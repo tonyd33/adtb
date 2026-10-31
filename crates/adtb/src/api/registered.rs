@@ -6,11 +6,11 @@ use std::sync::{Arc, Weak};
 
 use adtb_lang::ast::{BundleItem, FnDecl, Import, QName};
 use adtb_lang::check::{Bundles, Program, check_adhoc};
-use adtb_lang::evolve::{LogGrant, Source};
+use adtb_lang::evolve::{DeployedGrant, LogGrant, Source};
 use adtb_lang::kernel::{Kind, Terms, Tm, Var};
 use adtb_lang::norm::{self, NormalProgram, NormalQuery};
 use adtb_lang::parse::{Options, parse_adhoc, parse_bundle, parse_bundle_body, parse_migration};
-use adtb_lang::permission::{self, EffectiveGrants, Mode, Requirements};
+use adtb_lang::permission::{self, EffectiveGrants, Mode, Requirement, Requirements};
 use adtb_lang::schema::Schema;
 use adtb_lang::signature::{self, Item};
 use adtb_lang::translate::{Map, Pinned, Untranslatable};
@@ -280,26 +280,102 @@ impl Checked {
     }
 }
 
-/// Returns what `role` lacks with grant option, among `grants`, of every relation grant the
-/// queries and transactions of `c` use as they run: each translation where there is one. An
-/// imported schema function needs nothing of `role`. Each is a line naming the callable, what
-/// it does and the privilege, in ordinal order.
-pub(super) fn lacking(c: &Checked, grants: &[LogGrant], role: &str) -> Result<Vec<String>, Error> {
-    let runs = c.entries.iter().map(|e| match &e.served {
-        Some(s) => (e, s.run()),
-        None => (
-            e,
-            Run {
-                schema: &c.schema,
-                program: &c.program,
-                terms: &e.terms,
-                body: e.body,
-                params: &e.params,
-                unit: e.unit,
-            },
-        ),
-    });
-    lacking_of(runs, grants, role)
+/// What the owners of bundles lack among one state of the grants. Each program normalises once
+/// and each role's grants are resolved once per schema, whatever the number of bundles.
+pub(super) struct Lacking<'a> {
+    log: &'a [LogGrant],
+    deployed: &'a [DeployedGrant],
+    held: Vec<Held>,
+}
+
+/// What every callable over one schema and program shares.
+struct Held {
+    schema: Arc<Schema>,
+    program: Arc<Program>,
+    normal: NormalProgram,
+    roles: BTreeMap<String, EffectiveGrants>,
+}
+
+impl<'a> Lacking<'a> {
+    pub(super) fn new(log: &'a [LogGrant], deployed: &'a [DeployedGrant]) -> Self {
+        Lacking {
+            log,
+            deployed,
+            held: Vec::new(),
+        }
+    }
+
+    /// Returns what `role` lacks of what the queries and transactions of `c` use as they run:
+    /// each translation where there is one. An imported schema function needs nothing of `role`.
+    /// Each is a line naming the callable, what it does and the privilege, in ordinal order.
+    pub(super) fn of(&mut self, c: &Checked, role: &str) -> Result<Vec<String>, Error> {
+        let runs = c.entries.iter().map(|e| match &e.served {
+            Some(s) => (e, s.run()),
+            None => (
+                e,
+                Run {
+                    schema: &c.schema,
+                    program: &c.program,
+                    terms: &e.terms,
+                    body: e.body,
+                    params: &e.params,
+                    unit: e.unit,
+                },
+            ),
+        });
+        self.of_runs(runs, role)
+    }
+
+    /// Returns what [`Lacking::of`] does, for the callables `runs` runs.
+    fn of_runs<'r>(
+        &mut self,
+        runs: impl Iterator<Item = (&'r Entry, Run<'r>)>,
+        role: &str,
+    ) -> Result<Vec<String>, Error> {
+        let mut out = Vec::new();
+        for (e, run) in runs.filter(|(e, _)| e.kind != Callable::Fn) {
+            let at = self.held_at(&run)?;
+            let needs = requirements(&run, &self.held[at].normal)?;
+            let (log, deployed) = (self.log, self.deployed);
+            let held = self.held[at]
+                .roles
+                .entry(role.to_owned())
+                .or_insert_with(|| EffectiveGrants::of(run.schema, log, deployed, role));
+            for r in needs.missing(held, Mode::Registration) {
+                let (does, privilege) = r.text(run.schema);
+                out.push(if matches!(r, Requirement::ReadFiles) {
+                    format!("{} {does}; {role} lacks {privilege}", e.name)
+                } else {
+                    format!(
+                        "{} {does}; {role} lacks {privilege} with grant option",
+                        e.name
+                    )
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Returns where `self.held` holds the schema and program of `run`.
+    fn held_at(&mut self, run: &Run<'_>) -> Result<usize, Error> {
+        let same =
+            |h: &Held| Arc::ptr_eq(&h.schema, run.schema) && Arc::ptr_eq(&h.program, run.program);
+        if let Some(at) = self.held.iter().position(same) {
+            return Ok(at);
+        }
+        let normal = norm::program(run.schema, run.program).map_err(|e| {
+            Error::rejected(RejectReason::Internal {
+                what: format!("a checked registration's program does not normalise: {e:?}"),
+            })
+        })?;
+        self.held.push(Held {
+            schema: run.schema.clone(),
+            program: run.program.clone(),
+            normal,
+            roles: BTreeMap::new(),
+        });
+        Ok(self.held.len() - 1)
+    }
 }
 
 /// What a callable runs: its normal term over its parameters, the schema and program it runs
@@ -326,43 +402,6 @@ impl Served {
     }
 }
 
-/// Returns what [`lacking`] does, for the callables `runs` runs.
-fn lacking_of<'a>(
-    runs: impl Iterator<Item = (&'a Entry, Run<'a>)>,
-    grants: &[LogGrant],
-    role: &str,
-) -> Result<Vec<String>, Error> {
-    let mut out = Vec::new();
-    let mut normal: Vec<(&Arc<Schema>, &Arc<Program>, NormalProgram)> = Vec::new();
-    for (e, run) in runs.filter(|(e, _)| e.kind != Callable::Fn) {
-        let same = |(s, p, _): &(&Arc<Schema>, &Arc<Program>, NormalProgram)| {
-            Arc::ptr_eq(s, run.schema) && Arc::ptr_eq(p, run.program)
-        };
-        let at = match normal.iter().position(same) {
-            Some(at) => at,
-            None => {
-                let program = norm::program(run.schema, run.program).map_err(|e| {
-                    Error::rejected(RejectReason::Internal {
-                        what: format!("a checked registration's program does not normalise: {e:?}"),
-                    })
-                })?;
-                normal.push((run.schema, run.program, program));
-                normal.len() - 1
-            }
-        };
-        let needs = requirements(&run, &normal[at].2)?;
-        let held = EffectiveGrants::of(run.schema, grants, role);
-        for r in needs.missing(&held, Mode::Registration) {
-            let (does, privilege) = r.text(run.schema);
-            out.push(format!(
-                "{} {does}; {role} lacks {privilege} with grant option",
-                e.name
-            ));
-        }
-    }
-    Ok(out)
-}
-
 fn requirements(run: &Run<'_>, program: &NormalProgram) -> Result<Requirements, Error> {
     let params: Vec<Var> = run
         .params
@@ -379,13 +418,15 @@ fn requirements(run: &Run<'_>, program: &NormalProgram) -> Result<Requirements, 
 }
 
 /// Refuse a bundle of `checked`, recorded in `stored` with an owner other than the schema
-/// owner, whose owner lacks with grant option a grant among those of `source` it uses.
+/// owner, whose owner lacks a grant among those of `source` and `deployed` it uses.
 pub(super) fn definers(
     checked: &[Checked],
     stored: &Stored,
     source: &Source,
+    deployed: &[DeployedGrant],
     roles: &BTreeMap<i64, String>,
 ) -> Result<(), OpenError> {
+    let mut lacking = Lacking::new(&source.grants, deployed);
     for c in checked {
         let refused = |reason| OpenError::RegistrationRefused {
             bundle: c.name.clone(),
@@ -394,7 +435,7 @@ pub(super) fn definers(
         let Some(owner) = definer(stored, &c.name, roles).map_err(refused)? else {
             continue;
         };
-        let lacks = lacking(c, &source.grants, &owner).map_err(refused)?;
+        let lacks = lacking.of(c, &owner).map_err(refused)?;
         if !lacks.is_empty() {
             return Err(refused(Error::rejected(RejectReason::Denied {
                 detail: lacks.join("\n"),
@@ -470,6 +511,7 @@ pub(super) fn register(
     s: &Settings,
 ) -> Result<Vec<Checked>, OpenError> {
     let mut names = BTreeSet::new();
+    let mut pins = Pins::default();
     let mut out = Vec::with_capacity(regs.len());
     for r in regs {
         let refused = |reason: Error| OpenError::RegistrationRefused {
@@ -482,7 +524,7 @@ pub(super) fn register(
                 r.name
             ))));
         }
-        out.push(registration(over, r, stored, now, s).map_err(refused)?);
+        out.push(registration(over, r, stored, now, s, &mut pins).map_err(refused)?);
     }
     Ok(out)
 }
@@ -496,8 +538,9 @@ pub(super) fn register_marked(
     now: i64,
     s: &Settings,
 ) -> Vec<Checked> {
+    let mut pins = Pins::default();
     regs.iter()
-        .filter_map(|r| registration(over, r, stored, now, s).ok())
+        .filter_map(|r| registration(over, r, stored, now, s, &mut pins).ok())
         .collect()
 }
 
@@ -508,6 +551,7 @@ pub(super) fn registration(
     stored: &Stored,
     now: i64,
     s: &Settings,
+    pins: &mut Pins,
 ) -> Result<Checked, Error> {
     let version = over.source.version;
     let Some(h) = &r.header else {
@@ -515,7 +559,7 @@ pub(super) fn registration(
         pinned_within(&c, version)?;
         return Ok(c);
     };
-    let at_pin = pinned(over, h)?;
+    let at_pin = pinned(over, h, pins)?;
     let mut c = match &at_pin {
         Some(pin) => checked(&pin.over(), r),
         None => checked(over, r),
@@ -598,7 +642,7 @@ pub(super) fn downgrade(catalog: &Catalog, regs: &[Registration]) -> Result<(), 
         let Some(h) = r.header.as_ref().filter(|h| h.pins < version) else {
             continue;
         };
-        let Ok(Some(pin)) = pinned(&now, h) else {
+        let Ok(Some(pin)) = pinned(&now, h, &mut Pins::default()) else {
             continue;
         };
         let Ok(c) = checked(&pin.over(), r) else {
@@ -616,10 +660,15 @@ pub(super) fn downgrade(catalog: &Catalog, regs: &[Registration]) -> Result<(), 
     Ok(())
 }
 
+/// The versions bundles pin, each checked once. Bundles at one version share its schema and
+/// program.
+#[derive(Default)]
+pub(super) struct Pins(BTreeMap<u64, Arc<Pin>>);
+
 /// Returns the version `h` pins, `None` for the version `now` is at. Refuses an edition the
 /// engine does not implement, a catalog pin, and a pinned version the log does not hold or holds
 /// with another hash.
-fn pinned(now: &Over<'_>, h: &Header) -> Result<Option<Pin>, Error> {
+fn pinned(now: &Over<'_>, h: &Header, pins: &mut Pins) -> Result<Option<Arc<Pin>>, Error> {
     if h.edition != EDITION {
         return Err(Error::rejected(RejectReason::UnknownEdition {
             edition: h.edition.clone(),
@@ -648,6 +697,9 @@ fn pinned(now: &Over<'_>, h: &Header) -> Result<Option<Pin>, Error> {
     if h.pins == at {
         return hashed(now.schema, now.source).map(|()| None);
     }
+    if let Some(pin) = pins.0.get(&h.pins) {
+        return hashed(&pin.schema, &pin.source).map(|()| Some(pin.clone()));
+    }
     let source = catalog::source_at(now.source, h.pins).ok_or_else(|| {
         Error::invalid(format!(
             "bundle {} pins version {}, which the log does not hold: it is at version {at}",
@@ -657,12 +709,14 @@ fn pinned(now: &Over<'_>, h: &Header) -> Result<Option<Pin>, Error> {
     let (schema, program) = source
         .check()
         .map_err(|ds| Error::invalid(joined(ds.iter().map(|d| d.diag.message.as_str()))))?;
-    hashed(&schema, &source)?;
-    Ok(Some(Pin {
+    let pin = Arc::new(Pin {
         source,
         schema: Arc::new(schema),
         program: Arc::new(program),
-    }))
+    });
+    pins.0.insert(h.pins, pin.clone());
+    hashed(&pin.schema, &pin.source)?;
+    Ok(Some(pin))
 }
 
 /// Returns the constructor the bundle `c` would read that is enabled now and absent at its pin.
@@ -702,6 +756,7 @@ pub(super) fn readers(
     roles: &BTreeMap<i64, String>,
 ) -> Result<Vec<Live>, OpenError> {
     let mut out = Vec::new();
+    let mut pins = Pins::default();
     let schema = Arc::new(catalog.schema().clone());
     let program = catalog.program().clone();
     for r in regs {
@@ -717,8 +772,8 @@ pub(super) fn readers(
             schema: &schema,
             program: &program,
         };
-        let (c, source) = match pinned(&now, h).map_err(refused)? {
-            Some(pin) => (checked(&pin.over(), r), pin.source),
+        let (c, source) = match pinned(&now, h, &mut pins).map_err(refused)? {
+            Some(pin) => (checked(&pin.over(), r), pin.source.clone()),
             None => (checked(&now, r), catalog.source().clone()),
         };
         let c = c.map_err(refused)?;
@@ -738,10 +793,15 @@ pub(super) fn readers(
 
 /// Refuse migration `text`, applied to the version `catalog` is at, when a query or transaction
 /// of a bundle of `live` has no translation to the version it gives, or when the owner of a
-/// bundle, other than the schema owner, lacks with grant option after it a grant the translation
-/// uses. The refusal names every blocking bundle, in name order. A migration that does not
-/// apply or check is left for the catalog to refuse.
-pub(super) fn recheck(catalog: &Catalog, text: &str, live: &[Live]) -> Result<(), RejectReason> {
+/// bundle, other than the schema owner, lacks after it, among its grants and `deployed`, a grant
+/// the translation uses. The refusal names every blocking bundle, in name order. A migration
+/// that does not apply or check is left for the catalog to refuse.
+pub(super) fn recheck(
+    catalog: &Catalog,
+    text: &str,
+    live: &[Live],
+    deployed: &[DeployedGrant],
+) -> Result<(), RejectReason> {
     if live.is_empty() {
         return Ok(());
     }
@@ -756,6 +816,7 @@ pub(super) fn recheck(catalog: &Catalog, text: &str, live: &[Live]) -> Result<()
     };
     let schema = Arc::new(schema);
     let program = Arc::new(program);
+    let mut lacking = Lacking::new(&next.grants, deployed);
     let mut operator = None;
     let mut blocked: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for l in live {
@@ -777,7 +838,7 @@ pub(super) fn recheck(catalog: &Catalog, text: &str, live: &[Live]) -> Result<()
             continue;
         };
         let runs = c.entries.iter().zip(served.iter().map(Served::run));
-        let lacks = lacking_of(runs, &next.grants, owner).map_err(|e| match e {
+        let lacks = lacking.of_runs(runs, owner).map_err(|e| match e {
             Error::Rejected { reason } => reason,
             other => RejectReason::Internal {
                 what: format!("{other:?}"),
@@ -843,7 +904,7 @@ fn translations(
 pub(super) fn reread(over: &Over<'_>, text: &str) -> Result<Checked, Error> {
     let r = Registration::bundle(text)?;
     let h = r.header().expect("a bundle's registration has a header");
-    match pinned(over, h)? {
+    match pinned(over, h, &mut Pins::default())? {
         Some(pin) => checked(&pin.over(), &r),
         None => checked(over, &r),
     }

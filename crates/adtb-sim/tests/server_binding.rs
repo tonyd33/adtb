@@ -1212,3 +1212,770 @@ fn concurrent_bind_revoke_and_retire_keep_the_audit_and_renewal_facts() {
         assert_eq!(Outcome::Finished, got, "seed={seed}");
     }
 }
+
+const FILES: &str = "module shop
+add type Named = { name: Text }
+add relation loaded : Named key name
+grant insert loaded, read loaded to ann with grant option
+";
+
+const SYSTEM_LOG: &[&str] = &[SHOP, GRANTS, FILES];
+
+const SCAN: &str = r#"import shop
+txn load () -> I64 =
+  transact
+    insert loaded from (from r in read_csv("names.csv", Named) select r)
+    return 1
+"#;
+
+const CTORS: &str = "query ctors () -> Set Text = from c in catalog::constructors where c.name == \"Customer\" select c.name\n";
+
+const CTOR_SUMS: &str =
+    "query sums () -> Set Key catalog::types = from c in catalog::constructors select c.sum\n";
+
+const READ_CTORS: &str = "grant read catalog::constructors to ann with grant option";
+
+const REVOKE_CTORS: &str = "revoke read catalog::constructors from ann";
+
+fn refused_register(f: &Fixture, role: &str, reg: &Registration) -> String {
+    match f.db.role_authority().register(&f.session(role), reg) {
+        Err(Error::Rejected {
+            reason: RejectReason::Denied { detail },
+        }) => detail,
+        other => panic!("not denied: {other:?}"),
+    }
+}
+
+fn revoke_refusal(f: &Fixture, role: &str, text: &str) -> String {
+    match f.db.role_authority().revoke(&f.session(role), text) {
+        Err(Error::Rejected {
+            reason: RejectReason::Invalid { detail },
+        }) => detail,
+        other => panic!("not refused: {other:?}"),
+    }
+}
+
+fn grant_rows(f: &Fixture, grantee: &str) -> Vec<String> {
+    sorted(api::result(
+        &f.db,
+        &format!(
+            "from g in catalog::grants where g.grantee == \"{grantee}\" select {{ privilege: g.privilege, target: g.target, option: g.grant_option }}"
+        ),
+    ))
+}
+
+#[test]
+fn a_bundle_owner_needs_read_files_to_register_a_file_scan() {
+    once(340, |rt| {
+        let f = at(&rt, SYSTEM_LOG);
+        let scan = bundle("load-1.0", SYSTEM_LOG, SCAN);
+        assert_eq!(
+            "load reads files; ann lacks read_files",
+            refused_register(&f, "ann", &scan)
+        );
+        f.grant("owner", "grant read_files to bob");
+        assert!(
+            refused_register(&f, "bob", &scan).contains("bob lacks insert with grant option"),
+            "read_files gives no relation grant"
+        );
+        f.grant("owner", "grant read_files to ann");
+        f.register("ann", &scan);
+    });
+}
+
+#[test]
+fn a_bundle_reading_the_catalog_runs_for_a_caller_with_only_the_call_grant() {
+    once(341, |rt| {
+        let f = at(&rt, LOG);
+        let app = bundle("cat-1.0", LOG, CTORS);
+        let lacks = refused_register(&f, "ann", &app);
+        assert!(
+            lacks
+                .contains("ctors reads constructors.Constructor; ann lacks read with grant option"),
+            "{lacks}"
+        );
+        f.grant("owner", "grant read catalog::constructors to ann");
+        assert!(
+            refused_register(&f, "ann", &app).contains("with grant option"),
+            "a grant without the option does not register"
+        );
+        f.revoke("owner", REVOKE_CTORS);
+        f.grant("owner", READ_CTORS);
+        f.register("ann", &app);
+        f.grant("ann", "grant call cat-1.0 to web");
+        let web = f.bind("web", "cat-1.0").expect("web binds");
+        assert_eq!(
+            vec!["Text(\"Customer\")".to_owned()],
+            f.call(&web, "ctors", Vec::new()).expect("the call runs")
+        );
+    });
+}
+
+#[test]
+fn a_role_without_schema_gets_one_denial_giving_a_system_relation_grant() {
+    once(342, |rt| {
+        let f = at(&rt, LOG);
+        let authority = f.db.role_authority();
+        let session = f.session("bob");
+        let denial = |text: &str| denied(authority.grant(&session, text));
+        let present = denial("grant read catalog::constructors to ann");
+        assert_eq!(present, denial("grant read catalog::nosuch to ann"));
+        assert_eq!(present, denial("grant read nosuch.Nope (x) to ann"));
+        assert_eq!(present, denial("grant read catalog::nosuch to nobody"));
+        assert!(
+            grant_rows(&f, "ann")
+                .iter()
+                .all(|r| !r.contains("catalog::"))
+        );
+
+        f.grant("owner", "grant schema to bob");
+        f.db.role_authority()
+            .grant(&f.session("bob"), READ_CTORS)
+            .expect("a schema holder gives it");
+        assert!(
+            grant_rows(&f, "ann")
+                .iter()
+                .any(|r| r.contains("catalog::constructors frozen (") && r.contains("option: True")),
+            "{:?}",
+            grant_rows(&f, "ann")
+        );
+        let invalid =
+            f.db.role_authority()
+                .grant(&f.session("bob"), "grant read catalog::nosuch to ann");
+        assert!(matches!(reason(invalid), RejectReason::Invalid { .. }));
+        let operator =
+            f.db.role_authority()
+                .grant(&f.session("bob"), "grant read customers to ann");
+        assert!(matches!(reason(operator), RejectReason::Invalid { .. }));
+    });
+}
+
+#[test]
+fn an_option_on_a_system_relation_gives_no_right_to_grant_it() {
+    once(343, |rt| {
+        let f = at(&rt, LOG);
+        f.grant("owner", READ_CTORS);
+        denied(
+            f.db.role_authority()
+                .grant(&f.session("ann"), "grant read catalog::constructors to bob"),
+        );
+    });
+}
+
+#[test]
+fn a_system_relation_grant_closing_an_option_cycle_is_refused() {
+    once(344, |rt| {
+        let f = at(&rt, LOG);
+        f.grant("owner", "grant schema to ann");
+        f.grant("owner", "grant schema to bob");
+        f.grant(
+            "ann",
+            "grant read catalog::constructors to bob with grant option",
+        );
+        let closed = f.db.role_authority().grant(
+            &f.session("bob"),
+            "grant read catalog::constructors to ann with grant option",
+        );
+        assert!(matches!(reason(closed), RejectReason::Invalid { .. }));
+    });
+}
+
+#[test]
+fn a_refused_system_revoke_names_each_bundle_and_passes_once_retired() {
+    once(345, |rt| {
+        let f = at(&rt, LOG);
+        f.grant("owner", READ_CTORS);
+        f.register("ann", &bundle("cat-1.0", LOG, CTORS));
+        f.register("ann", &bundle("dog-1.0", LOG, CTORS));
+        let why = revoke_refusal(&f, "owner", REVOKE_CTORS);
+        assert!(why.contains("bundle cat-1.0: ctors reads"), "{why}");
+        assert!(why.contains("bundle dog-1.0: ctors reads"), "{why}");
+        query(&f.db, "retire bundle cat-1.0");
+        let why = revoke_refusal(&f, "owner", REVOKE_CTORS);
+        assert!(!why.contains("cat-1.0") && why.contains("dog-1.0"), "{why}");
+        query(&f.db, "retire bundle dog-1.0");
+        f.revoke("owner", REVOKE_CTORS);
+        assert!(
+            grant_rows(&f, "ann")
+                .iter()
+                .all(|r| !r.contains("constructors"))
+        );
+    });
+}
+
+#[test]
+fn a_refused_read_files_revoke_names_the_bundle_and_a_superseded_one_releases_it() {
+    once(346, |rt| {
+        let f = at(&rt, SYSTEM_LOG);
+        f.grant("owner", "grant read_files to ann");
+        f.register("ann", &bundle("load-1.0", SYSTEM_LOG, SCAN));
+        let why = revoke_refusal(&f, "owner", "revoke read_files from ann");
+        assert!(
+            why.contains("bundle load-1.0: load reads files; ann lacks read_files"),
+            "{why}"
+        );
+        assert!(matches!(
+            reason(
+                f.db.role_authority()
+                    .revoke_capability("ann", Capability::ReadFiles)
+            ),
+            RejectReason::Invalid { .. }
+        ));
+        f.register(
+            "ann",
+            &bundle(
+                "load-2.0",
+                SYSTEM_LOG,
+                "import shop\nquery q () -> Set Text = from c in customers select c.name\n",
+            ),
+        );
+        query(&f.db, "supersede bundle load-1.0 by load-2.0");
+        f.revoke("owner", "revoke read_files from ann");
+    });
+}
+
+#[test]
+fn an_expired_bundle_releases_a_system_revoke() {
+    once(347, |rt| {
+        let f = at(&rt, LOG);
+        f.grant("owner", READ_CTORS);
+        f.register("ann", &bundle("cat-1.0", LOG, CTORS));
+        revoke_refusal(&f, "owner", REVOKE_CTORS);
+        sleep(&rt, 9 * DAY);
+        f.revoke("owner", REVOKE_CTORS);
+    });
+}
+
+#[test]
+fn a_revoke_leaving_every_live_bundle_what_it_uses_passes() {
+    once(348, |rt| {
+        let f = at(&rt, SYSTEM_LOG);
+        f.grant("owner", READ_CTORS);
+        f.grant(
+            "owner",
+            "grant read catalog::relations to ann with grant option",
+        );
+        f.grant("owner", "grant read_files to ann");
+        f.grant(
+            "owner",
+            "grant read catalog::constructors to bob with grant option",
+        );
+        f.grant("owner", "grant monitor to ann");
+        f.register("ann", &bundle("cat-1.0", SYSTEM_LOG, CTORS));
+        f.revoke("owner", "revoke read catalog::relations from ann");
+        f.revoke("owner", "revoke read_files from ann");
+        f.revoke("owner", "revoke monitor from ann");
+        f.revoke("owner", "revoke read catalog::constructors from bob");
+    });
+}
+
+#[test]
+fn a_second_grantor_keeps_a_bundle_through_a_revoke_of_the_first() {
+    once(349, |rt| {
+        let f = at(&rt, LOG);
+        f.grant("owner", "grant schema to bob");
+        f.grant("owner", READ_CTORS);
+        f.db.role_authority()
+            .grant(&f.session("bob"), READ_CTORS)
+            .expect("bob gives it");
+        f.register("ann", &bundle("cat-1.0", LOG, CTORS));
+        f.db.role_authority()
+            .revoke(&f.session("bob"), REVOKE_CTORS)
+            .expect("the owner's row remains");
+        let why = revoke_refusal(&f, "owner", REVOKE_CTORS);
+        assert!(why.contains("bundle cat-1.0"), "{why}");
+    });
+}
+
+#[test]
+fn removing_a_system_grant_option_is_refused_the_same() {
+    once(350, |rt| {
+        let f = at(&rt, LOG);
+        f.grant("owner", READ_CTORS);
+        f.register("ann", &bundle("cat-1.0", LOG, CTORS));
+        let why = revoke_refusal(&f, "owner", REVOKE_CTORS);
+        assert!(why.contains("bundle cat-1.0"), "{why}");
+        assert!(
+            grant_rows(&f, "ann")
+                .iter()
+                .any(|r| r.contains("constructors") && r.contains("option: True")),
+            "the refused revoke keeps the option"
+        );
+        query(&f.db, "retire bundle cat-1.0");
+        f.revoke("owner", REVOKE_CTORS);
+        f.grant("owner", "grant read catalog::constructors to ann");
+        assert!(
+            grant_rows(&f, "ann")
+                .iter()
+                .any(|r| r.contains("constructors") && r.contains("option: False")),
+            "{:?}",
+            grant_rows(&f, "ann")
+        );
+    });
+}
+
+#[test]
+fn a_revoke_looks_only_at_the_bundles_of_the_revoked_role() {
+    once(351, |rt| {
+        let f = at(&rt, LOG);
+        f.grant("owner", READ_CTORS);
+        f.grant(
+            "owner",
+            "grant read catalog::constructors to bob with grant option",
+        );
+        f.register("owner", &bundle("own-1.0", LOG, CTORS));
+        f.register("ann", &bundle("cat-1.0", LOG, CTORS));
+        f.revoke("owner", "revoke read catalog::constructors from bob");
+    });
+}
+
+#[test]
+fn field_lists_on_a_system_relation_grant_cover_the_listed_fields() {
+    once(352, |rt| {
+        let f = at(&rt, LOG);
+        f.grant(
+            "owner",
+            "grant read catalog::constructors (name) to ann with grant option",
+        );
+        assert!(
+            grant_rows(&f, "ann")
+                .iter()
+                .any(|r| r.contains("catalog::constructors (name)")),
+            "{:?}",
+            grant_rows(&f, "ann")
+        );
+        f.register("ann", &bundle("cat-1.0", LOG, CTORS));
+        let lacks = refused_register(&f, "ann", &bundle("sum-1.0", LOG, CTOR_SUMS));
+        assert!(
+            lacks.contains("reads constructors.Constructor (sum)") && !lacks.contains("(name)"),
+            "{lacks}"
+        );
+        assert!(matches!(
+            reason(f.db.role_authority().grant(
+                &f.session("owner"),
+                "grant read catalog::constructors (nosuch) to ann"
+            )),
+            RejectReason::Invalid { .. }
+        ));
+        f.grant("owner", READ_CTORS);
+        f.register("ann", &bundle("sum-1.0", LOG, CTOR_SUMS));
+        let why = revoke_refusal(&f, "owner", REVOKE_CTORS);
+        assert!(why.contains("bundle sum-1.0"), "{why}");
+    });
+}
+
+#[test]
+fn a_system_relation_grant_of_constructors_covers_only_those() {
+    once(353, |rt| {
+        let f = at(&rt, LOG);
+        f.grant(
+            "owner",
+            "grant read catalog::functions.Host to ann with grant option",
+        );
+        f.register(
+            "ann",
+            &bundle(
+                "hosts-1.0",
+                LOG,
+                "query hosts () -> Set Text = from h in catalog::functions.Host select h.symbol\n",
+            ),
+        );
+        let lacks = refused_register(
+            &f,
+            "ann",
+            &bundle(
+                "every-1.0",
+                LOG,
+                "query all () -> Set Text = from h in catalog::functions select h.name\n",
+            ),
+        );
+        assert!(lacks.contains("functions.Wasm"), "{lacks}");
+    });
+}
+
+fn opened(
+    rt: &SimRuntime,
+    log: &[&str],
+    regs: Vec<Registration>,
+) -> Result<Database<SimRuntime>, adtb::OpenError> {
+    Database::open_in(
+        rt.clone(),
+        "binding.adt",
+        &Log::new(log.iter().copied()),
+        &OpenOptions {
+            registrations: regs,
+            ..gated(rt, &Arc::new(Gate::default()))
+        },
+    )
+}
+
+#[test]
+fn a_reopen_and_a_migration_count_deployed_grants_as_registration_does() {
+    once(354, |rt| {
+        let f = at(&rt, SYSTEM_LOG);
+        f.grant("owner", READ_CTORS);
+        f.grant("owner", "grant read_files to ann");
+        let cat = bundle("cat-1.0", SYSTEM_LOG, CTORS);
+        let scan = bundle("load-1.0", SYSTEM_LOG, SCAN);
+        f.register("ann", &cat);
+        f.register("ann", &scan);
+        f.db.close().expect("close");
+        let db = opened(&rt, SYSTEM_LOG, vec![cat.clone(), scan])
+            .unwrap_or_else(|e| panic!("the reopen counts deployed rows: {e:?}"));
+        query(&db, "retire bundle load-1.0");
+        db.close().expect("close");
+        let later: Vec<&str> = SYSTEM_LOG.iter().copied().chain([LATER]).collect();
+        let db = opened(&rt, &later, vec![cat])
+            .unwrap_or_else(|e| panic!("the migration's recheck counts deployed rows: {e:?}"));
+        db.close().expect("close");
+    });
+}
+
+#[test]
+fn a_reopen_reports_a_bundle_whose_owner_lost_a_deployed_grant() {
+    once(355, |rt| {
+        let f = at(&rt, LOG);
+        f.grant("owner", READ_CTORS);
+        let cat = bundle("cat-1.0", LOG, CTORS);
+        f.register("ann", &cat);
+        sleep(&rt, 9 * DAY);
+        f.revoke("owner", REVOKE_CTORS);
+        f.db.close().expect("close");
+        match opened(&rt, LOG, vec![cat]) {
+            Err(adtb::OpenError::RegistrationRefused { bundle, reason }) => {
+                assert_eq!("cat-1.0", bundle);
+                let why = format!("{reason:?}");
+                assert!(why.contains("ann lacks read with grant option"), "{why}");
+            }
+            Err(other) => panic!("not refused by the recheck: {other:?}"),
+            Ok(_) => panic!("the reopen admits the bundle"),
+        }
+    });
+}
+
+#[test]
+fn registering_and_revoking_at_once_never_leave_a_live_bundle_lacking() {
+    for seed in sweep(360..366) {
+        let mut sim = Sim::new(
+            seed,
+            Config {
+                switch_rate: 0.3,
+                ..Config::default()
+            },
+        );
+        let got = sim.run(|rt| {
+            let f = at(&rt, LOG);
+            f.grant("owner", READ_CTORS);
+            let reg = bundle("cat-1.0", LOG, CTORS);
+            let threads: Vec<_> = (0..2)
+                .map(|actor| {
+                    let (db, reg) = (f.db.clone(), reg.clone());
+                    rt.spawn("actor", move || {
+                        let a = db.role_authority();
+                        if actor == 0 {
+                            let s = a.session("owner").expect("a session");
+                            drop(a.revoke(&s, REVOKE_CTORS));
+                        } else {
+                            let s = a.session("ann").expect("a session");
+                            drop(a.register(&s, &reg));
+                        }
+                    })
+                })
+                .collect();
+            for t in threads {
+                rt.join(t);
+            }
+            let live = query(&f.db, "from b in catalog::bundles select b.name");
+            let held = grant_rows(&f, "ann")
+                .iter()
+                .any(|r| r.contains("constructors"));
+            assert!(live.is_empty() || held, "seed={seed}: {live:?}");
+        });
+        assert_eq!(Outcome::Finished, got, "seed={seed}");
+    }
+}
+
+fn reopened(rt: &SimRuntime, log: &[&str]) -> Fixture {
+    Fixture {
+        db: opened(rt, log, vec![]).unwrap_or_else(|e| panic!("the reopen succeeds: {e:?}")),
+        rt: rt.clone(),
+        gate: Arc::new(Gate::default()),
+    }
+}
+
+fn assert_expired<T: std::fmt::Debug>(got: Result<T, Error>) {
+    let why = reason(got);
+    assert!(matches!(why, RejectReason::BundleExpired { .. }), "{why:?}");
+}
+
+#[test]
+fn raising_the_grace_brings_back_no_expired_bundle_and_registering_runs_the_checks() {
+    once(370, |rt| {
+        let f = at(&rt, LOG);
+        f.grant("owner", READ_CTORS);
+        let cat = bundle("cat-1.0", LOG, CTORS);
+        f.register("ann", &cat);
+        f.grant("ann", "grant call cat-1.0 to web");
+        let web = f.bind("web", "cat-1.0").expect("it binds");
+        sleep(&rt, 9 * DAY);
+        f.revoke("owner", REVOKE_CTORS);
+        api::results(&f.db, "set setting LeaseGrace = { grace: 30d }");
+        assert_expired(f.bind("web", "cat-1.0"));
+        assert_expired(f.call(&web, "ctors", vec![]));
+        drop(web);
+        f.db.close().expect("close");
+
+        let f = reopened(&rt, LOG);
+        assert_expired(f.bind("web", "cat-1.0"));
+        let lacks = refused_register(&f, "ann", &cat);
+        assert!(
+            lacks.contains("ann lacks read with grant option"),
+            "{lacks}"
+        );
+        assert_expired(f.bind("web", "cat-1.0"));
+        f.grant("owner", READ_CTORS);
+        f.register("ann", &cat);
+        let web = f
+            .bind("web", "cat-1.0")
+            .expect("registering again clears it");
+        f.call(&web, "ctors", vec![]).expect("it runs");
+        drop(web);
+        f.db.close().expect("close");
+
+        let f = reopened(&rt, LOG);
+        f.bind("web", "cat-1.0").expect("the clearing is durable");
+    });
+}
+
+#[test]
+fn a_marked_bundle_presented_at_an_open_runs_the_checks() {
+    once(371, |rt| {
+        let f = at(&rt, LOG);
+        f.grant("owner", READ_CTORS);
+        let cat = bundle("cat-1.0", LOG, CTORS);
+        f.register("ann", &cat);
+        sleep(&rt, 9 * DAY);
+        f.revoke("owner", REVOKE_CTORS);
+        api::results(&f.db, "set setting LeaseGrace = { grace: 30d }");
+        f.db.close().expect("close");
+        match opened(&rt, LOG, vec![cat]) {
+            Err(adtb::OpenError::RegistrationRefused { bundle, .. }) => {
+                assert_eq!("cat-1.0", bundle);
+            }
+            Err(other) => panic!("not refused by the recheck: {other:?}"),
+            Ok(_) => panic!("presenting it runs the checks"),
+        }
+    });
+}
+
+#[test]
+fn raising_the_default_lease_brings_back_no_expired_bundle() {
+    once(372, |rt| {
+        let f = at(&rt, LOG);
+        let text = format!(
+            "bundle one-1.0 pins 2 ({}) edition \"2026-10\"\n{ONE_Q}",
+            version_hash(LOG)
+        );
+        let one = Registration::bundle(text).expect("the bundle parses");
+        f.register("ann", &one);
+        f.grant("ann", "grant call one-1.0 to web");
+        sleep(&rt, 31 * DAY);
+        api::results(&f.db, "set setting DefaultLease = { lease: 90d }");
+        assert_expired(f.bind("web", "one-1.0"));
+        api::results(&f.db, "set setting DefaultLease = { lease: 120d }");
+        assert_expired(f.bind("web", "one-1.0"));
+        f.register("ann", &one);
+        f.bind("web", "one-1.0").expect("registered again");
+    });
+}
+
+#[test]
+fn raising_the_grace_leaves_a_bundle_not_yet_expired_live() {
+    once(373, |rt| {
+        let f = at(&rt, LOG);
+        f.register("ann", &bundle("one-1.0", LOG, ONE_Q));
+        f.grant("ann", "grant call one-1.0 to web");
+        sleep(&rt, 7 * DAY);
+        api::results(&f.db, "set setting LeaseGrace = { grace: 30d }");
+        sleep(&rt, 2 * DAY);
+        let web = f.bind("web", "one-1.0").expect("its grace is the new one");
+        f.call(&web, "q", vec![]).expect("it runs");
+    });
+}
+
+#[test]
+fn a_bundle_a_migration_expired_past_stays_expired_when_the_grace_rises() {
+    once(374, |rt| {
+        let f = at(&rt, LOG);
+        let one = bundle("one-1.0", LOG, ONE_Q);
+        f.register("ann", &one);
+        f.grant("ann", "grant call one-1.0 to web");
+        sleep(&rt, 9 * DAY);
+        f.db.close().expect("close");
+        let later: &[&str] = &[
+            SHOP,
+            GRANTS,
+            "module shop\nrevoke read customers from ann\n",
+        ];
+        let f = reopened(&rt, later);
+        api::results(&f.db, "set setting LeaseGrace = { grace: 30d }");
+        assert_expired(f.bind("web", "one-1.0"));
+        f.db.close().expect("close");
+        let f = reopened(&rt, later);
+        assert_expired(f.bind("web", "one-1.0"));
+        assert!(
+            f.db.role_authority()
+                .register(&f.session("ann"), &one)
+                .is_err(),
+            "registering again runs the checks"
+        );
+        assert_expired(f.bind("web", "one-1.0"));
+    });
+}
+
+#[test]
+fn a_migration_goes_past_a_bundle_marked_before_it() {
+    once(375, |rt| {
+        let f = at(&rt, LOG);
+        f.register("ann", &bundle("one-1.0", LOG, ONE_Q));
+        sleep(&rt, 9 * DAY);
+        api::results(&f.db, "set setting LeaseGrace = { grace: 30d }");
+        f.db.close().expect("close");
+        let later: &[&str] = &[
+            SHOP,
+            GRANTS,
+            "module shop\nrevoke read customers from ann\n",
+        ];
+        reopened(&rt, later);
+    });
+}
+
+#[test]
+fn only_the_schema_owner_grants_on_credentials_in_every_form() {
+    once(376, |rt| {
+        let f = at(&rt, LOG);
+        f.grant("owner", "grant schema to bob");
+        let forms = [
+            "grant read catalog::credentials to ann",
+            "grant read catalog::credentials (stored_key) to ann",
+            "grant read catalog::credentials.Credential to ann",
+            "grant read catalog::credentials to ann with grant option",
+            "grant insert catalog::credentials to ann",
+        ];
+        for form in forms {
+            let why = denied(f.db.role_authority().grant(&f.session("bob"), form));
+            assert!(why.contains("catalog::credentials"), "{form}: {why}");
+        }
+        for form in &forms[..3] {
+            f.grant("owner", form);
+            f.revoke(
+                "owner",
+                &form
+                    .replace("grant read", "revoke read")
+                    .replace(" to ann", " from ann"),
+            );
+        }
+        f.grant("owner", "grant read catalog::relations to ann");
+    });
+}
+
+#[test]
+fn a_write_grant_on_a_system_relation_is_invalid_after_authority() {
+    once(377, |rt| {
+        let f = at(&rt, LOG);
+        f.grant("owner", "grant schema to bob");
+        for privilege in ["insert", "update", "delete"] {
+            let text = format!("grant {privilege} catalog::grants to ann with grant option");
+            denied(f.db.role_authority().grant(&f.session("web"), &text));
+            for by in ["owner", "bob"] {
+                let got = f.db.role_authority().grant(&f.session(by), &text);
+                match reason(got) {
+                    RejectReason::Invalid { detail } => {
+                        assert!(
+                            detail.contains(privilege) && detail.contains("catalog::grants"),
+                            "{detail}"
+                        );
+                    }
+                    other => panic!("not invalid: {other:?}"),
+                }
+            }
+        }
+        assert!(
+            grant_rows(&f, "ann")
+                .iter()
+                .all(|r| !r.contains("catalog::grants")),
+            "{:?}",
+            grant_rows(&f, "ann")
+        );
+    });
+}
+
+#[test]
+fn a_migration_grants_no_write_on_a_system_relation() {
+    once(378, |rt| {
+        let f = at(&rt, LOG);
+        f.db.close().expect("close");
+        for privilege in ["read", "insert"] {
+            let bad = format!("module shop\ngrant {privilege} catalog::grants to ann\n");
+            let log: &[&str] = &[SHOP, GRANTS, &bad];
+            assert!(
+                opened(&rt, log, vec![]).is_err(),
+                "`{privilege}` is deployment state"
+            );
+        }
+    });
+}
+
+#[test]
+fn a_role_with_nothing_gets_one_denial_revoking_any_relation() {
+    once(379, |rt| {
+        let f = at(&rt, LOG);
+        let session = f.session("bob");
+        let authority = f.db.role_authority();
+        let denial = |text: &str| denied(authority.revoke(&session, text));
+        let present = denial("revoke read customers from ann");
+        for text in [
+            "revoke read nosuch from ann",
+            "revoke read customers (name) from ann",
+            "revoke read customers.Customer from ann",
+            "revoke read nosuch.Nope (x) from ann",
+            "revoke update customers from ann",
+            "revoke update nosuch from ann",
+            "revoke insert customers from ann",
+            "revoke delete nosuch from ann",
+            "revoke retag customers -> customers from ann",
+            "revoke read catalog::constructors from ann",
+            "revoke read catalog::nosuch from ann",
+        ] {
+            assert_eq!(present, denial(text), "{text}");
+        }
+        for text in [
+            "grant read customers (name) to ann",
+            "grant read customers.Customer to ann",
+            "grant retag customers -> customers to ann",
+            "grant update customers to ann",
+            "grant read customers, insert customers to ann",
+        ] {
+            let got = denied(authority.grant(&session, text));
+            assert_eq!(present, got, "{text}");
+        }
+    });
+}
+
+#[test]
+fn a_former_schema_holder_revokes_what_it_gave() {
+    once(380, |rt| {
+        let f = at(&rt, LOG);
+        f.grant("owner", "grant schema to bob");
+        f.grant("bob", "grant read catalog::relations to web");
+        f.revoke("owner", "revoke schema from bob");
+        f.revoke("bob", "revoke read catalog::relations from web");
+        assert!(
+            grant_rows(&f, "web")
+                .iter()
+                .all(|r| !r.contains("catalog::relations")),
+            "{:?}",
+            grant_rows(&f, "web")
+        );
+    });
+}

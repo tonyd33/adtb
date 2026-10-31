@@ -822,3 +822,120 @@ fn a_live_bundle_whose_signature_cannot_be_read_refuses_a_family_grant() {
         "{garbled}"
     );
 }
+
+/// Returns a database with bundle `cat-1.0`, reading the catalog, of role `ann`, who holds
+/// `read_files` and `monitor`.
+fn bundle_of_ann() -> (Scratch, Database) {
+    let text = "module shop\nadd module shop\nadd type Customer = { id: Key customers, name: Text }\nadd relation customers : Customer key id generate sequence\n";
+    let (scratch, db) = opened(&Log::new([text]));
+    let authority = db.role_authority();
+    authority.create_role("ann").unwrap();
+    let owner = authority.session("owner").unwrap();
+    for grant in [
+        "grant read catalog::constructors to ann with grant option",
+        "grant read_files to ann",
+        "grant monitor to ann",
+    ] {
+        authority.grant(&owner, grant).unwrap();
+    }
+    let hash: String = crate::catalog::version_hash(&db.engine.schema, &db.engine.source)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let bundle = format!(
+        "bundle cat-1.0 pins 1 ({hash}) edition \"2026-10\"\nquery ctors () -> Set Text = from c in catalog::constructors select c.name\n"
+    );
+    let ann = authority.session("ann").unwrap();
+    authority
+        .register(&ann, &Registration::bundle(bundle).unwrap())
+        .unwrap();
+    (scratch, db)
+}
+
+fn forge(db: &Database, change: impl Fn(&mut Stored, i64)) {
+    let e = &db.engine;
+    let mut deployed = e.deployed.lock(&e.rt);
+    let mut stored = (**deployed).clone();
+    let id = stored.bundles["cat-1.0"].id;
+    change(&mut stored, id);
+    *deployed = std::sync::Arc::new(stored);
+}
+
+#[test]
+fn only_a_revoke_of_what_a_bundle_counts_looks_at_a_lacking_owner() {
+    let (_scratch, db) = bundle_of_ann();
+    let authority = db.role_authority();
+    let owner = authority.session("owner").unwrap();
+    let renewed = db.engine.deployed.lock(&db.engine.rt).bundles["cat-1.0"].renewed;
+    forge(&db, |s, _| {
+        s.bundles.get_mut("cat-1.0").unwrap().renewed = i64::MIN / 2;
+    });
+    authority
+        .revoke(&owner, "revoke read catalog::constructors from ann")
+        .unwrap();
+    forge(&db, |s, _| {
+        s.bundles.get_mut("cat-1.0").unwrap().renewed = renewed;
+    });
+    let refused = authority
+        .revoke(&owner, "revoke read_files from ann")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("cat-1.0") && refused.contains("ann lacks read with grant option"),
+        "{refused}"
+    );
+    authority.revoke(&owner, "revoke monitor from ann").unwrap();
+}
+
+#[test]
+fn a_bundle_of_the_grantee_that_cannot_be_read_refuses_a_counted_revoke() {
+    let (_scratch, db) = bundle_of_ann();
+    let authority = db.role_authority();
+    let owner = authority.session("owner").unwrap();
+    let e = authority.engine.upgrade().unwrap();
+    e.registered.lock(&e.rt).clear();
+    forge(&db, |s, id| {
+        s.deployed.registered.get_mut(&id).unwrap().text = "garbled".into();
+    });
+    let refused = authority
+        .revoke(&owner, "revoke read_files from ann")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("bundle cat-1.0 cannot be read:"),
+        "{refused}"
+    );
+    authority.revoke(&owner, "revoke monitor from ann").unwrap();
+}
+
+#[test]
+fn a_bundle_with_no_text_cannot_be_read_until_it_is_presented_or_retired() {
+    let (_scratch, db) = bundle_of_ann();
+    let authority = db.role_authority();
+    let e = authority.engine.upgrade().unwrap();
+    e.registered.lock(&e.rt).clear();
+    forge(&db, |s, id| {
+        s.deployed.registered.remove(&id);
+    });
+    let got = authority.access(false, |e, tx, id, _| {
+        let t = Tables::new(&e.schema, id);
+        let grants = t.grants(e, tx)?;
+        let deleted = grants
+            .iter()
+            .filter(|g| g.privilege == "read_files")
+            .map(|g| g.id)
+            .collect();
+        super::super::grant::Calls::new(e).refuse_lacking(
+            "revoke",
+            &grants,
+            &deleted,
+            ("owner", crate::api::OWNER_ID),
+        )
+    });
+    let refused = got.unwrap_err().to_string();
+    assert!(
+        refused
+            .contains("bundle cat-1.0 cannot be read until it is presented at an open or retired"),
+        "{refused}"
+    );
+}

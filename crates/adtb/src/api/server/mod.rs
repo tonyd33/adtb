@@ -21,7 +21,7 @@ use adtb_lang::span::Diag;
 
 use crate::runtime::Runtime;
 
-use super::{Database, Engine, Error, OWNER_ROLE, RejectReason, TxnId};
+use super::{Database, Engine, Error, OWNER_ID, OWNER_ROLE, RejectReason, TxnId};
 use grant::Calls;
 use store::Changes;
 pub(super) use tables::CallOrigin;
@@ -261,9 +261,12 @@ impl<R: Runtime> RoleAuthority<R> {
     /// Run the deployment revoke statement `text` as `session`'s role.
     ///
     /// Delete the matching rows the role granted, or every grantor's for the schema owner. Fail
-    /// with `Invalid`, changing nothing, naming the revoke when a privilege matches no row the
-    /// role may delete, or naming the rows when a deleted row held a grant option that rows of
-    /// its grantee rely on and no option left to the grantee covers.
+    /// with `Denied`, whether or not the relation exists, for a revoke naming a relation by a
+    /// role with no `schema` and no grant it gave on a relation. Fail with `Invalid`, changing
+    /// nothing, naming the revoke when a privilege matches no row the
+    /// role may delete, naming the rows when a deleted row held a grant option that rows of its
+    /// grantee rely on and no option left to the grantee covers, or naming each live bundle of
+    /// the grantee that would lack a system relation grant or `read_files` it uses.
     pub fn revoke(&self, session: &RoleSession<R>, text: &str) -> Result<(), Error> {
         self.revoke_as(&session.name, text, |e, tx, t| {
             self.checked(session, t, e, tx)
@@ -277,10 +280,14 @@ impl<R: Runtime> RoleAuthority<R> {
         allowed: impl Fn(&Engine<R>, &crate::write::Txn, &Tables<'_>) -> Result<(), Error>,
     ) -> Result<(), Error> {
         let statement = revoke_statement(text)?;
-        self.access(true, |e, tx, id, changes| {
+        let engine = self.engine.upgrade().ok_or_else(Error::closed)?;
+        let _open = engine.enter()?;
+        let _writer = engine.bundle_writer.lock(&engine.rt);
+        store::run(&engine, true, &mut |e, tx, id, changes| {
             let t = Tables::new(&e.schema, id);
             allowed(e, tx, &t)?;
             let grants = t.grants(e, tx)?;
+            refuse_relation_revoke(&grants, issuer, &statement)?;
             let calls = Calls::new(e);
             let mut deleted: BTreeSet<i64> = BTreeSet::new();
             for p in &statement.privileges {
@@ -310,6 +317,11 @@ impl<R: Runtime> RoleAuthority<R> {
                     "`{text}` takes a grant option these grants rely on: {}",
                     orphans.join(", ")
                 )));
+            }
+            let from = statement.from.text.as_str();
+            let role = t.roles(e, tx)?.into_iter().find(|r| r.name == from);
+            if let Some(role) = role.filter(|r| r.id.0 != OWNER_ID) {
+                calls.refuse_lacking(text, &grants, &deleted, (from, role.id.0))?;
             }
             for g in gone() {
                 changes.delete(t.grants, g.value.clone());
@@ -380,6 +392,26 @@ fn require<R: Runtime>(
             capability.name()
         )))
     }
+}
+
+/// Refuse with `Denied` a revoke naming a relation by a role that holds no `schema` and gave no
+/// grant on a relation, whether or not the relation exists.
+fn refuse_relation_revoke(grants: &[Grant], issuer: &str, statement: &Revoke) -> Result<(), Error> {
+    let gave = |g: &Grant| {
+        g.kind == "Deployment" && g.grantor == issuer && g.privilege != "call" && g.target.is_some()
+    };
+    if !statement.privileges.iter().any(grant::on_relation)
+        || issuer == OWNER_ROLE
+        || grants
+            .iter()
+            .any(|g| g.capability(Capability::Schema, issuer) || gave(g))
+    {
+        return Ok(());
+    }
+    Err(denied(format!(
+        "role `{issuer}` lacks `{}`",
+        Capability::Schema.name()
+    )))
 }
 
 /// Returns each row that a deleted row's grant option supported and that no remaining option of

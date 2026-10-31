@@ -221,6 +221,7 @@ fn roots_row() -> Vec<FieldType> {
         )])
         .chain(deployment::ctors())
         .chain(kept::ctors())
+        .chain([deployment::expired_ctor()])
         .collect(),
     )]
 }

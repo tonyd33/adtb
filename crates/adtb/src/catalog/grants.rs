@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb_lang::evolve::{GrantRow, LogGrant, NoCalls, closes_option_cycle};
+use adtb_lang::evolve::{DeployedGrant, GrantRow, LogGrant, NoCalls, closes_option_cycle};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 
@@ -287,6 +287,33 @@ impl Catalog {
         let roles = self.roles(pager, txns, &snapshot);
         txns.release(id);
         roles
+    }
+
+    /// Returns each `Deployment` row of `catalog::grants` of the latest commit.
+    pub fn committed_deployed<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        txns: &Transactions<R>,
+    ) -> Result<Vec<DeployedGrant>, Error> {
+        let (id, snapshot) = txns.take(Scope::Every)?;
+        let stored = self.stored_grants(pager, txns, &snapshot);
+        txns.release(id);
+        let shape = Shape::of(&self.schema);
+        let yes = boolean(&self.schema, true);
+        stored?
+            .iter()
+            .filter(|s| !s.log)
+            .map(|s| {
+                let row = shape.grant_row(&s.row, &yes)?;
+                Ok(DeployedGrant {
+                    grantee: row.grantee.to_owned(),
+                    privilege: row.privilege.to_owned(),
+                    target: row.target.map(str::to_owned),
+                    grant_option: row.grant_option,
+                    dormant: row.dormant,
+                })
+            })
+            .collect()
     }
 
     /// Give each grant of the source the id of the `Log` row the latest commit holds for it.

@@ -115,6 +115,7 @@ impl<'a> Stops<'a> {
             polls_from: None,
             rerun: None,
             grant: None,
+            confined: false,
         }
     }
 

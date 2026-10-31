@@ -1,10 +1,11 @@
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use adtb_lang::ast::{AdhocItem, Grant as Statement};
+use adtb_lang::ast::{AdhocItem, Grant as Statement, Privilege};
 use adtb_lang::evolve::{
-    CallSignatures, DeploymentGrant, GrantRow, closes_option_cycle, deployment_grant, family_query,
+    CallSignatures, DeploymentGrant, GrantRow, Stated, closes_option_cycle, deployment_grant,
+    family_query,
 };
 use adtb_lang::parse::{Options, parse_adhoc};
 use adtb_lang::signature::{self, Ids};
@@ -14,8 +15,8 @@ use crate::runtime::Runtime;
 use crate::write::Txn;
 
 use super::super::bundle::{Row, Stored};
-use super::super::registered::{self, Checked, Over};
-use super::super::{Engine, Error, OWNER_ID};
+use super::super::registered::{self, Checked, Lacking, Over};
+use super::super::{Engine, Error, OWNER_ID, RejectReason};
 use super::store::{self, Changes};
 use super::tables::{Given, Grant, Tables};
 use super::{
@@ -119,6 +120,72 @@ impl<'e, R: Runtime> Calls<'e, R> {
     }
 }
 
+impl<R: Runtime> Calls<'_, R> {
+    /// Refuse deleting the rows `deleted` of `grants` from `grantee`, naming each live bundle
+    /// `grantee` owns that lacks after it what it uses. A deleted call grant or capability other
+    /// than `read_files` looks at no bundle.
+    ///
+    /// Fail with `Invalid`, also for such a bundle with callables whose text cannot be read.
+    pub(super) fn refuse_lacking(
+        &self,
+        text: &str,
+        grants: &[Grant],
+        deleted: &BTreeSet<i64>,
+        grantee: (&str, i64),
+    ) -> Result<(), Error> {
+        let (name, id) = grantee;
+        let counts = |g: &Grant| {
+            g.privilege == "read_files" || (g.privilege != "call" && g.target.is_some())
+        };
+        if !grants.iter().any(|g| deleted.contains(&g.id) && counts(g)) {
+            return Ok(());
+        }
+        let after: Vec<_> = grants
+            .iter()
+            .filter(|g| !deleted.contains(&g.id))
+            .filter_map(Grant::deployed)
+            .collect();
+        let mut lacking = Lacking::new(&self.e.source.grants, &after);
+        let s = *self.e.settings.lock(&self.e.rt);
+        let mut lines = Vec::new();
+        for bundle in self.stored.live(self.e.clock(), &s) {
+            let Some(row) = self.stored.bundles.get(&bundle) else {
+                continue;
+            };
+            if self.stored.owner_of(row) != id {
+                continue;
+            }
+            let c = match self.checked(row) {
+                Some(Ok(c)) => c,
+                Some(Err(why)) => {
+                    lines.push(format!("bundle {bundle} cannot be read: {why}"));
+                    continue;
+                }
+                None if self.stored.calls_of(row.id).is_empty() => continue,
+                None => {
+                    lines.push(format!(
+                        "bundle {bundle} cannot be read until it is presented at an open or retired"
+                    ));
+                    continue;
+                }
+            };
+            lines.extend(
+                lacking
+                    .of(&c, name)?
+                    .into_iter()
+                    .map(|l| format!("bundle {bundle}: {l}")),
+            );
+        }
+        if lines.is_empty() {
+            return Ok(());
+        }
+        Err(Error::invalid(format!(
+            "`{text}` leaves live bundles lacking what they use:\n{}",
+            lines.join("\n")
+        )))
+    }
+}
+
 impl<R: Runtime> CallSignatures for Calls<'_, R> {
     fn family(&self, target: &str) -> Option<Ids> {
         if let Some(known) = self.families.borrow().get(target) {
@@ -151,6 +218,18 @@ impl<R: Runtime> CallSignatures for Calls<'_, R> {
                 .any(|c| c.name == query && c.kind != "ImportedFn"),
         )
     }
+}
+
+/// Returns whether `p` names a relation, whether or not one of that name exists.
+pub(super) fn on_relation(p: &Privilege) -> bool {
+    matches!(
+        p,
+        Privilege::Read(..)
+            | Privilege::Insert(_)
+            | Privilege::Update(..)
+            | Privilege::Delete(_)
+            | Privilege::Retag(..)
+    )
 }
 
 fn statement(text: &str) -> Result<Statement, Error> {
@@ -226,6 +305,51 @@ impl<R: Runtime> Giving<'_, R> {
             capability,
             self.grant_option,
         )
+    }
+
+    /// Give a grant on a system relation.
+    ///
+    /// Fail with `Denied` for a grant on `catalog::credentials` by any role but the schema owner,
+    /// and with `Invalid` for any privilege but `read`.
+    fn relation(&self, rows: &mut Vec<Grant>, stated: &Stated) -> Result<(), Error> {
+        let credentials = self.e.schema.ids.relations[&self.t.credentials];
+        if stated.names(credentials) && self.session.id.0 != OWNER_ID {
+            return Err(denied(format!(
+                "only the schema owner grants on `catalog::credentials`, not role `{}`",
+                self.session.name
+            )));
+        }
+        let privilege = stated.privilege_name();
+        let target = stated.target_text(&self.e.schema).ok_or_else(|| {
+            Error::rejected(RejectReason::Internal {
+                what: format!("a resolved `{privilege}` names an object of the schema"),
+            })
+        })?;
+        if privilege != "read" {
+            return Err(Error::invalid(format!(
+                "`{privilege}` on system relation `{target}`: a system relation grants only `read`"
+            )));
+        }
+        self.t.grantee(self.e, self.tx, self.grantee)?;
+        let new = GrantRow {
+            privilege,
+            ..self.new_row(&target)
+        };
+        let held: Vec<GrantRow<'_>> = rows.iter().map(Grant::row).collect();
+        if self.grant_option && closes_option_cycle(&self.e.schema, self.calls, &held, new) {
+            return Err(Error::invalid(format!(
+                "`{privilege}` on `{target}` with grant option from `{}` to `{}` would close a cycle of grant options",
+                self.session.name, self.grantee
+            )));
+        }
+        let given = Given {
+            grantor: &self.session.name,
+            grantee: self.grantee,
+            privilege,
+            target: Some(&target),
+        };
+        self.t
+            .give_row(self.e, self.tx, rows, &given, self.grant_option)
     }
 
     /// Give a call grant on bundle `bundle`, or on its query `query`.
@@ -381,11 +505,13 @@ impl<R: Runtime> RoleAuthority<R> {
     /// Postconditions:
     /// - A role that may not give a privilege is refused with `Denied` whether or not its target
     ///   exists, and nothing changes. A capability takes `schema` or the capability with grant
-    ///   option. A call grant takes the target's owner, the schema owner or a row of the role with
-    ///   grant option covering it.
+    ///   option, a grant on a relation takes `schema`, and a call grant takes the target's owner,
+    ///   the schema owner or a row of the role with grant option covering it.
+    /// - A grant on `catalog::credentials` by a role other than the schema owner is refused with
+    ///   `Denied`.
     /// - A target that is absent or retired, an absent grantee, an imported function, a family
-    ///   whose live bundles do not share one signature, and an option cycle are refused with
-    ///   `Invalid`.
+    ///   whose live bundles do not share one signature, a relation of the schema, a write
+    ///   privilege on a system relation, and an option cycle are refused with `Invalid`.
     /// - A row already held gains the option and loses none. A family row of equal ids keeps its
     ///   id and version; one of other ids is replaced unless that uncovers rows given under it.
     pub fn grant(&self, session: &RoleSession<R>, text: &str) -> Result<(), Error> {
@@ -422,6 +548,9 @@ impl<R: Runtime> RoleAuthority<R> {
             grant_option: statement.grant_option,
         };
         for p in &statement.privileges {
+            if on_relation(p) {
+                require(&rows, session, Capability::Schema, false)?;
+            }
             match deployment_grant(&e.schema, text, p)
                 .map_err(|ds| Error::invalid(diagnosed(&ds)))?
             {
@@ -433,11 +562,7 @@ impl<R: Runtime> RoleAuthority<R> {
                     query,
                     written,
                 } => giving.family(&mut rows, &family, &query, written.as_deref())?,
-                DeploymentGrant::Relation(_) => {
-                    return Err(Error::invalid(format!(
-                        "`{text}`: a grant on a system relation does not run in this engine yet"
-                    )));
-                }
+                DeploymentGrant::Relation(stated) => giving.relation(&mut rows, &stated)?,
             }
         }
         t.write_rows(changes, &before, &rows);

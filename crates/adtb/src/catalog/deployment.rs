@@ -18,6 +18,8 @@ const DEPLOYED: u32 = 11;
 const FAMILY: u32 = 12;
 /// The constructor of a roots row recording a bundle's successful registration.
 const REGISTERED: u32 = 13;
+/// The constructor of a roots row latching a lease as expired.
+const EXPIRED: u32 = 15;
 
 /// Who registered a bundle: an open given it, or a role through the registration command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +46,9 @@ pub struct Deployed {
     pub families: BTreeMap<String, i64>,
     /// The successful registration of each bundle, by bundle id.
     pub registered: BTreeMap<i64, Mark>,
+    /// The latest renewal latched as expired of each bundle, by bundle id. A later renewal is
+    /// not latched.
+    pub expired: BTreeMap<i64, i64>,
 }
 
 /// One deployment fact to write.
@@ -52,6 +57,8 @@ pub enum Fact {
     Deployed,
     Family(String, i64),
     Registered(i64, Mark),
+    /// The lease of the bundle of this id, last renewed at this instant, stays expired.
+    Expired(i64, i64),
 }
 
 /// The writer of deployment facts into transactions of the write path.
@@ -81,8 +88,18 @@ pub(super) fn ctors() -> [heap::CtorType; 3] {
     ]
 }
 
+pub(super) fn expired_ctor() -> heap::CtorType {
+    heap::CtorType {
+        id: CtorId(EXPIRED),
+        fields: vec![
+            FieldType::Scalar(Scalar::I64),
+            FieldType::Scalar(Scalar::I64),
+        ],
+    }
+}
+
 pub(super) fn holds(ctor: u32) -> bool {
-    matches!(ctor, DEPLOYED | FAMILY | REGISTERED)
+    matches!(ctor, DEPLOYED | FAMILY | REGISTERED | EXPIRED)
 }
 
 fn value(fact: &Fact) -> Value {
@@ -103,6 +120,9 @@ fn value(fact: &Fact) -> Value {
                 Value::Text(m.text.clone()),
             ],
         ),
+        Fact::Expired(bundle, renewed) => {
+            (EXPIRED, vec![Value::I64(*bundle), Value::I64(*renewed)])
+        }
     };
     Value::Sum { ctor, fields }
 }
@@ -119,12 +139,19 @@ impl Deployed {
                 Fact::Registered(bundle, m) => {
                     self.registered.insert(*bundle, m.clone());
                 }
+                Fact::Expired(bundle, renewed) => self.latch(*bundle, *renewed),
             }
         }
     }
 
+    fn latch(&mut self, bundle: i64, renewed: i64) {
+        let latest = self.expired.entry(bundle).or_insert(renewed);
+        *latest = renewed.max(*latest);
+    }
+
     fn add(&mut self, ctor: u32, fields: &[Value]) -> Result<(), Error> {
         match (ctor, fields) {
+            (EXPIRED, [Value::I64(bundle), Value::I64(renewed)]) => self.latch(*bundle, *renewed),
             (DEPLOYED, []) => self.marked = true,
             (FAMILY, [Value::Text(family), Value::I64(role)]) => {
                 self.families.insert(family.clone(), *role);

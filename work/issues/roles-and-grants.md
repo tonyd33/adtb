@@ -506,3 +506,7 @@ Also:
 - `Bounds.confined` defaults to false, so a new server path fails open. Make it required.
 - A bundle released by computed expiry, with no setting change, has no mark, so a wall clock stepped back brings it live. The revoke that relies on the expiry should write the latch; `latch` keeps only the highest renewal.
 - `adtb-server` has no option to set `file_roots`, so it reads no files. `Disk::default()` with a relative glob finds nothing.
+
+## 2026-10-30: from slice 3
+
+A live file scan blocks migrations with `has no translation`. Not handled in slice 3.

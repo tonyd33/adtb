@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: resolved
 kind: bug
 priority: 840
 summary: "opening and a migration recheck normalise a program once per nonowner bundle, and lacking_of rebuilds the effective grants per callable"
+closed: 2026-10-30
 tags:
   - quality
   - engine
@@ -18,3 +19,5 @@ registration-normalises-per-callable moved the normalise cache into `lacking_of`
 `EffectiveGrants::of` (`registered.rs:318`) sits in the same loop and is rebuilt per callable, though it depends only on the schema, the grants and the role. Each build walks the role's grants, and `GrantTarget::ctors` scans every constructor id of the schema for each one (`crates/adtb-lang/src/evolve/grant.rs:42`).
 
 Fix: hold the cache in the caller across bundles, keyed as it is now by `Arc::ptr_eq`, and keep the `EffectiveGrants` in the same entry.
+
+## 2026-10-30: resolved

@@ -114,6 +114,9 @@ pub struct OpenOptions {
     /// The directory a file scan resolves a relative path against; the working directory when
     /// `None`.
     pub file_root: Option<PathBuf>,
+    /// The directories a server reads files from, none when empty. A relative one resolves as a
+    /// file scan's path does. The in-process API is not confined to them.
+    pub file_roots: Vec<PathBuf>,
     /// What open registers once its migrations apply, all or none.
     pub registrations: Vec<Registration>,
     /// The bodies of the schema's host functions, bound before migrations run.
@@ -156,6 +159,12 @@ impl OpenOptions {
             .file_root
             .as_ref()
             .map_or_else(|| ".".to_owned(), |p| p.display().to_string());
+        let roots: Vec<String> = self
+            .file_roots
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        let roots = roots.join(", ");
         vec![
             shown("pool_bytes", pool.to_string(), self.pool_bytes.is_some()),
             shown(
@@ -170,6 +179,7 @@ impl OpenOptions {
             ),
             shown("fix_rounds", rounds.to_string(), self.fix_rounds.is_some()),
             shown("file_root", root, self.file_root.is_some()),
+            shown("file_roots", roots, !self.file_roots.is_empty()),
             shown("host_fns", self.host_fns.names().join(", "), true),
         ]
     }
@@ -1033,7 +1043,8 @@ impl<R: Runtime> Engine<R> {
             .collect();
         let deployed = if writable {
             let roles = catalog.committed_roles(&pager, &txns).map_err(corrupt)?;
-            registered::definers(&registered, &stored, catalog.source(), &roles)?;
+            let deployed = catalog.committed_deployed(&pager, &txns).map_err(corrupt)?;
+            registered::definers(&registered, &stored, catalog.source(), &deployed, &roles)?;
             let deployed =
                 bundle::register(&catalog, &pager, &txns, stored, &bundled, now, &settings)?;
             server::initialize(&catalog, &pager, &txns)?;
@@ -1055,7 +1066,14 @@ impl<R: Runtime> Engine<R> {
         let setup = setup_of(&catalog, schema.clone(), normal, &pager, txns, options);
         let db = write::Database::new(rt.clone(), setup)
             .map_err(corrupt)?
-            .with_files(options.file_root.clone().map(Disk::new).unwrap_or_default())
+            .with_files(
+                options
+                    .file_root
+                    .clone()
+                    .map(Disk::new)
+                    .unwrap_or_default()
+                    .within(options.file_roots.clone()),
+            )
             .with_hosts(hosts)
             .with_volatile(volatile)
             .with_kept_store(catalog.kept_store());
@@ -1391,9 +1409,11 @@ fn migrate<R: Runtime>(
     live: &[registered::Live],
 ) -> Result<(), OpenError> {
     let stored = catalog.source().log.len();
+    let deployed = catalog.committed_deployed(pager, txns).map_err(corrupt)?;
     for text in log.migrations.iter().skip(stored) {
         let version = catalog.source().version + 1;
-        registered::recheck(catalog, text, live).map_err(|reason| refused(version, reason))?;
+        registered::recheck(catalog, text, live, &deployed)
+            .map_err(|reason| refused(version, reason))?;
         catalog.migrate(pager, txns, text).map_err(|e| match e {
             catalog::Error::Refused(why) => refused(
                 version,

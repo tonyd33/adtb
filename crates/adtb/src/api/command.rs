@@ -318,6 +318,7 @@ impl<R: Runtime> Engine<R> {
                 self.reindex_job(schema, *relation, at.as_deref(), *online)
             }
             Command::SetSetting { setting, value } => {
+                let _writer = self.bundle_writer.lock(&self.rt);
                 let held = self.db.hold_vacuum(HoldWait::of(&bounds, at))?;
                 self.set_setting(tx, p, (*setting, *value), local, bounds, &held)
             }
@@ -476,6 +477,10 @@ impl<R: Runtime> Engine<R> {
 
     /// Replaces the row of constructor `setting` of `catalog::settings` by one holding the
     /// fields of `value`, a term of `p`, in a transaction of its own. Returns the new row.
+    ///
+    /// A lease setting first latches every bundle expired under the old values.
+    ///
+    /// Precondition: the caller holds `bundle_writer`.
     fn set_setting(
         &self,
         tx: &Txn,
@@ -516,6 +521,9 @@ impl<R: Runtime> Engine<R> {
             fields.push((*v).clone());
         }
         let row = Val::ctor(setting, fields);
+        if matches!(ctor.name.as_str(), "DefaultLease" | "LeaseGrace") {
+            self.latch_expired()?;
+        }
         self.swap_row(schema, settings, Old::Ctor(setting), row.clone())?;
         let window = {
             let mut settings = self.settings.lock(&self.rt);

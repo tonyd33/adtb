@@ -1,60 +1,81 @@
-use crate::evolve::{GrantTarget, Granted, LogGrant};
+use crate::evolve::{DeployedGrant, GrantTarget, Granted, LogGrant};
 
 use super::*;
 
 impl EffectiveGrants {
-    /// Returns the relation grants `role` holds among `grants`, a log over `schema`, each
-    /// resolved to the constructors it covers in `schema`. A dormant grant allows nothing.
-    pub fn of(schema: &Schema, grants: &[LogGrant], role: &str) -> EffectiveGrants {
+    /// Returns what `role` holds among `grants`, a log over `schema`, and `deployed`, each
+    /// relation grant resolved to the constructors it covers in `schema`. A dormant grant allows
+    /// nothing, and a deployed target `schema` cannot read covers nothing.
+    pub fn of(
+        schema: &Schema,
+        grants: &[LogGrant],
+        deployed: &[DeployedGrant],
+        role: &str,
+    ) -> EffectiveGrants {
         let mut relations = Vec::new();
         for g in grants.iter().filter(|g| g.role == role && !g.dormant) {
-            let mut push = |right| {
-                relations.push(EffectiveGrant {
-                    right,
-                    grant_option: g.grant_option,
-                });
-            };
-            match &g.privilege {
-                Granted::Read(t, fs) | Granted::Update(t, fs) => {
-                    let fields: BTreeSet<FieldId> = fs.ids.iter().copied().map(FieldId).collect();
-                    let read = matches!(g.privilege, Granted::Read(..));
-                    for target in targets(schema, t) {
-                        let fields = fields.clone();
-                        push(if read {
-                            Right::Read { target, fields }
-                        } else {
-                            Right::Update { target, fields }
-                        });
-                    }
-                }
-                Granted::Insert(t) => targets(schema, t).into_iter().for_each(|t| {
-                    push(Right::Insert(t));
-                }),
-                Granted::Delete(t) => targets(schema, t).into_iter().for_each(|t| {
-                    push(Right::Delete(t));
-                }),
-                Granted::Retag(from, to, except) => {
-                    let to = targets(schema, to);
-                    for f in targets(schema, from) {
-                        for t in &to {
-                            let pair = (f.constructor.0, t.constructor.0);
-                            if f.constructor != t.constructor && !except.contains(&pair) {
-                                push(Right::Retag {
-                                    relation: f.relation,
-                                    from: f.constructor,
-                                    to: t.constructor,
-                                });
-                            }
-                        }
-                    }
-                }
-                Granted::CallFn(_) => {}
+            rights(schema, &g.privilege, g.grant_option, &mut relations);
+        }
+        let deployed = || deployed.iter().filter(|g| g.grantee == role && !g.dormant);
+        for g in deployed().filter(|g| g.privilege != "call") {
+            let held = g
+                .target
+                .as_deref()
+                .and_then(|t| Granted::read_target(schema, &g.privilege, t));
+            if let Some(privilege) = held {
+                rights(schema, &privilege, g.grant_option, &mut relations);
             }
         }
         EffectiveGrants {
             relations,
-            read_files: false,
+            read_files: deployed().any(|g| g.privilege == "read_files" && g.target.is_none()),
         }
+    }
+}
+
+/// Add to `out` each right `privilege` gives over `schema`.
+fn rights(schema: &Schema, privilege: &Granted, grant_option: bool, out: &mut Vec<EffectiveGrant>) {
+    let mut push = |right| {
+        out.push(EffectiveGrant {
+            right,
+            grant_option,
+        });
+    };
+    match privilege {
+        Granted::Read(t, fs) | Granted::Update(t, fs) => {
+            let fields: BTreeSet<FieldId> = fs.ids.iter().copied().map(FieldId).collect();
+            let read = matches!(privilege, Granted::Read(..));
+            for target in targets(schema, t) {
+                let fields = fields.clone();
+                push(if read {
+                    Right::Read { target, fields }
+                } else {
+                    Right::Update { target, fields }
+                });
+            }
+        }
+        Granted::Insert(t) => targets(schema, t)
+            .into_iter()
+            .for_each(|t| push(Right::Insert(t))),
+        Granted::Delete(t) => targets(schema, t)
+            .into_iter()
+            .for_each(|t| push(Right::Delete(t))),
+        Granted::Retag(from, to, except) => {
+            let to = targets(schema, to);
+            for f in targets(schema, from) {
+                for t in &to {
+                    let pair = (f.constructor.0, t.constructor.0);
+                    if f.constructor != t.constructor && !except.contains(&pair) {
+                        push(Right::Retag {
+                            relation: f.relation,
+                            from: f.constructor,
+                            to: t.constructor,
+                        });
+                    }
+                }
+            }
+        }
+        Granted::CallFn(_) => {}
     }
 }
 

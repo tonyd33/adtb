@@ -8,7 +8,7 @@ use super::super::registered::{self, Checked, Over, Registration};
 use super::super::text::DynRows;
 use super::super::{Engine, Error, OWNER_ID};
 use super::store;
-use super::tables::Tables;
+use super::tables::{Grant, Tables};
 use super::{RoleAuthority, RoleSession, denied};
 
 impl<R: Runtime> RoleAuthority<R> {
@@ -19,7 +19,8 @@ impl<R: Runtime> RoleAuthority<R> {
     /// - Every check of registration passes, or the registration is refused and changes
     ///   nothing. A bundle registered before registers again only as its owner or the schema
     ///   owner. The role the bundle runs as holds with grant option every relation grant
-    ///   what the bundle runs uses, unless that role is the schema owner; and the bundle's
+    ///   what the bundle runs uses and holds `read_files` if it reads files, unless that
+    ///   role is the schema owner; and the bundle's
     ///   family has no owner, or the session's role owns it, or is the schema owner.
     /// - A bundle with no successful registration runs as the session's role; one registered
     ///   before keeps its owner.
@@ -58,7 +59,10 @@ impl<R: Runtime> RoleAuthority<R> {
             }
             if claim.owner != OWNER_ID {
                 let runs_as = name(claim.owner, &format!("bundle {bundle}"))?;
-                let lacks = registered::lacking(&checked, &e.source.grants, &runs_as)?;
+                let rows = t.grants(e, tx)?;
+                let deployed: Vec<_> = rows.iter().filter_map(Grant::deployed).collect();
+                let lacks =
+                    registered::Lacking::new(&e.source.grants, &deployed).of(&checked, &runs_as)?;
                 if !lacks.is_empty() {
                     return Err(denied(lacks.join("\n")));
                 }
@@ -103,7 +107,8 @@ fn decide<R: Runtime>(
         schema: &e.schema,
         program: &e.program,
     };
-    let checked = registered::registration(&over, bundle, stored, now, &s)?;
+    let checked =
+        registered::registration(&over, bundle, stored, now, &s, &mut Default::default())?;
     let passed = checked
         .passed()
         .expect("a bundle's registration has a header");

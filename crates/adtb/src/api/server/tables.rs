@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use adtb_lang::evolve::GrantRow;
+use adtb_lang::evolve::{DeployedGrant, GrantRow};
 use adtb_lang::schema::{Schema, TypeDef, ValueDef};
 use adtb_lang::textual::{Form, parse, print};
 use adtb_lang::types::{RelId, Ty};
@@ -47,6 +47,17 @@ impl Grant {
             grant_option: self.grant_option,
             dormant: self.dormant,
         }
+    }
+
+    /// Returns what the row gives its grantee, when it is a `Deployment` row.
+    pub(super) fn deployed(&self) -> Option<DeployedGrant> {
+        (self.kind == "Deployment").then(|| DeployedGrant {
+            grantee: self.grantee.clone(),
+            privilege: self.privilege.clone(),
+            target: self.target.clone(),
+            grant_option: self.grant_option,
+            dormant: self.dormant,
+        })
     }
 
     /// Returns the row printed for a refusal.

@@ -1063,8 +1063,7 @@ fn an_absent_or_retired_target_is_refused_and_a_superseded_one_allowed() {
         retire(&db, "old-1.0");
         let got = refused(grant(&db, "owner", "grant call old-1.0 to bob"));
         assert!(got.contains("retired"), "{got}");
-        let got = refused(grant(&db, "owner", "grant read catalog::roles to bob"));
-        assert!(got.contains("system relation"), "{got}");
+        grant(&db, "owner", "grant read catalog::roles to bob").unwrap();
         assert_eq!(Vec::<String>::new(), call_rows(&db));
 
         api::query(&db, "supersede bundle web-1.0 by web-1.1");

@@ -5,7 +5,7 @@ mod json;
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use adtb_lang::kernel::FileFormat;
 use adtb_lang::schema::{Schema, TypeDefKind};
@@ -24,12 +24,102 @@ pub trait Files: Send + Sync {
 #[derive(Clone, Debug, Default)]
 pub struct Disk {
     root: PathBuf,
+    roots: Vec<PathBuf>,
+}
+
+/// Why a confined read returned no files.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// The path, or a file it names, as the path names it, resolves outside the roots.
+    Outside(String),
+    Unreadable(String),
 }
 
 impl Disk {
     pub fn new(root: impl Into<PathBuf>) -> Disk {
-        Disk { root: root.into() }
+        Disk {
+            root: root.into(),
+            roots: Vec::new(),
+        }
     }
+
+    /// Returns the disk whose confined reads stay in `roots`, each relative one resolved against
+    /// `root`.
+    #[must_use]
+    pub fn within(mut self, roots: Vec<PathBuf>) -> Disk {
+        self.roots = roots;
+        self
+    }
+
+    /// Returns the files `path` names as [`Files::read`] does, once `..` and symlinks resolve.
+    ///
+    /// Postconditions:
+    /// - A file resolving outside the roots, a missing one included, and a directory a pattern
+    ///   would list outside them, refuse the whole read with `Outside`. With no roots, every path
+    ///   does.
+    /// - A directory outside the roots that a pattern matches is no file of the read.
+    pub fn read_confined(&self, path: &str) -> Result<Vec<(String, Vec<u8>)>, Refused> {
+        let roots: Vec<PathBuf> = self
+            .roots
+            .iter()
+            .map(|r| resolved(&self.root.join(r)))
+            .collect();
+        let inside = |at: &Path| roots.iter().any(|r| at.starts_with(r));
+        let named = candidates(&self.root, path, &mut |dir| {
+            if inside(&resolved(dir)) {
+                Ok(())
+            } else {
+                Err(Refused::Outside(path.to_string()))
+            }
+        })?;
+        let literal = !path.split('/').any(is_pattern);
+        let mut found = Vec::new();
+        for (name, at) in named {
+            let at = resolved(&at);
+            if inside(&at) {
+                if literal || at.is_file() {
+                    found.push((name, at));
+                }
+            } else if literal || !at.is_dir() {
+                return Err(Refused::Outside(name));
+            }
+        }
+        found.sort();
+        found
+            .into_iter()
+            .map(|(name, at)| {
+                fs::read(&at)
+                    .map(|bytes| (name.clone(), bytes))
+                    .map_err(|e| Refused::Unreadable(format!("{name}: {e}")))
+            })
+            .collect()
+    }
+}
+
+/// Returns `path` with `.`, `..` and every symlink of its existing prefix resolved, and whatever
+/// does not exist kept as written.
+fn resolved(path: &Path) -> PathBuf {
+    let mut out = if path.is_absolute() {
+        PathBuf::new()
+    } else {
+        std::env::current_dir().unwrap_or_default()
+    };
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::Prefix(_) | Component::RootDir => out.push(part),
+            Component::Normal(name) => {
+                out.push(name);
+                if let Ok(real) = fs::canonicalize(&out) {
+                    out = real;
+                }
+            }
+        }
+    }
+    out
 }
 
 impl Files for Disk {
@@ -92,6 +182,22 @@ fn expand(root: &Path, path: &str) -> Result<Vec<(String, PathBuf)>, String> {
     if !path.split('/').any(is_pattern) {
         return Ok(vec![(path.to_string(), root.join(path))]);
     }
+    let mut found = candidates::<String>(root, path, &mut |_| Ok(()))?;
+    found.retain(|(_, at)| at.is_file());
+    found.sort();
+    Ok(found)
+}
+
+/// Returns each path `path` can name under `root`, by the name `path` gives it, passing each
+/// directory to `listing` before a pattern lists it.
+fn candidates<E>(
+    root: &Path,
+    path: &str,
+    listing: &mut dyn FnMut(&Path) -> Result<(), E>,
+) -> Result<Vec<(String, PathBuf)>, E> {
+    if !path.split('/').any(is_pattern) {
+        return Ok(vec![(path.to_string(), root.join(path))]);
+    }
     let base = if path.starts_with('/') {
         PathBuf::from("/")
     } else {
@@ -110,6 +216,7 @@ fn expand(root: &Path, path: &str) -> Result<Vec<(String, PathBuf)>, String> {
                 next.push((join(part, &shown), at.join(part)));
                 continue;
             }
+            listing(&at)?;
             let Ok(entries) = fs::read_dir(&at) else {
                 continue;
             };
@@ -122,8 +229,6 @@ fn expand(root: &Path, path: &str) -> Result<Vec<(String, PathBuf)>, String> {
         }
         found = next;
     }
-    found.retain(|(_, at)| at.is_file());
-    found.sort();
     Ok(found)
 }
 

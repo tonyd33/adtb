@@ -382,6 +382,8 @@ pub struct Bounds {
     /// The grant every execution of the statements takes its memory from, else one admitted
     /// for each.
     pub grant: Option<Arc<exec::Grant>>,
+    /// Read files only within the file roots.
+    pub confined: bool,
 }
 
 /// Where the statement limit of a rerun of suspended statements starts.
@@ -414,6 +416,8 @@ pub struct Stop {
     pub suspend: Option<Rerun>,
     /// The grant every execution takes its memory from, else one admitted for each.
     pub grant: Option<Arc<exec::Grant>>,
+    /// Read files only within the file roots.
+    pub confined: bool,
 }
 
 impl Stop {
@@ -446,6 +450,7 @@ impl Stop {
             deadline: [limit, deadline].into_iter().flatten().min_by_key(|d| d.at),
             suspend,
             grant: bounds.grant.clone(),
+            confined: bounds.confined,
         }
     }
 }

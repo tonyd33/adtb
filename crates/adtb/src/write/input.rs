@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use adtb_file::{Files, Record};
+use adtb_file::{Disk, Files, Record, Refused};
 use adtb_lang::check::TEMP_MODULE;
 use adtb_lang::kernel::{FileFormat, Kind, Prim, Terms, Tm, Var};
 use adtb_lang::schema::Schema;
@@ -185,17 +185,17 @@ impl Local {
     }
 
     /// Returns the records of the files `path` names, read through `files` in `format` at
-    /// `row`, pinning them to the transaction.
+    /// `row`, pinning them to the transaction. A `confined` read of a file outside the file
+    /// roots fails with `Denied`.
     ///
     /// Fails with `FileChanged` when the transaction read `path` before and the files it names,
     /// or their contents, differ.
     pub fn scan(
         &mut self,
         schema: &Schema,
-        files: &dyn Files,
-        format: FileFormat,
-        path: &str,
-        row: &Ty,
+        files: &Disk,
+        confined: bool,
+        (format, path, row): (FileFormat, &str, &Ty),
     ) -> Result<Vec<Record<Val>>, Error> {
         let unreadable = |source: String, detail: String| {
             Error::Rejected(Rejection::BadInput {
@@ -204,9 +204,18 @@ impl Local {
                 detail,
             })
         };
-        let found = files
-            .read(path)
-            .map_err(|e| unreadable(path.to_string(), e))?;
+        let found = if confined {
+            files.read_confined(path).map_err(|refused| match refused {
+                Refused::Outside(file) => {
+                    Error::Denied(format!("file `{file}` is outside file_roots"))
+                }
+                Refused::Unreadable(e) => unreadable(path.to_string(), e),
+            })?
+        } else {
+            files
+                .read(path)
+                .map_err(|e| unreadable(path.to_string(), e))?
+        };
         let sums: Vec<(String, [u8; 32])> = found
             .iter()
             .map(|(name, bytes)| (name.clone(), *blake3::hash(bytes).as_bytes()))

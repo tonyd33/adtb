@@ -307,9 +307,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                     let records = self.local.borrow_mut().scan(
                         self.schema,
                         &self.db.files,
-                        *format,
-                        &at,
-                        row,
+                        self.stop.confined,
+                        (*format, &at, row),
                     )?;
                     let mut rows = BTreeSet::new();
                     let mut failed = None;

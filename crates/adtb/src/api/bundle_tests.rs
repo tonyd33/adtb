@@ -18,6 +18,7 @@ fn row(id: i64, name: &str, family: &str) -> Row {
         owner: "owner".to_owned(),
         renewed: 0,
         state: State::Active,
+        latched: false,
     }
 }
 

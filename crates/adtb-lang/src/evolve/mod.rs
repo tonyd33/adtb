@@ -45,8 +45,8 @@ mod memo_tests;
 pub use crate::schema::Stage;
 use grant::HeldGrant;
 pub use grant::{
-    CallSignatures, DeploymentGrant, DeploymentRevoke, GrantFields, GrantRow, GrantSel,
-    GrantTarget, Granted, LogGrant, NoCalls, OWNER_ROLE, Stated, closes_option_cycle,
+    CallSignatures, DeployedGrant, DeploymentGrant, DeploymentRevoke, GrantFields, GrantRow,
+    GrantSel, GrantTarget, Granted, LogGrant, NoCalls, OWNER_ROLE, Stated, closes_option_cycle,
     deployment_grant, deployment_revoke, family_query, target_covers,
 };
 pub use keep::Kept;

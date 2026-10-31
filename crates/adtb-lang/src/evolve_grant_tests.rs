@@ -1405,7 +1405,7 @@ fn lacking(src: &Source, role: &str, text: &str) -> Vec<(String, &'static str)> 
     let needs = crate::permission::adhoc(&schema, &program, &checked)
         .expect("requirements analyze")
         .remove(0);
-    let held = EffectiveGrants::of(&schema, &src.grants, role);
+    let held = EffectiveGrants::of(&schema, &src.grants, &[], role);
     needs
         .missing(&held, Mode::Registration)
         .iter()

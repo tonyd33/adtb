@@ -330,6 +330,7 @@ impl<R: Runtime> Call<R> {
     fn bounds(&self, e: &Engine<R>) -> write::Bounds {
         write::Bounds {
             grant: self.grant.clone(),
+            confined: true,
             ..self
                 .opts
                 .call

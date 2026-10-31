@@ -346,6 +346,29 @@ pub struct Stated {
 }
 
 impl Stated {
+    /// Returns the name of the privilege, as `catalog::grants` writes it.
+    pub fn privilege_name(&self) -> &'static str {
+        self.privilege.privilege_name()
+    }
+
+    /// Returns whether the privilege names the relation of catalog id `relation`.
+    pub fn names(&self, relation: u64) -> bool {
+        match &self.privilege {
+            Granted::Read(t, _)
+            | Granted::Insert(t)
+            | Granted::Update(t, _)
+            | Granted::Delete(t) => t.relation == relation,
+            Granted::Retag(a, b, _) => a.relation == relation || b.relation == relation,
+            Granted::CallFn(_) => false,
+        }
+    }
+
+    /// Returns what the privilege is granted on, as `catalog::grants` writes it; `None` when it
+    /// names an object `schema` lacks.
+    pub fn target_text(&self, schema: &Schema) -> Option<String> {
+        self.privilege.target_text(schema)
+    }
+
     /// Returns whether a revoke of this privilege matches `held`: the same privilege and target
     /// text, except that a revoke writing no field list matches every frozen field set and a
     /// retag revoke writing no `except` matches whatever pairs are excepted.
@@ -917,6 +940,16 @@ pub struct GrantRow<'a> {
     pub grantee: &'a str,
     pub privilege: &'a str,
     pub target: Option<&'a str>,
+    pub grant_option: bool,
+    pub dormant: bool,
+}
+
+/// A `Deployment` row of `catalog::grants`, as far as it gives its grantee a right.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeployedGrant {
+    pub grantee: String,
+    pub privilege: String,
+    pub target: Option<String>,
     pub grant_option: bool,
     pub dormant: bool,
 }

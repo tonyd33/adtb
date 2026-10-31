@@ -16,6 +16,7 @@ use crate::key::Value;
 use crate::mvcc::Transactions;
 use crate::runtime::Runtime;
 use crate::storage::Pager;
+use crate::write;
 
 use super::error::{Error, RejectReason};
 use super::settings::Settings;
@@ -145,6 +146,8 @@ pub(super) struct Row {
     /// The last renewal of the lease, in microseconds since the epoch.
     pub(super) renewed: i64,
     pub(super) state: State,
+    /// Whether the lease stays expired whatever the settings, until a registration renews it.
+    pub(super) latched: bool,
 }
 
 impl Row {
@@ -152,10 +155,10 @@ impl Row {
         matches!(self.state, State::Retired(_))
     }
 
-    /// Returns whether the lease has run out at `now` under the file settings `s`, with the
-    /// primary's grace.
+    /// Returns whether the lease is latched as expired or has run out at `now` under the file
+    /// settings `s`, with the primary's grace.
     fn expired(&self, now: i64, s: &Settings) -> bool {
-        now >= self.renewed + self.header.lease(s) + s.grace
+        self.latched || now >= self.renewed + self.header.lease(s) + s.grace
     }
 
     /// Returns whether the bundle is live at `now` under the file settings `s`: neither retired,
@@ -420,6 +423,7 @@ impl<'s> Tables<'s> {
                 other => return Err(format!("field `renewed` of a bundle row is {other:?}")),
             },
             state,
+            latched: false,
             header,
         })
     }
@@ -562,6 +566,9 @@ pub(super) fn stored<R: Runtime>(
         calls.sort_by_key(|(_, c)| c.ordinal);
     }
     out.deployed = catalog.deployed(pager, txns).map_err(corrupt)?;
+    for row in out.bundles.values_mut() {
+        row.latched = out.deployed.expired.get(&row.id) == Some(&row.renewed);
+    }
     Ok(out)
 }
 
@@ -637,6 +644,7 @@ pub(super) fn record<R: Runtime>(
                 owner: OWNER_ROLE.to_owned(),
                 renewed: now,
                 state: State::Active,
+                latched: false,
             };
             next += 1;
             writes.bundles.push((None, row));
@@ -820,6 +828,7 @@ pub(super) struct Claim {
 /// - A bundle with no successful registration becomes `by`'s; one registered before keeps its
 ///   owner.
 /// - A bundle that is not live gets a new lease, and one whose renewal is due is renewed.
+/// - The renewal of a latched bundle differs from the one its latch names.
 /// - A bundle with no stored calls stores those of `p`.
 /// - The first successful registration of a family gives `by` the family.
 pub(super) fn claim(
@@ -840,13 +849,19 @@ pub(super) fn claim(
         owner: by.name.to_owned(),
         renewed: now,
         state: State::Active,
+        latched: false,
     });
     if marked.is_none() {
         row.owner = by.name.to_owned();
     }
     if !row.live(now, s) || row.renewal_due(now, s) {
+        row.renewed = if row.latched {
+            now.max(row.renewed + 1)
+        } else {
+            now
+        };
         row.state = State::Active;
-        row.renewed = now;
+        row.latched = false;
     }
     let calls = if stored.calls_of(row.id).is_empty() {
         let next = stored.next_call();
@@ -1031,6 +1046,40 @@ impl<R: Runtime> Engine<R> {
         let out = self.bundle_rows(&next);
         self.put(next);
         Ok(out)
+    }
+
+    /// Latch each active bundle expired under the current settings, in a transaction of its own.
+    ///
+    /// Precondition: the caller holds `bundle_writer`, before a lease setting changes.
+    pub(super) fn latch_expired(&self) -> Result<(), write::Error> {
+        let now = self.clock();
+        let s = *self.settings.lock(&self.rt);
+        let due: Vec<Row> = self
+            .deployed
+            .lock(&self.rt)
+            .bundles
+            .values()
+            .filter(|r| r.state == State::Active && !r.latched && r.expired(now, &s))
+            .cloned()
+            .collect();
+        if due.is_empty() {
+            return Ok(());
+        }
+        let facts: Vec<Fact> = due.iter().map(|r| Fact::Expired(r.id, r.renewed)).collect();
+        let tx = self.db.begin()?;
+        let x = tx
+            .xid()
+            .expect("a write transaction of the write path has an id");
+        if let Err(e) = self.deployment.insert(&self.pager, x, &facts) {
+            self.db.abort(tx)?;
+            return Err(write::Error::Internal(format!("{e:?}")));
+        }
+        self.db.commit(tx)?;
+        for mut row in due {
+            row.latched = true;
+            self.put(row);
+        }
+        Ok(())
     }
 
     /// Hold `row`, once it commits, as its bundle's row.
