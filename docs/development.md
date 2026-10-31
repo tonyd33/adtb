@@ -102,16 +102,14 @@ For a standalone server, run `work/tools/docs-site serve --port 8081`.
 The site binds only to loopback. Search, themes and highlighting work without
 an internet connection. No Node installation is required.
 
-The checked-in `book.toml` reads `docs/` directly. `docs/SUMMARY.md` names the
-landing page and the three sections; a stateless mdBook preprocessor expands
-their README indexes into chapters. Add a page to its section index and native
-`mdbook serve` rebuilds the navigation. It also watches the highlighting asset
-directly. An incomplete index edit reports a build error and recovers after
-the next valid edit. `mdbook build` and `mdbook serve --hostname 127.0.0.1`
-also work directly from the repository root.
-`docs-check` checks every generated internal link, fragment and page, and tests
-the highlighting grammar against the lexer keywords and shared syntax corpus.
-The default `check` includes `docs-check`. Hosting is a separate task.
+The checked-in `book.toml` reads `docs/` directly. `docs/SUMMARY.md` lists every
+page: add a new page under `docs/manual/`, `docs/spec/` or `docs/design/` there. The
+suite fails on a page left out and on a listed path that does not exist. `mdbook
+serve` rebuilds on an edit and watches the highlighting asset. `mdbook build` and
+`mdbook serve --hostname 127.0.0.1` also work directly from the repository root.
+`docs-check` builds the site and runs lychee offline over the HTML, checking every
+internal link and fragment. The suite compares the highlighter keywords with the
+lexer table. The default `check` includes both. Hosting is a separate task.
 
 ## Optional editor integration
 

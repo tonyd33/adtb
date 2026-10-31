@@ -32,9 +32,8 @@ in
     pkgs.gnused
     pkgs.jujutsu
     pkgs.jq
+    pkgs.lychee
     pkgs.mdbook
-    pkgs.python3
-    pkgs.quickjs
     pkgs.ripgrep
     pkgs.util-linux
     pkgs.cargo-deny

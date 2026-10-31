@@ -6,12 +6,8 @@ src = "docs"
 [build]
 build-dir = "target/docs-site/html"
 create-missing = false
+# The index preprocessor renames README pages while links keep README.html.
 use-default-preprocessors = false
-extra-watch-dirs = ["tools/docs-site/navigation.py"]
-
-[preprocessor.navigation]
-command = "python3 -B tools/docs-site/navigation.py"
-before = ["links"]
 
 [preprocessor.links]
 

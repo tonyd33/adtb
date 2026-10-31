@@ -109,6 +109,10 @@ root (devenv also puts each on PATH as `NAME`):
 - `land WS [SUBJECT]`: land workspace WS on `main` and move the main
   working copy onto it; refuses while the main working copy has changes.
   A slot becomes free; any other workspace is forgotten.
+- `docs-site [build|serve|check]`: build or serve the site with mdBook; `check`
+  builds it and runs lychee offline over its links and fragments. A new page
+  under `docs/manual`, `docs/spec` or `docs/design` goes in `docs/SUMMARY.md`;
+  the suite fails otherwise.
 - `workspace-gc [--clean | --guard | --clear-build WS]`: every workspace's
   `target/` size; clean the idle ones; `--guard` fails under 30 GB free;
   `--clear-build` empties an idle `target/debug` and `target/tmp` of WS, `main`

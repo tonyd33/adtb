@@ -52,60 +52,69 @@ pub enum Kw {
     With,
 }
 
-impl Kw {
-    pub fn from_word(s: &str) -> Option<Kw> {
-        use Kw::*;
-        Some(match s {
-            "and" => And,
-            "bundle" => Bundle,
-            "by" => By,
-            "check" => Check,
-            "constraint" => Constraint,
-            "delete" => Delete,
-            "else" => Else,
-            "exists" => Exists,
-            "fail" => Fail,
-            "false" => False,
-            "fix" => Fix,
-            "fn" => Fn,
-            "for" => For,
-            "from" => From,
-            "group" => Group,
-            "if" => If,
-            "import" => Import,
-            "in" => In,
-            "insert" => Insert,
-            "into" => Into,
-            "key" => Key,
-            "let" => Let,
-            "match" => Match,
-            "module" => Module,
-            "not" => Not,
-            "or" => Or,
-            "order" => Order,
-            "ordered" => Ordered,
-            "query" => Query,
-            "relation" => Relation,
-            "return" => Return,
-            "schema" => Schema,
-            "select" => Select,
-            "set" => Set,
-            "skip" => Skip,
-            "temp" => Temp,
-            "then" => Then,
-            "top" => Top,
-            "transact" => Transact,
-            "true" => True,
-            "try" => Try,
-            "txn" => Txn,
-            "type" => Type,
-            "union" => Union,
-            "update" => Update,
-            "where" => Where,
-            "with" => With,
-            _ => return None,
-        })
-    }
+macro_rules! keywords {
+    ($($word:literal => $kw:ident,)*) => {
+        impl Kw {
+            pub const WORDS: &[(&str, Kw)] = &[$(($word, Kw::$kw)),*];
+
+            pub fn from_word(s: &str) -> Option<Kw> {
+                Some(match s {
+                    $($word => Kw::$kw,)*
+                    _ => return None,
+                })
+            }
+        }
+    };
+}
+
+keywords! {
+    "and" => And,
+    "bundle" => Bundle,
+    "by" => By,
+    "check" => Check,
+    "constraint" => Constraint,
+    "delete" => Delete,
+    "else" => Else,
+    "exists" => Exists,
+    "fail" => Fail,
+    "false" => False,
+    "fix" => Fix,
+    "fn" => Fn,
+    "for" => For,
+    "from" => From,
+    "group" => Group,
+    "if" => If,
+    "import" => Import,
+    "in" => In,
+    "insert" => Insert,
+    "into" => Into,
+    "key" => Key,
+    "let" => Let,
+    "match" => Match,
+    "module" => Module,
+    "not" => Not,
+    "or" => Or,
+    "order" => Order,
+    "ordered" => Ordered,
+    "query" => Query,
+    "relation" => Relation,
+    "return" => Return,
+    "schema" => Schema,
+    "select" => Select,
+    "set" => Set,
+    "skip" => Skip,
+    "temp" => Temp,
+    "then" => Then,
+    "top" => Top,
+    "transact" => Transact,
+    "true" => True,
+    "try" => Try,
+    "txn" => Txn,
+    "type" => Type,
+    "union" => Union,
+    "update" => Update,
+    "where" => Where,
+    "with" => With,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
