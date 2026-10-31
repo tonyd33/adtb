@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 
 [dev-dependencies]
+adtb-lang = { workspace = true, features = ["test-heap-cap"] }
 adtb-testkit.workspace = true
 
 [lints]

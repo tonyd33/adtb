@@ -1,3 +1,5 @@
+extern crate adtb_lang as _;
+
 mod common;
 mod memory;
 

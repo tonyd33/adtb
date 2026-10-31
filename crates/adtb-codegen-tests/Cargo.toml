@@ -13,7 +13,7 @@ adtb.workspace = true
 adtb-codegen.workspace = true
 
 [dev-dependencies]
-adtb-lang.workspace = true
+adtb-lang = { workspace = true, features = ["test-heap-cap"] }
 adtb-sim.workspace = true
 adtb-simkit.workspace = true
 

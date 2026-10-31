@@ -7,6 +7,32 @@ slow-timeout = { period = "20s", terminate-after = 3 }
 filter = "test(=every_page_prints_what_it_shows)"
 slow-timeout = { period = "60s", terminate-after = 3 }
 
+# Lists and starts every test binary, and builds them when an earlier step did not.
+[[profile.default.overrides]]
+filter = "test(=every_test_binary_has_the_heap_cap)"
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+# A test that calls `raise_cap` holds the slots its cap covers: the cap over the default, rounded up.
+[[profile.default.overrides]]
+filter = "test(=a_cut_that_loses_a_later_bitmap_group_refuses_the_select)"
+threads-required = 3
+
+[[profile.default.overrides]]
+filter = "test(=a_cut_losing_a_group_with_large_values_refuses_marks_and_stays_marked)"
+threads-required = 2
+
+[[profile.default.overrides]]
+filter = "test(=a_blank_status_page_refuses_and_never_aborts_committed_rows)"
+threads-required = 2
+
+[[profile.default.overrides]]
+filter = "test(=no_crash_while_crossing_a_group_refuses_a_healthy_file)"
+threads-required = 2
+
+[[profile.default.overrides]]
+filter = "test(=a_crash_in_recovery_then_a_cut_never_reuses_a_named_page)"
+threads-required = 2
+
 # For iteration: one seed per `profile::sweep` sweep, and no crash sweeps.
 [profile.quick]
 default-filter = "not test(/crash/)"

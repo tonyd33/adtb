@@ -1,5 +1,7 @@
 //! The exit status of the `campaign` binary on a usage error.
 
+extern crate adtb_lang as _;
+
 use std::process::Command;
 
 #[test]

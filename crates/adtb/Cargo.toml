@@ -28,5 +28,6 @@ plan-fixture = ["dep:adtb-reference", "dep:adtb-testkit"]
 workspace = true
 
 [dev-dependencies]
+adtb-lang = { workspace = true, features = ["test-heap-cap"] }
 adtb-reference.workspace = true
 adtb-testkit.workspace = true

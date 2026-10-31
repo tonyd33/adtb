@@ -1,3 +1,5 @@
+extern crate adtb_lang as _;
+
 use adtb_server::wire::Error;
 use adtb_server::wire::primitives::{Limits, Position, Reader, Version, Writer};
 

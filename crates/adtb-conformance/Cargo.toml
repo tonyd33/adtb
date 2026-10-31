@@ -13,6 +13,7 @@ adtb-lang.workspace = true
 adtb-reference.workspace = true
 
 [dev-dependencies]
+adtb-lang = { workspace = true, features = ["test-heap-cap"] }
 adtb-sim.workspace = true
 
 [lints]

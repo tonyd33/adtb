@@ -36,9 +36,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "adtb-heap-cap"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "adtb-lang"
 version = "0.1.0"
 dependencies = [
+ "adtb-heap-cap",
  "regex-syntax",
  "unicode-normalization",
 ]
@@ -196,6 +204,7 @@ version = "0.1.0"
 dependencies = [
  "adtb",
  "adtb-codegen",
+ "adtb-heap-cap",
  "adtb-lang",
  "adtb-sim",
  "adtb-testkit",

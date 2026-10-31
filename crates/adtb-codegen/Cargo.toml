@@ -10,5 +10,8 @@ publish.workspace = true
 clap.workspace = true
 adtb-lang.workspace = true
 
+[dev-dependencies]
+adtb-lang = { workspace = true, features = ["test-heap-cap"] }
+
 [lints]
 workspace = true

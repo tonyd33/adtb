@@ -1,5 +1,7 @@
 //! The `adtb` binary run against a real database file.
 
+extern crate adtb_lang as _;
+
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};

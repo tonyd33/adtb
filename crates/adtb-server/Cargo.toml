@@ -10,5 +10,8 @@ publish.workspace = true
 adtb.workspace = true
 unicode-normalization = { version = "0.1.26", default-features = false }
 
+[dev-dependencies]
+adtb-lang = { workspace = true, features = ["test-heap-cap"] }
+
 [lints]
 workspace = true

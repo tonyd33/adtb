@@ -9,8 +9,11 @@ publish.workspace = true
 [features]
 # Detect a thread asking for a latch it holds, outside debug builds too.
 latch-checks = []
+# Cap the heap of a test binary this crate links into.
+test-heap-cap = ["dep:adtb-heap-cap"]
 
 [dependencies]
+adtb-heap-cap = { workspace = true, optional = true }
 libc = "0.2.186"
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -18,6 +21,9 @@ io-uring = "0.7.15"
 
 [target.'cfg(adtb_loom)'.dev-dependencies]
 loom = "0.7.2"
+
+[dev-dependencies]
+adtb-sys = { path = ".", features = ["test-heap-cap"] }
 
 [lints]
 workspace = true

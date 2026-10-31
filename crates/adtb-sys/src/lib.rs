@@ -1,3 +1,6 @@
+#[cfg(feature = "test-heap-cap")]
+extern crate adtb_heap_cap as _;
+
 pub mod buf;
 pub mod crc32c;
 pub mod lock;

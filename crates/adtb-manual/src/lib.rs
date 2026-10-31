@@ -1,6 +1,9 @@
 //! Run the Rust examples of the user manual: each `rust` block of a page is a program whose
 //! `main` a test calls, and the `text` block right after it, if any, is what it prints.
 
+#[cfg(test)]
+extern crate adtb_lang as _;
+
 use std::fmt::Debug;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};

@@ -126,4 +126,14 @@ fn unchanged() {}
 fn added() {}
 RS
 expect 0 ''
+cat >fixture.rs <<'RS'
+/// Writes the unchanged item.
+fn unchanged() {}
+// SAFETY: the pointer names initialised bytes
+// the caller keeps alive.
+fn added() {}
+// The key stays unique.
+RS
+expect 1 'fixture.rs:6: comment, keep only for an invariant: // The key stays unique.'
+
 printf 'house-check fixtures passed\n'

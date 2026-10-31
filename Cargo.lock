@@ -60,9 +60,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "adtb-heap-cap"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "adtb-isolation"
 version = "0.1.0"
 dependencies = [
+ "adtb-lang",
  "adtb-testkit",
 ]
 
@@ -70,6 +78,8 @@ dependencies = [
 name = "adtb-lang"
 version = "0.1.0"
 dependencies = [
+ "adtb-heap-cap",
+ "adtb-lang",
  "adtb-testkit",
  "regex-syntax",
  "unicode-normalization",
@@ -116,6 +126,7 @@ name = "adtb-server"
 version = "0.1.0"
 dependencies = [
  "adtb",
+ "adtb-lang",
  "unicode-normalization",
 ]
 
@@ -133,6 +144,7 @@ name = "adtb-sim"
 version = "0.1.0"
 dependencies = [
  "adtb",
+ "adtb-heap-cap",
  "adtb-isolation",
  "adtb-lang",
  "adtb-reference",
@@ -158,6 +170,8 @@ dependencies = [
 name = "adtb-sys"
 version = "0.1.0"
 dependencies = [
+ "adtb-heap-cap",
+ "adtb-sys",
  "io-uring",
  "libc",
  "loom",

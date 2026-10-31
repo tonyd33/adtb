@@ -15,5 +15,8 @@ adtb-sim.workspace = true
 adtb-sys.workspace = true
 adtb-testkit.workspace = true
 
+[dev-dependencies]
+adtb-lang = { workspace = true, features = ["test-heap-cap"] }
+
 [lints]
 workspace = true

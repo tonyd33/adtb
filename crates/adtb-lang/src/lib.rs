@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "test-heap-cap")]
+extern crate adtb_heap_cap as _;
+
 pub mod analysis;
 pub mod ast;
 pub mod calendar;

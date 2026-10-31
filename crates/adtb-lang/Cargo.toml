@@ -6,7 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# Cap the heap of a test binary this crate links into.
+test-heap-cap = ["dep:adtb-heap-cap"]
+
 [dependencies]
+adtb-heap-cap = { workspace = true, optional = true }
 regex-syntax = { version = "0.8.11", default-features = false, features = ["std", "unicode"] }
 unicode-normalization = { version = "0.1.26", default-features = false }
 
@@ -14,4 +19,5 @@ unicode-normalization = { version = "0.1.26", default-features = false }
 workspace = true
 
 [dev-dependencies]
+adtb-lang = { path = ".", features = ["test-heap-cap"] }
 adtb-testkit.workspace = true

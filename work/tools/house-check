@@ -6,7 +6,7 @@
 # Rules: an em dash anywhere; an added size-allowlist entry; an added lint expectation in Rust;
 # in Rust comments, markdown bold, a section sign, a rule id
 # or a recognized third-person doc verb; a doc summary of two sentences that each start
-# `Returns`, one of its lines added. List added ordinary comments for invariant review.
+# `Returns`, one of its lines added. List added ordinary comments other than `// SAFETY:` for invariant review.
 # Pass `-r REV` or
 # `--from A --to B` to check other changes than the working copy's. Exits 1 when it prints.
 set -euo pipefail
@@ -24,7 +24,7 @@ jj diff --git "$@" | awk '
           "vacuums validates visits waits walks wraps writes", words)
     for (i in words) verbs[words[i]] = 1
   }
-  /^\+\+\+ / { file = substr($0, 7); block = 0; next }
+  /^\+\+\+ / { file = substr($0, 7); block = 0; safety = -1; next }
   /^@@ / {
     block = 0
     split($3, hunk, ",")
@@ -60,7 +60,8 @@ jj diff --git "$@" | awk '
       sub(/^\/\/[\/!][ \t]*/, "", doc)
       split(tolower(doc), words, /[^a-z]+/)
       if (words[1] in verbs && !noun(tolower(doc))) report("third-person doc verb")
-    } else report("comment, keep only for an invariant")
+    } else if (comment ~ /^\/\/ SAFETY:/ || safety == line - 1) safety = line
+    else report("comment, keep only for an invariant")
   }
   function noun(doc) {
     if (doc !~ /^(appends|builds|calls|checks|clones|counts|inserts|latches|loads|maps|matches|notes|plans|processes|reads|records|runs|sets|waits|walks|writes)([^a-z]|$)/) return 0

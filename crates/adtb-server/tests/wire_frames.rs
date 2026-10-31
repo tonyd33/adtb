@@ -1,3 +1,5 @@
+extern crate adtb_lang as _;
+
 use adtb_server::wire::frame::{
     Chunks, Decoder, Direction, FAIR_CHUNK, Frame, Header, Kind, StreamId,
 };

@@ -9,6 +9,8 @@
 //! continuation prompt as its input; a bare continuation prompt is a blank line. A command
 //! ending in `< FILE` reads that file instead.
 
+extern crate adtb_lang as _;
+
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};

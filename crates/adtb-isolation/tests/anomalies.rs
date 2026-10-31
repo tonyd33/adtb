@@ -1,3 +1,5 @@
+extern crate adtb_lang as _;
+
 mod common;
 
 use adtb_isolation::{Anomaly, Dep, Edge, Expected, Malformed, Op, Outcome, Txn, TxnId, check};

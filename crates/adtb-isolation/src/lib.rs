@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+extern crate adtb_lang as _;
+
 mod check;
 mod graph;
 mod harness;

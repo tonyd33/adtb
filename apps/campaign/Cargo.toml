@@ -26,7 +26,8 @@ adtb-sim = { path = "../../crates/adtb-sim" }
 adtb-testkit = { path = "../../crates/adtb-testkit" }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
-adtb-lang = { path = "../../crates/adtb-lang" }
+adtb-heap-cap = { path = "../../crates/adtb-heap-cap" }
+adtb-lang = { path = "../../crates/adtb-lang", features = ["test-heap-cap"] }
 
 [lints]
 workspace = true

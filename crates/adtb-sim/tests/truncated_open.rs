@@ -391,6 +391,7 @@ fn a_cut_page_ordinary_writes_grew_the_file_over_stays_refused() {
 
 #[test]
 fn a_cut_that_loses_a_later_bitmap_group_refuses_the_select() {
+    adtb_heap_cap::raise_cap(4 << 30);
     let mut sim = Sim::new(1, Config::default());
     let span = (PAGE - HEADER_LEN) * 8;
     let mut high = None;

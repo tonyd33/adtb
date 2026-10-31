@@ -222,6 +222,7 @@ fn assert_all_refused_as_database(db: &Database<SimRuntime>, what: &str) {
 
 #[test]
 fn a_cut_losing_a_group_with_large_values_refuses_marks_and_stays_marked() {
+    adtb_heap_cap::raise_cap(3 << 30);
     let row = "l".repeat(3 * PAGE);
     let files = cut(&two_groups(&row), SPAN - 100);
     let after = damaged_run(&files, "lost group", |db| {
@@ -288,6 +289,7 @@ fn assert_committed_rows_never_read_as_aborted(files: &Files, what: &str) {
 
 #[test]
 fn a_blank_status_page_refuses_and_never_aborts_committed_rows() {
+    adtb_heap_cap::raise_cap(3 << 30);
     let (files, status) = commits_on_a_status_page_in_group_one();
     assert_committed_rows_never_read_as_aborted(&zeroed(&files, status), "zeroed status");
     assert_committed_rows_never_read_as_aborted(&cut(&files, SPAN), "cut at the group");
@@ -728,6 +730,7 @@ fn recovery_stores_the_count_so_a_later_cut_never_reuses_a_named_page() {
 
 #[test]
 fn a_crash_in_recovery_then_a_cut_never_reuses_a_named_page() {
+    adtb_heap_cap::raise_cap(2 << 30);
     let (files, named) = crashed_after_growing();
     let mut sim = Sim::with_files(1, Config::default(), files);
     sim.record();
@@ -766,6 +769,7 @@ fn cross_a_group(pager: &Pager<SimRuntime>) {
 
 #[test]
 fn no_crash_while_crossing_a_group_refuses_a_healthy_file() {
+    adtb_heap_cap::raise_cap(2 << 30);
     for seed in sweep(0..1) {
         let mut sim = Sim::with_files(seed, Config::default(), full_group());
         sim.record();

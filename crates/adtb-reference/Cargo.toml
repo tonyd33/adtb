@@ -18,6 +18,7 @@ regex = { version = "1.13.1", default-features = false, features = ["std", "unic
 unicode-normalization = { version = "0.1.26", default-features = false }
 
 [dev-dependencies]
+adtb-lang = { workspace = true, features = ["test-heap-cap"] }
 adtb-testkit.workspace = true
 
 [lints]

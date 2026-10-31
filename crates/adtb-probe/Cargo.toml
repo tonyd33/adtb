@@ -6,12 +6,19 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# Cap the heap of the binary when `work/tools/adtb-probe` runs it.
+test-heap-cap = ["adtb-lang/test-heap-cap"]
+
 [dependencies]
 clap.workspace = true
 adtb.workspace = true
 adtb-conformance.workspace = true
 adtb-lang.workspace = true
 adtb-sim.workspace = true
+
+[dev-dependencies]
+adtb-lang = { workspace = true, features = ["test-heap-cap"] }
 
 [lints]
 workspace = true

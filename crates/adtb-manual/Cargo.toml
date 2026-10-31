@@ -10,8 +10,8 @@ publish.workspace = true
 adtb-codegen.workspace = true
 
 [dev-dependencies]
+adtb-lang = { workspace = true, features = ["test-heap-cap"] }
 adtb.workspace = true
-adtb-lang.workspace = true
 
 [lints]
 workspace = true

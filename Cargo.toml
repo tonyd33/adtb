@@ -14,6 +14,7 @@ publish = false
 adtb = { path = "crates/adtb" }
 adtb-codegen = { path = "crates/adtb-codegen" }
 adtb-conformance = { path = "crates/adtb-conformance" }
+adtb-heap-cap = { path = "crates/adtb-heap-cap" }
 adtb-file = { path = "crates/adtb-file" }
 adtb-lang = { path = "crates/adtb-lang" }
 adtb-isolation = { path = "crates/adtb-isolation" }

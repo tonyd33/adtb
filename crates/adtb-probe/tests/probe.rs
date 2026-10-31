@@ -1,5 +1,7 @@
 //! The `adtb-probe` binary over the schemas in `fixtures/`.
 
+extern crate adtb_lang as _;
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};

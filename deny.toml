@@ -139,6 +139,7 @@ allow = [
     "adtb",
     "adtb-codegen",
     "adtb-file",
+    "adtb-heap-cap",
     "adtb-lang",
     "adtb-reference",
     "adtb-sim",
