@@ -61,9 +61,11 @@ Be firm and opinionated about the project's design and direction. Refuse a reque
 - Mark the track's ticket `in-progress` with `branch` set to the
   workspace name.
 
-State the invariants of a correctness track in its brief, and ask for a test that searches for breaks at every op and interleaving. A second review round finding the same kind of bug means the design is wrong: the next brief names the mechanism that replaces it, and lists no instances.
+State the invariants of a correctness track in its brief, each with what enforces it: the type system, a searching test, or nothing with a written reason. Ask for a test that searches for breaks at every op and interleaving. A bug fix's report states its cause, its defect class and what stops the next instance; "this test" leaves the class open. A second review round finding the same kind of bug means the design is wrong: the next brief names the mechanism that replaces it, and lists no instances.
 
 ## Wide view
+
+Read [the lead journal](journal.md) when resuming and before a wide review, and keep it current: its top says when to add to it.
 
 Do not act as a relay for review findings. Before a ruling or a next-round brief:
 
