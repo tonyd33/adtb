@@ -1,7 +1,6 @@
 ---
 created-at: 2026-10-29
 status: in-progress
-branch: backup
 kind: feature
 priority: 720
 summary: "no dump, restore, online backup or point-in-time restore"
@@ -35,3 +34,7 @@ S4 is in round 4, change yxnwxzvu, which replaces name-based cleanup by building
 From round 6, not fixed: a misnamed foreign segment, or one of another block size, reads Invalid and is ignored in recovery, so `log.rs:350` removes it; it needs hand-placed files. `list_race_panics` survives default and deep, so no test reaches the `NotFound` arm at claim's List. No test covers races or a restore interleaving on a real file.
 
 From round 7, not fixed: `Unformatted` has no test, since a host page fault cannot be planted in a few lines. A failed log directory removal with a successful file removal leaves a log with no file, and the next create answers corrupt. The lock's postcondition needs every renamer or unlinker to hold it; restore's final rename against an opener of that name is not checked. Two-process races are tested only through a seam between open and lock.
+
+## 2026-10-31: S4 landed
+
+Full backup, restore and prove build aside and publish last. A log belongs to its file by `file_id` in every block. A failed open removes only what it made, and a lock is held only while the path names the locked inode. Seven rounds. The search harness is `crates/adtb-simkit/src/search.rs`. Open: the gaps listed above, an ignored red test `a_failed_read_of_the_test_database_records_no_verdict`, and two restores of one backup sharing a file id. S5 to S7 follow fault-matrix.

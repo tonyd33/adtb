@@ -47,3 +47,7 @@ The maintainer asked why slot-test looked so complex. It grew from 351 to 532 li
 ### 2026-10-31: backup rounds 5 and 6
 
 Round 5 fixed the pairing by id, and the review then found `Database::open` deleting the same restored log on a failed create, on a path the simulator tests never use. The harness searched `open_in`, and the bug was one layer up. Same class, a sixth round. A mechanism only holds where its search reaches, so a search of a layer says nothing of the layer above: name the entry point a user calls. Also, I accepted in round 5 that a refused create leaves its file, to avoid name-based cleanup; the real rule was to remove what the call made, by a fact from the operation that made it.
+
+### 2026-10-31: when review stops
+
+The maintainer asked for a principled reason the cycle would end, and I had none. My exit test was a clean review, and a review of a large surface never comes back clean. Rounds 6 and 7 of backup found defects already on main. Holding the branch protected nobody. The lead skill now defines a blocker by what the diff introduces or makes reachable, and caps delta reviews. Bet: track rounds fall to about three. Wrong if landed tracks start producing the data loss the cap let through.
