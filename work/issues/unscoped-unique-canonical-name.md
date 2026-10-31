@@ -1,0 +1,40 @@
+---
+created-at: 2026-10-31
+status: open
+kind: bug
+priority: 880
+summary: an unscoped unique violation appends an in constructor scope to its canonical name
+tags:
+  - quality
+  - engine
+---
+
+# Unscoped unique canonical name
+
+## Report
+
+Observed while running the hidden-conflict contract tests: a violation
+of an unscoped `unique (slug)` was reported as
+`auth::notes.unique(slug) in (Link | Plain)`. The canonical name is
+`auth::notes.unique(slug)`, with no `in` suffix. The constraint and its
+two report rows were otherwise correct.
+
+`docs/spec/constraints.md` section 7.1 gives the unscoped form and also
+requires an explicit scope covering every constructor to use that same
+name. `crates/adtb/src/write/schema.rs::unique_name` always expands a
+missing scope to all constructors and appends `in {set}`. It also fails
+to canonicalize an explicit all-constructor scope to the unscoped name.
+This code predates the hidden-conflict change.
+
+Minimal reproduction shape: declare a generated-key relation with a
+Text field and `unique (slug)`; insert two rows with different keys and
+the same slug. Assert the exact `Violated.constraint`, report and
+redaction count. Cross an omitted scope, an explicit scope naming all
+constructors and a proper subset. Only the proper subset has an `in`
+suffix; its constructor names are in code-point order.
+
+Cause: the error-name formatter conflates the constructor set used for
+checking with its canonical textual name. Class: copied rules. Reuse
+the common canonical naming mechanism if one exists, and test the
+observable name independently of the formatter under test. Do not
+change the uniqueness check or weaken the exact refusal assertion.

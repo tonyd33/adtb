@@ -75,3 +75,11 @@ The test-audit-b suite was stopped for low memory, and I had not looked at machi
 The review cap still holds: test-audit-b goes to verification with its review findings ticketed, not another review round. The prior handoff's claim that the branch was on main was stale by a documentation delta. I started linting before checking its parent, stopped that run, rebased, and restarted. Live ancestry must precede checks even when the handoff says it is current.
 
 The pinned-write investigation separated an explicit contract violation from an unrun candidate. Hidden-row overwrite already contradicts the key-refusal rule, whereas the ordinary nested-field scan appears to have the required reader gate. Existing upsert tests expect faulty outcomes. The next track runs both through the public API before choosing a fix. This tests the earlier bet about mechanisms: a shared source-scope contract must cover probes as well as scans; another field-shape patch would not.
+
+### 2026-10-31: child permissions and refusal expectations
+
+I verified that the lead could write sibling workspaces, then treated that as proof that workers had the same approval access. Two workers stalled on their first escalated command, one for over sixteen minutes. Their files and build processes had not moved, but I let the absence of a reply stand as analysis in progress. The existing instruction requires worker access, not lead access; I did not satisfy it.
+
+The replacement for this session uses ordinary worker reads and agent-authored patch files in the writable checkout. The lead inspects and applies those patches and runs commands through the normal approval flow. No custom watcher or runner was added. Future dispatch needs a worker-side access result before an implementation is called active; an outstanding approval is blocked work.
+
+Two full audit runs exposed guessed refusal expectations: an incomplete list of missing grants, then a named unique mistaken for a relation key. The second depended on a host-thread branch that the earlier run could skip. The repair now derives the exact report from the fixture and owned source row and gives the same helper a deterministic invocation. Typed serialization matching replaces a debug-string test. This is why exact assertions need independent expectations and evidence that the operation ran, not merely narrower matching.

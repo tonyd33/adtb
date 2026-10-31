@@ -63,3 +63,37 @@ passed all four existing characterizations. The three new
 `crates/adtb-sim/tests/bundles.rs`; preserve the failing hidden-conflict
 regression. Next: enforce hidden conflict visibility at the shared
 upsert boundary, then independent review and integration checks.
+
+## 2026-10-31: bounded hidden-conflict fix under verification
+
+Workspace `pinned-probes` implements the hiding-only source boundary:
+the translated old binder retains its checked constructor scope,
+mapped by catalog identity and intersected with the current probe
+scope. Engine and reference consumers do not bind an out-of-scope
+conflict; they contribute the ordinary proposed insertion, preserving
+statement-level validation and error selection. Nonhiding admission,
+nested upsert reader facts and the first-field-owner candidate remain
+outside this slice.
+
+The public hidden-key, branch, bulk-refusal and rename/removal probes
+pass. A direct translation counterexample proved that filtering only
+new constructor identities was insufficient when a known constructor
+newly joined a scoped unique: the old scope wrongly grew from Plain
+to Plain|Other. Mapping the checked binder's original selection fixed
+both new-constructor and existing-constructor cases, with hiding and
+nonhiding controls.
+
+Independent reading review found no introduced data-loss/wrong-answer
+blocker. Its runtime/coverage limits remain explicit. The public
+unscoped-unique assertion retains the normative name but is ignored
+for the preexisting defect in unscoped-unique-canonical-name. A scoped
+public fixture was blocked by named-set-index-scope-resolver; a later
+forward-name workaround was invalid and correctly refused. Direct
+translator and reference-consumer tests provide separate layers;
+they do not claim a complete public scoped-unique integration run.
+
+Remaining acceptance: full affected bundles/reference/translation
+binaries, exact guard mutants, clippy/fmt/house, rebase after
+test-audit-b lands, and full integration check. Keep the current
+unsupported structural-translation refusals. The ticket remains open
+after this slice for the reader-analysis and first-owner work.

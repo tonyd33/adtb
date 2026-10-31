@@ -68,3 +68,33 @@ Dropped on reading: evolve_grant_tests.rs:1611, evolve_memo_tests.rs:731 (stale)
 ## 2026-10-31: slot-test reduced
 
 From 536 to 396 lines. Accepted: a future case could still type a real path.
+
+## 2026-10-31: sections 3 and 4 ready to land
+
+Candidate `test-audit-b`, tested revision
+`480a4c3917d47183b82ae0e7b7909882bc399725`, base `fbb17db3`.
+Independent review was already complete; no additional review round was
+opened. Final full `check` passed: 3744 root tests, 48 campaign tests,
+Loom, Miri, documentation, grammar, policy, size and tooling checks.
+The source stayed unchanged across that run.
+
+Two final-check repairs corrected independently derived expected
+refusals: registration lists constructor, declared-key and projected
+field grants; a fresh key with a duplicate named-unique value returns
+that exact `Violated` report. The shared stress checker now matches
+serialization by type. A deterministic invocation of the same
+unique-refusal helper requires one fully validated report and exact
+unchanged data. Temporarily restoring the wrong key-error validator
+made that count fail (1 versus 0); source was restored afterward.
+
+Initial timing samples differed by about 1 percent. One cached paired
+root run under the same shared lock and four test slots measured main
+214.043s and candidate 213.388s, both passing; campaign measured main
+33.229s and candidate 32.817s. This establishes no observed default-run
+increase in that pair, not a statistically proven speedup.
+
+Next: land the candidate, run the post-land integration check, then
+record its landed revision. Section 5 and the whole-file lint
+expectations remain open; the enforcer/name/digest gaps are separately
+tracked in test-audit-b-gaps. Do not close this umbrella ticket merely
+because this slice lands.
