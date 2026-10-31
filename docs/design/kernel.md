@@ -339,11 +339,17 @@ from. Each form below is stated against that desugaring.
 | `Insert(r, e)` | `e : Set T`, `T` a row type of `r` | `{ ins(r, v) \| v ∈ e }` | `insert r {fill_r(...)}`, `insert r (for ξ in q do {fill_r(ξ)})` |
 | `Delete(r, e)` | `e : Set T`, `T` a row type of `r` | `{ del(r, v) \| v ∈ e ∩ D(r) }` | `delete r (for x in R do if p then {x} else {})`; `delete x` is `Delete(r, {x})`, `delete x where p` is `Delete(r, if p then {x} else {})` |
 | `Replace(r, e, f)` | `e : Set T` of rows of `r`; `f = Lam(x, n)`, `f : T -> T_r`; this `Lam` remains in a normal form (§7) | for each `v ∈ e`: `KeyChanged` if `key_r(f v) ≠ key_r(v)`; nothing if `f v = v` or `v ∉ D(r)`; `rep(r, v, f v)` otherwise | `for x in R do if p then replace r x e° else skip`, with `e` the filtered rows and `f` the completed new value `e°` |
-| `Upsert { rel, rows, on, old, new, otherwise, single }` | `rows : Set T`, filled; `on` is `Key` or `Unique(i)`, `i` an index of `rel` with `unique`; `old : T_rel` restricted to the constructor set of `on` (every constructor for `Key`); `new : T`; `otherwise : Change` | for each `n ∈ rows`, `O` = the rows `o` of `rel.S` in `D` whose `on` values equal `n`'s: `ins(rel, n)` if `O` is empty, else the effects of `otherwise` with `old ↦ o`, `new ↦ n`, for each `o ∈ O` | the `let! ξ_V … for new in ξ_V do … if empty(ξ_O) then insert … else for old in ξ_O do w` of §10.3 |
+| `Upsert { rel, rows, on, old, new, otherwise, single }` | `rows : Set T`, filled; `on` is `Key` or `Unique(i)`, `i` an index of `rel` with `unique`; `old : T_rel` restricted to the constructors visible to the conflict branch within the constructor set of `on`; `new : T`; `otherwise : Change` | for each `n ∈ rows`, `O` = the rows `o` of `rel.S` in `D` whose `on` values equal `n`'s: `ins(rel, n)` if `O` is empty, else the effects of `otherwise` with `old ↦ o`, `new ↦ n`, for each `o ∈ O` | the `let! ξ_V … for new in ξ_V do … if empty(ξ_O) then insert … else for old in ξ_O do w` of §10.3 |
 | `Rejects { into, insert }` | `insert` is an `Insert` or `Upsert` whose rows are `For(x, src, body)` with `src` a `Rel(r₀, S)` or a `Prim(ReadFile, [path])`; `into` holds `RejectedRow` | evaluates `body` per record `p` of the source: rows of records that compute are the inner form's rows; a record whose computation reaches `Reject(m)` or does not convert contributes `ins(into, { load: ℓ, line, source, raw, reason: m })` instead; `ℓ` is one fresh value per statement | `insert r (for x in e₀ do e) rejects into j` (§6.7) |
 | `Par(ws)` | each `w : Change` | the union of the effects of every `w`; order chooses neither the change set nor which abort is the outcome | `w₁ ∥ … ∥ wₙ` |
 | `Fail(t)` | `t : Text` | rejects the statement with `UserError(t)`; not a fault | `fail e` |
 | `Reject(t)` | `t : Text`, any type; only inside the rows of an `Insert` or `Upsert` | the record being computed is rejected with message `t`; without an enclosing `Rejects` the statement fails with `BadInput` | `reject e` |
+
+An `Upsert` probes the complete current key or unique scope independently
+of the constructor restriction of `old`. When a conflicting row's
+constructor lies outside `old`'s type, it contributes `ins(rel, n)` and
+binds `n` without binding `old` or evaluating `otherwise`. The ordinary
+statement-boundary checks validate that insertion.
 
 ### 4.3 Blocks
 

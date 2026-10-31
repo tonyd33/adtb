@@ -1,7 +1,11 @@
 //! Writes, delete actions, upserts, blocks and the statement boundary, driven through the front
 //! end. The examples of the writes part of the spec whose outcome it states are here.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+use adtb_lang::check::check_adhoc;
+use adtb_lang::kernel::Kind;
+use adtb_lang::parse::{Options, parse_adhoc};
 
 use adtb_reference::{Abort, Fault, Rejection, Stage, Value};
 use adtb_testkit::fixture::*;
@@ -699,6 +703,86 @@ fn a_retag_of_the_target_fires_no_action() {
 }
 
 // Upsert
+
+#[test]
+fn an_upsert_conflict_outside_olds_type_inserts_without_evaluating_its_branch() {
+    let mut f = Fixture::new(
+        "type Note { id: Key notes } = Plain { body: Text } | Link { url: Text }\nrelation notes : Note key id generate sequence",
+    );
+    f.ok(r#"insert notes.Link { id: notes.key(1), url: "u" }"#);
+    let text = r#"insert notes.Plain { id: notes.key(1), body: "x" }
+      unless conflict on key else fail "the conflict branch ran""#;
+    assert_eq!(
+        Err(Abort::Reject(key_violation("notes", "notes.key(1)"))),
+        run_with_restricted_old(&f, text)
+    );
+}
+
+fn run_with_restricted_old(f: &Fixture, text: &str) -> Result<adtb_reference::Outcome, Abort> {
+    let items = parse_adhoc(text, Options::default())
+        .ok()
+        .expect("the upsert parses");
+    let mut checked =
+        check_adhoc(&f.schema, &f.program, &items, &BTreeMap::new()).expect("the upsert checks");
+    let olds: Vec<_> = checked
+        .terms
+        .nodes
+        .iter()
+        .filter_map(|n| match n.kind {
+            Kind::Upsert { old, .. } => Some(old),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(1, olds.len());
+    checked.terms.vars[olds[0].0 as usize].ty = f.ty("Note.Plain");
+    let mut supply = f.supply.clone();
+    f.interp()
+        .run(&checked.terms, checked.items[0], &[], &mut supply)
+}
+
+#[test]
+fn a_scoped_unique_conflict_obeys_olds_constructor_type() {
+    let mut f = Fixture::new(
+        "type Note { id: Key notes, slug: Text } = Plain { body: Text } | Other { other: Text } | Link { url: Text }\nrelation notes : Note key id generate sequence unique (slug) in (Plain | Link)",
+    );
+    f.ok(r#"insert notes.Link { id: notes.key(9), slug: "same", url: "u" }"#);
+    let text = r#"insert notes.Plain { id: notes.key(1), slug: "same", body: "x" }
+      unless conflict on (slug) in (Plain | Link) else fail "the conflict branch ran""#;
+    let plain = Value::Ctor(
+        0,
+        vec![
+            ("id".into(), key(1)),
+            ("slug".into(), Value::text("same")),
+            ("body".into(), Value::text("x")),
+        ],
+    );
+    let link = Value::Ctor(
+        2,
+        vec![
+            ("id".into(), key(9)),
+            ("slug".into(), Value::text("same")),
+            ("url".into(), Value::text("u")),
+        ],
+    );
+    assert_eq!(
+        Err(Abort::Reject(Rejection::Violated {
+            constraint: "app::notes.unique(slug) in (Link | Plain)".into(),
+            report: BTreeSet::from([
+                Value::record([("a", plain.clone()), ("b", link.clone())]),
+                Value::record([("a", link), ("b", plain)]),
+            ]),
+        })),
+        run_with_restricted_old(&f, text)
+    );
+    f.ok("delete n in notes");
+    f.ok(r#"insert notes.Plain { id: notes.key(9), slug: "same", body: "a" }"#);
+    assert_eq!(
+        Err(Abort::Reject(Rejection::UserError {
+            message: "the conflict branch ran".into(),
+        })),
+        run_with_restricted_old(&f, text)
+    );
+}
 
 #[test]
 fn an_upsert_on_a_unique_updates_the_conflicting_row() {

@@ -2767,13 +2767,21 @@ fn an_upsert_old_read_on_a_constructor_new_since_the_pin_lacking_the_field_is_re
                 &[],
                 &CallOptions::default(),
             );
-            match refused {
-                Err(Error::Rejected {
-                    reason: RejectReason::Internal { what },
-                }) => assert_eq!("constructor 1 of the type has the field", what, "{clauses}"),
-                Err(other) => panic!("{clauses}: refused otherwise: {other:?}"),
-                Ok(called) => panic!("{clauses}: the call applies: {called:?}"),
-            }
+            let expected = if clauses.is_empty() {
+                RejectReason::Internal {
+                    what: "constructor 1 of the type has the field".into(),
+                }
+            } else {
+                RejectReason::KeyViolation {
+                    relation: "auth::notes".into(),
+                    key: "notes.key(1)".into(),
+                }
+            };
+            assert_eq!(
+                Err(expected),
+                refused.map(drop).map_err(|e| reason(&e).clone()),
+                "{clauses}"
+            );
             call(&db, "web-1.0", 2, &[]);
             let mut notes = query(&db, NOTES);
             notes.sort();
@@ -2783,7 +2791,7 @@ fn an_upsert_old_read_on_a_constructor_new_since_the_pin_lacking_the_field_is_re
 }
 
 #[test]
-fn an_upsert_old_read_on_a_constructor_new_since_the_pin_reads_its_own_field() {
+fn an_upsert_reads_a_new_constructors_own_field_unless_the_constructor_is_hidden() {
     for clauses in ["", " hide new constructors"] {
         let pin = [V1, ADD_NOTES];
         let log = [V1, ADD_NOTES, ADD_LINK_BODY, ENABLE_LINK];
@@ -2794,8 +2802,24 @@ fn an_upsert_old_read_on_a_constructor_new_since_the_pin_reads_its_own_field() {
                 r#"insert notes.Link { id: notes.key(1), url: "u", body: "b" }"#,
             )
             .expect("the link is written");
-            call(&db, "web-1.0", 1, &[]);
-            assert_eq!(vec![r#""b!""#], query(&db, NOTES), "{clauses}");
+            let got = db
+                .registered("web-1.0")
+                .expect("the bundle binds")
+                .call(1, &[], &CallOptions::default())
+                .map(drop)
+                .map_err(|e| reason(&e).clone());
+            let expected = if clauses.is_empty() {
+                (Ok(()), vec![r#""b!""#.to_owned()])
+            } else {
+                (
+                    Err(RejectReason::KeyViolation {
+                        relation: "auth::notes".into(),
+                        key: "notes.key(1)".into(),
+                    }),
+                    vec![r#""u""#.to_owned()],
+                )
+            };
+            assert_eq!(expected, (got, query(&db, NOTES)), "{clauses}");
         });
     }
 }
@@ -2863,6 +2887,398 @@ txn put () -> I64 =
                 &db,
                 "from m in marks select match m.tone | Ink i -> i.depth | Dye d -> d.depth"
             )
+        );
+    });
+}
+
+#[test]
+fn a_hiding_pinned_upsert_conflicting_with_a_hidden_row_fails_by_key() {
+    let body = r#"import auth
+txn put () -> I64 =
+  transact
+    insert notes.Plain { id: notes.key(1), body: "x" }
+      unless conflict on key else update old set new
+    return 0
+"#;
+    let pin = [V1, ADD_NOTES];
+    let log = [V1, ADD_NOTES, ADD_LINK, ENABLE_LINK];
+    once(192, |rt| {
+        let db = opened(
+            &rt,
+            &log,
+            vec![bundle("web-1.0", &pin, " hide new constructors", body)],
+        );
+        write(&db, r#"insert notes.Link { id: notes.key(1), url: "u" }"#)
+            .expect("the hidden link is written");
+        let got = db
+            .registered("web-1.0")
+            .expect("the bundle binds")
+            .call(1, &[], &CallOptions::default())
+            .map(drop)
+            .map_err(|e| reason(&e).clone());
+        assert_eq!(
+            (
+                Err(RejectReason::KeyViolation {
+                    relation: "auth::notes".into(),
+                    key: "notes.key(1)".into(),
+                }),
+                vec![r#"Link { id: notes.key(1), url: "u" }"#.to_owned()],
+            ),
+            (got, query(&db, "from n in notes select n"))
+        );
+    });
+}
+
+#[test]
+fn a_hiding_pin_refuses_hidden_conflicts_before_each_branch_and_binding() {
+    let branches = [
+        ("skip", "I64", "0"),
+        ("delete old", "I64", "0"),
+        (
+            "update old set Plain { old with body: old.body ++ \"!\" }",
+            "I64",
+            "0",
+        ),
+        ("fail \"the conflict branch ran\"", "I64", "0"),
+        (
+            "match old | Plain p -> update p set Plain { p with body: \"matched\" }",
+            "I64",
+            "0",
+        ),
+        ("skip", "Note", "written"),
+    ];
+    let mut body = "import auth\n".to_owned();
+    for (i, (branch, ty, result)) in branches.iter().enumerate() {
+        let binding = if *result == "written" {
+            "let written = "
+        } else {
+            ""
+        };
+        body.push_str(&format!(
+            "txn put{i} () -> {ty} =\n  transact\n    {binding}insert notes.Plain {{ id: notes.key(1), body: \"x\" }}\n      unless conflict on key else {branch}\n    return {result}\n"
+        ));
+    }
+    let pin = [V1, ADD_NOTES];
+    let log = [V1, ADD_NOTES, ADD_LINK, ENABLE_LINK];
+    once(195, |rt| {
+        let db = opened(
+            &rt,
+            &log,
+            vec![bundle("web-1.0", &pin, " hide new constructors", &body)],
+        );
+        write(&db, r#"insert notes.Link { id: notes.key(1), url: "u" }"#)
+            .expect("the hidden row is written");
+        let mut ran = 0;
+        for ordinal in 1..=branches.len() as u32 {
+            let got = db
+                .registered("web-1.0")
+                .expect("the bundle binds")
+                .call(ordinal, &[], &CallOptions::default())
+                .map(drop)
+                .map_err(|e| reason(&e).clone());
+            assert_eq!(
+                Err(RejectReason::KeyViolation {
+                    relation: "auth::notes".into(),
+                    key: "notes.key(1)".into(),
+                }),
+                got,
+                "branch {ordinal}"
+            );
+            assert_eq!(
+                vec![r#"Link { id: notes.key(1), url: "u" }"#],
+                query(&db, "from n in notes select n"),
+                "branch {ordinal}"
+            );
+            ran += 1;
+        }
+        assert_eq!(6, ran);
+    });
+}
+
+#[test]
+#[ignore = "unscoped uniques currently append a constructor scope to their canonical name"]
+fn a_hiding_pin_handles_known_unique_conflicts_and_refuses_hidden_ones() {
+    let add = "module auth\nadd type Note { id: Key notes, slug: Text } = Plain { body: Text }\nadd relation notes : Note key id generate sequence unique (slug)\n";
+    let body = r#"import auth
+txn put () -> I64 =
+  transact
+    insert notes.Plain { id: notes.key(1), slug: "same", body: "x" }
+      unless conflict on (slug) else update old set Plain { old with body: new.body }
+    return 0
+"#;
+    let pin = [V1, add];
+    let log = [V1, add, ADD_LINK, ENABLE_LINK];
+    let mut ran = 0;
+    for hidden in [false, true] {
+        once(196, |rt| {
+            let db = opened(
+                &rt,
+                &log,
+                vec![bundle("web-1.0", &pin, " hide new constructors", body)],
+            );
+            let (insert, expected_rows) = if hidden {
+                (
+                    r#"insert notes.Link { id: notes.key(9), slug: "same", url: "u" }"#,
+                    vec![r#"Link { id: notes.key(9), slug: "same", url: "u" }"#],
+                )
+            } else {
+                (
+                    r#"insert notes.Plain { id: notes.key(9), slug: "same", body: "a" }"#,
+                    vec![r#"Plain { id: notes.key(9), slug: "same", body: "x" }"#],
+                )
+            };
+            write(&db, insert).expect("the conflicting row is written");
+            let mut got = db
+                .registered("web-1.0")
+                .expect("the bundle binds")
+                .call(1, &[], &CallOptions::default())
+                .map(drop)
+                .map_err(|e| reason(&e).clone());
+            if let Err(RejectReason::Violated { report, .. }) = &mut got {
+                report.sort();
+            }
+            let expected = if hidden {
+                let plain = Value::ctor(
+                    0,
+                    vec![Value::Int(1), Value::text("same"), Value::text("x")],
+                );
+                let link = Value::ctor(
+                    1,
+                    vec![Value::Int(9), Value::text("same"), Value::text("u")],
+                );
+                let mut report = vec![
+                    Value::record(vec![plain.clone(), link.clone()]),
+                    Value::record(vec![link, plain]),
+                ];
+                report.sort();
+                Err(RejectReason::Violated {
+                    constraint: "auth::notes.unique(slug)".into(),
+                    report,
+                    redacted: 0,
+                })
+            } else {
+                Ok(())
+            };
+            assert_eq!(expected, got, "hidden {hidden}");
+            assert_eq!(
+                expected_rows,
+                query(&db, "from n in notes select n"),
+                "hidden {hidden}"
+            );
+        });
+        ran += 1;
+    }
+    assert_eq!(2, ran);
+}
+
+#[test]
+fn a_hidden_conflict_leaves_every_row_of_a_bulk_upsert_unapplied() {
+    let body = r#"import auth
+txn put () -> I64 =
+  transact
+    insert notes.Plain from [
+      { id: notes.key(1), body: "x" },
+      { id: notes.key(3), body: "new" }
+    ] unless conflict on key else delete old
+    return 0
+"#;
+    let pin = [V1, ADD_NOTES];
+    let log = [V1, ADD_NOTES, ADD_LINK, ENABLE_LINK];
+    once(197, |rt| {
+        let db = opened(
+            &rt,
+            &log,
+            vec![bundle("web-1.0", &pin, " hide new constructors", body)],
+        );
+        write(&db, r#"insert notes.Link { id: notes.key(1), url: "u" }"#)
+            .expect("the hidden row is written");
+        let got = db
+            .registered("web-1.0")
+            .expect("the bundle binds")
+            .call(1, &[], &CallOptions::default())
+            .map(drop)
+            .map_err(|e| reason(&e).clone());
+        assert_eq!(
+            (
+                Err(RejectReason::KeyViolation {
+                    relation: "auth::notes".into(),
+                    key: "notes.key(1)".into(),
+                }),
+                vec![r#"Link { id: notes.key(1), url: "u" }"#.to_owned()],
+            ),
+            (got, query(&db, "from n in notes select n"))
+        );
+    });
+}
+
+#[test]
+fn a_hidden_conflict_uses_the_ordinary_least_constraint_refusal() {
+    let check =
+        "module auth\nadd constraint aaa = from n in notes.Plain where n.body == \"x\" select n\n";
+    let body = r#"import auth
+txn put () -> I64 =
+  transact
+    insert notes.Plain { id: notes.key(1), body: "x" }
+      unless conflict on key else fail "the conflict branch ran"
+    return 0
+"#;
+    let pin = [V1, ADD_NOTES];
+    let log = [V1, ADD_NOTES, ADD_LINK, ENABLE_LINK, check];
+    once(198, |rt| {
+        let db = opened(
+            &rt,
+            &log,
+            vec![bundle("web-1.0", &pin, " hide new constructors", body)],
+        );
+        write(&db, r#"insert notes.Link { id: notes.key(1), url: "u" }"#)
+            .expect("the hidden row is written");
+        let got = db
+            .registered("web-1.0")
+            .expect("the bundle binds")
+            .call(1, &[], &CallOptions::default())
+            .map(drop)
+            .map_err(|e| reason(&e).clone());
+        assert_eq!(
+            (
+                Err(RejectReason::Violated {
+                    constraint: "auth::aaa".into(),
+                    report: vec![Value::ctor(0, vec![Value::Int(1), Value::text("x")])],
+                    redacted: 0,
+                }),
+                vec![r#"Link { id: notes.key(1), url: "u" }"#.to_owned()],
+            ),
+            (got, query(&db, "from n in notes select n"))
+        );
+    });
+}
+
+#[test]
+fn a_hiding_pin_maps_conflict_visibility_across_rename_and_constructor_removal() {
+    let add = "module auth\nadd type Note { id: Key notes } = Removed { body: Text } | Plain { body: Text }\nadd relation notes : Note key id generate sequence\n";
+    let deprecate = "module auth\ndeprecate notes.Removed\n";
+    let remove = "module auth\nremove constructor Note.Removed\n";
+    let rename = "module auth\nrename constructor Note.Plain to Prose\n";
+    let body = r#"import auth
+txn first () -> I64 =
+  transact
+    insert notes.Plain { id: notes.key(1), body: "x" }
+      unless conflict on key else update old set new
+    return 0
+txn second () -> I64 =
+  transact
+    insert notes.Plain { id: notes.key(2), body: "x" }
+      unless conflict on key else update old set new
+    return 0
+"#;
+    let pin = [V1, add];
+    let log = [V1, add, deprecate, remove, rename, ADD_LINK, ENABLE_LINK];
+    once(199, |rt| {
+        let db = opened(
+            &rt,
+            &log,
+            vec![bundle("web-1.0", &pin, " hide new constructors", body)],
+        );
+        write(&db, r#"insert notes.Prose { id: notes.key(1), body: "a" }"#)
+            .expect("the known row is written");
+        write(&db, r#"insert notes.Link { id: notes.key(2), url: "u" }"#)
+            .expect("the hidden row is written");
+        call(&db, "web-1.0", 1, &[]);
+        let got = db
+            .registered("web-1.0")
+            .expect("the bundle binds")
+            .call(2, &[], &CallOptions::default())
+            .map(drop)
+            .map_err(|e| reason(&e).clone());
+        let mut rows = query(&db, "from n in notes select n");
+        rows.sort();
+        assert_eq!(
+            (
+                Err(RejectReason::KeyViolation {
+                    relation: "auth::notes".into(),
+                    key: "notes.key(2)".into(),
+                }),
+                vec![
+                    r#"Link { id: notes.key(2), url: "u" }"#.to_owned(),
+                    r#"Prose { id: notes.key(1), body: "x" }"#.to_owned(),
+                ],
+            ),
+            (got, rows)
+        );
+    });
+}
+
+const PINNED_TONE_ADD: &str = "module auth
+add type Tone = Ink { depth: I64 }
+add type Mark = { id: Key marks, tone: Tone }
+add relation marks : Mark key id generate sequence
+";
+const PINNED_TONE_GROW: &str = "module auth\nadd constructor Tone.Dye { hue: Text, depth: I64 }\n";
+const PINNED_TONE_ENABLE: &str = "module auth\nenable Tone.Dye\n";
+const PINNED_DEPTHS: &str =
+    "import auth\nquery depths () -> Set I64 = from x in marks select x.tone.depth\n";
+
+#[test]
+fn a_hiding_pinned_nested_field_scan_refuses_an_enabled_value_constructor_at_registration() {
+    let pin = [V1, PINNED_TONE_ADD];
+    let log = [V1, PINNED_TONE_ADD, PINNED_TONE_GROW, PINNED_TONE_ENABLE];
+    once(193, |rt| {
+        assert_eq!(
+            RejectReason::BundleStale {
+                bundle: "web-1.0".into(),
+                ctor: "Tone.Dye".into(),
+            },
+            refusal(
+                open(
+                    &rt,
+                    &log,
+                    vec![bundle(
+                        "web-1.0",
+                        &pin,
+                        " hide new constructors",
+                        PINNED_DEPTHS
+                    )],
+                ),
+                "web-1.0",
+            ),
+        );
+    });
+}
+
+#[test]
+fn a_hiding_pinned_nested_field_scan_blocks_enabling_a_value_constructor_while_live() {
+    let pin = [V1, PINNED_TONE_ADD];
+    let before = [V1, PINNED_TONE_ADD, PINNED_TONE_GROW];
+    let log = [V1, PINNED_TONE_ADD, PINNED_TONE_GROW, PINNED_TONE_ENABLE];
+    let mut sim = Sim::new(194, Config::default());
+    run(&mut sim, |rt| {
+        opened(
+            &rt,
+            &before,
+            vec![bundle(
+                "web-1.0",
+                &pin,
+                " hide new constructors",
+                PINNED_DEPTHS,
+            )],
+        );
+    });
+    run(&mut sim, |rt| {
+        let (_operator, detail) = refused_migration(
+            open(
+                &rt,
+                &log,
+                vec![bundle(
+                    "web-1.0",
+                    &pin,
+                    " hide new constructors",
+                    PINNED_DEPTHS,
+                )],
+            ),
+            4,
+        );
+        assert_eq!(
+            "`enable Tone.Dye` is refused: bundle web-1.0, pinned at version 2, reads a field whose type reaches Tone; a bundle stops blocking only when it is released",
+            detail,
         );
     });
 }

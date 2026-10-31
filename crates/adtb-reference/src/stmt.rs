@@ -611,6 +611,19 @@ impl Run<'_, '_> {
                 continue;
             }
             for o in olds {
+                let Some(ctor) = o.tag() else {
+                    return internal("an upsert conflict is a constructor row");
+                };
+                if let Ty::Data {
+                    ctors: Some(visible),
+                    ..
+                } = &self.terms(h.arena).var_info(*old).ty
+                    && !visible.contains(&ctor)
+                {
+                    out.insert(Eff::Ins(rel, n.clone()));
+                    bound.insert(n.clone());
+                    continue;
+                }
                 let mut ew = Effects::new();
                 let inner = env.bind(*old, o.clone()).bind(*new, n.clone());
                 self.write(h, *otherwise, &inner, &mut ew)?;

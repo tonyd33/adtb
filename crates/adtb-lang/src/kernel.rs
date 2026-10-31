@@ -222,7 +222,7 @@ pub enum Kind {
     Delete(RelId, Tm),
     /// Replace each row of the set, a row of the relation in the snapshot, by the function's value on it; fail with `KeyChanged` when that value has another key, and leave the row alone when it is equal.
     Replace(RelId, Tm, Tm),
-    /// Insert each row of `rows` that no snapshot row matches on `on`; for each one that a snapshot row matches, evaluate the write `otherwise` instead, with `old` bound to the snapshot row and `new` to the proposed one.
+    /// Insert each row of `rows` that no snapshot row matches on `on`; for each one that a snapshot row matches, evaluate the write `otherwise` instead, with `old` bound to the snapshot row and `new` to the proposed one. Insert the proposed row without evaluating `otherwise` when a conflict's constructor is outside `old`'s type.
     Upsert {
         rel: RelId,
         rows: Tm,

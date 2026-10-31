@@ -51,6 +51,10 @@ fn checked(log: &[&str]) -> (Source, Schema, Program) {
 /// Returns the translation of the one query or transaction of `body`, checked at the version
 /// the first `pin` migrations of `log` leave, to the version `log` leaves.
 fn translated(log: &[&str], pin: usize, body: &str) -> R<NormalQuery> {
+    translated_with_hiding(log, pin, body, false)
+}
+
+fn translated_with_hiding(log: &[&str], pin: usize, body: &str, hide_new: bool) -> R<NormalQuery> {
     let (from_source, from, from_program) = checked(&log[..pin]);
     let (to_source, to, to_program) = checked(log);
     let text = format!("import auth\n{body}");
@@ -66,7 +70,7 @@ fn translated(log: &[&str], pin: usize, body: &str) -> R<NormalQuery> {
         Item::Fn(..) => panic!("the body holds a query or transaction"),
     }
     .expect("the callable normalises");
-    Pinned::new(&from, &from_source, &to, &to_source, &to_program, false)?.query(&q)
+    Pinned::new(&from, &from_source, &to, &to_source, &to_program, hide_new)?.query(&q)
 }
 
 /// Returns the operator and reason of the refusal of translating `body`.
@@ -81,6 +85,63 @@ fn refused_across(log: &[&str], pin: usize, body: &str) -> (String, String) {
             u.reason,
         ),
     }
+}
+
+#[test]
+fn a_hiding_upsert_keeps_its_visible_scope_distinct_from_its_unique_probe() {
+    let add = "module auth\nadd type Note { id: Key notes, slug: Text } = Plain { body: Text } | Other { other: Text }\nadd relation notes : Note key id generate sequence\nadd set Shared of notes = Plain\nadd unique (slug) in notes.Shared\n";
+    let grow = "module auth\nadd constructor Note.Link { url: Text }\n  joins notes.Shared\n";
+    let enable = "module auth\nenable notes.Link\n";
+    let members =
+        "module auth\ndrop set Shared of notes\nadd set Shared of notes = Plain | Other\n";
+    let body = r#"txn put () -> I64 =
+  transact
+    insert notes.Plain { id: notes.key(1), slug: "same", body: "x" }
+      unless conflict on (slug) in Shared else skip
+    return 0
+"#;
+    let mut ran = 0;
+    for (name, tail, probe) in [
+        ("new constructor", vec![grow, enable], vec![0, 2]),
+        ("known constructor joins", vec![members], vec![0, 1]),
+    ] {
+        let mut log = vec![V1, add];
+        log.extend(tail);
+        let (_, current, _) = checked(&log);
+        for (hide_new, expected) in [(false, probe.clone()), (true, vec![0])] {
+            let q = translated_with_hiding(&log, 2, body, hide_new)
+                .unwrap_or_else(|e| panic!("{name}: the upsert translates: {e:?}"));
+            let scopes: Vec<_> = q
+                .terms
+                .nodes
+                .iter()
+                .filter_map(|n| match n.kind {
+                    Kind::Upsert {
+                        rel,
+                        on: crate::kernel::Conflict::Unique(i),
+                        old,
+                        ..
+                    } => {
+                        let Ty::Data { ctors, .. } = &q.terms.var_info(old).ty else {
+                            panic!("an upsert's old binding is a declared row");
+                        };
+                        Some((
+                            current.relation(rel).indexes[i as usize].scope.clone(),
+                            ctors.clone(),
+                        ))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                vec![(Some(probe.clone()), Some(expected))],
+                scopes,
+                "{name}, hide_new {hide_new}"
+            );
+            ran += 1;
+        }
+    }
+    assert_eq!(4, ran);
 }
 
 #[test]

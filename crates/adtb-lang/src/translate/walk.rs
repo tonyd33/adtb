@@ -120,18 +120,32 @@ impl<'p, 'a> Walk<'p, 'a> {
             .map_err(|l| self.p.lost(&l, "reaches a value of"))
     }
 
-    /// Bind `old` of an upsert into `to` to the constructors its probe `on` can return.
+    /// Bind `old` of an upsert into `to` to the constructors its conflict branch may receive.
     fn bind_probed(&mut self, out: &mut Terms, old: Var, to: RelId, on: &Conflict) -> R<Var> {
         self.probed.insert(old);
         let info = self.src.var_info(old);
+        let visible = match &info.ty {
+            Ty::Data { def, ctors, .. } if self.p.hide_new => self.map.set(*def, ctors, true),
+            _ => None,
+        };
         let ty = match self.ty_probed(&info.ty)? {
             Ty::Data { def, args, .. } => Ty::Data {
                 def,
                 args,
-                ctors: match on {
-                    Conflict::Key => None,
-                    Conflict::Unique(i) => {
-                        self.map.to.relation(to).indexes[*i as usize].scope.clone()
+                ctors: {
+                    let scope = match on {
+                        Conflict::Key => None,
+                        Conflict::Unique(i) => {
+                            self.map.to.relation(to).indexes[*i as usize].scope.clone()
+                        }
+                    };
+                    match (scope, visible) {
+                        (Some(mut scope), Some(visible)) => {
+                            scope.retain(|c| visible.contains(c));
+                            Some(scope)
+                        }
+                        (scope, None) => scope,
+                        (None, visible) => visible,
                     }
                 },
             },

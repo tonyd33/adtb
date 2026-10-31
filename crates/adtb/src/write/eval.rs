@@ -782,6 +782,16 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 continue;
             }
             for o in olds {
+                if let Ty::Data {
+                    ctors: Some(visible),
+                    ..
+                } = &self.terms.var_info(old).ty
+                    && !visible.contains(&o.ctor_of()?)
+                {
+                    out.insert(Eff::Ins(rel, n.clone()));
+                    bound.insert(n.clone());
+                    continue;
+                }
                 let mut ew = Effects::new();
                 let inner = bind(&bind(env, old, o.clone()), new, n.clone());
                 self.write(otherwise, &inner, &mut ew)?;
