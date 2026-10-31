@@ -8,7 +8,7 @@ use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::types::RelId;
 
 use crate::catalog::{Catalog, layout};
-use crate::exec::{self, Val};
+use crate::exec::{self, F64, Val};
 use crate::mvcc::Transactions;
 use crate::runtime::Runtime;
 use crate::storage::Pager;
@@ -28,6 +28,10 @@ pub(super) struct Settings {
     pub(super) retries: u64,
     /// The length of the retention window.
     pub(super) window: Duration,
+    /// The period of the background scrub, `None` for no scrub.
+    pub(super) scrub: Option<Duration>,
+    /// The most of the time it runs that background work may spend on reads.
+    pub(super) io: F64,
 }
 
 impl Default for Settings {
@@ -37,6 +41,8 @@ impl Default for Settings {
             grace: HOUR,
             retries: 5,
             window: Duration::ZERO,
+            scrub: Some(Duration::from_secs(7 * 24 * 3600)),
+            io: F64::new(0.1),
         }
     }
 }
@@ -77,6 +83,15 @@ impl Settings {
             ("RetentionWindow", Some(Val::Duration(d))) => {
                 self.window = Duration::from_micros(u64::try_from(*d).unwrap_or(0));
             }
+            ("ScrubInterval", Some(Val::Ctor(_, every))) => {
+                self.scrub = match every.first() {
+                    Some(Val::Duration(d)) => {
+                        Some(Duration::from_micros(u64::try_from(*d).unwrap_or(0)))
+                    }
+                    _ => None,
+                };
+            }
+            ("VacuumBudget", Some(Val::F64(io))) => self.io = *io,
             _ => {}
         }
     }

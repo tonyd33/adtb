@@ -398,7 +398,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns whether the allocation bitmap calls `pid` free, or cannot be read to say.
-    fn called_free(&self, pid: Pid) -> bool {
+    pub(super) fn called_free(&self, pid: Pid) -> bool {
         match self.is_free(pid) {
             Ok(free) => free,
             Err(e) => e.damage == Damage::Unreadable,

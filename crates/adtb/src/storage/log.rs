@@ -4,7 +4,7 @@ use crate::runtime::{AlignedBuf, FileId, Runtime};
 
 use super::Lsn;
 use super::block::{LogImage, LogSource, Slot, data_lsn, frame};
-use super::driver::Driver;
+use super::driver::{Driver, FATAL_IO};
 use super::pager::parent;
 use super::record::Record;
 
@@ -154,7 +154,7 @@ impl Segments {
         let path = self.path(base);
         let (file, len) = drv
             .open(&path, true)
-            .unwrap_or_else(|e| panic!("fatal I/O error: create {path}: {e:?}"));
+            .unwrap_or_else(|e| panic!("{FATAL_IO}: create {path}: {e:?}"));
         if len < self.segment {
             drv.allocate(file, self.segment);
             drv.sync_all(&[file]);

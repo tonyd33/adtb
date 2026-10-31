@@ -9,9 +9,12 @@ pub(crate) struct Driver<R: Runtime> {
     ready: BTreeMap<Ticket, Completion>,
 }
 
+/// How the panic of a fatal I/O error starts: the one panic every thread lets crash the process.
+pub const FATAL_IO: &str = "fatal I/O error";
+
 /// Crash the process on a failed write or force, which the engine never retries.
 fn fatal(what: &str, e: IoError) -> ! {
-    panic!("fatal I/O error: {what}: {e:?}")
+    panic!("{FATAL_IO}: {what}: {e:?}")
 }
 
 impl<R: Runtime> Driver<R> {

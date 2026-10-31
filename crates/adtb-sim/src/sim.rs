@@ -73,6 +73,7 @@ enum Status {
 
 struct SimThread {
     name: String,
+    daemon: bool,
     status: Status,
     token: bool,
     turn: Arc<Condvar>,
@@ -222,10 +223,12 @@ impl Sim {
         lock(&self.shared.state).crash_at = Some(at.as_nanos());
     }
 
-    /// Run `body` as the first thread of a new process, until every thread has returned or the process crashes.
+    /// Run `body` as the first thread of a new process, until every thread but the idle daemons has
+    /// returned or the process crashes. A daemon's timer left pending at the end does not move the
+    /// clock.
     ///
-    /// Panics with the payload of any thread that panics, or when every live thread is blocked with no
-    /// completion or timer pending.
+    /// Panics with the payload of any thread that panics, or when a live thread that is no daemon is
+    /// blocked and only a daemon's timer can still fire.
     pub fn run<F: FnOnce(SimRuntime)>(&mut self, body: F) -> Outcome {
         let process = {
             let mut st = lock(&self.shared.state);
@@ -233,6 +236,7 @@ impl Sim {
             st.phase = Phase::Running;
             st.threads = vec![SimThread {
                 name: "main".into(),
+                daemon: false,
                 status: Status::Runnable,
                 token: false,
                 turn: Arc::new(Condvar::new()),
@@ -336,14 +340,21 @@ fn switch<'a>(shared: &'a Shared, mut st: Guard<'a>, me: usize) -> Result<Guard<
             let i = st.sched.below(runnable.len() as u64) as usize;
             break runnable[i];
         }
-        if let Some((&(due, _), _)) = st.events.first_key_value() {
+        if st.events.values().any(|e| !st.is_daemon_timer(e))
+            && let Some((&(due, _), _)) = st.events.first_key_value()
+        {
             if !st.advance(due) {
                 wake_all(shared, &st);
                 return Err(Halt);
             }
             continue;
         }
-        if st.threads.iter().all(|t| t.status == Status::Done) {
+        st.events.clear();
+        if st
+            .threads
+            .iter()
+            .all(|t| t.daemon || t.status == Status::Done)
+        {
             st.phase = Phase::Finished;
         } else {
             let blocked: Vec<String> = st
@@ -383,6 +394,10 @@ fn switch<'a>(shared: &'a Shared, mut st: Guard<'a>, me: usize) -> Result<Guard<
 }
 
 impl State {
+    fn is_daemon_timer(&self, event: &Event) -> bool {
+        matches!(event.op, Op::Timer { .. }) && self.threads[event.submitter].daemon
+    }
+
     /// Move the clock to `target`, delivering every event due by then.
     ///
     /// Returns false if the crash time came first and the process crashed.
@@ -632,8 +647,8 @@ impl Entropy for SimRuntime {
     }
 }
 
-impl Threads for SimRuntime {
-    fn spawn<F>(&self, name: &str, body: F) -> ThreadId
+impl SimRuntime {
+    fn start_thread<F>(&self, name: &str, daemon: bool, body: F) -> ThreadId
     where
         F: FnOnce() + Send + 'static,
     {
@@ -643,6 +658,7 @@ impl Threads for SimRuntime {
         let id = st.threads.len();
         st.threads.push(SimThread {
             name: name.to_owned(),
+            daemon,
             status: Status::Runnable,
             token: false,
             turn: Arc::new(Condvar::new()),
@@ -666,6 +682,22 @@ impl Threads for SimRuntime {
         lock(&self.shared.os).push(handle);
         drop(self.reschedule(st));
         ThreadId(id as u64)
+    }
+}
+
+impl Threads for SimRuntime {
+    fn spawn<F>(&self, name: &str, body: F) -> ThreadId
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.start_thread(name, false, body)
+    }
+
+    fn spawn_daemon<F>(&self, name: &str, body: F) -> ThreadId
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.start_thread(name, true, body)
     }
 
     fn current(&self) -> ThreadId {

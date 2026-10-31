@@ -187,3 +187,132 @@ fn crash_stops_every_thread_and_the_next_run_starts_clean() {
     assert_eq!(Outcome::Crashed, outcome);
     run(&mut sim, |rt, io| sleep(rt, io, Duration::from_millis(1)));
 }
+
+const WEEK: Duration = Duration::from_secs(7 * 24 * 3600);
+
+fn sleeping_daemon(rt: &SimRuntime) {
+    let rt2 = rt.clone();
+    rt.spawn_daemon("daemon", move || {
+        loop {
+            sleep(&rt2, &mut rt2.io(), WEEK);
+        }
+    });
+}
+
+#[test]
+#[should_panic(expected = "deadlock")]
+fn a_daemon_on_a_timer_does_not_hide_a_parked_main() {
+    let mut sim = Sim::new(30, Config::default());
+    sim.run(|rt| {
+        sleeping_daemon(&rt);
+        rt.park();
+    });
+}
+
+#[test]
+#[should_panic(expected = "deadlock")]
+fn a_daemon_on_a_timer_does_not_hide_a_stuck_thread() {
+    let mut sim = Sim::new(31, Config::default());
+    sim.run(|rt| {
+        sleeping_daemon(&rt);
+        let rt2 = rt.clone();
+        rt.spawn("stuck", move || rt2.park());
+    });
+}
+
+#[test]
+fn a_run_ends_with_a_daemon_on_a_timer_and_the_clock_stays() {
+    let mut sim = Sim::new(32, Config::default());
+    let outcome = sim.run(|rt| sleeping_daemon(&rt));
+    assert_eq!(Outcome::Finished, outcome);
+    assert!(
+        sim.now().as_nanos() < WEEK.as_nanos() as u64,
+        "{:?}",
+        sim.now()
+    );
+}
+
+#[test]
+fn a_run_ends_with_a_parked_daemon() {
+    let mut sim = Sim::new(33, Config::default());
+    let outcome = sim.run(|rt| {
+        let rt2 = rt.clone();
+        rt.spawn_daemon("daemon", move || rt2.park());
+    });
+    assert_eq!(Outcome::Finished, outcome);
+}
+
+#[test]
+fn a_daemon_timer_fires_while_another_thread_waits_past_it() {
+    let fired = Arc::new(Mutex::new(0));
+    let seen = fired.clone();
+    let mut sim = Sim::new(34, Config::default());
+    let outcome = sim.run(move |rt| {
+        let rt2 = rt.clone();
+        rt.spawn_daemon("daemon", move || {
+            sleep(&rt2, &mut rt2.io(), Duration::from_secs(1));
+            *seen.lock().unwrap() += 1;
+            rt2.park();
+        });
+        sleep(&rt, &mut rt.io(), Duration::from_secs(2));
+    });
+    assert_eq!(Outcome::Finished, outcome);
+    assert_eq!(1, *fired.lock().unwrap());
+}
+
+#[test]
+fn a_run_waits_for_a_sleeping_thread_beside_a_daemon() {
+    let woke = Arc::new(Mutex::new(false));
+    let seen = woke.clone();
+    let mut sim = Sim::new(35, Config::default());
+    let outcome = sim.run(move |rt| {
+        sleeping_daemon(&rt);
+        let rt2 = rt.clone();
+        rt.spawn("sleeper", move || {
+            sleep(&rt2, &mut rt2.io(), Duration::from_secs(3600));
+            *seen.lock().unwrap() = true;
+        });
+    });
+    assert_eq!(Outcome::Finished, outcome);
+    assert!(
+        *woke.lock().unwrap(),
+        "the run ended before the sleeper woke"
+    );
+}
+
+#[test]
+#[should_panic(expected = "boom")]
+fn a_panic_after_a_sleep_in_an_unjoined_thread_fails_the_run() {
+    let mut sim = Sim::new(36, Config::default());
+    sim.run(|rt| {
+        let rt2 = rt.clone();
+        rt.spawn("late", move || {
+            sleep(&rt2, &mut rt2.io(), Duration::from_secs(1));
+            panic!("boom");
+        });
+    });
+}
+
+#[test]
+#[should_panic(expected = "deadlock")]
+fn a_stuck_thread_beside_a_sleeper_is_a_deadlock() {
+    let mut sim = Sim::new(37, Config::default());
+    sim.run(|rt| {
+        let rt2 = rt.clone();
+        rt.spawn("stuck", move || rt2.park());
+        let rt3 = rt.clone();
+        rt.spawn("sleeper", move || {
+            sleep(&rt3, &mut rt3.io(), Duration::from_secs(3600));
+        });
+    });
+}
+
+#[test]
+#[should_panic(expected = "boom")]
+fn a_panic_in_a_daemon_fails_the_run() {
+    let mut sim = Sim::new(38, Config::default());
+    sim.run(|rt| {
+        rt.spawn_daemon("daemon", || panic!("boom"));
+        sleep(&rt, &mut rt.io(), Duration::from_secs(1));
+    });
+}

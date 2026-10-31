@@ -184,10 +184,73 @@ before this constructor existed has no such rows and needs no migration.
 Writes go through `Catalog::replace_kept` in a transaction of the write
 path, one writer per group at a time. `sys::verify_findings` uses groups
 `database`, `relation N` and `scrub`, N the relation's catalog id, the
-scope of `spec/verify-scope/per-scope`, and one row of group `counters`
+scope of `spec/verify-scope/per-scope`, one row of group `counters`
 holding the next run number and finding id, so both rise across a clean
-run and a reopen. Any run removes the rows of a group `relation N` when
-the schema no longer has N. The engine loads kept rows at
+run and a reopen, and one of group `scrub cursor` (section 6). Any run
+removes the rows of a group `relation N` when the schema no longer has N. The engine loads kept rows at
 open and holds them in memory for reads.
+
+## 6. The background scrub
+
+The engine has one background worker: one thread through the runtime's
+spawn, started at open unless `ScrubInterval` is `None`, stopped at close
+before the engine waits for calls, and joined there. It holds shared
+state and no strong or weak hold on the engine, so a dropped `Database`
+releases the file once the worker's current step returns.
+
+A pass reads every data page from the file by `Pager::check_page`, one at
+a time, against one reading of the retained log from the start of the
+pass or its resume.
+
+Postconditions:
+
+- A page's checksum is judged on the file's copy, whether or not the pool
+  holds the page. The pool's copy, when there is one, gives the page's LSN.
+- A page written at or past the log's end at that reading has no stale
+  finding, a repair included, whatever that reading says of its chain. A
+  page that looks wrong is read again under its exclusive latch, as
+  `verify` does (section 4), and no reading unconfirmed there is a finding.
+- A page is judged against what holds it now, by `verify` too. A file
+  copy under a changed copy in the pool is not damage, since the pool's
+  copy overwrites it. A page the allocation bitmap calls free has no
+  finding, looked at again after the latched reading, unless the pager
+  already refuses it; that finding marks nothing.
+- A new finding marks by `quarantine_findings` and replaces only group
+  `scrub`, at once. A finding a row already states writes no row. At the
+  end of a pass that read the whole file, rows it did not find go. A pass
+  resumed from a saved cursor keeps them until the next.
+- On a database quarantined whole, findings stay in memory, no cursor is
+  saved, no further mark is set, and nothing reaches the log.
+
+The cursor is a kept row of `sys::verify_findings`, group `scrub cursor`:
+the next page, or 0 between passes, and the wall instant the last pass
+started. It is saved at most once a minute during a pass, at the end of a
+pass, when the setting pauses the worker and at close, each only when
+changed, and only after the findings of the pages before it. A crash
+leaves it at or before where the worker was, and a short process resumes
+from it. A pass is due `ScrubInterval` after the last started; a file with
+no cursor counts from its first migration, and a wall instant in the
+future counts from now.
+
+The worker sleeps after each step so that reading takes at most
+`VacuumBudget.io` of the time the pass runs, the log's reading included.
+A budget of 0 reads nothing. A budget too small to compute a sleep from
+sleeps the interval, or a minute if that is longer, and looks again. A
+change of either setting wakes the worker.
+A pass has a `Verify` row in `sys::jobs` from its first page to its last,
+in this process, and none between passes.
+
+A panic in the worker's read of a page and its judgement of that page ends
+the worker for this process and leaves a `Structure` finding in group
+`scrub`, beside what the pass found so far, the engine running. On a
+database quarantined whole the rows stay in memory. Any other panic of the
+worker, a write of kept rows or a mark above all, and a fatal I/O error
+anywhere, is not caught: it crashes the process, as on every thread. The
+worker is a daemon
+of the runtime (runtime.md), so a simulated run neither waits for it nor
+counts its timers against a deadlock.
+
+A process killed within a minute of opening saves no cursor, so processes
+that keep crashing that soon restart the pass.
 
 TODO: verifying the log from a remembered position, so a caller that verifies often does not reread the whole retained log, needs the pager to offer it.

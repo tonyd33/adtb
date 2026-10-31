@@ -505,6 +505,7 @@ impl<R: Runtime> Engine<R> {
         let window = {
             let mut settings = self.settings.lock(&self.rt);
             settings.set(schema, &row);
+            self.background.configure(&settings);
             settings.window
         };
         self.db.set_retention(window)?;

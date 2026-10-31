@@ -24,7 +24,8 @@ handle that every thread of the engine shares:
 
 ```text
 trait Clock   { fn now(&self) -> Instant; fn wall(&self) -> SystemTime; }
-trait Threads { fn spawn(&self, name, body) -> ThreadId; fn current(&self) -> ThreadId;
+trait Threads { fn spawn(&self, name, body) -> ThreadId; fn spawn_daemon(&self, name, body) -> ThreadId;
+                fn current(&self) -> ThreadId;
                 fn park(&self); fn unpark(&self, ThreadId); fn yield_now(&self);
                 fn join(&self, ThreadId); }
 trait Entropy { fn next_u64(&self) -> u64; fn fill(&self, &mut [u8]); }
@@ -42,6 +43,9 @@ Postconditions every runtime must meet:
   the `park` is not lost; `park` may also return spuriously.
   `unpark` of a thread that has returned does nothing.
 - `join` returns once the thread has returned from its body.
+- `spawn_daemon` starts a thread as `spawn` does. Real threads need
+  nothing more: a host process ends without them. Only the simulator
+  treats a daemon differently.
 - A panic in any thread crashes the process
   ([README.md §4](README.md#4-errors)).
 
@@ -289,8 +293,17 @@ Postconditions of the simulator:
 - A seed and a configuration determine every schedule decision,
   completion order, fault, clock value and random draw, so the same
   seed replays a run byte for byte, trace and files alike.
-- A run fails when any thread panics, or when every live thread is
-  blocked with no completion or timer pending.
+- A run fails when any thread panics, or when a live thread that is no
+  daemon is blocked with no completion pending and only a daemon's timer
+  left.
+- A run ends when every thread that is no daemon has returned and every
+  daemon is idle: blocked, with only daemons' timers left. Those timers
+  do not fire and do not move the clock.
+- A daemon's timer is nothing a thread that is no daemon may wait on: a
+  non-daemon joining a daemon on a timer, or parked for a daemon to wake
+  it after one, fails the run as a deadlock.
+- A daemon that stays runnable hides a deadlock and keeps the run going.
+- A thread a daemon spawns is no daemon.
 
 After each run, and after each simulated crash and recovery, the
 simulator checks that every acknowledged commit is present, that no

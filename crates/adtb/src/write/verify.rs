@@ -84,6 +84,18 @@ impl Found {
         }
     }
 
+    fn of_storage(f: storage::Finding) -> Found {
+        match f {
+            storage::Finding::Page { pid, damage } => Found::of_damage(pid, damage),
+            storage::Finding::Orphan(pid) => Found::Structure {
+                at: format!("page {}: no record of the retained log wrote it", pid.0),
+            },
+            storage::Finding::Log(l) => Found::Structure {
+                at: format!("log at {}: {:?}", l.lsn.0, l.problem),
+            },
+        }
+    }
+
     /// Returns the finding of `e`.
     pub fn of_page(e: PageError) -> Found {
         Found::of_damage(e.pid, e.damage)
@@ -186,29 +198,31 @@ impl<R: Runtime> Database<R> {
             VerifyScope::Database | VerifyScope::Scrub => None,
         };
         for f in v.findings {
-            match f {
-                storage::Finding::Page { pid, damage } => {
-                    if within.as_ref().is_none_or(|w| w.contains(&pid)) {
-                        out.push(Found::of_damage(pid, damage));
-                    }
-                }
-                storage::Finding::Orphan(pid) => {
-                    if within.as_ref().is_none_or(|w| w.contains(&pid)) {
-                        out.push(Found::Structure {
-                            at: format!("page {}: no record of the retained log wrote it", pid.0),
-                        });
-                    }
-                }
-                storage::Finding::Log(l) => {
-                    if within.is_none() {
-                        out.push(Found::Structure {
-                            at: format!("log at {}: {:?}", l.lsn.0, l.problem),
-                        });
-                    }
-                }
+            let page = match f {
+                storage::Finding::Page { pid, .. } | storage::Finding::Orphan(pid) => Some(pid),
+                storage::Finding::Log(_) => None,
+            };
+            let wanted = match (&within, page) {
+                (None, _) => true,
+                (Some(w), Some(pid)) => w.contains(&pid),
+                (Some(_), None) => false,
+            };
+            if wanted {
+                out.push(Found::of_storage(f));
             }
         }
         Ok(out)
+    }
+
+    /// Returns what the retained log says of every page, for a scrub to check pages against.
+    pub fn scrub_log(&self) -> storage::RetainedLog {
+        self.pager.read_log(true)
+    }
+
+    /// Returns what the check of one page against `log` finds, while writers run.
+    pub fn scrub_page(&self, pid: Pid, log: &storage::RetainedLog) -> Vec<Found> {
+        let found = self.pager.check_page(pid, log);
+        found.into_iter().map(Found::of_storage).collect()
     }
 
     fn pages_of(&self, rel: RelId, out: &mut Vec<Found>) -> Result<BTreeSet<Pid>, Error> {

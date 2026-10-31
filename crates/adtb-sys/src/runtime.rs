@@ -56,6 +56,17 @@ pub trait Threads {
     where
         F: FnOnce() + Send + 'static;
 
+    /// Start a thread that a process may end without.
+    ///
+    /// A simulator ends a run once only daemons are left and they are idle, and its timers neither
+    /// keep a run alive nor stand in the way of reporting a deadlock.
+    fn spawn_daemon<F>(&self, name: &str, body: F) -> ThreadId
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.spawn(name, body)
+    }
+
     /// Returns the calling thread's id.
     fn current(&self) -> ThreadId;
 

@@ -8,6 +8,7 @@ mod host;
 #[cfg(all(target_os = "linux", debug_assertions, not(test)))]
 mod instances;
 mod load;
+mod maintenance;
 #[cfg(test)]
 mod open_tests;
 mod pinned;
@@ -275,10 +276,11 @@ struct Engine<R: Runtime> {
     settings: Lock<Settings>,
     role_mentions: BTreeSet<String>,
     pager: Pager<R>,
-    db: write::Database<R>,
-    catalog: Catalog,
-    /// The findings of `verify`. Held across a whole run, so that one runs at a time.
-    findings: Lock<verify::Findings>,
+    db: Arc<write::Database<R>>,
+    catalog: Arc<Catalog>,
+    verifier: Arc<verify::Verifier<R>>,
+    /// The engine's background worker.
+    background: Arc<maintenance::Background<R>>,
     /// Whether the engine is open. A call holds it shared while it runs; close holds it
     /// exclusively.
     open: RwLock<bool>,
@@ -365,6 +367,7 @@ impl<R: Runtime> Engine<R> {
             kept: Vec::new(),
         });
         self.db.stop_rebuilds();
+        self.background.stop();
         let was_open = std::mem::replace(&mut *self.open.write(&self.rt), false);
         let sched = self.sched.lock(&self.rt).clone();
         if let Some(s) = sched {
@@ -396,6 +399,7 @@ impl<R: Runtime> Database<R> {
     fn of(engine: Engine<R>) -> Database<R> {
         let engine = Arc::new(engine);
         *engine.reindexing.me.lock(&engine.rt) = Arc::downgrade(&engine);
+        engine.background.start();
         Database { engine }
     }
 
@@ -471,6 +475,33 @@ impl<R: Runtime> Database<R> {
     #[doc(hidden)]
     pub fn reindex_threads(&self) -> usize {
         self.engine.reindexing.threads.lock(&self.engine.rt).len()
+    }
+
+    /// Panic the background worker's next read of a page with `text`.
+    #[doc(hidden)]
+    pub fn fail_background(&self, text: &'static str) {
+        self.engine.background.fail(text);
+    }
+
+    /// Panic the next write of kept findings with `text`, after its first replacement.
+    #[doc(hidden)]
+    pub fn fail_kept_write(&self, text: &'static str) {
+        *self.engine.verifier.fail_kept.lock(&self.engine.rt) = Some(text);
+    }
+
+    /// Returns the next page of the background scrub's pass as last saved in the file: the page,
+    /// `None` between passes, and `None` of the outer option when nothing has been saved.
+    #[doc(hidden)]
+    pub fn saved_scrub_page(&self) -> Option<Option<u64>> {
+        let cursor = self.engine.verifier.cursor()?;
+        Some(cursor.next.map(|p| p.0))
+    }
+
+    /// Returns the rows of `sys::verify_findings` the engine holds, which a read of a database
+    /// quarantined whole cannot show.
+    #[doc(hidden)]
+    pub fn held_findings(&self) -> usize {
+        self.engine.verifier.held_findings()
     }
 
     /// Refuse page `pid` as if it failed as `damage` says. Plants a fault for a test of quarantine.
@@ -848,6 +879,18 @@ impl<R: Runtime> Engine<R> {
         options: &OpenOptions,
     ) -> Engine<R> {
         let role_mentions = server::mentioned(catalog.source());
+        let db = Arc::new(db);
+        let catalog = Arc::new(catalog);
+        let verifier = Arc::new(verify::Verifier {
+            rt: rt.clone(),
+            pager: pager.clone(),
+            db: db.clone(),
+            catalog: catalog.clone(),
+            findings: Lock::new(parts.findings),
+            fail_kept: Lock::new(None),
+        });
+        let background =
+            maintenance::Background::new(verifier.clone(), parts.schema.clone(), &parts.settings);
         Engine {
             rt,
             schema: parts.schema,
@@ -863,7 +906,8 @@ impl<R: Runtime> Engine<R> {
             pager,
             db,
             catalog,
-            findings: Lock::new(parts.findings),
+            verifier,
+            background,
             open: RwLock::new(true),
             audit_seeded: AtomicBool::new(false),
             closing: Lock::new(()),

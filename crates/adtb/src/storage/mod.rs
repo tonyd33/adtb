@@ -19,6 +19,7 @@ pub use alloc::Reservation;
 pub use block::{LogFinding, LogProblem};
 pub use crc::{Crc32c, crc32c};
 pub(crate) use driver::Driver;
+pub(crate) use driver::FATAL_IO;
 pub use page::{
     FIRST_EDITABLE, HEADER_LEN, MAX_PAGE_SIZE, MIN_PAGE_SIZE, PageKind, flags, flip_owner, format,
     header_edit, kind, lsn, owner,
@@ -31,7 +32,7 @@ pub use quarantine::{Holders, Quarantine, Stopped};
 pub use record::Edit;
 pub(crate) use record::{Malformed, Reader};
 pub use recovery::Recovery;
-pub use verify::{Finding, Verification};
+pub use verify::{Finding, RetainedLog, Verification};
 
 /// A page id: the page's index in the data file.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -2,19 +2,23 @@
 //! the row of `sys::jobs` while it runs.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, Ty};
+use adtb_sys::lock::Lock;
 
-use crate::catalog::{Denial, KeptField, KeptRow};
+use crate::catalog::{self, Catalog, Denial, KeptField, KeptRow};
 use crate::exec::{F64, Val};
+use crate::mvcc::Xid;
 use crate::runtime::Runtime;
+use crate::storage::{Pager, Pid};
 use crate::verify::{self, Depth};
 use crate::write::{self, Found, VerifyScope};
 
 use super::command::engine_relation;
 use super::text::{DynRows, rows};
-use super::{Engine, OpenError, corrupt};
+use super::{Engine, OpenError, corrupt, micros};
 
 /// The constructor of `Verify` in `JobKind`.
 const VERIFY_JOB: u32 = 3;
@@ -25,6 +29,21 @@ const REINDEX_JOB: u32 = 0;
 /// The group of the kept row holding the next run number and finding id.
 const COUNTERS: &str = "counters";
 
+/// The group of the kept rows of the scrub's findings.
+const SCRUB: &str = "scrub";
+
+/// The group of the kept row holding where the background scrub is.
+const CURSOR: &str = "scrub cursor";
+
+/// Where the background scrub is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Cursor {
+    /// The next page of the pass running, or `None` between passes.
+    pub(super) next: Option<Pid>,
+    /// The wall instant the last pass started, in microseconds.
+    pub(super) started: i64,
+}
+
 /// What the engine holds of `verify` between and during runs.
 #[derive(Debug)]
 pub(super) struct Findings {
@@ -34,6 +53,7 @@ pub(super) struct Findings {
     next_id: i64,
     /// The row of `sys::jobs` of each running run, by run number.
     jobs: BTreeMap<i64, Val>,
+    cursor: Option<Cursor>,
 }
 
 fn int(f: &KeptField) -> Option<i64> {
@@ -83,7 +103,7 @@ fn fields(f: Found) -> (u32, Vec<KeptField>) {
 fn group(scope: VerifyScope, schema: &Schema) -> String {
     match scope {
         VerifyScope::Database => "database".into(),
-        VerifyScope::Scrub => "scrub".into(),
+        VerifyScope::Scrub => SCRUB.into(),
         VerifyScope::Relation(r) => format!("relation {}", schema.ids.relations[&r]),
     }
 }
@@ -104,6 +124,7 @@ impl Findings {
             next_run: 1,
             next_id: 1,
             jobs: BTreeMap::new(),
+            cursor: None,
         };
         for row in kept.into_iter().filter(|k| k.relation == id) {
             let bad = || corrupt(format!("a finding holds {row:?}"));
@@ -113,6 +134,17 @@ impl Findings {
                 };
                 out.next_run = out.next_run.max(int(run).ok_or_else(bad)?);
                 out.next_id = out.next_id.max(int(next).ok_or_else(bad)?);
+                continue;
+            }
+            if row.group == CURSOR {
+                let [next, started] = row.fields.as_slice() else {
+                    return Err(bad());
+                };
+                let next = u64::try_from(int(next).ok_or_else(bad)?).map_err(|_| bad())?;
+                out.cursor = Some(Cursor {
+                    next: (next != 0).then_some(Pid(next)),
+                    started: int(started).ok_or_else(bad)?,
+                });
                 continue;
             }
             let key = row.fields.first().and_then(int).ok_or_else(bad)?;
@@ -129,9 +161,38 @@ impl Findings {
     }
 }
 
+/// What the verify runs and the background scrub share of the engine, so that holding it keeps no
+/// engine open.
+pub(super) struct Verifier<R: Runtime> {
+    pub(super) rt: R,
+    pub(super) pager: Pager<R>,
+    pub(super) db: Arc<write::Database<R>>,
+    pub(super) catalog: Arc<Catalog>,
+    /// The findings of `verify` and the scrub.
+    pub(super) findings: Lock<Findings>,
+    /// The text to panic with in the next kept write, after its first replacement.
+    pub(super) fail_kept: Lock<Option<&'static str>>,
+}
+
+/// The rows a replacement of a group's findings leaves it with.
+struct Replacement {
+    fresh: BTreeSet<Found>,
+    /// Rows of the group that stay as they are.
+    retained: Vec<KeptRow>,
+}
+
+impl From<BTreeSet<Found>> for Replacement {
+    fn from(fresh: BTreeSet<Found>) -> Replacement {
+        Replacement {
+            fresh,
+            retained: Vec::new(),
+        }
+    }
+}
+
 /// The row of `sys::jobs` of one run. Removes it when dropped, a panic included.
 pub(super) struct Job<'e, R: Runtime> {
-    engine: &'e Engine<R>,
+    verifier: &'e Verifier<R>,
     table: RelId,
     run: i64,
     kind: u32,
@@ -159,7 +220,7 @@ impl<R: Runtime> Job<'_, R> {
     }
 
     fn show(&self, held: &Findings) {
-        self.engine
+        self.verifier
             .db
             .set_volatile(self.table, held.jobs.values().cloned().collect());
     }
@@ -176,7 +237,7 @@ impl<R: Runtime> Job<'_, R> {
                 Val::Instant(self.started),
             ],
         );
-        let mut held = self.engine.findings.lock(&self.engine.rt);
+        let mut held = self.verifier.findings.lock(&self.verifier.rt);
         held.jobs.insert(self.run, row);
         self.show(&held);
     }
@@ -184,122 +245,115 @@ impl<R: Runtime> Job<'_, R> {
 
 impl<R: Runtime> Drop for Job<'_, R> {
     fn drop(&mut self) {
-        let mut held = self.engine.findings.lock(&self.engine.rt);
+        let mut held = self.verifier.findings.lock(&self.verifier.rt);
         held.jobs.remove(&self.run);
         self.show(&held);
     }
 }
 
-impl<R: Runtime> Engine<R> {
-    /// Returns the row of `sys::jobs` of a new rebuild job, which its [`Job`] will remove.
-    pub(super) fn reindex_row(&self, table: RelId, target: String) -> Job<'_, R> {
-        let run = {
-            let mut held = self.findings.lock(&self.rt);
-            held.next_run += 1;
-            held.next_run - 1
-        };
-        let job = Job {
-            engine: self,
-            table,
-            run,
-            kind: REINDEX_JOB,
-            target,
-            started: self.clock(),
-        };
-        job.phase("waiting", 0.0);
-        job
+impl<R: Runtime> Verifier<R> {
+    fn clock(&self) -> i64 {
+        micros(self.pager.wall())
     }
 
-    /// Returns what a job's thread holds of its row.
-    pub(super) fn reindex_row_of(&self, table: RelId, started: Started) -> Job<'_, R> {
-        Job {
-            engine: self,
-            table,
-            run: started.run,
-            kind: REINDEX_JOB,
-            target: started.target,
-            started: started.at,
-        }
+    fn next_run(&self) -> i64 {
+        let mut held = self.findings.lock(&self.rt);
+        held.next_run += 1;
+        held.next_run - 1
     }
 
-    /// Make `found` the findings of the last rebuild of the index with catalog id `index`.
-    pub(super) fn keep_reindex_findings(
-        &self,
-        schema: &Schema,
-        index: u64,
-        run: i64,
-        found: BTreeSet<Found>,
-    ) -> Result<(), write::Error> {
-        let table = engine_relation(schema, "sys", "verify_findings")?;
-        let group = format!("reindex {index}");
-        self.replace_findings(schema, table, &group, (run, self.clock()), found, true);
-        Ok(())
+    /// Returns whether a run may write to the file: a database quarantined whole keeps nothing.
+    pub(super) fn keeps(&self) -> bool {
+        self.db.admit_database().is_ok() && self.db.txns().quarantined().is_none()
     }
 
-    /// Run `verify` over `rel`, or the whole database. Returns the rows it wrote.
-    ///
-    /// Precondition: the calling thread holds no transaction with an id.
-    pub(super) fn verified(
-        &self,
-        schema: &Schema,
-        rel: Option<RelId>,
-    ) -> Result<DynRows, write::Error> {
-        let scope = rel.map_or(VerifyScope::Database, VerifyScope::Relation);
-        self.verify_run(schema, scope, false)
-    }
-
-    /// Run `verify` over the whole database with the checks that hold only with no writer as well.
-    ///
-    /// Precondition: no other call runs on this database while it runs.
-    pub(super) fn verified_holding(&self, schema: &Schema) -> Result<DynRows, write::Error> {
-        self.verify_run(schema, VerifyScope::Database, true)
-    }
-
-    fn verify_run(
-        &self,
-        schema: &Schema,
-        scope: VerifyScope,
-        holding: bool,
-    ) -> Result<DynRows, write::Error> {
-        let table = engine_relation(schema, "sys", "verify_findings")?;
-        let run = {
-            let mut held = self.findings.lock(&self.rt);
-            held.next_run += 1;
-            held.next_run - 1
-        };
+    /// Returns the row of `sys::jobs` of a new pass of the scrub, and its run number and start.
+    pub(super) fn scrub_row(&self, table: RelId) -> (Job<'_, R>, i64, i64) {
+        let run = self.next_run();
         let started = self.clock();
         let job = Job {
-            engine: self,
-            table: engine_relation(schema, "sys", "jobs")?,
+            verifier: self,
+            table,
             run,
             kind: VERIFY_JOB,
-            target: match scope {
-                VerifyScope::Relation(r) => schema.relation(r).name.clone(),
-                VerifyScope::Database | VerifyScope::Scrub => String::new(),
-            },
+            target: String::new(),
             started,
         };
-        let mut found = self.verify_checks(scope, holding, &job)?;
-        found.extend(self.db.quarantine_findings(&found));
-        let marked = self.db.admit_database().is_err() || self.db.txns().quarantined().is_some();
-        if marked {
-            found.insert(Found::Structure {
-                at: "the database: quarantined whole, so the findings of this run are not kept"
-                    .to_owned(),
-            });
-        }
-        let keep = !marked;
-        let group = group(scope, schema);
-        let vals = self.replace_findings(schema, table, &group, (run, started), found, keep);
-        let elem = Ty::Data {
-            def: schema.relation(table).elem_def,
-            args: Vec::new(),
-            ctors: None,
-        };
-        Ok(rows(schema, elem, vals))
+        (job, run, started)
     }
 
-    /// Make `found` the findings of `scope`, of run `run` at instant `at`, and drop those of
+    pub(super) fn held_findings(&self) -> usize {
+        self.findings.lock(&self.rt).rows.len()
+    }
+
+    /// Returns where the background scrub is, as last saved.
+    pub(super) fn cursor(&self) -> Option<Cursor> {
+        self.findings.lock(&self.rt).cursor
+    }
+
+    /// Save `cursor` in the file. Returns whether it is there.
+    pub(super) fn save_cursor(&self, schema: &Schema, table: RelId, cursor: Cursor) -> bool {
+        let next = cursor.next.map_or(0, |p| i64::try_from(p.0).unwrap_or(0));
+        let row = KeptRow {
+            relation: schema.ids.relations[&table],
+            group: CURSOR.into(),
+            ctor: 0,
+            fields: vec![KeptField::Int(next), KeptField::Int(cursor.started)],
+        };
+        if !self.keeps() {
+            return false;
+        }
+        let kept = self.in_kept_transaction(|x| {
+            let txns = self.db.txns();
+            let group = (row.relation, CURSOR);
+            self.catalog
+                .replace_kept(&self.pager, txns, x, group, std::slice::from_ref(&row))
+        });
+        if kept.is_ok() {
+            self.findings.lock(&self.rt).cursor = Some(cursor);
+        }
+        kept.is_ok()
+    }
+
+    /// Make the findings of the scrub the rows `old_stays` keeps and those of `found` no row
+    /// states yet, and mark what the latter implicate. Writes nothing when that changes no row,
+    /// and only in memory on a database quarantined whole.
+    pub(super) fn keep_scrub(
+        &self,
+        schema: &Schema,
+        table: RelId,
+        (run, at): (i64, i64),
+        found: &BTreeSet<Found>,
+        old_stays: bool,
+    ) {
+        let old: Vec<KeptRow> = {
+            let held = self.findings.lock(&self.rt);
+            let of_scrub = held.rows.values().filter(|r| r.group == SCRUB);
+            of_scrub.cloned().collect()
+        };
+        let states = |f: &Found, r: &KeptRow| {
+            let (ctor, rest) = fields(f.clone());
+            r.ctor == ctor && r.fields.get(3..) == Some(rest.as_slice())
+        };
+        let fresh: BTreeSet<Found> = found
+            .iter()
+            .filter(|f| !old.iter().any(|r| states(f, r)))
+            .cloned()
+            .collect();
+        let retained: Vec<KeptRow> = old
+            .iter()
+            .filter(|r| old_stays || found.iter().any(|f| states(f, r)))
+            .cloned()
+            .collect();
+        if fresh.is_empty() && retained.len() == old.len() {
+            return;
+        }
+        let keep = self.keeps();
+        let rows = Replacement { fresh, retained };
+        self.replace_findings(schema, table, SCRUB, (run, at), rows, keep);
+    }
+
+    /// Make `found` the findings of `group`, of run `run` at instant `at`, and drop those of
     /// relations `schema` no longer has, in the file too when `keep`. Returns the rows, with one
     /// saying so when the file could not keep them.
     fn replace_findings(
@@ -308,7 +362,7 @@ impl<R: Runtime> Engine<R> {
         table: RelId,
         group: &str,
         (run, at): (i64, i64),
-        found: BTreeSet<Found>,
+        found: Replacement,
         keep: bool,
     ) -> Vec<Val> {
         let id = schema.ids.relations[&table];
@@ -330,7 +384,11 @@ impl<R: Runtime> Engine<R> {
                 fields,
             }
         };
-        let mut written: Vec<KeptRow> = found.into_iter().map(|f| row(&mut held, f)).collect();
+        let mut written = found.retained;
+        for f in found.fresh {
+            let r = row(&mut held, f);
+            written.push(r);
+        }
         let gone: BTreeSet<String> = held
             .rows
             .values()
@@ -371,22 +429,18 @@ impl<R: Runtime> Engine<R> {
         gone: &BTreeSet<String>,
         counters: &KeptRow,
     ) -> Result<(), String> {
-        let shown = |e: &dyn std::fmt::Debug| format!("{e:?}");
-        let tx = self.db.begin().map_err(|e| shown(&e))?;
-        let x = tx
-            .xid()
-            .ok_or_else(|| "a read-write transaction has an id".to_owned())?;
-        let txns = self.db.txns();
-        let mut replaced = self
-            .catalog
-            .replace_kept(&self.pager, txns, x, (id, group), written);
-        for g in gone {
-            replaced = replaced.and_then(|()| {
+        self.in_kept_transaction(|x| {
+            let txns = self.db.txns();
+            self.catalog
+                .replace_kept(&self.pager, txns, x, (id, group), written)?;
+            let fail = self.fail_kept.lock(&self.rt).take();
+            if let Some(text) = fail {
+                panic!("{text}");
+            }
+            for g in gone {
                 self.catalog
-                    .replace_kept(&self.pager, txns, x, (id, g), &[])
-            });
-        }
-        replaced = replaced.and_then(|()| {
+                    .replace_kept(&self.pager, txns, x, (id, g), &[])?;
+            }
             self.catalog.replace_kept(
                 &self.pager,
                 txns,
@@ -394,12 +448,132 @@ impl<R: Runtime> Engine<R> {
                 (id, COUNTERS),
                 std::slice::from_ref(counters),
             )
-        });
-        if let Err(e) = replaced {
+        })
+    }
+
+    /// Run `write`, a change of kept rows, as one transaction of the write path.
+    fn in_kept_transaction(
+        &self,
+        write: impl FnOnce(Xid) -> Result<(), catalog::Error>,
+    ) -> Result<(), String> {
+        let shown = |e: &dyn std::fmt::Debug| format!("{e:?}");
+        let tx = self.db.begin().map_err(|e| shown(&e))?;
+        let x = tx
+            .xid()
+            .ok_or_else(|| "a read-write transaction has an id".to_owned())?;
+        if let Err(e) = write(x) {
             self.db.abort(tx).map_err(|e| shown(&e))?;
             return Err(shown(&e));
         }
         self.db.commit(tx).map(drop).map_err(|e| shown(&e))
+    }
+}
+
+impl<R: Runtime> Engine<R> {
+    /// Returns the row of `sys::jobs` of a new rebuild job, which its [`Job`] will remove.
+    pub(super) fn reindex_row(&self, table: RelId, target: String) -> Job<'_, R> {
+        let run = self.verifier.next_run();
+        let job = Job {
+            verifier: &self.verifier,
+            table,
+            run,
+            kind: REINDEX_JOB,
+            target,
+            started: self.clock(),
+        };
+        job.phase("waiting", 0.0);
+        job
+    }
+
+    /// Returns what a job's thread holds of its row.
+    pub(super) fn reindex_row_of(&self, table: RelId, started: Started) -> Job<'_, R> {
+        Job {
+            verifier: &self.verifier,
+            table,
+            run: started.run,
+            kind: REINDEX_JOB,
+            target: started.target,
+            started: started.at,
+        }
+    }
+
+    /// Make `found` the findings of the last rebuild of the index with catalog id `index`.
+    pub(super) fn keep_reindex_findings(
+        &self,
+        schema: &Schema,
+        index: u64,
+        run: i64,
+        found: BTreeSet<Found>,
+    ) -> Result<(), write::Error> {
+        let table = engine_relation(schema, "sys", "verify_findings")?;
+        let group = format!("reindex {index}");
+        let at = (run, self.clock());
+        self.verifier
+            .replace_findings(schema, table, &group, at, found.into(), true);
+        Ok(())
+    }
+
+    /// Run `verify` over `rel`, or the whole database. Returns the rows it wrote.
+    ///
+    /// Precondition: the calling thread holds no transaction with an id.
+    pub(super) fn verified(
+        &self,
+        schema: &Schema,
+        rel: Option<RelId>,
+    ) -> Result<DynRows, write::Error> {
+        let scope = rel.map_or(VerifyScope::Database, VerifyScope::Relation);
+        self.verify_run(schema, scope, false)
+    }
+
+    /// Run `verify` over the whole database with the checks that hold only with no writer as well.
+    ///
+    /// Precondition: no other call runs on this database while it runs.
+    pub(super) fn verified_holding(&self, schema: &Schema) -> Result<DynRows, write::Error> {
+        self.verify_run(schema, VerifyScope::Database, true)
+    }
+
+    fn verify_run(
+        &self,
+        schema: &Schema,
+        scope: VerifyScope,
+        holding: bool,
+    ) -> Result<DynRows, write::Error> {
+        let table = engine_relation(schema, "sys", "verify_findings")?;
+        let run = self.verifier.next_run();
+        let started = self.clock();
+        let job = Job {
+            verifier: &self.verifier,
+            table: engine_relation(schema, "sys", "jobs")?,
+            run,
+            kind: VERIFY_JOB,
+            target: match scope {
+                VerifyScope::Relation(r) => schema.relation(r).name.clone(),
+                VerifyScope::Database | VerifyScope::Scrub => String::new(),
+            },
+            started,
+        };
+        let mut found = self.verify_checks(scope, holding, &job)?;
+        if self.verifier.keeps() {
+            found.extend(self.db.quarantine_findings(&found));
+        }
+        let keep = self.verifier.keeps();
+        if !keep {
+            found.insert(Found::Structure {
+                at: "the database: quarantined whole, so the findings of this run are not kept"
+                    .to_owned(),
+            });
+        }
+        let group = group(scope, schema);
+        let stamp = (run, started);
+        let vals = self
+            .verifier
+            .replace_findings(schema, table, &group, stamp, found.into(), keep);
+        let elem = Ty::Data {
+            def: schema.relation(table).elem_def,
+            args: Vec::new(),
+            ctors: None,
+        };
+        Ok(rows(schema, elem, vals))
     }
 
     fn verify_checks(
