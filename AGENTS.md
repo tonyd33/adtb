@@ -80,7 +80,7 @@ nix run github:tonyd33/tix -- -C work/issues check
 Scripts in `work/tools/`, run as `work/tools/NAME` from any workspace
 root (devenv also puts each on PATH as `NAME`):
 
-- `suite [ARGS]`: the full nextest run, under the machine lock that
+- `suite [ARGS]`: the full nextest run under a memory cap, `ADTB_TEST_MEM_CAP` (default 20G), and the machine lock that
   `check` also holds; output in `target/suite.txt`, prints failures and the summary.
 - `conf PATH...`: run conformance files or directories on the
   reference and the engine; prints each difference as `FILE:LINE`.

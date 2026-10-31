@@ -60,3 +60,12 @@ over_slot_cap() {
   done
   ((${#parts[@]})) && (($(du -cs -BG "${parts[@]}" | tail -1 | cut -f1 | tr -d G) > ${ADTB_SLOT_CAP_GB:-20}))
 }
+
+# Run a command under a memory cap where user scopes work, so a runaway test dies alone.
+capped() {
+  if systemd-run --user --scope -q true 2>/dev/null; then
+    systemd-run --user --scope -q -p MemoryMax="${ADTB_TEST_MEM_CAP:-20G}" -p MemorySwapMax=0 "$@"
+  else
+    "$@"
+  fi
+}

@@ -32,7 +32,7 @@ echo "built in $((SECONDS - started))s"
 machine_lock "$root"
 
 started=$SECONDS
-cargo nextest run --workspace --no-fail-fast "$@" >>"$out" 2>&1
+capped cargo nextest run --workspace --no-fail-fast "$@" >>"$out" 2>&1
 status=$?
 machine_unlock
 
