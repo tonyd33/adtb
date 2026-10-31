@@ -399,6 +399,7 @@ accept:
   ops/check/logical: {title: Every admitted constraint is re-run as its denial query over the whole database, reason: 'pages, index-to-heap routing, every constraint as a denial query, and a background scrub'}
   ops/check/scrub: {title: A background pass reads every page on a schedule so latent errors surface before they are needed, reason: 'pages, index-to-heap routing, every constraint as a denial query, and a background scrub'}
   ops/check/structural: {title: 'Every page checksum and B-link invariant, as amcheck', reason: 'pages, index-to-heap routing, every constraint as a denial query, and a background scrub'}
+  ops/command-retry/surface: {title: A text in which a command ran is not rerun; the failure reaches the client, reason: a command takes effect once; the rerun premise fails only for these texts}
   ops/compact/offline-copy: {title: 'Write every live version into a new file and swap, with the database closed', reason: copy into a new file closed or while serving}
   ops/compact/online-copy: {title: 'Copy into a new file while serving, replay the log written meanwhile, then switch', reason: copy into a new file closed or while serving}
   ops/config/derived: {title: 'Resource sizes derived from the host by default, overridable; no tuning knobs', reason: behaviour is fixed; resource sizes are derived from the host and overridable}

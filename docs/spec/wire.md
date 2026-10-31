@@ -764,7 +764,9 @@ transaction declares or, by default, the file setting `RetryLimit`
 ([catalog.md §10.2](catalog.md#102-file-settings),
 [transactions.md](transactions.md#62-retryable-units)). End reports the number of
 attempts. Only when every attempt fails does the client receive Error
-`Serialization`.
+`Serialization`. A CallText in which a command has run
+([catalog.md](catalog.md#9-operational-commands)) has an effect outside
+the database and is not rerun: the failure reaches the client at once.
 
 ### 6.5 Idempotent writes
 
