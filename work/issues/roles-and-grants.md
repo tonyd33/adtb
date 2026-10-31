@@ -516,3 +516,7 @@ Slice 3 landed: system relation grants and `read_files` count for a bundle owner
 ## 2026-10-31: slice 4 reviewed
 
 Rulings: security/adhoc-names/charged, adhoc-function/call-and-reads, write-existence/stated, refusal-field/catalog-readers, system-read/monitor-or-read, export-occupied/refuse. Redaction stays per constraint for now and fails closed; 6.1 promises per row. Second round in the same workspace. A short text doubling through `let` costs exponential time and memory, also for the owner: bound it.
+
+## 2026-10-31: from slice 4 round 2
+
+Ruled: security/capability-names/any-relation. Engine modules stay nameable, since the spec names them; a parameter `Key r` is allowed when a nameable type references `r`; registration accepts `monitor` for `sys::` reads. Left for later: a schema's constraint, default or computed roots that expand are not bounded.

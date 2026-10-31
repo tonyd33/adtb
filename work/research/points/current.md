@@ -573,6 +573,7 @@ accept:
   security/backup-crypt/as-stored: {title: Backups copy encrypted pages and log as stored; restore needs the key versions they use, reason: backups copy encrypted pages; restore needs their key versions}
   security/bind-needs-grant/some-call: {title: 'Refuse with Denied when the role can call nothing in the bundle, with no renewal', reason: 'binding renews a lease, so no-grant binding lets any role hold off expiry'}
   security/call-check-when/submit-and-start: {title: At submit and on leaving the queue; a started call finishes, reason: matches ad hoc text; a check per attempt narrows no real window and adds conflicts or races}
+  security/capability-names/any-relation: {title: 'A capability command names any relation, and an absent one answers as absent', reason: an operator must not need data grants}
   security/catalog/open: {title: Every role reads the whole catalog, reason: applications read the catalog only through registered queries; the ad hoc role is granted catalog constructor sets like any others}
   security/drop-grantor/refuse: {title: Refuse naming the rows while the role is grantor of any deployment row, reason: a drop must not bypass who may revoke a row nor the orphan refusal; one rule covers both shapes}
   security/encrypt/io-cost/staging: {title: Encrypt into a per-I/O staging buffer on write; decrypt in place in the frame on read, reason: 'encrypt into a staging buffer on write, so optimistic readers never see ciphertext'}

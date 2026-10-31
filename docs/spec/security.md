@@ -575,6 +575,8 @@ schema catalog relations names only relations it holds a grant on, and the
 types and constructors those relations reach; any other name answers the same
 `Denied` whether it exists or not. Such a role can still tell the fields of a
 type it may name.
+A command a capability allows, such as `vacuum items` under `maintain`, names
+any relation.
 
 ### 4.6 The schema owner
 
