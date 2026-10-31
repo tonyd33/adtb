@@ -195,6 +195,6 @@ another track, and running it can change that track's workspace.
 
 Never use `pkill -f` or a broad process pattern. Kill only a PID you started.
 
-## Probes that may take much memory
+## Memory
 
-A probe of something that can grow without bound (a doubling text, a deep stack, a huge file) runs under a memory cap: `systemd-run --user --scope -p MemoryMax=4G -p MemorySwapMax=0 CMD`. Do not use `ulimit -v`: page reservation fails under it, so the result says nothing. An uncapped probe has been killed by the kernel with the whole machine out of memory, while a lead session and other builds were running.
+Cargo runs every test and example through `work/tools/test-runner`, which kills a process past 6 GiB resident. Run tests only through cargo. Never run a binary from `target/` directly, and for anything else that can grow without bound (a doubling text, a huge file) use `work/tools/test-runner CMD`. `ulimit -v` and `ulimit -d` do not work: page reservation fails under them. A larger stack in a probe does not make a runaway finish.

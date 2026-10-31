@@ -47,6 +47,7 @@ in
     source "$DEVENV_ROOT/work/tools/common.bash"
     machine_lock "$DEVENV_ROOT"
     export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$DEVENV_ROOT/target}"
+    "$DEVENV_ROOT/work/tools/test-runner-test"
     cargo clippy --workspace --all-targets -- -D warnings
     cargo fmt --all --check
     suite --no-tests=pass

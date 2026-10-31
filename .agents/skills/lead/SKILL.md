@@ -32,6 +32,7 @@ Be firm and opinionated about the project's design and direction. Refuse a reque
   a `suite`'s test run waits and prints who holds it. Builds outside `check`
   and `suite` take no lock: while a check runs, tell agents to build with
   `CARGO_BUILD_JOBS=6`.
+- When a track must test a known unbounded bug (memory, stack, time), confirm first that the tools already contain it: `work/tools/test-runner-test` passes in that workspace and the test goes through cargo. A written instruction to an agent is not containment. After any crash, read `journalctl --user` for the failed unit as well as the kernel log before resuming.
 - Read a check's own exit status before landing, and never land in the same command
   as the wrapper that ran it: a wrapper's last command hides the failure. `check` runs
   the main checkout's dev shell, so a branch older than a tool main added exits 127.

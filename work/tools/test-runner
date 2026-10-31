@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# test-runner CMD...   run CMD and kill it when its resident memory passes ADTB_TEST_MEM_EACH_KB
+#                      (default 6 GiB). Cargo runs every test and example through this. Reads /proc
+#                      only, and changes nothing outside the process it starts.
+cap=${ADTB_TEST_MEM_EACH_KB:-6291456}
+
+"$@" <&0 &
+pid=$!
+trap 'kill -TERM "$pid" 2>/dev/null' TERM INT HUP
+
+{
+  while [[ -r /proc/$pid/status ]]; do
+    while read -r key value _; do
+      if [[ $key == VmRSS: ]] && ((value > cap)); then
+        echo "test-runner: $1 passed ${cap} kB resident, killed" >&3
+        kill -KILL "$pid"
+        exit
+      fi
+    done <"/proc/$pid/status" 2>/dev/null
+    sleep 0.1
+  done
+} 3>&2 >/dev/null 2>&1 &
+watcher=$!
+
+while :; do
+  wait "$pid"
+  status=$?
+  kill -0 "$pid" 2>/dev/null || break
+done
+kill "$watcher" 2>/dev/null
+exit "$status"

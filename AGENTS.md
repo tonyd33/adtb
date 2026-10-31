@@ -80,8 +80,9 @@ nix run github:tonyd33/tix -- -C work/issues check
 Scripts in `work/tools/`, run as `work/tools/NAME` from any workspace
 root (devenv also puts each on PATH as `NAME`):
 
-- `suite [ARGS]`: the full nextest run under a memory cap, `ADTB_TEST_MEM_CAP` (default 20G), and the machine lock that
+- `suite [ARGS]`: the full nextest run, under the machine lock that
   `check` also holds; output in `target/suite.txt`, prints failures and the summary.
+- `test-runner CMD`: what cargo runs every test and example through, from `.cargo/config.toml`: kills a process past 6 GiB resident, polling /proc, so a runaway dies alone on any init system and nothing outside the process changes. Never run a built test binary directly. `test-runner-test`, in `check`, proves it.
 - `conf PATH...`: run conformance files or directories on the
   reference and the engine; prints each difference as `FILE:LINE`.
 - `adtb-probe --schema FILE [--data FILE] [--explain] [--checks NAME] TEXT`:
