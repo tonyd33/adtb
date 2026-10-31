@@ -806,14 +806,13 @@ impl Cx<'_> {
                     None => return Err(lossy()),
                 }
             }
+            let bound: Vec<String> = std::iter::once(format!("{disc}: {src}"))
+                .chain(m_fields.iter().cloned())
+                .collect();
             out_arms.push(format!(
-                "\n    | {} {{ {disc}: {src}, {} }} -> {src} {{ {} }}",
+                "\n    | {} {{ {} }} -> {src} {{ {} }}",
                 into.name.text,
-                m_fields
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                bound.join(", "),
                 given
                     .iter()
                     .map(|g| g.replace("r.", ""))

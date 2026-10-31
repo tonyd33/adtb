@@ -566,8 +566,10 @@ the constructor's state in its type, kept in `catalog::value_states`:
 between them, starts `r.C` declared. Products of `split`
 and `unnest` take their source's state, per relation variable,
 deprecated included. Products of `merge` and `nest` start enabled when
-every source constructor is enabled, and declared when some source is
-declared; merging or nesting a deprecated constructor is refused.
+every source constructor is enabled, declared when some source is
+declared and none is deprecated, and deprecated when every source is
+deprecated, per relation variable; merging or nesting a deprecated
+constructor with one in another state is refused.
 
 The states are per relation variable, recorded in
 `catalog::ctor_states` keyed by relation variable and constructor

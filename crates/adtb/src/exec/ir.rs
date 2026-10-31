@@ -423,7 +423,7 @@ impl Lower<'_> {
             .iter()
             .map(|e| match e {
                 Element::Field(f) => field(self.schema(), &row, f)
-                    .and_then(|(at, _)| at.of(ctor))
+                    .and_then(|at| at.of(ctor))
                     .map(Some),
                 Element::Derived { .. } => Ok(None),
             })

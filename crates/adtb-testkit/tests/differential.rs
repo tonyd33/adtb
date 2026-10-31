@@ -770,12 +770,35 @@ const STEPS: usize = 2;
 /// take back what an earlier one left.
 const LONG_STEPS: usize = 6;
 
-/// The operators whose laws depend on how removals and constraint drops stage.
-const STAGED: [Operator; 3] = [
-    Operator::RemoveConstructor,
-    Operator::DropUnique,
-    Operator::DropCheck,
-];
+/// The migrations of each walk of a sweep over an operator a short walk rarely draws, enough for
+/// it to follow what it removes.
+const TAKE_BACK_STEPS: usize = 3;
+
+/// The seeds searched for walks drawing such an operator.
+const TAKE_BACK_SEARCH: u64 = 2000;
+
+/// Returns the first walks, [`profile::deep`] sized, of [`TAKE_BACK_STEPS`] migrations drawing
+/// `op`, and fails when the search finds fewer.
+fn drawing(op: Operator) -> Vec<u64> {
+    let want = profile::deep(1) as usize;
+    let seeds: Vec<u64> = (0..TAKE_BACK_SEARCH)
+        .filter(|&s| {
+            walk_of(s, TAKE_BACK_STEPS, QUERIES, &[])
+                .steps
+                .iter()
+                .any(|t| t.operators.contains(&op))
+        })
+        .take(want)
+        .collect();
+    profile::assert_reached(&format!("a walk drawing {op:?}"), seeds.len(), want);
+    seeds
+}
+
+/// Sweep the walks drawing `op` with `check`.
+fn take_back(op: Operator, check: fn(u64, &Walk) -> Option<String>) {
+    let name = format!("{op:?}");
+    sweep_seeds(&name, drawing(op), TAKE_BACK_STEPS, &[], check);
+}
 
 /// Returns the first query of `case` on which `db` disagrees with the reference, named by
 /// where in the walk it runs.
@@ -791,6 +814,38 @@ fn walk_check(seed: u64, db: &Database<SimRuntime>, case: &Case, at: &str) -> Op
         .iter()
         .find_map(|q| fails(&env, differential, q))
         .map(|m| format!("{at}: {m}"))
+}
+
+/// Returns how the schema `log` leaves differs from the program of `case` in the count of uniques
+/// and checks of module `app`.
+fn constraints_differ(log: &[String], case: &Case) -> Option<String> {
+    let source = adtb_lang::signature::replay(log.iter().map(String::as_str))
+        .unwrap_or_else(|e| panic!("the log replays: {e:?}"));
+    let (schema, _) = source
+        .check()
+        .unwrap_or_else(|e| panic!("the version checks: {e:?}"));
+    let app = |m| schema.module(m).name == "app";
+    let uniques = schema
+        .relations
+        .iter()
+        .filter(|r| app(r.module))
+        .flat_map(|r| &r.indexes)
+        .filter(|i| i.unique)
+        .count();
+    let checks = schema.checks.iter().filter(|c| app(c.module)).count();
+    let lines = |word: &str| {
+        case.schema
+            .lines()
+            .filter(|l| l.trim_start().starts_with(word))
+            .count()
+    };
+    let want = (lines("unique "), lines("check "));
+    (want != (uniques, checks)).then(|| {
+        format!(
+            "the engine holds {uniques} uniques and {checks} checks, the reference {} and {}",
+            want.0, want.1
+        )
+    })
 }
 
 /// Returns the first disagreement of the engine and the reference along walk `w`: before its
@@ -810,9 +865,12 @@ fn walked(seed: u64, w: &Walk) -> Option<String> {
             return found;
         }
         for (k, step) in w.steps.iter().enumerate() {
+            let at = format!("after migration {}", k + 2);
+            if let Some(m) = constraints_differ(&log[..k + 2], &step.migrated) {
+                return Some(format!("{at}: {m}"));
+            }
             let found = process(&mut sim, |rt| {
                 let db = open(rt, &log[..k + 2]);
-                let at = format!("after migration {}", k + 2);
                 let mut found = walk_check(seed, &db, &step.migrated, &at);
                 if found.is_none() {
                     write(&db, &step.writes);
@@ -1372,12 +1430,12 @@ fn sweep_seeds(
 
 #[test]
 fn schema_walks_keep_engine_equal_to_reference() {
-    sweep_walks("schema walk", WALKS, STEPS, &STAGED, walked);
+    sweep_walks("schema walk", WALKS, STEPS, &[], walked);
 }
 
 #[test]
 fn schema_operators_keep_their_laws() {
-    sweep_walks("operator laws", LAW_WALKS, STEPS, &STAGED, laws);
+    sweep_walks("operator laws", LAW_WALKS, STEPS, &[], laws);
     let counts = TRANSLATED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1394,13 +1452,41 @@ fn schema_operators_keep_their_laws() {
 }
 
 #[test]
-#[ignore = "draws operators the engine does not yet apply as their laws state"]
+fn removing_a_constructor_keeps_engine_equal_to_reference() {
+    take_back(Operator::RemoveConstructor, walked);
+}
+
+#[test]
+fn removing_a_constructor_keeps_its_laws() {
+    take_back(Operator::RemoveConstructor, laws);
+}
+
+#[test]
+fn dropping_a_unique_keeps_engine_equal_to_reference() {
+    take_back(Operator::DropUnique, walked);
+}
+
+#[test]
+fn dropping_a_unique_keeps_its_laws() {
+    take_back(Operator::DropUnique, laws);
+}
+
+#[test]
+fn dropping_a_check_keeps_engine_equal_to_reference() {
+    take_back(Operator::DropCheck, walked);
+}
+
+#[test]
+fn dropping_a_check_keeps_its_laws() {
+    take_back(Operator::DropCheck, laws);
+}
+
+#[test]
 fn every_schema_walk_keeps_engine_equal_to_reference() {
     sweep_walks("every schema walk", WALKS, LONG_STEPS, &[], walked);
 }
 
 #[test]
-#[ignore = "draws operators the engine does not yet apply as their laws state"]
 fn every_operator_keeps_its_laws() {
     sweep_walks("every operator's laws", LAW_WALKS, LONG_STEPS, &[], laws);
 }

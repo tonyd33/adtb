@@ -37,6 +37,9 @@ pub(super) struct Walk<'p, 'a> {
     /// The `let`-bound variables an insert stores as a row, with the relation of the insert the
     /// `let` builds its value for.
     stored: HashMap<Var, RelId>,
+    /// The variables bound to a row a conflict probe returned, whose constructor is any the probe
+    /// can reach, and what those rows bind.
+    probed: HashSet<Var>,
 }
 
 impl<'p, 'a> Walk<'p, 'a> {
@@ -49,6 +52,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             memo: HashMap::new(),
             rows: HashMap::new(),
             stored: HashMap::new(),
+            probed: HashSet::new(),
         }
     }
 
@@ -100,10 +104,64 @@ impl<'p, 'a> Walk<'p, 'a> {
             return Ok(x);
         }
         let info = self.src.var_info(v);
-        let ty = self.ty(&info.ty)?;
+        let ty = if self.probed.contains(&v) {
+            self.ty_probed(&info.ty)?
+        } else {
+            self.ty(&info.ty)?
+        };
         let x = out.var(&info.name.clone(), ty);
         self.vars.insert(v, x);
         Ok(x)
+    }
+
+    fn ty_probed(&self, ty: &Ty) -> R<Ty> {
+        self.map
+            .ty_unnarrowed(ty)
+            .map_err(|l| self.p.lost(&l, "reaches a value of"))
+    }
+
+    /// Bind `old` of an upsert into `to` to the constructors its probe `on` can return.
+    fn bind_probed(&mut self, out: &mut Terms, old: Var, to: RelId, on: &Conflict) -> R<Var> {
+        self.probed.insert(old);
+        let info = self.src.var_info(old);
+        let ty = match self.ty_probed(&info.ty)? {
+            Ty::Data { def, args, .. } => Ty::Data {
+                def,
+                args,
+                ctors: match on {
+                    Conflict::Key => None,
+                    Conflict::Unique(i) => {
+                        self.map.to.relation(to).indexes[*i as usize].scope.clone()
+                    }
+                },
+            },
+            t => t,
+        };
+        let x = out.var(&info.name.clone(), ty);
+        self.vars.insert(old, x);
+        Ok(x)
+    }
+
+    /// Returns whether `t` reads a row a conflict probe returned.
+    fn reads_probed(&self, t: Tm) -> bool {
+        match self.src.kind(t) {
+            Kind::Var(v) => self.probed.contains(v),
+            Kind::Field(x, _) => self.reads_probed(*x),
+            _ => false,
+        }
+    }
+
+    /// Returns the probed row a set of rows `t` updates or deletes holds at most, as `update old`
+    /// makes it.
+    fn probed_rows(&self, t: Tm) -> Option<Var> {
+        match self.src.kind(t) {
+            Kind::Singleton(x) => match self.src.kind(*x) {
+                Kind::Var(v) if self.probed.contains(v) => Some(*v),
+                _ => None,
+            },
+            Kind::If(_, rows, _) => self.probed_rows(*rows),
+            _ => None,
+        }
     }
 
     /// Returns `t` at the later version, `site` the write it is the stored value of.
@@ -191,13 +249,25 @@ impl<'p, 'a> Walk<'p, 'a> {
                     rel: to,
                     rows,
                     on,
-                    old: self.var(out, old)?,
+                    old: self.bind_probed(out, old, to, &on)?,
                     new: self.var(out, new)?,
                     otherwise: self.tm(out, otherwise, None)?,
                     single,
                 }
             }
-            other => self.generic(out, &other, site)?,
+            Kind::Var(v) if self.probed.contains(&v) => {
+                let x = self.var(out, v)?;
+                let ty = out.var_info(x).ty.clone();
+                return Ok(out.add(Kind::Var(x), ty));
+            }
+            other => {
+                if let Kind::Let(v, value, _) = &other
+                    && self.reads_probed(*value)
+                {
+                    self.probed.insert(*v);
+                }
+                self.generic(out, &other, site)?
+            }
         };
         let ty = self.ty(&src_ty)?;
         Ok(out.add(kind, ty))
@@ -233,7 +303,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         Ok(match kind {
             Kind::Rel(r, set) => {
                 let def = self.map.from.relation(r).elem_def;
-                Kind::Rel(self.relation(r)?, self.map.set(def, &set, self.p.hide_new))
+                Kind::Rel(self.relation(r)?, self.map.set(def, &set, true))
             }
             Kind::Transition(tr, r, set) => {
                 let def = self.map.from.relation(r).elem_def;
@@ -427,6 +497,12 @@ impl<'p, 'a> Walk<'p, 'a> {
             return Ok(out.add(Kind::Field(x2, name.to_string()), fty));
         };
         let set = Map::ctor_set(self.map.from, &xt).unwrap_or_default();
+        let kept = |&c: &u32| self.map.ctor(*def, c).is_some();
+        if !set.iter().any(kept) {
+            let x2 = self.tm(out, x, None)?;
+            let fty = self.ty(src_ty)?;
+            return Ok(out.add(Kind::Field(x2, name.to_string()), fty));
+        }
         let header = self
             .map
             .from
@@ -473,7 +549,11 @@ impl<'p, 'a> Walk<'p, 'a> {
             });
         }
         let x2 = self.tm(out, x, None)?;
-        let fty = self.ty(src_ty)?;
+        let fty = if self.reads_probed(x) {
+            self.ty_probed(src_ty)?
+        } else {
+            self.ty(src_ty)?
+        };
         Ok(out.add(Kind::Field(x2, image), fty))
     }
 
@@ -848,6 +928,9 @@ impl<'p, 'a> Walk<'p, 'a> {
             let Some(k) = self.map.ctor(def, c) else {
                 continue;
             };
+            if self.reads_probed(scrutinee) {
+                self.probed.insert(y);
+            }
             let y = self.var(out, y)?;
             by_ctor.insert(k, (y, self.tm(out, body, site)?));
         }
@@ -881,6 +964,12 @@ impl<'p, 'a> Walk<'p, 'a> {
         let f2 = match self.src.kind(f).clone() {
             Kind::Lam(x, body) => {
                 self.written(rel, self.src.ty(body), kept.as_deref())?;
+                if let Some(row) = self.probed_rows(rows) {
+                    let ty = out.var_info(self.vars[&row]).ty.clone();
+                    self.probed.insert(x);
+                    let x2 = out.var(&self.src.var_info(x).name.clone(), ty);
+                    self.vars.insert(x, x2);
+                }
                 let x2 = self.var(out, x)?;
                 let body2 = self.tm(
                     out,

@@ -169,18 +169,28 @@ impl<'a> Map<'a> {
         self.to.normalize_ctors(to, out)
     }
 
-    /// Returns `ty` at the later version, its constructor sets narrowed to the earlier version's
-    /// constructors when `hide_new`.
+    /// Returns `ty` at the later version, a row or value naming the constructors it holds at the
+    /// earlier version, and a key narrowed to them when `hide_new`.
     pub fn ty(&self, ty: &Ty, hide_new: bool) -> Result<Ty, Loss> {
+        self.ty_at(ty, hide_new, true)
+    }
+
+    /// Returns `ty` at the later version with its constructor sets not narrowed, for a value read
+    /// from where a constructor new since the earlier version can lie.
+    pub fn ty_unnarrowed(&self, ty: &Ty) -> Result<Ty, Loss> {
+        self.ty_at(ty, false, false)
+    }
+
+    fn ty_at(&self, ty: &Ty, hide_new: bool, pinned: bool) -> Result<Ty, Loss> {
         Ok(match ty {
             Ty::Base(_) | Ty::Param(_) | Ty::Unit | Ty::Change => ty.clone(),
             Ty::Data { def, args, ctors } => Ty::Data {
                 def: self.def(*def).ok_or(Loss::Type(*def))?,
                 args: args
                     .iter()
-                    .map(|a| self.ty(a, hide_new))
+                    .map(|a| self.ty_at(a, hide_new, pinned))
                     .collect::<Result<_, _>>()?,
-                ctors: self.set(*def, ctors, hide_new),
+                ctors: self.set(*def, ctors, pinned),
             },
             Ty::Key { rel, ctors } => {
                 let def = self.from.relation(*rel).elem_def;
@@ -189,16 +199,16 @@ impl<'a> Map<'a> {
                     ctors: self.set(def, ctors, hide_new),
                 }
             }
-            Ty::Set(t) => Ty::Set(Box::new(self.ty(t, hide_new)?)),
-            Ty::NonEmpty(t) => Ty::NonEmpty(Box::new(self.ty(t, hide_new)?)),
+            Ty::Set(t) => Ty::Set(Box::new(self.ty_at(t, hide_new, pinned)?)),
+            Ty::NonEmpty(t) => Ty::NonEmpty(Box::new(self.ty_at(t, hide_new, pinned)?)),
             Ty::Group(k, t) => Ty::Group(
-                Box::new(self.ty(k, hide_new)?),
-                Box::new(self.ty(t, hide_new)?),
+                Box::new(self.ty_at(k, hide_new, pinned)?),
+                Box::new(self.ty_at(t, hide_new, pinned)?),
             ),
-            Ty::Tag(t) => Ty::Tag(Box::new(self.ty(t, hide_new)?)),
+            Ty::Tag(t) => Ty::Tag(Box::new(self.ty_at(t, hide_new, pinned)?)),
             Ty::Record(fs) => Ty::Record(
                 fs.iter()
-                    .map(|(n, t)| Ok((n.clone(), self.ty(t, hide_new)?)))
+                    .map(|(n, t)| Ok((n.clone(), self.ty_at(t, hide_new, pinned)?)))
                     .collect::<Result<_, Loss>>()?,
             ),
             Ty::Sum { ctors, sel } => Ty::Sum {
@@ -207,7 +217,7 @@ impl<'a> Map<'a> {
                     .map(|(n, fs)| {
                         let fs = fs
                             .iter()
-                            .map(|(f, t)| Ok((f.clone(), self.ty(t, hide_new)?)))
+                            .map(|(f, t)| Ok((f.clone(), self.ty_at(t, hide_new, pinned)?)))
                             .collect::<Result<_, Loss>>()?;
                         Ok((n.clone(), fs))
                     })
@@ -215,8 +225,8 @@ impl<'a> Map<'a> {
                 sel: sel.clone(),
             },
             Ty::Fn(a, b) => Ty::Fn(
-                Box::new(self.ty(a, hide_new)?),
-                Box::new(self.ty(b, hide_new)?),
+                Box::new(self.ty_at(a, hide_new, pinned)?),
+                Box::new(self.ty_at(b, hide_new, pinned)?),
             ),
         })
     }

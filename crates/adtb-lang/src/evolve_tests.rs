@@ -1570,8 +1570,83 @@ merge constructor Identity.(Google | Apple) into Social { provider: Provider, su
   by match
     | Google g -> Social { provider: Google, sub: g.gid }
     | Apple a  -> Social { provider: Apple, sub: a.sub }",
-        "merging or nesting a deprecated constructor is refused: `identities.Apple` is deprecated",
+        "merging or nesting a deprecated constructor with one in another state is refused: `identities.Apple` is deprecated",
     );
+}
+
+#[test]
+fn a_merge_product_is_deprecated_when_every_source_is() {
+    let s = source(
+        "module auth
+type T { id: Key r } = A | B | C
+relation r : T key id generate sequence
+type Tags = A | B",
+    );
+    let s = applies(&s, "module auth\ndeprecate r.A\ndeprecate r.B");
+    let merged = applies(
+        &s,
+        "module auth\nmerge constructor T.(A | B) into D { tag: Tags }",
+    );
+    assert_eq!(Stage::Deprecated, stage(&merged, "r", "D"));
+    let reverted = applies(&merged, "module auth\nrevert 0002");
+    assert_eq!(Stage::Deprecated, stage(&reverted, "r", "A"));
+    assert_eq!(Stage::Deprecated, stage(&reverted, "r", "B"));
+}
+
+#[test]
+fn a_nest_product_is_deprecated_when_every_source_is() {
+    let s = source(
+        "module auth
+type T { id: Key r } = A | B | C
+relation r : T key id generate sequence
+type Inner = A | B",
+    );
+    let s = applies(&s, "module auth\ndeprecate r.A\ndeprecate r.B");
+    let nested = applies(
+        &s,
+        "module auth\nnest constructor T.(A | B) into D { inner: Inner }",
+    );
+    assert_eq!(Stage::Deprecated, stage(&nested, "r", "D"));
+}
+
+#[test]
+fn a_merge_of_a_deprecated_and_a_declared_or_enabled_source_is_refused() {
+    let s = source(
+        "module auth
+type T { id: Key r } = A | B
+relation r : T key id generate sequence
+type Tags = A | B
+type Other = A | E",
+    );
+    let s = applies(&s, "module auth\ndeprecate r.A\nadd constructor T.E");
+    let mixed = "merging or nesting a deprecated constructor with one in another state is refused";
+    refuses(
+        &s,
+        "module auth\nmerge constructor T.(A | B) into D { tag: Tags }",
+        mixed,
+    );
+    refuses(
+        &s,
+        "module auth\nmerge constructor T.(A | E) into D { tag: Other }",
+        mixed,
+    );
+}
+
+#[test]
+fn the_inverse_of_a_merge_into_only_its_discriminator_applies() {
+    let s = source(
+        "module auth
+type T { id: Key r } = A | B
+relation r : T key id generate sequence
+type Tags = A | B",
+    );
+    let s = applies(
+        &s,
+        "module auth\nmerge constructor T.(A | B) into C { tag: Tags }",
+    );
+    let s = applies(&s, "module auth\nrevert 0001");
+    let t = flat(&decl(&s, "type", "T"));
+    assert!(t.contains("= A | B"), "{t}");
 }
 
 #[test]

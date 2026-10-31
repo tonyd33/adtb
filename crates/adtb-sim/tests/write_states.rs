@@ -302,6 +302,41 @@ fn merging_a_deprecated_constructor_is_refused() {
 }
 
 #[test]
+fn a_merge_of_only_deprecated_sources_keeps_their_rows_and_refuses_entry_and_reverts() {
+    let deprecate = "module shop\ndeprecate payments.Card\ndeprecate payments.Invoice\n";
+    let entry = r#"transact
+  let c = insert customers { name: "cy" }
+  insert payments.Any { customer: key c, method: Card, detail: "1" }"#;
+    after(14, &[deprecate, MERGE], |db| {
+        let db = db.expect("the merge applies");
+        not_open(&db, entry, "payments.Any", "Deprecated");
+        assert_eq!(
+            2,
+            query(&db, "from p in payments.Any select p.detail").len()
+        );
+    });
+    after(
+        15,
+        &[deprecate, MERGE, "module shop\nrevert 0003\n"],
+        |db| {
+            let db = db.expect("the revert applies");
+            assert_eq!(
+                vec![r#""4242""#],
+                query(&db, "from p in payments.Card select p.last4")
+            );
+            not_open(
+                &db,
+                r#"transact
+  let c = insert customers { name: "cy" }
+  insert payments.Card { customer: key c, last4: "1111" }"#,
+                "payments.Card",
+                "Deprecated",
+            );
+        },
+    );
+}
+
+#[test]
 fn a_merge_with_a_declared_source_starts_declared() {
     let merge = r"module shop
 add type Method = Invoice | Wire

@@ -74,35 +74,33 @@ impl At {
     }
 }
 
-/// Returns where field `name` of a value of type `ty` lies, and the field's type.
-pub fn field(schema: &Schema, ty: &Ty, name: &str) -> Result<(At, Ty), Error> {
+/// Returns where field `name` of a value of type `ty` lies. Reaching a value of a constructor of
+/// the set that lacks it is an error, as a translated upsert's `old` can. A type whose constructor
+/// set is empty holds no value, and the field lies at no constructor.
+pub fn field(schema: &Schema, ty: &Ty, name: &str) -> Result<At, Error> {
     if let Ty::Record(fs) = repr(schema, ty) {
         let i = fs.iter().position(|(n, _)| n == name).ok_or_else(|| {
             Error::Internal(format!("a record of type {ty:?} has field `{name}`"))
         })?;
-        return Ok((At::Fixed(i), fs[i].1.clone()));
+        return Ok(At::Fixed(i));
     }
     let cs = ctors(schema, ty)
         .ok_or_else(|| Error::Unsupported(format!("field `{name}` of a value of type {ty:?}")))?;
     let set = ctor_set(schema, ty);
     let mut at = vec![None; cs.len()];
-    let mut field_ty = None;
     for &c in &set {
-        let i = cs[c as usize]
-            .iter()
-            .position(|(n, _)| n == name)
-            .ok_or_else(|| {
-                Error::Internal(format!("constructor {c} of {ty:?} has field `{name}`"))
-            })?;
-        at[c as usize] = Some(i);
-        field_ty.get_or_insert_with(|| cs[c as usize][i].1.clone());
+        at[c as usize] = cs[c as usize].iter().position(|(n, _)| n == name);
+    }
+    if !set.is_empty() && set.iter().all(|&c| at[c as usize].is_none()) {
+        return Err(Error::Internal(format!(
+            "some constructor of {ty:?} has field `{name}`"
+        )));
     }
     let first = set.first().and_then(|&c| at[c as usize]);
     let fixed = set.iter().all(|&c| at[c as usize] == first);
-    let ty = field_ty.ok_or_else(|| Error::Internal(format!("{ty:?} names a constructor")))?;
     match (fixed, first) {
-        (true, Some(i)) => Ok((At::Fixed(i), ty)),
-        _ => Ok((At::ByCtor(at), ty)),
+        (true, Some(i)) => Ok(At::Fixed(i)),
+        _ => Ok(At::ByCtor(at)),
     }
 }
 
@@ -114,7 +112,7 @@ pub fn key_fields(schema: &Schema, rel: RelId, row: &Ty) -> Result<(Vec<At>, boo
     names.sort();
     let at = names
         .iter()
-        .map(|n| field(schema, row, n).map(|(a, _)| a))
+        .map(|n| field(schema, row, n))
         .collect::<Result<_, _>>()?;
     Ok((at, single))
 }

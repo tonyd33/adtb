@@ -1001,8 +1001,9 @@ impl Cx<'_> {
         Ok(edits)
     }
 
-    /// Moves the write states of `sources` to `products`. With `merge` a product is declared when a source is,
-    /// else enabled, and a deprecated source refuses; otherwise it takes the first source's state.
+    /// Move the write states of `sources` to `products`. With `merge` a product is deprecated when
+    /// every source is, declared when a source is, else enabled, and a deprecated source among
+    /// others refuses; otherwise it takes the first source's state.
     pub(super) fn restate(
         &mut self,
         schema: &Schema,
@@ -1018,7 +1019,11 @@ impl Cx<'_> {
                 return Ok(states.first().copied().unwrap_or(Stage::Enabled));
             }
             if states.contains(&Stage::Deprecated) {
-                return Err(Stage::Deprecated);
+                return if states.iter().all(|s| *s == Stage::Deprecated) {
+                    Ok(Stage::Deprecated)
+                } else {
+                    Err(Stage::Deprecated)
+                };
             }
             Ok(if states.contains(&Stage::Declared) {
                 Stage::Declared
@@ -1057,7 +1062,7 @@ impl Cx<'_> {
                 return Err(vec![Diag::new(
                     self.span,
                     format!(
-                        "merging or nesting a deprecated constructor is refused: `{r}.{which}` is deprecated"
+                        "merging or nesting a deprecated constructor with one in another state is refused: `{r}.{which}` is deprecated"
                     ),
                 )]);
             };

@@ -2633,6 +2633,240 @@ fn a_pinned_bundle_reads_a_removed_constructor_as_empty_and_cannot_write_it() {
     });
 }
 
+/// Queries reading the constructor relation of `Google` every way a query can, each empty once
+/// the constructor is removed, in ordinal order.
+const READS_GOOGLE: &str = r#"import auth
+query body () -> Set Text = from g in identities.Google select g.gid
+query header () -> Set (Key users) = from g in identities.Google select g.user
+query keys () -> Set (Key identities) = from g in identities.Google select key g
+query matched () -> Set Text = from g in identities.Google select match g
+  | Google x -> x.gid
+query joined () -> Set Text =
+  from u in users, g in identities.Google where g.user == key u select u.name
+query selfjoin () -> Set Text =
+  from a in identities.Google, b in identities.Google where key a == key b select a.gid
+query filtered () -> Set Text = from g in identities.Google where g.gid == "x" select g.gid
+query nested () -> Set Text =
+  from u in users
+  where exists g in identities.Google where g.user == key u
+  select u.name
+query crossed () -> Set Text = from g in identities.Google, h in identities.Google select h.gid
+"#;
+
+#[test]
+fn every_read_of_a_removed_constructor_pinned_before_it_is_empty() {
+    let log = [V1, DEPRECATE_GOOGLE, REMOVE_GOOGLE];
+    once(85, |rt| {
+        let db = opened(&rt, &log, vec![bundle("web-1.0", &[V1], "", READS_GOOGLE)]);
+        write(
+            &db,
+            r#"transact
+  let u = insert users { name: "ann", tier: Free }
+  insert identities.EmailPass { user: key u, email: "x" }
+  return 0"#,
+        )
+        .expect("the login is written");
+        for ordinal in 1..=9 {
+            assert_eq!(
+                Vec::<String>::new(),
+                rows(call(&db, "web-1.0", ordinal, &[])),
+                "query {ordinal}"
+            );
+        }
+    });
+}
+
+#[test]
+fn an_aggregate_and_a_test_of_a_removed_constructor_pinned_before_it_read_it_as_empty() {
+    let log = [V1, DEPRECATE_GOOGLE, REMOVE_GOOGLE];
+    let body = r#"import auth
+query counted () -> I64 = count(g for g in identities.Google)
+query present () -> Bool = exists g in identities.Google where g.gid == "x"
+"#;
+    once(86, |rt| {
+        let db = opened(&rt, &log, vec![bundle("web-1.0", &[V1], "", body)]);
+        write(
+            &db,
+            r#"transact
+  let u = insert users { name: "ann", tier: Free }
+  insert identities.EmailPass { user: key u, email: "x" }
+  return 0"#,
+        )
+        .expect("the login is written");
+        assert_eq!(vec!["0"], rows(call(&db, "web-1.0", 1, &[])));
+        assert_eq!(vec!["False"], rows(call(&db, "web-1.0", 2, &[])));
+    });
+}
+
+const ADD_NOTES: &str = "module auth
+add type Note { id: Key notes } = Plain { body: Text }
+add relation notes : Note key id generate sequence
+";
+const ADD_LINK: &str = "module auth\nadd constructor Note.Link { url: Text }\n";
+
+/// What a pin sees of a sum a later migration grows, in ordinal order: its one constructor read
+/// through the relation and by name, and a rewrite of each of its rows.
+const READS_GROWN: &str = "import auth
+query whole () -> Set Text = from n in notes select n.body
+query named () -> Set Text = from n in notes.Plain select n.body
+txn rewrite () -> I64 =
+  transact
+    insert notes.Plain from (from x in notes.Plain select { id: x.id, body: x.body })
+      unless conflict on key else update old set new
+    return 0
+";
+
+#[test]
+fn a_pin_reads_the_constructors_it_saw_of_a_sum_grown_after_it() {
+    let pin = [V1, ADD_NOTES];
+    let log = [V1, ADD_NOTES, ADD_LINK];
+    once(87, |rt| {
+        let db = opened(&rt, &log, vec![bundle("web-1.0", &pin, "", READS_GROWN)]);
+        write(&db, r#"insert notes.Plain { body: "a" }"#).expect("the note is written");
+        assert_eq!(vec!["\"a\""], rows(call(&db, "web-1.0", 1, &[])));
+        assert_eq!(vec!["\"a\""], rows(call(&db, "web-1.0", 2, &[])));
+        call(&db, "web-1.0", 3, &[]);
+        assert_eq!(vec!["\"a\""], rows(call(&db, "web-1.0", 1, &[])));
+    });
+}
+
+const ENABLE_LINK: &str = "module auth\nenable notes.Link\n";
+const ADD_LINK_BODY: &str = "module auth\nadd constructor Note.Link { url: Text, body: Text }\n";
+
+/// Upserts whose `old` is read by field, in ordinal order: at key 1, then at key 2.
+const UPSERTS: &str = r#"import auth
+txn first () -> I64 =
+  transact
+    insert notes.Plain { id: notes.key(1), body: "x" }
+      unless conflict on key else update old set Plain { old with body: old.body ++ "!" }
+    return 0
+txn second () -> I64 =
+  transact
+    insert notes.Plain { id: notes.key(2), body: "x" }
+      unless conflict on key else update old set Plain { old with body: old.body ++ "!" }
+    return 0
+"#;
+
+const NOTES: &str = "from n in notes select match n
+  | Plain p -> p.body
+  | Link l -> l.url";
+
+#[test]
+fn an_upsert_old_read_on_a_constructor_new_since_the_pin_lacking_the_field_is_refused() {
+    for clauses in ["", " hide new constructors"] {
+        let pin = [V1, ADD_NOTES];
+        let log = [V1, ADD_NOTES, ADD_LINK, ENABLE_LINK];
+        once(88, |rt| {
+            let db = opened(&rt, &log, vec![bundle("web-1.0", &pin, clauses, UPSERTS)]);
+            write(&db, r#"insert notes.Link { id: notes.key(1), url: "u" }"#)
+                .expect("the link is written");
+            write(&db, r#"insert notes.Plain { id: notes.key(2), body: "a" }"#)
+                .expect("the note is written");
+            let refused = db.registered("web-1.0").expect("the bundle binds").call(
+                1,
+                &[],
+                &CallOptions::default(),
+            );
+            match refused {
+                Err(Error::Rejected {
+                    reason: RejectReason::Internal { what },
+                }) => assert_eq!("constructor 1 of the type has the field", what, "{clauses}"),
+                Err(other) => panic!("{clauses}: refused otherwise: {other:?}"),
+                Ok(called) => panic!("{clauses}: the call applies: {called:?}"),
+            }
+            call(&db, "web-1.0", 2, &[]);
+            let mut notes = query(&db, NOTES);
+            notes.sort();
+            assert_eq!(vec![r#""a!""#, r#""u""#], notes, "{clauses}");
+        });
+    }
+}
+
+#[test]
+fn an_upsert_old_read_on_a_constructor_new_since_the_pin_reads_its_own_field() {
+    for clauses in ["", " hide new constructors"] {
+        let pin = [V1, ADD_NOTES];
+        let log = [V1, ADD_NOTES, ADD_LINK_BODY, ENABLE_LINK];
+        once(89, |rt| {
+            let db = opened(&rt, &log, vec![bundle("web-1.0", &pin, clauses, UPSERTS)]);
+            write(
+                &db,
+                r#"insert notes.Link { id: notes.key(1), url: "u", body: "b" }"#,
+            )
+            .expect("the link is written");
+            call(&db, "web-1.0", 1, &[]);
+            assert_eq!(vec![r#""b!""#], query(&db, NOTES), "{clauses}");
+        });
+    }
+}
+
+#[test]
+fn an_upsert_old_matched_on_a_constructor_new_since_the_pin_is_refused() {
+    let body = r#"import auth
+txn put () -> I64 =
+  transact
+    insert notes.Plain { id: notes.key(1), body: "x" }
+      unless conflict on key else update old set Plain { old with body: match old
+        | Plain p -> p.body }
+    return 0
+"#;
+    let pin = [V1, ADD_NOTES];
+    let log = [V1, ADD_NOTES, ADD_LINK, ENABLE_LINK];
+    once(90, |rt| {
+        let db = opened(&rt, &log, vec![bundle("web-1.0", &pin, "", body)]);
+        write(&db, r#"insert notes.Link { id: notes.key(1), url: "u" }"#)
+            .expect("the link is written");
+        let got = db.registered("web-1.0").expect("the bundle binds").call(
+            1,
+            &[],
+            &CallOptions::default(),
+        );
+        match got {
+            Err(Error::Rejected {
+                reason: RejectReason::Internal { what },
+            }) => assert_eq!("constructor 1 of the type has the field", what),
+            other => panic!("not refused so: {other:?}"),
+        }
+        assert_eq!(vec![r#""u""#], query(&db, NOTES));
+    });
+}
+
+#[test]
+fn an_upsert_old_field_holding_a_value_new_since_the_pin_reads_its_own_field() {
+    let add = "module auth
+add type Tone = Ink { depth: I64 }
+add type Mark = { id: Key marks, tone: Tone }
+add relation marks : Mark key id generate sequence
+";
+    let grow = "module auth\nadd constructor Tone.Dye { hue: Text, depth: I64 }\n";
+    let enable = "module auth\nenable Tone.Dye\n";
+    let body = "import auth
+txn put () -> I64 =
+  transact
+    insert marks { id: marks.key(1), tone: Ink { depth: 0 } }
+      unless conflict on key else update old set { old with tone: Ink { depth: old.tone.depth } }
+    return 0
+";
+    let pin = [V1, add];
+    let log = [V1, add, grow, enable];
+    once(91, |rt| {
+        let db = opened(&rt, &log, vec![bundle("web-1.0", &pin, "", body)]);
+        write(
+            &db,
+            r#"insert marks { id: marks.key(1), tone: Dye { hue: "red", depth: 7 } }"#,
+        )
+        .expect("the mark is written");
+        call(&db, "web-1.0", 1, &[]);
+        assert_eq!(
+            vec!["7"],
+            query(
+                &db,
+                "from m in marks select match m.tone | Ink i -> i.depth | Dye d -> d.depth"
+            )
+        );
+    });
+}
+
 #[test]
 fn a_pinned_bundle_runs_across_operators_that_change_no_result() {
     let unchanged = [

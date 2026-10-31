@@ -724,7 +724,7 @@ impl<'a> Compiler<'a> {
                 Opd::Reg(dst)
             }
             Kind::Field(x, name) => {
-                let (at, _) = field(self.schema, self.terms.ty(*x), name)?;
+                let at = field(self.schema, self.terms.ty(*x), name)?;
                 let src = self.expr(e, ins, *x)?;
                 let dst = e.reg();
                 ins.push(Ins::Field { src, at, dst });
