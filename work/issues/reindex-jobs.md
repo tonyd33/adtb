@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-29
-status: in-progress
-branch: reindex-jobs
+status: resolved
 kind: feature
 priority: 411
 summary: "reindex does not run; no sorted-run build, and a quarantined index has no way back"
+closed: 2026-10-30
 ---
 
 # Feature: Reindex jobs
@@ -16,3 +16,9 @@ Build slice S12 of the milestone 9 audit: a sorted-run build in `btree/`, offlin
 ## Proposal
 
 ## Open questions
+
+## 2026-10-30
+
+Landed on main. Check passed, 3216 tests. Follow-ups: reindex-job-holds-engine, reindex-build-memory, reindex-catch-up-cost, reindex-bulk-no-stop.
+
+## 2026-10-30: resolved

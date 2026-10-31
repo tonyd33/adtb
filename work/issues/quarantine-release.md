@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-30
-status: in-progress
-branch: reindex-jobs
+status: open
 kind: feature
-priority: 412
-summary: "a quarantined index or heap has no user path back: reindex and restore must call pager.release"
+priority: 720
+summary: "a quarantined constructor relation has no user path back: restore must release its mark"
 ---
 
 # Feature: Quarantine release
@@ -16,3 +15,7 @@ No path reaches users: `pager.release` has no caller outside tests. Marks from q
 ## Proposal
 
 ## Open questions
+
+## 2026-10-30
+
+Indexes done: the reindex swap clears the mark. A heap waits for dump-restore-backup, which must call the release in its restore.
