@@ -155,6 +155,10 @@ struct Entry {
     /// Its translation to the version the database is at, for a registration checked at an
     /// earlier one.
     served: Option<Served>,
+    /// The id of the schema function an imported function calls.
+    function: Option<u64>,
+    /// The `module::name` of the schema function an imported function calls.
+    function_name: Option<String>,
 }
 
 /// A callable translated to the version the database is at, its variables as [`Entry`]'s.
@@ -184,6 +188,11 @@ pub(super) struct Checked {
 }
 
 impl Checked {
+    fn entry(&self, ordinal: u32) -> Option<&Entry> {
+        let i = usize::try_from(ordinal).ok()?.checked_sub(1)?;
+        self.entries.get(i)
+    }
+
     /// Returns the header and calls of a bundle's registration.
     pub(super) fn bundle(&self) -> Option<(&Header, Vec<CallRow>)> {
         let calls = self.entries.iter().map(|e| e.row.clone()).collect();
@@ -946,6 +955,8 @@ fn entry(name: &str, kind: Callable, declared: &signature::Signature, n: NormalQ
         names: declared.params.iter().map(|(n, _)| n.clone()).collect(),
         result: declared.result.clone(),
         unit,
+        function: None,
+        function_name: None,
         writes,
         retry,
         served: None,
@@ -966,12 +977,8 @@ fn imported(schema: &Schema, program: &Program, f: &QName, id: FnId) -> Result<E
     let failed = |m: String| Error::invalid(format!("fn `{}`: {m}", f.name.text));
     let def = schema.function(id);
     let names: Vec<String> = (0..def.params.len()).map(|i| format!("arg{i}")).collect();
-    let text = format!(
-        "{}::{}({})",
-        schema.module(def.module).name,
-        def.name,
-        names.join(", ")
-    );
+    let qualified = format!("{}::{}", schema.module(def.module).name, def.name);
+    let text = format!("{qualified}({})", names.join(", "));
     let items = parse_adhoc(&text, Options::default())
         .ok()
         .map_err(|ds| failed(joined(ds.iter().map(|d| d.message.as_str()))))?;
@@ -1023,6 +1030,8 @@ fn imported(schema: &Schema, program: &Program, f: &QName, id: FnId) -> Result<E
         writes,
         retry,
         served: None,
+        function: schema.ids.functions.get(&id).copied(),
+        function_name: Some(qualified),
     })
 }
 
@@ -1062,16 +1071,7 @@ impl<R: Runtime> Database<R> {
     pub fn registered(&self, name: &str) -> Result<Registered<R>, Error> {
         let _open = self.engine.enter()?;
         self.engine.bind(name)?;
-        let found = self
-            .engine
-            .registered
-            .lock(&self.engine.rt)
-            .iter()
-            .find(|c| c.name == name)
-            .map(|c| Registered {
-                engine: Arc::downgrade(&self.engine),
-                checked: c.clone(),
-            });
+        let found = Registered::served(&self.engine, name);
         if found.is_none() {
             self.engine
                 .db
@@ -1168,9 +1168,8 @@ impl<R: Runtime> Registered<R> {
         caller: impl FnOnce() -> Result<Val, Error>,
     ) -> Result<(&Entry, Prepared, bool), Error> {
         let checked = self.checked();
-        let entry = usize::try_from(ordinal)
-            .ok()
-            .and_then(|i| checked.entries.get(i.checked_sub(1)?))
+        let entry = checked
+            .entry(ordinal)
             .ok_or_else(|| Error::rejected(RejectReason::UnknownQuery))?;
         let due = e.admit(&checked.name, &entry.name)?;
         let caller = caller()?;
@@ -1292,6 +1291,33 @@ fn one<R: Runtime>(e: &Engine<R>, entry: &Entry, mut out: Vec<DynRows>) -> DynRo
     })
 }
 
+/// One callable of a registration as a binding sees it, its types at the registration's version.
+pub(super) struct Callee<'c> {
+    pub(super) name: &'c str,
+    pub(super) writes: bool,
+    /// The id of the schema function an imported function calls.
+    pub(super) function: Option<u64>,
+    /// The `module::name` of that schema function.
+    pub(super) function_name: Option<&'c str>,
+    pub(super) names: &'c [String],
+    pub(super) types: &'c [Ty],
+    pub(super) result: &'c Ty,
+}
+
+impl Entry {
+    fn callee(&self) -> Callee<'_> {
+        Callee {
+            name: &self.name,
+            writes: self.writes,
+            function: self.function,
+            function_name: self.function_name.as_deref(),
+            names: &self.names,
+            types: &self.types,
+            result: &self.result,
+        }
+    }
+}
+
 /// A call of a registration checked against its signature, for a task to run.
 pub(super) struct Bound {
     pub(super) prepared: Prepared,
@@ -1326,8 +1352,45 @@ impl<R: Runtime> Registered<R> {
         })
     }
 
-    pub(super) fn engine_ref(&self) -> &Weak<Engine<R>> {
-        &self.engine
+    /// Returns the registration `name` the engine serves.
+    pub(super) fn served(e: &Arc<Engine<R>>, name: &str) -> Option<Registered<R>> {
+        e.registered
+            .lock(&e.rt)
+            .iter()
+            .find(|c| c.name == name)
+            .map(|c| Registered {
+                engine: Arc::downgrade(e),
+                checked: c.clone(),
+            })
+    }
+
+    /// Returns the callable of `ordinal`.
+    pub(super) fn callee(&self, ordinal: u32) -> Option<Callee<'_>> {
+        Some(self.checked.entry(ordinal)?.callee())
+    }
+
+    /// Returns every callable of the registration with its ordinal, in ordinal order.
+    pub(super) fn callees(&self) -> impl Iterator<Item = (u32, Callee<'_>)> {
+        (1..).zip(self.checked.entries.iter().map(Entry::callee))
+    }
+
+    /// Returns the header of a bundle's registration.
+    pub(super) fn header(&self) -> Option<&Header> {
+        self.checked.header.as_ref()
+    }
+
+    /// Returns the schema of the version the registration is checked at.
+    pub(super) fn schema(&self) -> &Arc<Schema> {
+        &self.checked.schema
+    }
+
+    /// Refuse `args` unless they are the arguments of the callable of `ordinal`.
+    pub(super) fn arguments(&self, ordinal: u32, args: &[Val]) -> Result<(), Error> {
+        let entry = self
+            .checked
+            .entry(ordinal)
+            .ok_or_else(|| Error::rejected(RejectReason::UnknownQuery))?;
+        arguments(&self.checked, entry, args)
     }
 }
 

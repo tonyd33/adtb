@@ -55,8 +55,8 @@ pub use host::{Determinism, HostFns};
 pub use load::{Appender, Load, LoadOptions, LoadReport};
 pub use registered::{Called, InTxn, Registered, Registration};
 pub use server::{
-    Capability, Completion, Format, Layout, Observation, ResultBatch, RoleAuthority, RoleSession,
-    Task, TaskOptions,
+    Binding, CallDescriptor, CallKind, Capability, Completion, Format, Layout, Observation, Pins,
+    ResultBatch, RoleAuthority, RoleBinding, RoleSession, Task, TaskOptions,
 };
 pub use stop::CancelToken;
 pub use text::DynRows;

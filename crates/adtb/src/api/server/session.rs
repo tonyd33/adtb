@@ -12,8 +12,9 @@ use super::super::bundle::bundle_name;
 use super::super::command::{Need, free_params, need};
 use super::super::text::Issuer;
 use super::super::{Engine, Error, OWNER_ROLE, RejectReason, TxnId};
+use super::binding::RoleBinding;
 use super::store::{self, Changes};
-use super::tables::{CallRow, RoleId, Tables, service};
+use super::tables::{CallOrigin, CallRow, RoleId, Tables, service};
 use super::{Capability, RoleAuthority, denied, require};
 
 #[derive(Clone, Debug)]
@@ -28,6 +29,12 @@ impl<R: Runtime> RoleSession<R> {
     pub fn role_name(&self) -> &str {
         &self.name
     }
+
+    pub(super) fn authority(&self) -> RoleAuthority<R> {
+        RoleAuthority {
+            engine: self.engine.clone(),
+        }
+    }
 }
 
 impl<R: Runtime> RoleAuthority<R> {
@@ -38,14 +45,24 @@ impl<R: Runtime> RoleAuthority<R> {
         assertion: Option<&Val>,
     ) -> Result<Val, Error> {
         self.access(false, |e, tx, id, _| {
-            let t = Tables::new(&e.schema, id);
-            self.checked(session, &t, e, tx)?;
-            let Some(assertion) = assertion else {
-                return Ok(service(&e.schema, &session.name));
-            };
-            require(&t.grants(e, tx)?, session, Capability::Assert, false)?;
-            e.principal(Some(assertion))
+            self.derive(session, &Tables::new(&e.schema, id), e, tx, assertion)
         })
+    }
+
+    pub(super) fn derive(
+        &self,
+        session: &RoleSession<R>,
+        t: &Tables<'_>,
+        e: &Engine<R>,
+        tx: &Txn,
+        assertion: Option<&Val>,
+    ) -> Result<Val, Error> {
+        self.checked(session, t, e, tx)?;
+        let Some(assertion) = assertion else {
+            return Ok(service(&e.schema, &session.name));
+        };
+        require(&t.grants(e, tx)?, session, Capability::Assert, false)?;
+        e.principal(Some(assertion))
     }
 
     /// Returns the principal ad hoc text of hash `text` of `session` runs for, refusing a dropped
@@ -60,14 +77,15 @@ impl<R: Runtime> RoleAuthority<R> {
     ) -> Result<Val, Error> {
         let e = self.engine.upgrade().ok_or_else(Error::closed)?;
         let service = service(&e.schema, &session.name);
+        let origin = CallOrigin::AdHoc(*text);
         if session.name == OWNER_ROLE && assertion.is_none() && e.db.admit_database().is_err() {
             return Ok(service);
         }
-        self.demand(session, &service, text, Capability::Adhoc)?;
+        self.demand(session, &service, &origin, Capability::Adhoc)?;
         if assertion.is_some() {
-            self.demand(session, &service, text, Capability::Assert)?;
+            self.demand(session, &service, &origin, Capability::Assert)?;
         }
-        self.admit_principal(session, &service, text, assertion)
+        self.admit_principal(session, &service, &origin, assertion)
     }
 
     /// Returns the principal of `session`, recording a `Denied` refusal for `service`.
@@ -75,11 +93,11 @@ impl<R: Runtime> RoleAuthority<R> {
         &self,
         session: &RoleSession<R>,
         service: &Val,
-        text: &[u8; 32],
+        origin: &CallOrigin,
         assertion: Option<&Val>,
     ) -> Result<Val, Error> {
         let got = self.principal(session, assertion);
-        self.record_refusal(session, service, text, got)
+        self.record_refusal(session, service, origin, got)
     }
 
     /// Refuse parsed ad hoc `items` of `session` unless the role may issue all of them, with
@@ -99,11 +117,12 @@ impl<R: Runtime> RoleAuthority<R> {
             return Ok(None);
         }
         let params = free_params(&e.schema, params);
+        let origin = CallOrigin::AdHoc(*text);
         let refuse = |detail: String| -> Result<Option<Issuer>, Error> {
             if let Some(quarantined) = e.refusal() {
                 return Err(quarantined);
             }
-            e.audit_denied(&session.name, caller, text)?;
+            e.audit_denied(&session.name, caller, &origin)?;
             Err(denied(detail))
         };
         let commands: Vec<_> = items
@@ -120,7 +139,7 @@ impl<R: Runtime> RoleAuthority<R> {
             match need(c, &params) {
                 Need::Capabilities(capabilities) => {
                     for capability in capabilities {
-                        self.demand(session, caller, text, *capability)?;
+                        self.demand(session, caller, &origin, *capability)?;
                     }
                 }
                 Need::BundleOwner(bundle) => {
@@ -153,18 +172,18 @@ impl<R: Runtime> RoleAuthority<R> {
         &self,
         session: &RoleSession<R>,
         caller: &Val,
-        text: &[u8; 32],
+        origin: &CallOrigin,
         capability: Capability,
     ) -> Result<(), Error> {
         let got = self.require(session, capability, false);
-        self.record_refusal(session, caller, text, got)
+        self.record_refusal(session, caller, origin, got)
     }
 
-    fn record_refusal<T>(
+    pub(super) fn record_refusal<T>(
         &self,
         session: &RoleSession<R>,
         caller: &Val,
-        text: &[u8; 32],
+        origin: &CallOrigin,
         got: Result<T, Error>,
     ) -> Result<T, Error> {
         if matches!(
@@ -177,51 +196,72 @@ impl<R: Runtime> RoleAuthority<R> {
             if let Some(quarantined) = e.refusal() {
                 return Err(quarantined);
             }
-            e.audit_denied(&session.name, caller, text)?;
+            e.audit_denied(&session.name, caller, origin)?;
         }
         got
     }
 }
 
-/// What a task of a role but the embedded owner rechecks when it leaves the queue.
-pub(super) struct Readmission<R: Runtime> {
-    pub(super) session: RoleSession<R>,
-    pub(super) items: Vec<AdhocItem>,
-    pub(super) params: Vec<String>,
-    pub(super) assertion: Option<Val>,
+/// What a task rechecks when it leaves the queue.
+pub(super) enum Readmission<R: Runtime> {
+    Text {
+        session: RoleSession<R>,
+        text: [u8; 32],
+        items: Vec<AdhocItem>,
+        params: Vec<String>,
+        assertion: Option<Val>,
+    },
+    Registered {
+        binding: RoleBinding<R>,
+        ordinal: u32,
+        assertion: Option<Val>,
+    },
 }
 
 impl<R: Runtime> Readmission<R> {
-    /// Refuse the text of hash `text` with `Denied`, recorded in the audit, unless the session's
-    /// role may still issue it.
-    pub(super) fn check(&self, e: &Engine<R>, text: &[u8; 32]) -> Result<(), Error> {
-        let authority = RoleAuthority {
-            engine: self.session.engine.clone(),
-        };
-        let caller = authority.admit_caller(&self.session, text, self.assertion.as_ref())?;
-        authority
-            .admit_items(&self.session, e, &self.items, &self.params, &caller, text)
-            .map(drop)
+    /// Refuse the call with `Denied`, recorded in the audit, unless the session's role may still
+    /// make it, and a registered call whose bundle has left its lifecycle.
+    pub(super) fn check(&self, e: &Engine<R>) -> Result<(), Error> {
+        match self {
+            Readmission::Text {
+                session,
+                text,
+                items,
+                params,
+                assertion,
+            } => {
+                let authority = session.authority();
+                let caller = authority.admit_caller(session, text, assertion.as_ref())?;
+                authority
+                    .admit_items(session, e, items, params, &caller, text)
+                    .map(drop)
+            }
+            Readmission::Registered {
+                binding,
+                ordinal,
+                assertion,
+            } => binding.recheck(e, *ordinal, assertion.as_ref()),
+        }
     }
 }
 
 impl<R: Runtime> Engine<R> {
-    /// Record, in a transaction of its own, that `role` running for `caller` was refused ad hoc
-    /// text of hash `text`, unless a mark stops the row.
+    /// Record, in a transaction of its own, that `role` running for `caller` was refused the call
+    /// of `origin`, unless a mark stops the row.
     pub(in super::super) fn audit_denied(
         &self,
         role: &str,
         caller: &Val,
-        text: &[u8; 32],
+        origin: &CallOrigin,
     ) -> Result<(), Error> {
         self.audit_unless_marked(|| {
             store::run(self, true, &mut |e, _, id, changes| {
-                Tables::new(&e.schema, id).audit_denied(e, changes, role, caller, text)
+                Tables::new(&e.schema, id).audit_denied(e, changes, role, caller, origin)
             })
         })
     }
 
-    /// Record the ad hoc call `call`, in a transaction of its own, unless a mark stops the row.
+    /// Record the call `call`, in a transaction of its own, unless a mark stops the row.
     pub(super) fn audit_call(&self, call: &CallRow<'_>) -> Result<(), Error> {
         self.audit_unless_marked(|| {
             let seq = self.audit_seq()?;
@@ -254,7 +294,7 @@ impl<R: Runtime> Engine<R> {
         Some(self.write_error(TxnId(0), marked))
     }
 
-    /// Add the row of ad hoc call `call`, the transaction `id`, to `tx` before its commit.
+    /// Add the row of call `call`, the transaction `id`, to `tx` before its commit.
     pub(super) fn audit_call_in(
         &self,
         tx: &Txn,

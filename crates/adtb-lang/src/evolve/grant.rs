@@ -836,8 +836,8 @@ fn family_covers(calls: &dyn CallSignatures, by: &str, row: &str) -> Option<bool
     Some(false)
 }
 
-/// Returns whether whole bundle `bundle` declares the query of family target `family`. A bundle
-/// of the family `calls` cannot read counts as declaring it.
+/// Returns whether whole bundle `bundle` declares the query of family target `family` with its
+/// ids. A bundle or target of the family `calls` cannot read counts as declaring it.
 fn bundle_declares(calls: &dyn CallSignatures, family: &str, bundle: &str) -> bool {
     let Some((name, query)) = family_query(family).and_then(|t| t.split_once("::")) else {
         return false;
@@ -845,6 +845,10 @@ fn bundle_declares(calls: &dyn CallSignatures, family: &str, bundle: &str) -> bo
     !bundle.contains("::")
         && bundle.rsplit_once('-').is_some_and(|(f, _)| f == name)
         && calls.declares(bundle, query).unwrap_or(true)
+        && calls
+            .query(bundle, query)
+            .zip(calls.family(family))
+            .is_none_or(|(of_bundle, of_family)| of_bundle == of_family)
 }
 
 /// Returns whether a row of `privilege` on target `row` is one a row on target `by` covers: the

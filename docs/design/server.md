@@ -515,8 +515,8 @@ The embedded facade already binds and renews registered calls, runs
 transaction retries, and propagates stop options. It currently
 materializes DynRows and ArrowStream and uses owner authority. The
 role administration, capability checks and principal derivation of
-§3.1 are implemented. Role-backed query execution, relation and field
-grants, call and family grants, checked binding descriptors,
+§3.1 are implemented, as are call and family grants and checked binding.
+Role-backed ad hoc reads and writes, relation and field grants,
 authentication and complete audit recording remain unimplemented.
 Checked registration through a role session, durable family ownership
 and the definer recheck at migration are implemented; the `register
@@ -524,10 +524,25 @@ bundle` command and `BlockingMigration` notices are not.
 The implemented authority provider is not an execution authorization
 boundary for the existing owner facade.
 
-`Registered::submit` returns an owned `Task` for the embedded owner's
-role and refuses every other role with `Denied`.
-`RoleSession::submit_text` does the same for a query, a write or a
-command that names a statement; any other role holding `adhoc` submits
+`RoleAuthority::bind` returns a `RoleBinding` whose `submit` returns an
+owned `Task` running for the session's role. The schema owner and a
+bundle's owner hold every call; any other role holds a call by a `call`
+row: on the bundle, the query, or the family with ids equal to the
+pinned entry's, and a Log `call fn` row for an imported function. A bind
+decides authority before anything else about the bundle, and a refused
+bind's `Denied` row names the bundle with query 0. A binding describes
+only the callables the role may call when it binds; a later grant is
+callable by ordinal with no rebind. A submit answers `UnknownQuery` for
+an ordinal past the bundle's callables before authority, and every
+refused call of a binding has one `Denied` detail. The task
+checks authority and lifecycle once more on leaving the queue, not per
+attempt. `Binding` omits the idle and transaction limits, which no
+setting holds yet, and compares a catalog pin by position, since the
+catalog has no version hashes. A descriptor's types name schema ids,
+with no constructor identifiers until the wire conversion exists.
+`RoleSession::submit_text` runs a query, a write or a
+command that names a statement only for the embedded owner's role, and
+refuses every other role with `Denied`; any other role holding `adhoc` submits
 commands that capabilities or bundle ownership alone decide, and the
 engine decides each from the parsed text at submit, before checking it
 against the schema. A command value counts when it computes from
@@ -549,17 +564,18 @@ row fails with its transaction. A call that changed nothing answers and
 writes no `Call` row: a read, a refusal, `verify`, `explain`, `vacuum`,
 `reindex`, and a write statement whose change set is empty.
 
-Every `RoleSession::submit_text` that checks or runs writes one `Call` row,
-except a call refused with `Denied`, which has its `Denied` row, and a call
-the queue refuses. A parameter that does not print as its type refuses the
-call before it checks, with no row. A write's row commits with it; any other call's row commits in
+Every `RoleSession::submit_text` and `RoleBinding::submit` that checks or runs
+writes one `Call` row, except a call refused with `Denied`, which has its
+`Denied` row, and a call the queue refuses. A parameter that does not print as
+its type, and a registered argument of another type, refuses the call before it
+checks, with no row. A write's row commits with it; any other call's row commits in
 a system transaction before the call settles. A task stopped while the engine
 closes writes none. `args` hashes the canonical text of the parameters;
 the wire encoding of values is not implemented in the engine. Retiring a
 bundle writes its `Retire` row in the transaction that retires it. `Grant`
 rows name the role that issued the change. Calls through the synchronous
-facade and registered calls write no `Call` row, and `Register`, `SchemaOp`,
-`Commit` and `Login` rows are not written.
+facade write no `Call` row, and `Register`, `SchemaOp`, `Commit` and `Login`
+rows are not written.
 
 The engine starts its task
 scheduler on the first submit. A

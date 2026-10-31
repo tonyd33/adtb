@@ -1,3 +1,4 @@
+mod binding;
 mod call;
 mod grant;
 mod initialize;
@@ -23,8 +24,10 @@ use crate::runtime::Runtime;
 use super::{Database, Engine, Error, OWNER_ROLE, RejectReason, TxnId};
 use grant::Calls;
 use store::Changes;
+pub(super) use tables::CallOrigin;
 use tables::{Given, Grant, Role, Tables};
 
+pub use binding::{Binding, CallDescriptor, CallKind, Pins, RoleBinding};
 pub use result::{Completion, Format, Layout, ResultBatch};
 pub use session::RoleSession;
 pub use task::{Observation, Task, TaskOptions};

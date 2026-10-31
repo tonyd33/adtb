@@ -171,6 +171,12 @@ impl Row {
         now - self.renewed >= lease / 8 && now < self.renewed + lease
     }
 
+    /// Returns when the lease runs out under the file settings `s`, in microseconds since the
+    /// epoch, before the primary's grace.
+    pub(super) fn lease_until(&self, s: &Settings) -> i64 {
+        self.renewed + self.header.lease(s)
+    }
+
     /// Returns why a bind or call of the bundle is refused at `now`, the call's query named
     /// `query`, if it is.
     fn refusal(&self, now: i64, s: &Settings, query: &str) -> Option<RejectReason> {

@@ -20,7 +20,7 @@ use super::super::text::{DynRows, Prepared};
 use super::super::{Closes, Engine, Error, Halted, Position, RejectReason, TxnId};
 use super::result::{Completion, Layout};
 use super::session::Readmission;
-use super::tables::CallRow;
+use super::tables::{CallOrigin, CallRow};
 use super::task::{Out, Request, Shared, TaskOptions, stopped};
 
 /// What a task calls.
@@ -38,10 +38,10 @@ impl Work {
     }
 }
 
-/// What the call of ad hoc text keeps for its audit row and its recheck.
-pub(super) struct TextCall<R: Runtime> {
+/// What a role's call keeps for its audit row and its recheck.
+pub(super) struct RoleCall<R: Runtime> {
     pub(super) role: String,
-    pub(super) text: [u8; 32],
+    pub(super) origin: CallOrigin,
     pub(super) args: [u8; 32],
     pub(super) readmission: Option<Readmission<R>>,
 }
@@ -119,8 +119,8 @@ pub(super) struct Call<R: Runtime> {
     close: Closes,
     shared: Arc<Shared<R>>,
     work: Work,
-    /// Ad hoc text not yet recorded in the audit.
-    text: Option<TextCall<R>>,
+    /// A role's call not yet recorded in the audit.
+    role_call: Option<RoleCall<R>>,
     opts: TaskOptions,
     grant: Option<Arc<Grant>>,
     phase: Phase<R>,
@@ -148,7 +148,7 @@ impl<R: Runtime> Call<R> {
         engine: &Arc<Engine<R>>,
         shared: Arc<Shared<R>>,
         work: Work,
-        text: Option<TextCall<R>>,
+        role_call: Option<RoleCall<R>>,
         opts: TaskOptions,
     ) -> Call<R> {
         Call {
@@ -156,41 +156,41 @@ impl<R: Runtime> Call<R> {
             close: engine.close.clone(),
             shared,
             work,
-            text,
+            role_call,
             opts,
             grant: None,
             phase: Phase::Start,
         }
     }
 
-    /// Refuse a text whose role may no longer issue it, once, when the call leaves the queue. A
+    /// Refuse a call whose role may no longer make it, once, when the call leaves the queue. A
     /// refusal has its `Denied` row and writes no `Call` row.
     fn readmit(&mut self, e: &Engine<R>) -> Result<(), Error> {
-        let Some(text) = self.text.as_mut() else {
+        let Some(call) = self.role_call.as_mut() else {
             return Ok(());
         };
-        let Some(readmission) = text.readmission.take() else {
+        let Some(readmission) = call.readmission.take() else {
             return Ok(());
         };
-        readmission.check(e, &text.text)
+        readmission.check(e)
     }
 
-    fn call_row<'c>(&'c self, text: &'c TextCall<R>, failed: Option<&'c Error>) -> CallRow<'c> {
+    fn call_row<'c>(&'c self, call: &'c RoleCall<R>, failed: Option<&'c Error>) -> CallRow<'c> {
         CallRow {
-            role: &text.role,
+            role: &call.role,
             caller: self.work.prepared().caller(),
-            text: &text.text,
-            args: &text.args,
+            origin: &call.origin,
+            args: &call.args,
             failed,
         }
     }
 
     /// Record a call that did not write, in a transaction of its own, unless it is recorded.
     fn audit(&mut self, e: &Engine<R>, failed: Option<&Error>) -> Result<(), Error> {
-        let Some(text) = self.text.take() else {
+        let Some(call) = self.role_call.take() else {
             return Ok(());
         };
-        e.audit_call(&self.call_row(&text, failed))
+        e.audit_call(&self.call_row(&call, failed))
     }
 
     /// Record the failure `err`, or the owner's request that replaces it. Returns the error to
@@ -206,7 +206,7 @@ impl<R: Runtime> Call<R> {
                 reason: RejectReason::Denied { .. }
             }
         ) {
-            self.text = None;
+            self.role_call = None;
         }
         match self.audit(e, Some(&shown)) {
             Ok(()) => shown,
@@ -255,7 +255,7 @@ impl<R: Runtime> Call<R> {
             e.renew(b.name());
         }
         let p = self.work.prepared();
-        if self.text.is_some()
+        if self.role_call.is_some()
             && p.commands().iter().any(|c| changes_data(&c.command))
             && let Some(marked) = e.audit_unwritable()
         {
@@ -614,8 +614,8 @@ impl<R: Runtime> Call<R> {
             }
         };
         let commanded = !self.work.prepared().commands().is_empty();
-        let marked = self.text.as_ref().and_then(|_| e.audit_unwritable());
-        let row = match (&self.text, marked) {
+        let marked = self.role_call.as_ref().and_then(|_| e.audit_unwritable());
+        let row = match (&self.role_call, marked) {
             (Some(_), Some(marked)) if tx.wrote() => {
                 e.abort(id, tx)?;
                 return Err(marked);
@@ -639,7 +639,7 @@ impl<R: Runtime> Call<R> {
         }
         let done = e.db.commit(tx);
         if done.is_ok() {
-            self.text = None;
+            self.role_call = None;
         }
         let after = self.shared.defer(|s| {
             s.committing = false;

@@ -16,17 +16,16 @@ use crate::runtime::Runtime;
 
 use super::super::text::Prepared;
 use super::super::{
-    CallOptions, CancelToken, Engine, Error, Limit, OWNER_ROLE, Registered, RejectReason,
-    RetryReason,
+    CallOptions, CancelToken, Engine, Error, Limit, OWNER_ROLE, RejectReason, RetryReason,
 };
-use super::call::{Call, TextCall, Work};
+use super::call::{Call, RoleCall, Work};
 use super::result::{Completion, Format, Layout, ResultBatch};
 use super::session::{Readmission, text_hash};
-use super::tables::CallRow;
-use super::{RoleAuthority, RoleSession, denied};
+use super::tables::{CallOrigin, CallRow};
+use super::{RoleAuthority, RoleSession};
 
 /// The bytes a queued task's metadata counts for besides its arguments.
-const TASK_BYTES: usize = 256;
+pub(super) const TASK_BYTES: usize = 256;
 
 /// The options of a submitted call.
 #[derive(Clone, Debug, Default)]
@@ -315,29 +314,6 @@ impl<R: Runtime> Drop for Task<R> {
     }
 }
 
-impl<R: Runtime> Registered<R> {
-    /// Submit the call of `ordinal` with `args` under `session` as a task.
-    ///
-    /// Refuse a session of any role but the embedded owner with `Denied`, and a call the
-    /// admission queue has no room for, without running it.
-    pub fn submit(
-        &self,
-        session: &RoleSession<R>,
-        ordinal: u32,
-        args: Vec<Val>,
-        opts: TaskOptions,
-    ) -> Result<Task<R>, Error> {
-        let caller = owner(session, opts.call.assert.as_ref())?;
-        let e = self.engine_ref().upgrade().ok_or_else(Error::closed)?;
-        let _open = e.enter()?;
-        let bound = self.bound(&e, ordinal, &args, caller)?;
-        let bytes = TASK_BYTES + args.iter().map(Val::size).sum::<usize>();
-        let class = bound.priority;
-        let work = Work::Registered(Box::new(bound));
-        submit(&e, work, None, opts, class, bytes)
-    }
-}
-
 impl<R: Runtime> RoleSession<R> {
     /// Submit ad hoc `text` as a task, each free name typed and bound by `params`.
     ///
@@ -356,6 +332,7 @@ impl<R: Runtime> RoleSession<R> {
         };
         let assertion = opts.call.assert.clone();
         let hash = text_hash(text);
+        let origin = CallOrigin::AdHoc(hash);
         let caller = authority.admit_caller(self, &hash, assertion.as_ref())?;
         let e = self.engine.upgrade().ok_or_else(Error::closed)?;
         let names: Vec<String> = params.iter().map(|(n, ..)| (*n).to_owned()).collect();
@@ -365,7 +342,8 @@ impl<R: Runtime> RoleSession<R> {
             Err(_) => None,
         };
         let _open = e.enter()?;
-        let args = args_hash(&e.schema, params)?;
+        let typed: Vec<_> = params.iter().map(|(n, t, v)| (*n, t, v)).collect();
+        let args = args_hash(&e.schema, &typed)?;
         let checked = parsed
             .map_err(|err| e.refusal().unwrap_or(err))
             .and_then(|items| {
@@ -385,7 +363,7 @@ impl<R: Runtime> RoleSession<R> {
                 e.audit_call(&CallRow {
                     role: &self.name,
                     caller: &caller,
-                    text: &hash,
+                    origin: &origin,
                     args: &args,
                     failed: Some(&err),
                 })?;
@@ -393,15 +371,16 @@ impl<R: Runtime> RoleSession<R> {
             }
         };
         p.issuer = issuer;
-        let readmission = (self.name != OWNER_ROLE).then(|| Readmission {
+        let readmission = (self.name != OWNER_ROLE).then(|| Readmission::Text {
             session: self.clone(),
+            text: hash,
             items,
             params: names,
             assertion,
         });
-        let call = TextCall {
+        let call = RoleCall {
             role: self.name.clone(),
-            text: hash,
+            origin,
             args,
             readmission,
         };
@@ -412,12 +391,12 @@ impl<R: Runtime> RoleSession<R> {
 }
 
 /// Returns the BLAKE3-256 hash of the canonical text of `params`, by name.
-fn args_hash(schema: &Schema, params: &[(&str, Ty, Val)]) -> Result<[u8; 32], Error> {
+pub(super) fn args_hash(schema: &Schema, params: &[(&str, &Ty, &Val)]) -> Result<[u8; 32], Error> {
     let mut sorted: Vec<_> = params.iter().collect();
     sorted.sort_by_key(|(name, ..)| *name);
     let mut hasher = blake3::Hasher::new();
     for (name, ty, value) in sorted {
-        let shown = print(value, &Form::of(schema, ty)).map_err(|_| {
+        let shown = print(*value, &Form::of(schema, ty)).map_err(|_| {
             Error::invalid(format!("parameter `{name}` does not print as its type"))
         })?;
         hasher.update(name.as_bytes());
@@ -428,22 +407,10 @@ fn args_hash(schema: &Schema, params: &[(&str, Ty, Val)]) -> Result<[u8; 32], Er
     Ok(*hasher.finalize().as_bytes())
 }
 
-/// Returns the principal a task of `session` runs for, refusing every role but the embedded
-/// owner.
-fn owner<R: Runtime>(session: &RoleSession<R>, assert: Option<&Val>) -> Result<Val, Error> {
-    if session.name != OWNER_ROLE {
-        return Err(denied("a task runs only for the embedded owner's role"));
-    }
-    RoleAuthority {
-        engine: session.engine.clone(),
-    }
-    .principal(session, assert)
-}
-
-fn submit<R: Runtime>(
+pub(super) fn submit<R: Runtime>(
     e: &Arc<Engine<R>>,
     work: Work,
-    text: Option<TextCall<R>>,
+    role_call: Option<RoleCall<R>>,
     mut opts: TaskOptions,
     class: Priority,
     bytes: usize,
@@ -475,7 +442,7 @@ fn submit<R: Runtime>(
         let id = t.on_cancel(Waker::from(stopper.clone()));
         (t, id)
     });
-    let call = Call::new(e, shared.clone(), work, text, opts);
+    let call = Call::new(e, shared.clone(), work, role_call, opts);
     match sched.admit(entry, Box::new(call)) {
         Ok(admitted) => {
             assert!(
@@ -676,16 +643,17 @@ mod tests {
         let items = Prepared::parsed("verify").expect("parses");
         let p = Prepared::of_items(&e.schema, &e.program, &e.explained(), &items, &[], caller)
             .expect("checks");
-        let call = TextCall {
+        let call = RoleCall {
             role: "w".to_owned(),
-            text: [0; 32],
+            origin: CallOrigin::AdHoc([0; 32]),
             args: [0; 32],
-            readmission: Some(Readmission {
+            readmission: Some(Readmission::Text {
                 session: RoleSession {
                     engine: Weak::new(),
                     id: RoleId(1),
                     name: "w".to_owned(),
                 },
+                text: [0; 32],
                 items: Vec::new(),
                 params: Vec::new(),
                 assertion: None,

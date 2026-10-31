@@ -453,16 +453,16 @@ impl<'s> Tables<'s> {
         self.audit_row(e, changes, "Grant", (role, &principal), event)
     }
 
-    /// Record that `role`, running for `caller`, was refused ad hoc text of hash `text`.
+    /// Record that `role`, running for `caller`, was refused the call of `origin`.
     pub(super) fn audit_denied<R: Runtime>(
         &self,
         e: &Engine<R>,
         changes: &mut Changes,
         role: &str,
         caller: &Val,
-        text: &[u8; 32],
+        origin: &CallOrigin,
     ) -> Result<(), Error> {
-        let event = ("origin", self.adhoc_origin(text)?);
+        let event = ("origin", self.origin(origin)?);
         self.audit_row(e, changes, "Denied", (role, caller), event)
     }
 
@@ -478,7 +478,7 @@ impl<'s> Tables<'s> {
         self.audit_row(e, changes, "Retire", (role, caller), event)
     }
 
-    /// Returns the `Call` row numbered `seq` of ad hoc text `call`.
+    /// Returns the `Call` row numbered `seq` of `call`.
     pub(super) fn call_row<R: Runtime>(
         &self,
         e: &Engine<R>,
@@ -486,22 +486,29 @@ impl<'s> Tables<'s> {
         call: &CallRow<'_>,
     ) -> Result<Val, Error> {
         let fields = vec![
-            ("origin", self.adhoc_origin(call.text)?),
+            ("origin", self.origin(call.origin)?),
             ("args", Val::Bytes(Arc::from(call.args.as_slice()))),
             ("outcome", self.outcome(call.failed)?),
         ];
         self.event_row(e, seq, "Call", (call.role, call.caller), fields)
     }
 
-    fn adhoc_origin(&self, text: &[u8; 32]) -> Result<Val, Error> {
-        let adhoc = self
-            .prelude_type("Origin")?
-            .ctor_index("AdHoc")
-            .ok_or_else(|| malformed("`Origin` declares `AdHoc`"))?;
-        Ok(Val::ctor(
-            adhoc,
-            vec![Val::Bytes(Arc::from(text.as_slice()))],
-        ))
+    fn origin(&self, origin: &CallOrigin) -> Result<Val, Error> {
+        let def = self.prelude_type("Origin")?;
+        let ctor = |name: &str| {
+            def.ctor_index(name)
+                .ok_or_else(|| malformed(format!("`Origin` declares `{name}`")))
+        };
+        Ok(match origin {
+            CallOrigin::Registered { bundle, query } => Val::ctor(
+                ctor("Registered")?,
+                vec![Val::text(bundle), Val::Int(i64::from(*query))],
+            ),
+            CallOrigin::Function { name } => Val::ctor(ctor("Function")?, vec![Val::text(name)]),
+            CallOrigin::AdHoc(text) => {
+                Val::ctor(ctor("AdHoc")?, vec![Val::Bytes(Arc::from(text.as_slice()))])
+            }
+        })
     }
 
     fn outcome(&self, failed: Option<&Error>) -> Result<Val, Error> {
@@ -595,11 +602,22 @@ impl<'s> Tables<'s> {
     }
 }
 
-/// An ad hoc call as its `Call` audit row states it, `failed` its error unless it succeeded.
+/// What a call runs, as the `origin` of its audit rows states it.
+#[derive(Clone, Debug)]
+pub(in super::super) enum CallOrigin {
+    /// A query or transaction of `bundle` by ordinal, 0 for a refused bind.
+    Registered { bundle: String, query: i32 },
+    /// A schema function called directly.
+    Function { name: String },
+    /// Ad hoc text by its hash.
+    AdHoc([u8; 32]),
+}
+
+/// A call as its `Call` audit row states it, `failed` its error unless it succeeded.
 pub(super) struct CallRow<'c> {
     pub(super) role: &'c str,
     pub(super) caller: &'c Val,
-    pub(super) text: &'c [u8; 32],
+    pub(super) origin: &'c CallOrigin,
     pub(super) args: &'c [u8; 32],
     pub(super) failed: Option<&'c Error>,
 }

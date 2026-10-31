@@ -24,8 +24,11 @@ pub use api::{
     OpenError, OpenOptions, Position, RecordBatch, Registered, Registration, RejectReason,
     RetryReason, RoleAuthority, RoleSession, TxnCallOptions, TxnId, TxnOptions,
 };
+pub use api::{
+    Binding, CallDescriptor, CallKind, Completion, Format, Layout, Observation, Pins, ResultBatch,
+    RoleBinding, Task, TaskOptions,
+};
 pub use api::{BundleDef, Callable, CtorRelation, Key, Pending, Rows, typed};
-pub use api::{Completion, Format, Layout, Observation, ResultBatch, Task, TaskOptions};
 #[cfg(target_os = "linux")]
 pub use api::{VerifyFileError, open, verify_file};
 pub use exec::HostError;

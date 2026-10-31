@@ -29,9 +29,10 @@ fn roots() {
     black_box(T::rollback as fn(_) -> _);
     black_box(Load::<SimRuntime>::commit as fn(_) -> _);
     black_box(G::call as fn(_, _, _, _) -> _);
-    black_box(G::submit as fn(_, _, _, _, _) -> _);
     black_box(A::session as fn(_, _) -> _);
     black_box(A::register as fn(_, _, _) -> _);
+    black_box(A::bind as fn(_, _, _, _) -> _);
+    black_box(adtb::RoleBinding::<SimRuntime>::submit as fn(_, _, _, _) -> _);
     black_box(RoleSession::<SimRuntime>::submit_text as fn(_, _, _, _) -> _);
     black_box(Task::<SimRuntime>::observe as fn(_, _) -> _);
 }

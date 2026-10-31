@@ -691,6 +691,34 @@ fn a_dormant_option_keeps_no_row_a_deployment_revoke_orphans() {
 }
 
 #[test]
+fn a_dormant_call_row_allows_nothing() {
+    let shop = "module shop\nadd module shop\nadd type Customer = { id: Key customers, name: Text }\nadd relation customers : Customer key id generate sequence\n";
+    let (_scratch, db) = opened(&Log::new([shop]));
+    let authority = db.role_authority();
+    authority.create_role("web").unwrap();
+    let owner = authority.session("owner").unwrap();
+    let hash: String = crate::catalog::version_hash(&db.engine.schema, &db.engine.source)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let bundle = format!(
+        "bundle web-1.0 pins 1 ({hash}) edition \"2026-10\"\nimport shop\nquery q () -> Set Text = from c in customers select c.name\n"
+    );
+    authority
+        .register(&owner, &Registration::bundle(bundle).unwrap())
+        .unwrap();
+    authority
+        .grant(&owner, "grant call web-1.0 to web")
+        .unwrap();
+    let web = authority.session("web").unwrap();
+    authority
+        .bind(&web, "web-1.0", &Default::default())
+        .unwrap();
+    dormant_owner_grant(&authority);
+    denied(authority.bind(&web, "web-1.0", &Default::default()));
+}
+
+#[test]
 fn a_revoke_from_the_schema_owner_orphans_nothing() {
     let (_scratch, db) = opened(&Log::default());
     let authority = db.role_authority();
@@ -716,7 +744,11 @@ fn an_audit_write_after_close_is_refused_as_closed() {
     let engine = db.engine.clone();
     let caller = engine.principal(None).expect("principal");
     db.close().expect("close");
-    let got = engine.audit_denied("w", &caller, &[0; 32]);
+    let got = engine.audit_denied(
+        "w",
+        &caller,
+        &crate::api::server::CallOrigin::AdHoc([0; 32]),
+    );
     assert!(format!("{got:?}").contains("Closed"), "{got:?}");
 }
 
@@ -730,7 +762,12 @@ fn a_role_dropped_in_the_admit_window_refuses_with_its_audit_row() {
     let denied_rows = "from a in catalog::audit.Denied select a.seq";
     let service = super::service(&db.engine.schema, "w");
     assert_eq!(0, rows(&db, denied_rows).len());
-    denied(authority.admit_principal(&w, &service, &[0; 32], None));
+    denied(authority.admit_principal(
+        &w,
+        &service,
+        &crate::api::server::CallOrigin::AdHoc([0; 32]),
+        None,
+    ));
     assert_eq!(1, rows(&db, denied_rows).len());
 }
 

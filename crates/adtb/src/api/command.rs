@@ -14,6 +14,7 @@ use crate::plan::explain::{Actual, Node, json_text, object};
 use crate::runtime::Runtime;
 use crate::write::{self, Bounds, HoldWait, Local, Outcome, Text, Txn, VacuumHold};
 
+use super::server::CallOrigin;
 use super::text::{DynRows, Issuer, Prepared, rows};
 use super::{Capability, Engine, Error, unsupported};
 
@@ -428,7 +429,7 @@ impl<R: Runtime> Engine<R> {
         if !found.any_left(|row| matches!(row, Val::Ctor(c, _) if *c == violation)) {
             return Ok(());
         }
-        self.audit_denied(&issuer.role, caller, &issuer.text)
+        self.audit_denied(&issuer.role, caller, &CallOrigin::AdHoc(issuer.text))
             .map_err(|e| write::Error::Internal(format!("recording a denied call: {e:?}")))?;
         Err(write::Error::Denied(format!(
             "role `{}` lacks `read` on the rows of the `Violation` witnesses of `verify`",

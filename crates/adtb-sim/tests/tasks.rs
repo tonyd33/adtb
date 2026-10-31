@@ -14,8 +14,8 @@ use adtb::key::Scalar;
 use adtb::runtime::{Clock, Io, Op, Runtime, ThreadId, Threads};
 use adtb::{
     CallOptions, CancelToken, Completion, CreateOptions, Database, Determinism, Error, Format,
-    HostFns, Log, Observation, OpenOptions, Registration, RejectReason, RetryReason, RoleSession,
-    Task, TaskOptions, TxnCallOptions, TxnOptions, Value,
+    HostFns, Log, Observation, OpenOptions, Pins, Registration, RejectReason, RetryReason,
+    RoleSession, Task, TaskOptions, TxnCallOptions, TxnOptions, Value,
 };
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::seeds::sweep;
@@ -213,9 +213,10 @@ fn text<R: Runtime>(db: &Database<R>, t: &str) -> Vec<Vec<Value>> {
 impl<R: Runtime> Fixture<R> {
     fn submit(&self, ordinal: u32, opts: TaskOptions) -> Task<R> {
         self.db
-            .registered("shop")
+            .role_authority()
+            .bind(&self.owner, "shop", &Pins::default())
             .unwrap()
-            .submit(&self.owner, ordinal, Vec::new(), opts)
+            .submit(ordinal, Vec::new(), opts)
             .unwrap()
     }
 
@@ -968,11 +969,7 @@ fn a_role_other_than_the_owner_is_refused() {
         let authority = f.db.role_authority();
         authority.create_role("web").unwrap();
         let web = authority.session("web").unwrap();
-        let err =
-            f.db.registered("shop")
-                .unwrap()
-                .submit(&web, 1, Vec::new(), read_opts())
-                .unwrap_err();
+        let err = authority.bind(&web, "shop", &Pins::default()).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -1298,9 +1295,10 @@ fn a_concurrent_close_returns_once_the_file_is_released() {
     text(&db, &fill(10));
     let owner = db.role_authority().session("owner").unwrap();
     let hold = db
-        .registered("shop")
+        .role_authority()
+        .bind(&owner, "shop", &Pins::default())
         .unwrap()
-        .submit(&owner, 4, Vec::new(), read_opts())
+        .submit(4, Vec::new(), read_opts())
         .unwrap();
     hold.supply(usize::MAX);
     wait_for(&rt, || gate.entered.load(Ordering::Acquire));

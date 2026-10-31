@@ -5,7 +5,7 @@ use adtb_sys::os::OsRuntime;
 
 use super::{
     AdHocTransaction, Database, Load, Log, OpenError, OpenOptions, Registered, RoleAuthority,
-    RoleSession, Task,
+    RoleBinding, RoleSession, Task,
 };
 
 /// Compile the public API at the host's runtime in this crate. Dependents at an opt level that
@@ -64,7 +64,6 @@ fn registered() {
     black_box(G::call as fn(_, _, _, _) -> _);
     black_box(G::call_arrow as fn(_, _, _, _) -> _);
     black_box(G::clone as fn(_) -> _);
-    black_box(G::submit as fn(_, _, _, _, _) -> _);
 }
 
 fn authority() {
@@ -79,6 +78,9 @@ fn authority() {
     black_box(A::revoke as fn(_, _, _) -> _);
     black_box(A::require as fn(_, _, _, _) -> _);
     black_box(A::register as fn(_, _, _) -> _);
+    black_box(A::bind as fn(_, _, _, _) -> _);
+    black_box(RoleBinding::<OsRuntime>::binding as fn(_) -> _);
+    black_box(RoleBinding::<OsRuntime>::submit as fn(_, _, _, _) -> _);
     black_box(A::principal as fn(_, _, _) -> _);
     black_box(S::role_name as fn(_) -> _);
     black_box(S::submit_text as fn(_, _, _, _) -> _);
