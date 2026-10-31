@@ -97,6 +97,7 @@ At every quality cadence, and before a milestone exit, dispatch a fresh read-onl
   agent whose brief points at that note.
   Fix trivial rebase fallout yourself.
 - Run at most 2 tracks that build at once, until the maintainer says otherwise: tracks spend most of their time waiting on builds. A read-only track, one that runs no build, is exempt. Run at most 5 agents at once in all.
+- A review of a large surface always finds something, so "until a review is clean" does not end. A blocker is a defect this track's diff introduces or makes reachable, that loses acknowledged data or gives a wrong answer through normal use. Anything else, including a defect the base already has, goes on a ticket, and severe ones go first in the queue. Holding a track back does not protect anyone from a bug already on main. A track gets at most one delta review after its redesign, limited to that round's diff; a further blocker is fixed and checked with no new review. Past that, land or abandon it, and say which.
 - After a review with blockers, review the delta yourself or with a fresh
   agent; a blocker-free round needs no new full review. Run the full check
   only on the final round.
