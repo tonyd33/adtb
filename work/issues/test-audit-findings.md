@@ -41,7 +41,7 @@ A `refused_with(reason)` helper, `#[must_use]` on `fails`, and a house-check fla
 
 - adtb-sim/tests: oplog.rs:1479,1487, server_adhoc.rs:1010,251,1693, lost_bitmap.rs:318,651, write_states.rs:1594, grant_rows.rs:1147, server_binding.rs:1829,1922, quarantine.rs:149, reindex_review.rs:966,1016,1040,181, reindex.rs:823.
 - adtb-conformance/tests/engine_runner.rs:59,102,115. adtb/src/api/server/tests.rs:591,328,752. adtb/src/catalog/tests.rs:478,488. adtb/src/btree/tests.rs:48,159. adtb-lang/src/check/tests/writes.rs:220,226,245, mod.rs:511 (needle "expected").
-- adtb-shell/tests/shell.rs:256,338,351,606,638. adtb-codegen-tests calls.rs:496. adtb-sim/tests/differential.rs (adtb-testkit) :591.
+- adtb-shell/tests/shell.rs:256,338,351,606,638. adtb-codegen-tests calls.rs:496. adtb-testkit/tests/differential.rs:591.
 
 ## 4. Names claim only what runs
 
