@@ -126,7 +126,11 @@ At every quality cadence, and before a milestone exit, dispatch a fresh read-onl
 - Treat every spec change an implementation asks for as suspect. Name the
   tier it belongs to before accepting it.
 - File the gaps agents report as tickets.
-- Once an agent has reported, message it again only when it must act.
+- Start or resume a task for every instruction requiring action, including
+  follow-up to an existing author. A context-only message can queue on a
+  completed thread without starting a turn. Use such messages only for
+  information, and verify accepted execution before calling work active.
+  Once an agent has reported, contact it again only when it must act.
   Save each report's handoff note and verification receipts to
   `work/briefs/handoff-NAME.md`; update the durable task state with unresolved
   failures, dependencies and the next action. Keep same-track follow-up

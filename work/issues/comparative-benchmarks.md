@@ -188,3 +188,27 @@ reference fixtures and captures unchanged inputs and command exits. No default
 engine/campaign/Loom/Miri rerun is required solely by adding private opt-in
 packages. Final scope, review and integration evidence remain necessary before
 landing the checkpoint. Measurement readiness and this feature remain open.
+
+
+## 2026-11-01: first native driver checkpoint landed
+
+Landed `e68af8b5487d` after independent source review and one focused delta
+review. The tested combined tree is identical to the initial landed tree.
+All 24 reviewed tool/manifest/fixture inputs matched; all 3214 tracked file
+hash/mode/symlink entries, commit identity and status stayed unchanged through
+final verification. Native package: six tests passed, zero skipped, 0.499s.
+The three selected workspace heap-cap consumers passed; binary discovery
+and its nested default-workspace build took 374.476s. This is build/discovery
+cost, not benchmark timing or semantic engine-test execution. Formatting,
+house and size checks passed. Unchanged strict default/native lint,
+locked-graph dependency policy and explicit native-binary containment receipts
+were retained under the isolated-leaf rule. No duplicate full engine run ran.
+
+The checkpoint supplies real native generated calls and retained SQLite
+prepared statements, deterministic complete/prefix/reopen oracles, and the
+corrected compatible-history checker. It introduces no comparative timing,
+measurement readiness, optimization or beta-exit claim. Full declaration/FK/
+subset/unique/transition refusal controls and corresponding mutations, actual
+ambiguous-commit and externally flushed child-kill controls, hard containment,
+resource reporting and large-data feasibility remain open. Keep this feature
+open for those controls and the later reviewed measurement phase.

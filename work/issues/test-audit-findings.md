@@ -364,3 +364,28 @@ unchanged shared compiled fixture; its broader compilation cost remains.
 This batch is complete. The remaining 71 write families and the wider Rust
 inventory remain open; their ordinary data is not declared unmigratable.
 Use the retained complete family map to choose the next closed cohort.
+
+
+## 2026-11-01: ordinary reference-write cohort extended
+
+Landed `1dc91ac6a423` after independent preservation review. Another 23
+families move 24 statement outcomes, 12 assertion queries and nine native
+table counts into 45 runtime steps. Totals are 30 of 78 write families and
+59 runtime steps; all 48 retained wrappers are byte-identical. The prior seven
+families, setup/schema, query corpus and shared/testkit code remain unchanged.
+Two small typed assertions compare successful Outcome.result and native table
+cardinality. Exact Key(Int), Option, unit, UUID and binding values remain
+native comparisons, with normalization and refusal-state checks preserved.
+
+The complete reference-package run passed 188/188 tests across ten binaries,
+zero skipped, native exit zero, in 2.415 seconds including the warm build
+(1.602s execution). All 3237 combined tracked file/metadata entries, revision
+and status were identical before and after on the exact landed revision.
+All 27 reviewed paths matched after rebase onto the native-tool checkpoint;
+other main paths were retained. Strict lint and static receipts apply to the
+same source/configuration. No post-land rerun or full engine suite is needed.
+New exact result/count bridge perturbations and data witnesses failed their
+intended assertions, including unit comparison; restored healthy runs passed.
+Runtime edit/addition kept executable hash and mtime unchanged. These do not
+establish a clean-build or whole-suite speedup. The remaining 48 families and
+wider inventory stay open for later typed fixture extensions.

@@ -176,9 +176,9 @@ Report: files changed, what works, tests and which fail, contracts you
 wrote into design files, spec gaps, and anything you stopped on. Plain
 prose. End with a handoff note of at most 15 lines: the files and
 functions a successor must know, with line ranges, verification receipt
-or link, incomplete checks and next action. Your session ends
-with the report; follow-up work goes to a new agent that reads that
-note.
+or link, incomplete checks and next action. End the assigned turn with the
+report. The lead may resume the same author for corrections or a related
+cohort; a replacement reads the handoff before taking ownership.
 
 ## Tickets
 

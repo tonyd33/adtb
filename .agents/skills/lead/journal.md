@@ -316,3 +316,19 @@ bounded metadata comparison was already sufficient for the resolved graph;
 it was not a compiler unit-graph receipt. Do not seek an absolute proof by
 expanding a DAG into paths. Actual workspace discovery consumers remain part
 of the final assignment. No benchmark readiness follows from this decision.
+
+
+### 2026-11-01: use task operations for action
+
+I sent the component-demand peer a new assignment through a context message
+after its report completed. That operation queued a note without starting a
+turn, and I incorrectly treated the follow-up as active. A later live-owner
+check exposed it; I resumed the task and verified execution. Other source
+tracks continued, but that did not make the missing design work progress.
+
+The lead workflow now assigns every action through the harness's task-start
+or resume operation, reserving context messages for information. This removes
+the need to guess whether a note will wake an idle thread. The code-agent
+handoff text also now agrees with retaining an author across corrections and
+related cohorts. Execution-state claims still need observed evidence; neither
+queued text nor a past assignment establishes current work.
