@@ -27,6 +27,7 @@ version = "0.1.0"
 dependencies = [
  "adtb",
  "adtb-codegen",
+ "adtb-heap-cap",
  "adtb-lang",
  "adtb-sys",
  "rusqlite",

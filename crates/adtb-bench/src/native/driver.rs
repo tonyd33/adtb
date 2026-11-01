@@ -466,3 +466,7 @@ mod tests;
 #[cfg(test)]
 #[path = "control_tests.rs"]
 mod control_tests;
+
+#[cfg(test)]
+#[path = "crash_tests/mod.rs"]
+mod crash_tests;

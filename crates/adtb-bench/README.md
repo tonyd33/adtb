@@ -83,11 +83,13 @@ Native and SQLite unscoped-unique controls run normally with exact names,
 reports and state assertions. Native constraint names come from the shared
 schema naming boundary.
 
-Outstanding before measurement readiness: externally flushed acknowledged-prefix
-child-kill controls using these adapters and the remaining comparison protocol
-review. The buffered ledger is insufficient to certify a killed process. Resource
-counters and latency distributions are unavailable; there is no ranked
-result. Large dataset feasibility is unverified.
+The opt-in native tests exercise an externally retained acknowledged prefix
+through child termination and reopen on both adapters. They are a bounded
+correctness checkpoint described below. Measurement readiness still requires
+hard containment for the command-line workloads and the remaining comparison
+protocol review. The buffered command-line ledger cannot certify a killed
+process. Resource counters and latency distributions are unavailable; there is
+no ranked result. Large dataset feasibility is unverified.
 
 ## Build and checks
 
@@ -183,3 +185,38 @@ adtb uses direct I/O. Close/checkpoint costs are not measured here. A common bou
 adapter uses the public runtime clock interface; SQLite correctness runs
 currently have one idle Pool worker for that clock. Its process overhead
 is included if whole-process resource counters are later collected.
+
+## Acknowledged-prefix child termination
+
+The two native `acknowledged_prefix` tests read `fixtures/crash.txt` at runtime.
+For each adapter they execute the fixed N4/eight-increment smoke sequence with
+four cuts: after ACK3, after ACK8, before the next call after ACK3, and after
+that next call commits with its response withheld. These last two cuts exercise
+the absent and present sides of one identified whole pending write. Withholding
+a response is harness transport uncertainty, not native flush-failure injection
+or a native ambiguous-commit error.
+
+A writer child uses the existing real-file adapter. An ACK is a committed
+Number result received by the parent and synced to the parent's own journal
+before it permits more progress. The exact cut handshake must arrive before
+the parent kills and reaps its owned writer PID. A separate verifier child
+reopens the file and checks every relation against external expected values,
+including the empty support relations. It also runs the retained independent
+counter-history oracle against the journal, with at most the identified terminal
+call uncertain. Both a validation receipt and successful verifier exit are
+required. The parent performs no database calls.
+
+Each case gives child work and socket/exit coordination one absolute ten-second
+deadline; partial socket transfers recompute the remaining time. Error cleanup
+kills the owned PID and polls for reap for at most two additional seconds.
+Children run sequentially through the heap-cap helper under the parent's exact
+slots-2 nextest assignment, with one slot each. Child output goes to owned
+files, so no pipe-drain thread can outlive the parent. Journals, child logs and
+database files remain under `target/sqlite-crash-controls/cases`.
+
+This bound assumes the parent's filesystem and process syscalls return. Journal
+flush, file creation and process spawn have no interruptible standard-library
+deadline. The tests provide no universal wall-clock watchdog and do not add
+hard containment to the command-line operations. They establish this finite
+crash-control checkpoint, not measurement readiness or engine-wide crash
+coverage.

@@ -81,6 +81,16 @@ binary(=server_adhoc) and (
 threads-required = 2
 test-group = "slots-2"
 
+[[profile.default.overrides]]
+filter = """
+package(=adtb-bench) and binary(=adtb_bench) and (
+  test(=native::driver::crash_tests::adtb_acknowledged_prefix) or
+  test(=native::driver::crash_tests::sqlite_acknowledged_prefix)
+)
+"""
+threads-required = 2
+test-group = "slots-2"
+
 [test-groups.slots-2]
 max-threads = 64
 
