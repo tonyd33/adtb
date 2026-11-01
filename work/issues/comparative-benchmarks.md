@@ -4,7 +4,6 @@ status: in-progress
 kind: feature
 priority: 910
 summary: no reproducible cross-database baseline or recurring measured optimization cycle exists
-branch: sqlite-controls
 tags:
   - engine
   - test
@@ -241,3 +240,45 @@ tracked inputs. The author owns final verification. Retain unchanged graph,
 policy and global-discovery evidence under the isolated-leaf rule. This
 checkpoint adds no timing, large-data feasibility, crash-control, hard-watchdog
 or measurement-readiness claim; those remain subsequent bounded work.
+
+
+## 2026-11-01: schema-control checkpoint landed
+
+Landed `6510d123e637` after fresh source and retained-execution review.
+Runtime data supplies 31 shared cases, ten SQLite-only tagged-shape cases
+and two SQLite unscoped-unique cases: 74 active peer runs. Independent native
+outcomes, reports and expected logical state are checked before/after/reopen.
+Refused SQLite writes also preserve all columns, including unused encoding
+columns. Type exclusion, admission, runtime faults, statement boundaries and
+refusal-order differences remain explicit. The existing counter oracle and
+normal benchmark execution paths are unchanged; new helpers are test-only.
+
+Fourteen named probes cover 13 distinct declaration/SQL mutations; CHECK removal
+was repeated after adding the raw-state oracle. Actual guards were removed,
+native schema pins were corrected before semantic runs, and every probe failed
+its intended state/outcome assertion. Compound foreign-key removal is labelled;
+no single-declaration sensitivity is claimed for implied constraints. All
+mutations were exactly restored. The two native canonical-name regressions
+were explicitly run and failed for the known scope suffix, with correct report
+rows and state; they remain separate ignored tests, not passing coverage.
+
+Complete default package: zero tests. Complete native package: 21 passed,
+two explicit known skips, 12.145s execution and 2.28s compilation. Strict
+default/native lint, formatting, house and size checks passed. Earlier control
+runs took 8.761s and 11.382s; individual families reached 2.973s. Splitting
+families is not a speedup, and no cause is inferred from this variance.
+These are fixed runtime-corpus enforcement sweeps, not benchmark measurements.
+
+All 3271 tracked inputs/metadata entries and tested id stayed identical; only
+the parent's bookmark decoration changed in status, with identical file entries.
+All 19 reviewed tool inputs and 38 retained dependency/build/discovery/tool
+inputs matched. Landing added only independently certified reference test/data
+and reviewed ticket prose; every tool input remained identical. The leaf
+boundary justifies receipt reuse without another engine/discovery run. The
+checkpoint took approximately 19 minutes from local brief creation to landing;
+that is a whole-track observation, not coding time or a general speedup.
+
+Keep the feature open. Canonical naming, ambiguous commit and externally flushed
+acknowledged-prefix child-kill controls, hard containment, resource reporting,
+large-data feasibility, excluded pilots and frozen measurement protocol remain.
+No benchmark result, optimization, beta exit or defect-class closure is claimed.

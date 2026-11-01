@@ -38,3 +38,23 @@ checking with its canonical textual name. Class: copied rules. Reuse
 the common canonical naming mechanism if one exists, and test the
 observable name independently of the formatter under test. Do not
 change the uniqueness check or weaken the exact refusal assertion.
+
+
+## 2026-11-01: native comparison reproductions retained
+
+The landed comparison controls add two runtime-data normative regressions for
+`baseline::entities.unique(campaign,name)` and
+`baseline::sessions.unique(campaign,number)`. Both were explicitly run and
+failed on the unwanted constructor scope; exact reports, redacted count and
+before/after/reopened state matched. They remain separately ignored, with the
+normative bare expected names preserved. Their ignored status is an explicit
+comparison limitation, not successful native constraint-name coverage.
+
+Run both regressions with:
+
+```sh
+work/tools/suite -p adtb-bench --features native --lib -E 'test(control_tests)' --run-ignored only
+```
+
+Repair the shared naming mechanism before enabling these cases; do not normalize
+names in the consumer.
