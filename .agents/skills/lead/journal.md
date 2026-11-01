@@ -193,3 +193,35 @@ metadata and command execution. Authors now own execution, result assessment
 and corrections; the lead owns scheduling, evidence judgment and landing.
 The existing access-preflight rule was sufficient. I needed to apply it to
 the current session rather than treat historical failure as current evidence.
+
+
+### 2026-10-31: postmortem of the execution-ownership incident
+
+The initiating event was an earlier worker execution stall. I preserved a
+patch-only workaround in the handoff, carried it into new briefs without
+current evidence, and explicitly prohibited author execution. Authors obeyed;
+their lack of execution therefore supplied no independent evidence that the
+restriction was necessary. I nevertheless described inability as fact.
+
+That converted an uncertain environmental observation into an organizational
+constraint. I absorbed launching, monitoring and first failure triage, spent
+lead context on delegated work, and serialized handoffs. The maintainer had
+to identify both the role drift and the untested premise. Fresh probes from
+both authors immediately succeeded. Earlier stalls are not disproved, but
+they did not justify the current restriction. The precise share of elapsed
+delivery time caused by this incident is not measured.
+
+The existing worker-access rule already covered the immediate probe. The
+broader correction is an ownership and evidence contract: authors own work
+through executed verification and corrections; operational restrictions need
+current observed evidence and scope; temporary exceptions have an owner and
+an exit condition. Command delegation does not delegate diagnosis back to
+the lead. The skill and author instructions now state those contracts. The
+current handoff must separate facts, assumptions and blockers from archives.
+
+I will assess this correction through the next tracks' receipts and delivery
+stages: authors execute their checks, diagnose their failures and deliver
+reviewable evidence while independent work proceeds. If I again become the
+routine command/log relay, the ownership arrangement has failed and needs
+resolution. This is a process control, not a type-level guarantee. No new
+watcher, approval layer or test gate is warranted by this incident.

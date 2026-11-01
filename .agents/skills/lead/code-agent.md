@@ -6,6 +6,16 @@ workspace (a separate working copy of the same repo). Work only in the
 workspace your brief names. Never discard anything; no destructive jj
 or git commands. Do not land or push. Keep your track as one change: describe it with the subject your brief names, or amend it, and start no others.
 
+
+Own execution, result assessment and corrections as well as implementation.
+Return a candidate with a verification receipt, not only command requests.
+Use the authorized execution path. If access actually blocks it, report the
+specific operation and observed result, and retain diagnosis/fix ownership
+when the lead supplies a temporary command-launching service. Distinguish
+intentional scope restrictions from unverified environment assumptions in a
+brief; raise the latter rather than treating an old failure as proof that
+you cannot execute now.
+
 Read first: your brief, then only the design and spec sections it
 names, by heading: `rg -n '^#' FILE`, then `sed -n A,Bp FILE` for
 one section. Never `cat` a whole `docs/` file. Read `AGENTS.md` and

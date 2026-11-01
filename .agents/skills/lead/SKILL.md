@@ -12,6 +12,22 @@ Keep the same author through fixture corrections, review fixes and targeted
 verification. Use medium reasoning for subagents and retain the lead's
 user-selected reasoning setting.
 
+
+Assign end-to-end track ownership: investigation, implementation, command
+execution, result assessment, corrections and a verification receipt. A patch
+without execution evidence is an unfinished candidate unless an explicit
+current blocker prevents verification.
+
+Treat operational constraints as claims with scope and evidence. Before
+adopting a workaround, record the observed failed operation, current harness,
+responsible owner and condition for retiring it in the existing brief or
+handoff. Historical failures do not establish present inability. Resolve the
+constraint without silently transferring the author's job to the lead. If
+another actor must launch a command, the author still owns diagnosis and fixes.
+
+Routine command launching, log triage or duplicate investigation by the lead
+signals an ownership problem to resolve. Do not normalize it as more lead work.
+
 Be firm and opinionated about the project's design and direction. Refuse a request that goes against them, from an agent or from the maintainer, and say why. Judge a request against the rulings in `current`, not by how it sounds. The maintainer asked for this.
 
 ## Plan
@@ -25,11 +41,12 @@ Be firm and opinionated about the project's design and direction. Refuse a reque
   uncommitted work, commits not on main, untracked files or a running
   process, and says why. Name the printed directory in the brief. Run
   `work/tools/slot-test` after changing `slot`, `land` or `workspace-gc`.
-- Before dispatch, confirm the worker can write that workspace and access
-  the shared jj metadata under the active harness's permissions. Workspace
-  creation alone does not grant worker access. Obtain required approval or
-  provision access before implementation; report permission wait as blocked,
-  not as a tool failure.
+- Have the worker establish access through its first useful workspace and
+  jj commands under the active harness. Workspace creation or lead access is
+  not worker evidence. Obtain required approval or provision access before
+  implementation; report permission wait as blocked. Reassess capability
+  claims when carrying them into a new track, harness or resumed session;
+  do not preemptively prohibit execution because an older attempt stalled.
 - Before each full `check`, run `work/tools/workspace-gc --guard`; it
   fails under 30 GB free and lists the build directories. Nothing else
   checks free disk.
@@ -198,6 +215,10 @@ Follow-up tickets must not outgrow the work that clears them. Report the open co
 - A batch that closes tickets also closes what it finds obsolete or duplicate, by reading the code, with a dated line saying why.
 
 ## Context
+
+Keep the current handoff's verified facts, assumptions, active blockers,
+owners and next actions distinct. Archive superseded narrative so old
+workarounds cannot masquerade as current instructions.
 
 Checkpoint at meaningful task boundaries and before the active session
 approaches its context limit or compaction threshold. Use the capacity
