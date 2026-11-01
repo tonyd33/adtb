@@ -220,3 +220,53 @@ deadline. The tests provide no universal wall-clock watchdog and do not add
 hard containment to the command-line operations. They establish this finite
 crash-control checkpoint, not measurement readiness or engine-wide crash
 coverage.
+
+## Bound command execution
+
+`work/tools/bench-run` runs an already-built native CLI in an owned transient
+systemd user service. It never builds or retries a command. Supply positive
+runtime seconds, memory bytes and task budgets, then the existing CLI arguments:
+
+```sh
+cargo build -p adtb-bench --bin adtb-bench --features native --locked
+work/tools/bench-run 5 1610612736 64 target/debug/adtb-bench sqlite counter-smoke target/sqlite-bounded-1 4 1
+```
+
+The memory and task values are caller policy, with no implicit default. The
+cgroup memory budget includes resident C allocations and page memory, unlike
+the test heap allocator; the two limits do not establish equivalent resources.
+The example is a tiny correctness operation, not a measurement protocol.
+
+The run directory must be new. Its `database/` is passed to the unchanged CLI;
+`stdout`, `stderr`, native manager/journal logs, invocation and actual cgroup
+limit receipts, exit status and `result` remain alongside it. Startup refuses
+actual limits different from the requested memory/task budgets or zero swap.
+The manager bounds active runtime by the supplied seconds, executable startup
+by two seconds, and graceful stop by0.2seconds before SIGKILL. It owns all
+service descendants through their cgroup, including a new process session.
+No pipe-drain thread or Rust supervisor is added.
+
+Only native service success with normal exit0, matching invocation receipts and
+successful manager wait marks `result` complete. The CLI owns its existing exact
+state/history/reopen checks. Timeout, OOM, signal, refusal or missing evidence
+leaves the run invalid/incomplete. A killed CLI's buffered ACK ledger is not
+crash-safe: its acknowledged prefix is unavailable and is not validated here.
+Retain partial state for diagnosis; never retry over that run directory.
+
+The tested host is Linux with systemd262, unified cgroupv2, delegated memory/pid
+controllers and a reachable user service manager. Bash, jq and coreutils are
+required. Missing native facilities fail rather than launch without containment.
+The bound assumes manager/kernel/filesystem/process syscalls return; it is not
+a universal wall-clock guarantee or measurement-readiness certification.
+
+Run the opt-in facility integration tests explicitly after building the CLI:
+
+```sh
+crates/adtb-bench/fixtures/run-boundary-test target/debug/adtb-bench
+```
+
+These tests additionally require GNU timeout, setsid and Python3. They exercise
+wrapper wiring, exact exits, resource refusal, descendant termination, retained
+incomplete results and tiny real-peer commands. They are deliberately outside
+the systemd-free global test commands. The prior finite crash-control tests
+remain the independent externally retained ACK validation checkpoint.

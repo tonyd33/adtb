@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -euo pipefail
+(($# == 1)) || { echo 'usage: run-boundary-test BUILT-NATIVE-BENCH' >&2; exit 2; }
+root=$(cd "$(dirname "$0")/../../.." && pwd)
+fixtures=$root/crates/adtb-bench/fixtures
+runner=$root/work/tools/bench-run
+mkdir -p "$root/target"
+scratch=$(mktemp -d "$root/target/bench-run-test.XXXXXX")
+shopt -s nullglob
+cleanup() {
+  local original=$? run pid group unit
+  for run in "$scratch"/*; do
+    if [[ -f $run/limits && -f $run/unit ]]; then
+      group=/sys/fs/cgroup$(sed -n '2p' "$run/limits")
+      unit=$(cat "$run/unit")
+      [[ $group == /sys/fs/cgroup/user.slice/* && ${group##*/} == "$unit" ]] || exit 1
+      if [[ -f $group/cgroup.events ]] && grep -qx 'populated 1' "$group/cgroup.events"; then
+        original=1
+        cat "$group/cgroup.procs" > "$run/cleanup-members"
+        if ! systemctl --user kill --kill-whom=all --signal=KILL "$unit" >> "$run/cleanup-native.log" 2>&1; then
+          printf '1\n' > "$group/cgroup.kill"
+        fi
+        # shellcheck disable=SC2016
+        if ! timeout 2 bash -c 'while [[ -f $1/cgroup.events ]] && grep -qx "populated 1" "$1/cgroup.events"; do sleep 0.01; done' _ "$group"; then echo 'owned cgroup cleanup failed' >&2; fi
+        while read -r pid; do
+          # shellcheck disable=SC2016
+          if ! timeout 2 bash -c 'while [[ -d /proc/$1 ]]; do sleep 0.01; done' _ "$pid"; then echo "owned member $pid was not reaped" >&2; fi
+        done < "$run/cleanup-members"
+      fi
+    fi
+    for file in "$run"/database/*.pid; do
+      read -r pid < "$file"
+      if kill -0 "$pid" 2>/dev/null; then
+        echo "unexpected surviving owned fixture PID $pid" >&2
+        original=1
+        if ! systemctl --user kill --kill-whom=all --signal=KILL "$(cat "$run/unit")"; then
+          echo 'owned fixture unit cleanup failed' >&2
+        fi
+      fi
+    done
+    if [[ -f $run/unit ]] && systemctl --user is-failed --quiet "$(cat "$run/unit")"; then
+      if ! systemctl --user reset-failed "$(cat "$run/unit")"; then original=1; fi
+    fi
+  done
+  exit "$original"
+}
+trap cleanup EXIT
+trap 'echo "native case ${action:-setup} failed at line $LINENO" >&2' ERR
+cases=0
+while read -r action seconds memory tasks expected result code status identity; do
+  run=$scratch/$action
+  if timeout --kill-after=1 4 "$runner" "$seconds" "$memory" "$tasks" "$fixtures/run-boundary-child" adtb "$action" "$run" 4 1 > "$scratch/$action.out" 2> "$scratch/$action.err"; then actual=0; else actual=$?; fi
+  [[ $actual == "$expected" ]]
+  if [[ $identity == missing ]]; then
+    [[ ! -f $run/unit-result && $(cat "$run/native-exit") == 0 ]]
+  else
+    mapfile -t receipt < "$run/unit-result"
+    [[ ${receipt[1]} == "$result" && ${receipt[2]} == "$code" && ${receipt[3]} == "$status" ]]
+    declared=$(sed -n '1p' "$run/limits")
+    case "$identity" in
+      match) [[ $declared == "${receipt[0]}" ]] ;;
+      mismatch) [[ $declared == 00000000000000000000000000000000 && $declared != "${receipt[0]}" ]] ;;
+      missingid) [[ -z $declared ]] ;;
+      *) exit 2 ;;
+    esac
+  fi
+  [[ $(sed -n '3p' "$run/limits") == "$memory" && $(sed -n '5p' "$run/limits") == "$tasks" ]]
+  [[ $(cat "$run/database/reached") == reached ]]
+  if ((actual)); then grep -qx 'acknowledged-prefix=unavailable' "$run/result"; else grep -qx 'status=complete' "$run/result"; fi
+  for file in "$run"/database/*.pid; do
+    # shellcheck disable=SC2016
+    timeout 2 bash -c 'while kill -0 "$1" 2>/dev/null; do sleep 0.01; done' _ "$(cat "$file")"
+  done
+  cgroup=/sys/fs/cgroup$(sed -n '2p' "$run/limits")
+  if [[ -d $cgroup ]]; then grep -qx 'populated 0' "$cgroup/cgroup.events"; fi
+  if [[ $action == ignore ]]; then [[ -s $run/database/descendant.pid ]]; fi
+  if [[ $action == tasks ]]; then [[ $(cat "$run/database/task-refused") == EAGAIN ]]; fi
+  cases=$((cases+1))
+done < "$fixtures/run-boundary-cases.txt"
+[[ $cases == 10 ]]
+guards=0
+while read -r action declared_memory declared_tasks memory swap tasks; do
+  run=$scratch/guard-$action
+  mkdir "$run"
+  unit=adtb-bench-guard-$$-$action.service
+  printf '%s\n' "$unit" > "$run/unit"
+  if timeout --kill-after=1 4 systemd-run --user --wait --service-type=exec --unit="$unit" \
+    --property=RuntimeMaxSec=2 --property=TimeoutStopSec=0.2 --property=LimitCORE=0 \
+    --property="MemoryMax=$memory" --property="MemorySwapMax=$swap" --property="TasksMax=$tasks" \
+    "$runner" --inside "$run" "$declared_memory" "$declared_tasks" "$fixtures/run-boundary-child" adtb success "$run/database" 4 1 > "$run/native.log" 2>&1; then exit 1; else [[ $? == 125 ]]; fi
+  [[ ! -e $run/database ]]
+  [[ $(sed -n '3p' "$run/limits") == "$memory" && $(sed -n '4p' "$run/limits") == "$swap" && $(sed -n '5p' "$run/limits") == "$tasks" ]]
+  systemctl --user reset-failed "$unit"
+  guards=$((guards+1))
+done < "$fixtures/run-boundary-limits.txt"
+[[ $guards == 3 ]]
+before=$(sha256sum "$scratch/ignore/unit" "$scratch/ignore/result" "$scratch/ignore/database/reached")
+if "$runner" 2 67108864 16 "$fixtures/run-boundary-child" adtb success "$scratch/ignore" 4 1; then exit 1; else [[ $? == 2 ]]; fi
+[[ $before == "$(sha256sum "$scratch/ignore/unit" "$scratch/ignore/result" "$scratch/ignore/database/reached")" ]]
+if DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent/adtb-boundary-bus "$runner" 2 67108864 16 "$fixtures/run-boundary-child" adtb success "$scratch/unavailable" 4 1; then exit 1; fi
+[[ ! -e $scratch/unavailable/database && $(cat "$scratch/unavailable/result") == $'status=invalid\nacknowledged-prefix=unavailable' ]]
+for peer in adtb sqlite; do
+  "$runner" 5 1610612736 64 "$1" "$peer" counter-smoke "$scratch/$peer" 4 1
+  grep -q '^correctness complete:' "$scratch/$peer/stdout"
+  [[ -s $scratch/$peer/database/ledger.txt ]]
+done
+for peer in adtb sqlite; do
+  run=$scratch/$peer-timeout
+  timeout --kill-after=1 4 "$runner" 0.5 1610612736 64 "$1" "$peer" counter-smoke "$run" 4 1 > "$scratch/$peer-timeout.out" 2> "$scratch/$peer-timeout.err" &
+  wrapper=$!
+  # shellcheck disable=SC2016
+  timeout 2 bash -c 'until [[ -f $1/main.pid ]]; do sleep 0.001; done; pid=$(cat "$1/main.pid"); until [[ $(readlink "/proc/$pid/exe") == "$2" ]]; do sleep 0.001; done; systemctl --user kill --kill-whom=main --signal=STOP "$(cat "$1/unit")"; grep -q "^State:.*T" "/proc/$pid/status"' _ "$run" "$(realpath "$1")"
+  if wait "$wrapper"; then exit 1; else [[ $? == 1 ]]; fi
+  mapfile -t receipt < "$run/unit-result"
+  [[ ${receipt[1]} == timeout && ${receipt[2]} == killed && ${receipt[3]} == TERM ]]
+  grep -qx 'acknowledged-prefix=unavailable' "$run/result"
+done
+printf 'native run boundary: %s cases, %s preexec refusals, 2 peers, timeout retention and native absence checked; %s\n' "$cases" "$guards" "$scratch"

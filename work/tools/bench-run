@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ ${1:-} == --receipt ]]; then
+  printf '%s\n' "${INVOCATION_ID:?}" "${SERVICE_RESULT:?}" "${EXIT_CODE:-unavailable}" "${EXIT_STATUS:-unavailable}" > "$2/unit-result"
+  exit
+fi
+if [[ ${1:-} == --inside ]]; then
+  shift
+  run=$1 memory=$2 tasks=$3
+  shift 3
+  cgroup=$(awk -F: '$1 == "0" { print $3 }' /proc/self/cgroup)
+  [[ $cgroup == /* && $cgroup != / ]] || exit 125
+  base=/sys/fs/cgroup$cgroup
+  read -r actual_memory < "$base/memory.max"
+  read -r actual_swap < "$base/memory.swap.max"
+  read -r actual_tasks < "$base/pids.max"
+  printf '%s\n' "${INVOCATION_ID:?}" "$cgroup" "$actual_memory" "$actual_swap" "$actual_tasks" > "$run/limits"
+  if [[ $actual_memory != "$memory" || $actual_swap != 0 || $actual_tasks != "$tasks" ]]; then
+    echo 'bench-run: native cgroup limits differ from requested budgets' >&2
+    exit 125
+  fi
+  printf '%s\n' "$BASHPID" > "$run/main.pid"
+  exec "$@"
+fi
+
+if (($# != 9)); then
+  echo 'usage: bench-run SECONDS MEMORY-BYTES TASKS BIN PEER WORKLOAD NEW-RUN-DIRECTORY N WRITERS' >&2
+  exit 2
+fi
+seconds=$1 memory=$2 tasks=$3 binary=$4 peer=$5 workload=$6 run=$7 n=$8 writers=$9
+if [[ ! $seconds =~ ^[0-9]+([.][0-9]+)?$ ]] || ! jq -en --arg value "$seconds" '$value | tonumber > 0' >/dev/null; then
+  echo 'bench-run: seconds must be positive' >&2
+  exit 2
+fi
+if [[ ! $memory =~ ^[1-9][0-9]*$ || ! $tasks =~ ^[1-9][0-9]*$ ]]; then
+  echo 'bench-run: memory bytes and tasks must be positive integers' >&2
+  exit 2
+fi
+for tool in systemd-run systemctl journalctl jq realpath; do
+  command -v "$tool" >/dev/null || { echo "bench-run: required native facility unavailable: $tool" >&2; exit 2; }
+done
+binary=$(realpath -e -- "$binary")
+[[ -x $binary && -f $binary ]] || { echo 'bench-run: BIN must be an executable file' >&2; exit 2; }
+script=$(realpath -e -- "${BASH_SOURCE[0]}")
+run=$(realpath -m -- "$run")
+umask 077
+mkdir -- "$run" || { echo 'bench-run: run directory must be new; partial state is never retried' >&2; exit 2; }
+mkdir "$run/tmp"
+printf 'status=invalid\nacknowledged-prefix=unavailable\n' > "$run/result"
+unit=adtb-bench-run-$$-$(date +%s%N).service
+printf '%s\n' "$unit" > "$run/unit"
+printf '%q ' "$binary" "$peer" "$workload" "$run/database" "$n" "$writers" > "$run/command"
+printf '\n' >> "$run/command"
+waiting=1
+# shellcheck disable=SC2329
+cleanup() {
+  local original=$?
+  if ((waiting)) && ! systemctl --user stop "$unit" >> "$run/cleanup.log" 2>&1; then
+    echo 'bench-run: owned unit stop reported unavailable; inspect cleanup.log' >&2
+  fi
+  if [[ -s $run/unit-result ]] && [[ $(sed -n '2p' "$run/unit-result") != success ]]; then
+    if ! systemctl --user reset-failed "$unit" >> "$run/cleanup.log" 2>&1; then
+      echo 'bench-run: owned unit reset failed; inspect cleanup.log' >&2
+    fi
+  fi
+  return "$original"
+}
+trap 'cleanup' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+# shellcheck disable=SC2016
+if systemd-run --user --wait --json=short --service-type=exec --expand-environment=no \
+  --unit="$unit" --working-directory="$PWD" \
+  --setenv="PATH=$PATH" --setenv="TMPDIR=$run/tmp" \
+  --setenv="ADTB_BENCH_RUN_TOOL=$script" --setenv="ADTB_BENCH_RUN_DIRECTORY=$run" \
+  --property='ExecStopPost=/usr/bin/env ${ADTB_BENCH_RUN_TOOL} --receipt ${ADTB_BENCH_RUN_DIRECTORY}' \
+  --property="RuntimeMaxSec=$seconds" --property=RuntimeRandomizedExtraSec=0 \
+  --property=TimeoutStartSec=2 --property=TimeoutStopSec=0.2 \
+  --property=KillMode=control-group --property=KillSignal=SIGTERM \
+  --property=SendSIGKILL=yes --property=FinalKillSignal=SIGKILL \
+  --property=Restart=no --property=OOMPolicy=kill --property=LimitCORE=0 \
+  --property="MemoryMax=$memory" --property=MemorySwapMax=0 --property="TasksMax=$tasks" \
+  --property="StandardOutput=file:$run/stdout" --property="StandardError=file:$run/stderr" \
+  "$script" --inside "$run" "$memory" "$tasks" "$binary" "$peer" "$workload" "$run/database" "$n" "$writers" \
+  > "$run/manager.json" 2> "$run/manager.log"; then
+  native_exit=0
+else
+  native_exit=$?
+fi
+waiting=0
+printf '%s\n' "$native_exit" > "$run/native-exit"
+if ! journalctl --user -u "$unit" --no-pager > "$run/journal.log" 2>&1; then
+  echo 'bench-run: owned unit journal unavailable; inspect journal.log' >&2
+fi
+if [[ -f $run/unit-result && -f $run/limits ]]; then
+  mapfile -t result < "$run/unit-result"
+  mapfile -t limits < "$run/limits"
+  if ((${#result[@]} == 4 && ${#limits[@]} == 5)) && \
+    [[ ${result[0]} =~ ^[0-9a-f]{32}$ && ${result[0]} == "${limits[0]}" && \
+       ${result[1]} == success && ${result[2]} == exited && ${result[3]} == 0 && $native_exit == 0 ]]; then
+    printf 'status=complete\nacknowledged-prefix=validated-by-cli\n' > "$run/result.new"
+    mv "$run/result.new" "$run/result"
+    echo "bench-run: complete; retained $run"
+    exit 0
+  fi
+fi
+echo "bench-run: invalid/incomplete; acknowledged prefix unavailable; retained $run" >&2
+((native_exit != 0)) || native_exit=1
+exit "$native_exit"

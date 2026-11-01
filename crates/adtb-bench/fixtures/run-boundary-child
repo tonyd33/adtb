@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir "$3"
+printf '%s\n' "$BASHPID" > "$3/main.pid"
+printf 'reached\n' > "$3/reached"
+case "$2" in
+  success) echo 'fixture completed' ;;
+  mismatch) sed -i '1c00000000000000000000000000000000' "$ADTB_BENCH_RUN_DIRECTORY/limits" ;;
+  missingid) sed -i '1s/.*//' "$ADTB_BENCH_RUN_DIRECTORY/limits" ;;
+  missing) ln -s /dev/null "$ADTB_BENCH_RUN_DIRECTORY/unit-result" ;;
+  exit7) exit 7 ;;
+  execfail) exec /nonexistent/adtb-run-boundary-command ;;
+  termzero) trap 'exit 0' TERM; while :; do sleep 60; done ;;
+  ignore)
+    trap '' TERM
+    # shellcheck disable=SC2016
+    setsid bash -c 'trap "" TERM; echo "$BASHPID" > "$1"; exec sleep 60' _ "$3/descendant.pid" &
+    while :; do sleep 60; done ;;
+  memory) exec python3 -c 'data = [bytearray(8 << 20) for _ in range(32)]' ;;
+  tasks)
+    exec python3 - "$3" <<'PY'
+import errno, pathlib, subprocess, sys
+children=[]
+try:
+    for _ in range(32):
+        try: children.append(subprocess.Popen(['sleep','60']))
+        except OSError as e:
+            assert e.errno == errno.EAGAIN, e
+            pathlib.Path(sys.argv[1], 'task-refused').write_text('EAGAIN\n')
+            break
+    else: raise AssertionError('native pids budget did not refuse a fork')
+finally:
+    for child in children:
+        child.terminate()
+        assert child.wait(timeout=2) == -15
+PY
+    ;;
+  *) echo 'unknown native test action' >&2; exit 2 ;;
+esac
