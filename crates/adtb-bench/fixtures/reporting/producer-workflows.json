@@ -1,0 +1,12 @@
+[
+  {
+    "calls": 3,
+    "outcome": "failed",
+    "end_ns": 22
+  },
+  {
+    "calls": 4,
+    "outcome": "completed",
+    "end_ns": 32
+  }
+]

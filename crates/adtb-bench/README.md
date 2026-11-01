@@ -85,9 +85,9 @@ schema naming boundary.
 
 The opt-in native tests exercise an externally retained acknowledged prefix
 through child termination and reopen on both adapters. They are a bounded
-correctness checkpoint described below. Measurement readiness still requires
-hard containment for the command-line workloads and the remaining comparison
-protocol review. The buffered command-line ledger cannot certify a killed
+correctness checkpoint described below. The bounded command entry provides
+operational containment; remaining comparison protocol review and large-data
+feasibility precede ranked measurements. The buffered command-line ledger cannot certify a killed
 process. The reporting entry below combines latency samples and native resource counters
 with command validity. There is no ranked result. Large dataset feasibility is
 unverified.
@@ -127,8 +127,8 @@ receipt. Build with the committed lock. Runtime startup checks version
 ## Explicit correctness operations
 
 Each command requires a new directory and retains `ledger.txt` alongside
-its database files. These are correctness operations, with no warmup or
-timing report. N=4 is a smoke fixture; N=1000/10000 are planned datasets.
+its database files. These are correctness operations with raw timing artifacts
+and no warmup; the bounded recipe below joins native resources into a report. N=4 is a smoke fixture; N=1000/10000 are planned datasets.
 
 ```sh
 cargo run -p adtb-bench --features native --locked -- adtb lifecycle target/adtb-lifecycle 4 4
@@ -153,8 +153,8 @@ start barrier, checking it before each attempt. adtb receives a statement
 time limit capped by the remaining actor budget. SQLite's remaining-budget
 cap applies to its lock wait, not statement execution or commit I/O. Setup,
 preparation, blocked calls, joins, snapshot/reopen and ledger writes have
-no hard process deadline. A parent watchdog, statement interruption and
-bounded drain/kill containment remain required before measurement readiness.
+no hard process deadline when invoked directly. Use `bench-run` for the native
+whole-command boundary described below.
 The earlier 20,000-request diagnostic stopped cooperatively, not under a
 hard 120-second parent ceiling. Fatal or ambiguous outcomes request
 cancellation of further queued work; existing calls return before the

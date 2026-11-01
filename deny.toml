@@ -186,6 +186,10 @@ allow = [
     "ryu",
     "serde",
     "serde_core",
+    # Serialize native benchmark artifacts without ad hoc escaping.
+    "serde_json",
+    # Format JSON numbers for the native benchmark serializer.
+    "zmij",
     "serde_derive",
     "serde_path_to_error",
     "serde_urlencoded",

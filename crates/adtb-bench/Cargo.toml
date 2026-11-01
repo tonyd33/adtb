@@ -8,9 +8,10 @@ publish.workspace = true
 
 [features]
 default = []
-native = ["dep:adtb", "dep:adtb-sys", "dep:rusqlite", "dep:adtb-codegen"]
+native = ["dep:adtb", "dep:adtb-sys", "dep:rusqlite", "dep:adtb-codegen", "dep:serde_json"]
 
 [dependencies]
+serde_json = { version = "=1.0.154", optional = true }
 adtb = { workspace = true, optional = true }
 adtb-sys = { workspace = true, optional = true }
 rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled"], optional = true }

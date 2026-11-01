@@ -1,0 +1,252 @@
+{
+  "schema_version": 1,
+  "kind": "adtb-bench-application",
+  "status": "complete",
+  "error": null,
+  "invocation_id": "1234567890abcdef1234567890abcdef",
+  "peer": "sqlite",
+  "workload": "counter-smoke",
+  "n": 4,
+  "writers": 1,
+  "generator_version": "baseline-v1",
+  "offered_model": "finite-closed-loop-per-actor",
+  "build": {
+    "profile": "synthetic",
+    "opt_level": "0",
+    "debug": "true",
+    "host": "fixture",
+    "target": "fixture"
+  },
+  "settings": "synthetic schema example",
+  "window": {
+    "start_ns": 100,
+    "end_ns": 890
+  },
+  "plan": [
+    {
+      "actor": 0,
+      "call": 0,
+      "action": "bump",
+      "target": 1,
+      "workflow": null
+    },
+    {
+      "actor": 0,
+      "call": 1,
+      "action": "bump",
+      "target": 2,
+      "workflow": null
+    },
+    {
+      "actor": 0,
+      "call": 2,
+      "action": "bump",
+      "target": 3,
+      "workflow": null
+    },
+    {
+      "actor": 0,
+      "call": 3,
+      "action": "bump",
+      "target": 4,
+      "workflow": null
+    },
+    {
+      "actor": 0,
+      "call": 4,
+      "action": "bump",
+      "target": 1,
+      "workflow": null
+    },
+    {
+      "actor": 0,
+      "call": 5,
+      "action": "bump",
+      "target": 2,
+      "workflow": null
+    },
+    {
+      "actor": 0,
+      "call": 6,
+      "action": "bump",
+      "target": 3,
+      "workflow": null
+    },
+    {
+      "actor": 0,
+      "call": 7,
+      "action": "bump",
+      "target": 4,
+      "workflow": null
+    }
+  ],
+  "record_counts": {
+    "calls": 8,
+    "attempts": 8,
+    "workflows": 0
+  },
+  "phases": [
+    {
+      "name": "directory_create",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 9
+    },
+    {
+      "name": "fixture_generation",
+      "actor": null,
+      "start_ns": 10,
+      "end_ns": 19
+    },
+    {
+      "name": "initial_open",
+      "actor": null,
+      "start_ns": 20,
+      "end_ns": 29
+    },
+    {
+      "name": "settings",
+      "actor": null,
+      "start_ns": 30,
+      "end_ns": 39
+    },
+    {
+      "name": "load",
+      "actor": null,
+      "start_ns": 40,
+      "end_ns": 49
+    },
+    {
+      "name": "loaded_validation",
+      "actor": null,
+      "start_ns": 50,
+      "end_ns": 59
+    },
+    {
+      "name": "actor_open",
+      "actor": null,
+      "start_ns": 60,
+      "end_ns": 64
+    },
+    {
+      "name": "prepare",
+      "actor": 0,
+      "start_ns": 70,
+      "end_ns": 90
+    },
+    {
+      "name": "actor_run",
+      "actor": null,
+      "start_ns": 70,
+      "end_ns": 900
+    },
+    {
+      "name": "steady",
+      "actor": null,
+      "start_ns": 100,
+      "end_ns": 890
+    },
+    {
+      "name": "ledger",
+      "actor": null,
+      "start_ns": 901,
+      "end_ns": 910
+    },
+    {
+      "name": "post_open",
+      "actor": null,
+      "start_ns": 921,
+      "end_ns": 930
+    },
+    {
+      "name": "validation",
+      "actor": null,
+      "start_ns": 931,
+      "end_ns": 940
+    },
+    {
+      "name": "active_inventory",
+      "actor": null,
+      "start_ns": 941,
+      "end_ns": 950
+    },
+    {
+      "name": "close",
+      "actor": null,
+      "start_ns": 951,
+      "end_ns": 960
+    },
+    {
+      "name": "reopen",
+      "actor": null,
+      "start_ns": 961,
+      "end_ns": 970
+    },
+    {
+      "name": "reopened_validation",
+      "actor": null,
+      "start_ns": 971,
+      "end_ns": 980
+    },
+    {
+      "name": "final_close",
+      "actor": null,
+      "start_ns": 981,
+      "end_ns": 990
+    },
+    {
+      "name": "closed_inventory",
+      "actor": null,
+      "start_ns": 991,
+      "end_ns": 1000
+    },
+    {
+      "name": "artifact_write",
+      "actor": null,
+      "start_ns": 1001,
+      "end_ns": 1010
+    },
+    {
+      "name": "coordinator_close",
+      "actor": null,
+      "start_ns": 65,
+      "end_ns": 69
+    }
+  ],
+  "storage": {
+    "active": [
+      {
+        "path": "baseline.sqlite",
+        "logical_bytes": 8192,
+        "allocated_bytes": 8192
+      }
+    ],
+    "closed": [
+      {
+        "path": "baseline.sqlite",
+        "logical_bytes": 8192,
+        "allocated_bytes": 8192
+      }
+    ]
+  },
+  "validation": {
+    "loaded": true,
+    "before_close": true,
+    "after_reopen": true,
+    "closed_form": true
+  },
+  "process_io": {
+    "status": "available",
+    "source": "/proc/self/io",
+    "boundary": "after-final-close-before-artifact-write",
+    "counters": {
+      "rchar": 4096,
+      "wchar": 8192,
+      "syscr": 1,
+      "syscw": 2,
+      "read_bytes": 512,
+      "write_bytes": 1024,
+      "cancelled_write_bytes": 0
+    }
+  }
+}

@@ -1,0 +1,20 @@
+[
+  {
+    "retries": 1,
+    "attempts": 2,
+    "outcome": "completed",
+    "budget_ns": 1000000000
+  },
+  {
+    "retries": 100,
+    "attempts": 100,
+    "outcome": "failed",
+    "budget_ns": 1000000000
+  },
+  {
+    "retries": 0,
+    "attempts": 0,
+    "outcome": "failed",
+    "budget_ns": 0
+  }
+]
