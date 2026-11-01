@@ -1,0 +1,30 @@
+[package]
+name = "adtb-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+native = ["dep:adtb", "dep:adtb-sys", "dep:rusqlite", "dep:adtb-codegen"]
+
+[dependencies]
+adtb = { workspace = true, optional = true }
+adtb-sys = { workspace = true, optional = true }
+rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled"], optional = true }
+
+[build-dependencies]
+adtb-codegen = { workspace = true, optional = true }
+
+[dev-dependencies]
+adtb-lang = { workspace = true, features = ["test-heap-cap"] }
+
+[[bin]]
+name = "adtb-bench"
+path = "src/main.rs"
+required-features = ["native"]
+
+[lints]
+workspace = true

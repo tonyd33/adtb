@@ -30,6 +30,16 @@ allow-workspace = true
 # Remove when maud_macros and proc-macro2-diagnostics use syn 3.
 skip = [{ name = "syn", version = "=2.0.119" }]
 allow = [
+    # Prepared native SQLite calls in the opt-in comparison driver.
+    "rusqlite",
+    # Bundled SQLite and its checked-in bindings for the comparison driver.
+    "libsqlite3-sys",
+    # Fallible row iteration required by rusqlite.
+    "fallible-iterator",
+    "fallible-streaming-iterator",
+    # Build-script library discovery required by libsqlite3-sys.
+    "pkg-config",
+    "vcpkg",
     # NFC normalization of text values.
     "unicode-normalization",
     # Inline buffers unicode-normalization requires.

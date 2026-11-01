@@ -1,0 +1,23 @@
+module baseline
+add module baseline
+add type Counter = { id: I64, value: I64 }
+add relation counters : Counter key id
+add type Campaign = { id: I64, title: Text }
+add relation campaigns : Campaign key id
+add type Entity { id: I64, campaign: Key campaigns, name: Text } = Party | Npc
+add relation entities : Entity
+  key id
+  unique (campaign, name)
+add type Session { id: I64, campaign: Key campaigns, party: Key entities.Party, number: I64, title: Text, prep: Text }
+  = Planned { planned_for: Option Date }
+  | Live { started: Instant }
+  | Played { played_on: Date, log: Text, recap: Text }
+add relation sessions : Session
+  key id
+  unique (campaign, number)
+  unique (campaign) in Live
+add constraint session_in_campaign =
+  from s in sessions where s.party.campaign != s.campaign select s
+add constraint played_stays_played =
+  from o in deleted(sessions.Played), n in inserted(sessions.(Planned | Live))
+  where key o == key n select n
