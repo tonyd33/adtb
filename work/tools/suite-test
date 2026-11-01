@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+suite=${1:-$(cd "$(dirname "$0")" && pwd)/suite}
+common=$(dirname "$suite")/common.bash
+native_cargo=$(command -v cargo)
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+mkdir -p "$scratch/work/tools" "$scratch/bin"
+cp "$suite" "$common" "$scratch/work/tools/"
+printf '[workspace]\nresolver = "3"\nmembers = ["alpha", "beta"]\n' >"$scratch/Cargo.toml"
+for package in alpha beta; do
+  mkdir -p "$scratch/$package/src"
+  printf '[package]\nname = "%s"\nversion = "0.1.0"\nedition = "2024"\n' "$package" >"$scratch/$package/Cargo.toml"
+  : >"$scratch/$package/src/lib.rs"
+  cat >"$scratch/$package/fixture" <<'FIXTURE'
+#!/usr/bin/env bash
+printf '%s\n' "${0%/fixture}" >>"$FIXTURE_CASE/reached"
+FIXTURE
+done
+cat >"$scratch/bin/cargo" <<'CARGO'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $1 == nextest && $2 == run ]]
+shift 2
+phase=run
+selection=()
+for arg in "$@"; do
+  case $arg in
+    --no-run) phase=build ;;
+    --no-fail-fast|--lib|'needle with spaces'|''|--|-literal) ;;
+    *) selection+=("$arg") ;;
+  esac
+done
+printf '%s\0' "$@" >"$FIXTURE_CASE/$phase.args"
+if flock -n "$ADTB_MACHINE_LOCK" true; then
+  printf 'free\n' >"$FIXTURE_CASE/$phase.lock"
+else
+  printf 'held\n' >"$FIXTURE_CASE/$phase.lock"
+fi
+"$FIXTURE_CARGO" tree --offline --depth 0 --prefix none "${selection[@]}" >"$FIXTURE_CASE/$phase.tree"
+if [[ $phase == build ]]; then
+  if [[ ${FIXTURE_BUILD_STATUS:-0} != 0 ]]; then
+    echo 'error: fixture build refused' >&2
+    exit "$FIXTURE_BUILD_STATUS"
+  fi
+  exit 0
+fi
+while read -r package rest; do
+  [[ -z $package ]] || bash "$package/fixture"
+done <"$FIXTURE_CASE/run.tree"
+echo 'Summary fixture execution'
+exit "${FIXTURE_RUN_STATUS:-0}"
+CARGO
+chmod +x "$scratch/bin/cargo"
+export FIXTURE_CARGO=$native_cargo
+export PATH="$scratch/bin:$PATH"
+export CARGO_TARGET_DIR="$scratch/target"
+export ADTB_MACHINE_LOCK="$scratch/machine.lock"
+unset ADTB_MACHINE_LOCK_HELD ADTB_SUITE_OUT FIXTURE_BUILD_STATUS FIXTURE_RUN_STATUS
+
+expect_file() {
+  diff -u <(printf '%s\n' "$2") "$FIXTURE_CASE/$1"
+}
+
+run_case() {
+  local name=$1 expected=$2 wanted_status=$3 actual_status=0
+  shift 3
+  export FIXTURE_CASE="$scratch/$name"
+  mkdir -p "$FIXTURE_CASE"
+  "$scratch/work/tools/suite" "$@" >"$FIXTURE_CASE/stdout" 2>&1 || actual_status=$?
+  if [[ $actual_status != "$wanted_status" ]]; then
+    cat "$FIXTURE_CASE/stdout" >&2
+    printf '%s: expected exit %s, got %s\n' "$name" "$wanted_status" "$actual_status" >&2
+    exit 1
+  fi
+  expect_file build.lock free
+  if [[ ${FIXTURE_BUILD_STATUS:-0} != 0 ]]; then
+    [[ ! -e $FIXTURE_CASE/run.args && ! -e $FIXTURE_CASE/reached ]]
+    grep -Fx 'error: fixture build refused' "$CARGO_TARGET_DIR/suite.txt"
+    grep -Fx "the build fails; output in $CARGO_TARGET_DIR/suite.txt" "$FIXTURE_CASE/stdout"
+  else
+    expect_file reached "$expected"
+    diff -u "$FIXTURE_CASE/build.tree" "$FIXTURE_CASE/run.tree"
+    expect_file run.lock held
+    printf '%s\0' --no-fail-fast "$@" >"$FIXTURE_CASE/expected-run.args"
+    cmp "$FIXTURE_CASE/expected-run.args" "$FIXTURE_CASE/run.args"
+    grep -Fx 'Summary fixture execution' "$FIXTURE_CASE/stdout"
+  fi
+  printf '%s\0' --no-run "$@" >"$FIXTURE_CASE/expected-build.args"
+  cmp "$FIXTURE_CASE/expected-build.args" "$FIXTURE_CASE/build.args"
+  grep -Fx "suite: exit $wanted_status" "$CARGO_TARGET_DIR/suite.txt"
+  flock -w 5 "$ADTB_MACHINE_LOCK" true
+  printf '%s: passed\n' "$name"
+}
+
+both=$'alpha\nbeta'
+run_case short alpha 0 -p alpha --lib 'needle with spaces' '' -- -literal
+run_case default "$both" 0
+run_case joined alpha 0 -palpha
+run_case long beta 0 --package beta
+run_case equals beta 0 --package=beta
+run_case repeated "$both" 0 -p alpha -p beta
+run_case glob "$both" 0 --package='*a'
+run_case workspace "$both" 0 --workspace -p alpha
+run_case all "$both" 0 --all
+run_case exclude alpha 0 --workspace --exclude beta
+FIXTURE_RUN_STATUS=100 run_case run-failure beta 100 -p beta
+FIXTURE_BUILD_STATUS=17 run_case build-failure '' 1 -p alpha
+printf 'suite-test: 12 cases passed\n'

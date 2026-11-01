@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# suite [ARGS]   build the workspace's tests, then run `cargo nextest run --workspace
-#                --no-fail-fast ARGS` holding the machine lock, which one run or `check` holds at a
-#                time
+# suite [ARGS]   build tests selected by ARGS (the workspace by default), then run
+#                `cargo nextest run --no-fail-fast ARGS` holding the machine lock,
+#                which one run or `check` holds at a time
+# Package selection follows Cargo; use --workspace with --exclude.
 #
 # The full output goes to target/suite.txt, or ADTB_SUITE_OUT when set, and ends with `suite:
 # exit N`. Prints only the failing and timed out tests, the summary and that path, and exits with
@@ -23,7 +24,7 @@ trap 'echo "suite: exit $status" >>"$out"' EXIT
 status=1
 
 started=$SECONDS
-if ! cargo nextest run --workspace --no-run "$@" >>"$out" 2>&1; then
+if ! cargo nextest run --no-run "$@" >>"$out" 2>&1; then
   grep -E '^error' -A8 "$out" | head -40
   echo "the build fails; output in $out"
   exit 1
@@ -33,7 +34,7 @@ echo "built in $((SECONDS - started))s"
 machine_lock "$root"
 
 started=$SECONDS
-cargo nextest run --workspace --no-fail-fast "$@" >>"$out" 2>&1
+cargo nextest run --no-fail-fast "$@" >>"$out" 2>&1
 status=$?
 machine_unlock
 
