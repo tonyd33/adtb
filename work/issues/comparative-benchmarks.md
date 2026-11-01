@@ -4,6 +4,7 @@ status: in-progress
 kind: feature
 priority: 910
 summary: no reproducible cross-database baseline or recurring measured optimization cycle exists
+branch: benchmark-reporting
 tags:
   - engine
   - test
@@ -459,3 +460,65 @@ supervisor. Resource and latency reporting, finite feasibility/pilots and the
 approved frozen comparison protocol remain before measurements. No ranking,
 optimization, streaming-ACK recovery, engine fault-class closure or beta exit is
 claimed. These limits do not reopen the completed containment prerequisite.
+
+## 2026-11-01: complete benchmark reporting assigned
+
+Active user goal: finish benchmark reporting. Workspace `benchmark-reporting`,
+base `1860b968a0b8`, owns the complete executable reporting feature, with an
+independent read-only acceptance/native-source assessment before scope ruling.
+Native command containment remains delivered. Candidate implementation stays
+in the isolated comparison tool, runtime fixtures, existing launcher and a narrow
+report entry if justified; no engine/shared-runtime or global configuration edits.
+
+Completion requires actual machine-readable raw data and a readable report for
+both peers and existing keyed/campaign workloads. Report completed logical units
+and throughput; raw end-to-end operation latency with p50/p95/p99 including waits,
+retries/backoff and decoded committed completion; attempts/retries/refusals/aborts
+with precise denominators; CPU, memory, I/O and storage footprint with native
+source/units/scope; and setup/loading/preparation/open/reopen/validation costs
+separate from steady operations. Preserve workload counts, schemas, constraints,
+durability and correctness/history/reopen checks. Unknown native retry accounting
+and genuinely unavailable counters need explicit reasons, never false zeros.
+
+Version/context/config/budgets and completion validity must accompany artifacts.
+Incomplete/failed/timed-out/OOM/missing/corrupt runs cannot become successful
+comparative throughput. Raw samples must support independent recomputation.
+Synthetic runtime fixtures and meaningful actual mutations check aggregates,
+units, quantiles, retry-inclusive windows and invalid-result handling; real tiny
+both-peer counter/lifecycle reports prove the full path reaches consumers.
+Fresh independent source review precedes one final complete affected package,
+strict lints/static/shell/reporting consumers, with one author owning native
+exits and exact input evidence. Retain unaffected engine checks after bounded
+isolation proof; no blanket binary-discovery or engine-suite repetition.
+
+This goal completes reporting capability and its diagnostic verification.
+Finite feasibility, frozen protocol and ranked baseline publication remain
+subsequent comparison stages; diagnostic outputs must not claim those results.
+Machine-specific execution details and raw local diagnostics stay in local
+receipts. The report source, portable contract and reproducible commands are
+public. Measurement windows remain exclusive of other builds/tests.
+
+Reporting implementation is split by owned interface. `benchmark-reporting`
+owns native Rust samples/phases/storage/build identity, canonical version-1 raw
+schema and producer fixtures, plus approved native-only serde_json 1.0.154 and
+its required private lock/policy additions. `benchmark-report-consumer` owns
+native resource capture, the Python standard-library report entry, consumer
+fixtures and reporting documentation. The collector/consumer can land first;
+the producer owner integrates once and owns final combined package checks and
+actual both-peer counter/lifecycle reports. No old-binary final followed by a
+repeat merely to integrate the new producer.
+
+Metric rules: preserve finite per-actor closed-loop offering. Latency begins
+before first attempt and includes all waits/backoff through terminal decoded
+outcome; the steady window is release to last terminal call. Future calls are
+not offered at release. Nearest-rank quantiles use ceil(p*N). API calls, committed
+write calls and completed four-call lifecycle workflows are explicit units.
+Whole-service native CPU/charged-memory resources include setup/oracles/helper;
+phase wall spans remain separate. Storage inventories report logical and allocated
+bytes at named active and closed boundaries, excluding ledger/report/log files.
+
+Actual collector probes show CPU/memory available, while io.stat is unavailable
+on the tested service despite explicit I/O accounting. Retain that reason and
+collect supported /proc/self/io process/threadgroup storage and syscall-logical
+bytes before artifact writing, with narrower scope clearly labeled. Do not
+reconfigure global controllers or invent aggregate/physical-media counters.
