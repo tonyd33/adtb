@@ -493,3 +493,33 @@ publication while authors prepared receipts. The existing instruction to publish
 stable source and machine evidence before polishing prose remains necessary;
 completion of a command must unblock the next action immediately. No further
 review pass or new orchestration framework was added to address that delay.
+
+
+### 2026-11-01: settle a feasible comparison without dropping a dimension
+
+The 30-second whole-command ceiling stopped both unchanged counter peers.
+Explicit pre-freeze calibration at 120 seconds completed them. The larger serial
+lifecycle still failed that bound. I rejected a one-size freeze because it would
+remove the requested size dimension. A bounded runtime admission rule, derived
+from campaign partitions and complete counter passes, allowed an intermediate
+size without changing generators, counts or guarantees. All 16 common 1000/5000,
+one/four-writer cells then completed. The unused fallback was not run.
+
+One fresh source review and one affected verification accepted the gate. Six old
+successful observations were retained only after exact downstream/configuration
+parity, with old binary identity visible; the future baseline requires one final
+binary. The selected caller spans sum to about 9 minutes 48 seconds, while the
+final native package executed in 3.376 seconds. These are scoped observations,
+not a measurement of total delivery time or a general suite speedup.
+
+The protocol's synthetic schedule checks preserve all planned rows after a cutoff
+or failure. I found that an ignored mkdir failure could overwrite an existing
+session index; successful exclusive creation now gates every write. A focused
+mutation reproduced the overwrite and failed the preservation assertion. No new
+supervisor or native containment project was needed.
+
+Detailed Rust mutation diagnostics were lost when suite's fixed output file was
+overwritten. Named failures and exits remain, so the receipt makes only that
+claim. The worker instructions now require preserving native output artifacts,
+not only stdout, before the next invocation. This is a process enforcer; there
+is no claim that the evidence-loss class is automatically prevented or retired.

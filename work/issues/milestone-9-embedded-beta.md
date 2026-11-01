@@ -90,3 +90,15 @@ Next comparison steps remain finite feasibility, equivalent outcomes, protocol
 freeze and repeated baseline publication before selecting an optimization. The
 other operations and correctness obligations above remain unchanged; milestone 9
 is still in progress.
+
+## 2026-11-01: comparison protocol frozen after feasibility
+
+All 16 selected adtb/SQLite counter/lifecycle cells passed bounded feasibility
+at N=1000/5000 and one/four writers. The executable comparison protocol is
+frozen, with unchanged work and correctness guarantees, five paired repetitions
+and explicit native limits, reservation, raw evidence and failure rules. Earlier
+timeouts remain visible and are not reclassified as successful measurements.
+
+The next comparison increment is the separately scheduled 80-invocation ranked
+baseline, followed by independent raw-result review and publication. This closes
+the feasibility/protocol slice, not the benchmark umbrella or embedded beta.

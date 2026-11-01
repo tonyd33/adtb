@@ -168,6 +168,11 @@ asynchronous execution when available, collect the final exit status and
 inspect the output. If it returns a session handle, wait on that handle;
 if it provides completion notifications, use them. Avoid busy polling.
 
+Before repeating a command, preserve its canonical output artifacts at unique
+stage paths as well as stdout/stderr. Some tools keep failure details in files
+that the next invocation overwrites. For suite, preserve target/suite.txt before
+running the next case or mutation.
+
 For a timeout, report the test, suite conditions and any isolated outcome.
 An isolated pass leaves the cause unresolved unless other evidence proves
 it; it does not make the full suite pass. Do not repeat the full suite

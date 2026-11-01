@@ -89,11 +89,10 @@ schema naming boundary.
 The opt-in native tests exercise an externally retained acknowledged prefix
 through child termination and reopen on both adapters. They are a bounded
 correctness checkpoint described below. The bounded command entry provides
-operational containment; remaining comparison protocol review and large-data
-feasibility precede ranked measurements. The buffered command-line ledger cannot certify a killed
+operational containment. The [frozen protocol](protocol.md) records the selected
+feasible matrix and retained timeouts. The buffered command-line ledger cannot certify a killed
 process. The reporting entry below combines latency samples and native resource counters
-with command validity. There is no ranked result. Large dataset feasibility is
-unverified.
+with command validity. There is no ranked result.
 
 ## Build and checks
 

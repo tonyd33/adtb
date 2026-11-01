@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-28
-status: in-progress
+status: open
 kind: feature
 priority: 910
 summary: no reproducible cross-database baseline or recurring measured optimization cycle exists
-branch: benchmark-feasibility
 tags:
   - engine
   - test
@@ -675,3 +674,45 @@ adaptation or smoke substitution is authorized.
 Land the admission change first, then rebase and finalize the protocol on it.
 The protocol keeps two meaningful common sizes, five paired repetitions and
 all failure evidence; its final numerical freeze remains pending actual results.
+
+## 2026-11-01: feasible matrix and comparison protocol frozen
+
+The [executable protocol](../../crates/adtb-bench/protocol.md) is frozen in
+`c798567c73e8`, with code pinned to `2f0369f68750`. Common dataset sizes are
+N=1000 and 5000, concurrency one and four writers, both adtb and SQLite, and
+both keyed counter and lifecycle workloads. Counter work stays 20,000 writes;
+lifecycle stays N four-call workflows. No durability, constraint, queue,
+generator, settings or oracle was weakened to fit the matrix.
+
+All 16 selected feasibility cells completed exact output/history/full-state/
+reopen validation: 256,000 calls, 208,000 write commits, 24,000 workflows and
+45 outer retry attempts, with no failed or uncertain selected calls. Six old
+N=1000 successes are explicitly reused through reviewed gate-only path parity;
+ten new executions use the updated binary. This is feasibility evidence, not
+a mixed-binary ranked comparison. The five earlier invalid/time-limited runs
+and nonselected 10000/four-writer success remain retained. Missing killed
+manifests still have unknown partial counts and phases.
+
+Maximum selected caller span was 60.492 seconds under the adopted 120-second
+native ceiling; maximum charged peak was 71,962,624 bytes. Adopt 1610612736
+memory bytes, zero swap and 64 tasks for every future invocation. The future
+baseline has five paired repetitions, 80 invocations, 9776 seconds maximum
+configured runtime/start/stop exposure, a 180-minute exclusive reservation and
+175-minute latest-launch cutoff. Use one final source and binary per session,
+with each cell's configuration fixed by the protocol. Preserve failed and
+not-started rows; no automatic replacement or hidden favorable aggregate is
+permitted.
+
+The runtime size admission rule replaces literal choices with the generator's
+bounded coverage contract. Fresh source/machine review, complete affected package
+(29 native tests), 55 exact report cases, six healthy size artifacts, strict
+affected checks and source/BIN closure passed. The ten source inputs survived
+landing unchanged; only reviewed ticket prose was inherited. Protocol landing
+matched its checked tree exactly. Its five synthetic scheduling cases and a
+guard-removal mutation verify order, cutoff, failure pauses and preservation of
+an existing session. No unchanged engine or native-facility suite was rerun.
+
+Bounded feasibility, size/concurrency selection and protocol freeze are complete.
+This umbrella returns to open for the separately scheduled 80-run ranked
+collection, independent raw-result review and publication, then one measured
+optimization. No ranked baseline, beta exit or defect-class retirement is claimed.
