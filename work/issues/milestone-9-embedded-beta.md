@@ -72,3 +72,21 @@ fault-matrix, compile-time-identity, admission and budget tickets are
 prerequisites only where the selected consumer actually needs them. They
 remain tracked debt and beta exit still requires the published benchmark
 and all stated release guarantees. No user-owned design ruling changed.
+
+## 2026-11-01: reporting capability delivered
+
+Native benchmark reporting now has a documented executable entry, raw samples,
+human/JSON summaries and complete tiny-run integration on both adtb and SQLite.
+Independent recomputation checks actual results; invalid evidence cannot acquire
+comparable rates. This completes the reporting slice of comparative-benchmarks,
+not the frozen or published comparative baseline.
+
+The pinned-reader correlation and preallocation-budget contract is also accepted
+and tracked inside the permission subsystem. Native reader integration remains
+unimplemented and its bug ticket stays open. No new refusal policy or beta-exit
+claim follows from this contract.
+
+Next comparison steps remain finite feasibility, equivalent outcomes, protocol
+freeze and repeated baseline publication before selecting an optimization. The
+other operations and correctness obligations above remain unchanged; milestone 9
+is still in progress.

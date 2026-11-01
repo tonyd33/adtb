@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-31
-status: in-progress
+status: open
 kind: bug
 priority: 399
 summary: Pinned upserts retain nonhiding admission and nested value-reader gaps
-branch: pinned-reader-contract
 ---
 
 # Pinned writes past pin
@@ -280,3 +279,37 @@ contract before further source implementation. Any required observable semantic
 change returns to the user-owned design space. Existing authority evaluation and
 Reader integration stay unchanged; retired prototypes stay unlanded. Benchmark
 reporting has separate ownership and verification and continues in parallel.
+
+## 2026-11-01: private correlation and budget contract resolved
+
+The accepted internal contract landed as `74c3ed967abc` in
+[`PINNED_VALUE_CONTRACT.md`](../../crates/adtb-lang/src/permission/PINNED_VALUE_CONTRACT.md).
+Use component-factored finite-domain decision diagrams for reader facts, with
+distinct draw, invocation, copy and snapshot identities. Native For return joins
+away its local draw; still-live outer capture conditions remain. Later ranges
+draw from the joined source. Native authority evaluation and public admission
+policy remain unchanged.
+
+Independent implementability review rejected an initial template contract because
+it preserved correlations native join discards. The focused correction removes
+templates and specifies local closing, all-contributor witness retention, dynamic
+fresh-event identity, semantic dependency closure and shared decode/native
+continuation/import. Built-in aggregate observations remain componentwise. All
+analysis-owned visits and requested capacity must be charged before construction;
+exhaustion is explicit, never an empty field result. Physical allocator residency
+and process RSS are outside this accounting contract.
+
+The corrected source-guided miniature passed 224 decoded comparisons, including
+same-constructor field joins, preserved outer captures, close/rebind, witnesses
+and selected producers. Retaining closed correlation and erasing live correlation
+both change expected results. These are bounded algebra observations, not native
+registration or permission-parity evidence. The accepted contract records the
+algorithms, concrete distinguishing examples, allocation inventory and limits.
+
+This resolves the requested contract prerequisite, not the reader bug. Next:
+estimate a bounded implementation at the existing Value/evaluation seams, retain
+the exact authority path, and verify native parity, owner Count registration,
+capture/alias/selection controls and allocation sealing before activating Reader
+integration. Nonhiding admission remains a separate unresolved question. No
+retired prototype landed and no defect class is declared closed. This ticket
+returns to open because the contract track has finished.

@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-28
-status: in-progress
+status: open
 kind: feature
 priority: 910
 summary: no reproducible cross-database baseline or recurring measured optimization cycle exists
-branch: benchmark-reporting
 tags:
   - engine
   - test
@@ -537,3 +536,41 @@ Its author integrates this consumer once and owns final combined affected-packag
 checks, dependency isolation/policy evidence, and actual both-peer counter and
 lifecycle reports. Reporting completion, comparison readiness, ranked results and
 beta exit are not claimed by this component landing.
+
+## 2026-11-01: complete benchmark reporting delivered
+
+The native producer landed as `64fadee82e3d`, following collector/consumer
+`9c4de3b56b68`. The documented `bench-run` then `bench-report` entry now produces
+raw call/attempt/workflow samples, versioned JSON and a readable report with
+counts, retry-inclusive latency percentiles, named throughput units, native
+resources, process I/O fallback, storage inventories, phases and build/context
+evidence. Incomplete, failed or inconsistent evidence suppresses comparative rates.
+See the [reporting contract](../../crates/adtb-bench/reporting.md) and
+[runnable recipe](../../crates/adtb-bench/README.md).
+
+Four actual contained diagnostics passed: adtb and SQLite, each on counter-smoke
+and lifecycle with N=4 and four writers. Raw independent recomputation confirmed
+48 completed calls, 32 write commits and eight completed four-call workflows,
+nearest-rank quantiles, rates, resources, file sizes and phase durations. One
+actual counter retry remains inside its call span. All native and report entries
+exited zero. These tiny runs establish reporting integration, not a peer ranking.
+Native I/O counters remain unavailable on the observed host; the report preserves
+that reason and distinctly labels the supported process/threadgroup fallback.
+
+Fresh source and machine reviews accepted the producer and isolated dependency
+graph. The complete native package passed 28 tests with no skips; default mode
+explicitly accepts its empty test set. Strict affected lints, dependency policy,
+formatting and size checks passed. House-check has one explicitly approved
+native host-clock expectation, recorded as an exception rather than a pass.
+Four actual producer mutants and the retained consumer negative/max/native
+fixtures establish their scoped sensitivity. No unchanged engine suite was rerun.
+
+The final checked source was `05354a5c9e5e`; all 68 reporting publication file
+contents and modes survived landing. The sole integration delta was the accepted
+private Markdown reader contract, which has no build or reporting consumer.
+Raw local receipts and host context remain outside the public repository.
+
+The reporting goal is complete. This umbrella returns to open for finite
+large-data feasibility, equivalent-outcome protocol freeze, repeated baseline
+measurements and publication, followed by one measured optimization. Reporting
+does not complete those stages or the embedded beta milestone.

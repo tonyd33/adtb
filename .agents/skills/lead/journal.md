@@ -468,3 +468,28 @@ Operational containment closes within its supported-host contract. Do not turn
 an impossible universal syscall-liveness promise into another readiness gate or
 add a second supervisor. Next work is the remaining reporting/finite comparison
 protocol, while the completed 78-family cohort stays complete.
+
+
+### 2026-11-01: reporting delivery and a contract before implementation
+
+Reporting used one final combined native-package check after source review,
+then four real contained diagnostics with independent raw recomputation. Native
+execution took 14.856 seconds and the production binary build 8.058 seconds.
+Those observations do not measure total delivery overhead or establish a general
+speedup. The integrated file hashes stayed equal, so no engine repeat followed
+landing. The approved host-clock expectation remains an explicit house exception.
+
+The reader contract's first model preserved correlation past a native For join.
+Its concrete guard oracle was too precise to reveal that mismatch. Independent
+implementability review worked the actual abstract join and caught it before
+Rust implementation. I ruled that scope closing follows native information loss;
+the correction removes templates and tests both local closing and live outer
+capture. One focused delta review approved the resulting algorithmic contract.
+The native reader repair is still unimplemented and no defect class is retired.
+
+Author execution ownership held. Source, machine and publication reviews had
+separate scopes and reused their evidence. I still had to request prompt result
+publication while authors prepared receipts. The existing instruction to publish
+stable source and machine evidence before polishing prose remains necessary;
+completion of a command must unblock the next action immediately. No further
+review pass or new orchestration framework was added to address that delay.
