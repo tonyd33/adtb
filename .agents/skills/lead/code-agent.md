@@ -107,8 +107,10 @@ denies, among others, `type_complexity` (name a `type` alias),
 `uninlined_format_args` and `self_named_module_files` (a module with
 children is `foo/mod.rs`, never `foo.rs` beside `foo/`).
 
-For a code track, run the authoritative `check` once before reporting,
-unless the brief assigns narrower checks and names who owns the rest.
+During implementation, run targeted checks and named mutation tests.
+For a code track, the brief names one owner for the authoritative `check`
+on the final reviewed tree. Run it before reporting only if you own it;
+otherwise report targeted results and the remaining owner.
 From your workspace root in the dev shell:
 
 ```sh
@@ -118,7 +120,9 @@ DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check && work/tools/house-chec
 The explicit roots keep generated dev-shell wrappers on your workspace.
 `check` owns root clippy, formatting and the suite; campaign lint parity,
 clippy, formatting and tests; dependency policy and source-size limits.
-Report each failed or unfinished check. The lead owns post-land `check`.
+Report each failed or unfinished check. The lead compares the landed tree
+with the tested revision and reuses the receipt when inputs are unchanged;
+landing alone does not require another full check.
 Record a [verification receipt](verification.md#verification-receipt) with
 its tested state, command/scope, outcome, log and remaining owner. Separate
 observed permission wait from execution and total elapsed time; mark timings
@@ -183,9 +187,11 @@ personal data and machine details out of commits and tickets. Use relative paths
 
 ## Saving time
 
-Run one full suite per round, and none after a clean rebase; the lead's check covers it. Run
-`work/tools/suite` in the background: it can wait out a whole `check`, and a foreground call with a
-harness timeout dies waiting. Run each mutant against the test expected to kill it, by name.
+Use targeted suites during each round; reserve the full check for the final
+reviewed tree and its assigned owner. Repeat checks only for changed inputs,
+failures or unresolved concerns. Run `work/tools/suite` in the background:
+it can wait out a whole `check`, and a foreground call with a harness timeout
+dies waiting. Run each mutant against the test expected to kill it, by name.
 
 ## Scripts
 

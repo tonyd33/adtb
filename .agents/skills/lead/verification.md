@@ -19,8 +19,9 @@ logs rather than copying their output. Include:
   wait and execution time separately. Mark unavailable measurements as
   unknown. Do not attribute a whole tool-call span to execution or infer
   contention from elapsed time alone.
-- Remaining work: checks still required and who owns them. The lead owns
-  the post-land integration check.
+- Remaining work: checks still required and who owns them. Name one owner
+  for the final full check. The lead owns post-land tree comparison and any
+  checks required by a changed integration delta.
 
 For example:
 
@@ -31,14 +32,19 @@ Environment: toolchain TOOLCHAIN, profiles/features as configured
 Outcome: interrupted, exit 143; clippy passed, root tests did not run
 Evidence: target/check-RUN.log
 Timing: elapsed DURATION; permission/queue/execution unknown
-Remaining: full check, independent review, lead post-land integration check
+Remaining: independent review, final full check by assigned owner, lead tree comparison
 ```
 
-A branch receipt does not certify a changed combined tree after rebase or
-conflict resolution. Rerun affected checks and retain the lead's integration
-check. For a prose-only delta, reuse a receipt only when the brief permits
-it and the tested inputs, including embedded examples and build inputs,
-are unchanged; record the receipt and the delta reviewed.
+A passing final full check certifies its tested tree, regardless of commit
+identity. After landing, record `jj diff --from TESTED --to main --summary`.
+An empty diff reuses the receipt without another full run, provided the
+recorded toolchain, configuration and external test inputs are unchanged.
+A changed combined tree after rebase or conflict resolution needs delta
+review and affected checks. Repeat the full check only when the impact
+cannot be bounded, and record the reason. For a prose-only delta, reuse
+unaffected check results when tested inputs, including embedded examples
+and build inputs, are unchanged; review the delta and run its relevant
+checks. Receipt and bookkeeping edits alone do not trigger Rust suites.
 
 An isolated pass does not erase a suite timeout. Report both. Permission
 wait remains part of total elapsed time but is not execution time; report

@@ -109,3 +109,17 @@ The existing process helper accepted an ordinary owned panic string as an expect
 The first review traced the prefix consumers but left the broad host callback catch as unchanged behavior. My final catcher audit found that it would erase the same genuine engine payload. A public callback fixture then measured exactly that FunctionFailed conversion, so I included a small typed propagation guard. The rule is by cause, not catch location: ordinary provider panics stay statement faults, genuine engine I/O still stops the process. The source change is bounded to that guard; no new broad review round or search framework follows it.
 
 The worker-control test again exposed an expectation sourced from only part of a conversion path: internal Structure.at is diagnostic text, public Finding.at is time, and public Structure.where holds the text. I checked the Rust diagnostic construction without checking the catalog shape. The exact assertion caught it; the correction followed the full mapping. A read-only review also missed it, which is why its verdict remains reading evidence. This test repair is specific; generated catalog codecs remain separate work.
+
+### 2026-10-31: reuse verification of an unchanged tree
+
+The maintainer caught the full check running twice on identical source. The
+lead workflow explicitly required both runs, and I followed it without asking
+what evidence the second added. The typed fatal-I/O track passed both, but
+that repetition added delay without testing a changed integration.
+
+The lead, author and receipt instructions now assign one final full check
+owner. After landing, the lead compares trees and reuses the passing receipt
+when test inputs are unchanged. A changed delta gets affected checks; a new
+full run needs an impact that cannot be bounded. Targeted checks remain the
+iteration loop. This removes the mandated duplicate; it does not claim that
+the remaining full check is fast or that all development delays are fixed.

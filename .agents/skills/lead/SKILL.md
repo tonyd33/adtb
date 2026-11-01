@@ -36,7 +36,9 @@ Be firm and opinionated about the project's design and direction. Refuse a reque
 - Read a check's own exit status before landing, and never land in the same command
   as the wrapper that ran it: a wrapper's last command hides the failure. `check` runs
   the main checkout's dev shell, so a branch older than a tool main added exits 127.
-  Rebase the track onto main first, then run its check.
+  Rebase the track onto main first, then run its check. Use targeted checks
+  during implementation and review; run one full check on the final reviewed
+  tree. Name one owner in the brief so author and lead do not duplicate it.
 - Before starting a track, list the files the running tracks change. A
   track that changes a shared signature (pager, heap or B-link tree calls)
   does not run beside tracks that call it: land it first and branch the
@@ -130,11 +132,16 @@ Passing tests do not justify unnecessary machinery.
    `jj new`, then run it again.
 3. When `land` reports conflicts, send the track back to its agent with
    the commits that landed since its base.
-4. Run `check`. Fix trivial failures yourself; ticket the rest for a new
-   track. Close the ticket with a dated section. Leave a slot's directory in
-   place. Remove a workspace's directory outside the slots once nothing in it
-   is needed.
-5. Once the main check passes, for a workspace outside the slots, delete its
+4. Verify the landed tree against the final checked revision with
+   `jj diff --from TESTED --to main --summary`. An empty diff reuses that
+   passing receipt; record the comparison and do not rerun `check`. If landing
+   changed inputs, review the delta and rerun affected checks. Run a new full
+   check only when the delta's impact cannot be bounded; state why. Apply the
+   [receipt reuse rules](verification.md#verification-receipt) to prose-only
+   deltas. Fix trivial failures yourself; ticket the rest for a new track.
+   Close the ticket with a dated section. Leave a slot's directory in place.
+   Remove a workspace's directory outside the slots once nothing in it is needed.
+5. Once landing verification passes, for a workspace outside the slots, delete its
    `target/debug` and `target/tmp`, each by its literal absolute path in
    its own command. Keep the other files and directories under `target/`. A
    slot keeps them: `slot` empties a reused slot's `target/debug` and
