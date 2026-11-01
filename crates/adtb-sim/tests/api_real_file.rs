@@ -247,22 +247,36 @@ fn a_refused_open_of_an_existing_file_keeps_it() {
     let dir = scratch("refused-existing");
     let path = dir.join("shop.adt");
     let log = Log::new([SHOP]);
-    adtb::open(&path, &log, &options())
-        .expect("create")
-        .close()
-        .expect("close");
-    let refused = Log::new([SHOP, "module shop\nremove relation missing"]);
+    let db = adtb::open(&path, &log, &options()).expect("create");
+    db.query_text(
+        r#"insert customers { name: "ann" }"#,
+        &[],
+        &CallOptions::default(),
+    )
+    .expect("the acknowledged row");
+    db.close().expect("close");
+    let refused = Log::new([SHOP, "module shop\ndrop relation missing"]);
     let got = adtb::open(&path, &refused, &options()).map(drop);
-    assert!(
-        matches!(got, Err(OpenError::MigrationRefused { .. })),
-        "{got:?}"
+    let Err(OpenError::MigrationRefused { version, reason }) = got else {
+        panic!("expected the invalid migration, found {got:?}");
+    };
+    assert_eq!(2, version);
+    assert_eq!(
+        adtb::Error::Rejected {
+            reason: adtb::RejectReason::SchemaRefused {
+                operator: String::new(),
+                detail: "module `shop` declares no relation `missing`".into(),
+            },
+        },
+        reason
     );
     assert!(
         path.is_file(),
         "an open that created nothing removes nothing"
     );
+    assert!(path.with_file_name("shop.adt-log").is_dir());
     let db = adtb::open(&path, &log, &OpenOptions::default()).expect("reopen");
-    assert!(names(&db).is_empty());
+    assert_eq!(vec![r#""ann""#], names(&db));
 }
 
 /// Returns each entry under `dir`, by name, with the bytes of each file.

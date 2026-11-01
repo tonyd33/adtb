@@ -23,20 +23,64 @@ pub struct Held {
 /// A lock, the file's directory and its name in that directory.
 type Taken = (Held, PathBuf, String);
 
+#[cfg(test)]
+type Collision = (PathBuf, Box<dyn FnOnce()>);
+
+#[cfg(test)]
+thread_local! {
+    static ON_COLLISION: std::cell::RefCell<Option<Collision>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn with_collision<T>(
+    path: &Path,
+    action: impl FnOnce() + 'static,
+    f: impl FnOnce() -> T,
+) -> T {
+    struct Restore(Option<Collision>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            drop(ON_COLLISION.replace(self.0.take()));
+        }
+    }
+    let _restore = Restore(ON_COLLISION.replace(Some((path.to_owned(), Box::new(action)))));
+    f()
+}
+
+#[cfg(test)]
+fn collide(path: &Path) {
+    let action = ON_COLLISION.with_borrow_mut(|hook| {
+        if hook.as_ref().is_some_and(|(target, _)| target == path) {
+            hook.take().map(|(_, action)| action)
+        } else {
+            None
+        }
+    });
+    if let Some(action) = action {
+        action();
+    }
+}
+
 /// Open the file at `path`, creating it when `create` is set. Returns the file and whether this
-/// call's exclusive create made it.
-fn open_file(path: &Path, create: bool) -> std::io::Result<(File, bool)> {
+/// call's exclusive create made it, or `None` when the name disappears before the fallback open.
+fn open_file(path: &Path, create: bool) -> std::io::Result<Option<(File, bool)>> {
     let mut opening = File::options();
     opening.read(true).write(true);
     if create {
         match opening.clone().create_new(true).open(path) {
-            Ok(file) => return Ok((file, true)),
+            Ok(file) => return Ok(Some((file, true))),
             Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(e),
-            Err(_) => {}
+            Err(_) => {
+                #[cfg(test)]
+                collide(path);
+            }
         }
     }
-    let file = opening.create(create).truncate(false).open(path)?;
-    Ok((file, false))
+    match opening.open(path) {
+        Ok(file) => Ok(Some((file, false))),
+        Err(e) if create && e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 /// Returns whether `path` names the inode `file` has open.
@@ -96,10 +140,13 @@ impl Held {
         create: bool,
         opened: &mut impl FnMut(),
     ) -> Result<Option<Taken>, OpenError> {
-        let (file, created) = open_file(path, create).map_err(|e| match e.kind() {
+        let Some((file, created)) = open_file(path, create).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => OpenError::NotFound,
             _ => OpenError::Io(e),
-        })?;
+        })?
+        else {
+            return Ok(None);
+        };
         opened();
         let canonical = match path.canonicalize() {
             Ok(canonical) => canonical,
