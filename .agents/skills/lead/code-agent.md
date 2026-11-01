@@ -177,6 +177,14 @@ Work is tracked as tix tickets in the main checkout's
 there (their `## Report` states the gap). Do not edit tickets; the
 lead updates them. Report anything that should become a new ticket.
 
+Test value and cost: use retained timings to find expensive tests before
+adding coverage. Remove redundant tests only after naming the retained
+stronger coverage. Remove pins on details no contract states; repair a weak
+oracle when its behavior has no other coverage. Report measured before/after
+cost with the same test profile and search depth. Do not keep a test merely
+because it already exists, or discard a distinct contract merely because it
+is expensive.
+
 Test time: a new test runs in under 2 seconds in the default nextest profile unless it is a sweep; a sweep reads its seed count from the one place the suite states it, keeps a small default count, and runs the full count only under a deep profile. Report the time your new tests add to the default run.
 
 ## What gets committed

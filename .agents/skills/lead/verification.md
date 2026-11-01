@@ -15,9 +15,10 @@ logs rather than copying their output. Include:
 - Outcome: passed, failed, timed out, interrupted, blocked or not run;
   command exit status when collected; failing tests or incomplete stages;
   retained log path. A successful early stage is not a complete check.
-- Timing, when observed: total elapsed time, permission wait, queue/lock
-  wait and execution time separately. Mark unavailable measurements as
-  unknown. Do not attribute a whole tool-call span to execution or infer
+- Timing, when observed: brief-to-publication elapsed time and command
+  stages, distinguishing compilation, test execution, review and coordination.
+  Separate permission wait and queue/lock wait from execution time. Mark
+  unavailable measurements as unknown. Do not attribute a whole tool-call span to execution or infer
   contention from elapsed time alone.
 - Remaining work: checks still required and who owns them. Name one owner
   for the final full check. The lead owns post-land tree comparison and any

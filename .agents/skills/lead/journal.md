@@ -157,3 +157,27 @@ No reliable coding-versus-checking percentage exists from these stage logs.
 I should have set a finite delivery checkpoint and noticed the redundant
 verification before the maintainer asked. Keep the next increment bounded;
 do not answer another delay by adding a universal gate or another broad audit.
+
+### 2026-10-31: cohesive ownership and test cost
+
+The fatal-I/O change used seven agents, including separate handoffs for a
+projection, counter and tally correction. Its first production patch existed
+about five minutes after the author brief, but the investigation-to-publication
+receipt interval was about 45 minutes. Artifact times are approximate phase
+boundaries, not a complete activity log. The source commits for the last three
+fixes were about 45 and 42 minutes apart.
+
+The maintainer approved keeping an author through corrections, overlapping
+snapshot review with targeted verification, reducing administration and
+measuring build feedback. Context caching was a reason for frequent agents
+in another harness, not a reason to fragment this work. Subagents now use
+medium reasoning; the lead retains the user's setting. Independent review
+still has a fresh reader. Test value must be evaluated against runtime and
+retained stronger coverage, with no quota of deletions or weaker searches.
+
+
+A bounded read-only check of the recorded slowest tests found distinct
+permission, stack and recovery obligations rather than justified deletions.
+The weak crash-image golden group costs under half a test-second in that
+recording; removing it would not explain or cure the delay. No tests were
+removed and no build was run for this assessment.
