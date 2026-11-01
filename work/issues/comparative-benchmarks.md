@@ -81,3 +81,25 @@ No benchmark, optimization or code change was performed for this roadmap entry.
 Benchmark work runs as one agent at a time, so runs do not contend for
 resources. While it measures, no other track builds or tests on the machine;
 record `uptime` with each run and discard a run taken under other load.
+
+## 2026-10-31: first baseline selected next
+
+The finite public commit recovery checkpoint and current-pin campaign
+authority/binding paths have verified receipts. A source assessment
+confirmed real-file generated-call concurrency/reopen paths; simulator load
+timing remains correctness evidence only. The first baseline is selected
+after the active pinned field-reader repair and fixture checks, with an
+exclusive measurement window. Do not wait for every operations feature.
+
+Before implementation, freeze a protocol for one ordinary keyed transaction
+control and one current-pin ADT relationship/retag/invariant workload, two
+data sizes and serial/bounded concurrent writers. Compare existing native
+interfaces and tools before choosing a harness or dependency. Check peer
+versions and keep sourced facts through the knowledge-base workflow.
+No benchmark result or readiness of every skewed-pin/role/socket path is
+claimed. Unsupported operations and differing guarantees invalidate or
+limit the affected comparison rather than being counted as fast success.
+
+Keep private execution-environment details in local receipts under the
+repository's publication rules. Protocol, logical workload, repeatable
+commands, portable configuration and reviewed results remain public.

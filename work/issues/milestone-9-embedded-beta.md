@@ -40,3 +40,35 @@ work/briefs/review-m9-audit.md: 6 of 53 requirements done, 14 partial, 33 absent
 ## 2026-10-31: next step
 
 By the wide review, new background jobs wait for fault-matrix. Order: test-audit-findings, then fault-matrix, compile-time-identity and vacuity-gate, then the remaining slices named in depends-on. Exit needs a searching test named for each claim, and the audit of 2026-10-29 must be re-run first, since its counts are stale.
+
+## 2026-10-31: finite recovery checkpoint and next increment
+
+The bounded public statement/commit recovery checkpoint landed as
+`9e349658d759`, with attempted/acknowledged state, reached fault positions
+and three mutation witnesses. It does not close the wider fault matrix or
+real-backend coverage. Hidden conflict scope and surviving field identity
+are fixed; nested upsert reader facts remain an active bounded repair.
+
+A fresh source assessment covered all six M9 plan bullets, not every one
+of the older 53 subrequirements. The old 6/14/33 counts are stale. Verify,
+quarantine, scrub, reindex and full physical backup/restore have public
+callers; statistics/plan lifecycle, background vacuum, logical dump,
+incremental/PITR, metrics/catalog releases and real-backend fault searches
+remain partial or absent. None of this is a milestone-exit verdict.
+
+The next selected milestone increment is the first reproducible embedded
+SQLite baseline under the existing benchmark exception in docs/plan.md.
+Freeze one keyed transactional control and one current-pin ADT relationship,
+retag and invariant workload, with two data sizes and serial/bounded
+concurrency. Independently establish equivalent outcomes, serializability,
+constraints and acknowledged durability before timing. Keep preparation,
+open/reopen and steady-state costs separate, retain raw repeated samples,
+and report unsuccessful work and unsupported cases explicitly.
+
+Measurement gets an exclusive window after active correctness checks.
+Then choose one measured optimization or the bounded background-vacuum
+consumer. This supersedes the earlier appended all-umbrella sequencing:
+fault-matrix, compile-time-identity, admission and budget tickets are
+prerequisites only where the selected consumer actually needs them. They
+remain tracked debt and beta exit still requires the published benchmark
+and all stated release guarantees. No user-owned design ruling changed.

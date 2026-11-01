@@ -225,3 +225,38 @@ reviewable evidence while independent work proceeds. If I again become the
 routine command/log relay, the ownership arrangement has failed and needs
 resolution. This is a process control, not a type-level guarantee. No new
 watcher, approval layer or test gate is warranted by this incident.
+
+### 2026-10-31: restore a finite beta delivery sequence
+
+The ownership correction held through the last batch: authors ran and
+assessed their own targeted proofs, and one author verified both reviewed
+changes in a combined final tree. Native landing preserved both commits;
+only reviewed ticket prose differed, so no post-land full run repeated.
+A shell-only author fixed forced workspace selection with native Cargo
+semantics while that check ran, without another Rust build or parser.
+These observations support the workflow change, not a defect-class closure.
+
+The remaining full check still took about fourteen and a half minutes.
+Root and campaign test builds contributed roughly eight minutes, distinct
+from execution. The fixture migration establishes a large local input-edit
+feedback improvement, not a clean-build or whole-suite improvement. Repeated
+old/new warm switches also cost about forty-five seconds each in that
+experiment. New briefs warm each form once and require the necessary
+sensitivity and no-recompile proof rather than an arbitrary trial pattern.
+
+I had also answered status and stopped with completed recommendations
+unassigned. The maintainer became the scheduler. This batch continued
+through review, integrated verification and publication before yielding;
+new work now has explicit execution owners and a source-only milestone
+assessment ran alongside it. That is a process correction to observe, not
+a guarantee produced by another reminder.
+
+The beta assessment checked current public callers against all six plan
+bullets. It disproves reuse of the older 6/53 tally, but is not a new
+53-requirement audit or exit claim. The finite public commit checkpoint
+requested earlier in this journal has landed. The next selected milestone
+increment is the existing native SQLite baseline, followed by a measured
+optimization or bounded vacuum consumer. The milestone ticket now replaces
+its appended all-umbrella scheduling with consumer-specific prerequisites.
+Existing failure, identity, authority and budget bets remain open; there is
+no measured recurrence trend that justifies calling those classes closed.
