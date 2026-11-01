@@ -93,3 +93,11 @@ The test audit passed both branch and landed checks and was published. Its deter
 A stale sibling snapshot surfaced during rebase as divergence and later made land refuse. I compared both trees, restored the already verified import correction, and gave the preserved older snapshot a separate change identity. No work was abandoned. Future cross-workspace rebases must first snapshot the source workspace itself; taking the root view alone can miss unsnapshotted sibling edits.
 
 The mechanism bet remains open: one landed hiding fix and its mutations do not establish a drop in class-wide recurrence. The next fault-matrix slice must reuse the operation search and name the public entry point, with exact outcomes and reached-case floors before adding a broad sweep.
+
+### 2026-10-31: host-open boundary and complete refusal expectations
+
+The first fault-matrix slice deliberately stops at the host acquisition protocol. The runtime operation search cannot reach syscalls before the runtime exists. A small private test-only seam reaches the actual public open, and the production repair uses the existing bounded retry rather than another runner, filesystem layer or retry budget. The old protocol failed after the exact post-log-claim refusal; false ownership in the opposite direction also failed preservation. Both are measured assertions, not reading claims.
+
+I checked the strengthened preservation test's diagnostic against the language code but failed to follow its public error wrapper. Its exact assertion rejected Invalid where migration returns SchemaRefused. A fresh narrow correction traced the whole conversion and retained the exact category, operator, detail, version and acknowledged row. This repeats the earlier refusal-expectation lesson: diagnostic wording is not the complete expected outcome. Future expectation receipts must identify the public conversion as well as the diagnostic source. That remains verification work, not a compile-time guarantee.
+
+The independent review found no introduced blocker and one preexisting acquisition cleanup candidate, now ticketed separately. The bounded review rule held: that candidate and a test expectation did not trigger another broad review or expand the fix. The class-wide mechanism bet remains open; a finite host-open search is not coverage of all engine faults.

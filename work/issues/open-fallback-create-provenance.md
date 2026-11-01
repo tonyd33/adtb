@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-31
-status: open
+status: in-progress
 kind: bug
 priority: 560
 summary: a create racing an unlink reports its newly created file as preexisting and leaves it after refusal
+branch: fault-open
 tags:
   - quality
   - engine
@@ -41,3 +42,24 @@ protocol and retain the result of the operation that actually created
 the inode. Class: multi-step change not atomic under failure or race;
 the ownership fact must come from the creating operation. Include this
 host filesystem window in fault-matrix's public-open coverage.
+
+## 2026-10-31: public-open reproduction
+
+The candidate is reproduced through actual `Database::open` on base
+`38f07e0e`, with only a private test callback and regressions added
+(`6f04ee6ebb4d67527d0ca3db8a04da96ba150ed9`). A cooperating holder
+unlinks the original inode between exclusive-create collision and the
+fallback. A missing `slugify` binding required by a constraint then
+returns exact `HostFnMissing { name: "slugify" }` after the pager has
+claimed its log. Both the replacement file and log incorrectly survive:
+expected retention `(false, false)`, observed `(true, true)`. The named
+window counter had reached one; missing/existing/replaced controls ran
+before the failing unlinked case. Nextest returned 100.
+
+Reproducer: `work/tools/suite -p adtb --lib
+a_refused_open_keeps_only_files_it_found_across_creation_races` in
+`fault-open`. The proposed repair uses a noncreating fallback and typed
+retry through the existing bounded lock-acquisition loop. It introduces
+no second retry loop, budget or public API. Fixed-source checks,
+preservation mutation, independent review and complete integration are
+still pending; this report does not yet close the ticket.
