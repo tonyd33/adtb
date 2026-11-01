@@ -1,0 +1,8 @@
+=== reject reject-key
+--- source
+(update u in users where key u == users.key(1) set User { u with name: "x" },
+                update u in users where key u == users.key(1) set User { u with name: "y" })
+--- relation
+users
+--- key
+users.key(1)

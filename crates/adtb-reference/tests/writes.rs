@@ -12,6 +12,15 @@ use adtb_testkit::fixture::*;
 use adtb_testkit::uuid;
 use adtb_testkit::writes::{SCHEMA, fixture};
 
+#[path = "writes/mod.rs"]
+mod cases;
+
+#[test]
+fn runtime_write_cases() {
+    let (families, steps) = cases::run();
+    eprintln!("runtime writes: {families} families, {steps} steps executed");
+}
+
 fn names(f: &Fixture) -> Value {
     f.value("from u in users select u.name")
 }
@@ -37,15 +46,6 @@ fn count(f: &Fixture, rel: &str) -> usize {
 // Change sets and combining writes
 
 #[test]
-fn an_insert_of_an_existing_key_is_a_key_violation_even_when_equal() {
-    let mut f = fixture();
-    assert_eq!(
-        key_violation("users", "users.key(1)"),
-        f.rejected(r#"insert users { id: users.key(1), name: "ann" }"#)
-    );
-}
-
-#[test]
 fn an_insert_fills_its_generated_key_with_an_unused_value() {
     let mut f = fixture();
     let out = f
@@ -55,84 +55,6 @@ fn an_insert_fills_its_generated_key_with_an_unused_value() {
     let k = f.one(r#"from u in users where u.name == "eve" select key u"#);
     assert!(![key(1), key(2), key(3), key(4)].contains(&k));
     assert_eq!(5, count(&f, "users"));
-}
-
-#[test]
-fn an_insert_into_a_constructor_relation() {
-    let mut f = fixture();
-    f.run_with(
-        "insert identities.Google { user: u, gid: g }",
-        &[("u", "Key users", key(3)), ("g", "Text", text("g-cy"))],
-    )
-    .expect("inserted");
-    assert_eq!(
-        key(3),
-        f.one(r#"from g in identities.Google where g.gid == "g-cy" select g.user"#)
-    );
-}
-
-#[test]
-fn an_insert_from_a_query_into_a_constructor_relation() {
-    let mut f = fixture();
-    f.ok("delete i in identities.Google where i.gid == \"s-bo\"");
-    f.ok("insert identities.Google from (
-            from x in imports.Oauth select { user: x.user, gid: x.sub })");
-    assert_eq!(
-        key(2),
-        f.one(r#"from g in identities.Google where g.gid == "s-bo" select g.user"#)
-    );
-}
-
-#[test]
-fn an_insert_into_a_sum_takes_constructors_from_the_query() {
-    let mut f = fixture();
-    f.ok("delete i in identities.Google where i.gid == \"s-bo\"");
-    f.ok("insert identities from (
-            from x in imports
-            select match x
-              | Email e -> EmailPass { user: e.user, email: e.addr, hash: e.h }
-              | Oauth o -> Google { user: o.user, gid: o.sub })");
-    assert_eq!(
-        key(3),
-        f.one(r#"from e in identities.EmailPass where e.email == "cy@x.org" select e.user"#)
-    );
-    assert_eq!(
-        key(2),
-        f.one(r#"from g in identities.Google where g.gid == "s-bo" select g.user"#)
-    );
-}
-
-#[test]
-fn two_rows_inserted_with_one_key_are_a_key_violation() {
-    let mut f = fixture();
-    assert_eq!(
-        key_violation("users", "users.key(9)"),
-        f.rejected(
-            r#"(insert users { id: users.key(9), name: "a" }, insert users { id: users.key(9), name: "b" })"#
-        )
-    );
-}
-
-#[test]
-fn two_updates_of_one_row_to_different_values_are_a_key_violation() {
-    let mut f = fixture();
-    assert_eq!(
-        key_violation("users", "users.key(1)"),
-        f.rejected(
-            r#"(update u in users where key u == users.key(1) set User { u with name: "x" },
-                update u in users where key u == users.key(1) set User { u with name: "y" })"#
-        )
-    );
-}
-
-#[test]
-fn two_equal_updates_of_one_row_are_one_update() {
-    let mut f = fixture();
-    f.ok(
-        r#"(update u in users where key u == users.key(1) set User { u with name: "x" },
-            update u in users where key u == users.key(1) set User { u with name: "x" })"#,
-    );
-    assert_eq!(texts(["x", "bo", "cy", "dee"]), names(&f));
 }
 
 #[test]

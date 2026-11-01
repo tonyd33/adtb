@@ -1,0 +1,7 @@
+=== reject reject-key
+--- source
+(insert users { id: users.key(9), name: "a" }, insert users { id: users.key(9), name: "b" })
+--- relation
+users
+--- key
+users.key(9)

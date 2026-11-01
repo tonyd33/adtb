@@ -1,0 +1,13 @@
+=== insert run
+--- source
+insert identities.Google { user: u, gid: g }
+--- params
+u|Key users|users.key(3)
+g|Text|"g-cy"
+=== user one
+--- source
+from g in identities.Google where g.gid == "g-cy" select g.user
+--- type
+Key users
+--- expected
+users.key(3)

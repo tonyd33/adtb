@@ -1,0 +1,14 @@
+=== update run
+--- source
+(update u in users where key u == users.key(1) set User { u with name: "x" },
+            update u in users where key u == users.key(1) set User { u with name: "x" })
+=== names set
+--- source
+from u in users select u.name
+--- type
+Text
+--- expected
+"x"
+"bo"
+"cy"
+"dee"

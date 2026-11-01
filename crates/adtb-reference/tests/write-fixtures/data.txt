@@ -1,0 +1,47 @@
+=== users rows
+--- source
+[User { id: users.key(1), name: "ann" },
+ User { id: users.key(2), name: "bo" },
+ User { id: users.key(3), name: "cy" },
+ User { id: users.key(4), name: "dee" }]
+=== identities rows
+--- source
+[EmailPass { id: identities.key(uuid("00000000-0000-7000-8000-000000000001")), user: users.key(1), email: "ann@example.com", hash: bytes("h1") },
+ Google { id: identities.key(uuid("00000000-0000-7000-8000-000000000002")), user: users.key(1), gid: "g-ann" },
+ Google { id: identities.key(uuid("00000000-0000-7000-8000-000000000003")), user: users.key(2), gid: "g-bo" },
+ Google { id: identities.key(uuid("00000000-0000-7000-8000-000000000004")), user: users.key(1), gid: "s-bo" },
+ EmailPass { id: identities.key(uuid("00000000-0000-7000-8000-000000000005")), user: users.key(2), email: "Bo@Example.com", hash: bytes("h2") }]
+=== logins rows
+--- source
+[Active { id: logins.key(1), user: users.key(1), identity: identities.key(uuid("00000000-0000-7000-8000-000000000001")) },
+ Active { id: logins.key(2), user: users.key(2), identity: identities.key(uuid("00000000-0000-7000-8000-000000000003")) },
+ Revoked { id: logins.key(3), user: users.key(1), at: t }]
+--- params
+t|Instant|1970-01-01T00:00:00.000005Z
+=== resets rows
+--- source
+from e in identities.EmailPass where e.email == "ann@example.com"
+select Reset { id: resets.key(1), identity: key e, token: bytes("t") }
+=== badges rows
+--- source
+[Badge { id: badges.key(1), owner: users.key(3), label: "b3" },
+ Badge { id: badges.key(2), owner: users.key(4), label: "b4" }]
+=== imports rows
+--- source
+[Oauth { id: imports.key(1), user: users.key(2), sub: "s-bo" },
+ Email { id: imports.key(2), user: users.key(3), addr: "cy@x.org", h: bytes("h3") }]
+=== notes rows
+--- source
+[Note { id: notes.key(1), author: Some { value: users.key(4) }, body: "n" },
+ Note { id: notes.key(2), author: None, body: "plain" },
+ Note { id: notes.key(3), author: None, body: "frozen" }]
+=== customers rows
+--- source
+[Customer { id: customers.key(1), name: "c", address: US { zip: "10001", street: "s" } },
+ Customer { id: customers.key(2), name: "d", address: Intl { country: "fr", postcode: "75001" } }]
+=== tickets rows
+--- source
+[Open { id: tickets.key(1), owner: Some { value: users.key(4) }, identity: identities.key(uuid("00000000-0000-7000-8000-000000000002")) }]
+=== raws rows
+--- source
+[Raw { id: raws.key(1), n: 5 }, Raw { id: raws.key(2), n: -1 }, Raw { id: raws.key(3), n: 7 }]

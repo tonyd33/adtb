@@ -1,6 +1,7 @@
-use adtb_reference::{Abort, Fault, Value, textual};
+use adtb_reference::{Abort, Fault, Value};
 use adtb_testkit::fixture::Fixture;
 
+use super::shared::{bindings, parse};
 use super::{Fields, finish, take};
 
 enum Mode {
@@ -11,29 +12,6 @@ enum Mode {
 enum Expected {
     Value(Value),
     Fault(Fault),
-}
-
-fn parse(fixture: &Fixture, ty: &str, text: &str) -> Value {
-    textual::parse(&fixture.schema, text, &fixture.ty(ty))
-        .unwrap_or_else(|error| panic!("expected/input {ty} `{text}`: {error}"))
-}
-
-pub(super) fn bindings(fixture: &Fixture, text: Option<String>) -> Vec<(String, String, Value)> {
-    let mut names = std::collections::BTreeSet::new();
-    text.into_iter()
-        .flat_map(|s| s.lines().map(str::to_owned).collect::<Vec<_>>())
-        .map(|line| {
-            let mut parts = line.splitn(3, '|');
-            let name = parts.next().expect("binding has a name").to_string();
-            assert!(
-                !name.is_empty() && names.insert(name.clone()),
-                "binding names are nonempty and unique"
-            );
-            let ty = parts.next().expect("binding has a type").to_string();
-            let value = parse(fixture, &ty, parts.next().expect("binding has a value"));
-            (name, ty, value)
-        })
-        .collect()
 }
 
 fn fault(text: &str) -> Fault {

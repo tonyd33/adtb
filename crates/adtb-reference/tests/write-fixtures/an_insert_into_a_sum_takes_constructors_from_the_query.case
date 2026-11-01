@@ -1,0 +1,24 @@
+=== delete run
+--- source
+delete i in identities.Google where i.gid == "s-bo"
+=== insert run
+--- source
+insert identities from (
+            from x in imports
+            select match x
+              | Email e -> EmailPass { user: e.user, email: e.addr, hash: e.h }
+              | Oauth o -> Google { user: o.user, gid: o.sub })
+=== email-user one
+--- source
+from e in identities.EmailPass where e.email == "cy@x.org" select e.user
+--- type
+Key users
+--- expected
+users.key(3)
+=== google-user one
+--- source
+from g in identities.Google where g.gid == "s-bo" select g.user
+--- type
+Key users
+--- expected
+users.key(2)

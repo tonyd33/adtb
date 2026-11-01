@@ -1,0 +1,14 @@
+=== delete run
+--- source
+delete i in identities.Google where i.gid == "s-bo"
+=== insert run
+--- source
+insert identities.Google from (
+            from x in imports.Oauth select { user: x.user, gid: x.sub })
+=== user one
+--- source
+from g in identities.Google where g.gid == "s-bo" select g.user
+--- type
+Key users
+--- expected
+users.key(2)
