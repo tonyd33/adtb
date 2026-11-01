@@ -1,0 +1,38 @@
+=== 001 schema
+--- text
+fn f () -> Key users = users.key(3)
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (a: Key users, b: Key users) -> Key follows = follows.key(src: a, dst: b)
+--- expect
+accept
+=== 003 schema
+--- text
+fn f (a: Key users) -> Key follows = follows.key(a)
+--- expect
+refuse
+--- errors
+`follows` has a composite key; name its fields: `follows.key(src: ..., dst: ...)`
+--- phase
+check
+=== 004 schema
+--- text
+fn f () -> Key users = users.key("x")
+--- expect
+refuse
+--- errors
+expected I64, found Text
+--- phase
+check
+=== 005 schema
+--- text
+fn f (k: Key users) -> I64 = value(k)
+--- expect
+accept
+=== 006 schema
+--- text
+fn f (k: Key follows) -> { dst: Key users, src: Key users } = value(k)
+--- expect
+accept

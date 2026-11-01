@@ -1,0 +1,33 @@
+=== 001 schema
+--- text
+fn f (b: Bool) -> I64 = if b then 1 else 0
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (b: Bool) -> I64 = match b | true -> 1 | false -> 0
+--- expect
+accept
+=== 003 schema
+--- text
+fn f (b: Bool) -> I64 = match b | True -> 1 | False -> 0
+--- expect
+accept
+=== 004 schema
+--- text
+fn f (b: Bool) -> I64 = match b | true -> 1
+--- expect
+refuse
+--- errors
+match does not cover `False`
+--- phase
+check
+=== 005 schema
+--- text
+fn f (b: I64) -> I64 = if b then 1 else 0
+--- expect
+refuse
+--- errors
+expected Bool, found I64
+--- phase
+check

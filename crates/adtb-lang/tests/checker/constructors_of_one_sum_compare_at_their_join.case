@@ -1,0 +1,31 @@
+=== 001 schema
+--- text
+type Stage ordered = Open | Billed { at: I64 } | Settled { at: I64, ref: Text }
+fn f () -> Bool = Billed { at: 100 } < Settled { at: 0, ref: "a" }
+--- expect
+accept
+=== 002 schema
+--- text
+type Stage ordered = Open | Billed { at: I64 } | Settled { at: I64, ref: Text }
+fn f () -> Bool = Open == Billed { at: 1 }
+--- expect
+accept
+=== 003 schema
+--- text
+type Stage ordered = Open | Billed { at: I64 } | Settled { at: I64, ref: Text }
+fn f (s: Stage) -> Bool = match s
+           | Open -> true
+           | Billed x -> x < Settled { at: 0, ref: "a" }
+           | Settled p -> Billed { at: 1 } <= p
+--- expect
+accept
+=== 004 schema
+--- text
+type Stage ordered = Open | Billed { at: I64 } | Settled { at: I64, ref: Text }
+fn f () -> Bool = Billed { at: 1 } < Courier { name: "a" }
+--- expect
+refuse
+--- errors
+expected Stage, found Via.Courier
+--- phase
+check

@@ -1,0 +1,18 @@
+=== 001 schema
+--- text
+fn logins_of (u: Key users) -> Set Text =
+           from i in identities where i.user == u select display_name(i)
+         fn active () -> Set User = from u in users where exists i in u.<identities.user select u
+         fn q () -> Set ({ name: Text, login: Text }) =
+           from u in active(), l in logins_of(key u) select { name: u.name, login: l }
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> I64 = display_name()
+--- expect
+refuse
+--- errors
+`display_name` takes 1 arguments, given 0
+--- phase
+check

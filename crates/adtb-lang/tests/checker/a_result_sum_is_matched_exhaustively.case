@@ -1,0 +1,32 @@
+=== 001 schema
+--- text
+fn rs () -> Set (A { n: I64 } | B { m: Text }) = [A { n: 1 }]
+         fn f () -> Set I64 = from r in rs() select match r | A a -> a.n | B b -> 0
+--- expect
+accept
+=== 002 schema
+--- text
+fn rs () -> Set (A { n: I64 } | B { m: Text }) = [A { n: 1 }]
+         fn f () -> Set I64 = from r in rs() select match r | A a -> a.n
+--- expect
+refuse
+--- errors
+match does not cover `B _`
+--- phase
+check
+=== 003 schema
+--- text
+fn rs () -> Set (A { n: I64 } | B { m: Text } | C) = [C]
+         fn f () -> Set Text = from r in rs().(B | C) select match r | B b -> b.m | C -> "c"
+--- expect
+accept
+=== 004 schema
+--- text
+fn rs () -> Set (A { n: I64 } | B { m: Text } | C) = [C]
+         fn f () -> Set Text = from r in rs().(B | C) select match r | B b -> b.m | C -> "c" | A _ -> "a"
+--- expect
+refuse
+--- errors
+`A` is not among the constructors of (A { n: I64 } | B { m: Text } | C).(B | C)
+--- phase
+check

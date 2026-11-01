@@ -1,0 +1,25 @@
+=== 001 schema
+--- text
+fn f (i: Identity) -> Identity = match i | Google g -> g | EmailPass e -> e | Apple a -> a
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (i: Identity) -> Set (Identity.Google) = match i | Google g -> [g] | EmailPass _ -> [] | Apple _ -> []
+--- expect
+accept
+=== 003 schema
+--- text
+fn f (i: Identity) -> Set (Key identities.Google) = match i
+           | Google g -> [key g] | EmailPass _ -> [] | Apple _ -> []
+--- expect
+accept
+=== 004 schema
+--- text
+fn f (o: Option I64) -> I64 = match o | Some s -> key s | None -> 0
+--- expect
+refuse
+--- errors
+`key` needs a row whose relation is known here, found a value of Option.Some I64
+--- phase
+check

@@ -1,0 +1,20 @@
+=== 001 schema
+--- text
+type Mark = { id: Key marks, v: Alpha | Zed { n: I64 } }
+         relation marks : Mark key id generate sequence
+--- expect
+refuse
+--- errors
+a declared field's type is a named type; declare a sum type for it
+--- phase
+schema
+=== 002 schema
+--- text
+type Mark = { id: Key marks, v: Option (Alpha | Zed { n: I64 }) }
+         relation marks : Mark key id generate sequence
+--- expect
+refuse
+--- errors
+a declared field's type is a named type; declare a sum type for it
+--- phase
+schema

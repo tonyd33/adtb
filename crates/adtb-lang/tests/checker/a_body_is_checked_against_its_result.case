@@ -1,0 +1,18 @@
+=== 001 schema
+--- text
+fn f () -> Text = count(u for u in users)
+--- expect
+refuse
+--- errors
+expected Text, found I64
+--- phase
+check
+=== 002 schema
+--- text
+fn f () -> Set Text = from u in users select u
+--- expect
+refuse
+--- errors
+expected Text, found User
+--- phase
+check

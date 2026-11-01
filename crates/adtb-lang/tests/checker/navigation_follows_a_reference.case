@@ -1,0 +1,19 @@
+=== 001 schema
+--- text
+fn f () -> Set Text = from i in identities select i.user.name
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> Text = users.key(3).name
+--- expect
+accept
+=== 003 schema
+--- text
+fn f () -> Set Text = from e in employees select e.manager.name
+--- expect
+refuse
+--- errors
+Option (Key employees) has no field `name`; a path stops at an `Option`: match it
+--- phase
+check

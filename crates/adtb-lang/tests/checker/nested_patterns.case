@@ -1,0 +1,28 @@
+=== 001 schema
+--- text
+fn f (s: Shipment) -> Text = match s
+           | Shipped { via: Courier c } -> c.name
+           | Shipped { via: Mail m }    -> m.tracking
+           | Pending                    -> "pending"
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (s: Shipment) -> Text = match s
+           | Shipped { via: Courier c } -> c.name
+           | Pending                    -> "pending"
+--- expect
+refuse
+--- errors
+match does not cover `Shipped { via: Mail _ }`
+--- phase
+check
+=== 003 schema
+--- text
+fn f (s: Shipment) -> Text = match s
+           | Shipped { via: Courier { name: "x" } } -> "x"
+           | Shipped { via: Courier c } -> c.name
+           | Shipped { via: Mail m }    -> m.tracking
+           | Pending                    -> "pending"
+--- expect
+accept

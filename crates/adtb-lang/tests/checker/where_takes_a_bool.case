@@ -1,0 +1,9 @@
+=== 001 schema
+--- text
+fn f () -> Set User = from u in users where u.name select u
+--- expect
+refuse
+--- errors
+expected Bool, found Text
+--- phase
+check

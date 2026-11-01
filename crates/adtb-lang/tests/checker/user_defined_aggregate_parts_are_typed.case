@@ -1,0 +1,52 @@
+=== 001 schema
+--- text
+aggregate bad (x: F64) -> F64 =
+  state { s: F64 } init { s: "zero" }
+  step (st, x) -> { s: st.s + x }
+  merge (a, b) -> { s: a.s + b.s }
+  finish st -> st.s
+--- expect
+refuse
+--- errors
+expected F64, found Text
+--- phase
+check
+=== 002 schema
+--- text
+aggregate bad (x: F64) -> F64 =
+  state { s: F64 } init { s: 0.0 }
+  step (st, x) -> { s: st.s + x, n: 1.0 }
+  merge (a, b) -> { s: a.s + b.s }
+  finish st -> st.s
+--- expect
+refuse
+--- errors
+expected { s: F64 }, found { n: Decimal 1, s: F64 }
+--- phase
+check
+=== 003 schema
+--- text
+aggregate bad (x: F64) -> Text =
+  state { s: F64 } init { s: 0.0 }
+  step (st, x) -> { s: st.s + x }
+  merge (a, b) -> { s: a.s + b.s }
+  finish st -> st.s
+--- expect
+refuse
+--- errors
+expected Text, found F64
+--- phase
+check
+=== 004 schema
+--- text
+aggregate bad (x: F64) -> F64 =
+  state { s: F64, s: F64 } init { s: 0.0 }
+  step (st, x) -> { s: st.s + x }
+  merge (a, b) -> { s: a.s + b.s }
+  finish st -> st.s
+--- expect
+refuse
+--- errors
+state field `s` is declared twice
+--- phase
+schema

@@ -1,0 +1,6 @@
+=== 001 schema
+--- text
+fn f () -> Set I64 = from o in orders
+           select match checked_div(o.total, o.qty) | None -> 0 | Some { value: q } -> q
+--- expect
+accept

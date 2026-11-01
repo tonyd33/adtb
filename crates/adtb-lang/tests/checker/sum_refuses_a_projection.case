@@ -1,0 +1,29 @@
+=== 001 schema
+--- text
+fn f () -> I64 = sum(o.total for o in orders)
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> I64 = sum(x.total for x in (from o in orders where o.qty > 1 select o))
+--- expect
+accept
+=== 003 schema
+--- text
+fn f () -> I64 = sum(t for t in (from o in orders select o.total))
+--- expect
+refuse
+--- errors
+`sum` ranges over rows, not over values a `select` may have merged; range over the rows and aggregate the field
+--- phase
+check
+=== 004 schema
+--- text
+fn f (xs: Set I64) -> I64 = sum(x for x in xs)
+--- expect
+accept
+=== 005 schema
+--- text
+fn f (u: User) -> I64 = sum(o.total for o in u.<orders.user)
+--- expect
+accept

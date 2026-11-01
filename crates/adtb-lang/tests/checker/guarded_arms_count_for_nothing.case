@@ -1,0 +1,30 @@
+=== 001 schema
+--- text
+fn f (i: Identity) -> Text = match i
+           | Google g if g.gid == "corp" -> "staff"
+           | Google _                    -> "guest"
+           | EmailPass _                 -> "guest"
+           | Apple _                     -> "guest"
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (i: Identity) -> Text = match i
+           | Google g if g.gid == "root" -> "staff"
+           | EmailPass _                 -> "guest"
+           | Apple _                     -> "guest"
+--- expect
+refuse
+--- errors
+match does not cover `Google _`
+--- phase
+check
+=== 003 schema
+--- text
+fn f (c: Text) -> I64 = match c | x if x == "a" -> 1
+--- expect
+refuse
+--- errors
+a match on Text does not cover every value: literal patterns never cover a scalar, so end it with `_` or a binder
+--- phase
+check

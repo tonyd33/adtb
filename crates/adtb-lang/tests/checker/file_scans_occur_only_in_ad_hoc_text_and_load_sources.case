@@ -1,0 +1,29 @@
+=== 001 schema
+--- text
+fn from_file () -> Set User = read_csv("u.csv", User)
+--- expect
+refuse
+--- errors
+`read_csv` reads files only in ad hoc text and in the source query of an insert
+--- phase
+check
+=== 002 schema
+--- text
+constraint bad = from u in read_csv("u.csv", User) select u
+--- expect
+refuse
+--- errors
+`read_csv` reads files only in ad hoc text and in the source query of an insert
+--- phase
+check
+=== 003 query
+--- text
+query from_file () -> Set User = read_csv("u.csv", User)
+--- extra
+
+--- expect
+refuse
+--- errors
+`read_csv` reads files only in ad hoc text and in the source query of an insert
+--- phase
+query

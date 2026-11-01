@@ -1,0 +1,28 @@
+=== 001 adhoc
+--- text
+"x"
+--- type
+Text
+--- expect
+accept
+=== 002 adhoc
+--- text
+true
+--- type
+Bool
+--- expect
+accept
+=== 003 schema
+--- text
+fn f (a: Text, b: Text) -> Text = a ++ b
+--- expect
+accept
+=== 004 schema
+--- text
+fn f (a: Text, b: I64) -> Text = a ++ b
+--- expect
+refuse
+--- errors
+`++` concatenates two texts or two byte strings, found Text and I64
+--- phase
+check

@@ -1,0 +1,15 @@
+=== 001 schema
+--- text
+fn f () -> Set (Result I32 Fault) = from r in raws select try i32(r.n)
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> Set ({ line: Key raws, n: Result I32 Fault }) = from r in raws select { line: key r, n: try i32(r.n) }
+--- expect
+accept
+=== 003 schema
+--- text
+fn f () -> Set Raw = from r in raws where r.n != 0 and 1000 / r.n > 10 select r
+--- expect
+accept

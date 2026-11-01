@@ -1,0 +1,30 @@
+=== 001 schema
+--- text
+fn f (i: Identity) -> Text = match i
+           | EmailPass e -> e.email
+           | OAuth o     -> display_name(o)
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (i: Identity) -> Key users = match i | OAuth o -> o.user | EmailPass e -> e.user
+--- expect
+accept
+=== 003 schema
+--- text
+fn f (i: Identity) -> Text = match i | EmailPass e -> e.email | OAuth o -> o.gid
+--- expect
+refuse
+--- errors
+Identity.(Google | Apple) has no field `gid`
+--- phase
+check
+=== 004 schema
+--- text
+fn f (i: Identity) -> Text = match i | OAuth o -> display_name(o) | Google g -> g.gid | EmailPass e -> e.email
+--- expect
+refuse
+--- errors
+this arm is unreachable: the arms before it cover every value it matches
+--- phase
+check

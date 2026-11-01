@@ -1,0 +1,14 @@
+=== 001 schema
+--- text
+constraint no_empty = from u in users where u.name == "" select u
+--- expect
+accept
+=== 002 schema
+--- text
+constraint bad = count(u for u in users)
+--- expect
+refuse
+--- errors
+a constraint is a query returning a set, here of type I64
+--- phase
+check

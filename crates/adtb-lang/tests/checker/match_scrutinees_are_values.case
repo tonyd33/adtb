@@ -1,0 +1,9 @@
+=== 001 schema
+--- text
+fn f () -> I64 = match users | User u -> 1
+--- expect
+refuse
+--- errors
+a match examines one value, found Set User; a set is ranged over
+--- phase
+check

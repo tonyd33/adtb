@@ -1,0 +1,98 @@
+=== 001 schema
+--- text
+fn f (x: I32) -> I32 = abs(x)
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (x: Decimal 2) -> Decimal 2 = abs(x)
+--- expect
+accept
+=== 003 schema
+--- text
+fn f (x: Text) -> Text = abs(x)
+--- expect
+refuse
+--- errors
+`abs` does not take Text
+--- phase
+check
+=== 004 schema
+--- text
+fn f (x: Decimal 2) -> I64 = i64(x, HalfEven)
+--- expect
+accept
+=== 005 schema
+--- text
+fn f (x: Decimal 2) -> I64 = i64(x)
+--- expect
+refuse
+--- errors
+`i64` of Decimal 2 takes a rounding: `i64(x, HalfEven)`
+--- phase
+check
+=== 006 schema
+--- text
+fn f (x: I32) -> I64 = i64(x)
+--- expect
+accept
+=== 007 schema
+--- text
+fn f (x: I64) -> Option I32 = checked_i32(x)
+--- expect
+accept
+=== 008 schema
+--- text
+fn f (x: I64) -> Text = text(x)
+--- expect
+accept
+=== 009 schema
+--- text
+fn f (x: Instant) -> Text = text(x)
+--- expect
+accept
+=== 010 schema
+--- text
+fn f (a: I64, b: I64) -> Option I64 = checked_div(a, b)
+--- expect
+accept
+=== 011 schema
+--- text
+fn f (a: I64) -> Option I64 = checked_add(a, 1)
+--- expect
+accept
+=== 012 schema
+--- text
+fn f (a: Decimal 2, b: Decimal 2) -> Decimal 4 = div(a, b, 4, HalfEven)
+--- expect
+accept
+=== 013 schema
+--- text
+fn f (s: Span Instant, t: Instant) -> Bool = covers(s, t)
+--- expect
+accept
+=== 014 schema
+--- text
+fn f (s: Span Instant, t: Span Instant) -> Bool = covers(s, t)
+--- expect
+accept
+=== 015 schema
+--- text
+fn f (s: Span Instant, t: Span Instant) -> Bool = overlaps(s, t)
+--- expect
+accept
+=== 016 schema
+--- text
+fn f (d: Date) -> Option Date = add_period(d, months(1), Reject)
+--- expect
+accept
+=== 017 schema
+--- text
+fn f (d: Date) -> Date = add_period(d, months(1), Clamp)
+--- expect
+accept
+=== 018 schema
+--- text
+fn f (t: Text) -> Option I64 = I64.parse(t)
+--- expect
+accept

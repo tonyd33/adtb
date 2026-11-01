@@ -1,0 +1,16 @@
+=== 001 schema
+--- text
+fn none [a] () -> Option a = None
+         fn h () -> Option I64 = none()
+--- expect
+accept
+=== 002 schema
+--- text
+fn none [a] () -> Option a = None
+         fn h () -> I64 = count(x for x in [none()])
+--- expect
+refuse
+--- errors
+the type argument `a` of `none` is not known here
+--- phase
+check

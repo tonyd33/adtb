@@ -1,0 +1,32 @@
+=== 001 schema
+--- text
+fn f (t: Text) -> SortKey = collate(t, "de-u-ks-level2@cldr-49")
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (t: Text) -> SortKey = collate(t, "de")
+--- expect
+refuse
+--- errors
+collation `de` names no version; write it as `name@version`
+--- phase
+check
+=== 003 schema
+--- text
+fn f (t: Text) -> SortKey = collate(t, "de@icu-1")
+--- expect
+refuse
+--- errors
+collation `de@icu-1` names version `icu-1`; this database supports `cldr-49`
+--- phase
+check
+=== 004 schema
+--- text
+fn f (t: Text) -> SortKey = collate(t, "de-u-zz-yes@cldr-49")
+--- expect
+refuse
+--- errors
+collation `de-u-zz-yes@cldr-49` is not a collation this database supports
+--- phase
+check

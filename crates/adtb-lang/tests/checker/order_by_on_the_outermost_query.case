@@ -1,0 +1,33 @@
+=== 001 adhoc
+--- text
+from u in users select u order by u.name
+--- expect
+accept
+=== 002 query
+--- text
+query q () -> Set User = from u in users select u order by u.name
+--- expect
+accept
+=== 003 query
+--- text
+query q () -> Set Text = from u in users select u.name order by u.name desc
+--- expect
+accept
+=== 004 schema
+--- text
+fn f () -> Set User = from u in users select u order by u.name
+--- expect
+refuse
+--- errors
+`order by` is allowed only on the outermost comprehension of a registered query or an ad hoc statement
+--- phase
+check
+=== 005 query
+--- text
+query q () -> Set (Set User) = from x in users select (from u in users select u order by u.name)
+--- expect
+refuse
+--- errors
+`order by` is allowed only on the outermost comprehension of a registered query or an ad hoc statement
+--- phase
+query

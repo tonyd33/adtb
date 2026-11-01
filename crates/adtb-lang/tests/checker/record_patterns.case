@@ -1,0 +1,27 @@
+=== 001 schema
+--- text
+fn f (i: Identity) -> Text = match i
+           | EmailPass { email, hash: _ } -> email
+           | Google { gid }               -> gid
+           | Apple { sub }                -> sub
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (u: User) -> Text = match u | User { name } -> name
+--- expect
+accept
+=== 003 schema
+--- text
+fn f (i: Identity) -> Key users = match i | EmailPass { user } -> user | Google { user } -> user | Apple { user } -> user
+--- expect
+accept
+=== 004 schema
+--- text
+fn f (i: Identity) -> Text = match i | EmailPass { nope } -> nope | Google g -> g.gid | Apple a -> a.sub
+--- expect
+refuse
+--- errors
+Identity.EmailPass has no field `nope`
+--- phase
+check

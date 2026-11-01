@@ -1,0 +1,6 @@
+=== 001 schema
+--- text
+fn pick [a] (x: a, y: a) -> a = x
+         fn f (g: Identity.Google, e: Identity.EmailPass) -> Identity = pick(g, e)
+--- expect
+accept

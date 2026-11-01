@@ -1,0 +1,15 @@
+=== 001 schema
+--- text
+fn f (p: Option I64) -> Bool = p == None
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (p: Option I64) -> Bool = Some { value: 1 } == p
+--- expect
+accept
+=== 003 schema
+--- text
+fn f (r: { a: I64 }) -> Bool = r == { a: 1 }
+--- expect
+accept

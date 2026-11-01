@@ -1,0 +1,40 @@
+=== 001 schema
+--- text
+fn f () -> Decimal 2 = 1.25
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> Decimal 3 = 1.25
+--- expect
+accept
+=== 003 schema
+--- text
+fn f () -> Decimal 1 = 1.25
+--- expect
+refuse
+--- errors
+a literal with 2 fractional digits does not check against Decimal 1
+--- phase
+check
+=== 004 schema
+--- text
+fn f () -> I64 = 1.5
+--- expect
+refuse
+--- errors
+a fractional literal does not check against I64
+--- phase
+check
+=== 005 schema
+--- text
+fn f () -> F64 = 1.5
+--- expect
+accept
+=== 006 adhoc
+--- text
+1.25
+--- type
+Decimal 2
+--- expect
+accept

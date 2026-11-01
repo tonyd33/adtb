@@ -1,0 +1,33 @@
+=== 001 schema
+--- text
+fn f () -> Option I64 = Some { value: 1 }
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> Option I64 = None
+--- expect
+accept
+=== 003 schema
+--- text
+fn f () -> Status = Draft
+--- expect
+accept
+=== 004 schema
+--- text
+fn f () -> Status = Bogus
+--- expect
+refuse
+--- errors
+`Bogus` is not a constructor of Status
+--- phase
+check
+=== 005 schema
+--- text
+fn f () -> Status = Pending
+--- expect
+refuse
+--- errors
+expected Status, found Shipment.Pending
+--- phase
+check

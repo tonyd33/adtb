@@ -1,0 +1,6 @@
+=== 001 schema
+--- text
+fn rs () -> Set (A { n: I64 } | B { n: I64 } | C) = [C]
+         fn f () -> Set I64 = from r in rs() select match r | A x | B x -> x.n | C -> 0
+--- expect
+accept

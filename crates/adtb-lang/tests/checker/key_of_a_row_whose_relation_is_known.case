@@ -1,0 +1,32 @@
+=== 001 schema
+--- text
+fn f () -> Set (Key identities.Google) = from g in identities.Google select key g
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> Set (Key identities.OAuth) = from g in identities.OAuth select key g
+--- expect
+accept
+=== 003 schema
+--- text
+fn f () -> Set (Key follows) = from x in (from f in follows select f) select key x
+--- expect
+accept
+=== 004 schema
+--- text
+fn f (u: Key users) -> Set (Key identities) = from i in u.<identities.user select key i
+--- expect
+accept
+=== 005 schema
+--- text
+fn fs () -> Set Follow = from f in follows select f
+         fn g () -> Set (Key follows) = from x in fs() select key x
+--- expect
+accept
+=== 006 schema
+--- text
+fn f () -> Set (Key identities) = from i in identities select match i
+           | Google g -> key g | Apple a -> key a | EmailPass e -> key e
+--- expect
+accept

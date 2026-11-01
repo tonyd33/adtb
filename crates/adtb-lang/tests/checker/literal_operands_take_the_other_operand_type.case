@@ -1,0 +1,29 @@
+=== 001 schema
+--- text
+fn f () -> Set I32 = from s in sales select s.qty + 1
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> Set Bool = from s in sales select s.qty > 1
+--- expect
+accept
+=== 003 schema
+--- text
+fn f (d: Decimal 2) -> Decimal 2 = d + 1.5
+--- expect
+accept
+=== 004 schema
+--- text
+fn f (d: Decimal 2) -> Decimal 3 = d + 1.125
+--- expect
+accept
+=== 005 schema
+--- text
+fn f () -> Set I32 = from s in sales select s.qty + 1.5
+--- expect
+refuse
+--- errors
+a fractional literal does not check against I32
+--- phase
+check

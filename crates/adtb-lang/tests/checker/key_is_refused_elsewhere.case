@@ -1,0 +1,18 @@
+=== 001 schema
+--- text
+fn f (x: Follow) -> Key follows = key x
+--- expect
+refuse
+--- errors
+`key` needs a row whose relation is known here, found a value of Follow
+--- phase
+check
+=== 002 schema
+--- text
+fn f () -> Set (Key follows) = from x in (from f in follows select { src: f.src, dst: f.dst }) select key x
+--- expect
+refuse
+--- errors
+`key` needs a row whose relation is known here, found a value of { dst: Key users, src: Key users }
+--- phase
+check

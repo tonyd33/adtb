@@ -1,0 +1,23 @@
+=== 001 schema
+--- text
+fn f () -> I64 = sum(x for x in [1, 2, 2, 3])
+--- expect
+accept
+=== 002 adhoc
+--- text
+sum(x for x in [1, 2, 2, 3])
+--- expect
+accept
+=== 003 schema
+--- text
+fn big () -> Set Order = from o in orders where o.total >= 100 select o
+fn f () -> I64 = sum(x.total for x in big())
+--- expect
+accept
+=== 004 adhoc
+--- text
+sum(x.total for x in big())
+--- extra
+fn big () -> Set Order = from o in orders where o.total >= 100 select o
+--- expect
+accept

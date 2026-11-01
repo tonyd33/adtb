@@ -1,0 +1,13 @@
+=== 001 schema
+--- text
+fn f () -> Set Text = from r in resets select match r.identity | EmailPass e -> e.email
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> Set Text = from e in employees
+           select match e.manager
+             | None              -> "none"
+             | Some { value: m } -> m.name
+--- expect
+accept

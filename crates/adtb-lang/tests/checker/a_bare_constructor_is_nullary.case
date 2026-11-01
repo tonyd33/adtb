@@ -1,0 +1,14 @@
+=== 001 schema
+--- text
+fn f (i: Identity) -> I64 = match i | Google -> 1 | EmailPass _ -> 2 | Apple _ -> 3
+--- expect
+refuse
+--- errors
+`Google` has fields; match any of its values with `Google _`
+--- phase
+check
+=== 002 schema
+--- text
+fn f (s: Status) -> I64 = match s | Draft -> 1 | Sent _ -> 2 | Paid p -> 3
+--- expect
+accept

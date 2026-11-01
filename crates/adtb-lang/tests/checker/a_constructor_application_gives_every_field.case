@@ -1,0 +1,23 @@
+=== 001 schema
+--- text
+fn f (u: Key users, k: Key identities) -> Identity.Google = Google { id: k, user: u, gid: "g" }
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (u: Key users, k: Key identities) -> Identity.Google = Google { id: k, user: u }
+--- expect
+refuse
+--- errors
+field `gid` of `Google` is missing
+--- phase
+check
+=== 003 schema
+--- text
+fn f (u: Key users, k: Key identities) -> Identity.Google = Google { id: k, user: u, gid: "g", sub: "s" }
+--- expect
+refuse
+--- errors
+`Google` has no field `sub`
+--- phase
+check

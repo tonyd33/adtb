@@ -1,0 +1,19 @@
+=== 001 schema
+--- text
+fn lt [a: Ord] (x: a, y: a) -> Bool = x < y
+--- expect
+accept
+=== 002 schema
+--- text
+fn lt [a] (x: a, y: a) -> Bool = x < y
+--- expect
+refuse
+--- errors
+a has no order
+--- phase
+check
+=== 003 schema
+--- text
+fn eq [a] (x: a, y: a) -> Bool = x == y
+--- expect
+accept

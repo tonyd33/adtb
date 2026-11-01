@@ -1,0 +1,28 @@
+=== 001 schema
+--- text
+fn or_else [a] (p: Option a, d: a) -> a = match p | None -> d | Some s -> s.value
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (p: Option I64) -> I64 = match p | Some s -> s.value
+--- expect
+refuse
+--- errors
+match does not cover `None`
+--- phase
+check
+=== 003 schema
+--- text
+fn f (p: Option (Option I64)) -> I64 = match p | None -> 0 | Some { value: None } -> 1 | Some { value: Some { value: n } } -> n
+--- expect
+accept
+=== 004 schema
+--- text
+fn f (p: Option (Option I64)) -> I64 = match p | None -> 0 | Some { value: Some { value: n } } -> n
+--- expect
+refuse
+--- errors
+match does not cover `Some { value: None }`
+--- phase
+check

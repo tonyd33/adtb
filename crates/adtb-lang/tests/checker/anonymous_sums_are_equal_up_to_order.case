@@ -1,0 +1,14 @@
+=== 001 schema
+--- text
+fn f (x: A { a: I64 } | B { b: Text }) -> B { b: Text } | A { a: I64 } = x
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (x: A { a: I64 } | B { b: Text }) -> A { a: I64 } | C { b: Text } = x
+--- expect
+refuse
+--- errors
+expected A { a: I64 } | C { b: Text }, found A { a: I64 } | B { b: Text }
+--- phase
+check

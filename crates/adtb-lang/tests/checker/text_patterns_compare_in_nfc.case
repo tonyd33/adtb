@@ -1,0 +1,23 @@
+=== 001 schema
+--- text
+fn f (t: Text) -> I64 = match t | "café" -> 1 | "café" -> 2 | _ -> 0
+--- expect
+refuse
+--- errors
+this arm is unreachable: the arms before it cover every value it matches
+--- phase
+check
+=== 002 schema
+--- text
+fn f (t: Text) -> I64 = match t | "cafe\u{301}" -> 1 | "café" -> 2 | _ -> 0
+--- expect
+refuse
+--- errors
+this arm is unreachable: the arms before it cover every value it matches
+--- phase
+check
+=== 003 schema
+--- text
+fn f (t: Text) -> I64 = match t | "café" -> 1 | "cafe" -> 2 | _ -> 0
+--- expect
+accept

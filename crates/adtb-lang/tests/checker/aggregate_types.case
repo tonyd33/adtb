@@ -1,0 +1,58 @@
+=== 001 schema
+--- text
+fn f (u: User) -> I64 = sum(o.total for o in orders where o.user == key u)
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> I64 = count(i for i in identities)
+--- expect
+accept
+=== 003 schema
+--- text
+fn f () -> Option Instant = min(p.created_at for p in posts)
+--- expect
+accept
+=== 004 schema
+--- text
+fn f () -> Text = sum(u.name for u in users)
+--- expect
+refuse
+--- errors
+`sum` adds numbers, found Text
+--- phase
+check
+=== 005 schema
+--- text
+fn f () -> Option I64 = avg(o.total for o in orders)
+--- expect
+refuse
+--- errors
+`avg` averages `F32` or `F64`, found I64; convert first
+--- phase
+check
+=== 006 schema
+--- text
+fn f () -> Option Status = max(i.status for i in invoices)
+--- expect
+refuse
+--- errors
+`max` needs an ordered type, found Status
+--- phase
+check
+=== 007 schema
+--- text
+fn f () -> I64 = count(x for x in (from i in identities
+           select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub))
+--- expect
+accept
+=== 008 schema
+--- text
+fn f () -> I64 = count(a for a in (from p in posts select p.author))
+--- expect
+accept
+=== 009 schema
+--- text
+fn f () -> I64 = count(1 for u in users, p in posts where p.author == key u)
+--- expect
+accept

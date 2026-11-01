@@ -1,0 +1,55 @@
+=== 001 schema
+--- text
+fn f (t: Text) -> Bool = matches(t, "^[^@]+@[^@]+$")
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (t: Text) -> Bool = matches(t, "(?i)\\p{L}+")
+--- expect
+accept
+=== 003 schema
+--- text
+fn f (t: Text, p: Text) -> Bool = matches(t, p)
+--- expect
+refuse
+--- errors
+this argument is a constant: write a text literal
+--- phase
+check
+=== 004 schema
+--- text
+fn f (t: Text) -> Bool = matches(t, "(a")
+--- expect
+refuse
+--- errors
+`(a` is not a regular expression: regex parse error:
+    (a
+    ^
+error: unclosed group
+--- phase
+check
+=== 005 schema
+--- text
+fn f (t: Text) -> Bool = matches(t, "(a)\\1")
+--- expect
+refuse
+--- errors
+`(a)\1` is not a regular expression: regex parse error:
+    (a)\1
+       ^^
+error: backreferences are not supported
+--- phase
+check
+=== 006 schema
+--- text
+fn f (t: Text) -> Bool = matches(t, "a(?=b)")
+--- expect
+refuse
+--- errors
+`a(?=b)` is not a regular expression: regex parse error:
+    a(?=b)
+     ^^^
+error: look-around, including look-ahead and look-behind, is not supported
+--- phase
+check

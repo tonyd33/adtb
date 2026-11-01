@@ -1,0 +1,7 @@
+=== 001 schema
+--- text
+fn oauth_owner (u: Key users) -> Set (Key identities) =
+           from i in identities where i.user == u
+           select match i | Google g -> key g | Apple a -> key a | EmailPass e -> key e
+--- expect
+accept

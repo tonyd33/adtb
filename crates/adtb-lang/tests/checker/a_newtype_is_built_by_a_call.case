@@ -1,0 +1,22 @@
+=== 001 schema
+--- text
+type Email = new Text
+fn f () -> Email = Email("a@b")
+--- expect
+accept
+=== 002 schema
+--- text
+type Email = new Text
+fn f () -> Email = Email(3)
+--- expect
+refuse
+--- errors
+expected Text, found I64
+--- phase
+check
+=== 003 schema
+--- text
+type Email = new Text
+fn f (e: Email) -> Text = unwrap(e)
+--- expect
+accept

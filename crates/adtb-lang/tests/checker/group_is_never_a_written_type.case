@@ -1,0 +1,38 @@
+=== 001 schema
+--- text
+fn f (g: Group (Key users) Order) -> I64 = 1
+--- expect
+refuse
+--- errors
+`Group K T` is the type of a group binder and is never written; a group passed on is a `Set T`
+--- phase
+schema
+=== 002 schema
+--- text
+fn f () -> Set (Group (Key users) Order) = from o in orders group o by o.user into g select g
+--- expect
+refuse
+--- errors
+`Group K T` is the type of a group binder and is never written; a group passed on is a `Set T`
+--- phase
+schema
+=== 003 schema
+--- text
+fn f () -> I64 = count(x for x in [fn (g: Group I64 I64) -> 1])
+--- expect
+refuse
+--- errors
+`Group K T` is the type of a group binder and is never written; a group passed on is a `Set T`
+--- phase
+check
+=== 004 query
+--- text
+query q (g: Group I64 I64) -> I64 = 1
+--- extra
+
+--- expect
+refuse
+--- errors
+`Group K T` is the type of a group binder and is never written; a group passed on is a `Set T`
+--- phase
+query

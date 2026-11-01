@@ -1,0 +1,17 @@
+=== 001 schema
+--- text
+fn rs () -> Set (A { n: I64 } | B { m: Text }) = [A { n: 1 }, B { m: "x" }]
+         fn f () -> Set (A { n: I64 } | B { m: Text }) = rs().A
+         fn g () -> Set I64 = from a in rs().A select a.n
+--- expect
+accept
+=== 002 schema
+--- text
+fn rs () -> Set (A { n: I64 } | B { m: Text }) = [A { n: 1 }, B { m: "x" }]
+         fn g () -> Set I64 = from a in rs().(A | B) select a.n
+--- expect
+refuse
+--- errors
+A { n: I64 } | B { m: Text } has no field `n`
+--- phase
+check

@@ -1,0 +1,16 @@
+=== 001 schema
+--- text
+type Other = Google { x: I64 } | Nope
+         fn f () -> Other.Google = Other.Google { x: 1 }
+--- expect
+accept
+=== 002 schema
+--- text
+type Other = Google { x: I64 } | Nope
+         fn f (u: Key users, k: Key identities) -> I64 = count(x for x in [Google { id: k, user: u, gid: "g" }])
+--- expect
+refuse
+--- errors
+`Google` is a constructor of `Identity` and `Other`; qualify it as `T.Google`
+--- phase
+check

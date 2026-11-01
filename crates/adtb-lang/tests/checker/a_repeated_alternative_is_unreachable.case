@@ -1,0 +1,18 @@
+=== 001 schema
+--- text
+fn f (i: Identity) -> I64 = match i | Google _ | Google _ -> 1 | EmailPass _ -> 2 | Apple _ -> 3
+--- expect
+refuse
+--- errors
+this alternative is unreachable: the arms and alternatives before it cover every value it matches
+--- phase
+check
+=== 002 schema
+--- text
+fn f (i: Identity) -> Key users = match i | OAuth o | Google o -> o.user | EmailPass e -> e.user
+--- expect
+refuse
+--- errors
+this alternative is unreachable: the arms and alternatives before it cover every value it matches
+--- phase
+check

@@ -1,0 +1,14 @@
+=== 001 schema
+--- text
+fn f (i: Identity) -> I64 = match tag(i) | EmailPass -> 1 | Google -> 2 | Apple -> 3
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (i: Identity) -> I64 = match tag(i) | EmailPass -> 1 | Google -> 2
+--- expect
+refuse
+--- errors
+match does not cover `Apple`
+--- phase
+check

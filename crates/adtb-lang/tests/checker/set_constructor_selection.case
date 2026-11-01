@@ -1,0 +1,34 @@
+=== 001 schema
+--- text
+fn sign_ins () -> Set (Local { id: Key identities, email: Text }
+                              | Remote { id: Key identities, provider: Text }) =
+           from i in identities select match i
+             | EmailPass e -> Local  { id: key e, email: e.email }
+             | Google g    -> Remote { id: key g, provider: "google" }
+             | Apple a     -> Remote { id: key a, provider: "apple" }
+         fn remote () -> Set Text = from l in sign_ins().Remote select l.provider
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> Set (Identity.OAuth) = (from i in identities select i).OAuth
+--- expect
+accept
+=== 003 schema
+--- text
+fn f () -> Set Identity = (from i in identities.Google select i).Apple
+--- expect
+refuse
+--- errors
+`Apple` is not among the constructors of Identity.Google
+--- phase
+check
+=== 004 schema
+--- text
+fn f (i: Identity) -> Identity = i.Google
+--- expect
+refuse
+--- errors
+`.C` selects constructors of a set; a single value is examined by `match`
+--- phase
+check

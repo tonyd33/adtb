@@ -1,0 +1,5 @@
+=== 001 schema
+--- text
+fn f (g: Identity) -> Identity.(EmailPass | Google | Apple) = g
+--- expect
+accept

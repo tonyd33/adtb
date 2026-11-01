@@ -1,0 +1,21 @@
+=== 001 schema
+--- text
+fn f () -> Set Text = from i in identities
+           where match i | Google g -> true | Apple a -> true | EmailPass e -> false
+           select display_name(i)
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> I64 = count(x for x in (from i in identities
+           select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub))
+--- expect
+accept
+=== 003 schema
+--- text
+fn f () -> Set ({ owner: Key users, login: Text }) = from i in identities select match i
+           | EmailPass e -> { owner: e.user, login: e.email }
+           | Google g    -> { owner: g.user, login: g.gid }
+           | Apple a     -> { owner: a.user, login: a.sub }
+--- expect
+accept

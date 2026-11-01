@@ -1,0 +1,19 @@
+=== 001 schema
+--- text
+fn ap (g: I64 -> I64 -> I64) -> I64 = g(1, 2)
+         fn h () -> I64 = ap(fn (a: I64, b: I64) -> a + b)
+--- expect
+accept
+=== 002 schema
+--- text
+fn add (a: I64, b: I64) -> I64 = a + b
+         fn ap (g: I64 -> I64 -> I64) -> I64 = g(1, 2)
+         fn h () -> I64 = ap(add)
+--- expect
+accept
+=== 003 schema
+--- text
+fn v () -> I64 = 1
+fn h () -> () -> I64 = v
+--- expect
+accept

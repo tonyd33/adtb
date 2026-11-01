@@ -1,0 +1,14 @@
+=== 001 schema
+--- text
+fn f () -> Set Identity = (from g in identities.Google select g) union (from e in identities.EmailPass select e)
+--- expect
+accept
+=== 002 adhoc
+--- text
+(from u in users select u.name) union (from u in users select key u)
+--- expect
+refuse
+--- errors
+the operands of `union` have no common type: Set Text and Set (Key users)
+--- phase
+adhoc

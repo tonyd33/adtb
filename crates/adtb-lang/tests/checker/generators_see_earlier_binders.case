@@ -1,0 +1,29 @@
+=== 001 schema
+--- text
+fn f () -> Set ({ name: Text, id: Key identities }) = from u in users, i in u.<identities.user
+           select { name: u.name, id: key i }
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> Set (Key users) = from p in posts select p.author
+--- expect
+accept
+=== 003 schema
+--- text
+fn f () -> Set Text = from u in users select u
+--- expect
+refuse
+--- errors
+expected Text, found User
+--- phase
+check
+=== 004 schema
+--- text
+fn f () -> Set Text = from u in 3 select u
+--- expect
+refuse
+--- errors
+a generator ranges over a set, found I64
+--- phase
+check

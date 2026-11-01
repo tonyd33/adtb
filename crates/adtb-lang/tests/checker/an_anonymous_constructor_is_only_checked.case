@@ -1,0 +1,14 @@
+=== 001 schema
+--- text
+fn f () -> Set (Local { n: I64 } | Remote { p: Text }) = [Local { n: 1 }, Remote { p: "x" }]
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> I64 = count(x for x in [Local { n: 1 }])
+--- expect
+refuse
+--- errors
+no constructor `Local` in scope, and no expected type declares it
+--- phase
+check

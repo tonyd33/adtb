@@ -1,0 +1,33 @@
+=== 001 schema
+--- text
+fn f () -> Set I64 = from s in sales select i64(s.qty) * s.unit_cents
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> Set I64 = from s in sales select s.qty * s.unit_cents
+--- expect
+refuse
+--- errors
+`*` does not apply to I32 and I64
+--- phase
+check
+=== 003 schema
+--- text
+fn f (a: Decimal 2, b: Decimal 2) -> Decimal 2 = a / b
+--- expect
+refuse
+--- errors
+decimals have no `/` and no `%`; use `div` with a scale and a rounding
+--- phase
+check
+=== 004 schema
+--- text
+fn f (a: Decimal 2, b: Decimal 3) -> Decimal 5 = a * b
+--- expect
+accept
+=== 005 schema
+--- text
+fn f (a: Decimal 2, b: Decimal 3) -> Decimal 3 = a + b
+--- expect
+accept

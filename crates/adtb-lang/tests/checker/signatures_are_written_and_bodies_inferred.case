@@ -1,0 +1,17 @@
+=== 001 query
+--- text
+query by_status (s: Status, since: Instant) -> Set ({ invoice: Key invoices }) =
+           from i in invoices where i.status == s and i.issued >= since
+           select { invoice: key i }
+--- expect
+accept
+=== 002 query
+--- text
+query n () -> I64 = count(u for u in users)
+--- expect
+accept
+=== 003 schema
+--- text
+fn n_users () -> I64 = count(u for u in users)
+--- expect
+accept

@@ -1,0 +1,51 @@
+=== 001 schema
+--- text
+fn f () -> Set (Key identities.(Google | Apple)) =
+           fix r = (from g in identities.Google select key g)
+                 union (from x in r, a in identities.Apple select key a)
+           in r
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> Set (Key identities.Google) =
+           fix r = (from g in identities.Google select key g)
+                 union (from x in r, a in identities.Apple select key a)
+           in r
+--- expect
+refuse
+--- errors
+expected Set (Key identities.Google), found Set (Key identities.(Google | Apple))
+--- phase
+check
+=== 003 schema
+--- text
+fn f () -> Set (Key identities.OAuth) =
+           fix a = (from g in identities.Google select key g) union b,
+               b = (from x in a select x) union (from p in identities.Apple select key p)
+           in a
+--- expect
+accept
+=== 004 schema
+--- text
+fn f () -> Set (Key identities.Google) =
+           fix a = (from g in identities.Google select key g) union b,
+               b = (from x in a select x) union (from p in identities.Apple select key p)
+           in a
+--- expect
+refuse
+--- errors
+expected Set (Key identities.Google), found Set (Key identities.(Google | Apple))
+--- phase
+check
+=== 005 schema
+--- text
+fn f () -> Set I64 =
+           fix a = [1] union (from x in a select { v: x })
+           in a
+--- expect
+refuse
+--- errors
+the operands of `union` have no common type: I64 and { v: I64 }
+--- phase
+check

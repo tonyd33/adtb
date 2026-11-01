@@ -1,0 +1,35 @@
+=== 001 schema
+--- text
+fn f () -> Set ({ user: Key users, top: I64 }) =
+           from o in orders group o by o.user into g
+           select { user: g.key, top: max(x.total for x in g) }
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> Set ({ name: Text, top: Option I64 }) = from u in users
+           select { name: u.name,
+                    top: max(o.total for o in orders where o.user == key u) }
+--- expect
+accept
+=== 003 schema
+--- text
+fn f () -> Set ({ user: Key users, top: I64 }) =
+           from o in orders group o by o.user into g
+           select { user: g.key, top: max(x.total for x in g where x.qty > 1) }
+--- expect
+refuse
+--- errors
+expected I64, found Option I64
+--- phase
+check
+=== 004 schema
+--- text
+fn f () -> Set (Option F64) = from o in orders group o by o.user into g select avg(f64(x.total) for x in g where x.qty > 1)
+--- expect
+accept
+=== 005 schema
+--- text
+fn f () -> Set F64 = from o in orders group o by o.user into g select avg(f64(x.total) for x in g)
+--- expect
+accept

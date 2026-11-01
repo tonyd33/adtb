@@ -1,0 +1,37 @@
+=== 001 schema
+--- text
+fn f (c: Text) -> I64 = match c | "US" -> 0 | "CA" -> 1 | _ -> 2
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (n: I32) -> I64 = match n | 1 -> 0 | -1 -> 1 | x -> 2
+--- expect
+accept
+=== 003 schema
+--- text
+fn f (n: I8) -> I64 = match n | 300 -> 0 | _ -> 1
+--- expect
+refuse
+--- errors
+literal out of range of I8
+--- phase
+check
+=== 004 schema
+--- text
+fn f (c: Text) -> I64 = match c | 1 -> 0 | _ -> 1
+--- expect
+refuse
+--- errors
+expected Text, found I64
+--- phase
+check
+=== 005 schema
+--- text
+fn f (s: Status) -> I64 = match s | 1 -> 0 | _ -> 1
+--- expect
+refuse
+--- errors
+a literal pattern matches a scalar; Status is matched by its constructors
+--- phase
+check

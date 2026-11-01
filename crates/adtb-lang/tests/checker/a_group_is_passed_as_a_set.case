@@ -1,0 +1,6 @@
+=== 001 schema
+--- text
+fn n (xs: Set Order) -> I64 = count(x for x in xs)
+         fn f () -> Set I64 = from o in orders group o by o.user into g select n(g)
+--- expect
+accept

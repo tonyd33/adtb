@@ -1,0 +1,14 @@
+=== 001 schema
+--- text
+fn f (r: Reset) -> Text = match r | Reset { identity: EmailPass e } -> e.email
+--- expect
+refuse
+--- errors
+a nested pattern does not follow a reference; bind the key and match it in the arm
+--- phase
+check
+=== 002 schema
+--- text
+fn f (r: Reset) -> Key identities.EmailPass = match r | Reset { identity: k } -> k
+--- expect
+accept

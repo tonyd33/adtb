@@ -1,0 +1,17 @@
+=== 001 schema
+--- text
+fn f (x: Identity.Google) -> Identity.Google = { id: x.id, user: x.user, gid: "a" }
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (u: Key users) -> Set Follow = [{ src: u, dst: u }]
+--- expect
+accept
+=== 003 adhoc
+--- text
+{ b: 1, a: "x" }
+--- type
+{ a: Text, b: I64 }
+--- expect
+accept

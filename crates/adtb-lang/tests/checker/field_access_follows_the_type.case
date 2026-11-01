@@ -1,0 +1,47 @@
+=== 001 schema
+--- text
+fn f (i: Identity) -> Key users = i.user
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (g: Identity.Google) -> Text = g.gid
+--- expect
+accept
+=== 003 schema
+--- text
+fn f (o: Identity.OAuth) -> Key users = o.user
+--- expect
+accept
+=== 004 schema
+--- text
+fn f (o: Identity.OAuth) -> Text = o.gid
+--- expect
+refuse
+--- errors
+Identity.(Google | Apple) has no field `gid`
+--- phase
+check
+=== 005 schema
+--- text
+fn f (r: { a: I64, b: Text }) -> Text = r.b
+--- expect
+accept
+=== 006 schema
+--- text
+fn f (r: { a: I64 }) -> Text = r.b
+--- expect
+refuse
+--- errors
+{ a: I64 } has no field `b`
+--- phase
+check
+=== 007 schema
+--- text
+fn f (i: Identity) -> Text = i.gid
+--- expect
+refuse
+--- errors
+Identity has no field `gid`; only header fields are reached on the whole sum: match on the constructor
+--- phase
+check

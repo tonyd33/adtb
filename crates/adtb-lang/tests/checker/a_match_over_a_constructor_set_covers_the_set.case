@@ -1,0 +1,14 @@
+=== 001 schema
+--- text
+fn f () -> Set Text = from i in identities.(Google | Apple) select match i | Google g -> g.gid | Apple a -> a.sub
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> Set Text = from i in identities.(Google | Apple) select match i | Google g -> g.gid
+--- expect
+refuse
+--- errors
+match does not cover `Apple _`
+--- phase
+check

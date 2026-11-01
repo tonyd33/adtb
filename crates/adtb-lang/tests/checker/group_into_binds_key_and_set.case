@@ -1,0 +1,39 @@
+=== 001 schema
+--- text
+fn f () -> Set ({ user: Key users, n: I64 }) =
+           from i in identities group i by i.user into g
+           select { user: g.key, n: count(x for x in g) }
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> Set ({ kind: Tag Identity, n: I64 }) =
+           from i in identities group i by tag(i) into g
+           select { kind: g.key, n: count(x for x in g) }
+--- expect
+accept
+=== 003 schema
+--- text
+fn f () -> Set ({ user: Key users, bulk: Bool }) =
+           from o in orders group o by { user: o.user, bulk: o.qty > 10 } into g select g.key
+--- expect
+accept
+=== 004 schema
+--- text
+fn f () -> Set (Set Order) = from o in orders group o by o.user into g select g
+--- expect
+accept
+=== 005 schema
+--- text
+fn f () -> Set (Key users) = from o in orders group o by o.user into g where count(x for x in g) > 1 select g.key
+--- expect
+accept
+=== 006 schema
+--- text
+fn f () -> Set Text = from o in orders group o by o.user into g select g.name
+--- expect
+refuse
+--- errors
+a group binder has only `key`; `g` is used as a set of its rows
+--- phase
+check

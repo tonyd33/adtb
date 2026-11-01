@@ -1,0 +1,41 @@
+=== 001 schema
+--- text
+fn f () -> I8 = 127
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> I8 = 128
+--- expect
+refuse
+--- errors
+literal out of range of I8
+--- phase
+check
+=== 003 schema
+--- text
+fn f () -> I8 = -128
+--- expect
+accept
+=== 004 schema
+--- text
+fn f () -> Decimal 2 = 3
+--- expect
+accept
+=== 005 schema
+--- text
+fn f () -> F32 = 3
+--- expect
+accept
+=== 006 schema
+--- text
+fn f () -> F64 = 3
+--- expect
+accept
+=== 007 adhoc
+--- text
+1
+--- type
+I64
+--- expect
+accept

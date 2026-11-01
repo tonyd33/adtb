@@ -1,0 +1,44 @@
+=== 001 schema
+--- text
+fn f () -> Set ({ name: Text, n: I64 }) = from u in users
+           select { name: u.name, n: count(i for i in u.<identities.user) }
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (u: User) -> Set Identity = u.<identities.user
+--- expect
+accept
+=== 003 schema
+--- text
+fn f (u: Key users) -> Set Identity = u.<identities.user
+--- expect
+accept
+=== 004 schema
+--- text
+fn f (u: User) -> Identity = u.<identities.user
+--- expect
+refuse
+--- errors
+expected Identity, found Set Identity
+--- phase
+check
+=== 005 schema
+--- text
+fn f (u: User) -> Set Session = u.<sessions.owner
+--- expect
+accept
+=== 006 schema
+--- text
+fn f (u: User) -> Set (Identity.Google) = u.<identities.Google.user
+--- expect
+accept
+=== 007 schema
+--- text
+fn f (p: Post) -> Set Identity = p.<identities.user
+--- expect
+refuse
+--- errors
+`user` references rows of `users`
+--- phase
+check

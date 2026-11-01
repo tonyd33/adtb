@@ -1,0 +1,23 @@
+=== 001 schema
+--- text
+fn f () -> Set Identity = from i in identities where i.user == 3 select i
+--- expect
+refuse
+--- errors
+Key users and I64 cannot be compared
+--- phase
+check
+=== 002 schema
+--- text
+fn f () -> Key users = 3
+--- expect
+refuse
+--- errors
+expected Key users, found I64
+--- phase
+check
+=== 003 schema
+--- text
+fn f () -> Set Identity = from i in identities where i.user == users.key(3) select i
+--- expect
+accept

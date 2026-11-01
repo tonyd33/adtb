@@ -1,0 +1,46 @@
+=== 001 schema
+--- text
+fn f (me: Key users) -> Set User =
+           fix reach = (from f in follows where f.src == me select f.dst)
+                     union (from r in reach, f in follows where f.src == r select f.dst)
+           in from u in users where exists r in reach where r == key u select u
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (me: Key users) -> Set User =
+           fix even = (from u in users where key u == me select key u)
+                      union (from o in odd, f in follows where f.src == o select f.dst),
+               odd  = from v in even, f in follows where f.src == v select f.dst
+           in from u in users where exists o in odd where o == key u select u
+--- expect
+accept
+=== 003 schema
+--- text
+fn f (me: Key users) -> Set User =
+           fix reach = (from f in follows where f.src == me select f.dst)
+                     union (from r in reach, f in follows where f.src == r select f.dst)
+           in from u in users where not exists r in reach where r == key u select u
+--- expect
+accept
+=== 004 schema
+--- text
+fn f () -> Set (Key users) = fix a = from x in a select x in a
+--- expect
+refuse
+--- errors
+the type of `a` is not known: give it a `union` operand whose `select` does not read the `fix` binders
+--- phase
+check
+=== 005 schema
+--- text
+fn f (me: Key users) -> Set (Key users) =
+           fix reach = (from f in follows where f.src == me select f.dst)
+                     union (from r in reach select users.key(1).name)
+           in reach
+--- expect
+refuse
+--- errors
+the operands of `union` have no common type: Key users and Text
+--- phase
+check

@@ -1,0 +1,27 @@
+=== 001 schema
+--- text
+type Shape = Circle { r: I64, name: Text } | Square { s: I64, name: Text } | Dot
+         fn f (x: Shape.(Circle | Square)) -> Text = x.name
+--- expect
+accept
+=== 002 schema
+--- text
+type Shape = Circle { r: I64, name: Text } | Square { s: I64, name: Text } | Dot
+         fn f (x: Shape.(Circle | Square)) -> I64 = x.r
+--- expect
+refuse
+--- errors
+Shape.(Circle | Square) has no field `r`
+--- phase
+check
+=== 003 schema
+--- text
+type Shape = Circle { v: I64 } | Square { v: Text }
+         fn f (x: Shape) -> I64 = match x | Circle c -> 1 | Square s -> 2
+         fn g (x: Shape.(Circle | Square)) -> I64 = x.v
+--- expect
+refuse
+--- errors
+Shape has no field `v`; only header fields are reached on the whole sum: match on the constructor
+--- phase
+check

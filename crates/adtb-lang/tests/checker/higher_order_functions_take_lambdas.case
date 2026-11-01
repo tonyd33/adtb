@@ -1,0 +1,22 @@
+=== 001 schema
+--- text
+fn having (p: Identity -> Bool) -> Set (Key users) =
+           from i in identities where p(i) select i.user
+         fn g () -> Set (Key users) =
+           having(fn i -> match i | Google _ -> true | EmailPass _ -> false | Apple _ -> false)
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> I64 = count(x for x in [fn x -> x])
+--- expect
+refuse
+--- errors
+the parameter type of `fn x -> ...` is not known here; write `fn (x: T) -> ...`
+--- phase
+check
+=== 003 schema
+--- text
+fn f () -> Identity -> Text = display_name
+--- expect
+accept

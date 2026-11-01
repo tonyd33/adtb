@@ -1,0 +1,40 @@
+=== 001 schema
+--- text
+type Bill = { id: Key bills, status: Status }
+         relation bills : Bill key id generate sequence unique (status.Void.at)
+--- expect
+refuse
+--- errors
+`Void` is not a constructor of Status
+--- phase
+check
+=== 002 schema
+--- text
+type Bill = { id: Key bills, at: Instant }
+         relation bills : Bill key id generate sequence unique (at.Paid)
+--- expect
+refuse
+--- errors
+Instant has no constructors to select
+--- phase
+check
+=== 003 schema
+--- text
+type Bill = { id: Key bills, status: Status }
+         relation bills : Bill key id generate sequence unique (status.Paid.ref)
+--- expect
+refuse
+--- errors
+Status.Paid has no field `ref`
+--- phase
+check
+=== 004 schema
+--- text
+type Bill = { id: Key bills, status: Status }
+         relation bills : Bill key id generate sequence unique (lower(status.Paid.at))
+--- expect
+refuse
+--- errors
+`.C` selects constructors of a set; a single value is examined by `match`
+--- phase
+check

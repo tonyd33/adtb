@@ -1,0 +1,28 @@
+=== 001 schema
+--- text
+fn or_else [a] (p: Option a, d: a) -> a = match p | None -> d | Some s -> s.value
+         fn latest [a: Ord] (xs: Set a) -> Option a = max(x for x in xs)
+         fn f (p: Option I32) -> I32 = or_else(p, 0)
+         fn g () -> Option Instant = latest(from p in posts select p.created_at)
+--- expect
+accept
+=== 002 schema
+--- text
+fn latest [a: Ord] (xs: Set a) -> Option a = max(x for x in xs)
+         fn g (xs: Set ZonedDateTime) -> Option ZonedDateTime = latest(xs)
+--- expect
+refuse
+--- errors
+ZonedDateTime does not satisfy the bound `a: Ord` of `latest`
+--- phase
+check
+=== 003 schema
+--- text
+fn or_else [a] (p: Option a, d: a) -> a = match p | None -> d | Some s -> s.value
+         fn f (p: Option I32) -> I32 = or_else(p, "x")
+--- expect
+refuse
+--- errors
+expected I32, found Text
+--- phase
+check

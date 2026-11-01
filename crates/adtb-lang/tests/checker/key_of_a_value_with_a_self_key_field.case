@@ -1,0 +1,5 @@
+=== 001 schema
+--- text
+fn f (u: User) -> Key users = key u
+--- expect
+accept

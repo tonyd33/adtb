@@ -1,0 +1,27 @@
+=== 001 schema
+--- text
+fn f (i: Identity) -> Text = match i | Google g -> g.gid | _ -> "other"
+--- expect
+refuse
+--- errors
+`_` and a binder do not match a value of a sum; name the constructors of Identity
+--- phase
+check
+=== 002 schema
+--- text
+fn f (i: Identity) -> Text = match i | x -> display_name(x)
+--- expect
+refuse
+--- errors
+`_` and a binder do not match a value of a sum; name the constructors of Identity
+--- phase
+check
+=== 003 schema
+--- text
+fn f (u: User) -> Text = match u | x -> x.name
+--- expect
+refuse
+--- errors
+`_` and a binder do not match a value of a sum; name the constructors of User
+--- phase
+check

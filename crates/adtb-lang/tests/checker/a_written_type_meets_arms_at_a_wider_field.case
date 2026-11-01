@@ -1,0 +1,6 @@
+=== 001 schema
+--- text
+fn f (i: Identity) -> { k: Key identities } = match i
+           | Google g -> { k: key g } | Apple a -> { k: key a } | EmailPass e -> { k: key e }
+--- expect
+accept

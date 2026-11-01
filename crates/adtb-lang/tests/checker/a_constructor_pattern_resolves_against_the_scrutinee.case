@@ -1,0 +1,32 @@
+=== 001 schema
+--- text
+fn f (i: Identity) -> I64 = match i | Pending -> 1
+--- expect
+refuse
+--- errors
+`Pending` is not a constructor of Identity
+--- phase
+check
+=== 002 schema
+--- text
+fn f (o: Identity.OAuth) -> I64 = match o | Google g -> 1 | Apple a -> 2 | EmailPass e -> 3
+--- expect
+refuse
+--- errors
+`EmailPass` is not among the constructors of Identity.(Google | Apple)
+--- phase
+check
+=== 003 schema
+--- text
+fn f (o: Identity.(Google | Apple)) -> I64 = match o | Google g -> 1 | Apple a -> 2
+--- expect
+accept
+=== 004 schema
+--- text
+fn f (c: Text) -> I64 = match c | Google g -> 1 | _ -> 2
+--- expect
+refuse
+--- errors
+`Google` is a constructor pattern, but Text has no constructors; match it with literals, `_` or a binder
+--- phase
+check

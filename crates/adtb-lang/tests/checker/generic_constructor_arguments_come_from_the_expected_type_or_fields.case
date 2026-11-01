@@ -1,0 +1,28 @@
+=== 001 schema
+--- text
+fn f () -> Set (Option I64) = [Some { value: 1 }]
+--- expect
+accept
+=== 002 adhoc
+--- text
+Some { value: 1 }
+--- expect
+accept
+=== 003 adhoc
+--- text
+None
+--- expect
+refuse
+--- errors
+the type argument `a` of `Option` is not known here; give the expected type
+--- phase
+adhoc
+=== 004 adhoc
+--- text
+Err { error: 1 }
+--- expect
+refuse
+--- errors
+the type argument `a` of `Result` is not known here; give the expected type
+--- phase
+adhoc

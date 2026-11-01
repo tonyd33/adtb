@@ -1,0 +1,41 @@
+=== 001 schema
+--- text
+fn f (i: Identity) -> I64 = match i | Google _ -> 1 | Google g -> 2 | EmailPass _ -> 3 | Apple _ -> 4
+--- expect
+refuse
+--- errors
+this arm is unreachable: the arms before it cover every value it matches
+--- phase
+check
+=== 002 schema
+--- text
+fn f (i: Identity) -> I64 = match i | Google _ -> 1 | Google g if g.gid == "x" -> 2 | EmailPass _ -> 3 | Apple _ -> 4
+--- expect
+refuse
+--- errors
+this arm is unreachable: the arms before it cover every value it matches
+--- phase
+check
+=== 003 schema
+--- text
+fn f (c: Text) -> I64 = match c | _ -> 1 | "US" -> 2
+--- expect
+refuse
+--- errors
+this arm is unreachable: the arms before it cover every value it matches
+--- phase
+check
+=== 004 schema
+--- text
+fn f (c: Text) -> I64 = match c | "US" -> 1 | "US" -> 2 | _ -> 3
+--- expect
+refuse
+--- errors
+this arm is unreachable: the arms before it cover every value it matches
+--- phase
+check
+=== 005 schema
+--- text
+fn f (c: Text) -> I64 = match c | "US" if true -> 1 | "US" -> 2 | _ -> 3
+--- expect
+accept

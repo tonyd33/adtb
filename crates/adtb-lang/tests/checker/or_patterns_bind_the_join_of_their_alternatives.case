@@ -1,0 +1,24 @@
+=== 001 schema
+--- text
+fn f (i: Identity) -> Key users = match i | Google g | Apple g -> g.user | EmailPass e -> e.user
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (i: Identity) -> Identity = match i | Google g | Apple g -> g | EmailPass e -> e
+--- expect
+accept
+=== 003 schema
+--- text
+fn f (i: Identity) -> Identity.Google = match i | Google g | Apple g -> g | EmailPass e -> e
+--- expect
+refuse
+--- errors
+expected Identity.Google, found Identity.(Google | Apple)
+--- phase
+check
+=== 004 schema
+--- text
+fn f (s: Status, t: Instant) -> Instant = match s | Sent { at } | Paid { at } -> at | Draft -> t
+--- expect
+accept

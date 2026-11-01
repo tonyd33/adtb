@@ -1,0 +1,19 @@
+=== 001 schema
+--- text
+fn f (k: Key identities.Google) -> Key identities = k
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (k: Key identities.Google) -> Key identities.OAuth = k
+--- expect
+accept
+=== 003 schema
+--- text
+fn f (k: Key identities) -> Key identities.Google = k
+--- expect
+refuse
+--- errors
+expected Key identities.Google, found Key identities
+--- phase
+check

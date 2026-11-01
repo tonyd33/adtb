@@ -1,0 +1,7 @@
+=== 001 schema
+--- text
+type Phantom a = { id: Key phantoms }
+         relation phantoms : Phantom I64 key id generate sequence
+         fn f (x: Phantom I64) -> Phantom Text = x
+--- expect
+accept

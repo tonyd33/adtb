@@ -1,0 +1,23 @@
+=== 001 schema
+--- text
+fn f (a: Instant, b: Instant) -> Span Instant = span(a, b)
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (a: ZonedDateTime, b: ZonedDateTime) -> Bool = start(span(a, b)) == a
+--- expect
+refuse
+--- errors
+`Span a` needs an ordered `a`, found ZonedDateTime
+--- phase
+check
+=== 003 schema
+--- text
+fn f (s: Span ZonedDateTime) -> Bool = true
+--- expect
+refuse
+--- errors
+`Span a` needs an ordered `a`
+--- phase
+schema

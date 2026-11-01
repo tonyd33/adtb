@@ -1,0 +1,24 @@
+=== 001 schema
+--- text
+fn f (c: Text) -> I64 = match c | "US" -> 0 | "CA" -> 1
+--- expect
+refuse
+--- errors
+a match on Text does not cover every value: literal patterns never cover a scalar, so end it with `_` or a binder
+--- phase
+check
+=== 002 schema
+--- text
+fn f (b: Bool, n: I64) -> I64 = match n | 0 -> 0
+--- expect
+refuse
+--- errors
+a match on I64 does not cover every value: literal patterns never cover a scalar, so end it with `_` or a binder
+--- phase
+check
+=== 003 schema
+--- text
+type Email = new Text
+fn f (e: Email) -> I64 = match e | _ -> 0
+--- expect
+accept

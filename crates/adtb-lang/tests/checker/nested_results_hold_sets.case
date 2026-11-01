@@ -1,0 +1,15 @@
+=== 001 schema
+--- text
+fn f () -> Set ({ name: Text, phones: Set Phone }) = from u in users
+           select { name: u.name,
+                    phones: from d in phones where d.owner == key u select d }
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> Set ({ name: Text, seen: Instant }) =
+           from r in (from u in users select { name: u.name, ds: u.<phones.owner }),
+                d in r.ds
+           select { name: r.name, seen: d.seen }
+--- expect
+accept

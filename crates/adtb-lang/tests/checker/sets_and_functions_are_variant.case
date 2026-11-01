@@ -1,0 +1,19 @@
+=== 001 schema
+--- text
+fn f (s: Set (Identity.Google)) -> Set Identity = s
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (p: Identity -> Bool) -> Identity.Google -> Bool = p
+--- expect
+accept
+=== 003 schema
+--- text
+fn f (p: Identity.Google -> Bool) -> Identity -> Bool = p
+--- expect
+refuse
+--- errors
+expected Identity -> Bool, found Identity.Google -> Bool
+--- phase
+check

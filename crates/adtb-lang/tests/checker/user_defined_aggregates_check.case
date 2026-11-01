@@ -1,0 +1,91 @@
+=== 001 schema
+--- text
+
+aggregate mean (x: F64) -> F64 =
+  state { s: F64, n: F64 } init { s: 0.0, n: 0.0 }
+  step (st, x) -> { s: st.s + x, n: st.n + 1.0 }
+  merge (a, b) -> { s: a.s + b.s, n: a.n + b.n }
+  finish st -> st.s / st.n
+type Reading = { id: Key readings, at: Text, v: F64 }
+relation readings : Reading key id generate sequence
+
+--- expect
+accept
+=== 002 schema
+--- text
+
+aggregate mean (x: F64) -> F64 =
+  state { s: F64, n: F64 } init { s: 0.0, n: 0.0 }
+  step (st, x) -> { s: st.s + x, n: st.n + 1.0 }
+  merge (a, b) -> { s: a.s + b.s, n: a.n + b.n }
+  finish st -> st.s / st.n
+type Reading = { id: Key readings, at: Text, v: F64 }
+relation readings : Reading key id generate sequence
+fn avg_all () -> Option F64 = mean(r.v for r in readings)
+--- expect
+accept
+=== 003 schema
+--- text
+
+aggregate mean (x: F64) -> F64 =
+  state { s: F64, n: F64 } init { s: 0.0, n: 0.0 }
+  step (st, x) -> { s: st.s + x, n: st.n + 1.0 }
+  merge (a, b) -> { s: a.s + b.s, n: a.n + b.n }
+  finish st -> st.s / st.n
+type Reading = { id: Key readings, at: Text, v: F64 }
+relation readings : Reading key id generate sequence
+fn per_place () -> Set ({ at: Text, m: F64 }) =
+  from r in readings group r by r.at into g select { at: g.key, m: mean(x.v for x in g) }
+--- expect
+accept
+=== 004 schema
+--- text
+
+aggregate mean (x: F64) -> F64 =
+  state { s: F64, n: F64 } init { s: 0.0, n: 0.0 }
+  step (st, x) -> { s: st.s + x, n: st.n + 1.0 }
+  merge (a, b) -> { s: a.s + b.s, n: a.n + b.n }
+  finish st -> st.s / st.n
+type Reading = { id: Key readings, at: Text, v: F64 }
+relation readings : Reading key id generate sequence
+fn bad () -> F64 = mean(r.v for r in readings)
+--- expect
+refuse
+--- errors
+expected F64, found Option F64
+--- phase
+check
+=== 005 schema
+--- text
+
+aggregate mean (x: F64) -> F64 =
+  state { s: F64, n: F64 } init { s: 0.0, n: 0.0 }
+  step (st, x) -> { s: st.s + x, n: st.n + 1.0 }
+  merge (a, b) -> { s: a.s + b.s, n: a.n + b.n }
+  finish st -> st.s / st.n
+type Reading = { id: Key readings, at: Text, v: F64 }
+relation readings : Reading key id generate sequence
+fn bad () -> Option F64 = mean(r.at for r in readings)
+--- expect
+refuse
+--- errors
+expected F64, found Text
+--- phase
+check
+=== 006 schema
+--- text
+
+aggregate mean (x: F64) -> F64 =
+  state { s: F64, n: F64 } init { s: 0.0, n: 0.0 }
+  step (st, x) -> { s: st.s + x, n: st.n + 1.0 }
+  merge (a, b) -> { s: a.s + b.s, n: a.n + b.n }
+  finish st -> st.s / st.n
+type Reading = { id: Key readings, at: Text, v: F64 }
+relation readings : Reading key id generate sequence
+fn bad () -> F64 = mean(1.0)
+--- expect
+refuse
+--- errors
+`mean` is an aggregate: `mean(e for x in q)`
+--- phase
+check

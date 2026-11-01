@@ -1,0 +1,19 @@
+=== 001 schema
+--- text
+fn f () -> I64 = g()
+fn g () -> I64 = f()
+--- expect
+refuse
+--- errors
+function `f` calls itself; recursion is written with `fix`
+--- phase
+check
+=== 002 schema
+--- text
+fn f () -> I64 = f()
+--- expect
+refuse
+--- errors
+function `f` calls itself; recursion is written with `fix`
+--- phase
+check

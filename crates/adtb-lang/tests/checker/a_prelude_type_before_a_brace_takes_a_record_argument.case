@@ -1,0 +1,11 @@
+=== 001 schema
+--- text
+fn f () -> Set { name: Text, n: I64 } = from u in users
+           select { name: u.name, n: count(i for i in u.<identities.user) }
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> Option { name: Text } = None
+--- expect
+accept

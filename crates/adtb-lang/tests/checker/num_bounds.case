@@ -1,0 +1,48 @@
+=== 001 schema
+--- text
+fn twice [a: Num] (x: a) -> a = x + x
+--- expect
+accept
+=== 002 schema
+--- text
+fn neg [a: Num] (x: a) -> a = -x
+--- expect
+accept
+=== 003 schema
+--- text
+fn total [a: Num] (xs: Set a) -> a = sum(x for x in xs)
+--- expect
+accept
+=== 004 schema
+--- text
+fn inc [a: Num] (x: a) -> a = x + 1
+--- expect
+accept
+=== 005 schema
+--- text
+fn sq [a: Num] (x: a) -> a = x * x
+--- expect
+refuse
+--- errors
+a generic body applies only `+` and `-` to a `Num` type; `*` and division are defined per concrete type
+--- phase
+check
+=== 006 schema
+--- text
+fn twice [a] (x: a) -> a = x + x
+--- expect
+refuse
+--- errors
+`+` does not apply to a and a
+--- phase
+check
+=== 007 schema
+--- text
+fn twice [a: Num] (x: a) -> a = x + x
+         fn f () -> Text = twice("x")
+--- expect
+refuse
+--- errors
+Text does not satisfy the bound `a: Num` of `twice`
+--- phase
+check

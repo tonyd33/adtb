@@ -1,0 +1,42 @@
+=== 001 schema
+--- text
+fn f () -> Set Text = from r in resets select match r.identity | EmailPass e -> e.email
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (k: Key identities) -> Key identities = match k | Google g -> key g | EmailPass e -> key e | Apple a -> key a
+--- expect
+accept
+=== 003 schema
+--- text
+fn f (k: Key identities) -> Text = match k | Google g -> g.gid | EmailPass e -> e.email
+--- expect
+refuse
+--- errors
+match does not cover `Apple _`
+--- phase
+check
+=== 004 schema
+--- text
+fn f () -> Set Text = from r in resets select match r.identity | e -> e.email
+--- expect
+refuse
+--- errors
+a match on a key matches the referenced row by its constructor; `_` and a binder are not patterns for a key
+--- phase
+check
+=== 005 adhoc
+--- text
+from r in resets select match r.identity | _ -> "x"
+--- expect
+refuse
+--- errors
+a match on a key matches the referenced row by its constructor; `_` and a binder are not patterns for a key
+--- phase
+adhoc
+=== 006 schema
+--- text
+fn f (r: Reset) -> Key identities.EmailPass = match r.identity | EmailPass e -> key e
+--- expect
+accept

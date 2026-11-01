@@ -1,0 +1,33 @@
+=== 001 schema
+--- text
+type Visit = { id: Key visits, identity: Key identities }
+         relation visits : Visit key id generate sequence
+         fn f () -> Set Visit =
+           from v in visits, g in identities.Google
+           where v.identity == key g
+           select v
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> Set User = from u in users, p in posts where key u == key p select u
+--- expect
+refuse
+--- errors
+Key users and Key posts cannot be compared
+--- phase
+check
+=== 003 schema
+--- text
+fn f (s: Status) -> Bool = s < s
+--- expect
+refuse
+--- errors
+Status has no order
+--- phase
+check
+=== 004 schema
+--- text
+fn f (a: Decimal 2, b: Decimal 3) -> Bool = a < b
+--- expect
+accept

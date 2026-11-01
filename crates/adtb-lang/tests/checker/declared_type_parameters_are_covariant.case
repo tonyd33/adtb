@@ -1,0 +1,8 @@
+=== 001 schema
+--- text
+type Fallback = { id: Key fallbacks, backup: Option (Key identities.Google) }
+         relation fallbacks : Fallback key id generate sequence
+         fn backups () -> Set (Option (Key identities)) =
+           from f in fallbacks select f.backup
+--- expect
+accept

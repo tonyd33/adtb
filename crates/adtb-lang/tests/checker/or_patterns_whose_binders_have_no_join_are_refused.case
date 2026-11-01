@@ -1,0 +1,19 @@
+=== 001 schema
+--- text
+type Mixed = A { v: I64 } | B { v: Text }
+         fn f (m: Mixed) -> I64 = match m | A { v } | B { v } -> 1
+--- expect
+refuse
+--- errors
+`v` has no common type across the alternatives: I64 and Text
+--- phase
+check
+=== 002 schema
+--- text
+fn f (i: Identity) -> Key users = match i | EmailPass e | Google g -> e.user | Apple a -> a.user
+--- expect
+refuse
+--- errors
+every alternative of an or-pattern binds the same names
+--- phase
+schema

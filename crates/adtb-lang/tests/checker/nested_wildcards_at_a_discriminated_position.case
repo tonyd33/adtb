@@ -1,0 +1,45 @@
+=== 001 schema
+--- text
+fn f (s: Shipment) -> Text = match s
+           | Shipped { via: Courier c } -> c.name
+           | Shipped _                  -> "other"
+           | Pending                    -> "pending"
+--- expect
+refuse
+--- errors
+`_` and a binder do not stand for constructors of Via; another arm names a constructor here, so every arm does
+--- phase
+check
+=== 002 schema
+--- text
+fn f (s: Shipment) -> Text = match s
+           | Shipped { via: Courier c } -> c.name
+           | Shipped { via: v }         -> "other"
+           | Pending                    -> "pending"
+--- expect
+refuse
+--- errors
+`_` and a binder do not stand for constructors of Via; another arm names a constructor here, so every arm does
+--- phase
+check
+=== 003 schema
+--- text
+fn f (s: Shipment) -> Text = match s
+           | Shipped { via: v } -> "shipped"
+           | Pending            -> "pending"
+--- expect
+accept
+=== 004 schema
+--- text
+fn f (s: Shipment) -> Text = match s
+           | Shipped _ -> "shipped"
+           | Pending   -> "pending"
+--- expect
+accept
+=== 005 adhoc
+--- text
+match s | Shipped { via: Courier c } -> c.name | Shipped _ -> "other" | Pending -> "pending"
+--- params
+s	Shipment
+--- expect
+accept

@@ -9,54 +9,16 @@ mod binding_sites;
 mod or_patterns;
 mod principal;
 mod row_provenance;
+mod runtime;
 mod writes;
 
-const RUNNING: &str = r"
-module auth
-type User = { id: Key users, name: Text }
-type Identity { id: Key identities, user: Key users }
-  = EmailPass { email: Text, hash: Bytes }
-  | Google    { gid: Text }
-  | Apple     { sub: Text }
-relation users : User key id generate sequence
-relation identities : Identity
-  key id generate uuidv7
-  unique (email) in EmailPass
-  unique (gid) in Google
-set OAuth of identities = Google | Apple
-fn display_name (i: Identity) -> Text = match i
-  | EmailPass e -> e.email
-  | Google g    -> g.gid
-  | Apple a     -> a.sub
-
-type Post = { id: Key posts, author: Key users, created_at: Instant, title: Text }
-type Phone = { id: Key phones, owner: Key users on delete cascade, seen: Instant }
-type Follow = { src: Key users, dst: Key users }
-type Employee = { id: Key employees, name: Text, manager: Option (Key employees) }
-type Order = { id: Key orders, user: Key users, total: I64, qty: I64 }
-type Reset = { id: Key resets, identity: Key identities.EmailPass on delete cascade }
-type Raw = { id: Key raws, n: I64 }
-relation posts : Post key id generate sequence
-relation phones : Phone key id generate sequence
-relation follows : Follow key (src, dst)
-relation employees : Employee key id generate sequence
-relation orders : Order key id generate sequence
-relation resets : Reset key id generate sequence
-relation raws : Raw key id generate sequence
-
-type Status = Draft | Sent { at: Instant } | Paid { at: Instant }
-type Invoice = { id: Key invoices, status: Status, issued: Instant }
-relation invoices : Invoice key id generate sequence
-type Via = Courier { name: Text } | Mail { tracking: Text }
-type Shipment = Pending | Shipped { via: Via }
-type Session = { id: Key sessions, owner: Option (Key users) }
-relation sessions : Session key id generate sequence
-type Sale = { id: Key sales, qty: I32, unit_cents: I64 }
-relation sales : Sale key id generate sequence
-";
-
 fn source(extra: &str) -> String {
-    format!("{RUNNING}\n{extra}")
+    let running = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/checker/running.schema"
+    ))
+    .expect("the checker running schema is readable");
+    format!("{running}\n{extra}")
 }
 
 fn schema(extra: &str) -> Result<Schema, Vec<String>> {
@@ -77,7 +39,10 @@ fn schema(extra: &str) -> Result<Schema, Vec<String>> {
 }
 
 fn program(extra: &str) -> Result<(Schema, Program), Vec<String>> {
-    let s = schema(extra)?;
+    check_program(schema(extra)?)
+}
+
+fn check_program(s: Schema) -> Result<(Schema, Program), Vec<String>> {
     match check_schema(&s) {
         Ok(p) => {
             assert_one_binding_site("checked", &p.terms, &program_roots(&p));
@@ -426,26 +391,6 @@ fn body_of(s: &Schema, p: &Program, name: &str) -> Tm {
 // Signatures and inference
 
 #[test]
-fn signatures_are_written_and_bodies_inferred() {
-    query_accepts(
-        "query by_status (s: Status, since: Instant) -> Set ({ invoice: Key invoices }) =
-           from i in invoices where i.status == s and i.issued >= since
-           select { invoice: key i }",
-    );
-    query_accepts("query n () -> I64 = count(u for u in users)");
-    accepts("fn n_users () -> I64 = count(u for u in users)");
-}
-
-#[test]
-fn match_arms_join_to_the_signature() {
-    accepts(
-        "fn oauth_owner (u: Key users) -> Set (Key identities) =
-           from i in identities where i.user == u
-           select match i | Google g -> key g | Apple a -> key a | EmailPass e -> key e",
-    );
-}
-
-#[test]
 fn adhoc_free_names_are_typed_by_their_descriptors() {
     adhoc_accepts(
         &[("u", "Key users")],
@@ -458,110 +403,7 @@ fn adhoc_free_names_are_typed_by_their_descriptors() {
     );
 }
 
-#[test]
-fn a_body_is_checked_against_its_result() {
-    refuses(
-        "fn f () -> Text = count(u for u in users)",
-        "expected Text, found I64",
-    );
-    refuses(
-        "fn f () -> Set Text = from u in users select u",
-        "expected Text, found User",
-    );
-}
-
 // Subtyping
-
-#[test]
-fn constructor_rows_are_subtypes_of_their_sum() {
-    accepts("fn f (g: Identity.Google) -> Identity = g");
-    accepts("fn f (g: Identity.Google) -> Identity.OAuth = g");
-    accepts("fn f (g: Identity.(Google | Apple)) -> Identity.OAuth = g");
-    refuses(
-        "fn f (g: Identity) -> Identity.Google = g",
-        "expected Identity.Google, found Identity",
-    );
-    refuses(
-        "fn f (g: Identity.OAuth) -> Identity.Google = g",
-        "expected Identity.Google",
-    );
-}
-
-#[test]
-fn listing_every_constructor_is_the_sum() {
-    accepts("fn f (g: Identity) -> Identity.(EmailPass | Google | Apple) = g");
-}
-
-#[test]
-fn narrower_keys_widen() {
-    accepts("fn f (k: Key identities.Google) -> Key identities = k");
-    accepts("fn f (k: Key identities.Google) -> Key identities.OAuth = k");
-    refuses(
-        "fn f (k: Key identities) -> Key identities.Google = k",
-        "expected Key identities.Google",
-    );
-}
-
-#[test]
-fn sets_and_functions_are_variant() {
-    accepts("fn f (s: Set (Identity.Google)) -> Set Identity = s");
-    accepts("fn f (p: Identity -> Bool) -> Identity.Google -> Bool = p");
-    refuses(
-        "fn f (p: Identity.Google -> Bool) -> Identity -> Bool = p",
-        "expected Identity -> Bool, found Identity.Google -> Bool",
-    );
-}
-
-#[test]
-fn declared_type_parameters_are_covariant() {
-    accepts(
-        "type Fallback = { id: Key fallbacks, backup: Option (Key identities.Google) }
-         relation fallbacks : Fallback key id generate sequence
-         fn backups () -> Set (Option (Key identities)) =
-           from f in fallbacks select f.backup",
-    );
-}
-
-#[test]
-fn a_parameter_in_no_field_relates_any_instantiations() {
-    accepts(
-        "type Phantom a = { id: Key phantoms }
-         relation phantoms : Phantom I64 key id generate sequence
-         fn f (x: Phantom I64) -> Phantom Text = x",
-    );
-}
-
-#[test]
-fn distinct_types_are_unrelated() {
-    refuses(
-        "type Email = new Text
-         fn f (e: Email) -> Text = e",
-        "expected Text, found Email",
-    );
-    refuses("fn f (x: I32) -> I64 = x", "expected I64, found I32");
-    refuses(
-        "fn f (x: { a: I64, b: I64 }) -> { a: I64 } = x",
-        "expected { a: I64 }",
-    );
-    refuses(
-        "fn f (x: { k: Key identities.Google }) -> { k: Key identities } = x",
-        "expected { k: Key identities }",
-    );
-    refuses("fn f (x: Key users) -> Key posts = x", "expected Key posts");
-    refuses(
-        "fn f (x: User) -> { id: Key users, name: Text } = x",
-        "expected { id: Key users, name: Text }, found User",
-    );
-}
-
-#[test]
-fn anonymous_sums_are_equal_up_to_order() {
-    accepts("fn f (x: A { a: I64 } | B { b: Text }) -> B { b: Text } | A { a: I64 } = x");
-    refuses(
-        "fn f (x: A { a: I64 } | B { b: Text }) -> A { a: I64 } | C { b: Text } = x",
-        "expected",
-    );
-}
 
 #[test]
 fn anonymous_sum_constructors_are_numbered_in_name_order() {
@@ -692,14 +534,6 @@ fn record_arms_join_only_when_equal() {
 }
 
 #[test]
-fn a_written_type_meets_arms_at_a_wider_field() {
-    accepts(
-        "fn f (i: Identity) -> { k: Key identities } = match i
-           | Google g -> { k: key g } | Apple a -> { k: key a } | EmailPass e -> { k: key e }",
-    );
-}
-
-#[test]
 fn different_sums_have_no_join() {
     adhoc_refuses(
         &[("i", "Identity"), ("u", "User")],
@@ -708,132 +542,7 @@ fn different_sums_have_no_join() {
     );
 }
 
-#[test]
-fn union_operands_join() {
-    accepts(
-        "fn f () -> Set Identity = (from g in identities.Google select g) union (from e in identities.EmailPass select e)",
-    );
-    adhoc_refuses(
-        &[],
-        "(from u in users select u.name) union (from u in users select key u)",
-        "no common type",
-    );
-}
-
-#[test]
-fn comparisons_meet_at_the_join() {
-    accepts(
-        "type Visit = { id: Key visits, identity: Key identities }
-         relation visits : Visit key id generate sequence
-         fn f () -> Set Visit =
-           from v in visits, g in identities.Google
-           where v.identity == key g
-           select v",
-    );
-    refuses(
-        "fn f () -> Set User = from u in users, p in posts where key u == key p select u",
-        "cannot be compared",
-    );
-    refuses("fn f (s: Status) -> Bool = s < s", "has no order");
-    accepts("fn f (a: Decimal 2, b: Decimal 3) -> Bool = a < b");
-}
-
-#[test]
-fn constructors_of_one_sum_compare_at_their_join() {
-    let stage = "type Stage ordered = Open | Billed { at: I64 } | Settled { at: I64, ref: Text }";
-    accepts(&format!(
-        "{stage}\nfn f () -> Bool = Billed {{ at: 100 }} < Settled {{ at: 0, ref: \"a\" }}"
-    ));
-    accepts(&format!(
-        "{stage}\nfn f () -> Bool = Open == Billed {{ at: 1 }}"
-    ));
-    accepts(&format!(
-        "{stage}\nfn f (s: Stage) -> Bool = match s
-           | Open -> true
-           | Billed x -> x < Settled {{ at: 0, ref: \"a\" }}
-           | Settled p -> Billed {{ at: 1 }} <= p"
-    ));
-    refuses(
-        &format!("{stage}\nfn f () -> Bool = Billed {{ at: 1 }} < Courier {{ name: \"a\" }}"),
-        "expected Stage, found Via.Courier",
-    );
-}
-
-#[test]
-fn a_constructor_operand_takes_the_other_operand_type() {
-    accepts("fn f (p: Option I64) -> Bool = p == None");
-    accepts("fn f (p: Option I64) -> Bool = Some { value: 1 } == p");
-    accepts("fn f (r: { a: I64 }) -> Bool = r == { a: 1 }");
-}
-
-#[test]
-fn generic_constructor_arguments_come_from_the_expected_type_or_fields() {
-    accepts("fn f () -> Set (Option I64) = [Some { value: 1 }]");
-    adhoc_accepts(&[], "Some { value: 1 }");
-    adhoc_refuses(
-        &[],
-        "None",
-        "the type argument `a` of `Option` is not known here",
-    );
-    adhoc_refuses(
-        &[],
-        "Err { error: 1 }",
-        "the type argument `a` of `Result` is not known here",
-    );
-}
-
-#[test]
-fn lambdas_are_curried() {
-    accepts(
-        "fn ap (g: I64 -> I64 -> I64) -> I64 = g(1, 2)
-         fn h () -> I64 = ap(fn (a: I64, b: I64) -> a + b)",
-    );
-    accepts(
-        "fn add (a: I64, b: I64) -> I64 = a + b
-         fn ap (g: I64 -> I64 -> I64) -> I64 = g(1, 2)
-         fn h () -> I64 = ap(add)",
-    );
-    accepts(
-        "fn v () -> I64 = 1
-fn h () -> () -> I64 = v",
-    );
-}
-
-#[test]
-fn no_literal_checks_against_a_key() {
-    refuses(
-        "fn f () -> Set Identity = from i in identities where i.user == 3 select i",
-        "Key users",
-    );
-    refuses("fn f () -> Key users = 3", "Key users");
-    accepts("fn f () -> Set Identity = from i in identities where i.user == users.key(3) select i");
-}
-
 // Records, constructors and fields
-
-#[test]
-fn functions_take_nominal_types() {
-    accepts("fn email_of (e: Identity.EmailPass) -> Text = e.email");
-    refuses(
-        "fn f (e: Identity) -> Text = e.email",
-        "has no field `email`",
-    );
-}
-
-#[test]
-fn a_constructor_application_gives_every_field() {
-    accepts(
-        "fn f (u: Key users, k: Key identities) -> Identity.Google = Google { id: k, user: u, gid: \"g\" }",
-    );
-    refuses(
-        "fn f (u: Key users, k: Key identities) -> Identity.Google = Google { id: k, user: u }",
-        "field `gid` of `Google` is missing",
-    );
-    refuses(
-        "fn f (u: Key users, k: Key identities) -> Identity.Google = Google { id: k, user: u, gid: \"g\", sub: \"s\" }",
-        "has no field `sub`",
-    );
-}
 
 #[test]
 fn a_constructor_application_synthesizes_its_row_type() {
@@ -845,110 +554,6 @@ fn a_constructor_application_synthesizes_its_row_type() {
         "Identity.Google"
     );
     assert_eq!(adhoc_ty(&[], "Draft"), "Status.Draft");
-}
-
-#[test]
-fn a_record_literal_against_a_row_type_constructs_it() {
-    accepts(
-        "fn f (x: Identity.Google) -> Identity.Google = { id: x.id, user: x.user, gid: \"a\" }",
-    );
-    accepts("fn f (u: Key users) -> Set Follow = [{ src: u, dst: u }]");
-    assert_eq!(adhoc_ty(&[], "{ b: 1, a: \"x\" }"), "{ a: Text, b: I64 }");
-}
-
-#[test]
-fn constructor_names_resolve_against_the_expected_type() {
-    accepts("fn f () -> Option I64 = Some { value: 1 }");
-    accepts("fn f () -> Option I64 = None");
-    accepts("fn f () -> Status = Draft");
-    refuses(
-        "fn f () -> Status = Bogus",
-        "`Bogus` is not a constructor of Status",
-    );
-    refuses(
-        "fn f () -> Status = Pending",
-        "expected Status, found Shipment.Pending",
-    );
-}
-
-#[test]
-fn an_anonymous_constructor_is_only_checked() {
-    accepts(
-        "fn f () -> Set (Local { n: I64 } | Remote { p: Text }) = [Local { n: 1 }, Remote { p: \"x\" }]",
-    );
-    refuses(
-        "fn f () -> I64 = count(x for x in [Local { n: 1 }])",
-        "no constructor `Local` in scope",
-    );
-}
-
-#[test]
-fn ambiguous_constructors_are_qualified() {
-    accepts(
-        "type Other = Google { x: I64 } | Nope
-         fn f () -> Other.Google = Other.Google { x: 1 }",
-    );
-    refuses(
-        "type Other = Google { x: I64 } | Nope
-         fn f (u: Key users, k: Key identities) -> I64 = count(x for x in [Google { id: k, user: u, gid: \"g\" }])",
-        "qualify it",
-    );
-}
-
-#[test]
-fn a_newtype_is_built_by_a_call() {
-    accepts("type Email = new Text\nfn f () -> Email = Email(\"a@b\")");
-    refuses(
-        "type Email = new Text\nfn f () -> Email = Email(3)",
-        "expected Text",
-    );
-    accepts("type Email = new Text\nfn f (e: Email) -> Text = unwrap(e)");
-}
-
-#[test]
-fn field_access_follows_the_type() {
-    accepts("fn f (i: Identity) -> Key users = i.user");
-    accepts("fn f (g: Identity.Google) -> Text = g.gid");
-    accepts("fn f (o: Identity.OAuth) -> Key users = o.user");
-    refuses(
-        "fn f (o: Identity.OAuth) -> Text = o.gid",
-        "has no field `gid`",
-    );
-    accepts("fn f (r: { a: I64, b: Text }) -> Text = r.b");
-    refuses("fn f (r: { a: I64 }) -> Text = r.b", "has no field `b`");
-    refuses(
-        "fn f (i: Identity) -> Text = i.gid",
-        "only header fields are reached on the whole sum",
-    );
-}
-
-#[test]
-fn shared_fields_of_a_constructor_set_are_reached() {
-    accepts(
-        "type Shape = Circle { r: I64, name: Text } | Square { s: I64, name: Text } | Dot
-         fn f (x: Shape.(Circle | Square)) -> Text = x.name",
-    );
-    refuses(
-        "type Shape = Circle { r: I64, name: Text } | Square { s: I64, name: Text } | Dot
-         fn f (x: Shape.(Circle | Square)) -> I64 = x.r",
-        "has no field `r`",
-    );
-    refuses(
-        "type Shape = Circle { v: I64 } | Square { v: Text }
-         fn f (x: Shape) -> I64 = match x | Circle c -> 1 | Square s -> 2
-         fn g (x: Shape.(Circle | Square)) -> I64 = x.v",
-        "has no field `v`",
-    );
-}
-
-#[test]
-fn navigation_follows_a_reference() {
-    accepts("fn f () -> Set Text = from i in identities select i.user.name");
-    accepts("fn f () -> Text = users.key(3).name");
-    refuses(
-        "fn f () -> Set Text = from e in employees select e.manager.name",
-        "a path stops at an `Option`",
-    );
 }
 
 #[test]
@@ -982,84 +587,7 @@ fn navigation_desugars_to_deref() {
 
 // key
 
-#[test]
-fn key_of_a_row_whose_relation_is_known() {
-    accepts("fn f () -> Set (Key identities.Google) = from g in identities.Google select key g");
-    accepts("fn f () -> Set (Key identities.OAuth) = from g in identities.OAuth select key g");
-    accepts("fn f () -> Set (Key follows) = from x in (from f in follows select f) select key x");
-    accepts(
-        "fn f (u: Key users) -> Set (Key identities) = from i in u.<identities.user select key i",
-    );
-    accepts(
-        "fn fs () -> Set Follow = from f in follows select f
-         fn g () -> Set (Key follows) = from x in fs() select key x",
-    );
-    accepts(
-        "fn f () -> Set (Key identities) = from i in identities select match i
-           | Google g -> key g | Apple a -> key a | EmailPass e -> key e",
-    );
-}
-
-#[test]
-fn key_of_a_value_with_a_self_key_field() {
-    accepts("fn f (u: User) -> Key users = key u");
-}
-
-#[test]
-fn key_is_refused_elsewhere() {
-    refuses(
-        "fn f (x: Follow) -> Key follows = key x",
-        "`key` needs a row whose relation is known here",
-    );
-    refuses(
-        "fn f () -> Set (Key follows) = from x in (from f in follows select { src: f.src, dst: f.dst }) select key x",
-        "`key` needs a row",
-    );
-}
-
-#[test]
-fn key_values_are_built_by_r_key() {
-    accepts("fn f () -> Key users = users.key(3)");
-    accepts("fn f (a: Key users, b: Key users) -> Key follows = follows.key(src: a, dst: b)");
-    refuses(
-        "fn f (a: Key users) -> Key follows = follows.key(a)",
-        "composite key",
-    );
-    refuses("fn f () -> Key users = users.key(\"x\")", "expected I64");
-    accepts("fn f (k: Key users) -> I64 = value(k)");
-    accepts("fn f (k: Key follows) -> { dst: Key users, src: Key users } = value(k)");
-}
-
-#[test]
-fn a_prelude_type_before_a_brace_takes_a_record_argument() {
-    accepts(
-        "fn f () -> Set { name: Text, n: I64 } = from u in users
-           select { name: u.name, n: count(i for i in u.<identities.user) }",
-    );
-    accepts("fn f () -> Option { name: Text } = None");
-}
-
 // Navigation and backlinks
-
-#[test]
-fn backlinks_are_sets() {
-    accepts(
-        "fn f () -> Set ({ name: Text, n: I64 }) = from u in users
-           select { name: u.name, n: count(i for i in u.<identities.user) }",
-    );
-    accepts("fn f (u: User) -> Set Identity = u.<identities.user");
-    accepts("fn f (u: Key users) -> Set Identity = u.<identities.user");
-    refuses(
-        "fn f (u: User) -> Identity = u.<identities.user",
-        "expected Identity",
-    );
-    accepts("fn f (u: User) -> Set Session = u.<sessions.owner");
-    accepts("fn f (u: User) -> Set (Identity.Google) = u.<identities.Google.user");
-    refuses(
-        "fn f (p: Post) -> Set Identity = p.<identities.user",
-        "references rows of `users`",
-    );
-}
 
 #[test]
 fn a_backlink_desugars_to_a_filtered_comprehension() {
@@ -1078,55 +606,7 @@ fn a_backlink_desugars_to_a_filtered_comprehension() {
     assert!(matches!(p.terms.kind(args[1]), Kind::Ctor { ctor: 1, .. }));
 }
 
-#[test]
-fn joins_compare_a_reference_with_a_key() {
-    accepts(
-        "fn f () -> Set Text = from i in identities, u in users where i.user == key u select u.name",
-    );
-    accepts(
-        "fn f () -> Set Text = from i in identities, u in users where key u == i.user select u.name",
-    );
-}
-
-#[test]
-fn a_path_to_a_sum_is_matched() {
-    accepts(
-        "fn f () -> Set Text = from r in resets select match r.identity | EmailPass e -> e.email",
-    );
-    accepts(
-        "fn f () -> Set Text = from e in employees
-           select match e.manager
-             | None              -> \"none\"
-             | Some { value: m } -> m.name",
-    );
-}
-
 // Comprehensions and nested results
-
-#[test]
-fn generators_see_earlier_binders() {
-    accepts(
-        "fn f () -> Set ({ name: Text, id: Key identities }) = from u in users, i in u.<identities.user
-           select { name: u.name, id: key i }",
-    );
-    accepts("fn f () -> Set (Key users) = from p in posts select p.author");
-    refuses(
-        "fn f () -> Set Text = from u in users select u",
-        "expected Text",
-    );
-    refuses(
-        "fn f () -> Set Text = from u in 3 select u",
-        "a generator ranges over a set",
-    );
-}
-
-#[test]
-fn where_takes_a_bool() {
-    refuses(
-        "fn f () -> Set User = from u in users where u.name select u",
-        "expected Bool",
-    );
-}
 
 #[test]
 fn a_comprehension_is_nested_for_if_singleton() {
@@ -1147,21 +627,6 @@ fn a_comprehension_is_nested_for_if_singleton() {
     };
     assert!(matches!(p.terms.kind(*yes), Kind::Singleton(_)));
     assert!(matches!(p.terms.kind(*no), Kind::EmptySet));
-}
-
-#[test]
-fn nested_results_hold_sets() {
-    accepts(
-        "fn f () -> Set ({ name: Text, phones: Set Phone }) = from u in users
-           select { name: u.name,
-                    phones: from d in phones where d.owner == key u select d }",
-    );
-    accepts(
-        "fn f () -> Set ({ name: Text, seen: Instant }) =
-           from r in (from u in users select { name: u.name, ds: u.<phones.owner }),
-                d in r.ds
-           select { name: r.name, seen: d.seen }",
-    );
 }
 
 #[test]
@@ -1187,42 +652,6 @@ fn and_or_not_are_ifs() {
     };
     assert!(matches!(p.terms.kind(*f), Kind::Ctor { ctor: 0, .. }));
     assert!(matches!(p.terms.kind(*rhs), Kind::If(..)));
-}
-
-#[test]
-fn set_constructor_selection() {
-    accepts(
-        "fn sign_ins () -> Set (Local { id: Key identities, email: Text }
-                              | Remote { id: Key identities, provider: Text }) =
-           from i in identities select match i
-             | EmailPass e -> Local  { id: key e, email: e.email }
-             | Google g    -> Remote { id: key g, provider: \"google\" }
-             | Apple a     -> Remote { id: key a, provider: \"apple\" }
-         fn remote () -> Set Text = from l in sign_ins().Remote select l.provider",
-    );
-    accepts("fn f () -> Set (Identity.OAuth) = (from i in identities select i).OAuth");
-    refuses(
-        "fn f () -> Set Identity = (from i in identities.Google select i).Apple",
-        "is not among the constructors of Identity.Google",
-    );
-    refuses(
-        "fn f (i: Identity) -> Identity = i.Google",
-        "`.C` selects constructors of a set",
-    );
-}
-
-#[test]
-fn a_result_sum_selection_has_a_row_type() {
-    accepts(
-        "fn rs () -> Set (A { n: I64 } | B { m: Text }) = [A { n: 1 }, B { m: \"x\" }]
-         fn f () -> Set (A { n: I64 } | B { m: Text }) = rs().A
-         fn g () -> Set I64 = from a in rs().A select a.n",
-    );
-    refuses(
-        "fn rs () -> Set (A { n: I64 } | B { m: Text }) = [A { n: 1 }, B { m: \"x\" }]
-         fn g () -> Set I64 = from a in rs().(A | B) select a.n",
-        "has no field `n`",
-    );
 }
 
 #[test]
@@ -1295,36 +724,6 @@ fn a_constructor_of_four_thousand_fields_is_checked_for_coverage() {
             "match does not cover `A _`",
         );
     });
-}
-
-#[test]
-fn a_result_sum_is_matched_exhaustively() {
-    accepts(
-        "fn rs () -> Set (A { n: I64 } | B { m: Text }) = [A { n: 1 }]
-         fn f () -> Set I64 = from r in rs() select match r | A a -> a.n | B b -> 0",
-    );
-    refuses(
-        "fn rs () -> Set (A { n: I64 } | B { m: Text }) = [A { n: 1 }]
-         fn f () -> Set I64 = from r in rs() select match r | A a -> a.n",
-        "match does not cover `B _`",
-    );
-    accepts(
-        "fn rs () -> Set (A { n: I64 } | B { m: Text } | C) = [C]
-         fn f () -> Set Text = from r in rs().(B | C) select match r | B b -> b.m | C -> \"c\"",
-    );
-    refuses(
-        "fn rs () -> Set (A { n: I64 } | B { m: Text } | C) = [C]
-         fn f () -> Set Text = from r in rs().(B | C) select match r | B b -> b.m | C -> \"c\" | A _ -> \"a\"",
-        "is not among the constructors",
-    );
-}
-
-#[test]
-fn or_binders_over_result_sums_get_the_row_type() {
-    accepts(
-        "fn rs () -> Set (A { n: I64 } | B { n: I64 } | C) = [C]
-         fn f () -> Set I64 = from r in rs() select match r | A x | B x -> x.n | C -> 0",
-    );
 }
 
 // Match
@@ -1482,261 +881,9 @@ fn a_match_on_a_key_derefs_it() {
     ));
 }
 
-#[test]
-fn match_is_an_expression_anywhere() {
-    accepts(
-        "fn f () -> Set Text = from i in identities
-           where match i | Google g -> true | Apple a -> true | EmailPass e -> false
-           select display_name(i)",
-    );
-    accepts(
-        "fn f () -> I64 = count(x for x in (from i in identities
-           select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub))",
-    );
-    accepts(
-        "fn f () -> Set ({ owner: Key users, login: Text }) = from i in identities select match i
-           | EmailPass e -> { owner: e.user, login: e.email }
-           | Google g    -> { owner: g.user, login: g.gid }
-           | Apple a     -> { owner: a.user, login: a.sub }",
-    );
-}
-
-#[test]
-fn if_is_a_match_on_bool() {
-    accepts("fn f (b: Bool) -> I64 = if b then 1 else 0");
-    accepts("fn f (b: Bool) -> I64 = match b | true -> 1 | false -> 0");
-    accepts("fn f (b: Bool) -> I64 = match b | True -> 1 | False -> 0");
-    refuses(
-        "fn f (b: Bool) -> I64 = match b | true -> 1",
-        "match does not cover `False`",
-    );
-    refuses("fn f (b: I64) -> I64 = if b then 1 else 0", "expected Bool");
-}
-
-#[test]
-fn a_match_on_a_tag() {
-    accepts("fn f (i: Identity) -> I64 = match tag(i) | EmailPass -> 1 | Google -> 2 | Apple -> 3");
-    refuses(
-        "fn f (i: Identity) -> I64 = match tag(i) | EmailPass -> 1 | Google -> 2",
-        "match does not cover `Apple`",
-    );
-}
-
-#[test]
-fn match_scrutinees_are_values() {
-    refuses(
-        "fn f () -> I64 = match users | User u -> 1",
-        "a set is ranged over",
-    );
-}
-
 // Patterns and binder types
 
-#[test]
-fn a_constructor_binder_has_the_row_type() {
-    accepts(
-        "fn f (i: Identity) -> Identity = match i | Google g -> g | EmailPass e -> e | Apple a -> a",
-    );
-    accepts(
-        "fn f (i: Identity) -> Set (Identity.Google) = match i | Google g -> [g] | EmailPass _ -> [] | Apple _ -> []",
-    );
-    accepts(
-        "fn f (i: Identity) -> Set (Key identities.Google) = match i
-           | Google g -> [key g] | EmailPass _ -> [] | Apple _ -> []",
-    );
-    refuses(
-        "fn f (o: Option I64) -> I64 = match o | Some s -> key s | None -> 0",
-        "`key` needs a row",
-    );
-}
-
-#[test]
-fn or_patterns_bind_the_join_of_their_alternatives() {
-    accepts(
-        "fn f (i: Identity) -> Key users = match i | Google g | Apple g -> g.user | EmailPass e -> e.user",
-    );
-    accepts(
-        "fn f (i: Identity) -> Identity = match i | Google g | Apple g -> g | EmailPass e -> e",
-    );
-    refuses(
-        "fn f (i: Identity) -> Identity.Google = match i | Google g | Apple g -> g | EmailPass e -> e",
-        "expected Identity.Google, found Identity.(Google | Apple)",
-    );
-    accepts(
-        "fn f (s: Status, t: Instant) -> Instant = match s | Sent { at } | Paid { at } -> at | Draft -> t",
-    );
-}
-
-#[test]
-fn or_patterns_whose_binders_have_no_join_are_refused() {
-    refuses(
-        "type Mixed = A { v: I64 } | B { v: Text }
-         fn f (m: Mixed) -> I64 = match m | A { v } | B { v } -> 1",
-        "no common type across the alternatives",
-    );
-    refuses(
-        "fn f (i: Identity) -> Key users = match i | EmailPass e | Google g -> e.user | Apple a -> a.user",
-        "binds the same names",
-    );
-}
-
-#[test]
-fn named_set_patterns() {
-    accepts(
-        "fn f (i: Identity) -> Text = match i
-           | EmailPass e -> e.email
-           | OAuth o     -> display_name(o)",
-    );
-    accepts(
-        "fn f (i: Identity) -> Key users = match i | OAuth o -> o.user | EmailPass e -> e.user",
-    );
-    refuses(
-        "fn f (i: Identity) -> Text = match i | EmailPass e -> e.email | OAuth o -> o.gid",
-        "has no field `gid`",
-    );
-    refuses(
-        "fn f (i: Identity) -> Text = match i | OAuth o -> display_name(o) | Google g -> g.gid | EmailPass e -> e.email",
-        "unreachable",
-    );
-}
-
-#[test]
-fn record_patterns() {
-    accepts(
-        "fn f (i: Identity) -> Text = match i
-           | EmailPass { email, hash: _ } -> email
-           | Google { gid }               -> gid
-           | Apple { sub }                -> sub",
-    );
-    accepts("fn f (u: User) -> Text = match u | User { name } -> name");
-    accepts(
-        "fn f (i: Identity) -> Key users = match i | EmailPass { user } -> user | Google { user } -> user | Apple { user } -> user",
-    );
-    refuses(
-        "fn f (i: Identity) -> Text = match i | EmailPass { nope } -> nope | Google g -> g.gid | Apple a -> a.sub",
-        "has no field `nope`",
-    );
-}
-
-#[test]
-fn nested_patterns() {
-    accepts(
-        "fn f (s: Shipment) -> Text = match s
-           | Shipped { via: Courier c } -> c.name
-           | Shipped { via: Mail m }    -> m.tracking
-           | Pending                    -> \"pending\"",
-    );
-    refuses(
-        "fn f (s: Shipment) -> Text = match s
-           | Shipped { via: Courier c } -> c.name
-           | Pending                    -> \"pending\"",
-        "match does not cover `Shipped { via: Mail _ }`",
-    );
-    accepts(
-        "fn f (s: Shipment) -> Text = match s
-           | Shipped { via: Courier { name: \"x\" } } -> \"x\"
-           | Shipped { via: Courier c } -> c.name
-           | Shipped { via: Mail m }    -> m.tracking
-           | Pending                    -> \"pending\"",
-    );
-}
-
-#[test]
-fn literal_patterns_take_the_scrutinee_type() {
-    accepts("fn f (c: Text) -> I64 = match c | \"US\" -> 0 | \"CA\" -> 1 | _ -> 2");
-    accepts("fn f (n: I32) -> I64 = match n | 1 -> 0 | -1 -> 1 | x -> 2");
-    refuses(
-        "fn f (n: I8) -> I64 = match n | 300 -> 0 | _ -> 1",
-        "out of range",
-    );
-    refuses(
-        "fn f (c: Text) -> I64 = match c | 1 -> 0 | _ -> 1",
-        "expected Text",
-    );
-    refuses(
-        "fn f (s: Status) -> I64 = match s | 1 -> 0 | _ -> 1",
-        "a literal pattern matches a scalar",
-    );
-}
-
-#[test]
-fn a_scalar_match_ends_with_a_wildcard_or_binder() {
-    refuses(
-        "fn f (c: Text) -> I64 = match c | \"US\" -> 0 | \"CA\" -> 1",
-        "end it with `_` or a binder",
-    );
-    refuses(
-        "fn f (b: Bool, n: I64) -> I64 = match n | 0 -> 0",
-        "end it with `_` or a binder",
-    );
-    accepts("type Email = new Text\nfn f (e: Email) -> I64 = match e | _ -> 0");
-}
-
-#[test]
-fn a_constructor_pattern_resolves_against_the_scrutinee() {
-    refuses(
-        "fn f (i: Identity) -> I64 = match i | Pending -> 1",
-        "`Pending` is not a constructor of Identity",
-    );
-    refuses(
-        "fn f (o: Identity.OAuth) -> I64 = match o | Google g -> 1 | Apple a -> 2 | EmailPass e -> 3",
-        "`EmailPass` is not among the constructors of Identity.(Google | Apple)",
-    );
-    accepts("fn f (o: Identity.(Google | Apple)) -> I64 = match o | Google g -> 1 | Apple a -> 2");
-    refuses(
-        "fn f (c: Text) -> I64 = match c | Google g -> 1 | _ -> 2",
-        "has no constructors",
-    );
-}
-
-#[test]
-fn a_bare_constructor_is_nullary() {
-    refuses(
-        "fn f (i: Identity) -> I64 = match i | Google -> 1 | EmailPass _ -> 2 | Apple _ -> 3",
-        "`Google _`",
-    );
-    accepts("fn f (s: Status) -> I64 = match s | Draft -> 1 | Sent _ -> 2 | Paid p -> 3");
-}
-
 // Exhaustiveness
-
-#[test]
-fn a_match_names_every_constructor() {
-    refuses(
-        "fn f (i: Identity) -> Text = match i | EmailPass e -> e.email | Google g -> g.gid",
-        "match does not cover `Apple _`",
-    );
-    accepts(
-        "fn f (i: Identity) -> Text = match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub",
-    );
-}
-
-#[test]
-fn a_match_over_a_constructor_set_covers_the_set() {
-    accepts(
-        "fn f () -> Set Text = from i in identities.(Google | Apple) select match i | Google g -> g.gid | Apple a -> a.sub",
-    );
-    refuses(
-        "fn f () -> Set Text = from i in identities.(Google | Apple) select match i | Google g -> g.gid",
-        "match does not cover `Apple _`",
-    );
-}
-
-#[test]
-fn wildcards_do_not_match_a_sum() {
-    refuses(
-        "fn f (i: Identity) -> Text = match i | Google g -> g.gid | _ -> \"other\"",
-        "do not match a value of a sum",
-    );
-    refuses(
-        "fn f (i: Identity) -> Text = match i | x -> display_name(x)",
-        "do not match a value of a sum",
-    );
-    refuses(
-        "fn f (u: User) -> Text = match u | x -> x.name",
-        "do not match a value of a sum",
-    );
-}
 
 #[test]
 fn adhoc_wildcards_cover_the_remaining_constructors() {
@@ -1764,159 +911,7 @@ fn adhoc_wildcards_cover_the_remaining_constructors() {
     );
 }
 
-#[test]
-fn nested_wildcards_at_a_discriminated_position() {
-    refuses(
-        "fn f (s: Shipment) -> Text = match s
-           | Shipped { via: Courier c } -> c.name
-           | Shipped _                  -> \"other\"
-           | Pending                    -> \"pending\"",
-        "another arm names a constructor here",
-    );
-    refuses(
-        "fn f (s: Shipment) -> Text = match s
-           | Shipped { via: Courier c } -> c.name
-           | Shipped { via: v }         -> \"other\"
-           | Pending                    -> \"pending\"",
-        "another arm names a constructor here",
-    );
-    accepts(
-        "fn f (s: Shipment) -> Text = match s
-           | Shipped { via: v } -> \"shipped\"
-           | Pending            -> \"pending\"",
-    );
-    accepts(
-        "fn f (s: Shipment) -> Text = match s
-           | Shipped _ -> \"shipped\"
-           | Pending   -> \"pending\"",
-    );
-    adhoc_accepts(
-        &[("s", "Shipment")],
-        "match s | Shipped { via: Courier c } -> c.name | Shipped _ -> \"other\" | Pending -> \"pending\"",
-    );
-}
-
-#[test]
-fn guarded_arms_count_for_nothing() {
-    accepts(
-        "fn f (i: Identity) -> Text = match i
-           | Google g if g.gid == \"corp\" -> \"staff\"
-           | Google _                    -> \"guest\"
-           | EmailPass _                 -> \"guest\"
-           | Apple _                     -> \"guest\"",
-    );
-    refuses(
-        "fn f (i: Identity) -> Text = match i
-           | Google g if g.gid == \"root\" -> \"staff\"
-           | EmailPass _                 -> \"guest\"
-           | Apple _                     -> \"guest\"",
-        "match does not cover `Google _`",
-    );
-    refuses(
-        "fn f (c: Text) -> I64 = match c | x if x == \"a\" -> 1",
-        "end it with `_` or a binder",
-    );
-}
-
-#[test]
-fn unreachable_arms_are_refused() {
-    refuses(
-        "fn f (i: Identity) -> I64 = match i | Google _ -> 1 | Google g -> 2 | EmailPass _ -> 3 | Apple _ -> 4",
-        "unreachable",
-    );
-    refuses(
-        "fn f (i: Identity) -> I64 = match i | Google _ -> 1 | Google g if g.gid == \"x\" -> 2 | EmailPass _ -> 3 | Apple _ -> 4",
-        "unreachable",
-    );
-    refuses(
-        "fn f (c: Text) -> I64 = match c | _ -> 1 | \"US\" -> 2",
-        "unreachable",
-    );
-    refuses(
-        "fn f (c: Text) -> I64 = match c | \"US\" -> 1 | \"US\" -> 2 | _ -> 3",
-        "unreachable",
-    );
-    accepts("fn f (c: Text) -> I64 = match c | \"US\" if true -> 1 | \"US\" -> 2 | _ -> 3");
-}
-
-#[test]
-fn a_key_scrutinee_matches_the_referenced_row() {
-    accepts(
-        "fn f () -> Set Text = from r in resets select match r.identity | EmailPass e -> e.email",
-    );
-    accepts(
-        "fn f (k: Key identities) -> Key identities = match k | Google g -> key g | EmailPass e -> key e | Apple a -> key a",
-    );
-    refuses(
-        "fn f (k: Key identities) -> Text = match k | Google g -> g.gid | EmailPass e -> e.email",
-        "match does not cover `Apple _`",
-    );
-    refuses(
-        "fn f () -> Set Text = from r in resets select match r.identity | e -> e.email",
-        "not patterns for a key",
-    );
-    adhoc_refuses(
-        &[],
-        "from r in resets select match r.identity | _ -> \"x\"",
-        "not patterns for a key",
-    );
-    accepts(
-        "fn f (r: Reset) -> Key identities.EmailPass = match r.identity | EmailPass e -> key e",
-    );
-}
-
-#[test]
-fn nested_patterns_do_not_follow_references() {
-    refuses(
-        "fn f (r: Reset) -> Text = match r | Reset { identity: EmailPass e } -> e.email",
-        "does not follow a reference",
-    );
-    accepts("fn f (r: Reset) -> Key identities.EmailPass = match r | Reset { identity: k } -> k");
-}
-
-#[test]
-fn option_matches() {
-    accepts("fn or_else [a] (p: Option a, d: a) -> a = match p | None -> d | Some s -> s.value");
-    refuses(
-        "fn f (p: Option I64) -> I64 = match p | Some s -> s.value",
-        "match does not cover `None`",
-    );
-    accepts(
-        "fn f (p: Option (Option I64)) -> I64 = match p | None -> 0 | Some { value: None } -> 1 | Some { value: Some { value: n } } -> n",
-    );
-    refuses(
-        "fn f (p: Option (Option I64)) -> I64 = match p | None -> 0 | Some { value: Some { value: n } } -> n",
-        "match does not cover `Some { value: None }`",
-    );
-}
-
 // Grouping and aggregates
-
-#[test]
-fn group_into_binds_key_and_set() {
-    accepts(
-        "fn f () -> Set ({ user: Key users, n: I64 }) =
-           from i in identities group i by i.user into g
-           select { user: g.key, n: count(x for x in g) }",
-    );
-    accepts(
-        "fn f () -> Set ({ kind: Tag Identity, n: I64 }) =
-           from i in identities group i by tag(i) into g
-           select { kind: g.key, n: count(x for x in g) }",
-    );
-    accepts(
-        "fn f () -> Set ({ user: Key users, bulk: Bool }) =
-           from o in orders group o by { user: o.user, bulk: o.qty > 10 } into g select g.key",
-    );
-    accepts("fn f () -> Set (Set Order) = from o in orders group o by o.user into g select g");
-    accepts(
-        "fn f () -> Set (Key users) = from o in orders group o by o.user into g where count(x for x in g) > 1 select g.key",
-    );
-    refuses(
-        "fn f () -> Set Text = from o in orders group o by o.user into g select g.name",
-        "a group binder has only `key`",
-    );
-}
 
 #[test]
 fn a_group_desugars_to_group_over_binder_records() {
@@ -1935,32 +930,6 @@ fn a_group_desugars_to_group_over_binder_records() {
         panic!("a group, found {:?}", p.terms.kind(*src));
     };
     assert!(matches!(p.terms.kind(*source), Kind::For(..)));
-}
-
-#[test]
-fn aggregates_over_a_group_are_nonempty() {
-    accepts(
-        "fn f () -> Set ({ user: Key users, top: I64 }) =
-           from o in orders group o by o.user into g
-           select { user: g.key, top: max(x.total for x in g) }",
-    );
-    accepts(
-        "fn f () -> Set ({ name: Text, top: Option I64 }) = from u in users
-           select { name: u.name,
-                    top: max(o.total for o in orders where o.user == key u) }",
-    );
-    refuses(
-        "fn f () -> Set ({ user: Key users, top: I64 }) =
-           from o in orders group o by o.user into g
-           select { user: g.key, top: max(x.total for x in g where x.qty > 1) }",
-        "expected",
-    );
-    accepts(
-        "fn f () -> Set (Option F64) = from o in orders group o by o.user into g select avg(f64(x.total) for x in g where x.qty > 1)",
-    );
-    accepts(
-        "fn f () -> Set F64 = from o in orders group o by o.user into g select avg(f64(x.total) for x in g)",
-    );
 }
 
 /// The aggregates reachable from `t`, each with whether its source has the nonempty type.
@@ -2008,56 +977,6 @@ fn an_aggregate_over_a_group_has_a_nonempty_source() {
 }
 
 #[test]
-fn aggregate_types() {
-    accepts("fn f (u: User) -> I64 = sum(o.total for o in orders where o.user == key u)");
-    accepts("fn f () -> I64 = count(i for i in identities)");
-    accepts("fn f () -> Option Instant = min(p.created_at for p in posts)");
-    refuses(
-        "fn f () -> Text = sum(u.name for u in users)",
-        "`sum` adds numbers",
-    );
-    refuses(
-        "fn f () -> Option I64 = avg(o.total for o in orders)",
-        "`avg` averages `F32` or `F64`",
-    );
-    refuses(
-        "fn f () -> Option Status = max(i.status for i in invoices)",
-        "needs an ordered type",
-    );
-    accepts(
-        "fn f () -> I64 = count(x for x in (from i in identities
-           select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub))",
-    );
-    accepts("fn f () -> I64 = count(a for a in (from p in posts select p.author))");
-    accepts("fn f () -> I64 = count(1 for u in users, p in posts where p.author == key u)");
-}
-
-#[test]
-fn sum_refuses_a_projection() {
-    accepts("fn f () -> I64 = sum(o.total for o in orders)");
-    accepts("fn f () -> I64 = sum(x.total for x in (from o in orders where o.qty > 1 select o))");
-    refuses(
-        "fn f () -> I64 = sum(t for t in (from o in orders select o.total))",
-        "`sum` ranges over rows",
-    );
-    accepts("fn f (xs: Set I64) -> I64 = sum(x for x in xs)");
-    accepts("fn f (u: User) -> I64 = sum(o.total for o in u.<orders.user)");
-}
-
-#[test]
-fn sum_ranges_over_a_set_literal_and_a_view_of_rows() {
-    accepts("fn f () -> I64 = sum(x for x in [1, 2, 2, 3])");
-    adhoc_accepts(&[], "sum(x for x in [1, 2, 2, 3])");
-    let big = "fn big () -> Set Order = from o in orders where o.total >= 100 select o";
-    accepts(&format!(
-        "{big}\nfn f () -> I64 = sum(x.total for x in big())"
-    ));
-    if let Err(errs) = adhoc_over(big, "sum(x.total for x in big())") {
-        panic!("refused: {errs:?}");
-    }
-}
-
-#[test]
 fn adhoc_text_takes_the_key_of_a_view_row() {
     let view = "fn all_follows () -> Set Follow = from f in follows select f";
     if let Err(errs) = adhoc_over(view, "from f in all_follows() select key f") {
@@ -2096,21 +1015,6 @@ fn an_aggregate_is_an_aggregate_node() {
 }
 
 // Ordering and limits
-
-#[test]
-fn order_by_on_the_outermost_query() {
-    adhoc_accepts(&[], "from u in users select u order by u.name");
-    query_accepts("query q () -> Set User = from u in users select u order by u.name");
-    query_accepts("query q () -> Set Text = from u in users select u.name order by u.name desc");
-    refuses(
-        "fn f () -> Set User = from u in users select u order by u.name",
-        "`order by` is allowed only on the outermost comprehension",
-    );
-    query_refuses(
-        "query q () -> Set (Set User) = from x in users select (from u in users select u order by u.name)",
-        "`order by` is allowed only on the outermost comprehension",
-    );
-}
 
 #[test]
 fn an_ordering_key_is_a_function_of_the_selected_value() {
@@ -2206,103 +1110,6 @@ fn top_is_a_set_at_any_depth() {
 // Recursion
 
 #[test]
-fn fix_binder_types_come_from_base_operands() {
-    accepts(
-        "fn f (me: Key users) -> Set User =
-           fix reach = (from f in follows where f.src == me select f.dst)
-                     union (from r in reach, f in follows where f.src == r select f.dst)
-           in from u in users where exists r in reach where r == key u select u",
-    );
-    accepts(
-        "fn f (me: Key users) -> Set User =
-           fix even = (from u in users where key u == me select key u)
-                      union (from o in odd, f in follows where f.src == o select f.dst),
-               odd  = from v in even, f in follows where f.src == v select f.dst
-           in from u in users where exists o in odd where o == key u select u",
-    );
-    accepts(
-        "fn f (me: Key users) -> Set User =
-           fix reach = (from f in follows where f.src == me select f.dst)
-                     union (from r in reach, f in follows where f.src == r select f.dst)
-           in from u in users where not exists r in reach where r == key u select u",
-    );
-    refuses(
-        "fn f () -> Set (Key users) = fix a = from x in a select x in a",
-        "the type of `a` is not known",
-    );
-    refuses(
-        "fn f (me: Key users) -> Set (Key users) =
-           fix reach = (from f in follows where f.src == me select f.dst)
-                     union (from r in reach select users.key(1).name)
-           in reach",
-        "the operands of `union` have no common type: Key users and Text",
-    );
-}
-
-#[test]
-fn fix_binder_types_come_from_a_select_that_reads_no_binder() {
-    assert_eq!(
-        "Set (Key users)",
-        adhoc_ty(
-            &[],
-            "fix x = from r in x, f in follows where f.src == r select f.dst in x"
-        )
-    );
-    accepts(
-        "fn f () -> Set (Key users) =
-           fix a = from x in b, f in follows where f.src == x select f.dst,
-               b = from y in a select y
-           in b",
-    );
-    accepts(
-        "fn f () -> Set (Key users) =
-           fix a = (from x in a, f in follows where f.src == x select f.dst)
-                 union [users.key(1)]
-           in a",
-    );
-    refuses(
-        "fn f () -> Set (Key users) = fix a = from x in a, f in follows where f.src == x select x in a",
-        "the type of `a` is not known",
-    );
-}
-
-#[test]
-fn fix_binder_types_widen_across_iterations() {
-    accepts(
-        "fn f () -> Set (Key identities.(Google | Apple)) =
-           fix r = (from g in identities.Google select key g)
-                 union (from x in r, a in identities.Apple select key a)
-           in r",
-    );
-    refuses(
-        "fn f () -> Set (Key identities.Google) =
-           fix r = (from g in identities.Google select key g)
-                 union (from x in r, a in identities.Apple select key a)
-           in r",
-        "expected Set (Key identities.Google)",
-    );
-    accepts(
-        "fn f () -> Set (Key identities.OAuth) =
-           fix a = (from g in identities.Google select key g) union b,
-               b = (from x in a select x) union (from p in identities.Apple select key p)
-           in a",
-    );
-    refuses(
-        "fn f () -> Set (Key identities.Google) =
-           fix a = (from g in identities.Google select key g) union b,
-               b = (from x in a select x) union (from p in identities.Apple select key p)
-           in a",
-        "expected Set (Key identities.Google)",
-    );
-    refuses(
-        "fn f () -> Set I64 =
-           fix a = [1] union (from x in a select { v: x })
-           in a",
-        "no common type",
-    );
-}
-
-#[test]
 fn fix_is_a_kernel_fix() {
     let (s, p) = program(
         "fn f (me: Key users) -> Set (Key users) =
@@ -2317,294 +1124,11 @@ fn fix_is_a_kernel_fix() {
     assert_eq!(binds.len(), 1);
 }
 
-#[test]
-fn functions_do_not_recurse() {
-    refuses("fn f () -> I64 = g()\nfn g () -> I64 = f()", "calls itself");
-    refuses("fn f () -> I64 = f()", "calls itself");
-}
-
 // Functions, generics and lambdas
-
-#[test]
-fn functions_and_views() {
-    accepts(
-        "fn logins_of (u: Key users) -> Set Text =
-           from i in identities where i.user == u select display_name(i)
-         fn active () -> Set User = from u in users where exists i in u.<identities.user select u
-         fn q () -> Set ({ name: Text, login: Text }) =
-           from u in active(), l in logins_of(key u) select { name: u.name, login: l }",
-    );
-    refuses("fn f () -> I64 = display_name()", "takes 1 arguments");
-}
-
-#[test]
-fn higher_order_functions_take_lambdas() {
-    accepts(
-        "fn having (p: Identity -> Bool) -> Set (Key users) =
-           from i in identities where p(i) select i.user
-         fn g () -> Set (Key users) =
-           having(fn i -> match i | Google _ -> true | EmailPass _ -> false | Apple _ -> false)",
-    );
-    refuses(
-        "fn f () -> I64 = count(x for x in [fn x -> x])",
-        "is not known here",
-    );
-    accepts("fn f () -> Identity -> Text = display_name");
-}
-
-#[test]
-fn generics_solve_from_arguments() {
-    accepts(
-        "fn or_else [a] (p: Option a, d: a) -> a = match p | None -> d | Some s -> s.value
-         fn latest [a: Ord] (xs: Set a) -> Option a = max(x for x in xs)
-         fn f (p: Option I32) -> I32 = or_else(p, 0)
-         fn g () -> Option Instant = latest(from p in posts select p.created_at)",
-    );
-    refuses(
-        "fn latest [a: Ord] (xs: Set a) -> Option a = max(x for x in xs)
-         fn g (xs: Set ZonedDateTime) -> Option ZonedDateTime = latest(xs)",
-        "does not satisfy the bound",
-    );
-    refuses(
-        "fn or_else [a] (p: Option a, d: a) -> a = match p | None -> d | Some s -> s.value
-         fn f (p: Option I32) -> I32 = or_else(p, \"x\")",
-        "expected I32",
-    );
-}
-
-#[test]
-fn generics_solve_from_the_expected_result() {
-    accepts(
-        "fn none [a] () -> Option a = None
-         fn h () -> Option I64 = none()",
-    );
-    refuses(
-        "fn none [a] () -> Option a = None
-         fn h () -> I64 = count(x for x in [none()])",
-        "the type argument `a` of `none` is not known here",
-    );
-}
-
-#[test]
-fn generic_joins_of_lower_bounds() {
-    accepts(
-        "fn pick [a] (x: a, y: a) -> a = x
-         fn f (g: Identity.Google, e: Identity.EmailPass) -> Identity = pick(g, e)",
-    );
-}
-
-#[test]
-fn num_bounds() {
-    accepts("fn twice [a: Num] (x: a) -> a = x + x");
-    accepts("fn neg [a: Num] (x: a) -> a = -x");
-    accepts("fn total [a: Num] (xs: Set a) -> a = sum(x for x in xs)");
-    accepts("fn inc [a: Num] (x: a) -> a = x + 1");
-    refuses(
-        "fn sq [a: Num] (x: a) -> a = x * x",
-        "`*` and division are defined per concrete type",
-    );
-    refuses("fn twice [a] (x: a) -> a = x + x", "does not apply");
-    refuses(
-        "fn twice [a: Num] (x: a) -> a = x + x
-         fn f () -> Text = twice(\"x\")",
-        "does not satisfy the bound",
-    );
-}
-
-#[test]
-fn ord_bounds() {
-    accepts("fn lt [a: Ord] (x: a, y: a) -> Bool = x < y");
-    refuses("fn lt [a] (x: a, y: a) -> Bool = x < y", "has no order");
-    accepts("fn eq [a] (x: a, y: a) -> Bool = x == y");
-}
-
-#[test]
-fn spans_need_an_ordered_argument() {
-    accepts("fn f (a: Instant, b: Instant) -> Span Instant = span(a, b)");
-    refuses(
-        "fn f (a: ZonedDateTime, b: ZonedDateTime) -> Bool = start(span(a, b)) == a",
-        "needs an ordered",
-    );
-    refuses(
-        "fn f (s: Span ZonedDateTime) -> Bool = true",
-        "needs an ordered",
-    );
-}
 
 // Literals and numeric types
 
-#[test]
-fn integer_literals_take_the_expected_type() {
-    accepts("fn f () -> I8 = 127");
-    refuses("fn f () -> I8 = 128", "literal out of range of I8");
-    accepts("fn f () -> I8 = -128");
-    accepts("fn f () -> Decimal 2 = 3");
-    accepts("fn f () -> F32 = 3");
-    accepts("fn f () -> F64 = 3");
-    assert_eq!(adhoc_ty(&[], "1"), "I64");
-}
-
-#[test]
-fn fractional_literals() {
-    accepts("fn f () -> Decimal 2 = 1.25");
-    accepts("fn f () -> Decimal 3 = 1.25");
-    refuses(
-        "fn f () -> Decimal 1 = 1.25",
-        "does not check against Decimal 1",
-    );
-    refuses(
-        "fn f () -> I64 = 1.5",
-        "a fractional literal does not check against I64",
-    );
-    accepts("fn f () -> F64 = 1.5");
-    assert_eq!(adhoc_ty(&[], "1.25"), "Decimal 2");
-}
-
-#[test]
-fn literal_operands_take_the_other_operand_type() {
-    accepts("fn f () -> Set I32 = from s in sales select s.qty + 1");
-    accepts("fn f () -> Set Bool = from s in sales select s.qty > 1");
-    accepts("fn f (d: Decimal 2) -> Decimal 2 = d + 1.5");
-    accepts("fn f (d: Decimal 2) -> Decimal 3 = d + 1.125");
-    refuses(
-        "fn f () -> Set I32 = from s in sales select s.qty + 1.5",
-        "fractional",
-    );
-}
-
-#[test]
-fn arithmetic_has_one_numeric_type() {
-    accepts("fn f () -> Set I64 = from s in sales select i64(s.qty) * s.unit_cents");
-    refuses(
-        "fn f () -> Set I64 = from s in sales select s.qty * s.unit_cents",
-        "`*` does not apply to I32 and I64",
-    );
-    refuses(
-        "fn f (a: Decimal 2, b: Decimal 2) -> Decimal 2 = a / b",
-        "use `div`",
-    );
-    accepts("fn f (a: Decimal 2, b: Decimal 3) -> Decimal 5 = a * b");
-    accepts("fn f (a: Decimal 2, b: Decimal 3) -> Decimal 3 = a + b");
-}
-
-#[test]
-fn a_literal_against_a_decimal_keeps_its_own_scale() {
-    adhoc_accepts(&[], "1.0 == 1.00");
-    adhoc_accepts(&[], "1.5 > 1.49");
-    adhoc_accepts(&[], "1 < 1.5");
-    accepts("fn f (x: Decimal 1) -> Bool = x == 1.00");
-    accepts("fn f (x: Decimal 2) -> Bool = 1.125 < x");
-    accepts("fn f (x: Decimal 2) -> Bool = x >= 1");
-    accepts("fn f (x: Decimal 0) -> Decimal 0 = x + 1");
-    accepts("fn f (x: Decimal 2) -> Decimal 2 = 1 - x");
-    accepts("fn f (x: Decimal 2) -> Decimal 2 = x * 3");
-    accepts("fn f (x: Decimal 2) -> Decimal 3 = x * 1.5");
-    assert_eq!(adhoc_ty(&[], "1 + 1.5"), "Decimal 1");
-    assert_eq!(adhoc_ty(&[], "1.25 * 1.5"), "Decimal 3");
-    assert_eq!(adhoc_ty(&[], "div(2.0, 3, 4, HalfUp)"), "Decimal 4");
-    accepts("fn f (x: Decimal 2) -> Decimal 4 = div(1, x, 4, HalfUp)");
-    accepts("fn f (x: Decimal 2) -> Option (Decimal 2) = checked_mul(x, 3)");
-    accepts("fn f (x: Decimal 2) -> Option (Decimal 3) = checked_add(1.125, x)");
-    refuses(
-        "fn f (x: I64) -> Decimal 4 = div(x, 3, 4, HalfUp)",
-        "`div` does not take I64",
-    );
-    refuses("fn f (x: Decimal 2) -> Bool = x == 1e3", "does not check");
-}
-
-#[test]
-fn text_and_booleans() {
-    assert_eq!(adhoc_ty(&[], "\"x\""), "Text");
-    assert_eq!(adhoc_ty(&[], "true"), "Bool");
-    accepts("fn f (a: Text, b: Text) -> Text = a ++ b");
-    refuses(
-        "fn f (a: Text, b: I64) -> Text = a ++ b",
-        "`++` concatenates",
-    );
-}
-
-#[test]
-fn matches_takes_a_valid_constant_pattern() {
-    accepts(r#"fn f (t: Text) -> Bool = matches(t, "^[^@]+@[^@]+$")"#);
-    accepts(r#"fn f (t: Text) -> Bool = matches(t, "(?i)\\p{L}+")"#);
-    refuses(
-        r"fn f (t: Text, p: Text) -> Bool = matches(t, p)",
-        "this argument is a constant",
-    );
-    refuses(
-        r#"fn f (t: Text) -> Bool = matches(t, "(a")"#,
-        "is not a regular expression",
-    );
-    refuses(
-        r#"fn f (t: Text) -> Bool = matches(t, "(a)\\1")"#,
-        "is not a regular expression",
-    );
-    refuses(
-        r#"fn f (t: Text) -> Bool = matches(t, "a(?=b)")"#,
-        "is not a regular expression",
-    );
-}
-
-#[test]
-fn collate_takes_a_known_versioned_name() {
-    accepts(r#"fn f (t: Text) -> SortKey = collate(t, "de-u-ks-level2@cldr-49")"#);
-    refuses(
-        r#"fn f (t: Text) -> SortKey = collate(t, "de")"#,
-        "names no version",
-    );
-    refuses(
-        r#"fn f (t: Text) -> SortKey = collate(t, "de@icu-1")"#,
-        "names version `icu-1`",
-    );
-    refuses(
-        r#"fn f (t: Text) -> SortKey = collate(t, "de-u-zz-yes@cldr-49")"#,
-        "is not a collation this database supports",
-    );
-}
-
 // Prelude overloads
-
-#[test]
-fn prelude_overloads_resolve_by_argument_types() {
-    accepts("fn f (x: I32) -> I32 = abs(x)");
-    accepts("fn f (x: Decimal 2) -> Decimal 2 = abs(x)");
-    refuses(
-        "fn f (x: Text) -> Text = abs(x)",
-        "`abs` does not take Text",
-    );
-    accepts("fn f (x: Decimal 2) -> I64 = i64(x, HalfEven)");
-    refuses("fn f (x: Decimal 2) -> I64 = i64(x)", "takes a rounding");
-    accepts("fn f (x: I32) -> I64 = i64(x)");
-    accepts("fn f (x: I64) -> Option I32 = checked_i32(x)");
-    accepts("fn f (x: I64) -> Text = text(x)");
-    accepts("fn f (x: Instant) -> Text = text(x)");
-    accepts("fn f (a: I64, b: I64) -> Option I64 = checked_div(a, b)");
-    accepts("fn f (a: I64) -> Option I64 = checked_add(a, 1)");
-    accepts("fn f (a: Decimal 2, b: Decimal 2) -> Decimal 4 = div(a, b, 4, HalfEven)");
-    accepts("fn f (s: Span Instant, t: Instant) -> Bool = covers(s, t)");
-    accepts("fn f (s: Span Instant, t: Span Instant) -> Bool = covers(s, t)");
-    accepts("fn f (s: Span Instant, t: Span Instant) -> Bool = overlaps(s, t)");
-    accepts("fn f (d: Date) -> Option Date = add_period(d, months(1), Reject)");
-    accepts("fn f (d: Date) -> Date = add_period(d, months(1), Clamp)");
-    accepts("fn f (t: Text) -> Option I64 = I64.parse(t)");
-}
-
-#[test]
-fn checked_operators_return_option() {
-    accepts(
-        "fn f () -> Set I64 = from o in orders
-           select match checked_div(o.total, o.qty) | None -> 0 | Some { value: q } -> q",
-    );
-}
-
-#[test]
-fn try_returns_a_result() {
-    accepts("fn f () -> Set (Result I32 Fault) = from r in raws select try i32(r.n)");
-    accepts(
-        "fn f () -> Set ({ line: Key raws, n: Result I32 Fault }) = from r in raws select { line: key r, n: try i32(r.n) }",
-    );
-    accepts("fn f () -> Set Raw = from r in raws where r.n != 0 and 1000 / r.n > 10 select r");
-}
 
 #[test]
 fn optional_filters_match_option_parameters() {
@@ -2626,15 +1150,6 @@ fn optional_filters_match_option_parameters() {
 }
 
 // Constraints and other bodies
-
-#[test]
-fn constraints_are_set_queries() {
-    accepts("constraint no_empty = from u in users where u.name == \"\" select u");
-    refuses(
-        "constraint bad = count(u for u in users)",
-        "a constraint is a query returning a set",
-    );
-}
 
 #[test]
 fn writes_are_checked() {
@@ -2740,33 +1255,6 @@ fn a_literal_in_an_after_record_is_checked_against_its_ordering_key() {
 
 // Redundant alternatives
 
-#[test]
-fn a_repeated_alternative_is_unreachable() {
-    refuses(
-        "fn f (i: Identity) -> I64 = match i | Google _ | Google _ -> 1 | EmailPass _ -> 2 | Apple _ -> 3",
-        "unreachable",
-    );
-    refuses(
-        "fn f (i: Identity) -> Key users = match i | OAuth o | Google o -> o.user | EmailPass e -> e.user",
-        "unreachable",
-    );
-}
-
-#[test]
-fn an_alternative_covered_by_an_earlier_arm_is_unreachable() {
-    refuses(
-        "fn f (i: Identity) -> I64 = match i | Google _ -> 1 | Google _ | Apple _ -> 2 | EmailPass _ -> 3",
-        "unreachable",
-    );
-    accepts(
-        "fn f (i: Identity) -> I64 = match i | Google g if g.gid == \"x\" -> 1 | Google _ | Apple _ -> 2 | EmailPass _ -> 3",
-    );
-    refuses(
-        "fn f (c: Text) -> I64 = match c | \"a\" -> 1 | \"b\" | \"a\" -> 2 | _ -> 3",
-        "unreachable",
-    );
-}
-
 // Unary functions in the kernel
 
 #[test]
@@ -2851,48 +1339,6 @@ fn a_lambda_of_several_parameters_is_nested_lams() {
 // Group is never written
 
 #[test]
-fn group_is_never_a_written_type() {
-    refuses(
-        "fn f (g: Group (Key users) Order) -> I64 = 1",
-        "`Group K T` is the type of a group binder",
-    );
-    refuses(
-        "fn f () -> Set (Group (Key users) Order) = from o in orders group o by o.user into g select g",
-        "`Group K T` is the type of a group binder",
-    );
-    refuses(
-        "fn f () -> I64 = count(x for x in [fn (g: Group I64 I64) -> 1])",
-        "`Group K T` is the type of a group binder",
-    );
-    let err = query("", "query q (g: Group I64 I64) -> I64 = 1").unwrap_err();
-    assert!(
-        err.contains("`Group K T` is the type of a group binder"),
-        "{err}"
-    );
-}
-
-#[test]
-fn a_group_is_passed_as_a_set() {
-    accepts(
-        "fn n (xs: Set Order) -> I64 = count(x for x in xs)
-         fn f () -> Set I64 = from o in orders group o by o.user into g select n(g)",
-    );
-}
-
-#[test]
-fn text_patterns_compare_in_nfc() {
-    refuses(
-        "fn f (t: Text) -> I64 = match t | \"caf\u{e9}\" -> 1 | \"cafe\u{301}\" -> 2 | _ -> 0",
-        "unreachable",
-    );
-    refuses(
-        "fn f (t: Text) -> I64 = match t | \"cafe\\u{301}\" -> 1 | \"caf\u{e9}\" -> 2 | _ -> 0",
-        "unreachable",
-    );
-    accepts("fn f (t: Text) -> I64 = match t | \"caf\u{e9}\" -> 1 | \"cafe\" -> 2 | _ -> 0");
-}
-
-#[test]
 fn text_literals_elaborate_to_nfc() {
     let (s, p) = program("fn f () -> Text = \"cafe\u{301}\"").expect("checks");
     assert_eq!(
@@ -2947,30 +1393,6 @@ fn an_index_field_through_a_value_level_constructor_names_its_path() {
 }
 
 #[test]
-fn an_index_path_names_a_constructor_of_a_sum_field() {
-    refuses(
-        "type Bill = { id: Key bills, status: Status }
-         relation bills : Bill key id generate sequence unique (status.Void.at)",
-        "`Void` is not a constructor of Status",
-    );
-    refuses(
-        "type Bill = { id: Key bills, at: Instant }
-         relation bills : Bill key id generate sequence unique (at.Paid)",
-        "Instant has no constructors to select",
-    );
-    refuses(
-        "type Bill = { id: Key bills, status: Status }
-         relation bills : Bill key id generate sequence unique (status.Paid.ref)",
-        "ref",
-    );
-    refuses(
-        "type Bill = { id: Key bills, status: Status }
-         relation bills : Bill key id generate sequence unique (lower(status.Paid.at))",
-        "`.C` selects constructors of a set",
-    );
-}
-
-#[test]
 fn a_fix_binder_joins_anonymous_sums_across_its_union_operands() {
     let sum = vec!["Alpha".to_string(), "Zed".to_string()];
     let want = vec![
@@ -2990,132 +1412,6 @@ fn a_fix_binder_joins_anonymous_sums_across_its_union_operands() {
         );
         assert_eq!(anon_ctors(&a.terms, a.items[0]), want, "{text}");
     }
-}
-
-#[test]
-fn a_declared_type_never_holds_an_anonymous_sum() {
-    refuses(
-        "type Mark = { id: Key marks, v: Alpha | Zed { n: I64 } }
-         relation marks : Mark key id generate sequence",
-        "declare a sum type for it",
-    );
-    refuses(
-        "type Mark = { id: Key marks, v: Option (Alpha | Zed { n: I64 }) }
-         relation marks : Mark key id generate sequence",
-        "declare a sum type for it",
-    );
-}
-
-const MEAN: &str = r"
-aggregate mean (x: F64) -> F64 =
-  state { s: F64, n: F64 } init { s: 0.0, n: 0.0 }
-  step (st, x) -> { s: st.s + x, n: st.n + 1.0 }
-  merge (a, b) -> { s: a.s + b.s, n: a.n + b.n }
-  finish st -> st.s / st.n
-type Reading = { id: Key readings, at: Text, v: F64 }
-relation readings : Reading key id generate sequence
-";
-
-#[test]
-fn user_defined_aggregates_check() {
-    accepts(MEAN);
-    accepts(&format!(
-        "{MEAN}fn avg_all () -> Option F64 = mean(r.v for r in readings)"
-    ));
-    accepts(&format!(
-        "{MEAN}fn per_place () -> Set ({{ at: Text, m: F64 }}) =
-  from r in readings group r by r.at into g select {{ at: g.key, m: mean(x.v for x in g) }}"
-    ));
-    refuses(
-        &format!("{MEAN}fn bad () -> F64 = mean(r.v for r in readings)"),
-        "Option",
-    );
-    refuses(
-        &format!("{MEAN}fn bad () -> Option F64 = mean(r.at for r in readings)"),
-        "F64",
-    );
-    refuses(
-        &format!("{MEAN}fn bad () -> F64 = mean(1.0)"),
-        "is an aggregate",
-    );
-}
-
-#[test]
-fn user_defined_aggregate_parts_are_typed() {
-    refuses(
-        r#"aggregate bad (x: F64) -> F64 =
-  state { s: F64 } init { s: "zero" }
-  step (st, x) -> { s: st.s + x }
-  merge (a, b) -> { s: a.s + b.s }
-  finish st -> st.s"#,
-        "",
-    );
-    refuses(
-        r"aggregate bad (x: F64) -> F64 =
-  state { s: F64 } init { s: 0.0 }
-  step (st, x) -> { s: st.s + x, n: 1.0 }
-  merge (a, b) -> { s: a.s + b.s }
-  finish st -> st.s",
-        "",
-    );
-    refuses(
-        r"aggregate bad (x: F64) -> Text =
-  state { s: F64 } init { s: 0.0 }
-  step (st, x) -> { s: st.s + x }
-  merge (a, b) -> { s: a.s + b.s }
-  finish st -> st.s",
-        "Text",
-    );
-    refuses(
-        r"aggregate bad (x: F64) -> F64 =
-  state { s: F64, s: F64 } init { s: 0.0 }
-  step (st, x) -> { s: st.s + x }
-  merge (a, b) -> { s: a.s + b.s }
-  finish st -> st.s",
-        "declared twice",
-    );
-}
-
-#[test]
-fn a_user_defined_aggregate_takes_exactly_one_parameter() {
-    refuses(
-        r"aggregate two (x: F64, w: F64) -> F64 =
-  state { s: F64 } init { s: 0.0 }
-  step (st, x) -> { s: st.s + x }
-  merge (a, b) -> { s: a.s + b.s }
-  finish st -> st.s",
-        "an aggregate takes exactly one parameter",
-    );
-    accepts(
-        r"aggregate wmean (p: { x: F64, w: F64 }) -> F64 =
-  state { s: F64, n: F64 } init { s: 0.0, n: 0.0 }
-  step (st, p) -> { s: st.s + p.x * p.w, n: st.n + p.w }
-  merge (a, b) -> { s: a.s + b.s, n: a.n + b.n }
-  finish st -> st.s / st.n
-type Weighted = { id: Key weighted, x: F64, w: F64 }
-relation weighted : Weighted key id generate sequence
-fn wm () -> Option F64 = wmean({ x: r.x, w: r.w } for r in weighted)",
-    );
-}
-
-#[test]
-fn file_scans_occur_only_in_ad_hoc_text_and_load_sources() {
-    refuses(
-        "fn from_file () -> Set User = read_csv(\"u.csv\", User)",
-        "reads files only in ad hoc text and in the source query of an insert",
-    );
-    refuses(
-        "constraint bad = from u in read_csv(\"u.csv\", User) select u",
-        "reads files only",
-    );
-    let q = query(
-        "",
-        "query from_file () -> Set User = read_csv(\"u.csv\", User)",
-    );
-    assert!(
-        q.as_ref().is_err_and(|m| m.contains("reads files only")),
-        "{q:?}"
-    );
 }
 
 #[test]

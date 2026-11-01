@@ -1,0 +1,33 @@
+=== 001 schema
+--- text
+fn f (g: Identity.Google) -> Identity = g
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (g: Identity.Google) -> Identity.OAuth = g
+--- expect
+accept
+=== 003 schema
+--- text
+fn f (g: Identity.(Google | Apple)) -> Identity.OAuth = g
+--- expect
+accept
+=== 004 schema
+--- text
+fn f (g: Identity) -> Identity.Google = g
+--- expect
+refuse
+--- errors
+expected Identity.Google, found Identity
+--- phase
+check
+=== 005 schema
+--- text
+fn f (g: Identity.OAuth) -> Identity.Google = g
+--- expect
+refuse
+--- errors
+expected Identity.Google, found Identity.(Google | Apple)
+--- phase
+check
