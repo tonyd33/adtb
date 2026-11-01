@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-31
-status: open
+status: in-progress
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
+branch: reference-writes-remaining
 ---
 
 # Test audit findings
@@ -389,3 +390,25 @@ intended assertions, including unit comparison; restored healthy runs passed.
 Runtime edit/addition kept executable hash and mtime unchanged. These do not
 establish a clean-build or whole-suite speedup. The remaining 48 families and
 wider inventory stay open for later typed fixture extensions.
+
+
+## 2026-11-01: next refusal cohort assigned
+
+Workspace `reference-writes-remaining`, based on `89891a340f30`, owns 18
+remaining default-Fixture refusal families: fault, user error, malformed input,
+key change, reference/unique/check/domain/transition refusal and report
+projection. The planned replacement has 26 runtime steps; the previous 30
+families and 59 steps remain unchanged. A bounded typed refusal helper keeps
+whole original/normalized outcomes and complete post-refusal state checks.
+The fixed try/fail case should assert its exact user message rather than add
+a variant-only matching escape hatch. No production, shared setup, manifest,
+dependency or containment change belongs to this track.
+
+Acceptance: independent assertion-preservation review; sensitive new native
+refusal/report/state bridge probes with exact restoration; data edit/addition
+without relinking; affected strict lint/static checks; one complete
+`work/tools/suite -p adtb-reference` run on the final reviewed combined inputs,
+owned by the author, with native exit and unchanged tracked inputs/status.
+Retain the fixture-verification boundary and earlier unchanged component
+receipts. No new full engine or global binary-discovery run is warranted by
+this scoped migration. The remaining families and broader inventory stay open.

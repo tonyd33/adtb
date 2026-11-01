@@ -4,7 +4,7 @@ status: in-progress
 kind: feature
 priority: 910
 summary: no reproducible cross-database baseline or recurring measured optimization cycle exists
-branch: sqlite-baseline
+branch: sqlite-controls
 tags:
   - engine
   - test
@@ -212,3 +212,32 @@ subset/unique/transition refusal controls and corresponding mutations, actual
 ambiguous-commit and externally flushed child-kill controls, hard containment,
 resource reporting and large-data feasibility remain open. Keep this feature
 open for those controls and the later reviewed measurement phase.
+
+
+## 2026-11-01: declaration and refusal controls assigned
+
+Workspace `sqlite-controls`, based on `89891a340f30`, owns a finite runtime
+case matrix against the existing real-file native and SQLite adapters. Cover
+keys, references and constructor subsets, uniques, constructor shape and the
+Played transition, with related positive controls and complete before/after/
+reopened state. Keep independently specified typed outcomes and native error
+payloads. Cases excluded by generated types or refused during text checking
+are distinct from runtime constraint enforcement. One native retag corresponds
+to SQLite UPDATE; separate DELETE/INSERT statements do not establish an equal
+statement boundary. No transaction-wide transition promise is added.
+
+Scope is the existing leaf tool's native test helpers, runtime fixtures and
+README. No new dependency, feature, binary, global runner or engine source.
+Keep known canonical-name defects normative and explicitly blocked; never
+normalize their output into an equivalence claim. A separately identified
+existing-defect regression may use the repository's explicit ignored-test
+convention with an actual failing receipt and ticket reference, outside the
+passing matrix. Missing or skipped cases cannot count as passing coverage.
+
+Acceptance: independent source review, actual declaration/SQL-constraint
+mutation witnesses with exact restoration, complete default/native tool-package
+checks and strict affected lints, and applicable static checks on unchanged
+tracked inputs. The author owns final verification. Retain unchanged graph,
+policy and global-discovery evidence under the isolated-leaf rule. This
+checkpoint adds no timing, large-data feasibility, crash-control, hard-watchdog
+or measurement-readiness claim; those remain subsequent bounded work.
