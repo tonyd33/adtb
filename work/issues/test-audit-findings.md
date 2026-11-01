@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-31
-status: in-progress
+status: open
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
-branch: reference-writes-remaining
 ---
 
 # Test audit findings
@@ -412,3 +411,30 @@ owned by the author, with native exit and unchanged tracked inputs/status.
 Retain the fixture-verification boundary and earlier unchanged component
 receipts. No new full engine or global binary-discovery run is warranted by
 this scoped migration. The remaining families and broader inventory stay open.
+
+
+## 2026-11-01: refusal fixture cohort landed
+
+Landed `9bcfa6018d77` after fresh independent source and execution-evidence
+review. Another 18 families preserve 23 statement outcomes, one scalar query
+and two table counts in 26 runtime steps. Totals: 48 of 78 write families,
+85 steps; all 30 retained wrappers and the previous 30 runtime families remain
+unchanged. The new 128-line typed refusal helper keeps exact native faults,
+rejection payloads, report counts/projections, external parameters and complete
+post-refusal state. The fixed try/fail case now checks its exact message.
+
+Five compiled assertion-bridge mutants failed at their intended assertions;
+eleven runtime-data outcomes proved error checks, strict field/step handling
+and case growth without relinking. Exact restoration preceded the final
+complete reference-package run: 170/170, ten binaries, zero skipped, native
+exit zero, 1.588s execution and 3.201s command elapsed. All 3256 tracked input/
+metadata entries, revision and status were identical before and after. The
+landed tree equals the tested tree; no full engine/discovery or post-land
+repeat ran. Lint, formatting, exact-range house and size checks passed.
+
+The batch took approximately seven minutes from local brief creation to
+landing; that is an observed whole-track interval, not measured coding time
+or a general speedup. The remaining 30 families need bounded drivers for
+successful change/cross-result assertions, native stage/kernel hooks, custom
+setup, row limits and related supplies; they remain runtime-data candidates.
+The umbrella stays open and no defect class is declared closed.

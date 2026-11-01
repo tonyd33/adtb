@@ -332,3 +332,31 @@ the need to guess whether a note will wake an idle thread. The code-agent
 handoff text also now agrees with retaining an author across corrections and
 related cohorts. Execution-state claims still need observed evidence; neither
 queued text nor a past assignment establishes current work.
+
+
+### 2026-11-01: stop an oversized mechanism; overlap bounded delivery
+
+The pinned-reader replay artifact exceeded its source estimate while still
+leaving selected captures and pre-allocation budgeting unresolved. I retired
+it as a source candidate instead of asking for another local patch or method
+split. The known reader defect remains open; preserving an experiment is not
+shipping a mechanism. The earlier mechanism bet has no new class-wide result.
+Further reader work needs a private value/correlation contract before code.
+
+The next refusal-fixture cohort kept one author through implementation,
+mutation and final verification while a fresh reviewer read the immutable
+snapshot. Eighteen families landed in roughly seven minutes from brief creation,
+with an exact tested/landed tree comparison and no repeated engine run. This is
+one observed delivery interval. A metadata-only jj divergence briefly blocked
+landing; assigning the preserved older snapshot its own change identity kept
+both trees without retesting unchanged inputs. Author execution ownership and
+bounded verification held for this batch.
+
+My schema-control brief asked for mutation sensitivity per declaration. The
+author identified a foreign key already implied by other active constraints.
+That syntactic quota would have added tests without independent behavior.
+I replaced it with coverage of semantic invariants and an explicit implication
+proof; compound mutants are labelled as such. The existing test-value rule
+already prefers retained stronger coverage. No new catalog-pinning test or
+custom runner was warranted. The schema controls remain under implementation;
+there is no benchmark readiness or comparative timing result yet.
