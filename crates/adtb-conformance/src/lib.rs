@@ -5,6 +5,8 @@
 //! is the lines below it indented by two spaces. The rows of a `query` follow a `----` line, one
 //! per line, unindented, and end at a blank line, a comment or the next directive. Lines starting with `#`
 //! between directives are comments.
+//! Use `query list` to require a reference List result in exact order. The engine runner
+//! reports this expectation as unobservable because its result interface exposes rows.
 
 #![forbid(unsafe_code)]
 
@@ -31,8 +33,14 @@ pub use engine::{migrations, run_engine, run_engine_in};
 pub enum Kind {
     Schema,
     Run,
-    Query { rowsort: bool, rows: Vec<String> },
-    Error { reason: String },
+    Query {
+        rowsort: bool,
+        list: bool,
+        rows: Vec<String>,
+    },
+    Error {
+        reason: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,10 +128,17 @@ pub fn parse(text: &str) -> Result<Script, Difference> {
             ("run", []) => Kind::Run,
             ("query", []) => Kind::Query {
                 rowsort: false,
+                list: false,
                 rows: Vec::new(),
             },
             ("query", ["rowsort"]) => Kind::Query {
                 rowsort: true,
+                list: false,
+                rows: Vec::new(),
+            },
+            ("query", ["list"]) => Kind::Query {
+                rowsort: false,
+                list: true,
                 rows: Vec::new(),
             },
             ("error", [reason]) => Kind::Error {
@@ -166,7 +181,7 @@ fn starts_directive(line: &str) -> bool {
     line.starts_with('#')
         || matches!(
             words.as_slice(),
-            ["schema" | "run" | "query"] | ["query", "rowsort"]
+            ["schema" | "run" | "query"] | ["query", "rowsort" | "list"]
         )
         || matches!(words.as_slice(), ["error", c] if c.chars().all(char::is_alphanumeric))
 }
@@ -337,7 +352,11 @@ impl Run {
                     None => Err(differ(d.line, "no statement")),
                 }
             }
-            Kind::Query { rowsort, rows } => {
+            Kind::Query {
+                rowsort,
+                list,
+                rows,
+            } => {
                 let (ended, _) = self
                     .statements(&d.body, false)
                     .map_err(|e| differ(d.line, e.message))?;
@@ -351,6 +370,9 @@ impl Run {
                         r,
                         detail,
                     )),
+                    Ended::Ok(v, _) if *list && !matches!(v, Value::List(_)) => {
+                        Err(differ(d.line, "expected a List result"))
+                    }
                     Ended::Ok(v, ty) => self.compare(d.line, v, ty, *rowsort, rows),
                 }
             }

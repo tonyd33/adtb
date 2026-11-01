@@ -28,6 +28,7 @@ fn a_script_reads_into_its_directives() {
     assert_eq!(
         &Kind::Query {
             rowsort: true,
+            list: false,
             rows: vec!["1".into(), "2".into()]
         },
         kinds[2]
@@ -321,4 +322,19 @@ query
         })
         .collect();
     assert_eq!(vec!["KeyViolation", "Faulted"], reasons);
+}
+
+#[test]
+fn a_list_expectation_checks_shape_and_order() {
+    assert!(
+        differences("query list\n  from t in ts select t.n order by t.n\n----\n1\n2\n").is_empty()
+    );
+    assert_eq!(
+        vec!["expected a List result"],
+        differences("query list\n  from t in ts select t.n\n----\n1\n2\n")
+    );
+    assert_eq!(
+        vec!["got in order [1, 2]"],
+        differences("query list\n  from t in ts select t.n order by t.n\n----\n2\n1\n")
+    );
 }

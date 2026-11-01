@@ -1,0 +1,32 @@
+# a_user_defined_aggregate_folds_its_inputs
+schema
+  module app
+  aggregate mean (x: F64) -> F64 =
+    state { s: F64, n: F64 } init { s: 0.0, n: 0.0 }
+    step (st, x) -> { s: st.s + x, n: st.n + 1.0 }
+    merge (a, b) -> { s: a.s + b.s, n: a.n + b.n }
+    finish st -> st.s / st.n
+  type Sale = { id: Key sales, region: Text, total: F64 }
+  relation sales : Sale key id generate sequence
+run
+  insert sales from [Sale { id: sales.key(1), region: "eu", total: 1.0 },
+            Sale { id: sales.key(2), region: "eu", total: 2.0 },
+            Sale { id: sales.key(3), region: "us", total: 4.0 }]
+
+query rowsort
+  from o in sales group o by o.region into g
+  select { region: g.key, mean: mean(x.total for x in g) }
+----
+{ region: "eu", mean: 1.5 }
+{ region: "us", mean: 4.0 }
+
+query
+  mean(o.total for o in sales)
+----
+Some { value: 2.3333333333333335 }
+
+query
+  mean(o.total for o in sales where o.total > 10.0)
+----
+None
+

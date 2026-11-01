@@ -178,33 +178,6 @@ fn post(f: &Fixture, id: i64) -> Value {
 }
 
 #[test]
-fn a_generator_depends_on_an_earlier_one() {
-    let f = fixture();
-    let got =
-        f.value("from u in users, i in u.<identities.user select { name: u.name, id: key i }");
-    let want = set([
-        rec(vec![("name", text("ann")), ("id", f.value(&uuid(1)))]),
-        rec(vec![("name", text("ann")), ("id", f.value(&uuid(2)))]),
-        rec(vec![("name", text("bo")), ("id", f.value(&uuid(3)))]),
-        rec(vec![("name", text("bo")), ("id", f.value(&uuid(4)))]),
-    ]);
-    assert_eq!(want, got);
-}
-
-#[test]
-fn arms_returning_rows_join_at_the_sum() {
-    let f = fixture();
-    let got = f.value(
-        "from i in identities select match i
-           | Google g    -> g
-           | Apple a     -> a
-           | EmailPass e -> e",
-    );
-    assert_eq!(f.value("from i in identities select i"), got);
-    assert_eq!(4, got.as_set().unwrap().len());
-}
-
-#[test]
 fn a_registered_query_returns_a_result_sum() {
     let f = fixture();
     let got = f
@@ -235,24 +208,6 @@ fn an_adhoc_wildcard_covers_the_remaining_constructors() {
     assert_eq!(text("g-ann"), at(2));
     assert_eq!(text("other"), at(1));
     assert_eq!(text("other"), at(4));
-}
-
-#[test]
-fn a_constructor_binder_reaches_header_fields() {
-    let f = fixture();
-    let got = f.value(
-        "from i in identities select match i
-           | EmailPass e -> { owner: e.user, login: e.email }
-           | Google g    -> { owner: g.user, login: g.gid }
-           | Apple a     -> { owner: a.user, login: a.sub }",
-    );
-    let want = set([
-        rec(vec![("owner", key(1)), ("login", text("ann@example.com"))]),
-        rec(vec![("owner", key(1)), ("login", text("g-ann"))]),
-        rec(vec![("owner", key(2)), ("login", text("root"))]),
-        rec(vec![("owner", key(2)), ("login", text("a-bo"))]),
-    ]);
-    assert_eq!(want, got);
 }
 
 #[test]
@@ -362,65 +317,6 @@ fn a_backlink_is_the_rows_that_reference() {
 }
 
 #[test]
-fn an_optional_backlink_skips_none() {
-    let f = fixture();
-    let got =
-        f.value("from u in users select { name: u.name, n: count(s for s in u.<sessions.owner) }");
-    let want = set([
-        rec(vec![("name", text("ann")), ("n", int(1))]),
-        rec(vec![("name", text("bo")), ("n", int(0))]),
-        rec(vec![("name", text("cy")), ("n", int(0))]),
-    ]);
-    assert_eq!(want, got);
-}
-
-#[test]
-fn a_nested_result_keeps_rows_with_nothing_related() {
-    let f = fixture();
-    let got = f.value(
-        "from u in users
-         select { name: u.name,
-                  phones: from d in phones where d.owner == key u select d }",
-    );
-    let phones = f.value("from d in phones select d");
-    let want = set([
-        rec(vec![("name", text("ann")), ("phones", phones)]),
-        rec(vec![("name", text("bo")), ("phones", set([]))]),
-        rec(vec![("name", text("cy")), ("phones", set([]))]),
-    ]);
-    assert_eq!(want, got);
-}
-
-#[test]
-fn a_nested_set_flattens_by_ranging_over_it() {
-    let f = fixture();
-    let got = f.value(
-        "from r in (from u in users select { name: u.name, ds: u.<phones.owner }),
-              d in r.ds
-         select { name: r.name, seen: d.seen }",
-    );
-    let want = set([
-        rec(vec![("name", text("ann")), ("seen", t(10))]),
-        rec(vec![("name", text("ann")), ("seen", t(20))]),
-    ]);
-    assert_eq!(want, got);
-}
-
-#[test]
-fn group_into_partitions_bindings() {
-    let f = fixture();
-    let got = f.value(
-        "from i in identities group i by i.user into g
-         select { user: g.key, n: count(x for x in g) }",
-    );
-    let want = set([
-        rec(vec![("user", key(1)), ("n", int(2))]),
-        rec(vec![("user", key(2)), ("n", int(2))]),
-    ]);
-    assert_eq!(want, got);
-}
-
-#[test]
 fn grouping_by_tag_groups_by_constructor() {
     let f = fixture();
     let got = f.value(
@@ -446,46 +342,6 @@ fn an_aggregate_counts_equal_values_of_distinct_bindings() {
         )
         .unwrap();
     assert_eq!(int(250), got);
-}
-
-#[test]
-fn an_aggregate_over_a_group_is_over_a_nonempty_range() {
-    let f = fixture();
-    let got = f.value(
-        "from o in orders group o by o.user into g
-         select { user: g.key, top: max(x.total for x in g) }",
-    );
-    let want = set([
-        rec(vec![("user", key(1)), ("top", int(100))]),
-        rec(vec![("user", key(2)), ("top", int(30))]),
-    ]);
-    assert_eq!(want, got);
-}
-
-#[test]
-fn an_aggregate_over_a_possibly_empty_range_is_optional() {
-    let f = fixture();
-    let got = f.value(
-        "from u in users
-         select { name: u.name,
-                  top: max(o.total for o in orders where o.user == key u) }",
-    );
-    let want = set([
-        rec(vec![("name", text("ann")), ("top", Value::some(int(100)))]),
-        rec(vec![("name", text("bo")), ("top", Value::some(int(30)))]),
-        rec(vec![("name", text("cy")), ("top", Value::none())]),
-    ]);
-    assert_eq!(want, got);
-}
-
-#[test]
-fn an_aggregate_over_a_match_ranges_over_its_result() {
-    let f = fixture();
-    let got = f.value(
-        "count(x for x in (from i in identities
-                           select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub))",
-    );
-    assert_eq!(int(4), got);
 }
 
 const REACH: &str = "fix reach = (from f in follows where f.src == me select f.dst)
@@ -528,32 +384,6 @@ fn a_lower_stratum_may_be_negated() {
         )
         .unwrap();
     assert_eq!(set([user(&f, 1)]), got);
-}
-
-#[test]
-fn functions_and_views_are_called() {
-    let f = fixture();
-    let got =
-        f.value("from u in active(), l in logins_of(key u) select { name: u.name, login: l }");
-    let want = set([
-        rec(vec![
-            ("name", text("ann")),
-            ("login", text("ann@example.com")),
-        ]),
-        rec(vec![("name", text("ann")), ("login", text("g-ann"))]),
-        rec(vec![("name", text("bo")), ("login", text("root"))]),
-        rec(vec![("name", text("bo")), ("login", text("a-bo"))]),
-    ]);
-    assert_eq!(want, got);
-}
-
-#[test]
-fn a_function_takes_a_lambda() {
-    let f = fixture();
-    let got = f.value(
-        "having(fn i -> match i | Google _ -> true | EmailPass _ -> false | Apple _ -> false)",
-    );
-    assert_eq!(keys([1, 2]), got);
 }
 
 #[test]
@@ -617,41 +447,6 @@ fn optional_filters_are_option_parameters() {
 }
 
 #[test]
-fn order_by_lists_the_final_result() {
-    let f = fixture();
-    let got = f.value("from u in users select u order by u.name");
-    assert_eq!(
-        Value::List(vec![user(&f, 1), user(&f, 2), user(&f, 3)]),
-        got
-    );
-    let got = f.value("from u in users select u order by u.name desc");
-    assert_eq!(
-        Value::List(vec![user(&f, 3), user(&f, 2), user(&f, 1)]),
-        got
-    );
-}
-
-#[test]
-fn top_takes_the_first_by_a_determinate_order() {
-    let f = fixture();
-    let got = f.value(
-        "from u in users
-         select { user: u,
-                  latest: top 3 by (p.created_at desc, key p)
-                            (from p in posts where p.author == key u select p) }",
-    );
-    let want = set([
-        rec(vec![
-            ("user", user(&f, 1)),
-            ("latest", set([post(&f, 5), post(&f, 4), post(&f, 2)])),
-        ]),
-        rec(vec![("user", user(&f, 2)), ("latest", set([post(&f, 3)]))]),
-        rec(vec![("user", user(&f, 3)), ("latest", set([]))]),
-    ]);
-    assert_eq!(want, got);
-}
-
-#[test]
 fn after_starts_past_the_cursor() {
     let f = fixture();
     let q = "query page (cursor: Option (Key users)) -> Set User =
@@ -693,16 +488,6 @@ fn a_guard_keeps_a_partial_operand_from_running() {
         Err(adtb_reference::Abort::Fault(Fault::DivisionByZero)),
         f.eval("from o in orders where o.total / o.qty > 10 select o")
     );
-}
-
-#[test]
-fn a_checked_operator_returns_none_where_it_would_fault() {
-    let f = fixture();
-    let got = f.value(
-        "from o in orders
-         select match checked_div(o.total, o.qty) | None -> 0 | Some { value: q } -> q",
-    );
-    assert_eq!(ints([50, 0, 10]), got);
 }
 
 #[test]
@@ -749,43 +534,5 @@ fn adhoc_anonymous_constructors_are_numbered_in_their_joined_sum() {
         zed(3),
         f.eval_with("if true then z else Alpha", &[("z", "Zed { n: I64 }", z)])
             .unwrap()
-    );
-}
-
-#[test]
-fn a_user_defined_aggregate_folds_its_inputs() {
-    let mut f = Fixture::new(
-        r"
-aggregate mean (x: F64) -> F64 =
-  state { s: F64, n: F64 } init { s: 0.0, n: 0.0 }
-  step (st, x) -> { s: st.s + x, n: st.n + 1.0 }
-  merge (a, b) -> { s: a.s + b.s, n: a.n + b.n }
-  finish st -> st.s / st.n
-type Sale = { id: Key sales, region: Text, total: F64 }
-relation sales : Sale key id generate sequence
-",
-    );
-    f.rows(
-        "sales",
-        r#"[Sale { id: sales.key(1), region: "eu", total: 1.0 },
-            Sale { id: sales.key(2), region: "eu", total: 2.0 },
-            Sale { id: sales.key(3), region: "us", total: 4.0 }]"#,
-    );
-    let got = f.value(
-        "from o in sales group o by o.region into g
-         select { region: g.key, mean: mean(x.total for x in g) }",
-    );
-    let want = set([
-        rec(vec![("region", text("eu")), ("mean", Value::F64(1.5))]),
-        rec(vec![("region", text("us")), ("mean", Value::F64(4.0))]),
-    ]);
-    assert_eq!(want, got);
-    assert_eq!(
-        Value::some(Value::F64(7.0 / 3.0)),
-        f.value("mean(o.total for o in sales)")
-    );
-    assert_eq!(
-        Value::none(),
-        f.value("mean(o.total for o in sales where o.total > 10.0)")
     );
 }

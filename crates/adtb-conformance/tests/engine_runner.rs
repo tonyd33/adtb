@@ -220,3 +220,11 @@ fn a_differing_query_carries_its_rows_and_a_refusal_its_reason() {
         got[1]
     );
 }
+
+#[test]
+fn a_list_expectation_reports_unobservable_shape() {
+    assert_eq!(
+        vec!["the engine runner cannot observe List result shape"],
+        differences("query list\n  from t in ts select t.n order by t.n\n----\n1\n2\n")
+    );
+}

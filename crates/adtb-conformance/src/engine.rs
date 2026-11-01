@@ -145,7 +145,17 @@ fn directive<R: Runtime>(db: &Database<R>, d: &Directive) -> Result<(), Differen
                 )),
             }
         }
-        Kind::Query { rowsort, rows } => {
+        Kind::Query {
+            rowsort,
+            list,
+            rows,
+        } => {
+            if *list {
+                return Err(differ(
+                    d.line,
+                    "the engine runner cannot observe List result shape",
+                ));
+            }
             if parse_adhoc(&d.body, Options::default())
                 .ok()
                 .is_ok_and(|items| {

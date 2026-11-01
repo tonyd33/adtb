@@ -204,6 +204,7 @@ fn directive(line: usize, kind: Kind, body: &str) -> Directive {
 fn query() -> Kind {
     Kind::Query {
         rowsort: true,
+        list: false,
         rows: Vec::new(),
     }
 }
