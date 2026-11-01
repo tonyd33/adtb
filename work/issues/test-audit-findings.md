@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-31
-status: in-progress
+status: open
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
-branch: reference-typed-fixtures
 ---
 
 # Test audit findings
@@ -273,3 +272,39 @@ raw constructor and exact fault expectations. List expectations preserve an
 ordered element vector. Strict runtime discovery must reject unused inputs,
 report each case failure and continue healthy cases before failing the run.
 This bounded implementation is approved; it is not yet validated or landed.
+
+
+## 2026-11-01: typed reference migration landed
+
+Landed `7f4fef979082` after fresh independent preservation review.
+The remaining 22 mapped reference-query families now run 59 runtime
+source/outcome pairs. All 45 originally mapped reference-query families
+have runtime case data across the three batches. The shared typed adapter
+preserves external bindings, registered check/apply calls, exact Abort/Fault
+payloads, independently supplied raw constructor IDs, and ordered List
+values including duplicates. Reference dependencies and production libraries
+are unchanged. Stronger independent complete rows replace pairwise/count
+oracles without dropping original query sources or parameter values.
+
+Final complete reference-package validation passed 217 tests across ten
+binaries, zero skips, native exit zero. Revision, status and all 3179 tracked
+file hash/metadata entries were identical before and after on tested
+`1db6ae242d65`. Own command elapsed was 8.829 seconds including compilation;
+nextest execution was 1.621 seconds. Affected strict lint and static checks
+passed. Tested-to-landed changes were only previously reviewed ticket/index
+prose; the passing receipt is reused without another engine-wide check.
+Previous full receipts apply only to unchanged components, not this driver.
+
+Data-only valid additions ran without executable hash/mtime changes; bad
+outcomes, missing originals, unused fields, unknown files/modes, raw IDs,
+fault and List expectations failed at their intended boundaries. An actual
+Rust driver binding mutation also failed exact outcomes; it was not a
+production interpreter mutant. Restored healthy checks passed. One matched
+warm feedback observation was 1.096 seconds for a compiled binding edit
+versus 0.464 seconds for runtime expected data, including command overhead.
+No clean-build or whole-suite saving is claimed.
+
+The migration of these two modules is complete; the wider Rust test inventory,
+section 5 and separately tracked quality gaps remain open. Select the next
+bounded data-migration batch from that inventory rather than treating these
+modules as the end of the work.

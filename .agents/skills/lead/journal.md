@@ -260,3 +260,29 @@ optimization or bounded vacuum consumer. The milestone ticket now replaces
 its appended all-umbrella scheduling with consumer-specific prerequisites.
 Existing failure, identity, authority and budget bets remain open; there is
 no measured recurrence trend that justifies calling those classes closed.
+
+
+### 2026-11-01: notifications need an active lead handoff
+
+Authors retained execution ownership: the typed reference migration arrived
+with preserved outcomes, reversible assertion probes, exact restoration and
+an immutable candidate. Independent review overlapped complete package
+validation; the latter took 8.829 seconds including compilation. The landed
+source matched the tested source; reviewed ticket prose did not trigger a
+second engine-wide run. The bounded verification policy held for this slice.
+
+I nevertheless ended the preceding lead turn while the authors were working.
+Their completion reports queued until the next active lead turn, leaving a
+ready candidate and an approval rejection without a lead decision. The
+maintainer prompted resumption and challenged my description of completed
+tracks as active. This repeats the earlier scheduling failure; the ownership
+correction alone did not resolve lead follow-through. Keep the lead active
+through a dispatched batch's report, ruling and review or explicit blocker
+handoff, and describe observed state instead of an old assignment. This
+remains a process obligation, not an enforced automation guarantee.
+
+The pinned-reader experiment also shows why green authority tests are not
+reader precision evidence. Joining constructor domains removed product cost
+but invented a captured field observation. That candidate remains rejected.
+The next experiment must preserve structural correlations while demonstrating
+bounded relevant work; a larger unverified rewrite is not progress by itself.

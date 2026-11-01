@@ -206,3 +206,24 @@ Repair nested-value field reader facts introduced by upsert conflict bindings. P
 The two source tracks use separate files and warm workspaces. Authors own
 execution and corrections; fresh independent reviews precede a lead-assigned
 combined final check when both are ready. No duplicate full runs.
+
+
+## 2026-11-01: field-reader correction remains unlanded
+
+Independent review reproduced a new complexity regression in the reader
+candidate: a small owner query with ten independent four-constructor ranges
+exhausts the authority evaluator budget instead of registering and returning
+zero. Reusing full authority products for field observation caused this cost.
+A joined-domain field prototype avoids that product on four related forms,
+but loses captured Case/partial-Let source correlation and falsely refuses a
+valid registration. That prototype is rejected and must not land.
+
+The author is staging a demand-sensitive shared-evaluator experiment with
+explicit correlated dependencies and work counters. Authority behavior and
+exact stored-versus-proposed/copy/snapshot distinctions must be preserved.
+No budget increase, missing-facts fallback or query-specific workaround is
+accepted. Automatic approval review rejected the first broad source rewrite
+before execution; a bounded patch, exact backups and targeted controls are
+being prepared for review before another execution request. This is not a
+corrected candidate or a passing final check. Separate fixture migrations
+have landed independently and do not wait on this production redesign.
