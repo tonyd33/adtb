@@ -1,0 +1,21 @@
+=== created created-linked-google-result
+--- invoke
+run
+--- source
+transact
+  let u = insert users { name: n }
+  let i = insert identities.Google { user: key u, gid: g }
+  return key i
+--- params
+n|Text|"eve"
+g|Text|"g-eve"
+--- name
+"eve"
+--- gid
+"g-eve"
+--- identity-query
+from g in identities.Google where g.gid == "g-eve" select key g
+--- user-query
+from u in users where u.name == "eve" select key u
+--- reference-query
+from g in identities.Google where g.gid == "g-eve" select g.user

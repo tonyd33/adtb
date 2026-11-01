@@ -47,38 +47,6 @@ fn count(f: &Fixture, rel: &str) -> usize {
 // Insert
 
 #[test]
-fn a_block_binds_inserted_rows_with_their_generated_keys() {
-    let mut f = fixture();
-    let out = f
-        .run_with(
-            "transact
-               let u = insert users { name: n }
-               let i = insert identities.Google { user: key u, gid: g }
-               return key i",
-            &[("n", "Text", text("eve")), ("g", "Text", text("g-eve"))],
-        )
-        .expect("inserted");
-    let i = f.one(r#"from g in identities.Google where g.gid == "g-eve" select key g"#);
-    assert_eq!(i, out.result);
-    let u = f.one(r#"from u in users where u.name == "eve" select key u"#);
-    assert_eq!(
-        u,
-        f.one(r#"from g in identities.Google where g.gid == "g-eve" select g.user"#)
-    );
-}
-
-#[test]
-fn a_nested_insert_is_part_of_the_change_set() {
-    let mut f = fixture();
-    f.ok(r#"insert identities.Google { user: key (insert users { name: "nest" }), gid: "g-n" }"#);
-    let u = f.one(r#"from u in users where u.name == "nest" select key u"#);
-    assert_eq!(
-        u,
-        f.one(r#"from g in identities.Google where g.gid == "g-n" select g.user"#)
-    );
-}
-
-#[test]
 fn rejected_records_go_to_the_rejects_relation() {
     let mut f = fixture();
     let out = f
@@ -226,47 +194,9 @@ fn an_upsert_on_a_unique_over_expressions() {
     assert!(by_id, "{name} is named by the unique's catalog id");
 }
 
-const GET_OR_CREATE: &str = "transact
-  let g = insert identities.Google { user: u, gid: x }
-          unless conflict on (gid) in Google
-          else update old set old
-  return key g";
-
-#[test]
-fn a_get_or_create_returns_the_created_row() {
-    let mut f = fixture();
-    let out = f
-        .run_with(
-            GET_OR_CREATE,
-            &[("u", "Key users", key(2)), ("x", "Text", text("g-new"))],
-        )
-        .expect("ran");
-    assert_eq!(
-        out.result,
-        f.one(r#"from g in identities.Google where g.gid == "g-new" select key g"#)
-    );
-}
-
 // The statement boundary
 
 // Blocks and transactions
-
-#[test]
-fn a_registered_transaction_runs_as_one_statement() {
-    let mut f = fixture();
-    let out = f
-        .call_txn(
-            "txn add_user (n: Text) -> Key users = transact
-               let u = insert users { name: n }
-               return key u",
-            vec![text("eve")],
-        )
-        .expect("ran");
-    assert_eq!(
-        out.result,
-        f.one(r#"from u in users where u.name == "eve" select key u"#)
-    );
-}
 
 #[test]
 fn a_unique_over_a_value_level_path_constrains_only_rows_holding_the_constructor() {

@@ -1,0 +1,18 @@
+=== created created-google
+--- invoke
+run
+--- source
+transact
+  let g = insert identities.Google { user: u, gid: x }
+          unless conflict on (gid) in Google
+          else update old set old
+  return key g
+--- params
+u|Key users|users.key(2)
+x|Text|"g-new"
+--- gid
+"g-new"
+--- user
+users.key(2)
+--- query
+from g in identities.Google where g.gid == "g-new" select key g

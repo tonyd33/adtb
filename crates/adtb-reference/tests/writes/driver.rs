@@ -4,6 +4,7 @@ use adtb_testkit::fixture::Fixture;
 use super::shared::{Fields, bindings, finish, parse, take};
 
 pub(super) enum Step {
+    Relationship(super::relationship::Step),
     Stage(super::stage::Step),
     Outcome(super::outcome::Success),
     Probe(super::probe::Probe),
@@ -39,6 +40,12 @@ fn value(fixture: &Fixture, fields: &mut Fields) -> Value {
 impl Step {
     pub(super) fn read(fixture: &Fixture, mode: &str, mut fields: Fields) -> Self {
         let step = match mode {
+            "created-user"
+            | "created-google"
+            | "created-linked-google"
+            | "created-linked-google-result" => {
+                return Self::Relationship(super::relationship::Step::read(fixture, mode, fields));
+            }
             "stage-closed" | "stage-relation" | "stage-value" | "reject-not-open" => {
                 return Self::Stage(super::stage::Step::read(fixture, mode, fields));
             }
@@ -97,6 +104,7 @@ impl Step {
 
     pub(super) fn run(self, fixture: &mut Fixture) {
         match self {
+            Self::Relationship(step) => step.run(fixture),
             Self::Stage(step) => step.run(fixture),
             Self::Outcome(success) => success.run(fixture),
             Self::Probe(probe) => probe.run(fixture),

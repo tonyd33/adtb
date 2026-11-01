@@ -1,0 +1,13 @@
+=== created created-user
+--- invoke
+call
+--- source
+txn add_user (n: Text) -> Key users = transact
+  let u = insert users { name: n }
+  return key u
+--- args
+Text|"eve"
+--- name
+"eve"
+--- query
+from u in users where u.name == "eve" select key u

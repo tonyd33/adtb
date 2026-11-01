@@ -1,0 +1,13 @@
+=== created created-linked-google
+--- invoke
+run
+--- source
+insert identities.Google { user: key (insert users { name: "nest" }), gid: "g-n" }
+--- name
+"nest"
+--- gid
+"g-n"
+--- user-query
+from u in users where u.name == "nest" select key u
+--- reference-query
+from g in identities.Google where g.gid == "g-n" select g.user

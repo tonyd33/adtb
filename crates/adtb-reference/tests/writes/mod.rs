@@ -1,10 +1,12 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+mod created;
 mod driver;
 mod outcome;
 mod probe;
 mod refusal;
+mod relationship;
 #[path = "../runtime/mod.rs"]
 mod shared;
 mod stage;
@@ -92,4 +94,4 @@ pub(super) fn run() -> (usize, usize) {
     (families.len(), executed.len())
 }
 
-const ORIGINAL_HASH: u64 = 0x1e0d0cd71585a7ba;
+const ORIGINAL_HASH: u64 = 0x7f1b48316a20586b;
