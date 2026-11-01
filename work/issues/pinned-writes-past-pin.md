@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-31
-status: open
+status: in-progress
 kind: bug
 priority: 399
 summary: Pinned upserts retain nonhiding admission and nested value-reader gaps
+branch: pinned-readers
 ---
 
 # Pinned writes past pin
@@ -197,3 +198,11 @@ delta contained only reviewed ticket prose. No duplicate full check ran.
 This umbrella remains open for nonhiding upsert admission and nested-value
 reader tracking through upserts. The ordinary nested scan was disproved
 and the field-owner defect is now resolved.
+
+## 2026-10-31: pinned field-reader follow-up
+
+Repair nested-value field reader facts introduced by upsert conflict bindings. Preserve settled hiding semantics and cover registration and live-migration gates. Make this bounded analysis explicitly account for kernel forms so new forms cannot silently omit facts. The nonhiding whole-probe admission criterion remains outside the authorized change unless existing contracts settle it; raise a concrete coupled decision before changing observable policy.
+
+The two source tracks use separate files and warm workspaces. Authors own
+execution and corrections; fresh independent reviews precede a lead-assigned
+combined final check when both are ready. No duplicate full runs.

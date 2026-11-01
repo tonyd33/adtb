@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-31
-status: open
+status: in-progress
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
+branch: reference-fixtures
 ---
 
 # Test audit findings
@@ -169,3 +170,11 @@ speedup claim. Three paired process medians were 0.038100 s before and
 0.066538 s after under differing harness contexts. The larger checker
 migration is active in checker-runtime-fixtures. This umbrella remains open
 for its unresolved audit findings.
+
+## 2026-10-31: next reference runtime batch
+
+Migrate the 16 mapped pure reference-query families into runtime .test data using the existing reference-only conformance runner. Preserve all source/outcome pairs, UUID and timestamp values, ordering and List container identity. Keep the other parameterized/typed/fault cases. Require data-only additions without recompilation, independent preservation review and bounded affected runtime cost; do not repeat expensive old/new warm builds just to fill a trial quota.
+
+The two source tracks use separate files and warm workspaces. Authors own
+execution and corrections; fresh independent reviews precede a lead-assigned
+combined final check when both are ready. No duplicate full runs.
