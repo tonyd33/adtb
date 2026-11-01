@@ -4,7 +4,7 @@ status: in-progress
 kind: feature
 priority: 910
 summary: no reproducible cross-database baseline or recurring measured optimization cycle exists
-branch: bounded-leaf-range
+branch: repeated-execution-cost
 tags:
   - engine
   - test
@@ -862,3 +862,46 @@ rule. Independent per-run audit of immutable unaffected data may proceed while
 performance execution is held. Final joined-data audit and all performance and
 regression gates remain prerequisites to landing; no new source check is needed
 merely because bookkeeping or private analysis helpers change.
+
+## 2026-11-01: complete confirmation rejects bounded leaf candidate
+
+The qualified recovery closed all remaining observations under the unchanged
+protocol and native bounds. Separate author computation and independent raw-data
+audit agree on all 80 accepted logical observations and the retained 82 physical
+slots. All new native executions, reports, source and closure guards passed. The
+previously qualified original success and timeout remain preserved separately.
+
+The bounded leaf candidate's primary paired savings were 4.845%, -4.840%,
+7.777%, 15.851% and 7.106%, with median 7.106%. The fixed landing rule requires
+every primary pair to improve. Four of five does not pass, so the candidate
+remains unlanded despite its positive median and successful correctness checks.
+Other steady-state gates did not reject; isolated latency, resource and storage
+review items remain explicit. No extra sample, exclusion, threshold change or
+repeat of the same candidate is authorized to obtain a passing result.
+
+The local SQLite baseline and diagnostic profile remain accepted. The requested
+optimization is still undelivered. Workspace `repeated-execution-cost` now owns
+a bounded source investigation of the other measured CPU providers: repeated
+execution compilation and store metadata construction. Establish actual steady
+caller reach, ownership and invalidation before choosing one structural change.
+No implementation or new measurement is authorized by that investigation alone.
+A new candidate needs its own reviewed mechanism, sensitivity evidence, final
+verification and predeclared complete normal-release comparison. Failed candidate
+observations cannot validate it. Work, guarantees and durability remain fixed.
+
+The next selected mechanism shares database-owned immutable heap/index metadata
+across executor views, while constructing fresh snapshot, SSI reader and history
+state per view. Scope includes changing the low-level executor Store map fields
+to shared immutable maps and updating their Rust construction sites. Keep owned
+setup bindings and observable database APIs unchanged. This representation change
+does not introduce cross-owner caches or new identity/invalidation rules.
+
+Select a new combined candidate with the already reviewed bounded leaf provider
+before implementation or timing. Both mechanisms remove avoidable copying at
+their owning boundaries; their individual savings are not assumed additive.
+Validate the combined tree with independent review, searching ownership/view
+oracles, meaningful mutants and one final shared-engine check. Use one new
+rejection-only two-pair pilot in opposite orders, then 80 entirely new normal-
+release observations if admitted. Preserve the original workload, limits, primary
+endpoint, all-five improvement rule, 5% floor and every regression guard. Pilot
+points and all rejected candidate points stay outside the new final matrix.
