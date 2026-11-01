@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-31
-status: open
+status: in-progress
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
+branch: reference-typed-fixtures
 ---
 
 # Test audit findings
@@ -250,3 +251,25 @@ run did not test the new drivers. No duplicate full check was run.
 This umbrella remains open for the queued migrations, the wider inventory,
 section 5 and separately tracked audit gaps. Production pinned-reader work
 is separate and did not delay this fixture delivery.
+
+
+## 2026-10-31: next typed reference migration
+
+Track `reference-typed-fixtures` owns the remaining 22 mapped reference-query
+families. First assess a small shared Fixture driver against existing native
+format and dependencies; preserve external parameters, registered calls,
+exact typed faults and raw identity assertions. Ordinary input and expected
+data default to runtime files; reusable typed assertions remain Rust.
+No production API, dependency, build or engine-coverage expansion is assumed.
+Independent preservation review and complete affected-package validation
+follow a stable candidate; no duplicate full check is planned.
+
+
+The driver assessment selected a test-local adapter around existing Fixture
+APIs. Importing conformance would add engine dependencies; keep the reference
+dependency graph unchanged. Typed evaluation/call modes preserve external
+bindings and check/apply boundaries; narrow shared probes retain independent
+raw constructor and exact fault expectations. List expectations preserve an
+ordered element vector. Strict runtime discovery must reject unused inputs,
+report each case failure and continue healthy cases before failing the run.
+This bounded implementation is approved; it is not yet validated or landed.
