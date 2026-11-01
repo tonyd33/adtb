@@ -4,7 +4,7 @@ status: in-progress
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
-branch: reference-write-hooks
+branch: reference-created-rows
 ---
 
 # Test audit findings
@@ -531,3 +531,26 @@ The shared naming author will include this batch in its single production
 fullcheck. The remaining 14 families and wider audit stay open; the absent
 runtime driver for a native boundary remains implementation work, not a reason
 to classify ordinary inputs as permanently compiled Rust.
+
+
+## 2026-11-01: generated-row witness cohort assigned
+
+Workspace `reference-created-rows` owns four generated result/query and
+registered-call families. Four writes/calls and seven singleton queries remain
+actual native operations inside four required composite blocks, targeting
+68 families/131 blocks. Native inserted rows, external name/gid payloads, fresh
+keys, post-state membership and direct reference fields provide an independent
+oracle. Both returned and queried keys must agree with that state; two equal
+wrong observations must fail. No fixed generated UUID, capture store or general
+assertion language is introduced. Existing normalization/call entry points stay.
+
+Acceptance includes paired correctly typed old-key substitutions at both
+comparison endpoints, direct-reference corruption, data growth without relink,
+strict fields/reachability, exact restoration and independent review. The final
+complete reference-package run must use the reviewed shared naming production
+source plus this fixture delta; never finalize on old production then repeat.
+Naming owns the one retained Invoice expected-name correction in writes.rs;
+this author owns the four wrapper removals. Naming lands first, this cohort
+second. Only one fullcheck is owned by the naming author; bounded fixture
+integration gets its complete affected-package checks, with actual inputs
+compared. The remaining ten families and wider audit remain open.
