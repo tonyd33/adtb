@@ -829,3 +829,36 @@ five. Only after pilot admission run the one final shared-engine check and
 explicit native benchmark-package verification, then collect the entire new
 80-invocation matrix with separate immutable source/build identities and a fresh
 independent raw audit. A passed pilot alone cannot justify landing the change.
+
+## 2026-11-01: interference qualification and bounded recovery
+
+The source candidate passed independent review, its targeted sensitivity checks,
+one full shared-engine check and explicit native benchmark-package verification.
+The confirmation experiment remains incomplete. Verified external foreground
+system-configuration evaluation overlapped both members of one pair. A review
+of every invoked native interval selected that pair without using rates. Preserve
+both original outcomes and raw evidence, including the timeout with no comparable
+rate or validated acknowledgement prefix. Overlap does not establish its cause
+or a new engine defect.
+
+The frozen proposal explicitly permits a separately ruled replacement for a
+verified external interruption; the generated short policy instead said no
+replacement without spelling out that exception. Preserve that wording conflict.
+The lead adopts the specific frozen exception over the operational default, with
+independent methodological review: one linked replacement for each affected
+observation, in the original pair order, followed by the original unstarted
+sequence. No other observations are excluded and no favourable retry is allowed.
+All workload, preparation, durability, native bounds and fixed landing gates stay
+unchanged. The accepted logical matrix still requires every original cell and
+five paired observations; the extra physical attempts remain visible.
+
+Recovery requires explicit machine-quiet readiness. A process-name guard is only
+a partial detector, so resource coordination covers external evaluation and build
+work as well as this repository's tests. Use a 30-minute quiet window with latest
+new-pair launch at 25 minutes; keep pairs adjacent and preserve any remaining
+fixed sequence for another window if that resource cutoff is reached. This is
+not a guarantee that every remaining invocation fits, nor a rate-based stopping
+rule. Independent per-run audit of immutable unaffected data may proceed while
+performance execution is held. Final joined-data audit and all performance and
+regression gates remain prerequisites to landing; no new source check is needed
+merely because bookkeeping or private analysis helpers change.
