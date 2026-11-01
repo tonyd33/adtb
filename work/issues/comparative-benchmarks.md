@@ -4,6 +4,7 @@ status: in-progress
 kind: feature
 priority: 910
 summary: no reproducible cross-database baseline or recurring measured optimization cycle exists
+branch: sqlite-run-boundary
 tags:
   - engine
   - test
@@ -376,3 +377,42 @@ large-data feasibility, excluded pilots and an approved frozen comparison protoc
 still precede measurements. No benchmark ranking, optimization or beta exit is
 claimed by these crash controls. Engine-wide fault/admission/budget mechanisms
 and named-set migration admission remain separate.
+
+## 2026-11-01: operational command boundary assigned
+
+Workspace `sqlite-run-boundary`, base `4756caf610e0`, owns the next bounded
+comparison prerequisite: practical containment of existing CLI correctness runs.
+Compare available native OS process/resource controls before proposing custom
+orchestration. Name deadline/stop/kill/reap and descendant ownership, retained
+logs/native exit, resource limits and incomplete-state handling. No source or
+build starts until the lead rules on the proposed mechanism and exact scope.
+Candidate scope is the native tool/README and one narrow run entry if warranted;
+no shared engine/runtime, dependency, manifest or global configuration changes
+without a concrete ruling. No measurements, new protocol counts or large runs.
+
+The buffered CLI ledger is not externally retained crash evidence. A killed
+command with unavailable prefix data must be marked incomplete/invalid, never
+silently validated from arbitrary final state or counted as throughput. Retain
+partial files and logs; never resume a killed writer as a fresh run. Parent
+filesystem/process syscall liveness cannot become an unconditional OS guarantee.
+Meaningful sensitivity must exercise the actual boundary and refusal/result
+handling. Final affected checks and any new script tests are owned by the author,
+with fresh source review and exact receipt reuse for unchanged components.
+Reference-fixture work is independent; measurement windows remain exclusive.
+
+Approved scope: native user transient service via one narrow shell launcher,
+caller-supplied positive seconds/memory-bytes/task budgets, and opt-in native
+facility fixtures plus README. No Rust supervisor or mandatory global systemd
+dependency. The manager owns service/descendant lifecycle and resource limits.
+Pre-exec actual-cgroup evidence and native ExecStopPost result/exit/InvocationID
+receipts must agree; unloaded-unit default fields cannot establish success.
+Only successful service result and successful native payload exit are complete.
+Timeout/OOM/failure retains partial files and invalidates unavailable prefixes.
+
+One targeted real non-test CLI build is required for actual peer smoke checks.
+Keep prior Rust package/lint/graph/discovery receipts after exact unchanged-input
+proof; new shell/facility checks certify the changed boundary. No broad engine
+or unchanged 26-test repetition. Source-stable fresh review overlaps meaningful
+negative probes. Parent manager/filesystem/kernel syscall liveness remains an
+explicit precondition. Test fixtures use native facilities, remain opt-in and
+fail clearly if their required host support is absent rather than skipping.

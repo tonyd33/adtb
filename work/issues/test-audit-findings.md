@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-31
-status: open
+status: in-progress
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
+branch: reference-write-final
 ---
 
 # Test audit findings
@@ -610,3 +611,24 @@ revision/status fields stayed equal. Fresh source/evidence review accepted;
 landing retained all eleven source hashes and inherited only three assignment
 Markdown files. No after-land or full-engine repeat. Families 20, 45, 46 and 50
 remain open: reject-load identity, restricted-old kernels and catalog identity.
+
+## 2026-11-01: final four write families assigned
+
+Workspace `reference-write-final`, base `4756caf610e0`, owns families 20, 45, 46
+and 50. Approved bounded typed adapters preserve native load identity/metadata,
+restricted-old checked-kernel execution and catalog-linked refusals. Keep the
+restricted-old direct interpreter, cloned supply and noncommit boundary; other
+paths retain ordinary Fixture normalization. No generic action/capture language,
+production API, manifest, dependency or global configuration changes.
+
+Preserve all 74 families/149 blocks and prior support data. Runtime expected
+names/refusals remain independent. Replace the incidental catalog-id floor with
+an actual catalog-ID-versus-local-offset witness and externally specified name
+prefix plus native catalog ID; the substitution mutant must fail. This states
+identity sensitivity without an allocation-layout promise. Proposal budget is
+250–330 reusable Rust lines; actual discovery should reach 78 families/162 blocks.
+The author owns relevant actual mutants, same-binary runtime edit/addition proof,
+exact restoration and one complete affected reference-package check after fresh
+source review, plus strict affected lint/fmt/house/size and native input snapshots.
+No unchanged full-engine rerun. Independent comparison run-boundary work has no
+shared source or landing dependency. The wider audit remains open afterward.
