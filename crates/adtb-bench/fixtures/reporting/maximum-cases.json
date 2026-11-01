@@ -28,5 +28,65 @@
       "p99": 10,
       "throughput_calls_per_second": 400000000.0
     }
+  },
+  {
+    "workload": "counter",
+    "n": 2000,
+    "writers": 4,
+    "jobs": 20000,
+    "expected": {
+      "completed": 20000,
+      "write_commits": 20000,
+      "completed_workflows": 0,
+      "p50": 10,
+      "p95": 10,
+      "p99": 10,
+      "throughput_calls_per_second": 400000000.0
+    }
+  },
+  {
+    "workload": "lifecycle",
+    "n": 2000,
+    "writers": 4,
+    "jobs": 2000,
+    "expected": {
+      "completed": 8000,
+      "write_commits": 4000,
+      "completed_workflows": 2000,
+      "p50": 10,
+      "p95": 10,
+      "p99": 10,
+      "throughput_calls_per_second": 400000000.0
+    }
+  },
+  {
+    "workload": "counter",
+    "n": 5000,
+    "writers": 4,
+    "jobs": 20000,
+    "expected": {
+      "completed": 20000,
+      "write_commits": 20000,
+      "completed_workflows": 0,
+      "p50": 10,
+      "p95": 10,
+      "p99": 10,
+      "throughput_calls_per_second": 400000000.0
+    }
+  },
+  {
+    "workload": "lifecycle",
+    "n": 5000,
+    "writers": 4,
+    "jobs": 5000,
+    "expected": {
+      "completed": 20000,
+      "write_commits": 10000,
+      "completed_workflows": 5000,
+      "p50": 10,
+      "p95": 10,
+      "p99": 10,
+      "throughput_calls_per_second": 400000000.0
+    }
   }
 ]

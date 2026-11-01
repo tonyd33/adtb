@@ -15,6 +15,12 @@ or {start_ns,end_ns}, plan array, record_counts {calls,attempts,workflows}, phas
 storage, validation and process_io. Build values are Cargo-provided categories
 and settings, not a source revision or proof of an arbitrary binary's provenance.
 
+The runtime size policy requires N >= 4, N divisible by 4, N dividing 20,000,
+and 20,000/N >= 2. It preserves four equal campaign partitions, integral counter
+visits and at least two ownership-rotating key passes, and implies N <= 10,000
+and coprimality with permutation stride 37. Both workloads use this size policy;
+`counter-smoke` additionally requires N=4. Writers are 1 or 4.
+
 Plan entries contain actor/call integer identity, action, target integer key and
 workflow integer key or null. Actions are `bump`, `start`, `read_live`, `finish`,
 `read_played`. Actor/call identifies the fixed queue entry; target identifies a

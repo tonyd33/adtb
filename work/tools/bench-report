@@ -100,7 +100,9 @@ def application(root):
     require(set(app['storage']) == {'active', 'closed'} and all(type(entries) is list and all(type(entry) is dict for entry in entries) for entries in app['storage'].values()), 'invalid storage inventory arrays')
     require(app['process_io'].get('status') != 'available' or type(app['process_io'].get('counters')) is dict, 'invalid process I/O counter object')
     require(type(app['schema_version']) is int and app['schema_version'] == 1 and app['kind'] == 'adtb-bench-application', 'unknown application schema')
-    require(app['peer'] in ('adtb', 'sqlite') and app['n'] in (4, 1000, 10000)
+    require(all(type(app[x]) is int for x in ('n', 'writers')), 'invalid numeric configuration')
+    require(app['peer'] in ('adtb', 'sqlite') and app['n'] >= 4 and app['n'] % 4 == 0
+            and 20000 % app['n'] == 0 and 20000 // app['n'] >= 2
             and app['writers'] in (1, 4), 'unsupported peer/configuration')
     require(app['generator_version'] == 'baseline-v1'
             and app['offered_model'] == 'finite-closed-loop-per-actor', 'unknown offered model')
@@ -122,7 +124,6 @@ def application(root):
         require((integer(row['workflow']) and row['workflow'] == row['target'] and row['action'] != 'bump') if workload == 'lifecycle'
                 else (row['workflow'] is None and row['action'] == 'bump'), 'invalid planned unit')
         plan[identity] = row
-    require(all(type(app[x]) is int for x in ('n', 'writers')), 'invalid numeric configuration')
     for actor in range(app['writers']):
         ids = sorted(call for owner, call in plan if owner == actor)
         require(ids == list(range(len(ids))), 'planned actor calls are not contiguous')

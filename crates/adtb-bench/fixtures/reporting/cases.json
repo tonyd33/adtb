@@ -1067,5 +1067,131 @@
       "missing completed phase"
     ],
     "exit": 1
+  },
+  {
+    "name": "size-policy-zero",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "n"
+        ],
+        "value": 0
+      }
+    ],
+    "expected": [],
+    "exit": 1,
+    "errors": [
+      "unsupported peer/configuration"
+    ]
+  },
+  {
+    "name": "size-policy-negative",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "n"
+        ],
+        "value": -4
+      }
+    ],
+    "expected": [],
+    "exit": 1,
+    "errors": [
+      "unsupported peer/configuration"
+    ]
+  },
+  {
+    "name": "size-policy-unbalanced",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "n"
+        ],
+        "value": 625
+      }
+    ],
+    "expected": [],
+    "exit": 1,
+    "errors": [
+      "unsupported peer/configuration"
+    ]
+  },
+  {
+    "name": "size-policy-partial-pass",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "n"
+        ],
+        "value": 12
+      }
+    ],
+    "expected": [],
+    "exit": 1,
+    "errors": [
+      "unsupported peer/configuration"
+    ]
+  },
+  {
+    "name": "size-policy-one-pass",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "n"
+        ],
+        "value": 20000
+      }
+    ],
+    "expected": [],
+    "exit": 1,
+    "errors": [
+      "unsupported peer/configuration"
+    ]
+  },
+  {
+    "name": "size-policy-float",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "n"
+        ],
+        "value": 4.0
+      }
+    ],
+    "expected": [],
+    "exit": 1,
+    "errors": [
+      "invalid numeric configuration"
+    ]
+  },
+  {
+    "name": "size-policy-bool",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "n"
+        ],
+        "value": true
+      }
+    ],
+    "expected": [],
+    "exit": 1,
+    "errors": [
+      "invalid numeric configuration"
+    ]
   }
 ]

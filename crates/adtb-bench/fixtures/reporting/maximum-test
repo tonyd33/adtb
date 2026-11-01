@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check existing maximum healthy workload sizes against fixed arithmetic oracles."""
+"""Check supported healthy workload sizes against fixed arithmetic oracles."""
 import json
 from pathlib import Path
 import shutil
@@ -13,7 +13,7 @@ scratch = Path(tempfile.mkdtemp(prefix='report-maximum-', dir=root / 'target'))
 cases = json.loads((fixtures / 'maximum-cases.json').read_text())
 reached = []
 for case in cases:
-    run = scratch / case['workload']
+    run = scratch / f"{case['workload']}-{case['n']}"
     shutil.copytree(fixtures / 'native', run)
     database = run / 'database'
     database.mkdir()

@@ -105,6 +105,11 @@ fn control_requests_rotate_keys_across_actors() {
         let [n, requests, writers, per_actor, visits, owners] = values.as_slice() else {
             panic!("control cases have six fields");
         };
+        assert_eq!(
+            run::validate_configuration(i64::try_from(*n).expect("fixture N fits"), *writers),
+            Ok(()),
+            "case {line}"
+        );
         let queues = actions(
             i64::try_from(*n).expect("fixture N fits"),
             *writers,
@@ -139,7 +144,7 @@ fn control_requests_rotate_keys_across_actors() {
         }
         cases += 1;
     }
-    assert_eq!(cases, 3, "smoke and both planned datasets ran");
+    assert_eq!(cases, 5, "all runtime control cases ran");
 }
 
 #[test]
@@ -203,4 +208,30 @@ fn counter_audit_requires_compatible_history() {
         checked, 9,
         "all order and uncertainty cases reach the live audit gate"
     );
+}
+
+#[test]
+fn runtime_size_policy_admission() {
+    let text = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/size-policy.json"),
+    )
+    .expect("read runtime size policy cases");
+    let cases: serde_json::Value = serde_json::from_str(&text).expect("valid size policy fixture");
+    let cases = cases.as_array().expect("size policy case array");
+    let mut reached = 0;
+    for case in cases {
+        let n = case["n"].as_i64().expect("fixture N fits i64");
+        let writers = usize::try_from(
+            case["writers"]
+                .as_u64()
+                .expect("fixture writers are unsigned"),
+        )
+        .expect("fixture writers fit usize");
+        let expected = case["error"]
+            .as_str()
+            .map_or(Ok(()), |error| Err(error.to_owned()));
+        assert_eq!(run::validate_configuration(n, writers), expected, "{case}");
+        reached += 1;
+    }
+    assert_eq!(reached, 12, "all runtime size policy cases ran");
 }

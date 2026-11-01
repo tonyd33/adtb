@@ -1,0 +1,62 @@
+[
+  {
+    "n": 4,
+    "writers": 1,
+    "error": null
+  },
+  {
+    "n": 4,
+    "writers": 4,
+    "error": null
+  },
+  {
+    "n": 1000,
+    "writers": 4,
+    "error": null
+  },
+  {
+    "n": 2000,
+    "writers": 4,
+    "error": null
+  },
+  {
+    "n": 5000,
+    "writers": 4,
+    "error": null
+  },
+  {
+    "n": 10000,
+    "writers": 4,
+    "error": null
+  },
+  {
+    "n": -4,
+    "writers": 1,
+    "error": "N must have four equal campaign partitions and at least two whole 20000-request key passes; writers must be 1 or 4"
+  },
+  {
+    "n": 0,
+    "writers": 1,
+    "error": "N must have four equal campaign partitions and at least two whole 20000-request key passes; writers must be 1 or 4"
+  },
+  {
+    "n": 625,
+    "writers": 4,
+    "error": "N must have four equal campaign partitions and at least two whole 20000-request key passes; writers must be 1 or 4"
+  },
+  {
+    "n": 12,
+    "writers": 4,
+    "error": "N must have four equal campaign partitions and at least two whole 20000-request key passes; writers must be 1 or 4"
+  },
+  {
+    "n": 20000,
+    "writers": 4,
+    "error": "N must have four equal campaign partitions and at least two whole 20000-request key passes; writers must be 1 or 4"
+  },
+  {
+    "n": 1000,
+    "writers": 2,
+    "error": "N must have four equal campaign partitions and at least two whole 20000-request key passes; writers must be 1 or 4"
+  }
+]

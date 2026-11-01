@@ -128,7 +128,11 @@ receipt. Build with the committed lock. Runtime startup checks version
 
 Each command requires a new directory and retains `ledger.txt` alongside
 its database files. These are correctness operations with raw timing artifacts
-and no warmup; the bounded recipe below joins native resources into a report. N=4 is a smoke fixture; N=1000/10000 are planned datasets.
+and no warmup; the bounded recipe below joins native resources into a report. N=4 is a smoke fixture. Supported runtime sizes have four equal campaign partitions
+and at least two whole passes of the fixed 20,000 counter requests: N must be at
+least 4, divisible by 4, divide 20,000, and satisfy 20,000/N >= 2. The same size
+policy applies to lifecycle; writers must be 1 or 4. These conditions imply
+N <= 10,000 and make stride 37 a key permutation.
 
 ```sh
 cargo run -p adtb-bench --features native --locked -- adtb lifecycle target/adtb-lifecycle 4 4

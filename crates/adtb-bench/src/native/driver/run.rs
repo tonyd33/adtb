@@ -9,9 +9,7 @@ pub fn correctness(
     lifecycle: bool,
     requests: usize,
 ) -> Result<String, String> {
-    if ![1, 4].contains(&writers) || !(n == 1000 || n == 10000 || n == 4) {
-        return Err("N must be 4 (smoke),1000,10000; writers 1 or 4".into());
-    }
+    validate_configuration(n, writers)?;
     let mut report = Report::new(Config {
         peer,
         n,
@@ -231,6 +229,15 @@ fn verify_completion(
     if !config.lifecycle && state.counters.iter().any(|c| c.value != per_key) {
         return Err(
             "complete control differs from closed-form requests/N increments per key".into(),
+        );
+    }
+    Ok(())
+}
+
+pub(super) fn validate_configuration(n: i64, writers: usize) -> Result<(), String> {
+    if n < 4 || n % 4 != 0 || 20_000 % n != 0 || 20_000 / n < 2 || ![1, 4].contains(&writers) {
+        return Err(
+            "N must have four equal campaign partitions and at least two whole 20000-request key passes; writers must be 1 or 4".into(),
         );
     }
     Ok(())
