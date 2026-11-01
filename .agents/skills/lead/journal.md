@@ -296,3 +296,23 @@ is the bounded reader producer and the prepared current-pin SQLite baseline;
 a further broad audit is not a prerequisite for either. Reference-writes
 is the next suggested small fixture cohort, pending an author's preservation
 assessment. No class closure or benchmark result follows from this review.
+
+
+### 2026-11-01: verify the changed consumer graph
+
+The native benchmark checkpoint introduces dependencies and a build script,
+so the fixture-only exception did not apply. An independent locked metadata
+comparison found all 115 existing package feature/edge/metadata objects and
+old lock records unchanged in default and native modes. The new build output
+belongs to the opt-in tool. Full default engine execution would not run its
+native tests; those already have separate six-test and strict-lint receipts.
+The leaf-tool rule now requires this isolation evidence, complete feature
+checks, dependency policy and affected global discovery/containment checks.
+Unproved shared impact still requires broader verification.
+
+The assessor also tried expanding every repeated Cargo dependency path. It
+grew needlessly and was stopped without building or changing source. The
+bounded metadata comparison was already sufficient for the resolved graph;
+it was not a compiler unit-graph receipt. Do not seek an absolute proof by
+expanding a DAG into paths. Actual workspace discovery consumers remain part
+of the final assignment. No benchmark readiness follows from this decision.

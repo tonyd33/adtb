@@ -60,8 +60,10 @@ Be firm and opinionated about the project's design and direction. Refuse a reque
   the main checkout's dev shell, so a branch older than a tool main added exits 127.
   Rebase the track onto main first, then run its check. Use targeted checks
   during implementation and review; assign final verification on the reviewed
-  tree. Production or unbounded changes get one full check; the bounded
-  fixture/tool exception in verification.md uses complete affected-package checks. Name one owner in the brief so author and lead do not duplicate it.
+  tree. Database, language or shared-runtime production changes and unbounded
+  impact get one full check. The fixture and isolated opt-in leaf-tool rules
+  in verification.md use complete affected-package checks with explicit
+  integration evidence. Name one owner so author and lead do not duplicate it.
 - Before starting a track, list the files the running tracks change. A
   track that changes a shared signature (pager, heap or B-link tree calls)
   does not run beside tracks that call it: land it first and branch the

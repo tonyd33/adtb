@@ -74,6 +74,44 @@ A production change or an impact that cannot be bounded gets one final full
 check after review. Keep such work separate from an independently ready
 fixture batch; its longer verification is not a gate for unrelated changes.
 
+## Isolated opt-in leaf tools
+
+A new tool may add private dependencies and an owned build script without
+repeating unchanged engine checks when the lead establishes all of these:
+
+- No existing package depends on the tool. Default features keep its optional
+  runtime and build dependencies inactive. Advertised opt-in modes are explicit.
+- Compare the actual locked, resolved package graphs, including normal, build
+  and dev edges, target conditions and features. Every existing package and
+  lock record remains identical in default and supported opt-in modes. Review
+  host/target context limits rather than calling metadata a compiler unit graph.
+- Existing database, language, shared runtime, manifests, profiles, build
+  scripts and containment are unchanged. Any independently combined test or
+  prose changes retain their own applicable receipts.
+- Review the new build script and dependency build effects: generated outputs
+  belong to the tool's build directory, and environment/library selection is
+  explicit. Run full dependency license, advisory, source and duplicate policy.
+- Run complete tool-package checks for default and advertised feature modes,
+  strict affected lints and applicable static checks. Check actual linked
+  native-library identity where relevant. An empty default test set does not
+  certify opt-in code.
+- Identify and run affected workspace discovery and containment consumers on
+  the combined tree. Default binary discovery does not certify feature-gated
+  binaries: retain explicit containment evidence for those too.
+- Independent review and an immutable receipt cover the final inputs. Reuse
+  unchanged checks only after tree/configuration/environment comparison; do
+  not label retained component evidence as a new whole-workspace check.
+
+Record the isolation evidence, direct consumers and final check owner in the
+track. Use native Cargo metadata and bounded graph comparisons; expanding every
+repeated dependency path is not a useful proof. If isolation is unproved or an
+existing dependency, feature, shared source or execution boundary changes, run
+the applicable full check and state the unresolved impact. A full default
+engine check never substitutes for the tool's supported feature checks.
+
+This extends bounded verification to isolated consumers; it does not establish
+benchmark equivalence, crash durability or measurement readiness.
+
 ## Durable task state
 
 Keep the scope, acceptance commands, workspace/base, unresolved failures,

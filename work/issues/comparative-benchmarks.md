@@ -158,3 +158,33 @@ controls. Such a checkpoint is not measurement readiness or ticket closure.
 Small correctness checks use fixed small request counts; no repeated long
 workloads are required merely to iterate the driver. No ranked measurement,
 pilot, operation-count freeze or performance claim has occurred.
+
+
+## 2026-11-01: isolated consumer verification scope
+
+Fresh review accepted the initial driver architecture, then found that its
+unordered counter oracle could accept impossible call order. The correction
+uses actor and per-key precedence with bounded placement of identified
+uncertain calls. A separate operational interleaving model checks 160000
+small histories, including 57600 uncertain histories, and live audit witnesses
+reject descending returns and a cross-key cycle. Focused delta review accepted
+that correction. The six opt-in package tests pass in under one second;
+this does not certify the deferred native crash and constraint controls.
+
+An independent locked graph comparison found every existing package's
+resolved features, normal/build/dev dependencies and metadata unchanged in
+default and native modes, with all old lock records unchanged. The tool is
+an opt-in leaf; its generated build output is owned by that tool. Apply the
+isolated-leaf verification rule: final complete native package checks,
+default/feature lint evidence, full dependency policy and the affected
+workspace heap-cap discovery/manifest/slot consumers. Retain explicit native
+binary containment evidence because default discovery does not select those
+feature-gated targets. This supersedes earlier full-engine-check wording for
+this isolated consumer only. Shared production or unproved global impact
+still requires broader checks; prior component receipts do not test new code.
+
+The final owner verifies the combined tree preserves the independently landed
+reference fixtures and captures unchanged inputs and command exits. No default
+engine/campaign/Loom/Miri rerun is required solely by adding private opt-in
+packages. Final scope, review and integration evidence remain necessary before
+landing the checkpoint. Measurement readiness and this feature remain open.
