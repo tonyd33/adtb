@@ -4,11 +4,14 @@
 
 use adtb_simkit::api;
 
+use std::panic::{AssertUnwindSafe, catch_unwind, panic_any};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use adtb::batch::{self, Batch, BatchBuilder, Type};
 use adtb::key::{Scalar, Value as Stored};
+use adtb::runtime::{IoError, Op};
+use adtb::storage::{FatalIo, Pager};
 use adtb::{
     CallOptions, Database, Determinism, Error, FatalReason, Fault, HostError, HostFns, Log,
     OpenError, OpenOptions, Position, RejectReason, TxnCallOptions, TxnOptions,
@@ -263,7 +266,15 @@ fn faulted(got: Result<Vec<adtb::DynRows>, Error>) -> bool {
 fn a_host_function_that_errs_panics_or_returns_another_shape_faults_its_statement() {
     let bodies: Vec<(&str, HostFns)> = vec![
         ("an error", failing(|_| Err(HostError("no".into())))),
-        ("a panic", failing(|_| panic!("a host function panics"))),
+        (
+            "a borrowed panic",
+            failing(|_| panic_any("fatal I/O error: a provider panic")),
+        ),
+        (
+            "an owned panic",
+            failing(|_| panic_any("fatal I/O error: a provider panic".to_owned())),
+        ),
+        ("a nontext panic", failing(|_| panic_any(17_u32))),
         (
             "another type",
             failing(|b| {
@@ -277,6 +288,7 @@ fn a_host_function_that_errs_panics_or_returns_another_shape_faults_its_statemen
         ),
         ("another length", failing(|_| Ok(texts(&empty(), slug)))),
     ];
+    let mut completed = 0;
     for (what, fns) in bodies {
         once(8, |rt| {
             let db = opened(&rt, &[NOTES], fns);
@@ -293,7 +305,62 @@ fn a_host_function_that_errs_panics_or_returns_another_shape_faults_its_statemen
                 "{what}: try catches the fault"
             );
         });
+        completed += 1;
     }
+    assert_eq!(6, completed, "all six host failure categories completed");
+}
+
+#[test]
+fn a_host_callback_preserves_a_genuine_storage_failure() {
+    let mut sim = Sim::new(8, Config::default());
+    let struck = Arc::new(AtomicUsize::new(0));
+    let mut returned = None;
+    let caught = catch_unwind(AssertUnwindSafe(|| {
+        sim.run(|rt| {
+            let hook = adtb_simkit::search::Hooked::new(&rt);
+            let failures = Arc::clone(&struck);
+            hook.fail_when(move |op| {
+                if matches!(op, Op::Write { .. })
+                    && failures
+                        .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    Some(IoError::Full)
+                } else {
+                    None
+                }
+            });
+            let fns = failing(move |b| {
+                let opts = adtb::storage::Options {
+                    name: "callback.adt".into(),
+                    segment_size: 64 * 1024,
+                    max_pages: 1024,
+                    ..adtb_simkit::harness::options(16)
+                };
+                Pager::create(hook.clone(), &opts)
+                    .expect("the injected storage failure must stop creation");
+                Ok(texts(b, slug))
+            });
+            let db = opened(&rt, &[NOTES], fns);
+            write(&db, r#"insert notes { body: "a" }"#).expect("a note");
+            returned = Some(db.query_text(
+                "from n in notes select slugify(n.body)",
+                &[],
+                &CallOptions::default(),
+            ));
+        })
+    }));
+    assert_eq!(1, struck.load(Ordering::Relaxed), "the write failure fired");
+    if let Some(got) = returned {
+        assert!(faulted(got), "the swallowed fatal became FunctionFailed");
+        panic!("the host catcher returned FunctionFailed instead of resuming fatal I/O");
+    }
+    let payload = caught.expect_err("fatal I/O escapes after the simulator's crash lifecycle");
+    let failure = payload
+        .downcast_ref::<FatalIo>()
+        .expect("the original fatal I/O payload escapes the callback catcher");
+    assert_eq!(IoError::Full, failure.cause());
+    assert_eq!("write", failure.context());
 }
 
 fn empty() -> Batch {

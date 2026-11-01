@@ -59,7 +59,6 @@ pub fn panic_text(payload: &(dyn Any + Send)) -> Option<String> {
         .downcast_ref::<String>()
         .cloned()
         .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
-        .filter(|text| !text.starts_with(storage::FATAL_IO))
 }
 
 /// How many catch-ups run while writes continue before the one that holds them.

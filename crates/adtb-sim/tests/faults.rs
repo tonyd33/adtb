@@ -1,6 +1,8 @@
 use adtb_simkit::common;
 
 use std::collections::BTreeSet;
+use std::panic::{AssertUnwindSafe, catch_unwind, panic_any};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use adtb::runtime::{AlignedBuf, Done, Io, IoError, Op, Runtime, Threads};
@@ -549,4 +551,143 @@ fn open_missing_file_is_not_found() {
             open(rt, io, "nope", false).map(|_| ())
         );
     });
+}
+
+#[derive(Clone, Copy, Debug)]
+enum OrdinaryPanic {
+    Owned,
+    Borrowed,
+    Other,
+}
+
+#[test]
+fn ordinary_panics_are_not_accepted_as_fatal_io_crashes() {
+    const MESSAGE: &str = "fatal I/O error: an ordinary panic";
+    let mut ran = 0;
+    for case in [
+        OrdinaryPanic::Owned,
+        OrdinaryPanic::Borrowed,
+        OrdinaryPanic::Other,
+    ] {
+        let mut sim = Sim::new(31, Config::default());
+        let caught = catch_unwind(AssertUnwindSafe(|| {
+            adtb_simkit::crash::run_process(&mut sim, |_| match case {
+                OrdinaryPanic::Owned => panic_any(MESSAGE.to_owned()),
+                OrdinaryPanic::Borrowed => panic_any(MESSAGE),
+                OrdinaryPanic::Other => panic_any(17_u32),
+            })
+        }));
+        let payload = caught.expect_err("an ordinary panic must escape the crash helper");
+        let text = match case {
+            OrdinaryPanic::Owned => {
+                assert_eq!(
+                    Some(&MESSAGE.to_owned()),
+                    payload.downcast_ref::<String>(),
+                    "{case:?}"
+                );
+                Some(MESSAGE.to_owned())
+            }
+            OrdinaryPanic::Borrowed => {
+                assert_eq!(Some(&MESSAGE), payload.downcast_ref::<&str>(), "{case:?}");
+                Some(MESSAGE.to_owned())
+            }
+            OrdinaryPanic::Other => {
+                assert_eq!(Some(&17_u32), payload.downcast_ref::<u32>(), "{case:?}");
+                None
+            }
+        };
+        assert_eq!(text, adtb::write::panic_text(&*payload), "{case:?}");
+        ran += 1;
+    }
+    assert_eq!(3, ran);
+}
+
+#[derive(Clone, Copy, Debug)]
+enum StorageFailure {
+    Write,
+    LogCreate,
+}
+
+fn fail_storage_operation(
+    rt: SimRuntime,
+    case: StorageFailure,
+    cause: IoError,
+    struck: Arc<Mutex<Vec<String>>>,
+) {
+    let hook = adtb_simkit::search::Hooked::new(&rt);
+    hook.fail_when(move |op| {
+        let context = match (case, op) {
+            (StorageFailure::Write, Op::Write { .. }) => "write".to_owned(),
+            (StorageFailure::LogCreate, Op::CreateNew { path }) => format!("create {path}"),
+            _ => return None,
+        };
+        let mut struck = struck.lock().unwrap();
+        if !struck.is_empty() {
+            return None;
+        }
+        struck.push(context);
+        Some(cause)
+    });
+    let options = adtb::storage::Options {
+        name: "fatal.adt".into(),
+        segment_size: 64 * 1024,
+        max_pages: 1024,
+        ..adtb_simkit::harness::options(16)
+    };
+    adtb::storage::Pager::create(hook, &options)
+        .expect("a planted fatal I/O failure must stop creation");
+}
+
+#[test]
+fn failed_storage_operations_preserve_their_typed_io_cause() {
+    let mut ran = 0;
+    for (case, cause) in [
+        (StorageFailure::Write, IoError::Full),
+        (StorageFailure::LogCreate, IoError::Failed),
+    ] {
+        let mut sim = Sim::new(32, Config::default());
+        let struck = Arc::new(Mutex::new(Vec::new()));
+        let caught = catch_unwind(AssertUnwindSafe(|| {
+            sim.run(|rt| fail_storage_operation(rt, case, cause, Arc::clone(&struck)))
+        }));
+        let payload = caught.expect_err("the planted storage failure must stop the process");
+        let failure = payload
+            .downcast_ref::<adtb::storage::FatalIo>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "{case:?}: expected typed fatal I/O, found {:?}",
+                    adtb::write::panic_text(&*payload)
+                )
+            });
+        assert_eq!(cause, failure.cause(), "{case:?}");
+        let struck = struck.lock().unwrap();
+        assert_eq!(1, struck.len(), "{case:?}: the planted failure ran");
+        assert_eq!(struck[0], failure.context(), "{case:?}");
+        assert_eq!(None, adtb::write::panic_text(&*payload), "{case:?}");
+        ran += 1;
+    }
+    assert_eq!(2, ran);
+}
+
+#[test]
+fn genuine_storage_io_failures_are_accepted_as_process_crashes() {
+    let mut ran = 0;
+    for (case, cause) in [
+        (StorageFailure::Write, IoError::Full),
+        (StorageFailure::LogCreate, IoError::Failed),
+    ] {
+        let mut sim = Sim::new(33, Config::default());
+        let struck = Arc::new(Mutex::new(Vec::new()));
+        let outcome = adtb_simkit::crash::run_process(&mut sim, |rt| {
+            fail_storage_operation(rt, case, cause, Arc::clone(&struck));
+        });
+        assert_eq!(Outcome::Crashed, outcome, "{case:?}");
+        assert_eq!(
+            1,
+            struck.lock().unwrap().len(),
+            "{case:?}: the planted failure ran"
+        );
+        ran += 1;
+    }
+    assert_eq!(2, ran);
 }

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::Arc;
 
 use crate::batch::{self, Batch, BatchBuilder};
@@ -93,7 +93,11 @@ impl HostCall {
                     .collect()
             })
         }));
-        Ok(ran.ok().flatten().ok_or(Fault::FunctionFailed))
+        let out = match ran {
+            Err(payload) if payload.is::<crate::storage::FatalIo>() => resume_unwind(payload),
+            other => other.ok().flatten(),
+        };
+        Ok(out.ok_or(Fault::FunctionFailed))
     }
 }
 

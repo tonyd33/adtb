@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::io::Write;
 
 use crate::runtime::{AlignedBuf, Completion, Done, FileId, Io, IoError, Op, Runtime, Ticket};
 
@@ -9,12 +10,43 @@ pub(crate) struct Driver<R: Runtime> {
     ready: BTreeMap<Ticket, Completion>,
 }
 
-/// How the panic of a fatal I/O error starts: the one panic every thread lets crash the process.
+/// Prefix the diagnostic of a fatal storage I/O failure.
 pub const FATAL_IO: &str = "fatal I/O error";
 
-/// Crash the process on a failed write or force, which the engine never retries.
-fn fatal(what: &str, e: IoError) -> ! {
-    panic!("{FATAL_IO}: {what}: {e:?}")
+/// Carry the cause of a storage I/O failure that must stop the process.
+#[derive(Debug)]
+pub struct FatalIo {
+    context: String,
+    cause: IoError,
+}
+
+impl FatalIo {
+    /// Returns the diagnostic context of the failed operation.
+    pub fn context(&self) -> &str {
+        &self.context
+    }
+
+    /// Returns the I/O error that stopped the process.
+    pub fn cause(&self) -> IoError {
+        self.cause
+    }
+}
+
+impl std::fmt::Display for FatalIo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{FATAL_IO}: {}: {:?}", self.context, self.cause)
+    }
+}
+
+/// Stop with the fatal I/O payload after a best-effort diagnostic.
+#[track_caller]
+pub(crate) fn fatal(context: impl Into<String>, cause: IoError) -> ! {
+    let failure = FatalIo {
+        context: context.into(),
+        cause,
+    };
+    drop(writeln!(std::io::stderr().lock(), "{failure}"));
+    std::panic::panic_any(failure)
 }
 
 impl<R: Runtime> Driver<R> {

@@ -4,7 +4,7 @@ use crate::runtime::{AlignedBuf, Done, FileId, IoError, Op, Runtime};
 
 use super::Lsn;
 use super::block::{LogImage, LogSource, Slot, data_lsn, frame};
-use super::driver::{Driver, FATAL_IO};
+use super::driver::{Driver, fatal};
 use super::pager::parent;
 use super::record::Record;
 
@@ -171,13 +171,14 @@ impl Segments {
             }
             Err(IoError::Exists) => false,
             Err(IoError::NotFound) => return false,
-            Err(e) => panic!("{FATAL_IO}: create {first}: {e:?}"),
+            Err(e) => fatal(format!("create {first}"), e),
         };
         let dir = self.dir.clone();
         let entries = match drv.attempt(Op::List { dir }).result {
             Ok(Done::Listed(paths)) => paths,
             Err(IoError::NotFound) => return false,
-            other => panic!("{FATAL_IO}: list {}: {other:?}", self.dir),
+            Err(e) => fatal(format!("list {}", self.dir), e),
+            Ok(other) => unreachable!("list completed as {other:?}"),
         };
         if entries != [first.clone()] {
             if created {
@@ -195,7 +196,7 @@ impl Segments {
         match drv.attempt(Op::SyncDir { dir }).result {
             Ok(_) => true,
             Err(IoError::NotFound) => false,
-            Err(e) => panic!("{FATAL_IO}: force {}: {e:?}", self.dir),
+            Err(e) => fatal(format!("force {}", self.dir), e),
         }
     }
 
@@ -225,7 +226,7 @@ impl Segments {
         let path = self.path(base);
         let (file, len) = drv
             .open(&path, true)
-            .unwrap_or_else(|e| panic!("{FATAL_IO}: create {path}: {e:?}"));
+            .unwrap_or_else(|e| fatal(format!("create {path}"), e));
         if len < self.segment {
             drv.allocate(file, self.segment);
             drv.sync_all(&[file]);
@@ -265,7 +266,7 @@ impl Segments {
     /// queue.
     pub(crate) fn load<R: Runtime>(&mut self, drv: &mut Driver<R>) -> LogImage<FileSource<R>> {
         self.try_load(drv)
-            .unwrap_or_else(|(what, e)| panic!("{FATAL_IO}: {what}: {e:?}"))
+            .unwrap_or_else(|(what, e)| fatal(what, e))
     }
 
     /// Returns what [`load`](Self::load) does, or the path and failure of what it cannot read. A

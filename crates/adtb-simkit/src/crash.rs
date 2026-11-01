@@ -4,22 +4,16 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::Once;
 use std::time::Duration;
 
-use adtb::storage::FATAL_IO as FATAL;
+use adtb::storage::FatalIo;
 use adtb_sim::{Outcome, Sim, SimRuntime};
 
-/// Keep panics that start with [`FATAL`] off stderr for the rest of the process.
+/// Keep panic-hook reports of [`FatalIo`] off stderr for the rest of the process.
 pub fn silence_fatal_panics() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let default = panic::take_hook();
         panic::set_hook(Box::new(move |info| {
-            let msg = info
-                .payload()
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| info.payload().downcast_ref::<&str>().copied())
-                .unwrap_or("");
-            if !msg.starts_with(FATAL) {
+            if !info.payload().is::<FatalIo>() {
                 default(info);
             }
         }));
@@ -30,17 +24,8 @@ pub fn silence_fatal_panics() {
 pub fn run_process<F: FnOnce(SimRuntime)>(sim: &mut Sim, body: F) -> Outcome {
     match panic::catch_unwind(AssertUnwindSafe(|| sim.run(body))) {
         Ok(o) => o,
-        Err(payload) => {
-            let msg = payload
-                .downcast_ref::<String>()
-                .cloned()
-                .unwrap_or_default();
-            if msg.starts_with(FATAL) {
-                Outcome::Crashed
-            } else {
-                panic::resume_unwind(payload)
-            }
-        }
+        Err(payload) if payload.is::<FatalIo>() => Outcome::Crashed,
+        Err(payload) => panic::resume_unwind(payload),
     }
 }
 

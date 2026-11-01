@@ -1011,14 +1011,28 @@ fn a_panic_in_the_worker_leaves_a_finding_and_the_engine_running() {
 }
 
 #[test]
-#[should_panic(expected = "fatal I/O error")]
-fn a_fatal_io_error_in_the_worker_still_crashes_the_process() {
+fn a_lookalike_fatal_message_is_an_ordinary_worker_failure() {
     let mut sim = Sim::new(51, Config::default());
-    sim.run(|rt| {
+    finished(&mut sim, |rt| {
         let db = open(rt.clone());
         set_interval(&db, "Some { value: 0s }");
         db.fail_background("fatal I/O error: write: a test");
         nap(&rt, Duration::from_secs(1));
+        assert_eq!(1, found(&db).len());
+        assert_eq!(
+            vec![r#""the background worker stopped: fatal I/O error: write: a test""#],
+            api::query(
+                &db,
+                "from f in sys::verify_findings.Structure select f.where"
+            )
+        );
+        assert!(!in_pass(&db));
+        api::results(&db, r#"insert users { id: users.key(1), name: "alive" }"#);
+        assert_eq!(
+            vec![r#""alive""#],
+            api::query(&db, "from u in users select u.name")
+        );
+        db.close().expect("the close");
     });
 }
 

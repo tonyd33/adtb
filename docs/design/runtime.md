@@ -282,6 +282,17 @@ What each fault leaves behind:
 A failed write or `fdatasync` is not retried by the engine; the
 process crashes and recovers ([README.md §4](README.md#4-errors)).
 
+Storage raises fatal I/O as an `adtb::storage::FatalIo` panic payload
+carrying the original `IoError` and diagnostic operation context. An
+engine catch must resume that payload. Simulation helpers recognize it
+only outside `Sim::run`, after the simulator has applied its crash
+lifecycle; they resume every other payload. A lookalike string is an
+ordinary panic, not evidence of an I/O failure.
+
+The raising point emits a best-effort diagnostic before unwinding. A
+failure to write that diagnostic does not replace the typed payload.
+Suppressing the panic hook does not suppress this direct diagnostic.
+
 ## 5. Simulated storage
 
 The whole engine runs inside a simulator that supplies time, I/O,
