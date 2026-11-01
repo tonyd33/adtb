@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-31
-status: open
+status: in-progress
 kind: bug
 priority: 401
 summary: acknowledged work and failure outcomes are not searched through Database under every fault
+branch: fault-fatal
 ---
 
 # Fault matrix
@@ -83,3 +84,78 @@ prove the full fault matrix. Next select a bounded statement/commit
 operation-failure workload using the existing search harness, checking
 acknowledged rows and exact outcomes with reached-case floors. Other
 workloads, crash/rot coverage, real backends and typed fatal causes remain.
+
+## 2026-10-31: statement/commit search boundary
+
+Track `fault-commit`, based on `6128e7f9`, is tracing a bounded workload
+through `Database` and the existing `simkit/search.rs` operation search.
+The oracle must preserve each recorded successful acknowledgement on
+reopen and permit an unacknowledged transaction only as a whole where
+the contract allows it. Reached-operation and outcome floors must make
+an empty or unexercised search fail.
+
+The existing `each_failure` requires a normally finished simulator run;
+write/flush failure is instead a required engine stop. Its current
+crash helper and maintenance catches identify fatal I/O by message
+prefix. Investigate a typed fatal cause before extending the search, so
+an ordinary assertion panic cannot count as an expected crash. Follow
+every producer/consumer and the simulator's panic/cancellation path;
+do not add a separate text heuristic at a new entry point.
+
+This phase is source investigation, not execution evidence. Select one
+modest search with its prerequisite, or land the minimal prerequisite
+first if that keeps the ownership boundary clear. No broad crash/rot,
+real-backend or known unbounded-directory test is authorized by this
+slice alone. Final acceptance still requires measured regression or
+mutation, affected checks, fresh review, and final/post-land `check`.
+
+The source trace selected `fault-fatal` as a separate prerequisite:
+migrate existing Driver/Log producers to one typed fatal-I/O payload
+carrying actual `IoError` and diagnostic context, and migrate shared
+maintenance/test-helper classification to type identity. Simulator core
+already crashes storage and joins threads before forwarding the payload;
+its lifecycle needs no new special case. An unexpected successful I/O
+completion remains an invariant failure, not a fabricated I/O cause.
+
+Acceptance for the prerequisite: a lookalike ordinary panic must not be
+accepted as fatal; genuine injected I/O must be recognized; ordinary
+worker panic controls must remain usable; all current producers and
+consumers are inventoried. Preserve useful diagnostics at the one raising
+point without a global hook framework. No new process-search API or
+acknowledgement workload is included in this prerequisite. Those follow
+only after its typed boundary is verified and landed.
+
+## 2026-10-31: fatal identity reproduced and catch boundary completed
+
+The old helper accepted an ordinary owned string panic as
+`Outcome::Crashed` solely because of its diagnostic prefix. The
+regression on test-only `ed6374c0` returned nextest 100 with
+`an ordinary panic must escape the crash helper: Crashed`.
+
+The candidate replaces that identity with private-construction
+`storage::FatalIo`, carrying actual `IoError` and context. All eight
+Driver and five Log fatal sites use one raising function; unexpected
+successful List completion remains an invariant failure. Best-effort
+diagnostic writing preserves the old useful context without controlling
+classification or installing an engine panic hook.
+
+Measured mutations restored the shared prefix filter and one Log string
+producer. Both compiled and failed their named assertions: ordinary text
+was wrongly filtered to `None`, and an actual Log error lost its typed
+payload. Exact sources were restored and all 26 fault tests passed.
+
+The final catcher trace also found the host callback's broad catch
+flattening genuine engine I/O into `FunctionFailed`. A public Database
+callback regression on `292cf97d` injected one actual failed Write and
+reproduced that exact conversion (nextest 100). Its narrow guard now
+resumes the original typed payload while preserving ordinary provider
+panic/shape/error behavior. This closes the same typed boundary rather
+than introducing a new callback policy or public hook.
+
+Independent reading review of the initial migration found no introduced
+blocker; the lead traced and reviewed the small host-catch delta. The
+worker-control query initially projected the public timestamp instead of
+`Structure.where`; its exact text assertion caught that test error and
+the complete catalog/row mapping justified correction. Final affected
+checks and full integration are still required before a landing claim.
+This remains the typed prerequisite, not the statement/commit search.
