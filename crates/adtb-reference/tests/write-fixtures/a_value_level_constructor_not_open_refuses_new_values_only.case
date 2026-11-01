@@ -1,0 +1,18 @@
+=== close stage-closed
+--- type
+Address
+--- ctor
+Intl
+--- stage
+Deprecated
+=== replace reject-not-open
+--- source
+update c in customers where c.id == customers.key(1)
+set Customer { c with address: Intl { country: "de", postcode: "1" } }
+--- ctor
+Address.Intl
+--- stage
+Deprecated
+=== equal-old run
+--- source
+update c in customers where c.id == customers.key(2) set Customer { c with name: "e" }

@@ -1,0 +1,16 @@
+=== close stage-relation
+--- type
+Identity
+--- ctor
+Apple
+--- relation
+identities
+--- stage
+Deprecated
+=== insert reject-not-open
+--- source
+insert identities.Apple { user: users.key(4), sub: "a-dee" }
+--- ctor
+identities.Apple
+--- stage
+Deprecated

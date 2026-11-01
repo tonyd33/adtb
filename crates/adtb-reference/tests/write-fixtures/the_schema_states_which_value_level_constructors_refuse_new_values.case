@@ -1,0 +1,15 @@
+=== close stage-value
+--- type
+Address
+--- ctor
+Intl
+--- stage
+Declared
+=== replace reject-not-open
+--- source
+update c in customers where c.id == customers.key(1)
+set Customer { c with address: Intl { country: "de", postcode: "1" } }
+--- ctor
+Address.Intl
+--- stage
+Declared

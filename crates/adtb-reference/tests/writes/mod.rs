@@ -7,6 +7,7 @@ mod probe;
 mod refusal;
 #[path = "../runtime/mod.rs"]
 mod shared;
+mod stage;
 
 fn directory() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/write-fixtures")
@@ -91,4 +92,4 @@ pub(super) fn run() -> (usize, usize) {
     (families.len(), executed.len())
 }
 
-const ORIGINAL_HASH: u64 = 0xe134f8dcd680d13f;
+const ORIGINAL_HASH: u64 = 0x1e0d0cd71585a7ba;

@@ -1,0 +1,27 @@
+=== existing run
+--- source
+insert identities.Apple { user: users.key(3), sub: "a-cy" }
+=== close stage-closed
+--- type
+Identity
+--- ctor
+Apple
+--- stage
+Declared
+=== insert reject-not-open
+--- source
+insert identities.Apple { user: users.key(4), sub: "a-dee" }
+--- ctor
+identities.Apple
+--- stage
+Declared
+=== retag reject-not-open
+--- source
+update i in identities.Google where i.id == identities.key(uuid("00000000-0000-7000-8000-000000000003")) set Apple { sub: "x" }
+--- ctor
+identities.Apple
+--- stage
+Declared
+=== update run
+--- source
+update a in identities.Apple set Apple { a with sub: "a-cy2" }

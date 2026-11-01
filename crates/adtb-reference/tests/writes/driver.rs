@@ -4,6 +4,7 @@ use adtb_testkit::fixture::Fixture;
 use super::shared::{Fields, bindings, finish, parse, take};
 
 pub(super) enum Step {
+    Stage(super::stage::Step),
     Outcome(super::outcome::Success),
     Probe(super::probe::Probe),
     Refuse(super::refusal::Refusal),
@@ -38,6 +39,9 @@ fn value(fixture: &Fixture, fields: &mut Fields) -> Value {
 impl Step {
     pub(super) fn read(fixture: &Fixture, mode: &str, mut fields: Fields) -> Self {
         let step = match mode {
+            "stage-closed" | "stage-relation" | "stage-value" | "reject-not-open" => {
+                return Self::Stage(super::stage::Step::read(fixture, mode, fields));
+            }
             "outcome" => return Self::Outcome(super::outcome::Success::read(fixture, fields)),
             "query-count" | "one-excludes" | "one-record" => {
                 return Self::Probe(super::probe::Probe::read(fixture, mode, fields));
@@ -93,6 +97,7 @@ impl Step {
 
     pub(super) fn run(self, fixture: &mut Fixture) {
         match self {
+            Self::Stage(step) => step.run(fixture),
             Self::Outcome(success) => success.run(fixture),
             Self::Probe(probe) => probe.run(fixture),
             Self::Refuse(refusal) => refusal.run(fixture),

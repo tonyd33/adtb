@@ -7,9 +7,8 @@ use adtb_lang::check::check_adhoc;
 use adtb_lang::kernel::Kind;
 use adtb_lang::parse::{Options, parse_adhoc};
 
-use adtb_reference::{Abort, Rejection, Stage, Value};
+use adtb_reference::{Abort, Rejection, Value};
 use adtb_testkit::fixture::*;
-use adtb_testkit::uuid;
 use adtb_testkit::writes::fixture;
 
 #[path = "writes/mod.rs"]
@@ -249,85 +248,6 @@ fn a_get_or_create_returns_the_created_row() {
 }
 
 // The statement boundary
-
-#[test]
-fn a_constructor_not_open_refuses_inserts_and_retags() {
-    let mut f = fixture();
-    f.ok(r#"insert identities.Apple { user: users.key(3), sub: "a-cy" }"#);
-    f.closed
-        .insert(f.ctor("Identity", "Apple"), Stage::Declared);
-    assert_eq!(
-        Rejection::NotOpen {
-            ctor: "identities.Apple".into(),
-            stage: Stage::Declared
-        },
-        f.rejected(r#"insert identities.Apple { user: users.key(4), sub: "a-dee" }"#)
-    );
-    assert!(matches!(
-        f.rejected(&format!(
-            r#"update i in identities.Google where i.id == {} set Apple {{ sub: "x" }}"#,
-            uuid(3)
-        )),
-        Rejection::NotOpen { .. }
-    ));
-    f.ok(r#"update a in identities.Apple set Apple { a with sub: "a-cy2" }"#);
-}
-
-#[test]
-fn a_value_level_constructor_not_open_refuses_new_values_only() {
-    let mut f = fixture();
-    f.closed
-        .insert(f.ctor("Address", "Intl"), Stage::Deprecated);
-    assert_eq!(
-        Rejection::NotOpen {
-            ctor: "Address.Intl".into(),
-            stage: Stage::Deprecated
-        },
-        f.rejected(
-            r#"update c in customers where c.id == customers.key(1)
-               set Customer { c with address: Intl { country: "de", postcode: "1" } }"#
-        )
-    );
-    f.ok(
-        r#"update c in customers where c.id == customers.key(2) set Customer { c with name: "e" }"#,
-    );
-}
-
-#[test]
-fn the_schema_states_which_constructor_relations_refuse_writes() {
-    let mut f = fixture();
-    let (_, apple) = f.ctor("Identity", "Apple");
-    let identities = f.rel("identities");
-    f.schema
-        .stages
-        .insert((identities, apple), adtb_lang::schema::Stage::Deprecated);
-    assert_eq!(
-        Rejection::NotOpen {
-            ctor: "identities.Apple".into(),
-            stage: Stage::Deprecated
-        },
-        f.rejected(r#"insert identities.Apple { user: users.key(4), sub: "a-dee" }"#)
-    );
-}
-
-#[test]
-fn the_schema_states_which_value_level_constructors_refuse_new_values() {
-    let mut f = fixture();
-    let (address, intl) = f.ctor("Address", "Intl");
-    f.schema
-        .value_stages
-        .insert((address, intl), adtb_lang::schema::Stage::Declared);
-    assert_eq!(
-        Rejection::NotOpen {
-            ctor: "Address.Intl".into(),
-            stage: Stage::Declared
-        },
-        f.rejected(
-            r#"update c in customers where c.id == customers.key(1)
-               set Customer { c with address: Intl { country: "de", postcode: "1" } }"#
-        )
-    );
-}
 
 // Blocks and transactions
 
