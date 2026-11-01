@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "$0")/../../.." && pwd)
+mkdir -p "$root/target/native-receipt-boundary-r1"
+scratch=$(mktemp -d "$root/target/native-receipt-boundary-r1/deadlines.XXXXXX")
+trap 'echo "receipt deadline fixture failed at line $LINENO; retained $scratch" >&2' ERR
+cp "$root/work/tools/bench-run" "$scratch/repaired"
+python3 - "$scratch" <<'PY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+source = (root / 'repaired').read_text()
+needle = '  run=$2\n'
+assert source.count(needle) == 1
+source = source.replace(needle, '''  run=$2
+  systemctl --user show "$(cat "$run/unit")" --property=InvocationID,RuntimeMaxUSec,TimeoutStartUSec,TimeoutStopUSec,KillMode,KillSignal,FinalKillSignal,MemoryMax,MemorySwapMax,TasksMax > "$run/native-properties"
+  sleep 0.5
+''')
+(root / 'repaired').write_text(source)
+assert source.count('TimeoutStopSec=2 ') == 1
+(root / 'old-receipt').write_text(source.replace('TimeoutStopSec=2 ', 'TimeoutStopSec=0.2 '))
+assert source.count('--property=KillSignal=SIGKILL ') == 1
+(root / 'naive').write_text(source.replace('--property=KillSignal=SIGKILL ', '--property=KillSignal=SIGTERM '))
+PY
+cat > "$scratch/late" <<'PY'
+#!/usr/bin/env python3
+import os, pathlib, signal, sys, time
+out = pathlib.Path(sys.argv[3])
+out.mkdir()
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+role = 'parent'
+if os.fork() == 0:
+    os.setsid()
+    role = 'descendant'
+(out / (role + '.pid')).write_text(str(os.getpid()))
+time.sleep(0.8)
+(out / (role + '.late')).write_text('late\n')
+while True:
+    time.sleep(60)
+PY
+chmod +x "$scratch/repaired" "$scratch/old-receipt" "$scratch/naive" "$scratch/late"
+check_empty() {
+  local run=$1 group pid
+  group=/sys/fs/cgroup$(sed -n '2p' "$run/limits")
+  [[ $group == /sys/fs/cgroup/user.slice/* && ${group##*/} == "$(cat "$run/unit")" ]]
+  if [[ -e $group/cgroup.events ]]; then grep -qx 'populated 0' "$group/cgroup.events"; fi
+  for file in "$run"/database/*.pid; do
+    [[ -e $file ]] || continue
+    pid=$(cat "$file")
+    # shellcheck disable=SC2016
+    timeout 2 bash -c 'while [[ -e /proc/$1 ]]; do sleep 0.01; done' _ "$pid"
+  done
+  printf 'empty/reaped\n' > "$run/cleanup-proof"
+}
+check_properties() {
+  local run=$1 signal=$2 stop=$3
+  grep -qx "InvocationID=$(head -1 "$run/limits")" "$run/native-properties"
+  grep -qx 'TimeoutStartUSec=2s' "$run/native-properties"
+  grep -qx "TimeoutStopUSec=$stop" "$run/native-properties"
+  grep -qx 'KillMode=control-group' "$run/native-properties"
+  grep -qx "KillSignal=$signal" "$run/native-properties"
+  grep -qx 'FinalKillSignal=9' "$run/native-properties"
+  grep -qx 'MemoryMax=1610612736' "$run/native-properties"
+  grep -qx 'MemorySwapMax=0' "$run/native-properties"
+  grep -qx 'TasksMax=64' "$run/native-properties"
+}
+cases=0
+for variant in repaired old-receipt naive; do
+  for payload in true late; do
+    [[ $variant != old-receipt || $payload == true ]] || continue
+    [[ $variant != naive || $payload == late ]] || continue
+    run=$scratch/$variant-$payload
+    binary=/usr/bin/true
+    seconds=2
+    if [[ $payload == late ]]; then binary=$scratch/late; seconds=0.3; fi
+    if timeout --kill-after=1 8 "$scratch/$variant" "$seconds" 1610612736 64 "$binary" adtb fixture "$run" 4 1 > "$run.out" 2> "$run.err"; then actual=0; else actual=$?; fi
+    printf '%s\n' "$actual" > "$run/fixture-exit"
+    if [[ $variant == old-receipt ]]; then
+      [[ $actual == 1 && ! -e $run/unit-result ]]
+      grep -qx 'acknowledged-prefix=unavailable' "$run/result"
+      check_properties "$run" 9 200ms
+    else
+      mapfile -t receipt < "$run/unit-result"
+      [[ ${receipt[0]} == "$(head -1 "$run/limits")" ]]
+      if [[ $payload == true ]]; then
+        [[ $actual == 0 && ${receipt[1]} == success && ${receipt[2]} == exited && ${receipt[3]} == 0 ]]
+        grep -qx 'status=complete' "$run/result"
+      else
+        [[ $actual == 1 && ${receipt[1]} == timeout && ${receipt[2]} == killed && ${receipt[3]} == KILL ]]
+        [[ -s $run/database/parent.pid && -s $run/database/descendant.pid ]]
+        grep -qx 'acknowledged-prefix=unavailable' "$run/result"
+        if [[ $variant == naive ]]; then
+          [[ $(cat "$run/database/parent.late") == late && $(cat "$run/database/descendant.late") == late ]]
+        else
+          [[ ! -e $run/database/parent.late && ! -e $run/database/descendant.late ]]
+        fi
+      fi
+      signal=9
+      [[ $variant != naive ]] || signal=15
+      check_properties "$run" "$signal" 2s
+      [[ -s $run/resources/memory.peak && -s $run/resources/cpu.stat && -s $run/resources/memory.events ]]
+      [[ -f $run/resources/io.stat || -s $run/resources/io.stat.error ]]
+    fi
+    grep -qx "RuntimeMaxUSec=${seconds}s" "$run/native-properties" || { [[ $seconds == 0.3 ]] && grep -qx 'RuntimeMaxUSec=300ms' "$run/native-properties"; }
+    check_empty "$run"
+    cases=$((cases+1))
+  done
+done
+[[ $cases == 4 ]]
+printf 'receipt deadlines: %s cases; old receipt and naive termination mutants rejected; %s\n' "$cases" "$scratch"

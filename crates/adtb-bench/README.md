@@ -249,7 +249,9 @@ The run directory must be new. Its `database/` is passed to the unchanged CLI;
 limit receipts, exit status and `result` remain alongside it. Startup refuses
 actual limits different from the requested memory/task budgets or zero swap.
 The manager bounds active runtime by the supplied seconds, executable startup
-by two seconds, and graceful stop by0.2seconds before SIGKILL. It owns all
+by two seconds, and receipt completion by two seconds. At the active deadline
+it sends SIGKILL to the entire service control group. The protocol counts all
+five potential two-second native stop states separately. It owns all
 service descendants through their cgroup, including a new process session.
 No pipe-drain thread or Rust supervisor is added.
 
@@ -270,6 +272,8 @@ Run the opt-in facility integration tests explicitly after building the CLI:
 
 ```sh
 crates/adtb-bench/fixtures/run-boundary-test target/debug/adtb-bench
+crates/adtb-bench/fixtures/run-boundary-test --fixtures-only
+crates/adtb-bench/fixtures/receipt-deadline-test
 ```
 
 These tests additionally require GNU timeout, setsid and Python3. They exercise
@@ -277,6 +281,11 @@ wrapper wiring, exact exits, resource refusal, descendant termination, retained
 incomplete results and tiny real-peer commands. They are deliberately outside
 the systemd-free global test commands. The prior finite crash-control tests
 remain the independent externally retained ACK validation checkpoint.
+The fixtures-only mode omits peer commands. The receipt deadline fixture uses
+owned scratch runner copies to delay the real receipt by 500 ms and proves
+that the old 200 ms allowance loses it. A TERM-ignoring parent and session-detached
+descendant demonstrate that raising only the stop timeout permits late effects;
+the repaired hard native kill prevents both effects.
 
 
 ## Report a bounded run

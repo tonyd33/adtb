@@ -157,13 +157,23 @@ source revision rather than claiming the executable was rebuilt from it.
 The common bounds are 120 seconds of native active runtime, 1610612736 charged
 memory bytes, zero swap and 64 tasks for every sample. These bounds were adopted after
 all 16 selected cells passed; no failed/nonselected cell is silently discarded.
-For80invocations the maximum configured active exposure is9600seconds, plus up to176
-seconds for configured2-second startup and0.2-second stop allowances:9776seconds
-(2h42m56s). Reserve an exclusive180-minute window with a latest-launch cutoff at175minutes.
-The final5minutes allow the last service budget (at most122.2configured seconds)
-and closeout under the stated native liveness preconditions. The17m4s beyond
-configured matrix exposure accommodates reporting/context/operator work. If
-scheduling headroom is insufficient, retain remaining samples as not started
+The native manager sends SIGKILL to the whole service control group at the
+active deadline (KillSignal=SIGKILL, KillMode=control-group), with no catchable
+payload termination grace. ExecStopPost captures the receipt after payload stop.
+TimeoutStartSec=2 and TimeoutStopSec=2 allocate the existing two-second control
+budget independently to startup and receipt completion; they do not extend active
+payload execution. Count every possible two-second native stop state: stop-sigterm,
+stop-sigkill, stop-post, final-sigterm and final-sigkill. The sigterm-named states
+also send SIGKILL under this configuration. Usually the kill waits complete
+immediately; a receipt timeout still invalidates the run.
+For 80 invocations the maximum configured active exposure is 9600 seconds, plus
+up to 960 seconds for startup and all five stop states: 10560 seconds (2h56m).
+Reserve an exclusive 180-minute window with a latest-launch cutoff at 175 minutes.
+The final five minutes allow the last service budget (at most 132 configured
+seconds) and closeout under the stated native liveness preconditions. The four
+minutes beyond configured matrix exposure accommodate reporting/context/operator
+work. If scheduling headroom is insufficient, retain remaining samples as not
+started
 instead of extending the window or budgets. One prior build may reserve300seconds
 separately. This operational scheduling limit is not an unconditional total
 wall-clock guarantee: native manager/kernel/filesystem calls can stall, and

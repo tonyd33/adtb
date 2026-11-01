@@ -99,6 +99,10 @@ if "$runner" 2 67108864 16 "$fixtures/run-boundary-child" adtb success "$scratch
 [[ $before == "$(sha256sum "$scratch/ignore/unit" "$scratch/ignore/result" "$scratch/ignore/database/reached")" ]]
 if DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent/adtb-boundary-bus "$runner" 2 67108864 16 "$fixtures/run-boundary-child" adtb success "$scratch/unavailable" 4 1; then exit 1; fi
 [[ ! -e $scratch/unavailable/database && $(cat "$scratch/unavailable/result") == $'status=invalid\nacknowledged-prefix=unavailable' ]]
+if [[ $1 == --fixtures-only ]]; then
+  printf "native run boundary: %s cases, %s preexec refusals; %s\n" "$cases" "$guards" "$scratch"
+  exit 0
+fi
 for peer in adtb sqlite; do
   "$runner" 5 1610612736 64 "$1" "$peer" counter-smoke "$scratch/$peer" 4 1
   grep -q '^correctness complete:' "$scratch/$peer/stdout"
@@ -112,7 +116,7 @@ for peer in adtb sqlite; do
   timeout 2 bash -c 'until [[ -f $1/main.pid ]]; do sleep 0.001; done; pid=$(cat "$1/main.pid"); until [[ $(readlink "/proc/$pid/exe") == "$2" ]]; do sleep 0.001; done; systemctl --user kill --kill-whom=main --signal=STOP "$(cat "$1/unit")"; grep -q "^State:.*T" "/proc/$pid/status"' _ "$run" "$(realpath "$1")"
   if wait "$wrapper"; then exit 1; else [[ $? == 1 ]]; fi
   mapfile -t receipt < "$run/unit-result"
-  [[ ${receipt[1]} == timeout && ${receipt[2]} == killed && ${receipt[3]} == TERM ]]
+  [[ ${receipt[1]} == timeout && ${receipt[2]} == killed && ${receipt[3]} == KILL ]]
   grep -qx 'acknowledged-prefix=unavailable' "$run/result"
 done
 printf 'native run boundary: %s cases, %s preexec refusals, 2 peers, timeout retention and native absence checked; %s\n' "$cases" "$guards" "$scratch"

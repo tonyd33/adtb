@@ -1,6 +1,6 @@
 success 2 67108864 16 0 success exited 0 match
 exit7 2 67108864 16 7 exit-code exited 7 match
-termzero 0.15 67108864 16 1 timeout exited 0 match
+termzero 0.15 67108864 16 1 timeout killed KILL match
 ignore 0.15 67108864 16 1 timeout killed KILL match
 memory 2 33554432 16 1 oom-kill killed KILL match
 tasks 2 67108864 8 0 success exited 0 match

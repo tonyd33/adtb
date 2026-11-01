@@ -103,8 +103,8 @@ if systemd-run --user --wait --json=short --service-type=exec --expand-environme
   --setenv="ADTB_BENCH_RUN_TOOL=$script" --setenv="ADTB_BENCH_RUN_DIRECTORY=$run" \
   --property='ExecStopPost=/usr/bin/env ${ADTB_BENCH_RUN_TOOL} --receipt ${ADTB_BENCH_RUN_DIRECTORY}' \
   --property="RuntimeMaxSec=$seconds" --property=RuntimeRandomizedExtraSec=0 \
-  --property=TimeoutStartSec=2 --property=TimeoutStopSec=0.2 \
-  --property=KillMode=control-group --property=KillSignal=SIGTERM \
+  --property=TimeoutStartSec=2 --property=TimeoutStopSec=2 \
+  --property=KillMode=control-group --property=KillSignal=SIGKILL \
   --property=SendSIGKILL=yes --property=FinalKillSignal=SIGKILL \
   --property=Restart=no --property=OOMPolicy=kill --property=LimitCORE=0 \
   --property=CPUAccounting=yes --property=MemoryAccounting=yes --property=IOAccounting=yes \
