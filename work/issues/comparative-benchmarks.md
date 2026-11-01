@@ -129,3 +129,32 @@ exact refusal controls and a portable run recipe. No timing, speed claim,
 optimization, pilot or measured matrix has started. The separate pilot and
 exclusive measurement phase follow reviewed correctness evidence; the lead
 must freeze counts and time budget before ranked measurements.
+
+
+## 2026-11-01: correctness configuration and request partition
+
+Native lifecycle checks exposed the engine's aggregate admission rule:
+each call reserves 64 MiB, so configure the process query budget as writer
+count times 64 MiB for this frozen engine revision. Keep the 64 MiB page
+pool and SQLite total page cache separately labelled; equal total query
+memory or RSS is not claimed. Serial and four-writer small lifecycle cases
+passed exact outputs and full state/reopen after this configuration change.
+A failed concurrent 64 MiB run retained its exact acknowledged prefix and
+reopened consistently. No engine budget constant was changed.
+
+Before measurement freeze, correct the counter partition to actor(i) =
+(i + floor(i / N)) mod writers, retaining the same request-to-key permutation.
+The earlier every-fourth-request assignment gave each key to the same actor
+because both dataset sizes are divisible by four. Rotating ownership between
+passes gives shared-key access across actors with balanced work; assert that
+property for both planned sizes. It does not guarantee simultaneous clashes.
+Use bounded native SQLite busy waiting with recorded settings; rapid retry
+exhaustion under an explicitly zero busy timeout is not peer incapability.
+Keep original incomplete run evidence and include waiting in call latency.
+
+The first driver checkpoint may land with explicit remaining full refusal,
+constraint-mutation and externally flushed acknowledgement/child-kill
+controls. Such a checkpoint is not measurement readiness or ticket closure.
+Small correctness checks use fixed small request counts; no repeated long
+workloads are required merely to iterate the driver. No ranked measurement,
+pilot, operation-count freeze or performance claim has occurred.

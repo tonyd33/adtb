@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-31
-status: open
+status: in-progress
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
+branch: reference-writes-fixtures
 ---
 
 # Test audit findings
@@ -308,3 +309,26 @@ The migration of these two modules is complete; the wider Rust test inventory,
 section 5 and separately tracked quality gaps remain open. Select the next
 bounded data-migration batch from that inventory rather than treating these
 modules as the end of the work.
+
+
+## 2026-11-01: reference-write continuation
+
+A body-level inventory covered all 78 current reference-write families and
+their helpers: 107 statement outcomes, 41 assertion queries and 18 native
+table-count invocations. This is source evidence, not a current timing run.
+The existing Fixture also compares original and normalized whole outcomes
+and checks unchanged database state after refusal. Native conformance alone
+would lose those boundaries; use a small mutable typed adapter.
+
+Track `reference-writes-fixtures` starts with seven insert/combine families:
+existing equal-key refusal, constructor insert, query-driven constructor
+insert, sum insert, conflicting duplicate insert, conflicting duplicate
+update and equal duplicate update. Preserve nine statement outcomes, five
+exact probes, external bindings and all normalization/refusal-state checks;
+leave the other 71 wrappers unchanged. Load the original setup through
+ordered runtime row loads, with a fresh Fixture per family. Setup duplication
+is explicit; the shared compiled fixture for other consumers is unchanged.
+Builds wait for a free slot while source/data implementation proceeds.
+Independent preservation review, same-executable edit/addition proof and
+complete affected-package validation precede landing. No new framework,
+dependency, production API or engine coverage is part of this batch.
