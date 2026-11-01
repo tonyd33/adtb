@@ -98,3 +98,19 @@ record its landed revision. Section 5 and the whole-file lint
 expectations remain open; the enforcer/name/digest gaps are separately
 tracked in test-audit-b-gaps. Do not close this umbrella ticket merely
 because this slice lands.
+
+## 2026-10-31: sections 3 and 4 landed
+
+Landed as `36d64bd637f348f7a6b67577a23f884822706e8e` on main.
+The post-land full `check` passed on an identical tree in
+`audit-integration`: 3744 root tests, 48 campaign tests, 13 Loom tests
+and 39 Miri tests, plus all configured static, documentation, grammar
+and tooling checks. Root ran in 205.071s and campaign in 31.172s;
+these are observations under that run's load, not a performance claim.
+
+The quality-cadence review of the ten code commits through this slice
+is complete. Its real new finding is tracked as
+open-fallback-create-provenance; the final test-only refusal repairs
+were independently derived, read by the lead and verified as above.
+Section 5, the whole-file lint expectations and the separately filed
+test-audit-b-gaps remain open.
