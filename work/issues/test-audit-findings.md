@@ -507,3 +507,27 @@ and one complete reference-package final run with unchanged input/id/status
 records. The author owns execution/corrections. No second fullcheck; the parallel
 shared naming fix owns the authoritative production fullcheck after integrating
 this batch if ready. Missing runner modes do not justify retaining ordinary data.
+
+
+## 2026-11-01: constructor-stage cohort landed
+
+Landed `04d83c7d0362` after fresh independent source and execution-evidence
+review. Four families now use 12 runtime steps covering all three native stage
+maps and eight original statement/refusal operations. Totals: 64 of 78 families,
+127 steps; all 14 retained wrappers and prior 60 runtime families stay unchanged.
+The 76-line typed hook uses native type/relation identity. Retag refusal now
+checks exact constructor and stage instead of only the NotOpen variant.
+
+Five compiled hook/refusal mutations failed at their intended assertions.
+Three runtime-data witnesses exercised changed stage, missing required hook
+and an added family without relinking. After exact restoration, complete
+reference-package tests passed 154/154 across ten binaries, zero skipped,
+native exit zero, 1.578s execution. Strict lint, formatting, exact-range house
+and size checks passed. All 3290 tracked inputs/metadata entries, id and status
+were identical before/after; all nine reviewed source hashes survived rebase.
+Tested-to-landed tree is exact. No full or after-land check was repeated.
+
+The shared naming author will include this batch in its single production
+fullcheck. The remaining 14 families and wider audit stay open; the absent
+runtime driver for a native boundary remains implementation work, not a reason
+to classify ordinary inputs as permanently compiled Rust.
