@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-28
-status: open
+status: in-progress
 kind: feature
 priority: 910
 summary: no reproducible cross-database baseline or recurring measured optimization cycle exists
+branch: comparison-protocol
 tags:
   - engine
   - test
@@ -574,3 +575,64 @@ The reporting goal is complete. This umbrella returns to open for finite
 large-data feasibility, equivalent-outcome protocol freeze, repeated baseline
 measurements and publication, followed by one measured optimization. Reporting
 does not complete those stages or the embedded beta milestone.
+
+## 2026-11-01: bounded feasibility and protocol freeze assigned
+
+Current user goal: run bounded feasibility, settle common dataset sizes and
+concurrency, then freeze the comparison protocol. Base `315af6492c80` already
+delivers reporting and containment. Workspace `benchmark-feasibility` owns actual
+native feasibility and evidence; `comparison-protocol` owns portable methodology
+and a focused README link. Lead decides common parameters and adoption after
+independent reading review. No ranked baseline or optimization is assigned here.
+
+Start with candidate N=1000/10000, writers=1/4, both peers, keyed counter with
+20,000 requests and lifecycle with N four-call workflows. These are candidates,
+not frozen values or successful runs. Establish one release-profile binary from
+unchanged source, using locked dependencies; a 300-second build ceiling is
+separate from database feasibility. Reuse existing checks for unchanged source.
+
+Run the N=1000 serial rung first, then expand feasible cells toward the complete
+16-cell peer/workload/size/concurrency matrix. Each fresh database command uses
+`work/tools/bench-run 30 1610612736 64 BIN PEER WORKLOAD RUN N WRITERS`, then
+`work/tools/bench-report RUN`, including failures. Execute serially in an exclusive
+window. Maximum initial exposure is 16 times 30 seconds plus four 15-second
+fallback probes before another lead decision. If a rung fails, retain exact
+native reason and partial evidence; do not retry over its directory, extend its
+deadline, silently change per-peer work or substitute eight-call smoke work.
+Any count/size adjustment must be common and explicit before ranked runs.
+
+Completion requires actual bounded outcomes and resource/phase headroom evidence,
+settled meaningful common sizes and concurrency, and a tracked executable protocol
+with exact workloads/counts, profile/source/configuration, cache/warmup semantics,
+paired order, repetitions and whole-matrix reservation, invalidation/retention
+rules, raw reporting and comparison limits. Reconcile older proposals against
+the actual runner rather than promising missing warmup/cloning/resource features.
+Independent review and lead adoption precede freeze. Host-specific raw evidence
+stays local; the protocol and resumable acceptance state are portable.
+
+## 2026-11-01: feasibility ceiling calibration
+
+The unchanged release binary built successfully within its 300-second bound.
+Both peers' N=1000, one-writer counter runs reached the 30-second native deadline;
+neither produced a complete application artifact. Counts and phase attribution
+for those killed runs are unknown. Both peers completed the corresponding
+N=1000 lifecycle. The failures remain retained pre-freeze observations.
+
+Before reducing logical work or changing the CLI, the lead explicitly authorizes
+new feasibility invocations at a common 120-second native whole-command ceiling,
+with the same 1610612736-byte memory and 64-task limits, source and binary.
+Calibrate both peers' N=1000 serial counter first and use that allowance for
+unlaunched larger lifecycle cells. Do not interrupt a live command or repeat a
+successful cell solely to enlarge its allowance. Stop equivalent expansions if
+a 120-second rung also fails. No code, durability, constraints, count or per-peer
+adaptation is authorized. These are feasibility observations, not replacements
+inside a ranked sample set.
+
+This supersedes the initial exposure allocation: at most 20 total database
+invocations on this track, each at most 120 seconds, or 40 minutes maximum active
+service exposure before another lead decision. If the complete candidate matrix
+fits, the prospective common 120-second, 80-invocation protocol has 9776 seconds
+of configured runtime/start/stop exposure. Reserve a 180-minute exclusive window
+with a prelaunch cutoff and retained not-started cells; native liveness limits
+and external reporting/operator costs remain explicit. Parameters are still
+pending final feasibility and freeze, not accepted on extrapolation.
