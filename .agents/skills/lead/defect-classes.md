@@ -15,3 +15,25 @@ Causes that keep producing bugs across tracks, from the review of 2026-10-31. Co
 Language and kernel fixes mostly removed their cause, and perf and refactor tracks mostly land without blockers. The classes above concentrate in failure paths, authority and grant carry.
 
 Open design question: grant identity by target text produced 13 rulings. The alternative is a grant as a set over catalog ids, with carry as the operator's id map and text only printed. Decide it, after checking when ids exist during a migration, before more carry work.
+
+## Mechanism evidence through `bd61e6fc`
+
+No class is retired by the three recent implementation fixes. The counts
+above remain historical estimates, not a current inventory.
+
+- Typed `FatalIo` removes diagnostic-text classification across current
+  storage producers, the shared process helper and the host callback catch.
+  Direct fault execution inside maintenance workers remains unverified;
+  other flattened errors and corruption causes remain open.
+- Noncreating host fallback makes creation provenance come from exclusive
+  creation. It does not carry ownership through every later acquisition
+  refusal; `open-acquisition-create-cleanup` remains a source-only candidate.
+- Pinned upserts now retain the checked constructor selection and enforce it
+  in both evaluators. This repairs a static/runtime domain disagreement;
+  nonhiding admission and nested-upsert reader analysis remain open.
+- Exact assertions, reached-case floors and tool-test discovery strengthen
+  the checked cases. They do not establish a general vacuity gate or remove
+  the catalog-identity, admission and resource-budget causes.
+
+Measured regressions and mutants support these bounded enforcement points.
+There is not yet enough subsequent work to measure class-wide recurrence.

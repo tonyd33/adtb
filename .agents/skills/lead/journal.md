@@ -123,3 +123,37 @@ when test inputs are unchanged. A changed delta gets affected checks; a new
 full run needs an impact that cannot be bounded. Targeted checks remain the
 iteration loop. This removes the mandated duplicate; it does not claim that
 the remaining full check is fast or that all development delays are fixed.
+
+### 2026-10-31: assess mechanism coverage and delivery cost
+
+A fresh read-only assessment verified the three recent fixes against source.
+They improve shared failure identity, creation provenance and checked/runtime
+scope boundaries. None closes its whole defect class. The mechanism bet has
+some implementation evidence now, but no measured recurrence trend.
+
+Ticket history is flatter than the apparent growth: first cause review
+`4ba971c9` had 165 unresolved tickets, last reviewed and current `bd61e6fc`
+both have 166. The recent range added one and resolved one. Earlier declines
+also included wontfix triage, so counts alone cannot establish delivery.
+
+The lead made later beta work wait behind a fault matrix spanning every
+workload, fault and backend. That is an unbounded delivery prerequisite even
+though individual tracks are bounded. The next decision is a finite public
+statement/commit recovery checkpoint, followed by an explicit beta gap audit
+and a feature or benchmark increment. This does not close the wider matrix
+or waive existing durability promises. Catalog, admission and budget work
+must justify their scope by the consumer they unblock.
+
+The fatal-I/O final check contains about ten minutes of recorded sequential
+build/test/lint stages, including 215 seconds building root tests and 96
+building campaign tests. Its unchanged-tree rerun spent another 265 seconds
+executing tests, before other tooling. Across the last three fixes duplicate
+post-land test execution totals about 801 seconds. Two named mutation runs
+each compiled for roughly a minute to execute a six-millisecond regression.
+Miri was 27 seconds per run. The duplicate policy is fixed; compile cost and
+suite selection remain measured optimization candidates, not solved problems.
+No reliable coding-versus-checking percentage exists from these stage logs.
+
+I should have set a finite delivery checkpoint and noticed the redundant
+verification before the maintainer asked. Keep the next increment bounded;
+do not answer another delay by adding a universal gate or another broad audit.
