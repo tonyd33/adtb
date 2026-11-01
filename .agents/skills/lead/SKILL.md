@@ -118,6 +118,11 @@ At every quality cadence, and before a milestone exit, dispatch a fresh read-onl
 
 ## While tracks run
 
+A lead-owned blocking action stays pending until its result is observed. A tool
+call aborted before dispatch has not performed the action. Resolve or reconcile
+that action before unrelated investigation; an attempted call is not evidence
+that the worker is unblocked.
+
 - "Waiting on its own background work" is an agent's claim, and a hung shell gives no signal. Before saying a track is running, and when its notice repeats, check that its slot moved: the times in its `target/`, its working copy, and any shell of the agent older than its build could take. If one is stuck, tell the agent the PIDs, and it stops them.
 
 - Rule on the design questions agents raise. Settle a hard call yourself

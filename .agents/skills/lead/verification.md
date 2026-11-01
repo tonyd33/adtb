@@ -52,6 +52,16 @@ wait remains part of total elapsed time but is not execution time; report
 it as permission wait when that cause is established. Never bypass approval
 in order to reduce the measured delay.
 
+## Continue a stopped full check
+
+Keep the failed command's exit and the stages it did not reach. When the
+correction changes only expectations, fixture data or prose with a proved
+bounded consumer set, retain unaffected passes, rerun the complete affected
+consumers and finish every unreached configured stage with the original native
+commands. Record a matrix linking each final input scope to its command and
+exit. Do not relabel the original failed command as passed. Shared production
+changes after the failed attempt follow the normal full-check requirement.
+
 ## Bounded fixture and diagnostic-tool changes
 
 A case-data or test-driver migration may finish with complete affected-package

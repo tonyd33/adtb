@@ -360,3 +360,36 @@ proof; compound mutants are labelled as such. The existing test-value rule
 already prefers retained stronger coverage. No new catalog-pinning test or
 custom runner was warranted. The schema controls remain under implementation;
 there is no benchmark readiness or comparative timing result yet.
+
+
+### 2026-11-01: independent oracles and a stopped full check
+
+The generated-row proposal initially compared two evaluator answers. I rejected
+that as a sufficient oracle: equal wrong keys would pass. The revised fixed
+native-state witness checks inserted payload, key freshness, persisted membership
+and direct reference linkage. Actual paired wrong-key substitutions passed the
+old relationship comparison and failed the witness. The scope remains four
+fixture families; no general capture interpreter or class-wide vacuity claim.
+
+The naming repair removes two copied producers in favor of one Schema provider.
+Its first full run exposed two more expectations of the old incorrect names,
+in an oplog test and a manual example. Production results matched the existing
+specification. The failed command remains failed; bounded consumer reruns and
+all missing stages complete verification without discarding the 3528 unaffected
+passes. The verification workflow now states that continuation rule explicitly.
+
+Delivery timing identifies real costs: workspace lint 57.76s, root prebuild 380s
+and root execution 401.510s. The cap-discovery guard reused that build and took
+0.449s; a suspected nested rebuild was disproved. Across all 3530 duration
+records, the top ten account for only 10.56 percent of summed test elapsed time.
+No test deletion follows from those numbers. Compiler peak memory was not
+sampled, so the need for two build jobs remains unproved. The next required
+native compile may trial four with observations; no productive run is restarted.
+
+I also let an optional cost discussion delay a lead-owned disk cleanup after its
+first tool call was aborted before dispatch. The worker correctly stayed blocked.
+The native cleanup later succeeded, preserving active workspaces. The lead
+workflow now keeps such actions pending until an actual result and gives them
+priority over unrelated investigation. This is a process obligation, not an
+automatic guarantee from the tool. Keeping authors responsible for execution
+held; keeping the lead focused on the critical path needs this correction.
