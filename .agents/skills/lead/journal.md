@@ -407,3 +407,21 @@ from explicitly named local deliverables. Their stale cargo-clean instruction
 also contradicted native idle cleanup and evidence preservation; it now follows
 the existing resource gate. These corrections remove conflicting instructions
 rather than asking each author to infer which one wins.
+
+### 2026-11-01: cadence through native comparison and fixture boundaries
+
+Fresh source-only review through `8ef7e285391b` found no new confirmed defect.
+I checked shared naming consumers and the generated native witness against its
+mechanism claims. No class is retired. The next consumer checkpoint remains
+external acknowledged-prefix validation, with structural pinned-reader design
+and a finite comparison protocol behind it. The remaining fixture boundaries
+need small typed mechanisms and edit-feedback evidence, not a quota.
+
+The crash-control author's required compile sampled four compiler jobs with
+available headroom, and its eight live cuts fit under two seconds per parent
+test. This observes one build's resource fit and test cost; it does not establish
+a two-versus-four-job speedup or justify changing every concurrent builder.
+A host process deadline is independent of the engine runtime: a narrow test-only
+clock exception is preferable to starting engine I/O workers just for a clock.
+Parent filesystem/process syscall liveness remains an explicit limit; this
+checkpoint must not be described as universal hard wall-clock containment.

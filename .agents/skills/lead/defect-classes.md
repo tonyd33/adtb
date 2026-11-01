@@ -54,3 +54,20 @@ from Rust inputs. Discovery floors and sensitivity probes support these
 specific drivers. They do not establish a universal vacuity gate, clean-build
 saving or defect recurrence trend. No class-wide budget mechanism landed;
 the rejected unlanded field-reader prototypes are not evidence of a fix.
+
+## Quality cadence through `8ef7e285391b`
+
+Ten further code commits have a fresh bounded source review, with no new
+confirmed finding and no class retired. Both unique-name producers now call
+one Schema provider; externally specified names cover their public boundary.
+The generated-row witness checks intended payload, fresh keys and exact native
+membership before comparing evaluator observations. Runtime driver discovery,
+normalization and callback reachability enforce the migrated cohorts' specific
+contracts. None forbids every future copied producer or weak assertion.
+
+The comparison counter oracle checks returned values, actor order and compatible
+serialization, beyond final counts. Its landed ledger remains an in-process
+observation; externally acknowledged crash validation is a separate active
+checkpoint outside this reviewed range. Admission, identity, shared-budget and
+engine-wide failure mechanisms remain open. Fixture data no longer requires
+Rust compilation on edit; this is not clean-build or whole-suite speed evidence.
