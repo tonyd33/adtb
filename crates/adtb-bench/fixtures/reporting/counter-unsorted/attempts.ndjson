@@ -1,0 +1,9 @@
+{"actor": 0, "call": 0, "attempt": 1, "started_ns": 0, "ended_ns": 2, "outcome": "retry"}
+{"actor": 0, "call": 0, "attempt": 2, "started_ns": 5, "ended_ns": 720, "outcome": "completed"}
+{"actor": 0, "call": 1, "attempt": 1, "started_ns": 720, "ended_ns": 730, "outcome": "completed"}
+{"actor": 0, "call": 2, "attempt": 1, "started_ns": 730, "ended_ns": 800, "outcome": "completed"}
+{"actor": 0, "call": 3, "attempt": 1, "started_ns": 800, "ended_ns": 820, "outcome": "completed"}
+{"actor": 0, "call": 4, "attempt": 1, "started_ns": 820, "ended_ns": 880, "outcome": "completed"}
+{"actor": 0, "call": 5, "attempt": 1, "started_ns": 880, "ended_ns": 910, "outcome": "completed"}
+{"actor": 0, "call": 6, "attempt": 1, "started_ns": 910, "ended_ns": 960, "outcome": "completed"}
+{"actor": 0, "call": 7, "attempt": 1, "started_ns": 960, "ended_ns": 1000, "outcome": "completed"}

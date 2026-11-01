@@ -1,0 +1,257 @@
+{
+  "schema_version": 1,
+  "kind": "adtb-bench-application",
+  "invocation_id": "1234567890abcdef1234567890abcdef",
+  "status": "incomplete",
+  "error": "fixture retry budget exhausted",
+  "peer": "sqlite",
+  "workload": "counter-smoke",
+  "n": 4,
+  "writers": 1,
+  "generator_version": "baseline-v1",
+  "offered_model": "finite-closed-loop-per-actor",
+  "build": {
+    "profile": "debug",
+    "opt_level": "0",
+    "debug": "true",
+    "host": "fixture-host",
+    "target": "fixture-target"
+  },
+  "settings": "fixture settings",
+  "window": {
+    "start_ns": 0,
+    "end_ns": 1000
+  },
+  "plan": [
+    {
+      "actor": 0,
+      "call": 0,
+      "action": "bump",
+      "target": 1,
+      "workflow": null
+    },
+    {
+      "actor": 0,
+      "call": 1,
+      "action": "bump",
+      "target": 2,
+      "workflow": null
+    },
+    {
+      "actor": 0,
+      "call": 2,
+      "action": "bump",
+      "target": 3,
+      "workflow": null
+    },
+    {
+      "actor": 0,
+      "call": 3,
+      "action": "bump",
+      "target": 4,
+      "workflow": null
+    },
+    {
+      "actor": 0,
+      "call": 4,
+      "action": "bump",
+      "target": 1,
+      "workflow": null
+    },
+    {
+      "actor": 0,
+      "call": 5,
+      "action": "bump",
+      "target": 2,
+      "workflow": null
+    },
+    {
+      "actor": 0,
+      "call": 6,
+      "action": "bump",
+      "target": 3,
+      "workflow": null
+    },
+    {
+      "actor": 0,
+      "call": 7,
+      "action": "bump",
+      "target": 4,
+      "workflow": null
+    }
+  ],
+  "record_counts": {
+    "calls": 1,
+    "attempts": 100,
+    "workflows": 0
+  },
+  "phases": [
+    {
+      "name": "directory_create",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 1000
+    },
+    {
+      "name": "fixture_generation",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 1000
+    },
+    {
+      "name": "initial_open",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 1000
+    },
+    {
+      "name": "settings",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 1000
+    },
+    {
+      "name": "load",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 1000
+    },
+    {
+      "name": "loaded_validation",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 1000
+    },
+    {
+      "name": "actor_open",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 1000
+    },
+    {
+      "name": "actor_run",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 1000
+    },
+    {
+      "name": "ledger",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 1000
+    },
+    {
+      "name": "validation",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 1000
+    },
+    {
+      "name": "active_inventory",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 1000
+    },
+    {
+      "name": "close",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 1000
+    },
+    {
+      "name": "reopen",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 1000
+    },
+    {
+      "name": "reopened_validation",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 1000
+    },
+    {
+      "name": "final_close",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 1000
+    },
+    {
+      "name": "closed_inventory",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 1000
+    },
+    {
+      "name": "artifact_write",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 1000
+    },
+    {
+      "name": "prepare",
+      "actor": 0,
+      "start_ns": 0,
+      "end_ns": 0
+    },
+    {
+      "name": "steady",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 1000
+    },
+    {
+      "name": "coordinator_close",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 0
+    },
+    {
+      "name": "post_open",
+      "actor": null,
+      "start_ns": 0,
+      "end_ns": 0
+    }
+  ],
+  "storage": {
+    "active": [
+      {
+        "path": "db",
+        "logical_bytes": 8192,
+        "allocated_bytes": 4096
+      },
+      {
+        "path": "db-wal",
+        "logical_bytes": 1024,
+        "allocated_bytes": 4096
+      }
+    ],
+    "closed": [
+      {
+        "path": "db",
+        "logical_bytes": 8192,
+        "allocated_bytes": 4096
+      }
+    ]
+  },
+  "validation": {
+    "loaded": true,
+    "before_close": true,
+    "after_reopen": true,
+    "closed_form": false
+  },
+  "process_io": {
+    "status": "available",
+    "source": "/proc/self/io",
+    "boundary": "after-final-close-before-artifact-write",
+    "counters": {
+      "rchar": 12000,
+      "wchar": 24000,
+      "syscr": 12,
+      "syscw": 24,
+      "read_bytes": 4096,
+      "write_bytes": 8192,
+      "cancelled_write_bytes": 0
+    }
+  }
+}

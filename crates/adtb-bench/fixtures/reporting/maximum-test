@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Check existing maximum healthy workload sizes against fixed arithmetic oracles."""
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+
+root = Path(__file__).resolve().parents[4]
+fixtures = Path(__file__).resolve().parent
+scratch = Path(tempfile.mkdtemp(prefix='report-maximum-', dir=root / 'target'))
+cases = json.loads((fixtures / 'maximum-cases.json').read_text())
+reached = []
+for case in cases:
+    run = scratch / case['workload']
+    shutil.copytree(fixtures / 'native', run)
+    database = run / 'database'
+    database.mkdir()
+    app = json.loads((fixtures / 'counter-smoke/application.json').read_text())
+    app.update(workload=case['workload'], n=case['n'], writers=case['writers'], plan=[])
+    command = json.loads((run / 'command.json').read_text())
+    command.update({field: str(app[field]) for field in ('peer', 'workload', 'n', 'writers')})
+    (run / 'command.json').write_text(json.dumps(command) + '\n')
+    calls, attempts, workflows = [], [], []
+    per_actor = [0] * case['writers']
+    for job in range(case['jobs']):
+        actor = job % case['writers']
+        target = job % case['n'] + 1
+        actions = ['bump'] if case['workload'] == 'counter' else ['start', 'read_live', 'finish', 'read_played']
+        offered = per_actor[actor] * 10
+        for action in actions:
+            call = per_actor[actor]
+            start = call * 10
+            identity = dict(actor=actor, call=call, action=action, target=target,
+                            workflow=None if case['workload'] == 'counter' else target)
+            app['plan'].append(identity)
+            calls.append(dict(identity, offered_ns=start, ended_ns=start + 10, outcome='completed', failure_kind=None, attempts=1))
+            attempts.append(dict(actor=actor, call=call, attempt=1, started_ns=start, ended_ns=start + 10, outcome='completed'))
+            per_actor[actor] += 1
+        if case['workload'] == 'lifecycle':
+            workflows.append(dict(actor=actor, workflow=target, offered_ns=offered,
+                                  ended_ns=per_actor[actor] * 10, outcome='completed', calls=4))
+    end = max(per_actor) * 10
+    app.update(window=dict(start_ns=0, end_ns=end), record_counts=dict(calls=len(calls), attempts=len(attempts), workflows=len(workflows)))
+    app['phases'] = [phase for phase in app['phases'] if phase['name'] != 'prepare']
+    app['phases'] += [dict(name='prepare', actor=actor, start_ns=0, end_ns=0) for actor in range(case['writers'])]
+    for phase in app['phases']:
+        if phase['name'] == 'steady':
+            phase.update(start_ns=0, end_ns=end)
+    (database / 'application.json').write_text(json.dumps(app, indent=2) + '\n')
+    for name, records in [('calls', calls), ('attempts', attempts), ('workflows', workflows)]:
+        (database / (name + '.ndjson')).write_text(''.join(json.dumps(row) + '\n' for row in records))
+    process = subprocess.run([sys.executable, str(root / 'work/tools/bench-report'), str(run)], capture_output=True, text=True, timeout=15)
+    (run / 'consumer.stdout').write_text(process.stdout)
+    (run / 'consumer.stderr').write_text(process.stderr)
+    assert process.returncode == 0, (case['workload'], process.returncode, process.stderr, process.stdout[:2000])
+    report = json.loads((run / 'report.json').read_text())
+    assert report['errors'] == [], report['errors']
+    for field in ('completed', 'write_commits', 'completed_workflows'):
+        assert report['counts'][field] == case['expected'][field], (case['workload'], field, report['counts'][field])
+    assert report['quantiles']['calls_ns']['completed'] == {key: case['expected'][key] for key in ('p50', 'p95', 'p99')}
+    assert report['throughput_per_second']['completed_calls'] == case['expected']['throughput_calls_per_second']
+    reached.append(case['workload'])
+assert len(reached) == len(cases) and reached
+print(f'maximum reporting inputs: {len(reached)} healthy cases passed; {scratch}')

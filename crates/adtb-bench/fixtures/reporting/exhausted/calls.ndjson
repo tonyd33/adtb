@@ -1,0 +1,1 @@
+{"actor": 0, "call": 0, "action": "bump", "target": 1, "workflow": null, "offered_ns": 0, "ended_ns": 1000, "outcome": "failed", "failure_kind": "retry_exhausted", "attempts": 100}

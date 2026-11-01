@@ -1,9 +1,9 @@
-# Native SQLite comparison: correctness checkpoint
+# Native SQLite comparison: correctness and reporting
 
 This opt-in consumer exercises the public generated adtb bundle API and
-rusqlite prepared statements on real files. It contains no measurements,
-pilot, benchmark ranking, or optimization claim. The complete comparison
-protocol and measurement reservation remain separate work.
+rusqlite prepared statements on real files. It retains operation samples and
+correctness evidence for native reporting. A frozen comparison protocol, large
+dataset measurements, benchmark ranking and optimization remain separate work.
 
 The keyed control uses N counters initially zero and 20,000 atomic
 read/increment/return requests. The reduced campaign workload has four
@@ -88,8 +88,9 @@ through child termination and reopen on both adapters. They are a bounded
 correctness checkpoint described below. Measurement readiness still requires
 hard containment for the command-line workloads and the remaining comparison
 protocol review. The buffered command-line ledger cannot certify a killed
-process. Resource counters and latency distributions are unavailable; there is
-no ranked result. Large dataset feasibility is unverified.
+process. The reporting entry below combines latency samples and native resource counters
+with command validity. There is no ranked result. Large dataset feasibility is
+unverified.
 
 ## Build and checks
 
@@ -270,3 +271,96 @@ wrapper wiring, exact exits, resource refusal, descendant termination, retained
 incomplete results and tiny real-peer commands. They are deliberately outside
 the systemd-free global test commands. The prior finite crash-control tests
 remain the independent externally retained ACK validation checkpoint.
+
+
+## Report a bounded run
+
+Build once, then run an explicit report command after each bounded command.
+Python 3 from the standard library is required for reporting. These tiny runs
+check reporting and correctness; they are not a comparative baseline. Choose a
+new directory for every run, including failures.
+
+```sh
+cargo build -p adtb-bench --bin adtb-bench --features native --locked
+work/tools/bench-run 10 1610612736 64 target/debug/adtb-bench sqlite counter-smoke target/report-sqlite-counter 4 1
+work/tools/bench-report target/report-sqlite-counter
+work/tools/bench-run 10 1610612736 64 target/debug/adtb-bench adtb lifecycle target/report-adtb-lifecycle 4 1
+work/tools/bench-report target/report-adtb-lifecycle
+```
+
+`bench-report RUN` writes versioned `report.json` and readable `report.txt`, and
+prints the readable report. Run it on failed directories too: incomplete, timed
+out, OOM, corrupt or missing evidence returns nonzero and suppresses comparable
+throughput. Native success, invocation identity, complete raw operation coverage
+and every application validation must agree before a report is complete.
+Diagnostic counts from valid partial application evidence remain visible; missing
+or corrupt application evidence makes counts unknown. Do not retry over a run.
+
+The [version 1 artifact contract](reporting.md) defines the raw application files
+under `database/`: `application.json`, `calls.ndjson`, `attempts.ndjson` and
+`workflows.ndjson`. The reporter recomputes counts and percentiles from those raw
+records. Call latency starts before the first attempt and ends at the final
+decoded outcome, including lock waits, retry attempts and backoff. Actors offer
+one call at a time after preparation; future calls are not offered at release.
+The steady window runs from common release to the last terminal call. Failed and
+uncertain samples have separate distributions. Percentiles use sorted integer
+nanoseconds and nearest rank `ceil(p*N)`; empty populations produce null.
+
+Calls, successful write calls and completed lifecycle workflows have separate
+counts and rates. N=4 lifecycle has 16 calls, eight write calls and four
+workflows; a workflow completes only after its final Played read. A final
+retryable failure does not create another attempt. Native SQLite busy-handler
+counts and unobserved internal abort counts remain explicitly unknown. Refusal
+and outer retry rates state their attempt or started-call denominator.
+
+Phase spans retain open/configuration, load, preparation, steady operations,
+validation, close/reopen and artifact costs separately. Preparation overlaps
+across actors; do not sum overlapping phases. Storage inventories contain file
+logical and allocated bytes at active validation and final closed boundaries.
+The active inventory occurs after actor handles have dropped, so SQLite may
+already have checkpointed; it is not a peak WAL inventory. Reporting files and
+ledgers do not contribute to database footprint.
+
+`resources/` retains raw `cpu.stat`, `memory.peak`, `memory.events` and per-device
+`io.stat`, or a counter-specific `.error` reason, before the service unloads.
+Invocation, cgroup, capture boundary and scope accompany these files. CPU values
+are microseconds. Memory peak is charged cgroup bytes including page cache and
+kernel charges. These counters cover the whole service through capture,
+including setup, validation and wrapper/stop-helper overhead; they are not
+steady-phase CPU or peak RSS. I/O records use bytes and operation counts per
+block device; stacked devices must not be added as independent physical writes.
+A readable empty `io.stat` means zero observed device I/O; an unavailable file is
+not zero. When cgroup I/O is unavailable, the report retains its reason and the
+application's `/proc/self/io` process/threadgroup fallback before artifact writes:
+`read_bytes`, `write_bytes` and `cancelled_write_bytes` are storage accounting;
+`rchar`/`wchar` count logical syscall bytes. Neither source promises physical
+media traffic. The fallback excludes other processes and stop-helper work.
+
+The wrapper retains the actual executable SHA-256, command, kernel, uptime,
+filesystem and available launch-tree context. Application build fields originate
+from Cargo; a launch-tree revision alone does not prove an arbitrary executable's
+source. Machine context stays in local run artifacts. Cache state, warmup and
+repetitions are not controlled by these tiny commands: retain that limitation
+when interpreting their output, and freeze those inputs before comparisons.
+
+Run the independent arithmetic, malformed-evidence and native collector checks:
+
+```sh
+python3 crates/adtb-bench/fixtures/reporting/test
+python3 crates/adtb-bench/fixtures/reporting/collector-test
+python3 crates/adtb-bench/fixtures/reporting/maximum-test
+```
+
+The collector check uses bounded synthetic services, requires the same native
+facilities as `bench-run`, and never invokes a database peer. The arithmetic
+fixtures are synthetic oracle values, not performance measurements.
+
+The reporter limits each manifest, native counter or context input to 16 MiB,
+and each streamed fixed-scalar NDJSON record to 4 KiB. This bounds individual
+input decoding; it is not a process RSS limit. Record counts follow the unchanged
+workload limits: up to 40,000 planned calls and 100 attempts per call. The maximum
+input fixture checks healthy 20,000-call counters and N=10,000 lifecycle reports
+with 40,000 calls and four actors. Oversized, nonregular or malformed evidence
+produces an invalid diagnostic report with native outcome retained, rather than
+reducing workload counts. Raw records are streamed; attempts are summarized per
+call instead of retaining every retry in memory.

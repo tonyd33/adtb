@@ -1,0 +1,4 @@
+[
+  {"action":"success", "exit":0, "receipt":["success","exited","0"], "result":"complete"},
+  {"action":"exit7", "exit":7, "receipt":["exit-code","exited","7"], "result":"invalid"}
+]

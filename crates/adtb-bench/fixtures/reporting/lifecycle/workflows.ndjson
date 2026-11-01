@@ -1,0 +1,4 @@
+{"actor": 0, "workflow": 1, "offered_ns": 0, "ended_ns": 40, "outcome": "completed", "calls": 4}
+{"actor": 0, "workflow": 2, "offered_ns": 40, "ended_ns": 80, "outcome": "completed", "calls": 4}
+{"actor": 0, "workflow": 3, "offered_ns": 80, "ended_ns": 120, "outcome": "completed", "calls": 4}
+{"actor": 0, "workflow": 4, "offered_ns": 120, "ended_ns": 160, "outcome": "completed", "calls": 4}

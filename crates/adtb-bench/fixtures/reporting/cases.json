@@ -1,0 +1,1071 @@
+[
+  {
+    "name": "counter-external-counts",
+    "scenario": "counter-smoke",
+    "edits": [],
+    "expected": [
+      {
+        "path": [
+          "counts",
+          "completed"
+        ],
+        "value": 8
+      },
+      {
+        "path": [
+          "counts",
+          "attempts"
+        ],
+        "value": 9
+      },
+      {
+        "path": [
+          "counts",
+          "additional_attempts"
+        ],
+        "value": 1
+      },
+      {
+        "path": [
+          "counts",
+          "write_commits"
+        ],
+        "value": 8
+      },
+      {
+        "path": [
+          "throughput_per_second",
+          "completed_calls"
+        ],
+        "value": 8000000.0
+      },
+      {
+        "path": [
+          "quantiles",
+          "calls_ns",
+          "completed"
+        ],
+        "value": {
+          "p50": 40,
+          "p95": 720,
+          "p99": 720
+        }
+      },
+      {
+        "path": [
+          "quantiles",
+          "calls_ns",
+          "failed"
+        ],
+        "value": {
+          "p50": null,
+          "p95": null,
+          "p99": null
+        }
+      },
+      {
+        "path": [
+          "resources",
+          "cpu.stat",
+          "counters",
+          "usage_usec"
+        ],
+        "value": 500000
+      },
+      {
+        "path": [
+          "resources",
+          "memory.peak",
+          "charged_bytes"
+        ],
+        "value": 8192
+      },
+      {
+        "path": [
+          "application",
+          "storage",
+          "closed",
+          0,
+          "allocated_bytes"
+        ],
+        "value": 4096
+      },
+      {
+        "path": [
+          "rates",
+          "outer_retryable_failures_per_attempt"
+        ],
+        "value": 0.1111111111111111
+      },
+      {
+        "path": [
+          "application",
+          "storage_totals_bytes",
+          "active"
+        ],
+        "value": {
+          "logical_bytes": 9216,
+          "allocated_bytes": 8192
+        }
+      },
+      {
+        "path": [
+          "application",
+          "storage_totals_bytes",
+          "closed"
+        ],
+        "value": {
+          "logical_bytes": 8192,
+          "allocated_bytes": 4096
+        }
+      }
+    ],
+    "errors": [],
+    "exit": 0
+  },
+  {
+    "name": "lifecycle-units",
+    "scenario": "lifecycle",
+    "edits": [],
+    "expected": [
+      {
+        "path": [
+          "counts",
+          "completed"
+        ],
+        "value": 16
+      },
+      {
+        "path": [
+          "counts",
+          "write_commits"
+        ],
+        "value": 8
+      },
+      {
+        "path": [
+          "counts",
+          "completed_workflows"
+        ],
+        "value": 4
+      },
+      {
+        "path": [
+          "throughput_per_second",
+          "completed_workflows"
+        ],
+        "value": 25000000.0
+      },
+      {
+        "path": [
+          "quantiles",
+          "completed_workflows_ns"
+        ],
+        "value": {
+          "p50": 40,
+          "p95": 40,
+          "p99": 40
+        }
+      }
+    ],
+    "errors": [],
+    "exit": 0
+  },
+  {
+    "name": "readable-empty-block-io",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "resources/io.stat",
+        "text": ""
+      }
+    ],
+    "expected": [
+      {
+        "path": [
+          "resources",
+          "io.stat",
+          "devices"
+        ],
+        "value": {}
+      }
+    ],
+    "errors": [],
+    "exit": 0
+  },
+  {
+    "name": "process-storage-fallback",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "resources/io.stat",
+        "remove": true
+      },
+      {
+        "file": "resources/io.stat.error",
+        "text": "fixture: No such file or directory\n"
+      }
+    ],
+    "expected": [
+      {
+        "path": [
+          "resources",
+          "io.stat",
+          "status"
+        ],
+        "value": "unavailable"
+      },
+      {
+        "path": [
+          "application",
+          "process_io",
+          "counters",
+          "read_bytes"
+        ],
+        "value": 4096
+      }
+    ],
+    "errors": [],
+    "exit": 0
+  },
+  {
+    "name": "outer-native-timeout",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "unit-result",
+        "text": "1234567890abcdef1234567890abcdef\ntimeout\nkilled\nTERM\n"
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "native result is incomplete/invalid"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "outer-native-nonzero",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "native-exit",
+        "text": "1\n"
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "native result is incomplete/invalid"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "oom-event",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "resources/memory.events",
+        "text": "oom 1\noom_kill 1\n"
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "native result is incomplete/invalid"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "stale-application",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "invocation_id"
+        ],
+        "value": "00000000000000000000000000000000"
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "application invocation mismatch"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "missing-sample",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/calls.ndjson",
+        "remove_record": 3
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "missing actor call prefix"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "duplicate-sample",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/calls.ndjson",
+        "append_record": 0
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "oversized/truncated records: calls.ndjson"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "duplicate-identity",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/calls.ndjson",
+        "path": [
+          1,
+          "call"
+        ],
+        "value": 0
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "duplicate/unknown call"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "last-attempt-latency",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/calls.ndjson",
+        "path": [
+          0,
+          "offered_ns"
+        ],
+        "value": 5
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "attempt outside call or overlaps"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "attempt-credit",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "record_counts",
+          "calls"
+        ],
+        "value": 9
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "raw record counts differ"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "workflow-premature-completion",
+    "scenario": "lifecycle",
+    "edits": [
+      {
+        "file": "database/workflows.ndjson",
+        "path": [
+          0,
+          "calls"
+        ],
+        "value": 3
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "workflow call count differs"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "negative-duration",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/calls.ndjson",
+        "path": [
+          0,
+          "ended_ns"
+        ],
+        "value": -1
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "invalid monotonic span"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "native-identity-mismatch",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "resources/invocation",
+        "text": "00000000000000000000000000000000\n"
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "native invocation mismatch",
+      "application invocation mismatch"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "corrupt-schema",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "schema_version"
+        ],
+        "value": 2
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "unknown application schema"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "missing-validation",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "validation",
+          "after_reopen"
+        ],
+        "value": false
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "complete application lacks coverage or validation"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "missing-phase",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "phases",
+          0,
+          "name"
+        ],
+        "value": "other"
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "missing completed phase"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "missing-raw-attempts",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/attempts.ndjson",
+        "remove_record": 0
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "attempt sequence differs"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "native-io-corruption",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "resources/io.stat",
+        "text": "8:0 rbytes=wrong\n"
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "invalid I/O field",
+      "application invocation mismatch"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "unreadable-both-io",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "resources/io.stat",
+        "remove": true
+      },
+      {
+        "file": "resources/io.stat.error",
+        "text": "fixture source unavailable\n"
+      },
+      {
+        "file": "database/application.json",
+        "path": [
+          "process_io"
+        ],
+        "value": {
+          "status": "unavailable",
+          "reason": "fixture unavailable"
+        }
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "all actual I/O sources unavailable"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "nonfinite-duration",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/calls.ndjson",
+        "text": "{\"actor\":0,\"call\":0,\"offered_ns\":NaN}\n"
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "nonfinite JSON: NaN"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "duplicate-json-key",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "text": "{\"schema_version\":1,\"schema_version\":1}\n"
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "duplicate JSON key: schema_version"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "unsorted-percentiles",
+    "scenario": "counter-unsorted",
+    "edits": [],
+    "errors": [],
+    "exit": 0,
+    "expected": [
+      {
+        "path": [
+          "quantiles",
+          "calls_ns",
+          "completed"
+        ],
+        "value": {
+          "p50": 40,
+          "p95": 720,
+          "p99": 720
+        }
+      }
+    ]
+  },
+  {
+    "name": "exhausted-retry-is-not-next-attempt",
+    "scenario": "exhausted",
+    "edits": [],
+    "errors": [
+      "application is incomplete/invalid"
+    ],
+    "exit": 1,
+    "expected": [
+      {
+        "path": [
+          "counts",
+          "attempts"
+        ],
+        "value": 100
+      },
+      {
+        "path": [
+          "counts",
+          "additional_attempts"
+        ],
+        "value": 99
+      },
+      {
+        "path": [
+          "counts",
+          "attempt_outcomes",
+          "retry"
+        ],
+        "value": 100
+      },
+      {
+        "path": [
+          "counts",
+          "not_started"
+        ],
+        "value": 7
+      },
+      {
+        "path": [
+          "counts",
+          "failed"
+        ],
+        "value": 1
+      }
+    ]
+  },
+  {
+    "name": "partial-workflow-not-completion",
+    "scenario": "partial-workflow",
+    "edits": [],
+    "errors": [
+      "application is incomplete/invalid"
+    ],
+    "exit": 1,
+    "expected": [
+      {
+        "path": [
+          "counts",
+          "completed"
+        ],
+        "value": 3
+      },
+      {
+        "path": [
+          "counts",
+          "write_commits"
+        ],
+        "value": 2
+      },
+      {
+        "path": [
+          "counts",
+          "completed_workflows"
+        ],
+        "value": 0
+      }
+    ]
+  },
+  {
+    "name": "missing-required-cpu",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "resources/cpu.stat",
+        "remove": true
+      },
+      {
+        "file": "resources/cpu.stat.error",
+        "text": "fixture CPU unavailable\n"
+      }
+    ],
+    "errors": [
+      "required native CPU/memory evidence unavailable",
+      "application invocation mismatch"
+    ],
+    "exit": 1,
+    "expected": []
+  },
+  {
+    "name": "oversized-manifest-diagnostic",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "padding_bytes": 16777217
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "oversized evidence: application.json"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "oversized-raw-record-diagnostic",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/calls.ndjson",
+        "padding_bytes": 4097
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "oversized/truncated records: calls.ndjson"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "deep-json-diagnostic",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "text": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]"
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "application manifest must be an object"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "command-peer-mismatch",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "command.json",
+        "path": [
+          "peer"
+        ],
+        "value": "adtb"
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "command/application configuration mismatch"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "command-budget-mismatch",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "command.json",
+        "path": [
+          "memory_bytes"
+        ],
+        "value": "2048"
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "command/native budget mismatch"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "corrupt-executable-identity",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "binary.sha256",
+        "text": "invalid fixture-binary\n"
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "invalid executable hash"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "storage-unit-mismatch",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "storage",
+          "closed",
+          0,
+          "allocated_bytes"
+        ],
+        "value": 8
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "invalid storage bytes"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "stale-complete-wrong-container",
+    "scenario": "counter-smoke",
+    "preseed_complete": true,
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "record_counts"
+        ],
+        "value": []
+      }
+    ],
+    "expected": [
+      {
+        "path": [
+          "native",
+          "service_result"
+        ],
+        "value": "success"
+      }
+    ],
+    "errors": [
+      "invalid application object: record_counts"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "stale-complete-exponent-overflow",
+    "scenario": "counter-smoke",
+    "preseed_complete": true,
+    "edits": [
+      {
+        "file": "database/application.json",
+        "json_exponent_overflow": true
+      }
+    ],
+    "expected": [
+      {
+        "path": [
+          "native",
+          "service_result"
+        ],
+        "value": "success"
+      }
+    ],
+    "errors": [
+      "nonfinite JSON number"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "empty-command-context",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "command",
+        "text": ""
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "missing context: command"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "wrong-container-build",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "build"
+        ],
+        "value": []
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "invalid application object: build"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "wrong-container-storage",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "storage"
+        ],
+        "value": []
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "invalid application object: storage"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "wrong-container-validation",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "validation"
+        ],
+        "value": []
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "invalid application object: validation"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "wrong-container-process_io",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "process_io"
+        ],
+        "value": []
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "invalid application object: process_io"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "wrong-container-window",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "window"
+        ],
+        "value": []
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "invalid application object: window"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "wrong-container-plan",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "plan"
+        ],
+        "value": {}
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "invalid application object array: plan"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "wrong-container-phases",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "phases"
+        ],
+        "value": {}
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "invalid application object array: phases"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "missing-sqlite-coordinator_close",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "phases",
+          19,
+          "name"
+        ],
+        "value": "other"
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "missing completed phase"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "missing-sqlite-post_open",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "phases",
+          20,
+          "name"
+        ],
+        "value": "other"
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "missing completed phase"
+    ],
+    "exit": 1
+  },
+  {
+    "name": "global-phase-cannot-be-actor-phase",
+    "scenario": "counter-smoke",
+    "edits": [
+      {
+        "file": "database/application.json",
+        "path": [
+          "phases",
+          0,
+          "actor"
+        ],
+        "value": 0
+      }
+    ],
+    "expected": [],
+    "errors": [
+      "missing completed phase"
+    ],
+    "exit": 1
+  }
+]

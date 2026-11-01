@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""Exercise the actual report entry with independent runtime oracle files."""
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+
+root = Path(__file__).resolve().parents[4]
+fixtures = Path(__file__).resolve().parent
+consumer = Path(sys.argv[1]).resolve() if len(sys.argv) == 2 else root / 'work/tools/bench-report'
+scratch = Path(tempfile.mkdtemp(prefix='report-fixtures-', dir=root / 'target'))
+cases = json.loads((fixtures / 'cases.json').read_text())
+reached = []
+for case in cases:
+    run = scratch / case['name']
+    shutil.copytree(fixtures / 'native', run)
+    shutil.copytree(fixtures / case['scenario'], run / 'database')
+    command = json.loads((run / 'command.json').read_text())
+    app = json.loads((run / 'database/application.json').read_text())
+    command.update({field: str(app[field]) for field in ('peer', 'workload', 'n', 'writers')})
+    (run / 'command.json').write_text(json.dumps(command) + '\n')
+    if case.get('preseed_complete'):
+        (run / 'report.json').write_text('{"status":"complete","throughput_per_second":999}\n')
+        (run / 'report.txt').write_text('Benchmark report: complete; OLD COMPARABLE RATE 999\n')
+    for edit in case['edits']:
+        path = run / edit['file']
+        if edit.get('remove'):
+            path.unlink()
+        elif edit.get('json_exponent_overflow'):
+            raw = path.read_text().replace('\"loaded\": true', '\"extra\": 1e999, \"loaded\": true')
+            assert '1e999' in raw
+            path.write_text(raw)
+        elif 'padding_bytes' in edit:
+            path.write_bytes(b' ' * edit['padding_bytes'])
+        elif 'text' in edit:
+            path.write_text(edit['text'])
+        else:
+            ndjson = path.suffix == '.ndjson'
+            value = [json.loads(line) for line in path.read_text().splitlines()] if ndjson else json.loads(path.read_text())
+            if 'remove_record' in edit:
+                del value[edit['remove_record']]
+            elif 'append_record' in edit:
+                value.append(value[edit['append_record']])
+            else:
+                parent = value
+                for part in edit['path'][:-1]:
+                    parent = parent[part]
+                parent[edit['path'][-1]] = edit['value']
+            path.write_text(''.join(json.dumps(row) + '\n' for row in value) if ndjson else json.dumps(value) + '\n')
+    process = subprocess.run([sys.executable, str(consumer), str(run)], capture_output=True, text=True, timeout=10)
+    (run / 'consumer.stdout').write_text(process.stdout)
+    (run / 'consumer.stderr').write_text(process.stderr)
+    assert process.returncode == case['exit'], (case['name'], process.returncode, process.stderr, process.stdout)
+    report = json.loads((run / 'report.json').read_text())
+    assert report['errors'] == case['errors'], (case['name'], report['errors'])
+    assert report['status'] == ('complete' if case['exit'] == 0 else 'invalid'), case['name']
+    if case['exit']:
+        assert report['throughput_per_second'] is None, case['name']
+    for expected in case['expected']:
+        actual = report
+        for part in expected['path']:
+            actual = actual[part]
+        assert actual == expected['value'], (case['name'], expected['path'], actual, expected['value'])
+    human = (run / 'report.txt').read_text()
+    assert 'OLD COMPARABLE RATE' not in human
+    assert f"Benchmark report: {report['status']}\n" in human and 'Comparable throughput per second:' in human, case['name']
+    reached.append(case['name'])
+assert len(reached) == len(cases) and reached, reached
+print(f'reporting fixtures: {len(reached)} exact cases passed; retained {scratch}')

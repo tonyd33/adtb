@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Check retained counters in actual bounded synthetic services, without peers."""
+import json
+from pathlib import Path
+import subprocess
+import tempfile
+import sys
+import time
+
+root = Path(__file__).resolve().parents[4]
+fixtures = Path(__file__).resolve().parent
+scratch = Path(tempfile.mkdtemp(prefix='report-collector-', dir=root / 'target'))
+cases = json.loads((fixtures / 'collector-cases.json').read_text())
+runner = Path(sys.argv[1]).resolve() if len(sys.argv) == 2 else root / 'work/tools/bench-run'
+reached = []
+
+
+def populated(group):
+    return group.is_dir() and 'populated 1' in (group / 'cgroup.events').read_text().splitlines()
+
+
+def cleanup(run):
+    if not (run / 'unit').is_file():
+        return
+    unit = (run / 'unit').read_text().strip()
+    assert unit.startswith('adtb-bench-run-') and unit.endswith('.service'), unit
+    if (run / 'limits').is_file():
+        group = Path('/sys/fs/cgroup' + (run / 'limits').read_text().splitlines()[1])
+        assert group.name == unit and str(group).startswith('/sys/fs/cgroup/user.slice/'), group
+        if populated(group):
+            killed = subprocess.run(['systemctl', '--user', 'kill', '--kill-whom=all', '--signal=KILL', unit],
+                                    capture_output=True, text=True, timeout=3)
+            (run / 'cleanup.log').write_text(killed.stdout + killed.stderr)
+            assert killed.returncode == 0, killed.stderr
+            deadline = time.monotonic() + 2
+            while populated(group) and time.monotonic() < deadline:
+                time.sleep(.01)
+            assert not populated(group), 'owned cgroup cleanup failed'
+            raise AssertionError('unexpected live owned cgroup after wrapper exit')
+    reset = subprocess.run(['systemctl', '--user', 'reset-failed', unit], capture_output=True, text=True, timeout=3)
+    (run / 'reset.log').write_text(reset.stdout + reset.stderr)
+    assert reset.returncode == 0 or 'not loaded' in reset.stderr, reset.stderr
+
+
+for case in cases:
+    run = scratch / case['action']
+    try:
+        command = [str(runner), '3', '67108864', '16',
+                   str(fixtures.parent / 'run-boundary-child'), 'adtb', case['action'], str(run), '4', '1']
+        process = subprocess.run(command, capture_output=True, text=True, timeout=8)
+        (run / 'wrapper.stdout').write_text(process.stdout)
+        (run / 'wrapper.stderr').write_text(process.stderr)
+        assert process.returncode == case['exit'], (case, process.returncode, process.stderr)
+        receipt = (run / 'unit-result').read_text().splitlines()
+        limits = (run / 'limits').read_text().splitlines()
+        resources = run / 'resources'
+        assert receipt[1:] == case['receipt'], receipt
+        assert receipt[0] == limits[0] == (resources / 'invocation').read_text().strip(), receipt
+        assert (resources / 'cgroup').read_text().strip() == limits[1], limits
+        assert (resources / 'scope').read_text().strip() == 'whole-service-including-wrapper-and-stop-helper-through-capture'
+        assert (resources / 'boundary').read_text().strip() == 'exec-stop-post-before-unit-unload'
+        cpu = dict(line.split() for line in (resources / 'cpu.stat').read_text().splitlines())
+        assert all(cpu[name].isdigit() for name in ('usage_usec', 'user_usec', 'system_usec')), cpu
+        assert (resources / 'memory.peak').read_text().strip().isdigit()
+        memory = dict(line.split() for line in (resources / 'memory.events').read_text().splitlines())
+        assert memory['oom'] == memory['oom_kill'] == '0', memory
+        assert (resources / 'io.stat').is_file() or (resources / 'io.stat.error').read_text().strip()
+        assert f"status={case['result']}" in (run / 'result').read_text().splitlines()
+        assert (run / 'native-exit').read_text().strip() == str(case['exit'])
+        reached.append(case['action'])
+    finally:
+        cleanup(run)
+assert len(reached) == len(cases) and reached, reached
+print(f'native collector: {len(reached)} exact service outcomes and retained resources; {scratch}')

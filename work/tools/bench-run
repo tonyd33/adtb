@@ -2,7 +2,24 @@
 set -euo pipefail
 
 if [[ ${1:-} == --receipt ]]; then
-  printf '%s\n' "${INVOCATION_ID:?}" "${SERVICE_RESULT:?}" "${EXIT_CODE:-unavailable}" "${EXIT_STATUS:-unavailable}" > "$2/unit-result"
+  run=$2
+  resources=$run/resources
+  mkdir -p "$resources"
+  cgroup=$(awk -F: '$1 == "0" { print $3 }' /proc/self/cgroup)
+  printf '%s\n' "${INVOCATION_ID:?}" > "$resources/invocation"
+  printf '%s\n' 'exec-stop-post-before-unit-unload' > "$resources/boundary"
+  printf '%s\n' 'whole-service-including-wrapper-and-stop-helper-through-capture' > "$resources/scope"
+  printf '%s\n' "$cgroup" > "$resources/cgroup"
+  for counter in cpu.stat memory.peak memory.events io.stat; do
+    if [[ $cgroup == /* && $cgroup != / ]] && cat "/sys/fs/cgroup$cgroup/$counter" > "$resources/$counter.new" 2> "$resources/$counter.error"; then
+      mv "$resources/$counter.new" "$resources/$counter"
+      rm "$resources/$counter.error"
+    else
+      rm -f "$resources/$counter.new"
+      [[ -s $resources/$counter.error ]] || printf '%s\n' 'invalid native service cgroup' > "$resources/$counter.error"
+    fi
+  done
+  printf '%s\n' "${INVOCATION_ID:?}" "${SERVICE_RESULT:?}" "${EXIT_CODE:-unavailable}" "${EXIT_STATUS:-unavailable}" > "$run/unit-result"
   exit
 fi
 if [[ ${1:-} == --inside ]]; then
@@ -37,7 +54,7 @@ if [[ ! $memory =~ ^[1-9][0-9]*$ || ! $tasks =~ ^[1-9][0-9]*$ ]]; then
   echo 'bench-run: memory bytes and tasks must be positive integers' >&2
   exit 2
 fi
-for tool in systemd-run systemctl journalctl jq realpath; do
+for tool in systemd-run systemctl journalctl jq realpath sha256sum stat uname; do
   command -v "$tool" >/dev/null || { echo "bench-run: required native facility unavailable: $tool" >&2; exit 2; }
 done
 binary=$(realpath -e -- "$binary")
@@ -47,6 +64,16 @@ run=$(realpath -m -- "$run")
 umask 077
 mkdir -- "$run" || { echo 'bench-run: run directory must be new; partial state is never retried' >&2; exit 2; }
 mkdir "$run/tmp"
+sha256sum -- "$binary" > "$run/binary.sha256"
+jq -n --arg binary "$binary" --arg peer "$peer" --arg workload "$workload" \
+  --arg n "$n" --arg writers "$writers" --arg memory "$memory" --arg tasks "$tasks" --arg seconds "$seconds" \
+  '{schema_version:1,kind:"adtb-bench-command",binary:$binary,peer:$peer,workload:$workload,n:$n,writers:$writers,memory_bytes:$memory,tasks:$tasks,runtime_seconds:$seconds}' > "$run/command.json"
+uname -srm > "$run/kernel.txt"
+cat /proc/uptime > "$run/uptime.txt"
+stat -f -c '%T %S' -- "$run" > "$run/filesystem.txt"
+if command -v jj >/dev/null && jj log -r @ --no-graph -T 'commit_id ++ "\n"' > "$run/launch-revision.txt" 2> "$run/launch-revision.error"; then
+  jj status > "$run/launch-status.txt" 2> "$run/launch-status.error" || printf '%s\n' 'launch tree status unavailable' >> "$run/launch-status.error"
+fi
 printf 'status=invalid\nacknowledged-prefix=unavailable\n' > "$run/result"
 unit=adtb-bench-run-$$-$(date +%s%N).service
 printf '%s\n' "$unit" > "$run/unit"
@@ -80,6 +107,7 @@ if systemd-run --user --wait --json=short --service-type=exec --expand-environme
   --property=KillMode=control-group --property=KillSignal=SIGTERM \
   --property=SendSIGKILL=yes --property=FinalKillSignal=SIGKILL \
   --property=Restart=no --property=OOMPolicy=kill --property=LimitCORE=0 \
+  --property=CPUAccounting=yes --property=MemoryAccounting=yes --property=IOAccounting=yes \
   --property="MemoryMax=$memory" --property=MemorySwapMax=0 --property="TasksMax=$tasks" \
   --property="StandardOutput=file:$run/stdout" --property="StandardError=file:$run/stderr" \
   "$script" --inside "$run" "$memory" "$tasks" "$binary" "$peer" "$workload" "$run/database" "$n" "$writers" \

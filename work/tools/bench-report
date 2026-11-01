@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+"""Recompute a bounded native benchmark report from retained evidence."""
+import collections
+import hashlib
+import json
+import math
+from pathlib import Path
+import re
+import sys
+
+
+class EvidenceError(ValueError):
+    pass
+
+
+def require(condition, message):
+    if not condition:
+        raise EvidenceError(message)
+
+
+def integer(value):
+    return type(value) is int and 0 <= value <= 2**64 - 1
+
+
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        require(key not in result, f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def finite_number(text):
+    number = float(text)
+    require(math.isfinite(number), 'nonfinite JSON number')
+    return number
+
+
+def decode(text):
+    try:
+        return json.loads(text, object_pairs_hook=unique, parse_float=finite_number,
+                          parse_constant=lambda value: require(False, f"nonfinite JSON: {value}"))
+    except RecursionError as error:
+        raise EvidenceError('JSON nesting exceeds parser limit') from error
+
+
+def read(path, limit=16 * 1024 * 1024):
+    require(path.is_file(), f"missing/nonregular evidence: {path.name}")
+    with path.open('rb') as source:
+        text = source.read(limit + 1)
+    require(len(text) <= limit, f"oversized evidence: {path.name}")
+    return text.decode('utf-8')
+
+
+def lines(path, count):
+    result = read(path).splitlines()
+    require(len(result) == count, f"wrong receipt length: {path.name}")
+    return result
+
+
+def rows(path, maximum):
+    require(path.is_file(), f"missing/nonregular evidence: {path.name}")
+    with path.open('rb') as source:
+        for index in range(maximum + 1):
+            text = source.readline(4097)
+            if not text:
+                return
+            require(index < maximum and len(text) <= 4096 and text.endswith(b'\n'),
+                    f"oversized/truncated records: {path.name}")
+            row = decode(text)
+            require(type(row) is dict, f"nonobject record: {path.name}")
+            yield row
+
+
+def span(row, start='offered_ns', end='ended_ns'):
+    require(integer(row[start]) and integer(row[end]) and row[start] <= row[end],
+            'invalid monotonic span')
+    return row[end] - row[start]
+
+
+def quantiles(values):
+    ordered = sorted(values)
+    return {f'p{p}': ordered[(p * len(ordered) + 99) // 100 - 1] if ordered else None
+            for p in (50, 95, 99)}
+
+
+def key(row):
+    require(integer(row['actor']) and integer(row['call']), 'invalid call identity')
+    return row['actor'], row['call']
+
+
+def application(root):
+    app = decode(read(root / 'application.json'))
+    require(type(app) is dict, 'application manifest must be an object')
+    for field in ('build', 'record_counts', 'storage', 'validation', 'process_io'):
+        require(type(app[field]) is dict, f'invalid application object: {field}')
+    for field in ('plan', 'phases'):
+        require(type(app[field]) is list and all(type(row) is dict for row in app[field]), f'invalid application object array: {field}')
+    require(app['window'] is None or type(app['window']) is dict, 'invalid application object: window')
+    require(set(app['storage']) == {'active', 'closed'} and all(type(entries) is list and all(type(entry) is dict for entry in entries) for entries in app['storage'].values()), 'invalid storage inventory arrays')
+    require(app['process_io'].get('status') != 'available' or type(app['process_io'].get('counters')) is dict, 'invalid process I/O counter object')
+    require(type(app['schema_version']) is int and app['schema_version'] == 1 and app['kind'] == 'adtb-bench-application', 'unknown application schema')
+    require(app['peer'] in ('adtb', 'sqlite') and app['n'] in (4, 1000, 10000)
+            and app['writers'] in (1, 4), 'unsupported peer/configuration')
+    require(app['generator_version'] == 'baseline-v1'
+            and app['offered_model'] == 'finite-closed-loop-per-actor', 'unknown offered model')
+    require(app['status'] in ('complete', 'incomplete', 'invalid'), 'unknown application status')
+    require(type(app['settings']) is str and type(app['build']) is dict, 'missing build/settings')
+    require(all(x in app['build'] for x in ('profile', 'opt_level', 'debug', 'host', 'target')) and all(type(v) is str for v in app['build'].values()),
+            'invalid build identity')
+    workload = app['workload']
+    require(workload in ('counter', 'counter-smoke', 'lifecycle'), 'unknown workload')
+    planned = 4 * app['n'] if workload == 'lifecycle' else (8 if workload == 'counter-smoke' else 20000)
+    require(workload != 'counter-smoke' or app['n'] == 4, 'invalid smoke size')
+    require(len(app['plan']) == planned, 'wrong planned call count')
+    plan = {}
+    for row in app['plan']:
+        identity = key(row)
+        require(identity not in plan and row['actor'] < app['writers'], 'duplicate/invalid planned identity')
+        require(integer(row['target']) and 1 <= row['target'] <= app['n'], 'invalid target')
+        require(row['action'] in ('bump', 'start', 'read_live', 'finish', 'read_played'), 'unknown action')
+        require((integer(row['workflow']) and row['workflow'] == row['target'] and row['action'] != 'bump') if workload == 'lifecycle'
+                else (row['workflow'] is None and row['action'] == 'bump'), 'invalid planned unit')
+        plan[identity] = row
+    require(all(type(app[x]) is int for x in ('n', 'writers')), 'invalid numeric configuration')
+    for actor in range(app['writers']):
+        ids = sorted(call for owner, call in plan if owner == actor)
+        require(ids == list(range(len(ids))), 'planned actor calls are not contiguous')
+    calls = {}
+    populations = collections.defaultdict(list)
+    for row in rows(root / 'calls.ndjson', planned):
+        identity = key(row)
+        require(identity not in calls and identity in plan, 'duplicate/unknown call')
+        require(all(row[x] == plan[identity][x] for x in ('action', 'target', 'workflow')), 'call differs from plan')
+        require(row['outcome'] in ('completed', 'failed', 'uncertain'), 'unknown call outcome')
+        require(integer(row['attempts']) and row['attempts'] <= 100, 'invalid attempt count')
+        require(row['failure_kind'] in (None, 'retry_exhausted', 'budget_exhausted', 'refused',
+                                       'uncertain', 'fatal', 'output_mismatch'), 'unknown failure kind')
+        require((row['failure_kind'] is None) == (row['outcome'] == 'completed') and (row['failure_kind'] == 'uncertain') == (row['outcome'] == 'uncertain'), 'failure/outcome mismatch')
+        populations[row['outcome']].append(span(row))
+        calls[identity] = row
+    for actor in range(app['writers']):
+        actor_calls = sorted((call, row) for (owner, call), row in calls.items() if owner == actor)
+        require([call for call, _ in actor_calls] == list(range(len(actor_calls))), 'missing actor call prefix')
+        require(all(a['ended_ns'] <= b['offered_ns'] for (_, a), (_, b) in zip(actor_calls, actor_calls[1:])),
+                'overlapping closed-loop calls')
+    attempts, outcomes = {}, collections.Counter()
+    for row in rows(root / 'attempts.ndjson', planned * 100):
+        identity = key(row)
+        require(identity in calls, 'attempt without call')
+        summary = attempts.setdefault(identity, {'count': 0, 'end': calls[identity]['offered_ns'], 'last': None})
+        require(integer(row['attempt']) and row['attempt'] == summary['count'] + 1 and row['attempt'] <= 100, 'attempt sequence differs')
+        span(row, 'started_ns')
+        require(summary['end'] <= row['started_ns'] <= row['ended_ns'] <= calls[identity]['ended_ns'],
+                'attempt outside call or overlaps')
+        require(summary['last'] in (None, 'retry'), 'attempt after terminal outcome')
+        require(row['outcome'] in ('completed', 'retry', 'refused', 'uncertain', 'fatal'), 'unknown attempt outcome')
+        summary.update(count=summary['count'] + 1, end=row['ended_ns'], last=row['outcome'])
+        outcomes[row['outcome']] += 1
+    for identity, row in calls.items():
+        summary = attempts.get(identity, {'count': 0, 'last': None})
+        require(summary['count'] == row['attempts'], 'call attempt total differs')
+        if row['outcome'] == 'completed':
+            require(summary['last'] == 'completed', 'completed call lacks completed attempt')
+        if row['outcome'] != 'completed':
+            expected_last = {'retry_exhausted': 'retry', 'refused': 'refused', 'uncertain': 'uncertain',
+                             'fatal': 'fatal', 'output_mismatch': 'completed'}.get(row['failure_kind'])
+            require(row['failure_kind'] == 'budget_exhausted' or summary['last'] == expected_last, 'failure differs from attempt')
+            require(row['failure_kind'] != 'retry_exhausted' or summary['count'] == 100, 'premature retry exhaustion')
+    workflows, workflow_latencies = set(), []
+    groups = collections.defaultdict(list)
+    for identity, row in plan.items():
+        if row['workflow'] is not None:
+            groups[(row['actor'], row['workflow'])].append(identity)
+    require(workload != 'lifecycle' or sorted(w for _, w in groups) == list(range(1, app['n'] + 1)),
+            'workflow target coverage differs')
+    if workload != 'lifecycle':
+        require(collections.Counter(row['target'] for row in plan.values()) ==
+                collections.Counter({target: planned // app['n'] for target in range(1, app['n'] + 1)}), 'counter target coverage differs')
+    for identities in groups.values():
+        identities.sort()
+        require([plan[i]['action'] for i in identities] == ['start', 'read_live', 'finish', 'read_played'],
+                'workflow plan is not four ordered calls')
+    for row in rows(root / 'workflows.ndjson', app['n'] if workload == 'lifecycle' else 0):
+        identity = row['actor'], row['workflow']
+        require(integer(row['actor']) and integer(row['workflow']) and identity in groups and identity not in workflows, 'duplicate/unknown workflow')
+        observed = [calls[i] for i in groups[identity] if i in calls]
+        require(observed and integer(row['calls']) and row['calls'] == len(observed), 'workflow call count differs')
+        duration = span(row)
+        require(row['offered_ns'] == observed[0]['offered_ns'] and row['ended_ns'] == observed[-1]['ended_ns'],
+                'workflow span differs from calls')
+        expected = 'completed' if len(observed) == 4 and all(c['outcome'] == 'completed' for c in observed) else (
+            'uncertain' if any(c['outcome'] == 'uncertain' for c in observed) else 'failed')
+        require(row['outcome'] == expected, 'workflow completion differs from calls')
+        if expected == 'completed':
+            workflow_latencies.append(duration)
+        workflows.add(identity)
+    require(workflows == {identity for identity, ids in groups.items() if any(i in calls for i in ids)},
+            'missing observed workflow')
+    counts = {'calls': len(calls), 'attempts': sum(outcomes.values()), 'workflows': len(workflows)}
+    require(all(integer(v) for v in app['record_counts'].values()) and app['record_counts'] == counts, 'raw record counts differ')
+    window = app['window']
+    require(window is None or set(window) == {'start_ns', 'end_ns'}, 'invalid steady window fields')
+    elapsed = span(window, 'start_ns', 'end_ns') if window is not None else None
+    if calls:
+        require(window is not None and all(window['start_ns'] <= c['offered_ns'] <= c['ended_ns'] <= window['end_ns']
+                                          for c in calls.values()), 'call outside steady window')
+        require(window['end_ns'] == max(c['ended_ns'] for c in calls.values()), 'steady end is not last terminal call')
+    validate_details(app, window)
+    complete = app['status'] == 'complete'
+    require(not complete or (len(calls) == planned and len(populations['completed']) == planned and elapsed
+                            and all(app['validation'][v] is True for v in ('loaded', 'before_close', 'after_reopen', 'closed_form'))),
+            'complete application lacks coverage or validation')
+    return app, {'planned': planned, 'started': len(calls), 'not_started': planned - len(calls),
+                 'completed': len(populations['completed']), 'failed': len(populations['failed']),
+                 'uncertain': len(populations['uncertain']), 'attempts': sum(outcomes.values()),
+                 'attempted_calls': len(attempts), 'additional_attempts': sum(max(0, a['count'] - 1) for a in attempts.values()),
+                 'attempt_outcomes': dict(outcomes), 'rollback_confirmed_retryable_failures': outcomes['retry'], 'write_commits': sum(c['action'] in ('bump', 'start', 'finish')
+                                                                         and c['outcome'] == 'completed' for c in calls.values()),
+                 'completed_workflows': len(workflow_latencies)}, elapsed, {
+                     'calls_ns': {outcome: quantiles(populations[outcome]) for outcome in ('completed', 'failed', 'uncertain')},
+                     'completed_workflows_ns': quantiles(workflow_latencies)}
+
+
+def validate_details(app, window):
+    required_phases = set('directory_create fixture_generation initial_open settings load loaded_validation actor_open actor_run steady ledger validation active_inventory close reopen reopened_validation final_close closed_inventory artifact_write'.split())
+    required_phases.update(('coordinator_close', 'post_open') if app['peer'] == 'sqlite' else ())
+    require(app['status'] != 'complete' or all(sum(p['name'] == name and p['actor'] is None for p in app['phases']) == 1 for name in required_phases), 'missing completed phase')
+    require(app['status'] != 'complete' or sorted(p['actor'] for p in app['phases'] if p['name'] == 'prepare') == list(range(app['writers'])), 'missing actor preparation phase')
+    require(app['status'] != 'complete' or [p for p in app['phases'] if p['name'] == 'steady'] == [dict(name='steady', actor=None, **window)], 'steady phase differs from window')
+    for phase in app['phases']:
+        require(set(phase) == {'name', 'actor', 'start_ns', 'end_ns'} and type(phase['name']) is str and (phase['actor'] is None or integer(phase['actor']) and phase['actor'] < app['writers']),
+                'invalid phase identity')
+        span(phase, 'start_ns', 'end_ns')
+    for boundary in ('active', 'closed'):
+        seen = set()
+        require(app['status'] != 'complete' or app['storage'][boundary], 'missing completed storage inventory')
+        for entry in app['storage'][boundary]:
+            path = Path(entry['path'])
+            require(set(entry) == {'path', 'logical_bytes', 'allocated_bytes'} and not path.is_absolute() and '..' not in path.parts and str(path) not in seen, 'unsafe/duplicate storage path')
+            require(integer(entry['logical_bytes']) and integer(entry['allocated_bytes']) and entry['allocated_bytes'] % 512 == 0, 'invalid storage bytes')
+            seen.add(str(path))
+    process_io = app['process_io']
+    require(set(process_io) == ({'status', 'source', 'boundary', 'counters'} if process_io['status'] == 'available' else {'status', 'reason'}), 'invalid process I/O fields')
+    require(process_io['status'] in ('available', 'unavailable'), 'unknown process I/O status')
+    if process_io['status'] == 'available':
+        require(process_io['source'] == '/proc/self/io' and process_io['boundary'] == 'after-final-close-before-artifact-write'
+                and set(process_io['counters']) == {'rchar', 'wchar', 'syscr', 'syscw', 'read_bytes', 'write_bytes', 'cancelled_write_bytes'}
+                and all(integer(process_io['counters'][x]) for x in ('rchar', 'wchar', 'syscr', 'syscw', 'read_bytes',
+                                                                    'write_bytes', 'cancelled_write_bytes')), 'invalid process I/O source/counters')
+    else:
+        require(type(process_io['reason']) is str and bool(process_io['reason']), 'missing process I/O reason')
+    require(set(app['validation']) == {'loaded', 'before_close', 'after_reopen', 'closed_form'} and all(type(v) is bool for v in app['validation'].values()), 'invalid validation fields')
+    require(app['error'] is None or type(app['error']) is str, 'invalid application error')
+
+
+def pairs(path):
+    result = {}
+    for line in read(path).splitlines():
+        parts = line.split()
+        require(len(parts) == 2 and parts[0] not in result and parts[1].isdigit(), f'invalid counter: {path.name}')
+        result[parts[0]] = int(parts[1])
+    return result
+
+
+def native(run, report):
+    receipt, limits = lines(run / 'unit-result', 4), lines(run / 'limits', 5)
+    report['native'] = {'invocation_id': receipt[0], 'service_result': receipt[1], 'exit_code': receipt[2], 'exit_status': receipt[3]}
+    require(all(v.isdigit() for v in limits[2:]) and int(limits[2]) > 0 and int(limits[3]) == 0 and int(limits[4]) > 0, 'invalid native budgets')
+    report['native'].update(memory_limit_bytes=int(limits[2]), swap_limit_bytes=int(limits[3]), tasks_limit=int(limits[4]))
+    resource = run / 'resources'
+    invocation = read(resource / 'invocation').strip()
+    require(re.fullmatch('[0-9a-f]{32}', invocation) is not None
+            and invocation == receipt[0] == limits[0], 'native invocation mismatch')
+    require(read(resource / 'cgroup').strip() == limits[1], 'resource cgroup mismatch')
+    require(read(resource / 'boundary').strip() == 'exec-stop-post-before-unit-unload', 'unknown capture boundary')
+    scope = read(resource / 'scope').strip()
+    require(scope == 'whole-service-including-wrapper-and-stop-helper-through-capture', 'unknown resource scope')
+    resources = report['resources'] = {'scope': scope, 'boundary': 'exec-stop-post-before-unit-unload'}
+    for name in ('cpu.stat', 'memory.peak', 'memory.events', 'io.stat'):
+        path = resource / name
+        if not path.is_file():
+            reason = read(resource / (name + '.error')).strip()
+            require(bool(reason), 'missing counter unavailability reason')
+            resources[name] = {'status': 'unavailable', 'reason': reason}
+        elif name == 'memory.peak':
+            value = read(path).strip()
+            require(value.isdigit(), 'invalid memory peak')
+            resources[name] = {'status': 'available', 'charged_bytes': int(value)}
+        elif name == 'io.stat':
+            devices = {}
+            for line in read(path).splitlines():
+                fields = line.split()
+                require(fields and re.fullmatch(r'\d+:\d+', fields[0]) and fields[0] not in devices, 'invalid I/O device')
+                values = {}
+                for field in fields[1:]:
+                    key_, value = field.split('=')
+                    require(key_ not in values and value.isdigit(), 'invalid I/O field')
+                    values[key_] = int(value)
+                require(all(x in values for x in ('rbytes', 'wbytes', 'rios', 'wios')), 'missing I/O field')
+                devices[fields[0]] = values
+            resources[name] = {'status': 'available', 'devices': devices, 'units': 'bytes and operations per block device; do not sum stacked devices'}
+        else:
+            values = pairs(path)
+            require(all(x in values for x in (('usage_usec', 'user_usec', 'system_usec') if name == 'cpu.stat' else ('oom', 'oom_kill'))), 'missing native counter')
+            resources[name] = {'status': 'available', 'counters': values, 'units': 'usage_usec/user_usec/system_usec: microseconds; other fields retain kernel units' if name == 'cpu.stat' else 'events'}
+    require(resources['cpu.stat']['status'] == resources['memory.peak']['status'] == resources['memory.events']['status'] == 'available',
+            'required native CPU/memory evidence unavailable')
+    result = unique(line.split('=', 1) for line in read(run / 'result').splitlines())
+    valid = (receipt[1:] == ['success', 'exited', '0'] and read(run / 'native-exit').strip() == '0'
+             and result == {'status': 'complete', 'acknowledged-prefix': 'validated-by-cli'})
+    if resources['memory.events']['status'] == 'available':
+        valid = valid and resources['memory.events']['counters']['oom'] == 0 and resources['memory.events']['counters']['oom_kill'] == 0
+    return invocation, valid, resources, report['native']
+
+
+def human_report(report):
+    output = [f"Benchmark report: {report['status']}", f"Errors: {report['errors']}",
+              f"Counts (calls, attempts, write commits, workflows): {report['counts']}",
+              f"Comparable throughput per second: {report['throughput_per_second']}",
+              f"Latency: {report['quantile_rule']}", f"Quantiles: {report['quantiles']}"]
+    for label in ('rates', 'native', 'resources', 'application', 'context', 'raw_provenance_sha256'):
+        if label in report:
+            output.append(f"{label}:\n{json.dumps(report[label], indent=2)}")
+    return '\n'.join(output) + '\n'
+
+
+def publish(run, report):
+    text = json.dumps(report, indent=2, allow_nan=False) + '\n'
+    human = human_report(report)
+    (run / 'report.json.new').write_text(text)
+    (run / 'report.txt.new').write_text(human)
+    (run / 'report.json.new').replace(run / 'report.json')
+    (run / 'report.txt.new').replace(run / 'report.txt')
+    return human
+
+
+def main():
+    require(len(sys.argv) == 2, 'usage: bench-report RUN')
+    run = Path(sys.argv[1]).resolve(strict=True)
+    report = {'schema_version': 1, 'kind': 'adtb-bench-report', 'status': 'invalid', 'errors': [],
+              'counts': None, 'throughput_per_second': None, 'quantiles': None,
+              'quantile_rule': 'nearest-rank ceil(p*N), integer nanoseconds; empty population=null'}
+    report['errors'] = ['report generation incomplete; previous views invalidated']
+    publish(run, report)
+    report['errors'] = []
+    app, invocation, native_valid = None, None, False
+    try:
+        invocation, native_valid, report['resources'], report['native'] = native(run, report)
+        require(native_valid, 'native result is incomplete/invalid')
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        report['errors'].append(str(error))
+    try:
+        app, report['counts'], elapsed, report['quantiles'] = application(run / 'database')
+        require(app['invocation_id'] == invocation and invocation is not None, 'application invocation mismatch')
+        report['application'] = {x: app[x] for x in ('status', 'error', 'invocation_id', 'peer', 'workload', 'n', 'writers', 'build', 'settings', 'generator_version', 'offered_model', 'window', 'phases', 'storage', 'validation', 'process_io')}
+        report['application']['storage_totals_bytes'] = {boundary: {unit: sum(entry[unit] for entry in app['storage'][boundary]) for unit in ('logical_bytes', 'allocated_bytes')} for boundary in ('active', 'closed')}
+        report['application']['phase_durations_ns'] = [dict(name=p['name'], actor=p['actor'], elapsed_ns=p['end_ns'] - p['start_ns']) for p in app['phases']]
+        report['application']['process_io'] = dict(app['process_io'], scope='payload process/threadgroup, not descendants',
+                                                   units='read_bytes/write_bytes/cancelled_write_bytes: storage accounting bytes; rchar/wchar: logical syscall bytes; syscr/syscw: calls')
+        require(app['status'] == 'complete', 'application is incomplete/invalid')
+        require(report.get('resources', {}).get('io.stat', {}).get('status') == 'available'
+                or app['process_io']['status'] == 'available', 'all actual I/O sources unavailable')
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        report['errors'].append(str(error))
+    report['context'] = {'measurement_policy': {'cache_state': 'not declared or controlled by wrapper',
+                                                   'warmup': 'not declared or performed by wrapper',
+                                                   'repetition': 'one invocation; no aggregation',
+                                                   'classification': 'reporting run; no comparative baseline freeze'}}
+    for name in ('command', 'binary.sha256', 'kernel.txt', 'uptime.txt', 'filesystem.txt', 'launch-revision.txt', 'launch-status.txt'):
+        try:
+            report['context'][name] = read(run / name)
+            require(bool(report['context'][name].strip()), f'empty context: {name}')
+        except (OSError, ValueError) as error:
+            report['context'][name] = {'unavailable': str(error)}
+            if name in ('command', 'binary.sha256', 'kernel.txt', 'uptime.txt', 'filesystem.txt'):
+                report['errors'].append(f'missing context: {name}')
+    try:
+        command = decode(read(run / 'command.json'))
+        require(type(command) is dict, 'command context must be an object')
+        require(set(command) == {'schema_version', 'kind', 'binary', 'peer', 'workload', 'n', 'writers', 'memory_bytes', 'tasks', 'runtime_seconds'} and all(type(v) is str and v for k, v in command.items() if k != 'schema_version'), 'invalid command context fields')
+        require(type(command['schema_version']) is int and command['schema_version'] == 1 and command['kind'] == 'adtb-bench-command', 'unknown command context schema')
+        require(all(re.fullmatch(r'[+]?[0-9]+', command[field]) for field in ('n', 'writers')) and (app is None or all(app[field] == int(command[field]) for field in ('n', 'writers')) and all(app[field] == command[field] for field in ('peer', 'workload'))), 'command/application configuration mismatch')
+        require(report.get('native') and command['memory_bytes'] == str(report['native']['memory_limit_bytes']) and command['tasks'] == str(report['native']['tasks_limit']), 'command/native budget mismatch')
+        require(re.fullmatch(r'\\?[0-9a-f]{64} [ *][^\n]+\n?', report['context']['binary.sha256']) is not None, 'invalid executable hash')
+        require(re.fullmatch(r'[0-9]+([.][0-9]+)?', command['runtime_seconds']) is not None and finite_number(command['runtime_seconds']) > 0, 'invalid command runtime budget')
+        report['context']['command.json'] = command
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        report['errors'].append(str(error))
+    if report['counts'] is not None:
+        counts = report['counts']
+        report['rates'] = {'outer_retryable_failures_per_attempt': counts['attempt_outcomes'].get('retry', 0) / counts['attempts'] if counts['attempts'] else None,
+                           'failed_calls_per_started_call': counts['failed'] / counts['started'] if counts['started'] else None,
+                           'outer_refusals_per_attempt': counts['attempt_outcomes'].get('refused', 0) / counts['attempts'] if counts['attempts'] else None,
+                           'uncertain_calls_per_started_call': counts['uncertain'] / counts['started'] if counts['started'] else None,
+                           'native_busy_handler_retries': {'value': None, 'reason': 'native busy-handler invocations are not exposed'},
+                           'native_internal_aborts': {'value': None, 'reason': 'not observed by application adapter'}}
+    report['raw_provenance_sha256'] = {}
+    for relative in ('database/application.json', 'database/calls.ndjson', 'database/attempts.ndjson', 'database/workflows.ndjson',
+                     'resources/cpu.stat', 'resources/memory.peak', 'resources/memory.events', 'resources/io.stat', 'unit-result', 'limits'):
+        path = run / relative
+        if path.is_file() and (not relative.startswith('database/') or app is not None):
+            digest = hashlib.sha256()
+            with path.open('rb') as source:
+                for chunk in iter(lambda: source.read(65536), b''):
+                    digest.update(chunk)
+            report['raw_provenance_sha256'][relative] = digest.hexdigest()
+    if not report['errors'] and native_valid:
+        report['status'] = 'complete'
+        report['throughput_per_second'] = {unit: report['counts'][count] * 1_000_000_000 / elapsed
+                                          for unit, count in (('completed_calls', 'completed'), ('write_commits', 'write_commits'))}
+        report['throughput_per_second']['completed_workflows'] = (report['counts']['completed_workflows'] * 1_000_000_000 / elapsed
+                                                                 if app['workload'] == 'lifecycle' else None)
+    human = publish(run, report)
+    print(human, end='')
+    return 0 if report['status'] == 'complete' else 1
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        print(f'bench-report: {error}', file=sys.stderr)
+        sys.exit(2)

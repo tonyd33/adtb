@@ -1,0 +1,1 @@
+{"schema_version": 1, "kind": "adtb-bench-command", "binary": "fixture-binary", "peer": "sqlite", "workload": "counter-smoke", "n": "4", "writers": "1", "memory_bytes": "1048576", "tasks": "16", "runtime_seconds": "3"}

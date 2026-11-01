@@ -1,0 +1,32 @@
+[
+  {
+    "workload": "counter",
+    "n": 10000,
+    "writers": 4,
+    "jobs": 20000,
+    "expected": {
+      "completed": 20000,
+      "write_commits": 20000,
+      "completed_workflows": 0,
+      "p50": 10,
+      "p95": 10,
+      "p99": 10,
+      "throughput_calls_per_second": 400000000.0
+    }
+  },
+  {
+    "workload": "lifecycle",
+    "n": 10000,
+    "writers": 4,
+    "jobs": 10000,
+    "expected": {
+      "completed": 40000,
+      "write_commits": 20000,
+      "completed_workflows": 10000,
+      "p50": 10,
+      "p95": 10,
+      "p99": 10,
+      "throughput_calls_per_second": 400000000.0
+    }
+  }
+]
