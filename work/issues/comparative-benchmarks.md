@@ -4,7 +4,6 @@ status: in-progress
 kind: feature
 priority: 910
 summary: no reproducible cross-database baseline or recurring measured optimization cycle exists
-branch: sqlite-crash-controls
 tags:
   - engine
   - test
@@ -334,3 +333,46 @@ run bounded static slot checks, explicit feature/default binary cap checks and
 all complete affected package/lint checks. Do not rebuild every unchanged engine
 binary merely to rediscover its existing allocator. Source budget is about
 600 test-only helper lines, with no generalized supervisor or IPC framework.
+
+## 2026-11-01: external acknowledgement crash checkpoint landed
+
+Landed `c9cc0be49640`. Both real-file adapters now execute four runtime cut
+controls: acknowledged prefixes of 3 and 8 calls, plus the identified next call
+before invocation and after real commit with its response withheld. Parent
+receives and syncs the acknowledgement journal before permitting progress.
+Eight writer kills and eight independent reopen verifications retain all 34
+acknowledged results. Reopen checks independently specified complete snapshots,
+including empty support relations, and the existing searching history oracle.
+Only the identified whole pending write may account for uncertain state.
+
+All database work stays in sequential owned writer/verifier children, using the
+existing capped-child helper and one exact two-slot override. Socket and child
+exit coordination use one absolute deadline. Parent filesystem/process syscall
+liveness remains a precondition; this is not universal hard wall-clock containment
+or an injected engine flush failure. Eight actual-source failure probes detect
+lost/extra writes, wrong replies, missing kill gates, normal early exit and a
+verifier exiting without its validation receipt. Exact source restoration passed.
+
+One final complete default/native package scope passed: empty default with
+explicit no-tests acceptance, native 26/26 across two binaries, zero skips,
+14.725s execution. Both strict lints, formatting, size and static slot checks
+passed. Default/native graph and discovery proof preserve all existing targets,
+26 discovery/allocator inputs and old test groups; three actual binary cap
+checks abort as expected and both new parents hold the required slots.
+All 3340 input records/revision/status and later full filesystem readbacks stayed
+exact. Fresh independent source/containment/machine review accepted. Checked and
+landed revisions are identical; no after-land package or blanket engine rerun.
+
+House-check returns 1 solely for the reviewed test-only host-clock expectation.
+Process deadlines require a monotonic clock independent of an engine I/O runtime;
+the narrow exception states its removal condition. This is an accepted review
+exception, not a passing command. The initial lint failure, wrong-group failure,
+empty-default command exit 4 and probe-script expectation error remain in the
+receipt. An earlier house-pass report incorrectly used a trailing print's status;
+the final matrix records actual native exits instead.
+
+The feature remains open. Universal hard containment, resource/latency reporting,
+large-data feasibility, excluded pilots and an approved frozen comparison protocol
+still precede measurements. No benchmark ranking, optimization or beta exit is
+claimed by these crash controls. Engine-wide fault/admission/budget mechanisms
+and named-set migration admission remain separate.

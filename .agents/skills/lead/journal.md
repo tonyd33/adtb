@@ -425,3 +425,11 @@ A host process deadline is independent of the engine runtime: a narrow test-only
 clock exception is preferable to starting engine I/O workers just for a clock.
 Parent filesystem/process syscall liveness remains an explicit limit; this
 checkpoint must not be described as universal hard wall-clock containment.
+
+The crash checkpoint landed exactly its checked revision after source review,
+mutants and scoped consumer proof; final package execution was 14.725s. One
+reviewed host-clock expectation makes house-check exit 1. An initial author
+report had mistaken a trailing print's exit for that command's exit; the author
+corrected it before landing and the final receipt preserves native 1 explicitly.
+Accepted exceptions must be recorded separately from passed checks, using actual
+command exits. No source workaround or unchanged package repetition was needed.
