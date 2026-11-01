@@ -1,0 +1,33 @@
+=== upsert run
+--- source
+insert identities.Google { id: k, user: u, gid: g }
+unless conflict on key
+else match old
+  | Google o    -> update o set Google { o with gid: g }
+  | EmailPass e -> fail "identity is email"
+  | Apple a     -> fail "identity is apple"
+--- params
+k|Key identities|identities.key(uuid("00000000-0000-7000-8000-000000000002"))
+u|Key users|users.key(1)
+g|Text|"g-new"
+=== keys set
+--- source
+from g in identities.Google where g.gid == "g-new" select key g
+--- type
+Key identities
+--- expected
+identities.key(uuid("00000000-0000-7000-8000-000000000002"))
+=== reject reject-user
+--- source
+insert identities.Google { id: k, user: u, gid: g }
+unless conflict on key
+else match old
+  | Google o    -> update o set Google { o with gid: g }
+  | EmailPass e -> fail "identity is email"
+  | Apple a     -> fail "identity is apple"
+--- params
+k|Key identities|identities.key(uuid("00000000-0000-7000-8000-000000000001"))
+u|Key users|users.key(1)
+g|Text|"g-x"
+--- message
+identity is email

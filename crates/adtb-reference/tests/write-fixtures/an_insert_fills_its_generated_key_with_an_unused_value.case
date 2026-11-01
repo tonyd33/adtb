@@ -1,0 +1,24 @@
+=== insert result
+--- source
+insert users { name: n }
+--- params
+n|Text|"eve"
+--- type
+()
+--- expected
+()
+=== unused one-excludes
+--- source
+from u in users where u.name == "eve" select key u
+--- type
+Key users
+--- excluded
+users.key(1)
+users.key(2)
+users.key(3)
+users.key(4)
+=== users count
+--- relation
+users
+--- expected
+5

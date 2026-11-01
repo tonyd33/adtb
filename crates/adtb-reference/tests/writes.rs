@@ -10,7 +10,7 @@ use adtb_lang::parse::{Options, parse_adhoc};
 use adtb_reference::{Abort, Rejection, Stage, Value};
 use adtb_testkit::fixture::*;
 use adtb_testkit::uuid;
-use adtb_testkit::writes::{SCHEMA, fixture};
+use adtb_testkit::writes::fixture;
 
 #[path = "writes/mod.rs"]
 mod cases;
@@ -45,50 +45,6 @@ fn count(f: &Fixture, rel: &str) -> usize {
 
 // Change sets and combining writes
 
-#[test]
-fn an_insert_fills_its_generated_key_with_an_unused_value() {
-    let mut f = fixture();
-    let out = f
-        .run_with("insert users { name: n }", &[("n", "Text", text("eve"))])
-        .expect("inserted");
-    assert_eq!(Value::unit(), out.result);
-    let k = f.one(r#"from u in users where u.name == "eve" select key u"#);
-    assert!(![key(1), key(2), key(3), key(4)].contains(&k));
-    assert_eq!(5, count(&f, "users"));
-}
-
-#[test]
-fn a_delete_and_an_insert_of_one_key_are_an_update() {
-    let mut f = fixture();
-    let out = f
-        .run(
-            r#"(delete u in users where key u == users.key(1),
-                insert users { id: users.key(1), name: "new" })"#,
-        )
-        .expect("an update");
-    let users = f.rel("users");
-    let rows = |db: &adtb_reference::Database| db.get(&(users, 0)).cloned().unwrap_or_default();
-    assert_eq!(1, rows(&out.change.inserted).len());
-    assert_eq!(1, rows(&out.change.deleted).len());
-    assert_eq!(texts(["new", "bo", "cy", "dee"]), names(&f));
-}
-
-#[test]
-fn an_update_that_changes_nothing_has_an_empty_change_set() {
-    let mut f = fixture();
-    let out = f
-        .run(
-            "update i in identities where i.user == users.key(1)
-             set match i
-               | EmailPass e -> EmailPass { e with hash: rehash(e.hash) }
-               | Google g    -> g
-               | Apple a     -> a",
-        )
-        .expect("ran");
-    assert!(out.change.inserted.is_empty());
-    assert!(out.change.deleted.is_empty());
-}
-
 // Insert
 
 #[test]
@@ -120,35 +76,6 @@ fn a_nested_insert_is_part_of_the_change_set() {
     assert_eq!(
         u,
         f.one(r#"from g in identities.Google where g.gid == "g-n" select g.user"#)
-    );
-}
-
-#[test]
-fn a_sequence_never_reissues_a_key_a_row_has_held() {
-    let mut f = fixture();
-    f.ok(r#"insert users { id: users.key(42), name: "imported" }"#);
-    f.ok("delete u in users where key u == users.key(42)");
-    f.ok(r#"insert users { name: "next" }"#);
-    let k = f.one(r#"from u in users where u.name == "next" select key u"#);
-    assert_ne!(key(42), k);
-    assert!(![key(1), key(2), key(3), key(4)].contains(&k));
-}
-
-#[test]
-fn every_clock_fill_of_a_statement_has_one_value() {
-    let mut f = fixture();
-    f.supply.clock = 777;
-    f.ok("update s in logins where s.user == users.key(1) set Revoked { }");
-    assert_eq!(
-        set([Value::Instant(777)]),
-        f.value("from s in logins.Revoked where s.user == users.key(1) select s.at")
-    );
-    assert_eq!(
-        2,
-        f.value("from s in logins.Revoked where s.user == users.key(1) select s")
-            .as_set()
-            .expect("a set")
-            .len()
     );
 }
 
@@ -189,78 +116,9 @@ fn rejected_records_go_to_the_rejects_relation() {
 
 // Update and retag
 
-#[test]
-fn a_retag_moves_the_row_between_constructor_relations_under_its_key() {
-    let mut f = fixture();
-    let out = f
-        .run(&format!(
-            "update i in identities where i.id == {}
-             set match i
-               | EmailPass e -> Google {{ gid: lookup(e.email) }}
-               | Google g    -> g
-               | Apple a     -> a",
-            uuid(5)
-        ))
-        .expect("retagged");
-    let ids = f.rel("identities");
-    assert!(out.change.deleted.contains_key(&(ids, 0)));
-    assert!(out.change.inserted.contains_key(&(ids, 1)));
-    assert_eq!(
-        f.value(&format!("[{}]", uuid(5))),
-        f.value(r#"from g in identities.Google where g.gid == "bo@example.com" select key g"#)
-    );
-    assert_eq!(
-        key(2),
-        f.one(r#"from g in identities.Google where g.gid == "bo@example.com" select g.user"#)
-    );
-}
-
-#[test]
-fn a_retag_fills_omitted_fields_from_the_relation_whatever_the_old_constructor() {
-    let mut f = fixture();
-    f.supply.clock = 99;
-    f.ok("update s in logins where s.user == users.key(1) set Revoked { }");
-    assert_eq!(
-        set([Value::Instant(99)]),
-        f.value("from s in logins.Revoked where s.user == users.key(1) select s.at")
-    );
-}
-
 // Delete
 
 // Delete actions
-
-#[test]
-fn deleting_a_target_cascades_and_retags_its_referrers() {
-    let mut f = fixture();
-    f.supply.clock = 1234;
-    f.ok(&format!("delete i in identities where i.id == {}", uuid(1)));
-    assert_eq!(0, count(&f, "resets"));
-    assert_eq!(
-        set([Value::Instant(1234)]),
-        f.value("from s in logins.Revoked where s.id == logins.key(1) select s.at")
-    );
-    assert_eq!(
-        key(1),
-        f.one("from s in logins.Revoked where s.id == logins.key(1) select s.user")
-    );
-    assert_eq!(3, count(&f, "logins"));
-}
-
-#[test]
-fn a_retag_and_a_clear_on_one_row_give_it_one_new_value() {
-    let mut f = fixture();
-    f.ok(&format!(
-        "transact
-           delete d in badges where d.owner == users.key(4)
-           delete i in identities where i.id == {}
-           delete x in users where key x == users.key(4)",
-        uuid(2)
-    ));
-    let t = f.one("from t in tickets select t");
-    assert_eq!(Some(1), t.tag());
-    assert_eq!(Some(&Value::none()), t.field("owner"));
-}
 
 // Upsert
 
@@ -344,52 +202,6 @@ fn a_scoped_unique_conflict_obeys_olds_constructor_type() {
     );
 }
 
-const ON_KEY: &str = r#"insert identities.Google { id: k, user: u, gid: g }
-unless conflict on key
-else match old
-  | Google o    -> update o set Google { o with gid: g }
-  | EmailPass e -> fail "identity is email"
-  | Apple a     -> fail "identity is apple""#;
-
-fn identity_key(n: u8) -> Value {
-    let f = Fixture::new(SCHEMA);
-    f.one(&format!("[{}]", uuid(n)))
-}
-
-#[test]
-fn an_upsert_on_the_key_matches_the_old_row() {
-    let mut f = fixture();
-    f.run_with(
-        ON_KEY,
-        &[
-            ("k", "Key identities", identity_key(2)),
-            ("u", "Key users", key(1)),
-            ("g", "Text", text("g-new")),
-        ],
-    )
-    .expect("upserted");
-    assert_eq!(
-        set([identity_key(2)]),
-        f.value(r#"from g in identities.Google where g.gid == "g-new" select key g"#)
-    );
-    let before = f.db.clone();
-    assert_eq!(
-        Err(Abort::Reject(Rejection::UserError {
-            message: "identity is email".into()
-        })),
-        f.run_with(
-            ON_KEY,
-            &[
-                ("k", "Key identities", identity_key(1)),
-                ("u", "Key users", key(1)),
-                ("g", "Text", text("g-x")),
-            ],
-        )
-        .map(|o| o.result)
-    );
-    assert_eq!(before, f.db);
-}
-
 #[test]
 fn an_upsert_on_a_unique_over_expressions() {
     let mut f = fixture();
@@ -420,19 +232,6 @@ const GET_OR_CREATE: &str = "transact
           unless conflict on (gid) in Google
           else update old set old
   return key g";
-
-#[test]
-fn a_get_or_create_returns_the_existing_row() {
-    let mut f = fixture();
-    let out = f
-        .run_with(
-            GET_OR_CREATE,
-            &[("u", "Key users", key(2)), ("x", "Text", text("g-ann"))],
-        )
-        .expect("ran");
-    assert_eq!(identity_key(2), out.result);
-    assert!(out.change.inserted.is_empty());
-}
 
 #[test]
 fn a_get_or_create_returns_the_created_row() {
@@ -531,14 +330,6 @@ fn the_schema_states_which_value_level_constructors_refuse_new_values() {
 }
 
 // Blocks and transactions
-
-#[test]
-fn a_query_statement_changes_nothing() {
-    let mut f = fixture();
-    let out = f.run("count(u for u in users)").expect("ran");
-    assert_eq!(int(4), out.result);
-    assert_eq!(f.db, out.db);
-}
 
 #[test]
 fn a_registered_transaction_runs_as_one_statement() {

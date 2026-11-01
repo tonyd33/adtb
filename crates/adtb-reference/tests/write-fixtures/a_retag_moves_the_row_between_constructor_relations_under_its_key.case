@@ -1,0 +1,24 @@
+=== retag outcome
+--- source
+update i in identities where i.id == identities.key(uuid("00000000-0000-7000-8000-000000000005"))
+set match i
+  | EmailPass e -> Google { gid: lookup(e.email) }
+  | Google g -> g
+  | Apple a -> a
+--- changes
+deleted|present|identities|0
+inserted|present|identities|1
+=== keys set
+--- source
+from g in identities.Google where g.gid == "bo@example.com" select key g
+--- type
+Key identities
+--- expected
+identities.key(uuid("00000000-0000-7000-8000-000000000005"))
+=== user one
+--- source
+from g in identities.Google where g.gid == "bo@example.com" select g.user
+--- type
+Key users
+--- expected
+users.key(2)

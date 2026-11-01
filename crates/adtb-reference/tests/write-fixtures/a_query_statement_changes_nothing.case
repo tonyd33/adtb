@@ -1,0 +1,9 @@
+=== query outcome
+--- source
+count(u for u in users)
+--- type
+I64
+--- expected
+4
+--- unchanged
+true

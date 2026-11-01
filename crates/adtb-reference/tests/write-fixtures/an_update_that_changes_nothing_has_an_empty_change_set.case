@@ -1,0 +1,10 @@
+=== update outcome
+--- source
+update i in identities where i.user == users.key(1)
+set match i
+  | EmailPass e -> EmailPass { e with hash: rehash(e.hash) }
+  | Google g -> g
+  | Apple a -> a
+--- changes
+inserted|empty
+deleted|empty

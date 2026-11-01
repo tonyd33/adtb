@@ -1,0 +1,17 @@
+=== write outcome
+--- source
+(delete u in users where key u == users.key(1),
+ insert users { id: users.key(1), name: "new" })
+--- changes
+inserted|count|users|0|1
+deleted|count|users|0|1
+=== names set
+--- source
+from u in users select u.name
+--- type
+Text
+--- expected
+"new"
+"bo"
+"cy"
+"dee"

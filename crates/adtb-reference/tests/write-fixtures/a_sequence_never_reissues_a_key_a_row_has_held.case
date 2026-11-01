@@ -1,0 +1,20 @@
+=== import run
+--- source
+insert users { id: users.key(42), name: "imported" }
+=== delete run
+--- source
+delete u in users where key u == users.key(42)
+=== generate run
+--- source
+insert users { name: "next" }
+=== unreissued one-excludes
+--- source
+from u in users where u.name == "next" select key u
+--- type
+Key users
+--- excluded
+users.key(1)
+users.key(2)
+users.key(3)
+users.key(4)
+users.key(42)

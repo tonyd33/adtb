@@ -1,0 +1,12 @@
+=== retag outcome
+--- source
+update s in logins where s.user == users.key(1) set Revoked { }
+--- clock
+99
+=== instants set
+--- source
+from s in logins.Revoked where s.user == users.key(1) select s.at
+--- type
+Instant
+--- expected
+1970-01-01T00:00:00.000099Z

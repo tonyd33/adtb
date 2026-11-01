@@ -1,0 +1,29 @@
+=== delete outcome
+--- source
+delete i in identities where i.id == identities.key(uuid("00000000-0000-7000-8000-000000000001"))
+--- clock
+1234
+=== resets count
+--- relation
+resets
+--- expected
+0
+=== instant set
+--- source
+from s in logins.Revoked where s.id == logins.key(1) select s.at
+--- type
+Instant
+--- expected
+1970-01-01T00:00:00.001234Z
+=== user one
+--- source
+from s in logins.Revoked where s.id == logins.key(1) select s.user
+--- type
+Key users
+--- expected
+users.key(1)
+=== logins count
+--- relation
+logins
+--- expected
+3

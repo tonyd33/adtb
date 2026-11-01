@@ -1,0 +1,13 @@
+=== delete run
+--- source
+transact
+  delete d in badges where d.owner == users.key(4)
+  delete i in identities where i.id == identities.key(uuid("00000000-0000-7000-8000-000000000002"))
+  delete x in users where key x == users.key(4)
+=== ticket one-record
+--- source
+from t in tickets select t
+--- tag
+1
+--- fields
+owner|Option (Key users)|None
