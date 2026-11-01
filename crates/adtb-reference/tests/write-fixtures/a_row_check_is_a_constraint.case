@@ -1,0 +1,5 @@
+=== reject reject-violated
+--- source
+insert users { name: "a name longer than twenty" }
+--- constraint
+app::name_short

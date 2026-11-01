@@ -1,0 +1,9 @@
+=== reject reject-violated
+--- source
+delete x in users where key x == users.key(2)
+--- constraint
+app::identities.user
+--- report
+count
+--- expected
+2

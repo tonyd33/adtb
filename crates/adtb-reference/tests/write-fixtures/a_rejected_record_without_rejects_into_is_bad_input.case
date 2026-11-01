@@ -1,0 +1,10 @@
+=== reject reject-bad-input
+--- source
+insert users from (
+  from r in raws select User { name: if r.n > 0 then "ok" else reject "negative" })
+--- input-source
+raws
+--- line
+2
+--- detail
+negative

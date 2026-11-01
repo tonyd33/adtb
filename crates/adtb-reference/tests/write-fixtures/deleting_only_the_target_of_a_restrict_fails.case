@@ -1,0 +1,13 @@
+=== reject reject-violated
+--- source
+delete x in users where key x == users.key(4)
+--- constraint
+app::badges.Badge.owner
+--- report
+field
+--- field
+label
+--- type
+Text
+--- expected
+"b4"

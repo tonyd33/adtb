@@ -4,6 +4,7 @@ use adtb_testkit::fixture::Fixture;
 use super::shared::{Fields, bindings, finish, parse, take};
 
 pub(super) enum Step {
+    Refuse(super::refusal::Refusal),
     Run {
         source: String,
         params: Vec<(String, String, Value)>,
@@ -51,6 +52,14 @@ impl Step {
                     key: take(&mut fields, "key"),
                 },
             },
+            "reject-user" | "reject-bad-input" | "reject-key-changed" | "fault"
+            | "reject-violated" => {
+                return Self::Refuse(super::refusal::Refusal::read(fixture, mode, fields));
+            }
+            "value" => Self::Set {
+                source: take(&mut fields, "source"),
+                expected: value(fixture, &mut fields),
+            },
             "one" => Self::One {
                 source: take(&mut fields, "source"),
                 expected: value(fixture, &mut fields),
@@ -78,6 +87,7 @@ impl Step {
 
     pub(super) fn run(self, fixture: &mut Fixture) {
         match self {
+            Self::Refuse(refusal) => refusal.run(fixture),
             Self::Run {
                 source,
                 params,

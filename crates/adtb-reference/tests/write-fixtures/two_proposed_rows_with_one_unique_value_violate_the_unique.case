@@ -1,0 +1,9 @@
+=== reject reject-violated
+--- source
+insert identities.Google from (
+  from p in [{ u: users.key(1), g: "dup" }, { u: users.key(2), g: "dup" }]
+  select { user: p.u, gid: p.g })
+unless conflict on (gid) in Google
+else update old set old
+--- constraint
+app::identities.unique(gid) in Google

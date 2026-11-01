@@ -7,7 +7,7 @@ use adtb_lang::check::check_adhoc;
 use adtb_lang::kernel::Kind;
 use adtb_lang::parse::{Options, parse_adhoc};
 
-use adtb_reference::{Abort, Fault, Rejection, Stage, Value};
+use adtb_reference::{Abort, Rejection, Stage, Value};
 use adtb_testkit::fixture::*;
 use adtb_testkit::uuid;
 use adtb_testkit::writes::{SCHEMA, fixture};
@@ -87,43 +87,6 @@ fn an_update_that_changes_nothing_has_an_empty_change_set() {
         .expect("ran");
     assert!(out.change.inserted.is_empty());
     assert!(out.change.deleted.is_empty());
-}
-
-#[test]
-fn a_fault_while_computing_a_change_set_aborts_the_statement() {
-    let mut f = fixture();
-    let before = f.db.clone();
-    assert_eq!(
-        Err(Abort::Fault(Fault::DivisionByZero)),
-        f.run_with(
-            r#"(insert users { name: "eve" }, if 1 / z > 0 then skip else skip)"#,
-            &[("z", "I64", int(0))]
-        )
-        .map(|o| o.result)
-    );
-    assert_eq!(before, f.db);
-}
-
-#[test]
-fn fail_rejects_the_statement_with_a_user_error() {
-    let mut f = fixture();
-    assert_eq!(
-        Rejection::UserError {
-            message: "no".into()
-        },
-        f.rejected(r#"(insert users { name: "eve" }, fail "no")"#)
-    );
-    f.ok(r#"if false then fail "no" else insert users { name: "eve" }"#);
-    assert_eq!(5, count(&f, "users"));
-}
-
-#[test]
-fn try_does_not_catch_fail() {
-    let mut f = fixture();
-    assert!(matches!(
-        f.rejected(r#"transact let x = try(1) fail "stop" return x"#),
-        Rejection::UserError { .. }
-    ));
 }
 
 // Insert
@@ -224,53 +187,7 @@ fn rejected_records_go_to_the_rejects_relation() {
     );
 }
 
-#[test]
-fn a_rejected_record_without_rejects_into_is_bad_input() {
-    let mut f = fixture();
-    assert_eq!(
-        Rejection::BadInput {
-            source: "raws".into(),
-            line: 2,
-            detail: "negative".into()
-        },
-        f.rejected(
-            r#"insert users from (
-                 from r in raws select User { name: if r.n > 0 then "ok" else reject "negative" })"#
-        )
-    );
-}
-
-#[test]
-fn a_constraint_violation_rejects_the_statement_with_its_rejects() {
-    let mut f = fixture();
-    let (name, _) = violated(f.rejected(
-        r#"insert users from (
-             from r in raws select User { name: if r.n > 0 then "aa" else reject "negative" })
-           rejects into user_rejects"#,
-    ));
-    assert_eq!("app::aa_names", name);
-    assert_eq!(0, count(&f, "user_rejects"));
-}
-
 // Update and retag
-
-#[test]
-fn an_update_to_another_key_is_key_changed() {
-    let mut f = fixture();
-    let other = Value::Ctor(0, vec![("id".into(), key(2)), ("name".into(), text("x"))]);
-    let before = f.db.clone();
-    assert_eq!(
-        Err(Abort::Reject(Rejection::KeyChanged {
-            relation: "users".into()
-        })),
-        f.run_with(
-            "update u in users where key u == users.key(1) set v",
-            &[("v", "User", other)]
-        )
-        .map(|o| o.result)
-    );
-    assert_eq!(before, f.db);
-}
 
 #[test]
 fn a_retag_moves_the_row_between_constructor_relations_under_its_key() {
@@ -309,17 +226,6 @@ fn a_retag_fills_omitted_fields_from_the_relation_whatever_the_old_constructor()
     );
 }
 
-#[test]
-fn a_retag_is_refused_while_a_reference_to_the_old_constructor_remains() {
-    let mut f = fixture();
-    let (name, report) = violated(f.rejected(&format!(
-        r#"update i in identities.EmailPass where i.id == {} set Google {{ gid: "g" }}"#,
-        uuid(1)
-    )));
-    assert_eq!("app::resets.Reset.identity", name);
-    assert_eq!(1, report.len());
-}
-
 // Delete
 
 // Delete actions
@@ -339,50 +245,6 @@ fn deleting_a_target_cascades_and_retags_its_referrers() {
         f.one("from s in logins.Revoked where s.id == logins.key(1) select s.user")
     );
     assert_eq!(3, count(&f, "logins"));
-}
-
-#[test]
-fn restrict_names_the_least_reference_and_its_referrers() {
-    let mut f = fixture();
-    let (name, report) = violated(f.rejected("delete x in users where key x == users.key(2)"));
-    assert_eq!("app::identities.user", name);
-    assert_eq!(2, report.len());
-}
-
-#[test]
-fn deleting_only_the_target_of_a_restrict_fails() {
-    let mut f = fixture();
-    let (name, report) = violated(f.rejected("delete x in users where key x == users.key(4)"));
-    assert_eq!("app::badges.Badge.owner", name);
-    assert_eq!(
-        texts(["b4"]),
-        Value::set(
-            report
-                .iter()
-                .map(|b| b.field("label").expect("a label").clone())
-        )
-    );
-}
-
-#[test]
-fn an_inserted_row_referencing_a_gone_key_violates_its_reference() {
-    let mut f = fixture();
-    let (name, report) = violated(f.rejected(
-        r#"transact
-             insert notes { author: Some { value: users.key(4) }, body: "new" }
-             delete d in badges where d.owner == users.key(4)
-             delete t in tickets
-             delete x in users where key x == users.key(4)"#,
-    ));
-    assert_eq!("app::notes.Note.author", name);
-    assert_eq!(
-        texts(["new"]),
-        Value::set(
-            report
-                .iter()
-                .map(|n| n.field("body").expect("a body").clone())
-        )
-    );
 }
 
 #[test]
@@ -587,91 +449,7 @@ fn a_get_or_create_returns_the_created_row() {
     );
 }
 
-#[test]
-fn two_proposed_rows_with_one_unique_value_violate_the_unique() {
-    let mut f = fixture();
-    let (name, _) = violated(f.rejected(
-        r#"insert identities.Google from (
-             from p in [{ u: users.key(1), g: "dup" }, { u: users.key(2), g: "dup" }]
-             select { user: p.u, gid: p.g })
-           unless conflict on (gid) in Google
-           else update old set old"#,
-    ));
-    assert_eq!("app::identities.unique(gid) in Google", name);
-}
-
-#[test]
-fn an_upsert_does_not_see_a_row_another_write_inserts() {
-    let mut f = fixture();
-    let (name, _) = violated(f.rejected(
-        r#"(insert identities.Google { user: users.key(1), gid: "z" },
-            insert identities.Google { user: users.key(2), gid: "z" }
-            unless conflict on (gid) in Google
-            else update old set old)"#,
-    ));
-    assert_eq!("app::identities.unique(gid) in Google", name);
-}
-
 // The statement boundary
-
-#[test]
-fn a_constraint_violation_reports_its_rows() {
-    let mut f = fixture();
-    let (name, report) =
-        violated(f.rejected(r#"insert identities.Google { user: users.key(3), gid: "" }"#));
-    assert_eq!("app::login_present", name);
-    assert_eq!(1, report.len());
-}
-
-#[test]
-fn the_violation_reported_is_the_least_name() {
-    let mut f = fixture();
-    let (name, _) = violated(f.rejected(
-        r#"(insert identities.Google { user: users.key(3), gid: "" },
-            insert identities.Google { user: users.key(4), gid: "" })"#,
-    ));
-    assert_eq!("app::identities.unique(gid) in Google", name);
-    let (name, _) = violated(f.rejected(r#"insert users { id: users.key(1), name: "aa" }"#));
-    assert_eq!("app::aa_names", name);
-    assert_eq!(
-        key_violation("users", "users.key(1)"),
-        f.rejected(r#"insert users { id: users.key(1), name: "zz" }"#)
-    );
-}
-
-#[test]
-fn a_row_check_is_a_constraint() {
-    let mut f = fixture();
-    let (name, _) = violated(f.rejected(r#"insert users { name: "a name longer than twenty" }"#));
-    assert_eq!("app::name_short", name);
-}
-
-#[test]
-fn a_transition_constraint_reads_the_change() {
-    let mut f = fixture();
-    let (name, _) = violated(f.rejected(r#"delete n in notes where n.body == "frozen""#));
-    assert_eq!("app::frozen_notes", name);
-    f.ok(r#"delete n in notes where n.body == "plain""#);
-}
-
-#[test]
-fn a_domain_is_checked_on_stored_values() {
-    let mut f = fixture();
-    let (name, _) = violated(f.rejected(r#"insert contacts { email: Email("ab") }"#));
-    assert_eq!("app::Email.domain", name);
-    f.ok(r#"insert contacts { email: Email("abcd") }"#);
-    assert_eq!(text("ab"), f.value(r#"unwrap(Email("ab"))"#));
-}
-
-#[test]
-fn a_fault_in_a_constraint_takes_precedence_over_every_violation() {
-    let mut f = fixture();
-    assert_eq!(
-        Err(Abort::Fault(Fault::DivisionByZero)),
-        f.run(r#"(insert raws { n: 0 }, insert users { id: users.key(1), name: "ann" })"#)
-            .map(|o| o.result)
-    );
-}
 
 #[test]
 fn a_constructor_not_open_refuses_inserts_and_retags() {

@@ -1,0 +1,7 @@
+=== reject fault
+--- source
+(insert users { name: "eve" }, if 1 / z > 0 then skip else skip)
+--- params
+z|I64|0
+--- fault
+DivisionByZero

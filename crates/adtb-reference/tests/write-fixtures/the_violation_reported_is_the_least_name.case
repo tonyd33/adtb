@@ -1,0 +1,18 @@
+=== unique reject-violated
+--- source
+(insert identities.Google { user: users.key(3), gid: "" },
+ insert identities.Google { user: users.key(4), gid: "" })
+--- constraint
+app::identities.unique(gid) in Google
+=== constraint reject-violated
+--- source
+insert users { id: users.key(1), name: "aa" }
+--- constraint
+app::aa_names
+=== key reject-key
+--- source
+insert users { id: users.key(1), name: "zz" }
+--- relation
+users
+--- key
+users.key(1)

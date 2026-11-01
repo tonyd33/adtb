@@ -1,0 +1,8 @@
+=== reject reject-violated
+--- source
+delete n in notes where n.body == "frozen"
+--- constraint
+app::frozen_notes
+=== delete run
+--- source
+delete n in notes where n.body == "plain"

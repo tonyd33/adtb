@@ -1,0 +1,15 @@
+=== reject reject-violated
+--- source
+insert contacts { email: Email("ab") }
+--- constraint
+app::Email.domain
+=== valid run
+--- source
+insert contacts { email: Email("abcd") }
+=== unwrap value
+--- source
+unwrap(Email("ab"))
+--- type
+Text
+--- expected
+"ab"

@@ -1,0 +1,17 @@
+=== reject reject-violated
+--- source
+transact
+  insert notes { author: Some { value: users.key(4) }, body: "new" }
+  delete d in badges where d.owner == users.key(4)
+  delete t in tickets
+  delete x in users where key x == users.key(4)
+--- constraint
+app::notes.Note.author
+--- report
+field
+--- field
+body
+--- type
+Text
+--- expected
+"new"

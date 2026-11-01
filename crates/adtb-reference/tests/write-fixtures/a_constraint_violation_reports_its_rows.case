@@ -1,0 +1,9 @@
+=== reject reject-violated
+--- source
+insert identities.Google { user: users.key(3), gid: "" }
+--- constraint
+app::login_present
+--- report
+count
+--- expected
+1

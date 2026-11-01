@@ -1,0 +1,12 @@
+=== reject reject-violated
+--- source
+insert users from (
+  from r in raws select User { name: if r.n > 0 then "aa" else reject "negative" })
+rejects into user_rejects
+--- constraint
+app::aa_names
+=== rejects count
+--- relation
+user_rejects
+--- expected
+0

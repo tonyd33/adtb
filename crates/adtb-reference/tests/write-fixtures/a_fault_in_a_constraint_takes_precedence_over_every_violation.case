@@ -1,0 +1,5 @@
+=== reject fault
+--- source
+(insert raws { n: 0 }, insert users { id: users.key(1), name: "ann" })
+--- fault
+DivisionByZero

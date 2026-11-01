@@ -1,0 +1,13 @@
+=== reject reject-user
+--- source
+(insert users { name: "eve" }, fail "no")
+--- message
+no
+=== inactive run
+--- source
+if false then fail "no" else insert users { name: "eve" }
+=== users count
+--- relation
+users
+--- expected
+5

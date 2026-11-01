@@ -1,0 +1,9 @@
+=== reject reject-violated
+--- source
+update i in identities.EmailPass where i.id == identities.key(uuid("00000000-0000-7000-8000-000000000001")) set Google { gid: "g" }
+--- constraint
+app::resets.Reset.identity
+--- report
+count
+--- expected
+1

@@ -1,0 +1,7 @@
+=== reject reject-key-changed
+--- source
+update u in users where key u == users.key(1) set v
+--- params
+v|User|User { id: users.key(2), name: "x" }
+--- relation
+users

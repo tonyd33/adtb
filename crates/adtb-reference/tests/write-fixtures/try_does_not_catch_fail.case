@@ -1,0 +1,5 @@
+=== reject reject-user
+--- source
+transact let x = try(1) fail "stop" return x
+--- message
+stop
