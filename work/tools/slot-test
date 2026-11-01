@@ -259,13 +259,97 @@ SHIM
   [[ $(ls -A "$p2/apps/campaign/target/debug") == .cargo-lock ]] || fail "the cap did not clear the campaign build"
 }
 
+retention_cases() {
+  local tag=$1 mode state ws build out cases=0 roots=0
+  for mode in --clear-build --clean; do
+    for state in known forgotten; do
+      [[ $mode != --clear-build || $state != forgotten ]] || continue
+      new_repo "retention-$tag-${mode#--}-$state"
+      if [[ $tag == valid ]]; then
+        cargo generate-lockfile --manifest-path "$main/Cargo.toml"
+        jj -R "$main" describe -m 'chore: seed retention lockfile' >/dev/null 2>&1
+        jj -R "$main" bookmark set main -r @ >/dev/null 2>&1
+        jj -R "$main" new >/dev/null 2>&1
+      fi
+      ws=$main-retention
+      jj -R "$main" workspace add --name retention -r main "$ws" >/dev/null 2>&1
+      if [[ $tag == valid ]]; then
+        for build in "$ws/target" "$ws/apps/campaign/target"; do
+          cargo build --quiet --manifest-path "$ws/Cargo.toml" --target-dir "$build"
+          [[ $(head -1 "$build/CACHEDIR.TAG") == 'Signature: 8a477f597d28d172789f06886806bc55' ]] ||
+            fail "Cargo did not create a valid cache tag in $build"
+        done
+      fi
+      fake_target "$ws"
+      for build in "$ws/target" "$ws/apps/campaign/target"; do
+        mkdir -p "$build/raw/provenance"
+        printf 'retained proof\n' >"$build/raw/provenance/manifest"
+        printf 'retained executable\n' >"$build/standalone"
+        chmod +x "$build/standalone"
+        [[ $tag != missing || ! -e $build/CACHEDIR.TAG ]] || fail "unexpected cache tag"
+      done
+      if [[ $state == forgotten ]]; then
+        jj -R "$main" workspace forget retention >/dev/null 2>&1
+        hold_dir "$ws/target/debug/deps"
+        out=$(ADTB_GC_IDLE_HOURS=0 ADTB_SLOT_CAP_GB=0 "$gc" --clean)
+        [[ -f $ws/target/debug/deps/x ]] || fail "--clean cleared an active forgotten workspace"
+        stop_sleeper
+        printf '%s pid 1 since now\n' "$ws" >"$ADTB_MACHINE_LOCK"
+        hold_flock "$ADTB_MACHINE_LOCK"
+        refused 'holds the machine lock' env ADTB_GC_IDLE_HOURS=0 ADTB_SLOT_CAP_GB=0 "$gc" --clean
+        [[ -f $ws/target/debug/deps/x ]] || fail "--clean ignored a forgotten workspace's machine lock"
+        stop_sleeper
+        sleep 0.2
+      fi
+      if [[ $mode == --clean ]]; then
+        out=$(ADTB_GC_IDLE_HOURS=2 ADTB_SLOT_CAP_GB=0 "$gc" --clean)
+        [[ $out != *"cleaning $ws/target"* && -f $ws/target/debug/deps/x ]] ||
+          fail "--clean cleared a recent $state workspace"
+        hold_flock "$ws/target/debug/.cargo-lock"
+        out=$(ADTB_GC_IDLE_HOURS=0 ADTB_SLOT_CAP_GB=0 "$gc" --clean)
+        [[ $out != *"cleaning $ws/target"* && -f $ws/target/debug/deps/x ]] ||
+          fail "--clean ignored the cargo lock ($state)"
+        stop_sleeper
+        sleep 0.2
+        mv "$ws/target/debug" "$ws/target/moved"
+        ln -s moved "$ws/target/debug"
+        refused 'resolves elsewhere' env ADTB_GC_IDLE_HOURS=0 ADTB_SLOT_CAP_GB=0 "$gc" --clean
+        [[ -f $ws/target/moved/deps/x ]] || fail "--clean followed a debug symlink ($state)"
+        rm "$ws/target/debug"
+        mv "$ws/target/moved" "$ws/target/debug"
+      fi
+      if [[ $mode == --clear-build ]]; then
+        (cd "$ws" && ADTB_GC_IDLE_HOURS=0 "$gc" "$mode" retention >/dev/null)
+      else
+        out=$(ADTB_GC_IDLE_HOURS=0 ADTB_SLOT_CAP_GB=0 "$gc" "$mode")
+        has "$out" "cleaning $ws/target"
+        has "$out" "cleaning $ws/apps/campaign/target"
+      fi
+      for build in "$ws/target" "$ws/apps/campaign/target"; do
+        [[ -f $build/evidence && -x $build/standalone &&
+          $(cat "$build/standalone") == 'retained executable' &&
+          $(cat "$build/raw/provenance/manifest") == 'retained proof' ]] ||
+          fail "$mode lost retained evidence ($tag, $state, $build)"
+        [[ $(ls -A "$build/debug") == .cargo-lock && -z $(ls -A "$build/tmp") ]] ||
+          fail "$mode left rebuildable output ($tag, $state, $build)"
+        roots=$((roots + 1))
+      done
+      cases=$((cases + 1))
+    done
+  done
+  [[ $cases == 3 && $roots == 6 ]] || fail "retention matrix missed cases: $cases / $roots"
+}
+
 new_repo shell-repo
 machine_lock_cases
 shell_cases
+retention_cases missing
 if [[ ${1:-} == --shell ]]; then
   echo 'slot-test: shell cases ok'
   exit 0
 fi
+
+retention_cases valid
 
 new_repo repo
 

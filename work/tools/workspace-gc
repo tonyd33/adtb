@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # workspace-gc            list each build directory of the repo's workspaces: size, whether the
 #                         working copy is empty, hours since its last build, and whether to clean it
-# workspace-gc --clean    run `cargo clean` on each build directory marked clean
+# workspace-gc --clean    empty debug and tmp of each build directory marked clean
 # workspace-gc --guard    print nothing when the disk has 30 GB free; else list the build
 #                         directories and fail
 # workspace-gc --clear-build WORKSPACE
@@ -11,8 +11,8 @@
 #                         directory, changed within ADTB_GC_IDLE_HOURS, or cargo, a process or a
 #                         run holding the machine lock from that workspace is using it
 #
-# A build directory is marked clean when its workspace is forgotten, or when its working copy
-# is empty, no process uses the workspace and it was not built for ADTB_GC_IDLE_HOURS (default 2).
+# A build directory is marked clean when its workspace is forgotten or its working copy is
+# empty, no process uses the workspace and its cache was idle for ADTB_GC_IDLE_HOURS (default 2).
 # In a slot directory, debug and tmp also have to be above ADTB_SLOT_CAP_GB (default 20).
 set -euo pipefail
 
@@ -61,6 +61,28 @@ idle() {
   jq -n --argjson now "$(date +%s)" --argjson built "${newest:-$(date +%s)}" '[0, (($now - $built) / 3600 | floor)] | max'
 }
 
+cache_size() {
+  local parts=() part
+  for part in "$1/debug" "$1/tmp"; do
+    [[ ! -d $part ]] || parts+=("$part")
+  done
+  if ((${#parts[@]})); then
+    du -sch "${parts[@]}" | tail -1 | cut -f1
+  else
+    echo 0
+  fi
+}
+
+cache_idle() {
+  local part hours oldest=
+  for part in "$1/debug" "$1/tmp"; do
+    [[ -d $part ]] || continue
+    hours=$(idle "$part")
+    [[ -n $oldest ]] && ((hours >= oldest)) || oldest=$hours
+  done
+  echo "${oldest:-0}"
+}
+
 # Prints `size<TAB>name<TAB>state<TAB>idle<TAB>verdict<TAB>dir` for each build directory.
 targets() {
   local name path state dir hours verdict main
@@ -69,17 +91,15 @@ targets() {
   while IFS=$'\t' read -r name path state; do
     for dir in "$path/target" "$path/apps/campaign/target"; do
       [[ -d $dir ]] || continue
-      hours=$(idle "$dir")
+      hours=$(cache_idle "$dir")
       verdict=keep
-      if [[ $state == forgotten ]]; then
-        verdict=clean
-      elif [[ $state == empty ]] && ((hours >= idle_hours)); then
+      if [[ $state == forgotten || $state == empty ]] && ((hours >= idle_hours)); then
         if { ! slot_dir "$path" "$main" || over_slot_cap "$dir"; } && [[ -z $(pids_using "$path") ]]; then
           verdict=clean
         fi
       fi
       printf '%s\t%s\t%s\t%sh\t%s\t%s\n' \
-        "$(du -sh "$dir" | cut -f1)" "$name" "$state" "$hours" "$verdict" "$dir"
+        "$(cache_size "$dir")" "$name" "$state" "$hours" "$verdict" "$dir"
     done
   done < <(workspaces)
 }
@@ -126,18 +146,23 @@ empty_build() {
   fi
 }
 
-# Empty the build directories of the workspace named $1.
-clear_build() {
-  local name=$1 wsroot lock
-  [[ $name != main ]] || name=default
-  wsroot=$(jj -R "$root" workspace list --ignore-working-copy -T 'name ++ "\t" ++ root ++ "\n"' |
-    awk -F'\t' -v name="$name" '$1 == name { print $2 }')
-  [[ $wsroot == /* ]] || refuse "no workspace named $1"
+clearable_workspace() {
+  local wsroot=$1 lock
   [[ -d $wsroot/.jj ]] || refuse "$wsroot holds no .jj"
   lock=$(machine_lock_path)
   if [[ -e $lock ]] && ! flock -n "$lock" true && [[ $(cat "$lock") == "$wsroot pid "* ]]; then
     refuse "a run in $wsroot holds the machine lock"
   fi
+}
+
+# Empty the build directories of the workspace named $1.
+clear_build() {
+  local name=$1 wsroot
+  [[ $name != main ]] || name=default
+  wsroot=$(jj -R "$root" workspace list --ignore-working-copy -T 'name ++ "\t" ++ root ++ "\n"' |
+    awk -F'\t' -v name="$name" '$1 == name { print $2 }')
+  [[ $wsroot == /* ]] || refuse "no workspace named $1"
+  clearable_workspace "$wsroot"
   clearable_build "$wsroot/target"
   clearable_build "$wsroot/apps/campaign/target"
   empty_build "$wsroot/target"
@@ -159,7 +184,15 @@ case $mode in
     while IFS=$'\t' read -r size name _ _ verdict dir; do
       [[ $verdict == clean ]] || continue
       echo "cleaning $dir ($name, $size)"
-      (cd "$root" && cargo clean --target-dir "$dir") || {
+      (
+        wsroot=${dir%/target}
+        wsroot=${wsroot%/apps/campaign}
+        clearable_workspace "$wsroot"
+        users=$(pids_using "$wsroot")
+        [[ -z $users ]] || refuse "$wsroot is in use by: $(echo "$users" | paste -sd,)"
+        clearable_build "$dir"
+        empty_build "$dir"
+      ) || {
         echo "$dir is not cleaned" >&2
         unclean=1
       }
@@ -177,7 +210,7 @@ case $mode in
     ((free >= min_free_gb)) && exit 0
     echo "only $free GB free, under $min_free_gb GB; the build directories:" >&2
     table >&2
-    echo "run work/tools/workspace-gc --clean, or cargo clean in your own workspace" >&2
+    echo "run work/tools/workspace-gc --clean, or --clear-build WORKSPACE for an idle build" >&2
     exit 1
     ;;
   *)
