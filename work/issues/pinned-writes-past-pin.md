@@ -160,3 +160,14 @@ checks and an independent review precede one final full check.
 This track does not decide nonhiding conflict-probe admission or close the
 nested-upsert reader-facts gap. It changes translation and its focused tests;
 the concurrent checker migration changes checker test data/driver only.
+
+## 2026-10-31: combined final verification plan
+
+Both implementation tracks have completed targeted verification and have
+separate fresh independent reviews. After review convergence, stack the
+pinned-field fix before the checker migration on current main. The checker
+author owns one authoritative full check of that combined final tree; each
+author retains diagnosis and corrections for their own change. Native
+landing preserves both commits and reuses the receipt only after comparing
+the landed tree with the tested combined tree. Do not run a separate full
+check merely because each change has its own ticket.
