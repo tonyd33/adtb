@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-31
-status: in-progress
+status: open
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
-branch: reference-fixtures
 ---
 
 # Test audit findings
@@ -211,3 +210,43 @@ The production pinned-reader change is separate and still requires its
 reviewed final full check. Its source-complexity correction does not gate
 the unrelated fixture batch. This supersedes earlier broad full-check
 wording for these bounded fixture-only changes.
+
+
+## 2026-10-31: reference and checker continuation landed
+
+Reference migration landed as `9b0e979b59c5`; checker continuation landed
+as `c9f2035e4731`. Fresh independent preservation reviews accepted both.
+The reference batch moves 16 additional families and 20 semantic outcomes
+into two existing reference-only scripts. Together with the pilot, 23 of
+45 mapped families now load ordinary case data at runtime. The remaining
+22 need shared typed support for bindings, registered calls, fault payloads
+and identity assertions; they are queued, not declared unmigratable.
+
+The checker continuation externalizes data for 49 more families: 101 source
+operations and 102 source/context strings. Across both checker batches,
+157 of the original 159 families load ordinary case data at runtime.
+Typed property assertions remain in reusable Rust drivers. The two retained
+case-construction exceptions are the generated wide-stack resource test
+and the synthetic shared kernel DAG. The corpus now has 492 runtime case
+IDs; all 110 prior checker fixture files remained byte-identical.
+
+Review found per-file validation outside failure accounting. The author
+moved it inside the existing catch; the bad-file probe then reported its
+named failure while all 464 valid ordinary cases still executed. Restored
+healthy groups passed. Data-only additions and expected-result changes
+proved discovery, assertion sensitivity and unchanged executable hashes.
+These are local feedback proofs, not a clean-build or whole-suite speedup.
+
+Final combined validation on `a0fe65d2013b` passed all 1169 selected tests
+across complete adtb-lang, adtb-reference, adtb-conformance, adtb-probe and
+adtb-testkit packages. Two existing deep-profile exclusions were unchanged.
+Strict affected lints and static checks passed; suite and final testkit
+clippy each returned zero. Revision, status and all 3152 tracked input
+hashes were identical before and after. Tested-to-landed differences were
+only reviewed ticket prose. The bounded fixture/tool verification policy
+reuses prior full-check evidence only for unchanged components; that old
+run did not test the new drivers. No duplicate full check was run.
+
+This umbrella remains open for the queued migrations, the wider inventory,
+section 5 and separately tracked audit gaps. Production pinned-reader work
+is separate and did not delay this fixture delivery.
