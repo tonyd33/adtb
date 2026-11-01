@@ -1,0 +1,33 @@
+=== an_adhoc_wildcard_covers_the_remaining_constructors-1 eval
+--- source
+match i | Google g -> g.gid | _ -> "other"
+--- params
+i|Identity|Google { id: identities.key(uuid("00000000-0000-7000-8000-000000000002")), user: users.key(1), gid: "g-ann" }
+--- shape
+scalar
+--- type
+Text
+--- expected
+"g-ann"
+=== an_adhoc_wildcard_covers_the_remaining_constructors-2 eval
+--- source
+match i | Google g -> g.gid | _ -> "other"
+--- params
+i|Identity|EmailPass { id: identities.key(uuid("00000000-0000-7000-8000-000000000001")), user: users.key(1), email: "ann@example.com", hash: 0x6831 }
+--- shape
+scalar
+--- type
+Text
+--- expected
+"other"
+=== an_adhoc_wildcard_covers_the_remaining_constructors-3 eval
+--- source
+match i | Google g -> g.gid | _ -> "other"
+--- params
+i|Identity|Apple { id: identities.key(uuid("00000000-0000-7000-8000-000000000004")), user: users.key(2), sub: "a-bo" }
+--- shape
+scalar
+--- type
+Text
+--- expected
+"other"

@@ -1,0 +1,10 @@
+=== try_returns_the_fault_as_a_value-1 eval
+--- source
+from r in raws select { line: key r, n: try i32(r.n) }
+--- shape
+set
+--- raw
+try
+--- expected
+0|raws.key(1)|ok|5
+1|raws.key(2)|fault|OutOfRange

@@ -1,0 +1,70 @@
+=== users rows
+--- source
+[User { id: users.key(1), name: "ann" },
+            User { id: users.key(2), name: "bo" },
+            User { id: users.key(3), name: "cy" }]
+=== identities rows
+--- source
+[EmailPass { id: identities.key(uuid("00000000-0000-7000-8000-000000000001")), user: users.key(1), email: "ann@example.com", hash: bytes("h1") },
+                Google { id: identities.key(uuid("00000000-0000-7000-8000-000000000002")), user: users.key(1), gid: "g-ann" },
+                Google { id: identities.key(uuid("00000000-0000-7000-8000-000000000003")), user: users.key(2), gid: "root" },
+                Apple { id: identities.key(uuid("00000000-0000-7000-8000-000000000004")), user: users.key(2), sub: "a-bo" }]
+=== posts rows
+--- source
+[Post { id: posts.key(1), author: users.key(1), created_at: t1, title: "hello" },
+            Post { id: posts.key(2), author: users.key(1), created_at: t2, title: "again" },
+            Post { id: posts.key(3), author: users.key(2), created_at: t3, title: "bo's" },
+            Post { id: posts.key(4), author: users.key(1), created_at: t4, title: "fourth" },
+            Post { id: posts.key(5), author: users.key(1), created_at: t5, title: "fifth" }]
+--- params
+t1|Instant|1970-01-01T00:00:00.000010Z
+t2|Instant|1970-01-01T00:00:00.000020Z
+t3|Instant|1970-01-01T00:00:00.000030Z
+t4|Instant|1970-01-01T00:00:00.000040Z
+t5|Instant|1970-01-01T00:00:00.000050Z
+=== phones rows
+--- source
+[Phone { id: phones.key(1), owner: users.key(1), seen: t1 },
+            Phone { id: phones.key(2), owner: users.key(1), seen: t2 }]
+--- params
+t1|Instant|1970-01-01T00:00:00.000010Z
+t2|Instant|1970-01-01T00:00:00.000020Z
+t3|Instant|1970-01-01T00:00:00.000030Z
+t4|Instant|1970-01-01T00:00:00.000040Z
+t5|Instant|1970-01-01T00:00:00.000050Z
+=== follows rows
+--- source
+[Follow { src: users.key(1), dst: users.key(2) },
+            Follow { src: users.key(2), dst: users.key(3) },
+            Follow { src: users.key(3), dst: users.key(2) }]
+=== employees rows
+--- source
+[Employee { id: employees.key(1), name: "boss", manager: None },
+            Employee { id: employees.key(2), name: "w", manager: Some { value: employees.key(1) } }]
+=== orders rows
+--- source
+[Order { id: orders.key(1), user: users.key(1), total: 100, qty: 2 },
+            Order { id: orders.key(2), user: users.key(1), total: 100, qty: 0 },
+            Order { id: orders.key(3), user: users.key(2), total: 30, qty: 3 },
+            Order { id: orders.key(4), user: users.key(1), total: 50, qty: 5 }]
+=== resets rows
+--- source
+from e in identities.EmailPass select Reset { id: resets.key(1), identity: key e }
+=== raws rows
+--- source
+[Raw { id: raws.key(1), n: 5 }, Raw { id: raws.key(2), n: 3000000000 }]
+=== invoices rows
+--- source
+[Invoice { id: invoices.key(1), status: Draft, issued: t1 },
+            Invoice { id: invoices.key(2), status: Sent { at: t1 }, issued: t2 },
+            Invoice { id: invoices.key(3), status: Draft, issued: t3 }]
+--- params
+t1|Instant|1970-01-01T00:00:00.000010Z
+t2|Instant|1970-01-01T00:00:00.000020Z
+t3|Instant|1970-01-01T00:00:00.000030Z
+t4|Instant|1970-01-01T00:00:00.000040Z
+t5|Instant|1970-01-01T00:00:00.000050Z
+=== sessions rows
+--- source
+[Session { id: sessions.key(1), owner: Some { value: users.key(1) } },
+            Session { id: sessions.key(2), owner: None }]

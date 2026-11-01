@@ -1,0 +1,11 @@
+=== an_aggregate_counts_equal_values_of_distinct_bindings-1 eval
+--- source
+sum(o.total for o in orders where o.user == key u)
+--- params
+u|User|User { id: users.key(1), name: "ann" }
+--- shape
+scalar
+--- type
+I64
+--- expected
+250

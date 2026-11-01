@@ -1,0 +1,14 @@
+=== a_guard_keeps_a_partial_operand_from_running-1 eval
+--- source
+from o in orders where o.qty > 0 and o.total / o.qty > 10 select o
+--- shape
+set
+--- type
+Order
+--- expected
+Order { id: orders.key(1), user: users.key(1), total: 100, qty: 2 }
+=== a_guard_keeps_a_partial_operand_from_running-2 eval
+--- source
+from o in orders where o.total / o.qty > 10 select o
+--- fault
+DivisionByZero

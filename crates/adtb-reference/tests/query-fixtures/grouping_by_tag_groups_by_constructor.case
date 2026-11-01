@@ -1,0 +1,12 @@
+=== grouping_by_tag_groups_by_constructor-1 eval
+--- source
+from i in identities group i by tag(i) into g
+         select { kind: g.key, n: count(x for x in g) }
+--- shape
+set
+--- raw
+tags
+--- expected
+0|1
+1|2
+2|1

@@ -1,0 +1,28 @@
+=== fix_is_the_least_fixpoint-1 eval
+--- source
+fix reach = (from f in follows where f.src == me select f.dst)
+          union (from r in reach, f in follows where f.src == r select f.dst)
+in from u in users where exists r in reach where r == key u select u
+--- params
+me|Key users|users.key(1)
+--- shape
+set
+--- type
+User
+--- expected
+User { id: users.key(2), name: "bo" }
+User { id: users.key(3), name: "cy" }
+=== fix_is_the_least_fixpoint-2 eval
+--- source
+fix reach = (from f in follows where f.src == me select f.dst)
+          union (from r in reach, f in follows where f.src == r select f.dst)
+in from u in users where exists r in reach where r == key u select u
+--- params
+me|Key users|users.key(2)
+--- shape
+set
+--- type
+User
+--- expected
+User { id: users.key(2), name: "bo" }
+User { id: users.key(3), name: "cy" }

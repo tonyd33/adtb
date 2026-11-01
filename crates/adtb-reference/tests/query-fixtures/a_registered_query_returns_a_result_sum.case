@@ -1,0 +1,16 @@
+=== a_registered_query_returns_a_result_sum-1 call
+--- source
+query login_key (u: Key users) -> Set (ByEmail { email: Text } | ByGoogle { gid: Text }) =
+               from i in identities.(EmailPass | Google) where i.user == u
+               select match i
+                 | EmailPass e -> ByEmail { email: e.email }
+                 | Google g    -> ByGoogle { gid: g.gid }
+--- args
+Key users|users.key(1)
+--- shape
+set
+--- raw
+login
+--- expected
+0|email|"ann@example.com"
+1|gid|"g-ann"

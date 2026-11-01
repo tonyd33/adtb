@@ -1,0 +1,78 @@
+=== a_named_set_pattern_covers_its_members-1 eval
+--- source
+match i
+                   | EmailPass e -> e.email
+                   | OAuth o     -> display_name(o)
+--- params
+i|Identity|EmailPass { id: identities.key(uuid("00000000-0000-7000-8000-000000000001")), user: users.key(1), email: "ann@example.com", hash: 0x6831 }
+--- shape
+scalar
+--- type
+Text
+--- expected
+"ann@example.com"
+=== a_named_set_pattern_covers_its_members-2 eval
+--- source
+match i
+                   | EmailPass { user } -> user
+                   | OAuth { user }     -> user
+--- params
+i|Identity|EmailPass { id: identities.key(uuid("00000000-0000-7000-8000-000000000001")), user: users.key(1), email: "ann@example.com", hash: 0x6831 }
+--- shape
+scalar
+--- type
+Key users
+--- expected
+users.key(1)
+=== a_named_set_pattern_covers_its_members-3 eval
+--- source
+match i
+                   | EmailPass e -> e.email
+                   | OAuth o     -> display_name(o)
+--- params
+i|Identity|Google { id: identities.key(uuid("00000000-0000-7000-8000-000000000002")), user: users.key(1), gid: "g-ann" }
+--- shape
+scalar
+--- type
+Text
+--- expected
+"g-ann"
+=== a_named_set_pattern_covers_its_members-4 eval
+--- source
+match i
+                   | EmailPass { user } -> user
+                   | OAuth { user }     -> user
+--- params
+i|Identity|Google { id: identities.key(uuid("00000000-0000-7000-8000-000000000002")), user: users.key(1), gid: "g-ann" }
+--- shape
+scalar
+--- type
+Key users
+--- expected
+users.key(1)
+=== a_named_set_pattern_covers_its_members-5 eval
+--- source
+match i
+                   | EmailPass e -> e.email
+                   | OAuth o     -> display_name(o)
+--- params
+i|Identity|Apple { id: identities.key(uuid("00000000-0000-7000-8000-000000000004")), user: users.key(2), sub: "a-bo" }
+--- shape
+scalar
+--- type
+Text
+--- expected
+"a-bo"
+=== a_named_set_pattern_covers_its_members-6 eval
+--- source
+match i
+                   | EmailPass { user } -> user
+                   | OAuth { user }     -> user
+--- params
+i|Identity|Apple { id: identities.key(uuid("00000000-0000-7000-8000-000000000004")), user: users.key(2), sub: "a-bo" }
+--- shape
+scalar
+--- type
+Key users
+--- expected
+users.key(2)

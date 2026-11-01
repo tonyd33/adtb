@@ -1,0 +1,27 @@
+=== after_starts_past_the_cursor-1 call
+--- source
+query page (cursor: Option (Key users)) -> Set User =
+               from u in users select u order by u.id take 50 after cursor
+--- args
+Option (Key users)|None
+--- shape
+list
+--- type
+User
+--- expected
+User { id: users.key(1), name: "ann" }
+User { id: users.key(2), name: "bo" }
+User { id: users.key(3), name: "cy" }
+=== after_starts_past_the_cursor-2 call
+--- source
+query page (cursor: Option (Key users)) -> Set User =
+               from u in users select u order by u.id take 50 after cursor
+--- args
+Option (Key users)|Some { value: users.key(1) }
+--- shape
+list
+--- type
+User
+--- expected
+User { id: users.key(2), name: "bo" }
+User { id: users.key(3), name: "cy" }

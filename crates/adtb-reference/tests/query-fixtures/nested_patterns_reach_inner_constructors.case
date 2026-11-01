@@ -1,0 +1,42 @@
+=== nested_patterns_reach_inner_constructors-1 eval
+--- source
+match s
+                 | Shipped { via: Courier c } -> c.name
+                 | Shipped { via: Mail m }    -> m.tracking
+                 | Pending                    -> "pending"
+--- params
+s|Shipment|Shipped { via: Courier { name: "dhl" } }
+--- shape
+scalar
+--- type
+Text
+--- expected
+"dhl"
+=== nested_patterns_reach_inner_constructors-2 eval
+--- source
+match s
+                 | Shipped { via: Courier c } -> c.name
+                 | Shipped { via: Mail m }    -> m.tracking
+                 | Pending                    -> "pending"
+--- params
+s|Shipment|Shipped { via: Mail { tracking: "t-1" } }
+--- shape
+scalar
+--- type
+Text
+--- expected
+"t-1"
+=== nested_patterns_reach_inner_constructors-3 eval
+--- source
+match s
+                 | Shipped { via: Courier c } -> c.name
+                 | Shipped { via: Mail m }    -> m.tracking
+                 | Pending                    -> "pending"
+--- params
+s|Shipment|Pending
+--- shape
+scalar
+--- type
+Text
+--- expected
+"pending"

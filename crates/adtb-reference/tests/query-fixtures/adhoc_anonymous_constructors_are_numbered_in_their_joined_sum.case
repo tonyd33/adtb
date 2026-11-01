@@ -1,0 +1,85 @@
+=== adhoc_anonymous_constructors_are_numbered_in_their_joined_sum-1 eval
+--- source
+match i | Google g -> Zed { n: 1 } | Apple a -> Alpha | EmailPass e -> Zed { n: 2 }
+--- params
+i|Identity|EmailPass { id: identities.key(uuid("00000000-0000-7000-8000-000000000001")), user: users.key(1), email: "ann@example.com", hash: 0x6831 }
+--- shape
+scalar
+--- raw
+anonymous
+--- expected
+1|2
+=== adhoc_anonymous_constructors_are_numbered_in_their_joined_sum-2 eval
+--- source
+match i | Google g -> Zed { n: 1 } | Apple a -> Alpha | EmailPass e -> Zed { n: 2 }
+--- params
+i|Identity|Google { id: identities.key(uuid("00000000-0000-7000-8000-000000000002")), user: users.key(1), gid: "g-ann" }
+--- shape
+scalar
+--- raw
+anonymous
+--- expected
+1|1
+=== adhoc_anonymous_constructors_are_numbered_in_their_joined_sum-3 eval
+--- source
+match i | Google g -> Zed { n: 1 } | Apple a -> Alpha | EmailPass e -> Zed { n: 2 }
+--- params
+i|Identity|Apple { id: identities.key(uuid("00000000-0000-7000-8000-000000000004")), user: users.key(2), sub: "a-bo" }
+--- shape
+scalar
+--- raw
+anonymous
+--- expected
+0|
+=== adhoc_anonymous_constructors_are_numbered_in_their_joined_sum-4 eval
+--- source
+[Zed { n: 1 }, Alpha]
+--- shape
+set
+--- raw
+anonymous
+--- expected
+1|1
+0|
+=== adhoc_anonymous_constructors_are_numbered_in_their_joined_sum-5 eval
+--- source
+[Zed { n: 1 }] union [Alpha]
+--- shape
+set
+--- raw
+anonymous
+--- expected
+1|1
+0|
+=== adhoc_anonymous_constructors_are_numbered_in_their_joined_sum-6 eval
+--- source
+fix a = [Zed { n: 1 }] union (from x in a select Alpha) in a
+--- shape
+set
+--- raw
+anonymous
+--- expected
+1|1
+0|
+=== adhoc_anonymous_constructors_are_numbered_in_their_joined_sum-7 eval
+--- source
+Zed == Alpha
+--- shape
+scalar
+--- raw
+anonymous
+--- expected
+0|
+=== adhoc_anonymous_constructors_are_numbered_in_their_joined_sum-8 eval
+--- source
+if true then z else Alpha
+--- params
+z|Zed { n: I64 }|Zed { n: 3 }
+--- raw-param
+z|0
+--- shape
+scalar
+--- raw
+anonymous
+--- expected
+1|3

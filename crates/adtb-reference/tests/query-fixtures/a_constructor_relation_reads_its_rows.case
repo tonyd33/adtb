@@ -1,0 +1,21 @@
+=== a_constructor_relation_reads_its_rows-1 eval
+--- source
+from i in identities where i.id == k select i
+--- params
+k|Key identities|identities.key(uuid("00000000-0000-7000-8000-000000000003"))
+--- shape
+set
+--- type
+Identity
+--- expected
+Google { id: identities.key(uuid("00000000-0000-7000-8000-000000000003")), user: users.key(2), gid: "root" }
+=== a_constructor_relation_reads_its_rows-2 eval
+--- source
+from g in identities.Google select g.gid
+--- shape
+set
+--- type
+Text
+--- expected
+"g-ann"
+"root"

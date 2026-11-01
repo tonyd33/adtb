@@ -1,0 +1,24 @@
+=== a_backlink_is_the_rows_that_reference-1 eval
+--- source
+u.<identities.user
+--- params
+u|User|User { id: users.key(1), name: "ann" }
+--- shape
+set
+--- type
+Identity
+--- expected
+EmailPass { id: identities.key(uuid("00000000-0000-7000-8000-000000000001")), user: users.key(1), email: "ann@example.com", hash: 0x6831 }
+Google { id: identities.key(uuid("00000000-0000-7000-8000-000000000002")), user: users.key(1), gid: "g-ann" }
+=== a_backlink_is_the_rows_that_reference-2 eval
+--- source
+from i in identities where i.user == key u select i
+--- params
+u|User|User { id: users.key(1), name: "ann" }
+--- shape
+set
+--- type
+Identity
+--- expected
+EmailPass { id: identities.key(uuid("00000000-0000-7000-8000-000000000001")), user: users.key(1), email: "ann@example.com", hash: 0x6831 }
+Google { id: identities.key(uuid("00000000-0000-7000-8000-000000000002")), user: users.key(1), gid: "g-ann" }

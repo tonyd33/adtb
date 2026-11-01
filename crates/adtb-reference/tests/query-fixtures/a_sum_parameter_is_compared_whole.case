@@ -1,0 +1,37 @@
+=== a_sum_parameter_is_compared_whole-1 call
+--- source
+query by_status (s: Status, since: Instant) -> Set Invoice =
+               from i in invoices where i.status == s and i.issued >= since select i
+--- args
+Status|Draft
+Instant|1970-01-01T00:00:00.000015Z
+--- shape
+set
+--- type
+Invoice
+--- expected
+Invoice { id: invoices.key(3), status: Draft, issued: 1970-01-01T00:00:00.000030Z }
+=== a_sum_parameter_is_compared_whole-2 call
+--- source
+query by_status (s: Status, since: Instant) -> Set Invoice =
+               from i in invoices where i.status == s and i.issued >= since select i
+--- args
+Status|Sent { at: 1970-01-01T00:00:00.000010Z }
+Instant|1970-01-01T00:00:00.000000Z
+--- shape
+set
+--- type
+Invoice
+--- expected
+Invoice { id: invoices.key(2), status: Sent { at: 1970-01-01T00:00:00.000010Z }, issued: 1970-01-01T00:00:00.000020Z }
+=== a_sum_parameter_is_compared_whole-3 eval
+--- source
+Sent { at: t }
+--- params
+t|Instant|1970-01-01T00:00:00.000010Z
+--- shape
+scalar
+--- type
+Status
+--- expected
+Sent { at: 1970-01-01T00:00:00.000010Z }

@@ -1,0 +1,53 @@
+type User = { id: Key users, name: Text }
+type Identity { id: Key identities, user: Key users }
+  = EmailPass { email: Text, hash: Bytes }
+  | Google    { gid: Text }
+  | Apple     { sub: Text }
+relation users : User key id generate sequence
+relation identities : Identity
+  key id generate uuidv7
+  unique (email) in EmailPass
+  unique (gid) in Google
+set OAuth of identities = Google | Apple
+fn display_name (i: Identity) -> Text = match i
+  | EmailPass e -> e.email
+  | Google g    -> g.gid
+  | Apple a     -> a.sub
+
+type Post = { id: Key posts, author: Key users, created_at: Instant, title: Text }
+type Phone = { id: Key phones, owner: Key users on delete cascade, seen: Instant }
+type Follow = { src: Key users, dst: Key users }
+type Employee = { id: Key employees, name: Text, manager: Option (Key employees) }
+type Order = { id: Key orders, user: Key users, total: I64, qty: I64 }
+type Reset = { id: Key resets, identity: Key identities.EmailPass on delete cascade }
+type Raw = { id: Key raws, n: I64 }
+relation posts : Post key id generate sequence
+relation phones : Phone key id generate sequence
+relation follows : Follow key (src, dst)
+relation employees : Employee key id generate sequence
+relation orders : Order key id generate sequence
+relation resets : Reset key id generate sequence
+relation raws : Raw key id generate sequence
+
+type Via = Courier { name: Text } | Mail { tracking: Text }
+type Shipment = Pending | Shipped { via: Via }
+type Status = Draft | Sent { at: Instant } | Paid { at: Instant }
+type Invoice = { id: Key invoices, status: Status, issued: Instant }
+relation invoices : Invoice key id generate sequence
+type Session = { id: Key sessions, owner: Option (Key users) }
+relation sessions : Session key id generate sequence
+
+fn sign_ins () -> Set (Local { id: Key identities, email: Text }
+                     | Remote { id: Key identities, provider: Text }) =
+  from i in identities select match i
+    | EmailPass e -> Local  { id: key e, email: e.email }
+    | Google g    -> Remote { id: key g, provider: "google" }
+    | Apple a     -> Remote { id: key a, provider: "apple" }
+
+fn logins_of (u: Key users) -> Set Text =
+  from i in identities where i.user == u select display_name(i)
+
+fn active () -> Set User = from u in users where exists i in u.<identities.user select u
+
+fn having (p: Identity -> Bool) -> Set (Key users) =
+  from i in identities where p(i) select i.user

@@ -1,0 +1,79 @@
+=== a_match_over_a_relation_is_the_union_of_its_arms-1 eval
+--- source
+from i in identities where i.user == u
+                 select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
+--- params
+u|Key users|users.key(1)
+--- shape
+set
+--- type
+Text
+--- expected
+"ann@example.com"
+"g-ann"
+=== a_match_over_a_relation_is_the_union_of_its_arms-2 eval
+--- source
+(from e in identities.EmailPass where e.user == u select e.email)
+                union (from g in identities.Google where g.user == u select g.gid)
+                union (from a in identities.Apple where a.user == u select a.sub)
+--- params
+u|Key users|users.key(1)
+--- shape
+set
+--- type
+Text
+--- expected
+"ann@example.com"
+"g-ann"
+=== a_match_over_a_relation_is_the_union_of_its_arms-3 eval
+--- source
+from i in identities where i.user == u
+                 select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
+--- params
+u|Key users|users.key(2)
+--- shape
+set
+--- type
+Text
+--- expected
+"root"
+"a-bo"
+=== a_match_over_a_relation_is_the_union_of_its_arms-4 eval
+--- source
+(from e in identities.EmailPass where e.user == u select e.email)
+                union (from g in identities.Google where g.user == u select g.gid)
+                union (from a in identities.Apple where a.user == u select a.sub)
+--- params
+u|Key users|users.key(2)
+--- shape
+set
+--- type
+Text
+--- expected
+"root"
+"a-bo"
+=== a_match_over_a_relation_is_the_union_of_its_arms-5 eval
+--- source
+from i in identities where i.user == u
+                 select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
+--- params
+u|Key users|users.key(3)
+--- shape
+set
+--- type
+Text
+--- expected
+
+=== a_match_over_a_relation_is_the_union_of_its_arms-6 eval
+--- source
+(from e in identities.EmailPass where e.user == u select e.email)
+                union (from g in identities.Google where g.user == u select g.gid)
+                union (from a in identities.Apple where a.user == u select a.sub)
+--- params
+u|Key users|users.key(3)
+--- shape
+set
+--- type
+Text
+--- expected
+

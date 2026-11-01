@@ -1,0 +1,42 @@
+=== record_patterns_bind_fields-1 eval
+--- source
+match i
+               | EmailPass { email, hash: _ } -> email
+               | Google { gid }               -> gid
+               | Apple { sub }                -> sub
+--- params
+i|Identity|EmailPass { id: identities.key(uuid("00000000-0000-7000-8000-000000000001")), user: users.key(1), email: "ann@example.com", hash: 0x6831 }
+--- shape
+scalar
+--- type
+Text
+--- expected
+"ann@example.com"
+=== record_patterns_bind_fields-2 eval
+--- source
+match i
+               | EmailPass { email, hash: _ } -> email
+               | Google { gid }               -> gid
+               | Apple { sub }                -> sub
+--- params
+i|Identity|Google { id: identities.key(uuid("00000000-0000-7000-8000-000000000003")), user: users.key(2), gid: "root" }
+--- shape
+scalar
+--- type
+Text
+--- expected
+"root"
+=== record_patterns_bind_fields-3 eval
+--- source
+match i
+               | EmailPass { email, hash: _ } -> email
+               | Google { gid }               -> gid
+               | Apple { sub }                -> sub
+--- params
+i|Identity|Apple { id: identities.key(uuid("00000000-0000-7000-8000-000000000004")), user: users.key(2), sub: "a-bo" }
+--- shape
+scalar
+--- type
+Text
+--- expected
+"a-bo"

@@ -1,0 +1,14 @@
+=== mutual_recursion_is_one_fixpoint-1 eval
+--- source
+fix even = (from u in users where key u == me select key u)
+                        union (from o in odd, f in follows where f.src == o select f.dst),
+                 odd  = from v in even, f in follows where f.src == v select f.dst
+             in from u in users where exists o in odd where o == key u select u
+--- params
+me|Key users|users.key(1)
+--- shape
+set
+--- type
+User
+--- expected
+User { id: users.key(2), name: "bo" }

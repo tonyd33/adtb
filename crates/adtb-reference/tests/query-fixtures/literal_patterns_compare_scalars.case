@@ -1,0 +1,33 @@
+=== literal_patterns_compare_scalars-1 eval
+--- source
+match c | "US" -> 0 | "CA" -> 1 | _ -> 2
+--- params
+c|Text|"US"
+--- shape
+scalar
+--- type
+I64
+--- expected
+0
+=== literal_patterns_compare_scalars-2 eval
+--- source
+match c | "US" -> 0 | "CA" -> 1 | _ -> 2
+--- params
+c|Text|"CA"
+--- shape
+scalar
+--- type
+I64
+--- expected
+1
+=== literal_patterns_compare_scalars-3 eval
+--- source
+match c | "US" -> 0 | "CA" -> 1 | _ -> 2
+--- params
+c|Text|"FR"
+--- shape
+scalar
+--- type
+I64
+--- expected
+2

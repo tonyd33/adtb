@@ -1,0 +1,30 @@
+=== a_compound_cursor_matches_keys_by_field_name-1 call
+--- source
+query feed_page (cursor: Option ({ at: Instant, id: Key posts })) -> Set Post =
+               from p in posts select p order by (p.created_at desc, key p) take 20 after cursor
+--- args
+Option ({ at: Instant, id: Key posts })|None
+--- shape
+list
+--- type
+Post
+--- expected
+Post { id: posts.key(5), author: users.key(1), created_at: 1970-01-01T00:00:00.000050Z, title: "fifth" }
+Post { id: posts.key(4), author: users.key(1), created_at: 1970-01-01T00:00:00.000040Z, title: "fourth" }
+Post { id: posts.key(3), author: users.key(2), created_at: 1970-01-01T00:00:00.000030Z, title: "bo's" }
+Post { id: posts.key(2), author: users.key(1), created_at: 1970-01-01T00:00:00.000020Z, title: "again" }
+Post { id: posts.key(1), author: users.key(1), created_at: 1970-01-01T00:00:00.000010Z, title: "hello" }
+=== a_compound_cursor_matches_keys_by_field_name-2 call
+--- source
+query feed_page (cursor: Option ({ at: Instant, id: Key posts })) -> Set Post =
+               from p in posts select p order by (p.created_at desc, key p) take 20 after cursor
+--- args
+Option ({ at: Instant, id: Key posts })|Some { value: { at: 1970-01-01T00:00:00.000040Z, id: posts.key(4) } }
+--- shape
+list
+--- type
+Post
+--- expected
+Post { id: posts.key(3), author: users.key(2), created_at: 1970-01-01T00:00:00.000030Z, title: "bo's" }
+Post { id: posts.key(2), author: users.key(1), created_at: 1970-01-01T00:00:00.000020Z, title: "again" }
+Post { id: posts.key(1), author: users.key(1), created_at: 1970-01-01T00:00:00.000010Z, title: "hello" }
