@@ -4,7 +4,7 @@ status: in-progress
 kind: feature
 priority: 910
 summary: no reproducible cross-database baseline or recurring measured optimization cycle exists
-branch: comparison-protocol
+branch: benchmark-feasibility
 tags:
   - engine
   - test
@@ -636,3 +636,42 @@ of configured runtime/start/stop exposure. Reserve a 180-minute exclusive window
 with a prelaunch cutoff and retained not-started cells; native liveness limits
 and external reporting/operator costs remain explicit. Parameters are still
 pending final feasibility and freeze, not accepted on extrapolation.
+
+## 2026-11-01: intermediate size with a runtime validity gate
+
+Both serial N=1000 counter calibrations completed the unchanged 20,000 writes
+under 120 seconds, with exact outputs/history/full-state/reopen checks. Both
+N=1000 lifecycle concurrency levels completed. The N=10000 four-writer adtb
+lifecycle completed, but its serial counterpart reached the 120-second ceiling
+without a final application artifact. Its phase attribution and partial counts
+remain unknown. These observations do not support freezing the full 1000/10000
+matrix. Freezing only N=1000 would drop the requested dataset-size dimension.
+
+The lead authorizes a narrow runtime-size admission repair before further probes.
+The current literal size list forces a Rust rebuild for intermediate parameter
+choices even though the generator and oracles support them. Admit N at least
+four, divisible by four, dividing 20,000 and allowing at least two complete
+counter passes. These rules preserve equal campaign partitions, uniform
+closed-form counter expectations and rotated key ownership. Coprimality with
+the permutation stride 37 follows from dividing 20,000. This is a bounded
+benchmark coverage policy, not a claimed engine capacity limit.
+
+Only leaf CLI/report admission, the portable artifact/usage contract and runtime
+boundary cases may change. Do not alter generator, queues, counts, settings,
+oracles, durability or engine code. Independent focused source review precedes
+one affected package/consumer verification and incremental release build. Reuse
+old successful N=1000 feasibility only after proving the gate-only successful
+execution path is unchanged, with old and new binary identities explicit.
+
+The next common large candidate is N=5000: fivefold cardinality relative to 1000
+and four complete counter passes. Probe the serial adtb lifecycle first under
+the same 120-second/1610612736-byte/64-task limits. If it completes, cover both
+peers, workloads and concurrency levels plus the missing N=1000 four-writer
+counter pair. If it fails, retain it and permit one predeclared N=2000 serial
+discriminator before another finite lead decision. At most 11 further database
+invocations are assigned in this stage. No new deadline increase, per-peer
+adaptation or smoke substitution is authorized.
+
+Land the admission change first, then rebase and finalize the protocol on it.
+The protocol keeps two meaningful common sizes, five paired repetitions and
+all failure evidence; its final numerical freeze remains pending actual results.
