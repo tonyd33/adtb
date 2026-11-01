@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-28
-status: open
+status: in-progress
 kind: feature
 priority: 910
 summary: no reproducible cross-database baseline or recurring measured optimization cycle exists
+branch: profile-preparation
 tags:
   - engine
   - test
@@ -716,3 +717,84 @@ Bounded feasibility, size/concurrency selection and protocol freeze are complete
 This umbrella returns to open for the separately scheduled 80-run ranked
 collection, independent raw-result review and publication, then one measured
 optimization. No ranked baseline, beta exit or defect-class retirement is claimed.
+
+## 2026-11-01: ranked collection, publication and measured optimization assigned
+
+The active user goal is to publish the first SQLite comparison in an exclusive
+window, then profile the largest measured bottleneck and deliver a principled
+optimization with repeatable before/after results. Completing collection or
+publication alone does not complete this goal.
+
+Workspace `sqlite-comparison` collects the frozen 80 new invocations on code
+`2f0369f6875073286513ae150e94d113a38f25b7` and one provenance-verified release
+binary under the existing protocol. No feasibility data enters ranked results.
+Hold the shared machine lock and exclusive window, retain source/binary/config
+and per-pair context, stop on nonzero and preserve every planned outcome. No
+build, test or profiler runs alongside collection. Other assigned tracks may
+read sources and prepare publication/profiling metadata only.
+
+Publish all five per-cell observations and median/range, latency populations,
+counts/retries, resource/storage/phase scopes and failures with an independent
+raw-data/membership/arithmetic review. Provide portable per-run data and a
+reviewed allowlisted raw-sample archive, preserving original-to-public hashes.
+Raw host paths, inventories and other private context remain local. Use a
+standard repository result page and release attachment after concrete artifact
+review; no replacement benchmark framework or hidden favorable aggregate.
+
+Only after baseline publication, select the largest measured adtb bottleneck
+using phase/resource and native profile evidence. Bound diagnostic profiling,
+keep it outside ranked data, and state the causal hypothesis, invariant and
+enforcer before implementation. Compare the strongest alternative and fix the
+owning subsystem rather than weaken work, durability, constraints or settings.
+No kernel/global configuration change is authorized merely to enable profiling.
+
+The optimization requires an independently reviewed bounded source change,
+meaningful regression/sensitivity evidence, appropriate final verification and
+repeatable before/after timing on unchanged work/configuration. Shared engine
+changes get one full check after review. Preserve the original baseline; record
+optimized code/build identity and an explicit comparison revision. Repeat the
+affected workload and comparison scope needed to demonstrate the saving and
+exclude material regressions. Reject an unrepeatable or noise-sized improvement.
+Land and publish the principled change and its results only when these gates
+are met. The broader beta remains outside this task's completion claim.
+
+## 2026-11-01: keep comparison data local
+
+The maintainer clarified that no public release, upload or public result page
+is needed; the data is for project work. Continue the frozen 80-run exclusive
+collection unchanged. Deliver retained raw measurements, a canonical local
+machine-readable summary and readable analysis with an independent raw-data
+audit. The public artifact/archive/sanitization plan above is superseded.
+
+Profiling can begin after baseline closure, the independent local audit and lead
+selection of the largest measured adtb bottleneck. It does not wait for public
+publication. The principled optimization and repeatable before/after requirements
+remain fully active. Benchmark data and host context stay local; normal code
+review, verification and landing still apply to the implementation change.
+
+## 2026-11-01: local baseline accepted; diagnostic profiling active
+
+The frozen exclusive comparison completed every planned invocation with normal
+native and report exits, no replacements and unchanged source, executable,
+configuration and preparation. Separate author arithmetic and a fresh independent
+raw-data audit agree on membership, exact decoded outputs and counter history,
+counts, all latency populations, rates, resources, storage and phase boundaries.
+Original producer full-state and reopen gates remain distinct from independently
+recomputed ledger observations. Retained cache, isolation and unavailable native
+I/O limitations remain explicit. Results and raw context stay local, with no
+public release or results page.
+
+Workspace `profile-preparation` now owns native diagnostic profiling. The lead
+selected the largest measured adtb phase/cell: the steady counter workload at
+N=1000 with one writer. An initial CPU profile and unchanged diagnostic control
+passed all original workload, output and reopen checks. Caller attribution was
+insufficient, so one separate release-equivalent build with symbols and frame
+pointers is authorized for attribution. Preserve the exact normal-release before
+executable and its source/build inputs; the diagnostic build cannot supply a
+ranked performance comparison. No engine change or optimization is implemented.
+
+Next, use actual profile evidence to choose the owning mechanism and its strongest
+competing explanation. Require an independently reviewed principled implementation,
+appropriate final checks and repeatable normal-release before/after measurements
+under unchanged work, constraints, durability and settings. The full active goal
+remains incomplete until that optimization and its measured saving are delivered.
