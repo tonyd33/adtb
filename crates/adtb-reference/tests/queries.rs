@@ -178,15 +178,6 @@ fn post(f: &Fixture, id: i64) -> Value {
 }
 
 #[test]
-fn a_query_built_sum_selects_by_constructor() {
-    let f = fixture();
-    assert_eq!(
-        texts(["google", "apple"]),
-        f.value("from l in sign_ins().Remote select l.provider")
-    );
-}
-
-#[test]
 fn a_generator_depends_on_an_earlier_one() {
     let f = fixture();
     let got =
@@ -198,12 +189,6 @@ fn a_generator_depends_on_an_earlier_one() {
         rec(vec![("name", text("bo")), ("id", f.value(&uuid(4)))]),
     ]);
     assert_eq!(want, got);
-}
-
-#[test]
-fn projection_merges_equal_values() {
-    let f = fixture();
-    assert_eq!(keys([1, 2]), f.value("from p in posts select p.author"));
 }
 
 #[test]
@@ -365,45 +350,6 @@ fn literal_patterns_compare_scalars() {
 }
 
 #[test]
-fn a_join_compares_a_reference_with_a_key() {
-    let f = fixture();
-    assert_eq!(
-        texts(["ann", "bo"]),
-        f.value("from i in identities, u in users where i.user == key u select u.name")
-    );
-}
-
-#[test]
-fn a_path_is_a_join() {
-    let f = fixture();
-    let path = f.value("from i in identities select i.user.name");
-    let join = f.value("from i in identities, u in users where key u == i.user select u.name");
-    assert_eq!(texts(["ann", "bo"]), path);
-    assert_eq!(join, path);
-}
-
-#[test]
-fn a_path_to_one_constructor_needs_one_arm() {
-    let f = fixture();
-    assert_eq!(
-        texts(["ann@example.com"]),
-        f.value("from r in resets select match r.identity | EmailPass e -> e.email")
-    );
-}
-
-#[test]
-fn an_optional_reference_is_matched() {
-    let f = fixture();
-    let got = f.value(
-        r#"from e in employees
-           select match e.manager
-             | None              -> "none"
-             | Some { value: m } -> m.name"#,
-    );
-    assert_eq!(texts(["none", "boss"]), got);
-}
-
-#[test]
 fn a_backlink_is_the_rows_that_reference() {
     let f = fixture();
     let p = [("u", "User", user(&f, 1))];
@@ -413,19 +359,6 @@ fn a_backlink_is_the_rows_that_reference() {
         .unwrap();
     assert_eq!(set([identity(&f, 1), identity(&f, 2)]), back);
     assert_eq!(from, back);
-}
-
-#[test]
-fn a_backlink_counts_per_row() {
-    let f = fixture();
-    let got =
-        f.value("from u in users select { name: u.name, n: count(i for i in u.<identities.user) }");
-    let want = set([
-        rec(vec![("name", text("ann")), ("n", int(2))]),
-        rec(vec![("name", text("bo")), ("n", int(2))]),
-        rec(vec![("name", text("cy")), ("n", int(0))]),
-    ]);
-    assert_eq!(want, got);
 }
 
 #[test]

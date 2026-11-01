@@ -1,0 +1,120 @@
+# a_join_compares_a_reference_with_a_key
+schema
+  module app
+  type User = { id: Key users, name: Text }
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Bytes }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation users : User key id generate sequence
+  relation identities : Identity
+    key id generate uuidv7
+    unique (email) in EmailPass
+    unique (gid) in Google
+  set OAuth of identities = Google | Apple
+  fn display_name (i: Identity) -> Text = match i
+    | EmailPass e -> e.email
+    | Google g    -> g.gid
+    | Apple a     -> a.sub
+
+  type Post = { id: Key posts, author: Key users, created_at: Instant, title: Text }
+  type Phone = { id: Key phones, owner: Key users on delete cascade, seen: Instant }
+  type Follow = { src: Key users, dst: Key users }
+  type Employee = { id: Key employees, name: Text, manager: Option (Key employees) }
+  type Order = { id: Key orders, user: Key users, total: I64, qty: I64 }
+  type Reset = { id: Key resets, identity: Key identities.EmailPass on delete cascade }
+  type Raw = { id: Key raws, n: I64 }
+  relation posts : Post key id generate sequence
+  relation phones : Phone key id generate sequence
+  relation follows : Follow key (src, dst)
+  relation employees : Employee key id generate sequence
+  relation orders : Order key id generate sequence
+  relation resets : Reset key id generate sequence
+  relation raws : Raw key id generate sequence
+
+  type Via = Courier { name: Text } | Mail { tracking: Text }
+  type Shipment = Pending | Shipped { via: Via }
+  type Status = Draft | Sent { at: Instant } | Paid { at: Instant }
+  type Invoice = { id: Key invoices, status: Status, issued: Instant }
+  relation invoices : Invoice key id generate sequence
+  type Session = { id: Key sessions, owner: Option (Key users) }
+  relation sessions : Session key id generate sequence
+
+  fn sign_ins () -> Set (Local { id: Key identities, email: Text }
+                       | Remote { id: Key identities, provider: Text }) =
+    from i in identities select match i
+      | EmailPass e -> Local  { id: key e, email: e.email }
+      | Google g    -> Remote { id: key g, provider: "google" }
+      | Apple a     -> Remote { id: key a, provider: "apple" }
+
+  fn logins_of (u: Key users) -> Set Text =
+    from i in identities where i.user == u select display_name(i)
+
+  fn active () -> Set User = from u in users where exists i in u.<identities.user select u
+
+  fn having (p: Identity -> Bool) -> Set (Key users) =
+    from i in identities where p(i) select i.user
+run
+  insert users from [User { id: users.key(1), name: "ann" },
+                     User { id: users.key(2), name: "bo" },
+                     User { id: users.key(3), name: "cy" }]
+  insert identities from [EmailPass { id: identities.key(uuid("00000000-0000-7000-8000-000000000001")), user: users.key(1), email: "ann@example.com", hash: bytes("h1") },
+                          Google { id: identities.key(uuid("00000000-0000-7000-8000-000000000002")), user: users.key(1), gid: "g-ann" },
+                          Google { id: identities.key(uuid("00000000-0000-7000-8000-000000000003")), user: users.key(2), gid: "root" },
+                          Apple { id: identities.key(uuid("00000000-0000-7000-8000-000000000004")), user: users.key(2), sub: "a-bo" }]
+  insert posts from (
+    from t1 in (match Instant.parse("1970-01-01T00:00:00.000010Z") | Some s -> [s.value] | None -> []),
+      t2 in (match Instant.parse("1970-01-01T00:00:00.000020Z") | Some s -> [s.value] | None -> []),
+      t3 in (match Instant.parse("1970-01-01T00:00:00.000030Z") | Some s -> [s.value] | None -> []),
+      t4 in (match Instant.parse("1970-01-01T00:00:00.000040Z") | Some s -> [s.value] | None -> []),
+      t5 in (match Instant.parse("1970-01-01T00:00:00.000050Z") | Some s -> [s.value] | None -> []),
+      row in [Post { id: posts.key(1), author: users.key(1), created_at: t1, title: "hello" },
+              Post { id: posts.key(2), author: users.key(1), created_at: t2, title: "again" },
+              Post { id: posts.key(3), author: users.key(2), created_at: t3, title: "bo's" },
+              Post { id: posts.key(4), author: users.key(1), created_at: t4, title: "fourth" },
+              Post { id: posts.key(5), author: users.key(1), created_at: t5, title: "fifth" }]
+    select row)
+  insert phones from (
+    from t1 in (match Instant.parse("1970-01-01T00:00:00.000010Z") | Some s -> [s.value] | None -> []),
+      t2 in (match Instant.parse("1970-01-01T00:00:00.000020Z") | Some s -> [s.value] | None -> []),
+      row in [Phone { id: phones.key(1), owner: users.key(1), seen: t1 },
+              Phone { id: phones.key(2), owner: users.key(1), seen: t2 }]
+    select row)
+  insert follows from [Follow { src: users.key(1), dst: users.key(2) },
+                       Follow { src: users.key(2), dst: users.key(3) },
+                       Follow { src: users.key(3), dst: users.key(2) }]
+  insert employees from [Employee { id: employees.key(1), name: "boss", manager: None },
+                         Employee { id: employees.key(2), name: "w", manager: Some { value: employees.key(1) } }]
+  insert orders from [Order { id: orders.key(1), user: users.key(1), total: 100, qty: 2 },
+                      Order { id: orders.key(2), user: users.key(1), total: 100, qty: 0 },
+                      Order { id: orders.key(3), user: users.key(2), total: 30, qty: 3 },
+                      Order { id: orders.key(4), user: users.key(1), total: 50, qty: 5 }]
+  insert resets from (from e in identities.EmailPass select Reset { id: resets.key(1), identity: key e })
+  insert raws from [Raw { id: raws.key(1), n: 5 }, Raw { id: raws.key(2), n: 3000000000 }]
+  insert invoices from (
+    from t1 in (match Instant.parse("1970-01-01T00:00:00.000010Z") | Some s -> [s.value] | None -> []),
+      t2 in (match Instant.parse("1970-01-01T00:00:00.000020Z") | Some s -> [s.value] | None -> []),
+      t3 in (match Instant.parse("1970-01-01T00:00:00.000030Z") | Some s -> [s.value] | None -> []),
+      row in [Invoice { id: invoices.key(1), status: Draft, issued: t1 },
+              Invoice { id: invoices.key(2), status: Sent { at: t1 }, issued: t2 },
+              Invoice { id: invoices.key(3), status: Draft, issued: t3 }]
+    select row)
+  insert sessions from [Session { id: sessions.key(1), owner: Some { value: users.key(1) } },
+                        Session { id: sessions.key(2), owner: None }]
+
+query
+  { users: count(x for x in users), identities: count(x for x in identities),
+    posts: count(x for x in posts), phones: count(x for x in phones),
+    follows: count(x for x in follows), employees: count(x for x in employees),
+    orders: count(x for x in orders), resets: count(x for x in resets),
+    raws: count(x for x in raws), invoices: count(x for x in invoices),
+    sessions: count(x for x in sessions) }
+----
+{ users: 3, identities: 4, posts: 5, phones: 2, follows: 3, employees: 2, orders: 4, resets: 1, raws: 2, invoices: 3, sessions: 2 }
+
+query rowsort
+  from i in identities, u in users where i.user == key u select u.name
+----
+"ann"
+"bo"
+

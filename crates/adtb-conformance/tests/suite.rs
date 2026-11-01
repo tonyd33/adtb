@@ -6,14 +6,13 @@ fn part(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn passes(name: &str) {
-    let dir = part(name);
+fn passes(dir: &Path) {
     assert!(
-        !adtb_conformance::scripts(&dir).is_empty(),
+        !adtb_conformance::scripts(dir).is_empty(),
         "no scripts in {}",
         dir.display()
     );
-    let found = adtb_conformance::run_dir(&dir);
+    let found = adtb_conformance::run_dir(dir);
     assert!(
         found.is_empty(),
         "{} directives differ:\n{}",
@@ -24,32 +23,63 @@ fn passes(name: &str) {
 
 #[test]
 fn model() {
-    passes("model");
+    passes(&part("model"));
 }
 
 #[test]
 fn queries() {
-    passes("queries");
+    passes(&part("queries"));
+}
+
+#[test]
+fn reference_queries() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/reference-queries");
+    let pilot = adtb_conformance::scripts(&dir);
+    assert!(
+        pilot.len() >= 7,
+        "at least the seven migrated reference query cases"
+    );
+    let queries: usize = pilot
+        .iter()
+        .map(|path| {
+            let text =
+                std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            let script = adtb_conformance::parse(&text)
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            let queries = script
+                .directives
+                .iter()
+                .filter(|d| matches!(d.kind, adtb_conformance::Kind::Query { .. }))
+                .count();
+            assert!(queries >= 1, "{} has no query", path.display());
+            queries
+        })
+        .sum();
+    assert!(
+        queries >= 15,
+        "at least seven fixture checks and eight query outcomes"
+    );
+    passes(&dir);
 }
 
 #[test]
 fn writes() {
-    passes("writes");
+    passes(&part("writes"));
 }
 
 #[test]
 fn constraints() {
-    passes("constraints");
+    passes(&part("constraints"));
 }
 
 #[test]
 fn conformance() {
-    passes("conformance");
+    passes(&part("conformance"));
 }
 
 #[test]
 fn interop() {
-    passes("interop");
+    passes(&part("interop"));
 }
 
 fn expand(body: &str, schema: &str, run: &str) -> String {
