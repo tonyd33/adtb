@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-31
-status: in-progress
+status: open
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
-branch: reference-write-outcomes
 ---
 
 # Test audit findings
@@ -461,3 +460,30 @@ edit without relinking, strict affected lint/static checks and one complete
 reference-package final run with native exit and unchanged input/id/status
 records. The author owns commands, correction and final verification; the lead
 owns landing/tree comparison. No unchanged full engine or discovery rerun.
+
+
+## 2026-11-01: successful-outcome cohort landed
+
+Landed `a0a2ec8c2a6d` after fresh source and execution-evidence review. Twelve
+families preserve 15 statements, 12 actual probes and three native counts in
+30 runtime steps. Totals are 60 of 78 write families and 115 steps, with all
+18 retained wrappers and the prior 48 runtime families unchanged. Bounded
+native helpers preserve whole change-map emptiness, typed relation/constructor
+entries, fixed clocks, generated-key exclusion and raw tag/field values.
+The query-purity comparison now uses an independent pre-statement database;
+the old comparison after fixture assignment was tautological and is removed.
+
+Eight compiled observation-bridge mutants failed their intended assertions;
+seven runtime-data outcomes verified strict inputs, case growth and no relink.
+After exact restoration, the complete reference package passed 158/158 tests
+across ten binaries, zero skipped, native exit zero: 1.527s execution and 2.761s
+command elapsed. All 3270 tracked inputs/metadata entries, revision and status
+were identical. Affected lint/format/house/size checks passed. All 18 independently
+reviewed source hashes matched the final tree, and tested-to-landed diff is
+empty. No duplicate engine/discovery or post-land suite ran.
+
+This batch took approximately six minutes from local brief creation to landing;
+that is a whole-track observation, not measured coding time or a general speedup.
+The remaining 18 families still have migratable case data: result relationships,
+stage and restricted-kernel hooks, catalog identity, custom setup and row limits
+need their bounded native driver boundaries. Keep the wider audit open.
