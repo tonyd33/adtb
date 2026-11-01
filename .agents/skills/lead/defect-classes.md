@@ -37,3 +37,20 @@ above remain historical estimates, not a current inventory.
 
 Measured regressions and mutants support these bounded enforcement points.
 There is not yet enough subsequent work to measure class-wide recurrence.
+
+
+## Quality cadence through `7309b60b`
+
+The ten code commits after `36d64bd6` have a fresh bounded source review;
+no new confirmed finding was filed. No defect class is retired. Typed fatal
+payloads enforce cause identity at their changed producers/catchers; checked
+upsert domains reach both evaluators; surviving field owners are mapped by
+catalog identity. These boundaries still leave acquisition cleanup, worker
+execution, nonhiding admission and nested reader facts open.
+
+Runtime fixture migrations preserve typed outcomes, raw IDs, List shape,
+external bindings and registered calls while removing ordinary case data
+from Rust inputs. Discovery floors and sensitivity probes support these
+specific drivers. They do not establish a universal vacuity gate, clean-build
+saving or defect recurrence trend. No class-wide budget mechanism landed;
+the rejected unlanded field-reader prototypes are not evidence of a fix.

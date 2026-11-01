@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-28
-status: open
+status: in-progress
 kind: feature
 priority: 910
 summary: no reproducible cross-database baseline or recurring measured optimization cycle exists
+branch: sqlite-baseline
 tags:
   - engine
   - test
@@ -103,3 +104,28 @@ limit the affected comparison rather than being counted as fast success.
 Keep private execution-environment details in local receipts under the
 repository's publication rules. Protocol, logical workload, repeatable
 commands, portable configuration and reviewed results remain public.
+
+
+## 2026-11-01: native correctness driver started
+
+Track `sqlite-baseline` owns the reduced owner/current-pin correctness driver:
+a keyed transaction control and Party/Npc plus Planned/Live/Played session
+lifecycle. Implementing this supported consumer may proceed alongside the
+isolated pinned-reader redesign; no rolling schema, role, hiding or nested
+upsert policy is assumed. Validate the actual public schema and calls before
+claiming readiness. This supersedes the earlier blanket ordering for source
+implementation; timings still require verified prerequisites and review.
+
+Prefer a root workspace member using native Cargo opt-in features so bundled
+SQLite and long workloads do not add routine default build/test cost. Compare
+existing codegen/native interfaces before committing to the concrete layout.
+No new benchmark framework, third workspace or engine API change is assumed.
+The proposed rusqlite 0.41.1 bundled route pins libsqlite3-sys 0.39.1/SQLite
+3.54.1, subject to actual complete dependency/license/advisory verification.
+
+The finite implementation exit is reviewed deterministic adapters, equivalent
+constraints, independent complete and acknowledged-prefix/reopen oracles,
+exact refusal controls and a portable run recipe. No timing, speed claim,
+optimization, pilot or measured matrix has started. The separate pilot and
+exclusive measurement phase follow reviewed correctness evidence; the lead
+must freeze counts and time budget before ranked measurements.
