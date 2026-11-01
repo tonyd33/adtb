@@ -227,3 +227,32 @@ before execution; a bounded patch, exact backups and targeted controls are
 being prepared for review before another execution request. This is not a
 corrected candidate or a passing final check. Separate fixture migrations
 have landed independently and do not wait on this production redesign.
+
+
+## 2026-11-01: reader prototype stopped before integration
+
+The separated-demand replay prototype is retired as a source candidate.
+Its staged Rust scope grew to +1338/-77 lines, beyond the agreed estimate,
+yet still requires exact fallback for one observer selecting among captured
+producer alternatives. Shape construction also allocates before the proposed
+shared work budget can stop it. No live application, build or test ran on
+that prototype; formatting evidence is not execution evidence.
+
+Keep the existing exact authority analyzer and current Reader integration
+unchanged. Neither the product-cost candidate nor the imprecise joined-domain
+candidate lands. The observed new owner-registration refusal belongs to the
+unlanded integration, not a newly accepted refusal policy. The nested reader
+bug and nonhiding admission question remain open.
+
+Cause: unguarded value joins lose the producer/control correlations needed
+for precise field observations, while exact constructor alternatives multiply
+independent domains. This intersects the unbounded-work class. No class-wide
+mechanism is delivered. A read-only architecture assessment found no material
+simplification of replay that preserves attribution and coverage. Guarded
+native provenance is a possible future direction, with unresolved identity,
+guard-algebra and allocation/copy contracts; it is not an implementation plan.
+Preserve the stopped experiments and their existing executed controls.
+Further source work requires a bounded private Value contract covering capture,
+independent aliases, selected producers and budget enforcement before allocation,
+then a concrete reviewed implementation scope. No new public semantics or spec
+ruling is made. Separate fixture and benchmark checkpoints remain delivered.
