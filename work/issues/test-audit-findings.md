@@ -129,3 +129,19 @@ and measured equivalent Rust-input versus runtime-fixture incremental edits.
 Fixture-only edits must avoid Rust recompilation; no whole-suite speedup is
 claimed from the pilot. One final full check follows fresh review and targeted
 proof; unchanged landed inputs reuse that receipt. The umbrella remains open.
+
+
+## 2026-10-31: runtime data is the default
+
+The maintainer requires justification for compiled Rust cases. Separate a
+shared Rust driver from case inputs and expectations: typed/internal assertions
+can remain in the driver while the cases load at runtime. A runner's missing
+feature does not alone justify retaining many wrappers; compare a small shared
+extension with migration while preserving every relevant assertion.
+
+The current seven-case pilot is being corrected to preserve reference-only
+responsibility and allow corpus growth without Rust edits. A separate read-only
+agent is mapping all remaining reference-query tests and the complete checker
+root test module into fixture routes and explicitly justified retained Rust
+families. This is a bounded next-batch proposal, not a completed suite audit or
+a claim that every case can use the current conformance format unchanged.

@@ -99,6 +99,13 @@ Do not act as a relay for review findings. Before a ruling or a next-round brief
 
 - Prefer the enforcer that needs no one to remember it, in this order: type, lint, searching test, process. When a review shows a run-time heuristic can fire falsely or be missed, ask what the compiler could refuse instead.
 - Judge tests by [Test value](../../../AGENTS.md#test-value). Ask each reviewer to name, for each new test that matters, the mutation that would make it fail, and to report assertions that cannot fail. Before deleting a test on an audit's word, check what covers it. A read-only finding is a candidate; mutation is the measure.
+- Make runtime fixture cases the default. Require justification for retaining
+  compiled Rust cases, separating reusable driver logic from input/expected
+  data. A missing runner feature is a design question about the shared driver,
+  not automatic justification for many compiled wrappers. Preserve typed,
+  internal and property assertions when moving their cases. Judge migrations
+  by measured edit feedback and permanent runtime cost, without accidental
+  expansion to additional backends.
 - Check a script or tool's safety by what it can reach, not by what its cases do today. An `rm -rf` of a path the script did not itself make with `mktemp` is a blocker.
 - Do not call a plan deep or done. Report what landed and what can no longer go wrong. Say which claims were read and which were run.
 

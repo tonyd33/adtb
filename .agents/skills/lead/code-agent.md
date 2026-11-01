@@ -187,6 +187,17 @@ Work is tracked as tix tickets in the main checkout's
 there (their `## Report` states the gap). Do not edit tickets; the
 lead updates them. Report anything that should become a new ticket.
 
+Default test cases to runtime-loaded fixtures. Keep a small shared Rust
+driver where it is needed to exercise APIs or check typed/internal properties;
+that does not justify compiling each input and expected outcome into Rust.
+A retained or new compiled case needs a reason that runtime data with an
+existing or reasonably small shared driver cannot preserve its assertions.
+Convenience or the absence of an existing runner feature is not sufficient:
+compare a reusable driver extension with retaining the compiled case family.
+State justifications by family in the brief or receipt, not boilerplate comments.
+Load case data at runtime; embedding it or generating Rust cases retains the
+compilation dependency this policy is intended to remove.
+
 Test value and cost: use retained timings to find expensive tests before
 adding coverage. Remove redundant tests only after naming the retained
 stronger coverage. Remove pins on details no contract states; repair a weak
