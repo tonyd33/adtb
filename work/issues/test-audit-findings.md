@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-31
-status: open
+status: in-progress
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
+branch: reference-write-boundaries
 ---
 
 # Test audit findings
@@ -561,3 +562,28 @@ other-consumer edits cannot reach this package; no final package/fullcheck
 repeat ran. Remaining ordinary data: reject-load identity, restricted-old
 kernels, catalog-linked identity, custom Invoice setup and row-limit hooks.
 These ten families and the wider inventory stay open.
+
+## 2026-11-01: remaining native write boundaries assigned
+
+Workspace `reference-write-boundaries`, base `4757015c5dc0`, assesses the final
+ten write families for runtime data. Scope is reference write tests/fixtures
+only: reject-load identity, restricted-old kernels, catalog identity, custom
+Invoice setup and row-limit callbacks. Preserve the existing 68 families and
+131 blocks, actual native calls, typed identity and independent state/outcome
+oracles. A missing driver mode is not justification for compiled case data.
+The author proposes bounded reusable native mechanisms before implementation;
+a split needs a concrete responsibility or source-size reason.
+
+No production, testkit, dependency or global configuration changes are assigned.
+Relevant sensitivity and runtime data growth without relinking precede final
+verification. The author owns one complete affected reference-package run on
+reviewed inputs, strict affected lint, formatting, size and exact-range house
+checks with unchanged-input/native-exit evidence. Fresh independent review and
+lead landing comparison complete the track. No blanket engine rerun. The other
+active track changes only the isolated comparison driver, so landing is independent.
+
+Lead scope ruling: implement families 73–78 together, using runtime family schema
+setup and a typed row-limit boundary, about 155–185 new driver lines. Preserve
+native callback execution and exact refusal/value/state checks. Families 20, 45,
+46 and 50 remain open: reject-load, restricted-old and catalog identity are
+separate mechanisms and do not belong in a larger collection of special hooks.

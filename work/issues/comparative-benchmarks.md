@@ -4,6 +4,7 @@ status: in-progress
 kind: feature
 priority: 910
 summary: no reproducible cross-database baseline or recurring measured optimization cycle exists
+branch: sqlite-crash-controls
 tags:
   - engine
   - test
@@ -289,3 +290,28 @@ Known named-set migration admission remains separate. Ambiguous commit,
 externally flushed acknowledged-prefix/child-kill controls, hard containment,
 resource reporting, feasibility, pilots and the frozen comparison protocol
 still precede measurement readiness. No benchmark result or beta exit is claimed.
+
+## 2026-11-01: acknowledged-prefix crash control assigned
+
+Workspace `sqlite-crash-controls`, base `4757015c5dc0`, proposes a bounded real
+child-termination control through the existing native/SQLite adapters. Scope:
+`adtb-bench` native source, runtime fixtures and README. Define the externally
+observed acknowledgement point, retained prefix, identified in-flight ambiguity,
+reached kill handshake, bounded process termination/reaping and independent
+complete reopen oracle before implementing. Prefer native process facilities;
+no new supervisor framework, backend, dependency, manifest or global containment
+change is authorized without an explicit scope ruling.
+
+Start with the deterministic counter-smoke workload. Required sensitivity must
+reject a lost acknowledged write, unjustified unacknowledged state and a missed
+kill point. Preserve exact histories, outputs, support relations and refusals.
+This is consumer crash validation; do not claim actual storage-flush fault
+injection or engine-wide failure-class closure. No measurements or pilots.
+
+The author owns complete default/native package checks, strict affected lints,
+formatting, house and size checks plus every discovery/containment consumer the
+new process path actually affects. Unchanged engine/dependency evidence may be
+reused after input comparison. Fresh independent review includes child-process
+reachability and the oracle; source-stable review overlaps targeted sensitivity.
+Final source/native exits and full input snapshots precede landing. The parallel
+reference-fixture track has no shared-source overlap; landing is independent.
