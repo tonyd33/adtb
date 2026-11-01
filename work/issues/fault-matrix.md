@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-31
-status: in-progress
+status: open
 kind: bug
 priority: 401
 summary: acknowledged work and failure outcomes are not searched through Database under every fault
-branch: fault-fatal
 ---
 
 # Fault matrix
@@ -159,3 +158,44 @@ worker-control query initially projected the public timestamp instead of
 the complete catalog/row mapping justified correction. Final affected
 checks and full integration are still required before a landing claim.
 This remains the typed prerequisite, not the statement/commit search.
+
+## 2026-10-31: typed fatal-I/O prerequisite landed and verified
+
+Landed as `6c973e03e20a3248f8e91a0d36b98454a402457d`, based on
+`f35ec560`. Fatal-I/O identity is a private-construction Rust payload
+with original typed cause and context, raised at one storage boundary.
+Shared job catches preserve ordinary text; the simulator helper accepts
+only genuine typed I/O outside the existing crash lifecycle. The host
+callback catch propagates that same payload and retains ordinary provider
+failure behavior. Diagnostic strings no longer decide any of these cases.
+
+The measured lookalike and host-flattening regressions, plus restored
+prefix-filter and Log-string mutations, failed before their repairs.
+Honest affected checks passed: 26 fault tests, 34 scrub, 11 commit and
+17 host-function tests, including six counted ordinary provider failure
+categories; affected clippy and format passed. The initial field-projection
+failure remains recorded above, rather than being counted as a pass.
+
+Final full `check` and the lead post-land full `check` both passed on
+unchanged source: 3759 root tests, 48 campaign, 13 Loom and 39 Miri,
+plus all configured static, documentation, grammar, policy, size and
+tooling checks. Existing skips were root eight, campaign one, Loom
+nineteen and Miri two. The independent reading review covered the initial
+migration; the lead reviewed the small callback propagation delta.
+
+Evidence limits: real failed I/O was exercised through storage producers
+and a public host callback. Actual fatal I/O inside maintenance/reindex
+worker catches remains supported by the shared gate tests and source
+trace; it is not claimed as a separately executed fault case. Invalid
+successful List completion and failed diagnostic emission also remain
+source/type evidence. Direct best-effort diagnostics are captured by
+tests and are not silenced by the panic-hook helper.
+
+This prerequisite does not complete the matrix. Next add the bounded
+public statement/commit operation-failure workload using the existing
+search enumeration and typed fatal boundary. Start with Write/Sync
+failures and two sequential atomic transactions; record acknowledgement
+only after public commit returns, require acknowledged rows on reopen,
+and permit only complete in-flight transactions where the contract allows.
+Require actual fault-hit and outcome floors, including a failure after an
+earlier acknowledged commit. Do not parse diagnostic text as fault identity.
