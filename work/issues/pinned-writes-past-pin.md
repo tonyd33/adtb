@@ -4,7 +4,7 @@ status: in-progress
 kind: bug
 priority: 399
 summary: Pinned upserts retain nonhiding admission and nested value-reader gaps
-branch: pinned-readers
+branch: pinned-reader-contract
 ---
 
 # Pinned writes past pin
@@ -256,3 +256,27 @@ Further source work requires a bounded private Value contract covering capture,
 independent aliases, selected producers and budget enforcement before allocation,
 then a concrete reviewed implementation scope. No new public semantics or spec
 ruling is made. Separate fixture and benchmark checkpoints remain delivered.
+
+## 2026-11-01: correlation and budget contract assigned
+
+The active user goal now includes resolving the private correlation and budget
+contract, alongside completing benchmark reporting. Workspace
+`pinned-reader-contract`, based on `9c4de3b56b68`, owns the contract assessment
+and a bounded discriminating executable model where useful. It does not own an
+engine rewrite or a change to registration/admission policy.
+
+Acceptance requires an implementable contract for captured Case and partial Let,
+independent aliases of one relation, and selection among captured producers;
+explicit guard identity/algebra and value join/projection/copy laws; preservation
+of stored, proposed, copied and snapshot authority distinctions; and an inventory
+of allocation/copy/environment boundaries with budget enforcement before the
+covered allocation. Exact refusal on budget exhaustion must not become missing
+reader facts. Compare the strongest alternative on the same cases, state actual
+growth bounds, and use independent expected facts and mutation-sensitive bounded
+model searches where feasible. A model does not certify native integration.
+
+A fresh independent implementability review and lead ruling must resolve the
+contract before further source implementation. Any required observable semantic
+change returns to the user-owned design space. Existing authority evaluation and
+Reader integration stay unchanged; retired prototypes stay unlanded. Benchmark
+reporting has separate ownership and verification and continues in parallel.

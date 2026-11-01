@@ -522,3 +522,18 @@ on the tested service despite explicit I/O accounting. Retain that reason and
 collect supported /proc/self/io process/threadgroup storage and syscall-logical
 bytes before artifact writing, with narrower scope clearly labeled. Do not
 reconfigure global controllers or invent aggregate/physical-media counters.
+
+## 2026-11-01: collector and report consumer landed
+
+The native resource collector and standard-library Python `bench-report` entry
+landed as `9c4de3b56b68`. Independent source and component verification accepted
+48 complete/invalid entry cases, two maximum supported workload artifacts, two
+native collector outcomes and applicable static checks. All 49 reviewed path
+contents and modes survived landing; the inherited delta was only reviewed
+assignment-ticket prose. Those component checks were retained without repetition.
+
+The native Rust producer remains unlanded and under independent source review.
+Its author integrates this consumer once and owns final combined affected-package
+checks, dependency isolation/policy evidence, and actual both-peer counter and
+lifecycle reports. Reporting completion, comparison readiness, ranked results and
+beta exit are not claimed by this component landing.
