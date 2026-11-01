@@ -1,0 +1,34 @@
+=== setup schema
+--- source
+type Note { id: Key notes, slug: Text } = Plain { body: Text } | Other { other: Text } | Link { url: Text }
+relation notes : Note key id generate sequence unique (slug) in (Plain | Link)
+=== link run
+--- source
+insert notes.Link { id: notes.key(9), slug: "same", url: "u" }
+=== outside restricted-old-violated
+--- source
+insert notes.Plain { id: notes.key(1), slug: "same", body: "x" }
+unless conflict on (slug) in (Plain | Link) else fail "the conflict branch ran"
+--- old-type
+Note.Plain
+--- constraint
+app::notes.unique(slug) in (Link | Plain)
+--- type
+{ a: Note, b: Note }
+--- expected
+{ a: Plain { id: notes.key(1), slug: "same", body: "x" }, b: Link { id: notes.key(9), slug: "same", url: "u" } }
+{ a: Link { id: notes.key(9), slug: "same", url: "u" }, b: Plain { id: notes.key(1), slug: "same", body: "x" } }
+=== clear run
+--- source
+delete n in notes
+=== plain run
+--- source
+insert notes.Plain { id: notes.key(9), slug: "same", body: "a" }
+=== inside restricted-old-user
+--- source
+insert notes.Plain { id: notes.key(1), slug: "same", body: "x" }
+unless conflict on (slug) in (Plain | Link) else fail "the conflict branch ran"
+--- old-type
+Note.Plain
+--- message
+the conflict branch ran

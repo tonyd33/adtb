@@ -3,11 +3,13 @@ use std::path::{Path, PathBuf};
 
 mod created;
 mod driver;
+mod identity;
 mod limited;
 mod outcome;
 mod probe;
 mod refusal;
 mod relationship;
+mod restricted;
 #[path = "../runtime/mod.rs"]
 mod shared;
 mod stage;
@@ -110,4 +112,4 @@ pub(super) fn run() -> (usize, usize) {
     (families.len(), executed.len())
 }
 
-const ORIGINAL_HASH: u64 = 0xce1a74c7acaf0882;
+const ORIGINAL_HASH: u64 = 0xa9d7a4e21371a792;

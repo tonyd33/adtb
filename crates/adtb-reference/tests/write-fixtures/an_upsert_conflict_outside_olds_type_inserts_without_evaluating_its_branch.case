@@ -1,0 +1,17 @@
+=== setup schema
+--- source
+type Note { id: Key notes } = Plain { body: Text } | Link { url: Text }
+relation notes : Note key id generate sequence
+=== link run
+--- source
+insert notes.Link { id: notes.key(1), url: "u" }
+=== reject restricted-old-key
+--- source
+insert notes.Plain { id: notes.key(1), body: "x" }
+unless conflict on key else fail "the conflict branch ran"
+--- old-type
+Note.Plain
+--- relation
+notes
+--- key
+notes.key(1)

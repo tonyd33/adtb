@@ -1,0 +1,21 @@
+=== upsert run
+--- source
+insert identities.EmailPass { user: u, email: e, hash: h }
+unless conflict on (lower(email)) in EmailPass
+else update old set old
+--- params
+u|Key users|users.key(3)
+e|Text|"ANN@example.com"
+h|Bytes|0x68
+=== identities count
+--- relation
+identities
+--- expected
+5
+=== catalog reject-catalog-unique
+--- source
+insert identities.EmailPass { user: users.key(3), email: "ANN@example.com", hash: bytes("h") }
+--- relation
+identities
+--- constraint-prefix
+app::identities.unique

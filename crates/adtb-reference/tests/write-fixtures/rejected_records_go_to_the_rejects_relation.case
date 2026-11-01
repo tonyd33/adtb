@@ -1,0 +1,23 @@
+=== loads reject-loads
+--- source
+insert users from (
+  from r in raws select User { name: if r.n > 0 then "ok" else reject "negative" })
+rejects into user_rejects
+--- names-query
+from u in users select u.name
+--- names
+["ann", "bo", "cy", "dee", "ok"]
+--- relation
+users
+--- count
+6
+--- reject-query
+from j in user_rejects select j
+--- metadata
+{ line: 2, source: "raws", reason: "negative" }
+--- raw-contains
+raws.key(2)
+--- loads-query
+from j in user_rejects select j.load
+--- loads-count
+2

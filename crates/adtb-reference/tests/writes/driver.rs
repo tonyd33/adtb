@@ -4,6 +4,8 @@ use adtb_testkit::fixture::Fixture;
 use super::shared::{Fields, bindings, finish, parse, take};
 
 pub(super) enum Step {
+    Identity(super::identity::Step),
+    Restricted(super::restricted::Step),
     Limited(super::limited::Step),
     Relationship(super::relationship::Step),
     Stage(super::stage::Step),
@@ -41,6 +43,12 @@ fn value(fixture: &Fixture, fields: &mut Fields) -> Value {
 impl Step {
     pub(super) fn read(fixture: &Fixture, mode: &str, mut fields: Fields) -> Self {
         let step = match mode {
+            "reject-loads" | "reject-catalog-unique" => {
+                return Self::Identity(super::identity::Step::read(fixture, mode, fields));
+            }
+            "restricted-old-key" | "restricted-old-user" | "restricted-old-violated" => {
+                return Self::Restricted(super::restricted::Step::read(fixture, mode, fields));
+            }
             "row-limit" | "reject-row-limit" => {
                 return Self::Limited(super::limited::Step::read(mode, fields));
             }
@@ -108,6 +116,8 @@ impl Step {
 
     pub(super) fn run(self, fixture: &mut Fixture) {
         match self {
+            Self::Identity(step) => step.run(fixture),
+            Self::Restricted(step) => step.run(fixture),
             Self::Limited(step) => step.run(fixture),
             Self::Relationship(step) => step.run(fixture),
             Self::Stage(step) => step.run(fixture),
