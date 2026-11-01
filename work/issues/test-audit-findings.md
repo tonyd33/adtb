@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-31
-status: in-progress
+status: open
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
-branch: reference-write-final
 ---
 
 # Test audit findings
@@ -632,3 +631,32 @@ exact restoration and one complete affected reference-package check after fresh
 source review, plus strict affected lint/fmt/house/size and native input snapshots.
 No unchanged full-engine rerun. Independent comparison run-boundary work has no
 shared source or landing dependency. The wider audit remains open afterward.
+
+## 2026-11-01: all reference-write families externalized
+
+Landed `1e3d924f2b10`. The final four families now use runtime data and three
+small typed native boundaries for reject-load identity/metadata, restricted-old
+checked-kernel execution and catalog-linked refusal identity. All 78 original
+families and 162 required blocks execute through the runtime driver; no compiled
+per-family wrapper remains in writes.rs. Prior 74 families/149 blocks and 76
+support/data files are byte-exact. Added 226 reusable Rust lines, removed 188
+compiled lines. This completes this migration cohort, not the wider audit.
+
+Five actual producer/driver mutations fail at exact load, restricted-old, report
+and catalog identity checks. Five runtime oracle edits fail; a discovered family
+runs as 79/165, then restoration returns to 78/162 with unchanged executable
+SHA256/mtime. The catalog allocation floor was replaced by a catalog-ID/local-
+offset sensitivity precondition and an external prefix plus native ID oracle.
+
+One final complete reference package passed 140/140 across ten binaries, no skips,
+native exit 0, 1.439s execution. Strict affected clippy, formatting, size and
+exact-range house checks each exit 0. All 3346 input records and id/parent/status
+captures stayed exact; fresh source and machine review accepted. All ten reviewed
+source hashes/modes survived landing; inheritance was only three read assignment
+Markdown files. No after-land package, full-engine or discovery repeat.
+
+The initial invalid fixture encodings failed before the reviewed candidate.
+Its native exit/launch summary survive; the standard suite output was overwritten
+by a later targeted run, so complete initial failure detail is not claimed.
+Current sensitivity/final package logs remain retained. No clean-build speedup,
+universal vacuity gate or closure of other audit findings follows from this batch.

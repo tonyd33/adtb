@@ -433,3 +433,21 @@ report had mistaken a trailing print's exit for that command's exit; the author
 corrected it before landing and the final receipt preserves native 1 explicitly.
 Accepted exceptions must be recorded separately from passed checks, using actual
 command exits. No source workaround or unchanged package repetition was needed.
+
+### 2026-11-01: finish a cohort and use the host boundary
+
+All 78 reference-write families now run from data. The final four preserve typed
+load and catalog identity plus the deliberately direct restricted-old kernel
+path. I rejected the unexplained 1024 catalog allocation pin; the replacement
+requires actual catalog-ID versus local-offset separation and independent names.
+The real offset substitution fails. Fresh review and final package input equality
+justify reuse after ticket-only landing inheritance; no engine repeat was added.
+
+The next command boundary belongs to the native process/resource manager. The
+author compared group timeouts, address-space limits and custom Rust supervision;
+a small systemd launcher can contain real resident/C/page memory and descendants
+without copying process-management machinery. Budgets are caller supplied,
+native result/InvocationID evidence is required, and unavailable killed CLI
+prefixes remain invalid. Source and facility proof are still required before
+claiming this boundary delivered. Successful manager units disappear quickly;
+a native stop-post receipt is the chosen evidence hook, not polling or IPC code.
