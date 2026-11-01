@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-31
-status: in-progress
-branch: pinned-field-owner
+status: open
 kind: bug
 priority: 399
-summary: Pinned upserts retain nonhiding Internal and nested value-reader gaps; field-owner candidate remains unverified
+summary: Pinned upserts retain nonhiding admission and nested value-reader gaps
 ---
 
 # Pinned writes past pin
@@ -171,3 +170,30 @@ author retains diagnosis and corrections for their own change. Native
 landing preserves both commits and reuses the receipt only after comparing
 the landed tree with the tested combined tree. Do not run a separate full
 check merely because each change has its own ticket.
+
+## 2026-10-31: field-owner identity fix landed
+
+Landed `efb953db9bba`. The valid public reproduction reads shared fields
+through a proper constructor subset; the initially suggested whole-sum
+query is refused by the checker and did not establish this defect. The
+translator formerly chose the first spelling owner even if removed. It
+now maps each surviving owner's catalog field identity, retaining a direct
+projection only when images agree and lowering different renamed images
+through existing typed constructor arms.
+
+Six runtime cases preserve pre-migration rows across both declaration
+orders, removal, survivor rename and independent owner renames. The
+original selection mechanism failed the exact public registration
+regression; byte-restored healthy code passed. Fresh independent review,
+17 translation tests, 123 bundle tests, and affected lint/format/house/size
+checks passed. The new public matrix cost about 1.2 seconds.
+
+The single combined final check on `047020687851` passed with the checker
+migration: 3650 root, 48 campaign, 13 Loom and 39 Miri tests plus all
+configured supporting checks. Existing skips remained. Own exit was zero,
+revision/status/all 3094 tracked inputs were unchanged, and the landing
+delta contained only reviewed ticket prose. No duplicate full check ran.
+
+This umbrella remains open for nonhiding upsert admission and nested-value
+reader tracking through upserts. The ordinary nested scan was disproved
+and the field-owner defect is now resolved.
