@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-31
-status: open
+status: in-progress
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
+branch: reference-write-hooks
 ---
 
 # Test audit findings
@@ -487,3 +488,22 @@ that is a whole-track observation, not measured coding time or a general speedup
 The remaining 18 families still have migratable case data: result relationships,
 stage and restricted-kernel hooks, catalog identity, custom setup and row limits
 need their bounded native driver boundaries. Keep the wider audit open.
+
+
+## 2026-11-01: constructor-stage fixture cohort assigned
+
+Workspace `reference-write-hooks`, based on `968609ec5cb0`, owns the four
+remaining constructor-stage families and all three native stage-map paths.
+Eight original statement/refusal checks and four reached hook steps move into
+runtime data, targeting 64 of 78 families and 127 steps. A bounded typed hook
+resolves native relation/type/constructor identity and applies the real fixture
+maps; the prior 60 families/115 steps and 14 retained wrappers remain unchanged.
+The retag case's coarse NotOpen assertion becomes exact constructor/stage equality.
+
+Acceptance: independent preservation review, meaningful mutations of all three
+hook paths and exact refusal comparison, strict data consumption/reached floors,
+edit/addition without relinking, exact restoration, affected lint/static checks
+and one complete reference-package final run with unchanged input/id/status
+records. The author owns execution/corrections. No second fullcheck; the parallel
+shared naming fix owns the authoritative production fullcheck after integrating
+this batch if ready. Missing runner modes do not justify retaining ordinary data.

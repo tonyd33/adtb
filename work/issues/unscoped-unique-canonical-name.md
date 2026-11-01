@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-31
-status: open
+status: in-progress
 kind: bug
 priority: 880
 summary: an unscoped unique violation appends an in constructor scope to its canonical name
+branch: canonical-unique-names
 tags:
   - quality
   - engine
@@ -58,3 +59,25 @@ work/tools/suite -p adtb-bench --features native --lib -E 'test(control_tests)' 
 
 Repair the shared naming mechanism before enabling these cases; do not normalize
 names in the consumer.
+
+
+## 2026-11-01: shared producer repair assigned
+
+Workspace `canonical-unique-names`, based on `968609ec5cb0`, owns the engine
+and reference evaluator's copied formatters. Move canonical unique naming to
+one schema-owned provider, including the shared AST field-path helper; preserve
+engine catalog reexports. Omitted and full-constructor scopes share the bare
+name, proper subsets sort constructor spellings, and expression names use the
+actual catalog index id. An index's position is only a local schema lookup,
+not its externally printed identity. Document the shared provider in the kernel
+schema boundary; no observable contract or adopted ruling changes.
+
+Acceptance: public runtime cases distinguish omitted/full/named/proper scopes,
+records, order, field paths and expression ids with independent exact expected
+names/reports/state. Enable the two comparison regressions and any demonstrated
+same-cause bundle regression; correct existing assertions that expect the bug.
+Fresh source review overlaps meaningful production mutation and exact restore.
+The author owns one final full `check` on the reviewed rebased tree, plus complete
+opt-in native consumer tests/lint that default checks do not execute. The lead
+compares landing inputs and reuses passes without another full run. Resource
+checks precede the full check; independently ready fixture work may land first.
