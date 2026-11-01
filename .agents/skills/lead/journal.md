@@ -181,3 +181,15 @@ permission, stack and recovery obligations rather than justified deletions.
 The weak crash-image golden group costs under half a test-second in that
 recording; removing it would not explain or cure the delay. No tests were
 removed and no build was run for this assessment.
+
+
+### 2026-10-31: refresh worker capability before preserving a fallback
+
+I carried the patch-only execution workaround forward from earlier approval
+stalls without repeating the worker-side probe. That made the lead a serial
+command launcher and log relay. The maintainer caught it. Fresh probes from
+both current authors immediately succeeded at workspace writes, shared jj
+metadata and command execution. Authors now own execution, result assessment
+and corrections; the lead owns scheduling, evidence judgment and landing.
+The existing access-preflight rule was sufficient. I needed to apply it to
+the current session rather than treat historical failure as current evidence.

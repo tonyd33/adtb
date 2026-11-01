@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-31
-status: open
+status: in-progress
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
+branch: text-fixtures
 ---
 
 # Test audit findings
@@ -114,3 +115,17 @@ open-fallback-create-provenance; the final test-only refusal repairs
 were independently derived, read by the lead and verified as above.
 Section 5, the whole-file lint expectations and the separately filed
 test-audit-b-gaps remain open.
+
+
+## 2026-10-31: runtime text fixture pilot
+
+Track `text-fixtures` starts from `ffd6c42d`. Migrate seven independently
+reviewed pure reference-query text/result cases to runtime-loaded conformance
+fixtures. Preserve original key kinds, explicit expected rows and paired
+queries. Name retained coverage before removing each Rust wrapper; retain
+internal, normalization and exact fault-payload assertions in Rust.
+Acceptance includes all seven reached cases, a decisive join/dedup mutation,
+and measured equivalent Rust-input versus runtime-fixture incremental edits.
+Fixture-only edits must avoid Rust recompilation; no whole-suite speedup is
+claimed from the pilot. One final full check follows fresh review and targeted
+proof; unchanged landed inputs reuse that receipt. The umbrella remains open.

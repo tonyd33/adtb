@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-31
-status: open
+status: in-progress
 kind: bug
 priority: 401
 summary: acknowledged work and failure outcomes are not searched through Database under every fault
+branch: fault-commit
 ---
 
 # Fault matrix
@@ -199,3 +200,17 @@ only after public commit returns, require acknowledged rows on reopen,
 and permit only complete in-flight transactions where the contract allows.
 Require actual fault-hit and outcome floors, including a failure after an
 earlier acknowledged commit. Do not parse diagnostic text as fault identity.
+
+
+## 2026-10-31: public commit search implementation
+
+Track `fault-commit` starts from `ffd6c42d`, after the typed fatal prerequisite.
+Use the existing operation enumeration for Write/Sync failures, two sequential
+public transactions and an external acknowledgement ledger updated only after
+commit returns. Reopen must preserve all acknowledged rows and allow only
+complete in-flight transactions where the contract permits them. Require
+actual fault-hit, operation-class and outcome floors, including a failure
+after an earlier acknowledgement. No broad crash/rot or backend claim.
+Targeted tests and one decisive mutation precede fresh review and one final
+full check; compare landed inputs before reusing that receipt. The umbrella
+stays open. This track is disjoint from the runtime text-fixture pilot.
