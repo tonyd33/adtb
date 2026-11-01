@@ -2,8 +2,11 @@
 
 This opt-in consumer exercises the public generated adtb bundle API and
 rusqlite prepared statements on real files. It retains operation samples and
-correctness evidence for native reporting. A frozen comparison protocol, large
-dataset measurements, benchmark ranking and optimization remain separate work.
+correctness evidence for native reporting. Ranked dataset measurements,
+benchmark ranking and optimization remain separate work.
+The [frozen executable comparison protocol](protocol.md) defines the paired
+N=1000/5000, one/four-writer matrix and actual preparation/cache semantics.
+All 16 feasibility cells passed; no ranked baseline has been collected.
 
 The keyed control uses N counters initially zero and 20,000 atomic
 read/increment/return requests. The reduced campaign workload has four
