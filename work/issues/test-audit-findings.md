@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-31
-status: in-progress
+status: open
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
-branch: reference-writes-fixtures
 ---
 
 # Test audit findings
@@ -332,3 +331,36 @@ Builds wait for a free slot while source/data implementation proceeds.
 Independent preservation review, same-executable edit/addition proof and
 complete affected-package validation precede landing. No new framework,
 dependency, production API or engine coverage is part of this batch.
+
+
+## 2026-11-01: seven reference-write families landed
+
+Landed `585dfa3a7e42` after fresh independent preservation review. Seven
+families now load nine statement outcomes and five probes from runtime data.
+The other 71 wrappers are byte-identical. A 92-line reference-local extraction
+shares envelope/value/setup mechanics with the query runner; all 59 query
+cases and their assertions are unchanged. The mutable runner retains whole
+original/normalized Outcome equality, exact typed KeyViolation relation/key,
+post-refusal database equality and singleton cardinality checks.
+
+The final complete reference-package suite on `69923802e094` passed all 211
+tests across ten binaries with zero skips and native exit zero. Before/after
+revision, status and all 3192 tracked file hash/metadata entries matched.
+Command time was 8.132 seconds including compilation; test execution 1.617
+seconds. Strict reference lint, formatting, exact-range house and size checks
+passed. Landing changed only separately reviewed ticket/index prose, so the
+passing receipt is reused without another engine-wide run.
+
+Runtime edits/additions kept executable hash and mtime unchanged; omitted
+steps, exact wrong outcomes, duplicate/unknown fields and newly added bad
+cases failed by name. Actual temporary Fixture bridge perturbations proved
+normalization and post-refusal state assertions still execute; both were
+restored exactly. Those are bridge witnesses, not production mutants.
+One warm feedback pair observed 2.170 seconds for a compiled input edit and
+0.732 seconds for runtime data, with equal test selection. No clean-build or
+whole-suite saving is claimed. Runtime setup duplicates 114 lines beside the
+unchanged shared compiled fixture; its broader compilation cost remains.
+
+This batch is complete. The remaining 71 write families and the wider Rust
+inventory remain open; their ordinary data is not declared unmigratable.
+Use the retained complete family map to choose the next closed cohort.
