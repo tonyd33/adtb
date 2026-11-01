@@ -80,6 +80,19 @@ impl Adtb {
         })
     }
 
+    #[cfg(test)]
+    pub fn control(
+        &self,
+        text: &str,
+        params: &[(&str, adtb_lang::types::Ty, adtb::Value)],
+    ) -> std::result::Result<Vec<adtb::Value>, adtb::Error> {
+        self.db
+            .query_text(text, params, &options_call())?
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
     pub fn settings(&self) -> Result<String> {
         for (name, expected) in [
             ("pool_bytes", 64 * 1024 * 1024),

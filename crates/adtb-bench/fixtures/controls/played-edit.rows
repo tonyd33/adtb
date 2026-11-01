@@ -1,0 +1,7 @@
+counters|Counter { id: 1, value: 0 }
+campaigns|Campaign { id: 1, title: "a" }
+campaigns|Campaign { id: 2, title: "b" }
+entities|Party { id: 1, campaign: campaigns.key(1), name: "p1" }
+entities|Party { id: 2, campaign: campaigns.key(2), name: "p2" }
+entities|Npc { id: 3, campaign: campaigns.key(1), name: "n3" }
+sessions|Played { id: 1, campaign: campaigns.key(1), party: entities.key(1), number: 1, title: "edit", prep: "p", played_on: 2024-10-05, log: "log-1", recap: "recap-1" }

@@ -1,0 +1,225 @@
+@party
+1
+@name
+entity-tag
+@family
+sqlite-shape
+@setup
+planned
+@after
+planned.rows
+@adtb
+
+@sqlite
+UPDATE entity SET tag='Ghost' WHERE id=3
+@native
+excluded|generated-enum
+@sql
+275|CHECK constraint failed: tag IN ('Party','Npc')
+@report
+
+---
+@party
+1
+@name
+session-tag
+@family
+sqlite-shape
+@setup
+planned
+@after
+planned.rows
+@adtb
+
+@sqlite
+UPDATE session SET tag='Ghost' WHERE id=1
+@native
+excluded|generated-enum
+@sql
+275|CHECK constraint failed: tag IN ('Planned','Live','Played')
+@report
+
+---
+@party
+1
+@name
+planned-day
+@family
+sqlite-shape
+@setup
+planned
+@after
+planned.rows
+@adtb
+
+@sqlite
+UPDATE session SET day=1 WHERE id=1
+@native
+excluded|generated-enum
+@sql
+275|CHECK constraint failed: (tag='Planned' AND tick IS NULL AND day IS NULL AND log IS NULL AND recap IS NULL)
+  OR (tag='Live' AND planned_for IS NULL AND tick IS NOT NULL AND day IS NULL AND log IS NULL AND recap IS NULL)
+  OR (tag='Played' AND planned_for IS NULL AND tick IS NULL AND day IS NOT NULL AND log IS NOT NULL AND recap IS NOT NULL)
+@report
+
+---
+@party
+1
+@name
+live-option
+@family
+sqlite-shape
+@setup
+live
+@after
+live.rows
+@adtb
+
+@sqlite
+UPDATE session SET planned_for=1 WHERE id=1
+@native
+excluded|generated-enum
+@sql
+275|CHECK constraint failed: (tag='Planned' AND tick IS NULL AND day IS NULL AND log IS NULL AND recap IS NULL)
+  OR (tag='Live' AND planned_for IS NULL AND tick IS NOT NULL AND day IS NULL AND log IS NULL AND recap IS NULL)
+  OR (tag='Played' AND planned_for IS NULL AND tick IS NULL AND day IS NOT NULL AND log IS NOT NULL AND recap IS NOT NULL)
+@report
+
+---
+@party
+1
+@name
+live-day
+@family
+sqlite-shape
+@setup
+live
+@after
+live.rows
+@adtb
+
+@sqlite
+UPDATE session SET day=1 WHERE id=1
+@native
+excluded|generated-enum
+@sql
+275|CHECK constraint failed: (tag='Planned' AND tick IS NULL AND day IS NULL AND log IS NULL AND recap IS NULL)
+  OR (tag='Live' AND planned_for IS NULL AND tick IS NOT NULL AND day IS NULL AND log IS NULL AND recap IS NULL)
+  OR (tag='Played' AND planned_for IS NULL AND tick IS NULL AND day IS NOT NULL AND log IS NOT NULL AND recap IS NOT NULL)
+@report
+
+---
+@party
+1
+@name
+live-log
+@family
+sqlite-shape
+@setup
+live
+@after
+live.rows
+@adtb
+
+@sqlite
+UPDATE session SET log='x' WHERE id=1
+@native
+excluded|generated-enum
+@sql
+275|CHECK constraint failed: (tag='Planned' AND tick IS NULL AND day IS NULL AND log IS NULL AND recap IS NULL)
+  OR (tag='Live' AND planned_for IS NULL AND tick IS NOT NULL AND day IS NULL AND log IS NULL AND recap IS NULL)
+  OR (tag='Played' AND planned_for IS NULL AND tick IS NULL AND day IS NOT NULL AND log IS NOT NULL AND recap IS NOT NULL)
+@report
+
+---
+@party
+1
+@name
+live-recap
+@family
+sqlite-shape
+@setup
+live
+@after
+live.rows
+@adtb
+
+@sqlite
+UPDATE session SET recap='x' WHERE id=1
+@native
+excluded|generated-enum
+@sql
+275|CHECK constraint failed: (tag='Planned' AND tick IS NULL AND day IS NULL AND log IS NULL AND recap IS NULL)
+  OR (tag='Live' AND planned_for IS NULL AND tick IS NOT NULL AND day IS NULL AND log IS NULL AND recap IS NULL)
+  OR (tag='Played' AND planned_for IS NULL AND tick IS NULL AND day IS NOT NULL AND log IS NOT NULL AND recap IS NOT NULL)
+@report
+
+---
+@party
+1
+@name
+played-day-required
+@family
+sqlite-shape
+@setup
+played
+@after
+played.rows
+@adtb
+
+@sqlite
+UPDATE session SET day=NULL WHERE id=1
+@native
+excluded|generated-enum
+@sql
+275|CHECK constraint failed: (tag='Planned' AND tick IS NULL AND day IS NULL AND log IS NULL AND recap IS NULL)
+  OR (tag='Live' AND planned_for IS NULL AND tick IS NOT NULL AND day IS NULL AND log IS NULL AND recap IS NULL)
+  OR (tag='Played' AND planned_for IS NULL AND tick IS NULL AND day IS NOT NULL AND log IS NOT NULL AND recap IS NOT NULL)
+@report
+
+---
+@party
+1
+@name
+played-log-required
+@family
+sqlite-shape
+@setup
+played
+@after
+played.rows
+@adtb
+
+@sqlite
+UPDATE session SET log=NULL WHERE id=1
+@native
+excluded|generated-enum
+@sql
+275|CHECK constraint failed: (tag='Planned' AND tick IS NULL AND day IS NULL AND log IS NULL AND recap IS NULL)
+  OR (tag='Live' AND planned_for IS NULL AND tick IS NOT NULL AND day IS NULL AND log IS NULL AND recap IS NULL)
+  OR (tag='Played' AND planned_for IS NULL AND tick IS NULL AND day IS NOT NULL AND log IS NOT NULL AND recap IS NOT NULL)
+@report
+
+---
+@party
+1
+@name
+played-recap-required
+@family
+sqlite-shape
+@setup
+played
+@after
+played.rows
+@adtb
+
+@sqlite
+UPDATE session SET recap=NULL WHERE id=1
+@native
+excluded|generated-enum
+@sql
+275|CHECK constraint failed: (tag='Planned' AND tick IS NULL AND day IS NULL AND log IS NULL AND recap IS NULL)
+  OR (tag='Live' AND planned_for IS NULL AND tick IS NOT NULL AND day IS NULL AND log IS NULL AND recap IS NULL)
+  OR (tag='Played' AND planned_for IS NULL AND tick IS NULL AND day IS NOT NULL AND log IS NOT NULL AND recap IS NOT NULL)
+@report
+

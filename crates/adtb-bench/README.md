@@ -43,10 +43,51 @@ Each filling must admit an acyclic union of actor and per-key value order.
 This also rejects cycles that span different keys. An independent finite
 serial-interleaving oracle checks the history boundary.
 
-Outstanding before measurement readiness: exact malformed/declaration/FK/
-unique/transition refusal controls for both peers, targeted declaration and
-SQL-constraint mutation proofs, externally flushed acknowledged-prefix
-child-kill controls using these adapters, and independent review. The
+The runtime-loaded schema matrix in `fixtures/controls/` checks declarations,
+keys, references and Party subsets, campaign membership, scoped Live uniqueness,
+constructor shape, Played transitions, least-name selection and whole-change-set
+atomicity through the existing real-file adapters. Thirty-one shared cases, ten
+SQLite-only tagged-shape cases and two SQLite unscoped-unique cases assert exact
+outcomes and complete typed snapshots before, after and after close/reopen.
+Rejected SQLite writes also preserve every stored column of all four tables,
+including encoding columns unused by the current constructor.
+Successful native unit writes return no rows; SQLite reports the expected
+last-statement affected count. Case names, section names, family counts and
+reached floors are checked. Positive controls cover valid keys/references,
+matching campaign/Party updates, forward transitions, Played edits, different
+campaign Live rows and Planned rows beside a Live row.
+
+Generated ADTB enums exclude malformed tags and branch fields at Rust type
+checking. Raw native shape controls instead assert exact ad hoc admission
+refusals. Neither is counted as a native runtime constraint refusal. Typed
+native parameters can carry a nonexistent or non-Party key; these inputs reach
+runtime. The membership check dereferences Party, so dangling, non-Party and
+inbound retag/delete controls fault with `NoSuchRow` before reporting a foreign
+key violation. SQLite returns its native extended constraint code and message;
+it provides no ADTB-style violation report or canonical-name selection.
+With the same competing counter/campaign key writes, native selects the least
+canonical constraint name; SQLite stops at the first failing SQL statement.
+
+An ADTB retag or same-key delete/insert in one change set corresponds to one
+SQLite UPDATE. Separate SQLite DELETE and INSERT statements have separate
+constraint boundaries, as do separate ADTB statements; the transition trigger
+makes no transaction-wide promise. The direct sessions.campaign reference is
+logically implied by a valid Party reference, the Party's campaign reference
+and the named equality check. SQLite's composite Party/campaign reference plus
+entity.campaign reference imply its direct session.campaign reference too.
+Removing either redundant direct declaration alone therefore need not change
+accepted states. Sensitivity witnesses distinguish individual obligations from
+compound removal of redundant guards.
+
+Two normative native unscoped-unique cases remain an explicit ignored regression
+for `work/issues/unscoped-unique-canonical-name.md`: the engine appends constructor
+scope to an unscoped unique name. They are separate from the passing matrix and
+are required before measurement readiness; their corresponding SQLite refusals
+run normally. Do not treat the ignored cases as validated native controls.
+
+Outstanding before measurement readiness: those native canonical-name refusals,
+externally flushed acknowledged-prefix child-kill controls using these adapters,
+and the remaining comparison protocol review. The
 buffered ledger is insufficient to certify a killed process. Resource
 counters and latency distributions are unavailable; there is no ranked
 result. Large dataset feasibility is unverified.

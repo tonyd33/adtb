@@ -462,3 +462,7 @@ pub fn correctness(
 #[cfg(test)]
 #[path = "driver_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "control_tests.rs"]
+mod control_tests;

@@ -1,0 +1,47 @@
+@party
+1
+@name
+entity-unscoped
+@family
+entity-unique
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  insert baseline::entities.Npc { id: 4, campaign: baseline::campaigns.key(1), name: "p1" }
+  return ()
+@sqlite
+INSERT INTO entity VALUES(4,1,'p1','Npc')
+@native
+violation|baseline::entities.unique(campaign, name)
+@sql
+2067|UNIQUE constraint failed: entity.campaign, entity.name
+@report
+entities|Party { id: 1, campaign: campaigns.key(1), name: "p1" }~Npc { id: 4, campaign: campaigns.key(1), name: "p1" }
+entities|Npc { id: 4, campaign: campaigns.key(1), name: "p1" }~Party { id: 1, campaign: campaigns.key(1), name: "p1" }
+---
+@party
+1
+@name
+session-unscoped
+@family
+session-unique
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  insert baseline::sessions.Planned { id: 4, campaign: baseline::campaigns.key(1), party: control_party, number: 1, title: "s", prep: "p", planned_for: None }
+  return ()
+@sqlite
+INSERT INTO session(id,campaign,party_id,party_tag,number,title,prep,tag) VALUES(4,1,1,'Party',1,'s','p','Planned')
+@native
+violation|baseline::sessions.unique(campaign, number)
+@sql
+2067|UNIQUE constraint failed: session.campaign, session.number
+@report
+sessions|Planned { id: 1, campaign: campaigns.key(1), party: entities.key(1), number: 1, title: "s", prep: "p", planned_for: None }~Planned { id: 4, campaign: campaigns.key(1), party: entities.key(1), number: 1, title: "s", prep: "p", planned_for: None }
+sessions|Planned { id: 4, campaign: campaigns.key(1), party: entities.key(1), number: 1, title: "s", prep: "p", planned_for: None }~Planned { id: 1, campaign: campaigns.key(1), party: entities.key(1), number: 1, title: "s", prep: "p", planned_for: None }

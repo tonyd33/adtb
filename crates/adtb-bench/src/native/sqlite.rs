@@ -7,6 +7,9 @@ use std::path::Path;
 
 type Result<T> = std::result::Result<T, Failure>;
 
+#[cfg(test)]
+pub type ControlRows = Vec<Vec<rusqlite::types::Value>>;
+
 pub struct Sqlite {
     connection: Connection,
 }
@@ -60,6 +63,31 @@ impl Sqlite {
             connection.execute_batch(include_str!("../../fixtures/schema.sql"))?;
         }
         Ok(Self { connection })
+    }
+
+    #[cfg(test)]
+    pub fn control(&self, text: &str) -> rusqlite::Result<u64> {
+        let tx = self.connection.unchecked_transaction()?;
+        tx.execute_batch(text)?;
+        let changed = tx.changes();
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    #[cfg(test)]
+    pub fn control_snapshot(&self) -> rusqlite::Result<Vec<ControlRows>> {
+        ["counter", "campaign", "entity", "session"]
+            .into_iter()
+            .map(|table| {
+                let mut stmt = self
+                    .connection
+                    .prepare(&format!("SELECT * FROM {table} ORDER BY id"))?;
+                let columns = stmt.column_count();
+                let rows =
+                    stmt.query_map([], |row| (0..columns).map(|at| row.get(at)).collect())?;
+                rows.collect()
+            })
+            .collect()
     }
 
     pub fn settings(&self) -> Result<String> {

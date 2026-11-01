@@ -1,0 +1,734 @@
+@party
+1
+@name
+counter-key
+@family
+keys
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  insert baseline::counters { id: 1, value: 9 }
+  return ()
+@sqlite
+INSERT INTO counter VALUES(1,9)
+@native
+key|baseline::counters|counters.key(1)
+@sql
+1555|UNIQUE constraint failed: counter.id
+@report
+
+---
+@party
+1
+@name
+campaign-key
+@family
+keys
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  insert baseline::campaigns { id: 1, title: "x" }
+  return ()
+@sqlite
+INSERT INTO campaign VALUES(1,'x')
+@native
+key|baseline::campaigns|campaigns.key(1)
+@sql
+1555|UNIQUE constraint failed: campaign.id
+@report
+
+---
+@party
+1
+@name
+entity-cross-key
+@family
+keys
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  insert baseline::entities.Npc { id: 1, campaign: baseline::campaigns.key(1), name: "x" }
+  return ()
+@sqlite
+INSERT INTO entity VALUES(1,1,'x','Npc')
+@native
+key|baseline::entities|entities.key(1)
+@sql
+1555|UNIQUE constraint failed: entity.id
+@report
+
+---
+@party
+1
+@name
+session-cross-key
+@family
+keys
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  match Instant.parse("2027-01-15T08:00:00.000001Z")
+  | Some t -> insert baseline::sessions.Live { id: 1, campaign: baseline::campaigns.key(1), party: control_party, number: 9, title: "x", prep: "p", started: t.value }
+  | None -> fail "invalid fixture instant"
+  return ()
+@sqlite
+INSERT INTO session(id,campaign,party_id,party_tag,number,title,prep,tag,tick) VALUES(1,1,1,'Party',9,'x','p','Live',1800000000000001)
+@native
+key|baseline::sessions|sessions.key(1)
+@sql
+1555|UNIQUE constraint failed: session.id
+@report
+
+---
+@party
+1
+@name
+entity-dangling
+@family
+outgoing
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  insert baseline::entities.Npc { id: 4, campaign: baseline::campaigns.key(99), name: "x" }
+  return ()
+@sqlite
+INSERT INTO entity VALUES(4,99,'x','Npc')
+@native
+violation|baseline::entities.campaign
+@sql
+787|FOREIGN KEY constraint failed
+@report
+entities|Npc { id: 4, campaign: campaigns.key(99), name: "x" }
+---
+@party
+99
+@name
+party-dangling
+@family
+outgoing
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  update x in baseline::sessions.Planned where x.id == 1 set Planned { x with party: control_party }
+  return ()
+@sqlite
+UPDATE session SET party_id=99 WHERE id=1
+@native
+fault|NoSuchRow
+@sql
+787|FOREIGN KEY constraint failed
+@report
+
+---
+@party
+3
+@name
+party-subset
+@family
+outgoing
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  update x in baseline::sessions.Planned where x.id == 1 set Planned { x with party: control_party }
+  return ()
+@sqlite
+UPDATE session SET party_id=3 WHERE id=1
+@native
+fault|NoSuchRow
+@sql
+787|FOREIGN KEY constraint failed
+@report
+
+---
+@party
+1
+@name
+referenced-party-retag
+@family
+incoming
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  update x in baseline::entities.Party where x.id == 1 set Npc { }
+  return ()
+@sqlite
+UPDATE entity SET tag='Npc' WHERE id=1
+@native
+fault|NoSuchRow
+@sql
+787|FOREIGN KEY constraint failed
+@report
+
+---
+@party
+1
+@name
+referenced-party-delete
+@family
+incoming
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  delete x in baseline::entities.Party where x.id == 1
+  return ()
+@sqlite
+DELETE FROM entity WHERE id=1
+@native
+fault|NoSuchRow
+@sql
+787|FOREIGN KEY constraint failed
+@report
+
+---
+@party
+1
+@name
+referenced-campaign-delete
+@family
+incoming
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  delete x in baseline::campaigns where x.id == 1
+  return ()
+@sqlite
+DELETE FROM campaign WHERE id=1
+@native
+violation|baseline::entities.campaign
+@sql
+787|FOREIGN KEY constraint failed
+@report
+entities|Party { id: 1, campaign: campaigns.key(1), name: "p1" }
+entities|Npc { id: 3, campaign: campaigns.key(1), name: "n3" }
+---
+@party
+2
+@name
+campaign-membership
+@family
+membership
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  update x in baseline::sessions.Planned where x.id == 1 set Planned { x with party: control_party }
+  return ()
+@sqlite
+UPDATE session SET party_id=2 WHERE id=1
+@native
+violation|baseline::session_in_campaign
+@sql
+787|FOREIGN KEY constraint failed
+@report
+sessions|Planned { id: 1, campaign: campaigns.key(1), party: entities.key(2), number: 1, title: "s", prep: "p", planned_for: None }
+---
+@party
+1
+@name
+live-unique
+@family
+scoped-unique
+@setup
+live
+@after
+live.rows
+@adtb
+transact
+  match Instant.parse("2027-01-15T08:00:00.000001Z")
+  | Some t -> insert baseline::sessions.Live { id: 4, campaign: baseline::campaigns.key(1), party: control_party, number: 4, title: "x", prep: "p", started: t.value }
+  | None -> fail "invalid fixture instant"
+  return ()
+@sqlite
+INSERT INTO session(id,campaign,party_id,party_tag,number,title,prep,tag,tick) VALUES(4,1,1,'Party',4,'x','p','Live',1800000000000001)
+@native
+violation|baseline::sessions.unique(campaign) in Live
+@sql
+2067|UNIQUE constraint failed: session.campaign
+@report
+sessions|Live { id: 1, campaign: campaigns.key(1), party: entities.key(1), number: 1, title: "s", prep: "p", started: 2027-01-15T08:00:00.000001Z }~Live { id: 4, campaign: campaigns.key(1), party: entities.key(1), number: 4, title: "x", prep: "p", started: 2027-01-15T08:00:00.000001Z }
+sessions|Live { id: 4, campaign: campaigns.key(1), party: entities.key(1), number: 4, title: "x", prep: "p", started: 2027-01-15T08:00:00.000001Z }~Live { id: 1, campaign: campaigns.key(1), party: entities.key(1), number: 1, title: "s", prep: "p", started: 2027-01-15T08:00:00.000001Z }
+---
+@party
+1
+@name
+played-to-planned
+@family
+transition
+@setup
+played
+@after
+played.rows
+@adtb
+transact
+  update x in baseline::sessions.Played where x.id == 1 set Planned { planned_for: None }
+  return ()
+@sqlite
+UPDATE session SET tag='Planned',day=NULL,log=NULL,recap=NULL WHERE id=1
+@native
+violation|baseline::played_stays_played
+@sql
+1811|Played stays Played
+@report
+sessions|Planned { id: 1, campaign: campaigns.key(1), party: entities.key(1), number: 1, title: "s", prep: "p", planned_for: None }
+---
+@party
+1
+@name
+played-to-live
+@family
+transition
+@setup
+played
+@after
+played.rows
+@adtb
+transact
+  match Instant.parse("2027-01-15T08:00:00.000001Z")
+  | Some t -> update x in baseline::sessions.Played where x.id == 1 set Live { started: t.value }
+  | None -> fail "invalid fixture instant"
+  return ()
+@sqlite
+UPDATE session SET tag='Live',day=NULL,log=NULL,recap=NULL,tick=1800000000000001 WHERE id=1
+@native
+violation|baseline::played_stays_played
+@sql
+1811|Played stays Played
+@report
+sessions|Live { id: 1, campaign: campaigns.key(1), party: entities.key(1), number: 1, title: "s", prep: "p", started: 2027-01-15T08:00:00.000001Z }
+---
+@party
+1
+@name
+planned-extra-field
+@family
+shape-fields
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  update x in baseline::sessions.Planned where x.id == 1 set Planned { x with started: 1 }
+  return ()
+@sqlite
+UPDATE session SET tick=1 WHERE id=1
+@native
+invalid|`Planned` has no field `started`
+@sql
+275|CHECK constraint failed: (tag='Planned' AND tick IS NULL AND day IS NULL AND log IS NULL AND recap IS NULL)
+  OR (tag='Live' AND planned_for IS NULL AND tick IS NOT NULL AND day IS NULL AND log IS NULL AND recap IS NULL)
+  OR (tag='Played' AND planned_for IS NULL AND tick IS NULL AND day IS NOT NULL AND log IS NOT NULL AND recap IS NOT NULL)
+@report
+
+---
+@party
+1
+@name
+live-required-field
+@family
+shape-fields
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  update x in baseline::sessions.Planned where x.id == 1 set Live { }
+  return ()
+@sqlite
+UPDATE session SET tag='Live' WHERE id=1
+@native
+invalid|field `started` of `Live` is missing, and `sessions` has no default for it
+@sql
+275|CHECK constraint failed: (tag='Planned' AND tick IS NULL AND day IS NULL AND log IS NULL AND recap IS NULL)
+  OR (tag='Live' AND planned_for IS NULL AND tick IS NOT NULL AND day IS NULL AND log IS NULL AND recap IS NULL)
+  OR (tag='Played' AND planned_for IS NULL AND tick IS NULL AND day IS NOT NULL AND log IS NOT NULL AND recap IS NOT NULL)
+@report
+
+---
+@party
+1
+@name
+missing-title
+@family
+shape-fields
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  insert baseline::campaigns { id: 4 }
+  return ()
+@sqlite
+INSERT INTO campaign(id) VALUES(4)
+@native
+invalid|field `title` of `Campaign` is missing, and `campaigns` has no default for it
+@sql
+1299|NOT NULL constraint failed: campaign.title
+@report
+
+---
+@party
+1
+@name
+integer-domain
+@family
+shape-domains
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  update x in baseline::counters where x.id == 1 set Counter { x with value: "wrong" }
+  return ()
+@sqlite
+UPDATE counter SET value='wrong' WHERE id=1
+@native
+invalid|expected I64, found Text
+@sql
+3091|cannot store TEXT value in INTEGER column counter.value
+@report
+
+---
+@party
+1
+@name
+party-tag-domain
+@family
+shape-domains
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  update x in baseline::sessions.Planned where x.id == 1 set Planned { x with party: baseline::entities.key(1) }
+  return ()
+@sqlite
+UPDATE session SET party_tag='Npc' WHERE id=1
+@native
+invalid|expected Key entities.Party, found Key entities
+@sql
+275|CHECK constraint failed: party_tag='Party'
+@report
+
+---
+@party
+1
+@name
+new-key
+@family
+key-positive
+@setup
+planned
+@after
+new-counter.rows
+@adtb
+transact
+  insert baseline::counters { id: 4, value: 9 }
+  return ()
+@sqlite
+INSERT INTO counter VALUES(4,9)
+@native
+ok
+@sql
+ok|1
+@report
+
+---
+@party
+1
+@name
+valid-reference
+@family
+key-positive
+@setup
+planned
+@after
+new-npc.rows
+@adtb
+transact
+  insert baseline::entities.Npc { id: 4, campaign: baseline::campaigns.key(2), name: "p1" }
+  return ()
+@sqlite
+INSERT INTO entity VALUES(4,2,'p1','Npc')
+@native
+ok
+@sql
+ok|1
+@report
+
+---
+@party
+2
+@name
+matching-campaign-party
+@family
+key-positive
+@setup
+planned
+@after
+party-changed.rows
+@adtb
+transact
+  update x in baseline::sessions.Planned where x.id == 1 set Planned { x with campaign: baseline::campaigns.key(2), party: control_party }
+  return ()
+@sqlite
+UPDATE session SET campaign=2,party_id=2 WHERE id=1
+@native
+ok
+@sql
+ok|1
+@report
+
+---
+@party
+1
+@name
+forward-live
+@family
+lifecycle-positive
+@setup
+planned
+@after
+live.rows
+@adtb
+transact
+  match Instant.parse("2027-01-15T08:00:00.000001Z")
+  | Some t -> update x in baseline::sessions.Planned where x.id == 1 set Live { started: t.value }
+  | None -> fail "invalid fixture instant"
+  return ()
+@sqlite
+UPDATE session SET tag='Live',tick=1800000000000001 WHERE id=1
+@native
+ok
+@sql
+ok|1
+@report
+
+---
+@party
+1
+@name
+forward-played
+@family
+lifecycle-positive
+@setup
+live
+@after
+played.rows
+@adtb
+transact
+  match Date.parse("2024-10-05")
+  | Some d -> update x in baseline::sessions.Live where x.id == 1 set Played { played_on: d.value, log: "log-1", recap: "recap-1" }
+  | None -> fail "invalid fixture date"
+  return ()
+@sqlite
+UPDATE session SET tag='Played',tick=NULL,day=20001,log='log-1',recap='recap-1' WHERE id=1
+@native
+ok
+@sql
+ok|1
+@report
+
+---
+@party
+1
+@name
+played-edit
+@family
+lifecycle-positive
+@setup
+played
+@after
+played-edit.rows
+@adtb
+transact
+  update x in baseline::sessions.Played where x.id == 1 set Played { x with title: "edit" }
+  return ()
+@sqlite
+UPDATE session SET title='edit' WHERE id=1
+@native
+ok
+@sql
+ok|1
+@report
+
+---
+@party
+2
+@name
+live-other-campaign
+@family
+scope-positive
+@setup
+live
+@after
+other-live.rows
+@adtb
+transact
+  match Instant.parse("2027-01-15T08:00:00.000001Z")
+  | Some t -> insert baseline::sessions.Live { id: 4, campaign: baseline::campaigns.key(2), party: control_party, number: 1, title: "x", prep: "p", started: t.value }
+  | None -> fail "invalid fixture instant"
+  return ()
+@sqlite
+INSERT INTO session(id,campaign,party_id,party_tag,number,title,prep,tag,tick) VALUES(4,2,2,'Party',1,'x','p','Live',1800000000000001)
+@native
+ok
+@sql
+ok|1
+@report
+
+---
+@party
+1
+@name
+planned-beside-live
+@family
+scope-positive
+@setup
+live
+@after
+planned-beside-live.rows
+@adtb
+transact
+  insert baseline::sessions.Planned { id: 4, campaign: baseline::campaigns.key(1), party: control_party, number: 4, title: "x", prep: "p", planned_for: None }
+  return ()
+@sqlite
+INSERT INTO session(id,campaign,party_id,party_tag,number,title,prep,tag) VALUES(4,1,1,'Party',4,'x','p','Planned')
+@native
+ok
+@sql
+ok|1
+@report
+
+---
+@party
+1
+@name
+played-replacement
+@family
+transition
+@setup
+played
+@after
+played.rows
+@adtb
+transact
+  delete x in baseline::sessions.Played where x.id == 1
+  insert baseline::sessions.Planned { id: 1, campaign: baseline::campaigns.key(1), party: control_party, number: 1, title: "s", prep: "p", planned_for: None }
+  return ()
+@sqlite
+UPDATE session SET tag='Planned',day=NULL,log=NULL,recap=NULL WHERE id=1
+@native
+violation|baseline::played_stays_played
+@sql
+1811|Played stays Played
+@report
+sessions|Planned { id: 1, campaign: campaigns.key(1), party: entities.key(1), number: 1, title: "s", prep: "p", planned_for: None }
+---
+@party
+1
+@name
+least-key-name
+@family
+selection
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  insert baseline::counters { id: 1, value: 8 }
+  insert baseline::campaigns { id: 1, title: "x" }
+  return ()
+@sqlite
+INSERT INTO counter VALUES(1,8); INSERT INTO campaign VALUES(1,'x')
+@native
+key|baseline::campaigns|campaigns.key(1)
+@sql
+1555|UNIQUE constraint failed: counter.id
+@report
+
+---
+@party
+1
+@name
+atomic-sibling
+@family
+atomic
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  insert baseline::counters { id: 4, value: 9 }
+  insert baseline::entities.Npc { id: 4, campaign: baseline::campaigns.key(99), name: "x" }
+  return ()
+@sqlite
+INSERT INTO counter VALUES(4,9); INSERT INTO entity VALUES(4,99,'x','Npc')
+@native
+violation|baseline::entities.campaign
+@sql
+787|FOREIGN KEY constraint failed
+@report
+entities|Npc { id: 4, campaign: campaigns.key(99), name: "x" }
+
+---
+@party
+1
+@name
+missing-session-campaign
+@family
+membership
+@setup
+planned
+@after
+planned.rows
+@adtb
+transact
+  update x in baseline::sessions.Planned where x.id == 1 set Planned { x with campaign: baseline::campaigns.key(99) }
+  return ()
+@sqlite
+UPDATE session SET campaign=99 WHERE id=1
+@native
+violation|baseline::session_in_campaign
+@sql
+787|FOREIGN KEY constraint failed
+@report
+sessions|Planned { id: 1, campaign: campaigns.key(99), party: entities.key(1), number: 1, title: "s", prep: "p", planned_for: None }

@@ -1,0 +1,13 @@
+atomic|1
+incoming|3
+key-positive|3
+keys|4
+lifecycle-positive|3
+membership|2
+outgoing|3
+scope-positive|2
+scoped-unique|1
+selection|1
+shape-domains|2
+shape-fields|3
+transition|3

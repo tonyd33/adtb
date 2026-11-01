@@ -1,0 +1,8 @@
+counters|Counter { id: 1, value: 0 }
+campaigns|Campaign { id: 1, title: "a" }
+campaigns|Campaign { id: 2, title: "b" }
+entities|Party { id: 1, campaign: campaigns.key(1), name: "p1" }
+entities|Party { id: 2, campaign: campaigns.key(2), name: "p2" }
+entities|Npc { id: 3, campaign: campaigns.key(1), name: "n3" }
+sessions|Live { id: 1, campaign: campaigns.key(1), party: entities.key(1), number: 1, title: "s", prep: "p", started: 2027-01-15T08:00:00.000001Z }
+sessions|Live { id: 4, campaign: campaigns.key(2), party: entities.key(2), number: 1, title: "x", prep: "p", started: 2027-01-15T08:00:00.000001Z }
