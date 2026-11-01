@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-31
-status: in-progress
+status: open
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
-branch: reference-created-rows
 ---
 
 # Test audit findings
@@ -116,7 +115,6 @@ were independently derived, read by the lead and verified as above.
 Section 5, the whole-file lint expectations and the separately filed
 test-audit-b-gaps remain open.
 
-
 ## 2026-10-31: runtime text fixture pilot
 
 Track `text-fixtures` starts from `ffd6c42d`. Migrate seven independently
@@ -129,7 +127,6 @@ and measured equivalent Rust-input versus runtime-fixture incremental edits.
 Fixture-only edits must avoid Rust recompilation; no whole-suite speedup is
 claimed from the pilot. One final full check follows fresh review and targeted
 proof; unchanged landed inputs reuse that receipt. The umbrella remains open.
-
 
 ## 2026-10-31: runtime data is the default
 
@@ -212,7 +209,6 @@ reviewed final full check. Its source-complexity correction does not gate
 the unrelated fixture batch. This supersedes earlier broad full-check
 wording for these bounded fixture-only changes.
 
-
 ## 2026-10-31: reference and checker continuation landed
 
 Reference migration landed as `9b0e979b59c5`; checker continuation landed
@@ -252,7 +248,6 @@ This umbrella remains open for the queued migrations, the wider inventory,
 section 5 and separately tracked audit gaps. Production pinned-reader work
 is separate and did not delay this fixture delivery.
 
-
 ## 2026-10-31: next typed reference migration
 
 Track `reference-typed-fixtures` owns the remaining 22 mapped reference-query
@@ -264,7 +259,6 @@ No production API, dependency, build or engine-coverage expansion is assumed.
 Independent preservation review and complete affected-package validation
 follow a stable candidate; no duplicate full check is planned.
 
-
 The driver assessment selected a test-local adapter around existing Fixture
 APIs. Importing conformance would add engine dependencies; keep the reference
 dependency graph unchanged. Typed evaluation/call modes preserve external
@@ -273,7 +267,6 @@ raw constructor and exact fault expectations. List expectations preserve an
 ordered element vector. Strict runtime discovery must reject unused inputs,
 report each case failure and continue healthy cases before failing the run.
 This bounded implementation is approved; it is not yet validated or landed.
-
 
 ## 2026-11-01: typed reference migration landed
 
@@ -310,7 +303,6 @@ section 5 and separately tracked quality gaps remain open. Select the next
 bounded data-migration batch from that inventory rather than treating these
 modules as the end of the work.
 
-
 ## 2026-11-01: reference-write continuation
 
 A body-level inventory covered all 78 current reference-write families and
@@ -332,7 +324,6 @@ Builds wait for a free slot while source/data implementation proceeds.
 Independent preservation review, same-executable edit/addition proof and
 complete affected-package validation precede landing. No new framework,
 dependency, production API or engine coverage is part of this batch.
-
 
 ## 2026-11-01: seven reference-write families landed
 
@@ -366,7 +357,6 @@ This batch is complete. The remaining 71 write families and the wider Rust
 inventory remain open; their ordinary data is not declared unmigratable.
 Use the retained complete family map to choose the next closed cohort.
 
-
 ## 2026-11-01: ordinary reference-write cohort extended
 
 Landed `1dc91ac6a423` after independent preservation review. Another 23
@@ -391,7 +381,6 @@ Runtime edit/addition kept executable hash and mtime unchanged. These do not
 establish a clean-build or whole-suite speedup. The remaining 48 families and
 wider inventory stay open for later typed fixture extensions.
 
-
 ## 2026-11-01: next refusal cohort assigned
 
 Workspace `reference-writes-remaining`, based on `89891a340f30`, owns 18
@@ -412,7 +401,6 @@ owned by the author, with native exit and unchanged tracked inputs/status.
 Retain the fixture-verification boundary and earlier unchanged component
 receipts. No new full engine or global binary-discovery run is warranted by
 this scoped migration. The remaining families and broader inventory stay open.
-
 
 ## 2026-11-01: refusal fixture cohort landed
 
@@ -440,7 +428,6 @@ successful change/cross-result assertions, native stage/kernel hooks, custom
 setup, row limits and related supplies; they remain runtime-data candidates.
 The umbrella stays open and no defect class is declared closed.
 
-
 ## 2026-11-01: successful-outcome cohort assigned
 
 Workspace `reference-write-outcomes`, based on `7e309deee2eb`, retains the
@@ -461,7 +448,6 @@ edit without relinking, strict affected lint/static checks and one complete
 reference-package final run with native exit and unchanged input/id/status
 records. The author owns commands, correction and final verification; the lead
 owns landing/tree comparison. No unchanged full engine or discovery rerun.
-
 
 ## 2026-11-01: successful-outcome cohort landed
 
@@ -489,7 +475,6 @@ The remaining 18 families still have migratable case data: result relationships,
 stage and restricted-kernel hooks, catalog identity, custom setup and row limits
 need their bounded native driver boundaries. Keep the wider audit open.
 
-
 ## 2026-11-01: constructor-stage fixture cohort assigned
 
 Workspace `reference-write-hooks`, based on `968609ec5cb0`, owns the four
@@ -507,7 +492,6 @@ and one complete reference-package final run with unchanged input/id/status
 records. The author owns execution/corrections. No second fullcheck; the parallel
 shared naming fix owns the authoritative production fullcheck after integrating
 this batch if ready. Missing runner modes do not justify retaining ordinary data.
-
 
 ## 2026-11-01: constructor-stage cohort landed
 
@@ -532,7 +516,6 @@ fullcheck. The remaining 14 families and wider audit stay open; the absent
 runtime driver for a native boundary remains implementation work, not a reason
 to classify ordinary inputs as permanently compiled Rust.
 
-
 ## 2026-11-01: generated-row witness cohort assigned
 
 Workspace `reference-created-rows` owns four generated result/query and
@@ -554,3 +537,27 @@ this author owns the four wrapper removals. Naming lands first, this cohort
 second. Only one fullcheck is owned by the naming author; bounded fixture
 integration gets its complete affected-package checks, with actual inputs
 compared. The remaining ten families and wider audit remain open.
+
+## 2026-11-01: generated-row witness cohort landed
+
+Landed `469e7f243eeb`. Four more families preserve four writes/calls and seven
+singleton queries in four composite runtime blocks. Totals: 68 of 78 write
+families and 131 blocks; ten retained wrappers and the old 127-block prefix stay.
+A fixed native inserted-row witness checks external payload, fresh identity,
+post-state membership and direct reference linkage. Equal wrong evaluator
+answers no longer suffice; no fixed generated UUID or capture framework is used.
+
+Three paired old-key substitutions passed the old peer equalities and failed
+that witness; a fourth mutation failed direct native linkage. Four runtime-data
+witnesses covered payload, mandatory probe, cardinality and new-family growth
+without relinking. Complete combined reference package: 150/150 across ten
+binaries, zero skipped, native exit 0; all 3329 tracked entries, own/parent revisions
+and status stayed equal. Compiler 44.19s, shared-lock queue 795s, execution 1.572s;
+queue time is not test execution. Independent source/machine/stack review passed.
+
+Landing inherited only separately reviewed oplog/manual expectation corrections,
+formatting and lead prose, with all ten owned source hashes unchanged. Those
+other-consumer edits cannot reach this package; no final package/fullcheck
+repeat ran. Remaining ordinary data: reject-load identity, restricted-old
+kernels, catalog-linked identity, custom Invoice setup and row-limit hooks.
+These ten families and the wider inventory stay open.

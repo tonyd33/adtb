@@ -175,13 +175,11 @@ medium reasoning; the lead retains the user's setting. Independent review
 still has a fresh reader. Test value must be evaluated against runtime and
 retained stronger coverage, with no quota of deletions or weaker searches.
 
-
 A bounded read-only check of the recorded slowest tests found distinct
 permission, stack and recovery obligations rather than justified deletions.
 The weak crash-image golden group costs under half a test-second in that
 recording; removing it would not explain or cure the delay. No tests were
 removed and no build was run for this assessment.
-
 
 ### 2026-10-31: refresh worker capability before preserving a fallback
 
@@ -193,7 +191,6 @@ metadata and command execution. Authors now own execution, result assessment
 and corrections; the lead owns scheduling, evidence judgment and landing.
 The existing access-preflight rule was sufficient. I needed to apply it to
 the current session rather than treat historical failure as current evidence.
-
 
 ### 2026-10-31: postmortem of the execution-ownership incident
 
@@ -261,7 +258,6 @@ its appended all-umbrella scheduling with consumer-specific prerequisites.
 Existing failure, identity, authority and budget bets remain open; there is
 no measured recurrence trend that justifies calling those classes closed.
 
-
 ### 2026-11-01: notifications need an active lead handoff
 
 Authors retained execution ownership: the typed reference migration arrived
@@ -287,7 +283,6 @@ but invented a captured field observation. That candidate remains rejected.
 The next experiment must preserve structural correlations while demonstrating
 bounded relevant work; a larger unverified rewrite is not progress by itself.
 
-
 The quality cadence through `7309b60b` independently found no new confirmed
 finding and kept the known ignored unique integration and broader failure
 gaps explicit. Root checked the typed fatal producer/shared catch boundary
@@ -296,7 +291,6 @@ is the bounded reader producer and the prepared current-pin SQLite baseline;
 a further broad audit is not a prerequisite for either. Reference-writes
 is the next suggested small fixture cohort, pending an author's preservation
 assessment. No class closure or benchmark result follows from this review.
-
 
 ### 2026-11-01: verify the changed consumer graph
 
@@ -317,7 +311,6 @@ it was not a compiler unit-graph receipt. Do not seek an absolute proof by
 expanding a DAG into paths. Actual workspace discovery consumers remain part
 of the final assignment. No benchmark readiness follows from this decision.
 
-
 ### 2026-11-01: use task operations for action
 
 I sent the component-demand peer a new assignment through a context message
@@ -332,7 +325,6 @@ the need to guess whether a note will wake an idle thread. The code-agent
 handoff text also now agrees with retaining an author across corrections and
 related cohorts. Execution-state claims still need observed evidence; neither
 queued text nor a past assignment establishes current work.
-
 
 ### 2026-11-01: stop an oversized mechanism; overlap bounded delivery
 
@@ -360,7 +352,6 @@ proof; compound mutants are labelled as such. The existing test-value rule
 already prefers retained stronger coverage. No new catalog-pinning test or
 custom runner was warranted. The schema controls remain under implementation;
 there is no benchmark readiness or comparative timing result yet.
-
 
 ### 2026-11-01: independent oracles and a stopped full check
 
@@ -393,3 +384,9 @@ workflow now keeps such actions pending until an actual result and gives them
 priority over unrelated investigation. This is a process obligation, not an
 automatic guarantee from the tool. Keeping authors responsible for execution
 held; keeping the lead focused on the critical path needs this correction.
+
+The required native build subsequently used four jobs and passed 23 tests plus
+strict lint, but the observer captured no matching compiler samples despite
+reported compilation. That does not establish peak memory, a cache hit or a
+speedup; the broader concurrency question remains open. The next root compile
+needs a useful live sample before changing the general policy.

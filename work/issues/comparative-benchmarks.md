@@ -104,7 +104,6 @@ Keep private execution-environment details in local receipts under the
 repository's publication rules. Protocol, logical workload, repeatable
 commands, portable configuration and reviewed results remain public.
 
-
 ## 2026-11-01: native correctness driver started
 
 Track `sqlite-baseline` owns the reduced owner/current-pin correctness driver:
@@ -128,7 +127,6 @@ exact refusal controls and a portable run recipe. No timing, speed claim,
 optimization, pilot or measured matrix has started. The separate pilot and
 exclusive measurement phase follow reviewed correctness evidence; the lead
 must freeze counts and time budget before ranked measurements.
-
 
 ## 2026-11-01: correctness configuration and request partition
 
@@ -157,7 +155,6 @@ controls. Such a checkpoint is not measurement readiness or ticket closure.
 Small correctness checks use fixed small request counts; no repeated long
 workloads are required merely to iterate the driver. No ranked measurement,
 pilot, operation-count freeze or performance claim has occurred.
-
 
 ## 2026-11-01: isolated consumer verification scope
 
@@ -188,7 +185,6 @@ engine/campaign/Loom/Miri rerun is required solely by adding private opt-in
 packages. Final scope, review and integration evidence remain necessary before
 landing the checkpoint. Measurement readiness and this feature remain open.
 
-
 ## 2026-11-01: first native driver checkpoint landed
 
 Landed `e68af8b5487d` after independent source review and one focused delta
@@ -211,7 +207,6 @@ subset/unique/transition refusal controls and corresponding mutations, actual
 ambiguous-commit and externally flushed child-kill controls, hard containment,
 resource reporting and large-data feasibility remain open. Keep this feature
 open for those controls and the later reviewed measurement phase.
-
 
 ## 2026-11-01: declaration and refusal controls assigned
 
@@ -240,7 +235,6 @@ tracked inputs. The author owns final verification. Retain unchanged graph,
 policy and global-discovery evidence under the isolated-leaf rule. This
 checkpoint adds no timing, large-data feasibility, crash-control, hard-watchdog
 or measurement-readiness claim; those remain subsequent bounded work.
-
 
 ## 2026-11-01: schema-control checkpoint landed
 
@@ -282,3 +276,16 @@ Keep the feature open. Canonical naming, ambiguous commit and externally flushed
 acknowledged-prefix child-kill controls, hard containment, resource reporting,
 large-data feasibility, excluded pilots and frozen measurement protocol remain.
 No benchmark result, optimization, beta exit or defect-class closure is claimed.
+
+## 2026-11-01: native canonical-name limitation resolved
+
+The shared naming repair `554f6fba3c75` enables both native canonical-name
+regressions. Complete native package now passes 23/23 with zero skips and strict
+native lint passes. Exact reports/redaction and before/after/reopened state
+remain required; consumers do not strip diagnostic suffixes. This removes the
+known naming limitation of the previous schema-control checkpoint.
+
+Known named-set migration admission remains separate. Ambiguous commit,
+externally flushed acknowledged-prefix/child-kill controls, hard containment,
+resource reporting, feasibility, pilots and the frozen comparison protocol
+still precede measurement readiness. No benchmark result or beta exit is claimed.

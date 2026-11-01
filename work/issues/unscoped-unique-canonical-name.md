@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-31
-status: in-progress
+status: resolved
 kind: bug
 priority: 880
 summary: an unscoped unique violation appends an in constructor scope to its canonical name
-branch: canonical-unique-names
+closed: 2026-11-01
 tags:
   - quality
   - engine
@@ -40,7 +40,6 @@ the common canonical naming mechanism if one exists, and test the
 observable name independently of the formatter under test. Do not
 change the uniqueness check or weaken the exact refusal assertion.
 
-
 ## 2026-11-01: native comparison reproductions retained
 
 The landed comparison controls add two runtime-data normative regressions for
@@ -59,7 +58,6 @@ work/tools/suite -p adtb-bench --features native --lib -E 'test(control_tests)' 
 
 Repair the shared naming mechanism before enabling these cases; do not normalize
 names in the consumer.
-
 
 ## 2026-11-01: shared producer repair assigned
 
@@ -81,3 +79,27 @@ The author owns one final full `check` on the reviewed rebased tree, plus comple
 opt-in native consumer tests/lint that default checks do not execute. The lead
 compares landing inputs and reuses passes without another full run. Resource
 checks precede the full check; independently ready fixture work may land first.
+
+## 2026-11-01: resolved
+
+Landed `554f6fba3c75`. Engine and reference now delegate to one schema-owned
+canonical-name provider. Omitted/full scopes share the bare name; proper subsets
+retain sorted constructor names; expression uniques use their catalog id.
+The common field-path renderer and consumer contract eliminate the two copied
+formatters. Existing caller gates and checked schemas enforce its preconditions.
+This resolves the named bug, not the broader copied-rules defect class.
+
+Thirty-one runtime records search constructor orders/scopes, records, paths and
+expression identity; named-set cases use resolved reference input because the
+separate migration admission bug remains. Three actual production mutations
+failed exact public oracles. The two native regressions and public bundle
+regression were enabled and passed without weakened report/state assertions.
+
+Configured verification completed by retained passes and bounded continuation.
+The original full command remains exit 100: 3528 root passes, two stale expected
+names, seven skips. Corrected complete oplog/manual binaries, all unreached
+configured stages and final formatting passed. Native package 23/23, zero skips;
+strict native lint passed. All 3323 final input records/id/status were identical.
+The initial formatting failure also remains recorded. Do not describe this as
+one unqualified successful `check` invocation. Landing changed only reviewed
+lead prose; all 47 reviewed source inputs stayed exact. No after-land rerun.
