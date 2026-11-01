@@ -201,9 +201,9 @@ The 16-family reference migration and 49-family checker data continuation
 form a separate ready batch. Their changes are confined to test inputs,
 assertion drivers and the conformance diagnostic format/probe adapter.
 Database/language production files, dependency/build/feature configuration
-and global containment are unchanged. All consumers are within adtb-lang,
-adtb-reference, adtb-conformance and adtb-probe; run complete tests of all
-four packages on their final combined tree and reuse unaffected full-check
+and global containment are unchanged. Direct consumers are within adtb-lang,
+adtb-reference, adtb-conformance, adtb-probe and the adtb-testkit soundness
+test; run complete tests of all five packages on their final combined tree and reuse unaffected full-check
 evidence from `6685d287`/tested `047020687851`. Existing strict affected
 lints, preservation and mutation receipts remain required.
 
