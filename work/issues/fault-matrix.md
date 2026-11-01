@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-31
-status: in-progress
+status: open
 kind: bug
 priority: 401
 summary: acknowledged work and failure outcomes are not searched through Database under every fault
-branch: fault-commit
 ---
 
 # Fault matrix
@@ -214,3 +213,50 @@ after an earlier acknowledgement. No broad crash/rot or backend claim.
 Targeted tests and one decisive mutation precede fresh review and one final
 full check; compare landed inputs before reusing that receipt. The umbrella
 stays open. This track is disjoint from the runtime text-fixture pilot.
+
+
+## 2026-10-31: bounded public commit search landed
+
+Landed as `9e349658d7596f9160690b154e3916c97d650050`. The existing
+operation enumerator now supports typed fatal-I/O process outcomes without
+accepting arbitrary panics. The public transaction workload records commit
+attempts before invocation and acknowledgements after return, then reopens
+and checks exact legal keyed-row prefixes between those counts. Both
+statement-stage and commit-stage submissions were reached.
+
+Default sampled six Write/Sync positions, quick three, and deep all sixteen
+eligible positions of this one seeded baseline. The counts include failures
+before the first new acknowledgement and after an earlier acknowledgement.
+They do not establish coverage of other workloads, schedules, corruption
+kinds or real backends. The umbrella remains open.
+
+The independent reading review found an over-permissive acknowledgement-plus-one
+oracle; the author corrected its upper bound to actual commit attempts.
+An initial fixture rejection was corrected by declaring the self-key's
+sequence generator while retaining every explicit key. Neither initial
+failure is counted as fault coverage.
+
+Three measured mutations failed as intended, and restored named runs passed:
+a seed-only recovered image lost earlier acknowledged rows; synthetic ledger
+inputs exposed a never-attempted recovered transaction; removal of the
+production durability wait under deep exposed acknowledged-data loss at
+position six (one acknowledged and one attempted transaction, recovered
+prefix zero). The last result establishes production-path sensitivity for
+this workload; the synthetic input is only oracle-bound sensitivity.
+
+The author's final full `check` passed on unchanged tested source
+`7cdd897b62d7b002abe8a88edb3d129cb6e6a5b6`: 3760 root tests, 48 campaign,
+13 Loom and 39 Miri, plus all configured static, documentation, grammar,
+policy, size and tooling checks. Configured skips were root eight, campaign
+one, Loom nineteen and Miri two ignored. The check body took 751 seconds;
+the new test took 0.916 seconds in that run. Landing changed only three
+reviewed lead-workflow Markdown files relative to the tested tree. Code,
+test inputs and configuration were identical, so the receipt was reused
+without another Rust full check.
+
+Rerun the focused search with `work/tools/suite -p adtb-sim --test commit
+--profile deep --success-output final -E
+"test(=public_commits_preserve_acknowledged_pairs_under_write_and_sync_failure)"`.
+Typed-panic controls, existing backup failure-search callers, affected clippy,
+formatting, house and size checks also passed. Next matrix work remains a
+separately bounded workload or fault domain with explicit reached-case floors.
