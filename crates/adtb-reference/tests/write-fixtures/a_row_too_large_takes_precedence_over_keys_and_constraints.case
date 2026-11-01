@@ -1,0 +1,18 @@
+=== key reject-row-limit
+--- source
+insert users { id: users.key(1), name: "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy" }
+--- limit
+60
+--- relation
+users
+--- ctor
+User
+=== reference reject-row-limit
+--- source
+insert badges { owner: users.key(99), label: "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy" }
+--- limit
+60
+--- relation
+badges
+--- ctor
+Badge

@@ -1,0 +1,22 @@
+=== update reject-row-limit
+--- source
+update u in users where key u == users.key(1) set User { u with name: "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy" }
+--- limit
+60
+--- relation
+users
+--- ctor
+User
+=== retag reject-row-limit
+--- source
+update i in identities where match i | Google g -> g.gid == "g-ann" | EmailPass _ -> false | Apple _ -> false
+set match i
+| Google g -> Apple { sub: "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy" }
+| EmailPass e -> e
+| Apple a -> a
+--- limit
+120
+--- relation
+identities
+--- ctor
+Apple

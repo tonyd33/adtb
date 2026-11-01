@@ -1,0 +1,14 @@
+=== long reject-row-limit
+--- source
+insert users { id: users.key(9), name: "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy" }
+--- limit
+60
+--- relation
+users
+--- ctor
+User
+=== short row-limit
+--- source
+insert users { id: users.key(9), name: "z" }
+--- limit
+60

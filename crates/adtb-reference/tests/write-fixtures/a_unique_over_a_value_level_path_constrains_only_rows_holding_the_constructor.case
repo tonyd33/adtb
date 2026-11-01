@@ -1,0 +1,20 @@
+=== setup schema
+--- source
+type Status = Draft | Paid { ref: Text }
+type Invoice = { id: Key invoices, status: Status }
+relation invoices : Invoice key id generate sequence unique (status.Paid.ref)
+=== drafts run
+--- source
+(insert invoices { status: Draft }, insert invoices { status: Draft })
+=== paid run
+--- source
+insert invoices { status: Paid { ref: "r1" } }
+=== duplicate reject-violated
+--- source
+insert invoices { status: Paid { ref: "r1" } }
+--- constraint
+app::invoices.unique(status.Paid.ref)
+--- report
+count
+--- expected
+2

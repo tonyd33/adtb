@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 mod created;
 mod driver;
+mod limited;
 mod outcome;
 mod probe;
 mod refusal;
@@ -65,8 +66,23 @@ pub(super) fn run() -> (usize, usize) {
             );
             let text = shared::read(&directory, file);
             assert!(text.starts_with("=== "), "a write family declares steps");
-            let mut fixture = shared::fixture(&directory);
-            for block in text[4..].split("\n=== ") {
+            let mut blocks = text[4..].split("\n=== ").peekable();
+            let mut fixture = if blocks
+                .peek()
+                .is_some_and(|block| shared::fields(block).1 == "schema")
+            {
+                let block = blocks.next().expect("the first schema block exists");
+                let (name, _, mut fields) = shared::fields(block);
+                let id = format!("{family}/{name}");
+                assert!(executed.insert(id.clone()), "duplicate step {id}");
+                current = id;
+                let source = shared::take(&mut fields, "source");
+                shared::finish(&fields);
+                adtb_testkit::fixture::Fixture::new(&source)
+            } else {
+                shared::fixture(&directory)
+            };
+            for block in blocks {
                 current = format!("{family}/{}", block.lines().next().unwrap_or("empty step"));
                 let (name, mode, fields) = shared::fields(block);
                 let id = format!("{family}/{name}");
@@ -94,4 +110,4 @@ pub(super) fn run() -> (usize, usize) {
     (families.len(), executed.len())
 }
 
-const ORIGINAL_HASH: u64 = 0x7f1b48316a20586b;
+const ORIGINAL_HASH: u64 = 0xce1a74c7acaf0882;

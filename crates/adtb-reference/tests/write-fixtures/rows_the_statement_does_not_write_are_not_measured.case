@@ -1,0 +1,5 @@
+=== short row-limit
+--- source
+insert users { id: users.key(9), name: "z" }
+--- limit
+40

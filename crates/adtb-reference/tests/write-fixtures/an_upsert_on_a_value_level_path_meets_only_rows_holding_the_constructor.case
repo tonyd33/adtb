@@ -1,0 +1,35 @@
+=== setup schema
+--- source
+type Status = Draft | Paid { ref: Text }
+type Invoice = { id: Key invoices, status: Status, n: I64 }
+relation invoices : Invoice key id generate sequence unique (status.Paid.ref)
+=== paid run
+--- source
+insert invoices { status: Paid { ref: "r1" }, n: 1 }
+=== upsert-paid run
+--- source
+insert invoices { status: Paid { ref: "r1" }, n: 2 }
+unless conflict on (status.Paid.ref)
+else update old set Invoice { old with n: old.n + 10 }
+=== paid-count count
+--- relation
+invoices
+--- expected
+1
+=== updated one
+--- source
+from i in invoices select i.n
+--- type
+I64
+--- expected
+11
+=== upsert-draft run
+--- source
+insert invoices { status: Draft, n: 5 }
+unless conflict on (status.Paid.ref)
+else update old set Invoice { old with n: 0 }
+=== final-count count
+--- relation
+invoices
+--- expected
+2
