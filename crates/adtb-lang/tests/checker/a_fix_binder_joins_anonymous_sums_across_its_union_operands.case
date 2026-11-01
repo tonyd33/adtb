@@ -1,0 +1,30 @@
+=== 001 adhoc
+--- text
+fix a = [Zed { n: 1 }] union (from x in a select Alpha) in a
+--- expect
+accept
+--- type
+Set (Alpha | Zed { n: I64 })
+--- constructors
+Alpha|Zed	0	Alpha	
+Alpha|Zed	1	Zed	n
+=== 002 adhoc
+--- text
+fix a = (from x in a select Zed { n: 1 }) union [Alpha] in a
+--- expect
+accept
+--- type
+Set (Alpha | Zed { n: I64 })
+--- constructors
+Alpha|Zed	0	Alpha	
+Alpha|Zed	1	Zed	n
+=== 003 adhoc
+--- text
+fix a = [Zed { n: 1 }] union [Alpha] union (from x in a select x) in a
+--- expect
+accept
+--- type
+Set (Alpha | Zed { n: I64 })
+--- constructors
+Alpha|Zed	0	Alpha	
+Alpha|Zed	1	Zed	n

@@ -1,0 +1,11 @@
+=== 001 probe
+--- text
+fn f (r: Reset) -> Text = match r.identity | EmailPass e -> e.email
+--- body
+f
+--- text_2
+fn f (k: Key identities.EmailPass) -> Text = match k | EmailPass e -> e.email
+--- reference_deref
+true
+--- key_deref
+false

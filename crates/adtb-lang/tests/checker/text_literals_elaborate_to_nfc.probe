@@ -1,0 +1,7 @@
+=== 001 probe
+--- text
+fn f () -> Text = "café"
+--- body
+f
+--- expected_text
+café

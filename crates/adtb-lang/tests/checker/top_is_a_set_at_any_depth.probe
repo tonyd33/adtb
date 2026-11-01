@@ -1,0 +1,9 @@
+=== 001 probe
+--- text_3
+fn f (xs: Set Post) -> Set Post = top 3 by 1 (xs)
+--- parse_refusal
+expected the operand of `top`, a comprehension starting with `from`, found `xs`
+--- text_4
+fn f () -> Set Post = top 3 by key p (from p in posts select p)
+--- body
+f

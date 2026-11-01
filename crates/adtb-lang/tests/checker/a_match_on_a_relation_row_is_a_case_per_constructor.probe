@@ -1,0 +1,11 @@
+=== 001 probe
+--- text
+fn f (u: Key users) -> Set Text = from i in identities where i.user == u select display_name(i)
+--- body
+f
+--- function
+display_name
+--- constructors
+0
+1
+2

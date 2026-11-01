@@ -1,0 +1,22 @@
+=== 001 schema
+--- text
+fn ba () -> B { b: Text } | A { a: I64 } = B { b: "x" }
+         fn ab () -> A { a: I64 } | B { b: Text } = B { b: "x" }
+--- expect
+accept
+--- bodies
+ba
+ab
+--- constructors
+A|B	1	B	b
+--- root_ctor
+1
+=== 002 adhoc
+--- text
+match i | Google g -> Zed { n: 1 } | Apple a -> Alpha | EmailPass e -> Zed { n: 2 }
+--- params
+i	Identity
+--- expect
+accept
+--- type
+Alpha | Zed { n: I64 }

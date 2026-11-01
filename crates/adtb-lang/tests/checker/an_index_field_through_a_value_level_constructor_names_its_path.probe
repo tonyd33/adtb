@@ -1,0 +1,18 @@
+=== 001 probe
+--- text
+
+type Bill = { id: Key bills, status: Status, ship: Shipment, note: Text }
+relation bills : Bill
+  key id generate sequence
+  unique (status.Paid.at)
+  index (ship.Shipped.via.Mail.tracking)
+  index (status.Paid)
+  unique (lower(note))
+
+--- paths
+field status,ctor 2,field at
+field ship,ctor 1,field via,ctor 1,field tracking
+field status,ctor 2
+empty
+--- relation
+bills

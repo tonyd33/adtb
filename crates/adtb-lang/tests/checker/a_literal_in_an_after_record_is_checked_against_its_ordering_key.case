@@ -1,0 +1,23 @@
+=== 001 adhoc
+--- text
+from s in sales select s order by (s.qty, key s) take 5 after Some { value: { a: 3, b: sales.key(1) } }
+--- expect
+accept
+=== 002 adhoc
+--- text
+from s in sales select s order by (s.qty, key s) take 5 after Some { value: { a: 3000000000, b: sales.key(1) } }
+--- expect
+refuse
+--- errors
+literal out of range of I32
+--- phase
+adhoc
+=== 003 adhoc
+--- text
+from p in posts select p order by (p.created_at desc, key p) take 5 after Some { value: { a: 40, b: posts.key(1) } }
+--- expect
+refuse
+--- errors
+expected Instant, found I64
+--- phase
+adhoc

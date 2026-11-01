@@ -1,0 +1,12 @@
+=== 001 schema
+--- text
+fn f (s: Shipment) -> Text = match s
+           | Shipped { via: Courier c } -> c.name
+           | Shipped { via: Mail m }    -> m.tracking
+           | Pending                    -> "pending"
+--- expect
+accept
+--- body
+f
+--- sexp
+(let ξ0 s1 (case ξ0 (0 ξ2 "pending") (1 ξ3 (if (case ξ3.via (0 ξ4 #1) (1 ξ5 #0)) (case ξ3.via (0 ξ6 (let c7 ξ6 c7.name)) (1 ξ8 unreachable)) (case ξ3.via (0 ξ9 unreachable) (1 ξ10 (let m11 ξ10 m11.tracking)))))))

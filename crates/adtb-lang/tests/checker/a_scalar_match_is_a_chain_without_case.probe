@@ -1,0 +1,5 @@
+=== 001 probe
+--- text
+fn f (c: Text) -> I64 = match c | "US" -> 0 | "CA" -> 1 | _ -> 2
+--- body
+f

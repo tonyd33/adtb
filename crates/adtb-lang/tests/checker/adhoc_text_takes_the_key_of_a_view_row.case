@@ -1,0 +1,7 @@
+=== 001 adhoc
+--- text
+from f in all_follows() select key f
+--- extra
+fn all_follows () -> Set Follow = from f in follows select f
+--- expect
+accept

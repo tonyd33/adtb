@@ -1,0 +1,8 @@
+=== 001 probe
+--- text
+fn f (o: Identity.OAuth) -> Text = match o | Google g -> g.gid | Apple a -> a.sub
+--- body
+f
+--- constructors
+1
+2

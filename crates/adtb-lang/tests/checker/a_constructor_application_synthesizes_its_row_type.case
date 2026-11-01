@@ -1,0 +1,17 @@
+=== 001 adhoc
+--- text
+Google { id: k, user: u, gid: "g" }
+--- params
+u	Key users
+k	Key identities
+--- expect
+accept
+--- type
+Identity.Google
+=== 002 adhoc
+--- text
+Draft
+--- expect
+accept
+--- type
+Status.Draft

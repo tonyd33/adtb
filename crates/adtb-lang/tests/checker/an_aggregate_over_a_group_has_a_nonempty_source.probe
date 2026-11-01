@@ -1,0 +1,45 @@
+=== 001 probe
+--- text
+fn f () -> Set ({ a: I64, b: Option I64 }) =
+               from o in orders group o by o.user into g
+               select { a: min(x.total for x in g), b: min(x.total for x in g where x.qty > 1) }
+--- body
+f
+--- aggregates
+min	false
+min	true
+--- normalize
+true
+=== 002 probe
+--- text
+fn f () -> Set ({ a: I64, b: Option I64 }) =
+               from o in orders group o by o.user into g
+               select { a: max(x.total for x in g), b: max(x.total for x in g where x.qty > 1) }
+--- body
+f
+--- aggregates
+max	false
+max	true
+--- normalize
+true
+=== 003 probe
+--- text
+fn f () -> Set ({ a: F64, b: Option F64 }) =
+               from o in orders group o by o.user into g
+               select { a: avg(f64(x.total) for x in g), b: avg(f64(x.total) for x in g where x.qty > 1) }
+--- body
+f
+--- aggregates
+avg	false
+avg	true
+--- normalize
+true
+=== 004 probe
+--- text
+fn f () -> Option I64 = min(o.total for o in orders)
+--- body
+f
+--- aggregates
+min	false
+--- normalize
+false

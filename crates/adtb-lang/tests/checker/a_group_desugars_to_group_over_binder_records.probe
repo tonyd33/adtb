@@ -1,0 +1,5 @@
+=== 001 probe
+--- text
+fn f () -> Set (Key users) = from o in orders group o by o.user into g select g.key
+--- body
+f

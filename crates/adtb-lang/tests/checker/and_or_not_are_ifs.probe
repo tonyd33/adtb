@@ -1,0 +1,7 @@
+=== 001 probe
+--- text
+fn f (a: Bool, b: Bool) -> Bool = a and not b
+--- body
+f
+--- false_ctor
+0

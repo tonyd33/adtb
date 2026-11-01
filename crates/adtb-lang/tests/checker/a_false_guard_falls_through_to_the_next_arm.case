@@ -1,0 +1,13 @@
+=== 001 schema
+--- text
+fn f (i: Identity) -> Text = match i
+           | Google g if g.gid == "corp" -> "staff"
+           | Google _                    -> "guest"
+           | EmailPass _                 -> "guest"
+           | Apple _                     -> "guest"
+--- expect
+accept
+--- body
+f
+--- sexp
+(let ξ0 i1 (case ξ0 (0 ξ2 "guest") (1 ξ3 (if (let g4 ξ3 (Eq g4.gid "corp")) (let g5 ξ3 "staff") "guest")) (2 ξ6 "guest")))

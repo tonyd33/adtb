@@ -1,0 +1,5 @@
+=== 001 probe
+--- text
+fn f () -> Set Text = from u in users, i in identities where i.user == key u select u.name
+--- body
+f

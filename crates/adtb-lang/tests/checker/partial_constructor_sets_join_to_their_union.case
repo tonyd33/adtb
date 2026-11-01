@@ -1,0 +1,16 @@
+=== 001 adhoc
+--- text
+from x in identities select match x | Google g -> key g | Apple a -> key a | EmailPass e -> key e
+--- params
+i	Identity
+--- expect
+accept
+--- type
+Set (Key identities)
+=== 002 adhoc
+--- text
+(from g in identities.Google select g) union (from a in identities.Apple select a)
+--- expect
+accept
+--- type
+Set Identity.(Google | Apple)

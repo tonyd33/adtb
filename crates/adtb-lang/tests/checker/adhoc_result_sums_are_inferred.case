@@ -1,0 +1,22 @@
+=== 001 adhoc
+--- text
+from i in identities select match i
+               | EmailPass e -> ByEmail { email: e.email }
+               | Google g    -> ByGoogle { gid: g.gid }
+               | Apple a     -> ByGoogle { gid: a.sub }
+--- expect
+accept
+--- type
+Set (ByEmail { email: Text } | ByGoogle { gid: Text })
+=== 002 adhoc
+--- text
+from i in identities select match i
+           | EmailPass e -> A { x: e.email }
+           | Google g    -> A { x: 1 }
+           | Apple a     -> B
+--- expect
+refuse
+--- errors
+the arms have no common type: A { x: Text } and A { x: I64 }
+--- phase
+adhoc

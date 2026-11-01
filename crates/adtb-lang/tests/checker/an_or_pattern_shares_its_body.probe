@@ -1,0 +1,7 @@
+=== 001 probe
+--- text
+fn f (i: Identity) -> Key users = match i | Google g | Apple g -> g.user | EmailPass e -> e.user
+--- body
+f
+--- excluded_ctor
+0

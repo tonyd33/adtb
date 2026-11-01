@@ -1,0 +1,12 @@
+=== 001 adhoc
+--- text
+match i | Google g -> g | Apple a -> u | EmailPass e -> e
+--- params
+i	Identity
+u	User
+--- expect
+refuse
+--- errors
+the arms have no common type: Identity.Google and User
+--- phase
+adhoc

@@ -1,0 +1,11 @@
+=== 001 probe
+--- total_field
+total
+--- qty_field
+qty
+--- total
+1
+--- qty
+2
+--- text
+Order { qty: 2, total: 1, user: users.key(1), id: orders.key(1) }

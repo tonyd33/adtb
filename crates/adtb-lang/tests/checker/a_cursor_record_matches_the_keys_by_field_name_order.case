@@ -1,0 +1,16 @@
+=== 001 query
+--- text
+query feed_page (cursor: Option ({ zz: Key posts, aa: Instant })) -> Set Post =
+           from p in posts select p order by (p.created_at desc, key p) take 20 after cursor
+--- expect
+accept
+=== 002 query
+--- text
+query feed_page (cursor: Option ({ aa: Key posts, zz: Instant })) -> Set Post =
+           from p in posts select p order by (p.created_at desc, key p) take 20 after cursor
+--- expect
+refuse
+--- errors
+field `aa` of the `after` record is compared with an ordering key of Instant, found Key posts
+--- phase
+query

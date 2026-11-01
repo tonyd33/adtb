@@ -1,0 +1,8 @@
+=== 001 adhoc
+--- text
+insert identities.Google { user: u, gid: g }
+--- params
+u	Key users
+g	Text
+--- expect
+accept

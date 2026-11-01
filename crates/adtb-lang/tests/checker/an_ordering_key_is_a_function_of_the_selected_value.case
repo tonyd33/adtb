@@ -1,0 +1,32 @@
+=== 001 adhoc
+--- text
+from u in users, p in posts select p order by u.name
+--- expect
+refuse
+--- errors
+an ordering key reads only the selected value, or fields the selected value holds unchanged
+--- phase
+adhoc
+=== 002 adhoc
+--- text
+from u in users select { n: u.name } order by u.name
+--- expect
+accept
+=== 003 adhoc
+--- text
+from i in invoices select i order by i.status
+--- expect
+refuse
+--- errors
+an ordering key has an ordered type, found Status
+--- phase
+adhoc
+=== 004 adhoc
+--- text
+from u in users select { n: u.name } order by { n: u.name }
+--- expect
+refuse
+--- errors
+an ordering key has an ordered type, found { n: Text }
+--- phase
+adhoc

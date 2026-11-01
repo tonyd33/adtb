@@ -1,0 +1,10 @@
+=== 001 probe
+--- text
+fn f (me: Key users) -> Set (Key users) =
+           fix reach = (from f in follows where f.src == me select f.dst)
+                     union (from r in reach, f in follows where f.src == r select f.dst)
+           in reach
+--- body
+f
+--- binders
+1

@@ -1,0 +1,7 @@
+=== 001 probe
+--- text
+fn ap (g: I64 -> I64 -> I64) -> I64 = g(1, 2)
+--- body
+ap
+--- text_2
+fn ap (g: () -> I64) -> I64 = g()

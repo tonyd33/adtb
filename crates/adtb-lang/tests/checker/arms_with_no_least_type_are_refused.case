@@ -1,0 +1,34 @@
+=== 001 adhoc
+--- text
+match b | true -> None | false -> None
+--- params
+b	Bool
+--- expect
+refuse
+--- errors
+the type argument `a` of `Option` is not known here; give the expected type
+--- phase
+adhoc
+=== 002 adhoc
+--- text
+if b then None else 1
+--- params
+b	Bool
+--- expect
+refuse
+--- errors
+the type argument `a` of `Option` is not known here; give the expected type
+--- phase
+adhoc
+=== 003 adhoc
+--- text
+if b then Draft else Pending
+--- params
+b	Bool
+t	Instant
+--- expect
+refuse
+--- errors
+the branches of `if` have no common type: Status.Draft and Shipment.Pending
+--- phase
+adhoc

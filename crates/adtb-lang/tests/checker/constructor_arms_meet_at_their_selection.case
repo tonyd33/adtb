@@ -1,0 +1,29 @@
+=== 001 adhoc
+--- text
+if b then Draft else Sent { at: t }
+--- params
+b	Bool
+t	Instant
+--- expect
+accept
+--- type
+Status.(Draft | Sent)
+=== 002 adhoc
+--- text
+match b | true -> Draft | false -> Sent { at: t }
+--- params
+b	Bool
+t	Instant
+--- expect
+accept
+--- type
+Status.(Draft | Sent)
+=== 003 adhoc
+--- text
+match s | Draft -> Draft | Sent x -> Draft | Paid p -> Draft
+--- params
+s	Status
+--- expect
+accept
+--- type
+Status.Draft

@@ -1,0 +1,8 @@
+=== 001 probe
+--- text
+fn f () -> Set (Identity.Google) = identities.Google
+--- body
+f
+--- text_2
+fn rs () -> Set Identity = from i in identities select i
+fn f () -> Set (Identity.Google) = rs().Google

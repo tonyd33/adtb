@@ -1,0 +1,24 @@
+=== 001 query
+--- text
+query search (name: Option Text, after: Option Instant) -> Set Post =
+           from p in posts
+           where match name  | None -> true | Some { value: n } -> p.title == n
+           where match after | None -> true | Some { value: t } -> p.created_at > t
+           select p
+--- expect
+accept
+=== 002 query
+--- text
+query by_status (s: Status, since: Instant) -> Set Invoice =
+           from i in invoices where i.status == s and i.issued >= since select i
+--- expect
+accept
+=== 003 query
+--- text
+query q (p: I64 -> I64) -> I64 = p(1)
+--- expect
+refuse
+--- errors
+a parameter of a registered query never has a function type
+--- phase
+query

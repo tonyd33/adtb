@@ -1,0 +1,5 @@
+=== 001 probe
+--- text
+fn v () -> I64 = 1
+--- function
+v

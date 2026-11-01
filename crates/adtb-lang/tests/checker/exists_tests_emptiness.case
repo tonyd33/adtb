@@ -1,0 +1,10 @@
+=== 001 schema
+--- text
+fn active () -> Set User = from u in users where exists i in u.<identities.user select u
+--- expect
+accept
+=== 002 schema
+--- text
+fn f () -> Set User = from u in users where not exists i in u.<identities.user where i.user == key u select u
+--- expect
+accept

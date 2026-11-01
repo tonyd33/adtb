@@ -1,0 +1,5 @@
+=== 001 probe
+--- text
+fn f () -> I64 = sum(o.total for o in orders where o.qty > 1)
+--- body
+f

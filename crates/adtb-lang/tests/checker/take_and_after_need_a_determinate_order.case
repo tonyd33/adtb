@@ -1,0 +1,60 @@
+=== 001 query
+--- text
+query page (cursor: Option (Key users)) -> Set User =
+           from u in users select u order by u.id take 50 after cursor
+--- expect
+accept
+=== 002 query
+--- text
+query feed_page (cursor: Option ({ at: Instant, id: Key posts })) -> Set Post =
+           from p in posts select p order by (p.created_at desc, key p) take 20 after cursor
+--- expect
+accept
+=== 003 query
+--- text
+query q () -> Set User = from u in users select u order by u.name take 5
+--- expect
+refuse
+--- errors
+`take` and `after` need a determinate order: include the row's key, or a field a key or unique covers
+--- phase
+query
+=== 004 adhoc
+--- text
+from i in identities.EmailPass select i order by i.email take 5
+--- expect
+accept
+=== 005 adhoc
+--- text
+from i in identities select i order by i.user take 5
+--- expect
+refuse
+--- errors
+`take` and `after` need a determinate order: include the row's key, or a field a key or unique covers
+--- phase
+adhoc
+=== 006 adhoc
+--- text
+from p in posts select p.author order by p.author take 5
+--- expect
+accept
+=== 007 query
+--- text
+query feed_page (cursor: Option ({ at: Instant, id: Key users })) -> Set Post =
+           from p in posts select p order by (p.created_at desc, key p) take 20 after cursor
+--- expect
+refuse
+--- errors
+field `id` of the `after` record is compared with an ordering key of Key posts, found Key users
+--- phase
+query
+=== 008 query
+--- text
+query page (cursor: Option Text) -> Set User =
+           from u in users select u order by u.id take 50 after cursor
+--- expect
+refuse
+--- errors
+expected Option (Key users), found Option Text
+--- phase
+query

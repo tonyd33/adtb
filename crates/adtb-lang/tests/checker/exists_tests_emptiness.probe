@@ -1,0 +1,5 @@
+=== 001 probe
+--- text_3
+fn f (u: User) -> Bool = exists i in u.<identities.user
+--- body
+f

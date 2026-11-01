@@ -1,0 +1,25 @@
+=== 001 adhoc
+--- text
+match i
+           | Google g    -> { sub: g.gid, team: g.gid }
+           | Apple a     -> { sub: a.sub }
+           | EmailPass e -> { sub: e.email }
+--- params
+i	Identity
+--- expect
+refuse
+--- errors
+the arms have no common type: field team missing
+--- phase
+adhoc
+=== 002 adhoc
+--- text
+match i | Google g -> { n: 1 } | Apple a -> { n: a.sub } | EmailPass e -> { n: 2 }
+--- params
+i	Identity
+--- expect
+refuse
+--- errors
+the arms have no common type: { n: I64 } and { n: Text }
+--- phase
+adhoc

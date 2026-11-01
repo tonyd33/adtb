@@ -1,0 +1,7 @@
+=== 001 probe
+--- text
+fn f (u: User) -> Set Session = u.<sessions.owner
+--- body
+f
+--- some_ctor
+1

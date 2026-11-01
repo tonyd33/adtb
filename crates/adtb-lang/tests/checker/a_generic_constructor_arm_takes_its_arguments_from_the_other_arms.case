@@ -1,0 +1,27 @@
+=== 001 adhoc
+--- text
+if b then None else Some { value: 1 }
+--- params
+b	Bool
+--- expect
+accept
+--- type
+Option I64
+=== 002 adhoc
+--- text
+if b then Some { value: 1 } else None
+--- params
+b	Bool
+--- expect
+accept
+--- type
+Option I64
+=== 003 adhoc
+--- text
+match b | true -> None | false -> Some { value: 1 }
+--- params
+b	Bool
+--- expect
+accept
+--- type
+Option I64

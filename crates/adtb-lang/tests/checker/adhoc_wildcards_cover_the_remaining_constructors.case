@@ -1,0 +1,41 @@
+=== 001 adhoc
+--- text
+match i | Google g -> g.gid | _ -> "other"
+--- params
+i	Identity
+--- expect
+accept
+=== 002 adhoc
+--- text
+from i in identities select match i | Google g -> g.gid | _ -> "other"
+--- expect
+accept
+=== 003 adhoc
+--- text
+match i | Google g -> g.gid | x -> display_name(x)
+--- params
+i	Identity
+--- expect
+accept
+=== 004 adhoc
+--- text
+match i | Google g -> g.gid | _ -> "other" | Apple a -> a.sub
+--- params
+i	Identity
+--- expect
+refuse
+--- errors
+this arm is unreachable: the arms before it cover every value it matches
+--- phase
+adhoc
+=== 005 adhoc
+--- text
+match i | Google g -> g.gid
+--- params
+i	Identity
+--- expect
+refuse
+--- errors
+match does not cover `EmailPass _`
+--- phase
+adhoc

@@ -1,0 +1,22 @@
+=== 001 query
+--- text
+query login_key (u: Key users) -> Set (ByEmail { email: Text } | ByGoogle { gid: Text }) =
+           from i in identities.(EmailPass | Google) where i.user == u
+           select match i
+             | EmailPass e -> ByEmail { email: e.email }
+             | Google g    -> ByGoogle { gid: g.gid }
+--- expect
+accept
+=== 002 query
+--- text
+query login_key (u: Key users) -> Set (ByEmail { email: Text } | ByGoogle { gid: Text }) =
+           from i in identities.(EmailPass | Google) where i.user == u
+           select match i
+             | EmailPass e -> ByEmail { email: e.email }
+             | Google g    -> ByApple { gid: g.gid }
+--- expect
+refuse
+--- errors
+`ByApple` is not a constructor of ByEmail { email: Text } | ByGoogle { gid: Text }
+--- phase
+query

@@ -1,0 +1,54 @@
+=== 001 adhoc
+--- text
+match i | Google g -> Zed { n: 1 } | Apple a -> Alpha | EmailPass e -> Zed { n: 2 }
+--- expect
+accept
+--- constructors
+Alpha|Zed	0	Alpha	
+Alpha|Zed	1	Zed	n
+--- params
+i	Identity
+=== 002 adhoc
+--- text
+[Zed { n: 1 }, Alpha]
+--- expect
+accept
+--- constructors
+Alpha|Zed	0	Alpha	
+Alpha|Zed	1	Zed	n
+=== 003 adhoc
+--- text
+[Zed { n: 1 }] union [Alpha]
+--- expect
+accept
+--- constructors
+Alpha|Zed	0	Alpha	
+Alpha|Zed	1	Zed	n
+=== 004 adhoc
+--- text
+if c then Zed { n: 1 } else Alpha
+--- expect
+accept
+--- constructors
+Alpha|Zed	0	Alpha	
+Alpha|Zed	1	Zed	n
+--- params
+c	Bool
+=== 005 adhoc
+--- text
+Alpha == Zed { n: 1 }
+--- expect
+accept
+--- constructors
+Alpha|Zed	0	Alpha	
+Alpha|Zed	1	Zed	n
+=== 006 adhoc
+--- text
+if true then z else Alpha
+--- expect
+accept
+--- constructors
+Alpha|Zed	0	Alpha	
+Alpha|Zed	1	Zed	n
+--- params
+z	Zed { n: I64 }

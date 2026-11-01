@@ -1,0 +1,16 @@
+=== 001 adhoc
+--- text
+from i in identities where i.user == u select i
+--- params
+u	Key users
+--- expect
+accept
+=== 002 adhoc
+--- text
+from i in identities where i.user == u select i
+--- expect
+refuse
+--- errors
+`u` is a parameter of this text, but the call supplies no value for it
+--- phase
+adhoc

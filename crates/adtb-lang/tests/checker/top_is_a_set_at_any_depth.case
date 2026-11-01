@@ -1,0 +1,17 @@
+=== 001 schema
+--- text
+fn f () -> Set ({ user: User, latest: Set Post }) = from u in users
+           select { user: u,
+                    latest: top 3 by (p.created_at desc, key p)
+                              (from p in posts where p.author == key u select p) }
+--- expect
+accept
+=== 002 schema
+--- text
+fn f (u: User) -> Set Post = top 3 by p.created_at (from p in posts where p.author == key u select p)
+--- expect
+refuse
+--- phase
+check
+--- errors
+`top` needs a determinate order: include the row's key, or a field a key or unique covers
