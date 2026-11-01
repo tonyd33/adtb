@@ -8,8 +8,9 @@ use adtb_sim::{
     Config, Faults, Finding, FindingKind, Ledger, Outcome, Recovered, Sim, SimRuntime, check,
 };
 
-use adtb_simkit::crash;
 use adtb_simkit::harness;
+use adtb_simkit::{api, crash, search};
+use adtb_testkit::profile::assert_reached;
 
 use crash::{crash_after, run_process, silence_fatal_panics};
 use harness::finished;
@@ -432,4 +433,192 @@ fn recovery_and_verify_read_the_log_a_chunk_at_a_time() {
         largest <= 64 * 1024,
         "a read of {largest} bytes, against log segments of {SEGMENT}"
     );
+}
+
+const COMMIT_SCHEMA: &str = r"module app
+add module app
+add type Row = { id: Key rows, name: Text }
+add relation rows : Row key id generate sequence
+";
+
+const COMMIT_PAIRS: [&str; 3] = [
+    r#"insert rows { id: rows.key(10), name: "seed-a" }
+       insert rows { id: rows.key(11), name: "seed-b" }"#,
+    r#"insert rows { id: rows.key(20), name: "first-a" }
+       insert rows { id: rows.key(21), name: "first-b" }"#,
+    r#"insert rows { id: rows.key(30), name: "second-a" }
+       insert rows { id: rows.key(31), name: "second-b" }"#,
+];
+
+fn public_commit_db<R: Runtime>(rt: R) -> adtb::Database<R> {
+    let mut opts = api::options(1);
+    opts.pool_bytes = Some(1024 * 1024);
+    adtb::Database::open_in(rt, "commit.adt", &adtb::Log::new([COMMIT_SCHEMA]), &opts)
+        .expect("the commit fixture opens")
+}
+
+fn commit_pair<R: Runtime>(
+    db: &adtb::Database<R>,
+    text: &str,
+    before_commit: impl FnOnce(),
+) -> adtb::Position {
+    let mut tx = db.begin(&adtb::TxnOptions::default()).expect("begin");
+    tx.query_text(text, &[], &adtb::TxnCallOptions::default())
+        .expect("insert both rows");
+    before_commit();
+    tx.commit(None).expect("acknowledge both rows")
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CommitStage {
+    Statements,
+    Commit,
+}
+
+#[derive(Default)]
+struct PublicCommitSeen {
+    attempted: usize,
+    acknowledged: Vec<adtb::Position>,
+    stages: Vec<CommitStage>,
+}
+
+fn recovered_commit_prefix(files: search::Files, acknowledged: usize, attempted: usize, at: u64) {
+    const PREFIXES: [&[&str]; 3] = [
+        &[
+            r#"{ id: rows.key(10), name: "seed-a" }"#,
+            r#"{ id: rows.key(11), name: "seed-b" }"#,
+        ],
+        &[
+            r#"{ id: rows.key(10), name: "seed-a" }"#,
+            r#"{ id: rows.key(11), name: "seed-b" }"#,
+            r#"{ id: rows.key(20), name: "first-a" }"#,
+            r#"{ id: rows.key(21), name: "first-b" }"#,
+        ],
+        &[
+            r#"{ id: rows.key(10), name: "seed-a" }"#,
+            r#"{ id: rows.key(11), name: "seed-b" }"#,
+            r#"{ id: rows.key(20), name: "first-a" }"#,
+            r#"{ id: rows.key(21), name: "first-b" }"#,
+            r#"{ id: rows.key(30), name: "second-a" }"#,
+            r#"{ id: rows.key(31), name: "second-b" }"#,
+        ],
+    ];
+    let mut reopened = Sim::with_files(83, Config::default(), files);
+    let rows = api::run(&mut reopened, |rt| {
+        let db = public_commit_db(rt);
+        let mut results = db
+            .query_text(
+                "from r in rows select { id: r.id, name: r.name }",
+                &[],
+                &adtb::CallOptions::default(),
+            )
+            .expect("read recovered rows");
+        assert_eq!(1, results.len(), "one recovered result at {at}");
+        api::sorted(results.remove(0))
+    });
+    let recovered = PREFIXES
+        .iter()
+        .position(|prefix| rows.iter().map(String::as_str).eq(prefix.iter().copied()))
+        .unwrap_or_else(|| panic!("partial or phantom rows at {at}: {rows:?}"));
+    assert!(
+        (acknowledged..=attempted).contains(&recovered),
+        "failure {at}: {acknowledged} acknowledged transactions, {attempted} attempted transactions, recovered prefix {recovered}"
+    );
+}
+
+#[test]
+fn public_commits_preserve_acknowledged_pairs_under_write_and_sync_failure() {
+    silence_fatal_panics();
+    let seed = 83;
+    let seen = Arc::new(Mutex::new(PublicCommitSeen::default()));
+    let mut initial = Sim::new(seed, Config::default());
+    let seed_ack = api::run(&mut initial, |rt| {
+        let db = public_commit_db(rt);
+        commit_pair(&db, COMMIT_PAIRS[0], || {})
+    });
+    assert!(seed_ack.lsn > 0, "the seed is publicly acknowledged");
+    let files = initial.files();
+    let workload = |hook: &search::Hooked| {
+        *seen.lock().unwrap() = PublicCommitSeen::default();
+        let db = public_commit_db(hook.clone());
+        let observing = seen.clone();
+        hook.arm(move |op, _| {
+            if !matches!(op, Op::Write { .. } | Op::Sync { .. }) {
+                return false;
+            }
+            let mut seen = observing.lock().unwrap();
+            let stage = if seen.attempted == seen.acknowledged.len() {
+                CommitStage::Statements
+            } else {
+                CommitStage::Commit
+            };
+            seen.stages.push(stage);
+            true
+        });
+        for text in &COMMIT_PAIRS[1..] {
+            let position = commit_pair(&db, text, || seen.lock().unwrap().attempted += 1);
+            seen.lock().unwrap().acknowledged.push(position);
+        }
+        hook.disarm();
+    };
+    let mut baseline = Sim::with_files(seed, Config::default(), files.clone());
+    api::run(&mut baseline, |rt| workload(&search::Hooked::new(&rt)));
+    assert_eq!(
+        2,
+        seen.lock().unwrap().attempted,
+        "both commits are attempted"
+    );
+    assert_eq!(
+        2,
+        seen.lock().unwrap().acknowledged.len(),
+        "both commits return"
+    );
+    recovered_commit_prefix(baseline.files(), 2, 2, u64::MAX);
+    let (mut writes, mut syncs, mut before_ack, mut after_ack) = (0, 0, 0, 0);
+    let mut positions = BTreeSet::new();
+    search::each_fatal_failure(&files, seed, 4, workload, |failed| {
+        assert_eq!(None, failed.out, "failure {}: {}", failed.at, failed.op);
+        assert!(positions.insert(failed.at), "a distinct failure position");
+        match failed.write_or_sync {
+            Some(search::WriteOrSync::Write) => writes += 1,
+            Some(search::WriteOrSync::Sync) => syncs += 1,
+            None => panic!("the search only fails writes and file forces"),
+        }
+        let (acked, attempted, stage) = {
+            let seen = seen.lock().unwrap();
+            (
+                seen.acknowledged.clone(),
+                seen.attempted,
+                seen.stages[failed.at as usize],
+            )
+        };
+        eprintln!(
+            "failure {} {:?}: struck {stage:?}; acknowledged {}, attempted {attempted}",
+            failed.at,
+            failed.write_or_sync,
+            acked.len()
+        );
+        assert!(
+            acked.len() <= attempted && attempted <= acked.len() + 1 && attempted <= 2,
+            "the external commit ledger"
+        );
+        match acked.len() {
+            0 => before_ack += 1,
+            1 => after_ack += 1,
+            n => panic!("failure {} returned {n} new acknowledgements", failed.at),
+        }
+        for position in &acked {
+            assert!(
+                position.lsn > seed_ack.lsn,
+                "failure {}: {position:?}",
+                failed.at
+            );
+        }
+        recovered_commit_prefix(failed.files, acked.len(), attempted, failed.at);
+    });
+    assert_reached("distinct failure positions", positions.len(), 3);
+    assert_reached("failed writes", writes, 1);
+    assert_reached("failed file forces", syncs, 1);
+    assert_reached("fatal before the first new acknowledgement", before_ack, 1);
+    assert_reached("fatal after an earlier acknowledgement", after_ack, 1);
 }

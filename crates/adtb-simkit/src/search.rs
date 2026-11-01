@@ -9,10 +9,10 @@ use adtb::runtime::{
     Clock, Completion, Done, Entropy, FileId, Instant, Io, IoError, Op, Runtime, ThreadId, Threads,
     Ticket,
 };
-use adtb_sim::{Config, Sim, SimIo, SimRuntime};
+use adtb_sim::{Config, Outcome, Sim, SimIo, SimRuntime};
 use adtb_testkit::profile::{assert_reached, count, every_case};
 
-use crate::{api, common};
+use crate::{api, common, crash};
 
 pub type Files = BTreeMap<String, Vec<u8>>;
 
@@ -48,6 +48,7 @@ struct Plan {
     at: Option<u64>,
     action: Option<Action>,
     struck: Option<String>,
+    write_or_sync: Option<WriteOrSync>,
     first_event: usize,
 }
 
@@ -160,6 +161,11 @@ impl Hooked {
             return None;
         }
         plan.struck = Some(format!("{} of {path:?}", op_name(op)));
+        plan.write_or_sync = match op {
+            Op::Write { .. } => Some(WriteOrSync::Write),
+            Op::Sync { .. } => Some(WriteOrSync::Sync),
+            _ => None,
+        };
         plan.action.take()
     }
 }
@@ -400,6 +406,13 @@ fn chosen_starts(names: &[&'static str], most: u64) -> Vec<u64> {
     out.into_iter().collect()
 }
 
+/// The write or file force the failure search struck.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteOrSync {
+    Write,
+    Sync,
+}
+
 /// One workload run with a failure at one op.
 #[derive(Debug)]
 pub struct Failed<T> {
@@ -407,6 +420,8 @@ pub struct Failed<T> {
     pub at: u64,
     /// The failed op, as text.
     pub op: String,
+    /// The struck operation when it was a write or file force.
+    pub write_or_sync: Option<WriteOrSync>,
     /// What the workload returned.
     pub out: T,
     /// The device after the workload, as a reader sees it.
@@ -440,21 +455,77 @@ pub fn each_failure<T>(
     workload: impl Fn(&Hooked) -> T,
     mut check: impl FnMut(Failed<T>),
 ) {
+    failure_runs(files, seed, most, workload, false, |failed| {
+        check(Failed {
+            at: failed.at,
+            op: failed.op,
+            write_or_sync: failed.write_or_sync,
+            out: failed.out.expect("the workload finishes"),
+            files: failed.files,
+            dirs: failed.dirs,
+        });
+    });
+}
+
+/// Search failures as [`each_failure`] does, accepting typed fatal I/O after the simulator's
+/// crash lifecycle. Return `None` instead of a workload result when the process crashes.
+/// Sample positions in the default profile and search every eligible position under `deep`.
+pub fn each_fatal_failure<T>(
+    files: &Files,
+    seed: u64,
+    most: u64,
+    workload: impl Fn(&Hooked) -> T,
+    check: impl FnMut(Failed<Option<T>>),
+) {
+    failure_runs(files, seed, most, workload, true, check);
+}
+
+fn failure_runs<T>(
+    files: &Files,
+    seed: u64,
+    most: u64,
+    workload: impl Fn(&Hooked) -> T,
+    fatal: bool,
+    mut check: impl FnMut(Failed<Option<T>>),
+) {
     let names = eligible_ops(files, seed, &workload);
     assert!(!names.is_empty(), "the workload arms the search");
     let total = names.len();
-    for at in chosen_ops(&names, most) {
+    let mut positions: BTreeSet<_> = chosen_ops(&names, most).into_iter().collect();
+    if fatal {
+        positions.extend([0, (total - 1) as u64]);
+    }
+    for at in positions {
         let mut sim = Sim::with_files(seed, Config::default(), files.clone());
-        let (out, op) = api::run(&mut sim, |rt| {
+        let mut observed = None;
+        let mut out = None;
+        let body = |rt| {
             let hook = Hooked::new(&rt);
             hook.plan(at, Action::Fail);
-            let out = workload(&hook);
-            (out, hook.struck())
-        });
-        let op = op.unwrap_or_else(|| panic!("op {at} of {total} came up in the workload"));
+            observed = Some(hook.clone());
+            out = Some(workload(&hook));
+        };
+        let outcome = if fatal {
+            crash::run_process(&mut sim, body)
+        } else {
+            sim.run(body)
+        };
+        match outcome {
+            Outcome::Finished => assert!(out.is_some(), "the workload returns"),
+            Outcome::Crashed => {
+                assert!(fatal, "the workload finishes");
+                out = None;
+            }
+        }
+        let hook = observed.expect("the workload starts");
+        let op = hook
+            .struck()
+            .unwrap_or_else(|| panic!("op {at} of {total} came up in the workload"));
+        let write_or_sync = hook.plan.lock().unwrap().write_or_sync;
         check(Failed {
             at,
             op,
+            write_or_sync,
             out,
             files: sim.files(),
             dirs: sim.dirs(),
