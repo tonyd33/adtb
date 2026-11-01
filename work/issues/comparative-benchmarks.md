@@ -315,3 +315,22 @@ reused after input comparison. Fresh independent review includes child-process
 reachability and the oracle; source-stable review overlaps targeted sensitivity.
 Final source/native exits and full input snapshots precede landing. The parallel
 reference-fixture track has no shared-source overlap; landing is independent.
+
+Approved protocol: four runtime cuts per peer, after acknowledgement 3 or 8,
+and before/after the next real commit with its reply withheld. Parent receives
+the committed result and syncs its independent journal before allowing progress.
+Only the identified whole in-flight write may be uncertain. A separately bounded
+verifier reopens the real database and checks the complete independently expected
+snapshot and retained searching history oracle. This is transport ambiguity,
+not an injected engine flush failure. Parent filesystem/process syscall liveness
+is a precondition; universal wall-clock containment remains outside this checkpoint.
+
+Minimal containment extension approved: the existing workspace heap-cap dev edge,
+its package-only lock dependency list and one exact new-parent-test slots-2
+override. No new package/version/binary/feature or build script. Child commands
+use the existing cap helper, one at a time. Verify actual group/cap reachability
+and unchanged old groups/executable set. Retain unchanged global discovery proof;
+run bounded static slot checks, explicit feature/default binary cap checks and
+all complete affected package/lint checks. Do not rebuild every unchanged engine
+binary merely to rediscover its existing allocator. Source budget is about
+600 test-only helper lines, with no generalized supervisor or IPC framework.

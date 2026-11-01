@@ -2,9 +2,11 @@
 
 Repo adtb: an embedded database with native sum types. Rust workspace,
 jj colocated with git. Several agents work at once, each in its own jj
-workspace (a separate working copy of the same repo). Work only in the
-workspace your brief names. Never discard anything; no destructive jj
-or git commands. Do not land or push. Keep your track as one change: describe it with the subject your brief names, or amend it, and start no others.
+workspace (a separate working copy of the same repo). Edit source and build
+only in the workspace your brief names. A brief may explicitly authorize named
+report, receipt and handoff files under the main checkout's ignored work/briefs;
+that does not authorize its tracked source, tickets or jj state. Never discard
+anything; no destructive jj or git commands. Do not land or push. Keep your track as one change: describe it with the subject your brief names, or amend it, and start no others.
 
 
 Own execution, result assessment and corrections as well as implementation.
@@ -79,10 +81,11 @@ Your workspace may be a reused slot: its `target/` holds earlier builds, and
 a file outside a commit and `target/` stops the next track reusing it. Build
 only into your workspace's own `target/`. Never set
 `CARGO_TARGET_DIR` under /tmp or the scratchpad: /tmp has a small
-quota, and filling it breaks every agent's shell. Check `df -h .`
-before the full check; below 30 GB free, run `cargo
-clean` in your own workspace (and in `apps/campaign` if you built
-there) and report it.
+quota, and filling it breaks every agent's shell. Run
+`work/tools/workspace-gc --guard` before the full check. Below its free-space
+floor, report the resource gate to the lead, who coordinates native idle-build
+cleanup under the lead workflow. Do not run `cargo clean`; preserve verification
+artifacts outside debug/tmp and builds another actor still uses.
 
 Shell: zsh. Quote globs in arguments (`grep -rn PAT crates
 --include='*.rs'`) or use `rg PAT crates`; an unquoted

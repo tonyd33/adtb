@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-31
-status: in-progress
+status: open
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
-branch: reference-write-boundaries
 ---
 
 # Test audit findings
@@ -587,3 +586,27 @@ setup and a typed row-limit boundary, about 155–185 new driver lines. Preserve
 native callback execution and exact refusal/value/state checks. Families 20, 45,
 46 and 50 remain open: reject-load, restricted-old and catalog identity are
 separate mechanisms and do not belong in a larger collection of special hooks.
+
+## 2026-11-01: six native-boundary families landed
+
+Landed `8ef7e285391b`. Families 73–78 now load source, schema and expectations at
+runtime. A first-only schema envelope creates the fresh family fixture; a small
+typed row-limit adapter preserves actual callback execution, native identity,
+exact refusal/limit and positive/nonwritten-row behavior. The adapter adds
+normalization agreement and reached-callback assertions on both executions.
+Independent original oracles remain; no universal rollback/state claim is made.
+
+Totals: 74 of 78 families, 149 required blocks. All prior 68 families/131 blocks,
+70 fixture/support files and four remaining wrappers are exact. The change adds
+141 reusable Rust lines and removes 160 compiled wrapper/helper lines. Three
+actual behavioral mutants fail; an initial compile failure is recorded without
+sensitivity credit. Three bad runtime edits fail, a new case passes and exact
+restoration passes with unchanged binary identity.
+
+One final complete reference package passed 144/144 across ten binaries, zero
+skips, native exit 0: compilation 0.04s, execution 1.551s. Strict affected lint,
+formatting, size and exact-range house checks pass. All 3336 input records and
+revision/status fields stayed equal. Fresh source/evidence review accepted;
+landing retained all eleven source hashes and inherited only three assignment
+Markdown files. No after-land or full-engine repeat. Families 20, 45, 46 and 50
+remain open: reject-load identity, restricted-old kernels and catalog identity.

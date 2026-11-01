@@ -390,3 +390,20 @@ strict lint, but the observer captured no matching compiler samples despite
 reported compilation. That does not establish peak memory, a cache hit or a
 speedup; the broader concurrency question remains open. The next root compile
 needs a useful live sample before changing the general policy.
+
+### 2026-11-01: keep delegation paths explicit
+
+The six-family fixture author owned implementation, three real mutants and final
+package verification; fresh review overlapped sensitivity. The complete package
+reused its build and executed in 1.551s. Landing changed only read assignment
+prose, so the passing package was retained. Four distinct native boundaries stay
+open rather than entering a larger collection of unrelated hooks.
+
+An approval review rejected a named local report write because no-main-edits
+was too broad beside the requested main-checkout deliverable paths. I clarified
+the exact output authorization immediately and kept artifact ownership with the
+author. The common worker instructions now distinguish source/build ownership
+from explicitly named local deliverables. Their stale cargo-clean instruction
+also contradicted native idle cleanup and evidence preservation; it now follows
+the existing resource gate. These corrections remove conflicting instructions
+rather than asking each author to infer which one wins.
