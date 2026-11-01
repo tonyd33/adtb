@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-31
-status: open
+status: in-progress
+branch: pinned-field-owner
 kind: bug
 priority: 399
 summary: Pinned upserts retain nonhiding Internal and nested value-reader gaps; field-owner candidate remains unverified
@@ -145,3 +146,17 @@ claim. This ticket stays open for
 nonhiding reader admission, nested-upsert value-reader facts and the
 first-field-owner candidate. The ordinary nested-field scan candidate
 was disproved; it is not an outstanding defect.
+
+## 2026-10-31: parallel field-owner follow-up
+
+Workspace `pinned-field-owner` owns reproduction and, if confirmed, a bounded
+fix for translation choosing a removed first owner of a same-named field.
+Preserve catalog field identity across surviving constructors; never substitute
+a spelling lookup or choose an arbitrary surviving owner when images differ.
+Search removal/declaration-order/rename combinations with explicit expected
+values and a mutation that restores the faulty owner selection. Targeted
+checks and an independent review precede one final full check.
+
+This track does not decide nonhiding conflict-probe admission or close the
+nested-upsert reader-facts gap. It changes translation and its focused tests;
+the concurrent checker migration changes checker test data/driver only.
