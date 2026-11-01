@@ -4,7 +4,6 @@ status: in-progress
 kind: feature
 priority: 910
 summary: no reproducible cross-database baseline or recurring measured optimization cycle exists
-branch: sqlite-run-boundary
 tags:
   - engine
   - test
@@ -416,3 +415,47 @@ or unchanged 26-test repetition. Source-stable fresh review overlaps meaningful
 negative probes. Parent manager/filesystem/kernel syscall liveness remains an
 explicit precondition. Test fixtures use native facilities, remain opt-in and
 fail clearly if their required host support is absent rather than skipping.
+
+## 2026-11-01: native command containment landed
+
+Landed `3dfc772a01a8`. `work/tools/bench-run` executes an existing built native
+comparison CLI in a uniquely owned user transient service. Caller supplies time,
+memory and task budgets. The native manager enforces service/descendant
+lifecycle and resource limits; preexec verifies actual cgroup settings and native
+stop-post receipts retain result, exit and matching invocation identity. Success
+requires both native service success and normal payload exit 0. Failed, timed-out
+or OOM runs retain partial files and mark buffered acknowledgement data unavailable.
+Existing run roots are refused; a killed run is never retried over its old state.
+
+The documented opt-in facility command passed from a fresh exact-source layout:
+ten runtime cases, three precise preexec resource refusals, both real peers'
+complete/reopened state checks and both observed-executable forced timeouts.
+Six semantic weakening probes fail at their intended boundaries. One additional
+mkdir diagnostic only proves an exact admission status, not harmful retry coverage.
+The cleanup witness kills an actual foreground descendant absent from the fixture
+PID list and verifies native cgroup absence/member reaping in under one second
+against a 60-second sleep. The initial failed cleanup and expiry-only observation
+remain explicit, rather than being counted as prompt cleanup success.
+
+All affected syntax, shellcheck, exact-range house and size checks pass. Fresh
+source/machine review accepted the six paths; launcher code is 110 shell lines.
+One necessary non-test CLI build took 31.607s; native facility execution took
+about six seconds. No Rust source, dependency, feature or configuration changed.
+Forty-nine unchanged Rust/build/corpus/config inputs and actual binary identity
+support reuse of prior package/lint/graph/discovery checks; no unchanged 26-test
+or whole-engine rerun was added. All six reviewed content/mode hashes survived
+landing; inheritance was only published reference tests and read lead/ticket prose.
+
+Input provenance is scoped: prelaunch immutable source and five actual copied
+runtime files were recorded; the full filesystem map was captured after launch.
+Later immutable/source, binary/tool and filesystem closure proofs are accepted,
+without describing that map as an observed prelaunch snapshot. The unchanged
+positive receipts and focused cleanup correction/witness are distinct scopes.
+
+Operational process/resource containment is complete for the documented supported
+Linux user-manager environment. Native manager/kernel/filesystem liveness remains
+a precondition, not a universal wall-clock guarantee or a reason for another
+supervisor. Resource and latency reporting, finite feasibility/pilots and the
+approved frozen comparison protocol remain before measurements. No ranking,
+optimization, streaming-ACK recovery, engine fault-class closure or beta exit is
+claimed. These limits do not reopen the completed containment prerequisite.

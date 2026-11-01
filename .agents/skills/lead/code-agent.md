@@ -175,6 +175,11 @@ without a specific diagnostic reason. `house-check` prints added lines
 that break a comment rule and lists added plain `//` comments; retain only
 comments stating a non-obvious invariant. Report its result.
 
+Keep detailed verification in one canonical receipt, linking its raw logs and
+matrix. Summarize it in the report and link it from the handoff; do not copy the
+same command history into all three artifacts. Publish source and machine
+evidence promptly so prose preparation does not serialize review.
+
 Report: files changed, what works, tests and which fail, contracts you
 wrote into design files, spec gaps, and anything you stopped on. Plain
 prose. End with a handoff note of at most 15 lines: the files and

@@ -451,3 +451,20 @@ native result/InvocationID evidence is required, and unavailable killed CLI
 prefixes remain invalid. Source and facility proof are still required before
 claiming this boundary delivered. Successful manager units disappear quickly;
 a native stop-post receipt is the chosen evidence hook, not polling or IPC code.
+
+The native boundary is now delivered. Review found fixture reliance on an ignored
+scratch parent and missing negative receipt/resource cases; one focused correction
+made those boundaries executable from a fresh layout. A weaker KillMode probe then
+exposed a separate cleanup ownership error: tracked PIDs missed a foreground child.
+The test now uses the native owned cgroup and bounded empty/reap truth. An actual
+unrecorded child was promptly killed; its earlier natural expiry is not cleanup
+success. The launcher itself remained unchanged through those fixture corrections.
+
+Executed-input provenance remains explicit: copied runtime source was recorded
+before launch, full filesystem readback afterward. Immutable/source/BIN/host
+closure and the affected cleanup witness justify retained component evidence;
+there is no invented prelaunch full snapshot or unchanged-suite repetition.
+Operational containment closes within its supported-host contract. Do not turn
+an impossible universal syscall-liveness promise into another readiness gate or
+add a second supervisor. Next work is the remaining reporting/finite comparison
+protocol, while the completed 78-family cohort stays complete.
