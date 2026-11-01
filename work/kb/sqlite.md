@@ -115,3 +115,14 @@ home: https://www.sqlite.org/
 ## CSV export (cli.html, run on sqlite3 3.54.0)
 
 - `sqlite3 -csv -header DB QUERY` prints RFC 4180 CSV; a NULL is an empty unquoted cell and an empty string is `""` by default; lines end in CRLF. [V 2026-10-30] https://www.sqlite.org/cli.html, line ending and quoting observed by running it
+
+## Embedded baseline preparation (2026-10-31)
+
+- The release history lists 3.54.1 (2026-10-16) after 3.54.0 (2026-10-09); the patch fixes a possible heap-buffer overflow on 32-bit builds and other user-reported 3.54.0 problems. Its source ID is `2026-10-16 14:45:20 555e07ef33f69a0957d24d8e555b702464a131d6f1607f4c3c1e4551e8e6ca76`. [V 2026-10-31] https://sqlite.org/changes.html
+- In WAL mode, synchronous=FULL adds a WAL synchronization after each transaction commit; NORMAL can lose acknowledged transactions after power loss/system crash. EXTRA equals FULL in WAL mode. [V 2026-10-31] https://sqlite.org/pragma.html#pragma_synchronous
+- The native C interface separates connection open, statement preparation, parameter binding, stepping, result extraction, statement reset/reuse and finalization; sqlite3_exec wraps preparation/execution/finalization. [V 2026-10-31] https://sqlite.org/cintro.html
+- SQLite supports row triggers, not statement triggers; trigger RAISE(ABORT, message) terminates the current query with SQLITE_CONSTRAINT and the specified message. [V 2026-10-31] https://sqlite.org/lang_createtrigger.html
+- A UNIQUE partial index enforces uniqueness only among rows selected by its WHERE predicate. [V 2026-10-31] https://www.sqlite.org/partialindex.html
+- BEGIN IMMEDIATE starts the write transaction immediately and can return SQLITE_BUSY when another connection already holds a write transaction; SQLite supports only one simultaneous writer. [V 2026-10-31] https://sqlite.org/lang_transaction.html
+- SQLite's speedtest1 is a native C performance program with named built-in test sets and switches for cache/page sizes, journal mode, statement repreparation and statistics. It documents building alternate SQLite versions for comparison. [V 2026-10-31] https://sqlite.org/src/doc/trunk/test/speedtest1.c
+- SQLite's deliverable code and documentation are dedicated to the public domain; some build scripts have other licenses, and their code does not reach the deliverable library. [V 2026-10-31] https://sqlite.org/copyright.html

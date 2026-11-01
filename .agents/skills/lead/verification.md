@@ -52,6 +52,28 @@ wait remains part of total elapsed time but is not execution time; report
 it as permission wait when that cause is established. Never bypass approval
 in order to reduce the measured delay.
 
+## Bounded fixture and diagnostic-tool changes
+
+A case-data or test-driver migration may finish with complete affected-package
+checks instead of a full engine run when the lead establishes its boundary:
+
+- Database and language production behavior, dependencies, features, build
+  scripts, test containment, global configuration and shared execution
+  boundaries are unchanged. A test-only path alone does not establish this.
+- Every changed driver and diagnostic-format consumer is identified, compiled
+  and checked. Run complete tests for those packages, including the language
+  test binary when its internal helpers change, plus affected strict lints
+  and applicable static/documentation checks.
+- Independent review and preservation/sensitivity evidence cover the migration.
+  Record the exact final combined tree, native exit and unchanged inputs.
+- Name the earlier full-check receipt reused for unaffected components and
+  explain why the changed inputs cannot reach them. Do not claim that receipt
+  tested the new cases or drivers.
+
+A production change or an impact that cannot be bounded gets one final full
+check after review. Keep such work separate from an independently ready
+fixture batch; its longer verification is not a gate for unrelated changes.
+
 ## Durable task state
 
 Keep the scope, acceptance commands, workspace/base, unresolved failures,

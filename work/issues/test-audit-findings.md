@@ -178,3 +178,36 @@ Migrate the 16 mapped pure reference-query families into runtime .test data usin
 The two source tracks use separate files and warm workspaces. Authors own
 execution and corrections; fresh independent reviews precede a lead-assigned
 combined final check when both are ready. No duplicate full runs.
+
+## 2026-10-31: continuing beyond the first fixture batches
+
+The active 16-family reference batch is followed by the remaining checker
+module: 48 adjacent cases and three structural/resource cases outside the
+first 108-family migration. Reuse the existing driver for representable
+inputs now; retain typed assertion logic and require explicit justification
+for compiled case data or a proposed small probe extension. Preserve every
+original assertion and data-only corpus growth. This is not a complete
+audit of the wider Rust test inventory.
+
+The other 22 reference-query cases need typed Fixture support for external
+bindings, registered calls, fault payloads and raw identity assertions. They
+remain queued for that adapter rather than being declared unmigratable.
+The SQLite baseline is a parallel milestone deliverable; fixture migration
+continues instead of stopping at these two modules.
+
+## 2026-10-31: final verification boundary for fixture-only batch
+
+The 16-family reference migration and 49-family checker data continuation
+form a separate ready batch. Their changes are confined to test inputs,
+assertion drivers and the conformance diagnostic format/probe adapter.
+Database/language production files, dependency/build/feature configuration
+and global containment are unchanged. All consumers are within adtb-lang,
+adtb-reference, adtb-conformance and adtb-probe; run complete tests of all
+four packages on their final combined tree and reuse unaffected full-check
+evidence from `6685d287`/tested `047020687851`. Existing strict affected
+lints, preservation and mutation receipts remain required.
+
+The production pinned-reader change is separate and still requires its
+reviewed final full check. Its source-complexity correction does not gate
+the unrelated fixture batch. This supersedes earlier broad full-check
+wording for these bounded fixture-only changes.
