@@ -83,3 +83,13 @@ I verified that the lead could write sibling workspaces, then treated that as pr
 The replacement for this session uses ordinary worker reads and agent-authored patch files in the writable checkout. The lead inspects and applies those patches and runs commands through the normal approval flow. No custom watcher or runner was added. Future dispatch needs a worker-side access result before an implementation is called active; an outstanding approval is blocked work.
 
 Two full audit runs exposed guessed refusal expectations: an incomplete list of missing grants, then a named unique mistaken for a relation key. The second depended on a host-thread branch that the earlier run could skip. The repair now derives the exact report from the fixture and owned source row and gives the same helper a deterministic invocation. Typed serialization matching replaces a debug-string test. This is why exact assertions need independent expectations and evidence that the operation ran, not merely narrower matching.
+
+### 2026-10-31: verification closed the bounded hiding slice
+
+The review cap held: the hidden-write fix received one independent reading review, then measured guard mutations and full verification without another broad review. Removing the engine guard reproduced the successful overwrite; removing the reference guard ran the forbidden branch; dropping the translator intersection widened the checked source. All sources were restored and the honest checks passed. This demonstrates those enforcement points, not that the remaining reader-policy defects are fixed. The public unique integration gap remains explicit rather than weakening its normative name assertion.
+
+The test audit passed both branch and landed checks and was published. Its deterministic unique-refusal helper killed the wrong key-error validator. The root runtime pair showed no observed increase; a prior slower sample remains recorded. These are narrower claims than a complete test-quality repair or a statistically established speedup.
+
+A stale sibling snapshot surfaced during rebase as divergence and later made land refuse. I compared both trees, restored the already verified import correction, and gave the preserved older snapshot a separate change identity. No work was abandoned. Future cross-workspace rebases must first snapshot the source workspace itself; taking the root view alone can miss unsnapshotted sibling edits.
+
+The mechanism bet remains open: one landed hiding fix and its mutations do not establish a drop in class-wide recurrence. The next fault-matrix slice must reuse the operation search and name the public entry point, with exact outcomes and reached-case floors before adding a broad sweep.

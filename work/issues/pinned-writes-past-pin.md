@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-31
-status: in-progress
+status: open
 kind: bug
 priority: 399
-summary: "A pinned bundle's write reaches constructors past its pin: Internal on a legal upsert, a hidden row overwritten, a hidden value-sum field misread"
-branch: pinned-probes
+summary: Pinned upserts retain nonhiding Internal and nested value-reader gaps; field-owner candidate remains unverified
 ---
 
 # Pinned writes past pin
@@ -97,3 +96,52 @@ binaries, exact guard mutants, clippy/fmt/house, rebase after
 test-audit-b lands, and full integration check. Keep the current
 unsupported structural-translation refusals. The ticket remains open
 after this slice for the reader-analysis and first-owner work.
+
+## 2026-10-31: hiding conflict boundary landed
+
+Landed as `561c5ca496f5ee53122afb42acd51e30d0c9d1d5`, based on
+`472200f6`. A hiding bundle can no longer bind a conflicting row outside
+its checked constructor scope or overwrite it through the conflict
+branch. Translation maps the checked scope by catalog identity; engine
+and reference enforce that scope before binding the row. The complete
+key/unique probe and ordinary statement validation remain responsible
+for detecting collisions and selecting the refusal.
+
+Cause: the current probe range replaced the checked branch source
+range, and consumers bound every returned row. This is a source/type
+scope disagreement within the copied-rules class. Enforcement is the
+typed constructor selection plus a check in each kernel consumer;
+stored runtime rows require that check. Public branch and identity
+matrices search the admitted domain. Unsupported structural
+translations retain their existing refusals.
+
+Independent reading review found no introduced blocker. All three
+deliberate mutants compiled and failed their exact regression assertions:
+removing the engine guard reproduced successful hidden-row overwrite;
+removing the reference guard ran the forbidden branch in key and scoped
+unique cases; removing the translator intersection widened the old
+binder while leaving the complete unique probe unchanged. Each source
+was restored, and all corresponding honest tests then passed.
+
+The final full `check` passed on the unchanged landed source: 3754 root
+tests, 48 campaign tests, 13 Loom tests and 39 Miri tests, plus all
+configured static, documentation, grammar and tooling checks. The root
+suite skipped eight tests, including the normative public unique case
+blocked by unscoped-unique-canonical-name. No complete public scoped
+unique integration result is claimed. Direct translation and reference
+consumer checks supply separate evidence; no physical-undo mutant is
+claimed for the bulk atomic-refusal test.
+
+Acceptance commands: `check`; targeted `work/tools/suite -p adtb-sim
+--test bundles a_hiding_pinned_upsert_conflicting_with_a_hidden_row_fails_by_key`;
+`work/tools/suite -p adtb-lang --lib
+a_hiding_upsert_keeps_its_visible_scope_distinct_from_its_unique_probe`;
+and `work/tools/suite -p adtb-reference --test writes`.
+
+The lead post-land full `check` also passed on an identical tree, with
+the same test counts and all configured checks. Root ran in 205.736s
+and campaign in 30.447s; these are run observations, not a performance
+claim. This ticket stays open for
+nonhiding reader admission, nested-upsert value-reader facts and the
+first-field-owner candidate. The ordinary nested-field scan candidate
+was disproved; it is not an outstanding defect.
