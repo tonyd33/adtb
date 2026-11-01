@@ -1,10 +1,10 @@
 ---
 created-at: 2026-11-01
-status: in-progress
+status: resolved
+closed: 2026-11-01
 kind: bug
 priority: 400
 summary: "workspace-gc clean can delete retained target evidence"
-branch: workspace-cache-safety
 tags: [quality]
 ---
 
@@ -25,3 +25,18 @@ machine-lock checks for known and forgotten workspaces. Disposable-size reportin
 excludes retained siblings. Searching scratch fixtures cover both target roots,
 cleanup modes and workspace classifications, with valid and missing Cargo tags.
 A real whole-target Cargo-clean mutation must fail the retention oracle.
+
+## 2026-11-01: closed
+
+Landed `4d6747bc`. Automatic and explicit cleanup now share the guarded
+debug/tmp deletion boundary. Retained siblings are excluded from deletion,
+reported cache size and cache-idle age; forgotten workspaces also retain idle
+and active-use admission.
+
+Independent source review and the complete slot-test pass. The searching
+retention fixtures cover both target roots and tag conditions. Real scratch
+whole-target Cargo-clean mutations delete the sentinels and fail the same
+retention oracle; a broad workspace-process predicate mutation fails the
+explicit same-workspace cleanup case. Existing shellcheck findings match the
+baseline, with no introduced diagnostics. The landed tree matches the tested
+tree exactly, so no unchanged engine or tool suite was repeated.
