@@ -1,0 +1,7 @@
+=== insert result
+--- source
+transact insert users { name: "eve" }
+--- type
+()
+--- expected
+()

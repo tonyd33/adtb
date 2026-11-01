@@ -1,0 +1,14 @@
+=== delete run
+--- source
+delete s in (from s in logins.Active, i in identities.Google
+                      where s.identity == key i and i.gid == g select s)
+--- params
+g|Text|"g-bo"
+=== keys set
+--- source
+from s in logins select key s
+--- type
+Key logins
+--- expected
+logins.key(1)
+logins.key(3)

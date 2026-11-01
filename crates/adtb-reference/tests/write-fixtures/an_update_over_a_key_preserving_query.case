@@ -1,0 +1,14 @@
+=== update run
+--- source
+update g in (from g in identities.Google, x in imports.Oauth
+                     where g.gid == x.sub select g)
+         set Google { g with user: u }
+--- params
+u|Key users|users.key(2)
+=== user one
+--- source
+from g in identities.Google where g.gid == "s-bo" select g.user
+--- type
+Key users
+--- expected
+users.key(2)

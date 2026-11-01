@@ -1,0 +1,10 @@
+=== delete run
+--- source
+delete s in logins.Revoked where s.user == u
+--- params
+u|Key users|users.key(1)
+=== logins count
+--- relation
+logins
+--- expected
+2

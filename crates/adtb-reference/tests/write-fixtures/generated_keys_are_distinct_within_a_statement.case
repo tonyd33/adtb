@@ -1,0 +1,8 @@
+=== insert run
+--- source
+insert users from (from u in users select User { name: u.name ++ "2" })
+=== users count
+--- relation
+users
+--- expected
+8

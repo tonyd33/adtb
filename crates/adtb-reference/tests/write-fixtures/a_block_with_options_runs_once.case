@@ -1,0 +1,19 @@
+=== read-only result
+--- source
+transact retry 3 read_only return count(u for u in users)
+--- type
+I64
+--- expected
+4
+=== durable result
+--- source
+transact durability quorum insert users { name: "q" }
+--- type
+()
+--- expected
+()
+=== users count
+--- relation
+users
+--- expected
+5

@@ -1,0 +1,16 @@
+=== update run
+--- source
+update c in customers where c.id == k
+           set Customer { c with address: match c.address
+                                            | US a   -> US { a with zip: "02139" }
+                                            | Intl i -> i }
+--- params
+k|Key customers|customers.key(1)
+=== address set
+--- source
+from c in customers where c.id == customers.key(1)
+             select match c.address | US a -> a.zip | Intl i -> i.country
+--- type
+Text
+--- expected
+"02139"

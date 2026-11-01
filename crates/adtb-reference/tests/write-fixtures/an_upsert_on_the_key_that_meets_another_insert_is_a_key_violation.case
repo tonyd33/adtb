@@ -1,0 +1,10 @@
+=== reject reject-key
+--- source
+(insert users { id: users.key(9), name: "a" },
+                insert users { id: users.key(9), name: "b" }
+                unless conflict on key
+                else update old set old)
+--- relation
+users
+--- key
+users.key(9)

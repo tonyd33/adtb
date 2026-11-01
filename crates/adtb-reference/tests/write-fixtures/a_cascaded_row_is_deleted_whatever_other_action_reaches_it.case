@@ -1,0 +1,18 @@
+=== delete run
+--- source
+transact
+            delete i in identities where i.user == users.key(1)
+            delete t in tickets
+            delete x in users where key x == users.key(1)
+=== keys set
+--- source
+from s in logins select key s
+--- type
+Key logins
+--- expected
+logins.key(2)
+=== resets count
+--- relation
+resets
+--- expected
+0

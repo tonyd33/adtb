@@ -1,0 +1,19 @@
+=== delete run
+--- source
+transact
+           delete d in badges where d.owner == u
+           delete x in users where key x == u
+--- params
+u|Key users|users.key(4)
+=== users count
+--- relation
+users
+--- expected
+3
+=== author set
+--- source
+from n in notes where n.body == "n" select n.author
+--- type
+Option (Key users)
+--- expected
+None

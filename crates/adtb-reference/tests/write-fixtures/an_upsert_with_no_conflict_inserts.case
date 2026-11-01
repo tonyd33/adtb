@@ -1,0 +1,13 @@
+=== upsert run
+--- source
+insert identities.Google { user: u, gid: g }
+         unless conflict on (gid) in Google
+         else update old set Google { old with user: u }
+--- params
+u|Key users|users.key(2)
+g|Text|"fresh"
+=== identities count
+--- relation
+identities
+--- expected
+6

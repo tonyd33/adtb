@@ -1,0 +1,13 @@
+=== update run
+--- source
+update g in identities.Google where g.user == u set Google { g with gid: g2 }
+--- params
+u|Key users|users.key(2)
+g2|Text|"g2"
+=== gids set
+--- source
+from g in identities.Google where g.user == users.key(2) select g.gid
+--- type
+Text
+--- expected
+"g2"

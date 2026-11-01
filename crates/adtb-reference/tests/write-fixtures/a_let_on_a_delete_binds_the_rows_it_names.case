@@ -1,0 +1,14 @@
+=== delete result
+--- source
+transact
+                 let x = delete n in notes where n.body == "plain"
+                 return from y in x select y.body
+--- type
+Set Text
+--- expected
+["plain"]
+=== notes count
+--- relation
+notes
+--- expected
+2

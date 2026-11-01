@@ -1,0 +1,16 @@
+=== upsert result
+--- source
+transact
+                 let b = insert identities.Google { id: k, user: users.key(2), gid: "gg" }
+                         unless conflict on key
+                         else match old
+                           | Google o    -> update o set o
+                           | EmailPass e -> update e set Google { gid: "from-email" }
+                           | Apple a     -> update a set a
+                 return match b | Google g -> g.gid | Apple a -> a.sub
+--- params
+k|Key identities|identities.key(uuid("00000000-0000-7000-8000-000000000005"))
+--- type
+Text
+--- expected
+"from-email"

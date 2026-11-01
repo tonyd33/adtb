@@ -1,0 +1,9 @@
+=== update result
+--- source
+transact
+                 let x = update u in users where key u == users.key(1) set User { u with name: "z" }
+                 return from y in x select y.name
+--- type
+Set Text
+--- expected
+["z"]

@@ -1,0 +1,11 @@
+=== insert result
+--- source
+transact
+                 let x = insert users from (
+                   from r in raws select User { name: if r.n > 0 then "ok" else reject "negative" })
+                   rejects into user_rejects
+                 return count(u for u in x)
+--- type
+I64
+--- expected
+2

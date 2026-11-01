@@ -1,0 +1,15 @@
+=== write run
+--- source
+(insert users { name: "eve" },
+            update u in users set User { u with name: u.name ++ "!" })
+=== names set
+--- source
+from u in users select u.name
+--- type
+Text
+--- expected
+"ann!"
+"bo!"
+"cy!"
+"dee!"
+"eve"

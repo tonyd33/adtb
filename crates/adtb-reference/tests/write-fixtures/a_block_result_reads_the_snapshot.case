@@ -1,0 +1,7 @@
+=== insert result
+--- source
+transact insert users { name: "eve" } return count(u for u in users)
+--- type
+I64
+--- expected
+4

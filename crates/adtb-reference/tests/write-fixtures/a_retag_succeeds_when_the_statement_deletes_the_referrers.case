@@ -1,0 +1,17 @@
+=== retag run
+--- source
+transact
+             delete r in resets where r.identity == identities.key(uuid("00000000-0000-7000-8000-000000000001"))
+             update i in identities.EmailPass where i.id == identities.key(uuid("00000000-0000-7000-8000-000000000001")) set Google { gid: "g" }
+=== resets count
+--- relation
+resets
+--- expected
+0
+=== state set
+--- source
+from s in logins where s.id == logins.key(1) select match s | Active a -> "Active" | Revoked r -> "Revoked"
+--- type
+Text
+--- expected
+"Active"

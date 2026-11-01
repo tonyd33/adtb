@@ -1,0 +1,12 @@
+=== repoint run
+--- source
+transact
+           update s in logins.Active where s.id == logins.key(1) set Active { s with identity: identities.key(uuid("00000000-0000-7000-8000-000000000002")) }
+           delete i in identities where i.id == identities.key(uuid("00000000-0000-7000-8000-000000000001"))
+=== identity set
+--- source
+from s in logins.Active where s.id == logins.key(1) select s.identity
+--- type
+Key identities
+--- expected
+identities.key(uuid("00000000-0000-7000-8000-000000000002"))

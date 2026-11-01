@@ -1,0 +1,13 @@
+=== upsert run
+--- source
+insert identities.Google from (
+            from x in imports.Oauth select { user: x.user, gid: x.sub })
+          unless conflict on (gid) in Google
+          else update old set Google { old with user: new.user }
+=== user one
+--- source
+from g in identities.Google where g.gid == "s-bo" select g.user
+--- type
+Key users
+--- expected
+users.key(2)

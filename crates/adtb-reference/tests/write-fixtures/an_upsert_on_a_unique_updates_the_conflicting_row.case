@@ -1,0 +1,20 @@
+=== upsert run
+--- source
+insert identities.Google { user: u, gid: g }
+         unless conflict on (gid) in Google
+         else update old set Google { old with user: u }
+--- params
+u|Key users|users.key(2)
+g|Text|"g-ann"
+=== user one
+--- source
+from g in identities.Google where g.gid == "g-ann" select g.user
+--- type
+Key users
+--- expected
+users.key(2)
+=== identities count
+--- relation
+identities
+--- expected
+5
