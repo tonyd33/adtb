@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-31
-status: in-progress
+status: open
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
-branch: text-fixtures
 ---
 
 # Test audit findings
@@ -145,3 +144,28 @@ agent is mapping all remaining reference-query tests and the complete checker
 root test module into fixture routes and explicitly justified retained Rust
 families. This is a bounded next-batch proposal, not a completed suite audit or
 a claim that every case can use the current conformance format unchanged.
+
+## 2026-10-31: reference fixture pilot landed
+
+Landed `69be892dc369` after independent review and a passing final check
+on `30383e8f9263`. Seven runtime `.test` files under
+`crates/adtb-conformance/tests/reference-queries` preserve seven original
+reference-only cases and eight query outcomes; one shared runner replaces
+67 Rust wrapper lines. Data-only eighth-file growth changed no executable
+and its wrong expected row failed; a projection mutant failed the intended
+assertion and exact restoration passed. No engine coverage was added.
+
+The final check passed: 3754 root tests (eight skipped), 48 campaign tests
+(one skipped), 13 Loom tests and 39 Miri tests (two ignored), plus all
+configured lint, formatting, policy, documentation, grammar and tool checks.
+The check's own exit was zero and before/after source states were identical.
+Tested-to-landed differences were only reviewed ticket/index prose; source,
+fixtures and configuration matched, so the receipt was reused without a
+second full run.
+
+One matched warm edit observed 1.162678 s Rust rebuild feedback versus
+0.063578 s runtime-data feedback; this is no clean-build or whole-suite
+speedup claim. Three paired process medians were 0.038100 s before and
+0.066538 s after under differing harness contexts. The larger checker
+migration is active in checker-runtime-fixtures. This umbrella remains open
+for its unresolved audit findings.
