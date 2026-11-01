@@ -1,0 +1,21 @@
+@entry
+engine
+@decls
+module app
+add module app
+add type Login = Google { gid: Text } | Local { name: Text }
+add type Row = { id: I64, login: Login }
+add relation rows : Row key id unique (login.Google.gid)
+@seed
+insert rows { id: 1, login: Google { gid: "same" } }
+@write
+insert rows { id: 2, login: Google { gid: "same" } }
+@constraint
+app::rows.unique(login.Google.gid)
+@before
+Row { id: 1, login: Google { gid: "same" } }
+@report
+Row { id: 1, login: Google { gid: "same" } }~Row { id: 2, login: Google { gid: "same" } }
+Row { id: 2, login: Google { gid: "same" } }~Row { id: 1, login: Google { gid: "same" } }
+@catalog
+

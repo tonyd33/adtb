@@ -1,0 +1,20 @@
+@entry
+engine
+@decls
+module app
+add module app
+add type Row = { id: I64, slug: Text, other: Text }
+add relation rows : Row key id index (other) unique (slug, scalar_len(other))
+@seed
+insert rows { id: 1, slug: "same", other: "ab" }
+@write
+insert rows { id: 2, slug: "same", other: "cd" }
+@constraint
+app::rows.unique#{catalog}
+@before
+Row { id: 1, slug: "same", other: "ab" }
+@report
+Row { id: 1, slug: "same", other: "ab" }~Row { id: 2, slug: "same", other: "cd" }
+Row { id: 2, slug: "same", other: "cd" }~Row { id: 1, slug: "same", other: "ab" }
+@catalog
+from i in catalog::indexes where i.relation.module == "app" and i.relation.name == "rows" and i.kind == Unique select value(key i)

@@ -286,13 +286,11 @@ fn canonical(family: &str) {
 }
 
 #[test]
-#[ignore = "work/issues/unscoped-unique-canonical-name.md: unscoped unique names include a constructor scope"]
 fn entity_unique_reports_canonical_name() {
     canonical("entity-unique");
 }
 
 #[test]
-#[ignore = "work/issues/unscoped-unique-canonical-name.md: unscoped unique names include a constructor scope"]
 fn session_unique_reports_canonical_name() {
     canonical("session-unique");
 }

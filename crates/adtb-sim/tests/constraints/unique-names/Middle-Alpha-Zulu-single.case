@@ -1,0 +1,20 @@
+@entry
+engine
+@decls
+module app
+add module app
+add type Row { id: I64, slug: Text } = Middle | Alpha | Zulu
+add relation rows : Row key id unique (slug) in Alpha
+@seed
+insert rows.Alpha { id: 1, slug: "same" }
+@write
+insert rows.Alpha { id: 2, slug: "same" }
+@constraint
+app::rows.unique(slug) in Alpha
+@before
+Alpha { id: 1, slug: "same" }
+@report
+Alpha { id: 1, slug: "same" }~Alpha { id: 2, slug: "same" }
+Alpha { id: 2, slug: "same" }~Alpha { id: 1, slug: "same" }
+@catalog
+

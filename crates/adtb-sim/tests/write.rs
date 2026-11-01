@@ -936,10 +936,10 @@ fn run_txn_with(
             Ok(_) => panic!("a failing statement succeeded"),
             Err(e) if e.ends_transaction() => return fail(tx, &e),
             Err(e) => {
-                let e = format!("{:?}", engine_error(schema, &e));
-                assert!(
-                    e.contains("Violated app::tags.unique(name) in Label"),
-                    "the failing statement failed by {e}"
+                let e = engine_error(schema, &e);
+                assert_eq!(
+                    e.0, "Violated app::tags.unique(name)",
+                    "the failing statement failed by {e:?}"
                 );
             }
         }
@@ -951,7 +951,7 @@ fn run_txn_with(
 }
 
 fn is_expected_failure(e: &str) -> bool {
-    e.contains("Serialization") || e.contains("Violated app::tags.unique(name) in Label")
+    e.contains("Serialization") || e.contains("\"Violated app::tags.unique(name)\"")
 }
 
 #[test]

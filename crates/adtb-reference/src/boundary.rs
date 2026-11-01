@@ -557,7 +557,7 @@ impl Interpreter<'_> {
                     })
                     .collect();
                 found(
-                    self.unique_name(&name, rel, ix_at),
+                    schema.unique_name(rel, ix_at),
                     Constraint::Other,
                     pairs(groups),
                 );
@@ -629,45 +629,5 @@ impl Interpreter<'_> {
             found(self.qualified(module, name), Constraint::Other, report);
         }
         Ok(out)
-    }
-
-    /// Returns the canonical name of the unique at index `i` of `rel`, whose qualified name is
-    /// `name`.
-    fn unique_name(&self, name: &str, rel: RelId, i: usize) -> String {
-        let r = self.schema.relation(rel);
-        let def = self.schema.ty(r.elem_def);
-        let ix = &r.indexes[i];
-        let paths: Option<Vec<String>> = ix.fields.iter().map(path).collect();
-        let Some(paths) = paths else {
-            let id = self.schema.ids.indexes[&(rel, i)];
-            return format!("{name}.unique#{id}");
-        };
-        let all: CtorSet = (0..def.ctors().len() as u32).collect();
-        let mut ctors: Vec<&str> = ix
-            .scope
-            .as_ref()
-            .unwrap_or(&all)
-            .iter()
-            .map(|c| def.ctors()[*c as usize].name.as_str())
-            .collect();
-        ctors.sort_unstable();
-        let set = match ctors.as_slice() {
-            [one] => one.to_string(),
-            many => format!("({})", many.join(" | ")),
-        };
-        format!("{name}.unique({}) in {set}", paths.join(", "))
-    }
-}
-
-/// Returns the field path an index field is written as, if it is one.
-fn path(e: &adtb_lang::ast::Expr) -> Option<String> {
-    use adtb_lang::ast::ExprKind;
-    match &e.kind {
-        ExprKind::Name(q) if q.module.is_none() => Some(q.name.text.clone()),
-        ExprKind::Field(x, f) => Some(format!("{}.{}", path(x)?, f.text)),
-        ExprKind::Select(x, adtb_lang::ast::CtorSel::One(c)) => {
-            Some(format!("{}.{}", path(x)?, c.text))
-        }
-        _ => None,
     }
 }

@@ -278,7 +278,7 @@ fn a_unique_over_a_value_level_path_constrains_only_rows_holding_the_constructor
     f.ok("(insert invoices { status: Draft }, insert invoices { status: Draft })");
     f.ok(r#"insert invoices { status: Paid { ref: "r1" } }"#);
     let (name, report) = violated(f.rejected(r#"insert invoices { status: Paid { ref: "r1" } }"#));
-    assert_eq!("app::invoices.unique(status.Paid.ref) in Invoice", name);
+    assert_eq!("app::invoices.unique(status.Paid.ref)", name);
     assert_eq!(2, report.len());
 }
 

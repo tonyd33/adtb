@@ -1,0 +1,20 @@
+@entry
+engine
+@decls
+module app
+add module app
+add type Row = { id: I64, slug: Text }
+add relation rows : Row key id unique (slug)
+@seed
+insert rows { id: 1, slug: "same" }
+@write
+insert rows { id: 2, slug: "same" }
+@constraint
+app::rows.unique(slug)
+@before
+Row { id: 1, slug: "same" }
+@report
+Row { id: 1, slug: "same" }~Row { id: 2, slug: "same" }
+Row { id: 2, slug: "same" }~Row { id: 1, slug: "same" }
+@catalog
+

@@ -21,6 +21,9 @@ pub const ENGINE_MODULES: [&str; 2] = ["catalog", "sys"];
 #[path = "../schema_tests.rs"]
 mod tests;
 
+mod names;
+pub use names::field_path;
+
 mod build;
 mod relation;
 mod types;

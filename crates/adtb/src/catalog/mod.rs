@@ -48,6 +48,7 @@ use crate::runtime::Runtime;
 use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid, Quarantine};
 use crate::verify::{self, Depth, Inventory, Problem, Report, Sum};
 
+pub use adtb_lang::schema::field_path;
 pub use deploy::Rewrite;
 pub use deployment::{Deployed, Deployment, Fact, Mark, Origin};
 pub use grants::Dormant;
@@ -57,7 +58,7 @@ use keying::{broken, index_keys, row_key};
 pub use layout::OrderKeys;
 pub use oplog::{Hash, try_version_hash, version_hash};
 pub use readers::{PendingDrop, Read, Reader, source_at, stale};
-pub use rows::{IndexSpec, Rows, applied, declared, field_path, indexed_fields, indexes};
+pub use rows::{IndexSpec, Rows, applied, declared, indexed_fields, indexes};
 pub use validate::Denial;
 
 use change::Data;

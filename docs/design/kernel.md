@@ -498,6 +498,14 @@ A term names declarations by id; a consumer reads them from the
   returns numbers its user objects as one migration declaring its
   files' declarations in order would; one `Source::schema` returns
   carries the ids of its log ([schema-change.md §4](schema-change.md#4-the-schema-transition)).
+- `Schema::unique_name(r, index)` returns the canonical constraint name of
+  the declared unique at `index` of `r`. Precondition: `index` locates a
+  unique in `RelationDef::indexes` of this schema. Field paths retain
+  their declared spelling. Omitted and full scopes have no suffix;
+  proper subsets name their constructors in code-point order. An
+  expression unique names its catalog id from `Schema::ids.indexes`,
+  independent of its position. Consumers obtain unique constraint names
+  only through this method.
 - `Schema::stage(r, c)` is the write state of constructor `c` in
   relation `r`, and `Schema::value_stage(t, c)` that of `c` as a value
   of `t` stored in a field; both are `Enabled` in a schema

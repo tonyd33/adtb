@@ -248,7 +248,7 @@ A relation holds a set of rows of one type, identified by its key.
 ```console
 $ adtb library.db
 adtb> insert members { name: "cy", email: "ann@example.org" }
-constraint `library::members.unique(email) in Member` is violated by 2 rows
+constraint `library::members.unique(email)` is violated by 2 rows
 adtb> insert loans.Out from (from m in members, b in books where m.name == "ann" and b.title == "Emma" select { member: key m, book: key b })
 adtb> from l in loans.Out select l.renewals
 0

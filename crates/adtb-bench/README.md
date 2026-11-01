@@ -46,8 +46,8 @@ serial-interleaving oracle checks the history boundary.
 The runtime-loaded schema matrix in `fixtures/controls/` checks declarations,
 keys, references and Party subsets, campaign membership, scoped Live uniqueness,
 constructor shape, Played transitions, least-name selection and whole-change-set
-atomicity through the existing real-file adapters. Thirty-one shared cases, ten
-SQLite-only tagged-shape cases and two SQLite unscoped-unique cases assert exact
+atomicity through the existing real-file adapters. Thirty-three shared cases and ten
+SQLite-only tagged-shape cases assert exact
 outcomes and complete typed snapshots before, after and after close/reopen.
 Rejected SQLite writes also preserve every stored column of all four tables,
 including encoding columns unused by the current constructor.
@@ -79,16 +79,13 @@ Removing either redundant direct declaration alone therefore need not change
 accepted states. Sensitivity witnesses distinguish individual obligations from
 compound removal of redundant guards.
 
-Two normative native unscoped-unique cases remain an explicit ignored regression
-for `work/issues/unscoped-unique-canonical-name.md`: the engine appends constructor
-scope to an unscoped unique name. They are separate from the passing matrix and
-are required before measurement readiness; their corresponding SQLite refusals
-run normally. Do not treat the ignored cases as validated native controls.
+Native and SQLite unscoped-unique controls run normally with exact names,
+reports and state assertions. Native constraint names come from the shared
+schema naming boundary.
 
-Outstanding before measurement readiness: those native canonical-name refusals,
-externally flushed acknowledged-prefix child-kill controls using these adapters,
-and the remaining comparison protocol review. The
-buffered ledger is insufficient to certify a killed process. Resource
+Outstanding before measurement readiness: externally flushed acknowledged-prefix
+child-kill controls using these adapters and the remaining comparison protocol
+review. The buffered ledger is insufficient to certify a killed process. Resource
 counters and latency distributions are unavailable; there is no ranked
 result. Large dataset feasibility is unverified.
 

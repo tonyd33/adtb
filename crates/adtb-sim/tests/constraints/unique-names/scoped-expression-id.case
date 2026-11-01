@@ -1,0 +1,20 @@
+@entry
+engine
+@decls
+module app
+add module app
+add type Row { id: I64, slug: Text } = Zulu | Alpha | Middle
+add relation rows : Row key id index (slug) unique (scalar_len(slug)) in Alpha
+@seed
+insert rows.Alpha { id: 1, slug: "ab" }
+@write
+insert rows.Alpha { id: 2, slug: "cd" }
+@constraint
+app::rows.unique#{catalog}
+@before
+Alpha { id: 1, slug: "ab" }
+@report
+Alpha { id: 1, slug: "ab" }~Alpha { id: 2, slug: "cd" }
+Alpha { id: 2, slug: "cd" }~Alpha { id: 1, slug: "ab" }
+@catalog
+from i in catalog::indexes where i.relation.module == "app" and i.relation.name == "rows" and i.kind == Unique select value(key i)

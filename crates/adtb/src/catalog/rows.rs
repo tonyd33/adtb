@@ -4,7 +4,7 @@ use adtb_lang::ast::{self, Decl, ExprKind, QName, RelationClause, RelationDecl};
 use adtb_lang::evolve::{Code, Source};
 use adtb_lang::kernel::PathStep;
 use adtb_lang::lex::lex;
-use adtb_lang::schema::{IndexDef, Schema, Stage, TypeDefKind};
+use adtb_lang::schema::{IndexDef, Schema, Stage, TypeDefKind, field_path};
 use adtb_lang::span::Span;
 use adtb_lang::types::{RelId, Ty, TypeId};
 
@@ -279,16 +279,6 @@ pub fn indexed_fields(def: &IndexDef) -> Option<Vec<String>> {
             _ => None,
         })
         .collect()
-}
-
-/// Returns the field path `e` is, written `f.C.g`.
-pub fn field_path(e: &ast::Expr) -> Option<String> {
-    match &e.kind {
-        ExprKind::Name(QName { module: None, name }) => Some(name.text.clone()),
-        ExprKind::Field(x, f) => Some(format!("{}.{}", field_path(x)?, f.text)),
-        ExprKind::Select(x, ast::CtorSel::One(c)) => Some(format!("{}.{}", field_path(x)?, c.text)),
-        _ => None,
-    }
 }
 
 /// One step of a field path through a row: a field by its position, or the constructor by its

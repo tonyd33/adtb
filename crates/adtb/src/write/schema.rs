@@ -4,7 +4,7 @@ use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::{Generator, OnDelete, ReferenceIndex, Schema};
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
-use crate::catalog::{IndexKeys, IndexSpec, field_path};
+use crate::catalog::{IndexKeys, IndexSpec};
 use crate::exec::types::ctors;
 use crate::exec::{Conv, conv};
 use crate::plan::{Catalog, HeapId, IndexDesc, IndexId, declared_elements};
@@ -122,32 +122,6 @@ fn qualified(schema: &Schema, rel: RelId) -> String {
     format!("{}::{}", schema.module(r.module).name, r.name)
 }
 
-fn unique_name(schema: &Schema, rel: RelId, i: usize) -> String {
-    let name = qualified(schema, rel);
-    let r = schema.relation(rel);
-    let def = schema.ty(r.elem_def);
-    let ix = &r.indexes[i];
-    let paths: Option<Vec<String>> = ix.fields.iter().map(field_path).collect();
-    let Some(paths) = paths else {
-        let id = schema.ids.indexes[&(rel, i)];
-        return format!("{name}.unique#{id}");
-    };
-    let all: CtorSet = (0..def.ctors().len() as u32).collect();
-    let mut names: Vec<&str> = ix
-        .scope
-        .as_ref()
-        .unwrap_or(&all)
-        .iter()
-        .map(|c| def.ctors()[*c as usize].name.as_str())
-        .collect();
-    names.sort_unstable();
-    let set = match names.as_slice() {
-        [one] => one.to_string(),
-        many => format!("({})", many.join(" | ")),
-    };
-    format!("{name}.unique({}) in {set}", paths.join(", "))
-}
-
 /// Returns what the engine derives from every relation variable `catalog` describes.
 pub fn rels(schema: &Schema, normal: &NormalProgram, catalog: &Catalog) -> Result<Rels, Error> {
     let mut out = Rels::new();
@@ -199,7 +173,7 @@ pub fn rels(schema: &Schema, normal: &NormalProgram, catalog: &Catalog) -> Resul
                 pos: i,
                 scope,
                 index,
-                name: unique_name(schema, *rel, i),
+                name: schema.unique_name(*rel, i),
             });
         }
         let mut indexes = Vec::new();

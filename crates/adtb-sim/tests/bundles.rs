@@ -2996,7 +2996,6 @@ fn a_hiding_pin_refuses_hidden_conflicts_before_each_branch_and_binding() {
 }
 
 #[test]
-#[ignore = "unscoped uniques currently append a constructor scope to their canonical name"]
 fn a_hiding_pin_handles_known_unique_conflicts_and_refuses_hidden_ones() {
     let add = "module auth\nadd type Note { id: Key notes, slug: Text } = Plain { body: Text }\nadd relation notes : Note key id generate sequence unique (slug)\n";
     let body = r#"import auth

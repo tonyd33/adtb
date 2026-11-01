@@ -2,6 +2,9 @@ use adtb::plan::fixture as planfix;
 
 use adtb_simkit::support;
 
+#[path = "constraints/names.rs"]
+mod names;
+
 #[path = "constraints/paths.rs"]
 mod paths;
 

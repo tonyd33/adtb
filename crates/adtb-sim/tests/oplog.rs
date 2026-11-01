@@ -1115,10 +1115,7 @@ fn a_nest_carries_a_unique_as_a_unique_over_the_path_into_the_nested_value() {
   let c = insert customers { name: "dup" }
   insert payments.Held { customer: key c, method: Card { last4: "4242" } }"#,
         );
-        assert_eq!(
-            "shop::payments.unique(method.Card.last4) in Held",
-            violated(&e)
-        );
+        assert_eq!("shop::payments.unique(method.Card.last4)", violated(&e));
         write(
             &db,
             r#"transact
