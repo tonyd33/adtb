@@ -4,7 +4,7 @@ status: in-progress
 kind: feature
 priority: 910
 summary: no reproducible cross-database baseline or recurring measured optimization cycle exists
-branch: profile-preparation
+branch: bounded-leaf-range
 tags:
   - engine
   - test
@@ -798,3 +798,34 @@ competing explanation. Require an independently reviewed principled implementati
 appropriate final checks and repeatable normal-release before/after measurements
 under unchanged work, constraints, durability and settings. The full active goal
 remains incomplete until that optimization and its measured saving are delivered.
+
+## 2026-11-01: bounded leaf range implementation assigned
+
+Native diagnostics distinguish substantial durability-associated waits from
+avoidable CPU work. There is no established redundant-force mechanism; Local
+acknowledgement remains unchanged. The selected removable cause is shared B-tree
+range materialization: the cursor expands every entry of a reached leaf before
+testing its bounds, including joined postings it then discards. Workspace
+`bounded-leaf-range` implements selection before materialization in that provider.
+Preserve exact ordered bound membership, postings, high-key resume, optimistic
+validation/retry and required checked malformed-page errors. Add a searching
+external-oracle range property and sensitivity to eager out-of-range expansion.
+No format, dependency, workload, constraint or durability change is authorized.
+
+Before candidate timing, fix the primary endpoint to counter N=1000/writers=1
+steady wall time. Require five new adjacent normal-release old/new pairs in every
+one of the eight adtb configurations, unchanged bounds/preparation/oracles, with
+all five primary pairs improving and median paired saving at least 5%. Other
+cells receive explicit throughput, latency and resource regression review. The
+full unpaired baseline spread is not a paired null distribution; the five new
+balanced pairs supply finite repeatability evidence without claiming certainty.
+Do not lower the floor, change endpoint or extend samples after observing timing.
+
+After independent stable-source review and targeted tests, allow a rejection-only
+pilot of two new primary old/new pairs in opposite order. Both must improve and
+median paired saving must reach the same 5% floor. Preserve every outcome; a
+failed/noisy pilot stops for lead assessment. Pilot points never enter the final
+five. Only after pilot admission run the one final shared-engine check and
+explicit native benchmark-package verification, then collect the entire new
+80-invocation matrix with separate immutable source/build identities and a fresh
+independent raw audit. A passed pilot alone cannot justify landing the change.
