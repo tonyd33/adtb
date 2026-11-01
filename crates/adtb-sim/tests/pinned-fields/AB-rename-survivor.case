@@ -1,0 +1,26 @@
+module auth
+add module auth
+add type Thing { id: Key things } = A { x: Text } | B { x: Text } | C
+add relation things : Thing key id generate sequence
+add set Selected of things = A | B
+
+===
+module auth
+deprecate things.A
+
++++
+module auth
+remove constructor Thing.A
+
++++
+module auth
+rename field Thing.B.x to bx
+
+===
+import auth
+query values () -> Set Text = from v in things.Selected select v.x
+
+===
+insert things.B { id: things.key(2), x: "b" }
+===
+"b"

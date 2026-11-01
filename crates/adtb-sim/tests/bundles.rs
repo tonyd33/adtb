@@ -3639,3 +3639,38 @@ query tiered (t: Tier) -> Set Text = from u in users where u.tier == t select u.
         }
     });
 }
+
+#[test]
+fn pinned_fields_follow_each_surviving_owner_identity() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pinned-fields");
+    let mut paths: Vec<_> = std::fs::read_dir(dir)
+        .expect("the pinned field cases are readable")
+        .map(|entry| entry.expect("a case entry is readable").path())
+        .collect();
+    paths.sort();
+    assert_eq!(paths.len(), 6, "the owner matrix is complete");
+    let mut ran = 0;
+    for path in paths {
+        let text = std::fs::read_to_string(&path).expect("the case is readable");
+        let parts: Vec<_> = text.trim_end().split("\n===\n").collect();
+        assert_eq!(parts.len(), 5, "{}: all case sections", path.display());
+        let pin = [parts[0]];
+        let mut log = pin.to_vec();
+        log.extend(parts[1].split("\n+++\n"));
+        once(211, |rt| {
+            let db = opened(&rt, &pin, vec![]);
+            write(&db, parts[3]).expect("the pinned rows are written before evolution");
+            drop(db);
+            let db = open(&rt, &log, vec![bundle("fields-1.0", &pin, "", parts[2])])
+                .unwrap_or_else(|e| {
+                    panic!("{}: the evolved database opens: {e:?}", path.display())
+                });
+            let mut got = rows(call(&db, "fields-1.0", 1, &[]));
+            got.sort();
+            let expected: Vec<_> = parts[4].lines().collect();
+            assert_eq!(got, expected, "{}: pinned field values", path.display());
+        });
+        ran += 1;
+    }
+    assert_eq!(ran, 6, "every owner case ran");
+}

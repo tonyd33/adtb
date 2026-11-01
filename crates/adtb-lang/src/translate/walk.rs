@@ -517,43 +517,42 @@ impl<'p, 'a> Walk<'p, 'a> {
             let fty = self.ty(src_ty)?;
             return Ok(out.add(Kind::Field(x2, name.to_string()), fty));
         }
-        let header = self
-            .map
-            .from
-            .ty(*def)
-            .header()
-            .iter()
-            .any(|f| f.name == name);
-        let owner = set
-            .iter()
-            .copied()
-            .find(|&c| self.map.from.ty(*def).field(c, name).is_some());
-        let image = match (header, owner) {
-            (true, _) => self.map.field(*def, None, name),
-            (false, Some(c)) => self.map.field(*def, Some(c), name),
-            (false, None) => None,
+        let given = match self.src.kind(x) {
+            Kind::Var(v) => self.rows.get(v).cloned(),
+            _ => None,
         };
-        let Some(image) = image else {
-            let c = owner.unwrap_or(0);
-            let id = self
-                .map
-                .from
-                .ids
-                .fields
-                .get(&super::map::slot(self.map.from, *def, c, name))
-                .copied();
-            return Err(refused(
-                self.p.blame_field(id, false),
-                format!(
-                    "it reads field `{name}` of `{}`, which the current version lacks",
-                    self.map.from.ty(*def).name
-                ),
-            ));
-        };
-        if let Kind::Var(v) = self.src.kind(x)
-            && let Some(g) = self.rows.get(v)
-        {
-            return g.fields.get(&image).copied().ok_or_else(|| {
+        let mut images = BTreeMap::new();
+        for c in set {
+            let Some(k) = self.map.ctor(*def, c) else {
+                continue;
+            };
+            if given.as_ref().is_some_and(|g| g.ctor != k) {
+                continue;
+            }
+            let Some(image) = self.map.field(*def, Some(c), name) else {
+                let id = self
+                    .map
+                    .from
+                    .ids
+                    .fields
+                    .get(&super::map::slot(self.map.from, *def, c, name))
+                    .copied();
+                return Err(refused(
+                    self.p.blame_field(id, false),
+                    format!(
+                        "it reads field `{name}` of `{}`, which the current version lacks",
+                        self.map.from.ty(*def).name
+                    ),
+                ));
+            };
+            images.insert(k, image);
+        }
+        let image = images
+            .values()
+            .next()
+            .expect("a field has a surviving owner");
+        if let Some(g) = given {
+            return g.fields.get(image).copied().ok_or_else(|| {
                 refused(
                     None,
                     format!(
@@ -568,7 +567,30 @@ impl<'p, 'a> Walk<'p, 'a> {
         } else {
             self.ty(src_ty)?
         };
-        Ok(out.add(Kind::Field(x2, image), fty))
+        if images.values().all(|n| n == image) {
+            return Ok(out.add(Kind::Field(x2, image.clone()), fty));
+        }
+        let xt = out.ty(x2).clone();
+        let mut arms = Vec::new();
+        for k in Map::ctor_set(self.map.to, &xt).unwrap_or_default() {
+            let arm_ty = restricted(self.map.to, &xt, k);
+            let y = out.var("field", arm_ty.clone());
+            let body = match images.get(&k) {
+                Some(image) => {
+                    let row = out.add(Kind::Var(y), arm_ty);
+                    out.add(Kind::Field(row, image.clone()), fty.clone())
+                }
+                None => out.add(Kind::Unreachable, fty.clone()),
+            };
+            arms.push((k, y, body));
+        }
+        Ok(out.add(
+            Kind::Case {
+                scrutinee: x2,
+                arms,
+            },
+            fty,
+        ))
     }
 
     fn ctor(

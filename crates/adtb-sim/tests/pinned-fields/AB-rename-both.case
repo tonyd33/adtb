@@ -1,0 +1,23 @@
+module auth
+add module auth
+add type Thing { id: Key things } = A { x: Text } | B { x: Text } | C
+add relation things : Thing key id generate sequence
+add set Selected of things = A | B
+
+===
+module auth
+rename field Thing.A.x to ax
+rename field Thing.B.x to bx
+
+===
+import auth
+query values () -> Set Text = from v in things.Selected select v.x
+
+===
+transact
+  insert things.A { id: things.key(1), x: "a" }
+  insert things.B { id: things.key(2), x: "b" }
+  return 0
+===
+"a"
+"b"
