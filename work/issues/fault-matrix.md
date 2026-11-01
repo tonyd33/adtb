@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-31
-status: in-progress
+status: open
 kind: bug
 priority: 401
 summary: acknowledged work and failure outcomes are not searched through Database under every fault
-branch: fault-open
 ---
 
 # Fault matrix
@@ -59,3 +58,28 @@ call the actual public `Database::open`. A missing `slugify` implementation
 required by a constraint supplies the exact post-log-claim refusal
 `HostFnMissing { name: "slugify" }`. These are source-traced claims;
 reproduction and mutation remain to run before claiming the defect fixed.
+
+## 2026-10-31: host acquisition slice landed
+
+`3177391253a874d60614f5ba87a2980cd12d8d13` fixes the creating-fallback
+ownership race through a noncreating open and typed retry in the existing
+bounded acquisition loop. The actual `Database::open` test checks four
+finite pathname cases with exact window counts, refusal, retention,
+inode and sentinel assertions. The old protocol and an opposite false
+ownership mutation both failed those assertions; restored checks passed.
+A strengthened real-file control separately preserves acknowledged
+`ann` across an exact refused migration and reopen.
+
+Independent reading review found no introduced blocker. Final and
+post-land full `check` both passed: 3755 root, 48 campaign, 13 Loom and
+39 Miri tests, plus all configured static, documentation, grammar and
+tooling checks. The narrow ticket open-fallback-create-provenance is
+resolved; the preexisting read-only acquisition cleanup candidate is
+tracked in open-acquisition-create-cleanup.
+
+This umbrella stays open. The private test seam reaches host syscalls
+before a runtime exists; it does not replace runtime operation search or
+prove the full fault matrix. Next select a bounded statement/commit
+operation-failure workload using the existing search harness, checking
+acknowledged rows and exact outcomes with reached-case floors. Other
+workloads, crash/rot coverage, real backends and typed fatal causes remain.

@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-31
-status: in-progress
+status: resolved
 kind: bug
 priority: 560
 summary: a create racing an unlink reports its newly created file as preexisting and leaves it after refusal
-branch: fault-open
+closed: 2026-10-31
 tags:
   - quality
   - engine
@@ -63,3 +63,51 @@ retry through the existing bounded lock-acquisition loop. It introduces
 no second retry loop, budget or public API. Fixed-source checks,
 preservation mutation, independent review and complete integration are
 still pending; this report does not yet close the ticket.
+
+## 2026-10-31: bounded protocol fix landed
+
+Landed as `3177391253a874d60614f5ba87a2980cd12d8d13`, based on
+`e1716e22`. The fallback open cannot create a file. A vanished pathname
+returns a typed retry to the existing bounded acquisition loop, and
+only successful exclusive creation supplies `created = true`. This
+repairs creation provenance for the protocol rather than special-casing
+one refusal or filename. Locking and inode validation remain in their
+existing boundary; no second retry loop, public API or dependency was
+introduced.
+
+The four-case test calls actual `Database::open` and checks missing,
+existing, replaced and unlinked paths, exact window counts, exact
+post-log-claim refusal, owned file/log cleanup, retained inode and an
+unrelated sentinel. A separate strengthened real-file test acknowledges
+`ann`, receives exact version-2 `SchemaRefused` for an invalid migration,
+then reopens and returns exactly `ann`. An initial expected `Invalid`
+category was corrected only after tracing the catalog/API wrappers.
+
+The old protocol failed as recorded above. A second mutation that
+misclassified fallback-opened files as created also failed: the existing
+case expected both file and log retained, but both were removed. Source
+was restored and the honest checks passed. These measure both directions
+of ownership; they do not exhaust arbitrary filesystem schedules.
+
+Independent source review found no introduced blocker. Final full
+`check` passed on unchanged `31773912`: 3755 root tests, 48 campaign,
+13 Loom and 39 Miri, plus configured static, documentation, grammar,
+policy, size and tooling checks. Root skipped eight, campaign one,
+Loom nineteen and Miri two. Targeted checks also passed: 52 API unit
+tests, all 22 real-file tests, missing-host fixture, clippy and format.
+The lead post-land full `check` also passed on an identical tree, with
+the same test counts and all configured checks. The file/log ownership
+race covered by this ticket is resolved.
+
+Scope limit: the callback covers the host syscalls before the runtime
+exists. Runtime operation failure/crash/rot searches remain in
+fault-matrix. The preexisting acquisition failure before a Held is
+returned is separately tracked in open-acquisition-create-cleanup.
+
+## 2026-10-31: resolved
+
+Resolved by `3177391253a874d60614f5ba87a2980cd12d8d13`. The preceding
+landed receipt records the measured regressions, review, final full
+check and lead post-land full check. Broader searches remain in
+fault-matrix; acquisition failure before a Held is returned remains
+separately tracked.
