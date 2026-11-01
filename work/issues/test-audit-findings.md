@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-31
-status: open
+status: in-progress
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
+branch: reference-write-outcomes
 ---
 
 # Test audit findings
@@ -438,3 +439,25 @@ or a general speedup. The remaining 30 families need bounded drivers for
 successful change/cross-result assertions, native stage/kernel hooks, custom
 setup, row limits and related supplies; they remain runtime-data candidates.
 The umbrella stays open and no defect class is declared closed.
+
+
+## 2026-11-01: successful-outcome cohort assigned
+
+Workspace `reference-write-outcomes`, based on `7e309deee2eb`, retains the
+same author for 12 more families: successful change-map assertions, fixed clock
+results, raw constructor/field probes, generated-key exclusion and a key-upsert
+already supported by the existing driver. Keep all 48 prior runtime families
+and their 85 steps, setup/shared inputs and 18 retained wrappers unchanged.
+Use small typed Outcome and probe helpers; no capture interpreter or new
+production/dependency/configuration boundary. The existing query-state test
+compares its result to the fixture after assignment and cannot detect a change.
+Replace that tautology with independent pre-query state equality and a mutation
+of the actual state-comparison boundary. Preserve original native/raw assertions
+and whole normalization outcomes; ordinary case data remains runtime loaded.
+
+Acceptance follows the bounded fixture rule: fresh independent preservation
+review overlapping new sensitivity work; exact restoration, runtime addition/
+edit without relinking, strict affected lint/static checks and one complete
+reference-package final run with native exit and unchanged input/id/status
+records. The author owns commands, correction and final verification; the lead
+owns landing/tree comparison. No unchanged full engine or discovery rerun.
