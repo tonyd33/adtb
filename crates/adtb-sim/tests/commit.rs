@@ -576,7 +576,7 @@ fn public_commits_preserve_acknowledged_pairs_under_write_and_sync_failure() {
     recovered_commit_prefix(baseline.files(), 2, 2, u64::MAX);
     let (mut writes, mut syncs, mut before_ack, mut after_ack) = (0, 0, 0, 0);
     let mut positions = BTreeSet::new();
-    search::each_fatal_failure(&files, seed, 4, workload, |failed| {
+    search::each_fatal_failure(&files, seed, 4, &[], workload, |failed| {
         assert_eq!(None, failed.out, "failure {}: {}", failed.at, failed.op);
         assert!(positions.insert(failed.at), "a distinct failure position");
         match failed.write_or_sync {
@@ -621,4 +621,62 @@ fn public_commits_preserve_acknowledged_pairs_under_write_and_sync_failure() {
     assert_reached("failed file forces", syncs, 1);
     assert_reached("fatal before the first new acknowledgement", before_ack, 1);
     assert_reached("fatal after an earlier acknowledgement", after_ack, 1);
+}
+
+#[test]
+fn public_commits_preserve_acknowledged_pairs_under_crashes_at_sampled_events() {
+    let seed = 83;
+    let mut initial = Sim::new(seed, Config::default());
+    api::run(&mut initial, |rt| {
+        let db = public_commit_db(rt);
+        commit_pair(&db, COMMIT_PAIRS[0], || {});
+    });
+    let files = initial.files();
+    let attempts = Mutex::new(Vec::new());
+    let acks = Mutex::new(Vec::new());
+    let (mut before_ack, mut after_ack, mut in_commit, mut images) = (0, 0, 0, 0);
+    let mut events = BTreeSet::new();
+    search::each_crash_image(
+        &files,
+        seed,
+        3,
+        2,
+        |hook| {
+            let db = public_commit_db(hook.clone());
+            hook.arm(|_, _| true);
+            for text in &COMMIT_PAIRS[1..] {
+                commit_pair(&db, text, || {
+                    attempts.lock().unwrap().push(hook.rt.recorded());
+                });
+                acks.lock().unwrap().push(hook.rt.recorded());
+            }
+            hook.disarm();
+            acks.lock().unwrap().clone()
+        },
+        |at, image| {
+            let acknowledged = acks.lock().unwrap().iter().filter(|&&e| e <= at).count();
+            let attempted = attempts
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|&&e| e <= at)
+                .count();
+            events.insert(at);
+            images += 1;
+            match acknowledged {
+                0 => before_ack += 1,
+                _ => after_ack += 1,
+            }
+            if attempted > acknowledged {
+                in_commit += 1;
+            }
+            recovered_commit_prefix(image, acknowledged, attempted, at as u64);
+        },
+    );
+    assert_eq!(2, acks.lock().unwrap().len(), "both commits return");
+    assert_reached("crash events", events.len(), 3);
+    assert_reached("crash images", images, 3);
+    assert_reached("crash before the first new acknowledgement", before_ack, 1);
+    assert_reached("crash after an earlier acknowledgement", after_ack, 1);
+    assert_reached("crash inside a commit", in_commit, 1);
 }

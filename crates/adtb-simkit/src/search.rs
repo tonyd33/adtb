@@ -455,7 +455,7 @@ pub fn each_failure<T>(
     workload: impl Fn(&Hooked) -> T,
     mut check: impl FnMut(Failed<T>),
 ) {
-    failure_runs(files, seed, most, workload, false, |failed| {
+    failure_runs(files, seed, most, &[], workload, false, |failed| {
         check(Failed {
             at: failed.at,
             op: failed.op,
@@ -469,21 +469,24 @@ pub fn each_failure<T>(
 
 /// Search failures as [`each_failure`] does, accepting typed fatal I/O after the simulator's
 /// crash lifecycle. Return `None` instead of a workload result when the process crashes.
-/// Sample positions in the default profile and search every eligible position under `deep`.
+/// Sample positions in the default profile, always with `also`, and search every eligible position
+/// under `deep`.
 pub fn each_fatal_failure<T>(
     files: &Files,
     seed: u64,
     most: u64,
+    also: &[u64],
     workload: impl Fn(&Hooked) -> T,
     check: impl FnMut(Failed<Option<T>>),
 ) {
-    failure_runs(files, seed, most, workload, true, check);
+    failure_runs(files, seed, most, also, workload, true, check);
 }
 
 fn failure_runs<T>(
     files: &Files,
     seed: u64,
     most: u64,
+    also: &[u64],
     workload: impl Fn(&Hooked) -> T,
     fatal: bool,
     mut check: impl FnMut(Failed<Option<T>>),
@@ -494,6 +497,7 @@ fn failure_runs<T>(
     let mut positions: BTreeSet<_> = chosen_ops(&names, most).into_iter().collect();
     if fatal {
         positions.extend([0, (total - 1) as u64]);
+        positions.extend(also);
     }
     for at in positions {
         let mut sim = Sim::with_files(seed, Config::default(), files.clone());
@@ -545,12 +549,40 @@ pub fn each_crash<T>(
     published: impl Fn(&Files) -> bool,
     mut check: impl FnMut(usize, Files),
 ) {
+    let (mut before, mut after) = (0, 0);
+    let run = |hook: &Hooked| {
+        workload(hook);
+        Vec::new()
+    };
+    each_crash_image(files, seed, most, images, run, |at, image| {
+        if published(&image) {
+            after += 1;
+        } else {
+            before += 1;
+        }
+        check(at, image);
+    });
+    assert_reached("an image before the result is published", before, 1);
+    assert_reached("an image with the result published", after, 1);
+}
+
+/// Run `workload` once and give `check` each image a crash at each chosen device event after it arms
+/// the search can leave, up to `images` for each event, with the event's number. The chosen events
+/// include each armed one `workload` returns.
+pub fn each_crash_image(
+    files: &Files,
+    seed: u64,
+    most: u64,
+    images: usize,
+    workload: impl FnOnce(&Hooked) -> Vec<usize>,
+    mut check: impl FnMut(usize, Files),
+) {
     let mut sim = Sim::with_files(seed, Config::default(), files.clone());
     sim.record();
-    let first = api::run(&mut sim, |rt| {
+    let (first, also) = api::run(&mut sim, |rt| {
         let hook = Hooked::new(&rt);
-        workload(&hook);
-        hook.plan.lock().unwrap().first_event
+        let also = workload(&hook);
+        (hook.plan.lock().unwrap().first_event, also)
     });
     let recording = sim.recording();
     let every: Vec<u64> = (first as u64..=recording.len() as u64).collect();
@@ -566,9 +598,12 @@ pub fn each_crash<T>(
             .iter()
             .copied()
             .chain(spread(&every, count(most)))
+            .chain(also.iter().map(|&at| at as u64))
             .collect()
     };
-    let (mut before, mut after) = (0, 0);
+    for at in &also {
+        assert!(every.contains(&(*at as u64)), "event {at} is armed");
+    }
     for at in points {
         let drawn = if around.contains(&at) {
             images * RENAME_IMAGES
@@ -577,16 +612,9 @@ pub fn each_crash<T>(
         };
         let at = at as usize;
         for image in recording.images(at, drawn, at as u64) {
-            if published(&image) {
-                after += 1;
-            } else {
-                before += 1;
-            }
             check(at, image);
         }
     }
-    assert_reached("an image before the result is published", before, 1);
-    assert_reached("an image with the result published", after, 1);
 }
 
 /// Run `workload` once with no op to act at, to count, then once per chosen op with its number. The
