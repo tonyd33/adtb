@@ -4,7 +4,7 @@ status: in-progress
 kind: feature
 priority: 910
 summary: no reproducible cross-database baseline or recurring measured optimization cycle exists
-branch: repeated-execution-cost
+branch: parked-durable-force
 tags:
   - engine
   - test
@@ -940,3 +940,38 @@ a cause to the steady phase or establish a lock defect. No implementation or
 new execution follows from that correlation alone. Preserve the rejected source,
 normal executable and all local raw results. The baseline and diagnostic profile
 remain accepted; the goal still requires an accepted measured optimization.
+
+## 2026-11-01: parked force followers selected as a new candidate
+
+Two bounded attribution profiles identify captured actor yield call chains in
+Pager::force_below, which polls while the force leader can block on durable log
+I/O. An event-address/filter discrepancy prevents clean quantitative CPU-cost
+attribution; exact inner-lock and physical sync-time causes remain unresolved.
+The call-tree and source evidence justify testing a storage-owned wait mechanism,
+not accepting the rejected candidate or claiming its full slowdown is explained.
+
+Workspace `parked-durable-force` carries the exact reviewed leaf/metadata changes
+into a new candidate, preserving the rejected source, executables and local data.
+Use existing log locking and runtime wake tokens for one force leader and typed
+parked followers. Registration, predicate checks and publication share the log
+lock; normal leadership release wakes all followers outside locks, including
+requests beyond the current batch. A contended segments lock alone is insufficient:
+verification and backup also hold it. Preserve the existing fatal crash/replay
+contract and keep cleanup destructors free of runtime calls. No global lock,
+format, durability, workload or configuration change is authorized.
+
+Independent source review and searching schedule/mutation evidence precede a
+normal release build and a new rejection-only pilot. Predeclare eight fresh pilot
+invocations: two opposite-order pairs on the primary counter N=1000/one-writer
+cell, then two on the regressed four-writer cell. Both primary pairs must improve
+and median saving must reach 5%. Both concurrent pairs must improve, with neither
+showing completed-call p99 growth exceeding both 10% and 0.25 ms. This stricter
+small admission screen covers both observed risks before expensive verification;
+it supplies no final points or regression-clearance claim. Evaluate the screens
+after all eight fixed observations; native or integrity failures pause immediately.
+
+Only after admission run one final full shared-engine check and native package
+verification, then the original complete fresh 80-run comparison and independent
+raw audit. All final gates remain unchanged. No rejected, profiling or pilot
+observation is reused; no additional sample or weaker final line is authorized.
+The new implementation and its measured benefit are pending.
