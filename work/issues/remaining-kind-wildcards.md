@@ -17,3 +17,9 @@ The slice in `fix: deny wildcard arms over Kind in reader and translation analys
 - `Kind::Prim(..)` arms in `compared` and `reads_of` do not name operators.
 - Nothing at type level ties a constructor set to its mapping in `generic`.
 - A `match` on a selection of a removed constructor builds a zero arm `Case`; `a_pinned_selection_reads_its_constructors_after_a_removal_moves_their_positions` reads only `x.n`. Add `match`.
+
+## 2026-11-02: judged
+
+`fix: name every Kind in the remaining translation analyses` names every form in `mark`, `stored_whole`, `kind`, `reads_probed`, `probed_rows`, `rows_of`, `yields`, and denies both lints there and on the earlier analyses. It fixed a wrong answer: after `remove constructor T.A`, a pinned `query q () -> Tag T = B` returned `C`. A `match` on a removed constructor's selection is right. Full check exit 0; review found no blocker and no other position kept in translate, by tracing.
+
+Left: `Prim` operators; a type tying a constructor set to its mapping; `_` over `Kind` at walk.rs `case` neighbours and over `Ty` in `case`, correct today, with no deny.
