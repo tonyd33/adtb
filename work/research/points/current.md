@@ -126,6 +126,7 @@ accept:
   evolution/merge-tag/discriminator: {title: Merged constructor keeps the old tag as a field, reason: 'keeping the tag makes merge the inverse of split, as inverse closure requires'}
   evolution/move-field: {title: Move a field between constructors or up to the sum, reason: 'the operator set is closed under inverses, so every change can be undone and versions translated'}
   evolution/nest: {title: 'Nest constructors under an intermediate sum, or un-nest', reason: 'the operator set is closed under inverses, so every change can be undone and versions translated'}
+  evolution/old-readers/blind-overwrite/names-old-blocks: {title: 'Any branch naming old blocks enable, the target position included', reason: a pinned writer must not destroy a row its pin cannot see; hide new constructors gives the same bundle a refusal by key}
   evolution/old-readers/readers-first: {title: Require readers to upgrade before writers use the constructor, reason: an unknown constructor would bring back wildcards; writers never emit what readers cannot type}
   evolution/old-readers/upsert-conflict/old-blocks: {title: 'A conflict branch using old reads the whole relation, so it blocks enable', reason: 'writers never emit what readers cannot type, and a schema change never fails a live call; the failure moves to enable'}
   evolution/remove: {title: Remove a constructor, reason: 'the operator set is closed under inverses, so every change can be undone and versions translated'}
