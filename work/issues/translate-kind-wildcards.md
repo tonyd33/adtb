@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: resolved
 kind: bug
 priority: 895
 summary: "the translation walk's generic, compared and carries match Kind with wildcards, so a new kernel form keeps pinned ids or skips its checks silently"
+closed: 2026-11-02
 tags:
   - quality
   - lang
@@ -21,3 +22,9 @@ Three matches over `Kind` in `crates/adtb-lang/src/translate/` end in a wildcard
 Each compiles silently when a kernel form is added. `plan-binder-wildcards` and `bundle-reads-kind-wildcards` cover the same pattern elsewhere.
 
 Fix: name every `Kind` in all three, with no wildcard.
+
+## 2026-11-02: fixed
+
+`fix: deny wildcard arms over Kind in reader and translation analyses`. Full check exit 0, review found no blocker after two rounds.
+
+## 2026-11-02: resolved
