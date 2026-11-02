@@ -556,3 +556,29 @@ call paths. Lower user CPU alongside higher system CPU in slow pairs motivates
 separating scheduling and I/O explanations before a new source change. Repeating
 the same matrix would add cost without identifying a mechanism. No broader
 failure class is retired and no uncertainty is renamed a proved cause.
+
+### 2026-11-01: reject cheap, certify survivors
+
+The parked-wait candidate passed targeted correctness and seven meaningful
+mutants but failed both concurrent pilot pairs. The rejection boundary held,
+and the failed pilot avoided a full correctness check and final confirmation.
+However, the pilot ran the primary workload first and deferred its decision
+until all eight observations completed. Mutation execution was short while
+compilation dominated its roughly four-minute cost. These stages provided
+useful evidence in an unnecessarily expensive order.
+
+The maintainer identified the iteration cost. Future candidates now screen the
+known concurrent regression first, stop on that stage's rejection, and test the
+primary improvement only for survivors. Expensive mutation and final checks
+follow the cheap screens. Final acceptance, exact workload/oracles, native
+bounds and independent audit remain unchanged. Closed rejected studies cannot
+be reopened to obtain favorable points. Reuse the same author and warm build
+cache after preserving immutable source, separate executables and evidence.
+The next iteration must report stage costs; faster rejection is a policy until
+its measured feedback time demonstrates the saving.
+
+I also resumed an owner before its follow-up brief existed. The owner had to
+wait for lead bookkeeping. The briefing rule now requires a successful file
+write before dispatch, and concise evidence publication takes priority over
+prose expansion. More review packets and cold workspaces do not by themselves
+strengthen a boundary. Reuse unchanged evidence and review only changed inputs.

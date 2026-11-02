@@ -975,3 +975,32 @@ verification, then the original complete fresh 80-run comparison and independent
 raw audit. All final gates remain unchanged. No rejected, profiling or pilot
 observation is reused; no additional sample or weaker final line is authorized.
 The new implementation and its measured benefit are pending.
+
+## 2026-11-01: parked pilot rejected; regression-first development
+
+The parked-wait candidate's eight fresh pilot observations passed every native,
+state/reopen and identity check. Independent raw-data reconstruction agrees:
+both primary pairs improved, with median saving 20.275%, but both four-writer
+pairs slowed, by 7.565% and 6.828%. The concurrent positivity screen failed;
+the candidate remains unlanded. Its latency screen passed. No full correctness
+check or final80 was run for this rejected body, and no favorable repeat is
+permitted. Lower whole-service CPU does not establish a steady-state speedup.
+
+Future candidates use the staged development protocol in the lead verification
+workflow. After focused correctness and a matched normal-release build, first
+run two opposite-order pairs of counter N=1000/four writers. Both must improve
+steady elapsed, with neither completed-call p99 increase exceeding both 10%
+and 0.25 ms. Evaluate after those four observations; failure ends admission and
+leaves the planned primary rows unstarted. Only a pass runs the two primary
+one-writer pairs, both positive with median saving at least 5%. Declare all
+stages and stop rules before timing. Preserve native bounds, exact oracles and
+original work; no extra points, retry or selective resampling. Earlier closed
+protocols and rejected observations remain immutable.
+
+Only survivors complete independent source review, meaningful mutations, one
+final full correctness check and native package checks, then the original fresh
+80-run comparison and independent audit. All final gates remain unchanged.
+Keep one iteration ledger and reuse unchanged evidence and warm build caches
+under exclusive ownership, after freezing the prior source, separate executable
+and retained proof inputs. The local baseline and profile remain accepted;
+there is still no accepted measured optimization.

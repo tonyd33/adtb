@@ -71,6 +71,8 @@ Be firm and opinionated about the project's design and direction. Refuse a reque
 
 ## Brief
 
+- Finish writing the brief and observe the successful write before dispatching
+  or resuming its owner. A promised brief is not a usable assignment.
 - Write the brief to `work/briefs/brief-NAME.md` in the main checkout.
   jj ignores that directory; earlier briefs there, if any, are templates.
   Keep essential scope, acceptance commands and landing dependencies in a

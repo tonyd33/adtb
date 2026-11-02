@@ -52,6 +52,46 @@ wait remains part of total elapsed time but is not execution time; report
 it as permission wait when that cause is established. Never bypass approval
 in order to reduce the measured delay.
 
+## Performance iteration
+
+Order development checks by the cost of finding a reason to reject. Before
+measurement, declare the candidate, workloads, pair order, stage gates and stop
+rules. Run focused correctness and containment checks, build a matched normal
+release, then screen the known regression before the primary improvement.
+Keep native execution bounds, fresh databases, unchanged logical work and exact
+state/reopen oracles in these screens. An unreviewed screen is provisional.
+
+For the current comparative optimization, Stage A is counter N=1000 with four
+writers: two adjacent opposite-order pairs. Collect its four observations, then
+require both steady elapsed savings positive and neither completed-call p99
+increase exceeding both 10% and 0.25 ms. On rejection, stop and retain the
+unstarted rows. Only on pass run Stage B: two opposite-order primary N=1000,
+one-writer pairs, both positive with median saving at least 5%. Compare each
+stage against the original normal-release baseline. A native, oracle, identity
+or context failure stops immediately. No retry, extra point or favorable
+resampling. This applies to future candidates; closed cohorts stay closed.
+
+Only a candidate passing both development stages proceeds to complete its
+independent source review, meaningful mutation checks, one final full correctness
+check and required opt-in package checks. Review may overlap earlier work on an
+immutable revision. Final admission still requires the original entirely fresh
+80-run confirmation, unchanged acceptance gates and independent raw-data audit.
+A screen supplies no final observations or permission to land.
+
+Use one concise iteration ledger linking native artifacts. Reuse unchanged
+helper, compiler and control evidence when its actual inputs are identical;
+create the full promotion receipt once a candidate survives screening. Record
+compilation, test execution, mutation, review, coordination and measurement time
+separately when observed. Do not repeat a full suite for each development edit.
+
+Retain the same author, workspace and warm Cargo cache across variants when
+ownership is unchanged. Before editing a closed candidate, preserve its immutable
+jj revision, standalone executable, build identity and required raw/proof inputs.
+Check that mutable Cargo outputs are not retained executables or proof inputs,
+including hard links. Active measurement inputs remain frozen until closure.
+A build cache is disposable acceleration, never evidence of source identity.
+No concurrent writers, blanket cargo clean or deletion of historical evidence.
+
 ## Continue a stopped full check
 
 Keep the failed command's exit and the stages it did not reach. When the

@@ -79,7 +79,12 @@ never delete a failing test; report which fail.
 
 Your workspace may be a reused slot: its `target/` holds earlier builds, and
 a file outside a commit and `target/` stops the next track reusing it. Build
-only into your workspace's own `target/`. Never set
+only into your workspace's own `target/`. Keep that warm cache when continuing
+variants of the same track. A brief may explicitly lease a different retained
+Cargo cache to one owner after checking no other actor uses it; never treat
+mutable cache outputs as frozen executable or proof inputs. Preserve the closed
+candidate's immutable revision, separate executable and required evidence before
+changing source or reusing its cache. Never set
 `CARGO_TARGET_DIR` under /tmp or the scratchpad: /tmp has a small
 quota, and filling it breaks every agent's shell. Run
 `work/tools/workspace-gc --guard` before the full check. Below its free-space
@@ -230,8 +235,11 @@ personal data and machine details out of commits and tickets. Use relative paths
 ## Saving time
 
 Use targeted suites during each round; reserve the full check for the final
-reviewed tree and its assigned owner. Repeat checks only for changed inputs,
-failures or unresolved concerns. Run `work/tools/suite` in the background:
+reviewed tree and its assigned owner. For performance tracks, follow the staged
+screen in verification.md: known regression first, primary improvement next,
+then expensive mutation and final verification only for surviving candidates.
+Do not use a provisional screen as correctness certification. Repeat checks only
+for changed inputs, failures or unresolved concerns. Run `work/tools/suite` in the background:
 it can wait out a whole `check`, and a foreground call with a harness timeout
 dies waiting. Run each mutant against the test expected to kill it, by name.
 
