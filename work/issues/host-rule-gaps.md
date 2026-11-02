@@ -37,3 +37,16 @@ Left from the review:
 - crates/adtb-lang/src/translate/mod.rs `host_conflict`, false refusal new with this fix, traced: f host at a live pin, language now, body naming `hs`, then `rename relation hs to ..` rewrites the body, so the code differs with no `redefine fn`. Gate on a resolved `RedefineFn` or `Revert` when the migration resolves. Way out today: retire or repin.
 - A `revert` before a `redefine fn f` in one migration blames the revert; an unresolved migration blames operator 0, pinned by a test with no contract. Wasm conflict text says host function.
 - bundles.rs: `refused` counts over a static table; the four case wasm part has empty `live`, so "each way against each state" overclaims; `LiveOmitted` is not live, expect superseded; no language to host or held host was language case. Summed 4.4 s, over the 3 s budget.
+
+## 2026-11-02: registration check landed
+
+`fix: refuse a bundle going live at a pin whose host code differs`. A bundle first registered, or registered again after it expired or was superseded, is refused when its pin holds a host or Wasm function with other code. The check runs in `registered::registration`, open step 9 and the register command, since step 5 would miss a redefine in the same open. `host_conflict` now needs a resolved `RedefineFn` or `Revert`, so the rename false refusal is gone, run and regressed. evolution.md 7.3 and applications.md 4.1 list the refusal. Class: authority per entry path. Check exit 0, five mutants die, review found no blocker.
+
+Lead ruling, changing the earlier one: the identity hash stays over the declared version for now, and interop.md 9.5 stands. Hashing the symbol as well panics on a stored file at the next `redefine fn` (`every row deleted is visible`), because old rows are deleted by re-derived value. The rule compares symbol and version already, so no wrong answer follows. Change the hash with the next file format break, or after rows delete by id.
+
+Left, severe first:
+
+- crates/adtb/src/api/bundle.rs:230, api/mod.rs:1028: a recorded row never registered counts as a reader, and first registration refused now leaves one often. Read, not run: open `[BARE, CODED, TO_B]` with web-1.0, refused; reopen with a further host redefine and the same bundle gives `MigrationRefused` naming web-1.0, where embedding.md step 5 and evolution.md 8.4 say the migration applies, then `RegistrationRefused`. Way out: omit the bundle or redefine back.
+- bundle.rs `going_live`: an Active row with no mark counts as going live, so a file from before this change holding a live bundle at other code refuses at next open. Always-true mutant survives since the API cannot make that state.
+- registered/mod.rs `registration`: a bundle with no entries reports query `web-1.0::`.
+- A language function at the pin, host now, stays over-refused under a live pin; no test. Untested: pin holds host `f`, `f` dropped now. A `revert` before a `redefine fn f` blames the revert.

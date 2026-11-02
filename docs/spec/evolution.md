@@ -1245,6 +1245,7 @@ the current version. The registration is refused with `BundleExpired`
 when:
 
 - any query or transaction has no translation;
+- version `v` holds a host or Wasm function whose code has changed;
 - the bundle reads the whole relation variable of a constructor added
   after `v` and since enabled, a conflict branch naming `old` included,
   or follows a reference whose current type admits such a constructor

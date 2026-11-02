@@ -260,7 +260,8 @@ Registration is refused, as a whole, when:
 2. any declaration fails to check at the pinned version (§1.2);
 3. the pinned version is older than the current one and some query or
    transaction has no translation to the current version
-   ([evolution.md §7.2](evolution.md#72-translation-is-decided-at-apply));
+   ([evolution.md §7.2](evolution.md#72-translation-is-decided-at-apply)),
+   or it holds a host or Wasm function whose code has changed;
 4. the pinned version lacks a constructor that is enabled now, and the
    bundle reads the whole relation variable holding it, follows a
    reference whose current type admits it, or reads a field whose type
