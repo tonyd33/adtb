@@ -374,3 +374,45 @@ the lead before expansion. This is a planning checkpoint, not a runtime limit.
 Use one evolving canonical execution receipt, runtime case data and focused named
 mutations. The author continues autonomously after the first passing checkpoint;
 final independent source review and the single author-owned full check remain.
+
+## 2026-11-01: refine the native implementation estimate
+
+The actual shared-native/exact-world foundation and imported guard algebra reach
+2,320 net production lines. The remaining guarded Value, witness identities,
+shared native joint decode/import, provider and Reader integration estimate
+another 2,200–3,100 lines. The lead raises the planning checkpoint from 4,500 to
+6,000 net production lines for these same accepted responsibilities. No new
+public behavior, dependency or independent semantic evaluator is introduced;
+per-file limits and all native parity/allocation gates remain unchanged. This
+is an implementation estimate, not a runtime limit or a reduced completion bar.
+
+## 2026-11-01: native foundation and public regression checkpoint
+
+The unlanded shared-native/exact-world foundation passed its corrected checkpoint
+at 186097500e0ce4baf726e8c2ee56edef4b19d9f8: 83 targeted permission tests and
+strict affected language lint. Review found borrowed-input lookup/scan work
+bypassing the ledger; the correction routes it through metered providers or a
+conservative precharged comparison bound. Runtime and source-enforcement bypass
+mutations fail. Aggregate merge/finish now have distinct expected observations;
+skipping either fails. All mutation source bytes were restored. This verifies
+foundations, not guarded Value integration or Reader activation.
+
+A disjoint public fixture delivery at c069575e4cde53c7da67f7c81f5f7eb3e5f42634
+adds a 172-line reusable driver and sixteen runtime data cases. Independent
+source/oracle review found no introduced blocker. All 23 baseline case/mode
+combinations executed. They expose unsafe nested upsert-field admission and live
+enablement under both headers, plus false blocking of valid outer capture,
+retained Let and selected pure values. Other refusal controls and all four
+current-pin ten-generator/four-constructor owner Count controls pass. Expected
+reds are preserved; all must pass after integration. The old unsafe-success
+characterization is tightened only after verifying the integrated outcome and
+naming its stronger runtime replacement.
+
+The existing value-field rule in evolution 8.1 applies to both hiding and
+nonhiding readers. This does not decide the separate unresolved question of
+whether a nonhiding conflict probe alone counts as a reader. Authority policy
+remains unchanged. Remaining gates are guarded/native parity, opaque identity
+and complete allocation enforcement, normalized retained-Let proof, typed Reader
+integration, exact public regression passes, final source review and the single
+author-owned full check on the complete reviewed tree. No code from these
+unlanded checkpoints has reached main yet.
