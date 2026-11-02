@@ -4,7 +4,7 @@ status: in-progress
 kind: feature
 priority: 910
 summary: no reproducible cross-database baseline or recurring measured optimization cycle exists
-branch: catalog-descriptors
+branch: final-compiler-wait
 tags:
   - engine
   - test
@@ -1080,3 +1080,23 @@ matched warm build, then one preauthorized guarded A4/B4 screen. Final floor,
 regression limits, full verification and independent final80 audit remain fixed.
 The alternative streaming posting decoder remains a source proposal until its
 allocation prevalence is established; it is outside this candidate.
+
+## 2026-11-01: final bounded composition trial
+
+Compiler descriptors plus Store metadata sharing failed its concurrent preview:
+median slowdown 13.827% and supported p99 growth above the preview limits. Four
+valid native/oracle observations completed; primary rows stayed unstarted.
+Retain the rejection. Same-cohort analysis found lower user CPU but higher
+system CPU, fewer WAL batches/bytes and identical record counts. It does not
+identify a particular syscall or prove a corrective compiler patch.
+
+Select one final composition before timing: exact compiler/Store metadata code
+plus the previously reviewed covered-waiter notification and offered force-owner
+component. Keep baseline B-tree behavior. Blocking the known durability polling
+path is a grounded mechanism; its interaction with faster compilation remains
+an experiment, not a demonstrated cure. No new wait algorithm, leaf change,
+threshold change or same-body rerun. Keep fresh execution state and exact durable
+acknowledgements. The fixed preview, complete correctness verification and fresh
+final80 with independent raw audit still govern acceptance. Stop this attempt
+on rejection or the user-authorized overall time limit, reporting an unsuccessful
+outcome if no qualifying optimization is established.
