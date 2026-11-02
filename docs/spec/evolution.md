@@ -1246,7 +1246,7 @@ when:
 
 - any query or transaction has no translation;
 - the bundle reads the whole relation variable of a constructor added
-  after `v` and since enabled, a conflict branch using `old` included,
+  after `v` and since enabled, a conflict branch naming `old` included,
   or follows a reference whose current type admits such a constructor
   (§8.1), unless it declares `hide new constructors`;
 - the bundle reads a field whose type reaches a sum that has gained,
@@ -1312,11 +1312,9 @@ constructor set of `r` does not block, since translation gives such a
 set its membership at the reader's version, which lacks `C`.
 
 An upsert into `r` reads the whole relation variable `r` when its
-conflict branch uses `old`: a field access, a `match`, a `with` copy or
-the whole row. Its `enable r.C` is refused as for a query ranging over
-`r`. Naming `old` only as the target of `update old` or `delete old`,
-with no `where`, does not use it: `update old set Plain { body: "x" }`
-replaces a `C` row, keeping its key and header fields. A `with` copy reads the relation
+conflict branch names `old` anywhere, the target of `update old` and
+`delete old` included. Its `enable r.C` is refused as for a query ranging over
+`r`. A `with` copy reads the relation
 variable and none of the row's fields (§7.2). A use of the upsert's
 bound result reads `r` the same way when its conflict branch can leave
 the stored row in that result: `skip`, or any branch that does not

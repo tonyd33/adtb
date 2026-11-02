@@ -109,13 +109,13 @@ impl Reads {
                 ..
             } => {
                 self.reached.insert(*r);
-                if uses_row(terms, *otherwise, *old) {
+                if names_row(terms, *otherwise, *old) {
                     self.whole.insert(*r);
                 }
             }
             Kind::LetBang(v, write, body) => {
                 if let Some(r) = keeping_upsert(terms, *write)
-                    && uses_row(terms, *body, *v)
+                    && names_row(terms, *body, *v)
                 {
                     self.whole.insert(r);
                 }
@@ -241,21 +241,10 @@ fn keeping_upsert(terms: &Terms, t: Tm) -> Option<RelId> {
     }
 }
 
-/// Returns whether `t` uses the value of `row`. Naming `row` as the unfiltered target of an
-/// `update` or `delete`, and the fields a new value keeps, do not use it.
-fn uses_row(terms: &Terms, t: Tm, row: Var) -> bool {
-    let target = |rows: Tm| terms.targets(rows, row);
-    let mut names = BTreeSet::from([row]);
+/// Returns whether `t` names `row` anywhere.
+fn names_row(terms: &Terms, t: Tm, row: Var) -> bool {
     terms.search(t, |s| match terms.kind(s) {
-        Kind::Var(v) if names.contains(v) => Search::Found,
-        Kind::Field(..) if terms.is_kept(s) => Search::Into(Vec::new()),
-        Kind::Delete(_, rows) if target(*rows) => Search::Into(Vec::new()),
-        Kind::Replace(_, rows, f) if target(*rows) => {
-            if let Kind::Lam(x, _) = terms.kind(*f) {
-                names.insert(*x);
-            }
-            Search::Into(vec![*f])
-        }
+        Kind::Var(v) if *v == row => Search::Found,
         k => Search::Into(k.children()),
     })
 }

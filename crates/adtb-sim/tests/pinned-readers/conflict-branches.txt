@@ -1,7 +1,7 @@
 skip	free	skip	Link { id: notes.key(1), url: "u" }	url	-	-	I64	return 0	0
-delete	free	delete old		url	-	-	I64	return 0	0
-new	free	update old set new	Plain { id: notes.key(1), body: "new" }	url	-	-	I64	return 0	0
-target-only	free	update old set Plain { body: "x" }	Plain { id: notes.key(1), body: "x" }	url	-	-	I64	return 0	0
+delete	uses	delete old		url	-	-	I64	return 0	0
+new	uses	update old set new		url	-	-	I64	return 0	0
+target-only	uses	update old set Plain { body: "x" }		url	-	-	I64	return 0	0
 field	uses	update old set Plain { body: old.body ++ "!" }		url	-	-	I64	return 0	0
 key-field	uses	update old where old.id == notes.key(1) set new		url	-	-	I64	return 0	0
 filter	uses	update old where old.body == "a" set new		url	-	-	I64	return 0	0
@@ -19,18 +19,18 @@ kept-unused	free	skip	Link { id: notes.key(1), url: "u" }	url	written	-	I64	retu
 kept-own-body	uses	skip		body	written	-	Text	return written.body	0
 kept-other-write	uses	insert users { name: "b", tier: Free }		url	written	-	Note	return written	0
 kept-one-arm	uses	if 1 == 1 then update old set new else skip		url	written	-	Note	return written	0
-kept-one-arm-unused	free	if 1 == 1 then update old set new else skip	Plain { id: notes.key(1), body: "new" }	url	written	-	I64	return 0	0
+kept-one-arm-unused	uses	if 1 == 1 then update old set new else skip		url	written	-	I64	return 0	0
 kept-one-match-arm	uses	match (if 1 == 1 then Free else Paid) | Free -> skip | Paid -> update old set new		url	written	-	Note	return written	0
 kept-set	uses	skip		url	written	from (from u in users select { id: notes.key(1), body: "new" })	Set Note	return written	0
 kept-rejects	uses	skip rejects into rejected		url	written	from (from u in users select { id: notes.key(1), body: "new" })	Set Note	return written	0
-replaced-returned	free	update old set new	Plain { id: notes.key(1), body: "new" }	url	written	-	Note	return written	Plain { id: notes.key(1), body: "new" }
-replaced-field	free	update old set new	Plain { id: notes.key(1), body: "new" }	url	written	-	Text	return written.body	"new"
-replaced-own-body	free	update old set new	Plain { id: notes.key(1), body: "new" }	body	written	-	Text	return written.body	"new"
-replaced-both-arms	free	if 1 == 1 then update old set new else update old set Plain { body: "x" }	Plain { id: notes.key(1), body: "new" }	url	written	-	Note	return written	Plain { id: notes.key(1), body: "new" }
-replaced-match-arm	free	match new | Plain p -> update old set new	Plain { id: notes.key(1), body: "new" }	url	written	-	Note	return written	Plain { id: notes.key(1), body: "new" }
-replaced-beside-write	free	(update old set new, insert users { name: "b", tier: Free })	Plain { id: notes.key(1), body: "new" }	url	written	-	Note	return written	Plain { id: notes.key(1), body: "new" }
-replaced-set	free	update old set new	Plain { id: notes.key(1), body: "new" }	url	written	from (from u in users select { id: notes.key(1), body: "new" })	Set Note	return written	Plain { id: notes.key(1), body: "new" }
-replaced-rejects	free	update old set new rejects into rejected	Plain { id: notes.key(1), body: "new" }	url	written	from (from u in users select { id: notes.key(1), body: "new" })	Set Note	return written	Plain { id: notes.key(1), body: "new" }
+replaced-returned	uses	update old set new		url	written	-	Note	return written	0
+replaced-field	uses	update old set new		url	written	-	Text	return written.body	0
+replaced-own-body	uses	update old set new		body	written	-	Text	return written.body	0
+replaced-both-arms	uses	if 1 == 1 then update old set new else update old set Plain { body: "x" }		url	written	-	Note	return written	0
+replaced-match-arm	uses	match new | Plain p -> update old set new		url	written	-	Note	return written	0
+replaced-beside-write	uses	(update old set new, insert users { name: "b", tier: Free })		url	written	-	Note	return written	0
+replaced-set	uses	update old set new		url	written	from (from u in users select { id: notes.key(1), body: "new" })	Set Note	return written	0
+replaced-rejects	uses	update old set new rejects into rejected		url	written	from (from u in users select { id: notes.key(1), body: "new" })	Set Note	return written	0
 failed-returned	free	fail "x"	Link { id: notes.key(1), url: "u" }	url	written	-	Note	return written	!x
 kept-with-copy	uses	skip		url	written	-	I64	insert notes.Plain { written with id: notes.key(2) }; return 0	0
 kept-filter	uses	update old where 1 == 2 set new		url	written	-	Note	return written	0

@@ -348,8 +348,6 @@ pub struct Terms {
     pub nodes: Vec<Node>,
     pub vars: Vec<VarInfo>,
     pub(crate) transport_fields: BTreeSet<Tm>,
-    /// The transport fields the checker fills in, for a new value that omits them.
-    pub(crate) kept_fields: BTreeSet<Tm>,
 }
 
 impl Terms {
@@ -360,8 +358,7 @@ impl Terms {
     }
 
     /// Returns whether `rows` names only `row`.
-    #[must_use]
-    pub fn targets(&self, rows: Tm, row: Var) -> bool {
+    fn targets(&self, rows: Tm, row: Var) -> bool {
         matches!(self.kind(rows), Kind::Singleton(x) if matches!(self.kind(*x), Kind::Var(v) if *v == row))
     }
 
@@ -402,12 +399,6 @@ impl Terms {
             }
             _ => end(self, t, rows),
         }
-    }
-
-    /// Returns whether the checker filled in the field access `t`, which the text does not write.
-    #[must_use]
-    pub fn is_kept(&self, t: Tm) -> bool {
-        self.kept_fields.contains(&t)
     }
 
     /// Returns whether the field access `t` copies its row's field through `with`.

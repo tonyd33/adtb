@@ -2861,12 +2861,22 @@ fn stored_link(kind: &str) -> (&'static str, &'static str, &'static str) {
     }
 }
 
+/// The branches a default run calls under `hide new constructors`.
+const ALWAYS_HIDDEN: [&str; 6] = [
+    "delete",
+    "new",
+    "target-only",
+    "filter-on-new",
+    "with-copy",
+    "kept-returned",
+];
+
 /// Assert each conflict branch and use of its result, with and without `hide new constructors`,
-/// while live and at registration: a branch using `old`, or a use of a result that can hold the
+/// while live and at registration: a branch naming `old`, or a use of a result that can hold the
 /// stored row, in a bundle that does not hide refuses `enable notes.Link` and is stale past it; any
 /// other opens and runs over a stored `Link` to its result and written rows.
 #[test]
-fn a_conflict_branch_using_old_reads_the_relation_unless_new_constructors_are_hidden() {
+fn a_conflict_branch_naming_old_reads_the_relation_unless_new_constructors_are_hidden() {
     let refused = "`enable notes.Link` is refused: bundle web-1.0, pinned at version 3, reads notes whole; a bundle stops blocking only when it is released";
     const ADD_REJECTED: &str =
         "module auth\nadd relation rejected : RejectedRow key (load, line)\n";
@@ -2918,7 +2928,7 @@ fn a_conflict_branch_using_old_reads_the_relation_unless_new_constructors_are_hi
             other => panic!("{name}: use is uses or free, not {other}"),
         };
         for (clauses, hides) in [("", false), (" hide new constructors", true)] {
-            if hides && !every && name != "with-copy" && name != "kept-returned" {
+            if hides && !every && !ALWAYS_HIDDEN.contains(&name) {
                 continue;
             }
             let registered = || vec![bundle("web-1.0", &pin, clauses, &text)];
@@ -3008,9 +3018,9 @@ fn a_conflict_branch_using_old_reads_the_relation_unless_new_constructors_are_hi
         cases.lines().filter(|l| l.contains("\tuses\t")).count(),
         cases.lines().filter(|l| l.contains("\tfree\t")).count(),
     );
-    assert_eq!((24, 15), (using, free), "the branches of the fixture");
+    assert_eq!((36, 3), (using, free), "the branches of the fixture");
     assert_eq!(
-        if every { 156 } else { 58 },
+        if every { 156 } else { 66 },
         reached.len(),
         "each selected branch reached its two outcomes under each header"
     );
