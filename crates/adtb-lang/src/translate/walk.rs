@@ -546,7 +546,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                         self.p
                             .blame_function(self.map.from.ids.functions.get(&func).copied()),
                         format!(
-                            "it calls `{}`, whose code at the pin is not the current one",
+                            "it calls `{}`, whose code changed since the pin",
                             self.map.from.function(func).name
                         ),
                     )
@@ -568,7 +568,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                         self.p.blame_function(
                             self.map.from.ids.aggregates.get(&(a as usize)).copied(),
                         ),
-                        "it folds by an aggregate whose code at the pin is not the current one",
+                        "it folds by an aggregate whose code changed since the pin",
                     )
                 })?),
                 var,
@@ -1038,7 +1038,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                             format!("the default of `{name}` has no term"),
                         ));
                     };
-                    let same = self.p.over(self.map.to);
+                    let same = self.p.over(self.map.to, None);
                     Walk::new(&same, &normal.terms).tm(out, t, None)
                 }
             };
@@ -1050,7 +1050,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             .fields
             .get(&super::map::slot(self.map.to, def, k, name))
             .copied();
-        let Some((fill, op)) = self.p.fill(def, k, name)? else {
+        let Some((fill, op, written)) = self.p.fill(def, k, name)? else {
             return Err(refused(
                 self.p.blame_field(id, true),
                 format!("it writes no `{name}`, which has no default and no fill"),
@@ -1060,7 +1060,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             operator: u.operator.or_else(|| Some(op.clone())),
             ..u
         };
-        let at = self.p.over(&fill.schema);
+        let at = self.p.over(&fill.schema, Some(&written));
         let mut w = Walk::new(&at, &fill.query.terms);
         let [row] = fill.query.params.as_slice() else {
             return Err(refused(Some(op.clone()), "a fill is a function of one row"));

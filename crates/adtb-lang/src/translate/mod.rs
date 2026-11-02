@@ -53,6 +53,8 @@ struct Op {
 pub struct Pinned<'a> {
     map: Map<'a>,
     from_source: &'a Source,
+    /// The source a fill was written at, while translating that fill's terms.
+    fill_source: Option<&'a Source>,
     to_source: &'a Source,
     to_program: &'a Program,
     hide_new: bool,
@@ -112,6 +114,7 @@ impl<'a> Pinned<'a> {
         Ok(Pinned {
             map: Map::new(from, to),
             from_source,
+            fill_source: None,
             to_source,
             to_program,
             hide_new,
@@ -120,15 +123,16 @@ impl<'a> Pinned<'a> {
         })
     }
 
-    /// Returns this translation over terms of `from`, the schema of an operator's fill or the
-    /// later version itself, to the same later version.
-    fn over<'b>(&self, from: &'b Schema) -> Pinned<'b>
+    /// Returns this translation over terms of `from`, the schema of an operator's fill written
+    /// at `fill_source` or the later version itself, to the same later version.
+    fn over<'b>(&self, from: &'b Schema, fill_source: Option<&'b Source>) -> Pinned<'b>
     where
         'a: 'b,
     {
         Pinned {
             map: Map::new(from, self.map.to),
             from_source: self.from_source,
+            fill_source,
             to_source: self.to_source,
             to_program: self.to_program,
             hide_new: self.hide_new,
@@ -416,8 +420,9 @@ impl<'a> Pinned<'a> {
     }
 
     /// Returns the fill of the operator that added field `name` of constructor `c` of `def`, at
-    /// the later version, as a function of the row before it, with the operator's text.
-    fn fill(&self, def: TypeId, c: u32, name: &str) -> R<Option<(RowFn, String)>> {
+    /// the later version, as a function of the row before it, with the operator's text and the
+    /// source the fill was written at.
+    fn fill(&self, def: TypeId, c: u32, name: &str) -> R<Option<(RowFn, String, Source)>> {
         let Some(&id) = self
             .map
             .to
@@ -457,7 +462,7 @@ impl<'a> Pinned<'a> {
             .into_iter()
             .flat_map(|s| s.maps)
             .find_map(|m| match m {
-                RowMap::Fill { fill, .. } => Some((fill, o.text.clone())),
+                RowMap::Fill { fill, .. } => Some((fill, o.text.clone(), before.clone())),
                 _ => None,
             }))
     }
@@ -490,16 +495,38 @@ impl<'a> Pinned<'a> {
         self.same_code(id).then_some(to)
     }
 
+    /// Returns whether function or aggregate `id` has its current code at the pin and, in a
+    /// fill's terms, where the fill was written.
     fn same_code(&self, id: u64) -> bool {
-        let code = |s: &Source| -> Option<Code> {
-            s.functions()
-                .ok()?
-                .into_iter()
-                .find(|f| f.id == id)
-                .map(|f| f.code)
-        };
-        code(self.from_source).is_some_and(|c| Some(c) == code(self.to_source))
+        let now = code_of(self.to_source, id);
+        now.is_some()
+            && code_of(self.from_source, id) == now
+            && self.fill_source.is_none_or(|s| code_of(s, id) == now)
     }
+}
+
+fn code_of(s: &Source, id: u64) -> Option<Code> {
+    let found = s.functions().ok()?.into_iter().find(|f| f.id == id);
+    found.map(|f| f.code)
+}
+
+/// Returns the operator of the last migration of `next` that takes a function from its code in
+/// `before` to one other than its code at `pin`, a host function's at any of the three, and the
+/// function's name.
+pub fn host_conflict(before: &Source, pin: &Source, next: &Source) -> Option<(String, String)> {
+    let host = |c: &Code| matches!(c, Code::Host { .. });
+    let f = next.functions().ok()?.into_iter().find(|f| {
+        let (Some(was), Some(held)) = (code_of(before, f.id), code_of(pin, f.id)) else {
+            return false;
+        };
+        was != f.code && held != f.code && (host(&f.code) || host(&was) || host(&held))
+    })?;
+    let logged = next.log.last()?;
+    let k = next.resolved(logged.number).ok()?.iter().position(|r| {
+        matches!(r.op, Resolved::Revert { .. })
+            || matches!(r.op, Resolved::RedefineFn { function, .. } if function == f.id)
+    })?;
+    Some((operator_text(&logged.text, &logged.operators[k]), f.name))
 }
 
 /// Returns the first line of operator `op` of migration `text`.

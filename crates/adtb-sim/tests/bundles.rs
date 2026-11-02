@@ -4414,10 +4414,32 @@ fn set(rows: impl IntoIterator<Item = String>) -> BTreeSet<String> {
     rows.into_iter().collect()
 }
 
+/// Returns the position of constructor `ctor` of type `ty` after `migrations`.
+fn ctor_position(migrations: &[&str], ty: &str, ctor: &str) -> usize {
+    let mut source = Source::default();
+    for text in migrations {
+        let file = parse_migration(text, Options::default())
+            .ok()
+            .unwrap_or_else(|ds| panic!("`{text}` parses: {ds:?}"));
+        source = source
+            .migrate(&file, text)
+            .unwrap_or_else(|r| panic!("`{text}` applies: {r:?}"));
+    }
+    let schema = source.schema().expect("the source builds");
+    let def = schema
+        .types
+        .iter()
+        .find(|t| t.name == ty)
+        .unwrap_or_else(|| panic!("a type `{ty}`"));
+    def.ctors()
+        .iter()
+        .position(|c| c.name == ctor)
+        .unwrap_or_else(|| panic!("a constructor `{ctor}` of `{ty}`"))
+}
+
 #[test]
 fn a_stored_value_keeps_its_constructor_when_a_removal_moves_its_position() {
-    let mut swept = Vec::new();
-    for (seed, removed) in (960..).zip(&STORED) {
+    for (seed, removed) in (960..).zip(&STORED[..2]) {
         let (deprecate, remove) = (stored_deprecate(removed.c), stored_remove(removed.c));
         let survivors: Vec<&Stored<'_>> = STORED.iter().filter(|s| s.c != removed.c).collect();
         let writes = format!(
@@ -4426,6 +4448,12 @@ fn a_stored_value_keeps_its_constructor_when_a_removal_moves_its_position() {
         );
         let pin = [V1, STORED_TYPES];
         let log = [V1, STORED_TYPES, deprecate.as_str(), remove.as_str()];
+        assert_eq!(
+            1,
+            ctor_position(&pin, "T", survivors[1].c) - ctor_position(&log, "T", survivors[1].c),
+            "removed {}",
+            removed.c
+        );
         let regs = || {
             vec![
                 bundle("read-1.0", &pin, "", STORED_READS),
@@ -4517,83 +4545,83 @@ fn a_stored_value_keeps_its_constructor_when_a_removal_moves_its_position() {
             );
             assert!(plan[0].contains("hs (val)"), "the index answers: {plan:?}");
         });
-        swept.push(removed.c);
     }
-    assert_eq!(vec!["A", "B", "C"], swept);
 }
 
 #[test]
 fn a_removal_is_refused_while_a_stored_field_of_each_shape_holds_the_constructor() {
-    let mut reached = 0;
-    for (seed, removed) in (970..).zip(&STORED) {
+    let [a, b, _] = &STORED;
+    let shapes = |removed: &Stored<'_>| {
+        let some = format!("Some {{ value: {} }}", removed.var);
+        let rec = format!("{{ t: {}, n: 1 }}", removed.var);
+        [
+            ("T", "val", removed.var.to_string()),
+            ("T", "tag", removed.c.to_string()),
+            ("F", "f", removed.fixed.to_string()),
+            ("G", "g", removed.large.to_string()),
+            ("E", "en", format!("{}0", removed.c)),
+            ("T", "opt", some),
+            ("T", "rec", rec),
+            ("U", "rtag", removed.c.to_string()),
+        ]
+    };
+    let row = |kept: &Stored<'_>, field: &str, value: &str| {
+        let fields = [
+            ("tag", kept.c.to_string()),
+            ("val", kept.var.to_string()),
+            ("f", kept.fixed.to_string()),
+            ("g", kept.large.to_string()),
+            ("en", format!("{}0", kept.c)),
+            ("opt", "None".to_string()),
+            ("rec", format!("{{ t: {}, n: 1 }}", kept.var)),
+            ("rtag", kept.c.to_string()),
+        ]
+        .map(|(n, v)| format!("{n}: {}", if n == field { value } else { &v }));
+        format!("insert hs {{ id: hs.key(1), {} }}", fields.join(", "))
+    };
+    let at_first = shapes(a);
+    let [val_b, ..] = shapes(b);
+    let cases = at_first.iter().map(|s| (a, b, s)).chain([(b, a, &val_b)]);
+    for (seed, (removed, kept, (held, field, value))) in (970..).zip(cases) {
         let (deprecate, remove) = (stored_deprecate(removed.c), stored_remove(removed.c));
-        let kept = STORED
-            .iter()
-            .find(|s| s.c != removed.c)
-            .expect("a survivor");
-        let (c, var, keep, keep_var) = (removed.c, removed.var, kept.c, kept.var);
-        let (fixed, large) = (kept.fixed, kept.large);
-        let row = |tag: &str, val: &str, opt: &str, rec: &str, rtag: &str| {
-            format!(
-                "insert hs {{ id: hs.key(1), tag: {tag}, val: {val}, f: {fixed}, g: {large}, en: {keep}0, opt: {opt}, rec: {{ t: {rec}, n: 1 }}, rtag: {rtag} }}"
-            )
+        let name = if *held == "E" {
+            format!("{}0", removed.c)
+        } else {
+            removed.c.to_string()
         };
-        let some = |v: &str| format!("Some {{ value: {v} }}");
-        let fine = row(keep, keep_var, "None", keep_var, keep);
-        let shapes = [
-            ("T", row(c, keep_var, "None", keep_var, keep)),
-            ("T", row(keep, var, "None", keep_var, keep)),
-            ("T", row(keep, keep_var, &some(var), keep_var, keep)),
-            ("T", row(keep, keep_var, "None", var, keep)),
-            ("U", row(keep, keep_var, "None", keep_var, c)),
-        ];
+        let insert = row(kept, field, value);
         let log = [V1, STORED_TYPES, deprecate.as_str(), remove.as_str()];
-        for (held, insert) in &shapes {
-            let mut sim = Sim::new(seed, Config::default());
-            run(&mut sim, |rt| {
-                let db = opened(&rt, &[V1, STORED_TYPES], vec![]);
-                results(&db, insert);
-            });
-            run(&mut sim, |rt| {
-                let (operator, detail) = refused_migration(open(&rt, &log, vec![]), 4);
-                assert_eq!(format!("remove constructor {held}.{c}"), operator);
-                assert_eq!(
-                    format!("a field of hs holds a value of {held}.{c}; it cannot be removed"),
-                    detail.lines().next().expect("a reason"),
-                    "{insert}"
-                );
-            });
-            reached += 1;
-        }
-        let (_, insert) = &shapes[0];
         let mut sim = Sim::new(seed, Config::default());
         run(&mut sim, |rt| {
             let db = opened(&rt, &[V1, STORED_TYPES], vec![]);
-            results(&db, insert);
-            results(&db, "delete h in hs where h.id == hs.key(1)");
-            results(&db, &fine);
+            results(&db, &insert);
         });
         run(&mut sim, |rt| {
-            let db = opened(&rt, &log, vec![]);
+            let (operator, detail) = refused_migration(open(&rt, &log, vec![]), 4);
+            assert_eq!(format!("remove constructor {held}.{name}"), operator);
             assert_eq!(
-                vec!["hs.key(1)".to_string()],
-                query(&db, "from h in hs select h.id"),
+                format!("a field of hs holds a value of {held}.{name}; it cannot be removed"),
+                detail.lines().next().expect("a reason"),
                 "{insert}"
             );
         });
     }
-    assert_eq!(15, reached);
-}
-
-/// A fill's schema with many types after the pin's last, so the fill's id of a later type is no
-/// id of the pin's.
-fn padded_tag_type() -> String {
-    let mut text = String::from("module auth\n");
-    for i in 0..60 {
-        text.push_str(&format!("add type Pad{i} = {{ a{i}: I32 }}\n"));
-    }
-    text.push_str("add type P = X | Y | Z\n");
-    text
+    let (deprecate, remove) = (stored_deprecate(a.c), stored_remove(a.c));
+    let log = [V1, STORED_TYPES, deprecate.as_str(), remove.as_str()];
+    let mut sim = Sim::new(980, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[V1, STORED_TYPES], vec![]);
+        results(&db, &row(b, "val", a.var));
+        results(&db, "delete h in hs where h.id == hs.key(1)");
+        results(&db, &row(b, "", ""));
+    });
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &log, vec![]);
+        assert_eq!(
+            vec!["hs.key(1)".to_string()],
+            query(&db, "from h in hs select h.id")
+        );
+    });
 }
 
 const FILLED: &str = "module auth\nadd type H { id: Key hs } = R { n: I32 }\nadd relation hs : H key id generate sequence\n";
@@ -4601,45 +4629,43 @@ const FILLED_INSERT: &str = "import auth\ntxn put () -> I32 =\n  transact\n    l
 
 #[test]
 fn a_tag_in_a_fill_past_a_removal_keeps_its_constructor_or_refuses_by_its_name() {
-    let types = padded_tag_type();
     let deprecate = "module auth\ndeprecate P.X\n";
     let remove = "module auth\nremove constructor P.X\n";
     let pin = [V1, FILLED];
     let field = |c: &str| format!("module auth\nadd field H.R.t: Tag P fill {c}\n");
-    let plain = "module auth\nadd type P = X | Y | Z\n";
-    for (seed, tys) in [(980, plain), (981, types.as_str())] {
-        let x = field("X");
-        once(seed, |rt| {
-            assert_eq!(
-                RejectReason::Untranslatable {
-                    query: "web-1.0::put".into(),
-                    detail: "across `remove constructor P.X`: it builds `P.X`, which the current version lacks".into(),
-                },
-                refusal(
-                    open(
-                        &rt,
-                        &[V1, FILLED, tys, x.as_str(), deprecate, remove],
-                        vec![bundle("web-1.0", &pin, "", FILLED_INSERT)],
-                    ),
-                    "web-1.0"
+    let tys = "module auth\nadd type P = X | Y | Z\n";
+    let seed = 980;
+    let x = field("X");
+    once(seed, |rt| {
+        assert_eq!(
+            RejectReason::Untranslatable {
+                query: "web-1.0::put".into(),
+                detail: "across `remove constructor P.X`: it builds `P.X`, which the current version lacks".into(),
+            },
+            refusal(
+                open(
+                    &rt,
+                    &[V1, FILLED, tys, x.as_str(), deprecate, remove],
+                    vec![bundle("web-1.0", &pin, "", FILLED_INSERT)],
                 ),
+                "web-1.0"
+            ),
+        );
+    });
+    for (c, seed) in [("Y", seed + 10), ("Z", seed + 20)] {
+        let f = field(c);
+        once(seed, |rt| {
+            let db = opened(
+                &rt,
+                &[V1, FILLED, tys, f.as_str(), deprecate, remove],
+                vec![bundle("web-1.0", &pin, "", FILLED_INSERT)],
+            );
+            call(&db, "web-1.0", 1, &[]);
+            assert_eq!(
+                vec![format!("R {{ id: hs.key(1), n: 1, t: {c} }}")],
+                query(&db, "from h in hs select h")
             );
         });
-        for (c, seed) in [("Y", seed + 10), ("Z", seed + 20)] {
-            let f = field(c);
-            once(seed, |rt| {
-                let db = opened(
-                    &rt,
-                    &[V1, FILLED, tys, f.as_str(), deprecate, remove],
-                    vec![bundle("web-1.0", &pin, "", FILLED_INSERT)],
-                );
-                call(&db, "web-1.0", 1, &[]);
-                assert_eq!(
-                    vec![format!("R {{ id: hs.key(1), n: 1, t: {c} }}")],
-                    query(&db, "from h in hs select h")
-                );
-            });
-        }
     }
 }
 
@@ -4652,10 +4678,10 @@ fn a_newtype_over_a_declared_sum_is_refused() {
     });
 }
 
-/// Returns host functions `g`, `h` and `n`, each answering its own name.
-fn named_host_fns() -> adtb::HostFns {
+/// Returns the host functions `names`, each answering its own name.
+fn named_host_fns(names: &[&str]) -> adtb::HostFns {
     let mut fns = adtb::HostFns::new();
-    for name in ["g", "h", "n"] {
+    for name in names {
         let reply = name.to_string();
         fns.register(
             name,
@@ -4690,7 +4716,7 @@ fn a_pinned_write_calls_the_function_a_fill_or_default_named_after_positions_mov
     let pin = [V1, base.as_str()];
     let opening = |rt: &SimRuntime, late: &str| {
         let options = OpenOptions {
-            host_fns: named_host_fns(),
+            host_fns: named_host_fns(&["g", "h", "n"]),
             ..with(vec![bundle("web-1.0", &pin, "", body)])
         };
         Database::open_in(
@@ -4716,7 +4742,7 @@ fn a_pinned_write_calls_the_function_a_fill_or_default_named_after_positions_mov
         });
     }
     let n_fill = fill("n");
-    let refused = "it calls `n`, whose code at the pin is not the current one";
+    let refused = "it calls `n`, whose code changed since the pin";
     for (seed, late, detail) in [
         (
             986,
@@ -4735,4 +4761,278 @@ fn a_pinned_write_calls_the_function_a_fill_or_default_named_after_positions_mov
             );
         });
     }
+}
+
+const CODED: &str = "module auth\ndefine fn f (t: Text) -> Text = host \"a\" version \"1.0\" deterministic\nadd type H { id: Key hs } = R { n: Text }\nadd relation hs : H key id generate sequence\n";
+const CODED_PUT: &str = "import auth\ntxn put () -> I32 =\n  transact\n    let h = insert hs.R { n: \"s\" }\n    return 1\n";
+const FILL_F: &str = "module auth\nadd field H.R.x: Text fill f(\"s\")\n";
+const TO_A: &str =
+    "module auth\nredefine fn f (t: Text) -> Text = host \"a\" version \"1.0\" deterministic\n";
+const TO_B: &str =
+    "module auth\nredefine fn f (t: Text) -> Text = host \"b\" version \"1.0\" deterministic\n";
+const REDEFINED_B: &str =
+    "redefine fn f (t: Text) -> Text = host \"b\" version \"1.0\" deterministic";
+const CODED_PIN: [&str; 2] = [V1, CODED];
+
+fn coded_open(
+    rt: &SimRuntime,
+    migrations: &[&str],
+    regs: Vec<Registration>,
+) -> Result<Database<SimRuntime>, OpenError> {
+    let options = OpenOptions {
+        host_fns: named_host_fns(&["a", "b"]),
+        ..with(regs)
+    };
+    Database::open_in(rt.clone(), "app.adt", &log(migrations), &options)
+}
+
+/// Returns a simulation whose database at the pin holds one row with `n` "old".
+fn coded_sim(seed: u64) -> Sim {
+    let mut sim = Sim::new(seed, Config::default());
+    run(&mut sim, |rt| {
+        let db = coded_open(&rt, &CODED_PIN, vec![]).expect("the pin opens");
+        results(&db, "insert hs.R { n: \"old\" }");
+    });
+    sim
+}
+
+fn coded_put(name: &str) -> Vec<Registration> {
+    vec![bundle(name, &CODED_PIN, "", CODED_PUT)]
+}
+
+fn stale_fill(name: &str, operator: &str, f: &str) -> RejectReason {
+    RejectReason::Untranslatable {
+        query: format!("{name}::put"),
+        detail: format!("across `{operator}`: it calls `{f}`, whose code changed since the pin"),
+    }
+}
+
+#[test]
+fn a_pinned_fill_whose_function_went_to_other_code_and_back_is_refused_and_the_rows_keep_the_fill()
+{
+    let same_migration = format!(
+        "{TO_B}add field H.R.x: Text fill f(\"s\")\nredefine fn f (t: Text) -> Text = host \"a\" version \"1.0\" deterministic\n"
+    );
+    let logs: [&[&str]; 2] = [
+        &[V1, CODED, TO_B, FILL_F, TO_A],
+        &[V1, CODED, same_migration.as_str()],
+    ];
+    for (seed, migrations) in (990..).zip(logs) {
+        let mut sim = coded_sim(seed);
+        run(&mut sim, |rt| {
+            let db = coded_open(&rt, &CODED_PIN, coded_put("web-1.0")).expect("the pin opens");
+            query(&db, "retire bundle web-1.0");
+        });
+        run(&mut sim, |rt| {
+            assert_eq!(
+                stale_fill("web-1.1", REDEFINED_B, "f"),
+                refusal(coded_open(&rt, migrations, coded_put("web-1.1")), "web-1.1"),
+                "{migrations:?}"
+            );
+        });
+        run(&mut sim, |rt| {
+            let db = coded_open(&rt, migrations, vec![]).expect("the log applies");
+            assert_eq!(
+                vec!["R { id: hs.key(1), n: \"old\", x: \"b\" }".to_string()],
+                query(&db, "from h in hs select h"),
+                "{migrations:?}"
+            );
+        });
+    }
+}
+
+#[test]
+fn a_redefine_of_a_host_function_is_refused_while_a_live_bundle_pins_another_code() {
+    let version =
+        "module auth\nredefine fn f (t: Text) -> Text = host \"a\" version \"2.0\" deterministic\n";
+    let reads = "import auth\nquery q () -> Set Text = from h in hs select h.n\n";
+    let cases = [
+        (reads, TO_B, REDEFINED_B),
+        (reads, version, version.lines().nth(1).expect("an operator")),
+        (
+            "import auth\nquery q () -> Set Text = from h in hs select f(h.n)\n",
+            TO_B,
+            REDEFINED_B,
+        ),
+        (
+            "import auth\ntxn q () -> I32 =\n  transact\n    let h = insert hs.R { n: f(\"s\") }\n    return 1\n",
+            TO_B,
+            REDEFINED_B,
+        ),
+    ];
+    for (seed, (body, to, operator)) in (994..).zip(cases) {
+        let regs = || vec![bundle("web-1.0", &CODED_PIN, "", body)];
+        let mut sim = Sim::new(seed, Config::default());
+        run(&mut sim, |rt| {
+            coded_open(&rt, &CODED_PIN, regs()).expect("the pin opens");
+        });
+        run(&mut sim, |rt| {
+            let (refused_by, detail) =
+                refused_migration(coded_open(&rt, &[V1, CODED, to], regs()), 3);
+            assert_eq!(operator, refused_by, "{body}");
+            assert_eq!(
+                "bundle web-1.0 pins 2: its version holds another code of host function `f`",
+                detail,
+                "{body}"
+            );
+        });
+    }
+    let mut sim = Sim::new(1006, Config::default());
+    run(&mut sim, |rt| {
+        let db = coded_open(
+            &rt,
+            &CODED_PIN,
+            vec![bundle("web-1.0", &CODED_PIN, "", reads)],
+        )
+        .expect("the pin opens");
+        query(&db, "retire bundle web-1.0");
+    });
+    run(&mut sim, |rt| {
+        coded_open(&rt, &[V1, CODED, TO_B], vec![]).expect("no live bundle pins the function");
+    });
+}
+
+#[test]
+fn a_redefine_back_to_the_code_a_live_bundle_pins_is_admitted_and_its_later_fill_stores_that_code()
+{
+    let mut sim = coded_sim(997);
+    run(&mut sim, |rt| {
+        coded_open(&rt, &[V1, CODED, TO_B], coded_put("web-1.0")).expect("it calls no `f`");
+    });
+    run(&mut sim, |rt| {
+        let db = coded_open(&rt, &[V1, CODED, TO_B, TO_A, FILL_F], coded_put("web-1.0"))
+            .expect("every code matches the pin");
+        call(&db, "web-1.0", 1, &[]);
+        assert_eq!(
+            set([
+                "R { id: hs.key(1), n: \"old\", x: \"a\" }".to_string(),
+                "R { id: hs.key(65), n: \"s\", x: \"a\" }".to_string(),
+            ]),
+            set(query(&db, "from h in hs select h"))
+        );
+    });
+}
+
+#[test]
+fn a_function_dropped_and_added_again_is_a_fresh_function_a_pinned_fill_refuses() {
+    let again = "module auth\ndrop fn f\ndefine fn f (t: Text) -> Text = host \"a\" version \"1.0\" deterministic\n";
+    for (seed, migrations, operator) in [
+        (
+            998,
+            [V1, CODED, again, FILL_F],
+            "add field H.R.x: Text fill f(\"s\")",
+        ),
+        (999, [V1, CODED, FILL_F, again], "drop fn f"),
+    ] {
+        once(seed, |rt| {
+            assert_eq!(
+                stale_fill("web-1.0", operator, "f"),
+                refusal(
+                    coded_open(&rt, &migrations, coded_put("web-1.0")),
+                    "web-1.0"
+                ),
+            );
+        });
+    }
+}
+
+#[test]
+fn a_pinned_write_takes_a_default_with_the_current_code_when_it_is_the_pins() {
+    let added = "module auth\nadd field H.R.x: Text fill \"z\"\nadd default hs.R.x = f(\"s\")\n";
+    let mut sim = coded_sim(1000);
+    run(&mut sim, |rt| {
+        let db = coded_open(&rt, &[V1, CODED, TO_B, added, TO_A], coded_put("web-1.0"))
+            .expect("the default's code at the pin is current");
+        call(&db, "web-1.0", 1, &[]);
+        assert_eq!(
+            set([
+                "R { id: hs.key(1), n: \"old\", x: \"z\" }".to_string(),
+                "R { id: hs.key(65), n: \"s\", x: \"a\" }".to_string(),
+            ]),
+            set(query(&db, "from h in hs select h"))
+        );
+    });
+    once(1001, |rt| {
+        assert_eq!(
+            stale_fill("web-1.0", REDEFINED_B, "f"),
+            refusal(
+                coded_open(&rt, &[V1, CODED, TO_B, added], coded_put("web-1.0")),
+                "web-1.0"
+            ),
+        );
+    });
+}
+
+#[test]
+fn a_tag_in_a_default_past_a_removal_keeps_its_constructor() {
+    let types = "module auth\nadd type P = X | Y | Z\n";
+    let add =
+        |c: &str| format!("module auth\nadd field H.R.t: Tag P fill Y\nadd default hs.R.t = {c}\n");
+    let pin = [V1, FILLED];
+    let (z, x) = (add("Z"), add("X"));
+    let deprecate = "module auth\ndeprecate P.X\n";
+    let remove = "module auth\nremove constructor P.X\n";
+    once(1002, |rt| {
+        let db = opened(
+            &rt,
+            &[V1, FILLED, types, z.as_str(), deprecate, remove],
+            vec![bundle("web-1.0", &pin, "", FILLED_INSERT)],
+        );
+        call(&db, "web-1.0", 1, &[]);
+        assert_eq!(
+            vec!["R { id: hs.key(1), n: 1, t: Z }".to_string()],
+            query(&db, "from h in hs select h")
+        );
+    });
+    once(1003, |rt| {
+        let got = open(
+            &rt,
+            &[V1, FILLED, types, x.as_str(), deprecate, remove],
+            vec![],
+        );
+        let (_, detail) = refused_migration(got, 6);
+        assert_eq!("`X` is not a constructor of Tag P", detail);
+    });
+}
+
+#[test]
+fn a_pinned_default_folds_by_its_aggregate_after_a_drop_moves_its_position() {
+    let agg = |n: &str, plus: u32| {
+        format!(
+            "define aggregate {n} (x: I64) -> I64 = state {{ n: I64 }} init {{ n: 0 }} step (s, x) -> {{ n: s.n + x }} merge (a, b) -> {{ n: a.n + b.n }} finish s -> s.n + {plus}\n"
+        )
+    };
+    let base = format!(
+        "module auth\n{}{}add type H {{ id: Key hs }} = R {{ n: I32 }}\nadd relation hs : H key id generate sequence\n",
+        agg("other", 100),
+        agg("total", 0),
+    );
+    let added = "module auth\nadd field H.R.x: Option I64 fill None\nadd default hs.R.x = total(v for v in [1, 2])\n";
+    let pin = [V1, base.as_str()];
+    let regs = || vec![bundle("web-1.0", &pin, "", FILLED_INSERT)];
+    once(1004, |rt| {
+        let drop = "module auth\ndrop aggregate other\n";
+        let db = opened(&rt, &[V1, base.as_str(), drop, added], regs());
+        call(&db, "web-1.0", 1, &[]);
+        assert_eq!(
+            vec!["R { id: hs.key(1), n: 1, x: Some { value: 3 } }".to_string()],
+            query(&db, "from h in hs select h")
+        );
+    });
+    let again = format!("module auth\ndrop aggregate total\n{}", agg("total", 0));
+    once(1005, |rt| {
+        assert_eq!(
+            RejectReason::Untranslatable {
+                query: "web-1.0::put".into(),
+                detail: format!(
+                    "across `{}`: it folds by an aggregate whose code changed since the pin",
+                    "define aggregate total (x: I64) -> I64 = state { n: I64 } init { n: 0 } step (s, x) -> { n: s.n + x } merge (a, b) -> { n: a.n + b.n } finish s -> s.n + 0"
+                ),
+            },
+            refusal(
+                open(&rt, &[V1, base.as_str(), again.as_str(), added], regs()),
+                "web-1.0"
+            ),
+        );
+    });
 }

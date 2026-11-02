@@ -13,7 +13,7 @@ use adtb_lang::parse::{Options, parse_bundle, parse_bundle_body, parse_migration
 use adtb_lang::permission::{self, EffectiveGrants, Mode, Requirement, Requirements};
 use adtb_lang::schema::Schema;
 use adtb_lang::signature;
-use adtb_lang::translate::{Map, Pinned, Untranslatable};
+use adtb_lang::translate::{Map, Pinned, Untranslatable, host_conflict};
 use adtb_lang::types::Ty;
 
 use crate::catalog::{self, Catalog};
@@ -800,8 +800,9 @@ pub(super) fn readers(
     Ok(out)
 }
 
-/// Refuse migration `text`, applied to the version `catalog` is at, when a query or transaction
-/// of a bundle of `live` has no translation to the version it gives, or when the owner of a
+/// Refuse migration `text`, applied to the version `catalog` is at, when it changes a host
+/// function's code from what a bundle of `live` pins, when a query or transaction of a bundle of
+/// `live` has no translation to the version it gives, or when the owner of a
 /// bundle, other than the schema owner, lacks after it, among its grants and `deployed`, a grant
 /// the translation uses. The refusal names every blocking bundle, in name order. A migration
 /// that does not apply or check is left for the catalog to refuse.
@@ -832,6 +833,14 @@ pub(super) fn recheck(
         let c = &l.checked;
         let pins = c.header.as_ref().map_or(0, |h| h.pins);
         let lines = blocked.entry(&c.name).or_default();
+        if let Some((op, f)) = host_conflict(catalog.source(), &l.source, &next) {
+            operator.get_or_insert(op);
+            lines.push(format!(
+                "bundle {} pins {pins}: its version holds another code of host function `{f}`",
+                c.name
+            ));
+            continue;
+        }
         let served = match translations(c, &l.source, &schema, &next, &program) {
             Ok(served) => served,
             Err((query, u)) => {
