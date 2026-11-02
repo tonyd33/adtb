@@ -26,3 +26,10 @@ From the independent review of `fix: count a conflict branch using old as readin
 - conflict-branches.txt has no row binding a filtered or ranged branch, so nothing fails if `replaces` treats a non-target `Replace` as replacing.
 - The sweep selects default live rows by the name suffix `-returned`; an explicit column would state it.
 - The 7.3 parenthetical in evolution.md does not name a bound result.
+
+## 2026-11-02: from the misread review
+
+- The conflict-branches.txt rows for filtered branches cannot catch a wrong `replaces`: `update old where` names `old`, so `uses_row` blocks either way. A row needs a branch that does not name `old` and ranges over another relation.
+- upsert-results.txt lacks a target retag, a variable-pattern or nested-match alias, a `Par` mixing filtered and unfiltered replaces, and a set source on a filtered branch. Dropping the alias insert in `Terms::replaces` likely fails no case.
+- `match (only {old}) | ...` makes `replaces` false, so `w.body` is refused though it is a replacement.
+- Filtered and ranged branches with an unused result are stale at registration. Filter: the target names `old`. Ranged: cause not confirmed.
