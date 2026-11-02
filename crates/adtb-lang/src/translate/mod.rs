@@ -56,8 +56,8 @@ pub struct Pinned<'a> {
     to_source: &'a Source,
     to_program: &'a Program,
     hide_new: bool,
-    ops: Vec<Op>,
-    normal: RefCell<Option<Rc<NormalProgram>>>,
+    ops: Rc<[Op]>,
+    normal: Rc<RefCell<Option<Rc<NormalProgram>>>>,
 }
 
 type R<T> = Result<T, Untranslatable>;
@@ -115,9 +115,26 @@ impl<'a> Pinned<'a> {
             to_source,
             to_program,
             hide_new,
-            ops,
-            normal: RefCell::new(None),
+            ops: ops.into(),
+            normal: Rc::default(),
         })
+    }
+
+    /// Returns this translation over terms of `from`, the schema of an operator's fill or the
+    /// later version itself, to the same later version.
+    fn over<'b>(&self, from: &'b Schema) -> Pinned<'b>
+    where
+        'a: 'b,
+    {
+        Pinned {
+            map: Map::new(from, self.map.to),
+            from_source: self.from_source,
+            to_source: self.to_source,
+            to_program: self.to_program,
+            hide_new: self.hide_new,
+            ops: self.ops.clone(),
+            normal: self.normal.clone(),
+        }
     }
 
     pub fn map(&self) -> &Map<'a> {
@@ -134,7 +151,7 @@ impl<'a> Pinned<'a> {
     pub fn query(&self, q: &NormalQuery) -> R<NormalQuery> {
         self.uncrossed(&q.terms)?;
         let mut out = Terms::default();
-        let mut w = walk::Walk::new(self, &self.map, &q.terms);
+        let mut w = walk::Walk::new(self, &q.terms);
         w.mark()?;
         let mut params = Vec::with_capacity(q.params.len());
         for &p in &q.params {
@@ -312,7 +329,7 @@ impl<'a> Pinned<'a> {
         let ids = &self.map.from.ids;
         let ctor_def = |id: u64| ids.ctors.iter().find(|(_, i)| **i == id).map(|(k, _)| k.0);
         let field_def = |id: u64| ids.fields.iter().find(|(_, i)| **i == id).map(|(k, _)| k.0);
-        for o in &self.ops {
+        for o in self.ops.iter() {
             let members = o.clauses.iter().filter_map(|c| match c {
                 Clause::Member { ctor } => ctor_def(*ctor),
                 _ => None,

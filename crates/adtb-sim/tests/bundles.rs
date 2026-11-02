@@ -4311,3 +4311,428 @@ query matched_all () -> Set I32 = from r in ts select (match r | A a -> a.n | B 
         }
     });
 }
+
+/// The stored forms a removal sweep writes for constructor `c`, as a text builds each.
+struct Stored<'a> {
+    c: &'a str,
+    /// A payload a text field stores out of line.
+    var: &'a str,
+    /// A fixed payload the largest of whose sum is `A`'s.
+    fixed: &'a str,
+    /// A payload past the largest a row stores whole when `A` is present.
+    large: &'a str,
+}
+
+type Shown = fn(&Stored<'_>) -> String;
+
+const STORED: [Stored<'_>; 3] = [
+    Stored {
+        c: "A",
+        var: "A { a: 1 }",
+        fixed: "A { a: 1 }",
+        large: "A { x1: 1, x2: 2, x3: 3, x4: 4, x5: 5, x6: 6, x7: 7, x8: 8, x9: 9 }",
+    },
+    Stored {
+        c: "B",
+        var: "B { b: 2 }",
+        fixed: "B { b: 2 }",
+        large: "B { b: 2 }",
+    },
+    Stored {
+        c: "C",
+        var: "C { c: \"x\" }",
+        fixed: "C { c: 3 }",
+        large: "C { c: 3 }",
+    },
+];
+
+const STORED_TYPES: &str = "module auth
+add type T = A { a: I64 } | B { b: I32 } | C { c: Text }
+add type F = A { a: I64 } | B { b: I32 } | C { c: I16 }
+add type G = A { x1: I64, x2: I64, x3: I64, x4: I64, x5: I64, x6: I64, x7: I64, x8: I64, x9: I64 } | B { b: I32 } | C { c: I16 }
+add type E = A0 | B0 | C0
+add type U { id: Key us } = A { n: I32 } | B { n: I32 } | C { n: I32 }
+add relation us : U key id generate sequence
+add type Rec = { t: T, n: I32 }
+add type H = { id: Key hs, tag: Tag T, val: T, f: F, g: G, en: E, opt: Option T, rec: Rec, rtag: Tag U }
+add relation hs : H key id generate sequence
+  index (val)
+  index (tag)
+  index (f)
+  index (en)
+  index (rtag)
+";
+
+const STORED_READS: &str = "import auth
+query tags () -> Set (Tag T) = from h in hs select h.tag
+query vals () -> Set T = from h in hs select h.val
+query fs () -> Set F = from h in hs select h.f
+query gs () -> Set G = from h in hs select h.g
+query ens () -> Set E = from h in hs select h.en
+query opts () -> Set (Option T) = from h in hs select h.opt
+query recs () -> Set Rec = from h in hs select h.rec
+query rtags () -> Set (Tag U) = from h in hs select h.rtag
+";
+
+fn stored_deprecate(c: &str) -> String {
+    format!(
+        "module auth\ndeprecate T.{c}\ndeprecate F.{c}\ndeprecate G.{c}\ndeprecate E.{c}0\ndeprecate us.{c}\n"
+    )
+}
+
+fn stored_remove(c: &str) -> String {
+    format!(
+        "module auth\nremove constructor T.{c}\nremove constructor F.{c}\nremove constructor G.{c}\nremove constructor E.{c}0\nremove constructor U.{c}\n"
+    )
+}
+
+fn stored_insert(s: &Stored<'_>, id: u32) -> String {
+    let Stored {
+        c,
+        var,
+        fixed,
+        large,
+    } = s;
+    format!(
+        "insert hs {{ id: hs.key({id}), tag: {c}, val: {var}, f: {fixed}, g: {large}, en: {c}0, opt: Some {{ value: {var} }}, rec: {{ t: {var}, n: {id} }}, rtag: {c} }}"
+    )
+}
+
+fn stored_printed(s: &Stored<'_>, id: u32) -> String {
+    let Stored {
+        c,
+        var,
+        fixed,
+        large,
+    } = s;
+    format!(
+        "H {{ id: hs.key({id}), tag: {c}, val: {var}, f: {fixed}, g: {large}, en: {c}0, opt: Some {{ value: {var} }}, rec: Rec {{ t: {var}, n: {id} }}, rtag: {c} }}"
+    )
+}
+
+fn set(rows: impl IntoIterator<Item = String>) -> BTreeSet<String> {
+    rows.into_iter().collect()
+}
+
+#[test]
+fn a_stored_value_keeps_its_constructor_when_a_removal_moves_its_position() {
+    let mut swept = Vec::new();
+    for (seed, removed) in (960..).zip(&STORED) {
+        let (deprecate, remove) = (stored_deprecate(removed.c), stored_remove(removed.c));
+        let survivors: Vec<&Stored<'_>> = STORED.iter().filter(|s| s.c != removed.c).collect();
+        let writes = format!(
+            "import auth\ntxn put () -> I32 =\n  transact\n    {}\n    return 1\n",
+            stored_insert(survivors[1], 21)
+        );
+        let pin = [V1, STORED_TYPES];
+        let log = [V1, STORED_TYPES, deprecate.as_str(), remove.as_str()];
+        let regs = || {
+            vec![
+                bundle("read-1.0", &pin, "", STORED_READS),
+                bundle("write-1.0", &pin, "", &writes),
+            ]
+        };
+        let mut sim = Sim::new(seed, Config::default());
+        run(&mut sim, |rt| {
+            let db = opened(&rt, &[V1, STORED_TYPES, deprecate.as_str()], vec![]);
+            results(&db, &stored_insert(survivors[0], 1));
+            results(&db, &stored_insert(survivors[1], 2));
+        });
+        run(&mut sim, |rt| {
+            let db = opened(&rt, &log, regs());
+            results(&db, &stored_insert(survivors[0], 11));
+            results(&db, &stored_insert(survivors[1], 12));
+            call(&db, "write-1.0", 1, &[]);
+        });
+        run(&mut sim, |rt| {
+            let db = opened(&rt, &log, regs());
+            let written = [(survivors[0], vec![1, 11]), (survivors[1], vec![2, 12, 21])];
+            let all = written
+                .iter()
+                .flat_map(|(s, ids)| ids.iter().map(|id| stored_printed(s, *id)));
+            assert_eq!(
+                set(all),
+                set(query(&db, "from h in hs select h")),
+                "removed {}",
+                removed.c
+            );
+            let columns: [(u32, Shown); 6] = [
+                (1, |s| s.c.to_string()),
+                (2, |s| s.var.to_string()),
+                (3, |s| s.fixed.to_string()),
+                (4, |s| s.large.to_string()),
+                (5, |s| format!("{}0", s.c)),
+                (6, |s| format!("Some {{ value: {} }}", s.var)),
+            ];
+            for (ordinal, shown) in columns {
+                assert_eq!(
+                    set(survivors.iter().map(|s| shown(s))),
+                    set(rows(call(&db, "read-1.0", ordinal, &[]))),
+                    "removed {} query {ordinal}",
+                    removed.c
+                );
+            }
+            let recs = written.iter().flat_map(|(s, ids)| {
+                ids.iter()
+                    .map(|id| format!("Rec {{ t: {}, n: {id} }}", s.var))
+            });
+            assert_eq!(
+                set(recs),
+                set(rows(call(&db, "read-1.0", 7, &[]))),
+                "removed {}",
+                removed.c
+            );
+            assert_eq!(
+                set(survivors.iter().map(|s| s.c.to_string())),
+                set(rows(call(&db, "read-1.0", 8, &[]))),
+                "removed {}",
+                removed.c
+            );
+            for (s, ids) in &written {
+                let keys = set(ids.iter().map(|id| format!("hs.key({id})")));
+                let c = s.c;
+                let probes = [
+                    format!("h.val == {}", s.var),
+                    format!("h.tag == {c}"),
+                    format!("h.f == {}", s.fixed),
+                    format!("h.en == {c}0"),
+                    format!("h.rtag == {c}"),
+                ];
+                for probe in &probes {
+                    let text = format!("from h in hs where {probe} select h.id");
+                    assert_eq!(
+                        keys,
+                        set(query(&db, &text)),
+                        "removed {} {probe}",
+                        removed.c
+                    );
+                }
+            }
+            let plan = query(
+                &db,
+                &format!(
+                    "explain from h in hs where h.val == {} select h.id",
+                    survivors[0].var
+                ),
+            );
+            assert!(plan[0].contains("hs (val)"), "the index answers: {plan:?}");
+        });
+        swept.push(removed.c);
+    }
+    assert_eq!(vec!["A", "B", "C"], swept);
+}
+
+#[test]
+fn a_removal_is_refused_while_a_stored_field_of_each_shape_holds_the_constructor() {
+    let mut reached = 0;
+    for (seed, removed) in (970..).zip(&STORED) {
+        let (deprecate, remove) = (stored_deprecate(removed.c), stored_remove(removed.c));
+        let kept = STORED
+            .iter()
+            .find(|s| s.c != removed.c)
+            .expect("a survivor");
+        let (c, var, keep, keep_var) = (removed.c, removed.var, kept.c, kept.var);
+        let (fixed, large) = (kept.fixed, kept.large);
+        let row = |tag: &str, val: &str, opt: &str, rec: &str, rtag: &str| {
+            format!(
+                "insert hs {{ id: hs.key(1), tag: {tag}, val: {val}, f: {fixed}, g: {large}, en: {keep}0, opt: {opt}, rec: {{ t: {rec}, n: 1 }}, rtag: {rtag} }}"
+            )
+        };
+        let some = |v: &str| format!("Some {{ value: {v} }}");
+        let fine = row(keep, keep_var, "None", keep_var, keep);
+        let shapes = [
+            ("T", row(c, keep_var, "None", keep_var, keep)),
+            ("T", row(keep, var, "None", keep_var, keep)),
+            ("T", row(keep, keep_var, &some(var), keep_var, keep)),
+            ("T", row(keep, keep_var, "None", var, keep)),
+            ("U", row(keep, keep_var, "None", keep_var, c)),
+        ];
+        let log = [V1, STORED_TYPES, deprecate.as_str(), remove.as_str()];
+        for (held, insert) in &shapes {
+            let mut sim = Sim::new(seed, Config::default());
+            run(&mut sim, |rt| {
+                let db = opened(&rt, &[V1, STORED_TYPES], vec![]);
+                results(&db, insert);
+            });
+            run(&mut sim, |rt| {
+                let (operator, detail) = refused_migration(open(&rt, &log, vec![]), 4);
+                assert_eq!(format!("remove constructor {held}.{c}"), operator);
+                assert_eq!(
+                    format!("a field of hs holds a value of {held}.{c}; it cannot be removed"),
+                    detail.lines().next().expect("a reason"),
+                    "{insert}"
+                );
+            });
+            reached += 1;
+        }
+        let (_, insert) = &shapes[0];
+        let mut sim = Sim::new(seed, Config::default());
+        run(&mut sim, |rt| {
+            let db = opened(&rt, &[V1, STORED_TYPES], vec![]);
+            results(&db, insert);
+            results(&db, "delete h in hs where h.id == hs.key(1)");
+            results(&db, &fine);
+        });
+        run(&mut sim, |rt| {
+            let db = opened(&rt, &log, vec![]);
+            assert_eq!(
+                vec!["hs.key(1)".to_string()],
+                query(&db, "from h in hs select h.id"),
+                "{insert}"
+            );
+        });
+    }
+    assert_eq!(15, reached);
+}
+
+/// A fill's schema with many types after the pin's last, so the fill's id of a later type is no
+/// id of the pin's.
+fn padded_tag_type() -> String {
+    let mut text = String::from("module auth\n");
+    for i in 0..60 {
+        text.push_str(&format!("add type Pad{i} = {{ a{i}: I32 }}\n"));
+    }
+    text.push_str("add type P = X | Y | Z\n");
+    text
+}
+
+const FILLED: &str = "module auth\nadd type H { id: Key hs } = R { n: I32 }\nadd relation hs : H key id generate sequence\n";
+const FILLED_INSERT: &str = "import auth\ntxn put () -> I32 =\n  transact\n    let h = insert hs.R { n: 1 }\n    return h.n\n";
+
+#[test]
+fn a_tag_in_a_fill_past_a_removal_keeps_its_constructor_or_refuses_by_its_name() {
+    let types = padded_tag_type();
+    let deprecate = "module auth\ndeprecate P.X\n";
+    let remove = "module auth\nremove constructor P.X\n";
+    let pin = [V1, FILLED];
+    let field = |c: &str| format!("module auth\nadd field H.R.t: Tag P fill {c}\n");
+    let plain = "module auth\nadd type P = X | Y | Z\n";
+    for (seed, tys) in [(980, plain), (981, types.as_str())] {
+        let x = field("X");
+        once(seed, |rt| {
+            assert_eq!(
+                RejectReason::Untranslatable {
+                    query: "web-1.0::put".into(),
+                    detail: "across `remove constructor P.X`: it builds `P.X`, which the current version lacks".into(),
+                },
+                refusal(
+                    open(
+                        &rt,
+                        &[V1, FILLED, tys, x.as_str(), deprecate, remove],
+                        vec![bundle("web-1.0", &pin, "", FILLED_INSERT)],
+                    ),
+                    "web-1.0"
+                ),
+            );
+        });
+        for (c, seed) in [("Y", seed + 10), ("Z", seed + 20)] {
+            let f = field(c);
+            once(seed, |rt| {
+                let db = opened(
+                    &rt,
+                    &[V1, FILLED, tys, f.as_str(), deprecate, remove],
+                    vec![bundle("web-1.0", &pin, "", FILLED_INSERT)],
+                );
+                call(&db, "web-1.0", 1, &[]);
+                assert_eq!(
+                    vec![format!("R {{ id: hs.key(1), n: 1, t: {c} }}")],
+                    query(&db, "from h in hs select h")
+                );
+            });
+        }
+    }
+}
+
+#[test]
+fn a_newtype_over_a_declared_sum_is_refused() {
+    let add = "module auth\nadd type T = A | B\nadd type U = new T\n";
+    once(983, |rt| {
+        let (_, detail) = refused_migration(open(&rt, &[V1, add], vec![]), 2);
+        assert_eq!("a newtype is over a base type", detail);
+    });
+}
+
+/// Returns host functions `g`, `h` and `n`, each answering its own name.
+fn named_host_fns() -> adtb::HostFns {
+    let mut fns = adtb::HostFns::new();
+    for name in ["g", "h", "n"] {
+        let reply = name.to_string();
+        fns.register(
+            name,
+            "1.0",
+            adtb::Determinism::Deterministic,
+            move |b: &adtb::batch::Batch| {
+                let mut out = adtb::batch::BatchBuilder::new(adtb::batch::Schema::new(vec![
+                    adtb::batch::Type::Scalar(adtb::key::Scalar::Text),
+                ]));
+                for _ in 0..b.len() {
+                    out.push_row(&[adtb::key::Value::Text(reply.clone())]);
+                }
+                Ok(out.finish())
+            },
+        );
+    }
+    fns
+}
+
+#[test]
+fn a_pinned_write_calls_the_function_a_fill_or_default_named_after_positions_move() {
+    let host = |n: &str| {
+        format!("define fn {n} (t: Text) -> Text = host \"{n}\" version \"1.0\" deterministic\n")
+    };
+    let base = format!(
+        "module auth\n{}{}add type H {{ id: Key hs }} = R {{ n: Text }}\nadd relation hs : H key id generate sequence\n",
+        host("g"),
+        host("h")
+    );
+    let shift = format!("module auth\ndrop fn g\n{}", host("n"));
+    let body = "import auth\ntxn put () -> I32 =\n  transact\n    let h = insert hs.R { n: \"s\" }\n    return 1\n";
+    let pin = [V1, base.as_str()];
+    let opening = |rt: &SimRuntime, late: &str| {
+        let options = OpenOptions {
+            host_fns: named_host_fns(),
+            ..with(vec![bundle("web-1.0", &pin, "", body)])
+        };
+        Database::open_in(
+            rt.clone(),
+            "app.adt",
+            &log(&[V1, base.as_str(), shift.as_str(), late]),
+            &options,
+        )
+    };
+    let default = |f: &str| {
+        format!("module auth\nadd field H.R.x: Text fill \"z\"\nadd default hs.R.x = {f}(\"a\")\n")
+    };
+    let fill = |f: &str| format!("module auth\nadd field H.R.x: Text fill {f}(\"a\")\n");
+    for (seed, late) in [(984, fill("h")), (985, default("h"))] {
+        once(seed, |rt| {
+            let db = opening(&rt, &late).unwrap_or_else(|e| panic!("{late}: {e:?}"));
+            call(&db, "web-1.0", 1, &[]);
+            assert_eq!(
+                vec!["R { id: hs.key(1), n: \"s\", x: \"h\" }".to_string()],
+                query(&db, "from h in hs select h"),
+                "{late}"
+            );
+        });
+    }
+    let n_fill = fill("n");
+    let refused = "it calls `n`, whose code at the pin is not the current one";
+    for (seed, late, detail) in [
+        (
+            986,
+            n_fill.as_str(),
+            format!("across `add field H.R.x: Text fill n(\"a\")`: {refused}"),
+        ),
+        (987, default("n").as_str(), refused.to_string()),
+    ] {
+        once(seed, |rt| {
+            assert_eq!(
+                RejectReason::Untranslatable {
+                    query: "web-1.0::put".into(),
+                    detail,
+                },
+                refusal(opening(&rt, late), "web-1.0"),
+            );
+        });
+    }
+}

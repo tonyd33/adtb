@@ -43,10 +43,10 @@ pub(super) struct Walk<'p, 'a> {
 }
 
 impl<'p, 'a> Walk<'p, 'a> {
-    pub(super) fn new(p: &'p Pinned<'a>, map: &'p Map<'a>, src: &'p Terms) -> Self {
+    pub(super) fn new(p: &'p Pinned<'a>, src: &'p Terms) -> Self {
         Walk {
             p,
-            map,
+            map: p.map(),
             src,
             vars: HashMap::new(),
             memo: HashMap::new(),
@@ -1038,8 +1038,8 @@ impl<'p, 'a> Walk<'p, 'a> {
                             format!("the default of `{name}` has no term"),
                         ));
                     };
-                    let same = Map::new(self.map.to, self.map.to);
-                    Walk::new(self.p, &same, &normal.terms).tm(out, t, None)
+                    let same = self.p.over(self.map.to);
+                    Walk::new(&same, &normal.terms).tm(out, t, None)
                 }
             };
         }
@@ -1060,8 +1060,8 @@ impl<'p, 'a> Walk<'p, 'a> {
             operator: u.operator.or_else(|| Some(op.clone())),
             ..u
         };
-        let map = Map::new(&fill.schema, self.map.to);
-        let mut w = Walk::new(self.p, &map, &fill.query.terms);
+        let at = self.p.over(&fill.schema);
+        let mut w = Walk::new(&at, &fill.query.terms);
         let [row] = fill.query.params.as_slice() else {
             return Err(refused(Some(op.clone()), "a fill is a function of one row"));
         };
