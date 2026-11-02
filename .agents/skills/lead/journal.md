@@ -523,3 +523,36 @@ overwritten. Named failures and exits remain, so the receipt makes only that
 claim. The worker instructions now require preserving native output artifacts,
 not only stdout, before the next invocation. This is a process enforcer; there
 is no claim that the evidence-loss class is automatically prevented or retired.
+
+### 2026-11-01: separate measurement administration from application execution
+
+A successful application exit did not make its missing native receipt valid.
+The stop-post collector had only 200 ms; the repaired native boundary gives
+receipt administration its own allowance while SIGKILL prevents the application
+borrowing that time after its deadline. Real delayed-receipt and termination
+mutants checked both sides. The incomplete experiment stayed inconclusive and
+a fresh complete matrix used the repaired controller. No unchanged engine
+build, full check or pilot was repeated for that isolated control repair.
+
+Historical pilot reuse initially trusted a caller-selected list of self hashes.
+Review caught the missing relationship before launch. The correction derives
+required membership and expected identities from anchored accepted originals;
+the caller selects copy locations only. Omission and current-byte substitutions
+fail, and the old loop admits them. This enforces the specific provenance
+boundary without another orchestration layer or a universal isolation claim.
+
+### 2026-11-01: serial savings do not authorize a concurrent regression
+
+The complete combined confirmation passed every correctness/provenance gate and
+improved all five primary pairs, with median saving 13.754 percent. The concurrent
+small counter slowed by a median 5.498 percent and failed the supported p99 gate.
+Independent reconstruction agreed. I rejected the candidate rather than treating
+the primary improvement as permission to change the frozen regression rule.
+The acceptance boundary held; it has not delivered the requested optimization.
+
+The author retained execution and diagnosis ownership throughout collection and
+now investigates the concurrent regression from existing data and actual shared
+call paths. Lower user CPU alongside higher system CPU in slow pairs motivates
+separating scheduling and I/O explanations before a new source change. Repeating
+the same matrix would add cost without identifying a mechanism. No broader
+failure class is retired and no uncertainty is renamed a proved cause.

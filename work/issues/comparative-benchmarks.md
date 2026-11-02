@@ -905,3 +905,38 @@ rejection-only two-pair pilot in opposite orders, then 80 entirely new normal-
 release observations if admitted. Preserve the original workload, limits, primary
 endpoint, all-five improvement rule, 5% floor and every regression guard. Pilot
 points and all rejected candidate points stay outside the new final matrix.
+
+## 2026-11-01: combined confirmation rejects a concurrency regression
+
+The combined bounded-leaf and immutable Store metadata-sharing candidate passed
+source review, targeted ownership/view sensitivity, one full shared-engine check
+and the native benchmark-package checks. Its two-pair pilot admitted the primary
+workload only. A first confirmation stopped on a missing native stop-post receipt
+after an otherwise successful application exit; its 22 successes, one invalid
+receipt and 57 unstarted observations remain inconclusive and unused.
+
+After a separately reviewed native receipt-control repair, a completely fresh
+80-run confirmation completed all 40 pairs with every native/report/final guard
+passing. Original engine work, durable acknowledgements, budgets and acceptance
+gates remained fixed. Independent reconstruction and canonical comparison agree
+on all observations, counts, latency populations, resources and paired gates:
+1,280,000 calls, 1,040,000 writes, 120,000 workflows and no outer retries.
+
+The primary counter N=1000, one-writer paired savings were 13.754%, 9.562%,
+8.053%, 13.867% and 17.120%; all five improve and the median is 13.754%.
+Counter N=1000 with four writers instead has median paired slowdown 5.498%,
+exceeding the fixed 5% regression gate. Its completed-write/bump p99 grows by
+21.917% and 1.463368 ms with four of five paired increases, also exceeding the
+supported latency guard. Those three population names describe the same calls,
+not independent regressions. The candidate remains unlanded and rejected.
+No extra observation, same-candidate repeat or relaxed threshold is authorized.
+
+The implementation author retains the next bounded source/existing-data
+investigation. Distinguish shared ownership, synchronization/scheduling and
+I/O explanations before choosing another mechanism. Existing whole-service
+measurements show lower user CPU in all five small-counter concurrent pairs,
+with higher system CPU in the three slower candidate runs; they do not localize
+a cause to the steady phase or establish a lock defect. No implementation or
+new execution follows from that correlation alone. Preserve the rejected source,
+normal executable and all local raw results. The baseline and diagnostic profile
+remain accepted; the goal still requires an accepted measured optimization.
