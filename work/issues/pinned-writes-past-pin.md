@@ -4,7 +4,7 @@ status: in-progress
 kind: bug
 priority: 399
 summary: Pinned upserts retain nonhiding admission and nested value-reader gaps
-branch: pinned-reader-native
+branch: pinned-reader-reduced
 ---
 
 # Pinned writes past pin
@@ -450,3 +450,9 @@ driver, prove the matching public retained-Let path, pass the full public matrix
 complete independent source review and pass one authoritative full check. Earlier
 failed commands remain failed evidence. This checkpoint does not close the ticket
 or certify the defect class.
+
+## 2026-11-01: lead ruling, candidate not landed
+
+The candidate 97bb8dad (6327 net production lines, about ten mechanisms, a rewritten authority evaluator) does not land. It stays in jj as a record. The defect is narrow: `Kind::Upsert` in `crates/adtb/src/api/reads.rs` records only a write, so a field read through `old` is dropped when the upsert is the bundle's sole access. The spec defines a read by occurrence, under `spec/evolution/translatable/semantic-via-triggers`; accepting `outer-capture`, `retained-let` and `selected-pure` would be new correlation-sensitive policy with no ruling, and the candidate's budget adds an `Internal` refusal on legal bundles that no ruling states. `PINNED_VALUE_CONTRACT.md` has no ruling behind it and no longer governs. Replacement: track pinned-reader-reduced, a small read fact with a searching test. The cost is that those three shapes stay refused, which is never a wrong answer. Raise them through the design space if a real bundle needs them.
+
+The nonhiding `old` probe, the only legal-call failure left here, needs a ruling and comes next.

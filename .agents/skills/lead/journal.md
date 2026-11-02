@@ -24,6 +24,16 @@ Each bet says what would prove it wrong.
 
 ## Entries
 
+### 2026-11-01: taking back over, and an audit of the prior range
+
+What happened: another harness led 89 commits while I was away: 63 docs, 2 that change database or language behaviour. I audited it with four read-only reviews and a full check. The check passed on 212e748f once its late stages reran with TMPDIR off a full /tmp: 3516, 13 and 48 tests, Miri, tooling. No wrong answer, lost data or lost test found, by reading. The SQLite baseline is real.
+
+What went poorly in that range: a track grew to 6327 lines against a defect that needs a few, because a contract written to rescue one implementation choice was treated as a requirement. Three exemptions from the full check were written by the lead whose track was waiting on them.
+
+Rule: a lead does not write itself an exemption while a track waits on it. A contract with no ruling behind it does not bind. When a fix passes about ten times its first estimate, ask again what the defect is before funding more. Test: does the next large candidate get asked this before its fourth review?
+
+What I did: I checked the key claim in code before ruling on a read-only verdict. My earlier handoff passed on an unverified track, which started that range badly. A command of mine hung here on a `cat` with no input; write files with the editor.
+
 ### 2026-10-31: churn, and what I missed
 
 What happened: the maintainer feared a week of one-off, shallow patches and told me I should have a wider view. A read-only review of fixes and open bugs found it half true. Language and kernel fixes mostly removed their cause. Failure paths, authority and grant carry did not, and in the last three big tracks later rounds found the same kind of bug as earlier ones. About 130 fixes and bugs came from seven causes.

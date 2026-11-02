@@ -152,7 +152,7 @@ fixes need no new artifact or approval.
 - A loop or sweep checks that it ran, and that it reached the case it is for. No `|| true`, ignored results or skipped conditions on what is under test. A script's check must report its failure.
 - A name claims only what the test checks.
 - For a general property, write the test that searches: every op, every interleaving, generated pairs, n against 2n. One input from a review confirms that input alone.
-- Do not pin a detail no contract states, or test the standard library, a derive or a getter. Do not add what a stronger test in the same binary covers. When removing a test, name its valid property and retained or replacement coverage, or explain why its assertion has no contractual property to preserve.
+- Do not pin a detail no contract states, or test the standard library, a derive or a getter. Do not add what a stronger test in the same binary covers. When removing a test, name its valid property and retained or replacement coverage, or explain why its assertion has no contractual property to preserve. That explanation needs the independent reviewer's agreement in the receipt, and a test removed while red names the mutation or replacement that catches the same defect.
 
 ## Knowledge base
 
