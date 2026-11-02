@@ -28,7 +28,7 @@ selection=()
 for arg in "$@"; do
   case $arg in
     --no-run) phase=build ;;
-    --no-fail-fast|--lib|'needle with spaces'|''|--|-literal) ;;
+    --fail-fast|--no-fail-fast|--lib|'needle with spaces'|''|--|-literal) ;;
     *) selection+=("$arg") ;;
   esac
 done
@@ -49,6 +49,9 @@ fi
 while read -r package rest; do
   [[ -z $package ]] || bash "$package/fixture"
 done <"$FIXTURE_CASE/run.tree"
+if [[ ${FIXTURE_RUN_STATUS:-0} != 0 ]]; then
+  echo '        FAIL fixture execution'
+fi
 echo 'Summary fixture execution'
 exit "${FIXTURE_RUN_STATUS:-0}"
 CARGO
@@ -64,11 +67,16 @@ expect_file() {
 }
 
 run_case() {
-  local name=$1 expected=$2 wanted_status=$3 actual_status=0
-  shift 3
+  local name=$1 expected=$2 wanted_status=$3 fail_fast=$4 actual_status=0
+  shift 4
+  local invocation=("$@")
+  if [[ $fail_fast == --fail-fast ]]; then
+    invocation=(--fail-fast "$@")
+  fi
   export FIXTURE_CASE="$scratch/$name"
   mkdir -p "$FIXTURE_CASE"
-  "$scratch/work/tools/suite" "$@" >"$FIXTURE_CASE/stdout" 2>&1 || actual_status=$?
+  export ADTB_SUITE_OUT="$FIXTURE_CASE/suite.txt"
+  "$scratch/work/tools/suite" "${invocation[@]}" >"$FIXTURE_CASE/stdout" 2>&1 || actual_status=$?
   if [[ $actual_status != "$wanted_status" ]]; then
     cat "$FIXTURE_CASE/stdout" >&2
     printf '%s: expected exit %s, got %s\n' "$name" "$wanted_status" "$actual_status" >&2
@@ -77,34 +85,42 @@ run_case() {
   expect_file build.lock free
   if [[ ${FIXTURE_BUILD_STATUS:-0} != 0 ]]; then
     [[ ! -e $FIXTURE_CASE/run.args && ! -e $FIXTURE_CASE/reached ]]
-    grep -Fx 'error: fixture build refused' "$CARGO_TARGET_DIR/suite.txt"
-    grep -Fx "the build fails; output in $CARGO_TARGET_DIR/suite.txt" "$FIXTURE_CASE/stdout"
+    grep -Fx 'error: fixture build refused' "$ADTB_SUITE_OUT"
+    grep -Fx "the build fails; output in $ADTB_SUITE_OUT" "$FIXTURE_CASE/stdout"
   else
     expect_file reached "$expected"
     diff -u "$FIXTURE_CASE/build.tree" "$FIXTURE_CASE/run.tree"
     expect_file run.lock held
-    printf '%s\0' --no-fail-fast "$@" >"$FIXTURE_CASE/expected-run.args"
+    printf '%s\0' "$fail_fast" "$@" >"$FIXTURE_CASE/expected-run.args"
     cmp "$FIXTURE_CASE/expected-run.args" "$FIXTURE_CASE/run.args"
     grep -Fx 'Summary fixture execution' "$FIXTURE_CASE/stdout"
+    if [[ ${FIXTURE_RUN_STATUS:-0} != 0 ]]; then
+      grep -Fx '        FAIL fixture execution' "$ADTB_SUITE_OUT"
+      grep -Fx '        FAIL fixture execution' "$FIXTURE_CASE/stdout"
+    fi
   fi
   printf '%s\0' --no-run "$@" >"$FIXTURE_CASE/expected-build.args"
   cmp "$FIXTURE_CASE/expected-build.args" "$FIXTURE_CASE/build.args"
-  grep -Fx "suite: exit $wanted_status" "$CARGO_TARGET_DIR/suite.txt"
+  grep -Fx "suite: exit $wanted_status" "$ADTB_SUITE_OUT"
   flock -w 5 "$ADTB_MACHINE_LOCK" true
   printf '%s: passed\n' "$name"
 }
 
 both=$'alpha\nbeta'
-run_case short alpha 0 -p alpha --lib 'needle with spaces' '' -- -literal
-run_case default "$both" 0
-run_case joined alpha 0 -palpha
-run_case long beta 0 --package beta
-run_case equals beta 0 --package=beta
-run_case repeated "$both" 0 -p alpha -p beta
-run_case glob "$both" 0 --package='*a'
-run_case workspace "$both" 0 --workspace -p alpha
-run_case all "$both" 0 --all
-run_case exclude alpha 0 --workspace --exclude beta
-FIXTURE_RUN_STATUS=100 run_case run-failure beta 100 -p beta
-FIXTURE_BUILD_STATUS=17 run_case build-failure '' 1 -p alpha
-printf 'suite-test: 12 cases passed\n'
+run_case short alpha 0 --no-fail-fast -p alpha --lib 'needle with spaces' '' -- -literal
+run_case default "$both" 0 --no-fail-fast
+run_case joined alpha 0 --no-fail-fast -palpha
+run_case long beta 0 --no-fail-fast --package beta
+run_case equals beta 0 --no-fail-fast --package=beta
+run_case repeated "$both" 0 --no-fail-fast -p alpha -p beta
+run_case glob "$both" 0 --no-fail-fast --package='*a'
+run_case workspace "$both" 0 --no-fail-fast --workspace -p alpha
+run_case all "$both" 0 --no-fail-fast --all
+run_case exclude alpha 0 --no-fail-fast --workspace --exclude beta
+FIXTURE_RUN_STATUS=100 run_case run-failure beta 100 --no-fail-fast -p beta
+FIXTURE_BUILD_STATUS=17 run_case build-failure '' 17 --no-fail-fast -p alpha
+run_case fail-fast-default "$both" 0 --fail-fast
+run_case fail-fast-targeted alpha 0 --fail-fast -p alpha --lib 'needle with spaces' '' -- -literal
+FIXTURE_RUN_STATUS=100 run_case fail-fast-run-failure beta 100 --fail-fast -p beta
+FIXTURE_BUILD_STATUS=17 run_case fail-fast-build-failure '' 17 --fail-fast -p alpha
+printf 'suite-test: 16 cases passed\n'

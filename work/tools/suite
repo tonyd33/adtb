@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# suite [ARGS]   build tests selected by ARGS (the workspace by default), then run
-#                `cargo nextest run --no-fail-fast ARGS` holding the machine lock,
-#                which one run or `check` holds at a time
-# Package selection follows Cargo; use --workspace with --exclude.
+# suite [--fail-fast] [ARGS]   build tests selected by ARGS, then run under the machine lock.
+# Collect all failures by default; a leading --fail-fast stops scheduling after a failure.
+# ARGS select Cargo packages and nextest tests; use --workspace with --exclude.
+# Other execution-only nextest flags are not supported by the prebuild.
 #
 # The full output goes to target/suite.txt, or ADTB_SUITE_OUT when set, and ends with `suite:
 # exit N`. Prints only the failing and timed out tests, the summary and that path, and exits with
@@ -23,18 +23,26 @@ cd "$root" || exit 1
 trap 'echo "suite: exit $status" >>"$out"' EXIT
 status=1
 
+fail_fast=--no-fail-fast
+if [[ ${1:-} == --fail-fast ]]; then
+  fail_fast=--fail-fast
+  shift
+fi
+
 started=$SECONDS
-if ! cargo nextest run --no-run "$@" >>"$out" 2>&1; then
+cargo nextest run --no-run "$@" >>"$out" 2>&1
+status=$?
+if ((status != 0)); then
   grep -E '^error' -A8 "$out" | head -40
   echo "the build fails; output in $out"
-  exit 1
+  exit "$status"
 fi
 echo "built in $((SECONDS - started))s"
 
 machine_lock "$root"
 
 started=$SECONDS
-cargo nextest run --no-fail-fast "$@" >>"$out" 2>&1
+cargo nextest run "$fail_fast" "$@" >>"$out" 2>&1
 status=$?
 machine_unlock
 
