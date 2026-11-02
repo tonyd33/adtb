@@ -103,6 +103,15 @@ Do not act as a relay for review findings. Before a ruling or a next-round brief
 - Ask whether the work reaches a user. Authority logic with no caller, or a setting nothing reads, is not done, whatever its tests say.
 
 - Prefer the enforcer that needs no one to remember it, in this order: type, lint, searching test, process. When a review shows a run-time heuristic can fire falsely or be missed, ask what the compiler could refuse instead.
+- Before a test failure constrains architecture or behavior, require its governing
+  contract, observed mismatch and cause. Rule on whether code, expectation,
+  harness or an explicitly reconsidered contract must change. Challenge internal
+  representation pins and temporary compatibility constraints; historic green
+  status is not their justification. Repeated false positives call for revisiting
+  the checker mechanism, not accumulating exceptions. Authors own diagnosis;
+  the lead rules on ambiguity and design constraints, not routine log triage.
+  Keep independent work moving while replacing a known-invalid oracle; retain
+  evidence and verify the valid property before claiming completion.
 - Judge tests by [Test value](../../../AGENTS.md#test-value). Ask each reviewer to name, for each new test that matters, the mutation that would make it fail, and to report assertions that cannot fail. Before deleting a test on an audit's word, check what covers it. A read-only finding is a candidate; mutation is the measure.
 - Make runtime fixture cases the default. Require justification for retaining
   compiled Rust cases, separating reusable driver logic from input/expected

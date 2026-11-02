@@ -15,6 +15,12 @@ logs rather than copying their output. Include:
 - Outcome: passed, failed, timed out, interrupted, blocked or not run;
   command exit status when collected; failing tests or incomplete stages;
   retained log path. A successful early stage is not a complete check.
+- Material failure decisions: for a failure that changes behavior or constrains
+  architecture, name the governing contract, cause and chosen code/test/harness
+  correction. Distinguish temporary compatibility scope from lasting guarantees.
+  A known false positive is not a production regression or a passing check;
+  retain its evidence and name replacement verification. Use this receipt, not
+  another approval stage or document for every routine failure.
 - Timing, when observed: brief-to-publication elapsed time and command
   stages, distinguishing compilation, test execution, review and coordination.
   Separate permission wait and queue/lock wait from execution time. Mark

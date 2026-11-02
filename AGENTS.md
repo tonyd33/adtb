@@ -137,11 +137,22 @@ Before writing code a correctness rule depends on, state the rule and what enfor
 
 A test earns its place by being able to fail when the behaviour breaks. Before adding one, name the change to the code that would make it fail, and try it when the code is at hand.
 
+A test failure is evidence to assess, not an automatic requirement. Before
+changing behavior or architecture to satisfy it, identify the governing contract
+and whether the defect is in the implementation, expectation or test harness.
+Correct tests that preserve bugs or unjustified implementation details. Identify
+constraints imposed by the user or adopted rulings separately from track-local
+choices; do not silently relax the former. State migration compatibility
+constraints separately from lasting contracts; those scope choices can be
+reconsidered. Public contract changes still follow the
+design-space rules. Record material decisions in the existing receipt; routine
+fixes need no new artifact or approval.
+
 - Assert the exact outcome: the refusal reason and value, not `is_err` or a substring. Do not compare two answers only with each other when both could be the same wrong answer. Do not repeat the code's own predicate as the expected value. An expected value comes from outside the code under test.
 - A loop or sweep checks that it ran, and that it reached the case it is for. No `|| true`, ignored results or skipped conditions on what is under test. A script's check must report its failure.
 - A name claims only what the test checks.
 - For a general property, write the test that searches: every op, every interleaving, generated pairs, n against 2n. One input from a review confirms that input alone.
-- Do not pin a detail no contract states, or test the standard library, a derive or a getter. Do not add what a stronger test in the same binary covers. Delete a test only after naming what covers it.
+- Do not pin a detail no contract states, or test the standard library, a derive or a getter. Do not add what a stronger test in the same binary covers. When removing a test, name its valid property and retained or replacement coverage, or explain why its assertion has no contractual property to preserve.
 
 ## Knowledge base
 

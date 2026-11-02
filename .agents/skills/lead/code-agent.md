@@ -74,8 +74,14 @@ writing a helper: the byte readers in `storage/header.rs` and
 `crates/adtb-simkit`. Every loop over seeds puts the seed in
 its assertion message. Never discard a `Result` with `let _ =`.
 
-Tests: write the full spec of the feature, including tests that fail;
-never delete a failing test; report which fail.
+Tests: cover the agreed behavior, including regressions that currently fail.
+Preserve evidence of unexpected failures. Apply AGENTS.md's Test value rules
+before changing implementation: correct code that violates its contract, and
+correct, replace or remove tests with wrong expectations or unjustified internal
+pins while preserving valid coverage. Never weaken a test to conceal a contract
+violation. Raise ambiguous contracts or architecture-limiting compatibility
+requirements to the lead with a recommended disposition. Record material
+failure decisions in the existing receipt, not a separate report per failure.
 
 Your workspace may be a reused slot: its `target/` holds earlier builds, and
 a file outside a commit and `target/` stops the next track reusing it. Build

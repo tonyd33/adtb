@@ -623,3 +623,30 @@ cap; apply both success and failure exits when scoping future research. This
 attempt stops after its one allowed candidate, with time remaining. Baseline and
 profile are useful completed work, but no optimization met all gates. Preserve
 that distinction instead of extending the search or calling the goal complete.
+
+### 2026-11-01: test failures do not decide the architecture
+
+The maintainer asked whether preserving old tests was trapping the work in its
+current design. Some decisions challenged tests: the unsafe upsert success
+expectation must change, public regression fixtures retain their intentional
+baseline failures, and weak aggregate phase assertions were strengthened.
+But I treated the new allocation source scanner as a completion gate before
+judging its mechanism. Two valid Storage receiver spellings triggered false
+positives, and the first response extended a name whitelist. That was an
+implementation detail acquiring authority through a test.
+
+The existing instruction "never delete a failing test" reinforced this mistake.
+It is now replaced in code-agent.md. AGENTS.md requires assessing the governing
+contract and whether code, expectation or harness is wrong. The lead workflow
+requires a ruling when failures constrain behavior or architecture, and
+verification.md records material dispositions in the existing receipt. Removing
+an invalid assertion preserves its legitimate property through named coverage,
+or explains why no contractual property existed. No extra routine approval or
+failure-reporting process is introduced.
+
+The earlier bet that enforcing mechanisms beat instance fixes still applies:
+the scanner needs a justified budget-gate mechanism, not more receiver-name
+exceptions. Its proposed replacement remains unverified while the goal is
+paused. Existing authority compatibility was a deliberate migration scope,
+not evidence that every analyzer internal is a permanent requirement. Future
+reviews must distinguish those choices before asking implementation to conform.
