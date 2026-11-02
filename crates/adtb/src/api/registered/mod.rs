@@ -13,7 +13,7 @@ use adtb_lang::parse::{Options, parse_bundle, parse_bundle_body, parse_migration
 use adtb_lang::permission::{self, EffectiveGrants, Mode, Requirement, Requirements};
 use adtb_lang::schema::Schema;
 use adtb_lang::signature;
-use adtb_lang::translate::{Map, Pinned, Untranslatable, host_conflict};
+use adtb_lang::translate::{Map, Pinned, Untranslatable, held_other_code, host_conflict};
 use adtb_lang::types::Ty;
 
 use crate::catalog::{self, Catalog};
@@ -576,6 +576,18 @@ pub(super) fn registration(
     let (_, calls) = c.bundle().expect("a bundle's registration has a header");
     bundle::admitted(stored, h, &calls)?;
     if let Some(pin) = &at_pin {
+        let internal = |what| Error::rejected(RejectReason::Internal { what });
+        if bundle::going_live(stored, h, now, s)
+            && let Some(f) = held_other_code(&pin.source, over.source)
+                .map_err(|ds| internal(format!("{ds:?}")))?
+        {
+            let u = Untranslatable {
+                operator: None,
+                reason: format!("its version holds another code of host or Wasm function `{f}`"),
+            };
+            let first = c.entries.first().map_or("", |e| e.name.as_str());
+            return Err(untranslatable(stored, h, now, s, &c.name, first, &u));
+        }
         let served = translations(&c, &pin.source, over.schema, over.source, over.program)
             .map_err(|(query, u)| untranslatable(stored, h, now, s, &c.name, &query, &u))?;
         for (e, s) in c.entries.iter_mut().zip(served) {
@@ -841,7 +853,7 @@ pub(super) fn recheck(
         if let Some((op, f)) = conflict {
             operator.get_or_insert(op);
             lines.push(format!(
-                "bundle {} pins {pins}: its version holds another code of host function `{f}`",
+                "bundle {} pins {pins}: its version holds another code of host or Wasm function `{f}`",
                 c.name
             ));
             continue;

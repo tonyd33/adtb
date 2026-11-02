@@ -747,6 +747,16 @@ pub(super) fn stale(
     Error::rejected(reason)
 }
 
+/// Returns whether registering the bundle of `header` at `now`, under the file settings `s`, makes
+/// it live: no earlier registration succeeded, or it lapsed since.
+pub(super) fn going_live(stored: &Stored, header: &Header, now: i64, s: &Settings) -> bool {
+    lapsed(stored, header, now, s)
+        || stored
+            .bundles
+            .get(&header.name)
+            .is_none_or(|r| !stored.deployed.registered.contains_key(&r.id))
+}
+
 /// Returns whether the bundle of `header` is registered again after it was superseded, or after
 /// its lease ran out at `now` under the file settings `s`.
 pub(super) fn lapsed(stored: &Stored, header: &Header, now: i64, s: &Settings) -> bool {

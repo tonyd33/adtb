@@ -453,3 +453,23 @@ fn a_wasm_function_taken_to_another_module_conflicts_with_a_pin_of_the_old_one()
         host_conflict(&at_pin, &at_pin, &next).expect("the functions resolve")
     );
 }
+
+#[test]
+fn a_rename_rewriting_a_language_body_is_no_change_of_a_host_function_at_the_pin() {
+    let host = "module auth\ndefine fn f (t: Text) -> Text = host \"a\" version \"1.0\" deterministic\nadd type H { id: Key hs } = R { n: Text }\nadd relation hs : H key id generate sequence\n";
+    let reader = "module auth\nredefine fn f (t: Text) -> Text = if count(h for h in hs) == 0 then t else t\n";
+    let rename = "module auth\nrename relation hs to hz\n";
+    let (at_pin, _, _) = checked(&[V1, host]);
+    let (before, _, _) = checked(&[V1, host, reader]);
+    let (next, _, _) = checked(&[V1, host, reader, rename]);
+    let body = |s: &Source| {
+        let f = s.functions().expect("the functions resolve").remove(0);
+        assert_eq!("f", f.name);
+        f.code
+    };
+    assert_ne!(body(&before), body(&next));
+    assert_eq!(
+        None,
+        host_conflict(&before, &at_pin, &next).expect("the functions resolve")
+    );
+}

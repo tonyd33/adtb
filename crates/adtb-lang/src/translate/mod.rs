@@ -511,45 +511,64 @@ fn code_of(s: &Source, id: u64) -> Option<Code> {
     found.map(|f| f.code)
 }
 
-/// Returns the first function of `next` that the last migration takes from its code in `before`
-/// to one other than its code at `pin`, a host or Wasm function's at any of the three, as the
-/// operator to blame and the function's name. Fail when a source's functions do not resolve.
+fn runs_outside(c: &Code) -> bool {
+    matches!(c, Code::Host { .. } | Code::Wasm { .. })
+}
+
+/// Returns the first function of `next` that the last migration, by a `redefine fn` or a `revert`
+/// when it resolves, takes from its code in `before` to one other than its code at `pin`, a host
+/// or Wasm function's at any of the three, as the operator to blame and the function's name. Fail
+/// when a source's functions do not resolve.
 pub fn host_conflict(
     before: &Source,
     pin: &Source,
     next: &Source,
 ) -> Result<Option<(String, String)>, Vec<FileDiag>> {
-    let outside = |c: &Code| matches!(c, Code::Host { .. } | Code::Wasm { .. });
     let codes = |s: &Source| -> Result<BTreeMap<u64, Code>, Vec<FileDiag>> {
         Ok(s.functions()?.into_iter().map(|f| (f.id, f.code)).collect())
     };
     let (was, held) = (codes(before)?, codes(pin)?);
-    let conflict = next.functions()?.into_iter().find(|f| {
+    let mut functions = next.functions()?.into_iter().filter(|f| {
         let (Some(was), Some(held)) = (was.get(&f.id), held.get(&f.id)) else {
             return false;
         };
-        *was != f.code && *held != f.code && (outside(&f.code) || outside(was) || outside(held))
+        let outside = runs_outside(&f.code) || runs_outside(was) || runs_outside(held);
+        *was != f.code && *held != f.code && outside
     });
-    Ok(conflict.map(|f| (blamed(next, f.id), f.name)))
+    Ok(functions.find_map(|f| blamed(next, f.id).map(|op| (op, f.name))))
+}
+
+/// Returns the name of the first function of `now` that `pin` holds as a host or Wasm function
+/// with other code. Fail when a source's functions do not resolve.
+pub fn held_other_code(pin: &Source, now: &Source) -> Result<Option<String>, Vec<FileDiag>> {
+    let held = pin.functions()?;
+    let other = now.functions()?.into_iter().find(|f| {
+        held.iter()
+            .any(|h| h.id == f.id && runs_outside(&h.code) && h.code != f.code)
+    });
+    Ok(other.map(|f| f.name))
 }
 
 /// Returns the first line of the operator of the last migration of `next` that changes function
-/// `id`, its first operator's when the migration does not resolve.
-fn blamed(next: &Source, id: u64) -> String {
-    let Some(logged) = next.log.last() else {
-        return String::new();
-    };
+/// `id`, its first operator's when the migration does not resolve, and `None` when it resolves
+/// and no operator changes `id`.
+fn blamed(next: &Source, id: u64) -> Option<String> {
+    let logged = next.log.last()?;
     let changes = |r: &ResolvedOp| match r.op {
         Resolved::Revert { .. } => true,
         Resolved::RedefineFn { function, .. } => function == id,
         _ => false,
     };
-    let at = next.resolved(logged.number).ok();
-    let at = at.and_then(|ops| ops.iter().position(changes)).unwrap_or(0);
-    logged
-        .operators
-        .get(at)
-        .map_or_else(String::new, |op| operator_text(&logged.text, op))
+    let at = match next.resolved(logged.number) {
+        Ok(ops) => ops.iter().position(changes)?,
+        Err(_) => 0,
+    };
+    Some(
+        logged
+            .operators
+            .get(at)
+            .map_or_else(String::new, |op| operator_text(&logged.text, op)),
+    )
 }
 
 /// Returns the first line of operator `op` of migration `text`.

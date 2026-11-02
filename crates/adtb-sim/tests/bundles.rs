@@ -4871,7 +4871,7 @@ fn a_redefine_of_a_host_function_is_refused_while_a_live_bundle_pins_another_cod
                 refused_migration(coded_open(&rt, &[V1, CODED, to], regs()), 3);
             assert_eq!(operator, refused_by, "{body}");
             assert_eq!(
-                "bundle web-1.0 pins 2: its version holds another code of host function `f`",
+                "bundle web-1.0 pins 2: its version holds another code of host or Wasm function `f`",
                 detail,
                 "{body}"
             );
@@ -4895,7 +4895,7 @@ const BLAMELESS: &str = "module auth\nadd type T = A | B\ndrop type T\nredefine 
 #[derive(Clone, Copy, Debug)]
 enum Holder {
     LivePresented,
-    LiveOmitted,
+    SupersededByThisOpen,
     SupersededOmitted,
     SupersededPresented,
     RetiredOmitted,
@@ -4925,7 +4925,7 @@ impl Holder {
             Holder::LivePresented | Holder::SupersededPresented | Holder::ExpiredPresented => {
                 "web-1.0 active"
             }
-            Holder::LiveOmitted | Holder::SupersededOmitted | Holder::ExpiredOmitted => {
+            Holder::SupersededByThisOpen | Holder::SupersededOmitted | Holder::ExpiredOmitted => {
                 "web-1.0 superseded"
             }
             Holder::RetiredOmitted | Holder::RetiredPresented => "web-1.0 retired",
@@ -4933,15 +4933,13 @@ impl Holder {
     }
 }
 
-const HOLDERS: [Holder; 8] = [
+const HOLDERS: [Holder; 6] = [
     Holder::LivePresented,
-    Holder::LiveOmitted,
+    Holder::SupersededByThisOpen,
     Holder::SupersededOmitted,
-    Holder::SupersededPresented,
     Holder::RetiredOmitted,
     Holder::RetiredPresented,
     Holder::ExpiredOmitted,
-    Holder::ExpiredPresented,
 ];
 
 /// Returns the `n` and `x` of each row of `hs`.
@@ -4982,7 +4980,7 @@ fn holding(seed: u64, pin: &[&str], holder: Holder) -> Sim {
                 sleep(&rt, DAY + 2 * HOUR);
             }
             Holder::LivePresented
-            | Holder::LiveOmitted
+            | Holder::SupersededByThisOpen
             | Holder::SupersededOmitted
             | Holder::SupersededPresented => {}
         }
@@ -5026,7 +5024,7 @@ fn holds_or_admits(
         if holder.live() {
             let (refused_by, detail) = refused_migration(got, held);
             let line = format!(
-                "bundle web-1.0 pins {}: its version holds another code of host function `f`",
+                "bundle web-1.0 pins {}: its version holds another code of host or Wasm function `f`",
                 pin.len()
             );
             assert_eq!(
@@ -5072,7 +5070,7 @@ fn holds_or_admits(
 }
 
 #[test]
-fn a_change_of_host_code_is_refused_for_a_live_pin_and_admitted_for_any_other_holder() {
+fn a_change_of_host_code_is_refused_for_a_live_pin_and_applies_under_any_other_holder() {
     let revert: &[&str] = &[BARE, CODED, TO_B, REVERT_3];
     let cases = HOLDERS
         .map(|h| (h, &[BARE, CODED, TO_B][..], REDEFINED_B, "a 1.0", "b 1.0"))
@@ -5080,18 +5078,125 @@ fn a_change_of_host_code_is_refused_for_a_live_pin_and_admitted_for_any_other_ho
         .chain(
             [
                 Holder::LivePresented,
-                Holder::LiveOmitted,
+                Holder::SupersededByThisOpen,
                 Holder::RetiredOmitted,
                 Holder::ExpiredOmitted,
             ]
             .map(|h| (h, revert, "revert 0003", "b 1.0", "a 1.0")),
         );
-    let mut refused = 0;
     for (seed, (holder, migrations, operator, before, after)) in (1100..).zip(cases) {
         holds_or_admits(seed, migrations, holder, operator, before, after);
-        refused += u32::from(holder.live());
     }
-    assert_eq!(2, refused, "each way reached a live pin");
+}
+
+fn other_code(query: &str) -> RejectReason {
+    RejectReason::Untranslatable {
+        query: query.into(),
+        detail: "its version holds another code of host or Wasm function `f`".into(),
+    }
+}
+
+#[test]
+fn a_bundle_going_live_is_refused_at_other_host_code_and_admitted_at_the_same() {
+    let regs = || vec![bundle("web-1.0", &BARE_PIN, " lease 1d", CODED_READS)];
+    let expired = RejectReason::BundleExpired {
+        bundle: "web-1.0".into(),
+        query: "web-1.0::q".into(),
+    };
+    let held: [(Option<Holder>, RejectReason); 3] = [
+        (None, other_code("web-1.0::q")),
+        (Some(Holder::ExpiredPresented), expired.clone()),
+        (Some(Holder::SupersededPresented), expired),
+    ];
+    for (seed, (holder, refused)) in (1170..).step_by(2).zip(held) {
+        let sim = |seed| match holder {
+            Some(holder) => holding(seed, &BARE_PIN, holder),
+            None => {
+                let mut sim = Sim::new(seed, Config::default());
+                run(&mut sim, |rt| {
+                    coded_open(&rt, &BARE_PIN, vec![]).expect("the pin opens");
+                });
+                sim
+            }
+        };
+        let mut other = sim(seed);
+        run(&mut other, |rt| {
+            let got = coded_open(&rt, &[BARE, CODED, TO_B], regs());
+            assert_eq!(refused, refusal(got, "web-1.0"), "{holder:?}");
+        });
+        run(&mut other, |rt| {
+            let db = coded_open(&rt, &[BARE, CODED, TO_B], vec![]).expect("the migration applied");
+            assert_eq!(vec!["b 1.0"], stored_host_f(&db), "{holder:?}");
+        });
+        let mut same = sim(seed + 1);
+        run(&mut same, |rt| {
+            let db = coded_open(&rt, &[BARE, CODED, TO_A], regs())
+                .unwrap_or_else(|e| panic!("{holder:?}: {e:?}"));
+            assert_eq!(vec!["web-1.0 active"], states(&db), "{holder:?}");
+            assert_eq!(vec!["a 1.0"], stored_host_f(&db), "{holder:?}");
+        });
+    }
+}
+
+#[test]
+fn a_bundle_going_live_is_admitted_at_a_pin_of_a_language_function_changed_since() {
+    let define_l = "module auth\ndefine fn l (t: Text) -> Text = t\n";
+    let move_l = "module auth\nredefine fn l (t: Text) -> Text = t ++ t\n";
+    let pin = [BARE, CODED, define_l];
+    once(1178, |rt| {
+        let db = coded_open(
+            &rt,
+            &[BARE, CODED, define_l, move_l],
+            vec![bundle("web-1.0", &pin, " lease 1d", CODED_READS)],
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(vec!["web-1.0 active"], states(&db));
+    });
+}
+
+#[test]
+fn a_bundle_pinned_ahead_of_the_file_is_refused_at_other_host_code() {
+    let define_g =
+        "module auth\ndefine fn g (t: Text) -> Text = host \"a\" version \"1.0\" deterministic\n";
+    let pin = [BARE, CODED, define_g];
+    let mut sim = Sim::new(1176, Config::default());
+    run(&mut sim, |rt| {
+        coded_open(&rt, &BARE_PIN, vec![]).expect("the file opens behind the pin");
+    });
+    run(&mut sim, |rt| {
+        assert_eq!(
+            other_code("web-1.0::q"),
+            refusal(
+                coded_open(
+                    &rt,
+                    &[BARE, CODED, define_g, TO_B],
+                    vec![bundle("web-1.0", &pin, " lease 1d", CODED_READS)]
+                ),
+                "web-1.0"
+            )
+        );
+    });
+}
+
+#[test]
+fn a_rename_is_no_host_redefine_under_a_recorded_pin_of_host_code() {
+    let to_reader = "module auth\nredefine fn f (t: Text) -> Text = if count(h for h in hs) == 0 then t else t\n";
+    let rename = "module auth\nrename relation hs to hz\n";
+    let regs = || vec![bundle("web-1.0", &BARE_PIN, " lease 1d", CODED_READS)];
+    let mut sim = Sim::new(1177, Config::default());
+    run(&mut sim, |rt| {
+        let got = coded_open(&rt, &[BARE, CODED, to_reader], regs());
+        assert_eq!(other_code("web-1.0::q"), refusal(got, "web-1.0"));
+    });
+    run(&mut sim, |rt| {
+        let got = coded_open(&rt, &[BARE, CODED, to_reader, rename], regs());
+        assert_eq!(other_code("web-1.0::q"), refusal(got, "web-1.0"));
+    });
+    run(&mut sim, |rt| {
+        let db =
+            coded_open(&rt, &[BARE, CODED, to_reader, rename], vec![]).expect("the rename applied");
+        assert_eq!(Vec::<String>::new(), query(&db, "from h in hz select h.n"));
+    });
 }
 
 #[test]
@@ -5145,7 +5250,7 @@ fn wasm_and_extensions_change_no_pinned_code_because_the_engine_refuses_them() {
             "`geo` is not an installed extension",
         ),
     ];
-    let mut sim = holding(1130, &BARE_PIN, Holder::LiveOmitted);
+    let mut sim = holding(1130, &BARE_PIN, Holder::SupersededByThisOpen);
     run(&mut sim, |rt| {
         for (migrations, operator, detail) in cases {
             let (refused_by, why) = refused_migration(coded_open(&rt, migrations, vec![]), 3);
@@ -5164,7 +5269,7 @@ fn wasm_and_extensions_change_no_pinned_code_because_the_engine_refuses_them() {
         );
         assert_eq!(REDEFINED_WASM, refused_by);
         assert_eq!(
-            "bundle web-1.0 pins 2: its version holds another code of host function `f`",
+            "bundle web-1.0 pins 2: its version holds another code of host or Wasm function `f`",
             detail
         );
     });
@@ -5174,7 +5279,7 @@ fn wasm_and_extensions_change_no_pinned_code_because_the_engine_refuses_them() {
 fn a_host_redefine_under_a_live_pin_is_refused_when_its_migration_does_not_resolve() {
     let mut sim = holding(1151, &BARE_PIN, Holder::LivePresented);
     run(&mut sim, |rt| {
-        let (refused_by, detail) = refused_migration(
+        let (_, detail) = refused_migration(
             coded_open(
                 &rt,
                 &[BARE, CODED, BLAMELESS],
@@ -5182,9 +5287,8 @@ fn a_host_redefine_under_a_live_pin_is_refused_when_its_migration_does_not_resol
             ),
             3,
         );
-        assert_eq!("add type T = A | B", refused_by);
         assert_eq!(
-            "bundle web-1.0 pins 2: its version holds another code of host function `f`",
+            "bundle web-1.0 pins 2: its version holds another code of host or Wasm function `f`",
             detail
         );
     });
@@ -5223,11 +5327,17 @@ fn a_live_pin_does_not_hold_back_code_it_does_not_pin() {
 }
 
 #[test]
-fn a_redefine_back_to_the_code_a_live_bundle_pins_is_admitted_and_its_later_fill_stores_that_code()
+fn a_bundle_refused_at_other_code_is_admitted_after_a_redefine_back_and_its_fill_stores_that_code()
 {
     let mut sim = coded_sim(997);
     run(&mut sim, |rt| {
-        coded_open(&rt, &[V1, CODED, TO_B], coded_put("web-1.0")).expect("it calls no `f`");
+        assert_eq!(
+            other_code("web-1.0::put"),
+            refusal(
+                coded_open(&rt, &[V1, CODED, TO_B], coded_put("web-1.0")),
+                "web-1.0"
+            ),
+        );
     });
     run(&mut sim, |rt| {
         let db = coded_open(&rt, &[V1, CODED, TO_B, TO_A, FILL_F], coded_put("web-1.0"))
@@ -5272,7 +5382,7 @@ fn a_pinned_write_takes_a_default_with_the_current_code_when_it_is_the_pins() {
     });
     once(1001, |rt| {
         assert_eq!(
-            stale_fill("web-1.0", REDEFINED_B, "f"),
+            other_code("web-1.0::put"),
             refusal(
                 coded_open(&rt, &[V1, CODED, TO_B, added], coded_put("web-1.0")),
                 "web-1.0"

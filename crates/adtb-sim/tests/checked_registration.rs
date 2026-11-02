@@ -455,11 +455,39 @@ fn a_registered_bundle_not_presented_at_open_holds_its_host_code() {
             }) => {
                 assert_eq!(host("redefine", "b"), operator);
                 assert_eq!(
-                    "bundle shop-1.0 pins 3: its version holds another code of host function `f`",
+                    "bundle shop-1.0 pins 3: its version holds another code of host or Wasm function `f`",
                     detail
                 );
             }
             other => panic!("the redefine is refused otherwise: {:?}", other.err()),
+        }
+    });
+}
+
+#[test]
+fn a_bundle_registered_by_command_at_other_host_code_is_refused() {
+    let host = |op: &str, symbol: &str| {
+        format!(
+            "module shop\n{op} fn f (t: Text) -> Text = host \"{symbol}\" version \"1.0\" deterministic\n"
+        )
+    };
+    let (define, redefine) = (host("define", "a"), host("redefine", "b"));
+    let pins = &[SHOP, GRANTS, define.as_str()];
+    let mut sim = Sim::new(332, Config::default());
+    run(&mut sim, |rt| {
+        shop(&rt).close().expect("close");
+        let db = opened(&rt, &[SHOP, GRANTS, define.as_str(), redefine.as_str()]);
+        match register(&db, "web", &bundle("shop-1.0", pins, NAMES)) {
+            Err(Error::Rejected {
+                reason: RejectReason::Untranslatable { query, detail },
+            }) => {
+                assert_eq!("shop-1.0::names", query);
+                assert_eq!(
+                    "its version holds another code of host or Wasm function `f`",
+                    detail
+                );
+            }
+            other => panic!("the registration is refused otherwise: {:?}", other.err()),
         }
     });
 }
