@@ -348,3 +348,29 @@ open-ended redesign. The umbrella stays open if nonhiding admission remains.
 Local brief and plan: work/briefs/brief-pinned-reader-native-r1.md and
 proposal-pinned-reader-native-r1.md. Implementation scope is pending, not claimed
 as complete or verified. No production code has changed at this checkpoint.
+
+## 2026-11-01: native integration scope admitted
+
+The source assessment found the allocation obligation reaches existing recursive
+Value, environment, type/shape and joint-continuation helpers. Exporting their
+results after allocation would not enforce the accepted contract. The lead admits
+one shared native domain-policy refactor, retaining the existing authority
+storage/accounting, with precharged exact-world and component-factored guarded
+field domains. All kernel control flow and joint continuations remain shared;
+independent semantic interpreters are not accepted. No new dependency is needed.
+
+The first executable checkpoint must compare the shared legacy and precharged
+exact-world paths against literal facts/errors, checking single operand evaluation,
+fresh witnesses and current snapshot. Only a passing checkpoint proceeds to guard
+algebra, component closing, dependency-bound decode/import and typed reader
+activation. Reader error propagation covers both stale registration and live
+readers; existing membership/reference/write policy remains. One final production
+activation and verification are required; foundations alone do not complete the
+goal. Independent source-guided plan review accepts this staged scope.
+
+Estimated scope is 3,000–4,500 net production lines plus adapted existing code;
+exceeding the estimate or requiring new dependencies returns a scope inventory to
+the lead before expansion. This is a planning checkpoint, not a runtime limit.
+Use one evolving canonical execution receipt, runtime case data and focused named
+mutations. The author continues autonomously after the first passing checkpoint;
+final independent source review and the single author-owned full check remain.
