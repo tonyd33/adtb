@@ -260,3 +260,17 @@ Rerun the focused search with `work/tools/suite -p adtb-sim --test commit
 Typed-panic controls, existing backup failure-search callers, affected clippy,
 formatting, house and size checks also passed. Next matrix work remains a
 separately bounded workload or fault domain with explicit reached-case floors.
+
+## 2026-11-02: maintenance and migration search
+
+`test: search crashes and failures through Database in maintenance and migration`, crates/adtb-sim/tests/maintenance_faults.rs. Failed Write and Sync and crash images during vacuum, reindex and migration, and crash images on the commit workload. Default crash and failure positions are forced inside each action, with floors on faults in the action, data writes in it, and a migration absent in it. Deep passed at 73 vacuum, 134 reindex and 102 migrate failure positions. No defect found in unmutated code. Mutants of the waits in pager.rs `staged` and write/mod.rs commit die. The wait at catalog/migration.rs:156 dies only in `an_open_that_migrates_has_made_the_migration_durable_when_it_returns`, with a 64 MiB pool: under a small pool eviction forces the log. Full check exit 0; review's two reach blockers were fixed and confirmed closed. Default adds 4.35 s wall alone at 4 threads, deep 59.6 s.
+
+Limits: one seed per workload, no concurrent writers. Review non-blockers left:
+
+- maintenance_faults.rs `lead_ops` counts Write and Sync while crash marks number every op, so the skip is short and recovery data writes can satisfy the migrate crash data write floor. Filter marks before the skip.
+- The start from `plain_open_cost` is not an exact bracket of `apply`: trailing open work counts as inside the action.
+- Reindex has no floor showing a fault at or after the swap.
+- A failed Sync drops nothing in `sim.files()`, so process death does not model dropped dirty pages; the crash search covers power loss.
+- The filler lookup does not prove the index was used, and `index (rank)` is never queried.
+
+Rows stay open: page rot, real backends, io_uring, scrub, verify, typed causes for `Internal` and `Corrupt`, create by publishing aside.
