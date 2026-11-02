@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-31
-status: in-progress
+status: open
 kind: bug
 priority: 399
 summary: Pinned upserts retain nonhiding admission and nested value-reader gaps
-branch: pinned-reader-reduced
 ---
 
 # Pinned writes past pin
@@ -461,3 +460,7 @@ The nonhiding `old` probe, the only legal-call failure left here, needs a ruling
 
 `fix: count field reads through upsert old` reports field reads through `old` and the upsert result, and skips `with` copies. Independent review found no blocker. The nonhiding `old` probe stays open here and needs a ruling. Same-name owner scope stays open. `sole-constructor-match-hides-read` takes a wrong answer the review found on the same path.
 
+
+## 2026-11-02: nonhiding conflict branch ruled and fixed
+
+Ruling `evolution/old-readers/upsert-conflict/old-blocks`, confirmed by the maintainer. `fix: count a conflict branch using old as reading the relation` implements it: full check exit 0 on the tested tree, a prose-only spec delta after it, mutants of the mechanism and of the use test die, independent review found no blocker. The `Internal` from a branch using `old` is gone. Result bindings go to upsert-result-binds-past-pin, classifier gaps to conflict-branch-classifier-gaps. Same-name owner scope is what remains here.
