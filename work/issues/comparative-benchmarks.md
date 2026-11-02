@@ -4,7 +4,7 @@ status: in-progress
 kind: feature
 priority: 910
 summary: no reproducible cross-database baseline or recurring measured optimization cycle exists
-branch: immutable-metadata-only
+branch: catalog-descriptors
 tags:
   - engine
   - test
@@ -1057,3 +1057,26 @@ focused correctness and a matched normal build. Existing collector controls may
 execute it without another lead launch handoff when exact inputs, resource and
 exclusivity conditions pass. No automatic variant loop/retry or final80 follows.
 Keep the warm workspace under one owner; root retains promotion and landing.
+
+## 2026-11-01: isolate the remaining compiler descriptor cost
+
+The standalone metadata candidate completed its eight-run development screen.
+All native/oracle/source/identity checks passed. Concurrent paired savings were
+8.482% and 1.033%, admitting the primary stage; primary savings were 4.152% and
+2.965%, median 3.559%, below the unchanged 5% floor. Reject admission and retain
+all data. No extra observation, final fullcheck or confirmation was run.
+
+The next single candidate combines that metadata component with reuse of reverse
+compiler descriptors at the immutable database catalog owner. Each compile miss
+currently rebuilds heap/index reverse maps; a retained bump sample stops while
+dropping the exact reverse-index map. Planning continues to use the live usable
+catalog, while compilation already uses the immutable base catalog. Construct a
+sealed catalog/descriptor context once, borrow it during compilation, and preserve
+fresh schema conversions, programs, callers, arguments, reads and snapshots.
+No global executable/plan cache or new invalidation contract is selected.
+
+Use meaningful production-path identity/layout and fresh-state coverage, one
+matched warm build, then one preauthorized guarded A4/B4 screen. Final floor,
+regression limits, full verification and independent final80 audit remain fixed.
+The alternative streaming posting decoder remains a source proposal until its
+allocation prevalence is established; it is outside this candidate.
