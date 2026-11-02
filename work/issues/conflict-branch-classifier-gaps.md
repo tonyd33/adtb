@@ -33,3 +33,12 @@ From the independent review of `fix: count a conflict branch using old as readin
 - upsert-results.txt lacks a target retag, a variable-pattern or nested-match alias, a `Par` mixing filtered and unfiltered replaces, and a set source on a filtered branch. Dropping the alias insert in `Terms::replaces` likely fails no case.
 - `match (only {old}) | ...` makes `replaces` false, so `w.body` is refused though it is a replacement.
 - Filtered and ranged branches with an unused result are stale at registration. Filter: the target names `old`. Ranged: cause not confirmed.
+
+## 2026-11-02: after any branch naming old blocks
+
+`fix: count any conflict branch naming old as reading the relation` makes the use classifier items above moot: `filter-on-new` blocks by the ruling, `kept_fields` is gone. It dropped live value checks with no replacement:
+
+- A set source and a `rejects` result replacing a row of another constructor (rows `replaced-set`, `replaced-rejects`). Add two set source cases over a stored `Link` to crates/adtb-conformance/tests/upsert-results.txt.
+- A replace beside a real second write (`replaced-beside-write`); that fixture pairs it with `skip` only.
+
+Also: no row pins `let w = .. else skip; delete w` or `update w set ..` now blocking, `update x in notes`, `delete x in notes`, or a nested upsert. `keeping_upsert` matches only a direct upsert as the bound write, so an upsert under an `if` is unprobed. It now only separates an all `fail` branch from others, and may simplify.
