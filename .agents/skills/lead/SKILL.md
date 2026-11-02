@@ -162,6 +162,12 @@ that the worker is unblocked.
 - Overlap independent review of a stable snapshot with targeted tests and
   mutations of the candidate. Give the reviewer an immutable revision; keep
   mutation edits out of its view. Run the final full check after both converge.
+  When the author continues rewriting a jj change, duplicate the frozen revision
+  onto its existing stable parents with `jj duplicate REV`, then check out an
+  empty child of that duplicate in the review workspace. Compare its full tree
+  with REV and record the empty diff. An ordinary child of the author's change
+  rebases when the author amends it; a hash in the brief does not pin that checkout.
+  Keep the original revision as evidence provenance and never land the review copy.
 - Give every track that changes code a review by a fresh agent, in a child workspace, before it lands: the author's own checks do not count. Tell it to form its view before reading the receipt. Give a review that builds a slot, moved to the commit with `jj new REV`, so it reuses a build directory.
 - A review that runs no build is a read-only track, and its verdict rests on reading. Check yourself anything it says it could not confirm, such as the provenance of expected values, and rely on the author's mutants and the full check for the rest. Prefer a review with targeted builds and mutants when build capacity allows, and for `unsafe` or concurrency code.
 - A small edit of your own after a blocker-free review, such as a test or a stated precondition, needs no second review. Run a new test against the mutant it is meant to kill, and pass it through the full check.

@@ -650,3 +650,19 @@ exceptions. Its proposed replacement remains unverified while the goal is
 paused. Existing authority compatibility was a deliberate migration scope,
 not evidence that every analyzer internal is a permanent requirement. Future
 reviews must distinguish those choices before asking implementation to conform.
+
+### 2026-11-01: pin the review tree independently of author amendments
+
+An immutable commit named in a review brief did not pin its jj workspace:
+an empty child still rebased when the author amended the parent change.
+The next checkout failed as stale before dispatch. Updating that completed,
+empty workspace recovered access, but another ordinary child would repeat
+the same condition. The review now uses a distinct duplicated change on the
+original stable parent, with an observed empty full-tree comparison against
+the author's frozen revision. The author can continue without moving that tree.
+
+The lead workflow now requires this preparation for concurrent review of a
+rewriting author. Keep the original revision as evidence provenance and the
+copy solely as a stable review checkout. Dispatch only after checkout and
+comparison succeed; a hash or attempted command is insufficient. This uses
+native jj operations and adds no watcher or review approval stage.
