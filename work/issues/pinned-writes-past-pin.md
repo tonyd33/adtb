@@ -416,3 +416,37 @@ and complete allocation enforcement, normalized retained-Let proof, typed Reader
 integration, exact public regression passes, final source review and the single
 author-owned full check on the complete reviewed tree. No code from these
 unlanded checkpoints has reached main yet.
+
+## 2026-11-01: guarded Count checkpoint and refined remaining scope
+
+The private guarded For/Case checkpoint at
+`9af9d6658c8c373a1855d46cf703cc4cb2b5da0c` passes four literal native/guarded
+field controls and the actual 2/4/8/10-generator four-constructor Count inputs.
+The normalized inputs retain the required draws. Count10 charges 747,388 units
+against the unchanged 1,048,576 ceiling. This is private execution evidence;
+joint continuations, complete native parity and public reader activation remain
+unfinished. Repeated immutable copies, guard scratch allocation and schema
+identity resolution caused the earlier resource failures. Structural reuse,
+metered typed caches and direct disjoint-row assembly reduce that cost without
+changing authority evaluation or increasing the ledger.
+
+Typed handles now retain an invariant generative analysis brand without a
+redundant runtime serial. Exact-source compiler controls still accept same-scope
+use and reject cross-analysis value/copy/snapshot use and wrong identity domains.
+The separate identity domains and private world-construction boundary remain.
+
+The measured source inventory is 5,419 net production lines. Remaining estimates
+are 250–350 for dependency closure and streamed assignments, 250–350 for native
+decode and shared witness maps, 100–150 for Changes closing, 80–130 for the typed
+field provider and 120–180 for reader/error propagation. The lead raises the
+planning checkpoint to 7,000 for these same responsibilities, before crossing
+6,000. This is an estimate, not a runtime limit or new semantic scope. No new
+dependency, separate interpreter or weaker completion gate is admitted. Existing
+typed table duplication may be consolidated without creating a general framework.
+
+The author continues joint integration and owns all corrections and verification.
+The final candidate must remove staging-directory dependencies from its runtime
+driver, prove the matching public retained-Let path, pass the full public matrix,
+complete independent source review and pass one authoritative full check. Earlier
+failed commands remain failed evidence. This checkpoint does not close the ticket
+or certify the defect class.
