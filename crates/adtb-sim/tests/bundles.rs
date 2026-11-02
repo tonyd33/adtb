@@ -2753,80 +2753,215 @@ const NOTES: &str = "from n in notes select match n
   | Link l -> l.url";
 
 #[test]
-fn an_upsert_old_read_on_a_constructor_new_since_the_pin_lacking_the_field_is_refused() {
-    for clauses in ["", " hide new constructors"] {
-        let pin = [V1, ADD_NOTES];
-        let log = [V1, ADD_NOTES, ADD_LINK, ENABLE_LINK];
-        once(88, |rt| {
-            let db = opened(&rt, &log, vec![bundle("web-1.0", &pin, clauses, UPSERTS)]);
-            write(&db, r#"insert notes.Link { id: notes.key(1), url: "u" }"#)
-                .expect("the link is written");
-            write(&db, r#"insert notes.Plain { id: notes.key(2), body: "a" }"#)
-                .expect("the note is written");
-            let refused = db.registered("web-1.0").expect("the bundle binds").call(
-                1,
-                &[],
-                &CallOptions::default(),
-            );
-            let expected = if clauses.is_empty() {
-                RejectReason::Internal {
-                    what: "constructor 1 of the type has the field".into(),
-                }
-            } else {
-                RejectReason::KeyViolation {
+fn an_upsert_old_read_past_a_constructor_lacking_the_field_is_stale_unless_hidden() {
+    let pin = [V1, ADD_NOTES];
+    let log = [V1, ADD_NOTES, ADD_LINK, ENABLE_LINK];
+    once(88, |rt| {
+        assert_eq!(
+            link_stale(),
+            refusal(
+                open(&rt, &log, vec![bundle("web-1.0", &pin, "", UPSERTS)]),
+                "web-1.0"
+            ),
+        );
+    });
+    once(88, |rt| {
+        let db = opened(
+            &rt,
+            &log,
+            vec![bundle("web-1.0", &pin, " hide new constructors", UPSERTS)],
+        );
+        write(&db, r#"insert notes.Link { id: notes.key(1), url: "u" }"#)
+            .expect("the link is written");
+        write(&db, r#"insert notes.Plain { id: notes.key(2), body: "a" }"#)
+            .expect("the note is written");
+        let refused = db.registered("web-1.0").expect("the bundle binds").call(
+            1,
+            &[],
+            &CallOptions::default(),
+        );
+        assert_eq!(
+            Err(RejectReason::KeyViolation {
+                relation: "auth::notes".into(),
+                key: "notes.key(1)".into(),
+            }),
+            refused.map(drop).map_err(|e| reason(&e).clone()),
+        );
+        call(&db, "web-1.0", 2, &[]);
+        let mut notes = query(&db, NOTES);
+        notes.sort();
+        assert_eq!(vec![r#""a!""#, r#""u""#], notes);
+    });
+}
+
+#[test]
+fn an_upsert_old_read_of_a_new_constructors_own_field_is_stale_unless_hidden() {
+    let pin = [V1, ADD_NOTES];
+    let log = [V1, ADD_NOTES, ADD_LINK_BODY, ENABLE_LINK];
+    once(89, |rt| {
+        assert_eq!(
+            link_stale(),
+            refusal(
+                open(&rt, &log, vec![bundle("web-1.0", &pin, "", UPSERTS)]),
+                "web-1.0"
+            ),
+        );
+    });
+    once(89, |rt| {
+        let db = opened(
+            &rt,
+            &log,
+            vec![bundle("web-1.0", &pin, " hide new constructors", UPSERTS)],
+        );
+        write(
+            &db,
+            r#"insert notes.Link { id: notes.key(1), url: "u", body: "b" }"#,
+        )
+        .expect("the link is written");
+        let got = db
+            .registered("web-1.0")
+            .expect("the bundle binds")
+            .call(1, &[], &CallOptions::default())
+            .map(drop)
+            .map_err(|e| reason(&e).clone());
+        assert_eq!(
+            (
+                Err(RejectReason::KeyViolation {
                     relation: "auth::notes".into(),
                     key: "notes.key(1)".into(),
+                }),
+                vec![r#""u""#.to_owned()],
+            ),
+            (got, query(&db, NOTES)),
+        );
+    });
+}
+
+fn link_stale() -> RejectReason {
+    RejectReason::BundleStale {
+        bundle: "web-1.0".into(),
+        ctor: "notes.Link".into(),
+    }
+}
+
+/// Assert each conflict branch, with and without `hide new constructors`, while live and at
+/// registration: one using `old` in a bundle that does not hide refuses `enable notes.Link` and is
+/// stale past it; any other opens and runs over a stored `Link` to its written rows.
+#[test]
+fn a_conflict_branch_using_old_reads_the_relation_unless_new_constructors_are_hidden() {
+    let refused = "`enable notes.Link` is refused: bundle web-1.0, pinned at version 2, reads notes whole; a bundle stops blocking only when it is released";
+    let cases = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/pinned-readers/conflict-branches.txt"),
+    )
+    .expect("the conflict branches are readable");
+    let pin = [V1, ADD_NOTES];
+    let before = [V1, ADD_NOTES, ADD_LINK];
+    let log = [V1, ADD_NOTES, ADD_LINK, ENABLE_LINK];
+    let link = r#"Link { id: notes.key(1), url: "u" }"#;
+    let mut reached = BTreeSet::new();
+    let every = adtb_testkit::profile::every_case();
+    let mut seed = 600;
+    for line in cases.lines() {
+        let [name, uses, branch, after] = line.split('\t').collect::<Vec<_>>()[..] else {
+            panic!("a branch is name, use, text, rows: {line}");
+        };
+        let text = format!(
+            "import auth\ntxn put () -> I64 =\n  transact\n    insert notes.Plain {{ id: notes.key(1), body: \"new\" }}\n      unless conflict on key else {branch}\n    return 0\n"
+        );
+        let blocks = match uses {
+            "uses" => true,
+            "free" => false,
+            other => panic!("{name}: use is uses or free, not {other}"),
+        };
+        for (clauses, hides) in [("", false), (" hide new constructors", true)] {
+            if hides && !every && name != "with-copy" {
+                continue;
+            }
+            let registered = || vec![bundle("web-1.0", &pin, clauses, &text)];
+            let runs = |db: &Database<SimRuntime>| {
+                write(db, r#"insert notes.Link { id: notes.key(1), url: "u" }"#)
+                    .expect("the link is written");
+                let got = db
+                    .registered("web-1.0")
+                    .expect("the bundle binds")
+                    .call(1, &[], &CallOptions::default())
+                    .map(|_| ())
+                    .map_err(|e| reason(&e).clone());
+                let expected = if hides {
+                    (
+                        Err(RejectReason::KeyViolation {
+                            relation: "auth::notes".into(),
+                            key: "notes.key(1)".into(),
+                        }),
+                        vec![link.to_owned()],
+                    )
+                } else {
+                    (
+                        Ok(()),
+                        after
+                            .split(';')
+                            .filter(|r| !r.is_empty())
+                            .map(str::to_owned)
+                            .collect(),
+                    )
+                };
+                assert_eq!(
+                    expected,
+                    (got, query(db, "from n in notes select n")),
+                    "{name}{clauses}"
+                );
+            };
+            seed += 1;
+            let mut sim = Sim::new(seed, Config::default());
+            run(&mut sim, |rt| {
+                opened(&rt, &before, registered());
+            });
+            run(&mut sim, |rt| {
+                let got = open(&rt, &log, registered());
+                if blocks && !hides {
+                    assert_eq!(
+                        refused,
+                        refused_migration(got, 4).1,
+                        "{name}{clauses} while live"
+                    );
+                    reached.insert((name, hides, "refused"));
+                } else {
+                    runs(&got.unwrap_or_else(|e| {
+                        panic!("{name}{clauses}: enable passes while live: {e:?}")
+                    }));
+                    reached.insert((name, hides, "ran"));
                 }
-            };
-            assert_eq!(
-                Err(expected),
-                refused.map(drop).map_err(|e| reason(&e).clone()),
-                "{clauses}"
-            );
-            call(&db, "web-1.0", 2, &[]);
-            let mut notes = query(&db, NOTES);
-            notes.sort();
-            assert_eq!(vec![r#""a!""#, r#""u""#], notes, "{clauses}");
-        });
+            });
+            seed += 1;
+            once(seed, |rt| {
+                let got = open(&rt, &log, registered());
+                if blocks && !hides {
+                    assert_eq!(link_stale(), refusal(got, "web-1.0"), "{name}{clauses}");
+                    reached.insert((name, hides, "stale"));
+                } else {
+                    runs(&got.unwrap_or_else(|e| {
+                        panic!("{name}{clauses}: the registration passes: {e:?}")
+                    }));
+                    reached.insert((name, hides, "registered"));
+                }
+            });
+        }
     }
+    let (using, free) = (
+        cases.lines().filter(|l| l.contains("\tuses\t")).count(),
+        cases.lines().filter(|l| l.contains("\tfree\t")).count(),
+    );
+    assert_eq!((8, 4), (using, free), "the branches of the fixture");
+    assert_eq!(
+        if every { 48 } else { 26 },
+        reached.len(),
+        "each selected branch reached its two outcomes under each header"
+    );
 }
 
 #[test]
-fn an_upsert_reads_a_new_constructors_own_field_unless_the_constructor_is_hidden() {
-    for clauses in ["", " hide new constructors"] {
-        let pin = [V1, ADD_NOTES];
-        let log = [V1, ADD_NOTES, ADD_LINK_BODY, ENABLE_LINK];
-        once(89, |rt| {
-            let db = opened(&rt, &log, vec![bundle("web-1.0", &pin, clauses, UPSERTS)]);
-            write(
-                &db,
-                r#"insert notes.Link { id: notes.key(1), url: "u", body: "b" }"#,
-            )
-            .expect("the link is written");
-            let got = db
-                .registered("web-1.0")
-                .expect("the bundle binds")
-                .call(1, &[], &CallOptions::default())
-                .map(drop)
-                .map_err(|e| reason(&e).clone());
-            let expected = if clauses.is_empty() {
-                (Ok(()), vec![r#""b!""#.to_owned()])
-            } else {
-                (
-                    Err(RejectReason::KeyViolation {
-                        relation: "auth::notes".into(),
-                        key: "notes.key(1)".into(),
-                    }),
-                    vec![r#""u""#.to_owned()],
-                )
-            };
-            assert_eq!(expected, (got, query(&db, NOTES)), "{clauses}");
-        });
-    }
-}
-
-#[test]
-fn an_upsert_old_matched_on_a_constructor_new_since_the_pin_is_refused() {
+fn an_upsert_old_matched_past_a_constructor_is_stale() {
     let body = r#"import auth
 txn put () -> I64 =
   transact
@@ -2838,21 +2973,13 @@ txn put () -> I64 =
     let pin = [V1, ADD_NOTES];
     let log = [V1, ADD_NOTES, ADD_LINK, ENABLE_LINK];
     once(90, |rt| {
-        let db = opened(&rt, &log, vec![bundle("web-1.0", &pin, "", body)]);
-        write(&db, r#"insert notes.Link { id: notes.key(1), url: "u" }"#)
-            .expect("the link is written");
-        let got = db.registered("web-1.0").expect("the bundle binds").call(
-            1,
-            &[],
-            &CallOptions::default(),
+        assert_eq!(
+            link_stale(),
+            refusal(
+                open(&rt, &log, vec![bundle("web-1.0", &pin, "", body)]),
+                "web-1.0"
+            ),
         );
-        match got {
-            Err(Error::Rejected {
-                reason: RejectReason::Internal { what },
-            }) => assert_eq!("constructor 1 of the type has the field", what),
-            other => panic!("not refused so: {other:?}"),
-        }
-        assert_eq!(vec![r#""u""#], query(&db, NOTES));
     });
 }
 

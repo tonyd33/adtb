@@ -630,7 +630,9 @@ impl Checker<'_> {
         if let Some(old) = site.old
             && (header || is_key)
         {
-            return Ok(Some(self.terms.transport_field(old, f.to_string(), fty)));
+            let kept = self.terms.transport_field(old, f.to_string(), fty);
+            self.terms.kept_fields.insert(kept);
+            return Ok(Some(kept));
         }
         let default = r
             .defaults

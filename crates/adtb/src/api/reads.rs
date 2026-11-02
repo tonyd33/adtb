@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use adtb_lang::check::Program;
-use adtb_lang::kernel::{Kind, Terms, Tm};
+use adtb_lang::kernel::{Kind, Search, Terms, Tm, Var};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{CtorSet, FnId, RelId, Ty, TypeId};
 
@@ -102,8 +102,16 @@ impl Reads {
                     self.fields.insert((*def, name.clone()));
                 }
             }
-            Kind::Upsert { rel: r, .. } => {
+            Kind::Upsert {
+                rel: r,
+                old,
+                otherwise,
+                ..
+            } => {
                 self.reached.insert(*r);
+                if uses_row(terms, *otherwise, *old) {
+                    self.whole.insert(*r);
+                }
             }
             _ => {}
         }
@@ -208,6 +216,25 @@ impl Reads {
     }
 }
 
+/// Returns whether the write `t` uses the value of `row`. Naming `row` as the unfiltered target of
+/// an `update` or `delete`, and the fields a new value keeps, do not use it.
+fn uses_row(terms: &Terms, t: Tm, row: Var) -> bool {
+    let target = |rows: Tm| matches!(terms.kind(rows), Kind::Singleton(x) if matches!(terms.kind(*x), Kind::Var(v) if *v == row));
+    let mut names = BTreeSet::from([row]);
+    terms.search(t, |s| match terms.kind(s) {
+        Kind::Var(v) if names.contains(v) => Search::Found,
+        Kind::Field(..) if terms.is_kept(s) => Search::Into(Vec::new()),
+        Kind::Delete(_, rows) if target(*rows) => Search::Into(Vec::new()),
+        Kind::Replace(_, rows, f) if target(*rows) => {
+            if let Kind::Lam(x, _) = terms.kind(*f) {
+                names.insert(*x);
+            }
+            Search::Into(vec![*f])
+        }
+        k => Search::Into(k.children()),
+    })
+}
+
 /// Returns each child of `t` with whether its position passes a row on without reading it: a
 /// field access, a key or tag, a binding whose uses are visited, a source ranged over, a branch
 /// whose value is the parent's, or rows a write copies.
@@ -277,11 +304,7 @@ fn children(terms: &Terms, t: Tm) -> Vec<(Tm, bool)> {
 
 /// Returns whether every arm of a `match` on `scrutinee` binds a row of the scrutinee's type, so
 /// the arms' uses of their variables are what reads it.
-fn arms_keep_rows(
-    terms: &Terms,
-    scrutinee: Tm,
-    arms: &[(u32, adtb_lang::kernel::Var, Tm)],
-) -> bool {
+fn arms_keep_rows(terms: &Terms, scrutinee: Tm, arms: &[(u32, Var, Tm)]) -> bool {
     let Ty::Data { def, .. } = terms.ty(scrutinee) else {
         return true;
     };

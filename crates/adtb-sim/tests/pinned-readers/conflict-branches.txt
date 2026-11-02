@@ -1,0 +1,12 @@
+skip	free	skip	Link { id: notes.key(1), url: "u" }
+delete	free	delete old	
+new	free	update old set new	Plain { id: notes.key(1), body: "new" }
+target-only	free	update old set Plain { body: "x" }	Plain { id: notes.key(1), body: "x" }
+field	uses	update old set Plain { body: old.body ++ "!" }	
+key-field	uses	update old where old.id == notes.key(1) set new	
+filter	uses	update old where old.body == "a" set new	
+delete-filter	uses	delete old where old.body == "a"	
+match	uses	match old | Plain p -> update p set Plain { p with body: "m" }	
+with-copy	uses	update old set Plain { old with body: "x" }	
+whole	uses	update old set old	
+filter-on-new	uses	update old where new.body == "new" set new	
