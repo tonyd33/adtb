@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-02
-status: open
+status: resolved
 kind: bug
 priority: 135
 summary: "A pinned fill calling a function redefined and back uses current code, and a host redefine may pass under a live pin"
+closed: 2026-11-02
 ---
 
 # Fill function code at fill time
@@ -17,3 +18,9 @@ From the review of `fix: translate a fill or default through its own schema`, tr
 - `uncrossed` does not run on fill or default terms; the later `Map` refusal is not traced.
 
 Test gaps in crates/adtb-sim/tests/bundles.rs from the same review: a tag in a default past a removal; a moved aggregate; drop and re-add of a function; the stored value sweep's name claims each shape though `f`, `g`, `en` never hold the removed constructor; `swept` and `reached` count a loop over a constant; about half of 12 s may be redundant (`padded_tag_type`, the full refusal cross).
+
+## 2026-11-02: fixed
+
+`fix: refuse a pinned fill whose function changed since the fill`. Reproduced: backfilled `"b"`, pinned insert `"a"`. `same_code` now also compares the code where the fill was written. The host redefine rule was only partly built: a bundle not calling `f` was admitted; `host_conflict` in `recheck` now refuses it. Class: authority per entry path. Full check exit 0, seven mutants die, review found no blocker. Gaps on host-rule-gaps.
+
+## 2026-11-02: resolved
