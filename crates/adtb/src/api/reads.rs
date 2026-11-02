@@ -1,6 +1,9 @@
 //! What the callables of a bundle read and write, as a reader of the catalog states it.
 
-#![deny(clippy::wildcard_enum_match_arm)]
+#![deny(
+    clippy::wildcard_enum_match_arm,
+    clippy::match_wildcard_for_single_variants
+)]
 
 use std::collections::BTreeSet;
 

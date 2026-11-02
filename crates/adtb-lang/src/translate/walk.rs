@@ -2,11 +2,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::evolve::Resolved;
-use crate::kernel::{Agg, Conflict, Kind, Prim, Search, Terms, Tm, Var};
+use crate::kernel::{Agg, Conflict, Kind, Prim, Terms, Tm, Var};
 use crate::schema::DefaultValue;
 use crate::types::*;
 
-use super::{Given, Map, Pinned, R, carries, refused};
+use super::{Given, Map, Pinned, R, carries, forms, refused};
 
 /// Where a term is the value a write stores: the relation written, at the later version, and
 /// the row it replaces, when it replaces one.
@@ -58,6 +58,10 @@ impl<'p, 'a> Walk<'p, 'a> {
 
     /// Note each `let`-bound variable whose value an insert or upsert of the arena stores as a
     /// row.
+    #[deny(
+        clippy::wildcard_enum_match_arm,
+        clippy::match_wildcard_for_single_variants
+    )]
     pub(super) fn mark(&mut self) -> R<()> {
         let bound: HashSet<Var> = self
             .src
@@ -65,13 +69,104 @@ impl<'p, 'a> Walk<'p, 'a> {
             .iter()
             .filter_map(|n| match n.kind {
                 Kind::Let(v, ..) => Some(v),
-                _ => None,
+                Kind::Var(..)
+                | Kind::Const(..)
+                | Kind::Prim(..)
+                | Kind::Record(..)
+                | Kind::Field(..)
+                | Kind::Ctor { .. }
+                | Kind::Case { .. }
+                | Kind::If(..)
+                | Kind::Lam(..)
+                | Kind::App(..)
+                | Kind::Call { .. }
+                | Kind::Caller
+                | Kind::Key(..)
+                | Kind::KeyOf(..)
+                | Kind::Deref { .. }
+                | Kind::Tag(..)
+                | Kind::Try(..)
+                | Kind::Rel(..)
+                | Kind::Transition(..)
+                | Kind::Restrict(..)
+                | Kind::EmptySet
+                | Kind::Singleton(..)
+                | Kind::Union(..)
+                | Kind::For(..)
+                | Kind::IsEmpty(..)
+                | Kind::Exists(..)
+                | Kind::Agg { .. }
+                | Kind::Group { .. }
+                | Kind::Top { .. }
+                | Kind::Fix(..)
+                | Kind::Fresh(..)
+                | Kind::Only(..)
+                | Kind::At { .. }
+                | Kind::Present { .. }
+                | Kind::Reject(..)
+                | Kind::Unreachable
+                | Kind::Skip
+                | Kind::Insert(..)
+                | Kind::Delete(..)
+                | Kind::Replace(..)
+                | Kind::Upsert { .. }
+                | Kind::Rejects { .. }
+                | Kind::Par(..)
+                | Kind::Fail(..)
+                | Kind::LetBang(..)
+                | Kind::Block(..)
+                | Kind::Transact(..) => None,
             })
             .collect();
         for n in &self.src.nodes {
             let (rel, rows) = match &n.kind {
                 Kind::Insert(rel, rows) | Kind::Upsert { rel, rows, .. } => (*rel, *rows),
-                _ => continue,
+                Kind::Var(..)
+                | Kind::Const(..)
+                | Kind::Prim(..)
+                | Kind::Record(..)
+                | Kind::Field(..)
+                | Kind::Ctor { .. }
+                | Kind::Case { .. }
+                | Kind::If(..)
+                | Kind::Let(..)
+                | Kind::Lam(..)
+                | Kind::App(..)
+                | Kind::Call { .. }
+                | Kind::Caller
+                | Kind::Key(..)
+                | Kind::KeyOf(..)
+                | Kind::Deref { .. }
+                | Kind::Tag(..)
+                | Kind::Try(..)
+                | Kind::Rel(..)
+                | Kind::Transition(..)
+                | Kind::Restrict(..)
+                | Kind::EmptySet
+                | Kind::Singleton(..)
+                | Kind::Union(..)
+                | Kind::For(..)
+                | Kind::IsEmpty(..)
+                | Kind::Exists(..)
+                | Kind::Agg { .. }
+                | Kind::Group { .. }
+                | Kind::Top { .. }
+                | Kind::Fix(..)
+                | Kind::Fresh(..)
+                | Kind::Only(..)
+                | Kind::At { .. }
+                | Kind::Present { .. }
+                | Kind::Reject(..)
+                | Kind::Unreachable
+                | Kind::Skip
+                | Kind::Delete(..)
+                | Kind::Replace(..)
+                | Kind::Rejects { .. }
+                | Kind::Par(..)
+                | Kind::Fail(..)
+                | Kind::LetBang(..)
+                | Kind::Block(..)
+                | Kind::Transact(..) => continue,
             };
             let to = self.relation(rel)?;
             let mut todo = vec![rows];
@@ -121,12 +216,28 @@ impl<'p, 'a> Walk<'p, 'a> {
     }
 
     /// Bind `old` of an upsert into `to` to the constructors its conflict branch may receive.
+    #[deny(
+        clippy::wildcard_enum_match_arm,
+        clippy::match_wildcard_for_single_variants
+    )]
     fn bind_probed(&mut self, out: &mut Terms, old: Var, to: RelId, on: &Conflict) -> R<Var> {
         self.probed.insert(old);
         let info = self.src.var_info(old);
         let visible = match &info.ty {
             Ty::Data { def, ctors, .. } if self.p.hide_new => self.map.set(*def, ctors, true),
-            _ => None,
+            Ty::Data { .. }
+            | Ty::Base(_)
+            | Ty::Param(_)
+            | Ty::Unit
+            | Ty::Change
+            | Ty::Key { .. }
+            | Ty::Set(_)
+            | Ty::NonEmpty(_)
+            | Ty::Group(..)
+            | Ty::Tag(_)
+            | Ty::Record(_)
+            | Ty::Sum { .. }
+            | Ty::Fn(..) => None,
         };
         let ty = match self.ty_probed(&info.ty)? {
             Ty::Data { def, args, .. } => Ty::Data {
@@ -149,33 +260,22 @@ impl<'p, 'a> Walk<'p, 'a> {
                     }
                 },
             },
-            t => t,
+            t @ (Ty::Base(_)
+            | Ty::Param(_)
+            | Ty::Unit
+            | Ty::Change
+            | Ty::Key { .. }
+            | Ty::Set(_)
+            | Ty::NonEmpty(_)
+            | Ty::Group(..)
+            | Ty::Tag(_)
+            | Ty::Record(_)
+            | Ty::Sum { .. }
+            | Ty::Fn(..)) => t,
         };
         let x = out.var(&info.name.clone(), ty);
         self.vars.insert(old, x);
         Ok(x)
-    }
-
-    /// Returns whether `t` reads a row a conflict probe returned.
-    fn reads_probed(&self, t: Tm) -> bool {
-        match self.src.kind(t) {
-            Kind::Var(v) => self.probed.contains(v),
-            Kind::Field(x, _) => self.reads_probed(*x),
-            _ => false,
-        }
-    }
-
-    /// Returns the probed row a set of rows `t` updates or deletes holds at most, as `update old`
-    /// makes it.
-    fn probed_rows(&self, t: Tm) -> Option<Var> {
-        match self.src.kind(t) {
-            Kind::Singleton(x) => match self.src.kind(*x) {
-                Kind::Var(v) if self.probed.contains(v) => Some(*v),
-                _ => None,
-            },
-            Kind::If(_, rows, _) => self.probed_rows(*rows),
-            _ => None,
-        }
     }
 
     /// Returns `t` at the later version, `site` the write it is the stored value of.
@@ -197,6 +297,10 @@ impl<'p, 'a> Walk<'p, 'a> {
     /// Returns whether `t`, at write site `site`, stores a value it does not build: no
     /// constructor, no branch carrying the site on, and no `let`-bound variable whose value is
     /// built for `site`.
+    #[deny(
+        clippy::wildcard_enum_match_arm,
+        clippy::match_wildcard_for_single_variants
+    )]
     fn stored_whole(&self, t: Tm, site: Site) -> bool {
         let kind = self.src.kind(t);
         match kind {
@@ -208,10 +312,56 @@ impl<'p, 'a> Walk<'p, 'a> {
                         .get(v)
                         .is_none_or(|&rel| Site { rel, old: None } != site)
             }
-            _ => !carries(kind).contains(&true),
+            Kind::Const(..)
+            | Kind::Prim(..)
+            | Kind::Record(..)
+            | Kind::Field(..)
+            | Kind::If(..)
+            | Kind::Let(..)
+            | Kind::Lam(..)
+            | Kind::App(..)
+            | Kind::Call { .. }
+            | Kind::Caller
+            | Kind::Key(..)
+            | Kind::KeyOf(..)
+            | Kind::Deref { .. }
+            | Kind::Tag(..)
+            | Kind::Try(..)
+            | Kind::Rel(..)
+            | Kind::Transition(..)
+            | Kind::Restrict(..)
+            | Kind::Singleton(..)
+            | Kind::Union(..)
+            | Kind::For(..)
+            | Kind::IsEmpty(..)
+            | Kind::Exists(..)
+            | Kind::Agg { .. }
+            | Kind::Group { .. }
+            | Kind::Top { .. }
+            | Kind::Fix(..)
+            | Kind::Fresh(..)
+            | Kind::Only(..)
+            | Kind::At { .. }
+            | Kind::Present { .. }
+            | Kind::Reject(..)
+            | Kind::Skip
+            | Kind::Insert(..)
+            | Kind::Delete(..)
+            | Kind::Replace(..)
+            | Kind::Upsert { .. }
+            | Kind::Rejects { .. }
+            | Kind::Par(..)
+            | Kind::Fail(..)
+            | Kind::LetBang(..)
+            | Kind::Block(..)
+            | Kind::Transact(..) => !carries(kind).contains(&true),
         }
     }
 
+    #[deny(
+        clippy::wildcard_enum_match_arm,
+        clippy::match_wildcard_for_single_variants
+    )]
     fn kind(&mut self, out: &mut Terms, t: Tm, site: Option<Site>) -> R<Tm> {
         let kind = self.src.kind(t).clone();
         let src_ty = self.src.ty(t).clone();
@@ -274,9 +424,49 @@ impl<'p, 'a> Walk<'p, 'a> {
                 let ty = out.var_info(x).ty.clone();
                 return Ok(out.add(Kind::Var(x), ty));
             }
-            other => {
+            other @ (Kind::Var(..)
+            | Kind::Const(..)
+            | Kind::Prim(..)
+            | Kind::Record(..)
+            | Kind::If(..)
+            | Kind::Let(..)
+            | Kind::Lam(..)
+            | Kind::App(..)
+            | Kind::Call { .. }
+            | Kind::Caller
+            | Kind::Key(..)
+            | Kind::KeyOf(..)
+            | Kind::Deref { .. }
+            | Kind::Tag(..)
+            | Kind::Try(..)
+            | Kind::Rel(..)
+            | Kind::Transition(..)
+            | Kind::Restrict(..)
+            | Kind::EmptySet
+            | Kind::Singleton(..)
+            | Kind::Union(..)
+            | Kind::For(..)
+            | Kind::IsEmpty(..)
+            | Kind::Exists(..)
+            | Kind::Agg { .. }
+            | Kind::Group { .. }
+            | Kind::Top { .. }
+            | Kind::Fix(..)
+            | Kind::Fresh(..)
+            | Kind::Only(..)
+            | Kind::Present { .. }
+            | Kind::Reject(..)
+            | Kind::Unreachable
+            | Kind::Skip
+            | Kind::Delete(..)
+            | Kind::Rejects { .. }
+            | Kind::Par(..)
+            | Kind::Fail(..)
+            | Kind::LetBang(..)
+            | Kind::Block(..)
+            | Kind::Transact(..)) => {
                 if let Kind::Let(v, value, _) = &other
-                    && self.reads_probed(*value)
+                    && forms::reads_probed(self.src, &self.probed, *value)
                 {
                     self.probed.insert(*v);
                 }
@@ -288,7 +478,10 @@ impl<'p, 'a> Walk<'p, 'a> {
     }
 
     /// Returns `kind` with its children, variables and named objects at the later version.
-    #[deny(clippy::wildcard_enum_match_arm)]
+    #[deny(
+        clippy::wildcard_enum_match_arm,
+        clippy::match_wildcard_for_single_variants
+    )]
     fn generic(&mut self, out: &mut Terms, kind: &Kind, site: Option<Site>) -> R<Kind> {
         let carried = carries(kind);
         let bound = if let Kind::Let(v, ..) = kind {
@@ -462,7 +655,10 @@ impl<'p, 'a> Walk<'p, 'a> {
 
     /// Refuse a comparison, grouping, ordering or union of values that do not carry whole, and a
     /// count, fold, `top`, `take` or `only` of a set whose elements may merge at the pin.
-    #[deny(clippy::wildcard_enum_match_arm)]
+    #[deny(
+        clippy::wildcard_enum_match_arm,
+        clippy::match_wildcard_for_single_variants
+    )]
     fn compared(&self, kind: &Kind) -> R<()> {
         let check = |t: Tm, ordered: bool| {
             self.map
@@ -546,23 +742,12 @@ impl<'p, 'a> Walk<'p, 'a> {
     /// Refuse `set` when two of its elements may be one value at the pin: its elements do not
     /// carry whole, and are no rows read from one relation, whose keys keep them apart.
     fn distinct(&self, set: Tm) -> R<()> {
-        if self.rows_of(set) {
+        if forms::rows_of(self.src, set) {
             return Ok(());
         }
         self.map
             .whole(elem(self.src.ty(set)), true, false)
             .map_err(|l| self.p.lost(&l, "counts the values of"))
-    }
-
-    /// Returns whether `set` holds only rows read from one relation: the relation, a
-    /// constructor relation of it, or a comprehension over one that yields its bound row.
-    fn rows_of(&self, set: Tm) -> bool {
-        match self.src.kind(set) {
-            Kind::Rel(..) | Kind::Transition(..) => true,
-            Kind::Restrict(x, _) => self.rows_of(*x),
-            Kind::For(v, source, body) => self.rows_of(*source) && yields(self.src, *body, *v),
-            _ => false,
-        }
     }
 
     /// Refuse a write into `rel` of a constructor of `rows`, a set of rows, that is enabled at
@@ -644,7 +829,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             });
         }
         let x2 = self.tm(out, x, None)?;
-        let fty = if self.reads_probed(x) {
+        let fty = if forms::reads_probed(self.src, &self.probed, x) {
             self.ty_probed(src_ty)?
         } else {
             self.ty(src_ty)?
@@ -684,6 +869,13 @@ impl<'p, 'a> Walk<'p, 'a> {
         site: Option<Site>,
     ) -> R<Tm> {
         let ty = self.ty(src_ty)?;
+        if let Ty::Tag(t) = src_ty
+            && let Ty::Data { def, .. } = t.as_ref()
+        {
+            let k = self.built(*def, ctor)?;
+            let fields = Vec::new();
+            return Ok(out.add(Kind::Ctor { ctor: k, fields }, ty));
+        }
         let Ty::Data { def, .. } = src_ty else {
             let mut given = Vec::with_capacity(fields.len());
             for (n, f) in fields {
@@ -705,15 +897,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         else {
             unreachable!("a declared type maps to a declared type");
         };
-        let k = self.map.ctor(*def, ctor).ok_or_else(|| {
-            refused(
-                self.p.blame_ctor(*def, ctor),
-                format!(
-                    "it builds `{}`, which the current version lacks",
-                    self.p.ctor_name(*def, ctor)
-                ),
-            )
-        })?;
+        let k = self.built(*def, ctor)?;
         let mut given = BTreeMap::new();
         for (n, f) in fields {
             if let Some(image) = self.map.field(*def, Some(ctor), n) {
@@ -755,6 +939,19 @@ impl<'p, 'a> Walk<'p, 'a> {
         }
         let fields = given.into_iter().collect();
         Ok(out.add(Kind::Ctor { ctor: k, fields }, ty))
+    }
+
+    /// Returns the later position of constructor `ctor` of `def`, a constructor a term builds.
+    fn built(&self, def: TypeId, ctor: u32) -> R<u32> {
+        self.map.ctor(def, ctor).ok_or_else(|| {
+            refused(
+                self.p.blame_ctor(def, ctor),
+                format!(
+                    "it builds `{}`, which the current version lacks",
+                    self.p.ctor_name(def, ctor)
+                ),
+            )
+        })
     }
 
     /// Returns the value of field `lacked` that a write at `site` of a value with the fields
@@ -1046,7 +1243,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             let Some(k) = self.map.ctor(def, c) else {
                 continue;
             };
-            if self.reads_probed(scrutinee) {
+            if forms::reads_probed(self.src, &self.probed, scrutinee) {
                 self.probed.insert(y);
             }
             let y = self.var(out, y)?;
@@ -1082,7 +1279,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         let f2 = match self.src.kind(f).clone() {
             Kind::Lam(x, body) => {
                 self.written(rel, self.src.ty(body), kept.as_deref())?;
-                if let Some(row) = self.probed_rows(rows) {
+                if let Some(row) = forms::probed_rows(self.src, &self.probed, rows) {
                     let ty = out.var_info(self.vars[&row]).ty.clone();
                     self.probed.insert(x);
                     let x2 = out.var(&self.src.var_info(x).name.clone(), ty);
@@ -1125,18 +1322,4 @@ fn restricted(schema: &crate::schema::Schema, ty: &Ty, k: u32) -> Ty {
         Ty::Tag(t) => Ty::Tag(Box::new(restricted(schema, t, k))),
         t => t.clone(),
     }
-}
-
-/// Returns whether every element of `set` is the value of `v`.
-pub(super) fn yields(terms: &Terms, set: Tm, v: Var) -> bool {
-    !terms.search(set, |t| match terms.kind(t) {
-        Kind::EmptySet => Search::Into(Vec::new()),
-        Kind::Singleton(x) if matches!(terms.kind(*x), Kind::Var(y) if *y == v) => {
-            Search::Into(Vec::new())
-        }
-        Kind::If(_, a, b) => Search::Into(vec![*a, *b]),
-        Kind::Let(_, _, body) | Kind::For(_, _, body) => Search::Into(vec![*body]),
-        Kind::Case { arms, .. } => Search::Into(arms.iter().map(|&(_, _, body)| body).collect()),
-        _ => Search::Found,
-    })
 }

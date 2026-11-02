@@ -434,5 +434,5 @@ fn a_comprehension_yielding_its_row_under_shared_branches_is_walked_once() {
     let element = terms.add(Kind::Var(row), Ty::Unit);
     let yielded = terms.add(Kind::Singleton(element), Ty::Unit);
     let set = terms.doubled(test, yielded, 64);
-    assert!(walk::yields(&terms, set, row));
+    assert!(forms::yields(&terms, set, row));
 }

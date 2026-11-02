@@ -13,6 +13,7 @@ use crate::norm::{self, NormalProgram, NormalQuery};
 use crate::schema::{Schema, Stage};
 use crate::types::*;
 
+mod forms;
 mod map;
 #[cfg(test)]
 mod tests;
@@ -501,7 +502,10 @@ struct Given {
 }
 
 /// Returns `kind`'s terms that stay the value of a write's row: a branch, a body, an element.
-#[deny(clippy::wildcard_enum_match_arm)]
+#[deny(
+    clippy::wildcard_enum_match_arm,
+    clippy::match_wildcard_for_single_variants
+)]
 fn carries(kind: &Kind) -> Vec<bool> {
     let n = kind.children().len();
     let mut out = vec![false; n];

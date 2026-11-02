@@ -4234,6 +4234,45 @@ txn fixed (e: Text) -> Text =
 }
 
 #[test]
+fn a_pinned_tag_constructor_keeps_its_constructor_after_a_removal_moves_its_position() {
+    let add = "module auth\nadd type T { id: Key ts } = A { n: I32 } | B { n: I32 } | C { n: I32 }\nadd relation ts : T key id generate sequence\n";
+    let deprecate = "module auth\ndeprecate ts.A\n";
+    let remove = "module auth\nremove constructor T.A\n";
+    let log = [V1, add, deprecate, remove];
+    let body = "import auth
+query b () -> Tag T = B
+query c () -> Tag T = C
+fn f () -> Tag T = C
+query called () -> Tag T = f()
+query chosen () -> Tag T = if 1 == 1 then B else C
+";
+    once(35, |rt| {
+        let db = opened(&rt, &log, vec![bundle("web-1.0", &[V1, add], "", body)]);
+        let expected = ["B", "C", "C", "B"];
+        for (ordinal, want) in (1..).zip(expected) {
+            assert_eq!(
+                vec![want],
+                rows(call(&db, "web-1.0", ordinal, &[])),
+                "{ordinal}"
+            );
+        }
+    });
+    once(36, |rt| {
+        let body = "import auth\nquery a () -> Tag T = A\n";
+        assert_eq!(
+            RejectReason::Untranslatable {
+                query: "web-1.0::a".into(),
+                detail: "across `remove constructor T.A`: it builds `T.A`, which the current version lacks".into(),
+            },
+            refusal(
+                open(&rt, &log, vec![bundle("web-1.0", &[V1, add], "", body)]),
+                "web-1.0"
+            ),
+        );
+    });
+}
+
+#[test]
 fn a_pinned_selection_reads_its_constructors_after_a_removal_moves_their_positions() {
     let add = "module auth\nadd type T { id: Key ts } = A { n: I32 } | B { n: I32 } | C { n: I32 }\nadd relation ts : T key id generate sequence\n";
     let deprecate = "module auth\ndeprecate ts.A\n";
@@ -4244,6 +4283,10 @@ query read_b () -> Set I32 = from x in (from r in ts select r).B select x.n
 query named_b () -> Set I32 = from x in ts.B select x.n
 query built_c () -> Set I32 = from x in [B { id: ts.key(9), n: 7 }, C { id: ts.key(8), n: 8 }].C select x.n
 query read_a () -> Set I32 = from x in (from r in ts select r).A select x.n
+query matched_a () -> Set I32 = from x in (from r in ts select r).A select (match x | A a -> a.n)
+query named_a () -> Set I32 = from x in ts.A select (match x | A a -> a.n)
+query matched_b () -> Set I32 = from x in ts.B select (match x | B b -> b.n)
+query matched_all () -> Set I32 = from r in ts select (match r | A a -> a.n | B b -> b.n + 10 | C c -> c.n + 20)
 ";
     once(34, |rt| {
         let log = [V1, add, deprecate, remove];
@@ -4252,7 +4295,17 @@ query read_a () -> Set I32 = from x in (from r in ts select r).A select x.n
             &db,
             "insert ts from [B { id: ts.key(1), n: 2 }, C { id: ts.key(2), n: 3 }]",
         );
-        let expected: [&[&str]; 5] = [&["7"], &["2"], &["2"], &["8"], &[]];
+        let expected: [&[&str]; 9] = [
+            &["7"],
+            &["2"],
+            &["2"],
+            &["8"],
+            &[],
+            &[],
+            &[],
+            &["2"],
+            &["12", "23"],
+        ];
         for (ordinal, want) in (1..).zip(expected) {
             assert_eq!(want, rows(call(&db, "web-1.0", ordinal, &[])), "{ordinal}");
         }
