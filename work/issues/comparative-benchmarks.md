@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-28
-status: in-progress
+status: open
 kind: feature
 priority: 910
-summary: no reproducible cross-database baseline or recurring measured optimization cycle exists
-branch: final-compiler-wait
+summary: SQLite baseline and profile exist; no qualifying measured optimization has landed
 tags:
   - engine
   - test
@@ -1100,3 +1099,17 @@ acknowledgements. The fixed preview, complete correctness verification and fresh
 final80 with independent raw audit still govern acceptance. Stop this attempt
 on rejection or the user-authorized overall time limit, reporting an unsuccessful
 outcome if no qualifying optimization is established.
+
+## 2026-11-01: final attempt rejected; optimization search stopped
+
+The user authorized one final candidate with a total time cap. Its four-writer
+small-counter preview completed four valid observations: paired slowdowns were
+1.898231% and 13.801009%, median 7.849620%, exceeding the unchanged 5% limit.
+Native, outcome, oracle and provenance checks passed. The p99 preview did not
+reject. The primary stage stayed unstarted; no additional observations, full
+correctness check or final confirmation followed. The candidate remains unlanded.
+
+The final candidate and all measurements are preserved. The first SQLite
+baseline and profile are complete, but no optimization passed all acceptance
+gates. The bounded search stops unsuccessfully on this rejection, with time
+remaining. Keep this feature open; further optimization requires a new scope.

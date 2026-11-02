@@ -605,3 +605,21 @@ Reuse the established collector as an execution service, not another approval
 boundary. Automate mechanical evidence with the build and avoid serial prose
 handoffs. Independent raw audit remains mandatory for final acceptance, not
 every rejected development preview. Measure this change before calling it fast.
+
+### 2026-11-01: close the optimization search at its failure exit
+
+The final composition failed its unchanged concurrent preview: 7.850% median
+slowdown against the 5% limit. Four observations took about 106 seconds; primary
+runs, full verification and final80 stayed unstarted. Build to measurement took
+about four minutes, versus nearly nine in the earlier recorded trial. The
+preauthorized transition reduced that interval in this instance, while evidence
+binding still costs more elapsed time than the normal build. Focused execution
+was under two seconds. Do not blame this iteration's delay on the Rust suite.
+
+The maintainer had to ask for a failure exit after prolonged optimization work.
+A measurable success threshold does not bound a search that finds no winner.
+The final brief and tracked ticket now stop on rejection or the authorized total
+cap; apply both success and failure exits when scoping future research. This
+attempt stops after its one allowed candidate, with time remaining. Baseline and
+profile are useful completed work, but no optimization met all gates. Preserve
+that distinction instead of extending the search or calling the goal complete.
