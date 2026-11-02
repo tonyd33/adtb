@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-02
-status: open
+status: resolved
 kind: bug
 priority: 140
 summary: Translation panics on a tag in a fill past a removal and on a newtype over a sum
+closed: 2026-11-02
 ---
 
 # Translate boundary panics
@@ -18,3 +19,9 @@ From the review of `fix: name every Kind in the remaining translation analyses`,
 Also not traced: a stored `Tag T` column or value level sum across `remove constructor`, in heap encoding. Run that first; a wrong answer there outranks both panics.
 
 Over-refusals, safe: `tag r == B` and `[B, C]` at full `Tag T` are refused across a removal, and a live bundle holding them blocks the migration.
+
+## 2026-11-02: fixed
+
+`fix: translate a fill or default through its own schema`. Stored values are safe: the heap stores stable catalog ids, removal is refused while a stored value holds the constructor; swept over removed position with exact values, four mutants killed. Tag in a fill reproduced, now refused. A newtype over a declared sum is illegal, so that trace is unreachable. A new wrong answer with the same cause: after `drop fn g` and `define fn n`, a fill calling `n` stored another function's result, now refused. Class: identity by position. Stopped by `Walk::new` taking only `Pinned`, so the map cannot disagree with the schema. A fill calling an unchanged function whose position moved is now admitted, correctly. Full check exit 0, review found no blocker. Follow up on fill-function-code-at-fill-time.
+
+## 2026-11-02: resolved
