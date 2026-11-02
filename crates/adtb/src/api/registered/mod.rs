@@ -833,7 +833,12 @@ pub(super) fn recheck(
         let c = &l.checked;
         let pins = c.header.as_ref().map_or(0, |h| h.pins);
         let lines = blocked.entry(&c.name).or_default();
-        if let Some((op, f)) = host_conflict(catalog.source(), &l.source, &next) {
+        let conflict = host_conflict(catalog.source(), &l.source, &next).map_err(|ds| {
+            RejectReason::Internal {
+                what: format!("{ds:?}"),
+            }
+        })?;
+        if let Some((op, f)) = conflict {
             operator.get_or_insert(op);
             lines.push(format!(
                 "bundle {} pins {pins}: its version holds another code of host function `{f}`",

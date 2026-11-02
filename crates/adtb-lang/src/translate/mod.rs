@@ -7,10 +7,11 @@ use std::fmt;
 use std::rc::Rc;
 
 use crate::check::Program;
-use crate::evolve::{Clause, Code, Resolved, RowFn, RowMap, Source};
+use crate::evolve::{Clause, Code, Resolved, ResolvedOp, RowFn, RowMap, Source};
 use crate::kernel::{Kind, Terms, Tm};
 use crate::norm::{self, NormalProgram, NormalQuery};
 use crate::schema::{Schema, Stage};
+use crate::span::FileDiag;
 use crate::types::*;
 
 mod forms;
@@ -510,23 +511,45 @@ fn code_of(s: &Source, id: u64) -> Option<Code> {
     found.map(|f| f.code)
 }
 
-/// Returns the operator of the last migration of `next` that takes a function from its code in
-/// `before` to one other than its code at `pin`, a host function's at any of the three, and the
-/// function's name.
-pub fn host_conflict(before: &Source, pin: &Source, next: &Source) -> Option<(String, String)> {
-    let host = |c: &Code| matches!(c, Code::Host { .. });
-    let f = next.functions().ok()?.into_iter().find(|f| {
-        let (Some(was), Some(held)) = (code_of(before, f.id), code_of(pin, f.id)) else {
+/// Returns the first function of `next` that the last migration takes from its code in `before`
+/// to one other than its code at `pin`, a host or Wasm function's at any of the three, as the
+/// operator to blame and the function's name. Fail when a source's functions do not resolve.
+pub fn host_conflict(
+    before: &Source,
+    pin: &Source,
+    next: &Source,
+) -> Result<Option<(String, String)>, Vec<FileDiag>> {
+    let outside = |c: &Code| matches!(c, Code::Host { .. } | Code::Wasm { .. });
+    let codes = |s: &Source| -> Result<BTreeMap<u64, Code>, Vec<FileDiag>> {
+        Ok(s.functions()?.into_iter().map(|f| (f.id, f.code)).collect())
+    };
+    let (was, held) = (codes(before)?, codes(pin)?);
+    let conflict = next.functions()?.into_iter().find(|f| {
+        let (Some(was), Some(held)) = (was.get(&f.id), held.get(&f.id)) else {
             return false;
         };
-        was != f.code && held != f.code && (host(&f.code) || host(&was) || host(&held))
-    })?;
-    let logged = next.log.last()?;
-    let k = next.resolved(logged.number).ok()?.iter().position(|r| {
-        matches!(r.op, Resolved::Revert { .. })
-            || matches!(r.op, Resolved::RedefineFn { function, .. } if function == f.id)
-    })?;
-    Some((operator_text(&logged.text, &logged.operators[k]), f.name))
+        *was != f.code && *held != f.code && (outside(&f.code) || outside(was) || outside(held))
+    });
+    Ok(conflict.map(|f| (blamed(next, f.id), f.name)))
+}
+
+/// Returns the first line of the operator of the last migration of `next` that changes function
+/// `id`, its first operator's when the migration does not resolve.
+fn blamed(next: &Source, id: u64) -> String {
+    let Some(logged) = next.log.last() else {
+        return String::new();
+    };
+    let changes = |r: &ResolvedOp| match r.op {
+        Resolved::Revert { .. } => true,
+        Resolved::RedefineFn { function, .. } => function == id,
+        _ => false,
+    };
+    let at = next.resolved(logged.number).ok();
+    let at = at.and_then(|ops| ops.iter().position(changes)).unwrap_or(0);
+    logged
+        .operators
+        .get(at)
+        .map_or_else(String::new, |op| operator_text(&logged.text, op))
 }
 
 /// Returns the first line of operator `op` of migration `text`.

@@ -427,6 +427,44 @@ fn reopen_serves_a_registered_bundle_unpresented_and_supersedes_an_opened_one() 
 }
 
 #[test]
+fn a_registered_bundle_not_presented_at_open_holds_its_host_code() {
+    let host = |op: &str, symbol: &str| {
+        format!("{op} fn f (t: Text) -> Text = host \"{symbol}\" version \"1.0\" deterministic")
+    };
+    let define = format!("module shop\n{}\n", host("define", "a"));
+    let redefine = format!("module shop\n{}\n", host("redefine", "b"));
+    let mut sim = Sim::new(331, Config::default());
+    run(&mut sim, |rt| {
+        let db = shop(&rt);
+        db.close().expect("close");
+        let pins = &[SHOP, GRANTS, define.as_str()];
+        let db = opened(&rt, pins);
+        register(&db, "web", &bundle("shop-1.0", pins, NAMES)).expect("web registers");
+        db.close().expect("close");
+        match open(
+            &rt,
+            &[SHOP, GRANTS, define.as_str(), redefine.as_str()],
+            vec![],
+        ) {
+            Err(OpenError::MigrationRefused {
+                version: 4,
+                reason:
+                    Error::Rejected {
+                        reason: RejectReason::SchemaRefused { operator, detail },
+                    },
+            }) => {
+                assert_eq!(host("redefine", "b"), operator);
+                assert_eq!(
+                    "bundle shop-1.0 pins 3: its version holds another code of host function `f`",
+                    detail
+                );
+            }
+            other => panic!("the redefine is refused otherwise: {:?}", other.err()),
+        }
+    });
+}
+
+#[test]
 fn an_open_presenting_a_registered_bundle_keeps_its_owner() {
     let mut sim = Sim::new(307, Config::default());
     run(&mut sim, |rt| {

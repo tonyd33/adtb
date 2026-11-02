@@ -436,3 +436,20 @@ fn a_comprehension_yielding_its_row_under_shared_branches_is_walked_once() {
     let set = terms.doubled(test, yielded, 64);
     assert!(forms::yields(&terms, set, row));
 }
+
+#[test]
+fn a_wasm_function_taken_to_another_module_conflicts_with_a_pin_of_the_old_one() {
+    let wasm = |m: &str, op: &str| {
+        format!("module auth\n{op} fn f (t: Text) -> Text = wasm \"{m}\" export \"e\"\n")
+    };
+    let (define, redefine) = (wasm("m", "define"), wasm("n", "redefine"));
+    let (at_pin, _, _) = checked(&[V1, &define]);
+    let (next, _, _) = checked(&[V1, &define, &redefine]);
+    assert_eq!(
+        Some((
+            "redefine fn f (t: Text) -> Text = wasm \"n\" export \"e\"".to_string(),
+            "f".to_string()
+        )),
+        host_conflict(&at_pin, &at_pin, &next).expect("the functions resolve")
+    );
+}
