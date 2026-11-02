@@ -3,7 +3,7 @@ created-at: 2026-10-29
 status: in-progress
 kind: feature
 priority: 900
-summary: "milestone 9 (operations, the embedded beta) has not exited: statistics and plan pinning, explain, config and metrics, dump, restore and backup, and the published benchmarks are open"
+summary: "embedded beta remains in progress: operations features, resource controls and broader recovery coverage remain"
 depends-on:
   - milestone-8-embedded-alpha
   - statistics-and-plan-pinning
@@ -102,3 +102,27 @@ timeouts remain visible and are not reclassified as successful measurements.
 The next comparison increment is the separately scheduled 80-invocation ranked
 baseline, followed by independent raw-result review and publication. This closes
 the feasibility/protocol slice, not the benchmark umbrella or embedded beta.
+
+## 2026-11-01: initial comparison accepted; return to correctness and operations
+
+The maintainer accepts the first SQLite comparison, profiling and bounded
+optimization exploration as complete. Comparative-benchmarks is resolved for
+this initial scope; further tuning is deferred. No public release is needed for
+this checkpoint and no rejected engine optimization is landed. This is not an
+embedded-beta exit. Reassess benchmark freshness if relevant engine behavior
+changes before release, rather than extending the completed optimization search.
+
+Next prepare bounded native pinned-reader integration against the accepted
+private correlation/budget contract, preserving authority evaluation and exposing
+nonhiding admission as a separate unresolved question. In parallel, select one
+additional public recovery workload or fault domain using the existing enumerator
+and exact acknowledgement oracle. These are planned tracks, not running agents.
+Use fixture data by default and one final verification owner per code track.
+
+Refresh the operations exit checklist against current code before selecting the
+next consumer, provisionally background vacuum. Statistics/plan lifecycle,
+configuration and resource observability, remaining logical dump/incremental/PITR
+work and real-backend fault coverage still require bounded slices. Shared
+admission and work budgets must precede exposing untrusted socket text. Existing
+umbrella tickets do not require unrelated rewrites before every consumer, and
+new feature work does not displace a demonstrated data-loss or authority defect.

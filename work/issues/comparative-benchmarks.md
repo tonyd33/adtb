@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-28
-status: open
+status: resolved
 kind: feature
 priority: 910
-summary: SQLite baseline and profile exist; no qualifying measured optimization has landed
+summary: "first SQLite comparison, profiling and bounded optimization exploration completed"
+closed: 2026-11-01
 tags:
   - engine
   - test
@@ -1113,3 +1114,13 @@ The final candidate and all measurements are preserved. The first SQLite
 baseline and profile are complete, but no optimization passed all acceptance
 gates. The bounded search stops unsuccessfully on this rejection, with time
 remaining. Keep this feature open; further optimization requires a new scope.
+
+## 2026-11-01: resolved
+
+The maintainer accepts this first comparison, profiling and bounded optimization
+exploration as complete. The independently audited SQLite baseline and retained
+profiles provide working data; no public release is required. No candidate met
+all optimization gates, so none landed. Further optimization, SQLite tuning and
+additional comparison workloads are deferred until separately selected. This
+closes the initial effort without claiming a measured optimization win or that
+SQLite received exhaustive tuning. Existing rejected results remain unchanged.
