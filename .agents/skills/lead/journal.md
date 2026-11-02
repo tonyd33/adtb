@@ -582,3 +582,26 @@ wait for lead bookkeeping. The briefing rule now requires a successful file
 write before dispatch, and concise evidence publication takes priority over
 prose expansion. More review packets and cold workspaces do not by themselves
 strengthen a boundary. Reuse unchanged evidence and review only changed inputs.
+
+### 2026-11-01: keep development gates within the delivery contract
+
+The first staged trial rejected after four observations in 1m48s and left its
+primary runs, mutations and full check unstarted. The stop mechanism worked.
+I had required both concurrent pairs to improve although the frozen final rule
+allows up to 5% median slowdown. That extra requirement can discard candidates
+worth confirming and push implementation toward unnecessary synchronization
+changes. Future previews now use the original 5% regression line and a paired
+preview of the original tail rule. Closed studies retain their original result;
+there is no same-body rerun or change to final acceptance.
+
+The normal build took 79 seconds but measurement started 8m57s after it ended.
+That interval includes build-proof preparation and asynchronous observation,
+input binding, resource samples and lead launch handoffs; their individual
+shares are not all measured. Test execution did not explain that gap. The next
+implementation brief preauthorizes one guarded development trial. Its owner
+can transition from a passing normal build to the frozen screen without a new
+lead notice, while the lead retains scope, promotion and landing decisions.
+Reuse the established collector as an execution service, not another approval
+boundary. Automate mechanical evidence with the build and avoid serial prose
+handoffs. Independent raw audit remains mandatory for final acceptance, not
+every rejected development preview. Measure this change before calling it fast.

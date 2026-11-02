@@ -4,7 +4,7 @@ status: in-progress
 kind: feature
 priority: 910
 summary: no reproducible cross-database baseline or recurring measured optimization cycle exists
-branch: parked-durable-force
+branch: immutable-metadata-only
 tags:
   - engine
   - test
@@ -1004,3 +1004,56 @@ Keep one iteration ledger and reuse unchanged evidence and warm build caches
 under exclusive ownership, after freezing the prior source, separate executable
 and retained proof inputs. The local baseline and profile remain accepted;
 there is still no accepted measured optimization.
+
+## 2026-11-01: bounded covered-wait handoff trial
+
+Select one further storage-owned candidate: retain typed requested frontiers,
+notify covered callers after durable publication, then offer the next batch to
+one future waiter. Other future callers retain their registration. Preserve
+ordered write/sync/publication, atomic ownership transitions, retained wake
+semantics, no-batch progress and fatal crash/replay. This removes unnecessary
+future wake/re-registration and election competition when such waiters exist;
+it does not establish an elapsed-time benefit or improved coalescing. A reserved
+owner can still run too early or delay another runnable caller.
+
+Preserve both rejected predecessors and reuse the same warm workspace. Independent
+production reading found no concrete blocker; five focused schedule/frontier/
+fatal tests pass. A matched normal-release build and the declared four-writer
+screen come next. No expensive mutation matrix, final full correctness check,
+final80 or acceptance is claimed. Apply the regression-first pipeline and all
+unchanged final gates; reject this trial cheaply if its first stage fails.
+
+The test wrapper now supports a leading `work/tools/suite --fail-fast [ARGS]`
+for targeted development runs. Its default still collects all failures. Focused
+script checks and independent review passed; no engine suite was repeated for
+that isolated argument-routing change.
+
+## 2026-11-01: close handoff trial and isolate metadata sharing
+
+The covered-handoff development screen closed after four valid observations.
+One concurrent pair slowed 6.335% and the other improved 2.724%, failing its
+predeclared both-positive rule. All native/oracle/identity guards passed; the
+primary rows stayed unstarted. Preserve this rejection and do not rerun the
+same body for favorable points. It is not a complete final regression finding.
+
+That development rule imposed an improvement absent from the original final
+regression contract. Before another candidate is measured, preview concurrent
+median paired slowdown against the original 5% line. Preview p99 rejection when
+both pairs increase and median paired growth exceeds both 10% and 0.25 ms.
+Primary both-positive/median-at-least-5% remains. Final80 gates and independent
+final raw audit remain unchanged. Closed protocols and data are not reclassified.
+
+Select a separate metadata-only candidate: reuse the exact reviewed immutable
+heap/index-map sharing and fresh per-view Reads/snapshot/history mechanism,
+leaving bounded-leaf and all new force-wait protocols out. Its seven component
+paths are catalog/validate.rs, exec/store.rs, write/mod.rs, write/past.rs,
+write/tests.rs, the simulation history test and simulator support. Preserve
+owned setup bindings, declared identities, database APIs, formats, dependencies
+and workload. Verify this standalone combination; old combined results are
+component evidence only, not its performance or correctness certification.
+
+The candidate owner receives one preauthorized guarded development trial after
+focused correctness and a matched normal build. Existing collector controls may
+execute it without another lead launch handoff when exact inputs, resource and
+exclusivity conditions pass. No automatic variant loop/retry or final80 follows.
+Keep the warm workspace under one owner; root retains promotion and landing.

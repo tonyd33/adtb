@@ -63,8 +63,10 @@ state/reopen oracles in these screens. An unreviewed screen is provisional.
 
 For the current comparative optimization, Stage A is counter N=1000 with four
 writers: two adjacent opposite-order pairs. Collect its four observations, then
-require both steady elapsed savings positive and neither completed-call p99
-increase exceeding both 10% and 0.25 ms. On rejection, stop and retain the
+reject median paired steady slowdown above 5%. Reject completed-call p99 when
+both pairs increase and median paired growth exceeds both 10% and 0.25 ms.
+These preview the original final limits; do not demand a concurrent speedup
+that final acceptance does not require. On rejection, stop and retain the
 unstarted rows. Only on pass run Stage B: two opposite-order primary N=1000,
 one-writer pairs, both positive with median saving at least 5%. Compare each
 stage against the original normal-release baseline. A native, oracle, identity
@@ -77,6 +79,20 @@ check and required opt-in package checks. Review may overlap earlier work on an
 immutable revision. Final admission still requires the original entirely fresh
 80-run confirmation, unchanged acceptance gates and independent raw-data audit.
 A screen supplies no final observations or permission to land.
+
+Preauthorize one bounded development trial in its implementation brief, including
+its fixed stages, native controls, baseline, evidence and exclusivity conditions.
+The assigned owner may freeze the actual new candidate and run the guarded
+screen once those conditions pass; a routine build-to-screen transition needs
+no additional lead launch round. A collector may provide the existing execution
+service under that same authorization. Stop on input, scope, resource or native
+failure and report to the lead. No automatic variant loop or favorable repeat.
+Root retains new-scope rulings and promotion, final confirmation and landing.
+Generate mechanical build/identity evidence with the build job where possible;
+use one receipt, rather than serial author/collector/lead prose handoffs.
+A failed development screen needs its declared arithmetic and integrity evidence;
+another independent raw-data reconstruction is optional diagnostic work. Final
+acceptance still requires independent review and complete raw-data audit.
 
 Use one concise iteration ledger linking native artifacts. Reuse unchanged
 helper, compiler and control evidence when its actual inputs are identical;
