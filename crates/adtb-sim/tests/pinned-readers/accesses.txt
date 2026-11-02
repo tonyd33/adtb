@@ -7,3 +7,12 @@ for-capture	sum(@R.tone.depth + 1 for y in pads)
 fn-capture	applied(fn u -> @R.tone.depth + u)
 with-read	Mark { @R with note: "c" }.tone.depth + 1
 whole-compare	if @R == @R then 8 else 0
+sole-case	match @R.tone | Ink i -> 8
+known-case	match Ink { depth: @R.tone.depth } | Ink i -> 8
+unused-arg	ignored(@R.tone)
+unused-fn	ignored_fn(fn u -> @R.tone.depth + u)
+other-field	{ a: @R.tone, b: 8 }.b
+dead-if	if True then 8 else @R.tone.depth
+dead-arm	match some_one() | None -> @R.tone.depth | Some s -> 8
+singleton-source	sum(x for x in (from y in [@R.tone] select 8))
+empty-source	8 + sum(x for x in (from y in (from z in [1] where False select z) select @R.tone.depth))

@@ -1,16 +1,16 @@
-//! What the callables of a bundle read and write, from their normal forms, as a reader of the
-//! catalog states it.
+//! What the callables of a bundle read and write, as a reader of the catalog states it.
 
 use std::collections::BTreeSet;
 
+use adtb_lang::check::Program;
 use adtb_lang::kernel::{Kind, Terms, Tm};
 use adtb_lang::schema::Schema;
-use adtb_lang::types::{CtorSet, RelId, Ty, TypeId};
+use adtb_lang::types::{CtorSet, FnId, RelId, Ty, TypeId};
 
 use crate::catalog::{Read, Reader};
 
 /// The reads and writes of some normal forms over one schema.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct Reads {
     whole: BTreeSet<RelId>,
     references: BTreeSet<(RelId, Option<CtorSet>)>,
@@ -24,7 +24,7 @@ pub(super) struct Reads {
 }
 
 impl Reads {
-    /// Add what the normal form `root` of `terms` reads and writes.
+    /// Add the whole rows the normal form `root` of `terms` uses and what it writes.
     pub(super) fn add(&mut self, schema: &Schema, terms: &Terms, root: Tm) {
         let mut seen = BTreeSet::new();
         let mut stack = vec![(root, false)];
@@ -35,15 +35,54 @@ impl Reads {
             if !transparent {
                 rows_in(terms.ty(t), &mut self.rows);
             }
-            self.facts(schema, terms, t);
+            self.writes_of(schema, terms, t);
             for (c, through) in children(terms, t) {
                 stack.push((c, through));
             }
         }
     }
 
-    /// Record the reads and writes `t` makes itself.
-    fn facts(&mut self, schema: &Schema, terms: &Terms, t: Tm) {
+    /// Add what the term `root` of `terms`, as written, reads by occurrence, and what the functions
+    /// of `program` it calls read.
+    ///
+    /// Preconditions: `root` is not normalised.
+    pub(super) fn add_source(
+        &mut self,
+        schema: &Schema,
+        program: &Program,
+        terms: &Terms,
+        root: Tm,
+    ) {
+        let mut calls = self.occurrences(schema, terms, root);
+        let mut followed = BTreeSet::new();
+        while let Some(f) = calls.pop_first() {
+            if followed.insert(f)
+                && let Some(Some(body)) = program.functions.get(f.0 as usize)
+            {
+                calls.extend(self.occurrences(schema, &program.terms, *body));
+            }
+        }
+    }
+
+    /// Record the reads of every term under `root`. Returns the functions they call.
+    fn occurrences(&mut self, schema: &Schema, terms: &Terms, root: Tm) -> BTreeSet<FnId> {
+        let mut calls = BTreeSet::new();
+        let mut seen = BTreeSet::new();
+        let mut stack = vec![root];
+        while let Some(t) = stack.pop() {
+            if seen.insert(t) {
+                if let Kind::Call { func, .. } = terms.kind(t) {
+                    calls.insert(*func);
+                }
+                self.reads_of(schema, terms, t);
+                stack.extend(terms.children(t));
+            }
+        }
+        calls
+    }
+
+    /// Record the reads `t` makes itself.
+    fn reads_of(&mut self, schema: &Schema, terms: &Terms, t: Tm) {
         match terms.kind(t) {
             Kind::Rel(r, set) | Kind::Transition(_, r, set) => {
                 self.reached.insert(*r);
@@ -63,11 +102,17 @@ impl Reads {
                     self.fields.insert((*def, name.clone()));
                 }
             }
-            Kind::Insert(r, rows) => {
-                self.written(schema, *r, element(terms.ty(*rows)));
-            }
-            Kind::Upsert { rel: r, rows, .. } => {
+            Kind::Upsert { rel: r, .. } => {
                 self.reached.insert(*r);
+            }
+            _ => {}
+        }
+    }
+
+    /// Record the writes `t` makes itself.
+    fn writes_of(&mut self, schema: &Schema, terms: &Terms, t: Tm) {
+        match terms.kind(t) {
+            Kind::Insert(r, rows) | Kind::Upsert { rel: r, rows, .. } => {
                 self.written(schema, *r, element(terms.ty(*rows)));
             }
             Kind::Replace(r, _, f) => {

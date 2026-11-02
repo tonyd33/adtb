@@ -12,6 +12,7 @@ use adtb_lang::types::{FnId, Ty};
 
 use super::super::bundle::CallRow;
 use super::super::error::{Error, RejectReason};
+use super::super::reads::Reads;
 use super::{Callable, Checked, Entry, Over, Registration, joined};
 
 /// Check and normalise registration `r` over `over`.
@@ -48,10 +49,17 @@ pub(super) fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Erro
     let calls =
         signature::calls(schema, program, &vis, &imports, &items).map_err(Error::diagnostic)?;
     let mut entries = Vec::new();
+    let mut source_reads = Reads::default();
     for c in calls {
         let mut e = match c.item {
-            Item::Fn(f, id) => imported(schema, program, f, id)?,
+            Item::Fn(f, id) => {
+                if let Some(Some(body)) = program.functions.get(id.0 as usize) {
+                    source_reads.add_source(schema, program, &program.terms, *body);
+                }
+                imported(schema, program, f, id)?
+            }
             Item::Query(q, checked) => {
+                source_reads.add_source(schema, program, &checked.terms, checked.term);
                 let normal = norm::query(schema, program, &checked).map_err(not_normal)?;
                 let (signature, text) = decl(q.span, &q.name, &q.result);
                 let mut e = declared(&q.name.text, Callable::Query, &c.signature, normal)?;
@@ -60,6 +68,7 @@ pub(super) fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Erro
                 e
             }
             Item::Txn(t, checked) => {
+                source_reads.add_source(schema, program, &checked.terms, checked.term);
                 let normal = norm::txn(schema, program, &checked).map_err(not_normal)?;
                 let (signature, text) = decl(t.span, &t.name, &t.result);
                 let mut e = declared(&t.name.text, Callable::Txn, &c.signature, normal)?;
@@ -79,6 +88,7 @@ pub(super) fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Erro
         program: extended.map_or_else(|| over.program.clone(), |(_, p)| p),
         text: r.text.clone(),
         entries,
+        source_reads,
         header: r.header.clone(),
     })
 }

@@ -188,6 +188,8 @@ pub(super) struct Checked {
     /// The text of the registration's file.
     text: String,
     entries: Vec<Entry>,
+    /// What the callables read by occurrence, before normalisation.
+    source_reads: Reads,
     /// The header of a bundle file's registration.
     header: Option<Header>,
 }
@@ -244,7 +246,7 @@ impl Checked {
     /// Returns the catalog reader of a bundle's registration, at the version it pins.
     fn reader(&self) -> Option<catalog::Reader> {
         let h = self.header.as_ref()?;
-        let mut reads = Reads::default();
+        let mut reads = self.source_reads.clone();
         for e in &self.entries {
             reads.add(&self.schema, &e.terms, e.body);
         }

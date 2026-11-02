@@ -1,0 +1,8 @@
+stale-live
+===
+txn run () -> I64 =
+  transact
+    let x = insert marks { id: marks.key(1), note: "p", tone: Ink { depth: 0 } }
+      unless conflict on key else skip
+    let t = x.tone
+    return 0

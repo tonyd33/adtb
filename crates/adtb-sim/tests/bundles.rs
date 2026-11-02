@@ -3818,9 +3818,9 @@ fn reader_fixtures(dir: &str, extension: &str) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-/// A stored row bound by any construct, read through any access, is a read `enable` sees.
+/// Assert a reader of a row each binder binds, through each access, is stale once `Dye` is enabled.
 #[test]
-fn every_path_binding_a_stored_row_reports_the_fields_read_through_it() {
+fn each_binder_with_each_access_of_tone_is_stale_after_enable() {
     let accesses = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pinned-readers/accesses.txt"),
     )
@@ -3865,7 +3865,7 @@ fn every_path_binding_a_stored_row_reports_the_fields_read_through_it() {
         };
         for clauses in headers {
             for (access, text) in &accesses {
-                if !every && name != "upsert-old" && *access != "direct" {
+                if !every && !both_paths(name) && *access != "direct" {
                     continue;
                 }
                 seed += 1;
@@ -3881,7 +3881,7 @@ fn every_path_binding_a_stored_row_reports_the_fields_read_through_it() {
     let pairs = if every {
         binders.len() * accesses.len()
     } else {
-        binders.len() + accesses.len() - 1
+        binders.len() + (accesses.len() - 1) * binders.iter().filter(|(n, _)| both_paths(n)).count()
     };
     assert_eq!(pairs, reached.len(), "every selected pair ran");
     assert_eq!(
@@ -3895,6 +3895,34 @@ fn every_path_binding_a_stored_row_reports_the_fields_read_through_it() {
         ],
         binders.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
     );
+    assert_eq!(
+        vec![
+            "direct",
+            "fn-row",
+            "fn-field",
+            "case",
+            "for",
+            "for-capture",
+            "fn-capture",
+            "with-read",
+            "whole-compare",
+            "sole-case",
+            "known-case",
+            "unused-arg",
+            "unused-fn",
+            "other-field",
+            "dead-if",
+            "dead-arm",
+            "singleton-source",
+            "empty-source",
+        ],
+        accesses.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+    );
+}
+
+/// Returns whether a default run takes every access through binder `name`.
+fn both_paths(name: &str) -> bool {
+    name == "rel" || name == "upsert-old"
 }
 
 #[test]
@@ -3935,6 +3963,8 @@ fn a_sole_access_shape_blocks_enable_only_when_it_reads_the_field() {
             "returned-with-copy",
             "selected-pure",
             "sole-upsert-old-depth",
+            "unused-let-field",
+            "unused-let-fn",
             "with-copy",
             "with-copy-then-note",
         ]),

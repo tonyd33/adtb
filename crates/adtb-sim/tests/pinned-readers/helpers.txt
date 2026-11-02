@@ -1,3 +1,6 @@
 fn row_depth (r: Mark) -> I64 = r.tone.depth + 1
 fn tone_depth (t: Tone) -> I64 = t.depth + 1
 fn applied (f: I64 -> I64) -> I64 = f(1)
+fn ignored (t: Tone) -> I64 = 8
+fn some_one () -> Option I64 = Some { value: 1 }
+fn ignored_fn (f: I64 -> I64) -> I64 = 8
