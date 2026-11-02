@@ -17,7 +17,7 @@ use adtb_lang::evolve::Source;
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 
-use api::{once, options, printed, query, run};
+use api::{once, options, printed, query, results, run};
 
 const V1: &str = r"module auth
 add module auth
@@ -4163,4 +4163,98 @@ fn a_sole_access_shape_blocks_enable_only_when_it_reads_the_field() {
         ]),
         ran,
     );
+}
+
+#[test]
+fn a_field_read_through_try_reads_that_field_and_a_returned_or_read_tier_blocks() {
+    let log = [V1, ADD_GOLD, ENABLE_GOLD];
+    let name_only = "import auth
+query q () -> Set Text = from u in users select match try u
+  | Ok o -> o.value.name
+  | Err _ -> \"none\"
+";
+    once(29, |rt| {
+        let db = opened(&rt, &log, vec![bundle("web-1.0", &[V1], "", name_only)]);
+        results(&db, r#"insert users { name: "gil", tier: Gold }"#);
+        assert_eq!(vec!["\"gil\""], rows(call(&db, "web-1.0", 1, &[])));
+    });
+    let tier = "import auth
+query q () -> Set Text = from u in users select match try u
+  | Ok o -> (match o.value.tier | Free -> \"f\" | Paid -> \"p\")
+  | Err _ -> \"none\"
+";
+    let whole =
+        "import auth\nquery q () -> Set (Result User Fault) = from u in users select try u\n";
+    for (seed, body) in [(30, tier), (32, whole)] {
+        once(seed, |rt| {
+            assert_eq!(
+                RejectReason::BundleStale {
+                    bundle: "web-1.0".into(),
+                    ctor: "Tier.Gold".into()
+                },
+                refusal(
+                    open(&rt, &log, vec![bundle("web-1.0", &[V1], "", body)]),
+                    "web-1.0"
+                ),
+                "{body}"
+            );
+        });
+    }
+}
+
+#[test]
+fn a_pinned_insert_built_under_a_selection_or_fix_is_refused_lacking_the_added_field() {
+    let log = [V1, ADD_VERIFIED, DEFAULT_VERIFIED];
+    let selected = "import auth
+txn selected (e: Text) -> Text =
+  transact
+    insert identities from ([EmailPass { id: identities.key(1), user: users.key(1), email: e }].EmailPass)
+    return e
+";
+    let fixed = "import auth
+txn fixed (e: Text) -> Text =
+  transact
+    insert identities from (fix s = [EmailPass { id: identities.key(2), user: users.key(1), email: e }] in s)
+    return e
+";
+    for (seed, name, body) in [(31, "selected", selected), (33, "fixed", fixed)] {
+        once(seed, |rt| {
+            assert_eq!(
+                RejectReason::Untranslatable {
+                    query: format!("web-1.0::{name}"),
+                    detail: "across `add field Identity.EmailPass.verified: Bool fill false`: it builds `Identity.EmailPass` without field `verified`, outside a write".into(),
+                },
+                refusal(
+                    open(&rt, &log, vec![bundle("web-1.0", &[V1], "", body)]),
+                    "web-1.0"
+                ),
+            );
+        });
+    }
+}
+
+#[test]
+fn a_pinned_selection_reads_its_constructors_after_a_removal_moves_their_positions() {
+    let add = "module auth\nadd type T { id: Key ts } = A { n: I32 } | B { n: I32 } | C { n: I32 }\nadd relation ts : T key id generate sequence\n";
+    let deprecate = "module auth\ndeprecate ts.A\n";
+    let remove = "module auth\nremove constructor T.A\n";
+    let body = "import auth
+query built_b () -> Set I32 = from x in [B { id: ts.key(9), n: 7 }].B select x.n
+query read_b () -> Set I32 = from x in (from r in ts select r).B select x.n
+query named_b () -> Set I32 = from x in ts.B select x.n
+query built_c () -> Set I32 = from x in [B { id: ts.key(9), n: 7 }, C { id: ts.key(8), n: 8 }].C select x.n
+query read_a () -> Set I32 = from x in (from r in ts select r).A select x.n
+";
+    once(34, |rt| {
+        let log = [V1, add, deprecate, remove];
+        let db = opened(&rt, &log, vec![bundle("web-1.0", &[V1, add], "", body)]);
+        results(
+            &db,
+            "insert ts from [B { id: ts.key(1), n: 2 }, C { id: ts.key(2), n: 3 }]",
+        );
+        let expected: [&[&str]; 5] = [&["7"], &["2"], &["2"], &["8"], &[]];
+        for (ordinal, want) in (1..).zip(expected) {
+            assert_eq!(want, rows(call(&db, "web-1.0", ordinal, &[])), "{ordinal}");
+        }
+    });
 }

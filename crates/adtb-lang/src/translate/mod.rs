@@ -501,6 +501,7 @@ struct Given {
 }
 
 /// Returns `kind`'s terms that stay the value of a write's row: a branch, a body, an element.
+#[deny(clippy::wildcard_enum_match_arm)]
 fn carries(kind: &Kind) -> Vec<bool> {
     let n = kind.children().len();
     let mut out = vec![false; n];
@@ -512,7 +513,46 @@ fn carries(kind: &Kind) -> Vec<bool> {
         Kind::Let(..) | Kind::LetBang(..) | Kind::For(..) | Kind::Block(..) => out[1] = true,
         Kind::Case { .. } => out.iter_mut().skip(1).for_each(|b| *b = true),
         Kind::Singleton(_) | Kind::Union(..) => out.iter_mut().for_each(|b| *b = true),
-        _ => {}
+        Kind::Var(..)
+        | Kind::Const(..)
+        | Kind::Prim(..)
+        | Kind::Record(..)
+        | Kind::Field(..)
+        | Kind::Ctor { .. }
+        | Kind::Lam(..)
+        | Kind::App(..)
+        | Kind::Call { .. }
+        | Kind::Caller
+        | Kind::Key(..)
+        | Kind::KeyOf(..)
+        | Kind::Deref { .. }
+        | Kind::Tag(..)
+        | Kind::Try(..)
+        | Kind::Rel(..)
+        | Kind::Transition(..)
+        | Kind::EmptySet
+        | Kind::IsEmpty(..)
+        | Kind::Exists(..)
+        | Kind::Agg { .. }
+        | Kind::Group { .. }
+        | Kind::Top { .. }
+        | Kind::Fresh(..)
+        | Kind::Only(..)
+        | Kind::At { .. }
+        | Kind::Present { .. }
+        | Kind::Restrict(..)
+        | Kind::Fix(..)
+        | Kind::Reject(..)
+        | Kind::Unreachable
+        | Kind::Skip
+        | Kind::Insert(..)
+        | Kind::Delete(..)
+        | Kind::Replace(..)
+        | Kind::Upsert { .. }
+        | Kind::Rejects { .. }
+        | Kind::Par(..)
+        | Kind::Fail(..)
+        | Kind::Transact(..) => {}
     }
     out
 }

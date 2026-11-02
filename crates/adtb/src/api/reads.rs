@@ -1,5 +1,7 @@
 //! What the callables of a bundle read and write, as a reader of the catalog states it.
 
+#![deny(clippy::wildcard_enum_match_arm)]
+
 use std::collections::BTreeSet;
 
 use adtb_lang::check::Program;
@@ -71,18 +73,15 @@ impl Reads {
         let mut stack = vec![root];
         while let Some(t) = stack.pop() {
             if seen.insert(t) {
-                if let Kind::Call { func, .. } = terms.kind(t) {
-                    calls.insert(*func);
-                }
-                self.reads_of(schema, terms, t);
+                self.reads_of(schema, terms, t, &mut calls);
                 stack.extend(terms.children(t));
             }
         }
         calls
     }
 
-    /// Record the reads `t` makes itself.
-    fn reads_of(&mut self, schema: &Schema, terms: &Terms, t: Tm) {
+    /// Record the reads `t` makes itself and add the function it calls to `calls`.
+    fn reads_of(&mut self, schema: &Schema, terms: &Terms, t: Tm, calls: &mut BTreeSet<FnId>) {
         match terms.kind(t) {
             Kind::Rel(r, set) | Kind::Transition(_, r, set) => {
                 self.reached.insert(*r);
@@ -120,7 +119,51 @@ impl Reads {
                     self.whole.insert(r);
                 }
             }
-            _ => {}
+            Kind::Call { func, .. } => {
+                calls.insert(*func);
+            }
+            Kind::Var(..)
+            | Kind::Const(..)
+            | Kind::Prim(..)
+            | Kind::Record(..)
+            | Kind::Field(..)
+            | Kind::Ctor { .. }
+            | Kind::Case { .. }
+            | Kind::If(..)
+            | Kind::Let(..)
+            | Kind::Lam(..)
+            | Kind::App(..)
+            | Kind::Caller
+            | Kind::Key(..)
+            | Kind::KeyOf(..)
+            | Kind::Tag(..)
+            | Kind::Try(..)
+            | Kind::Restrict(..)
+            | Kind::EmptySet
+            | Kind::Singleton(..)
+            | Kind::Union(..)
+            | Kind::For(..)
+            | Kind::IsEmpty(..)
+            | Kind::Exists(..)
+            | Kind::Agg { .. }
+            | Kind::Group { .. }
+            | Kind::Top { .. }
+            | Kind::Fix(..)
+            | Kind::Fresh(..)
+            | Kind::Only(..)
+            | Kind::At { .. }
+            | Kind::Present { .. }
+            | Kind::Reject(..)
+            | Kind::Unreachable
+            | Kind::Skip
+            | Kind::Insert(..)
+            | Kind::Delete(..)
+            | Kind::Replace(..)
+            | Kind::Rejects { .. }
+            | Kind::Par(..)
+            | Kind::Fail(..)
+            | Kind::Block(..)
+            | Kind::Transact(..) => {}
         }
     }
 
@@ -131,25 +174,71 @@ impl Reads {
                 self.written(schema, *r, element(terms.ty(*rows)));
             }
             Kind::Replace(r, _, f) => {
-                let out = match terms.ty(*f) {
-                    Ty::Fn(_, out) => Some(&**out),
-                    _ => None,
+                let out = if let Ty::Fn(_, out) = terms.ty(*f) {
+                    Some(&**out)
+                } else {
+                    None
                 };
                 self.written(schema, *r, out);
             }
             Kind::Rejects { into, .. } => self.written(schema, *into, None),
-            _ => {}
+            Kind::Var(..)
+            | Kind::Const(..)
+            | Kind::Prim(..)
+            | Kind::Record(..)
+            | Kind::Field(..)
+            | Kind::Ctor { .. }
+            | Kind::Case { .. }
+            | Kind::If(..)
+            | Kind::Let(..)
+            | Kind::Lam(..)
+            | Kind::App(..)
+            | Kind::Call { .. }
+            | Kind::Caller
+            | Kind::Key(..)
+            | Kind::KeyOf(..)
+            | Kind::Deref { .. }
+            | Kind::Tag(..)
+            | Kind::Try(..)
+            | Kind::Rel(..)
+            | Kind::Transition(..)
+            | Kind::Restrict(..)
+            | Kind::EmptySet
+            | Kind::Singleton(..)
+            | Kind::Union(..)
+            | Kind::For(..)
+            | Kind::IsEmpty(..)
+            | Kind::Exists(..)
+            | Kind::Agg { .. }
+            | Kind::Group { .. }
+            | Kind::Top { .. }
+            | Kind::Fix(..)
+            | Kind::Fresh(..)
+            | Kind::Only(..)
+            | Kind::At { .. }
+            | Kind::Present { .. }
+            | Kind::Reject(..)
+            | Kind::Unreachable
+            | Kind::Skip
+            | Kind::Delete(..)
+            | Kind::Par(..)
+            | Kind::Fail(..)
+            | Kind::LetBang(..)
+            | Kind::Block(..)
+            | Kind::Transact(..) => {}
         }
     }
 
     /// Record a write into `r` of rows of type `row`: into its constructors, else into every
     /// constructor of `r`.
     fn written(&mut self, schema: &Schema, r: RelId, row: Option<&Ty>) {
-        let ctors = match row {
-            Some(Ty::Data {
-                ctors: Some(cs), ..
-            }) => cs.clone(),
-            _ => (0..ctor_count(schema, r)).collect(),
+        let ctors = if let Some(Ty::Data {
+            ctors: Some(cs), ..
+        }) = row
+        {
+            cs.clone()
+        } else {
+            (0..ctor_count(schema, r)).collect()
         };
         self.writes.extend(ctors.into_iter().map(|c| (r, c)));
     }
@@ -226,26 +315,71 @@ impl Reads {
 /// Returns the relation of the upsert `t` when its conflict branch can leave the stored row in its
 /// result.
 fn keeping_upsert(terms: &Terms, t: Tm) -> Option<RelId> {
-    let upsert = match terms.kind(t) {
-        Kind::Rejects { insert, .. } => *insert,
-        _ => t,
-    };
-    match terms.kind(upsert) {
+    match terms.kind(t) {
+        Kind::Rejects { insert, .. } => keeping_upsert(terms, *insert),
         Kind::Upsert {
             rel,
             old,
             otherwise,
             ..
-        } if !terms.replaces(*otherwise, *old) => Some(*rel),
-        _ => None,
+        } => (!terms.replaces(*otherwise, *old)).then_some(*rel),
+        Kind::Var(..)
+        | Kind::Const(..)
+        | Kind::Prim(..)
+        | Kind::Record(..)
+        | Kind::Field(..)
+        | Kind::Ctor { .. }
+        | Kind::Case { .. }
+        | Kind::If(..)
+        | Kind::Let(..)
+        | Kind::Lam(..)
+        | Kind::App(..)
+        | Kind::Call { .. }
+        | Kind::Caller
+        | Kind::Key(..)
+        | Kind::KeyOf(..)
+        | Kind::Deref { .. }
+        | Kind::Tag(..)
+        | Kind::Try(..)
+        | Kind::Rel(..)
+        | Kind::Transition(..)
+        | Kind::Restrict(..)
+        | Kind::EmptySet
+        | Kind::Singleton(..)
+        | Kind::Union(..)
+        | Kind::For(..)
+        | Kind::IsEmpty(..)
+        | Kind::Exists(..)
+        | Kind::Agg { .. }
+        | Kind::Group { .. }
+        | Kind::Top { .. }
+        | Kind::Fix(..)
+        | Kind::Fresh(..)
+        | Kind::Only(..)
+        | Kind::At { .. }
+        | Kind::Present { .. }
+        | Kind::Reject(..)
+        | Kind::Unreachable
+        | Kind::Skip
+        | Kind::Insert(..)
+        | Kind::Delete(..)
+        | Kind::Replace(..)
+        | Kind::Par(..)
+        | Kind::Fail(..)
+        | Kind::LetBang(..)
+        | Kind::Block(..)
+        | Kind::Transact(..) => None,
     }
 }
 
 /// Returns whether `t` names `row` anywhere.
 fn names_row(terms: &Terms, t: Tm, row: Var) -> bool {
-    terms.search(t, |s| match terms.kind(s) {
-        Kind::Var(v) if *v == row => Search::Found,
-        k => Search::Into(k.children()),
+    terms.search(t, |s| {
+        if matches!(terms.kind(s), Kind::Var(v) if *v == row) {
+            Search::Found
+        } else {
+            Search::Into(terms.children(s))
+        }
     })
 }
 
@@ -259,6 +393,7 @@ fn children(terms: &Terms, t: Tm) -> Vec<(Tm, bool)> {
         | Kind::Key(x)
         | Kind::KeyOf(_, x)
         | Kind::Tag(x)
+        | Kind::Try(x)
         | Kind::Restrict(x, _)
         | Kind::Only(x)
         | Kind::IsEmpty(x)
@@ -312,7 +447,25 @@ fn children(terms: &Terms, t: Tm) -> Vec<(Tm, bool)> {
         } => through(&[*rows, *otherwise]),
         Kind::Rejects { insert, .. } => through(&[*insert]),
         Kind::Par(ws) => through(ws),
-        _ => terms.children(t).into_iter().map(|c| (c, false)).collect(),
+        Kind::Var(..)
+        | Kind::Const(..)
+        | Kind::Prim(..)
+        | Kind::Record(..)
+        | Kind::Ctor { .. }
+        | Kind::App(..)
+        | Kind::Call { .. }
+        | Kind::Caller
+        | Kind::Deref { .. }
+        | Kind::Rel(..)
+        | Kind::Transition(..)
+        | Kind::EmptySet
+        | Kind::Fresh(..)
+        | Kind::Reject(..)
+        | Kind::Unreachable
+        | Kind::Skip
+        | Kind::Fail(..)
+        | Kind::Block(..)
+        | Kind::Transact(..) => terms.children(t).into_iter().map(|c| (c, false)).collect(),
     }
 }
 
@@ -351,9 +504,10 @@ fn rows_in(ty: &Ty, out: &mut BTreeSet<TypeId>) {
 
 /// Returns the element type of a set type.
 fn element(ty: &Ty) -> Option<&Ty> {
-    match ty {
-        Ty::Set(t) | Ty::NonEmpty(t) => Some(t),
-        _ => None,
+    if let Ty::Set(t) | Ty::NonEmpty(t) = ty {
+        Some(t)
+    } else {
+        None
     }
 }
 

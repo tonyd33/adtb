@@ -328,7 +328,9 @@ relations it ranges over whole, the references it follows, the fields
 it reads and the constructor relations it can write into, all named as
 at its version. Ranging over a relation reads none of its fields: a
 reader that returns, compares or passes on whole rows states each of
-their fields as read. `Catalog::register` records one and `Catalog::release`
+their fields as read. A delete writes into no constructor, since a
+deprecated constructor's rows can still be deleted.
+`Catalog::register` records one and `Catalog::release`
 releases it. Whoever registers bundles states their readers through
 these calls; the catalog derives nothing from `catalog::bundles`.
 

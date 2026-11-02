@@ -288,11 +288,13 @@ impl<'p, 'a> Walk<'p, 'a> {
     }
 
     /// Returns `kind` with its children, variables and named objects at the later version.
+    #[deny(clippy::wildcard_enum_match_arm)]
     fn generic(&mut self, out: &mut Terms, kind: &Kind, site: Option<Site>) -> R<Kind> {
         let carried = carries(kind);
-        let bound = match kind {
-            Kind::Let(v, ..) => self.stored.get(v).map(|&rel| Site { rel, old: None }),
-            _ => None,
+        let bound = if let Kind::Let(v, ..) = kind {
+            self.stored.get(v).map(|&rel| Site { rel, old: None })
+        } else {
+            None
         };
         let mut children = Vec::new();
         for (i, (c, keeps)) in kind.children().into_iter().zip(carried).enumerate() {
@@ -324,7 +326,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                 Kind::Transition(tr, self.relation(r)?, self.map.set(def, &set, false))
             }
             Kind::Restrict(x, set) => {
-                let Ty::Data { def, .. } = out.ty(x).clone() else {
+                let Ty::Data { def, .. } = elem(out.ty(x)).clone() else {
                     return Ok(Kind::Restrict(x, set));
                 };
                 let from = self.earlier_def(def);
@@ -380,7 +382,46 @@ impl<'p, 'a> Walk<'p, 'a> {
                 source,
                 body,
             },
-            other => other,
+            same @ (Kind::Var(..)
+            | Kind::Const(..)
+            | Kind::Prim(..)
+            | Kind::Record(..)
+            | Kind::Field(..)
+            | Kind::Ctor { .. }
+            | Kind::Case { .. }
+            | Kind::If(..)
+            | Kind::Let(..)
+            | Kind::Lam(..)
+            | Kind::App(..)
+            | Kind::Caller
+            | Kind::Key(..)
+            | Kind::Deref { .. }
+            | Kind::Tag(..)
+            | Kind::Try(..)
+            | Kind::EmptySet
+            | Kind::Singleton(..)
+            | Kind::Union(..)
+            | Kind::For(..)
+            | Kind::IsEmpty(..)
+            | Kind::Exists(..)
+            | Kind::Agg { .. }
+            | Kind::Group { .. }
+            | Kind::Top { .. }
+            | Kind::Fix(..)
+            | Kind::Only(..)
+            | Kind::At { .. }
+            | Kind::Present { .. }
+            | Kind::Reject(..)
+            | Kind::Unreachable
+            | Kind::Skip
+            | Kind::Insert(..)
+            | Kind::Replace(..)
+            | Kind::Upsert { .. }
+            | Kind::Par(..)
+            | Kind::Fail(..)
+            | Kind::LetBang(..)
+            | Kind::Block(..)
+            | Kind::Transact(..)) => same,
         })
     }
 
@@ -421,6 +462,7 @@ impl<'p, 'a> Walk<'p, 'a> {
 
     /// Refuse a comparison, grouping, ordering or union of values that do not carry whole, and a
     /// count, fold, `top`, `take` or `only` of a set whose elements may merge at the pin.
+    #[deny(clippy::wildcard_enum_match_arm)]
     fn compared(&self, kind: &Kind) -> R<()> {
         let check = |t: Tm, ordered: bool| {
             self.map
@@ -452,12 +494,52 @@ impl<'p, 'a> Walk<'p, 'a> {
                 self.distinct(*source)?;
                 match op {
                     Agg::Min | Agg::Max => check(*body, true),
-                    _ => Ok(()),
+                    Agg::Count | Agg::Sum | Agg::Avg | Agg::User(_) => Ok(()),
                 }
             }
             Kind::Only(x) => self.distinct(*x),
             Kind::Call { args, .. } => args.iter().try_for_each(|&x| check(x, false)),
-            _ => Ok(()),
+            Kind::Var(..)
+            | Kind::Const(..)
+            | Kind::Prim(..)
+            | Kind::Record(..)
+            | Kind::Field(..)
+            | Kind::Ctor { .. }
+            | Kind::Case { .. }
+            | Kind::If(..)
+            | Kind::Let(..)
+            | Kind::Lam(..)
+            | Kind::App(..)
+            | Kind::Caller
+            | Kind::Key(..)
+            | Kind::KeyOf(..)
+            | Kind::Deref { .. }
+            | Kind::Tag(..)
+            | Kind::Try(..)
+            | Kind::Rel(..)
+            | Kind::Transition(..)
+            | Kind::Restrict(..)
+            | Kind::EmptySet
+            | Kind::Singleton(..)
+            | Kind::For(..)
+            | Kind::IsEmpty(..)
+            | Kind::Exists(..)
+            | Kind::Fix(..)
+            | Kind::Fresh(..)
+            | Kind::At { .. }
+            | Kind::Reject(..)
+            | Kind::Unreachable
+            | Kind::Skip
+            | Kind::Insert(..)
+            | Kind::Delete(..)
+            | Kind::Replace(..)
+            | Kind::Upsert { .. }
+            | Kind::Rejects { .. }
+            | Kind::Par(..)
+            | Kind::Fail(..)
+            | Kind::LetBang(..)
+            | Kind::Block(..)
+            | Kind::Transact(..) => Ok(()),
         }
     }
 
