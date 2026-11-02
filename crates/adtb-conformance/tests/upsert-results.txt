@@ -1,0 +1,70 @@
+plain-skip	plain	skip	match	a	Plain { id: notes.key(1), body: "a" };Plain { id: notes.key(9), body: "other" }
+link-skip	link	skip	match	u	Link { id: notes.key(1), url: "u" };Plain { id: notes.key(9), body: "other" }
+plain-unfiltered	plain	update old set new	field	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+link-unfiltered	link	update old set new	field	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+plain-target-only	plain	update old set Plain { body: "x" }	field	x	Plain { id: notes.key(1), body: "x" };Plain { id: notes.key(9), body: "other" }
+link-target-only	link	update old set Plain { body: "x" }	field	x	Plain { id: notes.key(1), body: "x" };Plain { id: notes.key(9), body: "other" }
+plain-same	plain	update old set old	match	a	Plain { id: notes.key(1), body: "a" };Plain { id: notes.key(9), body: "other" }
+link-same	link	update old set old	match	u	Link { id: notes.key(1), url: "u" };Plain { id: notes.key(9), body: "other" }
+plain-filter-true	plain	update old where 1 == 1 set new	match	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+link-filter-true	link	update old where 1 == 1 set new	match	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+plain-filter-false	plain	update old where 1 == 2 set new	match	a	Plain { id: notes.key(1), body: "a" };Plain { id: notes.key(9), body: "other" }
+link-filter-false	link	update old where 1 == 2 set new	match	u	Link { id: notes.key(1), url: "u" };Plain { id: notes.key(9), body: "other" }
+plain-filter-on-old	plain	update old where key old == notes.key(9) set new	match	a	Plain { id: notes.key(1), body: "a" };Plain { id: notes.key(9), body: "other" }
+link-filter-on-old	link	update old where key old == notes.key(9) set new	match	u	Link { id: notes.key(1), url: "u" };Plain { id: notes.key(9), body: "other" }
+plain-ranged-all	plain	update x in notes.Plain set Plain { body: "x" }	match	x	Plain { id: notes.key(1), body: "x" };Plain { id: notes.key(9), body: "x" }
+link-ranged-all	link	update x in notes.Plain set Plain { body: "x" }	match	u	Link { id: notes.key(1), url: "u" };Plain { id: notes.key(9), body: "x" }
+plain-ranged-match	plain	update x in notes.Plain where x.body == "a" set Plain { body: "x" }	match	x	Plain { id: notes.key(1), body: "x" };Plain { id: notes.key(9), body: "other" }
+link-ranged-match	link	update x in notes.Plain where x.body == "a" set Plain { body: "x" }	match	u	Link { id: notes.key(1), url: "u" };Plain { id: notes.key(9), body: "other" }
+plain-ranged-miss	plain	update x in notes.Plain where x.body == "zzz" set Plain { body: "x" }	match	a	Plain { id: notes.key(1), body: "a" };Plain { id: notes.key(9), body: "other" }
+link-ranged-miss	link	update x in notes.Plain where x.body == "zzz" set Plain { body: "x" }	match	u	Link { id: notes.key(1), url: "u" };Plain { id: notes.key(9), body: "other" }
+plain-ranged-other	plain	update x in notes.Plain where x.body == "other" set Plain { body: "z" }	match	a	Plain { id: notes.key(1), body: "a" };Plain { id: notes.key(9), body: "z" }
+link-ranged-other	link	update x in notes.Plain where x.body == "other" set Plain { body: "z" }	match	u	Link { id: notes.key(1), url: "u" };Plain { id: notes.key(9), body: "z" }
+plain-ranged-link	plain	update x in notes.Link set Link { url: "y" }	match	a	Plain { id: notes.key(1), body: "a" };Plain { id: notes.key(9), body: "other" }
+link-ranged-link	link	update x in notes.Link set Link { url: "y" }	match	y	Link { id: notes.key(1), url: "y" };Plain { id: notes.key(9), body: "other" }
+plain-delete	plain	delete old	deleted	-	Plain { id: notes.key(1), body: "a" };Plain { id: notes.key(9), body: "other" }
+link-delete	link	delete old	deleted	-	Link { id: notes.key(1), url: "u" };Plain { id: notes.key(9), body: "other" }
+plain-delete-filter	plain	delete old where 1 == 2	deleted	-	Plain { id: notes.key(1), body: "a" };Plain { id: notes.key(9), body: "other" }
+link-delete-filter	link	delete old where 1 == 2	deleted	-	Link { id: notes.key(1), url: "u" };Plain { id: notes.key(9), body: "other" }
+plain-delete-ranged	plain	delete x in notes where 1 == 2	deleted	-	Plain { id: notes.key(1), body: "a" };Plain { id: notes.key(9), body: "other" }
+link-delete-ranged	link	delete x in notes where 1 == 2	deleted	-	Link { id: notes.key(1), url: "u" };Plain { id: notes.key(9), body: "other" }
+plain-delete-other	plain	delete c in copies	match	a	Plain { id: notes.key(1), body: "a" };Plain { id: notes.key(9), body: "other" }
+link-delete-other	link	delete c in copies	match	u	Link { id: notes.key(1), url: "u" };Plain { id: notes.key(9), body: "other" }
+plain-fail	plain	fail "x"	field	!UserError	Plain { id: notes.key(1), body: "a" };Plain { id: notes.key(9), body: "other" }
+link-fail	link	fail "x"	field	!UserError	Link { id: notes.key(1), url: "u" };Plain { id: notes.key(9), body: "other" }
+plain-if-write-true	plain	if 1 == 1 then update old set new else skip	match	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+link-if-write-true	link	if 1 == 1 then update old set new else skip	match	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+plain-if-write-false	plain	if 1 == 2 then update old set new else skip	match	a	Plain { id: notes.key(1), body: "a" };Plain { id: notes.key(9), body: "other" }
+link-if-write-false	link	if 1 == 2 then update old set new else skip	match	u	Link { id: notes.key(1), url: "u" };Plain { id: notes.key(9), body: "other" }
+plain-if-write-fail	plain	if 1 == 1 then update old set new else fail "x"	field	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+link-if-write-fail	link	if 1 == 1 then update old set new else fail "x"	field	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+plain-if-fail-taken	plain	if 1 == 2 then update old set new else fail "x"	field	!UserError	Plain { id: notes.key(1), body: "a" };Plain { id: notes.key(9), body: "other" }
+link-if-fail-taken	link	if 1 == 2 then update old set new else fail "x"	field	!UserError	Link { id: notes.key(1), url: "u" };Plain { id: notes.key(9), body: "other" }
+plain-if-two-writes	plain	if 1 == 1 then update old set new else update old set Plain { body: "x" }	field	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+link-if-two-writes	link	if 1 == 1 then update old set new else update old set Plain { body: "x" }	field	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+plain-if-filter-arm	plain	if 1 == 1 then update old where 1 == 2 set new else update old set new	match	a	Plain { id: notes.key(1), body: "a" };Plain { id: notes.key(9), body: "other" }
+link-if-filter-arm	link	if 1 == 1 then update old where 1 == 2 set new else update old set new	match	u	Link { id: notes.key(1), url: "u" };Plain { id: notes.key(9), body: "other" }
+plain-match-both	plain	match old | Plain p -> update p set Plain { p with body: "m" } | Link l -> update l set Plain { body: "m" }	field	m	Plain { id: notes.key(1), body: "m" };Plain { id: notes.key(9), body: "other" }
+link-match-both	link	match old | Plain p -> update p set Plain { p with body: "m" } | Link l -> update l set Plain { body: "m" }	field	m	Plain { id: notes.key(1), body: "m" };Plain { id: notes.key(9), body: "other" }
+plain-match-link-skip	plain	match old | Plain p -> update p set new | Link l -> skip	match	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+link-match-link-skip	link	match old | Plain p -> update p set new | Link l -> skip	match	u	Link { id: notes.key(1), url: "u" };Plain { id: notes.key(9), body: "other" }
+plain-match-plain-skip	plain	match old | Plain p -> skip | Link l -> update l set new	match	a	Plain { id: notes.key(1), body: "a" };Plain { id: notes.key(9), body: "other" }
+link-match-plain-skip	link	match old | Plain p -> skip | Link l -> update l set new	match	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+plain-match-filter-arm	plain	match old | Plain p -> update p where 1 == 2 set new | Link l -> update l set new	match	a	Plain { id: notes.key(1), body: "a" };Plain { id: notes.key(9), body: "other" }
+link-match-filter-arm	link	match old | Plain p -> update p where 1 == 2 set new | Link l -> update l set new	match	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+plain-match-fail-arm	plain	match old | Plain p -> update p set new | Link l -> fail "x"	field	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+link-match-fail-arm	link	match old | Plain p -> update p set new | Link l -> fail "x"	field	!UserError	Link { id: notes.key(1), url: "u" };Plain { id: notes.key(9), body: "other" }
+plain-match-new	plain	match new | Plain p -> update old set new	field	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+link-match-new	link	match new | Plain p -> update old set new	field	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+plain-match-or	plain	match old | Plain o | Link o -> update o set new	field	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+link-match-or	link	match old | Plain o | Link o -> update o set new	field	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+plain-match-guard	plain	match old | Plain p if p.body == "a" -> update p set new | Plain p -> update p set Plain { body: "x" } | Link l -> update l set new	field	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+link-match-guard	link	match old | Plain p if p.body == "a" -> update p set new | Plain p -> update p set Plain { body: "x" } | Link l -> update l set new	field	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+plain-match-guard-skip	plain	match old | Plain p if p.body == "zzz" -> update p set new | Plain p -> skip | Link l -> update l set new	match	a	Plain { id: notes.key(1), body: "a" };Plain { id: notes.key(9), body: "other" }
+link-match-guard-skip	link	match old | Plain p if p.body == "zzz" -> update p set new | Plain p -> skip | Link l -> update l set new	match	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+plain-seq-write	plain	(update old set new, skip)	field	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+link-seq-write	link	(update old set new, skip)	field	new	Plain { id: notes.key(1), body: "new" };Plain { id: notes.key(9), body: "other" }
+plain-seq-filter	plain	(update old where 1 == 2 set new, skip)	match	a	Plain { id: notes.key(1), body: "a" };Plain { id: notes.key(9), body: "other" }
+link-seq-filter	link	(update old where 1 == 2 set new, skip)	match	u	Link { id: notes.key(1), url: "u" };Plain { id: notes.key(9), body: "other" }
+plain-seq-fail	plain	(update old where 1 == 2 set new, fail "x")	field	!UserError	Plain { id: notes.key(1), body: "a" };Plain { id: notes.key(9), body: "other" }
+link-seq-fail	link	(update old where 1 == 2 set new, fail "x")	field	!UserError	Link { id: notes.key(1), url: "u" };Plain { id: notes.key(9), body: "other" }

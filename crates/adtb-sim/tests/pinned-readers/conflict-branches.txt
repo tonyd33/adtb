@@ -33,3 +33,7 @@ replaced-set	free	update old set new	Plain { id: notes.key(1), body: "new" }	url
 replaced-rejects	free	update old set new rejects into rejected	Plain { id: notes.key(1), body: "new" }	url	written	from (from u in users select { id: notes.key(1), body: "new" })	Set Note	return written	Plain { id: notes.key(1), body: "new" }
 failed-returned	free	fail "x"	Link { id: notes.key(1), url: "u" }	url	written	-	Note	return written	!x
 kept-with-copy	uses	skip		url	written	-	I64	insert notes.Plain { written with id: notes.key(2) }; return 0	0
+kept-filter	uses	update old where 1 == 2 set new		url	written	-	Note	return written	0
+kept-filter-field	uses	update old where 1 == 2 set new		url	written	-	Text	return written.body	0
+kept-ranged	uses	update x in notes.Plain where x.body == "zzz" set Plain { body: "x" }		url	written	-	Note	return written	0
+kept-ranged-field	uses	update x in notes.Plain where x.body == "zzz" set Plain { body: "x" }		url	written	-	Text	return written.body	0

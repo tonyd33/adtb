@@ -313,6 +313,8 @@ struct Renaming {
     copies: HashMap<Tm, Tm>,
 }
 
+type EndTest = dyn Fn(&Terms, Tm, &mut BTreeSet<Var>) -> bool;
+
 /// The free variables of terms of one arena, kept across calls.
 #[derive(Debug, Default)]
 pub struct Frees(HashMap<Tm, Rc<BTreeSet<Var>>>);
@@ -355,6 +357,51 @@ impl Terms {
         let tm = self.add(Kind::Field(row, field), ty);
         self.transport_fields.insert(tm);
         tm
+    }
+
+    /// Returns whether `rows` names only `row`.
+    #[must_use]
+    pub fn targets(&self, rows: Tm, row: Var) -> bool {
+        matches!(self.kind(rows), Kind::Singleton(x) if matches!(self.kind(*x), Kind::Var(v) if *v == row))
+    }
+
+    /// Returns whether every completion of the write `t` replaces `row`, a value matched from
+    /// `row` standing for it.
+    #[must_use]
+    pub fn replaces(&self, t: Tm, row: Var) -> bool {
+        self.replaces_any(t, &mut BTreeSet::from([row]))
+    }
+
+    fn replaces_any(&self, t: Tm, rows: &mut BTreeSet<Var>) -> bool {
+        self.every_end(t, rows, &|terms, end, rows| match terms.kind(end) {
+            Kind::Replace(_, target, _) => rows.iter().any(|&r| terms.targets(*target, r)),
+            Kind::Fail(_) => true,
+            Kind::Par(ws) => ws.iter().any(|&w| terms.replaces_any(w, rows)),
+            _ => false,
+        })
+    }
+
+    /// Returns whether `end` holds at every place `t` can finish, past its lets and branches.
+    /// Add to `rows` each binding of a value that is one of `rows`.
+    fn every_end(&self, t: Tm, rows: &mut BTreeSet<Var>, end: &EndTest) -> bool {
+        let row = &|terms: &Terms, t: Tm, rows: &mut BTreeSet<Var>| matches!(terms.kind(t), Kind::Var(v) if rows.contains(v));
+        match self.kind(t) {
+            Kind::Unreachable => true,
+            Kind::Let(x, v, w) => {
+                if self.every_end(*v, rows, row) {
+                    rows.insert(*x);
+                }
+                self.every_end(*w, rows, end)
+            }
+            Kind::If(_, a, b) => self.every_end(*a, rows, end) && self.every_end(*b, rows, end),
+            Kind::Case { scrutinee, arms } => {
+                if self.every_end(*scrutinee, rows, row) {
+                    rows.extend(arms.iter().map(|&(_, x, _)| x));
+                }
+                arms.iter().all(|&(_, _, b)| self.every_end(b, rows, end))
+            }
+            _ => end(self, t, rows),
+        }
     }
 
     /// Returns whether the checker filled in the field access `t`, which the text does not write.

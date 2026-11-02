@@ -3008,9 +3008,9 @@ fn a_conflict_branch_using_old_reads_the_relation_unless_new_constructors_are_hi
         cases.lines().filter(|l| l.contains("\tuses\t")).count(),
         cases.lines().filter(|l| l.contains("\tfree\t")).count(),
     );
-    assert_eq!((20, 15), (using, free), "the branches of the fixture");
+    assert_eq!((24, 15), (using, free), "the branches of the fixture");
     assert_eq!(
-        if every { 140 } else { 54 },
+        if every { 156 } else { 58 },
         reached.len(),
         "each selected branch reached its two outcomes under each header"
     );

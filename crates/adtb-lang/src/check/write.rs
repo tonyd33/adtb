@@ -19,7 +19,7 @@ pub(super) struct Nested {
     row: Tm,
 }
 
-/// One way a write can end: by `fail`, or with the new values its updates write per relation.
+/// One way a write can end: by `fail`, or with the new values its updates can write per relation.
 #[derive(Clone, Debug, PartialEq)]
 enum Outcome {
     Fail,
@@ -849,7 +849,8 @@ impl Checker<'_> {
         self.once = saved;
         self.scope.pop();
         let (otherwise, eff) = r?;
-        let binding = self.upsert_binding(&eff, p.rel, &p.row_ty, &old_ty, span);
+        let kept = (!self.terms.replaces(otherwise, old)).then_some(&old_ty);
+        let binding = self.upsert_binding(&eff, p.rel, &p.row_ty, kept, span);
         let binding = binding.map(|t| if p.single { t } else { Ty::Set(Box::new(t)) });
         let tm = self.change(Kind::Upsert {
             rel: p.rel,
@@ -863,13 +864,15 @@ impl Checker<'_> {
         Ok((tm, binding, Effect::done().either(eff), p.rel))
     }
 
-    /// The type of the row an upsert binds: the target's row type joined with the new values its else branch writes into the relation.
+    /// The type of the row an upsert binds: the target's row type joined with the new values its
+    /// else branch writes into the relation, and with `kept`, the type of a stored row the branch
+    /// can leave in place.
     fn upsert_binding(
         &self,
         eff: &Effect,
         rel: RelId,
         row_ty: &Ty,
-        old_ty: &Ty,
+        kept: Option<&Ty>,
         span: Span,
     ) -> R<Ty> {
         if self.cascade_closure(&eff.deletes).contains(&rel) {
@@ -878,46 +881,23 @@ impl Checker<'_> {
                 "a `let` on an upsert binds exactly one row, and this else branch can delete it",
             ));
         }
-        let mut joined = row_ty.clone();
-        let mut keeps = false;
-        for o in &eff.outcomes {
-            let Outcome::Done(ws) = o else {
-                continue;
-            };
-            let mine: Vec<&Ty> = ws
-                .iter()
-                .filter(|(r, _)| *r == rel)
-                .map(|(_, t)| t)
-                .collect();
-            if mine.is_empty() {
-                keeps = true;
-            }
-            for t in mine {
-                joined = self.join(&joined, t).ok_or_else(|| {
-                    diag(
-                        span,
-                        format!(
-                            "the upsert's rows have no common type: {} and {}",
-                            self.show(&joined),
-                            self.show(t)
-                        ),
-                    )
-                })?;
-            }
-        }
-        if keeps {
-            joined = self.join(&joined, old_ty).ok_or_else(|| {
+        let written = eff.outcomes.iter().flat_map(|o| match o {
+            Outcome::Fail => &[][..],
+            Outcome::Done(ws) => ws,
+        });
+        let wrote = written.filter(|(r, _)| *r == rel).map(|(_, t)| t);
+        wrote.chain(kept).try_fold(row_ty.clone(), |joined, t| {
+            self.join(&joined, t).ok_or_else(|| {
                 diag(
                     span,
                     format!(
                         "the upsert's rows have no common type: {} and {}",
                         self.show(&joined),
-                        self.show(old_ty)
+                        self.show(t)
                     ),
                 )
-            })?;
-        }
-        Ok(joined)
+            })
+        })
     }
 
     /// The relations deleting from `rels` can delete rows of, through `cascade` actions included.
