@@ -233,6 +233,16 @@ impl Stored {
             .collect()
     }
 
+    /// Returns the name of each bundle live at `now` under the file settings `s` that a
+    /// registration has succeeded for, which migrations check against.
+    pub(super) fn readers(&self, now: i64, s: &Settings) -> BTreeSet<String> {
+        self.bundles
+            .values()
+            .filter(|r| r.live(now, s) && self.deployed.registered.contains_key(&r.id))
+            .map(|r| r.header.name.clone())
+            .collect()
+    }
+
     /// Returns the text of each live bundle at `now`, under the file settings `s`, that a role
     /// registered by the command, by name.
     pub(super) fn commanded(&self, now: i64, s: &Settings) -> BTreeMap<String, String> {

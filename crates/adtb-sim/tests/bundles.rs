@@ -4780,7 +4780,7 @@ fn coded_open(
     regs: Vec<Registration>,
 ) -> Result<Database<SimRuntime>, OpenError> {
     let options = OpenOptions {
-        host_fns: named_host_fns(&["a", "b"]),
+        host_fns: named_host_fns(&["a", "b", "c"]),
         ..with(regs)
     };
     Database::open_in(rt.clone(), "app.adt", &log(migrations), &options)
@@ -5178,25 +5178,114 @@ fn a_bundle_pinned_ahead_of_the_file_is_refused_at_other_host_code() {
     });
 }
 
+/// A bundle whose first registration is refused at `log`, and a migration past `log` that a
+/// reader of that bundle would block.
+struct NeverRegistered {
+    seed: u64,
+    pin: &'static [&'static str],
+    log: &'static [&'static str],
+    body: &'static str,
+    refused: RejectReason,
+    further: &'static str,
+    applied: fn(&Database<SimRuntime>) -> Vec<String>,
+    after: &'static [&'static str],
+}
+
+const ADD_X: &str = "module auth\nadd field H.R.x: Text fill \"s\"\n";
+const DROP_X: &str = "module auth\ndrop field H.R.x\n";
+const TO_C: &str =
+    "module auth\nredefine fn f (t: Text) -> Text = host \"c\" version \"1.0\" deterministic\n";
+const ADD_TS: &str = "module auth\nadd type T { id: Key ts } = S { n: Text }\nadd relation ts : T key id generate sequence\n";
+
+fn never_registered() -> [NeverRegistered; 2] {
+    [
+        NeverRegistered {
+            seed: 1190,
+            pin: &BARE_PIN,
+            log: &[BARE, CODED, TO_B],
+            body: CODED_READS,
+            refused: other_code("web-1.0::q"),
+            further: TO_C,
+            applied: stored_host_f,
+            after: &["c 1.0"],
+        },
+        NeverRegistered {
+            seed: 1192,
+            pin: &[BARE, CODED, ADD_X],
+            log: &[BARE, CODED, ADD_X, DROP_X],
+            body: "import auth\nquery q () -> Set Text = from h in hs select h.x\n",
+            refused: RejectReason::Untranslatable {
+                query: "web-1.0::q".into(),
+                detail: "across `drop field H.R.x`: it reads field `x` of `H`, which the current version lacks".into(),
+            },
+            further: ADD_TS,
+            applied: |db| query(db, "from t in ts select t.n"),
+            after: &[],
+        },
+    ]
+}
+
+impl NeverRegistered {
+    fn regs(&self) -> Vec<Registration> {
+        vec![bundle("web-1.0", self.pin, " lease 1d", self.body)]
+    }
+
+    fn further_log(&self) -> Vec<&'static str> {
+        let mut log = self.log.to_vec();
+        log.push(self.further);
+        log
+    }
+
+    /// Returns a simulation whose file holds the recorded row of the refused first registration.
+    fn recorded(&self, seed: u64) -> Sim {
+        let mut sim = Sim::new(seed, Config::default());
+        run(&mut sim, |rt| {
+            let got = coded_open(&rt, self.log, self.regs());
+            assert_eq!(self.refused, refusal(got, "web-1.0"), "seed {seed}");
+        });
+        sim
+    }
+}
+
 #[test]
-fn a_rename_is_no_host_redefine_under_a_recorded_pin_of_host_code() {
-    let to_reader = "module auth\nredefine fn f (t: Text) -> Text = if count(h for h in hs) == 0 then t else t\n";
-    let rename = "module auth\nrename relation hs to hz\n";
-    let regs = || vec![bundle("web-1.0", &BARE_PIN, " lease 1d", CODED_READS)];
-    let mut sim = Sim::new(1177, Config::default());
-    run(&mut sim, |rt| {
-        let got = coded_open(&rt, &[BARE, CODED, to_reader], regs());
-        assert_eq!(other_code("web-1.0::q"), refusal(got, "web-1.0"));
-    });
-    run(&mut sim, |rt| {
-        let got = coded_open(&rt, &[BARE, CODED, to_reader, rename], regs());
-        assert_eq!(other_code("web-1.0::q"), refusal(got, "web-1.0"));
-    });
-    run(&mut sim, |rt| {
-        let db =
-            coded_open(&rt, &[BARE, CODED, to_reader, rename], vec![]).expect("the rename applied");
-        assert_eq!(Vec::<String>::new(), query(&db, "from h in hz select h.n"));
-    });
+fn a_bundle_never_registered_holds_back_no_migration_and_is_refused_at_registration() {
+    for case in never_registered() {
+        let mut sim = case.recorded(case.seed);
+        run(&mut sim, |rt| {
+            let got = coded_open(&rt, &case.further_log(), case.regs());
+            assert_eq!(case.refused, refusal(got, "web-1.0"), "seed {}", case.seed);
+        });
+        run(&mut sim, |rt| {
+            let db = coded_open(&rt, case.log, vec![]).expect("the file is ahead of this log");
+            assert_eq!(case.after, (case.applied)(&db), "seed {}", case.seed);
+        });
+    }
+}
+
+#[test]
+fn a_bundle_never_registered_and_not_presented_again_holds_back_nothing_and_stays_not_live() {
+    for case in never_registered() {
+        let mut sim = case.recorded(case.seed + 1);
+        run(&mut sim, |rt| {
+            let db = coded_open(&rt, &case.further_log(), vec![])
+                .unwrap_or_else(|e| panic!("seed {}: {e:?}", case.seed));
+            assert_eq!(case.after, (case.applied)(&db), "seed {}", case.seed);
+            assert_eq!(
+                vec!["web-1.0 superseded"],
+                states(&db),
+                "seed {}",
+                case.seed
+            );
+            assert_eq!(
+                RejectReason::BundleSuperseded {
+                    bundle: "web-1.0".into()
+                },
+                unbound(&db, "web-1.0"),
+                "seed {}",
+                case.seed
+            );
+        });
+    }
 }
 
 #[test]

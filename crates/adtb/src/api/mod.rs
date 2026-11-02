@@ -1018,7 +1018,7 @@ impl<R: Runtime> Engine<R> {
         if writable {
             registered::downgrade(&catalog, regs)?;
         }
-        let live = stored.live(opened, &settings);
+        let live = stored.readers(opened, &settings);
         let headers: Vec<&bundle::Header> = regs.iter().filter_map(Registration::header).collect();
         if writable {
             bundle::record(&catalog, &pager, &txns, &mut stored, &headers, opened)?;
