@@ -2844,30 +2844,73 @@ fn link_stale() -> RejectReason {
     }
 }
 
-/// Assert each conflict branch, with and without `hide new constructors`, while live and at
-/// registration: one using `old` in a bundle that does not hide refuses `enable notes.Link` and is
-/// stale past it; any other opens and runs over a stored `Link` to its written rows.
+/// Returns the migration adding `Link` of the fixture's `kind`, the write of a `Link` and its print.
+fn stored_link(kind: &str) -> (&'static str, &'static str, &'static str) {
+    match kind {
+        "url" => (
+            ADD_LINK,
+            r#"insert notes.Link { id: notes.key(1), url: "u" }"#,
+            r#"Link { id: notes.key(1), url: "u" }"#,
+        ),
+        "body" => (
+            ADD_LINK_BODY,
+            r#"insert notes.Link { id: notes.key(1), url: "u", body: "theirs" }"#,
+            r#"Link { id: notes.key(1), url: "u", body: "theirs" }"#,
+        ),
+        other => panic!("a link is url or body, not {other}"),
+    }
+}
+
+/// Assert each conflict branch and use of its result, with and without `hide new constructors`,
+/// while live and at registration: a branch using `old`, or a use of a result that can hold the
+/// stored row, in a bundle that does not hide refuses `enable notes.Link` and is stale past it; any
+/// other opens and runs over a stored `Link` to its result and written rows.
 #[test]
 fn a_conflict_branch_using_old_reads_the_relation_unless_new_constructors_are_hidden() {
-    let refused = "`enable notes.Link` is refused: bundle web-1.0, pinned at version 2, reads notes whole; a bundle stops blocking only when it is released";
+    let refused = "`enable notes.Link` is refused: bundle web-1.0, pinned at version 3, reads notes whole; a bundle stops blocking only when it is released";
+    const ADD_REJECTED: &str =
+        "module auth\nadd relation rejected : RejectedRow key (load, line)\n";
     let cases = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/pinned-readers/conflict-branches.txt"),
     )
     .expect("the conflict branches are readable");
-    let pin = [V1, ADD_NOTES];
-    let before = [V1, ADD_NOTES, ADD_LINK];
-    let log = [V1, ADD_NOTES, ADD_LINK, ENABLE_LINK];
-    let link = r#"Link { id: notes.key(1), url: "u" }"#;
+    let pin = [V1, ADD_NOTES, ADD_REJECTED];
     let mut reached = BTreeSet::new();
     let every = adtb_testkit::profile::every_case();
     let mut seed = 600;
     for line in cases.lines() {
-        let [name, uses, branch, after] = line.split('\t').collect::<Vec<_>>()[..] else {
-            panic!("a branch is name, use, text, rows: {line}");
+        let [
+            name,
+            uses,
+            branch,
+            after,
+            link,
+            bound,
+            source,
+            ty,
+            rest,
+            value,
+        ] = line.split('\t').collect::<Vec<_>>()[..]
+        else {
+            panic!(
+                "a branch is name, use, text, rows, link, binding, source, type, rest, value: {line}"
+            );
         };
+        let (add, stored, link) = stored_link(link);
+        let before = [V1, ADD_NOTES, ADD_REJECTED, add];
+        let log = [V1, ADD_NOTES, ADD_REJECTED, add, ENABLE_LINK];
+        let binding = match bound {
+            "-" => String::new(),
+            b => format!("let {b} = "),
+        };
+        let source = match source {
+            "-" => r#"{ id: notes.key(1), body: "new" }"#,
+            s => s,
+        };
+        let rest = rest.replace("; ", "\n    ");
         let text = format!(
-            "import auth\ntxn put () -> I64 =\n  transact\n    insert notes.Plain {{ id: notes.key(1), body: \"new\" }}\n      unless conflict on key else {branch}\n    return 0\n"
+            "import auth\nfn pass (n: Note) -> Note = n\ntxn put () -> {ty} =\n  transact\n    {binding}insert notes.Plain {source}\n      unless conflict on key else {branch}\n    {rest}\n"
         );
         let blocks = match uses {
             "uses" => true,
@@ -2875,18 +2918,22 @@ fn a_conflict_branch_using_old_reads_the_relation_unless_new_constructors_are_hi
             other => panic!("{name}: use is uses or free, not {other}"),
         };
         for (clauses, hides) in [("", false), (" hide new constructors", true)] {
-            if hides && !every && name != "with-copy" {
+            if hides && !every && name != "with-copy" && name != "kept-returned" {
                 continue;
             }
             let registered = || vec![bundle("web-1.0", &pin, clauses, &text)];
             let runs = |db: &Database<SimRuntime>| {
-                write(db, r#"insert notes.Link { id: notes.key(1), url: "u" }"#)
-                    .expect("the link is written");
+                write(db, stored).expect("the link is written");
+                write(db, r#"insert users { name: "a", tier: Free }"#)
+                    .expect("the source row is written");
                 let got = db
                     .registered("web-1.0")
                     .expect("the bundle binds")
                     .call(1, &[], &CallOptions::default())
-                    .map(|_| ())
+                    .map(|c| match c {
+                        Called::Rows(r) => printed(r),
+                        Called::Committed(c) => printed(c.value),
+                    })
                     .map_err(|e| reason(&e).clone());
                 let expected = if hides {
                     (
@@ -2898,7 +2945,14 @@ fn a_conflict_branch_using_old_reads_the_relation_unless_new_constructors_are_hi
                     )
                 } else {
                     (
-                        Ok(()),
+                        value.strip_prefix('!').map_or_else(
+                            || Ok(value.split(';').map(str::to_owned).collect()),
+                            |message| {
+                                Err(RejectReason::UserError {
+                                    message: message.to_owned(),
+                                })
+                            },
+                        ),
                         after
                             .split(';')
                             .filter(|r| !r.is_empty())
@@ -2913,26 +2967,28 @@ fn a_conflict_branch_using_old_reads_the_relation_unless_new_constructors_are_hi
                 );
             };
             seed += 1;
-            let mut sim = Sim::new(seed, Config::default());
-            run(&mut sim, |rt| {
-                opened(&rt, &before, registered());
-            });
-            run(&mut sim, |rt| {
-                let got = open(&rt, &log, registered());
-                if blocks && !hides {
-                    assert_eq!(
-                        refused,
-                        refused_migration(got, 4).1,
-                        "{name}{clauses} while live"
-                    );
-                    reached.insert((name, hides, "refused"));
-                } else {
-                    runs(&got.unwrap_or_else(|e| {
-                        panic!("{name}{clauses}: enable passes while live: {e:?}")
-                    }));
-                    reached.insert((name, hides, "ran"));
-                }
-            });
+            if every || bound == "-" || name.ends_with("-returned") {
+                let mut sim = Sim::new(seed, Config::default());
+                run(&mut sim, |rt| {
+                    opened(&rt, &before, registered());
+                });
+                run(&mut sim, |rt| {
+                    let got = open(&rt, &log, registered());
+                    if blocks && !hides {
+                        assert_eq!(
+                            refused,
+                            refused_migration(got, 5).1,
+                            "{name}{clauses} while live"
+                        );
+                        reached.insert((name, hides, "refused"));
+                    } else {
+                        runs(&got.unwrap_or_else(|e| {
+                            panic!("{name}{clauses}: enable passes while live: {e:?}")
+                        }));
+                        reached.insert((name, hides, "ran"));
+                    }
+                });
+            }
             seed += 1;
             once(seed, |rt| {
                 let got = open(&rt, &log, registered());
@@ -2952,9 +3008,9 @@ fn a_conflict_branch_using_old_reads_the_relation_unless_new_constructors_are_hi
         cases.lines().filter(|l| l.contains("\tuses\t")).count(),
         cases.lines().filter(|l| l.contains("\tfree\t")).count(),
     );
-    assert_eq!((8, 4), (using, free), "the branches of the fixture");
+    assert_eq!((20, 15), (using, free), "the branches of the fixture");
     assert_eq!(
-        if every { 48 } else { 26 },
+        if every { 140 } else { 54 },
         reached.len(),
         "each selected branch reached its two outcomes under each header"
     );

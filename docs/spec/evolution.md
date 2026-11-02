@@ -1317,7 +1317,10 @@ the whole row. Its `enable r.C` is refused as for a query ranging over
 `r`. Naming `old` only as the target of `update old` or `delete old`,
 with no `where`, does not use it: `update old set Plain { body: "x" }`
 replaces a `C` row, keeping its key and header fields. A `with` copy reads the relation
-variable and none of the row's fields (§7.2).
+variable and none of the row's fields (§7.2). A use of the upsert's
+bound result reads `r` the same way when its conflict branch can leave
+the stored row in that result: `skip`, or any branch that does not
+replace the row on every path that completes.
 
 `enable T.C`, for a sum `T` used as a field type, is refused while any
 reader is pinned at a version where `C` does not exist and reads a

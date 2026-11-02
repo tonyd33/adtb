@@ -113,6 +113,13 @@ impl Reads {
                     self.whole.insert(*r);
                 }
             }
+            Kind::LetBang(v, write, body) => {
+                if let Some(r) = keeping_upsert(terms, *write)
+                    && uses_row(terms, *body, *v)
+                {
+                    self.whole.insert(r);
+                }
+            }
             _ => {}
         }
     }
@@ -216,10 +223,46 @@ impl Reads {
     }
 }
 
-/// Returns whether the write `t` uses the value of `row`. Naming `row` as the unfiltered target of
-/// an `update` or `delete`, and the fields a new value keeps, do not use it.
+/// Returns the relation of the upsert `t` when its conflict branch can leave the stored row in its
+/// result.
+fn keeping_upsert(terms: &Terms, t: Tm) -> Option<RelId> {
+    let upsert = match terms.kind(t) {
+        Kind::Rejects { insert, .. } => *insert,
+        _ => t,
+    };
+    match terms.kind(upsert) {
+        Kind::Upsert {
+            rel,
+            old,
+            otherwise,
+            ..
+        } if !replaces(terms, *otherwise, *old) => Some(*rel),
+        _ => None,
+    }
+}
+
+/// Returns whether every completion of the write `t` replaces `row`.
+fn replaces(terms: &Terms, t: Tm, row: Var) -> bool {
+    match terms.kind(t) {
+        Kind::Replace(_, rows, _) => targets(terms, *rows, row),
+        Kind::Fail(_) => true,
+        Kind::Let(_, _, w) => replaces(terms, *w, row),
+        Kind::If(_, a, b) => replaces(terms, *a, row) && replaces(terms, *b, row),
+        Kind::Par(ws) => ws.iter().any(|&w| replaces(terms, w, row)),
+        Kind::Case { arms, .. } => arms.iter().all(|&(_, _, b)| replaces(terms, b, row)),
+        _ => false,
+    }
+}
+
+/// Returns whether `rows` names only `row`.
+fn targets(terms: &Terms, rows: Tm, row: Var) -> bool {
+    matches!(terms.kind(rows), Kind::Singleton(x) if matches!(terms.kind(*x), Kind::Var(v) if *v == row))
+}
+
+/// Returns whether `t` uses the value of `row`. Naming `row` as the unfiltered target of an
+/// `update` or `delete`, and the fields a new value keeps, do not use it.
 fn uses_row(terms: &Terms, t: Tm, row: Var) -> bool {
-    let target = |rows: Tm| matches!(terms.kind(rows), Kind::Singleton(x) if matches!(terms.kind(*x), Kind::Var(v) if *v == row));
+    let target = |rows: Tm| targets(terms, rows, row);
     let mut names = BTreeSet::from([row]);
     terms.search(t, |s| match terms.kind(s) {
         Kind::Var(v) if names.contains(v) => Search::Found,
