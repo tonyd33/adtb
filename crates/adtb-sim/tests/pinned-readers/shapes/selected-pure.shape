@@ -1,0 +1,8 @@
+stale
+===
+fn picked (a: Mark, b: Mark, left: Bool) -> Mark = if left then a else b
+txn run () -> I64 =
+  transact
+    insert marks { id: marks.key(1), note: "p", tone: Ink { depth: 0 } }
+      unless conflict on key else update old set Mark { old with tone: Ink { depth: picked(new, new, old.note == "n").tone.depth } }
+    return 0

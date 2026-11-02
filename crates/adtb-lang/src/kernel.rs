@@ -355,6 +355,12 @@ impl Terms {
         tm
     }
 
+    /// Returns whether the field access `t` copies its row's field through `with`.
+    #[must_use]
+    pub fn is_transport(&self, t: Tm) -> bool {
+        self.transport_fields.contains(&t)
+    }
+
     pub fn add(&mut self, kind: Kind, ty: Ty) -> Tm {
         self.nodes.push(Node { kind, ty });
         Tm(self.nodes.len() as u32 - 1)

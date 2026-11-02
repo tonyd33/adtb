@@ -1,0 +1,13 @@
+m
+===
+query run () -> Set I64 = from m in marks select @A
+===
+query run () -> Set Text = from m in marks select m.note
+===
+8
+===
+"n"
+===
+7
+===
+"n"

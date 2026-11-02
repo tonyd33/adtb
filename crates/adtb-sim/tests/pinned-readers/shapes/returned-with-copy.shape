@@ -1,0 +1,3 @@
+stale
+===
+query run () -> Set Mark = from m in marks select Mark { m with note: "c" }

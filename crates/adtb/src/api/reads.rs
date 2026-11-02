@@ -58,12 +58,16 @@ impl Reads {
                     self.references.insert((*rel, ctors));
                 }
             }
-            Kind::Field(x, name) => {
+            Kind::Field(x, name) if !terms.is_transport(t) => {
                 if let Ty::Data { def, .. } = terms.ty(*x) {
                     self.fields.insert((*def, name.clone()));
                 }
             }
-            Kind::Insert(r, rows) | Kind::Upsert { rel: r, rows, .. } => {
+            Kind::Insert(r, rows) => {
+                self.written(schema, *r, element(terms.ty(*rows)));
+            }
+            Kind::Upsert { rel: r, rows, .. } => {
+                self.reached.insert(*r);
                 self.written(schema, *r, element(terms.ty(*rows)));
             }
             Kind::Replace(r, _, f) => {

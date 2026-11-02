@@ -1,0 +1,19 @@
+m
+===
+txn run () -> I64 =
+  transact
+    update m in marks set Mark { m with tone: Ink { depth: @A } }
+    return 8
+===
+txn run () -> I64 =
+  transact
+    update m in marks set Mark { m with note: "w" }
+    return 8
+===
+8
+===
+8
+===
+8
+===
+"w"

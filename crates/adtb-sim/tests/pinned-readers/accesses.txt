@@ -1,0 +1,9 @@
+direct	@R.tone.depth + 1
+fn-row	row_depth(@R)
+fn-field	tone_depth(@R.tone)
+case	match @R.tone | Ink i -> i.depth + 1
+for	sum(y.tone.depth + 1 for y in [@R])
+for-capture	sum(@R.tone.depth + 1 for y in pads)
+fn-capture	applied(fn u -> @R.tone.depth + u)
+with-read	Mark { @R with note: "c" }.tone.depth + 1
+whole-compare	if @R == @R then 8 else 0

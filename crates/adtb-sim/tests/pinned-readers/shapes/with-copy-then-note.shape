@@ -1,0 +1,3 @@
+accept
+===
+query run () -> Set Text = from m in marks select Mark { m with note: "c" }.note

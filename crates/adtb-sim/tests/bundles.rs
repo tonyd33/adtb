@@ -4,6 +4,7 @@
 
 use adtb_simkit::api;
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use adtb::catalog::version_hash;
@@ -2856,7 +2857,8 @@ txn put () -> I64 =
 }
 
 #[test]
-fn an_upsert_old_field_holding_a_value_new_since_the_pin_reads_its_own_field() {
+fn an_upsert_old_field_read_is_stale_once_a_value_constructor_is_enabled_even_with_a_same_named_field()
+ {
     let add = "module auth
 add type Tone = Ink { depth: I64 }
 add type Mark = { id: Key marks, tone: Tone }
@@ -2874,19 +2876,15 @@ txn put () -> I64 =
     let pin = [V1, add];
     let log = [V1, add, grow, enable];
     once(91, |rt| {
-        let db = opened(&rt, &log, vec![bundle("web-1.0", &pin, "", body)]);
-        write(
-            &db,
-            r#"insert marks { id: marks.key(1), tone: Dye { hue: "red", depth: 7 } }"#,
-        )
-        .expect("the mark is written");
-        call(&db, "web-1.0", 1, &[]);
         assert_eq!(
-            vec!["7"],
-            query(
-                &db,
-                "from m in marks select match m.tone | Ink i -> i.depth | Dye d -> d.depth"
-            )
+            RejectReason::BundleStale {
+                bundle: "web-1.0".into(),
+                ctor: "Tone.Dye".into(),
+            },
+            refusal(
+                open(&rt, &log, vec![bundle("web-1.0", &pin, "", body)]),
+                "web-1.0"
+            ),
         );
     });
 }
@@ -3672,4 +3670,274 @@ fn pinned_fields_follow_each_surviving_owner_identity() {
         ran += 1;
     }
     assert_eq!(ran, 6, "every owner case ran");
+}
+
+const READER_ADD: &str = "module auth
+add type Tone = Ink { depth: I64 }
+add type Mark = { id: Key marks, note: Text, tone: Tone }
+add relation marks : Mark key id generate sequence
+add type Pad = { id: Key pads, mark: Key marks }
+add relation pads : Pad key id generate sequence
+";
+const READER_GROW: &str = "module auth\nadd constructor Tone.Dye { hue: Text }\n";
+const READER_ENABLE: &str = "module auth\nenable Tone.Dye\n";
+const READER_REFUSED: &str = "`enable Tone.Dye` is refused: bundle web-1.0, pinned at version 2, reads a field whose type reaches Tone; a bundle stops blocking only when it is released";
+const READER_TONES: &str =
+    r#"from m in marks select match m.tone | Ink i -> "ink" | Dye d -> d.hue"#;
+
+/// Write the mark and pad every pinned reader case reads, its mark's tone being `tone`.
+fn reader_rows(db: &Database<SimRuntime>, tone: &str) {
+    write(
+        db,
+        &format!(r#"insert marks {{ id: marks.key(1), note: "n", tone: {tone} }}"#),
+    )
+    .expect("the mark is written");
+    write(db, "insert pads { id: pads.key(1), mark: marks.key(1) }").expect("the pad is written");
+}
+
+/// Returns what a call of the bundle's only callable gives, printed.
+fn reader_called(db: &Database<SimRuntime>) -> Vec<String> {
+    match call(db, "web-1.0", 1, &[]) {
+        Called::Rows(r) => printed(r),
+        Called::Committed(c) => printed(c.value),
+    }
+}
+
+/// What a generated reader gives over the row it reads.
+#[derive(Clone, Copy)]
+struct ReaderOutcome<'a> {
+    called: &'a str,
+    stored: &'a str,
+}
+
+/// Assert that `body`, which reads a field reaching `Tone`, gives `at_pin` over a stored `Ink` at
+/// its pin and is stale once `Dye` is enabled. With `live`, also assert it blocks `enable Tone.Dye`.
+fn assert_reader_blocks(
+    seed: u64,
+    clauses: &str,
+    body: &str,
+    at_pin: Option<ReaderOutcome>,
+    live: bool,
+) {
+    let pin = [V1, READER_ADD];
+    let before = [V1, READER_ADD, READER_GROW];
+    let log = [V1, READER_ADD, READER_GROW, READER_ENABLE];
+    let text = format!("import auth\n{body}\n");
+    let registered = || vec![bundle("web-1.0", &pin, clauses, &text)];
+    if let Some(at_pin) = at_pin {
+        once(seed, |rt| {
+            let db = opened(&rt, &pin, registered());
+            reader_rows(&db, "Ink { depth: 7 }");
+            assert_eq!(vec![at_pin.called], reader_called(&db), "{clauses}: {body}");
+            assert_eq!(
+                vec![at_pin.stored],
+                query(&db, "from m in marks select m.tone.depth"),
+                "{clauses}: {body}",
+            );
+        });
+    }
+    if live {
+        let mut sim = Sim::new(seed, Config::default());
+        run(&mut sim, |rt| {
+            opened(&rt, &before, registered());
+        });
+        run(&mut sim, |rt| {
+            let (_, detail) = refused_migration(open(&rt, &log, registered()), 4);
+            assert_eq!(READER_REFUSED, detail, "{clauses}: {body}");
+        });
+    }
+    once(seed, |rt| {
+        assert_eq!(
+            RejectReason::BundleStale {
+                bundle: "web-1.0".into(),
+                ctor: "Tone.Dye".into(),
+            },
+            refusal(open(&rt, &log, registered()), "web-1.0"),
+            "{clauses}: {body}",
+        );
+    });
+}
+
+/// Assert that `body`, which reads no field reaching `Tone`, lets `enable Tone.Dye` pass while live
+/// and then runs over a stored `Dye` to `outcome`, with `Dye`'s hue still stored.
+fn assert_reader_runs(seed: u64, clauses: &str, body: &str, outcome: Option<ReaderOutcome>) {
+    let pin = [V1, READER_ADD];
+    let log = [V1, READER_ADD, READER_GROW, READER_ENABLE];
+    let text = format!("import auth\n{body}\n");
+    let registered = || vec![bundle("web-1.0", &pin, clauses, &text)];
+    let mut sim = Sim::new(seed, Config::default());
+    run(&mut sim, |rt| {
+        opened(&rt, &pin, registered());
+    });
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &log, registered());
+        reader_rows(&db, r#"Dye { hue: "red" }"#);
+        let got = reader_called(&db);
+        if let Some(outcome) = outcome {
+            assert_eq!(vec![outcome.called], got, "{clauses}: {body}");
+            assert_eq!(
+                vec![outcome.stored],
+                query(&db, "from m in marks select m.note"),
+                "{clauses}: {body}",
+            );
+        }
+        assert_eq!(
+            vec![r#""red""#],
+            query(&db, READER_TONES),
+            "{clauses}: {body}"
+        );
+    });
+}
+
+fn reader_fixtures(dir: &str, extension: &str) -> Vec<(String, Vec<String>)> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/pinned-readers")
+        .join(dir);
+    let mut paths: Vec<_> = std::fs::read_dir(root)
+        .expect("the pinned reader fixtures are readable")
+        .map(|entry| entry.expect("a fixture entry is readable").path())
+        .filter(|path| path.extension().is_some_and(|e| e == extension))
+        .collect();
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|path| {
+            let text = std::fs::read_to_string(&path).expect("the fixture is readable");
+            let name = path
+                .file_stem()
+                .expect("a fixture has a name")
+                .to_string_lossy()
+                .into_owned();
+            let parts = text
+                .trim_end()
+                .split("\n===\n")
+                .map(str::to_owned)
+                .collect();
+            (name, parts)
+        })
+        .collect()
+}
+
+/// A stored row bound by any construct, read through any access, is a read `enable` sees.
+#[test]
+fn every_path_binding_a_stored_row_reports_the_fields_read_through_it() {
+    let accesses = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pinned-readers/accesses.txt"),
+    )
+    .expect("the accesses are readable");
+    let accesses: Vec<(&str, &str)> = accesses
+        .lines()
+        .map(|l| l.split_once('\t').expect("an access is name, tab, text"))
+        .collect();
+    let helpers = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pinned-readers/helpers.txt"),
+    )
+    .expect("the helpers are readable");
+    let binders = reader_fixtures("binders", "binder");
+    let every = adtb_testkit::profile::every_case();
+    let mut reached = BTreeSet::new();
+    let mut seed = 400;
+    for (name, parts) in &binders {
+        let [
+            row,
+            reading,
+            copying,
+            read_called,
+            copy_called,
+            read_stored,
+            copy_stored,
+        ] = parts.as_slice()
+        else {
+            panic!("{name}: a binder has seven sections");
+        };
+        let at_pin = ReaderOutcome {
+            called: read_called,
+            stored: read_stored,
+        };
+        let over_dye = ReaderOutcome {
+            called: copy_called,
+            stored: copy_stored,
+        };
+        let headers: &[&str] = if !every || name == "deref" {
+            &[""]
+        } else {
+            &["", " hide new constructors"]
+        };
+        for clauses in headers {
+            for (access, text) in &accesses {
+                if !every && name != "upsert-old" && *access != "direct" {
+                    continue;
+                }
+                seed += 1;
+                let reading = reading.replace("@A", &text.replace("@R", row));
+                let body = format!("{helpers}{reading}");
+                assert_reader_blocks(seed, clauses, &body, Some(at_pin), every);
+                reached.insert((name.as_str(), *access));
+            }
+            seed += 1;
+            assert_reader_runs(seed, clauses, copying, Some(over_dye));
+        }
+    }
+    let pairs = if every {
+        binders.len() * accesses.len()
+    } else {
+        binders.len() + accesses.len() - 1
+    };
+    assert_eq!(pairs, reached.len(), "every selected pair ran");
+    assert_eq!(
+        vec![
+            "deref",
+            "rel",
+            "replace",
+            "upsert-old",
+            "upsert-result-let",
+            "upsert-result",
+        ],
+        binders.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+    );
+}
+
+#[test]
+fn a_sole_access_shape_blocks_enable_only_when_it_reads_the_field() {
+    let shapes = reader_fixtures("shapes", "shape");
+    let mut ran = BTreeSet::new();
+    let mut seed = 900;
+    for (name, parts) in &shapes {
+        let [outcome, body] = parts.as_slice() else {
+            panic!("{name}: a shape has two sections");
+        };
+        seed += 1;
+        match outcome.as_str() {
+            "stale" => assert_reader_blocks(seed, "", body, None, false),
+            "stale-live" => assert_reader_blocks(seed, "", body, None, true),
+            "accept" => assert_reader_runs(seed, "", body, None),
+            "transition" => once(seed, |rt| {
+                let text = format!("import auth\n{body}\n");
+                let pin = [V1, READER_ADD];
+                assert_eq!(
+                    "query `run`: `inserted` reads the change of a statement, only in a constraint",
+                    invalid(
+                        open(&rt, &pin, vec![bundle("web-1.0", &pin, "", &text)]),
+                        "web-1.0"
+                    ),
+                );
+            }),
+            other => panic!("{name}: unknown outcome {other}"),
+        }
+        ran.insert(name.as_str());
+    }
+    assert_eq!(
+        BTreeSet::from([
+            "deref-path",
+            "field-transition",
+            "outer-capture",
+            "retained-let",
+            "returned-with-copy",
+            "selected-pure",
+            "sole-upsert-old-depth",
+            "with-copy",
+            "with-copy-then-note",
+        ]),
+        ran,
+    );
 }

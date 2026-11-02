@@ -1,0 +1,3 @@
+transition
+===
+query run () -> Set I64 = from m in inserted(marks) select m.tone.depth

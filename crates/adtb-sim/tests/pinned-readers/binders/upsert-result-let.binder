@@ -1,0 +1,23 @@
+r
+===
+txn run () -> I64 =
+  transact
+    let x = insert marks { id: marks.key(1), note: "p", tone: Ink { depth: 0 } }
+      unless conflict on key else update old set Mark { old with note: "w" }
+    let r = x
+    return @A
+===
+txn run () -> Text =
+  transact
+    let x = insert marks { id: marks.key(1), note: "p", tone: Ink { depth: 0 } }
+      unless conflict on key else update old set Mark { old with note: "w" }
+    let r = x
+    return r.note
+===
+8
+===
+"w"
+===
+7
+===
+"w"

@@ -1,0 +1,21 @@
+old
+===
+txn run () -> I64 =
+  transact
+    insert marks { id: marks.key(1), note: "p", tone: Ink { depth: 0 } }
+      unless conflict on key else update old set Mark { old with tone: Ink { depth: @A } }
+    return 8
+===
+txn run () -> I64 =
+  transact
+    insert marks { id: marks.key(1), note: "p", tone: Ink { depth: 0 } }
+      unless conflict on key else update old set Mark { old with note: "w" }
+    return 8
+===
+8
+===
+8
+===
+8
+===
+"w"

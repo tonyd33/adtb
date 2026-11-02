@@ -1,0 +1,3 @@
+stale
+===
+query run () -> Set I64 = from p in pads select p.mark.tone.depth

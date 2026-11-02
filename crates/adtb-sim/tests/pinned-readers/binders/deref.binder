@@ -1,0 +1,13 @@
+d
+===
+query run () -> Set I64 = from p in pads select match p.mark | Mark d -> @A
+===
+query run () -> Set Text = from p in pads select p.mark.note
+===
+8
+===
+"n"
+===
+7
+===
+"n"
