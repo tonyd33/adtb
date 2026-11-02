@@ -50,3 +50,14 @@ Left, severe first:
 - bundle.rs `going_live`: an Active row with no mark counts as going live, so a file from before this change holding a live bundle at other code refuses at next open. Always-true mutant survives since the API cannot make that state.
 - registered/mod.rs `registration`: a bundle with no entries reports query `web-1.0::`.
 - A language function at the pin, host now, stays over-refused under a live pin; no test. Untested: pin holds host `f`, `f` dropped now. A `revert` before a `redefine fn f` blames the revert.
+
+## 2026-11-02: recorded row is no reader
+
+`fix: hold back no migration for a bundle never registered`. Run and reproduced, `MigrationRefused` naming web-1.0. Open now takes its readers from `Stored::readers`, live with a registered mark; grant paths keep `live` and still refuse an unmarked row. Class: authority per entry path. Check exit 0, three mutants die, review found no blocker.
+
+Lead ruling: a file written before marks landed, three days ago, is not supported past this. Its served bundle has no mark, so a migration it would have blocked commits and registration then refuses. No release has shipped.
+
+Left:
+
+- `a_bundle_never_registered_and_not_presented_again...` passes with `live` restored at api/mod.rs open, as `regs` is empty. It pins supersession only, so its name overclaims.
+- A rename under a live registered pin of a function host at the pin, language now, has no API test. The API cannot make that pin, since the redefine is refused under it; the `host_conflict` unit test stays.
