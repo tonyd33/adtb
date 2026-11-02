@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-31
-status: open
+status: in-progress
 kind: bug
 priority: 399
 summary: Pinned upserts retain nonhiding admission and nested value-reader gaps
+branch: pinned-reader-native
 ---
 
 # Pinned writes past pin
@@ -313,3 +314,37 @@ capture/alias/selection controls and allocation sealing before activating Reader
 integration. Nonhiding admission remains a separate unresolved question. No
 retired prototype landed and no defect class is declared closed. This ticket
 returns to open because the contract track has finished.
+
+## 2026-11-01: native reader integration goal started
+
+The maintainer authorized item1 as its own goal: integrate the accepted private
+correlation and preallocation-budget contract into the native field-reader path.
+Workspace pinned-reader-native, based on0633c3516abd, owns investigation,
+implementation, commands and verification. Its first checkpoint is an exact
+provider/caller and allocation design, before production edits. The lead admits
+that bounded scope; contradictory public behavior returns to the design space.
+
+Preserve the current authority evaluator, policy, Requirements and explicit
+failure behavior. Nonhiding conflict admission is separate and remains out of
+scope. Cover captured Case/partial Let, independent aliases, selected producers,
+local closing and retained outer correlation, native joint continuations and
+preconstruction accounting. Distinct typed identity domains and a sealed fallible
+allocation layer enforce the accepted contract; no analysis failure means empty
+reader facts. No retired prototype is revived as a presumed solution.
+
+Activation requires native field/authority parity against expanded existing
+analysis, valid owner Count registration, exact public BundleStale/readers-first
+controls and allocation sealing. Prefer runtime fixture case data with a shared
+native driver; justify compiled internal/property assertions. Targeted affected
+language/permission and public engine integration suites, concrete focused
+mutations with byte restoration, affected strict lint/fmt/size/house checks and
+independent review precede one authoritative final full check on the reviewed
+current-main tree. The author owns that check; unchanged evidence is reused.
+No benchmark runs or additional operations/fault tracks belong to this goal.
+
+Scope failure returns a concrete contract contradiction or activation gap to the
+lead, with a bounded alternative; it does not silently change policy or start an
+open-ended redesign. The umbrella stays open if nonhiding admission remains.
+Local brief and plan: work/briefs/brief-pinned-reader-native-r1.md and
+proposal-pinned-reader-native-r1.md. Implementation scope is pending, not claimed
+as complete or verified. No production code has changed at this checkpoint.
