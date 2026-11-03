@@ -372,3 +372,7 @@ Row still open: typed causes for `Internal` and `Corrupt`.
 `refactor: carry a typed cause to every Internal and Corrupt`. Every non-test `Internal` and `Corrupt` is built in crates/adtb/src/api/cause.rs from a typed cause; public texts unchanged except Debug quoting dropped from some `Corrupt` details. Review blocker (a search test blind to shorthand, `String::from`, renames and code after a test module) fixed before landing. The engine layers still carry text into it: typed-causes-engine-layers.
 
 Every row of the matrix is now landed or ticketed. Closing review next.
+
+## 2026-11-03: closing review
+
+Every row is landed. Of the tickets this one names, two are defects the matrix exists to rule out and block closing: space-append-spin (a fault that overwrites a large store directory page hangs an insert with no mark) and truncated-to-nothing (a file cut to 0 bytes opens a fresh database beside a log holding acknowledged commits). Each gets a track. The rest stand alone, none losing data or hanging: real-backend-faults-engine and heap-read-foreign-page-panics (leftovers after their fixes), verify-sweeps-no-progress and lost-bitmap-follow-ups (test strength), catalog-open-error-nesting, deployment-refusal-sentinel and typed-causes-engine-layers (cause typing), scrub-follow-ups, create-leftover-marker, picked-seed-floors. This ticket resolves when both blockers land.
