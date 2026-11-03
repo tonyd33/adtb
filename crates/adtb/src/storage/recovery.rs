@@ -71,6 +71,7 @@ impl<R: Runtime> Pager<R> {
         }
         self.log()
             .resume(s.end, s.last_seq.expect("a batch was accepted") + 1);
+        self.meta().recovered = s.end;
         let mut replay = Replay {
             redo,
             last: BTreeMap::new(),

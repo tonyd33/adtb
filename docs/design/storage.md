@@ -406,6 +406,7 @@ operating error and never handed out as data.
 | Truncated file | After recovery, a bit of the allocation bitmap set past the end of the file refuses that page, and a bitmap page of a started group past the end of the file (§1.1) reads blank and is refused as below; a page a directory entry, index entry, version chain or out-of-line pointer names that reads all zero is refused on every read and write that reaches it through that name |
 | Lost or zeroed bitmap | A blank bitmap page of a started group (§1.1) is refused on every allocation, free and read of the bitmap, before anything is written, and marks the database (§8) |
 | Lost write | Page LSN older than the retained log says it must be, in recovery (§7) and in `verify` and scrub ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)); a page read back after the pool dropped it, older than it was then, while the pool's bounded table of dropped pages still holds it (§10.3) |
+| Lost or misdirected log write | A page LSN, on the page or as a record's previous LSN, that no retained record wrote: past the page's last record in a log with no gap, or at or past the end of the log recovery kept in a gapless log retained from at or before that end; in `verify` and scrub, as an `Unlogged` log finding (§7) |
 
 A page that fails verification on read quarantines the heap or index
 holding it (§8).
@@ -414,8 +415,10 @@ Outside what the engine detects: a device that drops a forced write of
 the last batch of the log before a crash, or damages a block of that
 batch, leaves the log ending at the batch before. Its commits were
 acknowledged and are lost without a report, since recovery cannot tell
-the batch from one that was never forced (§7). Earlier in the log the
-same damage is a gap and stops recovery.
+the batch from one that was never forced (§7), unless a page that batch
+changed reached the file: `verify` then reports the page's LSN as
+unlogged. Earlier in the log the same damage is a gap and stops
+recovery.
 
 Rulings: buffer/faults/corrupt-detect, buffer/faults/stale-page/lsn-check
 
@@ -638,7 +641,27 @@ previous LSN is not the LSN of the record before it for the same page
 marks a page that was changed from a stale copy: a lost write, which
 quarantines the page's heap or index. `verify` checks the same chain
 over the whole retained log, and that each page's LSN is that of its
-last record there. A full-page image of a page overwritten while damaged
+last record there.
+
+Under write-ahead logging no page carries an LSN the durable log does
+not hold for it. `verify` reports an `Unlogged` log finding naming the
+page, the LSN it carries and the LSN it is past:
+
+- the end of the log recovery kept, for a page at or past that end and
+  past its last record, when the retained log runs from at or before
+  that end with no gap;
+- otherwise its last record, for a page, or a record's previous LSN,
+  past the page's last record in a log with no gap.
+
+A page below that end with no record in a log retained from its start
+is an `Orphan` finding. A check while writers run takes a page at or
+past the log's end when it starts as written since, unless no LSN that
+high had been given out when it read the page. Relation-scoped `verify`
+shows the `Unlogged` findings of the relation's pages. Recovery neither
+refuses to open nor quarantines on such a page: it reads only the pages
+it redoes, so it cannot find every one, and `verify` reads them all.
+
+A full-page image of a page overwritten while damaged
 (§8) has an unknown previous LSN: it continues no chain and clears the
 page's damage.
 

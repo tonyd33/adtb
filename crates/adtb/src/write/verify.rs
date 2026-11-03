@@ -199,7 +199,12 @@ impl<R: Runtime> Database<R> {
         };
         for f in v.findings {
             let page = match f {
-                storage::Finding::Page { pid, .. } | storage::Finding::Orphan(pid) => Some(pid),
+                storage::Finding::Page { pid, .. }
+                | storage::Finding::Orphan(pid)
+                | storage::Finding::Log(storage::LogFinding {
+                    problem: storage::LogProblem::Unlogged { pid, .. },
+                    ..
+                }) => Some(pid),
                 storage::Finding::Log(_) => None,
             };
             let wanted = match (&within, page) {

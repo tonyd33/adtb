@@ -1,9 +1,9 @@
 #[cfg(test)]
 use std::collections::BTreeMap;
 
-use super::Lsn;
 use super::crc::crc32c_skipping;
 use super::record::{Malformed, Record};
+use super::{Lsn, Pid};
 
 pub const BLOCK_HEADER: usize = 56;
 
@@ -235,6 +235,13 @@ pub enum LogProblem {
     Malformed,
     /// A valid block another file's log wrote.
     Foreign,
+    /// Page `pid` carried LSN `page`, on the page or as a record's previous LSN, which no retained
+    /// record wrote, past the finding's LSN: the last record the log holds for the page before it
+    /// or, with none, the end of the log recovery kept. The log lost the record that wrote it.
+    Unlogged {
+        pid: Pid,
+        page: Lsn,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

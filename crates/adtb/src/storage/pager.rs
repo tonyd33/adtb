@@ -72,7 +72,8 @@ pub enum Damage {
     Checksum,
     /// The device refused to read it.
     Unreadable,
-    /// The page is older than the log says it must be: a lost write.
+    /// The page's LSN is not the one the log says it must be: a lost page write when `found` is
+    /// before `expected`, a lost log record when past it.
     Stale { expected: Lsn, found: Lsn },
 }
 
@@ -127,6 +128,8 @@ pub(crate) struct Meta {
     pub(crate) groups: u64,
     /// Damaged pages latched blank, whose next change logs an unchained full-page image.
     pub(crate) overwritten: BTreeSet<Pid>,
+    /// The end of the log recovery kept when the pager opened, or zero for a pager created empty.
+    pub(crate) recovered: Lsn,
     /// Resident pages and pages being read in, in clock order.
     resident: Vec<Pid>,
     hand: usize,
@@ -380,6 +383,7 @@ impl<R: Runtime> Pager<R> {
                 damaged: BTreeMap::new(),
                 groups: bitmap_groups,
                 overwritten: BTreeSet::new(),
+                recovered: Lsn(0),
                 resident: Vec::new(),
                 hand: 0,
             }),

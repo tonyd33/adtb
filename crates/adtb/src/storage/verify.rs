@@ -29,9 +29,15 @@ pub struct Verification {
     pub safe_snapshots: Vec<(Lsn, Position, Vec<u8>)>,
 }
 
-/// A page's damage, the LSN it is judged at, what the log says of that LSN, and whether no record
-/// wrote it.
-type Judged = (Option<Damage>, Option<Lsn>, Option<Damage>, bool);
+/// A page's damage, the LSN it is judged at, what the log says of that LSN, whether no record wrote
+/// it, and the LSN past which the retained log holds every record but none wrote it.
+type Judged = (
+    Option<Damage>,
+    Option<Lsn>,
+    Option<Damage>,
+    bool,
+    Option<Lsn>,
+);
 
 /// What the retained log says of every page at one moment.
 #[derive(Clone, Debug)]
@@ -42,6 +48,12 @@ pub struct RetainedLog {
     broken: BTreeMap<Pid, Damage>,
     /// Whether the log runs from its start with no gap, so every page written has a record.
     complete: bool,
+    /// Whether the log has no gap.
+    gapless: bool,
+    /// The end of the log recovery kept, when the log runs from at or before it with no gap.
+    recovered: Option<Lsn>,
+    /// Whether writers may run during the check.
+    live: bool,
     findings: Vec<Finding>,
     commits: Vec<u64>,
     safe_snapshots: Vec<(Lsn, Position, Vec<u8>)>,
@@ -57,6 +69,9 @@ impl RetainedLog {
             last: BTreeMap::new(),
             broken: BTreeMap::new(),
             complete: false,
+            gapless: false,
+            recovered: None,
+            live: false,
             findings: vec![Finding::Log(LogFinding {
                 lsn,
                 problem: LogProblem::Unreadable,
@@ -64,6 +79,24 @@ impl RetainedLog {
             commits: Vec::new(),
             safe_snapshots: Vec::new(),
         }
+    }
+}
+
+fn unlogged_at(pid: Pid, lsn: Lsn, page: Lsn) -> Finding {
+    Finding::Log(LogFinding {
+        lsn,
+        problem: LogProblem::Unlogged { pid, page },
+    })
+}
+
+/// Returns the log finding a stale page `pid` implies when the LSN it is found at is past the one
+/// the log expects.
+fn lost_record(pid: Pid, damage: Damage) -> Option<Finding> {
+    match damage {
+        Damage::Stale { expected, found } if found > expected => {
+            Some(unlogged_at(pid, expected, found))
+        }
+        _ => None,
     }
 }
 
@@ -110,8 +143,9 @@ impl<R: Runtime> Pager<R> {
         commits
     }
 
-    /// Check every page and the retained log. A page whose LSN is at or past `end`, the log's end
-    /// when the check starts, was written since and has no finding.
+    /// Check every page and the retained log. A page whose LSN is at or past the log's end when the
+    /// check starts has no stale or orphan finding. When `live` it has no unlogged finding either,
+    /// unless no LSN that high had been given out when the page was read.
     fn verify_to(&self, live: bool) -> Verification {
         let mut log = self.read_log(live);
         let mut findings = std::mem::take(&mut log.findings);
@@ -181,6 +215,9 @@ impl<R: Runtime> Pager<R> {
         let complete = s
             .as_ref()
             .is_some_and(|s| s.resumed == 0 && first == Some(Lsn(0)));
+        let gapless = s.as_ref().is_some_and(|s| s.resumed == 0);
+        let recovered = self.meta().recovered;
+        let recovered = (gapless && first.is_some_and(|f| f <= recovered)).then_some(recovered);
         let findings = s.iter().flat_map(|s| &s.findings);
         let findings = findings
             .filter(|f| !live || f.lsn < end)
@@ -191,6 +228,9 @@ impl<R: Runtime> Pager<R> {
             last,
             broken,
             complete,
+            gapless,
+            recovered,
+            live,
             findings,
             commits,
             safe_snapshots,
@@ -223,15 +263,20 @@ impl<R: Runtime> Pager<R> {
             last,
             broken,
             complete,
+            gapless,
+            recovered,
+            live,
             ..
         } = log;
         let known = self.meta().damaged.get(&pid).copied();
         if let Some(damage) = known {
             findings.push(Finding::Page { pid, damage });
+            findings.extend(lost_record(pid, damage));
             return findings;
         }
         let judge =
             |disk: &Result<(AlignedBuf, Verdict), Damage>, resident: Option<Lsn>, changed: bool| {
+                let now = self.log().next_lsn();
                 let bad = match disk {
                     _ if changed => None,
                     Err(d) => Some(*d),
@@ -253,13 +298,23 @@ impl<R: Runtime> Pager<R> {
                 let orphan = found.is_some_and(|found| {
                     *complete && !last.contains_key(&pid) && found != Lsn(0) && found < *end
                 });
-                (bad, found, stale, orphan)
+                let unlogged = found
+                    .filter(|&found| found != Lsn(0) && (found < *end || !live || found >= now))
+                    .and_then(|found| {
+                        let last = last.get(&pid).copied();
+                        match *recovered {
+                            Some(r) if found >= r && last.is_none_or(|e| found > e) => Some(r),
+                            _ => last.filter(|&e| *gapless && found > e),
+                        }
+                    });
+                (bad, found, stale, orphan, unlogged)
             };
         let disk = self.read_disk(pid);
         let resident = self.mem.lock_shared(pid.0, &self.rt).map(|g| page::lsn(&g));
         let mut seen = judge(&disk, resident, false);
-        let wrong =
-            |seen: &Judged| seen.0.is_some() || seen.1.is_none() || seen.2.is_some() || seen.3;
+        let wrong = |seen: &Judged| {
+            seen.0.is_some() || seen.1.is_none() || seen.2.is_some() || seen.3 || seen.4.is_some()
+        };
         // Twice: a page freed and allocated again between the latched read and the look at the
         // bitmap is judged afresh. The bitmap's latch is never taken under this page's.
         for _ in 0..2 {
@@ -278,18 +333,22 @@ impl<R: Runtime> Pager<R> {
         if !wrong(&seen) || self.called_free(pid) {
             return findings;
         }
-        let (bad, found, stale, orphan) = seen;
+        let (bad, found, stale, orphan, unlogged) = seen;
         if let Some(damage) = bad {
             findings.push(Finding::Page { pid, damage });
         }
-        if found.is_none() {
+        let Some(found) = found else {
             self.damage(pid, bad.unwrap_or(Damage::Checksum));
             return findings;
+        };
+        if let Some(lsn) = unlogged {
+            findings.push(unlogged_at(pid, lsn, found));
         }
         if let Some(damage) = stale {
             findings.push(Finding::Page { pid, damage });
+            findings.extend(lost_record(pid, damage));
             self.damage(pid, damage);
-        } else if orphan {
+        } else if orphan && unlogged.is_none() {
             findings.push(Finding::Orphan(pid));
         }
         findings

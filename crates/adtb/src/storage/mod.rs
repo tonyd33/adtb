@@ -31,7 +31,7 @@ pub use driver::{FATAL_IO, FatalIo};
 pub use header::HISTORY_CAPACITY;
 pub use page::{
     FIRST_EDITABLE, HEADER_LEN, MAX_PAGE_SIZE, MIN_PAGE_SIZE, PageKind, flags, flip_owner, format,
-    header_edit, kind, lsn, owner,
+    header_edit, kind, lsn, owner, seal,
 };
 pub use pager::{
     Damage, LATCHES_PER_THREAD, OpenError, Options, PageError, PageExclusive, PageOptimistic,

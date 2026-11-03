@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use adtb::runtime::{Entropy, Threads};
 use adtb::storage::{
-    Damage, Edit, Finding, HEADER_LEN, LATCHES_PER_THREAD, OpenError, Options, PageKind, Pager, Pid,
+    Damage, Edit, Finding, HEADER_LEN, LATCHES_PER_THREAD, LogFinding, LogProblem, Lsn, OpenError,
+    Options, PageKind, Pager, Pid,
 };
 use adtb_sim::{
     Config, Fate, Faults, FindingKind, Ledger, Outcome, Recovered, Sim, SimRuntime, Violation,
@@ -511,6 +512,7 @@ struct Tally {
     findings: usize,
     pages: usize,
     logs: usize,
+    unlogged: usize,
     reopened: usize,
     unopenable: usize,
 }
@@ -626,7 +628,12 @@ fn crash_loop(
         for f in &report.findings {
             match f {
                 Finding::Page { .. } => tally.pages += 1,
-                Finding::Log(_) => tally.logs += 1,
+                Finding::Log(l) => {
+                    tally.logs += 1;
+                    if matches!(l.problem, LogProblem::Unlogged { .. }) {
+                        tally.unlogged += 1;
+                    }
+                }
                 Finding::Orphan(_) => {}
             }
         }
@@ -662,6 +669,7 @@ fn run(seeds: Range<u64>, faults: Faults, layout: Layout, damage_allowed: bool) 
         total.findings += t.findings;
         total.pages += t.pages;
         total.logs += t.logs;
+        total.unlogged += t.unlogged;
         total.reopened += t.reopened;
         total.unopenable += t.unopenable;
     }
@@ -761,6 +769,14 @@ fn misdirected_and_lost_writes_are_reported_never_returned() {
     let rate = Rate { found: 1, per: 1 };
     assert_reached("page findings", t.pages, kind_floor(t.seeds, &rate));
     assert_reached("log findings", t.logs, kind_floor(t.seeds, &rate));
+    if every_case() {
+        let unlogged = Rate { found: 1, per: 96 };
+        assert_reached(
+            "pages past their log",
+            t.unlogged,
+            kind_floor(t.seeds, &unlogged),
+        );
+    }
 }
 
 #[test]
@@ -869,6 +885,105 @@ fn flip(sim: &mut Sim, path: &str, at: usize) -> Sim {
     let mut files = sim.files();
     files.get_mut(path).unwrap()[at] ^= 0x20;
     Sim::with_files(1, Config::default(), files)
+}
+
+/// Returns a device holding a database whose page `pid` carries an LSN past the end of its log,
+/// with the LSN of the last record that wrote the page and the LSN it carries.
+fn page_past_log_end() -> (Sim, Pid, Lsn, Lsn) {
+    let mut sim = Sim::new(3, Config::default());
+    let client = Client::new();
+    setup(&mut sim, &client, PLAIN);
+    let pid = client.world.lock().unwrap().pages[3];
+    with_pager(&mut sim, |_| ());
+    let mut files = sim.files();
+    let at = pid.0 as usize * PAGE;
+    let page = &mut files.get_mut(NAME).unwrap()[at..at + PAGE];
+    let written = adtb::storage::lsn(page);
+    let past = Lsn(1 << 40);
+    page[..8].copy_from_slice(&past.0.to_le_bytes());
+    adtb::storage::seal(pid, page);
+    let sim = Sim::with_files(1, Config::default(), files);
+    (sim, pid, written, past)
+}
+
+/// Returns the end of the log recovery kept on opening `sim`, and what a verify then finds.
+fn verify_opened(sim: &mut Sim) -> (Lsn, Vec<Finding>) {
+    let mut out = None;
+    let outcome = sim.run(|rt| {
+        let (p, recovery) = Pager::open(rt, &options(PLAIN)).expect("open");
+        out = Some((recovery.end, p.verify().findings));
+    });
+    assert_eq!(Outcome::Finished, outcome);
+    out.unwrap()
+}
+
+fn unlogged(lsn: Lsn, pid: Pid, page: Lsn) -> Finding {
+    Finding::Log(LogFinding {
+        lsn,
+        problem: LogProblem::Unlogged { pid, page },
+    })
+}
+
+#[test]
+fn a_page_past_the_log_end_is_reported_as_an_unlogged_write() {
+    let (mut sim, pid, _, past) = page_past_log_end();
+    let (end, findings) = verify_opened(&mut sim);
+    assert_eq!(vec![unlogged(end, pid, past)], findings);
+}
+
+#[test]
+fn a_page_whose_only_records_are_in_the_lost_log_tail_is_an_unlogged_write() {
+    let mut sim = Sim::new(4, Config::default());
+    setup(&mut sim, &Client::new(), PLAIN);
+    let (cut, pid) = with_pager(&mut sim, |p| {
+        p.flush_log();
+        let cut = p.durable();
+        let pid = p.allocate(1, PageKind::HeapSlotted, 7).unwrap();
+        p.update(&[pid], |v| v[0][HEADER_LEN] ^= 1).unwrap();
+        p.flush_log();
+        p.flush_pages(usize::MAX);
+        (cut, pid)
+    });
+    let mut files = sim.files();
+    let dir = format!("{}/", options(PLAIN).log_dir());
+    let segment = options(PLAIN).segment_size;
+    for (path, bytes) in files.iter_mut().filter(|(path, _)| path.starts_with(&dir)) {
+        let base = u64::from_str_radix(&path[dir.len()..], 16).unwrap();
+        let from = cut.0.saturating_sub(base).min(segment) as usize;
+        bytes[from..].fill(0);
+    }
+    let data = &files[NAME];
+    let past: Vec<(Pid, Lsn)> = (Pid::FIRST_DATA.0..(data.len() / PAGE) as u64)
+        .map(|n| (Pid(n), adtb::storage::lsn(&data[n as usize * PAGE..])))
+        .filter(|&(_, lsn)| lsn >= cut)
+        .collect();
+    assert!(past.iter().any(|&(p, _)| p == pid), "{past:?}");
+    let mut sim = Sim::with_files(1, Config::default(), files);
+    let (end, findings) = verify_opened(&mut sim);
+    assert_eq!(cut, end);
+    let expected: Vec<Finding> = past.iter().map(|&(p, lsn)| unlogged(cut, p, lsn)).collect();
+    assert_eq!(expected, findings);
+}
+
+#[test]
+fn a_change_chained_to_an_unlogged_lsn_is_reported_as_an_unlogged_write_on_every_verify() {
+    let (mut sim, pid, written, past) = page_past_log_end();
+    with_pager(&mut sim, |p| {
+        p.update(&[pid], |v| v[0][HEADER_LEN] ^= 1).unwrap();
+        p.flush_log();
+        p.flush_pages(usize::MAX);
+    });
+    let (first, again) = with_pager(&mut sim, |p| (p.verify().findings, p.verify().findings));
+    let stale = Damage::Stale {
+        expected: written,
+        found: past,
+    };
+    let expected = vec![
+        Finding::Page { pid, damage: stale },
+        unlogged(written, pid, past),
+    ];
+    assert_eq!(expected, first);
+    assert_eq!(expected, again);
 }
 
 #[test]

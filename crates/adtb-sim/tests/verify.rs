@@ -534,6 +534,37 @@ fn a_lost_write_is_a_stale_page_finding() {
 }
 
 #[test]
+fn a_page_past_the_log_end_is_an_unlogged_finding_of_its_relation() {
+    let mut sim = Sim::new(45, Config::default());
+    let page = api::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed_app(&db);
+        let page = users_page(&db);
+        db.close().unwrap();
+        page
+    });
+    let mut files = sim.files();
+    let at = page.0 as usize * PAGE_SIZE;
+    let bytes = &mut files.get_mut(NAME).unwrap()[at..at + PAGE_SIZE];
+    bytes[..8].copy_from_slice(&(1u64 << 40).to_le_bytes());
+    adtb::storage::seal(page, bytes);
+    let mut sim = Sim::with_files(45, Config::default(), files);
+    api::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        let problem = format!(
+            "Unlogged {{ pid: Pid({}), page: Lsn({}) }}",
+            page.0,
+            1u64 << 40
+        );
+        let got = verified(&db, Some("users"));
+        assert_eq!(1, got.len(), "{got:?}");
+        assert!(got[0].starts_with("Structure"), "{got:?}");
+        assert!(got[0].contains(&problem), "{got:?}");
+        assert_eq!(Vec::<String>::new(), verified(&db, Some("identities")));
+    });
+}
+
+#[test]
 fn a_misordered_leaf_is_an_order_finding() {
     api::once(44, |rt| {
         let db = open_app(rt);
