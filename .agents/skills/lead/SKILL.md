@@ -142,7 +142,9 @@ that the worker is unblocked.
 - A call that changes nothing a user or client observes, or that an adopted
   ruling already decides, is yours alone: rule, record it on the ticket and
   dispatch. Do not wait for the user on it. Check `quandary rulings` before
-  calling anything a design decision.
+  calling anything a design decision, and read the `docs/design/` file of
+  the boundary the call touches before ruling: a ruling that contradicts it
+  is a design change.
 - Treat every spec change an implementation asks for as suspect. Name the
   tier it belongs to before accepting it.
 - File the gaps agents report as tickets.
