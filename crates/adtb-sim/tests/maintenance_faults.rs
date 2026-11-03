@@ -1,16 +1,26 @@
 //! Search crashes and failed writes and forces through `Database` while a vacuum, a reindex and a
-//! migration run after acknowledged commits. Every expected row comes from a table written here.
+//! migration run after acknowledged commits, and rot each page of the closed file. Every expected
+//! row comes from a table written here.
 
-use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex};
+use std::collections::{BTreeMap, BTreeSet};
+use std::panic::{self, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
+use std::time::Duration;
 
 use adtb::runtime::{Op, Runtime, Threads};
-use adtb::{CallOptions, Database, Error, Log, OpenOptions, TxnCallOptions, TxnOptions};
-use adtb_sim::{Config, Sim};
+use adtb::storage::{self, PageKind, Pid};
+use adtb::{
+    CallOptions, Database, DynRows, Error, FatalReason, Log, OpenError, OpenOptions,
+    TxnCallOptions, TxnOptions,
+};
+use adtb_lang::textual::print;
+use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::crash::silence_fatal_panics;
 use adtb_simkit::search::{self, Files, Hooked, WriteOrSync};
-use adtb_testkit::profile::assert_reached;
+use adtb_testkit::profile::{self, assert_reached};
 
 const FILE: &str = "maintenance.adt";
 const SEED: u64 = 97;
@@ -251,7 +261,7 @@ fn seeded_files(workload: Workload) -> Files {
     sim.files()
 }
 
-fn query<R: Runtime>(db: &Database<R>, text: &str) -> Result<Vec<adtb::DynRows>, Error> {
+fn query<R: Runtime>(db: &Database<R>, text: &str) -> Result<Vec<DynRows>, Error> {
     db.query_text(text, &[], &CallOptions::default())
 }
 
@@ -827,4 +837,485 @@ fn an_open_that_migrates_has_made_the_migration_durable_when_it_returns() {
         },
     );
     assert_reached("images at the acknowledgement", images, 1);
+}
+
+const PAGE: usize = 8192;
+/// Wall time a case may take before it counts as a hang. A hung case leaks its thread.
+const ROT_CASE_LIMIT: Duration = Duration::from_secs(20);
+const ROT_ROW: i64 = 50;
+const SMALL_DOCS: i64 = 40;
+const BIG_DOCS: i64 = 3;
+const BIG_BYTES: usize = 30_000;
+
+const ROT_SCHEMA: &str = r"module app
+add type Doc { id: Key docs, tag: Text }
+  = Small { note: Text }
+  | Big { body: Text }
+add relation docs : Doc key id generate sequence
+  index (tag)
+  index (note) in Small
+";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Rot {
+    Flip,
+    Zeroed,
+    /// One half of the page zero, as a write that reached the device for the other half only.
+    Torn,
+}
+
+const ROTS: [Rot; 3] = [Rot::Flip, Rot::Zeroed, Rot::Torn];
+
+#[rustfmt::skip]
+const ROT_CLASSES: [&str; 11] = [
+    "file header", "AllocationBitmap", "Quarantine", "CommitLog", "Catalog", "FreeSpaceMap",
+    "VisibilityMap", "application heap", "other heap", "application btree", "other btree",
+];
+
+fn rot_log() -> Log {
+    Log::new([SCHEMA, ROT_SCHEMA])
+}
+
+fn big_body(i: i64) -> String {
+    format!("{i}").repeat(BIG_BYTES)
+}
+
+fn ordered(rows: impl Iterator<Item = String>) -> Vec<String> {
+    let mut rows: Vec<String> = rows.collect();
+    rows.sort();
+    rows
+}
+
+/// Returns each read of the database and its rows, from what the fixture wrote.
+fn rot_reads(inserted: bool) -> Vec<(String, Vec<String>)> {
+    let added = inserted.then(|| format!(r#"{{ id: rows.key({ROT_ROW}), name: "rotted" }}"#));
+    let rows = ordered(expected(FINISHED, false).into_iter().chain(added));
+    let filler = ordered((0..FILLER_ROWS).map(|i| format!("filler.key({i})")));
+    let fill = "f".repeat(FILLER_BYTES);
+    let last = SMALL_DOCS + BIG_DOCS;
+    let ids = ordered((0..last).map(|i| format!("docs.key({i})")));
+    let notes = ordered(
+        (0..SMALL_DOCS).map(|i| format!(r#"{{ id: docs.key({i}), note: "n{i}", tag: "t{i}" }}"#)),
+    );
+    let bigs = ordered(
+        (SMALL_DOCS..last).map(|i| format!(r#"{{ body: "{}", id: docs.key({i}) }}"#, big_body(i))),
+    );
+    let one = |text: &str, row: &str| (text.to_owned(), vec![row.to_owned()]);
+    let all = |text: &str, rows: Vec<String>| (text.to_owned(), rows);
+    #[rustfmt::skip]
+    let reads = vec![
+        all("from r in rows select { id: r.id, name: r.name }", rows),
+        one(r#"from r in rows where r.name == "last-a" select r.id"#, "rows.key(30)"),
+        all("from f in filler select f.id", filler.clone()),
+        all(&format!(r#"from f in filler where f.body == "{fill}" select f.id"#), filler),
+        all("from d in docs select d.id", ids),
+        all("from d in docs.Small select { id: d.id, tag: d.tag, note: d.note }", notes),
+        all("from d in docs.Big select { id: d.id, body: d.body }", bigs),
+        one(r#"from d in docs where d.tag == "t7" select d.id"#, "docs.key(7)"),
+        one(r#"from d in docs.Small where d.note == "n8" select d.id"#, "docs.key(8)"),
+    ];
+    reads
+}
+
+/// The owners of the application's heaps and of its indexes.
+type Owners = (BTreeSet<u32>, BTreeSet<u32>);
+
+/// Returns the files of the closed fixture and the owners of its pages.
+fn rot_fixture() -> (Files, Owners) {
+    let files = seeded_files(REINDEX);
+    let mut sim = Sim::with_files(SEED, Config::default(), files);
+    let (heaps, indexes) = api::run(&mut sim, |rt| {
+        let db = Database::open_in(rt, FILE, &rot_log(), &no_create(REINDEX))
+            .expect("the fixture opens");
+        commit(&db, CHANGE_TEXT, || {}).expect("the change commits");
+        commit(&db, LAST_TEXT, || {}).expect("the last commit commits");
+        let small = (0..SMALL_DOCS).map(|i| {
+            format!("insert docs.Small {{ id: docs.key({i}), tag: \"t{i}\", note: \"n{i}\" }}\n")
+        });
+        let big = (SMALL_DOCS..SMALL_DOCS + BIG_DOCS).map(|i| {
+            let body = big_body(i);
+            format!("insert docs.Big {{ id: docs.key({i}), tag: \"t{i}\", body: \"{body}\" }}\n")
+        });
+        let docs: String = small.chain(big).collect();
+        commit(&db, &docs, || {}).expect("the documents commit");
+        let w = db.write_path();
+        #[rustfmt::skip]
+        let heaps = [("app::rows", "Row"), ("app::filler", "Filler"), ("app::docs", "Small"), ("app::docs", "Big")];
+        let pages = |(rel, ctor): &(&str, &str)| {
+            let heap = w.heap_named(rel, ctor).expect("the heap");
+            heap.pages(w.pager()).expect("its pages")
+        };
+        let heaps: Vec<Vec<Pid>> = heaps.iter().map(pages).collect();
+        #[rustfmt::skip]
+        let indexes = [("app::rows", "index (name)"), ("app::filler", "index (body)"), ("app::docs", "index (tag)"), ("app::docs", "index (note) in Small")];
+        let owner = |(rel, clause): &(&str, &str)| {
+            let index = w.index_named(rel, clause).expect("the index");
+            index.tree().owner()
+        };
+        let indexes: BTreeSet<u32> = indexes.iter().map(owner).collect();
+        db.close().expect("the fixture closes");
+        (heaps, indexes)
+    });
+    let files = sim.files();
+    let bytes = &files[FILE];
+    let heaps = heaps
+        .iter()
+        .flatten()
+        .map(|p| storage::owner(&bytes[p.0 as usize * PAGE..(p.0 as usize + 1) * PAGE]))
+        .collect();
+    (files, (heaps, indexes))
+}
+
+/// Returns the class of `page`, number `at` of a file whose application heaps have `owners`.
+fn page_class(at: usize, page: &[u8], owners: &Owners) -> String {
+    if at < Pid::FIRST_DATA.0 as usize {
+        return "file header".into();
+    }
+    if page.iter().all(|&b| b == 0) {
+        return "blank".into();
+    }
+    match PageKind::from_u16(storage::kind(page)) {
+        Some(PageKind::HeapFixed | PageKind::HeapSlotted) => {
+            if owners.0.contains(&storage::owner(page)) {
+                "application heap".into()
+            } else {
+                "other heap".into()
+            }
+        }
+        Some(PageKind::IndexLeaf | PageKind::IndexInner) => {
+            if owners.1.contains(&storage::owner(page)) {
+                "application btree".into()
+            } else {
+                "other btree".into()
+            }
+        }
+        Some(kind) => format!("{kind:?}"),
+        None => "unknown".into(),
+    }
+}
+
+/// Returns a copy of `page` under `rot`, the same bytes when it changes nothing.
+fn rotted(page: &[u8], at: usize, rot: Rot) -> Vec<u8> {
+    let mut out = page.to_vec();
+    match rot {
+        Rot::Flip => out[(at * 2_654_435_761) % PAGE] ^= 1 << (at % 8),
+        Rot::Zeroed => out.fill(0),
+        Rot::Torn if page[PAGE / 2..].iter().any(|&b| b != 0) => out[PAGE / 2..].fill(0),
+        Rot::Torn => out[..PAGE / 2].fill(0),
+    }
+    out
+}
+
+#[derive(Default)]
+struct Seen {
+    opened: bool,
+    exact: usize,
+    refused: usize,
+    acknowledged: bool,
+    findings: Vec<String>,
+    open_refusal: Option<String>,
+}
+
+fn is_damage_refusal(e: &Error) -> bool {
+    matches!(
+        e,
+        Error::Fatal {
+            reason: FatalReason::Quarantined { .. }
+        }
+    )
+}
+
+/// Returns the rows of `rows` printed, or `None` for a refusal naming damage.
+fn rot_rows(rows: DynRows, what: &str) -> Result<Option<Vec<String>>, String> {
+    let form = rows.form().clone();
+    let mut out = Vec::new();
+    for row in rows {
+        match row {
+            Ok(row) => out.push(print(&row, &form).map_err(|e| format!("{what}: {e:?}"))?),
+            Err(e) if is_damage_refusal(&e) => return Ok(None),
+            Err(e) => return Err(format!("{what}: mid-stream {e:?}")),
+        }
+    }
+    Ok(Some(out))
+}
+
+/// Returns the rows of `text` printed and sorted, or `None` for a refusal naming damage.
+fn rot_read<R: Runtime>(db: &Database<R>, text: &str) -> Result<Option<Vec<String>>, String> {
+    let mut results = match query(db, text) {
+        Ok(results) => results,
+        Err(e) if is_damage_refusal(&e) => return Ok(None),
+        Err(e) => return Err(format!("{text}: {e:?}")),
+    };
+    let rows = rot_rows(results.remove(0), text)?;
+    Ok(rows.map(|rows| ordered(rows.into_iter())))
+}
+
+fn rot_read_all<R: Runtime>(
+    db: &Database<R>,
+    inserted: bool,
+    seen: &mut Seen,
+) -> Result<(), String> {
+    for (text, want) in rot_reads(inserted) {
+        match rot_read(db, &text)? {
+            None => seen.refused += 1,
+            Some(got) if got == want => seen.exact += 1,
+            Some(got) => {
+                let short = |v: &[String]| format!("{} rows {:.300?}", v.len(), v);
+                return Err(format!(
+                    "wrong rows from {text:.80}: want {}, got {}",
+                    short(&want),
+                    short(&got)
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn rot_insert<R: Runtime>(db: &Database<R>, seen: &mut Seen) -> Result<(), String> {
+    let text = format!(r#"insert rows {{ id: rows.key({ROT_ROW}), name: "rotted" }}"#);
+    match commit(db, &text, || {}) {
+        Ok(()) => seen.acknowledged = true,
+        Err(e) if is_damage_refusal(&e) => seen.refused += 1,
+        Err(e) => return Err(format!("insert: {e:?}")),
+    }
+    Ok(())
+}
+
+fn rot_verify<R: Runtime>(db: &Database<R>, seen: &mut Seen) -> Result<(), String> {
+    let found = match db.verify(None) {
+        Ok(rows) => rot_rows(rows, "verify")?,
+        Err(e) if is_damage_refusal(&e) => None,
+        Err(e) => return Err(format!("verify: {e:?}")),
+    };
+    seen.refused += usize::from(found.is_none());
+    seen.findings = found.unwrap_or_default();
+    Ok(())
+}
+
+/// Open the file, or return `None` for a refusal naming damage.
+fn rot_open(rt: SimRuntime, seen: &mut Seen) -> Result<Option<Database<SimRuntime>>, String> {
+    match Database::open_in(rt, FILE, &rot_log(), &no_create(REINDEX)) {
+        Ok(db) => Ok(Some(db)),
+        Err(OpenError::Corrupt { detail }) => {
+            seen.open_refusal = Some(detail);
+            Ok(None)
+        }
+        Err(e) => Err(format!("open: {e:?}")),
+    }
+}
+
+fn rot_close<R: Runtime>(db: Database<R>) -> Result<(), String> {
+    match db.close() {
+        Err(e) if !is_damage_refusal(&e) => Err(format!("close: {e:?}")),
+        _ => Ok(()),
+    }
+}
+
+fn finished_run<T>(sim: &mut Sim, body: impl FnOnce(SimRuntime) -> T) -> Result<T, String> {
+    let mut got = None;
+    match sim.run(|rt| got = Some(body(rt))) {
+        Outcome::Finished => got.ok_or_else(|| "the run returned nothing".to_owned()),
+        other => Err(format!("the run ended {other:?}")),
+    }
+}
+
+/// Run the public API over `image`: open, every read, one commit, verify, close, then reopen and
+/// read what was acknowledged.
+fn rot_case(image: Files) -> Result<Seen, String> {
+    let mut seen = Seen::default();
+    let mut sim = Sim::with_files(SEED, Config::default(), image);
+    finished_run(&mut sim, |rt| -> Result<(), String> {
+        let Some(db) = rot_open(rt, &mut seen)? else {
+            return Ok(());
+        };
+        seen.opened = true;
+        rot_read_all(&db, false, &mut seen)?;
+        rot_insert(&db, &mut seen)?;
+        rot_read_all(&db, seen.acknowledged, &mut seen)?;
+        rot_verify(&db, &mut seen)?;
+        rot_close(db)
+    })??;
+    let mut sim = Sim::with_files(SEED, Config::default(), sim.files());
+    finished_run(&mut sim, |rt| -> Result<(), String> {
+        let Some(db) = rot_open(rt, &mut seen)? else {
+            return Ok(());
+        };
+        rot_read_all(&db, seen.acknowledged, &mut seen)?;
+        rot_close(db)
+    })??;
+    Ok(seen)
+}
+
+static IN_ROT_CASE: AtomicBool = AtomicBool::new(false);
+static ROT_PANICS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn hook_rot_panics() {
+    let default = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        if IN_ROT_CASE.load(Ordering::SeqCst) {
+            ROT_PANICS.lock().unwrap().push(info.to_string());
+        } else {
+            default(info);
+        }
+    }));
+}
+
+/// Returns what `case` answers in `limit`, or the panic or hang that stopped it.
+fn rot_bounded<T: Send + 'static>(
+    limit: Duration,
+    case: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let (send, receive) = mpsc::channel();
+    IN_ROT_CASE.store(true, Ordering::SeqCst);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "gone once the simulator stops a run that spins, so no case needs its own thread"
+    )]
+    thread::spawn(move || {
+        send.send(panic::catch_unwind(AssertUnwindSafe(case)))
+            .expect("the search waits");
+    });
+    let answer = receive.recv_timeout(limit);
+    IN_ROT_CASE.store(false, Ordering::SeqCst);
+    let panics = std::mem::take(&mut *ROT_PANICS.lock().unwrap());
+    match answer {
+        Err(_) => Err(format!("no answer in {limit:?}")),
+        Ok(_) if !panics.is_empty() => Err(format!("panic: {}", panics.join(" | "))),
+        Ok(Err(_)) => Err("panic with no report".to_owned()),
+        Ok(Ok(got)) => got,
+    }
+}
+
+/// Returns why the answer of a run with `rot` on data page `at` fails to name the damage.
+fn unnamed_damage(at: usize, rot: Rot, seen: &Seen) -> Option<String> {
+    let name = match rot {
+        Rot::Flip => format!("where: \"page {at}: Checksum\""),
+        Rot::Zeroed | Rot::Torn => format!("where: \"page {at}: "),
+    };
+    let named = seen.findings.iter().any(|f| f.contains(&name));
+    (seen.opened && !named).then(|| format!("verify names no damage: {:?}", seen.findings))
+}
+
+#[derive(Default, Debug)]
+struct Tally {
+    cases: usize,
+    refused: usize,
+    exact: usize,
+}
+
+/// Returns the pages of the file to rot with `ROTS[kind]`: all of them under the deep profile, and
+/// otherwise a spread over each class.
+fn rot_sample(classes: &BTreeMap<String, Vec<usize>>, kind: usize) -> BTreeSet<usize> {
+    classes
+        .values()
+        .flat_map(|pages| {
+            if profile::every_case() {
+                pages.clone()
+            } else {
+                vec![pages[kind * pages.len() / ROTS.len()]]
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn page_rot_gives_the_written_rows_or_a_refusal_naming_damage() {
+    hook_rot_panics();
+    let (pristine, owners) = rot_fixture();
+    let run = |image: Files| rot_bounded(ROT_CASE_LIMIT, move || rot_case(image));
+    let clean = run(pristine.clone()).expect("the undamaged file answers");
+    assert_eq!(0, clean.refused, "the undamaged file refuses nothing");
+    assert_eq!(27, clean.exact, "the undamaged file reads back");
+    assert_eq!(Vec::<String>::new(), clean.findings);
+    let file = &pristine[FILE];
+    assert_eq!(0, file.len() % PAGE, "the file is whole pages");
+    let mut classes: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (at, page) in file.chunks(PAGE).enumerate() {
+        classes
+            .entry(page_class(at, page, &owners))
+            .or_default()
+            .push(at);
+    }
+    let (mut defects, mut refusals) = (Vec::new(), BTreeSet::new());
+    let mut table: BTreeMap<(String, Rot), Tally> = BTreeMap::new();
+    let mut reached = BTreeSet::new();
+    for (kind, rot) in ROTS.into_iter().enumerate() {
+        for at in rot_sample(&classes, kind) {
+            let page = &file[at * PAGE..(at + 1) * PAGE];
+            let class = page_class(at, page, &owners);
+            let bytes = rotted(page, at, rot);
+            assert_ne!(
+                page, bytes,
+                "page {at} {class} {rot:?}: nothing was damaged"
+            );
+            let mut image = pristine.clone();
+            image.get_mut(FILE).unwrap()[at * PAGE..(at + 1) * PAGE].copy_from_slice(&bytes);
+            reached.insert(at);
+            let tally = table.entry((class.clone(), rot)).or_default();
+            tally.cases += 1;
+            let answer = run(image).and_then(|seen| {
+                let data = at >= Pid::FIRST_DATA.0 as usize;
+                match unnamed_damage(at, rot, &seen).filter(|_| data) {
+                    Some(defect) => Err(defect),
+                    None => Ok(seen),
+                }
+            });
+            match answer {
+                Ok(seen) => {
+                    tally.refused += usize::from(seen.refused > 0 || !seen.opened);
+                    tally.exact += usize::from(seen.exact > 0);
+                    refusals.extend(seen.open_refusal);
+                }
+                Err(defect) => defects.push(format!("page {at} {class} {rot:?}: {defect:.900}")),
+            }
+        }
+    }
+    println!(
+        "pages {}, reached {}, open refusals {refusals:?}\n{table:#?}",
+        file.len() / PAGE,
+        reached.len()
+    );
+    assert_eq!(Vec::<String>::new(), defects, "{} defects", defects.len());
+    if profile::every_case() {
+        assert_eq!(file.len() / PAGE, reached.len(), "every page number");
+    }
+    for class in ROT_CLASSES {
+        let tally = |rot| {
+            table
+                .get(&(class.to_owned(), rot))
+                .unwrap_or_else(|| panic!("{class} {rot:?} was never reached"))
+        };
+        let refused: usize = ROTS.into_iter().map(|rot| tally(rot).refused).sum();
+        if class == "file header" {
+            assert_eq!(0, refused, "{class}: the other copy serves");
+        } else {
+            assert_reached(&format!("{class}: a refusal"), refused, 1);
+        }
+    }
+    for class in ["application heap", "application btree"] {
+        for rot in ROTS {
+            let tally = &table[&(class.to_owned(), rot)];
+            let what = format!("{class} {rot:?}");
+            assert_reached(&format!("{what}: a refusal"), tally.refused, 1);
+            assert_reached(&format!("{what}: exact rows"), tally.exact, 1);
+        }
+    }
+}
+
+#[test]
+fn a_rot_case_that_hangs_or_panics_is_reported() {
+    hook_rot_panics();
+    let hang = rot_bounded::<()>(Duration::from_millis(20), || {
+        loop {
+            thread::park();
+        }
+    });
+    assert_eq!(Err("no answer in 20ms".to_owned()), hang);
+    let panicked = rot_bounded::<()>(ROT_CASE_LIMIT, || panic!("the case broke"));
+    let report = panicked.expect_err("a panic is a defect");
+    assert!(
+        report.starts_with("panic: ") && report.contains("the case broke"),
+        "{report}"
+    );
 }
