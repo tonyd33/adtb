@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-26
-status: in-progress
+status: resolved
+closed: 2026-11-03
 kind: feature
 priority: 110
 summary: "engine open re-parses and rebuilds every declaration, page checksums have no hardware CRC, reserve_page reads a page just for its LSN, and some sim seed loops skip profile::sweep"
@@ -32,3 +33,7 @@ Caching parsed declarations targets 1.8% of suite cycles, so the fix is a memo o
 ## 2026-10-31: next step
 
 Hardware CRC landed. What remains is the memo on `Source::built` and `reserve_page`'s read of a free page, each to be measured against a stop line first. The item on seed loops outside `profile::sweep` goes with test-audit-findings. No track is running.
+
+## 2026-11-03: resolved
+
+The memo on `Source::built` landed in `perf: memoise schema builds per source and scan visibility map leaves by set bit`. Ruling on `reserve_page`: dropped. Allocation logs a diff against the free page's current bytes (`Pager::allocating`), so the page is read for that diff whether or not `reserve_page` reads it first; the early latch only moves the read. Skipping the read needs a full-page image with an unknown previous LSN, which under docs/design/storage.md §8 clears damage and continues no chain, weakening the lost-write check `verify` runs, for 2.1% of suite cycles. Reopen if a profile shows allocation reads above 5% of a workload that matters.
