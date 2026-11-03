@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-31
-status: open
+status: resolved
+closed: 2026-11-03
 kind: bug
 priority: 401
 summary: acknowledged work and failure outcomes are not searched through Database under every fault
@@ -380,3 +381,7 @@ Every row is landed. Of the tickets this one names, two are defects the matrix e
 ## 2026-11-03: space-append-spin landed
 
 Closed by `fix: refuse a foreign page in a heap directory instead of spinning`. One blocker left: truncated-to-nothing.
+
+## 2026-11-03: resolved
+
+truncated-to-nothing closed by `fix: refuse to open an empty file beside a log no create wrote`. Both blockers of the closing review have landed. Every row of the matrix is landed; what remains is ticketed on its own, listed in the closing review above, plus heap-directory-follow-ups.
