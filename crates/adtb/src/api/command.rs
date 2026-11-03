@@ -194,8 +194,7 @@ fn export_csv<'v>(
         for ((_, ty), value) in columns.iter().zip(fields) {
             cells.push(match value {
                 Val::Text(t) => t.to_string(),
-                other => print(other, &Form::of(schema, ty))
-                    .map_err(|e| write::Error::Internal(format!("printing a cell: {e:?}")))?,
+                other => print(other, &Form::of(schema, ty)).map_err(write::Broken::Unprintable)?,
             });
         }
         out.push_str(&line(cells));
@@ -315,14 +314,17 @@ pub(super) fn engine_relation(
     schema: &Schema,
     module: &str,
     name: &str,
-) -> Result<RelId, write::Error> {
+) -> Result<RelId, write::Broken> {
     schema
         .module_named(module)
         .and_then(|m| match schema.module(m).values.get(name) {
             Some(ValueDef::Relation(r)) => Some(*r),
             _ => None,
         })
-        .ok_or_else(|| write::Error::Internal(format!("the engine declares `{module}::{name}`")))
+        .ok_or_else(|| write::Broken::Undeclared {
+            module: module.to_string(),
+            name: name.to_string(),
+        })
 }
 
 /// Returns the positions among `rel`'s indexes of those `reindex` rebuilds: every one when
@@ -476,7 +478,7 @@ impl<R: Runtime> Engine<R> {
             .map_err(|f| f.error)?;
         got.pop()
             .map(|o| o.result)
-            .ok_or_else(|| write::Error::Internal("a statement of one item has one outcome".into()))
+            .ok_or_else(|| write::Broken::NoValueOutcome.into())
     }
 
     /// Record that the issuer of `p` was refused while its text ran. Returns the refusal.
@@ -488,7 +490,7 @@ impl<R: Runtime> Engine<R> {
     ) -> write::Error {
         match self.audit_denied(&issuer.role, p.caller(), &CallOrigin::AdHoc(issuer.text)) {
             Ok(()) => write::Error::Denied(detail),
-            Err(e) => write::Error::Internal(format!("recording a denied call: {e:?}")),
+            Err(e) => write::Broken::RefusalUnrecorded(Box::new(e)).into(),
         }
     }
 
@@ -504,9 +506,7 @@ impl<R: Runtime> Engine<R> {
     ) -> Result<DynRows, write::Error> {
         let schema = p.schema();
         let Val::Int(id) = self.value_of(tx, p, key, local, bounds)? else {
-            return Err(write::Error::Internal(
-                "a key of `sys::calls` is an I64".into(),
-            ));
+            return Err(write::Broken::CallKeyNotInt.into());
         };
         let calls = self.calls.lock(&self.rt);
         let session = calls.session(id);
@@ -549,10 +549,10 @@ impl<R: Runtime> Engine<R> {
             )));
         }
         let Ty::Set(elem) = p.terms().ty(source) else {
-            return Err(write::Error::Internal("an export's source is a set".into()));
+            return Err(write::Broken::ExportNotSetTyped.into());
         };
         let Val::Set(found) = self.value_of(tx, p, source, local, bounds)? else {
-            return Err(write::Error::Internal("an export's source is a set".into()));
+            return Err(write::Broken::ExportNotSet.into());
         };
         let bytes = export_csv(schema, elem, found.iter(), sums_text)?;
         let outside = format!("path `{path}` is outside export_roots");
@@ -608,9 +608,7 @@ impl<R: Runtime> Engine<R> {
             .trial(tx, text, local, bounds)
             .map_err(|f| f.error)?;
         let took = self.rt.now().saturating_since(start);
-        let o: Outcome = outcomes.pop().ok_or_else(|| {
-            write::Error::Internal("a trial of one statement has one outcome".into())
-        })?;
+        let o: Outcome = outcomes.pop().ok_or(write::Broken::NoTrialOutcome)?;
         let rows = match &o.result {
             _ if *text.terms.ty(text.items[0]) == Ty::Change => 0,
             Val::Set(s) => s.len(),
@@ -681,7 +679,7 @@ impl<R: Runtime> Engine<R> {
         let violation = schema
             .ty(schema.relation(findings).elem_def)
             .ctor_index("Violation")
-            .ok_or_else(|| write::Error::Internal("`Finding` declares `Violation`".into()))?;
+            .ok_or(write::Broken::NoViolation)?;
         let finding = schema.ty(schema.relation(findings).elem_def);
         let constraint_at = finding.header().len();
         let constraints = &schema.ids.constraints;
@@ -709,7 +707,7 @@ impl<R: Runtime> Engine<R> {
             return Ok(());
         }
         self.audit_denied(&issuer.role, caller, &CallOrigin::AdHoc(issuer.text))
-            .map_err(|e| write::Error::Internal(format!("recording a denied call: {e:?}")))?;
+            .map_err(|e| write::Broken::WitnessDenialUnrecorded(Box::new(e)))?;
         Err(write::Error::Denied(format!(
             "role `{}` lacks `read` on the rows of the `Violation` witnesses of `verify`",
             issuer.role
@@ -776,13 +774,12 @@ impl<R: Runtime> Engine<R> {
             .db
             .statements(tx, given, local, bounds)
             .map_err(|f| f.error)?;
-        let record = got.pop().map(|o| o.result).ok_or_else(|| {
-            write::Error::Internal("a statement of one item has one outcome".into())
-        })?;
+        let record = got
+            .pop()
+            .map(|o| o.result)
+            .ok_or(write::Broken::NoSettingOutcome)?;
         let Ty::Record(names) = p.terms().ty(value) else {
-            return Err(write::Error::Internal(
-                "a setting's value is a record".into(),
-            ));
+            return Err(write::Broken::SettingNotRecord.into());
         };
         let given: BTreeMap<&str, &Val> = names
             .iter()
@@ -793,9 +790,9 @@ impl<R: Runtime> Engine<R> {
         let id = schema.ids.ctors[&(def, setting)];
         let mut fields = vec![Val::Int(i64::try_from(id).unwrap_or(i64::MAX))];
         for f in &ctor.fields {
-            let v = given.get(f.name.as_str()).ok_or_else(|| {
-                write::Error::Internal(format!("a setting's value has field `{}`", f.name))
-            })?;
+            let v = given
+                .get(f.name.as_str())
+                .ok_or_else(|| write::Broken::SettingField(f.name.clone()))?;
             fields.push((*v).clone());
         }
         let row = Val::ctor(setting, fields);

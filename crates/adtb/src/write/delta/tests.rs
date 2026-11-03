@@ -9,9 +9,10 @@ use adtb_lang::schema::{Schema, ValueDef, build};
 use adtb_lang::span::FileId;
 use adtb_lang::types::{Base, RelId, Ty};
 
+use super::super::{Broken, TermKind};
 use super::{At, Binder, Compiler, Occurrence, Origin, Part, Row, Within, compile};
 use crate::plan::fixture::Fixture;
-use crate::plan::{self, Catalog, Facts};
+use crate::plan::{Catalog, Facts};
 
 fn schema() -> Schema {
     let text = "module app\ntype U = { id: Key us }\nrelation us : U key id generate sequence\n";
@@ -61,11 +62,8 @@ fn compiler<'a>(
     }
 }
 
-fn internal<T: std::fmt::Debug>(r: Result<T, plan::Error>) -> String {
-    match r {
-        Err(plan::Error::Internal(what)) => what,
-        other => panic!("{other:?} is not an internal error"),
-    }
+fn internal<T: std::fmt::Debug>(r: Result<T, Broken>) -> Broken {
+    r.expect_err("an internal error")
 }
 
 fn int() -> Ty {
@@ -95,8 +93,7 @@ fn a_prior_relation_not_a_set_is_an_internal_error() {
     let v = terms.var("p", int());
     let t = terms.add(Kind::Var(v), int());
     let mut cx = compiler(&s, &n, &catalog, &mut terms, Some(v));
-    let what = internal(cx.priors(t));
-    assert!(what.contains("a prior relation is a set"), "{what}");
+    assert_eq!(Broken::PriorNotSet(int()), internal(cx.priors(t)));
 }
 
 #[test]
@@ -108,8 +105,7 @@ fn a_top_level_read_outside_a_for_is_an_internal_error() {
     let q = terms.add(Kind::EmptySet, Ty::Set(Box::new(int())));
     let mut cx = compiler(&s, &n, &catalog, &mut terms, None);
     let o = bare(&s, q, Origin::State);
-    let what = internal(cx.top_delta(q, q, &o));
-    assert!(what.contains("the source of a `For`"), "{what}");
+    assert_eq!(Broken::TopNotFor, internal(cx.top_delta(q, q, &o)));
 }
 
 #[test]
@@ -122,8 +118,8 @@ fn a_read_of_rows_not_a_set_is_an_internal_error() {
     let node = terms.add(Kind::Rel(us(&s), None), int());
     let mut cx = compiler(&s, &n, &catalog, &mut terms, None);
     let o = bare(&s, node, Origin::State);
-    let what = internal(cx.nested_delta(q, &o, &Row::Bare, &Within::default(), &HashMap::new()));
-    assert!(what.contains("a read of rows is a set"), "{what}");
+    let got = internal(cx.nested_delta(q, &o, &Row::Bare, &Within::default(), &HashMap::new()));
+    assert_eq!(Broken::RowsNotSetTyped(int()), got);
 }
 
 #[test]
@@ -138,8 +134,8 @@ fn a_change_set_input_not_a_set_is_an_internal_error() {
     let y = terms.var("y", int());
     let mut cx = compiler(&s, &n, &catalog, &mut terms, None);
     let o = bare(&s, node, Origin::Inserted);
-    let what = internal(cx.nested_delta(q, &o, &Row::Gen(y), &Within::default(), &HashMap::new()));
-    assert!(what.contains("a change set input is a set"), "{what}");
+    let got = internal(cx.nested_delta(q, &o, &Row::Gen(y), &Within::default(), &HashMap::new()));
+    assert_eq!(Broken::InputNotSet(int()), got);
 }
 
 #[test]
@@ -164,7 +160,7 @@ fn a_top_level_binder_outside_a_for_or_let_is_an_internal_error() {
     let mut cx = compiler(&s, &n, &catalog, &mut terms, None);
     let o = bare(&s, node, Origin::Inserted);
     let binders = HashMap::from([(x, Binder { node: q, order: 0 })]);
-    let what = internal(cx.nested_delta(
+    let got = internal(cx.nested_delta(
         q,
         &o,
         &Row::Gen(y),
@@ -174,10 +170,7 @@ fn a_top_level_binder_outside_a_for_or_let_is_an_internal_error() {
         },
         &binders,
     ));
-    assert!(
-        what.contains("a top level binder is a `For` or a `Let`"),
-        "{what}"
-    );
+    assert_eq!(Broken::TopBinder(TermKind(Kind::EmptySet)), got);
 }
 
 #[test]

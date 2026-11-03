@@ -10,6 +10,8 @@ use crate::catalog::indexed_fields;
 use crate::plan::explain::{Describe, Node};
 use crate::plan::{self, Catalog, Facts, Plan};
 
+use super::{Broken, TermKind};
+
 #[cfg(test)]
 mod tests;
 
@@ -85,14 +87,14 @@ impl Delta {
 pub enum Unadmitted {
     /// Each constraint without an index-bounded incremental check, with why.
     Refused(Vec<Refusal>),
-    /// A guarantee of the checker does not hold; the one named.
-    Internal(String),
+    /// A guarantee of the checker does not hold.
+    Internal(Broken),
 }
 
 /// Why one constraint compiles to no incremental check.
 enum Outside {
     Refused(Vec<String>),
-    Internal(String),
+    Internal(Broken),
 }
 
 /// A constraint the schema cannot admit: it has no index-bounded incremental check.
@@ -172,7 +174,7 @@ pub fn compile(
                 constraint: name.clone(),
                 detail,
             })),
-            Err(Outside::Internal(what)) => return Err(Unadmitted::Internal(what)),
+            Err(Outside::Internal(b)) => return Err(Unadmitted::Internal(b)),
         }
     }
     if refused.is_empty() {
@@ -180,10 +182,6 @@ pub fn compile(
     } else {
         Err(Unadmitted::Refused(refused))
     }
-}
-
-fn internal<T>(what: impl Into<String>) -> Result<T, plan::Error> {
-    Err(plan::Error::Internal(what.into()))
 }
 
 /// Returns the qualified name of `r`, with the constructor set `ctors` when it is not every
@@ -459,19 +457,14 @@ impl Compiler<'_> {
                         self.nested_delta(q, o, row, within, &binders)
                     }
                 };
-                match made {
-                    Ok((t, trigger)) => terms.push((t, Some(trigger), what)),
-                    Err(e) => return Err(Outside::Refused(vec![self.reason(&what, e)?])),
-                }
+                let (t, trigger) = made.map_err(Outside::Internal)?;
+                terms.push((t, Some(trigger), what));
             }
         }
         let mut deltas = Vec::new();
         let mut why: Vec<String> = Vec::new();
         for (t, trigger, what) in terms {
-            let t = match self.priors(t) {
-                Ok(t) => t,
-                Err(e) => return Err(Outside::Refused(vec![self.reason(&what, e)?])),
-            };
+            let t = self.priors(t).map_err(Outside::Internal)?;
             for reason in self.shapes(t) {
                 let r = format!("{what}: {reason}");
                 if !why.contains(&r) {
@@ -511,7 +504,7 @@ impl Compiler<'_> {
     /// Returns why `what` has no bounded check, for `e`; fails with an internal error as itself.
     fn reason(&self, what: &str, e: plan::Error) -> Result<String, Outside> {
         match e {
-            plan::Error::Internal(broken) => Err(Outside::Internal(broken)),
+            e @ plan::Error::Internal(_) => Err(Outside::Internal(Broken::BoundedPlan(e))),
             e => Ok(format!("{what}: {}", self.refusal(&e))),
         }
     }
@@ -686,9 +679,9 @@ impl Compiler<'_> {
     /// into its source, and that input.
     ///
     /// Precondition: `f` reads a constructor set in the state after the change.
-    fn top_delta(&mut self, q: Tm, f: Tm, o: &Occurrence) -> Result<(Tm, Var), plan::Error> {
+    fn top_delta(&mut self, q: Tm, f: Tm, o: &Occurrence) -> Result<(Tm, Var), Broken> {
         let Kind::For(x, _, body) = self.kind(f) else {
-            return internal("a top level read is the source of a `For`");
+            return Err(Broken::TopNotFor);
         };
         let elem = self.terms.var_info(x).ty.clone();
         let d = self.input(o.rel, &o.ctors, Part::Inserted, &elem);
@@ -708,13 +701,13 @@ impl Compiler<'_> {
         row: &Row,
         within: &Within,
         binders: &HashMap<Var, Binder>,
-    ) -> Result<(Tm, Var), plan::Error> {
+    ) -> Result<(Tm, Var), Broken> {
         let elem = match row {
             Row::Gen(y) => self.terms.var_info(*y).ty.clone(),
             Row::Deref(_) => self.ty(o.node),
             Row::Bare => match self.ty(o.node) {
                 Ty::Set(e) | Ty::NonEmpty(e) => *e,
-                other => return internal(format!("a read of rows is a set, not {other:?}")),
+                other => return Err(Broken::RowsNotSetTyped(other)),
             },
         };
         let input = match (o.origin, self.kind(o.node)) {
@@ -724,7 +717,7 @@ impl Compiler<'_> {
         let input_ty = self.terms.var_info(input).ty.clone();
         let elem = match &input_ty {
             Ty::Set(e) => e.as_ref().clone(),
-            other => return internal(format!("a change set input is a set, not {other:?}")),
+            other => return Err(Broken::InputNotSet(other.clone())),
         };
         let d = self.terms.var("%changed", elem);
         let mut sub: HashMap<Var, Var> = HashMap::new();
@@ -823,9 +816,7 @@ impl Compiler<'_> {
                     Kind::Let(x, e, body)
                 }
                 k => {
-                    return internal(format!(
-                        "a top level binder is a `For` or a `Let`, not {k:?}"
-                    ));
+                    return Err(Broken::TopBinder(TermKind(k)));
                 }
             };
             let n = self.add(wrapped, self.ty(node));
@@ -1100,7 +1091,7 @@ impl Compiler<'_> {
 
     /// Returns `t` with each read of a `prior` relation replaced by the rows of the state after
     /// the change that it does not insert, with the rows it deletes.
-    fn priors(&mut self, t: Tm) -> Result<Tm, plan::Error> {
+    fn priors(&mut self, t: Tm) -> Result<Tm, Broken> {
         let mut map = HashMap::new();
         let mut seen = BTreeSet::new();
         self.find_priors(t, &mut seen, &mut map)?;
@@ -1115,7 +1106,7 @@ impl Compiler<'_> {
         t: Tm,
         seen: &mut BTreeSet<Tm>,
         map: &mut HashMap<Tm, Tm>,
-    ) -> Result<(), plan::Error> {
+    ) -> Result<(), Broken> {
         if !seen.insert(t) {
             return Ok(());
         }
@@ -1132,7 +1123,7 @@ impl Compiler<'_> {
         {
             let elem = match self.ty(t) {
                 Ty::Set(e) | Ty::NonEmpty(e) => *e,
-                other => return internal(format!("a prior relation is a set, not {other:?}")),
+                other => return Err(Broken::PriorNotSet(other)),
             };
             let ty = Ty::Set(Box::new(elem.clone()));
             let y = self.terms.var("%prior", elem.clone());

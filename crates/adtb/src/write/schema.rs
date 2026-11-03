@@ -9,7 +9,7 @@ use crate::exec::types::ctors;
 use crate::exec::{Conv, conv};
 use crate::plan::{Catalog, HeapId, IndexDesc, IndexId, declared_elements};
 
-use super::Error;
+use super::{Broken, Error};
 
 /// A direct reference field of a constructor.
 #[derive(Clone, Debug)]
@@ -166,8 +166,9 @@ pub fn rels(schema: &Schema, normal: &NormalProgram, catalog: &Catalog) -> Resul
                 .iter()
                 .find(|d| d.unique && d.ctors == scope && d.elements == elements)
                 .map(|d| d.id)
-                .ok_or_else(|| {
-                    Error::Internal(format!("unique {i} of relation {} has an index", r.name))
+                .ok_or_else(|| Broken::UniqueUnindexed {
+                    position: i,
+                    relation: r.name.clone(),
                 })?;
             uniques.push(Unique {
                 pos: i,
@@ -196,10 +197,11 @@ pub fn rels(schema: &Schema, normal: &NormalProgram, catalog: &Catalog) -> Resul
                     clause
                 }
                 (None, _) => {
-                    return Err(Error::Internal(format!(
-                        "index {} of relation {} is neither declared nor an old key",
-                        d.id.0, r.name
-                    )));
+                    return Err(Broken::UndeclaredIndex {
+                        index: d.id,
+                        relation: r.name.clone(),
+                    }
+                    .into());
                 }
             };
             let indexed = Indexed {
@@ -227,7 +229,7 @@ pub fn rels(schema: &Schema, normal: &NormalProgram, catalog: &Catalog) -> Resul
                 key_index: desc.key_index,
                 key_fields: key_desc
                     .fields()
-                    .ok_or_else(|| Error::Internal(format!("the key of {} is fields", r.name)))?
+                    .ok_or_else(|| Broken::KeyNotFields(r.name.clone()))?
                     .into_iter()
                     .map(String::from)
                     .collect(),

@@ -17,8 +17,7 @@ use super::error::{Error, OpenError, RejectReason};
 /// A guarantee of the engine that did not hold, made into the text of `RejectReason::Internal`.
 #[derive(Debug)]
 pub(super) enum Broken {
-    /// A guarantee the write path or the planner names in text.
-    Write(String),
+    Write(write::Broken),
     Exec(exec::Broken),
     Catalog(catalog::Broken),
     CatalogError(catalog::Error),
@@ -54,7 +53,7 @@ pub(super) enum Broken {
 impl fmt::Display for Broken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Broken::Write(what) => f.write_str(what),
+            Broken::Write(b) => write!(f, "{b}"),
             Broken::Exec(e) => write!(f, "{e}"),
             Broken::Catalog(e) => write!(f, "{e}"),
             Broken::CatalogError(e) => write!(f, "{e:?}"),
@@ -134,7 +133,7 @@ impl fmt::Display for Corruption {
             Corruption::Catalog(e) => write!(f, "{e:?}"),
             Corruption::Exec(e) => write!(f, "{e:?}"),
             Corruption::Normal(e) => write!(f, "{e:?}"),
-            Corruption::Write(e) => write!(f, "{e:?}"),
+            Corruption::Write(e) => f.write_str(&write::detail(e)),
             Corruption::Engine(e) => write!(f, "{e:?}"),
             Corruption::BundleRow(row) => write!(f, "{row}"),
             Corruption::Finding(row) => write!(f, "a finding holds {row:?}"),

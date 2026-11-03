@@ -28,7 +28,7 @@ use crate::storage::{self, Damage, Lsn, Pid, Quarantine};
 
 use super::past::Retained;
 use super::schema::{Indexed, Rel};
-use super::{Bounds, Database, Error, Rerun, Stop, Txn};
+use super::{Bounds, Broken, Database, Error, Rerun, Stop, Txn};
 
 /// One index to rebuild, how, and who follows it.
 #[expect(
@@ -275,21 +275,21 @@ impl<R: Runtime> Database<R> {
         rel: RelId,
         positions: Option<&[usize]>,
     ) -> Result<Vec<IndexId>, Error> {
-        let r = self
-            .rels
-            .get(&rel)
-            .ok_or_else(|| Error::Internal(format!("reindex of {rel:?}, which has no heaps")))?;
+        let r = self.rels.get(&rel).ok_or(Broken::ReindexNoHeaps(rel))?;
         let Some(positions) = positions else {
             return Ok(r.indexes.iter().map(|(id, _)| *id).collect());
         };
         let mut ids = BTreeSet::new();
         for &i in positions {
-            let id = self
-                .schema
-                .ids
-                .indexes
-                .get(&(rel, i))
-                .ok_or_else(|| Error::Internal(format!("index {i} of {} is stored", r.name)))?;
+            let id =
+                self.schema
+                    .ids
+                    .indexes
+                    .get(&(rel, i))
+                    .ok_or_else(|| Broken::UnstoredIndex {
+                        position: i,
+                        relation: r.name.clone(),
+                    })?;
             ids.insert(IndexId(*id));
         }
         Ok(ids.into_iter().collect())
@@ -425,7 +425,7 @@ impl<R: Runtime> Database<R> {
         };
         let ran = catch_unwind(AssertUnwindSafe(|| self.rebuild_and_swap(job, &mut pages)));
         let ran = ran.unwrap_or_else(|payload| match panic_text(&*payload) {
-            Some(text) => Err(Error::Internal(text)),
+            Some(text) => Err(Broken::Panicked(text).into()),
             None => resume_unwind(payload),
         });
         match ran {
@@ -443,7 +443,7 @@ impl<R: Runtime> Database<R> {
                 reclaimed &= pages.old.found && retire(&self.pager, &pages.old.pages).is_ok();
                 let cause = match e {
                     Error::Cancelled => None,
-                    e => Some(format!("{:?}", self.quarantining(e))),
+                    e => Some(super::detail(&self.quarantining(e))),
                 };
                 Err(Failure { cause, reclaimed })
             }
@@ -473,7 +473,10 @@ impl<R: Runtime> Database<R> {
             .indexes
             .iter()
             .find(|(i, _)| *i == job.index)
-            .ok_or_else(|| Error::Internal(format!("{:?} is an index of {}", job.index, r.name)))?;
+            .ok_or_else(|| Broken::NotAnIndex {
+                index: job.index,
+                relation: r.name.clone(),
+            })?;
         let tree = self.indexes[&job.index].index.tree();
         let scan = Scan {
             db: self,
@@ -606,9 +609,7 @@ impl From<BuildError> for Error {
         match e {
             BuildError::Stopped => Error::Cancelled,
             BuildError::Page(e) => e.into(),
-            BuildError::Duplicate(key) => {
-                Error::Internal(format!("a duplicate of key {key:?} in a unique index"))
-            }
+            BuildError::Duplicate(key) => Broken::DuplicateKey(key).into(),
         }
     }
 }

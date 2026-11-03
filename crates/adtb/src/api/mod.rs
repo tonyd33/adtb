@@ -810,7 +810,8 @@ fn held_rows<R: Runtime>(
     } else {
         catalog.kept(pager, txns).map_err(corrupt)?
     };
-    let table = command::engine_relation(schema, "sys", "verify_findings").map_err(corrupt)?;
+    let table = command::engine_relation(schema, "sys", "verify_findings")
+        .map_err(|b| corrupt(write::Error::from(b)))?;
     let findings = verify::Findings::of(kept, schema.ids.relations[&table])?;
     let mut volatile = settings::process_options(schema, &options.shown());
     volatile.insert(table, findings.vals());

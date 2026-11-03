@@ -19,7 +19,7 @@ use super::apply::Undo;
 use super::fresh::{self, Occurrences};
 use super::input::{self, Input, Local, is_temp, temp_key};
 use super::schema::{RefField, Rel};
-use super::{Database, Error, Outcome, Rejection, Rows, Txn};
+use super::{Broken, Database, Error, Outcome, Rejection, Rows, TermKind, Txn};
 
 pub type Env = BTreeMap<Var, Val>;
 
@@ -302,7 +302,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                         ));
                     }
                     let Val::Text(at) = self.eval(Arena::Statement, *path, env)? else {
-                        return Err(Error::Internal("a file scan's path is a Text".into()));
+                        return Err(Broken::ScanPathNotText.into());
                     };
                     let records = self.local.borrow_mut().scan(
                         self.schema,
@@ -439,9 +439,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     fn set(&self, t: Tm, env: &Env) -> Result<BTreeSet<Val>, Error> {
         match self.eval(Arena::Statement, t, env)? {
             Val::Set(s) => Ok(s.as_ref().clone()),
-            other => Err(Error::Internal(format!(
-                "a write's rows are a set, found {other:?}"
-            ))),
+            other => Err(Broken::RowsNotSet(other).into()),
         }
     }
 
@@ -493,7 +491,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             Kind::Par(ws) => ws.iter().try_for_each(|w| self.write(*w, env, out)),
             Kind::Fail(m) => {
                 let Val::Text(message) = self.eval(Arena::Statement, m, env)? else {
-                    return Err(Error::Internal("`fail` takes a Text".into()));
+                    return Err(Broken::FailNotText.into());
                 };
                 Err(Error::Rejected(Rejection::UserError {
                     message: message.to_string(),
@@ -510,22 +508,18 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             Kind::Case { scrutinee, arms } => {
                 let v = self.eval(Arena::Statement, scrutinee, env)?;
                 let c = v.ctor_of()?;
-                let (_, x, w) = arms.iter().find(|(d, _, _)| *d == c).ok_or_else(|| {
-                    Error::Internal(format!("a case has an arm for constructor {c}"))
-                })?;
+                let (_, x, w) = arms
+                    .iter()
+                    .find(|(d, _, _)| *d == c)
+                    .ok_or(Broken::NoArm(c))?;
                 self.write(*w, &bind(env, *x, v), out)
             }
             Kind::Let(x, e, w) => {
                 let v = self.eval(Arena::Statement, e, env)?;
                 self.write(w, &bind(env, x, v), out)
             }
-            Kind::Unreachable => Err(Error::Internal(
-                "evaluation reaches no position that exhaustiveness or a dominating test excludes"
-                    .into(),
-            )),
-            k => Err(Error::Internal(format!(
-                "a write term is a write, found {k:?}"
-            ))),
+            Kind::Unreachable => Err(Broken::Unreachable.into()),
+            k => Err(Broken::NotAWrite(TermKind(k)).into()),
         }
     }
 
@@ -535,7 +529,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         match self.terms.kind(t).clone() {
             Kind::Replace(r, rows, f) => {
                 let Kind::Lam(x, body) = *self.terms.kind(f) else {
-                    return Err(Error::Internal("a replace's new value is a `Lam`".into()));
+                    return Err(Broken::ReplaceNotLam.into());
                 };
                 let mut news = BTreeSet::new();
                 for v in self.set(rows, env)? {
@@ -558,9 +552,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 let rows = match self.terms.kind(insert) {
                     Kind::Insert(_, rows) | Kind::Upsert { rows, .. } => *rows,
                     k => {
-                        return Err(Error::Internal(format!(
-                            "`rejects into` wraps an insert or upsert, not {k:?}"
-                        )));
+                        return Err(Broken::RejectsWraps(TermKind(k.clone())).into());
                     }
                 };
                 let mut rejected = Vec::new();
@@ -580,9 +572,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 }
                 Ok(bound)
             }
-            k => Err(Error::Internal(format!(
-                "a bound write is a replace, an upsert or `rejects into`, found {k:?}"
-            ))),
+            k => Err(Broken::NotABoundWrite(TermKind(k)).into()),
         }
     }
 
@@ -667,9 +657,12 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         env: &Env,
         mut rejected: Option<&mut Vec<Rejected>>,
     ) -> Result<BTreeSet<Val>, Error> {
-        let records = self.scans.borrow().get(&scan).cloned().ok_or_else(|| {
-            Error::Internal("every file scan of a statement is read before it runs".into())
-        })?;
+        let records = self
+            .scans
+            .borrow()
+            .get(&scan)
+            .cloned()
+            .ok_or(Broken::ScanUnread)?;
         let mut out = BTreeSet::new();
         for r in records {
             let reason = match r.row {
@@ -733,8 +726,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     /// declaration order.
     fn rejected_fields(&self, into: RelId) -> Result<Vec<String>, Error> {
         let elem = &self.schema.relation(into).elem;
-        let cs = ctors(self.schema, elem)
-            .ok_or_else(|| Error::Internal("`RejectedRow` is a declared record".into()))?;
+        let cs = ctors(self.schema, elem).ok_or(Broken::RejectedRowNotRecord)?;
         Ok(cs[0].iter().map(|(n, _)| n.clone()).collect())
     }
 
@@ -850,16 +842,12 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                     .uniques
                     .iter()
                     .find(|u| u.pos == i as usize)
-                    .ok_or_else(|| {
-                        Error::Internal(format!("an upsert names unique {i} of its relation"))
-                    })?;
+                    .ok_or(Broken::NoUnique(i))?;
                 let (_, ix) = r
                     .indexes
                     .iter()
                     .find(|(id, _)| *id == u.index)
-                    .ok_or_else(|| {
-                        Error::Internal("a unique's index is one of its relation's".into())
-                    })?;
+                    .ok_or(Broken::UniqueIndexMissing)?;
                 let c = n.ctor_of()?;
                 let types = self.store.key_types(u.index);
                 let row = self.stored(r.ctors[c as usize].heap, n)?;
@@ -1072,11 +1060,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 if !probed.insert((at, f.name.as_str())) {
                     continue;
                 }
-                let index = f.index.ok_or_else(|| {
-                    Error::Internal(format!(
-                        "a reference field has an index: {}.{} has none",
-                        r.qualified, f.name
-                    ))
+                let index = f.index.ok_or_else(|| Broken::ReferenceUnindexed {
+                    relation: r.qualified.clone(),
+                    field: f.name.clone(),
                 })?;
                 let routes: BTreeSet<u32> = if f.header {
                     r.all_ctors().into_iter().collect()
@@ -1448,7 +1434,7 @@ impl<R: Runtime> Database<R> {
             crate::plan::Options::default(),
         )
         .map_err(|e| match e {
-            crate::plan::Error::Internal(what) => Error::Internal(what),
+            e @ crate::plan::Error::Internal(_) => Broken::StatementPlan(e).into(),
             e => Error::Unsupported(e.to_string()),
         })
     }

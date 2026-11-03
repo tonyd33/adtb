@@ -64,9 +64,7 @@ impl<R: Runtime> Engine<R> {
                     Some(Ok(rows)) => ran.push((at, rows)),
                     Some(Err(e)) => {
                         refused = Some(e);
-                        return Err(write::Error::Internal(
-                            "a deployment command was refused".into(),
-                        ));
+                        return Err(write::Broken::DeploymentRefused.into());
                     }
                     None => {
                         if !matches!(c.command, adtb_lang::check::Command::Verify(_)) {

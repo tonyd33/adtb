@@ -365,7 +365,7 @@ impl Error {
             write::Error::SequenceExhausted => {
                 Error::invalid("the generated counter exhausted its integer range")
             }
-            write::Error::Internal(what) => Error::internal(Broken::Write(what)),
+            write::Error::Internal(b) => Error::internal(Broken::Write(*b)),
             write::Error::Exec(b) => Error::internal(Broken::Exec(*b)),
             write::Error::Blocked { on, .. } => Error::internal(Broken::Suspended(on)),
             write::Error::HistoryUnavailable { oldest } => {
@@ -962,11 +962,11 @@ mod tests {
     #[test]
     fn a_broken_checker_guarantee_is_rejected_as_internal() {
         let schema = catalog::engine_schema();
-        let got = Error::of_write(&schema, TxnId(7), write::Error::Internal("a set".into()));
+        let got = Error::of_write(&schema, TxnId(7), write::Broken::NoValueOutcome.into());
         assert_eq!(
             Error::Rejected {
                 reason: RejectReason::Internal {
-                    what: "a set".into()
+                    what: "a statement of one item has one outcome".into()
                 }
             },
             got

@@ -1,6 +1,7 @@
 //! Run the write path: change sets, constraint checks, schema changes and reindexing.
 
 mod apply;
+mod broken;
 mod check;
 mod delta;
 mod eval;
@@ -46,6 +47,7 @@ use crate::vacuum;
 
 pub use adtb_lang::schema::Stage;
 
+pub use broken::{Broken, TermKind, detail};
 pub use delta::{CheckPlan, Part};
 pub use input::Local;
 pub use past::Retained;
@@ -131,8 +133,7 @@ pub enum Error {
     /// The role the statement runs for lacks a privilege, as this text states.
     Denied(String),
     SequenceExhausted,
-    /// The plan or a value breaks the invariant this text names, one the checker guarantees.
-    Internal(String),
+    Internal(Box<Broken>),
     /// The executor breaks an invariant the checker guarantees.
     Exec(Box<exec::Broken>),
     /// The schema has a constraint without an index-bounded incremental check; each constraint
@@ -226,10 +227,7 @@ impl From<vacuum::Error> for Error {
             vacuum::Error::Index(i) => Error::from(i),
             vacuum::Error::Heap(e @ crate::heap::Error::Changed { .. }) => Error::from(e),
             vacuum::Error::Heap(crate::heap::Error::TooLarge { len, limit }) => {
-                Error::Internal(format!(
-                    "a version vacuum moves fits its history heap, as it fit its current heap: \
-                     {len} bytes over the limit of {limit}"
-                ))
+                Broken::VacuumTooLarge { len, limit }.into()
             }
         }
     }
@@ -289,14 +287,14 @@ pub fn refusals(
     schema: &Schema,
     normal: &NormalProgram,
     catalog: &Catalog,
-) -> Result<Vec<(String, String)>, Error> {
+) -> Result<Vec<(String, String)>, Broken> {
     let mut terms = normal.terms.clone();
     match delta::compile(schema, normal, &mut terms, catalog) {
         Ok(_) => Ok(Vec::new()),
         Err(delta::Unadmitted::Refused(why)) => {
             Ok(why.into_iter().map(|r| (r.constraint, r.detail)).collect())
         }
-        Err(delta::Unadmitted::Internal(what)) => Err(Error::Internal(what)),
+        Err(delta::Unadmitted::Internal(b)) => Err(b),
     }
 }
 
@@ -352,8 +350,7 @@ impl Txn {
     }
 
     fn writer(&self) -> Result<Xid, Error> {
-        self.xid
-            .ok_or_else(|| Error::Internal("a read-only transaction runs no write".into()))
+        self.xid.ok_or_else(|| Broken::ReadOnly.into())
     }
 }
 
@@ -943,10 +940,7 @@ impl<R: Runtime> Database<R> {
         waiting: HoldWait<'_>,
     ) -> Result<Vec<(CtorId, vacuum::Report)>, Error> {
         let _one = self.hold_vacuum(waiting)?;
-        let r = self
-            .rels
-            .get(&rel)
-            .ok_or_else(|| Error::Internal(format!("vacuum of {rel:?}, which has no heaps")))?;
+        let r = self.rels.get(&rel).ok_or(Broken::VacuumNoHeaps(rel))?;
         self.admit_vacuum(r)?;
         let ids: BTreeMap<u32, CtorId> = self.indexes[&r.key_index]
             .ctors

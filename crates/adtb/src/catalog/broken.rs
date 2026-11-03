@@ -34,7 +34,7 @@ pub enum Broken {
     /// A constraint's query has this type, not a set's.
     NotSetTyped(Ty),
     /// Compiling the incremental checks of a schema breaks a guarantee of the checker.
-    Admission(write::Error),
+    Admission(write::Broken),
     /// A rebuild of indexes ended during this other change of the catalog.
     ReindexDuring(Changing),
     KeyCounter(write::Error),
@@ -121,14 +121,13 @@ impl fmt::Display for Broken {
             Broken::Validation(e) => write!(f, "{e:?}"),
             Broken::NotASet(v) => write!(f, "a constraint returns a set, found {v:?}"),
             Broken::NotSetTyped(t) => write!(f, "a constraint is typed as a set, found {t:?}"),
-            Broken::Admission(write::Error::Internal(what)) => f.write_str(what),
-            Broken::Admission(e) => write!(f, "{e:?}"),
+            Broken::Admission(b) => write!(f, "{b}"),
             Broken::ReindexDuring(c) => write!(
                 f,
                 "a rebuild of indexes ended during the catalog's change {c:?}"
             ),
-            Broken::KeyCounter(e) => write!(f, "advancing a key counter: {e:?}"),
-            Broken::GrantId(e) => write!(f, "drawing a grant id: {e:?}"),
+            Broken::KeyCounter(e) => write!(f, "advancing a key counter: {}", write::detail(e)),
+            Broken::GrantId(e) => write!(f, "drawing a grant id: {}", write::detail(e)),
             Broken::NoSequences => f.write_str("a grant row id needs a named page of id counters"),
             Broken::GrantTarget(g) => write!(f, "a log grant names live objects: {g:?}"),
             Broken::KeptCtor(r, c) => write!(f, "relation {r} keeps constructor {c}"),

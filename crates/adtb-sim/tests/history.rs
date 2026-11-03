@@ -1204,9 +1204,12 @@ fn a_history_heap_write_that_fails_on_a_page_is_a_page_error() {
         len: 9000,
         limit: 4000,
     }));
-    assert!(
-        matches!(&e, adtb::write::Error::Internal(text) if text.contains("history heap")),
-        "{e:?}"
+    assert_eq!(
+        adtb::write::Error::from(adtb::write::Broken::VacuumTooLarge {
+            len: 9000,
+            limit: 4000
+        }),
+        e
     );
 }
 

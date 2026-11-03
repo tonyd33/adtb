@@ -14,7 +14,7 @@ use crate::runtime::Runtime;
 use super::delta::{self, Delta, Input, Part};
 use super::eval::{Arena, Env, Stmt, Violations, violate};
 use super::schema::RefField;
-use super::{Error, Rows};
+use super::{Broken, Error, Rows};
 
 /// A constraint or check of the schema, as its incremental checks ready to run.
 pub struct Denial {
@@ -38,7 +38,7 @@ pub fn denials(
         delta::Unadmitted::Refused(why) => {
             Error::Refused(why.into_iter().map(|r| (r.constraint, r.detail)).collect())
         }
-        delta::Unadmitted::Internal(what) => Error::Internal(what),
+        delta::Unadmitted::Internal(b) => b.into(),
     })?;
     let mut out = Vec::new();
     for c in checks {
@@ -140,9 +140,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 match exec::execute(self.db.rt.clone(), program.clone(), call, &params)? {
                     Val::Set(report) => violate(viol, &d.name, report.iter().cloned()),
                     other => {
-                        return Err(Error::Internal(format!(
-                            "a denial query returns a set, found {other:?}"
-                        )));
+                        return Err(Broken::DenialNotSet(other).into());
                     }
                 }
             }

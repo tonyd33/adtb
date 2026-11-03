@@ -1149,7 +1149,7 @@ impl<R: Runtime> Engine<R> {
             .expect("a write transaction of the write path has an id");
         if let Err(e) = self.deployment.insert(&self.pager, x, &facts) {
             self.db.abort(tx)?;
-            return Err(write::Error::Internal(format!("{e:?}")));
+            return Err(write::Broken::Expiry(e).into());
         }
         self.db.commit(tx)?;
         for mut row in due {

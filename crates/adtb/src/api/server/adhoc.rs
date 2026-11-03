@@ -82,7 +82,7 @@ impl Holds {
             .iter()
             .map(|n| engine_relation(&e.schema, "catalog", n))
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|w| Error::invalid(format!("{w:?}")))?;
+            .map_err(|b| Error::internal(Broken::Write(b)))?;
         let user = (0..e.schema.relations.len() as u32)
             .map(RelId)
             .filter(|r| !e.schema.module(e.schema.relation(*r).module).engine)

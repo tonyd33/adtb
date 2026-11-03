@@ -352,11 +352,10 @@ impl<R: Runtime> Engine<R> {
             .db
             .statements(tx, text, local, bounds.clone())
             .map_err(|f| failed(f.error))?;
-        let value = got.pop().map(|outcome| outcome.result).ok_or_else(|| {
-            failed(write::Error::Internal(
-                "a statement of one item has one outcome".into(),
-            ))
-        })?;
+        let value = got
+            .pop()
+            .map(|outcome| outcome.result)
+            .ok_or_else(|| failed(write::Broken::NoPointOutcome.into()))?;
         let at = write::position(&value).map_err(|e| failed(e.into()))?;
         Ok(at.map_or(RestorePoint::Version(0), |at| {
             RestorePoint::Position(Position::from(at))

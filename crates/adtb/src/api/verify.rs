@@ -457,16 +457,15 @@ impl<R: Runtime> Verifier<R> {
         &self,
         write: impl FnOnce(Xid) -> Result<(), catalog::Error>,
     ) -> Result<(), String> {
-        let shown = |e: &dyn std::fmt::Debug| format!("{e:?}");
-        let tx = self.db.begin().map_err(|e| shown(&e))?;
+        let tx = self.db.begin().map_err(|e| write::detail(&e))?;
         let x = tx
             .xid()
             .ok_or_else(|| "a read-write transaction has an id".to_owned())?;
         if let Err(e) = write(x) {
-            self.db.abort(tx).map_err(|e| shown(&e))?;
-            return Err(shown(&e));
+            self.db.abort(tx).map_err(|e| write::detail(&e))?;
+            return Err(format!("{e:?}"));
         }
-        self.db.commit(tx).map(drop).map_err(|e| shown(&e))
+        self.db.commit(tx).map(drop).map_err(|e| write::detail(&e))
     }
 }
 
@@ -617,7 +616,7 @@ impl<R: Runtime> Engine<R> {
         let denied = self
             .catalog
             .denied(&self.db.store_at(tx), reads)
-            .map_err(|e| write::Error::Internal(format!("{e:?}")))?;
+            .map_err(write::Broken::Denials)?;
         found.extend(denied.into_iter().map(|d| match d {
             Denial::Violated { id, witness } => Found::Violation {
                 constraint: id,
