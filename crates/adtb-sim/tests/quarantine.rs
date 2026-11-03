@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -2290,8 +2290,10 @@ fn transact_fails_once_when_a_mark_lands_before_its_commit() {
 }
 
 #[test]
-fn a_mark_lsn_follows_every_commit_kept_before_it() {
-    for seed_no in adtb_simkit::seeds::sweep(0..1) {
+fn a_mark_lsn_follows_every_commit_kept_before_it_and_refuses_every_commit_after() {
+    let seeds = adtb_simkit::seeds::sweep(0..2);
+    let mut refusing = 0;
+    for seed_no in seeds.clone() {
         let config = Config {
             switch_rate: 0.5,
             ..Config::default()
@@ -2301,17 +2303,43 @@ fn a_mark_lsn_follows_every_commit_kept_before_it() {
             let db = open_app(rt.clone());
             seed(&db);
             let kept = Arc::new(Mutex::new(Vec::new()));
+            let (between, refused) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
             let writers: Vec<_> = (0..4)
                 .map(|w| {
-                    let (db, kept) = (db.clone(), kept.clone());
+                    let (db, clock, kept, between, refused) = (
+                        db.clone(),
+                        rt.clone(),
+                        kept.clone(),
+                        between.clone(),
+                        refused.clone(),
+                    );
                     rt.spawn(&format!("writer {w}"), move || {
                         while marks(&db).is_empty() {
                             let mut t = db.begin(&TxnOptions::default()).unwrap();
                             let write = "insert notes { about: users.key(1) }";
-                            if t.query_text(write, &[], &TxnCallOptions::default()).is_ok()
-                                && let Ok(at) = t.commit(None)
+                            if t.query_text(write, &[], &TxnCallOptions::default())
+                                .is_err()
                             {
-                                kept.lock().unwrap().push(at.lsn);
+                                continue;
+                            }
+                            between.fetch_add(1, Ordering::AcqRel);
+                            let wait = adtb_simkit::draw::below(&clock, 4) as u64;
+                            let until = clock.now() + Duration::from_millis(wait);
+                            while clock.now() < until {
+                                clock.yield_now();
+                            }
+                            let got = t.commit(None);
+                            between.fetch_sub(1, Ordering::AcqRel);
+                            match got {
+                                Ok(at) => kept.lock().unwrap().push(at.lsn),
+                                Err(e) => {
+                                    assert_eq!(
+                                        "app::notes index (about)",
+                                        quarantined(&e),
+                                        "seed {seed_no}"
+                                    );
+                                    refused.fetch_add(1, Ordering::AcqRel);
+                                }
                             }
                         }
                     })
@@ -2321,7 +2349,7 @@ fn a_mark_lsn_follows_every_commit_kept_before_it() {
                 let (db, rt, kept) = (db.clone(), rt.clone(), kept.clone());
                 rt.clone().spawn("marker", move || {
                     for _ in 0..4000 {
-                        if kept.lock().unwrap().len() >= 8 {
+                        if kept.lock().unwrap().len() >= 8 && between.load(Ordering::Acquire) > 0 {
                             break;
                         }
                         rt.yield_now();
@@ -2340,19 +2368,33 @@ fn a_mark_lsn_follows_every_commit_kept_before_it() {
             let w = db.write_path();
             let pager = w.pager();
             let marked = adtb::storage::lsn(&pager.read(pager.quarantine_page()).unwrap());
-            for &at in kept.lock().unwrap().iter() {
+            let kept = kept.lock().unwrap();
+            for &at in kept.iter() {
                 assert!(
                     at < marked.0,
                     "seed {seed_no}: commit at {at}, mark at {marked:?}"
                 );
             }
+            assert_eq!(
+                kept.len(),
+                api::query(&db, "from n in notes select n").len(),
+                "seed {seed_no}: the notes are the kept commits"
+            );
             adtb_simkit::seeds::assert_reached(
                 &format!("seed {seed_no}: commits before the mark"),
-                kept.lock().unwrap().len(),
+                kept.len(),
                 8,
             );
+            if refused.load(Ordering::Acquire) > 0 {
+                refusing += 1;
+            }
         });
     }
+    adtb_simkit::seeds::assert_reached(
+        "seeds refusing a commit after the mark",
+        refusing,
+        seeds.count().div_ceil(2),
+    );
 }
 
 #[test]

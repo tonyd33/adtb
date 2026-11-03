@@ -1,3 +1,6 @@
+use std::io::ErrorKind;
+
+use crate::runtime::IoError;
 use crate::storage;
 
 use super::{OpenError, corrupt};
@@ -21,4 +24,15 @@ pub(super) fn failed_create(e: storage::OpenError) -> FailedOpen {
         other => (corrupt(other), false),
     };
     FailedOpen { error, log_claimed }
+}
+
+/// Returns the host's error of `e`'s kind.
+pub(super) fn host_error(e: IoError) -> std::io::Error {
+    std::io::Error::from(match e {
+        IoError::NotFound => ErrorKind::NotFound,
+        IoError::Exists => ErrorKind::AlreadyExists,
+        IoError::NotADirectory => ErrorKind::NotADirectory,
+        IoError::Full => ErrorKind::StorageFull,
+        IoError::Failed => ErrorKind::Other,
+    })
 }

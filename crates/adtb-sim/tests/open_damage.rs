@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use adtb::runtime::IoError;
 use adtb::storage::{Damage, Options, Pager, Pid, Quarantine};
 use adtb::{CallOptions, Database, Error, FatalReason, Log, OpenError, OpenOptions, TxnOptions};
 use adtb_sim::{Config, Faults, Sim, SimRuntime};
@@ -1002,5 +1003,45 @@ fn the_roots_heap_marks_the_database_at_open_and_nothing_once_running() {
             "at open"
         );
         db.close().unwrap();
+    });
+}
+
+#[test]
+fn an_io_failure_opening_the_file_is_not_a_missing_header() {
+    let files = Files::from([
+        ("blocker".to_owned(), vec![1; PAGE]),
+        ("empty.adt".to_owned(), Vec::new()),
+    ]);
+    let mut sim = Sim::with_files(0, Config::default(), files);
+    finished(&mut sim, |rt| {
+        let opened = |name: &str| {
+            let options = Options {
+                page_size: PAGE as u32,
+                ..Options::new(name)
+            };
+            Pager::open(rt.clone(), &options).err()
+        };
+        assert!(
+            matches!(
+                opened("blocker/open.adt"),
+                Some(adtb::storage::OpenError::Io(IoError::NotADirectory))
+            ),
+            "{:?}",
+            opened("blocker/open.adt")
+        );
+        assert!(
+            matches!(
+                opened("empty.adt"),
+                Some(adtb::storage::OpenError::NoHeader)
+            ),
+            "{:?}",
+            opened("empty.adt")
+        );
+        let Err(OpenError::Io(e)) =
+            Database::open_in(rt, "blocker/open.adt", &app(), &api::options(2))
+        else {
+            panic!("the open is no I/O failure");
+        };
+        assert_eq!(std::io::ErrorKind::NotADirectory, e.kind());
     });
 }

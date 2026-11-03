@@ -29,7 +29,7 @@ pub mod typed;
 mod value;
 mod verify;
 
-use failed_open::{FailedOpen, failed_create};
+use failed_open::{FailedOpen, failed_create, host_error};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -852,6 +852,7 @@ impl<R: Runtime> Engine<R> {
                 )
             }
             Err(storage::OpenError::NotFound) => return Err(unclaimed(OpenError::NotFound)),
+            Err(storage::OpenError::Io(e)) => return Err(unclaimed(OpenError::Io(host_error(e)))),
             Err(storage::OpenError::OtherLayout(layout)) => {
                 return Err(unclaimed(OpenError::Corrupt {
                     detail: format!(

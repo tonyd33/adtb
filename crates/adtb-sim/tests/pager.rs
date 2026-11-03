@@ -16,6 +16,7 @@ use adtb_sim::{
 use adtb_simkit::crash;
 use adtb_simkit::seeds;
 
+use adtb_testkit::profile::every_case;
 use crash::{crash_after, run_process, silence_fatal_panics};
 use seeds::{assert_reached, share, sweep};
 
@@ -491,21 +492,47 @@ struct Floors {
     crashes: usize,
     acked: usize,
     reopened: usize,
-    findings: usize,
+    pages: Rate,
+    logs: Rate,
+}
+
+/// At least `found` findings of one kind per `per` seeds run.
+struct Rate {
+    found: usize,
+    per: usize,
 }
 
 #[must_use]
 #[derive(Debug, Default)]
 struct Tally {
+    seeds: usize,
     crashes: usize,
     acked: usize,
     findings: usize,
+    pages: usize,
+    logs: usize,
     reopened: usize,
     unopenable: usize,
 }
 
+/// Returns the findings `rate` asks of `seeds` seeds run, at least one unless `rate` asks none.
+fn kind_floor(seeds: usize, rate: &Rate) -> usize {
+    (seeds * rate.found / rate.per).max(rate.found.min(1))
+}
+
+/// Returns every seed of `all` under the nextest profile `deep`, and otherwise what [`sweep`]
+/// makes of `n` seeds from `first`. Pick `first` to reach every kind of finding.
+fn picked(all: Range<u64>, first: u64, n: u64) -> Range<u64> {
+    if every_case() {
+        all
+    } else {
+        sweep(first..first + n)
+    }
+}
+
 impl Tally {
-    /// Fail unless a sweep under every fault crashed, acknowledged, reopened and saw damage.
+    /// Fail unless a sweep under every fault crashed, acknowledged, reopened and found each kind
+    /// of damage `floors` claims.
     #[track_caller]
     fn assert_every_fault_reached(&self, seeds: Range<u64>, floors: &Floors) {
         assert_reached(
@@ -527,9 +554,18 @@ impl Tally {
         assert_reached(
             "acknowledged writes",
             self.acked,
-            share(seeds.clone(), floors.acked),
+            share(seeds, floors.acked),
         );
-        assert_reached("findings", self.findings, share(seeds, floors.findings));
+        assert_reached(
+            "page findings",
+            self.pages,
+            kind_floor(self.seeds, &floors.pages),
+        );
+        assert_reached(
+            "log findings",
+            self.logs,
+            kind_floor(self.seeds, &floors.logs),
+        );
     }
 }
 
@@ -587,6 +623,13 @@ fn crash_loop(
             report.findings
         );
         tally.findings += report.findings.len();
+        for f in &report.findings {
+            match f {
+                Finding::Page { .. } => tally.pages += 1,
+                Finding::Log(_) => tally.logs += 1,
+                Finding::Orphan(_) => {}
+            }
+        }
         resolve(&report, &client.ledger, &world);
         if report.open.is_some() {
             tally.unopenable += 1;
@@ -606,12 +649,19 @@ fn crash_loop(
 }
 
 fn seeds(range: Range<u64>, faults: Faults, layout: Layout, damage_allowed: bool) -> Tally {
+    run(sweep(range), faults, layout, damage_allowed)
+}
+
+fn run(seeds: Range<u64>, faults: Faults, layout: Layout, damage_allowed: bool) -> Tally {
     let mut total = Tally::default();
-    for seed in sweep(range) {
+    for seed in seeds {
+        total.seeds += 1;
         let t = crash_loop(seed, faults.clone(), layout, damage_allowed, 4);
         total.crashes += t.crashes;
         total.acked += t.acked;
         total.findings += t.findings;
+        total.pages += t.pages;
+        total.logs += t.logs;
         total.reopened += t.reopened;
         total.unopenable += t.unopenable;
     }
@@ -697,9 +747,8 @@ fn bit_rot_and_latent_errors_are_reported_never_returned() {
 
 #[test]
 fn misdirected_and_lost_writes_are_reported_never_returned() {
-    const SEEDS: Range<u64> = 300..312;
-    let t = seeds(
-        SEEDS,
+    let t = run(
+        picked(300..396, 323, 12),
         Faults {
             torn_p: 0.3,
             misdirect_p: 0.004,
@@ -709,7 +758,9 @@ fn misdirected_and_lost_writes_are_reported_never_returned() {
         PLAIN,
         true,
     );
-    assert!(t.findings >= share(SEEDS, 1), "no seed lost a write: {t:?}");
+    let rate = Rate { found: 1, per: 1 };
+    assert_reached("page findings", t.pages, kind_floor(t.seeds, &rate));
+    assert_reached("log findings", t.logs, kind_floor(t.seeds, &rate));
 }
 
 #[test]
@@ -782,7 +833,8 @@ fn every_fault_at_once() {
             crashes: 25,
             acked: 300,
             reopened: 33,
-            findings: 8,
+            pages: Rate { found: 3, per: 4 },
+            logs: Rate { found: 0, per: 1 },
         },
     );
 }
@@ -998,9 +1050,9 @@ fn threads_sharing_a_pager_lose_nothing_across_crashes() {
 
 #[test]
 fn threads_sharing_a_pager_under_every_fault() {
-    const SEEDS: Range<u64> = 800..808;
-    seeds(
-        SEEDS,
+    const SEEDS: Range<u64> = 807..815;
+    run(
+        picked(800..864, SEEDS.start, SEEDS.end - SEEDS.start),
         Faults {
             torn_p: 0.3,
             corrupt_p: 0.002,
@@ -1019,7 +1071,8 @@ fn threads_sharing_a_pager_under_every_fault() {
             crashes: 15,
             acked: 1000,
             reopened: 22,
-            findings: 1,
+            pages: Rate { found: 1, per: 2 },
+            logs: Rate { found: 1, per: 6 },
         },
     );
 }

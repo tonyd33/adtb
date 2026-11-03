@@ -93,6 +93,8 @@ pub enum OpenError {
     Unformatted(PageError),
     /// Neither copy of the file header verifies.
     NoHeader,
+    /// Opening the data file failed.
+    Io(IoError),
     /// A whole copy of the file header is written in this layout, which this engine does not read.
     OtherLayout(u32),
     /// The log is damaged where recovery needs it.
@@ -451,9 +453,7 @@ impl<R: Runtime> Pager<R> {
         let mut drv = Driver::new(rt.clone());
         let (data, _) = drv.open(&options.name, false).map_err(|e| match e {
             IoError::NotFound => OpenError::NotFound,
-            IoError::Exists | IoError::NotADirectory | IoError::Full | IoError::Failed => {
-                OpenError::NoHeader
-            }
+            e => OpenError::Io(e),
         })?;
         let read = |drv: &mut Driver<R>, at: u64| drv.read(data, at, REGION).ok();
         let first = read(&mut drv, 0).and_then(|b| FileHeader::decode(0, &b));
