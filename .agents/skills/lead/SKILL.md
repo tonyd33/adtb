@@ -177,6 +177,8 @@ that the worker is unblocked.
 - Give every track that changes code a review by a fresh agent, in a child workspace, before it lands: the author's own checks do not count. Tell it to form its view before reading the receipt. Give a review that builds a slot, moved to the commit with `jj new REV`, so it reuses a build directory.
 - A review that runs no build is a read-only track, and its verdict rests on reading. Check yourself anything it says it could not confirm, such as the provenance of expected values, and rely on the author's mutants and the full check for the rest. Prefer a review with targeted builds and mutants when build capacity allows, and for `unsafe` or concurrency code.
 - A small edit of your own after a blocker-free review, such as a test or a stated precondition, needs no second review. Run a new test against the mutant it is meant to kill, and pass it through the full check.
+- When a review finds an older wrong answer next to the change, a third in one subsystem means the cause is a class there, not a site: brief an audit of that subsystem for the class before the next fix in it.
+- A follow-up a review files that changes no answer, loses no data and opens no hang goes on the track's follow-ups ticket at its priority, not above the queue's wrong answers. Close a follow-ups ticket as wontfix when nothing on it has moved for a month of tracks.
 - Land a performance track on its measured saving, against a stop line in its brief. A change that adds code and does not move its measure stays unlanded: record why on the ticket, keep the commit, and free the workspace. Compare CPU time across sessions only with the load noted: load alone has moved it by about 20%.
 
 ## Land

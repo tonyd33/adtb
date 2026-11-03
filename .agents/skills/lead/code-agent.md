@@ -251,6 +251,10 @@ Do not use a provisional screen as correctness certification. Repeat checks only
 for changed inputs, failures or unresolved concerns. Run `work/tools/suite` in the background:
 it can wait out a whole `check`, and a foreground call with a harness timeout
 dies waiting. Run each mutant against the test expected to kill it, by name.
+Mutate every guard, branch and match arm your change adds, not one site for the
+whole change: delete it or invert it, and each must fail a test by name. A
+survivor is a missing test; add it before reporting. A stop line is a check-in:
+when a count reaches it, stop and report the size and what remains before going on.
 Restore a mutated file with a command that gives it a new mtime, `cp` without
 `-p`, never `mv` of a backup, `cp -p` or `perl -i.keep` followed by a rename:
 cargo trusts mtimes and keeps testing the mutant's build. `check` touches every
