@@ -721,10 +721,7 @@ impl Heap {
         let f = self.current();
         let need = need_category(f.arrangement.need(need), self.page_size);
         let (arrangement, newest) = (f.arrangement, self.newest());
-        match self
-            .space
-            .find(&Stage::new(), pager, need, arrangement, newest)?
-        {
+        match self.space.find(pager, need, arrangement, newest)? {
             Some(pid) => Ok(pid),
             None => self.space.append(pager, arrangement, newest),
         }
@@ -807,7 +804,7 @@ impl Heap {
 
     fn vm<'p, R: Runtime>(
         &self,
-        stage: &Stage<'p, R>,
+        stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
     ) -> Result<Vm, PageError> {
         let root = self.space.vm(stage, pager)?;
@@ -820,7 +817,7 @@ impl Heap {
     /// Returns whether the visibility map has the bit of page `pid` set: every version on it is
     /// visible to every snapshot.
     pub fn all_visible<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<bool, PageError> {
-        self.vm(&Stage::new(), pager)?.get(pager, pid)
+        self.vm(&mut Stage::new(), pager)?.get(pager, pid)
     }
 
     /// Returns whether `tid` names a slot of this heap holding a version, a dead mark or a
@@ -872,7 +869,7 @@ impl Heap {
         mark: bool,
     ) -> Result<Pruned, PageError> {
         if mark {
-            self.vm(&Stage::new(), pager)?.extend(pager, pid)?;
+            self.vm(&mut Stage::new(), pager)?.extend(pager, pid)?;
         }
         let mut stage = Stage::new();
         let page = stage.page(pager, pid)?.clone();
@@ -901,7 +898,7 @@ impl Heap {
         };
         let flagged = page::all_visible(&page);
         let position = page::position(&page);
-        let vm = self.vm(&stage, pager)?;
+        let vm = self.vm(&mut stage, pager)?;
         let bit = vm.get(pager, pid)?;
         if page::is_empty(&out) {
             page::set_all_visible(&mut out, false);
@@ -1323,7 +1320,7 @@ impl Heap {
     pub fn check<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<(Pid, String)>, PageError> {
         let check = self.space.check(pager)?;
         let mut problems = check.problems;
-        let vm = self.vm(&Stage::new(), pager)?;
+        let vm = self.vm(&mut Stage::new(), pager)?;
         let mut marked: BTreeSet<Pid> = vm.marked(pager)?.into_iter().collect();
         for (position, leaf) in check.leaves.into_iter().enumerate() {
             let Some((pid, cat)) = leaf else {
@@ -1415,7 +1412,7 @@ impl Heap {
     pub fn owned_pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
         let mut out = self.space.nodes(pager)?;
         out.extend(self.space.pages(pager)?);
-        out.extend(self.vm(&Stage::new(), pager)?.pages(pager)?);
+        out.extend(self.vm(&mut Stage::new(), pager)?.pages(pager)?);
         Ok(out)
     }
 }

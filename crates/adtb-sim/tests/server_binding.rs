@@ -1657,7 +1657,7 @@ fn a_reopen_reports_a_bundle_whose_owner_lost_a_deployed_grant() {
 
 #[test]
 fn registering_and_revoking_at_once_never_leave_a_live_bundle_lacking() {
-    const SEEDS: std::ops::Range<u64> = 360..366;
+    const SEEDS: std::ops::Range<u64> = 366..372;
     let (mut registered, mut refused) = (0, 0);
     for seed in sweep(SEEDS) {
         let mut sim = Sim::new(

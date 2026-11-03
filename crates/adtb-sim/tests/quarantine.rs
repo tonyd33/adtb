@@ -1057,19 +1057,16 @@ fn an_io_failure_in_the_walk_marks_nothing() {
         seed(&db);
         let w = db.write_path();
         let heap = w.heap_named("app::identities", "Apple").unwrap();
-        let large = heap.large();
-        let long = "x".repeat(40_000);
-        api::results(
-            &db,
-            &format!(
-                r#"insert identities.Apple {{ id: identities.key(700), user: users.key(1), sub: "{long}" }}"#
-            ),
-        );
-        let unheld = *large.owned_pages(w.pager()).unwrap().last().unwrap();
-        let root = heap.owned_pages(w.pager()).unwrap()[0];
+        let p = w.pager();
+        let unheld = p
+            .allocate(1, adtb::storage::PageKind::Quarantine, 0)
+            .unwrap();
+        let root = heap.owned_pages(p).unwrap()[0];
         db.damage_page(root, Damage::Unreadable);
         db.damage_page(unheld, Damage::Checksum);
-        db.verify(Some("users")).unwrap();
+        let found = api::printed(db.verify(None).unwrap());
+        let checksum = format!("where: \"page {}: Checksum\"", unheld.0);
+        assert!(found.iter().any(|r| r.contains(&checksum)), "{found:?}");
         assert!(marks(&db).is_empty(), "{:?}", marks(&db));
     });
 }
@@ -2108,7 +2105,7 @@ fn a_walk_stopped_by_io_is_not_run_again_and_leaves_the_page_unmapped() {
 }
 
 #[test]
-fn a_page_whose_holder_is_unknown_fails_storage_and_marks_nothing_until_the_walk_resolves() {
+fn a_large_value_page_maps_to_the_database_while_another_walk_stops() {
     let mut sim = Sim::new(64, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
@@ -2127,19 +2124,8 @@ fn a_page_whose_holder_is_unknown_fails_storage_and_marks_nothing_until_the_walk
         let index = w.index_named("app::identities", USER_INDEX).unwrap();
         let root = index.tree().root();
         index.tree().flip_owner(w.pager(), root).unwrap();
-        for attempt in 0..2 {
-            let e = api::failure(&db, ROWS);
-            let Error::Fatal {
-                reason: FatalReason::Storage { detail },
-            } = &e
-            else {
-                panic!("attempt {attempt}: {e:?}");
-            };
-            assert!(detail.contains(&format!("{page:?}")), "{detail}");
-            assert_eq!(BTreeSet::new(), marks(&db), "attempt {attempt}");
-        }
-        index.tree().flip_owner(w.pager(), root).unwrap();
         assert_eq!("the database", failed_on(&db, ROWS));
+        assert_eq!(BTreeSet::from([Quarantine::Database]), marks(&db));
     });
 }
 

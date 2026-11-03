@@ -57,7 +57,12 @@ impl<R: Runtime> Database<R> {
         for r in self.rels.values() {
             for c in &r.ctors {
                 let past = retained.and_then(|k| k.heaps.get(&c.heap));
-                holdings.heaps(r.id, &self.heaps[&c.heap].heap, past.map(|p| &*p.heap));
+                let heap = &self.heaps[&c.heap].heap;
+                holdings.heaps(r.id, heap, past.map(|p| &*p.heap));
+                holdings.large(heap.large());
+                if let Some(p) = past {
+                    holdings.large(p.heap.large());
+                }
             }
             for (id, _) in &r.indexes {
                 let tree = self.indexes[id].index.tree();

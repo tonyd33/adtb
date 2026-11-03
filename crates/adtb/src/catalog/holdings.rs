@@ -4,7 +4,7 @@ use adtb_lang::schema::{ENGINE_MODULES, Schema};
 use adtb_lang::types::RelId;
 
 use crate::btree::BTree;
-use crate::heap::Heap;
+use crate::heap::{Heap, LargeStore};
 use crate::runtime::Runtime;
 use crate::storage::{Holders, Pager, Quarantine, Stopped};
 
@@ -15,6 +15,7 @@ pub struct Holdings<'a> {
     schema: &'a Schema,
     heaps: Vec<(Option<Quarantine>, &'a Heap)>,
     trees: Vec<(Option<Quarantine>, BTree)>,
+    large: Vec<LargeStore>,
 }
 
 impl<'a> Holdings<'a> {
@@ -23,6 +24,7 @@ impl<'a> Holdings<'a> {
             schema,
             heaps: Vec::new(),
             trees: Vec::new(),
+            large: Vec::new(),
         }
     }
 
@@ -44,6 +46,13 @@ impl<'a> Holdings<'a> {
         self.trees.extend(trees.into_iter().map(|t| (object, t)));
     }
 
+    /// Add the large-value store `store`, whose damage quarantines the database.
+    pub fn large(&mut self, store: LargeStore) {
+        if !self.large.contains(&store) {
+            self.large.push(store);
+        }
+    }
+
     fn object(&self, r: RelId, object: Quarantine) -> Option<Quarantine> {
         let module = &self.schema.module(self.schema.relation(r).module).name;
         Some(if ENGINE_MODULES.contains(&module.as_str()) {
@@ -57,6 +66,10 @@ impl<'a> Holdings<'a> {
     pub fn walk<R: Runtime>(&self, pager: &Pager<R>, h: &mut Holders) {
         for (object, heap) in &self.heaps {
             h.walk(*object, || heap.owned_pages(pager).map_err(Stopped::from));
+        }
+        for store in &self.large {
+            let pages = || store.owned_pages(pager).map_err(Stopped::from);
+            h.walk(Some(Quarantine::Database), pages);
         }
         for (object, tree) in &self.trees {
             h.walk(*object, || tree.walk(pager));

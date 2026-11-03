@@ -190,10 +190,7 @@ impl LargeStore {
         let size = pager.page_size();
         let need = need_category(Arrangement::Slotted.need(tuple.len()), size);
         loop {
-            let pid = match self
-                .space
-                .find(&Stage::new(), pager, need, Arrangement::Slotted, 1)?
-            {
+            let pid = match self.space.find(pager, need, Arrangement::Slotted, 1)? {
                 Some(pid) => pid,
                 None => self.space.append(pager, Arrangement::Slotted, 1)?,
             };
