@@ -1,7 +1,7 @@
 //! The faults the real runtime injects beneath its files.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use adtb::runtime::{AlignedBuf, Done, IoError, Op, Runtime};
 use adtb_sys::os::{Backend, Faults, OsIo, OsRuntime};
@@ -10,9 +10,56 @@ use super::{BLOCK, block, complete, done, list, open, read, scratch, write};
 
 const SEEDS: u64 = 24;
 
-fn faulty(dir: &Path, faults: Faults) -> OsRuntime {
-    OsRuntime::with_faults(dir, Backend::Pool { threads: 2 }, faults)
+/// The backend a case runs on, and the name its directories begin with.
+#[derive(Clone, Copy)]
+struct On(&'static str, Backend);
+
+impl On {
+    fn scratch(self, name: &str) -> PathBuf {
+        scratch(&format!("{}-{name}", self.0))
+    }
+
+    fn faulty(self, dir: &Path, faults: Faults) -> OsRuntime {
+        OsRuntime::with_faults(dir, self.1, faults)
+    }
 }
+
+macro_rules! cases {
+    ($($name:ident),* $(,)?) => {
+        mod pool {
+            $(
+                #[test]
+                fn $name() {
+                    super::$name(super::On("pool", adtb_sys::os::Backend::Pool { threads: 2 }));
+                }
+            )*
+        }
+        mod uring {
+            $(
+                #[test]
+                fn $name() {
+                    if let Some(backend) = adtb_simkit::backends::uring(4) {
+                        super::$name(super::On("uring", backend));
+                    }
+                }
+            )*
+        }
+    };
+}
+
+cases!(
+    failed_writes_allocations_and_forces_complete_with_failed,
+    a_lost_write_completes_and_never_lands,
+    a_misdirected_write_lands_at_another_offset_of_the_file,
+    a_latent_sector_fails_reads_until_it_is_rewritten,
+    a_rotted_bit_is_seen_by_every_later_read,
+    a_failed_force_loses_writes_and_a_later_force_succeeds_without_them,
+    a_crash_keeps_forced_writes_and_any_subset_of_the_rest,
+    a_torn_write_lands_in_any_subset_of_its_atomic_units,
+    a_crash_keeps_a_prefix_of_unforced_creations_and_removals,
+    a_crash_may_lose_an_unforced_rename_and_removed_directory_whole,
+    a_crash_that_loses_a_directory_loses_its_files,
+);
 
 fn plain(dir: &Path) -> OsRuntime {
     OsRuntime::new(dir, Backend::Pool { threads: 2 })
@@ -38,9 +85,8 @@ fn failing_write(rt: &OsRuntime, io: &mut OsIo, data: &[u8]) {
     );
 }
 
-#[test]
-fn failed_writes_allocations_and_forces_complete_with_failed() {
-    let rt = faulty(&scratch("faults-fail"), Faults::default());
+fn failed_writes_allocations_and_forces_complete_with_failed(on: On) {
+    let rt = on.faulty(&on.scratch("faults-fail"), Faults::default());
     let mut io = rt.io();
     let (file, _) = open(&rt, &mut io, "f", true).unwrap();
     rt.set_faults(Faults {
@@ -61,9 +107,8 @@ fn failed_writes_allocations_and_forces_complete_with_failed() {
     }
 }
 
-#[test]
-fn a_lost_write_completes_and_never_lands() {
-    let rt = faulty(&scratch("faults-lost"), Faults::default());
+fn a_lost_write_completes_and_never_lands(on: On) {
+    let rt = on.faulty(&on.scratch("faults-lost"), Faults::default());
     let mut io = rt.io();
     let (file, _) = open(&rt, &mut io, "f", true).unwrap();
     write(&rt, &mut io, file, 0, &block(1));
@@ -77,9 +122,8 @@ fn a_lost_write_completes_and_never_lands() {
     assert_eq!(block(1), read(&rt, &mut io, file, 0, BLOCK));
 }
 
-#[test]
-fn a_misdirected_write_lands_at_another_offset_of_the_file() {
-    let rt = faulty(&scratch("faults-misdirect"), Faults::default());
+fn a_misdirected_write_lands_at_another_offset_of_the_file(on: On) {
+    let rt = on.faulty(&on.scratch("faults-misdirect"), Faults::default());
     let mut io = rt.io();
     let (file, _) = open(&rt, &mut io, "f", true).unwrap();
     for i in 0..4u8 {
@@ -107,9 +151,8 @@ fn a_misdirected_write_lands_at_another_offset_of_the_file() {
     );
 }
 
-#[test]
-fn a_latent_sector_fails_reads_until_it_is_rewritten() {
-    let rt = faulty(&scratch("faults-latent"), Faults::default());
+fn a_latent_sector_fails_reads_until_it_is_rewritten(on: On) {
+    let rt = on.faulty(&on.scratch("faults-latent"), Faults::default());
     let mut io = rt.io();
     let (file, _) = open(&rt, &mut io, "f", true).unwrap();
     write(&rt, &mut io, file, 0, &block(1));
@@ -140,9 +183,8 @@ fn a_latent_sector_fails_reads_until_it_is_rewritten() {
     assert_eq!(block(3), read(&rt, &mut io, file, 0, BLOCK));
 }
 
-#[test]
-fn a_rotted_bit_is_seen_by_every_later_read() {
-    let rt = faulty(&scratch("faults-rot"), Faults::default());
+fn a_rotted_bit_is_seen_by_every_later_read(on: On) {
+    let rt = on.faulty(&on.scratch("faults-rot"), Faults::default());
     let mut io = rt.io();
     let (file, _) = open(&rt, &mut io, "f", true).unwrap();
     write(&rt, &mut io, file, 0, &block(0x55));
@@ -162,9 +204,9 @@ fn a_rotted_bit_is_seen_by_every_later_read() {
 }
 
 /// Returns a forced file `f` holding `block(1)` at its start, under a fresh directory.
-fn forced_file(name: &str, seed: u64, faults: Faults) -> (OsRuntime, std::path::PathBuf) {
-    let dir = scratch(&format!("{name}-{seed}"));
-    let rt = faulty(&dir, Faults { seed, ..faults });
+fn forced_file(on: On, name: &str, seed: u64, faults: Faults) -> (OsRuntime, PathBuf) {
+    let dir = on.scratch(&format!("{name}-{seed}"));
+    let rt = on.faulty(&dir, Faults { seed, ..faults });
     let mut io = rt.io();
     let (file, _) = open(&rt, &mut io, "f", true).unwrap();
     write(&rt, &mut io, file, 0, &block(1));
@@ -181,11 +223,10 @@ fn read_back(dir: &Path, len: usize) -> Vec<u8> {
     read(&rt, &mut io, file, 0, len)
 }
 
-#[test]
-fn a_failed_force_loses_writes_and_a_later_force_succeeds_without_them() {
+fn a_failed_force_loses_writes_and_a_later_force_succeeds_without_them(on: On) {
     let mut seen = BTreeSet::new();
     for seed in 0..SEEDS {
-        let (rt, dir) = forced_file("faults-fsyncgate", seed, Faults::default());
+        let (rt, dir) = forced_file(on, "faults-fsyncgate", seed, Faults::default());
         let mut io = rt.io();
         let (file, _) = open(&rt, &mut io, "f", false).unwrap();
         write(&rt, &mut io, file, 0, &block(2));
@@ -213,11 +254,10 @@ fn a_failed_force_loses_writes_and_a_later_force_succeeds_without_them() {
     assert_eq!(BTreeSet::from([false, true]), seen);
 }
 
-#[test]
-fn a_crash_keeps_forced_writes_and_any_subset_of_the_rest() {
+fn a_crash_keeps_forced_writes_and_any_subset_of_the_rest(on: On) {
     let mut seen = BTreeSet::new();
     for seed in 0..SEEDS {
-        let (rt, dir) = forced_file("faults-crash", seed, Faults::default());
+        let (rt, dir) = forced_file(on, "faults-crash", seed, Faults::default());
         let mut io = rt.io();
         let (file, _) = open(&rt, &mut io, "f", false).unwrap();
         write(&rt, &mut io, file, BLOCK as u64, &block(2));
@@ -253,15 +293,14 @@ fn a_crash_keeps_forced_writes_and_any_subset_of_the_rest() {
     assert_eq!(4, seen.len(), "every subset of two writes: {seen:?}");
 }
 
-#[test]
-fn a_torn_write_lands_in_any_subset_of_its_atomic_units() {
+fn a_torn_write_lands_in_any_subset_of_its_atomic_units(on: On) {
     let mut mixed = false;
     for seed in 0..SEEDS {
         let faults = Faults {
             torn_p: 1.0,
             ..Faults::default()
         };
-        let (rt, dir) = forced_file("faults-torn", seed, faults);
+        let (rt, dir) = forced_file(on, "faults-torn", seed, faults);
         let mut io = rt.io();
         let (file, _) = open(&rt, &mut io, "f", false).unwrap();
         let whole: Vec<u8> = (2..6u8).flat_map(block).collect();
@@ -283,12 +322,11 @@ fn a_torn_write_lands_in_any_subset_of_its_atomic_units() {
     assert!(mixed, "some write tears");
 }
 
-#[test]
-fn a_crash_keeps_a_prefix_of_unforced_creations_and_removals() {
+fn a_crash_keeps_a_prefix_of_unforced_creations_and_removals(on: On) {
     let mut seen = BTreeSet::new();
     for seed in 0..SEEDS {
-        let dir = scratch(&format!("faults-names-{seed}"));
-        let rt = faulty(
+        let dir = on.scratch(&format!("faults-names-{seed}"));
+        let rt = on.faulty(
             &dir,
             Faults {
                 seed,
@@ -330,12 +368,11 @@ fn a_crash_keeps_a_prefix_of_unforced_creations_and_removals() {
     assert_eq!(4, seen.len(), "every prefix: {seen:?}");
 }
 
-#[test]
-fn a_crash_may_lose_an_unforced_rename_and_removed_directory_whole() {
+fn a_crash_may_lose_an_unforced_rename_and_removed_directory_whole(on: On) {
     let mut seen = BTreeSet::new();
     for seed in 0..SEEDS {
-        let dir = scratch(&format!("faults-rename-{seed}"));
-        let rt = faulty(
+        let dir = on.scratch(&format!("faults-rename-{seed}"));
+        let rt = on.faulty(
             &dir,
             Faults {
                 seed,
@@ -387,12 +424,11 @@ fn a_crash_may_lose_an_unforced_rename_and_removed_directory_whole() {
     assert_eq!(3, seen.len(), "every prefix: {seen:?}");
 }
 
-#[test]
-fn a_crash_that_loses_a_directory_loses_its_files() {
+fn a_crash_that_loses_a_directory_loses_its_files(on: On) {
     let mut lost = false;
     for seed in 0..SEEDS {
-        let dir = scratch(&format!("faults-dir-{seed}"));
-        let rt = faulty(
+        let dir = on.scratch(&format!("faults-dir-{seed}"));
+        let rt = on.faulty(
             &dir,
             Faults {
                 seed,

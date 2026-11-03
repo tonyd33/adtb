@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io;
+use std::ops::Range;
 use std::os::unix::fs::FileExt;
 
 use super::files::{Files, Outcome};
@@ -10,7 +11,7 @@ use crate::runtime::{AlignedBuf, Done, FileId, IoError, Op};
 ///
 /// Each `_p` is the chance of its fault per op that can suffer it, drawn from a generator seeded
 /// by `seed`. The I/O threads draw in the order the host runs them, so a seed does not replay a
-/// run.
+/// run. Under io_uring other ops run between an op's admission and its completion.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Faults {
     pub seed: u64,
@@ -53,7 +54,7 @@ impl Default for Faults {
     }
 }
 
-/// The state of the injected faults, behind one lock that every op takes.
+/// The state of the injected faults, behind one lock taken to admit and to complete each op.
 #[derive(Debug)]
 pub(crate) struct Injector {
     faults: Faults,
@@ -110,6 +111,58 @@ enum Over {
     File(Vec<u8>),
 }
 
+/// The unforced writes a crash dropped whole and tore.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Loss {
+    /// The writes no part of which reached the device.
+    pub lost: usize,
+    /// The writes some but not all of whose atomic units reached the device.
+    pub torn: usize,
+}
+
+/// What the injector does once the device completes an op it admitted.
+#[derive(Debug)]
+pub(crate) struct After(Hook);
+
+#[derive(Debug)]
+enum Hook {
+    Nothing,
+    Opened {
+        path: String,
+        existed: bool,
+    },
+    Read {
+        path: String,
+        file: FileId,
+        offset: u64,
+    },
+    Written {
+        path: String,
+        sectors: Range<u64>,
+    },
+    /// The writes the force covers, returned to pending if the device fails it.
+    Forced(Option<(String, Pending)>),
+    SyncedDir {
+        dir: String,
+    },
+    Removed {
+        path: String,
+        bytes: Option<Vec<u8>>,
+    },
+    RemovedDir {
+        path: String,
+    },
+    Renamed {
+        from: String,
+        to: String,
+        over: Over,
+    },
+    CreatedDir {
+        dir: String,
+        existed: bool,
+    },
+}
+
 /// Returns `path` with its leading `from` changed to `to`, when `path` is `from` or lies under it.
 fn moved(path: &str, from: &str, to: &str) -> Option<String> {
     let rest = path.strip_prefix(from)?;
@@ -132,10 +185,6 @@ fn check(faults: &Faults) {
         faults.sector > 0 && faults.atomic_unit.is_multiple_of(faults.sector),
         "the atomic unit is a whole number of sectors"
     );
-}
-
-fn failed<T>(_: io::Error) -> Result<T, IoError> {
-    Err(IoError::Failed)
 }
 
 impl Injector {
@@ -177,59 +226,116 @@ impl Injector {
 
     /// Run `op` on `files` with the faults injected.
     pub(crate) fn run(&mut self, files: &Files, op: Op) -> Outcome {
-        if self.crashed {
-            return (buffer(op), Err(IoError::Failed));
+        match self.admit(files, op) {
+            Ok((op, after)) => {
+                let out = files.perform(op);
+                self.complete(files, after, out)
+            }
+            Err(out) => out,
         }
-        match op {
-            Op::Open { path, create } => self.open(files, path, create),
-            Op::CreateNew { path } => {
-                let out = files.perform(Op::CreateNew { path: path.clone() });
+    }
+
+    /// Returns `op` as the device is to run it and what follows its completion, or its outcome
+    /// when a fault completes it without the device.
+    pub(crate) fn admit(&mut self, files: &Files, op: Op) -> Result<(Op, After), Outcome> {
+        if self.crashed {
+            return Err((buffer(op), Err(IoError::Failed)));
+        }
+        let hook = match op {
+            Op::Open { ref path, .. } => Hook::Opened {
+                path: path.clone(),
+                existed: files.path(path).exists(),
+            },
+            Op::CreateNew { ref path } => Hook::Opened {
+                path: path.clone(),
+                existed: false,
+            },
+            Op::Read { file, offset, buf } => return self.admit_read(file, offset, buf),
+            Op::Write { file, offset, buf } => return self.admit_write(files, file, offset, buf),
+            Op::Allocate { .. } | Op::SyncDir { .. } if self.draw(self.faults.fail_p) => {
+                return Err((None, Err(IoError::Failed)));
+            }
+            Op::Sync { file } => return self.admit_sync(files, file),
+            Op::SyncDir { ref dir } => Hook::SyncedDir { dir: dir.clone() },
+            Op::Remove { ref path } => Hook::Removed {
+                path: path.clone(),
+                bytes: if self.faults.lose_unsynced {
+                    fs::read(files.path(path)).ok()
+                } else {
+                    None
+                },
+            },
+            Op::RemoveDir { ref path } => Hook::RemovedDir { path: path.clone() },
+            Op::Rename {
+                ref from, ref to, ..
+            } => {
+                let target = files.path(to);
+                let over = if target.is_dir() {
+                    Over::EmptyDir
+                } else {
+                    fs::read(&target).map_or(Over::Nothing, Over::File)
+                };
+                Hook::Renamed {
+                    from: from.clone(),
+                    to: to.clone(),
+                    over,
+                }
+            }
+            Op::CreateDir { ref dir } => Hook::CreatedDir {
+                dir: dir.clone(),
+                existed: files.path(dir).is_dir(),
+            },
+            Op::Close { file } => {
+                self.paths.remove(&file);
+                Hook::Nothing
+            }
+            _ => Hook::Nothing,
+        };
+        Ok((op, After(hook)))
+    }
+
+    /// Returns the outcome of an op [`Injector::admit`] passed to the device, given what the
+    /// device answered.
+    pub(crate) fn complete(&mut self, files: &Files, after: After, out: Outcome) -> Outcome {
+        if self.crashed {
+            return (out.0, Err(IoError::Failed));
+        }
+        match after.0 {
+            Hook::Read { path, file, offset } => return self.read(files, path, file, offset, out),
+            Hook::Forced(Some((path, forced))) if out.1.is_err() => self.unforced(path, forced),
+            _ if out.1.is_err() => {}
+            Hook::Opened { path, existed } => {
                 if let Ok(Done::Opened { file, .. }) = out.1 {
                     self.paths.insert(file, path.clone());
-                    self.created(path, false);
+                    if !existed {
+                        self.created(path, false);
+                    }
                 }
-                out
             }
-            Op::Read { file, offset, buf } => self.read(files, file, offset, buf),
-            Op::Write { file, offset, buf } => self.write(files, file, offset, buf),
-            Op::Allocate { .. } if self.draw(self.faults.fail_p) => (None, Err(IoError::Failed)),
-            Op::Sync { file } => self.sync(files, file),
-            Op::SyncDir { dir } => {
-                if self.draw(self.faults.fail_p) {
-                    return (None, Err(IoError::Failed));
+            Hook::Written { path, sectors } => {
+                for s in sectors {
+                    self.bad.remove(&(path.clone(), s));
                 }
-                let out = files.perform(Op::SyncDir { dir: dir.clone() });
-                if out.1.is_ok() {
-                    self.entries.retain(|e| e.parent != dir);
-                }
-                out
             }
-            Op::Remove { path } => self.remove(files, path),
-            Op::RemoveDir { path } => {
-                let out = files.perform(Op::RemoveDir { path: path.clone() });
-                if out.1.is_ok() && self.faults.lose_unsynced {
+            Hook::SyncedDir { dir } => self.entries.retain(|e| e.parent != dir),
+            Hook::Removed { path, bytes } => self.removed(path, bytes),
+            Hook::RemovedDir { path } => {
+                if self.faults.lose_unsynced {
                     self.entries.push(Entry {
                         parent: parent(&path).to_owned(),
                         undo: Undo::RemovedDir { path },
                     });
                 }
-                out
             }
-            Op::Rename { from, to, replace } => self.rename(files, from, to, replace),
-            Op::CreateDir { dir } => {
-                let existed = files.path(&dir).is_dir();
-                let out = files.perform(Op::CreateDir { dir: dir.clone() });
-                if out.1.is_ok() && !existed {
+            Hook::Renamed { from, to, over } => self.renamed(from, to, over),
+            Hook::CreatedDir { dir, existed } => {
+                if !existed {
                     self.created(dir, true);
                 }
-                out
             }
-            Op::Close { file } => {
-                self.paths.remove(&file);
-                files.perform(Op::Close { file })
-            }
-            op => files.perform(op),
+            Hook::Forced(_) | Hook::Nothing => {}
         }
+        out
     }
 
     fn created(&mut self, path: String, dir: bool) {
@@ -241,57 +347,19 @@ impl Injector {
         }
     }
 
-    fn open(&mut self, files: &Files, path: String, create: bool) -> Outcome {
-        let existed = files.path(&path).exists();
-        let out = files.perform(Op::Open {
-            path: path.clone(),
-            create,
-        });
-        if let Ok(Done::Opened { file, .. }) = out.1 {
-            self.paths.insert(file, path.clone());
-            if !existed {
-                self.created(path, false);
-            }
+    fn removed(&mut self, path: String, bytes: Option<Vec<u8>>) {
+        self.pending.remove(&path);
+        self.paths.retain(|_, p| *p != path);
+        self.bad.retain(|(p, _)| *p != path);
+        if let Some(bytes) = bytes {
+            self.entries.push(Entry {
+                parent: parent(&path).to_owned(),
+                undo: Undo::Restore { path, bytes },
+            });
         }
-        out
     }
 
-    fn remove(&mut self, files: &Files, path: String) -> Outcome {
-        let bytes = if self.faults.lose_unsynced {
-            fs::read(files.path(&path)).ok()
-        } else {
-            None
-        };
-        let out = files.perform(Op::Remove { path: path.clone() });
-        if out.1.is_ok() {
-            self.pending.remove(&path);
-            self.paths.retain(|_, p| *p != path);
-            self.bad.retain(|(p, _)| *p != path);
-            if let Some(bytes) = bytes {
-                self.entries.push(Entry {
-                    parent: parent(&path).to_owned(),
-                    undo: Undo::Restore { path, bytes },
-                });
-            }
-        }
-        out
-    }
-
-    fn rename(&mut self, files: &Files, from: String, to: String, replace: bool) -> Outcome {
-        let target = files.path(&to);
-        let over = if target.is_dir() {
-            Over::EmptyDir
-        } else {
-            fs::read(&target).map_or(Over::Nothing, Over::File)
-        };
-        let out = files.perform(Op::Rename {
-            from: from.clone(),
-            to: to.clone(),
-            replace,
-        });
-        if out.1.is_err() {
-            return out;
-        }
+    fn renamed(&mut self, from: String, to: String, over: Over) {
         for path in self.paths.values_mut() {
             if let Some(now) = moved(path, &from, &to) {
                 *path = now;
@@ -315,24 +383,41 @@ impl Injector {
                 undo: Undo::Renamed { from, to, over },
             });
         }
-        out
     }
 
-    fn sectors(&self, offset: u64, len: u64) -> std::ops::Range<u64> {
+    fn sectors(&self, offset: u64, len: u64) -> Range<u64> {
         let s = self.faults.sector;
         offset / s..(offset + len).div_ceil(s)
     }
 
-    fn read(&mut self, files: &Files, file: FileId, offset: u64, buf: AlignedBuf) -> Outcome {
-        let Some(path) = self.paths.get(&file).cloned() else {
-            return files.perform(Op::Read { file, offset, buf });
+    fn admit_read(
+        &mut self,
+        file: FileId,
+        offset: u64,
+        buf: AlignedBuf,
+    ) -> Result<(Op, After), Outcome> {
+        let hook = match self.paths.get(&file).cloned() {
+            None => Hook::Nothing,
+            Some(path) => {
+                let mut range = self.sectors(offset, buf.len() as u64);
+                if range.any(|s| self.bad.contains(&(path.clone(), s))) {
+                    return Err((Some(buf), Err(IoError::Failed)));
+                }
+                Hook::Read { path, file, offset }
+            }
         };
-        let len = buf.len() as u64;
-        let mut range = self.sectors(offset, len);
-        if range.any(|s| self.bad.contains(&(path.clone(), s))) {
-            return (Some(buf), Err(IoError::Failed));
-        }
-        let (mut buf, n) = match files.perform(Op::Read { file, offset, buf }) {
+        Ok((Op::Read { file, offset, buf }, After(hook)))
+    }
+
+    fn read(
+        &mut self,
+        files: &Files,
+        path: String,
+        file: FileId,
+        offset: u64,
+        out: Outcome,
+    ) -> Outcome {
+        let (mut buf, n) = match out {
             (Some(buf), Ok(Done::Read(n))) => (buf, n),
             out => return out,
         };
@@ -364,12 +449,18 @@ impl Injector {
         (Some(buf), Ok(Done::Read(n as usize)))
     }
 
-    fn write(&mut self, files: &Files, file: FileId, offset: u64, buf: AlignedBuf) -> Outcome {
+    fn admit_write(
+        &mut self,
+        files: &Files,
+        file: FileId,
+        offset: u64,
+        buf: AlignedBuf,
+    ) -> Result<(Op, After), Outcome> {
         let Some(path) = self.paths.get(&file).cloned() else {
-            return files.perform(Op::Write { file, offset, buf });
+            return Ok((Op::Write { file, offset, buf }, After(Hook::Nothing)));
         };
         if self.draw(self.faults.lost_write_p) {
-            return (Some(buf), Ok(Done::Written));
+            return Err((Some(buf), Ok(Done::Written)));
         }
         let fd = files.file(file);
         let len = buf.len() as u64;
@@ -385,7 +476,7 @@ impl Injector {
                 }
                 at += n;
             }
-            return (Some(buf), Err(IoError::Failed));
+            return Err((Some(buf), Err(IoError::Failed)));
         }
         let mut target = offset;
         if self.draw(self.faults.misdirect_p) {
@@ -396,34 +487,49 @@ impl Injector {
                 target = if slot >= offset / len { slot + 1 } else { slot } * len;
             }
         }
-        let result = self.land(&fd, &path, target, &buf).or_else(failed);
-        (Some(buf), result.map(|()| Done::Written))
+        if self.record(&fd, &path, target, &buf).is_err() {
+            return Err((Some(buf), Err(IoError::Failed)));
+        }
+        let sectors = self.sectors(target, len);
+        let op = Op::Write {
+            file,
+            offset: target,
+            buf,
+        };
+        Ok((op, After(Hook::Written { path, sectors })))
     }
 
     /// Write `bytes` at `offset` of the file at `path`, remembering what it replaces.
     fn land(&mut self, fd: &File, path: &str, offset: u64, bytes: &[u8]) -> io::Result<()> {
-        let range = self.sectors(offset, bytes.len() as u64);
-        if self.faults.lose_unsynced {
-            let sector = self.faults.sector;
-            let pending = self.pending.entry(path.to_owned()).or_default();
-            for s in range.clone() {
-                if pending.base.contains_key(&s) {
-                    continue;
-                }
-                let mut old = AlignedBuf::zeroed(sector as usize);
-                fd.read_at(&mut old, s * sector)?;
-                pending.base.insert(s, old.to_vec());
-            }
-            pending.writes.push((offset, bytes.to_vec()));
-        }
+        self.record(fd, path, offset, bytes)?;
         fd.write_all_at(bytes, offset)?;
-        for s in range {
+        for s in self.sectors(offset, bytes.len() as u64) {
             self.bad.remove(&(path.to_owned(), s));
         }
         Ok(())
     }
 
-    fn sync(&mut self, files: &Files, file: FileId) -> Outcome {
+    /// Remember a write of `bytes` at `offset` of the file at `path` and what it replaces.
+    fn record(&mut self, fd: &File, path: &str, offset: u64, bytes: &[u8]) -> io::Result<()> {
+        if !self.faults.lose_unsynced {
+            return Ok(());
+        }
+        let sector = self.faults.sector;
+        let range = self.sectors(offset, bytes.len() as u64);
+        let pending = self.pending.entry(path.to_owned()).or_default();
+        for s in range {
+            if pending.base.contains_key(&s) {
+                continue;
+            }
+            let mut old = AlignedBuf::zeroed(sector as usize);
+            fd.read_at(&mut old, s * sector)?;
+            pending.base.insert(s, old.to_vec());
+        }
+        pending.writes.push((offset, bytes.to_vec()));
+        Ok(())
+    }
+
+    fn admit_sync(&mut self, files: &Files, file: FileId) -> Result<(Op, After), Outcome> {
         let path = self.paths.get(&file).cloned();
         if self.draw(self.faults.fail_p) {
             if let Some(path) = path
@@ -431,24 +537,32 @@ impl Injector {
             {
                 self.lose(files, &path, pending);
             }
-            return (None, Err(IoError::Failed));
+            return Err((None, Err(IoError::Failed)));
         }
-        let out = files.perform(Op::Sync { file });
-        if out.1.is_ok()
-            && let Some(path) = path
-        {
-            self.pending.remove(&path);
+        let forced = path.and_then(|p| self.pending.remove(&p).map(|f| (p, f)));
+        Ok((Op::Sync { file }, After(Hook::Forced(forced))))
+    }
+
+    /// Return the writes a force that failed on the device took, ahead of any written since.
+    fn unforced(&mut self, path: String, mut forced: Pending) {
+        if let Some(later) = self.pending.remove(&path) {
+            for (s, contents) in later.base {
+                forced.base.entry(s).or_insert(contents);
+            }
+            forced.writes.extend(later.writes);
         }
-        out
+        self.pending.insert(path, forced);
     }
 
     /// Put back on the device any subset of `pending`'s writes, each whole or torn, over the
-    /// contents the last force left.
-    fn lose(&mut self, files: &Files, path: &str, pending: Pending) {
+    /// contents the last force left. Returns the writes it dropped and tore.
+    fn lose(&mut self, files: &Files, path: &str, pending: Pending) -> Loss {
         let unit = self.faults.atomic_unit;
         let mut kept = Vec::new();
+        let mut loss = Loss::default();
         for (offset, bytes) in pending.writes {
             let len = bytes.len() as u64;
+            let before = kept.len();
             if len > unit && self.draw(self.faults.torn_p) {
                 let mut at = 0;
                 while at < len {
@@ -458,8 +572,14 @@ impl Injector {
                     }
                     at += n;
                 }
+                if kept.len() > before && kept.len() - before < len.div_ceil(unit) as usize {
+                    loss.torn += 1;
+                }
             } else if self.draw(0.5) {
                 kept.push((offset, bytes));
+            }
+            if kept.len() == before {
+                loss.lost += 1;
             }
         }
         let sector = self.faults.sector;
@@ -488,13 +608,19 @@ impl Injector {
         }
         fd.sync_all()
             .unwrap_or_else(|e| panic!("force the lost writes to {full:?}: {e}"));
+        loss
     }
 
     /// Stop the device as a power loss would, losing what the faults allow.
-    pub(crate) fn crash(&mut self, files: &Files) {
+    ///
+    /// Returns the unforced writes it dropped and tore.
+    pub(crate) fn crash(&mut self, files: &Files) -> Loss {
         self.crashed = true;
+        let mut loss = Loss::default();
         for (path, pending) in std::mem::take(&mut self.pending) {
-            self.lose(files, &path, pending);
+            let file = self.lose(files, &path, pending);
+            loss.lost += file.lost;
+            loss.torn += file.torn;
         }
         let keep = self.below(self.entries.len() as u64 + 1) as usize;
         for entry in self.entries.drain(keep..).rev() {
@@ -517,5 +643,6 @@ impl Injector {
                 _ => {}
             }
         }
+        loss
     }
 }

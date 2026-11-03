@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockWriteGuard};
 use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration, SystemTime};
 
-pub use self::faults::Faults;
+pub use self::faults::{Faults, Loss};
 use self::files::Files;
 use self::pool::Pool;
 use self::queue::{Ring, Waiter};
@@ -42,8 +42,8 @@ pub enum Backend {
 
 /// The runtime over the host's clocks, threads, entropy and the files under one directory.
 ///
-/// Every file is opened for direct I/O. Dropping the last handle and the last I/O queue stops
-/// the backend's threads once the ops already submitted have completed.
+/// Every file is opened for direct I/O. Dropping the last handle and the last I/O queue returns
+/// once every op already submitted has completed and the backend's threads have stopped.
 #[derive(Clone)]
 pub struct OsRuntime {
     threads: Arc<Registry>,
@@ -99,15 +99,11 @@ impl OsRuntime {
     /// Returns a runtime whose paths are relative to the directory `root`, injecting `faults`
     /// into every op on its files.
     ///
-    /// Panic if `backend` is not a [`Backend::Pool`] or asks for no threads, or if the atomic
-    /// unit is not a whole number of sectors.
+    /// Panic if `backend` asks for no threads or no entries, if the host refuses io_uring, or if
+    /// the atomic unit is not a whole number of sectors.
     pub fn with_faults(root: impl Into<PathBuf>, backend: Backend, faults: Faults) -> OsRuntime {
-        assert!(
-            matches!(backend, Backend::Pool { .. }),
-            "faults are injected only beneath the pool backend"
-        );
         OsRuntime::start(Files::new(root.into(), Some(faults)), backend)
-            .expect("the pool backend is never refused")
+            .unwrap_or_else(|e| panic!("{e}"))
     }
 
     fn start(files: Files, backend: Backend) -> Result<OsRuntime, Unavailable> {
@@ -133,11 +129,14 @@ impl OsRuntime {
     /// - With `lose_unsynced`, any subset of the writes no completed `Sync` covers is on the
     ///   device, each whole or, with `torn_p`, in any subset of its atomic units; any prefix of
     ///   the creations and removals no completed `SyncDir` covers is.
-    /// - Every op that runs after it completes with `Failed`.
+    /// - Every op admitted after it completes with `Failed`. An op the device runs across it
+    ///   completes with `Failed`: a write may land, whole or in part, after the crash, and a
+    ///   directory op the device finished before the crash may survive it.
+    /// - Returns the unforced writes it dropped and tore.
     ///
     /// Panics unless the runtime was made by [`OsRuntime::with_faults`].
-    pub fn crash(&self) {
-        self.backend.files.crash();
+    pub fn crash(&self) -> Loss {
+        self.backend.files.crash()
     }
 
     /// Inject `faults` from now on, keeping what earlier faults left.

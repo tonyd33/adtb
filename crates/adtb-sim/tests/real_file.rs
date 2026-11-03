@@ -1,13 +1,16 @@
 //! A database on a real file under the host's runtime, with no simulator.
 
+use std::collections::BTreeSet;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
 use adtb::catalog::Catalog;
-use adtb::storage::{OpenError, Options, PageKind, Pager, Pid};
-use adtb::verify;
+use adtb::storage::{FatalIo, OpenError, Options, PageKind, Pager, Pid};
+use adtb::{CallOptions, CreateOptions, Database, Log, OpenOptions, verify};
 use adtb_lang::schema::ValueDef;
-use adtb_sys::os::{Backend, Faults, OsRuntime};
+use adtb_lang::textual::print;
+use adtb_simkit::seeds::{assert_reached, sweep};
+use adtb_sys::os::{Backend, Faults, Loss, OsRuntime};
 
 const SCHEMA: &str = r"module shop
 add module shop
@@ -198,8 +201,16 @@ fn increment(
 
 /// Check every counter after a restart: an acknowledged increment is present, and only the one
 /// in doubt may be past it.
-fn check_counters(dir: &Path, pids: &[Pid], acked: &[u64], doubt: Option<usize>, seed: u64) {
-    let (pager, _) = Pager::open(runtime(dir), &counter_options()).expect("reopen");
+fn check_counters(
+    dir: &Path,
+    backend: Backend,
+    pids: &[Pid],
+    acked: &[u64],
+    doubt: Option<usize>,
+    seed: u64,
+) {
+    let rt = OsRuntime::new(dir, backend);
+    let (pager, _) = Pager::open(rt, &counter_options()).expect("reopen");
     for (i, &pid) in pids.iter().enumerate() {
         let got = counter(&pager, pid).unwrap_or_else(|e| panic!("seed {seed}: page {i}: {e}"));
         let ok = got == acked[i] || (doubt == Some(i) && got == acked[i] + 1);
@@ -213,12 +224,49 @@ fn check_counters(dir: &Path, pids: &[Pid], acked: &[u64], doubt: Option<usize>,
     assert!(findings.is_empty(), "seed {seed}: {findings:?}");
 }
 
-#[test]
-fn acknowledged_commits_survive_crashes_with_torn_and_lost_unforced_writes() {
+/// Returns the name a backend's directories begin with.
+fn label(backend: Backend) -> &'static str {
+    match backend {
+        Backend::Pool { .. } => "pool",
+        Backend::Uring { .. } => "uring",
+    }
+}
+
+macro_rules! on_both_backends {
+    ($($name:ident),* $(,)?) => {
+        mod pool {
+            $(
+                #[test]
+                fn $name() {
+                    super::$name(adtb_sys::os::Backend::Pool { threads: 4 });
+                }
+            )*
+        }
+        mod uring {
+            $(
+                #[test]
+                fn $name() {
+                    if let Some(backend) = adtb_simkit::backends::uring(64) {
+                        super::$name(backend);
+                    }
+                }
+            )*
+        }
+    };
+}
+
+on_both_backends!(
+    acknowledged_commits_survive_crashes_with_torn_and_lost_unforced_writes,
+    a_failed_write_or_force_crashes_the_engine_and_recovery_keeps_every_acknowledged_commit,
+    acknowledged_commits_survive_injected_failures_and_a_crash,
+);
+
+fn acknowledged_commits_survive_crashes_with_torn_and_lost_unforced_writes(backend: Backend) {
     for seed in 0..6 {
-        let dir = scratch(&format!("crash-{seed}"));
-        let rt = faulty(
+        let dir = scratch(&format!("crash-{}-{seed}", label(backend)));
+        let rt = OsRuntime::with_faults(
             &dir,
+            backend,
             Faults {
                 seed,
                 torn_p: 0.5,
@@ -233,16 +281,18 @@ fn acknowledged_commits_survive_crashes_with_torn_and_lost_unforced_writes() {
         pager.flush_pages(seed as usize);
         rt.crash();
         drop(pager);
-        check_counters(&dir, &pids, &acked, doubt, seed);
+        check_counters(&dir, backend, &pids, &acked, doubt, seed);
     }
 }
 
-#[test]
-fn a_failed_write_or_force_crashes_the_engine_and_recovery_keeps_every_acknowledged_commit() {
+fn a_failed_write_or_force_crashes_the_engine_and_recovery_keeps_every_acknowledged_commit(
+    backend: Backend,
+) {
     for seed in 0..6 {
-        let dir = scratch(&format!("fail-{seed}"));
-        let rt = faulty(
+        let dir = scratch(&format!("fail-{}-{seed}", label(backend)));
+        let rt = OsRuntime::with_faults(
             &dir,
+            backend,
             Faults {
                 seed,
                 ..Faults::default()
@@ -263,7 +313,7 @@ fn a_failed_write_or_force_crashes_the_engine_and_recovery_keeps_every_acknowled
         assert!(run.is_err(), "seed {seed}: some write or force fails");
         rt.crash();
         drop(pager);
-        check_counters(&dir, &pids, &acked, doubt, seed);
+        check_counters(&dir, backend, &pids, &acked, doubt, seed);
     }
 }
 
@@ -337,4 +387,131 @@ fn a_failed_open_or_create_holds_no_file_open() {
         Err(OpenError::Exists)
     ));
     assert_eq!(Vec::<PathBuf>::new(), open_under(&dir));
+}
+
+const POOL_BYTES: u64 = 256 * 1024;
+const NAME_PAD: usize = 1500;
+
+const CUSTOMERS: &str = r"module shop
+add module shop
+add type Customer = { id: Key customers, name: Text }
+add relation customers : Customer key id generate sequence
+";
+
+/// What one faulted workload left: the names of the commits acknowledged and of those refused,
+/// how many refusals were fatal I/O failures, after which the process counts as crashed, and
+/// what the crash dropped and tore.
+#[derive(Default)]
+struct Commits {
+    acked: BTreeSet<String>,
+    refused: BTreeSet<String>,
+    storage: usize,
+    loss: Loss,
+}
+
+fn answers(db: &Database<OsRuntime>, text: &str) -> BTreeSet<String> {
+    let rows = db
+        .query_text(text, &[], &CallOptions::default())
+        .unwrap_or_else(|e| panic!("`{text}` fails: {e:?}"))
+        .remove(0);
+    let form = rows.form().clone();
+    rows.map(|r| print(&r.expect("a row"), &form).expect("a row prints"))
+        .collect()
+}
+
+/// Insert one customer per commit into a new database on `backend` under failing writes and
+/// forces until a fatal I/O failure, then crash it.
+fn commit_under_faults(dir: &Path, backend: Backend, seed: u64) -> Commits {
+    let rt = OsRuntime::with_faults(
+        dir,
+        backend,
+        Faults {
+            seed,
+            ..Faults::default()
+        },
+    );
+    let create = OpenOptions {
+        create: Some(CreateOptions::default()),
+        workers: Some(2),
+        pool_bytes: Some(POOL_BYTES),
+        ..OpenOptions::default()
+    };
+    let db = Database::open_in(rt.clone(), "shop.adt", &Log::new([CUSTOMERS]), &create)
+        .unwrap_or_else(|e| panic!("seed {seed}: create: {e:?}"));
+    rt.set_faults(Faults {
+        seed,
+        fail_p: 0.05,
+        torn_p: 0.5,
+        ..Faults::default()
+    });
+    let mut commits = Commits::default();
+    for i in 0..40 {
+        let name = format!("\"c{i}{}\"", "x".repeat(NAME_PAD));
+        let insert = format!("insert customers {{ name: {name} }}");
+        let run = panic::catch_unwind(AssertUnwindSafe(|| {
+            db.query_text(&insert, &[], &CallOptions::default())
+        }));
+        match run {
+            Ok(Ok(_)) => {
+                commits.acked.insert(name);
+            }
+            Ok(Err(_)) => {
+                commits.refused.insert(name);
+            }
+            Err(payload) if payload.is::<FatalIo>() => {
+                commits.storage += 1;
+                commits.refused.insert(name);
+                break;
+            }
+            Err(payload) => panic::resume_unwind(payload),
+        }
+    }
+    commits.loss = rt.crash();
+    if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| drop(db)))
+        && !payload.is::<FatalIo>()
+    {
+        panic::resume_unwind(payload);
+    }
+    commits
+}
+
+fn acknowledged_commits_survive_injected_failures_and_a_crash(backend: Backend) {
+    let (mut acked, mut storage, mut loss) = (0, 0, Loss::default());
+    for seed in sweep(0..4) {
+        let dir = scratch(&format!("db-faults-{}-{seed}", label(backend)));
+        let commits = commit_under_faults(&dir, backend, seed);
+        let db = Database::open_in(
+            OsRuntime::new(&dir, backend),
+            "shop.adt",
+            &Log::new([CUSTOMERS]),
+            &OpenOptions::default(),
+        )
+        .unwrap_or_else(|e| panic!("seed {seed}: reopen: {e:?}"));
+        let got = answers(&db, "from c in customers select c.name");
+        let missing: Vec<_> = commits.acked.difference(&got).collect();
+        assert!(
+            missing.is_empty(),
+            "seed {seed}: acknowledged and lost: {missing:?}"
+        );
+        let unknown: Vec<_> = got
+            .iter()
+            .filter(|n| !commits.acked.contains(*n) && !commits.refused.contains(*n))
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "seed {seed}: never committed: {unknown:?}"
+        );
+        let findings = db
+            .verify(None)
+            .unwrap_or_else(|e| panic!("seed {seed}: verify: {e:?}"));
+        assert_eq!(0, findings.count(), "seed {seed}: verify finds damage");
+        acked += commits.acked.len();
+        storage += commits.storage;
+        loss.lost += commits.loss.lost;
+        loss.torn += commits.loss.torn;
+    }
+    assert_reached("an injected storage failure inside a commit", storage, 1);
+    assert_reached("an acknowledged commit read back", acked, 1);
+    assert_reached("an unforced write a crash dropped", loss.lost, 1);
+    assert_reached("an unforced write a crash tore", loss.torn, 1);
 }

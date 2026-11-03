@@ -60,6 +60,8 @@ policy and source-size limits, one at a time across this machine.
 `work/tools/suite` shares that lock for its test run and saves output to
 `target/suite.txt`.
 
+A test that needs io_uring fails on a host that refuses it; set `ADTB_URING=absent` there to skip those tests with a note on stderr.
+
 Builds stay in each workspace's `target/`; `CARGO_TARGET_DIR` can select
 another location.
 

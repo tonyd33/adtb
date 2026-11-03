@@ -132,7 +132,7 @@ own included, aborts the process. Every file it opens is opened with
 `Failed`.
 
 It injects the faults of §3 into the ops on its files when made with
-a fault policy, under the pool backend only:
+a fault policy, with the same meaning under either backend:
 
 ```text
 OsRuntime::with_faults(root, backend, Faults {
@@ -157,8 +157,12 @@ Postconditions of a runtime with faults:
   `lose_unsynced`, any subset of the writes no completed `Sync` covers,
   each whole or, with `torn_p`, in any subset of its atomic units, and
   any prefix of the creations and removals no completed `SyncDir`
-  covers. Every op that runs after it completes with `Failed`; a new
-  runtime over the directory is the restart.
+  covers. Every op admitted after it completes with `Failed`. An op
+  the device runs across it completes with `Failed`: a write may land,
+  whole or in part, after the crash, and a directory op the device
+  finished before the crash may survive it. Dropping the runtime
+  returns once every admitted op has completed, so a new runtime over
+  the directory, the restart, sees no later write.
 
 Data pages and the log are read and written with direct I/O
 (`O_DIRECT` on Linux): the page pool is the only cache, and write

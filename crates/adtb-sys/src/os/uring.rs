@@ -8,9 +8,11 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::thread::JoinHandle;
 
 use io_uring::{IoUring, Probe, opcode, squeue, types};
 
+use super::faults::After;
 use super::files::{self, Files, Outcome};
 use super::host_thread;
 use super::pool::Pool;
@@ -58,6 +60,7 @@ pub(crate) struct Uring {
     state: Mutex<State>,
     files: Arc<Files>,
     pool: Arc<Pool>,
+    reaper: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl fmt::Debug for Uring {
@@ -81,6 +84,7 @@ struct State {
 
 struct Pending {
     work: Work,
+    after: Option<After>,
     waiter: Waiter,
 }
 
@@ -333,9 +337,11 @@ impl Uring {
             state: Mutex::default(),
             pool: Pool::start(Arc::clone(&files), 1),
             files,
+            reaper: Mutex::default(),
         });
         let run = Arc::clone(&uring);
-        host_thread("adtb-uring".to_owned(), move || run.reap());
+        let reaper = host_thread("adtb-uring".to_owned(), move || run.reap());
+        *uring.reaper.lock().unwrap_or_else(PoisonError::into_inner) = Some(reaper);
         Ok(uring)
     }
 
@@ -347,6 +353,16 @@ impl Uring {
     ///
     /// Panic on a `Timer`, which no file operation completes.
     pub(crate) fn push(&self, op: Op, waiter: Waiter) {
+        if matches!(
+            op,
+            Op::List { .. } | Op::CreateNew { .. } | Op::RemoveDir { .. } | Op::Rename { .. }
+        ) {
+            return self.pool.push(op, waiter);
+        }
+        let (op, after) = match self.files.admit(op) {
+            Ok(admitted) => admitted,
+            Err((buf, result)) => return waiter.complete(buf, result),
+        };
         let path = |p: &str| c_path(&self.files.path(p));
         let work = match op {
             Op::Open { path: p, create } => Work::Open {
@@ -378,20 +394,22 @@ impl Uring {
             Op::SyncDir { dir } => Work::OpenDir { path: path(&dir) },
             Op::Remove { path: p } => Work::Remove { path: path(&p) },
             Op::CreateDir { dir } => Work::CreateDir { path: path(&dir) },
-            op @ (Op::List { .. }
-            | Op::CreateNew { .. }
-            | Op::RemoveDir { .. }
-            | Op::Rename { .. }) => {
-                return self.pool.push(op, waiter);
-            }
             op @ Op::Close { .. } => {
-                let (buf, result) = self.files.perform(op);
+                let out = self.files.perform(op);
+                let (buf, result) = self.files.complete(after, out);
                 return waiter.complete(buf, result);
+            }
+            Op::List { .. } | Op::CreateNew { .. } | Op::RemoveDir { .. } | Op::Rename { .. } => {
+                unreachable!("an op the pool runs goes to it before admission")
             }
             Op::Timer { .. } => unreachable!("a timer is not a file operation"),
         };
         let mut st = self.lock();
-        let slot = st.insert(Pending { work, waiter });
+        let slot = st.insert(Pending {
+            work,
+            after,
+            waiter,
+        });
         self.enqueue(&mut st, slot);
     }
 
@@ -435,11 +453,23 @@ impl Uring {
         }
     }
 
-    /// Stop the reaping thread once every op already pushed has completed.
+    /// Stop the reaping thread once every op already pushed has completed, and wait for it.
+    ///
+    /// Precondition: the caller is not the reaping thread or the pool's.
     pub(crate) fn stop(&self) {
         self.lock().stop = true;
         self.pool.stop();
         self.signal();
+        let reaper = self
+            .reaper
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(reaper) = reaper {
+            reaper
+                .join()
+                .expect("a panicking reaper aborts the process");
+        }
     }
 
     fn signal(&self) {
@@ -497,7 +527,11 @@ impl Uring {
     }
 
     fn complete(&self, slot: usize, res: i32) {
-        let Pending { work, waiter } = {
+        let Pending {
+            work,
+            after,
+            waiter,
+        } = {
             let mut st = self.lock();
             st.in_ring -= 1;
             st.slots[slot]
@@ -507,10 +541,15 @@ impl Uring {
         match work.finish(&self.files, res) {
             Step::Again(work) => {
                 let mut st = self.lock();
-                st.slots[slot] = Some(Pending { work, waiter });
+                st.slots[slot] = Some(Pending {
+                    work,
+                    after,
+                    waiter,
+                });
                 self.enqueue(&mut st, slot);
             }
-            Step::Complete((buf, result)) => {
+            Step::Complete(out) => {
+                let (buf, result) = self.files.complete(after, out);
                 let mut st = self.lock();
                 st.free.push(slot);
                 self.refill(&mut st);

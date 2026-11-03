@@ -7,7 +7,7 @@ use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
-use super::faults::{Faults, Injector};
+use super::faults::{After, Faults, Injector, Loss};
 use crate::runtime::{AlignedBuf, Done, FileId, IoError, Op};
 
 /// The files one process has open, under its database directory.
@@ -71,6 +71,25 @@ impl Files {
         }
     }
 
+    /// Returns `op` as the device is to run it and what follows its completion, or its outcome
+    /// when a fault completes it without the device.
+    pub(crate) fn admit(&self, op: Op) -> Result<(Op, Option<After>), Outcome> {
+        if self.faults.is_none() {
+            return Ok((op, None));
+        }
+        let (op, after) = self.injector().admit(self, op)?;
+        Ok((op, Some(after)))
+    }
+
+    /// Returns the outcome of an op [`Files::admit`] passed to the device, given what the device
+    /// answered.
+    pub(crate) fn complete(&self, after: Option<After>, out: Outcome) -> Outcome {
+        match after {
+            Some(after) => self.injector().complete(self, after, out),
+            None => out,
+        }
+    }
+
     /// Panics if the files inject no faults.
     fn injector(&self) -> MutexGuard<'_, Injector> {
         self.faults
@@ -80,9 +99,9 @@ impl Files {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Stop the device as a power loss would.
-    pub(crate) fn crash(&self) {
-        self.injector().crash(self);
+    /// Stop the device as a power loss would. Returns the unforced writes it dropped and tore.
+    pub(crate) fn crash(&self) -> Loss {
+        self.injector().crash(self)
     }
 
     pub(crate) fn set_faults(&self, faults: Faults) {

@@ -1,6 +1,6 @@
 use std::thread;
 
-use super::{Backend, Faults, LIVE, OsRuntime, Unavailable};
+use super::{Backend, LIVE, OsRuntime, Unavailable};
 use crate::runtime::{ThreadId, Threads};
 
 fn runtime() -> OsRuntime {
@@ -141,16 +141,6 @@ fn the_pool_is_the_fallback_where_io_uring_is_denied() {
             .or_else(|_| OsRuntime::try_new(std::env::temp_dir(), Backend::Pool { threads: 1 }));
         assert!(rt.is_ok(), "the pool is never refused");
     });
-}
-
-#[test]
-#[should_panic(expected = "faults are injected only beneath the pool backend")]
-fn faults_refuse_the_uring_backend() {
-    OsRuntime::with_faults(
-        std::env::temp_dir(),
-        Backend::Uring { entries: 8 },
-        Faults::default(),
-    );
 }
 
 #[test]

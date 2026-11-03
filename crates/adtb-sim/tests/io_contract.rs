@@ -500,17 +500,19 @@ fn on_pool(name: &str, body: fn(&OsRuntime)) {
 }
 
 fn on_uring(name: &str, body: fn(&OsRuntime)) {
-    let rt = OsRuntime::new(scratch(name), Backend::Uring { entries: 4 });
-    body(&rt);
+    if let Some(backend) = adtb_simkit::backends::uring(4) {
+        body(&OsRuntime::new(scratch(name), backend));
+    }
 }
 
-fn on_faulty_pool(name: &str, body: fn(&OsRuntime)) {
-    let rt = OsRuntime::with_faults(
-        scratch(name),
-        Backend::Pool { threads: 4 },
-        Faults::default(),
-    );
-    body(&rt);
+fn on_faulty(name: &str, backend: Option<Backend>, body: fn(&OsRuntime)) {
+    if let Some(backend) = backend {
+        body(&OsRuntime::with_faults(
+            scratch(name),
+            backend,
+            Faults::default(),
+        ));
+    }
 }
 
 macro_rules! contract {
@@ -544,8 +546,21 @@ macro_rules! contract {
             $(
                 #[test]
                 fn $name() {
-                    super::on_faulty_pool(
+                    super::on_faulty(
                         concat!("faulty-", stringify!($name)),
+                        Some(adtb_sys::os::Backend::Pool { threads: 4 }),
+                        super::$name::<adtb_sys::os::OsRuntime>,
+                    )
+                }
+            )*
+        }
+        mod faulty_uring {
+            $(
+                #[test]
+                fn $name() {
+                    super::on_faulty(
+                        concat!("faulty-uring-", stringify!($name)),
+                        adtb_simkit::backends::uring(4),
                         super::$name::<adtb_sys::os::OsRuntime>,
                     )
                 }
@@ -618,4 +633,62 @@ fn unaligned_requests_fail_on_the_pool() {
 #[test]
 fn unaligned_requests_fail_on_the_uring() {
     on_uring("uring-unaligned", unaligned_requests_fail);
+}
+
+#[test]
+fn a_refused_ring_fails_the_test_unless_its_absence_is_declared() {
+    let absent = std::env::var("ADTB_URING").as_deref() == Ok("absent");
+    let chosen = std::panic::catch_unwind(|| adtb_simkit::backends::uring(u32::MAX));
+    match chosen {
+        Ok(backend) => {
+            assert!(absent, "a refused ring is not chosen");
+            assert_eq!(None, backend);
+        }
+        Err(payload) => {
+            assert!(!absent, "a declared absence does not panic");
+            let message = payload.downcast_ref::<String>().expect("a formatted panic");
+            assert!(
+                message.ends_with("; set ADTB_URING=absent on a host without io_uring"),
+                "{message}"
+            );
+        }
+    }
+}
+
+const SUBMITTED: u8 = 64;
+
+/// Submit writes without waiting for them, then drop the runtime.
+fn writes_submitted_before_a_drop_have_landed_when_it_returns(name: &str, backend: Backend) {
+    let dir = scratch(name);
+    let rt = OsRuntime::new(&dir, backend);
+    let mut io = rt.io();
+    let (file, _) = open(&rt, &mut io, "f", true).unwrap();
+    for i in 0..SUBMITTED {
+        let buf = AlignedBuf::from_slice(&block(i + 1));
+        io.submit(Op::Write {
+            file,
+            offset: u64::from(i) * BLOCK as u64,
+            buf,
+        });
+    }
+    drop(io);
+    drop(rt);
+    let bytes = std::fs::read(dir.join("f")).expect("the file");
+    let landed: Vec<u8> = bytes.chunks(BLOCK).map(|b| b[0]).collect();
+    assert_eq!((1..=SUBMITTED).collect::<Vec<u8>>(), landed);
+}
+
+#[test]
+fn writes_submitted_before_a_drop_have_landed_when_it_returns_on_the_pool() {
+    writes_submitted_before_a_drop_have_landed_when_it_returns(
+        "pool-drop-drains",
+        Backend::Pool { threads: 4 },
+    );
+}
+
+#[test]
+fn writes_submitted_before_a_drop_have_landed_when_it_returns_on_the_uring() {
+    if let Some(backend) = adtb_simkit::backends::uring(4) {
+        writes_submitted_before_a_drop_have_landed_when_it_returns("uring-drop-drains", backend);
+    }
 }

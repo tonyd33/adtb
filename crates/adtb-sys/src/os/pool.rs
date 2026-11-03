@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::thread::JoinHandle;
 
 use super::files::Files;
 use super::host_thread;
@@ -12,6 +13,7 @@ pub(crate) struct Pool {
     state: Mutex<State>,
     ready: Condvar,
     files: Arc<Files>,
+    threads: Mutex<Vec<JoinHandle<()>>>,
 }
 
 #[derive(Debug, Default)]
@@ -30,11 +32,13 @@ impl Pool {
             state: Mutex::default(),
             ready: Condvar::new(),
             files,
+            threads: Mutex::default(),
         });
-        for i in 0..threads {
+        let handles = (0..threads).map(|i| {
             let run = Arc::clone(&pool);
-            host_thread(format!("adtb-io-{i}"), move || run.work());
-        }
+            host_thread(format!("adtb-io-{i}"), move || run.work())
+        });
+        *pool.threads.lock().unwrap_or_else(PoisonError::into_inner) = handles.collect();
         pool
     }
 
@@ -44,13 +48,20 @@ impl Pool {
         self.ready.notify_one();
     }
 
-    /// Stop the threads once every op already pushed has completed.
+    /// Stop the threads once every op already pushed has completed, and wait for them.
+    ///
+    /// Precondition: the caller is not one of the pool's threads.
     pub(crate) fn stop(&self) {
         self.state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .stop = true;
         self.ready.notify_all();
+        let threads =
+            std::mem::take(&mut *self.threads.lock().unwrap_or_else(PoisonError::into_inner));
+        for t in threads {
+            t.join().expect("a panicking I/O thread aborts the process");
+        }
     }
 
     fn work(&self) {
