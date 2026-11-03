@@ -33,3 +33,15 @@ Left from the review:
 - `exec::Broken`'s Debug prints its Display text quoted, so `{e:?}` details in `catalog::Broken` (`Validation`, `Map`, the `IndexKey` fallback) and keying's refusal read as before. Have those arms Display `exec::Error::Internal(b)` with `{b}`, then derive Debug.
 - `Broken::OtherVersion` is a deployment binding mismatch, not a broken invariant, against the docs of `Broken` and `write::Error::Exec`, and duplicates `exec::Error::OtherVersion(String)`.
 - `a_primitive_of_mistyped_operands...` accepts any operand as `found`.
+
+## 2026-11-03: write slice landed
+
+`refactor: carry a typed cause for every write Internal`. `write::Broken` (crates/adtb/src/write/broken.rs, derived Debug, Display keeping the old texts, one variant per site group) replaces `write::Error::Internal(String)`, `delta::Unadmitted::Internal(String)` and `api::cause::Broken::Write(String)`; `catalog::Broken::Admission` holds it. `write::detail` keeps the old `Internal("text")` form at the user details that printed a write error's Debug. The engine-relation failure in api/server/adhoc.rs is internal now, not `Invalid`. `TermKind` compares `Kind`s by Debug text, a true equivalence, since `Kind` holds an f64. write/broken_tests.rs reads every variant's Display through a `match` with no wildcard. No error changed kind or api outcome, per review. Full check 3636 passed.
+
+Left from the review:
+
+- Derived Debug of a `catalog::Error` holding a write cause now prints its structure where it used to print `Internal("text")`: api/cause.rs `Broken::CatalogError`, api/verify.rs `in_kept_transaction`, api/reindex.rs report rows, `write::Broken::Denials` and `Expiry`. None found reachable through normal use. Display the cause at those sites.
+- No test pins the text of a write `Internal` inside `Corruption::Write`, the reindex failure cause or verify's details: reverting `Corruption::Write` to `{e:?}` passes every test.
+- `RefusalUnrecorded` and `WitnessDenialUnrecorded` hold `api::Error`, so write names a layer above it.
+- Relation names held as `String` where the site has a `RelId`, since Display has no schema: `UnstoredIndex`, `NotAnIndex` (reindex.rs), `UniqueUnindexed`, `UndeclaredIndex`, `KeyNotFields` (schema.rs), `ReferenceUnindexed` (eval.rs).
+- Next slices: plan (`plan::Error::Internal`), `Broken::NoValue`, `catalog::Error::Corrupt(String)`, the exec Debug and Display items above.
