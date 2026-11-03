@@ -30,8 +30,8 @@ pub use sched::{
     Task,
 };
 pub use store::{
-    AtSnapshot, Histories, IndexedRows, Listing, PastReads, ProbeBounds, Reads, Store, StoredHeap,
-    StoredIndex,
+    AtSnapshot, Histories, IndexedRows, Listing, Named, PastReads, ProbeBounds, Reads, Store,
+    StoredHeap, StoredIndex,
 };
 pub(crate) use store::{Conv, conv, from_stored, to_key, to_stored};
 pub use stream::{Produced, Production, produce};
@@ -122,6 +122,8 @@ pub enum Error {
     StatementLimit(Exceeded),
     Serialization(SerializationFailure),
     Page(PageError),
+    /// An entry of the index with this owner names an unused slot of a page its heap holds.
+    OrphanEntry(u32),
     /// The call's spill file could not be made, written or read.
     Spill(IoError),
     /// A stored structure the plan reads does not decode.
@@ -157,6 +159,12 @@ pub enum Error {
 impl From<PageError> for Error {
     fn from(e: PageError) -> Error {
         Error::Page(e)
+    }
+}
+
+impl From<crate::heap::OrphanEntry> for Error {
+    fn from(e: crate::heap::OrphanEntry) -> Error {
+        Error::OrphanEntry(e.index)
     }
 }
 

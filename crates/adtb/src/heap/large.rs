@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::key::Tid;
 use crate::runtime::Runtime;
-use crate::storage::{self, LATCHES_PER_THREAD, PageError, Pager, Pid};
+use crate::storage::{self, Damage, LATCHES_PER_THREAD, PageError, Pager, Pid};
 
 use super::dir::{Above, Space, category, max_fanout, need_category};
 use super::page::{self, Arrangement, Slot};
@@ -66,21 +66,38 @@ pub struct ChunkCheck {
     pub overcounted: Vec<(Tid, u32, u32)>,
 }
 
-/// Returns the chunk header in slot `slot` of store page `page`, if a chunk is there.
-fn chunk_at(page: &[u8], slot: usize) -> Option<Chunk> {
+/// Returns the chunk header in slot `slot` of `page`, if it is a page of store `owner` with a
+/// chunk there.
+fn chunk_at(page: &[u8], owner: u32, slot: usize) -> Option<Chunk> {
+    tuple_at(page, owner, slot).map(chunk)
+}
+
+/// Returns the chunk tuple in slot `slot` of `page`, if it is a page of store `owner` with a
+/// chunk there.
+fn tuple_at(page: &[u8], owner: u32, slot: usize) -> Option<&[u8]> {
+    if !page::is_heap(page) || storage::owner(page) != owner {
+        return None;
+    }
     match page::get(page, slot) {
-        Slot::Normal { at, .. } => Some(chunk(&page[at])),
+        Slot::Normal { at, .. } if at.len() >= BYTES => Some(&page[at]),
         _ => None,
     }
 }
 
-fn update_chunk(page: &mut [u8], slot: usize, f: impl FnOnce(&mut Chunk)) {
-    let Slot::Normal { at, .. } = page::get(page, slot) else {
-        panic!("slot {slot} holds no chunk");
+/// Change the chunk at `tid` on `page`, a page of store `owner`, by `f`, unless `f` refuses it.
+/// Returns false when no chunk is there or `f` refuses it, leaving the page unchanged.
+fn update_chunk(page: &mut [u8], owner: u32, tid: Tid, f: impl FnOnce(&mut Chunk) -> bool) -> bool {
+    let Some(mut c) = chunk_at(page, owner, usize::from(tid.slot())) else {
+        return false;
     };
-    let mut c = chunk(&page[at.clone()]);
-    f(&mut c);
+    if !f(&mut c) {
+        return false;
+    }
+    let Slot::Normal { at, .. } = page::get(page, usize::from(tid.slot())) else {
+        unreachable!("tuple_at found a chunk");
+    };
     set_chunk(&mut page[at], c);
+    true
 }
 
 fn tid(pid: Pid, slot: usize) -> Tid {
@@ -213,7 +230,11 @@ impl LargeStore {
             let cat = category(page::free(page), size);
             if let Some(t) = tail {
                 let page = stage.page(pager, Pid(t.page()))?;
-                update_chunk(page, usize::from(t.slot()), |c| c.head = false);
+                let written = update_chunk(page, self.id(), t, |c| {
+                    c.head = false;
+                    true
+                });
+                assert!(written, "the chunk this write wrote at {t:?} is there");
             }
             let above =
                 self.space
@@ -244,11 +265,12 @@ impl LargeStore {
         let mut out = Vec::with_capacity(pointer.len as usize);
         let mut at = Some(pointer.first);
         while let Some(tid) = at {
-            let page = pager.read_formatted(Pid(tid.page()))?;
-            let Slot::Normal { at: range, .. } = page::get(&page, usize::from(tid.slot())) else {
-                panic!("chunk {tid:?} of a large value is missing");
+            let pid = Pid(tid.page());
+            let page = pager.read_formatted(pid)?;
+            let Some(tuple) = tuple_at(&page, self.id(), usize::from(tid.slot())) else {
+                drop(page);
+                return Err(pager.damage(pid, Damage::Checksum));
             };
-            let tuple = &page[range];
             at = chunk(tuple).next;
             out.extend_from_slice(&tuple[BYTES..]);
         }
@@ -269,9 +291,12 @@ impl LargeStore {
         let mut out = Vec::new();
         let mut at = Some(pointer.first);
         while let Some(t) = at {
-            let page = pager.read_formatted(Pid(t.page()))?;
-            let c = chunk_at(&page, usize::from(t.slot()))
-                .unwrap_or_else(|| panic!("chunk {t:?} of a large value is missing"));
+            let pid = Pid(t.page());
+            let page = pager.read_formatted(pid)?;
+            let Some(c) = chunk_at(&page, self.id(), usize::from(t.slot())) else {
+                drop(page);
+                return Err(pager.damage(pid, Damage::Checksum));
+            };
             out.push((t, c));
             at = c.next;
         }
@@ -285,12 +310,27 @@ impl LargeStore {
         pager: &'p Pager<R>,
         pointer: Pointer,
     ) -> Result<(), PageError> {
-        let page = stage.page(pager, Pid(pointer.first.page()))?;
-        update_chunk(page, usize::from(pointer.first.slot()), |c| {
-            assert!(c.head, "{:?} is not the head of a value", pointer.first);
+        self.update(stage, pager, pointer.first, |c| {
             c.count += 1;
-        });
-        Ok(())
+            c.head
+        })
+    }
+
+    /// Change the chunk at `tid` by `f` in `stage`, latching its page. Refuses the page when no
+    /// chunk is there or `f` refuses it.
+    fn update<'p, R: Runtime>(
+        &self,
+        stage: &mut Stage<'p, R>,
+        pager: &'p Pager<R>,
+        tid: Tid,
+        f: impl FnOnce(&mut Chunk) -> bool,
+    ) -> Result<(), PageError> {
+        let pid = Pid(tid.page());
+        if update_chunk(stage.page(pager, pid)?, self.id(), tid, f) {
+            return Ok(());
+        }
+        stage.unstage(pid);
+        Err(pager.damage(pid, Damage::Checksum))
     }
 
     /// Count one version fewer pointing at `pointer`, in an update of its own. A head left at
@@ -298,17 +338,14 @@ impl LargeStore {
     pub fn release<R: Runtime>(&self, pager: &Pager<R>, pointer: Pointer) -> Result<(), PageError> {
         let pid = Pid(pointer.first.page());
         let mut stage = Stage::new();
-        let page = stage.page(pager, pid)?;
         let mut left = 0;
-        update_chunk(page, usize::from(pointer.first.slot()), |c| {
-            assert!(
-                c.head && c.count > 0,
-                "{:?} is not a head pointed at",
-                pointer.first
-            );
-            c.count -= 1;
+        self.update(&mut stage, pager, pointer.first, |c| {
+            let pointed = c.head && c.count > 0;
+            c.count = c.count.saturating_sub(1);
             left = c.count;
-        });
+            pointed
+        })?;
+        let page = stage.page(pager, pid)?;
         let mut above = Above::default();
         if left == 0 {
             let position = page::position(page);
@@ -337,7 +374,7 @@ impl LargeStore {
             let page = pager.read_formatted(pid)?.to_vec();
             let mut pending = false;
             for slot in 0..page::slot_count(&page) {
-                let Some(c) = chunk_at(&page, slot) else {
+                let Some(c) = chunk_at(&page, self.id(), slot) else {
                     continue;
                 };
                 if !c.head || c.count > 0 {
@@ -369,7 +406,7 @@ impl LargeStore {
             let here = Pid(at.page());
             let next = {
                 let page = pager.read_formatted(here)?;
-                match chunk_at(&page, usize::from(at.slot())) {
+                match chunk_at(&page, self.id(), usize::from(at.slot())) {
                     Some(c) if c.head && c.count == 0 && c.xmin == xmin => c.next,
                     _ => return Ok(freed),
                 }
@@ -386,7 +423,9 @@ impl LargeStore {
                 stage.page(pager, p)?;
             }
             let page = stage.page(pager, here)?;
-            if chunk_at(page, usize::from(at.slot())).is_none_or(|c| !c.head || c.count > 0) {
+            if chunk_at(page, self.id(), usize::from(at.slot()))
+                .is_none_or(|c| !c.head || c.count > 0)
+            {
                 return Ok(freed);
             }
             page::release(page, usize::from(at.slot()), &Slot::Unused);
@@ -395,11 +434,11 @@ impl LargeStore {
             let empty = page::is_empty(page);
             let cat = category(page::free(page), pager.page_size());
             if let Some(n) = next {
-                let page = stage.page(pager, Pid(n.page()))?;
-                update_chunk(page, usize::from(n.slot()), |c| {
+                self.update(&mut stage, pager, n, |c| {
                     c.head = true;
                     c.count = 0;
-                });
+                    true
+                })?;
             }
             let mut gone = pager.reserve();
             let above = if empty {
@@ -468,7 +507,7 @@ impl LargeStore {
             return Ok(());
         }
         let waiting = (0..page::slot_count(page))
-            .filter_map(|s| chunk_at(page, s))
+            .filter_map(|s| chunk_at(page, self.id(), s))
             .any(|c| c.head && c.count == 0);
         if !waiting {
             let above = self.space.touch(&mut stage, pager, pid, position, false)?;
@@ -479,9 +518,7 @@ impl LargeStore {
     }
 
     /// Set the count of the head at `head` to `count`, marking its page touched when the count
-    /// is 0.
-    ///
-    /// Panics if no head is at `head`.
+    /// is 0. Refuses the page when no head is at `head`.
     pub fn recount<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -489,11 +526,11 @@ impl LargeStore {
         count: u32,
     ) -> Result<(), PageError> {
         let mut stage = Stage::new();
-        let page = stage.page(pager, Pid(head.page()))?;
-        update_chunk(page, usize::from(head.slot()), |c| {
-            assert!(c.head, "{head:?} is not the head of a value");
+        self.update(&mut stage, pager, head, |c| {
             c.count = count;
-        });
+            c.head
+        })?;
+        let page = stage.page(pager, Pid(head.page()))?;
         let mut above = Above::default();
         if count == 0 {
             let position = page::position(page);
@@ -523,7 +560,7 @@ impl LargeStore {
                 continue;
             }
             for slot in 0..page::slot_count(&page) {
-                if let Some(c) = chunk_at(&page, slot) {
+                if let Some(c) = chunk_at(&page, self.id(), slot) {
                     chunks.insert(tid(pid, slot), c);
                 }
             }

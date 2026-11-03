@@ -870,8 +870,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 let want = schema.encode(&key);
                 let scope: BTreeSet<u32> = u.scope.iter().copied().collect();
                 let mut out = BTreeMap::new();
-                for (d, tid) in self.probe(u.index, &key, &scope)? {
-                    let Some((_, stored)) = self.store.fetch(r.ctors[d as usize].heap, tid)? else {
+                for n in self.probe(u.index, &key, &scope)? {
+                    let d = n.ctor;
+                    let Some((_, stored)) = self.store.fetch(r.ctors[d as usize].heap, &n)? else {
                         continue;
                     };
                     let found = ix.keys.key(d, &stored, &types)?;
@@ -922,8 +923,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             .map(|(t, v)| to_key(t, v))
             .collect::<Result<_, _>>()?;
         let all: BTreeSet<u32> = r.all_ctors().into_iter().collect();
-        for (c, tid) in self.probe(r.key_index, &prefix, &all)? {
-            let Some((at, stored)) = self.store.fetch(r.ctors[c as usize].heap, tid)? else {
+        for n in self.probe(r.key_index, &prefix, &all)? {
+            let c = n.ctor;
+            let Some((at, stored)) = self.store.fetch(r.ctors[c as usize].heap, &n)? else {
                 continue;
             };
             let v = self.row(rel, c, &stored);
@@ -968,7 +970,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         id: IndexId,
         prefix: &[crate::key::Value],
         routes: &BTreeSet<u32>,
-    ) -> Result<Vec<(u32, Tid)>, exec::Error> {
+    ) -> Result<Vec<exec::Named>, exec::Error> {
         let grant = self.grant();
         let bounds = exec::ProbeBounds {
             grant: &grant,
@@ -1089,8 +1091,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                         k.clone()
                     };
                     let prefix = [to_key(&types[0], &value)?];
-                    for (d, tid) in self.probe(index, &prefix, &routes)? {
-                        let Some((_, stored)) = self.store.fetch(r.ctors[d as usize].heap, tid)?
+                    for n in self.probe(index, &prefix, &routes)? {
+                        let d = n.ctor;
+                        let Some((_, stored)) = self.store.fetch(r.ctors[d as usize].heap, &n)?
                         else {
                             continue;
                         };

@@ -353,6 +353,9 @@ impl Error {
                 reason: FatalReason::Quarantined { what },
             },
             write::Error::Page(p) => Error::storage(format!("{p:?}")),
+            write::Error::OrphanEntry(index) => {
+                Error::storage(format!("an entry of index {index} names no version"))
+            }
             write::Error::Spill(io) => Error::storage(format!("the spill file failed: {io:?}")),
             write::Error::Transactions(detail) | write::Error::Corrupt(detail) => {
                 Error::storage(detail)

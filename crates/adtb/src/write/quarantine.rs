@@ -126,6 +126,7 @@ impl<R: Runtime> Database<R> {
                     self.mark(held)
                 }
             }
+            Error::OrphanEntry(index) => self.mark(BTreeSet::from([Quarantine::Index(index)])),
             Error::Transactions(_) if self.txns.quarantined().as_ref().is_some_and(damage) => {
                 self.mark(BTreeSet::from([Quarantine::Database]))
             }

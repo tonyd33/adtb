@@ -3,6 +3,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use adtb::heap::refuse_named;
+use adtb::key::Value;
+use adtb::runtime::Threads;
 use adtb::storage::{
     self, Crc32c, Damage, HEADER_LEN, Options, PageError, PageKind, Pager, Pid, Quarantine,
 };
@@ -808,4 +811,118 @@ fn no_crash_while_crossing_a_group_refuses_a_healthy_file() {
             }
         }
     }
+}
+
+#[test]
+fn a_page_vacuum_frees_and_another_heap_reuses_under_a_reader_is_not_refused() {
+    let mut sim = Sim::new(1, Config::default());
+    finished(&mut sim, |rt| {
+        let db = open(rt);
+        insert_users(&db, 0..4, "u");
+        let w = db.write_path();
+        let pager = w.pager();
+        let heap = w.heap_named("app::users", "User").unwrap();
+        let index = w.index_named("app::users", "key id").unwrap();
+        let listing = heap.pages(pager).unwrap();
+        let key = [Value::I64(1)];
+        let held = index.probe(pager, &key).unwrap();
+        assert_eq!(1, held.len());
+        api::results(&db, "delete u in users");
+        api::results(&db, "vacuum users");
+        let others = || {
+            w.heap_named("app::others", "Other")
+                .unwrap()
+                .pages(pager)
+                .unwrap()
+        };
+        for i in 0..64 {
+            if others().contains(&listing[0]) {
+                break;
+            }
+            api::results(
+                &db,
+                &format!(r#"insert others {{ id: others.key({i}), name: "o" }}"#),
+            );
+        }
+        assert!(
+            others().contains(&listing[0]),
+            "others reuses {:?}",
+            listing[0]
+        );
+        let mut found = 0;
+        heap.scan_pages(pager, &listing, |_| found += 1).unwrap();
+        assert_eq!(0, found);
+        let named = || Ok(index.probe(pager, &key).unwrap().contains(&held[0]));
+        let at = (heap.id(), held[0].tid);
+        let owner = index.tree().owner();
+        refuse_named::<_, adtb::exec::Error>(pager, at, owner, named).expect("not refused");
+        assert_eq!(BTreeSet::new(), pager.quarantined());
+        assert_eq!(Vec::<String>::new(), text(&db, SELECT).unwrap());
+    });
+}
+
+/// Returns what `query` answers on `db`, panicking on anything but rows.
+fn rows_or_panic(db: &Database<SimRuntime>, query: &str, seed: u64) -> Vec<String> {
+    text(db, query).unwrap_or_else(|e| panic!("seed {seed}: {query}: {e:?}"))
+}
+
+#[test]
+fn lookups_racing_a_vacuum_that_frees_slots_of_a_page_it_keeps_are_not_refused() {
+    let seeds = sweep(0..8);
+    let mut ran = 0;
+    for seed in seeds.clone() {
+        let config = Config {
+            switch_rate: 0.3,
+            ..Config::default()
+        };
+        let mut sim = Sim::new(seed, config);
+        finished(&mut sim, |rt| {
+            let db = open(rt.clone());
+            insert_users(&db, 0..4, "kept");
+            let page = first_users_page(&db);
+            let reader = {
+                let db = db.clone();
+                rt.spawn("reader", move || {
+                    for k in 0..12 {
+                        let by_key = format!(
+                            "from u in users where u.id == users.key({}) select u.id",
+                            100 + k / 2
+                        );
+                        assert!(rows_or_panic(&db, &by_key, seed).len() <= 1);
+                        let by_tag = "from u in users where u.tag == 2 select u.id";
+                        assert!(rows_or_panic(&db, by_tag, seed).len() <= 1);
+                        api::results(
+                            &db,
+                            &format!("insert others {{ id: others.key({k}), name: \"o\" }}"),
+                        );
+                    }
+                })
+            };
+            for k in 0..6 {
+                let row = 100 + k;
+                api::results(
+                    &db,
+                    &format!("insert users {{ id: users.key({row}), name: \"g\", tag: 2 }}"),
+                );
+                api::results(
+                    &db,
+                    &format!("delete u in users where key u == users.key({row})"),
+                );
+                api::results(&db, "vacuum users");
+            }
+            rt.join(reader);
+            assert_eq!(
+                page,
+                first_users_page(&db),
+                "seed {seed}: the page survives"
+            );
+            assert_eq!(
+                BTreeSet::new(),
+                db.write_path().pager().quarantined(),
+                "seed {seed}"
+            );
+            ran += 1;
+        });
+    }
+    assert_eq!(seeds.count(), ran);
 }

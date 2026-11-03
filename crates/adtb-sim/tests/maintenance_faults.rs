@@ -1550,11 +1550,12 @@ fn rot_commit(image: Files) -> Result<Tally, String> {
     Ok(tally)
 }
 
-/// Open `image` and run first the read `crossing` of `object`: rows only if exact, and a refusal
-/// only naming and marking `object`. With `commit_after`, then commit to `rows` and read that
-/// commit back, before a close and after a reopen. Returns one case's tally.
+/// Open `image` and run first the read `crossing` of `object`: rows only if exact and not
+/// `must_refuse`, and a refusal only naming and marking `object`. With `commit_after`, then commit
+/// to `rows` and read that commit back, before a close and after a reopen. Returns one case's
+/// tally.
 #[rustfmt::skip]
-fn rot_cross(image: Files, object: &RotObject, crossing: &Crossing, commit_after: bool, rot: Rot) -> Result<Tally, String> {
+fn rot_cross(image: Files, object: &RotObject, crossing: &Crossing, commit_after: bool, must_refuse: bool, damaged: Option<Pid>) -> Result<Tally, String> {
     let (mut seen, mut tally) = (Seen::default(), Tally::default());
     let mut sim = Sim::with_files(SEED, Config::default(), image);
     finished_run(&mut sim, |rt| -> Result<(), String> {
@@ -1563,12 +1564,13 @@ fn rot_cross(image: Files, object: &RotObject, crossing: &Crossing, commit_after
         if !marks(&db).is_empty() {
             return Err(format!("marked before the read: {:?}", marks(&db)));
         }
+        let pages = || db.write_path().pager().damaged();
         match rot_read(&db, &crossing.text)? {
-            Err(what) if what == object.name && marks(&db) == BTreeSet::from([object.mark]) => {
+            Err(what) if what == object.name && marks(&db) == BTreeSet::from([object.mark]) && damaged.is_none_or(|p| pages().contains_key(&p)) => {
                 tally.refused += 1;
             }
-            Err(what) => return Err(format!("refusal names {what:?}, marks {:?}", marks(&db))),
-            Ok(_) if rot == Rot::Flip => return Err("a flip of a page it needs answered".into()),
+            Err(what) => return Err(format!("refusal names {what:?}, marks {:?}, damaged {:?}", marks(&db), pages())),
+            Ok(_) if must_refuse => return Err("a damaged page it needs answered".into()),
             Ok(got) if got == crossing.want => tally.exact += 1,
             Ok(got) => return Err(format!("want {:?}, got {got:?}", crossing.want)),
         }
@@ -1659,7 +1661,14 @@ fn a_read_crossing_a_rotted_page_gives_the_written_rows_or_refuses_naming_it() {
                     let (image, owned) = (image.clone(), object.clone());
                     let commit_after = n == 0 && !object.of_rows;
                     let answer = rot_bounded(ROT_CASE_LIMIT, move || {
-                        rot_cross(image, &owned, &crossing, commit_after, rot)
+                        rot_cross(
+                            image,
+                            &owned,
+                            &crossing,
+                            commit_after,
+                            rot == Rot::Flip,
+                            None,
+                        )
                     });
                     let tally = table.entry((object.is_heap, rot)).or_default();
                     tally.cases += 1;
@@ -1750,4 +1759,237 @@ fn a_rot_case_that_hangs_or_panics_is_reported() {
         report.starts_with("panic: ") && report.contains("the case broke"),
         "{report}"
     );
+}
+
+const CHECKSUM_AT: usize = 8;
+const SLOT_COUNT_AT: usize = 32;
+
+/// Write the checksum of `page` as page `at` into its header, as the pager seals a page.
+fn sealed_as(at: usize, page: &mut [u8]) {
+    let sum = storage::Crc32c::new()
+        .update(&(at as u64).to_le_bytes())
+        .update(&page[..CHECKSUM_AT])
+        .update(&[0; 4])
+        .update(&page[CHECKSUM_AT + 4..])
+        .finish();
+    page[CHECKSUM_AT..CHECKSUM_AT + 4].copy_from_slice(&sum.to_le_bytes());
+}
+
+/// A valid page written in place of a heap page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Foreign {
+    /// A heap page of another owner.
+    Heap,
+    /// An index leaf.
+    Leaf,
+    /// The page itself with no slot.
+    Emptied,
+}
+
+const FOREIGN: [Foreign; 3] = [Foreign::Heap, Foreign::Leaf, Foreign::Emptied];
+
+/// Returns `pristine` with page `at` replaced as `foreign` says, `donors` being a heap page of
+/// another owner and an index leaf.
+fn foreign_image(pristine: &Files, at: usize, foreign: Foreign, donors: (usize, usize)) -> Files {
+    let file = &pristine[FILE];
+    let page = |p: usize| file[p * PAGE..(p + 1) * PAGE].to_vec();
+    let mut bytes = match foreign {
+        Foreign::Heap => page(donors.0),
+        Foreign::Leaf => page(donors.1),
+        Foreign::Emptied => {
+            let mut b = page(at);
+            let kind = PageKind::from_u16(storage::kind(&b));
+            assert_eq!(Some(PageKind::HeapSlotted), kind, "page {at}");
+            b[SLOT_COUNT_AT..SLOT_COUNT_AT + 2].fill(0);
+            b
+        }
+    };
+    sealed_as(at, &mut bytes);
+    let mut image = pristine.clone();
+    image.get_mut(FILE).unwrap()[at * PAGE..(at + 1) * PAGE].copy_from_slice(&bytes);
+    image
+}
+
+/// Returns the reads that cross the first page of heap object `name`, each with its kind: a
+/// scan, a lookup through an index, or a large value.
+fn first_page_reads(name: &str) -> Vec<(&'static str, Crossing)> {
+    let reads = rot_reads(false);
+    let doc = |i: i64| vec![format!("docs.key({i})")];
+    let lookup = |text: String, want: Vec<String>, plan: &str| Crossing {
+        text,
+        want,
+        plan: plan.to_owned(),
+        key: Vec::new(),
+    };
+    let scan = |n: usize, plan: &str| lookup(reads[n].0.clone(), reads[n].1.clone(), plan);
+    let by_doc = |i: i64| format!("from d in docs where d.id == docs.key({i}) select d.id");
+    let big = "from d in docs.Big where d.id == docs.key(40) select { id: d.id, body: d.body }";
+    let big_want = vec![format!(
+        r#"{{ body: "{}", id: docs.key(40) }}"#,
+        big_body(40)
+    )];
+    #[rustfmt::skip]
+    let out = match name {
+        "app::rows.Row" => vec![
+            ("scan", scan(0, "Scan rows.Row")),
+            ("lookup", lookup(BY_ID.replace("{}", "11"), row_with_id(11), "Probe rows (id)")),
+            ("lookup", lookup(BY_NAME.replace("{}", "seed-b2"), rows_named("seed-b2"), "Probe rows (name)")),
+        ],
+        "app::filler.Filler" => vec![
+            ("scan", scan(2, "Scan filler.Filler")),
+            ("lookup", lookup("from f in filler where f.id == filler.key(0) select f.id".into(), vec!["filler.key(0)".into()], "Probe filler (id)")),
+        ],
+        "app::docs.Small" => vec![
+            ("scan", scan(5, "Scan docs.Small")),
+            ("lookup", lookup(by_doc(0), doc(0), "Probe docs (id)")),
+            ("lookup", lookup(r#"from d in docs where d.tag == "t0" select d.id"#.into(), doc(0), "Probe docs (tag)")),
+            ("lookup", lookup(r#"from d in docs.Small where d.note == "n0" select d.id"#.into(), doc(0), "Probe docs (note)")),
+        ],
+        "app::docs.Big" => vec![
+            ("scan", scan(6, "Scan docs.Big")),
+            ("lookup", lookup(by_doc(40), doc(40), "Probe docs (id)")),
+        ],
+        _ => vec![
+            ("large", scan(6, "Scan docs.Big")),
+            ("large", lookup(big.into(), big_want, "Probe docs (id)")),
+        ],
+    };
+    out
+}
+
+#[test]
+fn a_valid_page_of_another_owner_or_lacking_the_slot_refuses_naming_its_holder() {
+    hook_rot_panics();
+    let (pristine, _, objects) = rot_fixture();
+    let file = &pristine[FILE];
+    let first = |o: &RotObject| pages_of(file, o)[0];
+    let leaf = objects
+        .iter()
+        .find(|o| !o.is_heap)
+        .map(first)
+        .expect("an index");
+    let (mut defects, mut table) = (Vec::new(), BTreeMap::<(Foreign, &str), usize>::new());
+    for (o, object) in objects.iter().filter(|o| o.is_heap).enumerate() {
+        let at = first(object);
+        let other = |o: &&RotObject| o.is_heap && o.owner != object.owner && o.of_rows;
+        let donor = objects.iter().find(other).map(first).unwrap_or(leaf);
+        for (f, foreign) in FOREIGN.into_iter().enumerate() {
+            let image = foreign_image(&pristine, at, foreign, (donor, leaf));
+            let mut reads = first_page_reads(&object.name);
+            reads.retain(|(kind, _)| foreign != Foreign::Emptied || *kind != "scan");
+            if !profile::every_case() {
+                reads = vec![reads.swap_remove((o + f) % reads.len())];
+            }
+            for (kind, crossing) in reads {
+                let label = format!(
+                    "page {at} {} {foreign:?} {:.60}",
+                    object.name, crossing.text
+                );
+                let probed =
+                    |o: &&RotObject| !o.is_heap && o.reads.iter().any(|r| r.plan == crossing.plan);
+                let holder = match (foreign, kind) {
+                    (Foreign::Emptied, "lookup") => objects.iter().find(probed).expect("its index"),
+                    _ => object,
+                };
+                let page = (foreign != Foreign::Emptied).then_some(Pid(at as u64));
+                let (image, owned) = (image.clone(), holder.clone());
+                let answer = rot_bounded(ROT_CASE_LIMIT, move || {
+                    rot_cross(image, &owned, &crossing, true, true, page)
+                });
+                match answer {
+                    Ok(case) => *table.entry((foreign, kind)).or_default() += case.refused,
+                    Err(defect) => defects.push(format!("{label}: {defect:.600}")),
+                }
+            }
+        }
+    }
+    println!("{table:#?}");
+    assert_eq!(Vec::<String>::new(), defects, "{} defects", defects.len());
+    for foreign in FOREIGN {
+        for kind in ["scan", "lookup", "large"] {
+            if foreign != Foreign::Emptied || kind != "scan" {
+                let refused = table.get(&(foreign, kind)).copied().unwrap_or(0);
+                assert_reached(&format!("{foreign:?} {kind}: refused"), refused, 1);
+            }
+        }
+    }
+}
+
+/// Open `image`, commit `text`, which must refuse naming and marking `holder`, then, with
+/// `read_back`, read `rows` before a close and after a reopen.
+fn rows_write_refused(
+    image: Files,
+    text: &str,
+    holder: &RotObject,
+    read_back: bool,
+) -> Result<(), String> {
+    let (mut seen, mut tally) = (Seen::default(), Tally::default());
+    let mut sim = Sim::with_files(SEED, Config::default(), image);
+    finished_run(&mut sim, |rt| -> Result<(), String> {
+        let db = rot_opened(rt, &mut seen)?;
+        match commit(&db, text, || {}) {
+            Ok(()) => return Err("acknowledged".into()),
+            Err(e) => {
+                let what = refused_what(e, "commit", text)?;
+                if what != holder.name || marks(&db) != BTreeSet::from([holder.mark]) {
+                    return Err(format!("refusal names {what:?}, marks {:?}", marks(&db)));
+                }
+            }
+        }
+        if read_back {
+            read_rows(&db, false, &mut tally)?;
+        }
+        rot_close(db)
+    })??;
+    let mut sim = Sim::with_files(SEED, Config::default(), sim.files());
+    finished_run(&mut sim, |rt| -> Result<(), String> {
+        let db = rot_opened(rt, &mut seen)?;
+        if read_back {
+            read_rows(&db, false, &mut tally)?;
+        }
+        rot_close(db)
+    })?
+}
+
+#[test]
+fn a_write_by_key_through_a_valid_page_of_another_owner_or_lacking_the_slot_refuses() {
+    hook_rot_panics();
+    let (pristine, _, objects) = rot_fixture();
+    let file = &pristine[FILE];
+    let first = |o: &RotObject| pages_of(file, o)[0];
+    let rows = objects
+        .iter()
+        .find(|o| o.name == "app::rows.Row")
+        .expect("rows");
+    let filler = objects.iter().find(|o| o.name == "app::filler.Filler");
+    let leaf = objects
+        .iter()
+        .find(|o| !o.is_heap)
+        .map(first)
+        .expect("an index");
+    let donors = (filler.map(first).expect("filler"), leaf);
+    let key_index = objects.iter().find(|o| o.name == "app::rows key id");
+    let key_index = key_index.expect("the key index of rows");
+    let insert = r#"insert rows { id: rows.key(11), name: "again" }"#;
+    let texts = [
+        r#"update r in rows where key r == rows.key(11) set Row { r with name: "u" }"#,
+        "delete r in rows where key r == rows.key(20)",
+    ];
+    let mut defects = Vec::new();
+    for foreign in FOREIGN {
+        let image = foreign_image(&pristine, first(rows), foreign, donors);
+        let emptied = (foreign == Foreign::Emptied).then_some(insert);
+        for text in texts.into_iter().chain(emptied) {
+            let foreign_owner = foreign != Foreign::Emptied;
+            let holder = if foreign_owner { rows } else { key_index };
+            let (image, owned) = (image.clone(), holder.clone());
+            let answer = rot_bounded(ROT_CASE_LIMIT, move || {
+                rows_write_refused(image, text, &owned, foreign_owner)
+            });
+            if let Err(defect) = answer {
+                defects.push(format!("{foreign:?} {text:.50}: {defect:.600}"));
+            }
+        }
+    }
+    assert_eq!(Vec::<String>::new(), defects, "{} defects", defects.len());
 }

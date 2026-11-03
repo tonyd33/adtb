@@ -117,6 +117,8 @@ pub enum Error {
     StatementLimit(exec::Exceeded),
     Serialization(SerializationFailure),
     Page(PageError),
+    /// An entry of the index with this owner names an unused slot of a page its heap holds.
+    OrphanEntry(u32),
     /// The statement's spill file could not be made, written or read.
     Spill(IoError),
     /// The call reads, or writes under, what this text names, which is quarantined.
@@ -177,6 +179,12 @@ impl Error {
 impl From<PageError> for Error {
     fn from(e: PageError) -> Error {
         Error::Page(e)
+    }
+}
+
+impl From<crate::heap::OrphanEntry> for Error {
+    fn from(e: crate::heap::OrphanEntry) -> Error {
+        Error::OrphanEntry(e.index)
     }
 }
 
@@ -247,6 +255,7 @@ impl From<exec::Error> for Error {
             exec::Error::StatementLimit(x) => Error::StatementLimit(x),
             exec::Error::Serialization(f) => Error::Serialization(f),
             exec::Error::Page(p) => Error::Page(p),
+            exec::Error::OrphanEntry(i) => Error::OrphanEntry(i),
             exec::Error::Spill(io) => Error::Spill(io),
             exec::Error::Corrupt(c) => Error::Corrupt(c),
             exec::Error::Unsupported(u) => Error::Unsupported(u),

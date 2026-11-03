@@ -21,7 +21,7 @@ use super::join::{Deferred, Probed, Table};
 use super::memory::Grant;
 use super::sched::Scheduler;
 use super::spill::{Distinct, Spill};
-use super::store::{ProbeBounds, Store, from_stored, to_key};
+use super::store::{Named, ProbeBounds, Store, from_stored, to_key};
 use super::value::Val;
 use super::{Error, Exceeded, Fault, Options};
 
@@ -355,9 +355,9 @@ impl<R: Runtime> Ctx<R> {
             grant: &self.grant,
             check: &check,
         };
-        for (c, tid) in self.store.probe(l.index, &k, &routes, bounds)? {
-            let route = l.routes.iter().find(|r| r.ctor == c).expect("a route");
-            if let Some((_, v)) = self.fetch(route, tid, key)? {
+        for n in self.store.probe(l.index, &k, &routes, bounds)? {
+            let route = l.routes.iter().find(|r| r.ctor == n.ctor).expect("a route");
+            if let Some((_, v)) = self.fetch(route, &n, key)? {
                 return Ok(v);
             }
         }
@@ -368,10 +368,16 @@ impl<R: Runtime> Ctx<R> {
         Err(Error::Fault(Fault::NoSuchRow))
     }
 
-    /// Returns the visible version the chain from `tid` reaches in `route`'s heap, with its
-    /// TID, when its key fields still equal `key`. The plan rechecks every other key element.
-    fn fetch(&self, route: &Fetch, tid: Tid, key: &[Val]) -> Result<Option<(Tid, Val)>, Error> {
-        let Some((at, row)) = self.store.fetch(route.heap, tid)? else {
+    /// Returns the visible version the chain from the TID `named` names reaches in `route`'s
+    /// heap, with its TID, when its key fields still equal `key`. The plan rechecks every other
+    /// key element.
+    fn fetch(
+        &self,
+        route: &Fetch,
+        named: &Named,
+        key: &[Val],
+    ) -> Result<Option<(Tid, Val)>, Error> {
+        let Some((at, row)) = self.store.fetch(route.heap, named)? else {
             return Ok(None);
         };
         let v = self.row(route.heap, &row);
@@ -861,7 +867,7 @@ impl<R: Runtime> Ctx<R> {
         at: &IndexEnd,
         f: &Frame,
         sel: &Sel,
-        mut found: impl FnMut(u32, &[Value]) -> Result<Vec<(u32, Tid)>, Error>,
+        mut found: impl FnMut(u32, &[Value]) -> Result<Vec<Named>, Error>,
         out: &mut Distinct,
     ) -> Result<(), Error> {
         let types = self.store.key_types(at.index);
@@ -878,13 +884,13 @@ impl<R: Runtime> Ctx<R> {
                 .map(|(t, v)| to_key(t, v))
                 .collect::<Result<_, _>>()?;
             let mut seen = BTreeSet::new();
-            for (c, tid) in found(r, &prefix)? {
+            for n in found(r, &prefix)? {
                 let i = at
                     .routes
                     .iter()
-                    .position(|(rt, _)| rt.ctor == c)
+                    .position(|(rt, _)| rt.ctor == n.ctor)
                     .expect("a route of the entry's constructor");
-                let Some((t, v)) = self.fetch(&at.routes[i].0, tid, k)? else {
+                let Some((t, v)) = self.fetch(&at.routes[i].0, &n, k)? else {
                     continue;
                 };
                 if seen.insert(t)

@@ -8,8 +8,8 @@ use adtb_lang::types::Ty;
 use crate::batch::{Batch, BatchBuilder, Schema as BatchSchema};
 use crate::btree::{self, Index, prefix_end};
 use crate::catalog::IndexKeys;
-use crate::heap::{FieldType, Header, Heap, HeapNo, Version, walk};
-use crate::key::{CtorId, Dir, KeySchema, KeyType, Scalar, Tid, Value};
+use crate::heap::{FieldType, Header, Heap, HeapNo, Version, refuse_named, walk};
+use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
 use crate::mvcc::{
     ScanId, SerialId, SerializationFailure, Serializer, Snapshot, Status, Transactions, Xid,
 };
@@ -22,6 +22,15 @@ use super::Error;
 use super::memory::{Arena, Grant};
 use super::types::{ctors, repr};
 use super::value::{F32, F64, Val};
+
+/// An index entry a probe found: the constructor position and TID it names, and the entry when an
+/// index rather than a heap scan answered.
+#[derive(Clone, Debug)]
+pub struct Named {
+    pub ctor: u32,
+    pub tid: Tid,
+    entry: Option<(IndexId, Entry)>,
+}
 
 /// What a query's reads see and record: the visibility of versions at its snapshot, and the
 /// SIREAD locks its transaction takes.
@@ -497,9 +506,15 @@ impl<R: Runtime> Store<R> {
             let Some(stored) = self.history.heaps.get(&heap) else {
                 continue;
             };
-            if let Some(v) = stored.heap.read(&self.pager, e.tid)?
-                && self.reads.sees(&v.header)?
-            {
+            let Some(v) = stored.heap.read(&self.pager, e.tid)? else {
+                let at = (stored.heap.id(), e.tid);
+                refuse_named(&self.pager, at, ix.index.tree().owner(), || {
+                    let found = past.probe(&self.pager, key).map_err(index_error)?;
+                    Ok::<_, Error>(found.iter().any(|f| (f.ctor, f.tid) == (e.ctor, e.tid)))
+                })?;
+                continue;
+            };
+            if self.reads.sees(&v.header)? {
                 return Ok(Some((heap, v.row)));
             }
         }
@@ -611,8 +626,10 @@ impl<R: Runtime> Store<R> {
         writers.into_iter().try_for_each(|w| self.reads.depends(w))
     }
 
-    /// Returns the version of heap `id` visible from the chain starting at `tid`, with its TID.
-    pub fn fetch(&self, id: HeapId, tid: Tid) -> Result<Option<(Tid, Vec<Value>)>, Error> {
+    /// Returns the version of heap `id` visible from the chain starting at the TID `at` names,
+    /// with its TID.
+    pub fn fetch(&self, id: HeapId, at: &Named) -> Result<Option<(Tid, Vec<Value>)>, Error> {
+        let tid = at.tid;
         let StoredHeap { heap, sum, .. } = self.heap(id);
         let mut failed = None;
         let mut writers = BTreeSet::new();
@@ -632,6 +649,19 @@ impl<R: Runtime> Store<R> {
             return Err(Error::Page(e));
         }
         self.depend_all(writers)?;
+        if link.is_none()
+            && let Some((index, entry)) = &at.entry
+        {
+            let ix = &self.index(*index).index;
+            refuse_named(&self.pager, (heap.id(), tid), ix.tree().owner(), || {
+                let found = ix.probe(&self.pager, &entry.key).map_err(index_error)?;
+                Ok::<_, Error>(
+                    found
+                        .iter()
+                        .any(|f| (f.ctor, f.tid) == (entry.ctor, entry.tid)),
+                )
+            })?;
+        }
         let Some(link) = link.filter(|l| l.heap == heap.id()) else {
             return Ok(None);
         };
@@ -652,7 +682,7 @@ impl<R: Runtime> Store<R> {
         prefix: &[Value],
         routes: &BTreeSet<u32>,
         bounds: ProbeBounds<'_>,
-    ) -> Result<Vec<(u32, Tid)>, Error> {
+    ) -> Result<Vec<Named>, Error> {
         let bytes = self.encode_prefix(id, prefix);
         let end = prefix_end(&bytes);
         self.entries(id, Bound::Included(bytes), end, routes, bounds)
@@ -671,7 +701,7 @@ impl<R: Runtime> Store<R> {
         hi: Option<(Value, bool)>,
         routes: &BTreeSet<u32>,
         bounds: ProbeBounds<'_>,
-    ) -> Result<Vec<(u32, Tid)>, Error> {
+    ) -> Result<Vec<Named>, Error> {
         let base = self.encode_prefix(id, prefix);
         let next = self.index(id).index.schema().components()[prefix.len()].clone();
         let dir = next.1;
@@ -715,7 +745,7 @@ impl<R: Runtime> Store<R> {
         hi: Bound<Vec<u8>>,
         routes: &BTreeSet<u32>,
         bounds: ProbeBounds<'_>,
-    ) -> Result<Vec<(u32, Tid)>, Error> {
+    ) -> Result<Vec<Named>, Error> {
         let ix = self.index(id);
         if let Some(rows) = &ix.rows
             && self.pager.any_quarantined()
@@ -749,7 +779,11 @@ impl<R: Runtime> Store<R> {
                     .ctors
                     .get(&e.ctor)
                     .unwrap_or_else(|| panic!("index {id:?} maps constructor {:?}", e.ctor));
-                routes.contains(&c).then_some((c, e.tid))
+                routes.contains(&c).then_some(Named {
+                    ctor: c,
+                    tid: e.tid,
+                    entry: Some((id, e)),
+                })
             })
             .collect())
     }
@@ -765,7 +799,7 @@ impl<R: Runtime> Store<R> {
         range: (&Bound<Vec<u8>>, &Bound<Vec<u8>>),
         routes: &BTreeSet<u32>,
         bounds: ProbeBounds<'_>,
-    ) -> Result<Vec<(u32, Tid)>, Error> {
+    ) -> Result<Vec<Named>, Error> {
         let schema = self.index(id).index.schema();
         let types = self.key_types(id);
         let (lo, hi) = range;
@@ -801,7 +835,12 @@ impl<R: Runtime> Store<R> {
             self.depend_all(writers)?;
         }
         found.sort();
-        Ok(found.into_iter().map(|(_, c, t)| (c, t)).collect())
+        let named = |(_, ctor, tid)| Named {
+            ctor,
+            tid,
+            entry: None,
+        };
+        Ok(found.into_iter().map(named).collect())
     }
 
     /// Returns the key types of index `id`'s fields.

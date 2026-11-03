@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::key::{Tid, Value};
 use crate::runtime::Runtime;
-use crate::storage::{self, PageError, Pager, Pid};
+use crate::storage::{self, Damage, PageError, Pager, Pid};
 
 use super::dir::{Above, Space, category, max_fanout, need_category};
 use super::large::LargeStore;
@@ -385,22 +385,17 @@ impl Heap {
         })
     }
 
-    /// Returns the version at `tid`, if a version is there. Its out-of-line values are read
-    /// while its page is held under a shared latch.
-    ///
-    /// Panics if `tid` names a page of another heap.
+    /// Returns the version at `tid`, if a version of this heap is there. Its out-of-line values
+    /// are read while its page is held under a shared latch.
     pub fn read<R: Runtime>(
         &self,
         pager: &Pager<R>,
         tid: Tid,
     ) -> Result<Option<Version>, PageError> {
         let page = pager.read_formatted(Pid(tid.page()))?;
-        assert_eq!(
-            self.id,
-            storage::owner(&page),
-            "{tid:?} is not in heap {}",
-            self.id
-        );
+        if !self.holds_page(&page) {
+            return Ok(None);
+        }
         let Slot::Normal { flags, at } = page::get(&page, usize::from(tid.slot())) else {
             return Ok(None);
         };
@@ -427,7 +422,8 @@ impl Heap {
     }
 
     /// Call `f` on every version on `pages`, a range of what [`Heap::pages`] returned, in their
-    /// order and then slot order, as [`Heap::scan`] does. A page no longer of the heap is skipped.
+    /// order and then slot order, as [`Heap::scan`] does. A page no longer of the heap is skipped,
+    /// and refused while the directory still names it.
     pub fn scan_pages<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -438,12 +434,29 @@ impl Heap {
             let found;
             {
                 let page = pager.read_formatted(pid)?;
-                if !page::is_heap(&page) || storage::owner(&page) != self.id {
+                if !self.holds_page(&page) {
+                    drop(page);
+                    self.refuse_if_named(pager, pid)?;
                     continue;
                 }
                 found = self.versions_on(pager, pid, &page)?;
             }
             found.into_iter().for_each(&mut f);
+        }
+        Ok(())
+    }
+
+    fn holds_page(&self, page: &[u8]) -> bool {
+        page::is_heap(page) && storage::owner(page) == self.id
+    }
+
+    /// Refuse page `pid`, read as no page of this heap, when the directory still names it and it
+    /// still reads so.
+    ///
+    /// Preconditions: the caller holds no latch on `pid`.
+    fn refuse_if_named<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), PageError> {
+        if self.pages(pager)?.contains(&pid) && !self.holds_page(&pager.read_formatted(pid)?) {
+            return Err(pager.damage(pid, Damage::Checksum));
         }
         Ok(())
     }
