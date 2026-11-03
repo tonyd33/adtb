@@ -45,3 +45,14 @@ Left from the review:
 - `RefusalUnrecorded` and `WitnessDenialUnrecorded` hold `api::Error`, so write names a layer above it.
 - Relation names held as `String` where the site has a `RelId`, since Display has no schema: `UnstoredIndex`, `NotAnIndex` (reindex.rs), `UniqueUnindexed`, `UndeclaredIndex`, `KeyNotFields` (schema.rs), `ReferenceUnindexed` (eval.rs).
 - Next slices: plan (`plan::Error::Internal`), `Broken::NoValue`, `catalog::Error::Corrupt(String)`, the exec Debug and Display items above.
+
+## 2026-11-03: plan slice landed
+
+`refactor: carry a typed cause for every plan Internal`. `plan::Broken` (crates/adtb/src/plan/broken.rs) replaces `plan::Error::Internal(String)` at its 9 sites; `api::cause::Broken::NoValue` holds the api `Error` and Displays its value. No `Internal(String)` is left in crates/adtb/src; texts and api outcomes unchanged, per review. Full check 3639 passed.
+
+Left:
+
+- `Corrupt(String)` on `catalog::Error` (41 sites), `write::Error` and `exec::Error`: the next slice.
+- A `catalog::Error` holding a plan Internal Debug-prints the variant (`Plan(Internal(GroupFieldMissing))`) where it printed the text, at `Broken::CatalogError` and `Corruption::Catalog`; reached only when the checker breaks a guarantee. Same as the write item above: Display the cause at those sites.
+- The `cases` arrays of write/broken_tests.rs and plan/broken_tests.rs are not compiler-checked, so a new variant can be left out of them; `expected` is.
+- `an_error_with_no_value_reads_as_its_value_text` (api/cause.rs) uses an error that has a value and does not reach tables.rs's fallback: its name overclaims.
