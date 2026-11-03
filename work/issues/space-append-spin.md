@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-31
-status: open
+status: resolved
+closed: 2026-11-03
 kind: bug
 priority: 412
 summary: a large store insert spins in Space::append when a fault overwrites a directory page
@@ -17,3 +18,7 @@ Direction: a kind check on a directory node refuses and marks. Done when a test 
 ## 2026-10-31: from the lost-bitmap review
 
 Reachable with an intact but wrong bitmap, as after a lost write: `pager.free` of the large store's directory page, then one large insert gave no answer in 60 s, no mark. `add_page` returning `None` (heap/dir.rs:771) has no bound, so the loop in `append` never ends. `LargeStore::insert`'s `continue` (heap/large.rs near 190) can also loop on a foreign page.
+
+## 2026-11-03: landed
+
+Closed by `fix: refuse a foreign page in a heap directory instead of spinning`. Every directory walk in crates/adtb/src/heap/dir.rs reads through `Space::node`/`node_mut`, gated by `shaped` (kind, owner, capacity, count, level and capacity against the parent); a failing page is recorded damaged and the statement answers `Quarantined`. `find` checks the page it returns belongs to the space at that position. Holdings map large-store pages to the database. Search: crates/adtb-sim/tests/directory_damage.rs. Check exit 0, 3624 passed. Follow-ups on heap-directory-follow-ups.
