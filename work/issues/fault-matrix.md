@@ -324,3 +324,11 @@ Rows still open: scrub, typed causes for `Internal` and `Corrupt`, create by pub
 The deep run found a lost acknowledged commit no one reports: page-past-log-end-unreported, so `misdirected_and_lost_writes_are_reported_never_returned` fails under deep at seed 337 until it lands. Orphan findings are not floored: no sweep reaches one. create-io-failure-as-not-found holds the same I/O as damage on create.
 
 Rows still open: scrub, typed causes for `Internal` and `Corrupt`, create by publishing aside, page-past-log-end-unreported.
+
+## 2026-11-02: rulings on the last rows
+
+None of the three changes anything a client observes, so none goes through the design space.
+
+- Typed causes for `Internal` and `Corrupt`: the adopted ruling project/arch/errors/checker-guarantee/fail-statement fixes the client shape as `Internal { what: Text }`, and `OpenError::Corrupt { detail }` is the embedding shape. The public shapes stay. Inside the engine every site that builds one carries a typed cause, an enum per layer, and text is made only where the api builds the public error. No string stands for a cause a caller or test branches on; tests assert the cause, not the text.
+- Scrub: no new call. The search starts scrub passes through the public `ScrubInterval` setting under simulated time, and floors pages scrub read and findings it filed, by kind, as the rot search does.
+- Create by publishing aside: adopted. Create builds data file and log under reserved names beside the target, forces both and the directory, then publishes by rename in the order restore uses, and forces the directory again. A crash at any point leaves either no database or a whole one, so a retried create works with no file deleted by hand. A create finding its own reserved leftovers removes them first; any other existing file still refuses. The rename keeps open descriptors, so no reopen is paid. Searched through `Database::open` with `create`, crash at every op, as the host path.

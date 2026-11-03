@@ -139,6 +139,10 @@ that the worker is unblocked.
 - Rule on the design questions agents raise. Settle a hard call yourself
   in a proposed point with your argument as its reason, and present it to
   the user for confirmation. Do not hand the question back open.
+- A call that changes nothing a user or client observes, or that an adopted
+  ruling already decides, is yours alone: rule, record it on the ticket and
+  dispatch. Do not wait for the user on it. Check `quandary rulings` before
+  calling anything a design decision.
 - Treat every spec change an implementation asks for as suspect. Name the
   tier it belongs to before accepting it.
 - File the gaps agents report as tickets.
