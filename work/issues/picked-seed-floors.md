@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-02
-status: open
+status: resolved
+closed: 2026-11-03
 kind: bug
 priority: 360
 summary: pager search floors on picked seeds break whenever an unrelated change shifts the op stream, and the deep floor on pages past their log rests on one seed
@@ -24,3 +25,9 @@ From the create-aside delta review: on that tree, of eight 8-seed windows across
 ## 2026-11-03: from create-aside-2
 
 Measured over 800..864 on main and on the create-aside-2 tree, for `threads_sharing_a_pager_under_every_fault`: refused opens about 7% of crashes on both; at the old bound of one per 12 crashes, 46 of 57 eight-seed starts held on that tree and 56 on main, at one per 8, 56 on main. A log finding is reached on about 1 seed in 10 on both, so no 8-seed window holds a floor of one. Ruled in that track: the bound becomes one per 6 crashes (all 57 starts hold on both), and the log-findings floor runs under deep only. The other tests' picked floors are unchanged.
+
+## 2026-11-03: resolved
+
+`test: reach each pager finding kind by construction` (crates/adtb-sim/tests/pager.rs only). Three deterministic tests reach their kind on every seed: `a_misdirected_page_write_is_refused_where_it_was_meant_and_where_it_landed`, `a_lost_page_write_is_reported_and_refused_on_reopen`, `a_lost_log_write_refuses_the_reopen_at_its_gap`; mutants of the read-path stale filter, the pid in the page checksum, verify's Stale arm and the recovery Gap check each fail one by name in quick, default and deep. The sweeps keep their wrong-answer and lost-row judging in every profile; their kind floors run under deep only, as named constants stating the rule from the measured rate. `picked` is gone. The threads reopen floor is 13, half the measured mean over 8 seeds, and holds over every 8-seed window of 0..256. Lead ruling, changing the create-aside-2 one: `CRASHES_PER_REFUSAL` is 3, since one per 6 failed 6 of those 249 windows (mean 7.2% of crashes, worst window 25%). The deep "pages past their log" floor is removed, reached on 0 of 64 seeds; `Unlogged` stays covered by three pager.rs tests and verify.rs `a_page_past_the_log_end_is_an_unlogged_finding_of_its_relation`. Full check 3650 passed. Found on the way: bitmap-unreadable-no-finding, which fails deep `bit_rot_and_latent_errors_are_reported_never_returned` at seed 248.
+
+Left: in default, only the constructed tests catch a pager that stops refusing Stale reads or stops treating a log gap as fatal; the random sweeps do not. Under deep the threads reopen floor is not scaled past 8 seeds (`share` returns 13 over 64).
