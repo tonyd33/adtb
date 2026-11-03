@@ -365,7 +365,7 @@ impl<'p, 'a> Walk<'p, 'a> {
     fn kind(&mut self, out: &mut Terms, t: Tm, site: Option<Site>) -> R<Tm> {
         let kind = self.src.kind(t).clone();
         let src_ty = self.src.ty(t).clone();
-        self.compared(&kind)?;
+        self.compared(&kind, &src_ty)?;
         let kind = match kind {
             Kind::Var(v) if self.rows.contains_key(&v) => {
                 return Err(refused(
@@ -653,23 +653,27 @@ impl<'p, 'a> Walk<'p, 'a> {
         })
     }
 
-    /// Refuse a comparison, grouping, ordering or union of values that do not carry whole, and a
-    /// count, fold, `top`, `take` or `only` of a set whose elements may merge at the pin.
+    /// Refuse a comparison, grouping, ordering or union of values that do not carry whole, a
+    /// count, fold, `top`, `take` or `only` of a set whose elements may merge at the pin, and a
+    /// print or parse, of type `ty`, of values whose text differs at the later version.
     #[deny(
         clippy::wildcard_enum_match_arm,
         clippy::match_wildcard_for_single_variants
     )]
-    fn compared(&self, kind: &Kind) -> R<()> {
+    fn compared(&self, kind: &Kind, ty: &Ty) -> R<()> {
         let check = |t: Tm, ordered: bool| {
             self.map
                 .whole(self.src.ty(t), true, ordered)
                 .map_err(|l| self.p.lost(&l, "compares"))
         };
+        let shown = |ty: &Ty, what| self.map.shown(ty).map_err(|l| self.p.lost(&l, what));
         match kind {
             Kind::Prim(Prim::Eq | Prim::Ne, xs) => xs.iter().try_for_each(|&x| check(x, false)),
             Kind::Prim(Prim::Lt | Prim::Le | Prim::Gt | Prim::Ge, xs) => {
                 xs.iter().try_for_each(|&x| check(x, true))
             }
+            Kind::Prim(Prim::Print, xs) => shown(self.src.ty(xs[0]), "prints"),
+            Kind::Prim(Prim::Parse, _) => shown(ty, "parses"),
             Kind::Group { by, .. } => check(*by, false),
             Kind::Union(a, _) => check(*a, false),
             Kind::Top { keys, source, .. } => {
@@ -695,9 +699,66 @@ impl<'p, 'a> Walk<'p, 'a> {
             }
             Kind::Only(x) => self.distinct(*x),
             Kind::Call { args, .. } => args.iter().try_for_each(|&x| check(x, false)),
-            Kind::Var(..)
+            Kind::Prim(
+                Prim::Add
+                | Prim::Sub
+                | Prim::Mul
+                | Prim::Div
+                | Prim::Rem
+                | Prim::Neg
+                | Prim::Concat
+                | Prim::CheckedAdd
+                | Prim::CheckedSub
+                | Prim::CheckedMul
+                | Prim::CheckedDiv
+                | Prim::CheckedRem
+                | Prim::CheckedNeg
+                | Prim::DecimalDiv
+                | Prim::Round
+                | Prim::Rescale
+                | Prim::Abs
+                | Prim::Convert { .. }
+                | Prim::Wrap
+                | Prim::Unwrap
+                | Prim::KeyValue
+                | Prim::ParseUuid
+                | Prim::ToText
+                | Prim::BytesLen
+                | Prim::ScalarLen
+                | Prim::GraphemeLen
+                | Prim::StartsWith
+                | Prim::EndsWith
+                | Prim::Contains
+                | Prim::Matches
+                | Prim::Lower
+                | Prim::Upper
+                | Prim::Fold
+                | Prim::Collate
+                | Prim::Utf8
+                | Prim::Bytes
+                | Prim::Micros
+                | Prim::Millis
+                | Prim::Seconds
+                | Prim::Minutes
+                | Prim::Hours
+                | Prim::Days
+                | Prim::Weeks
+                | Prim::Months
+                | Prim::Years
+                | Prim::AddPeriod
+                | Prim::Zoned
+                | Prim::InZone
+                | Prim::ToInstant
+                | Prim::Span
+                | Prim::Start
+                | Prim::End
+                | Prim::Overlaps
+                | Prim::Covers
+                | Prim::ReadFile { .. },
+                _,
+            )
+            | Kind::Var(..)
             | Kind::Const(..)
-            | Kind::Prim(..)
             | Kind::Record(..)
             | Kind::Field(..)
             | Kind::Ctor { .. }

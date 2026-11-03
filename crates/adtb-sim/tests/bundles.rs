@@ -5559,3 +5559,198 @@ fn a_pinned_default_folds_by_its_aggregate_after_a_drop_moves_its_position() {
         );
     });
 }
+
+const CONTACT: &str = "module auth
+add type Contact = Mail { addr: Text } | Phone { num: Text }
+add type Handle = new Text
+add type Tagged = { nick: Handle, n: Text }
+add relation tags : Tagged key nick
+add type Pair = { a: Text, b: Text }
+add relation pairs : Pair key (a, b)
+add type Pt = { x: Text }
+";
+
+/// The operators after `CONTACT` a print or parse may meet.
+const TEXT_OPS: [&str; 8] = [
+    "rename constructor Contact.Mail to Email",
+    "rename field Contact.Mail.addr to address",
+    "add constructor Contact.Post { box: Text }",
+    "add field Contact.Mail.verified: Bool fill false",
+    "rename type Handle to Nick",
+    "rename relation users to people",
+    "rename field Pair.a to x",
+    "rename type Pt to Q",
+];
+
+/// A bundle body pinned after `CONTACT` that prints or parses a value of a user type, what each
+/// of its queries answers at the pin, and the refusal of its first query across each operator
+/// of `TEXT_OPS`, by position, that changes the text.
+struct Textual {
+    body: &'static str,
+    answers: &'static [&'static str],
+    refused: &'static [(usize, &'static str)],
+}
+
+const TEXTUAL: [Textual; 10] = [
+    Textual {
+        body: r#"query q () -> Text = print(Mail { addr: "a" })"#,
+        answers: &[r#""Mail { addr: \"a\" }""#],
+        refused: &[
+            (
+                0,
+                "it prints `Mail`, which the current version names otherwise",
+            ),
+            (
+                1,
+                "it prints `addr`, which the current version names otherwise",
+            ),
+            (
+                3,
+                "it prints `Contact` whole, and its field `verified` differs",
+            ),
+        ],
+    },
+    Textual {
+        body: r#"query q () -> Option Contact = Contact.parse("Mail { addr: \"a\" }")
+query post () -> Option Contact = Contact.parse("Post { box: \"b\" }")"#,
+        answers: &["Some { value: Mail { addr: \"a\" } }", "None"],
+        refused: &[
+            (
+                0,
+                "it parses `Mail`, which the current version names otherwise",
+            ),
+            (
+                1,
+                "it parses `addr`, which the current version names otherwise",
+            ),
+            (
+                3,
+                "it parses `Contact` whole, and its field `verified` differs",
+            ),
+        ],
+    },
+    Textual {
+        body: "query q () -> Text = print(users.key(1))",
+        answers: &[r#""users.key(1)""#],
+        refused: &[(
+            5,
+            "it prints `users`, which the current version names otherwise",
+        )],
+    },
+    Textual {
+        body: r#"query q () -> Text = print(Handle("h"))"#,
+        answers: &[r#""Handle(\"h\")""#],
+        refused: &[(
+            4,
+            "it prints `Handle`, which the current version names otherwise",
+        )],
+    },
+    Textual {
+        body: r#"query q () -> Option Handle = Handle.parse("Handle(\"h\")")"#,
+        answers: &[r#"Some { value: Handle("h") }"#],
+        refused: &[(
+            4,
+            "it parses `Handle`, which the current version names otherwise",
+        )],
+    },
+    Textual {
+        body: r#"query q () -> Text = print(tags.key(Handle("h")))"#,
+        answers: &[r#""tags.key(Handle(\"h\"))""#],
+        refused: &[(
+            4,
+            "it prints `Handle`, which the current version names otherwise",
+        )],
+    },
+    Textual {
+        body: r#"query q () -> Text = print(pairs.key(a: "1", b: "2"))"#,
+        answers: &[r#""pairs.key(a: \"1\", b: \"2\")""#],
+        refused: &[(
+            6,
+            "it prints `a`, which the current version names otherwise",
+        )],
+    },
+    Textual {
+        body: r#"query q () -> Option (Key pairs) = (Key pairs).parse("pairs.key(a: \"1\", b: \"2\")")"#,
+        answers: &[r#"Some { value: pairs.key(a: "1", b: "2") }"#],
+        refused: &[(
+            6,
+            "it parses `a`, which the current version names otherwise",
+        )],
+    },
+    Textual {
+        body: r#"query q () -> Text = print(Pt { x: "1" })"#,
+        answers: &[r#""Pt { x: \"1\" }""#],
+        refused: &[(
+            7,
+            "it prints `Pt`, which the current version names otherwise",
+        )],
+    },
+    Textual {
+        body: r#"query q () -> Option Pt = Pt.parse("Pt { x: \"1\" }")"#,
+        answers: &[r#"Some { value: Pt { x: "1" } }"#],
+        refused: &[(
+            7,
+            "it parses `Pt`, which the current version names otherwise",
+        )],
+    },
+];
+
+/// Returns how many bodies of `TEXTUAL` translated and how many were refused across the operators
+/// of `TEXT_OPS` at positions `ops`, each applied alone after the pin, asserting each answer and
+/// refusal.
+fn textual_across(ops: std::ops::Range<usize>) -> (usize, usize) {
+    let mut reached = (0, 0);
+    for (o, op) in TEXT_OPS.iter().enumerate().take(ops.end).skip(ops.start) {
+        let later = format!("module auth\n{op}\n");
+        once(1000 + o as u64, |rt| {
+            let db = opened(&rt, &[V1, CONTACT, &later], Vec::new());
+            let authority = db.role_authority();
+            let owner = authority.session("owner").expect("the owner's session");
+            let mut kept = String::from("import auth\n");
+            let mut answers = Vec::new();
+            for (b, t) in TEXTUAL.iter().enumerate() {
+                let body = t.body.replace("query q ", &format!("query q{b} "));
+                let body = body.replace("query post ", &format!("query post{b} "));
+                let Some(&(_, want)) = t.refused.iter().find(|(i, _)| *i == o) else {
+                    kept.push_str(&format!("{body}\n"));
+                    answers.extend(t.answers.iter().map(|a| (b, *a)));
+                    reached.0 += 1;
+                    continue;
+                };
+                let case = format!("body {b} across `{op}`");
+                let name = format!("text{b}-1.0");
+                let body = format!("import auth\n{body}\n");
+                let reg = bundle(&name, &[V1, CONTACT], "", &body);
+                let e = authority
+                    .register(&owner, &reg)
+                    .err()
+                    .unwrap_or_else(|| panic!("{case}: registers"));
+                let RejectReason::Untranslatable { query, detail } = reason(&e) else {
+                    panic!("{case}: refused otherwise: {e:?}");
+                };
+                assert_eq!(&format!("{name}::q{b}"), query, "{case}");
+                assert_eq!(&format!("across `{op}`: {want}"), detail, "{case}");
+                reached.1 += 1;
+            }
+            let reg = bundle("kept-1.0", &[V1, CONTACT], "", &kept);
+            authority
+                .register(&owner, &reg)
+                .unwrap_or_else(|e| panic!("the bodies kept across `{op}` register: {e:?}"));
+            for (ordinal, (b, answer)) in (1..).zip(&answers) {
+                let got = rows(call(&db, "kept-1.0", ordinal, &[]));
+                assert_eq!(vec![*answer], got, "body {b} across `{op}`");
+            }
+        });
+    }
+    reached
+}
+
+#[test]
+fn a_pinned_print_or_parse_answers_as_at_its_pin_or_is_refused_across_a_change_of_a_sum() {
+    assert_eq!((34, 6), textual_across(0..4));
+}
+
+#[test]
+fn a_pinned_print_or_parse_answers_as_at_its_pin_or_is_refused_across_a_rename_elsewhere() {
+    assert_eq!((32, 8), textual_across(4..8));
+}

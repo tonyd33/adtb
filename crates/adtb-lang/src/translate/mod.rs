@@ -20,7 +20,7 @@ mod map;
 mod tests;
 mod walk;
 
-pub use map::{Loss, Map};
+pub use map::{Loss, Map, Part};
 
 /// Why a callable has no translation: the operator it fails across, when one is to blame, and
 /// the reason.
@@ -215,6 +215,10 @@ impl<'a> Pinned<'a> {
                     from.ty(*def).name
                 ),
             ),
+            Loss::Renamed { part, name, id } => refused(
+                id.and_then(|id| self.blame_rename(*part, id)),
+                format!("it {what} `{name}`, which the current version names otherwise"),
+            ),
         }
     }
 
@@ -281,6 +285,16 @@ impl<'a> Pinned<'a> {
             | Resolved::DropFn { function }
             | Resolved::DropAggregate { function }
             | Resolved::DefineAggregate { function, .. } => *function == id,
+            _ => false,
+        })
+    }
+
+    fn blame_rename(&self, part: Part, id: u64) -> Option<String> {
+        self.blame(|o| match (part, &o.op) {
+            (Part::Type, Resolved::RenameType { sum: x, .. })
+            | (Part::Ctor, Resolved::RenameConstructor { ctor: x, .. })
+            | (Part::Field, Resolved::RenameField { field: x, .. })
+            | (Part::Relation, Resolved::RenameRelation { relation: x, .. }) => *x == id,
             _ => false,
         })
     }

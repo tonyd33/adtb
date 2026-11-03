@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::schema::Schema;
+use crate::schema::{Schema, TypeDefKind};
+use crate::textual::key_field_ty;
 use crate::types::*;
 
 /// The objects of one schema version as they are at another, matched by catalog id; an object
@@ -34,6 +35,21 @@ pub enum Loss {
     },
     /// The type of the earlier version orders its values otherwise at the later one.
     Order(TypeId),
+    /// The object of the earlier version named `name` is named otherwise at the later one.
+    Renamed {
+        part: Part,
+        name: String,
+        id: Option<u64>,
+    },
+}
+
+/// The kind of object a catalog id names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part {
+    Type,
+    Ctor,
+    Field,
+    Relation,
 }
 
 impl<'a> Map<'a> {
@@ -236,7 +252,36 @@ impl<'a> Map<'a> {
     /// constructor it lacks, or, when `ordered`, one whose constructors or fields are ordered
     /// otherwise.
     pub fn whole(&self, ty: &Ty, exact: bool, ordered: bool) -> Result<(), Loss> {
-        self.whole_in(ty, exact, ordered, &mut BTreeSet::new())
+        self.whole_in(ty, exact, ordered, false, &mut BTreeSet::new())
+    }
+
+    /// Refuse a type whose values print otherwise at the later version: one that does not carry
+    /// whole, exactly and ordered, or reaches a constructor, field, newtype or relation renamed.
+    pub fn shown(&self, ty: &Ty) -> Result<(), Loss> {
+        self.whole_in(ty, true, true, true, &mut BTreeSet::new())
+    }
+
+    /// Refuse a key of `rel` whose text differs at the later version: its relation, a field
+    /// of a composite key, or a key field's type named otherwise.
+    fn key_shown(&self, rel: RelId, seen: &mut BTreeSet<(TypeId, Vec<u32>)>) -> Result<(), Loss> {
+        let to = self.relation(rel).ok_or(Loss::Relation(rel))?;
+        let r = self.from.relation(rel);
+        if r.name != self.to.relation(to).name {
+            return Err(renamed(
+                Part::Relation,
+                &r.name,
+                self.from.ids.relations.get(&rel),
+            ));
+        }
+        for f in &r.key {
+            if r.key.len() > 1 && self.field(r.elem_def, Some(0), f).as_ref() != Some(f) {
+                let id = self.from.ids.fields.get(&slot(self.from, r.elem_def, 0, f));
+                return Err(renamed(Part::Field, f, id));
+            }
+            let ty = key_field_ty(self.from, rel, f);
+            self.whole_in(&ty, true, true, true, seen)?;
+        }
+        Ok(())
     }
 
     /// Returns the constructors `def` narrowed to `ctors` may hold, at the earlier version.
@@ -257,33 +302,34 @@ impl<'a> Map<'a> {
         ty: &Ty,
         exact: bool,
         ordered: bool,
+        named: bool,
         seen: &mut BTreeSet<(TypeId, Vec<u32>)>,
     ) -> Result<(), Loss> {
+        let mut inner = |t: &Ty| self.whole_in(t, exact, ordered, named, seen);
         match ty {
+            Ty::Key { rel, .. } if named => self.key_shown(*rel, seen),
             Ty::Base(_) | Ty::Param(_) | Ty::Unit | Ty::Change | Ty::Fn(..) | Ty::Key { .. } => {
                 Ok(())
             }
-            Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => self.whole_in(t, exact, ordered, seen),
+            Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => inner(t),
             Ty::Group(k, t) => {
-                self.whole_in(k, exact, ordered, seen)?;
-                self.whole_in(t, exact, ordered, seen)
+                inner(k)?;
+                inner(t)
             }
-            Ty::Record(fs) => fs
-                .iter()
-                .try_for_each(|(_, t)| self.whole_in(t, exact, ordered, seen)),
+            Ty::Record(fs) => fs.iter().try_for_each(|(_, t)| inner(t)),
             Ty::Sum { ctors, .. } => ctors
                 .iter()
                 .flat_map(|(_, fs)| fs)
-                .try_for_each(|(_, t)| self.whole_in(t, exact, ordered, seen)),
+                .try_for_each(|(_, t)| inner(t)),
             Ty::Data { def, args, ctors } => {
                 for a in args {
-                    self.whole_in(a, exact, ordered, seen)?;
+                    inner(a)?;
                 }
                 let set = self.narrowed(*def, ctors);
                 if !seen.insert((*def, set.clone())) {
                     return Ok(());
                 }
-                self.whole_def(*def, args, set, exact, ordered, seen)
+                self.whole_def(*def, args, set, (exact, ordered, named), seen)
             }
         }
     }
@@ -293,12 +339,18 @@ impl<'a> Map<'a> {
         def: TypeId,
         args: &[Ty],
         set: Vec<u32>,
-        exact: bool,
-        ordered: bool,
+        (exact, ordered, named): (bool, bool, bool),
         seen: &mut BTreeSet<(TypeId, Vec<u32>)>,
     ) -> Result<(), Loss> {
         let name = || self.from.ty(def).name.clone();
         let to = self.def(def).ok_or(Loss::Type(def))?;
+        let named_by_type = matches!(
+            self.from.ty(def).kind,
+            TypeDefKind::Newtype { .. } | TypeDefKind::Sum { record: true, .. }
+        );
+        if named && named_by_type && self.from.ty(def).name != self.to.ty(to).name {
+            return Err(renamed(Part::Type, &name(), self.from.ids.types.get(&def)));
+        }
         let mut last = None;
         for c in set {
             let Some(k) = self.ctor(def, c) else {
@@ -311,6 +363,14 @@ impl<'a> Map<'a> {
                 return Err(Loss::Order(def));
             }
             last = Some(k);
+            let ctor = &self.from.ty(def).ctors()[c as usize].name;
+            if named && *ctor != self.to.ty(to).ctors()[k as usize].name {
+                return Err(renamed(
+                    Part::Ctor,
+                    ctor,
+                    self.from.ids.ctors.get(&(def, c)),
+                ));
+            }
             let fs = Self::fields(self.from, def, args, c);
             let mut images = Vec::with_capacity(fs.len());
             for (f, t) in &fs {
@@ -325,8 +385,12 @@ impl<'a> Map<'a> {
                         .copied(),
                     added: false,
                 })?;
+                if named && image != *f {
+                    let id = self.from.ids.fields.get(&slot(self.from, def, c, f));
+                    return Err(renamed(Part::Field, f, id));
+                }
                 images.push(image);
-                self.whole_in(t, exact, ordered, seen)?;
+                self.whole_in(t, exact, ordered, named, seen)?;
             }
             let later: Vec<String> = Self::fields(self.to, to, &[], k)
                 .into_iter()
@@ -350,6 +414,14 @@ impl<'a> Map<'a> {
             }
         }
         Ok(())
+    }
+}
+
+fn renamed(part: Part, name: &str, id: Option<&u64>) -> Loss {
+    Loss::Renamed {
+        part,
+        name: name.to_string(),
+        id: id.copied(),
     }
 }
 
