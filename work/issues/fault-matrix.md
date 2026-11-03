@@ -316,3 +316,11 @@ heap-read-foreign-page-panics landed `fix: refuse a heap page another owner hold
 real-backend-faults-engine landed `test: search Database under injected faults on both real backends`: `with_faults` injects every kind beneath io_uring with the pool's meaning, the fault contract and the crash cases run on both backends, and a `Database` commit workload under failures, torn and lost unforced writes keeps every acknowledged commit on both. Latent and corrupt reads are not in the `Database` search. Its ticket stays open for races between admission and completion and for file systems.
 
 Rows still open: scrub, typed causes for `Internal` and `Corrupt`, create by publishing aside, and the test-audit-a floors in the report.
+
+## 2026-11-02: test-audit-a floors
+
+`test: floor quarantine refusals and verify findings by kind`. All four items held when run and are closed. A commit refused after a quarantine mark is reached by the renamed sweep `a_mark_lsn_follows_every_commit_kept_before_it_and_refuses_every_commit_after`: writers wait between statement and commit and the mark lands in that window; floor half the seeds, reached in every profile. The pager sweeps floor page and log findings by kind as a rate per seed run, set near half the deep rate, with quick and default on picked seeds; deep runs the full old ranges. `storage::OpenError::Io` carries an I/O failure opening the data file, which `NoHeader` used to stand for; the api maps it to `OpenError::Io`. Mutants: `admit_commit` always Ok, verify keeping only page findings, `Io` mapped back to `NoHeader`, each fails its test. Check exit 0, 3602 passed.
+
+The deep run found a lost acknowledged commit no one reports: page-past-log-end-unreported, so `misdirected_and_lost_writes_are_reported_never_returned` fails under deep at seed 337 until it lands. Orphan findings are not floored: no sweep reaches one. create-io-failure-as-not-found holds the same I/O as damage on create.
+
+Rows still open: scrub, typed causes for `Internal` and `Corrupt`, create by publishing aside, page-past-log-end-unreported.
