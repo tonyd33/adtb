@@ -338,3 +338,19 @@ None of the three changes anything a client observes, so none goes through the d
 page-past-log-end-unreported closed by `fix: report a page past the recovered log end`. Left from it: a log batch that passes its checksum but fails to parse reports its pages `Unlogged` on top of its own log finding, a second report of damage already reported. New defect class row: damage reported as nothing.
 
 Rows still open: create by publishing aside, scrub through `ScrubInterval`, typed causes for `Internal` and `Corrupt`, each ruled above.
+
+## 2026-11-03: create by publishing aside, abandoned
+
+Track create-aside abandoned after one review and one delta review; its last commit is eb1db5f14b84 (change kmknnwos), kept as a reference, not landed. Both reviews found create deleting data it did not make, the same defect class twice: identity decided by name and shape.
+
+- Round 1 built beside the target as `NAME.creating` and `NAME.creating-log` and removed leftovers by name, so creating `shop.adt` deleted a live database named `shop.adt.creating` and its log.
+- Round 2 built inside `NAME.creating/` and removed it when it held exactly a file with a whole header and a log whose segments carry that header's file_id. A real database a user keeps at `NAME.creating/NAME` meets every part, and a probe deleted it with its committed row. On the host the removal takes no lock, and Linux unlinks a file another process holds a flock on.
+
+What the next attempt needs, ruled now:
+- Ownership by a mark no database has, written first: create makes `NAME.creating/` and writes a marker naming a fresh create id before anything else; removal requires the marker and that every built artifact carries the id. Without the marker nothing is removed. A user's directory without it refuses.
+- Removal on the host only under the reserved file's lock, taken non-blocking; held means refuse.
+- Keep from round 2: the runtime contract for a rename into the parent, forced after both directories sync (docs/design/runtime.md and the sim's disk.rs), roll-forward when `NAME-log` carries the build's id, create never deleting `NAME-log`, cleanup errors as `OpenError::Io`, create's I/O failures as `OpenError::Io`.
+- Fix from the delta review: a failed reopen after a roll-forward on the host must not remove the published file (`remove_created` after `Held::take`); `publish_names`'s postcondition; an empty reserved directory left behind on a refusal; a first-block-only segment check.
+- Stop line honest from the start: round 1 was +194 production against 120 and round 2 +229, so brief about 250 production and 300 test.
+
+create-io-failure-as-not-found stays open: its fix was in the abandoned change.
