@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-03
-status: open
+status: resolved
+closed: 2026-11-03
 kind: bug
 priority: 340
 summary: "catalog, write, plan and exec still pass Internal and Corrupt causes as text through Broken::Write, Broken::Catalog and Broken::NoValue"
@@ -56,3 +57,7 @@ Left:
 - A `catalog::Error` holding a plan Internal Debug-prints the variant (`Plan(Internal(GroupFieldMissing))`) where it printed the text, at `Broken::CatalogError` and `Corruption::Catalog`; reached only when the checker breaks a guarantee. Same as the write item above: Display the cause at those sites.
 - The `cases` arrays of write/broken_tests.rs and plan/broken_tests.rs are not compiler-checked, so a new variant can be left out of them; `expected` is.
 - `an_error_with_no_value_reads_as_its_value_text` (api/cause.rs) uses an error that has a value and does not reach tables.rs's fallback: its name overclaims.
+
+## 2026-11-03: resolved
+
+`refactor: carry a typed cause for every Corrupt`. `catalog::Rot`, `write::Rot` and `exec::Rot` (rot.rs in each) replace `Corrupt(String)` on the three error enums; `catalog::load` holds the typed `Broken`; the user details at api/cause.rs (`Broken::CatalogError`, `Corruption::Catalog`, `Corruption::Exec`, `Broken::Batches`), api/verify.rs, api/reindex.rs, `write::Broken::Denials`/`Expiry` and `catalog::Broken::IndexKey`/`Validation`/`Map` print the cause's text through `catalog::detail`, `exec::detail`, `write::detail`. The Display tests' case lists walk an `after` chain built by a `match` with no wildcard and fail on a repeat. No error changed kind or api outcome, per review; `Rot::IndexKeying`'s detail now reads a nested Internal as its text. Full check 3647 passed. No `Internal(String)` or `Corrupt(String)` is left on the engine's error enums. Leftovers carried to typed-causes-follow-ups.
