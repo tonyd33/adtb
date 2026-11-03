@@ -122,8 +122,8 @@ pub fn detail(e: &Error) -> String {
 impl fmt::Display for Broken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Broken::BoundedPlan(plan::Error::Internal(what))
-            | Broken::StatementPlan(plan::Error::Internal(what)) => f.write_str(what),
+            Broken::BoundedPlan(plan::Error::Internal(b))
+            | Broken::StatementPlan(plan::Error::Internal(b)) => write!(f, "{b}"),
             Broken::BoundedPlan(e) | Broken::StatementPlan(e) => write!(f, "{e}"),
             Broken::ReindexNoHeaps(rel) => write!(f, "reindex of {rel:?}, which has no heaps"),
             Broken::VacuumNoHeaps(rel) => write!(f, "vacuum of {rel:?}, which has no heaps"),

@@ -14,7 +14,7 @@ use super::{Broken, Broken as B, TermKind, detail};
 #[rustfmt::skip]
 fn expected(b: &Broken) -> &'static str {
     match b {
-        B::BoundedPlan(plan::Error::Internal(_)) | B::StatementPlan(plan::Error::Internal(_)) => "p",
+        B::BoundedPlan(plan::Error::Internal(_)) | B::StatementPlan(plan::Error::Internal(_)) => "a group has a key and rows",
         B::BoundedPlan(_) | B::StatementPlan(_) => "a plan computes a query, not a write",
         B::ReindexNoHeaps(_) => "reindex of RelId(3), which has no heaps",
         B::VacuumNoHeaps(_) => "vacuum of RelId(3), which has no heaps",
@@ -73,7 +73,7 @@ fn each_broken_guarantee_reads_as_its_text() {
             reason: RejectReason::Internal { what: "w".into() },
         })
     };
-    let internal = || plan::Error::Internal("p".into());
+    let internal = || plan::Error::Internal(plan::Broken::GroupFieldMissing);
     let refused = || plan::Error::NotAQuery("a write");
     #[rustfmt::skip]
     let cases = [

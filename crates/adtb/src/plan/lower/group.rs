@@ -4,7 +4,7 @@ use adtb_lang::kernel::{Agg, Kind, Tm, Var};
 use adtb_lang::types::Ty;
 
 use super::{Planner, QueryCx, SET_ROWS, Scope, prepend};
-use crate::plan::{Chain, Error, GroupAgg, Sink, Step};
+use crate::plan::{Broken, Chain, Error, GroupAgg, Sink, Step};
 
 impl Planner<'_> {
     /// Returns the chain for `for g in src do body`, `src` being `group (var in source by by)`,
@@ -42,16 +42,14 @@ impl Planner<'_> {
             fused.retain(|(_, t)| *t);
         }
         let Ty::Record(group_fields) = self.t.var_info(g).ty.clone() else {
-            return Err(Error::Internal(
-                "a group is a record of its key and rows".into(),
-            ));
+            return Err(Broken::GroupNotRecord.into());
         };
         let field_ty = |name: &str| {
             group_fields
                 .iter()
                 .find(|(n, _)| n == name)
                 .map(|(_, t)| t.clone())
-                .ok_or_else(|| Error::Internal("a group has a key and rows".into()))
+                .ok_or(Error::Internal(Broken::GroupFieldMissing))
         };
         loop {
             if fused.is_empty() {

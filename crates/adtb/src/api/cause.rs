@@ -46,8 +46,8 @@ pub(super) enum Broken {
     Lacking(Error),
     Batches(exec::Error),
     NoColumn(Ty),
-    /// An error whose text does not read as a value of the prelude sum `Error`.
-    NoValue(String),
+    /// An error whose value does not read as a value of the prelude sum `Error`.
+    NoValue(Error),
 }
 
 impl fmt::Display for Broken {
@@ -94,7 +94,7 @@ impl fmt::Display for Broken {
             Broken::Lacking(e) => write!(f, "{e:?}"),
             Broken::Batches(e) => write!(f, "{e:?}"),
             Broken::NoColumn(ty) => write!(f, "a result of type {ty:?} has no column"),
-            Broken::NoValue(text) => f.write_str(text),
+            Broken::NoValue(e) => write!(f, "{}", e.value()),
         }
     }
 }
@@ -328,6 +328,13 @@ mod tests {
         ] {
             assert_eq!(0, offences(true, good), "{good}");
         }
+    }
+
+    #[test]
+    fn an_error_with_no_value_reads_as_its_value_text() {
+        let e = super::Error::rejected(super::RejectReason::Cancelled);
+        let text = super::Broken::NoValue(e).to_string();
+        assert_eq!("Rejected { reason: Cancelled }", text);
     }
 
     #[test]

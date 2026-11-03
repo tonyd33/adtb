@@ -3,6 +3,7 @@
 //! [`with_rewrites`] is a hook for tests: while it runs, every unbounded plan its thread makes
 //! applies the rewrites it names in place of the ones its caller passes.
 
+mod broken;
 mod catalog;
 pub mod explain;
 #[cfg(any(test, feature = "plan-fixture"))]
@@ -13,6 +14,7 @@ mod terms;
 #[cfg(test)]
 mod tests;
 
+pub use broken::Broken;
 pub use catalog::{Catalog, Element, HeapId, IndexDesc, IndexId, RelationDesc, declared_elements};
 pub use lower::{plan, plan_bounded};
 pub(crate) use terms::Facts;
@@ -382,8 +384,8 @@ pub enum Error {
     UserCode(String),
     /// The term is a write, a block, a transition read or a history read.
     NotAQuery(&'static str),
-    /// The term breaks the invariant this text names, one the checker or normaliser guarantees.
-    Internal(String),
+    /// The term breaks this guarantee of the checker or normaliser.
+    Internal(Broken),
     /// Under [`plan_bounded`], the term reads `ctors` of `rel` where no index covering them
     /// has leading fields among `fields`, the fields its conditions fix.
     Unbounded {

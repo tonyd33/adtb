@@ -684,12 +684,7 @@ fn a_function_value_in_a_normal_form_is_an_internal_error() {
         Options::default(),
     )
     .map(|_| ());
-    assert_eq!(
-        Err(Error::Internal(
-            "a normal form holds no function value".into()
-        )),
-        got
-    );
+    assert_eq!(Err(Error::Internal(Broken::FunctionValue)), got);
 }
 
 #[test]
@@ -715,10 +710,7 @@ fn a_dereference_of_a_value_that_is_not_a_key_is_an_internal_error() {
         Options::default(),
     )
     .map(|_| ());
-    assert_eq!(
-        Err(Error::Internal("a dereference follows a key".into())),
-        got
-    );
+    assert_eq!(Err(Error::Internal(Broken::DerefNotKey)), got);
 }
 
 /// Returns the bounded plan of `text` over the set parameter `xs` of type `ty`.

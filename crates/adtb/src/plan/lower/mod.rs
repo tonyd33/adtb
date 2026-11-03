@@ -557,9 +557,10 @@ impl Planner<'_> {
                 if let Kind::Var(v) = self.kind(scrutinee)
                     && let Some(c) = known.get(&v) =>
             {
-                let (_, x, arm) = arms.into_iter().find(|(d, _, _)| d == c).ok_or_else(|| {
-                    Error::Internal("a case names the constructor its scrutinee holds".into())
-                })?;
+                let (_, x, arm) = arms
+                    .into_iter()
+                    .find(|(d, _, _)| d == c)
+                    .ok_or(Broken::KnownArmMissing)?;
                 let mut inner = known.clone();
                 inner.insert(x, *c);
                 let arm = self.specialise(arm, &inner, &mut HashMap::new())?;
@@ -802,9 +803,7 @@ impl Planner<'_> {
     fn refuse(&self, t: Tm) -> Result<(), Error> {
         match self.t.kind(t) {
             Kind::Transition(..) => Err(Error::NotAQuery("a read of a statement's transition")),
-            Kind::Lam(..) | Kind::App(..) => Err(Error::Internal(
-                "a normal form holds no function value".into(),
-            )),
+            Kind::Lam(..) | Kind::App(..) => Err(Broken::FunctionValue.into()),
             Kind::Skip
             | Kind::Insert(..)
             | Kind::Delete(..)
@@ -829,9 +828,7 @@ impl Planner<'_> {
         let refused = || Error::UserCode(def.name.clone());
         let parts = normal.aggregates[a as usize].as_ref().ok_or_else(refused)?;
         let (&[st, x], &[fin]) = (parts.step.0.as_slice(), parts.finish.0.as_slice()) else {
-            return Err(Error::Internal(
-                "an aggregate's step takes two values and its finish one".into(),
-            ));
+            return Err(Broken::AggregateArity.into());
         };
         let state = self.import_var(st);
         let value = self.import_var(x);
@@ -1108,9 +1105,10 @@ impl Planner<'_> {
                 && let Kind::Var(v) = self.kind(scrutinee)
                 && let Some(&k) = sc.known.get(&v)
             {
-                let (_, x, arm) = arms.into_iter().find(|(d, _, _)| *d == k).ok_or_else(|| {
-                    Error::Internal("a case names the constructor its scrutinee holds".into())
-                })?;
+                let (_, x, arm) = arms
+                    .into_iter()
+                    .find(|(d, _, _)| *d == k)
+                    .ok_or(Broken::KnownArmMissing)?;
                 steps.push(Step::Bind(x, Eval::Expr(scrutinee)));
                 sc = sc.bind_known(x, Some(k));
                 c = arm;
@@ -1182,15 +1180,11 @@ impl Planner<'_> {
                     && let Kind::Var(v) = self.kind(scrutinee)
                     && let Some(&c) = sc.known.get(&v)
                 {
-                    let (_, x, body) =
-                        arms.iter()
-                            .find(|(d, _, _)| *d == c)
-                            .cloned()
-                            .ok_or_else(|| {
-                                Error::Internal(
-                                    "a case names the constructor its scrutinee holds".into(),
-                                )
-                            })?;
+                    let (_, x, body) = arms
+                        .iter()
+                        .find(|(d, _, _)| *d == c)
+                        .cloned()
+                        .ok_or(Broken::KnownArmMissing)?;
                     let rest = self.chain(body, q, &sc.bind_known(x, Some(c)))?;
                     return Ok(prepend(vec![Step::Bind(x, Eval::Expr(scrutinee))], rest));
                 }
@@ -1219,9 +1213,7 @@ impl Planner<'_> {
     fn elem_ty(&self, set: Tm) -> Result<Ty, Error> {
         match self.t.ty(set) {
             Ty::Set(e) | Ty::NonEmpty(e) => Ok((**e).clone()),
-            other => Err(Error::Internal(format!(
-                "a comprehension ranges over a set, not {other:?}"
-            ))),
+            other => Err(Broken::RangeNotSet(other.clone()).into()),
         }
     }
 

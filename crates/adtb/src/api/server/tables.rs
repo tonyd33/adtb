@@ -550,7 +550,7 @@ impl<'s> Tables<'s> {
         let form = Form::of(self.schema, &ty);
         let text = error.value().to_string();
         parse::<Val>(&text, &form).or_else(|_| {
-            let internal = Error::internal(Broken::NoValue(text.clone()));
+            let internal = Error::internal(Broken::NoValue(error.clone()));
             parse::<Val>(&internal.value().to_string(), &form)
                 .map_err(|_| malformed(format!("the error `{text}` reads as a value")))
         })

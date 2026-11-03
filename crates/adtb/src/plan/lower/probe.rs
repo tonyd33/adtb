@@ -8,8 +8,8 @@ use super::{
     QueryCx, Scope, Span, chain, erase, is_nothing, nothing, prepend, union,
 };
 use crate::plan::{
-    Build, BuildId, Chain, Element, End, Error, IndexDesc, Lookup, Pipeline, RangeBound, Route,
-    Source, Spine, Step,
+    Broken, Build, BuildId, Chain, Element, End, Error, IndexDesc, Lookup, Pipeline, RangeBound,
+    Route, Source, Spine, Step,
 };
 
 /// The rows `x` a probe binds, then `conds` in order, then `rest`.
@@ -22,7 +22,7 @@ struct Then<'a> {
 impl Planner<'_> {
     pub(super) fn lookup(&mut self, key: Tm, row_ty: &Ty) -> Result<Lookup, Error> {
         let Ty::Key { rel, ctors } = self.ty(key) else {
-            return Err(Error::Internal("a dereference follows a key".into()));
+            return Err(Broken::DerefNotKey.into());
         };
         let ctors = match row_ty {
             Ty::Data { ctors: Some(s), .. } => s.clone(),
