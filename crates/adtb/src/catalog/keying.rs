@@ -182,10 +182,9 @@ fn derived<'n>(
     match e {
         Element::Field(f) => Ok(Derived::Path(vec![PathStep::Field(f.clone())])),
         Element::Derived { index, element } => {
-            let missing = || {
-                exec::Error::Internal(format!(
-                    "derived element {element} of index {index} has a normal program"
-                ))
+            let missing = || exec::Broken::NoNormal {
+                index: *index,
+                element: *element,
             };
             let normal = normal.ok_or_else(missing)?;
             let (x, f) = normal

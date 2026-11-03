@@ -1,7 +1,7 @@
 use adtb_lang::schema::{Schema, TypeDefKind};
 use adtb_lang::types::{Base, RelId, Ty};
 
-use super::Error;
+use super::{Broken, Error};
 
 /// Returns `ty` with every newtype at its top replaced by its representation.
 pub fn repr(schema: &Schema, ty: &Ty) -> Ty {
@@ -67,9 +67,11 @@ impl At {
     pub fn of(&self, ctor: u32) -> Result<usize, Error> {
         match self {
             At::Fixed(i) => Ok(*i),
-            At::ByCtor(at) => at.get(ctor as usize).copied().flatten().ok_or_else(|| {
-                Error::Internal(format!("constructor {ctor} of the type has the field"))
-            }),
+            At::ByCtor(at) => at
+                .get(ctor as usize)
+                .copied()
+                .flatten()
+                .ok_or_else(|| Broken::CtorLacksField(ctor).into()),
         }
     }
 }
@@ -79,9 +81,13 @@ impl At {
 /// set is empty holds no value, and the field lies at no constructor.
 pub fn field(schema: &Schema, ty: &Ty, name: &str) -> Result<At, Error> {
     if let Ty::Record(fs) = repr(schema, ty) {
-        let i = fs.iter().position(|(n, _)| n == name).ok_or_else(|| {
-            Error::Internal(format!("a record of type {ty:?} has field `{name}`"))
-        })?;
+        let i = fs
+            .iter()
+            .position(|(n, _)| n == name)
+            .ok_or_else(|| Broken::RecordLacksField {
+                ty: ty.clone(),
+                name: name.into(),
+            })?;
         return Ok(At::Fixed(i));
     }
     let cs = ctors(schema, ty)
@@ -92,9 +98,11 @@ pub fn field(schema: &Schema, ty: &Ty, name: &str) -> Result<At, Error> {
         at[c as usize] = cs[c as usize].iter().position(|(n, _)| n == name);
     }
     if !set.is_empty() && set.iter().all(|&c| at[c as usize].is_none()) {
-        return Err(Error::Internal(format!(
-            "some constructor of {ty:?} has field `{name}`"
-        )));
+        return Err(Broken::NoCtorHasField {
+            ty: ty.clone(),
+            name: name.into(),
+        }
+        .into());
     }
     let first = set.first().and_then(|&c| at[c as usize]);
     let fixed = set.iter().all(|&c| at[c as usize] == first);

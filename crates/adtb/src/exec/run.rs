@@ -23,7 +23,7 @@ use super::sched::Scheduler;
 use super::spill::{Distinct, Spill};
 use super::store::{Named, ProbeBounds, Store, from_stored, to_key};
 use super::value::Val;
-use super::{Error, Exceeded, Fault, Options};
+use super::{Broken, Error, Exceeded, Fault, Options};
 
 /// Everything the evaluations of one statement share.
 pub struct Ctx<R: Runtime> {
@@ -317,9 +317,7 @@ impl<R: Runtime> Ctx<R> {
     /// thread.
     fn at(self: &Arc<Self>, a: &At, point: &Val, env: &Frame) -> Result<Val, Error> {
         let Some(past) = &self.store.past else {
-            return Err(Error::Internal(
-                "a read of the past holds no other read of the past".into(),
-            ));
+            return Err(Broken::NestedPast.into());
         };
         let store = past.store(point, a.instant, a.pins, &a.heaps)?;
         let cx = Arc::new(Ctx {

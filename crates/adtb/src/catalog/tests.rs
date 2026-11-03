@@ -653,10 +653,11 @@ fn an_index_path_naming_no_field_is_internal() {
     let (sa, _, r, _) = gaining_a_field();
     let path = [adtb_lang::kernel::PathStep::Field("missing".into())];
     let got = super::rows::path_steps(&sa, r, 0, &path);
-    assert!(
-        matches!(got, Err(crate::exec::Error::Internal(_))),
-        "{got:?}"
-    );
+    let want = crate::exec::Broken::PathRowField {
+        path: path.to_vec(),
+        field: "missing".into(),
+    };
+    assert_eq!(Err(want.into()), got.map(|_| ()));
 }
 
 #[test]
@@ -683,16 +684,14 @@ fn a_derived_index_element_without_the_normal_program_is_internal() {
         index: 0,
         element: 0,
     }];
+    let none = crate::exec::Broken::NoNormal {
+        index: 0,
+        element: 0,
+    };
     let got = super::IndexKeys::new(&sa, None, r, &[0], &elements);
-    assert!(
-        matches!(got, Err(crate::exec::Error::Internal(_))),
-        "{got:?}"
-    );
+    assert_eq!(Some(none.clone().into()), got.err());
     let got = super::element_types(&sa, None, r, 0, &elements);
-    assert!(
-        matches!(got, Err(crate::exec::Error::Internal(_))),
-        "{got:?}"
-    );
+    assert_eq!(Err(none.into()), got);
 }
 
 #[test]

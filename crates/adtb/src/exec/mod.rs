@@ -1,5 +1,6 @@
 //! Compile physical plans and run them on morsels of batches.
 
+mod broken;
 mod code;
 mod frame;
 mod host;
@@ -20,6 +21,7 @@ mod wide;
 #[cfg(test)]
 mod tests;
 
+pub use broken::Broken;
 pub(crate) use host::canonical;
 pub use host::{HostBody, HostCall, HostError, Hosts};
 pub use ir::{Program, compile};
@@ -142,8 +144,8 @@ pub enum Error {
     /// The evaluation reached a host function whose body is bound at another version than its
     /// declaration names; the name the body is registered under.
     OtherVersion(String),
-    /// The plan or a value breaks the invariant this text names, one the checker guarantees.
-    Internal(String),
+    /// The plan or a value breaks an invariant the checker guarantees.
+    Internal(Box<Broken>),
     /// A read of the past names a state the engine keeps no history of; `oldest` is the oldest
     /// position a read may name.
     HistoryUnavailable {
@@ -170,7 +172,7 @@ impl From<crate::heap::OrphanEntry> for Error {
 
 impl From<PrintError> for Error {
     fn from(e: PrintError) -> Error {
-        Error::Internal(e.message)
+        Broken::Print(e).into()
     }
 }
 
@@ -217,7 +219,7 @@ impl Scalar {
 fn arm<T>(arms: &[Option<T>], c: u32) -> Result<&T, Error> {
     arms.get(c as usize)
         .and_then(Option::as_ref)
-        .ok_or_else(|| Error::Internal(format!("a case has an arm for constructor {c}")))
+        .ok_or_else(|| Broken::NoArm(c).into())
 }
 
 /// Bounds and sizes of one statement's execution.
@@ -344,9 +346,7 @@ pub fn batches(
         Val::Set(s) => s.iter().collect(),
         Val::List(xs) => xs.iter().collect(),
         other => {
-            return Err(Error::Internal(format!(
-                "a result in batches is a set or a list, found {other:?}"
-            )));
+            return Err(Broken::NotBatchable(other.clone()).into());
         }
     };
     elems
@@ -366,16 +366,20 @@ pub fn batches(
 }
 
 fn mistyped(v: &Val, t: &batch::Type) -> Error {
-    value::mistyped(&format!("a value of batch type {t:?}"), v)
+    Broken::NotBatchTyped {
+        value: v.clone(),
+        ty: t.clone(),
+    }
+    .into()
 }
 
 fn data(ts: &[batch::Type], vs: &[Val]) -> Result<Vec<Datum>, Error> {
     if ts.len() != vs.len() {
-        return Err(Error::Internal(format!(
-            "{vs:?} has {} fields, its batch type {ts:?} has {}",
-            vs.len(),
-            ts.len()
-        )));
+        return Err(Broken::FieldCount {
+            values: vs.to_vec(),
+            types: ts.to_vec(),
+        }
+        .into());
     }
     ts.iter().zip(vs).map(|(t, x)| datum(t, x)).collect()
 }

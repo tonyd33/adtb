@@ -18,10 +18,10 @@ use crate::runtime::Runtime;
 use crate::storage::{PageError, Pager, Pid, Quarantine};
 use adtb_sys::lock::Lock;
 
-use super::Error;
 use super::memory::{Arena, Grant};
 use super::types::{ctors, repr};
 use super::value::{F32, F64, Val};
+use super::{Broken, Error};
 
 /// An index entry a probe found: the constructor position and TID it names, and the entry when an
 /// index rather than a heap scan answered.
@@ -950,6 +950,12 @@ fn scalar(v: &Value) -> Val {
 
 /// Returns `v` as a heap stores a field of type `t`.
 pub fn to_stored(t: &FieldType, v: &Val) -> Result<Value, Error> {
+    let not = || {
+        Error::from(Broken::NotStored {
+            value: v.clone(),
+            ty: t.clone(),
+        })
+    };
     Ok(match (t, v) {
         (FieldType::Scalar(s), v) => scalar_key(*s, v)?,
         (FieldType::Record(ts), Val::Ctor(_, fs) | Val::Record(fs)) => Value::Record(
@@ -962,19 +968,25 @@ pub fn to_stored(t: &FieldType, v: &Val) -> Result<Value, Error> {
             ctor: *c,
             fields: cs
                 .get(*c as usize)
-                .ok_or_else(|| not_stored(v, t))?
+                .ok_or_else(not)?
                 .fields
                 .iter()
                 .zip(fs.iter())
                 .map(|(t, v)| to_stored(t, v))
                 .collect::<Result<_, _>>()?,
         },
-        (t, v) => return Err(not_stored(v, t)),
+        _ => return Err(not()),
     })
 }
 
 /// Returns `v` as a value of key type `t`.
 pub fn to_key(t: &KeyType, v: &Val) -> Result<Value, Error> {
+    let not = || {
+        Error::from(Broken::NotKeyed {
+            value: v.clone(),
+            ty: t.clone(),
+        })
+    };
     Ok(match (t, v) {
         (KeyType::Scalar(s), v) => scalar_key(*s, v)?,
         (KeyType::Record(ts), Val::Ctor(_, fs) | Val::Record(fs)) => Value::Record(
@@ -995,7 +1007,7 @@ pub fn to_key(t: &KeyType, v: &Val) -> Result<Value, Error> {
             fields: s
                 .ctors()
                 .get(*c as usize)
-                .ok_or_else(|| not_stored(v, t))?
+                .ok_or_else(not)?
                 .fields
                 .iter()
                 .zip(fs.iter())
@@ -1007,7 +1019,7 @@ pub fn to_key(t: &KeyType, v: &Val) -> Result<Value, Error> {
             fields: s
                 .ctors()
                 .get(*c as usize)
-                .ok_or_else(|| not_stored(v, t))?
+                .ok_or_else(not)?
                 .1
                 .fields()
                 .iter()
@@ -1015,7 +1027,7 @@ pub fn to_key(t: &KeyType, v: &Val) -> Result<Value, Error> {
                 .map(|((_, t), v)| to_key(t, v))
                 .collect::<Result<_, _>>()?,
         },
-        (t, v) => return Err(not_stored(v, t)),
+        _ => return Err(not()),
     })
 }
 
@@ -1044,10 +1056,12 @@ fn scalar_key(s: Scalar, v: &Val) -> Result<Value, Error> {
             months: *months,
             days: *days,
         },
-        (s, v) => return Err(not_stored(v, s)),
+        (scalar, v) => {
+            return Err(Broken::NotScalar {
+                value: v.clone(),
+                scalar,
+            }
+            .into());
+        }
     })
-}
-
-fn not_stored(v: &Val, t: impl std::fmt::Debug) -> Error {
-    Error::Internal(format!("{v:?} is not a value of {t:?}"))
 }

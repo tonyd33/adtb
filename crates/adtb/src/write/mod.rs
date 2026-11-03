@@ -133,6 +133,8 @@ pub enum Error {
     SequenceExhausted,
     /// The plan or a value breaks the invariant this text names, one the checker guarantees.
     Internal(String),
+    /// The executor breaks an invariant the checker guarantees.
+    Exec(Box<exec::Broken>),
     /// The schema has a constraint without an index-bounded incremental check; each constraint
     /// refused, with why.
     Refused(Vec<(String, String)>),
@@ -268,10 +270,10 @@ impl From<exec::Error> for Error {
             exec::Error::Cancelled => Error::Cancelled,
             exec::Error::DeadlineExceeded => Error::DeadlineExceeded,
             exec::Error::MissingFunction(name) => Error::MissingFunction(name),
-            exec::Error::OtherVersion(name) => Error::Internal(format!(
-                "host function `{name}` is bound at the version its declaration names"
-            )),
-            exec::Error::Internal(what) => Error::Internal(what),
+            exec::Error::OtherVersion(name) => {
+                Error::Exec(Box::new(exec::Broken::OtherVersion(name)))
+            }
+            exec::Error::Internal(b) => Error::Exec(b),
             exec::Error::HistoryUnavailable { oldest } => Error::HistoryUnavailable { oldest },
             exec::Error::WrongVersion { version } => Error::WrongVersion { version },
         }

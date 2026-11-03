@@ -116,7 +116,7 @@ impl fmt::Display for Broken {
             Broken::NotNormal(e) => write!(f, "a checked schema normalises: {e:?}"),
             Broken::StoredNotNormal(e) => write!(f, "the schema normalises: {e:?}"),
             Broken::Plan(e) => write!(f, "{e}"),
-            Broken::IndexKey(exec::Error::Internal(why)) => f.write_str(why),
+            Broken::IndexKey(exec::Error::Internal(why)) => write!(f, "{why}"),
             Broken::IndexKey(e) => write!(f, "an index key evaluates: {e:?}"),
             Broken::Validation(e) => write!(f, "{e:?}"),
             Broken::NotASet(v) => write!(f, "a constraint returns a set, found {v:?}"),

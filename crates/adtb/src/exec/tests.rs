@@ -19,7 +19,7 @@ use super::spill::{put, record};
 use super::types::At;
 use super::value::{F32, F64, Val};
 use super::wide::{Wide, cmp_decimal};
-use super::{Budget, Error, Exceeded, Fault, arm, to_key, to_stored};
+use super::{Broken, Budget, Error, Exceeded, Fault, arm, to_key, to_stored};
 use crate::heap::FieldType;
 use crate::key::{KeyType, Scalar};
 
@@ -442,14 +442,14 @@ fn zone_rules_repeat_past_the_range_they_are_tabled_for() {
     );
 }
 
-fn broken<T: std::fmt::Debug>(r: Result<T, Error>) -> String {
+fn broken<T: std::fmt::Debug>(r: Result<T, Error>) -> Broken {
     match r {
-        Err(Error::Internal(what)) => what,
+        Err(Error::Internal(what)) => *what,
         other => panic!("{other:?} is not an internal error"),
     }
 }
 
-fn broken_op(op: Op, xs: &[Val]) -> String {
+fn broken_op(op: Op, xs: &[Val]) -> Broken {
     let refs: Vec<&Val> = xs.iter().collect();
     broken(apply(&op, &refs))
 }
@@ -509,35 +509,43 @@ fn a_primitive_of_mistyped_operands_is_an_internal_error() {
     ];
     for (op, xs, want) in cases {
         let what = broken_op(op.clone(), &xs);
-        assert!(
-            what.starts_with(&format!("a primitive's operands are {want}, found ")),
-            "{op:?} of {xs:?}: {what}"
-        );
+        let named = match &what {
+            Broken::Operand { want: w, found } => *w == want && xs.contains(found),
+            Broken::Operands { want: w, found } => {
+                *w == want && *found == (xs[0].clone(), xs[1].clone())
+            }
+            _ => false,
+        };
+        assert!(named, "{op:?} of {xs:?}: {what}");
     }
 }
 
 #[test]
 fn a_checked_primitive_of_mistyped_operands_is_an_internal_error_not_none() {
     let op = Op::Checked(Box::new(Op::Int(Arith::Div, Width::I64)));
-    let what = broken_op(op, &[Val::text("a"), Val::Int(0)]);
-    assert!(what.contains("an integer"), "{what}");
+    let found = Val::text("a");
+    let what = broken_op(op, &[found.clone(), Val::Int(0)]);
+    assert_eq!(
+        Broken::Operand {
+            want: "an integer",
+            found
+        },
+        what
+    );
 }
 
 #[test]
 fn an_aggregate_over_mistyped_members_is_an_internal_error() {
     let cases = [
-        (AggOp::SumInt(Base::I64), vec![Val::text("a")]),
-        (AggOp::SumDecimal, vec![Val::Int(1)]),
-        (AggOp::SumF32, vec![Val::Int(1)]),
-        (AggOp::SumF64, vec![Val::Int(1)]),
-        (AggOp::AvgF64 { wrap: true }, vec![Val::Int(1)]),
+        (AggOp::SumInt(Base::I64), Val::text("a"), "integers"),
+        (AggOp::SumDecimal, Val::Int(1), "decimals"),
+        (AggOp::SumF32, Val::Int(1), "floats"),
+        (AggOp::SumF64, Val::Int(1), "floats"),
+        (AggOp::AvgF64 { wrap: true }, Val::Int(1), "floats"),
     ];
-    for (op, ms) in cases {
-        let what = broken(aggregate(op, ms.clone()));
-        assert!(
-            what.starts_with("an aggregate's range binds "),
-            "{op:?} over {ms:?}: {what}"
-        );
+    for (op, found, want) in cases {
+        let what = broken(aggregate(op, vec![found.clone()]));
+        assert_eq!(Broken::Ranged { want, found }, what, "{op:?}");
     }
 }
 
@@ -549,7 +557,7 @@ fn an_aggregate_that_is_not_an_option_over_no_members_is_an_internal_error() {
         AggOp::AvgF64 { wrap: false },
     ] {
         assert_eq!(
-            "an aggregate that is not an Option ranges over a nonempty range",
+            Broken::EmptyRange,
             broken(aggregate(op, Vec::new())),
             "{op:?}"
         );
@@ -564,40 +572,49 @@ fn an_aggregate_that_is_not_an_option_over_no_members_is_an_internal_error() {
 fn a_field_of_a_constructor_without_it_is_an_internal_error() {
     let at = At::ByCtor(vec![Some(0), None]);
     assert_eq!(Ok(0), at.of(0));
-    assert_eq!("constructor 1 of the type has the field", broken(at.of(1)));
-    assert_eq!("constructor 7 of the type has the field", broken(at.of(7)));
+    assert_eq!(Broken::CtorLacksField(1), broken(at.of(1)));
+    assert_eq!(Broken::CtorLacksField(7), broken(at.of(7)));
 }
 
 #[test]
 fn a_case_without_an_arm_for_the_scrutinee_is_an_internal_error() {
     let arms = [Some('a'), None];
     assert_eq!(Ok(&'a'), arm(&arms, 0));
-    assert_eq!("a case has an arm for constructor 1", broken(arm(&arms, 1)));
-    assert_eq!("a case has an arm for constructor 9", broken(arm(&arms, 9)));
+    assert_eq!(Broken::NoArm(1), broken(arm(&arms, 1)));
+    assert_eq!(Broken::NoArm(9), broken(arm(&arms, 9)));
 }
 
 #[test]
 fn a_stored_or_key_value_of_another_type_is_an_internal_error() {
-    let what = broken(to_key(&KeyType::Scalar(Scalar::I64), &Val::text("a")));
-    assert!(what.contains("is not a value of"), "{what}");
-    let what = broken(to_stored(&FieldType::Scalar(Scalar::Text), &Val::Int(1)));
-    assert!(what.contains("is not a value of"), "{what}");
-    let what = broken(to_stored(&FieldType::Sum(Vec::new()), &Val::tag(3)));
-    assert!(what.contains("is not a value of"), "{what}");
+    let (text, one, tag) = (Val::text("a"), Val::Int(1), Val::tag(3));
+    let not = |value, scalar| Broken::NotScalar { value, scalar };
+    assert_eq!(
+        not(text.clone(), Scalar::I64),
+        broken(to_key(&KeyType::Scalar(Scalar::I64), &text))
+    );
+    assert_eq!(
+        not(one.clone(), Scalar::Text),
+        broken(to_stored(&FieldType::Scalar(Scalar::Text), &one))
+    );
+    let ty = FieldType::Sum(Vec::new());
+    let what = broken(to_stored(&ty, &tag));
+    assert_eq!(Broken::NotStored { value: tag, ty }, what);
 }
 
 #[test]
 fn printing_a_value_not_of_its_form_is_an_internal_error() {
+    let printed =
+        |what: Broken, is: &str| matches!(what, Broken::Print(e) if e.message.contains(is));
     let what = broken_op(Op::Print(Arc::new(Form::Base(Base::Text))), &[Val::Int(1)]);
-    assert!(what.contains("is text"), "{what}");
+    assert!(printed(what, "is text"));
     let what = broken_op(Op::ToText(Arc::new(Form::Uuid)), &[Val::Int(1)]);
-    assert!(what.contains("is bytes"), "{what}");
+    assert!(printed(what, "is bytes"));
     let set = Form::Set {
         elem: Box::new(Form::Base(Base::I64)),
         nonempty: false,
     };
     let what = broken_op(Op::Print(Arc::new(set)), &[Val::Int(1)]);
-    assert!(what.contains("is a set"), "{what}");
+    assert!(printed(what, "is a set"));
 }
 
 #[test]
@@ -615,8 +632,8 @@ fn an_ordered_result_prints_its_elements_in_its_order() {
 
 #[test]
 fn an_internal_error_fails_the_statement_and_keeps_the_transaction() {
-    let e = crate::write::Error::from(Error::Internal("an invariant".into()));
-    assert_eq!(crate::write::Error::Internal("an invariant".into()), e);
+    let e = crate::write::Error::from(Error::from(Broken::Unreachable));
+    assert_eq!(crate::write::Error::Exec(Box::new(Broken::Unreachable)), e);
     assert!(!e.ends_transaction());
 }
 
@@ -659,10 +676,7 @@ fn evaluating_unreachable_is_an_internal_error() {
     let schema = empty_schema();
     let mut terms = Terms::default();
     let t = terms.add(Kind::Unreachable, Ty::Base(Base::I64));
-    assert_eq!(
-        "an evaluation reaches no `Unreachable`",
-        broken(eval_term(&schema, &terms, t))
-    );
+    assert_eq!(Broken::Unreachable, broken(eval_term(&schema, &terms, t)));
 }
 
 #[test]
@@ -671,10 +685,7 @@ fn a_reject_of_a_value_that_is_not_text_is_an_internal_error() {
     let mut terms = Terms::default();
     let m = terms.add(Kind::Const(Const::Int(1)), Ty::Base(Base::I64));
     let t = terms.add(Kind::Reject(m), Ty::Base(Base::I64));
-    assert_eq!(
-        "`reject` takes a Text",
-        broken(eval_term(&schema, &terms, t))
-    );
+    assert_eq!(Broken::RejectNotText, broken(eval_term(&schema, &terms, t)));
 }
 
 #[test]
@@ -683,7 +694,7 @@ fn a_literal_outside_its_type_is_an_internal_error() {
     let mut terms = Terms::default();
     let t = terms.add(Kind::Const(Const::Int(i128::MAX)), Ty::Base(Base::I64));
     assert_eq!(
-        "an integer literal fits its type",
+        Broken::IntegerLiteral,
         broken(eval_term(&schema, &terms, t))
     );
 }
@@ -695,18 +706,22 @@ fn a_key_of_a_term_that_is_not_a_key_type_is_an_internal_error() {
     let x = terms.add(Kind::Const(Const::Int(1)), Ty::Base(Base::I64));
     let t = terms.add(Kind::Key(x), Ty::Base(Base::I64));
     let what = broken(eval_term(&schema, &terms, t));
-    assert!(what.starts_with("`key` has a key type"), "{what}");
+    assert_eq!(Broken::KeyNotKeyTyped(Ty::Base(Base::I64)), what);
 }
 
 #[test]
 fn an_accessor_of_a_mistyped_value_is_an_internal_error() {
     let one = Val::Int(1);
-    assert!(broken(one.truth()).contains("a Bool"));
-    assert!(broken(Val::tag(2).truth()).contains("a Bool"));
-    assert!(broken(one.ctor_of()).contains("a constructor value"));
-    assert!(broken(one.fields()).contains("a value with fields"));
-    assert!(broken(one.as_set()).contains("a set"));
-    assert!(broken(Val::text("1").int()).contains("an integer"));
+    let m = |want, found| Broken::Mistyped { want, found };
+    assert_eq!(m("a Bool", one.clone()), broken(one.truth()));
+    assert_eq!(m("a Bool", Val::tag(2)), broken(Val::tag(2).truth()));
+    assert_eq!(m("a constructor value", one.clone()), broken(one.ctor_of()));
+    assert_eq!(m("a value with fields", one.clone()), broken(one.fields()));
+    assert_eq!(m("a set", one.clone()), broken(one.as_set()));
+    assert_eq!(
+        m("an integer", Val::text("1")),
+        broken(Val::text("1").int())
+    );
 }
 
 #[test]
@@ -717,7 +732,14 @@ fn a_condition_or_scrutinee_that_is_not_a_constructor_is_an_internal_error() {
     let c = terms.add(Kind::Const(Const::Int(1)), int.clone());
     let a = terms.add(Kind::Const(Const::Int(2)), int.clone());
     let t = terms.add(Kind::If(c, a, a), int.clone());
-    assert!(broken(eval_term(&schema, &terms, t)).contains("a Bool"));
+    let m = |want| Broken::Mistyped {
+        want,
+        found: Val::Int(1),
+    };
+    assert_eq!(m("a Bool"), broken(eval_term(&schema, &terms, t)));
     let tag = terms.add(Kind::Tag(c), int);
-    assert!(broken(eval_term(&schema, &terms, tag)).contains("a constructor value"));
+    assert_eq!(
+        m("a constructor value"),
+        broken(eval_term(&schema, &terms, tag))
+    );
 }

@@ -366,6 +366,7 @@ impl Error {
                 Error::invalid("the generated counter exhausted its integer range")
             }
             write::Error::Internal(what) => Error::internal(Broken::Write(what)),
+            write::Error::Exec(b) => Error::internal(Broken::Exec(*b)),
             write::Error::Blocked { on, .. } => Error::internal(Broken::Suspended(on)),
             write::Error::HistoryUnavailable { oldest } => {
                 Error::rejected(RejectReason::HistoryUnavailable {

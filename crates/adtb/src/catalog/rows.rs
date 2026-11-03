@@ -8,7 +8,7 @@ use adtb_lang::schema::{IndexDef, Schema, Stage, TypeDefKind, field_path};
 use adtb_lang::span::Span;
 use adtb_lang::types::{RelId, Ty, TypeId};
 
-use crate::exec;
+use crate::exec::{self, Broken};
 use crate::key::Value;
 use crate::plan::{Element, declared_elements};
 
@@ -283,7 +283,7 @@ pub fn indexed_fields(def: &IndexDef) -> Option<Vec<String>> {
 
 /// One step of a field path through a row: a field by its position, or the constructor by its
 /// position that the value the steps before it reach must hold.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
     Field(usize),
     Ctor(u32),
@@ -299,15 +299,21 @@ pub fn path_steps(
     c: u32,
     path: &[PathStep],
 ) -> Result<(Vec<Step>, Ty), exec::Error> {
-    let broken = |why: String| exec::Error::Internal(format!("an index path {why}: {path:?}"));
     let Some((PathStep::Field(first), rest)) = path.split_first() else {
-        return Err(broken("starts at a field".into()));
+        return Err(Broken::PathStart(path.to_vec()).into());
+    };
+    let reached = |field: &str| Broken::PathValueField {
+        path: path.to_vec(),
+        field: field.into(),
     };
     let row = layout::row(schema, r, c);
     let at = row
         .iter()
         .position(|(n, _)| n == first)
-        .ok_or_else(|| broken(format!("names a field `{first}` of the row")))?;
+        .ok_or_else(|| Broken::PathRowField {
+            path: path.to_vec(),
+            field: first.clone(),
+        })?;
     let mut steps = vec![Step::Field(at)];
     let mut ty = row[at].1.clone();
     let mut fields: Option<Vec<(String, Ty)>> = None;
@@ -317,7 +323,11 @@ pub fn path_steps(
                 steps.push(Step::Ctor(*k));
                 let mut ctors = layout::ctors(schema, &layout::repr(schema, &ty));
                 if *k as usize >= ctors.len() {
-                    return Err(broken(format!("names a constructor {k} of the value")));
+                    return Err(Broken::PathCtor {
+                        path: path.to_vec(),
+                        ctor: *k,
+                    }
+                    .into());
                 }
                 fields = Some(ctors.swap_remove(*k as usize).1);
                 continue;
@@ -330,14 +340,14 @@ pub fn path_steps(
                 Ty::Record(fs) => fs,
                 t => match layout::ctors(schema, &t).into_iter().next() {
                     Some((_, fs)) => fs,
-                    None => return Err(broken(format!("reaches a value with field `{name}`"))),
+                    None => return Err(reached(name).into()),
                 },
             },
         };
         let at = fs
             .iter()
             .position(|(n, _)| n == name)
-            .ok_or_else(|| broken(format!("reaches a value with field `{name}`")))?;
+            .ok_or_else(|| reached(name))?;
         steps.push(Step::Field(at));
         ty = fs[at].1.clone();
     }
@@ -355,9 +365,7 @@ pub fn at_path<'v>(row: &'v [Value], steps: &[Step]) -> Result<Option<&'v Value>
         return Ok(None);
     };
     let Step::Field(i) = first else {
-        return Err(exec::Error::Internal(format!(
-            "index path steps start at a field: {steps:?}"
-        )));
+        return Err(Broken::StepsStart(steps.to_vec()).into());
     };
     let mut at = row.get(*i).ok_or_else(corrupt)?;
     for step in rest {

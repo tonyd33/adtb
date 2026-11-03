@@ -104,9 +104,7 @@ pub(super) struct Pasts<R: Runtime> {
 /// have it.
 pub(crate) fn position(v: &Val) -> Result<Option<Position>, exec::Error> {
     let [Val::Int(epoch), Val::Int(lsn)] = v.fields()? else {
-        return Err(exec::Error::Internal(format!(
-            "a position is an epoch and an LSN, found {v:?}"
-        )));
+        return Err(exec::Broken::NotPosition(v.clone()).into());
     };
     Ok(u64::try_from(*epoch)
         .ok()
@@ -135,9 +133,7 @@ impl<R: Runtime> Pasts<R> {
         let pinned = match (instant, at) {
             (true, Val::Instant(t)) => self.txns.pin_time(&self.pager, wall(*t), self.upto),
             (true, other) => {
-                return Err(exec::Error::Internal(format!(
-                    "an `at instant` names an instant, found {other:?}"
-                )));
+                return Err(exec::Broken::NotInstant(other.clone()).into());
             }
             (false, p) => match position(p)? {
                 Some(p) => self.txns.pin(&self.pager, p, self.upto),

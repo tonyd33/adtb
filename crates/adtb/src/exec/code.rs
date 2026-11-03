@@ -16,7 +16,7 @@ use super::prim::{self, Op};
 use super::store::conv;
 use super::types::{At, base, ctors, field, key_fields, repr};
 use super::value::{F32, F64, Val};
-use super::{Error, Fault};
+use super::{Broken, Error, Fault};
 
 /// An operand of an instruction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -513,15 +513,13 @@ impl Code {
                 Ins::Reject { msg } => {
                     if let Some(&r) = sel.first() {
                         let Val::Text(t) = self.get(*msg, f, regs, r) else {
-                            return Err(Error::Internal("`reject` takes a Text".into()));
+                            return Err(Broken::RejectNotText.into());
                         };
                         return Err(Error::Rejected(t.to_string()));
                     }
                 }
                 Ins::Unreachable => {
-                    return Err(Error::Internal(
-                        "an evaluation reaches no `Unreachable`".into(),
-                    ));
+                    return Err(Broken::Unreachable.into());
                 }
             }
         }
@@ -628,14 +626,11 @@ impl<'a> Compiler<'a> {
         Ok(match (c, b) {
             (Const::Int(i), Some(Base::Decimal(s))) => Val::Decimal(
                 i.checked_mul(10i128.pow(u32::from(s)))
-                    .ok_or_else(|| Error::Internal("a decimal literal fits its type".into()))?,
+                    .ok_or(Broken::DecimalLiteral)?,
             ),
             (Const::Int(i), Some(Base::F32)) => Val::F32(F32::new(*i as f32)),
             (Const::Int(i), Some(Base::F64)) => Val::F64(F64::new(*i as f64)),
-            (Const::Int(i), _) => Val::Int(
-                i64::try_from(*i)
-                    .map_err(|_| Error::Internal("an integer literal fits its type".into()))?,
-            ),
+            (Const::Int(i), _) => Val::Int(i64::try_from(*i).map_err(|_| Broken::IntegerLiteral)?),
             (Const::Decimal(d), _) => Val::Decimal(*d),
             (Const::Float(x), Some(Base::F32)) => Val::F32(F32::new(*x as f32)),
             (Const::Float(x), _) => Val::F64(F64::new(*x)),
@@ -696,7 +691,7 @@ impl<'a> Compiler<'a> {
                     .collect::<Result<_, Error>>()?;
                 let order = match repr(self.schema, ty) {
                     Ty::Data { .. } => ctors(self.schema, ty)
-                        .ok_or_else(|| Error::Internal("a constructor's type is a sum".into()))?
+                        .ok_or(Broken::CtorNotSum)?
                         .swap_remove(*ctor as usize)
                         .into_iter()
                         .map(|(n, _)| n)
@@ -710,9 +705,7 @@ impl<'a> Compiler<'a> {
                             .iter()
                             .find(|(g, _)| g == n)
                             .map(|(_, o)| *o)
-                            .ok_or_else(|| {
-                                Error::Internal(format!("constructor field `{n}` is given"))
-                            })
+                            .ok_or_else(|| Broken::CtorField(n.clone()).into())
                     })
                     .collect::<Result<_, Error>>()?;
                 let dst = e.reg();
@@ -732,9 +725,7 @@ impl<'a> Compiler<'a> {
             }
             Kind::Key(x) => {
                 let Ty::Key { rel, .. } = ty else {
-                    return Err(Error::Internal(format!(
-                        "`key` has a key type, found {ty:?}"
-                    )));
+                    return Err(Broken::KeyNotKeyTyped(ty.clone()).into());
                 };
                 let (at, single) = key_fields(self.schema, *rel, self.terms.ty(*x))?;
                 let src = self.expr(e, ins, *x)?;
@@ -770,7 +761,7 @@ impl<'a> Compiler<'a> {
             }
             Kind::Restrict(x, set) => {
                 let elem = super::types::elem(self.schema, self.terms.ty(*x))
-                    .ok_or_else(|| Error::Internal("a restriction is of a set".into()))?;
+                    .ok_or(Broken::RestrictNotSet)?;
                 let n = ctors(self.schema, &elem).map_or(0, |c| c.len());
                 let mut keep = vec![false; n];
                 for c in set {

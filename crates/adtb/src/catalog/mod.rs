@@ -61,7 +61,7 @@ pub use layout::OrderKeys;
 pub use oplog::{Hash, try_version_hash, version_hash};
 pub use readers::{PendingDrop, Read, Reader, source_at, stale};
 pub(crate) use root::Changing;
-pub use rows::{IndexSpec, Rows, applied, declared, indexed_fields, indexes};
+pub use rows::{IndexSpec, Rows, Step, applied, declared, indexed_fields, indexes};
 pub use validate::Denial;
 
 use change::Data;

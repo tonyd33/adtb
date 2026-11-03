@@ -13,7 +13,7 @@ use super::run::{Ctx, holding};
 use super::spill::Distinct;
 use super::value::{F32, F64, Val};
 use super::wide::Wide;
-use super::{Error, Fault};
+use super::{Broken, Error, Fault};
 
 fn fits(b: Base, v: i128) -> Option<i64> {
     let (lo, hi): (i128, i128) = match b {
@@ -25,8 +25,12 @@ fn fits(b: Base, v: i128) -> Option<i64> {
     (lo..=hi).contains(&v).then_some(v as i64)
 }
 
-fn mistyped(want: &str, v: &Val) -> Error {
-    Error::Internal(format!("an aggregate's range binds {want}, found {v:?}"))
+fn mistyped(want: &'static str, v: &Val) -> Error {
+    Broken::Ranged {
+        want,
+        found: v.clone(),
+    }
+    .into()
 }
 
 fn float(v: &Val) -> Result<f64, Error> {
@@ -103,9 +107,7 @@ impl Acc {
             (true, Some(v)) => Ok(Val::some(v)),
             (true, None) => Ok(Val::none()),
             (false, Some(v)) => Ok(v),
-            (false, None) => Err(Error::Internal(
-                "an aggregate that is not an Option ranges over a nonempty range".into(),
-            )),
+            (false, None) => Err(Broken::EmptyRange.into()),
         };
         let n = self.n;
         match self.op {

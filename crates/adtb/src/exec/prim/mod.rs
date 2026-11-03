@@ -9,7 +9,7 @@ use adtb_lang::types::{Base, Ty};
 use super::types::{base, option_arg};
 use super::value::{F32, F64, Val};
 use super::wide::{Wide, cmp_decimal, rescaled};
-use super::{Error, Fault};
+use super::{Broken, Error, Fault};
 
 mod num;
 mod syntax;
@@ -226,8 +226,7 @@ pub fn choose(
             | Prim::CheckedNeg
     );
     let result = if checked {
-        option_arg(schema, ty)
-            .ok_or_else(|| Error::Internal("a checked primitive returns an Option".into()))?
+        option_arg(schema, ty).ok_or(Broken::CheckedNotOption)?
     } else {
         ty.clone()
     };
@@ -258,9 +257,7 @@ fn arith_op(schema: &Schema, p: Prim, a: Arith, args: &[Ty], result: &Ty) -> Res
     let arg = |i: usize| args.get(i).and_then(b);
     Ok(match (arg(0), arg(1)) {
         (Some(x), _) if Width::of(x).is_some() => {
-            let w = b(result).and_then(Width::of).ok_or_else(|| {
-                Error::Internal("integer arithmetic has an integer result".into())
-            })?;
+            let w = b(result).and_then(Width::of).ok_or(Broken::IntegerResult)?;
             Op::Int(a, w)
         }
         (Some(Base::Decimal(s)), Some(Base::Decimal(t))) => match a {
@@ -360,8 +357,7 @@ fn order_op(p: Prim, x: Option<Base>, y: Option<Base>) -> Result<Op, Error> {
 
 fn convert_op(schema: &Schema, checked: bool, x: Option<Base>, ty: &Ty) -> Result<Op, Error> {
     let to = if checked {
-        option_arg(schema, ty)
-            .ok_or_else(|| Error::Internal("a checked conversion returns an Option".into()))?
+        option_arg(schema, ty).ok_or(Broken::ConversionNotOption)?
     } else {
         ty.clone()
     };
@@ -453,8 +449,7 @@ fn other_op(
         Prim::ToText => Op::ToText(Arc::new(form(schema, &args[0])?)),
         Prim::Print => Op::Print(Arc::new(form(schema, &args[0])?)),
         Prim::Parse => {
-            let t = option_arg(schema, ty)
-                .ok_or_else(|| Error::Internal("`parse` returns an Option".into()))?;
+            let t = option_arg(schema, ty).ok_or(Broken::ParseNotOption)?;
             Op::Parse(Arc::new(form(schema, &t)?))
         }
         Prim::AddPeriod => Op::AddPeriod {
@@ -508,10 +503,12 @@ fn overflow<T>(v: Option<T>) -> Result<T, Fault> {
     v.ok_or(Fault::ArithmeticOverflow)
 }
 
-fn mistyped(want: &str, found: impl std::fmt::Debug) -> Error {
-    Error::Internal(format!(
-        "a primitive's operands are {want}, found {found:?}"
-    ))
+fn mistyped(want: &'static str, found: &Val) -> Error {
+    Broken::Operand {
+        want,
+        found: found.clone(),
+    }
+    .into()
 }
 
 fn text(v: &Val) -> Result<&str, Error> {
@@ -725,7 +722,13 @@ pub fn apply(op: &Op, xs: &[&Val]) -> Result<Result<Val, Fault>, Error> {
                 (Val::Instant(a), Val::Instant(b)) | (Val::DateTime(a), Val::DateTime(b)) => {
                     a.checked_sub(*b)
                 }
-                (a, b) => return Err(mistyped("two instants or two date-times", (a, b))),
+                (a, b) => {
+                    return Err(Broken::Operands {
+                        want: "two instants or two date-times",
+                        found: (a.clone(), b.clone()),
+                    }
+                    .into());
+                }
             };
             match r {
                 Some(v) => Val::Duration(v),
@@ -739,7 +742,13 @@ pub fn apply(op: &Op, xs: &[&Val]) -> Result<Result<Val, Fault>, Error> {
                     None => return Ok(Err(Fault::ArithmeticOverflow)),
                 }
             }
-            (a, b) => return Err(mistyped("two dates", (a, b))),
+            (a, b) => {
+                return Err(Broken::Operands {
+                    want: "two dates",
+                    found: (a.clone(), b.clone()),
+                }
+                .into());
+            }
         },
         Op::Eq => Val::bool(x() == y()),
         Op::Ne => Val::bool(x() != y()),

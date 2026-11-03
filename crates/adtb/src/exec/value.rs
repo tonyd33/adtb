@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, LazyLock};
 
-use super::Error;
+use super::{Broken, Error};
 
 /// An `F32` with `-0.0` replaced by `0.0` and every NaN by one NaN, ordered with NaN greatest.
 #[derive(Clone, Copy, Debug)]
@@ -250,6 +250,10 @@ impl Val {
     }
 }
 
-pub(crate) fn mistyped(want: &str, v: &Val) -> Error {
-    Error::Internal(format!("expected {want}, found {v:?}"))
+pub(crate) fn mistyped(want: &'static str, v: &Val) -> Error {
+    Broken::Mistyped {
+        want,
+        found: v.clone(),
+    }
+    .into()
 }

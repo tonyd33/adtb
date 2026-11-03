@@ -17,8 +17,9 @@ use super::error::{Error, OpenError, RejectReason};
 /// A guarantee of the engine that did not hold, made into the text of `RejectReason::Internal`.
 #[derive(Debug)]
 pub(super) enum Broken {
-    /// A guarantee the write path, the planner or the executor names in text.
+    /// A guarantee the write path or the planner names in text.
     Write(String),
+    Exec(exec::Broken),
     Catalog(catalog::Broken),
     CatalogError(catalog::Error),
     Unchecked {
@@ -54,6 +55,7 @@ impl fmt::Display for Broken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Broken::Write(what) => f.write_str(what),
+            Broken::Exec(e) => write!(f, "{e}"),
             Broken::Catalog(e) => write!(f, "{e}"),
             Broken::CatalogError(e) => write!(f, "{e:?}"),
             Broken::Unchecked { built, messages } => {
