@@ -2,7 +2,7 @@
 created-at: 2026-11-02
 status: open
 kind: bug
-priority: 136
+priority: 610
 summary: "The host redefine rule misses bundles not presented at open, a revert, and Wasm byte identity"
 ---
 
@@ -61,3 +61,7 @@ Left:
 
 - `a_bundle_never_registered_and_not_presented_again...` passes with `live` restored at api/mod.rs open, as `regs` is empty. It pins supersession only, so its name overclaims.
 - A rename under a live registered pin of a function host at the pin, language now, has no API test. The API cannot make that pin, since the redefine is refused under it; the `host_conflict` unit test stays.
+
+## 2026-11-03: reprioritised
+
+Lead ruling: priority 136 to 610. Every item left is a test that overclaims, a detail text (`web-1.0::`, blame on a `revert` before `redefine fn f`), an over-refusal with `retire bundle` as the way out, or an untested path; none gives a wrong answer or loses data.
