@@ -325,8 +325,8 @@ fn a_rebuild_does_not_overwrite_another_change_of_the_catalog() {
     Catalog::naming_sequences(&pager, catalog.root()).unwrap();
     assert!(catalog.begin_reindexing(&pager).unwrap());
     assert_eq!(
-        Err(crate::catalog::Error::Internal(
-            "a rebuild of indexes ended during the catalog's change NamingSequences".to_string()
+        Err(crate::catalog::Error::from(
+            crate::catalog::Broken::ReindexDuring(crate::catalog::Changing::NamingSequences)
         )),
         catalog.end_reindexing(&pager),
         "the change stays for the next open to free"

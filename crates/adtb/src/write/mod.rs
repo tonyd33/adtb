@@ -287,14 +287,14 @@ pub fn refusals(
     schema: &Schema,
     normal: &NormalProgram,
     catalog: &Catalog,
-) -> Result<Vec<(String, String)>, String> {
+) -> Result<Vec<(String, String)>, Error> {
     let mut terms = normal.terms.clone();
     match delta::compile(schema, normal, &mut terms, catalog) {
         Ok(_) => Ok(Vec::new()),
         Err(delta::Unadmitted::Refused(why)) => {
             Ok(why.into_iter().map(|r| (r.constraint, r.detail)).collect())
         }
-        Err(delta::Unadmitted::Internal(what)) => Err(what),
+        Err(delta::Unadmitted::Internal(what)) => Err(Error::Internal(what)),
     }
 }
 

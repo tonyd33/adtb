@@ -12,7 +12,7 @@ use super::ids::{
     CatConstraintId, CatCtorId, CatFieldId, CatIndexId, CatRelId, CatSetId, ctor_id, ctor_index,
     rel_id, relation,
 };
-use super::{Catalog, Checked, Error, ctor_count};
+use super::{Broken, Catalog, Checked, Error, ctor_count};
 
 /// A live reader of the database: a bundle with its feeds and registered change consumers, at
 /// the version it is pinned to.
@@ -519,9 +519,7 @@ impl Catalog {
         let enforced = checked(source)
             .map_err(|ds| Error::Refused(ds.iter().map(|d| no_image(&d.message)).collect()))?;
         if enforced.schema.ids.relations != now.ids.relations {
-            return Err(Error::Internal(
-                "the schema keeping pending drops has the relations of the version".to_string(),
-            ));
+            return Err(Error::from(Broken::PendingRelations));
         }
         readers.enforced = Some(Arc::new(enforced));
         Ok(readers)
@@ -936,11 +934,12 @@ pub(super) fn without(source: &Source, drops: &[Pending]) -> Result<Source, Erro
         let kind = match &p.kind {
             Kind::Check => OperatorKind::DropCheck(name),
             Kind::Constraint => OperatorKind::DropConstraint(name),
-            Kind::Unique(_) | Kind::Key { .. } => {
-                return Err(Error::Internal(format!(
-                    "pending-dropped {} is never declared again",
-                    p.object()
-                )));
+            Kind::Unique(index) | Kind::Key { index, .. } => {
+                return Err(Error::from(Broken::PendingRedeclared {
+                    module: p.module.clone(),
+                    name: p.name.clone(),
+                    index: *index,
+                }));
             }
         };
         let op = Operator {

@@ -13,7 +13,7 @@ use super::hosts::unbound;
 use super::ids::{
     CatCtorId, CatRelId, ctor_id, ctor_index, field_id, rel_id, relation, type_def, type_id,
 };
-use super::{Error, layout, oplog};
+use super::{Broken, Error, layout, oplog};
 
 /// Returns what `maps`, the row maps of one step from schema `a` to schema `b`, give the rows of
 /// `data`, which are in `a`'s layout.
@@ -81,10 +81,6 @@ struct Mapping<'s> {
     out: Moved,
 }
 
-fn internal(why: impl Into<String>) -> Failed {
-    Failed::Internal(why.into())
-}
-
 /// Each relation of `a` whose element type is `def`, with its catalog id and the same relation
 /// of `b`.
 fn relations_of(a: &Schema, b: &Schema, def: TypeId) -> Vec<(RelId, CatRelId, RelId)> {
@@ -129,12 +125,12 @@ fn ctor_name(schema: &Schema, def: TypeId, c: u32) -> &str {
 fn field_named<'f>(fs: &'f [Field], name: &str) -> Result<&'f Field, Failed> {
     fs.iter()
         .find(|f| f.name == name)
-        .ok_or_else(|| internal(format!("no field `{name}`")))
+        .ok_or_else(|| Failed::from(Broken::NoField(name.to_owned())))
 }
 
 fn compiled(f: &RowFn, hosts: &Arc<exec::Hosts>) -> Result<Scalar, Failed> {
     let [var] = f.query.params.as_slice() else {
-        return Err(internal("a fill or routing takes the row"));
+        return Err(Failed::from(Broken::RowParams(f.query.params.len())));
     };
     let mut scalar = Scalar::new(&f.schema, &f.query.terms, *var, f.query.body).map_err(shown)?;
     scalar.set_hosts(hosts.clone());
@@ -148,7 +144,7 @@ fn shown(e: exec::Error) -> Failed {
     match e {
         exec::Error::Fault(f) => Failed::Refused(format!("the map faults with {}", f.name())),
         exec::Error::Rejected(why) => Failed::Refused(format!("the map rejects: {why}")),
-        other => Failed::Internal(format!("a data map fails: {other:?}")),
+        other => Failed::from(Broken::Map(other)),
     }
 }
 
@@ -156,9 +152,10 @@ fn shown(e: exec::Error) -> Failed {
 fn by_name(names: &[String], vals: &[Val], to: &[Field]) -> Result<Vec<Value>, Failed> {
     to.iter()
         .map(|t| {
-            let at = names.iter().position(|n| *n == t.name).ok_or_else(|| {
-                internal(format!("field `{}` has no value in the routed row", t.name))
-            })?;
+            let at = names
+                .iter()
+                .position(|n| *n == t.name)
+                .ok_or_else(|| Failed::from(Broken::Unrouted(t.name.clone())))?;
             to_stored(&t.ty, &vals[at]).map_err(shown)
         })
         .collect()
@@ -169,7 +166,7 @@ fn carried(from: &[Field], row: &[Value], to: &Field) -> Result<Value, Failed> {
     let at = from
         .iter()
         .position(|f| f.name == to.name)
-        .ok_or_else(|| internal(format!("field `{}` has no counterpart", to.name)))?;
+        .ok_or_else(|| Failed::from(Broken::NoCounterpart(to.name.clone())))?;
     convert(&from[at].ty, &to.ty, &row[at]).map_err(Failed::Refused)
 }
 
@@ -177,9 +174,7 @@ fn carried(from: &[Field], row: &[Value], to: &Field) -> Result<Value, Failed> {
 fn last_field_def(schema: &Schema, r: RelId, c: u32) -> Result<TypeId, Failed> {
     match layout::row(schema, r, c).last() {
         Some((_, Ty::Data { def, .. })) => Ok(*def),
-        _ => Err(internal(
-            "the constructor's last field holds no declared sum",
-        )),
+        _ => Err(Failed::from(Broken::LastNotSum)),
     }
 }
 
@@ -194,8 +189,9 @@ fn key_value(
     keyed: RelId,
 ) -> Result<Value, Failed> {
     let from = fields(a, r, c);
-    let kc = ctor_named(k, keyed, ctor_name(a, a.relation(r).elem_def, c))
-        .ok_or_else(|| internal("the keyed constructor is gone"))?;
+    let name = ctor_name(a, a.relation(r).elem_def, c);
+    let kc =
+        ctor_named(k, keyed, name).ok_or_else(|| Failed::from(Broken::NoCtor(name.to_owned())))?;
     let to = fields(k, keyed, kc);
     let mut names = k.relation(keyed).key.clone();
     names.sort();
@@ -227,7 +223,7 @@ impl Mapping<'_> {
                 };
                 let to = fields(b, rb, cb);
                 let Some(id) = field_named(&to, field)?.id else {
-                    return Err(internal(format!("field `{field}` has no catalog id")));
+                    return Err(Failed::from(Broken::NoFieldId(field.to_owned())));
                 };
                 let ty = field_named(&to, field)?.ty.clone();
                 let convs = row_convs(&fill.schema, ra, c);
@@ -278,7 +274,7 @@ impl Mapping<'_> {
                 continue;
             };
             let Some(id) = field_id(b, db, cb, field) else {
-                return Err(internal(format!("field `{field}` has no catalog id")));
+                return Err(Failed::from(Broken::NoFieldId(field.to_owned())));
             };
             let ty = layout::field_type(b, ty);
             let convs: Vec<Conv> = before[c as usize]
@@ -311,9 +307,10 @@ impl Mapping<'_> {
                 let Some(id) = to.id else { continue };
                 let name = field.to_string();
                 let fill: Box<Fill<'static>> = Box::new(move |from, row| {
-                    let at = from.iter().position(|f| f.name == name).ok_or_else(|| {
-                        internal(format!("the row has no field `{name}` to move"))
-                    })?;
+                    let at = from
+                        .iter()
+                        .position(|f| f.name == name)
+                        .ok_or_else(|| Failed::from(Broken::NotCopied(name.clone())))?;
                     convert(&from[at].ty, &to.ty, &row[at]).map_err(Failed::Refused)
                 });
                 self.out.fills.insert((rid, ctor_id(b, rb, cb), id), fill);
@@ -333,7 +330,7 @@ impl Mapping<'_> {
                 let convs = row_convs(&routing.schema, ra, c);
                 for row in rows.get(&cid).into_iter().flatten() {
                     let Val::Ctor(k, vals) = f.eval(row_val(c, &convs, row)).map_err(shown)? else {
-                        return Err(internal("a routing gives a constructor"));
+                        return Err(Failed::from(Broken::RoutedNotCtor));
                     };
                     let name = ctor_name(&routing.schema, def, k);
                     let cb = ctor_named(b, rb, name).ok_or_else(|| {
@@ -369,7 +366,7 @@ impl Mapping<'_> {
                 continue;
             };
             let cb = ctor_named(b, rb, into)
-                .ok_or_else(|| internal(format!("no constructor `{into}`")))?;
+                .ok_or_else(|| Failed::from(Broken::NoCtor(into.to_owned())))?;
             let to = fields(b, rb, cb);
             let disc = layout::row(b, rb, cb)
                 .into_iter()
@@ -378,14 +375,14 @@ impl Mapping<'_> {
                     Ty::Data { def, .. } => Some(def),
                     _ => None,
                 })
-                .ok_or_else(|| internal(format!("no discriminator `{discriminator}`")))?;
+                .ok_or_else(|| Failed::from(Broken::NoDiscriminator(discriminator.to_owned())))?;
             for &c in from {
                 let cid = ctor_id(a, ra, c);
                 let name = ctor_name(a, def, c);
                 let tag = b
                     .ty(disc)
                     .ctor_index(name)
-                    .ok_or_else(|| internal(format!("the discriminator has no `{name}`")))?;
+                    .ok_or_else(|| Failed::from(Broken::NotDiscriminated(name.to_owned())))?;
                 let from_fields = fields(a, ra, c);
                 for row in rows.get(&cid).into_iter().flatten() {
                     let merged = to
@@ -418,10 +415,10 @@ impl Mapping<'_> {
                 continue;
             };
             let cb = ctor_named(b, rb, into)
-                .ok_or_else(|| internal(format!("no constructor `{into}`")))?;
+                .ok_or_else(|| Failed::from(Broken::NoCtor(into.to_owned())))?;
             let to = fields(b, rb, cb);
             let Some((held, outer)) = to.split_last() else {
-                return Err(internal(format!("`{into}` has no field")));
+                return Err(Failed::from(Broken::Fieldless(into.to_owned())));
             };
             let s = last_field_def(b, rb, cb)?;
             for &c in from {
@@ -430,7 +427,7 @@ impl Mapping<'_> {
                 let k = b
                     .ty(s)
                     .ctor_index(name)
-                    .ok_or_else(|| internal(format!("the nested sum has no `{name}`")))?;
+                    .ok_or_else(|| Failed::from(Broken::NotNested(name.to_owned())))?;
                 let from_fields = fields(a, ra, c);
                 let convs = row_convs(a, ra, c);
                 for row in rows.get(&cid).into_iter().flatten() {
@@ -467,15 +464,17 @@ impl Mapping<'_> {
             let s = last_field_def(a, ra, from)?;
             let convs = row_convs(a, ra, from);
             let Some(held) = convs.last() else {
-                return Err(internal("the unnested constructor has no field"));
+                return Err(Failed::from(Broken::Fieldless(
+                    ctor_name(a, def, from).to_owned(),
+                )));
             };
             for row in rows.get(&cid).into_iter().flatten() {
                 let Some(Val::Ctor(k, vals)) = row.last().map(|v| from_stored(held, v)) else {
-                    return Err(internal("the unnested field holds a constructor"));
+                    return Err(Failed::from(Broken::UnnestedNotCtor));
                 };
                 let inner = &a.ty(s).ctors()[k as usize];
                 let cb = ctor_named(b, rb, &inner.name)
-                    .ok_or_else(|| internal(format!("no constructor `{}`", inner.name)))?;
+                    .ok_or_else(|| Failed::from(Broken::NoCtor(inner.name.clone())))?;
                 let names: Vec<String> = inner.fields.iter().map(|f| f.name.clone()).collect();
                 let lifted = fields(b, rb, cb)
                     .iter()
@@ -498,12 +497,11 @@ impl Mapping<'_> {
     fn rekey(&mut self, ra: RelId) -> Result<(), Failed> {
         let (a, b) = (self.a, self.b);
         let rid = rel_id(a, ra);
-        let rb = relation(b, rid).ok_or_else(|| internal("the rekeyed relation is gone"))?;
+        let rb = relation(b, rid).ok_or_else(|| Failed::from(Broken::RekeyedGone(rid)))?;
         let old_ty = layout::field_type(a, &layout::key_value_ty(a, ra));
         let mut keys: BTreeMap<Vec<u8>, Value> = BTreeMap::new();
         for (&cid, rows) in self.data.get(&rid).into_iter().flatten() {
-            let c = ctor_index(a, ra, cid)
-                .ok_or_else(|| internal("the data holds only constructors of the schema before"))?;
+            let c = ctor_index(a, ra, cid).ok_or_else(|| Failed::from(Broken::ForeignCtor(cid)))?;
             for row in rows {
                 let old = key_value(a, ra, c, row, a, ra)?;
                 let mut at = Vec::new();
@@ -526,9 +524,10 @@ impl Mapping<'_> {
                     }
                     let (keys, old_ty) = (keys.clone(), old_ty.clone());
                     let fill: Box<Fill<'static>> = Box::new(move |from, row| {
-                        let at = from.iter().position(|g| g.id == Some(id)).ok_or_else(|| {
-                            internal(format!("field `{}` has no value before the rekey", f.name))
-                        })?;
+                        let at = from
+                            .iter()
+                            .position(|g| g.id == Some(id))
+                            .ok_or_else(|| Failed::from(Broken::NotRekeyed(id)))?;
                         let mut enc = Vec::new();
                         oplog::encode(&old_ty, &row[at], &mut enc);
                         keys.get(&enc).cloned().ok_or_else(|| {

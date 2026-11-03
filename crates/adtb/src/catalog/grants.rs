@@ -14,7 +14,7 @@ use crate::storage::Pager;
 use crate::write::{self, Sequences};
 
 use super::values::{self, boolean, relation, tag};
-use super::{Catalog, DORMANT, Error, Migrating, OWNER_ROLE, delete_rows, int, layout};
+use super::{Broken, Catalog, DORMANT, Error, Migrating, OWNER_ROLE, delete_rows, int, layout};
 
 /// A log grant whose role did not exist when its row was written. It allows nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -132,7 +132,7 @@ impl Shape {
 fn target(schema: &Schema, g: &LogGrant) -> Result<String, Error> {
     g.privilege
         .target_text(schema)
-        .ok_or_else(|| Error::Internal(format!("a log grant names live objects: {g:?}")))
+        .ok_or_else(|| Error::from(Broken::GrantTarget(g.clone())))
 }
 
 fn log_grant_row<'a>(g: &'a LogGrant, target: &'a str) -> GrantRow<'a> {
@@ -153,7 +153,7 @@ fn drawn(e: write::Error) -> Error {
         write::Error::SequenceExhausted => {
             Error::Refused(vec!["the ids of catalog::grants are spent".to_owned()])
         }
-        other => Error::Internal(format!("drawing a grant id: {other:?}")),
+        other => Error::from(Broken::GrantId(other)),
     }
 }
 
@@ -488,9 +488,7 @@ impl Catalog {
                 .ok_or(write::Error::SequenceExhausted)
                 .map_err(drawn)?;
             let Some(page) = self.sequences() else {
-                return Err(Error::Internal(
-                    "a grant row id needs a named page of id counters".to_owned(),
-                ));
+                return Err(Error::from(Broken::NoSequences));
             };
             let mut counters = Sequences::open(m.pager, page)?;
             for i in fresh {

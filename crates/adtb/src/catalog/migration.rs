@@ -22,7 +22,7 @@ use crate::storage::Pager;
 use super::grants::{Dormant, Grantees};
 use super::history::{Rebuilding, key_indexes};
 use super::{
-    Built, CatCtorId, CatRelId, Catalog, Changing, Checked, Data, Error, HEAP_ROOT, Hash,
+    Broken, Built, CatCtorId, CatRelId, Catalog, Changing, Checked, Data, Error, HEAP_ROOT, Hash,
     INDEX_ROOT, IndexKeys, IndexSpec, MIGRATION, Migrating, ORDER_KEY, OrderKeys, Readers, change,
     ctor_count, ctor_id, ctor_index, ctor_relations, delete_rows, heap_root, index_ctors,
     index_keys, index_program, indexes, int, key_schema, layout, moved, oplog, owner, pending,
@@ -178,7 +178,8 @@ impl Catalog {
             index_keys(schema, Some(&normal), spec, &self.hosts)?;
         }
         let catalog = planned(schema, specs.values(), &heaps);
-        let why = crate::write::refusals(schema, &normal, &catalog).map_err(Error::Internal)?;
+        let why = crate::write::refusals(schema, &normal, &catalog)
+            .map_err(|e| Error::from(Broken::Admission(e)))?;
         if why.is_empty() {
             return Ok(());
         }
@@ -629,9 +630,8 @@ impl Catalog {
                 next += 1;
                 next - 1
             } else {
-                *old.get(&(rid, cid)).ok_or_else(|| {
-                    Error::Internal(format!("relation {rid} keeps constructor {cid}"))
-                })?
+                *old.get(&(rid, cid))
+                    .ok_or_else(|| Error::from(Broken::KeptCtor(rid, cid)))?
             };
             out.insert((r, c), id);
         }

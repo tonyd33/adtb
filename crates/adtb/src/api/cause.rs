@@ -19,8 +19,7 @@ use super::error::{Error, OpenError, RejectReason};
 pub(super) enum Broken {
     /// A guarantee the write path, the planner or the executor names in text.
     Write(String),
-    /// A guarantee the catalog names in text.
-    Catalog(String),
+    Catalog(catalog::Broken),
     CatalogError(catalog::Error),
     Unchecked {
         built: String,
@@ -54,7 +53,8 @@ pub(super) enum Broken {
 impl fmt::Display for Broken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Broken::Write(what) | Broken::Catalog(what) => f.write_str(what),
+            Broken::Write(what) => f.write_str(what),
+            Broken::Catalog(e) => write!(f, "{e}"),
             Broken::CatalogError(e) => write!(f, "{e:?}"),
             Broken::Unchecked { built, messages } => {
                 write!(f, "{built} does not check: {}", messages.join("; "))

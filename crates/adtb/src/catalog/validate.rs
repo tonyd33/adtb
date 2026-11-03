@@ -14,7 +14,7 @@ use crate::storage::PageError;
 
 use super::hosts::unbound;
 use super::ids::CatRelId;
-use super::{Catalog, Error, Migrating};
+use super::{Broken, Catalog, Error, Migrating};
 
 impl Catalog {
     /// Returns, for each constraint and check of this catalog that `old` lacks or that reads a
@@ -30,8 +30,8 @@ impl Catalog {
     ) -> Result<Vec<String>, Error> {
         let (pager, x) = (m.pager, m.x);
         let (schema, program) = self.checking();
-        let normal = norm::program(schema, program)
-            .map_err(|e| Error::Internal(format!("a checked schema normalises: {e:?}")))?;
+        let normal =
+            norm::program(schema, program).map_err(|e| Error::from(Broken::NotNormal(e)))?;
         let existed: BTreeSet<String> = qualified(old).into_iter().collect();
         let catalog = self.plan();
         let (heaps, indexes) = self.bindings();
@@ -92,8 +92,8 @@ impl Catalog {
         keep: impl Fn(&BTreeSet<RelId>) -> bool,
     ) -> Result<Vec<Denial>, Error> {
         let (schema, program) = self.checking();
-        let normal = norm::program(schema, program)
-            .map_err(|e| Error::Internal(format!("a checked schema normalises: {e:?}")))?;
+        let normal =
+            norm::program(schema, program).map_err(|e| Error::from(Broken::NotNormal(e)))?;
         let catalog = self.plan();
         let budget = Budget::new(self.query_memory);
         let ids = schema.ids.constraints.values().copied().chain(
@@ -219,7 +219,6 @@ fn run_denial<R: Runtime>(
     hosts: &Arc<exec::Hosts>,
 ) -> Result<Result<Vec<String>, Denied>, Error> {
     let terms = &normal.terms;
-    let internal = Error::Internal;
     let p = plan::plan(
         schema,
         normal,
@@ -229,7 +228,7 @@ fn run_denial<R: Runtime>(
         &[],
         plan::Options::default(),
     )
-    .map_err(|e| internal(e.to_string()))?;
+    .map_err(|e| Error::from(Broken::Plan(e)))?;
     let mut program = exec::compile(schema, catalog, &p, None).map_err(failed)?;
     program.shared.hosts = hosts.clone();
     let program = Arc::new(program);
@@ -265,14 +264,12 @@ fn run_denial<R: Runtime>(
         Err(e) => return Err(failed(e)),
     };
     let Val::Set(rows) = &v else {
-        return Err(internal(format!("a constraint returns a set, found {v:?}")));
+        return Err(Error::from(Broken::NotASet(v)));
     };
     let elem = match terms.ty(t) {
         Ty::Set(e) => e.as_ref().clone(),
         other => {
-            return Err(internal(format!(
-                "a constraint is typed as a set, found {other:?}"
-            )));
+            return Err(Error::from(Broken::NotSetTyped(other.clone())));
         }
     };
     rows.iter()
@@ -287,6 +284,6 @@ fn failed(e: exec::Error) -> Error {
     }
     match e {
         exec::Error::Page(p) => Error::Page(p),
-        other => Error::Internal(format!("{other:?}")),
+        other => Error::from(Broken::Validation(other)),
     }
 }

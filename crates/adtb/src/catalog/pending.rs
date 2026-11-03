@@ -18,7 +18,9 @@ use super::ids::{CatFieldId, CatIndexId, CatRelId, field_id, relation};
 use super::readers::{Kind, Pending, Readers, enforcing};
 use super::root::Changing;
 use super::rows::IndexSpec;
-use super::{Catalog, Error, INDEX_ROOT, Migrating, ROOTS, delete_rows, indexes, int, uint};
+use super::{
+    Broken, Catalog, Error, INDEX_ROOT, Migrating, ROOTS, delete_rows, indexes, int, uint,
+};
 
 /// The constructor of a roots row naming a pending-dropped constraint and a bundle holding it.
 pub(super) const HELD_CONSTRAINT: u32 = 6;
@@ -134,14 +136,19 @@ pub(super) fn imageless_keys(schema: &Schema, pending: &[Pending]) -> Vec<String
 pub(super) fn kept_indexes(
     schema: &Schema,
     pending: &[Pending],
-) -> Result<BTreeMap<u64, IndexSpec>, String> {
+) -> Result<BTreeMap<u64, IndexSpec>, Box<Broken>> {
     let mut out = indexes(schema);
     for p in pending {
         let Kind::Key { index, .. } = &p.kind else {
             continue;
         };
-        let (r, fields) = old_key(schema, &p.kind)
-            .ok_or_else(|| format!("pending-dropped {} has no image", p.object()))?;
+        let (r, fields) = old_key(schema, &p.kind).ok_or_else(|| {
+            Box::new(Broken::NoImage {
+                module: p.module.clone(),
+                name: p.name.clone(),
+                index: *index,
+            })
+        })?;
         out.insert(index.0, IndexSpec::key(schema, r, index.0, fields));
     }
     Ok(out)

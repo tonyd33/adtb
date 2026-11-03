@@ -178,7 +178,7 @@ fn refusals(src: &str) -> Vec<(String, String)> {
     let normal = norm::program(&f.schema, &f.program).expect("the schema normalises");
     let catalog = planfix::catalog(&f.schema);
     write::refusals(&f.schema, &normal, &catalog)
-        .unwrap_or_else(|e| panic!("admission breaks a guarantee: {e}"))
+        .unwrap_or_else(|e| panic!("admission breaks a guarantee: {e:?}"))
 }
 
 /// Returns the one refusal of schema `src`.

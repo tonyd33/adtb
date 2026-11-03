@@ -10,10 +10,10 @@ use crate::exec::{self, Conv, Val, conv, from_stored, to_key};
 use crate::key::{KeySchema, KeyType, Value};
 use crate::plan::Element;
 
-use super::Error;
 use super::hosts::unbound;
 use super::layout;
 use super::rows::{IndexSpec, Step, at_path, path_steps};
+use super::{Broken, Error};
 
 /// How the rows of a relation's constructors are keyed in one index.
 #[derive(Clone, Debug)]
@@ -226,8 +226,7 @@ pub(super) fn broken(e: exec::Error) -> Error {
     }
     match e {
         exec::Error::Corrupt(why) => Error::Corrupt(why),
-        exec::Error::Internal(why) => Error::Internal(why),
-        other => Error::Internal(format!("an index key evaluates: {other:?}")),
+        other => Error::from(Broken::IndexKey(other)),
     }
 }
 

@@ -1,5 +1,6 @@
 //! Hold the catalog: relations, deployments, grants and their rows, and open and migrate them.
 
+mod broken;
 mod change;
 mod deploy;
 mod deployment;
@@ -49,6 +50,7 @@ use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid, Quarantine};
 use crate::verify::{self, Depth, Inventory, Problem, Report, Sum};
 
 pub use adtb_lang::schema::field_path;
+pub use broken::Broken;
 pub use deploy::Rewrite;
 pub use deployment::{Deployed, Deployment, Fact, Mark, Origin};
 pub use grants::Dormant;
@@ -58,6 +60,7 @@ use keying::{broken, index_keys, row_key};
 pub use layout::OrderKeys;
 pub use oplog::{Hash, try_version_hash, version_hash};
 pub use readers::{PendingDrop, Read, Reader, source_at, stale};
+pub(crate) use root::Changing;
 pub use rows::{IndexSpec, Rows, applied, declared, indexed_fields, indexes};
 pub use validate::Denial;
 
@@ -65,7 +68,7 @@ use change::Data;
 use history::{HISTORY_HEAP, HISTORY_INDEX, Kept, key_indexes};
 use ids::{CatCtorId, CatRelId, ctor_id, ctor_index, rel_id, relation};
 use readers::{Pending, Readers};
-use root::{Changing, Root};
+use root::Root;
 
 /// The name of the schema owner's role, the grantor of every log grant.
 pub use adtb_lang::evolve::OWNER_ROLE;
@@ -109,8 +112,8 @@ pub enum Error {
     /// A stored migration does not parse or apply under this engine; its version and each
     /// reason.
     Unaccepted(u64, Vec<String>),
-    /// A guarantee of the checker or planner does not hold; the one named.
-    Internal(String),
+    /// A guarantee of the checker, planner, executor or catalog does not hold; the one named.
+    Internal(Box<Broken>),
     /// The migration reached a host function, by its name, with no body bound.
     MissingFunction(String),
     /// The migration reached a host function whose body is bound at another version than its
@@ -274,7 +277,7 @@ fn index_program<'s>(
     schema: &Schema,
     program: &Program,
     mut specs: impl Iterator<Item = &'s IndexSpec>,
-) -> Result<Option<NormalProgram>, String> {
+) -> Result<Option<NormalProgram>, Box<Broken>> {
     let derived = specs.any(|s| {
         s.elements
             .iter()
@@ -285,7 +288,7 @@ fn index_program<'s>(
     }
     norm::program(schema, program)
         .map(Some)
-        .map_err(|e| format!("the schema normalises: {e:?}"))
+        .map_err(|e| Box::new(Broken::StoredNotNormal(e)))
 }
 
 fn index_ctors(schema: &Schema, spec: &IndexSpec) -> BTreeSet<CtorId> {
@@ -610,7 +613,7 @@ impl Catalog {
         let named = (roots.id().0, roots.root());
         let (schema, program) = Source::default()
             .check()
-            .map_err(|ds| Error::Internal(format!("the engine's declarations check: {ds:?}")))?;
+            .map_err(|ds| Error::from(Broken::Declarations(ds)))?;
         let program = Arc::new(program);
         let empty = Catalog {
             source: Source::default(),
@@ -769,8 +772,10 @@ impl Catalog {
         let (held, held_program) = readers
             .enforced()
             .map_or((&schema, &program), |e| (&e.schema, &*e.program));
-        let specs = pending::kept_indexes(held, &readers.pending).map_err(Error::Corrupt)?;
-        let normal = index_program(held, held_program, specs.values()).map_err(Error::Corrupt)?;
+        let specs = pending::kept_indexes(held, &readers.pending)
+            .map_err(|e| Error::Corrupt(e.to_string()))?;
+        let normal = index_program(held, held_program, specs.values())
+            .map_err(|e| Error::Corrupt(e.to_string()))?;
         let mut stored = BTreeMap::new();
         for (id, spec) in specs {
             let Some(&at) = named.indexes.get(&id) else {
@@ -819,7 +824,7 @@ impl Catalog {
     pub fn unread<R: Runtime>(pager: &Pager<R>) -> Result<Catalog, Error> {
         let (schema, program) = Source::default()
             .check()
-            .map_err(|ds| Error::Internal(format!("the engine's declarations check: {ds:?}")))?;
+            .map_err(|ds| Error::from(Broken::Declarations(ds)))?;
         let large = LargeStore::open(0, Pid(0));
         Ok(Catalog {
             source: Source::default(),
@@ -1018,9 +1023,7 @@ impl Catalog {
         })?;
         match was {
             Changing::None | Changing::Reindexing => Ok(()),
-            other => Err(Error::Internal(format!(
-                "a rebuild of indexes ended during the catalog's change {other:?}"
-            ))),
+            other => Err(Error::from(Broken::ReindexDuring(other))),
         }
     }
 
@@ -1064,7 +1067,7 @@ impl Catalog {
         })
         .map_err(|e| match e {
             crate::write::Error::Page(e) => Error::Page(e),
-            other => Error::Internal(format!("advancing a key counter: {other:?}")),
+            other => Error::from(Broken::KeyCounter(other)),
         })?;
         Catalog::name_sequences(pager, self.root, pid)?;
         self.sequences = pid;

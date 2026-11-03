@@ -1460,7 +1460,7 @@ fn migrate<R: Runtime>(
                     detail: why.join("\n"),
                 },
             ),
-            catalog::Error::Internal(what) => refused(version, internal(Broken::Catalog(what))),
+            catalog::Error::Internal(what) => refused(version, internal(Broken::Catalog(*what))),
             catalog::Error::MissingFunction(name) => OpenError::HostFnMissing { name },
             catalog::Error::OtherVersion(name) => OpenError::HostFnMismatch { name },
             catalog::Error::Unchecked(built, ds) => refused(

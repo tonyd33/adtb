@@ -10,7 +10,7 @@ use crate::storage::Pid;
 use super::ids::{CatCtorId, CatRelId};
 use super::root::{Changing, Root};
 use super::{
-    Error, HEAP_ROOT, Hash, MIGRATION, Named, Rows, applied, check_order_keys, declared,
+    Broken, Error, HEAP_ROOT, Hash, MIGRATION, Named, Rows, applied, check_order_keys, declared,
     engine_schema, fold, indexes, layout, oplog, version_hash,
 };
 
@@ -583,12 +583,12 @@ fn a_fill_that_fails_internally_fails_the_step_as_internal() {
     let mut moved = super::change::Moved::default();
     moved.fills.insert(
         (rid, cid, fid),
-        Box::new(|_, _| Err(super::change::Failed::Internal("broken".into()))),
+        Box::new(|_, _| Err(Broken::LastNotSum.into())),
     );
-    match super::change::step(&sa, &sb, &mut data, moved) {
-        Err(Error::Internal(why)) => assert_eq!("broken", why),
-        other => panic!("not an internal failure: {other:?}"),
-    }
+    assert_eq!(
+        Err(Error::from(Broken::LastNotSum)),
+        super::change::step(&sa, &sb, &mut data, moved)
+    );
 }
 
 /// Returns the schemas of a relation `ts` of a one-field record before and after it gains a
@@ -621,8 +621,10 @@ fn a_rekey_of_a_relation_the_schema_after_lacks_is_internal() {
     let (sa, _, r, data) = gaining_a_field();
     let maps = [adtb_lang::evolve::RowMap::Rekey { relation: r }];
     match super::moved::moved(&sa, &engine_schema(), &maps, &data, &Default::default()) {
-        Err(Error::Internal(why)) => assert!(why.contains("rekeyed"), "{why}"),
-        Err(e) => panic!("not an internal failure: {e:?}"),
+        Err(e) => assert_eq!(
+            Error::from(Broken::RekeyedGone(super::ids::rel_id(&sa, r))),
+            e
+        ),
         Ok(_) => panic!("the rekey maps"),
     }
 }
@@ -639,7 +641,9 @@ fn a_copy_from_a_row_without_the_field_is_internal() {
         super::moved::moved(&sa, &sb, &maps, &data, &Default::default()).expect("the copy maps");
     let fill = moved.fills.values().next().expect("the copy fills `n`");
     match fill(&[], &[]) {
-        Err(super::change::Failed::Internal(why)) => assert!(why.contains("`n`"), "{why}"),
+        Err(super::change::Failed::Internal(why)) => {
+            assert_eq!(Broken::NotCopied("n".into()), *why);
+        }
         other => panic!("not an internal failure: {other:?}"),
     }
 }

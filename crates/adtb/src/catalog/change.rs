@@ -10,7 +10,7 @@ use super::ids::{
     CatCtorId, CatFieldId, CatRelId, CatTypeId, ctor_id, ctor_index, field_id, rel_id, relation,
     type_id,
 };
-use super::{Error, ctor_relations, layout, row_type, rows};
+use super::{Broken, Error, ctor_relations, layout, row_type, rows};
 
 /// The rows of the relations a migration rewrites, by relation id and then constructor id, each
 /// row in the layout of the schema the operators applied so far produce.
@@ -109,7 +109,7 @@ pub enum Failed {
     /// The data refuses the operator; why.
     Refused(String),
     /// A guarantee of the checker or the executor does not hold; the one named.
-    Internal(String),
+    Internal(Box<Broken>),
     /// A call reached a host function with no body bound at the version its declaration names.
     Unbound(Error),
 }
