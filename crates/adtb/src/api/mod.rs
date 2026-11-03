@@ -865,7 +865,12 @@ impl<R: Runtime> Engine<R> {
         });
         match new {
             Some(new) => finish_create(rt, &pager, &new, opened, hold),
-            None => opened,
+            None => {
+                if opened.is_ok() {
+                    storage::remove_leftover(&pager, &storage, hold);
+                }
+                opened
+            }
         }
     }
 

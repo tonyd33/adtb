@@ -27,7 +27,7 @@ pub use backup::{
 };
 pub use block::{LogFinding, LogProblem};
 pub use crc::{Crc32c, crc32c};
-pub(crate) use create::{Created, Hold, Unpublished, create, refuse_foreign_log};
+pub(crate) use create::{Created, Hold, Unpublished, create, refuse_foreign_log, remove_leftover};
 pub use create::{aside, creating, marker, marker_bytes};
 pub(crate) use driver::Driver;
 pub use driver::{FATAL_IO, FatalIo};

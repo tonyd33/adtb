@@ -175,6 +175,7 @@ impl Unpublished {
         let aside = self.aside();
         let log = log_of(&self.name);
         hold(&aside)?;
+        let mut segments = pager.segments.lock(&pager.rt);
         let published = pager.io(|drv| {
             rename(drv, &log_of(&aside), &log, false).map_err(|e| match e {
                 IoError::Exists => OpenError::LogPresent,
@@ -188,7 +189,7 @@ impl Unpublished {
             filed
         });
         if published.is_ok() {
-            pager.segments.lock(&pager.rt).dir = log;
+            segments.dir = log;
         }
         published
     }
@@ -235,18 +236,41 @@ fn settle<R: Runtime>(
     options: &Options,
     hold: Hold<'_>,
 ) -> Result<Option<[u8; 16]>, OpenError> {
-    let (name, reserved) = (&options.name, creating(&options.name));
-    match drv
-        .attempt(Op::CreateDir {
-            dir: reserved.clone(),
-        })
-        .result
-    {
+    let name = &options.name;
+    let dir = creating(name);
+    match drv.attempt(Op::CreateDir { dir }).result {
         Ok(Done::Created) => return Ok(None),
         Ok(_) => {}
         Err(IoError::Exists) => return Err(OpenError::Reserved),
         Err(e) => return Err(OpenError::Io(e)),
     }
+    let Some((id, entries)) = owner(drv, options, hold)? else {
+        return Ok(None);
+    };
+    let file = aside(name, &id);
+    let has_log = entries.contains(&log_of(&file));
+    if entries.contains(&file) && !has_log && carries(drv, options, &id)? {
+        return Ok(Some(id));
+    }
+    remove_built(drv, name, &id, &entries)?;
+    Ok(None)
+}
+
+/// The id of a create and the entries of its reserved directory.
+type Owner = ([u8; 16], Vec<String>);
+
+/// Returns the id of the create that owns the reserved directory of `options.name`, its file
+/// held, and the directory's entries; `None` when the directory is empty or holds only a marker
+/// with nothing written.
+///
+/// Postconditions: answers `Reserved` when the marker is torn, or holds nothing written beside
+/// another entry.
+fn owner<R: Runtime>(
+    drv: &mut Driver<R>,
+    options: &Options,
+    hold: Hold<'_>,
+) -> Result<Option<Owner>, OpenError> {
+    let (name, reserved) = (&options.name, creating(&options.name));
     let mark = marker(name);
     let marked = read_marker(drv, options)?;
     let entries = listed(drv, &reserved)?.unwrap_or_default();
@@ -255,15 +279,30 @@ fn settle<R: Runtime>(
         Marked::Whole(id) => id,
         Marked::Unwritten | Marked::Torn => return Err(OpenError::Reserved),
     };
-    let file = aside(name, &id);
-    hold(&file)?;
+    hold(&aside(name, &id))?;
     let entries = listed(drv, &reserved)?.unwrap_or_default();
-    let has_log = entries.contains(&log_of(&file));
-    if entries.contains(&file) && !has_log && carries(drv, options, &id)? {
-        return Ok(Some(id));
+    Ok(Some((id, entries)))
+}
+
+/// Remove the reserved directory of `pager`'s file when it holds only a whole marker naming the
+/// file's id, as a crash after a create's commit point leaves it. A failure leaves it.
+pub(crate) fn remove_leftover<R: Runtime>(pager: &Pager<R>, options: &Options, hold: Hold<'_>) {
+    let mut drv = Driver::new(pager.rt.clone());
+    let reserved = creating(&options.name);
+    if !matches!(listed(&mut drv, &reserved), Ok(Some(_))) {
+        return;
     }
-    remove_built(drv, name, &id, &entries)?;
-    Ok(None)
+    let file_id = pager.header.lock(&pager.rt).0.file_id;
+    let Ok(Some((id, entries))) = owner(&mut drv, options, hold) else {
+        return;
+    };
+    if id == file_id
+        && entries == [marker(&options.name)]
+        && remove_built(&mut drv, &options.name, &id, &entries).is_ok()
+        && remove_dir(&mut drv, &reserved).is_ok()
+    {
+        drv.sync_dir(parent(&reserved));
+    }
 }
 
 fn read_marker<R: Runtime>(drv: &mut Driver<R>, options: &Options) -> Result<Marked, OpenError> {

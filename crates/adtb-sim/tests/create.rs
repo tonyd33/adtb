@@ -1,7 +1,7 @@
 //! Creating a database: a crash anywhere in it leaves no database or a whole one, a retried
 //! create works with nothing removed by hand, and a create removes nothing it did not make.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -141,9 +141,9 @@ fn read_image(dir: &Path, at: &Path, into: &mut Files) {
 }
 
 /// Crash a create at each device event: an open finds an empty database or nothing, then a
-/// retried create works and a commit reads back. Under the deep profile the database verifies
-/// whole, and one image of each stage that leaves reserved names beside a whole file is retried
-/// again on a real file through the host's open.
+/// retried create works, a commit reads back and no reserved name is left. Under the deep
+/// profile the database verifies whole, and one image of each stage that leaves reserved names
+/// is retried again on a real file through the host's open.
 #[test]
 fn a_create_crashed_anywhere_is_retried() {
     let workload = |hook: &Hooked| {
@@ -164,7 +164,7 @@ fn a_create_crashed_anywhere_is_retried() {
         |at, image| {
             let stage = stage(&image);
             *reached.entry(stage).or_insert(0) += 1;
-            if every_case() && matches!(stage, Stage::Built | Stage::BetweenRenames) {
+            if every_case() && stage != Stage::Building {
                 images.entry(stage).or_insert_with(|| image.clone());
             }
             let first_block = |files: &Files| {
@@ -177,13 +177,8 @@ fn a_create_crashed_anywhere_is_retried() {
                 opened_or_retried(|o| Database::open_in(rt.clone(), FILE, &log(), o))
             });
             assert_eq!(vec![r#""ann""#], names, "event {at}, {stage:?}");
-            let left = reserved(sim.files().into_keys());
-            let swept = if stage == Stage::Published {
-                left.iter().all(|p| *p == marker(FILE))
-            } else {
-                left.is_empty()
-            };
-            assert!(swept, "event {at}, {stage:?}: {left:?}");
+            let left = reserved(sim.files().into_keys().chain(sim.dirs()));
+            assert_eq!(Vec::<String>::new(), left, "event {at}, {stage:?}");
             if stage == Stage::BetweenRenames {
                 let now = first_block(&sim.files());
                 assert_eq!(logged, now, "event {at}: rolled forward");
@@ -453,4 +448,163 @@ fn a_create_over_a_held_reserved_file_is_locked() {
     let db = adtb::open(dir.join(FILE), &log(), &api::options(2)).expect("the create");
     db.close().unwrap();
     assert!(!dir.join(creating(FILE)).exists());
+}
+
+/// Returns the id of the database `created(1)` leaves.
+fn created_id() -> [u8; 16] {
+    created(1)[FILE][24..40].try_into().unwrap()
+}
+
+fn under_reserved(files: &Files) -> Files {
+    let reserved = format!("{}/", creating(FILE));
+    files
+        .iter()
+        .filter(|(p, _)| p.starts_with(&reserved))
+        .map(|(p, b)| (p.clone(), b.clone()))
+        .collect()
+}
+
+/// Returns the open options without `create`, and under the deep profile with it too.
+fn either_open() -> Vec<OpenOptions> {
+    let mut each = vec![no_create()];
+    if every_case() {
+        each.push(api::options(2));
+    }
+    each
+}
+
+/// Open `FILE` over `files` on the simulator with each of [`either_open`]. Returns the files and
+/// the directories after each open.
+fn opened_over(files: &Files) -> Vec<(Files, BTreeSet<String>)> {
+    either_open()
+        .into_iter()
+        .map(|options| {
+            let mut sim = Sim::with_files(1, Config::default(), files.clone());
+            api::run(&mut sim, |rt| {
+                let db = Database::open_in(rt, FILE, &log(), &options).expect("the open");
+                db.close().unwrap();
+            });
+            (sim.files(), sim.dirs())
+        })
+        .collect()
+}
+
+/// An open of a whole database, with or without `create`, removes a reserved directory holding
+/// only a whole marker naming the database's id, and leaves byte for byte one holding a marker
+/// of another id, a torn marker, or another entry beside the marker, the file or the log
+/// directory it names among them. On the host it leaves a
+/// linked marker too.
+#[test]
+fn a_whole_open_removes_only_its_own_leftover_marker() {
+    let id = created_id();
+    let mut torn = marker_bytes(&id);
+    torn[10] ^= 1;
+    let own = Files::from([(marker(FILE), marker_bytes(&id))]);
+    for (after, dirs) in opened_over(&created(1).into_iter().chain(own).collect()) {
+        assert_eq!(
+            Vec::<String>::new(),
+            reserved(after.into_keys().chain(dirs))
+        );
+    }
+    let file = aside(FILE, &id);
+    let cases = [
+        (
+            "a marker of another id",
+            vec![(marker(FILE), marker_bytes(&OTHER))],
+        ),
+        ("a torn marker", vec![(marker(FILE), torn)]),
+        (
+            "another entry beside the marker",
+            vec![
+                (marker(FILE), marker_bytes(&id)),
+                (format!("{}/notes", creating(FILE)), b"keep".to_vec()),
+            ],
+        ),
+        (
+            "the file the marker names beside it",
+            vec![
+                (marker(FILE), marker_bytes(&id)),
+                (file.clone(), b"keep".to_vec()),
+            ],
+        ),
+        (
+            "the log directory the marker names beside it",
+            vec![
+                (marker(FILE), marker_bytes(&id)),
+                (format!("{file}-log/0000000000000000"), b"keep".to_vec()),
+            ],
+        ),
+    ];
+    let mut ran = 0;
+    for (case, planted) in cases {
+        let files: Files = created(1).into_iter().chain(planted).collect();
+        for (after, dirs) in opened_over(&files) {
+            assert_eq!(under_reserved(&files), under_reserved(&after), "{case}");
+            assert!(dirs.contains(&creating(FILE)), "{case}: {dirs:?}");
+            ran += 1;
+        }
+    }
+    assert_reached("an open over a reserved directory it does not own", ran, 5);
+    linked_leftover_markers_stay(&id);
+}
+
+/// On the host a whole open leaves a marker naming its id that is a symbolic link, or in a
+/// reserved directory that is one, and still opens.
+fn linked_leftover_markers_stay(id: &[u8; 16]) {
+    let mut ran = 0;
+    for linked_dir in [false, true] {
+        let dir = scratch(&format!("leftover-linked-{linked_dir}"));
+        write_image(&dir, &created(1));
+        let target = dir.join("mine");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("id"), marker_bytes(id)).unwrap();
+        let reserved = dir.join(creating(FILE));
+        if linked_dir {
+            std::os::unix::fs::symlink(&target, &reserved).unwrap();
+        } else {
+            std::fs::create_dir(&reserved).unwrap();
+            std::os::unix::fs::symlink(target.join("id"), dir.join(marker(FILE))).unwrap();
+        }
+        for options in either_open() {
+            let db = adtb::open(dir.join(FILE), &log(), &options).expect("the open");
+            db.close().unwrap();
+            let what = format!("linked dir {linked_dir}");
+            assert_eq!(
+                marker_bytes(id),
+                std::fs::read(target.join("id")).unwrap(),
+                "{what}"
+            );
+            assert!(reserved.symlink_metadata().is_ok(), "{what}");
+            assert!(dir.join(marker(FILE)).symlink_metadata().is_ok(), "{what}");
+            ran += 1;
+        }
+    }
+    assert_reached("a host open over a linked leftover marker", ran, 2);
+}
+
+/// An empty file beside the log directory its own create published, the file still in the
+/// reserved directory, opens without `create` as a file with no header and is rolled forward by
+/// a create.
+#[test]
+fn an_empty_file_beside_its_own_published_log_is_rolled_forward() {
+    let (built, id) = built();
+    let mut files = moved(
+        built,
+        &format!("{}-log", aside(FILE, &id)),
+        &format!("{FILE}-log"),
+    );
+    files.insert(FILE.to_owned(), Vec::new());
+    let mut sim = Sim::with_files(1, Config::default(), files.clone());
+    let got = api::run(&mut sim, |rt| {
+        Database::open_in(rt, FILE, &log(), &no_create()).map(drop)
+    });
+    assert!(
+        matches!(&got, Err(OpenError::Corrupt { detail }) if detail == "NoHeader"),
+        "{got:?}"
+    );
+    assert_eq!(files, sim.files());
+    let (got, after) = create_over(files);
+    got.unwrap();
+    assert_eq!(id, after[FILE][24..40]);
+    assert_eq!(Vec::<String>::new(), reserved(after.into_keys()));
 }

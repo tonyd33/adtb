@@ -569,7 +569,10 @@ refuses the create and is left as it was, and a create never removes the
 log directory at the file's own name.
 An open without create of an empty file refuses when a log directory is
 at its own name whose first block carries no id a whole marker names. A crash after the commit point
-can leave the reserved directory holding only its marker.
+can leave the reserved directory holding only its marker. An open that finds the file whole
+removes the marker and the directory when the marker is whole, names the file's id and is the
+directory's only entry, on the host only when no symbolic link is at or in the directory, and
+leaves anything else; a failure to remove them does not fail the open.
 
 Invariants:
 
