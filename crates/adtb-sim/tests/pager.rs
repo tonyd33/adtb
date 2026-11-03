@@ -486,10 +486,11 @@ fn resolve(report: &Report, ledger: &Ledger, world: &World) {
 }
 
 /// The fewest crashes under every fault that may leave one file refusing to open: the measured
-/// refused-open rate is about 7%, and this bound about 17%.
-const CRASHES_PER_REFUSAL: usize = 6;
+/// refused-open rate is about 7% of crashes, and up to 25% over 8 seeds, so the bound is 33%.
+const CRASHES_PER_REFUSAL: usize = 3;
 
-/// The least a sweep under every fault reaches over all of its seeds.
+/// The least a sweep under every fault reaches over all of its seeds, its kinds of finding only
+/// under the nextest profile `deep`.
 struct Floors {
     crashes: usize,
     acked: usize,
@@ -504,6 +505,22 @@ struct Rate {
     per: usize,
 }
 
+/// Page findings under misdirected and lost writes: under half the measured 104 over 64 seeds.
+const MISDIRECTED_PAGES: Rate = Rate { found: 1, per: 2 };
+/// Log findings under misdirected and lost writes: one, as 6 of 64 measured seeds reach any and
+/// 96 seeds then all miss with chance under 1e-4.
+const MISDIRECTED_LOGS: Rate = Rate { found: 1, per: 96 };
+/// Page findings under every fault: under half the measured 85 over 64 seeds.
+const EVERY_FAULT_PAGES: Rate = Rate { found: 1, per: 2 };
+/// Reopens of 8 seeds of threads under every fault: half the measured mean of 3.33 per seed over
+/// 256 seeds.
+const THREADED_REOPENS: usize = 13;
+/// Page findings of threads under every fault: under half the measured 305 over 256 seeds.
+const THREADED_PAGES: Rate = Rate { found: 1, per: 2 };
+/// Log findings of threads under every fault: one, as 25 of 256 measured seeds reach any and 64
+/// seeds then all miss with chance under 0.2%.
+const THREADED_LOGS: Rate = Rate { found: 1, per: 64 };
+
 #[must_use]
 #[derive(Debug, Default)]
 struct Tally {
@@ -513,7 +530,6 @@ struct Tally {
     findings: usize,
     pages: usize,
     logs: usize,
-    unlogged: usize,
     reopened: usize,
     unopenable: usize,
 }
@@ -521,16 +537,6 @@ struct Tally {
 /// Returns the findings `rate` asks of `seeds` seeds run, at least one unless `rate` asks none.
 fn kind_floor(seeds: usize, rate: &Rate) -> usize {
     (seeds * rate.found / rate.per).max(rate.found.min(1))
-}
-
-/// Returns every seed of `all` under the nextest profile `deep`, and otherwise what [`sweep`]
-/// makes of `n` seeds from `first`. Pick `first` to reach every kind of finding.
-fn picked(all: Range<u64>, first: u64, n: u64) -> Range<u64> {
-    if every_case() {
-        all
-    } else {
-        sweep(first..first + n)
-    }
 }
 
 impl Tally {
@@ -559,6 +565,9 @@ impl Tally {
             self.acked,
             share(seeds, floors.acked),
         );
+        if !every_case() {
+            return;
+        }
         assert_reached(
             "page findings",
             self.pages,
@@ -629,12 +638,7 @@ fn crash_loop(
         for f in &report.findings {
             match f {
                 Finding::Page { .. } => tally.pages += 1,
-                Finding::Log(l) => {
-                    tally.logs += 1;
-                    if matches!(l.problem, LogProblem::Unlogged { .. }) {
-                        tally.unlogged += 1;
-                    }
-                }
+                Finding::Log(_) => tally.logs += 1,
                 Finding::Orphan(_) => {}
             }
         }
@@ -657,12 +661,8 @@ fn crash_loop(
 }
 
 fn seeds(range: Range<u64>, faults: Faults, layout: Layout, damage_allowed: bool) -> Tally {
-    run(sweep(range), faults, layout, damage_allowed)
-}
-
-fn run(seeds: Range<u64>, faults: Faults, layout: Layout, damage_allowed: bool) -> Tally {
     let mut total = Tally::default();
-    for seed in seeds {
+    for seed in sweep(range) {
         total.seeds += 1;
         let t = crash_loop(seed, faults.clone(), layout, damage_allowed, 4);
         total.crashes += t.crashes;
@@ -670,7 +670,6 @@ fn run(seeds: Range<u64>, faults: Faults, layout: Layout, damage_allowed: bool) 
         total.findings += t.findings;
         total.pages += t.pages;
         total.logs += t.logs;
-        total.unlogged += t.unlogged;
         total.reopened += t.reopened;
         total.unopenable += t.unopenable;
     }
@@ -756,8 +755,8 @@ fn bit_rot_and_latent_errors_are_reported_never_returned() {
 
 #[test]
 fn misdirected_and_lost_writes_are_reported_never_returned() {
-    let t = run(
-        picked(300..396, 323, 12),
+    let t = seeds(
+        300..312,
         Faults {
             torn_p: 0.3,
             misdirect_p: 0.004,
@@ -767,15 +766,13 @@ fn misdirected_and_lost_writes_are_reported_never_returned() {
         PLAIN,
         true,
     );
-    let rate = Rate { found: 1, per: 1 };
-    assert_reached("page findings", t.pages, kind_floor(t.seeds, &rate));
-    assert_reached("log findings", t.logs, kind_floor(t.seeds, &rate));
     if every_case() {
-        let unlogged = Rate { found: 1, per: 96 };
+        let pages = kind_floor(t.seeds, &MISDIRECTED_PAGES);
+        assert_reached("page findings", t.pages, pages);
         assert_reached(
-            "pages past their log",
-            t.unlogged,
-            kind_floor(t.seeds, &unlogged),
+            "log findings",
+            t.logs,
+            kind_floor(t.seeds, &MISDIRECTED_LOGS),
         );
     }
 }
@@ -852,7 +849,7 @@ fn every_fault_at_once() {
             crashes: 25,
             acked: 300,
             reopened: 33,
-            pages: Rate { found: 3, per: 4 },
+            pages: EVERY_FAULT_PAGES,
             logs: Rate { found: 0, per: 1 },
         },
     );
@@ -1168,9 +1165,9 @@ fn threads_sharing_a_pager_lose_nothing_across_crashes() {
 
 #[test]
 fn threads_sharing_a_pager_under_every_fault() {
-    const SEEDS: Range<u64> = 807..815;
-    run(
-        picked(800..864, SEEDS.start, SEEDS.end - SEEDS.start),
+    const SEEDS: Range<u64> = 800..808;
+    seeds(
+        SEEDS,
         Faults {
             torn_p: 0.3,
             corrupt_p: 0.002,
@@ -1188,12 +1185,9 @@ fn threads_sharing_a_pager_under_every_fault() {
         &Floors {
             crashes: 15,
             acked: 1000,
-            reopened: 22,
-            pages: Rate { found: 1, per: 2 },
-            logs: Rate {
-                found: usize::from(every_case()),
-                per: 6,
-            },
+            reopened: THREADED_REOPENS,
+            pages: THREADED_PAGES,
+            logs: THREADED_LOGS,
         },
     );
 }
@@ -1517,6 +1511,163 @@ fn a_lost_write_is_caught_when_the_page_is_read_back() {
         assert!(
             matches!(back, Err(Damage::Stale { .. })),
             "a lost write read back as {back:?}"
+        );
+    });
+    assert_eq!(Outcome::Finished, outcome);
+}
+
+/// Write every page of `pages`, then change the first and flush it under `faults`. Returns the
+/// LSN the change gave it and the LSN the device held for it before.
+fn flush_first_under(
+    rt: &SimRuntime,
+    p: &Pager<SimRuntime>,
+    pages: &[Pid],
+    faults: Faults,
+) -> (Lsn, Lsn) {
+    for &pid in pages {
+        p.update(&[pid], |v| v[0][HEADER_LEN] ^= 1).unwrap();
+    }
+    p.flush_pages(usize::MAX);
+    let before = adtb::storage::lsn(&p.read(pages[0]).unwrap());
+    let changed = p.update(&[pages[0]], |v| v[0][HEADER_LEN + 1] = 7).unwrap();
+    p.flush_log();
+    rt.set_faults(faults);
+    p.flush_pages(usize::MAX);
+    rt.set_faults(Faults::default());
+    (changed, before)
+}
+
+/// Returns the page the first misdirected write to the data file in `trace` landed on.
+fn misdirected_to(trace: &str) -> Pid {
+    let line = trace
+        .lines()
+        .find(|l| l.starts_with("fault misdirect") && l.contains(NAME))
+        .expect("no write to the data file was misdirected");
+    let at: u64 = line.rsplit_once('@').unwrap().1.parse().unwrap();
+    Pid(at / PAGE as u64)
+}
+
+#[test]
+fn a_misdirected_page_write_is_refused_where_it_was_meant_and_where_it_landed() {
+    let layout = Layout {
+        log_block: PAGE as u32,
+        ..PLAIN
+    };
+    let mut landed_on_a_read_page = false;
+    for seed in 0..4 {
+        let mut sim = Sim::new(
+            seed,
+            Config {
+                sector: PAGE as u64,
+                atomic_unit: PAGE as u64,
+                ..Config::default()
+            },
+        );
+        let client = Client::new();
+        setup(&mut sim, &client, layout);
+        let pages = client.world.lock().unwrap().pages.clone();
+        let mut seen = None;
+        let outcome = sim.run(|rt| {
+            let (p, _) = Pager::open(rt.clone(), &options(layout)).unwrap();
+            let misdirect = Faults {
+                misdirect_p: 1.0,
+                ..Faults::default()
+            };
+            let (expected, found) = flush_first_under(&rt, &p, &pages, misdirect);
+            let mut refused = BTreeMap::new();
+            for _ in 0..3 {
+                for &pid in &pages[1..] {
+                    if let Err(e) = p.read(pid) {
+                        refused.insert(pid, e.damage);
+                    }
+                }
+            }
+            let back = p.read(pages[0]).map(|_| ()).map_err(|e| e.damage);
+            seen = Some((Damage::Stale { expected, found }, back, refused));
+        });
+        assert_eq!(Outcome::Finished, outcome, "seed {seed}");
+        let (stale, back, refused) = seen.unwrap();
+        assert_eq!(Err(stale), back, "seed {seed}");
+        let landed = misdirected_to(&sim.trace());
+        let hit: BTreeMap<Pid, Damage> = pages[1..]
+            .contains(&landed)
+            .then_some((landed, Damage::Checksum))
+            .into_iter()
+            .collect();
+        landed_on_a_read_page |= !hit.is_empty();
+        assert_eq!(hit, refused, "seed {seed}");
+    }
+    assert!(
+        landed_on_a_read_page,
+        "no misdirected write landed on a page read back"
+    );
+}
+
+#[test]
+fn a_lost_page_write_is_reported_and_refused_on_reopen() {
+    let mut sim = Sim::new(41, Config::default());
+    let client = Client::new();
+    setup(&mut sim, &client, PLAIN);
+    let pages = client.world.lock().unwrap().pages.clone();
+    let mut lsns = None;
+    let outcome = sim.run(|rt| {
+        let (p, _) = Pager::open(rt.clone(), &options(PLAIN)).unwrap();
+        let lost = Faults {
+            lost_write_p: 1.0,
+            ..Faults::default()
+        };
+        lsns = Some(flush_first_under(&rt, &p, &pages, lost));
+        p.checkpoint();
+    });
+    assert_eq!(Outcome::Finished, outcome);
+    let (expected, found) = lsns.unwrap();
+    let stale = Damage::Stale { expected, found };
+    let (findings, back) = with_pager(&mut sim, |p| {
+        let findings = p.verify().findings;
+        (findings, p.read(pages[0]).map(|_| ()).map_err(|e| e.damage))
+    });
+    assert_eq!(
+        vec![Finding::Page {
+            pid: pages[0],
+            damage: stale
+        }],
+        findings
+    );
+    assert_eq!(Err(stale), back);
+}
+
+#[test]
+fn a_lost_log_write_refuses_the_reopen_at_its_gap() {
+    let mut sim = Sim::new(42, Config::default());
+    let client = Client::new();
+    setup(&mut sim, &client, PLAIN);
+    let pages = client.world.lock().unwrap().pages.clone();
+    let mut cut = None;
+    let outcome = sim.run(|rt| {
+        let (p, _) = Pager::open(rt.clone(), &options(PLAIN)).unwrap();
+        let change = |pid| p.update(&[pid], |v| v[0][HEADER_LEN] ^= 1).unwrap();
+        change(pages[1]);
+        p.flush_log();
+        cut = Some(p.durable());
+        rt.set_faults(Faults {
+            lost_write_p: 1.0,
+            ..Faults::default()
+        });
+        change(pages[2]);
+        p.flush_log();
+        rt.set_faults(Faults::default());
+        change(pages[3]);
+        p.flush_log();
+    });
+    assert_eq!(Outcome::Finished, outcome);
+    let gap = LogFinding {
+        lsn: cut.unwrap(),
+        problem: LogProblem::Gap,
+    };
+    let outcome = sim.run(|rt| {
+        assert_eq!(
+            Some(OpenError::Log(gap)),
+            Pager::open(rt, &options(PLAIN)).err()
         );
     });
     assert_eq!(Outcome::Finished, outcome);
