@@ -45,4 +45,10 @@ Left after the fix, severe first, from the review:
 - Cost: `Store::fetch` reads one more page per entry with no visible version; `refuse_if_named` walks the whole directory per skipped page.
 - `fetch_past`, the large store's `chunks`, retain, release, recount and freeing are untested.
 
+## 2026-11-02: landed
+
+`fix: refuse a heap page another owner holds`. The delta landed as asked: `heap::OrphanEntry { index }` with `exec::Error::OrphanEntry` and `write::Error::OrphanEntry`, which `quarantining` maps to `Quarantine::Index`; the large store's `tuple_at` checks kind, owner and chunk length for every chunk read, and `rot_cross` requires the replaced page in the pager's damaged set; `lost_bitmap::lookups_racing_a_vacuum_that_frees_slots_of_a_page_it_keeps_are_not_refused` searches 8 seeds of a key and tag lookup racing insert, delete and vacuum on a page that keeps other rows. Check exit 0, 3566 passed. Production +259 -95 against a 120 line stop line, accepted across review rounds.
+
+The panics this ticket reported are gone; it stays open for the leftovers above, and two more: the apply unique check's recheck survives its mutant, the race inserting only fresh keys, and `fetch_past` has no case, the fixture keeping no history.
+
 Direction: return `pager.damage(pid, Damage::Checksum)` as `read_role` does (crates/adtb/src/mvcc/clog.rs), sweeping every assert and panic in heap/handle.rs and heap/large.rs that judges page contents. space-append-spin covers the directory walk and stays separate.
