@@ -20,6 +20,8 @@ Each bet says what would prove it wrong.
 - Reporting an event as unexplained before reading the evidence that exists. After a disk drop, `coredumpctl list`; after a crash, `journalctl --user`.
 - Counting green tests, closed tickets or landed commits as progress. Ask what a user can now do, and what can no longer go wrong.
 - Saying "deep" or "done" about plans.
+- Waiving a stop line or a time limit as "mostly mechanical". Four of eight tracks on 2026-11-03.
+- Filling the queue with hygiene tracks because they land cleanly, while the roadmap stands still.
 - Accepting an agent's premise, or my own, without a run. My "65 `or`s stay refused" was false.
 
 ## Entries
@@ -676,3 +678,18 @@ rewriting author. Keep the original revision as evidence provenance and the
 copy solely as a stable review checkout. Dispatch only after checkout and
 comparison succeed; a hash or attempted command is insufficient. This uses
 native jj operations and adds no watcher or review approval stage.
+
+### 2026-11-03: periodic review after fault-matrix and eight tracks
+
+What happened: fault-matrix closed, then eight tracks ran one at a time (the maintainer's limit). Landed: every Prim named in translation, with a refusal for a pinned `print` or `parse` across a rename; a pinned composite key translated by field; create's leftover marker removed on the next whole open; typed causes in catalog, exec, write, plan and Corrupt, closing typed-causes-engine-layers. Ruled without code: `reserve_page` dropped (2.1% of suite cycles, against weakening the lost-write check); host-rule-gaps lowered to 610. Every landed tree was the tested tree, and every full check passed.
+
+Going well: every review found something real, twice an older wrong answer beside the change that no fixed input would have reached. The one delta round rule kept each track to two rounds. Rulings that saved a track cost less than running it.
+
+Going worse:
+
+- Every review found a test gap a mutant survived, because briefs asked for one mutant per change. The worst was create's deletion guard, untested, where a survivor could delete what the engine does not own. Five of eight tracks needed a delta round for it. Moved to a rule: code-agent.md now asks for a mutant per guard, branch and arm the change adds.
+- Four of eight tracks passed their stop line and I accepted each, so the line meant nothing. Moved to a rule: a stop line is a check-in, the author stops and reports.
+- Three wrong answers in translate this session were one class, identity by name or position, fixed site by site as reviews found them. Against the mechanisms bet: the class keeps producing bugs in translate, so it has no mechanism there yet. Moved to a rule in SKILL.md: a third older wrong answer in one subsystem brings an audit of it for the class. Next: a hack-audit track over translate/.
+- Typed causes took five tracks and four delta rounds while no roadmap item moved (dump-restore-backup, prealpha-app). Worth doing, but it changes no answer a user sees. Next: after picked-seed-floors, alternate a correctness track with a roadmap track, dump-restore-backup first.
+- Each track resolves one ticket and opens a follow-ups ticket, mostly cosmetic. Moved to a rule in SKILL.md: such follow-ups take no priority over wrong answers, and a stale follow-ups ticket closes as wontfix.
+- My slips: one outgoing-diff scan and push in a single command (scan clean, nothing leaked); a stale main working copy from a race with a slot's operation, recovered after copying the edited files aside.
