@@ -338,7 +338,7 @@ fn a_create_refused_on_a_log_with_no_file_leaves_the_log_and_makes_no_file() {
 
     let got = adtb::open(&path, &log, &options()).map(drop);
     assert!(
-        corrupt_detail(&got).contains("log directory"),
+        corrupt_detail(&got) == "the log directory holds a log that no file here wrote",
         "the refusal names the log: {got:?}"
     );
     assert!(
@@ -367,7 +367,7 @@ fn a_create_refused_on_a_log_of_only_an_unknown_file_leaves_it() {
 
     let got = adtb::open(&path, &Log::new([SHOP]), &options()).map(drop);
     assert!(
-        corrupt_detail(&got).contains("log directory"),
+        corrupt_detail(&got) == "the log directory holds a log that no file here wrote",
         "the refusal names the log: {got:?}"
     );
     assert!(
@@ -428,7 +428,7 @@ fn a_file_of_another_layout_is_refused_naming_the_layout_and_kept() {
     for opening in [options(), OpenOptions::default()] {
         let got = adtb::open(&path, &log, &opening).map(drop);
         assert!(
-            corrupt_detail(&got).contains("layout 2"),
+            corrupt_detail(&got) == "the file header has layout 2, not one this engine reads",
             "the refusal names the layout: {got:?}"
         );
         assert_eq!(bytes, std::fs::read(&path).expect("the file"));

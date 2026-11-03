@@ -300,7 +300,7 @@ fn create_over(files: Files) -> (Result<(), OpenError>, Files) {
 }
 
 fn is_reserved(got: &Result<(), OpenError>) -> bool {
-    matches!(got, Err(OpenError::Corrupt { detail }) if *detail == format!("{RESERVED:?}"))
+    matches!(got, Err(OpenError::Corrupt { detail }) if detail == RESERVED)
 }
 
 /// Plant at the reserved names every shape a create could mistake for its own: a database at
@@ -375,10 +375,7 @@ fn a_create_leaves_a_log_no_create_here_wrote() {
             .filter(|(p, _)| p.starts_with(&log))
             .collect()
     };
-    let log_present = format!(
-        "{:?}",
-        "the log directory holds a log that no file here wrote"
-    );
+    let log_present = "the log directory holds a log that no file here wrote";
     for own_log in [true, false] {
         let mut files = build.clone();
         if own_log {

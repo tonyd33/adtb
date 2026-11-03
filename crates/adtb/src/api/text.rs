@@ -15,6 +15,7 @@ use adtb_lang::types::{FnId, Ty};
 use crate::exec::Val;
 use crate::write::Outcome;
 
+use super::cause::Broken;
 use super::command;
 use super::error::Error;
 use super::server::Holds;
@@ -176,9 +177,7 @@ impl Prepared {
             TextError::Other(if e.past_limit() {
                 Error::invalid(e.message)
             } else {
-                Error::rejected(super::error::RejectReason::Internal {
-                    what: format!("checked ad hoc text has no normal form: {e:?}"),
-                })
+                Error::internal(Broken::AdhocNotNormal(e))
             })
         })?;
         let roots: Vec<Tm> = normal
@@ -325,9 +324,7 @@ fn elements(v: Val) -> Result<Vec<Val>, Error> {
     match v {
         Val::Set(s) => Ok(s.iter().cloned().collect()),
         Val::List(l) => Ok(l.to_vec()),
-        other => Err(Error::rejected(super::error::RejectReason::Internal {
-            what: format!("a set-valued item evaluates to a set, not {other:?}"),
-        })),
+        other => Err(Error::internal(Broken::NotASet(other))),
     }
 }
 

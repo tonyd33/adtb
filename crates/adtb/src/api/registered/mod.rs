@@ -22,6 +22,7 @@ use crate::runtime::Runtime;
 
 use super::arrow::{self, ArrowStream};
 use super::bundle::{self, CallRow, EDITION, Header, Passed, Stored};
+use super::cause::{Broken, internal};
 use super::error::{Error, RejectReason};
 use super::pinned;
 use super::reads::Reads;
@@ -372,11 +373,8 @@ impl<'a> Lacking<'a> {
         if let Some(at) = self.held.iter().position(same) {
             return Ok(at);
         }
-        let normal = norm::program(run.schema, run.program).map_err(|e| {
-            Error::rejected(RejectReason::Internal {
-                what: format!("a checked registration's program does not normalise: {e:?}"),
-            })
-        })?;
+        let normal = norm::program(run.schema, run.program)
+            .map_err(|e| Error::internal(Broken::RegistrationNotNormal(e)))?;
         self.held.push(Held {
             schema: run.schema.clone(),
             program: run.program.clone(),
@@ -419,11 +417,8 @@ fn requirements(run: &Run<'_>, program: &NormalProgram) -> Result<Requirements, 
         .copied()
         .chain(run.unit)
         .collect();
-    permission::normal(run.schema, program, run.terms, run.body, &params).map_err(|e| {
-        Error::rejected(RejectReason::Internal {
-            what: format!("a checked registered call has no requirements: {e:?}"),
-        })
-    })
+    permission::normal(run.schema, program, run.terms, run.body, &params)
+        .map_err(|e| Error::internal(Broken::NoRequirements(e)))
 }
 
 /// Refuse a bundle of `checked`, recorded in `stored` with an owner other than the schema
@@ -478,8 +473,9 @@ pub(super) fn role_name(
     owned: &str,
 ) -> Result<String, Error> {
     roles.get(&id).cloned().ok_or_else(|| {
-        Error::rejected(RejectReason::Internal {
-            what: format!("no role has id {id}, which owns {owned}"),
+        Error::internal(Broken::NoRole {
+            id,
+            owned: owned.to_owned(),
         })
     })
 }
@@ -576,10 +572,9 @@ pub(super) fn registration(
     let (_, calls) = c.bundle().expect("a bundle's registration has a header");
     bundle::admitted(stored, h, &calls)?;
     if let Some(pin) = &at_pin {
-        let internal = |what| Error::rejected(RejectReason::Internal { what });
         if bundle::going_live(stored, h, now, s)
             && let Some(f) = held_other_code(&pin.source, over.source)
-                .map_err(|ds| internal(format!("{ds:?}")))?
+                .map_err(|ds| Error::internal(Broken::HostCode(ds)))?
         {
             let u = Untranslatable {
                 operator: None,
@@ -753,9 +748,7 @@ fn catalog_error(e: catalog::Error) -> Error {
         catalog::Error::Refused(why) | catalog::Error::Unaccepted(_, why) => {
             Error::invalid(why.join("\n"))
         }
-        other => Error::rejected(RejectReason::Internal {
-            what: format!("{other:?}"),
-        }),
+        other => Error::internal(Broken::CatalogError(other)),
     }
 }
 
@@ -845,11 +838,8 @@ pub(super) fn recheck(
         let c = &l.checked;
         let pins = c.header.as_ref().map_or(0, |h| h.pins);
         let lines = blocked.entry(&c.name).or_default();
-        let conflict = host_conflict(catalog.source(), &l.source, &next).map_err(|ds| {
-            RejectReason::Internal {
-                what: format!("{ds:?}"),
-            }
-        })?;
+        let conflict = host_conflict(catalog.source(), &l.source, &next)
+            .map_err(|ds| internal(Broken::HostCode(ds)))?;
         if let Some((op, f)) = conflict {
             operator.get_or_insert(op);
             lines.push(format!(
@@ -875,9 +865,7 @@ pub(super) fn recheck(
         let runs = c.entries.iter().zip(served.iter().map(Served::run));
         let lacks = lacking.of_runs(runs, owner).map_err(|e| match e {
             Error::Rejected { reason } => reason,
-            other => RejectReason::Internal {
-                what: format!("{other:?}"),
-            },
+            other => internal(Broken::Lacking(other)),
         })?;
         lines.extend(
             lacks

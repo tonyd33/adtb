@@ -3,6 +3,7 @@
 mod arrow;
 mod backup;
 mod bundle;
+mod cause;
 mod command;
 mod error;
 mod failed_open;
@@ -29,6 +30,7 @@ pub mod typed;
 mod value;
 mod verify;
 
+use cause::{Broken, corrupt, internal};
 use failed_open::{failed_create, finish_create, host_error};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -486,11 +488,7 @@ impl<R: Runtime> Database<R> {
         let text = relation.map_or_else(|| "verify".to_owned(), |r| format!("verify {r}"));
         self.query_text(&text, &[], &CallOptions::default())?
             .pop()
-            .ok_or_else(|| {
-                Error::rejected(RejectReason::Internal {
-                    what: "a command returns its rows".into(),
-                })
-            })
+            .ok_or_else(|| Error::internal(Broken::NoRows))
     }
 
     /// Run `verify` over the whole database with the checks of the allocation bitmap, the heaps
@@ -676,12 +674,6 @@ fn unsupported(what: &str) -> Error {
     Error::invalid(format!("{what} does not run in this engine yet"))
 }
 
-fn corrupt(detail: impl std::fmt::Debug) -> OpenError {
-    OpenError::Corrupt {
-        detail: format!("{detail:?}"),
-    }
-}
-
 /// Mark what holds each page that failed verification while the database opened. A page of the
 /// catalog or commit log marks the database. A page nothing maps marks nothing. A failure to
 /// write a mark is left to the next open, which finds the same damage.
@@ -855,13 +847,6 @@ impl<R: Runtime> Engine<R> {
             }
             Err(storage::OpenError::NotFound) => return Err(OpenError::NotFound),
             Err(storage::OpenError::Io(e)) => return Err(OpenError::Io(host_error(e))),
-            Err(storage::OpenError::OtherLayout(layout)) => {
-                return Err(OpenError::Corrupt {
-                    detail: format!(
-                        "the file header has layout {layout}, not one this engine reads"
-                    ),
-                });
-            }
             Err(e) => return Err(corrupt(e)),
         };
         let opened = Engine::on(rt.clone(), pager.clone(), log, options).or_else(|e| {
@@ -1466,14 +1451,16 @@ fn migrate<R: Runtime>(
                     detail: why.join("\n"),
                 },
             ),
-            catalog::Error::Internal(what) => refused(version, RejectReason::Internal { what }),
+            catalog::Error::Internal(what) => refused(version, internal(Broken::Catalog(what))),
             catalog::Error::MissingFunction(name) => OpenError::HostFnMissing { name },
             catalog::Error::OtherVersion(name) => OpenError::HostFnMismatch { name },
-            catalog::Error::Unchecked(built, ds) => {
-                let what = ds.into_iter().map(|d| d.message).collect::<Vec<_>>();
-                let what = format!("{built} does not check: {}", what.join("; "));
-                refused(version, RejectReason::Internal { what })
-            }
+            catalog::Error::Unchecked(built, ds) => refused(
+                version,
+                internal(Broken::Unchecked {
+                    built,
+                    messages: ds.into_iter().map(|d| d.message).collect(),
+                }),
+            ),
             other => corrupt(other),
         })?;
     }

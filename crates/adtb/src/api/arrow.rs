@@ -11,7 +11,8 @@ use crate::catalog::layout::{self, batch_type, is_record, repr};
 use crate::exec::types::ctor_set;
 use crate::exec::{self, Val};
 
-use super::error::{Error, RejectReason};
+use super::cause::Broken;
+use super::error::Error;
 use super::text::DynRows;
 
 /// The rows of one batch of a result stream.
@@ -99,7 +100,7 @@ pub(super) fn stream(schema: &Schema, rows: DynRows) -> Result<ArrowStream, Erro
         by,
         BATCH_ROWS,
     )
-    .map_err(|e| internal(&format!("{e:?}")))?;
+    .map_err(|e| Error::internal(Broken::Batches(e)))?;
     let batches: Vec<RecordBatch> = batches
         .into_iter()
         .map(|batch| RecordBatch {
@@ -133,7 +134,7 @@ pub(super) fn record_batch(
         by,
         n.max(1),
     )
-    .map_err(|e| internal(&format!("{e:?}")))?;
+    .map_err(|e| Error::internal(Broken::Batches(e)))?;
     let batch = batches
         .pop()
         .unwrap_or_else(|| BatchBuilder::new(arrow.batch_schema()).finish());
@@ -151,7 +152,7 @@ fn columns(schema: &Schema, elem: &Ty) -> Result<(Vec<Field>, exec::Rows), Error
         Ok(Field {
             name: name.to_owned(),
             ty: batch_type(schema, ty)
-                .ok_or_else(|| internal(&format!("a result of type {ty:?} has no column")))?,
+                .ok_or_else(|| Error::internal(Broken::NoColumn(ty.clone())))?,
         })
     };
     let fields: Option<Vec<(String, Ty)>> = match (&t, ctor_set(schema, &t).as_slice()) {
@@ -182,10 +183,4 @@ fn is_sum(schema: &Schema, t: &Ty) -> bool {
         Ty::Sum { ctors, .. } => ctors.len() >= 2,
         _ => false,
     }
-}
-
-fn internal(what: &str) -> Error {
-    Error::rejected(RejectReason::Internal {
-        what: what.to_owned(),
-    })
 }

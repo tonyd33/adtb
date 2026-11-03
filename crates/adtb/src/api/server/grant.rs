@@ -15,8 +15,9 @@ use crate::runtime::Runtime;
 use crate::write::Txn;
 
 use super::super::bundle::{Row, Stored};
+use super::super::cause::Broken;
 use super::super::registered::{self, Checked, Lacking, Over};
-use super::super::{Engine, Error, OWNER_ID, RejectReason};
+use super::super::{Engine, Error, OWNER_ID};
 use super::store::{self, Changes};
 use super::tables::{Given, Grant, Tables};
 use super::{
@@ -321,8 +322,8 @@ impl<R: Runtime> Giving<'_, R> {
         }
         let privilege = stated.privilege_name();
         let target = stated.target_text(&self.e.schema).ok_or_else(|| {
-            Error::rejected(RejectReason::Internal {
-                what: format!("a resolved `{privilege}` names an object of the schema"),
+            Error::internal(Broken::UnresolvedGrant {
+                privilege: privilege.to_owned(),
             })
         })?;
         if privilege != "read" {

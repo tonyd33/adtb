@@ -11,7 +11,8 @@ use adtb_lang::signature::{self, Item};
 use adtb_lang::types::{FnId, Ty};
 
 use super::super::bundle::CallRow;
-use super::super::error::{Error, RejectReason};
+use super::super::cause::Broken;
+use super::super::error::Error;
 use super::super::reads::Reads;
 use super::{Callable, Checked, Entry, Over, Registration, joined};
 
@@ -208,7 +209,7 @@ fn imported(schema: &Schema, program: &Program, f: &QName, id: FnId) -> Result<E
     })?;
     let normal = norm::adhoc(schema, program, &adhoc).map_err(not_normal)?;
     let [body] = normal.items.as_slice() else {
-        return Err(no_normal("a call is one item"));
+        return Err(Error::internal(Broken::CallNotOneItem));
     };
     let body = *body;
     let shown: Vec<String> = def
@@ -243,12 +244,6 @@ fn not_normal(e: norm::Error) -> Error {
     if e.past_limit() {
         Error::invalid(e.message)
     } else {
-        no_normal(e)
+        Error::internal(Broken::CallNotNormal(e))
     }
-}
-
-fn no_normal(e: impl std::fmt::Debug) -> Error {
-    Error::rejected(RejectReason::Internal {
-        what: format!("a checked registered call has no normal form: {e:?}"),
-    })
 }

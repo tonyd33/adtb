@@ -458,7 +458,7 @@ fn a_nonempty_ownerless_roles_table_is_refused_and_releases_open_resources() {
     for _ in 0..2 {
         let result = Database::open_in(rt.clone(), "roles.adt", &Log::default(), &options);
         assert!(
-            matches!(result, Err(OpenError::Corrupt { detail }) if detail.contains("no schema owner"))
+            matches!(result, Err(OpenError::Corrupt { detail }) if detail == "a nonempty roles relation has no schema owner")
         );
     }
     let (pager, _) = Pager::open(rt.clone(), &options.storage("roles.adt")).unwrap();

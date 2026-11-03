@@ -26,13 +26,6 @@ pub(super) fn finish_create<R: Runtime>(
 /// Returns the refusal a failure of a create or of publishing its database makes.
 pub(super) fn failed_create(e: storage::OpenError) -> OpenError {
     match e {
-        storage::OpenError::Exists => corrupt("neither copy of the file header verifies"),
-        storage::OpenError::LogPresent => {
-            corrupt("the log directory holds a log that no file here wrote")
-        }
-        storage::OpenError::Reserved => {
-            corrupt("the reserved directory of a create holds what no create left")
-        }
         storage::OpenError::Locked => OpenError::Locked { pid: None },
         storage::OpenError::Io(e) => OpenError::Io(host_error(e)),
         other => corrupt(other),

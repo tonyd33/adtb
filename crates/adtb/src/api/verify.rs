@@ -16,6 +16,7 @@ use crate::storage::{Pager, Pid};
 use crate::verify::{self, Depth};
 use crate::write::{self, Found, HoldWait, VerifyScope};
 
+use super::cause::Corruption;
 use super::command::engine_relation;
 use super::text::{DynRows, rows};
 use super::{Engine, OpenError, corrupt, micros};
@@ -127,7 +128,7 @@ impl Findings {
             cursor: None,
         };
         for row in kept.into_iter().filter(|k| k.relation == id) {
-            let bad = || corrupt(format!("a finding holds {row:?}"));
+            let bad = || corrupt(Corruption::Finding(row.clone()));
             if row.group == COUNTERS {
                 let [run, next] = row.fields.as_slice() else {
                     return Err(bad());

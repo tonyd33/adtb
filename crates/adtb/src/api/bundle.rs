@@ -2,6 +2,7 @@
 //! that hold their deployment state, leases, retirement and supersession.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::sync::Arc;
 
 use adtb_lang::ast::{self, BundleHeader, BundleName, ExprKind, HeaderClause, Lit};
@@ -111,6 +112,60 @@ const PRIORITIES: [(&str, exec::Priority); 3] = [
     ("Background", exec::Priority::Background),
     ("Regular", exec::Priority::Regular),
 ];
+
+/// A row of `catalog::bundles` or `catalog::registered` the engine did not write.
+#[derive(Debug)]
+pub(super) enum BadRow {
+    NotARow(Val),
+    Registered(Val),
+    Field {
+        row: &'static str,
+        field: String,
+        found: Option<Val>,
+    },
+    Bundle {
+        bundle: String,
+        field: &'static str,
+        found: String,
+    },
+    Range(std::num::TryFromIntError),
+}
+
+impl BadRow {
+    fn field(row: &'static str, field: &str, found: Option<&Val>) -> BadRow {
+        BadRow::Field {
+            row,
+            field: field.to_owned(),
+            found: found.cloned(),
+        }
+    }
+
+    fn bundle(bundle: &str, field: &'static str, found: String) -> BadRow {
+        BadRow::Bundle {
+            bundle: bundle.to_owned(),
+            field,
+            found,
+        }
+    }
+}
+
+impl fmt::Display for BadRow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BadRow::NotARow(v) => write!(f, "a catalog row is {v:?}"),
+            BadRow::Registered(v) => write!(f, "a registered row is {v:?}"),
+            BadRow::Field { row, field, found } => {
+                write!(f, "field `{field}` of a {row} row is {:?}", found.as_ref())
+            }
+            BadRow::Bundle {
+                bundle,
+                field,
+                found,
+            } => write!(f, "bundle {bundle} has {field} {found}"),
+            BadRow::Range(e) => write!(f, "{e}"),
+        }
+    }
+}
 
 /// Returns the priority class the word `p` names, in any case.
 fn priority(p: &str) -> Option<exec::Priority> {
@@ -368,20 +423,21 @@ impl<'s> Tables<'s> {
     }
 
     /// Returns the row `v`, a value of `catalog::Bundle`.
-    fn bundle_row(&self, v: &Val) -> Result<Row, String> {
+    fn bundle_row(&self, v: &Val) -> Result<Row, BadRow> {
         let f = self.named(self.bundles, v)?;
+        let field = |n: &str| BadRow::field("bundle", n, f.get(n));
         let text = |n: &str| match f.get(n) {
             Some(Val::Text(t)) => Ok(t.to_string()),
-            other => Err(format!("field `{n}` of a bundle row is {other:?}")),
+            _ => Err(field(n)),
         };
         let number = |n: &str| match f.get(n) {
             Some(Val::Int(i)) => Ok(*i),
-            other => Err(format!("field `{n}` of a bundle row is {other:?}")),
+            _ => Err(field(n)),
         };
         let some = |n: &str| match f.get(n) {
             Some(Val::Ctor(1, inner)) => Ok(inner.first().cloned()),
             Some(Val::Ctor(0, _)) => Ok(None),
-            other => Err(format!("field `{n}` of a bundle row is {other:?}")),
+            _ => Err(field(n)),
         };
         let name = text("name")?;
         let state = match f.get("state") {
@@ -390,10 +446,10 @@ impl<'s> Tables<'s> {
                     ("Active", _) => State::Active,
                     ("Superseded", Some(Val::Instant(t))) => State::Superseded(*t),
                     ("Retired", Some(Val::Instant(t))) => State::Retired(*t),
-                    other => return Err(format!("bundle {name} has state {other:?}")),
+                    other => return Err(BadRow::bundle(&name, "state", format!("{other:?}"))),
                 }
             }
-            other => return Err(format!("bundle {name} has state {other:?}")),
+            other => return Err(BadRow::bundle(&name, "state", format!("{other:?}"))),
         };
         let header = Header {
             version: name
@@ -401,13 +457,13 @@ impl<'s> Tables<'s> {
                 .map(|(_, v)| v.to_owned())
                 .unwrap_or_default(),
             family: text("family")?,
-            pins: u64::try_from(number("pins")?).map_err(|e| e.to_string())?,
+            pins: u64::try_from(number("pins")?).map_err(BadRow::Range)?,
             hash: match f.get("hash") {
                 Some(Val::Bytes(b)) => b.iter().map(|x| format!("{x:02x}")).collect(),
-                other => return Err(format!("bundle {name} has hash {other:?}")),
+                other => return Err(BadRow::bundle(&name, "hash", format!("{other:?}"))),
             },
             catalog: match some("catalog")? {
-                Some(Val::Int(c)) => Some(u64::try_from(c).map_err(|e| e.to_string())?),
+                Some(Val::Int(c)) => Some(u64::try_from(c).map_err(BadRow::Range)?),
                 _ => None,
             },
             edition: text("edition")?,
@@ -419,9 +475,9 @@ impl<'s> Tables<'s> {
             priority: match f.get("priority") {
                 Some(Val::Ctor(c, _)) => {
                     let ctor = self.ctor_name("Priority", *c);
-                    priority(&ctor).ok_or_else(|| format!("bundle {name} has priority {ctor}"))?
+                    priority(&ctor).ok_or_else(|| BadRow::bundle(&name, "priority", ctor))?
                 }
-                other => return Err(format!("bundle {name} has priority {other:?}")),
+                other => return Err(BadRow::bundle(&name, "priority", format!("{other:?}"))),
             },
             name,
         };
@@ -430,7 +486,7 @@ impl<'s> Tables<'s> {
             owner: text("owner")?,
             renewed: match f.get("renewed") {
                 Some(Val::Instant(t)) => *t,
-                other => return Err(format!("field `renewed` of a bundle row is {other:?}")),
+                _ => return Err(field("renewed")),
             },
             state,
             latched: false,
@@ -454,18 +510,19 @@ impl<'s> Tables<'s> {
     }
 
     /// Returns the row id, bundle id and call of `v`, a value of `catalog::Registered`.
-    fn call_row(&self, v: &Val) -> Result<(i64, i64, CallRow), String> {
+    fn call_row(&self, v: &Val) -> Result<(i64, i64, CallRow), BadRow> {
         let Val::Ctor(kind, _) = v else {
-            return Err(format!("a registered row is {v:?}"));
+            return Err(BadRow::Registered(v.clone()));
         };
         let f = self.named(self.registered, v)?;
+        let field = |n: &str| BadRow::field("registered", n, f.get(n));
         let text = |n: &str| match f.get(n) {
             Some(Val::Text(t)) => Ok(t.to_string()),
-            other => Err(format!("field `{n}` of a registered row is {other:?}")),
+            _ => Err(field(n)),
         };
         let number = |n: &str| match f.get(n) {
             Some(Val::Int(i)) => Ok(*i),
-            other => Err(format!("field `{n}` of a registered row is {other:?}")),
+            _ => Err(field(n)),
         };
         let kind = match self.ctor_name("Registered", *kind).as_str() {
             "Query" => "Query",
@@ -499,9 +556,9 @@ impl<'s> Tables<'s> {
     }
 
     /// Returns the fields of `v`, a row of `rel`, by name.
-    fn named(&self, rel: RelId, v: &Val) -> Result<BTreeMap<String, Val>, String> {
+    fn named(&self, rel: RelId, v: &Val) -> Result<BTreeMap<String, Val>, BadRow> {
         let Val::Ctor(c, fs) = v else {
-            return Err(format!("a catalog row is {v:?}"));
+            return Err(BadRow::NotARow(v.clone()));
         };
         Ok(layout::row(self.schema, rel, *c)
             .into_iter()
@@ -513,7 +570,7 @@ impl<'s> Tables<'s> {
     /// Returns the stored form of `v`, a row of `rel`.
     fn stored(&self, rel: RelId, v: &Val) -> Result<(u32, Vec<Value>), OpenError> {
         let Val::Ctor(c, fs) = v else {
-            return Err(corrupt(format!("a catalog row is {v:?}")));
+            return Err(corrupt(BadRow::NotARow(v.clone())));
         };
         let fields = layout::row(self.schema, rel, *c)
             .iter()

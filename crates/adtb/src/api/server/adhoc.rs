@@ -10,6 +10,7 @@ use adtb_lang::types::{FnId, RelId};
 
 use crate::runtime::Runtime;
 
+use super::super::cause::Broken;
 use super::super::command::engine_relation;
 use super::super::error::qualified;
 use super::super::text::{Issuer, Prepared};
@@ -207,9 +208,7 @@ fn no_identity(e: permission::Error) -> Error {
     if e == permission::Error::TooLarge {
         return Error::invalid("the text asks more of the permission check than it allows");
     }
-    Error::rejected(RejectReason::Internal {
-        what: format!("a relation of the schema has no identity: {e:?}"),
-    })
+    Error::internal(Broken::NoIdentity(e))
 }
 
 /// Returns whether `deployed` gives `role` the `monitor` capability.

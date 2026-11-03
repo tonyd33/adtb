@@ -6,6 +6,7 @@ use crate::mvcc::Transactions;
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
+use super::super::cause::Corruption;
 use super::super::{OWNER_ID, OWNER_ROLE, OpenError, corrupt, micros};
 
 pub(in crate::api) fn initialize<R: Runtime>(
@@ -36,7 +37,7 @@ pub(in crate::api) fn initialize<R: Runtime>(
         return Ok(());
     }
     if !rows.is_empty() {
-        return Err(corrupt("a nonempty roles relation has no schema owner"));
+        return Err(corrupt(Corruption::NoSchemaOwner));
     }
     let row = fields
         .iter()

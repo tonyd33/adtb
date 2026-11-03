@@ -2174,7 +2174,7 @@ fn an_open_after_a_restore_crashed_between_its_renames_refuses() {
             });
             assert!(
                 matches!(&opened, Err(adtb::OpenError::Corrupt { detail })
-                    if detail.contains("log directory")),
+                    if detail == "the log directory holds a log that no file here wrote"),
                 "event {at}: {opened:?}"
             );
             assert!(
@@ -2301,9 +2301,21 @@ fn a_foreign_block_past_the_end_of_a_log_is_refused_as_foreign() {
     assert!(tail.iter().any(|&b| b != 0), "their log passes ours");
     ours[end..end + BLOCK].copy_from_slice(tail);
     let mut sim = Sim::with_files(9, Config::default(), files);
-    let got = api::run(&mut sim, |rt| open_at(rt, FILE).map(Database::close));
+    let (got, cause) = api::run(&mut sim, |rt| {
+        let got = open_at(rt.clone(), FILE).map(Database::close);
+        (got, Pager::open(rt, &Options::new(FILE)).err())
+    });
+    let Some(
+        cause @ storage::OpenError::Log(storage::LogFinding {
+            problem: storage::LogProblem::Foreign,
+            ..
+        }),
+    ) = cause
+    else {
+        panic!("the pager refuses the log as foreign: {cause:?}");
+    };
     assert!(
-        matches!(&got, Err(adtb::OpenError::Corrupt { detail }) if detail.contains("Foreign")),
+        matches!(&got, Err(adtb::OpenError::Corrupt { detail }) if *detail == format!("{cause:?}")),
         "{got:?}"
     );
 }

@@ -12,6 +12,7 @@ use crate::{catalog, heap};
 
 pub use crate::exec::Fault;
 
+use super::cause::{Broken, internal};
 use super::{Position, TxnId};
 
 /// A failure the engine reports to a caller, as the prelude sum `Error` gives it.
@@ -311,9 +312,7 @@ impl Error {
             catalog::Error::Page(p) | catalog::Error::Heap(heap::Error::Page(p)) => {
                 Error::storage(format!("{p:?}"))
             }
-            other => Error::rejected(RejectReason::Internal {
-                what: format!("{other:?}"),
-            }),
+            other => Error::internal(Broken::CatalogError(other)),
         }
     }
 
@@ -366,10 +365,8 @@ impl Error {
             write::Error::SequenceExhausted => {
                 Error::invalid("the generated counter exhausted its integer range")
             }
-            write::Error::Internal(what) => Error::rejected(RejectReason::Internal { what }),
-            write::Error::Blocked { on, .. } => Error::rejected(RejectReason::Internal {
-                what: format!("a statement suspended on {on:?} outside a resumable call"),
-            }),
+            write::Error::Internal(what) => Error::internal(Broken::Write(what)),
+            write::Error::Blocked { on, .. } => Error::internal(Broken::Suspended(on)),
             write::Error::HistoryUnavailable { oldest } => {
                 Error::rejected(RejectReason::HistoryUnavailable {
                     oldest: oldest.into(),
@@ -897,7 +894,7 @@ fn rejection(schema: &Schema, r: Rejection) -> RejectReason {
                 relation: qualified(schema, relation),
                 key,
             },
-            Err(e) => RejectReason::Internal { what: e.message },
+            Err(e) => internal(Broken::UnprintableKey(e)),
         },
         Rejection::KeyChanged { relation } => RejectReason::KeyChanged {
             relation: qualified(schema, relation),
