@@ -308,3 +308,11 @@ Limits, severe first:
 - One seed, sim backend, one damaged page, clean close, no concurrent writers.
 
 `check` run through `direnv exec MAIN` from a slot tested the main checkout and exited 0, found on this track's first check. `check` now refuses a `DEVENV_ROOT` that does not hold the working directory. The earlier fault-next check reported 3560 with main at 3558 and two new tests, so it did test its slot.
+
+## 2026-11-02: foreign pages and real backends
+
+heap-read-foreign-page-panics landed `fix: refuse a heap page another owner holds`: a valid page of another owner refuses and marks its holder, an entry naming an unused slot refuses its index, searched through `Database` by scan, lookup, large value and write by key. Its ticket stays open for leftovers.
+
+real-backend-faults-engine landed `test: search Database under injected faults on both real backends`: `with_faults` injects every kind beneath io_uring with the pool's meaning, the fault contract and the crash cases run on both backends, and a `Database` commit workload under failures, torn and lost unforced writes keeps every acknowledged commit on both. Latent and corrupt reads are not in the `Database` search. Its ticket stays open for races between admission and completion and for file systems.
+
+Rows still open: scrub, typed causes for `Internal` and `Corrupt`, create by publishing aside, and the test-audit-a floors in the report.

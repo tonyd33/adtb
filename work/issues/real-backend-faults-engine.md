@@ -28,3 +28,9 @@ Left, severe first, all from admission and completion no longer sharing one lock
 - An injected Sync failure runs `lose` while writes it covers may still be in flight; they can land after the restore.
 - Two overlapping Syncs where the first fails on the device restore bases older than the second's forced writes. Unreachable under injection.
 - Latent and corrupt kinds are not in the `Database` search: the injector does not report the damage it causes, so `verify`'s answer has nothing to compare with.
+
+## 2026-11-02: landed
+
+`test: search Database under injected faults on both real backends`. The delta landed as asked: dropping a runtime joins its threads, so every admitted op completes first, pinned by a drain test per backend; `OsRuntime::crash` returns `Loss { lost, torn }` and the `Database` case floors both per backend, reaching them with a 256 KiB pool and 1500 byte names; the two Pager crash cases and the `Database` case run on both backends from one list. Check exit 0, 3601 passed. Production +302 -150 and a delta of +75 -31, over the stop lines on added lines, accepted: most is the injector split moving existing bodies.
+
+Stays open for the leftovers above and S15b, file systems under faults. S15b waits for a plan that uses no mount, FUSE or device mapper, nothing outside the test's own processes.
