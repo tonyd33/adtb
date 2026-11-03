@@ -549,6 +549,26 @@ with direct I/O in whole blocks of the device's logical block size.
 Each group commit (§10) is one batch of whole blocks, padded after its
 last record.
 
+A create of a file builds it inside a reserved directory beside it, the
+file's name with `.creating`. The create makes the directory, then writes
+and forces a marker in it holding a fresh create id, which is also the
+new file's id; the file and its log directory are named by the id and
+made only after the marker is forced. Once the new database is open, the
+create forces the log, renames the log directory into the parent under
+its own name, forces both directories, renames the file to its own name,
+which is the commit point, forces both again, and removes the marker and
+the directory. A later create removes what the reserved directory holds
+only when its marker is whole and every other entry is the file or the
+log directory its id names, the log holding only segments, and on the
+host only while it holds the lock on that file, taken without waiting;
+it removes the marker last. When the log directory at its own name
+begins with a block carrying the marker's id, the later create renames
+the file into place instead. A reserved directory that is empty, or
+holds only a marker with nothing written, is reused. Anything else
+refuses the create and is left as it was, and a create never removes the
+log directory at the file's own name. A crash after the commit point
+can leave the reserved directory holding only its marker.
+
 Invariants:
 
 - A block that has been acknowledged is never written again.

@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 use super::OpenError;
+use crate::runtime::IoError;
+use crate::storage;
 
 /// The opens one [`Held::take`] tries while each finds its path no longer names the file it locked.
 const TAKE_ATTEMPTS: usize = 8;
@@ -18,6 +20,8 @@ pub struct Held {
     path: PathBuf,
     file: File,
     created: bool,
+    /// The lock on the reserved file of a create, which a rename may give this lock's name.
+    reserved: Option<(PathBuf, File)>,
 }
 
 /// A lock, the file's directory and its name in that directory.
@@ -94,13 +98,18 @@ fn names(path: &Path, file: &File) -> std::io::Result<bool> {
     Ok(named.dev() == open.dev() && named.ino() == open.ino())
 }
 
-/// Remove what a failed open made: the log directory, when it claimed one, and the file. A name
-/// that cannot be removed stays, and does not stop the other's removal.
-pub fn remove_created(log_dir: Option<&Path>, file: &Path) {
-    if let Some(log_dir) = log_dir {
-        drop(std::fs::remove_dir_all(log_dir));
+/// Returns whether the directory `dir`, or an entry of it, is a symbolic link.
+fn linked(dir: &Path) -> std::io::Result<bool> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    let mut linked = std::fs::symlink_metadata(dir)?.is_symlink();
+    for entry in entries {
+        linked |= entry?.file_type()?.is_symlink();
     }
-    drop(std::fs::remove_file(file));
+    Ok(linked)
 }
 
 impl Held {
@@ -174,6 +183,7 @@ impl Held {
             path: canonical,
             file,
             created,
+            reserved: None,
         };
         match held.file.try_lock() {
             Ok(()) => {}
@@ -184,9 +194,53 @@ impl Held {
         Ok(still.then_some((held, dir, name)))
     }
 
-    /// Returns whether this lock's [`Held::take`] made the file.
-    pub fn created(&self) -> bool {
-        self.created
+    /// Lock the reserved file at `path`, which a create is about to remove or rename to this
+    /// lock's name, keeping the lock until [`Held::published`]. An absent file needs no lock. A
+    /// symbolic link at or in the reserved directory or the file's log directory refuses.
+    pub fn hold(&mut self, path: &Path) -> Result<(), storage::OpenError> {
+        let failed = |_| storage::OpenError::Io(IoError::Failed);
+        if self.reserved.as_ref().is_some_and(|(held, _)| held == path) {
+            return Ok(());
+        }
+        let mut log = path.as_os_str().to_owned();
+        log.push("-log");
+        for dir in [path.parent().unwrap_or(path), Path::new(&log)] {
+            if linked(dir).map_err(failed)? {
+                return Err(storage::OpenError::Reserved);
+            }
+        }
+        let file = match File::options().read(true).write(true).open(path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(failed(e)),
+        };
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => return Err(storage::OpenError::Locked),
+            Err(TryLockError::Error(e)) => return Err(failed(e)),
+        }
+        self.reserved = Some((path.to_owned(), file));
+        Ok(())
+    }
+
+    /// Keep only the lock [`Held::hold`] took when this lock's name names its file now, and then
+    /// count the file as found, not made.
+    pub fn published(&mut self) {
+        let Some((_, reserved)) = self.reserved.take() else {
+            return;
+        };
+        if names(&self.path, &reserved).unwrap_or(true) {
+            self.file = reserved;
+            self.created = false;
+        }
+    }
+
+    /// Remove the empty file this lock's [`Held::take`] made, while its name still names it. A
+    /// file that cannot be removed stays.
+    pub fn remove_created(&self) {
+        if self.created && names(&self.path, &self.file).unwrap_or(false) {
+            drop(std::fs::remove_file(&self.path));
+        }
     }
 }
 
@@ -257,7 +311,7 @@ mod tests {
         assert_eq!(2, opens);
         assert_eq!("db", name);
         assert!(names(&path, &held.file).expect("the locked inode"));
-        assert!(!held.created());
+        assert!(!held.created);
     }
 
     #[test]
@@ -274,7 +328,7 @@ mod tests {
         .expect("the second open makes the file");
         assert_eq!(2, opens);
         assert!(names(&path, &held.file).expect("the locked inode"));
-        assert!(held.created());
+        assert!(held.created);
     }
 
     #[test]
@@ -304,18 +358,5 @@ mod tests {
         };
         assert_eq!(std::io::ErrorKind::ResourceBusy, e.kind());
         Held::take(&path, false).expect("no attempt left the path held");
-    }
-
-    #[test]
-    fn a_log_directory_that_cannot_be_removed_leaves_the_file_removed() {
-        let scratch = Scratch::new("cleanup");
-        let path = scratch.path("db");
-        let blocker = scratch.path("blocker");
-        File::create(&path).expect("the file");
-        File::create(&blocker).expect("the blocker");
-        let log_dir = blocker.join("log");
-        std::fs::remove_dir_all(&log_dir).expect_err("a path under a file cannot be removed");
-        remove_created(Some(&log_dir), &path);
-        assert!(!path.exists());
     }
 }

@@ -1,29 +1,42 @@
 use std::io::ErrorKind;
 
-use crate::runtime::IoError;
-use crate::storage;
+use crate::runtime::{IoError, Runtime};
+use crate::storage::{self, Pager, Unpublished};
 
-use super::{OpenError, corrupt};
+use super::{Engine, OpenError, corrupt};
 
-/// A failed `Engine::open`.
-pub(super) struct FailedOpen {
-    pub(super) error: OpenError,
-    /// The open's `Pager::create` took the log directory.
-    pub(super) log_claimed: bool,
+/// Publish `new` once `opened` holds its engine, or discard it.
+pub(super) fn finish_create<R: Runtime>(
+    rt: R,
+    pager: &Pager<R>,
+    new: &Unpublished,
+    opened: Result<Engine<R>, OpenError>,
+    hold: storage::Hold<'_>,
+) -> Result<Engine<R>, OpenError> {
+    let published = opened.and_then(|engine| {
+        new.publish(pager, hold).map_err(failed_create)?;
+        Ok(engine)
+    });
+    if published.is_err() {
+        new.discard(rt, hold).map_err(failed_create)?;
+    }
+    published
 }
 
-/// Returns the failed open that a failure of `Pager::create` makes.
-pub(super) fn failed_create(e: storage::OpenError) -> FailedOpen {
-    let (error, log_claimed) = match e {
-        storage::OpenError::Exists => (corrupt("neither copy of the file header verifies"), false),
-        storage::OpenError::LogPresent => (
-            corrupt("the log directory holds a log that no file here wrote"),
-            false,
-        ),
-        storage::OpenError::Unformatted(page) => (corrupt(page), true),
-        other => (corrupt(other), false),
-    };
-    FailedOpen { error, log_claimed }
+/// Returns the refusal a failure of a create or of publishing its database makes.
+pub(super) fn failed_create(e: storage::OpenError) -> OpenError {
+    match e {
+        storage::OpenError::Exists => corrupt("neither copy of the file header verifies"),
+        storage::OpenError::LogPresent => {
+            corrupt("the log directory holds a log that no file here wrote")
+        }
+        storage::OpenError::Reserved => {
+            corrupt("the reserved directory of a create holds what no create left")
+        }
+        storage::OpenError::Locked => OpenError::Locked { pid: None },
+        storage::OpenError::Io(e) => OpenError::Io(host_error(e)),
+        other => corrupt(other),
+    }
 }
 
 /// Returns the host's error of `e`'s kind.

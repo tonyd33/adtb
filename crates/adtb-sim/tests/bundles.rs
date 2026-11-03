@@ -567,6 +567,9 @@ fn supersession_commits_before_the_migrations_and_survives_a_refused_one() {
 fn the_registrations_of_an_open_take_effect_together_or_not_at_all() {
     let mut sim = Sim::new(19, Config::default());
     run(&mut sim, |rt| {
+        opened(&rt, &[V1], Vec::new());
+    });
+    run(&mut sim, |rt| {
         let broken = "import auth\nquery bad () -> Set Text = from u in users select u.nope\n";
         let got = open(
             &rt,
@@ -5239,6 +5242,9 @@ impl NeverRegistered {
     /// Returns a simulation whose file holds the recorded row of the refused first registration.
     fn recorded(&self, seed: u64) -> Sim {
         let mut sim = Sim::new(seed, Config::default());
+        run(&mut sim, |rt| {
+            coded_open(&rt, self.pin, vec![]).expect("the file opens at the pin");
+        });
         run(&mut sim, |rt| {
             let got = coded_open(&rt, self.log, self.regs());
             assert_eq!(self.refused, refusal(got, "web-1.0"), "seed {seed}");

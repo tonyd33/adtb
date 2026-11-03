@@ -175,6 +175,18 @@ fn a_file_open_in_this_process_is_not_opened_again() {
 }
 
 #[test]
+fn a_created_file_is_locked_against_another_process() {
+    let path = scratch("created-locked").join("shop.adt");
+    let db = adtb::open(&path, &Log::new([SHOP]), &options()).expect("create");
+    let other = std::fs::File::open(&path).expect("the created file");
+    assert!(
+        matches!(other.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+        "the name the create published is locked"
+    );
+    db.close().expect("close");
+}
+
+#[test]
 fn a_missing_file_is_not_found_without_create() {
     let path = scratch("missing").join("shop.adt");
     let got = adtb::open(&path, &Log::new([SHOP]), &OpenOptions::default());
@@ -366,7 +378,7 @@ fn a_create_refused_on_a_log_of_only_an_unknown_file_leaves_it() {
 }
 
 #[test]
-fn a_refused_create_on_a_file_it_found_empty_keeps_the_file_and_its_log() {
+fn a_refused_create_on_a_file_it_found_empty_keeps_it_empty_and_makes_no_log() {
     let dir = scratch("refused-empty");
     let path = dir.join("shop.adt");
     std::fs::write(&path, b"").expect("an empty file");
@@ -377,13 +389,11 @@ fn a_refused_create_on_a_file_it_found_empty_keeps_the_file_and_its_log() {
         "{got:?}"
     );
     assert_eq!(
-        vec![
-            std::ffi::OsString::from("shop.adt"),
-            std::ffi::OsString::from("shop.adt-log")
-        ],
+        vec![std::ffi::OsString::from("shop.adt")],
         entries(&dir),
-        "the file was not this call's, and its log stays with it"
+        "the file was not this call's, and nothing was published over it"
     );
+    assert_eq!(Vec::<u8>::new(), std::fs::read(&path).expect("the file"));
     adtb::open(&path, &Log::new([SHOP]), &options()).expect("a later open succeeds");
 }
 

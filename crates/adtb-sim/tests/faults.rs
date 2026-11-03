@@ -618,7 +618,9 @@ fn fail_storage_operation(
     hook.fail_when(move |op| {
         let context = match (case, op) {
             (StorageFailure::Write, Op::Write { .. }) => "write".to_owned(),
-            (StorageFailure::LogCreate, Op::CreateNew { path }) => format!("create {path}"),
+            (StorageFailure::LogCreate, Op::CreateNew { path }) if path.contains("-log/") => {
+                format!("create {path}")
+            }
             _ => return None,
         };
         let mut struck = struck.lock().unwrap();

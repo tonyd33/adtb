@@ -246,6 +246,56 @@ fn rename<R: Runtime>(
     done(rt, io, Op::Rename { from, to, replace })
 }
 
+/// Make `d/f`, force it, rename it into the parent and then force each directory of `synced`.
+pub(crate) fn rename_into_the_parent<R: Runtime>(rt: &R, io: &mut R::Io, synced: &[&str]) {
+    let force = |io: &mut R::Io, dir: &str| {
+        let dir = dir.to_owned();
+        assert_eq!(Ok(Done::Synced), done(rt, io, Op::SyncDir { dir }));
+    };
+    create_dir(rt, io, "d").unwrap();
+    open(rt, io, "d/f", true).unwrap();
+    force(io, "d");
+    force(io, "");
+    assert_eq!(Ok(Done::Renamed), rename(rt, io, "d/f", "f", false));
+    for dir in synced {
+        force(io, dir);
+    }
+}
+
+/// Check what a crash left of [`rename_into_the_parent`]: the file at its new name when both
+/// directories were forced, else at exactly one name. Returns the names.
+pub(crate) fn after_a_parent_rename(files: Vec<String>, synced: &[&str], seed: u64) -> Vec<String> {
+    if synced.len() == 2 {
+        assert_eq!(vec!["f"], files, "seed {seed}: forced");
+    } else {
+        assert!(
+            files == ["f"] || files == ["d/f"],
+            "seed {seed} {synced:?}: {files:?}"
+        );
+    }
+    files
+}
+
+pub(crate) const PARENT_SYNCS: [&[&str]; 3] = [&["d", ""], &["d"], &[""]];
+
+/// A rename into the parent survives a crash once both directories are forced after it, and else
+/// is kept or lost whole.
+#[test]
+fn a_rename_into_the_parent_is_forced_by_both_directories_on_the_sim() {
+    let mut seen = BTreeSet::new();
+    for seed in 0..16 {
+        for synced in PARENT_SYNCS {
+            let mut sim = Sim::new(seed, Config::default());
+            adtb_simkit::common::run_then_crash(&mut sim, |rt, io| {
+                rename_into_the_parent(rt, io, synced);
+            });
+            let files = sim.files().into_keys().collect();
+            seen.insert(after_a_parent_rename(files, synced, seed));
+        }
+    }
+    assert_eq!(2, seen.len(), "{seen:?}");
+}
+
 fn renames_refuse_an_occupied_name<R: Runtime>(rt: &R) {
     let mut io = rt.io();
     for dir in ["d", "d/empty", "d/full", "d/src", "d/src/inner"] {

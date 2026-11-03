@@ -107,7 +107,8 @@ enum NameOp {
     Remove(String),
     MakeDir(String),
     RemoveDir(String),
-    Rename(String, String),
+    /// A rename, and the directories whose force it still waits for.
+    Rename(String, String, BTreeSet<String>),
 }
 
 impl NameOp {
@@ -117,7 +118,7 @@ impl NameOp {
             | NameOp::Remove(p)
             | NameOp::MakeDir(p)
             | NameOp::RemoveDir(p)
-            | NameOp::Rename(_, p) => p,
+            | NameOp::Rename(_, p, _) => p,
         }
     }
 }
@@ -407,10 +408,10 @@ impl Disk {
     }
 
     pub(crate) fn rename(&mut self, from: &str, to: &str, replace: bool) -> Result<(), IoError> {
-        assert_eq!(
-            parent(from),
-            parent(to),
-            "a rename stays in one directory: {from} to {to}"
+        assert!(
+            parent(from) == parent(to)
+                || (!parent(from).is_empty() && parent(parent(from)) == parent(to)),
+            "a rename stays in one directory or moves into its parent: {from} to {to}"
         );
         self.below_a_file(parent(to))?;
         let from_is_dir = self.dirs.contains(from);
@@ -429,8 +430,11 @@ impl Disk {
             return Err(IoError::Exists);
         }
         move_entry(&mut self.names, &mut self.dirs, from, to);
-        self.pending_names
-            .push((self.seq, NameOp::Rename(from.to_owned(), to.to_owned())));
+        let waiting = [parent(from), parent(to)].map(str::to_owned).into();
+        self.pending_names.push((
+            self.seq,
+            NameOp::Rename(from.to_owned(), to.to_owned(), waiting),
+        ));
         self.note(Event::Rename {
             from: from.to_owned(),
             to: to.to_owned(),
@@ -680,10 +684,20 @@ impl Disk {
         if !dir_exists(&self.dirs, dir) {
             return Err(IoError::NotFound);
         }
-        let (forced, kept): (Vec<_>, Vec<_>) = self
-            .pending_names
-            .drain(..)
-            .partition(|(seq, op)| *seq < upto && parent(op.path()) == dir);
+        for (seq, op) in &mut self.pending_names {
+            if let NameOp::Rename(_, _, waiting) = op
+                && *seq < upto
+            {
+                waiting.remove(dir);
+            }
+        }
+        let (forced, kept): (Vec<_>, Vec<_>) =
+            self.pending_names
+                .drain(..)
+                .partition(|(seq, op)| match op {
+                    NameOp::Rename(_, _, waiting) => *seq < upto && waiting.is_empty(),
+                    op => *seq < upto && parent(op.path()) == dir,
+                });
         self.pending_names = kept;
         for (_, op) in forced {
             apply_name(&mut self.durable_names, &mut self.durable_dirs, op);
@@ -776,8 +790,15 @@ fn apply_name(names: &mut BTreeMap<String, Ino>, dirs: &mut BTreeSet<String>, op
         NameOp::RemoveDir(path) => {
             dirs.remove(&path);
         }
-        NameOp::Rename(from, to) => move_entry(names, dirs, &from, &to),
+        NameOp::Rename(from, to, _) => move_entry(names, dirs, &from, &to),
     }
+}
+
+/// Returns whether `events` hold a force of `dir` covering the name change numbered `seq`.
+fn synced(events: &[Event], dir: &str, seq: u64) -> bool {
+    events
+        .iter()
+        .any(|e| matches!(e, Event::SyncDir { dir: d, upto } if d == dir && *upto > seq))
 }
 
 impl Recording {
@@ -817,17 +838,15 @@ impl Recording {
         let forced = |i: usize| -> bool {
             let later = &events[i..];
             match &events[i] {
-                Event::Write { ino, seq, .. } => later.iter().any(|e| {
-                    matches!(e, Event::Sync { ino: j, upto } if j == ino && upto > seq)
-                }),
+                Event::Write { ino, seq, .. } => later
+                    .iter()
+                    .any(|e| matches!(e, Event::Sync { ino: j, upto } if j == ino && upto > seq)),
                 Event::Create { path, seq, .. }
                 | Event::Remove { path, seq }
                 | Event::MakeDir { path, seq }
-                | Event::RemoveDir { path, seq }
-                | Event::Rename { to: path, seq, .. } => {
-                    later.iter().any(|e| {
-                        matches!(e, Event::SyncDir { dir, upto } if dir == parent(path) && upto > seq)
-                    })
+                | Event::RemoveDir { path, seq } => synced(later, parent(path), *seq),
+                Event::Rename { from, to, seq } => {
+                    synced(later, parent(from), *seq) && synced(later, parent(to), *seq)
                 }
                 Event::Sync { .. } | Event::SyncDir { .. } => false,
             }

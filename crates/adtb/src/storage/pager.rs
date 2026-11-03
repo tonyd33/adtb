@@ -9,6 +9,7 @@ use crate::runtime::{AlignedBuf, FileId, IoError, Runtime, ThreadId};
 
 use super::alloc::diff;
 use super::block::LogFinding;
+use super::create::{Created, create};
 use super::driver::Driver;
 use super::evicted::EvictedLsns;
 use super::header::{self, FileHeader, REGION};
@@ -90,6 +91,10 @@ pub enum OpenError {
     Exists,
     /// `create` found the log directory holding what the new file did not write.
     LogPresent,
+    /// `create` found its reserved directory holding what no create left.
+    Reserved,
+    /// Another open holds the lock on a file `create` would remove or rename.
+    Locked,
     /// `create` took the log directory, then failed on a page of the new file.
     Unformatted(PageError),
     /// Neither copy of the file header verifies.
@@ -216,7 +221,7 @@ pub(super) fn parent(path: &str) -> &str {
     }
 }
 
-fn check_options(o: &Options) {
+pub(super) fn check_options(o: &Options) {
     let block = o.log_block as usize;
     assert!(
         valid_page_size(o.page_size),
@@ -394,22 +399,31 @@ impl<R: Runtime> Pager<R> {
         }))
     }
 
-    /// Create an empty database: its data file, its first log segment and a first checkpoint.
+    /// Create an empty database: its data file, its first log segment and a first checkpoint,
+    /// built as [`create`] does and published.
     ///
     /// Panics if `options` breaks a limit of the file format.
     pub fn create(rt: R, options: &Options) -> Result<Pager<R>, OpenError> {
-        check_options(options);
-        let mut drv = Driver::new(rt.clone());
-        let (data, len) = drv
-            .open(&options.name, true)
-            .map_err(|_| OpenError::NotFound)?;
-        if len > 0 {
-            drv.close(data);
-            return Err(OpenError::Exists);
+        let (pager, new) = match create(rt.clone(), options, &mut |_| Ok(()))? {
+            Created::Finished(pager) => return Ok(pager),
+            Created::Built(pager, new) => (pager, new),
+        };
+        if let Err(e) = new.publish(&pager, &mut |_| Ok(())) {
+            pager.close();
+            new.discard(rt, &mut |_| Ok(()))?;
+            return Err(e);
         }
-        drv.sync_dir(parent(&options.name));
-        let mut file_id = [0; 16];
-        rt.fill(&mut file_id);
+        Ok(pager)
+    }
+
+    /// Returns the pager of a new database whose id is `file_id` in the empty file `data` and
+    /// the log directory of `options`, with its first checkpoint.
+    pub(super) fn format_new(
+        rt: R,
+        options: &Options,
+        data: FileId,
+        file_id: [u8; 16],
+    ) -> Result<Pager<R>, OpenError> {
         let header = FileHeader {
             seq: 0,
             file_id,

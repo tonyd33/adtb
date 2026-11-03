@@ -190,7 +190,7 @@ enum Op {
   List     { dir }                   // -> Listed(paths) of its entries, in no particular order
   Remove   { path }                  // -> Removed
   RemoveDir { path }                 // -> Removed; the directory is empty
-  Rename   { from, to, replace }     // -> Renamed; both names in one directory
+  Rename   { from, to, replace }     // -> Renamed; within a directory or into its parent
   CreateDir { dir }                  // -> Created, or Present when it is a directory already
   Close    { file }                  // -> Closed
   Timer    { at }                    // -> Fired, once now() >= at
@@ -248,13 +248,16 @@ Postconditions every backend must meet:
 - `Close` forces nothing; the file's data and name stay as they were.
 
 - `Rename` moves a file or a directory, with all under it, atomically,
-  and both names are in one directory. It completes with `Exists` when
+  within one directory or from a directory into that directory's
+  parent, on one filesystem. It completes with `Exists` when
   `to` is taken, except that a directory replaces an empty directory
   and, with `replace`, a file replaces a file. It completes with
   `NotFound` when `from` is absent and `NotADirectory` when a directory
   above them is a file. A `FileId` stays valid across it.
-- `SyncDir` of that directory forces a `Rename`; until then a crash may
-  lose it, whole, and the old names stay. `SyncDir` of an absent
+- A `Rename` is forced once `SyncDir` has completed after it on the
+  directory of `from` and on the directory of `to`. Until then a crash
+  keeps it whole or loses it whole, so the entry is at exactly one of
+  the names. `SyncDir` of an absent
   directory completes with `NotFound`.
 - `Open`, `CreateNew`, `Remove` and `RemoveDir` complete with
   `NotADirectory` when a directory above their path is a file.

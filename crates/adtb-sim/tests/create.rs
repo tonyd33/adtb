@@ -1,0 +1,459 @@
+//! Creating a database: a crash anywhere in it leaves no database or a whole one, a retried
+//! create works with nothing removed by hand, and a create removes nothing it did not make.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use adtb::runtime::{Op, Runtime};
+use adtb::storage::{aside, creating, marker, marker_bytes};
+use adtb::{Database, Log, OpenError, OpenOptions, TxnCallOptions, TxnOptions};
+use adtb_sim::{Config, Sim};
+use adtb_simkit::api;
+use adtb_simkit::search::{self, Files, Hooked};
+use adtb_testkit::profile::{assert_reached, every_case};
+
+const FILE: &str = "create.adt";
+const APP: &str = r"module app
+add module app
+add type User = { id: Key users, name: Text }
+add relation users : User key id generate sequence
+";
+const CRASH_POINTS: u64 = 1;
+const HEADER: usize = 4096;
+const RESERVED: &str = "the reserved directory of a create holds what no create left";
+const OTHER: [u8; 16] = [9; 16];
+
+fn log() -> Log {
+    Log::new([APP])
+}
+
+fn no_create() -> OpenOptions {
+    OpenOptions {
+        create: None,
+        ..api::options(2)
+    }
+}
+
+/// Where a crash left the create, by the names the image holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Stage {
+    Building,
+    Built,
+    BetweenRenames,
+    Published,
+}
+
+fn stage(image: &Files) -> Stage {
+    let reserved = format!("{}/", creating(FILE));
+    let built = image.iter().any(|(p, b)| {
+        p.strip_prefix(&reserved)
+            .is_some_and(|f| f.len() == 32 && b.iter().take(HEADER).any(|&x| x != 0))
+    });
+    if image.contains_key(FILE) {
+        Stage::Published
+    } else if image.keys().any(|p| p.starts_with(&format!("{FILE}-log/"))) {
+        Stage::BetweenRenames
+    } else if built {
+        Stage::Built
+    } else {
+        Stage::Building
+    }
+}
+
+fn every_op(op: &Op, _: Option<&str>) -> bool {
+    !matches!(op, Op::Close { .. } | Op::Timer { .. })
+}
+
+/// Open `FILE` without `create`, else create it, then commit a row. Returns the names of the
+/// users a later open reads.
+fn opened_or_retried<R: Runtime>(
+    open: impl Fn(&OpenOptions) -> Result<Database<R>, OpenError>,
+) -> Vec<String> {
+    let names = |db: &Database<R>| {
+        let rows = db.query_text("from u in users select u.name", &[], &Default::default());
+        api::sorted(rows.unwrap().remove(0))
+    };
+    let db = match open(&no_create()) {
+        Ok(db) => {
+            assert_eq!(Vec::<String>::new(), names(&db));
+            db
+        }
+        Err(OpenError::NotFound) => open(&api::options(2)).expect("the retried create"),
+        Err(e) => panic!("an open after the crash: {e:?}"),
+    };
+    if every_case() {
+        assert!(db.verify_holding().unwrap().next().is_none());
+    }
+    let mut t = db.begin(&TxnOptions::default()).unwrap();
+    let insert = r#"insert users { id: users.key(1), name: "ann" }"#;
+    t.query_text(insert, &[], &TxnCallOptions::default())
+        .unwrap();
+    t.commit(None).unwrap();
+    db.close().unwrap();
+    let db = open(&no_create()).expect("the reopen");
+    let read = names(&db);
+    db.close().unwrap();
+    read
+}
+
+fn reserved(names: impl IntoIterator<Item = String>) -> Vec<String> {
+    let aside = creating(FILE);
+    names
+        .into_iter()
+        .filter(|p| p.starts_with(&aside))
+        .collect()
+}
+
+fn scratch(name: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("create")
+        .join(name);
+    match std::fs::remove_dir_all(&dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("clear {dir:?}: {e}"),
+        _ => {}
+    }
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn write_image(dir: &Path, image: &Files) {
+    for (path, bytes) in image {
+        let path = dir.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let used = bytes.iter().rposition(|&b| b != 0).map_or(0, |at| at + 1);
+        std::fs::write(&path, &bytes[..used]).unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(bytes.len() as u64).unwrap();
+    }
+}
+
+fn read_image(dir: &Path, at: &Path, into: &mut Files) {
+    for entry in std::fs::read_dir(at).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            read_image(dir, &path, into);
+        } else {
+            let name = path.strip_prefix(dir).unwrap().to_str().unwrap().to_owned();
+            into.insert(name, std::fs::read(&path).unwrap());
+        }
+    }
+}
+
+/// Crash a create at each device event: an open finds an empty database or nothing, then a
+/// retried create works and a commit reads back. Under the deep profile the database verifies
+/// whole, and one image of each stage that leaves reserved names beside a whole file is retried
+/// again on a real file through the host's open.
+#[test]
+fn a_create_crashed_anywhere_is_retried() {
+    let workload = |hook: &Hooked| {
+        hook.arm(every_op);
+        let db = Database::open_in(hook.clone(), FILE, &log(), &api::options(2)).unwrap();
+        hook.disarm();
+        db.close().unwrap();
+    };
+    let mut reached = BTreeMap::new();
+    let mut images = BTreeMap::new();
+    search::each_crash(
+        &Files::new(),
+        1,
+        CRASH_POINTS,
+        if every_case() { 2 } else { 1 },
+        workload,
+        |image| image.contains_key(FILE),
+        |at, image| {
+            let stage = stage(&image);
+            *reached.entry(stage).or_insert(0) += 1;
+            if every_case() && matches!(stage, Stage::Built | Stage::BetweenRenames) {
+                images.entry(stage).or_insert_with(|| image.clone());
+            }
+            let first_block = |files: &Files| {
+                let segment = files.get(&format!("{FILE}-log/0000000000000000"));
+                segment.map(|b| b[..512].to_vec())
+            };
+            let logged = first_block(&image);
+            let mut sim = Sim::with_files(at as u64, Config::default(), image);
+            let names = api::run(&mut sim, |rt| {
+                opened_or_retried(|o| Database::open_in(rt.clone(), FILE, &log(), o))
+            });
+            assert_eq!(vec![r#""ann""#], names, "event {at}, {stage:?}");
+            let left = reserved(sim.files().into_keys());
+            let swept = if stage == Stage::Published {
+                left.iter().all(|p| *p == marker(FILE))
+            } else {
+                left.is_empty()
+            };
+            assert!(swept, "event {at}, {stage:?}: {left:?}");
+            if stage == Stage::BetweenRenames {
+                let now = first_block(&sim.files());
+                assert_eq!(logged, now, "event {at}: rolled forward");
+            }
+        },
+    );
+    for stage in [
+        Stage::Building,
+        Stage::Built,
+        Stage::BetweenRenames,
+        Stage::Published,
+    ] {
+        let count = reached.get(&stage).copied().unwrap_or(0);
+        assert_reached(&format!("a crash {stage:?}"), count, 1);
+    }
+    for (stage, image) in images {
+        let dir = scratch(&format!("{stage:?}"));
+        write_image(&dir, &image);
+        let path = dir.join(FILE);
+        let names = opened_or_retried(|o| adtb::open(&path, &log(), o));
+        assert_eq!(vec![r#""ann""#], names, "{stage:?} on the host");
+        let left = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap());
+        assert_eq!(
+            Vec::<String>::new(),
+            reserved(left),
+            "{stage:?} on the host"
+        );
+    }
+}
+
+/// A create under a path whose parent is a regular file answers the host's error of that kind,
+/// on the simulator and on the host.
+#[test]
+fn a_create_under_a_regular_file_is_not_a_directory() {
+    let plain = Files::from([("plain".to_owned(), Vec::new())]);
+    let mut sim = Sim::with_files(1, Config::default(), plain);
+    let got = api::run(&mut sim, |rt| {
+        Database::open_in(rt, "plain/create.adt", &log(), &api::options(2)).map(drop)
+    });
+    let Err(OpenError::Io(e)) = got else {
+        panic!("{got:?}")
+    };
+    assert_eq!(std::io::ErrorKind::NotADirectory, e.kind());
+
+    let dir = scratch("under-a-file");
+    std::fs::write(dir.join("plain"), b"").unwrap();
+    let got = adtb::open(dir.join("plain").join(FILE), &log(), &api::options(2)).map(drop);
+    let Err(OpenError::Io(e)) = got else {
+        panic!("{got:?}")
+    };
+    assert_eq!(std::io::ErrorKind::NotADirectory, e.kind());
+}
+
+/// A create in a directory that does not exist answers the host's error, not damage.
+#[test]
+fn a_create_in_a_missing_directory_is_not_found() {
+    let got = api::once(1, |rt| {
+        Database::open_in(rt, "missing/create.adt", &log(), &api::options(2)).map(drop)
+    });
+    let Err(OpenError::Io(e)) = got else {
+        panic!("{got:?}")
+    };
+    assert_eq!(std::io::ErrorKind::NotFound, e.kind());
+}
+
+/// Returns the files a create of `FILE` that finished on seed `seed` leaves.
+fn created(seed: u64) -> Files {
+    static MADE: Mutex<BTreeMap<u64, Files>> = Mutex::new(BTreeMap::new());
+    let mut made = MADE.lock().unwrap();
+    let files = made.entry(seed).or_insert_with(|| {
+        let mut sim = Sim::new(seed, Config::default());
+        api::run(&mut sim, |rt| {
+            let db = Database::open_in(rt, FILE, &log(), &api::options(2)).unwrap();
+            db.close().unwrap();
+        });
+        sim.files()
+    });
+    files.clone()
+}
+
+/// Returns `files` with every name under `from` moved under `to`.
+fn moved(files: Files, from: &str, to: &str) -> Files {
+    files
+        .into_iter()
+        .map(|(p, b)| match p.strip_prefix(from) {
+            Some(rest) => (format!("{to}{rest}"), b),
+            None => (p, b),
+        })
+        .collect()
+}
+
+/// Returns a database a create left in the reserved directory with its marker and its log
+/// directory, and the create's id.
+fn built() -> (Files, [u8; 16]) {
+    let mut files = created(1);
+    let data = files.remove(FILE).unwrap();
+    let id: [u8; 16] = data[24..40].try_into().unwrap();
+    let file = aside(FILE, &id);
+    let mut files = moved(files, &format!("{FILE}-log"), &format!("{file}-log"));
+    files.insert(file, data);
+    files.insert(marker(FILE), marker_bytes(&id));
+    (files, id)
+}
+
+/// Create `FILE` over `files` on the simulator. Returns the outcome and the files after it.
+fn create_over(files: Files) -> (Result<(), OpenError>, Files) {
+    let mut sim = Sim::with_files(1, Config::default(), files);
+    let got = api::run(&mut sim, |rt| {
+        Database::open_in(rt, FILE, &log(), &api::options(2)).map(|db| db.close().unwrap())
+    });
+    (got, sim.files())
+}
+
+fn is_reserved(got: &Result<(), OpenError>) -> bool {
+    matches!(got, Err(OpenError::Corrupt { detail }) if *detail == format!("{RESERVED:?}"))
+}
+
+/// Plant at the reserved names every shape a create could mistake for its own: a database at
+/// the reserved directory's name, a database with its log inside it, a marker naming another
+/// create than the file beside it, a marker beside a file no create makes, a torn marker, a
+/// file of no create without a marker. A create of `FILE` over each refuses as reserved and
+/// every planted byte stays.
+#[test]
+fn a_create_removes_nothing_it_did_not_make() {
+    let dir = creating(FILE);
+    let inside = format!("{dir}/{FILE}");
+    let (base, id) = built();
+    let mut torn = marker_bytes(&id);
+    torn[10] ^= 1;
+    let mut cases: Vec<(&str, Files)> = vec![
+        (
+            "a database named as the reserved directory",
+            moved(created(1), FILE, &dir),
+        ),
+        (
+            "a database inside the reserved directory",
+            moved(created(1), FILE, &inside),
+        ),
+        ("a user's file named as the marker", {
+            Files::from([(marker(FILE), b"mine".to_vec())])
+        }),
+    ];
+    let mut other = base.clone();
+    other.insert(marker(FILE), marker_bytes(&OTHER));
+    cases.push(("a marker of another create", other));
+    let mut beside = base.clone();
+    beside.insert(format!("{dir}/notes"), b"keep".to_vec());
+    cases.push(("a marker beside a user's file", beside));
+    let mut nested = base.clone();
+    nested.insert(format!("{}-log/notes", aside(FILE, &id)), b"keep".to_vec());
+    cases.push(("a user's file in the built log directory", nested));
+    let mut torn_built = base.clone();
+    torn_built.insert(marker(FILE), torn);
+    cases.push(("a torn marker", torn_built));
+    let mut unmarked = base;
+    unmarked.remove(&marker(FILE));
+    cases.push(("no marker", unmarked));
+    let mut padded = vec![0; 1 << 16];
+    padded.extend_from_slice(b"data");
+    cases.push((
+        "a user's file of zeros then data named as the marker",
+        Files::from([(marker(FILE), padded)]),
+    ));
+    for (case, files) in cases {
+        let (got, after) = create_over(files.clone());
+        assert!(is_reserved(&got), "{case}: {got:?}");
+        assert_eq!(files, after, "{case}");
+    }
+}
+
+/// A create finding a build of an earlier create, with or without its log directory beside it,
+/// and a log at `FILE`'s own name that no create here wrote refuses, leaving that log and never
+/// publishing the build. With no log at `FILE`'s own name it removes the build and creates anew.
+#[test]
+fn a_create_leaves_a_log_no_create_here_wrote() {
+    let foreign = moved(created(2), FILE, &format!("{FILE}.old"));
+    let foreign = moved(foreign, &format!("{FILE}.old-log"), &format!("{FILE}-log"));
+    let file = aside(FILE, &OTHER);
+    let build = Files::from([
+        (marker(FILE), marker_bytes(&OTHER)),
+        (file.clone(), b"built".to_vec()),
+    ]);
+    let logs = |files: Files| -> Files {
+        let log = format!("{FILE}-log/");
+        files
+            .into_iter()
+            .filter(|(p, _)| p.starts_with(&log))
+            .collect()
+    };
+    let log_present = format!(
+        "{:?}",
+        "the log directory holds a log that no file here wrote"
+    );
+    for own_log in [true, false] {
+        let mut files = build.clone();
+        if own_log {
+            files.insert(format!("{file}-log/0000000000000000"), vec![0; 512]);
+        }
+        files.extend(foreign.clone());
+        let (got, after) = create_over(files);
+        assert!(
+            matches!(&got, Err(OpenError::Corrupt { detail }) if *detail == log_present),
+            "own log {own_log}: {got:?}"
+        );
+        assert!(!after.contains_key(FILE), "own log {own_log}");
+        assert_eq!(logs(foreign.clone()), logs(after), "own log {own_log}");
+    }
+    let (got, after) = create_over(build);
+    got.unwrap();
+    assert!(after.get(FILE).is_some_and(|b| b[24..40] != OTHER));
+    assert_eq!(Vec::<String>::new(), reserved(after.into_keys()));
+}
+
+/// On the host a create refuses as reserved when the reserved directory holds a symbolic link,
+/// leaving what the link names.
+#[test]
+fn a_create_over_a_link_in_the_reserved_directory_is_reserved() {
+    let dir = scratch("linked");
+    let file = aside(FILE, &OTHER);
+    write_image(
+        &dir,
+        &Files::from([
+            (marker(FILE), marker_bytes(&OTHER)),
+            (file.clone(), b"built".to_vec()),
+            ("mine/0000000000000000".to_owned(), b"keep".to_vec()),
+        ]),
+    );
+    std::os::unix::fs::symlink(dir.join("mine"), dir.join(format!("{file}-log"))).unwrap();
+    let got = adtb::open(dir.join(FILE), &log(), &api::options(2)).map(drop);
+    assert!(is_reserved(&got), "{got:?}");
+    let kept = std::fs::read(dir.join("mine/0000000000000000")).unwrap();
+    assert_eq!(b"keep".to_vec(), kept);
+}
+
+/// A create finds the reserved directory holding only a marker of zeros, as a crash before the
+/// marker's force leaves it, and creates in it.
+#[test]
+fn a_create_reuses_a_reserved_directory_with_nothing_written() {
+    let (got, after) = create_over(Files::from([(marker(FILE), vec![0; 512])]));
+    got.unwrap();
+    assert!(after.contains_key(FILE));
+    assert_eq!(Vec::<String>::new(), reserved(after.into_keys()));
+}
+
+/// On the host a create refuses as locked while another open holds the reserved file of an
+/// earlier build, with every byte left, and removes the build once the lock is released.
+#[test]
+fn a_create_over_a_held_reserved_file_is_locked() {
+    let dir = scratch("held");
+    let file = aside(FILE, &OTHER);
+    let planted = Files::from([
+        (marker(FILE), marker_bytes(&OTHER)),
+        (file.clone(), b"built".to_vec()),
+        (format!("{file}-log/0000000000000000"), vec![0; 512]),
+    ]);
+    write_image(&dir, &planted);
+    let held = std::fs::File::open(dir.join(&file)).unwrap();
+    held.try_lock().unwrap();
+    let got = adtb::open(dir.join(FILE), &log(), &api::options(2)).map(drop);
+    assert!(
+        matches!(got, Err(OpenError::Locked { pid: None })),
+        "{got:?}"
+    );
+    let mut after = Files::new();
+    read_image(&dir, &dir, &mut after);
+    assert_eq!(planted, after);
+    drop(held);
+    let db = adtb::open(dir.join(FILE), &log(), &api::options(2)).expect("the create");
+    db.close().unwrap();
+    assert!(!dir.join(creating(FILE)).exists());
+}

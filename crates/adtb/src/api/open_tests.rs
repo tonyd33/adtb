@@ -120,9 +120,13 @@ fn a_refused_open_keeps_only_files_it_found_across_creation_races() {
         assert_eq!("slugify", name, "{case:?}");
         assert_eq!(collisions, hits.get(), "{case:?}: the planned window ran");
         assert_eq!(
-            (retained, retained),
-            (path.exists(), log_dir.exists()),
-            "{case:?}: retain only preexisting files and their initialized logs"
+            (retained, false, false),
+            (
+                path.exists(),
+                log_dir.exists(),
+                scratch.path().join("notes.adt.creating").exists()
+            ),
+            "{case:?}: retain only preexisting files, and publish and leave nothing"
         );
         if retained {
             assert_eq!(

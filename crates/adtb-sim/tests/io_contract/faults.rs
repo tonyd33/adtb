@@ -59,6 +59,7 @@ cases!(
     a_crash_keeps_a_prefix_of_unforced_creations_and_removals,
     a_crash_may_lose_an_unforced_rename_and_removed_directory_whole,
     a_crash_that_loses_a_directory_loses_its_files,
+    a_rename_into_the_parent_is_forced_by_both_directories,
 );
 
 fn plain(dir: &Path) -> OsRuntime {
@@ -460,4 +461,29 @@ fn a_crash_that_loses_a_directory_loses_its_files(on: On) {
         }
     }
     assert!(lost, "some crash loses the directory");
+}
+
+fn a_rename_into_the_parent_is_forced_by_both_directories(on: On) {
+    let mut seen = BTreeSet::new();
+    for seed in 0..SEEDS {
+        for (k, synced) in super::PARENT_SYNCS.into_iter().enumerate() {
+            let dir = on.scratch(&format!("faults-parent-{seed}-{k}"));
+            let rt = on.faulty(
+                &dir,
+                Faults {
+                    seed,
+                    ..Faults::default()
+                },
+            );
+            super::rename_into_the_parent(&rt, &mut rt.io(), synced);
+            rt.crash();
+            let rt = plain(&dir);
+            let mut io = rt.io();
+            let mut files: Vec<String> = list(&rt, &mut io, "").unwrap().into_iter().collect();
+            files.retain(|f| f != "d");
+            files.extend(list(&rt, &mut io, "d").unwrap());
+            seen.insert(super::after_a_parent_rename(files, synced, seed));
+        }
+    }
+    assert_eq!(2, seen.len(), "{seen:?}");
 }

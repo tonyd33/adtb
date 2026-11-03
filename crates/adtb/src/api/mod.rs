@@ -29,7 +29,7 @@ pub mod typed;
 mod value;
 mod verify;
 
-use failed_open::{FailedOpen, failed_create, host_error};
+use failed_open::{failed_create, finish_create, host_error};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -449,7 +449,7 @@ impl<R: Runtime> Database<R> {
         log: &Log,
         options: &OpenOptions,
     ) -> Result<Database<R>, OpenError> {
-        let engine = Engine::open(rt, name, log, options).map_err(|failed| failed.error)?;
+        let engine = Engine::open(rt, name, log, options, &mut |_| Ok(()))?;
         Ok(Database::of(engine))
     }
 
@@ -590,31 +590,29 @@ impl Database<adtb_sys::os::OsRuntime> {
     /// every other open, and apply the migrations of `log` beyond the file's own.
     ///
     /// The runtime runs on io_uring where the host allows it, else on a pool of threads. An open
-    /// that fails removes a file only if it created it, with the log directory only if it also
-    /// claimed that, and answers its refusal whether or not those removals succeed. A file it
-    /// found empty and wrote stays with its log, which a retry opens.
+    /// that fails removes the empty file it locked only if it created it and no create published
+    /// a database at its name, and answers its refusal whether or not that removal succeeds.
     pub fn open(
         path: impl AsRef<std::path::Path>,
         log: &Log,
         options: &OpenOptions,
     ) -> Result<Database, OpenError> {
         let path = path.as_ref();
-        let (held, dir, name) = file::Held::take(path, options.create.is_some())?;
+        let (mut held, dir, name) = file::Held::take(path, options.create.is_some())?;
         let rt = os_runtime(&dir, options.workers());
-        match Engine::open(rt, &name, log, options) {
+        let opened = Engine::open(rt, &name, log, options, &mut |file| {
+            held.hold(&dir.join(file))
+        });
+        held.published();
+        match opened {
             Ok(engine) => {
                 *engine.held.lock(&engine.rt) = Some(held);
                 *engine.targets.lock(&engine.rt) = backup::resolved_root(options);
                 Ok(Database::of(engine))
             }
-            Err(failed) => {
-                if held.created() {
-                    let log_dir = failed
-                        .log_claimed
-                        .then(|| dir.join(options.storage(&name).log_dir()));
-                    file::remove_created(log_dir.as_deref(), &dir.join(&name));
-                }
-                Err(failed.error)
+            Err(error) => {
+                held.remove_created();
+                Err(error)
             }
         }
     }
@@ -835,45 +833,51 @@ fn refused(version: u64, reason: RejectReason) -> OpenError {
 }
 
 impl<R: Runtime> Engine<R> {
-    fn open(rt: R, name: &str, log: &Log, options: &OpenOptions) -> Result<Engine<R>, FailedOpen> {
+    /// Open the database `name`, or create it in a reserved directory and publish it once open,
+    /// calling `hold` with each reserved file before create removes or renames it.
+    fn open(
+        rt: R,
+        name: &str,
+        log: &Log,
+        options: &OpenOptions,
+        hold: storage::Hold<'_>,
+    ) -> Result<Engine<R>, OpenError> {
         let storage = options.storage(name);
-        let unclaimed = |error| FailedOpen {
-            error,
-            log_claimed: false,
-        };
-        let (pager, log_claimed) = match Pager::open(rt.clone(), &storage) {
-            Ok((p, _)) => (p, false),
+        let (pager, new) = match Pager::open(rt.clone(), &storage) {
+            Ok((p, _)) => (p, None),
             Err(storage::OpenError::NotFound | storage::OpenError::NoHeader)
                 if options.create.is_some() =>
             {
-                (
-                    Pager::create(rt.clone(), &storage).map_err(failed_create)?,
-                    true,
-                )
+                match storage::create(rt.clone(), &storage, hold).map_err(failed_create)? {
+                    storage::Created::Finished(p) => (p, None),
+                    storage::Created::Built(p, new) => (p, Some(new)),
+                }
             }
-            Err(storage::OpenError::NotFound) => return Err(unclaimed(OpenError::NotFound)),
-            Err(storage::OpenError::Io(e)) => return Err(unclaimed(OpenError::Io(host_error(e)))),
+            Err(storage::OpenError::NotFound) => return Err(OpenError::NotFound),
+            Err(storage::OpenError::Io(e)) => return Err(OpenError::Io(host_error(e))),
             Err(storage::OpenError::OtherLayout(layout)) => {
-                return Err(unclaimed(OpenError::Corrupt {
+                return Err(OpenError::Corrupt {
                     detail: format!(
                         "the file header has layout {layout}, not one this engine reads"
                     ),
-                }));
-            }
-            Err(e) => return Err(unclaimed(corrupt(e))),
-        };
-        Engine::on(rt.clone(), pager.clone(), log, options)
-            .or_else(|e| {
-                mark_open_damage(rt.clone(), &pager);
-                let opened = open_damage(&pager).map_or(Err(e), |damage| {
-                    Engine::unread(rt, pager.clone(), options, damage)
                 });
-                if opened.is_err() {
-                    pager.close();
-                }
-                opened
-            })
-            .map_err(|error| FailedOpen { error, log_claimed })
+            }
+            Err(e) => return Err(corrupt(e)),
+        };
+        let opened = Engine::on(rt.clone(), pager.clone(), log, options).or_else(|e| {
+            mark_open_damage(rt.clone(), &pager);
+            let opened = open_damage(&pager).map_or(Err(e), |damage| {
+                Engine::unread(rt.clone(), pager.clone(), options, damage)
+            });
+            if opened.is_err() {
+                pager.close();
+            }
+            opened
+        });
+        match new {
+            Some(new) => finish_create(rt, &pager, &new, opened, hold),
+            None => opened,
+        }
     }
 
     /// Returns the engine of a file quarantined whole whose catalog cannot be trusted: the

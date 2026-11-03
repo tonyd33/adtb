@@ -2186,15 +2186,11 @@ fn an_open_after_a_restore_crashed_between_its_renames_refuses() {
     assert_reached("a crash between the renames", between, 1);
 }
 
-/// Open with `create` at each op of a restore: nobody loses a log they were told is theirs.
+/// Open with `create` through `open_in` at each op of a restore: one of them wins, and nobody
+/// loses a log they were told is theirs.
 #[test]
 fn an_open_at_each_op_of_a_restore() {
-    let (restore_won, open_won, both_lost, both_lost_cases) = (
-        AtomicU64::new(0),
-        AtomicU64::new(0),
-        AtomicU64::new(0),
-        AtomicU64::new(0),
-    );
+    let (restore_won, open_won) = (AtomicU64::new(0), AtomicU64::new(0));
     let workload = |hook: &Hooked, at: Option<u64>| {
         let opened = Arc::new(Mutex::new(None));
         let thread = Arc::new(Mutex::new(None));
@@ -2220,54 +2216,36 @@ fn an_open_at_each_op_of_a_restore() {
             let joined = joined.expect("the second run started");
             hook.join(joined);
             let opened = opened.lock().unwrap().take().expect("the thread ended");
+            assert!(
+                restored.is_ok() || opened.is_ok(),
+                "op {at:?}: {restored:?} {opened:?}"
+            );
             let tally = if restored.is_ok() {
                 &restore_won
-            } else if opened.is_ok() {
-                &open_won
             } else {
-                &both_lost
+                &open_won
             };
             tally.fetch_add(1, Ordering::Relaxed);
-            if restored.is_ok() || opened.is_ok() {
-                let db = open_at(hook.rt.clone(), COPY).expect("the winner's database opens");
-                let expected = if restored.is_ok() {
-                    rows_upto(SEARCH_ROWS)
-                } else {
-                    BTreeSet::new()
-                };
-                assert_eq!(expected, ids(&db), "op {at:?}");
-                db.close().unwrap();
+            let db = open_at(hook.rt.clone(), COPY).expect("the winner's database opens");
+            let expected = if restored.is_ok() {
+                rows_upto(SEARCH_ROWS)
             } else {
-                is_invalid_naming(&restored, "exists");
-                assert!(
-                    matches!(&opened, Err(adtb::OpenError::Corrupt { detail })
-                        if detail.contains("log directory")),
-                    "op {at:?}: {opened:?}"
-                );
-            }
+                BTreeSet::new()
+            };
+            assert_eq!(expected, ids(&db), "op {at:?}");
+            db.close().unwrap();
         }
     };
     let base = backed_up(SEARCH_ROWS);
     search::each_start(&base, 95, STARTS, workload, |at, files| {
         assert!(!files.keys().any(|p| is_aside(p)), "op {at}");
-        if both_lost.swap(0, Ordering::Relaxed) > 0 {
-            both_lost_cases.fetch_add(1, Ordering::Relaxed);
-            assert!(
-                files.get(COPY).is_none_or(Vec::is_empty),
-                "op {at}: both lost and the path holds data"
-            );
-            let segments = segments_of(&files, &format!("{COPY}-log"));
-            assert!(segments.is_empty(), "op {at}: both lost: {segments:?}");
-        }
     });
     let (restore, open) = (
         restore_won.load(Ordering::Relaxed) as usize,
         open_won.load(Ordering::Relaxed) as usize,
     );
-    let both = both_lost_cases.load(Ordering::Relaxed) as usize;
     assert_reached("the restore winning", restore, 1);
     assert_reached("the open winning", open, 1);
-    assert_reached("both losing", both, 1);
 }
 
 fn with_rows_of_seed(seed: u64, rows: i64) -> Files {
