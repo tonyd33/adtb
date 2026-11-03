@@ -1,6 +1,6 @@
 ---
 created-at: 2026-11-02
-status: open
+status: closed
 kind: bug
 priority: 470
 summary: a page whose LSN is past the recovered log end is reported by neither recovery nor verify, so a commit lost to a misdirected log write goes unseen
@@ -28,3 +28,9 @@ Done when the deep profile of that test passes over a seed range past 337, with 
 `LogProblem::Unlogged { pid, page }` from verify for a page whose LSN is past the log end recovery kept, and for a recovery Stale with found past expected. Only verify reports it; open neither refuses nor quarantines, since recovery reads only pages it redoes (docs/design/storage.md sections 3 and 7). Seed 337 passes under deep over 300..396. Review: no blocker, no false positive found on healthy databases, restore, live check or crash sweeps. Delta asked: a test reaching the no-record branch, one classification independent of open history with relation-scoped VERIFY keeping the finding, the known-damage path tested, docs.
 
 Left: a batch that passes its checksum but fails to parse reports its pages `Unlogged` on top of its own log finding.
+
+## 2026-11-02: landed, closed
+
+`fix: report a page past the recovered log end`. The delta landed as asked: a page at or past the recovered end is `Unlogged` with or without a record, one below it with no record stays Orphan; relation-scoped VERIFY keeps the finding; a live check reports a page at or past the log's next LSN read after the page; tests reach the no-record branch, the known-damage path and the relation scope. Check exit 0, 3606 passed; deep passes over 300..396 with a floor on `Unlogged`. The round 2 live check change was not separately reviewed.
+
+The leftover, a batch that passes its checksum but fails to parse reporting its pages twice, moves to fault-matrix.
