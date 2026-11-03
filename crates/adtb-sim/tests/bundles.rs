@@ -5754,3 +5754,245 @@ fn a_pinned_print_or_parse_answers_as_at_its_pin_or_is_refused_across_a_change_o
 fn a_pinned_print_or_parse_answers_as_at_its_pin_or_is_refused_across_a_rename_elsewhere() {
     assert_eq!((32, 8), textual_across(4..8));
 }
+
+/// Each composite key's fields, and each rename of one field `f` to `g` as `fg`, marked `!`
+/// where it reorders the key's fields by name: to a name before, between and after the others.
+const KEY_RENAMES: [(&str, &str); 2] = [
+    ("b d", "ba bc be! da! dc de"),
+    ("b d f", "ba bc be! bg! da! dc de dg! fa! fc! fe fg"),
+];
+
+/// One rename of `KEY_RENAMES`: the key's fields in name order, the field renamed, its new name
+/// and whether it reorders the key's fields.
+struct KeyRename {
+    fields: Vec<&'static str>,
+    from: &'static str,
+    to: &'static str,
+    reorders: bool,
+}
+
+fn key_renames((fields, renames): (&'static str, &'static str)) -> Vec<KeyRename> {
+    renames
+        .split(' ')
+        .map(|r| KeyRename {
+            fields: fields.split(' ').collect(),
+            from: &r[..1],
+            to: &r[1..2],
+            reorders: r.ends_with('!'),
+        })
+        .collect()
+}
+
+/// Returns the operators that declare relation `p{i}` keyed by the fields of rename `i`, its key
+/// declared in reverse at an odd `i`, and `n{i}` keyed by a key of `p{i}` and a text.
+fn key_schema(i: usize, k: &KeyRename) -> String {
+    let fields: Vec<String> = k.fields.iter().map(|f| format!("{f}: Text")).collect();
+    let mut key: Vec<&str> = k.fields.clone();
+    if i % 2 == 1 {
+        key.reverse();
+    }
+    format!(
+        "add type P{i} = {{ {} }}\nadd relation p{i} : P{i} key ({})\n\
+         add type N{i} = {{ o: Key p{i}, m: Text }}\nadd relation n{i} : N{i} key (o, m)\n",
+        fields.join(", "),
+        key.join(", ")
+    )
+}
+
+/// Returns `p{i}.key(..)` of rename `i`, its field `j` in name order holding `"{j + 1}"`, or
+/// `"9"` for every field when `top`.
+fn key_text(i: usize, k: &KeyRename, top: bool) -> String {
+    let args: Vec<String> = (1..)
+        .zip(&k.fields)
+        .map(|(j, f)| format!("{f}: \"{}\"", if top { 9 } else { j }))
+        .collect();
+    format!("p{i}.key({})", args.join(", "))
+}
+
+/// The number of bodies `key_reads` returns.
+const KEY_READS: usize = 7;
+
+/// Returns the queries of rename `i` that read `p{i}` and `n{i}`, whose key holds a reference
+/// to `p{i}`.
+fn key_reads(i: usize, k: &KeyRename) -> String {
+    let key = key_text(i, k, false);
+    let cat = |x: &str| {
+        k.fields
+            .iter()
+            .map(|f| format!("{x}.{f}"))
+            .collect::<Vec<_>>()
+            .join(" ++ ")
+    };
+    format!(
+        "query eq{i} () -> Set Text = from p in p{i} where key p == {key} select {}\n\
+         query given{i} (k: Key p{i}) -> Set Text = from p in p{i} where key p == k select {}\n\
+         query follow{i} () -> Set Text = from x in n{i} select {}\n\
+         query tos{i} () -> Set (Key p{i}) = from x in n{i} select x.o\n\
+         query whole{i} () -> Set {{ {} }} = from p in p{i} select value(key p)\n\
+         query nested{i} () -> Set (Key n{i}) = from x in n{i} select key x\n\
+         query ngiven{i} (k: Key n{i}) -> Set Text = from x in n{i} where key x == k select x.m\n",
+        cat("p"),
+        cat("p"),
+        cat("x.o"),
+        k.fields
+            .iter()
+            .map(|f| format!("{f}: Text"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
+}
+
+fn committed(called: Result<Called, Error>, case: &str) -> Vec<String> {
+    match called {
+        Ok(Called::Committed(c)) => printed(c.value),
+        other => panic!("{case}: commits: {other:?}"),
+    }
+}
+
+/// Returns how many (rename, body) pairs answered as at the pin, asserting each answer: a
+/// transaction inserting into `p{i}` and returning the key, one inserting into every `n{i}` a
+/// row keyed by a key of `p{i}` it builds, the reads of `key_reads`, and, across a rename that keeps
+/// the key's order, a query comparing keys ordered.
+fn key_order_search(renames: &[KeyRename]) -> usize {
+    let n = renames.len();
+    let mut schema = String::from("module auth\nadd module auth\n");
+    let mut later = String::from("module auth\n");
+    let mut puts = String::from("import auth\n");
+    let mut reads = String::new();
+    let mut sorted = String::from("import auth\n");
+    let mut nested = String::new();
+    for (i, k) in renames.iter().enumerate() {
+        schema.push_str(&key_schema(i, k));
+        later.push_str(&format!("rename field P{i}.{} to {}\n", k.from, k.to));
+        let row: Vec<String> = (1..)
+            .zip(&k.fields)
+            .map(|(j, f)| format!("{f}: \"{j}\""))
+            .collect();
+        puts.push_str(&format!(
+            "txn put{i} () -> Key p{i} =\n  transact\n    let p = insert p{i} {{ {} }}\n    return key p\n",
+            row.join(", ")
+        ));
+        nested.push_str(&format!(
+            "    let n{i} = insert n{i} {{ o: {}, m: \"z\" }}\n",
+            key_text(i, k, false)
+        ));
+        reads.push_str(&key_reads(i, k));
+        if !k.reorders {
+            sorted.push_str(&format!(
+                "query lt{i} () -> Set Text = from p in p{i} where key p < {} select \"below\"\n",
+                key_text(i, k, true)
+            ));
+        }
+    }
+    let body =
+        format!("{puts}txn link () -> Key n0 =\n  transact\n{nested}    return key n0\n{reads}");
+    let mut reached = 0;
+    once(31, |rt| {
+        let regs = vec![
+            bundle("keys-1.0", &[&schema], "", &body),
+            bundle("sorted-1.0", &[&schema], "", &sorted),
+        ];
+        let db = opened(&rt, &[&schema, &later], regs);
+        let keys = db.registered("keys-1.0").expect("keys-1.0 binds");
+        let run = |ordinal: usize, args: &[Value]| {
+            keys.call(ordinal as u32, args, &CallOptions::default())
+        };
+        let case = |i: usize| {
+            let k = &renames[i];
+            format!(
+                "`rename field P{i}.{} to {}` of {:?}",
+                k.from, k.to, k.fields
+            )
+        };
+        for (i, k) in renames.iter().enumerate() {
+            let got = committed(run(i + 1, &[]), &case(i));
+            assert_eq!(vec![key_text(i, k, false)], got, "put across {}", case(i));
+            reached += 1;
+        }
+        let got = committed(run(n + 1, &[]), "link");
+        let n0 = format!("n0.key(m: \"z\", o: {})", key_text(0, &renames[0], false));
+        assert_eq!(vec![n0], got, "link");
+        reached += n;
+        let mut lt = 0;
+        for (i, k) in renames.iter().enumerate() {
+            let case = case(i);
+            let key = key_text(i, k, false);
+            let cat: String = (1..=k.fields.len()).map(|j| j.to_string()).collect();
+            let cat = format!("{cat:?}");
+            let given: Vec<Value> = (1..=k.fields.len())
+                .map(|j| Value::text(&j.to_string()))
+                .collect();
+            let whole: Vec<String> = (1..)
+                .zip(&k.fields)
+                .map(|(j, f)| format!("{f}: \"{j}\""))
+                .collect();
+            let whole = format!("{{ {} }}", whole.join(", "));
+            let nested = format!("n{i}.key(m: \"z\", o: {key})");
+            let z = "\"z\"".to_string();
+            for (j, args, want) in [
+                (0, Vec::new(), &cat),
+                (1, vec![Value::record(given.clone())], &cat),
+                (2, Vec::new(), &cat),
+                (3, Vec::new(), &key),
+                (4, Vec::new(), &whole),
+                (5, Vec::new(), &nested),
+                (
+                    6,
+                    vec![Value::record(vec![
+                        Value::text("z"),
+                        Value::record(given.clone()),
+                    ])],
+                    &z,
+                ),
+            ] {
+                let got = run(n + 2 + i * KEY_READS + j, &args)
+                    .unwrap_or_else(|e| panic!("read {j} across {case}: {e:?}"));
+                assert_eq!(vec![want.clone()], rows(got), "read {j} across {case}");
+                reached += 1;
+            }
+            if !k.reorders {
+                lt += 1;
+                let got = rows(call(&db, "sorted-1.0", lt, &[]));
+                assert_eq!(vec!["\"below\""], got, "lt across {case}");
+                reached += 1;
+            }
+        }
+    });
+    reached
+}
+
+#[test]
+fn a_pinned_composite_key_reads_and_writes_by_field_across_every_rename_of_a_key_field() {
+    let reached: Vec<usize> = KEY_RENAMES
+        .iter()
+        .map(|&shape| key_order_search(&key_renames(shape)))
+        .collect();
+    assert_eq!(
+        vec![6 * (2 + KEY_READS) + 4, 12 * (2 + KEY_READS) + 6],
+        reached
+    );
+}
+
+#[test]
+fn a_pinned_key_value_reads_by_field_across_two_renames_that_reorder_its_fields() {
+    let schema = "module auth\nadd module auth\nadd type P = { b: Text, d: Text, f: Text }\nadd relation p : P key (b, d, f)\n";
+    let renames = [
+        "module auth\nrename field P.b to e\n",
+        "module auth\nrename field P.d to a\n",
+    ];
+    let body = r#"import auth
+txn put () -> Key p =
+  transact
+    let x = insert p { b: "1", d: "2", f: "3" }
+    return key x
+query whole () -> Set { b: Text, d: Text, f: Text } = from x in p select value(key x)
+"#;
+    once(32, |rt| {
+        let regs = vec![bundle("whole-1.0", &[schema], "", body)];
+        let db = opened(&rt, &[schema, renames[0], renames[1]], regs);
+        let put = committed(Ok(call(&db, "whole-1.0", 1, &[])), "put");
+        assert_eq!(vec![r#"p.key(b: "1", d: "2", f: "3")"#], put);
+        let got = rows(call(&db, "whole-1.0", 2, &[]));
+        assert_eq!(vec![r#"{ b: "1", d: "2", f: "3" }"#], got);
+    });
+}

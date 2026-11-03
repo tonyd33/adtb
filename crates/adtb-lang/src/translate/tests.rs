@@ -55,6 +55,11 @@ fn translated(log: &[&str], pin: usize, body: &str) -> R<NormalQuery> {
 }
 
 fn translated_with_hiding(log: &[&str], pin: usize, body: &str, hide_new: bool) -> R<NormalQuery> {
+    translated_each(log, pin, body, hide_new).remove(0)
+}
+
+/// Returns the translation of each query or transaction of `body`, as `translated` does.
+fn translated_each(log: &[&str], pin: usize, body: &str, hide_new: bool) -> Vec<R<NormalQuery>> {
     let (from_source, from, from_program) = checked(&log[..pin]);
     let (to_source, to, to_program) = checked(log);
     let text = format!("import auth\n{body}");
@@ -64,13 +69,19 @@ fn translated_with_hiding(log: &[&str], pin: usize, body: &str, hide_new: bool) 
     let vis = signature::visible(&from, &imports).expect("auth is visible");
     let calls = signature::calls(&from, &from_program, &vis, &imports, &items)
         .unwrap_or_else(|d| panic!("`{body}` checks at its pin: {}", d.message));
-    let q = match &calls[0].item {
-        Item::Query(_, q) => norm::query(&from, &from_program, q),
-        Item::Txn(_, t) => norm::txn(&from, &from_program, t),
-        Item::Fn(..) => panic!("the body holds a query or transaction"),
-    }
-    .expect("the callable normalises");
-    Pinned::new(&from, &from_source, &to, &to_source, &to_program, hide_new)?.query(&q)
+    let p = Pinned::new(&from, &from_source, &to, &to_source, &to_program, hide_new);
+    calls
+        .iter()
+        .map(|c| {
+            let q = match &c.item {
+                Item::Query(_, q) => norm::query(&from, &from_program, q),
+                Item::Txn(_, t) => norm::txn(&from, &from_program, t),
+                Item::Fn(..) => panic!("the body holds a query or transaction"),
+            }
+            .expect("the callable normalises");
+            p.as_ref().map_err(Clone::clone)?.query(&q)
+        })
+        .collect()
 }
 
 /// Returns the operator and reason of the refusal of translating `body`.
@@ -472,4 +483,55 @@ fn a_rename_rewriting_a_language_body_is_no_change_of_a_host_function_at_the_pin
         None,
         host_conflict(&before, &at_pin, &next).expect("the functions resolve")
     );
+}
+
+/// Each composite key's fields, and each rename of one field `f` to `g` as `fg`, marked `!`
+/// where it reorders the key's fields by name.
+const KEY_RENAMES: [(&str, &str); 2] = [
+    ("b d", "ba bc be! da! dc de"),
+    ("b d f", "ba bc be! bg! da! dc de dg! fa! fc! fe fg"),
+];
+
+#[test]
+fn a_composite_key_compared_ordered_is_refused_across_a_rename_that_reorders_its_fields() {
+    let mut reached = (0, 0);
+    for (fields, renames) in KEY_RENAMES {
+        let fields: Vec<&str> = fields.split(' ').collect();
+        let decl: Vec<String> = fields.iter().map(|f| format!("{f}: Text")).collect();
+        let schema = format!(
+            "module auth\nadd type P = {{ {} }}\nadd relation p : P key ({})\n\
+             add type R = {{ o: Key p, n: Text }}\nadd relation r : R key (o, n)\n",
+            decl.join(", "),
+            fields.join(", ")
+        );
+        let args: Vec<String> = fields.iter().map(|f| format!("{f}: \"9\"")).collect();
+        let key = format!("p.key({})", args.join(", "));
+        let body = format!(
+            "query lt () -> Set Text = from x in p where key x < {key} select \"below\"\n\
+             query first () -> Set (Key p) = from x in p select key x order by key x take 1\n\
+             query nested () -> Set Text = from x in r where key x < r.key(o: {key}, n: \"z\") select x.n\n"
+        );
+        for rename in renames.split(' ') {
+            let op = format!("rename field P.{} to {}", &rename[..1], &rename[1..2]);
+            let later = format!("module auth\n{op}\n");
+            let got = translated_each(&[V1, &schema, &later], 2, &body, false);
+            for (q, got) in ["lt", "first", "nested"].iter().zip(got) {
+                let case = format!("`{q}` across `{op}` of {fields:?}");
+                match got {
+                    Ok(_) if !rename.ends_with('!') => reached.0 += 1,
+                    Err(u) if rename.ends_with('!') => {
+                        let why = "it compares `Key p` ordered, and its order differs";
+                        assert_eq!(
+                            (Some(op.clone()), why.into()),
+                            (u.operator, u.reason),
+                            "{case}"
+                        );
+                        reached.1 += 1;
+                    }
+                    other => panic!("{case}: {other:?}"),
+                }
+            }
+        }
+    }
+    assert_eq!((30, 24), reached);
 }

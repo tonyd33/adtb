@@ -374,6 +374,8 @@ impl<'p, 'a> Walk<'p, 'a> {
                 ));
             }
             Kind::Field(x, name) => return self.field(out, &src_ty, x, &name),
+            Kind::KeyOf(rel, x) => return self.key_of(out, &src_ty, rel, x),
+            Kind::Prim(Prim::KeyValue, xs) => return self.key_value(out, &src_ty, xs[0]),
             Kind::Ctor { ctor, fields } => {
                 return self.ctor(out, &src_ty, ctor, &fields, site);
             }
@@ -435,7 +437,6 @@ impl<'p, 'a> Walk<'p, 'a> {
             | Kind::Call { .. }
             | Kind::Caller
             | Kind::Key(..)
-            | Kind::KeyOf(..)
             | Kind::Deref { .. }
             | Kind::Tag(..)
             | Kind::Try(..)
@@ -829,6 +830,50 @@ impl<'p, 'a> Walk<'p, 'a> {
             self.p.writable(rel, c)?;
         }
         Ok(())
+    }
+
+    /// Returns the key of `rel` built from `x`, a record laid out as the pin lays out the key.
+    fn key_of(&mut self, out: &mut Terms, src_ty: &Ty, rel: RelId, x: Tm) -> R<Tm> {
+        let to = self.relation(rel)?;
+        let mut x = self.tm(out, x, None)?;
+        let order = self.map.key_order(rel);
+        if let Some(order) = order.map_err(|l| self.p.lost(&l, "builds a key of"))?
+            && let Ty::Record(fs) = out.ty(x).clone()
+        {
+            let fields: Vec<_> = order
+                .into_iter()
+                .map(|(p, n)| (fs[p].0.clone(), n, fs[p].1.clone()))
+                .collect();
+            x = relaid(out, x, &fields);
+        }
+        let ty = self.ty(src_ty)?;
+        Ok(out.add(Kind::KeyOf(to, x), ty))
+    }
+
+    /// Returns the value of key `k` as a record laid out as the pin lays out the key.
+    fn key_value(&mut self, out: &mut Terms, src_ty: &Ty, k: Tm) -> R<Tm> {
+        let ty = self.ty(src_ty)?;
+        let Ty::Key { rel, .. } = *self.src.ty(k) else {
+            panic!("the operand of a key's value is a key");
+        };
+        let k = self.tm(out, k, None)?;
+        let order = self.map.key_order(rel);
+        let order = order.map_err(|l| self.p.lost(&l, "reads a key of"))?;
+        let (Some(order), Ty::Record(fs)) = (order, &ty) else {
+            return Ok(out.add(Kind::Prim(Prim::KeyValue, vec![k]), ty));
+        };
+        let now = order.iter().map(|(p, n)| (n.clone(), fs[*p].1.clone()));
+        let v = out.add(
+            Kind::Prim(Prim::KeyValue, vec![k]),
+            Ty::Record(now.collect()),
+        );
+        let mut back = order;
+        back.sort();
+        let back: Vec<_> = back
+            .into_iter()
+            .map(|(p, n)| (n, fs[p].0.clone(), fs[p].1.clone()))
+            .collect();
+        Ok(relaid(out, v, &back))
     }
 
     fn field(&mut self, out: &mut Terms, src_ty: &Ty, x: Tm, name: &str) -> R<Tm> {
@@ -1383,4 +1428,23 @@ fn restricted(schema: &crate::schema::Schema, ty: &Ty, k: u32) -> Ty {
         Ty::Tag(t) => Ty::Tag(Box::new(restricted(schema, t, k))),
         t => t.clone(),
     }
+}
+
+/// Returns a record holding, for each `(from, name, ty)` of `fields`, field `from` of record `x`
+/// as its field `name`.
+fn relaid(out: &mut Terms, x: Tm, fields: &[(String, String, Ty)]) -> Tm {
+    let mut parts = Vec::with_capacity(fields.len());
+    for (f, n, t) in fields {
+        let given = match out.kind(x) {
+            Kind::Record(vs) => vs.iter().find(|(m, _)| m == f).map(|&(_, v)| v),
+            _ => None,
+        };
+        let v = given.unwrap_or_else(|| out.add(Kind::Field(x, f.clone()), t.clone()));
+        parts.push((n.clone(), v));
+    }
+    let ty = fields
+        .iter()
+        .map(|(_, n, t)| (n.clone(), t.clone()))
+        .collect();
+    out.add(Kind::Record(parts), Ty::Record(ty))
 }

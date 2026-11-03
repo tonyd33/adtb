@@ -215,6 +215,20 @@ impl<'a> Pinned<'a> {
                     from.ty(*def).name
                 ),
             ),
+            Loss::KeyOrder(rel) => {
+                let r = from.relation(*rel);
+                let slot = |f| map::slot(from, r.elem_def, 0, f);
+                let key: Vec<_> = r
+                    .key
+                    .iter()
+                    .filter_map(|f| from.ids.fields.get(&slot(f)))
+                    .collect();
+                let renames = |o: &Op| matches!(&o.op, Resolved::RenameField { field, .. } if key.contains(&field));
+                refused(
+                    self.blame(renames),
+                    format!("it {what} `Key {}` ordered, and its order differs", r.name),
+                )
+            }
             Loss::Renamed { part, name, id } => refused(
                 id.and_then(|id| self.blame_rename(*part, id)),
                 format!("it {what} `{name}`, which the current version names otherwise"),

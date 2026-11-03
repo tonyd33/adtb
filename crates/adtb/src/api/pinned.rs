@@ -4,6 +4,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use adtb_lang::textual::key_field_ty;
 use adtb_lang::translate::Map;
 use adtb_lang::types::Ty;
 
@@ -85,6 +86,33 @@ fn recode(map: &Map<'_>, ty: &Ty, v: &Val, forward: bool) -> Val {
                 map.ctor_back(def, *c)
             };
             Val::tag(c.expect("a carried tag's constructor has a counterpart at both versions"))
+        }
+        (Ty::Key { rel, .. }, _) => {
+            let mut names = map.from.relation(*rel).key.clone();
+            names.sort();
+            let tys: Vec<Ty> = names
+                .iter()
+                .map(|f| key_field_ty(map.from, *rel, f))
+                .collect();
+            let (Val::Record(fs), [_, _, ..]) = (v, tys.as_slice()) else {
+                return recode(map, &tys[0], v, forward);
+            };
+            let order = map
+                .key_order(*rel)
+                .expect("a carried key's every field has a counterpart at both versions");
+            let at: Vec<usize> = match order {
+                Some(order) => order.into_iter().map(|(p, _)| p).collect(),
+                None => (0..fs.len()).collect(),
+            };
+            let mut out = fs.to_vec();
+            for (i, &p) in at.iter().enumerate() {
+                if forward {
+                    out[i] = recode(map, &tys[p], &fs[p], true);
+                } else {
+                    out[p] = recode(map, &tys[p], &fs[i], false);
+                }
+            }
+            Val::record(out)
         }
         (Ty::Record(ts), Val::Record(fs)) => Val::record(
             ts.iter()

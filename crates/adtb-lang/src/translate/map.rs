@@ -35,6 +35,9 @@ pub enum Loss {
     },
     /// The type of the earlier version orders its values otherwise at the later one.
     Order(TypeId),
+    /// The composite key of the relation of the earlier version orders its values otherwise at
+    /// the later one.
+    KeyOrder(RelId),
     /// The object of the earlier version named `name` is named otherwise at the later one.
     Renamed {
         part: Part,
@@ -284,6 +287,39 @@ impl<'a> Map<'a> {
         Ok(())
     }
 
+    /// Returns, for each field of the composite key of `rel` in its layout at the later version,
+    /// the position of the field it is in the layout at the earlier version and its name at the
+    /// later one; `None` when both lay the key out alike or `rel` has no counterpart.
+    ///
+    /// Fail when a field of the key has no counterpart at the later version.
+    pub fn key_order(&self, rel: RelId) -> Result<Option<Vec<(usize, String)>>, Loss> {
+        if self.relation(rel).is_none() {
+            return Ok(None);
+        }
+        let r = self.from.relation(rel);
+        let mut pinned = r.key.clone();
+        pinned.sort();
+        let image = |f: &String| {
+            self.field(r.elem_def, Some(0), f)
+                .ok_or_else(|| Loss::Field {
+                    ty: self.from.ty(r.elem_def).name.clone(),
+                    field: f.clone(),
+                    id: self
+                        .from
+                        .ids
+                        .fields
+                        .get(&slot(self.from, r.elem_def, 0, f))
+                        .copied(),
+                    added: false,
+                })
+        };
+        let images = pinned.iter().map(image).collect::<Result<Vec<_>, _>>()?;
+        let mut order: Vec<_> = images.into_iter().enumerate().collect();
+        order.sort_by(|a, b| a.1.cmp(&b.1));
+        let moved = order.iter().enumerate().any(|(i, &(p, _))| i != p);
+        Ok(moved.then_some(order))
+    }
+
     /// Returns the constructors `def` narrowed to `ctors` may hold, at the earlier version.
     fn narrowed(&self, def: TypeId, ctors: &Option<CtorSet>) -> Vec<u32> {
         Self::ctor_set(
@@ -308,9 +344,16 @@ impl<'a> Map<'a> {
         let mut inner = |t: &Ty| self.whole_in(t, exact, ordered, named, seen);
         match ty {
             Ty::Key { rel, .. } if named => self.key_shown(*rel, seen),
-            Ty::Base(_) | Ty::Param(_) | Ty::Unit | Ty::Change | Ty::Fn(..) | Ty::Key { .. } => {
-                Ok(())
+            Ty::Key { rel, .. } => {
+                if self.key_order(*rel)?.is_some() && ordered {
+                    return Err(Loss::KeyOrder(*rel));
+                }
+                let r = self.from.relation(*rel);
+                r.key
+                    .iter()
+                    .try_for_each(|f| inner(&key_field_ty(self.from, *rel, f)))
             }
+            Ty::Base(_) | Ty::Param(_) | Ty::Unit | Ty::Change | Ty::Fn(..) => Ok(()),
             Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => inner(t),
             Ty::Group(k, t) => {
                 inner(k)?;
