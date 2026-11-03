@@ -271,3 +271,8 @@ A test binary aborts past 1.5 GiB of live heap, charged by malloc chunk, by a co
 ## Waiting
 
 Never run a command that waits on input it will not get. Never poll with an unbounded loop: run the command in the foreground, or in the background and wait for its notification. A wait for something else must have a time limit and must fail when the limit passes. An agent stuck this way gives no signal, and two such shells once held a track for 80 minutes.
+
+Per harness:
+
+- Claude Code: run `work/tools/suite`, `check` and any command longer than a minute with `run_in_background`, and wait for its completion notification. Do not tail, grep or sleep on its log meanwhile. Foreground wait loops were the largest waste measured in Claude Code subagents.
+- Codex: a long `exec` returns a session. Wait on it with long `write_stdin` waits, not repeated short ones; short polls were 11% of Codex subagent time. Stay within commands the sandbox allows without escalation, since each escalation starts a guardian review. Read the files your brief names before searching: search and reading were 13% of Codex subagent time.
