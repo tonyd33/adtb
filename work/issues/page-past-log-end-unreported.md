@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-02
-status: closed
+status: resolved
+closed: 2026-11-02
 kind: bug
 priority: 470
 summary: a page whose LSN is past the recovered log end is reported by neither recovery nor verify, so a commit lost to a misdirected log write goes unseen
