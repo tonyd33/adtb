@@ -360,3 +360,9 @@ create-io-failure-as-not-found stays open: its fix was in the abandoned change.
 The scrub row is closed by `fix: leave a page the scrub cannot read for the next read to retry`, which carries the scrub search in crates/adtb-sim/tests/maintenance_faults.rs. Deep: 1878 rot cases, no defect. Leftovers on scrub-follow-ups.
 
 Rows still open: create by publishing aside (abandoned once, ruled for the next attempt), typed causes for `Internal` and `Corrupt`.
+
+## 2026-11-03: create by publishing aside landed
+
+`fix: create a database aside and publish it last` (track create-aside-2). On main a crash at 3 of 1137 create points refused every retried create; after it none does. Ownership by a forced marker carrying the file id, removal only under the reserved file's lock and with every entry that id's, links refused on the host. The ownership search plants every shape the earlier attempts deleted, a zero-headed user file at the marker's name and a link inside the reserved directory, and compares every byte. Review blocker (a marker read by its first block only) fixed before landing. Leftovers on create-leftover-marker. Pager floors in `threads_sharing_a_pager_under_every_fault` reruled (picked-seed-floors).
+
+Row still open: typed causes for `Internal` and `Corrupt`.
