@@ -338,7 +338,10 @@ impl<R: Runtime> Pager<R> {
             findings.push(Finding::Page { pid, damage });
         }
         let Some(found) = found else {
-            self.damage(pid, bad.unwrap_or(Damage::Checksum));
+            // Leave an unreadable page unrecorded for the next read to retry.
+            if bad != Some(Damage::Unreadable) {
+                self.damage(pid, bad.unwrap_or(Damage::Checksum));
+            }
             return findings;
         };
         if let Some(lsn) = unlogged {

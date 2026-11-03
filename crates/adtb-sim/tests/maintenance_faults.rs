@@ -2,7 +2,8 @@
 //! migration run after acknowledged commits, and rot each page of the closed file. Every expected
 //! row comes from a table written here.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::ops::Range;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -10,7 +11,7 @@ use std::thread;
 use std::time::Duration;
 
 use adtb::key::Value;
-use adtb::runtime::{Op, Runtime, Threads};
+use adtb::runtime::{Clock, FileId, Instant, IoError, Op, Runtime, Threads};
 use adtb::storage::{self, PageKind, Pid, Quarantine};
 use adtb::{
     CallOptions, Database, DynRows, Error, FatalReason, Log, OpenError, OpenOptions,
@@ -18,9 +19,9 @@ use adtb::{
 };
 use adtb_lang::textual::print;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
-use adtb_simkit::api;
 use adtb_simkit::crash::silence_fatal_panics;
 use adtb_simkit::search::{self, Files, Hooked, WriteOrSync};
+use adtb_simkit::{api, common};
 use adtb_testkit::profile::{self, assert_reached};
 
 const FILE: &str = "maintenance.adt";
@@ -1992,4 +1993,474 @@ fn a_write_by_key_through_a_valid_page_of_another_owner_or_lacking_the_slot_refu
         }
     }
     assert_eq!(Vec::<String>::new(), defects, "{} defects", defects.len());
+}
+
+const SCRUB_SETTINGS: &str = "set setting ScrubInterval = { every: Some { value: 10min } }
+set setting VacuumBudget = { io: 1.0, cpu: 1.0 }";
+const FINDINGS: &str = "from f in sys::verify_findings select f";
+/// Minutes a scrub search waits for the reads of a pass to cover the file before it is a defect.
+const SCRUB_NAPS: usize = 120;
+/// Milliseconds after the scrub first reads the damaged page that a crash search crashes: before
+/// the scrub marks it, then after.
+const CRASH_AFTER_MS: [u64; 5] = [100, 1_000, 10_000, 60_000, 600_000];
+const SCRUB_ALONE: [&str; 4] = [
+    "application heap",
+    "application btree",
+    "VisibilityMap",
+    "FreeSpaceMap",
+];
+
+/// Returns every object under the deep profile, and otherwise every fourth from `from`.
+fn sampled(objects: &[RotObject], from: usize) -> Vec<RotObject> {
+    let step = if profile::every_case() { 1 } else { 4 };
+    let kept = objects.iter().skip(from % step).step_by(step);
+    kept.cloned().collect()
+}
+
+/// Returns the rot fixture with a scrub every ten minutes at the full budget.
+fn scrub_fixture() -> (Files, Owners, Vec<RotObject>) {
+    let (files, owners, objects) = rot_fixture();
+    let mut sim = Sim::with_files(SEED, Config::default(), files);
+    api::run(&mut sim, |rt| {
+        let db = Database::open_in(rt, FILE, &rot_log(), &no_create(REINDEX))
+            .expect("the fixture opens");
+        query(&db, SCRUB_SETTINGS).expect("the settings");
+        db.close().expect("the fixture closes");
+    });
+    (sim.files(), owners, objects)
+}
+
+/// The data pages read since a search armed, each read of one page with when it ran and whether it
+/// failed, whether a read of the last page followed one at or past that page, and the outcomes of
+/// its next reads, a failure for each `true`.
+#[derive(Default)]
+struct Watch {
+    data: Option<FileId>,
+    read: BTreeSet<u64>,
+    page: u64,
+    last: u64,
+    past: bool,
+    ended: bool,
+    touched: Vec<(Instant, bool)>,
+    plan: VecDeque<bool>,
+}
+
+impl Watch {
+    fn saw(&mut self, pages: Range<u64>, now: Instant, failed: bool) {
+        if pages.contains(&self.page) {
+            self.touched.push((now, failed));
+        }
+        let past = self.past || pages.contains(&self.page) || self.page < Pid::FIRST_DATA.0;
+        self.ended |= pages.contains(&self.last) && past;
+        self.past |= pages.end > self.page;
+        self.read.extend(pages);
+    }
+}
+
+fn watch(hook: &Hooked, page: u64, last: u64, plan: &[bool]) -> Arc<Mutex<Watch>> {
+    let w = Arc::new(Mutex::new(Watch {
+        page,
+        last,
+        plan: plan.iter().copied().collect(),
+        ..Watch::default()
+    }));
+    let pages =
+        |offset: u64, len: usize| offset / PAGE as u64..(offset + len as u64).div_ceil(PAGE as u64);
+    let (seen, rt) = (w.clone(), hook.rt.clone());
+    hook.arm(move |op, path| {
+        if let (Op::Read { file, offset, buf }, Some(FILE)) = (op, path) {
+            let mut w = seen.lock().unwrap();
+            w.data = Some(*file);
+            w.saw(pages(*offset, buf.len()), rt.now(), false);
+        }
+        false
+    });
+    let (fails, rt) = (w.clone(), hook.rt.clone());
+    hook.fail_when(move |op| {
+        let mut w = fails.lock().unwrap();
+        let at = w.page * PAGE as u64;
+        let hit =
+            matches!(op, Op::Read { file, offset, .. } if w.data == Some(*file) && *offset == at);
+        (hit && w.plan.pop_front() == Some(true)).then(|| {
+            w.saw(pages(at, PAGE), rt.now(), true);
+            IoError::Failed
+        })
+    });
+    w
+}
+
+/// What a scrub search saw of a case: the open's marks, each read of the page, how many planned
+/// failures never struck, and what the judge answered.
+struct Pass<T> {
+    early: BTreeSet<Quarantine>,
+    touched: Vec<(Instant, bool)>,
+    left: usize,
+    judged: T,
+}
+
+/// Open `image`, give the next reads of page `at` the outcomes of `plan`, nap until the reads cover
+/// every data page and the pass reading page `at` has ended, `judge` the database, close and reopen.
+/// Returns `None` for an open refusing damage.
+fn scrubbed<T>(
+    image: Files,
+    at: usize,
+    plan: &[bool],
+    judge: impl FnOnce(&Database<Hooked>, &BTreeSet<Quarantine>) -> Result<T, String>,
+) -> Result<Option<Pass<T>>, String> {
+    let pages = (image[FILE].len() / PAGE) as u64;
+    let mut sim = Sim::with_files(SEED, Config::default(), image);
+    let got = finished_run(&mut sim, |rt| -> Result<Option<Pass<T>>, String> {
+        let hook = Hooked::new(&rt);
+        let db = match Database::open_in(hook.clone(), FILE, &rot_log(), &no_create(REINDEX)) {
+            Ok(db) => db,
+            Err(OpenError::Corrupt { .. }) => return Ok(None),
+            Err(e) => return Err(format!("open: {e:?}")),
+        };
+        let early = marks(&db);
+        let watch = watch(&hook, at as u64, pages - 1, plan);
+        let whole = early.contains(&Quarantine::Database);
+        let unread = || {
+            let known = db.write_path().pager().damaged();
+            let w = watch.lock().unwrap();
+            let seen = |p: &u64| w.read.contains(p) || known.contains_key(&Pid(*p));
+            (Pid::FIRST_DATA.0..pages).find(|p| !whole && !seen(p))
+        };
+        let ended = || watch.lock().unwrap().ended;
+        let mut done = whole;
+        for _ in 0..SCRUB_NAPS {
+            if done {
+                break;
+            }
+            done = unread().is_none() && ended();
+            common::sleep(
+                &rt,
+                &mut rt.io(),
+                Duration::from_secs(if done { 1 } else { 60 }),
+            );
+        }
+        if let Some(page) = unread() {
+            return Err(format!("no pass read page {page} of {pages}"));
+        }
+        if !done {
+            return Err("no pass ended after reading the page".to_owned());
+        }
+        let w = watch.lock().unwrap();
+        let (touched, left) = (w.touched.clone(), w.plan.iter().filter(|f| **f).count());
+        drop(w);
+        let judged = judge(&db, &early)?;
+        rot_close(db)?;
+        Ok(Some(Pass {
+            early,
+            touched,
+            left,
+            judged,
+        }))
+    })??;
+    let mut sim = Sim::with_files(SEED, Config::default(), sim.files());
+    let reopened = finished_run(&mut sim, |rt| {
+        match Database::open_in(rt, FILE, &rot_log(), &no_create(REINDEX)) {
+            Ok(db) => rot_close(db),
+            Err(_) if got.is_none() => Ok(()),
+            Err(e) => Err(format!("reopen: {e:?}")),
+        }
+    });
+    reopened??;
+    Ok(got)
+}
+
+/// Returns the relation the first read of `object` names.
+fn relation_of(object: &RotObject) -> &str {
+    let named = object.reads[0].text.split_whitespace().nth(3);
+    named
+        .and_then(|n| n.split('.').next())
+        .expect("from x in r")
+}
+
+/// Returns whether a finding of `db` names page `at`.
+fn names_page<R: Runtime>(db: &Database<R>, at: usize) -> Result<bool, String> {
+    let named = format!("where: \"page {at}: ");
+    Ok(match rot_read(db, FINDINGS)? {
+        Ok(rows) => rows.iter().any(|r| r.contains(&named)),
+        Err(_) => db.held_findings() > 0,
+    })
+}
+
+/// Fail unless the scrub filed damage of page `at` of `object` as a read would: one finding naming
+/// the page, `object` alone marked, a write to it refused naming it, reads of it refused naming it
+/// unless it is an index, and every read of another relation exact. A database marked whole by its
+/// open holds no finding.
+#[rustfmt::skip]
+fn filed_as_read<R: Runtime>(db: &Database<R>, early: &BTreeSet<Quarantine>, at: usize, rot: Rot, object: &RotObject, objects: &[RotObject]) -> Result<(), String> {
+    let whole = object.mark == Quarantine::Database;
+    let refused = Err(object.name.clone());
+    if marks(db) != BTreeSet::from([object.mark]) {
+        return Err(format!("marks {:?}", marks(db)));
+    }
+    let named = match rot {
+        Rot::Flip => format!("where: \"page {at}: Checksum\""),
+        Rot::Zeroed | Rot::Torn => format!("where: \"page {at}: "),
+    };
+    match rot_read(db, FINDINGS)? {
+        Ok(rows) if rows.len() == 1 && rows[0].contains(&named) => {}
+        Err(what) if whole && what == object.name && db.held_findings() == usize::from(early.is_empty()) => {}
+        other => return Err(format!("findings {other:?}")),
+    }
+    for o in objects {
+        let read = rot_read(db, &o.reads[0].text)?;
+        let same = relation_of(o) == relation_of(object);
+        let fine = if whole || o.is_heap && o.name == object.name {
+            read == refused
+        } else {
+            read == Ok(o.reads[0].want.clone()) || object.is_heap && same && read == refused
+        };
+        if !fine {
+            return Err(format!("{} reads {read:.300?}", o.name));
+        }
+    }
+    let insert = match relation_of(object) {
+        "rows" => format!(r#"insert rows {{ id: rows.key({ROT_ROW}), name: "rotted" }}"#),
+        "filler" => r#"insert filler { id: filler.key(999), body: "b" }"#.to_owned(),
+        _ => r#"insert docs.Small { id: docs.key(99), tag: "t", note: "n" }"#.to_owned(),
+    };
+    let wrote = commit(db, &insert, || {}).map_err(|e| refused_what(e, "commit", &insert));
+    if wrote != Err(Ok(object.name.clone())) {
+        return Err(format!("a write to it {wrote:?}"));
+    }
+    Ok(())
+}
+
+/// What a scrub search saw: the open refusing, the open marking, the scrub alone naming the page.
+#[derive(Default, Debug)]
+struct Scrubbed {
+    cases: usize,
+    open_refused: usize,
+    open_marked: usize,
+    by_scrub: usize,
+    unfound: usize,
+}
+
+fn rotted_image(pristine: &Files, at: usize, rot: Rot) -> Files {
+    let mut image = pristine.clone();
+    let page = &mut image.get_mut(FILE).unwrap()[at * PAGE..(at + 1) * PAGE];
+    let bytes = rotted(page, at, rot);
+    assert_ne!(page, &bytes[..], "page {at} {rot:?}: nothing was damaged");
+    page.copy_from_slice(&bytes);
+    image
+}
+
+#[test]
+fn the_scrub_files_rot_on_a_page_no_call_reads_as_a_read_would() {
+    hook_rot_panics();
+    let (pristine, owners, objects) = scrub_fixture();
+    let file = &pristine[FILE];
+    let mut classes: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (at, page) in file.chunks(PAGE).enumerate() {
+        let class = page_class(at, page, &owners);
+        classes.entry(class).or_default().push(at);
+    }
+    let mut holder = BTreeMap::new();
+    for o in &objects {
+        holder.extend(pages_of(file, o).into_iter().map(|at| (at, o.clone())));
+    }
+    let (mut defects, mut table) = (Vec::new(), BTreeMap::<(String, Rot), Scrubbed>::new());
+    let deep = profile::every_case();
+    for (kind, rot) in ROTS.into_iter().enumerate() {
+        let mut sample = if rot == Rot::Flip || deep {
+            rot_sample(&classes, kind)
+        } else {
+            BTreeSet::new()
+        };
+        for o in sampled(&objects, kind) {
+            let own = pages_of(file, &o);
+            sample.insert(own[kind * own.len() / ROTS.len()]);
+        }
+        for at in sample {
+            let class = page_class(at, &file[at * PAGE..(at + 1) * PAGE], &owners);
+            let (image, object) = (rotted_image(&pristine, at, rot), holder.get(&at).cloned());
+            let all = objects.clone();
+            let label = format!("page {at} {class} {rot:?}");
+            let answer = rot_bounded(ROT_CASE_LIMIT, move || {
+                scrubbed(image, at, &[], |db, early| match &object {
+                    Some(o) => filed_as_read(db, early, at, rot, o, &all).map(|()| (true, true)),
+                    None => Ok((false, names_page(db, at)?)),
+                })
+            });
+            let tally = table.entry((class.clone(), rot)).or_default();
+            tally.cases += 1;
+            match answer {
+                Ok(None) => tally.open_refused += 1,
+                Ok(Some(pass)) if pass.early.is_empty() && pass.judged.1 => tally.by_scrub += 1,
+                Ok(Some(pass)) if !pass.early.is_empty() && !pass.judged.0 => {
+                    tally.open_marked += 1;
+                }
+                Ok(Some(_)) if class == "file header" => tally.unfound += 1,
+                Ok(Some(pass)) => {
+                    defects.push(format!("{label}: unnamed, marks at open {:?}", pass.early));
+                }
+                Err(defect) => defects.push(format!("{label}: {defect:.900}")),
+            }
+        }
+    }
+    println!("pages {}\n{table:#?}", file.len() / PAGE);
+    assert_eq!(Vec::<String>::new(), defects, "{} defects", defects.len());
+    for ((class, rot), tally) in &table {
+        let found = tally.open_refused + tally.open_marked + tally.by_scrub;
+        if class == "file header" {
+            assert_eq!(
+                tally.cases, tally.unfound,
+                "{rot:?}: no check reads the copy not used"
+            );
+        } else {
+            assert_eq!(tally.cases, found, "{class} {rot:?}: every damage found");
+        }
+    }
+    for class in SCRUB_ALONE {
+        for rot in ROTS {
+            let tally = table.get(&(class.to_owned(), rot));
+            let floor = usize::from(rot == Rot::Flip || deep);
+            let what = format!("{class} {rot:?}: found by the scrub alone");
+            assert_reached(&what, tally.map_or(0, |t| t.by_scrub), floor);
+        }
+    }
+}
+
+/// Fail unless nothing is marked and every read of `objects` is exact.
+fn all_exact<R: Runtime>(db: &Database<R>, objects: &[RotObject]) -> Result<(), String> {
+    if !marks(db).is_empty() {
+        return Err(format!("marks {:?}", marks(db)));
+    }
+    for o in objects {
+        let read = rot_read(db, &o.reads[0].text)?;
+        if read != Ok(o.reads[0].want.clone()) {
+            return Err(format!("{} reads {read:.300?}", o.name));
+        }
+    }
+    Ok(())
+}
+
+/// Fail unless nothing is marked and the only finding, if `unread`, names page `at` unreadable.
+fn unread_filed<R: Runtime>(db: &Database<R>, at: usize, unread: bool) -> Result<(), String> {
+    let rows = rot_read(db, FINDINGS)?.map_err(|what| format!("findings refused {what}"))?;
+    let named = format!("where: \"page {at}: Unreadable\"");
+    if !marks(db).is_empty()
+        || rows.len() != usize::from(unread)
+        || !rows.iter().all(|r| r.contains(&named))
+    {
+        return Err(format!("marks {:?}, findings {rows:?}", marks(db)));
+    }
+    Ok(())
+}
+
+#[test]
+fn a_page_the_scrub_cannot_read_is_filed_unreadable_and_marks_nothing() {
+    hook_rot_panics();
+    let (pristine, _, objects) = scrub_fixture();
+    let mut defects = Vec::new();
+    #[rustfmt::skip]
+    let plans: [(&[bool], bool); 4] = [(&[true], false), (&[true, true], false), (&[true, true, true], false), (&[false, true, true], true)];
+    for o in sampled(&objects, 0) {
+        let at = pages_of(&pristine[FILE], &o)[0];
+        for (plan, rotten) in plans {
+            let image = if rotten {
+                rotted_image(&pristine, at, Rot::Flip)
+            } else {
+                pristine.clone()
+            };
+            let (all, label) = (objects.clone(), format!("page {at} {plan:?}"));
+            let unread = plan.len() == 3;
+            let answer = rot_bounded(ROT_CASE_LIMIT, move || {
+                scrubbed(image, at, plan, |db, _| {
+                    unread_filed(db, at, unread)?;
+                    if rotten { Ok(()) } else { all_exact(db, &all) }
+                })
+            });
+            let check: Vec<bool> = answer.as_ref().map_or(Vec::new(), |p| {
+                p.as_ref()
+                    .map_or(Vec::new(), |p| p.touched.iter().map(|t| t.1).collect())
+            });
+            match answer {
+                Ok(Some(pass))
+                    if pass.left == 0
+                        && check.starts_with(plan)
+                        && one_check(&pass.touched, plan.len()) => {}
+                Ok(Some(pass)) => defects.push(format!("{label}: struck {:?}", pass.touched)),
+                Ok(None) => defects.push(format!("{label}: open refused")),
+                Err(defect) => defects.push(format!("{label}: {defect:.600}")),
+            }
+        }
+    }
+    assert_eq!(Vec::<String>::new(), defects, "{} defects", defects.len());
+}
+
+/// Returns whether the first `reads` reads of the page, and the read after a failure, ran within one
+/// second, as one check of the page and its rechecks do.
+fn one_check(touched: &[(Instant, bool)], reads: usize) -> bool {
+    let reads = if reads < 3 { reads + 1 } else { reads };
+    let span = touched
+        .get(reads - 1)
+        .map(|t| t.0.as_nanos() - touched[0].0.as_nanos());
+    span.is_some_and(|ns| ns < 1_000_000_000)
+}
+
+/// Run `image` on a hooked runtime as `scrubbed` does until a crash at `crash`. Returns the files.
+fn crashed(image: Files, crash: Instant) -> Result<Files, String> {
+    let mut sim = Sim::with_files(SEED, Config::default(), image);
+    sim.crash_at(crash);
+    let outcome = sim.run(|rt| {
+        let hook = Hooked::new(&rt);
+        let _db = Database::open_in(hook.clone(), FILE, &rot_log(), &no_create(REINDEX))
+            .expect("the image opens");
+        let _watch = watch(&hook, 0, 0, &[]);
+        loop {
+            common::sleep(&rt, &mut rt.io(), Duration::from_secs(60));
+        }
+    });
+    match outcome {
+        Outcome::Crashed => Ok(sim.files()),
+        other => Err(format!("the run ended {other:?}")),
+    }
+}
+
+#[test]
+fn a_crash_during_a_scrub_pass_leaves_the_damage_filed_after_the_next_pass() {
+    hook_rot_panics();
+    let (pristine, _, objects) = scrub_fixture();
+    let (mut defects, mut kept, deep) = (Vec::new(), [0; 2], profile::every_case());
+    for (kind, o) in sampled(&objects, 0).into_iter().enumerate() {
+        let rot = ROTS[kind % ROTS.len()];
+        let at = pages_of(&pristine[FILE], &o)[0];
+        let image = rotted_image(&pristine, at, rot);
+        let judge = |db: &_, early: &_| filed_as_read(db, early, at, rot, &o, &objects);
+        let baseline = scrubbed(image.clone(), at, &[], judge);
+        let baseline = baseline.and_then(|p| p.ok_or_else(|| "open refused".to_owned()));
+        let first = match baseline.map(|p| p.touched.first().map(|t| t.0)) {
+            Ok(Some(first)) => first.as_nanos(),
+            Ok(_) => panic!("page {at}: the scrub never read it"),
+            Err(defect) => {
+                defects.push(format!("page {at} {rot:?} no crash: {defect:.600}"));
+                continue;
+            }
+        };
+        let take = if deep { CRASH_AFTER_MS.len() } else { 2 };
+        for (k, ms) in CRASH_AFTER_MS.into_iter().take(take).enumerate() {
+            let crash = Instant::from_nanos(first) + Duration::from_millis(ms);
+            let (o, all) = (o.clone(), objects.clone());
+            let answer = crashed(image.clone(), crash).and_then(|image| {
+                rot_bounded(ROT_CASE_LIMIT, move || {
+                    scrubbed(image, at, &[], |db, early| {
+                        filed_as_read(db, early, at, rot, &o, &all)
+                    })
+                })
+            });
+            match answer {
+                Ok(Some(pass)) => kept[usize::from(pass.early.is_empty())] += 1,
+                Ok(None) => defects.push(format!("page {at} {rot:?} crash {k}: open refused")),
+                Err(defect) => defects.push(format!("page {at} {rot:?} crash {k}: {defect:.600}")),
+            }
+        }
+    }
+    println!("crashes with the mark kept, and before it: {kept:?}");
+    assert_eq!(Vec::<String>::new(), defects, "{} defects", defects.len());
+    assert_reached("a crash with the mark kept", kept[0], 1);
+    assert_reached("a crash before the mark", kept[1], 1);
 }
