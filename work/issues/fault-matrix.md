@@ -366,3 +366,9 @@ Rows still open: create by publishing aside (abandoned once, ruled for the next 
 `fix: create a database aside and publish it last` (track create-aside-2). On main a crash at 3 of 1137 create points refused every retried create; after it none does. Ownership by a forced marker carrying the file id, removal only under the reserved file's lock and with every entry that id's, links refused on the host. The ownership search plants every shape the earlier attempts deleted, a zero-headed user file at the marker's name and a link inside the reserved directory, and compares every byte. Review blocker (a marker read by its first block only) fixed before landing. Leftovers on create-leftover-marker. Pager floors in `threads_sharing_a_pager_under_every_fault` reruled (picked-seed-floors).
 
 Row still open: typed causes for `Internal` and `Corrupt`.
+
+## 2026-11-03: typed causes, api layer landed
+
+`refactor: carry a typed cause to every Internal and Corrupt`. Every non-test `Internal` and `Corrupt` is built in crates/adtb/src/api/cause.rs from a typed cause; public texts unchanged except Debug quoting dropped from some `Corrupt` details. Review blocker (a search test blind to shorthand, `String::from`, renames and code after a test module) fixed before landing. The engine layers still carry text into it: typed-causes-engine-layers.
+
+Every row of the matrix is now landed or ticketed. Closing review next.
