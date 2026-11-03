@@ -287,3 +287,24 @@ Limits, severe first, from the review:
 - A leaked hung thread can slow later cases or panic into a later report: false failures only.
 
 heap-read-foreign-page-panics stays open: rot fails the checksum or reads blank, so never reaches that path. Scrub is not searched: no public call starts a pass. Rows still open: real backends, io_uring, scrub, typed causes for `Internal` and `Corrupt`, create by publishing aside. Page rot is done with the limits above.
+
+## 2026-11-02: rot reads tied to the damaged page
+
+`test: tie page rot reads to the damaged page`, crates/adtb-sim/tests/maintenance_faults.rs. Test only, no engine defect found. Closes the first three limits above, for application objects.
+
+`a_read_crossing_a_rotted_page_gives_the_written_rows_or_refuses_naming_it`: each case takes a fresh image and runs first a read that needs the damaged page: the full scan of a heap or large value page, an index lookup for each key the leaf's own bytes hold, on secondary and key indexes. The plan is asserted on the damaged database. A flip that answers is a defect. The refusal's `what` and the quarantine marks compare exactly. An open refusal is a defect. Deep: heap and store 56 cases per kind, leaves 294 per kind, all refused. Commits after damage elsewhere read back exact through scan, name probe and key probe, 82 per kind.
+
+`a_commit_through_a_rotted_page_of_its_target_loses_no_row`: commit first, no read before it, damage in the `rows` heap, name leaf or key leaf. All refused the commit; no row lost.
+
+Default adds 5.1 s against an asked 3 s, accepted. Deep 62 s. Check exit 0, suite 3562 passed. Mutants: read path skipping the checksum on chosen pages, `!=` lookup form, and a dropped refusal name each fail the search. One review and one delta; delta not separately reviewed.
+
+Limits, severe first:
+
+- The commit search has no case of a commit acknowledged on its own damaged target, so its lost row assertion has never fired. A checksum failure read as blank, scoped to `Heap::insert_pruning` and `BTree::insert_with`, survives: reads earlier in the statement refuse first. Widened to all of `Stmt::apply` it fails only by hang and `Fatal Storage Malformed`. `rows` has one page of each kind, so each commit row is one case.
+- Inner B-tree pages have no crossing read. Floors group objects, so an object with no pages adds no case and no failure.
+- Damage to a large value page refuses naming `the database` and marks `Database`, pinned by the test. Spec wants one constructor relation: quarantine-large-values.
+- A read whose expected rows are empty counts as exact. Default takes one key per leaf and every profile one flip per page.
+- The leaf parser restates node offsets. A change fails loudly.
+- One seed, sim backend, one damaged page, clean close, no concurrent writers.
+
+`check` run through `direnv exec MAIN` from a slot tested the main checkout and exited 0, found on this track's first check. `check` now refuses a `DEVENV_ROOT` that does not hold the working directory. The earlier fault-next check reported 3560 with main at 3558 and two new tests, so it did test its slot.

@@ -241,7 +241,10 @@ personal data and machine details out of commits and tickets. Use relative paths
 ## Saving time
 
 Use targeted suites during each round; reserve the full check for the final
-reviewed tree and its assigned owner. For performance tracks, follow the staged
+reviewed tree and its assigned owner. A `--workspace` run or `work/tools/suite`
+while iterating is the largest avoidable cost measured across agents. Start from
+the files your brief names and `work/tools/codemap`; broad reading is the next
+largest. For performance tracks, follow the staged
 screen in verification.md: known regression first, primary improvement next,
 then expensive mutation and final verification only for surviving candidates.
 Do not use a provisional screen as correctness certification. Repeat checks only

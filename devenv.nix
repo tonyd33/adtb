@@ -44,6 +44,13 @@ in
 
   scripts.check.exec = ''
     set -e
+    case "$PWD/" in
+      "$DEVENV_ROOT"/*) ;;
+      *)
+        echo "check: DEVENV_ROOT $DEVENV_ROOT does not hold $PWD, so the suite would test another tree" >&2
+        exit 1
+        ;;
+    esac
     source "$DEVENV_ROOT/work/tools/common.bash"
     no_core_dumps
     machine_lock "$DEVENV_ROOT"
