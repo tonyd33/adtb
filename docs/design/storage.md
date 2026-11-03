@@ -566,7 +566,9 @@ begins with a block carrying the marker's id, the later create renames
 the file into place instead. A reserved directory that is empty, or
 holds only a marker with nothing written, is reused. Anything else
 refuses the create and is left as it was, and a create never removes the
-log directory at the file's own name. A crash after the commit point
+log directory at the file's own name.
+An open without create of an empty file refuses when a log directory is
+at its own name whose first block carries no id a whole marker names. A crash after the commit point
 can leave the reserved directory holding only its marker.
 
 Invariants:

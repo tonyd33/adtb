@@ -248,15 +248,7 @@ fn settle<R: Runtime>(
         Err(e) => return Err(OpenError::Io(e)),
     }
     let mark = marker(name);
-    let marked = match drv.open(&mark, false) {
-        Ok((file, len)) => {
-            let read = drv.read(file, 0, options.log_block as usize);
-            drv.close(file);
-            marked(len, &read.map_err(OpenError::Io)?)
-        }
-        Err(IoError::NotFound) => Marked::Unwritten,
-        Err(e) => return Err(OpenError::Io(e)),
-    };
+    let marked = read_marker(drv, options)?;
     let entries = listed(drv, &reserved)?.unwrap_or_default();
     let id = match marked {
         Marked::Unwritten if entries.iter().all(|e| *e == mark) => return Ok(None),
@@ -272,6 +264,48 @@ fn settle<R: Runtime>(
     }
     remove_built(drv, name, &id, &entries)?;
     Ok(None)
+}
+
+fn read_marker<R: Runtime>(drv: &mut Driver<R>, options: &Options) -> Result<Marked, OpenError> {
+    match drv.open(&marker(&options.name), false) {
+        Ok((file, len)) => {
+            let read = drv.read(file, 0, options.log_block as usize);
+            drv.close(file);
+            Ok(marked(len, &read.map_err(OpenError::Io)?))
+        }
+        Err(IoError::NotFound) => Ok(Marked::Unwritten),
+        Err(e) => Err(OpenError::Io(e)),
+    }
+}
+
+/// Answer `LogPresent` when the file at `options.name` is empty or absent and a log directory
+/// is at its own name whose first block carries no id a whole marker names.
+pub(crate) fn refuse_foreign_log<R: Runtime>(rt: R, options: &Options) -> Result<(), OpenError> {
+    let mut drv = Driver::new(rt);
+    match listed(&mut drv, &options.log_dir()) {
+        Ok(None) => return Ok(()),
+        Ok(Some(_)) | Err(OpenError::Io(IoError::NotADirectory)) => {}
+        Err(e) => return Err(e),
+    }
+    match drv.open(&options.name, false) {
+        Ok((file, len)) => {
+            drv.close(file);
+            if len > 0 {
+                return Ok(());
+            }
+        }
+        Err(IoError::NotFound) => {}
+        Err(e) => return Err(OpenError::Io(e)),
+    }
+    let owned = match read_marker(&mut drv, options)? {
+        Marked::Whole(id) => carries(&mut drv, options, &id)?,
+        Marked::Unwritten | Marked::Torn => false,
+    };
+    if owned {
+        Ok(())
+    } else {
+        Err(OpenError::LogPresent)
+    }
 }
 
 /// Remove the file, the log directory and then the marker of the create of `name` whose id is

@@ -846,6 +846,10 @@ impl<R: Runtime> Engine<R> {
                 }
             }
             Err(storage::OpenError::NotFound) => return Err(OpenError::NotFound),
+            Err(storage::OpenError::NoHeader) => {
+                storage::refuse_foreign_log(rt, &storage).map_err(failed_create)?;
+                return Err(corrupt(storage::OpenError::NoHeader));
+            }
             Err(storage::OpenError::Io(e)) => return Err(OpenError::Io(host_error(e))),
             Err(e) => return Err(corrupt(e)),
         };

@@ -12,11 +12,11 @@ use std::time::Duration;
 use adtb::key::Tid;
 use adtb::runtime::{Clock, Runtime, Threads};
 use adtb::storage::{HEADER_LEN, Pid, Quarantine};
-use adtb::{CallOptions, Database, Error, FatalReason, Log, OpenError, OpenOptions};
+use adtb::{CallOptions, CreateOptions, Database, Error, FatalReason, Log, OpenError, OpenOptions};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::harness::finished;
 use adtb_simkit::{api, common};
-use adtb_testkit::profile::{assert_reached, share, sweep};
+use adtb_testkit::profile::{assert_reached, every_case, share, sweep};
 
 const FILE: &str = "truncated_open.adt";
 const PAGE: usize = 8192;
@@ -716,4 +716,119 @@ fn a_large_value_write_over_a_zeroed_page_of_the_store_is_refused() {
         got.unwrap()
     });
     assert_refused(&got, "the database", "large insert");
+}
+
+const LOG_PRESENT: &str = "the log directory holds a log that no file here wrote";
+const NO_HEADER_CREATE: &str = "neither copy of the file header verifies";
+const NO_HEADER: &str = "NoHeader";
+const HEADER_COPY: usize = 4096;
+
+fn with_create(create: bool) -> OpenOptions {
+    OpenOptions {
+        create: create.then(CreateOptions::default),
+        ..api::options(2)
+    }
+}
+
+fn refusal(got: &Result<(), OpenError>) -> Option<&str> {
+    match got {
+        Err(OpenError::Corrupt { detail }) => Some(detail),
+        _ => None,
+    }
+}
+
+/// Cut the file to each length up to and past both header copies with its log kept, and open
+/// with and without `create`. While no header copy is whole open refuses, an empty file as one
+/// whose log is no create's, and no file or directory changes, appears or goes.
+#[test]
+fn a_file_cut_short_beside_its_log_never_opens_as_a_new_database() {
+    let s = seeded();
+    let mut lengths = vec![0, 1, PAGE, PAGE + 1, 2 * PAGE];
+    if every_case() {
+        lengths.extend(
+            (0..=2 * PAGE + SECTOR)
+                .step_by(SECTOR)
+                .flat_map(|n| [n, n + 1]),
+        );
+    }
+    let (mut logs, mut headers, mut opens) = (0, 0, 0);
+    for len in lengths {
+        for create in [true, false] {
+            let what = format!("cut at {len} bytes, create {create}");
+            let files = cut(&s.files, len);
+            let mut sim = Sim::with_files(1, Config::default(), files.clone());
+            let dirs = sim.dirs();
+            let mut got = None;
+            finished(&mut sim, |rt| {
+                let opened = Database::open_in(rt, FILE, &Log::new([APP]), &with_create(create));
+                got = Some(opened.map(|db| db.close().unwrap()));
+            });
+            let got = got.unwrap();
+            let expected = match (len, create) {
+                (0, _) => Some(LOG_PRESENT),
+                (..HEADER_COPY, true) => Some(NO_HEADER_CREATE),
+                (..HEADER_COPY, false) => Some(NO_HEADER),
+                _ => None,
+            };
+            assert_eq!(expected, refusal(&got), "{what}: {got:?}");
+            match expected {
+                Some(LOG_PRESENT) => logs += 1,
+                Some(_) => headers += 1,
+                None => opens += 1,
+            }
+            if expected.is_some() {
+                assert_eq!(files, sim.files(), "{what}");
+                assert_eq!(dirs, sim.dirs(), "{what}");
+            } else {
+                got.unwrap_or_else(|e| panic!("{what}: {e:?}"));
+            }
+        }
+    }
+    assert_reached("an empty file refused for its log", logs, 2);
+    assert_reached("a file refused for its header", headers, 2);
+    assert_reached("a file with a header copy that opened", opens, 2);
+}
+
+/// On the host, a file cut to nothing beside its log refuses with and without `create`, and no
+/// file or directory changes, appears or goes.
+#[test]
+fn a_real_file_cut_to_nothing_beside_its_log_refuses() {
+    let files = cut(&seeded().files, 0);
+    for create in [true, false] {
+        let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join("truncated_open")
+            .join(format!("create-{create}"));
+        match std::fs::remove_dir_all(&dir) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("clear {dir:?}: {e}"),
+            _ => {}
+        }
+        for (path, bytes) in &files {
+            let path = dir.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+        let got = Database::open(dir.join(FILE), &Log::new([APP]), &with_create(create)).map(drop);
+        assert_eq!(Some(LOG_PRESENT), refusal(&got), "create {create}: {got:?}");
+        assert_eq!(files, read_tree(&dir, &dir), "create {create}");
+    }
+}
+
+/// Returns every entry under `at` by its path from `root`: a file's bytes, a directory's empty.
+fn read_tree(root: &std::path::Path, at: &std::path::Path) -> Files {
+    let mut out = Files::new();
+    for entry in std::fs::read_dir(at).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            out.extend(read_tree(root, &path));
+        } else {
+            let name = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned();
+            out.insert(name, std::fs::read(&path).unwrap());
+        }
+    }
+    out
 }
