@@ -463,7 +463,7 @@ impl<R: Runtime> Verifier<R> {
             .ok_or_else(|| "a read-write transaction has an id".to_owned())?;
         if let Err(e) = write(x) {
             self.db.abort(tx).map_err(|e| write::detail(&e))?;
-            return Err(format!("{e:?}"));
+            return Err(catalog::detail(&e));
         }
         self.db.commit(tx).map(drop).map_err(|e| write::detail(&e))
     }

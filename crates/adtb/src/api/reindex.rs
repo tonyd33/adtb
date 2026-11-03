@@ -9,6 +9,7 @@ use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, Ty};
 use adtb_sys::lock::Lock;
 
+use crate::catalog;
 use crate::exec::Val;
 use crate::plan::IndexId;
 use crate::runtime::{Runtime, ThreadId};
@@ -153,7 +154,7 @@ impl<R: Runtime> Engine<R> {
         let was_marked = match self.catalog.begin_reindexing(&self.pager) {
             Ok(marked) => marked,
             Err(e) => {
-                let at = format!("reindex of {}: {e:?}", work.target);
+                let at = format!("reindex of {}: {}", work.target, catalog::detail(&e));
                 for &id in &work.indexes {
                     self.keep_outcome(schema, id, work.run, Some(at.clone()));
                 }
@@ -191,7 +192,11 @@ impl<R: Runtime> Engine<R> {
                 schema,
                 work.indexes[0],
                 work.run,
-                Some(format!("reindex of {}: {e:?}", work.target)),
+                Some(format!(
+                    "reindex of {}: {}",
+                    work.target,
+                    catalog::detail(&e)
+                )),
             );
         }
     }

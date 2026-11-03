@@ -13,6 +13,7 @@ use crate::runtime::Runtime;
 use crate::storage::Pager;
 use crate::write::{self, Sequences};
 
+use super::Rot;
 use super::values::{self, boolean, relation, tag};
 use super::{Broken, Catalog, DORMANT, Error, Migrating, OWNER_ROLE, delete_rows, int, layout};
 
@@ -71,10 +72,14 @@ impl Shape {
             .unwrap_or_else(|| panic!("catalog RoleGrant declares {name}"))
     }
 
-    fn text<'r>(&self, row: &'r [Value], name: &str) -> Result<&'r str, Error> {
+    fn text<'r>(&self, row: &'r [Value], name: &'static str) -> Result<&'r str, Error> {
         match row.get(self.at(name)) {
             Some(Value::Text(t)) => Ok(t),
-            other => Err(Error::Corrupt(format!("a grant row's {name} is {other:?}"))),
+            other => Err(Rot::GrantField {
+                field: name,
+                found: other.cloned(),
+            }
+            .into()),
         }
     }
 
@@ -172,7 +177,7 @@ impl Catalog {
             .into_iter()
             .map(|(_, row)| {
                 let Some(&Value::I64(at)) = row.get(id) else {
-                    return Err(Error::Corrupt("a grant row has no I64 id".to_owned()));
+                    return Err(Rot::GrantNoId.into());
                 };
                 Ok(Stored {
                     id: at,
@@ -271,7 +276,7 @@ impl Catalog {
                 (Some(Value::I64(id)), Some(Value::Text(name))) => {
                     out.insert(*id, name.clone());
                 }
-                _ => return Err(Error::Corrupt(format!("a role row is {row:?}"))),
+                _ => return Err(Rot::RoleRow(row).into()),
             }
         }
         Ok(out)
@@ -336,10 +341,7 @@ impl Catalog {
                         .is_ok_and(|row| row == s.row)
             });
             let Some(at) = at else {
-                return Err(Error::Corrupt(format!(
-                    "grant row {} records no grant of the log",
-                    s.id
-                )));
+                return Err(Rot::UntaggedGrant(s.id).into());
             };
             self.source.grants[at].row = Some(s.id);
         }

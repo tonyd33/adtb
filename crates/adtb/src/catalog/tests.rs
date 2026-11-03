@@ -7,6 +7,7 @@ use crate::key::Value;
 use crate::mvcc::Xid;
 use crate::storage::Pid;
 
+use super::Rot;
 use super::ids::{CatCtorId, CatRelId};
 use super::root::{Changing, Root};
 use super::{
@@ -504,32 +505,39 @@ fn sum(ctor: u32, fields: Vec<Value>) -> Vec<Value> {
 
 #[test]
 fn a_roots_row_of_another_shape_is_corrupt() {
+    let ctor = |ctor, fields: &[Value]| Rot::RootsCtor {
+        ctor,
+        fields: fields.to_vec(),
+    };
+    let heap = |id| vec![Value::I64(1), Value::I64(0), Value::I64(id), Value::I64(7)];
+    let text = || Value::Text("1".into());
     let rows = [
-        vec![Value::I64(1)],
-        sum(9, vec![Value::I64(1)]),
-        sum(HEAP_ROOT, vec![Value::I64(1)]),
-        sum(MIGRATION, vec![Value::I64(1), Value::I64(2)]),
-        sum(
-            HEAP_ROOT,
-            vec![Value::I64(1), Value::I64(0), Value::I64(-3), Value::I64(7)],
+        (vec![Value::I64(1)], Rot::RootsRow(vec![Value::I64(1)])),
+        (
+            sum(9, vec![Value::I64(1)]),
+            Rot::PendingRow {
+                ctor: 9,
+                fields: vec![Value::I64(1)],
+            },
         ),
-        sum(
-            HEAP_ROOT,
-            vec![
-                Value::I64(1),
-                Value::I64(0),
-                Value::I64(1 << 40),
-                Value::I64(7),
-            ],
+        (
+            sum(HEAP_ROOT, vec![Value::I64(1)]),
+            ctor(HEAP_ROOT, &[Value::I64(1)]),
         ),
-        sum(
-            MIGRATION,
-            vec![Value::Text("1".into()), Value::Text("".into())],
+        (
+            sum(MIGRATION, vec![Value::I64(1), Value::I64(2)]),
+            ctor(MIGRATION, &[Value::I64(1), Value::I64(2)]),
+        ),
+        (sum(HEAP_ROOT, heap(-3)), Rot::NegativeId(-3)),
+        (sum(HEAP_ROOT, heap(1 << 40)), Rot::HeapIdWide(1 << 40)),
+        (
+            sum(MIGRATION, vec![text(), Value::Text("".into())]),
+            Rot::NotAnId(text()),
         ),
     ];
-    for row in rows {
+    for (row, rot) in rows {
         let got = Named::default().add(&row);
-        assert!(matches!(got, Err(Error::Corrupt(_))), "{row:?}: {got:?}");
+        assert_eq!(Err(Error::Corrupt(rot)), got, "{row:?}");
     }
 }
 
@@ -554,9 +562,9 @@ fn stored_order_keys_order_every_declared_sum() {
     let keys = layout::new_order_keys(&schema, &layout::OrderKeys::new());
     assert_eq!(Ok(()), check_order_keys(&schema, &keys));
     let mut missing = keys.clone();
-    missing.pop_last();
+    let (last, _) = missing.pop_last().expect("an order key");
     let got = check_order_keys(&schema, &missing);
-    assert!(matches!(got, Err(Error::Corrupt(_))), "{got:?}");
+    assert_eq!(Err(Rot::NoOrderKey(last).into()), got);
     let mut reversed = keys.clone();
     let ids: Vec<u64> = layout::declared_sums(&schema)
         .into_iter()
@@ -566,7 +574,7 @@ fn stored_order_keys_order_every_declared_sum() {
     reversed.insert(ids[0], b);
     reversed.insert(ids[1], a);
     let got = check_order_keys(&schema, &reversed);
-    assert!(matches!(got, Err(Error::Corrupt(_))), "{got:?}");
+    assert_eq!(Err(Rot::OrderKeyOrder(ids[1]).into()), got);
 }
 
 #[test]
@@ -661,6 +669,16 @@ fn an_index_path_naming_no_field_is_internal() {
 }
 
 #[test]
+fn an_executor_damage_in_index_keying_stays_damage_and_its_internal_stays_internal() {
+    let rot = crate::exec::Rot::SpillCut;
+    let got = super::broken(rot.clone().into());
+    assert_eq!(Error::Corrupt(Rot::Exec(rot)), got);
+    let internal = || crate::exec::Error::from(crate::exec::Broken::EmptyRange);
+    let want = Error::from(Broken::IndexKey(internal()));
+    assert_eq!(want, super::broken(internal()));
+}
+
+#[test]
 fn a_stored_row_without_the_shape_of_an_index_path_is_corrupt() {
     use super::rows::{Step, at_path};
     let steps = [Step::Field(0), Step::Ctor(1), Step::Field(0)];
@@ -670,10 +688,8 @@ fn a_stored_row_without_the_shape_of_an_index_path_is_corrupt() {
     assert_eq!(Ok(None), at_path(&other, &steps));
     for row in [vec![], vec![Value::I64(1)], vec![sum(1, vec![]).remove(0)]] {
         let got = at_path(&row, &steps);
-        assert!(
-            matches!(got, Err(crate::exec::Error::Corrupt(_))),
-            "{row:?}: {got:?}"
-        );
+        let rot = crate::exec::Rot::StoredPath(steps.to_vec());
+        assert_eq!(Err(crate::exec::Error::Corrupt(rot)), got, "{row:?}");
     }
 }
 

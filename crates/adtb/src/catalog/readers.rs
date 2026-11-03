@@ -8,6 +8,7 @@ use adtb_lang::schema::{Schema, Stage, ValueDef};
 use adtb_lang::span::{Diag, Span};
 use adtb_lang::types::{RelId, Ty, TypeId};
 
+use super::Rot;
 use super::ids::{
     CatConstraintId, CatCtorId, CatFieldId, CatIndexId, CatRelId, CatSetId, ctor_id, ctor_index,
     rel_id, relation,
@@ -333,9 +334,7 @@ pub(super) fn enforcing(source: &Source, pending: &[Pending]) -> Result<Option<C
         return Ok(None);
     };
     let Some(start) = source.log.iter().find(|l| l.number == first) else {
-        return Err(Error::Corrupt(format!(
-            "a pending drop names version {first}, which the log does not hold"
-        )));
+        return Err(Rot::DropVersion(first).into());
     };
     let mut at = (*start.before).clone();
     for l in source.log.iter().filter(|l| l.number >= first) {
@@ -365,10 +364,11 @@ pub(super) fn enforcing(source: &Source, pending: &[Pending]) -> Result<Option<C
                 .map(|u| u.op)
                 .collect();
             if let Some(id) = held.iter().find(|id| !drops.iter().any(|u| u.id == **id)) {
-                return Err(Error::Corrupt(format!(
-                    "unique {id} is held as dropped at version {}, which does not drop it",
-                    l.number
-                )));
+                return Err(Rot::UniqueNotDropped {
+                    index: *id,
+                    version: l.number,
+                }
+                .into());
             }
             file = skipping(&file, &skipped);
         }

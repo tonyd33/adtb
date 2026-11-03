@@ -356,9 +356,8 @@ impl Error {
                 Error::storage(format!("an entry of index {index} names no version"))
             }
             write::Error::Spill(io) => Error::storage(format!("the spill file failed: {io:?}")),
-            write::Error::Transactions(detail) | write::Error::Corrupt(detail) => {
-                Error::storage(detail)
-            }
+            write::Error::Transactions(detail) => Error::storage(detail),
+            write::Error::Corrupt(r) => Error::storage(r.to_string()),
             write::Error::Unsupported(what) => {
                 Error::invalid(format!("{what} does not run in this engine yet"))
             }

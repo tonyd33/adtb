@@ -19,6 +19,7 @@ use crate::storage::{Pager, Pid};
 use crate::verify::Sum;
 use crate::write::Retained;
 
+use super::Rot;
 use super::ids::{CatCtorId, CatRelId, ctor_id, ctor_index, rel_id, relation};
 use super::root::Root;
 use super::{
@@ -55,7 +56,7 @@ pub(super) struct Names {
 
 fn heap_id(v: &Value) -> Result<u32, Error> {
     let id = uint(v)?;
-    u32::try_from(id).map_err(|_| Error::Corrupt(format!("heap id {id} is past 32 bits")))
+    u32::try_from(id).map_err(|_| Rot::HeapIdWide(id).into())
 }
 
 impl Names {
@@ -73,9 +74,11 @@ impl Names {
                 self.indexes.insert(CatRelId(uint(rel)?), at);
             }
             (ctor, fields) => {
-                return Err(Error::Corrupt(format!(
-                    "a roots row of constructor {ctor} holds {fields:?}"
-                )));
+                return Err(Rot::RootsCtor {
+                    ctor,
+                    fields: fields.to_vec(),
+                }
+                .into());
             }
         }
         Ok(())
@@ -365,7 +368,7 @@ impl Catalog {
         let mut named = Vec::new();
         for (x, row) in rows {
             let [Value::Sum { ctor, fields }] = row.as_slice() else {
-                return Err(Error::Corrupt(format!("a roots row is {row:?}")));
+                return Err(Rot::RootsRow(row).into());
             };
             match (*ctor, fields.as_slice()) {
                 (MIGRATION, [version, _]) => {

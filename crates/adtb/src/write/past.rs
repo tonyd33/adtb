@@ -145,9 +145,7 @@ impl<R: Runtime> Pasts<R> {
                 oldest: oldest.unwrap_or(self.upto),
             },
             PastError::Damaged(crate::btree::Error::Page(p)) => exec::Error::Page(p),
-            PastError::Damaged(d) => exec::Error::Corrupt(format!(
-                "the record of the retention window is damaged: {d:?}"
-            )),
+            PastError::Damaged(d) => exec::Rot::RetentionWindow(d).into(),
         })
     }
 
@@ -177,7 +175,7 @@ impl<R: Runtime> Pasts<R> {
         let made = self.retained.migrations.get(&v).copied();
         let markers = record
             .markers(&self.pager)
-            .map_err(|e| exec::Error::Corrupt(format!("{e:?}")))?;
+            .map_err(|e| exec::Error::from(exec::Rot::Markers(e)))?;
         let mut oldest = self.upto;
         for m in markers
             .iter()

@@ -14,6 +14,7 @@ use crate::mvcc::{Scope, Transactions};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
+use super::Rot;
 use super::ids::{CatFieldId, CatIndexId, CatRelId, field_id, relation};
 use super::readers::{Kind, Pending, Readers, enforcing};
 use super::root::Changing;
@@ -172,9 +173,10 @@ fn bytes_fields(bytes: &[u8]) -> Option<Vec<CatFieldId>> {
 /// `pending`.
 pub(super) fn add(pending: &mut Vec<Pending>, ctor: u32, fields: &[Value]) -> Result<(), Error> {
     let corrupt = || {
-        Error::Corrupt(format!(
-            "a roots row of constructor {ctor} holds {fields:?}"
-        ))
+        Error::from(Rot::PendingRow {
+            ctor,
+            fields: fields.to_vec(),
+        })
     };
     let (
         [
@@ -203,10 +205,13 @@ pub(super) fn add(pending: &mut Vec<Pending>, ctor: u32, fields: &[Value]) -> Re
     let same = |p: &&mut Pending| p.kind == kind && p.module == *module && p.name == *name;
     match pending.iter_mut().find(same) {
         Some(p) if p.dropped != dropped => {
-            return Err(Error::Corrupt(format!(
-                "{module}::{name} is held as dropped at versions {} and {dropped}",
-                p.dropped
-            )));
+            return Err(Rot::DroppedTwice {
+                module: module.clone(),
+                name: name.clone(),
+                first: p.dropped,
+                second: dropped,
+            }
+            .into());
         }
         Some(p) => {
             p.blocking.insert(holder.clone());

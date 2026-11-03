@@ -56,7 +56,7 @@ impl fmt::Display for Broken {
             Broken::Write(b) => write!(f, "{b}"),
             Broken::Exec(e) => write!(f, "{e}"),
             Broken::Catalog(e) => write!(f, "{e}"),
-            Broken::CatalogError(e) => write!(f, "{e:?}"),
+            Broken::CatalogError(e) => f.write_str(&catalog::detail(e)),
             Broken::Unchecked { built, messages } => {
                 write!(f, "{built} does not check: {}", messages.join("; "))
             }
@@ -92,7 +92,7 @@ impl fmt::Display for Broken {
             Broken::NoRole { id, owned } => write!(f, "no role has id {id}, which owns {owned}"),
             Broken::HostCode(ds) => write!(f, "{ds:?}"),
             Broken::Lacking(e) => write!(f, "{e:?}"),
-            Broken::Batches(e) => write!(f, "{e:?}"),
+            Broken::Batches(e) => f.write_str(&exec::detail(e)),
             Broken::NoColumn(ty) => write!(f, "a result of type {ty:?} has no column"),
             Broken::NoValue(e) => write!(f, "{}", e.value()),
         }
@@ -130,8 +130,8 @@ impl fmt::Display for Corruption {
                 "the file header has layout {layout}, not one this engine reads"
             ),
             Corruption::Storage(e) => write!(f, "{e:?}"),
-            Corruption::Catalog(e) => write!(f, "{e:?}"),
-            Corruption::Exec(e) => write!(f, "{e:?}"),
+            Corruption::Catalog(e) => f.write_str(&catalog::detail(e)),
+            Corruption::Exec(e) => f.write_str(&exec::detail(e)),
             Corruption::Normal(e) => write!(f, "{e:?}"),
             Corruption::Write(e) => f.write_str(&write::detail(e)),
             Corruption::Engine(e) => write!(f, "{e:?}"),
@@ -335,6 +335,19 @@ mod tests {
         let e = super::Error::rejected(super::RejectReason::Cancelled);
         let text = super::Broken::NoValue(e).to_string();
         assert_eq!("Rejected { reason: Cancelled }", text);
+    }
+
+    #[test]
+    fn a_catalog_error_holding_a_plan_or_write_cause_reads_as_its_text() {
+        use crate::{catalog, plan, write};
+        let plan = plan::Error::Internal(plan::Broken::GroupFieldMissing);
+        let corruption = super::Corruption::Catalog(catalog::Broken::Plan(plan).into());
+        let text = "Internal(\"a broken invariant: a group has a key and rows\")";
+        assert_eq!(text, corruption.to_string());
+        let admission = catalog::Broken::Admission(write::Broken::ReadOnly);
+        let broken = super::Broken::CatalogError(admission.into());
+        let text = "Internal(\"a read-only transaction runs no write\")";
+        assert_eq!(text, broken.to_string());
     }
 
     #[test]

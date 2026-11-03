@@ -10,6 +10,7 @@ use crate::exec::{self, Conv, Val, conv, from_stored, to_key};
 use crate::key::{KeySchema, KeyType, Value};
 use crate::plan::Element;
 
+use super::Rot;
 use super::hosts::unbound;
 use super::layout;
 use super::rows::{IndexSpec, Step, at_path, path_steps};
@@ -224,7 +225,7 @@ pub(super) fn broken(e: exec::Error) -> Error {
         return e;
     }
     match e {
-        exec::Error::Corrupt(why) => Error::Corrupt(why),
+        exec::Error::Corrupt(r) => Rot::Exec(r).into(),
         other => Error::from(Broken::IndexKey(other)),
     }
 }

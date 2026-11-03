@@ -10,7 +10,7 @@ use crate::storage::{Driver, Malformed, Reader};
 
 use super::memory::{Arena, Grant};
 use super::value::{F32, F64, Val};
-use super::{Error, Exceeded};
+use super::{Error, Exceeded, Rot};
 
 /// The unit of spill file I/O.
 const BLOCK: usize = 4096;
@@ -133,7 +133,7 @@ impl<R: Runtime> Spill<R> {
         match (c.result, c.buf) {
             (Ok(Done::Read(n)), Some(buf)) if n >= e.len => Ok(buf[..e.len].to_vec()),
             (Err(io), _) => Err(Error::Spill(io)),
-            _ => Err(Error::Corrupt("a spilled extent reads back short".into())),
+            _ => Err(Rot::SpillShort.into()),
         }
     }
 }
@@ -232,7 +232,7 @@ impl<'a, R: Runtime> Records<'a, R> {
                 if self.at == self.buf.len() {
                     return Ok(None);
                 }
-                return Err(Error::Corrupt("a spilled record is cut short".into()));
+                return Err(Rot::SpillCut.into());
             };
             self.buf.drain(..self.at);
             self.at = 0;
@@ -251,7 +251,7 @@ pub(super) fn record(bytes: &[u8]) -> Result<Vec<Val>, Error> {
 }
 
 fn malformed() -> Error {
-    Error::Corrupt("a spilled value does not decode".into())
+    Rot::SpillUndecoded.into()
 }
 
 fn put_bytes(out: &mut Vec<u8>, b: &[u8]) {

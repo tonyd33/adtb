@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use crate::runtime::Runtime;
 
-use super::Error;
 use super::code::Catch;
 use super::frame::{Frame, Sel};
 use super::ir::{Build, Chain, Step};
@@ -12,6 +11,7 @@ use super::memory::Arena;
 use super::run::{Ctx, Expand, Run};
 use super::spill::{Distinct, Records, Stream, Writer};
 use super::value::Val;
+use super::{Error, Rot};
 
 /// The partitions of a keyed build too large for memory.
 const PARTS: usize = 16;
@@ -77,9 +77,7 @@ fn part(key: &Val, parts: usize) -> usize {
 fn pair(mut rec: Vec<Val>) -> Result<(Val, Val), Error> {
     match (rec.pop(), rec.pop(), rec.is_empty()) {
         (Some(b), Some(a), true) => Ok((a, b)),
-        _ => Err(Error::Corrupt(
-            "a spilled build record is not a pair".into(),
-        )),
+        _ => Err(Rot::SpillNotPair.into()),
     }
 }
 
@@ -350,5 +348,5 @@ impl<R: Runtime> Ctx<R> {
 }
 
 fn bad_row() -> Error {
-    Error::Corrupt("a deferred row names no variable".into())
+    Rot::DeferredNoVariable.into()
 }

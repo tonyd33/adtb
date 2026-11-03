@@ -117,8 +117,8 @@ impl fmt::Display for Broken {
             Broken::StoredNotNormal(e) => write!(f, "the schema normalises: {e:?}"),
             Broken::Plan(e) => write!(f, "{e}"),
             Broken::IndexKey(exec::Error::Internal(why)) => write!(f, "{why}"),
-            Broken::IndexKey(e) => write!(f, "an index key evaluates: {e:?}"),
-            Broken::Validation(e) => write!(f, "{e:?}"),
+            Broken::IndexKey(e) => write!(f, "an index key evaluates: {}", exec::detail(e)),
+            Broken::Validation(e) => f.write_str(&exec::detail(e)),
             Broken::NotASet(v) => write!(f, "a constraint returns a set, found {v:?}"),
             Broken::NotSetTyped(t) => write!(f, "a constraint is typed as a set, found {t:?}"),
             Broken::Admission(b) => write!(f, "{b}"),
@@ -143,7 +143,7 @@ impl fmt::Display for Broken {
                     "pending-dropped {module}::{name} is never declared again"
                 )
             }
-            Broken::Map(e) => write!(f, "a data map fails: {e:?}"),
+            Broken::Map(e) => write!(f, "a data map fails: {}", exec::detail(e)),
             Broken::RowParams(n) => write!(f, "a fill or routing takes the row, not {n} values"),
             Broken::NoField(n) => write!(f, "no field `{n}`"),
             Broken::Unrouted(n) => write!(f, "field `{n}` has no value in the routed row"),

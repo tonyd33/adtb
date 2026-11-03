@@ -18,6 +18,7 @@ mod oplog;
 mod pending;
 mod readers;
 mod root;
+mod rot;
 mod rows;
 mod steps;
 mod validate;
@@ -61,6 +62,7 @@ pub use layout::OrderKeys;
 pub use oplog::{Hash, try_version_hash, version_hash};
 pub use readers::{PendingDrop, Read, Reader, source_at, stale};
 pub(crate) use root::Changing;
+pub use rot::{Rot, detail};
 pub use rows::{IndexSpec, Rows, Step, applied, declared, indexed_fields, indexes};
 pub use validate::Denial;
 
@@ -108,7 +110,7 @@ pub enum Error {
         why: Vec<String>,
     },
     /// A stored page or row does not read as the catalog writes it; what is wrong.
-    Corrupt(String),
+    Corrupt(Rot),
     /// A stored migration does not parse or apply under this engine; its version and each
     /// reason.
     Unaccepted(u64, Vec<String>),
@@ -238,11 +240,8 @@ fn int(n: u64) -> Value {
 
 fn uint(v: &Value) -> Result<u64, Error> {
     match v {
-        Value::I64(n) => u64::try_from(*n)
-            .map_err(|_| Error::Corrupt(format!("a roots row holds negative id {n}"))),
-        other => Err(Error::Corrupt(format!(
-            "a roots row holds {other:?} for an id"
-        ))),
+        Value::I64(n) => u64::try_from(*n).map_err(|_| Rot::NegativeId(*n).into()),
+        other => Err(Rot::NotAnId(other.clone()).into()),
     }
 }
 
@@ -383,13 +382,12 @@ impl Named {
     /// Add what roots row `row` names.
     fn add(&mut self, row: &[Value]) -> Result<(), Error> {
         let [Value::Sum { ctor, fields }] = row else {
-            return Err(Error::Corrupt(format!("a roots row is {row:?}")));
+            return Err(Rot::RootsRow(row.to_vec()).into());
         };
         match (*ctor, fields.as_slice()) {
             (HEAP_ROOT, [rel, c, id, at]) => {
                 let id = uint(id)?;
-                let id = u32::try_from(id)
-                    .map_err(|_| Error::Corrupt(format!("heap id {id} is past 32 bits")))?;
+                let id = u32::try_from(id).map_err(|_| Rot::HeapIdWide(id))?;
                 self.heaps.insert(
                     (CatRelId(uint(rel)?), CatCtorId(uint(c)?)),
                     (id, Pid(uint(at)?)),
@@ -399,8 +397,7 @@ impl Named {
                 self.indexes.insert(uint(id)?, Pid(uint(at)?));
             }
             (ORDER_KEY, [c, Value::Bytes(key)]) => {
-                let key = OrderKey::new(key.clone())
-                    .ok_or_else(|| Error::Corrupt(format!("order key {key:?} is not valid")))?;
+                let key = OrderKey::new(key.clone()).ok_or_else(|| Rot::OrderKey(key.clone()))?;
                 self.keys.insert(uint(c)?, key);
             }
             (MIGRATION, [version, Value::Text(text)]) => {
@@ -418,9 +415,11 @@ impl Named {
             }
             (ctor, _) if deployment::holds(ctor) || kept::holds(ctor) => {}
             (ctor, fields) => {
-                return Err(Error::Corrupt(format!(
-                    "a roots row of constructor {ctor} holds {fields:?}"
-                )));
+                return Err(Rot::RootsCtor {
+                    ctor,
+                    fields: fields.to_vec(),
+                }
+                .into());
             }
         }
         Ok(())
@@ -528,14 +527,10 @@ fn check_order_keys(schema: &Schema, keys: &OrderKeys) -> Result<(), Error> {
         let mut last: Option<&OrderKey> = None;
         for id in cs {
             let Some(key) = keys.get(&id) else {
-                return Err(Error::Corrupt(format!(
-                    "constructor {id} has no stored order key"
-                )));
+                return Err(Rot::NoOrderKey(id).into());
             };
             if last.is_some_and(|l| l >= key) {
-                return Err(Error::Corrupt(format!(
-                    "the order key of constructor {id} does not follow the one before it"
-                )));
+                return Err(Rot::OrderKeyOrder(id).into());
             }
             last = Some(key);
         }
@@ -559,7 +554,7 @@ fn unfinished(report: &Report) -> Error {
     });
     match damaged {
         Some(e) => Error::Page(e),
-        None => Error::Corrupt(format!("{:?}", report.findings)),
+        None => Rot::Unfinished(report.findings.clone()).into(),
     }
 }
 
@@ -710,8 +705,7 @@ impl Catalog {
     /// the roots heap's. Leaves what a crashed schema change allocated, and every grant untagged.
     pub fn load<R: Runtime>(rt: R, pager: &Pager<R>) -> Result<(Catalog, Transactions<R>), Error> {
         let pid = pager.catalog_root();
-        let refused =
-            || Error::Corrupt("a marked database has no whole catalog and writes none".to_owned());
+        let refused = || Error::from(Rot::MarkedNoCatalog);
         if pid == Pid(0) {
             if pager.is_quarantined(Quarantine::Database) {
                 return Err(refused());
@@ -725,9 +719,7 @@ impl Catalog {
             let page = pager.read(pid)?;
             let found = (storage::kind(&page), storage::format(&page));
             if found != (PageKind::Catalog as u16, root::FORMAT) {
-                return Err(Error::Corrupt(format!(
-                    "the header's catalog root {pid:?} has kind and format {found:?}"
-                )));
+                return Err(Rot::RootPage { pid, found }.into());
             }
             Root::read(&page)
         };
@@ -772,10 +764,8 @@ impl Catalog {
         let (held, held_program) = readers
             .enforced()
             .map_or((&schema, &program), |e| (&e.schema, &*e.program));
-        let specs = pending::kept_indexes(held, &readers.pending)
-            .map_err(|e| Error::Corrupt(e.to_string()))?;
-        let normal = index_program(held, held_program, specs.values())
-            .map_err(|e| Error::Corrupt(e.to_string()))?;
+        let specs = pending::kept_indexes(held, &readers.pending).map_err(Rot::KeptIndexes)?;
+        let normal = index_program(held, held_program, specs.values()).map_err(Rot::KeptIndexes)?;
         let mut stored = BTreeMap::new();
         for (id, spec) in specs {
             let Some(&at) = named.indexes.get(&id) else {
@@ -784,11 +774,11 @@ impl Catalog {
             let index = Index::open(
                 BTree::open(at, owner(id)),
                 key_schema(held, normal.as_ref(), &named.keys, &spec)
-                    .map_err(|e| Error::Corrupt(format!("{e:?}")))?,
+                    .map_err(|e| Rot::IndexKeying(Box::new(e)))?,
                 index_ctors(held, &spec),
             );
             let keys = index_keys(held, normal.as_ref(), &spec, &Arc::default())
-                .map_err(|e| Error::Corrupt(format!("{e:?}")))?;
+                .map_err(|e| Rot::IndexKeying(Box::new(e)))?;
             stored.insert(id, (spec, index, keys));
         }
         let kept = Kept::open(

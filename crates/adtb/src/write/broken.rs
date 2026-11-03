@@ -111,10 +111,11 @@ impl From<Broken> for Error {
     }
 }
 
-/// Returns `e` as its `Debug` reads, with an internal cause as the `Debug` of its text.
+/// Returns `e` as its `Debug` reads, with an internal or damage cause as the `Debug` of its text.
 pub fn detail(e: &Error) -> String {
     match e {
         Error::Internal(b) => format!("Internal({:?})", b.to_string()),
+        Error::Corrupt(r) => format!("Corrupt({:?})", r.to_string()),
         e => format!("{e:?}"),
     }
 }
@@ -203,7 +204,7 @@ impl fmt::Display for Broken {
             Broken::NoViolation => f.write_str("`Finding` declares `Violation`"),
             Broken::SettingNotRecord => f.write_str("a setting's value is a record"),
             Broken::SettingField(name) => write!(f, "a setting's value has field `{name}`"),
-            Broken::Denials(e) | Broken::Expiry(e) => write!(f, "{e:?}"),
+            Broken::Denials(e) | Broken::Expiry(e) => f.write_str(&catalog::detail(e)),
             Broken::DeploymentRefused => f.write_str("a deployment command was refused"),
         }
     }

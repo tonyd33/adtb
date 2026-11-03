@@ -8,6 +8,7 @@ mod ir;
 mod join;
 mod memory;
 mod prim;
+mod rot;
 mod run;
 mod sched;
 mod sink;
@@ -27,6 +28,7 @@ pub use host::{HostBody, HostCall, HostError, Hosts};
 pub use ir::{Program, compile};
 pub use memory::{Arena, Budget, Grant};
 pub(crate) use prim::print;
+pub use rot::{Rot, detail};
 pub use sched::{
     Admission, Admitted, Entry, Priority, Refusal, Refused, Resumable, Scheduler, Step, Stopped,
     Task,
@@ -128,8 +130,8 @@ pub enum Error {
     OrphanEntry(u32),
     /// The call's spill file could not be made, written or read.
     Spill(IoError),
-    /// A stored structure the plan reads does not decode.
-    Corrupt(String),
+    /// A stored structure or spill file the plan reads does not decode.
+    Corrupt(Rot),
     /// The plan needs a form or primitive the executor does not run yet.
     Unsupported(String),
     /// The plan reads `caller` and the statement has none.

@@ -9,13 +9,14 @@ use crate::mvcc::{Scope, Transactions, Xid};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
+use super::Rot;
 use super::{Catalog, Error, ROOTS, int, uint, visible};
 
 /// The constructor of a roots row holding a row of a volatile relation.
 const KEPT: u32 = 14;
 
 /// The only encoding of a kept row's fields this engine reads.
-const ROW_FORMAT: u64 = 1;
+pub(super) const ROW_FORMAT: u64 = 1;
 
 /// One field of a kept row.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,7 +106,7 @@ fn decode(mut bytes: &[u8]) -> Option<Vec<KeptField>> {
 }
 
 fn row_of(fields: &[Value]) -> Result<KeptRow, Error> {
-    let bad = || Error::Corrupt(format!("a kept row holds {fields:?}"));
+    let bad = || Error::from(Rot::KeptRow(fields.to_vec()));
     let [
         relation,
         Value::Text(group),
@@ -118,9 +119,7 @@ fn row_of(fields: &[Value]) -> Result<KeptRow, Error> {
     };
     let format = uint(format)?;
     if format != ROW_FORMAT {
-        return Err(Error::Corrupt(format!(
-            "a kept row has format {format}; this engine reads format {ROW_FORMAT}"
-        )));
+        return Err(Rot::KeptFormat(format).into());
     }
     Ok(KeptRow {
         relation: uint(relation)?,
@@ -248,9 +247,7 @@ mod tests {
 
     #[test]
     fn a_kept_row_of_another_format_is_refused() {
-        assert!(matches!(
-            row_of(&stored(ROW_FORMAT + 1)),
-            Err(Error::Corrupt(why)) if why.contains("format 2")
-        ));
+        let got = row_of(&stored(ROW_FORMAT + 1));
+        assert_eq!(Err(Rot::KeptFormat(ROW_FORMAT + 1).into()), got);
     }
 }

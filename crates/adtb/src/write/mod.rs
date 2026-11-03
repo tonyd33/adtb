@@ -12,6 +12,7 @@ mod past;
 mod polarity;
 mod quarantine;
 mod reindex;
+mod rot;
 mod schema;
 mod sequence;
 mod stream;
@@ -53,6 +54,7 @@ pub use input::Local;
 pub use past::Retained;
 pub(crate) use past::position;
 pub use reindex::{Failure, HoldWait, Rebuild, VacuumHold, panic_text};
+pub use rot::Rot;
 pub use stream::{Produced, Production};
 pub use verify::{Found, VerifyScope, VerifySnapshot};
 
@@ -127,7 +129,7 @@ pub enum Error {
     Quarantined(String),
     /// The commit log is corrupt or its ids are spent.
     Transactions(String),
-    Corrupt(String),
+    Corrupt(Rot),
     /// The statement needs a form the engine does not run yet.
     Unsupported(String),
     /// The role the statement runs for lacks a privilege, as this text states.
@@ -237,7 +239,7 @@ impl From<crate::btree::Error> for Error {
     fn from(e: crate::btree::Error) -> Error {
         match e {
             crate::btree::Error::Page(p) => Error::Page(p),
-            other => Error::Corrupt(format!("{other:?}")),
+            other => Rot::Index(other).into(),
         }
     }
 }
@@ -257,7 +259,7 @@ impl From<exec::Error> for Error {
             exec::Error::Page(p) => Error::Page(p),
             exec::Error::OrphanEntry(i) => Error::OrphanEntry(i),
             exec::Error::Spill(io) => Error::Spill(io),
-            exec::Error::Corrupt(c) => Error::Corrupt(c),
+            exec::Error::Corrupt(r) => Rot::Exec(r).into(),
             exec::Error::Unsupported(u) => Error::Unsupported(u),
             exec::Error::Rejected(detail) => Error::Rejected(Rejection::BadInput {
                 source: String::new(),

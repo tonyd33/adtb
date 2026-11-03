@@ -9,7 +9,7 @@ use crate::exec::types::ctors;
 use crate::exec::{Conv, conv};
 use crate::plan::{Catalog, HeapId, IndexDesc, IndexId, declared_elements};
 
-use super::{Broken, Error};
+use super::{Broken, Error, Rot};
 
 /// A direct reference field of a constructor.
 #[derive(Clone, Debug)]
@@ -216,7 +216,7 @@ pub fn rels(schema: &Schema, normal: &NormalProgram, catalog: &Catalog) -> Resul
             .indexes
             .iter()
             .find(|d| d.id == desc.key_index)
-            .ok_or_else(|| Error::Corrupt(format!("relation {} has no key index", r.name)))?;
+            .ok_or_else(|| Rot::NoKeyIndex(r.name.clone()))?;
         out.insert(
             *rel,
             Rel {

@@ -360,7 +360,7 @@ pub fn path_steps(
 /// Fails with `exec::Error::Corrupt` when a value on the way does not have the shape the steps
 /// give it.
 pub fn at_path<'v>(row: &'v [Value], steps: &[Step]) -> Result<Option<&'v Value>, exec::Error> {
-    let corrupt = || exec::Error::Corrupt(format!("a stored row does not hold path {steps:?}"));
+    let corrupt = || exec::Error::from(exec::Rot::StoredPath(steps.to_vec()));
     let Some((first, rest)) = steps.split_first() else {
         return Ok(None);
     };

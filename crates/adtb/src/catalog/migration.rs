@@ -19,6 +19,7 @@ use crate::plan::HeapId;
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
+use super::Rot;
 use super::grants::{Dormant, Grantees};
 use super::history::{Rebuilding, key_indexes};
 use super::{
@@ -702,18 +703,16 @@ impl Catalog {
         };
         for (_, row) in self.rows(m.pager, m.txns, m.snapshot, r)? {
             let [Value::I64(version), Value::Bytes(hash), ..] = row.as_slice() else {
-                return Err(Error::Corrupt("malformed migration row".to_string()));
+                return Err(Rot::MigrationRow.into());
             };
             if *version == i64::try_from(self.source.version).expect("a version fits I64") {
-                return hash.as_slice().try_into().map_err(|_| {
-                    Error::Corrupt("a migration hash must hold 32 bytes".to_string())
-                });
+                return hash
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| Rot::MigrationHash.into());
             }
         }
-        Err(Error::Corrupt(format!(
-            "missing migration {}",
-            self.source.version
-        )))
+        Err(Rot::NoMigration(self.source.version).into())
     }
 }
 

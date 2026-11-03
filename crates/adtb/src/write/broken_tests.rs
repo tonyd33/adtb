@@ -10,64 +10,14 @@ use crate::plan::{self, IndexId};
 use super::super::Error;
 use super::{Broken, Broken as B, TermKind, detail};
 
-/// Returns the text the case of `b`'s variant in `cases` reads as.
+/// Returns the case that follows `b`, the first when `b` is `None`, and the text it reads as.
+/// A walk from `None` reaches every variant.
 #[rustfmt::skip]
-fn expected(b: &Broken) -> &'static str {
-    match b {
-        B::BoundedPlan(plan::Error::Internal(_)) | B::StatementPlan(plan::Error::Internal(_)) => "a group has a key and rows",
-        B::BoundedPlan(_) | B::StatementPlan(_) => "a plan computes a query, not a write",
-        B::ReindexNoHeaps(_) => "reindex of RelId(3), which has no heaps",
-        B::VacuumNoHeaps(_) => "vacuum of RelId(3), which has no heaps",
-        B::UnstoredIndex { .. } => "index 2 of us is stored",
-        B::Panicked(_) => "boom",
-        B::NotAnIndex { .. } => "IndexId(5) is an index of us",
-        B::DuplicateKey(_) => "a duplicate of key [1, 2] in a unique index",
-        B::DenialNotSet(_) => "a denial query returns a set, found Int(1)",
-        B::UniqueUnindexed { .. } => "unique 1 of relation us has an index",
-        B::UndeclaredIndex { .. } => "index 7 of relation us is neither declared nor an old key",
-        B::KeyNotFields(_) => "the key of us is fields",
-        B::VacuumTooLarge { .. } => "a version vacuum moves fits its history heap, as it fit its current heap: 9000 bytes over the limit of 4000",
-        B::ReadOnly => "a read-only transaction runs no write",
-        B::ScanPathNotText => "a file scan's path is a Text",
-        B::RowsNotSet(_) => "a write's rows are a set, found Int(1)",
-        B::FailNotText => "`fail` takes a Text",
-        B::NoArm(_) => "a case has an arm for constructor 4",
-        B::Unreachable => "evaluation reaches no position that exhaustiveness or a dominating test excludes",
-        B::NotAWrite(_) => "a write term is a write, found EmptySet",
-        B::ReplaceNotLam => "a replace's new value is a `Lam`",
-        B::RejectsWraps(_) => "`rejects into` wraps an insert or upsert, not EmptySet",
-        B::NotABoundWrite(_) => "a bound write is a replace, an upsert or `rejects into`, found EmptySet",
-        B::ScanUnread => "every file scan of a statement is read before it runs",
-        B::RejectedRowNotRecord => "`RejectedRow` is a declared record",
-        B::NoUnique(_) => "an upsert names unique 2 of its relation",
-        B::UniqueIndexMissing => "a unique's index is one of its relation's",
-        B::ReferenceUnindexed { .. } => "a reference field has an index: app::us.f has none",
-        B::TopNotFor => "a top level read is the source of a `For`",
-        B::RowsNotSetTyped(_) => "a read of rows is a set, not Base(I64)",
-        B::InputNotSet(_) => "a change set input is a set, not Base(I64)",
-        B::TopBinder(_) => "a top level binder is a `For` or a `Let`, not EmptySet",
-        B::PriorNotSet(_) => "a prior relation is a set, not Base(I64)",
-        B::Unprintable(_) => "printing a cell: PrintError { message: \"m\" }",
-        B::Undeclared { .. } => "the engine declares `sys::calls`",
-        B::NoValueOutcome | B::NoSettingOutcome | B::NoPointOutcome => "a statement of one item has one outcome",
-        B::NoTrialOutcome => "a trial of one statement has one outcome",
-        B::RefusalUnrecorded(_) | B::WitnessDenialUnrecorded(_) => "recording a denied call: Rejected { reason: Internal { what: \"w\" } }",
-        B::CallKeyNotInt => "a key of `sys::calls` is an I64",
-        B::ExportNotSetTyped | B::ExportNotSet => "an export's source is a set",
-        B::NoViolation => "`Finding` declares `Violation`",
-        B::SettingNotRecord => "a setting's value is a record",
-        B::SettingField(_) => "a setting's value has field `f`",
-        B::Denials(_) | B::Expiry(_) => "Missing(\"m\")",
-        B::DeploymentRefused => "a deployment command was refused",
-    }
-}
-
-#[test]
-fn each_broken_guarantee_reads_as_its_text() {
+fn after(b: Option<&Broken>) -> Option<(Broken, &'static str)> {
     let int = || Ty::Base(Base::I64);
     let k = || TermKind(Kind::EmptySet);
     let r = || "us".to_string();
-    let missing = || catalog::Error::Missing("m".into());
+    let rot = || catalog::Error::from(catalog::Rot::GrantNoId);
     let denial = || {
         Box::new(api::Error::Rejected {
             reason: RejectReason::Internal { what: "w".into() },
@@ -75,34 +25,70 @@ fn each_broken_guarantee_reads_as_its_text() {
     };
     let internal = || plan::Error::Internal(plan::Broken::GroupFieldMissing);
     let refused = || plan::Error::NotAQuery("a write");
-    #[rustfmt::skip]
-    let cases = [
-        B::BoundedPlan(internal()), B::BoundedPlan(refused()),
-        B::StatementPlan(internal()), B::StatementPlan(refused()),
-        B::ReindexNoHeaps(RelId(3)), B::VacuumNoHeaps(RelId(3)),
-        B::UnstoredIndex { position: 2, relation: r() },
-        B::Panicked("boom".into()),
-        B::NotAnIndex { index: IndexId(5), relation: r() },
-        B::DuplicateKey(vec![1, 2]), B::DenialNotSet(Val::Int(1)),
-        B::UniqueUnindexed { position: 1, relation: r() },
-        B::UndeclaredIndex { index: IndexId(7), relation: r() },
-        B::KeyNotFields(r()), B::VacuumTooLarge { len: 9000, limit: 4000 },
-        B::ReadOnly, B::ScanPathNotText, B::RowsNotSet(Val::Int(1)), B::FailNotText, B::NoArm(4),
-        B::Unreachable, B::NotAWrite(k()), B::ReplaceNotLam, B::RejectsWraps(k()),
-        B::NotABoundWrite(k()), B::ScanUnread, B::RejectedRowNotRecord, B::NoUnique(2),
-        B::UniqueIndexMissing,
-        B::ReferenceUnindexed { relation: "app::us".into(), field: "f".into() },
-        B::TopNotFor, B::RowsNotSetTyped(int()), B::InputNotSet(int()), B::TopBinder(k()),
-        B::PriorNotSet(int()), B::Unprintable(PrintError { message: "m".into() }),
-        B::Undeclared { module: "sys".into(), name: "calls".into() },
-        B::NoValueOutcome, B::NoSettingOutcome, B::NoPointOutcome, B::NoTrialOutcome,
-        B::RefusalUnrecorded(denial()), B::WitnessDenialUnrecorded(denial()),
-        B::CallKeyNotInt, B::ExportNotSetTyped, B::ExportNotSet, B::NoViolation,
-        B::SettingNotRecord, B::SettingField("f".into()), B::Denials(missing()),
-        B::Expiry(missing()), B::DeploymentRefused,
-    ];
-    for broken in cases {
-        assert_eq!(expected(&broken), broken.to_string(), "{broken:?}");
+    Some(match b {
+        None => (B::BoundedPlan(internal()), "a group has a key and rows"),
+        Some(B::BoundedPlan(plan::Error::Internal(_))) => (B::BoundedPlan(refused()), "a plan computes a query, not a write"),
+        Some(B::BoundedPlan(_)) => (B::StatementPlan(internal()), "a group has a key and rows"),
+        Some(B::StatementPlan(plan::Error::Internal(_))) => (B::StatementPlan(refused()), "a plan computes a query, not a write"),
+        Some(B::StatementPlan(_)) => (B::ReindexNoHeaps(RelId(3)), "reindex of RelId(3), which has no heaps"),
+        Some(B::ReindexNoHeaps(_)) => (B::VacuumNoHeaps(RelId(3)), "vacuum of RelId(3), which has no heaps"),
+        Some(B::VacuumNoHeaps(_)) => (B::UnstoredIndex { position: 2, relation: r() }, "index 2 of us is stored"),
+        Some(B::UnstoredIndex { .. }) => (B::Panicked("boom".into()), "boom"),
+        Some(B::Panicked(_)) => (B::NotAnIndex { index: IndexId(5), relation: r() }, "IndexId(5) is an index of us"),
+        Some(B::NotAnIndex { .. }) => (B::DuplicateKey(vec![1, 2]), "a duplicate of key [1, 2] in a unique index"),
+        Some(B::DuplicateKey(_)) => (B::DenialNotSet(Val::Int(1)), "a denial query returns a set, found Int(1)"),
+        Some(B::DenialNotSet(_)) => (B::UniqueUnindexed { position: 1, relation: r() }, "unique 1 of relation us has an index"),
+        Some(B::UniqueUnindexed { .. }) => (B::UndeclaredIndex { index: IndexId(7), relation: r() }, "index 7 of relation us is neither declared nor an old key"),
+        Some(B::UndeclaredIndex { .. }) => (B::KeyNotFields(r()), "the key of us is fields"),
+        Some(B::KeyNotFields(_)) => (B::VacuumTooLarge { len: 9000, limit: 4000 }, "a version vacuum moves fits its history heap, as it fit its current heap: 9000 bytes over the limit of 4000"),
+        Some(B::VacuumTooLarge { .. }) => (B::ReadOnly, "a read-only transaction runs no write"),
+        Some(B::ReadOnly) => (B::ScanPathNotText, "a file scan's path is a Text"),
+        Some(B::ScanPathNotText) => (B::RowsNotSet(Val::Int(1)), "a write's rows are a set, found Int(1)"),
+        Some(B::RowsNotSet(_)) => (B::FailNotText, "`fail` takes a Text"),
+        Some(B::FailNotText) => (B::NoArm(4), "a case has an arm for constructor 4"),
+        Some(B::NoArm(_)) => (B::Unreachable, "evaluation reaches no position that exhaustiveness or a dominating test excludes"),
+        Some(B::Unreachable) => (B::NotAWrite(k()), "a write term is a write, found EmptySet"),
+        Some(B::NotAWrite(_)) => (B::ReplaceNotLam, "a replace's new value is a `Lam`"),
+        Some(B::ReplaceNotLam) => (B::RejectsWraps(k()), "`rejects into` wraps an insert or upsert, not EmptySet"),
+        Some(B::RejectsWraps(_)) => (B::NotABoundWrite(k()), "a bound write is a replace, an upsert or `rejects into`, found EmptySet"),
+        Some(B::NotABoundWrite(_)) => (B::ScanUnread, "every file scan of a statement is read before it runs"),
+        Some(B::ScanUnread) => (B::RejectedRowNotRecord, "`RejectedRow` is a declared record"),
+        Some(B::RejectedRowNotRecord) => (B::NoUnique(2), "an upsert names unique 2 of its relation"),
+        Some(B::NoUnique(_)) => (B::UniqueIndexMissing, "a unique's index is one of its relation's"),
+        Some(B::UniqueIndexMissing) => (B::ReferenceUnindexed { relation: "app::us".into(), field: "f".into() }, "a reference field has an index: app::us.f has none"),
+        Some(B::ReferenceUnindexed { .. }) => (B::TopNotFor, "a top level read is the source of a `For`"),
+        Some(B::TopNotFor) => (B::RowsNotSetTyped(int()), "a read of rows is a set, not Base(I64)"),
+        Some(B::RowsNotSetTyped(_)) => (B::InputNotSet(int()), "a change set input is a set, not Base(I64)"),
+        Some(B::InputNotSet(_)) => (B::TopBinder(k()), "a top level binder is a `For` or a `Let`, not EmptySet"),
+        Some(B::TopBinder(_)) => (B::PriorNotSet(int()), "a prior relation is a set, not Base(I64)"),
+        Some(B::PriorNotSet(_)) => (B::Unprintable(PrintError { message: "m".into() }), "printing a cell: PrintError { message: \"m\" }"),
+        Some(B::Unprintable(_)) => (B::Undeclared { module: "sys".into(), name: "calls".into() }, "the engine declares `sys::calls`"),
+        Some(B::Undeclared { .. }) => (B::NoValueOutcome, "a statement of one item has one outcome"),
+        Some(B::NoValueOutcome) => (B::NoSettingOutcome, "a statement of one item has one outcome"),
+        Some(B::NoSettingOutcome) => (B::NoPointOutcome, "a statement of one item has one outcome"),
+        Some(B::NoPointOutcome) => (B::NoTrialOutcome, "a trial of one statement has one outcome"),
+        Some(B::NoTrialOutcome) => (B::RefusalUnrecorded(denial()), "recording a denied call: Rejected { reason: Internal { what: \"w\" } }"),
+        Some(B::RefusalUnrecorded(_)) => (B::WitnessDenialUnrecorded(denial()), "recording a denied call: Rejected { reason: Internal { what: \"w\" } }"),
+        Some(B::WitnessDenialUnrecorded(_)) => (B::CallKeyNotInt, "a key of `sys::calls` is an I64"),
+        Some(B::CallKeyNotInt) => (B::ExportNotSetTyped, "an export's source is a set"),
+        Some(B::ExportNotSetTyped) => (B::ExportNotSet, "an export's source is a set"),
+        Some(B::ExportNotSet) => (B::NoViolation, "`Finding` declares `Violation`"),
+        Some(B::NoViolation) => (B::SettingNotRecord, "a setting's value is a record"),
+        Some(B::SettingNotRecord) => (B::SettingField("f".into()), "a setting's value has field `f`"),
+        Some(B::SettingField(_)) => (B::Denials(rot()), "Corrupt(\"a grant row has no I64 id\")"),
+        Some(B::Denials(_)) => (B::Expiry(rot()), "Corrupt(\"a grant row has no I64 id\")"),
+        Some(B::Expiry(_)) => (B::DeploymentRefused, "a deployment command was refused"),
+        Some(B::DeploymentRefused) => return None,
+    })
+}
+
+#[test]
+fn each_broken_guarantee_reads_as_its_text() {
+    let mut seen = Vec::new();
+    for (broken, text) in std::iter::successors(after(None), |(b, _)| after(Some(b))) {
+        assert!(!seen.contains(&broken), "the walk returns to {broken:?}");
+        assert_eq!(text, broken.to_string(), "{broken:?}");
+        seen.push(broken);
     }
 }
 

@@ -10,6 +10,7 @@ use crate::mvcc::{Scope, Transactions, Xid};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
+use super::Rot;
 use super::{Catalog, Error, ROOTS, int, uint, visible};
 
 /// The constructor of the roots row marking a file whose families have durable owners.
@@ -168,7 +169,7 @@ impl Deployed {
                 let origin = match uint(origin)? {
                     0 => Origin::Open,
                     1 => Origin::Command,
-                    n => return Err(Error::Corrupt(format!("registration origin {n}"))),
+                    n => return Err(Rot::Origin(n).into()),
                 };
                 self.registered.insert(
                     *bundle,
@@ -180,9 +181,11 @@ impl Deployed {
                 );
             }
             _ => {
-                return Err(Error::Corrupt(format!(
-                    "a deployment row of constructor {ctor} holds {fields:?}"
-                )));
+                return Err(Rot::DeploymentRow {
+                    ctor,
+                    fields: fields.to_vec(),
+                }
+                .into());
             }
         }
         Ok(())

@@ -21,7 +21,7 @@ use adtb_sys::lock::Lock;
 use super::memory::{Arena, Grant};
 use super::types::{ctors, repr};
 use super::value::{F32, F64, Val};
-use super::{Broken, Error};
+use super::{Broken, Error, Rot};
 
 /// An index entry a probe found: the constructor position and TID it names, and the entry when an
 /// index rather than a heap scan answered.
@@ -382,7 +382,7 @@ fn value_size(v: &Value) -> usize {
 fn index_error(e: btree::Error) -> Error {
     match e {
         btree::Error::Page(p) => Error::Page(p),
-        other => Error::Corrupt(format!("{other:?}")),
+        other => Rot::Index(other).into(),
     }
 }
 
