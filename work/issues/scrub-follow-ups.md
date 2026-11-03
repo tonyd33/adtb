@@ -20,3 +20,9 @@ Left from the review:
 - `names_page` in the scrub test counts any held finding as naming an unowned page, so an ownerless page under a database-wide mark passes unnamed.
 - The crash test asserts `held_findings() == 0` after a restart behind a whole-database mark, pinning the "mark durable before its finding row" gap as expected behaviour.
 - A database marked whole at open runs no scrub reads; a page the pager holds damaged is not reread.
+
+## 2026-11-03: landed
+
+`fix: leave a page the scrub cannot read for the next read to retry`. `check_page` keeps `Unreadable` as an I/O failure, marks nothing and does not record it, so "a transient read error refuses a page" is closed for the scrub and verify. The scrub search landed with it: rot found by a pass alone and filed as a read would, a crash during a pass, and 1, 2, 3 failed reads plus a bad first read then two failed rechecks. Check exit 0, 3609 passed.
+
+Left: the read path in pager.rs (about line 661) still records one failed `Unreadable` read by a call as sticky, refusing the page until reopen; the storage.md rule says an I/O failure marks nothing, so a call's single failed read should not refuse the page for every later reader either. Nothing finds a rotted copy of the file header: the scrub starts at the first data page and open uses the other copy.

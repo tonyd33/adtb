@@ -354,3 +354,9 @@ What the next attempt needs, ruled now:
 - Stop line honest from the start: round 1 was +194 production against 120 and round 2 +229, so brief about 250 production and 300 test.
 
 create-io-failure-as-not-found stays open: its fix was in the abandoned change.
+
+## 2026-11-03: scrub row done
+
+The scrub row is closed by `fix: leave a page the scrub cannot read for the next read to retry`, which carries the scrub search in crates/adtb-sim/tests/maintenance_faults.rs. Deep: 1878 rot cases, no defect. Leftovers on scrub-follow-ups.
+
+Rows still open: create by publishing aside (abandoned once, ruled for the next attempt), typed causes for `Internal` and `Corrupt`.
