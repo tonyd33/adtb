@@ -984,3 +984,17 @@ fn a_privilege_clause_takes_its_fixed_ids() {
         assert_eq!(Some(&id), s.ids.fields.get(&key));
     }
 }
+
+#[test]
+fn a_key_reaches_the_types_of_its_relations_key_fields_at_their_arguments() {
+    let s = build_src(&[&module(
+        "type Tier = Free | Paid\ntype Mark = Ink\ntype P a = { k: a, n: Text, m: Mark }\nrelation ps : P Tier key (k, n)",
+    )])
+    .unwrap();
+    let key = Ty::Key {
+        rel: rel_id(&s, "m", "ps"),
+        ctors: None,
+    };
+    assert!(s.reaches(&key, type_id(&s, "Tier")));
+    assert!(!s.reaches(&key, type_id(&s, "Mark")));
+}

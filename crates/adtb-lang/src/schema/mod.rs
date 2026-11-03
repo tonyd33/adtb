@@ -544,8 +544,8 @@ impl Schema {
     }
 
     /// Add to `defs` each declared type a value of `ty` can hold, through its type arguments, its
-    /// structure or the fields of the types it names, and to `rels` each relation a key it holds
-    /// names.
+    /// structure, the fields of the types it names or the key fields of the relations its keys
+    /// name, and to `rels` each relation a key it holds names.
     pub fn reached(&self, ty: &Ty, defs: &mut BTreeSet<TypeId>, rels: &mut BTreeSet<RelId>) {
         match ty {
             Ty::Data { def, args, .. } => {
@@ -564,7 +564,20 @@ impl Schema {
                 }
             }
             Ty::Key { rel, .. } => {
-                rels.insert(*rel);
+                if !rels.insert(*rel) {
+                    return;
+                }
+                let r = self.relation(*rel);
+                let Ty::Data { args, .. } = &r.elem else {
+                    unreachable!("a relation's element type is a declared sum");
+                };
+                for name in &r.key {
+                    let f = self
+                        .ty(r.elem_def)
+                        .field(0, name)
+                        .expect("a relation's key fields are fields of its row type");
+                    self.reached(&f.ty.subst(args), defs, rels);
+                }
             }
             Ty::Record(fs) => fs.iter().for_each(|(_, t)| self.reached(t, defs, rels)),
             Ty::Sum { ctors, .. } => ctors

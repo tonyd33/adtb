@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::evolve::Resolved;
@@ -408,7 +408,10 @@ impl<'p, 'a> Walk<'p, 'a> {
                 let to = self.relation(rel)?;
                 let rows = self.tm(out, rows, Some(Site { rel: to, old: None }))?;
                 let on = match on {
-                    Conflict::Key => Conflict::Key,
+                    Conflict::Key => {
+                        self.same_key(rel)?;
+                        Conflict::Key
+                    }
                     Conflict::Unique(i) => Conflict::Unique(self.unique(rel, i)?),
                 };
                 Kind::Upsert {
@@ -629,6 +632,37 @@ impl<'p, 'a> Walk<'p, 'a> {
 
     fn relation(&self, r: RelId) -> R<RelId> {
         self.map.relation(r).ok_or_else(|| self.p.gone_relation(r))
+    }
+
+    /// Refuse a write that relies on the key of `rel` when the later version keys its image by
+    /// other fields, by their catalog ids, or by a field that has none.
+    fn same_key(&self, rel: RelId) -> R<()> {
+        let to = self.relation(rel)?;
+        let fields = |schema: &crate::schema::Schema, r: RelId| {
+            let r = schema.relation(r);
+            r.key
+                .iter()
+                .map(|f| {
+                    let slot = super::map::slot(schema, r.elem_def, 0, f);
+                    schema.ids.fields.get(&slot).copied()
+                })
+                .collect::<Option<BTreeSet<_>>>()
+        };
+        if let (Some(a), Some(b)) = (fields(self.map.from, rel), fields(self.map.to, to))
+            && a == b
+        {
+            return Ok(());
+        }
+        let id = self.map.from.ids.relations.get(&rel).copied();
+        Err(refused(
+            self.p.blame(
+                |o| matches!(o.op, Resolved::Rekey { relation, .. } if Some(relation) == id),
+            ),
+            format!(
+                "it writes by the key of `{}`, which the current version replaces",
+                self.map.from.relation(rel).name
+            ),
+        ))
     }
 
     /// Returns the position at the later version of the unique at position `i` of `rel`.
@@ -1380,6 +1414,7 @@ impl<'p, 'a> Walk<'p, 'a> {
 
     fn replace(&mut self, out: &mut Terms, src_ty: &Ty, rel: RelId, rows: Tm, f: Tm) -> R<Tm> {
         let kept = Map::ctor_set(self.map.from, elem(self.src.ty(rows)));
+        self.same_key(rel)?;
         let to = self.relation(rel)?;
         let rows2 = self.tm(out, rows, None)?;
         let f2 = match self.src.kind(f).clone() {

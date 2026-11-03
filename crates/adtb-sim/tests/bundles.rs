@@ -16,6 +16,7 @@ use adtb::{
 use adtb_lang::evolve::Source;
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_testkit::sections::{Section, expectations, sections};
 
 use api::{once, options, printed, query, results, run};
 
@@ -3868,6 +3869,136 @@ fn pinned_fields_follow_each_surviving_owner_identity() {
     assert_eq!(ran, 6, "every owner case ran");
 }
 
+/// Write each row of the `rows` part of `s`.
+fn key_rows(s: &Section, db: &Database<SimRuntime>, case: &str) {
+    for line in s.part("rows").lines() {
+        write(db, line).unwrap_or_else(|e| panic!("{case}: `{line}` writes: {e:?}"));
+    }
+}
+
+fn key_file(name: &str) -> String {
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../adtb-lang/tests/pinned-keys");
+    std::fs::read_to_string(dir.join(name)).expect("the pinned key search is readable")
+}
+
+/// Returns what a call of callable `ordinal` of `web-1.0` gives, then what `observe` reads.
+fn key_answer(db: &Database<SimRuntime>, ordinal: u32, observe: &str) -> String {
+    let called = db
+        .registered("web-1.0")
+        .and_then(|r| r.call(ordinal, &[], &CallOptions::default()));
+    let answer = match called {
+        Ok(Called::Rows(r)) => format!("call {:?}", printed(r)),
+        Ok(Called::Committed(c)) => format!("call {:?}", printed(c.value)),
+        Err(e) => format!("fails {:?}", reason(&e)),
+    };
+    format!("{answer} rows {:?}", query(db, observe))
+}
+
+/// Returns the answer of each of `bodies`, called in turn, over the rows of `rel` written at its
+/// pin, then after `op` with its rows when one is given; or the refusal of `op`.
+fn key_answers(seed: u64, rel: &Section, op: Option<&Section>, bodies: &[&Section]) -> Vec<String> {
+    let pin = [rel.text.as_str()];
+    let text: String = bodies.iter().map(|b| b.text.as_str()).collect();
+    let bundled = || vec![bundle("web-1.0", &pin, "", &format!("import auth\n{text}"))];
+    let case = format!("{} seed {seed}", rel.name[0]);
+    let mut sim = Sim::new(seed, Config::default());
+    let pinned = run(&mut sim, |rt| {
+        let db = opened(&rt, &pin, bundled());
+        key_rows(rel, &db, &case);
+        op.is_none().then(|| {
+            (1..=bodies.len() as u32)
+                .map(|i| key_answer(&db, i, rel.part("observe")))
+                .collect()
+        })
+    });
+    if let Some(answers) = pinned {
+        return answers;
+    }
+    let op = op.expect("an operator follows the pin");
+    let log = [rel.text.as_str(), op.text.as_str()];
+    run(&mut sim, |rt| match open(&rt, &log, bundled()) {
+        Ok(db) => {
+            key_rows(op, &db, &case);
+            (1..=bodies.len() as u32)
+                .map(|i| key_answer(&db, i, rel.part("observe")))
+                .collect()
+        }
+        got => {
+            let (operator, detail) = refused_migration(got, 2);
+            vec![format!("refused {operator:?} {detail:?}")]
+        }
+    })
+}
+
+/// The answers of the pinned key search through the engine: every body at its pin, every body
+/// after each operator that translates them all, and the pairs `answers.txt` names after an
+/// operator that refuses some.
+#[test]
+fn a_pinned_key_answers_at_its_pin_and_after_each_operator_it_crosses() {
+    let sections = sections(&key_file("search.txt"));
+    let translations = expectations(&key_file("translations.txt"));
+    let expected = expectations(&key_file("answers.txt"));
+    let mut got = std::collections::BTreeMap::new();
+    let mut seed = 400;
+    let mut runs = (0, 0, 0);
+    for rel in sections.iter().filter(|s| s.kind == "relation") {
+        let name = &rel.name[0];
+        let of = |kind: &str| -> Vec<&Section> {
+            sections
+                .iter()
+                .filter(|s| s.kind == kind && s.name[0] == *name)
+                .collect()
+        };
+        let bodies = of("body");
+        seed += 1;
+        for (b, answer) in bodies.iter().zip(key_answers(seed, rel, None, &bodies)) {
+            got.insert(format!("{name} pin {}", b.name[1]), answer);
+        }
+        runs.0 += 1;
+        for op in of("operator") {
+            let pair = |b: &Section| format!("{name} {} {}", op.name[1], b.name[1]);
+            seed += 1;
+            if bodies.iter().all(|b| {
+                translations
+                    .get(&pair(b))
+                    .is_some_and(|t| t == "translates")
+            }) {
+                for (b, answer) in bodies.iter().zip(key_answers(seed, rel, Some(op), &bodies)) {
+                    got.insert(pair(b), answer);
+                }
+                runs.1 += 1;
+                continue;
+            }
+            for b in bodies.iter().filter(|b| expected.contains_key(&pair(b))) {
+                let answer = key_answers(seed, rel, Some(op), &[b]).remove(0);
+                got.insert(pair(b), answer);
+                runs.2 += 1;
+            }
+        }
+    }
+    let differs: Vec<String> = got
+        .iter()
+        .filter(|(k, v)| expected.get(*k) != Some(v))
+        .map(|(k, v)| format!("{k} = {v}"))
+        .collect();
+    assert!(
+        differs.is_empty(),
+        "answers differ:\n{}",
+        differs.join("\n")
+    );
+    assert_eq!(
+        (2, 4, 6),
+        runs,
+        "every pin, every crossed operator and each named pair ran"
+    );
+    assert_eq!(
+        expected.keys().collect::<Vec<_>>(),
+        got.keys().collect::<Vec<_>>(),
+        "every expectation is reached"
+    );
+}
+
 const READER_ADD: &str = "module auth
 add type Tone = Ink { depth: I64 }
 add type Mark = { id: Key marks, note: Text, tone: Tone }
@@ -3880,6 +4011,33 @@ const READER_ENABLE: &str = "module auth\nenable Tone.Dye\n";
 const READER_REFUSED: &str = "`enable Tone.Dye` is refused: bundle web-1.0, pinned at version 2, reads a field whose type reaches Tone; a bundle stops blocking only when it is released";
 const READER_TONES: &str =
     r#"from m in marks select match m.tone | Ink i -> "ink" | Dye d -> d.hue"#;
+
+#[test]
+fn enabling_a_constructor_a_read_key_holds_is_refused_while_a_bundle_reads_the_key() {
+    let pin = "module auth
+add module auth
+add type Tier = Free | Paid
+add type P = { t: Tier, n: Text }
+add relation p : P key (t, n)
+add type Q = { id: Key qs, o: Key p }
+add relation qs : Q key id generate sequence
+";
+    let grow = "module auth\nadd constructor Tier.Gold\n";
+    let enable = "module auth\nenable Tier.Gold\n";
+    let body = "import auth\nquery keys () -> Set (Key p) = from x in qs select x.o\n";
+    let registered = || vec![bundle("web-1.0", &[pin], "", body)];
+    let mut sim = Sim::new(212, Config::default());
+    run(&mut sim, |rt| {
+        opened(&rt, &[pin, grow], registered());
+    });
+    run(&mut sim, |rt| {
+        let (_, detail) = refused_migration(open(&rt, &[pin, grow, enable], registered()), 3);
+        assert_eq!(
+            "`enable Tier.Gold` is refused: bundle web-1.0, pinned at version 1, reads a field whose type reaches Tier; a bundle stops blocking only when it is released",
+            detail
+        );
+    });
+}
 
 /// Write the mark and pad every pinned reader case reads, its mark's tone being `tone`.
 fn reader_rows(db: &Database<SimRuntime>, tone: &str) {

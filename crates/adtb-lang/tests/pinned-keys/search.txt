@@ -1,0 +1,124 @@
+=== relation tiered
+module auth
+add module auth
+add type Tier = Free | Paid
+add type P = { t: Tier, n: Text, w: Text }
+add relation p : P key (t, n)
+add type Q = { id: Key qs, o: Key p }
+add relation qs : Q key id generate sequence
+--- rows
+insert p { t: Free, n: "a", w: "1" }
+insert p { t: Free, n: "z", w: "9" }
+insert qs { o: p.key(t: Free, n: "a") }
+--- observe
+from x in p select x.w
+=== operator tiered split
+module auth
+split constructor Tier.Paid into Monthly | Yearly
+  by match
+    | Paid -> Monthly
+--- rows
+insert p { t: Monthly, n: "b", w: "2" }
+insert qs { o: p.key(t: Monthly, n: "b") }
+=== operator tiered merge
+module auth
+add type Kind = Free | Paid
+merge constructor Tier.(Free | Paid) into Any { kind: Kind }
+=== operator tiered add
+module auth
+add constructor Tier.Gold
+=== operator tiered narrow
+module auth
+rekey relation p key n
+  carry Q.o
+=== operator tiered widen
+module auth
+rekey relation p key (t, n, w)
+  carry Q.o
+=== operator tiered rename
+module auth
+rename field P.n to name
+=== body tiered key
+query body_key () -> Set (Key p) = from x in qs select x.o
+=== body tiered follow
+query body_follow () -> Set Text = from x in qs select x.o.w
+=== body tiered insert
+txn body_insert () -> I64 =
+  transact
+    insert p { t: Paid, n: "a", w: "2" } unless conflict on key else skip
+    return 0
+=== body tiered upsert
+txn body_upsert () -> I64 =
+  transact
+    insert p { t: Free, n: "a", w: "3" } unless conflict on key else update old set new
+    return 0
+=== body tiered update
+txn body_update () -> I64 =
+  transact
+    update x in p where x.n == "z" set P { x with w: "8" }
+    return 0
+=== body tiered delete
+txn body_delete () -> I64 =
+  transact
+    delete x in p where key x == p.key(t: Free, n: "z")
+    return 0
+=== relation priced
+module auth
+add module auth
+add type Price { sku: Text, n: I64, w: Text } = Std | Promo
+add relation prices : Price key (sku, n)
+add type Order = { id: Key orders, price: Key prices }
+add relation orders : Order key id generate sequence
+--- rows
+insert prices.Std { sku: "a", n: 1, w: "1" }
+insert prices.Promo { sku: "z", n: 9, w: "9" }
+insert orders { price: prices.key(sku: "a", n: 1) }
+--- observe
+from x in prices select x.w
+=== operator priced split
+module auth
+split constructor Price.Promo into Half | Third
+  by match
+    | Promo _ -> Half {}
+=== operator priced merge
+module auth
+add type Kind = Std | Promo
+merge constructor Price.(Std | Promo) into Any { kind: Kind }
+=== operator priced add
+module auth
+add constructor Price.Bulk
+=== operator priced narrow
+module auth
+rekey relation prices key sku
+  carry Order.price
+=== operator priced widen
+module auth
+rekey relation prices key (sku, n, w)
+  carry Order.price
+=== operator priced rename
+module auth
+rename field Price.sku to tag
+=== body priced key
+query body_key () -> Set (Key prices) = from o in orders select o.price
+=== body priced follow
+query body_follow () -> Set Text = from o in orders select o.price.w
+=== body priced insert
+txn body_insert () -> I64 =
+  transact
+    insert prices.Std { sku: "a", n: 2, w: "2" } unless conflict on key else skip
+    return 0
+=== body priced upsert
+txn body_upsert () -> I64 =
+  transact
+    insert prices.Std { sku: "a", n: 1, w: "3" } unless conflict on key else update old set new
+    return 0
+=== body priced update
+txn body_update () -> I64 =
+  transact
+    update x in prices where x.sku == "z" set Promo { x with w: "8" }
+    return 0
+=== body priced delete
+txn body_delete () -> I64 =
+  transact
+    delete x in prices where key x == prices.key(sku: "z", n: 9)
+    return 0

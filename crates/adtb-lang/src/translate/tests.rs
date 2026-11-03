@@ -535,3 +535,52 @@ fn a_composite_key_compared_ordered_is_refused_across_a_rename_that_reorders_its
     }
     assert_eq!((30, 24), reached);
 }
+
+#[test]
+fn a_pinned_key_is_judged_by_its_fields_and_its_identity_across_each_operator() {
+    use adtb_testkit::sections::{Section, expectations, sections};
+    let read = |f: &str| {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/pinned-keys/");
+        std::fs::read_to_string(format!("{dir}{f}")).expect("the search is readable")
+    };
+    let sections = sections(&read("search.txt"));
+    let expected = expectations(&read("translations.txt"));
+    let of = |kind: &str, rel: &str| -> Vec<&Section> {
+        sections
+            .iter()
+            .filter(|s| s.kind == kind && s.name[0] == rel)
+            .collect()
+    };
+    let mut got = BTreeMap::new();
+    for r in sections.iter().filter(|s| s.kind == "relation") {
+        let rel = &r.name[0];
+        let bodies = of("body", rel);
+        let text: String = bodies.iter().map(|b| b.text.as_str()).collect();
+        for op in of("operator", rel) {
+            let each = translated_each(&[&r.text, &op.text], 1, &text, false);
+            for (b, got_one) in bodies.iter().zip(each) {
+                let answer = match got_one {
+                    Ok(_) => "translates".to_owned(),
+                    Err(u) => format!("refused {:?} {:?}", u.operator, u.reason),
+                };
+                got.insert(format!("{rel} {} {}", op.name[1], b.name[1]), answer);
+            }
+        }
+    }
+    assert_eq!(72, got.len(), "every relation, operator and body pair ran");
+    let differs: Vec<String> = got
+        .iter()
+        .filter(|(k, v)| expected.get(*k) != Some(v))
+        .map(|(k, v)| format!("{k} = {v}"))
+        .collect();
+    assert!(
+        differs.is_empty(),
+        "translations differ:\n{}",
+        differs.join("\n")
+    );
+    assert_eq!(
+        expected.keys().collect::<Vec<_>>(),
+        got.keys().collect::<Vec<_>>(),
+        "every expectation is reached"
+    );
+}
