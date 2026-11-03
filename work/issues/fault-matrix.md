@@ -274,3 +274,16 @@ Limits: one seed per workload, no concurrent writers. Review non-blockers left:
 - The filler lookup does not prove the index was used, and `index (rank)` is never queried.
 
 Rows stay open: page rot, real backends, io_uring, scrub, verify, typed causes for `Internal` and `Corrupt`, create by publishing aside.
+
+## 2026-11-02: page rot search
+
+`test: search page rot through Database`, crates/adtb-sim/tests/maintenance_faults.rs. Flip, zeroed and torn on each page of a closed database, then open, scan, index lookup, insert and commit, `verify`, with a guard against hangs. Deep passed all 1872 cases, 624 pages by three kinds, 230 s. No panic, hang, wrong row or lost acknowledgement, no engine change. Default samples by page class, 27 pages, 4.6 s. With the checksum check disabled the search reports 13 defects, 2 wrong rows and 2 panics. Check exit 0, review found no blocker. Test only.
+
+Limits, severe first, from the review:
+
+- Floors count any read and any refusal, and `verify` proves the damage landed, but nothing proves a read crossed the damaged page. Point probes reach few leaves and no plan is asserted, so a read path that skips the checksum on other leaves could go unseen. Tie each read to the page damaged.
+- No floor on an acknowledged commit read back after damage; only undamaged, header and visibility map flips reach it. Clean close only, no crash.
+- `what` and `detail` of a refusal are unchecked, so it may name the wrong object.
+- A leaked hung thread can slow later cases or panic into a later report: false failures only.
+
+heap-read-foreign-page-panics stays open: rot fails the checksum or reads blank, so never reaches that path. Scrub is not searched: no public call starts a pass. Rows still open: real backends, io_uring, scrub, typed causes for `Internal` and `Corrupt`, create by publishing aside. Page rot is done with the limits above.
