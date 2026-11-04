@@ -170,6 +170,8 @@ pub struct Catalog {
     readers: Readers,
     hosts: Arc<exec::Hosts>,
     kept: Kept,
+    /// The grantee, privilege and target of each grant [`Catalog::replay_holding`] keeps dormant.
+    held: BTreeSet<(String, String, String)>,
 }
 
 /// The memory a migration's validation may hold until [`Catalog::set_query_memory`] sets it.
@@ -626,6 +628,7 @@ impl Catalog {
             readers: Readers::default(),
             hosts: Arc::default(),
             kept,
+            held: BTreeSet::new(),
         };
         let x = txns.begin(pager)?;
         let every = empty
@@ -805,6 +808,7 @@ impl Catalog {
             readers,
             hosts: Arc::default(),
             kept,
+            held: BTreeSet::new(),
         };
         Ok((catalog, txns))
     }
@@ -832,6 +836,7 @@ impl Catalog {
             readers: Readers::default(),
             hosts: Arc::default(),
             kept: Kept::unread(),
+            held: BTreeSet::new(),
         })
     }
 

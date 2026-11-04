@@ -18,6 +18,19 @@ pub fn catalog_relation(schema: &Schema, name: &str, ctor: &str) -> (RelId, u32)
     (r, c)
 }
 
+/// Insert the row of constructor `ctor` of `catalog::name` holding `fields`, durably.
+pub fn deploy_fields<R: Runtime>(
+    catalog: &Catalog,
+    pager: &Pager<R>,
+    txns: &Transactions<R>,
+    (name, ctor): (&str, &str),
+    fields: Vec<(&str, Value)>,
+) {
+    let (r, c) = catalog_relation(catalog.schema(), name, ctor);
+    let row = values::row(catalog.schema(), r, c, fields);
+    deploy(catalog, pager, txns, name, ctor, row);
+}
+
 fn deploy<R: Runtime>(
     catalog: &Catalog,
     pager: &Pager<R>,

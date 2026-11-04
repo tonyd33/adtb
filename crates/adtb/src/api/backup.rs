@@ -5,7 +5,7 @@ use adtb_lang::schema::Schema;
 use adtb_lang::textual::print;
 use adtb_lang::types::{Base, Ty};
 
-use crate::catalog;
+use crate::catalog::{self, Dormant};
 use crate::exec::Val;
 use crate::runtime::Runtime;
 use crate::storage::{self, BackupError, BackupRun, Envelope, Manifest, Proved};
@@ -97,11 +97,15 @@ fn log_dir_of(options: &OpenOptions, path: &str) -> String {
     options.storage(path).log_dir()
 }
 
-/// What a restore wrote: the manifest of its source, and the pages a backup lists as copied
-/// damaged.
-struct Restored {
-    manifest: String,
-    damaged: Vec<u64>,
+/// What a restore wrote: the manifest of its source, the pages a backup lists as copied damaged,
+/// and each grant of the restored file that is dormant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[doc(hidden)]
+pub struct Restored {
+    pub manifest: String,
+    pub damaged: Vec<u64>,
+    pub dormant: Vec<Dormant>,
 }
 
 fn restored<R: Runtime>(
@@ -114,10 +118,11 @@ fn restored<R: Runtime>(
     refuse_scheme(source)?;
     refuse_scheme(path)?;
     if storage::is_dump(rt, source).map_err(refused)? {
-        let manifest = super::dump::restore_dump(rt, source, path, to, options)?;
+        let (manifest, dormant) = super::dump::restore_dump(rt, source, path, to, options)?;
         return Ok(Restored {
             manifest: manifest.text(),
             damaged: Vec::new(),
+            dormant,
         });
     }
     let (manifest, _) = storage::check_backup(rt, source).map_err(refused)?;
@@ -129,6 +134,7 @@ fn restored<R: Runtime>(
     Ok(Restored {
         manifest: manifest.text(),
         damaged: manifest.damaged.iter().map(|pid| pid.0).collect(),
+        dormant: Vec::new(),
     })
 }
 
@@ -159,6 +165,18 @@ pub fn restore_in<R: Runtime>(
     options: &OpenOptions,
 ) -> Result<Vec<u64>, Error> {
     Ok(restored(&rt, &archive.0, path, to, options)?.damaged)
+}
+
+/// Restore `archive` as [`restore_in`] does. Returns what the restore wrote.
+#[doc(hidden)]
+pub fn restore_report_in<R: Runtime>(
+    rt: R,
+    archive: &ArchiveTarget,
+    path: &str,
+    to: RestorePoint,
+    options: &OpenOptions,
+) -> Result<Restored, Error> {
+    restored(&rt, &archive.0, path, to, options)
 }
 
 /// Restore the backup at `archive` as the new database file at `path`. A relative `archive` and

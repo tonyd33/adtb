@@ -4,15 +4,18 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use adtb::catalog::{Catalog, Dormant};
+use adtb::key::Value;
 use adtb::runtime::{IoError, Op, Runtime as _};
-use adtb::storage::{self, Envelope, Lsn};
+use adtb::storage::{self, Envelope, Lsn, Pager};
 use adtb::{
-    ArchiveTarget, CallOptions, Database, Error, FatalReason, Log, OpenOptions, Position,
-    RejectReason, RestorePoint, TxnCallOptions, TxnOptions, restore_in,
+    ArchiveTarget, CallOptions, Capability, Database, Error, FatalReason, Log, OpenOptions,
+    Position, RejectReason, RestorePoint, Restored, TxnCallOptions, TxnOptions, restore_in,
+    restore_report_in,
 };
 use adtb_sim::{Config, Sim, SimRuntime};
-use adtb_simkit::api;
 use adtb_simkit::search::{self, Files, Hooked};
+use adtb_simkit::{api, grants};
 use adtb_testkit::corpus;
 use adtb_testkit::profile::{assert_reached, count, every_case};
 
@@ -91,7 +94,18 @@ const LOGGED: [&str; 14] = [
     "computed",
 ];
 
-/// Returns the texts reading every relation of a user module of `db` and of [`LOGGED`].
+/// The catalog relations of deployment state a dump carries.
+const DEPLOYED: [&str; 6] = [
+    "roles",
+    "credentials",
+    "grants",
+    "peer_mappings",
+    "settings",
+    "audit",
+];
+
+/// Returns the texts reading every relation of a user module of `db`, of [`LOGGED`] and of
+/// [`DEPLOYED`].
 fn every_relation(db: &Database<SimRuntime>) -> Vec<String> {
     let s = db.schema();
     let user = s
@@ -99,7 +113,8 @@ fn every_relation(db: &Database<SimRuntime>) -> Vec<String> {
         .iter()
         .filter(|r| !r.volatile && !s.module(r.module).engine);
     let user = user.map(|r| format!("{}::{}", s.module(r.module).name, r.name));
-    user.chain(LOGGED.iter().map(|r| format!("catalog::{r}")))
+    let catalog = LOGGED.iter().chain(&DEPLOYED);
+    user.chain(catalog.map(|r| format!("catalog::{r}")))
         .collect()
 }
 
@@ -112,14 +127,67 @@ fn restore(rt: &SimRuntime, to: RestorePoint, options: &OpenOptions) -> Result<(
     restore_in(rt.clone(), &archive, COPY, to, options).map(drop)
 }
 
-/// Returns a device holding `FILE` with `ROWS`, the third user deleted, and its dump, and the
-/// position the dump's snapshot reads.
+/// Give `FILE` roles `web` and `gone`, a credential and a peer mapping of `web`, a capability
+/// granted to it, a setting and their audit rows, then drop `gone`.
+fn deploy(rt: &SimRuntime) {
+    let db = open(rt, FILE, &[APP.to_owned()]);
+    let authority = db.role_authority();
+    for role in ["web", "gone"] {
+        authority.create_role(role).unwrap();
+    }
+    authority
+        .grant_capability("web", Capability::Assert, false)
+        .unwrap();
+    authority.drop_role("gone").unwrap();
+    run(&db, "set setting RetryLimit = { retries: 4 }").unwrap();
+    db.close().unwrap();
+    let options = storage::Options {
+        page_size: 8192,
+        ..storage::Options::new(FILE)
+    };
+    let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
+    let (catalog, txns) = Catalog::open(rt.clone(), &pager).unwrap();
+    let credential = vec![
+        ("id", Value::I64(1)),
+        ("role", Value::I64(2)),
+        ("salt", Value::Bytes(b"salt".to_vec())),
+        ("iterations", Value::I32(4096)),
+        ("stored_key", Value::Bytes(vec![7; 32])),
+        ("server_key", Value::Bytes(vec![9; 32])),
+    ];
+    grants::deploy_fields(
+        &catalog,
+        &pager,
+        &txns,
+        ("credentials", "Credential"),
+        credential,
+    );
+    let mapping = vec![
+        ("listener", Value::Text("local".to_owned())),
+        ("ordinal", Value::I32(1)),
+        ("pattern", Value::Text("svc".to_owned())),
+        ("role", Value::Text("web".to_owned())),
+    ];
+    grants::deploy_fields(
+        &catalog,
+        &pager,
+        &txns,
+        ("peer_mappings", "PeerMapping"),
+        mapping,
+    );
+    drop((catalog, txns));
+    pager.close();
+}
+
+/// Returns a device holding `FILE` with `ROWS`, the deployment state of [`deploy`], the third
+/// user deleted, and its dump, and the position the dump's snapshot reads.
 fn dumped() -> (Files, Position) {
     let mut sim = Sim::new(1, Config::default());
     let at = api::run(&mut sim, |rt| {
         let db = open(&rt, FILE, &[APP.to_owned()]);
         run(&db, ROWS).unwrap();
         db.close().unwrap();
+        deploy(&rt);
         let db = open(&rt, FILE, &app_log());
         run(&db, "delete u in users where u.name == \"cy\"").unwrap();
         let t = db.begin(&TxnOptions::default()).unwrap();
@@ -197,6 +265,228 @@ fn a_restore_keeps_deprecated_rows_ids_and_the_next_generated_key() {
         assert_ne!("users.key(3)", answer(&copy, drawn));
         src.close().unwrap();
         copy.close().unwrap();
+    });
+}
+
+#[test]
+fn a_restore_keeps_roles_capabilities_and_the_next_role_id() {
+    let (files, _) = dumped();
+    let mut sim = Sim::with_files(3, Config::default(), files);
+    api::run(&mut sim, |rt| {
+        restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
+        assert_same(&rt, &app_log(), &[], "deployed");
+        let (src, copy) = (open(&rt, FILE, &app_log()), open(&rt, COPY, &app_log()));
+        let authority = copy.role_authority();
+        let web = authority.session("web").unwrap();
+        authority.require(&web, Capability::Assert, false).unwrap();
+        assert!(
+            matches!(
+                authority.require(&web, Capability::Schema, false),
+                Err(Error::Rejected {
+                    reason: RejectReason::Denied { .. }
+                })
+            ),
+            "web holds only assert"
+        );
+        let drawn = "from r in catalog::roles where r.name == \"new\" select r.id";
+        for db in [&src, &copy] {
+            db.role_authority().create_role("new").unwrap();
+        }
+        assert_eq!(answer(&src, drawn), answer(&copy, drawn));
+        assert_ne!("roles.key(3)", answer(&copy, drawn), "gone held 3");
+        src.close().unwrap();
+        copy.close().unwrap();
+    });
+}
+
+const GRANTED: &str = "module app\ngrant read users to web\n";
+
+/// Returns the rows of `catalog::grants` of `db`, with their ids and without.
+fn grant_rows(db: &Database<SimRuntime>) -> [String; 2] {
+    let rows = answer(db, "from g in catalog::grants select g");
+    let fields = "kind: g.kind, privilege: g.privilege, target: g.target, grantee: g.grantee, \
+                  grantor: g.grantor, grant_option: g.grant_option, dormant: g.dormant";
+    let hidden = answer(
+        db,
+        &format!("from g in catalog::grants select {{ {fields} }}"),
+    );
+    [rows, hidden]
+}
+
+fn granted_log() -> [String; 2] {
+    [APP.to_owned(), GRANTED.to_owned()]
+}
+
+/// Returns a device holding `FILE` and its dump, whose log grants to a role its security holds,
+/// after a deployment grant.
+fn granted() -> Files {
+    let mut sim = Sim::new(4, Config::default());
+    api::run(&mut sim, |rt| {
+        open(&rt, FILE, &[APP.to_owned()]).close().unwrap();
+        deploy(&rt);
+        let db = open(&rt, FILE, &granted_log());
+        dump(&db).unwrap();
+        db.close().unwrap();
+    });
+    sim.files()
+}
+
+fn report(rt: &SimRuntime) -> Result<Restored, Error> {
+    let archive = ArchiveTarget::path(DUMP).unwrap();
+    restore_report_in(
+        rt.clone(),
+        &archive,
+        COPY,
+        RestorePoint::Latest,
+        &no_create(),
+    )
+}
+
+/// Returns the grants of the source and of the restore of [`granted`], and the restore's dormant
+/// grants.
+fn restored_grants() -> ([[String; 2]; 2], Vec<Dormant>) {
+    let mut sim = Sim::with_files(4, Config::default(), granted());
+    api::run(&mut sim, |rt| {
+        let log = granted_log();
+        let dormant = report(&rt).unwrap().dormant;
+        let rows = [FILE, COPY].map(|name| {
+            let db = open(&rt, name, &log);
+            let rows = grant_rows(&db);
+            db.close().unwrap();
+            rows
+        });
+        (rows, dormant)
+    })
+}
+
+#[test]
+fn a_log_grant_to_a_restored_role_restores_active() {
+    let ([src, copy], dormant) = restored_grants();
+    assert_eq!(Vec::<Dormant>::new(), dormant);
+    let active = src[1].contains("kind: Log") && src[1].contains("dormant: False");
+    assert!(active, "{}", src[1]);
+    assert_eq!(src[1], copy[1]);
+}
+
+#[test]
+fn a_restore_keeps_the_id_of_each_log_grant() {
+    let ([src, copy], _) = restored_grants();
+    assert!(!src[0].contains("grants.key(2)"), "{}", src[0]);
+    assert_eq!(src[0], copy[0]);
+}
+
+#[test]
+fn log_grant_ids_that_do_not_pair_with_the_replayed_grants_are_refused_naming_ids() {
+    let files = granted();
+    let grants = |edit: fn(&str) -> String| {
+        let ids = |n: &str, t: &str| match n {
+            "ids" => {
+                let at = t.find("data catalog::grants\n").unwrap() + "data catalog::grants\n".len();
+                let row = t[at..].lines().next().unwrap();
+                t.replacen(row, &edit(row), 1)
+            }
+            _ => t.to_owned(),
+        };
+        reissued(&files, |_| {}, ids)
+    };
+    let another = |row: &str| row.replacen("privilege: \"read\"", "privilege: \"insert\"", 1);
+    let twice = |row: &str| {
+        let key = row.find("grants.key(").unwrap();
+        let end = key + row[key..].find(')').unwrap();
+        format!("{row}\n{}grants.key(999){}", &row[..key], &row[end + 1..])
+    };
+    for (label, bad) in [
+        ("another privilege", grants(another)),
+        ("twice", grants(twice)),
+        ("none", grants(|_| String::new())),
+    ] {
+        assert_eq!("ids", damaged_part(refused_with(bad)), "{label}");
+    }
+}
+
+/// Returns the security of the dump in `files` holding only the schema owner.
+fn owner_only(files: &Files) -> Files {
+    let owner_only = |n: &str, t: &str| match n {
+        "security" => t
+            .split_inclusive('\n')
+            .enumerate()
+            .filter(|(i, l)| *i == 0 || l.starts_with("data ") || l.contains("roles.key(1),"))
+            .map(|(_, l)| l)
+            .collect(),
+        _ => t.to_owned(),
+    };
+    reissued(files, |_| {}, owner_only)
+}
+
+/// Returns `files` with the dump at `DUMP` written again without its part `name`.
+fn without(files: &Files, name: &str) -> Files {
+    let (e, snapshot) = manifest_of(files);
+    let entries: Vec<(String, Vec<u8>)> = parts(files)
+        .into_iter()
+        .filter(|(n, _)| n != name)
+        .map(|(n, len)| {
+            let bytes = files[&format!("{DUMP}/{n}")][..len as usize].to_vec();
+            (n, bytes)
+        })
+        .collect();
+    let mut kept = files.clone();
+    kept.retain(|p, _| !p.starts_with("d/"));
+    let mut sim = Sim::with_files(8, Config::default(), kept);
+    api::run(&mut sim, |rt| {
+        storage::write_dump(&rt, DUMP, e, snapshot, &entries).unwrap();
+    });
+    sim.files()
+}
+
+/// Restore the dump at `from` to `to` on `rt`, asserting its report and `to` hold the log grant
+/// of `FILE` dormant, and `to` no role but the schema owner when `owner` holds.
+fn assert_dormant(rt: &SimRuntime, (from, to): (&str, &str), owner: bool) {
+    let src = open(rt, FILE, &granted_log());
+    let read = "from g in catalog::grants where g.privilege == \"read\" select g.id";
+    let id = answer(&src, read);
+    src.close().unwrap();
+    let archive = ArchiveTarget::path(from).unwrap();
+    let got = restore_report_in(rt.clone(), &archive, to, RestorePoint::Latest, &no_create());
+    let dormant = Dormant {
+        id: id["grants.key(".len()..id.len() - 1].parse().unwrap(),
+        grantee: "web".to_owned(),
+        privilege: "read".to_owned(),
+        target: "app::users frozen (id, name)".to_owned(),
+    };
+    assert_eq!(vec![dormant], got.unwrap().dormant, "{from}");
+    let copy = open(rt, to, &granted_log());
+    assert_eq!(id, answer(&copy, read), "{from}");
+    let rows = answer(&copy, "from g in catalog::grants select g.dormant");
+    assert_eq!("True", rows, "{from}");
+    if owner {
+        let roles = answer(&copy, "from r in catalog::roles select r.name");
+        assert_eq!("\"owner\"", roles, "{from}");
+    }
+    copy.close().unwrap();
+}
+
+#[test]
+fn a_restore_without_the_role_of_a_log_grant_reports_it_dormant() {
+    let mut sim = Sim::with_files(5, Config::default(), owner_only(&granted()));
+    api::run(&mut sim, |rt| assert_dormant(&rt, (DUMP, COPY), true));
+}
+
+#[test]
+fn a_dump_without_security_restores_the_owner_alone_and_log_grants_dormant() {
+    let mut sim = Sim::with_files(6, Config::default(), without(&granted(), "security"));
+    api::run(&mut sim, |rt| assert_dormant(&rt, (DUMP, COPY), true));
+}
+
+#[test]
+fn a_dormant_grant_stays_dormant_through_a_dump_and_restore_once_its_role_exists() {
+    let mut sim = Sim::with_files(7, Config::default(), owner_only(&granted()));
+    api::run(&mut sim, |rt| {
+        assert_dormant(&rt, (DUMP, COPY), true);
+        let copy = open(&rt, COPY, &granted_log());
+        copy.role_authority().create_role("web").unwrap();
+        run(&copy, "dump to \"again\"").unwrap();
+        copy.close().unwrap();
+        assert_dormant(&rt, ("again", "third.adt"), false);
     });
 }
 
@@ -698,6 +988,43 @@ fn a_dump_that_decodes_wrong_is_refused_naming_its_part_and_writes_nothing() {
 }
 
 #[test]
+fn deployment_state_that_decodes_wrong_is_refused_naming_its_part_and_writes_nothing() {
+    let (files, _) = dumped();
+    let edited = |part: &'static str, edit: &dyn Fn(&str) -> String| {
+        reissued(
+            &files,
+            |_| {},
+            |n, t| if n == part { edit(t) } else { t.to_owned() },
+        )
+    };
+    let section = |t: &str, relation: &str| {
+        let at = t.find(&format!("data catalog::{relation}\n")).unwrap();
+        let end = t[at + 5..].find("data ").map_or(t.len(), |e| at + 5 + e);
+        format!("{}{}", &t[..at], &t[end..])
+    };
+    let text = |part: &str| String::from_utf8_lossy(&files[&format!("{DUMP}/{part}")]).into_owned();
+    assert!(text("security").contains("\"web\""), "{}", text("security"));
+    assert!(
+        text("audit").contains("grant assert to web"),
+        "{}",
+        text("audit")
+    );
+    let cases = [
+        edited("security", &|t| t.replacen("\"owner\"", "\"boss\"", 1)),
+        edited("security", &|t| t.replacen("Deployment", "Log", 1)),
+        edited("security", &|t| section(t, "peer_mappings")),
+        edited("settings", &|t| {
+            t.replacen("data catalog::settings", "data catalog::audit", 1)
+        }),
+        edited("audit", &|t| section(t, "audit")),
+    ];
+    let named = ["security", "security", "security", "settings", "audit"];
+    for (part, bad) in named.into_iter().zip(cases) {
+        assert_eq!(part, damaged_part(refused_with(bad)), "{part}");
+    }
+}
+
+#[test]
 fn a_dump_of_another_release_or_an_older_catalog_version_restores() {
     let (files, _) = dumped();
     let older = reissued(
@@ -803,6 +1130,7 @@ fn line_edits(lines: &[String]) -> Vec<Edit> {
         dropped.remove(i);
         let expect = match i {
             i if i < HEADER => judged(&dropped),
+            i if part_name(&lines[i]) == "security" => Answer::Restored,
             i => Answer::Damaged(part_name(&lines[i])),
         };
         cases.push((format!("drop {i}"), dropped, expect));

@@ -2,25 +2,31 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use adtb_lang::kernel::{Kind, Terms};
 use adtb_lang::schema::{Generator, Schema};
 use adtb_lang::textual::{Form, Header, print, read_document};
 use adtb_lang::types::{RelId, Ty};
 
+use crate::catalog::{self, Dormant, OWNER_ROLE, layout, values};
 use crate::exec::Val;
 use crate::runtime::Runtime;
 use crate::storage::{self, BackupError, DumpManifest, Envelope};
-use crate::write::Txn;
+use crate::write::{Bounds, Local, Text, Txn};
 
 use super::backup::{CATALOG_VERSION, RestorePoint, refused};
 use super::bundle::EDITION;
 use super::error::{FatalReason, RejectReason};
 use super::{
-    CallOptions, CreateOptions, Database, Engine, Error, Log, OpenError, OpenOptions, Position,
+    CallOptions, CreateOptions, Database, Engine, Error, Log, OWNER_ID, OpenError, OpenOptions,
+    Position,
 };
 
 const LOG: &str = "log";
 const IDS: &str = "ids";
 const GENERATORS: &str = "generators";
+const SECURITY: &str = "security";
+const SETTINGS: &str = "settings";
+const AUDIT: &str = "audit";
 
 /// The catalog relations holding the key of every catalog object but a constructor.
 const KEYED: [&str; 9] = [
@@ -34,6 +40,10 @@ const KEYED: [&str; 9] = [
     "defaults",
     "computed",
 ];
+/// The catalog relations of the `security` entry, whose `grants` are its `Deployment` rows.
+const SECURED: [&str; 4] = ["roles", "credentials", "grants", "peer_mappings"];
+/// The catalog relations whose keys the engine draws from a counter of its own.
+const DRAWN: [&str; 3] = ["roles", "grants", "audit"];
 
 fn damaged(part: &str) -> Error {
     Error::rejected(RejectReason::DumpDamaged {
@@ -73,17 +83,37 @@ fn dumped(schema: &Schema) -> impl Iterator<Item = RelId> + '_ {
         })
 }
 
-fn keyed(schema: &Schema) -> Vec<RelId> {
-    let catalog = schema
-        .module_named("catalog")
-        .expect("the engine declares module catalog");
-    KEYED
+fn catalog_relations(schema: &Schema, names: &[&str]) -> Vec<RelId> {
+    names.iter().map(|n| values::relation(schema, n)).collect()
+}
+
+/// Returns the relations whose next key a `generators` entry holds, in ascending order.
+fn generated(schema: &Schema) -> Vec<RelId> {
+    let mut out: Vec<RelId> = dumped(schema).filter(|&r| sequenced(schema, r)).collect();
+    out.extend(catalog_relations(schema, &DRAWN));
+    out.sort();
+    out
+}
+
+/// Returns field `name` of `row`, a row of `r`.
+fn field<'v>(schema: &Schema, r: RelId, row: &'v Val, name: &str) -> Option<&'v Val> {
+    let Val::Ctor(c, fields) = row else {
+        return None;
+    };
+    let at = layout::row(schema, r, *c)
         .iter()
-        .map(|name| match schema.module(catalog).values.get(*name) {
-            Some(adtb_lang::schema::ValueDef::Relation(r)) => *r,
-            _ => panic!("the engine declares relation catalog::{name}"),
-        })
-        .collect()
+        .position(|(n, _)| n == name)?;
+    fields.get(at)
+}
+
+/// Returns whether `row` of `catalog::grants` is a `Deployment` row.
+fn deployment(schema: &Schema, grants: RelId, row: &Val) -> bool {
+    let fields = layout::row(schema, grants, 0);
+    let Some((_, Ty::Data { def, .. })) = fields.iter().find(|(n, _)| n == "kind") else {
+        panic!("catalog RoleGrant declares its GrantKind as `kind`");
+    };
+    let kind = schema.ty(*def).ctor_index("Deployment");
+    matches!(field(schema, grants, row, "kind"), Some(Val::Ctor(c, _)) if Some(*c) == kind)
 }
 
 /// Returns the rows of `r` as a document: `head`, a `data` line naming `r` with its module, then
@@ -102,30 +132,32 @@ fn document(schema: &Schema, r: RelId, rows: &BTreeSet<Val>, head: &str) -> Stri
     out
 }
 
-/// Returns the `ids` entry: the rows of each relation of [`KEYED`].
-fn ids_text(e: &Envelope, schema: &Schema, ids: &Ids) -> String {
+/// Returns an entry holding `rows`, a document for each relation.
+fn sections_text(e: &Envelope, schema: &Schema, rows: &Rows) -> String {
     let mut out = header_line(e);
-    for (&r, rows) in ids {
+    for (&r, rows) in rows {
         out.push_str(&document(schema, r, rows, ""));
     }
     out
 }
 
-/// The rows of each relation of [`KEYED`].
-type Ids = BTreeMap<RelId, BTreeSet<Val>>;
+/// The rows of each of several relations.
+type Rows = BTreeMap<RelId, BTreeSet<Val>>;
 
-fn ids_of(
+fn rows_of(
     schema: &Schema,
+    names: &[&str],
     mut rows: impl FnMut(RelId) -> Result<Vec<Val>, Error>,
-) -> Result<Ids, Error> {
-    keyed(schema)
+) -> Result<Rows, Error> {
+    catalog_relations(schema, names)
         .into_iter()
         .map(|r| Ok((r, rows(r)?.into_iter().collect())))
         .collect()
 }
 
-/// Returns the rows an `ids` entry holds, by relation.
-fn read_ids(schema: &Schema, text: &str, e: &Envelope) -> Option<Ids> {
+/// Returns the rows an entry of [`sections_text`] holds, once it holds a document for exactly
+/// the relations `names`.
+fn read_sections(schema: &Schema, text: &str, e: &Envelope, names: &[&str]) -> Option<Rows> {
     let rest = text.strip_prefix(&header_line(e))?;
     let mut sections: Vec<String> = Vec::new();
     for line in rest.split_inclusive('\n') {
@@ -134,12 +166,13 @@ fn read_ids(schema: &Schema, text: &str, e: &Envelope) -> Option<Ids> {
         }
         sections.last_mut()?.push_str(line);
     }
-    let mut out = Ids::new();
+    let mut out = Rows::new();
     for section in &sections {
         let doc = read_document::<Val>(schema, section).ok()?;
         out.insert(doc.relation, doc.rows).is_none().then_some(())?;
     }
-    Some(out)
+    let wanted: BTreeSet<RelId> = catalog_relations(schema, names).into_iter().collect();
+    out.keys().copied().eq(wanted).then_some(out)
 }
 
 fn log_text(e: &Envelope, log: &[adtb_lang::evolve::Logged]) -> String {
@@ -211,13 +244,27 @@ impl<R: Runtime> Engine<R> {
         let failed = |e| self.write_error(super::TxnId(0), e);
         let rows = |r| self.db.relation_rows(tx, r).map_err(failed);
         let schema = &*self.schema;
-        let ids = ids_of(schema, rows)?;
-        let mut entries = vec![
-            (LOG.to_owned(), log_text(&envelope, &self.source.log)),
-            (IDS.to_owned(), ids_text(&envelope, schema, &ids)),
-        ];
+        let mut security = rows_of(schema, &SECURED, rows)?;
+        let grants = values::relation(schema, "grants");
+        security
+            .entry(grants)
+            .or_default()
+            .retain(|g| deployment(schema, grants, g));
+        let mut ids = rows_of(schema, &KEYED, rows)?;
+        let mut logged: BTreeSet<Val> = rows(grants)?.into_iter().collect();
+        logged.retain(|g| !deployment(schema, grants, g));
+        ids.insert(grants, logged);
+        let mut entries = vec![(LOG.to_owned(), log_text(&envelope, &self.source.log))];
+        for (name, rows) in [
+            (IDS, ids),
+            (SECURITY, security),
+            (SETTINGS, rows_of(schema, &[SETTINGS], rows)?),
+            (AUDIT, rows_of(schema, &[AUDIT], rows)?),
+        ] {
+            entries.push((name.to_owned(), sections_text(&envelope, schema, &rows)));
+        }
         let mut generators = header_line(&envelope);
-        for r in dumped(schema).filter(|&r| sequenced(schema, r)) {
+        for r in generated(schema) {
             let next = self.db.sequence_next(r);
             let id = schema.ids.relations[&r];
             generators.push_str(&format!("generator {id} {next}\n"));
@@ -245,14 +292,14 @@ impl<R: Runtime> Engine<R> {
 }
 
 /// Restore the dump at `source` as the new database file `path` of runtime `rt`, which opens with
-/// `options`. Returns the dump's manifest.
+/// `options`. Returns the dump's manifest and each dormant grant of the restored file.
 pub(super) fn restore_dump<R: Runtime>(
     rt: &R,
     source: &str,
     path: &str,
     to: RestorePoint,
     options: &OpenOptions,
-) -> Result<DumpManifest, Error> {
+) -> Result<(DumpManifest, Vec<Dormant>), Error> {
     let (manifest, entries) = storage::read_dump(rt, source).map_err(dump_refused)?;
     let e = &manifest.envelope;
     if e.edition != EDITION || e.catalog_version > CATALOG_VERSION {
@@ -276,7 +323,31 @@ pub(super) fn restore_dump<R: Runtime>(
     };
     let log = read_log(entry(LOG)?, e).ok_or_else(|| damaged(LOG))?;
     let generators = read_generators(entry(GENERATORS)?, e).ok_or_else(|| damaged(GENERATORS))?;
-    let ids = entry(IDS)?;
+    let schema = catalog::engine_schema();
+    let section = |name: &str, names: &[&str]| {
+        read_sections(&schema, entry(name)?, e, names).ok_or_else(|| damaged(name))
+    };
+    let security = entries
+        .get(SECURITY)
+        .map(|_| security_rows(&schema, entry(SECURITY)?, e));
+    let security = security.transpose()?.unwrap_or_default();
+    let deployed = section(SETTINGS, &[SETTINGS])?.into_iter();
+    let deployed = deployed.chain(section(AUDIT, &[AUDIT])?).collect();
+    let mut ids = section(IDS, &[&KEYED[..], &["grants"]].concat())?;
+    let grants = values::relation(&schema, "grants");
+    let logged = ids.remove(&grants).unwrap_or_default();
+    let key = |g| dormant_grant(&schema, grants, g).map(|d| (d.grantee, d.privilege, d.target));
+    let held = logged
+        .iter()
+        .filter(|g| dormant(&schema, grants, g))
+        .map(key);
+    let held = held.collect::<Option<_>>().ok_or_else(|| damaged(IDS))?;
+    let parsed = Parsed {
+        schema,
+        ids,
+        logged,
+        deployed,
+    };
     let log_dir = options.storage(path).log_dir();
     let (aside, made) = storage::restore_aside(rt, path, &log_dir).map_err(refused)?;
     let aside_log = options.storage(&aside).log_dir();
@@ -284,11 +355,12 @@ pub(super) fn restore_dump<R: Runtime>(
     let opening = OpenOptions {
         create: Some(CreateOptions {
             after: Some(manifest.snapshot),
+            replay: Some(held),
         }),
         ..options.clone()
     };
-    let built = Database::open_in(rt.clone(), &aside, &Log::new(log), &opening)
-        .map_err(|e| match e {
+    let open = |log: Log, options: &OpenOptions| {
+        Database::open_in(rt.clone(), &aside, &log, options).map_err(|e| match e {
             OpenError::HostFnMissing { name } => Error::Fatal {
                 reason: FatalReason::MissingFunction { function: name },
             },
@@ -296,29 +368,113 @@ pub(super) fn restore_dump<R: Runtime>(
             OpenError::MigrationRefused { .. } => damaged(LOG),
             e => Error::invalid(format!("the dumped log does not open: {e}")),
         })
+    };
+    let bare = OpenOptions {
+        registrations: Vec::new(),
+        ..opening.clone()
+    };
+    let built = open(Log::default(), &bare)
         .and_then(|db| {
-            let filled = fill(&db, &manifest, &entries, ids, &generators);
+            let secured = db
+                .engine
+                .replace_rows(on(&parsed.schema, &db.engine.schema, security));
             let closed = db.close();
-            filled.and(closed)
+            secured.and(closed)
         })
-        .and_then(|()| {
-            storage::publish_database(rt, (&aside, &aside_log), path, &log_dir).map_err(refused)
+        .and_then(|()| open(Log::new(log), &opening))
+        .and_then(|db| {
+            let filled = fill(&db, &manifest, &entries, parsed, &generators);
+            let closed = db.close();
+            filled.and_then(|dormant| closed.map(|()| dormant))
+        })
+        .and_then(|dormant| {
+            storage::publish_database(rt, (&aside, &aside_log), path, &log_dir)
+                .map(|()| dormant)
+                .map_err(refused)
         });
     if built.is_err() {
         storage::discard_aside(rt, &[&aside, &aside_log, &creating], &made);
     }
-    built.map(|()| manifest)
+    built.map(|dormant| (manifest, dormant))
+}
+
+/// Returns the rows of `text`, a `security` entry, by relation of `schema`, the schema of a file
+/// holding no migration.
+///
+/// Fail with `DumpDamaged` naming `security` when its schema owner has another name, or its
+/// grants hold a row of the log.
+fn security_rows(schema: &Schema, text: &str, e: &Envelope) -> Result<Rows, Error> {
+    let rows = read_sections(schema, text, e, &SECURED).ok_or_else(|| damaged(SECURITY))?;
+    let [roles, grants] = [
+        values::relation(schema, "roles"),
+        values::relation(schema, "grants"),
+    ];
+    let owner = rows[&roles]
+        .iter()
+        .find(|r| matches!(field(schema, roles, r, "id"), Some(Val::Int(OWNER_ID))));
+    let named = owner.and_then(|r| field(schema, roles, r, "name"));
+    if !matches!(named, Some(Val::Text(n)) if &**n == OWNER_ROLE)
+        || !rows[&grants].iter().all(|g| deployment(schema, grants, g))
+    {
+        return Err(damaged(SECURITY));
+    }
+    Ok(rows)
+}
+
+impl<R: Runtime> Engine<R> {
+    /// Replace every row of each relation of `rows` by its rows, as one transaction.
+    ///
+    /// Precondition: each relation is one no migration writes.
+    fn replace_rows(&self, rows: Rows) -> Result<(), Error> {
+        let mut terms = Terms::default();
+        let mut params = Vec::new();
+        let mut changes = Vec::new();
+        for (r, rows) in rows {
+            let set = Ty::Set(Box::new(Ty::Data {
+                def: self.schema.relation(r).elem_def,
+                args: Vec::new(),
+                ctors: None,
+            }));
+            let x = terms.var("row·", set.clone());
+            params.push((x, Val::set(rows)));
+            let gone = terms.add(Kind::Rel(r, None), set.clone());
+            changes.push(terms.add(Kind::Delete(r, gone), Ty::Change));
+            let new = terms.add(Kind::Var(x), set);
+            changes.push(terms.add(Kind::Insert(r, new), Ty::Change));
+        }
+        let all = terms.add(Kind::Par(changes), Ty::Change);
+        let text = Text {
+            schema: &self.schema,
+            terms: &terms,
+            items: &[all],
+            params: &params,
+            clock: self.clock(),
+            caller: None,
+        };
+        let failed = |w| self.write_error(super::TxnId(0), w);
+        let tx = self.db.begin().map_err(failed)?;
+        match self
+            .db
+            .statements(&tx, text, &mut Local::default(), Bounds::default())
+        {
+            Ok(_) => self.db.commit(tx).map(drop).map_err(failed),
+            Err(f) => {
+                self.db.abort(tx).map_err(failed)?;
+                Err(failed(f.error))
+            }
+        }
+    }
 }
 
 /// Check the opened database against the dump's version, parts and `ids`, insert every dumped row
-/// as one change set, and resume every generator.
+/// as one change set, and resume every generator. Returns each dormant grant it wrote.
 fn fill<R: Runtime>(
     db: &Database<R>,
     manifest: &DumpManifest,
     entries: &BTreeMap<String, Vec<u8>>,
-    ids: &str,
+    parsed: Parsed,
     generators: &[(u64, i64)],
-) -> Result<(), Error> {
+) -> Result<Vec<Dormant>, Error> {
     let engine = &*db.engine;
     let e = &manifest.envelope;
     if header(&engine.envelope()) != header(e) {
@@ -335,7 +491,8 @@ fn fill<R: Runtime>(
     if let Some((_, _, missing)) = data.iter().find(|(_, _, n)| !entries.contains_key(n)) {
         return Err(damaged(missing));
     }
-    let expected = |n: &str| [LOG, IDS, GENERATORS].contains(&n) || data.iter().any(|d| d.2 == n);
+    let named = [LOG, IDS, GENERATORS, SECURITY, SETTINGS, AUDIT];
+    let expected = |n: &str| named.contains(&n) || data.iter().any(|d| d.2 == n);
     if let Some(unexpected) = entries.keys().find(|n| !expected(n)) {
         return Err(damaged(unexpected));
     }
@@ -347,15 +504,18 @@ fn fill<R: Runtime>(
             .flatten()
             .collect::<Result<Vec<Val>, Error>>()
     };
-    if read_ids(schema, ids, e) != Some(ids_of(schema, read)?) {
+    let grants = values::relation(schema, "grants");
+    let kept = paired(schema, grants, read(grants)?, parsed.logged).ok_or_else(|| damaged(IDS))?;
+    if on(&parsed.schema, schema, parsed.ids) != rows_of(schema, &KEYED, read)? {
         return Err(damaged(IDS));
     }
+    let mut deployed = on(&parsed.schema, schema, parsed.deployed);
+    deployed.insert(grants, kept);
     let resumed: BTreeMap<RelId, i64> = generators
         .iter()
         .filter_map(|&(id, next)| Some((schema.ids.relation(id)?, next)))
         .collect();
-    let sequences: Vec<RelId> = dumped(schema).filter(|&r| sequenced(schema, r)).collect();
-    if resumed.len() != generators.len() || !resumed.keys().copied().eq(sequences) {
+    if resumed.len() != generators.len() || !resumed.keys().copied().eq(generated(schema)) {
         return Err(damaged(GENERATORS));
     }
     engine.db.admit_restored_rows();
@@ -370,13 +530,106 @@ fn fill<R: Runtime>(
         rows.entry(*r).or_default().extend(doc.rows);
     }
     insert(db, schema, rows)?;
+    let dormant = deployed[&grants]
+        .iter()
+        .filter(|g| dormant(schema, grants, g))
+        .map(|g| dormant_grant(schema, grants, g).ok_or_else(|| damaged(IDS)))
+        .collect::<Result<_, _>>()?;
+    engine.replace_rows(deployed)?;
     for (r, next) in resumed {
         engine
             .db
             .resume_sequence(r, next)
             .map_err(|w| engine.write_error(super::TxnId(0), w))?;
     }
-    Ok(())
+    Ok(dormant)
+}
+
+/// Returns the rows of `catalog::grants`, `replayed` with each of its `Log` rows given the id of
+/// the row of `logged` that differs from it only in id and, when the replayed row is dormant, in
+/// dormancy, or `None` when the two do not pair.
+fn paired(
+    schema: &Schema,
+    grants: RelId,
+    replayed: Vec<Val>,
+    mut logged: BTreeSet<Val>,
+) -> Option<BTreeSet<Val>> {
+    let fields = layout::row(schema, grants, 0);
+    let at = |name: &str| fields.iter().position(|(n, _)| n == name);
+    let (id, sleeps) = (at("id")?, at("dormant")?);
+    let with = |row: &Val, value: Option<&Val>| match row {
+        Val::Ctor(c, fields) => {
+            let mut fields = fields.to_vec();
+            fields[id] = value.map_or(Val::Int(0), Val::clone);
+            if value.is_none() {
+                fields[sleeps] = Val::Int(0);
+            }
+            Some(Val::ctor(*c, fields))
+        }
+        _ => None,
+    };
+    let mut out = BTreeSet::new();
+    for row in replayed {
+        if deployment(schema, grants, &row) {
+            out.insert(row);
+            continue;
+        }
+        let pair = with(&row, None)?;
+        let from = logged
+            .iter()
+            .find(|d| with(d, None).as_ref() == Some(&pair))
+            .filter(|d| !dormant(schema, grants, d) || dormant(schema, grants, &row))?
+            .clone();
+        logged.remove(&from);
+        out.insert(with(&row, field(schema, grants, &from, "id"))?);
+    }
+    logged.is_empty().then_some(out)
+}
+
+/// Returns whether `row` of `catalog::grants` is dormant.
+fn dormant(schema: &Schema, grants: RelId, row: &Val) -> bool {
+    matches!(
+        field(schema, grants, row, "dormant").map(Val::truth),
+        Some(Ok(true))
+    )
+}
+
+/// Returns `rows`, rows of catalog relations of `from`, by the relations of `to` of those names.
+fn on(from: &Schema, to: &Schema, rows: Rows) -> Rows {
+    let named = |r: RelId| values::relation(to, &from.relation(r).name);
+    rows.into_iter().map(|(r, v)| (named(r), v)).collect()
+}
+
+/// The catalog rows a restore parsed before it made its file, by relation of `schema`.
+struct Parsed {
+    schema: Schema,
+    ids: Rows,
+    logged: BTreeSet<Val>,
+    deployed: Rows,
+}
+
+/// Returns the dormant `Log` row `row` of `catalog::grants` as a restore reports it.
+fn dormant_grant(schema: &Schema, grants: RelId, row: &Val) -> Option<Dormant> {
+    let text = |name: &str| match field(schema, grants, row, name)? {
+        Val::Text(t) => Some(t.to_string()),
+        _ => None,
+    };
+    let target = match field(schema, grants, row, "target")? {
+        Val::Ctor(_, value) => match value.first() {
+            Some(Val::Text(t)) => t.to_string(),
+            _ => String::new(),
+        },
+        _ => return None,
+    };
+    let Val::Int(id) = field(schema, grants, row, "id")? else {
+        return None;
+    };
+    Some(Dormant {
+        id: *id,
+        grantee: text("grantee")?,
+        privilege: text("privilege")?,
+        target,
+    })
 }
 
 fn insert<R: Runtime>(

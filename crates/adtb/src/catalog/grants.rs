@@ -445,7 +445,12 @@ impl Catalog {
             Grantees::Dormant => {
                 let mut marked = BTreeSet::new();
                 for (i, g) in grants.iter_mut().enumerate() {
-                    if g.dormant || roles.contains(&g.role) {
+                    let privilege = g.privilege.privilege_name().to_owned();
+                    let held = !self.held.is_empty()
+                        && self
+                            .held
+                            .contains(&(g.role.clone(), privilege, target(schema, g)?));
+                    if g.dormant || roles.contains(&g.role) && !held {
                         continue;
                     }
                     g.dormant = true;

@@ -15,6 +15,7 @@ mod host;
 mod instances;
 mod load;
 mod maintenance;
+mod migrate;
 #[cfg(test)]
 mod open_tests;
 mod pinned;
@@ -31,7 +32,7 @@ pub mod typed;
 mod value;
 mod verify;
 
-use cause::{Broken, corrupt, internal};
+use cause::{Broken, corrupt};
 use failed_open::{failed_create, finish_create, host_error};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -58,7 +59,9 @@ use crate::storage::{self, LATCHES_PER_THREAD, Pager};
 use crate::write::{self, Bindings, Bounds, Local, Setup, Txn};
 
 pub use arrow::{ArrowSchema, ArrowStream, Field, RecordBatch};
-pub use backup::{ArchiveTarget, Proof, RestorePoint, proof_in, prove_in, restore_in};
+pub use backup::{
+    ArchiveTarget, Proof, RestorePoint, Restored, proof_in, prove_in, restore_in, restore_report_in,
+};
 #[cfg(target_os = "linux")]
 pub use backup::{prove, restore};
 pub use error::{Error, FatalReason, Fault, Limit, OpenError, RejectReason, RetryReason};
@@ -112,6 +115,9 @@ impl Log {
 #[non_exhaustive]
 pub struct CreateOptions {
     pub(crate) after: Option<storage::Position>,
+    /// Whether open replays as a restore, and the grantee, privilege and target of each grant
+    /// it keeps dormant though its role exists. A grant to a role that does not exist is dormant.
+    pub(crate) replay: Option<BTreeSet<(String, String, String)>>,
 }
 
 /// The settings fixed while a handle is open.
@@ -825,13 +831,6 @@ fn held_rows<R: Runtime>(
     Ok((findings, volatile))
 }
 
-fn refused(version: u64, reason: RejectReason) -> OpenError {
-    OpenError::MigrationRefused {
-        version,
-        reason: Error::rejected(reason),
-    }
-}
-
 impl<R: Runtime> Engine<R> {
     /// Open the database `name`, or create it in a reserved directory and publish it once open,
     /// calling `hold` with each reserved file before create removes or renames it.
@@ -1048,7 +1047,8 @@ impl<R: Runtime> Engine<R> {
         if writable {
             catalog.counters(&pager).map_err(corrupt)?;
             catalog.record_grants(&pager, &txns).map_err(corrupt)?;
-            migrate(&mut catalog, &pager, &txns, log, &live)?;
+            let replay = options.create.as_ref().and_then(|c| c.replay.as_ref());
+            migrate::migrate(&mut catalog, (&pager, &txns), log, &live, replay)?;
         }
         let (schema, program) = catalog.checking();
         let (schema, program) = (schema.clone(), program.clone());
@@ -1437,52 +1437,6 @@ fn diverged(catalog: &Catalog, log: &Log) -> Result<(), OpenError> {
         Some((m, _)) => Err(OpenError::Diverged { version: m.number }),
         None => Ok(()),
     }
-}
-
-/// Apply the migrations of `log` beyond the file's own, each as its own schema change, stopping
-/// at the first refused one or the first across which a bundle of `live` has no translation.
-fn migrate<R: Runtime>(
-    catalog: &mut Catalog,
-    pager: &Pager<R>,
-    txns: &Transactions<R>,
-    log: &Log,
-    live: &[registered::Live],
-) -> Result<(), OpenError> {
-    let stored = catalog.source().log.len();
-    let deployed = catalog.committed_deployed(pager, txns).map_err(corrupt)?;
-    for text in log.migrations.iter().skip(stored) {
-        let version = catalog.source().version + 1;
-        registered::recheck(catalog, text, live, &deployed)
-            .map_err(|reason| refused(version, reason))?;
-        catalog.migrate(pager, txns, text).map_err(|e| match e {
-            catalog::Error::Refused(why) => refused(
-                version,
-                RejectReason::SchemaRefused {
-                    operator: String::new(),
-                    detail: why.join("\n"),
-                },
-            ),
-            catalog::Error::RefusedBy { operator, why } => refused(
-                version,
-                RejectReason::SchemaRefused {
-                    operator,
-                    detail: why.join("\n"),
-                },
-            ),
-            catalog::Error::Internal(what) => refused(version, internal(Broken::Catalog(*what))),
-            catalog::Error::MissingFunction(name) => OpenError::HostFnMissing { name },
-            catalog::Error::OtherVersion(name) => OpenError::HostFnMismatch { name },
-            catalog::Error::Unchecked(built, ds) => refused(
-                version,
-                internal(Broken::Unchecked {
-                    built,
-                    messages: ds.into_iter().map(|d| d.message).collect(),
-                }),
-            ),
-            other => corrupt(other),
-        })?;
-    }
-    Ok(())
 }
 
 /// Returns whether `text`, applied where migration `m` of the log was, gives the version hash

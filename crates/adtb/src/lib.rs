@@ -25,7 +25,9 @@ pub use api::{
     OpenError, OpenOptions, Position, RecordBatch, Registered, Registration, RejectReason,
     RetryReason, RoleAuthority, RoleSession, TxnCallOptions, TxnId, TxnOptions,
 };
-pub use api::{ArchiveTarget, Proof, RestorePoint, proof_in, prove_in, restore_in};
+pub use api::{
+    ArchiveTarget, Proof, RestorePoint, Restored, proof_in, prove_in, restore_in, restore_report_in,
+};
 pub use api::{
     Binding, CallDescriptor, CallKind, Completion, Format, Layout, Observation, Pins, ResultBatch,
     RoleBinding, Task, TaskOptions,

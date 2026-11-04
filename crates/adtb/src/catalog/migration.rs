@@ -79,6 +79,20 @@ impl Catalog {
         self.apply(pager, txns, text, Grantees::Dormant)
     }
 
+    /// Replay `text` as [`Catalog::replay`] does, a grant of `held`, by grantee, privilege and
+    /// target, applied with a dormant row whether or not its role exists.
+    pub fn replay_holding<R: Runtime>(
+        &mut self,
+        (pager, txns): (&Pager<R>, &Transactions<R>),
+        text: &str,
+        held: &BTreeSet<(String, String, String)>,
+    ) -> Result<Vec<Dormant>, Error> {
+        self.held.clone_from(held);
+        let replayed = self.replay(pager, txns, text);
+        self.held.clear();
+        replayed
+    }
+
     fn apply<R: Runtime>(
         &mut self,
         pager: &Pager<R>,
@@ -491,6 +505,7 @@ impl Catalog {
             readers: Readers::default(),
             hosts: self.hosts.clone(),
             kept: self.kept.clone(),
+            held: BTreeSet::new(),
         };
         let (held, held_program) = b
             .readers
