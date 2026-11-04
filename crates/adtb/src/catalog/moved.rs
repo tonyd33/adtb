@@ -148,6 +148,23 @@ fn shown(e: exec::Error) -> Failed {
     }
 }
 
+/// A constructor of a type in a routing's schema: its name, its position and fields in the schema
+/// after the operator, and the names and conversions of its fields.
+struct Routed {
+    name: String,
+    product: Option<(u32, Vec<Field>)>,
+    names: Vec<String>,
+    convs: Vec<Conv>,
+}
+
+fn data(def: TypeId) -> Ty {
+    Ty::Data {
+        def,
+        args: Vec::new(),
+        ctors: None,
+    }
+}
+
 /// Returns `vals`, the fields of a value named `names`, as a row of fields `to`.
 fn by_name(names: &[String], vals: &[Val], to: &[Field]) -> Result<Vec<Value>, Failed> {
     to.iter()
@@ -193,9 +210,7 @@ fn key_value(
     let kc =
         ctor_named(k, keyed, name).ok_or_else(|| Failed::from(Broken::NoCtor(name.to_owned())))?;
     let to = fields(k, keyed, kc);
-    let mut names = k.relation(keyed).key.clone();
-    names.sort();
-    let mut vs = names
+    let mut vs = layout::key_names(k, keyed)
         .iter()
         .map(|n| carried(&from, row, field_named(&to, n)?))
         .collect::<Result<Vec<_>, _>>()?;
@@ -255,16 +270,11 @@ impl Mapping<'_> {
         let Some(db) = type_def(b, tid) else {
             return Ok(());
         };
-        let value = |def| Ty::Data {
-            def,
-            args: Vec::new(),
-            ctors: None,
-        };
         if !b.ty(db).params.is_empty() {
             return Ok(());
         }
-        let after = layout::ctors(b, &value(db));
-        let before = layout::ctors(&fill.schema, &value(def));
+        let after = layout::ctors(b, &data(db));
+        let before = layout::ctors(&fill.schema, &data(def));
         for &c in ctors {
             let Some(cb) = b.ty(db).ctor_index(ctor_name(a, def, c)) else {
                 continue;
@@ -320,7 +330,8 @@ impl Mapping<'_> {
 
     fn route(&mut self, def: TypeId, from: &[u32], routing: &RowFn) -> Result<(), Failed> {
         let (a, b) = (self.a, self.b);
-        let f = compiled(routing, self.hosts)?;
+        let f = Arc::new(compiled(routing, self.hosts)?);
+        self.held_routes(def, from, routing, &f);
         for (ra, rid, rb) in relations_of(a, b, def) {
             let Some(rows) = self.data.get(&rid) else {
                 continue;
@@ -351,6 +362,59 @@ impl Mapping<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Add to `out.routes` the routing `f`, compiled from `routing`, of each constructor `from`
+    /// of type `def`, for the values of `def` other rows hold.
+    fn held_routes(&mut self, def: TypeId, from: &[u32], routing: &RowFn, f: &Arc<Scalar>) {
+        let (a, b) = (self.a, self.b);
+        let (Some(tid), true) = (type_id(a, def), a.ty(def).params.is_empty()) else {
+            return;
+        };
+        let Some(db) = type_def(b, tid) else {
+            return;
+        };
+        let after = layout::ctors(b, &data(db));
+        let d = routing.schema.ty(def);
+        let routed: Arc<Vec<Routed>> = Arc::new(
+            d.ctors()
+                .iter()
+                .map(|c| {
+                    let fs: Vec<_> = d.header().iter().chain(&c.fields).collect();
+                    let product = b.ty(db).ctor_index(&c.name).map(|k| {
+                        let to = after[k as usize].1.iter().map(|(name, t)| Field {
+                            id: None,
+                            name: name.clone(),
+                            ty: layout::field_type(b, t),
+                        });
+                        (k, to.collect())
+                    });
+                    Routed {
+                        name: c.name.clone(),
+                        product,
+                        names: fs.iter().map(|f| f.name.clone()).collect(),
+                        convs: fs.iter().map(|f| conv(&routing.schema, &f.ty)).collect(),
+                    }
+                })
+                .collect(),
+        );
+        for &c in from {
+            let (f, routed) = (f.clone(), routed.clone());
+            let route: Box<Fill<'static>> = Box::new(move |_, vals| {
+                let held = row_val(c, &routed[c as usize].convs, vals);
+                let Val::Ctor(k, out) = f.eval(held).map_err(shown)? else {
+                    return Err(Failed::from(Broken::RoutedNotCtor));
+                };
+                let to = &routed[k as usize];
+                let (cb, product) = to.product.as_ref().ok_or_else(|| {
+                    Failed::Refused(format!("the routing gives `{}`, no product", to.name))
+                })?;
+                let fields = by_name(&to.names, &out, product)?;
+                Ok(Value::Sum { ctor: *cb, fields })
+            });
+            let cid = CatCtorId(u64::from(layout::ctors(a, &data(def))[c as usize].0));
+            self.out.routes.insert((tid, cid), route);
+        }
     }
 
     fn merge(

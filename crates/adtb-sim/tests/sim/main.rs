@@ -30,6 +30,7 @@ mod history;
 mod host_fns;
 mod io_contract;
 mod isolation;
+mod key_renames;
 mod latches;
 mod loads;
 mod longkey;

@@ -1,0 +1,41 @@
+seed 82
+use auth
+log
+  module auth
+  add type P = { t: Tier, n: Text, u: Tier }
+  add relation p : P key (t, n)
+  add type Q = { id: Key qs, o: Key p }
+  add relation qs : Q key id generate sequence
+bundle ids-1.0 pins 2 edition "2026-10" use logins
+reopen
+
+run
+  transact
+    let u = insert users { name: "ann", tier: Paid }
+    insert identities.Google { user: key u, gid: "g1" }
+    insert p { t: Free, n: "a", u: Paid }
+    insert p { t: Paid, n: "b", u: Free }
+    insert qs { o: p.key(t: Free, n: "a") }
+    insert qs { o: p.key(t: Paid, n: "b") }
+
+bundle ids-1.0 pins 2 edition "2026-10" use logins
+migrate
+  module auth
+  split constructor Tier.Paid into Monthly | Yearly
+    by match
+      | Paid -> Monthly
+
+call ids-1.0 1
+----
+"g1"
+
+query rowsort
+  from u in users select u.tier
+----
+Monthly
+
+query rowsort
+  from q in qs select { t: q.o.t, n: q.o.n, u: q.o.u }
+----
+{ n: "a", t: Free, u: Monthly }
+{ n: "b", t: Monthly, u: Free }

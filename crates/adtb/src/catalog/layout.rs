@@ -130,20 +130,20 @@ pub fn key_value_ty(schema: &Schema, rel: RelId) -> Ty {
     }
     match schema.relation(rel).key.as_slice() {
         [k] => key_field_ty(schema, rel, k),
-        ks => {
-            let mut names = ks.to_vec();
-            names.sort();
-            Ty::Record(
-                names
-                    .into_iter()
-                    .map(|n| {
-                        let t = key_field_ty(schema, rel, &n);
-                        (n, t)
-                    })
-                    .collect(),
-            )
-        }
+        _ => Ty::Record(
+            key_names(schema, rel)
+                .into_iter()
+                .map(|n| (n.clone(), key_field_ty(schema, rel, &n)))
+                .collect(),
+        ),
     }
+}
+
+/// Returns the key fields of `rel` in the order a value of `Key rel` holds them.
+pub fn key_names(schema: &Schema, rel: RelId) -> Vec<String> {
+    let mut names = schema.relation(rel).key.clone();
+    names.sort();
+    names
 }
 
 fn scalar(b: Base) -> Scalar {

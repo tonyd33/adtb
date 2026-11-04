@@ -1,0 +1,33 @@
+seed 83
+migrate
+  module shop
+  add module shop
+  add type Price = { c: Text, f: Text, w: Text }
+  add relation prices : Price key (c, f)
+  add type Order = { id: Key orders, opt: Option (Key prices) }
+  add relation orders : Order key id generate sequence
+  add type Label = { p: Key prices, m: Text }
+  add relation tags : Label key (p, m)
+  add type Use = { id: Key uses, t: Key tags }
+  add relation uses : Use key id generate sequence
+
+run
+  transact
+    insert prices { c: "c0", f: "f0", w: "w0" }
+    insert orders { opt: Some { value: prices.key(c: "c0", f: "f0") } }
+    insert tags { p: prices.key(c: "c0", f: "f0"), m: "m0" }
+    insert uses { t: tags.key(p: prices.key(c: "c0", f: "f0"), m: "m0") }
+
+migrate
+  module shop
+  rename field Price.c to g
+
+query rowsort
+  from o in orders select match o.opt | Some s -> s.value.w | None -> "none"
+----
+"w0"
+
+query rowsort
+  from u in uses select u.t.p.w
+----
+"w0"

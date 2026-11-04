@@ -1,0 +1,50 @@
+seed 81
+migrate
+  module auth
+  add module auth
+  add type Tier = Free | Paid
+  add type P = { t: Tier, n: Text, u: Tier }
+  add relation p : P key (t, n)
+  add type Q = { id: Key qs, o: Key p }
+  add relation qs : Q key id generate sequence
+  add type R = { t: Tier, m: Option Tier }
+  add relation r : R key t
+  add type S = { id: Key ss, o: Key r }
+  add relation ss : S key id generate sequence
+
+run
+  transact
+    insert p { t: Free, n: "a", u: Paid }
+    insert p { t: Paid, n: "b", u: Free }
+    insert qs { o: p.key(t: Free, n: "a") }
+    insert qs { o: p.key(t: Paid, n: "b") }
+    insert r { t: Paid, m: Some { value: Paid } }
+    insert ss { o: r.key(Paid) }
+
+migrate
+  module auth
+  split constructor Tier.Paid into Monthly | Yearly
+    by match
+      | Paid -> Yearly
+
+query rowsort
+  from x in p select { t: x.t, n: x.n, u: x.u }
+----
+{ n: "a", t: Free, u: Yearly }
+{ n: "b", t: Yearly, u: Free }
+
+query rowsort
+  from q in qs select { n: q.o.n, u: q.o.u }
+----
+{ n: "a", u: Yearly }
+{ n: "b", u: Free }
+
+query rowsort
+  from x in p where x.t == Yearly and x.n == "b" select x.u
+----
+Free
+
+query rowsort
+  from x in ss select { t: x.o.t, m: x.o.m }
+----
+{ m: Some { value: Yearly }, t: Yearly }

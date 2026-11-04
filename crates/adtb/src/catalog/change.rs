@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::schema::Schema;
+use adtb_lang::textual::key_field_ty;
 use adtb_lang::types::{RelId, Ty};
 
 use crate::heap::FieldType;
@@ -38,12 +39,47 @@ pub fn fields(schema: &Schema, r: RelId, c: u32) -> Vec<Field> {
         .collect()
 }
 
-/// How a relation is stored: each constructor's id and fields, and each index's id, whether it is
-/// unique, its constructor ids and its fields.
+/// How a relation is stored: each constructor's id and fields, each index's id, whether it is
+/// unique, its constructor ids and its fields, and the key field ids, in stored order, of each
+/// relation its fields reach through `Key`.
 #[derive(Debug, PartialEq, Eq)]
 struct Shape {
     ctors: Vec<(CatCtorId, Vec<Field>)>,
     indexes: Vec<(u64, bool, Vec<CatCtorId>, Vec<String>)>,
+    keys: KeyIds,
+}
+
+/// Returns the key field ids of `rel`, in the order a value of `Key rel` holds them.
+fn key_ids(schema: &Schema, rel: RelId) -> Vec<Option<CatFieldId>> {
+    layout::key_names(schema, rel)
+        .iter()
+        .map(|n| field_id(schema, schema.relation(rel).elem_def, 0, n))
+        .collect()
+}
+
+type KeyIds = BTreeMap<CatRelId, Vec<Option<CatFieldId>>>;
+
+/// Add to `keys` the key field ids of each relation a value of type `ty` reaches through `Key`.
+fn reached_keys(schema: &Schema, ty: &Ty, seen: &mut Vec<Ty>, keys: &mut KeyIds) {
+    let t = layout::repr(schema, ty);
+    if seen.contains(&t) {
+        return;
+    }
+    seen.push(t.clone());
+    match &t {
+        Ty::Key { rel, .. } if schema.ahead_relation(*rel).is_none() => {
+            keys.insert(rel_id(schema, *rel), key_ids(schema, *rel));
+            for n in layout::key_names(schema, *rel) {
+                reached_keys(schema, &key_field_ty(schema, *rel, &n), seen, keys);
+            }
+        }
+        Ty::Data { .. } => {
+            for (_, f) in layout::ctors(schema, &t).into_iter().flat_map(|(_, fs)| fs) {
+                reached_keys(schema, &f, seen, keys);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn shapes(schema: &Schema) -> BTreeMap<CatRelId, Shape> {
@@ -53,7 +89,12 @@ fn shapes(schema: &Schema) -> BTreeMap<CatRelId, Shape> {
         let shape = out.entry(rid).or_insert(Shape {
             ctors: Vec::new(),
             indexes: Vec::new(),
+            keys: BTreeMap::new(),
         });
+        let mut seen = Vec::new();
+        for (_, t) in layout::row(schema, r, c) {
+            reached_keys(schema, &t, &mut seen, &mut shape.keys);
+        }
         shape
             .ctors
             .push((ctor_id(schema, r, c), fields(schema, r, c)));
@@ -75,7 +116,7 @@ fn shapes(schema: &Schema) -> BTreeMap<CatRelId, Shape> {
 }
 
 /// Returns the ids of the relations that `old` and `new` store otherwise: those only one of them
-/// has, and those whose constructors, fields or indexes differ.
+/// has, and those whose constructors, fields, indexes or reached keys differ.
 pub fn rewritten(old: &Schema, new: &Schema) -> BTreeSet<CatRelId> {
     let (a, b) = (shapes(old), shapes(new));
     a.keys()
@@ -98,6 +139,9 @@ pub struct Moved {
     /// The value of each field a constructor of a type held as a value gains, from the fields of
     /// the value before the operator, by type id, constructor id and field id.
     pub values: BTreeMap<(CatTypeId, CatCtorId, CatFieldId), Box<Fill<'static>>>,
+    /// The value after the operator of each value of a constructor the operator replaces, of a
+    /// type held as a value, from its fields, by type id and constructor id.
+    pub routes: BTreeMap<(CatTypeId, CatCtorId), Box<Fill<'static>>>,
 }
 
 /// The value of a field for a row, from the fields of the row before the operator.
@@ -146,6 +190,7 @@ pub fn step(a: &Schema, b: &Schema, data: &mut Data, mut moved: Moved) -> Result
                         from: layout::row(a, ra, ca).into_iter().map(|(_, t)| t).collect(),
                         to: layout::row(b, rb, cb).into_iter().map(|(_, t)| t).collect(),
                         values: &moved.values,
+                        routes: &moved.routes,
                     };
                     let mut rows = Vec::new();
                     for row in &ctors[&cid] {
@@ -203,6 +248,7 @@ struct Types<'s> {
     from: Vec<Ty>,
     to: Vec<Ty>,
     values: &'s BTreeMap<(CatTypeId, CatCtorId, CatFieldId), Box<Fill<'static>>>,
+    routes: &'s BTreeMap<(CatTypeId, CatCtorId), Box<Fill<'static>>>,
 }
 
 /// Returns `row`, with fields `from`, as a row with fields `to`: each field the fill `fill` gives
@@ -226,12 +272,7 @@ fn carry<'f>(
                     });
             match (t.id.and_then(&fill), kept) {
                 (Some(f), _) => f(from, row),
-                (None, Some(at)) if from[at].ty == t.ty => Ok(row[at].clone()),
-                (None, Some(at)) => {
-                    held(types, &types.from[at], tb, &row[at]).unwrap_or_else(|| {
-                        convert(&from[at].ty, &t.ty, &row[at]).map_err(Failed::Refused)
-                    })
-                }
+                (None, Some(at)) => stored(types, &types.from[at], tb, &row[at]),
                 (None, None) => Err(Failed::Refused(format!(
                     "field `{}` has no value for existing rows",
                     t.name
@@ -241,13 +282,64 @@ fn carry<'f>(
         .collect()
 }
 
-/// Returns `v`, a value of declared type `ta` of `types.a`, as a value of the same declared type
-/// `tb` of `types.b`: each field its constructor keeps by id converted, and each field it gains
-/// filled by `types.values`. Returns `None` when `ta` and `tb` are not one declared type.
-fn held(types: &Types<'_>, ta: &Ty, tb: &Ty, v: &Value) -> Option<Result<Value, Failed>> {
+/// Returns `v`, a value of declared type `ta` of `types.a`, as a value of declared type `tb` of
+/// `types.b`: the fields of a declared type and of a key matched by catalog id.
+fn stored(types: &Types<'_>, ta: &Ty, tb: &Ty, v: &Value) -> Result<Value, Failed> {
     let (a, b) = (types.a, types.b);
-    let (ra, rb) = (layout::repr(a, ta), layout::repr(b, tb));
-    let (Ty::Data { def: da, .. }, Ty::Data { def: db, .. }) = (&ra, &rb) else {
+    let matched = match (layout::repr(a, ta), layout::repr(b, tb)) {
+        (Ty::Base(x), Ty::Base(y)) if x == y => return Ok(v.clone()),
+        (ra @ Ty::Data { .. }, rb @ Ty::Data { .. }) => held(types, &ra, &rb, v),
+        (Ty::Key { rel: x, .. }, Ty::Key { rel: y, .. }) => keyed(types, x, y, v),
+        _ => None,
+    };
+    matched.unwrap_or_else(|| {
+        let (fa, fb) = (layout::field_type(a, ta), layout::field_type(b, tb));
+        convert(&fa, &fb, v).map_err(Failed::Refused)
+    })
+}
+
+/// Returns `v`, a stored value of `Key ra` of `types.a`, as `Key rb` of `types.b` stores it,
+/// each key field matched by catalog id, refused when `v` holds no key field of `rb`. Returns
+/// `None` when `ra` and `rb` are not one relation or one has a single key field and the other
+/// several.
+fn keyed(types: &Types<'_>, ra: RelId, rb: RelId, v: &Value) -> Option<Result<Value, Failed>> {
+    let (a, b) = (types.a, types.b);
+    let id = |s: &Schema, r: RelId| s.ahead_relation(r).is_none().then(|| rel_id(s, r));
+    if id(a, ra)? != id(b, rb)? {
+        return None;
+    }
+    let key = |s: &Schema, r: RelId| -> Option<Vec<(CatFieldId, Ty)>> {
+        key_ids(s, r)
+            .into_iter()
+            .zip(layout::key_names(s, r))
+            .map(|(id, n)| Some((id?, key_field_ty(s, r, &n))))
+            .collect()
+    };
+    let (ka, kb) = (key(a, ra)?, key(b, rb)?);
+    let lacks = || Failed::Refused("a key field has no value in stored keys".to_owned());
+    match (ka.as_slice(), kb.as_slice(), v) {
+        ([(i, _)], [(j, _)], _) if i != j => Some(Err(lacks())),
+        ([(_, x)], [(_, y)], _) => Some(stored(types, x, y, v)),
+        ([_, _, ..], [_, _, ..], Value::Record(vs)) => Some(
+            kb.iter()
+                .map(|(id, t)| {
+                    let at = ka.iter().position(|(i, _)| i == id).ok_or_else(lacks)?;
+                    stored(types, &ka[at].1, t, &vs[at])
+                })
+                .collect::<Result<_, _>>()
+                .map(Value::Record),
+        ),
+        _ => None,
+    }
+}
+
+/// Returns `v`, a value of type `ra` of `types.a`, as a value of the same declared type `rb` of
+/// `types.b`: each field its constructor keeps by id converted, each field it gains filled by
+/// `types.values`, and a value of a constructor it replaces routed by `types.routes`. Returns
+/// `None` when `ra` and `rb` are not one declared type.
+fn held(types: &Types<'_>, ra: &Ty, rb: &Ty, v: &Value) -> Option<Result<Value, Failed>> {
+    let (a, b) = (types.a, types.b);
+    let (Ty::Data { def: da, .. }, Ty::Data { def: db, .. }) = (ra, rb) else {
         return None;
     };
     let tid = type_id(a, *da)?;
@@ -259,9 +351,12 @@ fn held(types: &Types<'_>, ta: &Ty, tb: &Ty, v: &Value) -> Option<Result<Value, 
         Value::Sum { ctor, fields } => (*ctor, fields),
         _ => return None,
     };
-    let (ctors_a, ctors_b) = (layout::ctors(a, &ra), layout::ctors(b, &rb));
+    let (ctors_a, ctors_b) = (layout::ctors(a, ra), layout::ctors(b, rb));
     let (cid, fields_a) = &ctors_a[ca as usize];
     let Some(cb) = ctors_b.iter().position(|(id, _)| id == cid) else {
+        if let Some(route) = types.routes.get(&(tid, CatCtorId(u64::from(*cid)))) {
+            return Some(route(&[], vs));
+        }
         return Some(Err(Failed::Refused(format!(
             "a stored value holds constructor {cid} of a sum that no longer has it"
         ))));
@@ -281,15 +376,7 @@ fn held(types: &Types<'_>, ta: &Ty, tb: &Ty, v: &Value) -> Option<Result<Value, 
                 .ok_or_else(|| {
                     Failed::Refused(format!("field `{name}` has no value in stored values"))
                 })?;
-            let (fa, fb) = (
-                layout::field_type(a, &fields_a[at].1),
-                layout::field_type(b, t),
-            );
-            if fa == fb {
-                return Ok(vs[at].clone());
-            }
-            held(types, &fields_a[at].1, t, &vs[at])
-                .unwrap_or_else(|| convert(&fa, &fb, &vs[at]).map_err(Failed::Refused))
+            stored(types, &fields_a[at].1, t, &vs[at])
         })
         .collect::<Result<Vec<_>, _>>();
     Some(out.map(|fields| match v {
