@@ -82,6 +82,17 @@ pub enum Damage {
     Stale { expected: Lsn, found: Lsn },
 }
 
+impl Damage {
+    /// Returns the damage of a page the file holds at LSN `found`, other than a blank one, when the
+    /// log holds no record at or past `end`.
+    pub(crate) fn past_log_end(found: Lsn, end: Lsn) -> Option<Damage> {
+        (found >= end && found != Lsn(0)).then_some(Damage::Stale {
+            expected: end,
+            found,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PageError {
     pub pid: Pid,
@@ -139,6 +150,8 @@ pub(crate) struct Meta {
     pub(crate) overwritten: BTreeSet<Pid>,
     /// The end of the log recovery kept when the pager opened, or zero for a pager created empty.
     pub(crate) recovered: Lsn,
+    /// The pages this open wrote to the file, one bit per page number.
+    pub(crate) wrote: Vec<u64>,
     /// Resident pages and pages being read in, in clock order.
     resident: Vec<Pid>,
     hand: usize,
@@ -393,6 +406,7 @@ impl<R: Runtime> Pager<R> {
                 groups: bitmap_groups,
                 overwritten: BTreeSet::new(),
                 recovered: Lsn(0),
+                wrote: Vec::new(),
                 resident: Vec::new(),
                 hand: 0,
             }),
@@ -673,11 +687,13 @@ impl<R: Runtime> Pager<R> {
             Ok((_, Verdict::Corrupt)) => Some(Damage::Checksum),
             Ok((buf, _)) => {
                 let found = page::lsn(buf);
-                self.meta()
-                    .evicted
-                    .get(pid)
-                    .filter(|&expected| found < expected)
-                    .map(|expected| Damage::Stale { expected, found })
+                Damage::past_log_end(found, self.file_end(pid)).or_else(|| {
+                    self.meta()
+                        .evicted
+                        .get(pid)
+                        .filter(|&expected| found < expected)
+                        .map(|expected| Damage::Stale { expected, found })
+                })
             }
         };
         if let Some(damage) = damage {
@@ -715,6 +731,27 @@ impl<R: Runtime> Pager<R> {
         if let Some(i) = m.resident.iter().position(|p| *p == pid) {
             m.resident.swap_remove(i);
         }
+    }
+
+    /// Returns whether the file's copy `buf` of `pid` verifies and is behind [`Pager::file_end`].
+    pub(crate) fn sound(&self, pid: Pid, buf: &[u8]) -> bool {
+        !matches!(page::verify(pid, buf), Verdict::Corrupt)
+            && Damage::past_log_end(page::lsn(buf), self.file_end(pid)).is_none()
+    }
+
+    /// Returns the LSN the file's copy of `pid` is below: the log's next LSN once this open has
+    /// written the page, and the end of the log recovery kept before.
+    ///
+    /// Preconditions: the caller holds a latch on `pid` that no write-out holds with, or judges
+    /// again under one.
+    pub(crate) fn file_end(&self, pid: Pid) -> Lsn {
+        let (word, bit) = ((pid.0 / 64) as usize, pid.0 % 64);
+        let m = self.meta();
+        if m.wrote.get(word).is_some_and(|w| w >> bit & 1 == 1) {
+            drop(m);
+            return self.log().next_lsn();
+        }
+        m.recovered
     }
 
     /// Returns the page `pid` as the file holds it, verified.
@@ -791,6 +828,11 @@ impl<R: Runtime> Pager<R> {
         let mut m = self.meta();
         m.changed.remove(&pid);
         m.written.insert(pid);
+        let (word, bit) = ((pid.0 / 64) as usize, pid.0 % 64);
+        if m.wrote.len() <= word {
+            m.wrote.resize(word + 1, 0);
+        }
+        m.wrote[word] |= 1 << bit;
     }
 
     /// Returns `bytes` sealed for the device, once the log holds everything the page depends on.

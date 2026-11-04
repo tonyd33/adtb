@@ -406,7 +406,7 @@ operating error and never handed out as data.
 | Truncated file | After recovery, a bit of the allocation bitmap set past the end of the file refuses that page, and a bitmap page of a started group past the end of the file (§1.1) reads blank and is refused as below; a page a directory entry, index entry, version chain or out-of-line pointer names that reads all zero is refused on every read and write that reaches it through that name |
 | Lost or zeroed bitmap | A blank bitmap page of a started group (§1.1) is refused on every allocation, free and read of the bitmap, before anything is written, and marks the database (§8) |
 | Lost write | Page LSN older than the retained log says it must be, in recovery (§7) and in `verify` and scrub ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)); a page read back after the pool dropped it, older than it was then, while the pool's bounded table of dropped pages still holds it (§10.3) |
-| Lost or misdirected log write | A page LSN, on the page or as a record's previous LSN, that no retained record wrote: past the page's last record in a log with no gap, or at or past the end of the log recovery kept in a gapless log retained from at or before that end; in `verify` and scrub, as an `Unlogged` log finding (§7) |
+| Lost or misdirected log write | A page read from the file at or past the end of the log recovery kept, or past the log's next LSN once the open has written the page, refused as stale on every read, write, replay and backup that reads it, and in `verify` and scrub; a page LSN, on the page or as a record's previous LSN, that no retained record wrote: past the page's last record in a log with no gap, or at or past the end of the log recovery kept in a gapless log retained from at or before that end; in `verify` and scrub, as an `Unlogged` log finding (§7) |
 
 A page that fails verification on read quarantines the heap or index
 holding it (§8).
@@ -679,12 +679,16 @@ page, the LSN it carries and the LSN it is past:
   past the page's last record in a log with no gap.
 
 A page below that end with no record in a log retained from its start
-is an `Orphan` finding. A check while writers run takes a page at or
-past the log's end when it starts as written since, unless no LSN that
-high had been given out when it read the page. Relation-scoped `verify`
-shows the `Unlogged` findings of the relation's pages. Recovery neither
-refuses to open nor quarantines on such a page: it reads only the pages
-it redoes, so it cannot find every one, and `verify` reads them all.
+is an `Orphan` finding. A check while writers run takes a page this open
+wrote, at or past the log's end when the check starts, as written since.
+A page the check reads from the file at or past the end of the log
+recovery kept, or at or past the log's next LSN once the open has written
+the page, is stale, and its `Unlogged` finding names that LSN.
+Relation-scoped `verify` shows the `Unlogged` findings of the relation's
+pages. Recovery
+refuses a page it reads at or past the end of the log it kept, unless a
+full-page image of it follows. A page it does not redo is refused by the
+first read, write or `verify` that reaches it.
 
 A full-page image of a page overwritten while damaged
 (§8) has an unknown previous LSN: it continues no chain and clears the

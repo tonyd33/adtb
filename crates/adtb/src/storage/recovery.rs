@@ -140,8 +140,11 @@ impl<R: Runtime> Pager<R> {
                 self.make_room(pid);
                 let failed = match self.read_disk(pid) {
                     Ok((buf, Verdict::Valid | Verdict::Blank)) => {
-                        g.write(0, &buf);
-                        None
+                        let past = Damage::past_log_end(page::lsn(&buf), self.file_end(pid));
+                        if past.is_none() {
+                            g.write(0, &buf);
+                        }
+                        past
                     }
                     Ok((_, Verdict::Corrupt)) => Some(Damage::Checksum),
                     Err(d) => Some(d),

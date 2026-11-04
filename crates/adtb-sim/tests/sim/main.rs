@@ -38,6 +38,7 @@ mod lost_bitmap;
 mod maintenance_faults;
 mod open_damage;
 mod oplog;
+mod page_past_log_end;
 mod pager;
 mod past;
 mod principal;

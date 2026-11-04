@@ -15,7 +15,7 @@ use super::block::{
 use super::driver::Driver;
 use super::header::{FileHeader, HISTORY_CAPACITY, REGION};
 use super::log::{FileSource, parse_segment, segment_name};
-use super::page::{self, Verdict, valid_page_size};
+use super::page::valid_page_size;
 use super::pager::{Pager, parent};
 use super::quarantine::Quarantine;
 use super::record::Record;
@@ -858,7 +858,7 @@ impl<R: Runtime> Pager<R> {
                 if !visit(pid, &mut buf) {
                     return Err(BackupError::Stopped);
                 }
-                if !matches!(page::verify(pid, &buf), Verdict::Corrupt) {
+                if self.sound(pid, &buf) {
                     return Ok(buf.to_vec());
                 }
                 Some(buf)
@@ -874,8 +874,8 @@ impl<R: Runtime> Pager<R> {
         let free = matches!(self.is_free(pid), Ok(true));
         let g = self.mem.lock_exclusive(pid.0, &self.rt);
         let again = self.read_disk(pid);
-        if let Ok((buf, verdict)) = &again
-            && !matches!(verdict, Verdict::Corrupt)
+        if let Ok((buf, _)) = &again
+            && self.sound(pid, buf)
         {
             return Ok(buf.to_vec());
         }

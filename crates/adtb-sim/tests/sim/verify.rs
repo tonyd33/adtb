@@ -550,20 +550,19 @@ fn a_page_past_the_log_end_is_an_unlogged_finding_of_its_relation() {
     adtb::storage::seal(page, bytes);
     let mut sim = Sim::with_files(45, Config::default(), files);
     api::run(&mut sim, |rt| {
-        let options = adtb::OpenOptions {
-            no_background_vacuum: true,
-            ..api::options(2)
-        };
-        let db = Database::open_in(rt, NAME, &Log::new([APP]), &options).unwrap();
+        let db = open_app(rt);
         let problem = format!(
             "Unlogged {{ pid: Pid({}), page: Lsn({}) }}",
             page.0,
             1u64 << 40
         );
+        let stale = format!("page {}: Stale {{", page.0);
         let got = verified(&db, Some("users"));
-        assert_eq!(1, got.len(), "{got:?}");
-        assert!(got[0].starts_with("Structure"), "{got:?}");
-        assert!(got[0].contains(&problem), "{got:?}");
+        assert_eq!(2, got.len(), "{got:?}");
+        assert!(got[0].starts_with("StalePage"), "{got:?}");
+        assert!(got[0].contains(&stale), "{got:?}");
+        assert!(got[1].starts_with("Structure"), "{got:?}");
+        assert!(got[1].contains(&problem), "{got:?}");
         assert_eq!(Vec::<String>::new(), verified(&db, Some("identities")));
     });
 }

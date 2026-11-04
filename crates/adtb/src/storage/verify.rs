@@ -144,8 +144,8 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Check every page and the retained log. A page whose LSN is at or past the log's end when the
-    /// check starts has no stale or orphan finding. When `live` it has no unlogged finding either,
-    /// unless no LSN that high had been given out when the page was read.
+    /// check starts has no orphan finding, and a stale one only when the file's copy is at or past
+    /// [`Pager::file_end`]. When `live` it has no unlogged finding either, unless it is stale.
     fn verify_to(&self, live: bool) -> Verification {
         let mut log = self.read_log(live);
         let mut findings = std::mem::take(&mut log.findings);
@@ -276,7 +276,6 @@ impl<R: Runtime> Pager<R> {
         }
         let judge =
             |disk: &Result<(AlignedBuf, Verdict), Damage>, resident: Option<Lsn>, changed: bool| {
-                let now = self.log().next_lsn();
                 let bad = match disk {
                     _ if changed => None,
                     Err(d) => Some(*d),
@@ -288,18 +287,26 @@ impl<R: Runtime> Pager<R> {
                     (Ok(_), Some(l)) => Some(l),
                     (Ok((buf, _)), None) => Some(page::lsn(buf)),
                 };
-                let stale = found.and_then(|found| match (broken.get(&pid), last.get(&pid)) {
-                    (Some(&d), _) if found < *end => Some(d),
-                    (None, Some(&expected)) if expected != found && found < *end => {
-                        Some(Damage::Stale { expected, found })
+                let future = match (disk, resident) {
+                    (Ok((buf, Verdict::Valid)), None) => {
+                        Damage::past_log_end(page::lsn(buf), self.file_end(pid))
                     }
                     _ => None,
+                };
+                let stale = future.or_else(|| {
+                    found.and_then(|found| match (broken.get(&pid), last.get(&pid)) {
+                        (Some(&d), _) if found < *end => Some(d),
+                        (None, Some(&expected)) if expected != found && found < *end => {
+                            Some(Damage::Stale { expected, found })
+                        }
+                        _ => None,
+                    })
                 });
                 let orphan = found.is_some_and(|found| {
                     *complete && !last.contains_key(&pid) && found != Lsn(0) && found < *end
                 });
                 let unlogged = found
-                    .filter(|&found| found != Lsn(0) && (found < *end || !live || found >= now))
+                    .filter(|&found| found != Lsn(0) && (found < *end || !live))
                     .and_then(|found| {
                         let last = last.get(&pid).copied();
                         match *recovered {

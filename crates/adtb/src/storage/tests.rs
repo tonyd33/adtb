@@ -10,7 +10,7 @@ use super::block::{
 use super::crc::{Crc32c, crc32c, crc32c_skipping};
 use super::header::{FileHeader, choose};
 use super::page::{self, Verdict};
-use super::pager::{Options, Pager};
+use super::pager::{Damage, Options, Pager};
 use super::record::{Edit, Record};
 use super::{Lsn, Pid, Position};
 
@@ -496,4 +496,15 @@ fn a_first_segment_opening_on_a_batch_begun_before_it_starts_at_the_next_batch()
     held[..block].copy_from_slice(&whole);
     let mut img = LogImage::in_memory(block, segment, BTreeMap::from([(segment, Some(held))]));
     assert_eq!(Some(Lsn(segment)), img.first_batch());
+}
+
+#[test]
+fn a_page_at_the_next_lsn_is_past_the_log_end_and_one_below_it_is_not() {
+    let next = Lsn(4096);
+    let stale = Damage::Stale {
+        expected: next,
+        found: next,
+    };
+    assert_eq!(Some(stale), Damage::past_log_end(next, next));
+    assert_eq!(None, Damage::past_log_end(Lsn(4095), next));
 }

@@ -7,7 +7,7 @@ use std::time::Duration;
 use adtb::runtime::{Entropy, IoError, Threads};
 use adtb::storage::{
     Damage, Edit, Finding, HEADER_LEN, LATCHES_PER_THREAD, LogFinding, LogProblem, Lsn, OpenError,
-    Options, PageKind, Pager, Pid,
+    Options, PageError, PageKind, Pager, Pid,
 };
 use adtb_sim::{
     Config, Fate, Faults, FindingKind, Ledger, Outcome, Recovered, Sim, SimRuntime, Violation,
@@ -890,28 +890,46 @@ fn flip(sim: &mut Sim, path: &str, at: usize) -> Sim {
 /// Returns a device holding a database whose page `pid` carries an LSN past the end of its log,
 /// with the LSN of the last record that wrote the page and the LSN it carries.
 fn page_past_log_end() -> (Sim, Pid, Lsn, Lsn) {
+    page_changed_past_log_end(PLAIN, false)
+}
+
+/// Returns what [`page_past_log_end`] does, after an open under `layout` that, when `change`,
+/// changes the page and writes it out with no close.
+fn page_changed_past_log_end(layout: Layout, change: bool) -> (Sim, Pid, Lsn, Lsn) {
     let mut sim = Sim::new(3, Config::default());
     let client = Client::new();
     setup(&mut sim, &client, PLAIN);
     let pid = client.world.lock().unwrap().pages[3];
-    with_pager(&mut sim, |_| ());
-    let mut files = sim.files();
-    let at = pid.0 as usize * PAGE;
-    let page = &mut files.get_mut(NAME).unwrap()[at..at + PAGE];
-    let written = adtb::storage::lsn(page);
+    let outcome = sim.run(|rt| {
+        let (p, _) = Pager::open(rt, &options(layout)).expect("open");
+        if change {
+            p.update(&[pid], |v| v[0][HEADER_LEN] ^= 1).unwrap();
+            p.flush_log();
+            p.flush_pages(usize::MAX);
+        }
+    });
+    assert_eq!(Outcome::Finished, outcome);
+    let files = sim.files();
+    let written = adtb::storage::lsn(&files[NAME][pid.0 as usize * PAGE..]);
     let past = Lsn(1 << 40);
-    page[..8].copy_from_slice(&past.0.to_le_bytes());
-    adtb::storage::seal(pid, page);
-    let sim = Sim::with_files(1, Config::default(), files);
-    (sim, pid, written, past)
+    (planted(files, pid, past), pid, written, past)
 }
 
-/// Returns the end of the log recovery kept on opening `sim`, and what a verify then finds.
-fn verify_opened(sim: &mut Sim) -> (Lsn, Vec<Finding>) {
+/// Returns a device holding `files` with page `pid` resealed at LSN `lsn`.
+fn planted(mut files: BTreeMap<String, Vec<u8>>, pid: Pid, lsn: Lsn) -> Sim {
+    let at = pid.0 as usize * PAGE;
+    let page = &mut files.get_mut(NAME).unwrap()[at..at + PAGE];
+    page[..8].copy_from_slice(&lsn.0.to_le_bytes());
+    adtb::storage::seal(pid, page);
+    Sim::with_files(1, Config::default(), files)
+}
+
+/// Returns the end of the log recovery kept on opening `sim`, and what `body` then returns.
+fn opened<T>(sim: &mut Sim, body: impl FnOnce(&Pager<SimRuntime>) -> T) -> (Lsn, T) {
     let mut out = None;
     let outcome = sim.run(|rt| {
         let (p, recovery) = Pager::open(rt, &options(PLAIN)).expect("open");
-        out = Some((recovery.end, p.verify().findings));
+        out = Some((recovery.end, body(&p)));
     });
     assert_eq!(Outcome::Finished, outcome);
     out.unwrap()
@@ -924,11 +942,75 @@ fn unlogged(lsn: Lsn, pid: Pid, page: Lsn) -> Finding {
     })
 }
 
+/// Returns the findings of a page `pid` the file holds at `found`, at or past `end`.
+fn past_end(pid: Pid, end: Lsn, found: Lsn) -> [Finding; 2] {
+    let damage = Damage::Stale {
+        expected: end,
+        found,
+    };
+    [Finding::Page { pid, damage }, unlogged(end, pid, found)]
+}
+
 #[test]
-fn a_page_past_the_log_end_is_reported_as_an_unlogged_write() {
+fn a_page_past_the_log_end_is_reported_as_stale_and_an_unlogged_write() {
     let (mut sim, pid, _, past) = page_past_log_end();
-    let (end, findings) = verify_opened(&mut sim);
-    assert_eq!(vec![unlogged(end, pid, past)], findings);
+    let (end, findings) = opened(&mut sim, |p| p.verify().findings);
+    assert_eq!(past_end(pid, end, past).to_vec(), findings);
+}
+
+#[test]
+fn replay_refuses_a_page_past_the_log_end_whose_change_it_redoes() {
+    let atomic = Layout {
+        atomic: true,
+        ..PLAIN
+    };
+    let (mut sim, pid, _, past) = page_changed_past_log_end(atomic, true);
+    let mut out = None;
+    let outcome = sim.run(|rt| {
+        let (p, recovery) = Pager::open(rt, &options(atomic)).expect("open");
+        let read = p.read(pid).map(|_| ()).map_err(|e| e.damage);
+        out = Some((recovery.end, recovery.damaged, read));
+    });
+    assert_eq!(Outcome::Finished, outcome);
+    let (end, damaged, read) = out.unwrap();
+    let stale = Damage::Stale {
+        expected: end,
+        found: past,
+    };
+    assert_eq!(vec![(pid, stale)], damaged);
+    assert_eq!(Err(stale), read);
+}
+
+#[test]
+fn replay_heals_a_page_past_the_log_end_from_its_full_page_image() {
+    let (mut sim, pid, _, _) = page_changed_past_log_end(PLAIN, true);
+    let (_, (damaged, read)) = opened(&mut sim, |p| (p.damaged(), p.read(pid).map(|_| ())));
+    assert_eq!(BTreeMap::new(), damaged);
+    assert_eq!(Ok(()), read);
+}
+
+#[test]
+fn a_page_one_below_the_recovered_end_reads_and_one_at_it_is_refused() {
+    let (sim, pid, _, _) = page_past_log_end();
+    let files = sim.files();
+    let (end, ()) = opened(
+        &mut Sim::with_files(1, Config::default(), files.clone()),
+        |_| (),
+    );
+    let damage = Damage::Stale {
+        expected: end,
+        found: end,
+    };
+    for (lsn, want) in [
+        (Lsn(end.0 - 1), Ok(())),
+        (end, Err(PageError { pid, damage })),
+    ] {
+        let (at, read) = opened(&mut planted(files.clone(), pid, lsn), |p| {
+            p.read(pid).map(|_| ())
+        });
+        assert_eq!(end, at);
+        assert_eq!(want, read, "a page at {lsn:?}");
+    }
 }
 
 #[test]
@@ -958,32 +1040,70 @@ fn a_page_whose_only_records_are_in_the_lost_log_tail_is_an_unlogged_write() {
         .filter(|&(_, lsn)| lsn >= cut)
         .collect();
     assert!(past.iter().any(|&(p, _)| p == pid), "{past:?}");
-    let mut sim = Sim::with_files(1, Config::default(), files);
-    let (end, findings) = verify_opened(&mut sim);
+    let mut sim = Sim::with_files(1, Config::default(), files.clone());
+    let (end, findings) = opened(&mut sim, |p| p.verify().findings);
     assert_eq!(cut, end);
-    let expected: Vec<Finding> = past.iter().map(|&(p, lsn)| unlogged(cut, p, lsn)).collect();
+    let mut expected: Vec<Finding> = past
+        .iter()
+        .flat_map(|&(p, l)| past_end(p, cut, l))
+        .collect();
+    expected.sort();
     assert_eq!(expected, findings);
+    let stale = |&(pid, found): &(Pid, Lsn)| {
+        let damage = Damage::Stale {
+            expected: cut,
+            found,
+        };
+        (pid, found, Err(PageError { pid, damage }))
+    };
+    let refused: Vec<_> = past.iter().map(stale).collect();
+    let highest = past.iter().map(|&(_, l)| l).max().unwrap();
+    for append_past in [false, true] {
+        let mut sim = Sim::with_files(1, Config::default(), files.clone());
+        let (_, read) = opened(&mut sim, |p| {
+            let mut appends = 0;
+            while append_past && p.appended() <= highest {
+                p.reserve_xids(1);
+                appends += 1;
+                assert!(appends < 100_000, "the log passes LSN {highest:?}");
+            }
+            let next = p.appended();
+            let read = |&(pid, found): &(Pid, Lsn)| (pid, found, p.read(pid).map(|_| ()));
+            let read: Vec<_> = past.iter().map(read).collect();
+            assert!(
+                past.iter().all(|&(_, l)| (l < next) == append_past),
+                "{next:?}"
+            );
+            read
+        });
+        assert_eq!(refused, read, "appended past every page: {append_past}");
+    }
 }
 
 #[test]
-fn a_change_chained_to_an_unlogged_lsn_is_reported_as_an_unlogged_write_on_every_verify() {
-    let (mut sim, pid, written, past) = page_past_log_end();
-    with_pager(&mut sim, |p| {
-        p.update(&[pid], |v| v[0][HEADER_LEN] ^= 1).unwrap();
-        p.flush_log();
-        p.flush_pages(usize::MAX);
+fn a_change_to_a_page_past_the_log_end_is_refused_and_reported_on_every_verify() {
+    let (mut sim, pid, _, past) = page_past_log_end();
+    let planted = sim.files();
+    let (end, refused) = opened(&mut sim, |p| {
+        let refused = p.update(&[pid], |v| v[0][HEADER_LEN] ^= 1);
+        refused.map(|_| ()).map_err(|e| e.damage)
     });
-    let (first, again) = with_pager(&mut sim, |p| (p.verify().findings, p.verify().findings));
-    let stale = Damage::Stale {
-        expected: written,
-        found: past,
-    };
-    let expected = vec![
-        Finding::Page { pid, damage: stale },
-        unlogged(written, pid, past),
-    ];
-    assert_eq!(expected, first);
-    assert_eq!(expected, again);
+    let [stale, _] = past_end(pid, end, past);
+    assert_eq!(
+        Finding::Page {
+            pid,
+            damage: refused.unwrap_err()
+        },
+        stale
+    );
+    let (end, (first, again)) = opened(&mut sim, |p| (p.verify().findings, p.verify().findings));
+    assert_eq!(past_end(pid, end, past).to_vec(), first);
+    assert_eq!(first, again);
+    let at = pid.0 as usize * PAGE;
+    assert_eq!(
+        planted[NAME][at..at + PAGE],
+        sim.files()[NAME][at..at + PAGE]
+    );
 }
 
 #[test]
