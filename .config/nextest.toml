@@ -16,27 +16,27 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 
 # A test that calls `raise_cap` holds the slots its cap covers: the cap over the default, rounded up.
 [[profile.default.overrides]]
-filter = "test(=a_cut_that_loses_a_later_bitmap_group_refuses_the_select)"
+filter = "test(=truncated_open::a_cut_that_loses_a_later_bitmap_group_refuses_the_select)"
 threads-required = 3
 
 [[profile.default.overrides]]
-filter = "test(=a_cut_losing_a_group_with_large_values_refuses_marks_and_stays_marked)"
+filter = "test(=lost_bitmap::a_cut_losing_a_group_with_large_values_refuses_marks_and_stays_marked)"
 threads-required = 2
 
 [[profile.default.overrides]]
-filter = "test(=a_blank_status_page_refuses_and_never_aborts_committed_rows)"
+filter = "test(=lost_bitmap::a_blank_status_page_refuses_and_never_aborts_committed_rows)"
 threads-required = 2
 
 [[profile.default.overrides]]
-filter = "test(=no_crash_while_crossing_a_group_refuses_a_healthy_file)"
+filter = "test(=lost_bitmap::no_crash_while_crossing_a_group_refuses_a_healthy_file)"
 threads-required = 2
 
 [[profile.default.overrides]]
-filter = "test(=a_crash_in_recovery_then_a_cut_never_reuses_a_named_page)"
+filter = "test(=lost_bitmap::a_crash_in_recovery_then_a_cut_never_reuses_a_named_page)"
 threads-required = 2
 
 [[profile.default.overrides]]
-filter = "test(=a_crash_at_each_stage_keeps_an_index_that_finds_every_row_and_leaks_nothing)"
+filter = "test(=reindex::a_crash_at_each_stage_keeps_an_index_that_finds_every_row_and_leaks_nothing)"
 threads-required = 2
 
 # A test that spawns a capped binary belongs to the group naming the slots it holds. `test_child`
@@ -53,29 +53,29 @@ test-group = "slots-2"
 
 [[profile.default.overrides]]
 filter = """
-binary(=server_adhoc) and (
-  test(=a_chain_of_different_ors_runs_on_the_reduced_stack) or
-  test(=a_chain_of_match_arms_runs_to_its_limit) or
-  test(=a_comprehension_chain_runs_to_its_limit) or
-  test(=a_function_chain_over_sets_runs_to_its_limit) or
-  test(=a_function_chain_runs_to_its_limit) or
-  test(=a_long_chain_of_lets_answers_and_does_not_take_the_stack) or
-  test(=a_long_chain_of_operators_answers_and_does_not_take_the_stack) or
-  test(=a_match_chain_runs_to_its_limit) or
-  test(=a_nesting_of_fixpoints_at_its_limit_runs_on_the_reduced_stack) or
-  test(=a_record_nesting_runs_to_its_limit) or
-  test(=a_set_nesting_runs_to_its_limit) or
-  test(=a_transact_of_a_thousand_inserts_runs_and_explains_on_the_reduced_stack) or
-  test(=a_type_one_level_past_its_limit_is_refused_for_its_height) or
-  test(=a_very_deep_type_is_refused_on_a_default_stack) or
-  test(=a_wide_doubling_at_its_limit_runs_on_the_reduced_stack) or
-  test(=a_write_at_the_height_limit_checks_its_constraint_on_the_reduced_stack) or
-  test(=an_aggregate_at_the_height_limit_runs_on_the_reduced_stack) or
-  test(=an_export_at_the_height_limit_runs_on_the_reduced_stack) or
-  test(=an_if_chain_runs_to_its_limit) or
-  test(=an_operator_chain_runs_to_its_limit) or
-  test(=explain_at_the_height_limit_runs_on_the_reduced_stack) or
-  test(=fused_loops_under_the_run_bound_run_on_the_reduced_stack)
+package(=adtb-sim) and binary(=sim) and (
+  test(=server_adhoc::a_chain_of_different_ors_runs_on_the_reduced_stack) or
+  test(=server_adhoc::a_chain_of_match_arms_runs_to_its_limit) or
+  test(=server_adhoc::a_comprehension_chain_runs_to_its_limit) or
+  test(=server_adhoc::a_function_chain_over_sets_runs_to_its_limit) or
+  test(=server_adhoc::a_function_chain_runs_to_its_limit) or
+  test(=server_adhoc::a_long_chain_of_lets_answers_and_does_not_take_the_stack) or
+  test(=server_adhoc::a_long_chain_of_operators_answers_and_does_not_take_the_stack) or
+  test(=server_adhoc::a_match_chain_runs_to_its_limit) or
+  test(=server_adhoc::a_nesting_of_fixpoints_at_its_limit_runs_on_the_reduced_stack) or
+  test(=server_adhoc::a_record_nesting_runs_to_its_limit) or
+  test(=server_adhoc::a_set_nesting_runs_to_its_limit) or
+  test(=server_adhoc::a_transact_of_a_thousand_inserts_runs_and_explains_on_the_reduced_stack) or
+  test(=server_adhoc::a_type_one_level_past_its_limit_is_refused_for_its_height) or
+  test(=server_adhoc::a_very_deep_type_is_refused_on_a_default_stack) or
+  test(=server_adhoc::a_wide_doubling_at_its_limit_runs_on_the_reduced_stack) or
+  test(=server_adhoc::a_write_at_the_height_limit_checks_its_constraint_on_the_reduced_stack) or
+  test(=server_adhoc::an_aggregate_at_the_height_limit_runs_on_the_reduced_stack) or
+  test(=server_adhoc::an_export_at_the_height_limit_runs_on_the_reduced_stack) or
+  test(=server_adhoc::an_if_chain_runs_to_its_limit) or
+  test(=server_adhoc::an_operator_chain_runs_to_its_limit) or
+  test(=server_adhoc::explain_at_the_height_limit_runs_on_the_reduced_stack) or
+  test(=server_adhoc::fused_loops_under_the_run_bound_run_on_the_reduced_stack)
 )
 """
 threads-required = 2

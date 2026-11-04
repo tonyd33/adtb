@@ -274,6 +274,39 @@ fn raised_tests(source: &str) -> Vec<(String, usize)> {
     raised
 }
 
+/// Returns the module path, with a trailing `::`, of a source under `tests/BINARY/`, a module of
+/// the test binary rooted at `tests/BINARY/main.rs`, and the empty string for any other source.
+fn module_prefix(source: &Path) -> String {
+    let parts: Vec<_> = source.iter().filter_map(|part| part.to_str()).collect();
+    let Some(tests) = parts.iter().rposition(|part| *part == "tests") else {
+        return String::new();
+    };
+    let Some(below_binary) = parts.get(tests + 2..) else {
+        return String::new();
+    };
+    below_binary
+        .iter()
+        .map(|part| part.strip_suffix(".rs").unwrap_or(part))
+        .filter(|module| !matches!(*module, "main" | "mod"))
+        .map(|module| format!("{module}::"))
+        .collect()
+}
+
+#[test]
+fn a_module_of_a_test_binary_prefixes_its_tests() {
+    assert_eq!(
+        module_prefix(Path::new("crates/s/tests/sim/lost_bitmap.rs")),
+        "lost_bitmap::"
+    );
+    assert_eq!(
+        module_prefix(Path::new("crates/s/tests/sim/constraints/names.rs")),
+        "constraints::names::"
+    );
+    assert_eq!(module_prefix(Path::new("crates/s/tests/sim/main.rs")), "");
+    assert_eq!(module_prefix(Path::new("crates/s/tests/cap.rs")), "");
+    assert_eq!(module_prefix(Path::new("crates/s/src/lib.rs")), "");
+}
+
 /// Returns each `test(=NAME)` override of a nextest config with its `threads-required`.
 fn slot_overrides(config: &str) -> Vec<(String, usize)> {
     let mut overrides = Vec::new();
@@ -417,7 +450,12 @@ fn every_raised_test_holds_its_slots() {
     rust_sources(&root.join("apps"), &mut sources);
     let raised: Vec<_> = sources
         .iter()
-        .flat_map(|path| raised_tests(&fs::read_to_string(path).expect("a source reads")))
+        .flat_map(|path| {
+            let prefix = module_prefix(path);
+            raised_tests(&fs::read_to_string(path).expect("a source reads"))
+                .into_iter()
+                .map(move |(name, bytes)| (format!("{prefix}{name}"), bytes))
+        })
         .collect();
     assert!(!raised.is_empty(), "the scan finds the raised tests");
     let config = fs::read_to_string(root.join(".config/nextest.toml")).expect("the config reads");

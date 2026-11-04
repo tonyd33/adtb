@@ -40,7 +40,7 @@ fn denied(got: Result<(), Error>) {
     );
 }
 
-const CATALOG_SPEC: &str = include_str!("../../../docs/spec/catalog.md");
+const CATALOG_SPEC: &str = include_str!("../../../../docs/spec/catalog.md");
 
 /// A row of the command table, by its first column: a statement for each form it runs in today
 /// and the capabilities that decide it, or the statements of a form the engine does not run.
