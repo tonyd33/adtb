@@ -1,0 +1,37 @@
+seed 74
+use auth
+bundle tiers-1.0 pins 1 edition "2026-10"
+  import auth
+  query n () -> I64 = count(t for t in (from u in users select u.tier))
+bundle users-1.0 pins 1 edition "2026-10"
+  import auth
+  query n () -> I64 = count(u for u in users)
+reopen
+
+bundle tiers-1.0 pins 1 edition "2026-10"
+  import auth
+  query n () -> I64 = count(t for t in (from u in users select u.tier))
+bundle users-1.0 pins 1 edition "2026-10"
+  import auth
+  query n () -> I64 = count(u for u in users)
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add field Tier.Paid.seats: I32 fill 1", detail: "bundle tiers-1.0 pins 1: `n` has no translation: it counts the values of `Tier` whole, and its field `seats` differs" } } }
+  module auth
+  add field Tier.Paid.seats: I32 fill 1
+
+bundle users-1.0 pins 1 edition "2026-10"
+  import auth
+  query n () -> I64 = count(u for u in users)
+migrate
+  module auth
+  add field Tier.Paid.seats: I32 fill 1
+
+run
+  transact
+    insert users { name: "ann", tier: Paid { seats: 1 } }
+    insert users { name: "bo", tier: Free }
+    insert users { name: "cy", tier: Paid { seats: 5 } }
+    return 0
+
+call users-1.0 1
+----
+3

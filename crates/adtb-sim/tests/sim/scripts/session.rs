@@ -4,13 +4,23 @@ use std::fmt::Write as _;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
 
-use adtb::{Database, Log, OpenError, OpenOptions};
+use std::collections::BTreeMap;
+use std::time::Duration;
+
+use adtb::catalog::version_hash;
+use adtb::runtime::{Clock, Done, Io, Op, Runtime, Threads};
+use adtb::{
+    CallOptions, Called, Database, DynRows, Error, Log, OpenError, OpenOptions, Registered,
+    Registration,
+};
 use adtb_conformance::engine::{self, Ended};
 use adtb_conformance::{Directive, Got, Kind, panic_message};
+use adtb_lang::evolve::Source;
+use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::textual::{Form, print};
 use adtb_lang::types::Base;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
-use adtb_simkit::api::options;
+use adtb_simkit::api::{options, printed};
 
 use super::read::{self, Head, Step};
 use super::shown;
@@ -88,11 +98,175 @@ impl Differs {
     }
 }
 
+/// Returns the version hash of `migrations` as 64 hex digits, or why it has none.
+fn hash(migrations: &[String]) -> Result<String, String> {
+    let mut source = Source::default();
+    for (v, text) in (1..).zip(migrations) {
+        let file = parse_migration(text, Options::default())
+            .ok()
+            .map_err(|_| format!("migration {v} of the pin does not parse"))?;
+        source = source
+            .migrate(&file, text)
+            .map_err(|_| format!("migration {v} of the pin does not apply"))?;
+    }
+    let schema = source
+        .schema()
+        .map_err(|_| "the pinned schema does not build")?;
+    Ok(version_hash(&schema, &source)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
+/// Returns the bundle file of `header` and `body`, the hash of the first N migrations of `log`
+/// written after `pins N` when the header states none.
+fn bundle_file(header: &str, body: &str, log: &[String]) -> Result<String, String> {
+    let mut words: Vec<String> = header.split(' ').map(str::to_owned).collect();
+    if let Some(i) = words.iter().position(|w| w == "pins")
+        && let Some(n) = words.get(i + 1).and_then(|n| n.parse::<usize>().ok())
+        && !words.get(i + 2).is_some_and(|w| w.starts_with('('))
+    {
+        let past = || format!("`pins {n}` is past the log's {} migrations", log.len());
+        words.insert(
+            i + 2,
+            format!("({})", hash(log.get(..n).ok_or_else(past)?)?),
+        );
+    }
+    Ok(match header {
+        "" => body.to_owned(),
+        _ => format!("bundle {}\n{body}", words.join(" ")),
+    })
+}
+
+/// Advance the simulated clock by `d`.
+fn sleep(rt: &SimRuntime, d: Duration) {
+    let mut io = rt.io();
+    let ticket = io.submit(Op::Timer { at: rt.now() + d });
+    loop {
+        if let Some(c) = io.poll() {
+            assert_eq!(ticket, c.ticket, "the one timer completes");
+            assert_eq!(Ok(Done::Fired), c.result, "the timer fires");
+            return;
+        }
+        rt.park();
+    }
+}
+
+fn refused(e: &Error) -> String {
+    e.value().to_string()
+}
+
+fn rejected(reason: &str) -> String {
+    format!("Rejected {{ reason: {reason} }}")
+}
+
+/// Compare outcome `got` with `want`, a refusal, else the step's rows.
+fn compare(
+    step: &Step,
+    want: Option<&str>,
+    got: Result<Vec<String>, String>,
+) -> Result<(), Differs> {
+    let want = want.map_or_else(|| Ok(step.rows.clone()), |w| Err(rejected(w)));
+    if got == want {
+        return Ok(());
+    }
+    Err(Differs::at(step, "the outcome differs").values(listed(want), listed(got)))
+}
+
+fn listed(r: Result<Vec<String>, String>) -> String {
+    r.map_or_else(|e| e, |rows| format!("[{}]", rows.join(", ")))
+}
+
+/// What a `call` step ended with.
+enum Answer {
+    Bound,
+    Rows(DynRows),
+    Refused(String),
+}
+
+/// Compare the rows of a call with the step's, a set result in printed order, or as a
+/// multiset under `rowsort`.
+fn call_rows(step: &Step, rows: DynRows, rowsort: bool) -> Result<(), Differs> {
+    let form = rows.form().clone();
+    let mut got = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| Differs::at(step, format!("a row fails: {}", refused(&e))))?;
+    got.sort();
+    engine::compare(step.line, &form, got, rowsort, &step.rows).map_err(|d| {
+        let expected = format!("[{}]", step.rows.join(", "));
+        match d.got {
+            Some(Got::Rows(rows)) => Differs::at(step, "the rows differ")
+                .values(expected, format!("[{}]", rows.join(", "))),
+            _ => Differs::at(step, d.message),
+        }
+    })
+}
+
+/// Returns how call `ordinal` of `name` ended, the arguments the queries of `body` evaluate to.
+/// With no `ordinal`, bind `name` and keep the handle in `handles`; else call through the handle
+/// kept for `name` when there is one.
+fn called(
+    db: &Database<SimRuntime>,
+    handles: &mut BTreeMap<String, Registered<SimRuntime>>,
+    step: &Step,
+    name: &str,
+    ordinal: Option<u32>,
+    committed: bool,
+) -> Result<Answer, Differs> {
+    let mut args = Vec::new();
+    for line in step.body.lines() {
+        let mut got = db
+            .query_text(line, &[], &CallOptions::default())
+            .map_err(|e| {
+                Differs::at(
+                    step,
+                    format!("argument `{line}` is refused: {}", refused(&e)),
+                )
+            })?;
+        let (1, Some((Some(Ok(value)), None))) =
+            (got.len(), got.pop().map(|mut r| (r.next(), r.next())))
+        else {
+            let shown = format!("argument `{line}` is no one value");
+            return Err(Differs::at(step, shown));
+        };
+        args.push(value);
+    }
+    let Some(ordinal) = ordinal else {
+        return Ok(match db.registered(name) {
+            Ok(reg) => {
+                handles.insert(name.to_owned(), reg);
+                Answer::Bound
+            }
+            Err(e) => Answer::Refused(refused(&e)),
+        });
+    };
+    let fresh;
+    let reg = match handles.get(name) {
+        Some(kept) => kept,
+        None => match db.registered(name) {
+            Ok(reg) => {
+                fresh = reg;
+                &fresh
+            }
+            Err(e) => return Ok(Answer::Refused(refused(&e))),
+        },
+    };
+    Ok(match reg.call(ordinal, &args, &CallOptions::default()) {
+        Ok(Called::Rows(rows)) if !committed => Answer::Rows(rows),
+        Ok(Called::Committed(c)) if committed => Answer::Rows(c.value),
+        Ok(Called::Rows(_)) => return Err(Differs::at(step, "the call commits nothing")),
+        Ok(Called::Committed(_)) => return Err(Differs::at(step, "the call commits")),
+        Err(e) => Answer::Refused(refused(&e)),
+    })
+}
+
 struct Script {
     steps: Vec<Step>,
     next: usize,
     log: Vec<String>,
     options: OpenOptions,
+    bundles: Vec<Step>,
+    handles: BTreeMap<String, Registered<SimRuntime>>,
     out: Vec<Differs>,
 }
 
@@ -120,8 +294,8 @@ impl Script {
                 (log, refused.clone())
             }
             Head::Reopen { refused } => (self.log.clone(), refused.clone()),
-            Head::QueryMemory(bytes) => {
-                self.options.query_memory_bytes = *bytes;
+            Head::QueryMemory(_) | Head::Log | Head::Bundle { .. } => {
+                self.closed(&first);
                 return;
             }
             _ => {
@@ -130,7 +304,11 @@ impl Script {
                 return;
             }
         };
-        let opened = Database::open_in(rt.clone(), FILE, &Log::new(log.clone()), &self.options);
+        let options = OpenOptions {
+            registrations: self.registrations(&log),
+            ..self.options.clone()
+        };
+        let opened = Database::open_in(rt.clone(), FILE, &Log::new(log.clone()), &options);
         let db = match (opened, refused) {
             (Ok(db), want) => {
                 self.log = log;
@@ -164,17 +342,56 @@ impl Script {
                 break;
             }
             self.next += 1;
-            if let Err(d) = self.step(&db, &step) {
+            if let Err(d) = self.step(rt, &db, &step) {
                 self.out.push(d);
             }
         }
+        self.handles.clear();
         if let Err(e) = db.close() {
             let closed = format!("the database does not close: {}", e.value());
             self.out.push(Differs::at(&first, closed));
         }
     }
 
-    fn step(&mut self, db: &Database<SimRuntime>, step: &Step) -> Result<(), Differs> {
+    /// Returns the registrations of the bundles stated since the last open, each bundle file that
+    /// differs from its step a difference.
+    fn registrations(&mut self, log: &[String]) -> Vec<Registration> {
+        let mut out = Vec::new();
+        for step in std::mem::take(&mut self.bundles) {
+            let Head::Bundle {
+                header,
+                refused: want,
+                ..
+            } = &step.head
+            else {
+                unreachable!("only bundle steps are pending")
+            };
+            let got = bundle_file(header, &step.body, log)
+                .map(|text| Registration::bundle(text).map_err(|e| refused(&e)));
+            match got.map(|r| r.map(|reg| out.push(reg)).map(|()| Vec::new())) {
+                Err(e) => self.out.push(Differs::at(&step, e)),
+                Ok(got) => self.out.extend(compare(&step, want.as_deref(), got).err()),
+            }
+        }
+        out
+    }
+
+    /// Run a step that needs no open database.
+    fn closed(&mut self, step: &Step) {
+        match &step.head {
+            Head::QueryMemory(bytes) => self.options.query_memory_bytes = *bytes,
+            Head::Log => self.log.extend(read::migrations(&step.body)),
+            Head::Bundle { .. } => self.bundles.push(step.clone()),
+            _ => unreachable!("session runs only these before an open"),
+        }
+    }
+
+    fn step(
+        &mut self,
+        rt: &SimRuntime,
+        db: &Database<SimRuntime>,
+        step: &Step,
+    ) -> Result<(), Differs> {
         let conformance = |kind| Directive {
             line: step.line,
             kind,
@@ -184,10 +401,26 @@ impl Script {
             Head::Seed(_) | Head::Use(_) | Head::Migrate { .. } | Head::Reopen { .. } => {
                 unreachable!("read takes seeds and uses, and session takes opens")
             }
-            Head::QueryMemory(bytes) => {
-                self.options.query_memory_bytes = *bytes;
+            Head::QueryMemory(_) | Head::Log | Head::Bundle { .. } => {
+                self.closed(step);
                 Ok(())
             }
+            Head::Advance(d) => {
+                sleep(rt, *d);
+                Ok(())
+            }
+            Head::Call {
+                name,
+                ordinal,
+                committed,
+                rowsort,
+                error,
+            } => match called(db, &mut self.handles, step, name, *ordinal, *committed)? {
+                Answer::Rows(rows) if error.is_none() => call_rows(step, rows, *rowsort),
+                Answer::Rows(rows) => compare(step, error.as_deref(), Ok(printed(rows))),
+                Answer::Bound => compare(step, error.as_deref(), Ok(Vec::new())),
+                Answer::Refused(got) => compare(step, error.as_deref(), Err(got)),
+            },
             Head::Role(name) => db
                 .role_authority()
                 .create_role(name)
@@ -210,7 +443,7 @@ impl Script {
                 })
             }
             Head::Error(reason) => {
-                let want = format!("Rejected {{ reason: {reason} }}");
+                let want = rejected(reason);
                 match engine::ended(db, step.line, &step.body)
                     .map_err(|d| Differs::at(step, d.message))?
                 {
@@ -247,6 +480,8 @@ pub(super) fn run_file(path: &Path) -> Vec<String> {
         next: start,
         log: Vec::new(),
         options: options(4),
+        bundles: Vec::new(),
+        handles: BTreeMap::new(),
         out: Vec::new(),
     };
     let ran = panic::catch_unwind(AssertUnwindSafe(|| {
@@ -259,6 +494,8 @@ pub(super) fn run_file(path: &Path) -> Vec<String> {
         None
     }));
     let mut out: Vec<String> = script.out.iter().map(Differs::shown).collect();
+    let unopened = |s| Differs::at(s, "no open registers the bundle").shown();
+    out.extend(script.bundles.iter().map(unopened));
     match ran {
         Ok(None) => {}
         Ok(Some(crash)) => out.push(crash),

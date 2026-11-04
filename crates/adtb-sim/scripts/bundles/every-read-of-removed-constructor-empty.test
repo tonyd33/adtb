@@ -1,0 +1,54 @@
+seed 85
+use auth
+use auth-google-removed
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query body () -> Set Text = from g in identities.Google select g.gid
+  query header () -> Set (Key users) = from g in identities.Google select g.user
+  query keys () -> Set (Key identities) = from g in identities.Google select key g
+  query matched () -> Set Text = from g in identities.Google select match g
+    | Google x -> x.gid
+  query joined () -> Set Text =
+    from u in users, g in identities.Google where g.user == key u select u.name
+  query selfjoin () -> Set Text =
+    from a in identities.Google, b in identities.Google where key a == key b select a.gid
+  query filtered () -> Set Text = from g in identities.Google where g.gid == "x" select g.gid
+  query nested () -> Set Text =
+    from u in users
+    where exists g in identities.Google where g.user == key u
+    select u.name
+  query crossed () -> Set Text = from g in identities.Google, h in identities.Google select h.gid
+reopen
+
+run
+  transact
+    let u = insert users { name: "ann", tier: Free }
+    insert identities.EmailPass { user: key u, email: "x" }
+    return 0
+
+call web-1.0 1
+----
+
+call web-1.0 2
+----
+
+call web-1.0 3
+----
+
+call web-1.0 4
+----
+
+call web-1.0 5
+----
+
+call web-1.0 6
+----
+
+call web-1.0 7
+----
+
+call web-1.0 8
+----
+
+call web-1.0 9
+----

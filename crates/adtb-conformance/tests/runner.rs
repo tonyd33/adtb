@@ -167,7 +167,7 @@ fn an_unknown_directive_does_not_read() {
 #[test]
 fn a_query_without_its_rule_does_not_read() {
     assert_eq!(
-        (1, "a query's rows follow `----`".to_string()),
+        (1, "`query` takes its rows after `----`".to_string()),
         refused("query\n  1\n1\n")
     );
 }

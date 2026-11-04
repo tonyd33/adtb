@@ -1,0 +1,6 @@
+# Identity gains an Apple constructor, enabled in identities, as the log's next two migrations.
+log
+  module auth
+  add constructor Identity.Apple { sub: Text }
+  module auth
+  enable identities.Apple

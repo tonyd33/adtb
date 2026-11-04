@@ -1,0 +1,16 @@
+seed 87
+use auth
+use auth-hash
+bundle web-1.0 pins 2 edition "2026-10"
+  import auth
+  query pairs () -> Set { a: Identity.Google, b: Identity.EmailPass } =
+    from g in identities.Google, e in identities.EmailPass select { a: g, b: e }
+reopen
+
+bundle web-1.0 pins 2 edition "2026-10"
+  import auth
+  query pairs () -> Set { a: Identity.Google, b: Identity.EmailPass } =
+    from g in identities.Google, e in identities.EmailPass select { a: g, b: e }
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "drop field Identity.EmailPass.hash", detail: "bundle web-1.0 pins 2: `pairs` has no translation: it returns `Identity` whole, and its field `hash` differs" } } }
+  module auth
+  drop field Identity.EmailPass.hash

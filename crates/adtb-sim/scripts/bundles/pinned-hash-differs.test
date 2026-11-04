@@ -1,0 +1,4 @@
+seed 7
+use auth
+bundle web-1.0 pins 1 (0000000000000000000000000000000000000000000000000000000000000000) edition "2026-10" use names
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Invalid { detail: "bundle web-1.0 pins version 1 with hash 0000000000000000000000000000000000000000000000000000000000000000, and the log's version 1 has hash 8c51cb1119c443dca8943c1b8a1307c3c3595a343380c1cbc48d689dd1f429ba" } } }

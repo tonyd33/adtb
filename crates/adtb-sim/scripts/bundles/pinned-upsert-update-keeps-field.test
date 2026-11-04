@@ -1,0 +1,30 @@
+seed 78
+use auth
+log
+  module auth
+  add field Identity.EmailPass.verified: Bool fill false
+  module auth
+  add default identities.EmailPass.verified = true
+bundle web-1.0 pins 1 edition "2026-10" use ids
+bundle put-1.0 pins 1 edition "2026-10" use reput
+reopen
+
+call web-1.0 1 committed
+  "ann"
+  "a@x"
+----
+identities.key(1)
+
+run
+  update i in identities.EmailPass set EmailPass { i with verified: false }
+
+call put-1.0 1 committed
+  "a@y"
+----
+"a@y"
+
+# An update keeps the row's value.
+query
+  from i in identities.EmailPass select i.email ++ ":" ++ (if i.verified then "t" else "f")
+----
+"a@y:f"

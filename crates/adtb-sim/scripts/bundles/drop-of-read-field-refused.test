@@ -1,0 +1,10 @@
+seed 66
+use auth
+use auth-hash
+bundle web-1.0 pins 2 edition "2026-10" use hashes
+reopen
+
+bundle web-1.0 pins 2 edition "2026-10" use hashes
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "drop field Identity.EmailPass.hash", detail: "bundle web-1.0 pins 2: `hashes` has no translation: it reads field `hash` of `Identity`, which the current version lacks" } } }
+  module auth
+  drop field Identity.EmailPass.hash

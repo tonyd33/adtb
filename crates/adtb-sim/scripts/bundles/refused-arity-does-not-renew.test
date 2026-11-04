@@ -1,0 +1,21 @@
+seed 60
+use auth
+bundle web-1.0 pins 1 edition "2026-10" lease 1d use names
+reopen
+
+call web-1.0
+
+query
+  from b in catalog::bundles select b.renewed
+----
+2026-01-01T00:00:00.145848Z
+
+advance 4h
+
+call web-1.0 1 error Invalid { detail: "`names` takes 0 arguments, not 1" }
+  1
+
+query
+  from b in catalog::bundles select b.renewed
+----
+2026-01-01T00:00:00.145848Z

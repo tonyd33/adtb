@@ -1,0 +1,7 @@
+# Notes gain a Link constructor, enabled, after Plain.
+use notes
+log
+  module auth
+  add constructor Note.Link { url: Text }
+  module auth
+  enable notes.Link

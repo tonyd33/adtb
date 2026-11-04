@@ -1,0 +1,3 @@
+import auth
+query emails () -> Set Text = from i in identities.EmailPass select i.email
+query hashes () -> Set Text = from i in identities.EmailPass select i.hash

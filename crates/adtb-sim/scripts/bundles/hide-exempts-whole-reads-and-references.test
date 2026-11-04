@@ -1,0 +1,10 @@
+seed 24
+use hiding
+
+call web-1.0 1
+----
+users.key(1)
+
+call web-1.0 2
+----
+users.key(1)

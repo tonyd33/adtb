@@ -1,0 +1,38 @@
+seed 96
+log
+  module shop
+  add module shop
+  add type Item = { sku: Text, cents: I64 }
+  add relation items : Item key sku
+  add relation olds : Item key sku
+  module shop
+  add field Item.currency: Text fill "USD"
+  module shop
+  add default items.currency = "ITM"
+  module shop
+  add default olds.currency = "OLD"
+bundle shop-1.0 pins 1 edition "2026-10"
+  import shop
+  txn both (s: Text, n: I64) -> Text =
+    transact
+      let i = Item { sku: s, cents: 10 / n }
+      insert items i
+      insert olds i
+      return s
+reopen
+
+call shop-1.0 1 committed
+  "a"
+  2
+----
+"a"
+
+query
+  from i in items select i.sku ++ ":" ++ i.currency
+----
+"a:ITM"
+
+query
+  from i in olds select i.sku ++ ":" ++ i.currency
+----
+"a:OLD"

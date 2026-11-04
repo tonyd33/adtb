@@ -1,0 +1,14 @@
+seed 91
+use hiding
+
+call web-1.0 2
+----
+users.key(1)
+
+call web-1.0 3
+----
+Google { id: identities.key(1), user: users.key(1), gid: "g-ann" }
+
+call web-1.0 4
+----
+"g-ann"

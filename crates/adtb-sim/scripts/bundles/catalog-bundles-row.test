@@ -1,0 +1,24 @@
+seed 3
+use auth
+bundle web-app-2.4 pins 1 edition "2026-10" lease 90d hide new constructors use names
+reopen
+
+query
+  from b in catalog::bundles select { name: b.name, family: b.family, owner: b.owner, edition: b.edition, hides_new: b.hides_new }
+----
+{ edition: "2026-10", family: "web-app", hides_new: True, name: "web-app-2.4", owner: "owner" }
+
+query
+  from b in catalog::bundles, m in catalog::migrations where b.pins == key m select b.hash == m.hash
+----
+True
+
+query
+  from b in catalog::bundles select (match b.lease | Some l -> l.value == 90d | None -> false)
+----
+True
+
+query
+  from b in catalog::bundles select (match b.state | Active -> "active" | Superseded _ -> "superseded" | Retired _ -> "retired")
+----
+"active"

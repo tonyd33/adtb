@@ -1,0 +1,4 @@
+seed 6
+use auth
+bundle web-1.0 pins 2 (0000000000000000000000000000000000000000000000000000000000000000) edition "2026-10" use names
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Invalid { detail: "bundle web-1.0 pins version 2, which the log does not hold: it is at version 1" } } }

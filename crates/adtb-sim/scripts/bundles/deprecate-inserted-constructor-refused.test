@@ -1,0 +1,9 @@
+seed 68
+use auth
+bundle web-1.0 pins 1 edition "2026-10" use ids
+reopen
+
+bundle web-1.0 pins 1 edition "2026-10" use ids
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "deprecate identities.Google", detail: "bundle web-1.0 pins 1: `link` has no translation: it writes `Identity.Google`, which is deprecated now" } } }
+  module auth
+  deprecate identities.Google

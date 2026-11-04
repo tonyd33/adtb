@@ -1,0 +1,8 @@
+seed 9
+use auth
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query subs () -> Set Text = from a in identities.Apple select a.sub
+migrate refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Invalid { detail: "query `subs`: `Apple` is neither a constructor of `Identity` nor a named set of `identities`" } } }
+  module auth
+  add constructor Identity.Apple { sub: Text }

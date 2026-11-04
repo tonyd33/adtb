@@ -1,0 +1,17 @@
+seed 39
+use auth
+bundle web-1.0 pins 1 edition "2026-10" use names
+reopen
+
+run
+  retire bundle web-1.0
+
+reopen
+
+query
+  from b in catalog::bundles select b.name ++ " " ++ (match b.state | Active -> "active" | Superseded _ -> "superseded" | Retired _ -> "retired")
+----
+"web-1.0 retired"
+
+bundle web-1.0 pins 1 edition "2026-10" use names
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Retired { bundle: "web-1.0" } } }

@@ -1,0 +1,12 @@
+seed 42
+use auth
+bundle web-1.0 pins 1 edition "2026-10" use names
+bundle web-1.1 pins 1 edition "2026-10" use names
+reopen
+
+call web-1.0
+
+run
+  supersede bundle web-1.0 by web-1.1
+
+call web-1.0 1 error BundleSuperseded { bundle: "web-1.0" }

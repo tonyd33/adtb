@@ -1,0 +1,4 @@
+# The hiding fixture with a session of the Apple identity.
+use hiding
+run
+  insert sessions { id: sessions.key(2), who: identities.key(2) }

@@ -1,0 +1,45 @@
+seed 199
+use auth
+log
+  module auth
+  add type Note { id: Key notes } = Removed { body: Text } | Plain { body: Text }
+  add relation notes : Note key id generate sequence
+  module auth
+  deprecate notes.Removed
+  module auth
+  remove constructor Note.Removed
+  module auth
+  rename constructor Note.Plain to Prose
+  module auth
+  add constructor Note.Link { url: Text }
+  module auth
+  enable notes.Link
+bundle web-1.0 pins 2 edition "2026-10" hide new constructors
+  import auth
+  txn first () -> I64 =
+    transact
+      insert notes.Plain { id: notes.key(1), body: "x" }
+        unless conflict on key else update old set new
+      return 0
+  txn second () -> I64 =
+    transact
+      insert notes.Plain { id: notes.key(2), body: "x" }
+        unless conflict on key else update old set new
+      return 0
+reopen
+
+run
+  insert notes.Prose { id: notes.key(1), body: "a" }
+  insert notes.Link { id: notes.key(2), url: "u" }
+
+call web-1.0 1 committed
+----
+0
+
+call web-1.0 2 error KeyViolation { relation: "auth::notes", key: "notes.key(2)" }
+
+query rowsort
+  from n in notes select n
+----
+Link { id: notes.key(2), url: "u" }
+Prose { id: notes.key(1), body: "x" }

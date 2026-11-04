@@ -1,0 +1,9 @@
+seed 99
+use auth
+bundle web-1.0 pins 1 edition "2026-10" use names
+reopen
+
+bundle web-1.0 pins 1 edition "2026-10" use names
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "adopt tzdb \"2026b\" from \"tz-2026b.tzif\"", detail: "bundle web-1.0 pins 1: `names` has no translation: the release data `tz-2026b.tzif` is not available" } } }
+  module auth
+  adopt tzdb "2026b" from "tz-2026b.tzif"

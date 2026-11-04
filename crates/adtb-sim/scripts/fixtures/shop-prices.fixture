@@ -1,0 +1,7 @@
+# Prices, priced or gratis, and their archive, as the log's first migration.
+log
+  module shop
+  add module shop
+  add type Price { sku: Text } = Priced { cents: I64 } | Gratis
+  add relation prices : Price key sku
+  add relation archive : Price key sku

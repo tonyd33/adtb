@@ -1,0 +1,52 @@
+seed 90
+use shop-prices
+log
+  module shop
+  add field Price.Priced.currency: Text fill "USD"
+  module shop
+  add default archive.Priced.currency = "ARC"
+bundle shop-1.0 pins 1 edition "2026-10"
+  import shop
+  txn archive_all () -> I64 =
+    transact
+      insert archive from (from p in prices where p.sku != "" select p)
+      return 0
+  txn keep (s: Text) -> Text =
+    transact
+      match prices.key(s)
+        | Priced p -> insert archive.Priced p
+        | Gratis g -> skip
+      return s
+reopen
+
+run
+  insert prices.Priced { sku: "a", cents: 1, currency: "EUR" }
+
+call shop-1.0 1 committed
+----
+0
+
+# A row a `for` binds.
+query
+  from a in archive select match a
+    | Priced p -> p.sku ++ ":" ++ p.currency
+    | Gratis g -> g.sku
+----
+"a:ARC"
+
+run
+  insert prices.Priced { sku: "b", cents: 2, currency: "EUR" }
+
+call shop-1.0 2 committed
+  "b"
+----
+"b"
+
+# A row a `match` binds.
+query rowsort
+  from a in archive select match a
+    | Priced p -> p.sku ++ ":" ++ p.currency
+    | Gratis g -> g.sku
+----
+"a:ARC"
+"b:ARC"

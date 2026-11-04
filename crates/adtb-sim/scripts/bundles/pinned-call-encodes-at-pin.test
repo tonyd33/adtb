@@ -1,0 +1,32 @@
+seed 60
+use auth
+log
+  module auth
+  rename constructor Tier.Paid to Pro
+  module auth
+  rename field User.name to display
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query tiered (t: Tier) -> Set Text = from u in users where u.tier == t select u.name
+  query tiers () -> Set Tier = from u in users select u.tier
+  query people () -> Set User = from u in users select u
+reopen
+
+run
+  insert users { display: "ann", tier: Pro }
+  insert users { display: "bo", tier: Free }
+
+call web-1.0 1
+  Pro
+----
+"ann"
+
+call web-1.0 2
+----
+Free
+Paid
+
+call web-1.0 3
+----
+User { id: users.key(1), name: "ann", tier: Paid }
+User { id: users.key(2), name: "bo", tier: Free }

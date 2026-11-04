@@ -1,0 +1,35 @@
+seed 87
+use auth
+use notes
+log
+  module auth
+  add constructor Note.Link { url: Text }
+bundle web-1.0 pins 2 edition "2026-10"
+  import auth
+  query whole () -> Set Text = from n in notes select n.body
+  query named () -> Set Text = from n in notes.Plain select n.body
+  txn rewrite () -> I64 =
+    transact
+      insert notes.Plain from (from x in notes.Plain select { id: x.id, body: x.body })
+        unless conflict on key else update old set new
+      return 0
+reopen
+
+run
+  insert notes.Plain { body: "a" }
+
+call web-1.0 1
+----
+"a"
+
+call web-1.0 2
+----
+"a"
+
+call web-1.0 3 committed
+----
+0
+
+call web-1.0 1
+----
+"a"

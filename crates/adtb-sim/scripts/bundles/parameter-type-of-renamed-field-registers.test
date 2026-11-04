@@ -1,0 +1,11 @@
+seed 71
+use auth
+log
+  module auth
+  rename field User.name to display
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query same (i: Identity) -> Set Text = from j in identities where key j == i.id select "x"
+reopen
+
+call web-1.0

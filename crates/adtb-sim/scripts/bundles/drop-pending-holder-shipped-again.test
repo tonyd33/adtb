@@ -1,0 +1,8 @@
+seed 41
+use no-blank
+
+bundle web-1.0 pins 2 edition "2026-10" use names
+reopen
+
+error Violated { constraint: "auth::no_blank", report: 1 rows, redacted: 0 }
+  insert users { name: "", tier: Free }

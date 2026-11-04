@@ -1,0 +1,21 @@
+seed 5
+use auth
+log
+  module auth
+  define fn shown (u: User) -> Text = u.name
+bundle web-1.0 pins 2 edition "2026-10"
+  import auth
+  import fn shown
+  query names () -> Set Text = from u in users select u.name
+  txn add (n: Text) -> Key users =
+    transact
+      let u = insert users { name: n, tier: Free }
+      return key u
+reopen
+
+query rowsort
+  from r in catalog::registered where r.bundle.name == "web-1.0" select { name: r.name, ordinal: r.ordinal, kind: match r | Query _ -> "query" | Txn _ -> "txn" | ImportedFn _ -> "fn" }
+----
+{ kind: "fn", name: "shown", ordinal: 1 }
+{ kind: "query", name: "names", ordinal: 2 }
+{ kind: "txn", name: "add", ordinal: 3 }

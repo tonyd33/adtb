@@ -1,0 +1,7 @@
+import auth
+query emails () -> Set Text = from i in identities.EmailPass select i.email
+txn join (n: Text, e: Text, h: Text) -> Key identities =
+  transact
+    let u = insert users { name: n, tier: Free }
+    let i = insert identities.EmailPass { user: key u, email: e, hash: h }
+    return key i

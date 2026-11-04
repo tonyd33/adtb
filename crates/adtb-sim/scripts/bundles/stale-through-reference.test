@@ -1,0 +1,7 @@
+seed 23
+use auth
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query whose () -> Set Key users = from s in sessions select s.who.user
+use auth-apple
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: BundleStale { bundle: "web-1.0", ctor: "identities.Apple" } } }

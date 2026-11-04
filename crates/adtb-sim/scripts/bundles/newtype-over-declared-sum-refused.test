@@ -1,0 +1,6 @@
+seed 983
+use auth
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "a newtype is over a base type" } } }
+  module auth
+  add type T = A | B
+  add type U = new T

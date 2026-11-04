@@ -1,0 +1,13 @@
+seed 32
+use auth
+bundle web-1.0 pins 1 edition "2026-10" lease 1d use names
+reopen
+
+advance 1470m
+
+call web-1.0 1
+----
+
+advance 40m
+
+call web-1.0 error BundleExpired { bundle: "web-1.0", query: "" }

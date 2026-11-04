@@ -1,0 +1,15 @@
+seed 89
+use auth
+use auth-hash
+bundle web-1.0 pins 2 edition "2026-10" use hashes
+bundle web-1.1 pins 2 edition "2026-10" use names
+reopen
+
+run
+  supersede bundle web-1.0 by web-1.1
+
+bundle web-1.0 pins 2 edition "2026-10" use hashes
+bundle web-1.1 pins 2 edition "2026-10" use names
+migrate refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: BundleExpired { bundle: "web-1.0", query: "web-1.0::hashes" } } }
+  module auth
+  drop field Identity.EmailPass.hash

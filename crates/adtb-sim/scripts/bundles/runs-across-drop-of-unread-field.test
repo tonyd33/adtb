@@ -1,0 +1,21 @@
+seed 65
+use auth
+use auth-hash
+bundle web-1.0 pins 2 edition "2026-10" use emails-only
+reopen
+
+bundle web-1.0 pins 2 edition "2026-10" use emails-only
+migrate
+  module auth
+  drop field Identity.EmailPass.hash
+
+call web-1.0 2 committed
+  "ann"
+  "a@x"
+  "h"
+----
+identities.key(1)
+
+call web-1.0 1
+----
+"a@x"

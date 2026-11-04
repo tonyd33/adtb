@@ -1,0 +1,26 @@
+seed 73
+use auth
+bundle web-1.0 pins 1 edition "2026-10" use names
+bundle ids-1.0 pins 1 edition "2026-10" use logins
+reopen
+
+bundle web-1.0 pins 1 edition "2026-10" use names
+bundle ids-1.0 pins 1 edition "2026-10" use logins
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "split constructor Tier.Paid into Monthly | Yearly", detail: "bundle web-1.0 pins 1: `names` has no translation: it reaches what the operator changes, and this engine does not translate across it" } } }
+  module auth
+  split constructor Tier.Paid into Monthly | Yearly
+    by match
+      | Paid -> Monthly
+
+bundle ids-1.0 pins 1 edition "2026-10" use logins
+migrate
+  module auth
+  split constructor Tier.Paid into Monthly | Yearly
+    by match
+      | Paid -> Monthly
+use logins
+
+call ids-1.0 1
+----
+"a@x"
+"g1"

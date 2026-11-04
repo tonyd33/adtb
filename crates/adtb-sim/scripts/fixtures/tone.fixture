@@ -1,0 +1,6 @@
+# Marks of a value type Tone with one constructor, Ink, as the log's next migration.
+log
+  module auth
+  add type Tone = Ink { depth: I64 }
+  add type Mark = { id: Key marks, tone: Tone }
+  add relation marks : Mark key id generate sequence

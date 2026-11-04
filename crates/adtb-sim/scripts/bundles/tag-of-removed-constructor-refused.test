@@ -1,0 +1,7 @@
+seed 36
+use auth
+use abc
+bundle web-1.0 pins 2 edition "2026-10"
+  import auth
+  query a () -> Tag T = A
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Untranslatable { query: "web-1.0::a", detail: "across `remove constructor T.A`: it builds `T.A`, which the current version lacks" } } }

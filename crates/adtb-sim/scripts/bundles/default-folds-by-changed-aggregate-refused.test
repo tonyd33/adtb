@@ -1,0 +1,12 @@
+seed 1005
+use auth
+use aggregates
+log
+  module auth
+  drop aggregate total
+  define aggregate total (x: I64) -> I64 = state { n: I64 } init { n: 0 } step (s, x) -> { n: s.n + x } merge (a, b) -> { n: a.n + b.n } finish s -> s.n + 0
+  module auth
+  add field H.R.x: Option I64 fill None
+  add default hs.R.x = total(v for v in [1, 2])
+bundle web-1.0 pins 2 edition "2026-10" use filled-put
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Untranslatable { query: "web-1.0::put", detail: "across `define aggregate total (x: I64) -> I64 = state { n: I64 } init { n: 0 } step (s, x) -> { n: s.n + x } merge (a, b) -> { n: a.n + b.n } finish s -> s.n + 0`: it folds by an aggregate whose code changed since the pin" } } }

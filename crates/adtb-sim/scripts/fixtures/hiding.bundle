@@ -1,0 +1,9 @@
+import auth
+query ids () -> Set Key users = from i in identities select i.user
+query whose () -> Set Key users = from s in sessions select s.who.user
+query whole () -> Set Identity = from s in sessions select (match s.who
+  | EmailPass e -> e
+  | Google g -> g)
+query names () -> Set Text = from s in sessions select (match s.who
+  | EmailPass e -> e.email
+  | Google g -> g.gid)

@@ -1,0 +1,9 @@
+seed 30
+use auth
+use auth-gold
+reopen
+
+bundle web-1.0 pins 1 edition "2026-10" use names
+migrate at 2
+
+call web-1.0

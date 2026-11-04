@@ -1,0 +1,6 @@
+seed 38
+use auth
+reopen
+
+error UnknownBundle { bundle: "web-9.9" }
+  retire bundle web-9.9

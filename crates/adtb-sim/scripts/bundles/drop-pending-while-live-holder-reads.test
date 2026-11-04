@@ -1,0 +1,5 @@
+seed 40
+use no-blank
+
+error Violated { constraint: "auth::no_blank", report: 1 rows, redacted: 0 }
+  insert users { name: "", tier: Free }

@@ -1,0 +1,22 @@
+seed 29
+use auth
+use auth-apple
+bundle web-3.0 pins 3 edition "2026-10"
+  import auth
+  query ids () -> Set Key users = from i in identities select i.user
+reopen
+
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query ids () -> Set Key users = from i in identities select i.user
+migrate at 2 refused DowngradeRefused { cause: "bundle web-1.0, pinned at version 1, reads identities.Apple, enabled since" }
+
+bundle web-3.0 pins 3 edition "2026-10"
+  import auth
+  query ids () -> Set Key users = from i in identities select i.user
+reopen
+
+query
+  from b in catalog::bundles select b.name ++ " " ++ (match b.state | Active -> "active" | Superseded _ -> "superseded" | Retired _ -> "retired")
+----
+"web-3.0 active"

@@ -1,0 +1,15 @@
+seed 47
+use auth
+bundle web-1.0 pins 1 edition "2026-10" lease 1d use names
+reopen
+
+run
+  set setting LeaseGrace = { grace: 3h }
+
+advance 26h
+
+call web-1.0
+
+advance 2h
+
+call web-1.0 error BundleExpired { bundle: "web-1.0", query: "" }

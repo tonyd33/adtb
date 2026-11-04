@@ -1,0 +1,5 @@
+# Notes of one constructor, Plain, as the log's next migration.
+log
+  module auth
+  add type Note { id: Key notes } = Plain { body: Text }
+  add relation notes : Note key id generate sequence

@@ -1,0 +1,29 @@
+seed 86
+use auth
+use auth-hash
+bundle web-1.0 pins 2 edition "2026-10" use hashes
+reopen
+
+run
+  transact
+    let u = insert users { name: "ann", tier: Free }
+    insert identities.EmailPass { user: key u, email: "a@x", hash: "h" }
+    return 0
+
+bundle web-1.0 pins 2 edition "2026-10" use hashes
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "drop field Identity.EmailPass.hash", detail: "bundle web-1.0 pins 2: `hashes` has no translation: it reads field `hash` of `Identity`, which the current version lacks" } } }
+  module auth
+  drop field Identity.EmailPass.hash
+
+bundle web-1.0 pins 2 edition "2026-10" use hashes
+reopen
+
+call web-1.0 2
+----
+"h"
+
+query rowsort
+  from m in catalog::migrations select m.version
+----
+migrations.key(1)
+migrations.key(2)

@@ -1,0 +1,14 @@
+seed 980
+use auth
+use filled
+log
+  module auth
+  add type P = X | Y | Z
+  module auth
+  add field H.R.t: Tag P fill X
+  module auth
+  deprecate P.X
+  module auth
+  remove constructor P.X
+bundle web-1.0 pins 2 edition "2026-10" use filled-put
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Untranslatable { query: "web-1.0::put", detail: "across `remove constructor P.X`: it builds `P.X`, which the current version lacks" } } }

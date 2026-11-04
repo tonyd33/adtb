@@ -1,0 +1,9 @@
+seed 81
+use auth
+bundle web-1.0 pins 1 edition "2026-10" use ids
+reopen
+
+bundle web-1.0 pins 1 edition "2026-10" use ids
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "disable identities.Google", detail: "bundle web-1.0 pins 1: `link` has no translation: it writes `Identity.Google`, which is declared now" } } }
+  module auth
+  disable identities.Google

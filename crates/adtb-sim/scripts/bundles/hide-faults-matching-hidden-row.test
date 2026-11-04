@@ -1,0 +1,4 @@
+seed 94
+use hidden-session
+
+call web-1.0 4 error Faulted { fault: NoSuchRow }

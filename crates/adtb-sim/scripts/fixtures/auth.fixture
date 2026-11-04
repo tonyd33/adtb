@@ -1,0 +1,14 @@
+# The auth schema: users of a tier, their identities by email or Google, and sessions, as the
+# log's first migration, applied at the next open.
+log
+  module auth
+  add module auth
+  add type Tier = Free | Paid
+  add type User = { id: Key users, name: Text, tier: Tier }
+  add relation users : User key id generate sequence
+  add type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text }
+    | Google { gid: Text }
+  add relation identities : Identity key id generate sequence
+  add type Session = { id: Key sessions, who: Key identities }
+  add relation sessions : Session key id generate sequence

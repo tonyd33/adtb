@@ -1,0 +1,20 @@
+seed 37
+use auth
+bundle web-1.0 pins 1 edition "2026-10" use names
+reopen
+
+call web-1.0
+
+query
+  retire bundle web-1.0
+----
+Bundle { id: bundles.key(1), name: "web-1.0", family: "web", owner: "owner", pins: migrations.key(1), hash: 0x8c51cb1119c443dca8943c1b8a1307c3c3595a343380c1cbc48d689dd1f429ba, edition: "2026-10", catalog: None, hides_new: False, lease: None, renewed: 2026-01-01T00:00:00.143986Z, priority: Regular, memory_share: None, workers: None, state: Retired { at: 2026-01-01T00:00:00.157750Z } }
+
+call web-1.0 1 error Retired { bundle: "web-1.0" }
+
+call web-1.0 error Retired { bundle: "web-1.0" }
+
+query
+  from b in catalog::bundles select b.name ++ " " ++ (match b.state | Active -> "active" | Superseded _ -> "superseded" | Retired _ -> "retired")
+----
+"web-1.0 retired"

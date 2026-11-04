@@ -1,0 +1,10 @@
+seed 89
+use auth
+use notes
+log
+  module auth
+  add constructor Note.Link { url: Text, body: Text }
+  module auth
+  enable notes.Link
+bundle web-1.0 pins 2 edition "2026-10" use upserts
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: BundleStale { bundle: "web-1.0", ctor: "notes.Link" } } }

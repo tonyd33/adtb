@@ -1,0 +1,13 @@
+seed 1
+use auth
+bundle web-1.0 pins 1 edition "2026-10" use names
+reopen
+
+call web-1.0 2 committed
+  "ann"
+----
+users.key(1)
+
+call web-1.0 1
+----
+"ann"

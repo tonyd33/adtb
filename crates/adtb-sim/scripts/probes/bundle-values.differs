@@ -1,0 +1,11 @@
+scripts/probes/bundle-values.test:2: the outcome differs
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   []
+scripts/probes/bundle-values.test:3: the outcome differs
+  expected: []
+  actual:   Rejected { reason: Invalid { detail: "a bundle's priority is background or regular, not `adhoc`" } }
+scripts/probes/bundle-values.test:4: the outcome differs
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   Rejected { reason: Invalid { detail: "a bundle's priority is background or regular, not `adhoc`" } }
+scripts/probes/bundle-values.test:5: `pins 2` is past the log's 1 migrations
+scripts/probes/bundle-values.test:11: migration 2 of the pin does not parse

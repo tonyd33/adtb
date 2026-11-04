@@ -1,0 +1,2 @@
+import auth
+query tiered (t: Tier) -> Set Text = from u in users where u.tier == t select u.name

@@ -1,0 +1,7 @@
+seed 15
+use auth
+bundle web-1.0 pins 1 edition "2026-10" lease 2d use names
+reopen
+
+bundle web-1.0 pins 1 edition "2026-10" lease 3d use names
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Invalid { detail: "bundle web-1.0 is registered with different content; a new release is a bundle of a new name" } } }

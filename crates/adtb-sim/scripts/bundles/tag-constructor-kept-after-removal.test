@@ -1,0 +1,27 @@
+seed 35
+use auth
+use abc
+bundle web-1.0 pins 2 edition "2026-10"
+  import auth
+  query b () -> Tag T = B
+  query c () -> Tag T = C
+  fn f () -> Tag T = C
+  query called () -> Tag T = f()
+  query chosen () -> Tag T = if 1 == 1 then B else C
+reopen
+
+call web-1.0 1
+----
+B
+
+call web-1.0 2
+----
+C
+
+call web-1.0 3
+----
+C
+
+call web-1.0 4
+----
+B

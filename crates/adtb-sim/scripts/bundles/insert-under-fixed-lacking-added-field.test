@@ -1,0 +1,14 @@
+seed 33
+use auth
+log
+  module auth
+  add field Identity.EmailPass.verified: Bool fill false
+  module auth
+  add default identities.EmailPass.verified = true
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  txn fixed (e: Text) -> Text =
+    transact
+      insert identities from (fix s = [EmailPass { id: identities.key(2), user: users.key(1), email: e }] in s)
+      return e
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Untranslatable { query: "web-1.0::fixed", detail: "across `add field Identity.EmailPass.verified: Bool fill false`: it builds `Identity.EmailPass` without field `verified`, outside a write" } } }

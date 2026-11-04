@@ -1,0 +1,7 @@
+# Aggregates other and total, and a relation hs of one constructor R, as the log's next migration.
+log
+  module auth
+  define aggregate other (x: I64) -> I64 = state { n: I64 } init { n: 0 } step (s, x) -> { n: s.n + x } merge (a, b) -> { n: a.n + b.n } finish s -> s.n + 100
+  define aggregate total (x: I64) -> I64 = state { n: I64 } init { n: 0 } step (s, x) -> { n: s.n + x } merge (a, b) -> { n: a.n + b.n } finish s -> s.n + 0
+  add type H { id: Key hs } = R { n: I32 }
+  add relation hs : H key id generate sequence

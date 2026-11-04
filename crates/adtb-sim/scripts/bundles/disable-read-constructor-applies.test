@@ -1,0 +1,14 @@
+seed 82
+use auth
+bundle web-1.0 pins 1 edition "2026-10" use logins
+reopen
+use one-login
+
+bundle web-1.0 pins 1 edition "2026-10" use logins
+migrate
+  module auth
+  disable identities.Google
+
+call web-1.0 1
+----
+"a@x"

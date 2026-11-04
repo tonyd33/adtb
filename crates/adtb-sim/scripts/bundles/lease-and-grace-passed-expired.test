@@ -1,0 +1,13 @@
+seed 31
+use auth
+bundle web-1.0 pins 1 edition "2026-10" lease 1d use names
+reopen
+
+call web-1.0
+
+advance 26h
+
+# A fresh bind names no query; the call through the handle bound before names its query.
+call web-1.0 error BundleExpired { bundle: "web-1.0", query: "" }
+
+call web-1.0 1 error BundleExpired { bundle: "web-1.0", query: "names" }

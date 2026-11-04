@@ -148,7 +148,8 @@ pub fn blocks(
         let mut rows = Vec::new();
         if takes_rows(line) {
             if lines.get(i) != Some(&"----") {
-                return Err(differ(n, "a query's rows follow `----`"));
+                let word = line.split(' ').next().unwrap_or_default();
+                return Err(differ(n, format!("`{word}` takes its rows after `----`")));
             }
             i += 1;
             while i < lines.len()

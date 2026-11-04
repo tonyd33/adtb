@@ -1,0 +1,21 @@
+seed 192
+use auth
+use notes-link
+bundle web-1.0 pins 2 edition "2026-10" hide new constructors
+  import auth
+  txn put () -> I64 =
+    transact
+      insert notes.Plain { id: notes.key(1), body: "x" }
+        unless conflict on key else update old set new
+      return 0
+reopen
+
+run
+  insert notes.Link { id: notes.key(1), url: "u" }
+
+call web-1.0 1 error KeyViolation { relation: "auth::notes", key: "notes.key(1)" }
+
+query
+  from n in notes select n
+----
+Link { id: notes.key(1), url: "u" }

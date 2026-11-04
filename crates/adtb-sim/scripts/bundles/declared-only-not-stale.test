@@ -1,0 +1,10 @@
+seed 21
+use auth
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query ids () -> Set Key users = from i in identities select i.user
+migrate
+  module auth
+  add constructor Identity.Apple { sub: Text }
+
+call web-1.0

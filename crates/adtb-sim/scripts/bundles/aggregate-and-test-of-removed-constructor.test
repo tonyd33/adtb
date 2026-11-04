@@ -1,0 +1,22 @@
+seed 86
+use auth
+use auth-google-removed
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query counted () -> I64 = count(g for g in identities.Google)
+  query present () -> Bool = exists g in identities.Google where g.gid == "x"
+reopen
+
+run
+  transact
+    let u = insert users { name: "ann", tier: Free }
+    insert identities.EmailPass { user: key u, email: "x" }
+    return 0
+
+call web-1.0 1
+----
+0
+
+call web-1.0 2
+----
+False

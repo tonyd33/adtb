@@ -1,0 +1,6 @@
+# A user with an EmailPass login `a@x`.
+run
+  transact
+    let u = insert users { name: "ann", tier: Free }
+    insert identities.EmailPass { user: key u, email: "a@x" }
+    return 0

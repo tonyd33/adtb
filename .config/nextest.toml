@@ -41,7 +41,7 @@ threads-required = 2
 
 # An area test of the engine scripts runs three scripts at once.
 [[profile.default.overrides]]
-filter = "package(=adtb-sim) and binary(=sim) and test(=scripts::oplog)"
+filter = "package(=adtb-sim) and binary(=sim) and (test(=scripts::oplog) | test(=scripts::bundles))"
 threads-required = 3
 
 # A test that spawns a capped binary belongs to the group naming the slots it holds. `test_child`

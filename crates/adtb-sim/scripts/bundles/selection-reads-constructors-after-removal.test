@@ -1,0 +1,52 @@
+seed 34
+use auth
+use abc
+bundle web-1.0 pins 2 edition "2026-10"
+  import auth
+  query built_b () -> Set I32 = from x in [B { id: ts.key(9), n: 7 }].B select x.n
+  query read_b () -> Set I32 = from x in (from r in ts select r).B select x.n
+  query named_b () -> Set I32 = from x in ts.B select x.n
+  query built_c () -> Set I32 = from x in [B { id: ts.key(9), n: 7 }, C { id: ts.key(8), n: 8 }].C select x.n
+  query read_a () -> Set I32 = from x in (from r in ts select r).A select x.n
+  query matched_a () -> Set I32 = from x in (from r in ts select r).A select (match x | A a -> a.n)
+  query named_a () -> Set I32 = from x in ts.A select (match x | A a -> a.n)
+  query matched_b () -> Set I32 = from x in ts.B select (match x | B b -> b.n)
+  query matched_all () -> Set I32 = from r in ts select (match r | A a -> a.n | B b -> b.n + 10 | C c -> c.n + 20)
+reopen
+
+run
+  insert ts from [B { id: ts.key(1), n: 2 }, C { id: ts.key(2), n: 3 }]
+
+call web-1.0 1
+----
+7
+
+call web-1.0 2
+----
+2
+
+call web-1.0 3
+----
+2
+
+call web-1.0 4
+----
+8
+
+call web-1.0 5
+----
+
+call web-1.0 6
+----
+
+call web-1.0 7
+----
+
+call web-1.0 8
+----
+2
+
+call web-1.0 9
+----
+12
+23

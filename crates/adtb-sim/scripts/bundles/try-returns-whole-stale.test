@@ -1,0 +1,7 @@
+seed 32
+use auth
+use auth-gold
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query q () -> Set (Result User Fault) = from u in users select try u
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: BundleStale { bundle: "web-1.0", ctor: "Tier.Gold" } } }

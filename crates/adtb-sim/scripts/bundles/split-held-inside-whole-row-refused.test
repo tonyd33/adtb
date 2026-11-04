@@ -1,0 +1,15 @@
+seed 75
+use auth
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query people () -> Set User = from u in users select u
+reopen
+
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query people () -> Set User = from u in users select u
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "split constructor Tier.Paid into Monthly | Yearly", detail: "bundle web-1.0 pins 1: `people` has no translation: it reaches what the operator changes, and this engine does not translate across it" } } }
+  module auth
+  split constructor Tier.Paid into Monthly | Yearly
+    by match
+      | Paid -> Monthly

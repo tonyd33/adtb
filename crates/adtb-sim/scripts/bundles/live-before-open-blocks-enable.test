@@ -1,0 +1,8 @@
+seed 39
+use auth
+bundle web-1.0 pins 1 edition "2026-10" use identities
+reopen
+
+bundle web-1.0 pins 1 edition "2026-10" use identities
+use auth-apple
+reopen refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`enable identities.Apple` is refused: bundle web-1.0, pinned at version 1, reads identities whole; a bundle stops blocking only when it is released" } } }

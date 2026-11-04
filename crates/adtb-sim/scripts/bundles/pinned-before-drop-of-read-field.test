@@ -1,0 +1,8 @@
+seed 67
+use auth
+use auth-hash
+log
+  module auth
+  drop field Identity.EmailPass.hash
+bundle web-1.0 pins 2 edition "2026-10" use hashes
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Untranslatable { query: "web-1.0::hashes", detail: "across `drop field Identity.EmailPass.hash`: it reads field `hash` of `Identity`, which the current version lacks" } } }

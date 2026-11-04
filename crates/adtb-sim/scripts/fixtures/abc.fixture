@@ -1,0 +1,10 @@
+# A sum T of A, B and C stored in ts, then A deprecated and removed, as the log's next three
+# migrations.
+log
+  module auth
+  add type T { id: Key ts } = A { n: I32 } | B { n: I32 } | C { n: I32 }
+  add relation ts : T key id generate sequence
+  module auth
+  deprecate ts.A
+  module auth
+  remove constructor T.A

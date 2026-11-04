@@ -283,28 +283,15 @@ fn last_start(body: &str) -> Option<usize> {
     Some(body[..start].rfind('\n').map_or(0, |n| n + 1))
 }
 
-fn compare(
+/// Compare result `got`, printed at `form`, with the expected `rows` of the directive on `line`:
+/// in order, or as a multiset under `rowsort`.
+pub fn compare(
     line: usize,
     form: &Form,
     mut got: Vec<Value>,
     rowsort: bool,
     rows: &[String],
 ) -> Result<(), Difference> {
-    let mut want = Vec::new();
-    for (i, r) in rows.iter().enumerate() {
-        match textual::parse::<Value>(r, form) {
-            Ok(v) => want.push(v),
-            Err(e) => {
-                return Err(differ(
-                    line,
-                    format!("expected row {} `{r}` does not read: {e}", i + 1),
-                ));
-            }
-        }
-    }
-    if let Some(d) = repeated(line, &want) {
-        return Err(d);
-    }
     let printed = match got
         .iter()
         .map(|v| textual::print(v, form))
@@ -318,6 +305,25 @@ fn compare(
             ));
         }
     };
+    let mut want = Vec::new();
+    for (i, r) in rows.iter().enumerate() {
+        match textual::parse::<Value>(r, form) {
+            Ok(v) => want.push(v),
+            Err(e) => {
+                return Err(differ(
+                    line,
+                    format!(
+                        "expected row {} `{r}` does not read: {e}; got [{}]",
+                        i + 1,
+                        printed.join(", ")
+                    ),
+                ));
+            }
+        }
+    }
+    if let Some(d) = repeated(line, &want) {
+        return Err(d);
+    }
     if rowsort {
         got.sort();
         want.sort();

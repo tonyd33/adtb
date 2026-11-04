@@ -1,0 +1,5 @@
+use auth
+bundle use names refused Invalid { detail: "expected `bundle`, found `import`" }
+bundle web pins 1 (00) edition "2026-10" refused Invalid { detail: "expected a bundle name such as `web-2.4`, found `web`" }
+  import auth
+reopen

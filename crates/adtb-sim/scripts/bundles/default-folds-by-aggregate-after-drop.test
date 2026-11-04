@@ -1,0 +1,20 @@
+seed 1004
+use auth
+use aggregates
+log
+  module auth
+  drop aggregate other
+  module auth
+  add field H.R.x: Option I64 fill None
+  add default hs.R.x = total(v for v in [1, 2])
+bundle web-1.0 pins 2 edition "2026-10" use filled-put
+reopen
+
+call web-1.0 1 committed
+----
+1
+
+query
+  from h in hs select h
+----
+R { id: hs.key(1), n: 1, x: Some { value: 3 } }

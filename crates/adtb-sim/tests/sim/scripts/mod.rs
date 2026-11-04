@@ -6,16 +6,32 @@
 //! - `use NAME`: the directives of `scripts/fixtures/NAME.fixture`, in place.
 //! - `option query_memory_bytes N`: the open option for each later open; `default` clears it.
 //! - `migrate [at V] [refused VALUE]`: the body's migrations, each starting at a `module` line,
-//!   appended to the log, after its first V - 1 when `at V`, and the file reopened with it.
+//!   appended to the log, after its first V - 1 when `at V`, and the file reopened with it;
+//!   `at V` with no body reopens the file with the first V - 1.
 //! - `reopen [refused VALUE]`: the file reopened with the same log.
+//! - `log`: the body's migrations appended to the log the next open applies.
+//! - `bundle HEADER [use NAME] [refused VALUE]`: the bundle file of `HEADER` and the body, or
+//!   of `scripts/fixtures/NAME.bundle`, registered at the next open; `pins N` with no hash
+//!   gains the hash of the first N migrations of that open's log; with no HEADER the file has
+//!   none. With `refused`, the file is refused with VALUE and not registered. A script opens
+//!   the file after each bundle.
+//! - `call NAME [ORDINAL [committed] [rowsort]] [error VALUE]`: bind NAME and call ORDINAL with
+//!   the value of each body line, a query, as an argument. The rows after `----` are the
+//!   elements of a set result in printed order, or the one value of another; `rowsort` compares
+//!   them as a multiset. `committed` states that the call is of a transaction and commits, its
+//!   rows the transaction's value. With no ORDINAL, the call takes no body and no rows, and the
+//!   handle bound is kept: later calls of NAME in the same open go through it.
+//! - `advance N(s|m|h|d)`: the simulated clock advanced.
 //! - `role NAME`: the role created.
 //! - `run`, `query [rowsort]`: as in a conformance script.
 //! - `error VALUE`: as in a conformance script, the last statement refused with exactly the
 //!   reason VALUE in textual syntax.
 //!
-//! An open refused with VALUE, the open refusal in textual syntax, leaves the file closed and
-//! the log at the migrations the file holds. Each open is a new simulated process. A script
-//! holds a directive besides `seed` and `use`; an area holds only scripts and directories.
+//! An open refused with VALUE, the open refusal in textual syntax, leaves the file closed. A
+//! refusal `MigrationRefused` of version V leaves the log at its first V - 1 migrations. Any
+//! other refusal leaves the log as before the step, the migrations of each `log` step since
+//! the last open included. Each open is a new simulated process. A script holds a directive
+//! besides `seed` and `use`; an area holds only scripts and directories.
 //!
 //! Set `ADTB_SCRIPTS` to a newline-separated list of script files and directories and run
 //! `scripts::by_hand` to run them; `work/tools/script` does that.
@@ -135,6 +151,11 @@ fn run(dir: &Path) {
 #[test]
 fn oplog() {
     run(&root().join("oplog"));
+}
+
+#[test]
+fn bundles() {
+    run(&root().join("bundles"));
 }
 
 /// Run the scripts `ADTB_SCRIPTS` names. Does nothing when it is unset.

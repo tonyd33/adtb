@@ -1,0 +1,23 @@
+seed 1000
+use auth
+use filled
+log
+  module auth
+  add type P = X | Y | Z
+  module auth
+  add field H.R.t: Tag P fill Z
+  module auth
+  deprecate P.X
+  module auth
+  remove constructor P.X
+bundle web-1.0 pins 2 edition "2026-10" use filled-put
+reopen
+
+call web-1.0 1 committed
+----
+1
+
+query
+  from h in hs select h
+----
+R { id: hs.key(1), n: 1, t: Z }

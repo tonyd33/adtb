@@ -1,0 +1,6 @@
+import auth
+query names () -> Set Text = from u in users select u.name
+txn add (n: Text) -> Key users =
+  transact
+    let u = insert users { name: n, tier: Free }
+    return key u

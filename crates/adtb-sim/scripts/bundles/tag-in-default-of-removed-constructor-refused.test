@@ -1,0 +1,13 @@
+seed 1003
+use auth
+use filled
+migrate refused MigrationRefused { version: 6, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`X` is not a constructor of Tag P" } } }
+  module auth
+  add type P = X | Y | Z
+  module auth
+  add field H.R.t: Tag P fill Y
+  add default hs.R.t = X
+  module auth
+  deprecate P.X
+  module auth
+  remove constructor P.X

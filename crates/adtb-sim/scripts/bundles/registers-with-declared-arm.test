@@ -1,0 +1,16 @@
+seed 12
+use auth
+log
+  module auth
+  add constructor Identity.Apple { sub: Text }
+bundle web-2.5 pins 2 edition "2026-10" use covering
+reopen
+
+call web-2.5
+
+bundle web-3.0 pins 3 edition "2026-10" use covering
+migrate
+  module auth
+  enable identities.Apple
+
+call web-3.0

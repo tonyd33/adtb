@@ -1,0 +1,5 @@
+seed 84
+use auth
+use auth-google-removed
+bundle web-1.0 pins 1 edition "2026-10" use ids
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Untranslatable { query: "web-1.0::link", detail: "across `remove constructor Identity.Google`: it builds `Identity.Google`, which the current version lacks" } } }

@@ -1,0 +1,18 @@
+seed 19
+use auth
+reopen
+
+bundle good-1.0 pins 1 edition "2026-10" use names
+bundle bad-1.0 pins 1 edition "2026-10"
+  import auth
+  query bad () -> Set Text = from u in users select u.nope
+reopen refused RegistrationRefused { bundle: "bad-1.0", reason: Rejected { reason: Invalid { detail: "query `bad`: User has no field `nope`" } } }
+
+reopen
+
+query
+  count(r for r in catalog::registered)
+----
+0
+
+call good-1.0 error BundleSuperseded { bundle: "good-1.0" }

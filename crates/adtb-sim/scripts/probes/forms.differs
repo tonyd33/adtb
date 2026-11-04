@@ -1,0 +1,15 @@
+scripts/probes/forms/advance-count.test:3: `advance h` is not a directive
+scripts/probes/forms/advance-unit.test:3: `advance 3` is not a directive
+scripts/probes/forms/bundle-bodiless.test:2: `bundle web-1.0 pins 1 edition "2026-10"` takes a body
+scripts/probes/forms/bundle-fixture-missing.test:2: scripts/fixtures/absent.bundle: No such file or directory (os error 2)
+scripts/probes/forms/bundle-fixture-name.test:2: `bundle web-1.0 pins 1 use no such` is not a directive
+scripts/probes/forms/call-bare.test:3: `call` is not a directive
+scripts/probes/forms/call-bound-body.test:4: `call web-1.0` takes no body
+scripts/probes/forms/call-committed-error.test:3: `call web-1.0 1 committed error UnknownQuery` is not a directive
+scripts/probes/forms/call-committed-unbound.test:3: `call web-1.0 committed` is not a directive
+scripts/probes/forms/call-extra.test:3: `call web-1.0 1 extra` is not a directive
+scripts/probes/forms/call-ordinal.test:3: `call web-1.0 one` is not a directive
+scripts/probes/forms/call-rows.test:3: `call` takes its rows after `----`
+scripts/probes/forms/call-rowsort-error.test:3: `call web-1.0 1 rowsort error UnknownQuery` is not a directive
+scripts/probes/forms/call-rowsort-unbound.test:3: `call web-1.0 rowsort` is not a directive
+scripts/probes/forms/log-bodiless.test:2: `log` takes a body

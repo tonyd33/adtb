@@ -1,0 +1,5 @@
+# A relation hs of one constructor R, as the log's next migration.
+log
+  module auth
+  add type H { id: Key hs } = R { n: I32 }
+  add relation hs : H key id generate sequence

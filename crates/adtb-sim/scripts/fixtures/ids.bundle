@@ -1,0 +1,25 @@
+import auth
+txn join (n: Text, e: Text) -> Key identities =
+  transact
+    let u = insert users { name: n, tier: Free }
+    let i = insert identities.EmailPass { user: key u, email: e }
+    return key i
+txn link (n: Text, g: Text) -> Key identities =
+  transact
+    let u = insert users { name: n, tier: Free }
+    let i = insert identities.Google { user: key u, gid: g }
+    return key i
+txn reword (e: Text, to: Text) -> Text =
+  transact
+    update i in identities.EmailPass where i.email == e set EmailPass { i with email: to }
+    return to
+txn convert (g: Text, e: Text) -> Text =
+  transact
+    update i in identities.Google where i.gid == g set EmailPass { email: e }
+    return e
+query emails () -> Set Text = from i in identities.EmailPass select i.email
+query logins () -> Set Text =
+  from i in identities
+  select match i
+    | EmailPass e -> e.email
+    | Google g -> g.gid

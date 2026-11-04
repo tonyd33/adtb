@@ -1,0 +1,28 @@
+seed 88
+use auth
+use notes
+log
+  module auth
+  add constructor Note.Link { url: Text }
+  module auth
+  enable notes.Link
+bundle web-1.0 pins 2 edition "2026-10" hide new constructors use upserts
+reopen
+
+run
+  insert notes.Link { id: notes.key(1), url: "u" }
+  insert notes.Plain { id: notes.key(2), body: "a" }
+
+call web-1.0 1 error KeyViolation { relation: "auth::notes", key: "notes.key(1)" }
+
+call web-1.0 2 committed
+----
+0
+
+query rowsort
+  from n in notes select match n
+    | Plain p -> p.body
+    | Link l -> l.url
+----
+"a!"
+"u"

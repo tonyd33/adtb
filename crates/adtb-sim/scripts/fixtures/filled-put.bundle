@@ -1,0 +1,5 @@
+import auth
+txn put () -> I32 =
+  transact
+    let h = insert hs.R { n: 1 }
+    return h.n

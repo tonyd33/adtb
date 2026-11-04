@@ -1,0 +1,7 @@
+seed 42
+use no-blank
+
+reopen
+
+run
+  insert users { name: "", tier: Free }

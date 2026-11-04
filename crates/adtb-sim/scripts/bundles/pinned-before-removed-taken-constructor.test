@@ -1,0 +1,10 @@
+seed 77
+use auth
+use auth-gold
+log
+  module auth
+  deprecate Tier.Free
+  module auth
+  remove constructor Tier.Free
+bundle web-1.0 pins 3 edition "2026-10" use tiered
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Untranslatable { query: "web-1.0::tiered", detail: "across `remove constructor Tier.Free`: it takes a parameter of `Tier.Free`, which the current version lacks" } } }

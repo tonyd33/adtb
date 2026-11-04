@@ -1,0 +1,13 @@
+seed 14
+use auth
+bundle web-1.0 pins 1 edition "2026-10" use names
+reopen
+
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query names () -> Set Text = from u in users select u.name ++ "!"
+  txn add (n: Text) -> Key users =
+    transact
+      let u = insert users { name: n, tier: Free }
+      return key u
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Invalid { detail: "bundle web-1.0 is registered with different content; a new release is a bundle of a new name" } } }

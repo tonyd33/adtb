@@ -1,0 +1,22 @@
+seed 212
+log
+  module auth
+  add module auth
+  add type Tier = Free | Paid
+  add type P = { t: Tier, n: Text }
+  add relation p : P key (t, n)
+  add type Q = { id: Key qs, o: Key p }
+  add relation qs : Q key id generate sequence
+  module auth
+  add constructor Tier.Gold
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query keys () -> Set (Key p) = from x in qs select x.o
+reopen
+
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query keys () -> Set (Key p) = from x in qs select x.o
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`enable Tier.Gold` is refused: bundle web-1.0, pinned at version 1, reads a field whose type reaches Tier; a bundle stops blocking only when it is released" } } }
+  module auth
+  enable Tier.Gold

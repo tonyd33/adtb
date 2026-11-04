@@ -1,0 +1,12 @@
+use auth
+bundle web-1.0 pins 1 edition "2026-10" use names refused Invalid { detail: "x" }
+bundle web-2.0 pins 1 edition "2026-10" priority adhoc use names
+bundle web-3.0 pins 1 edition "2026-10" priority adhoc use names refused Invalid { detail: "x" }
+bundle web-4.0 pins 2 edition "2026-10" use names
+reopen
+
+log
+  module auth
+  add relation nothing
+bundle web-5.0 pins 2 edition "2026-10" use names
+reopen refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "expected `:`, found the end of the text" } } }

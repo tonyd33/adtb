@@ -1,0 +1,10 @@
+seed 83
+use auth
+use auth-google-removed
+bundle web-1.0 pins 1 edition "2026-10" use logins
+reopen
+use one-login
+
+call web-1.0 1
+----
+"a@x"

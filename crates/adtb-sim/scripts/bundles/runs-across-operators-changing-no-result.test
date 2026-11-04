@@ -1,0 +1,32 @@
+seed 85
+use auth
+log
+  module auth
+  add unique (email) in identities.EmailPass
+  module auth
+  add index (gid) in identities.Google
+  module auth
+  add constraint no_blank = from u in users where u.name == "" select u
+bundle web-1.0 pins 1 edition "2026-10" use ids
+reopen
+
+call web-1.0 1 committed
+  "ann"
+  "a@x"
+----
+identities.key(1)
+
+call web-1.0 2 committed
+  "bo"
+  "g1"
+----
+identities.key(2)
+
+call web-1.0 5
+----
+"a@x"
+
+call web-1.0 6
+----
+"a@x"
+"g1"

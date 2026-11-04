@@ -1,0 +1,17 @@
+seed 13
+use auth
+bundle web-1.0 pins 1 edition "2026-10" use names
+reopen
+
+bundle web-1.0 pins 1 edition "2026-10" use names
+reopen
+
+query
+  from b in catalog::bundles select b.name ++ " " ++ (match b.state | Active -> "active" | Superseded _ -> "superseded" | Retired _ -> "retired")
+----
+"web-1.0 active"
+
+query
+  count(r for r in catalog::registered)
+----
+2

@@ -1,0 +1,7 @@
+# A user with an EmailPass login `a@x` and a Google login `g1`.
+run
+  transact
+    let u = insert users { name: "ann", tier: Free }
+    insert identities.EmailPass { user: key u, email: "a@x" }
+    insert identities.Google { user: key u, gid: "g1" }
+    return 0

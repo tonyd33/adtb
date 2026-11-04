@@ -1,0 +1,9 @@
+seed 72
+use auth
+log
+  module auth
+  add field Identity.EmailPass.verified: Bool fill false
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query same (i: Identity) -> Set Text = from j in identities where key j == i.id select "x"
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Untranslatable { query: "web-1.0::same", detail: "across `add field Identity.EmailPass.verified: Bool fill false`: it takes a parameter of `Identity` whole, and its field `verified` differs" } } }

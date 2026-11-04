@@ -1,0 +1,12 @@
+seed 90
+use auth
+use notes-link
+bundle web-1.0 pins 2 edition "2026-10"
+  import auth
+  txn put () -> I64 =
+    transact
+      insert notes.Plain { id: notes.key(1), body: "x" }
+        unless conflict on key else update old set Plain { old with body: match old
+          | Plain p -> p.body }
+      return 0
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: BundleStale { bundle: "web-1.0", ctor: "notes.Link" } } }

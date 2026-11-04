@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 
 use adtb_conformance::blocks;
 
@@ -20,6 +21,20 @@ pub(super) enum Head {
         refused: Option<String>,
     },
     Role(String),
+    Log,
+    Bundle {
+        header: String,
+        fixture: Option<String>,
+        refused: Option<String>,
+    },
+    Call {
+        name: String,
+        ordinal: Option<u32>,
+        committed: bool,
+        rowsort: bool,
+        error: Option<String>,
+    },
+    Advance(Duration),
     Run,
     Query {
         rowsort: bool,
@@ -27,8 +42,9 @@ pub(super) enum Head {
     Error(String),
 }
 
-const HEADS: [&str; 9] = [
-    "seed", "use", "option", "migrate", "reopen", "role", "run", "query", "error",
+const HEADS: [&str; 13] = [
+    "seed", "use", "option", "migrate", "reopen", "role", "log", "bundle", "call", "advance",
+    "run", "query", "error",
 ];
 
 /// One directive, with the file and line it was read from.
@@ -73,6 +89,10 @@ fn head(line: &str) -> Option<Head> {
             refused: refused(rest)?,
         },
         "role" if !rest.is_empty() => Head::Role(rest.to_owned()),
+        "log" if rest.is_empty() => Head::Log,
+        "bundle" => bundle(rest)?,
+        "call" => call(rest)?,
+        "advance" => Head::Advance(duration(rest)?),
         "run" if rest.is_empty() => Head::Run,
         "query" if rest.is_empty() || rest == "rowsort" => Head::Query {
             rowsort: !rest.is_empty(),
@@ -80,6 +100,76 @@ fn head(line: &str) -> Option<Head> {
         "error" if !rest.is_empty() => Head::Error(rest.to_owned()),
         _ => return None,
     })
+}
+
+/// Returns `rest` before `sep` and the text after it, or `rest` whole.
+fn split<'a>(rest: &'a str, sep: &str) -> (&'a str, Option<String>) {
+    match rest.split_once(sep) {
+        Some((rest, v)) => (rest, Some(v.to_owned())),
+        None => (rest, None),
+    }
+}
+
+fn bundle(rest: &str) -> Option<Head> {
+    let (rest, refused) = split(rest, " refused ");
+    let (header, fixture) = match rest.strip_prefix("use ") {
+        Some(name) => ("", Some(name.to_owned())),
+        None => split(rest, " use "),
+    };
+    (!fixture.as_ref().is_some_and(|f| f.contains(' '))).then(|| Head::Bundle {
+        header: header.to_owned(),
+        fixture,
+        refused,
+    })
+}
+
+fn call(rest: &str) -> Option<Head> {
+    let (rest, error) = split(rest, " error ");
+    let mut words = rest.split(' ');
+    let name = words.next().filter(|n| !n.is_empty())?;
+    let ordinal = words.next().map(str::parse).transpose().ok()?;
+    let (committed, rowsort) = match words.collect::<Vec<_>>()[..] {
+        [] => (false, false),
+        ["committed"] => (true, false),
+        ["rowsort"] => (false, true),
+        ["committed", "rowsort"] => (true, true),
+        _ => return None,
+    };
+    let rows = ordinal.is_some() && error.is_none();
+    (rows || !(committed || rowsort)).then(|| Head::Call {
+        name: name.to_owned(),
+        ordinal,
+        committed,
+        rowsort,
+        error,
+    })
+}
+
+/// Returns the duration `text` states as a count of `s`, `m`, `h` or `d`.
+fn duration(text: &str) -> Option<Duration> {
+    let unit = match text.chars().last()? {
+        's' => 1,
+        'm' => 60,
+        'h' => 3600,
+        'd' => 86_400,
+        _ => return None,
+    };
+    let count: u64 = text[..text.len() - 1].parse().ok()?;
+    Some(Duration::from_secs(count.checked_mul(unit)?))
+}
+
+/// Returns whether the directive `line` begins is followed by expected rows.
+fn takes_rows(line: &str) -> bool {
+    let call = line.strip_prefix("call ").and_then(call);
+    line.split(' ').next() == Some("query")
+        || matches!(
+            call,
+            Some(Head::Call {
+                ordinal: Some(_),
+                error: None,
+                ..
+            })
+        )
 }
 
 fn starts(line: &str) -> bool {
@@ -108,7 +198,6 @@ pub(super) fn script(path: &Path) -> Result<Vec<Step>, String> {
 fn read(path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, String> {
     let at = shown(path);
     let text = fs::read_to_string(path).map_err(|e| format!("{at}: {e}"))?;
-    let takes_rows = |l: &str| l.split_whitespace().next() == Some("query");
     let found =
         blocks(&text, starts, takes_rows).map_err(|d| format!("{at}:{}: {}", d.line, d.message))?;
     let mut out = Vec::new();
@@ -118,11 +207,28 @@ fn read(path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, String> {
         };
         let bodied = matches!(
             head,
-            Head::Migrate { .. } | Head::Run | Head::Query { .. } | Head::Error(_)
+            Head::Migrate { .. } | Head::Log | Head::Run | Head::Query { .. } | Head::Error(_)
+        ) || matches!(&head, Head::Bundle { fixture: None, .. });
+        let free = matches!(
+            head,
+            Head::Call {
+                ordinal: Some(_),
+                ..
+            } | Head::Migrate { at: Some(_), .. }
         );
-        if bodied == b.body.trim().is_empty() {
+        if !free && bodied == b.body.trim().is_empty() {
             let needs = if bodied { "a body" } else { "no body" };
             return Err(format!("{at}:{}: `{}` takes {needs}", b.line, b.head));
+        }
+        let mut body = b.body;
+        if let Head::Bundle {
+            fixture: Some(name),
+            ..
+        } = &head
+        {
+            let fixture = root().join("fixtures").join(format!("{name}.bundle"));
+            body = fs::read_to_string(&fixture)
+                .map_err(|e| format!("{at}:{}: {}: {e}", b.line, shown(&fixture)))?;
         }
         if let Head::Use(name) = &head {
             if uses.contains(name) {
@@ -152,7 +258,7 @@ fn read(path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, String> {
             line: b.line,
             via: None,
             head,
-            body: b.body,
+            body,
             rows: b.rows,
         });
     }

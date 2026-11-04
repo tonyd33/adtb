@@ -1,0 +1,17 @@
+seed 194
+use auth
+use tone
+log
+  module auth
+  add constructor Tone.Dye { hue: Text, depth: I64 }
+bundle web-1.0 pins 2 edition "2026-10" hide new constructors
+  import auth
+  query depths () -> Set I64 = from x in marks select x.tone.depth
+reopen
+
+bundle web-1.0 pins 2 edition "2026-10" hide new constructors
+  import auth
+  query depths () -> Set I64 = from x in marks select x.tone.depth
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`enable Tone.Dye` is refused: bundle web-1.0, pinned at version 2, reads a field whose type reaches Tone; a bundle stops blocking only when it is released" } } }
+  module auth
+  enable Tone.Dye

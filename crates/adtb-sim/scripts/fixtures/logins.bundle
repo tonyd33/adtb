@@ -1,0 +1,6 @@
+import auth
+query logins () -> Set Text =
+  from i in identities
+  select match i
+    | EmailPass e -> e.email
+    | Google g -> g.gid

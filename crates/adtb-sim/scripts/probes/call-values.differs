@@ -1,0 +1,30 @@
+scripts/probes/call-values.test:5: the rows differ
+  expected: ["ann"]
+  actual:   []
+scripts/probes/call-values.test:9: the outcome differs
+  expected: Rejected { reason: UnknownQuery }
+  actual:   []
+scripts/probes/call-values.test:11: the outcome differs
+  expected: Rejected { reason: Retired { bundle: "web-1.0" } }
+  actual:   Rejected { reason: UnknownQuery }
+scripts/probes/call-values.test:13: the outcome differs
+  expected: []
+  actual:   Rejected { reason: UnknownQuery }
+scripts/probes/call-values.test:16: the call commits nothing
+scripts/probes/call-values.test:19: the call commits
+scripts/probes/call-values.test:23: argument `nope` is refused: Rejected { reason: Invalid { detail: "`nope` is a parameter of this text, but the call supplies no value for it" } }
+scripts/probes/call-values.test:27: argument `from u in users where u.name == "zed" select u.name` is no one value
+scripts/probes/call-values.test:31: the outcome differs
+  expected: []
+  actual:   Rejected { reason: UnknownBundle { bundle: "web-9.9" } }
+scripts/probes/call-values.test:33: the rows differ
+  expected: [users.key(9)]
+  actual:   [users.key(2)]
+scripts/probes/call-values.test:38: expected row 1 `X` does not read: at byte 0: expected a key of `users`; got [users.key(3)]
+scripts/probes/call-values.test:43: the rows differ
+  expected: ["bo", "al", "ann"]
+  actual:   ["al", "ann", "bo"]
+scripts/probes/call-values.test:49: expected row 3 repeats row 2; a result holds each row once
+scripts/probes/call-values.test:55: the rows differ
+  expected: ["bo", "zed"]
+  actual:   ["al", "ann", "bo"]

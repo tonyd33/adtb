@@ -1,0 +1,15 @@
+seed 76
+use auth
+use auth-gold
+bundle web-1.0 pins 3 edition "2026-10" use tiered
+reopen
+
+run
+  insert users { name: "ann", tier: Paid }
+
+bundle web-1.0 pins 3 edition "2026-10" use tiered
+migrate refused MigrationRefused { version: 5, reason: Rejected { reason: SchemaRefused { operator: "remove constructor Tier.Free", detail: "bundle web-1.0 pins 3: `tiered` has no translation: it takes a parameter of `Tier.Free`, which the current version lacks" } } }
+  module auth
+  deprecate Tier.Free
+  module auth
+  remove constructor Tier.Free

@@ -1,0 +1,4 @@
+# EmailPass gains a hash field, as the log's next migration.
+log
+  module auth
+  add field Identity.EmailPass.hash: Text fill "none"

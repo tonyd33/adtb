@@ -1,0 +1,12 @@
+seed 193
+use auth
+use tone
+log
+  module auth
+  add constructor Tone.Dye { hue: Text, depth: I64 }
+  module auth
+  enable Tone.Dye
+bundle web-1.0 pins 2 edition "2026-10" hide new constructors
+  import auth
+  query depths () -> Set I64 = from x in marks select x.tone.depth
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: BundleStale { bundle: "web-1.0", ctor: "Tone.Dye" } } }

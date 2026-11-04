@@ -1,0 +1,9 @@
+seed 22
+use auth
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query gids () -> Set Text = from g in identities.Google select g.gid
+use auth-apple
+reopen
+
+call web-1.0

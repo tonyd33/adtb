@@ -1,0 +1,2 @@
+import auth
+query past (t: Instant) -> Set Text = at instant t { from u in users select u.name }

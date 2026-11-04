@@ -1,0 +1,24 @@
+seed 64
+use auth
+log
+  module auth
+  add constructor Identity.Apple { sub: Text }
+bundle web-1.0 pins 1 edition "2026-10" use ids
+reopen
+
+call web-1.0 1 committed
+  "ann"
+  "a@x"
+----
+identities.key(1)
+
+call web-1.0 2 committed
+  "bo"
+  "g1"
+----
+identities.key(2)
+
+call web-1.0 6
+----
+"a@x"
+"g1"

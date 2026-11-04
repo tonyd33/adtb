@@ -1,0 +1,21 @@
+seed 11
+use auth
+log
+  module auth
+  rename field User.name to display
+bundle web-1.0 pins 1 edition "2026-10" use names
+reopen
+
+call web-1.0 2 committed
+  "ann"
+----
+users.key(1)
+
+call web-1.0 1
+----
+"ann"
+
+query
+  from u in users select u.display
+----
+"ann"

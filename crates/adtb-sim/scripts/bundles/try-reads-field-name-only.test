@@ -1,0 +1,16 @@
+seed 29
+use auth
+use auth-gold
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query q () -> Set Text = from u in users select match try u
+    | Ok o -> o.value.name
+    | Err _ -> "none"
+reopen
+
+run
+  insert users { name: "gil", tier: Gold }
+
+call web-1.0 1
+----
+"gil"

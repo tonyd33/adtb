@@ -1,0 +1,9 @@
+seed 30
+use auth
+use auth-gold
+bundle web-1.0 pins 1 edition "2026-10"
+  import auth
+  query q () -> Set Text = from u in users select match try u
+    | Ok o -> (match o.value.tier | Free -> "f" | Paid -> "p")
+    | Err _ -> "none"
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: BundleStale { bundle: "web-1.0", ctor: "Tier.Gold" } } }

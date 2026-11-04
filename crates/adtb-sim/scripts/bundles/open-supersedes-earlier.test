@@ -1,0 +1,17 @@
+seed 16
+use auth
+bundle web-1.0 pins 1 edition "2026-10" use names
+reopen
+
+bundle web-1.1 pins 1 edition "2026-10" use names
+reopen
+
+query rowsort
+  from b in catalog::bundles select b.name ++ " " ++ (match b.state | Active -> "active" | Superseded _ -> "superseded" | Retired _ -> "retired")
+----
+"web-1.0 superseded"
+"web-1.1 active"
+
+call web-1.0 error BundleSuperseded { bundle: "web-1.0" }
+
+call web-1.1

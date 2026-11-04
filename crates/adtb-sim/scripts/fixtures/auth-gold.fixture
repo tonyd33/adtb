@@ -1,0 +1,6 @@
+# Tier gains a Gold constructor, enabled, as the log's next two migrations.
+log
+  module auth
+  add constructor Tier.Gold
+  module auth
+  enable Tier.Gold

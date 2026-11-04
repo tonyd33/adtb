@@ -1,0 +1,13 @@
+seed 100
+use auth
+log
+  module auth
+  rename constructor Tier.Paid to Pro
+bundle web-1.0 pins 1 edition "2026-10" use tiered
+reopen
+
+error Invalid { detail: "bundle `web-1.0` is not registered" }
+  explain web-1.0::tiered(Pro)
+
+error Invalid { detail: "bundle `web-1.0` is not registered" }
+  explain web-1.0::tiered(Paid)

@@ -1,0 +1,6 @@
+# Google deprecated and removed from Identity, as the log's next two migrations.
+log
+  module auth
+  deprecate identities.Google
+  module auth
+  remove constructor Identity.Google

@@ -1,0 +1,11 @@
+import auth
+txn first () -> I64 =
+  transact
+    insert notes.Plain { id: notes.key(1), body: "x" }
+      unless conflict on key else update old set Plain { old with body: old.body ++ "!" }
+    return 0
+txn second () -> I64 =
+  transact
+    insert notes.Plain { id: notes.key(2), body: "x" }
+      unless conflict on key else update old set Plain { old with body: old.body ++ "!" }
+    return 0

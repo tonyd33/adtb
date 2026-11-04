@@ -1,0 +1,4 @@
+seed 8
+use auth
+bundle web-1.0 pins 1 edition "1999-01" use names
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: UnknownEdition { edition: "1999-01" } } }

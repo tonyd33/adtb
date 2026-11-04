@@ -1,0 +1,58 @@
+use auth
+bundle web-1.0 pins 1 edition "2026-10" use names
+reopen
+
+call web-1.0 1
+----
+"ann"
+
+call web-1.0 1 error UnknownQuery
+
+call web-1.0 0 error Retired { bundle: "web-1.0" }
+
+call web-1.0 0
+----
+
+call web-1.0 1 committed
+----
+
+call web-1.0 2
+  "ann"
+----
+
+call web-1.0 2 committed
+  nope
+----
+
+call web-1.0 2 committed
+  from u in users where u.name == "zed" select u.name
+----
+
+call web-9.9
+
+call web-1.0 2 committed
+  "bo"
+----
+users.key(9)
+
+call web-1.0 2 committed
+  "al"
+----
+X
+
+call web-1.0 1
+----
+"bo"
+"al"
+"ann"
+
+call web-1.0 1 rowsort
+----
+"bo"
+"al"
+"al"
+
+call web-1.0 1 rowsort
+----
+"bo"
+"zed"

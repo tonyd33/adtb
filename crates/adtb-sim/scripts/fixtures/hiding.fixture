@@ -1,0 +1,12 @@
+# The auth schema with Apple enabled, opened with `hiding` registered under `hide new
+# constructors`, holding a user, a Google identity, an Apple identity and a session of the
+# Google one.
+use auth
+use auth-apple
+bundle web-1.0 pins 1 edition "2026-10" hide new constructors use hiding
+reopen
+run
+  insert users { id: users.key(1), name: "ann", tier: Free }
+  insert identities.Google { id: identities.key(1), user: users.key(1), gid: "g-ann" }
+  insert identities.Apple { id: identities.key(2), user: users.key(1), sub: "a-ann" }
+  insert sessions { id: sessions.key(1), who: identities.key(1) }

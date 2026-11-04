@@ -1,0 +1,16 @@
+seed 91
+use auth
+use tone
+log
+  module auth
+  add constructor Tone.Dye { hue: Text, depth: I64 }
+  module auth
+  enable Tone.Dye
+bundle web-1.0 pins 2 edition "2026-10"
+  import auth
+  txn put () -> I64 =
+    transact
+      insert marks { id: marks.key(1), tone: Ink { depth: 0 } }
+        unless conflict on key else update old set { old with tone: Ink { depth: old.tone.depth } }
+      return 0
+reopen refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: BundleStale { bundle: "web-1.0", ctor: "Tone.Dye" } } }

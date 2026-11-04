@@ -1,0 +1,12 @@
+seed 10
+use auth
+log
+  module auth
+  rename field User.name to display
+bundle web-1.0 pins 1 edition "2026-10" use names
+reopen
+
+call web-1.0
+
+bundle web-2.0 pins 2 edition "2026-10" use names
+reopen refused RegistrationRefused { bundle: "web-2.0", reason: Rejected { reason: Invalid { detail: "query `names`: User has no field `name`" } } }

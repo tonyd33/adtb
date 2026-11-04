@@ -1,0 +1,23 @@
+seed 48
+use auth
+log
+  module auth
+  add unique (name) in users
+bundle web-1.0 pins 2 edition "2026-10" use names
+reopen
+
+run
+  insert users { name: "ann", tier: Free }
+
+bundle web-1.0 pins 2 edition "2026-10" use names
+migrate
+  module auth
+  drop unique (name) in users
+
+error Violated { constraint: "auth::users.unique(name)", report: 2 rows, redacted: 0 }
+  insert users { name: "ann", tier: Free }
+
+reopen
+
+run
+  insert users { name: "ann", tier: Free }

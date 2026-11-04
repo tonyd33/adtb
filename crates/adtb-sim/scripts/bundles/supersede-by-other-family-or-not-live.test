@@ -1,0 +1,16 @@
+seed 41
+use auth
+bundle web-1.0 pins 1 edition "2026-10" use names
+bundle ios-1.0 pins 1 edition "2026-10" use names
+reopen
+
+error Invalid { detail: "bundle web-1.0 is superseded only by another live bundle of family web" }
+  supersede bundle web-1.0 by ios-1.0
+
+error Invalid { detail: "bundle web-1.0 is superseded only by another live bundle of family web" }
+  supersede bundle web-1.0 by web-9.9
+
+error Invalid { detail: "bundle web-1.0 is superseded only by another live bundle of family web" }
+  supersede bundle web-1.0 by web-1.0
+
+call web-1.0

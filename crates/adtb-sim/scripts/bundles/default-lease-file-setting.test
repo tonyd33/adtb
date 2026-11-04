@@ -1,0 +1,13 @@
+seed 46
+use auth
+reopen
+
+run
+  set setting DefaultLease = { lease: 2d }
+
+bundle web-1.0 pins 1 edition "2026-10" use names
+reopen
+
+advance 50h
+
+call web-1.0 error BundleExpired { bundle: "web-1.0", query: "" }

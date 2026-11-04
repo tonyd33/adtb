@@ -1,0 +1,49 @@
+seed 62
+use auth
+log
+  module auth
+  add field Identity.EmailPass.verified: Bool fill false
+  module auth
+  add default identities.EmailPass.verified = true
+bundle web-1.0 pins 1 edition "2026-10" use ids
+reopen
+
+call web-1.0 1 committed
+  "ann"
+  "a@x"
+----
+identities.key(1)
+
+run
+  update i in identities.EmailPass set EmailPass { i with verified: false }
+
+call web-1.0 3 committed
+  "a@x"
+  "a@y"
+----
+"a@y"
+
+# An update keeps the row's value.
+query
+  from i in identities.EmailPass select i.email ++ ":" ++ (if i.verified then "t" else "f")
+----
+"a@y:f"
+
+call web-1.0 2 committed
+  "bo"
+  "g1"
+----
+identities.key(2)
+
+call web-1.0 4 committed
+  "g1"
+  "b@x"
+----
+"b@x"
+
+# A retag from another constructor takes the default.
+query rowsort
+  from i in identities.EmailPass select i.email ++ ":" ++ (if i.verified then "t" else "f")
+----
+"a@y:f"
+"b@x:t"

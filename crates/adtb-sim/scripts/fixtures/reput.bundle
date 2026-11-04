@@ -1,0 +1,7 @@
+import auth
+txn reput (e: Text) -> Text =
+  transact
+    insert identities.EmailPass { id: identities.key(1), user: users.key(1), email: e }
+      unless conflict on key
+      else update old set new
+    return e
