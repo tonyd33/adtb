@@ -3,7 +3,7 @@ use std::ops::Bound;
 
 use crate::key::DecodeError;
 use crate::runtime::Runtime;
-use crate::storage::{PageError, PageExclusive, PageOptimistic, Pager, Pid};
+use crate::storage::{PageError, PageExclusive, PageOptimistic, Pager, Pid, Walk};
 
 use super::leaf;
 use super::node::{self, Bounds, FORMAT, Item, Malformed, Node, kind_of};
@@ -595,7 +595,7 @@ impl BTree {
     }
 
     /// Delete every entry `keep` refuses, walking the leaves left to right and changing each in
-    /// one update. Returns the number of entries deleted.
+    /// one update. Returns the number of entries deleted, and whether it stopped early.
     ///
     /// Each leaf is judged and changed under its exclusive latch, which is released before the
     /// next leaf's is taken; a leaf left empty is unlinked as [`BTree::delete`] unlinks one. An
@@ -606,7 +606,7 @@ impl BTree {
         pager: &Pager<R>,
         mut keep: impl FnMut(&[u8]) -> bool,
         between: &mut dyn FnMut() -> bool,
-    ) -> Result<usize, Error> {
+    ) -> Result<Walk, Error> {
         let mut from: Vec<u8> = Vec::new();
         let mut deleted = 0;
         loop {
@@ -627,11 +627,13 @@ impl BTree {
             if emptied {
                 self.unlink(pager, low.as_deref())?;
             }
-            let more = between();
-            match high {
-                Some(h) if more => from = h,
-                _ => return Ok(deleted),
+            let Some(h) = high else {
+                return Ok(Walk::Done(deleted));
+            };
+            if !between() {
+                return Ok(Walk::Stopped(deleted));
             }
+            from = h;
         }
     }
 

@@ -3,7 +3,7 @@ use std::ops::Bound;
 
 use crate::key::{CtorId, CtorType, Dir, Entry, KeySchema, KeyType, SumType, Value, ovarint};
 use crate::runtime::Runtime;
-use crate::storage::{PageError, Pager};
+use crate::storage::{PageError, Pager, Walk};
 
 use super::tree::{BTree, Cursor, Entries, Error, prefix_end};
 
@@ -130,13 +130,13 @@ impl Index {
     }
 
     /// Delete every entry `keep` refuses, one leaf at a time, calling `between` after each leaf
-    /// and ending once it returns false. Returns the number deleted.
+    /// and ending once it returns false. Returns the number deleted, and whether it stopped early.
     pub fn retain<R: Runtime>(
         &self,
         pager: &Pager<R>,
         mut keep: impl FnMut(&Entry) -> bool,
         between: &mut dyn FnMut() -> bool,
-    ) -> Result<usize, Error> {
+    ) -> Result<Walk, Error> {
         let mut bad = None;
         let deleted = self.tree.retain(
             pager,

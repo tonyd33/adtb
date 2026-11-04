@@ -212,7 +212,7 @@ fn a_running_vacuum_shows_one_row_per_constructor_relation() {
     seeds::assert_reached("dead versions found and not yet removed", dead, floor);
     seeds::assert_reached("a phase past the scan", late, floor);
     seeds::assert_reached(
-        "a finished constructor relation beside a running one",
+        "a constructor relation finished while the vacuum runs",
         finished,
         seeds::share(0..6, 2),
     );

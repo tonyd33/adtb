@@ -51,6 +51,22 @@ pub(crate) use record::{Malformed, Reader};
 pub use recovery::Recovery;
 pub use verify::{Finding, RetainedLog, Verification};
 
+/// How a paced walk ended, with the number of things it did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Walk {
+    Done(usize),
+    /// Its pacer said to stop before the walk was done.
+    Stopped(usize),
+}
+
+impl Walk {
+    pub fn count(self) -> usize {
+        match self {
+            Walk::Done(n) | Walk::Stopped(n) => n,
+        }
+    }
+}
+
 /// A page id: the page's index in the data file.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Pid(pub u64);

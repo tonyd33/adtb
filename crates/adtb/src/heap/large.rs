@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::key::Tid;
 use crate::runtime::Runtime;
-use crate::storage::{self, Damage, LATCHES_PER_THREAD, PageError, Pager, Pid};
+use crate::storage::{self, Damage, LATCHES_PER_THREAD, PageError, Pager, Pid, Walk};
 
 use super::dir::{Above, Space, category, max_fanout, need_category};
 use super::page::{self, Arrangement, Slot};
@@ -354,8 +354,8 @@ impl LargeStore {
 
     /// Settle the store's directory, then free every value whose head on a touched page has count
     /// 0 and whose writer `resolved` accepts, and unmark each touched page left with no head of
-    /// count 0, ending early once `between` returns false after a page. Returns the number of
-    /// chunks freed.
+    /// count 0, ending early once `between` returns false after a chunk or a page. Returns the
+    /// number of chunks freed, and whether it stopped early.
     ///
     /// Each step frees one chunk and makes the next one a head of count 0, in one update, so a
     /// crash leaves the rest of the value for the next sweep.
@@ -366,7 +366,7 @@ impl LargeStore {
         pager: &Pager<R>,
         mut resolved: impl FnMut(u64) -> Result<bool, PageError>,
         between: &mut dyn FnMut() -> bool,
-    ) -> Result<usize, PageError> {
+    ) -> Result<Walk, PageError> {
         self.space.settle(pager)?;
         let mut freed = 0;
         for (position, pid) in self.space.touched(pager)? {
@@ -383,26 +383,31 @@ impl LargeStore {
                     pending = true;
                     continue;
                 }
-                freed += self.free_value(pager, tid(pid, slot), c.xmin)?;
+                match self.free_value(pager, tid(pid, slot), c.xmin, between)? {
+                    Walk::Done(n) => freed += n,
+                    Walk::Stopped(n) => return Ok(Walk::Stopped(freed + n)),
+                }
             }
             if !pending {
                 self.settle(pager, pid, position)?;
             }
             if !between() {
-                break;
+                return Ok(Walk::Stopped(freed));
             }
         }
-        Ok(freed)
+        Ok(Walk::Done(freed))
     }
 
-    /// Free the value whose head is at `at`, written by `xmin`, one chunk at a time. Returns the
-    /// number of chunks freed.
+    /// Free the value whose head is at `at`, written by `xmin`, one chunk at a time, calling
+    /// `between` after each chunk and ending once it returns false. Returns the number of chunks
+    /// freed, and whether it stopped early.
     fn free_value<R: Runtime>(
         &self,
         pager: &Pager<R>,
         mut at: Tid,
         xmin: u64,
-    ) -> Result<usize, PageError> {
+        between: &mut dyn FnMut() -> bool,
+    ) -> Result<Walk, PageError> {
         let mut freed = 0;
         loop {
             let here = Pid(at.page());
@@ -410,7 +415,7 @@ impl LargeStore {
                 let page = pager.read_formatted(here)?;
                 match chunk_at(&page, self.id(), usize::from(at.slot())) {
                     Some(c) if c.head && c.count == 0 && c.xmin == xmin => c.next,
-                    _ => return Ok(freed),
+                    _ => return Ok(Walk::Done(freed)),
                 }
             };
             if let Some(n) = next {
@@ -428,7 +433,7 @@ impl LargeStore {
             if chunk_at(page, self.id(), usize::from(at.slot()))
                 .is_none_or(|c| !c.head || c.count > 0)
             {
-                return Ok(freed);
+                return Ok(Walk::Done(freed));
             }
             page::release(page, usize::from(at.slot()), &Slot::Unused);
             page::compact(page);
@@ -453,10 +458,13 @@ impl LargeStore {
             stage.commit_with(pager, gone)?;
             above.settle(pager)?;
             freed += 1;
-            match next {
-                Some(n) => at = n,
-                None => return Ok(freed),
+            if !between() {
+                return Ok(Walk::Stopped(freed));
             }
+            let Some(n) = next else {
+                return Ok(Walk::Done(freed));
+            };
+            at = n;
         }
     }
 

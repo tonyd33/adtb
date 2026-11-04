@@ -735,18 +735,17 @@ impl<R: Runtime> Engine<R> {
             ("freed".into(), Ty::Base(Base::Text)),
             ("removed".into(), Ty::Base(Base::I64)),
         ]);
-        let out = self
-            .db
-            .vacuum(rel, waiting)?
-            .into_iter()
-            .map(|(id, report)| {
+        let done = self.db.vacuum(rel, waiting)?;
+        let chunks = done.report.chunks;
+        let out = (done.ctors.into_iter())
+            .map(|(id, heap)| {
                 Val::record(vec![
                     Val::Int(i64::from(id.0)),
                     Val::text(&format!(
-                        "{} pages, {} out-of-line chunks",
-                        report.removed, report.chunks
+                        "{} pages, {chunks} out-of-line chunks of the relation",
+                        heap.removed
                     )),
-                    Val::Int(i64::try_from(report.freed).unwrap_or(i64::MAX)),
+                    Val::Int(i64::try_from(heap.freed).unwrap_or(i64::MAX)),
                 ])
             })
             .collect();

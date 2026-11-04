@@ -340,7 +340,11 @@ impl<R: Runtime> Database<R> {
     /// no worker; else with what stops the call, looking every few milliseconds; and with
     /// `Cancelled` once rebuilds are stopped.
     pub fn hold_vacuum(&self, waiting: HoldWait<'_>) -> Result<VacuumHold<'_, R>, Error> {
-        let stop = waiting.stop(self.rt.now());
+        self.hold_vacuum_until(&waiting.stop(self.rt.now()))
+    }
+
+    /// Returns the vacuum lock as [`Database::hold_vacuum`] does, stopping as `stop` says.
+    pub(super) fn hold_vacuum_until(&self, stop: &Stop) -> Result<VacuumHold<'_, R>, Error> {
         loop {
             if let Some(hold) = self.try_hold_vacuum() {
                 return Ok(hold);

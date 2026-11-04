@@ -7,7 +7,7 @@ use crate::history::{self, History};
 use crate::key::{CtorId, Tid, Value};
 use crate::mvcc::{Status, Transactions, Xid};
 use crate::runtime::Runtime;
-use crate::storage::{PageError, Pager, Pid};
+use crate::storage::{PageError, Pager, Pid, Walk};
 
 use super::dead::DeadSet;
 
@@ -50,8 +50,17 @@ pub struct Sum<'a> {
     pub indexes: Vec<&'a Index>,
 }
 
+/// What one run of [`vacuum`] did to one heap.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Freed {
+    /// Heap slots emptied.
+    pub freed: usize,
+    /// Heap pages that left the heap.
+    pub removed: usize,
+}
+
 /// What one run of [`vacuum`] did.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Report {
     /// Heap pages read.
     pub scanned: usize,
@@ -78,6 +87,8 @@ pub struct Report {
     /// No version of the sum names an aborted transaction below this id, nor has one as its
     /// deleter.
     pub clean_below: Xid,
+    /// What it did to each heap that freed something, by heap id.
+    pub heaps: BTreeMap<u32, Freed>,
 }
 
 /// What versions of one heap are judged by.
@@ -199,8 +210,8 @@ pub enum Phase {
     Indexes,
     /// Freeing the dead versions collected.
     Prune,
-    /// Freeing the out-of-line values no version points at any more.
-    Sweep,
+    /// Finished: every dead version it found is freed.
+    Done,
 }
 
 /// The progress of a vacuum on one heap.
@@ -236,19 +247,31 @@ impl Progress {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn set(&self, heap: u32, f: impl FnOnce(&mut Step)) {
-        let mut rows = self.lock();
-        let row = rows.entry(heap).or_insert(Step {
+    /// Show `heap` as a vacuum that has just begun.
+    pub fn start(&self, heap: u32) {
+        self.lock().insert(
             heap,
-            phase: Phase::Scan,
-            done: 0.0,
-            dead_versions: 0,
-        });
-        f(row);
+            Step {
+                heap,
+                phase: Phase::Scan,
+                done: 0.0,
+                dead_versions: 0,
+            },
+        );
+    }
+
+    fn set(&self, heap: u32, f: impl FnOnce(&mut Step)) {
+        if let Some(row) = self.lock().get_mut(&heap) {
+            f(row);
+        }
     }
 
     fn finish(&self, heap: u32) {
-        self.lock().remove(&heap);
+        self.set(heap, |s| {
+            s.phase = Phase::Done;
+            s.done = 1.0;
+            s.dead_versions = 0;
+        });
     }
 }
 
@@ -261,13 +284,12 @@ impl Progress {
 /// passes `budget` bytes, and once at the end, every index of the sum is cleaned of the set's
 /// TIDs in one pass and then the set's pages are pruned, each under its exclusive latch. The
 /// large-value store is then swept of the values left unreferenced. `progress` shows each heap's
-/// phase while the vacuum runs. `pace` is called before each heap page scanned or pruned and
-/// after each index leaf and store page, holding no latch. Once it returns false the vacuum fails
-/// with `Stopped`, except in the closing sweep, which ends early.
+/// phase, and `Done` once the closing prune of its pages ends. `pace` is called before each heap
+/// page scanned, moved to history or pruned, and after each index leaf, store chunk and store
+/// page, holding no latch. Once it returns false the vacuum fails with `Stopped` and frees
+/// nothing more.
 ///
-/// Preconditions:
-/// - no other vacuum of the sum, or of a sum sharing its large-value store, runs;
-/// - once `pace` returns false, it returns false at every later call.
+/// Precondition: no other vacuum of the sum, or of a sum sharing its large-value store, runs.
 ///
 /// Versions the retention window keeps stay where they are.
 ///
@@ -280,7 +302,11 @@ pub fn vacuum<R: Runtime>(
     progress: &Progress,
     pace: &mut dyn FnMut() -> bool,
 ) -> Result<Report, Error> {
-    let mut pass = Pass { progress, pace };
+    let mut pass = Pass {
+        progress,
+        pace,
+        last: false,
+    };
     run(pager, txns, sum, Rule::Current(None), budget, &mut pass)
 }
 
@@ -298,7 +324,11 @@ pub fn vacuum_keeping<R: Runtime>(
     progress: &Progress,
     pace: &mut dyn FnMut() -> bool,
 ) -> Result<Report, Error> {
-    let mut pass = Pass { progress, pace };
+    let mut pass = Pass {
+        progress,
+        pace,
+        last: false,
+    };
     let rule = Rule::Current(Some(into));
     run(pager, txns, sum, rule, budget, &mut pass)
 }
@@ -315,10 +345,14 @@ pub fn expire<R: Runtime>(
     pace: &mut dyn FnMut() -> bool,
 ) -> Result<Report, Error> {
     let cutoff = txns.cutoff();
-    let mut pass = Pass { progress, pace };
+    let mut pass = Pass {
+        progress,
+        pace,
+        last: false,
+    };
     let report = run(pager, txns, past, Rule::Past(cutoff), budget, &mut pass)?;
     if let (Some(record), Some(cutoff)) = (txns.history(), cutoff) {
-        record.expire(pager, cutoff)?;
+        finished(record.expire(pager, cutoff, pass.pace)?)?;
     }
     Ok(report)
 }
@@ -337,6 +371,8 @@ enum Rule<'a> {
 struct Pass<'p> {
     progress: &'p Progress,
     pace: &'p mut dyn FnMut() -> bool,
+    /// Whether the clean running is the one after the scan ends.
+    last: bool,
 }
 
 impl Pass<'_> {
@@ -347,6 +383,14 @@ impl Pass<'_> {
         } else {
             Err(Error::Stopped)
         }
+    }
+}
+
+/// Returns the count of a walk that finished, or fails the run if it stopped.
+fn finished(walk: Walk) -> Result<usize, Error> {
+    match walk {
+        Walk::Done(n) => Ok(n),
+        Walk::Stopped(_) => Err(Error::Stopped),
     }
 }
 
@@ -373,11 +417,12 @@ fn run<R: Runtime>(
         moved: 0,
         rounds: 0,
         clean_below: txns.running().first().copied().unwrap_or(txns.next()),
+        heaps: BTreeMap::new(),
     };
     let mut dead = DeadSet::new();
     let mut marks = Watermarks::new(txns, rule);
     for (_, heap) in &sum.heaps {
-        progress.set(heap.id().0, |_| {});
+        progress.start(heap.id().0);
     }
     for (_, heap) in &sum.heaps {
         let id = heap.id().0;
@@ -404,18 +449,13 @@ fn run<R: Runtime>(
         }
         progress.set(id, |s| s.done = 1.0);
     }
+    pass.last = true;
     clean(pager, txns, sum, &mut dead, &mut marks, &mut report, pass)?;
-    for (_, heap) in &sum.heaps {
-        progress.set(heap.id().0, |s| s.phase = Phase::Sweep);
-    }
-    report.chunks = large.sweep(
+    report.chunks = finished(large.sweep(
         pager,
         |x| Ok(txns.status(pager, Xid(x))? != Status::InProgress),
         pass.pace,
-    )?;
-    for (_, heap) in &sum.heaps {
-        progress.finish(heap.id().0);
-    }
+    )?)?;
     Ok(report)
 }
 
@@ -483,7 +523,8 @@ fn shared_store(sum: &Sum) -> LargeStore {
 
 /// Copy the versions of `dead` the retention window keeps to their history heaps, when the rule
 /// moves them, then delete the index entries of every TID in `dead`, then prune each of its pages,
-/// freeing those TIDs, and empty `dead`.
+/// freeing those TIDs, and empty `dead`. On the pass's last clean, finish each heap's progress
+/// once its pages are pruned.
 fn clean<R: Runtime>(
     pager: &Pager<R>,
     txns: &Transactions<R>,
@@ -493,8 +534,11 @@ fn clean<R: Runtime>(
     report: &mut Report,
     pass: &mut Pass,
 ) -> Result<(), Error> {
-    let progress = pass.progress;
+    let (progress, last) = (pass.progress, pass.last);
     if dead.is_empty() {
+        for (_, heap) in sum.heaps.iter().filter(|_| last) {
+            progress.finish(heap.id().0);
+        }
         return Ok(());
     }
     report.rounds += 1;
@@ -505,6 +549,7 @@ fn clean<R: Runtime>(
         for &(ctor, heap) in &sum.heaps {
             let w = marks.of(txns, heap.id().0);
             for (pid, _) in dead.pages(heap.id().0) {
+                pass.step()?;
                 report.moved += history::keep(pager, txns, heap, ctor, into, &w, pid)?;
             }
         }
@@ -516,7 +561,7 @@ fn clean<R: Runtime>(
                 .get(&e.ctor)
                 .is_some_and(|&heap| dead.contains(heap, e.tid))
         };
-        report.entries += index.retain(pager, keep, pass.pace)?;
+        report.entries += finished(index.retain(pager, keep, pass.pace)?)?;
     }
     for &(_, heap) in &sum.heaps {
         let id = heap.id().0;
@@ -530,11 +575,18 @@ fn clean<R: Runtime>(
             report.cleared += done.cleared;
             report.all_visible += usize::from(done.all_visible);
             report.removed += usize::from(done.removed);
+            let heap = report.heaps.entry(id).or_default();
+            heap.freed += done.freed;
+            heap.removed += usize::from(done.removed);
             progress.set(id, |s| {
                 s.dead_versions = s.dead_versions.saturating_sub(slots.len());
             });
         }
-        progress.set(id, |s| s.phase = Phase::Scan);
+        if last {
+            progress.finish(id);
+        } else {
+            progress.set(id, |s| s.phase = Phase::Scan);
+        }
     }
     dead.clear();
     Ok(())

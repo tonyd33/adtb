@@ -2,7 +2,7 @@ use std::ops::Bound;
 
 use crate::btree::{self, BTree, prefix_end};
 use crate::runtime::Runtime;
-use crate::storage::{Lsn, PageError, Pager, Position};
+use crate::storage::{Lsn, PageError, Pager, Position, Walk};
 
 use super::{Snapshot, Xid};
 
@@ -211,9 +211,15 @@ impl Past {
         Ok(entries.iter().filter_map(|e| decode_marker(e)).collect())
     }
 
-    /// Forget every commit time and every marker before `cutoff`. Returns the number of entries
-    /// dropped.
-    pub fn expire<R: Runtime>(&self, pager: &Pager<R>, cutoff: u64) -> Result<usize, btree::Error> {
+    /// Forget every commit time and every marker before `cutoff`, calling `between` after each
+    /// leaf and ending once it returns false. Returns the number of entries dropped, and whether
+    /// it stopped early.
+    pub fn expire<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        cutoff: u64,
+        between: &mut dyn FnMut() -> bool,
+    ) -> Result<Walk, btree::Error> {
         self.tree.retain(
             pager,
             |e| {
@@ -223,7 +229,7 @@ impl Past {
                 };
                 time.is_none_or(|t| t >= cutoff)
             },
-            &mut || true,
+            between,
         )
     }
 }

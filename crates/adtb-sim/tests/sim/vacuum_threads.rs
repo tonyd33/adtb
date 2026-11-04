@@ -455,8 +455,8 @@ fn vacuumer(
         w.vacuuming = false;
         drop(w);
         assert!(
-            progress.rows().is_empty(),
-            "a finished vacuum shows progress"
+            progress.rows().iter().all(|s| s.phase == Phase::Done),
+            "a finished vacuum shows every heap done"
         );
         pause(rt, 500 + rt.next_u64() % 3000);
     }
@@ -468,7 +468,7 @@ fn watcher(rt: &SimRuntime, progress: &Progress, stop: &AtomicBool, seen: &Atomi
         for step in progress.rows() {
             assert!((0.0..=1.0).contains(&step.done), "{step:?}");
             assert!(HEAP_IDS.contains(&step.heap), "{step:?}");
-            if step.phase != Phase::Scan {
+            if !matches!(step.phase, Phase::Scan | Phase::Done) {
                 seen.fetch_add(1, Ordering::Relaxed);
             }
         }

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use adtb::btree::{BTree, Entries};
 use adtb::runtime::{Entropy, Threads};
-use adtb::storage::{PageKind, Pager, Pid, kind};
+use adtb::storage::{PageKind, Pager, Pid, Walk, kind};
 use adtb_sim::{Config, Faults, Outcome, Recording, Sim, SimRuntime};
 
 use adtb_simkit::crash;
@@ -702,7 +702,8 @@ fn retain_beside_inserts(seed: u64, n: u32, inserters: u32) {
             let before = i.load(Relaxed);
             let n = tree
                 .retain(&p, |e| !dropped(id_of(e)), &mut || true)
-                .expect("retain");
+                .expect("retain")
+                .count();
             *d.lock().unwrap() = (n, i.load(Relaxed) - before);
         }));
         for t in threads {
@@ -809,7 +810,7 @@ fn retain_unlinks_the_leaves_it_empties() {
         let deleted = tree
             .retain(pager, |e| !dropped(id_of(e)), &mut || true)
             .unwrap();
-        assert_eq!(deleted, 1600);
+        assert_eq!(deleted, Walk::Done(1600));
         let kept: Vec<Vec<u8>> = (0..n).filter(|&id| !dropped(id)).map(entry).collect();
         assert_eq!(tree.verify(pager), Ok(kept));
         let pages: BTreeSet<Pid> = tree.pages(pager).unwrap().into_iter().collect();

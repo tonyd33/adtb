@@ -33,7 +33,6 @@ use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 use adtb_sys::lock::Lock;
 
-use crate::btree::Index;
 use crate::exec::{self, Budget, Scheduler, StoredHeap, StoredIndex, Val};
 use crate::heap::Heap;
 use crate::key::CtorId;
@@ -418,6 +417,14 @@ impl Rerun {
     pub fn limit_at(&self, limit: Duration) -> Instant {
         self.since + limit
     }
+}
+
+/// What one vacuum of a relation did.
+#[derive(Debug)]
+pub struct Vacuumed {
+    /// What it did to the heap of each constructor, by constructor id.
+    pub ctors: Vec<(CtorId, vacuum::Freed)>,
+    pub report: vacuum::Report,
 }
 
 /// What stops one statement's executions early.
@@ -942,17 +949,15 @@ impl<R: Runtime> Database<R> {
             .explain(&params)
     }
 
-    /// Vacuum each constructor relation of `rel` in turn, within the budget of
-    /// [`Database::pacer`]. Returns the id of each constructor with what its vacuum did.
+    /// Vacuum the constructor relations of `rel` together, within the budget of
+    /// [`Database::pacer`]. Returns the id of each constructor with what the vacuum did to its
+    /// heap, and what it did in all.
     ///
-    /// Stop as [`Database::hold_vacuum`] says while another holds off vacuum, and as `waiting`
-    /// says while the vacuum runs.
-    pub fn vacuum(
-        &self,
-        rel: RelId,
-        waiting: HoldWait<'_>,
-    ) -> Result<Vec<(CtorId, vacuum::Report)>, Error> {
-        let _one = self.hold_vacuum(waiting)?;
+    /// Stop as [`Database::hold_vacuum`] says while another holds off vacuum, and as the same
+    /// `waiting`, timed from the call, says while the vacuum runs.
+    pub fn vacuum(&self, rel: RelId, waiting: HoldWait<'_>) -> Result<Vacuumed, Error> {
+        let stop = waiting.stop(self.rt.now());
+        let _one = self.hold_vacuum_until(&stop)?;
         let r = self.rels.get(&rel).ok_or(Broken::VacuumNoHeaps(rel))?;
         self.admit_vacuum(r)?;
         let ids: BTreeMap<u32, CtorId> = self.indexes[&r.key_index]
@@ -960,41 +965,32 @@ impl<R: Runtime> Database<R> {
             .iter()
             .map(|(id, c)| (*c, *id))
             .collect();
-        let indexes: Vec<&Index> = r
-            .indexes
-            .iter()
-            .map(|(i, _)| &self.indexes[i].index)
-            .collect();
-        let shown: Vec<(CtorId, u32)> = r
-            .ctors
-            .iter()
-            .enumerate()
-            .map(|(c, ctor)| (ids[&(c as u32)], self.heaps[&ctor.heap].heap.id().0))
-            .collect();
-        let _shown = self.show_vacuum(self.schema.ids.relations[&rel], &shown);
-        let stop = waiting.stop(self.rt.now());
-        let mut began = self.rt.now();
-        let halted = std::cell::Cell::new(None);
-        let mut pace = || {
-            let paced = self.pace(&stop, &mut began);
-            paced.map_err(|e| halted.set(Some(e))).is_ok()
+        let sum = vacuum::Sum {
+            heaps: (r.ctors.iter().enumerate())
+                .map(|(c, ctor)| (ids[&(c as u32)], &*self.heaps[&ctor.heap].heap))
+                .collect(),
+            indexes: (r.indexes.iter())
+                .map(|(i, _)| &self.indexes[i].index)
+                .collect(),
         };
-        let mut out = Vec::with_capacity(r.ctors.len());
-        for (c, ctor) in r.ctors.iter().enumerate() {
-            let id = ids[&(c as u32)];
-            let sum = vacuum::Sum {
-                heaps: vec![(id, &*self.heaps[&ctor.heap].heap)],
-                indexes: indexes.clone(),
-            };
-            self.vacuum_stage(id, vacuums::Stage::Current);
-            let report = self.vacuum_sum(r, &sum, &mut pace).map_err(|e| match e {
-                vacuum::Error::Stopped => halted.take().unwrap_or(Error::Cancelled),
-                e => e.into(),
-            })?;
-            self.vacuum_stage(id, vacuums::Stage::Done);
-            out.push((id, report));
-        }
-        Ok(out)
+        let shown: Vec<(CtorId, u32)> = sum.heaps.iter().map(|(id, h)| (*id, h.id().0)).collect();
+        let _shown = self.show_vacuum(self.schema.ids.relations[&rel], &shown);
+        let mut began = self.rt.now();
+        let mut io = None;
+        let halted = std::cell::Cell::new(None);
+        let ran = self.vacuum_sum(r, &sum, &mut || {
+            let paced = self.pace(&stop, &mut began, &mut io);
+            paced.map_err(|e| halted.set(Some(e))).is_ok()
+        });
+        self.pacer.charge(&self.rt, began);
+        let report = ran.map_err(|e| match e {
+            vacuum::Error::Stopped => halted.take().unwrap_or(Error::Cancelled),
+            e => e.into(),
+        })?;
+        let ctors = (shown.iter())
+            .map(|(id, heap)| (*id, report.heaps.get(heap).copied().unwrap_or_default()))
+            .collect();
+        Ok(Vacuumed { ctors, report })
     }
 
     /// Returns term `t`, item `item` of `text`, as a statement of `tx` bounded by `bounds`, in

@@ -168,6 +168,16 @@ impl Db {
     }
 
     fn vacuum(&mut self, budget: usize) -> Report {
+        self.vacuum_paced(budget, &vacuum::Progress::new(), &mut || true)
+            .expect("vacuum")
+    }
+
+    fn vacuum_paced(
+        &mut self,
+        budget: usize,
+        progress: &vacuum::Progress,
+        pace: &mut dyn FnMut() -> bool,
+    ) -> Result<Report, vacuum::Error> {
         let Db {
             pager,
             txns,
@@ -182,15 +192,7 @@ impl Db {
                 .collect(),
             indexes: indexes.iter().collect(),
         };
-        vacuum::vacuum(
-            pager,
-            txns,
-            &sum,
-            budget,
-            &vacuum::Progress::new(),
-            &mut || true,
-        )
-        .expect("vacuum")
+        vacuum::vacuum(pager, txns, &sum, budget, progress, pace)
     }
 
     fn prune(&mut self, heap: usize, pid: Pid) {
@@ -1379,4 +1381,104 @@ fn failed_writes_during_vacuum_crash_and_recover_clean() {
         crashes > share(SEEDS, 5) && during > share(SEEDS, 1),
         "{crashes} crashes, {during} during vacuum"
     );
+}
+
+/// Returns a database whose three heaps each hold 40 dead rows, one of them with a value of 50
+/// chunks stored out of line, indexed by keys long enough to fill several leaves.
+fn dead_rows(rt: SimRuntime) -> Db {
+    let (mut db, _) = Db::create(rt, 8);
+    let x = db.txns.begin(&db.pager).unwrap();
+    let mut tids = Vec::new();
+    for heap in 0..3 {
+        for key in 0..40 {
+            let mut row = make_row(heap, key, key as u64);
+            if heap != APPLE {
+                row[1] = Value::Text(format!("{key:0>300}"));
+            }
+            if heap == EMAIL && key == 0 {
+                row[2] = Value::Bytes(vec![7; 50 * PAGE]);
+            }
+            let tid = db.heaps[heap].insert(&db.pager, x.0, &row).unwrap();
+            db.index(heap, &row, tid);
+            tids.push((heap, tid));
+        }
+    }
+    db.txns.commit(&db.pager, x).unwrap();
+    let x = db.txns.begin(&db.pager).unwrap();
+    for (heap, tid) in tids {
+        db.heaps[heap].delete(&db.pager, tid, x.0).unwrap();
+    }
+    db.txns.commit(&db.pager, x).unwrap();
+    db
+}
+
+#[test]
+fn a_vacuum_its_pace_stops_calls_it_no_more_and_leaves_a_sound_database() {
+    let mut sim = Sim::new(41, Config::default());
+    let counted = Arc::new(Mutex::new(0));
+    let into = counted.clone();
+    finished(&mut sim, move |rt| {
+        let mut db = dead_rows(rt);
+        let mut calls = 0;
+        let report = db.vacuum_paced(usize::MAX, &vacuum::Progress::new(), &mut || {
+            calls += 1;
+            true
+        });
+        assert!(
+            report.expect("vacuum").chunks >= 50,
+            "the sweep frees the value"
+        );
+        *into.lock().unwrap() = calls;
+    });
+    let calls = *counted.lock().unwrap();
+    assert!(calls > 100, "{calls} paced steps");
+    for stop_at in 1..=calls {
+        let mut sim = Sim::new(41, Config::default());
+        finished(&mut sim, move |rt| {
+            let mut db = dead_rows(rt);
+            let mut calls = 0;
+            let got = db.vacuum_paced(usize::MAX, &vacuum::Progress::new(), &mut || {
+                calls += 1;
+                calls != stop_at
+            });
+            assert!(
+                matches!(got, Err(vacuum::Error::Stopped)),
+                "{stop_at}: {got:?}"
+            );
+            assert_eq!(stop_at, calls, "pace called after it stopped the vacuum");
+            assert_eq!(Vec::<String>::new(), db.verify(), "{stop_at}");
+            db.vacuum(usize::MAX);
+            assert!(db.heaps[EMAIL].large().pages(&db.pager).unwrap().is_empty());
+            assert_eq!(Vec::<String>::new(), db.verify(), "{stop_at}");
+        });
+    }
+}
+
+#[test]
+fn each_heap_shows_done_once_its_pages_are_pruned() {
+    let mut sim = Sim::new(42, Config::default());
+    finished(&mut sim, |rt| {
+        let mut db = dead_rows(rt);
+        let progress = vacuum::Progress::new();
+        let mut mixed = 0;
+        let report = db.vacuum_paced(usize::MAX, &progress, &mut || {
+            let rows = progress.rows();
+            let done = rows
+                .iter()
+                .filter(|s| s.phase == vacuum::Phase::Done)
+                .count();
+            mixed += usize::from(done > 0 && done < rows.len());
+            true
+        });
+        report.expect("vacuum");
+        assert!(mixed > 0, "a heap finished while another ran");
+        let rows = progress.rows();
+        assert_eq!(3, rows.len());
+        for s in rows {
+            assert_eq!(
+                (vacuum::Phase::Done, 1.0, 0),
+                (s.phase, s.done, s.dead_versions)
+            );
+        }
+    });
 }
