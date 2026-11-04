@@ -2,7 +2,7 @@
 created-at: 2026-11-02
 status: open
 kind: bug
-priority: 130
+priority: 610
 summary: "Other Kind wildcards in translation, single form wildcards and Prim operators are not named"
 ---
 
@@ -29,3 +29,7 @@ Left: `Prim` operators; a type tying a constructor set to its mapping; `_` over 
 `fix: name every Prim in the translation analyses` names every `Prim` in `compared` under the deny of both lints. It fixed a wrong answer: a pinned `print` or `T.parse` of a value of a user type answered with the later version's names after a rename of a constructor, field, type, record type or relation, or an added field; a key printed or parsed by its relation's later name, a renamed key field or a renamed newtype in a key field. Such a migration is now refused naming the operator (`Map::shown`, `Map::key_shown`, `blame_rename`); evolution.md 7.1 asks for the pinned answer instead, carried on pinned-print-parse-translation. Other Prims judged by reading: values pass through unchanged. Search tests `a_pinned_print_or_parse_answers_as_at_its_pin_or_is_refused_naming_the_operator_across_a_change_of_a_sum` and `..._across_a_rename_elsewhere`: 10 bodies by 8 operators, 66 translated and 14 refused, all reached. Full check 3628 passed. Review found a composite key permuted by sorted position across a rename, carried on pinned-composite-key-order.
 
 Left: `Kind::Prim(..)` arms unnamed in the structural analyses (`mark`, `stored_whole`, `kind`'s generic arm, `generic`, `carries`, forms.rs), where no Prim holds rows, probes or a carried branch; `_` arms with no deny over `Kind` in `field` and `replace`, over `Ty` in `case`, over `Option<Site>` in `tm`, each correct today by tracing; latent over-refusal: `shown` passes `ordered = true`, so a constructor reorder would refuse a scalar print, though no operator reaches it; a type tying a constructor set to its mapping in `generic`.
+
+## 2026-11-04: lowered
+
+What is left is latent or structural, with no wrong answer known: unnamed `Prim` arms in the structural analyses, undenied `_` arms correct by tracing, an over-refusal no operator reaches, a type for the constructor mapping. Lowered from 130 to 610 behind the open wrong answers.
