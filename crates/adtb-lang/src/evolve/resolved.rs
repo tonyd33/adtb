@@ -365,7 +365,7 @@ impl Source {
             logged,
             schema: &after.schema().map_err(unbuilt)?,
             before: &logged.before.schema().map_err(unbuilt)?,
-            names: &names,
+            names: Some(&names),
             indexes: BTreeMap::new(),
             at: 0,
         };
@@ -492,6 +492,10 @@ fn deterministic_functions(schema: &Schema) -> Vec<bool> {
     det
 }
 
+fn term_in(text: &str, names: Option<&Names>, span: Span) -> String {
+    names.map_or_else(String::new, |n| canonical_term(text, span, n))
+}
+
 /// Returns the span from the first token after the first `=` at or after `from` to `end`.
 fn after_eq(text: &str, from: u32, end: u32) -> Span {
     let toks = tokens(&text[from as usize..end as usize]);
@@ -509,14 +513,47 @@ struct Resolver<'a> {
     schema: &'a Schema,
     /// The schema before the migration.
     before: &'a Schema,
-    names: &'a Names,
+    /// `None` when resolving by id only.
+    names: Option<&'a Names>,
     /// The position among the relation's uniques and indexes the next one added takes.
     indexes: BTreeMap<RelId, usize>,
     /// The ordinal of the operator being resolved.
     at: usize,
 }
 
+impl Applied {
+    /// Returns the operator resolved by id against `before`, the source it applies to, and
+    /// `after`, the source it leaves; its operand texts are empty.
+    pub(crate) fn resolved(
+        &self,
+        before: &Source,
+        after: &Source,
+    ) -> Result<ResolvedOp, Vec<Diag>> {
+        let unbuilt = |ds: Vec<FileDiag>| ds.into_iter().map(|d| d.diag).collect::<Vec<_>>();
+        let logged = Logged {
+            number: after.version,
+            module: self.module.clone(),
+            text: self.text.clone(),
+            operators: vec![self.op.clone()],
+            before: Arc::new(before.clone()),
+        };
+        Resolver {
+            logged: &logged,
+            schema: &after.schema().map_err(unbuilt)?,
+            before: &before.schema().map_err(unbuilt)?,
+            names: None,
+            indexes: BTreeMap::new(),
+            at: 0,
+        }
+        .operator(&self.op)
+    }
+}
+
 impl Resolver<'_> {
+    fn term(&self, span: Span) -> String {
+        term_in(&self.logged.text, self.names, span)
+    }
+
     fn operator(&mut self, op: &Operator) -> Result<ResolvedOp, Vec<Diag>> {
         let gone = || {
             vec![Diag::new(
@@ -524,7 +561,8 @@ impl Resolver<'_> {
                 "an object this operator creates or names is gone by the migration's end",
             )]
         };
-        let term = |span: Span| canonical_term(&self.logged.text, span, self.names);
+        let (text, names) = (&self.logged.text, self.names);
+        let term = |span: Span| term_in(text, names, span);
         let own = |name: &ast::Ident| QName {
             module: None,
             name: name.clone(),
@@ -703,8 +741,7 @@ impl Resolver<'_> {
     /// Returns the resolved form of an operator that drops, renames or reshapes objects, its
     /// clauses appended to `clauses`; `None` when an object it names is in neither schema.
     fn changing(&self, kind: &OperatorKind, clauses: &mut Vec<Clause>) -> Option<Resolved> {
-        let text = &self.logged.text;
-        let term = |span: Span| canonical_term(text, span, self.names);
+        let term = |span: Span| self.term(span);
         let (before, after) = (self.before, self.schema);
         let own = |name: &ast::Ident| QName {
             module: None,
@@ -789,7 +826,7 @@ impl Resolver<'_> {
                         field: self
                             .field_in(after, p, &p.field.text)
                             .or_else(|| self.field_in(before, p, &p.field.text))?,
-                        fill: canonical_term(&self.logged.text, fill_span(f)?, self.names),
+                        fill: self.term(fill_span(f)?),
                     });
                 }
                 Resolved::Revert {
@@ -805,7 +842,7 @@ impl Resolver<'_> {
     /// schema or it is no such operator.
     fn reshaping(&self, kind: &OperatorKind, clauses: &mut Vec<Clause>) -> Option<Resolved> {
         let text = &self.logged.text;
-        let term = |span: Span| canonical_term(text, span, self.names);
+        let term = |span: Span| self.term(span);
         let def = |name: &ast::Ident| term(ctor_def_span(text, name));
         let (before, after) = (self.before, self.schema);
         Some(match kind {
@@ -927,7 +964,7 @@ impl Resolver<'_> {
     /// neither schema or it is no such operator.
     fn restructuring(&self, kind: &OperatorKind, clauses: &mut Vec<Clause>) -> Option<Resolved> {
         let text = &self.logged.text;
-        let term = |span: Span| canonical_term(text, span, self.names);
+        let term = |span: Span| self.term(span);
         let def = |name: &ast::Ident| term(ctor_def_span(text, name));
         let (before, after) = (self.before, self.schema);
         Some(match kind {
@@ -1015,11 +1052,7 @@ impl Resolver<'_> {
         };
         Some(Clause::Arm {
             target,
-            arm: canonical_term(
-                &self.logged.text,
-                a.pattern.span.to(a.body.span),
-                self.names,
-            ),
+            arm: self.term(a.pattern.span.to(a.body.span)),
         })
     }
 
@@ -1040,7 +1073,7 @@ impl Resolver<'_> {
     /// `index` clause takes, in order, the last indexes of `ty`'s relation the migration gives new
     /// ids.
     fn split_clauses(&self, ty: &QName, given: &[ast::SplitClause]) -> Option<Vec<Clause>> {
-        let term = |span: Span| canonical_term(&self.logged.text, span, self.names);
+        let term = |span: Span| self.term(span);
         let added = given
             .iter()
             .filter(|c| !matches!(c, ast::SplitClause::Arm(_)))

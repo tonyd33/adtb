@@ -10,7 +10,7 @@ impl Resolver<'_> {
         clauses: &mut Vec<Clause>,
     ) -> Option<Resolved> {
         let text = &self.logged.text;
-        let term = |span: Span| canonical_term(text, span, self.names);
+        let term = |span: Span| self.term(span);
         let (before, after) = (self.before, self.schema);
         let package = |from: &str| self.logged.before.packages.get(from).cloned();
         Some(match kind {
@@ -141,7 +141,7 @@ impl Resolver<'_> {
     ) -> Option<(String, String)> {
         let mut terms = privileges.iter().map(|p| {
             let (name, span) = privilege_term(p)?;
-            let target = canonical_term(&self.logged.text, span, self.names);
+            let target = self.term(span);
             Some((name.to_owned(), target))
         });
         let first = terms.next()??;

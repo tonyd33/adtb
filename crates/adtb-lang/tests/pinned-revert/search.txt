@@ -1,0 +1,202 @@
+=== base auth
+module auth
+add module auth
+add type Tier = Free | Paid
+add type User = { id: Key users, name: Text, tier: Tier }
+add relation users : User key id generate sequence
+add type Identity { id: Key identities, note: Text }
+  = EmailPass { email: Text }
+  | Google { gid: Text }
+add relation identities : Identity key id generate sequence
+add type Price = { sku: Text, n: I64 }
+add relation prices : Price key sku
+add type Order = { id: Key orders, price: Key prices }
+add relation orders : Order key id generate sequence
+add type Pay = Card { last4: Text } | Cash
+add type Payment { id: Key payments } = Paying { how: Pay } | Owed { amt: I64 }
+add relation payments : Payment key id generate sequence
+add type Scale = Realm | Town
+add type Place { id: Key places } = Location { name: Text, scale: Scale } | Faction
+add relation places : Place key id generate sequence
+=== operator addfield
+module auth
+add field User.age: I64 fill 7
+--- inverse
+module auth
+drop field User.age
+--- blame
+drop field User.age
+=== body addfield ages
+query ages () -> Set I64 = from u in users select u.age
+=== body addfield names
+query names () -> Set Text = from u in users select u.name
+=== operator dropfield
+module auth
+drop field User.name
+--- rows
+insert users { tier: Paid }
+--- observe
+from u in users select match u.tier | Free -> u.name ++ " free" | Paid -> u.name ++ " paid"
+--- inverse
+module auth
+add field User.name: Text fill "x"
+--- revert
+module auth
+revert 0002
+  fill User.name = "x"
+=== body dropfield insert
+txn put () -> I64 =
+  transact
+    insert users { tier: Free }
+    return 0
+=== operator moveup
+module auth
+move field Identity.EmailPass.email to Identity fill match
+  | Google g -> "g@x"
+--- inverse
+module auth
+move field Identity.email to Identity.EmailPass
+--- blame
+move field Identity.email to Identity.EmailPass
+=== body moveup emails
+query emails () -> Set Text = from i in identities select i.email
+=== operator movedown
+module auth
+move field Identity.note to Identity.EmailPass
+--- inverse
+module auth
+move field Identity.EmailPass.note to Identity fill match
+  | Google g -> "m"
+--- revert
+module auth
+revert 0002
+  fill Identity.EmailPass.note = match
+  | Google g -> "m"
+--- blame
+move field Identity.EmailPass.note to Identity fill match
+=== body movedown notes
+query notes () -> Set Text = from i in identities select match i | EmailPass e -> e.note | Google g -> g.gid
+=== operator rekey
+module auth
+rekey relation prices key (sku, n)
+  carry Order.price
+--- inverse
+module auth
+rekey relation prices key sku
+  carry Order.price
+--- blame
+rekey relation prices key sku
+=== body rekey keys
+query keys () -> Set (Key prices) = from o in orders select o.price
+=== operator split
+module auth
+split constructor Place.Location into Region { name: Text } | Settlement { name: Text }
+  by match
+    | Location { name, scale: Realm } -> Region { name: name }
+    | Location { name, scale: Town } -> Settlement { name: name }
+--- inverse
+module auth
+add type Rs = Region | Settlement
+merge constructor Place.(Region | Settlement) into Location { name: Text, rs: Rs }
+--- blame
+merge constructor Place.(Region | Settlement) into Location { name: Text, rs: Rs }
+--- oracle
+refusal
+=== body split places
+query places () -> Set Text = from p in places select match p | Region r -> r.name | Settlement t -> t.name | Faction _ -> "f"
+=== operator merge
+module auth
+add type Kind = Free | Paid
+merge constructor Tier.(Free | Paid) into Any { kind: Kind }
+--- inverse
+module auth
+split constructor Tier.Any into Free | Paid
+  by match
+    | Any a -> match a.kind | Free -> Free | Paid -> Paid
+drop type Kind
+--- blame
+split constructor Tier.Any into Free | Paid
+=== body merge tiers
+query tiers () -> Set Text = from u in users select match u.tier | Any a -> "a"
+=== operator nest
+module auth
+add type Login = Google { gid: Text }
+nest constructor Identity.(Google) into Social { login: Login }
+--- inverse
+module auth
+unnest constructor Identity.Social
+drop type Login
+--- blame
+unnest constructor Identity.Social
+=== body nest logins
+query logins () -> Set Text = from i in identities select match i | EmailPass e -> e.email | Social s -> "s"
+=== operator unnest
+module auth
+unnest constructor Payment.Paying
+--- inverse
+module auth
+nest constructor Payment.(Card | Cash) into Paying { how: Pay }
+--- blame
+nest constructor Payment.(Card | Cash) into Paying { how: Pay }
+=== body unnest pays
+query pays () -> Set Text = from p in payments select match p | Card c -> c.last4 | Cash _ -> "cash" | Owed o -> "owed"
+=== operator rename
+module auth
+rename field User.name to display
+--- inverse
+module auth
+rename field User.display to name
+=== body rename displays
+query displays () -> Set Text = from u in users select u.display
+=== body rename insert
+txn put () -> I64 =
+  transact
+    insert users { display: "bob", tier: Free }
+    return 0
+=== operator addctor
+module auth
+add constructor Tier.Gold
+--- rows
+insert users { name: "ann", tier: Paid }
+--- observe
+from u in users select u.name
+--- inverse
+module auth
+enable Tier.Gold
+module auth
+deprecate Tier.Gold
+module auth
+remove constructor Tier.Gold
+--- oracle
+answer
+=== body addctor tiers
+query tiers () -> Set Text = from u in users select match u.tier | Free -> "f" | Paid -> "p" | Gold -> "g"
+=== operator renamed
+module auth
+add field User.age: I64 fill 7
+rename field User.age to years
+--- inverse
+module auth
+rename field User.years to age
+module auth
+drop field User.age
+--- blame
+drop field User.age
+=== body renamed names
+query names () -> Set Text = from u in users select u.name
+=== body renamed years
+query years () -> Set I64 = from u in users select u.years
+=== operator rerevert
+module auth
+move field Identity.EmailPass.email to Identity fill match
+  | Google g -> "g@x"
+module auth
+revert 0002
+--- inverse
+module auth
+move field Identity.EmailPass.email to Identity fill match
+  | Google g -> "g@x"
+--- blame
+move field Identity.EmailPass.email to Identity fill match
+=== body rerevert emails
+query emails () -> Set Text = from i in identities select match i | EmailPass e -> e.email | Google g -> g.gid

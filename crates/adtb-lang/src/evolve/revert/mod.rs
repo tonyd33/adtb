@@ -416,6 +416,7 @@ impl Cx<'_> {
                     steps.borrow_mut().push(Step {
                         after: self.src.clone(),
                         maps: Vec::new(),
+                        applied: None,
                     });
                 }
             }
@@ -993,6 +994,11 @@ impl Cx<'_> {
                 steps.borrow_mut().push(Step {
                     after: self.src.clone(),
                     maps,
+                    applied: Some(Applied {
+                        module: self.module.clone(),
+                        text: full.clone(),
+                        op: op.clone(),
+                    }),
                 });
             }
         }

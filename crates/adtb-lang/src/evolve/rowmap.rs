@@ -61,11 +61,21 @@ pub enum RowMap {
     Rekey { relation: RelId },
 }
 
-/// One step of applying an operator: the source after it, and how it moves rows.
+/// One step of applying an operator: the source after it, how it moves rows, and the operator
+/// it applies when it applies one.
 #[derive(Debug)]
 pub struct Step {
     pub after: Source,
     pub maps: Vec<RowMap>,
+    pub applied: Option<Applied>,
+}
+
+/// An operator of a migration of `module` whose text is `text`.
+#[derive(Debug)]
+pub struct Applied {
+    pub(super) module: String,
+    pub(super) text: String,
+    pub(super) op: Operator,
 }
 
 impl Source {
@@ -91,6 +101,11 @@ impl Source {
             steps.push(Step {
                 after: self.clone(),
                 maps,
+                applied: Some(Applied {
+                    module: module.to_string(),
+                    text: text.to_string(),
+                    op: op.clone(),
+                }),
             });
         }
         match steps.last_mut() {
@@ -98,6 +113,7 @@ impl Source {
             None => steps.push(Step {
                 after: self.clone(),
                 maps: Vec::new(),
+                applied: None,
             }),
         }
         Ok(steps)

@@ -60,22 +60,33 @@ fn translated_with_hiding(log: &[&str], pin: usize, body: &str, hide_new: bool) 
 
 /// Returns the translation of each query or transaction of `body`, as `translated` does.
 fn translated_each(log: &[&str], pin: usize, body: &str, hide_new: bool) -> Vec<R<NormalQuery>> {
-    let (from_source, from, from_program) = checked(&log[..pin]);
+    translated_from(&checked(&log[..pin]), log, body, hide_new)
+}
+
+/// Returns the translation of each query or transaction of `body`, checked at `pinned`, the
+/// version some first migrations of `log` leave, to the version `log` leaves.
+fn translated_from(
+    pinned: &(Source, Schema, Program),
+    log: &[&str],
+    body: &str,
+    hide_new: bool,
+) -> Vec<R<NormalQuery>> {
+    let (from_source, from, from_program) = pinned;
     let (to_source, to, to_program) = checked(log);
     let text = format!("import auth\n{body}");
     let (imports, items) = parse_bundle_body(&text, Options::default())
         .ok()
         .expect("the body parses");
-    let vis = signature::visible(&from, &imports).expect("auth is visible");
-    let calls = signature::calls(&from, &from_program, &vis, &imports, &items)
+    let vis = signature::visible(from, &imports).expect("auth is visible");
+    let calls = signature::calls(from, from_program, &vis, &imports, &items)
         .unwrap_or_else(|d| panic!("`{body}` checks at its pin: {}", d.message));
-    let p = Pinned::new(&from, &from_source, &to, &to_source, &to_program, hide_new);
+    let p = Pinned::new(from, from_source, &to, &to_source, &to_program, hide_new);
     calls
         .iter()
         .map(|c| {
             let q = match &c.item {
-                Item::Query(_, q) => norm::query(&from, &from_program, q),
-                Item::Txn(_, t) => norm::txn(&from, &from_program, t),
+                Item::Query(_, q) => norm::query(from, from_program, q),
+                Item::Txn(_, t) => norm::txn(from, from_program, t),
                 Item::Fn(..) => panic!("the body holds a query or transaction"),
             }
             .expect("the callable normalises");
@@ -582,5 +593,131 @@ fn a_pinned_key_is_judged_by_its_fields_and_its_identity_across_each_operator() 
         expected.keys().collect::<Vec<_>>(),
         got.keys().collect::<Vec<_>>(),
         "every expectation is reached"
+    );
+}
+
+/// Returns the migrations of `text`, each a `module auth` line and the operators after it.
+fn migrations(text: &str) -> Vec<String> {
+    text.split("module auth\n")
+        .filter(|m| !m.is_empty())
+        .map(|m| format!("module auth\n{m}\n"))
+        .collect()
+}
+
+/// Every body pinned after an operator translates across the revert of that operator as across
+/// its inverse written as migrations. Across a stand-in an `oracle` part marks `refusal`, it is
+/// only refused.
+#[test]
+fn a_revert_is_judged_as_its_inverse_written_out_or_a_marked_stand_in() {
+    use adtb_testkit::sections::{Section, expectations, sections};
+    let read = |f: &str| {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/pinned-revert/");
+        std::fs::read_to_string(format!("{dir}{f}")).expect("the search is readable")
+    };
+    let sections = sections(&read("search.txt"));
+    let expected = expectations(&read("translations.txt"));
+    let base = sections
+        .iter()
+        .find(|s| s.kind == "base")
+        .expect("the search has a base");
+    let mut got = BTreeMap::new();
+    let mut refusals = 0;
+    let mut refusal_only = BTreeSet::new();
+    for op in sections.iter().filter(|s| s.kind == "operator") {
+        let name = &op.name[0];
+        let bodies: Vec<&Section> = sections
+            .iter()
+            .filter(|s| s.kind == "body" && s.name[0] == *name)
+            .collect();
+        let text: String = bodies.iter().map(|b| b.text.as_str()).collect();
+        let mut pin = vec![base.text.clone()];
+        pin.extend(migrations(&op.text));
+        let reverted = format!("revert {:04}", pin.len());
+        let revert = match op.part("revert") {
+            "" => format!("module auth\n{reverted}"),
+            given => given.to_owned(),
+        };
+        let pinned = checked(&pin.iter().map(String::as_str).collect::<Vec<_>>());
+        for (side, then, blamed) in [
+            ("inverse", op.part("inverse"), op.part("blame")),
+            ("revert", revert.as_str(), reverted.as_str()),
+        ] {
+            let mut log = pin.clone();
+            log.extend(migrations(then));
+            let log: Vec<&str> = log.iter().map(String::as_str).collect();
+            for (b, one) in bodies
+                .iter()
+                .zip(translated_from(&pinned, &log, &text, false))
+            {
+                let pair = format!("{name} {} {side}", b.name[1]);
+                let answer = match one {
+                    Ok(_) => "translates".to_owned(),
+                    Err(u) => {
+                        assert_eq!(Some(blamed), u.operator.as_deref(), "{pair}");
+                        refusals += 1;
+                        format!("refused {:?}", u.reason)
+                    }
+                };
+                if side == "inverse" && op.part("oracle") == "refusal" {
+                    refusal_only.insert(pair.clone());
+                }
+                got.insert(pair, answer);
+            }
+        }
+    }
+    let differs: Vec<String> = got
+        .iter()
+        .filter(|(k, v)| {
+            let pair = k.rsplit_once(' ').expect("a side ends the key").0;
+            match expected.get(pair) {
+                Some(e) if refusal_only.contains(*k) => {
+                    !(e.starts_with("refused") && v.starts_with("refused"))
+                }
+                e => e != Some(*v),
+            }
+        })
+        .map(|(k, v)| format!("{k} = {v}"))
+        .collect();
+    assert!(
+        differs.is_empty(),
+        "translations differ:\n{}",
+        differs.join("\n")
+    );
+    let reached: Vec<String> = expected
+        .keys()
+        .flat_map(|k| [format!("{k} inverse"), format!("{k} revert")])
+        .collect();
+    assert_eq!(
+        reached,
+        got.keys().cloned().collect::<Vec<_>>(),
+        "every pair is reached on both sides"
+    );
+    assert_eq!(
+        (16, 20, 1),
+        (expected.len(), refusals, refusal_only.len()),
+        "every operator and body pair ran, each refusal on both sides, and each stand-in"
+    );
+}
+
+#[test]
+fn a_field_moved_down_has_an_image_only_in_the_constructor_it_now_sits_in() {
+    let add = "module auth\nadd field Identity.note: Text fill \"n\"\n";
+    let down = "module auth\nmove field Identity.note to Identity.EmailPass\n";
+    let (_, from, _) = checked(&[V1, add]);
+    let (_, to, _) = checked(&[V1, add, down]);
+    let map = Map::new(&from, &to);
+    let def = named(&from, "Identity");
+    let image = |c, f| map.field(def, c, f);
+    assert_eq!(
+        (Some("note".to_owned()), None, None),
+        (
+            image(Some(0), "note"),
+            image(Some(1), "note"),
+            image(None, "note")
+        )
+    );
+    assert_eq!(
+        (Some("user".to_owned()), Some("user".to_owned())),
+        (image(Some(1), "user"), image(None, "user"))
     );
 }

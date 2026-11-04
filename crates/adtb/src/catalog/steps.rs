@@ -48,7 +48,11 @@ mod tests {
         }])
         .expect("the source builds");
         after.decls[0].text = "type Pair = { a: Missing }\n".to_string();
-        Step { after, maps }
+        Step {
+            after,
+            maps,
+            applied: None,
+        }
     }
 
     #[test]

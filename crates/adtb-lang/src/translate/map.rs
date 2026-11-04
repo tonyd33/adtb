@@ -121,7 +121,7 @@ impl<'a> Map<'a> {
     }
 
     /// Returns the name field `name` of constructor `c` of `def` has at the later version, a
-    /// header field's when it is one.
+    /// header field's when it is one; `None` when it sits in another constructor there.
     pub fn field(&self, def: TypeId, c: Option<u32>, name: &str) -> Option<String> {
         let to = self.def(def)?;
         let t = self.from.ty(def);
@@ -134,7 +134,9 @@ impl<'a> Map<'a> {
             Some(id) => self
                 .fields
                 .get(id)
-                .filter(|(t, _, _)| *t == to)
+                .filter(|(t, k, _)| {
+                    *t == to && (k.is_none() || *k == c.and_then(|c| self.ctor(def, c)))
+                })
                 .map(|(_, _, n)| n.clone()),
             None if self.from.ids.types.contains_key(&def) => None,
             None => {

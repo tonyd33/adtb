@@ -3999,6 +3999,148 @@ fn a_pinned_key_answers_at_its_pin_and_after_each_operator_it_crosses() {
     );
 }
 
+fn revert_file(name: &str) -> String {
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../adtb-lang/tests/pinned-revert");
+    std::fs::read_to_string(dir.join(name)).expect("the pinned revert search is readable")
+}
+
+/// The bodies of one bundle, pinned after operator `op` of the revert search.
+struct Pinned<'s> {
+    base: &'s Section,
+    op: &'s Section,
+    bodies: Vec<&'s Section>,
+}
+
+impl Pinned<'_> {
+    /// Returns the migrations of the pin, `then` after them.
+    fn log(&self, then: &[&str]) -> Vec<String> {
+        let mut log = vec![self.base.text.clone()];
+        let op = migrations(&self.op.text);
+        log.extend(op.iter().chain(then).map(|m| format!("module auth\n{m}\n")));
+        log
+    }
+
+    fn bundled(&self) -> Vec<Registration> {
+        let text: String = self.bodies.iter().map(|b| b.text.as_str()).collect();
+        let pin = self.log(&[]);
+        let pin: Vec<&str> = pin.iter().map(String::as_str).collect();
+        vec![bundle("web-1.0", &pin, "", &format!("import auth\n{text}"))]
+    }
+
+    /// Returns the files of a database at the pin holding the operator's rows.
+    fn files(&self, seed: u64) -> std::collections::BTreeMap<String, Vec<u8>> {
+        let mut sim = Sim::new(seed, Config::default());
+        run(&mut sim, |rt| {
+            let case = format!("{} seed {seed}", self.op.name[0]);
+            let pin = self.log(&[]);
+            let pin: Vec<&str> = pin.iter().map(String::as_str).collect();
+            key_rows(self.op, &opened(&rt, &pin, self.bundled()), &case);
+        });
+        sim.files()
+    }
+
+    /// Returns the answer of each body called once `then`, migrations each without its
+    /// `module auth` line, applies to `files`.
+    fn crossed(
+        &self,
+        seed: u64,
+        files: std::collections::BTreeMap<String, Vec<u8>>,
+        then: &[&str],
+    ) -> Vec<String> {
+        let log = self.log(then);
+        let log: Vec<&str> = log.iter().map(String::as_str).collect();
+        let mut sim = Sim::with_files(seed, Config::default(), files);
+        run(&mut sim, |rt| {
+            let db = opened(&rt, &log, self.bundled());
+            (1..=self.bodies.len() as u32)
+                .map(|i| key_answer(&db, i, self.op.part("observe")))
+                .collect()
+        })
+    }
+}
+
+/// Every body pinned after an operator the search observes, across the revert of that operator
+/// and across its inverse written as migrations, or the stand-in an `oracle` part marks: the same
+/// answer.
+#[test]
+fn a_pinned_call_answers_across_a_revert_as_across_its_inverse_or_a_marked_stand_in() {
+    let sections = sections(&revert_file("search.txt"));
+    let translations = expectations(&revert_file("translations.txt"));
+    let expected = expectations(&revert_file("answers.txt"));
+    let base = sections
+        .iter()
+        .find(|s| s.kind == "base")
+        .expect("the search has a base");
+    let mut got = std::collections::BTreeMap::new();
+    let mut seed = 600;
+    for op in sections.iter().filter(|s| s.kind == "operator") {
+        let name = &op.name[0];
+        let bodies: Vec<&Section> = sections
+            .iter()
+            .filter(|s| s.kind == "body" && s.name[0] == *name)
+            .collect();
+        if op.part("observe").is_empty() {
+            continue;
+        }
+        for b in &bodies {
+            let pair = format!("{name} {}", b.name[1]);
+            assert_eq!(
+                Some("translates"),
+                translations.get(&pair).map(String::as_str),
+                "{pair}"
+            );
+        }
+        let pinned = Pinned { base, op, bodies };
+        let reverted = format!("revert {:04}", pinned.log(&[]).len());
+        let revert = match op.part("revert") {
+            "" => reverted.as_str(),
+            given => given,
+        };
+        seed += 1;
+        let files = pinned.files(seed);
+        for (side, then) in [
+            ("inverse", migrations(op.part("inverse"))),
+            ("revert", migrations(revert)),
+        ] {
+            let answers = pinned.crossed(seed, files.clone(), &then);
+            for (b, answer) in pinned.bodies.iter().zip(answers) {
+                got.insert(format!("{name} {} {side}", b.name[1]), answer);
+            }
+        }
+    }
+    let differs: Vec<String> = got
+        .iter()
+        .filter(|(k, v)| {
+            let pair = k.rsplit_once(' ').expect("a side ends the key").0;
+            expected.get(pair) != Some(*v)
+        })
+        .map(|(k, v)| format!("{k} = {v}"))
+        .collect();
+    assert!(
+        differs.is_empty(),
+        "answers differ:\n{}",
+        differs.join("\n")
+    );
+    let reached: Vec<String> = expected
+        .keys()
+        .flat_map(|k| [format!("{k} inverse"), format!("{k} revert")])
+        .collect();
+    assert_eq!(
+        reached,
+        got.keys().cloned().collect::<Vec<_>>(),
+        "every pair is reached on both sides"
+    );
+    assert_eq!(2, expected.len(), "every observed pair has an answer");
+}
+
+/// Returns the migrations of `text`, each without its `module auth` line.
+fn migrations(text: &str) -> Vec<&str> {
+    text.split("module auth\n")
+        .filter(|m| !m.is_empty())
+        .collect()
+}
+
 const READER_ADD: &str = "module auth
 add type Tone = Ink { depth: I64 }
 add type Mark = { id: Key marks, note: Text, tone: Tone }

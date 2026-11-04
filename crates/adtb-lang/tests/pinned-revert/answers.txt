@@ -1,0 +1,2 @@
+addctor tiers = call ["\"p\""] rows ["\"ann\""]
+dropfield insert = call ["0"] rows ["\"x free\"", "\"x paid\""]

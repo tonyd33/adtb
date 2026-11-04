@@ -1,0 +1,16 @@
+addctor tiers = translates
+addfield ages = refused "it reads field `age` of `User`, which the current version lacks"
+addfield names = translates
+dropfield insert = translates
+merge tiers = refused "it reaches what the operator changes, and this engine does not translate across it"
+movedown notes = refused "it reaches what the operator changes, and this engine does not translate across it"
+moveup emails = refused "it reaches what the operator changes, and this engine does not translate across it"
+nest logins = refused "it reaches what the operator changes, and this engine does not translate across it"
+rekey keys = refused "it reaches what the operator changes, and this engine does not translate across it"
+rename displays = translates
+renamed names = translates
+renamed years = refused "it reads field `years` of `User`, which the current version lacks"
+rename insert = translates
+rerevert emails = refused "it reaches what the operator changes, and this engine does not translate across it"
+split places = refused "it reaches what the operator changes, and this engine does not translate across it"
+unnest pays = refused "it reaches what the operator changes, and this engine does not translate across it"

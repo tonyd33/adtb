@@ -7,7 +7,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use crate::check::Program;
-use crate::evolve::{Clause, Code, Resolved, ResolvedOp, RowFn, RowMap, Source};
+use crate::evolve::{Clause, Code, Logged, Resolved, ResolvedOp, RowFn, RowMap, Source};
 use crate::kernel::{Kind, Terms, Tm};
 use crate::norm::{self, NormalProgram, NormalQuery};
 use crate::schema::{Schema, Stage};
@@ -39,14 +39,22 @@ impl fmt::Display for Untranslatable {
     }
 }
 
-/// One operator logged after the pin.
+/// One operator logged after the pin, or applied by a revert logged after it.
 #[derive(Debug)]
 struct Op {
-    /// The migration it belongs to and its position among that migration's operators.
-    at: (usize, usize),
+    from: Origin,
+    /// The logged operator's text, a revert's for each operator it applies.
     text: String,
     op: Resolved,
     clauses: Vec<Clause>,
+}
+
+#[derive(Debug)]
+enum Origin {
+    /// Operator `.1` of migration `.0` of the log.
+    Logged(usize, usize),
+    /// A step of a revert, with the fill of the field it adds and the source it leaves.
+    Reverted(Option<(Rc<RowFn>, Rc<Source>)>),
 }
 
 /// The translation from a pinned version to a later one.
@@ -104,12 +112,16 @@ impl<'a> Pinned<'a> {
             })?;
             for (k, (op, r)) in logged.operators.iter().zip(resolved).enumerate() {
                 let text = operator_text(&logged.text, op);
+                let reverts = matches!(r.op, Resolved::Revert { .. });
                 ops.push(Op {
-                    at: (i, k),
-                    text,
+                    from: Origin::Logged(i, k),
+                    text: text.clone(),
                     op: r.op,
                     clauses: r.clauses,
                 });
+                if reverts {
+                    ops.extend(reverted(logged, k, &text)?);
+                }
             }
         }
         Ok(Pinned {
@@ -345,7 +357,7 @@ impl<'a> Pinned<'a> {
 
     /// Refuse a callable that meets an operator this translation does not cross: a split,
     /// merge, nest or unnest of a type it reaches, a move or alter of a field of one, a rekey of
-    /// a relation it reaches.
+    /// a relation it reaches. A revert is judged by the operators it applies, which follow it.
     fn uncrossed(&self, terms: &Terms) -> R<()> {
         let from = self.map.from;
         let mut defs = BTreeSet::new();
@@ -367,6 +379,10 @@ impl<'a> Pinned<'a> {
                 Clause::Member { ctor } => ctor_def(*ctor),
                 _ => None,
             });
+            #[deny(
+                clippy::wildcard_enum_match_arm,
+                clippy::match_wildcard_for_single_variants
+            )]
             let hit = match &o.op {
                 Resolved::Split { ctor, .. } | Resolved::Unnest { ctor } => {
                     ctor_def(*ctor).is_some_and(|d| defs.contains(&d))
@@ -381,7 +397,53 @@ impl<'a> Pinned<'a> {
                     .relations
                     .iter()
                     .any(|(r, i)| i == relation && rels.contains(r)),
-                _ => false,
+                Resolved::AddModule { .. }
+                | Resolved::AddType { .. }
+                | Resolved::AddRelation { .. }
+                | Resolved::AddSet { .. }
+                | Resolved::AddUnique { .. }
+                | Resolved::AddIndex { .. }
+                | Resolved::DefineFn { .. }
+                | Resolved::DefineAggregate { .. }
+                | Resolved::AddConstraint { .. }
+                | Resolved::AddCheck { .. }
+                | Resolved::DropModule { .. }
+                | Resolved::DropType { .. }
+                | Resolved::DropRelation { .. }
+                | Resolved::DropSet { .. }
+                | Resolved::AddConstructor { .. }
+                | Resolved::RemoveConstructor { .. }
+                | Resolved::Enable { .. }
+                | Resolved::Disable { .. }
+                | Resolved::Deprecate { .. }
+                | Resolved::RenameConstructor { .. }
+                | Resolved::RenameType { .. }
+                | Resolved::RenameRelation { .. }
+                | Resolved::RenameSet { .. }
+                | Resolved::RenameField { .. }
+                | Resolved::AddField { .. }
+                | Resolved::DropField { .. }
+                | Resolved::DropUnique { .. }
+                | Resolved::DropIndex { .. }
+                | Resolved::RedefineFn { .. }
+                | Resolved::DropFn { .. }
+                | Resolved::DropAggregate { .. }
+                | Resolved::DropConstraint { .. }
+                | Resolved::DropCheck { .. }
+                | Resolved::Revert { .. }
+                | Resolved::AddDefault { .. }
+                | Resolved::DropDefault { .. }
+                | Resolved::Store { .. }
+                | Resolved::Unstore { .. }
+                | Resolved::AddComputed { .. }
+                | Resolved::RedefineComputed { .. }
+                | Resolved::DropComputed { .. }
+                | Resolved::Grant { .. }
+                | Resolved::Revoke { .. }
+                | Resolved::Install { .. }
+                | Resolved::Uninstall { .. }
+                | Resolved::AdoptTzdb { .. }
+                | Resolved::Script { .. } => false,
             };
             if hit {
                 return Err(refused(
@@ -451,7 +513,7 @@ impl<'a> Pinned<'a> {
     /// Returns the fill of the operator that added field `name` of constructor `c` of `def`, at
     /// the later version, as a function of the row before it, with the operator's text and the
     /// source the fill was written at.
-    fn fill(&self, def: TypeId, c: u32, name: &str) -> R<Option<(RowFn, String, Source)>> {
+    fn fill(&self, def: TypeId, c: u32, name: &str) -> R<Option<(Rc<RowFn>, String, Source)>> {
         let Some(&id) = self
             .map
             .to
@@ -468,32 +530,20 @@ impl<'a> Pinned<'a> {
         else {
             return Ok(None);
         };
-        let logged = &self.to_source.log[o.at.0];
-        let mut before = (*logged.before).clone();
-        let failed = |ds: Vec<crate::span::Diag>| {
-            refused(
-                Some(o.text.clone()),
-                ds.into_iter()
-                    .map(|d| d.message)
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            )
+        let found = match &o.from {
+            Origin::Logged(i, k) => {
+                let logged = &self.to_source.log[*i];
+                let mut src = replayed(logged, *k).map_err(|ds| failed(&o.text, ds))?;
+                let steps = src
+                    .steps(&logged.module, &logged.operators[*k], &logged.text)
+                    .map_err(|ds| failed(&o.text, ds))?;
+                filled(steps.into_iter().flat_map(|s| s.maps)).map(|f| (f, src))
+            }
+            Origin::Reverted(fill) => fill
+                .as_ref()
+                .map(|(f, after)| (f.clone(), (**after).clone())),
         };
-        for op in &logged.operators[..o.at.1] {
-            before
-                .apply(&logged.module, op, &logged.text)
-                .map_err(failed)?;
-        }
-        let steps = before
-            .steps(&logged.module, &logged.operators[o.at.1], &logged.text)
-            .map_err(failed)?;
-        Ok(steps
-            .into_iter()
-            .flat_map(|s| s.maps)
-            .find_map(|m| match m {
-                RowMap::Fill { fill, .. } => Some((fill, o.text.clone(), before.clone())),
-                _ => None,
-            }))
+        Ok(found.map(|(f, after)| (f, o.text.clone(), after)))
     }
 
     /// Returns whether function `f` of the pin has the same code at the later version, and its
@@ -532,6 +582,62 @@ impl<'a> Pinned<'a> {
             && code_of(self.from_source, id) == now
             && self.fill_source.is_none_or(|s| code_of(s, id) == now)
     }
+}
+
+fn failed(text: &str, ds: Vec<crate::span::Diag>) -> Untranslatable {
+    refused(
+        Some(text.to_string()),
+        ds.into_iter()
+            .map(|d| d.message)
+            .collect::<Vec<_>>()
+            .join("; "),
+    )
+}
+
+fn filled(maps: impl IntoIterator<Item = RowMap>) -> Option<Rc<RowFn>> {
+    maps.into_iter().find_map(|m| match m {
+        RowMap::Fill { fill, .. } => Some(Rc::new(fill)),
+        _ => None,
+    })
+}
+
+/// Returns the source before operator `k` of `logged`.
+fn replayed(logged: &Logged, k: usize) -> Result<Source, Vec<crate::span::Diag>> {
+    let mut src = (*logged.before).clone();
+    for op in &logged.operators[..k] {
+        src.apply(&logged.module, op, &logged.text)?;
+    }
+    Ok(src)
+}
+
+/// Returns each operator that revert `k` of `logged`, whose text is `text`, applies, resolved
+/// against the source before and after it.
+fn reverted(logged: &Logged, k: usize, text: &str) -> R<Vec<Op>> {
+    let mut before = replayed(logged, k).map_err(|ds| failed(text, ds))?;
+    let steps = before
+        .clone()
+        .steps(&logged.module, &logged.operators[k], &logged.text)
+        .map_err(|ds| failed(text, ds))?;
+    let mut out = Vec::new();
+    for s in steps {
+        if let Some(a) = &s.applied {
+            let r = a
+                .resolved(&before, &s.after)
+                .map_err(|ds| failed(text, ds))?;
+            let fill = match r.op {
+                Resolved::AddField { .. } => filled(s.maps).map(|f| (f, Rc::new(s.after.clone()))),
+                _ => None,
+            };
+            out.push(Op {
+                from: Origin::Reverted(fill),
+                text: text.to_string(),
+                op: r.op,
+                clauses: r.clauses,
+            });
+        }
+        before = s.after;
+    }
+    Ok(out)
 }
 
 fn code_of(s: &Source, id: u64) -> Option<Code> {
