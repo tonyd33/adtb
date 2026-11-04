@@ -126,3 +126,7 @@ work and real-backend fault coverage still require bounded slices. Shared
 admission and work budgets must precede exposing untrusted socket text. Existing
 umbrella tickets do not require unrelated rewrites before every consumer, and
 new feature work does not displace a demonstrated data-loss or authority defect.
+
+## 2026-11-03: exit without a release
+
+Maintainer, 2026-11-03: no release is cut at this milestone; the repository is cleaned up before any real release. Milestone 9 exits when the suite and every test method pass and the benchmark results are recorded in the repository. Publishing them with a release moves to that later release.
