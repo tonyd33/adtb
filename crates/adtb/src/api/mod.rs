@@ -137,6 +137,9 @@ pub struct OpenOptions {
     pub registrations: Vec<Registration>,
     /// The bodies of the schema's host functions, bound before migrations run.
     pub host_fns: HostFns,
+    /// Start no background vacuum. Unspecified; for tests of the command and the scrub.
+    #[doc(hidden)]
+    pub no_background_vacuum: bool,
 }
 
 impl OpenOptions {
@@ -936,7 +939,8 @@ impl<R: Runtime> Engine<R> {
             fail_kept: Lock::new(None),
         });
         let background =
-            maintenance::Background::new(verifier.clone(), parts.schema.clone(), &parts.settings);
+            maintenance::Background::new(verifier.clone(), parts.schema.clone(), &parts.settings)
+                .vacuuming(!options.no_background_vacuum);
         Engine {
             rt,
             schema: parts.schema,

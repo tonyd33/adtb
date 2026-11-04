@@ -194,7 +194,11 @@ fn damaged_writing(
     let mut sim = Sim::with_files(1, Config::default(), files.clone());
     let mut kept = None;
     finished(&mut sim, |rt| {
-        let db = open(rt);
+        let quiet = OpenOptions {
+            no_background_vacuum: true,
+            ..options(256)
+        };
+        let db = Database::open_in(rt, FILE, &Log::new([APP]), &quiet).unwrap();
         let w = db.write_path();
         kept = Some(Kept {
             marks: w.pager().quarantine_page(),

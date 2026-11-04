@@ -1,4 +1,5 @@
-//! The engine's background worker: one thread, holding no engine, that runs the background scrub.
+//! The engine's background workers, holding no engine: one thread that runs the background
+//! scrub and one that vacuums each relation as it falls due.
 
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
@@ -13,7 +14,7 @@ use crate::catalog::layout;
 use crate::exec::{self, F64, Val};
 use crate::runtime::{Instant, Io, Op, Runtime, ThreadId};
 use crate::storage::{Pid, RetainedLog};
-use crate::write::{Found, panic_text};
+use crate::write::{self, Due, Found, panic_text};
 
 use super::command::engine_relation;
 use super::micros;
@@ -26,14 +27,23 @@ const SAVE_EVERY: Duration = Duration::from_secs(60);
 /// The longest the worker sleeps before it looks at the clock again.
 const LONGEST_WAIT: Duration = Duration::from_secs(30 * 24 * 3600);
 
+/// The longest the vacuum worker sleeps before it looks for a relation due.
+const VACUUM_BACKSTOP: Duration = Duration::from_secs(60);
+
+/// How long the vacuum worker waits after another call took the vacuum lock from it.
+const VACUUM_YIELD: Duration = Duration::from_millis(100);
+
 /// What the worker is told.
 struct Control {
     every: Option<Duration>,
     budget: F64,
+    window: Duration,
     stop: bool,
     woken: bool,
     fail: Option<&'static str>,
     thread: Option<ThreadId>,
+    vacuum_thread: Option<ThreadId>,
+    vacuums: bool,
 }
 
 /// The engine's background worker.
@@ -113,12 +123,21 @@ impl<R: Runtime> Background<R> {
             control: Lock::new(Control {
                 every: settings.scrub,
                 budget: settings.budget,
+                window: settings.window,
                 stop: false,
                 woken: false,
                 fail: None,
                 thread: None,
+                vacuum_thread: None,
+                vacuums: true,
             }),
         })
+    }
+
+    /// Returns the workers, starting the vacuum worker only if `on`.
+    pub(super) fn vacuuming(self: Arc<Self>, on: bool) -> Arc<Self> {
+        self.control.lock(&self.rt).vacuums = on;
+        self
     }
 
     /// Start the worker, unless the settings ask for no work.
@@ -132,21 +151,31 @@ impl<R: Runtime> Background<R> {
         let mut c = self.control.lock(&self.rt);
         c.every = settings.scrub;
         c.budget = settings.budget;
+        c.window = settings.window;
         self.verifier
             .db
             .pacer()
             .set(&self.rt, settings.budget.get());
         c.woken = true;
         self.spawn_if_wanted(&mut c);
-        if let Some(t) = c.thread {
+        for t in [c.thread, c.vacuum_thread].into_iter().flatten() {
             self.rt.unpark(t);
         }
     }
 
     fn spawn_if_wanted(self: &Arc<Self>, c: &mut Control) {
-        if c.every.is_some() && c.thread.is_none() && !c.stop {
+        if c.stop {
+            return;
+        }
+        if c.every.is_some() && c.thread.is_none() {
             let me = self.clone();
             c.thread = Some(self.rt.spawn_daemon("background", move || me.run()));
+        }
+        if c.vacuums && c.vacuum_thread.is_none() {
+            let me = self.clone();
+            let t = self.rt.spawn_daemon("vacuum", move || me.vacuums());
+            self.verifier.db.watch_dead(t);
+            c.vacuum_thread = Some(t);
         }
     }
 
@@ -162,15 +191,58 @@ impl<R: Runtime> Background<R> {
 
     /// Stop the worker and wait for it to save where it is. No later call starts it again.
     pub(super) fn stop(&self) {
-        let thread = {
+        let threads = {
             let mut c = self.control.lock(&self.rt);
             c.stop = true;
-            c.thread.take()
+            [c.thread.take(), c.vacuum_thread.take()]
         };
-        if let Some(t) = thread {
+        for t in threads.into_iter().flatten() {
             self.rt.unpark(t);
             self.rt.join(t);
         }
+    }
+
+    /// Vacuum each relation as it falls due, within the budget. A relation whose vacuum fails
+    /// is not vacuumed again by this process.
+    fn vacuums(&self) {
+        let db = &self.verifier.db;
+        let mut io = self.rt.io();
+        let mut skipped = BTreeSet::new();
+        let mut last = None;
+        loop {
+            let (stop, budget, window) = {
+                let c = self.control.lock(&self.rt);
+                (c.stop, c.budget.get(), c.window)
+            };
+            if stop {
+                return;
+            }
+            let until = match db.due_vacuum(window, &skipped, last) {
+                Due::Now(rel) if budget > 0.0 => match db.vacuum_background(rel) {
+                    Ok(Some(_)) => {
+                        last = Some(rel);
+                        continue;
+                    }
+                    Ok(None) | Err(write::Error::Cancelled) => self.rt.now() + VACUUM_YIELD,
+                    Err(_) => {
+                        skipped.insert(rel);
+                        continue;
+                    }
+                },
+                Due::At(Some(at)) if budget > 0.0 => at.min(self.rt.now() + VACUUM_BACKSTOP),
+                _ => self.rt.now() + VACUUM_BACKSTOP,
+            };
+            self.vacuum_wait(&mut io, until);
+        }
+    }
+
+    /// Sleep until `until`, an unpark by a commit, a change of the settings or a stop.
+    fn vacuum_wait(&self, io: &mut R::Io, until: Instant) {
+        io.submit(Op::Timer { at: until });
+        if !self.control.lock(&self.rt).stop {
+            self.rt.park();
+        }
+        while io.poll().is_some() {}
     }
 
     /// Run the worker. A panic in its read of a page ends it and leaves a `Structure` finding, the

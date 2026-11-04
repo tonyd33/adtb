@@ -12,7 +12,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use adtb::runtime::{Clock, Runtime, Threads};
 use adtb::storage::{Damage, Quarantine};
-use adtb::{CallOptions, CancelToken, Database, Log, TxnCallOptions, TxnOptions, Value};
+use adtb::{
+    CallOptions, CancelToken, Database, Log, OpenOptions, TxnCallOptions, TxnOptions, Value,
+};
 use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
 use adtb_simkit::seeds::assert_reached;
 use adtb_simkit::{api, common, crash};
@@ -723,7 +725,11 @@ fn hold_build(db: &Database) -> (Arc<AtomicBool>, Arc<AtomicBool>) {
 const GATED_INSERT: &str = r#"insert things.A { id: things.key(2), owner: 2, note: "n", a: "y" }"#;
 
 fn offline_with_one_row(name: &str) -> (Database, Arc<AtomicBool>, Arc<AtomicBool>) {
-    let db = open(&path(name));
+    let options = OpenOptions {
+        no_background_vacuum: true,
+        ..api::options(4)
+    };
+    let db = Database::open(path(name), &Log::new([APP]), &options).unwrap();
     run(
         &db,
         r#"insert things.A { id: things.key(1), owner: 1, note: "n", a: "x" }"#,

@@ -506,7 +506,10 @@ pub(super) fn run_file(path: &Path) -> Vec<String> {
         steps,
         next: start,
         log: Vec::new(),
-        options: options(4),
+        options: OpenOptions {
+            no_background_vacuum: true,
+            ..options(4)
+        },
         bundles: Vec::new(),
         handles: Handles::default(),
         out: Vec::new(),

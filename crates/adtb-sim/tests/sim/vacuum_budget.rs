@@ -228,6 +228,7 @@ const WIDE_ROWS: i64 = 1500;
 fn wide_as(rt: &SimRuntime, big: bool, retained: bool) -> Database<SimRuntime> {
     let options = OpenOptions {
         pool_bytes: Some(256 * 1024),
+        no_background_vacuum: true,
         ..api::options(2)
     };
     let db = Database::open_in(rt.clone(), "wide.adt", &Log::new([WIDE]), &options)
@@ -261,6 +262,7 @@ fn wide_as(rt: &SimRuntime, big: bool, retained: bool) -> Database<SimRuntime> {
 fn expired(rt: &SimRuntime) -> Database<SimRuntime> {
     let options = OpenOptions {
         pool_bytes: Some(256 * 1024),
+        no_background_vacuum: true,
         ..api::options(2)
     };
     let db = Database::open_in(rt.clone(), "expired.adt", &Log::new([WIDE]), &options)

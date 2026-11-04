@@ -434,6 +434,7 @@ fn commit_under_faults(dir: &Path, backend: Backend, seed: u64) -> Commits {
         create: Some(CreateOptions::default()),
         workers: Some(2),
         pool_bytes: Some(POOL_BYTES),
+        no_background_vacuum: true,
         ..OpenOptions::default()
     };
     let db = Database::open_in(rt.clone(), "shop.adt", &Log::new([CUSTOMERS]), &create)

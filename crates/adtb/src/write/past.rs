@@ -284,20 +284,22 @@ impl<R: Runtime> Database<R> {
 
     /// Vacuum the heaps of `sum`, of constructors of `rel`, moving each version the retention
     /// window keeps to its history heap when history is kept, and then expire the history heaps
-    /// of the same constructors. Returns what the vacuum of the current heaps did.
+    /// of the same constructors. Returns what the vacuum of the current heaps did, and whether
+    /// the history heaps keep a page.
     pub(super) fn vacuum_sum(
         &self,
         rel: &Rel,
         sum: &vacuum::Sum,
         pace: &mut dyn FnMut() -> bool,
-    ) -> Result<vacuum::Report, vacuum::Error> {
+    ) -> Result<(vacuum::Report, bool), vacuum::Error> {
         let progress = &self.vacuums.progress;
         let kept = self
             .retained
             .as_ref()
             .filter(|_| self.txns.history().is_some());
         let Some(retained) = kept else {
-            return vacuum::vacuum(&self.pager, &self.txns, sum, self.grant, progress, pace);
+            let report = vacuum::vacuum(&self.pager, &self.txns, sum, self.grant, progress, pace)?;
+            return Ok((report, false));
         };
         let key_index = rel.key_index;
         let ctors = &self.indexes[&key_index].ctors;
@@ -345,8 +347,8 @@ impl<R: Runtime> Database<R> {
             heaps: pasts,
             indexes: vec![index],
         };
-        vacuum::expire(&self.pager, &self.txns, &past, self.grant, progress, pace)?;
-        Ok(report)
+        let left = vacuum::expire(&self.pager, &self.txns, &past, self.grant, progress, pace)?;
+        Ok((report, left.scanned + left.skipped > left.removed))
     }
 
     /// Returns the reads of the past of a statement reading commits up to `upto`, when the

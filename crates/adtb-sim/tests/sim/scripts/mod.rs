@@ -50,8 +50,9 @@
 //! An open refused with VALUE, the open refusal in textual syntax, leaves the file closed. A
 //! refusal `MigrationRefused` of version V leaves the log at its first V - 1 migrations. Any
 //! other refusal leaves the log as before the step, the migrations of each `log` step since
-//! the last open included. Each open is a new simulated process. A script holds a directive
-//! besides `seed` and `use`; an area holds only scripts and directories.
+//! the last open included. Each open is a new simulated process. No open runs the background
+//! vacuum. A script holds a directive besides `seed` and `use`; an area holds only scripts and
+//! directories.
 //!
 //! Set `ADTB_SCRIPTS` to a newline-separated list of script files and directories and run
 //! `scripts::by_hand` to run them; `work/tools/script` does that.

@@ -165,6 +165,7 @@ fn open_under<R: Runtime>(rt: &R, rows: usize, workers: usize, memory: Option<u6
         &Log::new([SCHEMA]),
         &OpenOptions {
             query_memory_bytes: memory,
+            no_background_vacuum: true,
             ..options(rt, &seen, &gate, workers)
         },
     )

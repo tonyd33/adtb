@@ -1,5 +1,6 @@
 mod api;
 mod api_real_file;
+mod background_vacuum;
 mod backup;
 mod btree;
 mod btree_threads;

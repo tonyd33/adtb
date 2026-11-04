@@ -56,6 +56,7 @@ pub(crate) use past::position;
 pub use reindex::{Failure, HoldWait, Rebuild, VacuumHold, panic_text};
 pub use rot::Rot;
 pub use stream::{Produced, Production};
+pub use vacuums::Due;
 pub use verify::{Found, VerifyScope, VerifySnapshot};
 
 use schema::Rels;
@@ -339,6 +340,7 @@ pub struct Txn {
     hold: SnapshotId,
     /// What its statements that succeeded wrote into the file.
     written: RefCell<quarantine::Touched>,
+    changed: RefCell<vacuums::Changed>,
 }
 
 impl Txn {
@@ -520,8 +522,10 @@ pub struct Database<R: Runtime> {
     options: exec::Options,
     grant: usize,
     files: Disk,
-    /// Held while a vacuum runs or the retention window changes, so that one runs at a time.
-    vacuuming: Lock<bool>,
+    /// Held while a vacuum runs or the retention window changes, so that one runs at a time,
+    /// with what is set when another call fails to take it.
+    vacuuming: Lock<Option<Arc<AtomicBool>>>,
+    dead: Lock<vacuums::Dead>,
     vacuums: vacuums::Vacuums,
     pacer: Arc<vacuum::Pacer>,
     /// How many pauses calls have made at a rebuild's gate or for the vacuum lock.
@@ -624,7 +628,8 @@ impl<R: Runtime> Database<R> {
             options: setup.options,
             grant: setup.grant,
             files: Disk::default(),
-            vacuuming: Lock::new(false),
+            vacuuming: Lock::new(None),
+            dead: Lock::default(),
             vacuums: vacuums::Vacuums::default(),
             pacer: Arc::new(vacuum::Pacer::new(0.1)),
             rebuild_waits: AtomicU64::new(0),
@@ -727,6 +732,7 @@ impl<R: Runtime> Database<R> {
             snapshot,
             hold,
             written: RefCell::default(),
+            changed: RefCell::default(),
         })
     }
 
@@ -791,6 +797,7 @@ impl<R: Runtime> Database<R> {
             snapshot,
             hold,
             written: RefCell::default(),
+            changed: RefCell::default(),
         })
     }
 
@@ -893,14 +900,14 @@ impl<R: Runtime> Database<R> {
             });
             if let Err(error) = done {
                 local.restore_temps(before);
-                if !error.ends_transaction() {
-                    self.undo(&ran).map_err(|error| Failed { item, error })?;
-                }
+                self.take_back(tx, &ran, error.ends_transaction())
+                    .map_err(|error| Failed { item, error })?;
                 return Err(Failed { item, error });
             }
         }
         for o in &out {
             self.record_written(&mut tx.written.borrow_mut(), o);
+            self.record_changed(&mut tx.changed.borrow_mut(), o);
         }
         Ok(out)
     }
@@ -929,16 +936,16 @@ impl<R: Runtime> Database<R> {
                 Ok(o) => out.push(o),
                 Err(error) => {
                     local.restore_temps(before);
-                    if !error.ends_transaction() {
-                        self.undo(&ran).map_err(|error| Failed { item, error })?;
-                    }
+                    self.take_back(tx, &ran, error.ends_transaction())
+                        .map_err(|error| Failed { item, error })?;
                     return Err(Failed { item, error });
                 }
             }
         }
         local.restore_temps(before);
         let item = text.items.len();
-        self.undo(&ran).map_err(|error| Failed { item, error })?;
+        self.take_back(tx, &ran, false)
+            .map_err(|error| Failed { item, error })?;
         Ok(out)
     }
 
@@ -957,9 +964,30 @@ impl<R: Runtime> Database<R> {
     /// `waiting`, timed from the call, says while the vacuum runs.
     pub fn vacuum(&self, rel: RelId, waiting: HoldWait<'_>) -> Result<Vacuumed, Error> {
         let stop = waiting.stop(self.rt.now());
-        let _one = self.hold_vacuum_until(&stop)?;
+        let one = self.hold_vacuum_until(&stop)?;
+        self.vacuum_held(rel, &stop, &one)
+    }
+
+    /// Vacuum `rel` as the background worker, if no one holds the vacuum lock, stopping with
+    /// `Cancelled` once another caller waits for the lock. Returns `None` if one holds it.
+    pub fn vacuum_background(&self, rel: RelId) -> Result<Option<Vacuumed>, Error> {
+        let stop = Stop::default();
+        let Some(one) = self.try_hold_yielding(stop.cancel.clone()) else {
+            return Ok(None);
+        };
+        self.vacuum_held(rel, &stop, &one).map(Some)
+    }
+
+    fn vacuum_held(
+        &self,
+        rel: RelId,
+        stop: &Stop,
+        _one: &VacuumHold<'_, R>,
+    ) -> Result<Vacuumed, Error> {
         let r = self.rels.get(&rel).ok_or(Broken::VacuumNoHeaps(rel))?;
         self.admit_vacuum(r)?;
+        let horizon = self.horizon(r);
+        let started = self.rt.now();
         let ids: BTreeMap<u32, CtorId> = self.indexes[&r.key_index]
             .ctors
             .iter()
@@ -979,14 +1007,23 @@ impl<R: Runtime> Database<R> {
         let mut io = None;
         let halted = std::cell::Cell::new(None);
         let ran = self.vacuum_sum(r, &sum, &mut || {
-            let paced = self.pace(&stop, &mut began, &mut io);
+            let paced = self.pace(stop, &mut began, &mut io);
             paced.map_err(|e| halted.set(Some(e))).is_ok()
         });
         self.pacer.charge(&self.rt, began);
-        let report = ran.map_err(|e| match e {
+        let (report, kept) = ran.map_err(|e| match e {
             vacuum::Error::Stopped => halted.take().unwrap_or(Error::Cancelled),
             e => e.into(),
         })?;
+        let freed: BTreeMap<HeapId, u64> = (r.ctors.iter())
+            .map(|c| {
+                let heap = self.heaps[&c.heap].heap.id().0;
+                let freed = report.heaps.get(&heap).map_or(0, |f| f.freed);
+                (c.heap, freed as u64)
+            })
+            .collect();
+        let pages = (report.scanned - report.removed) as u64;
+        self.vacuumed(rel, started, horizon, &freed, pages, kept);
         let ctors = (shown.iter())
             .map(|(id, heap)| (*id, report.heaps.get(heap).copied().unwrap_or_default()))
             .collect();
@@ -1034,8 +1071,20 @@ impl<R: Runtime> Database<R> {
         eval::Stmt::new(self, tx, text, t, options, stop)
     }
 
-    /// Undoes the effects of `ran` on the file, the last first.
-    fn undo(&self, ran: &[eval::Stmt<'_, R>]) -> Result<(), Error> {
+    /// Count each version `ran` inserted as dead in `tx`, and undo the effects of `ran` on the
+    /// file, the last first, unless the transaction `ends`.
+    fn take_back(&self, tx: &Txn, ran: &[eval::Stmt<'_, R>], ends: bool) -> Result<(), Error> {
+        let mut changed = tx.changed.borrow_mut();
+        for s in ran {
+            for u in s.undo.borrow().iter() {
+                if let apply::Undo::Kill(heap, _) = u {
+                    changed.entry(*heap).or_default().undone += 1;
+                }
+            }
+        }
+        if ends {
+            return Ok(());
+        }
         ran.iter().rev().try_for_each(eval::Stmt::undo)
     }
 
@@ -1131,6 +1180,7 @@ impl<R: Runtime> Database<R> {
                 if let Some(x) = tx.xid {
                     self.waits.ended(x);
                 }
+                self.add_dead(&tx.changed.take(), true);
                 Ok(self.pager.position(wait))
             }
             Err(e) => {
@@ -1156,6 +1206,7 @@ impl<R: Runtime> Database<R> {
         if let Some(x) = tx.xid {
             self.waits.ended(x);
         }
+        self.add_dead(&tx.changed.take(), false);
         aborted?;
         Ok(())
     }

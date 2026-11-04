@@ -152,6 +152,7 @@ fn watch(seed: u64) -> Seen {
         let log = Log::new([shape.schema().as_str()]);
         let options = OpenOptions {
             pool_bytes: Some(POOL),
+            no_background_vacuum: true,
             ..api::options(2)
         };
         let db = Database::open_in(rt.clone(), "progress.adt", &log, &options)

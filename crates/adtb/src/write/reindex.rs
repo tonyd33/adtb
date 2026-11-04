@@ -12,7 +12,8 @@
 use std::any::Any;
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use adtb_lang::types::RelId;
@@ -127,8 +128,7 @@ pub struct VacuumHold<'d, R: Runtime> {
 
 impl<R: Runtime> Drop for VacuumHold<'_, R> {
     fn drop(&mut self) {
-        let mut held = self.db.vacuuming.lock(&self.db.rt);
-        *held = false;
+        *self.db.vacuuming.lock(&self.db.rt) = None;
         self.db.waits.ended(VACUUM_HOLDER);
     }
 }
@@ -325,11 +325,18 @@ impl<R: Runtime> Database<R> {
     /// Returns the vacuum lock unless another holds it. [`VACUUM_HOLDER`] runs exactly while one
     /// does, so a call that watches it and finds it ended finds the lock free.
     fn try_hold_vacuum(&self) -> Option<VacuumHold<'_, R>> {
+        self.try_hold_yielding(Arc::default())
+    }
+
+    /// Returns the vacuum lock as [`Database::try_hold_vacuum`] does, setting `asked` once
+    /// another call fails to take it.
+    pub(super) fn try_hold_yielding(&self, asked: Arc<AtomicBool>) -> Option<VacuumHold<'_, R>> {
         let mut held = self.vacuuming.lock(&self.rt);
-        if *held {
+        if let Some(holder) = &*held {
+            holder.store(true, Ordering::Release);
             return None;
         }
-        *held = true;
+        *held = Some(asked);
         self.waits.started(VACUUM_HOLDER);
         Some(VacuumHold { db: self })
     }

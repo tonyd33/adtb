@@ -2111,7 +2111,11 @@ fn scrubbed<T>(
     let mut sim = Sim::with_files(SEED, Config::default(), image);
     let got = finished_run(&mut sim, |rt| -> Result<Option<Pass<T>>, String> {
         let hook = Hooked::new(&rt);
-        let db = match Database::open_in(hook.clone(), FILE, &rot_log(), &no_create(REINDEX)) {
+        let options = OpenOptions {
+            no_background_vacuum: true,
+            ..no_create(REINDEX)
+        };
+        let db = match Database::open_in(hook.clone(), FILE, &rot_log(), &options) {
             Ok(db) => db,
             Err(OpenError::Corrupt { .. }) => return Ok(None),
             Err(e) => return Err(format!("open: {e:?}")),

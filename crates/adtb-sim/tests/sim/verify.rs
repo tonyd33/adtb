@@ -550,7 +550,11 @@ fn a_page_past_the_log_end_is_an_unlogged_finding_of_its_relation() {
     adtb::storage::seal(page, bytes);
     let mut sim = Sim::with_files(45, Config::default(), files);
     api::run(&mut sim, |rt| {
-        let db = open_app(rt);
+        let options = adtb::OpenOptions {
+            no_background_vacuum: true,
+            ..api::options(2)
+        };
+        let db = Database::open_in(rt, NAME, &Log::new([APP]), &options).unwrap();
         let problem = format!(
             "Unlogged {{ pid: Pid({}), page: Lsn({}) }}",
             page.0,

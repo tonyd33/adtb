@@ -38,7 +38,11 @@ fn app() -> Log {
 }
 
 fn open(rt: SimRuntime) -> Database<SimRuntime> {
-    Database::open_in(rt, FILE, &app(), &api::options(2)).expect("the file opens")
+    let options = OpenOptions {
+        no_background_vacuum: true,
+        ..api::options(2)
+    };
+    Database::open_in(rt, FILE, &app(), &options).expect("the file opens")
 }
 
 fn nap(rt: &SimRuntime, d: Duration) {
@@ -643,6 +647,7 @@ fn host_options() -> OpenOptions {
     OpenOptions {
         create: Some(CreateOptions::default()),
         workers: Some(2),
+        no_background_vacuum: true,
         ..OpenOptions::default()
     }
 }
