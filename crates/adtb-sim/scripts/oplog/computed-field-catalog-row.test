@@ -1,0 +1,12 @@
+seed 83
+use shop
+use customers
+
+migrate
+  module shop
+  add computed customers.shout: Text = self.name ++ "!"
+
+query rowsort
+  from c in catalog::computed select { name: c.name, field_type: c.field_type, text: c.text }
+----
+{ field_type: "Text", name: "shout", text: "self.name ++ \"!\"" }

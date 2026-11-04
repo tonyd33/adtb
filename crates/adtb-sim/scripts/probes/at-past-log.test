@@ -1,0 +1,4 @@
+use shop
+migrate at 5
+  module shop
+  rename relation customers to clients

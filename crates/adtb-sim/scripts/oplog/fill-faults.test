@@ -1,0 +1,7 @@
+seed 49
+use shop
+use customers
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "add field Customer.ratio: I64 fill 1 / 0", detail: "customers: the map faults with DivisionByZero" } } }
+  module shop
+  add field Customer.ratio: I64 fill 1 / 0

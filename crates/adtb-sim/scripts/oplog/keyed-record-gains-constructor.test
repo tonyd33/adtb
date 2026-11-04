@@ -1,0 +1,27 @@
+seed 73
+use shop
+use customers
+
+migrate
+  module shop
+  add constructor Customer.Vip { tier: Text }
+  enable customers.Vip
+
+run
+  insert customers.Vip { tier: "gold" }
+
+query rowsort
+  from c in customers.Customer select c.name
+----
+"ann"
+"bob"
+
+query
+  count(k for k in (from c in customers select c.id))
+----
+3
+
+query rowsort
+  from p in payments.Card, c in customers.Customer where p.customer == key c and c.name == "ann" select p.last4
+----
+"4242"

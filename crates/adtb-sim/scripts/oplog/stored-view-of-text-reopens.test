@@ -1,0 +1,27 @@
+seed 94
+
+migrate
+  module pets
+  add module pets
+  add type Pet { id: Key pets } = Cat { name: Text } | Dog { age: I64 }
+  add relation pets : Pet key id generate sequence
+
+run
+  insert pets.Cat { name: "tom" }
+
+migrate
+  module pets
+  define fn cats () -> Set Text = from c in pets.Cat select c.name
+  store cats
+
+query rowsort
+  cats()
+----
+"tom"
+
+reopen
+
+query rowsort
+  cats()
+----
+"tom"

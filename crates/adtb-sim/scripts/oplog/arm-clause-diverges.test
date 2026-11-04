@@ -1,0 +1,24 @@
+seed 51
+
+migrate
+  module shop
+  add module shop
+  add type Customer = { id: Key customers, name: Text }
+  add relation customers : Customer key id generate sequence
+  add type Payment { id: Key payments, customer: Key customers }
+    = Card { last4: Text }
+    | Invoice { due: Text }
+  add relation payments : Payment
+    key id generate sequence
+    index (customer)
+  define fn method (p: Payment) -> Text = match p
+    | Card c -> c.last4
+    | Invoice i -> i.due
+  module shop
+  add constructor Payment.Wire { iban: Text }
+    arm method: Wire w -> w.iban
+
+migrate at 2 refused Diverged { version: 2 }
+  module shop
+  add constructor Payment.Wire { iban: Text }
+    arm method: Wire w -> "wire"

@@ -1,0 +1,15 @@
+seed 6
+use shop
+use customers
+
+migrate
+  module shop
+  drop field Payment.Card.last4
+
+query rowsort
+  from p in payments.Card select p.customer
+----
+customers.key(1)
+
+error Invalid { detail: "Payment.Card has no field `last4`" }
+  from p in payments.Card select p.last4

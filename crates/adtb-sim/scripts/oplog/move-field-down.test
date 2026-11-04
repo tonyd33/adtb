@@ -1,0 +1,18 @@
+seed 43
+use shop
+use customers
+use invoice
+
+migrate
+  module shop
+  add field Payment.note: Text fill "n"
+  module shop
+  move field Payment.note to Payment.(Card)
+
+query rowsort
+  from p in payments.Card select p.note
+----
+"n"
+
+error Invalid { detail: "Payment.Invoice has no field `note`" }
+  from p in payments.Invoice select p.note

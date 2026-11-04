@@ -1,0 +1,10 @@
+seed 18
+use shop
+use customers
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint shop::paid is violated by Customer { id: customers.key(2), name: \"bob\" }" } } }
+  module shop
+  add constraint paid =
+    from c in customers
+    where not exists p in payments where p.customer == key c
+    select c

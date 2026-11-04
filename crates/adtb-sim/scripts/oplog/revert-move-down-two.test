@@ -1,0 +1,36 @@
+seed 72
+use shop
+use customers
+use invoice
+
+migrate
+  module shop
+  add constructor Payment.Wire { iban: Text }
+  enable payments.Wire
+  add field Payment.note: Text fill "n"
+
+run
+  insert payments.Wire { customer: customers.key(1), iban: "DE", note: "n" }
+
+migrate
+  module shop
+  move field Payment.note to Payment.(Card | Invoice)
+  module shop
+  revert 0003
+    fill Payment.Card.note = match
+      | Wire x -> "w"
+
+query rowsort
+  from p in payments.Card select p.note
+----
+"n"
+
+query rowsort
+  from p in payments.Invoice select p.note
+----
+"n"
+
+query rowsort
+  from p in payments.Wire select p.note
+----
+"w"

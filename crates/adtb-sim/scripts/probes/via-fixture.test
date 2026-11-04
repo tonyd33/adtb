@@ -1,0 +1,5 @@
+use probe-failing
+query
+  1
+----
+1

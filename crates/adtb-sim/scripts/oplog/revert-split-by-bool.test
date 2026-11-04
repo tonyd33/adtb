@@ -1,0 +1,19 @@
+seed 70
+use shop
+use customers
+
+migrate
+  module shop
+  add field Payment.Card.wide: Bool fill true
+  module shop
+  split constructor Payment.Card into Wide { last4: Text } | Narrow { last4: Text }
+    by match
+      | Card { wide: true, last4 } -> Wide { last4: last4 }
+      | Card { wide: false, last4 } -> Narrow { last4: last4 }
+  module shop
+  revert 0003
+
+query rowsort
+  from p in payments.Card select { wide: p.wide, last4: p.last4 }
+----
+{ last4: "4242", wide: True }

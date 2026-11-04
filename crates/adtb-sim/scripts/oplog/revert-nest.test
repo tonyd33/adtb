@@ -1,0 +1,21 @@
+seed 62
+use shop
+use customers
+use invoice
+
+migrate
+  module shop
+  add type Method = Card { last4: Text } | Invoice { due: Text }
+  nest constructor Payment.(Card | Invoice) into Held { method: Method }
+  module shop
+  revert 0002
+
+query rowsort
+  from p in payments.Card select p.last4
+----
+"4242"
+
+query rowsort
+  from p in payments.Invoice select p.due
+----
+"2027-01"

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# script PATH...   run each engine script named, or every `.test` file under each directory
+#                  named, on the simulator, and print each differing directive as FILE:LINE
+#                  with what the script expects and what the engine gives
+#
+# Builds adtb-sim's test binary in the test profile, the artifact `cargo nextest run` uses, and
+# runs its `scripts::by_hand` test over the paths. Exits 1 when any directive differs.
+set -uo pipefail
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+paths=()
+for arg in "$@"; do
+  case $arg in
+    -h | --help)
+      sed -n '2,7s/^# \{0,1\}//p' "$0"
+      exit 0
+      ;;
+    *)
+      [[ -e $arg ]] || { echo "$arg: no such file or directory" >&2; exit 2; }
+      paths+=("$(realpath "$arg")")
+      ;;
+  esac
+done
+((${#paths[@]})) || { sed -n '2,4s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+
+cd "$root" || exit 1
+built=$(cargo test --no-run -p adtb-sim --test sim --message-format=json-render-diagnostics) \
+  || exit 1
+sim=$(printf '%s\n' "$built" | jq -r 'select(.reason == "compiler-artifact" and .target.name == "sim"
+  and .executable != null) | .executable' | tail -1)
+[[ -n $sim ]] || { echo "no sim test binary was built" >&2; exit 1; }
+
+ADTB_SCRIPTS=$(printf '%s\n' "${paths[@]}") "$sim" --exact scripts::by_hand --nocapture \
+  --test-threads 1 >"${CARGO_TARGET_DIR:-$root/target}/script.log" 2>&1
+status=$?
+sed -n '/^[0-9]* differences:$/,/^note: \|^FAILED$/{/^note: \|^FAILED$/d;p}' "${CARGO_TARGET_DIR:-$root/target}/script.log" \
+  | sed "s|$root/||g"
+if ((status != 0)) && ! grep -q '^[0-9]* differences:$' "${CARGO_TARGET_DIR:-$root/target}/script.log"; then
+  tail -20 "${CARGO_TARGET_DIR:-$root/target}/script.log"
+fi
+((status == 0)) && echo "the scripts agree"
+exit $((status == 0 ? 0 : 1))

@@ -1,0 +1,10 @@
+seed 96
+use shop
+use customers
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "a stored view returns a `Set`; `names` does not" } } }
+  module shop
+  define fn names () -> Set Text = from c in customers select c.name
+  store names
+  module shop
+  redefine fn names () -> I64 = count(c for c in customers)

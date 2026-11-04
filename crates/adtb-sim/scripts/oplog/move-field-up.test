@@ -1,0 +1,15 @@
+seed 42
+use shop
+use customers
+use invoice
+
+migrate
+  module shop
+  move field Payment.Card.last4 to Payment fill match
+    | Invoice i -> i.due
+
+query rowsort
+  from p in payments select p.last4
+----
+"2027-01"
+"4242"

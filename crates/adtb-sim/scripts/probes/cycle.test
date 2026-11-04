@@ -1,0 +1,5 @@
+use probe-cycle-a
+query
+  1
+----
+1

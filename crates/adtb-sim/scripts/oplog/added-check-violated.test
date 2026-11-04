@@ -1,0 +1,8 @@
+seed 47
+use shop
+use customers
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint shop::scored is violated by Customer { id: customers.key(1), name: \"ann\", score: 0 }, Customer { id: customers.key(2), name: \"bob\", score: 0 }" } } }
+  module shop
+  add field Customer.score: I32 fill 0
+  add check scored on customers (score > 0)

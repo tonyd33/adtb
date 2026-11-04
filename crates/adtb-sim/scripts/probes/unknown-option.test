@@ -1,0 +1,2 @@
+use shop
+option workers 3

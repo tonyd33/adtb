@@ -1,0 +1,1 @@
+scripts/probes/empty.test: the script holds no directive but `seed` and `use`

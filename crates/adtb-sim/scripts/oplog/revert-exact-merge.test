@@ -1,0 +1,24 @@
+seed 61
+use shop
+use customers
+use invoice
+
+migrate
+  module shop
+  add type Kind = Card | Invoice
+  merge constructor Payment.(Card | Invoice) into Any { kind: Kind, last4: Text }
+    by match
+      | Card c    -> Any { kind: Card, last4: c.last4 }
+      | Invoice i -> Any { kind: Invoice, last4: i.due }
+  module shop
+  revert 0002
+
+query rowsort
+  from p in payments.Card select p.last4
+----
+"4242"
+
+query rowsort
+  from p in payments.Invoice select p.due
+----
+"2027-01"

@@ -1,0 +1,1 @@
+scripts/probes/cycle.test:1: scripts/fixtures/probe-cycle-a.fixture:2: scripts/fixtures/probe-cycle-b.fixture:2: `use` cycle: probe-cycle-a -> probe-cycle-b -> probe-cycle-a

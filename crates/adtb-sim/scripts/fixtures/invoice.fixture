@@ -1,0 +1,5 @@
+# A third customer of the shop, cy with an invoice.
+run
+  transact
+    let c = insert customers { name: "cy" }
+    insert payments.Invoice { customer: key c, due: "2027-01" }

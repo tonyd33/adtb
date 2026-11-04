@@ -39,6 +39,11 @@ threads-required = 2
 filter = "test(=reindex::a_crash_at_each_stage_keeps_an_index_that_finds_every_row_and_leaks_nothing)"
 threads-required = 2
 
+# An area test of the engine scripts runs three scripts at once.
+[[profile.default.overrides]]
+filter = "package(=adtb-sim) and binary(=sim) and test(=scripts::oplog)"
+threads-required = 3
+
 # A test that spawns a capped binary belongs to the group naming the slots it holds. `test_child`
 # reads the group and divides those slots among its children; it panics in any other group.
 [[profile.default.overrides]]

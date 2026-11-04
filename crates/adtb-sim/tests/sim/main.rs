@@ -46,6 +46,7 @@ mod reindex;
 mod reindex_review;
 mod replay;
 mod scheduler;
+mod scripts;
 mod scrub;
 mod server_adhoc;
 mod server_authority;

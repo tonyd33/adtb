@@ -1,0 +1,14 @@
+seed 8
+use shop
+use customers
+
+migrate
+  module shop
+  add field Payment.note: Text fill match
+    | Card c    -> c.last4
+    | Invoice i -> i.due
+
+query rowsort
+  from p in payments select p.note
+----
+"4242"

@@ -1,0 +1,16 @@
+seed 45
+use shop
+use customers
+use invoice
+
+migrate
+  module shop
+  rekey relation customers key name
+    carry Payment.customer
+  drop field Customer.id
+
+query rowsort
+  from p in payments, c in customers where p.customer == key c select c.name
+----
+"ann"
+"cy"

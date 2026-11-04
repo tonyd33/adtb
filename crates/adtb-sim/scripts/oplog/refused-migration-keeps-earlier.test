@@ -1,0 +1,18 @@
+seed 3
+use shop
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "module `shop` declares no relation `nothing`" } } }
+  module shop
+  add type Label = { id: Key labels, name: Text }
+  add relation labels : Label key id generate sequence
+  module shop
+  drop relation nothing
+  module shop
+  add type Label = { id: Key labels, name: Text }
+  add relation labels : Label key id generate sequence
+
+reopen
+
+query rowsort
+  from t in labels select t.name
+----

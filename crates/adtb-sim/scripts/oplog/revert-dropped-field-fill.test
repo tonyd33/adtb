@@ -1,0 +1,15 @@
+seed 23
+use shop
+use customers
+
+migrate
+  module shop
+  drop field Payment.Card.last4
+  module shop
+  revert 0002
+    fill Payment.Card.last4 = "0000"
+
+query rowsort
+  from p in payments.Card select p.last4
+----
+"0000"

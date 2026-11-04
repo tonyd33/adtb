@@ -1,0 +1,2 @@
+scripts/probes/no-open.test:1: no database is open: `migrate` or `reopen` first
+scripts/probes/no-open.test:10: no database is open: `migrate` or `reopen` first

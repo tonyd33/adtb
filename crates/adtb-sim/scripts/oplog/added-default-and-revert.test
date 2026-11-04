@@ -1,0 +1,24 @@
+seed 73
+use shop
+use customers
+
+migrate
+  module shop
+  add default customers.name = "anon"
+
+run
+  insert customers {}
+
+query rowsort
+  from c in customers select c.name
+----
+"ann"
+"anon"
+"bob"
+
+migrate
+  module shop
+  revert 0002
+
+error Invalid { detail: "field `name` of `Customer` is missing, and `customers` has no default for it" }
+  insert customers {}

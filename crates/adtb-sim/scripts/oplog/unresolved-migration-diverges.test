@@ -1,0 +1,11 @@
+seed 53
+use shop
+
+migrate
+  module shop
+  add type Label = { id: Key labels, name: Text }
+  add relation labels : Label key id generate sequence
+
+migrate at 2 refused Diverged { version: 2 }
+  module shop
+  adopt tzdb "2026b" from "tz-2026b.tzif"

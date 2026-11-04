@@ -10,7 +10,7 @@
 
 #![forbid(unsafe_code)]
 
-mod engine;
+pub mod engine;
 
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -105,10 +105,27 @@ fn refused(line: usize, message: String, reason: &str, detail: &str) -> Differen
     differ_got(line, message, got)
 }
 
-/// Reads a script.
-pub fn parse(text: &str) -> Result<Script, Difference> {
+/// A directive as the reader finds it, its first line not yet read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Block {
+    /// The 1-based line of the directive in its script.
+    pub line: usize,
+    pub head: String,
+    pub body: String,
+    /// The rows after `----`, read only for a head `takes_rows` accepts.
+    pub rows: Vec<String>,
+}
+
+/// Returns the blocks of a script: each directive line, its indented body and, for a head
+/// `takes_rows` accepts, the rows after `----`. Rows end at a blank line, a comment or a line
+/// `starts` accepts as a directive.
+pub fn blocks(
+    text: &str,
+    starts: impl Fn(&str) -> bool,
+    takes_rows: impl Fn(&str) -> bool,
+) -> Result<Vec<Block>, Difference> {
     let lines: Vec<&str> = text.lines().collect();
-    let mut directives = Vec::new();
+    let mut out = Vec::new();
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
@@ -120,32 +137,6 @@ pub fn parse(text: &str) -> Result<Script, Difference> {
         if line.starts_with(' ') {
             return Err(differ(n, "an indented line outside a directive's body"));
         }
-        let mut words = line.split_whitespace();
-        let head = words.next().unwrap_or_default();
-        let rest: Vec<&str> = words.collect();
-        let mut kind = match (head, rest.as_slice()) {
-            ("schema", []) => Kind::Schema,
-            ("run", []) => Kind::Run,
-            ("query", []) => Kind::Query {
-                rowsort: false,
-                list: false,
-                rows: Vec::new(),
-            },
-            ("query", ["rowsort"]) => Kind::Query {
-                rowsort: true,
-                list: false,
-                rows: Vec::new(),
-            },
-            ("query", ["list"]) => Kind::Query {
-                rowsort: false,
-                list: true,
-                rows: Vec::new(),
-            },
-            ("error", [reason]) => Kind::Error {
-                reason: reason.to_string(),
-            },
-            _ => return Err(differ(n, format!("`{line}` is not a directive"))),
-        };
         let mut body = String::new();
         while i < lines.len() && (lines[i].starts_with("  ") || lines[i].trim().is_empty()) {
             if !lines[i].trim().is_empty() || next_is_body(&lines[i..]) {
@@ -154,36 +145,84 @@ pub fn parse(text: &str) -> Result<Script, Difference> {
             }
             i += 1;
         }
-        if let Kind::Query { rows, .. } = &mut kind {
+        let mut rows = Vec::new();
+        if takes_rows(line) {
             if lines.get(i) != Some(&"----") {
                 return Err(differ(n, "a query's rows follow `----`"));
             }
             i += 1;
-            while i < lines.len() && !lines[i].trim().is_empty() && !starts_directive(lines[i]) {
+            while i < lines.len()
+                && !lines[i].trim().is_empty()
+                && !lines[i].starts_with('#')
+                && !starts(lines[i])
+            {
                 rows.push(lines[i].to_string());
                 i += 1;
             }
         }
-        if body.trim().is_empty() {
-            return Err(differ(n, "a directive with no body"));
+        out.push(Block {
+            line: n,
+            head: line.to_owned(),
+            body,
+            rows,
+        });
+    }
+    Ok(out)
+}
+
+/// Returns the script `text` holds.
+pub fn parse(text: &str) -> Result<Script, Difference> {
+    let takes_rows = |line: &str| matches!(kind(line), Some(Kind::Query { .. }));
+    let mut directives = Vec::new();
+    for b in blocks(text, starts_directive, takes_rows)? {
+        let kind = match kind(&b.head) {
+            Some(Kind::Query { rowsort, list, .. }) => Kind::Query {
+                rowsort,
+                list,
+                rows: b.rows,
+            },
+            Some(k) => k,
+            None => return Err(differ(b.line, format!("`{}` is not a directive", b.head))),
+        };
+        if b.body.trim().is_empty() {
+            return Err(differ(b.line, "a directive with no body"));
         }
         directives.push(Directive {
-            line: n,
+            line: b.line,
             kind,
-            body,
+            body: b.body,
         });
     }
     Ok(Script { directives })
 }
 
+/// Returns the directive `line` starts, its rows not yet read.
+fn kind(line: &str) -> Option<Kind> {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let query = |rowsort, list| Kind::Query {
+        rowsort,
+        list,
+        rows: Vec::new(),
+    };
+    Some(match words.as_slice() {
+        ["schema"] => Kind::Schema,
+        ["run"] => Kind::Run,
+        ["query"] => query(false, false),
+        ["query", "rowsort"] => query(true, false),
+        ["query", "list"] => query(false, true),
+        ["error", reason] => Kind::Error {
+            reason: (*reason).to_owned(),
+        },
+        _ => return None,
+    })
+}
+
 fn starts_directive(line: &str) -> bool {
     let words: Vec<&str> = line.split_whitespace().collect();
-    line.starts_with('#')
-        || matches!(
-            words.as_slice(),
-            ["schema" | "run" | "query"] | ["query", "rowsort" | "list"]
-        )
-        || matches!(words.as_slice(), ["error", c] if c.chars().all(char::is_alphanumeric))
+    matches!(
+        words.as_slice(),
+        ["schema" | "run" | "query"] | ["query", "rowsort" | "list"]
+    ) || matches!(words.as_slice(), ["error", c] if c.chars().all(char::is_alphanumeric))
 }
 
 /// Returns whether the blank line at the head of `lines` lies inside a body.

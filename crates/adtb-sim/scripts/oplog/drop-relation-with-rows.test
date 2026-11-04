@@ -1,0 +1,8 @@
+seed 12
+use shop
+use customers
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "drop type Payment", detail: "relation payments is not empty" } } }
+  module shop
+  drop relation payments
+  drop type Payment

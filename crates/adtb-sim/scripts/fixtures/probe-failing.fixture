@@ -1,0 +1,6 @@
+# A fixture whose query differs, for the runner's probes.
+use shop
+query
+  1
+----
+2

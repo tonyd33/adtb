@@ -1,0 +1,18 @@
+seed 44
+use shop
+use customers
+use invoice
+
+migrate
+  module shop
+  rename field Payment.Invoice.due to detail
+  rename field Payment.Card.last4 to detail
+  module shop
+  add type Kind = Card | Invoice
+  merge constructor Payment.(Card | Invoice) into Any { kind: Kind, detail: Text }
+
+query rowsort
+  from p in payments.Any select { detail: p.detail, kind: p.kind }
+----
+{ detail: "2027-01", kind: Invoice }
+{ detail: "4242", kind: Card }

@@ -1,0 +1,22 @@
+seed 89
+use shop
+
+role support
+
+migrate
+  module shop
+  grant read customers to support with grant option
+  module shop
+  revert 0002
+
+query rowsort
+  from g in catalog::grants where g.grantee == "support" select g.id
+----
+
+query rowsort
+  from o in catalog::migration_ops where o.migration == catalog::migrations.key(2)
+    select match o.op
+      | Grant g -> g.privilege ++ " " ++ g.grantee ++ " " ++ print(g.grant_option)
+      | _ -> ""
+----
+"read support True"

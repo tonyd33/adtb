@@ -1,0 +1,16 @@
+scripts/probes/values.test:2: succeeds
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   success
+scripts/probes/values.test:4: refused otherwise
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   Rejected { reason: Invalid { detail: "Customer has no field `nope`" } }
+scripts/probes/values.test:6: the rows differ
+  expected: [2]
+  actual:   [1]
+scripts/probes/values.test:10: the open succeeds
+  expected: Diverged { version: 9 }
+  actual:   an open database
+scripts/probes/values.test:14: the open is refused otherwise
+  expected: Diverged { version: 3 }
+  actual:   Diverged { version: 2 }
+scripts/probes/values.test:17: the open is refused: Diverged { version: 2 }

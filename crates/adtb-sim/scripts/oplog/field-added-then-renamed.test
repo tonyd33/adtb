@@ -1,0 +1,13 @@
+seed 75
+use shop
+use customers
+
+migrate
+  module shop
+  add field Customer.nick: Text fill ""
+  rename field Customer.nick to handle
+
+query rowsort
+  from c in customers select c.handle
+----
+""

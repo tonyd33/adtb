@@ -1,0 +1,18 @@
+seed 20
+use shop
+use customers
+
+migrate
+  module shop
+  split constructor Payment.Card into Visa { digits: Text } | Other { digits: Text }
+    by match
+      | Card { last4 } -> Visa { digits: last4 }
+
+query rowsort
+  from p in payments.Visa select p.digits
+----
+"4242"
+
+query rowsort
+  from p in payments.Other select p.digits
+----

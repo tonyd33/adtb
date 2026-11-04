@@ -1,0 +1,15 @@
+seed 54
+use shop
+use customers
+
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "remove constructor Payment.Card", detail: "constructor relation payments.Card is not empty" } } }
+  module shop
+  define fn method (p: Payment) -> Text = match p
+    | Card c -> c.last4
+    | Invoice i -> i.due
+  module shop
+  deprecate payments.Card
+  module shop
+  remove constructor Payment.Card
+  redefine fn method (p: Payment) -> Text = match p
+    | Invoice i -> i.due

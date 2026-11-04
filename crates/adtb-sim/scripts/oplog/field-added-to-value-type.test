@@ -1,0 +1,20 @@
+seed 76
+use shop
+
+migrate
+  module shop
+  add type Address = { street: Text }
+  add type Shipment = { id: Key shipments, to: Address }
+  add relation shipments : Shipment key id generate sequence
+
+run
+  insert shipments { to: { street: "main" } }
+
+migrate
+  module shop
+  add field Address.zip: Text fill "none"
+
+query rowsort
+  from s in shipments select s.to
+----
+Address { street: "main", zip: "none" }

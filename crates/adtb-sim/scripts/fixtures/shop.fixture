@@ -1,0 +1,12 @@
+# The shop schema: customers, and payments by card or invoice.
+migrate
+  module shop
+  add module shop
+  add type Customer = { id: Key customers, name: Text }
+  add relation customers : Customer key id generate sequence
+  add type Payment { id: Key payments, customer: Key customers }
+    = Card { last4: Text }
+    | Invoice { due: Text }
+  add relation payments : Payment
+    key id generate sequence
+    index (customer)

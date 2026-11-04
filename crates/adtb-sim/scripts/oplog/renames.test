@@ -1,0 +1,21 @@
+seed 5
+use shop
+use customers
+
+migrate
+  module shop
+  rename relation customers to clients
+  rename field Customer.name to full_name
+  rename type Customer to Client
+  rename constructor Payment.Card to Debit
+
+query rowsort
+  from c in clients select c.full_name
+----
+"ann"
+"bob"
+
+query rowsort
+  from p in payments.Debit select p.last4
+----
+"4242"

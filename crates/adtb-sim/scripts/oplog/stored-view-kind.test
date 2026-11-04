@@ -1,0 +1,36 @@
+seed 85
+use shop
+use customers
+
+migrate
+  module shop
+  define fn named () -> Set { id: Key customers, name: Text } =
+    from c in customers select { id: c.id, name: c.name }
+  store named key id
+
+query rowsort
+  from r in catalog::relations where r.name == "named" select match r.kind
+    | Base -> "base"
+    | Stored -> "stored"
+    | Catalog -> "catalog"
+    | Volatile -> "volatile"
+----
+"stored"
+
+query rowsort
+  from r in catalog::relations where r.name == "customers" select match r.kind
+    | Base -> "base"
+    | Stored -> "stored"
+    | Catalog -> "catalog"
+    | Volatile -> "volatile"
+----
+"base"
+
+query rowsort
+  from r in catalog::relations where r.name == "migrations" select match r.kind
+    | Base -> "base"
+    | Stored -> "stored"
+    | Catalog -> "catalog"
+    | Volatile -> "volatile"
+----
+"catalog"

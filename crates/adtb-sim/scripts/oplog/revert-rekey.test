@@ -1,0 +1,40 @@
+seed 74
+use shop
+
+migrate
+  module shop
+  add type Badge = { code: Text, label: Text }
+  add relation tags : Badge key code
+  add type Item = { id: Key items, tag: Key tags }
+  add relation items : Item key id generate sequence
+
+run
+  transact
+    let a = insert tags { code: "a", label: "alpha" }
+    let b = insert tags { code: "b", label: "beta" }
+    insert items { tag: key a }
+    insert items { tag: key b }
+    insert items { tag: key b }
+
+migrate
+  module shop
+  rekey relation tags key label
+    carry Item.tag
+  module shop
+  revert 0003
+
+query rowsort
+  from i in items, t in tags where i.tag == key t select t.code
+----
+"a"
+"b"
+
+query rowsort
+  from i in items, t in tags where i.tag == key t select { item: i.id, code: t.code }
+----
+{ code: "a", item: items.key(1) }
+{ code: "b", item: items.key(2) }
+{ code: "b", item: items.key(3) }
+
+run
+  insert tags { code: "c", label: "alpha" }

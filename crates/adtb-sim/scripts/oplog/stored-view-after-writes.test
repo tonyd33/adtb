@@ -1,0 +1,19 @@
+seed 84
+use shop
+use customers
+
+migrate
+  module shop
+  define fn named () -> Set { id: Key customers, name: Text } =
+    from c in customers select { id: c.id, name: c.name }
+  store named key id
+
+run
+  insert customers { name: "cy" }
+
+query rowsort
+  from n in named() select n.name
+----
+"ann"
+"bob"
+"cy"

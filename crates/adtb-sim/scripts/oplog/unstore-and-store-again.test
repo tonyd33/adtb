@@ -1,0 +1,49 @@
+seed 93
+use shop
+use customers
+
+migrate
+  module shop
+  define fn names () -> Set Text = from c in customers select c.name
+  store names
+  define fn sizes () -> Set I64 = from c in customers select count(d for d in customers)
+  store sizes
+  define fn references () -> Set (Key customers) = from c in customers select key c
+  store references
+  define fn nested () -> Set (Set Text) =
+    from c in customers where c.name == "ann" select (from d in customers select d.name)
+  store nested
+
+query rowsort
+  names()
+----
+"ann"
+"bob"
+
+migrate
+  module shop
+  unstore names
+
+query rowsort
+  names()
+----
+"ann"
+"bob"
+
+migrate
+  module shop
+  store names
+
+query rowsort
+  names()
+----
+"ann"
+"bob"
+
+reopen
+
+query rowsort
+  names()
+----
+"ann"
+"bob"

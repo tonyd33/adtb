@@ -1,0 +1,20 @@
+seed 75
+use shop
+use customers
+use invoice
+
+migrate
+  module shop
+  add field Payment.note: Text fill "n"
+  module shop
+  move field Payment.note to Payment.(Invoice)
+  module shop
+  revert 0003
+    fill Payment.Invoice.note = match
+      | Card x -> "w"
+
+query rowsort
+  from p in payments select p.note
+----
+"n"
+"w"

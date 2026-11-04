@@ -1,0 +1,10 @@
+seed 17
+use shop
+use customers
+
+migrate
+  module shop
+  add unique (name) in customers
+
+error Violated { constraint: "shop::customers.unique(name)", report: 2 rows, redacted: 0 }
+  insert customers { name: "ann" }

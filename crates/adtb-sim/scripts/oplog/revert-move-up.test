@@ -1,0 +1,19 @@
+seed 64
+use shop
+use customers
+use invoice
+
+migrate
+  module shop
+  move field Payment.Card.last4 to Payment fill match
+    | Invoice i -> i.due
+  module shop
+  revert 0002
+
+query rowsort
+  from p in payments.Card select p.last4
+----
+"4242"
+
+error Invalid { detail: "Payment.Invoice has no field `last4`" }
+  from p in payments.Invoice select p.last4

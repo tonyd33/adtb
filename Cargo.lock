@@ -161,6 +161,7 @@ name = "adtb-sim"
 version = "0.1.0"
 dependencies = [
  "adtb",
+ "adtb-conformance",
  "adtb-heap-cap",
  "adtb-isolation",
  "adtb-lang",

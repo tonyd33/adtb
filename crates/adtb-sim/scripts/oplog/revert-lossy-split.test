@@ -1,0 +1,11 @@
+seed 68
+use shop
+use customers
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "the split of `Card` routes no row to `Other`, so it is lossy and has no inverse" } } }
+  module shop
+  split constructor Payment.Card into Visa { digits: Text } | Other { digits: Text }
+    by match
+      | Card c -> Visa { digits: "xxxx" }
+  module shop
+  revert 0002

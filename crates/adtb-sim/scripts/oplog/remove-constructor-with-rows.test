@@ -1,0 +1,9 @@
+seed 10
+use shop
+use customers
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "remove constructor Payment.Card", detail: "constructor relation payments.Card is not empty" } } }
+  module shop
+  deprecate payments.Card
+  module shop
+  remove constructor Payment.Card

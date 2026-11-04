@@ -1,0 +1,16 @@
+seed 73
+use shop
+use customers
+use invoice
+
+migrate
+  module shop
+  add type Method = Card { last4: Text } | Invoice { due: Text }
+  nest constructor Payment.(Card | Invoice) into Held { method: Method }
+  module shop
+  add index (method.Invoice.due) in payments.Held
+
+query rowsort
+  from p in payments.Held where match p.method | Invoice i -> i.due == "2027-01" | Card c -> false select p.method
+----
+Invoice { due: "2027-01" }

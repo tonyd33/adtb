@@ -1,0 +1,12 @@
+seed 81
+use shop
+use customers
+
+migrate
+  module shop
+  add computed customers.shout: Text = self.name ++ "!"
+  module shop
+  drop computed customers.shout
+
+error Invalid { detail: "Customer has no field `shout`" }
+  from c in customers select c.shout

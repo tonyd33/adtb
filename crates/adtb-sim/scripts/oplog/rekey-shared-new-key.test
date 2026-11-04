@@ -1,0 +1,12 @@
+seed 46
+use shop
+use customers
+
+run
+  insert customers { name: "ann" }
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of customers share the key \"ann\" of `key name`" } } }
+  module shop
+  rekey relation customers key name
+    carry Payment.customer
+  drop field Customer.id

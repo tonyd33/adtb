@@ -1,0 +1,272 @@
+//! Run the steps of an engine script on the simulator, one process per open.
+
+use std::fmt::Write as _;
+use std::panic::{self, AssertUnwindSafe};
+use std::path::Path;
+
+use adtb::{Database, Log, OpenError, OpenOptions};
+use adtb_conformance::engine::{self, Ended};
+use adtb_conformance::{Directive, Got, Kind, panic_message};
+use adtb_lang::textual::{Form, print};
+use adtb_lang::types::Base;
+use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_simkit::api::options;
+
+use super::read::{self, Head, Step};
+use super::shown;
+
+const FILE: &str = "app.adt";
+
+fn text(s: &str) -> String {
+    print(&adtb::Value::text(s), &Form::Base(Base::Text)).expect("text prints")
+}
+
+/// Returns open refusal `e` in textual syntax, or the difference naming a refusal that has none.
+pub(super) fn open_value(e: &OpenError) -> Result<String, String> {
+    let field =
+        |name: &str, field: &str, value: &str| Ok(format!("{name} {{ {field}: {} }}", text(value)));
+    match e {
+        OpenError::AlreadyOpen => Ok("AlreadyOpen".into()),
+        OpenError::NotFound => Ok("NotFound".into()),
+        OpenError::KeyRequired => Ok("KeyRequired".into()),
+        OpenError::WrongKey => Ok("WrongKey".into()),
+        OpenError::FormatTooNew { written_by } => field("FormatTooNew", "written_by", written_by),
+        OpenError::Corrupt { detail } => field("Corrupt", "detail", detail),
+        OpenError::Diverged { version } => Ok(format!("Diverged {{ version: {version} }}")),
+        OpenError::MigrationRefused { version, reason } => Ok(format!(
+            "MigrationRefused {{ version: {version}, reason: {} }}",
+            reason.value()
+        )),
+        OpenError::RegistrationRefused { bundle, reason } => Ok(format!(
+            "RegistrationRefused {{ bundle: {}, reason: {} }}",
+            text(bundle),
+            reason.value()
+        )),
+        OpenError::HostFnMissing { name } => field("HostFnMissing", "name", name),
+        OpenError::HostFnMismatch { name } => field("HostFnMismatch", "name", name),
+        OpenError::DowngradeRefused { cause } => field("DowngradeRefused", "cause", cause),
+        OpenError::Locked { .. } => {
+            Err("the open is refused with `Locked`, which has no textual value".into())
+        }
+        OpenError::Io(_) => Err("the open is refused with `Io`, which has no textual value".into()),
+    }
+}
+
+struct Differs {
+    at: String,
+    message: String,
+    expected: Option<String>,
+    actual: Option<String>,
+}
+
+impl Differs {
+    fn at(step: &Step, message: impl Into<String>) -> Differs {
+        let mut at = format!("{}:{}", step.at, step.line);
+        if let Some((file, line)) = &step.via {
+            write!(at, " (via {file}:{line})").expect("a string takes text");
+        }
+        Differs {
+            at,
+            message: message.into(),
+            expected: None,
+            actual: None,
+        }
+    }
+
+    fn values(mut self, expected: String, actual: String) -> Differs {
+        self.expected = Some(expected);
+        self.actual = Some(actual);
+        self
+    }
+
+    fn shown(&self) -> String {
+        let mut s = format!("{}: {}", self.at, self.message);
+        if let (Some(e), Some(a)) = (&self.expected, &self.actual) {
+            write!(s, "\n  expected: {e}\n  actual:   {a}").expect("a string takes text");
+        }
+        s
+    }
+}
+
+struct Script {
+    steps: Vec<Step>,
+    next: usize,
+    log: Vec<String>,
+    options: OpenOptions,
+    out: Vec<Differs>,
+}
+
+impl Script {
+    /// Run one process: the open the next step states, then each step up to the next open.
+    /// A next step that sets an option or needs an open database runs alone.
+    fn session(&mut self, rt: &SimRuntime) {
+        let first = self.steps[self.next].clone();
+        self.next += 1;
+        let (log, refused) = match &first.head {
+            Head::Migrate { at, refused } => {
+                let mut log = self.log.clone();
+                if let Some(v) = at
+                    && v - 1 > log.len()
+                {
+                    self.out.push(Differs::at(
+                        &first,
+                        format!("`at {v}` is past the log's {} migrations", log.len()),
+                    ));
+                    self.next = self.steps.len();
+                    return;
+                }
+                log.truncate(at.map_or(log.len(), |v| v - 1));
+                log.extend(read::migrations(&first.body));
+                (log, refused.clone())
+            }
+            Head::Reopen { refused } => (self.log.clone(), refused.clone()),
+            Head::QueryMemory(bytes) => {
+                self.options.query_memory_bytes = *bytes;
+                return;
+            }
+            _ => {
+                let message = "no database is open: `migrate` or `reopen` first";
+                self.out.push(Differs::at(&first, message));
+                return;
+            }
+        };
+        let opened = Database::open_in(rt.clone(), FILE, &Log::new(log.clone()), &self.options);
+        let db = match (opened, refused) {
+            (Ok(db), want) => {
+                self.log = log;
+                if let Some(want) = want {
+                    let open = Differs::at(&first, "the open succeeds");
+                    self.out.push(open.values(want, "an open database".into()));
+                }
+                db
+            }
+            (Err(e), want) => {
+                if let OpenError::MigrationRefused { version, .. } = e {
+                    self.log = log;
+                    self.log
+                        .truncate(usize::try_from(version).expect("a version") - 1);
+                }
+                match (open_value(&e), want) {
+                    (Err(unprintable), _) => self.out.push(Differs::at(&first, unprintable)),
+                    (Ok(got), Some(want)) if want == got => {}
+                    (Ok(got), Some(want)) => self.out.push(
+                        Differs::at(&first, "the open is refused otherwise").values(want, got),
+                    ),
+                    (Ok(got), None) => self
+                        .out
+                        .push(Differs::at(&first, format!("the open is refused: {got}"))),
+                }
+                return;
+            }
+        };
+        while let Some(step) = self.steps.get(self.next).cloned() {
+            if matches!(step.head, Head::Migrate { .. } | Head::Reopen { .. }) {
+                break;
+            }
+            self.next += 1;
+            if let Err(d) = self.step(&db, &step) {
+                self.out.push(d);
+            }
+        }
+        if let Err(e) = db.close() {
+            let closed = format!("the database does not close: {}", e.value());
+            self.out.push(Differs::at(&first, closed));
+        }
+    }
+
+    fn step(&mut self, db: &Database<SimRuntime>, step: &Step) -> Result<(), Differs> {
+        let conformance = |kind| Directive {
+            line: step.line,
+            kind,
+            body: step.body.clone(),
+        };
+        match &step.head {
+            Head::Seed(_) | Head::Use(_) | Head::Migrate { .. } | Head::Reopen { .. } => {
+                unreachable!("read takes seeds and uses, and session takes opens")
+            }
+            Head::QueryMemory(bytes) => {
+                self.options.query_memory_bytes = *bytes;
+                Ok(())
+            }
+            Head::Role(name) => db
+                .role_authority()
+                .create_role(name)
+                .map_err(|e| Differs::at(step, format!("the role is refused: {}", e.value()))),
+            Head::Run => engine::directive(db, &conformance(Kind::Run))
+                .map_err(|d| Differs::at(step, d.message)),
+            Head::Query { rowsort } => {
+                let kind = Kind::Query {
+                    rowsort: *rowsort,
+                    list: false,
+                    rows: step.rows.clone(),
+                };
+                engine::directive(db, &conformance(kind)).map_err(|d| {
+                    let expected = format!("[{}]", step.rows.join(", "));
+                    match d.got {
+                        Some(Got::Rows(rows)) => Differs::at(step, "the rows differ")
+                            .values(expected, format!("[{}]", rows.join(", "))),
+                        _ => Differs::at(step, d.message),
+                    }
+                })
+            }
+            Head::Error(reason) => {
+                let want = format!("Rejected {{ reason: {reason} }}");
+                match engine::ended(db, step.line, &step.body)
+                    .map_err(|d| Differs::at(step, d.message))?
+                {
+                    Ended::Refused(e) if e.value().to_string() == want => Ok(()),
+                    Ended::Refused(e) => {
+                        Err(Differs::at(step, "refused otherwise")
+                            .values(want, e.value().to_string()))
+                    }
+                    Ended::Succeeded => {
+                        Err(Differs::at(step, "succeeds").values(want, "success".into()))
+                    }
+                    Ended::Early(e) => Err(Differs::at(
+                        step,
+                        format!("a statement before the last is refused with {}", e.value()),
+                    )),
+                }
+            }
+        }
+    }
+}
+
+/// Run the script at `path`. Returns each directive that differs from it, shown.
+pub(super) fn run_file(path: &Path) -> Vec<String> {
+    let steps = match read::script(path) {
+        Ok(s) => s,
+        Err(e) => return vec![e],
+    };
+    let (seed, start) = match steps.first().map(|s| &s.head) {
+        Some(Head::Seed(n)) => (*n, 1),
+        _ => (0, 0),
+    };
+    let mut script = Script {
+        steps,
+        next: start,
+        log: Vec::new(),
+        options: options(4),
+        out: Vec::new(),
+    };
+    let ran = panic::catch_unwind(AssertUnwindSafe(|| {
+        let mut sim = Sim::new(seed, Config::default());
+        while script.next < script.steps.len() {
+            if sim.run(|rt| script.session(&rt)) != Outcome::Finished {
+                return Some(format!("{}: the simulated process crashes", shown(path)));
+            }
+        }
+        None
+    }));
+    let mut out: Vec<String> = script.out.iter().map(Differs::shown).collect();
+    match ran {
+        Ok(None) => {}
+        Ok(Some(crash)) => out.push(crash),
+        Err(p) => out.push(format!(
+            "{}: the engine panics: {}",
+            shown(path),
+            panic_message(&*p)
+        )),
+    }
+    out
+}

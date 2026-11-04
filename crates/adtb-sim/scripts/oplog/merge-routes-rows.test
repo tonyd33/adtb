@@ -1,0 +1,16 @@
+seed 21
+use shop
+use customers
+
+migrate
+  module shop
+  add type Method = Card | Invoice
+  merge constructor Payment.(Card | Invoice) into Any { method: Method, detail: Text }
+    by match
+      | Card c    -> Any { method: Card, detail: c.last4 }
+      | Invoice i -> Any { method: Invoice, detail: i.due }
+
+query rowsort
+  from p in payments.Any select p.detail
+----
+"4242"

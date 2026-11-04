@@ -1,0 +1,26 @@
+seed 70
+use shop
+use customers
+use invoice
+
+migrate
+  module shop
+  add unique (last4) in payments.Card
+  module shop
+  add type Method = Card { last4: Text } | Invoice { due: Text }
+  nest constructor Payment.(Card | Invoice) into Held { method: Method }
+
+error Violated { constraint: "shop::payments.unique(method.Card.last4)", report: 2 rows, redacted: 0 }
+  transact
+    let c = insert customers { name: "dup" }
+    insert payments.Held { customer: key c, method: Card { last4: "4242" } }
+
+run
+  transact
+    let c = insert customers { name: "inv" }
+    insert payments.Held { customer: key c, method: Invoice { due: "2027-01" } }
+
+query
+  count(k for k in (from p in payments select p.id))
+----
+3

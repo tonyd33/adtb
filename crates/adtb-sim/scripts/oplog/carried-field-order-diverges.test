@@ -1,0 +1,25 @@
+seed 52
+
+migrate
+  module shop
+  add module shop
+  add type Customer = { id: Key customers, name: Text }
+  add relation customers : Customer key id generate sequence
+  add type Payment { id: Key payments, customer: Key customers }
+    = Card { last4: Text }
+    | Invoice { due: Text }
+  add relation payments : Payment
+    key id generate sequence
+    index (customer)
+  add type Note = { id: Key notes, about: Key customers, text: Text }
+  add relation notes : Note key id generate sequence
+  module shop
+  rekey relation customers key name
+    carry Payment.customer, Note.about
+  drop field Customer.id
+
+migrate at 2 refused Diverged { version: 2 }
+  module shop
+  rekey relation customers key name
+    carry Note.about, Payment.customer
+  drop field Customer.id

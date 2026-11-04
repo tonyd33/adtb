@@ -1,0 +1,19 @@
+seed 16
+use shop
+use customers
+
+run
+  insert customers { name: "ann" }
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of customers share the key \"ann\" of `unique (name)`" } } }
+  module shop
+  add unique (name) in customers
+
+reopen
+
+query rowsort
+  from c in customers select c
+----
+Customer { id: customers.key(1), name: "ann" }
+Customer { id: customers.key(2), name: "bob" }
+Customer { id: customers.key(3), name: "ann" }

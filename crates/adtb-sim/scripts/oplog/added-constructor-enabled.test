@@ -1,0 +1,26 @@
+seed 9
+use shop
+use customers
+
+migrate
+  module shop
+  add constructor Payment.Wire { iban: Text }
+
+error NotOpen { ctor: "payments.Wire", stage: "Declared" }
+  transact
+    let c = insert customers { name: "cy" }
+    insert payments.Wire { customer: key c, iban: "DE00" }
+
+migrate
+  module shop
+  enable payments.Wire
+
+run
+  transact
+    let c = insert customers { name: "cy" }
+    insert payments.Wire { customer: key c, iban: "DE00" }
+
+query rowsort
+  from p in payments.Wire select p.iban
+----
+"DE00"

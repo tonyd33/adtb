@@ -13,8 +13,7 @@ use adtb_lang::textual::{self, Form};
 use adtb_lang::types::Ty;
 
 use crate::{
-    Difference, Directive, FIX_ROUNDS, Got, Kind, Script, differ, differ_got, modules, refused,
-    repeated,
+    Difference, Directive, FIX_ROUNDS, Got, Kind, Script, differ, differ_got, modules, repeated,
 };
 
 const FILE: &str = "conformance.adt";
@@ -117,34 +116,29 @@ fn migration(module: &str) -> String {
     out
 }
 
-fn directive<R: Runtime>(db: &Database<R>, d: &Directive) -> Result<(), Difference> {
+/// Run directive `d` on `db`. Returns how its outcome differs from what it states.
+pub fn directive<R: Runtime>(db: &Database<R>, d: &Directive) -> Result<(), Difference> {
     match &d.kind {
         Kind::Schema => unreachable!("handled by the caller"),
         Kind::Run => db
             .query_text(&d.body, &[], &CallOptions::default())
             .map(drop)
             .map_err(|e| refusal_of(d.line, &e)),
-        Kind::Error { reason } => {
-            let mut t = begin(db, d.line, &TxnOptions::default())?;
-            let ended = refusal(&mut t, &d.body);
-            t.rollback()
-                .map_err(|e| differ(d.line, format!("the rollback fails: {}", shown(&e))))?;
-            match ended {
-                Ended::Succeeded => Err(differ(
-                    d.line,
-                    format!("succeeds, not refused with {reason}"),
-                )),
-                Ended::Early(e) => Err(differ(
-                    d.line,
-                    format!("a statement before the last is refused with {}", shown(&e)),
-                )),
-                Ended::Refused(e) if name(&e) == *reason => Ok(()),
-                Ended::Refused(e) => Err(differ(
-                    d.line,
-                    format!("refused with {}, not {reason}", shown(&e)),
-                )),
-            }
-        }
+        Kind::Error { reason } => match ended(db, d.line, &d.body)? {
+            Ended::Succeeded => Err(differ(
+                d.line,
+                format!("succeeds, not refused with {reason}"),
+            )),
+            Ended::Early(e) => Err(differ(
+                d.line,
+                format!("a statement before the last is refused with {}", shown(&e)),
+            )),
+            Ended::Refused(e) if name(&e) == *reason => Ok(()),
+            Ended::Refused(e) => Err(differ(
+                d.line,
+                format!("refused with {}, not {reason}", shown(&e)),
+            )),
+        },
         Kind::Query {
             rowsort,
             list,
@@ -229,8 +223,21 @@ fn values(rows: DynRows) -> Result<Vec<Value>, Error> {
     rows.collect()
 }
 
+/// Run the statements of `body` in one transaction of `db` and roll it back.
+///
+/// Returns how they ended, or how the transaction failed, as the difference of the directive on
+/// `line`.
+pub fn ended<R: Runtime>(db: &Database<R>, line: usize, body: &str) -> Result<Ended, Difference> {
+    let mut t = begin(db, line, &TxnOptions::default())?;
+    let ended = refusal(&mut t, body);
+    t.rollback()
+        .map_err(|e| differ(line, format!("the rollback fails: {}", shown(&e))))?;
+    Ok(ended)
+}
+
 /// How the statements of an `error` directive ended.
-enum Ended {
+#[derive(Debug)]
+pub enum Ended {
     Succeeded,
     /// A statement before the last is refused.
     Early(Error),
@@ -324,7 +331,7 @@ fn compare(
 }
 
 fn refusal_of(line: usize, e: &Error) -> Difference {
-    refused(
+    crate::refused(
         line,
         format!("refused with {}", shown(e)),
         &name(e),

@@ -1,0 +1,19 @@
+use shop
+error Invalid { detail: "x" }
+  insert customers { name: "a" }
+error Invalid { detail: "x" }
+  from c in customers select c.nope
+query
+  1
+----
+2
+migrate refused Diverged { version: 9 }
+  module shop
+  add type Label = { id: Key labels, name: Text }
+  add relation labels : Label key id generate sequence
+migrate at 2 refused Diverged { version: 3 }
+  module shop
+  rename relation customers to clients
+migrate at 2
+  module shop
+  rename relation customers to clients

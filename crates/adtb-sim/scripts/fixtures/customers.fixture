@@ -1,0 +1,6 @@
+# Two customers of the shop, ann with a card.
+run
+  transact
+    let c = insert customers { name: "ann" }
+    insert payments.Card { customer: key c, last4: "4242" }
+    insert customers { name: "bob" }

@@ -1,0 +1,16 @@
+seed 95
+use shop
+use customers
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "a stored view returns a `Set`; `total` does not" } } }
+  module shop
+  define fn total () -> I64 = count(c for c in customers)
+  store total
+
+reopen
+
+query rowsort
+  from c in customers select c.name
+----
+"ann"
+"bob"

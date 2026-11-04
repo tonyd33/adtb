@@ -1,0 +1,18 @@
+seed 65
+use shop
+use customers
+
+migrate
+  module shop
+  add field Customer.vip: Bool fill false
+  module shop
+  revert 0002
+
+query rowsort
+  from c in customers select c.name
+----
+"ann"
+"bob"
+
+error Invalid { detail: "Customer has no field `vip`" }
+  from c in customers select c.vip

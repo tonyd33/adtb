@@ -1,0 +1,17 @@
+seed 66
+use shop
+use customers
+
+migrate
+  module shop
+  add field Customer.vip: Bool fill false
+  module shop
+  revert 0002
+  module shop
+  revert 0003
+
+query rowsort
+  from c in customers select { name: c.name, vip: c.vip }
+----
+{ name: "ann", vip: False }
+{ name: "bob", vip: False }

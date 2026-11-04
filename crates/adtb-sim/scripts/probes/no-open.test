@@ -1,0 +1,13 @@
+query
+  1
+----
+1
+
+use shop
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "module `shop` declares no relation `nothing`" } } }
+  module shop
+  drop relation nothing
+query
+  1
+----
+1

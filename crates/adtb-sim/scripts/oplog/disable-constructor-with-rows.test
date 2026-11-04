@@ -1,0 +1,10 @@
+seed 14
+use shop
+use customers
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "disable payments.Card", detail: "constructor relation payments.Card holds rows; it cannot be disabled" } } }
+  module shop
+  add constructor Payment.Wire { iban: Text }
+  enable payments.Wire
+  module shop
+  disable payments.Card

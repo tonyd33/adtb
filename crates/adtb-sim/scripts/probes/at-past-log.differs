@@ -1,0 +1,1 @@
+scripts/probes/at-past-log.test:2: `at 5` is past the log's 1 migrations

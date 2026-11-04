@@ -12,6 +12,7 @@ adtb-sys.workspace = true
 
 [dev-dependencies]
 adtb-heap-cap.workspace = true
+adtb-conformance.workspace = true
 adtb-lang = { workspace = true, features = ["test-heap-cap"] }
 adtb = { workspace = true, features = ["plan-fixture"] }
 adtb-isolation.workspace = true

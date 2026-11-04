@@ -1,0 +1,14 @@
+seed 19
+use shop
+use customers
+
+migrate
+  module shop
+  drop index (customer) in payments
+  module shop
+  add index (customer) in payments
+
+query rowsort
+  from c in customers, p in payments.Card where c.name == "ann" and p.customer == key c select p.last4
+----
+"4242"

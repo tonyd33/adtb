@@ -1,0 +1,14 @@
+seed 13
+use shop
+use customers
+
+migrate
+  module shop
+  add type Label = { id: Key labels, name: Text }
+  add relation labels : Label key id generate sequence
+  module shop
+  drop relation labels
+  drop type Label
+
+error Invalid { detail: "`labels` is a parameter of this text, but the call supplies no value for it" }
+  from t in labels select t.name

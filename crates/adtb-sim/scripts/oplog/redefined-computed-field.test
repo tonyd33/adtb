@@ -1,0 +1,15 @@
+seed 80
+use shop
+use customers
+
+migrate
+  module shop
+  add computed customers.shout: Text = self.name ++ "!"
+  module shop
+  redefine computed customers.shout: Text = self.name ++ "?"
+
+query rowsort
+  from c in customers select c.shout
+----
+"ann?"
+"bob?"

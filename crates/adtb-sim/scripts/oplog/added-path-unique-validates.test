@@ -1,0 +1,17 @@
+seed 72
+use shop
+use customers
+
+migrate
+  module shop
+  add type Method = Card { last4: Text } | Invoice { due: Text }
+  nest constructor Payment.(Card | Invoice) into Held { method: Method }
+
+run
+  transact
+    let c = insert customers { name: "dup" }
+    insert payments.Held { customer: key c, method: Card { last4: "4242" } }
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "rows of payments share the key \"4242\" of `unique (method.Card.last4) in Held`" } } }
+  module shop
+  add unique (method.Card.last4) in payments.Held

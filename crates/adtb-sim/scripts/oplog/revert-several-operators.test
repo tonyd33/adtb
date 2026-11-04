@@ -1,0 +1,18 @@
+seed 67
+use shop
+use customers
+
+migrate
+  module shop
+  add field Payment.Card.network: Text fill "visa"
+  rename field Payment.Card.last4 to digits
+  module shop
+  revert 0002
+
+query rowsort
+  from p in payments.Card select p.last4
+----
+"4242"
+
+error Invalid { detail: "Payment.Card has no field `network`" }
+  from p in payments.Card select p.network

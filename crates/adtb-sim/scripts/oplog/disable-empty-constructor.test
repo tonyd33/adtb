@@ -1,0 +1,10 @@
+seed 15
+use shop
+use customers
+
+migrate
+  module shop
+  add constructor Payment.Wire { iban: Text }
+  enable payments.Wire
+  module shop
+  disable payments.Wire

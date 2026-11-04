@@ -1,0 +1,11 @@
+seed 48
+use shop
+use customers
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint shop::short is violated by Visa { id: payments.key(1), customer: customers.key(1), last4: \"12345\" }" } } }
+  module shop
+  add check short on payments.Card (scalar_len(last4) == 4)
+  module shop
+  split constructor Payment.Card into Visa { last4: Text } | Other { last4: Text }
+    by match
+      | Card c -> Visa { last4: "12345" }

@@ -1,0 +1,15 @@
+seed 87
+use shop
+use customers
+
+migrate
+  module shop
+  define fn named () -> Set { id: Key customers, name: Text } =
+    from c in customers select { id: c.id, name: c.name }
+  store named key id
+  module shop
+  revert 0002
+
+query rowsort
+  from r in catalog::relations where r.name == "named" select r.name
+----

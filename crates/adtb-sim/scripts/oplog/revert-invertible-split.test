@@ -1,0 +1,29 @@
+seed 60
+use shop
+use customers
+use invoice
+
+migrate
+  module shop
+  add type Brand = Visa | Other
+  add field Payment.Card.brand: Brand fill Visa
+  module shop
+  split constructor Payment.Card into Visa { last4: Text } | Other { last4: Text }
+    by match
+      | Card { brand: Visa, last4 }  -> Visa { last4: last4 }
+      | Card { brand: Other, last4 } -> Other { last4: last4 }
+  module shop
+  revert 0003
+
+query rowsort
+  from p in payments.Card select { brand: p.brand, last4: p.last4 }
+----
+{ brand: Visa, last4: "4242" }
+
+query rowsort
+  from p in payments.Invoice select p.due
+----
+"2027-01"
+
+error Invalid { detail: "`Visa` is neither a constructor of `Payment` nor a named set of `payments`" }
+  from p in payments.Visa select p.last4

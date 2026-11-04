@@ -1,0 +1,14 @@
+seed 11
+use shop
+use customers
+
+migrate
+  module shop
+  deprecate payments.Invoice
+  module shop
+  remove constructor Payment.Invoice
+
+query rowsort
+  from p in payments select p.customer
+----
+customers.key(1)

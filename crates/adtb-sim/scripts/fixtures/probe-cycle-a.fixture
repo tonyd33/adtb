@@ -1,0 +1,2 @@
+# One of two fixtures that use each other, for the runner's probes.
+use probe-cycle-b

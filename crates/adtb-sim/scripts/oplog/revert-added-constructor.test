@@ -1,0 +1,12 @@
+seed 24
+use shop
+use customers
+
+migrate
+  module shop
+  add constructor Payment.Wire { iban: Text }
+  module shop
+  revert 0002
+
+error Invalid { detail: "`Wire` is neither a constructor of `Payment` nor a named set of `payments`" }
+  from p in payments.Wire select p.iban
