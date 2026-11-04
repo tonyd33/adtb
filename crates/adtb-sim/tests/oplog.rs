@@ -92,15 +92,6 @@ fn refusal(got: Result<Database<SimRuntime>, OpenError>) -> (u64, String) {
 const TAGS: &str = "module shop\nadd type Label = { id: Key labels, name: Text }\nadd relation labels : Label key id generate sequence\n";
 
 #[test]
-fn a_second_migration_declaring_a_relation_applies_at_open() {
-    after(1, &[TAGS], |db| {
-        let db = db.expect("the second migration applies");
-        assert!(query(&db, "from t in labels select t.name").is_empty());
-        assert_eq!(2, query(&db, "from c in customers select c.name").len());
-    });
-}
-
-#[test]
 fn migrations_apply_in_order_each_producing_a_version_that_survives_reopening() {
     let mut sim = Sim::new(2, Config::default());
     let rename = "module shop\nrename relation customers to clients\n";

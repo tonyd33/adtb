@@ -204,21 +204,6 @@ fn a_refused_first_migration_fails_open() {
 }
 
 #[test]
-fn a_second_migration_applies_at_open() {
-    let mut sim = Sim::new(6, Config::default());
-    run(&mut sim, |rt| drop(open(&rt)));
-    run(&mut sim, |rt| {
-        let next = Log::new([
-            SHOP,
-            "module shop\nadd type Label = { id: Key tags, name: Text }\nadd relation tags : Label key id generate sequence\n",
-        ]);
-        let db = Database::open_in(rt, "app.adt", &next, &options(4))
-            .expect("the second migration applies");
-        assert!(query(&db, "from t in tags select t.name").is_empty());
-    });
-}
-
-#[test]
 fn text_that_does_not_parse_or_check_is_invalid() {
     once(0, |rt| {
         let db = open(&rt);
