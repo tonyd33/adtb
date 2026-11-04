@@ -1509,8 +1509,9 @@ relation jobs : Job volatile key id
 
 Vacuum runs per relation variable and removes the dead versions of
 its constructor relations (§11.5). `sys::vacuums` has a row per
-constructor relation of a running vacuum: `dead_versions` is the
-number it has left to remove, `phase` implementation-defined text.
+constructor relation of a running vacuum, `phase` implementation-defined
+text. `dead_versions` is the number of versions the running pass has
+found dead and not yet removed.
 `sys::jobs` has a row per running long operation of §11 and per staged
 schema job ([evolution.md](evolution.md#34-staged-changes)). In both,
 `done` is the fraction complete.

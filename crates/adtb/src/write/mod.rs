@@ -16,6 +16,7 @@ mod rot;
 mod schema;
 mod sequence;
 mod stream;
+mod vacuums;
 mod verify;
 
 use std::cell::RefCell;
@@ -513,6 +514,7 @@ pub struct Database<R: Runtime> {
     files: Disk,
     /// Held while a vacuum runs or the retention window changes, so that one runs at a time.
     vacuuming: Lock<bool>,
+    vacuums: vacuums::Vacuums,
     /// How many pauses calls have made at a rebuild's gate or for the vacuum lock.
     rebuild_waits: AtomicU64,
     /// The relations an offline rebuild holds writes to.
@@ -614,6 +616,7 @@ impl<R: Runtime> Database<R> {
             grant: setup.grant,
             files: Disk::default(),
             vacuuming: Lock::new(false),
+            vacuums: vacuums::Vacuums::default(),
             rebuild_waits: AtomicU64::new(0),
             offline: Lock::default(),
             rebuilds_stopped: AtomicBool::new(false),
@@ -958,6 +961,13 @@ impl<R: Runtime> Database<R> {
             .iter()
             .map(|(i, _)| &self.indexes[i].index)
             .collect();
+        let shown: Vec<(CtorId, u32)> = r
+            .ctors
+            .iter()
+            .enumerate()
+            .map(|(c, ctor)| (ids[&(c as u32)], self.heaps[&ctor.heap].heap.id().0))
+            .collect();
+        let _shown = self.show_vacuum(self.schema.ids.relations[&rel], &shown);
         let mut out = Vec::with_capacity(r.ctors.len());
         for (c, ctor) in r.ctors.iter().enumerate() {
             let id = ids[&(c as u32)];
@@ -965,7 +975,9 @@ impl<R: Runtime> Database<R> {
                 heaps: vec![(id, &*self.heaps[&ctor.heap].heap)],
                 indexes: indexes.clone(),
             };
+            self.vacuum_stage(id, vacuums::Stage::Current);
             let report = self.vacuum_sum(r, &sum)?;
+            self.vacuum_stage(id, vacuums::Stage::Done);
             out.push((id, report));
         }
         Ok(out)

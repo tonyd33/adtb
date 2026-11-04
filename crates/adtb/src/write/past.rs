@@ -243,6 +243,9 @@ impl<R: Runtime> PastReads<R> for Pasts<R> {
 impl<R: Runtime> Database<R> {
     pub(super) fn volatile_rows(&self, rel: RelId) -> Result<BTreeSet<Val>, Error> {
         let id = self.schema.ids.relations[&rel];
+        if id == super::vacuums::VACUUMS {
+            return Ok(self.vacuum_rows());
+        }
         if id != COMMIT_TIMES && id != SAFE_SNAPSHOTS {
             return Ok(self
                 .volatile
@@ -287,13 +290,13 @@ impl<R: Runtime> Database<R> {
         rel: &Rel,
         sum: &vacuum::Sum,
     ) -> Result<vacuum::Report, vacuum::Error> {
-        let progress = vacuum::Progress::new();
+        let progress = &self.vacuums.progress;
         let kept = self
             .retained
             .as_ref()
             .filter(|_| self.txns.history().is_some());
         let Some(retained) = kept else {
-            return vacuum::vacuum(&self.pager, &self.txns, sum, self.grant, &progress);
+            return vacuum::vacuum(&self.pager, &self.txns, sum, self.grant, progress);
         };
         let key_index = rel.key_index;
         let ctors = &self.indexes[&key_index].ctors;
@@ -329,12 +332,12 @@ impl<R: Runtime> Database<R> {
             key: &key,
         };
         let report =
-            vacuum::vacuum_keeping(&self.pager, &self.txns, sum, &into, self.grant, &progress)?;
+            vacuum::vacuum_keeping(&self.pager, &self.txns, sum, &into, self.grant, progress)?;
         let past = vacuum::Sum {
             heaps: pasts,
             indexes: vec![index],
         };
-        vacuum::expire(&self.pager, &self.txns, &past, self.grant, &progress)?;
+        vacuum::expire(&self.pager, &self.txns, &past, self.grant, progress)?;
         Ok(report)
     }
 
