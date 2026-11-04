@@ -255,6 +255,8 @@ Mutate every guard, branch and match arm your change adds, not one site for the
 whole change: delete it or invert it, and each must fail a test by name. A
 survivor is a missing test; add it before reporting. A stop line is a check-in:
 when a count reaches it, stop and report the size and what remains before going on.
+Count with `jj diff --stat` before starting each new file or test module, and stop
+before a file that would carry the count past the line, not after writing it.
 Restore a mutated file with a command that gives it a new mtime, `cp` without
 `-p`, never `mv` of a backup, `cp -p` or `perl -i.keep` followed by a rename:
 cargo trusts mtimes and keeps testing the mutant's build. `check` touches every
