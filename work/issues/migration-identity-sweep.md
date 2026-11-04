@@ -23,3 +23,10 @@ Details are in the track's local receipt, work/briefs/receipt-migration-key-r1.m
 ## Proposal
 
 Route every lookup across schemas through catalog ids, and make `layout::key_names` the only sorted-key-order rule, so a disagreement cannot compile. Give merge, nest and unnest the same held-value routing as split.
+
+## 2026-11-04: from the review of the migration-key change
+
+- A rekey with `carry` of a reference wrapped in `Option` (or another library sum) is accepted by the carry check, but `Mapping::rekey` (crates/adtb/src/catalog/moved.rs) fills only fields typed `Key r` directly. The change makes it refuse; carrying it should map the old key to the new one through the wrapper.
+- A split of a type held as `Tag T` still refuses ("a stored value holds constructor ... of a sum that no longer has it"): `held_routes` covers no tags. Route them to a field-less constructor of the routing's result.
+- Each `Key` field of each rewritten row recomputes both schemas' key layouts, and each held sum walks `layout::ctors`. Hoist the per-relation layouts out of the per-row loop.
+- api/pinned.rs keeps its own key order path for translation; whether it agrees with `layout::key_names` across a reorder is unchecked.
