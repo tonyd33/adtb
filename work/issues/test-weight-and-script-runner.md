@@ -61,3 +61,11 @@ Next: `host` and the 16 host-function tests, `as ROLE` and the server batch, the
 Filed from it: audit-violated-call-outcome, revoke-call-fn-says-grant.
 
 Next: change 2, named transactions and `assert`, then server_binding, server_commands, registered, checked_registration, principal and the remaining 13 host tests.
+
+## 2026-11-04: roles and server batch, change 2 landed
+
+`test: move the transaction and principal tests onto engine scripts`. New directives: `in NAME` and `assert VALUE` prefixes (`assert` on a call only with an ordinal), `begin [read only] [deferrable] NAME`, `commit NAME`, `rollback NAME` through the engine with their outcomes compared, `failed R` (admitted, fails at completion), `drop role NAME`, `loose NAME`; a transaction open at script end or at a `migrate`/`reopen` is a difference. 105 tests moved into scripts/registered/, scripts/registration/ (with binding/), scripts/roles/commands/ and scripts/bundles/host-*. Kept in Rust: principal.rs, grant_rows.rs, held and queued sessions, pins, typed parameters, quarantine, seed loops, the holder-loop host tests, the empty text after `adhoc`, the assert capability checked before the asserted value, and the host redefine refusal (detail only). Review found three moved tests weaker than the old ones (holder fresh-bind refusals after retire, supersede and expiry; an audit set folding the grant and revoke rows), all fixed. Full check 3355 passed.
+
+Filed from it: host-redefine-operator-attribution, drop-unknown-role-message.
+
+Next: commands, api, past, longkey, and the 60 conformance-fit tests into `conformance/`.
