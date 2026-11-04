@@ -693,3 +693,17 @@ Going worse:
 - Typed causes took five tracks and four delta rounds while no roadmap item moved (dump-restore-backup, prealpha-app). Worth doing, but it changes no answer a user sees. Next: after picked-seed-floors, alternate a correctness track with a roadmap track, dump-restore-backup first.
 - Each track resolves one ticket and opens a follow-ups ticket, mostly cosmetic. Moved to a rule in SKILL.md: such follow-ups take no priority over wrong answers, and a stale follow-ups ticket closes as wontfix.
 - My slips: one outgoing-diff scan and push in a single command (scan clean, nothing leaked); a stale main working copy from a race with a slot's operation, recovered after copying the edited files aside.
+
+### 2026-11-04: periodic review after ten tracks
+
+What happened: ten tracks, two at a time until the maintainer went back to one. Landed: a pinned key and a written relation translated by identity; logical dump and restore (S5.1); a revert translated by the operators it applies; adtb-sim's tests built as one binary; the engine script runner with four batches (oplog, bundles, roles and server, transactions and principals), about 400 Rust tests moved onto scripts; background vacuum V1 to V4, closing background-vacuum. Every full check passed on the tree it tested, and main was re-checked when code had moved under it.
+
+Going well: every review found a blocker, and most were false evidence rather than code: a script that could not tell a refusal at submit from a failure at completion, a longest-step test blind to work after the last step, a snapshot search that passed with the worker disabled. The script batches cut adtb-sim's Rust by thousands of lines with assertions the same or stronger, and each batch's review caught the moved tests that had quietly weakened. Rulings that tickets absorbed (twelve filed) kept each track to its scope.
+
+Going worse:
+
+- False evidence was the common blocker: four tests of a mechanism running beside the code (a pacer, a shared budget, a worker, a role session) passed with that mechanism off or unmeasured. Moved to a rule in AGENTS.md: such a test asserts the mechanism ran where the property needs it and is shown failing with it off.
+- Stop lines were passed three more times on the vacuum track, twice after the rule that a stop line is a check-in, and once in a brief that said so in words. The authors did stop afterwards. The overruns came from writing a whole test module before running it. Next: briefs ask the author to count `jj diff --stat` before starting each new file.
+- Turning on the background worker broke fourteen tests whose oracles assumed nothing else writes (pinned simulated times, page bytes, a scrub's budget). They now open with the worker off and a reason each. That switch is a debt: every test using it is a place the worker's interaction goes untested.
+- The disk guard stopped three checks; each slot's build is 18 to 20 GB. Clearing idle builds fixed it each time, at the cost of a cold build on reuse.
+- My slips: I misread "let the current one finish" and asked; a push to GitHub failed on an SSH key and went through later.
