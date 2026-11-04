@@ -1,0 +1,18 @@
+seed 380
+use binding
+
+grant
+  grant schema to bob
+
+as bob grant
+  grant read catalog::relations to web
+
+revoke
+  revoke schema from bob
+
+as bob revoke
+  revoke read catalog::relations from web
+
+query
+  from g in catalog::grants where g.grantee == "web" select { privilege: g.privilege, target: g.target, option: g.grant_option }
+----

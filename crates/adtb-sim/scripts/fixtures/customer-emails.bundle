@@ -1,0 +1,2 @@
+import shop
+query emails () -> Set Text = from c in customers select c.email

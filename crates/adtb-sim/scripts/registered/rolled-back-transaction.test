@@ -1,0 +1,15 @@
+seed 19
+use store
+
+begin t
+
+in t call app 5 committed
+  "ann"
+  "4242"
+----
+shop::customers.key(1)
+
+rollback t
+
+call app 3
+----

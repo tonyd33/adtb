@@ -384,143 +384,6 @@ fn denied_detail(got: Result<(), Error>) -> String {
 }
 
 #[test]
-fn a_role_with_only_adhoc_gets_no_checker_output_and_each_refusal_is_audited() {
-    let mut sim = Sim::new(146, Config::default());
-    run(&mut sim, |rt| {
-        let db = opened_secrets(&rt);
-        let authority = db.role_authority();
-        authority.create_role("w").expect("role");
-        authority
-            .grant_capability("w", Capability::Adhoc, false)
-            .expect("grant");
-        let w = authority.session("w").expect("session");
-        for text in [
-            "from i in secrets select i.nope",
-            "from i in secrets select i.salary",
-            "from s in secrets select s.salary + \"x\"",
-            "from i in nosuch select i",
-            "vacuum nosuch",
-            "vacuum secrets",
-            "verify nosuch",
-            "set setting Nope = 1",
-            "set setting RetryLimit = { retries: \"x\" }",
-            "explain from i in secrets select i.nope",
-            "transact\n  delete i in secrets",
-            "temp relation stage : Secret key id\nverify",
-            "vacuum secrets\nvacuum nosuch",
-            "grant read secrets (id) to w",
-        ] {
-            let before = audit_denied(&db, "w");
-            denied_detail(task(&rt, &w, text));
-            assert_eq!(before + 1, audit_denied(&db, "w"), "{text}");
-        }
-    });
-}
-
-#[test]
-fn a_refusal_of_a_named_relation_reads_the_same_whether_or_not_it_exists() {
-    let mut sim = Sim::new(147, Config::default());
-    run(&mut sim, |rt| {
-        let db = opened_secrets(&rt);
-        let authority = db.role_authority();
-        authority.create_role("w").expect("role");
-        authority
-            .grant_capability("w", Capability::Adhoc, false)
-            .expect("grant");
-        let w = authority.session("w").expect("session");
-        for (present, absent) in [
-            ("vacuum secrets", "vacuum nosuch"),
-            ("verify secrets", "verify nosuch"),
-            ("reindex secrets", "reindex nosuch"),
-            (
-                "from i in secrets select i.salary",
-                "from i in secrets select i.nope",
-            ),
-            ("from i in secrets select i", "from i in nosuch select i"),
-            (
-                "set setting RetryLimit = { retries: 1 }",
-                "set setting Nope = 1",
-            ),
-        ] {
-            assert_eq!(
-                denied_detail(task(&rt, &w, present)),
-                denied_detail(task(&rt, &w, absent)),
-                "{present} against {absent}"
-            );
-        }
-    });
-}
-
-#[test]
-fn a_capability_holder_gets_no_checker_reply_on_a_statement_inside_a_command() {
-    let mut sim = Sim::new(148, Config::default());
-    run(&mut sim, |rt| {
-        let db = opened_secrets(&rt);
-        let authority = db.role_authority();
-        authority.create_role("w").expect("role");
-        grant_all(&db, "w");
-        let w = authority.session("w").expect("session");
-        for text in [
-            "set setting RetryLimit = { retries: count(i for i in secrets) }",
-            "set setting RetryLimit = { retries: from i in secrets select i.nope }",
-            "set setting RetryLimit = { retries: nosuch }",
-            "pin plan (from i in secrets select i.nope)",
-            "unpin plan (from i in secrets select i.nope)",
-            "terminate session (from i in secrets select i.nope)",
-            "archive audit through (from i in secrets select i.nope) to \"x\"",
-            "reindex secrets index (from i in secrets select i.nope) in Secret",
-            "explain from i in secrets select i.nope",
-            "from i in secrets select i.nope",
-        ] {
-            let before = audit_denied(&db, "w");
-            denied_detail(task(&rt, &w, text));
-            assert_eq!(before + 1, audit_denied(&db, "w"), "{text}");
-        }
-        let got = format!(
-            "{:?}",
-            task(&rt, &w, "reindex secrets index (id) in Secret")
-        );
-        assert!(got.contains("Invalid"), "{got}");
-    });
-}
-
-#[test]
-fn a_parse_failure_answers_invalid_and_needs_adhoc_first() {
-    let mut sim = Sim::new(149, Config::default());
-    run(&mut sim, |rt| {
-        let db = opened_secrets(&rt);
-        let authority = db.role_authority();
-        authority.create_role("w").expect("role");
-        let w = authority.session("w").expect("session");
-        let text = "syntax error here (((";
-        denied_detail(task(&rt, &w, text));
-        assert_eq!(1, audit_denied(&db, "w"));
-        authority
-            .grant_capability("w", Capability::Adhoc, false)
-            .expect("grant");
-        for text in [text, ""] {
-            let got = format!("{:?}", task(&rt, &w, text));
-            assert!(got.contains("Invalid"), "{got}");
-            assert_eq!(1, audit_denied(&db, "w"));
-        }
-    });
-}
-
-#[test]
-fn print_schema_is_refused_a_role_that_cannot_read_the_catalog() {
-    let mut sim = Sim::new(150, Config::default());
-    run(&mut sim, |rt| {
-        let db = opened_secrets(&rt);
-        let authority = db.role_authority();
-        authority.create_role("w").expect("role");
-        grant_all(&db, "w");
-        let w = authority.session("w").expect("session");
-        denied_detail(task(&rt, &w, "print schema"));
-        assert_eq!(1, audit_denied(&db, "w"));
-    });
-}
-
-#[test]
 fn a_refusal_on_a_dropped_role_session_is_audited() {
     let mut sim = Sim::new(151, Config::default());
     run(&mut sim, |rt| {
@@ -532,37 +395,6 @@ fn a_refusal_on_a_dropped_role_session_is_audited() {
         let detail = denied_detail(task(&rt, &w, "verify"));
         assert!(detail.contains("no longer"), "{detail}");
         assert_eq!(1, audit_denied(&db, "w"));
-    });
-}
-
-#[test]
-fn a_role_holding_no_relation_grant_runs_no_statement_alone_or_inside_a_command() {
-    let mut sim = Sim::new(142, Config::default());
-    run(&mut sim, |rt| {
-        let db = opened_schema(&rt);
-        let authority = db.role_authority();
-        authority.create_role("web").expect("role");
-        let web = authority.session("web").expect("session");
-        for capability in [
-            Capability::Adhoc,
-            Capability::Maintain,
-            Capability::Configure,
-            Capability::Monitor,
-        ] {
-            authority
-                .grant_capability("web", capability, false)
-                .expect("grant");
-        }
-        for text in [
-            "from i in items select i.value",
-            "delete i in items",
-            "explain from i in items select i.value",
-            "verify\nfrom i in items select i.value",
-            "set setting RetryLimit = { retries: count(i for i in items) }",
-        ] {
-            let before = audit_denied(&db, "web");
-            refused_and_audited(&db, "web", text, "role", task(&rt, &web, text), before);
-        }
     });
 }
 
@@ -588,47 +420,6 @@ fn a_read_grant_revoked_while_queued_stops_the_text_with_its_audit_row() {
         release(&rt, &q);
         denied(finish(&rt, &task));
         assert_eq!(1, audit_denied(&q.db, "dba"));
-    });
-}
-
-#[test]
-fn a_role_without_adhoc_learns_nothing_of_text_the_checker_would_refuse() {
-    let mut sim = Sim::new(143, Config::default());
-    run(&mut sim, |rt| {
-        let db = opened_schema(&rt);
-        let authority = db.role_authority();
-        authority.create_role("web").expect("role");
-        let web = authority.session("web").expect("session");
-        denied(task(&rt, &web, "from i in no_such_relation select i"));
-        assert_eq!(1, audit_denied(&db, "web"));
-    });
-}
-
-#[test]
-fn an_asserted_principal_needs_assert_and_a_refusal_records_the_session_s_service() {
-    let mut sim = Sim::new(144, Config::default());
-    run(&mut sim, |rt| {
-        let db = opened_schema(&rt);
-        let authority = db.role_authority();
-        authority.create_role("web").expect("role");
-        authority
-            .grant_capability("web", Capability::Adhoc, false)
-            .expect("grant");
-        authority
-            .grant_capability("web", Capability::Maintain, false)
-            .expect("grant");
-        let web = authority.session("web").expect("session");
-        let options = TaskOptions {
-            call: CallOptions {
-                assert: Some(Value::text("nobody")),
-                ..CallOptions::default()
-            },
-            ..TaskOptions::default()
-        };
-        denied(web.submit_text("verify", &[], options).map(drop));
-        let principal = query(&db, "from a in catalog::audit.Denied select a.principal");
-        assert_eq!(1, principal.len());
-        assert!(principal[0].contains("web"), "{principal:?}");
     });
 }
 
@@ -917,19 +708,6 @@ fn with_param(
 }
 
 #[test]
-fn a_holder_sets_a_setting_to_a_computed_value() {
-    let mut sim = Sim::new(165, Config::default());
-    run(&mut sim, |rt| {
-        let db = opened_secrets(&rt);
-        adhoc_and(&db, "ops", Capability::Configure);
-        let ops = db.role_authority().session("ops").expect("session");
-        task(&rt, &ops, "set setting RetryLimit = { retries: 1 + 2 }").expect("a computed value");
-        assert_eq!(vec!["3"], retries(&db));
-        assert_eq!(0, audit_denied(&db, "ops"));
-    });
-}
-
-#[test]
 fn a_holder_sets_a_setting_to_a_parameter() {
     let mut sim = Sim::new(166, Config::default());
     run(&mut sim, |rt| {
@@ -940,24 +718,6 @@ fn a_holder_sets_a_setting_to_a_parameter() {
             .expect("a parameter");
         assert_eq!(vec!["7"], retries(&db));
         assert_eq!(0, audit_denied(&db, "ops"));
-    });
-}
-
-#[test]
-fn a_nonholder_is_refused_a_computed_value_as_it_is_a_literal() {
-    let mut sim = Sim::new(167, Config::default());
-    run(&mut sim, |rt| {
-        let db = opened_secrets(&rt);
-        adhoc_and(&db, "ops", Capability::Maintain);
-        let ops = db.role_authority().session("ops").expect("session");
-        for text in [
-            "set setting RetryLimit = { retries: 1 + 2 }",
-            "set setting RetryLimit = { retries: 3 }",
-        ] {
-            let detail = denied_detail(task(&rt, &ops, text));
-            assert!(detail.contains("`configure`"), "{text}: {detail}");
-        }
-        assert_eq!(2, audit_denied(&db, "ops"));
     });
 }
 
@@ -1015,111 +775,6 @@ fn a_parameter_named_for_a_schema_name_answers_as_an_absent_name() {
 }
 
 #[test]
-fn a_holders_absent_name_is_invalid_with_no_denied_row() {
-    let mut sim = Sim::new(170, Config::default());
-    run(&mut sim, |rt| {
-        let db = opened_secrets(&rt);
-        adhoc_and(&db, "dba", Capability::Maintain);
-        let dba = db.role_authority().session("dba").expect("session");
-        let got = format!("{:?}", task(&rt, &dba, "vacuum nosuch"));
-        assert!(got.contains("Invalid"), "{got}");
-        assert_eq!(0, audit_denied(&db, "dba"));
-        assert_eq!(1, audit_calls(&db, "dba"));
-    });
-}
-
-#[test]
-fn a_nonholder_answer_and_audit_do_not_depend_on_the_name_existing() {
-    let mut sim = Sim::new(171, Config::default());
-    run(&mut sim, |rt| {
-        let db = opened_secrets(&rt);
-        adhoc_and(&db, "ops", Capability::Monitor);
-        let ops = db.role_authority().session("ops").expect("session");
-        let shape = "from a in catalog::audit.Denied where a.role == \"ops\" select a.seq";
-        let principal =
-            "from a in catalog::audit.Denied where a.role == \"ops\" select a.principal";
-        for (present, absent) in [
-            ("vacuum secrets", "vacuum nosuch"),
-            ("verify secrets", "verify nosuch"),
-            ("reindex secrets", "reindex nosuch"),
-            (
-                "set setting RetryLimit = { retries: 1 }",
-                "set setting Nope = 1",
-            ),
-        ] {
-            let rows_before = query(&db, shape).len();
-            let one = denied_detail(task(&rt, &ops, present));
-            assert_eq!(rows_before + 1, query(&db, shape).len(), "{present}");
-            let other = denied_detail(task(&rt, &ops, absent));
-            assert_eq!(rows_before + 2, query(&db, shape).len(), "{absent}");
-            assert_eq!(one, other, "{present} against {absent}");
-        }
-        assert_eq!(1, query(&db, principal).len());
-        assert_eq!(0, audit_calls(&db, "ops"));
-    });
-}
-
-#[test]
-fn an_adhoc_call_writes_one_row_with_its_outcome() {
-    let mut sim = Sim::new(172, Config::default());
-    run(&mut sim, |rt| {
-        let db = opened_secrets(&rt);
-        adhoc_and(&db, "dba", Capability::Maintain);
-        let dba = db.role_authority().session("dba").expect("session");
-        task(&rt, &dba, "verify").expect("verify");
-        let rows = query(
-            &db,
-            "from a in catalog::audit.Call where a.role == \"dba\" select a",
-        );
-        assert_eq!(1, rows.len(), "{rows:?}");
-        assert!(rows[0].contains("AdHoc"), "{rows:?}");
-        assert!(rows[0].contains("Succeeded"), "{rows:?}");
-        assert!(rows[0].contains("Service"), "{rows:?}");
-        let got = format!("{:?}", task(&rt, &dba, "verify nosuch"));
-        assert!(got.contains("Invalid"), "{got}");
-        let failed = query(
-            &db,
-            "from a in catalog::audit.Call where a.role == \"dba\" select a.outcome",
-        );
-        assert_eq!(2, failed.len(), "{failed:?}");
-        assert_eq!(
-            1,
-            failed.iter().filter(|o| o.contains("Failed")).count(),
-            "{failed:?}"
-        );
-    });
-}
-
-#[test]
-fn a_committed_adhoc_write_records_its_call_with_the_commit_and_a_failed_one_its_error() {
-    let mut sim = Sim::new(173, Config::default());
-    run(&mut sim, |rt| {
-        let log = "module example\nadd module example\nadd type Item = { id: Key items, n: I64 }\nadd relation items : Item key id generate sequence\n";
-        let db = Database::open_in(rt.clone(), "writes.adt", &Log::new([log]), &options(2))
-            .expect("schema database opens");
-        let owner = db.role_authority().session("owner").expect("session");
-        task(&rt, &owner, "insert items { n: 1 }").expect("insert");
-        let got = task(&rt, &owner, "insert items { n: 1 / 0 }");
-        assert!(got.is_err(), "{got:?}");
-        let rows = query(
-            &db,
-            "from a in catalog::audit.Call where a.role == \"owner\" select { seq: a.seq, outcome: a.outcome }",
-        );
-        assert_eq!(2, rows.len(), "{rows:?}");
-        assert_eq!(
-            1,
-            rows.iter().filter(|o| o.contains("Succeeded")).count(),
-            "{rows:?}"
-        );
-        assert!(
-            rows.iter()
-                .any(|o| o.contains("Failed") && o.contains("Rejected")),
-            "the failed outcome holds the error value: {rows:?}"
-        );
-    });
-}
-
-#[test]
 fn a_cancelled_queued_text_records_a_failed_call() {
     let mut sim = Sim::new(174, Config::default());
     run(&mut sim, |rt| {
@@ -1143,38 +798,6 @@ fn a_cancelled_queued_text_records_a_failed_call() {
         );
         assert_eq!(1, rows.len(), "{rows:?}");
         assert!(rows[0].contains("Cancelled"), "{rows:?}");
-    });
-}
-
-#[test]
-fn a_grant_by_a_role_records_that_role_and_its_service() {
-    let mut sim = Sim::new(175, Config::default());
-    run(&mut sim, |rt| {
-        let db = opened_schema(&rt);
-        let authority = db.role_authority();
-        authority.create_role("ann").expect("role");
-        authority.create_role("bob").expect("role");
-        authority
-            .grant_capability("ann", Capability::Monitor, true)
-            .expect("grant");
-        let ann = authority.session("ann").expect("session");
-        authority
-            .grant_capability_as(&ann, "bob", Capability::Monitor, false)
-            .expect("grant");
-        authority
-            .revoke(&ann, "revoke monitor from bob")
-            .expect("revoke");
-        let rows = query(
-            &db,
-            "from a in catalog::audit.Grant where a.role == \"ann\" select { seq: a.seq, who: a.principal }",
-        );
-        assert_eq!(2, rows.len(), "{rows:?}");
-        assert!(rows.iter().all(|p| p.contains("ann")), "{rows:?}");
-        let owner = query(
-            &db,
-            "from a in catalog::audit.Grant where a.statement == \"grant monitor to bob\" select a.role",
-        );
-        assert_eq!(vec!["\"ann\""], owner);
     });
 }
 
@@ -2190,4 +1813,68 @@ fn a_supersede_bundle_before_a_waiting_write_takes_effect_once() {
         "supersede bundle web-1.0 by web-1.1",
         &["\"web-1.0 superseded\"", "\"web-1.1 active\""],
     );
+}
+
+fn refusal(got: Result<(), Error>) -> RejectReason {
+    match got {
+        Err(Error::Rejected { reason }) => reason,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn an_empty_text_after_adhoc_is_invalid_with_no_denied_row() {
+    let mut sim = Sim::new(149, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened_schema(&rt);
+        let authority = db.role_authority();
+        authority.create_role("w").expect("role");
+        authority
+            .grant_capability("w", Capability::Adhoc, false)
+            .expect("grant");
+        let w = authority.session("w").expect("session");
+        assert_eq!(
+            RejectReason::Invalid {
+                detail: "expected a statement, found the end of the text".into()
+            },
+            refusal(task(&rt, &w, ""))
+        );
+        assert_eq!(
+            0,
+            query(&db, "from a in catalog::audit.Denied select a.seq").len()
+        );
+    });
+}
+
+#[test]
+fn the_assert_capability_is_checked_before_the_asserted_value() {
+    let mut sim = Sim::new(144, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened_schema(&rt);
+        let authority = db.role_authority();
+        authority.create_role("web").expect("role");
+        for capability in [Capability::Adhoc, Capability::Maintain] {
+            authority
+                .grant_capability("web", capability, false)
+                .expect("grant");
+        }
+        let web = authority.session("web").expect("session");
+        let options = TaskOptions {
+            call: CallOptions {
+                assert: Some(Value::text("nobody")),
+                ..CallOptions::default()
+            },
+            ..TaskOptions::default()
+        };
+        assert_eq!(
+            RejectReason::Denied {
+                detail: "role `web` lacks `assert`".into()
+            },
+            refusal(web.submit_text("verify", &[], options).map(drop))
+        );
+        assert_eq!(
+            vec![r#""Service { name: \"web\" }""#.to_string()],
+            query(&db, "from a in catalog::audit.Denied select a.principal")
+        );
+    });
 }

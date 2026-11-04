@@ -1,0 +1,22 @@
+seed 352
+use granted
+migrate
+  module shop
+  define fn all_names () -> Set Text = from c in customers select c.name
+
+as idle register fns-1.0 pins 3 edition "2026-10"
+  import shop
+  import fn all_names
+
+as idle register fns-1.1 pins 3 edition "2026-10" error Denied { detail: "everyone reads customers.Customer; idle lacks read with grant option\neveryone reads customers.Customer (id); idle lacks read with grant option\neveryone reads customers.Customer (name); idle lacks read with grant option" }
+  import shop
+  query everyone () -> Set Text = all_names()
+
+as web register web-1.0 pins 3 edition "2026-10"
+  import shop
+  import fn all_names
+
+migrate
+  module shop
+  revoke read customers from web
+  revoke read customers from ops

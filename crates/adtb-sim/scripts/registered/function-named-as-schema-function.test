@@ -1,0 +1,7 @@
+seed 24
+use store-schema
+loose clash
+  import shop
+  fn method (t: Text) -> Text = t
+  query q () -> Set Text = from c in customers select method(c.name)
+reopen refused RegistrationRefused { bundle: "clash", reason: Rejected { reason: Invalid { detail: "fn `method`: a bundle function has the name of a schema function" } } }

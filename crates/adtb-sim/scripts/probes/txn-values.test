@@ -1,0 +1,75 @@
+use store
+role bob
+
+in t query
+  caller
+----
+Anonymous
+
+commit t
+
+begin t
+
+begin t
+
+in t run
+  insert customers { name: "ann" }
+
+commit t error Invalid { detail: "x" }
+
+begin r error Invalid { detail: "x" }
+
+begin read only ro
+
+in ro run
+  insert customers { name: "ann" }
+
+rollback ro
+
+begin deferrable d error Invalid { detail: "x" }
+
+assert EndUser { nick: "ann" } query
+  caller
+----
+Anonymous
+
+assert Anonymous error Invalid { detail: "x" }
+  caller
+
+assert Anonymous query
+  caller
+----
+EndUser { name: "ann" }
+
+begin u
+
+in u call app 3 committed
+----
+
+in u call app 5
+  "bob"
+  "1"
+----
+shop::customers.key(2)
+
+drop role bob error Invalid { detail: "x" }
+
+drop role nobody
+
+as bob failed Invalid { detail: "x" }
+  1
+
+grant
+  grant adhoc to bob
+  grant read customers to bob
+
+as bob failed Invalid { detail: "x" }
+  from c in customers select c.name
+
+as owner failed UnknownBundle { bundle: "x" }
+  retire bundle nope-1.0
+
+as owner failed UnknownBundle { bundle: "nope-1.0" }
+  1
+
+begin left

@@ -1,0 +1,28 @@
+seed 301
+use binding
+register web-2.4 pins 2 edition "2026-10" lease 8d use binding-app
+
+grant
+  grant call web-2.4::q to web
+
+as web call web-2.4
+
+as web call web-2.4 2
+----
+
+query
+  from a in catalog::audit.Call where a.role == "web" select { origin: a.origin, outcome: a.outcome }
+----
+{ origin: Registered { bundle: "web-2.4", query: 2 }, outcome: Succeeded }
+
+as web call web-2.4 3 error Denied { detail: "role `web` may not make this call" }
+
+query
+  from a in catalog::audit.Call where a.role == "web" select { origin: a.origin, outcome: a.outcome }
+----
+{ origin: Registered { bundle: "web-2.4", query: 2 }, outcome: Succeeded }
+
+query
+  from a in catalog::audit.Denied where a.role == "web" select a.origin
+----
+Registered { bundle: "web-2.4", query: 3 }

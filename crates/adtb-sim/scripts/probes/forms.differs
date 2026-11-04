@@ -1,7 +1,12 @@
 scripts/probes/forms/advance-count.test:3: `advance h` is not a directive
 scripts/probes/forms/advance-unit.test:3: `advance 3` is not a directive
 scripts/probes/forms/as-bare.test:3: `as bob` is not a directive
+scripts/probes/forms/as-begin.test:3: `as bob begin t` is not a directive
 scripts/probes/forms/as-migrate.test:3: `as bob migrate` is not a directive
+scripts/probes/forms/assert-bind.test:3: `assert Anonymous call app` is not a directive
+scripts/probes/forms/assert-grant.test:3: `assert Anonymous grant` is not a directive
+scripts/probes/forms/assert-in.test:3: `in t assert Anonymous query` is not a directive
+scripts/probes/forms/begin-two-names.test:3: `begin t u` is not a directive
 scripts/probes/forms/bundle-bodiless.test:2: `bundle web-1.0 pins 1 edition "2026-10"` takes a body
 scripts/probes/forms/bundle-fixture-missing.test:2: scripts/fixtures/absent.bundle: No such file or directory (os error 2)
 scripts/probes/forms/bundle-fixture-name.test:2: `bundle web-1.0 pins 1 use no such` is not a directive
@@ -14,8 +19,16 @@ scripts/probes/forms/call-ordinal.test:3: `call web-1.0 one` is not a directive
 scripts/probes/forms/call-rows.test:3: `call` takes its rows after `----`
 scripts/probes/forms/call-rowsort-error.test:3: `call web-1.0 1 rowsort error UnknownQuery` is not a directive
 scripts/probes/forms/call-rowsort-unbound.test:3: `call web-1.0 rowsort` is not a directive
+scripts/probes/forms/drop-bare.test:3: `drop idle` is not a directive
+scripts/probes/forms/failed-bare.test:3: `failed Invalid { detail: "x" }` is not a directive
 scripts/probes/forms/grant-bodiless.test:3: `grant` takes a body
 scripts/probes/forms/host-bare.test:1: `host` is not a directive
+scripts/probes/forms/in-as.test:3: `in t as bob run` is not a directive
+scripts/probes/forms/in-begin.test:3: `in t begin u` is not a directive
+scripts/probes/forms/in-unbound-call.test:3: `in t call app` is not a directive
 scripts/probes/forms/log-bodiless.test:2: `log` takes a body
+scripts/probes/forms/loose-bodiless.test:2: `loose app` takes a body
+scripts/probes/forms/loose-two-names.test:2: `loose app web` is not a directive
 scripts/probes/forms/register-bodiless.test:3: `register web-1.0 pins 1 edition "2026-10" error` takes a body
 scripts/probes/forms/revoke-suffix.test:3: `revoke refused Invalid` is not a directive
+scripts/probes/forms/rollback-error.test:3: `rollback t error Invalid { detail: "x" }` is not a directive

@@ -1,0 +1,3 @@
+use store
+
+rollback t error Invalid { detail: "x" }

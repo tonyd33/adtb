@@ -1,0 +1,120 @@
+seed 146
+use secrets
+
+grant
+  grant adhoc to w
+
+as w error Denied { detail: "role `w` may not run this text" }
+  from i in secrets select i.nope
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "w")
+----
+1
+
+as w error Denied { detail: "role `w` may not run this text" }
+  from i in secrets select i.salary
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "w")
+----
+2
+
+as w error Denied { detail: "role `w` may not run this text" }
+  from s in secrets select s.salary + "x"
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "w")
+----
+3
+
+as w error Denied { detail: "role `w` may not run this text" }
+  from i in nosuch select i
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "w")
+----
+4
+
+as w error Denied { detail: "role `w` lacks `maintain`" }
+  vacuum nosuch
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "w")
+----
+5
+
+as w error Denied { detail: "role `w` lacks `maintain`" }
+  vacuum secrets
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "w")
+----
+6
+
+as w error Denied { detail: "role `w` lacks `maintain`" }
+  verify nosuch
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "w")
+----
+7
+
+as w error Denied { detail: "role `w` lacks `configure`" }
+  set setting Nope = 1
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "w")
+----
+8
+
+as w error Denied { detail: "role `w` lacks `configure`" }
+  set setting RetryLimit = { retries: "x" }
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "w")
+----
+9
+
+as w error Denied { detail: "role `w` may not run this text" }
+  explain from i in secrets select i.nope
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "w")
+----
+10
+
+as w error Denied { detail: "role `w` may not run this text" }
+  transact
+    delete i in secrets
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "w")
+----
+11
+
+as w error Denied { detail: "role `w` lacks `maintain`" }
+  temp relation stage : Secret key id
+  verify
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "w")
+----
+12
+
+as w error Denied { detail: "role `w` lacks `maintain`" }
+  vacuum secrets
+  vacuum nosuch
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "w")
+----
+13
+
+as w error Denied { detail: "management statements run only for the embedded owner's role" }
+  grant read secrets (id) to w
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "w")
+----
+14

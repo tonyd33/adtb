@@ -1,0 +1,1 @@
+query ctors () -> Set Text = from c in catalog::constructors where c.name == "Customer" select c.name

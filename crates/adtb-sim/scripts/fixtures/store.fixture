@@ -1,0 +1,4 @@
+# The store opened with registration `app`.
+use store-schema
+use store-app
+reopen

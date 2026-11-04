@@ -1,0 +1,19 @@
+seed 340
+use granted
+role spare
+
+as idle register tools-0.1 pins 2 edition "2026-10"
+  import shop
+
+drop role idle error Denied { detail: "the role owns family tools" }
+
+run
+  retire bundle tools-0.1
+
+drop role idle error Denied { detail: "the role owns family tools" }
+
+drop role spare
+
+reopen
+
+drop role idle error Denied { detail: "the role owns family tools" }

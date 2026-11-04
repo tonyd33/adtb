@@ -1,0 +1,5 @@
+seed 9
+use store-schema
+use store-app
+use store-app
+reopen refused RegistrationRefused { bundle: "app", reason: Rejected { reason: Invalid { detail: "`app` is registered twice" } } }

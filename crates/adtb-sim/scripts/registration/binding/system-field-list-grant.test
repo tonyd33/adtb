@@ -1,0 +1,31 @@
+seed 352
+use binding
+
+grant
+  grant read catalog::constructors (name) to ann with grant option
+
+query
+  from g in catalog::grants where g.grantee == "ann" select { privilege: g.privilege, target: g.target, option: g.grant_option }
+----
+{ option: True, privilege: "insert", target: Some { value: "shop::customers" } }
+{ option: True, privilege: "read", target: Some { value: "catalog::constructors (name)" } }
+{ option: True, privilege: "read", target: Some { value: "shop::counters frozen (id, value)" } }
+{ option: True, privilege: "read", target: Some { value: "shop::customers frozen (id, name)" } }
+{ option: True, privilege: "update", target: Some { value: "shop::counters frozen (id, value)" } }
+
+as ann register cat-1.0 pins 2 edition "2026-10" lease 8d use ctors
+
+as ann register sum-1.0 pins 2 edition "2026-10" lease 8d error Denied { detail: "sums reads constructors.Constructor (sum); ann lacks read with grant option" }
+  query sums () -> Set Key catalog::types = from c in catalog::constructors select c.sum
+
+grant error Invalid { detail: "`constructors` has no field `nosuch`" }
+  grant read catalog::constructors (nosuch) to ann
+
+grant
+  grant read catalog::constructors to ann with grant option
+
+as ann register sum-1.0 pins 2 edition "2026-10" lease 8d
+  query sums () -> Set Key catalog::types = from c in catalog::constructors select c.sum
+
+revoke error Invalid { detail: "`revoke read catalog::constructors from ann` leaves live bundles lacking what they use:\nbundle sum-1.0: sums reads constructors.Constructor (sum); ann lacks read with grant option" }
+  revoke read catalog::constructors from ann

@@ -1,0 +1,5 @@
+import shop
+txn load () -> I64 =
+  transact
+    insert loaded from (from r in read_csv("names.csv", Named) select r)
+    return 1

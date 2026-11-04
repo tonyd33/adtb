@@ -1,0 +1,20 @@
+seed 302
+use binding
+register web-1.0 pins 2 edition "2026-10" lease 8d use by-text
+
+grant
+  grant call web::q to web
+
+register web-1.1 pins 2 edition "2026-10" lease 8d use by-text
+register web-2.0 pins 2 edition "2026-10" lease 8d use by-int
+
+as web call web-1.1 1
+  "x"
+----
+
+as web call web-2.0 error Denied { detail: "role `web` may call nothing in bundle web-2.0" }
+
+query
+  from a in catalog::audit.Denied where a.role == "web" select a.origin
+----
+Registered { bundle: "web-2.0", query: 0 }

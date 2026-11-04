@@ -1,0 +1,11 @@
+seed 353
+use binding
+
+grant
+  grant read catalog::functions.Host to ann with grant option
+
+as ann register hosts-1.0 pins 2 edition "2026-10" lease 8d
+  query hosts () -> Set Text = from h in catalog::functions.Host select h.symbol
+
+as ann register every-1.0 pins 2 edition "2026-10" lease 8d error Denied { detail: "all reads functions.Language; ann lacks read with grant option\nall reads functions.Wasm; ann lacks read with grant option\nall reads functions.Aggregate; ann lacks read with grant option\nall reads functions.Language (id); ann lacks read with grant option\nall reads functions.Language (name); ann lacks read with grant option\nall reads functions.Wasm (id); ann lacks read with grant option\nall reads functions.Wasm (name); ann lacks read with grant option\nall reads functions.Aggregate (id); ann lacks read with grant option\nall reads functions.Aggregate (name); ann lacks read with grant option" }
+  query all () -> Set Text = from h in catalog::functions select h.name

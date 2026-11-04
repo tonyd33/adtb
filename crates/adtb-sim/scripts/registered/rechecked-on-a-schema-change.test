@@ -1,0 +1,25 @@
+seed 21
+use store
+
+call app 5 committed
+  "ann"
+  "4242"
+----
+shop::customers.key(1)
+
+loose cards
+  import shop
+  query tags () -> Set Text = from n in notes select n.tag
+migrate refused RegistrationRefused { bundle: "cards", reason: Rejected { reason: Invalid { detail: "query `tags`: Note has no field `tag`" } } }
+  module shop
+  drop field Note.tag
+
+reopen
+
+error Invalid { detail: "Note has no field `tag`" }
+  from n in notes select n.tag
+
+query
+  from c in customers select c.name
+----
+"ann"

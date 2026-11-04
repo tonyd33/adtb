@@ -1,0 +1,9 @@
+seed 332
+use granted
+migrate
+  module shop
+  define fn f (t: Text) -> Text = host "a" version "1.0" deterministic
+  module shop
+  redefine fn f (t: Text) -> Text = host "b" version "1.0" deterministic
+
+as web register shop-1.0 pins 3 edition "2026-10" use customer-names error Untranslatable { query: "shop-1.0::names", detail: "its version holds another code of host or Wasm function `f`" }

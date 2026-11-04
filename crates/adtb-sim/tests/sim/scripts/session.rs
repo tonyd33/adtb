@@ -20,6 +20,7 @@ use adtb_simkit::api::options;
 use super::read::{self, Head, Step};
 use super::role::{self, Handles, OWNER, called};
 use super::shown;
+use super::txn::{self, Txns};
 
 const FILE: &str = "app.adt";
 
@@ -263,7 +264,11 @@ impl Script {
                 (log, refused.clone())
             }
             Head::Reopen { refused } => (self.log.clone(), refused.clone()),
-            Head::QueryMemory(_) | Head::Log | Head::Bundle { .. } | Head::Host(_) => {
+            Head::QueryMemory(_)
+            | Head::Log
+            | Head::Bundle { .. }
+            | Head::Host(_)
+            | Head::Loose(_) => {
                 self.closed(&first);
                 return;
             }
@@ -306,14 +311,19 @@ impl Script {
                 return;
             }
         };
+        let mut txns = Txns::new();
         while let Some(step) = self.steps.get(self.next).cloned() {
             if matches!(step.head, Head::Migrate { .. } | Head::Reopen { .. }) {
                 break;
             }
             self.next += 1;
-            if let Err(d) = self.step(rt, &db, &step) {
+            if let Err(d) = self.step(rt, &db, &mut txns, &step) {
                 self.out.push(d);
             }
+        }
+        for name in txns.into_keys() {
+            let open = format!("transaction `{name}` is open at the next open");
+            self.out.push(Differs::at(&first, open));
         }
         self.handles = Handles::default();
         if let Err(e) = db.close() {
@@ -327,13 +337,15 @@ impl Script {
     fn registrations(&mut self, log: &[String]) -> Vec<Registration> {
         let mut out = Vec::new();
         for step in std::mem::take(&mut self.bundles) {
-            let Head::Bundle {
-                header,
-                refused: want,
-                ..
-            } = &step.head
-            else {
-                unreachable!("only bundle steps are pending")
+            let (header, want) = match &step.head {
+                Head::Bundle {
+                    header, refused, ..
+                } => (header, refused),
+                Head::Loose(name) => {
+                    out.push(Registration::new(name, step.body.clone()));
+                    continue;
+                }
+                _ => unreachable!("only bundle and loose steps are pending"),
             };
             let got = bundle_file(header, &step.body, log)
                 .map(|text| Registration::bundle(text).map_err(|e| refused(&e)));
@@ -350,16 +362,17 @@ impl Script {
         match &step.head {
             Head::QueryMemory(bytes) => self.options.query_memory_bytes = *bytes,
             Head::Log => self.log.extend(read::migrations(&step.body)),
-            Head::Bundle { .. } => self.bundles.push(step.clone()),
+            Head::Bundle { .. } | Head::Loose(_) => self.bundles.push(step.clone()),
             Head::Host(names) => names.iter().for_each(|n| role::host(&mut self.options, n)),
             _ => unreachable!("session runs only these before an open"),
         }
     }
 
-    fn step(
+    fn step<'a>(
         &mut self,
         rt: &SimRuntime,
-        db: &Database<SimRuntime>,
+        db: &'a Database<SimRuntime>,
+        txns: &mut Txns<'a>,
         step: &Step,
     ) -> Result<(), Differs> {
         let conformance = |kind| Directive {
@@ -371,34 +384,43 @@ impl Script {
             Head::Seed(_) | Head::Use(_) | Head::Migrate { .. } | Head::Reopen { .. } => {
                 unreachable!("read takes seeds and uses, and session takes opens")
             }
-            Head::QueryMemory(_) | Head::Log | Head::Bundle { .. } | Head::Host(_) => {
+            Head::QueryMemory(_)
+            | Head::Log
+            | Head::Bundle { .. }
+            | Head::Host(_)
+            | Head::Loose(_) => {
                 self.closed(step);
                 Ok(())
+            }
+            Head::Begin { .. } | Head::Commit { .. } | Head::Rollback(_) => {
+                txn::ended(db, txns, step)
             }
             Head::Advance(d) => {
                 sleep(rt, *d);
                 Ok(())
             }
-            Head::Call { rowsort, error, .. } => match called(rt, db, &mut self.handles, step)? {
-                Answer::Rows(form, rows) if error.is_none() => {
-                    call_rows(step, &form, rows, *rowsort)
+            Head::Call { rowsort, error, .. } => {
+                match called(rt, db, &mut self.handles, txns, step)? {
+                    Answer::Rows(form, rows) if error.is_none() => {
+                        call_rows(step, &form, rows, *rowsort)
+                    }
+                    Answer::Rows(form, rows) => {
+                        let shown = rows
+                            .iter()
+                            .map(|v| print(v, &form).unwrap_or_else(|e| e.message));
+                        compare(step, error.as_deref(), Ok(shown.collect()))
+                    }
+                    Answer::Bound => compare(step, error.as_deref(), Ok(Vec::new())),
+                    Answer::Refused(got) => compare(step, error.as_deref(), Err(got)),
+                    Answer::Failed(got) => {
+                        let want = error
+                            .as_deref()
+                            .map_or_else(|| Ok(step.rows.clone()), |w| Err(rejected(w)));
+                        Err(Differs::at(step, "admitted, and fails at completion")
+                            .values(listed(want), got))
+                    }
                 }
-                Answer::Rows(form, rows) => {
-                    let shown = rows
-                        .iter()
-                        .map(|v| print(v, &form).unwrap_or_else(|e| e.message));
-                    compare(step, error.as_deref(), Ok(shown.collect()))
-                }
-                Answer::Bound => compare(step, error.as_deref(), Ok(Vec::new())),
-                Answer::Refused(got) => compare(step, error.as_deref(), Err(got)),
-                Answer::Failed(got) => {
-                    let want = error
-                        .as_deref()
-                        .map_or_else(|| Ok(step.rows.clone()), |w| Err(rejected(w)));
-                    Err(Differs::at(step, "admitted, and fails at completion")
-                        .values(listed(want), got))
-                }
-            },
+            }
             Head::Grant { revoke, error } => role::grant(db, step, *revoke, error.as_deref()),
             Head::Register { header, error, .. } => {
                 let text =
@@ -414,8 +436,24 @@ impl Script {
                     got.map(|_| Vec::new()).map_err(|e| refused(&e)),
                 )
             }
-            Head::Run | Head::Query { .. } | Head::Error(_) if step.role.is_some() => {
-                role::sent_step(rt, db, step)
+            Head::Run | Head::Query { .. } | Head::Error(_) | Head::Failed(_)
+                if step.role.is_some() =>
+            {
+                role::sent_step(step, role::sent(rt, db, step)?)
+            }
+            Head::Run | Head::Query { .. } | Head::Error(_)
+                if step.txn.is_some() || step.assert.is_some() =>
+            {
+                role::sent_step(step, txn::texted(db, txns, step)?)
+            }
+            Head::Failed(_) => unreachable!("read gives `failed` an `as` prefix"),
+            Head::DropRole { name, error } => {
+                let got = db.role_authority().drop_role(name);
+                compare(
+                    step,
+                    error.as_deref(),
+                    got.map(|()| Vec::new()).map_err(|e| refused(&e)),
+                )
             }
             Head::Role(name) => db
                 .role_authority()

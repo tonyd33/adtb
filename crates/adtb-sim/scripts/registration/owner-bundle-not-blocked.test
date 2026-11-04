@@ -1,0 +1,11 @@
+seed 334
+use granted
+register shop-1.0 pins 2 edition "2026-10" use customer-names
+
+migrate
+  module shop
+  revoke read customers from web
+  revoke read customers from ops
+
+call shop-1.0 1
+----

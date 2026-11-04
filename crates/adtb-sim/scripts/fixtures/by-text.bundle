@@ -1,0 +1,2 @@
+import shop
+query q (n: Text) -> Set Text = from c in customers where c.name == n select c.name

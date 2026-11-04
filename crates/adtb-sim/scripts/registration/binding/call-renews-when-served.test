@@ -1,0 +1,41 @@
+seed 306
+use binding
+register web-1.0 pins 2 edition "2026-10" lease 8d use binding-app
+
+grant
+  grant call web-1.0::q to web
+
+as web call web-1.0
+advance 2d
+
+query
+  from b in catalog::bundles select b.renewed
+----
+2026-01-01T00:00:00.560069Z
+
+as web call web-1.0 3 error Denied { detail: "role `web` may not make this call" }
+
+query
+  from b in catalog::bundles select b.renewed
+----
+2026-01-01T00:00:00.560069Z
+
+as web call web-1.0 2 error Invalid { detail: "`q` takes 0 arguments, not 1" }
+  1
+
+query
+  from b in catalog::bundles select b.renewed
+----
+2026-01-01T00:00:00.560069Z
+
+query
+  from a in catalog::audit.Call where a.role == "web" select { origin: a.origin, outcome: a.outcome }
+----
+
+as web call web-1.0 2
+----
+
+query
+  from b in catalog::bundles select b.renewed
+----
+2026-01-03T00:00:00.563540Z

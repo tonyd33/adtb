@@ -1,0 +1,13 @@
+seed 390
+use granted
+
+as idle register mon-1.0 pins 2 edition "2026-10" error Denied { detail: "files reads format.Format; idle lacks read with grant option\nfiles reads format.Format (id); idle lacks read with grant option\nfiles reads format.Format (file); idle lacks read with grant option" }
+  import shop
+  query files () -> Set Text = from f in sys::format select f.file
+
+grant
+  grant monitor to idle
+
+as idle register mon-1.0 pins 2 edition "2026-10"
+  import shop
+  query files () -> Set Text = from f in sys::format select f.file

@@ -1,0 +1,19 @@
+seed 320
+use binding
+as ann register web-1.0 pins 2 edition "2026-10" lease 8d use by-text
+
+as ann grant
+  grant call web::q to bob with grant option
+
+as ann register web-2.0 pins 2 edition "2026-10" lease 8d use by-int
+as ann register web-3.0 pins 2 edition "2026-10" lease 8d use by-text
+
+grant
+  grant call web-2.0 to bob with grant option
+  grant call web-3.0 to bob with grant option
+
+as bob grant
+  grant call web-2.0 to ann with grant option
+
+as bob grant error Invalid { detail: "`call` on `web-3.0` with grant option from `bob` to `ann` would close a cycle of grant options" }
+  grant call web-3.0 to ann with grant option

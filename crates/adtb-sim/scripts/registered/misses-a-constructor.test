@@ -1,0 +1,8 @@
+seed 7
+use store-schema
+loose partial
+  import shop
+  query cards () -> Set Text =
+    from p in payments select match p
+      | Card c -> c.last4
+reopen refused RegistrationRefused { bundle: "partial", reason: Rejected { reason: Invalid { detail: "query `cards`: match does not cover `Invoice _`" } } }

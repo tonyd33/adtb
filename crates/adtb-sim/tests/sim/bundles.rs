@@ -345,58 +345,6 @@ fn admission_principal_ordinal_and_argument_refusals_leave_renewal_unchanged() {
     });
 }
 
-#[test]
-fn admission_interactive_refusals_leave_renewal_and_transaction_usable() {
-    once(62, |rt| {
-        let db = opened(
-            &rt,
-            &[V1],
-            vec![bundle("web-1.0", &[V1], " lease 1d", NAMES)],
-        );
-        let web = db.registered("web-1.0").expect("web binds");
-        let renewed = || query(&db, "from b in catalog::bundles select b.renewed");
-        let before = renewed();
-        sleep(&rt, 4 * HOUR);
-        let mut t = db
-            .begin(&adtb::TxnOptions {
-                read_only: true,
-                ..adtb::TxnOptions::default()
-            })
-            .expect("begin read-only");
-        for (ordinal, args) in [
-            (1, vec![Value::Int(1)]),
-            (2, vec![Value::Int(1)]),
-            (2, vec![Value::text("ann")]),
-        ] {
-            let got = t.call(&web, ordinal, &args, &adtb::TxnCallOptions::default());
-            assert!(
-                matches!(
-                    got,
-                    Err(Error::Rejected {
-                        reason: RejectReason::Invalid { .. }
-                    })
-                ),
-                "{got:?}"
-            );
-            assert_eq!(
-                before,
-                renewed(),
-                "a refused interactive call writes no renewal"
-            );
-        }
-        assert!(query(&db, "from u in auth::users select u.name").is_empty());
-        let got = t
-            .call(&web, 1, &[], &adtb::TxnCallOptions::default())
-            .expect("a refused call leaves the transaction usable");
-        let adtb::InTxn::Rows(rows) = got else {
-            panic!("names returns rows")
-        };
-        assert!(printed(rows).is_empty());
-        assert_ne!(before, renewed(), "a valid interactive call renews");
-        t.commit(None).expect("the transaction commits");
-    });
-}
-
 fn admission_options_refusal(opts: &CallOptions, expected: &RejectReason) {
     once(63, |rt| {
         let db = opened(
@@ -1929,16 +1877,6 @@ fn coded_open(
     Database::open_in(rt.clone(), "app.adt", &log(migrations), &options)
 }
 
-/// Returns a simulation whose database at the pin holds one row with `n` "old".
-fn coded_sim(seed: u64) -> Sim {
-    let mut sim = Sim::new(seed, Config::default());
-    run(&mut sim, |rt| {
-        let db = coded_open(&rt, &CODED_PIN, vec![]).expect("the pin opens");
-        results(&db, "insert hs.R { n: \"old\" }");
-    });
-    sim
-}
-
 fn coded_put(name: &str) -> Vec<Registration> {
     vec![bundle(name, &CODED_PIN, "", CODED_PUT)]
 }
@@ -1951,6 +1889,7 @@ fn stale_fill(name: &str, operator: &str, f: &str) -> RejectReason {
 }
 
 const BARE: &str = "module auth\nadd module auth\n";
+const BLAMELESS: &str = "module auth\nadd type T = A | B\ndrop type T\nredefine fn f (t: Text) -> Text = host \"b\" version \"1.0\" deterministic\n";
 const BARE_PIN: [&str; 2] = [BARE, CODED];
 const CODED_READS: &str = "import auth\nquery q () -> Set Text = from h in hs select h.n\n";
 const TO_WASM: &str = "module auth\nredefine fn f (t: Text) -> Text = wasm \"m\" export \"e\"\n";
@@ -1960,8 +1899,6 @@ const DEFINE_WASM: &str = "module auth\ndefine fn w (t: Text) -> Text = wasm \"m
 const REVERT_3: &str = "module auth\nrevert 0003\n";
 const INSTALL: &str = "module auth\ninstall geo \"1.2\" from \"geo.adtx\"\n";
 const UNINSTALL: &str = "module auth\nuninstall geo\n";
-const BLAMELESS: &str = "module auth\nadd type T = A | B\ndrop type T\nredefine fn f (t: Text) -> Text = host \"b\" version \"1.0\" deterministic\n";
-
 /// What the last open of a case gives bundle web-1.0, and what its state is by then.
 #[derive(Clone, Copy, Debug)]
 enum Holder {
@@ -2012,14 +1949,6 @@ const HOLDERS: [Holder; 6] = [
     Holder::RetiredPresented,
     Holder::ExpiredOmitted,
 ];
-
-/// Returns the `n` and `x` of each row of `hs`.
-fn n_and_x(db: &Database<SimRuntime>) -> BTreeSet<String> {
-    set(unquoted(query(
-        db,
-        r#"from h in hs select h.n ++ " " ++ h.x"#,
-    )))
-}
 
 fn unquoted(texts: Vec<String>) -> Vec<String> {
     texts
@@ -2439,78 +2368,6 @@ fn wasm_and_extensions_change_no_pinned_code_because_the_engine_refuses_them() {
 }
 
 #[test]
-fn a_host_redefine_under_a_live_pin_is_refused_when_its_migration_does_not_resolve() {
-    let mut sim = holding(1151, &BARE_PIN, Holder::LivePresented);
-    run(&mut sim, |rt| {
-        let (_, detail) = refused_migration(
-            coded_open(
-                &rt,
-                &[BARE, CODED, BLAMELESS],
-                vec![bundle("web-1.0", &BARE_PIN, " lease 1d", CODED_READS)],
-            ),
-            3,
-        );
-        assert_eq!(
-            "bundle web-1.0 pins 2: its version holds another code of host or Wasm function `f`",
-            detail
-        );
-    });
-}
-
-#[test]
-fn a_live_pin_does_not_hold_back_code_it_does_not_pin() {
-    let define_g =
-        "module auth\ndefine fn g (t: Text) -> Text = host \"a\" version \"1.0\" deterministic\n";
-    let move_g =
-        "module auth\nredefine fn g (t: Text) -> Text = host \"b\" version \"1.0\" deterministic\n";
-    let define_l = "module auth\ndefine fn l (t: Text) -> Text = t\n";
-    let move_l = "module auth\nredefine fn l (t: Text) -> Text = t ++ t\n";
-    let migrations = [BARE, CODED, TO_A, define_g, move_g, define_l, move_l];
-    let mut sim = holding(1152, &BARE_PIN, Holder::LivePresented);
-    run(&mut sim, |rt| {
-        let regs = vec![bundle("web-1.0", &BARE_PIN, " lease 1d", CODED_READS)];
-        let db = coded_open(&rt, &migrations, regs).unwrap_or_else(|e| panic!("{e:?}"));
-        assert_eq!(vec!["web-1.0 active"], states(&db));
-        assert_eq!(vec!["a 1.0"], stored_host_f(&db));
-        assert_eq!(
-            vec!["b".to_string()],
-            unquoted(query(
-                &db,
-                r#"from h in catalog::functions.Host where h.name == "g" select h.symbol"#,
-            ))
-        );
-        assert_eq!(
-            vec!["t ++ t".to_string()],
-            unquoted(query(
-                &db,
-                r#"from h in catalog::functions.Language where h.name == "l" select h.body"#,
-            ))
-        );
-    });
-}
-
-#[test]
-fn a_bundle_refused_at_other_code_is_admitted_after_a_redefine_back_and_its_fill_stores_that_code()
-{
-    let mut sim = coded_sim(997);
-    run(&mut sim, |rt| {
-        assert_eq!(
-            other_code("web-1.0::put"),
-            refusal(
-                coded_open(&rt, &[V1, CODED, TO_B], coded_put("web-1.0")),
-                "web-1.0"
-            ),
-        );
-    });
-    run(&mut sim, |rt| {
-        let db = coded_open(&rt, &[V1, CODED, TO_B, TO_A, FILL_F], coded_put("web-1.0"))
-            .expect("every code matches the pin");
-        call(&db, "web-1.0", 1, &[]);
-        assert_eq!(set(["old a".to_string(), "s a".to_string()]), n_and_x(&db));
-    });
-}
-
-#[test]
 fn a_function_dropped_and_added_again_is_a_fresh_function_a_pinned_fill_refuses() {
     let again = "module auth\ndrop fn f\ndefine fn f (t: Text) -> Text = host \"a\" version \"1.0\" deterministic\n";
     for (seed, migrations, operator) in [
@@ -2534,22 +2391,20 @@ fn a_function_dropped_and_added_again_is_a_fresh_function_a_pinned_fill_refuses(
 }
 
 #[test]
-fn a_pinned_write_takes_a_default_with_the_current_code_when_it_is_the_pins() {
-    let added = "module auth\nadd field H.R.x: Text fill \"z\"\nadd default hs.R.x = f(\"s\")\n";
-    let mut sim = coded_sim(1000);
+fn a_host_redefine_under_a_live_pin_is_refused_when_its_migration_does_not_resolve() {
+    let mut sim = holding(1151, &BARE_PIN, Holder::LivePresented);
     run(&mut sim, |rt| {
-        let db = coded_open(&rt, &[V1, CODED, TO_B, added, TO_A], coded_put("web-1.0"))
-            .expect("the default's code at the pin is current");
-        call(&db, "web-1.0", 1, &[]);
-        assert_eq!(set(["old z".to_string(), "s a".to_string()]), n_and_x(&db));
-    });
-    once(1001, |rt| {
-        assert_eq!(
-            other_code("web-1.0::put"),
-            refusal(
-                coded_open(&rt, &[V1, CODED, TO_B, added], coded_put("web-1.0")),
-                "web-1.0"
+        let (_, detail) = refused_migration(
+            coded_open(
+                &rt,
+                &[BARE, CODED, BLAMELESS],
+                vec![bundle("web-1.0", &BARE_PIN, " lease 1d", CODED_READS)],
             ),
+            3,
+        );
+        assert_eq!(
+            "bundle web-1.0 pins 2: its version holds another code of host or Wasm function `f`",
+            detail
         );
     });
 }

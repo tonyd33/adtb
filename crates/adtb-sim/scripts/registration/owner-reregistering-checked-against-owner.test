@@ -1,0 +1,20 @@
+seed 350
+use deployed-leased
+advance 26h
+
+migrate
+  module shop
+  revoke read customers from web
+  revoke read customers from ops
+
+register shop-1.0 pins 2 edition "2026-10" lease 1d use customer-names error Denied { detail: "names reads customers.Customer; web lacks read with grant option\nnames reads customers.Customer (id); web lacks read with grant option\nnames reads customers.Customer (name); web lacks read with grant option" }
+
+query
+  from b in catalog::bundles select { name: b.name, owner: b.owner }
+----
+{ name: "admin-1.0", owner: "ops" }
+{ name: "shop-1.0", owner: "web" }
+
+call shop-1.0 error BundleExpired { bundle: "shop-1.0", query: "" }
+
+reopen

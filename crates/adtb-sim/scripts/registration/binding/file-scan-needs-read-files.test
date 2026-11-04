@@ -1,0 +1,14 @@
+seed 340
+use binding-files
+
+as ann register load-1.0 pins 3 edition "2026-10" lease 8d use scan error Denied { detail: "load reads files; ann lacks read_files" }
+
+grant
+  grant read_files to bob
+
+as bob register load-1.0 pins 3 edition "2026-10" lease 8d use scan error Denied { detail: "load inserts loaded.Named; bob lacks insert with grant option" }
+
+grant
+  grant read_files to ann
+
+as ann register load-1.0 pins 3 edition "2026-10" lease 8d use scan

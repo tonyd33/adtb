@@ -1,0 +1,41 @@
+seed 147
+use secrets
+
+grant
+  grant adhoc to w
+
+as w error Denied { detail: "role `w` lacks `maintain`" }
+  vacuum secrets
+
+as w error Denied { detail: "role `w` lacks `maintain`" }
+  vacuum nosuch
+
+as w error Denied { detail: "role `w` lacks `maintain`" }
+  verify secrets
+
+as w error Denied { detail: "role `w` lacks `maintain`" }
+  verify nosuch
+
+as w error Denied { detail: "role `w` lacks `maintain`" }
+  reindex secrets
+
+as w error Denied { detail: "role `w` lacks `maintain`" }
+  reindex nosuch
+
+as w error Denied { detail: "role `w` may not run this text" }
+  from i in secrets select i.salary
+
+as w error Denied { detail: "role `w` may not run this text" }
+  from i in secrets select i.nope
+
+as w error Denied { detail: "role `w` may not run this text" }
+  from i in secrets select i
+
+as w error Denied { detail: "role `w` may not run this text" }
+  from i in nosuch select i
+
+as w error Denied { detail: "role `w` lacks `configure`" }
+  set setting RetryLimit = { retries: 1 }
+
+as w error Denied { detail: "role `w` lacks `configure`" }
+  set setting Nope = 1

@@ -1,0 +1,18 @@
+seed 167
+use secrets
+role ops
+
+grant
+  grant adhoc to ops
+  grant maintain to ops
+
+as ops error Denied { detail: "role `ops` lacks `configure`" }
+  set setting RetryLimit = { retries: 1 + 2 }
+
+as ops error Denied { detail: "role `ops` lacks `configure`" }
+  set setting RetryLimit = { retries: 3 }
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "ops")
+----
+2

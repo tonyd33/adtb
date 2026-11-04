@@ -1,0 +1,23 @@
+# Customers and counters with functions `names` and `whose`; roles ann, web, fns and bob; ann
+# holds reads and writes with grant option and fns the call of `names`, the log's second
+# migration.
+migrate
+  module shop
+  add module shop
+  add type Customer = { id: Key customers, name: Text }
+  add relation customers : Customer key id generate sequence
+  add type Counter = { id: Key counters, value: I64 }
+  add relation counters : Counter key id generate sequence
+  define fn names () -> Set Text = from c in customers select c.name
+  define fn whose () -> Text = match caller
+    | EndUser u -> u.name
+    | Service s -> s.name
+    | Anonymous -> "nobody"
+role ann
+role web
+role fns
+role bob
+migrate
+  module shop
+  grant read customers, insert customers, read counters, update counters to ann with grant option
+  grant call fn names to fns

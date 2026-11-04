@@ -1,0 +1,17 @@
+seed 348
+use binding-files
+
+grant
+  grant read catalog::constructors to ann with grant option
+  grant read catalog::relations to ann with grant option
+  grant read_files to ann
+  grant read catalog::constructors to bob with grant option
+  grant monitor to ann
+
+as ann register cat-1.0 pins 3 edition "2026-10" lease 8d use ctors
+
+revoke
+  revoke read catalog::relations from ann
+  revoke read_files from ann
+  revoke monitor from ann
+  revoke read catalog::constructors from bob

@@ -1,0 +1,15 @@
+seed 323
+use binding
+register web-1.0 pins 2 edition "2026-10" lease 8d use one-q
+
+grant
+  grant call web-1.0 to web
+
+as web call web-1.0
+advance 9d
+
+as web call web-1.0 error BundleExpired { bundle: "web-1.0", query: "" }
+
+as bob call web-1.0 error Denied { detail: "role `bob` may call nothing in bundle web-1.0" }
+
+as web call web-1.0 1 error BundleExpired { bundle: "web-1.0", query: "q" }

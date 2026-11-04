@@ -1,0 +1,14 @@
+seed 303
+use binding
+register web-1.0 pins 2 edition "2026-10" lease 8d use by-text
+
+grant
+  grant call web::q to web
+
+as web call web-1.0
+
+revoke
+  revoke call web::q from web
+
+as web call web-1.0 1 error Denied { detail: "role `web` may not make this call" }
+  "x"

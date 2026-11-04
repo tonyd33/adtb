@@ -1,0 +1,39 @@
+seed 320
+use granted
+as web register shop-1.0 pins 2 edition "2026-10" use customer-names
+as web register shop-1.1 pins 2 edition "2026-10" use customer-names
+as web register shop-1.2 pins 2 edition "2026-10" use customer-names
+
+grant
+  grant adhoc to web
+  grant adhoc to ops
+
+as ops error Denied { detail: "role `ops` does not own bundle shop-1.0" }
+  retire bundle shop-1.0
+
+query
+  count(a for a in catalog::audit.Denied)
+----
+1
+
+as ops error Denied { detail: "role `ops` does not own bundle shop-1.0" }
+  supersede bundle shop-1.0 by shop-1.1
+
+query
+  count(a for a in catalog::audit.Denied)
+----
+2
+
+as web run
+  supersede bundle shop-1.0 by shop-1.1
+
+as web run
+  retire bundle shop-1.1
+
+as owner run
+  retire bundle shop-1.2
+
+query
+  count(a for a in catalog::audit.Denied)
+----
+2

@@ -1,0 +1,43 @@
+seed 312
+use binding
+register web-1.0 pins 2 edition "2026-10" lease 8d use one-q
+register web-2.0 pins 2 edition "2026-10" lease 8d use one-q
+register web-3.0 pins 2 edition "2026-10" lease 8d use one-q
+
+grant
+  grant call web-1.0 to web
+  grant call web-2.0 to web
+  grant call web-3.0 to web
+
+as web call web-1.0
+
+as web call web-2.0
+
+run
+  retire bundle web-1.0
+
+run
+  supersede bundle web-2.0 by web-3.0
+
+as web call web-1.0 error Retired { bundle: "web-1.0" }
+
+as web call web-2.0 error BundleSuperseded { bundle: "web-2.0" }
+
+as web call web-1.0 1 error Retired { bundle: "web-1.0" }
+
+as web call web-2.0 1 error BundleSuperseded { bundle: "web-2.0" }
+
+query
+  from a in catalog::audit.Call where a.role == "web" select { origin: a.origin, outcome: a.outcome }
+----
+{ origin: Registered { bundle: "web-1.0", query: 1 }, outcome: Failed { error: Rejected { reason: Retired { bundle: "web-1.0" } } } }
+{ origin: Registered { bundle: "web-2.0", query: 1 }, outcome: Failed { error: Rejected { reason: BundleSuperseded { bundle: "web-2.0" } } } }
+
+query
+  from a in catalog::audit.Denied where a.role == "web" select a.origin
+----
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "web")
+----
+0

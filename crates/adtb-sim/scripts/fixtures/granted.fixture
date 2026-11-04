@@ -1,0 +1,8 @@
+# The granted roles, then a read of customers to web and ops with grant option and to app
+# without, the log's second migration.
+use granted-roles
+migrate
+  module shop
+  grant read customers to web with grant option
+  grant read customers to ops with grant option
+  grant read customers to app

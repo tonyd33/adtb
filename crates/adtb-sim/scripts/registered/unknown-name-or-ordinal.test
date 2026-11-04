@@ -1,0 +1,6 @@
+seed 4
+use store
+
+call web error UnknownBundle { bundle: "web" }
+
+call app 99 error UnknownQuery

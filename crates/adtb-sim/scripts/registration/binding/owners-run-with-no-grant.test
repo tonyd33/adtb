@@ -1,0 +1,17 @@
+seed 307
+use binding
+as ann register web-1.0 pins 2 edition "2026-10" lease 8d use one-q
+register web-2.0 pins 2 edition "2026-10" lease 8d use one-q
+
+as ann call web-1.0 1
+----
+
+as ann call web-2.0 error Denied { detail: "role `ann` may call nothing in bundle web-2.0" }
+
+as owner call web-1.0 1
+----
+
+as owner call web-2.0 1
+----
+
+as owner call web-9.9 error UnknownBundle { bundle: "web-9.9" }

@@ -1,0 +1,16 @@
+seed 373
+use binding
+as ann register one-1.0 pins 2 edition "2026-10" lease 8d use one-q
+
+as ann grant
+  grant call one-1.0 to web
+
+advance 7d
+
+run
+  set setting LeaseGrace = { grace: 30d }
+
+advance 2d
+
+as web call one-1.0 1
+----

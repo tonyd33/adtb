@@ -1,0 +1,4 @@
+use store
+
+assert Anonymous grant
+  grant adhoc to bob

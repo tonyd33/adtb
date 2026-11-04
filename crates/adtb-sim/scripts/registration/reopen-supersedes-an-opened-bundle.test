@@ -1,0 +1,13 @@
+seed 306
+use granted
+bundle legacy-1.0 pins 2 edition "2026-10" use customer-names
+reopen
+
+as web register shop-1.0 pins 2 edition "2026-10" use customer-names
+
+reopen
+
+call legacy-1.0 error BundleSuperseded { bundle: "legacy-1.0" }
+
+call shop-1.0 1
+----

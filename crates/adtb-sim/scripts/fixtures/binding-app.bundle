@@ -1,0 +1,20 @@
+import shop
+import fn names
+query q () -> Set Text = from c in customers select c.name
+query other () -> Set Text = from c in customers select c.name
+query me () -> Text = whose()
+query named (n: Text) -> Set Text = from c in customers
+  where c.name == n and match caller
+    | EndUser u -> c.name == u.name
+    | Service s -> s.name == c.name
+    | Anonymous -> false
+  select c.name
+txn add (n: Text) -> Key customers =
+  transact
+    let c = insert customers { name: n }
+    return key c
+txn bump () -> Key customers =
+  transact
+    update c in counters set { c with value: c.value + 1 }
+    let c = insert customers { name: "bumped" }
+    return key c

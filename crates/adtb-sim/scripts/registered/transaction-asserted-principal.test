@@ -1,0 +1,15 @@
+seed 17
+use store
+
+assert EndUser { name: "ann" } begin t
+
+in t query
+  caller
+----
+EndUser { name: "ann" }
+
+in t call app 6
+----
+EndUser { name: "ann" }
+
+rollback t

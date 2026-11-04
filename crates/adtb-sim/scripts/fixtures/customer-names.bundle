@@ -1,0 +1,2 @@
+import shop
+query names () -> Set Text = from c in customers select c.name

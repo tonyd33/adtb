@@ -1,0 +1,24 @@
+seed 341
+use binding
+
+as ann register cat-1.0 pins 2 edition "2026-10" lease 8d use ctors error Denied { detail: "ctors reads constructors.Constructor; ann lacks read with grant option\nctors reads constructors.Constructor (id); ann lacks read with grant option\nctors reads constructors.Constructor (name); ann lacks read with grant option" }
+
+grant
+  grant read catalog::constructors to ann
+
+as ann register cat-1.0 pins 2 edition "2026-10" lease 8d use ctors error Denied { detail: "ctors reads constructors.Constructor; ann lacks read with grant option\nctors reads constructors.Constructor (id); ann lacks read with grant option\nctors reads constructors.Constructor (name); ann lacks read with grant option" }
+
+revoke
+  revoke read catalog::constructors from ann
+
+grant
+  grant read catalog::constructors to ann with grant option
+
+as ann register cat-1.0 pins 2 edition "2026-10" lease 8d use ctors
+
+as ann grant
+  grant call cat-1.0 to web
+
+as web call cat-1.0 1
+----
+"Customer"

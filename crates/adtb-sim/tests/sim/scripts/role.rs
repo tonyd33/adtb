@@ -10,13 +10,14 @@ use adtb::key::Scalar;
 use adtb::runtime::{ThreadId, Threads};
 use adtb::{
     CallOptions, Called, Completion, Database, Determinism, DynRows, Error, Observation,
-    OpenOptions, Pins, Registered, RoleBinding, Task, TaskOptions, Value,
+    OpenOptions, Pins, Registered, RoleBinding, Task, TaskOptions, TxnCallOptions, Value,
 };
 use adtb_lang::textual::Form;
 use adtb_sim::SimRuntime;
 
 use super::read::{Head, Step};
 use super::session::{Answer, Differs, arguments, call_rows, compare, refused, rejected};
+use super::txn::{Txns, asserted, named, pending};
 
 /// The schema owner's role, which a `grant`, `revoke` or `register` step with no `as` prefix
 /// acts as.
@@ -39,6 +40,7 @@ pub(super) fn called(
     rt: &SimRuntime,
     db: &Database<SimRuntime>,
     handles: &mut Handles,
+    txns: &mut Txns<'_>,
     step: &Step,
 ) -> Result<Answer, Differs> {
     let Head::Call {
@@ -80,15 +82,18 @@ pub(super) fn called(
             Err(e) => return Ok(Answer::Refused(refused(&e))),
         },
     };
-    let got = match handle {
-        Handle::Owner(reg) => {
-            reg.call(ordinal, &args, &CallOptions::default())
-                .and_then(|c| match c {
-                    Called::Rows(rows) => collected(rows).map(|r| (false, vec![r])),
-                    Called::Committed(c) => collected(c.value).map(|r| (true, vec![r])),
-                })
-        }
-        Handle::Role(binding) => match binding.submit(ordinal, args, TaskOptions::default()) {
+    let opts = asserting(db, step)?;
+    let got = match (handle, named(txns, step)?) {
+        (Handle::Owner(reg), Some(t)) => t
+            .call(reg, ordinal, &args, &TxnCallOptions::default())
+            .and_then(pending)
+            .map(|(committed, r)| (committed, vec![r])),
+        (Handle::Role(_), Some(_)) => unreachable!("a role calls in no transaction"),
+        (Handle::Owner(reg), None) => reg.call(ordinal, &args, &opts.call).and_then(|c| match c {
+            Called::Rows(rows) => collected(rows).map(|r| (false, vec![r])),
+            Called::Committed(c) => collected(c.value).map(|r| (true, vec![r])),
+        }),
+        (Handle::Role(binding), None) => match binding.submit(ordinal, args, opts) {
             Err(e) => Err(e),
             Ok(task) => match drain(rt, &task) {
                 Err(e) => return Ok(Answer::Failed(refused(&e))),
@@ -108,7 +113,7 @@ pub(super) fn called(
 }
 
 /// Returns the form and elements of `rows`.
-fn collected(rows: DynRows) -> Result<(Form, Vec<Value>), Error> {
+pub(super) fn collected(rows: DynRows) -> Result<(Form, Vec<Value>), Error> {
     let form = rows.form().clone();
     Ok((form, rows.collect::<Result<_, _>>()?))
 }
@@ -124,8 +129,18 @@ impl Wake for Unpark {
     }
 }
 
+fn asserting(db: &Database<SimRuntime>, step: &Step) -> Result<TaskOptions, Differs> {
+    Ok(TaskOptions {
+        call: CallOptions {
+            assert: asserted(db, step)?,
+            ..CallOptions::default()
+        },
+        ..TaskOptions::default()
+    })
+}
+
 /// The form and elements of each result of a task, in order.
-type Results = Vec<(Form, Vec<Value>)>;
+pub(super) type Results = Vec<(Form, Vec<Value>)>;
 
 /// Returns each result of `task` and how it completed, or its failure.
 fn drain(rt: &SimRuntime, task: &Task<SimRuntime>) -> Result<(Results, Completion), Error> {
@@ -151,9 +166,9 @@ fn drain(rt: &SimRuntime, task: &Task<SimRuntime>) -> Result<(Results, Completio
     }
 }
 
-/// How ad hoc text sent as a task ended.
-enum Sent {
-    /// Refused at the submit, the session's included.
+/// How ad hoc text sent as one call ended.
+pub(super) enum Sent {
+    /// Refused at the submit, the session's included, or by the call in process.
     Refused(Error),
     /// Admitted, and failed when it completed.
     Failed(Error),
@@ -161,18 +176,24 @@ enum Sent {
 }
 
 /// Returns how `text` sent as one ad hoc call of a session of `role` ended.
-fn sent(rt: &SimRuntime, db: &Database<SimRuntime>, role: &str, text: &str) -> Sent {
+pub(super) fn sent(
+    rt: &SimRuntime,
+    db: &Database<SimRuntime>,
+    step: &Step,
+) -> Result<Sent, Differs> {
+    let role = step.role.as_deref().expect("a step sent as a role");
+    let opts = asserting(db, step)?;
     let submitted = db
         .role_authority()
         .session(role)
-        .and_then(|s| s.submit_text(text, &[], TaskOptions::default()));
-    match submitted {
+        .and_then(|s| s.submit_text(&step.body, &[], opts));
+    Ok(match submitted {
         Err(e) => Sent::Refused(e),
         Ok(task) => match drain(rt, &task) {
             Err(e) => Sent::Failed(e),
             Ok((results, _)) => Sent::Done(results),
         },
-    }
+    })
 }
 
 /// Supply host function `name`, version `1.0` and deterministic, answering its own name as text
@@ -221,14 +242,8 @@ pub(super) fn grant(
     compare(step, want, Ok(Vec::new()))
 }
 
-/// Run a `run`, `query` or `error` step as one ad hoc call of a session of its role.
-pub(super) fn sent_step(
-    rt: &SimRuntime,
-    db: &Database<SimRuntime>,
-    step: &Step,
-) -> Result<(), Differs> {
-    let role = step.role.as_deref().expect("a step sent as a role");
-    let got = sent(rt, db, role, &step.body);
+/// Compare how the body of a `run`, `query`, `error` or `failed` step sent as one call ended.
+pub(super) fn sent_step(step: &Step, got: Sent) -> Result<(), Differs> {
     match (&step.head, got) {
         (Head::Run, Sent::Done(_)) => Ok(()),
         (Head::Run | Head::Query { .. }, Sent::Refused(e)) => {
@@ -256,6 +271,19 @@ pub(super) fn sent_step(
                 Sent::Done(_) => Err(Differs::at(step, "succeeds").values(want, "success".into())),
             }
         }
-        _ => unreachable!("only run, query and error steps are sent"),
+        (Head::Failed(reason), got) => {
+            let want = rejected(reason);
+            match got {
+                Sent::Failed(e) if refused(&e) == want => Ok(()),
+                Sent::Failed(e) => {
+                    Err(Differs::at(step, "fails otherwise").values(want, refused(&e)))
+                }
+                Sent::Refused(e) => {
+                    Err(Differs::at(step, "refused at the submit").values(want, refused(&e)))
+                }
+                Sent::Done(_) => Err(Differs::at(step, "succeeds").values(want, "success".into())),
+            }
+        }
+        _ => unreachable!("only run, query, error and failed steps are sent"),
     }
 }

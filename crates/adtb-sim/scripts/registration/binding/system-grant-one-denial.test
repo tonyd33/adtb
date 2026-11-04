@@ -1,0 +1,43 @@
+seed 342
+use binding
+
+as bob grant error Denied { detail: "role `bob` lacks `schema`" }
+  grant read catalog::constructors to ann
+
+as bob grant error Denied { detail: "role `bob` lacks `schema`" }
+  grant read catalog::nosuch to ann
+
+as bob grant error Denied { detail: "role `bob` lacks `schema`" }
+  grant read nosuch.Nope (x) to ann
+
+as bob grant error Denied { detail: "role `bob` lacks `schema`" }
+  grant read catalog::nosuch to nobody
+
+query
+  from g in catalog::grants where g.grantee == "ann" select { privilege: g.privilege, target: g.target, option: g.grant_option }
+----
+{ option: True, privilege: "insert", target: Some { value: "shop::customers" } }
+{ option: True, privilege: "read", target: Some { value: "shop::counters frozen (id, value)" } }
+{ option: True, privilege: "read", target: Some { value: "shop::customers frozen (id, name)" } }
+{ option: True, privilege: "update", target: Some { value: "shop::counters frozen (id, value)" } }
+
+grant
+  grant schema to bob
+
+as bob grant
+  grant read catalog::constructors to ann with grant option
+
+query
+  from g in catalog::grants where g.grantee == "ann" select { privilege: g.privilege, target: g.target, option: g.grant_option }
+----
+{ option: True, privilege: "insert", target: Some { value: "shop::customers" } }
+{ option: True, privilege: "read", target: Some { value: "catalog::constructors frozen (id, sum, name, position, dropped)" } }
+{ option: True, privilege: "read", target: Some { value: "shop::counters frozen (id, value)" } }
+{ option: True, privilege: "read", target: Some { value: "shop::customers frozen (id, name)" } }
+{ option: True, privilege: "update", target: Some { value: "shop::counters frozen (id, value)" } }
+
+as bob grant error Invalid { detail: "module `catalog` declares no `nosuch`" }
+  grant read catalog::nosuch to ann
+
+as bob grant error Invalid { detail: "a grant on a relation variable of the schema is a schema operator; write it in a migration" }
+  grant read customers to ann

@@ -1,0 +1,10 @@
+seed 378
+use binding
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "a grant on a `catalog::` or `sys::` relation is deployment state, an ad hoc statement, never an operator in a migration" } } }
+  module shop
+  grant read catalog::grants to ann
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "a grant on a `catalog::` or `sys::` relation is deployment state, an ad hoc statement, never an operator in a migration" } } }
+  module shop
+  grant insert catalog::grants to ann

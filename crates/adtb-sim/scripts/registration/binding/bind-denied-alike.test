@@ -1,0 +1,44 @@
+seed 305
+use binding
+register web-1.0 pins 2 edition "2026-10" lease 8d use one-q
+advance 2d
+
+query
+  from b in catalog::bundles select b.renewed
+----
+2026-01-01T00:00:00.565244Z
+
+as web call web-1.0 error Denied { detail: "role `web` may call nothing in bundle web-1.0" }
+
+as web call web-9.9 error Denied { detail: "role `web` may call nothing in bundle web-9.9" }
+
+query
+  from b in catalog::bundles select b.renewed
+----
+2026-01-01T00:00:00.565244Z
+
+query
+  from a in catalog::audit.Denied where a.role == "web" select a.origin
+----
+Registered { bundle: "web-1.0", query: 0 }
+Registered { bundle: "web-9.9", query: 0 }
+
+grant
+  grant adhoc to web
+
+as web call web-1.0 error Denied { detail: "role `web` may call nothing in bundle web-1.0" }
+
+query
+  from b in catalog::bundles select b.renewed
+----
+2026-01-01T00:00:00.565244Z
+
+grant
+  grant call web-1.0::q to web
+
+as web call web-1.0
+
+query
+  from b in catalog::bundles select b.renewed
+----
+2026-01-03T00:00:00.570191Z

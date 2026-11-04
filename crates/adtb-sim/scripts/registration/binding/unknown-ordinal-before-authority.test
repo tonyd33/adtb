@@ -1,0 +1,22 @@
+seed 339
+use binding
+register web-1.0 pins 2 edition "2026-10" lease 8d use binding-app
+
+grant
+  grant call web-1.0::q to web
+
+as web call web-1.0
+
+as web call web-1.0 0 error UnknownQuery
+
+as web call web-1.0 8 error UnknownQuery
+
+as web call web-1.0 4294967295 error UnknownQuery
+
+drop role web
+
+as web call web-1.0 8 error UnknownQuery
+
+query
+  from a in catalog::audit.Denied where a.role == "web" select a.origin
+----

@@ -1,0 +1,10 @@
+seed 143
+use items
+
+as web error Denied { detail: "role `web` lacks `adhoc`" }
+  from i in no_such_relation select i
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "web")
+----
+1

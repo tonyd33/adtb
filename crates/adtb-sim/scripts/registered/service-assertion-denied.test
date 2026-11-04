@@ -1,0 +1,9 @@
+seed 14
+use store
+
+assert Service { name: "owner" } call app 6 error Denied { detail: "a service principal is the role the handle acts as; it is never asserted" }
+
+assert Service { name: "owner" } error Denied { detail: "a service principal is the role the handle acts as; it is never asserted" }
+  caller
+
+assert Service { name: "owner" } begin t error Denied { detail: "a service principal is the role the handle acts as; it is never asserted" }

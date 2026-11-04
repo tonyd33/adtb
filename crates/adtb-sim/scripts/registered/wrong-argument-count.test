@@ -1,0 +1,5 @@
+seed 5
+use store
+
+call app 5 error Invalid { detail: "`sign_up` takes 2 arguments, not 1" }
+  "ann"

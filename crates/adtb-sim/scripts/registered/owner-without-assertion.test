@@ -1,0 +1,10 @@
+seed 11
+use store
+
+call app 6
+----
+Service { name: "owner" }
+
+call app 2
+----
+"owner"

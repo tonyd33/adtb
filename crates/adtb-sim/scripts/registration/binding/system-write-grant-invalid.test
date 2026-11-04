@@ -1,0 +1,40 @@
+seed 377
+use binding
+
+grant
+  grant schema to bob
+
+as web grant error Denied { detail: "role `web` lacks `schema`" }
+  grant insert catalog::grants to ann with grant option
+
+grant error Invalid { detail: "`insert` on system relation `catalog::grants`: a system relation grants only `read`" }
+  grant insert catalog::grants to ann with grant option
+
+as bob grant error Invalid { detail: "`insert` on system relation `catalog::grants`: a system relation grants only `read`" }
+  grant insert catalog::grants to ann with grant option
+
+as web grant error Denied { detail: "role `web` lacks `schema`" }
+  grant update catalog::grants to ann with grant option
+
+grant error Invalid { detail: "`update` on system relation `catalog::grants frozen (id, kind, privilege, target, grantee, grantor, grant_option, dormant)`: a system relation grants only `read`" }
+  grant update catalog::grants to ann with grant option
+
+as bob grant error Invalid { detail: "`update` on system relation `catalog::grants frozen (id, kind, privilege, target, grantee, grantor, grant_option, dormant)`: a system relation grants only `read`" }
+  grant update catalog::grants to ann with grant option
+
+as web grant error Denied { detail: "role `web` lacks `schema`" }
+  grant delete catalog::grants to ann with grant option
+
+grant error Invalid { detail: "`delete` on system relation `catalog::grants`: a system relation grants only `read`" }
+  grant delete catalog::grants to ann with grant option
+
+as bob grant error Invalid { detail: "`delete` on system relation `catalog::grants`: a system relation grants only `read`" }
+  grant delete catalog::grants to ann with grant option
+
+query
+  from g in catalog::grants where g.grantee == "ann" select { privilege: g.privilege, target: g.target, option: g.grant_option }
+----
+{ option: True, privilege: "insert", target: Some { value: "shop::customers" } }
+{ option: True, privilege: "read", target: Some { value: "shop::counters frozen (id, value)" } }
+{ option: True, privilege: "read", target: Some { value: "shop::customers frozen (id, name)" } }
+{ option: True, privilege: "update", target: Some { value: "shop::counters frozen (id, value)" } }

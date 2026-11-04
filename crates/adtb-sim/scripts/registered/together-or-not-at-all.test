@@ -1,0 +1,15 @@
+seed 8
+use store-schema
+use store-app
+loose bad
+  import shop
+  query q () -> Set Text = nope
+reopen refused RegistrationRefused { bundle: "bad", reason: Rejected { reason: Invalid { detail: "query `q`: no `nope` in scope" } } }
+
+reopen
+
+call app error UnknownBundle { bundle: "app" }
+
+query
+  from c in customers select c.name
+----

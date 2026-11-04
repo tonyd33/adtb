@@ -36,6 +36,16 @@
 //!   acts through a session of ROLE, a server's own path. A `run`, `query` or `error` body is
 //!   then one ad hoc call, refused as a whole, and a `call` binds through the session. Without
 //!   it, `grant`, `revoke` and `register` act as `owner` and the others in process.
+//! - `failed VALUE`, after `as ROLE`: the body is admitted and fails at completion with VALUE;
+//!   `error` takes only a refusal at the submit.
+//! - `drop role NAME [error VALUE]`: the role dropped.
+//! - `loose NAME`: the body, registration NAME with no bundle file, registered at the next open.
+//! - `begin [read only] [deferrable] NAME [error VALUE]`, `commit NAME [error VALUE]`,
+//!   `rollback NAME`: interactive transaction NAME; one open at the next open differs.
+//! - `in NAME` before `run`, `query`, `error` or a `call` with an ordinal: one call of
+//!   transaction NAME; `committed` states a registered transaction committing with it.
+//! - `assert VALUE` before `run`, `query`, `error`, `call` or `begin`, after any `as`: the call
+//!   or transaction runs for principal VALUE. With `in` or `assert` a body is one call.
 //!
 //! An open refused with VALUE, the open refusal in textual syntax, leaves the file closed. A
 //! refusal `MigrationRefused` of version V leaves the log at its first V - 1 migrations. Any
@@ -49,6 +59,7 @@
 mod read;
 mod role;
 mod session;
+mod txn;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -177,6 +188,16 @@ fn roles() {
 #[test]
 fn authority() {
     run(&root().join("authority"));
+}
+
+#[test]
+fn registered() {
+    run(&root().join("registered"));
+}
+
+#[test]
+fn registration() {
+    run(&root().join("registration"));
 }
 
 /// Run the scripts `ADTB_SCRIPTS` names. Does nothing when it is unset.

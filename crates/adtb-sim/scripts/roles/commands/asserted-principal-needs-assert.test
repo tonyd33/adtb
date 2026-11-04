@@ -1,0 +1,14 @@
+seed 144
+use items
+
+grant
+  grant adhoc to web
+  grant maintain to web
+
+as web assert Anonymous error Denied { detail: "role `web` lacks `assert`" }
+  verify
+
+query
+  from a in catalog::audit.Denied select a.principal
+----
+"Service { name: \"web\" }"

@@ -1,0 +1,22 @@
+# Registration `app` of the store at the next open: `method` 1, `whose` 2, `names` 3,
+# `methods` 4, `sign_up` 5, `me` 6, `mine` 7.
+loose app
+  import shop
+  import fn method
+  import fn whose
+  query names () -> Set Text = from c in customers select c.name
+  query methods (k: Key customers) -> Set Text =
+    from p in payments where p.customer == k select method(p)
+  txn sign_up (n: Text, last4: Text) -> Key customers =
+    transact
+      let c = insert customers { name: n }
+      insert payments.Card { customer: key c, last4: last4 }
+      return key c
+  query me () -> Principal = caller
+  query mine () -> Set Text =
+    from c in customers
+    where match caller
+            | EndUser u -> c.name == u.name
+            | Service _ -> false
+            | Anonymous -> false
+    select c.name

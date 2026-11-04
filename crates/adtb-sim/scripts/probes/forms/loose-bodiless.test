@@ -1,0 +1,3 @@
+use store-schema
+loose app
+reopen

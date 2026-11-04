@@ -1,0 +1,41 @@
+seed 354
+use granted
+migrate
+  module shop
+  define fn all_names () -> Set Text = from c in customers select c.name
+
+as idle register shop-1.0 pins 3 edition "2026-10"
+  import shop
+  import fn all_names
+
+bundle shop-2.0 pins 3 edition "2026-10" use customer-names
+reopen
+
+reopen
+
+query
+  from b in catalog::bundles where b.name == "shop-2.0" select b.renewed
+----
+2026-01-01T00:00:00.994821Z
+
+as idle register shop-2.0 pins 3 edition "2026-10" use customer-names error Denied { detail: "bundle shop-2.0 is owned by role owner" }
+
+query
+  from b in catalog::bundles where b.name == "shop-2.0" select b.renewed
+----
+2026-01-01T00:00:00.994821Z
+
+call shop-2.0 error BundleSuperseded { bundle: "shop-2.0" }
+
+register shop-2.0 pins 3 edition "2026-10" use customer-names
+
+call shop-2.0 1
+----
+
+as web register shop-1.0 pins 3 edition "2026-10" error Denied { detail: "bundle shop-1.0 is owned by role idle" }
+  import shop
+  import fn all_names
+
+as idle register shop-1.0 pins 3 edition "2026-10"
+  import shop
+  import fn all_names

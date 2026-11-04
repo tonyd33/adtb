@@ -1,0 +1,18 @@
+seed 173
+migrate
+  module example
+  add module example
+  add type Item = { id: Key items, n: I64 }
+  add relation items : Item key id generate sequence
+
+as owner run
+  insert items { n: 1 }
+
+as owner failed Faulted { fault: DivisionByZero }
+  insert items { n: 1 / 0 }
+
+query rowsort
+  from a in catalog::audit.Call where a.role == "owner" select a.outcome
+----
+Succeeded
+Failed { error: Rejected { reason: Faulted { fault: DivisionByZero } } }

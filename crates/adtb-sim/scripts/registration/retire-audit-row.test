@@ -1,0 +1,32 @@
+seed 201
+use granted
+as web register shop-1.0 pins 2 edition "2026-10" use customer-names
+as web register shop-1.1 pins 2 edition "2026-10" use customer-names
+
+grant
+  grant adhoc to web
+
+as web run
+  retire bundle shop-1.0
+
+query
+  from a in catalog::audit.Retire select { role: a.role, bundle: a.bundle, who: a.principal }
+----
+{ bundle: "shop-1.0", role: "web", who: "Service { name: \"web\" }" }
+
+as web run
+  retire bundle shop-1.0
+
+query
+  count(a for a in catalog::audit.Retire)
+----
+1
+
+run
+  retire bundle shop-1.1
+
+query
+  from a in catalog::audit.Retire select { role: a.role, bundle: a.bundle, who: a.principal }
+----
+{ bundle: "shop-1.0", role: "web", who: "Service { name: \"web\" }" }
+{ bundle: "shop-1.1", role: "owner", who: "Service { name: \"owner\" }" }

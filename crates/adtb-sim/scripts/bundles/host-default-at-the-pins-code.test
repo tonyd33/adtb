@@ -1,0 +1,31 @@
+seed 1000
+use coded
+reopen
+
+run
+  insert hs.R { n: "old" }
+
+bundle web-1.0 pins 2 edition "2026-10"
+  import auth
+  txn put () -> I32 =
+    transact
+      let h = insert hs.R { n: "s" }
+      return 1
+migrate
+  module auth
+  redefine fn f (t: Text) -> Text = host "b" version "1.0" deterministic
+  module auth
+  add field H.R.x: Text fill "z"
+  add default hs.R.x = f("s")
+  module auth
+  redefine fn f (t: Text) -> Text = host "a" version "1.0" deterministic
+
+call web-1.0 1 committed
+----
+1
+
+query
+  from h in hs select h.n ++ " " ++ h.x
+----
+"old z"
+"s a"

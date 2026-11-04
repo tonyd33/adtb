@@ -1,0 +1,10 @@
+seed 20
+use store
+
+begin read only t
+
+in t call app 5 error Invalid { detail: "a read-only transaction does not write" }
+  "ann"
+  "4242"
+
+rollback t

@@ -1,0 +1,7 @@
+seed 10
+use store-schema
+loose twice
+  import shop
+  query q () -> Set Text = from c in customers select c.name
+  query q () -> Set Text = from c in customers select c.name
+reopen refused RegistrationRefused { bundle: "twice", reason: Rejected { reason: Invalid { detail: "`q` is declared twice in the bundle" } } }

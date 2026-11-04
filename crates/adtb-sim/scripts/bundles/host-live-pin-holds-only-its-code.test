@@ -1,0 +1,44 @@
+seed 1152
+use coded
+bundle web-1.0 pins 2 edition "2026-10" lease 1d
+  import auth
+  query q () -> Set Text = from h in hs select h.n
+reopen
+
+bundle web-1.0 pins 2 edition "2026-10" lease 1d
+  import auth
+  query q () -> Set Text = from h in hs select h.n
+migrate
+  module auth
+  redefine fn f (t: Text) -> Text = host "a" version "1.0" deterministic
+  module auth
+  define fn g (t: Text) -> Text = host "a" version "1.0" deterministic
+  module auth
+  redefine fn g (t: Text) -> Text = host "b" version "1.0" deterministic
+  module auth
+  define fn l (t: Text) -> Text = t
+  module auth
+  redefine fn l (t: Text) -> Text = t ++ t
+
+query
+  from b in catalog::bundles select b.name ++ " " ++ (match b.state
+    | Active -> "active"
+    | Superseded _ -> "superseded"
+    | Retired _ -> "retired")
+----
+"web-1.0 active"
+
+query
+  from h in catalog::functions.Host where h.name == "f" select h.symbol ++ " " ++ h.version
+----
+"a 1.0"
+
+query
+  from h in catalog::functions.Host where h.name == "g" select h.symbol
+----
+"b"
+
+query
+  from h in catalog::functions.Language where h.name == "l" select h.body
+----
+"t ++ t"

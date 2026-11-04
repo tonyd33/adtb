@@ -1,0 +1,8 @@
+seed 343
+use binding
+
+grant
+  grant read catalog::constructors to ann with grant option
+
+as ann grant error Denied { detail: "role `ann` lacks `schema`" }
+  grant read catalog::constructors to bob

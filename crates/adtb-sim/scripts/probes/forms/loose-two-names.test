@@ -1,0 +1,4 @@
+use store-schema
+loose app web
+  import shop
+reopen

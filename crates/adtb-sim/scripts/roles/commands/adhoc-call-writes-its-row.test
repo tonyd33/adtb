@@ -1,0 +1,24 @@
+seed 172
+use secrets
+role dba
+
+grant
+  grant adhoc to dba
+  grant maintain to dba
+
+as dba run
+  verify
+
+query
+  from a in catalog::audit.Call where a.role == "dba" select { origin: a.origin, outcome: a.outcome, who: a.principal }
+----
+{ origin: AdHoc { text: 0xc6a16ed6991b60b6f273774a51525cb05882af1cba41696959bc1692983619fd }, outcome: Succeeded, who: "Service { name: \"dba\" }" }
+
+as dba error Invalid { detail: "no `nosuch` in scope" }
+  verify nosuch
+
+query rowsort
+  from a in catalog::audit.Call where a.role == "dba" select a.outcome
+----
+Succeeded
+Failed { error: Rejected { reason: Invalid { detail: "no `nosuch` in scope" } } }

@@ -1,0 +1,22 @@
+seed 316
+use binding
+register web-1.0 pins 2 edition "2026-10" lease 8d use binding-app
+
+grant
+  grant call web-1.0 to web
+
+as web call web-1.0
+
+as web assert Anonymous call web-1.0 4 error Denied { detail: "role `web` may not make this call" }
+
+query
+  from a in catalog::audit.Denied where a.role == "web" select a.origin
+----
+Registered { bundle: "web-1.0", query: 4 }
+
+grant
+  grant assert to web
+
+as web assert Anonymous call web-1.0 4
+----
+"nobody"

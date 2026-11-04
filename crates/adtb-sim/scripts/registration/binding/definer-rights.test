@@ -1,0 +1,40 @@
+seed 315
+use binding
+as ann register web-1.0 pins 2 edition "2026-10" lease 8d use binding-app
+
+as ann grant
+  grant call web-1.0 to web
+
+run
+  insert customers { name: "web" }
+  insert customers { name: "ann" }
+
+as web call web-1.0
+
+as web call web-1.0 2
+----
+"ann"
+"web"
+
+as web call web-1.0 6 committed
+  "new"
+----
+shop::customers.key(3)
+
+query
+  from c in customers where c.name == "new" select c.name
+----
+"new"
+
+as web call web-1.0 4
+----
+"web"
+
+as web call web-1.0 5
+  "web"
+----
+"web"
+
+as web call web-1.0 5
+  "ann"
+----

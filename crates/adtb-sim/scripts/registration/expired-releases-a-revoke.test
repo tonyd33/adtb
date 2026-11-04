@@ -1,0 +1,8 @@
+seed 333
+use deployed-leased
+advance 26h
+
+migrate
+  module shop
+  revoke read customers from web
+  revoke read customers from ops

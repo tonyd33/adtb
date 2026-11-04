@@ -1,0 +1,44 @@
+scripts/probes/txn-values.test:4: no transaction `t` is open
+scripts/probes/txn-values.test:9: no transaction `t` is open
+scripts/probes/txn-values.test:13: transaction `t` is open
+scripts/probes/txn-values.test:18: the outcome differs
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   []
+scripts/probes/txn-values.test:20: the outcome differs
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   []
+scripts/probes/txn-values.test:24: refused with Rejected { reason: Invalid { detail: "a read-only transaction does not write" } }
+scripts/probes/txn-values.test:29: the outcome differs
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   Rejected { reason: Invalid { detail: "only a read-only transaction is deferrable" } }
+scripts/probes/txn-values.test:31: `EndUser { nick: "ann" }` is no principal: at byte 10: no field `nick`
+scripts/probes/txn-values.test:36: succeeds
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   success
+scripts/probes/txn-values.test:39: the rows differ
+  expected: [EndUser { name: "ann" }]
+  actual:   [Anonymous]
+scripts/probes/txn-values.test:46: the call commits nothing
+scripts/probes/txn-values.test:49: the call commits
+scripts/probes/txn-values.test:55: the outcome differs
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   []
+scripts/probes/txn-values.test:57: the outcome differs
+  expected: []
+  actual:   Rejected { reason: Denied { detail: "the authenticated role no longer exists" } }
+scripts/probes/txn-values.test:59: refused at the submit
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   Rejected { reason: Denied { detail: "the authenticated role no longer exists" } }
+scripts/probes/txn-values.test:62: `grant adhoc to bob` is refused: Rejected { reason: Invalid { detail: "the grantee `bob` is not a role" } }
+scripts/probes/txn-values.test:66: refused at the submit
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   Rejected { reason: Denied { detail: "the authenticated role no longer exists" } }
+scripts/probes/txn-values.test:69: fails otherwise
+  expected: Rejected { reason: UnknownBundle { bundle: "x" } }
+  actual:   Rejected { reason: UnknownBundle { bundle: "nope-1.0" } }
+scripts/probes/txn-values.test:72: succeeds
+  expected: Rejected { reason: UnknownBundle { bundle: "nope-1.0" } }
+  actual:   success
+scripts/probes/txn-values.test:1 (via scripts/fixtures/store.fixture:4): transaction `left` is open at the next open
+scripts/probes/txn-values.test:1 (via scripts/fixtures/store.fixture:4): transaction `r` is open at the next open
+scripts/probes/txn-values.test:1 (via scripts/fixtures/store.fixture:4): transaction `u` is open at the next open

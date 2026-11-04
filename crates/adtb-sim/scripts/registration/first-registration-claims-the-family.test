@@ -1,0 +1,29 @@
+seed 303
+use granted
+
+as idle register tools-0.1 pins 2 edition "2026-10"
+  import shop
+
+as web register tools-0.2 pins 2 edition "2026-10" use customer-names error Denied { detail: "family tools is owned by role idle" }
+
+as web register shop-1.0 pins 2 edition "2026-10" use customer-names
+
+as ops register shop-1.1 pins 2 edition "2026-10" use customer-names error Denied { detail: "family shop is owned by role web" }
+
+register shop-1.1 pins 2 edition "2026-10" use customer-names
+
+as web register shop-1.2 pins 2 edition "2026-10" use customer-emails
+
+query
+  from b in catalog::bundles select { name: b.name, owner: b.owner }
+----
+{ name: "shop-1.0", owner: "web" }
+{ name: "shop-1.1", owner: "owner" }
+{ name: "shop-1.2", owner: "web" }
+{ name: "tools-0.1", owner: "idle" }
+
+reopen
+
+as ops register shop-1.3 pins 2 edition "2026-10" use customer-names error Denied { detail: "family shop is owned by role web" }
+
+as web register tools-0.2 pins 2 edition "2026-10" use customer-names error Denied { detail: "family tools is owned by role idle" }

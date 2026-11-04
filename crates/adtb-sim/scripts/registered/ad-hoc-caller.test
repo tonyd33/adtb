@@ -1,0 +1,17 @@
+seed 16
+use store
+
+query
+  caller
+----
+Service { name: "owner" }
+
+assert EndUser { name: "ann" } query
+  caller
+----
+EndUser { name: "ann" }
+
+query
+  shop::whose()
+----
+"owner"

@@ -1,0 +1,21 @@
+seed 150
+use secrets
+
+grant
+  grant adhoc to w
+  grant assert to w
+  grant schema to w
+  grant monitor to w
+  grant cancel to w
+  grant maintain to w
+  grant configure to w
+  grant read_files to w
+  grant write_files to w
+
+as w error Denied { detail: "role `w` may not run this text" }
+  print schema
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "w")
+----
+1

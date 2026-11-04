@@ -1,0 +1,8 @@
+# The binding schema with relation `loaded`, writable by ann with grant option, the log's third
+# migration.
+use binding
+migrate
+  module shop
+  add type Named = { name: Text }
+  add relation loaded : Named key name
+  grant insert loaded, read loaded to ann with grant option

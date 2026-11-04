@@ -1,0 +1,4 @@
+use store
+
+in t as bob run
+  1

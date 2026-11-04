@@ -1,0 +1,53 @@
+seed 379
+use binding
+
+as bob revoke error Denied { detail: "role `bob` lacks `schema`" }
+  revoke read customers from ann
+
+as bob revoke error Denied { detail: "role `bob` lacks `schema`" }
+  revoke read nosuch from ann
+
+as bob revoke error Denied { detail: "role `bob` lacks `schema`" }
+  revoke read customers (name) from ann
+
+as bob revoke error Denied { detail: "role `bob` lacks `schema`" }
+  revoke read customers.Customer from ann
+
+as bob revoke error Denied { detail: "role `bob` lacks `schema`" }
+  revoke read nosuch.Nope (x) from ann
+
+as bob revoke error Denied { detail: "role `bob` lacks `schema`" }
+  revoke update customers from ann
+
+as bob revoke error Denied { detail: "role `bob` lacks `schema`" }
+  revoke update nosuch from ann
+
+as bob revoke error Denied { detail: "role `bob` lacks `schema`" }
+  revoke insert customers from ann
+
+as bob revoke error Denied { detail: "role `bob` lacks `schema`" }
+  revoke delete nosuch from ann
+
+as bob revoke error Denied { detail: "role `bob` lacks `schema`" }
+  revoke retag customers -> customers from ann
+
+as bob revoke error Denied { detail: "role `bob` lacks `schema`" }
+  revoke read catalog::constructors from ann
+
+as bob revoke error Denied { detail: "role `bob` lacks `schema`" }
+  revoke read catalog::nosuch from ann
+
+as bob grant error Denied { detail: "role `bob` lacks `schema`" }
+  grant read customers (name) to ann
+
+as bob grant error Denied { detail: "role `bob` lacks `schema`" }
+  grant read customers.Customer to ann
+
+as bob grant error Denied { detail: "role `bob` lacks `schema`" }
+  grant retag customers -> customers to ann
+
+as bob grant error Denied { detail: "role `bob` lacks `schema`" }
+  grant update customers to ann
+
+as bob grant error Denied { detail: "role `bob` lacks `schema`" }
+  grant read customers, insert customers to ann

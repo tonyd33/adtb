@@ -1,0 +1,13 @@
+seed 3
+use store
+
+call app 5 committed
+  "ann"
+  "4242"
+----
+shop::customers.key(1)
+
+call app 1
+  from p in payments select p
+----
+"4242"

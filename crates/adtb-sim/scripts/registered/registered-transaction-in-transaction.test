@@ -1,0 +1,23 @@
+seed 18
+use store
+
+begin t
+
+in t call app 5 committed
+  "ann"
+  "4242"
+----
+shop::customers.key(1)
+
+in t call app 3
+----
+"ann"
+
+call app 3
+----
+
+commit t
+
+call app 3
+----
+"ann"

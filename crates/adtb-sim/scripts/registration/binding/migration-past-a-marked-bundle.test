@@ -1,0 +1,11 @@
+seed 375
+use binding
+as ann register one-1.0 pins 2 edition "2026-10" lease 8d use one-q
+advance 9d
+
+run
+  set setting LeaseGrace = { grace: 30d }
+
+migrate
+  module shop
+  revoke read customers from ann

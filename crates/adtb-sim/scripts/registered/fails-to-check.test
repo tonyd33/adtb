@@ -1,0 +1,7 @@
+seed 6
+use store-schema
+loose bad
+  import shop
+  query ok () -> Set Text = from c in customers select c.name
+  query broken () -> Set Text = from c in customers select c.nickname
+reopen refused RegistrationRefused { bundle: "bad", reason: Rejected { reason: Invalid { detail: "query `broken`: Customer has no field `nickname`" } } }

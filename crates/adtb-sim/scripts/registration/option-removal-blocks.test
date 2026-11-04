@@ -1,0 +1,7 @@
+seed 331
+use deployed
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "bundle shop-1.0 pins 2: names reads customers.Customer; web lacks read with grant option\nbundle shop-1.0 pins 2: names reads customers.Customer (id); web lacks read with grant option\nbundle shop-1.0 pins 2: names reads customers.Customer (name); web lacks read with grant option" } } }
+  module shop
+  revoke read customers from web
+  grant read customers to web

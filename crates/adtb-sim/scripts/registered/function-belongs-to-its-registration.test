@@ -1,0 +1,10 @@
+seed 26
+use store-schema
+loose helpers
+  import shop
+  fn shout (t: Text) -> Text = t ++ "!"
+  query loud () -> Set Text = from c in customers select shout(c.name)
+loose other
+  import shop
+  query louder () -> Set Text = from c in customers select shout(c.name)
+reopen refused RegistrationRefused { bundle: "other", reason: Rejected { reason: Invalid { detail: "query `louder`: no `shout` in scope" } } }

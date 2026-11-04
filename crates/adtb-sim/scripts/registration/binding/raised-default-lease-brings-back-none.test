@@ -1,0 +1,22 @@
+seed 372
+use binding
+as ann register one-1.0 pins 2 edition "2026-10" use one-q
+
+as ann grant
+  grant call one-1.0 to web
+
+advance 31d
+
+run
+  set setting DefaultLease = { lease: 90d }
+
+as web call one-1.0 error BundleExpired { bundle: "one-1.0", query: "" }
+
+run
+  set setting DefaultLease = { lease: 120d }
+
+as web call one-1.0 error BundleExpired { bundle: "one-1.0", query: "" }
+
+as ann register one-1.0 pins 2 edition "2026-10" use one-q
+
+as web call one-1.0

@@ -1,0 +1,4 @@
+use store
+
+failed Invalid { detail: "x" }
+  1

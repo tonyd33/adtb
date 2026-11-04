@@ -1,0 +1,14 @@
+seed 1001
+use coded
+bundle web-1.0 pins 2 edition "2026-10"
+  import auth
+  txn put () -> I32 =
+    transact
+      let h = insert hs.R { n: "s" }
+      return 1
+migrate refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Untranslatable { query: "web-1.0::put", detail: "its version holds another code of host or Wasm function `f`" } } }
+  module auth
+  redefine fn f (t: Text) -> Text = host "b" version "1.0" deterministic
+  module auth
+  add field H.R.x: Text fill "z"
+  add default hs.R.x = f("s")

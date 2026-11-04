@@ -1,0 +1,20 @@
+seed 23
+use store-schema
+use store-app
+loose helpers
+  import shop
+  fn shout (t: Text) -> Text = t ++ "!"
+  query loud () -> Set Text = from c in customers select shout(c.name)
+reopen
+
+call app 5 committed
+  "ann"
+  "4242"
+----
+shop::customers.key(1)
+
+call helpers 1
+----
+"ann!"
+
+call helpers 2 error UnknownQuery

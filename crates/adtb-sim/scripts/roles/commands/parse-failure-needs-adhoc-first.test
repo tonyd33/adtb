@@ -1,0 +1,21 @@
+seed 149
+use secrets
+
+as w error Denied { detail: "role `w` lacks `adhoc`" }
+  syntax error here (((
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "w")
+----
+1
+
+grant
+  grant adhoc to w
+
+as w error Invalid { detail: "a query that starts with neither a keyword nor `(` must be the first item or be parenthesised" }
+  syntax error here (((
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "w")
+----
+1

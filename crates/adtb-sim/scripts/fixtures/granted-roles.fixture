@@ -1,0 +1,10 @@
+# The customers schema with names and emails, and roles web, ops, app and idle.
+migrate
+  module shop
+  add module shop
+  add type Customer = { id: Key customers, name: Text, email: Text }
+  add relation customers : Customer key id generate sequence
+role web
+role ops
+role app
+role idle

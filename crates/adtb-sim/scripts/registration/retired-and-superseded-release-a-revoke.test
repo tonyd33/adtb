@@ -1,0 +1,23 @@
+seed 332
+use deployed
+
+run
+  retire bundle shop-1.0
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "bundle admin-1.0 pins 2: names reads customers.Customer; ops lacks read with grant option\nbundle admin-1.0 pins 2: names reads customers.Customer (id); ops lacks read with grant option\nbundle admin-1.0 pins 2: names reads customers.Customer (name); ops lacks read with grant option" } } }
+  module shop
+  revoke read customers from web
+  revoke read customers from ops
+
+reopen
+
+as ops register admin-1.1 pins 2 edition "2026-10"
+  import shop
+
+run
+  supersede bundle admin-1.0 by admin-1.1
+
+migrate
+  module shop
+  revoke read customers from web
+  revoke read customers from ops

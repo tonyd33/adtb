@@ -1,0 +1,7 @@
+# Items with a value, and role web holding nothing.
+migrate
+  module example
+  add module example
+  add type Item = { id: Key items, value: I64 }
+  add relation items : Item key id
+role web

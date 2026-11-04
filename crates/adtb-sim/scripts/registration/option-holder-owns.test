@@ -1,0 +1,16 @@
+seed 301
+use granted
+
+run
+  insert customers { name: "ann", email: "a@x" }
+
+as web register shop-1.0 pins 2 edition "2026-10" use customer-names
+
+query
+  from b in catalog::bundles select { name: b.name, owner: b.owner }
+----
+{ name: "shop-1.0", owner: "web" }
+
+call shop-1.0 1
+----
+"ann"

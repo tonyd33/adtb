@@ -1,0 +1,3 @@
+use store
+
+assert Anonymous call app

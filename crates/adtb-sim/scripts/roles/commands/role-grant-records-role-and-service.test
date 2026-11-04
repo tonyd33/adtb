@@ -1,0 +1,24 @@
+seed 175
+use items
+role ann
+role bob
+
+grant
+  grant monitor to ann with grant option
+
+as ann grant
+  grant monitor to bob
+
+as ann revoke
+  revoke monitor from bob
+
+query rowsort
+  from a in catalog::audit.Grant where a.role == "ann" select { statement: a.statement, who: a.principal }
+----
+{ statement: "grant monitor to bob", who: "Service { name: \"ann\" }" }
+{ statement: "revoke monitor from bob", who: "Service { name: \"ann\" }" }
+
+query
+  from a in catalog::audit.Grant where a.statement == "grant monitor to bob" select a.role
+----
+"ann"

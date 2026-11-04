@@ -1,0 +1,20 @@
+seed 346
+use binding-files
+
+grant
+  grant read_files to ann
+
+as ann register load-1.0 pins 3 edition "2026-10" lease 8d use scan
+
+revoke error Invalid { detail: "`revoke read_files from ann` leaves live bundles lacking what they use:\nbundle load-1.0: load reads files; ann lacks read_files" }
+  revoke read_files from ann
+
+as ann register load-2.0 pins 3 edition "2026-10" lease 8d
+  import shop
+  query q () -> Set Text = from c in customers select c.name
+
+run
+  supersede bundle load-1.0 by load-2.0
+
+revoke
+  revoke read_files from ann

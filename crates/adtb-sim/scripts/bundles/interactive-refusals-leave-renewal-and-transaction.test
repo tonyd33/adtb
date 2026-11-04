@@ -1,0 +1,43 @@
+seed 62
+use auth
+bundle web-1.0 pins 1 edition "2026-10" lease 1d use names
+reopen
+
+call web-1.0
+
+query
+  from b in catalog::bundles select b.renewed
+----
+2026-01-01T00:00:00.143040Z
+
+advance 4h
+
+begin read only t
+
+in t call web-1.0 1 error Invalid { detail: "`names` takes 0 arguments, not 1" }
+  1
+
+in t call web-1.0 2 error Invalid { detail: "argument 1 of `add` is not a value of its declared parameter type" }
+  1
+
+in t call web-1.0 2 error Invalid { detail: "a read-only transaction does not write" }
+  "ann"
+
+query
+  from b in catalog::bundles select b.renewed
+----
+2026-01-01T00:00:00.143040Z
+
+query
+  from u in auth::users select u.name
+----
+
+in t call web-1.0 1
+----
+
+query
+  from b in catalog::bundles select b.renewed
+----
+2026-01-01T04:00:00.157303Z
+
+commit t

@@ -1,0 +1,10 @@
+seed 13
+use store
+
+assert Anonymous call app 6
+----
+Anonymous
+
+assert Anonymous call app 2
+----
+"nobody"

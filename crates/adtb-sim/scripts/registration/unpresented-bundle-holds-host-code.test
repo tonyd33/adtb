@@ -1,0 +1,11 @@
+seed 331
+use granted
+migrate
+  module shop
+  define fn f (t: Text) -> Text = host "a" version "1.0" deterministic
+
+as web register shop-1.0 pins 3 edition "2026-10" use customer-names
+
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "redefine fn f (t: Text) -> Text = host \"b\" version \"1.0\" deterministic", detail: "bundle shop-1.0 pins 3: its version holds another code of host or Wasm function `f`" } } }
+  module shop
+  redefine fn f (t: Text) -> Text = host "b" version "1.0" deterministic

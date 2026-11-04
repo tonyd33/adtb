@@ -1,0 +1,29 @@
+seed 28
+log
+  module club
+  add module club
+  add type Member = { id: Key members, name: Text }
+  add relation members : Member key id generate sequence
+  add type Principal = EndUser { member: Key members } | Service { name: Text } | Anonymous
+loose club
+  import club
+  query me () -> Principal = caller
+  query my_name () -> Set Text =
+    from m in members
+    where match caller
+            | EndUser u -> key m == u.member
+            | Service _ -> false
+            | Anonymous -> false
+    select m.name
+reopen
+
+run
+  insert members { name: "ann" }
+
+call club 1
+----
+Service { name: "owner" }
+
+assert EndUser { member: club::members.key(1) } call club 2
+----
+"ann"

@@ -1,0 +1,20 @@
+seed 165
+use secrets
+role ops
+
+grant
+  grant adhoc to ops
+  grant configure to ops
+
+as ops run
+  set setting RetryLimit = { retries: 1 + 2 }
+
+query
+  from s in catalog::settings.RetryLimit select s.retries
+----
+3
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "ops")
+----
+0

@@ -21,6 +21,10 @@ pub(super) enum Head {
         refused: Option<String>,
     },
     Role(String),
+    DropRole {
+        name: String,
+        error: Option<String>,
+    },
     Log,
     Bundle {
         header: String,
@@ -45,16 +49,30 @@ pub(super) enum Head {
         error: Option<String>,
     },
     Host(Vec<String>),
+    Loose(String),
+    Begin {
+        name: String,
+        read_only: bool,
+        deferrable: bool,
+        error: Option<String>,
+    },
+    Commit {
+        name: String,
+        error: Option<String>,
+    },
+    Rollback(String),
     Run,
     Query {
         rowsort: bool,
     },
     Error(String),
+    Failed(String),
 }
 
-const HEADS: [&str; 18] = [
+const HEADS: [&str; 26] = [
     "seed", "use", "option", "migrate", "reopen", "role", "log", "bundle", "call", "advance",
-    "run", "query", "error", "as", "grant", "revoke", "register", "host",
+    "run", "query", "error", "as", "grant", "revoke", "register", "host", "loose", "begin",
+    "commit", "rollback", "in", "assert", "failed", "drop",
 ];
 
 /// One directive, with the file and line it was read from.
@@ -66,6 +84,10 @@ pub(super) struct Step {
     pub(super) via: Option<(String, usize)>,
     /// The role an `as` prefix names, the step then running through a session of it.
     pub(super) role: Option<String>,
+    /// The transaction an `in` prefix names, the step then one call of it.
+    pub(super) txn: Option<String>,
+    /// The principal an `assert` prefix states, in textual syntax.
+    pub(super) assert: Option<String>,
     pub(super) head: Head,
     pub(super) body: String,
     pub(super) rows: Vec<String>,
@@ -101,6 +123,13 @@ fn head(line: &str) -> Option<Head> {
             refused: refused(rest)?,
         },
         "role" if !rest.is_empty() => Head::Role(rest.to_owned()),
+        "drop" => {
+            let (name, error) = split(rest.strip_prefix("role ")?, " error ");
+            Head::DropRole {
+                name: named(name)?,
+                error,
+            }
+        }
         "log" if rest.is_empty() => Head::Log,
         "bundle" => bundle(rest)?,
         "call" => call(rest)?,
@@ -121,11 +150,32 @@ fn head(line: &str) -> Option<Head> {
             }
         }
         "host" if !rest.is_empty() => Head::Host(rest.split(' ').map(str::to_owned).collect()),
+        "loose" if !rest.is_empty() && !rest.contains(' ') => Head::Loose(rest.to_owned()),
+        "begin" => {
+            let (rest, error) = split(rest, " error ");
+            let (read_only, rest) = flag(rest, "read only ");
+            let (deferrable, name) = flag(rest, "deferrable ");
+            Head::Begin {
+                name: named(name)?,
+                read_only,
+                deferrable,
+                error,
+            }
+        }
+        "commit" => {
+            let (name, error) = split(rest, " error ");
+            Head::Commit {
+                name: named(name)?,
+                error,
+            }
+        }
+        "rollback" => Head::Rollback(named(rest)?),
         "run" if rest.is_empty() => Head::Run,
         "query" if rest.is_empty() || rest == "rowsort" => Head::Query {
             rowsort: !rest.is_empty(),
         },
         "error" if !rest.is_empty() => Head::Error(rest.to_owned()),
+        "failed" if !rest.is_empty() => Head::Failed(rest.to_owned()),
         _ => return None,
     })
 }
@@ -180,6 +230,15 @@ fn call(rest: &str) -> Option<Head> {
     })
 }
 
+fn flag<'a>(rest: &'a str, word: &str) -> (bool, &'a str) {
+    rest.strip_prefix(word)
+        .map_or((false, rest), |rest| (true, rest))
+}
+
+fn named(name: &str) -> Option<String> {
+    (!name.is_empty() && !name.contains(' ')).then(|| name.to_owned())
+}
+
 /// Returns the duration `text` states as a count of `s`, `m`, `h` or `d`.
 fn duration(text: &str) -> Option<Duration> {
     let unit = match text.chars().last()? {
@@ -193,12 +252,49 @@ fn duration(text: &str) -> Option<Duration> {
     Some(Duration::from_secs(count.checked_mul(unit)?))
 }
 
-/// Returns the role an `as ROLE` prefix of `line` names, and the directive after it.
-fn prefixed(line: &str) -> (Option<&str>, &str) {
-    match line.strip_prefix("as ").and_then(|r| r.split_once(' ')) {
-        Some((role, rest)) => (Some(role), rest),
-        None => (None, line),
+/// The prefixes of a directive.
+#[derive(Default)]
+struct Prefix<'a> {
+    txn: Option<&'a str>,
+    role: Option<&'a str>,
+    assert: Option<&'a str>,
+}
+
+/// Returns the `in NAME`, `as ROLE` and `assert VALUE` prefixes of `line`, in that order, and the
+/// directive after them.
+fn prefixed(line: &str) -> (Prefix<'_>, &str) {
+    let mut p = Prefix::default();
+    let mut line = line;
+    if let Some((txn, rest)) = line.strip_prefix("in ").and_then(|r| r.split_once(' ')) {
+        (p.txn, line) = (Some(txn), rest);
     }
+    if let Some((role, rest)) = line.strip_prefix("as ").and_then(|r| r.split_once(' ')) {
+        (p.role, line) = (Some(role), rest);
+    }
+    if let Some(rest) = line.strip_prefix("assert ") {
+        let end = value_end(rest);
+        (p.assert, line) = (Some(&rest[..end]), rest[end..].trim_start());
+    }
+    (p, line)
+}
+
+/// Returns the length of the value `text` begins: up to the first space outside brackets and
+/// quotes that no `{` follows.
+fn value_end(text: &str) -> usize {
+    let (mut depth, mut quoted, mut escaped) = (0usize, false, false);
+    for (i, c) in text.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            _ if quoted => {}
+            '{' | '(' | '[' => depth += 1,
+            '}' | ')' | ']' => depth = depth.saturating_sub(1),
+            ' ' if depth == 0 && !text[i..].trim_start().starts_with('{') => return i,
+            _ => {}
+        }
+    }
+    text.len()
 }
 
 /// Returns whether the directive `line` begins is followed by expected rows.
@@ -246,20 +342,37 @@ fn read(path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, String> {
         blocks(&text, starts, takes_rows).map_err(|d| format!("{at}:{}: {}", d.line, d.message))?;
     let mut out = Vec::new();
     for b in found {
-        let (role, line) = prefixed(&b.head);
-        let as_role = |h: &Head| {
-            role.is_none()
+        let (prefix, line) = prefixed(&b.head);
+        let sent = |h: &Head| {
+            matches!(
+                h,
+                Head::Run | Head::Query { .. } | Head::Error(_) | Head::Failed(_)
+            )
+        };
+        let call = |h: &Head| {
+            matches!(
+                h,
+                Head::Call {
+                    ordinal: Some(_),
+                    ..
+                }
+            )
+        };
+        let allowed = |h: &Head| {
+            let role = sent(h)
                 || matches!(
                     h,
-                    Head::Run
-                        | Head::Query { .. }
-                        | Head::Error(_)
-                        | Head::Call { .. }
-                        | Head::Grant { .. }
-                        | Head::Register { .. }
-                )
+                    Head::Call { .. } | Head::Grant { .. } | Head::Register { .. }
+                );
+            let txn = prefix.role.is_none() && prefix.assert.is_none() && (sent(h) || call(h));
+            let assert = sent(h) || call(h) || matches!(h, Head::Begin { .. });
+            let failed = !matches!(h, Head::Failed(_)) || prefix.role.is_some();
+            failed
+                && (prefix.role.is_none() || role)
+                && (prefix.txn.is_none() || txn)
+                && (prefix.assert.is_none() || assert)
         };
-        let Some(head) = head(line).filter(as_role) else {
+        let Some(head) = head(line).filter(allowed) else {
             return Err(format!("{at}:{}: `{}` is not a directive", b.line, b.head));
         };
         let bodied = matches!(
@@ -269,7 +382,9 @@ fn read(path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, String> {
                 | Head::Run
                 | Head::Query { .. }
                 | Head::Error(_)
+                | Head::Failed(_)
                 | Head::Grant { .. }
+                | Head::Loose(_)
         ) || matches!(
             &head,
             Head::Bundle { fixture: None, .. } | Head::Register { fixture: None, .. }
@@ -326,7 +441,9 @@ fn read(path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, String> {
             at: at.clone(),
             line: b.line,
             via: None,
-            role: role.map(str::to_owned),
+            role: prefix.role.map(str::to_owned),
+            txn: prefix.txn.map(str::to_owned),
+            assert: prefix.assert.map(str::to_owned),
             head,
             body,
             rows: b.rows,

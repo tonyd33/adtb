@@ -1,0 +1,12 @@
+seed 344
+use binding
+
+grant
+  grant schema to ann
+  grant schema to bob
+
+as ann grant
+  grant read catalog::constructors to bob with grant option
+
+as bob grant error Invalid { detail: "`read` on `catalog::constructors frozen (id, sum, name, position, dropped)` with grant option from `bob` to `ann` would close a cycle of grant options" }
+  grant read catalog::constructors to ann with grant option

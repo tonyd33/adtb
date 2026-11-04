@@ -1,0 +1,4 @@
+# The granted schema with shop-1.0 registered by web and admin-1.0 by ops, each reading names.
+use granted
+as web register shop-1.0 pins 2 edition "2026-10" use customer-names
+as ops register admin-1.0 pins 2 edition "2026-10" use customer-names

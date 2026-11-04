@@ -1,0 +1,6 @@
+use store
+
+in t assert Anonymous query
+  caller
+----
+Anonymous

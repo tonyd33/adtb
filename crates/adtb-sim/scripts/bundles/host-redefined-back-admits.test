@@ -1,0 +1,40 @@
+seed 997
+use coded
+reopen
+
+run
+  insert hs.R { n: "old" }
+
+bundle web-1.0 pins 2 edition "2026-10"
+  import auth
+  txn put () -> I32 =
+    transact
+      let h = insert hs.R { n: "s" }
+      return 1
+migrate refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Untranslatable { query: "web-1.0::put", detail: "its version holds another code of host or Wasm function `f`" } } }
+  module auth
+  redefine fn f (t: Text) -> Text = host "b" version "1.0" deterministic
+
+bundle web-1.0 pins 2 edition "2026-10"
+  import auth
+  txn put () -> I32 =
+    transact
+      let h = insert hs.R { n: "s" }
+      return 1
+migrate
+  module auth
+  redefine fn f (t: Text) -> Text = host "b" version "1.0" deterministic
+  module auth
+  redefine fn f (t: Text) -> Text = host "a" version "1.0" deterministic
+  module auth
+  add field H.R.x: Text fill f("s")
+
+call web-1.0 1 committed
+----
+1
+
+query
+  from h in hs select h.n ++ " " ++ h.x
+----
+"old a"
+"s a"

@@ -1,0 +1,18 @@
+seed 22
+use store
+
+call app 5 committed
+  "ann"
+  "4242"
+----
+shop::customers.key(1)
+
+use store-app
+migrate
+  module shop
+  add type Label = { id: Key tags, name: Text }
+  add relation tags : Label key id generate sequence
+
+call app 3
+----
+"ann"

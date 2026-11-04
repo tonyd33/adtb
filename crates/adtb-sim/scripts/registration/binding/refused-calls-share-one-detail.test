@@ -1,0 +1,23 @@
+seed 329
+use binding
+register web-1.0 pins 2 edition "2026-10" lease 8d use binding-app
+
+grant
+  grant call web-1.0::q to web
+
+as web call web-1.0
+
+as web call web-1.0 3 error Denied { detail: "role `web` may not make this call" }
+
+as web call web-1.0 1 error Denied { detail: "role `web` may not make this call" }
+
+as web assert Anonymous call web-1.0 2 error Denied { detail: "role `web` may not make this call" }
+
+revoke
+  revoke call web-1.0::q from web
+
+as web call web-1.0 2 error Denied { detail: "role `web` may not make this call" }
+
+drop role web
+
+as web call web-1.0 2 error Denied { detail: "role `web` may not make this call" }

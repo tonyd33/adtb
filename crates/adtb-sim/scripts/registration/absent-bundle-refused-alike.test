@@ -1,0 +1,32 @@
+seed 321
+use granted
+as web register shop-1.0 pins 2 edition "2026-10" use customer-names
+
+grant
+  grant adhoc to web
+  grant adhoc to ops
+
+as ops error Denied { detail: "role `ops` does not own bundle shop-1.0" }
+  retire bundle shop-1.0
+
+as ops error Denied { detail: "role `ops` does not own bundle nope-1.0" }
+  retire bundle nope-1.0
+
+as web error Denied { detail: "role `web` does not own bundle nope-1.0" }
+  retire bundle nope-1.0
+
+as ops error Denied { detail: "role `ops` does not own bundle nope-1.0" }
+  supersede bundle nope-1.0 by shop-1.0
+
+query
+  count(a for a in catalog::audit.Denied)
+----
+4
+
+as owner failed UnknownBundle { bundle: "nope-1.0" }
+  retire bundle nope-1.0
+
+query
+  count(a for a in catalog::audit.Denied)
+----
+4

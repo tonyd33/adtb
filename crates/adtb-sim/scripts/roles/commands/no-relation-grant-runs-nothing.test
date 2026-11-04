@@ -1,0 +1,49 @@
+seed 142
+use items
+
+grant
+  grant adhoc to web
+  grant maintain to web
+  grant configure to web
+  grant monitor to web
+
+as web error Denied { detail: "role `web` may not run this text" }
+  from i in items select i.value
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "web")
+----
+1
+
+as web error Denied { detail: "role `web` may not run this text" }
+  delete i in items
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "web")
+----
+2
+
+as web error Denied { detail: "role `web` may not run this text" }
+  explain from i in items select i.value
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "web")
+----
+3
+
+as web error Denied { detail: "role `web` may not run this text" }
+  verify
+  from i in items select i.value
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "web")
+----
+4
+
+as web error Denied { detail: "this command as written runs only for the embedded owner's role" }
+  set setting RetryLimit = { retries: count(i for i in items) }
+
+query
+  count(a for a in catalog::audit.Denied where a.role == "web")
+----
+5

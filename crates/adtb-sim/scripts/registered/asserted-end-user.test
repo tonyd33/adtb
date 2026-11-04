@@ -1,0 +1,29 @@
+seed 12
+use store
+
+call app 5 committed
+  "ann"
+  "4242"
+----
+shop::customers.key(1)
+
+call app 5 committed
+  "bob"
+  "4242"
+----
+shop::customers.key(2)
+
+assert EndUser { name: "ann" } call app 6
+----
+EndUser { name: "ann" }
+
+assert EndUser { name: "ann" } call app 7
+----
+"ann"
+
+assert EndUser { name: "ann" } call app 2
+----
+"ann"
+
+call app 7
+----
