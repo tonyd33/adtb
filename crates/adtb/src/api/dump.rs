@@ -7,11 +7,11 @@ use adtb_lang::schema::{Generator, Schema};
 use adtb_lang::textual::{Form, Header, print, read_document};
 use adtb_lang::types::{RelId, Ty};
 
-use crate::catalog::{self, Dormant, OWNER_ROLE, layout, values};
+use crate::catalog::{self, Deployed, Dormant, Fact, Mark, OWNER_ROLE, Origin, layout, values};
 use crate::exec::Val;
 use crate::runtime::Runtime;
 use crate::storage::{self, BackupError, DumpManifest, Envelope};
-use crate::write::{Bounds, Local, Text, Txn};
+use crate::write::{self, Bounds, Local, Text, Txn};
 
 use super::backup::{CATALOG_VERSION, RestorePoint, refused};
 use super::bundle::EDITION;
@@ -27,6 +27,10 @@ const GENERATORS: &str = "generators";
 const SECURITY: &str = "security";
 const SETTINGS: &str = "settings";
 const AUDIT: &str = "audit";
+const BUNDLES: &str = "bundles/";
+/// The entry naming every bundle of a dump, with the owners of their families and their leases
+/// latched as expired. A bundle's name holds a `-`, so no bundle's entry takes this name.
+const INDEX: &str = "bundles/index";
 
 /// The catalog relations holding the key of every catalog object but a constructor.
 const KEYED: [&str; 9] = [
@@ -44,6 +48,8 @@ const KEYED: [&str; 9] = [
 const SECURED: [&str; 4] = ["roles", "credentials", "grants", "peer_mappings"];
 /// The catalog relations whose keys the engine draws from a counter of its own.
 const DRAWN: [&str; 3] = ["roles", "grants", "audit"];
+/// The catalog relations of a bundle's entry, each holding the rows of that bundle alone.
+const BUNDLED: [&str; 4] = ["bundles", "registered", "feeds", "feed_members"];
 
 fn damaged(part: &str) -> Error {
     Error::rejected(RejectReason::DumpDamaged {
@@ -158,7 +164,11 @@ fn rows_of(
 /// Returns the rows an entry of [`sections_text`] holds, once it holds a document for exactly
 /// the relations `names`.
 fn read_sections(schema: &Schema, text: &str, e: &Envelope, names: &[&str]) -> Option<Rows> {
-    let rest = text.strip_prefix(&header_line(e))?;
+    sections(schema, text.strip_prefix(&header_line(e))?, names)
+}
+
+/// Returns the rows of `rest`, once it holds a document for exactly the relations `names`.
+fn sections(schema: &Schema, rest: &str, names: &[&str]) -> Option<Rows> {
     let mut sections: Vec<String> = Vec::new();
     for line in rest.split_inclusive('\n') {
         if line.starts_with("data ") {
@@ -217,6 +227,190 @@ fn read_generators(text: &str, e: &Envelope) -> Option<Vec<(u64, i64)>> {
         .collect()
 }
 
+/// Returns the entry of each bundle of `rows`, rows of [`BUNDLED`], holding its registration mark
+/// of `d` and its rows, then the [`INDEX`] entry.
+fn bundle_entries(
+    e: &Envelope,
+    schema: &Schema,
+    rows: &Rows,
+    d: &Deployed,
+) -> Vec<(String, String)> {
+    let [bundles, registered, feeds, members] = BUNDLED.map(|n| values::relation(schema, n));
+    let of = |r: RelId, name: &str, among: &BTreeSet<&Val>| -> BTreeSet<Val> {
+        let held = |row: &&Val| field(schema, r, row, name).is_some_and(|v| among.contains(v));
+        rows[&r].iter().filter(held).cloned().collect()
+    };
+    let (mut index, mut out) = (header_line(e), Vec::new());
+    for row in &rows[&bundles] {
+        let at = |name| field(schema, bundles, row, name);
+        let (Some(id @ Val::Int(n)), Some(Val::Text(name))) = (at("id"), at("name")) else {
+            panic!("a row of `catalog::bundles` holds its id and name");
+        };
+        let own = BTreeSet::from([id]);
+        let fed = of(feeds, "bundle", &own);
+        let member = of(
+            members,
+            "feed",
+            &fed.iter()
+                .filter_map(|f| field(schema, feeds, f, "id"))
+                .collect(),
+        );
+        let mine = Rows::from([
+            (bundles, BTreeSet::from([row.clone()])),
+            (registered, of(registered, "bundle", &own)),
+            (members, member),
+            (feeds, fed),
+        ]);
+        let mut text = header_line(e);
+        if let Some(m) = d.registered.get(n) {
+            let origin = match m.origin {
+                Origin::Open => "open",
+                Origin::Command => "command",
+            };
+            text.push_str(&format!(
+                "mark {} {origin} {}\n{}\n",
+                m.role,
+                m.text.len(),
+                m.text
+            ));
+        }
+        for (&r, rows) in &mine {
+            text.push_str(&document(schema, r, rows, ""));
+        }
+        index.push_str(&format!("bundle {name}\n"));
+        if let Some(renewed) = d.expired.get(n) {
+            index.push_str(&format!("expired {n} {renewed}\n"));
+        }
+        out.push((format!("{BUNDLES}{name}"), text));
+    }
+    for (family, role) in &d.families {
+        index.push_str(&format!("family {role} {family}\n"));
+    }
+    out.push((INDEX.to_owned(), index));
+    out
+}
+
+/// Returns the rows of every bundle the [`INDEX`] entry names, by relation of `schema`, the
+/// schema of a file holding no migration, and the deployment facts of the dump.
+///
+/// Fail with `DumpDamaged` naming the first entry under `bundles/` that does not decode, that the
+/// index names and `entries` lacks, that the index does not name, or whose mark names a role
+/// outside `roles`, then naming the index when it names a bundle twice, an owner outside `roles`,
+/// or a family or latched bundle of no bundle it names.
+fn read_bundles<'t>(
+    schema: &Schema,
+    e: &Envelope,
+    roles: &BTreeSet<i64>,
+    entry: impl Fn(&str) -> Result<&'t str, Error>,
+    entries: impl Iterator<Item = &'t String>,
+) -> Result<(Rows, Vec<Fact>), Error> {
+    let (mut rows, mut facts, mut named, mut index) =
+        (Rows::new(), Vec::new(), BTreeSet::new(), Vec::new());
+    let text = entry(INDEX)?.strip_prefix(&header_line(e));
+    for line in text.ok_or_else(|| damaged(INDEX))?.lines() {
+        let number = |n: &str| n.parse::<i64>().ok();
+        let fact = match line
+            .split_once(' ')
+            .map(|(k, rest)| (k, rest.split_once(' ')))
+        {
+            Some(("bundle", _)) => {
+                if named.insert(format!("{BUNDLES}{}", &line["bundle ".len()..])) {
+                    continue;
+                }
+                None
+            }
+            Some(("family", Some((role, family)))) => {
+                number(role).map(|r| Fact::Family(family.to_owned(), r))
+            }
+            Some(("expired", Some((b, at)))) => number(b)
+                .zip(number(at))
+                .map(|(b, at)| Fact::Expired(b, at)),
+            _ => None,
+        };
+        index.push(fact.ok_or_else(|| damaged(INDEX))?);
+    }
+    if let Some(stray) = entries
+        .filter(|n| n.starts_with(BUNDLES))
+        .find(|n| *n != INDEX && !named.contains(*n))
+    {
+        return Err(damaged(stray));
+    }
+    let (mut ids, mut families) = (BTreeSet::new(), BTreeSet::new());
+    for name in &named {
+        let text = entry(name)?.strip_prefix(&header_line(e));
+        let (id, family, mark, mine) = text
+            .and_then(|t| read_bundle(schema, t, &name[BUNDLES.len()..]))
+            .filter(|(_, _, mark, _)| mark.as_ref().is_none_or(|m| roles.contains(&m.role)))
+            .ok_or_else(|| damaged(name))?;
+        ids.insert(id);
+        families.insert(family);
+        facts.extend(mark.map(|m| Fact::Registered(id, m)));
+        for (r, held) in mine {
+            rows.entry(r).or_default().extend(held);
+        }
+    }
+    let known = |f: &Fact| match f {
+        Fact::Family(family, role) => families.contains(family) && roles.contains(role),
+        Fact::Expired(bundle, _) => ids.contains(bundle),
+        _ => false,
+    };
+    if !index.iter().all(known) {
+        return Err(damaged(INDEX));
+    }
+    facts.extend(index);
+    Ok((rows, facts))
+}
+
+/// Returns the id, family, registration mark and rows of bundle `name` from `text`, its entry
+/// after the header line, once its `catalog::bundles` holds `name`'s row alone and its other rows
+/// are that bundle's.
+fn read_bundle(
+    schema: &Schema,
+    text: &str,
+    name: &str,
+) -> Option<(i64, String, Option<Mark>, Rows)> {
+    let (mut rest, mut mark) = (text, None);
+    if let Some(after) = rest.strip_prefix("mark ") {
+        let (line, after) = after.split_once('\n')?;
+        let mut words = line.splitn(3, ' ');
+        let role = words.next()?.parse().ok()?;
+        let origin = match words.next()? {
+            "open" => Origin::Open,
+            "command" => Origin::Command,
+            _ => return None,
+        };
+        let len = words.next()?.parse().ok()?;
+        let text = after.get(..len)?.to_owned();
+        rest = after.get(len..)?.strip_prefix('\n')?;
+        mark = Some(Mark { role, origin, text });
+    }
+    let rows = sections(schema, rest, &BUNDLED)?;
+    let [bundles, registered, feeds, members] = BUNDLED.map(|n| values::relation(schema, n));
+    let [row] = &rows[&bundles].iter().collect::<Vec<_>>()[..] else {
+        return None;
+    };
+    let at = |n| field(schema, bundles, row, n);
+    let (Some(Val::Text(n)), Some(&Val::Int(id)), Some(Val::Text(family))) =
+        (at("name"), at("id"), at("family"))
+    else {
+        return None;
+    };
+    let held = |r: RelId, key: &str, among: &BTreeSet<Val>| {
+        let of = |row: &Val| field(schema, r, row, key).is_some_and(|v| among.contains(v));
+        rows[&r].iter().all(of)
+    };
+    let own = BTreeSet::from([Val::Int(id)]);
+    let fed = rows[&feeds]
+        .iter()
+        .filter_map(|f| field(schema, feeds, f, "id").cloned());
+    let owned = &**n == name
+        && held(registered, "bundle", &own)
+        && held(feeds, "bundle", &own)
+        && held(members, "feed", &fed.collect());
+    let family = family.to_string();
+    owned.then_some((id, family, mark, rows))
+}
+
 fn sequenced(schema: &Schema, r: RelId) -> bool {
     let rel = schema.relation(r);
     rel.generate == Some(Generator::Sequence) && rel.key.len() == 1
@@ -270,6 +464,10 @@ impl<R: Runtime> Engine<R> {
             generators.push_str(&format!("generator {id} {next}\n"));
         }
         entries.push((GENERATORS.to_owned(), generators));
+        let deployed = self.db.deployed(tx, &self.deployment);
+        let deployed = deployed.map_err(|e| failed(write::Broken::Facts(e).into()))?;
+        let bundled = rows_of(schema, &BUNDLED, rows)?;
+        entries.extend(bundle_entries(&envelope, schema, &bundled, &deployed));
         for r in dumped(schema) {
             let mut by_ctor: BTreeMap<u32, BTreeSet<Val>> = BTreeMap::new();
             for row in self.db.relation_rows(tx, r).map_err(failed)? {
@@ -331,8 +529,19 @@ pub(super) fn restore_dump<R: Runtime>(
         .get(SECURITY)
         .map(|_| security_rows(&schema, entry(SECURITY)?, e));
     let security = security.transpose()?.unwrap_or_default();
+    let roles = values::relation(&schema, "roles");
+    let ids = security.get(&roles).into_iter().flatten();
+    let ids = ids.filter_map(|r| match field(&schema, roles, r, "id") {
+        Some(Val::Int(id)) => Some(*id),
+        _ => None,
+    });
+    let roles = ids.chain([OWNER_ID]).collect();
+    let (bundled, facts) = read_bundles(&schema, e, &roles, entry, entries.keys())?;
     let deployed = section(SETTINGS, &[SETTINGS])?.into_iter();
-    let deployed = deployed.chain(section(AUDIT, &[AUDIT])?).collect();
+    let deployed = deployed
+        .chain(section(AUDIT, &[AUDIT])?)
+        .chain(bundled)
+        .collect();
     let mut ids = section(IDS, &[&KEYED[..], &["grants"]].concat())?;
     let grants = values::relation(&schema, "grants");
     let logged = ids.remove(&grants).unwrap_or_default();
@@ -347,6 +556,7 @@ pub(super) fn restore_dump<R: Runtime>(
         ids,
         logged,
         deployed,
+        facts,
     };
     let log_dir = options.storage(path).log_dir();
     let (aside, made) = storage::restore_aside(rt, path, &log_dir).map_err(refused)?;
@@ -357,6 +567,7 @@ pub(super) fn restore_dump<R: Runtime>(
             after: Some(manifest.snapshot),
             replay: Some(held),
         }),
+        registrations: Vec::new(),
         ..options.clone()
     };
     let open = |log: Log, options: &OpenOptions| {
@@ -369,15 +580,11 @@ pub(super) fn restore_dump<R: Runtime>(
             e => Error::invalid(format!("the dumped log does not open: {e}")),
         })
     };
-    let bare = OpenOptions {
-        registrations: Vec::new(),
-        ..opening.clone()
-    };
-    let built = open(Log::default(), &bare)
+    let built = open(Log::default(), &opening)
         .and_then(|db| {
             let secured = db
                 .engine
-                .replace_rows(on(&parsed.schema, &db.engine.schema, security));
+                .replace_rows(on(&parsed.schema, &db.engine.schema, security), &[]);
             let closed = db.close();
             secured.and(closed)
         })
@@ -422,10 +629,11 @@ fn security_rows(schema: &Schema, text: &str, e: &Envelope) -> Result<Rows, Erro
 }
 
 impl<R: Runtime> Engine<R> {
-    /// Replace every row of each relation of `rows` by its rows, as one transaction.
+    /// Replace every row of each relation of `rows` by its rows and write `facts`, as one
+    /// transaction.
     ///
     /// Precondition: each relation is one no migration writes.
-    fn replace_rows(&self, rows: Rows) -> Result<(), Error> {
+    fn replace_rows(&self, rows: Rows, facts: &[Fact]) -> Result<(), Error> {
         let mut terms = Terms::default();
         let mut params = Vec::new();
         let mut changes = Vec::new();
@@ -453,14 +661,22 @@ impl<R: Runtime> Engine<R> {
         };
         let failed = |w| self.write_error(super::TxnId(0), w);
         let tx = self.db.begin().map_err(failed)?;
-        match self
+        let x = tx
+            .xid()
+            .expect("a write transaction of the write path has an id");
+        let written = self
             .db
             .statements(&tx, text, &mut Local::default(), Bounds::default())
-        {
-            Ok(_) => self.db.commit(tx).map(drop).map_err(failed),
-            Err(f) => {
+            .map_err(|f| f.error)
+            .and_then(|_| {
+                let facts = self.deployment.insert(&self.pager, x, facts);
+                facts.map_err(|e| write::Broken::Facts(e).into())
+            });
+        match written {
+            Ok(()) => self.db.commit(tx).map(drop).map_err(failed),
+            Err(e) => {
                 self.db.abort(tx).map_err(failed)?;
-                Err(failed(f.error))
+                Err(failed(e))
             }
         }
     }
@@ -492,7 +708,8 @@ fn fill<R: Runtime>(
         return Err(damaged(missing));
     }
     let named = [LOG, IDS, GENERATORS, SECURITY, SETTINGS, AUDIT];
-    let expected = |n: &str| named.contains(&n) || data.iter().any(|d| d.2 == n);
+    let expected =
+        |n: &str| named.contains(&n) || n.starts_with(BUNDLES) || data.iter().any(|d| d.2 == n);
     if let Some(unexpected) = entries.keys().find(|n| !expected(n)) {
         return Err(damaged(unexpected));
     }
@@ -535,7 +752,7 @@ fn fill<R: Runtime>(
         .filter(|g| dormant(schema, grants, g))
         .map(|g| dormant_grant(schema, grants, g).ok_or_else(|| damaged(IDS)))
         .collect::<Result<_, _>>()?;
-    engine.replace_rows(deployed)?;
+    engine.replace_rows(deployed, &parsed.facts)?;
     for (r, next) in resumed {
         engine
             .db
@@ -606,6 +823,7 @@ struct Parsed {
     ids: Rows,
     logged: BTreeSet<Val>,
     deployed: Rows,
+    facts: Vec<Fact>,
 }
 
 /// Returns the dormant `Log` row `row` of `catalog::grants` as a restore reports it.

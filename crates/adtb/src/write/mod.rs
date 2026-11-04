@@ -1107,6 +1107,15 @@ impl<R: Runtime> Database<R> {
             .map(|rows| rows.into_iter().map(|(_, row)| row).collect())
     }
 
+    /// Returns the deployment facts of `d` that `tx` reads.
+    pub(crate) fn deployed(
+        &self,
+        tx: &Txn,
+        d: &crate::catalog::Deployment,
+    ) -> Result<crate::catalog::Deployed, crate::catalog::Error> {
+        d.at(&self.pager, &self.txns, &tx.snapshot)
+    }
+
     /// Returns the position of the latest commit `tx` reads, else of the log's durable end.
     pub(crate) fn read_position(&self, tx: &Txn) -> Position {
         let upto = self.txns.read_upto(tx.hold);

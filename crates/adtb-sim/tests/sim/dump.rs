@@ -3,16 +3,19 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::time::Duration;
 
-use adtb::catalog::{Catalog, Dormant};
+use adtb::catalog::{Catalog, Dormant, version_hash};
 use adtb::key::Value;
 use adtb::runtime::{IoError, Op, Runtime as _};
 use adtb::storage::{self, Envelope, Lsn, Pager};
 use adtb::{
-    ArchiveTarget, CallOptions, Capability, Database, Error, FatalReason, Log, OpenOptions,
-    Position, RejectReason, RestorePoint, Restored, TxnCallOptions, TxnOptions, restore_in,
-    restore_report_in,
+    ArchiveTarget, CallOptions, Called, Capability, Database, Error, FatalReason, Log, OpenOptions,
+    Position, Registration, RejectReason, RestorePoint, Restored, TxnCallOptions, TxnOptions,
+    restore_in, restore_report_in,
 };
+use adtb_lang::evolve::Source;
+use adtb_lang::parse::{Options, parse_migration};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::search::{self, Files, Hooked};
 use adtb_simkit::{api, grants};
@@ -95,7 +98,11 @@ const LOGGED: [&str; 14] = [
 ];
 
 /// The catalog relations of deployment state a dump carries.
-const DEPLOYED: [&str; 6] = [
+const DEPLOYED: [&str; 10] = [
+    "bundles",
+    "registered",
+    "feeds",
+    "feed_members",
     "roles",
     "credentials",
     "grants",
@@ -141,12 +148,6 @@ fn deploy(rt: &SimRuntime) {
     authority.drop_role("gone").unwrap();
     run(&db, "set setting RetryLimit = { retries: 4 }").unwrap();
     db.close().unwrap();
-    let options = storage::Options {
-        page_size: 8192,
-        ..storage::Options::new(FILE)
-    };
-    let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
-    let (catalog, txns) = Catalog::open(rt.clone(), &pager).unwrap();
     let credential = vec![
         ("id", Value::I64(1)),
         ("role", Value::I64(2)),
@@ -155,32 +156,140 @@ fn deploy(rt: &SimRuntime) {
         ("stored_key", Value::Bytes(vec![7; 32])),
         ("server_key", Value::Bytes(vec![9; 32])),
     ];
-    grants::deploy_fields(
-        &catalog,
-        &pager,
-        &txns,
-        ("credentials", "Credential"),
-        credential,
-    );
     let mapping = vec![
         ("listener", Value::Text("local".to_owned())),
         ("ordinal", Value::I32(1)),
         ("pattern", Value::Text("svc".to_owned())),
         ("role", Value::Text("web".to_owned())),
     ];
-    grants::deploy_fields(
-        &catalog,
-        &pager,
-        &txns,
-        ("peer_mappings", "PeerMapping"),
-        mapping,
+    write_rows(
+        rt,
+        vec![
+            ("credentials", "Credential", credential),
+            ("peer_mappings", "PeerMapping", mapping),
+        ],
     );
+}
+
+/// A catalog relation, one of its constructors and the fields of a row of it.
+type CatalogRow = (&'static str, &'static str, Vec<(&'static str, Value)>);
+
+/// Write `rows` into the catalog of the closed `FILE`.
+fn write_rows(rt: &SimRuntime, rows: Vec<CatalogRow>) {
+    let options = storage::Options {
+        page_size: 8192,
+        ..storage::Options::new(FILE)
+    };
+    let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
+    let (catalog, txns) = Catalog::open(rt.clone(), &pager).unwrap();
+    for (relation, ctor, fields) in rows {
+        grants::deploy_fields(&catalog, &pager, &txns, (relation, ctor), fields);
+    }
     drop((catalog, txns));
     pager.close();
 }
 
-/// Returns a device holding `FILE` with `ROWS`, the deployment state of [`deploy`], the third
-/// user deleted, and its dump, and the position the dump's snapshot reads.
+const HELLO: &str = "query hello () -> Text = \"hi\"\n";
+const READS: &str = "import app\nquery names () -> Set Text = from u in users select u.name\n";
+
+/// Returns bundle `name` pinned at the last version of [`app_log`], with `clauses`, holding
+/// `body`.
+fn bundle(name: &str, clauses: &str, body: &str) -> Registration {
+    let mut source = Source::default();
+    for text in app_log() {
+        let file = parse_migration(&text, Options::default()).ok().unwrap();
+        source = source.migrate(&file, &text).unwrap();
+    }
+    let hash = version_hash(&source.schema().unwrap(), &source);
+    let hash: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+    let pins = format!("pins 2 ({hash}) edition \"2026-10\"");
+    Registration::bundle(format!("bundle {name} {pins}{clauses}\n{body}")).unwrap()
+}
+
+/// The bundles of [`dumped`], each with the outcome of calling its first query.
+fn bundle_outcomes() -> [(&'static str, Result<Vec<String>, RejectReason>); 6] {
+    let names = Ok(vec!["\"ann\"".to_owned(), "\"bo\"".to_owned()]);
+    let bundle = |name: &str| name.to_owned();
+    [
+        (
+            "app-0.9",
+            Err(RejectReason::BundleSuperseded {
+                bundle: bundle("app-0.9"),
+            }),
+        ),
+        ("app-1.0", names),
+        (
+            "gui-1.0",
+            Err(RejectReason::BundleSuperseded {
+                bundle: bundle("gui-1.0"),
+            }),
+        ),
+        (
+            "old-1.0",
+            Err(RejectReason::Retired {
+                bundle: bundle("old-1.0"),
+            }),
+        ),
+        (
+            "short-1.0",
+            Err(RejectReason::BundleExpired {
+                bundle: bundle("short-1.0"),
+                query: String::new(),
+            }),
+        ),
+        ("tool-1.0", Ok(vec!["\"hi\"".to_owned()])),
+    ]
+}
+
+/// Register the bundles of [`bundle_outcomes`] on `db`, `tool-1.0` as `web`, the owner of its
+/// family, then supersede `app-0.9`, retire `old-1.0` and latch the lease of `short-1.0` as
+/// expired. Returns a feed of `app-1.0` over `app::users` and its member row.
+fn register_bundles(rt: &SimRuntime, db: &Database<SimRuntime>) -> Vec<CatalogRow> {
+    let authority = db.role_authority();
+    for (name, _) in bundle_outcomes() {
+        let (role, clauses, body) = match name {
+            "tool-1.0" => ("web", "", HELLO),
+            "gui-1.0" => continue,
+            "short-1.0" => ("owner", " lease 1h", READS),
+            _ => ("owner", "", READS),
+        };
+        let session = authority.session(role).unwrap();
+        authority
+            .register(&session, &bundle(name, clauses, body))
+            .unwrap();
+    }
+    run(db, "supersede bundle app-0.9 by app-1.0").unwrap();
+    run(db, "retire bundle old-1.0").unwrap();
+    adtb_simkit::common::sleep(rt, &mut rt.io(), Duration::from_secs(3 * 3600));
+    run(db, "set setting LeaseGrace = { grace: 2h }").unwrap();
+    let key = |text: &str| {
+        let key = answer(db, text);
+        let digits = key.trim_end_matches(')').rsplit('(').next().unwrap();
+        Value::I64(digits.parse().unwrap())
+    };
+    let relation = key("from r in catalog::relations where r.name == \"users\" select r.id");
+    let ctor = key("from c in catalog::constructors where c.name == \"User\" select c.id");
+    let feed = vec![
+        ("id", Value::I64(1)),
+        ("bundle", Value::I64(2)),
+        ("name", Value::Text("users".to_owned())),
+        ("ordinal", Value::I32(1)),
+        ("relation", relation.clone()),
+        ("set", Value::Text("app::users".to_owned())),
+    ];
+    let member = vec![
+        ("feed", Value::I64(1)),
+        ("relation", relation),
+        ("ctor", ctor),
+    ];
+    vec![
+        ("feeds", "Feed", feed),
+        ("feed_members", "FeedMember", member),
+    ]
+}
+
+/// Returns a device holding `FILE` with `ROWS`, the deployment state of [`deploy`], the bundles
+/// of [`register_bundles`], the third user deleted, and its dump, and the position the dump's snapshot reads.
 fn dumped() -> (Files, Position) {
     let mut sim = Sim::new(1, Config::default());
     let at = api::run(&mut sim, |rt| {
@@ -188,6 +297,16 @@ fn dumped() -> (Files, Position) {
         run(&db, ROWS).unwrap();
         db.close().unwrap();
         deploy(&rt);
+        let db = open(&rt, FILE, &app_log());
+        let feed = register_bundles(&rt, &db);
+        db.close().unwrap();
+        write_rows(&rt, feed);
+        let gui = OpenOptions {
+            registrations: vec![bundle("gui-1.0", "", HELLO)],
+            ..api::options(2)
+        };
+        let db = Database::open_in(rt.clone(), FILE, &Log::new(app_log()), &gui).unwrap();
+        db.close().unwrap();
         let db = open(&rt, FILE, &app_log());
         run(&db, "delete u in users where u.name == \"cy\"").unwrap();
         let t = db.begin(&TxnOptions::default()).unwrap();
@@ -297,6 +416,62 @@ fn a_restore_keeps_roles_capabilities_and_the_next_role_id() {
         src.close().unwrap();
         copy.close().unwrap();
     });
+}
+
+/// Returns what calling the first query of bundle `name` on `db` answers: its rows or its refusal.
+fn outcome(db: &Database<SimRuntime>, name: &str) -> Result<Vec<String>, RejectReason> {
+    let called = db
+        .registered(name)
+        .and_then(|b| b.call(1, &[], &CallOptions::default()));
+    match called {
+        Ok(Called::Rows(rows)) => Ok(api::printed(rows)),
+        Err(Error::Rejected { reason }) => Err(reason),
+        other => panic!("{name}: {other:?}"),
+    }
+}
+
+#[test]
+fn each_restored_bundle_answers_or_refuses_its_calls_as_its_source() {
+    let (files, _) = dumped();
+    let mut sim = Sim::with_files(9, Config::default(), files);
+    api::run(&mut sim, |rt| {
+        let given = OpenOptions {
+            registrations: vec![bundle("new-1.0", "", HELLO)],
+            ..no_create()
+        };
+        restore(&rt, RestorePoint::Latest, &given).unwrap();
+        let (src, copy) = (open(&rt, FILE, &app_log()), open(&rt, COPY, &app_log()));
+        for (name, expected) in bundle_outcomes() {
+            assert_eq!(expected, outcome(&src, name), "source {name}");
+            assert_eq!(expected, outcome(&copy, name), "restored {name}");
+        }
+        run(&copy, "dump to \"again\"").unwrap();
+        let owned = "family tool is owned by role web".to_owned();
+        for db in [&src, &copy] {
+            let authority = db.role_authority();
+            authority.create_role("ops").unwrap();
+            let session = |role| authority.session(role).unwrap();
+            let refused = authority.register(&session("ops"), &bundle("tool-2.0", "", HELLO));
+            let denied = |e: &Error| matches!(e, Error::Rejected { reason: RejectReason::Denied { detail } } if *detail == owned);
+            assert!(refused.as_ref().is_err_and(denied), "{refused:?}");
+            let new = bundle("new-1.0", "", HELLO);
+            authority.register(&session("web"), &new).unwrap();
+        }
+        src.close().unwrap();
+        copy.close().unwrap();
+    });
+    let files = sim.files();
+    let bundles = files.iter().filter(|(p, _)| p.starts_with("d/bundles/"));
+    let mut again = 0;
+    for (path, bytes) in bundles {
+        assert_eq!(
+            Some(bytes),
+            files.get(&path.replacen("d/", "again/", 1)),
+            "{path}"
+        );
+        again += 1;
+    }
+    assert_eq!(7, again);
 }
 
 const GRANTED: &str = "module app\ngrant read users to web\n";
@@ -529,6 +704,69 @@ fn a_restored_file_begins_an_epoch_past_the_dump_and_keeps_no_past() {
     let manifest = String::from_utf8_lossy(&sim.files()["bk/manifest"]).into_owned();
     let ended = format!("epoch_ended {} {}", at.epoch, at.lsn);
     assert!(manifest.lines().any(|l| l == ended), "{manifest}");
+}
+
+fn expired(bundle: &str) -> Result<Vec<String>, RejectReason> {
+    let (bundle, query) = (bundle.to_owned(), String::new());
+    Err(RejectReason::BundleExpired { bundle, query })
+}
+
+#[test]
+fn a_lease_latched_in_the_dumping_session_stays_expired_after_restore() {
+    let mut sim = Sim::new(17, Config::default());
+    api::run(&mut sim, |rt| {
+        let db = open(&rt, FILE, &app_log());
+        run(&db, "set setting LeaseGrace = { grace: 60s }").unwrap();
+        let owner = db.role_authority().session("owner").unwrap();
+        let short = bundle("s-1.0", " lease 1h", HELLO);
+        db.role_authority().register(&owner, &short).unwrap();
+        adtb_simkit::common::sleep(&rt, &mut rt.io(), Duration::from_secs(2 * 3600));
+        run(&db, "set setting LeaseGrace = { grace: 100h }").unwrap();
+        dump(&db).unwrap();
+        assert_eq!(expired("s-1.0"), outcome(&db, "s-1.0"), "source");
+        restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
+        let copy = open(&rt, COPY, &app_log());
+        assert_eq!(expired("s-1.0"), outcome(&copy, "s-1.0"), "restored");
+        copy.close().unwrap();
+        db.close().unwrap();
+    });
+}
+
+#[test]
+fn a_registration_after_the_dump_snapshot_leaves_its_family_unowned_in_the_restore() {
+    let mut sim = Sim::new(18, Config::default());
+    api::run(&mut sim, |rt| {
+        let db = open(&rt, FILE, &app_log());
+        let read_only = TxnOptions {
+            read_only: true,
+            ..TxnOptions::default()
+        };
+        let call = TxnCallOptions::default();
+        let mut reader = db.begin(&read_only).unwrap();
+        reader.query_text("users", &[], &call).unwrap();
+        let authority = db.role_authority();
+        authority.create_role("web").unwrap();
+        authority
+            .register(
+                &authority.session("web").unwrap(),
+                &bundle("zed-1.0", "", HELLO),
+            )
+            .unwrap();
+        reader
+            .query_text(&format!("dump to \"{DUMP}\""), &[], &call)
+            .unwrap();
+        reader.commit(None).unwrap();
+        restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
+        let copy = open(&rt, COPY, &app_log());
+        let authority = copy.role_authority();
+        authority.create_role("ops").unwrap();
+        let ops = authority.session("ops").unwrap();
+        authority
+            .register(&ops, &bundle("zed-2.0", "", HELLO))
+            .unwrap();
+        copy.close().unwrap();
+        db.close().unwrap();
+    });
 }
 
 #[test]
@@ -905,6 +1143,10 @@ fn a_dump_that_decodes_wrong_is_refused_naming_its_part_and_writes_nothing() {
         ),
         (
             "manifest",
+            resealed(&files, |b| b.replacen("part ids ", "part ids/x ", 1)),
+        ),
+        (
+            "manifest",
             resealed(&files, |b| {
                 b.replacen(&format!("part {users} "), "part data/../log ", 1)
             }),
@@ -1022,6 +1264,96 @@ fn deployment_state_that_decodes_wrong_is_refused_naming_its_part_and_writes_not
     for (part, bad) in named.into_iter().zip(cases) {
         assert_eq!(part, damaged_part(refused_with(bad)), "{part}");
     }
+    let (index, app, tool) = ("bundles/index", "bundles/app-1.0", "bundles/tool-1.0");
+    assert!(text(index).contains("family 2 tool\n"), "{}", text(index));
+    assert!(text(index).contains("\nexpired 4 "), "{}", text(index));
+    assert!(text(tool).contains("\nmark 2 command "), "{}", text(tool));
+    assert!(text("bundles/gui-1.0").contains("\nmark 1 open "));
+    let after = |t: &str, relation: &str, row: &str, key: &str| {
+        let at = t.find(&format!("data catalog::{relation}\n")).unwrap();
+        let moved = row.replacen(key, "key(7)", 1);
+        assert!(t[at..].contains(row), "{relation}: {t}");
+        format!("{}{}", &t[..at], t[at..].replacen(row, &moved, 1))
+    };
+    let twice = |t: &str| {
+        let row = t.lines().find(|l| l.contains("bundles.key(2)")).unwrap();
+        t.replacen(
+            row,
+            &format!("{row}\n{}", row.replacen("key(2)", "key(9)", 1)),
+            1,
+        )
+    };
+    let bundles = [
+        (index, without(&files, index)),
+        (app, without(&files, app)),
+        (
+            "bundles/zz-1",
+            with_parts(
+                &files,
+                |_| {},
+                |_, t| t.to_owned(),
+                &[("bundles/zz-1", "x")],
+            ),
+        ),
+        (
+            index,
+            edited(index, &|t| t.replacen("family 2 ", "family two ", 1)),
+        ),
+        (
+            index,
+            edited(index, &|t| t.replacen("expired 4 ", "expired 4.0 ", 1)),
+        ),
+        (
+            index,
+            edited(index, &|t| t.replacen("expired 4 ", "expired 4 x", 1)),
+        ),
+        (index, edited(index, &|t| format!("{t}latched 4\n"))),
+        (
+            tool,
+            edited(tool, &|t| t.replacen("mark 2 command ", "mark 2 shell ", 1)),
+        ),
+        (
+            app,
+            edited(app, &|t| t.replacen("\"app-1.0\"", "\"app-1.1\"", 1)),
+        ),
+        (app, edited(app, &twice)),
+        (
+            app,
+            edited(app, &|t| {
+                after(t, "registered", "bundle: bundles.key(2)", "key(2)")
+            }),
+        ),
+        (
+            app,
+            edited(app, &|t| {
+                after(t, "feeds", "bundle: bundles.key(2)", "key(2)")
+            }),
+        ),
+        (
+            app,
+            edited(app, &|t| {
+                after(t, "feed_members", "feed: feeds.key(1)", "key(1)")
+            }),
+        ),
+        (tool, edited(tool, &|t| t.replacen("mark 2 ", "mark 9 ", 1))),
+        (index, edited(index, &|t| format!("{t}bundle app-1.0\n"))),
+        (
+            index,
+            edited(index, &|t| t.replacen("expired 4 ", "expired 99 ", 1)),
+        ),
+        (
+            index,
+            edited(index, &|t| t.replacen("family 2 tool", "family 2 zed", 1)),
+        ),
+        (
+            index,
+            edited(index, &|t| t.replacen("family 2 tool", "family 9 tool", 1)),
+        ),
+        (tool, without(&files, "security")),
+    ];
+    for (part, bad) in bundles {
+        assert_eq!(part, damaged_part(refused_with(bad)), "{part}");
+    }
 }
 
 #[test]
@@ -1130,7 +1462,9 @@ fn line_edits(lines: &[String]) -> Vec<Edit> {
         dropped.remove(i);
         let expect = match i {
             i if i < HEADER => judged(&dropped),
-            i if part_name(&lines[i]) == "security" => Answer::Restored,
+            i if part_name(&lines[i]) == "security" => {
+                Answer::Damaged("bundles/tool-1.0".to_owned())
+            }
             i => Answer::Damaged(part_name(&lines[i])),
         };
         cases.push((format!("drop {i}"), dropped, expect));

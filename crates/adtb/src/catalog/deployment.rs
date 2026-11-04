@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::heap::{self, FieldType, Heap};
 use crate::key::{CtorId, Scalar, Value};
-use crate::mvcc::{Scope, Transactions, Xid};
+use crate::mvcc::{Scope, Snapshot, Transactions, Xid};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
@@ -200,17 +200,9 @@ impl Catalog {
         txns: &Transactions<R>,
     ) -> Result<Deployed, Error> {
         let (id, snapshot) = txns.take(Scope::Heaps([ROOTS].into()))?;
-        let rows = visible(pager, txns, &snapshot, &self.roots);
+        let out = self.deployment().at(pager, txns, &snapshot);
         txns.release(id);
-        let mut out = Deployed::default();
-        for row in rows? {
-            if let [Value::Sum { ctor, fields }] = row.as_slice()
-                && holds(*ctor)
-            {
-                out.add(*ctor, fields)?;
-            }
-        }
-        Ok(out)
+        out
     }
 
     /// Returns the writer of deployment facts.
@@ -231,6 +223,24 @@ impl Catalog {
 }
 
 impl Deployment {
+    /// Returns the deployment facts `snapshot` sees.
+    pub fn at<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        txns: &Transactions<R>,
+        snapshot: &Snapshot,
+    ) -> Result<Deployed, Error> {
+        let mut out = Deployed::default();
+        for row in visible(pager, txns, snapshot, &self.roots)? {
+            if let [Value::Sum { ctor, fields }] = row.as_slice()
+                && holds(*ctor)
+            {
+                out.add(*ctor, fields)?;
+            }
+        }
+        Ok(out)
+    }
+
     #[cfg(test)]
     pub(crate) fn roots(&self) -> &Heap {
         &self.roots

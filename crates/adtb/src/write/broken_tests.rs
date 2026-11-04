@@ -76,8 +76,8 @@ fn after(b: Option<&Broken>) -> Option<(Broken, &'static str)> {
         Some(B::NoViolation) => (B::SettingNotRecord, "a setting's value is a record"),
         Some(B::SettingNotRecord) => (B::SettingField("f".into()), "a setting's value has field `f`"),
         Some(B::SettingField(_)) => (B::Denials(rot()), "Corrupt(\"a grant row has no I64 id\")"),
-        Some(B::Denials(_)) => (B::Expiry(rot()), "Corrupt(\"a grant row has no I64 id\")"),
-        Some(B::Expiry(_)) => (B::DeploymentRefused, "a deployment command was refused"),
+        Some(B::Denials(_)) => (B::Facts(rot()), "Corrupt(\"a grant row has no I64 id\")"),
+        Some(B::Facts(_)) => (B::DeploymentRefused, "a deployment command was refused"),
         Some(B::DeploymentRefused) => return None,
     })
 }

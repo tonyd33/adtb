@@ -1149,9 +1149,12 @@ impl<R: Runtime> Engine<R> {
             .expect("a write transaction of the write path has an id");
         if let Err(e) = self.deployment.insert(&self.pager, x, &facts) {
             self.db.abort(tx)?;
-            return Err(write::Broken::Expiry(e).into());
+            return Err(write::Broken::Facts(e).into());
         }
         self.db.commit(tx)?;
+        Arc::make_mut(&mut self.deployed.lock(&self.rt))
+            .deployed
+            .record(&facts);
         for mut row in due {
             row.latched = true;
             self.put(row);

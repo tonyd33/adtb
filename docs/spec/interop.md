@@ -779,7 +779,8 @@ A restore reproduces the dumped database exactly as clients see it:
 - the same key values, including generated ones, with every generator
   resuming at its dumped next value;
 - every bundle registered at its pinned version, with its owner, lease
-  and state;
+  and state; a lease's last renewal is kept as the same instant, so a
+  lease expired in the dumped database stays expired after the restore;
 - the same roles, grants, credential verifiers and peer mappings, so
   every principal authenticates and is authorised as before, except
   that a log grant whose role the dump lacks is dormant and reported;

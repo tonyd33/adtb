@@ -21,6 +21,8 @@ pub const DUMP_FORMAT: u32 = 1;
 const KIND: &str = "dump";
 /// The only form of the rows of `data/` this engine writes and reads.
 const DATA_FORM: &str = "text";
+/// The directories of a dump that hold entries.
+const DIRS: [&str; 2] = ["data", "bundles"];
 
 /// What a dump holds and the snapshot it was read at.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -131,11 +133,12 @@ impl DumpManifest {
     }
 }
 
-/// Returns whether `name` is a path a dump may hold an entry at: a name, or one inside `data/`.
+/// Returns whether `name` is a path a dump may hold an entry at: a name, or one inside a
+/// directory of [`DIRS`].
 fn entry_name(name: &str) -> bool {
     let plain = |n: &str| !n.is_empty() && !n.contains('/') && n != "." && n != "..";
-    match name.strip_prefix("data/") {
-        Some(rest) => plain(rest),
+    match name.split_once('/') {
+        Some((dir, rest)) => DIRS.contains(&dir) && plain(rest),
         None => plain(name),
     }
 }
@@ -198,9 +201,11 @@ fn write_entries<R: Runtime>(
     aside: &str,
     entries: &[(String, Vec<u8>)],
 ) -> Io<Vec<Part>> {
-    fs.make_dirs(&inside(aside, "data"), || {
-        BackupError::Occupied(aside.to_owned())
-    })?;
+    for dir in DIRS {
+        fs.make_dirs(&inside(aside, dir), || {
+            BackupError::Occupied(aside.to_owned())
+        })?;
+    }
     let mut parts = Vec::with_capacity(entries.len());
     for (name, bytes) in entries {
         let path = inside(aside, name);
@@ -217,7 +222,9 @@ fn write_entries<R: Runtime>(
             hash: hex(blake3::hash(bytes).as_bytes()),
         });
     }
-    fs.sync_dir(&inside(aside, "data"))?;
+    for dir in DIRS {
+        fs.sync_dir(&inside(aside, dir))?;
+    }
     Ok(parts)
 }
 
