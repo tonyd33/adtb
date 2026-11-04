@@ -1,0 +1,24 @@
+seed 601
+use adhoc
+
+as reader query
+  from d in docs.Draft select d.body
+----
+"text"
+
+as reader error Denied { detail: "role `reader` may not run this text" }
+  from d in docs select d.owner
+
+as reader error Denied { detail: "role `reader` may not run this text" }
+  from d in docs.Sent select d.to
+
+as narrow query
+  from d in docs.Draft select d.owner
+----
+"ann"
+
+as narrow error Denied { detail: "role `narrow` may not run this text" }
+  from d in docs.Draft select d.body
+
+as narrow error Denied { detail: "role `narrow` may not run this text" }
+  from d in docs.Draft select d

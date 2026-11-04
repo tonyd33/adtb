@@ -1,0 +1,10 @@
+seed 657
+use adhoc
+as reader error Denied { detail: "role `reader` may not run this text" }
+  fix r = (from s in secrets select s.salary) union (from x in r, y in r select x) in r
+as outer error Denied { detail: "role `outer` may not run this text" }
+  fix r = (from s in secrets select s.salary) union (from x in r, y in r select x) in r
+as reader query
+  fix r = (from d in docs.Draft select d.owner) union (from x in r select x) in r
+----
+"ann"

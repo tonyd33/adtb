@@ -1,0 +1,18 @@
+seed 641
+use adhoc
+as reader run
+  temp relation t : Doc key id
+as reader run
+  temp relation t : { n: Option I64 } key n
+as reader query
+  from d in docs.Draft select { o: d.owner, b: d.body }
+----
+{ b: "text", o: "ann" }
+as reader query
+  Draft { id: docs.key(1), owner: "a", body: "b" }
+----
+Draft { id: docs.key(1), owner: "a", body: "b" }
+as reader query
+  lower("A")
+----
+"a"

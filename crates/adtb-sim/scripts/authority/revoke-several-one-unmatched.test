@@ -1,0 +1,12 @@
+seed 204
+use empty
+role bob
+grant
+  grant monitor to bob
+revoke error Invalid { detail: "`revoke monitor, cancel from bob` matches no grant `owner` may revoke" }
+  revoke monitor, cancel from bob
+
+query
+  from g in catalog::grants where g.privilege == "monitor" select g.grantee ++ " " ++ g.grantor ++ " " ++ print(g.grant_option)
+----
+"bob owner False"

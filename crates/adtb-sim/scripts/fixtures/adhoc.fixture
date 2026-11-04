@@ -1,0 +1,70 @@
+# The ad hoc schema: docs by draft or sent, secrets and notes, seventeen roles holding adhoc,
+# the grants of each, and one row of each constructor and one secret.
+use adhoc-schema
+role noter
+role upserter
+role loader
+role reader
+role narrow
+role inserter
+role updater
+role frozen
+role deleter
+role retagger
+role writer
+role outer
+role payer
+role caller_fn
+role bare
+role other
+role cataloged
+grant
+  grant adhoc to noter
+  grant adhoc to upserter
+  grant adhoc to loader
+  grant adhoc to reader
+  grant adhoc to narrow
+  grant adhoc to inserter
+  grant adhoc to updater
+  grant adhoc to frozen
+  grant adhoc to deleter
+  grant adhoc to retagger
+  grant adhoc to writer
+  grant adhoc to outer
+  grant adhoc to payer
+  grant adhoc to caller_fn
+  grant adhoc to bare
+  grant adhoc to other
+  grant adhoc to cataloged
+migrate
+  module shop
+  grant read docs.Draft (id, owner, body) to reader
+  grant read docs.Draft (owner) to narrow
+  grant insert docs.Draft to inserter
+  grant read docs.Draft to updater
+  grant update docs.Draft (body) to updater
+  grant read docs.Draft to frozen
+  grant read docs.Sent to deleter
+  grant delete docs.Sent to deleter
+  grant read docs to retagger
+  grant retag docs.Draft -> docs.Sent to retagger
+  grant read docs.Draft to writer
+  grant insert docs.Draft to writer
+  grant read secrets (id) to outer
+  grant insert secrets to payer
+  grant read docs to upserter
+  grant insert docs.Draft to upserter
+  grant update docs to upserter
+  grant retag docs.Sent -> docs.Draft to upserter
+  grant read docs.Draft to loader
+  grant insert secrets to loader
+  grant insert doc_rejects to loader
+  grant read doc_rejects to loader
+  grant call fn salaries to caller_fn
+  grant call fn pure_answer to caller_fn
+  grant call fn maybe to reader
+  grant read notes to noter
+run
+  insert docs.Draft { owner: "ann", body: "text" }
+  insert docs.Sent { owner: "bob", to: "cid" }
+  insert secrets { salary: 7 }

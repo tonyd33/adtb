@@ -1,0 +1,12 @@
+seed 605
+use adhoc
+as retagger error Denied { detail: "role `retagger` may not run this text" }
+  update d in docs.Sent set Draft { body: "b" }
+as retagger run
+  update d in docs.Draft set Sent { to: "t" }
+
+query
+  from d in docs.Sent select d.owner
+----
+"ann"
+"bob"

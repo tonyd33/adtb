@@ -1,0 +1,12 @@
+seed 994
+use coded
+bundle web-1.0 pins 2 edition "2026-10"
+  import auth
+  query q () -> Set Text = from h in hs select h.n
+reopen
+bundle web-1.0 pins 2 edition "2026-10"
+  import auth
+  query q () -> Set Text = from h in hs select h.n
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "redefine fn f (t: Text) -> Text = host \"b\" version \"1.0\" deterministic", detail: "bundle web-1.0 pins 2: its version holds another code of host or Wasm function `f`" } } }
+  module auth
+  redefine fn f (t: Text) -> Text = host "b" version "1.0" deterministic

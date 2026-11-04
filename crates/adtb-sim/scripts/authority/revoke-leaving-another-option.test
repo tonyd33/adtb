@@ -1,0 +1,20 @@
+seed 206
+use empty
+role a
+role b
+role x
+grant
+  grant schema to x
+  grant monitor to a with grant option
+as x grant
+  grant monitor to a with grant option
+as a grant
+  grant monitor to b
+as x revoke
+  revoke monitor from a
+
+query
+  from g in catalog::grants where g.privilege == "monitor" select g.grantee ++ " " ++ g.grantor ++ " " ++ print(g.grant_option)
+----
+"a owner True"
+"b a False"

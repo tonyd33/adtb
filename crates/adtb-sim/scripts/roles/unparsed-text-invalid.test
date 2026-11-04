@@ -1,0 +1,4 @@
+seed 608
+use adhoc
+as bare error Invalid { detail: "expected a binder name, found `from`" }
+  from from

@@ -1,0 +1,9 @@
+# The auth schema, then host function `f` of code `a` and relation `hs`, as the log's first two
+# migrations, with host functions `a`, `b` and `c` supplied.
+host a b c
+use auth
+log
+  module auth
+  define fn f (t: Text) -> Text = host "a" version "1.0" deterministic
+  add type H { id: Key hs } = R { n: Text }
+  add relation hs : H key id generate sequence

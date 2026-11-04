@@ -1,0 +1,18 @@
+seed 997
+use coded
+bundle web-1.0 pins 2 edition "2026-10"
+  import auth
+  txn q () -> I32 =
+    transact
+      let h = insert hs.R { n: f("s") }
+      return 1
+reopen
+bundle web-1.0 pins 2 edition "2026-10"
+  import auth
+  txn q () -> I32 =
+    transact
+      let h = insert hs.R { n: f("s") }
+      return 1
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "redefine fn f (t: Text) -> Text = host \"b\" version \"1.0\" deterministic", detail: "bundle web-1.0 pins 2: its version holds another code of host or Wasm function `f`" } } }
+  module auth
+  redefine fn f (t: Text) -> Text = host "b" version "1.0" deterministic

@@ -1,0 +1,5 @@
+seed 986
+use hosted
+migrate refused RegistrationRefused { bundle: "web-1.0", reason: Rejected { reason: Untranslatable { query: "web-1.0::put", detail: "across `add field H.R.x: Text fill n(\"a\")`: it calls `n`, whose code changed since the pin" } } }
+  module auth
+  add field H.R.x: Text fill n("a")

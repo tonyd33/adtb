@@ -1,0 +1,43 @@
+seed 208
+use empty
+role ann
+role bob
+role x
+grant
+  grant monitor to ann with grant option
+as ann grant
+  grant monitor to bob with grant option
+as bob grant error Invalid { detail: "`monitor` with grant option from `bob` to `ann` would close a cycle of grant options" }
+  grant monitor to ann with grant option
+as ann grant error Invalid { detail: "`monitor` with grant option from `ann` to `ann` would close a cycle of grant options" }
+  grant monitor to ann with grant option
+as bob grant
+  grant monitor to ann
+as bob revoke
+  revoke monitor from ann
+as ann revoke
+  revoke monitor from bob
+revoke
+  revoke monitor from ann
+
+query
+  from g in catalog::grants where g.privilege == "monitor" select g.grantee ++ " " ++ g.grantor ++ " " ++ print(g.grant_option)
+----
+grant
+  grant schema to x
+as x grant
+  grant monitor to ann with grant option
+as ann grant
+  grant monitor to bob with grant option
+as bob grant error Invalid { detail: "`monitor` with grant option from `bob` to `ann` would close a cycle of grant options" }
+  grant monitor to ann with grant option
+as x revoke error Invalid { detail: "`revoke monitor from ann` takes a grant option these grants rely on: `monitor` given by `ann` to `bob`" }
+  revoke monitor from ann
+as ann revoke
+  revoke monitor from bob
+as x revoke
+  revoke monitor from ann
+
+query
+  from g in catalog::grants where g.privilege == "monitor" select g.grantee ++ " " ++ g.grantor ++ " " ++ print(g.grant_option)
+----

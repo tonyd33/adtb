@@ -1,0 +1,14 @@
+seed 984
+use hosted
+migrate
+  module auth
+  add field H.R.x: Text fill h("a")
+
+call web-1.0 1 committed
+----
+1
+
+query
+  from h in hs select h
+----
+R { id: hs.key(1), n: "s", x: "h" }

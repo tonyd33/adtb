@@ -1,0 +1,6 @@
+seed 673
+use adhoc
+grant
+  grant maintain to bare
+as bare error Invalid { detail: "`secrets` declares no index or unique with these fields" }
+  reindex secrets index (salry)

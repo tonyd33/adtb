@@ -1,0 +1,4 @@
+use auth
+reopen
+as bob migrate
+  module auth

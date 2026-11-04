@@ -1,0 +1,4 @@
+seed 630
+use adhoc
+as reader error Denied { detail: "role `reader` may not run this text" }
+  from d in docs select d.owner

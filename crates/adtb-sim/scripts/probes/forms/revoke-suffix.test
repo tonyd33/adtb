@@ -1,0 +1,4 @@
+use auth
+reopen
+revoke refused Invalid
+  revoke monitor from bob

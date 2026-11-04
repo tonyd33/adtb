@@ -1,0 +1,24 @@
+seed 203
+use empty
+role ann
+role bob
+grant
+  grant monitor to ann with grant option
+as ann grant
+  grant monitor to bob
+revoke error Invalid { detail: "`revoke monitor from ann` takes a grant option these grants rely on: `monitor` given by `ann` to `bob`" }
+  revoke monitor from ann
+
+query
+  from g in catalog::grants where g.privilege == "monitor" select g.grantee ++ " " ++ g.grantor ++ " " ++ print(g.grant_option)
+----
+"ann owner True"
+"bob ann False"
+as ann revoke
+  revoke monitor from bob
+revoke
+  revoke monitor from ann
+
+query
+  from g in catalog::grants where g.privilege == "monitor" select g.grantee ++ " " ++ g.grantor ++ " " ++ print(g.grant_option)
+----

@@ -1,0 +1,8 @@
+seed 658
+use adhoc
+as narrow error Denied { detail: "role `narrow` may not run this text" }
+  from d in docs.Draft select d order by d.body
+as reader query
+  from d in docs.Draft select d order by d.body
+----
+Draft { id: docs.key(1), owner: "ann", body: "text" }

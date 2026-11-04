@@ -1,0 +1,16 @@
+# The ad hoc schema alone: docs by draft or sent, secrets and notes.
+migrate
+  module shop
+  add module shop
+  add type Doc { id: Key docs, owner: Text } = Draft { body: Text } | Sent { to: Text }
+  add relation docs : Doc key id generate sequence
+  add type Secret = { id: Key secrets, salary: I64 }
+  add relation secrets : Secret key id generate sequence
+  define fn salaries () -> Set I64 = from s in secrets select s.salary
+  define fn pure_answer () -> I64 = 42
+  define fn maybe (x: I64) -> Option I64 = if x > 0 then Some { value: x } else None
+  add relation doc_rejects : RejectedRow key (load, line)
+  add type Note = { id: Key notes, about: Key secrets, doc: Key docs.Draft }
+  add relation notes : Note key id generate sequence
+  add constraint no_blank = from d in docs.Draft where d.body == "" select d.owner
+  add constraint no_negative = from s in secrets where s.salary < 0 select s.id

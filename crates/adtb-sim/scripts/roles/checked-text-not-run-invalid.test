@@ -1,0 +1,5 @@
+seed 661
+use adhoc
+as writer error Invalid { detail: "`print schema` does not run inside a transaction" }
+  insert docs.Draft { owner: "x", body: "y" }
+  print schema

@@ -1,0 +1,15 @@
+seed 615
+use adhoc
+as bare query
+  temp relation stage : { n: I64 } key n
+  insert stage { n: 1 }
+  from s in stage select s.n
+----
+1
+as bare error Denied { detail: "role `bare` may not run this text" }
+  temp relation stage : { n: I64 } key n
+  insert stage from (from s in secrets select { n: s.salary })
+  from s in stage select s.n
+as outer error Denied { detail: "role `outer` may not run this text" }
+  temp relation stage : { n: Key secrets } key n
+  from s in stage select s.n.salary

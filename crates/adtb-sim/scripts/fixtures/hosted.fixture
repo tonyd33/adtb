@@ -1,0 +1,19 @@
+# The auth schema, then host functions `g` and `h` and relation `hs`, then `g` dropped and `n`
+# defined, as the log's first three migrations; bundle web-1.0 pins the second and puts a row.
+host g h n
+use auth
+log
+  module auth
+  define fn g (t: Text) -> Text = host "g" version "1.0" deterministic
+  define fn h (t: Text) -> Text = host "h" version "1.0" deterministic
+  add type H { id: Key hs } = R { n: Text }
+  add relation hs : H key id generate sequence
+  module auth
+  drop fn g
+  define fn n (t: Text) -> Text = host "n" version "1.0" deterministic
+bundle web-1.0 pins 2 edition "2026-10"
+  import auth
+  txn put () -> I32 =
+    transact
+      let h = insert hs.R { n: "s" }
+      return 1

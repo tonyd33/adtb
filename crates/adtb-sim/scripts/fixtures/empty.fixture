@@ -1,0 +1,2 @@
+# An empty database: no migration, only the schema owner.
+migrate at 1

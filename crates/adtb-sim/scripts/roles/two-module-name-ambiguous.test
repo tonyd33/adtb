@@ -1,0 +1,15 @@
+seed 672
+use adhoc-schema
+migrate
+  module vault
+  add module vault
+  add type V = { id: Key secrets }
+  add relation secrets : V key id generate sequence
+role maintainer
+grant
+  grant adhoc to maintainer
+  grant maintain to maintainer
+as maintainer error Invalid { detail: "`secrets` is declared in modules `shop` and `vault`; qualify it" }
+  vacuum secrets
+as maintainer run
+  vacuum vault::secrets

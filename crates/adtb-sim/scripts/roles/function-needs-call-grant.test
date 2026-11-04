@@ -1,0 +1,10 @@
+seed 645
+use adhoc
+as bare error Denied { detail: "role `bare` may not run this text" }
+  nosuchfn()
+as bare error Denied { detail: "role `bare` may not run this text" }
+  pure_answer()
+as caller_fn query
+  pure_answer()
+----
+42

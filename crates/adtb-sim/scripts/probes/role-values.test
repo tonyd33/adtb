@@ -1,0 +1,88 @@
+use auth
+bundle web-1.0 pins 1 edition "2026-10" use names
+reopen
+role bob
+grant
+  grant adhoc to bob
+
+as bob run
+  from u in users select u.name
+
+as bob query
+  from u in users select u.name
+----
+"ann"
+
+as owner query
+  (1)
+  (2)
+----
+1
+
+as bob error Denied { detail: "role `bob` may not run this text" }
+  1
+
+as bob error Invalid { detail: "x" }
+  from u in users select u.name
+
+grant
+  grant monitor to nobody
+  grant cancel to bob
+
+grant error Invalid { detail: "x" }
+  grant monitor to bob
+
+revoke error Invalid { detail: "x" }
+  revoke adhoc from bob
+
+as bob call web-1.0
+
+as bob call web-1.0 1
+----
+"ann"
+
+call web-1.0 2
+  "ann"
+----
+users.key(1)
+
+as owner call web-1.0 1 committed
+----
+"ann"
+
+as owner call web-1.0 2
+  "al"
+----
+users.key(2)
+
+register web-2.0 pins 9 edition "2026-10" use names
+
+register web-1.0 pins 1 edition "2026-10" error Invalid { detail: "x" }
+  import auth
+  query names () -> Set Text = from u in users select u.name
+
+as owner call web-1.0 1
+----
+
+as owner error Invalid { detail: "x" }
+  1 / 0
+
+as owner run
+  1 / 0
+
+register web-3.0 pins 1 edition "2026-10" error Invalid { detail: "x" }
+  import auth
+  query div (n: I64) -> I64 = 1 / n
+
+as owner call web-3.0 1 error Invalid { detail: "x" }
+  0
+
+as owner call web-3.0 1
+  0
+----
+1
+
+as bob register web-4.0 pins 1 edition "2026-10" use names
+
+as bob register web-5.0 pins 1 edition "2026-10" error Denied { detail: "x" }
+  query one () -> I64 = 1

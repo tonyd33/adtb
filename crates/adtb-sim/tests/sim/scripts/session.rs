@@ -3,32 +3,28 @@
 use std::fmt::Write as _;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
-
-use std::collections::BTreeMap;
 use std::time::Duration;
 
 use adtb::catalog::version_hash;
 use adtb::runtime::{Clock, Done, Io, Op, Runtime, Threads};
-use adtb::{
-    CallOptions, Called, Database, DynRows, Error, Log, OpenError, OpenOptions, Registered,
-    Registration,
-};
+use adtb::{CallOptions, Database, Error, Log, OpenError, OpenOptions, Registration, Value};
 use adtb_conformance::engine::{self, Ended};
-use adtb_conformance::{Directive, Got, Kind, panic_message};
+use adtb_conformance::{Difference, Directive, Got, Kind, panic_message};
 use adtb_lang::evolve::Source;
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::textual::{Form, print};
 use adtb_lang::types::Base;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
-use adtb_simkit::api::{options, printed};
+use adtb_simkit::api::options;
 
 use super::read::{self, Head, Step};
+use super::role::{self, Handles, OWNER, called};
 use super::shown;
 
 const FILE: &str = "app.adt";
 
 fn text(s: &str) -> String {
-    print(&adtb::Value::text(s), &Form::Base(Base::Text)).expect("text prints")
+    print(&Value::text(s), &Form::Base(Base::Text)).expect("text prints")
 }
 
 /// Returns open refusal `e` in textual syntax, or the difference naming a refusal that has none.
@@ -62,7 +58,7 @@ pub(super) fn open_value(e: &OpenError) -> Result<String, String> {
     }
 }
 
-struct Differs {
+pub(super) struct Differs {
     at: String,
     message: String,
     expected: Option<String>,
@@ -70,7 +66,7 @@ struct Differs {
 }
 
 impl Differs {
-    fn at(step: &Step, message: impl Into<String>) -> Differs {
+    pub(super) fn at(step: &Step, message: impl Into<String>) -> Differs {
         let mut at = format!("{}:{}", step.at, step.line);
         if let Some((file, line)) = &step.via {
             write!(at, " (via {file}:{line})").expect("a string takes text");
@@ -83,7 +79,7 @@ impl Differs {
         }
     }
 
-    fn values(mut self, expected: String, actual: String) -> Differs {
+    pub(super) fn values(mut self, expected: String, actual: String) -> Differs {
         self.expected = Some(expected);
         self.actual = Some(actual);
         self
@@ -152,16 +148,16 @@ fn sleep(rt: &SimRuntime, d: Duration) {
     }
 }
 
-fn refused(e: &Error) -> String {
+pub(super) fn refused(e: &Error) -> String {
     e.value().to_string()
 }
 
-fn rejected(reason: &str) -> String {
+pub(super) fn rejected(reason: &str) -> String {
     format!("Rejected {{ reason: {reason} }}")
 }
 
 /// Compare outcome `got` with `want`, a refusal, else the step's rows.
-fn compare(
+pub(super) fn compare(
     step: &Step,
     want: Option<&str>,
     got: Result<Vec<String>, String>,
@@ -173,46 +169,45 @@ fn compare(
     Err(Differs::at(step, "the outcome differs").values(listed(want), listed(got)))
 }
 
-fn listed(r: Result<Vec<String>, String>) -> String {
+pub(super) fn listed(r: Result<Vec<String>, String>) -> String {
     r.map_or_else(|e| e, |rows| format!("[{}]", rows.join(", ")))
 }
 
 /// What a `call` step ended with.
-enum Answer {
+pub(super) enum Answer {
     Bound,
-    Rows(DynRows),
+    Rows(Form, Vec<Value>),
+    /// Refused at the bind or the submit.
     Refused(String),
+    /// Admitted through a role's binding, and failed when it completed.
+    Failed(String),
+}
+
+/// Returns the difference of a step whose rows `d` states differ.
+fn rows_differ(step: &Step, d: Difference) -> Differs {
+    match d.got {
+        Some(Got::Rows(rows)) => Differs::at(step, "the rows differ").values(
+            format!("[{}]", step.rows.join(", ")),
+            format!("[{}]", rows.join(", ")),
+        ),
+        _ => Differs::at(step, d.message),
+    }
 }
 
 /// Compare the rows of a call with the step's, a set result in printed order, or as a
 /// multiset under `rowsort`.
-fn call_rows(step: &Step, rows: DynRows, rowsort: bool) -> Result<(), Differs> {
-    let form = rows.form().clone();
-    let mut got = rows
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| Differs::at(step, format!("a row fails: {}", refused(&e))))?;
+pub(super) fn call_rows(
+    step: &Step,
+    form: &Form,
+    mut got: Vec<Value>,
+    rowsort: bool,
+) -> Result<(), Differs> {
     got.sort();
-    engine::compare(step.line, &form, got, rowsort, &step.rows).map_err(|d| {
-        let expected = format!("[{}]", step.rows.join(", "));
-        match d.got {
-            Some(Got::Rows(rows)) => Differs::at(step, "the rows differ")
-                .values(expected, format!("[{}]", rows.join(", "))),
-            _ => Differs::at(step, d.message),
-        }
-    })
+    engine::compare(step.line, form, got, rowsort, &step.rows).map_err(|d| rows_differ(step, d))
 }
 
-/// Returns how call `ordinal` of `name` ended, the arguments the queries of `body` evaluate to.
-/// With no `ordinal`, bind `name` and keep the handle in `handles`; else call through the handle
-/// kept for `name` when there is one.
-fn called(
-    db: &Database<SimRuntime>,
-    handles: &mut BTreeMap<String, Registered<SimRuntime>>,
-    step: &Step,
-    name: &str,
-    ordinal: Option<u32>,
-    committed: bool,
-) -> Result<Answer, Differs> {
+/// Returns the values the queries of the step's body evaluate to, one per line.
+pub(super) fn arguments(db: &Database<SimRuntime>, step: &Step) -> Result<Vec<Value>, Differs> {
     let mut args = Vec::new();
     for line in step.body.lines() {
         let mut got = db
@@ -231,33 +226,7 @@ fn called(
         };
         args.push(value);
     }
-    let Some(ordinal) = ordinal else {
-        return Ok(match db.registered(name) {
-            Ok(reg) => {
-                handles.insert(name.to_owned(), reg);
-                Answer::Bound
-            }
-            Err(e) => Answer::Refused(refused(&e)),
-        });
-    };
-    let fresh;
-    let reg = match handles.get(name) {
-        Some(kept) => kept,
-        None => match db.registered(name) {
-            Ok(reg) => {
-                fresh = reg;
-                &fresh
-            }
-            Err(e) => return Ok(Answer::Refused(refused(&e))),
-        },
-    };
-    Ok(match reg.call(ordinal, &args, &CallOptions::default()) {
-        Ok(Called::Rows(rows)) if !committed => Answer::Rows(rows),
-        Ok(Called::Committed(c)) if committed => Answer::Rows(c.value),
-        Ok(Called::Rows(_)) => return Err(Differs::at(step, "the call commits nothing")),
-        Ok(Called::Committed(_)) => return Err(Differs::at(step, "the call commits")),
-        Err(e) => Answer::Refused(refused(&e)),
-    })
+    Ok(args)
 }
 
 struct Script {
@@ -266,7 +235,7 @@ struct Script {
     log: Vec<String>,
     options: OpenOptions,
     bundles: Vec<Step>,
-    handles: BTreeMap<String, Registered<SimRuntime>>,
+    handles: Handles,
     out: Vec<Differs>,
 }
 
@@ -294,7 +263,7 @@ impl Script {
                 (log, refused.clone())
             }
             Head::Reopen { refused } => (self.log.clone(), refused.clone()),
-            Head::QueryMemory(_) | Head::Log | Head::Bundle { .. } => {
+            Head::QueryMemory(_) | Head::Log | Head::Bundle { .. } | Head::Host(_) => {
                 self.closed(&first);
                 return;
             }
@@ -346,7 +315,7 @@ impl Script {
                 self.out.push(d);
             }
         }
-        self.handles.clear();
+        self.handles = Handles::default();
         if let Err(e) = db.close() {
             let closed = format!("the database does not close: {}", e.value());
             self.out.push(Differs::at(&first, closed));
@@ -382,6 +351,7 @@ impl Script {
             Head::QueryMemory(bytes) => self.options.query_memory_bytes = *bytes,
             Head::Log => self.log.extend(read::migrations(&step.body)),
             Head::Bundle { .. } => self.bundles.push(step.clone()),
+            Head::Host(names) => names.iter().for_each(|n| role::host(&mut self.options, n)),
             _ => unreachable!("session runs only these before an open"),
         }
     }
@@ -401,7 +371,7 @@ impl Script {
             Head::Seed(_) | Head::Use(_) | Head::Migrate { .. } | Head::Reopen { .. } => {
                 unreachable!("read takes seeds and uses, and session takes opens")
             }
-            Head::QueryMemory(_) | Head::Log | Head::Bundle { .. } => {
+            Head::QueryMemory(_) | Head::Log | Head::Bundle { .. } | Head::Host(_) => {
                 self.closed(step);
                 Ok(())
             }
@@ -409,18 +379,44 @@ impl Script {
                 sleep(rt, *d);
                 Ok(())
             }
-            Head::Call {
-                name,
-                ordinal,
-                committed,
-                rowsort,
-                error,
-            } => match called(db, &mut self.handles, step, name, *ordinal, *committed)? {
-                Answer::Rows(rows) if error.is_none() => call_rows(step, rows, *rowsort),
-                Answer::Rows(rows) => compare(step, error.as_deref(), Ok(printed(rows))),
+            Head::Call { rowsort, error, .. } => match called(rt, db, &mut self.handles, step)? {
+                Answer::Rows(form, rows) if error.is_none() => {
+                    call_rows(step, &form, rows, *rowsort)
+                }
+                Answer::Rows(form, rows) => {
+                    let shown = rows
+                        .iter()
+                        .map(|v| print(v, &form).unwrap_or_else(|e| e.message));
+                    compare(step, error.as_deref(), Ok(shown.collect()))
+                }
                 Answer::Bound => compare(step, error.as_deref(), Ok(Vec::new())),
                 Answer::Refused(got) => compare(step, error.as_deref(), Err(got)),
+                Answer::Failed(got) => {
+                    let want = error
+                        .as_deref()
+                        .map_or_else(|| Ok(step.rows.clone()), |w| Err(rejected(w)));
+                    Err(Differs::at(step, "admitted, and fails at completion")
+                        .values(listed(want), got))
+                }
             },
+            Head::Grant { revoke, error } => role::grant(db, step, *revoke, error.as_deref()),
+            Head::Register { header, error, .. } => {
+                let text =
+                    bundle_file(header, &step.body, &self.log).map_err(|e| Differs::at(step, e))?;
+                let authority = db.role_authority();
+                let got = Registration::bundle(text).and_then(|reg| {
+                    let session = authority.session(step.role.as_deref().unwrap_or(OWNER))?;
+                    authority.register(&session, &reg)
+                });
+                compare(
+                    step,
+                    error.as_deref(),
+                    got.map(|_| Vec::new()).map_err(|e| refused(&e)),
+                )
+            }
+            Head::Run | Head::Query { .. } | Head::Error(_) if step.role.is_some() => {
+                role::sent_step(rt, db, step)
+            }
             Head::Role(name) => db
                 .role_authority()
                 .create_role(name)
@@ -433,14 +429,7 @@ impl Script {
                     list: false,
                     rows: step.rows.clone(),
                 };
-                engine::directive(db, &conformance(kind)).map_err(|d| {
-                    let expected = format!("[{}]", step.rows.join(", "));
-                    match d.got {
-                        Some(Got::Rows(rows)) => Differs::at(step, "the rows differ")
-                            .values(expected, format!("[{}]", rows.join(", "))),
-                        _ => Differs::at(step, d.message),
-                    }
-                })
+                engine::directive(db, &conformance(kind)).map_err(|d| rows_differ(step, d))
             }
             Head::Error(reason) => {
                 let want = rejected(reason);
@@ -481,7 +470,7 @@ pub(super) fn run_file(path: &Path) -> Vec<String> {
         log: Vec::new(),
         options: options(4),
         bundles: Vec::new(),
-        handles: BTreeMap::new(),
+        handles: Handles::default(),
         out: Vec::new(),
     };
     let ran = panic::catch_unwind(AssertUnwindSafe(|| {

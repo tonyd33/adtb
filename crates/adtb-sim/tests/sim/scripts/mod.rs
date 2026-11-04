@@ -23,9 +23,19 @@
 //!   handle bound is kept: later calls of NAME in the same open go through it.
 //! - `advance N(s|m|h|d)`: the simulated clock advanced.
 //! - `role NAME`: the role created.
+//! - `host NAME...`: host functions supplied at each later open, each of version `1.0`,
+//!   deterministic, answering its own name as text.
+//! - `grant [error VALUE]`, `revoke [error VALUE]`: each line of the body, one grant or revoke
+//!   statement, given in order; only the last may be refused, with VALUE.
+//! - `register HEADER [use NAME] [error VALUE]`: the bundle file `bundle` states, registered
+//!   now.
 //! - `run`, `query [rowsort]`: as in a conformance script.
 //! - `error VALUE`: as in a conformance script, the last statement refused with exactly the
 //!   reason VALUE in textual syntax.
+//! - `as ROLE` before `run`, `query`, `error`, `call`, `grant`, `revoke` or `register`: the step
+//!   acts through a session of ROLE, a server's own path. A `run`, `query` or `error` body is
+//!   then one ad hoc call, refused as a whole, and a `call` binds through the session. Without
+//!   it, `grant`, `revoke` and `register` act as `owner` and the others in process.
 //!
 //! An open refused with VALUE, the open refusal in textual syntax, leaves the file closed. A
 //! refusal `MigrationRefused` of version V leaves the log at its first V - 1 migrations. Any
@@ -37,6 +47,7 @@
 //! `scripts::by_hand` to run them; `work/tools/script` does that.
 
 mod read;
+mod role;
 mod session;
 
 use std::fs;
@@ -156,6 +167,16 @@ fn oplog() {
 #[test]
 fn bundles() {
     run(&root().join("bundles"));
+}
+
+#[test]
+fn roles() {
+    run(&root().join("roles"));
+}
+
+#[test]
+fn authority() {
+    run(&root().join("authority"));
 }
 
 /// Run the scripts `ADTB_SCRIPTS` names. Does nothing when it is unset.

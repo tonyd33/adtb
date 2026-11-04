@@ -1,0 +1,21 @@
+seed 613
+use adhoc
+as writer error Denied { detail: "role `writer` may not run this text" }
+  transact
+    insert docs.Draft { owner: "x", body: "y" }
+    delete s in secrets
+
+query
+  count(d for d in docs.Draft)
+----
+1
+
+query
+  count(s for s in secrets)
+----
+1
+
+query
+  count(a for a in (from a in catalog::audit.Denied where a.role == "writer" select a))
+----
+1

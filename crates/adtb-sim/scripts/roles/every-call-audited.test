@@ -1,0 +1,26 @@
+seed 618
+use adhoc
+as reader run
+  from d in docs.Draft select d.body
+
+query
+  count(a for a in (from a in catalog::audit.Call where a.role == "reader" select a))
+----
+1
+as reader error Denied { detail: "role `reader` may not run this text" }
+  from d in docs select d.owner
+
+query
+  count(a for a in (from a in catalog::audit.Denied where a.role == "reader" select a))
+----
+1
+
+query
+  from a in catalog::audit.Call where a.role == "reader" select { o: a.origin, x: a.args, y: a.outcome }
+----
+{ o: AdHoc { text: 0x895d650a50b3c9b0aaf52c386e0c6a16789cf049632cd275fe9c1c98d6d1817b }, x: 0xaf1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262, y: Succeeded }
+
+query
+  from a in catalog::audit.Denied where a.role == "reader" select a.origin
+----
+AdHoc { text: 0x4aebbcb322cf1010983924892a71ff5bcdb6d1a1593f9106c2454a8e7339d406 }

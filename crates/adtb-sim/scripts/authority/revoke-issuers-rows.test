@@ -1,0 +1,37 @@
+seed 201
+use empty
+role ann
+role bob
+role cal
+grant
+  grant schema to ann
+  grant monitor to bob
+as ann grant
+  grant monitor to bob
+
+query
+  from g in catalog::grants where g.privilege == "monitor" select g.grantee ++ " " ++ g.grantor ++ " " ++ print(g.grant_option)
+----
+"bob ann False"
+"bob owner False"
+
+as cal revoke error Invalid { detail: "`revoke monitor from bob` matches no grant `cal` may revoke" }
+  revoke monitor from bob
+as ann revoke
+  revoke monitor from bob
+
+query
+  from g in catalog::grants where g.privilege == "monitor" select g.grantee ++ " " ++ g.grantor ++ " " ++ print(g.grant_option)
+----
+"bob owner False"
+
+as ann revoke error Invalid { detail: "`revoke monitor from bob` matches no grant `ann` may revoke" }
+  revoke monitor from bob
+as ann grant
+  grant monitor to bob
+revoke
+  revoke monitor from bob
+
+query
+  from g in catalog::grants where g.privilege == "monitor" select g.grantee
+----

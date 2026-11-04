@@ -1,0 +1,8 @@
+seed 627
+use adhoc
+as owner query
+  from s in secrets select s.salary
+----
+7
+as caller_fn error Denied { detail: "role `caller_fn` may not run this text" }
+  from s in secrets select s.salary

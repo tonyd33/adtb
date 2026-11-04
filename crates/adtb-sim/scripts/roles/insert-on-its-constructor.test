@@ -1,0 +1,14 @@
+seed 602
+use adhoc
+as inserter run
+  insert docs.Draft { owner: "z", body: "b" }
+as inserter error Denied { detail: "role `inserter` may not run this text" }
+  insert docs.Sent { owner: "z", to: "b" }
+as reader error Denied { detail: "role `reader` may not run this text" }
+  insert docs.Draft { owner: "z", body: "b" }
+
+query
+  from d in docs.Draft select d.owner
+----
+"ann"
+"z"

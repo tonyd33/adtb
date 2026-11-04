@@ -1,0 +1,6 @@
+seed 205
+use empty
+revoke error Invalid { detail: "`grant call fn` is a schema operator; write it in a migration" }
+  revoke call fn f from bob
+revoke error Invalid { detail: "expected an expression, found `select`" }
+  select 1

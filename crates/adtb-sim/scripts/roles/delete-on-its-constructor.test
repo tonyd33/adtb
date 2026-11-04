@@ -1,0 +1,16 @@
+seed 604
+use adhoc
+as deleter error Denied { detail: "role `deleter` may not run this text" }
+  delete d in docs.Draft
+as deleter run
+  delete d in docs.Sent
+
+query
+  count(d for d in docs.Sent)
+----
+0
+
+query
+  from d in docs.Draft select d.owner
+----
+"ann"

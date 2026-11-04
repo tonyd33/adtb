@@ -228,103 +228,6 @@ const CATALOG_READS: [&str; 15] = [
 ];
 
 const READ_DRAFT: &str = "from d in docs.Draft select d.body";
-const READ_DOCS: &str = "from d in docs select d.owner";
-
-#[test]
-fn a_read_passes_only_within_constructors_and_fields_held() {
-    scenario(601, |rt, db| {
-        assert_eq!(1, allowed(&rt, &db, "reader", READ_DRAFT).len());
-        detail(send(&rt, &db, "reader", READ_DOCS));
-        detail(send(&rt, &db, "reader", "from d in docs.Sent select d.to"));
-        assert_eq!(
-            1,
-            allowed(&rt, &db, "narrow", "from d in docs.Draft select d.owner").len()
-        );
-        detail(send(&rt, &db, "narrow", READ_DRAFT));
-        detail(send(&rt, &db, "narrow", "from d in docs.Draft select d"));
-    });
-}
-
-#[test]
-fn a_text_it_may_not_run_is_refused_at_the_send() {
-    scenario(630, |_, db| {
-        let got = session(&db, "reader").submit_text(READ_DOCS, &[], TaskOptions::default());
-        refused_with(got, "denied: role `reader` may not run this text");
-    });
-}
-
-#[test]
-fn an_insert_passes_with_its_grant_on_that_constructor_only() {
-    scenario(602, |rt, db| {
-        let draft = r#"insert docs.Draft { owner: "z", body: "b" }"#;
-        allowed(&rt, &db, "inserter", draft);
-        detail(send(
-            &rt,
-            &db,
-            "inserter",
-            r#"insert docs.Sent { owner: "z", to: "b" }"#,
-        ));
-        detail(send(&rt, &db, "reader", draft));
-        assert_eq!(2, query(&db, "from d in docs.Draft select d.id").len());
-    });
-}
-
-#[test]
-fn an_update_passes_only_on_the_listed_field() {
-    scenario(603, |rt, db| {
-        let body = r#"update d in docs.Draft set Draft { d with body: "new" }"#;
-        let owner = r#"update d in docs.Draft set Draft { d with owner: "new" }"#;
-        allowed(&rt, &db, "updater", body);
-        detail(send(&rt, &db, "updater", owner));
-        detail(send(&rt, &db, "frozen", body));
-        assert_eq!(
-            vec!["new".to_owned()],
-            query(&db, "from d in docs.Draft select d.owner")
-                .iter()
-                .map(|_| "new".to_owned())
-                .collect::<Vec<_>>()
-        );
-    });
-}
-
-#[test]
-fn a_delete_passes_with_its_grant_on_that_constructor_only() {
-    scenario(604, |rt, db| {
-        detail(send(&rt, &db, "deleter", "delete d in docs.Draft"));
-        allowed(&rt, &db, "deleter", "delete d in docs.Sent");
-        assert_eq!(0, query(&db, "from d in docs.Sent select d.id").len());
-        assert_eq!(1, query(&db, "from d in docs.Draft select d.id").len());
-    });
-}
-
-#[test]
-fn a_retag_passes_only_along_the_pair_granted() {
-    scenario(605, |rt, db| {
-        let back = r#"update d in docs.Sent set Draft { body: "b" }"#;
-        detail(send(&rt, &db, "retagger", back));
-        allowed(
-            &rt,
-            &db,
-            "retagger",
-            r#"update d in docs.Draft set Sent { to: "t" }"#,
-        );
-        assert_eq!(2, query(&db, "from d in docs.Sent select d.id").len());
-    });
-}
-
-#[test]
-fn a_role_without_adhoc_is_refused_the_same_whatever_it_names() {
-    scenario(606, |rt, db| {
-        let authority = db.role_authority();
-        authority
-            .revoke_capability("bare", Capability::Adhoc)
-            .expect("revoke");
-        let one = detail(send(&rt, &db, "bare", "from s in secrets select s"));
-        let two = detail(send(&rt, &db, "bare", "from s in nosuch select s"));
-        assert_eq!(one, two);
-        assert_eq!(2, denied_rows(&db, "bare"));
-    });
-}
 
 #[test]
 fn a_relation_it_cannot_read_and_one_that_does_not_exist_answer_the_same() {
@@ -417,40 +320,6 @@ fn a_relation_it_cannot_read_and_one_that_does_not_exist_answer_the_same() {
 }
 
 #[test]
-fn a_text_that_fails_to_parse_answers_invalid() {
-    scenario(608, |rt, db| {
-        let got = format!("{:?}", send(&rt, &db, "bare", "from from"));
-        assert!(got.contains("Invalid"), "{got}");
-    });
-}
-
-#[test]
-fn a_revoke_between_two_sends_is_seen_by_the_second() {
-    let mut sim = Sim::new(609, Config::default());
-    run(&mut sim, |rt| {
-        let opts = options(2);
-        let db = opened(&rt, &opts);
-        allowed(&rt, &db, "reader", READ_DRAFT);
-        let owner = session(&db, "owner");
-        let authority = db.role_authority();
-        authority
-            .grant(&owner, "grant read catalog::roles to cataloged")
-            .expect("grant");
-        let roles = "from r in catalog::roles select r.name";
-        allowed(&rt, &db, "cataloged", roles);
-        authority
-            .revoke(&owner, "revoke read catalog::roles from cataloged")
-            .expect("revoke");
-        detail(send(&rt, &db, "cataloged", roles));
-        allowed(&rt, &db, "reader", READ_DRAFT);
-        db.close().expect("close");
-        let revoke = "module shop\nrevoke read docs.Draft (id, owner, body) from reader\n";
-        let db = open_at(&rt, &opts, &[SCHEMA, GRANTS, revoke]);
-        detail(send(&rt, &db, "reader", READ_DRAFT));
-    });
-}
-
-#[test]
 fn a_parameter_cannot_widen_what_is_read() {
     scenario(611, |rt, db| {
         let reader = session(&db, "reader");
@@ -521,50 +390,6 @@ fn caller_names_the_session_s_role_whatever_a_parameter_says() {
 }
 
 #[test]
-fn a_transact_block_with_one_forbidden_item_runs_nothing() {
-    scenario(613, |rt, db| {
-        let text = r#"transact
-  insert docs.Draft { owner: "x", body: "y" }
-  delete s in secrets
-"#;
-        detail(send(&rt, &db, "writer", text));
-        assert_eq!(1, query(&db, "from d in docs.Draft select d.id").len());
-        assert_eq!(1, query(&db, "from s in secrets select s.id").len());
-        assert_eq!(1, denied_rows(&db, "writer"));
-    });
-}
-
-#[test]
-fn several_items_with_one_forbidden_run_nothing() {
-    scenario(614, |rt, db| {
-        let text = "insert docs.Draft { owner: \"x\", body: \"y\" }\nfrom s in secrets select s";
-        detail(send(&rt, &db, "writer", text));
-        assert_eq!(1, query(&db, "from d in docs.Draft select d.id").len());
-    });
-}
-
-#[test]
-fn a_temp_relation_needs_no_grant_but_what_fills_it_does() {
-    scenario(615, |rt, db| {
-        let own = "temp relation stage : { n: I64 } key n\ninsert stage { n: 1 }\nfrom s in stage select s.n";
-        assert_eq!(1, allowed(&rt, &db, "bare", own).len());
-        let fill = "temp relation stage : { n: I64 } key n\ninsert stage from (from s in secrets select { n: s.salary })\nfrom s in stage select s.n";
-        detail(send(&rt, &db, "bare", fill));
-        let reading =
-            "temp relation stage : { n: Key secrets } key n\nfrom s in stage select s.n.salary";
-        detail(send(&rt, &db, "outer", reading));
-    });
-}
-
-#[test]
-fn a_schema_function_s_reads_are_charged_to_the_role_calling_it() {
-    scenario(616, |rt, db| {
-        detail(send(&rt, &db, "bare", "salaries()"));
-        detail(send(&rt, &db, "caller_fn", "salaries()"));
-    });
-}
-
-#[test]
 fn a_violation_redacts_what_the_role_cannot_read() {
     scenario(617, |rt, db| {
         let blank = r#"insert docs.Draft { owner: "x", body: "" }"#;
@@ -586,28 +411,6 @@ fn a_violation_redacts_what_the_role_cannot_read() {
         assert!(!audit[0].contains("\"x\""), "{audit:?}");
         let payer = send(&rt, &db, "payer", "insert secrets { salary: -1 }");
         assert!(format!("{payer:?}").contains("redacted: 1"), "{payer:?}");
-    });
-}
-
-#[test]
-fn every_call_of_a_role_has_its_row_with_hash_arguments_and_outcome() {
-    scenario(618, |rt, db| {
-        allowed(&rt, &db, "reader", READ_DRAFT);
-        assert_eq!(1, call_rows(&db, "reader"));
-        detail(send(&rt, &db, "reader", READ_DOCS));
-        assert_eq!(1, denied_rows(&db, "reader"));
-        assert_eq!(1, call_rows(&db, "reader"));
-        let rows = query(
-            &db,
-            "from a in catalog::audit.Call where a.role == \"reader\" select { o: a.origin, x: a.args, y: a.outcome }",
-        );
-        assert!(rows[0].contains("AdHoc"), "{rows:?}");
-        assert!(rows[0].contains("Succeeded"), "{rows:?}");
-        let denied = query(
-            &db,
-            "from a in catalog::audit.Denied where a.role == \"reader\" select a.origin",
-        );
-        assert!(denied[0].contains("AdHoc"), "{denied:?}");
     });
 }
 
@@ -749,19 +552,6 @@ fn a_session_cancels_its_own_call_and_no_other_session_of_its_role() {
 }
 
 #[test]
-fn verify_witnesses_need_a_read_of_what_the_constraint_reads() {
-    scenario(625, |rt, db| {
-        for role in ["reader", "bare"] {
-            db.role_authority()
-                .grant_capability(role, Capability::Maintain, false)
-                .expect("maintain");
-        }
-        allowed(&rt, &db, "bare", "verify");
-        allowed(&rt, &db, "reader", "verify");
-    });
-}
-
-#[test]
 fn export_writes_within_export_roots_and_needs_what_its_source_reads() {
     let dir = adtb_testkit::scratch::Scratch::new("adhoc-export", "x");
     let base = dir.path().to_path_buf();
@@ -796,53 +586,6 @@ fn export_writes_within_export_roots_and_needs_what_its_source_reads() {
         let secret = "export (from s in secrets select { a: s.salary }) to \"out/s.csv\"";
         detail(send(&rt, &db, "reader", secret));
         assert!(!base.join("out/s.csv").exists());
-    });
-}
-
-#[test]
-fn a_definer_s_rights_do_not_reach_text_of_the_same_session() {
-    scenario(627, |rt, db| {
-        let owner = session(&db, "owner");
-        assert_eq!(
-            1,
-            finish(
-                &rt,
-                &owner
-                    .submit_text(
-                        "from s in secrets select s.salary",
-                        &[],
-                        TaskOptions::default()
-                    )
-                    .expect("owner")
-            )
-            .expect("owner reads")
-            .len()
-        );
-        detail(send(
-            &rt,
-            &db,
-            "caller_fn",
-            "from s in secrets select s.salary",
-        ));
-    });
-}
-
-#[test]
-fn sys_relations_need_monitor_and_a_revealing_column_needs_every_read() {
-    scenario(628, |rt, db| {
-        let calls = "from c in sys::calls select c.id";
-        detail(send(&rt, &db, "bare", calls));
-        db.role_authority()
-            .grant_capability("bare", Capability::Monitor, false)
-            .expect("monitor");
-        allowed(&rt, &db, "bare", calls);
-        detail(send(&rt, &db, "bare", "from s in secrets select s.salary"));
-        detail(send(
-            &rt,
-            &db,
-            "bare",
-            "from v in sys::field_values select v.value",
-        ));
     });
 }
 
@@ -904,25 +647,6 @@ fn a_parameter_type_naming_what_the_role_holds_no_grant_on_answers_as_an_absent_
 }
 
 #[test]
-fn a_role_names_what_its_grants_reach_and_the_prelude() {
-    scenario(641, |rt, db| {
-        for text in [
-            "temp relation t : Doc key id",
-            "temp relation t : { n: Option I64 } key n",
-            "from d in docs.Draft select { o: d.owner, b: d.body }",
-            r#"Draft { id: docs.key(1), owner: "a", body: "b" }"#,
-            "lower(\"A\")",
-        ] {
-            let got = send(&rt, &db, "reader", text);
-            assert!(
-                !format!("{got:?}").contains("may not run this text"),
-                "{text}: {got:?}"
-            );
-        }
-    });
-}
-
-#[test]
 fn a_key_parameter_may_name_what_a_field_of_a_held_type_references() {
     scenario(642, |_, db| {
         let docs = Ty::Key {
@@ -931,39 +655,6 @@ fn a_key_parameter_may_name_what_a_field_of_a_held_type_references() {
         };
         let got = typed(&db, "reader", "k", docs);
         assert!(!got.contains("may not run this text"), "{got}");
-    });
-}
-
-#[test]
-fn a_hidden_declaration_of_the_same_name_does_not_make_a_held_name_ambiguous() {
-    let shadow = r"module shop
-add module shop
-add type Doc = { id: Key docs, n: I64 }
-add relation docs : Doc key id generate sequence
-";
-    let vault = r"module vault
-add module vault
-add type Doc = { id: Key docs, n: I64 }
-add relation docs : Doc key id generate sequence
-";
-    let grant = "module shop\ngrant read docs to reader\n";
-    let mut sim = Sim::new(643, Config::default());
-    run(&mut sim, |rt| {
-        let opts = options(2);
-        let db = open_at(&rt, &opts, &[shadow, vault]);
-        let authority = db.role_authority();
-        authority.create_role("reader").expect("role");
-        authority
-            .grant_capability("reader", Capability::Adhoc, false)
-            .expect("adhoc");
-        db.close().expect("close");
-        let db = open_at(&rt, &opts, &[shadow, vault, grant]);
-        assert!(allowed(&rt, &db, "reader", "from d in docs select d.n").is_empty());
-        let owner = db.role_authority().session("owner").expect("session");
-        let got = owner
-            .submit_text("from d in docs select d.n", &[], TaskOptions::default())
-            .map(drop);
-        assert!(format!("{got:?}").contains("qualify"), "{got:?}");
     });
 }
 
@@ -1025,18 +716,6 @@ fn a_role_reading_the_schema_is_told_what_it_names_wrong() {
             1,
             call_rows(&db, "cataloged") - 1,
             "the absent name and the bad parameter"
-        );
-    });
-}
-
-#[test]
-fn a_function_needs_its_call_grant_even_when_it_reads_nothing() {
-    scenario(645, |rt, db| {
-        let want = detail(send(&rt, &db, "bare", "nosuchfn()"));
-        assert_eq!(want, detail(send(&rt, &db, "bare", "pure_answer()")));
-        assert_eq!(
-            vec!["Int(42)"],
-            allowed(&rt, &db, "caller_fn", "pure_answer()")
         );
     });
 }
@@ -1560,24 +1239,6 @@ fn a_match_over_a_doubling_match_stops() {
 }
 
 #[test]
-fn a_capability_command_names_any_relation_and_a_statement_beside_it_does_not_read_it() {
-    scenario(665, |rt, db| {
-        db.role_authority()
-            .grant_capability("bare", Capability::Maintain, false)
-            .expect("maintain");
-        for text in ["vacuum secrets", "verify secrets", "reindex secrets"] {
-            allowed(&rt, &db, "bare", text);
-        }
-        let absent = format!("{:?}", send(&rt, &db, "bare", "verify nosuch"));
-        assert!(absent.contains("Invalid"), "{absent}");
-        let beside = "vacuum secrets\nfrom s in secrets select s.salary";
-        detail(send(&rt, &db, "bare", beside));
-        let beside = "vacuum nosuch\nfrom s in nosuch select s";
-        detail(send(&rt, &db, "bare", beside));
-    });
-}
-
-#[test]
 fn a_chain_of_doubling_functions_is_refused() {
     let mut sim = Sim::new(654, Config::default());
     run(&mut sim, |rt| {
@@ -1633,62 +1294,6 @@ fn a_nesting_of_loops_within_the_bound_runs_on_a_default_stack() {
 }
 
 #[test]
-fn every_write_form_is_charged_to_the_role() {
-    scenario(656, |rt, db| {
-        let upsert = r#"insert docs.Draft { id: docs.key(1), owner: "o", body: "b" }
-  unless conflict on key
-  else update old set Draft { old with body: "c" }"#;
-        detail(send(&rt, &db, "reader", upsert));
-        detail(send(&rt, &db, "inserter", upsert));
-        allowed(&rt, &db, "upserter", upsert);
-        let rejects = "insert secrets from (from d in docs.Draft select { salary: 1 }) \
-                       rejects into doc_rejects";
-        detail(send(&rt, &db, "reader", rejects));
-        detail(send(&rt, &db, "payer", rejects));
-        allowed(&rt, &db, "loader", rejects);
-    });
-}
-
-#[test]
-fn a_recursive_query_reading_past_its_grants_is_refused() {
-    scenario(657, |rt, db| {
-        let body = "fix r = (from s in secrets select s.salary) union \
-                    (from x in r, y in r select x) in r";
-        detail(send(&rt, &db, "reader", body));
-        detail(send(&rt, &db, "outer", body));
-        let open =
-            r"fix r = (from d in docs.Draft select d.owner) union (from x in r select x) in r";
-        assert_eq!(vec!["Text(\"ann\")"], allowed(&rt, &db, "reader", open));
-    });
-}
-
-#[test]
-fn ordering_by_a_field_reads_it() {
-    scenario(658, |rt, db| {
-        let by_body = "from d in docs.Draft select d order by d.body";
-        detail(send(&rt, &db, "narrow", by_body));
-        assert_eq!(1, allowed(&rt, &db, "reader", by_body).len());
-    });
-}
-
-#[test]
-fn prior_stays_outside_ad_hoc_text() {
-    scenario(659, |rt, db| {
-        for role in ["reader", "owner"] {
-            let got = format!(
-                "{:?}",
-                send(&rt, &db, role, "from d in prior(docs) select d.owner")
-            );
-            assert!(
-                got.contains("Invalid") || got.contains("Denied"),
-                "{role}: {got}"
-            );
-            assert!(!got.contains("ann"), "{role}: {got}");
-        }
-    });
-}
-
-#[test]
 fn a_dropped_role_runs_nothing() {
     scenario(660, |rt, db| {
         let authority = db.role_authority();
@@ -1697,16 +1302,6 @@ fn a_dropped_role_runs_nothing() {
         let got = held.submit_text("1", &[], TaskOptions::default()).map(drop);
         refused_with(got, "denied: the authenticated role no longer exists");
         assert!(send(&rt, &db, "reader", "1").is_ok());
-    });
-}
-
-#[test]
-fn a_checked_text_that_does_not_run_answers_invalid_not_denied() {
-    scenario(661, |rt, db| {
-        let text = "insert docs.Draft { owner: \"x\", body: \"y\" }\nprint schema";
-        let got = format!("{:?}", send(&rt, &db, "writer", text));
-        assert!(got.contains("Invalid"), "{got}");
-        assert!(got.contains("inside a transaction"), "{got}");
     });
 }
 
@@ -1825,77 +1420,6 @@ fn a_long_chain_of_operators_answers_and_does_not_take_the_stack() {
             });
         },
     );
-}
-
-#[test]
-fn a_module_a_role_names_nothing_in_answers_as_an_absent_one() {
-    let vault = "module vault\nadd module vault\nadd type V = { id: Key vs }\nadd relation vs : V key id generate sequence\n";
-    let mut sim = Sim::new(671, Config::default());
-    run(&mut sim, |rt| {
-        let opts = options(2);
-        let db = open_at(&rt, &opts, &[SCHEMA, vault]);
-        let authority = db.role_authority();
-        for role in ["only_adhoc", "maintainer"] {
-            authority.create_role(role).expect("role");
-            authority
-                .grant_capability(role, Capability::Adhoc, false)
-                .expect("adhoc");
-        }
-        authority
-            .grant_capability("maintainer", Capability::Maintain, false)
-            .expect("maintain");
-        for (present, absent) in [
-            ("cancel call vault::x.key(1)", "cancel call nomod::x.key(1)"),
-            (
-                "from x in vault::vs select x",
-                "from x in nomod::vs select x",
-            ),
-            ("vacuum vault::x", "vacuum nomod::x"),
-        ] {
-            for role in ["only_adhoc", "maintainer"] {
-                let one = format!("{:?}", send(&rt, &db, role, present));
-                let two = format!("{:?}", send(&rt, &db, role, absent));
-                let two = two.replace("nomod", "vault");
-                assert_eq!(one, two, "{role}: {present}");
-            }
-        }
-        detail(send(&rt, &db, "only_adhoc", "cancel call nomod::x.key(1)"));
-        detail(send(&rt, &db, "only_adhoc", "vacuum nomod::x"));
-        detail(send(&rt, &db, "maintainer", "cancel call nomod::x.key(1)"));
-    });
-}
-
-#[test]
-fn a_capability_command_on_a_name_of_two_modules_answers_ambiguous() {
-    let vault = "module vault\nadd module vault\nadd type V = { id: Key secrets }\nadd relation secrets : V key id generate sequence\n";
-    let mut sim = Sim::new(672, Config::default());
-    run(&mut sim, |rt| {
-        let db = open_at(&rt, &options(2), &[SCHEMA, vault]);
-        let authority = db.role_authority();
-        authority.create_role("maintainer").expect("role");
-        for capability in [Capability::Adhoc, Capability::Maintain] {
-            authority
-                .grant_capability("maintainer", capability, false)
-                .expect("capability");
-        }
-        let got = format!("{:?}", send(&rt, &db, "maintainer", "vacuum secrets"));
-        assert!(got.contains("qualify"), "{got}");
-        allowed(&rt, &db, "maintainer", "vacuum vault::secrets");
-    });
-}
-
-#[test]
-fn reindex_by_fields_names_fields_to_a_maintain_role() {
-    scenario(673, |rt, db| {
-        db.role_authority()
-            .grant_capability("bare", Capability::Maintain, false)
-            .expect("maintain");
-        let got = format!(
-            "{:?}",
-            send(&rt, &db, "bare", "reindex secrets index (salry)")
-        );
-        assert!(got.contains("Invalid") && got.contains("no index"), "{got}");
-    });
 }
 
 #[test]

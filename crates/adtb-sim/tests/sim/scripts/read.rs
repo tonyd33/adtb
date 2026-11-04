@@ -35,6 +35,16 @@ pub(super) enum Head {
         error: Option<String>,
     },
     Advance(Duration),
+    Grant {
+        revoke: bool,
+        error: Option<String>,
+    },
+    Register {
+        header: String,
+        fixture: Option<String>,
+        error: Option<String>,
+    },
+    Host(Vec<String>),
     Run,
     Query {
         rowsort: bool,
@@ -42,9 +52,9 @@ pub(super) enum Head {
     Error(String),
 }
 
-const HEADS: [&str; 13] = [
+const HEADS: [&str; 18] = [
     "seed", "use", "option", "migrate", "reopen", "role", "log", "bundle", "call", "advance",
-    "run", "query", "error",
+    "run", "query", "error", "as", "grant", "revoke", "register", "host",
 ];
 
 /// One directive, with the file and line it was read from.
@@ -54,6 +64,8 @@ pub(super) struct Step {
     pub(super) line: usize,
     /// The fixture file and line the step comes from, when a `use` brought it in.
     pub(super) via: Option<(String, usize)>,
+    /// The role an `as` prefix names, the step then running through a session of it.
+    pub(super) role: Option<String>,
     pub(super) head: Head,
     pub(super) body: String,
     pub(super) rows: Vec<String>,
@@ -93,6 +105,22 @@ fn head(line: &str) -> Option<Head> {
         "bundle" => bundle(rest)?,
         "call" => call(rest)?,
         "advance" => Head::Advance(duration(rest)?),
+        "grant" | "revoke" => Head::Grant {
+            revoke: word == "revoke",
+            error: match rest {
+                "" => None,
+                rest => Some(rest.strip_prefix("error ")?.to_owned()),
+            },
+        },
+        "register" => {
+            let (header, fixture, error) = bundled(rest, " error ")?;
+            Head::Register {
+                header,
+                fixture,
+                error,
+            }
+        }
+        "host" if !rest.is_empty() => Head::Host(rest.split(' ').map(str::to_owned).collect()),
         "run" if rest.is_empty() => Head::Run,
         "query" if rest.is_empty() || rest == "rowsort" => Head::Query {
             rowsort: !rest.is_empty(),
@@ -110,14 +138,21 @@ fn split<'a>(rest: &'a str, sep: &str) -> (&'a str, Option<String>) {
     }
 }
 
-fn bundle(rest: &str) -> Option<Head> {
-    let (rest, refused) = split(rest, " refused ");
+/// Returns the header, the fixture `use` names and the value after `sep` of a bundle's directive.
+fn bundled(rest: &str, sep: &str) -> Option<(String, Option<String>, Option<String>)> {
+    let (rest, value) = split(rest, sep);
     let (header, fixture) = match rest.strip_prefix("use ") {
         Some(name) => ("", Some(name.to_owned())),
         None => split(rest, " use "),
     };
-    (!fixture.as_ref().is_some_and(|f| f.contains(' '))).then(|| Head::Bundle {
-        header: header.to_owned(),
+    (!fixture.as_ref().is_some_and(|f| f.contains(' ')))
+        .then(|| (header.to_owned(), fixture, value))
+}
+
+fn bundle(rest: &str) -> Option<Head> {
+    let (header, fixture, refused) = bundled(rest, " refused ")?;
+    Some(Head::Bundle {
+        header,
         fixture,
         refused,
     })
@@ -158,8 +193,17 @@ fn duration(text: &str) -> Option<Duration> {
     Some(Duration::from_secs(count.checked_mul(unit)?))
 }
 
+/// Returns the role an `as ROLE` prefix of `line` names, and the directive after it.
+fn prefixed(line: &str) -> (Option<&str>, &str) {
+    match line.strip_prefix("as ").and_then(|r| r.split_once(' ')) {
+        Some((role, rest)) => (Some(role), rest),
+        None => (None, line),
+    }
+}
+
 /// Returns whether the directive `line` begins is followed by expected rows.
 fn takes_rows(line: &str) -> bool {
+    let line = prefixed(line).1;
     let call = line.strip_prefix("call ").and_then(call);
     line.split(' ').next() == Some("query")
         || matches!(
@@ -202,13 +246,34 @@ fn read(path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, String> {
         blocks(&text, starts, takes_rows).map_err(|d| format!("{at}:{}: {}", d.line, d.message))?;
     let mut out = Vec::new();
     for b in found {
-        let Some(head) = head(&b.head) else {
+        let (role, line) = prefixed(&b.head);
+        let as_role = |h: &Head| {
+            role.is_none()
+                || matches!(
+                    h,
+                    Head::Run
+                        | Head::Query { .. }
+                        | Head::Error(_)
+                        | Head::Call { .. }
+                        | Head::Grant { .. }
+                        | Head::Register { .. }
+                )
+        };
+        let Some(head) = head(line).filter(as_role) else {
             return Err(format!("{at}:{}: `{}` is not a directive", b.line, b.head));
         };
         let bodied = matches!(
             head,
-            Head::Migrate { .. } | Head::Log | Head::Run | Head::Query { .. } | Head::Error(_)
-        ) || matches!(&head, Head::Bundle { fixture: None, .. });
+            Head::Migrate { .. }
+                | Head::Log
+                | Head::Run
+                | Head::Query { .. }
+                | Head::Error(_)
+                | Head::Grant { .. }
+        ) || matches!(
+            &head,
+            Head::Bundle { fixture: None, .. } | Head::Register { fixture: None, .. }
+        );
         let free = matches!(
             head,
             Head::Call {
@@ -222,6 +287,10 @@ fn read(path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, String> {
         }
         let mut body = b.body;
         if let Head::Bundle {
+            fixture: Some(name),
+            ..
+        }
+        | Head::Register {
             fixture: Some(name),
             ..
         } = &head
@@ -257,6 +326,7 @@ fn read(path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, String> {
             at: at.clone(),
             line: b.line,
             via: None,
+            role: role.map(str::to_owned),
             head,
             body,
             rows: b.rows,

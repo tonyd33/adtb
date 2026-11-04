@@ -1,0 +1,20 @@
+seed 656
+use adhoc
+as reader error Denied { detail: "role `reader` may not run this text" }
+  insert docs.Draft { id: docs.key(1), owner: "o", body: "b" }
+    unless conflict on key
+    else update old set Draft { old with body: "c" }
+as inserter error Denied { detail: "role `inserter` may not run this text" }
+  insert docs.Draft { id: docs.key(1), owner: "o", body: "b" }
+    unless conflict on key
+    else update old set Draft { old with body: "c" }
+as upserter run
+  insert docs.Draft { id: docs.key(1), owner: "o", body: "b" }
+    unless conflict on key
+    else update old set Draft { old with body: "c" }
+as reader error Denied { detail: "role `reader` may not run this text" }
+  insert secrets from (from d in docs.Draft select { salary: 1 }) rejects into doc_rejects
+as payer error Denied { detail: "role `payer` may not run this text" }
+  insert secrets from (from d in docs.Draft select { salary: 1 }) rejects into doc_rejects
+as loader run
+  insert secrets from (from d in docs.Draft select { salary: 1 }) rejects into doc_rejects

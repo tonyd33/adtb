@@ -1,0 +1,22 @@
+seed 643
+migrate
+  module shop
+  add module shop
+  add type Doc = { id: Key docs, n: I64 }
+  add relation docs : Doc key id generate sequence
+  module vault
+  add module vault
+  add type Doc = { id: Key docs, n: I64 }
+  add relation docs : Doc key id generate sequence
+role reader
+grant
+  grant adhoc to reader
+migrate
+  module shop
+  grant read docs to reader
+
+as reader query
+  from d in docs select d.n
+----
+as owner error Invalid { detail: "`docs` is declared in modules `shop` and `vault`; qualify it" }
+  from d in docs select d.n

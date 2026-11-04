@@ -1,0 +1,12 @@
+seed 628
+use adhoc
+as bare error Denied { detail: "role `bare` may not run this text" }
+  from c in sys::calls select c.id
+grant
+  grant monitor to bare
+as bare run
+  from c in sys::calls select c.id
+as bare error Denied { detail: "role `bare` may not run this text" }
+  from s in secrets select s.salary
+as bare error Denied { detail: "role `bare` may not run this text" }
+  from v in sys::field_values select v.value

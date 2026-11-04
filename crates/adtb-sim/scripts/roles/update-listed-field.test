@@ -1,0 +1,13 @@
+seed 603
+use adhoc
+as updater run
+  update d in docs.Draft set Draft { d with body: "new" }
+as updater error Denied { detail: "role `updater` may not run this text" }
+  update d in docs.Draft set Draft { d with owner: "new" }
+as frozen error Denied { detail: "role `frozen` may not run this text" }
+  update d in docs.Draft set Draft { d with body: "new" }
+
+query
+  from d in docs.Draft select { owner: d.owner, body: d.body }
+----
+{ body: "new", owner: "ann" }

@@ -1,0 +1,37 @@
+seed 671
+use adhoc-schema
+migrate
+  module vault
+  add module vault
+  add type V = { id: Key vs }
+  add relation vs : V key id generate sequence
+role only_adhoc
+role maintainer
+grant
+  grant adhoc to only_adhoc
+  grant adhoc to maintainer
+  grant maintain to maintainer
+as only_adhoc error Denied { detail: "role `only_adhoc` may not run this text" }
+  cancel call vault::x.key(1)
+as only_adhoc error Denied { detail: "role `only_adhoc` may not run this text" }
+  cancel call nomod::x.key(1)
+as maintainer error Denied { detail: "role `maintainer` may not run this text" }
+  cancel call vault::x.key(1)
+as maintainer error Denied { detail: "role `maintainer` may not run this text" }
+  cancel call nomod::x.key(1)
+as only_adhoc error Denied { detail: "role `only_adhoc` may not run this text" }
+  from x in vault::vs select x
+as only_adhoc error Denied { detail: "role `only_adhoc` may not run this text" }
+  from x in nomod::vs select x
+as maintainer error Denied { detail: "role `maintainer` may not run this text" }
+  from x in vault::vs select x
+as maintainer error Denied { detail: "role `maintainer` may not run this text" }
+  from x in nomod::vs select x
+as only_adhoc error Denied { detail: "role `only_adhoc` lacks `maintain`" }
+  vacuum vault::x
+as only_adhoc error Denied { detail: "role `only_adhoc` lacks `maintain`" }
+  vacuum nomod::x
+as maintainer error Invalid { detail: "no module `vault`" }
+  vacuum vault::x
+as maintainer error Invalid { detail: "no module `nomod`" }
+  vacuum nomod::x

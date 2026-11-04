@@ -1,0 +1,51 @@
+scripts/probes/role-values.test:8: refused with Rejected { reason: Denied { detail: "role `bob` may not run this text" } }
+scripts/probes/role-values.test:11: refused with Rejected { reason: Denied { detail: "role `bob` may not run this text" } }
+scripts/probes/role-values.test:16: a query holds one statement
+scripts/probes/role-values.test:22: succeeds
+  expected: Rejected { reason: Denied { detail: "role `bob` may not run this text" } }
+  actual:   success
+scripts/probes/role-values.test:25: refused otherwise
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   Rejected { reason: Denied { detail: "role `bob` may not run this text" } }
+scripts/probes/role-values.test:28: `grant monitor to nobody` is refused: Rejected { reason: Invalid { detail: "the grantee `nobody` is not a role" } }
+scripts/probes/role-values.test:32: the outcome differs
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   []
+scripts/probes/role-values.test:35: the outcome differs
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   []
+scripts/probes/role-values.test:38: the outcome differs
+  expected: []
+  actual:   Rejected { reason: Denied { detail: "role `bob` may call nothing in bundle web-1.0" } }
+scripts/probes/role-values.test:40: the outcome differs
+  expected: ["ann"]
+  actual:   Rejected { reason: Denied { detail: "role `bob` may call nothing in bundle web-1.0" } }
+scripts/probes/role-values.test:44: the call commits
+scripts/probes/role-values.test:49: the call commits nothing
+scripts/probes/role-values.test:53: the call commits
+scripts/probes/role-values.test:58: `pins 9` is past the log's 1 migrations
+scripts/probes/role-values.test:60: the outcome differs
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   Rejected { reason: Invalid { detail: "bundle web-1.0 is registered with different content; a new release is a bundle of a new name" } }
+scripts/probes/role-values.test:64: the rows differ
+  expected: []
+  actual:   ["al", "ann"]
+scripts/probes/role-values.test:67: admitted, and fails at completion
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   Rejected { reason: Faulted { fault: DivisionByZero } }
+scripts/probes/role-values.test:70: fails at completion with Rejected { reason: Faulted { fault: DivisionByZero } }
+scripts/probes/role-values.test:73: the outcome differs
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   []
+scripts/probes/role-values.test:77: admitted, and fails at completion
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   Rejected { reason: Faulted { fault: DivisionByZero } }
+scripts/probes/role-values.test:80: admitted, and fails at completion
+  expected: [1]
+  actual:   Rejected { reason: Faulted { fault: DivisionByZero } }
+scripts/probes/role-values.test:85: the outcome differs
+  expected: []
+  actual:   Rejected { reason: Denied { detail: "family web is owned by role owner" } }
+scripts/probes/role-values.test:87: the outcome differs
+  expected: Rejected { reason: Denied { detail: "x" } }
+  actual:   Rejected { reason: Denied { detail: "family web is owned by role owner" } }

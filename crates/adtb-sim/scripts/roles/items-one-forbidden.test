@@ -1,0 +1,10 @@
+seed 614
+use adhoc
+as writer error Denied { detail: "role `writer` may not run this text" }
+  insert docs.Draft { owner: "x", body: "y" }
+  from s in secrets select s
+
+query
+  count(d for d in docs.Draft)
+----
+1

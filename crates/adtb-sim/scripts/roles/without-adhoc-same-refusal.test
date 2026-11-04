@@ -1,0 +1,13 @@
+seed 606
+use adhoc
+revoke
+  revoke adhoc from bare
+as bare error Denied { detail: "role `bare` lacks `adhoc`" }
+  from s in secrets select s
+as bare error Denied { detail: "role `bare` lacks `adhoc`" }
+  from s in nosuch select s
+
+query
+  count(a for a in (from a in catalog::audit.Denied where a.role == "bare" select a))
+----
+2

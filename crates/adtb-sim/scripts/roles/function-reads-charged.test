@@ -1,0 +1,6 @@
+seed 616
+use adhoc
+as bare error Denied { detail: "role `bare` may not run this text" }
+  salaries()
+as caller_fn error Denied { detail: "role `caller_fn` may not run this text" }
+  salaries()

@@ -1,0 +1,44 @@
+seed 609
+use adhoc
+as reader query
+  from d in docs.Draft select d.body
+----
+"text"
+grant
+  grant read catalog::roles to cataloged
+
+as cataloged query
+  from r in catalog::roles select r.name
+----
+"bare"
+"caller_fn"
+"cataloged"
+"deleter"
+"frozen"
+"inserter"
+"loader"
+"narrow"
+"noter"
+"other"
+"outer"
+"owner"
+"payer"
+"reader"
+"retagger"
+"updater"
+"upserter"
+"writer"
+revoke
+  revoke read catalog::roles from cataloged
+as cataloged error Denied { detail: "role `cataloged` may not run this text" }
+  from r in catalog::roles select r.name
+
+as reader query
+  from d in docs.Draft select d.body
+----
+"text"
+migrate
+  module shop
+  revoke read docs.Draft (id, owner, body) from reader
+as reader error Denied { detail: "role `reader` may not run this text" }
+  from d in docs.Draft select d.body
