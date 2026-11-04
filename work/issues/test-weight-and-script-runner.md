@@ -53,3 +53,11 @@ Next batches need `bundle`/`register`, `call`, `as ROLE`, named transactions, `a
 Known pin: one committed call's value holds `identities.key(65)`, the key a sequence hands out after a reopen, which no contract states. Dropped: the BundleExpired message text, which no contract states.
 
 Next: `host` and the 16 host-function tests, `as ROLE` and the server batch, then commands, api, past, longkey, and the 60 conformance-fit tests.
+
+## 2026-11-04: roles and server batch, change 1 landed
+
+`test: move the role and server tests onto engine scripts`. New directives: `as ROLE` before `run`, `query`, `error`, `call`, `grant`, `revoke`, `register`, driving the server's own path (a `RoleSession` and `submit_text`, or `RoleAuthority::bind` and `RoleBinding::submit`), so no `through server`; under `as`, `error V` passes only on a refusal at submit or bind, and a failure at completion is a difference. `grant`/`revoke [error V]` (only the last line may be refused), `register HEADER [use NAME] [error V]`, `host NAME...` from a fixed registry. Role path in scripts/role.rs. 38 tests moved into 46 scripts (29 server_adhoc to scripts/roles/, 8 server_authority to scripts/authority/, 3 host tests to scripts/bundles/host-*); `verify-witness-reads` dropped, since no directive stores a row that breaks a constraint, covered by the two witness tests in verify.rs. Review found two blockers, both closed: the runner folded a submit refusal into a completion failure, and moving `only_a_schema_holder_or_an_option_holder_gives_a_capability` left `grant_capability_as`'s own check untested, so that test stays in Rust with the exact Denied. Full check 3456 passed.
+
+Filed from it: audit-violated-call-outcome, revoke-call-fn-says-grant.
+
+Next: change 2, named transactions and `assert`, then server_binding, server_commands, registered, checked_registration, principal and the remaining 13 host tests.
