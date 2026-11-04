@@ -33,3 +33,9 @@ Low value: `exec::bench_scans_joins_and_groups` (ignored, asserts nothing); `opl
 Batches: 0 delete the low value tests; 1 the 60 into `conformance/`; 2 runner core with oplog, longkey, commands, api, past (about 170 tests); 3 bundles (about 234); 4 roles and server (about 230); 5 the rest (about 80). In all about 20.5k Rust lines out, 8.45k script lines in.
 
 Merging the 64 binaries: test names gain a module path, so every `test(=NAME)` filter in .config/nextest.toml (six `threads-required` overrides, the server_adhoc slots-2 group keyed on `binary(=server_adhoc)`) and crates/adtb-heap-cap/tests/cap.rs change in the same commit; server_adhoc reruns itself with `--exact NAME`; three names repeat across files; `#[path]` modules in constraints.rs and io_contract.rs; file-level `#![expect]` in reindex_review.rs and truncated_open.rs; scratch directory names under `CARGO_TARGET_TMPDIR` need a clash check. Build time is not yet measured.
+
+## 2026-11-03: steps 1 and 2 landed
+
+`test: drop three adtb-sim tests a stronger test covers` (the bench, and the two second-migration tests covered by `oplog::migrations_apply_in_order_each_producing_a_version_that_survives_reopening`; the quarantine test stays). `test: build adtb-sim's tests as one binary`: tests/sim/main.rs with one module per former file; nextest filters, the heap-cap scan (`module_prefix`) and server_adhoc's `--exact` reruns carry module paths; `every_source_of_the_binary_is_a_module` fails naming any file under tests/sim no `mod` line reaches. Test names before and after equal as `BINARY::NAME` against `MODULE::NAME`, less the three deleted. Measured once at 3 build jobs: clean build of adtb-sim tests 190 s to 256 s; one line in crates/adtb/src 17.9 s to 10.2 s; one test file edited 0.8 s to about 6 s; test binaries 2.07 GB to 88 MB. Full check 3677 passed.
+
+Next: step 3, the engine script runner and its first batch (oplog, longkey, commands, api, past).
