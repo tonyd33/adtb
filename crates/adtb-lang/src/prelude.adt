@@ -78,7 +78,7 @@ type RejectReason = Violated             { constraint: Text, report: Report, red
                   | EditionLocked
                   | UnknownEdition       { edition: Text }
                   | MigrationInProgress
-                  | DumpDamaged          { offset: I64 }
+                  | DumpDamaged          { part: Text }
                   | BackupDamaged        { part: Text }
                   | RestorePointUnavailable { oldest: Position, newest: Position }
                   | Internal             { what: Text }

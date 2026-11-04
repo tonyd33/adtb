@@ -841,7 +841,7 @@ fn engine_fields_and_keys_take_their_fixed_ids() {
     }
     let reject = s.prelude_type("RejectReason");
     let damaged = s.ty(reject).ctor_index("DumpDamaged").unwrap();
-    assert_eq!(Some(68), field(reject, Some(damaged), "offset"));
+    assert_eq!(Some(68), field(reject, Some(damaged), "part"));
     let internal = s.ty(reject).ctor_index("Internal").unwrap();
     assert_eq!(Some(69), field(reject, Some(internal), "what"));
     let limit = s.prelude_type("Limit");

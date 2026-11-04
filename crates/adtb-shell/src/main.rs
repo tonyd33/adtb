@@ -84,9 +84,24 @@ enum Tool {
         )]
         log: Vec<PathBuf>,
     },
-    /// Write a new database file PATH from the backup at SOURCE.
+    /// Write a logical dump of the database FILE to the empty directory TARGET.
+    Dump {
+        #[arg(value_name = "FILE", help = "the database file")]
+        file: PathBuf,
+        #[arg(value_name = "TARGET", help = "the dump directory")]
+        target: PathBuf,
+        #[arg(
+            long = "schema",
+            value_name = "FILE",
+            allow_hyphen_values = true,
+            help = "the next migration of the database's log; the first may instead be a \
+                    schema file of declarations"
+        )]
+        log: Vec<PathBuf>,
+    },
+    /// Write a new database file PATH from the backup or dump at SOURCE.
     Restore {
-        #[arg(value_name = "SOURCE", help = "the backup directory")]
+        #[arg(value_name = "SOURCE", help = "the backup or dump directory")]
         source: PathBuf,
         #[arg(value_name = "PATH", help = "the new database file")]
         path: PathBuf,
@@ -123,6 +138,11 @@ fn main() -> ExitCode {
                 verify,
                 log: paths,
             } => backed_up(file, target, *verify, paths),
+            Tool::Dump {
+                file,
+                target,
+                log: paths,
+            } => written(file, target, "dump", paths),
             Tool::Restore {
                 source,
                 path,
@@ -207,21 +227,28 @@ fn verified(file: &Path, paths: &[PathBuf]) -> Result<bool, String> {
 /// Copy the database `file` to `target`, then prove the copy when `verify`. Returns whether it is
 /// proven or unasked to be, or why it could not run.
 fn backed_up(file: &Path, target: &Path, verify: bool, paths: &[PathBuf]) -> Result<bool, String> {
-    let failed = |e: &dyn std::fmt::Display| format!("{}: {e}", file.display());
-    let log = log(paths)?;
-    let db = adtb::open(file, &log, &OpenOptions::default()).map_err(|e| failed(&e))?;
-    let absolute = std::path::absolute(target).map_err(|e| failed(&e))?;
-    let text = format!("backup to {:?}", absolute.display().to_string());
-    db.query_text(&text, &[], &CallOptions::default())
-        .map_err(|e| failed(&e))?;
-    db.close().map_err(|e| failed(&e))?;
+    written(file, target, "backup", paths)?;
     if verify {
         return proved(target, paths);
     }
     Ok(true)
 }
 
-/// Write the new database `path` from the backup at `source`, up to `position` as `EPOCH/LSN`, an
+/// Run the command `command to "target"` on the database `file`. Returns true, or why it could
+/// not run.
+fn written(file: &Path, target: &Path, command: &str, paths: &[PathBuf]) -> Result<bool, String> {
+    let failed = |e: &dyn std::fmt::Display| format!("{}: {e}", file.display());
+    let log = log(paths)?;
+    let db = adtb::open(file, &log, &OpenOptions::default()).map_err(|e| failed(&e))?;
+    let absolute = std::path::absolute(target).map_err(|e| failed(&e))?;
+    let text = format!("{command} to {:?}", absolute.display().to_string());
+    db.query_text(&text, &[], &CallOptions::default())
+        .map_err(|e| failed(&e))?;
+    db.close().map_err(|e| failed(&e))?;
+    Ok(true)
+}
+
+/// Write the new database `path` from the backup or dump at `source`, up to `position` as `EPOCH/LSN`, an
 /// instant if `timed`, or `before` a version, and print the pages its manifest lists as copied
 /// damaged. Returns true, or why it could not run.
 fn restored(

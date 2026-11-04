@@ -881,7 +881,7 @@ type RejectReason = Violated             { constraint: Text, report: Report, red
                   | EditionLocked
                   | UnknownEdition       { edition: Text }
                   | MigrationInProgress
-                  | DumpDamaged          { offset: I64 }
+                  | DumpDamaged          { part: Text }
                   | BackupDamaged        { part: Text }
                   | RestorePointUnavailable { oldest: Position, newest: Position }
                   | Internal             { what: Text }
@@ -951,7 +951,7 @@ wire's 32-bit epoch and 64-bit log position.
 | `EditionLocked` | a Hello asks for an edition on a bound connection, whose edition is its bundle's | [wire.md](wire.md#32-hello) |
 | `UnknownEdition` | a Hello asks for an edition the server does not implement | [wire.md](wire.md#32-hello) |
 | `MigrationInProgress` | a migration set was presented while a staged migration is pending | [evolution.md](evolution.md#23-applying-a-migration-set) |
-| `DumpDamaged` | a restore could not authenticate or decode the dump; `offset` is the byte offset of the first part that fails | [interop.md](interop.md#61-a-logical-dump) |
+| `DumpDamaged` | a restore could not authenticate or decode the dump, or its `ids` disagree with the replayed log; `part` names the first part that fails, by its path in the dump or `manifest` | [interop.md](interop.md#61-a-logical-dump) |
 | `BackupDamaged` | a restore or a test restore found a part of a backup that fails its check; `part` names the first, by its path in the backup or `manifest` | [interop.md](interop.md#71-backup) |
 | `RestorePointUnavailable` | the source of a restore cannot reach the chosen point; `oldest` and `newest` bound what it can | [interop.md](interop.md#72-point-in-time-restore) |
 | `Internal` | the statement broke a guarantee the engine's checker makes about a program, a bug in the engine; the statement fails and none of its effects are applied, the transaction stays open, and the engine keeps serving; `what` is implementation-defined | [transactions.md](transactions.md#52-meaning) |
@@ -1249,7 +1249,7 @@ declared order, then each constructor's fields, constructors in listed
 order and fields in declared order, excluding constructors with ids
 from 471. They take ids 0 to 563:
 `Option.Some.value` 0, `Result.Ok.value` 1, `Result.Err.error` 2,
-`RejectReason.DumpDamaged.offset` 68, `RejectReason.Internal.what` 69,
+`RejectReason.DumpDamaged.part` 68, `RejectReason.Internal.what` 69,
 `RejectReason.RowTooLarge`'s fields 70 to 73, the fields of the
 `catalog` and `sys` modules from 92, and `Limit.Rounds.rounds` 563.
 `RejectReason.KeyTooLarge` appends fields `relation`, `ctor`, `index`,

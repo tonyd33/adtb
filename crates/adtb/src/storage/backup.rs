@@ -24,8 +24,8 @@ use super::{Lsn, Pid, Position};
 /// The layout of a backup directory this engine reads and writes.
 pub const FORMAT: u32 = 1;
 /// The kind of a directory holding a physical copy.
-const KIND: &str = "backup";
-const FIRST_LINE: &str = "adtb manifest";
+pub(super) const KIND: &str = "backup";
+pub(super) const FIRST_LINE: &str = "adtb manifest";
 const PROOF_LINE: &str = "adtb proof";
 
 /// The file a backup is complete once it holds in full.
@@ -48,9 +48,9 @@ const CHUNK_PAGES: usize = REGION / 8 - 1;
 /// The chunks of one page part.
 const PART_CHUNKS: usize = 64;
 /// The most a restore raises the epoch by.
-const EPOCH_STEP: u64 = 1 << 32;
+pub(super) const EPOCH_STEP: u64 = 1 << 32;
 /// The highest epoch a manifest may end in: a restore of it stays within an `I64`.
-const MAX_EPOCH: u64 = (1 << 63) - 1 - EPOCH_STEP;
+pub(super) const MAX_EPOCH: u64 = (1 << 63) - 1 - EPOCH_STEP;
 
 /// What a backup says of the database beyond its file.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -135,19 +135,19 @@ impl std::fmt::Debug for BackupRun<'_> {
 }
 
 /// File operations that report a failure to their caller and name the file.
-struct Fs<R: Runtime> {
-    drv: Driver<R>,
+pub(super) struct Fs<R: Runtime> {
+    pub(super) drv: Driver<R>,
 }
 
-type Io<T> = Result<T, BackupError>;
+pub(super) type Io<T> = Result<T, BackupError>;
 
-fn io_error(what: impl Into<String>) -> impl FnOnce(IoError) -> BackupError {
+pub(super) fn io_error(what: impl Into<String>) -> impl FnOnce(IoError) -> BackupError {
     let what = what.into();
     move |error| BackupError::Io { what, error }
 }
 
 impl<R: Runtime> Fs<R> {
-    fn new(rt: R) -> Fs<R> {
+    pub(super) fn new(rt: R) -> Fs<R> {
         Fs {
             drv: Driver::new(rt),
         }
@@ -157,18 +157,18 @@ impl<R: Runtime> Fs<R> {
         self.drv.open(path, create).map_err(io_error(path))
     }
 
-    fn create(&mut self, path: &str) -> Io<FileId> {
+    pub(super) fn create(&mut self, path: &str) -> Io<FileId> {
         let (file, _) = self.drv.create_new(path).map_err(io_error(path))?;
         Ok(file)
     }
 
     /// Returns a private name beside `name`.
-    fn aside_name(&self, name: &str) -> String {
+    pub(super) fn aside_name(&self, name: &str) -> String {
         format!("{name}{PARTIAL}{:016x}", self.drv.rt.next_u64())
     }
 
     /// Create a new private directory beside `name` and return its path.
-    fn aside_dir(&mut self, name: &str) -> Io<String> {
+    pub(super) fn aside_dir(&mut self, name: &str) -> Io<String> {
         loop {
             let dir = self.aside_name(name);
             let op = Op::CreateDir { dir: dir.clone() };
@@ -193,7 +193,12 @@ impl<R: Runtime> Fs<R> {
     }
 
     /// Rename `from` to `to`. A taken name answers `taken`.
-    fn rename(&mut self, from: &str, to: &str, taken: impl FnOnce() -> BackupError) -> Io<()> {
+    pub(super) fn rename(
+        &mut self,
+        from: &str,
+        to: &str,
+        taken: impl FnOnce() -> BackupError,
+    ) -> Io<()> {
         let op = Op::Rename {
             from: from.to_owned(),
             to: to.to_owned(),
@@ -207,7 +212,12 @@ impl<R: Runtime> Fs<R> {
     }
 
     /// Force `aside`'s name, rename it to `to`, and force that.
-    fn publish(&mut self, aside: &str, to: &str, taken: impl FnOnce() -> BackupError) -> Io<()> {
+    pub(super) fn publish(
+        &mut self,
+        aside: &str,
+        to: &str,
+        taken: impl FnOnce() -> BackupError,
+    ) -> Io<()> {
         self.sync_dir(parent(to))?;
         self.rename(aside, to, taken)?;
         self.sync_dir(parent(to))
@@ -215,7 +225,7 @@ impl<R: Runtime> Fs<R> {
 
     /// Remove the private file or directory `path` and all under it, going on past a failed
     /// removal, and force its name's removal. Returns the first failure.
-    fn discard(&mut self, path: &str) -> Io<()> {
+    pub(super) fn discard(&mut self, path: &str) -> Io<()> {
         let removed = self.remove_tree(path);
         removed.and(self.sync_dir(parent(path)))
     }
@@ -237,7 +247,7 @@ impl<R: Runtime> Fs<R> {
     }
 
     /// Run `body` and close `file`, whatever `body` answers.
-    fn closing<T>(
+    pub(super) fn closing<T>(
         &mut self,
         path: &str,
         file: FileId,
@@ -254,16 +264,16 @@ impl<R: Runtime> Fs<R> {
         self.drv.attempt(op).result.map_err(io_error(what))
     }
 
-    fn write(&mut self, what: &str, file: FileId, offset: u64, bytes: &[u8]) -> Io<()> {
+    pub(super) fn write(&mut self, what: &str, file: FileId, offset: u64, bytes: &[u8]) -> Io<()> {
         let buf = AlignedBuf::from_slice(bytes);
         self.run(what, Op::Write { file, offset, buf }).map(|_| ())
     }
 
-    fn sync(&mut self, what: &str, file: FileId) -> Io<()> {
+    pub(super) fn sync(&mut self, what: &str, file: FileId) -> Io<()> {
         self.run(what, Op::Sync { file }).map(|_| ())
     }
 
-    fn sync_dir(&mut self, dir: &str) -> Io<()> {
+    pub(super) fn sync_dir(&mut self, dir: &str) -> Io<()> {
         let dir = dir.to_owned();
         self.run(&dir.clone(), Op::SyncDir { dir }).map(|_| ())
     }
@@ -285,7 +295,14 @@ impl<R: Runtime> Fs<R> {
 
     /// Create `dir` and every absent directory above it, and force the name of each one made. An
     /// entry of another kind on the way answers `taken`.
-    fn make_dirs(&mut self, dir: &str, taken: impl Fn() -> BackupError) -> Io<()> {
+    /// Make `dir` and each directory above it that is absent. Returns the ones it made, outermost
+    /// first.
+    pub(super) fn make_dirs(
+        &mut self,
+        dir: &str,
+        taken: impl Fn() -> BackupError,
+    ) -> Io<Vec<String>> {
+        let mut made = Vec::new();
         let mut at = String::new();
         for (i, name) in dir.split('/').enumerate() {
             if i > 0 {
@@ -297,13 +314,16 @@ impl<R: Runtime> Fs<R> {
             }
             let path = at.clone();
             match self.drv.attempt(Op::CreateDir { dir: path }).result {
-                Ok(Done::Created) => self.sync_dir(parent(&at))?,
+                Ok(Done::Created) => {
+                    made.push(at.clone());
+                    self.sync_dir(parent(&at))?;
+                }
                 Ok(_) => {}
                 Err(IoError::Exists | IoError::NotADirectory) => return Err(taken()),
                 Err(e) => return Err(io_error(at)(e)),
             }
         }
-        Ok(())
+        Ok(made)
     }
 
     fn remove(&mut self, path: &str) -> Io<()> {
@@ -319,7 +339,7 @@ impl<R: Runtime> Fs<R> {
         }
     }
 
-    fn remove_dir(&mut self, path: &str) -> Io<()> {
+    pub(super) fn remove_dir(&mut self, path: &str) -> Io<()> {
         let op = Op::RemoveDir {
             path: path.to_owned(),
         };
@@ -336,13 +356,13 @@ impl<R: Runtime> Fs<R> {
         self.run(what, Op::Close { file }).map(|_| ())
     }
 
-    fn read(&mut self, what: &str, file: FileId, at: u64, len: usize) -> Io<AlignedBuf> {
+    pub(super) fn read(&mut self, what: &str, file: FileId, at: u64, len: usize) -> Io<AlignedBuf> {
         self.drv.read(file, at, len).map_err(io_error(what))
     }
 
     /// Write `text` to the open file `file`, zero to a multiple of [`REGION`], force it and close
     /// it, and force its name.
-    fn write_text(&mut self, path: &str, file: FileId, text: &str) -> Io<()> {
+    pub(super) fn write_text(&mut self, path: &str, file: FileId, text: &str) -> Io<()> {
         let mut bytes = text.as_bytes().to_vec();
         bytes.resize(bytes.len().next_multiple_of(REGION), 0);
         self.closing(path, file, |fs| {
@@ -353,7 +373,7 @@ impl<R: Runtime> Fs<R> {
     }
 
     /// Returns the text of `path` up to its first zero byte, `None` when the file is absent.
-    fn read_text(&mut self, path: &str) -> Io<Option<String>> {
+    pub(super) fn read_text(&mut self, path: &str) -> Io<Option<String>> {
         let (file, len) = match self.drv.open(path, false) {
             Ok(opened) => opened,
             Err(IoError::NotFound | IoError::NotADirectory) => return Ok(None),
@@ -367,7 +387,7 @@ impl<R: Runtime> Fs<R> {
 }
 
 /// Returns `dir/name`, or `name` where `dir` is empty.
-fn inside(dir: &str, name: &str) -> String {
+pub(super) fn inside(dir: &str, name: &str) -> String {
     if dir.is_empty() {
         name.to_owned()
     } else {
@@ -375,7 +395,7 @@ fn inside(dir: &str, name: &str) -> String {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(super) fn hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for b in bytes {
         write!(out, "{b:02x}").expect("a string takes any text");
@@ -395,14 +415,14 @@ fn unhex<const N: usize>(text: &str) -> Option<[u8; N]> {
 }
 
 /// Returns `body` followed by a line holding the hash of `body`.
-fn sealed(mut body: String) -> String {
+pub(super) fn sealed(mut body: String) -> String {
     let sum = hex(blake3::hash(body.as_bytes()).as_bytes());
     writeln!(body, "checksum {sum}").expect("a string takes any text");
     body
 }
 
 /// Returns what `text` says before its checksum line, when that line holds its hash.
-fn unsealed(text: &str) -> Option<&str> {
+pub(super) fn unsealed(text: &str) -> Option<&str> {
     let body = text.strip_suffix('\n')?;
     let at = body.rfind('\n')? + 1;
     let sum = body[at..].strip_prefix("checksum ")?;
@@ -987,24 +1007,28 @@ fn wall_micros(at: std::time::SystemTime) -> i64 {
 }
 
 /// Returns `path` without the separators that end it, which would put a name beside it inside it.
-fn final_name(path: &str) -> &str {
+pub(super) fn final_name(path: &str) -> &str {
     match path.trim_end_matches('/') {
         "" => path,
         name => name,
     }
 }
 
-/// Create the directories above `path`.
-fn make_parent<R: Runtime>(fs: &mut Fs<R>, path: &str, taken: impl Fn() -> BackupError) -> Io<()> {
+/// Create the directories above `path`. Returns the ones it made, outermost first.
+pub(super) fn make_parent<R: Runtime>(
+    fs: &mut Fs<R>,
+    path: &str,
+    taken: impl Fn() -> BackupError,
+) -> Io<Vec<String>> {
     let dir = parent(path);
     if dir.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     fs.make_dirs(dir, taken)
 }
 
 /// Answer `taken` when `path` names an entry of any kind.
-fn name_taken<R: Runtime>(
+pub(super) fn name_taken<R: Runtime>(
     fs: &mut Fs<R>,
     path: &str,
     taken: impl FnOnce() -> BackupError,
@@ -1021,7 +1045,11 @@ fn name_taken<R: Runtime>(
 }
 
 /// Answer `taken` when `dir` holds an entry of any kind or is not a directory.
-fn occupied<R: Runtime>(fs: &mut Fs<R>, dir: &str, taken: impl FnOnce() -> BackupError) -> Io<()> {
+pub(super) fn occupied<R: Runtime>(
+    fs: &mut Fs<R>,
+    dir: &str,
+    taken: impl FnOnce() -> BackupError,
+) -> Io<()> {
     match fs.list(dir) {
         Ok(entries) if entries.is_empty() => Ok(()),
         Ok(_)
@@ -1176,7 +1204,7 @@ fn build_restored<R: Runtime>(
 
 /// Rename the log directory and then the file, the commit point. A failure before the file's name
 /// exists takes the log directory's name back.
-fn publish_restored<R: Runtime>(
+pub(super) fn publish_restored<R: Runtime>(
     fs: &mut Fs<R>,
     file_aside: &str,
     path: &str,

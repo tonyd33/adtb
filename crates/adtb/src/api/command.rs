@@ -51,6 +51,7 @@ pub(super) fn runs(c: &Command) -> Result<(), Error> {
         | Command::PrintSchema
         | Command::Export { .. }
         | Command::Restore { .. }
+        | Command::Dump { .. }
         | Command::Backup {
             incremental: false, ..
         } => Ok(()),
@@ -138,6 +139,7 @@ pub(super) fn changes_data(c: &Command) -> bool {
             | Command::PrintSchema
             | Command::Export { .. }
             | Command::Backup { .. }
+            | Command::Dump { .. }
             | Command::Restore { .. }
     )
 }

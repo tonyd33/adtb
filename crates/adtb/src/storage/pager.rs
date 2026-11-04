@@ -39,6 +39,9 @@ pub struct Options {
     /// How long a page-in waits for a frame, with every frame latched, before it reports a
     /// stalled pool.
     pub stall_after: Duration,
+    /// The position a new file's history starts after: the file begins an epoch a random step
+    /// of 1 to 2^32 above it, that position ending its epoch. `None` begins epoch 1.
+    pub after: Option<Position>,
 }
 
 /// The pages one thread latches at most at once: a B-link operation's four and the allocation
@@ -57,6 +60,7 @@ impl Options {
             atomic_page_writes: false,
             threads: 1,
             stall_after: Duration::from_secs(10),
+            after: None,
         }
     }
 
@@ -437,10 +441,16 @@ impl<R: Runtime> Pager<R> {
             checkpoint: Lsn(0),
             catalog_root: Pid(0),
             quarantine: Pid(0),
-            epoch: 1,
+            epoch: options.after.map_or(1, |at| {
+                at.epoch + rt.next_u64() % super::backup::EPOCH_STEP + 1
+            }),
             encryption: 0,
             bitmap_groups: 0,
-            history: Vec::new(),
+            history: options
+                .after
+                .map(|at| (at.epoch, at.lsn))
+                .into_iter()
+                .collect(),
         };
         let pager = Pager::assemble(rt, options, header, 1, data);
         let claimed = {

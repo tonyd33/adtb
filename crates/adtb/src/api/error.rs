@@ -170,7 +170,7 @@ pub enum RejectReason {
     },
     MigrationInProgress,
     DumpDamaged {
-        offset: i64,
+        part: String,
     },
     BackupDamaged {
         part: String,
@@ -578,7 +578,7 @@ impl fmt::Display for RejectReason {
             R::EditionLocked => f.write_str("the edition is locked"),
             R::UnknownEdition { edition } => write!(f, "no edition `{edition}`"),
             R::MigrationInProgress => f.write_str("a migration is in progress"),
-            R::DumpDamaged { offset } => write!(f, "the dump is damaged at byte {offset}"),
+            R::DumpDamaged { part } => write!(f, "the dump's part `{part}` is damaged"),
             R::BackupDamaged { part } => write!(f, "the backup's part `{part}` is damaged"),
             R::RestorePointUnavailable { oldest, newest } => {
                 write!(
@@ -781,7 +781,7 @@ impl fmt::Display for Value<&RejectReason> {
             R::EditionLocked => ("EditionLocked", &[]),
             R::UnknownEdition { edition } => ("UnknownEdition", &[("edition", &Txt(edition))]),
             R::MigrationInProgress => ("MigrationInProgress", &[]),
-            R::DumpDamaged { offset } => ("DumpDamaged", &[("offset", offset)]),
+            R::DumpDamaged { part } => ("DumpDamaged", &[("part", &Txt(part))]),
             R::BackupDamaged { part } => ("BackupDamaged", &[("part", &Txt(part))]),
             R::RestorePointUnavailable { oldest, newest } => (
                 "RestorePointUnavailable",

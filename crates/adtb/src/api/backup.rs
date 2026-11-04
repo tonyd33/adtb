@@ -16,7 +16,7 @@ use super::text::{DynRows, Prepared, rows};
 use super::{Database, Engine, Error, Log, OpenError, OpenOptions, Position, TxnId};
 
 /// The catalog version of this engine's edition.
-const CATALOG_VERSION: u64 = 1;
+pub(super) const CATALOG_VERSION: u64 = 1;
 
 /// Where a backup lives: a file system path.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,7 +66,7 @@ fn refuse_scheme(target: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn refused(e: BackupError) -> Error {
+pub(super) fn refused(e: BackupError) -> Error {
     match e {
         BackupError::Occupied(target) => {
             Error::invalid(format!("the backup target `{target}` holds files"))
@@ -87,14 +87,21 @@ fn refused(e: BackupError) -> Error {
     }
 }
 
-fn manifest_row(schema: &Schema, manifest: &Manifest) -> DynRows {
+fn manifest_row(schema: &Schema, manifest: &str) -> DynRows {
     let ty = Ty::Record(vec![("manifest".into(), Ty::Base(Base::Text))]);
-    let row = Val::record(vec![Val::text(&manifest.text())]);
+    let row = Val::record(vec![Val::text(manifest)]);
     rows(schema, ty, vec![row])
 }
 
 fn log_dir_of(options: &OpenOptions, path: &str) -> String {
     options.storage(path).log_dir()
+}
+
+/// What a restore wrote: the manifest of its source, and the pages a backup lists as copied
+/// damaged.
+struct Restored {
+    manifest: String,
+    damaged: Vec<u64>,
 }
 
 fn restored<R: Runtime>(
@@ -103,15 +110,26 @@ fn restored<R: Runtime>(
     path: &str,
     to: RestorePoint,
     options: &OpenOptions,
-) -> Result<Manifest, Error> {
+) -> Result<Restored, Error> {
     refuse_scheme(source)?;
     refuse_scheme(path)?;
+    if storage::is_dump(rt, source).map_err(refused)? {
+        let manifest = super::dump::restore_dump(rt, source, path, to, options)?;
+        return Ok(Restored {
+            manifest: manifest.text(),
+            damaged: Vec::new(),
+        });
+    }
     let (manifest, _) = storage::check_backup(rt, source).map_err(refused)?;
     let end = Position::from(manifest.end);
     if to != RestorePoint::Latest && to != RestorePoint::Position(end) {
         return Err(unreachable_point(&manifest));
     }
-    restore_checked(rt, source, path, options)
+    let manifest = restore_checked(rt, source, path, options)?;
+    Ok(Restored {
+        manifest: manifest.text(),
+        damaged: manifest.damaged.iter().map(|pid| pid.0).collect(),
+    })
 }
 
 fn restore_checked<R: Runtime>(
@@ -140,8 +158,7 @@ pub fn restore_in<R: Runtime>(
     to: RestorePoint,
     options: &OpenOptions,
 ) -> Result<Vec<u64>, Error> {
-    let manifest = restored(&rt, &archive.0, path, to, options)?;
-    Ok(manifest.damaged.iter().map(|pid| pid.0).collect())
+    Ok(restored(&rt, &archive.0, path, to, options)?.damaged)
 }
 
 /// Restore the backup at `archive` as the new database file at `path`. A relative `archive` and
@@ -321,6 +338,19 @@ impl<R: Runtime> Engine<R> {
     ) -> Option<Result<DynRows, Error>> {
         match c {
             Command::Backup { path, .. } => Some(self.backup_to(path, p, bounds)),
+            Command::Dump {
+                encrypt: Some(_), ..
+            } => Some(Err(super::unsupported("`dump` with `encrypt`"))),
+            Command::Dump { .. } if bounds.confined => {
+                Some(Err(super::unsupported("`dump` through a server")))
+            }
+            Command::Dump { .. } if tx.wrote() => Some(Err(Error::invalid(
+                "`dump` does not run in a transaction that has written",
+            ))),
+            Command::Dump { path, .. } => Some(
+                self.dump_to(tx, path)
+                    .map(|manifest| manifest_row(p.schema(), &manifest.text())),
+            ),
             Command::Restore { from, to, point } => {
                 let at = point.as_ref().map_or(Ok(RestorePoint::Latest), |point| {
                     self.point_of(tx, point, p, local, bounds)
@@ -362,7 +392,7 @@ impl<R: Runtime> Engine<R> {
         }))
     }
 
-    fn target(&self, path: &str) -> Result<String, Error> {
+    pub(super) fn target(&self, path: &str) -> Result<String, Error> {
         refuse_scheme(path)?;
         let root = self.targets.lock(&self.rt).clone();
         Ok(match root {
@@ -371,7 +401,7 @@ impl<R: Runtime> Engine<R> {
         })
     }
 
-    fn envelope(&self) -> Envelope {
+    pub(super) fn envelope(&self) -> Envelope {
         let version = self
             .catalog
             .source()
@@ -418,7 +448,7 @@ impl<R: Runtime> Engine<R> {
             name: &name,
         };
         match self.pager.backup(&mut run) {
-            Ok(manifest) => Ok(manifest_row(p.schema(), &manifest)),
+            Ok(manifest) => Ok(manifest_row(p.schema(), &manifest.text())),
             Err(BackupError::Stopped) => {
                 let e = stopped.map_or(write::Error::Cancelled, write::Error::from);
                 Err(self.write_error(TxnId(0), e))
@@ -445,7 +475,7 @@ impl<R: Runtime> Engine<R> {
         }
         let (source, path) = (self.target(from)?, self.target(to)?);
         let options = OpenOptions::default();
-        let manifest = restored(&self.rt, &source, &path, at, &options)?;
-        Ok(manifest_row(p.schema(), &manifest))
+        let restored = restored(&self.rt, &source, &path, at, &options)?;
+        Ok(manifest_row(p.schema(), &restored.manifest))
     }
 }

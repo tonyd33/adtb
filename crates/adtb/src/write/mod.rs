@@ -500,6 +500,9 @@ pub struct Database<R: Runtime> {
     rels: Rels,
     denials: Vec<check::Denial>,
     sequences: Lock<Sequences>,
+    /// Whether inserts into a constructor closed for writes are admitted, as a restore of rows
+    /// that existed inserts them.
+    restoring: AtomicBool,
     /// The snapshot of each running read-only transaction, for its safe snapshot marker.
     readers: Lock<BTreeMap<SerialId, (SnapshotId, Snapshot)>>,
     uuids: AtomicU64,
@@ -602,6 +605,7 @@ impl<R: Runtime> Database<R> {
             rels,
             denials,
             sequences: Lock::new(sequences),
+            restoring: AtomicBool::new(false),
             readers: Lock::default(),
             uuids: AtomicU64::new(seed >> 2),
             budget: setup.budget,
@@ -1030,6 +1034,34 @@ impl<R: Runtime> Database<R> {
         eval::Stmt::reader(self, tx)
             .rows(rel, None)
             .map(|rows| rows.into_iter().map(|(_, row)| row).collect())
+    }
+
+    /// Returns the position of the latest commit `tx` reads, else of the log's durable end.
+    pub(crate) fn read_position(&self, tx: &Txn) -> Position {
+        let upto = self.txns.read_upto(tx.hold);
+        self.pager
+            .position(upto.unwrap_or_else(|| self.pager.durable()))
+    }
+
+    /// Admit inserts into constructors closed for writes from now on.
+    ///
+    /// Precondition: the caller is a restore, and nothing else holds this database.
+    pub(crate) fn admit_restored_rows(&self) {
+        self.restoring.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn restoring(&self) -> bool {
+        self.restoring.load(Ordering::Acquire)
+    }
+
+    /// Returns the value `rel`'s sequence draws next.
+    pub(crate) fn sequence_next(&self, rel: RelId) -> i64 {
+        self.sequences.lock(&self.rt).peek(rel.0)
+    }
+
+    /// Make `rel`'s sequence draw no value below `next`, durably.
+    pub(crate) fn resume_sequence(&self, rel: RelId, next: i64) -> Result<(), Error> {
+        self.advance_sequence(rel, next.saturating_sub(1))
     }
 
     /// Returns the next deployment row id of `rel`, at least `floor`.

@@ -1,4 +1,4 @@
-//! Hold the file, pages and log: the pager, allocation, recovery, backup and quarantine.
+//! Hold the file, pages and log: the pager, allocation, recovery, backup, dump and quarantine.
 
 mod alloc;
 mod backup;
@@ -6,6 +6,7 @@ mod block;
 mod crc;
 mod create;
 mod driver;
+mod dump;
 mod evicted;
 mod header;
 mod log;
@@ -31,6 +32,10 @@ pub(crate) use create::{Created, Hold, Unpublished, create, refuse_foreign_log, 
 pub use create::{aside, creating, marker, marker_bytes};
 pub(crate) use driver::Driver;
 pub use driver::{FATAL_IO, FatalIo};
+pub use dump::{
+    DUMP_FORMAT, DumpManifest, discard_aside, is_dump, publish_database, read_dump, restore_aside,
+    write_dump,
+};
 pub use header::HISTORY_CAPACITY;
 pub use page::{
     FIRST_EDITABLE, HEADER_LEN, MAX_PAGE_SIZE, MIN_PAGE_SIZE, PageKind, flags, flip_owner, format,

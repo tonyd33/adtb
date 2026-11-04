@@ -253,6 +253,15 @@ the log directory `PATH-log` with no file at `PATH`: delete it to retry, since a
 restore refuses a log directory that holds files. An open that would create `PATH`
 refuses it too, leaves it whole and makes no file at `PATH`.
 
+`adtb dump FILE TARGET` writes a logical dump of the database to the empty
+directory `TARGET`: its migrations and its rows as text, read at one snapshot.
+`adtb restore TARGET PATH` reads a dump as well as a backup, and writes a new
+database file holding the dumped rows, with the same keys and catalog ids. A
+dump this release writes carries only the text form of its rows. Its
+deployment state, such as roles, grants, bundles and settings, is not dumped
+yet. A restore of a dump whose schema has host functions refuses, naming the
+function: `adtb restore` supplies none.
+
 A target that is a mount point fails: the run builds on the parent's device, copies
 there first, and the rename across devices answers a storage failure. Name a directory
 inside the mount.
@@ -265,7 +274,7 @@ scratch directory inside the backup, runs every check on it and records the resu
 a proof file beside the manifest. `adtb backup --verify` does the same at once.
 Pass the database's migrations with `--schema` when its checks need them.
 
-| Exit status | `adtb verify TARGET` | `adtb backup`, `adtb restore` |
+| Exit status | `adtb verify TARGET` | `adtb backup`, `adtb dump`, `adtb restore` |
 | --- | --- | --- |
 | 0 | proven | done |
 | 1 | a finding, printed, or unproven for want of a host function | with `--verify`, not proven |
@@ -330,8 +339,8 @@ adtb> \q
 `retire bundle B` runs too, on a bundle a program registered
 ([the Rust API](rust-api.md#supersede-and-retire)). `supersede bundle`
 needs a live bundle to supersede by, and the shell has none. The
-specification lists more commands, among them `compact`,
-`dump` and `register bundle`, and `export` to anything but CSV. The engine
+specification lists more commands, among them `compact`
+and `register bundle`, and `export` to anything but CSV. The engine
 does not run them yet and answers, for example,
 `` `compact` does not run in this engine yet ``. The commands and
 their privileges are in

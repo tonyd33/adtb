@@ -708,7 +708,10 @@ $ adtb restore app.dump new.adt
 `read` on every relation it dumps; its `security` entry is written
 only for a holder of `schema`.
 
-A dump reads the database at one snapshot. It is a directory holding:
+A dump reads the database at one snapshot, that of the transaction it
+runs in: a read-only transaction dumps at its snapshot, and in a
+transaction that has written, `dump` is refused with `Invalid`. A dump
+is a directory holding:
 
 | Entry | Content |
 | --- | --- |
@@ -725,6 +728,10 @@ A dump reads the database at one snapshot. It is a directory holding:
 | `extensions` | each installed extension by name, version and content hash |
 | `data/R.C.arrows` | for each constructor relation `R.C`, its rows as an Arrow IPC stream in the mapping of §2.2 |
 | `data/R.C.txt` | optionally, the same rows as a text document (§1.2) |
+
+Every entry but `manifest`, `blobs/` and the Arrow streams is text whose
+first line states the edition and the dumped schema version, as a
+document's does (§1.2).
 
 Relation and constructor-set grants and `grant call fn` are log
 operators, rows of `catalog::grants` of kind `Log`, so the `log`
@@ -746,9 +753,10 @@ an encrypted dump needs the passphrase. A restore with the wrong
 passphrase fails as a restore of a damaged dump does: authenticated
 encryption cannot tell a wrong key from damaged ciphertext. A restore
 that cannot authenticate or decode a dump fails with `Rejected {
-reason: DumpDamaged { offset } }`, `offset` the byte offset in the dump
-of the first part that fails
-([catalog.md §4.2](catalog.md#42-reasons)).
+reason: DumpDamaged { part } }`, `part` naming the first part that
+fails by its path in the dump, or `manifest`
+([catalog.md §4.2](catalog.md#42-reasons)). A dump whose `ids` disagree
+with the keys replaying its `log` assigns fails as damaged, naming `ids`.
 
 Not dumped, and lost by a dump and restore:
 
@@ -784,7 +792,14 @@ A restore reproduces the dumped database exactly as clients see it:
 
 A restore needs an engine release that reads the dump's format and
 whose catalog log extends the dump's catalog version; any other
-release refuses the dump before writing anything.
+release refuses the dump before writing anything. A dump restores only
+the state at its snapshot: a restore of it to any other point fails with
+`RestorePointUnavailable`, `oldest` and `newest` both the snapshot's
+position. The restored file has a file id of its own and begins a new
+epoch, so no position of the dumped database is a position of a commit
+of the restored one (§7.1). A restore that fails with `Fatal { reason:
+Storage {..} }` has an undetermined outcome: the target then holds
+nothing or a complete, checked database, never a partial one.
 
 A deployed client keeps working against the restored database with no
 redeploy. Host functions must be supplied by the program that opens

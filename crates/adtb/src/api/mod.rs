@@ -5,6 +5,7 @@ mod backup;
 mod bundle;
 mod cause;
 mod command;
+mod dump;
 mod error;
 mod failed_open;
 #[cfg(target_os = "linux")]
@@ -109,7 +110,9 @@ impl Log {
 /// What open creates a file with when none exists.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct CreateOptions {}
+pub struct CreateOptions {
+    pub(crate) after: Option<storage::Position>,
+}
 
 /// The settings fixed while a handle is open.
 #[derive(Clone, Debug, Default)]
@@ -150,6 +153,7 @@ impl OpenOptions {
             page_size: PAGE_SIZE,
             pool_frames: frames.max(threads * LATCHES_PER_THREAD),
             threads,
+            after: self.create.as_ref().and_then(|c| c.after),
             ..storage::Options::new(name)
         }
     }

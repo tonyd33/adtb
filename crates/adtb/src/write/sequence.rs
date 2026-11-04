@@ -117,6 +117,11 @@ impl Sequences {
         self.replace(pager, id, c)
     }
 
+    /// Returns the value counter `id` draws next with no floor.
+    pub fn peek(&self, id: u32) -> i64 {
+        self.counter(id).next
+    }
+
     fn counter(&self, id: u32) -> Counter {
         self.counters.get(&id).copied().unwrap_or(Counter {
             next: 1,

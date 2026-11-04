@@ -733,6 +733,25 @@ fn backup_restore_and_verify_of_a_backup_exit_as_documented() {
 }
 
 #[test]
+fn dump_and_restore_of_a_dump_exit_as_documented_and_keep_the_rows() {
+    let (schema, file) = scratch("dump_tool");
+    create(&schema, &file);
+    seed(&file);
+    let dir = file.parent().unwrap();
+    let (target, copy) = (dir.join("nested/dump"), dir.join("copy.adt"));
+    let args = [file.to_str().unwrap(), target.to_str().unwrap()];
+    let schema_arg = schema.to_str().unwrap();
+    let ran = adtb(&["dump", args[0], args[1], "--schema", schema_arg], "");
+    assert_eq!(Some(0), ran.status.code(), "{ran:?}");
+    let again = adtb(&["dump", args[0], args[1], "--schema", schema_arg], "");
+    assert_eq!(Some(2), again.status.code(), "{again:?}");
+    let restored = adtb(&["restore", args[1], copy.to_str().unwrap()], "");
+    assert_eq!(Some(0), restored.status.code(), "{restored:?}");
+    assert_eq!(stdout(&run(&file, SIGN_INS)), stdout(&run(&copy, SIGN_INS)));
+    assert_eq!(3, stdout(&run(&copy, SIGN_INS)).len());
+}
+
+#[test]
 fn restore_reads_a_relative_source_from_the_working_directory() {
     let (schema, file) = scratch("restore_relative");
     let dir = file.parent().unwrap().to_owned();
