@@ -599,11 +599,13 @@ impl BTree {
     ///
     /// Each leaf is judged and changed under its exclusive latch, which is released before the
     /// next leaf's is taken; a leaf left empty is unlinked as [`BTree::delete`] unlinks one. An
-    /// entry a concurrent writer inserts during the walk may be left unjudged.
+    /// entry a concurrent writer inserts during the walk may be left unjudged. After each leaf,
+    /// holding no latch, it calls `between` and ends once that returns false.
     pub fn retain<R: Runtime>(
         &self,
         pager: &Pager<R>,
         mut keep: impl FnMut(&[u8]) -> bool,
+        between: &mut dyn FnMut() -> bool,
     ) -> Result<usize, Error> {
         let mut from: Vec<u8> = Vec::new();
         let mut deleted = 0;
@@ -625,9 +627,10 @@ impl BTree {
             if emptied {
                 self.unlink(pager, low.as_deref())?;
             }
+            let more = between();
             match high {
-                Some(h) => from = h,
-                None => return Ok(deleted),
+                Some(h) if more => from = h,
+                _ => return Ok(deleted),
             }
         }
     }

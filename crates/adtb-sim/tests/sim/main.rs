@@ -60,6 +60,7 @@ mod textual;
 mod truncated_open;
 mod update_concurrency;
 mod vacuum;
+mod vacuum_budget;
 mod vacuum_progress;
 mod vacuum_threads;
 mod verify;

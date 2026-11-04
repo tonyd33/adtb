@@ -232,8 +232,9 @@ from it. A pass is due `ScrubInterval` after the last started; a file with
 no cursor counts from its first migration, and a wall instant in the
 future counts from now.
 
-The worker sleeps after each step so that reading takes at most
-`VacuumBudget.io` of the time the pass runs, the log's reading included.
+The worker sleeps after each step so that its steps and every vacuum's
+together take at most the least of `VacuumBudget.io` and
+`VacuumBudget.cpu` of the time they run, the log's reading included.
 A budget of 0 reads nothing. A budget too small to compute a sleep from
 sleeps the interval, or a minute if that is longer, and looks again. A
 change of either setting wakes the worker.

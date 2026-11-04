@@ -29,7 +29,7 @@ const LONGEST_WAIT: Duration = Duration::from_secs(30 * 24 * 3600);
 /// What the worker is told.
 struct Control {
     every: Option<Duration>,
-    io: F64,
+    budget: F64,
     stop: bool,
     woken: bool,
     fail: Option<&'static str>,
@@ -96,6 +96,7 @@ impl<R: Runtime> Background<R> {
         schema: Arc<Schema>,
         settings: &Settings,
     ) -> Arc<Background<R>> {
+        verifier.db.pacer().set(&verifier.rt, settings.budget.get());
         let wall = micros(verifier.pager.wall());
         let born = if verifier.cursor().is_some() {
             wall
@@ -111,7 +112,7 @@ impl<R: Runtime> Background<R> {
             born,
             control: Lock::new(Control {
                 every: settings.scrub,
-                io: settings.io,
+                budget: settings.budget,
                 stop: false,
                 woken: false,
                 fail: None,
@@ -130,7 +131,11 @@ impl<R: Runtime> Background<R> {
     pub(super) fn configure(self: &Arc<Self>, settings: &Settings) {
         let mut c = self.control.lock(&self.rt);
         c.every = settings.scrub;
-        c.io = settings.io;
+        c.budget = settings.budget;
+        self.verifier
+            .db
+            .pacer()
+            .set(&self.rt, settings.budget.get());
         c.woken = true;
         self.spawn_if_wanted(&mut c);
         if let Some(t) = c.thread {
@@ -183,7 +188,7 @@ impl<R: Runtime> Background<R> {
         loop {
             let (every, budget, stop) = {
                 let c = self.control.lock(&self.rt);
-                (c.every, c.io.get().min(1.0), c.stop)
+                (c.every, c.budget.get(), c.stop)
             };
             if stop {
                 break;
@@ -230,7 +235,9 @@ impl<R: Runtime> Background<R> {
                 self.save(cursor, &mut saved);
                 save_at = self.rt.now() + SAVE_EVERY;
             }
-            let gap = pace(self.rt.now().saturating_since(began), budget, every);
+            let longest = every.clamp(SAVE_EVERY, LONGEST_WAIT);
+            let gap = self.verifier.db.pacer().charge(&self.rt, began);
+            let gap = gap.map_or(longest, |g| g.min(longest));
             if !gap.is_zero() {
                 self.wait(&mut io, self.rt.now() + gap);
             }
@@ -349,15 +356,6 @@ impl<R: Runtime> Background<R> {
 fn caught<T>(body: impl FnOnce() -> T) -> Result<T, String> {
     catch_unwind(AssertUnwindSafe(body))
         .map_err(|payload| panic_text(&*payload).unwrap_or_else(|| resume_unwind(payload)))
-}
-
-/// Returns how long to sleep after `spent` reading, so that reading takes `budget` of the time.
-/// A budget too small to compute waits the interval, or a minute if that is longer, and rechecks.
-fn pace(spent: Duration, budget: f64, every: Duration) -> Duration {
-    Duration::try_from_secs_f64(spent.as_secs_f64() * (1.0 / budget - 1.0))
-        .ok()
-        .filter(|gap| *gap <= LONGEST_WAIT)
-        .unwrap_or_else(|| every.clamp(SAVE_EVERY, LONGEST_WAIT))
 }
 
 fn done(page: u64, end: u64) -> f64 {

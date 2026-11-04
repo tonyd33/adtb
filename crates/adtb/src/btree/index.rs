@@ -129,22 +129,26 @@ impl Index {
         self.tree.delete(pager, &self.encode(entry))
     }
 
-    /// Delete every entry `keep` refuses, one leaf at a time. Returns the number deleted.
+    /// Delete every entry `keep` refuses, one leaf at a time, calling `between` after each leaf
+    /// and ending once it returns false. Returns the number deleted.
     pub fn retain<R: Runtime>(
         &self,
         pager: &Pager<R>,
         mut keep: impl FnMut(&Entry) -> bool,
+        between: &mut dyn FnMut() -> bool,
     ) -> Result<usize, Error> {
         let mut bad = None;
-        let deleted = self
-            .tree
-            .retain(pager, |bytes| match self.schema.decode_entry(bytes) {
+        let deleted = self.tree.retain(
+            pager,
+            |bytes| match self.schema.decode_entry(bytes) {
                 Ok(e) => keep(&e),
                 Err(e) => {
                     bad.get_or_insert(e);
                     true
                 }
-            })?;
+            },
+            between,
+        )?;
         match bad {
             Some(e) => Err(Error::Entry(e)),
             None => Ok(deleted),

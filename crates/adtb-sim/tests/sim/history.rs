@@ -280,6 +280,7 @@ impl Db {
             &history,
             budget,
             &vacuum::Progress::new(),
+            &mut || true,
         )
         .expect("vacuum")
     }
@@ -291,6 +292,7 @@ impl Db {
             &self.sum(),
             usize::MAX,
             &vacuum::Progress::new(),
+            &mut || true,
         )
         .expect("vacuum")
     }
@@ -306,6 +308,7 @@ impl Db {
             &past,
             usize::MAX,
             &vacuum::Progress::new(),
+            &mut || true,
         )
         .expect("expire")
     }
@@ -1049,8 +1052,16 @@ fn a_moved_version_keeps_its_out_of_line_values_until_the_window_passes() {
             key: &key,
         };
         let progress = vacuum::Progress::new();
-        let report = vacuum::vacuum_keeping(&pager, &txns, &sum, &history, usize::MAX, &progress)
-            .expect("vacuum");
+        let report = vacuum::vacuum_keeping(
+            &pager,
+            &txns,
+            &sum,
+            &history,
+            usize::MAX,
+            &progress,
+            &mut || true,
+        )
+        .expect("vacuum");
         assert_eq!(1, report.moved);
         assert!(
             report.chunks > 0,
@@ -1068,7 +1079,8 @@ fn a_moved_version_keeps_its_out_of_line_values_until_the_window_passes() {
             heaps: vec![(CTOR, &past_heap)],
             indexes: vec![&past_index],
         };
-        let report = vacuum::expire(&pager, &txns, &past, usize::MAX, &progress).expect("expire");
+        let report = vacuum::expire(&pager, &txns, &past, usize::MAX, &progress, &mut || true)
+            .expect("expire");
         assert_eq!(1, report.freed, "{report:?}");
         assert!(
             report.chunks > 0,

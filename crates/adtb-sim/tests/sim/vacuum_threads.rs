@@ -134,7 +134,15 @@ impl Db {
     }
 
     fn vacuum(&self, budget: usize, progress: &Progress) {
-        vacuum::vacuum(&self.pager, &self.txns, &self.sum(), budget, progress).expect("vacuum");
+        vacuum::vacuum(
+            &self.pager,
+            &self.txns,
+            &self.sum(),
+            budget,
+            progress,
+            &mut || true,
+        )
+        .expect("vacuum");
     }
 
     fn index(&self, heap: usize, key: i64, tid: Tid) {

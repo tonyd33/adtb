@@ -289,6 +289,7 @@ impl<R: Runtime> Database<R> {
         &self,
         rel: &Rel,
         sum: &vacuum::Sum,
+        pace: &mut dyn FnMut() -> bool,
     ) -> Result<vacuum::Report, vacuum::Error> {
         let progress = &self.vacuums.progress;
         let kept = self
@@ -296,7 +297,7 @@ impl<R: Runtime> Database<R> {
             .as_ref()
             .filter(|_| self.txns.history().is_some());
         let Some(retained) = kept else {
-            return vacuum::vacuum(&self.pager, &self.txns, sum, self.grant, progress);
+            return vacuum::vacuum(&self.pager, &self.txns, sum, self.grant, progress, pace);
         };
         let key_index = rel.key_index;
         let ctors = &self.indexes[&key_index].ctors;
@@ -331,13 +332,20 @@ impl<R: Runtime> Database<R> {
             index,
             key: &key,
         };
-        let report =
-            vacuum::vacuum_keeping(&self.pager, &self.txns, sum, &into, self.grant, progress)?;
+        let report = vacuum::vacuum_keeping(
+            &self.pager,
+            &self.txns,
+            sum,
+            &into,
+            self.grant,
+            progress,
+            pace,
+        )?;
         let past = vacuum::Sum {
             heaps: pasts,
             indexes: vec![index],
         };
-        vacuum::expire(&self.pager, &self.txns, &past, self.grant, progress)?;
+        vacuum::expire(&self.pager, &self.txns, &past, self.grant, progress, pace)?;
         Ok(report)
     }
 

@@ -30,8 +30,9 @@ pub(super) struct Settings {
     pub(super) window: Duration,
     /// The period of the background scrub, `None` for no scrub.
     pub(super) scrub: Option<Duration>,
-    /// The most of the time it runs that background work may spend on reads.
-    pub(super) io: F64,
+    /// The share of time vacuum and the scrub may spend working: the least of the fractions of
+    /// `VacuumBudget`.
+    pub(super) budget: F64,
 }
 
 impl Default for Settings {
@@ -42,7 +43,7 @@ impl Default for Settings {
             retries: 5,
             window: Duration::ZERO,
             scrub: Some(Duration::from_secs(7 * 24 * 3600)),
-            io: F64::new(0.1),
+            budget: F64::new(0.1),
         }
     }
 }
@@ -91,7 +92,13 @@ impl Settings {
                     _ => None,
                 };
             }
-            ("VacuumBudget", Some(Val::F64(io))) => self.io = *io,
+            ("VacuumBudget", Some(Val::F64(io))) => {
+                let cpu = match fields.get(2) {
+                    Some(Val::F64(cpu)) => cpu.get(),
+                    _ => 1.0,
+                };
+                self.budget = F64::new(io.get().min(cpu));
+            }
             _ => {}
         }
     }

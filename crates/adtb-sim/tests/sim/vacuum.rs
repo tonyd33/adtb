@@ -182,7 +182,15 @@ impl Db {
                 .collect(),
             indexes: indexes.iter().collect(),
         };
-        vacuum::vacuum(pager, txns, &sum, budget, &vacuum::Progress::new()).expect("vacuum")
+        vacuum::vacuum(
+            pager,
+            txns,
+            &sum,
+            budget,
+            &vacuum::Progress::new(),
+            &mut || true,
+        )
+        .expect("vacuum")
     }
 
     fn prune(&mut self, heap: usize, pid: Pid) {

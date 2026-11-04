@@ -2226,7 +2226,8 @@ justify it, by an implementation-defined measure. A dead version a
 snapshot on a replica can still see is not removed
 ([replication.md](replication.md#12-reads-on-a-replica)). An operator may start
 one at once with `vacuum r`. All vacuum work, background or started,
-runs within the `VacuumBudget` setting. Progress is in `sys::vacuums`
+runs within the `VacuumBudget` setting, which bounds vacuum and the
+background scrub together. Progress is in `sys::vacuums`
 (§6.5).
 
 Rulings: ops/check/structural, ops/check/cross, ops/check/logical, ops/check/scrub, ops/halt-scope/heap, spec/quarantine/verify/yes, spec/quarantine/unowned/database, ops/compact/offline-copy, ops/compact/online-copy, ops/reindex/online, ops/reindex/offline, ops/vacuum/trigger, ops/vacuum/throttle, buffer/faults/corrupt-detect, buffer/faults/stale-page/lsn-check, spec/catalog/physical/per-ctor-relation, spec/reads/static/static-types, spec/quarantine/index/cost-only

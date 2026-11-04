@@ -214,12 +214,16 @@ impl Past {
     /// Forget every commit time and every marker before `cutoff`. Returns the number of entries
     /// dropped.
     pub fn expire<R: Runtime>(&self, pager: &Pager<R>, cutoff: u64) -> Result<usize, btree::Error> {
-        self.tree.retain(pager, |e| {
-            let time = match e.first() {
-                Some(&COMMIT | &POSITION) => word(e, 9),
-                _ => word(e, 13),
-            };
-            time.is_none_or(|t| t >= cutoff)
-        })
+        self.tree.retain(
+            pager,
+            |e| {
+                let time = match e.first() {
+                    Some(&COMMIT | &POSITION) => word(e, 9),
+                    _ => word(e, 13),
+                };
+                time.is_none_or(|t| t >= cutoff)
+            },
+            &mut || true,
+        )
     }
 }

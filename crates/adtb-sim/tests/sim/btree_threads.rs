@@ -700,7 +700,9 @@ fn retain_beside_inserts(seed: u64, n: u32, inserters: u32) {
         let (p, d, i) = (pager.clone(), deleted.clone(), inserted);
         threads.push(rt.spawn("retain", move || {
             let before = i.load(Relaxed);
-            let n = tree.retain(&p, |e| !dropped(id_of(e))).expect("retain");
+            let n = tree
+                .retain(&p, |e| !dropped(id_of(e)), &mut || true)
+                .expect("retain");
             *d.lock().unwrap() = (n, i.load(Relaxed) - before);
         }));
         for t in threads {
@@ -804,7 +806,9 @@ fn retain_unlinks_the_leaves_it_empties() {
         }
         let full = leaves(pager, &tree);
         let dropped = |id: u32| (200..1800).contains(&id);
-        let deleted = tree.retain(pager, |e| !dropped(id_of(e))).unwrap();
+        let deleted = tree
+            .retain(pager, |e| !dropped(id_of(e)), &mut || true)
+            .unwrap();
         assert_eq!(deleted, 1600);
         let kept: Vec<Vec<u8>> = (0..n).filter(|&id| !dropped(id)).map(entry).collect();
         assert_eq!(tree.verify(pager), Ok(kept));

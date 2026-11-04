@@ -159,6 +159,7 @@ fn watch(seed: u64) -> Seen {
         if shape.history {
             api::results(&db, "set setting RetentionWindow = { length: 1h }");
         }
+        api::results(&db, "set setting VacuumBudget = { io: 1.0, cpu: 1.0 }");
         fill(&db, shape);
         api::results(&db, "delete i in items where value(key i) % 3 != 0");
         let stop = Arc::new(AtomicBool::new(false));

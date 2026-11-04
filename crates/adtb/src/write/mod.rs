@@ -232,6 +232,7 @@ impl From<vacuum::Error> for Error {
             vacuum::Error::Heap(crate::heap::Error::TooLarge { len, limit }) => {
                 Broken::VacuumTooLarge { len, limit }.into()
             }
+            vacuum::Error::Stopped => Error::Cancelled,
         }
     }
 }
@@ -515,6 +516,7 @@ pub struct Database<R: Runtime> {
     /// Held while a vacuum runs or the retention window changes, so that one runs at a time.
     vacuuming: Lock<bool>,
     vacuums: vacuums::Vacuums,
+    pacer: Arc<vacuum::Pacer>,
     /// How many pauses calls have made at a rebuild's gate or for the vacuum lock.
     rebuild_waits: AtomicU64,
     /// The relations an offline rebuild holds writes to.
@@ -617,6 +619,7 @@ impl<R: Runtime> Database<R> {
             files: Disk::default(),
             vacuuming: Lock::new(false),
             vacuums: vacuums::Vacuums::default(),
+            pacer: Arc::new(vacuum::Pacer::new(0.1)),
             rebuild_waits: AtomicU64::new(0),
             offline: Lock::default(),
             rebuilds_stopped: AtomicBool::new(false),
@@ -939,10 +942,11 @@ impl<R: Runtime> Database<R> {
             .explain(&params)
     }
 
-    /// Vacuums each constructor relation of `rel` in turn. Returns the id of each constructor
-    /// with what its vacuum did.
+    /// Vacuum each constructor relation of `rel` in turn, within the budget of
+    /// [`Database::pacer`]. Returns the id of each constructor with what its vacuum did.
     ///
-    /// Stop as [`Database::hold_vacuum`] says while another holds off vacuum.
+    /// Stop as [`Database::hold_vacuum`] says while another holds off vacuum, and as `waiting`
+    /// says while the vacuum runs.
     pub fn vacuum(
         &self,
         rel: RelId,
@@ -968,6 +972,13 @@ impl<R: Runtime> Database<R> {
             .map(|(c, ctor)| (ids[&(c as u32)], self.heaps[&ctor.heap].heap.id().0))
             .collect();
         let _shown = self.show_vacuum(self.schema.ids.relations[&rel], &shown);
+        let stop = waiting.stop(self.rt.now());
+        let mut began = self.rt.now();
+        let halted = std::cell::Cell::new(None);
+        let mut pace = || {
+            let paced = self.pace(&stop, &mut began);
+            paced.map_err(|e| halted.set(Some(e))).is_ok()
+        };
         let mut out = Vec::with_capacity(r.ctors.len());
         for (c, ctor) in r.ctors.iter().enumerate() {
             let id = ids[&(c as u32)];
@@ -976,7 +987,10 @@ impl<R: Runtime> Database<R> {
                 indexes: indexes.clone(),
             };
             self.vacuum_stage(id, vacuums::Stage::Current);
-            let report = self.vacuum_sum(r, &sum)?;
+            let report = self.vacuum_sum(r, &sum, &mut pace).map_err(|e| match e {
+                vacuum::Error::Stopped => halted.take().unwrap_or(Error::Cancelled),
+                e => e.into(),
+            })?;
             self.vacuum_stage(id, vacuums::Stage::Done);
             out.push((id, report));
         }

@@ -354,7 +354,8 @@ impl LargeStore {
 
     /// Settle the store's directory, then free every value whose head on a touched page has count
     /// 0 and whose writer `resolved` accepts, and unmark each touched page left with no head of
-    /// count 0. Returns the number of chunks freed.
+    /// count 0, ending early once `between` returns false after a page. Returns the number of
+    /// chunks freed.
     ///
     /// Each step frees one chunk and makes the next one a head of count 0, in one update, so a
     /// crash leaves the rest of the value for the next sweep.
@@ -364,6 +365,7 @@ impl LargeStore {
         &self,
         pager: &Pager<R>,
         mut resolved: impl FnMut(u64) -> Result<bool, PageError>,
+        between: &mut dyn FnMut() -> bool,
     ) -> Result<usize, PageError> {
         self.space.settle(pager)?;
         let mut freed = 0;
@@ -385,6 +387,9 @@ impl LargeStore {
             }
             if !pending {
                 self.settle(pager, pid, position)?;
+            }
+            if !between() {
+                break;
             }
         }
         Ok(freed)

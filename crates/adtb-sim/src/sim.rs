@@ -651,6 +651,11 @@ impl SimRuntime {
         lock(&self.shared.state).config.faults = faults;
     }
 
+    /// Returns the number of I/O queues opened since the simulation began.
+    pub fn queues(&self) -> usize {
+        lock(&self.shared.state).rings.len()
+    }
+
     /// Returns the number of events recorded so far, or 0 when the simulation is not recording.
     pub fn recorded(&self) -> usize {
         lock(&self.shared.state)

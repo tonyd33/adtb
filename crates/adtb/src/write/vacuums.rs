@@ -2,18 +2,21 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 use adtb_sys::lock::Lock;
 
 use crate::exec::{F64, Val};
 use crate::key::CtorId;
-use crate::runtime::Runtime;
-use crate::vacuum::{Phase, Progress, Step};
+use crate::runtime::{Instant, Runtime};
+use crate::vacuum::{Pacer, Phase, Progress, Step};
 
-use super::Database;
+use super::{Database, Error, Stop};
 
 pub(super) const VACUUMS: u64 = 334;
+
+/// The longest a vacuum sleeps before it looks again at what stops it.
+const NAP: Duration = Duration::from_millis(100);
 
 /// How far the vacuum of one constructor relation has got.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,6 +131,34 @@ impl Shown {
 }
 
 impl<R: Runtime> Database<R> {
+    /// Returns the budget every vacuum and the scrub run within.
+    pub fn pacer(&self) -> &Pacer {
+        &self.pacer
+    }
+
+    /// Charge the vacuum step that began at `began` to the pacer and sleep as it says, looking at
+    /// `stop` and for a close at least every `NAP`; at a budget of 0, until one of them fails
+    /// the vacuum, on one I/O queue however long it sleeps. Sets `began` to the end of the
+    /// sleep.
+    pub(super) fn pace(&self, stop: &Stop, began: &mut Instant) -> Result<(), Error> {
+        let until = self
+            .pacer
+            .charge(&self.rt, *began)
+            .map(|gap| self.rt.now() + gap);
+        let mut io = None;
+        loop {
+            self.rebuild_stopped()?;
+            stop.check(self.rt.now())?;
+            let left = until.map_or(NAP, |at| at.saturating_since(self.rt.now()));
+            if left.is_zero() {
+                break;
+            }
+            self.nap(io.get_or_insert_with(|| self.rt.io()), left.min(NAP));
+        }
+        *began = self.rt.now();
+        Ok(())
+    }
+
     /// Show a vacuum of the constructor relations `ctors`, each its id with its heap, of the
     /// relation whose catalog key is `relation`, until the guard returned drops.
     pub(super) fn show_vacuum(&self, relation: u64, ctors: &[(CtorId, u32)]) -> ShownVacuum<'_, R> {

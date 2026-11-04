@@ -99,7 +99,7 @@ impl<'b> HoldWait<'b> {
     }
 
     /// Returns what stops the wait, from `now`.
-    fn stop(&self, now: Instant) -> Stop {
+    pub(super) fn stop(&self, now: Instant) -> Stop {
         let Some(bounds) = self.bounds else {
             return Stop::default();
         };
@@ -390,9 +390,13 @@ impl<R: Runtime> Database<R> {
 
     /// Block the calling thread until `GATE_POLL` has passed.
     pub(super) fn pause_a_poll(&self) {
-        let mut io = self.rt.io();
+        self.nap(&mut self.rt.io(), GATE_POLL);
+    }
+
+    /// Block the calling thread until `d` has passed, waiting on `io`.
+    pub(super) fn nap(&self, io: &mut R::Io, d: Duration) {
         io.submit(Op::Timer {
-            at: self.rt.now() + GATE_POLL,
+            at: self.rt.now() + d,
         });
         while io.poll().is_none() {
             self.rt.park();

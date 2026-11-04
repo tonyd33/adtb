@@ -411,7 +411,7 @@ fn large_values_written_beside_a_sweep_freeing_store_pages_stay_whole() {
                             .prune(&db.pager, Pid(tid.page()), dead_once_deleted, &[], false)
                             .unwrap();
                         let n = large
-                            .sweep(&db.pager, |x| Ok(!x.is_multiple_of(2)))
+                            .sweep(&db.pager, |x| Ok(!x.is_multiple_of(2)), &mut || true)
                             .unwrap();
                         freed.fetch_add(n, Ordering::Relaxed);
                         xid += 2;
