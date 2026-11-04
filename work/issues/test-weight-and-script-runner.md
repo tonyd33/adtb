@@ -21,3 +21,15 @@ Counts on 2026-11-03: adtb-sim 1828 tests, 64 binaries, about 72k lines; adtb-la
 3. Build the runner; move tests in batches, each batch deleting the Rust tests it replaces and naming retained coverage.
 
 ## Open questions
+
+## 2026-11-03: audit
+
+Read-only audit of crates/adtb-sim/tests, bucketed from names, helpers and assertion markers with about 60 bodies read whole; mixed files carry about 10% error. 1828 tests: 60 fit conformance scripts (constraints 28, files 25, api 6, principal 1); 714 fit an engine-only runner (bundles 151, oplog 74, server_adhoc 68, server_binding 50, server_authority 42, registered 30, checked_registration 29, api 29, server_commands 28, commands 27, past 25, others); 1050 stay Rust (searches, faults, internals, interleavings); 4 are low value. 13 tests assert only `is_err()`.
+
+Runner: eleven directives cover 588 of the 714: `migrate`, an exact `error C VALUE` comparing the whole `RejectReason` in textual syntax, `bundle`/`register`, `as ROLE`, `reopen`, `call`, an engine-only catalog query, open options, named transactions, `advance` on the simulated clock, host functions from a fixed registry. Shared schemas are fixture files pulled in by `use NAME`. The runner never stands in for the reference, does not live in `conformance/`, and runs no searches.
+
+Low value: `exec::bench_scans_joins_and_groups` (ignored, asserts nothing); `oplog::a_second_migration_declaring_a_relation_applies_at_open` and `api::a_second_migration_applies_at_open` (covered by `oplog::migrations_apply_in_order_each_producing_a_version_that_survives_reopening`); `quarantine::a_file_with_a_damaged_catalog_page_opens_for_verify` overlaps open_damage but is the only test of the `Checksum` finding for that page, so it stays until that is covered elsewhere.
+
+Batches: 0 delete the low value tests; 1 the 60 into `conformance/`; 2 runner core with oplog, longkey, commands, api, past (about 170 tests); 3 bundles (about 234); 4 roles and server (about 230); 5 the rest (about 80). In all about 20.5k Rust lines out, 8.45k script lines in.
+
+Merging the 64 binaries: test names gain a module path, so every `test(=NAME)` filter in .config/nextest.toml (six `threads-required` overrides, the server_adhoc slots-2 group keyed on `binary(=server_adhoc)`) and crates/adtb-heap-cap/tests/cap.rs change in the same commit; server_adhoc reruns itself with `--exact NAME`; three names repeat across files; `#[path]` modules in constraints.rs and io_contract.rs; file-level `#![expect]` in reindex_review.rs and truncated_open.rs; scratch directory names under `CARGO_TARGET_TMPDIR` need a clash check. Build time is not yet measured.
