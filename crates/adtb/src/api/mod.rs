@@ -973,18 +973,24 @@ impl<R: Runtime> Engine<R> {
     }
 
     /// Returns `p`, the checked text of a call. On a database quarantined whole, fail with
-    /// `Quarantined` whether or not it checked, unless it is a run of `verify` alone.
+    /// `Quarantined` whether or not it checked, unless it is a run of `verify` or `dump` alone.
     fn admit_text(&self, p: Result<Prepared, Error>) -> Result<Prepared, Error> {
         let Some(refused) = self.refusal() else {
             return p;
         };
         match p {
-            Ok(p) if self.lone_verify(&p) => Ok(p),
+            Ok(p) if self.lone_verify(&p) || Self::lone_dump(&p) => Ok(p),
             _ => Err(refused),
         }
     }
 
-    /// Returns the failure of every call but `verify` on a database quarantined whole.
+    /// Returns whether `p` is one run of `dump` alone.
+    fn lone_dump(p: &Prepared) -> bool {
+        use adtb_lang::check::Command::Dump;
+        matches!((p.items(), p.commands()), ([], [c]) if matches!(c.command, Dump { .. }))
+    }
+
+    /// Returns the failure of every call but `verify` and `dump` on a database quarantined whole.
     fn refusal(&self) -> Option<Error> {
         let refused = self.db.admit_database().err()?;
         Some(self.write_error(TxnId(0), refused))

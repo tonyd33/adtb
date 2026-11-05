@@ -2130,6 +2130,11 @@ Quarantined {..} }`, and the file opens for `verify` and `dump` only. An
 names. A file with neither copy of its header intact, or a log that
 recovery refuses, does not open.
 
+A `dump` of a database quarantined whole first checks every page of
+the commit log and the catalog as `verify` does (§11.1), by checksum
+and by log position. Any finding fails the dump with `Fatal { reason:
+Quarantined {..} }` naming the database, and it writes nothing.
+
 A call fails with `Fatal { reason: Quarantined {..} }` exactly when
 the constructors it reads
 ([queries.md §12.4](queries.md#124-the-constructors-a-statement-reads))
@@ -2230,7 +2235,7 @@ runs within the `VacuumBudget` setting, which bounds vacuum and the
 background scrub together. Progress is in `sys::vacuums`
 (§6.5).
 
-Rulings: ops/check/structural, ops/check/cross, ops/check/logical, ops/check/scrub, ops/halt-scope/heap, spec/quarantine/verify/yes, spec/quarantine/unowned/database, ops/compact/offline-copy, ops/compact/online-copy, ops/reindex/online, ops/reindex/offline, ops/vacuum/trigger, ops/vacuum/throttle, buffer/faults/corrupt-detect, buffer/faults/stale-page/lsn-check, spec/catalog/physical/per-ctor-relation, spec/reads/static/static-types, spec/quarantine/index/cost-only
+Rulings: ops/check/structural, ops/check/cross, ops/check/logical, ops/check/scrub, ops/halt-scope/heap, spec/quarantine/verify/yes, spec/quarantine/unowned/database, ops/compact/offline-copy, ops/compact/online-copy, ops/reindex/online, ops/reindex/offline, ops/vacuum/trigger, ops/vacuum/throttle, buffer/faults/corrupt-detect, buffer/faults/stale-page/lsn-check, spec/catalog/physical/per-ctor-relation, spec/reads/static/static-types, spec/quarantine/index/cost-only, repl/dump-quarantined/prove-then-dump
 
 ## 12. Releases and compatibility
 

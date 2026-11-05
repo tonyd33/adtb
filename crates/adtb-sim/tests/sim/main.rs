@@ -20,6 +20,7 @@ mod derived_index;
 mod directory_damage;
 mod dump;
 mod dump_arrow;
+mod dump_quarantine;
 mod dump_server;
 mod dump_validate;
 mod embedding;

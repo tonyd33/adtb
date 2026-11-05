@@ -241,8 +241,8 @@ impl Deployment {
         Ok(out)
     }
 
-    #[cfg(test)]
-    pub(crate) fn roots(&self) -> &Heap {
+    #[doc(hidden)]
+    pub fn roots(&self) -> &Heap {
         &self.roots
     }
 

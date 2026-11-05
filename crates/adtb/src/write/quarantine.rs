@@ -205,6 +205,18 @@ impl<R: Runtime> Database<R> {
         Ok(())
     }
 
+    /// Fail if a constructor heap of `rel` is quarantined. The database's own mark plays no part.
+    pub(crate) fn admit_heaps(&self, rel: RelId) -> Result<(), Error> {
+        let marks = self.pager.quarantined();
+        for c in &self.rels[&rel].ctors {
+            let object = Quarantine::Heap(self.heaps[&c.heap].heap.id().0);
+            if marks.contains(&object) {
+                return Err(Error::Quarantined(self.quarantined_name(object)));
+            }
+        }
+        Ok(())
+    }
+
     /// Fail if a row of `rel` cannot be written: the database, a constructor heap or an index of
     /// `rel` is quarantined. A key spans the sum, so a mark on any constructor counts.
     pub fn admit_relation(&self, rel: RelId) -> Result<(), Error> {

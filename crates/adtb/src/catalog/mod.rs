@@ -985,6 +985,29 @@ impl Catalog {
             .1
     }
 
+    /// Returns the pages the schema and the visibility of every row are read from: the catalog's
+    /// root, its roots heap, each heap of a relation of an engine module, the counters page and
+    /// every page of the commit log of `txns`.
+    pub fn read_from<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        txns: &Transactions<R>,
+    ) -> Result<BTreeSet<Pid>, PageError> {
+        let clog = txns.commit_log();
+        let mut pages = BTreeSet::from([self.root, clog.root()]);
+        pages.extend(clog.status_pages().values());
+        pages.extend(clog.directory_pages());
+        pages.extend(self.sequences());
+        pages.extend(self.roots.owned_pages(pager)?);
+        for (&(r, _), heap) in &self.heaps {
+            let module = &self.schema.module(self.schema.relation(r).module).name;
+            if schema::ENGINE_MODULES.contains(&module.as_str()) {
+                pages.extend(heap.owned_pages(pager)?);
+            }
+        }
+        Ok(pages)
+    }
+
     /// Returns the write path's page of generated counters, once one is named.
     pub fn sequences(&self) -> Option<Pid> {
         (self.sequences != Pid(0)).then_some(self.sequences)

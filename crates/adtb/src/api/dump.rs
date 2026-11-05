@@ -453,6 +453,26 @@ fn ctor_of(v: &Val) -> u32 {
 }
 
 impl<R: Runtime> Engine<R> {
+    /// Fail with `Quarantined` naming the database when it is quarantined whole and a page the
+    /// schema or the visibility of a row is read from fails its check against the retained log.
+    fn admit_dump(&self) -> Result<(), Error> {
+        let Some(refused) = self.refusal() else {
+            return Ok(());
+        };
+        let Ok(pages) = self.catalog.read_from(&self.pager, self.db.txns()) else {
+            return Err(refused);
+        };
+        let log = self.pager.read_log(true);
+        if pages
+            .into_iter()
+            .all(|pid| self.pager.check_page(pid, &log).is_empty())
+        {
+            Ok(())
+        } else {
+            Err(refused)
+        }
+    }
+
     /// Write the database as `tx` reads it to the dump directory `path`, with a `security` entry
     /// when `secured`. Returns its manifest.
     pub(super) fn dump_to(
@@ -462,6 +482,7 @@ impl<R: Runtime> Engine<R> {
         secured: bool,
     ) -> Result<DumpManifest, Error> {
         let target = self.target(path)?;
+        self.admit_dump()?;
         let envelope = self.envelope();
         let failed = |e| self.write_error(super::TxnId(0), e);
         let rows = |r| self.db.relation_rows(tx, r).map_err(failed);
@@ -494,7 +515,7 @@ impl<R: Runtime> Engine<R> {
         }
         entries.push((GENERATORS.to_owned(), generators));
         let deployed = self.db.deployed(tx, &self.deployment);
-        let deployed = deployed.map_err(|e| failed(write::Broken::Facts(e).into()))?;
+        let deployed = deployed.map_err(|e| self.catalog_error(e))?;
         let bundled = rows_of(schema, &BUNDLED, rows)?;
         entries.extend(bundle_entries(&envelope, schema, &bundled, &deployed));
         let mut streams = Vec::new();
@@ -517,6 +538,9 @@ impl<R: Runtime> Engine<R> {
             .map(|(name, text)| (name, text.into_bytes()))
             .chain(streams)
             .collect();
+        for r in dumped(schema) {
+            self.db.admit_heaps(r).map_err(failed)?;
+        }
         let snapshot = self.db.read_position(tx);
         storage::write_dump(&self.rt, &target, envelope, snapshot, &entries).map_err(refused)
     }
