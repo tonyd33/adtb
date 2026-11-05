@@ -359,16 +359,20 @@ impl<R: Runtime> Engine<R> {
             Command::Dump {
                 encrypt: Some(_), ..
             } => Some(Err(super::unsupported("`dump` with `encrypt`"))),
-            Command::Dump { .. } if bounds.confined => {
-                Some(Err(super::unsupported("`dump` through a server")))
-            }
             Command::Dump { .. } if tx.wrote() => Some(Err(Error::invalid(
                 "`dump` does not run in a transaction that has written",
             ))),
-            Command::Dump { path, .. } => Some(
-                self.dump_to(tx, path)
-                    .map(|manifest| manifest_row(p.schema(), &manifest.text())),
-            ),
+            Command::Dump { path, .. } => {
+                let secured = p
+                    .issuer
+                    .as_ref()
+                    .is_none_or(|i| i.holds.as_ref().is_some_and(|h| h.schema_capability));
+                Some(
+                    self.confine(path, p, bounds)
+                        .and_then(|()| self.dump_to(tx, path, secured))
+                        .map(|manifest| manifest_row(p.schema(), &manifest.text())),
+                )
+            }
             Command::Restore { from, to, point } => {
                 let at = point.as_ref().map_or(Ok(RestorePoint::Latest), |point| {
                     self.point_of(tx, point, p, local, bounds)
@@ -436,18 +440,25 @@ impl<R: Runtime> Engine<R> {
         }
     }
 
+    /// Refuse `path` of a call confined to the export roots unless its directory resolves inside
+    /// one, with `Denied` recorded in the audit for a role.
+    fn confine(&self, path: &str, p: &Prepared, bounds: &Bounds) -> Result<(), Error> {
+        if !bounds.confined || self.db.files().exports_beside(path) {
+            return Ok(());
+        }
+        let outside = format!("path `{path}` is outside export_roots");
+        let e = match &p.issuer {
+            Some(issuer) => self.refused_running(p, issuer, outside),
+            None => write::Error::Denied(outside),
+        };
+        Err(self.write_error(TxnId(0), e))
+    }
+
     fn backup_to(&self, path: &str, p: &Prepared, bounds: &Bounds) -> Result<DynRows, Error> {
         if let Some(refusal) = self.refusal() {
             return Err(refusal);
         }
-        if bounds.confined && !self.db.files().exports_beside(path) {
-            let outside = format!("path `{path}` is outside export_roots");
-            let e = match &p.issuer {
-                Some(issuer) => self.refused_running(p, issuer, outside),
-                None => write::Error::Denied(outside),
-            };
-            return Err(self.write_error(TxnId(0), e));
-        }
+        self.confine(path, p, bounds)?;
         let target = self.target(path)?;
         let stop = Stop::of(bounds, Some(self.rt.now()), None);
         let mut stopped = None;

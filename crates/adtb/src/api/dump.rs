@@ -47,7 +47,9 @@ const KEYED: [&str; 9] = [
 /// The catalog relations of the `security` entry, whose `grants` are its `Deployment` rows.
 const SECURED: [&str; 4] = ["roles", "credentials", "grants", "peer_mappings"];
 /// The catalog relations whose keys the engine draws from a counter of its own.
-const DRAWN: [&str; 3] = ["roles", "grants", "audit"];
+const DRAWN: [&str; 1] = ["audit"];
+/// The relations of [`DRAWN`] a dump holds the counter of only with its `security` entry.
+const SECURED_DRAWN: [&str; 2] = ["roles", "grants"];
 /// The catalog relations of a bundle's entry, each holding the rows of that bundle alone.
 const BUNDLED: [&str; 4] = ["bundles", "registered", "feeds", "feed_members"];
 
@@ -89,14 +91,26 @@ fn dumped(schema: &Schema) -> impl Iterator<Item = RelId> + '_ {
         })
 }
 
+/// Returns the relations a role must hold `read` on to dump besides those `print schema` reads.
+pub(super) fn read_by_dump(schema: &Schema) -> Vec<RelId> {
+    let catalog = [&[SETTINGS, AUDIT][..], &BUNDLED].concat();
+    dumped(schema)
+        .chain(catalog_relations(schema, &catalog))
+        .collect()
+}
+
 fn catalog_relations(schema: &Schema, names: &[&str]) -> Vec<RelId> {
     names.iter().map(|n| values::relation(schema, n)).collect()
 }
 
-/// Returns the relations whose next key a `generators` entry holds, in ascending order.
-fn generated(schema: &Schema) -> Vec<RelId> {
+/// Returns the relations whose next key a `generators` entry holds, in ascending order, those of
+/// [`SECURED_DRAWN`] only when `secured`.
+fn generated(schema: &Schema, secured: bool) -> Vec<RelId> {
     let mut out: Vec<RelId> = dumped(schema).filter(|&r| sequenced(schema, r)).collect();
     out.extend(catalog_relations(schema, &DRAWN));
+    if secured {
+        out.extend(catalog_relations(schema, &SECURED_DRAWN));
+    }
     out.sort();
     out
 }
@@ -431,34 +445,41 @@ fn ctor_of(v: &Val) -> u32 {
 }
 
 impl<R: Runtime> Engine<R> {
-    /// Write the database as `tx` reads it to the dump directory `path`. Returns its manifest.
-    pub(super) fn dump_to(&self, tx: &Txn, path: &str) -> Result<DumpManifest, Error> {
+    /// Write the database as `tx` reads it to the dump directory `path`, with a `security` entry
+    /// when `secured`. Returns its manifest.
+    pub(super) fn dump_to(
+        &self,
+        tx: &Txn,
+        path: &str,
+        secured: bool,
+    ) -> Result<DumpManifest, Error> {
         let target = self.target(path)?;
         let envelope = self.envelope();
         let failed = |e| self.write_error(super::TxnId(0), e);
         let rows = |r| self.db.relation_rows(tx, r).map_err(failed);
         let schema = &*self.schema;
-        let mut security = rows_of(schema, &SECURED, rows)?;
         let grants = values::relation(schema, "grants");
-        security
-            .entry(grants)
-            .or_default()
-            .retain(|g| deployment(schema, grants, g));
         let mut ids = rows_of(schema, &KEYED, rows)?;
         let mut logged: BTreeSet<Val> = rows(grants)?.into_iter().collect();
         logged.retain(|g| !deployment(schema, grants, g));
         ids.insert(grants, logged);
+        let mut sections = vec![(IDS, ids)];
+        if secured {
+            let mut security = rows_of(schema, &SECURED, rows)?;
+            security
+                .entry(grants)
+                .or_default()
+                .retain(|g| deployment(schema, grants, g));
+            sections.push((SECURITY, security));
+        }
+        sections.push((SETTINGS, rows_of(schema, &[SETTINGS], rows)?));
+        sections.push((AUDIT, rows_of(schema, &[AUDIT], rows)?));
         let mut entries = vec![(LOG.to_owned(), log_text(&envelope, &self.source.log))];
-        for (name, rows) in [
-            (IDS, ids),
-            (SECURITY, security),
-            (SETTINGS, rows_of(schema, &[SETTINGS], rows)?),
-            (AUDIT, rows_of(schema, &[AUDIT], rows)?),
-        ] {
+        for (name, rows) in sections {
             entries.push((name.to_owned(), sections_text(&envelope, schema, &rows)));
         }
         let mut generators = header_line(&envelope);
-        for r in generated(schema) {
+        for r in generated(schema, secured) {
             let next = self.db.sequence_next(r);
             let id = schema.ids.relations[&r];
             generators.push_str(&format!("generator {id} {next}\n"));
@@ -733,7 +754,12 @@ fn fill<R: Runtime>(
         .iter()
         .filter_map(|&(id, next)| Some((schema.ids.relation(id)?, next)))
         .collect();
-    if resumed.len() != generators.len() || !resumed.keys().copied().eq(generated(schema)) {
+    if resumed.len() != generators.len()
+        || !resumed
+            .keys()
+            .copied()
+            .eq(generated(schema, entries.contains_key(SECURITY)))
+    {
         return Err(damaged(GENERATORS));
     }
     let failed = |w| engine.write_error(super::TxnId(0), w);

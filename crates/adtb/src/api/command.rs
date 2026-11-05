@@ -85,7 +85,7 @@ pub(super) fn need<'c>(c: &'c ast::Command, params: &[String]) -> Need<'c> {
         C::Vacuum(_) | C::Verify(_) | C::Compact | C::FinalizeUpgrade => {
             Need::Capabilities(&[Maintain])
         }
-        C::Backup { .. } => Need::Capabilities(&[Maintain, WriteFiles]),
+        C::Backup { .. } | C::Dump { .. } => Need::Capabilities(&[Maintain, WriteFiles]),
         C::TerminateSession(k) if key_value(k, params) => Need::Capabilities(&[Cancel]),
         C::SetSetting(_, v) if value(v, params) => Need::Capabilities(&[Configure]),
         C::RotateKek(_) | C::RotateDek | C::DestroyDek(_) => Need::Capabilities(&[Configure]),
@@ -109,7 +109,6 @@ pub(super) fn need<'c>(c: &'c ast::Command, params: &[String]) -> Need<'c> {
         | C::ArchiveAudit { .. }
         | C::CancelCall(_)
         | C::RegisterBundle(_)
-        | C::Dump { .. }
         | C::Restore { .. } => Need::SchemaOwner,
     }
 }

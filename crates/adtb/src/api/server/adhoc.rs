@@ -12,6 +12,7 @@ use crate::runtime::Runtime;
 
 use super::super::cause::Broken;
 use super::super::command::engine_relation;
+use super::super::dump::read_by_dump;
 use super::super::error::qualified;
 use super::super::text::{Issuer, Prepared};
 use super::super::{Engine, Error, RejectReason};
@@ -55,6 +56,7 @@ pub(in super::super) struct Holds {
     grants: EffectiveGrants,
     pub(in super::super) monitor: bool,
     pub(in super::super) cancel: bool,
+    pub(in super::super) schema_capability: bool,
     /// Whether the role may read every catalog relation the printed schema states.
     pub(in super::super) schema: bool,
     /// Whether the role may read every field of every relation outside the engine's modules.
@@ -62,6 +64,14 @@ pub(in super::super) struct Holds {
     /// The functions the role holds `call fn` on.
     calls: BTreeSet<FnId>,
     pub(super) names: Nameable,
+}
+
+fn schema_relations(schema: &Schema) -> Result<Vec<RelId>, Error> {
+    SCHEMA_RELATIONS
+        .iter()
+        .map(|n| engine_relation(schema, "catalog", n))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|b| Error::internal(Broken::Write(b)))
 }
 
 /// The one answer to text a role may not run, whatever the text names.
@@ -78,11 +88,7 @@ impl Holds {
                 .map(|r| r.missing(&held, Mode::Ordinary).is_empty())
                 .map_err(no_identity)
         };
-        let catalog = SCHEMA_RELATIONS
-            .iter()
-            .map(|n| engine_relation(&e.schema, "catalog", n))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|b| Error::internal(Broken::Write(b)))?;
+        let catalog = schema_relations(&e.schema)?;
         let user = (0..e.schema.relations.len() as u32)
             .map(RelId)
             .filter(|r| !e.schema.module(e.schema.relation(*r).module).engine)
@@ -95,6 +101,7 @@ impl Holds {
         Ok(Holds {
             monitor: has(Capability::Monitor),
             cancel: has(Capability::Cancel),
+            schema_capability: has(Capability::Schema),
             schema,
             data,
             calls,
@@ -303,6 +310,15 @@ impl<R: Runtime> RoleAuthority<R> {
             .chain(p.commands().iter().flat_map(|c| c.command.terms()));
         for root in roots {
             lacking.extend(holds.lacking(p.schema(), &needs(root)?));
+        }
+        if p.commands()
+            .iter()
+            .any(|c| matches!(c.command, Command::Dump { .. }))
+        {
+            let mut read = read_by_dump(p.schema());
+            read.extend(schema_relations(p.schema())?);
+            let dumped = Requirements::whole(p.schema(), read);
+            lacking.extend(holds.lacking(p.schema(), &dumped.map_err(no_identity)?));
         }
         let uncalled = p.functions().iter().find(|f| {
             let def = &p.schema().functions[f.0 as usize];

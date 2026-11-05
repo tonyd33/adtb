@@ -705,8 +705,21 @@ $ adtb restore app.dump new.adt
 
 `adtb dump` and `adtb restore` wrap the commands `dump` and `restore`
 ([catalog.md](catalog.md#91-commands)). A dump needs `maintain` and
-`read` on every relation it dumps; its `security` entry is written
-only for a holder of `schema`.
+`read` on every relation it dumps: what `print schema` needs, `read`
+on the catalog relations the printed schema states (`catalog::types`,
+`constructors`, `ctor_states`, `value_states`, `fields`, `relations`,
+`named_sets`, `set_members`, `indexes`, `index_ctors`, `constraints`,
+`functions`, `defaults`, `computed`, `grants`), and `read` on each
+relation of `data/`, `catalog::settings`, `catalog::audit` and the
+relations of `bundles/` (`catalog::bundles`, `registered`, `feeds`,
+`feed_members`). Its `security` entry is written only for a holder of
+`schema`; no other relation of that entry needs `read`. A dump without
+`security` holds no next key of `catalog::roles` or `catalog::grants`
+in `generators`, and its restore draws each later key of those
+relations past every key the restored file holds. Through a server a
+dump also needs `write_files` and writes only inside the directories
+of `export_roots`; a path outside them is refused with `Rejected {
+reason: Denied {..} }`.
 
 A dump reads the database at one snapshot, that of the transaction it
 runs in: a read-only transaction dumps at its snapshot, and in a

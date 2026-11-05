@@ -593,6 +593,22 @@ fn owner_only(files: &Files) -> Files {
     reissued(files, |_| {}, owner_only)
 }
 
+/// Returns the dump in `files` as one written without `security`, whose `generators` hold no next
+/// key of `catalog::roles` or `catalog::grants`.
+fn unsecured(files: &Files) -> Files {
+    let schema = adtb::catalog::engine_schema();
+    let id = |n| schema.ids.relations[&adtb::catalog::values::relation(&schema, n)];
+    let drawn = ["roles", "grants"].map(|n| format!("generator {} ", id(n)));
+    let kept = |n: &str, t: &str| match n {
+        "generators" => t
+            .split_inclusive('\n')
+            .filter(|l| !drawn.iter().any(|d| l.starts_with(d)))
+            .collect(),
+        _ => t.to_owned(),
+    };
+    without(&reissued(files, |_| {}, kept), "security")
+}
+
 /// Returns `files` with the dump at `DUMP` written again without its part `name`.
 fn without(files: &Files, name: &str) -> Files {
     let (e, snapshot) = manifest_of(files);
@@ -648,7 +664,7 @@ fn a_restore_without_the_role_of_a_log_grant_reports_it_dormant() {
 
 #[test]
 fn a_dump_without_security_restores_the_owner_alone_and_log_grants_dormant() {
-    let mut sim = Sim::with_files(6, Config::default(), without(&granted(), "security"));
+    let mut sim = Sim::with_files(6, Config::default(), unsecured(&granted()));
     api::run(&mut sim, |rt| assert_dormant(&rt, (DUMP, COPY), true));
 }
 
