@@ -35,3 +35,10 @@ Left:
 - The read path (`refuse_if_named` for scan and vacuum, `refuse_named` for index reads) still damages the named page when its header does not claim the position (a large-value or map page under a heap entry); under the heap-dir rule it would blame the directory page naming it.
 - Page validity is tied to today's `capacity` formula for fixed pages: changing it would make every existing fixed page fail `is_heap`. A format change must version the slot-table layout.
 - The server_binding window note above.
+
+## 2026-11-05: from the read-blame reviews
+
+- A scan reads a page named by a single stale entry at a position the page does not claim (no duplicate) and records nothing, as on main; catching it needs positions threaded through exec's `Listing` and `scan_pages`.
+- A leaf named twice by inner directory entries makes the duplicate check blame the leaf; the damage is the inner node. `walk` should refuse a directory page already seen, blaming its parent.
+- Prune (heap/handle.rs, near the `vacate` call) frees `pid` even when `vacate` finds that the entry at the header's position does not name it, leaving a stale entry naming a freed page.
+- `refuse_misnamed` and `pages()` retry on a changed leaf with no bound, as `find` does; under a hot leaf a check of the damaged entry can retry many times (converged in the review's test).
