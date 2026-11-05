@@ -682,8 +682,9 @@ impl<R: Runtime> Engine<R> {
     }
 }
 
-/// Check the opened database against the dump's version, parts and `ids`, insert every dumped row
-/// as one change set, and resume every generator. Returns each dormant grant it wrote.
+/// Check the opened database against the dump's version, parts and `ids`, write every dumped row
+/// unchecked, validate the whole database once, and resume every generator. Returns each dormant
+/// grant it wrote.
 fn fill<R: Runtime>(
     db: &Database<R>,
     manifest: &DumpManifest,
@@ -735,8 +736,8 @@ fn fill<R: Runtime>(
     if resumed.len() != generators.len() || !resumed.keys().copied().eq(generated(schema)) {
         return Err(damaged(GENERATORS));
     }
-    engine.db.admit_restored_rows();
-    let mut rows: BTreeMap<RelId, BTreeSet<Val>> = BTreeMap::new();
+    let failed = |w| engine.write_error(super::TxnId(0), w);
+    let restoring = engine.db.admit_restored_rows();
     for (r, c, name) in &data {
         let doc = std::str::from_utf8(&entries[name])
             .ok()
@@ -744,9 +745,13 @@ fn fill<R: Runtime>(
             .filter(|d| d.header.as_ref() == Some(&header(e)) && d.relation == *r)
             .filter(|d| d.rows.iter().all(|row| ctor_of(row) == *c))
             .ok_or_else(|| damaged(name))?;
-        rows.entry(*r).or_default().extend(doc.rows);
+        restoring
+            .write(&BTreeMap::from([((*r, *c), doc.rows)]))
+            .map_err(failed)?;
     }
-    insert(db, schema, rows)?;
+    restoring
+        .validate(&dumped(schema).collect::<Vec<_>>())
+        .map_err(failed)?;
     let dormant = deployed[&grants]
         .iter()
         .filter(|g| dormant(schema, grants, g))
@@ -848,30 +853,4 @@ fn dormant_grant(schema: &Schema, grants: RelId, row: &Val) -> Option<Dormant> {
         privilege: text("privilege")?,
         target,
     })
-}
-
-fn insert<R: Runtime>(
-    db: &Database<R>,
-    schema: &Schema,
-    rows: BTreeMap<RelId, BTreeSet<Val>>,
-) -> Result<(), Error> {
-    let mut text = String::from("transact\n");
-    let mut params = Vec::new();
-    for (r, rows) in rows.into_iter().filter(|(_, rows)| !rows.is_empty()) {
-        let rel = schema.relation(r);
-        let name = format!("dump_rows_{}", params.len());
-        let qualified = format!("{}::{}", schema.module(rel.module).name, rel.name);
-        text.push_str(&format!("  insert {qualified} from ({name})\n"));
-        params.push((name, Ty::Set(Box::new(rel.elem.clone())), Val::set(rows)));
-    }
-    if params.is_empty() {
-        return Ok(());
-    }
-    text.push_str("  return {}\n");
-    let params: Vec<(&str, Ty, Val)> = params
-        .iter()
-        .map(|(n, t, v)| (n.as_str(), t.clone(), v.clone()))
-        .collect();
-    db.query_text(&text, &params, &CallOptions::default())
-        .map(|_| ())
 }

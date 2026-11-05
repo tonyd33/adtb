@@ -103,6 +103,23 @@ pub fn pairs<'a>(groups: impl IntoIterator<Item = &'a BTreeMap<Val, Val>>) -> BT
     out
 }
 
+/// Fail with the violation of least name in `viol`, if it holds any.
+pub fn refuse(viol: Violations) -> Result<(), Error> {
+    let Some((name, v)) = viol.into_iter().next() else {
+        return Ok(());
+    };
+    Err(Error::Rejected(match v {
+        Violation::Key(relation, keys) => Rejection::KeyViolation {
+            relation,
+            key: keys.into_iter().next().expect("a key violation has a key"),
+        },
+        Violation::Other(report) => Rejection::Violated {
+            constraint: name,
+            report,
+        },
+    }))
+}
+
 /// A record of a source that an insert with `rejects into` rejected.
 pub struct Rejected {
     line: i64,
@@ -1256,19 +1273,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         }
         self.apply(&plus, &minus, &mut viol)?;
         self.check(&plus, &minus, &mut viol)?;
-        if let Some((name, v)) = viol.into_iter().next() {
-            let reason = match v {
-                Violation::Key(relation, keys) => Rejection::KeyViolation {
-                    relation,
-                    key: keys.into_iter().next().expect("a key violation has a key"),
-                },
-                Violation::Other(report) => Rejection::Violated {
-                    constraint: name,
-                    report,
-                },
-            };
-            return Err(Error::Rejected(reason));
-        }
+        refuse(viol)?;
         Ok(Outcome {
             result,
             inserted: plus,
@@ -1297,7 +1302,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     /// does not hold at the same path.
     fn check_open(&self, plus: &Rows) -> Result<(), Error> {
         let schema = &self.db.schema;
-        if (schema.stages.is_empty() && schema.value_stages.is_empty()) || self.db.restoring() {
+        if schema.stages.is_empty() && schema.value_stages.is_empty() {
             return Ok(());
         }
         let closed = |s: Stage| match s {

@@ -18,6 +18,7 @@ mod create;
 mod derived_index;
 mod directory_damage;
 mod dump;
+mod dump_validate;
 mod embedding;
 mod exec;
 mod faults;

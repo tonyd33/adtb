@@ -77,17 +77,7 @@ impl<R: Runtime> Stmt<'_, R> {
     /// Check, after the change set is applied, every constraint it can violate: references,
     /// newtype domains, and the schema's constraints and checks.
     pub fn check(&self, plus: &Rows, minus: &Rows, viol: &mut Violations) -> Result<(), Error> {
-        for ((r, c), rows) in plus {
-            for f in &self.rel(*r).ctors[*c as usize].refs {
-                for n in rows {
-                    if let Some(k) = Self::names(f, n)?
-                        && !self.reaches(f, &k)?
-                    {
-                        violate(viol, &self.field_name(*r, *c, f), [n.clone()]);
-                    }
-                }
-            }
-        }
+        self.check_rows(plus, viol)?;
         let mut moved: BTreeMap<RelId, BTreeSet<Val>> = BTreeMap::new();
         for ((r, c), rows) in minus {
             for v in rows {
@@ -109,12 +99,6 @@ impl<R: Runtime> Stmt<'_, R> {
                         violate(viol, &self.field_name(r, c, f), [u.clone()]);
                     }
                 }
-            }
-        }
-        for ((r, _), rows) in plus {
-            for v in rows {
-                let elem = self.rel(*r).elem.clone();
-                self.check_domains(v, v, &elem, viol)?;
             }
         }
         let touched: BTreeSet<RelId> = plus.keys().chain(minus.keys()).map(|(r, _)| *r).collect();
@@ -143,6 +127,28 @@ impl<R: Runtime> Stmt<'_, R> {
                         return Err(Broken::DenialNotSet(other).into());
                     }
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Check the references and newtype domains of every row of `plus`.
+    pub fn check_rows(&self, plus: &Rows, viol: &mut Violations) -> Result<(), Error> {
+        for ((r, c), rows) in plus {
+            for f in &self.rel(*r).ctors[*c as usize].refs {
+                for n in rows {
+                    if let Some(k) = Self::names(f, n)?
+                        && !self.reaches(f, &k)?
+                    {
+                        violate(viol, &self.field_name(*r, *c, f), [n.clone()]);
+                    }
+                }
+            }
+        }
+        for ((r, _), rows) in plus {
+            for v in rows {
+                let elem = self.rel(*r).elem.clone();
+                self.check_domains(v, v, &elem, viol)?;
             }
         }
         Ok(())

@@ -168,11 +168,11 @@ impl<R: Runtime> Drop for Offline<'_, R> {
 }
 
 /// How the rows of one index's constructors give its entries.
-struct Scan<'d, R: Runtime> {
-    db: &'d Database<R>,
-    rel: &'d Rel,
-    id: IndexId,
-    ix: &'d Indexed,
+pub(super) struct Scan<'d, R: Runtime> {
+    pub(super) db: &'d Database<R>,
+    pub(super) rel: &'d Rel,
+    pub(super) id: IndexId,
+    pub(super) ix: &'d Indexed,
 }
 
 impl<R: Runtime> Scan<'_, R> {
@@ -231,7 +231,11 @@ impl<R: Runtime> Scan<'_, R> {
         Ok(out)
     }
 
-    fn runs(&self, since: Option<Lsn>, tx: Option<&Txn>) -> Result<Vec<Vec<RunEntry>>, Error> {
+    pub(super) fn runs(
+        &self,
+        since: Option<Lsn>,
+        tx: Option<&Txn>,
+    ) -> Result<Vec<Vec<RunEntry>>, Error> {
         self.db.indexes[&self.id]
             .ctors
             .iter()

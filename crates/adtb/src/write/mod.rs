@@ -12,6 +12,7 @@ mod past;
 mod polarity;
 mod quarantine;
 mod reindex;
+mod restore;
 mod rot;
 mod schema;
 mod sequence;
@@ -54,6 +55,7 @@ pub use input::Local;
 pub use past::Retained;
 pub(crate) use past::position;
 pub use reindex::{Failure, HoldWait, Rebuild, VacuumHold, panic_text};
+pub use restore::Restoring;
 pub use rot::Rot;
 pub use stream::{Produced, Production};
 pub use vacuums::Due;
@@ -511,9 +513,6 @@ pub struct Database<R: Runtime> {
     rels: Rels,
     denials: Vec<check::Denial>,
     sequences: Lock<Sequences>,
-    /// Whether inserts into a constructor closed for writes are admitted, as a restore of rows
-    /// that existed inserts them.
-    restoring: AtomicBool,
     /// The snapshot of each running read-only transaction, for its safe snapshot marker.
     readers: Lock<BTreeMap<SerialId, (SnapshotId, Snapshot)>>,
     uuids: AtomicU64,
@@ -620,7 +619,6 @@ impl<R: Runtime> Database<R> {
             rels,
             denials,
             sequences: Lock::new(sequences),
-            restoring: AtomicBool::new(false),
             readers: Lock::default(),
             uuids: AtomicU64::new(seed >> 2),
             budget: setup.budget,
@@ -1121,17 +1119,6 @@ impl<R: Runtime> Database<R> {
         let upto = self.txns.read_upto(tx.hold);
         self.pager
             .position(upto.unwrap_or_else(|| self.pager.durable()))
-    }
-
-    /// Admit inserts into constructors closed for writes from now on.
-    ///
-    /// Precondition: the caller is a restore, and nothing else holds this database.
-    pub(crate) fn admit_restored_rows(&self) {
-        self.restoring.store(true, Ordering::Release);
-    }
-
-    pub(crate) fn restoring(&self) -> bool {
-        self.restoring.load(Ordering::Acquire)
     }
 
     /// Returns the value `rel`'s sequence draws next.

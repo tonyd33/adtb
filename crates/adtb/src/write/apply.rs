@@ -16,7 +16,7 @@ use super::eval::{Stmt, Violations, pairs, violate, violate_key};
 use super::{Error, Rejection, Rows};
 
 /// Returns the write error of heap error `e`, met writing a row of constructor `ctor` of `rel`.
-fn too_large(rel: RelId, ctor: u32) -> impl Fn(heap::Error) -> Error {
+pub(super) fn too_large(rel: RelId, ctor: u32) -> impl Fn(heap::Error) -> Error {
     move |e| match e {
         heap::Error::TooLarge { len, limit } => Error::Rejected(Rejection::RowTooLarge {
             relation: rel,
