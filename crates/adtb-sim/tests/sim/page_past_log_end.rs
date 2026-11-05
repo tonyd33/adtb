@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use adtb::runtime::Runtime;
-use adtb::storage::{self, Pid, Quarantine};
+use adtb::storage::{self, Lsn, Options, Pager, Pid, Quarantine};
 use adtb::{
     ArchiveTarget, CallOptions, Database, Error, FatalReason, Log, OpenOptions, RestorePoint,
     restore_in,
@@ -16,6 +16,7 @@ type Files = BTreeMap<String, Vec<u8>>;
 
 const SEED: u64 = 61;
 const FILE: &str = "past_end.adt";
+const RESTORED: &str = "restored.adt";
 const PAGE: usize = 8192;
 const PAST: u64 = 1 << 40;
 const GOOGLE: &str = "app::identities.Google";
@@ -41,15 +42,26 @@ enum Met {
 type Enter = fn(&Database<SimRuntime>, &SimRuntime) -> Met;
 
 fn open(rt: SimRuntime) -> Database<SimRuntime> {
+    open_at(rt, FILE)
+}
+
+fn open_at(rt: SimRuntime, name: &str) -> Database<SimRuntime> {
     let options = OpenOptions {
         no_background_vacuum: true,
         ..api::options(2)
     };
-    Database::open_in(rt, FILE, &Log::new([APP]), &options).expect("the file opens")
+    Database::open_in(rt, name, &Log::new([APP]), &options).expect("the file opens")
 }
 
 /// Returns a closed file whose one page of `identities.Google` carries LSN `PAST`, and that page.
 fn planted() -> (Files, Pid) {
+    let (mut files, page) = built();
+    stamp(&mut files, page, PAST);
+    (files, page)
+}
+
+/// Returns a closed file holding every `identities.Google` row on one page, and that page.
+fn built() -> (Files, Pid) {
     let mut sim = Sim::new(SEED, Config::default());
     let page = api::run(&mut sim, |rt| {
         let db = open(rt);
@@ -70,12 +82,25 @@ fn planted() -> (Files, Pid) {
         db.close().unwrap();
         pages[0]
     });
-    let mut files = sim.files();
+    (sim.files(), page)
+}
+
+/// Set the LSN of `page` in `files` to `lsn`, sealed.
+fn stamp(files: &mut Files, page: Pid, lsn: u64) {
     let at = page.0 as usize * PAGE;
     let bytes = &mut files.get_mut(FILE).unwrap()[at..at + PAGE];
-    bytes[..8].copy_from_slice(&PAST.to_le_bytes());
+    bytes[..8].copy_from_slice(&lsn.to_le_bytes());
     storage::seal(page, bytes);
-    (files, page)
+}
+
+/// Returns the end of the log the next open of `files` recovers.
+fn recovered_end(files: &Files) -> Lsn {
+    let mut sim = Sim::with_files(SEED, Config::default(), files.clone());
+    api::run(&mut sim, |rt| {
+        let (pager, recovery) = Pager::open(rt, &Options::new(FILE)).unwrap();
+        pager.close();
+        recovery.end
+    })
 }
 
 fn answered(got: Result<Vec<adtb::DynRows>, Error>) -> Met {
@@ -150,23 +175,34 @@ const ENTRIES: [(&str, Enter); 12] = [
     ("backup", backup),
 ];
 
-/// Returns why `met` is not what the spec states for `entry` meeting page `page`.
-fn wrong(entry: &str, page: Pid, met: &Met) -> Option<String> {
+/// Returns whether `rows` are what verify and scrub find of the damaged page `page`.
+type Reported = fn(Pid, &[String]) -> bool;
+
+fn stale_reported(page: Pid, rows: &[String]) -> bool {
     let stale = format!("page {}: Stale {{", page.0);
     let unlogged = format!("Unlogged {{ pid: Pid({}), page: Lsn({PAST}) }}", page.0);
+    rows.len() == 2
+        && rows
+            .iter()
+            .any(|r| r.starts_with("StalePage") && r.contains(&stale))
+        && rows
+            .iter()
+            .any(|r| r.starts_with("Structure") && r.contains(&unlogged))
+}
+
+fn checksum_reported(page: Pid, rows: &[String]) -> bool {
+    let checksum = format!("where: \"page {}: Checksum\" }}", page.0);
+    rows.len() == 1 && rows[0].starts_with("Checksum") && rows[0].ends_with(&checksum)
+}
+
+/// Returns why `met` is not what the spec states for `entry` meeting page `page`.
+fn wrong(entry: &str, page: Pid, met: &Met, reported: Reported) -> Option<String> {
     let right = match met {
         Met::Refused(what) => {
             !matches!(entry, "verify" | "verify identities" | "scrub" | "backup") && what == GOOGLE
         }
         Met::Found(rows) => {
-            matches!(entry, "verify" | "verify identities" | "scrub")
-                && rows.len() == 2
-                && rows
-                    .iter()
-                    .any(|r| r.starts_with("StalePage") && r.contains(&stale))
-                && rows
-                    .iter()
-                    .any(|r| r.starts_with("Structure") && r.contains(&unlogged))
+            matches!(entry, "verify" | "verify identities" | "scrub") && reported(page, rows)
         }
         Met::Copied(damaged) => entry == "backup" && *damaged == [page.0],
         Met::Finished => entry == "reindex",
@@ -175,17 +211,17 @@ fn wrong(entry: &str, page: Pid, met: &Met) -> Option<String> {
     (!right).then(|| format!("{entry}: {met:?}"))
 }
 
-#[test]
-fn every_entry_refuses_or_reports_a_page_past_the_log_end_and_leaves_it_unchanged() {
-    let (files, page) = planted();
+/// Returns how each entry, run on the file `name` of `files`, departs from the spec for its
+/// damaged page `page`.
+fn sweep(files: &Files, name: &str, page: Pid, reported: Reported) -> Vec<String> {
     let at = page.0 as usize * PAGE;
-    let bytes = files[FILE][at..at + PAGE].to_vec();
+    let bytes = files[name][at..at + PAGE].to_vec();
     let mut defects = Vec::new();
     for (entry, enter) in ENTRIES {
         let mut sim = Sim::with_files(SEED, Config::default(), files.clone());
         let marked = api::run(&mut sim, |rt| {
-            let db = open(rt.clone());
-            defects.extend(wrong(entry, page, &enter(&db, &rt)));
+            let db = open_at(rt.clone(), name);
+            defects.extend(wrong(entry, page, &enter(&db, &rt), reported));
             let w = db.write_path();
             let heap = w.heap_named("app::identities", "Google").unwrap().id().0;
             let marked = w.pager().is_quarantined(Quarantine::Heap(heap));
@@ -204,9 +240,78 @@ fn every_entry_refuses_or_reports_a_page_past_the_log_end_and_leaves_it_unchange
         if !marked && entry != "backup" {
             defects.push(format!("{entry}: {GOOGLE} is not quarantined"));
         }
-        if sim.files()[FILE][at..at + PAGE] != bytes[..] {
+        if sim.files()[name][at..at + PAGE] != bytes[..] {
             defects.push(format!("{entry}: the page changed"));
         }
     }
-    assert_eq!(Vec::<String>::new(), defects);
+    defects
+}
+
+#[test]
+fn every_entry_refuses_or_reports_a_page_past_the_log_end_and_leaves_it_unchanged() {
+    let (files, page) = planted();
+    assert_eq!(
+        Vec::<String>::new(),
+        sweep(&files, FILE, page, stale_reported)
+    );
+}
+
+/// Returns a file whose page of `identities.Google` `damage` changed, given the end of the log its
+/// next open recovers, backed up once the log passes that end and restored as `RESTORED`, and the
+/// page.
+fn restored(damage: fn(&mut Files, Pid, Lsn)) -> (Files, Pid) {
+    let (mut files, page) = built();
+    let end = recovered_end(&files);
+    damage(&mut files, page, end);
+    let mut sim = Sim::with_files(SEED, Config::default(), files);
+    api::run(&mut sim, |rt| {
+        let db = open(rt.clone());
+        for i in 21..=23 {
+            let apple = format!(
+                r#"insert identities.Apple {{ id: identities.key({i}), tag: "v{i}", sub: "s{i}" }}"#
+            );
+            api::results(&db, &apple);
+        }
+        let w = db.write_path();
+        let heap = w.heap_named("app::identities", "Google").unwrap().id().0;
+        assert!(!w.pager().is_quarantined(Quarantine::Heap(heap)));
+        api::results(&db, "backup to \"bk0\"");
+        let (manifest, _) = storage::read_manifest(&rt, "bk0").unwrap();
+        assert_eq!(vec![page], manifest.damaged);
+        assert!(
+            manifest.quarantined.is_empty(),
+            "{:?}",
+            manifest.quarantined
+        );
+        assert!(manifest.end.lsn > end, "{:?} {end:?}", manifest.end);
+        db.close().unwrap();
+        let archive = ArchiveTarget::path("bk0").unwrap();
+        let options = OpenOptions {
+            create: None,
+            ..api::options(2)
+        };
+        let got = restore_in(rt, &archive, RESTORED, RestorePoint::Latest, &options);
+        assert_eq!(vec![page.0], got.unwrap());
+    });
+    (sim.files(), page)
+}
+
+#[test]
+fn a_page_a_backup_copied_past_the_log_end_stays_refused_in_the_restored_file() {
+    let (files, page) = restored(|files, page, end| stamp(files, page, end.0));
+    assert_eq!(
+        Vec::<String>::new(),
+        sweep(&files, RESTORED, page, checksum_reported)
+    );
+}
+
+#[test]
+fn a_page_a_backup_copied_rotted_stays_refused_in_the_restored_file() {
+    let (files, page) = restored(|files, page, _| {
+        files.get_mut(FILE).unwrap()[page.0 as usize * PAGE + 200] ^= 0xff;
+    });
+    assert_eq!(
+        Vec::<String>::new(),
+        sweep(&files, RESTORED, page, checksum_reported)
+    );
 }

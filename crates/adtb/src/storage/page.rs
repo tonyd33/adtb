@@ -124,6 +124,12 @@ pub fn seal(pid: Pid, page: &mut [u8]) {
     page[CHECKSUM..CHECKSUM + 4].copy_from_slice(&sum.to_le_bytes());
 }
 
+/// Write into the header of `page` a checksum it fails as page `pid`.
+pub fn spoil(pid: Pid, page: &mut [u8]) {
+    let sum = !checksum(pid, page);
+    page[CHECKSUM..CHECKSUM + 4].copy_from_slice(&sum.to_le_bytes());
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
     Valid,

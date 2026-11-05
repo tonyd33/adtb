@@ -12,11 +12,12 @@ use crate::runtime::{AlignedBuf, Done, FileId, IoError, Op, Runtime};
 use super::block::{
     Batch, BlockState, LogImage, LogProblem, LogSource, Mode, Slot, read_block, scan,
 };
+use super::digest::{hex, sealed, unhex, unsealed};
 use super::driver::Driver;
 use super::header::{FileHeader, HISTORY_CAPACITY, REGION};
 use super::log::{FileSource, parse_segment, segment_name};
-use super::page::valid_page_size;
-use super::pager::{Pager, parent};
+use super::page::{spoil, valid_page_size};
+use super::pager::{Damage, Pager, parent};
 use super::quarantine::Quarantine;
 use super::record::Record;
 use super::{Lsn, Pid, Position};
@@ -393,41 +394,6 @@ pub(super) fn inside(dir: &str, name: &str) -> String {
     } else {
         format!("{dir}/{name}")
     }
-}
-
-pub(super) fn hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        write!(out, "{b:02x}").expect("a string takes any text");
-    }
-    out
-}
-
-fn unhex<const N: usize>(text: &str) -> Option<[u8; N]> {
-    let mut out = [0; N];
-    if text.len() != N * 2 {
-        return None;
-    }
-    for (i, b) in out.iter_mut().enumerate() {
-        *b = u8::from_str_radix(text.get(i * 2..i * 2 + 2)?, 16).ok()?;
-    }
-    Some(out)
-}
-
-/// Returns `body` followed by a line holding the hash of `body`.
-pub(super) fn sealed(mut body: String) -> String {
-    let sum = hex(blake3::hash(body.as_bytes()).as_bytes());
-    writeln!(body, "checksum {sum}").expect("a string takes any text");
-    body
-}
-
-/// Returns what `text` says before its checksum line, when that line holds its hash.
-pub(super) fn unsealed(text: &str) -> Option<&str> {
-    let body = text.strip_suffix('\n')?;
-    let at = body.rfind('\n')? + 1;
-    let sum = body[at..].strip_prefix("checksum ")?;
-    let lines = &text[..at];
-    (hex(blake3::hash(lines.as_bytes()).as_bytes()) == sum).then_some(lines)
 }
 
 /// Returns the hash naming a manifest.
@@ -842,10 +808,12 @@ impl<R: Runtime> Pager<R> {
         Ok((parts, damaged))
     }
 
-    /// Returns the bytes of page `pid` for the copy. A read that fails verification may have met a
-    /// write in flight, so it is read again under the exclusive latch, which no write-out holds
-    /// with. A page still failing is copied as stored and added to `damaged`, unless the allocation
-    /// bitmap reads and calls it free or the pool's changed copy is to overwrite it.
+    /// Returns the bytes of page `pid` for the copy. A read that fails verification, or of a page
+    /// this open refused as stale, may have met a write in flight, so it is read again under the
+    /// exclusive latch, which no write-out holds with. A page still failing is added to `damaged`
+    /// and copied as stored with a checksum it fails, so a restore refuses it whatever its LSN,
+    /// unless the allocation bitmap reads and calls it free or the pool's changed copy is to
+    /// overwrite it.
     fn page_as_stored(
         &self,
         pid: Pid,
@@ -858,7 +826,7 @@ impl<R: Runtime> Pager<R> {
                 if !visit(pid, &mut buf) {
                     return Err(BackupError::Stopped);
                 }
-                if self.sound(pid, &buf) {
+                if self.trusted(pid, &buf) {
                     return Ok(buf.to_vec());
                 }
                 Some(buf)
@@ -875,20 +843,30 @@ impl<R: Runtime> Pager<R> {
         let g = self.mem.lock_exclusive(pid.0, &self.rt);
         let again = self.read_disk(pid);
         if let Ok((buf, _)) = &again
-            && self.sound(pid, buf)
+            && self.trusted(pid, buf)
         {
             return Ok(buf.to_vec());
         }
         if g.resident() && self.meta().changed.contains(&pid) {
             return Ok(self.staged(pid, &g).to_vec());
         }
-        if !free {
-            damaged.insert(pid);
-        }
-        Ok(match (again, bytes) {
+        let mut copy = match (again, bytes) {
             (Ok((buf, _)), _) | (Err(_), Some(buf)) => buf.to_vec(),
             (Err(_), None) => unreadable_page(self.page_size),
-        })
+        };
+        if !free {
+            damaged.insert(pid);
+            spoil(pid, &mut copy);
+        }
+        Ok(copy)
+    }
+
+    /// Returns whether the file's copy `buf` of `pid` is sound and this open has not refused the
+    /// page as stale, whose copy may be a lost write.
+    fn trusted(&self, pid: Pid, buf: &[u8]) -> bool {
+        let refused = self.meta().damaged.get(&pid).copied();
+        let stale = matches!(refused, Some(Damage::Stale { .. }));
+        self.sound(pid, buf) && !stale
     }
 
     fn copy_log(

@@ -5,6 +5,7 @@ mod backup;
 mod block;
 mod crc;
 mod create;
+mod digest;
 mod driver;
 mod dump;
 mod evicted;

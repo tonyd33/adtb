@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 
 use adtb::runtime::{Done, IoError, Op, Runtime, Threads};
 use adtb::storage::{
-    self, BackupError, BackupRun, Envelope, Manifest, Options, PageKind, Pager, Pid, Quarantine,
+    self, BackupError, BackupRun, Damage, Envelope, Lsn, Manifest, Options, PageKind, Pager, Pid,
+    Quarantine,
 };
 use adtb::{
     ArchiveTarget, CallOptions, CancelToken, Capability, Database, Determinism, Error, FatalReason,
@@ -603,7 +604,7 @@ fn segments_covering_redo_retained_through_backup() {
         storage::restore_file(&rt, TARGET, COPY, &format!("{COPY}-log")).unwrap();
         let (copy, recovery) = Pager::open(rt, &pager_options(COPY, false, 1 << 14)).unwrap();
         assert_eq!(manifest.end.lsn, recovery.end);
-        assert_eq!(Vec::<(Pid, storage::Damage)>::new(), recovery.damaged);
+        assert_eq!(Vec::<(Pid, Damage)>::new(), recovery.damaged);
         let found = copy.verify().findings;
         assert!(found.is_empty(), "{found:?}");
         assert_ne!(0, copy.read(pid).unwrap()[101]);
@@ -1581,7 +1582,7 @@ fn history_truncates_at_capacity() {
         let on = |epoch, lsn| {
             pager.on_history(storage::Position {
                 epoch,
-                lsn: storage::Lsn(lsn),
+                lsn: Lsn(lsn),
             })
         };
         assert!(on(2, 2000), "the oldest kept epoch");
@@ -1820,6 +1821,72 @@ fn a_restore_under_a_rotted_bitmap_opens_and_lists_it() {
             PageKind::HeapSlotted as u16
         );
         pager.close();
+    });
+}
+
+/// Restore a page this open refused, but whose stored bytes verify, as copied, unless it was
+/// refused as stale.
+#[test]
+fn a_refused_page_with_sound_bytes_restores_as_copied_unless_stale() {
+    let options = pager_options(FILE, false, 1 << 20);
+    let (files, used, _) = pager_with_bitmap(&options);
+    let stale = Damage::Stale {
+        expected: Lsn(1 << 40),
+        found: Lsn(1),
+    };
+    let cases = [
+        (Damage::Unreadable, Ok(9)),
+        (Damage::Checksum, Ok(9)),
+        (stale, Err(Damage::Checksum)),
+    ];
+    for (damage, want) in cases {
+        let mut sim = Sim::with_files(51, Config::default(), files.clone());
+        let got = api::run(&mut sim, |rt| {
+            let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
+            pager.damage(used, damage);
+            let manifest = backup_with(&pager, TARGET, &mut |_, _| true).unwrap();
+            assert_eq!(vec![used], manifest.damaged, "{damage:?}");
+            pager.close();
+            storage::restore_file(&rt, TARGET, COPY, &format!("{COPY}-log")).unwrap();
+            let (copy, _) = Pager::open(rt, &pager_options(COPY, false, 1 << 20)).unwrap();
+            let got = copy.read(used).map(|p| p[100]).map_err(|e| e.damage);
+            copy.close();
+            got
+        });
+        assert_eq!(want, got, "{damage:?}");
+    }
+}
+
+/// Heal in the restored file a listed page that a full-page image in the backup's log overwrites.
+#[test]
+fn a_listed_page_a_replayed_image_overwrites_restores_healed() {
+    let options = pager_options(FILE, false, 1 << 20);
+    let (mut files, used, _) = pager_with_bitmap(&options);
+    files.get_mut(FILE).unwrap()[used.0 as usize * 4096 + 200] ^= 0xff;
+    let mut sim = Sim::with_files(52, Config::default(), files);
+    api::run(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
+        let from = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
+        pager.update(&[from], |v| v[0][100] = 5).unwrap();
+        assert!(used < from);
+        let refused = pager.read(used).map(|_| ()).map_err(|e| e.damage);
+        assert_eq!(Err(Damage::Checksum), refused);
+        let mut replaced = false;
+        let manifest = backup_with(&pager, TARGET, &mut |at, _| {
+            if at == from && !replaced {
+                replaced = true;
+                pager.replace_contents(used, from, None).unwrap();
+            }
+            true
+        })
+        .unwrap();
+        assert!(replaced);
+        assert_eq!(vec![used], manifest.damaged);
+        pager.close();
+        storage::restore_file(&rt, TARGET, COPY, &format!("{COPY}-log")).unwrap();
+        let (copy, _) = Pager::open(rt, &pager_options(COPY, false, 1 << 20)).unwrap();
+        assert_eq!(5, copy.read(used).unwrap()[100]);
+        copy.close();
     });
 }
 

@@ -9,9 +9,9 @@ use crate::runtime::{IoError, Runtime};
 
 use super::backup::{
     BackupError, Envelope, FIRST_LINE, Fs, Io, KIND as BACKUP, MANIFEST, MAX_EPOCH, Part,
-    final_name, hex, inside, io_error, make_parent, name_taken, occupied, publish_restored, sealed,
-    unsealed,
+    final_name, inside, io_error, make_parent, name_taken, occupied, publish_restored,
 };
+use super::digest::{hex, sealed, unsealed};
 use super::header::REGION;
 use super::pager::parent;
 use super::{Lsn, Position};
