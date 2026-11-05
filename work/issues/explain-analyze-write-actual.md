@@ -3,7 +3,7 @@ created-at: 2026-11-04
 status: open
 kind: bug
 priority: 520
-summary: "Under explain analyze a write's plan sets actual only on the root node; catalog.md says every node has it"
+summary: "Under explain analyze the plan sets actual only on the root node, for writes and queries; catalog.md says every node has it"
 ---
 
 # Explain analyze of a write omits actual below the root
@@ -19,3 +19,7 @@ Found in script batch 5, 2026-11-04; not reproduced by the lead.
 ## Proposal
 
 Fill `actual` on every node of a write's plan, or find the contract that excuses the write's inner nodes. Add a test that walks every node of an analyzed write's plan.
+
+## 2026-11-05: queries too
+
+The review of script batch 6 ran `explain analyze` on a select over a match: `actual` is on the root `Set` only; Pipeline, Probe, Chain and Emit carry none. The gap is not limited to writes. When fixed, the `plan` script directive's shape check is where to require `actual` on every node of an analyze document.
