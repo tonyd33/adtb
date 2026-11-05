@@ -331,3 +331,58 @@ fn an_entry_naming_a_foreign_page_quarantines_only_the_heap_of_its_directory() {
         });
     }
 }
+
+#[test]
+fn a_read_over_an_entry_naming_a_large_value_or_map_page_blames_its_directory_page() {
+    let mut cases = 0;
+    for foreign in ["a large-value page", "another heap's map page"] {
+        for (form, read) in [("scan", Op::Scan.text()), ("vacuum", "vacuum users".into())] {
+            let what = format!("an entry naming {foreign}, {form}");
+            let (w, read) = (what.clone(), read.clone());
+            bounded(&fixture(), what, move |db| {
+                let w = &w;
+                let path = db.write_path();
+                let pager = path.pager();
+                let users = path.heap_named("app::users", "User").unwrap();
+                let others = path.heap_named("app::others", "Other").unwrap();
+                let map = PageKind::VisibilityMap as u16;
+                let named = match foreign {
+                    "a large-value page" => users.large().pages(pager).unwrap()[0],
+                    _ => *(others.owned_pages(pager).unwrap().iter())
+                        .find(|&&p| storage::kind(&pager.read(p).unwrap()) == map)
+                        .expect("the others heap has a map page"),
+                };
+                point(pager, users.root(), users.pages(pager).unwrap()[0], named);
+                assert_eq!("app::users.User", quarantined(text(db, &read), w));
+                let met: BTreeSet<Pid> = pager.damaged().into_keys().collect();
+                assert_eq!(BTreeSet::from([users.root()]), met, "{w}");
+                let only = BTreeSet::from([Quarantine::Heap(users.id().0)]);
+                assert_eq!(only, pager.quarantined(), "{w}");
+            });
+            cases += 1;
+        }
+    }
+    assert_eq!(4, cases);
+}
+
+#[test]
+fn an_index_entry_outliving_its_page_refuses_the_index() {
+    let what = "an index entry outliving its page".to_owned();
+    bounded(&fixture(), what.clone(), move |db| {
+        let pager = db.write_path().pager();
+        let users = db.write_path().heap_named("app::users", "User").unwrap();
+        Replacement::Others.apply(db, Target::UsersPage);
+        let pid = Target::UsersPage.pages(db).0;
+        point(pager, users.root(), pid, Pid(0));
+        assert_eq!(
+            "app::users key id",
+            quarantined(text(db, &Op::Read.text()), &what)
+        );
+        assert_eq!(0, pager.damaged().len(), "{what}");
+        let marks = Vec::from_iter(pager.quarantined());
+        assert!(
+            matches!(marks[..], [Quarantine::Index(_)]),
+            "{what}: {marks:?}"
+        );
+    });
+}

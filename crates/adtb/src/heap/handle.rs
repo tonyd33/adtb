@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::key::{Tid, Value};
 use crate::runtime::Runtime;
-use crate::storage::{self, Damage, PageError, Pager, Pid, Stopped};
+use crate::storage::{self, PageError, Pager, Pid, Stopped};
 
 use super::dir::{Above, Space, category, max_fanout, need_category};
 use super::large::LargeStore;
@@ -139,7 +139,7 @@ enum Put {
 pub struct Heap {
     pub(super) id: u32,
     page_size: usize,
-    space: Space,
+    pub(super) space: Space,
     large: LargeStore,
     formats: Vec<Format>,
     /// The page that took the last insert, 0 for none.
@@ -436,7 +436,7 @@ impl Heap {
                 let page = pager.read_formatted(pid)?;
                 if !self.holds_page(&page) {
                     drop(page);
-                    self.refuse_if_named(pager, pid)?;
+                    self.space.refuse_misnamed(pager, pid)?;
                     continue;
                 }
                 found = self.versions_on(pager, pid, &page)?;
@@ -448,17 +448,6 @@ impl Heap {
 
     fn holds_page(&self, page: &[u8]) -> bool {
         page::is_heap(page) && storage::owner(page) == self.id
-    }
-
-    /// Refuse page `pid`, read as no page of this heap, when the directory still names it and it
-    /// still reads so.
-    ///
-    /// Preconditions: the caller holds no latch on `pid`.
-    fn refuse_if_named<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), PageError> {
-        if self.pages(pager)?.contains(&pid) && !self.holds_page(&pager.read_formatted(pid)?) {
-            return Err(pager.damage(pid, Damage::Checksum));
-        }
-        Ok(())
     }
 
     /// Returns the versions on `page`, page `pid` of the heap, in slot order.
@@ -838,7 +827,7 @@ impl Heap {
     ) -> Result<Vec<u16>, PageError> {
         let page = pager.read_formatted(pid)?.to_vec();
         if !self.holds_page(&page) {
-            self.refuse_if_named(pager, pid)?;
+            self.space.refuse_misnamed(pager, pid)?;
         }
         if !self.ours(pager, pid, &page)? {
             return Ok(Vec::new());

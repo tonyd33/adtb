@@ -212,6 +212,12 @@ const FORMS: [(&str, Write); 7] = [
 
 const SCAN: Write = |db, t| run(db, &format!("from i in identities.{} select i.tag", t.ctor));
 
+#[rustfmt::skip]
+const READS: [(&str, Write); 2] = [
+    ("vacuum", |db, _| run(db, "vacuum identities")),
+    ("index read", |db, t| run(db, &format!("from i in identities.{} where i.id == identities.key({}) select i.tag", t.ctor, t.key))),
+];
+
 #[test]
 fn an_insert_refuses_a_heap_page_of_another_kind_or_owner_as_a_read_does() {
     let ours = |t: Target, r| matches!(r, Replacement::Kind(k) if k == t.kinds.1);
@@ -223,7 +229,24 @@ fn an_insert_refuses_a_heap_page_of_another_kind_or_owner_as_a_read_does() {
             .chain(maps)
         {
             fixture.refuses(t, r, "insert", insert, !ours(t, r));
-            fixture.refuses(t, r, "scan", SCAN, false);
+            fixture.refuses(t, r, "scan", SCAN, !ours(t, r));
+        }
+    }
+}
+
+#[test]
+fn a_vacuum_and_an_index_read_blame_the_page_a_scan_blames() {
+    let ours = |t: Target, r| matches!(r, Replacement::Kind(k) if k == t.kinds.1);
+    let fixture = Fixture::new();
+    for t in TARGETS {
+        let maps = [PageKind::FreeSpaceMap, PageKind::VisibilityMap].map(Replacement::Kind);
+        for r in [Replacement::Kind(t.kinds.1), Replacement::Large]
+            .into_iter()
+            .chain(maps)
+        {
+            for (form, read) in READS {
+                fixture.refuses(t, r, form, read, !ours(t, r));
+            }
         }
     }
 }

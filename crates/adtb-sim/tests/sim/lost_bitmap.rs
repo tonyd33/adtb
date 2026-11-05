@@ -857,7 +857,7 @@ fn a_page_vacuum_frees_and_another_heap_reuses_under_a_reader_is_not_refused() {
         heap.scan_pages(pager, &listing, |_| found += 1).unwrap();
         assert_eq!(0, found);
         let named = || Ok(index.probe(pager, &key).unwrap().contains(&held[0]));
-        let at = (heap.id(), held[0].tid);
+        let at = (&*heap, held[0].tid);
         let owner = index.tree().owner();
         refuse_named::<_, adtb::exec::Error>(pager, at, owner, named).expect("not refused");
         assert_eq!(BTreeSet::new(), pager.quarantined());

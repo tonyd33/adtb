@@ -370,3 +370,161 @@ fn verify_names_the_slot_table_fault_of_a_page_relabelled_to_the_other_heap_kind
     assert_eq!(data_fault, heap.check(&pager).unwrap());
     assert_eq!(chunk_fault, large.check(&pager).unwrap());
 }
+
+#[test]
+fn a_refusal_rechecks_an_entry_whose_leaf_changed_under_its_check() {
+    for restored in [false, true] {
+        let scratch = Scratch::new("heap-dir", "recheck");
+        let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
+        let pager = Arc::new(Pager::create(rt.clone(), &Options::new("dir.adt")).unwrap());
+        let s = space(&pager, 1);
+        let leaf = s.root();
+        let (page, category) = entry(&pager.read(leaf).unwrap(), 0);
+        let vm = pager.allocate(1, PageKind::VisibilityMap, 7).unwrap();
+        pager
+            .update(&[leaf], |p| set_word(p[0], 0, vm, category, false))
+            .unwrap();
+        let held = pager.exclusive(vm).unwrap();
+        let (sent, answer) = mpsc::channel();
+        let p = pager.clone();
+        rt.spawn("refusal", move || {
+            sent.send(s.refuse_misnamed(&p, vm)).unwrap();
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        let now = if restored { page } else { vm };
+        pager
+            .update(&[leaf], |p| set_word(p[0], 0, now, category, true))
+            .unwrap();
+        drop(held);
+        let want = if restored { Ok(false) } else { refused(leaf) };
+        let got = answer.recv_timeout(Duration::from_secs(3));
+        assert_eq!(Ok(want), got.map_err(|e| format!("{e:?}")), "{restored}");
+    }
+}
+
+#[test]
+fn a_refusal_takes_the_position_from_the_path_past_a_short_leaf() {
+    let scratch = Scratch::new("heap-dir", "short-leaf");
+    let pager = pager(&scratch);
+    let s = space(&pager, 4);
+    let root = pager.read(s.root()).unwrap().to_vec();
+    let (first, second) = (entry(&root, 0).0, entry(&root, 1).0);
+    let named = entry(&pager.read(second).unwrap(), 0).0;
+    assert_eq!(s.pages(&pager).unwrap()[2], named);
+    put_u16(&pager, first, COUNT, 1);
+    put_u16(&pager, named, 14, PageKind::HeapFixed as u16);
+    assert!(!page::is_heap(&pager.read(named).unwrap()));
+    assert_eq!(refused(named), s.refuse_misnamed(&pager, named));
+}
+
+#[test]
+fn a_scan_refuses_the_leaf_naming_its_page_at_a_second_position() {
+    let scratch = Scratch::new("heap-dir", "twice");
+    let pager = pager(&scratch);
+    let large = LargeStore::create(&pager, 107).unwrap();
+    let heap = Heap::create(&pager, 7, vec![FieldType::Scalar(Scalar::I64)], large).unwrap();
+    let data = Pid(heap.insert(&pager, 1, &[Value::I64(1)]).unwrap().page());
+    let root = heap.root();
+    put_u16(&pager, root, COUNT, 2);
+    pager
+        .update(&[root], |p| set_word(p[0], 1, data, 0, false))
+        .unwrap();
+    assert_eq!(refused(root), heap.scan(&pager, |_| {}));
+}
+
+#[test]
+fn a_root_entry_past_the_last_position_refuses_the_root_within_a_bound() {
+    let scratch = Scratch::new("heap-dir", "past-positions");
+    let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
+    let mut options = Options::new("dir.adt");
+    options.page_size = 32768;
+    let pager = Arc::new(Pager::create(rt.clone(), &options).unwrap());
+    let s = Space::create(&pager, 7, 2048, None).unwrap();
+    s.append(&pager, s.root(), Arrangement::Slotted, 1).unwrap();
+    let data = s.pages(&pager).unwrap()[0];
+    let fresh = || pager.allocate(1, PageKind::FreeSpaceMap, 7).unwrap();
+    let (inner, leaf, empty) = (fresh(), fresh(), fresh());
+    let node = |pid, level: u16, entries: &[Pid]| {
+        let n = u16::try_from(entries.len()).unwrap();
+        for (at, v) in [(LEVEL, level), (CAPACITY, 2048), (COUNT, n)] {
+            put_u16(&pager, pid, at, v);
+        }
+        pager
+            .update(&[pid], |p| {
+                entries
+                    .iter()
+                    .enumerate()
+                    .for_each(|(i, &e)| set_word(p[0], i, e, 0, false));
+            })
+            .unwrap();
+    };
+    node(leaf, 0, &[data]);
+    node(inner, 1, &[leaf]);
+    node(empty, 1, &[]);
+    let mut root = vec![empty; 1025];
+    (root[0], root[1024]) = (inner, inner);
+    node(s.root(), 2, &root);
+    let p = pager.clone();
+    assert_eq!(refused(s.root()), within(&rt, move || s.pages(&p)));
+}
+
+/// Push `path::function` for each function under `dir` that records damage or builds a
+/// `Damage`, skipping the storage layer and test files.
+fn damage_sites(src: &std::path::Path, dir: &std::path::Path, out: &mut BTreeSet<String>) {
+    for e in std::fs::read_dir(dir).expect("a source directory is readable") {
+        let path = e.expect("a directory entry").path();
+        let at = path
+            .strip_prefix(src)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        if path.is_dir() {
+            if at != "storage" {
+                damage_sites(src, &path, out);
+            }
+            continue;
+        }
+        if at.ends_with("tests.rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("a source is readable");
+        let mut function = String::new();
+        for line in text.lines() {
+            if let Some((_, rest)) = line.split_once("fn ") {
+                let name = rest
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .next();
+                function = name.unwrap_or_default().to_owned();
+            }
+            let builds = ["(", "damage: "].iter().any(|before| {
+                ["Damage::", "storage::Damage::", "crate::storage::Damage::"]
+                    .iter()
+                    .any(|d| line.contains(&format!("{before}{d}")))
+            });
+            if line.contains(".damage(") || builds {
+                out.insert(format!("{at}::{function}"));
+            }
+        }
+    }
+}
+
+#[test]
+fn damage_is_recorded_outside_storage_only_by_these_functions() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut found = BTreeSet::new();
+    damage_sites(&src, &src, &mut found);
+    let expected = [
+        "api/error.rs::a_damaged_page_met_writing_catalog_rows_is_a_storage_failure",
+        "api/mod.rs::damage_page",
+        "api/verify.rs::damage_kept_store",
+        "heap/dir.rs::refuse",
+        "heap/large.rs::chunks",
+        "heap/large.rs::read",
+        "heap/large.rs::update",
+        "heap/vm.rs::child",
+        "mvcc/clog.rs::read_role",
+        "write/sequence.rs::open",
+        "write/verify.rs::every_other_problem_is_a_finding",
+    ];
+    assert_eq!(BTreeSet::from(expected.map(String::from)), found);
+}

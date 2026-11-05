@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::runtime::Runtime;
 use crate::storage::{self, Damage, PageError, PageKind, Pager, Pid, Stopped};
 
@@ -139,8 +141,34 @@ fn stopped(fault: Fault) -> Stopped {
 #[derive(Default)]
 struct Walked {
     nodes: Vec<Pid>,
-    pages: Vec<Pid>,
+    entries: Vec<Entry>,
     vm: Option<Pid>,
+}
+
+impl Walked {
+    fn pages(&self) -> impl Iterator<Item = Pid> + '_ {
+        self.entries.iter().map(|e| e.page).filter(|&p| p != HOLE)
+    }
+}
+
+/// A level-0 entry: its position, the directory page holding it, its index there and the page it
+/// names.
+#[derive(Clone, Copy)]
+struct Entry {
+    position: u32,
+    leaf: Pid,
+    i: usize,
+    page: Pid,
+}
+
+/// What [`Space::misnamed`] finds of a page an entry names.
+enum Named {
+    /// The page is a page of the space at the entry's position.
+    Held,
+    /// The entry changed while it was checked.
+    Changed,
+    /// The page to record as damaged.
+    Blamed(Pid),
 }
 
 /// Returns the free space category of a page with `free` bytes free.
@@ -387,7 +415,8 @@ impl Space {
     }
 
     /// Returns the directory pages, the root first, and the pages of the space in position order,
-    /// failing with what `fault` makes of a directory page that cannot be read.
+    /// failing with what `fault` makes of a directory page that cannot be read or has an entry at a
+    /// position of [`POSITIONS`] or more.
     fn walk<R: Runtime, E>(
         &self,
         pager: &Pager<R>,
@@ -397,8 +426,8 @@ impl Space {
         let Some(root) = self.root else {
             return Ok(out);
         };
-        let mut todo = vec![(root, None)];
-        while let Some((pid, parent)) = todo.pop() {
+        let mut todo = vec![(root, None, 0)];
+        while let Some((pid, parent, base)) = todo.pop() {
             let node = self
                 .read(&mut Stage::new(), pager, pid, parent)
                 .map_err(&fault)?;
@@ -406,19 +435,96 @@ impl Space {
             if parent.is_none() {
                 out.vm = vm_root(&node);
             }
-            let entries = (0..count(&node)).map(|i| entry(&node, i).0);
+            let entries = (0..count(&node)).map(|i| (i, entry(&node, i).0));
+            let span = capacity(&node).pow(level(&node));
+            let at = |i: usize| base + i as u64 * span;
+            if count(&node)
+                .checked_sub(1)
+                .is_some_and(|i| at(i) >= POSITIONS)
+            {
+                return Err(fault(Fault::Shape(pid)));
+            }
             if level(&node) == 0 {
-                out.pages.extend(entries.filter(|&p| p != HOLE));
+                out.entries.extend(entries.map(|(i, page)| Entry {
+                    position: at(i) as u32,
+                    leaf: pid,
+                    i,
+                    page,
+                }));
             } else {
-                todo.extend(entries.rev().map(|c| (c, parent_of(pid, &node))));
+                todo.extend(
+                    entries
+                        .rev()
+                        .map(|(i, c)| (c, parent_of(pid, &node), at(i))),
+                );
             }
         }
         Ok(out)
     }
 
-    /// Returns every page of the space, in position order.
+    /// Returns every page of the space, in position order. A page named at two positions is
+    /// refused as [`Space::refuse_misnamed`] refuses it, or by its second entry's directory page
+    /// when each entry finds it held.
+    ///
+    /// Preconditions: the caller holds no page latch.
     pub fn pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
-        Ok(self.walk(pager, |f| self.fail(pager, f))?.pages)
+        loop {
+            let walked = self.walk(pager, |f| self.fail(pager, f))?;
+            let mut seen = BTreeSet::new();
+            let Some(twice) = walked.pages().find(|&p| !seen.insert(p)) else {
+                return Ok(walked.pages().collect());
+            };
+            if self
+                .refuse_entries(pager, &walked.entries, twice)?
+                .is_some()
+            {
+                let mut named = walked.entries.iter().filter(|e| e.page == twice);
+                let second = named.nth(1).expect("a page named twice has a second entry");
+                return Err(self.refuse(&mut Stage::new(), pager, second.leaf));
+            }
+        }
+    }
+
+    /// Refuse page `pid`, read as no page of the space, at each position a level-0 entry names it
+    /// where it is not a page of the space: record as damaged `pid` when its header claims that
+    /// position, the directory page holding the entry otherwise. Returns whether an entry names
+    /// `pid`, from a walk whose every entry naming `pid` was checked unchanged.
+    ///
+    /// Retry while an entry changes under its check. A try holds one latch at a time and none
+    /// across tries.
+    ///
+    /// Preconditions: the caller holds no page latch.
+    pub fn refuse_misnamed<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        pid: Pid,
+    ) -> Result<bool, PageError> {
+        loop {
+            let entries = self.walk(pager, |f| self.fail(pager, f))?.entries;
+            if let Some(named) = self.refuse_entries(pager, &entries, pid)? {
+                return Ok(named);
+            }
+        }
+    }
+
+    /// Refuse `pid` at each of `entries` naming it as [`Space::refuse_misnamed`] does. Returns
+    /// whether one names it, or `None` when one changed under its check.
+    fn refuse_entries<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        entries: &[Entry],
+        pid: Pid,
+    ) -> Result<Option<bool>, PageError> {
+        let mut named = false;
+        for e in entries.iter().filter(|e| e.page == pid) {
+            named = true;
+            match self.misnamed(pager, e.leaf, e.i, pid, e.position)? {
+                Named::Held => {}
+                Named::Changed => return Ok(None),
+                Named::Blamed(bad) => return Err(self.refuse(&mut Stage::new(), pager, bad)),
+            }
+        }
+        Ok(Some(named))
     }
 
     /// Returns every directory page of the space, then every page of it, then every page of the
@@ -430,8 +536,9 @@ impl Space {
         fault: impl Fn(Fault) -> E,
     ) -> Result<Vec<Pid>, E> {
         let walked = self.walk(pager, &fault)?;
+        let pages: Vec<Pid> = walked.pages().collect();
         let mut out = walked.nodes;
-        out.extend(walked.pages);
+        out.extend(pages);
         if let Some(map) = walked.vm {
             let stage = Stage::new();
             let read = |pid, parent| self.map_page(&stage, pager, pid, parent).map_err(&fault);
@@ -575,7 +682,9 @@ impl Space {
                     }
                 } else if self.holds(pager, child, position as u32)? {
                     return Ok(Some(child));
-                } else if let Some(bad) = self.misnamed(pager, here, i, child, position as u32)? {
+                } else if let Named::Blamed(bad) =
+                    self.misnamed(pager, here, i, child, position as u32)?
+                {
                     return Err(self.refuse(stage, pager, bad));
                 } else {
                     continue 'search;
@@ -605,10 +714,10 @@ impl Space {
             && page::position(page) == position
     }
 
-    /// Returns the page to refuse when entry `i` of level-0 directory page `leaf` names `pid` while
-    /// `pid` is not a page of the space at `position`: `pid` when its header claims that position,
-    /// `leaf` otherwise. Holds one latch at a time: `leaf` is read optimistically and validated
-    /// after `pid` is read under its shared latch.
+    /// Returns what entry `i` of level-0 directory page `leaf`, naming `pid` at `position`, finds:
+    /// [`Named::Blamed`] holds `pid` when its header claims that position, `leaf` otherwise. Holds
+    /// one latch at a time: `leaf` is read optimistically and validated after `pid` is read under
+    /// its shared latch.
     ///
     /// Precondition: `i` is below the most entries a directory page holds.
     fn misnamed<R: Runtime>(
@@ -618,18 +727,20 @@ impl Space {
         i: usize,
         pid: Pid,
         position: u32,
-    ) -> Result<Option<Pid>, PageError> {
+    ) -> Result<Named, PageError> {
         let seen = pager.optimistic(leaf)?;
         if !seen.read(|node| level(node) == 0 && i < count(node) && entry(node, i).0 == pid) {
-            return Ok(None);
+            return Ok(Named::Changed);
         }
         let page = pager.read(pid)?;
         let (held, claimed) = (self.at(&page, position), self.claims(&page, position));
         drop(page);
-        if held || !seen.validate() {
-            return Ok(None);
-        }
-        Ok(Some(if claimed { pid } else { leaf }))
+        Ok(match (held, seen.validate(), claimed) {
+            (true, _, _) => Named::Held,
+            (false, false, _) => Named::Changed,
+            (false, true, true) => Named::Blamed(pid),
+            (false, true, false) => Named::Blamed(leaf),
+        })
     }
 
     /// Set entry `i` of directory page `parent` to the greatest category and the touched mark of

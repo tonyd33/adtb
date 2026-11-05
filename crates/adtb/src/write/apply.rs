@@ -401,7 +401,7 @@ impl<R: Runtime> Stmt<'_, R> {
                     let heap = r.ctors[c as usize].heap;
                     let run = hot_run(pager, e.tid, &self.db.heaps[&heap])?;
                     if run.is_empty() {
-                        let at = (self.db.heaps[&heap].heap.id(), e.tid);
+                        let at = (&*self.db.heaps[&heap].heap, e.tid);
                         heap::refuse_named(pager, at, stored.index.tree().owner(), || {
                             let found = stored.index.probe(pager, &key)?;
                             Ok::<_, Error>(found.iter().any(|f| (f.ctor, f.tid) == (e.ctor, e.tid)))

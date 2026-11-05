@@ -1872,6 +1872,14 @@ fn a_valid_page_of_another_owner_or_lacking_the_slot_refuses_naming_its_holder()
     let (mut defects, mut table) = (Vec::new(), BTreeMap::<(Foreign, &str), usize>::new());
     for (o, object) in objects.iter().filter(|o| o.is_heap).enumerate() {
         let at = first(object);
+        let directory = file.chunks(PAGE).position(|p| {
+            storage::kind(p) == PageKind::FreeSpaceMap as u16 && storage::owner(p) == object.owner
+        });
+        let directory = Pid(directory.expect("the heap's directory root") as u64);
+        let blamed = match object.mark {
+            Quarantine::Database => Pid(at as u64),
+            _ => directory,
+        };
         let other = |o: &&RotObject| o.is_heap && o.owner != object.owner && o.of_rows;
         let donor = objects.iter().find(other).map(first).unwrap_or(leaf);
         for (f, foreign) in FOREIGN.into_iter().enumerate() {
@@ -1892,7 +1900,7 @@ fn a_valid_page_of_another_owner_or_lacking_the_slot_refuses_naming_its_holder()
                     (Foreign::Emptied, "lookup") => objects.iter().find(probed).expect("its index"),
                     _ => object,
                 };
-                let page = (foreign != Foreign::Emptied).then_some(Pid(at as u64));
+                let page = (foreign != Foreign::Emptied).then_some(blamed);
                 let (image, owned) = (image.clone(), holder.clone());
                 let answer = rot_bounded(ROT_CASE_LIMIT, move || {
                     rot_cross(image, &owned, &crossing, true, true, page)

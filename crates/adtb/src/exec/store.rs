@@ -508,7 +508,7 @@ impl<R: Runtime> Store<R> {
                 continue;
             };
             let Some(v) = stored.heap.read(&self.pager, e.tid)? else {
-                let at = (stored.heap.id(), e.tid);
+                let at = (&*stored.heap, e.tid);
                 refuse_named(&self.pager, at, ix.index.tree().owner(), || {
                     let found = past.probe(&self.pager, key).map_err(index_error)?;
                     Ok::<_, Error>(found.iter().any(|f| (f.ctor, f.tid) == (e.ctor, e.tid)))
@@ -654,7 +654,7 @@ impl<R: Runtime> Store<R> {
             && let Some((index, entry)) = &at.entry
         {
             let ix = &self.index(*index).index;
-            refuse_named(&self.pager, (heap.id(), tid), ix.tree().owner(), || {
+            refuse_named(&self.pager, (heap, tid), ix.tree().owner(), || {
                 let found = ix.probe(&self.pager, &entry.key).map_err(index_error)?;
                 Ok::<_, Error>(
                     found
