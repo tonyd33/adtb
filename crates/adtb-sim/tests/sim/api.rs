@@ -123,27 +123,6 @@ fn results_carry_their_type() {
 }
 
 #[test]
-fn a_reopened_file_holds_what_was_committed() {
-    let mut sim = Sim::new(1, Config::default());
-    run(&mut sim, |rt| {
-        let db = open(&rt);
-        sign_up(&db, "ann");
-        sign_up(&db, "bob");
-        db.close().expect("close");
-    });
-    run(&mut sim, |rt| {
-        let db = open(&rt);
-        assert_eq!(vec![r#""ann""#, r#""bob""#], query(&db, NAMES));
-        sign_up(&db, "cat");
-        assert_eq!(
-            3,
-            query(&db, NAMES).len(),
-            "a new key is drawn past the old ones"
-        );
-    });
-}
-
-#[test]
 fn a_process_that_exits_without_closing_loses_nothing_committed() {
     let mut sim = Sim::new(2, Config::default());
     run(&mut sim, |rt| {
@@ -154,52 +133,6 @@ fn a_process_that_exits_without_closing_loses_nothing_committed() {
     run(&mut sim, |rt| {
         let db = open(&rt);
         assert_eq!(vec![r#""ann""#], query(&db, NAMES));
-    });
-}
-
-#[test]
-fn a_shipped_log_that_differs_from_the_file_diverges() {
-    let mut sim = Sim::new(3, Config::default());
-    run(&mut sim, |rt| drop(open(&rt)));
-    run(&mut sim, |rt| {
-        let other = Log::new([SHOP.replace("body: Text", "text: Text")]);
-        let got = Database::open_in(rt, "app.adt", &other, &options(4));
-        assert!(
-            matches!(got, Err(OpenError::Diverged { version: 1 })),
-            "{got:?}"
-        );
-    });
-}
-
-#[test]
-fn a_shorter_shipped_log_opens_at_the_file_version() {
-    let mut sim = Sim::new(4, Config::default());
-    run(&mut sim, |rt| sign_up(&open(&rt), "ann"));
-    run(&mut sim, |rt| {
-        let db = Database::open_in(rt, "app.adt", &Log::default(), &options(4))
-            .expect("an empty log is a prefix of the file's");
-        assert_eq!(vec![r#""ann""#], query(&db, NAMES));
-    });
-}
-
-#[test]
-fn a_refused_first_migration_fails_open() {
-    once(5, |rt| {
-        let unindexed = SHOP.replace(
-            "where not exists p in payments where p.customer == key c",
-            "where not exists n in notes where n.body == c.name",
-        );
-        let got = Database::open_in(rt, "app.adt", &Log::new([unindexed]), &options(4));
-        match got {
-            Err(OpenError::MigrationRefused {
-                version: 1,
-                reason:
-                    Error::Rejected {
-                        reason: RejectReason::SchemaRefused { detail, .. },
-                    },
-            }) => assert!(detail.contains("shop::paid"), "{detail}"),
-            other => panic!("not refused: {other:?}"),
-        }
     });
 }
 
@@ -281,50 +214,6 @@ insert notes { id: notes.key(1), body: "b" }"#,
 }
 
 #[test]
-fn a_key_violation_names_the_key_in_the_textual_syntax() {
-    once(0, |rt| {
-        let db = open(&rt);
-        let one = r#"insert notes { id: notes.key(1), body: "a" }"#;
-        db.query_text(one, &[], &CallOptions::default())
-            .expect("the first insert");
-        let err = db
-            .query_text(one, &[], &CallOptions::default())
-            .expect_err("the key is held");
-        match reason(&err) {
-            RejectReason::KeyViolation { relation, key } => {
-                assert_eq!("shop::notes", relation);
-                assert_eq!("notes.key(1)", key);
-            }
-            other => panic!("{other:?}"),
-        }
-    });
-}
-
-#[test]
-fn a_violated_constraint_is_rejected_naming_it_with_its_rows() {
-    once(0, |rt| {
-        let db = open(&rt);
-        let err = db
-            .query_text(
-                r#"insert customers { name: "ann" }"#,
-                &[],
-                &CallOptions::default(),
-            )
-            .expect_err("a customer without a payment");
-        match reason(&err) {
-            RejectReason::Violated {
-                constraint, report, ..
-            } => {
-                assert_eq!("shop::paid", constraint);
-                assert_eq!(1, report.len(), "{report:?}");
-            }
-            other => panic!("{other:?}"),
-        }
-        assert!(query(&db, NAMES).is_empty());
-    });
-}
-
-#[test]
 fn a_fail_in_a_block_is_a_user_error() {
     once(0, |rt| {
         let db = open(&rt);
@@ -391,158 +280,6 @@ fn rollback_and_drop_discard_a_transaction() {
             .expect("the sign up");
         drop(t);
         assert!(query(&db, NAMES).is_empty());
-    });
-}
-
-#[test]
-fn a_failing_call_undoes_all_its_items_and_leaves_the_transaction_open() {
-    once(0, |rt| {
-        let db = open(&rt);
-        let mut t = db.begin(&TxnOptions::default()).expect("begin");
-        t.query_text(
-            r#"insert notes { body: "kept" }"#,
-            &[],
-            &TxnCallOptions::default(),
-        )
-        .expect("the first call");
-        let err = t
-            .query_text(
-                r#"insert notes { body: "undone" }
-insert notes { id: notes.key(1), body: "collides" }"#,
-                &[],
-                &TxnCallOptions::default(),
-            )
-            .expect_err("the second item collides");
-        assert!(
-            matches!(reason(&err), RejectReason::KeyViolation { .. }),
-            "{err:?}"
-        );
-        assert_eq!(
-            vec![r#""kept""#],
-            in_txn(&mut t, "from n in notes select n.body")
-        );
-        t.query_text(
-            r#"insert notes { body: "later" }"#,
-            &[],
-            &TxnCallOptions::default(),
-        )
-        .expect("a later call");
-        t.commit(None).expect("commit");
-        assert_eq!(
-            vec![r#""kept""#, r#""later""#],
-            query(&db, "from n in notes select n.body")
-        );
-    });
-}
-
-#[test]
-fn constraints_hold_after_every_call_of_an_interactive_transaction() {
-    once(0, |rt| {
-        let db = open(&rt);
-        let mut t = db.begin(&TxnOptions::default()).expect("begin");
-        let err = t
-            .query_text(
-                "insert customers { name: n }",
-                &name("ann"),
-                &TxnCallOptions::default(),
-            )
-            .expect_err("a customer without a payment");
-        assert!(
-            matches!(reason(&err), RejectReason::Violated { constraint, .. } if constraint == "shop::paid"),
-            "{err:?}"
-        );
-        t.query_text(SIGN_UP, &name("ann"), &TxnCallOptions::default())
-            .expect("one call inserting both");
-        t.commit(None).expect("commit");
-        assert_eq!(vec![r#""ann""#], query(&db, NAMES));
-    });
-}
-
-#[test]
-fn a_read_only_transaction_refuses_writes() {
-    once(0, |rt| {
-        let db = open(&rt);
-        let opts = TxnOptions {
-            read_only: true,
-            ..TxnOptions::default()
-        };
-        let mut t = db.begin(&opts).expect("begin");
-        assert!(in_txn(&mut t, NAMES).is_empty());
-        let got = t.query_text(
-            r#"insert notes { body: "a" }"#,
-            &[],
-            &TxnCallOptions::default(),
-        );
-        assert!(got.as_ref().is_err_and(is_invalid), "{got:?}");
-        t.commit(None).expect("commit");
-    });
-}
-
-#[test]
-fn a_read_only_transaction_refuses_a_fail_as_a_write() {
-    once(0, |rt| {
-        let db = open(&rt);
-        let opts = TxnOptions {
-            read_only: true,
-            ..TxnOptions::default()
-        };
-        let mut t = db.begin(&opts).expect("begin");
-        let got = t.query_text(
-            "if count(n for n in notes) == 0 then fail \"empty\" else skip",
-            &[],
-            &TxnCallOptions::default(),
-        );
-        let refused = Error::Rejected {
-            reason: RejectReason::Invalid {
-                detail: "a read-only transaction does not write".into(),
-            },
-        };
-        assert_eq!(Some(&refused), got.as_ref().err());
-        t.commit(None).expect("commit");
-    });
-}
-
-#[test]
-fn a_deferrable_read_only_transaction_reads_and_commits() {
-    once(0, |rt| {
-        let db = open(&rt);
-        sign_up(&db, "ann");
-        let opts = TxnOptions {
-            read_only: true,
-            deferrable: true,
-            ..TxnOptions::default()
-        };
-        let mut t = db.begin(&opts).expect("a deferrable transaction begins");
-        assert_eq!(vec![r#""ann""#], in_txn(&mut t, NAMES));
-        t.commit(None).expect("commit");
-    });
-}
-
-#[test]
-fn a_deferrable_block_runs_as_ad_hoc_text() {
-    once(0, |rt| {
-        let db = open(&rt);
-        sign_up(&db, "ann");
-        assert_eq!(
-            vec!["1"],
-            query(
-                &db,
-                "transact read_only deferrable\n  return count(c for c in customers)"
-            )
-        );
-    });
-}
-
-#[test]
-fn only_a_read_only_transaction_is_deferrable() {
-    once(0, |rt| {
-        let db = open(&rt);
-        let opts = TxnOptions {
-            deferrable: true,
-            ..TxnOptions::default()
-        };
-        let got = db.begin(&opts).map(drop);
-        assert!(got.as_ref().is_err_and(is_invalid), "{got:?}");
     });
 }
 
@@ -1109,53 +846,6 @@ fn a_migration_declaring_a_constructor_that_can_never_fit_is_refused_naming_it()
                 }) => assert!(detail.contains("wides.Wide"), "seed {seed}: {detail}"),
                 other => panic!("seed {seed}: {n} fields of {ty} are not refused: {other:?}"),
             }
-        });
-    }
-}
-
-#[test]
-fn an_explicit_maximum_sequence_key_commits_and_exhaustion_survives_reopen() {
-    let mut sim = Sim::new(0, Config::default());
-    run(&mut sim, |rt| {
-        let db = open(&rt);
-        db.query_text(
-            "insert notes { id: notes.key(9223372036854775807), body: \"maximum\" }",
-            &[],
-            &CallOptions::default(),
-        )
-        .expect("an explicit maximum key commits");
-        db.close().expect("close");
-    });
-    for phase in 0..2 {
-        run(&mut sim, |rt| {
-            let db = open(&rt);
-            assert_eq!(
-                vec!["9223372036854775807".to_owned()],
-                query(&db, "from n in notes select value(key n)"),
-                "phase {phase}"
-            );
-            let result = db.query_text(
-                "insert notes { body: \"generated\" }",
-                &[],
-                &CallOptions::default(),
-            );
-            match result {
-                Err(Error::Rejected {
-                    reason: RejectReason::Invalid { detail },
-                }) => {
-                    assert_eq!(
-                        "the generated counter exhausted its integer range", detail,
-                        "phase {phase}"
-                    );
-                }
-                other => panic!("phase {phase}: exhausted sequence returned {other:?}"),
-            }
-            assert_eq!(
-                vec!["\"maximum\"".to_owned()],
-                query(&db, "from n in notes select n.body"),
-                "phase {phase}: refused generation leaves the explicit maximum row"
-            );
-            db.close().expect("close");
         });
     }
 }

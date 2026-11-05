@@ -1,0 +1,5 @@
+seed 8
+use history
+
+error HistoryUnavailable { oldest: $first }
+  at commit Position { epoch: ($second).epoch, lsn: ($second).lsn + 1000000 } { from i in items select i.name }

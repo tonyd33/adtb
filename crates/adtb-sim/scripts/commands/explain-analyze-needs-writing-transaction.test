@@ -1,0 +1,8 @@
+use users
+
+begin read only ro
+
+in ro error Invalid { detail: "a read-only transaction does not write" }
+  explain analyze insert users { name: "cy" }
+
+rollback ro

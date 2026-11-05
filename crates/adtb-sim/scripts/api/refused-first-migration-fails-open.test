@@ -1,0 +1,19 @@
+seed 5
+
+migrate refused MigrationRefused { version: 1, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint shop::paid is not admitted: changes to shop::customers: index (body) in shop::notes is missing\nconstraint shop::paid is not admitted: changes to shop::notes: index (name) in shop::customers is missing" } } }
+  module shop
+  add module shop
+  add type Note = { id: Key notes, body: Text }
+  add relation notes : Note key id generate sequence
+  add type Customer = { id: Key customers, name: Text }
+  add relation customers : Customer key id generate sequence
+  add type Payment { id: Key payments, customer: Key customers }
+    = Card { last4: Text }
+    | Invoice { due: Text }
+  add relation payments : Payment
+    key id generate sequence
+    index (customer)
+  add constraint paid =
+    from c in customers
+    where not exists n in notes where n.body == c.name
+    select c

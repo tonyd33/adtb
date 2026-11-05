@@ -77,6 +77,7 @@ pub(super) fn ended<'a>(
     db: &'a Database<SimRuntime>,
     txns: &mut Txns<'a>,
     step: &Step,
+    positions: &mut BTreeMap<String, String>,
 ) -> Result<(), Differs> {
     let (got, want): (Result<(), Error>, _) = match &step.head {
         Head::Begin {
@@ -99,7 +100,25 @@ pub(super) fn ended<'a>(
             });
             (got, error)
         }
-        Head::Commit { name, error } => (taken(txns, step, name)?.commit(None).map(drop), error),
+        Head::Commit {
+            name,
+            position,
+            error,
+        } => {
+            if let Some(at) = position.as_ref().filter(|at| positions.contains_key(*at)) {
+                return Err(Differs::at(
+                    step,
+                    format!("position `{at}` is bound already"),
+                ));
+            }
+            let got = taken(txns, step, name)?.commit(None).map(|p| {
+                if let Some(at) = position {
+                    let shown = format!("{{ epoch: {}, lsn: {} }}", p.epoch, p.lsn);
+                    positions.insert(at.clone(), shown);
+                }
+            });
+            (got, error)
+        }
         Head::Rollback(name) => (taken(txns, step, name)?.rollback(), &None),
         _ => unreachable!("only begin, commit and rollback end"),
     };

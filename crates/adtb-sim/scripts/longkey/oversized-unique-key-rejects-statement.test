@@ -1,0 +1,45 @@
+seed 1
+use long
+
+migrate
+  module app
+  add module app
+  add type Item = { id: I64, text: Text }
+  add relation items : Item key id
+    unique (text)
+
+begin tx
+
+in tx run
+  insert items { id: 2, text: "before" }
+
+in tx error KeyTooLarge { relation: "app::items", ctor: "Item", index: "unique (text)", size: 20002, limit: 1607 }
+  (insert items { id: 0, text: "small" }, insert items { id: 1, text: long::x20000() })
+
+# A key of exactly the limit fits.
+in tx run
+  insert items { id: 3, text: long::x1605() }
+
+in tx error KeyTooLarge { relation: "app::items", ctor: "Item", index: "unique (text)", size: 1608, limit: 1607 }
+  insert items { id: 4, text: long::x1605() ++ "x" }
+
+in tx run
+  delete i in items where i.id == 3
+
+in tx query
+  from i in items select i.text
+----
+"before"
+
+in tx run
+  insert items { id: 1, text: "usable" }
+
+commit tx
+
+reopen
+
+query rowsort
+  from i in items select i.text
+----
+"before"
+"usable"

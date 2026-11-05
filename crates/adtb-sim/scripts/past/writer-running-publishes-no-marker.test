@@ -1,0 +1,42 @@
+seed 28
+use stock
+
+run
+  set setting RetentionWindow = { length: 1h }
+
+begin w
+
+in w run
+  insert items.Closed { id: items.key(1), name: "ann" }
+
+commit w position first
+
+begin before
+
+begin w
+
+in w run
+  insert items.Closed { id: items.key(2), name: "bo" }
+
+commit w position second
+
+query
+  at commit $second { from i in items select i.name }
+----
+"ann"
+
+# The commit follows the reader's snapshot.
+in before error HistoryUnavailable { oldest: $first }
+  at commit $second { from i in items select i.name }
+
+query
+  from s in sys::safe_snapshots select s.position == $first
+----
+True
+
+query
+  count(s for s in sys::safe_snapshots)
+----
+1
+
+rollback before

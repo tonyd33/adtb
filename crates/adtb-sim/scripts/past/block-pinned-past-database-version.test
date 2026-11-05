@@ -1,0 +1,12 @@
+seed 17
+use history
+
+# Migrations past the database's version 1, which no open applies.
+log
+  module stock
+  rename field Item.Open.qty to count
+  module stock
+  rename field Item.Open.count to qty
+
+error Invalid { detail: "an `at` block pinned at version 3, after the database's version 1 does not run in this engine yet" }
+  at commit $first pins 3 { from i in items select i.name }

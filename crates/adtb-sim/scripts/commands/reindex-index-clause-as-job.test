@@ -1,0 +1,11 @@
+use users
+
+command
+  reindex identities index (user) in Google offline
+----
+{ job: jobs.key(1) }
+
+query
+  from g in identities.Google where g.user == users.key(2) select g.gid
+----
+"g-bo"

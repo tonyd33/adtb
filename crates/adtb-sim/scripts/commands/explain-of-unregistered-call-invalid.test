@@ -1,0 +1,4 @@
+use users
+
+error Invalid { detail: "bundle `web-2` is not registered" }
+  explain web-2::names()

@@ -11,9 +11,8 @@
 //! - `reopen [refused VALUE]`: the file reopened with the same log.
 //! - `log`: the body's migrations appended to the log the next open applies.
 //! - `bundle HEADER [use NAME] [refused VALUE]`: the bundle file of `HEADER` and the body, or
-//!   of `scripts/fixtures/NAME.bundle`, registered at the next open; `pins N` with no hash
-//!   gains the hash of the first N migrations of that open's log; with no HEADER the file has
-//!   none. With `refused`, the file is refused with VALUE and not registered. A script opens
+//!   of `scripts/fixtures/NAME.bundle`, registered at the next open; with no HEADER the file
+//!   has none. With `refused`, the file is refused with VALUE and not registered. A script opens
 //!   the file after each bundle.
 //! - `call NAME [ORDINAL [committed] [rowsort]] [error VALUE]`: bind NAME and call ORDINAL with
 //!   the value of each body line, a query, as an argument. The rows after `----` are the
@@ -30,8 +29,12 @@
 //! - `register HEADER [use NAME] [error VALUE]`: the bundle file `bundle` states, registered
 //!   now.
 //! - `run`, `query [rowsort]`: as in a conformance script.
+//! - `command [rowsort]`: the body, a command or other text, one call in process, its one result
+//!   compared with the rows as a `query`'s.
 //! - `error VALUE`: as in a conformance script, the last statement refused with exactly the
 //!   reason VALUE in textual syntax.
+//! - `adhoc error VALUE`: the body, one ad hoc call in process committing on its own, refused
+//!   with exactly VALUE.
 //! - `as ROLE` before `run`, `query`, `error`, `call`, `grant`, `revoke` or `register`: the step
 //!   acts through a session of ROLE, a server's own path. A `run`, `query` or `error` body is
 //!   then one ad hoc call, refused as a whole, and a `call` binds through the session. Without
@@ -40,12 +43,17 @@
 //!   `error` takes only a refusal at the submit.
 //! - `drop role NAME [error VALUE]`: the role dropped.
 //! - `loose NAME`: the body, registration NAME with no bundle file, registered at the next open.
-//! - `begin [read only] [deferrable] NAME [error VALUE]`, `commit NAME [error VALUE]`,
-//!   `rollback NAME`: interactive transaction NAME; one open at the next open differs.
+//! - `begin [read only] [deferrable] NAME [error VALUE]`, `commit NAME [position P] [error
+//!   VALUE]`, `rollback NAME`: interactive transaction NAME; one open at the next open differs.
+//!   `$P` in a later body or compared value stands for the position the commit took, in textual
+//!   syntax; a second binding of P differs.
 //! - `in NAME` before `run`, `query`, `error` or a `call` with an ordinal: one call of
 //!   transaction NAME; `committed` states a registered transaction committing with it.
 //! - `assert VALUE` before `run`, `query`, `error`, `call` or `begin`, after any `as`: the call
 //!   or transaction runs for principal VALUE. With `in` or `assert` a body is one call.
+//!
+//! `pins N` with no hash in a header or body gains the hash of the first N migrations of the log:
+//! of that open's in a bundle file, else of the script's, each `log` step's included.
 //!
 //! An open refused with VALUE, the open refusal in textual syntax, leaves the file closed. A
 //! refusal `MigrationRefused` of version V leaves the log at its first V - 1 migrations. Any
@@ -199,6 +207,26 @@ fn registered() {
 #[test]
 fn registration() {
     run(&root().join("registration"));
+}
+
+#[test]
+fn commands() {
+    run(&root().join("commands"));
+}
+
+#[test]
+fn api() {
+    run(&root().join("api"));
+}
+
+#[test]
+fn past() {
+    run(&root().join("past"));
+}
+
+#[test]
+fn longkey() {
+    run(&root().join("longkey"));
 }
 
 /// Run the scripts `ADTB_SCRIPTS` names. Does nothing when it is unset.

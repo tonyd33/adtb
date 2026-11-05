@@ -1,0 +1,18 @@
+use paid-shop
+
+begin t
+
+in t error Violated { constraint: "shop::paid", report: 1 rows, redacted: 0 }
+  insert customers { name: "ann" }
+
+in t run
+  transact
+    let c = insert customers { name: "ann" }
+    insert payments.Card { customer: key c, last4: "4242" }
+
+commit t
+
+query
+  from c in customers select c.name
+----
+"ann"

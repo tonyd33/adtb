@@ -1,0 +1,23 @@
+seed 9
+use long
+
+migrate
+  module app
+  add module app
+  add type Item = { id: I64, text: Text }
+  add relation items : Item key id
+    index (1 / id)
+
+begin tx
+
+in tx error Faulted { fault: DivisionByZero }
+  insert items { id: 0, text: "fault" }
+
+in tx query
+  from i in items select i
+----
+
+in tx run
+  insert items { id: 1, text: "usable" }
+
+commit tx

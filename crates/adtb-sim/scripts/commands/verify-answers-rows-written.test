@@ -1,0 +1,13 @@
+use users
+
+command
+  verify
+----
+
+command
+  verify users
+----
+
+query
+  from f in sys::verify_findings select f
+----

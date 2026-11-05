@@ -1,0 +1,4 @@
+use stock
+
+adhoc
+  from i in items select i

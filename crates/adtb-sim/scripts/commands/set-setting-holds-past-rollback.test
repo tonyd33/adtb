@@ -1,0 +1,13 @@
+use users
+
+begin t
+
+in t run
+  set setting ConflictLog = { rows: 5 }
+
+rollback t
+
+query
+  count(s for s in catalog::settings)
+----
+1

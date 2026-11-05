@@ -1,0 +1,4 @@
+use users
+
+error Invalid { detail: "no `nothing` in scope" }
+  verify nothing

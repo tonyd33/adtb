@@ -1,12 +1,11 @@
-//! Commands of ad hoc text run in process: explain, explain analyze, vacuum, reindex and set
-//! setting.
+//! Commands of ad hoc text run in process: explain, explain analyze, vacuum and set setting.
 
 use adtb_simkit::api;
 
-use adtb::{Database, DynRows, Error, Log, RejectReason, TxnCallOptions, TxnOptions, Value};
+use adtb::{Database, DynRows, Log, TxnCallOptions, TxnOptions, Value};
 use adtb_sim::SimRuntime;
 
-use api::{failure, in_txn, is_invalid, once, options, printed, result, results, sorted};
+use api::{in_txn, once, options, printed, result, results, sorted};
 
 const SCHEMA: &str = r"module app
 add module app
@@ -144,14 +143,6 @@ fn explain_of_a_read_of_a_temp_relation_plans_it() {
 }
 
 #[test]
-fn explain_of_a_registered_call_names_a_registered_bundle() {
-    with_db(|db| {
-        let e = failure(db, "explain web-2::names()");
-        assert!(is_invalid(&e), "no bundle is registered: {e:?}");
-    });
-}
-
-#[test]
 fn explain_results_take_their_place_among_the_items() {
     with_db(|db| {
         let out = results(
@@ -233,25 +224,6 @@ fn explain_analyze_of_a_write_counts_no_actual_rows() {
 }
 
 #[test]
-fn explain_analyze_of_a_write_checks_its_constraints() {
-    with_db(|db| {
-        let e = failure(
-            db,
-            "explain analyze insert identities.Google { user: users.key(2), gid: \"again\" }",
-        );
-        assert!(
-            matches!(
-                e,
-                Error::Rejected {
-                    reason: RejectReason::Violated { .. } | RejectReason::KeyViolation { .. }
-                }
-            ),
-            "{e:?}"
-        );
-    });
-}
-
-#[test]
 fn explain_analyze_in_a_transaction_sees_its_writes_and_leaves_no_trace() {
     with_db(|db| {
         let mut t = db
@@ -279,26 +251,6 @@ fn explain_analyze_in_a_transaction_sees_its_writes_and_leaves_no_trace() {
         );
         t.commit(None).expect("the transaction commits");
         assert_eq!(vec![r#""ann""#, r#""bo""#, r#""cy""#], names(db));
-    });
-}
-
-#[test]
-fn explain_analyze_of_a_write_needs_a_transaction_that_writes() {
-    with_db(|db| {
-        let mut t = db
-            .begin(&TxnOptions {
-                read_only: true,
-                ..TxnOptions::default()
-            })
-            .expect("a transaction begins");
-        let e = t
-            .query_text(
-                r#"explain analyze insert users { name: "cy" }"#,
-                &[],
-                &TxnCallOptions::default(),
-            )
-            .expect_err("a read-only transaction does not write");
-        assert!(is_invalid(&e), "{e:?}");
     });
 }
 
@@ -334,80 +286,6 @@ fn vacuum_removes_versions_no_snapshot_sees() {
 }
 
 #[test]
-fn reindex_rebuilds_every_index_of_a_relation_as_a_job() {
-    with_db(|db| {
-        let got = printed(results(db, "reindex identities").remove(0));
-        assert_eq!(1, got.len(), "{got:?}");
-        assert!(got[0].starts_with("{ job: "), "{got:?}");
-    });
-}
-
-#[test]
-fn reindex_of_one_index_clause_rebuilds_it_as_a_job() {
-    with_db(|db| {
-        let got =
-            printed(results(db, "reindex identities index (user) in Google offline").remove(0));
-        assert_eq!(1, got.len(), "{got:?}");
-        assert!(got[0].starts_with("{ job: "), "{got:?}");
-        assert_eq!(
-            vec![r#""g-bo""#.to_owned()],
-            printed(result(
-                db,
-                "from g in identities.Google where g.user == users.key(2) select g.gid"
-            )),
-            "the rebuilt index finds the row"
-        );
-    });
-}
-
-#[test]
-fn reindex_of_an_undeclared_index_is_invalid() {
-    with_db(|db| {
-        let e = failure(db, "reindex identities index (gid) in Google");
-        assert!(is_invalid(&e), "{e:?}");
-    });
-}
-
-#[test]
-fn vacuum_of_a_temp_relation_is_invalid_and_names_it() {
-    with_db(|db| {
-        let e = failure(db, "temp relation t : User key id\nvacuum t");
-        assert!(is_invalid(&e), "{e:?}");
-        let shown = format!("{e:?}");
-        assert!(shown.contains("`t`") && shown.contains("temp"), "{shown}");
-    });
-}
-
-#[test]
-fn reindex_of_a_temp_relation_is_invalid_and_names_it() {
-    with_db(|db| {
-        let e = failure(db, "temp relation t : User key id\nreindex t");
-        assert!(is_invalid(&e), "{e:?}");
-        let shown = format!("{e:?}");
-        assert!(shown.contains("`t`") && shown.contains("temp"), "{shown}");
-    });
-}
-
-#[test]
-fn vacuum_of_a_temp_relation_an_earlier_statement_declared_is_invalid() {
-    with_db(|db| {
-        let mut t = db
-            .begin(&TxnOptions::default())
-            .expect("a transaction begins");
-        t.query_text(
-            "temp relation t : User key id",
-            &[],
-            &TxnCallOptions::default(),
-        )
-        .expect("the temp relation is declared");
-        let Err(e) = t.query_text("vacuum t", &[], &TxnCallOptions::default()) else {
-            panic!("`vacuum t` succeeds")
-        };
-        assert!(is_invalid(&e), "{e:?}");
-    });
-}
-
-#[test]
 fn set_setting_replaces_the_row_of_its_constructor() {
     with_db(|db| {
         let got = printed(results(db, "set setting RetryLimit = { retries: 3 }").remove(0));
@@ -427,55 +305,5 @@ fn set_setting_replaces_the_row_of_its_constructor() {
             .filter(|r| r != "0")
             .collect::<Vec<_>>()
         );
-    });
-}
-
-#[test]
-fn set_setting_holds_whatever_the_transaction_does() {
-    with_db(|db| {
-        let mut t = db
-            .begin(&TxnOptions::default())
-            .expect("a transaction begins");
-        t.query_text(
-            "set setting ConflictLog = { rows: 5 }",
-            &[],
-            &TxnCallOptions::default(),
-        )
-        .expect("the command runs");
-        t.rollback().expect("the transaction rolls back");
-        assert_eq!(
-            vec!["1".to_owned()],
-            printed(result(db, "(count(s for s in catalog::settings))")),
-            "a command is not undone by an abort"
-        );
-    });
-}
-
-#[test]
-fn a_command_the_engine_does_not_run_is_refused_whole() {
-    with_db(|db| {
-        for text in ["compact", "finalize upgrade"] {
-            let e = failure(db, text);
-            assert!(is_invalid(&e), "`{text}`: {e:?}");
-        }
-    });
-}
-
-#[test]
-fn verify_answers_the_rows_it_wrote() {
-    with_db(|db| {
-        assert_eq!(0, results(db, "verify").remove(0).count());
-        assert_eq!(0, results(db, "verify users").remove(0).count());
-        assert_eq!(
-            Vec::<String>::new(),
-            printed(result(db, "from f in sys::verify_findings select f"))
-        );
-    });
-}
-
-#[test]
-fn verify_of_a_name_that_is_no_relation_is_refused() {
-    with_db(|db| {
-        assert!(is_invalid(&failure(db, "verify nothing")));
     });
 }

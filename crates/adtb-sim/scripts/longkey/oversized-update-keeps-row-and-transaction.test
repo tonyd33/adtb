@@ -1,0 +1,35 @@
+seed 5
+use long
+
+migrate
+  module app
+  add module app
+  add type Item = { id: I64, text: Text }
+  add relation items : Item key id
+    index (text)
+
+begin tx
+
+in tx run
+  insert items { id: 1, text: "old" }
+
+in tx error KeyTooLarge { relation: "app::items", ctor: "Item", index: "index (text)", size: 20002, limit: 1607 }
+  update i in items set Item { i with text: long::x20000() }
+
+in tx query
+  from i in items select i.text
+----
+"old"
+
+in tx run
+  insert items { id: 2, text: "usable" }
+
+commit tx
+
+reopen
+
+query rowsort
+  from i in items select i.text
+----
+"old"
+"usable"

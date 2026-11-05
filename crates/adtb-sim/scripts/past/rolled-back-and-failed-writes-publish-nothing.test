@@ -1,0 +1,69 @@
+seed 26
+use stock
+
+run
+  set setting RetentionWindow = { length: 1h }
+
+begin w
+
+in w run
+  insert items.Closed { id: items.key(1), name: "ann" }
+
+commit w position first
+
+begin t
+
+in t run
+  insert items.Closed { id: items.key(2), name: "bo" }
+
+rollback t
+
+adhoc error KeyViolation { relation: "stock::items", key: "items.key(1)" }
+  insert items.Closed { id: items.key(1), name: "duplicate" }
+
+query
+  from c in sys::commit_times select c.position == $first
+----
+True
+
+query
+  count(c for c in sys::commit_times)
+----
+1
+
+query
+  from s in sys::safe_snapshots select s.position == $first
+----
+True
+
+query
+  count(s for s in sys::safe_snapshots)
+----
+1
+
+query
+  at commit $first { from i in items select i.name }
+----
+"ann"
+
+reopen
+
+query
+  from c in sys::commit_times select c.position == $first
+----
+True
+
+query
+  count(c for c in sys::commit_times)
+----
+1
+
+query
+  from s in sys::safe_snapshots select s.position == $first
+----
+True
+
+query
+  count(s for s in sys::safe_snapshots)
+----
+1

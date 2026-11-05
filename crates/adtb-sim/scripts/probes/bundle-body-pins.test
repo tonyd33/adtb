@@ -1,0 +1,12 @@
+use stock
+
+bundle reports-1.0 pins 2 edition "2026-10"
+  import stock
+  query names_then (c: Position) -> Set Text =
+    at commit c pins 2 { from i in items select i.name }
+
+migrate
+  module stock
+  rename field Item.Open.qty to count
+
+call reports-1.0

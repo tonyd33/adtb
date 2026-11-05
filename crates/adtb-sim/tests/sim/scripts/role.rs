@@ -246,20 +246,19 @@ pub(super) fn grant(
 pub(super) fn sent_step(step: &Step, got: Sent) -> Result<(), Differs> {
     match (&step.head, got) {
         (Head::Run, Sent::Done(_)) => Ok(()),
-        (Head::Run | Head::Query { .. }, Sent::Refused(e)) => {
+        (Head::Run | Head::Query { .. } | Head::Command { .. }, Sent::Refused(e)) => {
             Err(Differs::at(step, format!("refused with {}", refused(&e))))
         }
-        (Head::Run | Head::Query { .. }, Sent::Failed(e)) => Err(Differs::at(
-            step,
-            format!("fails at completion with {}", refused(&e)),
-        )),
-        (Head::Query { rowsort }, Sent::Done(mut results)) => {
+        (Head::Run | Head::Query { .. } | Head::Command { .. }, Sent::Failed(e)) => Err(
+            Differs::at(step, format!("fails at completion with {}", refused(&e))),
+        ),
+        (Head::Query { rowsort } | Head::Command { rowsort }, Sent::Done(mut results)) => {
             match (results.pop(), results.is_empty()) {
                 (Some((form, rows)), true) => call_rows(step, &form, rows, *rowsort),
                 _ => Err(Differs::at(step, "a query holds one statement")),
             }
         }
-        (Head::Error(reason), got) => {
+        (Head::Error(reason) | Head::Adhoc(reason), got) => {
             let want = rejected(reason);
             match got {
                 Sent::Refused(e) if refused(&e) == want => Ok(()),

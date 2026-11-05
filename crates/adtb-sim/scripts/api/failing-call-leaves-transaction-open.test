@@ -1,0 +1,26 @@
+use paid-shop
+
+begin t
+
+in t run
+  insert notes { body: "kept" }
+
+in t error KeyViolation { relation: "shop::notes", key: "notes.key(1)" }
+  insert notes { body: "undone" }
+  insert notes { id: notes.key(1), body: "collides" }
+
+in t query
+  from n in notes select n.body
+----
+"kept"
+
+in t run
+  insert notes { body: "later" }
+
+commit t
+
+query rowsort
+  from n in notes select n.body
+----
+"kept"
+"later"

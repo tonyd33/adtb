@@ -1,0 +1,4 @@
+use users
+
+error Violated { constraint: "app::identities.unique(user) in Google", report: 2 rows, redacted: 0 }
+  explain analyze insert identities.Google { user: users.key(2), gid: "again" }

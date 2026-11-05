@@ -1,0 +1,9 @@
+seed 4
+use history
+
+query
+  from p in (at commit $first { from i in items.Open select i }), q in items.Closed
+  where key p == key q
+  select { item: q.name, was: p.qty }
+----
+{ item: "bo", was: 5 }

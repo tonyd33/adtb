@@ -58,6 +58,7 @@ pub(super) enum Head {
     },
     Commit {
         name: String,
+        position: Option<String>,
         error: Option<String>,
     },
     Rollback(String),
@@ -65,14 +66,18 @@ pub(super) enum Head {
     Query {
         rowsort: bool,
     },
+    Command {
+        rowsort: bool,
+    },
     Error(String),
+    Adhoc(String),
     Failed(String),
 }
 
-const HEADS: [&str; 26] = [
+const HEADS: [&str; 28] = [
     "seed", "use", "option", "migrate", "reopen", "role", "log", "bundle", "call", "advance",
     "run", "query", "error", "as", "grant", "revoke", "register", "host", "loose", "begin",
-    "commit", "rollback", "in", "assert", "failed", "drop",
+    "commit", "rollback", "in", "assert", "failed", "drop", "command", "adhoc",
 ];
 
 /// One directive, with the file and line it was read from.
@@ -163,9 +168,14 @@ fn head(line: &str) -> Option<Head> {
             }
         }
         "commit" => {
-            let (name, error) = split(rest, " error ");
+            let (rest, error) = split(rest, " error ");
+            let (name, position) = split(rest, " position ");
             Head::Commit {
                 name: named(name)?,
+                position: match position {
+                    Some(p) => Some(named(&p)?),
+                    None => None,
+                },
                 error,
             }
         }
@@ -174,7 +184,11 @@ fn head(line: &str) -> Option<Head> {
         "query" if rest.is_empty() || rest == "rowsort" => Head::Query {
             rowsort: !rest.is_empty(),
         },
+        "command" if rest.is_empty() || rest == "rowsort" => Head::Command {
+            rowsort: !rest.is_empty(),
+        },
         "error" if !rest.is_empty() => Head::Error(rest.to_owned()),
+        "adhoc" => Head::Adhoc(rest.strip_prefix("error ")?.to_owned()),
         "failed" if !rest.is_empty() => Head::Failed(rest.to_owned()),
         _ => return None,
     })
@@ -301,7 +315,7 @@ fn value_end(text: &str) -> usize {
 fn takes_rows(line: &str) -> bool {
     let line = prefixed(line).1;
     let call = line.strip_prefix("call ").and_then(call);
-    line.split(' ').next() == Some("query")
+    ["query", "command"].contains(&line.split(' ').next().unwrap_or_default())
         || matches!(
             call,
             Some(Head::Call {
@@ -381,7 +395,9 @@ fn read(path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, String> {
                 | Head::Log
                 | Head::Run
                 | Head::Query { .. }
+                | Head::Command { .. }
                 | Head::Error(_)
+                | Head::Adhoc(_)
                 | Head::Failed(_)
                 | Head::Grant { .. }
                 | Head::Loose(_)

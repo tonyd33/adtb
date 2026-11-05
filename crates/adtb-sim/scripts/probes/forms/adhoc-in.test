@@ -1,0 +1,6 @@
+use stock
+
+begin t
+
+in t adhoc error Invalid { detail: "x" }
+  from i in items select i

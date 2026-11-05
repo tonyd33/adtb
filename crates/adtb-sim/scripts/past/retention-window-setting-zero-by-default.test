@@ -1,0 +1,47 @@
+use stock
+
+begin w
+
+in w run
+  insert items.Closed { id: items.key(1), name: "ann" }
+
+commit w position first
+
+run
+  from i in items select key i
+
+# No history is kept.
+error HistoryUnavailable { oldest: $first }
+  at commit $first { from i in items select i.name }
+
+run
+  set setting RetentionWindow = { length: 2h }
+
+query rowsort
+  from s in catalog::settings select match s
+    | RetentionWindow w -> w.length
+    | _ -> 0s
+----
+2h
+
+begin w
+
+in w run
+  insert items.Closed { id: items.key(2), name: "bo" }
+
+commit w position second
+
+run
+  from i in items select key i
+
+run
+  delete i in items where key i == items.key(2)
+
+run
+  from i in items select key i
+
+query rowsort
+  at commit $second { from i in items select i.name }
+----
+"ann"
+"bo"

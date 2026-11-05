@@ -1,0 +1,29 @@
+# The stock schema keeping an hour of history: ann and bo committed at `first`, ann renamed cy
+# and bo closed at `second`, a read after each keeping its safe snapshot.
+use stock
+
+run
+  set setting RetentionWindow = { length: 1h }
+
+begin w
+
+in w run
+  insert items.Open { id: items.key(1), name: "ann", qty: 3 }
+  insert items.Open { id: items.key(2), name: "bo", qty: 5 }
+
+commit w position first
+
+run
+  from i in items select key i
+
+begin w
+
+in w run
+  update i in items.Open where key i == items.key(1) set Open { i with name: "cy" }
+  delete i in items where key i == items.key(2)
+  insert items.Closed { id: items.key(2), name: "bo" }
+
+commit w position second
+
+run
+  from i in items select key i

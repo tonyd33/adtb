@@ -1,0 +1,4 @@
+use users
+
+error Invalid { detail: "`identities` declares no index or unique with these fields in this constructor set" }
+  reindex identities index (gid) in Google

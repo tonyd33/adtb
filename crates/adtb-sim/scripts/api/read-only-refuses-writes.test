@@ -1,0 +1,12 @@
+use paid-shop
+
+begin read only t
+
+in t query
+  from c in customers select c.name
+----
+
+in t error Invalid { detail: "a read-only transaction does not write" }
+  insert notes { body: "a" }
+
+commit t

@@ -1,0 +1,15 @@
+use paid-shop
+
+run
+  transact
+    let c = insert customers { name: "ann" }
+    insert payments.Card { customer: key c, last4: "4242" }
+
+begin read only deferrable t
+
+in t query
+  from c in customers select c.name
+----
+"ann"
+
+commit t

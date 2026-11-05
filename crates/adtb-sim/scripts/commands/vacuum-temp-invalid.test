@@ -1,0 +1,5 @@
+use users
+
+error Invalid { detail: "`vacuum` takes a stored relation; `t` is a temp relation" }
+  temp relation t : User key id
+  vacuum t

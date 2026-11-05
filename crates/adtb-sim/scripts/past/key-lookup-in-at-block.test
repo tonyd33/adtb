@@ -1,0 +1,7 @@
+seed 5
+use history
+
+query
+  at commit $first { from i in items where key i == items.key(1) select i.name }
+----
+"ann"

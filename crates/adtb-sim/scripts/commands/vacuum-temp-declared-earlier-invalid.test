@@ -1,0 +1,11 @@
+use users
+
+begin t
+
+in t run
+  temp relation t : User key id
+
+in t error Invalid { detail: "`vacuum` takes a stored relation; `t` is a temp relation" }
+  vacuum t
+
+rollback t

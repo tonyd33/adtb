@@ -1,0 +1,46 @@
+use stock
+
+query
+  at commit $nope { from i in items select i.name }
+----
+
+error HistoryUnavailable { oldest: $nope }
+  at commit { epoch: 0, lsn: 0 } { from i in items select i.name }
+
+query
+  at commit { epoch: 0, lsn: 0 } pins 5 { from i in items select i.name }
+----
+
+begin r
+
+commit r position later error Invalid { detail: "x" }
+
+command
+  verify nothing
+----
+
+command
+  verify
+----
+1
+
+command
+  from i in items select i.name
+----
+"bo"
+
+command
+  from i in items select i
+  from i in items select i.name
+----
+
+begin r2
+
+commit r2 error Invalid { detail: "$nope" }
+
+adhoc error Invalid { detail: "x" }
+  from i in items select i.name
+
+adhoc error Invalid { detail: "x" }
+  insert items.Closed { id: items.key(1), name: "ann" }
+  insert items.Closed { id: items.key(1), name: "ann" }

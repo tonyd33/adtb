@@ -1,0 +1,4 @@
+scripts/probes/position-twice.test:9: position `p` is bound already
+scripts/probes/position-twice.test:13: position `p` is bound already
+scripts/probes/position-twice.test:1 (via scripts/fixtures/stock.fixture:2): transaction `v` is open at the next open
+scripts/probes/position-twice.test:1 (via scripts/fixtures/stock.fixture:2): transaction `w` is open at the next open

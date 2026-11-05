@@ -1,0 +1,35 @@
+use paid-shop
+
+run
+  insert notes { id: notes.key(9223372036854775807), body: "maximum" }
+
+reopen
+
+query
+  from n in notes select value(key n)
+----
+9223372036854775807
+
+adhoc error Invalid { detail: "the generated counter exhausted its integer range" }
+  insert notes { body: "generated" }
+
+# The refused generation leaves the explicit maximum row.
+query
+  from n in notes select n.body
+----
+"maximum"
+
+reopen
+
+query
+  from n in notes select value(key n)
+----
+9223372036854775807
+
+adhoc error Invalid { detail: "the generated counter exhausted its integer range" }
+  insert notes { body: "generated" }
+
+query
+  from n in notes select n.body
+----
+"maximum"

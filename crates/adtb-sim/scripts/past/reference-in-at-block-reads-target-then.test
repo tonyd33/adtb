@@ -1,0 +1,23 @@
+seed 6
+use history
+
+begin w
+
+in w run
+  insert orders { id: orders.key(1), item: items.key(1) }
+
+commit w position placed
+
+run
+  from i in items select key i
+
+run
+  update i in items.Open where key i == items.key(1) set Open { i with name: "dee" }
+
+run
+  from i in items select key i
+
+query
+  at commit $placed { from o in orders select o.item.name }
+----
+"cy"

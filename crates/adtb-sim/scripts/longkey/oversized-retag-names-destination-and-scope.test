@@ -1,0 +1,34 @@
+seed 6
+use long
+
+migrate
+  module app
+  add module app
+  add type Item { id: I64 } = Plain | Named { text: Text }
+  add relation items : Item key id
+    index (text) in Named
+
+begin tx
+
+in tx run
+  insert items.Plain { id: 1 }
+
+in tx error KeyTooLarge { relation: "app::items", ctor: "Named", index: "index (text) in Named", size: 20002, limit: 1607 }
+  update i in items.Plain set Named { text: long::x20000() }
+
+in tx query
+  from i in items.Plain select i.id
+----
+1
+
+in tx run
+  update i in items.Plain set Named { text: "usable" }
+
+commit tx
+
+reopen
+
+query
+  from i in items.Named select i.text
+----
+"usable"

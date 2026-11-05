@@ -1,0 +1,33 @@
+seed 1
+use paid-shop
+
+run
+  transact
+    let c = insert customers { name: "ann" }
+    insert payments.Card { customer: key c, last4: "4242" }
+
+run
+  transact
+    let c = insert customers { name: "bob" }
+    insert payments.Card { customer: key c, last4: "4242" }
+
+reopen
+
+query rowsort
+  from c in customers select c.name
+----
+"ann"
+"bob"
+
+# A new key is drawn past the old ones.
+run
+  transact
+    let c = insert customers { name: "cat" }
+    insert payments.Card { customer: key c, last4: "4242" }
+
+query rowsort
+  from c in customers select c.name
+----
+"ann"
+"bob"
+"cat"

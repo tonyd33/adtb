@@ -1,5 +1,6 @@
 //! Run the steps of an engine script on the simulator, one process per open.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
@@ -115,23 +116,50 @@ fn hash(migrations: &[String]) -> Result<String, String> {
         .collect())
 }
 
-/// Returns the bundle file of `header` and `body`, the hash of the first N migrations of `log`
-/// written after `pins N` when the header states none.
-fn bundle_file(header: &str, body: &str, log: &[String]) -> Result<String, String> {
-    let mut words: Vec<String> = header.split(' ').map(str::to_owned).collect();
-    if let Some(i) = words.iter().position(|w| w == "pins")
-        && let Some(n) = words.get(i + 1).and_then(|n| n.parse::<usize>().ok())
-        && !words.get(i + 2).is_some_and(|w| w.starts_with('('))
-    {
-        let past = || format!("`pins {n}` is past the log's {} migrations", log.len());
-        words.insert(
-            i + 2,
-            format!("({})", hash(log.get(..n).ok_or_else(past)?)?),
-        );
+/// Returns `text` with the hash of the first N migrations of `log` after each `pins N` that
+/// states none.
+fn pinned(text: &str, log: &[String]) -> Result<String, String> {
+    let mut parts = text.split("pins ");
+    let mut out = parts.next().unwrap_or_default().to_owned();
+    for part in parts {
+        let digits = part
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(part.len());
+        out.push_str("pins ");
+        out.push_str(&part[..digits]);
+        if let Ok(n) = part[..digits].parse::<usize>()
+            && !part[digits..].starts_with(" (")
+        {
+            let past = || format!("`pins {n}` is past the log's {} migrations", log.len());
+            write!(out, " ({})", hash(log.get(..n).ok_or_else(past)?)?)
+                .expect("a string takes text");
+        }
+        out.push_str(&part[digits..]);
     }
+    Ok(out)
+}
+
+/// Returns `text` with the position each `$NAME` names, in textual syntax.
+fn placed(text: &str, positions: &BTreeMap<String, String>) -> Result<String, String> {
+    let mut parts = text.split('$');
+    let mut out = parts.next().unwrap_or_default().to_owned();
+    for part in parts {
+        let end = part.find(|c: char| !c.is_alphanumeric() && c != '_');
+        let (name, rest) = part.split_at(end.unwrap_or(part.len()));
+        let p = positions.get(name);
+        out.push_str(p.ok_or_else(|| format!("`${name}` names no position"))?);
+        out.push_str(rest);
+    }
+    Ok(out)
+}
+
+/// Returns the bundle file of `header` and `body`, each `pins N` stating no hash given that of
+/// the first N migrations of `log`.
+fn bundle_file(header: &str, body: &str, log: &[String]) -> Result<String, String> {
+    let body = pinned(body, log)?;
     Ok(match header {
-        "" => body.to_owned(),
-        _ => format!("bundle {}\n{body}", words.join(" ")),
+        "" => body,
+        _ => format!("bundle {}\n{body}", pinned(header, log)?),
     })
 }
 
@@ -237,6 +265,8 @@ struct Script {
     options: OpenOptions,
     bundles: Vec<Step>,
     handles: Handles,
+    /// The position each `commit NAME position P` took, by P, in textual syntax.
+    positions: BTreeMap<String, String>,
     out: Vec<Differs>,
 }
 
@@ -317,7 +347,8 @@ impl Script {
                 break;
             }
             self.next += 1;
-            if let Err(d) = self.step(rt, &db, &mut txns, &step) {
+            let step = self.resolved(step);
+            if let Err(d) = step.and_then(|step| self.step(rt, &db, &mut txns, &step)) {
                 self.out.push(d);
             }
         }
@@ -357,6 +388,29 @@ impl Script {
         out
     }
 
+    /// Returns `step` with each `$NAME` in its body or in a value it compares a position, and each
+    /// `pins N` in a body no bundle file takes a hash of the script's log.
+    fn resolved(&self, mut step: Step) -> Result<Step, Differs> {
+        let place = |text: &mut String| placed(text, &self.positions).map(|t| *text = t);
+        let mut done = Ok(());
+        if !matches!(step.head, Head::Bundle { .. } | Head::Loose(_) | Head::Log) {
+            done = place(&mut step.body);
+            done = done.and_then(|()| pinned(&step.body, &self.log).map(|b| step.body = b));
+        }
+        done = done.and_then(|()| match &mut step.head {
+            Head::Error(v)
+            | Head::Adhoc(v)
+            | Head::Failed(v)
+            | Head::Call { error: Some(v), .. }
+            | Head::Commit { error: Some(v), .. } => place(v),
+            _ => Ok(()),
+        });
+        match done {
+            Ok(()) => Ok(step),
+            Err(e) => Err(Differs::at(&step, e)),
+        }
+    }
+
     /// Run a step that needs no open database.
     fn closed(&mut self, step: &Step) {
         match &step.head {
@@ -393,7 +447,7 @@ impl Script {
                 Ok(())
             }
             Head::Begin { .. } | Head::Commit { .. } | Head::Rollback(_) => {
-                txn::ended(db, txns, step)
+                txn::ended(db, txns, step, &mut self.positions)
             }
             Head::Advance(d) => {
                 sleep(rt, *d);
@@ -444,6 +498,9 @@ impl Script {
             Head::Run | Head::Query { .. } | Head::Error(_)
                 if step.txn.is_some() || step.assert.is_some() =>
             {
+                role::sent_step(step, txn::texted(db, txns, step)?)
+            }
+            Head::Command { .. } | Head::Adhoc(_) => {
                 role::sent_step(step, txn::texted(db, txns, step)?)
             }
             Head::Failed(_) => unreachable!("read gives `failed` an `as` prefix"),
@@ -512,6 +569,7 @@ pub(super) fn run_file(path: &Path) -> Vec<String> {
         },
         bundles: Vec::new(),
         handles: Handles::default(),
+        positions: BTreeMap::new(),
         out: Vec::new(),
     };
     let ran = panic::catch_unwind(AssertUnwindSafe(|| {

@@ -1,0 +1,20 @@
+# Users and their identities by email, Google or Apple: ann by email, bo by Google.
+migrate
+  module app
+  add module app
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+  add type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  add relation identities : Identity key id generate sequence
+    unique (user) in Google
+    index (user) in Google
+    index (user)
+
+run
+  insert users { id: users.key(1), name: "ann" }
+  insert users { id: users.key(2), name: "bo" }
+  insert identities.EmailPass { id: identities.key(1), user: users.key(1), email: "a@x" }
+  insert identities.Google { id: identities.key(2), user: users.key(2), gid: "g-bo" }

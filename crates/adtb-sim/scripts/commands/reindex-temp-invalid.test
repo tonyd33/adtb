@@ -1,0 +1,5 @@
+use users
+
+error Invalid { detail: "`reindex` takes a stored relation; `t` is a temp relation" }
+  temp relation t : User key id
+  reindex t

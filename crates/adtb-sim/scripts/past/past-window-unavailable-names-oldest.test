@@ -1,0 +1,54 @@
+seed 13
+use stock
+
+run
+  set setting RetentionWindow = { length: 1s }
+
+begin w
+
+in w run
+  insert items.Closed { id: items.key(1), name: "ann" }
+
+commit w position first
+
+run
+  from i in items select key i
+
+advance 2s
+
+begin w
+
+in w run
+  insert items.Closed { id: items.key(2), name: "x" }
+
+commit w position kept
+
+begin w
+
+in w run
+  delete i in items where key i == items.key(1)
+
+commit w position last
+
+run
+  from i in items select key i
+
+run
+  vacuum items
+
+# The first commit is outside the window.
+error HistoryUnavailable { oldest: $kept }
+  at commit $first { from i in items select i.name }
+
+query
+  from c in sys::commit_times where c.position == $first select c
+----
+
+query
+  from s in sys::safe_snapshots where s.position == $first select s
+----
+
+query
+  at commit $last { from i in items select i.name }
+----
+"x"

@@ -1,0 +1,10 @@
+# The stock schema: items open with a quantity or closed, and orders of items.
+migrate
+  module stock
+  add module stock
+  add type Item { id: Key items, name: Text }
+    = Open   { qty: I64 }
+    | Closed
+  add relation items : Item key id generate sequence
+  add type Order = { id: Key orders, item: Key items }
+  add relation orders : Order key id generate sequence

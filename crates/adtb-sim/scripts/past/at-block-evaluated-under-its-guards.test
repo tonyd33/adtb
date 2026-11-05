@@ -1,0 +1,11 @@
+seed 10
+use stock
+
+run
+  insert items.Closed { id: items.key(1), name: "ann" }
+
+query
+  from i in items
+  where false
+  select count(j for j in (at commit Position { epoch: 0, lsn: 0 } { from k in items select k }))
+----

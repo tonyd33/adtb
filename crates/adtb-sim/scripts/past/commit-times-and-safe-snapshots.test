@@ -1,0 +1,49 @@
+seed 25
+use stock
+
+run
+  set setting RetentionWindow = { length: 1h }
+
+begin w
+
+in w run
+  insert items.Closed { id: items.key(1), name: "ann" }
+
+commit w position first
+
+begin w
+
+in w run
+  insert items.Closed { id: items.key(2), name: "bo" }
+
+commit w position second
+
+query rowsort
+  from c in sys::commit_times select { first: c.position == $first, second: c.position == $second }
+----
+{ first: True, second: False }
+{ first: False, second: True }
+
+query rowsort
+  from s in sys::safe_snapshots select { first: s.position == $first, second: s.position == $second }
+----
+{ first: True, second: False }
+{ first: False, second: True }
+
+query rowsort
+  from c in sys::commit_times, n in (at instant c.at { from i in items select i.name })
+  select { first: c.position == $first, name: n }
+----
+{ first: True, name: "ann" }
+{ first: False, name: "ann" }
+{ first: False, name: "bo" }
+
+reopen
+
+query rowsort
+  from c in sys::commit_times, n in (at instant c.at { from i in items select i.name })
+  select { first: c.position == $first, name: n }
+----
+{ first: True, name: "ann" }
+{ first: False, name: "ann" }
+{ first: False, name: "bo" }

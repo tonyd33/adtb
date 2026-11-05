@@ -1,0 +1,37 @@
+seed 3
+use long
+
+migrate
+  module app
+  add module app
+  add type Item = { id: I64, text: Text }
+  add relation items : Item key id
+
+# Large unindexed text is valid.
+run
+  insert items { id: 1, text: long::x20000() }
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "index `app::items.index (lower(text))` needs a key payload of 20002 bytes; the limit is 1607 bytes" } } }
+  module app
+  add index (lower(text)) in items
+
+# The old schema reopens and stays writable.
+reopen
+
+query
+  from i in items select i.id
+----
+1
+
+run
+  update i in items set Item { i with text: long::x1605() }
+
+# The migration accepts a fitting key.
+migrate
+  module app
+  add index (lower(text)) in items
+
+query
+  from i in items select i.text == long::x1605()
+----
+True

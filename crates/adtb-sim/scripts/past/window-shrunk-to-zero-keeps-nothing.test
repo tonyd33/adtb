@@ -1,0 +1,20 @@
+seed 14
+use history
+
+begin s
+
+in s run
+  set setting RetentionWindow = { length: 0s }
+
+commit s position shrunk
+
+query
+  from c in sys::commit_times select c
+----
+
+query
+  from s in sys::safe_snapshots select s
+----
+
+error HistoryUnavailable { oldest: $shrunk }
+  at commit $first { from i in items select i.name }

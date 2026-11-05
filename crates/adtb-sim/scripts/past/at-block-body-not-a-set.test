@@ -1,0 +1,5 @@
+seed 11
+use stock
+
+error Invalid { detail: "an `at` block reads a set, found I64" }
+  at commit Position { epoch: 0, lsn: 0 } { 1 }

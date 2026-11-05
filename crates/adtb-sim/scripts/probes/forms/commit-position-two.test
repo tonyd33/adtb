@@ -1,0 +1,3 @@
+use stock
+
+commit t position p q

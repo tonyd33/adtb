@@ -1,0 +1,16 @@
+seed 8
+use long
+
+migrate
+  module app
+  add module app
+  add type Item = { id: I64, text: Text }
+  add relation items : Item key id
+    index (text)
+
+adhoc error KeyTooLarge { relation: "app::items", ctor: "Item", index: "index (text)", size: 20002, limit: 1607 }
+  (insert items { id: 1, text: "small" }, insert items { id: 1, text: long::x20000() })
+
+query
+  from i in items select i
+----

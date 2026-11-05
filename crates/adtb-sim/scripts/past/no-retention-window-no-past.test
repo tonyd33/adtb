@@ -1,0 +1,15 @@
+seed 9
+use stock
+
+begin w
+
+in w run
+  insert items.Closed { id: items.key(1), name: "ann" }
+
+commit w position first
+
+run
+  from i in items select key i
+
+error HistoryUnavailable { oldest: $first }
+  at commit $first { from i in items select i.name }

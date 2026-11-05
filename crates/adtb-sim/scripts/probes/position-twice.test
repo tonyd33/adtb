@@ -1,0 +1,13 @@
+use stock
+
+begin w
+
+commit w position p
+
+begin w
+
+commit w position p
+
+begin v
+
+commit v position p error Invalid { detail: "x" }

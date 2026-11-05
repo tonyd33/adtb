@@ -1,0 +1,8 @@
+use paid-shop
+
+adhoc error Violated { constraint: "shop::paid", report: 1 rows, redacted: 0 }
+  insert customers { name: "ann" }
+
+query
+  from c in customers select c.name
+----

@@ -1,0 +1,31 @@
+seed 12
+use history
+
+run
+  vacuum items
+
+query rowsort
+  at commit $first { from i in items select i.name }
+----
+"ann"
+"bo"
+
+query rowsort
+  at commit $second { from i in items select i.name }
+----
+"bo"
+"cy"
+
+query
+  at commit $first { from i in items where key i == items.key(2) select i.name }
+----
+"bo"
+
+run
+  vacuum items
+
+query rowsort
+  at commit $first { from i in items select i.name }
+----
+"ann"
+"bo"

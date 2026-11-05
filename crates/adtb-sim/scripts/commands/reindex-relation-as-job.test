@@ -1,0 +1,6 @@
+use users
+
+command
+  reindex identities
+----
+{ job: jobs.key(1) }

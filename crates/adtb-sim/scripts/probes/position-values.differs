@@ -1,0 +1,20 @@
+scripts/probes/position-values.test:3: `$nope` names no position
+scripts/probes/position-values.test:7: `$nope` names no position
+scripts/probes/position-values.test:10: `pins 5` is past the log's 1 migrations
+scripts/probes/position-values.test:16: the outcome differs
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   []
+scripts/probes/position-values.test:18: refused with Rejected { reason: Invalid { detail: "no `nothing` in scope" } }
+scripts/probes/position-values.test:22: expected row 1 `1` does not read: at byte 0: expected a name; got []
+scripts/probes/position-values.test:27: the rows differ
+  expected: ["bo"]
+  actual:   []
+scripts/probes/position-values.test:32: a query holds one statement
+scripts/probes/position-values.test:39: `$nope` names no position
+scripts/probes/position-values.test:41: succeeds
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   success
+scripts/probes/position-values.test:44: refused otherwise
+  expected: Rejected { reason: Invalid { detail: "x" } }
+  actual:   Rejected { reason: KeyViolation { relation: "stock::items", key: "items.key(1)" } }
+scripts/probes/position-values.test:1 (via scripts/fixtures/stock.fixture:2): transaction `r2` is open at the next open

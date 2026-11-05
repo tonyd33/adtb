@@ -1,0 +1,33 @@
+seed 21
+use stock
+
+bundle reports-1.0 pins 1 edition "2026-10"
+  import stock
+  query names_then (c: Position) -> Set Text =
+    at commit c pins 1 { from i in items select i.name }
+
+reopen
+
+run
+  set setting RetentionWindow = { length: 1h }
+
+begin w
+
+in w run
+  insert items.Closed { id: items.key(1), name: "ann" }
+
+commit w position first
+
+run
+  from i in items select key i
+
+run
+  delete i in items where key i == items.key(1)
+
+run
+  from i in items select key i
+
+call reports-1.0 1
+  Position { epoch: ($first).epoch, lsn: ($first).lsn }
+----
+"ann"

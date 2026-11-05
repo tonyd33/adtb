@@ -1,0 +1,7 @@
+use users
+
+error Invalid { detail: "`compact` does not run in this engine yet" }
+  compact
+
+error Invalid { detail: "`finalize upgrade` does not run in this engine yet" }
+  finalize upgrade

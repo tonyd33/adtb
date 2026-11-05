@@ -1,3 +1,5 @@
+scripts/probes/forms/adhoc-bare.test:3: `adhoc` is not a directive
+scripts/probes/forms/adhoc-in.test:5: `in t adhoc error Invalid { detail: "x" }` is not a directive
 scripts/probes/forms/advance-count.test:3: `advance h` is not a directive
 scripts/probes/forms/advance-unit.test:3: `advance 3` is not a directive
 scripts/probes/forms/as-bare.test:3: `as bob` is not a directive
@@ -19,6 +21,11 @@ scripts/probes/forms/call-ordinal.test:3: `call web-1.0 one` is not a directive
 scripts/probes/forms/call-rows.test:3: `call` takes its rows after `----`
 scripts/probes/forms/call-rowsort-error.test:3: `call web-1.0 1 rowsort error UnknownQuery` is not a directive
 scripts/probes/forms/call-rowsort-unbound.test:3: `call web-1.0 rowsort` is not a directive
+scripts/probes/forms/command-bodiless.test:3: `command` takes a body
+scripts/probes/forms/command-rows.test:3: `command` takes its rows after `----`
+scripts/probes/forms/command-suffix.test:3: `command sorted` is not a directive
+scripts/probes/forms/commit-position-bare.test:3: `commit t position` is not a directive
+scripts/probes/forms/commit-position-two.test:3: `commit t position p q` is not a directive
 scripts/probes/forms/drop-bare.test:3: `drop idle` is not a directive
 scripts/probes/forms/failed-bare.test:3: `failed Invalid { detail: "x" }` is not a directive
 scripts/probes/forms/grant-bodiless.test:3: `grant` takes a body

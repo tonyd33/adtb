@@ -1,0 +1,5 @@
+use stock
+
+command sorted
+  verify
+----

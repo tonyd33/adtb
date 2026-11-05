@@ -1,0 +1,8 @@
+use paid-shop
+
+begin read only t
+
+in t error Invalid { detail: "a read-only transaction does not write" }
+  if count(n for n in notes) == 0 then fail "empty" else skip
+
+commit t

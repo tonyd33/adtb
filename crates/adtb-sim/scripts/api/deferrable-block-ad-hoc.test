@@ -1,0 +1,12 @@
+use paid-shop
+
+run
+  transact
+    let c = insert customers { name: "ann" }
+    insert payments.Card { customer: key c, last4: "4242" }
+
+query
+  transact read_only deferrable
+    return count(c for c in customers)
+----
+1

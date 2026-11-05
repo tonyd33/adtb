@@ -1,0 +1,20 @@
+seed 3
+use paid-shop
+
+migrate at 1 refused Diverged { version: 1 }
+  module shop
+  add module shop
+  add type Note = { id: Key notes, text: Text }
+  add relation notes : Note key id generate sequence
+  add type Customer = { id: Key customers, name: Text }
+  add relation customers : Customer key id generate sequence
+  add type Payment { id: Key payments, customer: Key customers }
+    = Card { last4: Text }
+    | Invoice { due: Text }
+  add relation payments : Payment
+    key id generate sequence
+    index (customer)
+  add constraint paid =
+    from c in customers
+    where not exists p in payments where p.customer == key c
+    select c

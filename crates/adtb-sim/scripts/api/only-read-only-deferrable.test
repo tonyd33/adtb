@@ -1,0 +1,3 @@
+use paid-shop
+
+begin deferrable t error Invalid { detail: "only a read-only transaction is deferrable" }

@@ -1,0 +1,15 @@
+seed 4
+use paid-shop
+
+run
+  transact
+    let c = insert customers { name: "ann" }
+    insert payments.Card { customer: key c, last4: "4242" }
+
+# An empty log is a prefix of the file's.
+migrate at 1
+
+query
+  from c in customers select c.name
+----
+"ann"

@@ -1,0 +1,13 @@
+seed 16
+use history
+
+migrate
+  module stock
+  rename field Item.Open.qty to count
+
+run
+  from i in items select key i
+
+# Version 1 stores items otherwise than version 2.
+error WrongVersion { version: 1 }
+  at commit $first pins 2 { from i in items select i.name }

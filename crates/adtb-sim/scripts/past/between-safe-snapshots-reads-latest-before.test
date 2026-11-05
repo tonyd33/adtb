@@ -1,0 +1,13 @@
+seed 3
+use history
+
+query
+  ($first).lsn < ($second).lsn - 1
+----
+True
+
+query rowsort
+  at commit Position { epoch: ($second).epoch, lsn: ($second).lsn - 1 } { from i in items select i.name }
+----
+"ann"
+"bo"

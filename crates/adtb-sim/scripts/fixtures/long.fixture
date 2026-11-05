@@ -1,0 +1,10 @@
+# Texts of x by length, functions of module long, as the log's next migration.
+log
+  module long
+  add module long
+  define fn x10 () -> Text = "xxxxxxxxxx"
+  define fn x100 () -> Text = x10() ++ x10() ++ x10() ++ x10() ++ x10() ++ x10() ++ x10() ++ x10() ++ x10() ++ x10()
+  define fn x1000 () -> Text = x100() ++ x100() ++ x100() ++ x100() ++ x100() ++ x100() ++ x100() ++ x100() ++ x100() ++ x100()
+  define fn x1597 () -> Text = x1000() ++ x100() ++ x100() ++ x100() ++ x100() ++ x100() ++ x10() ++ x10() ++ x10() ++ x10() ++ x10() ++ x10() ++ x10() ++ x10() ++ x10() ++ "xxxxxxx"
+  define fn x1605 () -> Text = x1597() ++ "xxxxxxxx"
+  define fn x20000 () -> Text = x1000() ++ x1000() ++ x1000() ++ x1000() ++ x1000() ++ x1000() ++ x1000() ++ x1000() ++ x1000() ++ x1000() ++ x1000() ++ x1000() ++ x1000() ++ x1000() ++ x1000() ++ x1000() ++ x1000() ++ x1000() ++ x1000() ++ x1000()

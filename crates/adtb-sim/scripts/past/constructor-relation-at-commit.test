@@ -1,0 +1,12 @@
+seed 2
+use history
+
+query rowsort
+  at commit $first { from i in items.Open select i.name }
+----
+"ann"
+"bo"
+
+query
+  at commit $first { from i in items.Closed select i.name }
+----

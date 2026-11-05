@@ -1,0 +1,8 @@
+seed 18
+use history
+
+query rowsort
+  at commit $first pins 1 { from i in items select i.name }
+----
+"ann"
+"bo"

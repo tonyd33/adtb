@@ -1,0 +1,7 @@
+use paid-shop
+
+run
+  insert notes { id: notes.key(1), body: "a" }
+
+error KeyViolation { relation: "shop::notes", key: "notes.key(1)" }
+  insert notes { id: notes.key(1), body: "a" }
