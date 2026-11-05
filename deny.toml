@@ -151,6 +151,7 @@ allow = [
     "adtb-file",
     "adtb-heap-cap",
     "adtb-lang",
+    "adtb-mutant",
     "adtb-reference",
     "adtb-sim",
     "adtb-sys",

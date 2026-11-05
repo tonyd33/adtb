@@ -257,10 +257,17 @@ survivor is a missing test; add it before reporting. A stop line is a check-in:
 when a count reaches it, stop and report the size and what remains before going on.
 Count with `jj diff --stat` before starting each new file or test module, and stop
 before a file that would carry the count past the line, not after writing it.
-Restore a mutated file with a command that gives it a new mtime, `cp` without
-`-p`, never `mv` of a backup, `cp -p` or `perl -i.keep` followed by a rename:
-cargo trusts mtimes and keeps testing the mutant's build. `check` touches every
-source first; a targeted run does not.
+Run mutants with `work/tools/mutants`, one build for all of them. Wrap each
+mutated expression in the `mutant` macro of the `adtb-mutant` crate, called by its
+full path with the ID, the original and the mutated expression; a statement goes
+by its expression, the mutated one `()`. The crate's doc comment shows the form;
+adtb, adtb-sys and adtb-lang depend on it. One ID names one site. List `ID FILTER` a line in a file under `target/`, FILTER
+naming the test expected to kill it, and run `work/tools/mutants FILE -p PACKAGE
+--test BINARY`. Remove every site before reporting: `house-check` reports one and
+`land` refuses it. A mutant that is not an expression (a pattern, a type, a match
+arm) or that a source-searching test reads is still an edit, rebuild and run:
+restore the file with `cp` without `-p`, never `mv` of a backup, `cp -p` or
+`perl -i.keep` followed by a rename, so it gets a new mtime; cargo trusts mtimes.
 
 ## Scripts
 

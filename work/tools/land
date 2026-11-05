@@ -4,11 +4,12 @@
 #                     `main` bookmark and the main working copy onto it, and forget WS
 #
 # Refuses before changing anything when the main working copy has changes, WS is unknown or
-# a commit to land has no description. Refuses after the rebase when a landed commit has
-# conflicts; the rebased commits stay in WS for its agent to fix. Leaves WS's directory in place.
-# A workspace taken with `slot` is not forgotten: its directory becomes a free slot, its working
-# copy an empty commit on the landed tip, its name `slot-N`. Refuses a slot in use by a process, and
-# leaves main unmoved when a file written during land strands work in a divergent commit.
+# a commit to land has no description or adds a mutant site. Refuses after the rebase when a
+# landed commit has conflicts; the rebased commits stay in WS for its agent to fix. Leaves WS's
+# directory in place. A workspace taken with `slot` is not forgotten: its directory becomes a
+# free slot, its working copy an empty commit on the landed tip, its name `slot-N`. Refuses a
+# slot in use by a process, and leaves main unmoved when a file written during land strands
+# work in a divergent commit.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -58,6 +59,13 @@ elif [[ -n $subject ]]; then
 fi
 undescribed=$(jj -R "$main" log -r "(@-..$tip) & description(exact:'')" --no-graph -T 'change_id.short() ++ "\n"')
 [[ -z $undescribed ]] || die "no description on $(echo $undescribed); pass SUBJECT or describe them"
+for commit in $(jj -R "$main" log -r "@-..$tip" --no-graph -T 'commit_id.short() ++ "\n"'); do
+  found=0
+  findings=$("$root/work/tools/house-check" "$main" -r "$commit") || found=$?
+  ((found <= 1)) || die "house-check failed on $commit"
+  sites=$(grep ': mutant site: ' <<<"$findings" || true)
+  [[ -z $sites ]] || die "mutant sites in $commit to remove first: $sites"
+done
 
 jj -R "$main" rebase -b "$ws@" -d @-
 

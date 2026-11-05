@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# mutants FILE [ARGS]   build the tests ARGS select (default --workspace) once with every
+#                       mutant site of the adtb-mutant crate compiled in, check every filter
+#                       passes with no mutant, then run each mutant of FILE under the machine
+#                       lock and print its verdict
+#
+# FILE holds one mutant a line, `ID FILTER...`: ID names exactly one site under crates/ and
+# FILTER the nextest filters its run adds to ARGS, split on blanks, so an `-E` expression holds
+# none. Blank lines and lines starting `#` are skipped. A verdict is `killed` with the first
+# failing test, `survived`, `not-reached` (no process of the run evaluated the site), `timeout`
+# (a test nextest terminated, or the run past ADTB_MUTANT_TIMEOUT seconds, default 600),
+# `sigkill`, `sigterm`, `no-tests`, `build-failed` or `error N`; `killed` and `survived` need the
+# site's hit in the run's trace. Logs go to target/mutant/ID.log, or ADTB_MUTANT_OUT when set.
+# Exits 0 when every mutant is killed.
+set -uo pipefail
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+target=${CARGO_TARGET_DIR:-$root/target}
+out=${ADTB_MUTANT_OUT:-$target/mutant}
+file=$(realpath "${1:?usage: mutants FILE [ARGS]}")
+shift
+(($#)) || set -- --workspace
+args=(-p adtb-mutant --features adtb-mutant/active "$@")
+
+# shellcheck source=work/tools/common.bash
+source "$root/work/tools/common.bash"
+
+no_core_dumps
+cd "$root" || exit 1
+mkdir -p "$out"
+
+ids=() filters=()
+while read -r id filter; do
+  [[ -n $id && $id != \#* ]] || continue
+  sites=0
+  [[ ! $id =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] ||
+    sites=$(rg -Uo --type rust -g '!crates/adtb-mutant/' "mutant\s*!\s*[(\[{]\s*$id\s*," crates | wc -l)
+  if ((sites != 1)); then
+    echo "mutants: $id is not an identifier with exactly one site under crates/; found $sites" >&2
+    exit 2
+  fi
+  ids+=("$id")
+  filters+=("$filter")
+done <"$file"
+((${#ids[@]})) || { echo "mutants: no mutant in $file" >&2; exit 2; }
+
+started=$SECONDS
+if ! cargo nextest run --no-run "${args[@]}" >"$out/build.log" 2>&1; then
+  grep -E '^error' -A8 "$out/build.log" | head -40
+  for id in "${ids[@]}"; do
+    printf '%-12s %-10s %s\n' "$id" build-failed "$out/build.log"
+  done
+  exit 1
+fi
+echo "built in $((SECONDS - started))s"
+
+machine_lock "$root"
+started=$SECONDS
+for filter in "${filters[@]}"; do
+  read -ra words <<<"$filter"
+  if ! env -u ADTB_MUTANT cargo nextest run --no-fail-fast "${args[@]}" "${words[@]}" >"$out/baseline.log" 2>&1; then
+    echo "mutants: with no mutant, filter '$filter' fails; no mutant runs. Log: $out/baseline.log" >&2
+    exit 1
+  fi
+done
+echo "baseline passed in $((SECONDS - started))s"
+status=0
+for i in "${!ids[@]}"; do
+  id=${ids[i]}
+  log=$out/$id.log
+  trace=$out/$id.trace
+  : >"$trace"
+  read -ra words <<<"${filters[i]}"
+  ADTB_MUTANT=$id ADTB_MUTANT_TRACE=$trace timeout "${ADTB_MUTANT_TIMEOUT:-600}" \
+    cargo nextest run --no-fail-fast "${args[@]}" "${words[@]}" >"$log" 2>&1
+  code=$?
+  reached=$(grep -cx "$id" "$trace")
+  first=$(grep -m1 -E '^\s+(FAIL|SIG[A-Z]+) \[' "$log" | sed -E 's/^\s+(FAIL )?//; s/\[[^]]*\] *(\([ 0-9/]+\) *)?//')
+  if ((code == 124)) || grep -qE '^\s+TIMEOUT \[' "$log"; then
+    verdict=timeout
+  elif ((code == 4)); then
+    verdict=no-tests
+  elif ((code != 0 && code != 100)); then
+    verdict="error $code"
+  elif ((reached == 0)); then
+    verdict=not-reached
+  elif ((code == 0)); then
+    verdict=survived
+  elif [[ $first =~ ^SIG(KILL|TERM) ]]; then
+    verdict=${BASH_REMATCH[0],,}
+  elif [[ -n $first ]]; then
+    verdict=killed
+  else
+    verdict="error $code"
+  fi
+  [[ $verdict == killed ]] || status=1
+  printf '%-12s %-10s %s\n' "$id" "$verdict" "${first:-$log}"
+done
+machine_unlock
+echo "ran in $((SECONDS - started))s; logs in $out"
+exit "$status"
