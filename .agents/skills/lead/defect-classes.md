@@ -6,7 +6,7 @@ Causes that keep producing bugs across tracks, from the review of 2026-10-31. Co
 |---|---|---|---|
 | Multi-step change not atomic under failure, crash or race | about 20 | Build aside, publish last, memory updated under the latch | fault-matrix |
 | Damage or failure gives a panic, hang or flattened error | about 24 | Typed fatal payload and causes, read checks return `Result` | fault-matrix |
-| Damage reported as nothing: evidence of loss falls between two checks, each excusing it as the other's case | 2: a page past the log end, a foreign heap page | Each finding keyed by what the evidence proves, checked over every bound, with a search that reaches each kind | fault-matrix |
+| Damage reported as nothing: evidence of loss falls between two checks, each excusing it as the other's case | 4: a page past the log end, a foreign heap page, a heap page of the wrong frame read as empty, a restore laundering a page a backup listed damaged | Each finding keyed by what the evidence proves, checked over every bound, with a search that reaches each kind | fault-matrix |
 | Authority and admission checked per entry path | about 18 | One admitted value required by every execution entry | admitted-gate |
 | Unbounded work over size, depth or sharing | about 16 | One budget, sized stacks, sharing-aware lowering | one-spend-budget |
 | Wildcards and copied rules | about 17 | Scoped lint, shared helper | compile-time-identity |
