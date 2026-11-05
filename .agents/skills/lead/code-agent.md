@@ -262,6 +262,9 @@ survivor is a missing test; add it before reporting. A stop line is a check-in:
 when a count reaches it, stop and report the size and what remains before going on.
 Count with `jj diff --stat` before starting each new file or test module, and stop
 before a file that would carry the count past the line, not after writing it.
+Write a file of more than about 150 lines in pieces, running `cargo fmt` and
+counting after each: formatting grows a file, and a whole module written in one
+pass has twice landed hundreds of lines past its line.
 Run mutants with `work/tools/mutants`, one build for all of them. Wrap each
 mutated expression in the `mutant` macro of the `adtb-mutant` crate, called by its
 full path with the ID, the original and the mutated expression; a statement goes
