@@ -1,12 +1,15 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::runtime::Runtime;
 use crate::storage::{
     Damage, FIRST_EDITABLE, HEADER_LEN, Lsn, PageError, PageKind, PageShared, Pager, Pid, flags,
-    header_edit, kind,
+    header_edit, kind, lsn,
 };
 
 use super::{Status, Xid};
+
+/// A status page holding ids in progress: its page, its first id and those ids.
+pub(crate) type Unresolved = (Pid, u64, Vec<u64>);
 
 /// The format version of commit log pages.
 pub const PAGE_FORMAT: u16 = 1;
@@ -218,13 +221,11 @@ impl CommitLog {
         })
     }
 
-    /// Load the commit log rooted at `root` from a recovered pager, and record as aborted every
-    /// reserved id still in progress.
-    ///
-    /// Postcondition: every id below [`CommitLog::reserved`] has resolved.
+    /// Load the commit log rooted at `root` from a recovered pager, and settle every reserved id
+    /// still in progress as [`CommitLog::settle_unresolved`] does.
     pub fn open<R: Runtime>(pager: &Pager<R>, root: Pid) -> Result<CommitLog, PageError> {
         let mut clog = CommitLog::load(pager, root)?;
-        clog.abort_unresolved(pager)?;
+        clog.settle_unresolved(pager)?;
         Ok(clog)
     }
 
@@ -272,37 +273,73 @@ impl CommitLog {
         })
     }
 
-    /// Record as aborted every reserved id still in progress.
-    pub(crate) fn abort_unresolved<R: Runtime>(
+    /// Record every reserved id still in progress as committed when the retained log holds its
+    /// commit record, and as aborted otherwise, as [`CommitLog::unresolved`] reads them.
+    ///
+    /// Fail as [`CommitLog::unresolved`] does, writing nothing.
+    ///
+    /// Postcondition: on success every id below [`CommitLog::reserved`] has resolved.
+    pub(crate) fn settle_unresolved<R: Runtime>(
         &mut self,
         pager: &Pager<R>,
     ) -> Result<(), PageError> {
-        let from = self.root.resolved.max(self.root.bound);
-        let to = self.root.reserved;
+        let (open, logged) = self.unresolved(pager)?;
+        for (pid, base, ids) in open {
+            pager.update(&[pid], |p| {
+                for &x in &ids {
+                    let status = if logged.contains(&x) {
+                        Status::Committed
+                    } else {
+                        Status::Aborted
+                    };
+                    set_status(p[0], (x - base) as usize, status);
+                }
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Returns each status page holding a reserved id still in progress, with the page's first id
+    /// and those ids, and the transaction of every commit record the retained log holds from the
+    /// oldest LSN of those pages, past which lies every commit record changing them.
+    ///
+    /// Fail with [`Damage::LogUnproven`], naming the page of that LSN, when the log from there to
+    /// the end recovery kept is not whole and readable. Before the log's first segment the status
+    /// page stands.
+    pub(crate) fn unresolved<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+    ) -> Result<(Vec<Unresolved>, BTreeSet<u64>), PageError> {
+        let (from, to) = (self.root.bound, self.root.reserved);
         if from >= to {
-            return Ok(());
+            return Ok((Vec::new(), BTreeSet::new()));
         }
         let (first, _) = locate(from, self.per_page);
         let (last, _) = locate(Xid(to.0 - 1), self.per_page);
+        let mut open = Vec::new();
+        let mut oldest: Option<(Lsn, Pid)> = None;
         for n in first..=last {
             let pid = self.page(n);
-            let lo = from.0.max(n * self.per_page);
-            let hi = to.0.min((n + 1) * self.per_page);
+            let base = n * self.per_page;
             let page = pager.read_formatted(pid)?;
-            let open: Vec<usize> = (lo - n * self.per_page..hi - n * self.per_page)
-                .map(|i| i as usize)
-                .filter(|&i| status_at(&page, i) == Status::InProgress)
+            let ids: Vec<u64> = (from.0.max(base)..to.0.min(base + self.per_page))
+                .filter(|&x| status_at(&page, (x - base) as usize) == Status::InProgress)
                 .collect();
-            drop(page);
-            if !open.is_empty() {
-                pager.update(&[pid], |p| {
-                    for &i in &open {
-                        set_status(p[0], i, Status::Aborted);
-                    }
-                })?;
+            if !ids.is_empty() {
+                if oldest.is_none_or(|(at, _)| lsn(&page) < at) {
+                    oldest = Some((lsn(&page), pid));
+                }
+                open.push((pid, base, ids));
             }
         }
-        Ok(())
+        let Some((since, pid)) = oldest else {
+            return Ok((open, BTreeSet::new()));
+        };
+        let logged = pager.logged_commits_since(since).map_err(|at| PageError {
+            pid,
+            damage: Damage::LogUnproven { at },
+        })?;
+        Ok((open, logged))
     }
 
     /// Returns the page id of the root, by which [`CommitLog::open`] finds the commit log.

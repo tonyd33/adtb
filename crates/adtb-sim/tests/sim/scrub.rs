@@ -405,9 +405,41 @@ fn time_cursor_passes(seed: u64, files: &Files, page: Pid) -> Duration {
     Duration::from_nanos(at.expect("the cursor passed it").as_nanos())
 }
 
+/// Returns `files` with users from `from` to `to` added, a hundred to a transaction, and the
+/// first page of their heap with the last page of the file.
+fn grown(seed: u64, files: Files, from: i64, to: i64) -> (Files, Pid, Pid) {
+    let mut sim = Sim::with_files(seed, Config::default(), files);
+    let mut out = None;
+    finished(&mut sim, |rt| {
+        let db = open(rt.clone());
+        for chunk in (from..to).collect::<Vec<_>>().chunks(100) {
+            let text: String = chunk
+                .iter()
+                .map(|i| format!("insert users {{ id: users.key({i}), name: \"user\" }}\n"))
+                .collect();
+            api::results(&db, &text);
+        }
+        let w = db.write_path();
+        let pages = w
+            .heap_named("app::users", "User")
+            .unwrap()
+            .pages(w.pager())
+            .unwrap();
+        db.close().expect("the close");
+        out = Some((pages[0], last_page(&rt)));
+    });
+    let (page, last) = out.expect("the file");
+    (sim.files(), page, last)
+}
+
 #[test]
 fn a_restart_in_the_middle_of_a_pass_resumes_at_or_before_and_finds_rot_behind_it() {
-    let (files, page) = seeded(7, 5, &[("Some { value: 1h }", "0.0001")]);
+    let (files, _) = seeded(7, 5, &[("Some { value: 1h }", "0.0001")]);
+    let (files, page, last) = grown(7, files, 5, 4000);
+    assert!(
+        last.0 - page.0 >= 30,
+        "{page:?} lies well inside a file ending at {last:?}"
+    );
     let crash = time_cursor_passes(7, &files, page) + Duration::from_secs(1);
     let mut sim = Sim::with_files(7, Config::default(), files);
     let mut saved = None;
@@ -561,25 +593,36 @@ fn a_job_row_shows_only_while_a_pass_runs() {
     });
 }
 
-/// Returns the simulated time a pass of the file of `seeded` takes at budget `io`, by watching its
-/// row, and how many pages the file has.
+/// Returns the wall instant, in microseconds, the running job started at, if one runs.
+fn job_started(db: &Database<SimRuntime>) -> Option<i64> {
+    let mut rows = api::result(db, "from j in sys::jobs select j.started");
+    rows.next().map(|v| match v.expect("a row") {
+        adtb::Value::Instant(us) => us,
+        other => panic!("started is an instant: {other:?}"),
+    })
+}
+
+/// Returns the time a pass of the file of `seeded` takes at budget `io`, from its job's start to
+/// the end of the job, and how many pages the file has.
 fn pass_time(io: &str) -> (Duration, u64) {
     let (files, _) = seeded(13, 5, &[("Some { value: 1h }", io)]);
     let mut sim = Sim::with_files(13, Config::default(), files);
     let mut out = None;
     api::run(&mut sim, |rt| {
         let db = open(rt.clone());
-        let step = Duration::from_millis(20);
         nap(&rt, Duration::from_secs(3599));
-        while api::query(&db, JOBS).is_empty() {
-            nap(&rt, step);
+        let started = loop {
+            if let Some(us) = job_started(&db) {
+                break us;
+            }
+            nap(&rt, Duration::from_millis(20));
+        };
+        while job_started(&db).is_some() {
+            nap(&rt, Duration::from_millis(1));
         }
-        let began = rt.now();
-        while !api::query(&db, JOBS).is_empty() {
-            nap(&rt, step);
-        }
+        let ended = rt.wall().duration_since(std::time::UNIX_EPOCH).unwrap();
         out = Some((
-            rt.now().saturating_since(began),
+            ended - Duration::from_micros(started as u64),
             last_page(&rt).0 + 1 - Pid::FIRST_DATA.0,
         ));
     });

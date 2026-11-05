@@ -5,7 +5,7 @@ as web register shop-1.0 pins 2 edition "2026-10" lease 1d use customer-names
 query
   from b in catalog::bundles where b.name == "shop-1.0" select b.renewed
 ----
-2026-01-01T00:00:00.562356Z
+2026-01-01T00:00:00.603831Z
 
 advance 20h
 reopen
@@ -13,7 +13,7 @@ reopen
 query
   from b in catalog::bundles where b.name == "shop-1.0" select b.renewed
 ----
-2026-01-01T00:00:00.562356Z
+2026-01-01T00:00:00.603831Z
 
 advance 20h
 reopen
@@ -21,7 +21,7 @@ reopen
 query
   from b in catalog::bundles where b.name == "shop-1.0" select b.renewed
 ----
-2026-01-01T00:00:00.562356Z
+2026-01-01T00:00:00.603831Z
 
 advance 20h
 migrate
@@ -34,4 +34,4 @@ call shop-1.0 error BundleExpired { bundle: "shop-1.0", query: "" }
 query
   from b in catalog::bundles where b.name == "shop-1.0" select b.renewed
 ----
-2026-01-01T00:00:00.562356Z
+2026-01-01T00:00:00.603831Z

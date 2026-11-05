@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::runtime::{AlignedBuf, Runtime};
 
-use super::block::{LogFinding, LogProblem, Mode, scan};
+use super::block::{LogFinding, LogProblem, Mode, commits_from, scan};
 use super::log::parse_segment;
 use super::page::{self, Verdict};
 use super::pager::{Damage, Pager};
@@ -141,6 +141,20 @@ impl<R: Runtime> Pager<R> {
             });
         }
         commits
+    }
+
+    /// Returns the transaction of every commit record in the retained log from the batch holding
+    /// `since`, or from its first whole batch when that batch begins before its first segment.
+    ///
+    /// Fail with the LSN of the first damage before the end of the log recovery kept: a segment
+    /// it cannot list, open or read, a batch whose records do not decode, or a block missing.
+    pub fn logged_commits_since(&self, since: Lsn) -> Result<BTreeSet<u64>, Lsn> {
+        let loaded = {
+            let mut segments = self.segments.lock(&self.rt);
+            self.io(|d| segments.try_load(d))
+        };
+        let mut img = loaded.map_err(|_| since)?;
+        commits_from(&mut img, since, self.meta().recovered)
     }
 
     /// Check every page and the retained log. A page whose LSN is at or past the log's end when the

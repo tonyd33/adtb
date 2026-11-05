@@ -5,7 +5,8 @@ use adtb_testkit::scratch::Scratch;
 
 use super::alloc::diff;
 use super::block::{
-    Batch, BlockState, InMemory, LogImage, LogProblem, Mode, Scan, frame, read_block, scan,
+    Batch, BlockState, InMemory, LogImage, LogProblem, Mode, Scan, commits_from, frame, read_block,
+    scan,
 };
 use super::crc::{Crc32c, crc32c, crc32c_skipping};
 use super::header::{FileHeader, choose};
@@ -507,4 +508,94 @@ fn a_page_at_the_next_lsn_is_past_the_log_end_and_one_below_it_is_not() {
     };
     assert_eq!(Some(stale), Damage::past_log_end(next, next));
     assert_eq!(None, Damage::past_log_end(Lsn(4095), next));
+}
+
+/// Returns three segments of one-block batches, the batch at block `n` holding the commit of
+/// transaction `n`.
+fn committed_segments() -> BTreeMap<u64, Option<Vec<u8>>> {
+    let per = SEGMENT / BLOCK as u64;
+    let segment = |s: u64| {
+        let mut seg = vec![0; SEGMENT as usize];
+        for (i, b) in seg.chunks_mut(BLOCK).enumerate() {
+            let n = s * per + i as u64;
+            let mut data = Vec::new();
+            Record::Commit {
+                xid: n,
+                wall_nanos: 0,
+            }
+            .encode(&mut data);
+            b.copy_from_slice(&frame(
+                Lsn(n * BLOCK as u64),
+                n + 1,
+                1,
+                &[0; 16],
+                &data,
+                BLOCK,
+            ));
+        }
+        (s * SEGMENT, Some(seg))
+    };
+    (0..3).map(segment).collect()
+}
+
+fn block_at(n: u64) -> Lsn {
+    Lsn(n * BLOCK as u64)
+}
+
+fn commits(segments: BTreeMap<u64, Option<Vec<u8>>>, since: Lsn) -> Result<Vec<u64>, Lsn> {
+    let mut img = LogImage::in_memory(BLOCK, SEGMENT, segments);
+    commits_from(&mut img, since, block_at(48)).map(|c| c.into_iter().collect())
+}
+
+#[test]
+fn commits_from_a_whole_log_are_those_from_the_batch_holding_the_start() {
+    let got = commits(committed_segments(), Lsn(block_at(20).0 + 5));
+    assert_eq!(Ok((20..48).collect()), got);
+}
+
+#[test]
+fn commits_from_before_the_first_segment_start_at_its_first_whole_batch() {
+    let mut held = committed_segments();
+    held.remove(&0);
+    assert_eq!(Ok((16..48).collect()), commits(held, block_at(3)));
+}
+
+#[test]
+fn commits_from_a_log_damaged_before_its_end_fail_at_the_damage() {
+    let mut unreadable = committed_segments();
+    unreadable.insert(SEGMENT, None);
+    assert_eq!(Err(block_at(16)), commits(unreadable, block_at(2)));
+    let mut missing = committed_segments();
+    missing.remove(&SEGMENT);
+    assert_eq!(Err(block_at(16)), commits(missing.clone(), block_at(2)));
+    assert_eq!(Err(block_at(18)), commits(missing, block_at(18)));
+    let mut short = committed_segments();
+    short.remove(&(2 * SEGMENT));
+    assert_eq!(Err(block_at(32)), commits(short, block_at(2)));
+    let mut undecoded = committed_segments();
+    let at = (block_at(20).0 - SEGMENT) as usize;
+    let bad = frame(block_at(20), 21, 1, &[0; 16], &[0xff; 8], BLOCK);
+    undecoded.get_mut(&SEGMENT).unwrap().as_mut().unwrap()[at..at + BLOCK].copy_from_slice(&bad);
+    assert_eq!(Err(block_at(20)), commits(undecoded, block_at(2)));
+}
+
+#[test]
+fn commits_from_a_log_damaged_only_past_its_end_are_whole() {
+    let mut short = committed_segments();
+    short.remove(&(2 * SEGMENT));
+    let mut img = LogImage::in_memory(BLOCK, SEGMENT, short);
+    let got = commits_from(&mut img, block_at(2), block_at(32));
+    assert_eq!(Ok((2..32).collect()), got);
+}
+
+#[test]
+fn commits_from_a_batch_begun_before_the_first_segment_start_at_its_first_whole_batch() {
+    let mut held = committed_segments();
+    let straddling = frame(block_at(15), 16, 1, &[0; 16], &records(6), BLOCK);
+    assert_eq!(2 * BLOCK, straddling.len());
+    let seg = held.get_mut(&SEGMENT).unwrap().as_mut().unwrap();
+    seg[..BLOCK].copy_from_slice(&straddling[BLOCK..]);
+    held.remove(&0);
+    let since = Lsn(block_at(16).0 + 50);
+    assert_eq!(Ok((17..48).collect()), commits(held, since));
 }

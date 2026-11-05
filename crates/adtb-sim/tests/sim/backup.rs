@@ -261,7 +261,10 @@ fn restored_verify_clean_all_checks() {
         restore(&rt).unwrap();
         let db = open_at(rt, COPY).unwrap();
         assert_eq!(0, db.verify_holding().unwrap().count());
-        assert!(db.write_path().pager().verify().findings.is_empty());
+        let w = db.write_path();
+        let quiet = w.hold_vacuum(adtb::write::HoldWait::unbounded()).unwrap();
+        assert!(w.pager().verify().findings.is_empty());
+        drop(quiet);
         db.close().unwrap();
     });
 }

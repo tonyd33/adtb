@@ -746,7 +746,9 @@ catalog or the allocator, quarantines the whole database as a commit log
 page does.
 
 A commit log page that fails verification quarantines the whole
-database, since the visibility of every relation reads the commit log:
+database, since the visibility of every relation reads the commit log,
+and so does a retained log the open cannot read whole when it settles
+the ids a crash left in progress:
 every transaction is refused with the corruption fault, and the
 database opens for `verify` and `dump` only
 ([mvcc.md §4.2](mvcc.md#42-the-commit-log)).

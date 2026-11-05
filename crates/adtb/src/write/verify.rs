@@ -15,7 +15,7 @@ use crate::storage::{self, Damage, PageError, Pid};
 use crate::verify::{Finding, Problem};
 
 use super::schema::{Indexed, Rel};
-use super::{Database, Error, HoldWait, Txn};
+use super::{Database, Error, HoldWait, Txn, VacuumHold};
 
 /// What one run of `verify` covers, and so what it replaces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +81,7 @@ impl Found {
             },
             Damage::Unreadable => Found::Checksum { at, page: None },
             Damage::Stale { .. } => Found::StalePage { at, page: pid },
+            Damage::LogUnproven { .. } => Found::Structure { at },
         }
     }
 
@@ -267,11 +268,31 @@ impl<R: Runtime> Database<R> {
         scope: VerifyScope,
         waiting: HoldWait<'_>,
     ) -> Result<Vec<Found>, Error> {
+        self.index_checks(tx, scope, || self.hold_vacuum(waiting).map(Some))
+    }
+
+    /// Check each index of `scope` as [`Database::check_indexes`] does, under `_held`, the vacuum
+    /// lock the caller holds.
+    pub fn check_indexes_held(
+        &self,
+        tx: &Txn,
+        scope: VerifyScope,
+        _held: &VacuumHold<'_, R>,
+    ) -> Result<Vec<Found>, Error> {
+        self.index_checks(tx, scope, || Ok(None))
+    }
+
+    fn index_checks<'a>(
+        &'a self,
+        tx: &Txn,
+        scope: VerifyScope,
+        hold: impl Fn() -> Result<Option<VacuumHold<'a, R>>, Error>,
+    ) -> Result<Vec<Found>, Error> {
         let mut out = Vec::new();
         for r in self.rels.values() {
             if scope.covers(r.id) {
                 for (id, ix) in &r.indexes {
-                    let _no_vacuum = self.hold_vacuum(waiting)?;
+                    let _no_vacuum = hold()?;
                     self.check_index(tx, r, *id, ix, &mut out)?;
                 }
             }

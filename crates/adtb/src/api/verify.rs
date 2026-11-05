@@ -526,7 +526,8 @@ impl<R: Runtime> Engine<R> {
         self.verify_run(schema, scope, false, waiting)
     }
 
-    /// Run `verify` over the whole database with the checks that hold only with no writer as well.
+    /// Run `verify` over the whole database with the checks that hold only with no writer as well,
+    /// holding off vacuum, the background worker's included, for the whole run.
     ///
     /// Precondition: no other call runs on this database while it runs.
     pub(super) fn verified_holding(&self, schema: &Schema) -> Result<DynRows, write::Error> {
@@ -585,6 +586,11 @@ impl<R: Runtime> Engine<R> {
         waiting: HoldWait<'_>,
         job: &Job<'_, R>,
     ) -> Result<BTreeSet<Found>, write::Error> {
+        let held = if holding {
+            Some(self.db.hold_vacuum(waiting)?)
+        } else {
+            None
+        };
         if self.db.txns().quarantined().is_some() {
             job.phase("pages", 0.1);
             let mut found: BTreeSet<Found> = self.db.check_pages(scope)?.into_iter().collect();
@@ -603,7 +609,10 @@ impl<R: Runtime> Engine<R> {
         job.phase("pages", 0.1);
         found.extend(self.db.check_pages(scope)?);
         job.phase("indexes", 0.4);
-        found.extend(self.db.check_indexes(tx, scope, waiting)?);
+        found.extend(match &held {
+            Some(held) => self.db.check_indexes_held(tx, scope, held)?,
+            None => self.db.check_indexes(tx, scope, waiting)?,
+        });
         if !holding {
             found.extend(self.db.check_links(scope));
         }

@@ -11,6 +11,7 @@ mod catalog;
 mod checked_registration;
 mod checks;
 mod clog;
+mod clog_lost;
 mod commands;
 mod commit;
 mod constraints;

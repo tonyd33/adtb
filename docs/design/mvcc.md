@@ -252,7 +252,8 @@ the in-memory state keeps the first damage for the transaction layer,
 which holds no reference to the marks. `Transactions::open` reads every
 status page before it writes any, so a status page damaged at rest
 quarantines the database at open, the open sets the mark and no id is
-resolved. A catalog row is then read only as
+resolved. A retained log too damaged to settle an id in progress does
+the same. A catalog row is then read only as
 [storage.md §8](storage.md#8-quarantine) states. From then on every transaction is refused with the corruption fault: no
 transaction starts, takes a snapshot, commits or aborts, and status
 lookups fail naming the damaged page. The database opens for `verify`
@@ -272,17 +273,30 @@ keeps both or neither.
 
 Recovery replays the commit log pages as any pages
 ([storage.md §7](storage.md#7-recovery)); it does not read the commit
-and abort records. Opening the commit log after recovery then records
-as aborted every reserved id still in progress: the transactions
-running at the crash and the ids reserved but never assigned.
+and abort records. Opening the commit log after recovery then settles
+every reserved id still in progress: as committed when the retained log
+holds its commit record, and as aborted otherwise. A status page that
+lost a write can hold an id in progress whose commit record lies past
+the page's LSN, so the open reads the retained log from the oldest LSN
+of a status page holding such an id to the end of the log recovery
+kept. When that stretch of the log is not whole and readable (a segment
+it cannot list, open or read, a batch whose records do not decode, or a
+block missing), the open quarantines the whole database as a damaged
+status page does and settles no id.
 
-Postconditions, after a crash and recovery:
+Postconditions, after a crash and recovery, on an open that quarantines
+nothing:
 
-- An id reads as committed exactly when recovery accepted its commit
-  record, or it lies below the truncation bound. An acknowledged commit
-  therefore stays committed.
+- An id reads as committed exactly when its status page or a commit
+  record of the retained log says so, or it lies below the truncation
+  bound. An acknowledged commit whose commit record the retained log
+  holds therefore stays committed.
 - Every other id below the reservation reads as aborted. No id below the
   reservation reads as in progress until new transactions start.
+
+The retained log starts at its first segment. A commit record in a
+segment recycled before it is not read: an id whose status page lost
+the write of that commit reads as aborted.
 
 ### 4.3 Snapshots
 

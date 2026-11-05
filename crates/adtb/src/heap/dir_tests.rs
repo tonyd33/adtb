@@ -523,6 +523,7 @@ fn damage_is_recorded_outside_storage_only_by_these_functions() {
         "heap/large.rs::update",
         "heap/vm.rs::child",
         "mvcc/clog.rs::read_role",
+        "mvcc/clog.rs::unresolved",
         "write/sequence.rs::open",
         "write/verify.rs::every_other_problem_is_a_finding",
     ];

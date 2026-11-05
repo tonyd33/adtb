@@ -128,12 +128,14 @@ impl<R: Runtime> Transactions<R> {
     ///
     /// Postconditions:
     ///
-    /// - Every id assigned before the crash reads as committed exactly when its commit record was
-    ///   recovered, and as aborted otherwise.
+    /// - Every id assigned before the crash reads as committed exactly when its status page or a
+    ///   commit record of the retained log says so, and as aborted otherwise.
     /// - No id assigned before the crash is assigned again.
-    /// - If a status page is damaged, the database is quarantined.
-    /// - A file with a damaged status page or the database's mark has nothing written, and an id
-    ///   running at the crash still reads as in progress.
+    /// - If a status page is damaged, or the retained log is too damaged to settle an id in
+    ///   progress, the database is quarantined.
+    /// - A file with a damaged status page, a log that cannot settle an id in progress, or the
+    ///   database's mark has nothing written, and an id running at the crash still reads as in
+    ///   progress.
     ///
     /// Fail if the commit log's root or a directory page is damaged, or a status page cannot
     /// be read.
@@ -146,7 +148,7 @@ impl<R: Runtime> Transactions<R> {
         let damage = if found.is_some() || pager.is_quarantined(Quarantine::Database) {
             found
         } else {
-            clog.abort_unresolved(pager).err()
+            clog.settle_unresolved(pager).err()
         };
         if let Some(e) = damage.filter(|e| e.damage == Damage::Unreadable) {
             return Err(e);

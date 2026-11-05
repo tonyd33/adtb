@@ -1,5 +1,6 @@
 #[cfg(test)]
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use super::crc::crc32c_skipping;
 use super::record::{Malformed, Record};
@@ -469,4 +470,41 @@ pub fn scan<S: LogSource>(
         Mode::Verify => None,
     };
     out
+}
+
+/// Returns the transaction of every commit record of `img` from the batch holding `since`, or
+/// from its first whole batch when that batch begins before its first segment.
+///
+/// Fail with the LSN of the first damage before `end`: a block it cannot read, a batch that
+/// does not decode, or a block missing.
+pub fn commits_from<S: LogSource>(
+    img: &mut LogImage<S>,
+    since: Lsn,
+    end: Lsn,
+) -> Result<BTreeSet<u64>, Lsn> {
+    let base = img.first().ok_or(since)?;
+    let from = match (since >= base).then(|| img.batch_start(since)) {
+        Some(None) => return Err(since),
+        Some(Some(at)) if at >= base => at,
+        _ => img.first_batch().ok_or(since)?,
+    };
+    let block = img.block;
+    let mut commits = BTreeSet::new();
+    let s = scan(img, from, Mode::Verify, |batch, _| {
+        for (_, record) in batch.records(block).into_iter().flatten() {
+            if let Record::Commit { xid, .. } = record {
+                commits.insert(xid);
+            }
+        }
+    });
+    let undecoded = s
+        .findings
+        .iter()
+        .filter(|f| f.problem == LogProblem::Malformed && f.lsn < end)
+        .map(|f| f.lsn);
+    let short = (s.end < end).then_some(s.end);
+    match undecoded.chain(short).min() {
+        Some(at) => Err(at),
+        None => Ok(commits),
+    }
 }

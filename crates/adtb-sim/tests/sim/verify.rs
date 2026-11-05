@@ -526,7 +526,11 @@ fn a_lost_write_is_a_stale_page_finding() {
     files.get_mut(NAME).unwrap()[at..at + size].copy_from_slice(&old);
     let mut sim = Sim::with_files(43, Config::default(), files);
     api::run(&mut sim, |rt| {
-        let db = open_app(rt);
+        let quiet = adtb::OpenOptions {
+            no_background_vacuum: true,
+            ..api::options(2)
+        };
+        let db = Database::open_in(rt, NAME, &Log::new([APP]), &quiet).unwrap();
         let got = verified(&db, None);
         assert_eq!(1, got.len(), "{got:?}");
         assert!(got[0].starts_with("StalePage"), "{got:?}");

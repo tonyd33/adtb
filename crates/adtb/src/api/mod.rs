@@ -505,7 +505,8 @@ impl<R: Runtime> Database<R> {
     }
 
     /// Run `verify` over the whole database with the checks of the allocation bitmap, the heaps
-    /// and the large values that hold only with no writer. Returns the rows it wrote.
+    /// and the large values that hold only with no writer, holding off vacuum, the background
+    /// worker's included, for the whole run. Returns the rows it wrote.
     ///
     /// Precondition: no other call runs on this database while it runs.
     #[doc(hidden)]

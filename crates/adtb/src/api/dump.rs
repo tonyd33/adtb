@@ -454,7 +454,8 @@ fn ctor_of(v: &Val) -> u32 {
 
 impl<R: Runtime> Engine<R> {
     /// Fail with `Quarantined` naming the database when it is quarantined whole and a page the
-    /// schema or the visibility of a row is read from fails its check against the retained log.
+    /// schema or the visibility of a row is read from fails its check against the retained log, or
+    /// the retained log cannot settle an id in progress.
     fn admit_dump(&self) -> Result<(), Error> {
         let Some(refused) = self.refusal() else {
             return Ok(());
@@ -463,9 +464,11 @@ impl<R: Runtime> Engine<R> {
             return Err(refused);
         };
         let log = self.pager.read_log(true);
-        if pages
-            .into_iter()
-            .all(|pid| self.pager.check_page(pid, &log).is_empty())
+        let proven = self.db.txns().commit_log().unresolved(&self.pager).is_ok();
+        if proven
+            && pages
+                .into_iter()
+                .all(|pid| self.pager.check_page(pid, &log).is_empty())
         {
             Ok(())
         } else {

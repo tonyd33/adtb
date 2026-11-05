@@ -80,6 +80,8 @@ pub enum Damage {
     /// The page's LSN is not the one the log says it must be: a lost page write when `found` is
     /// before `expected`, a lost log record when past it.
     Stale { expected: Lsn, found: Lsn },
+    /// The page holds ids in progress that the log, damaged at `at`, cannot settle.
+    LogUnproven { at: Lsn },
 }
 
 impl Damage {
