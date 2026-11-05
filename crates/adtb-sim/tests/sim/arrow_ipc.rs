@@ -144,7 +144,7 @@ fn dtype(l: L<'_>) -> DataType {
     }
 }
 
-fn schema(file: &FileSchema) -> Schema {
+pub(crate) fn schema(file: &FileSchema) -> Schema {
     Schema::new(
         file.fields()
             .iter()
@@ -350,7 +350,7 @@ fn i32_at(b: &Buffer, i: usize) -> usize {
 }
 
 /// Returns row `i` of `d`, Arrow data of type `t`'s layout, as arrow-rs decoded it.
-fn get(t: &FileType, d: &ArrayData, i: usize) -> Datum {
+pub(crate) fn get(t: &FileType, d: &ArrayData, i: usize) -> Datum {
     match layout(t) {
         L::Nullable(_) if d.is_null(i) => Datum::Sum {
             ctor: 0,

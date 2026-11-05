@@ -17,10 +17,10 @@ use super::pager::parent;
 use super::{Lsn, Position};
 
 /// The layout of a dump directory this engine reads and writes.
-pub const DUMP_FORMAT: u32 = 1;
+pub const DUMP_FORMAT: u32 = 2;
 const KIND: &str = "dump";
 /// The only form of the rows of `data/` this engine writes and reads.
-const DATA_FORM: &str = "text";
+const DATA_FORM: &str = "arrow";
 /// The directories of a dump that hold entries.
 const DIRS: [&str; 2] = ["data", "bundles"];
 

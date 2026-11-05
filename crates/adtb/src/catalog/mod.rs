@@ -1,5 +1,6 @@
 //! Hold the catalog: relations, deployments, grants and their rows, and open and migrate them.
 
+pub mod arrows;
 mod broken;
 mod change;
 mod deploy;

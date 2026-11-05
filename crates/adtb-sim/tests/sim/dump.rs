@@ -1,7 +1,7 @@
 //! Logical dumps of a database and their restores into new files: the round trip, the refusals,
 //! and dump and restore under a failed op or a crash.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
 
@@ -1055,28 +1055,29 @@ fn reissued(
     with_parts(files, envelope, part, &[])
 }
 
-/// Write a whole dump at `DUMP` as [`reissued`] does, holding `added` besides.
+/// Write a whole dump at `DUMP` as [`reissued`] does, `part` editing only text entries, with each
+/// entry of `added` in place of the one of its name.
 fn with_parts(
     files: &Files,
     envelope: impl Fn(&mut Envelope),
     part: impl Fn(&str, &str) -> String,
-    added: &[(&str, &str)],
+    added: &[(&str, &[u8])],
 ) -> Files {
     let (mut e, snapshot) = manifest_of(files);
     envelope(&mut e);
-    let mut entries: Vec<(String, Vec<u8>)> = parts(files)
+    let mut entries: BTreeMap<String, Vec<u8>> = parts(files)
         .into_iter()
         .map(|(name, len)| {
             let bytes = &files[&format!("{DUMP}/{name}")][..len as usize];
+            if name.ends_with(".arrows") {
+                return (name, bytes.to_vec());
+            }
             let text = part(&name, std::str::from_utf8(bytes).unwrap());
             (name, text.into_bytes())
         })
         .collect();
-    entries.extend(
-        added
-            .iter()
-            .map(|(n, t)| ((*n).to_owned(), t.as_bytes().to_vec())),
-    );
+    entries.extend(added.iter().map(|(n, b)| ((*n).to_owned(), b.to_vec())));
+    let entries: Vec<(String, Vec<u8>)> = entries.into_iter().collect();
     let mut kept = files.clone();
     kept.retain(|p, _| !p.starts_with("d/"));
     let mut sim = Sim::with_files(8, Config::default(), kept);
@@ -1116,15 +1117,10 @@ fn refused_with(files: Files) -> Result<(), Error> {
 fn a_dump_that_decodes_wrong_is_refused_naming_its_part_and_writes_nothing() {
     let (files, _) = dumped();
     let same = |_: &mut Envelope| {};
-    let users = "data/app::users.User.txt";
+    let users = "data/app::users.User.arrows";
     let (e, _) = manifest_of(&files);
-    let pins = format!(" pins {} ", e.schema_version);
     let renumbered = reissued(&files, same, |n, t| match n {
         "log" => t.replacen("migration 1 ", "migration 2 ", 1),
-        _ => t.to_owned(),
-    });
-    let repinned = reissued(&files, same, |n, t| match n {
-        n if n == users => t.replacen(&pins, &format!(" pins {} ", e.schema_version + 1), 1),
         _ => t.to_owned(),
     });
     let fake = "ab".repeat(32);
@@ -1135,11 +1131,10 @@ fn a_dump_that_decodes_wrong_is_refused_naming_its_part_and_writes_nothing() {
     );
     let cases = [
         ("log", renumbered),
-        (users, repinned),
         ("log", rehashed),
         (
             "manifest",
-            resealed(&files, |b| b.replacen("data text", "data arrow", 1)),
+            resealed(&files, |b| b.replacen("data arrow", "data text", 1)),
         ),
         (
             "manifest",
@@ -1175,12 +1170,14 @@ fn a_dump_that_decodes_wrong_is_refused_naming_its_part_and_writes_nothing() {
         })
     };
     let header = |t: &str| t.lines().next().unwrap().to_owned() + "\n";
-    let square = "data/app::shapes.Square.txt";
-    let circle_row = |t: &str| t.lines().nth(2).unwrap().to_owned();
-    let circle = String::from_utf8_lossy(&files[&format!("{DUMP}/data/app::shapes.Circle.txt")])
-        .into_owned();
-    let row = circle_row(&circle);
-    let dot = "data/app::shapes.Dot.txt";
+    let square = "data/app::shapes.Square.arrows";
+    let entry = |name: &str| {
+        let (_, len) = parts(&files).into_iter().find(|(n, _)| n == name).unwrap();
+        files[&format!("{DUMP}/{name}")][..len as usize].to_vec()
+    };
+    let circles = entry("data/app::shapes.Circle.arrows");
+    let dot = "data/app::shapes.Dot.arrows";
+    let dot_users = entry(users);
     let more = [
         (
             "log",
@@ -1195,17 +1192,11 @@ fn a_dump_that_decodes_wrong_is_refused_naming_its_part_and_writes_nothing() {
         ),
         (
             square,
-            reissued(&files, same, |n, t| match n {
-                n if n == square => format!("{t}{row}\n"),
-                _ => t.to_owned(),
-            }),
+            with_parts(&files, same, |_, t| t.to_owned(), &[(square, &circles)]),
         ),
         (
             dot,
-            reissued(&files, same, |n, t| match n {
-                n if n == dot => t.replacen("data app::shapes", "data app::users", 1),
-                _ => t.to_owned(),
-            }),
+            with_parts(&files, same, |_, t| t.to_owned(), &[(dot, &dot_users)]),
         ),
         (
             "data/app::zz.Z.txt",
@@ -1213,7 +1204,16 @@ fn a_dump_that_decodes_wrong_is_refused_naming_its_part_and_writes_nothing() {
                 &files,
                 same,
                 |_, t| t.to_owned(),
-                &[("data/app::zz.Z.txt", "x")],
+                &[("data/app::zz.Z.txt", b"x")],
+            ),
+        ),
+        (
+            "data/app::zz.Z.arrows",
+            with_parts(
+                &files,
+                same,
+                |_, t| t.to_owned(),
+                &[("data/app::zz.Z.arrows", b"x")],
             ),
         ),
         ("generators", generator(header)),
@@ -1308,7 +1308,7 @@ fn deployment_state_that_decodes_wrong_is_refused_naming_its_part_and_writes_not
                 &files,
                 |_| {},
                 |_, t| t.to_owned(),
-                &[("bundles/zz-1", "x")],
+                &[("bundles/zz-1", b"x")],
             ),
         ),
         (
@@ -1477,10 +1477,12 @@ fn line_edits(lines: &[String]) -> Vec<Edit> {
         let mut dropped = lines.to_vec();
         dropped.remove(i);
         let expect = match i {
+            1 => Answer::Invalid,
             i if i < HEADER => judged(&dropped),
             i if part_name(&lines[i]) == "security" => {
                 Answer::Damaged("bundles/tool-1.0".to_owned())
             }
+            i if part_name(&lines[i]).ends_with(".txt") => Answer::Restored,
             i => Answer::Damaged(part_name(&lines[i])),
         };
         cases.push((format!("drop {i}"), dropped, expect));
@@ -1498,7 +1500,11 @@ fn line_edits(lines: &[String]) -> Vec<Edit> {
     for i in 0..HEADER {
         let mut renamed = lines.to_vec();
         renamed[i] = format!("x{}", lines[i]);
-        let expect = if i == 1 { backup() } else { manifest_damaged() };
+        let expect = if i == 1 {
+            Answer::Invalid
+        } else {
+            manifest_damaged()
+        };
         cases.push((format!("rename key {i}"), renamed, expect));
     }
     cases
@@ -1524,6 +1530,7 @@ fn field_edits(lines: &[String]) -> Vec<Edit> {
     let log = || Answer::Damaged("log".to_owned());
     [
         ("format", "0".to_owned(), Answer::Invalid),
+        ("format", "1".to_owned(), Answer::Invalid),
         ("format", u32::MAX.to_string(), Answer::Invalid),
         ("format", max.clone(), manifest_damaged()),
         ("schema_version", "0".to_owned(), log()),
@@ -1538,7 +1545,7 @@ fn field_edits(lines: &[String]) -> Vec<Edit> {
         ("edition", "1999".to_owned(), Answer::Invalid),
         ("schema_hash", "ab".repeat(32), log()),
         ("kind", "dumps".to_owned(), Answer::Invalid),
-        ("data", "arrow".to_owned(), manifest_damaged()),
+        ("data", "text".to_owned(), manifest_damaged()),
         ("encrypted", "1".to_owned(), manifest_damaged()),
     ]
     .into_iter()

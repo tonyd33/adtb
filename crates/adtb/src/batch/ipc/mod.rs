@@ -74,6 +74,26 @@ impl FileSchema {
     pub fn schema(&self) -> &Schema {
         &self.schema
     }
+
+    /// Returns the fewest bits of a stream's body one row of these columns takes.
+    pub fn row_bits(&self) -> usize {
+        self.fields.iter().map(|f| bits(form(&f.ty))).sum()
+    }
+}
+
+fn bits(f: Form<'_>) -> usize {
+    match f {
+        Form::Scalar(
+            Scalar::Text | Scalar::Bytes | Scalar::SortKey | Scalar::Period | Scalar::ZonedDateTime,
+        )
+        | Form::Enum(_)
+        | Form::List(_) => 32,
+        Form::Scalar(s) => 8 * width(s),
+        Form::Bool => 1,
+        Form::Struct { fields, .. } => fields.iter().map(|f| bits(form(&f.ty))).sum(),
+        Form::Union { .. } => 40,
+        Form::Nullable(t) => bits(form(t)),
+    }
 }
 
 fn batch_type(t: &FileType) -> Type {

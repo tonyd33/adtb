@@ -3,6 +3,7 @@
 
 use std::sync::OnceLock;
 
+use adtb::catalog::arrows;
 use adtb::runtime::Op;
 use adtb::storage;
 use adtb::{
@@ -42,10 +43,10 @@ const ROWS: &str = r#"transact
   insert shapes.Circle { name: "c", r: 2 }
   insert shapes.Square { name: "s", side: 3 }
   insert pins { id: 1, owner: users.key(1), email: Email("a@b") }"#;
-const USERS: &str = "data/app::users.User.txt";
-const CIRCLES: &str = "data/app::shapes.Circle.txt";
-const SQUARES: &str = "data/app::shapes.Square.txt";
-const PINS: &str = "data/app::pins.Pin.txt";
+const USERS: &str = "data/app::users.User.arrows";
+const CIRCLES: &str = "data/app::shapes.Circle.arrows";
+const SQUARES: &str = "data/app::shapes.Square.arrows";
+const PINS: &str = "data/app::pins.Pin.arrows";
 
 fn log() -> Log {
     Log::new(vec![APP.to_owned()])
@@ -79,16 +80,24 @@ fn dumped() -> Files {
 }
 
 /// Returns the device of [`dumped`] with the dump written again at `EDITED`, each row of `added`
-/// read into the data part it names.
+/// read into the Arrow entry it names and the text entry beside it.
 fn edited(added: &[(&str, &str)]) -> Files {
     let mut sim = Sim::with_files(2, Config::default(), dumped());
     api::run(&mut sim, |rt| {
         let (manifest, mut entries) = storage::read_dump(&rt, DUMP).unwrap();
         for (part, row) in added {
-            let text = std::str::from_utf8(&entries[*part]).unwrap();
+            let named = part.strip_suffix(".arrows").unwrap();
+            let text_part = format!("{named}.txt");
+            let text = std::str::from_utf8(&entries[&text_part]).unwrap();
             let doc = read_document::<Value>(schema(), &format!("{text}{row}\n")).unwrap();
+            let elem = schema().relation(doc.relation).elem_def;
+            let (_, ctor) = named.rsplit_once('.').unwrap();
+            let ctor = schema().ty(elem).ctor_index(ctor).unwrap();
+            let stream =
+                arrows::write_rows(schema(), doc.relation, ctor, &doc.rows, arrows::BATCH_LIMIT);
+            entries.insert((*part).to_owned(), stream);
             let text = print_document(schema(), &doc).unwrap();
-            entries.insert((*part).to_owned(), text.into_bytes());
+            entries.insert(text_part, text.into_bytes());
         }
         let entries: Vec<(String, Vec<u8>)> = entries.into_iter().collect();
         storage::write_dump(&rt, EDITED, manifest.envelope, manifest.snapshot, &entries).unwrap();
@@ -290,16 +299,13 @@ fn a_dump_violating_any_constraint_form_is_refused_with_its_violation_and_leaves
 }
 
 #[test]
-fn a_row_in_the_part_of_another_constructor_is_refused_as_damage() {
+fn a_stream_of_another_row_shape_in_a_part_is_refused_as_damage() {
     let files = edited(&[]);
     let mut sim = Sim::with_files(6, Config::default(), files);
     let moved = api::run(&mut sim, |rt| {
         let (manifest, mut entries) = storage::read_dump(&rt, EDITED).unwrap();
-        let circles = std::str::from_utf8(&entries[CIRCLES]).unwrap();
-        let squares = std::str::from_utf8(&entries[SQUARES]).unwrap();
-        let row = circles.lines().last().unwrap();
-        let text = format!("{squares}{row}\n");
-        entries.insert(SQUARES.to_owned(), text.into_bytes());
+        let circles = entries[CIRCLES].clone();
+        entries.insert(SQUARES.to_owned(), circles);
         let entries: Vec<(String, Vec<u8>)> = entries.into_iter().collect();
         storage::write_dump(&rt, "m", manifest.envelope, manifest.snapshot, &entries).unwrap();
         let archive = ArchiveTarget::path("m").unwrap();

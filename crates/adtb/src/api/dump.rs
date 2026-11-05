@@ -7,7 +7,9 @@ use adtb_lang::schema::{Generator, Schema};
 use adtb_lang::textual::{Form, Header, print, read_document};
 use adtb_lang::types::{RelId, Ty};
 
-use crate::catalog::{self, Deployed, Dormant, Fact, Mark, OWNER_ROLE, Origin, layout, values};
+use crate::catalog::{
+    self, Deployed, Dormant, Fact, Mark, OWNER_ROLE, Origin, arrows, layout, values,
+};
 use crate::exec::Val;
 use crate::runtime::Runtime;
 use crate::storage::{self, BackupError, DumpManifest, Envelope};
@@ -28,6 +30,10 @@ const SECURITY: &str = "security";
 const SETTINGS: &str = "settings";
 const AUDIT: &str = "audit";
 const BUNDLES: &str = "bundles/";
+/// The extension of a data entry in the Arrow form, which a restore reads.
+const ARROWS: &str = "arrows";
+/// The extension of a data entry in the text form, which a restore does not read.
+const TEXT: &str = "txt";
 /// The entry naming every bundle of a dump, with the owners of their families and their leases
 /// latched as expired. A bundle's name holds a `-`, so no bundle's entry takes this name.
 const INDEX: &str = "bundles/index";
@@ -430,11 +436,13 @@ fn sequenced(schema: &Schema, r: RelId) -> bool {
     rel.generate == Some(Generator::Sequence) && rel.key.len() == 1
 }
 
-fn data_name(schema: &Schema, r: RelId, ctor: u32) -> String {
+/// Returns the name of the entry holding the rows of constructor `ctor` of `r` in the form whose
+/// extension is `form`.
+fn data_name(schema: &Schema, r: RelId, ctor: u32, form: &str) -> String {
     let rel = schema.relation(r);
     let ctor = &schema.ty(rel.elem_def).ctors()[ctor as usize].name;
     let module = &schema.module(rel.module).name;
-    format!("data/{module}::{}.{ctor}.txt", rel.name)
+    format!("data/{module}::{}.{ctor}.{form}", rel.name)
 }
 
 fn ctor_of(v: &Val) -> u32 {
@@ -489,6 +497,7 @@ impl<R: Runtime> Engine<R> {
         let deployed = deployed.map_err(|e| failed(write::Broken::Facts(e).into()))?;
         let bundled = rows_of(schema, &BUNDLED, rows)?;
         entries.extend(bundle_entries(&envelope, schema, &bundled, &deployed));
+        let mut streams = Vec::new();
         for r in dumped(schema) {
             let mut by_ctor: BTreeMap<u32, BTreeSet<Val>> = BTreeMap::new();
             for row in self.db.relation_rows(tx, r).map_err(failed)? {
@@ -498,12 +507,15 @@ impl<R: Runtime> Engine<R> {
             for c in 0..u32::try_from(ctors).expect("a sum has fewer than 2^32 constructors") {
                 let rows = by_ctor.remove(&c).unwrap_or_default();
                 let text = document(schema, r, &rows, &header_line(&envelope));
-                entries.push((data_name(schema, r, c), text));
+                entries.push((data_name(schema, r, c, TEXT), text));
+                let stream = arrows::write_rows(schema, r, c, &rows, arrows::BATCH_LIMIT);
+                streams.push((data_name(schema, r, c, ARROWS), stream));
             }
         }
         let entries: Vec<(String, Vec<u8>)> = entries
             .into_iter()
             .map(|(name, text)| (name, text.into_bytes()))
+            .chain(streams)
             .collect();
         let snapshot = self.db.read_position(tx);
         storage::write_dump(&self.rt, &target, envelope, snapshot, &entries).map_err(refused)
@@ -723,15 +735,19 @@ fn fill<R: Runtime>(
         .flat_map(|r| {
             let ctors = schema.ty(schema.relation(r).elem_def).ctors().len();
             (0..u32::try_from(ctors).expect("a sum has fewer than 2^32 constructors"))
-                .map(move |c| (r, c, data_name(schema, r, c)))
+                .map(move |c| (r, c, data_name(schema, r, c, ARROWS)))
         })
         .collect();
     if let Some((_, _, missing)) = data.iter().find(|(_, _, n)| !entries.contains_key(n)) {
         return Err(damaged(missing));
     }
-    let named = [LOG, IDS, GENERATORS, SECURITY, SETTINGS, AUDIT];
-    let expected =
-        |n: &str| named.contains(&n) || n.starts_with(BUNDLES) || data.iter().any(|d| d.2 == n);
+    let mut allowed: BTreeSet<String> = [LOG, IDS, GENERATORS, SECURITY, SETTINGS, AUDIT]
+        .map(str::to_owned)
+        .into();
+    for (r, c, name) in &data {
+        allowed.extend([name.clone(), data_name(schema, *r, *c, TEXT)]);
+    }
+    let expected = |n: &str| allowed.contains(n) || n.starts_with(BUNDLES);
     if let Some(unexpected) = entries.keys().find(|n| !expected(n)) {
         return Err(damaged(unexpected));
     }
@@ -765,14 +781,9 @@ fn fill<R: Runtime>(
     let failed = |w| engine.write_error(super::TxnId(0), w);
     let restoring = engine.db.admit_restored_rows();
     for (r, c, name) in &data {
-        let doc = std::str::from_utf8(&entries[name])
-            .ok()
-            .and_then(|text| read_document::<Val>(schema, text).ok())
-            .filter(|d| d.header.as_ref() == Some(&header(e)) && d.relation == *r)
-            .filter(|d| d.rows.iter().all(|row| ctor_of(row) == *c))
-            .ok_or_else(|| damaged(name))?;
+        let rows = arrows::read_rows(schema, *r, *c, &entries[name]).map_err(|_| damaged(name))?;
         restoring
-            .write(&BTreeMap::from([((*r, *c), doc.rows)]))
+            .write(&BTreeMap::from([((*r, *c), rows.into_iter().collect())]))
             .map_err(failed)?;
     }
     restoring

@@ -139,7 +139,7 @@ pub fn key_value_ty(schema: &Schema, rel: RelId) -> Ty {
     }
 }
 
-fn scalar(b: Base) -> Scalar {
+pub(super) fn scalar(b: Base) -> Scalar {
     match b {
         Base::I8 => Scalar::I8,
         Base::I16 => Scalar::I16,

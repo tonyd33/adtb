@@ -13,6 +13,7 @@ type Slot<'a> = Option<&'a Datum>;
 ///
 /// Preconditions:
 /// - Every batch's schema is `file`'s.
+/// - Each column of each batch holds under 2^31 elements and under 2^31 value bytes.
 pub fn write<'a>(
     file: &FileSchema,
     batches: impl IntoIterator<Item = &'a Batch>,
