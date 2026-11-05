@@ -827,9 +827,9 @@ impl Heap {
             && page::get(&page, usize::from(tid.slot())) != Slot::Unused)
     }
 
-    /// Returns the slots of page `pid` whose index entries must be deleted before pruning can
-    /// free them: those named by index entries whose chain on the page holds no version `judge`
-    /// keeps. A page no longer of this heap has none.
+    /// Returns the slots of page `pid` whose index entries must be deleted before pruning can free
+    /// them: those named by index entries whose chain on the page holds no version `judge` keeps.
+    /// A page no longer of this heap has none, refused while the directory still names it.
     pub fn dead_slots<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -837,6 +837,9 @@ impl Heap {
         mut judge: impl FnMut(&Pager<R>, &Header) -> Result<Fate, PageError>,
     ) -> Result<Vec<u16>, PageError> {
         let page = pager.read_formatted(pid)?.to_vec();
+        if !self.holds_page(&page) {
+            self.refuse_if_named(pager, pid)?;
+        }
         if !self.ours(pager, pid, &page)? {
             return Ok(Vec::new());
         }
@@ -1330,7 +1333,7 @@ impl Heap {
                 continue;
             };
             let page = pager.read(pid)?.to_vec();
-            if !page::is_heap(&page) || storage::owner(&page) != self.id {
+            if !page::has_heap_kind(&page) || storage::owner(&page) != self.id {
                 problems.push((pid, format!("is not a page of heap {}", self.id)));
                 continue;
             }

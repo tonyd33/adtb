@@ -231,12 +231,17 @@ pub fn insert(page: &mut [u8], version: &[u8], flags: Flags) -> Option<usize> {
     put(page, slot, Content::Version(version, flags)).then_some(slot)
 }
 
+/// Returns whether the line pointers and tuple area of a slotted page fit the page.
+pub fn framed(page: &[u8]) -> bool {
+    let lower = POINTERS + POINTER * count(page);
+    (lower..=page.len()).contains(&upper(page))
+}
+
 /// Returns what is wrong with the line pointers and tuples of a slotted page.
 pub fn check(page: &[u8]) -> Vec<String> {
     let n = count(page);
-    let lower = POINTERS + POINTER * n;
     let top = upper(page);
-    if lower > page.len() || top < lower || top > page.len() {
+    if !framed(page) {
         return vec![format!("has {n} line pointers and tuples from {top}")];
     }
     let mut problems = Vec::new();

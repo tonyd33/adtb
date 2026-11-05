@@ -11,7 +11,7 @@ use crate::heap::{Error, Fate, FieldType, Heap, LargeStore};
 use crate::key::{Scalar, Value};
 use crate::storage::{Damage, Options, PageError, PageKind, Pager, Pid, Quarantine, Stopped};
 
-use super::super::page::{Arrangement, CONTENTS};
+use super::super::page::{self, Arrangement, CONTENTS};
 use super::super::stage::Stage;
 use super::super::vm::{self, Vm};
 use super::{CAPACITY, COUNT, LEVEL, Space, VM, entry, max_fanout, set_word};
@@ -345,4 +345,28 @@ fn a_map_pointer_naming_the_page_prune_holds_refuses_the_directory_root_within_a
         heap.prune(&p, page, keep, &[], false).map(drop)
     });
     assert_eq!(refused(root), pruned);
+}
+
+#[test]
+fn verify_names_the_slot_table_fault_of_a_page_relabelled_to_the_other_heap_kind() {
+    let scratch = Scratch::new("heap-dir", "relabel");
+    let pager = pager(&scratch);
+    let large = LargeStore::create(&pager, 107).unwrap();
+    let heap = Heap::create(&pager, 7, vec![FieldType::Scalar(Scalar::I64)], large).unwrap();
+    let data = Pid(heap.insert(&pager, 1, &[Value::I64(1)]).unwrap().page());
+    large.write(&pager, 1, &[1; 100]).unwrap();
+    let chunk = large.pages(&pager).unwrap()[0];
+    put_u16(&pager, data, 14, PageKind::HeapSlotted as u16);
+    put_u16(&pager, chunk, 14, PageKind::HeapFixed as u16);
+    let frame = |pid| {
+        page::check(&pager.read(pid).unwrap())
+            .into_iter()
+            .map(move |w| (pid, w))
+    };
+    let (data_fault, chunk_fault): (Vec<_>, Vec<_>) =
+        (frame(data).collect(), frame(chunk).collect());
+    assert_eq!(1, data_fault.len(), "{data_fault:?}");
+    assert_eq!(1, chunk_fault.len(), "{chunk_fault:?}");
+    assert_eq!(data_fault, heap.check(&pager).unwrap());
+    assert_eq!(chunk_fault, large.check(&pager).unwrap());
 }

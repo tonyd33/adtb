@@ -111,10 +111,21 @@ pub fn insert(page: &mut [u8], version: &[u8], flags: Flags) -> Option<usize> {
     put(page, slot, version, flags).then_some(slot)
 }
 
+/// Returns whether the slot width and count of a fixed-slot page fit the page.
+pub fn framed(page: &[u8]) -> bool {
+    let (n, w) = (count(page), width(page));
+    let fits = |n: usize| slots_at(n) + n * w <= page.len();
+    w >= HEADER_LEN
+        && w.is_multiple_of(8)
+        && n != 0
+        && fits(n)
+        && (n == usize::from(u16::MAX) || !fits(n + 1))
+}
+
 /// Returns what is wrong with the slot table of a fixed-slot page.
 pub fn check(page: &[u8]) -> Vec<String> {
     let (n, w) = (count(page), width(page));
-    if w < HEADER_LEN || !w.is_multiple_of(8) || n == 0 || n != capacity(page.len(), w) {
+    if !framed(page) {
         return vec![format!("has {n} fixed slots of width {w}")];
     }
     (0..n)

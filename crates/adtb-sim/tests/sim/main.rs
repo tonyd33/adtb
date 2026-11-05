@@ -26,6 +26,7 @@ mod files;
 mod grant_rows;
 mod heap;
 mod heap_claims;
+mod heap_kind;
 mod heap_threads;
 mod history;
 mod host_fns;

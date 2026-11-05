@@ -785,3 +785,16 @@ fn a_page_check_finds_overlapping_tuples_and_bad_states() {
     page::set_flags(&mut f, 0, Flags::MOVED);
     assert_eq!(vec!["unused slot 0 has flags".to_owned()], page::check(&f));
 }
+
+#[test]
+fn a_fixed_page_is_framed_only_at_the_most_slots_of_its_width_that_fit() {
+    for width in [24, 32, 104, 1000, 4048] {
+        let mut p = heap_page(Arrangement::Fixed { width }, 0);
+        let n = fixed::count(&p);
+        assert!(page::is_heap(&p), "{width}");
+        for count in [0, n - 1, n + 1] {
+            p[30..32].copy_from_slice(&(count as u16).to_le_bytes());
+            assert!(!page::is_heap(&p), "{width} with {count} of {n} slots");
+        }
+    }
+}

@@ -675,7 +675,7 @@ impl LargeStore {
                 continue;
             };
             let page = &pager.read_formatted(pid)?.to_vec();
-            let ours = page::is_heap(page) && storage::owner(page) == self.id();
+            let ours = page::has_heap_kind(page) && storage::owner(page) == self.id();
             if !ours || page::position(page) as usize != position {
                 problems.push((
                     pid,

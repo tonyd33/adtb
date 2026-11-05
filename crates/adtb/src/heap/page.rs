@@ -77,12 +77,21 @@ impl Arrangement {
     }
 }
 
-/// Returns whether `page` is a heap page of either arrangement.
-pub fn is_heap(page: &[u8]) -> bool {
+/// Returns whether `page` has a heap kind, whatever its slot table holds.
+pub fn has_heap_kind(page: &[u8]) -> bool {
     matches!(
         PageKind::from_u16(storage::kind(page)),
         Some(PageKind::HeapFixed | PageKind::HeapSlotted)
     )
+}
+
+/// Returns whether `page` is a heap page of either arrangement whose slot table fits the page.
+pub fn is_heap(page: &[u8]) -> bool {
+    match PageKind::from_u16(storage::kind(page)) {
+        Some(PageKind::HeapFixed) => fixed::framed(page),
+        Some(PageKind::HeapSlotted) => slotted::framed(page),
+        _ => false,
+    }
 }
 
 /// Returns what is wrong with the slots of heap page `page`.

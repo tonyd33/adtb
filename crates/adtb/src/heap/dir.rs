@@ -575,8 +575,8 @@ impl Space {
                     }
                 } else if self.holds(pager, child, position as u32)? {
                     return Ok(Some(child));
-                } else if self.misnamed(pager, here, i, child, position as u32)? {
-                    return Err(self.refuse(stage, pager, here));
+                } else if let Some(bad) = self.misnamed(pager, here, i, child, position as u32)? {
+                    return Err(self.refuse(stage, pager, bad));
                 } else {
                     continue 'search;
                 }
@@ -595,14 +595,20 @@ impl Space {
     }
 
     fn at(&self, page: &[u8], position: u32) -> bool {
-        page::is_heap(page)
+        self.claims(page, position) && page::is_heap(page)
+    }
+
+    /// Returns whether the header of `page` names a heap kind, the space's owner and `position`.
+    fn claims(&self, page: &[u8], position: u32) -> bool {
+        page::has_heap_kind(page)
             && storage::owner(page) == self.owner
             && page::position(page) == position
     }
 
-    /// Returns whether entry `i` of level-0 directory page `leaf` names `pid` while `pid` is not a
-    /// page of the space at `position`, holding one latch at a time: `leaf` is read optimistically
-    /// and validated after `pid` is read under its shared latch.
+    /// Returns the page to refuse when entry `i` of level-0 directory page `leaf` names `pid` while
+    /// `pid` is not a page of the space at `position`: `pid` when its header claims that position,
+    /// `leaf` otherwise. Holds one latch at a time: `leaf` is read optimistically and validated
+    /// after `pid` is read under its shared latch.
     ///
     /// Precondition: `i` is below the most entries a directory page holds.
     fn misnamed<R: Runtime>(
@@ -612,13 +618,18 @@ impl Space {
         i: usize,
         pid: Pid,
         position: u32,
-    ) -> Result<bool, PageError> {
+    ) -> Result<Option<Pid>, PageError> {
         let seen = pager.optimistic(leaf)?;
         if !seen.read(|node| level(node) == 0 && i < count(node) && entry(node, i).0 == pid) {
-            return Ok(false);
+            return Ok(None);
         }
-        let held = self.at(&pager.read(pid)?, position);
-        Ok(!held && seen.validate())
+        let page = pager.read(pid)?;
+        let (held, claimed) = (self.at(&page, position), self.claims(&page, position));
+        drop(page);
+        if held || !seen.validate() {
+            return Ok(None);
+        }
+        Ok(Some(if claimed { pid } else { leaf }))
     }
 
     /// Set entry `i` of directory page `parent` to the greatest category and the touched mark of
