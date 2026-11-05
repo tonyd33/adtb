@@ -4,7 +4,7 @@ use std::fmt;
 
 use adtb_lang::check::Program;
 use adtb_lang::schema::{Schema, TypeDefKind};
-use adtb_lang::textual::{Textual, key_field_ty};
+use adtb_lang::textual::{Textual, key_field_ty, key_names};
 use adtb_lang::types::{Base, CtorSet, RelId, Ty};
 use adtb_reference::{Database, Interpreter, Value};
 use unicode_normalization::is_nfc;
@@ -301,13 +301,14 @@ impl<'a> Judge<'a> {
         path.push_str(".key");
         match r.key.as_slice() {
             [f] => self.at(path, k, &key_field_ty(self.schema, rel, f))?,
-            fs => {
-                let mut names: Vec<&String> = fs.iter().collect();
-                names.sort();
+            _ => {
                 let want: Ty = Ty::Record(
-                    names
+                    key_names(self.schema, rel)
                         .into_iter()
-                        .map(|f| (f.clone(), key_field_ty(self.schema, rel, f)))
+                        .map(|f| {
+                            let ty = key_field_ty(self.schema, rel, &f);
+                            (f, ty)
+                        })
                         .collect(),
                 );
                 self.at(path, k, &want)?;

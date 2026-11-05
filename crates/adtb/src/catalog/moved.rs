@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use adtb_lang::evolve::{RowFn, RowMap};
 use adtb_lang::schema::Schema;
+use adtb_lang::textual::key_names;
 use adtb_lang::types::{RelId, Ty, TypeId};
 
 use crate::exec::{self, Conv, Scalar, Val, conv, from_stored, to_stored};
@@ -11,7 +12,8 @@ use crate::key::Value;
 use super::change::{Data, Failed, Field, Fill, Moved, convert, fields};
 use super::hosts::unbound;
 use super::ids::{
-    CatCtorId, CatRelId, ctor_id, ctor_index, field_id, rel_id, relation, type_def, type_id,
+    CatCtorId, CatRelId, ctor_id, ctor_index, field_id, rel_id, relation, type_ctor_id,
+    type_ctor_index, type_def, type_id,
 };
 use super::{Broken, Error, layout, oplog};
 
@@ -114,6 +116,7 @@ fn row_val(c: u32, convs: &[Conv], row: &[Value]) -> Val {
     )
 }
 
+/// Returns the constructor of relation `r` named `name`.
 fn ctor_named(schema: &Schema, r: RelId, name: &str) -> Option<u32> {
     schema.ty(schema.relation(r).elem_def).ctor_index(name)
 }
@@ -206,13 +209,22 @@ fn key_value(
     keyed: RelId,
 ) -> Result<Value, Failed> {
     let from = fields(a, r, c);
-    let name = ctor_name(a, a.relation(r).elem_def, c);
-    let kc =
-        ctor_named(k, keyed, name).ok_or_else(|| Failed::from(Broken::NoCtor(name.to_owned())))?;
+    let kc = ctor_index(k, keyed, ctor_id(a, r, c)).ok_or_else(|| {
+        Failed::from(Broken::NoCtor(
+            ctor_name(a, a.relation(r).elem_def, c).to_owned(),
+        ))
+    })?;
     let to = fields(k, keyed, kc);
-    let mut vs = layout::key_names(k, keyed)
+    let mut vs = key_names(k, keyed)
         .iter()
-        .map(|n| carried(&from, row, field_named(&to, n)?))
+        .map(|n| {
+            let t = field_named(&to, n)?;
+            let at = from
+                .iter()
+                .position(|f| f.id.is_some() && f.id == t.id)
+                .ok_or_else(|| Failed::from(Broken::NoCounterpart(n.clone())))?;
+            convert(&from[at].ty, &t.ty, &row[at]).map_err(Failed::Refused)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(match vs.len() {
         1 => vs.remove(0),
@@ -232,8 +244,7 @@ impl Mapping<'_> {
         let f = Arc::new(compiled(fill, self.hosts)?);
         for (ra, rid, rb) in relations_of(a, b, def) {
             for &c in ctors {
-                let name = ctor_name(a, def, c);
-                let Some(cb) = ctor_named(b, rb, name) else {
+                let Some(cb) = ctor_index(b, rb, ctor_id(a, ra, c)) else {
                     continue;
                 };
                 let to = fields(b, rb, cb);
@@ -276,7 +287,7 @@ impl Mapping<'_> {
         let after = layout::ctors(b, &data(db));
         let before = layout::ctors(&fill.schema, &data(def));
         for &c in ctors {
-            let Some(cb) = b.ty(db).ctor_index(ctor_name(a, def, c)) else {
+            let Some(cb) = type_ctor_index(b, db, type_ctor_id(a, def, c)) else {
                 continue;
             };
             let (cid, to) = &after[cb as usize];
@@ -306,9 +317,9 @@ impl Mapping<'_> {
 
     fn copies(&mut self, def: TypeId, ctors: &[u32], field: &str) {
         let (a, b) = (self.a, self.b);
-        for (_, rid, rb) in relations_of(a, b, def) {
+        for (ra, rid, rb) in relations_of(a, b, def) {
             for &c in ctors {
-                let Some(cb) = ctor_named(b, rb, ctor_name(a, def, c)) else {
+                let Some(cb) = ctor_index(b, rb, ctor_id(a, ra, c)) else {
                     continue;
                 };
                 let Some(to) = fields(b, rb, cb).into_iter().find(|f| f.name == field) else {

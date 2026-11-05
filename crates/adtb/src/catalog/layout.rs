@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use adtb_lang::schema::{Schema, TypeDefKind};
-use adtb_lang::textual::key_field_ty;
+use adtb_lang::textual::{key_field_ty, key_names};
 use adtb_lang::types::{Base, RelId, Ty, TypeId};
 
 use crate::batch;
@@ -137,13 +137,6 @@ pub fn key_value_ty(schema: &Schema, rel: RelId) -> Ty {
                 .collect(),
         ),
     }
-}
-
-/// Returns the key fields of `rel` in the order a value of `Key rel` holds them.
-pub fn key_names(schema: &Schema, rel: RelId) -> Vec<String> {
-    let mut names = schema.relation(rel).key.clone();
-    names.sort();
-    names
 }
 
 fn scalar(b: Base) -> Scalar {

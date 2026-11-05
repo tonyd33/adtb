@@ -578,7 +578,7 @@ fn a_pinned_key_is_judged_by_its_fields_and_its_identity_across_each_operator() 
             }
         }
     }
-    assert_eq!(72, got.len(), "every relation, operator and body pair ran");
+    assert_eq!(84, got.len(), "every relation, operator and body pair ran");
     let differs: Vec<String> = got
         .iter()
         .filter(|(k, v)| expected.get(*k) != Some(v))

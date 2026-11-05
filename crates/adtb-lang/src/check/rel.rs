@@ -1,5 +1,6 @@
 use super::*;
 use crate::kernel::Kind;
+use crate::textual::key_names;
 
 impl Checker<'_> {
     /// `r.S` as a set of rows.
@@ -68,12 +69,12 @@ impl Checker<'_> {
         };
         match r.key.as_slice() {
             [one] => field_ty(one),
-            many => {
+            _ => {
                 let mut fs = Vec::new();
-                for k in many {
-                    fs.push((k.clone(), field_ty(k)?));
+                for k in key_names(self.schema, rel) {
+                    let ty = field_ty(&k)?;
+                    fs.push((k, ty));
                 }
-                fs.sort_by(|a, b| a.0.cmp(&b.0));
                 Ok(Ty::Record(fs))
             }
         }

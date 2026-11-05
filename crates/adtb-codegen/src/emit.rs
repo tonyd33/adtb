@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write;
 
 use adtb_lang::schema::{FieldDef, Schema, TypeDefKind};
-use adtb_lang::textual::key_field_ty;
+use adtb_lang::textual::{key_field_ty, key_names};
 use adtb_lang::types::{Base, RelId, Ty, TypeId};
 
 use crate::Error;
@@ -391,12 +391,14 @@ impl<'s> Module<'s> {
         let path = format!("{module}::{}", r.name);
         let key = match r.key.as_slice() {
             [k] => self.host_ty(&key_field_ty(schema, rel, k), &format!("{marker}Key"), &[])?,
-            ks => {
-                let mut fs: Vec<(String, Ty)> = ks
-                    .iter()
-                    .map(|k| (k.clone(), key_field_ty(schema, rel, k)))
+            _ => {
+                let fs: Vec<(String, Ty)> = key_names(schema, rel)
+                    .into_iter()
+                    .map(|k| {
+                        let ty = key_field_ty(schema, rel, &k);
+                        (k, ty)
+                    })
                     .collect();
-                fs.sort_by(|a, b| a.0.cmp(&b.0));
                 self.host_ty(&Ty::Record(fs), &format!("{marker}Key"), &[])?
             }
         };

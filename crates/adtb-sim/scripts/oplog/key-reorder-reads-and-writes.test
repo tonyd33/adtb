@@ -1,0 +1,62 @@
+seed 41
+migrate
+  module shop
+  add module shop
+  add type Tier = Free | Paid
+  add type Price = { t: Tier, b: Text, m: I64, w: Text }
+  add relation prices : Price key (t, b, m)
+  add type Order = { id: Key orders, price: Key prices }
+  add relation orders : Order key id generate sequence
+  add type Line = { o: Key orders, t: Tier, b: Text }
+  add relation lines : Line key (o, t, b)
+  add type Note = { id: Key notes, line: Key lines }
+  add relation notes : Note key id generate sequence
+
+run
+  transact
+    insert prices { t: Paid, b: "b1", m: 1, w: "w1" }
+    insert prices { t: Free, b: "b2", m: 2, w: "w2" }
+    insert orders { price: prices.key(t: Paid, b: "b1", m: 1) }
+
+migrate
+  module shop
+  rename field Price.b to z
+
+query rowsort
+  from p in prices select p
+----
+Price { t: Free, z: "b2", m: 2, w: "w2" }
+Price { t: Paid, z: "b1", m: 1, w: "w1" }
+
+query rowsort
+  from o in orders select { key: o.price, w: o.price.w, z: o.price.z }
+----
+{ key: prices.key(m: 1, t: Paid, z: "b1"), w: "w1", z: "b1" }
+
+run
+  transact
+    insert prices { t: Free, z: "b2", m: 2, w: "dup" } unless conflict on key else skip
+    insert prices { t: Paid, z: "b1", m: 1, w: "w1x" } unless conflict on key else update old set new
+    insert prices { t: Free, z: "b3", m: 3, w: "w3" }
+    insert orders { price: prices.key(t: Free, z: "b3", m: 3) }
+
+run
+  transact
+    delete x in prices where key x == prices.key(t: Free, z: "b2", m: 2)
+
+query rowsort
+  from o in orders select { w: o.price.w, z: o.price.z, t: o.price.t }
+----
+{ w: "w1x", z: "b1", t: Paid }
+{ w: "w3", z: "b3", t: Free }
+
+run
+  transact
+    let o = insert orders { price: prices.key(t: Free, z: "b3", m: 3) }
+    let l = insert lines { o: key o, t: Paid, b: "l1" }
+    insert notes { line: key l }
+
+query rowsort
+  from n in notes select { t: n.line.t, b: n.line.b, w: n.line.o.price.w }
+----
+{ t: Paid, b: "l1", w: "w3" }

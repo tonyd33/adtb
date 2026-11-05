@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use adtb_lang::kernel::{Kind, PathStep, Prim, Tm, Var};
+use adtb_lang::textual::key_names;
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
 use super::{
@@ -66,10 +67,14 @@ impl Planner<'_> {
                 vec![(f.clone(), self.add(Kind::Prim(Prim::KeyValue, vec![k]), ty))]
             }
             fs => {
-                let mut tys: Vec<(String, Ty)> =
-                    fs.iter().map(|f| (f.clone(), field_ty(f))).collect();
-                tys.sort_by(|a, b| a.0.cmp(&b.0));
-                let rec = self.add(Kind::Prim(Prim::KeyValue, vec![k]), Ty::Record(tys.clone()));
+                let tys: Vec<(String, Ty)> = key_names(self.schema, rel)
+                    .into_iter()
+                    .map(|f| {
+                        let ty = field_ty(&f);
+                        (f, ty)
+                    })
+                    .collect();
+                let rec = self.add(Kind::Prim(Prim::KeyValue, vec![k]), Ty::Record(tys));
                 fs.iter()
                     .map(|f| {
                         let ty = field_ty(f);

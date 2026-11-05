@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use adtb_lang::kernel::{Const, Kind, Terms, Tm, Var};
 use adtb_lang::schema::{Generator, Schema};
+use adtb_lang::textual::key_names;
 use adtb_lang::types::{Base, RelId, Ty};
 
 use crate::exec::Val;
@@ -132,13 +133,14 @@ pub fn fill<E>(
                     },
                     f => fill(schema, &f, v, draw)?,
                 },
-                ks => {
-                    let mut names = ks.to_vec();
-                    names.sort();
+                _ => {
                     let Val::Record(fs) = v else {
                         panic!("a composite key is a record")
                     };
-                    let tys: Vec<Ty> = names.iter().map(|n| field_ty(n)).collect();
+                    let tys: Vec<Ty> = key_names(schema, *rel)
+                        .iter()
+                        .map(|n| field_ty(n))
+                        .collect();
                     Val::record(fill_all(schema, tys.iter().zip(fs.iter()), draw)?)
                 }
             }

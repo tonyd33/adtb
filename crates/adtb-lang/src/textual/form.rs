@@ -50,6 +50,13 @@ pub enum KeyForm {
     Fields(Vec<(String, Form)>),
 }
 
+/// Returns the key fields of `rel` in the order a value of `Key rel` holds them.
+pub fn key_names(schema: &Schema, rel: RelId) -> Vec<String> {
+    let mut names = schema.relation(rel).key.clone();
+    names.sort();
+    names
+}
+
 /// Returns the type of key field `f` of `rel`, where a key field that is a key of `rel` itself
 /// has the type of the value its generator draws.
 pub fn key_field_ty(schema: &Schema, rel: RelId, f: &str) -> Ty {
@@ -145,18 +152,15 @@ impl Form {
                 let r = schema.relation(*rel);
                 let value = match r.key.as_slice() {
                     [f] => KeyForm::One(Box::new(Form::of(schema, &key_field_ty(schema, *rel, f)))),
-                    fs => {
-                        let mut names: Vec<&String> = fs.iter().collect();
-                        names.sort();
-                        KeyForm::Fields(
-                            names
-                                .into_iter()
-                                .map(|f| {
-                                    (f.clone(), Form::of(schema, &key_field_ty(schema, *rel, f)))
-                                })
-                                .collect(),
-                        )
-                    }
+                    _ => KeyForm::Fields(
+                        key_names(schema, *rel)
+                            .into_iter()
+                            .map(|f| {
+                                let form = Form::of(schema, &key_field_ty(schema, *rel, &f));
+                                (f, form)
+                            })
+                            .collect(),
+                    ),
                 };
                 Form::Key {
                     rel: r.name.clone(),

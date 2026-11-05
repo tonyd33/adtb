@@ -1066,7 +1066,7 @@ fn a_pinned_key_answers_at_its_pin_and_after_each_operator_it_crosses() {
         differs.join("\n")
     );
     assert_eq!(
-        (2, 4, 6),
+        (2, 6, 6),
         runs,
         "every pin, every crossed operator and each named pair ran"
     );

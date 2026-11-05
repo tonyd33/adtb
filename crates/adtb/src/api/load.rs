@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use adtb_lang::schema::{Schema, ValueDef};
+use adtb_lang::textual::key_names;
 use adtb_lang::types::{Base, RelId, Ty};
 
 use crate::catalog::layout::{self, batch_type};
@@ -326,11 +327,9 @@ fn staged(schema: &Schema, target: &str) -> Result<Staged, Error> {
             filled,
         });
     }
-    let mut key_names: Vec<&String> = r.key.iter().collect();
-    key_names.sort();
-    let key = key_names
+    let key = key_names(schema, rel)
         .iter()
-        .map(|k| columns.iter().position(|c| c.name == **k))
+        .map(|k| columns.iter().position(|c| c.name == *k))
         .collect::<Option<Vec<usize>>>()
         .ok_or_else(unknown)?;
     let qualified = format!("{}::{}", schema.module(r.module).name, r.name);

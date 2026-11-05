@@ -50,7 +50,12 @@ pub fn rel_id(schema: &Schema, r: RelId) -> CatRelId {
 
 /// Returns the catalog id of constructor `c` of relation `r` of `schema`.
 pub fn ctor_id(schema: &Schema, r: RelId, c: u32) -> CatCtorId {
-    CatCtorId(schema.ids.ctors[&(schema.relation(r).elem_def, c)])
+    type_ctor_id(schema, schema.relation(r).elem_def, c)
+}
+
+/// Returns the catalog id of constructor `c` of type `def` of `schema`.
+pub fn type_ctor_id(schema: &Schema, def: TypeId, c: u32) -> CatCtorId {
+    CatCtorId(schema.ids.ctors[&(def, c)])
 }
 
 pub fn type_id(schema: &Schema, def: TypeId) -> Option<CatTypeId> {
@@ -85,7 +90,11 @@ pub fn type_def(schema: &Schema, id: CatTypeId) -> Option<TypeId> {
 
 /// Returns the position of the constructor with catalog id `id` of relation `r`.
 pub fn ctor_index(schema: &Schema, r: RelId, id: CatCtorId) -> Option<u32> {
-    let def = schema.relation(r).elem_def;
+    type_ctor_index(schema, schema.relation(r).elem_def, id)
+}
+
+/// Returns the position of the constructor with catalog id `id` of type `def`.
+pub fn type_ctor_index(schema: &Schema, def: TypeId, id: CatCtorId) -> Option<u32> {
     schema
         .ids
         .ctors

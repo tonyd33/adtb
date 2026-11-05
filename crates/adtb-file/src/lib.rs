@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use adtb_lang::kernel::FileFormat;
 use adtb_lang::schema::{Schema, TypeDefKind};
-use adtb_lang::textual::{Textual, key_field_ty};
+use adtb_lang::textual::{Textual, key_field_ty, key_names};
 use adtb_lang::types::{Base, CtorSet, RelId, Ty};
 use unicode_normalization::UnicodeNormalization;
 
@@ -524,14 +524,15 @@ fn key_value_ty(schema: &Schema, rel: RelId) -> Ty {
     let r = schema.relation(rel);
     match r.key.as_slice() {
         [f] => key_field_ty(schema, rel, f),
-        fs => {
-            let mut fields: Vec<(String, Ty)> = fs
-                .iter()
-                .map(|f| (f.clone(), key_field_ty(schema, rel, f)))
-                .collect();
-            fields.sort_by(|a, b| a.0.cmp(&b.0));
-            Ty::Record(fields)
-        }
+        _ => Ty::Record(
+            key_names(schema, rel)
+                .into_iter()
+                .map(|f| {
+                    let ty = key_field_ty(schema, rel, &f);
+                    (f, ty)
+                })
+                .collect(),
+        ),
     }
 }
 

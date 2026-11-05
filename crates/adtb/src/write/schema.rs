@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::{Generator, OnDelete, ReferenceIndex, Schema};
+use adtb_lang::textual::key_names;
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
 use crate::catalog::{IndexKeys, IndexSpec};
@@ -130,8 +131,7 @@ pub fn rels(schema: &Schema, normal: &NormalProgram, catalog: &Catalog) -> Resul
         let r = schema.relation(*rel);
         let cs = ctors(schema, &r.elem).expect("a relation's element type is a sum");
         let def = schema.ty(r.elem_def);
-        let mut key_names = r.key.clone();
-        key_names.sort();
+        let key = key_names(schema, *rel);
         let ctor_list = cs
             .iter()
             .enumerate()
@@ -143,7 +143,7 @@ pub fn rels(schema: &Schema, normal: &NormalProgram, catalog: &Catalog) -> Resul
                     heap: desc.heaps[&c],
                     convs: fields.iter().map(|(_, t)| conv(schema, t)).collect(),
                     refs: refs(schema, *rel, c, &desc.indexes),
-                    key_at: key_names
+                    key_at: key
                         .iter()
                         .map(|n| pos(n).expect("every constructor has the key fields"))
                         .collect(),

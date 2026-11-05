@@ -720,3 +720,107 @@ fn a_function_with_a_bounded_type_parameter_is_hashed() {
     assert_eq!("Language", ctor);
     assert_eq!(Value::Text("[a: Ord] (x: a, y: a) -> a".into()), row[3]);
 }
+
+/// Returns whether `line` reads a relation's key fields.
+fn reads_key(line: &str) -> bool {
+    [".key.", ".key;", ".key)", ".key_fields"]
+        .iter()
+        .any(|k| line.contains(k))
+}
+
+/// Returns whether `line` sorts: a sort method of any form, or an ordered collection built.
+fn sorts(line: &str) -> bool {
+    [
+        ".sort(",
+        ".sort_by",
+        ".sort_unstable",
+        ".sort_by_key",
+        ".sort_by_cached_key",
+    ]
+    .iter()
+    .any(|s| line.contains(s))
+}
+
+/// Add to `out` each line of the Rust sources under `dir` that orders a relation's key fields,
+/// as `PATH: LINE TEXT`, and count in `seen` each sort it reads: a sort within 12 lines of a
+/// read of the key, or a `BTreeSet` or `BTreeMap` collected in a statement that reads it.
+fn key_sorts(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut Vec<String>,
+    seen: &mut usize,
+) {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .expect("the sources are readable")
+        .map(|e| e.expect("a directory entry").path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            if !path.ends_with("target") {
+                key_sorts(root, &path, out, seen);
+            }
+            continue;
+        }
+        if path.extension().is_none_or(|e| e != "rs") || path.ends_with("catalog/tests.rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("a source is readable");
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, l) in lines.iter().enumerate() {
+            let statement = || {
+                let end = lines[i..].iter().position(|l| l.contains(';')).unwrap_or(0);
+                &lines[i..=(i + end).min(i + 8)]
+            };
+            let hit = if sorts(l) {
+                *seen += 1;
+                lines[i.saturating_sub(12)..=i].iter().any(|l| reads_key(l))
+            } else if l.contains("BTreeSet") || l.contains("BTreeMap") {
+                *seen += 1;
+                let st = statement();
+                st.iter().any(|l| reads_key(l)) && st.iter().any(|l| l.contains("collect"))
+            } else {
+                false
+            };
+            if hit {
+                let at = path.strip_prefix(root).expect("under the root").display();
+                out.push(format!("{at}: {}", l.trim()));
+            }
+        }
+    }
+}
+
+#[test]
+fn only_key_names_sorts_the_fields_of_a_key() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let (mut found, mut seen, mut scanned) = (Vec::new(), 0, 0);
+    for group in ["crates", "apps"] {
+        let mut dirs: Vec<_> = std::fs::read_dir(root.join(group))
+            .expect("the crates are readable")
+            .map(|e| e.expect("a directory entry").path())
+            .collect();
+        dirs.sort();
+        for dir in dirs {
+            let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap_or_default();
+            if manifest.contains("adtb-lang") {
+                scanned += 1;
+                key_sorts(&root, &dir, &mut found, &mut seen);
+            }
+        }
+    }
+    assert!(
+        scanned >= 15,
+        "the search reached every crate on adtb-lang: {scanned}"
+    );
+    assert!(
+        seen > 100,
+        "the search read the sorts of those crates: {seen}"
+    );
+    let membership = [
+        "crates/adtb-lang/src/evolve/ctor/mod.rs: \
+         fn key_fields(schema: &Schema, def: TypeId) -> BTreeSet<String> {",
+        "crates/adtb-lang/src/evolve/ids.rs: let keys: BTreeSet<&String> = schema",
+    ];
+    let rule = "crates/adtb-lang/src/textual/form.rs: names.sort();";
+    assert_eq!(vec![membership[0], membership[1], rule], found);
+}

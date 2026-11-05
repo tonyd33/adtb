@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use adtb_lang::textual::key_field_ty;
+use adtb_lang::textual::{key_field_ty, key_names};
 use adtb_lang::translate::Map;
 use adtb_lang::types::Ty;
 
@@ -88,9 +88,7 @@ fn recode(map: &Map<'_>, ty: &Ty, v: &Val, forward: bool) -> Val {
             Val::tag(c.expect("a carried tag's constructor has a counterpart at both versions"))
         }
         (Ty::Key { rel, .. }, _) => {
-            let mut names = map.from.relation(*rel).key.clone();
-            names.sort();
-            let tys: Vec<Ty> = names
+            let tys: Vec<Ty> = key_names(map.from, *rel)
                 .iter()
                 .map(|f| key_field_ty(map.from, *rel, f))
                 .collect();

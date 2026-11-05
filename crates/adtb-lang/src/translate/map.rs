@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::schema::{Schema, TypeDefKind};
-use crate::textual::key_field_ty;
+use crate::textual::{key_field_ty, key_names};
 use crate::types::*;
 
 /// The objects of one schema version as they are at another, matched by catalog id; an object
@@ -299,8 +299,7 @@ impl<'a> Map<'a> {
             return Ok(None);
         }
         let r = self.from.relation(rel);
-        let mut pinned = r.key.clone();
-        pinned.sort();
+        let pinned = key_names(self.from, rel);
         let image = |f: &String| {
             self.field(r.elem_def, Some(0), f)
                 .ok_or_else(|| Loss::Field {

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::schema::Schema;
-use adtb_lang::textual::key_field_ty;
+use adtb_lang::textual::{key_field_ty, key_names};
 use adtb_lang::types::{RelId, Ty};
 
 use crate::heap::FieldType;
@@ -51,7 +51,7 @@ struct Shape {
 
 /// Returns the key field ids of `rel`, in the order a value of `Key rel` holds them.
 fn key_ids(schema: &Schema, rel: RelId) -> Vec<Option<CatFieldId>> {
-    layout::key_names(schema, rel)
+    key_names(schema, rel)
         .iter()
         .map(|n| field_id(schema, schema.relation(rel).elem_def, 0, n))
         .collect()
@@ -69,7 +69,7 @@ fn reached_keys(schema: &Schema, ty: &Ty, seen: &mut Vec<Ty>, keys: &mut KeyIds)
     match &t {
         Ty::Key { rel, .. } if schema.ahead_relation(*rel).is_none() => {
             keys.insert(rel_id(schema, *rel), key_ids(schema, *rel));
-            for n in layout::key_names(schema, *rel) {
+            for n in key_names(schema, *rel) {
                 reached_keys(schema, &key_field_ty(schema, *rel, &n), seen, keys);
             }
         }
@@ -263,14 +263,9 @@ fn carry<'f>(
     to.iter()
         .zip(&types.to)
         .map(|(t, tb)| {
-            let kept =
-                t.id.and_then(|id| from.iter().position(|f| f.id == Some(id)))
-                    .or_else(|| {
-                        t.id.is_none()
-                            .then(|| from.iter().position(|f| f.name == t.name))
-                            .flatten()
-                    });
-            match (t.id.and_then(&fill), kept) {
+            let id = t.id.ok_or_else(|| Broken::NoFieldId(t.name.clone()))?;
+            let kept = from.iter().position(|f| f.id == Some(id));
+            match (fill(id), kept) {
                 (Some(f), _) => f(from, row),
                 (None, Some(at)) => stored(types, &types.from[at], tb, &row[at]),
                 (None, None) => Err(Failed::Refused(format!(
@@ -311,7 +306,7 @@ fn keyed(types: &Types<'_>, ra: RelId, rb: RelId, v: &Value) -> Option<Result<Va
     let key = |s: &Schema, r: RelId| -> Option<Vec<(CatFieldId, Ty)>> {
         key_ids(s, r)
             .into_iter()
-            .zip(layout::key_names(s, r))
+            .zip(key_names(s, r))
             .map(|(id, n)| Some((id?, key_field_ty(s, r, &n))))
             .collect()
     };

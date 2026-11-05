@@ -1,4 +1,5 @@
 use adtb_lang::schema::{Schema, TypeDefKind};
+use adtb_lang::textual::key_names;
 use adtb_lang::types::{Base, RelId, Ty};
 
 use super::{Broken, Error};
@@ -115,9 +116,8 @@ pub fn field(schema: &Schema, ty: &Ty, name: &str) -> Result<At, Error> {
 /// Returns, for a row of relation `rel` of type `row`, where each key field is, in name order,
 /// and whether the key is one field's value rather than a record of them.
 pub fn key_fields(schema: &Schema, rel: RelId, row: &Ty) -> Result<(Vec<At>, bool), Error> {
-    let mut names = schema.relation(rel).key.clone();
+    let names = key_names(schema, rel);
     let single = names.len() == 1;
-    names.sort();
     let at = names
         .iter()
         .map(|n| field(schema, row, n))

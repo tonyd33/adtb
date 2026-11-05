@@ -38,6 +38,10 @@ rekey relation p key (t, n, w)
 === operator tiered rename
 module auth
 rename field P.n to name
+=== operator tiered reorder
+module auth
+rename field P.n to u
+add constructor Tier.Basic before Free
 === body tiered key
 query body_key () -> Set (Key p) = from x in qs select x.o
 === body tiered follow
@@ -98,6 +102,9 @@ rekey relation prices key (sku, n, w)
 === operator priced rename
 module auth
 rename field Price.sku to tag
+=== operator priced reorder
+module auth
+rename field Price.n to z
 === body priced key
 query body_key () -> Set (Key prices) = from o in orders select o.price
 === body priced follow

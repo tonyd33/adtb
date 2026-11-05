@@ -237,6 +237,34 @@ fn two_staged_rows_with_one_key_fail_with_a_key_violation_at_commit() {
 }
 
 #[test]
+fn a_load_across_a_rename_that_reorders_a_key_inserts_by_the_new_names_and_names_a_shared_key() {
+    const PARTS: &str = "module shop\nadd type Part = { t: Text, b: Text, m: I64 }\n\
+                         add relation parts : Part key (t, b, m)\n";
+    const RENAME: &str = "module shop\nrename field Part.b to z\n";
+    once(5, |rt| {
+        let log = Log::new([SHOP, PARTS, RENAME]);
+        let db = Database::open_in(rt, "app.adt", &log, &options(4)).expect("it opens");
+        let row = |t: &str, z: &str, m: i64| vec![text(t), text(z), Stored::I64(m)];
+        let mut load = db.load(&LoadOptions::default()).expect("a load");
+        push(&mut load, "parts", &["t", "z", "m"], &[row("t1", "z1", 1)]).expect("a part");
+        load.commit().expect("the load commits");
+        let mut load = db.load(&LoadOptions::default()).expect("a load");
+        let shared = [row("t2", "z2", 2), row("t2", "z2", 2)];
+        push(&mut load, "parts", &["t", "z", "m"], &shared).expect("rows land in staging");
+        let err = load.commit().expect_err("one key twice");
+        assert_eq!(
+            &RejectReason::KeyViolation {
+                relation: "shop::parts".into(),
+                key: "parts.key(m: 2, t: \"t2\", z: \"z2\")".into()
+            },
+            reason(&err)
+        );
+        let parts = query(&db, "from p in parts select p");
+        assert_eq!(vec!["Part { t: \"t1\", z: \"z1\", m: 1 }"], parts);
+    });
+}
+
+#[test]
 fn two_identical_staged_rows_with_one_key_fail_with_a_key_violation_at_commit() {
     once(5, |rt| {
         let db = open(&rt);

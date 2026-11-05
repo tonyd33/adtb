@@ -7,6 +7,7 @@ use std::sync::atomic::Ordering;
 use adtb_file::Record;
 use adtb_lang::kernel::{Conflict, Kind, Terms, Tm, Var};
 use adtb_lang::schema::{Generator, OnDelete, Schema, Stage};
+use adtb_lang::textual::key_names;
 use adtb_lang::types::{RelId, Ty};
 
 use crate::exec::types::ctors;
@@ -913,8 +914,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         let parts: Vec<Val> = if r.single_key {
             vec![key.clone()]
         } else {
-            let mut names = r.key_fields.clone();
-            names.sort();
+            let names = key_names(self.schema, rel);
             let fs = key.fields()?;
             r.key_fields
                 .iter()

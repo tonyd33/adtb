@@ -3,6 +3,7 @@ use std::ops::{Bound, ControlFlow, RangeBounds};
 use std::sync::Arc;
 
 use adtb_lang::schema::Schema;
+use adtb_lang::textual::key_names;
 use adtb_lang::types::Ty;
 
 use crate::batch::{Batch, BatchBuilder, Schema as BatchSchema};
@@ -886,11 +887,12 @@ pub fn conv(schema: &Schema, ty: &Ty) -> Conv {
                     Ty::Key { rel: own, .. } if own == *rel => Conv::Scalar,
                     f => conv(schema, &f),
                 },
-                ks => {
-                    let mut names = ks.to_vec();
-                    names.sort();
-                    Conv::AnonRecord(names.iter().map(|n| conv(schema, &field_ty(n))).collect())
-                }
+                _ => Conv::AnonRecord(
+                    key_names(schema, *rel)
+                        .iter()
+                        .map(|n| conv(schema, &field_ty(n)))
+                        .collect(),
+                ),
             }
         }
         _ => match ctors(schema, &t) {
