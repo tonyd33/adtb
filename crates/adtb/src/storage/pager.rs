@@ -687,13 +687,8 @@ impl<R: Runtime> Pager<R> {
             Ok((_, Verdict::Corrupt)) => Some(Damage::Checksum),
             Ok((buf, _)) => {
                 let found = page::lsn(buf);
-                Damage::past_log_end(found, self.file_end(pid)).or_else(|| {
-                    self.meta()
-                        .evicted
-                        .get(pid)
-                        .filter(|&expected| found < expected)
-                        .map(|expected| Damage::Stale { expected, found })
-                })
+                Damage::past_log_end(found, self.file_end(pid))
+                    .or_else(|| self.lost_write(pid, found, None))
             }
         };
         if let Some(damage) = damage {
@@ -703,6 +698,20 @@ impl<R: Runtime> Pager<R> {
         let (buf, _) = read.unwrap();
         g.write(0, &buf);
         Ok(Some(g))
+    }
+
+    /// Returns `Stale` when the pool holds `pid` at an LSN past `found`, the LSN of the file's copy:
+    /// the LSN of `image`, its resident copy, changed or not, or else the LSN it had when last
+    /// evicted.
+    ///
+    /// Preconditions: the caller holds a latch on `pid` and `image` is the resident copy under it,
+    /// or the caller judges again under one.
+    pub(crate) fn lost_write(&self, pid: Pid, found: Lsn, image: Option<&[u8]>) -> Option<Damage> {
+        let expected = match image {
+            Some(image) => page::lsn(image),
+            None => self.meta().evicted.get(pid)?,
+        };
+        (found < expected).then_some(Damage::Stale { expected, found })
     }
 
     /// Refuse `pid` from now on, dropping its memory unwritten.

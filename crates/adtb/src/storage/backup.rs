@@ -16,7 +16,7 @@ use super::digest::{hex, sealed, unhex, unsealed};
 use super::driver::Driver;
 use super::header::{FileHeader, HISTORY_CAPACITY, REGION};
 use super::log::{FileSource, parse_segment, segment_name};
-use super::page::{spoil, valid_page_size};
+use super::page::{self, spoil, valid_page_size};
 use super::pager::{Damage, Pager, parent};
 use super::quarantine::Quarantine;
 use super::record::Record;
@@ -804,16 +804,15 @@ impl<R: Runtime> Pager<R> {
             }
         }
         let parts = writer.finish()?;
-        damaged.extend(self.damaged().keys());
         Ok((parts, damaged))
     }
 
-    /// Returns the bytes of page `pid` for the copy. A read that fails verification, or of a page
-    /// this open refused as stale, may have met a write in flight, so it is read again under the
-    /// exclusive latch, which no write-out holds with. A page still failing is added to `damaged`
-    /// and copied as stored with a checksum it fails, so a restore refuses it whatever its LSN,
-    /// unless the allocation bitmap reads and calls it free or the pool's changed copy is to
-    /// overwrite it.
+    /// Returns the bytes of page `pid` for the copy. A read that fails verification, of a page this
+    /// open refused as stale, or that the pool holds at a later LSN may have met a write in flight,
+    /// so it is read again under the exclusive latch, which no write-out holds with. A page still
+    /// failing is added to `damaged` and copied as stored with a checksum it fails, so a
+    /// restore refuses it whatever its LSN, unless the allocation bitmap reads and calls it free or
+    /// the pool's changed copy is to overwrite it. Only such a page is added.
     fn page_as_stored(
         &self,
         pid: Pid,
@@ -826,7 +825,8 @@ impl<R: Runtime> Pager<R> {
                 if !visit(pid, &mut buf) {
                     return Err(BackupError::Stopped);
                 }
-                if self.trusted(pid, &buf) {
+                let held = self.mem.lock_shared(pid.0, &self.rt);
+                if self.trusted(pid, &buf, held.as_deref()) {
                     return Ok(buf.to_vec());
                 }
                 Some(buf)
@@ -843,7 +843,7 @@ impl<R: Runtime> Pager<R> {
         let g = self.mem.lock_exclusive(pid.0, &self.rt);
         let again = self.read_disk(pid);
         if let Ok((buf, _)) = &again
-            && self.trusted(pid, buf)
+            && self.trusted(pid, buf, g.resident().then(|| &*g))
         {
             return Ok(buf.to_vec());
         }
@@ -861,12 +861,13 @@ impl<R: Runtime> Pager<R> {
         Ok(copy)
     }
 
-    /// Returns whether the file's copy `buf` of `pid` is sound and this open has not refused the
-    /// page as stale, whose copy may be a lost write.
-    fn trusted(&self, pid: Pid, buf: &[u8]) -> bool {
+    /// Returns whether the file's copy `buf` of `pid` is sound and nothing shows it a lost write:
+    /// this open has not refused the page as stale, and the pool holds it at no later LSN.
+    /// `image` is its resident copy under the caller's latch.
+    fn trusted(&self, pid: Pid, buf: &[u8], image: Option<&[u8]>) -> bool {
         let refused = self.meta().damaged.get(&pid).copied();
         let stale = matches!(refused, Some(Damage::Stale { .. }));
-        self.sound(pid, buf) && !stale
+        self.sound(pid, buf) && !stale && self.lost_write(pid, page::lsn(buf), image).is_none()
     }
 
     fn copy_log(

@@ -15,7 +15,7 @@ use adtb::{
     HostFns, Log, OpenOptions, Position, Proof, RejectReason, RestorePoint, TxnCallOptions,
     TxnOptions, proof_in, prove_in, restore_in,
 };
-use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
 use adtb_simkit::search::{self, Action, Files, Hooked};
 use adtb_simkit::{api, common};
 use adtb_testkit::profile::{assert_reached, every_case, sweep};
@@ -971,9 +971,9 @@ fn first_checkpoint_under_live_writers_keeps_every_acked_commit() {
         let mut sim = Sim::new(
             seed,
             Config {
-                faults: adtb_sim::Faults {
+                faults: Faults {
                     torn_p: 0.5,
-                    ..adtb_sim::Faults::default()
+                    ..Faults::default()
                 },
                 ..Config::default()
             },
@@ -1824,8 +1824,8 @@ fn a_restore_under_a_rotted_bitmap_opens_and_lists_it() {
     });
 }
 
-/// Restore a page this open refused, but whose stored bytes verify, as copied, unless it was
-/// refused as stale.
+/// Restore a page this open refused, but whose stored bytes verify, as copied and unlisted, unless
+/// it was refused as stale.
 #[test]
 fn a_refused_page_with_sound_bytes_restores_as_copied_unless_stale() {
     let options = pager_options(FILE, false, 1 << 20);
@@ -1835,17 +1835,17 @@ fn a_refused_page_with_sound_bytes_restores_as_copied_unless_stale() {
         found: Lsn(1),
     };
     let cases = [
-        (Damage::Unreadable, Ok(9)),
-        (Damage::Checksum, Ok(9)),
-        (stale, Err(Damage::Checksum)),
+        (Damage::Unreadable, Ok(9), vec![]),
+        (Damage::Checksum, Ok(9), vec![]),
+        (stale, Err(Damage::Checksum), vec![used]),
     ];
-    for (damage, want) in cases {
+    for (damage, want, listed) in cases {
         let mut sim = Sim::with_files(51, Config::default(), files.clone());
         let got = api::run(&mut sim, |rt| {
             let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
             pager.damage(used, damage);
             let manifest = backup_with(&pager, TARGET, &mut |_, _| true).unwrap();
-            assert_eq!(vec![used], manifest.damaged, "{damage:?}");
+            assert_eq!(listed, manifest.damaged, "{damage:?}");
             pager.close();
             storage::restore_file(&rt, TARGET, COPY, &format!("{COPY}-log")).unwrap();
             let (copy, _) = Pager::open(rt, &pager_options(COPY, false, 1 << 20)).unwrap();
@@ -1855,6 +1855,175 @@ fn a_refused_page_with_sound_bytes_restores_as_copied_unless_stale() {
         });
         assert_eq!(want, got, "{damage:?}");
     }
+}
+
+/// Where a page last flushed is when the backup copies it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Flushed {
+    Evicted,
+    /// Evicted, and read during the backup after its copy.
+    ReadAfterCopy,
+    Resident,
+}
+
+/// What a backup of a page whose byte 100 was set to 7 and flushed made of it.
+#[derive(Debug, PartialEq)]
+struct FlushedCopy {
+    listed: Vec<Pid>,
+    restored: Result<u8, Damage>,
+    source: Result<u8, Damage>,
+}
+
+/// Set byte 100 of a page to 7 and flush it, losing the write when `lost`, leave it `at`, back
+/// it up and restore the backup. Returns the copy, the page, and the stale damage a lost write is
+/// refused with.
+fn backup_after_flush(seed: u64, lost: bool, at: Flushed) -> (FlushedCopy, Pid, Damage) {
+    let mut sim = Sim::new(seed, Config::default());
+    api::run(&mut sim, |rt| {
+        let (pager, pages, found, expected) = flushed(&rt, false, lost);
+        let (victim, last) = (pages[0], pages[15]);
+        let evicting = if at == Flushed::Resident { 0 } else { 3 };
+        for _ in 0..evicting {
+            for &pid in &pages[1..] {
+                drop(pager.read(pid).unwrap());
+            }
+        }
+        let byte = |p: &Pager<SimRuntime>| p.read(victim).map(|g| g[100]).map_err(|e| e.damage);
+        let mut during = None;
+        let manifest = backup_with(&pager, TARGET, &mut |pid, _| {
+            if at == Flushed::ReadAfterCopy && pid == last && during.is_none() {
+                during = Some(byte(&pager));
+            }
+            true
+        })
+        .unwrap();
+        let stale = Damage::Stale { expected, found };
+        let source = byte(&pager);
+        if at == Flushed::ReadAfterCopy {
+            assert_eq!(Some(source), during, "{at:?}");
+        }
+        pager.close();
+        storage::restore_file(&rt, TARGET, COPY, &format!("{COPY}-log")).unwrap();
+        let (copy, _) = Pager::open(rt, &pager_options(COPY, false, 1 << 20)).unwrap();
+        let restored = byte(&copy);
+        copy.close();
+        let listed = manifest.damaged;
+        let copy = FlushedCopy {
+            listed,
+            restored,
+            source,
+        };
+        (copy, victim, stale)
+    })
+}
+
+/// Spoil and list the copy of a page whose flush was lost before the pool evicted it, no reader
+/// having refused it before the backup.
+#[test]
+fn a_lost_write_evicted_before_the_backup_restores_refused() {
+    let (copy, pid, stale) = backup_after_flush(53, true, Flushed::Evicted);
+    let want = FlushedCopy {
+        listed: vec![pid],
+        restored: Err(Damage::Checksum),
+        source: Err(stale),
+    };
+    assert_eq!(want, copy);
+}
+/// Spoil and list the copy of a page whose flush was lost and that a reader refuses during the
+/// backup, after its copy.
+#[test]
+fn a_lost_write_refused_after_its_copy_restores_refused() {
+    let (copy, pid, stale) = backup_after_flush(54, true, Flushed::ReadAfterCopy);
+    let want = FlushedCopy {
+        listed: vec![pid],
+        restored: Err(Damage::Checksum),
+        source: Err(stale),
+    };
+    assert_eq!(want, copy);
+}
+
+/// Spoil and list the copy of a page whose flush was lost while the pool keeps the page.
+#[test]
+fn a_lost_write_still_resident_restores_refused() {
+    let (copy, pid, _) = backup_after_flush(55, true, Flushed::Resident);
+    let want = FlushedCopy {
+        listed: vec![pid],
+        restored: Err(Damage::Checksum),
+        source: Ok(7),
+    };
+    assert_eq!(want, copy);
+}
+
+/// Copy a page whose flush reached the file as it is, evicted or resident.
+#[test]
+fn a_flushed_write_restores_with_its_value() {
+    for at in [Flushed::Evicted, Flushed::Resident] {
+        let (copy, _, _) = backup_after_flush(56, false, at);
+        let want = FlushedCopy {
+            listed: vec![],
+            restored: Ok(7),
+            source: Ok(7),
+        };
+        assert_eq!(want, copy, "{at:?}");
+    }
+}
+
+/// Create a pager of 8 frames, allocate 16 pages and flush them, then set byte 100 of the first to
+/// 7 and flush it, losing the write when `lost`. Returns the pager, the pages and the first's LSN
+/// before and after the change.
+fn flushed(rt: &SimRuntime, atomic: bool, lost: bool) -> (Pager<SimRuntime>, Vec<Pid>, Lsn, Lsn) {
+    let options = Options {
+        pool_frames: 8,
+        ..pager_options(FILE, atomic, 1 << 20)
+    };
+    let pager = Pager::create(rt.clone(), &options).unwrap();
+    let pages: Vec<Pid> = (0..16)
+        .map(|_| pager.allocate(1, PageKind::HeapSlotted, 7).unwrap())
+        .collect();
+    pager.flush_log();
+    pager.flush_pages(usize::MAX);
+    let found = storage::lsn(&pager.read(pages[0]).unwrap());
+    let expected = pager.update(&[pages[0]], |v| v[0][100] = 7).unwrap();
+    pager.flush_log();
+    let lost_write_p = if lost { 1.0 } else { 0.0 };
+    rt.set_faults(Faults {
+        lost_write_p,
+        ..Faults::default()
+    });
+    pager.flush_pages(usize::MAX);
+    rt.set_faults(Faults::default());
+    (pager, pages, found, expected)
+}
+
+/// Copy from the pool a lost write that a writer changes again during the backup, before its copy.
+#[test]
+fn a_lost_write_changed_again_before_its_copy_restores_both_changes() {
+    let mut sim = Sim::new(57, Config::default());
+    let got = api::run(&mut sim, |rt| {
+        let (pager, pages, _, _) = flushed(&rt, true, true);
+        let victim = pages[0];
+        pager.checkpoint();
+        let bytes = |p: &Pager<SimRuntime>| {
+            p.read(victim)
+                .map(|g| (g[100], g[101]))
+                .map_err(|e| e.damage)
+        };
+        let manifest = backup_with(&pager, TARGET, &mut |pid, _| {
+            if pid == victim {
+                pager.update(&[victim], |v| v[0][101] = 8).unwrap();
+            }
+            true
+        })
+        .unwrap();
+        let source = bytes(&pager);
+        pager.close();
+        storage::restore_file(&rt, TARGET, COPY, &format!("{COPY}-log")).unwrap();
+        let (copy, _) = Pager::open(rt, &pager_options(COPY, true, 1 << 20)).unwrap();
+        let restored = bytes(&copy);
+        copy.close();
+        (manifest.damaged, source, restored)
+    });
+    assert_eq!((vec![], Ok((7, 8)), Ok((7, 8))), got);
 }
 
 /// Heal in the restored file a listed page that a full-page image in the backup's log overwrites.
