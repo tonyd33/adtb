@@ -707,3 +707,17 @@ Going worse:
 - Turning on the background worker broke fourteen tests whose oracles assumed nothing else writes (pinned simulated times, page bytes, a scrub's budget). They now open with the worker off and a reason each. That switch is a debt: every test using it is a place the worker's interaction goes untested.
 - The disk guard stopped three checks; each slot's build is 18 to 20 GB. Clearing idle builds fixed it each time, at the cost of a cold build on reuse.
 - My slips: I misread "let the current one finish" and asked; a push to GitHub failed on an SSH key and went through later.
+
+### 2026-11-05: periodic review after eight tracks
+
+What happened: eight tracks, one at a time. Landed: a page past the log end refused on every read; script batches 5 and 6 (63 command, api, past and longkey tests, then the explain tests with a `plan` directive); heap directory follow-ups and holder walk reach (a lying directory or map blames the page naming it, shape failures stop walks without marking, placeholders read nothing); dump S5.3 offline validation; migration identity change 1 (constructors matched by id, one key order rule); a mutant driver building every mutant into one binary and `check --changed`. Every landing ran its check on the tree it landed, and `check-reach` confirmed nothing skipped could be reached by what landed beside it.
+
+Going well: reviews kept finding what the author's own tests could not: a clean dump with a transition constraint panicked on restore, a search test passed with two copies left, a mutant driver reported kills it had not earned, a plan comparison passed on an empty array. Scoped latch reviews found one hang in a fix round (`misnamed` holding two latches against prune) and one self-latch on damage, and cleared a latch change in `extend` with a stress test. The timing study gave numbers: mutation 31% of author time, `check` 20%, builds 19%; raising build limits for a single track, one check per track after review, and the driver (6 mutants from 351 s to about 30 s a round) followed from it.
+
+Going worse:
+
+- A fix round twice added a mechanism the review had not seen and it carried the track's worst defect (two latches in `misnamed`; the `extend` change, which turned out sound). Moved to the lead skill: such a mechanism gets a scoped review before landing.
+- Briefs kept 3 jobs and 3 test threads after the switch to one track, tripling the suite time inside `check` for a day. Moved to the lead skill: build limits follow the number of tracks building.
+- Line estimates I give for runner directives are low (70 estimated, 227 needed for `plan`); authors stopped correctly, but each stop cost a round trip. Next: size a directive from the nearest existing one before setting its stop line.
+- Fixes whose wrong answer no user text can reach (migration identity's id lookups, six surviving mutants) land on a type as their only guard; that is right, but the ticket should say so when filed, so the track is not briefed to show a failure on main that cannot exist.
+- `check --changed` saved 14 s on an engine change: clippy, the suite and the campaign dominate. Its value is for changes outside the engine's reach.
