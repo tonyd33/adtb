@@ -41,6 +41,8 @@ pub enum Error {
         len: usize,
         limit: usize,
     },
+    /// The heap or store was opened at page 0, with no directory to take a page.
+    NoDirectory,
 }
 
 impl From<PageError> for Error {

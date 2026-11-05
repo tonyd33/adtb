@@ -219,6 +219,7 @@ impl From<crate::heap::Error> for Error {
             crate::heap::Error::TooLarge { len, limit } => Error::Unsupported(format!(
                 "a row version of {len} bytes, over the limit of {limit}"
             )),
+            crate::heap::Error::NoDirectory => Broken::HeapNoDirectory.into(),
         }
     }
 }
@@ -231,6 +232,7 @@ impl From<vacuum::Error> for Error {
             }
             vacuum::Error::Index(i) => Error::from(i),
             vacuum::Error::Heap(e @ crate::heap::Error::Changed { .. }) => Error::from(e),
+            vacuum::Error::Heap(crate::heap::Error::NoDirectory) => Broken::HeapNoDirectory.into(),
             vacuum::Error::Heap(crate::heap::Error::TooLarge { len, limit }) => {
                 Broken::VacuumTooLarge { len, limit }.into()
             }

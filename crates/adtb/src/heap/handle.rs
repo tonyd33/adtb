@@ -713,7 +713,7 @@ impl Heap {
 
     /// Returns a page that may take a version needing `need` bytes: the last page that took an
     /// insert, a page whose entry promises the room, or a new page.
-    fn candidate<R: Runtime>(&self, pager: &Pager<R>, need: usize) -> Result<Pid, PageError> {
+    fn candidate<R: Runtime>(&self, pager: &Pager<R>, need: usize) -> Result<Pid, Error> {
         let hint = self.hint.load(Ordering::Relaxed);
         if hint != 0 {
             return Ok(Pid(hint));
@@ -721,10 +721,8 @@ impl Heap {
         let f = self.current();
         let need = need_category(f.arrangement.need(need), self.page_size);
         let (arrangement, newest) = (f.arrangement, self.newest());
-        match self.space.find(pager, need, arrangement, newest)? {
-            Some(pid) => Ok(pid),
-            None => self.space.append(pager, arrangement, newest),
-        }
+        let room = self.space.room(pager, need, arrangement, newest)?;
+        room.ok_or(Error::NoDirectory)
     }
 
     /// Set `xmax` and `next` of the version at `at`, whose page `stage` holds, and replace its
@@ -807,17 +805,17 @@ impl Heap {
         stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
     ) -> Result<Vm, PageError> {
-        let root = self.space.vm(stage, pager)?;
-        Ok(Vm::open(
-            root.expect("a heap's directory names its visibility map"),
-            self.id,
-        ))
+        match self.space.vm(stage, pager)? {
+            Some(root) => Ok(Vm::open(root, self.id)),
+            None => Err(self.space.refuse_root(stage, pager)),
+        }
     }
 
     /// Returns whether the visibility map has the bit of page `pid` set: every version on it is
     /// visible to every snapshot.
     pub fn all_visible<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<bool, PageError> {
-        self.vm(&mut Stage::new(), pager)?.get(pager, pid)
+        let mut stage = Stage::new();
+        self.vm(&mut stage, pager)?.get(&stage, pager, pid)
     }
 
     /// Returns whether `tid` names a slot of this heap holding a version, a dead mark or a
@@ -899,7 +897,7 @@ impl Heap {
         let flagged = page::all_visible(&page);
         let position = page::position(&page);
         let vm = self.vm(&mut stage, pager)?;
-        let bit = vm.get(pager, pid)?;
+        let bit = vm.get(&stage, pager, pid)?;
         if page::is_empty(&out) {
             page::set_all_visible(&mut out, false);
             if bit {
@@ -1320,8 +1318,13 @@ impl Heap {
     pub fn check<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<(Pid, String)>, PageError> {
         let check = self.space.check(pager)?;
         let mut problems = check.problems;
-        let vm = self.vm(&mut Stage::new(), pager)?;
-        let mut marked: BTreeSet<Pid> = vm.marked(pager)?.into_iter().collect();
+        let Some(vm) = self.space.vm(&mut Stage::new(), pager)? else {
+            if !self.space.is_placeholder() {
+                problems.push((self.root(), "names no visibility map".into()));
+            }
+            return Ok(problems);
+        };
+        let mut marked: BTreeSet<Pid> = Vm::open(vm, self.id).marked(pager)?.into_iter().collect();
         for (position, leaf) in check.leaves.into_iter().enumerate() {
             let Some((pid, cat)) = leaf else {
                 continue;
@@ -1410,19 +1413,13 @@ impl Heap {
 
     /// Returns every page the heap owns: its directory's, its own and its visibility map's.
     pub fn owned_pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
-        let mut out = self.space.nodes(pager)?;
-        out.extend(self.space.pages(pager)?);
-        out.extend(self.vm(&mut Stage::new(), pager)?.pages(pager)?);
-        Ok(out)
+        self.space.owned(pager)
     }
 
-    /// Returns the pages of [`Heap::owned_pages`]. A directory page out of shape stops the walk.
+    /// Returns the pages of [`Heap::owned_pages`]. A directory or map page out of shape stops the
+    /// walk.
     pub fn held_pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, Stopped> {
-        let (mut out, vm) = self.space.held(pager)?;
-        if let Some(vm) = vm {
-            out.extend(Vm::open(vm, self.id).pages(pager)?);
-        }
-        Ok(out)
+        self.space.held(pager)
     }
 }
 

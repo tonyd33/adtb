@@ -44,6 +44,7 @@ pub enum Broken {
         len: usize,
         limit: usize,
     },
+    HeapNoDirectory,
     ReadOnly,
     ScanPathNotText,
     RowsNotSet(Val),
@@ -151,6 +152,7 @@ impl fmt::Display for Broken {
                 "a version vacuum moves fits its history heap, as it fit its current heap: \
                  {len} bytes over the limit of {limit}"
             ),
+            Broken::HeapNoDirectory => f.write_str("a heap the write path writes has a directory"),
             Broken::ReadOnly => f.write_str("a read-only transaction runs no write"),
             Broken::ScanPathNotText => f.write_str("a file scan's path is a Text"),
             Broken::RowsNotSet(v) => write!(f, "a write's rows are a set, found {v:?}"),

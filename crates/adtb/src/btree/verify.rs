@@ -406,14 +406,6 @@ impl BTree {
         Ok(())
     }
 
-    /// Flip the owner of node `pid`, which a second flip undoes. Plants a fault for a test of the
-    /// mapping of a damaged page.
-    #[doc(hidden)]
-    pub fn flip_owner<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), Error> {
-        pager.update(&[pid], |p| storage::flip_owner(p[0]))?;
-        Ok(())
-    }
-
     /// Finish every split whose page lacks its downlink. Returns the number
     /// this pass finished, which leaves out any another thread finished
     /// first.

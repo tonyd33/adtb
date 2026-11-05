@@ -1,5 +1,5 @@
 use crate::runtime::Runtime;
-use crate::storage::{PageError, PageKind, Pager, Pid};
+use crate::storage::{self, Damage, PageError, PageKind, Pager, Pid};
 
 use super::page::{CONTENTS, u16_at, u64_at};
 use super::stage::Stage;
@@ -19,6 +19,33 @@ fn fanout(page_size: usize) -> u64 {
 
 fn level(node: &[u8]) -> u32 {
     u32::from(u16_at(node, LEVEL))
+}
+
+/// Returns whether `node` is a map page of `owner`, one level below `parent` when it has one.
+pub(super) fn shaped(node: &[u8], owner: u32, parent: Option<u32>) -> bool {
+    storage::kind(node) == PageKind::VisibilityMap as u16
+        && storage::owner(node) == owner
+        && parent.is_none_or(|l| level(node) + 1 == l)
+}
+
+/// Returns every page of the map rooted at `root`, the root first, each read by `read` with the
+/// page naming it and that page's level, `None` for the root.
+pub(super) fn walk<E>(
+    root: Pid,
+    mut read: impl FnMut(Pid, Option<(Pid, u32)>) -> Result<Vec<u8>, E>,
+) -> Result<Vec<Pid>, E> {
+    let mut out = Vec::new();
+    let mut todo = vec![(root, None)];
+    while let Some((at, parent)) = todo.pop() {
+        let node = read(at, parent)?;
+        out.push(at);
+        let l = level(&node);
+        if l > 0 {
+            let children = (0..fanout(node.len()) as usize).filter_map(|i| child(&node, i));
+            todo.extend(children.rev().map(|c| (c, Some((at, l)))));
+        }
+    }
+    Ok(out)
 }
 
 fn set_level(node: &mut [u8], level: u32) {
@@ -98,6 +125,29 @@ impl Vm {
         self.root
     }
 
+    /// Returns map page `pid` as `stage` holds it, or as the pager does, read without latching it.
+    /// Record `parent`, the map page naming it, as damaged when `pid` is not a map page of the
+    /// heap one level below it.
+    ///
+    /// Precondition: the caller holds no latch on `parent`, and `stage` holds no copy of it.
+    fn child<'p, R: Runtime>(
+        &self,
+        stage: &Stage<'p, R>,
+        pager: &'p Pager<R>,
+        pid: Pid,
+        parent: (Pid, u32),
+    ) -> Result<Vec<u8>, PageError> {
+        let node = if stage.holds(pid) {
+            stage.read(pager, pid)?
+        } else {
+            pager.read(pid)?.to_vec()
+        };
+        if shaped(&node, self.owner, Some(parent.1)) {
+            return Ok(node);
+        }
+        Err(pager.damage(parent.0, Damage::Checksum))
+    }
+
     /// Returns the leaf covering `pid`, if one exists, as `stage` holds the map.
     fn leaf<'p, R: Runtime>(
         &self,
@@ -115,20 +165,24 @@ impl Vm {
             let Some(c) = child(&node, child_index(size, level(&node), pid)) else {
                 return Ok(None);
             };
+            node = self.child(stage, pager, c, (at, level(&node)))?;
             at = c;
-            node = stage.read(pager, c)?;
         }
         Ok(Some(at))
     }
 
     /// Returns whether the bit of `pid` is set.
-    pub fn get<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<bool, PageError> {
-        let stage = Stage::new();
-        let Some(leaf) = self.leaf(&stage, pager, pid)? else {
+    pub fn get<'p, R: Runtime>(
+        &self,
+        stage: &Stage<'p, R>,
+        pager: &'p Pager<R>,
+        pid: Pid,
+    ) -> Result<bool, PageError> {
+        let Some(leaf) = self.leaf(stage, pager, pid)? else {
             return Ok(false);
         };
         let i = bit_index(pager.page_size(), pid);
-        Ok(bit(&pager.read_formatted(leaf)?, i))
+        Ok(bit(&stage.read(pager, leaf)?, i))
     }
 
     /// Set or clear the bit of `pid` in `stage`, latching its leaf.
@@ -200,6 +254,8 @@ impl Vm {
             }
             let i = child_index(size, l, pid);
             if let Some(c) = child(node, i) {
+                drop(stage);
+                self.child(&Stage::new(), pager, c, (at, l))?;
                 at = c;
                 continue;
             }
@@ -213,32 +269,16 @@ impl Vm {
         }
     }
 
-    /// Returns every page of the map, the root first.
-    pub fn pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
-        let size = pager.page_size();
-        let mut out = Vec::new();
-        let mut todo = vec![self.root];
-        while let Some(at) = todo.pop() {
-            out.push(at);
-            let node = &pager.read_formatted(at)?.to_vec();
-            if level(node) > 0 {
-                todo.extend(
-                    (0..fanout(size) as usize)
-                        .rev()
-                        .filter_map(|i| child(node, i)),
-                );
-            }
-        }
-        Ok(out)
-    }
-
     /// Returns every page id whose bit is set, in order.
     pub fn marked<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
         let size = pager.page_size();
         let mut out = Vec::new();
-        let mut todo = vec![(self.root, 0)];
-        while let Some((at, base)) = todo.pop() {
-            let node = pager.read_formatted(at)?;
+        let mut todo = vec![(self.root, 0, None)];
+        while let Some((at, base, parent)) = todo.pop() {
+            let node = match parent {
+                None => pager.read_formatted(at)?.to_vec(),
+                Some(parent) => self.child(&Stage::new(), pager, at, parent)?,
+            };
             let l = level(&node);
             if l == 0 {
                 let set: u32 = node[BODY..].iter().map(|b| b.count_ones()).sum();
@@ -247,8 +287,10 @@ impl Vm {
                 continue;
             }
             let below = reach(size, l - 1);
-            let children: Vec<(Pid, u64)> = (0..fanout(size) as usize)
-                .filter_map(|i| child(&node, i).map(|c| (c, base + i as u64 * below)))
+            let children: Vec<_> = (0..fanout(size) as usize)
+                .filter_map(|i| {
+                    child(&node, i).map(|c| (c, base + i as u64 * below, Some((at, l))))
+                })
                 .collect();
             todo.extend(children.into_iter().rev());
         }

@@ -4,6 +4,7 @@ use crate::key::Tid;
 use crate::runtime::Runtime;
 use crate::storage::{self, Damage, LATCHES_PER_THREAD, PageError, Pager, Pid, Stopped, Walk};
 
+use super::Error;
 use super::dir::{Above, Space, category, max_fanout, need_category};
 use super::page::{self, Arrangement, Slot};
 use super::row::Pointer;
@@ -157,7 +158,7 @@ impl LargeStore {
         pager: &Pager<R>,
         xid: u64,
         bytes: &[u8],
-    ) -> Result<Pointer, PageError> {
+    ) -> Result<Pointer, Error> {
         let room = slotted::max_version(pager.page_size()) - BYTES;
         let mut next = None;
         for piece in bytes.chunks(room).rev() {
@@ -186,14 +187,12 @@ impl LargeStore {
         pager: &Pager<R>,
         tuple: &[u8],
         tail: Option<Tid>,
-    ) -> Result<Tid, PageError> {
+    ) -> Result<Tid, Error> {
         let size = pager.page_size();
         let need = need_category(Arrangement::Slotted.need(tuple.len()), size);
         loop {
-            let pid = match self.space.find(pager, need, Arrangement::Slotted, 1)? {
-                Some(pid) => pid,
-                None => self.space.append(pager, Arrangement::Slotted, 1)?,
-            };
+            let room = self.space.room(pager, need, Arrangement::Slotted, 1)?;
+            let pid = room.ok_or(Error::NoDirectory)?;
             drop(pager.read_formatted(pid)?);
             let mut stage = Stage::new();
             let mut pids = vec![pid];
@@ -633,16 +632,14 @@ impl LargeStore {
 
     /// Returns every page of the store's directory and every page it names.
     pub fn owned_pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
-        let mut out = self.space.nodes(pager)?;
-        out.extend(self.space.pages(pager)?);
-        Ok(out)
+        self.space.owned(pager)
     }
 
     /// Returns every page the store owns as [`LargeStore::owned_pages`] does, for a walk mapping
     /// damage to its holder: a directory page it cannot follow stops the walk as a shape,
     /// recording no damage.
     pub fn held_pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, Stopped> {
-        Ok(self.space.held(pager)?.0)
+        self.space.held(pager)
     }
 
     /// Returns what is wrong with the store's directory and pages, directory entries promising
