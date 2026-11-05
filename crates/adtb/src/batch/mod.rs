@@ -2,6 +2,7 @@
 
 mod buffer;
 mod column;
+pub mod ipc;
 mod types;
 
 #[cfg(test)]

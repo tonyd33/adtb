@@ -1,5 +1,6 @@
 mod api;
 mod api_real_file;
+mod arrow_ipc;
 mod background_vacuum;
 mod backup;
 mod btree;

@@ -271,3 +271,31 @@ pub enum Value {
     Record(Vec<Value>),
     Sum { ctor: u32, fields: Vec<Value> },
 }
+
+impl Value {
+    /// Returns whether the value keeps the preconditions of [`Value`] that its own bits can
+    /// break: NFC text and zone names, a coefficient of at most 38 digits, a `Date` within the
+    /// range of `Instant` and a `Time` below a day.
+    pub fn in_domain(&self) -> bool {
+        match self {
+            Value::Text(t) => unicode_normalization::is_nfc(t),
+            Value::ZonedDateTime { zone, .. } => unicode_normalization::is_nfc(zone),
+            Value::Decimal(c) => c.unsigned_abs() < 10u128.pow(38),
+            Value::Date(d) => adtb_lang::calendar::date_in_range(i64::from(*d)),
+            Value::Time(t) => (0..adtb_lang::calendar::MICROS_PER_DAY).contains(t),
+            Value::Record(fs) | Value::Sum { fields: fs, .. } => fs.iter().all(Value::in_domain),
+            Value::I8(_)
+            | Value::I16(_)
+            | Value::I32(_)
+            | Value::I64(_)
+            | Value::F32(_)
+            | Value::F64(_)
+            | Value::Bytes(_)
+            | Value::SortKey(_)
+            | Value::Instant(_)
+            | Value::DateTime(_)
+            | Value::Duration(_)
+            | Value::Period { .. } => true,
+        }
+    }
+}

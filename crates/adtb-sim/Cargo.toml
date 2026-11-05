@@ -21,6 +21,11 @@ adtb-simkit.workspace = true
 adtb-testkit.workspace = true
 adtb-sys = { workspace = true, features = ["latch-checks"] }
 serde_json = "=1.0.154"
+arrow-ipc = "=60.1.0"
+arrow-array = "=60.1.0"
+arrow-schema = "=60.1.0"
+arrow-buffer = "=60.1.0"
+arrow-data = "=60.1.0"
 
 [lints]
 workspace = true

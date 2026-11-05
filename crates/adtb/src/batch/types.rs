@@ -108,6 +108,18 @@ pub enum Datum {
     List(Vec<Datum>),
 }
 
+impl Datum {
+    /// Returns whether every scalar the datum holds is [`Value::in_domain`].
+    pub fn in_domain(&self) -> bool {
+        match self {
+            Datum::Scalar(v) => v.in_domain(),
+            Datum::Record(xs) | Datum::Sum { fields: xs, .. } | Datum::List(xs) => {
+                xs.iter().all(Datum::in_domain)
+            }
+        }
+    }
+}
+
 impl From<Value> for Datum {
     fn from(v: Value) -> Datum {
         match v {

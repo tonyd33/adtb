@@ -6,6 +6,9 @@ home: https://arrow.apache.org/docs/format/Columnar.html
 ## Unions
 
 - Dense union: int8 types buffer plus int32 offsets, children compact. Sparse union: no offsets, every child full length, more amenable to vectorized evaluation. No top-level validity bitmap for either. [V 2026-10-25] https://arrow.apache.org/docs/format/Columnar.html
+- Unions have no validity bitmap of their own; a slot's nullness comes only from the child arrays. The respective offsets for each child of a dense union must be in order / increasing. [V 2026-11-05] https://arrow.apache.org/docs/format/Columnar.html
+- A struct child's value is valid only when both the struct's and the child's validity bits are set (logical AND); a struct null may hide a valid child value. [V 2026-11-05] https://arrow.apache.org/docs/format/Columnar.html
+- An IPC record batch carries "the length and null count for each flattened field"; the page does not define a separate null count for a union beyond its children's nullness. [V 2026-11-05] https://arrow.apache.org/docs/format/Columnar.html
 - Union types buffer is 8-bit signed type ids; more than 128 types is modeled as a union of unions. Dense union offsets are int32 and increasing per child. [V 2026-10-25] https://arrow.apache.org/docs/format/Columnar.html
 
 ## Buffers

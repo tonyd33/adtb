@@ -179,9 +179,10 @@ scans and loads (§3, §4) and a writer for export (§5.1).
 | `Bool` | `bool` | `BOOLEAN` | `true`, `false` |
 | `I8` .. `I64` | `int8` .. `int64` | `INT32`/`INT64` with the matching integer annotation | textual syntax |
 | `F32`, `F64` | `float32`, `float64` | `FLOAT`, `DOUBLE` | textual syntax |
-| `Decimal s` | `decimal128` with scale `s` | `DECIMAL` with scale `s` | textual syntax |
+| `Decimal s` | `decimal128` with precision 38 and scale `s` | `DECIMAL` with scale `s` | textual syntax |
 | `Text` | `utf8` | `BYTE_ARRAY` annotated `STRING` | the text |
 | `Bytes` | `binary` | `BYTE_ARRAY` | textual syntax |
+| `SortKey` | `binary` | `BYTE_ARRAY` | textual syntax |
 | `Instant` | `timestamp[us, UTC]` | `TIMESTAMP(MICROS, UTC)` | textual syntax |
 | `Date` | `date32` | `DATE` | textual syntax |
 | `Time` | `time64[us]` | `TIME(MICROS)` | textual syntax |
@@ -199,6 +200,17 @@ scans and loads (§3, §4) and a writer for export (§5.1).
 Arrow IPC files keep the dictionary of constructor names for an enum
 other than `Bool`; the Arrow format of the server protocol sends an
 unsigned tag column instead ([wire.md](wire.md#54-arrow-format)).
+
+In Arrow:
+
+- An enum's dictionary holds every constructor name in declaration
+  order, so a row's index is its constructor's position. A stream
+  sends it in one dictionary batch before its first record batch.
+- `Option T` is a nullable `T` unless `T` is an `Option` or a sum
+  written as a dense union; then it is the dense union of `None` and
+  `Some` (§2.3).
+- Every field is non-nullable except the present column of an
+  `Option`.
 
 A writer writes exactly these types. A reader converts a column to the
 declared type of its field when the column's type is the one listed,
@@ -242,7 +254,17 @@ and from tag columns otherwise.
 In Arrow IPC a value-level sum is a dense union with one child per
 constructor; each child field is named by its constructor's name, and
 the union's type ids are the order of the children. Options and enums
-use the mappings of §2.2.
+use the mappings of §2.2, and a sum of one constructor is a `struct`
+of its fields.
+
+A union holds at most 127 children. A sum of `n` constructors, `n`
+past 127, is a union of unions: with `g` the least power of 127 with
+`127 g >= n`, child `j` covers the constructors at positions `j g` up
+to `(j + 1) g`, laid out by the same rule. An inner union's field is
+named by its child index in decimal (`0`, `1`, ...).
+
+A reader identifies a union child and a dictionary entry by its
+constructor's name; a writer adds no other metadata.
 
 A result whose row type is a sum of several constructors, such as an
 export of a relation-level sum, is written with one column per header
