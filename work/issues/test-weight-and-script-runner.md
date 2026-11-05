@@ -69,3 +69,9 @@ Next: change 2, named transactions and `assert`, then server_binding, server_com
 Filed from it: host-redefine-operator-attribution, drop-unknown-role-message.
 
 Next: commands, api, past, longkey, and the 60 conformance-fit tests into `conformance/`.
+
+## 2026-11-04: batch 5, commands, api, past and longkey
+
+`test: move the command, api, past and longkey tests onto engine scripts`. 63 tests moved to scripts/{commands,api,past,longkey}/, each Rust copy deleted; the four Rust files went from 2984 to 1721 lines. 56 kept in Rust: 11 explain tests (need a JSON reader), the vacuum rows holding implementation-defined `freed`, a set-setting test holding a catalog key, 6 conformance-fit api tests, seed loops, threads, interleavings, open and call options, crash and pager tests, the row-too-large tests, wall-clock and explain tests in past, the Arrow load in longkey. Runner +154 -34: `commit NAME position P` with `$P` in every later body and compared value, a second binding of one name refused; `pins N` with no hash in any body, bundle and log bodies hashed against their open's log; `command [rowsort]` for a body that cannot run read-only; `adhoc error V` for a refusal sent in autocommit. Probes: position-values, bundle-body-pins, position-twice, adhoc forms. Review found plain `error` runs under a rollback, so a "nothing committed" check after it could not fail (four scripts), and a window-zero read moved after an extra commit; both fixed, the first proven with a mutant committing a refused call's transaction. Full check 3337 passed.
+
+Next: the explain tests with a `plan` directive, `serde_json` approved as an adtb-sim dev-dependency; the 6 api and other conformance-fit tests into the conformance suite.
