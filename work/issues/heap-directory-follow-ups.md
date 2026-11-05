@@ -42,3 +42,9 @@ Left:
 - A leaf named twice by inner directory entries makes the duplicate check blame the leaf; the damage is the inner node. `walk` should refuse a directory page already seen, blaming its parent.
 - Prune (heap/handle.rs, near the `vacate` call) frees `pid` even when `vacate` finds that the entry at the header's position does not name it, leaving a stale entry naming a freed page.
 - `refuse_misnamed` and `pages()` retry on a changed leaf with no bound, as `find` does; under a hot leaf a check of the damaged entry can retry many times (converged in the review's test).
+
+## 2026-11-05: read paths fixed
+
+`fix: blame the directory page naming a foreign page on the read paths`. Class: identity trusted from an unvalidated pointer. Scan, vacuum and index reads decide blame through `Space::misnamed` and record it through `Space::refuse`, as the write path does: the named page is damaged only when its header claims a heap kind, the space's owner and the position (taken from the path digits, in u64; a position at or past 2^32 is a shape fault of the node holding it); otherwise the level-0 directory page naming it. On main a heap entry naming the large-value page quarantined the whole database, and one naming another heap's map page quarantined both heaps. `refuse_misnamed` retries a check whose leaf changed (a held page returns before validation); `Space::pages` refuses a page named at two positions, blaming the second entry's leaf. An index entry naming a foreign page no directory entry names refuses the index as `OrphanEntry`. A search test pins the 11 functions outside storage/ that record damage. maintenance_faults' expectation of the old rule corrected. Reviews found the leaf-changed arm reported nothing (a scan skipped the page's rows silently) and a 32-bit position collision that looped; fixed. `check --changed` 3382 passed.
+
+Left: the items of the section above, large-pointer-blame, the capacity-formula tie, the server_binding window note.
