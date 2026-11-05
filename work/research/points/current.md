@@ -542,6 +542,7 @@ accept:
   repl/commit-ack/quorum: {title: Durable in the logs of a quorum of nodes, reason: durability level chosen per transaction}
   repl/commit-ack/rpo/stated: {title: The spec states the loss window as commits past the promoted replica's applied position, reason: the spec states the loss window of each commit level}
   repl/distribution/never: {title: Never partition one database; scale by replicas and many databases, reason: scale by replicas and by many databases; sharding is not a direction}
+  repl/dump-quarantined/prove-then-dump: {title: The dump first proves the commit log and catalog pages sound with verify's checks; any finding refuses it as Quarantined naming the database, reason: 'sound now with verify''s existing checks; settled-status needs a log reader and a manifest field that do not exist, and can extend this later'}
   repl/embedded/embedded-replica: {title: 'An application process holds a local replica of a server primary, writes forwarded', reason: Litestream-style log shipping and embedded replicas that forward writes}
   repl/embedded/local-writes/forward: {title: Every read-write transaction runs on the primary, reason: writes at an embedded replica forward to the primary}
   repl/embedded/ship-log: {title: The library ships its log and snapshots to object storage, reason: Litestream-style log shipping and embedded replicas that forward writes}
@@ -1002,6 +1003,8 @@ defeat:
   query/narrowing: {title: A narrowing primitive that filters to one constructor, reason: same as ctor-relations at relation level; match covers value level}
   query/outer-join: {title: Outer joins of every constructor and CASE on the tag, reason: branches on nullness and multiplies rows; not the semantics}
   query/plain-sql: {title: Plain SQL over the union view and CASE on the tag, reason: we're not using any form of SQL; we're building our own database}
+  repl/dump-quarantined/refuse: {title: A file quarantined whole refuses dump, reason: contradicts catalog 11.2}
+  repl/dump-quarantined/settled-status: {title: 'The dump reads every row whose writer''s status is settled, from undamaged status pages or the retained log, and refuses only rows it cannot settle', reason: needs a reader of the retained log for visibility and a dump manifest field for unsettled rows; revisit if a real recovery needs it}
   sum/disjoint-partial: {title: 'Disjoint, totality optional per sum', reason: native sums have no parent row to be partial; partiality is a 0..1 relationship to a sum}
   sum/eer: {title: 'Full EER specialization, overlap and partiality allowed', reason: overlap is facets through relationships; no second specialization concept}
   sum/open: {title: 'Open, constructors may be added elsewhere', reason: extensibility belongs to evolution; an open sum gives up exhaustiveness everywhere}
