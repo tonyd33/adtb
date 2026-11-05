@@ -74,3 +74,13 @@ Left: migration-skips-transition-constraints, restore-violation-reports-wording.
 Rulings (lead): "read on every relation dumped" covers every relation whose rows an entry holds, catalog ones included; `security` is gated by `schema` alone.
 
 Left: export-path-toctou, quarantined-file-refuses-dump. Next: S5.5 Arrow, S5.6 encryption (needs a dependency ruling), then S6 and S7.
+
+## 2026-11-05: S5.5a Arrow IPC stream
+
+`feat: write and read engine batches as an Arrow IPC stream`. `crates/adtb/src/batch/ipc/`: a caller-built `FileSchema` (field and constructor names, Bool, the library Option, enums) and `write(file, batches, out)` / `read(bytes, file, &mut Budget)` in interop.md §2.2's mapping, with an engine flatbuffer writer and bounds-checked reader; no production dependency. arrow-rs 60.1.0 is a dev-dependency of adtb-sim only, the test oracle (deny.toml entries). Tests in adtb-sim arrow_ipc.rs: round trips both ways through arrow-rs for every type and shape and a generated sweep, each read at its exact row budget; another schema refused naming the first difference; fieldless types at any length; padded nodes read nothing past what rows refer to; values outside their domain refused naming column and row; union children read by name; dictionaries charged once; cut and flipped streams refused or read in domain. Mutants killed.
+
+Lead rulings (in interop.md §2.2 and §2.3): a sum past 127 constructors is a union of unions, intermediate children named by decimal index; `Option (Option T)` and `Option` of a union-laid sum are a `None | Some` union; an enum's dictionary is every constructor name in declaration order, sent once; a one-constructor value sum is a struct; `SortKey` is `binary`; `decimal128(38, s)`; fields are non-nullable but an `Option`'s present column; a reader matches constructors by name, and a writer adds no other metadata. The reader accepts any field's nullability and refuses a null outside an `Option` per value; text that is not NFC is refused, not normalised.
+
+Reviews found: the reader read the `nodes`/`buffers` vectors of 16-byte structs as scalars; an 8x-bytes length bound refused fieldless types; hostile streams materialised hundreds of millions of rows; values outside their domain decoded; the datum cap undercounted union rows; dictionaries were resolved per batch uncharged. All fixed. Size overran the brief's stop lines twice (production 1663 lines, tests 1170); accepted.
+
+Left: arrow-reader-lenient-forms. Next: S5.5b (dump writes `data/R.C.arrows`, restore reads it, `FileSchema` built from the catalog), S5.6 encryption, then S6 and S7.
