@@ -6,7 +6,7 @@ use adtb_lang::types::RelId;
 use crate::btree::BTree;
 use crate::heap::{Heap, LargeStore};
 use crate::runtime::Runtime;
-use crate::storage::{Holders, Pager, Quarantine, Stopped};
+use crate::storage::{Holders, Pager, Quarantine};
 
 /// What [`Holders`] walks to map a damaged page to its object. The damage of a relation of an
 /// engine module quarantines the database.
@@ -65,11 +65,10 @@ impl<'a> Holdings<'a> {
     /// Report the pages of every heap and tree to `h`.
     pub fn walk<R: Runtime>(&self, pager: &Pager<R>, h: &mut Holders) {
         for (object, heap) in &self.heaps {
-            h.walk(*object, || heap.owned_pages(pager).map_err(Stopped::from));
+            h.walk(*object, || heap.held_pages(pager));
         }
         for store in &self.large {
-            let pages = || store.owned_pages(pager).map_err(Stopped::from);
-            h.walk(Some(Quarantine::Database), pages);
+            h.walk(Some(Quarantine::Database), || store.held_pages(pager));
         }
         for (object, tree) in &self.trees {
             h.walk(*object, || tree.walk(pager));

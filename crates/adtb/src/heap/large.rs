@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::key::Tid;
 use crate::runtime::Runtime;
-use crate::storage::{self, Damage, LATCHES_PER_THREAD, PageError, Pager, Pid, Walk};
+use crate::storage::{self, Damage, LATCHES_PER_THREAD, PageError, Pager, Pid, Stopped, Walk};
 
 use super::dir::{Above, Space, category, max_fanout, need_category};
 use super::page::{self, Arrangement, Slot};
@@ -636,6 +636,13 @@ impl LargeStore {
         let mut out = self.space.nodes(pager)?;
         out.extend(self.space.pages(pager)?);
         Ok(out)
+    }
+
+    /// Returns every page the store owns as [`LargeStore::owned_pages`] does, for a walk mapping
+    /// damage to its holder: a directory page it cannot follow stops the walk as a shape,
+    /// recording no damage.
+    pub fn held_pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, Stopped> {
+        Ok(self.space.held(pager)?.0)
     }
 
     /// Returns what is wrong with the store's directory and pages, directory entries promising

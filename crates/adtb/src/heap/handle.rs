@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::key::{Tid, Value};
 use crate::runtime::Runtime;
-use crate::storage::{self, Damage, PageError, Pager, Pid};
+use crate::storage::{self, Damage, PageError, Pager, Pid, Stopped};
 
 use super::dir::{Above, Space, category, max_fanout, need_category};
 use super::large::LargeStore;
@@ -1413,6 +1413,15 @@ impl Heap {
         let mut out = self.space.nodes(pager)?;
         out.extend(self.space.pages(pager)?);
         out.extend(self.vm(&mut Stage::new(), pager)?.pages(pager)?);
+        Ok(out)
+    }
+
+    /// Returns the pages of [`Heap::owned_pages`]. A directory page out of shape stops the walk.
+    pub fn held_pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, Stopped> {
+        let (mut out, vm) = self.space.held(pager)?;
+        if let Some(vm) = vm {
+            out.extend(Vm::open(vm, self.id).pages(pager)?);
+        }
         Ok(out)
     }
 }

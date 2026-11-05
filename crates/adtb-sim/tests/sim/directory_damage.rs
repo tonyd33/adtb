@@ -3,11 +3,11 @@
 //! read that meets no such page answers exactly, other relations of a heap's damage read exactly,
 //! and the file reopens.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
-use adtb::storage::{self, FIRST_EDITABLE, PageKind, Pid};
+use adtb::storage::{self, FIRST_EDITABLE, PageKind, Pager, Pid, Quarantine};
 use adtb::{CallOptions, Database, Error, FatalReason, Log};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
@@ -284,4 +284,50 @@ fn every_call_over_a_foreign_page_in_a_directory_answers_in_bounded_time() {
     assert_reached("refused", refused, 3 * heap + large + 4 * page);
     assert_reached("read", read, heap + 3 * large);
     assert_reached("reopened", reopened, heap + large + page);
+}
+
+/// Make the one entry of directory page `dir` naming `from` name `to`.
+fn point(pager: &Pager<SimRuntime>, dir: Pid, from: Pid, to: Pid) {
+    let page = pager.read(dir).unwrap().to_vec();
+    let id = |pid: Pid| pid.0.to_le_bytes()[..6].to_vec();
+    let found: Vec<usize> = (FIRST_EDITABLE..page.len() - 6)
+        .filter(|&at| page[at..at + 6] == id(from))
+        .collect();
+    assert_eq!(1, found.len(), "{dir:?} names {from:?} at {found:?}");
+    pager
+        .update(&[dir], |v| {
+            v[0][found[0]..found[0] + 6].copy_from_slice(&id(to));
+        })
+        .unwrap();
+}
+
+#[test]
+fn an_entry_naming_a_foreign_page_quarantines_only_the_heap_of_its_directory() {
+    let foreigns = [
+        "another heap's page",
+        "an allocation bitmap page",
+        "its own directory page",
+    ];
+    for foreign in foreigns {
+        let what = format!("an entry naming {foreign}");
+        bounded(&fixture(), what.clone(), move |db| {
+            let w = db.write_path();
+            let pager = w.pager();
+            let users = w.heap_named("app::users", "User").unwrap();
+            let named = match foreign {
+                "another heap's page" => Target::UsersPage.pages(db).1,
+                "its own directory page" => users.root(),
+                _ => Pid::FIRST_DATA,
+            };
+            let kind = storage::kind(&pager.read(named).unwrap());
+            let bitmap = kind == PageKind::AllocationBitmap as u16;
+            assert_eq!(foreign.contains("bitmap"), bitmap, "{what}: {kind}");
+            point(pager, users.root(), users.pages(pager).unwrap()[0], named);
+            let got = text(db, &Op::Insert.text());
+            assert_eq!("app::users.User", quarantined(got, &what));
+            let only = BTreeSet::from([Quarantine::Heap(users.id().0)]);
+            assert_eq!(only, pager.quarantined(), "{what}");
+            assert_eq!(vec![r#""o""#], text(db, OTHERS).unwrap(), "{what}");
+        });
+    }
 }

@@ -2105,7 +2105,8 @@ fn a_walk_stopped_by_io_is_not_run_again_and_leaves_the_page_unmapped() {
 }
 
 #[test]
-fn a_large_value_page_maps_to_the_database_while_another_walk_stops() {
+fn a_large_value_page_fails_as_storage_unmarked_while_its_store_walk_stops_then_maps_to_the_database()
+ {
     let mut sim = Sim::new(64, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
@@ -2118,12 +2119,28 @@ fn a_large_value_page_maps_to_the_database_while_another_walk_stops() {
             ),
         );
         let w = db.write_path();
-        let heap = w.heap_named("app::identities", "Apple").unwrap();
-        let page = *heap.large().owned_pages(w.pager()).unwrap().last().unwrap();
+        let large = w.heap_named("app::identities", "Apple").unwrap().large();
+        let page = *large.owned_pages(w.pager()).unwrap().last().unwrap();
         db.damage_page(page, Damage::Checksum);
-        let index = w.index_named("app::identities", USER_INDEX).unwrap();
-        let root = index.tree().root();
-        index.tree().flip_owner(w.pager(), root).unwrap();
+        let flip = || {
+            let root = large.root();
+            w.pager()
+                .update(&[root], |v| adtb::storage::flip_owner(v[0]))
+                .unwrap()
+        };
+        flip();
+        for attempt in 0..2 {
+            let e = api::failure(&db, ROWS);
+            let Error::Fatal {
+                reason: FatalReason::Storage { detail },
+            } = &e
+            else {
+                panic!("attempt {attempt}: {e:?}");
+            };
+            assert!(detail.contains(&format!("{page:?}")), "{detail}");
+            assert_eq!(BTreeSet::new(), marks(&db), "attempt {attempt}");
+        }
+        flip();
         assert_eq!("the database", failed_on(&db, ROWS));
         assert_eq!(BTreeSet::from([Quarantine::Database]), marks(&db));
     });
