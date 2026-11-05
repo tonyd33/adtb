@@ -65,6 +65,12 @@ Be firm and opinionated about the project's design and direction. Refuse a reque
   impact get one full check. The fixture and isolated opt-in leaf-tool rules
   in verification.md use complete affected-package checks with explicit
   integration evidence. Name one owner so author and lead do not duplicate it.
+- Authors run `check --changed` for their round: fmt, clippy, the suite, size-check and
+  house-check always, and Miri, Loom, the campaign, tree-sitter, docs, deny and each
+  `work/tools/*-test` only when `work/tools/check-reach` finds a path of `main..@` in that
+  part's reach; it prints each part it skips and why. After `land`, run
+  `work/tools/check-reach TESTED..main`, TESTED the checked revision: run the full `check` on
+  main when it prints `run` for a part the author's run skipped, else reuse the receipt.
 - Before starting a track, list the files the running tracks change. A
   track that changes a shared signature (pager, heap or B-link tree calls)
   does not run beside tracks that call it: land it first and branch the

@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# check-reach [REVSET]   print, for each optional part of `check`, `run PART` or
+#                        `skip PART: REASON`, from the files REVSET changes (default main..@)
+# check-reach --summary  the same from `jj diff --summary` lines on stdin
+#
+# Parts: miri and loom (adtb-sys's reach), campaign (the campaign's reach), tree-sitter (adtb-lang's
+# reach and the texts it compares), docs, deny, and each work/tools/*-test (a tool file it names).
+# A crate's reach is the directories of the workspace packages its build links, tests and
+# examples included, from `cargo metadata`. A change to a file every build reads runs every part.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+cd "$root"
+
+if [[ ${1:-} == --summary ]]; then
+  summary=$(cat)
+else
+  summary=$(jj diff --summary -r "${1:-main..@}")
+fi
+# A rename or copy, `R a/{b => c}/d`, changes both a/b/d and a/c/d.
+changed=$(sed -E 's/^[RC] (.*)\{(.*) => (.*)\}(.*)$/\1\2\4\n\1\3\4/; t; s/^. //' <<<"$summary")
+
+# Print the repository-relative directories, space separated, of the local packages that package $2
+# of manifest $1 links.
+reach() {
+  cargo metadata --locked --offline --format-version 1 --manifest-path "$1" | jq -r --arg name "$2" --arg root "$root/" '
+    (.resolve.nodes | map({key: .id, value: [.deps[] | select(any(.dep_kinds[]; .kind != "dev")) | .pkg]})
+      | from_entries) as $links
+    | (.packages | map(select(.source == null) | {key: .id, value: .manifest_path}) | from_entries) as $local
+    | (.packages[] | select(.name == $name) | .id) as $id
+    | ([$id] + [.resolve.nodes[] | select(.id == $id) | .deps[].pkg] | unique) as $start
+    | {all: $start, new: $start}
+    | until(.new == []; (([.new[] | $links[.][]] | unique) - .all) as $n | {all: (.all + $n | unique), new: $n})
+    | .all[] | $local[.] // empty | ltrimstr($root) | rtrimstr("Cargo.toml")' | paste -sd' '
+}
+
+# Print the first changed path under one of the prefixes $@.
+touched() {
+  local path prefix
+  while read -r path; do
+    for prefix in "$@"; do
+      [[ $path != "$prefix"* ]] || { printf '%s\n' "$path"; return 0; }
+    done
+  done <<<"$changed"
+}
+
+global=$(touched Cargo.toml Cargo.lock deny.toml clippy.toml rustfmt.toml devenv.nix devenv.lock devenv.yaml \
+  flake.nix nix/ rust-toolchain .cargo/ .config/ || true)
+
+# Print `run PART` for part $1 when a path under one of the prefixes $3... changed, else
+# `skip PART: no change in $2`.
+part() {
+  local name=$1 what=$2 hit
+  shift 2
+  hit=${global:-$(touched "$@" || true)}
+  if [[ -n $hit ]]; then
+    echo "run $name"
+  else
+    echo "skip $name: no change in $what"
+  fi
+}
+
+sys=$(reach Cargo.toml adtb-sys)
+app=$(reach apps/campaign/Cargo.toml campaign)
+lang=$(reach Cargo.toml adtb-lang)
+texts="tools/ docs/spec/ conformance/ apps/campaign/"
+# shellcheck disable=SC2086 # each list is of paths without spaces
+{
+  part miri "$sys or its tool" $sys work/tools/miri
+  part loom "$sys or its tool" $sys work/tools/loom
+  part campaign "$app" $app
+  part tree-sitter "$lang $texts or its tool" $lang $texts work/tools/tree-sitter-check
+}
+part docs "docs/, book.toml or its tools" docs/ book.toml work/tools/docs-site tools/docs-site/
+part deny "a manifest, lock or deny.toml" Cargo.lock deny.toml apps/campaign/Cargo. crates/*/Cargo.toml
+for test in work/tools/*-test; do
+  tools=()
+  for tool in work/tools/*; do
+    if [[ $tool != "$test" ]] && grep -qw -- "$(basename "$tool")" "$test"; then
+      tools+=("$tool")
+    fi
+  done
+  [[ $test != */check-reach-test ]] || tools+=(crates/*/Cargo.toml apps/*/Cargo.toml)
+  part "$(basename "$test")" "$(basename -a "$test" "${tools[@]}" | paste -sd' ')" "$test" "${tools[@]}"
+done

@@ -138,8 +138,13 @@ otherwise report targeted results and the remaining owner.
 From your workspace root in the dev shell:
 
 ```sh
-DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check && work/tools/house-check
+DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check --changed
 ```
+
+`--changed [REVSET]` (default `main..@`) skips Miri, Loom, the campaign,
+tree-sitter, docs, deny and each tool test when no file of REVSET is in its
+reach, prints each part it skips, and runs `house-check` over REVSET last. The
+full `check`, without the flag, is the lead's.
 
 The explicit roots keep generated dev-shell wrappers on your workspace.
 `check` owns root clippy, formatting and the suite; campaign lint parity,
@@ -160,7 +165,7 @@ inspecting that log, and return that status. For example, in a subshell:
 ```sh
 (
   mkdir -p target || exit 1
-  if DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check >target/check.log 2>&1; then
+  if DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check --changed >target/check.log 2>&1; then
     check_status=0
   else
     check_status=$?

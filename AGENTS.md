@@ -52,7 +52,9 @@ For a fresh clone, host prerequisites and optional editor setup, read
 - `work/tools/suite [ARGS]`: run tests through the shared nextest lock.
 - `check` (in the dev shell): run the full checks, including the campaign
   application, the Loom models, Miri, dependency policy, source-size
-  limits and every `work/tools/*-test`.
+  limits and every `work/tools/*-test`. `check --changed [REVSET]` (default
+  `main..@`) runs the optional parts only when `work/tools/check-reach`
+  finds a changed file in their reach, and `house-check` over REVSET.
 - `apps/campaign/` is its own cargo workspace, excluded from the root
   one. Build and test it from that directory.
 

@@ -43,6 +43,8 @@ in
   ];
 
   scripts.check.exec = ''
+    # check [--changed [REVSET]]   every check, or with --changed only the optional parts the files
+    # REVSET changes (default main..@) can reach, printing each part it skips and why.
     set -e
     case "$PWD/" in
       "$DEVENV_ROOT"/*) ;;
@@ -52,6 +54,13 @@ in
         ;;
     esac
     source "$DEVENV_ROOT/work/tools/common.bash"
+    plan=
+    if [[ ''${1:-} == --changed ]]; then
+      revset=''${2:-main..@}
+      plan=$("$DEVENV_ROOT/work/tools/check-reach" "$revset")
+      grep '^skip' <<<"$plan" || true
+    fi
+    part() { [[ -z $plan ]] || grep -qx "run $1" <<<"$plan"; }
     no_core_dumps
     machine_lock "$DEVENV_ROOT"
     export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$DEVENV_ROOT/target}"
@@ -60,22 +69,27 @@ in
     cargo clippy --workspace --all-targets -- -D warnings
     cargo fmt --all --check
     suite
-    loom
-    miri
+    if part loom; then loom; fi
+    if part miri; then miri; fi
     app="$DEVENV_ROOT/apps/campaign/Cargo.toml"
-    diff <(sed -n '/^\[workspace.lints.rust\]/,$p' "$DEVENV_ROOT/Cargo.toml") \
-      <(sed -n '/^\[workspace.lints.rust\]/,$p' "$app")
-    cargo clippy --manifest-path "$app" --all-targets -- -D warnings
-    cargo fmt --manifest-path "$app" --all --check
-    cargo nextest run --manifest-path "$app"
-    cargo deny check
-    cargo deny --manifest-path "$app" check
+    if part campaign; then
+      diff <(sed -n '/^\[workspace.lints.rust\]/,$p' "$DEVENV_ROOT/Cargo.toml") \
+        <(sed -n '/^\[workspace.lints.rust\]/,$p' "$app")
+      cargo clippy --manifest-path "$app" --all-targets -- -D warnings
+      cargo fmt --manifest-path "$app" --all --check
+      cargo nextest run --manifest-path "$app"
+    fi
+    if part deny; then
+      cargo deny check
+      cargo deny --manifest-path "$app" check
+    fi
     size-check
-    docs-check
-    tree-sitter-check
+    if part docs; then docs-check; fi
+    if part tree-sitter; then tree-sitter-check; fi
     for t in "$DEVENV_ROOT"/work/tools/*-test; do
-      "$t"
+      if part "$(basename "$t")"; then "$t"; fi
     done
+    if [[ -n $plan ]]; then house-check "$DEVENV_ROOT" -r "$revset"; fi
   '';
 
   scripts.docs-build.exec = ''

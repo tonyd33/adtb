@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+reach=${1:-$(cd "$(dirname "$0")" && pwd)/check-reach}
+
+# Fail unless the plan for the `jj diff --summary` line $1 has the verdicts `run PART` or
+# `skip PART` of $2...
+expect() {
+  local line=$1 plan want
+  shift
+  plan=$(printf '%s\n' "$line" | "$reach" --summary 2>/dev/null)
+  for want in "$@"; do
+    if ! grep -qE "^$want(:|$)" <<<"$plan"; then
+      printf 'check-reach-test: %s: expected %s in\n%s\n' "$line" "$want" "$plan" >&2
+      exit 1
+    fi
+  done
+}
+
+expect "M crates/adtb/src/lib.rs" 'skip miri' 'skip loom' 'skip tree-sitter' 'run campaign' 'skip docs'
+expect "M crates/adtb-sys/src/lib.rs" 'run miri' 'run loom' 'run campaign' 'skip tree-sitter'
+expect "M apps/campaign/src/main.rs" 'run campaign' 'run tree-sitter' 'skip miri' 'skip loom'
+expect "M crates/adtb-bench/src/lib.rs" 'skip campaign' 'skip miri' 'skip tree-sitter'
+expect "M crates/adtb-lang/src/lex.rs" 'run tree-sitter' 'run campaign' 'skip miri'
+expect "M docs/SUMMARY.md" 'run docs' 'skip tree-sitter' 'skip campaign'
+expect "M work/tools/land" 'run slot-test' 'skip suite-test' 'skip house-check-test'
+expect "M work/tools/common.bash" 'run slot-test' 'run suite-test' 'skip house-check-test'
+expect "M Cargo.lock" 'run miri' 'run loom' 'run campaign' 'run tree-sitter' 'run docs' 'run deny'
+expect "M clippy.toml" 'run miri' 'run loom' 'run campaign' 'run tree-sitter' 'run docs'
+expect "A tools/docs-site/adt-highlight.js" 'run docs' 'skip campaign'
+expect "R {crates/adtb-sys/src/a.rs => crates/adtb/src/a.rs}" 'run miri' 'run loom' 'run campaign'
+expect "R crates/{adtb => adtb-bench}/src/a.rs" 'run campaign' 'skip miri'
+expect "M crates/adtb/Cargo.toml" 'run check-reach-test' 'run deny' 'skip miri'
+printf 'check-reach cases passed\n'
+
