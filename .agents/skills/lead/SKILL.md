@@ -165,6 +165,7 @@ that the worker is unblocked.
 - After a review with blockers, review the delta yourself or with a fresh
   agent; a blocker-free round needs no new full review. Run the full check
   only on the final round.
+- A delta round that adds a mechanism the review never saw (a latch taken while another is held, a retry loop, a new thread or wait) gets a scoped review of that mechanism before landing, even after a blocker-free review. A fix round that held two page latches at once hung `find` against prune.
 - Overlap independent review of a stable snapshot with targeted tests and
   mutations of the candidate. Give the reviewer an immutable revision; keep
   mutation edits out of its view. Run the final full check after both converge.
