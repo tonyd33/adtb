@@ -500,7 +500,7 @@ impl Script {
             {
                 role::sent_step(step, txn::texted(db, txns, step)?)
             }
-            Head::Command { .. } | Head::Adhoc(_) => {
+            Head::Command { .. } | Head::Adhoc(_) | Head::Plan => {
                 role::sent_step(step, txn::texted(db, txns, step)?)
             }
             Head::Failed(_) => unreachable!("read gives `failed` an `as` prefix"),

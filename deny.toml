@@ -187,7 +187,8 @@ allow = [
     "ryu",
     "serde",
     "serde_core",
-    # Serialize native benchmark artifacts without ad hoc escaping.
+    # Serialize native benchmark artifacts without ad hoc escaping, and read plan documents in
+    # engine scripts.
     "serde_json",
     # Format JSON numbers for the native benchmark serializer.
     "zmij",

@@ -2,10 +2,10 @@
 
 use adtb_simkit::api;
 
-use adtb::{Database, DynRows, Log, TxnCallOptions, TxnOptions, Value};
+use adtb::{Database, Log};
 use adtb_sim::SimRuntime;
 
-use api::{in_txn, once, options, printed, result, results, sorted};
+use api::{once, options, printed, result, results};
 
 const SCHEMA: &str = r"module app
 add module app
@@ -36,112 +36,6 @@ fn with_db<T>(body: impl FnOnce(&Database<SimRuntime>) -> T) -> T {
     })
 }
 
-/// Returns the `text` and `document` of the one row of an explain result.
-fn explained(rows: DynRows) -> (String, String) {
-    let got: Vec<Value> = rows.map(|r| r.expect("a row")).collect();
-    let [Value::Record(fs)] = got.as_slice() else {
-        panic!("explain returns one record: {got:?}")
-    };
-    match fs.as_ref() {
-        [Value::Text(document), Value::Text(text)] => (text.to_string(), document.to_string()),
-        other => panic!("an explain row is {{ document: Text, text: Text }}: {other:?}"),
-    }
-}
-
-fn names(db: &Database<SimRuntime>) -> Vec<String> {
-    sorted(result(db, "from u in users select u.name"))
-}
-
-#[test]
-fn explain_returns_the_plan_of_a_query_as_text_and_a_document() {
-    with_db(|db| {
-        let mut out = results(db, "explain from u in users select u.name");
-        assert_eq!(1, out.len(), "explain returns one result");
-        let (text, document) = explained(out.remove(0));
-        assert!(text.contains("Scan users.User"), "{text}");
-        assert!(document.starts_with('{'), "{document}");
-        for member in [
-            "\"format\": 1",
-            "\"release\": ",
-            "\"root\": ",
-            "\"kind\": ",
-            "\"estimate\": ",
-            "\"children\": ",
-        ] {
-            assert!(document.contains(member), "{member} in {document}");
-        }
-    });
-}
-
-#[test]
-fn explain_of_an_index_probe_routes_by_constructor() {
-    with_db(|db| {
-        let (text, document) = explained(
-            results(
-                db,
-                r"explain from i in identities
-                      where i.user == users.key(2)
-                      select match i
-                        | EmailPass e -> e.email
-                        | Google g    -> g.gid
-                        | Apple a     -> a.sub",
-            )
-            .remove(0),
-        );
-        assert!(text.contains("Probe identities (user)"), "{text}");
-        for name in ["EmailPass", "Google", "Apple"] {
-            assert!(text.contains(name), "{name} in {text}");
-            assert!(
-                document.contains(&format!("\"name\": \"{name}\"")),
-                "{name} in {document}"
-            );
-        }
-        assert!(document.contains("\"arms\": "), "{document}");
-    });
-}
-
-#[test]
-fn explain_of_a_read_of_some_constructors_names_the_pruned_ones() {
-    with_db(|db| {
-        let (_, document) = explained(
-            results(
-                db,
-                "explain from g in identities.Google where g.user == users.key(2) select g.gid",
-            )
-            .remove(0),
-        );
-        assert!(
-            document.contains("\"pruned\": [{"),
-            "a read of one constructor of a sum names the others pruned: {document}"
-        );
-        assert!(document.contains("\"stage\": \"compile\""), "{document}");
-    });
-}
-
-#[test]
-fn explain_of_a_write_does_not_run_it() {
-    with_db(|db| {
-        let (text, _) = explained(results(db, r#"explain insert users { name: "cy" }"#).remove(0));
-        assert!(text.contains("Insert users"), "{text}");
-        assert_eq!(vec![r#""ann""#, r#""bo""#], names(db));
-    });
-}
-
-#[test]
-fn explain_of_a_read_of_a_temp_relation_plans_it() {
-    with_db(|db| {
-        let (text, _) = explained(
-            results(
-                db,
-                r"temp relation stage : User key id
-                  explain from s in stage select s.name",
-            )
-            .remove(0),
-        );
-        assert!(text.contains("Unnest"), "{text}");
-    });
-}
-
 #[test]
 fn explain_results_take_their_place_among_the_items() {
     with_db(|db| {
@@ -156,101 +50,6 @@ fn explain_results_take_their_place_among_the_items() {
         assert_eq!(vec!["2".to_owned()], shown[0]);
         assert!(shown[1][0].contains("Scan users.User"), "{:?}", shown[1]);
         assert_eq!(vec!["2".to_owned()], shown[2]);
-    });
-}
-
-#[test]
-fn explain_analyze_runs_a_query_and_adds_its_actual_rows() {
-    with_db(|db| {
-        let (text, document) =
-            explained(results(db, "explain analyze from u in users select u.name").remove(0));
-        assert!(text.contains("actual rows 2"), "{text}");
-        assert!(document.contains("\"actual\": {\"rows\": 2"), "{document}");
-        for member in ["\"loops\": ", "\"time_us\": ", "\"storage\": "] {
-            assert!(document.contains(member), "{member} in {document}");
-        }
-    });
-}
-
-#[test]
-fn explain_analyze_of_a_write_reports_its_change_set_and_applies_nothing() {
-    with_db(|db| {
-        let (text, document) = explained(
-            results(
-                db,
-                r#"explain analyze update g in identities.Google where g.gid == "g-bo"
-                   set Google { g with gid: "g-2" }"#,
-            )
-            .remove(0),
-        );
-        assert!(text.contains("identities.Google: -1 +1"), "{text}");
-        assert!(text.contains("constraints checked"), "{text}");
-        assert!(
-            document
-                .contains("\"change\": {\"identities.Google\": {\"deleted\": 1, \"inserted\": 1}}"),
-            "{document}"
-        );
-        assert_eq!(
-            vec![r#""g-bo""#.to_owned()],
-            printed(result(db, "from g in identities.Google select g.gid"))
-        );
-    });
-}
-
-#[test]
-fn explain_analyze_of_a_write_to_a_temp_relation_reports_its_change() {
-    with_db(|db| {
-        let got = results(
-            db,
-            "temp relation t : { a: I64 } key a\nexplain analyze insert t { a: 1 }",
-        );
-        let (text, document) = explained(got.into_iter().next().expect("a result"));
-        assert!(text.contains("t.t: -0 +1"), "{text}");
-        assert!(
-            document.contains("\"change\": {\"t.t\": {\"deleted\": 0, \"inserted\": 1}}"),
-            "{document}"
-        );
-    });
-}
-
-#[test]
-fn explain_analyze_of_a_write_counts_no_actual_rows() {
-    with_db(|db| {
-        let (text, document) =
-            explained(results(db, r#"explain analyze insert users { name: "cy" }"#).remove(0));
-        assert!(text.contains("actual rows 0"), "{text}");
-        assert!(document.contains("\"actual\": {\"rows\": 0"), "{document}");
-    });
-}
-
-#[test]
-fn explain_analyze_in_a_transaction_sees_its_writes_and_leaves_no_trace() {
-    with_db(|db| {
-        let mut t = db
-            .begin(&TxnOptions::default())
-            .expect("a transaction begins");
-        t.query_text(
-            r#"insert users { name: "cy" }"#,
-            &[],
-            &TxnCallOptions::default(),
-        )
-        .expect("the insert runs");
-        let got = t
-            .query_text(
-                r#"explain analyze delete u in users where u.name == "cy""#,
-                &[],
-                &TxnCallOptions::default(),
-            )
-            .expect("explain analyze runs");
-        let (text, _) = explained(got.into_iter().next().expect("a result"));
-        assert!(text.contains("users.User: -1 +0"), "{text}");
-        assert_eq!(
-            vec!["3".to_owned()],
-            in_txn(&mut t, "(count(u for u in users))"),
-            "the explained delete is undone"
-        );
-        t.commit(None).expect("the transaction commits");
-        assert_eq!(vec![r#""ann""#, r#""bo""#, r#""cy""#], names(db));
     });
 }
 

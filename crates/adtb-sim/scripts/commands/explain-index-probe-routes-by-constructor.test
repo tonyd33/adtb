@@ -1,0 +1,15 @@
+use users
+
+plan
+  explain from i in identities
+    where i.user == users.key(2)
+    select match i
+      | EmailPass e -> e.email
+      | Google g    -> g.gid
+      | Apple a     -> a.sub
+----
+{"format": 1, "root": {"children": [{"arms": [
+  {"name": "EmailPass", "child": {}},
+  {"name": "Google", "child": {}},
+  {"name": "Apple", "child": {}}
+]}]}}

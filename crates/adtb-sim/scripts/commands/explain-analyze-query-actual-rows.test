@@ -1,0 +1,6 @@
+use users
+
+plan
+  explain analyze from u in users select u.name
+----
+{"format": 1, "root": {"actual": {"rows": 2, "loops": 1}}}

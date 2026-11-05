@@ -1,0 +1,6 @@
+use users
+
+plan
+  explain analyze insert users { name: "cy" }
+----
+{"format": 1, "root": {"actual": {"rows": 0, "loops": 1}}}

@@ -1,0 +1,138 @@
+use users
+
+plan
+  explain from u in users select u.name
+----
+{"format": 1,
+
+plan
+  explain from u in users select u.name
+----
+{"root": {}}
+
+plan
+  (1)
+----
+{"format": 1}
+
+plan
+  explain from u in users select u.name
+  explain from u in users select u.name
+----
+{"format": 1}
+
+plan
+  explain from u in users select u.name
+----
+{"format": 2}
+
+plan
+  explain from u in users select u.name
+----
+{"format": 1, "root": {"kind": "Set"}}
+
+plan
+  explain from u in users select u.name
+----
+{"format": 1, "change": {}}
+
+plan
+  explain from g in identities.Google where g.user == users.key(2) select g.gid
+----
+{"format": 1, "root": {"children": [{"pruned": {"name": "Apple"}}]}}
+
+plan
+  explain from g in identities.Google where g.user == users.key(2) select g.gid
+----
+{"format": 1, "root": {"children": [{"pruned": [{"name": "Apple", "stage": "compile"}]}]}}
+
+plan
+  explain from g in identities.Google where g.user == users.key(2) select g.gid
+----
+{"format": 1, "root": {"children": [{"pruned": [
+  {"name": "EmailPass", "stage": "compile"},
+  {"name": "Apple", "stage": "start"}
+]}]}}
+
+plan
+  explain from i in identities where i.user == users.key(2) select match i
+    | EmailPass e -> e.email
+    | Google g    -> g.gid
+    | Apple a     -> a.sub
+----
+{"format": 1, "root": {"children": [{"arms": [
+  {"name": "EmailPass", "child": {"actual": {"rows": 1}}},
+  {"name": "Google", "child": {}},
+  {"name": "Apple", "child": {}}
+]}]}}
+
+plan
+  explain from i in identities where i.user == users.key(2) select match i
+    | EmailPass e -> e.email
+    | Google g    -> g.gid
+    | Apple a     -> a.sub
+----
+{"format": 1, "root": {"children": [{"arms": [
+  {"name": "EmailPass", "child": {}},
+  {"name": "Google", "child": {}}
+]}]}}
+
+plan
+  explain analyze from u in users select u.name
+----
+{"format": 1, "root": {"actual": {"rows": 3}}}
+
+plan
+  explain analyze from u in users select u.name
+----
+{"format": 1, "root": {"actual": {"time_us": 0}}}
+
+plan
+  explain from u in users select u.name
+----
+{"format": 1, "root": {"children": [{}, {"children": [{}, {}, {}]}]}}
+
+plan
+  explain nothing
+----
+{"format": 1}
+
+plan
+  explain from u in users select u.name
+----
+{"format": 1, "root": {"children": []}}
+
+plan
+  explain analyze from u in users select u.name
+----
+{"format": 1, "root": {"actual": {}}}
+
+plan
+  explain from g in identities.Google where g.user == users.key(2) select g.gid
+----
+{"format": 1, "root": {"children": [{"pruned": [
+  {"ctor": 0, "stage": "compile"},
+  {"name": "Apple", "stage": "compile"}
+]}]}}
+
+plan
+  explain from i in identities where i.user == users.key(2) select match i
+    | EmailPass e -> e.email
+    | Google g    -> g.gid
+    | Apple a     -> a.sub
+----
+{"format": 1, "root": {"children": [{"arms": [
+  {"name": "Google", "child": {}},
+  {"name": "Google", "child": {}},
+  {"name": "Apple", "child": {}}
+]}]}}
+
+plan
+  explain from i in identities where i.user == users.key(2) select match i
+    | EmailPass e -> e.email
+    | Google g    -> g.gid
+    | Apple a     -> a.sub
+----
+{"format": 1, "root": {"children": [{"arms": [
+  {"name": "Google", "child": {"actual": {}}}
+]}]}}

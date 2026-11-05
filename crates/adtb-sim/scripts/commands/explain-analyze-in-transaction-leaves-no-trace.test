@@ -1,0 +1,25 @@
+use users
+
+begin t
+
+in t run
+  insert users { name: "cy" }
+
+in t plan
+  explain analyze delete u in users where u.name == "cy"
+----
+{"format": 1, "change": {"users.User": {"deleted": 1, "inserted": 0}}, "constraints": "checked"}
+
+in t query
+  count(u for u in users)
+----
+3
+
+commit t
+
+query rowsort
+  from u in users select u.name
+----
+"ann"
+"bo"
+"cy"

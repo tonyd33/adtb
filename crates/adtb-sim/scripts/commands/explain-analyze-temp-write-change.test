@@ -1,0 +1,7 @@
+use users
+
+plan
+  temp relation t : { a: I64 } key a
+  explain analyze insert t { a: 1 }
+----
+{"format": 1, "change": {"t.t": {"deleted": 0, "inserted": 1}}, "constraints": "checked"}

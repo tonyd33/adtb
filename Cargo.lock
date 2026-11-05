@@ -178,6 +178,7 @@ dependencies = [
  "adtb-simkit",
  "adtb-sys",
  "adtb-testkit",
+ "serde_json",
 ]
 
 [[package]]

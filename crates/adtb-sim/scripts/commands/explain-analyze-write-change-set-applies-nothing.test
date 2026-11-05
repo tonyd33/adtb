@@ -1,0 +1,13 @@
+use users
+
+plan
+  explain analyze update g in identities.Google where g.gid == "g-bo"
+    set Google { g with gid: "g-2" }
+----
+{"format": 1, "change": {"identities.Google": {"deleted": 1, "inserted": 1}},
+ "constraints": "checked"}
+
+query
+  from g in identities.Google select g.gid
+----
+"g-bo"

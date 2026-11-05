@@ -1,0 +1,9 @@
+use users
+
+plan
+  explain from g in identities.Google where g.user == users.key(2) select g.gid
+----
+{"format": 1, "root": {"children": [{"pruned": [
+  {"name": "EmailPass", "stage": "compile"},
+  {"name": "Apple", "stage": "compile"}
+]}]}}

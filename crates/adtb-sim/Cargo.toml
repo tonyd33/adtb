@@ -20,6 +20,7 @@ adtb-reference.workspace = true
 adtb-simkit.workspace = true
 adtb-testkit.workspace = true
 adtb-sys = { workspace = true, features = ["latch-checks"] }
+serde_json = "=1.0.154"
 
 [lints]
 workspace = true

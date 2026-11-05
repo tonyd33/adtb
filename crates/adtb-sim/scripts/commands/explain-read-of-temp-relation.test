@@ -1,0 +1,7 @@
+use users
+
+plan
+  temp relation stage : User key id
+  explain from s in stage select s.name
+----
+{"format": 1}

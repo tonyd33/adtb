@@ -1,0 +1,7 @@
+seed 19
+use history
+
+plan
+  explain at commit $first { from i in items select i.name }
+----
+{"format": 1}

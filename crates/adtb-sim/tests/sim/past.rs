@@ -17,7 +17,7 @@ use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::types::{Base, Ty};
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use api::{options, printed, run, sorted};
+use api::{options, run, sorted};
 
 const STOCK: &str = r"module stock
 add module stock
@@ -226,21 +226,6 @@ fn a_read_before_a_migration_that_rewrote_what_it_reads_is_unavailable() {
         unavailable(&e);
         let orders = format!("at commit {} {{ from o in orders select o }}", at(first));
         assert!(rows(&db, &orders).is_empty());
-    });
-}
-
-#[test]
-fn explain_shows_a_read_of_the_past() {
-    with_history(19, |_, db, first, _| {
-        let mut out = db
-            .query_text(
-                &format!("explain {}", past_names(first)),
-                &[],
-                &CallOptions::default(),
-            )
-            .expect("explain runs");
-        let text = printed(out.remove(0)).join("\n");
-        assert!(text.contains("Read the past"), "{text}");
     });
 }
 

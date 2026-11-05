@@ -36,6 +36,10 @@ scripts/probes/forms/in-unbound-call.test:3: `in t call app` is not a directive
 scripts/probes/forms/log-bodiless.test:2: `log` takes a body
 scripts/probes/forms/loose-bodiless.test:2: `loose app` takes a body
 scripts/probes/forms/loose-two-names.test:2: `loose app web` is not a directive
+scripts/probes/forms/plan-as.test:3: `as owner plan` is not a directive
+scripts/probes/forms/plan-bodiless.test:3: `plan` takes a body
+scripts/probes/forms/plan-rows.test:3: `plan` takes its rows after `----`
+scripts/probes/forms/plan-suffix.test:3: `plan rowsort` is not a directive
 scripts/probes/forms/register-bodiless.test:3: `register web-1.0 pins 1 edition "2026-10" error` takes a body
 scripts/probes/forms/revoke-suffix.test:3: `revoke refused Invalid` is not a directive
 scripts/probes/forms/rollback-error.test:3: `rollback t error Invalid { detail: "x" }` is not a directive

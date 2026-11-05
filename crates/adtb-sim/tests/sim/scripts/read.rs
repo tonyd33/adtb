@@ -69,15 +69,16 @@ pub(super) enum Head {
     Command {
         rowsort: bool,
     },
+    Plan,
     Error(String),
     Adhoc(String),
     Failed(String),
 }
 
-const HEADS: [&str; 28] = [
+const HEADS: [&str; 29] = [
     "seed", "use", "option", "migrate", "reopen", "role", "log", "bundle", "call", "advance",
     "run", "query", "error", "as", "grant", "revoke", "register", "host", "loose", "begin",
-    "commit", "rollback", "in", "assert", "failed", "drop", "command", "adhoc",
+    "commit", "rollback", "in", "assert", "failed", "drop", "command", "adhoc", "plan",
 ];
 
 /// One directive, with the file and line it was read from.
@@ -167,18 +168,7 @@ fn head(line: &str) -> Option<Head> {
                 error,
             }
         }
-        "commit" => {
-            let (rest, error) = split(rest, " error ");
-            let (name, position) = split(rest, " position ");
-            Head::Commit {
-                name: named(name)?,
-                position: match position {
-                    Some(p) => Some(named(&p)?),
-                    None => None,
-                },
-                error,
-            }
-        }
+        "commit" => commit(rest)?,
         "rollback" => Head::Rollback(named(rest)?),
         "run" if rest.is_empty() => Head::Run,
         "query" if rest.is_empty() || rest == "rowsort" => Head::Query {
@@ -187,6 +177,7 @@ fn head(line: &str) -> Option<Head> {
         "command" if rest.is_empty() || rest == "rowsort" => Head::Command {
             rowsort: !rest.is_empty(),
         },
+        "plan" if rest.is_empty() => Head::Plan,
         "error" if !rest.is_empty() => Head::Error(rest.to_owned()),
         "adhoc" => Head::Adhoc(rest.strip_prefix("error ")?.to_owned()),
         "failed" if !rest.is_empty() => Head::Failed(rest.to_owned()),
@@ -219,6 +210,19 @@ fn bundle(rest: &str) -> Option<Head> {
         header,
         fixture,
         refused,
+    })
+}
+
+fn commit(rest: &str) -> Option<Head> {
+    let (rest, error) = split(rest, " error ");
+    let (name, position) = split(rest, " position ");
+    Some(Head::Commit {
+        name: named(name)?,
+        position: match position {
+            Some(p) => Some(named(&p)?),
+            None => None,
+        },
+        error,
     })
 }
 
@@ -315,7 +319,7 @@ fn value_end(text: &str) -> usize {
 fn takes_rows(line: &str) -> bool {
     let line = prefixed(line).1;
     let call = line.strip_prefix("call ").and_then(call);
-    ["query", "command"].contains(&line.split(' ').next().unwrap_or_default())
+    ["query", "command", "plan"].contains(&line.split(' ').next().unwrap_or_default())
         || matches!(
             call,
             Some(Head::Call {
@@ -378,7 +382,9 @@ fn read(path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, String> {
                     h,
                     Head::Call { .. } | Head::Grant { .. } | Head::Register { .. }
                 );
-            let txn = prefix.role.is_none() && prefix.assert.is_none() && (sent(h) || call(h));
+            let txn = prefix.role.is_none()
+                && prefix.assert.is_none()
+                && (sent(h) || call(h) || matches!(h, Head::Plan));
             let assert = sent(h) || call(h) || matches!(h, Head::Begin { .. });
             let failed = !matches!(h, Head::Failed(_)) || prefix.role.is_some();
             failed
@@ -396,6 +402,7 @@ fn read(path: &Path, uses: &mut Vec<String>) -> Result<Vec<Step>, String> {
                 | Head::Run
                 | Head::Query { .. }
                 | Head::Command { .. }
+                | Head::Plan
                 | Head::Error(_)
                 | Head::Adhoc(_)
                 | Head::Failed(_)

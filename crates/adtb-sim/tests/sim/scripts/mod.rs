@@ -31,6 +31,14 @@
 //! - `run`, `query [rowsort]`: as in a conformance script.
 //! - `command [rowsort]`: the body, a command or other text, one call in process, its one result
 //!   compared with the rows as a `query`'s.
+//! - `plan`: the body, one explain sent as a `command` is, its plan document compared with the
+//!   JSON object after `----`, which states `format`. Each member the object states is compared,
+//!   and only these: `format`, `change` and `constraints` as equal; a node's `arms` and `pruned`
+//!   as sets, each entry naming its constructor once by `name`, an arm's `child` as a node;
+//!   `rows` and `loops` of `actual`; each of a node's `children` against any node below it in
+//!   preorder, through children and arms, the first after the one the child before matched. An
+//!   empty `children` or `actual` differs. Each node of the plan holds `kind`, `estimate` and the
+//!   array `children`, and each arm, pruned constructor and `actual` its members.
 //! - `error VALUE`: as in a conformance script, the last statement refused with exactly the
 //!   reason VALUE in textual syntax.
 //! - `adhoc error VALUE`: the body, one ad hoc call in process committing on its own, refused
@@ -47,7 +55,7 @@
 //!   VALUE]`, `rollback NAME`: interactive transaction NAME; one open at the next open differs.
 //!   `$P` in a later body or compared value stands for the position the commit took, in textual
 //!   syntax; a second binding of P differs.
-//! - `in NAME` before `run`, `query`, `error` or a `call` with an ordinal: one call of
+//! - `in NAME` before `run`, `query`, `error`, `plan` or a `call` with an ordinal: one call of
 //!   transaction NAME; `committed` states a registered transaction committing with it.
 //! - `assert VALUE` before `run`, `query`, `error`, `call` or `begin`, after any `as`: the call
 //!   or transaction runs for principal VALUE. With `in` or `assert` a body is one call.
@@ -65,6 +73,7 @@
 //! Set `ADTB_SCRIPTS` to a newline-separated list of script files and directories and run
 //! `scripts::by_hand` to run them; `work/tools/script` does that.
 
+mod plan;
 mod read;
 mod role;
 mod session;

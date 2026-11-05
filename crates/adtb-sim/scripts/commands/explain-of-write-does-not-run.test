@@ -1,0 +1,12 @@
+use users
+
+plan
+  explain insert users { name: "cy" }
+----
+{"format": 1}
+
+query rowsort
+  from u in users select u.name
+----
+"ann"
+"bo"

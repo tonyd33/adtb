@@ -15,6 +15,7 @@ use adtb::{
 use adtb_lang::textual::Form;
 use adtb_sim::SimRuntime;
 
+use super::plan;
 use super::read::{Head, Step};
 use super::session::{Answer, Differs, arguments, call_rows, compare, refused, rejected};
 use super::txn::{Txns, asserted, named, pending};
@@ -246,18 +247,22 @@ pub(super) fn grant(
 pub(super) fn sent_step(step: &Step, got: Sent) -> Result<(), Differs> {
     match (&step.head, got) {
         (Head::Run, Sent::Done(_)) => Ok(()),
-        (Head::Run | Head::Query { .. } | Head::Command { .. }, Sent::Refused(e)) => {
+        (Head::Run | Head::Query { .. } | Head::Command { .. } | Head::Plan, Sent::Refused(e)) => {
             Err(Differs::at(step, format!("refused with {}", refused(&e))))
         }
-        (Head::Run | Head::Query { .. } | Head::Command { .. }, Sent::Failed(e)) => Err(
-            Differs::at(step, format!("fails at completion with {}", refused(&e))),
-        ),
+        (Head::Run | Head::Query { .. } | Head::Command { .. } | Head::Plan, Sent::Failed(e)) => {
+            Err(Differs::at(
+                step,
+                format!("fails at completion with {}", refused(&e)),
+            ))
+        }
         (Head::Query { rowsort } | Head::Command { rowsort }, Sent::Done(mut results)) => {
             match (results.pop(), results.is_empty()) {
                 (Some((form, rows)), true) => call_rows(step, &form, rows, *rowsort),
                 _ => Err(Differs::at(step, "a query holds one statement")),
             }
         }
+        (Head::Plan, Sent::Done(results)) => plan::compare(step, results),
         (Head::Error(reason) | Head::Adhoc(reason), got) => {
             let want = rejected(reason);
             match got {

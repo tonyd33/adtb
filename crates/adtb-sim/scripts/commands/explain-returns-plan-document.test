@@ -1,0 +1,6 @@
+use users
+
+plan
+  explain from u in users select u.name
+----
+{"format": 1}

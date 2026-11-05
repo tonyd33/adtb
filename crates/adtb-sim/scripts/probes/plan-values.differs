@@ -1,0 +1,41 @@
+scripts/probes/plan-values.test:3: the expected document does not read: EOF while parsing a value at line 1 column 13
+scripts/probes/plan-values.test:8: the expected document states no `format`
+scripts/probes/plan-values.test:13: the body has no one explain result
+scripts/probes/plan-values.test:18: the body has no one explain result
+scripts/probes/plan-values.test:24: the plan differs at `.format`
+  expected: 2
+  actual:   1
+scripts/probes/plan-values.test:29: the plan differs at `.root.kind`
+  expected: "Set"
+  actual:   a member no plan step compares
+scripts/probes/plan-values.test:34: the plan differs at `.change`
+  expected: {}
+  actual:   nothing
+scripts/probes/plan-values.test:39: the expected `.root.children[0].pruned` is no array
+scripts/probes/plan-values.test:44: the plan differs at `.root.children[0].pruned`
+  expected: [{"name":"Apple","stage":"compile"}]
+  actual:   []
+scripts/probes/plan-values.test:49: the plan differs at `.root.children[0].pruned[Apple].stage`
+  expected: "start"
+  actual:   "compile"
+scripts/probes/plan-values.test:57: the plan differs at `.root.children[0].arms[EmailPass].child.actual`
+  expected: {"rows":1}
+  actual:   nothing
+scripts/probes/plan-values.test:69: the plan differs at `.root.children[0].arms`
+  expected: [{"child":{},"name":"EmailPass"},{"child":{},"name":"Google"}]
+  actual:   [{"child":{"children":[{"children":[],"detail":"","estimate":null,"kind":"Emit","pruned":[]}],"detail":"","estimate":null,"kind":"Chain","pruned":[]},"ctor":0,"name":"EmailPass"},{"child":{"children":[{"children":[],"detail":"","estimate":null,"kind":"Emit","pruned":[]}],"detail":"","estimate":null,"kind":"Chain","pruned":[]},"ctor":1,"name":"Google"},{"child":{"children":[{"children":[],"detail":"","estimate":null,"kind":"Emit","pruned":[]}],"detail":"","estimate":null,"kind":"Chain","pruned":[]},"ctor":2,"name":"Apple"}]
+scripts/probes/plan-values.test:80: the plan differs at `.root.actual.rows`
+  expected: 3
+  actual:   2
+scripts/probes/plan-values.test:85: the plan differs at `.root.actual.time_us`
+  expected: 0
+  actual:   a member no plan step compares
+scripts/probes/plan-values.test:90: the plan differs at `.root.children[1].children[0]`
+  expected: {}
+  actual:   no node below matches
+scripts/probes/plan-values.test:95: refused with Rejected { reason: Invalid { detail: "`nothing` is a parameter of this text, but the call supplies no value for it" } }
+scripts/probes/plan-values.test:100: the expected `.root.children` compares nothing
+scripts/probes/plan-values.test:105: the expected `.root.actual` compares nothing
+scripts/probes/plan-values.test:110: the expected `.root.children[0].pruned` holds an entry with no `name`
+scripts/probes/plan-values.test:118: the expected `.root.children[0].arms` names an entry twice
+scripts/probes/plan-values.test:130: the expected `.root.children[0].arms[Google].child.actual` compares nothing
