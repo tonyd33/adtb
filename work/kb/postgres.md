@@ -280,3 +280,8 @@ home: https://www.postgresql.org/docs/
 - Upstream TDE unmerged after patches in 2016, 2018, 2019; proposed design is cluster-wide AES with a key hierarchy; shared buffers stay plaintext; LSN-based nonces are reused when hint bits change pages within a checkpoint, so wal_log_hints would be required; whether checksums are over ciphertext is open. [V 2026-10-25] https://wiki.postgresql.org/wiki/Transparent_Data_Encryption
 - Generic WAL records let extension index AMs WAL-log page changes without a custom resource manager: GenericXLogStart, GenericXLogRegisterBuffer (returns a page copy to modify), GenericXLogFinish; assumes standard page layout; ignored by logical decoding. [V 2026-10-25] https://www.postgresql.org/docs/current/generic-wal.html
 - An index AM without ampredlocks makes every serializable scan take a predicate lock on the whole index, conflicting with any concurrent insert into it. [V 2026-10-25] https://www.postgresql.org/docs/current/index-locking.html
+
+## Damage reporting
+
+- Data checksums are verified on every read of a data page; internal structures and temp files are not covered; `ignore_checksum_failure` bypasses the check. [V 2026-11-05] https://www.postgresql.org/docs/current/checksums.html
+- A checksum failure errors the reading query and is counted in `pg_stat_database.checksum_failures`/`checksum_last_failure`; nothing marks the page or relation durably, and there is no lost-write detection outside redo. [U] general knowledge, not checked in the docs

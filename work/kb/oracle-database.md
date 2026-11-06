@@ -55,3 +55,8 @@ home: https://docs.oracle.com/en/database/oracle/oracle-database/26/
 ## Virtual Private Database
 
 - VPD policy functions (DBMS_RLS.ADD_POLICY) return a predicate applied to the statement; static policies assume one predicate for all users except SYS and EXEMPT ACCESS POLICY holders. Column-level VPD with sec_relevant_cols_opt => ALL_ROWS returns all rows with sensitive columns shown as NULL, SELECT only. [S 2026-10-25] https://docs.oracle.com/en/database/oracle/oracle-database/26/arpls/DBMS_RLS.html
+
+## Lost writes
+
+- `DB_LOST_WRITE_PROTECT`: TYPICAL/FULL make the primary log buffer cache reads (block read redo) in the redo log; a standby, or the primary during media recovery, compares them to detect lost writes. NONE disables it; AUTO (default from 19.26) logs reads only when a real-time-apply physical standby exists and skips detection on a lagging standby. Detection is thus only at redo apply, never on the primary's own read. [V 2026-11-05] https://docs.oracle.com/en/database/oracle/oracle-database/19/refrn/DB_LOST_WRITE_PROTECT.html
+- Shadow lost write protection (18c): a bigfile "lost write protection" shadow tablespace stores the SCN of each tracked block when modified; a block read is compared with it and a mismatch fails with ORA-65478. The shadow blocks are ordinary blocks, buffered, redo-logged and backed up. Example: 100 MB protected used about 1.4 MB of shadow. [S 2026-11-05] https://www.dbi-services.com/blog/18c-new-lost-write-protection/ ; sizing "at least 2% of the protected data files" [S 2026-11-05] https://docs.oracle.com/en/database/oracle/oracle-database/26/haovw/corruption-prevention-detection-and-repair.html

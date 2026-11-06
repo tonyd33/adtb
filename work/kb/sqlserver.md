@@ -41,3 +41,7 @@ home: https://learn.microsoft.com/en-us/sql/
 ## Ledger
 
 - Ledger tables (updatable, with history table; or append-only): rows changed by a transaction are SHA-256 hashed in a Merkle tree, transactions hashed into a block, each block hashed with the previous block's root. The latest block hash (database digest) is stored outside the database (immutable blob storage, WORM); verification recomputes and compares. Ledger cannot prevent file edits by a machine administrator, only detect them at verification. [V 2026-10-25] https://learn.microsoft.com/en-us/sql/relational-databases/security/ledger/ledger-overview
+
+## Damage records
+
+- `msdb.dbo.suspect_pages` records the page id of every page that fails a read with an 823 (OS CRC, I/O) or 824 (logical: bad checksum, torn page, bad page id) error, met by a query, DBCC CHECKDB or a backup; one row per page, at most 1,000 rows, and once full new errors are not logged. `event_type`: 1 823/other 824, 2 bad checksum, 3 torn page, 4 restored, 5 repaired, 7 deallocated by DBCC; `number_of_errors` and `last_update` count repeats. Restore and repair update the row's event type; transient I/O errors are recorded too; the DBA deletes old rows. The table lives in a separate database (msdb), not the damaged one. [V 2026-11-05] https://learn.microsoft.com/en-us/sql/relational-databases/backup-restore/manage-the-suspect-pages-table-sql-server
