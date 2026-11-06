@@ -73,7 +73,8 @@ highest page format versions present, the finalization state of a
 format upgrade ([../spec/catalog.md §12.2](../spec/catalog.md#122-upgrades-and-downgrade)),
 the location of the last checkpoint record (§6), the root of the
 catalog, the encryption parameters when the file is encrypted (§4),
-the page size (§1.1),
+the page of the damage list (§6) with the stale log blocks recovery
+found and the list does not hold yet (§7), the page size (§1.1),
 whether page writes are atomic on the device (§5.2), and the current
 primary epoch ([replication.md §6](replication.md#6-epochs-and-fencing)).
 
@@ -102,7 +103,10 @@ offset  size  field
 80      8     page id of the quarantine marks (§8), 0 before the page exists
 88      8     current primary epoch
 96      4     encryption scheme, 0 for a plaintext file
-100           encryption parameters; zero in a plaintext file
+100           encryption parameters, to 1024; zero in a plaintext file
+1024    8     page id of the damage list (§6), 0 before the page exists
+1032    8     stale log blocks past the end of the log (§7) not yet in the damage list, m; at most 62; the top bit set when recovery found more
+1040    16m   (u64 LSN of the block, u64 kind 1)
 2048    4     ended epochs of the file's history, n; at most 127, a restore past that forgets the oldest
 2052    16n   (u64 epoch, u64 log end where it ended), oldest first
 4088    8     allocation bitmap groups started (§1.1) as of the last checkpoint
@@ -511,6 +515,11 @@ describes a change to one page, or a transaction or system event:
 | safe snapshot marker | a snapshot no read-write transaction can make unsafe, as the transactions layer encodes it, and the commit position it covers ([replication.md §2](replication.md#2-safe-snapshot-markers)) |
 | logical change | inserted and deleted rows of one constructor relation that has a registered consumer ([replication.md §7](replication.md#7-logical-change-records)) |
 | checkpoint | redo LSN and dirty page table (§6) |
+| damage | page id and its damage, other than a page the device cannot read (§8) |
+| freed | page id of a page a batch frees whose damage was recorded |
+
+A damage or freed record is no page record: it changes no page,
+continues no page's chain of records and gives no page an expected LSN.
 
 A retag, a split or any multi-page change is several page records in
 one transaction. A caller may rely on it being atomic: its versions
@@ -698,6 +707,30 @@ The expected LSNs a pager holds (§10.3) take 8 bytes of memory per page
 of the file, plus an entry per page the retained log names past its
 map entry.
 
+Every page the pager refuses as damaged, other than one the device
+cannot read, is recorded: the detection appends a damage record (§5.1)
+holding only the log lock, and forces it before it returns. Recovery's
+detections are recorded once it ends (§7), and a file quarantined whole
+records in memory only (§8). A commit log status page settled from the
+log is recorded as settled before its rewrite is logged. A checkpoint
+folds every record into the damage list, one page of kind damage list the file header names
+(§1.2): it takes the records under the log lock with the checkpoint
+record, and logs the list page's change after that record, so recovery
+from the checkpoint finds in the log every record the list lacks. A
+checkpoint whose records have not changed since the last fold leaves
+the page alone. An entry is 24 bytes: the page id with the damage's kind in its top byte,
+then two LSNs. A full-page image of the page logged after its record
+removes its entry, unless it is settled; a batch that frees the page
+removes it of any kind, with a freed record. Nothing else removes one: a
+page repaired outside the engine, such as by copying its bytes back,
+stays reported until an image or a free. Past the page's capacity the
+list records the whole file as damaged and lists no more pages. A list
+page that fails its checksum or is no list page quarantines the
+database (§8). One the device cannot read quarantines it for the open
+only, and the open's records then live in memory only. On a file
+quarantined whole a checkpoint folds only the records the log holds
+(§8).
+
 Rulings: buffer/checkpoint/fuzzy
 
 ## 7. Recovery
@@ -783,9 +816,21 @@ Past the last accepted batch, with sequence number `n`:
 
 An unreadable log block in the range recovery reads also stops it.
 
+Before it zeroes the tail, recovery adds the stale blocks it found to
+those the file header holds, the 62 lowest, sets the header's overflow
+bit when there were more, and forces the header. The first checkpoint
+that folds the damage list folds them into it, an overflow as the list's
+whole-file damage, and clears the header's. Recovery reads the damage
+and freed records and the full-page images of the log past the
+checkpoint it starts from onto the list, in log order. The pages it refuses are recorded once
+the tail is zeroed, in the batch of its closing checkpoint; a crash
+before that batch is durable leaves the page and the retained log as
+they were, so the next open finds them again.
+
 Recovery ends with a checkpoint: it writes and forces every page it
 replayed, then logs a checkpoint with an empty dirty page table and
-points the file header at it.
+points the file header at it. The open takes it once it has read the
+marks and the damage list.
 
 Recovery reads both log and pages with direct I/O, so it reads what
 is on the device and not a stale kernel cache.
@@ -824,7 +869,10 @@ Opening a file under that mark, postconditions:
   one `verify` alone. As a call it always runs. As a task it needs a session,
   and `session` reads the roles: on a file whose catalog or commit log cannot
   be read, only a session issued before the damage has one.
-- Nothing past the mark is written. The open resolves no id, frees no page,
+- Nothing past the mark is written. A damage found from then on is recorded
+  in memory only. A checkpoint still folds into the damage list every
+  record the log holds, including those replay reads at the open of a file
+  already marked. The open resolves no id, frees no page,
   allocates no counters page, applies no migration and compares no
   migration of the given log with the file's. No transaction with an id
   begins, so `verify` keeps no findings and a refused call records no `Denied`
@@ -832,8 +880,8 @@ Opening a file under that mark, postconditions:
   that finds the damage only after opening an intact commit log has already
   resolved the ids left in progress.
 - Pages 0 and 1 and the log may change on open and close: recovery and the
-  close's checkpoint write them. Every other page but the page of marks stays
-  as it was.
+  close's checkpoint write them. Every other page but the page of marks and
+  the damage list stays as it was.
 - `verify` answers at least one `Structure` row naming the mark, so a mark
   over a page replay has healed never reads as sound. A mark on one heap or
   index adds no row.
@@ -869,7 +917,11 @@ pager.quarantined() -> BTreeSet<Quarantine>
 
 The marks live on one page of the file, of kind quarantine marks,
 whose id the file header records (§1.2); the database's creation
-allocates it. A mark or release is a logged change of that page,
+allocates it, and the damage list (§6) beside it. `verify` and a scrub
+report each page the damage list or a record since names as a finding of
+that page with its damage, and each stale log block it holds as a log
+finding; a full list is a finding of the whole file. A settled status
+page is reported and marks nothing. A mark or release is a logged change of that page,
 durable when the call returns, so the marks survive a crash and a
 restart and are read back at open. A heap or index stays quarantined
 across restarts until `release`. A marks page that fails verification

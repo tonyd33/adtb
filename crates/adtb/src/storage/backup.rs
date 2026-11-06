@@ -432,6 +432,7 @@ impl Manifest {
             format!("encryption {}", h.encryption),
             format!("catalog_root {}", h.catalog_root.0),
             format!("quarantine_page {}", h.quarantine.0),
+            format!("damage_list_page {}", h.damage_list.0),
             format!("bitmap_groups {}", h.bitmap_groups),
             format!("file_pages {}", self.file_pages),
             format!("start {}/{}", self.start.epoch, self.start.lsn.0),
@@ -511,6 +512,7 @@ impl Manifest {
             && self.file_pages >= Pid::FIRST_DATA.0
             && pid_fits(h.catalog_root)
             && pid_fits(h.quarantine)
+            && pid_fits(h.damage_list)
             && self.damaged.iter().copied().all(pid_fits)
             && self.start.epoch <= self.end.epoch
             && self.start.lsn <= h.checkpoint
@@ -577,6 +579,9 @@ impl Manifest {
             bitmap_groups: number("bitmap_groups")?,
             history,
             log_start: Lsn(0),
+            damage_list: Pid(number("damage_list_page")?),
+            log_damage: Vec::new(),
+            log_damage_full: false,
         };
         Some(Manifest {
             envelope: Envelope {

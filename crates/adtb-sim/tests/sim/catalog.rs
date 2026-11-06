@@ -4,8 +4,8 @@ use adtb::catalog::{Catalog, Error, applied, declared, version_hash};
 use adtb::key::{CtorId, Value};
 use adtb::mvcc::{Scope, Transactions};
 use adtb::plan::{Element, IndexId};
-use adtb::storage::{Options, Pager, Pid};
-use adtb::verify::{self, Report};
+use adtb::storage::{Damage, Options, Pager, Pid};
+use adtb::verify::{self, Finding, Problem, Report};
 use adtb_lang::types::RelId;
 use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
 
@@ -107,6 +107,17 @@ fn unapplied(rows: &[(u32, Vec<Value>)]) -> Vec<String> {
 /// latest migration, that no transaction
 /// committed twice, and that it verifies clean.
 fn check_whole(pager: &Pager<SimRuntime>, catalog: &Catalog, txns: &Transactions<SimRuntime>) {
+    check_whole_but(pager, catalog, txns, None);
+}
+
+/// Check as [`check_whole`] does, but with verify finding `listed`, a page whose checksum failure
+/// is recorded, and nothing else.
+fn check_whole_but(
+    pager: &Pager<SimRuntime>,
+    catalog: &Catalog,
+    txns: &Transactions<SimRuntime>,
+    listed: Option<Pid>,
+) {
     let schema = catalog.schema();
     let got = committed(pager, catalog, txns);
     let migrations = rel(catalog, "catalog", "migrations");
@@ -134,7 +145,15 @@ fn check_whole(pager: &Pager<SimRuntime>, catalog: &Catalog, txns: &Transactions
         .collect();
     assert_eq!(want, unapplied(&latest), "rows of migrations");
     let report = verify_catalog(pager, catalog, txns);
-    assert!(report.is_clean() && report.complete, "{report:#?}");
+    let want: Vec<Finding> = listed
+        .map(|pid| Finding {
+            pid,
+            problem: Problem::Damaged(Damage::Checksum),
+        })
+        .into_iter()
+        .collect();
+    assert_eq!(want, report.findings, "{report:#?}");
+    assert!(report.log.is_empty() && report.complete, "{report:#?}");
     let commits: BTreeSet<u64> = report.commits.iter().copied().collect();
     assert_eq!(commits.len(), report.commits.len(), "{:?}", report.commits);
     assert_eq!(catalog.root(), pager.catalog_root());
@@ -144,10 +163,15 @@ fn check_whole(pager: &Pager<SimRuntime>, catalog: &Catalog, txns: &Transactions
 /// clean. Returns whether the header named a catalog before it opened, and the version the
 /// catalog opened at.
 fn check_reopened(rt: SimRuntime) -> (bool, u64) {
+    check_reopened_but(rt, None)
+}
+
+/// Open as [`check_reopened`] does, checking as [`check_whole_but`] does with `listed`.
+fn check_reopened_but(rt: SimRuntime, listed: Option<Pid>) -> (bool, u64) {
     let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
     let found = pager.catalog_root() != Pid(0);
     let (catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
-    check_whole(&pager, &catalog, &txns);
+    check_whole_but(&pager, &catalog, &txns, listed);
     (found, catalog.source().version)
 }
 
@@ -796,7 +820,8 @@ fn an_unfinished_migration_over_a_damaged_page_is_freed_once_the_page_reads() {
         assert_eq!(Outcome::Finished, outcome, "at {at}");
         let mended = restore(sim.files(), &files, pid);
         let mut sim = Sim::with_files(seed, Config::default(), mended);
-        let outcome = sim.run(|rt| assert_eq!((true, 0), check_reopened(rt), "at {at}"));
+        let reopened = |rt| assert_eq!((true, 0), check_reopened_but(rt, Some(pid)), "at {at}");
+        let outcome = sim.run(reopened);
         assert_eq!(Outcome::Finished, outcome, "at {at}");
         return;
     }

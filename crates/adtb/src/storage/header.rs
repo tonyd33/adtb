@@ -1,3 +1,4 @@
+use super::block::{LogFinding, LogProblem};
 use super::crc::crc32c_skipping;
 use super::page::{MAX_PAGE_SIZE, MIN_PAGE_SIZE, valid_page_size};
 use super::{Lsn, Pid};
@@ -14,6 +15,16 @@ const HISTORY: usize = 2048;
 /// Zero in a header written before the field existed.
 const LOG_START: usize = HISTORY - 8;
 const HISTORY_ENTRY: usize = 16;
+/// The end of the encryption parameters.
+const DAMAGE_LIST: usize = 1024;
+const LOG_DAMAGE: usize = DAMAGE_LIST + 8;
+const LOG_DAMAGE_ENTRY: usize = 16;
+const LOG_DAMAGE_ENTRIES: usize = LOG_DAMAGE + 8;
+/// The log findings a header holds.
+pub const LOG_DAMAGE_CAPACITY: usize = (LOG_START - LOG_DAMAGE_ENTRIES) / LOG_DAMAGE_ENTRY;
+const LOG_STALE: u64 = 1;
+/// The bit of the log findings' count set when more were found than a header holds.
+const LOG_DAMAGE_FULL: u64 = 1 << 63;
 /// The ended epochs a header holds; a restore past it forgets the oldest.
 pub const HISTORY_CAPACITY: usize = (BITMAP_GROUPS - HISTORY - 4) / HISTORY_ENTRY;
 
@@ -42,6 +53,14 @@ pub struct FileHeader {
     pub history: Vec<(u64, Lsn)>,
     /// Where this file's log starts in its epoch: 0, or a restored backup's end.
     pub log_start: Lsn,
+    /// The page listing the damage recorded, 0 before it exists.
+    pub damage_list: Pid,
+    /// Stale blocks recovery found past the end of the log and the damage list does not hold yet,
+    /// at most [`LOG_DAMAGE_CAPACITY`].
+    pub log_damage: Vec<LogFinding>,
+    /// Whether recovery found more stale blocks than [`LOG_DAMAGE_CAPACITY`], which damages the
+    /// whole file.
+    pub log_damage_full: bool,
 }
 
 struct Cursor<'a> {
@@ -92,6 +111,27 @@ impl FileHeader {
         out.extend_from_slice(&self.quarantine.0.to_le_bytes());
         out.extend_from_slice(&self.epoch.to_le_bytes());
         out.extend_from_slice(&self.encryption.to_le_bytes());
+        out.resize(DAMAGE_LIST, 0);
+        out.extend_from_slice(&self.damage_list.0.to_le_bytes());
+        assert!(
+            self.log_damage.len() <= LOG_DAMAGE_CAPACITY,
+            "a header holds at most {LOG_DAMAGE_CAPACITY} log findings"
+        );
+        let full = if self.log_damage_full {
+            LOG_DAMAGE_FULL
+        } else {
+            0
+        };
+        out.extend_from_slice(&(self.log_damage.len() as u64 | full).to_le_bytes());
+        for f in &self.log_damage {
+            assert_eq!(
+                f.problem,
+                LogProblem::Stale,
+                "a header holds only stale log blocks"
+            );
+            out.extend_from_slice(&f.lsn.0.to_le_bytes());
+            out.extend_from_slice(&LOG_STALE.to_le_bytes());
+        }
         out.resize(LOG_START, 0);
         out.extend_from_slice(&self.log_start.0.to_le_bytes());
         out.extend_from_slice(&(self.history.len() as u32).to_le_bytes());
@@ -139,6 +179,19 @@ impl FileHeader {
                 at: LOG_START,
             }
             .u64()),
+            damage_list: Pid(Cursor {
+                bytes,
+                at: DAMAGE_LIST,
+            }
+            .u64()),
+            log_damage: log_damage(bytes)?,
+            log_damage_full: Cursor {
+                bytes,
+                at: LOG_DAMAGE,
+            }
+            .u64()
+                & LOG_DAMAGE_FULL
+                != 0,
         };
         valid_page_size(header.page_size).then_some(header)
     }
@@ -148,6 +201,26 @@ fn history(bytes: &[u8]) -> Option<Vec<(u64, Lsn)>> {
     let mut c = Cursor { bytes, at: HISTORY };
     let n = c.u32() as usize;
     (n <= HISTORY_CAPACITY).then(|| (0..n).map(|_| (c.u64(), Lsn(c.u64()))).collect())
+}
+
+fn log_damage(bytes: &[u8]) -> Option<Vec<LogFinding>> {
+    let mut c = Cursor {
+        bytes,
+        at: LOG_DAMAGE,
+    };
+    let n = usize::try_from(c.u64() & !LOG_DAMAGE_FULL).ok()?;
+    if n > LOG_DAMAGE_CAPACITY {
+        return None;
+    }
+    (0..n)
+        .map(|_| {
+            let lsn = Lsn(c.u64());
+            (c.u64() == LOG_STALE).then_some(LogFinding {
+                lsn,
+                problem: LogProblem::Stale,
+            })
+        })
+        .collect()
 }
 
 /// Returns the byte offsets where copy 1 may start: one per page size a file may have.

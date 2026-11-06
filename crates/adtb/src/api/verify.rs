@@ -84,7 +84,7 @@ fn fields(f: Found) -> (u32, Vec<KeptField>) {
     let id = |n: u64| Int(i64::try_from(n).unwrap_or(i64::MAX));
     match f {
         Found::Checksum { at, .. } => (0, vec![Text(at)]),
-        Found::StalePage { at, .. } => (1, vec![Text(at)]),
+        Found::StalePage { at, .. } | Found::Settled { at, .. } => (1, vec![Text(at)]),
         Found::Order { index, at } => (2, vec![id(index), Text(at)]),
         Found::Orphan { index, ctor, at } => (3, vec![id(index), id(ctor), Text(at)]),
         Found::Missing {

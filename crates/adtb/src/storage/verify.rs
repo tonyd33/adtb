@@ -18,6 +18,8 @@ pub enum Finding {
     /// A valid page that no record of a complete log wrote.
     Orphan(Pid),
     Log(LogFinding),
+    /// The damage list ran out of room, so the whole file counts as damaged.
+    Unlisted,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -159,6 +161,11 @@ impl<R: Runtime> Pager<R> {
         for n in Pid::FIRST_DATA.0..self.pages_within(&log) {
             findings.extend(self.check_page(Pid(n), &log));
         }
+        let recorded = self.recorded();
+        findings.extend(recorded.log.into_iter().map(Finding::Log));
+        if recorded.full {
+            findings.push(Finding::Unlisted);
+        }
         findings.sort();
         findings.dedup();
         Verification {
@@ -243,13 +250,12 @@ impl<R: Runtime> Pager<R> {
     /// Returns the end of the page numbers to check against `log`.
     pub fn pages_within(&self, log: &RetainedLog) -> u64 {
         let logged = log.last.keys().next_back().map_or(0, |p| p.0 + 1);
-        let refused = self
-            .meta()
-            .damaged
-            .keys()
-            .next_back()
-            .map_or(0, |p| p.0 + 1);
-        self.file_pages().max(logged).max(refused)
+        let m = self.meta();
+        let end = |pages: Option<&Pid>| pages.map_or(0, |p| p.0 + 1);
+        let refused = end(m.damaged.keys().next_back());
+        let recorded = end(m.records.all().pages.keys().next_back());
+        drop(m);
+        self.file_pages().max(logged).max(refused).max(recorded)
     }
 
     /// Check page `pid` against `log`, refusing it from now on if its contents are lost. Read the
@@ -259,7 +265,20 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Judge a page by what holds it now. A file copy the pool's changed copy will overwrite is not
     /// damage, and a page the allocation bitmap calls free has no finding unless already refused.
+    /// Report the damage recorded of it as well.
     pub fn check_page(&self, pid: Pid, log: &RetainedLog) -> Vec<Finding> {
+        let mut findings = self.judge_page(pid, log);
+        let recorded = self.meta().records.page(pid);
+        if let Some(damage) = recorded {
+            let found = Finding::Page { pid, damage };
+            if !findings.contains(&found) {
+                findings.push(found);
+            }
+        }
+        findings
+    }
+
+    fn judge_page(&self, pid: Pid, log: &RetainedLog) -> Vec<Finding> {
         let mut findings = Vec::new();
         let RetainedLog {
             end,

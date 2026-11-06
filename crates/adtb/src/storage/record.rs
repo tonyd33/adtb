@@ -1,3 +1,4 @@
+use super::pager::Damage;
 use super::{Lsn, Pid, Position};
 
 /// Bytes written at `offset` of a page.
@@ -56,6 +57,16 @@ pub enum Record {
         at: Position,
         snapshot: Vec<u8>,
     },
+    /// Page `pid` was found damaged. No page record: it changes no page and raises no page's
+    /// expected LSN.
+    Damaged {
+        pid: Pid,
+        damage: Damage,
+    },
+    /// Page `pid` was freed, so the damage recorded of it no longer holds. No page record.
+    Freed {
+        pid: Pid,
+    },
 }
 
 const CHANGE: u8 = 1;
@@ -66,6 +77,43 @@ const XID_ALLOCATION: u8 = 5;
 const CHECKPOINT: u8 = 6;
 const SAFE_SNAPSHOT: u8 = 7;
 const MAP_ROOT: u8 = 8;
+const DAMAGED: u8 = 9;
+const FREED: u8 = 10;
+
+const CHECKSUM: u8 = 1;
+const STALE: u8 = 2;
+const LOG_UNPROVEN: u8 = 3;
+const SETTLED: u8 = 4;
+
+/// Returns the kind of `damage` and its two LSNs, zero where it has none.
+///
+/// Panic on [`Damage::Unreadable`].
+pub(crate) fn damage_words(damage: Damage) -> (u8, Lsn, Lsn) {
+    match damage {
+        Damage::Checksum => (CHECKSUM, Lsn(0), Lsn(0)),
+        Damage::Stale { expected, found } => (STALE, expected, found),
+        Damage::LogUnproven { at } => (LOG_UNPROVEN, at, Lsn(0)),
+        Damage::Settled { expected, found } => (SETTLED, expected, found),
+        Damage::Unreadable => panic!("an unreadable page is never recorded as damaged"),
+    }
+}
+
+/// Returns the damage [`damage_words`] gave `kind` and the two LSNs, `None` for no such kind.
+pub(crate) fn damage_of(kind: u8, a: Lsn, b: Lsn) -> Option<Damage> {
+    Some(match kind {
+        CHECKSUM => Damage::Checksum,
+        STALE => Damage::Stale {
+            expected: a,
+            found: b,
+        },
+        LOG_UNPROVEN => Damage::LogUnproven { at: a },
+        SETTLED => Damage::Settled {
+            expected: a,
+            found: b,
+        },
+        _ => return None,
+    })
+}
 
 fn put_map(out: &mut Vec<u8>, m: &MapRoot) {
     put_u64(out, m.root.0);
@@ -196,6 +244,18 @@ impl Record {
                 out.extend_from_slice(snapshot);
                 SAFE_SNAPSHOT
             }
+            Record::Damaged { pid, damage } => {
+                let (kind, a, b) = damage_words(*damage);
+                put_u64(out, pid.0);
+                out.push(kind);
+                put_u64(out, a.0);
+                put_u64(out, b.0);
+                DAMAGED
+            }
+            Record::Freed { pid } => {
+                put_u64(out, pid.0);
+                FREED
+            }
         };
         let body = len32(out.len() - start - PREFIX);
         out[start] = tag;
@@ -279,6 +339,16 @@ impl Record {
                     snapshot: std::mem::take(&mut b.bytes).to_vec(),
                 }
             }
+            DAMAGED => {
+                let pid = Pid(b.u64()?);
+                let kind = b.take(1)?[0];
+                let (a, c) = (Lsn(b.u64()?), Lsn(b.u64()?));
+                Record::Damaged {
+                    pid,
+                    damage: damage_of(kind, a, c).ok_or(Malformed)?,
+                }
+            }
+            FREED => Record::Freed { pid: Pid(b.u64()?) },
             _ => return Err(Malformed),
         };
         if !b.bytes.is_empty() {

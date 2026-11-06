@@ -239,13 +239,12 @@ fn an_open_of_a_damaged_file_writes_only_the_mark() {
             expected.insert(seeded(seed, status_page).1.0);
         }
         assert_eq!(expected, changed(&before, &marked), "pick {n}");
+        let list = with_pager(&mut sim, Pager::damage_list_page);
         let mut sim = Sim::with_files(seed, Config::default(), sim.files());
         finished(&mut sim, |rt| open(rt, &app()).unwrap().close().unwrap());
-        assert_eq!(
-            BTreeSet::new(),
-            changed(&marked, &sim.files()[FILE]),
-            "pick {n}, the second open"
-        );
+        let mut second = changed(&marked, &sim.files()[FILE]);
+        second.remove(&list.0);
+        assert_eq!(BTreeSet::new(), second, "pick {n}, the second open");
     }
 }
 
@@ -405,8 +404,10 @@ fn opens_damaged(c: &Crashes, mut files: Files) -> bool {
         });
     }
     let marks = with_pager(&mut sim, Pager::quarantine_page);
+    let list = with_pager(&mut sim, Pager::damage_list_page);
     let mut other = changed(&before, &sim.files()[FILE]);
     other.remove(&marks.0);
+    other.remove(&list.0);
     assert_eq!(BTreeSet::new(), other);
     read
 }
@@ -539,7 +540,7 @@ fn dropping_a_transaction_on_a_damaged_commit_log_marks_the_database() {
             Ok(()),
             db.write_path().pager().read(page.unwrap()).map(drop)
         );
-        assert_only_verify_runs(&db, None);
+        assert_only_verify_runs(&db, Some("Checksum"));
     });
 }
 
@@ -659,7 +660,7 @@ fn dropping_a_transaction_on_a_damaged_commit_log_of_a_real_file_does_not_panic(
     let mut bytes = std::fs::read(&path).unwrap();
     bytes[page.0 as usize * PAGE + 300] ^= 0x10;
     std::fs::write(&path, bytes).unwrap();
-    assert_real_opens_for_verify(&path, &app(), None);
+    assert_real_opens_for_verify(&path, &app(), Some("Checksum"));
 }
 
 /// Returns the files of a seeded, closed database with `nobody`, a role without `adhoc`, marked

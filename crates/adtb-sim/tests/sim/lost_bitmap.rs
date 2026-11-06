@@ -146,6 +146,7 @@ enum Writes {
 
 struct Kept {
     marks: Pid,
+    list: Pid,
     users: u32,
     counters: Pid,
     writes: Writes,
@@ -164,13 +165,13 @@ impl Kept {
     }
 
     /// Assert every byte of every page of `before` stands in `after`, leaving out the header copies,
-    /// the marks page and the pages `may_change` names.
+    /// the marks page, the damage list and the pages `may_change` names.
     fn check(&self, before: &Files, after: &Files, what: &str) {
         let (a, b) = (&before[FILE], &after[FILE]);
         assert!(b.len() >= a.len(), "{what}: the file shrank");
         for (i, (x, y)) in a.chunks(PAGE).zip(b.chunks(PAGE)).enumerate() {
             let page = Pid(i as u64);
-            if page < Pid::FIRST_DATA || page == self.marks {
+            if page < Pid::FIRST_DATA || page == self.marks || page == self.list {
                 continue;
             }
             if self.may_change(page, x) {
@@ -202,6 +203,7 @@ fn damaged_writing(
         let w = db.write_path();
         kept = Some(Kept {
             marks: w.pager().quarantine_page(),
+            list: w.pager().damage_list_page(),
             users: w.heap_named("app::users", "User").map_or(0, |h| h.id().0),
             counters: w.sequences_root(),
             writes,
@@ -676,12 +678,14 @@ fn lost_damage(files: &Files) -> Damage {
 }
 
 /// Assert every allocator path refuses the lost second group with `damage` and the file keeps its
-/// pages.
+/// pages but the damage list.
 fn assert_second_group_refused(files: Files, named: Pid, damage: Damage, what: &str) {
     let before = files[FILE].clone();
     let mut sim = Sim::with_files(1, Config::default(), files);
+    let mut list = Pid(0);
     finished(&mut sim, |rt| {
         let pager = pager_of(rt);
+        list = pager.damage_list_page();
         let lost = PageError {
             pid: Pid(SMALL_SPAN),
             damage,
@@ -709,7 +713,10 @@ fn assert_second_group_refused(files: Files, named: Pid, damage: Damage, what: &
         .enumerate()
     {
         let page = Pid(i as u64);
-        assert!(page < Pid::FIRST_DATA || x == y, "{what}: page {i} changed");
+        assert!(
+            page < Pid::FIRST_DATA || page == list || x == y,
+            "{what}: page {i} changed"
+        );
     }
 }
 

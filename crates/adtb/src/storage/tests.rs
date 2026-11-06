@@ -5,8 +5,8 @@ use adtb_testkit::scratch::Scratch;
 
 use super::alloc::diff;
 use super::block::{
-    Batch, BlockState, InMemory, LogImage, LogProblem, Mode, Scan, commits_from, frame, read_block,
-    scan,
+    Batch, BlockState, InMemory, LogFinding, LogImage, LogProblem, Mode, Scan, commits_from, frame,
+    read_block, scan,
 };
 use super::crc::{Crc32c, crc32c, crc32c_skipping};
 use super::header::{FileHeader, choose};
@@ -188,6 +188,12 @@ fn header(seq: u64) -> FileHeader {
         bitmap_groups: 3,
         history: vec![(1, Lsn(500)), (2, Lsn(900))],
         log_start: Lsn(900),
+        damage_list: Pid(13),
+        log_damage: vec![LogFinding {
+            lsn: Lsn(4096),
+            problem: LogProblem::Stale,
+        }],
+        log_damage_full: true,
     }
 }
 

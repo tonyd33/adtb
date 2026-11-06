@@ -10,6 +10,7 @@ use adtb::storage::{self, Damage, HEADER_LEN, Lsn, PageError, PageKind, Pager, P
 use adtb::{Database, Error, FatalReason, Log};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::{api, common, harness};
+use adtb_testkit::profile::assert_reached;
 
 const APP: &str = r"module app
 add module app
@@ -115,7 +116,11 @@ fn task_finding(row: &str) -> (String, String) {
 /// Returns a simulation whose last status page lost the write of a logged commit, the ids of that
 /// commit, read committed so far, and the findings of a verify of the file.
 fn lost_write() -> (Sim, Vec<Xid>, Vec<(String, String)>) {
-    let mut sim = Sim::new(1, Config::default());
+    lost_write_in(Sim::new(1, Config::default()))
+}
+
+/// Returns what [`lost_write`] does, from `sim`.
+fn lost_write_in(mut sim: Sim) -> (Sim, Vec<Xid>, Vec<(String, String)>) {
     insert(&mut sim, "ann");
     let before = sim.files();
     let (page, bo) = insert(&mut sim, "bo");
@@ -136,8 +141,13 @@ fn lost_write() -> (Sim, Vec<Xid>, Vec<(String, String)>) {
         "\"page {}: Stale {{ expected: {expected:?}, found: {found:?} }}\"",
         page.0
     );
+    let settled = format!(
+        "\"page {}: Settled {{ expected: {expected:?}, found: {found:?} }}\"",
+        page.0
+    );
     let want = [
         ("StalePage", stale.as_str()),
+        ("StalePage", settled.as_str()),
         (
             "Structure",
             "\"the database: only the pages and the log were checked\"",
@@ -149,6 +159,60 @@ fn lost_write() -> (Sim, Vec<Xid>, Vec<(String, String)>) {
     ];
     let want = want.map(|(c, a)| (c.to_owned(), a.to_owned())).into();
     (sim, bo, want)
+}
+
+#[test]
+fn a_settled_status_page_whose_log_is_recycled_is_a_finding_of_verify_that_marks_nothing() {
+    let segment = 1 << 16;
+    let options = storage::Options {
+        page_size: DB_PAGE as u32,
+        segment_size: segment,
+        threads: 2,
+        ..storage::Options::new(harness::NAME)
+    };
+    let mut sim = Sim::new(1, Config::default());
+    api::run(&mut sim, |rt| Pager::create(rt, &options).unwrap().close());
+    let (mut sim, bo, _) = lost_write_in(sim);
+    let settled = api::run(&mut sim, |rt| {
+        let db = open(&rt);
+        let pager = db.write_path().pager();
+        let recorded = pager.recorded().pages;
+        let settled = recorded
+            .into_iter()
+            .find(|(_, d)| matches!(d, Damage::Settled { .. }));
+        let name = "x".repeat(2000);
+        let (start, mut n) = (pager.appended(), 0);
+        while pager.appended().0 - start.0 <= 3 * segment {
+            api::results(&db, &format!("insert users {{ name: \"{name}{n}\" }}"));
+            n += 1;
+        }
+        db.close().unwrap();
+        settled
+    });
+    let recycled = api::run(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt, &options).unwrap();
+        let recycled = pager.recycle_log();
+        pager.close();
+        recycled
+    });
+    assert_reached("segments recycled", recycled, 1);
+    let Some((page, damage)) = settled else {
+        panic!("the open settles a status page");
+    };
+    api::run(&mut sim, |rt| {
+        let db = open(&rt);
+        assert_eq!(vec![Status::Committed; bo.len()], statuses(&db, &bo));
+        let rows = findings(api::sorted(db.verify(None).unwrap()));
+        let of_page = format!("\"page {}: ", page.0);
+        let rows: Vec<_> = rows
+            .into_iter()
+            .filter(|(_, a)| a.starts_with(&of_page))
+            .collect();
+        let want = ("StalePage".to_owned(), format!("{of_page}{damage:?}\""));
+        assert_eq!(vec![want], rows);
+        assert_eq!(BTreeSet::new(), db.write_path().pager().quarantined());
+        db.close().unwrap();
+    });
 }
 
 /// Assert a reopen of `sim` reads `bo` committed and refuses a query as quarantined whole.
@@ -176,13 +240,17 @@ fn the_first_verify_of_a_status_page_that_lost_a_write_reports_it_and_then_marks
     refused_on_reopen(&mut sim, &bo);
 }
 
-/// Returns `want` with the row saying what a run of `verify app::users` checked.
+/// Returns `want` with the row saying what a run of `verify app::users` checked, and without the
+/// settled status page, which is no page of the relation.
 fn of_users(want: &[(String, String)]) -> Vec<(String, String)> {
     let only = "\"the database: only the pages and the log were checked\"";
     let of_users = "\"relation users: only its pages were checked\"";
     let row =
         |(c, a): &(String, String)| (c.clone(), if a == only { of_users } else { a }.to_owned());
-    want.iter().map(row).collect()
+    want.iter()
+        .filter(|(_, a)| !a.contains("Settled"))
+        .map(row)
+        .collect()
 }
 
 #[test]

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use adtb::runtime::{Clock, Runtime, Threads};
-use adtb::storage::{Options, PageKind, Pager, Pid, Quarantine};
+use adtb::storage::{FIRST_EDITABLE, Options, PageKind, Pager, Pid, Quarantine};
 use adtb::{CreateOptions, Database, Error, FatalReason, Log, OpenOptions};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::harness::finished;
@@ -272,13 +272,19 @@ fn a_full_pass_drops_a_row_it_no_longer_finds() {
         assert_eq!(1, found(&db).len());
         db.close().expect("the close");
     });
-    let mut files = sim.files();
     let at = page.0 as usize * PAGE;
-    files.get_mut(FILE).expect("the file")[at..at + PAGE].copy_from_slice(&clean[at..at + PAGE]);
-    let mut sim = Sim::with_files(16, Config::default(), files);
+    let mut sim = Sim::with_files(16, Config::default(), sim.files());
     api::run(&mut sim, |rt| {
         let db = open(rt.clone());
         assert_eq!(1, found(&db).len(), "the row outlives the reopen");
+        let pager = db.write_path().pager();
+        let from = pager.allocate(1, PageKind::HeapSlotted, 0).unwrap();
+        pager
+            .update(&[from], |p| {
+                p[0][FIRST_EDITABLE..].copy_from_slice(&clean[at + FIRST_EDITABLE..at + PAGE]);
+            })
+            .unwrap();
+        pager.replace_contents(page, from, None).unwrap();
         nap(&rt, Duration::from_secs(660));
         assert_eq!(Vec::<String>::new(), found(&db), "the page reads clean now");
     });

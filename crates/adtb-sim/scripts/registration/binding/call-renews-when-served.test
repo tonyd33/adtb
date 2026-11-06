@@ -11,14 +11,14 @@ advance 2d
 query
   from b in catalog::bundles select b.renewed
 ----
-2026-01-01T00:00:00.669981Z
+2026-01-01T00:00:00.674400Z
 
 as web call web-1.0 3 error Denied { detail: "role `web` may not make this call" }
 
 query
   from b in catalog::bundles select b.renewed
 ----
-2026-01-01T00:00:00.669981Z
+2026-01-01T00:00:00.674400Z
 
 as web call web-1.0 2 error Invalid { detail: "`q` takes 0 arguments, not 1" }
   1
@@ -26,7 +26,7 @@ as web call web-1.0 2 error Invalid { detail: "`q` takes 0 arguments, not 1" }
 query
   from b in catalog::bundles select b.renewed
 ----
-2026-01-01T00:00:00.669981Z
+2026-01-01T00:00:00.674400Z
 
 query
   from a in catalog::audit.Call where a.role == "web" select { origin: a.origin, outcome: a.outcome }
@@ -38,4 +38,4 @@ as web call web-1.0 2
 query
   from b in catalog::bundles select b.renewed
 ----
-2026-01-03T00:00:00.673314Z
+2026-01-03T00:00:00.677915Z

@@ -1,11 +1,13 @@
-use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_sys::pages;
 
 use crate::runtime::Runtime;
 
 use super::block::{LogFinding, LogProblem, Mode, batch_at, scan};
+use super::damage_log::Met;
+use super::header::LOG_DAMAGE_CAPACITY;
 use super::page::{self, Verdict};
 use super::pager::{Damage, OpenError, Pager};
 use super::record::{Edit, MapRoot, Record};
@@ -28,6 +30,8 @@ pub struct Recovery {
 
 struct Replay {
     redo: Lsn,
+    /// The checkpoint replay starts from.
+    ck: Lsn,
     /// The LSN of the last record seen for each page.
     last: BTreeMap<Pid, Lsn>,
     /// Pages that failed verification, waiting for a full-page image.
@@ -44,8 +48,11 @@ fn damaged_at(lsn: Lsn, problem: LogProblem) -> OpenError {
 }
 
 impl<R: Runtime> Pager<R> {
-    /// Replay the log, checkpoint and arm the read-in gate. Returns what it did, the pages the
-    /// file then holds and whether the gate is armed.
+    /// Replay the log, write every page it replayed and arm the read-in gate. Returns what it did,
+    /// the pages the file then holds and whether the gate is armed.
+    ///
+    /// Postconditions: the stale blocks past the log's end are in the file header before the
+    /// log's tail is cleared.
     pub(crate) fn recover(&self) -> Result<(Recovery, u64, Armed), OpenError> {
         let mut img = {
             let mut segments = self.segments.lock(&self.rt);
@@ -80,6 +87,7 @@ impl<R: Runtime> Pager<R> {
         self.meta().recovered = s.end;
         let mut replay = Replay {
             redo,
+            ck,
             last: BTreeMap::new(),
             unverified: BTreeMap::new(),
             applied: 0,
@@ -116,6 +124,7 @@ impl<R: Runtime> Pager<R> {
         for (pid, damage) in std::mem::take(&mut replay.unverified) {
             self.damage(pid, damage);
         }
+        self.keep_log_findings(&s.findings);
         {
             let mut segments = self.segments.lock(&self.rt);
             self.io(|d| segments.clear_tail(d, &mut img, s.end));
@@ -123,7 +132,7 @@ impl<R: Runtime> Pager<R> {
         self.flush_pages(usize::MAX);
         assert!(self.meta().dirty.is_empty(), "recovery left a dirty page");
         let pages = self.count_file_groups();
-        self.checkpoint();
+        let armed = self.arm();
         let recovery = Recovery {
             redo,
             end: s.end,
@@ -131,8 +140,27 @@ impl<R: Runtime> Pager<R> {
             log: s.findings,
             damaged: self.damaged().into_iter().collect(),
         };
-        let armed = self.arm();
         Ok((recovery, pages, armed))
+    }
+
+    /// Add the stale blocks of `findings` to those the file header holds, the lowest that fit,
+    /// marking the header full when some do not, and force the header when that changes it.
+    fn keep_log_findings(&self, findings: &[LogFinding]) {
+        let stale = findings.iter().filter(|f| f.problem == LogProblem::Stale);
+        let changed = {
+            let mut h = self.header.lock(&self.rt);
+            let mut kept: BTreeSet<LogFinding> = h.0.log_damage.iter().copied().collect();
+            kept.extend(stale);
+            let full = h.0.log_damage_full || kept.len() > LOG_DAMAGE_CAPACITY;
+            let kept: Vec<LogFinding> = kept.into_iter().take(LOG_DAMAGE_CAPACITY).collect();
+            let changed = kept != h.0.log_damage || full != h.0.log_damage_full;
+            h.0.log_damage = kept;
+            h.0.log_damage_full = full;
+            changed
+        };
+        if changed {
+            self.write_header(None);
+        }
     }
 
     /// Refuse `pid` as [`Pager::damage`] does, and drop its dirty entry.
@@ -142,6 +170,15 @@ impl<R: Runtime> Pager<R> {
     }
 
     fn replay(&self, st: &mut Replay, lsn: Lsn, record: Record) {
+        let met = match &record {
+            Record::Damaged { pid, damage } => Some((*pid, Met::Damaged(*damage))),
+            Record::Image { pid, .. } => Some((*pid, Met::Image)),
+            Record::Freed { pid } => Some((*pid, Met::Freed)),
+            _ => None,
+        };
+        if let Some(met) = met.filter(|_| lsn > st.ck) {
+            self.meta().records.replayed.push(met);
+        }
         let Some((pid, prev)) = record.page() else {
             return;
         };

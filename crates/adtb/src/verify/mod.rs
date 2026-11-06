@@ -498,6 +498,10 @@ pub fn verify_with<R: Runtime>(pager: &Pager<R>, inventory: &Inventory, depth: D
                 storage::Finding::Page { pid, damage } => walk.found(pid, Problem::Damaged(damage)),
                 storage::Finding::Orphan(pid) => walk.found(pid, Problem::Unlogged),
                 storage::Finding::Log(l) => log.push(l),
+                storage::Finding::Unlisted => walk.found(
+                    pager.damage_list_page(),
+                    Problem::Structure("the damage list is full".to_owned()),
+                ),
             }
         }
     }

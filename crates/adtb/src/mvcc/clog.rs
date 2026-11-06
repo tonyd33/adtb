@@ -9,8 +9,8 @@ use crate::storage::{
 use super::{Status, Xid};
 
 /// A status page holding ids in progress: its page, its first id, those ids, and the file's copy
-/// when the page lost a write.
-pub(crate) type Unresolved = (Pid, u64, Vec<u64>, Option<Vec<u8>>);
+/// with its refusal when the page lost a write.
+pub(crate) type Unresolved = (Pid, u64, Vec<u64>, Option<(Vec<u8>, PageError)>);
 
 /// The right to read a status page that lost a write and write it back settled, which only the
 /// commit log holds: no code outside this module can make one.
@@ -301,9 +301,10 @@ impl CommitLog {
                 }
             };
             match copy {
-                Some(copy) => {
+                Some((copy, refusal)) => {
                     let mut settled = copy.clone();
                     settle(&mut settled);
+                    pager.record_settled(&Settling(()), refusal);
                     pager.rewrite_stale(pid, &Settling(()), &copy, &settled)?;
                 }
                 None => drop(pager.update(&[pid], |p| settle(p[0]))?),
@@ -337,7 +338,7 @@ impl CommitLog {
                 if oldest.is_none_or(|(at, _)| lsn(&page) < at) {
                     oldest = Some((lsn(&page), pid));
                 }
-                open.push((pid, base, ids, refused.map(|_| page)));
+                open.push((pid, base, ids, refused.map(|e| (page, e))));
             }
         }
         let Some((since, pid)) = oldest else {

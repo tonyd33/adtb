@@ -7,7 +7,7 @@ reopen
 query
   supersede bundle web-1.0 by web-1.1
 ----
-Bundle { id: bundles.key(1), name: "web-1.0", family: "web", owner: "owner", pins: migrations.key(1), hash: 0x8c51cb1119c443dca8943c1b8a1307c3c3595a343380c1cbc48d689dd1f429ba, edition: "2026-10", catalog: None, hides_new: False, lease: None, renewed: 2026-01-01T00:00:00.140062Z, priority: Regular, memory_share: None, workers: None, state: Superseded { at: 2026-01-01T00:00:00.154831Z } }
+Bundle { id: bundles.key(1), name: "web-1.0", family: "web", owner: "owner", pins: migrations.key(1), hash: 0x8c51cb1119c443dca8943c1b8a1307c3c3595a343380c1cbc48d689dd1f429ba, edition: "2026-10", catalog: None, hides_new: False, lease: None, renewed: 2026-01-01T00:00:00.140471Z, priority: Regular, memory_share: None, workers: None, state: Superseded { at: 2026-01-01T00:00:00.155300Z } }
 
 call web-1.0 error BundleSuperseded { bundle: "web-1.0" }
 

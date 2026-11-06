@@ -6,6 +6,7 @@ mod backup;
 mod block;
 mod crc;
 mod create;
+mod damage_log;
 mod digest;
 mod driver;
 mod dump;
@@ -34,6 +35,7 @@ pub use block::{LogFinding, LogProblem};
 pub use crc::{Crc32c, crc32c};
 pub(crate) use create::{Created, Hold, Unpublished, create, refuse_foreign_log, remove_leftover};
 pub use create::{aside, creating, marker, marker_bytes};
+pub use damage_log::Recorded;
 pub(crate) use driver::Driver;
 pub use driver::{FATAL_IO, FatalIo};
 pub use dump::{

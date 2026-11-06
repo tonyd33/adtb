@@ -47,6 +47,11 @@ pub enum Found {
         at: String,
         page: Pid,
     },
+    /// A commit log status page settled from the log. It marks nothing.
+    Settled {
+        at: String,
+        page: Pid,
+    },
     Order {
         index: u64,
         at: String,
@@ -81,6 +86,7 @@ impl Found {
             },
             Damage::Unreadable => Found::Checksum { at, page: None },
             Damage::Stale { .. } => Found::StalePage { at, page: pid },
+            Damage::Settled { .. } => Found::Settled { at, page: pid },
             Damage::LogUnproven { .. } => Found::Structure { at },
         }
     }
@@ -93,6 +99,9 @@ impl Found {
             },
             storage::Finding::Log(l) => Found::Structure {
                 at: format!("log at {}: {:?}", l.lsn.0, l.problem),
+            },
+            storage::Finding::Unlisted => Found::Structure {
+                at: "the database: the damage list is full".to_owned(),
             },
         }
     }
@@ -206,7 +215,7 @@ impl<R: Runtime> Database<R> {
                     problem: storage::LogProblem::Unlogged { pid, .. },
                     ..
                 }) => Some(pid),
-                storage::Finding::Log(_) => None,
+                storage::Finding::Log(_) | storage::Finding::Unlisted => None,
             };
             let wanted = match (&within, page) {
                 (None, _) => true,

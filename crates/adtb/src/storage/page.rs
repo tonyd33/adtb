@@ -32,6 +32,7 @@ pub enum PageKind {
     Catalog = 10,
     Quarantine = 11,
     LsnMap = 12,
+    DamageList = 13,
 }
 
 impl PageKind {
@@ -50,6 +51,7 @@ impl PageKind {
             10 => Catalog,
             11 => Quarantine,
             12 => LsnMap,
+            13 => DamageList,
             _ => return None,
         })
     }

@@ -337,7 +337,7 @@ impl<R: Runtime> Pager<R> {
         for m in &mut maps {
             all.push(m.inner());
         }
-        let lsn = self.apply(&mut all, edits, tail);
+        let lsn = self.apply_freeing(&mut all, edits, &new.freed, tail);
         if let Some(&g) = groups.last() {
             let mut m = self.meta();
             m.groups = m.groups.max(g + 1);
@@ -374,12 +374,13 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns every page the allocation bitmap marks allocated, in order, leaving out the pages
     /// the pager owns itself: the file header copies, the bitmap's pages, the quarantine marks'
-    /// page and the page LSN map's pages.
+    /// page, the damage list's page and the page LSN map's pages.
     ///
     /// Fail if an allocation bitmap page or a map page is refused.
     pub fn allocated(&self) -> Result<Vec<Pid>, PageError> {
         let span = self.bitmap_span();
         let marks = self.quarantine_page();
+        let list = self.damage_list_page();
         let map = self.map_pages()?;
         let mut out = Vec::new();
         for g in 0.. {
@@ -393,7 +394,7 @@ impl<R: Runtime> Pager<R> {
                 (0..span)
                     .filter(|&i| bits[(i / 8) as usize] >> (i % 8) & 1 == 1)
                     .map(|i| Pid(g * span + i))
-                    .filter(|&p| p != bitmap && p != marks && p >= Pid::FIRST_DATA)
+                    .filter(|&p| p != bitmap && p != marks && p != list && p >= Pid::FIRST_DATA)
                     .filter(|p| !map.contains(p)),
             );
         }

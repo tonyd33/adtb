@@ -10,6 +10,7 @@ use crate::runtime::{AlignedBuf, FileId, IoError, Runtime, ThreadId};
 use super::alloc::diff;
 use super::block::{LogFinding, LogImage};
 use super::create::{Created, create};
+use super::damage_log::Met;
 use super::driver::Driver;
 use super::header::{self, FileHeader, REGION};
 use super::log::{FileSource, Log, Segments};
@@ -83,6 +84,9 @@ pub enum Damage {
     Stale { expected: Lsn, found: Lsn },
     /// The page holds ids in progress that the log, damaged at `at`, cannot settle.
     LogUnproven { at: Lsn },
+    /// A commit log status page lost the write to `expected` and was settled from the log at
+    /// `found`. The page serves again.
+    Settled { expected: Lsn, found: Lsn },
 }
 
 impl Damage {
@@ -149,6 +153,7 @@ pub(crate) struct Meta {
     /// logged since.
     pub(crate) gate: Gate,
     pub(crate) damaged: BTreeMap<Pid, Damage>,
+    pub(crate) records: super::damage_log::Records,
     /// The bitmap groups a batch has started: their bitmap pages are never blank. A batch counts
     /// here only once it is in the log and while its bitmap page is latched, so a checkpoint that
     /// captures a lower count finds that page dirty and its redo point covers the batch.
@@ -431,6 +436,7 @@ impl<R: Runtime> Pager<R> {
                 written: BTreeSet::new(),
                 gate: Gate::Recovering,
                 damaged: BTreeMap::new(),
+                records: Default::default(),
                 groups: bitmap_groups,
                 overwritten: BTreeSet::new(),
                 recovered: Lsn(0),
@@ -497,6 +503,9 @@ impl<R: Runtime> Pager<R> {
                 .into_iter()
                 .collect(),
             log_start: Lsn(0),
+            damage_list: Pid(0),
+            log_damage: Vec::new(),
+            log_damage_full: false,
         };
         let pager = Pager::assemble(rt, options, header, 1, data);
         pager.meta().gate = Gate::Armed(Expected::default());
@@ -511,7 +520,7 @@ impl<R: Runtime> Pager<R> {
         let made = pager.reserve_marks().and_then(|(new, marks)| {
             pager.format_marks(new, marks)?;
             pager.header.lock(&pager.rt).0.quarantine = marks;
-            Ok(())
+            pager.create_damage_list()
         });
         if let Err(e) = made {
             pager.close_files();
@@ -572,10 +581,12 @@ impl<R: Runtime> Pager<R> {
             let (new, marks) = self.reserve_marks()?;
             self.format_marks(new, marks)?;
             self.header.lock(&self.rt).0.quarantine = marks;
-            self.checkpoint();
         } else {
             self.load_marks(marks)?;
         }
+        self.load_damage_list()?;
+        self.start_recording();
+        self.checkpoint();
         self.check_map();
         if let Err(map) = armed {
             if map.is_some_and(|e| e.damage != Damage::Unreadable) {
@@ -781,9 +792,12 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Refuse `pid` from now on, dropping its memory unwritten but leaving it in the dirty page
-    /// table, so recovery replays a logged change the file lacks.
+    /// table, so recovery replays a logged change the file lacks. Record the damage unless it is
+    /// [`Damage::Unreadable`], durable on return once recovery has ended and unless the file is
+    /// quarantined whole.
     ///
-    /// Preconditions: the caller holds no latch on `pid`.
+    /// Preconditions: the caller holds no latch on `pid`, and neither the log lock nor the meta
+    /// lock.
     #[doc(hidden)]
     pub fn damage(&self, pid: Pid, damage: Damage) -> PageError {
         let g = self.mem.lock_exclusive(pid.0, &self.rt);
@@ -792,10 +806,17 @@ impl<R: Runtime> Pager<R> {
         } else {
             drop(g);
         }
+        let mut log = self.log();
+        let whole = self.is_quarantined(Quarantine::Database);
         let mut m = self.meta();
         m.damaged.insert(pid, damage);
         m.changed.remove(&pid);
+        let logged = m.records.detect(&mut log, pid, damage, whole);
         drop(m);
+        drop(log);
+        if let Some(end) = logged {
+            self.force_below(end);
+        }
         self.unreserve(pid);
         PageError { pid, damage }
     }
@@ -925,6 +946,18 @@ impl<R: Runtime> Pager<R> {
         edits: Vec<Vec<Edit>>,
         tail: Option<Record>,
     ) -> Lsn {
+        self.apply_freeing(guards, edits, &[], tail)
+    }
+
+    /// Apply as [`Pager::apply`] does, and drop the damage recorded of `freed`, the pages the
+    /// batch frees, logging that in the batch before `tail`.
+    pub(crate) fn apply_freeing(
+        &self,
+        guards: &mut [&mut pages::Exclusive<'_>],
+        edits: Vec<Vec<Edit>>,
+        freed: &[Pid],
+        tail: Option<Record>,
+    ) -> Lsn {
         let size = self.page_size;
         for e in edits.iter().flatten() {
             let at = e.offset as usize;
@@ -964,11 +997,20 @@ impl<R: Runtime> Pager<R> {
             };
             let (at, field) = page::lsn_field(lsn);
             g.write(at, &field);
+            if let Record::Image { .. } = record {
+                m.records.meet(pid, Met::Image);
+            }
             log.append(&record);
             m.dirty.entry(pid).or_insert(lsn);
             m.changed.insert(pid);
             m.gate.raise(pid, lsn);
             last = lsn;
+        }
+        if !freed.is_empty() {
+            let whole = self.is_quarantined(Quarantine::Database);
+            for &pid in freed {
+                last = m.records.free(&mut log, pid, whole).unwrap_or(last);
+            }
         }
         if let Some(Record::MapRoot { root, height }) = &tail {
             let lsn = guards
@@ -1260,8 +1302,12 @@ impl<R: Runtime> Pager<R> {
     /// Take a checkpoint as [`Pager::checkpoint`] does. Returns its LSN, its redo LSN and the
     /// bitmap groups it captured.
     pub(super) fn log_checkpoint(&self) -> (Lsn, Lsn, u64) {
-        let (at, redo, groups) = {
+        let (mut list, (at, redo, groups, folded)) = loop {
+            let list = self.list_to_fold();
             let mut log = self.log();
+            if list.is_none() && self.to_fold().is_some() {
+                continue;
+            }
             let (groups, map) = {
                 let m = self.meta();
                 (m.groups, m.map)
@@ -1269,13 +1315,22 @@ impl<R: Runtime> Pager<R> {
             let lsn = log.next_lsn();
             let dirty: Vec<(Pid, Lsn)> = self.meta().dirty.iter().map(|(p, l)| (*p, *l)).collect();
             let redo = dirty.iter().map(|(_, l)| *l).min().unwrap_or(lsn);
-            (
-                log.append(&Record::Checkpoint { redo, dirty, map }),
-                redo,
-                groups,
-            )
+            let folded = list.as_ref().map(|_| self.records_to_fold());
+            let at = log.append(&Record::Checkpoint { redo, dirty, map });
+            break (list, (at, redo, groups, folded));
         };
+        // The fold is logged after the checkpoint record: every record before it is in the fold,
+        // and recovery from it reads every record after.
+        if let (Some(g), Some(folded)) = (&mut list, &folded) {
+            Self::fold_records(g, folded);
+        }
+        drop(list);
         self.flush_log();
+        if folded.is_some() {
+            let mut h = self.header.lock(&self.rt);
+            h.0.log_damage.clear();
+            h.0.log_damage_full = false;
+        }
         self.write_header(Some((at, groups)));
         self.log().checkpointed(redo);
         (at, redo, groups)

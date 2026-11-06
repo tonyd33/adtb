@@ -639,7 +639,7 @@ fn crash_loop(
             match f {
                 Finding::Page { .. } => tally.pages += 1,
                 Finding::Log(_) => tally.logs += 1,
-                Finding::Orphan(_) => {}
+                Finding::Orphan(_) | Finding::Unlisted => {}
             }
         }
         resolve(&report, &client.ledger, &world);
@@ -1020,6 +1020,9 @@ fn a_page_whose_only_records_are_in_the_lost_log_tail_is_an_unlogged_write() {
     let (cut, pid) = with_pager(&mut sim, |p| {
         p.flush_log();
         let cut = p.durable();
+        while p.appended().0 < cut.0 + 16 * PAGE as u64 {
+            p.reserve_xids(1);
+        }
         let pid = p.allocate(1, PageKind::HeapSlotted, 7).unwrap();
         p.update(&[pid], |v| v[0][HEADER_LEN] ^= 1).unwrap();
         p.flush_log();
@@ -1142,9 +1145,14 @@ fn allocation_skips_a_damaged_free_page() {
     let mut sim = Sim::new(3, Config::default());
     let client = Client::new();
     setup(&mut sim, &client, PLAIN);
-    let next = Pid(3 + PAGES as u64);
+    let last = *client.world.lock().unwrap().pages.last().unwrap();
+    let next = Pid(last.0 + 1);
     let mut files = sim.files();
     let data = files.get_mut(NAME).unwrap();
+    assert!(
+        data.len() <= next.0 as usize * PAGE,
+        "page {next:?} is past the file's end"
+    );
     data.resize((next.0 as usize + 1) * PAGE, 0);
     data[next.0 as usize * PAGE + 77] = 1;
     let mut sim = Sim::with_files(3, Config::default(), files);
