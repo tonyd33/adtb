@@ -910,8 +910,9 @@ impl<R: Runtime> Engine<R> {
         match new {
             Some(new) => finish_create(rt, &pager, &new, opened, hold),
             None => {
-                if opened.is_ok() {
+                if let Ok(engine) = &opened {
                     storage::remove_leftover(&pager, &storage, hold);
+                    storage::recycle_at_open(&pager, engine.archiver.as_deref());
                 }
                 opened
             }
@@ -977,9 +978,7 @@ impl<R: Runtime> Engine<R> {
         let background =
             maintenance::Background::new(verifier.clone(), parts.schema.clone(), &parts.settings)
                 .vacuuming(!options.no_background_vacuum);
-        let archiver = options
-            .archive_dir()
-            .map(|dest| Arc::new(storage::Archiver::new(pager.clone(), &dest)));
+        let archiver = storage::Archiver::bounding(&pager, options.archive_dir());
         Engine {
             rt,
             schema: parts.schema,

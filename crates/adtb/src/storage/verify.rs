@@ -120,12 +120,9 @@ impl<R: Runtime> Pager<R> {
     /// Returns the transaction of every commit record in the retained log, none when its segments
     /// cannot be listed or opened.
     pub fn logged_commits(&self) -> BTreeSet<u64> {
-        let loaded = {
-            let mut segments = self.segments.lock(&self.rt);
-            self.io(|d| segments.try_load(d))
-        };
+        let loaded = self.load_log();
         let mut commits = BTreeSet::new();
-        let Ok(mut img) = loaded else {
+        let Ok((_pin, mut img)) = loaded else {
             return commits;
         };
         let block = img.block;
@@ -149,11 +146,7 @@ impl<R: Runtime> Pager<R> {
     /// Fail with the LSN of the first damage before the end of the log recovery kept: a segment
     /// it cannot list, open or read, a batch whose records do not decode, or a block missing.
     pub fn logged_commits_since(&self, since: Lsn) -> Result<BTreeSet<u64>, Lsn> {
-        let loaded = {
-            let mut segments = self.segments.lock(&self.rt);
-            self.io(|d| segments.try_load(d))
-        };
-        let mut img = loaded.map_err(|_| since)?;
+        let (_pin, mut img) = self.load_log().map_err(|_| since)?;
         commits_from(&mut img, since, self.meta().recovered)
     }
 
@@ -179,12 +172,8 @@ impl<R: Runtime> Pager<R> {
     pub fn read_log(&self, live: bool) -> RetainedLog {
         let end = self.log().next_lsn();
         self.flush_log();
-        let loaded = {
-            let mut segments = self.segments.lock(&self.rt);
-            self.io(|d| segments.try_load(d))
-        };
-        let mut img = match loaded {
-            Ok(img) => img,
+        let (_pin, mut img) = match self.load_log() {
+            Ok(loaded) => loaded,
             Err((what, _)) => return RetainedLog::unreadable(end, &what),
         };
         let mut commits = Vec::new();
@@ -288,6 +277,17 @@ impl<R: Runtime> Pager<R> {
             findings.extend(lost_record(pid, damage));
             return findings;
         }
+        let mapped = if last.contains_key(&pid) {
+            None
+        } else {
+            self.mapped(pid).unwrap_or_else(|e| {
+                findings.push(Finding::Page {
+                    pid: e.pid,
+                    damage: e.damage,
+                });
+                None
+            })
+        };
         let judge =
             |disk: &Result<(AlignedBuf, Verdict), Damage>, resident: Option<Lsn>, changed: bool| {
                 let bad = match disk {
@@ -313,6 +313,9 @@ impl<R: Runtime> Pager<R> {
                         (None, Some(&expected)) if expected != found && found < *end => {
                             Some(Damage::Stale { expected, found })
                         }
+                        (None, None) => mapped
+                            .filter(|&expected| found < expected && found < *end)
+                            .map(|expected| Damage::Stale { expected, found }),
                         _ => None,
                     })
                 });

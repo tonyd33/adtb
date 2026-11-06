@@ -53,6 +53,7 @@ mod past;
 mod principal;
 mod quarantine;
 mod real_file;
+mod recycle;
 mod registered;
 mod reindex;
 mod reindex_review;

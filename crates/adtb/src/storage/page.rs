@@ -31,6 +31,7 @@ pub enum PageKind {
     CommitLog = 9,
     Catalog = 10,
     Quarantine = 11,
+    LsnMap = 12,
 }
 
 impl PageKind {
@@ -48,6 +49,7 @@ impl PageKind {
             9 => CommitLog,
             10 => Catalog,
             11 => Quarantine,
+            12 => LsnMap,
             _ => return None,
         })
     }

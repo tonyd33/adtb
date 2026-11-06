@@ -8,14 +8,15 @@ use adtb_sys::pages::{self, PageMemory, PageState};
 use crate::runtime::{AlignedBuf, FileId, IoError, Runtime, ThreadId};
 
 use super::alloc::diff;
-use super::block::LogFinding;
+use super::block::{LogFinding, LogImage};
 use super::create::{Created, create};
 use super::driver::Driver;
 use super::evicted::EvictedLsns;
 use super::header::{self, FileHeader, REGION};
-use super::log::{Log, Segments};
+use super::log::{FileSource, Log, Segments};
+use super::lsnmap::folded;
 use super::page::{self, FIRST_EDITABLE, Verdict, valid_page_size};
-use super::record::{Edit, Record};
+use super::record::{Edit, MapRoot, Record};
 use super::{Lsn, Pid, Position};
 use adtb_sys::lock::Lock;
 
@@ -154,6 +155,8 @@ pub(crate) struct Meta {
     pub(crate) overwritten: BTreeSet<Pid>,
     /// The end of the log recovery kept when the pager opened, or zero for a pager created empty.
     pub(crate) recovered: Lsn,
+    /// The page LSN map's root, `None` while the file has no map.
+    pub(crate) map: Option<MapRoot>,
     /// The pages this open wrote to the file, one bit per page number.
     pub(crate) wrote: Vec<u64>,
     /// Resident pages and pages being read in, in clock order.
@@ -171,8 +174,8 @@ pub(crate) struct Meta {
 /// - A page record and its dirty page table entry are made under the log lock, so a checkpoint,
 ///   which snapshots the table under the same lock, never misses a page whose image precedes it.
 ///
-/// Lock order: page latches, then the flush lock, then the log lock, then the meta lock. The
-/// header, allocation and driver locks are taken alone.
+/// Lock order: the recycle lock, then page latches, then the flush lock, then the log lock, then
+/// the meta lock. The header, allocation, archive and driver locks are taken alone.
 ///
 /// Clones are handles on one pager.
 pub struct Pager<R: Runtime>(std::sync::Arc<Shared<R>>);
@@ -214,6 +217,27 @@ pub struct Shared<R: Runtime> {
     pub(crate) marks: Lock<super::quarantine::Marks>,
     /// Whether `marks` holds any mark. Set before a mark shows in `marks`.
     pub(crate) any_mark: std::sync::atomic::AtomicBool,
+    archive: Lock<Option<ArchiveHook>>,
+    /// Held across a recycle of the log, taken before any other lock or latch.
+    recycling: Lock<()>,
+}
+
+/// Returns the LSN below which the log's archive holds every segment, `None` while it holds none.
+pub type ArchiveHook = std::sync::Arc<dyn Fn() -> Option<Lsn> + Send + Sync>;
+
+/// A hold on the log from an LSN: no recycle removes the segment holding the start of its batch,
+/// or any later one, while it lives.
+pub(crate) struct LogPin<'p, R: Runtime> {
+    pager: &'p Pager<R>,
+    at: Lsn,
+}
+
+type PinnedLog<'p, R> = (LogPin<'p, R>, LogImage<FileSource<R>>);
+
+impl<R: Runtime> Drop for LogPin<'_, R> {
+    fn drop(&mut self) {
+        self.pager.log().unpin(self.at);
+    }
 }
 
 impl<R: Runtime> std::fmt::Debug for Pager<R> {
@@ -411,6 +435,7 @@ impl<R: Runtime> Pager<R> {
                 groups: bitmap_groups,
                 overwritten: BTreeSet::new(),
                 recovered: Lsn(0),
+                map: None,
                 wrote: Vec::new(),
                 resident: Vec::new(),
                 hand: 0,
@@ -418,6 +443,8 @@ impl<R: Runtime> Pager<R> {
             alloc: Lock::new(Default::default()),
             marks: Lock::new(Default::default()),
             any_mark: std::sync::atomic::AtomicBool::new(false),
+            archive: Lock::new(None),
+            recycling: Lock::new(()),
             rt,
         }))
     }
@@ -549,6 +576,7 @@ impl<R: Runtime> Pager<R> {
         } else {
             self.load_marks(marks)?;
         }
+        self.check_map();
         Ok(recovery)
     }
 
@@ -859,7 +887,8 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Apply `edits[i]` to the page under `guards[i]` and log them, one record per page with
-    /// edits, then `tail` if given, all in one batch.
+    /// edits, then `tail` if given, all in one batch. A `tail` naming a new map root makes it the
+    /// map before any later record can be logged.
     ///
     /// Returns the LSN of `tail`, or else of the last page record.
     pub(crate) fn apply(
@@ -911,6 +940,17 @@ impl<R: Runtime> Pager<R> {
             m.dirty.entry(pid).or_insert(lsn);
             m.changed.insert(pid);
             last = lsn;
+        }
+        if let Some(Record::MapRoot { root, height }) = &tail {
+            let lsn = guards
+                .iter()
+                .find(|g| Pid(g.pid()) == *root)
+                .map(|g| page::lsn(g));
+            m.map = Some(MapRoot {
+                root: *root,
+                lsn: lsn.expect("a map root is logged with its page"),
+                height: *height,
+            });
         }
         tail.map_or(last, |r| log.append(&r))
     }
@@ -1193,19 +1233,87 @@ impl<R: Runtime> Pager<R> {
     pub(super) fn log_checkpoint(&self) -> (Lsn, Lsn, u64) {
         let (at, redo, groups) = {
             let mut log = self.log();
-            let groups = self.meta().groups;
+            let (groups, map) = {
+                let m = self.meta();
+                (m.groups, m.map)
+            };
             let lsn = log.next_lsn();
             let dirty: Vec<(Pid, Lsn)> = self.meta().dirty.iter().map(|(p, l)| (*p, *l)).collect();
             let redo = dirty.iter().map(|(_, l)| *l).min().unwrap_or(lsn);
             (
-                log.append(&Record::Checkpoint { redo, dirty }),
+                log.append(&Record::Checkpoint { redo, dirty, map }),
                 redo,
                 groups,
             )
         };
         self.flush_log();
         self.write_header(Some((at, groups)));
+        self.log().checkpointed(redo);
         (at, redo, groups)
+    }
+
+    /// Bound what [`Pager::recycle_log`] removes by what `hook` says the archive holds.
+    pub fn set_archive(&self, hook: ArchiveHook) {
+        *self.archive.lock(&self.rt) = Some(hook);
+    }
+
+    /// Remove every log segment that ends at or before the start of the batch holding the least
+    /// LSN still needed and, with an archive set, before what it holds, once the last LSN of each
+    /// page they name is folded into the page LSN map and a checkpoint names the map. Returns the
+    /// number removed. Remove nothing when a segment to fold cannot be read whole.
+    pub fn recycle_log(&self) -> usize {
+        let _one = self.recycling.lock(&self.rt);
+        let hook = self.archive.lock(&self.rt).clone();
+        let archived = match hook.map(|h| h()) {
+            None => u64::MAX,
+            Some(None) => return 0,
+            Some(Some(through)) => through.0,
+        };
+        let mut img = {
+            let mut segments = self.segments.lock(&self.rt);
+            if !segments.may_recycle(self.log().needed().0.min(archived)) {
+                return 0;
+            }
+            let Ok(img) = self.io(|d| segments.try_load(d)) else {
+                return 0;
+            };
+            img
+        };
+        let Some(start) = img.batch_start(self.log().needed()) else {
+            return 0;
+        };
+        let floor = start.0.min(archived);
+        img.bases.retain(|&b| b <= floor);
+        let Some(last) = folded(&mut img, floor) else {
+            return 0;
+        };
+        if self.fold(&last).is_err() {
+            return 0;
+        }
+        self.checkpoint();
+        let mut segments = self.segments.lock(&self.rt);
+        let needed = self.log().needed();
+        let floor = if needed.0 < floor {
+            let Some(start) = img.batch_start(needed) else {
+                return 0;
+            };
+            start.0
+        } else {
+            floor
+        };
+        let bases = std::mem::take(&mut img.bases);
+        drop(img);
+        self.io(|d| segments.recycle(d, &bases, floor))
+    }
+
+    /// Returns the log as its segments hold it now, pinned from its first segment while the pin
+    /// lives, or the path and failure of what it cannot read.
+    pub(crate) fn load_log(&self) -> Result<PinnedLog<'_, R>, (String, IoError)> {
+        let mut segments = self.segments.lock(&self.rt);
+        let img = self.io(|d| segments.try_load(d))?;
+        let at = img.first().unwrap_or(Lsn(0));
+        self.log().pin(at);
+        Ok((LogPin { pager: self, at }, img))
     }
 
     /// Write the next header copy, pointing at the checkpoint of `checkpoint` unless the header

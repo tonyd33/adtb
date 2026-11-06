@@ -9,7 +9,7 @@ use adtb::storage::{
     self, ArchiveStatus, Archiver, BackupError, BackupRun, Envelope, Lsn, Options, PageKind, Pager,
     Pid, Position,
 };
-use adtb::{CreateOptions, Database, Log, OpenOptions};
+use adtb::{CallOptions, CreateOptions, Database, Log, OpenOptions};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::search::{self, Files, Hooked};
 use adtb_simkit::{api, common};
@@ -540,13 +540,12 @@ add type User = { id: Key users, name: Text }
 add relation users : User key id generate sequence
 ";
 
-fn insert(db: &Database<SimRuntime>, ids: std::ops::Range<i64>) {
+fn insert<R: Runtime>(db: &Database<R>, ids: std::ops::Range<i64>) {
     for id in ids {
         let name = "x".repeat(4000);
-        api::results(
-            db,
-            &format!(r#"insert users {{ id: users.key({id}), name: "{name}" }}"#),
-        );
+        let text = format!(r#"insert users {{ id: users.key({id}), name: "{name}" }}"#);
+        db.query_text(&text, &[], &CallOptions::default())
+            .unwrap_or_else(|e| panic!("`{text}` fails: {e:?}"));
     }
 }
 
@@ -601,4 +600,79 @@ fn a_segment_size_off_the_log_block_is_refused() {
         SEGMENT + 1
     );
     assert_eq!((std::io::ErrorKind::InvalidInput, text), refused);
+}
+
+/// Open `db.adt` of `sim` with an archive when `archive`, failing every op `refused` names,
+/// insert `rows` and close. Returns the archive's status after the open, or the open's refusal.
+fn engine_session(
+    sim: &mut Sim,
+    archive: bool,
+    refused: fn(&Op) -> bool,
+    rows: std::ops::Range<i64>,
+) -> Result<Option<ArchiveStatus>, adtb::OpenError> {
+    api::run(sim, |rt| {
+        let hook = Hooked::new(&rt);
+        hook.fail_when(move |op| refused(op).then_some(IoError::Full));
+        let mut create = CreateOptions::default();
+        create.segment_size = Some(SEGMENT);
+        let options = OpenOptions {
+            log_archive: archive.then(|| DEST.into()),
+            create: Some(create),
+            ..api::options(2)
+        };
+        let db = Database::open_in(hook, "db.adt", &Log::new([APP]), &options)?;
+        let status = db.archive_status();
+        insert(&db, rows);
+        db.close().unwrap();
+        Ok(status)
+    })
+}
+
+fn none(_: &Op) -> bool {
+    false
+}
+
+fn archive_creates(op: &Op) -> bool {
+    matches!(op, Op::CreateNew { path } if path.starts_with(DEST))
+}
+
+#[test]
+fn an_engine_recycles_only_the_segments_its_archive_holds() {
+    let mut sim = rooted(20);
+    engine_session(&mut sim, true, none, 0..3 * ROWS).unwrap();
+    engine_session(&mut sim, true, archive_creates, 3 * ROWS..6 * ROWS).unwrap();
+    let behind = sim.files();
+    let log = "db.adt-log";
+    let status = engine_session(&mut sim, true, archive_creates, 0..0).unwrap();
+    let status = status.expect("an archive is set");
+    let through = status
+        .through
+        .expect("the open's pass listed the archive")
+        .0;
+    let kept = segments(&sim.files(), log);
+    assert!(
+        through > SEGMENT && *segments(&behind, log).last().unwrap() > through + SEGMENT,
+        "the archive holds some of the log, and less than all: {through}"
+    );
+    assert_eq!(through, kept[0], "{kept:?}");
+    let mut unarchived = Sim::with_files(21, Config::default(), behind);
+    engine_session(&mut unarchived, false, none, 0..0).unwrap();
+    let first = segments(&unarchived.files(), log)[0];
+    assert!(
+        first > through,
+        "without the archive the recycle removes more: {first}"
+    );
+}
+
+#[test]
+fn a_create_that_fails_to_publish_its_log_archives_nothing() {
+    let mut sim = rooted(22);
+    let published = |op: &Op| matches!(op, Op::Rename { to, .. } if to == "db.adt-log");
+    let refused = engine_session(&mut sim, true, published, 0..0).is_err();
+    let under: Vec<String> = sim
+        .files()
+        .into_keys()
+        .filter(|p| p.starts_with(DEST))
+        .collect();
+    assert_eq!((true, vec![format!("{DEST}/keep")]), (refused, under));
 }

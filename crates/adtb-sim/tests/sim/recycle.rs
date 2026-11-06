@@ -1,0 +1,464 @@
+//! Recycling the log: what it removes, what it keeps, and the page LSN map it folds into first.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+use adtb::runtime::{Clock, Instant, IoError, Op};
+use adtb::storage::{
+    BackupRun, Damage, Envelope, Finding, HEADER_LEN, Lsn, Options, PageError, PageKind, Pager,
+    Pid, Quarantine,
+};
+use adtb::verify::{self, Inventory, Problem};
+use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_simkit::harness;
+use adtb_simkit::search::Hooked;
+
+type Files = BTreeMap<String, Vec<u8>>;
+
+const SEGMENT: u64 = 64 * 1024;
+
+fn options() -> Options {
+    Options {
+        segment_size: SEGMENT,
+        ..harness::options(16)
+    }
+}
+
+/// Returns the first LSN of every log segment of `files`.
+fn segments(files: &Files) -> Vec<u64> {
+    let dir = format!("{}/", options().log_dir());
+    let names = files.keys().filter_map(|k| k.strip_prefix(&dir));
+    names.map(|n| u64::from_str_radix(n, 16).unwrap()).collect()
+}
+
+/// Returns a closed file of `n` data pages, and them.
+fn created(n: usize) -> (Sim, Vec<Pid>) {
+    let mut sim = Sim::new(3, Config::default());
+    let mut pages = Vec::new();
+    harness::finished(&mut sim, |rt| {
+        let pager = Pager::create(rt, &options()).unwrap();
+        pages = (0..n)
+            .map(|_| pager.allocate(1, PageKind::HeapSlotted, 7).unwrap())
+            .collect();
+        pager.close();
+    });
+    (sim, pages)
+}
+
+/// Open the file of `sim`, run `body` on it and close it. Returns what `body` returns.
+fn session<T>(sim: &mut Sim, body: impl FnOnce(&Pager<SimRuntime>, &SimRuntime) -> T) -> T {
+    let mut out = None;
+    harness::finished(sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options()).unwrap();
+        out = Some(body(&pager, &rt));
+        pager.close();
+    });
+    out.unwrap()
+}
+
+/// Write `value` to `pid`, forced.
+fn put(pager: &Pager<SimRuntime>, pid: Pid, value: u64) {
+    pager
+        .update(&[pid], |p| {
+            p[0][HEADER_LEN..HEADER_LEN + 8].copy_from_slice(&value.to_le_bytes());
+        })
+        .unwrap();
+    pager.flush_log();
+}
+
+/// Write the pages of `pages` in turn until the log has grown by `bytes`. Returns the last value
+/// written to each.
+fn fill(pager: &Pager<SimRuntime>, pages: &[Pid], bytes: u64) -> BTreeMap<Pid, u64> {
+    let start = pager.appended().0;
+    let mut written = BTreeMap::new();
+    for n in 0.. {
+        if pager.appended().0 >= start + bytes {
+            break;
+        }
+        let pid = pages[n % pages.len()];
+        put(pager, pid, n as u64 + 1);
+        written.insert(pid, n as u64 + 1);
+    }
+    written
+}
+
+fn reverted(mut files: Files, from: &Files, pid: Pid) -> Files {
+    let at = pid.0 as usize * harness::PAGE;
+    let name = harness::NAME;
+    files.get_mut(name).unwrap()[at..at + harness::PAGE]
+        .copy_from_slice(&from[name][at..at + harness::PAGE]);
+    files
+}
+
+fn lsn_of(files: &Files, pid: Pid) -> Lsn {
+    let at = pid.0 as usize * harness::PAGE;
+    Lsn(u64::from_le_bytes(
+        files[harness::NAME][at..at + 8].try_into().unwrap(),
+    ))
+}
+
+#[test]
+fn the_log_holds_only_the_last_session_and_the_current_one() {
+    let (mut sim, pages) = created(8);
+    let mut held = Vec::new();
+    for _ in 0..8 {
+        let removed = session(&mut sim, |pager, _| {
+            let removed = pager.recycle_log();
+            fill(pager, &pages, 3 * SEGMENT);
+            removed
+        });
+        held.push((removed, segments(&sim.files()).len()));
+    }
+    let written = session(&mut sim, |pager, _| pager.appended().0);
+    assert!(written > 24 * SEGMENT, "{written}");
+    assert!(held[1..].iter().all(|&(r, h)| r >= 2 && h <= 5), "{held:?}");
+}
+
+#[test]
+fn an_archive_holding_nothing_keeps_every_segment_and_one_bounds_the_recycle() {
+    let (mut sim, pages) = created(8);
+    session(&mut sim, |pager, _| fill(pager, &pages, 3 * SEGMENT));
+    let before = segments(&sim.files());
+    let kept = session(&mut sim, |pager, _| {
+        pager.set_archive(Arc::new(|| None));
+        pager.recycle_log()
+    });
+    assert_eq!((0, before.clone()), (kept, segments(&sim.files())));
+    let removed = session(&mut sim, |pager, _| {
+        pager.set_archive(Arc::new(|| Some(Lsn(SEGMENT))));
+        pager.recycle_log()
+    });
+    assert_eq!((1, before[1..].to_vec()), (removed, segments(&sim.files())));
+}
+
+fn envelope() -> Envelope {
+    Envelope {
+        release: "test".into(),
+        edition: "2026-10".into(),
+        schema_version: 1,
+        schema_hash: "00".into(),
+        catalog_version: 1,
+    }
+}
+
+#[test]
+fn a_recycle_while_a_backup_copies_the_log_removes_nothing() {
+    let (mut sim, pages) = created(8);
+    session(&mut sim, |pager, _| fill(pager, &pages, 3 * SEGMENT));
+    let (during, after) = session(&mut sim, |pager, _| {
+        let mut during = Vec::new();
+        let mut visit = |pid: Pid, _: &mut [u8]| {
+            if pid == Pid(0) {
+                during.push(pager.recycle_log());
+            }
+            true
+        };
+        let run = &mut BackupRun {
+            target: "backup",
+            envelope: envelope(),
+            visit: &mut visit,
+            name: &|q| format!("{q:?}"),
+        };
+        pager.backup(run).unwrap();
+        (during, pager.recycle_log())
+    });
+    assert!(
+        !during.is_empty() && during.iter().all(|&n| n == 0),
+        "{during:?}"
+    );
+    assert!(after >= 2, "{after}");
+}
+
+#[test]
+fn recycles_while_a_backup_copies_its_pages_keep_the_log_it_copies() {
+    let (mut sim, pages) = created(8);
+    session(&mut sim, |pager, _| fill(pager, &pages, 3 * SEGMENT));
+    let (during, backup) = session(&mut sim, |pager, _| {
+        let mut during = Vec::new();
+        let mut visit = |pid: Pid, _: &mut [u8]| {
+            if pid == pages[0] && during.is_empty() {
+                for _ in 0..2 {
+                    fill(pager, &pages[1..], 2 * SEGMENT);
+                    pager.flush_pages(usize::MAX);
+                    during.push(pager.recycle_log());
+                }
+            }
+            true
+        };
+        let run = &mut BackupRun {
+            target: "backup",
+            envelope: envelope(),
+            visit: &mut visit,
+            name: &|q| format!("{q:?}"),
+        };
+        let backup = pager.backup(run).map(|m| (m.start, m.end));
+        (during, backup)
+    });
+    assert!(during.len() == 2 && during[0] >= 2, "{during:?}");
+    let (start, end) = backup.unwrap();
+    assert!(end.lsn.0 - start.lsn.0 > 4 * SEGMENT, "{start:?} {end:?}");
+}
+
+/// Returns the files of a closed session whose page `pages[0]` was last written in a batch
+/// spanning a segment boundary, before a second session that recycled it, and those files.
+fn recycled_across_a_boundary(pages: &[Pid], sim: &mut Sim) -> (Files, Files) {
+    session(sim, |pager, _| {
+        for n in 0.. {
+            if SEGMENT - pager.appended().0 % SEGMENT <= 1024 {
+                break;
+            }
+            put(pager, pages[1 + n % 8], n as u64 + 1);
+        }
+        let at = pager.appended().0;
+        pager
+            .update(&[pages[1]], |p| p[0][HEADER_LEN..].fill(9))
+            .unwrap();
+        pager.update(&[pages[0]], |p| p[0][HEADER_LEN] = 8).unwrap();
+        pager.flush_log();
+        let end = pager.appended().0 - 1;
+        assert_ne!(at / SEGMENT, end / SEGMENT, "the batch spans a boundary");
+    });
+    let written = sim.files();
+    let removed = session(sim, |pager, _| pager.recycle_log());
+    assert!(removed >= 1, "{removed}");
+    (written, sim.files())
+}
+
+#[test]
+fn a_lost_write_whose_record_was_recycled_is_found_by_verify_and_backup() {
+    let (mut sim, pages) = created(600);
+    let before = sim.files();
+    let (written, recycled) = recycled_across_a_boundary(&pages, &mut sim);
+    let page = pages[0];
+    let lost = reverted(recycled, &before, page);
+    let stale = Damage::Stale {
+        expected: lsn_of(&written, page),
+        found: lsn_of(&before, page),
+    };
+    let mut sim = Sim::with_files(3, Config::default(), lost);
+    let (findings, damaged) = session(&mut sim, |pager, _| {
+        let run = &mut BackupRun {
+            target: "backup",
+            envelope: envelope(),
+            visit: &mut |_, _| true,
+            name: &|q| format!("{q:?}"),
+        };
+        let damaged = pager.backup(run).unwrap().damaged;
+        (pager.verify().findings, damaged)
+    });
+    assert_eq!(vec![page], damaged);
+    assert!(
+        findings.contains(&Finding::Page {
+            pid: page,
+            damage: stale
+        }),
+        "{findings:?}"
+    );
+}
+
+#[test]
+fn a_lost_write_of_a_map_page_quarantines_the_database() {
+    let (mut sim, pages) = created(600);
+    let (_, first) = recycled_across_a_boundary(&pages, &mut sim);
+    session(&mut sim, |pager, _| {
+        fill(pager, &pages[550..], 2 * SEGMENT);
+    });
+    session(&mut sim, |pager, _| pager.recycle_log());
+    let last = sim.files();
+    let map = session(&mut sim, |pager, _| pager.map_pages().unwrap());
+    assert_eq!(3, map.len(), "a root of height 2 and two leaves: {map:?}");
+    let mut reached = 0;
+    for &page in &map {
+        if lsn_of(&first, page) == lsn_of(&last, page) {
+            continue;
+        }
+        let lost = reverted(last.clone(), &first, page);
+        let mut sim = Sim::with_files(3, Config::default(), lost);
+        let marks = session(&mut sim, |pager, _| {
+            pager.verify();
+            pager.quarantined()
+        });
+        assert_eq!(BTreeSet::from([Quarantine::Database]), marks, "{page:?}");
+        reached += 1;
+    }
+    assert!(reached >= 2, "{reached} of {map:?}");
+}
+
+/// Returns a closed file of 600 data pages whose map has a root and two leaves, its pages, and
+/// the root and a leaf.
+fn mapped() -> (Sim, Vec<Pid>, Pid, Pid) {
+    let (mut sim, pages) = created(600);
+    recycled_across_a_boundary(&pages, &mut sim);
+    session(&mut sim, |pager, _| {
+        fill(pager, &pages[550..], 2 * SEGMENT);
+    });
+    session(&mut sim, |pager, _| pager.recycle_log());
+    let map = session(&mut sim, |pager, _| pager.map_pages().unwrap());
+    let [root, leaf, _] = map[..] else {
+        panic!("a root of height 2 and two leaves: {map:?}");
+    };
+    (sim, pages, root, leaf)
+}
+
+#[test]
+fn an_unreadable_map_page_is_refused_unmarked_and_read_by_the_next_open() {
+    let (mut sim, _, _, leaf) = mapped();
+    let mut out = None;
+    harness::finished(&mut sim, |rt| {
+        let hook = Hooked::new(&rt);
+        let (pager, _) = Pager::open(hook.clone(), &options()).unwrap();
+        let at = leaf.0 * harness::PAGE as u64;
+        hook.fail_when(move |op| match op {
+            Op::Read { offset, .. } if *offset == at => Some(IoError::Failed),
+            _ => None,
+        });
+        out = Some((pager.map_pages(), pager.quarantined()));
+        pager.close();
+    });
+    let (refused, marks) = out.unwrap();
+    let damage = Damage::Unreadable;
+    assert_eq!(
+        (Err(PageError { pid: leaf, damage }), BTreeSet::new()),
+        (refused, marks)
+    );
+    let after = session(&mut sim, |pager, _| pager.map_pages().map(|m| m.len()));
+    assert_eq!(Ok(3), after);
+}
+
+#[test]
+fn a_checksum_bad_map_page_quarantines_the_database_and_verify_reports_the_rest() {
+    let (sim, pages, root, leaf) = mapped();
+    let data = pages[3];
+    for bad in [root, leaf] {
+        let mut files = sim.files();
+        for pid in [bad, data] {
+            files.get_mut(harness::NAME).unwrap()[pid.0 as usize * harness::PAGE + 100] ^= 1;
+        }
+        let mut sim = Sim::with_files(3, Config::default(), files);
+        let (findings, marks, allocated, leaked) = session(&mut sim, |pager, _| {
+            let findings = pager.verify().findings;
+            let inventory = Inventory {
+                commit_log: None,
+                sums: Vec::new(),
+                trees: Vec::new(),
+                pages: pages.clone(),
+            };
+            let report = verify::verify(pager, &inventory);
+            let leaked = report
+                .findings
+                .iter()
+                .filter(|f| f.problem == Problem::Leaked);
+            let leaked: Vec<Pid> = leaked.map(|f| f.pid).collect();
+            (findings, pager.quarantined(), pager.allocated(), leaked)
+        });
+        assert_eq!(BTreeSet::from([Quarantine::Database]), marks, "{bad:?}");
+        let refused = PageError {
+            pid: bad,
+            damage: Damage::Checksum,
+        };
+        assert_eq!((Err(refused), Vec::new()), (allocated, leaked), "{bad:?}");
+        for pid in [bad, data] {
+            let finding = Finding::Page {
+                pid,
+                damage: Damage::Checksum,
+            };
+            assert!(findings.contains(&finding), "{pid:?}: {findings:?}");
+        }
+    }
+}
+
+/// Crash a reopen of `files` at evenly spaced points of its recycle. Returns how many crashes
+/// fell in the fold, the checkpoint and the removal, told apart by what the crash left on disk:
+/// segments removed, a header written, or only log written.
+fn crash_through_a_recycle(files: &Files, pages: &[Pid], written: &BTreeMap<Pid, u64>) -> [u32; 3] {
+    let mut opened = Sim::with_files(4, Config::default(), files.clone());
+    opened.run(|rt| {
+        Pager::open(rt, &options()).unwrap();
+    });
+    let opened = opened.files();
+    let mut probe = Sim::with_files(4, Config::default(), files.clone());
+    let (began, ended) = session(&mut probe, |pager, rt| {
+        let began = rt.now().as_nanos();
+        assert!(pager.recycle_log() >= 2);
+        (began, rt.now().as_nanos())
+    });
+    let headers = 0..Pid::FIRST_DATA.0 as usize * harness::PAGE;
+    let log = |f: &Files| -> Vec<Vec<u8>> {
+        let dir = format!("{}/", options().log_dir());
+        let held = f.iter().filter(|(k, _)| k.starts_with(&dir));
+        held.map(|(_, v)| v.clone()).collect()
+    };
+    let wanted: BTreeSet<Pid> = pages.iter().copied().collect();
+    let mut kinds = [0; 3];
+    const STEPS: u64 = 96;
+    for k in 0..=STEPS {
+        let mut sim = Sim::with_files(4, Config::default(), files.clone());
+        sim.crash_at(Instant::from_nanos(began + (ended - began) * k / STEPS));
+        let outcome = sim.run(|rt| {
+            let (pager, _) = Pager::open(rt, &options()).unwrap();
+            pager.recycle_log();
+        });
+        let left = sim.files();
+        if outcome == Outcome::Crashed {
+            if segments(&left).len() < segments(files).len() {
+                kinds[2] += 1;
+            } else if left[harness::NAME][headers.clone()] != opened[harness::NAME][headers.clone()]
+            {
+                kinds[1] += 1;
+            } else if log(&left) != log(&opened) {
+                kinds[0] += 1;
+            }
+        }
+        let (findings, allocated, values) = session(&mut sim, |pager, _| {
+            let values: BTreeMap<Pid, u64> = written
+                .keys()
+                .map(|&pid| {
+                    let page = pager.read(pid).unwrap();
+                    let value =
+                        u64::from_le_bytes(page[HEADER_LEN..HEADER_LEN + 8].try_into().unwrap());
+                    (pid, value)
+                })
+                .collect();
+            (pager.verify().findings, pager.allocated().unwrap(), values)
+        });
+        let allocated: BTreeSet<Pid> = allocated.into_iter().collect();
+        assert_eq!(
+            (Vec::new(), &wanted, written),
+            (findings, &allocated, &values),
+            "step {k}"
+        );
+    }
+    kinds
+}
+
+#[test]
+fn a_crash_at_any_point_of_a_recycle_reopens_with_every_write_and_no_leaked_page() {
+    let (mut sim, pages) = created(600);
+    let written = session(&mut sim, |pager, _| fill(pager, &pages, 2 * SEGMENT));
+    let kinds = crash_through_a_recycle(&sim.files(), &pages, &written);
+    assert!(kinds.iter().all(|&n| n >= 1), "{kinds:?}");
+}
+
+#[test]
+fn a_crash_at_any_point_of_a_recycle_growing_the_map_reopens_with_every_write() {
+    let (mut sim, mut pages) = created(50);
+    let mut written = session(&mut sim, |pager, _| fill(pager, &pages, 2 * SEGMENT));
+    session(&mut sim, |pager, _| pager.recycle_log());
+    assert_eq!(
+        1,
+        session(&mut sim, |pager, _| pager.map_pages().unwrap().len())
+    );
+    session(&mut sim, |pager, _| {
+        pages.extend((0..550).map(|_| pager.allocate(1, PageKind::HeapSlotted, 7).unwrap()));
+        written.extend(fill(pager, &pages, 2 * SEGMENT));
+    });
+    let files = sim.files();
+    let kinds = crash_through_a_recycle(&files, &pages, &written);
+    assert!(kinds.iter().all(|&n| n >= 1), "{kinds:?}");
+    let mut grown = Sim::with_files(4, Config::default(), files);
+    session(&mut grown, |pager, _| pager.recycle_log());
+    assert_eq!(
+        3,
+        session(&mut grown, |pager, _| pager.map_pages().unwrap().len())
+    );
+}

@@ -13,6 +13,7 @@ mod dump_crypt;
 mod evicted;
 mod header;
 mod log;
+mod lsnmap;
 mod page;
 mod pager;
 mod quarantine;
@@ -24,7 +25,7 @@ mod verify;
 mod tests;
 
 pub use alloc::Reservation;
-pub use archive::{Archiver, Status as ArchiveStatus};
+pub use archive::{Archiver, Status as ArchiveStatus, recycle_at_open};
 pub use backup::{
     BackupError, BackupRun, Envelope, FORMAT, MANIFEST, Manifest, PROOF, Part, Proved,
     check_backup, make_scratch, manifest_hash, read_manifest, read_proof, remove_scratch,
@@ -47,8 +48,8 @@ pub use page::{
     header_edit, kind, lsn, owner, seal,
 };
 pub use pager::{
-    Damage, LATCHES_PER_THREAD, OpenError, Options, PageError, PageExclusive, PageOptimistic,
-    PageShared, Pager,
+    ArchiveHook, Damage, LATCHES_PER_THREAD, OpenError, Options, PageError, PageExclusive,
+    PageOptimistic, PageShared, Pager,
 };
 pub use quarantine::{Holders, Quarantine, Stopped};
 pub use record::Edit;

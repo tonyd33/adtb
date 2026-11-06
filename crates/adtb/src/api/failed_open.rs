@@ -13,9 +13,12 @@ pub(super) fn finish_create<R: Runtime>(
     opened: Result<Engine<R>, OpenError>,
     hold: storage::Hold<'_>,
 ) -> Result<Engine<R>, OpenError> {
-    let published = opened.and_then(|engine| {
-        new.publish(pager, hold).map_err(failed_create)?;
-        Ok(engine)
+    let published = opened.and_then(|mut engine| match new.publish(pager, hold) {
+        Ok(()) => Ok(engine),
+        Err(e) => {
+            engine.archiver = None;
+            Err(failed_create(e))
+        }
     });
     if published.is_err() {
         new.discard(rt, hold).map_err(failed_create)?;

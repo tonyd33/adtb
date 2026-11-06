@@ -11,8 +11,8 @@ use super::block::{
 use super::crc::{Crc32c, crc32c, crc32c_skipping};
 use super::header::{FileHeader, choose};
 use super::page::{self, Verdict};
-use super::pager::{Damage, Options, Pager};
-use super::record::{Edit, Record};
+use super::pager::{Damage, OpenError, Options, PageError, Pager};
+use super::record::{Edit, MapRoot, Record};
 use super::{Lsn, Pid, Position};
 
 const BLOCK: usize = 128;
@@ -51,6 +51,60 @@ fn an_older_checkpoint_keeps_the_group_count_and_a_lower_one_never_lowers_it() {
 }
 
 const SEGMENT: u64 = 16 * BLOCK as u64;
+
+#[test]
+fn a_map_root_whose_root_has_no_record_in_its_batch_refuses_the_open() {
+    let scratch = Scratch::new("storage", "unproven-root");
+    let rt = || {
+        OsRuntime::with_faults(
+            scratch.path(),
+            Backend::Pool { threads: 1 },
+            Faults::default(),
+        )
+    };
+    let options = Options {
+        pool_frames: 16,
+        max_pages: 1024,
+        ..Options::new("root.adt")
+    };
+    let pager = Pager::create(rt(), &options).expect("create pager");
+    pager
+        .fold(&BTreeMap::from([(Pid(1), Lsn(1))]))
+        .expect("fold");
+    let root = pager.meta().map.expect("the fold made a map").root;
+    pager.flush_log();
+    let at = pager.log().append(&Record::MapRoot { root, height: 1 });
+    pager.flush_log();
+    drop(pager);
+    let damage = Damage::LogUnproven { at };
+    assert_eq!(
+        Some(OpenError::Page(PageError { pid: root, damage })),
+        Pager::open(rt(), &options).err()
+    );
+}
+
+#[test]
+fn a_page_past_the_reach_of_the_map_has_no_entry() {
+    let scratch = Scratch::new("storage", "map-reach");
+    let rt = OsRuntime::with_faults(
+        scratch.path(),
+        Backend::Pool { threads: 1 },
+        Faults::default(),
+    );
+    let options = Options {
+        pool_frames: 16,
+        max_pages: 1024,
+        ..Options::new("reach.adt")
+    };
+    let pager = Pager::create(rt, &options).expect("create pager");
+    pager
+        .fold(&BTreeMap::from([(Pid(1), Lsn(1))]))
+        .expect("fold");
+    let per_leaf = ((pager.page_size() - page::HEADER_LEN) / 8) as u64;
+    assert_eq!(Ok(Some(Lsn(1))), pager.mapped(Pid(1)));
+    assert_eq!(Ok(None), pager.mapped(Pid(1 + per_leaf)));
+    pager.close();
+}
 
 #[test]
 fn the_parent_of_a_path_keeps_the_root() {
@@ -192,6 +246,20 @@ fn records_round_trip() {
         Record::Checkpoint {
             redo: Lsn(36),
             dirty: vec![(Pid(2), Lsn(36)), (Pid(7), Lsn(80))],
+            map: None,
+        },
+        Record::Checkpoint {
+            redo: Lsn(36),
+            dirty: vec![],
+            map: Some(MapRoot {
+                root: Pid(9),
+                lsn: Lsn(70),
+                height: 2,
+            }),
+        },
+        Record::MapRoot {
+            root: Pid(9),
+            height: 3,
         },
         Record::SafeSnapshot {
             at: Position {

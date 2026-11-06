@@ -21,6 +21,7 @@ use super::digest::hex;
 use super::header::REGION;
 use super::log::{parse_segment, segment_name};
 use super::pager::{Pager, parent};
+use super::quarantine::Quarantine;
 
 const EPOCH: &str = "epoch";
 const EVERY: Duration = Duration::from_secs(1);
@@ -53,8 +54,6 @@ pub struct Archiver<R: Runtime> {
     dir: String,
     /// The base of the segment holding the header's `log_start`.
     first: u64,
-    /// Read once a created file's log has its own name.
-    log_dir: std::sync::OnceLock<String>,
     segment: u64,
     /// The epoch file's bytes.
     epoch: Vec<u8>,
@@ -65,6 +64,17 @@ pub struct Archiver<R: Runtime> {
 }
 
 impl<R: Runtime> Archiver<R> {
+    /// Returns an archiver of `pager`'s log into `dest`, when given, and bound what `pager`'s
+    /// recycle removes by what it has archived.
+    pub fn bounding(pager: &Pager<R>, dest: Option<String>) -> Option<Arc<Archiver<R>>> {
+        let archiver = Arc::new(Archiver::new(pager.clone(), &dest?));
+        let weak = Arc::downgrade(&archiver);
+        pager.set_archive(Arc::new(move || {
+            weak.upgrade().and_then(|a| a.archived_through())
+        }));
+        Some(archiver)
+    }
+
     /// Returns an archiver of `pager`'s log into `dest`.
     pub fn new(pager: Pager<R>, dest: &str) -> Archiver<R> {
         let (id, epoch, segment, start, branch) = {
@@ -85,7 +95,6 @@ impl<R: Runtime> Archiver<R> {
         .into_bytes();
         text.resize(text.len().next_multiple_of(REGION), 0);
         Archiver {
-            log_dir: std::sync::OnceLock::new(),
             segment,
             epoch: text,
             dest: dest.to_owned(),
@@ -151,9 +160,8 @@ impl<R: Runtime> Archiver<R> {
 
     /// Run a pass and record its outcome in the status.
     pub fn archive(&self) {
-        let log_dir =
-            (self.log_dir).get_or_init(|| self.pager.segments.lock(&self.pager.rt).dir.clone());
-        let failure = self.pass(log_dir).err();
+        let log_dir = self.pager.segments.lock(&self.pager.rt).dir.clone();
+        let failure = self.pass(&log_dir).err();
         self.status.lock(&self.pager.rt).failure = failure;
     }
 
@@ -338,4 +346,15 @@ fn read_segment<R: Runtime>(
         }
         Ok(Some(hash.finalize()))
     })
+}
+
+/// Recycle `pager`'s log after a pass of `archiver`, unless the database is quarantined whole.
+pub fn recycle_at_open<R: Runtime>(pager: &Pager<R>, archiver: Option<&Archiver<R>>) {
+    if pager.is_quarantined(Quarantine::Database) {
+        return;
+    }
+    if let Some(a) = archiver {
+        a.archive();
+    }
+    pager.recycle_log();
 }

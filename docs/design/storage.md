@@ -405,7 +405,7 @@ operating error and never handed out as data.
 | Torn write | Checksum mismatch; repaired from a full-page image in the log (§5.2) |
 | Truncated file | After recovery, a bit of the allocation bitmap set past the end of the file refuses that page, and a bitmap page of a started group past the end of the file (§1.1) reads blank and is refused as below; a page a directory entry, index entry, version chain or out-of-line pointer names that reads all zero is refused on every read and write that reaches it through that name |
 | Lost or zeroed bitmap | A blank bitmap page of a started group (§1.1) is refused on every allocation, free and read of the bitmap, before anything is written, and marks the database (§8) |
-| Lost write | Page LSN older than the retained log says it must be, in recovery (§7) and in `verify` and scrub ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)); a page read back after the pool dropped it, older than it was then, while the pool's bounded table of dropped pages still holds it (§10.3) |
+| Lost write | Page LSN older than the retained log says it must be, in recovery (§7) and in `verify` and scrub ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)); in `verify`, scrub and backup, a page whose last record is recycled, older than the page LSN map holds for it (§6); a page read back after the pool dropped it, older than it was then, while the pool's bounded table of dropped pages still holds it (§10.3) |
 | Lost or misdirected log write | A page read from the file at or past the end of the log recovery kept, or past the log's next LSN once the open has written the page, refused as stale on every read, write, replay and backup that reads it, and in `verify` and scrub; a page LSN, on the page or as a record's previous LSN, that no retained record wrote: past the page's last record in a log with no gap, or at or past the end of the log recovery kept in a gapless log retained from at or before that end; in `verify` and scrub, as an `Unlogged` log finding (§7) |
 
 A page that fails verification on read quarantines the heap or index
@@ -635,9 +635,20 @@ checkpoint record
   (u64 page_id, u64 rec_lsn) * n
 ```
 
-Log before the redo LSN is no longer needed for recovery. Its segments
-may be recycled only once replication, archiving and change consumers
-no longer need them ([replication.md §1](replication.md#1-the-log-stream)).
+Log before the redo LSN is no longer needed for recovery. A recycle
+removes the segments that end at or before the start of the batch
+holding the least of: the redo LSN of the last checkpoint the file
+header durably names, the start of the current open's log, and the LSN
+every running backup or reader of the log holds it from. It removes
+the oldest first and forces the directory after each, so the segments
+present always run from the first of them with no hole. An open recycles once
+every reader of the log it found has run: recovery, the settling of the
+commit log, and the catalog's reads of a damaged commit log. With an
+archive set, the open first waits for one archive pass, however long it
+takes. An open that creates the file does not recycle. A close never
+recycles, so the log of the last open is read by the next before
+it goes. Replication and change consumers bound it too once they exist
+([replication.md §1](replication.md#1-the-log-stream)).
 
 With a log archive set, the archiver publishes each complete segment, one
 whose every block is durable, under the file's id and epoch, in order and
@@ -656,6 +667,32 @@ first segment.
 
 Invariant: with an archive set, a recycler keeps every segment while
 `archived_through()` is `None` or below the segment's end.
+
+Before removing segments, a recycle folds the last LSN of each page
+their batches name into the page LSN map, then takes a checkpoint. A
+segment it cannot read whole is kept. The map is a radix tree of pages
+of kind `LsnMap`: a leaf holds one LSN per page of the file, and an
+interior page holds each child's page id and the least LSN that child
+may have. The checkpoint record carries the root's page id, LSN and
+height; a checkpoint record without them means no map. A fold that
+makes a new root logs a record naming it in the same batch, and
+recovery adopts the later of that record and the checkpoint's root. A
+fold covers only pages below the file's end and grows the tree by a
+level above the root when the file outgrows it. A map page that fails
+its checksum, is no map page, or has an LSN below the one its parent,
+or for the root the checkpoint, gives it quarantines the whole database
+(§8). One the device cannot read is refused unmarked, as any page is. A
+read of the map that meets either fails, and so does the listing of
+allocated pages.
+
+Postconditions of a recycle:
+
+- Recovery from the checkpoint the file header names reads only segments
+  it kept.
+- No segment a running backup copies, or a reader of the log reads, is
+  removed or closed.
+- The map holds, for every page below the file's end named by a removed
+  segment, at least the LSN of its last record there.
 
 Rulings: buffer/checkpoint/fuzzy
 
@@ -685,6 +722,12 @@ marks a page that was changed from a stale copy: a lost write, which
 quarantines the page's heap or index. `verify` checks the same chain
 over the whole retained log, and that each page's LSN is that of its
 last record there.
+
+The retained log runs from the first segment present. Segments missing
+before it are recycled, not a gap; a missing segment between two
+present ones is a gap. A lost write whose last record lies in a recycled
+segment is not detected, and `verify` reports an `Orphan` finding only
+while the log is retained from its start.
 
 Under write-ahead logging no page carries an LSN the durable log does
 not hold for it. `verify` reports an `Unlogged` log finding naming the
@@ -976,7 +1019,9 @@ page memory under one lock. The pager remembers the LSN a page had
 when it was evicted, to catch a lost write when the page is read back,
 in a direct-mapped table of four slots per frame: a later eviction of
 a page sharing the slot replaces the entry, and the page it displaced
-is no longer checked until it is evicted again. Group commit is §10.1.
+is no longer checked until it is evicted again. The page LSN map
+(§6) is read through the pool like any page, from the root to a leaf,
+each page checked against its parent. Group commit is §10.1.
 Pages in flight for a read are held exclusive; writes go out under a
 shared latch. Recovery and `verify` read the log in chunks of 64 KiB,
 holding one chunk and one batch at a time; recovery reads it twice,

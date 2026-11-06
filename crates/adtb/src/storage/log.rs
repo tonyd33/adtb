@@ -21,6 +21,12 @@ pub(crate) struct Log {
     /// Every record below it is forced.
     durable: Lsn,
     batches: u64,
+    /// The redo LSN of the last checkpoint the file header durably names.
+    redo: Lsn,
+    /// Where this open's log starts: the end of the log recovery kept.
+    session: Lsn,
+    /// The LSNs readers of the log hold it from, each with its number of holders.
+    pins: BTreeMap<Lsn, usize>,
 }
 
 /// A batch taken from the appender, to be written and forced by the one flusher.
@@ -46,6 +52,8 @@ pub(crate) struct Segments {
     files: BTreeMap<u64, FileId>,
     /// The directory exists and its creation is forced.
     made: bool,
+    /// The first LSN of the oldest segment present, as last listed or recycled.
+    oldest: u64,
 }
 
 pub(super) fn segment_name(base: u64) -> String {
@@ -70,6 +78,9 @@ impl Log {
             pending: Vec::new(),
             durable: Lsn(0),
             batches: 0,
+            redo: Lsn(0),
+            session: Lsn(0),
+            pins: BTreeMap::new(),
         }
     }
 
@@ -93,6 +104,7 @@ impl Log {
         assert!(self.pending.is_empty());
         self.start = end;
         self.durable = end;
+        self.session = end;
         self.seq = seq;
     }
 
@@ -134,6 +146,31 @@ impl Log {
         self.durable = batch.end();
         self.batches += 1;
     }
+
+    /// Record that the file header durably names a checkpoint whose redo LSN is `redo`.
+    pub(crate) fn checkpointed(&mut self, redo: Lsn) {
+        self.redo = self.redo.max(redo);
+    }
+
+    pub(crate) fn pin(&mut self, at: Lsn) {
+        *self.pins.entry(at).or_default() += 1;
+    }
+
+    pub(crate) fn unpin(&mut self, at: Lsn) {
+        if let Some(n) = self.pins.get_mut(&at) {
+            *n -= 1;
+            if *n == 0 {
+                self.pins.remove(&at);
+            }
+        }
+    }
+
+    /// Returns the least LSN still needed: by recovery, the durable checkpoint's redo LSN; by a
+    /// reader, a pin; by the next open, the start of this open's log.
+    pub(crate) fn needed(&self) -> Lsn {
+        let kept = self.redo.min(self.session);
+        self.pins.keys().next().map_or(kept, |&p| p.min(kept))
+    }
 }
 
 impl Segments {
@@ -145,6 +182,7 @@ impl Segments {
             file_id,
             files: BTreeMap::new(),
             made: false,
+            oldest: 0,
         }
     }
 
@@ -243,6 +281,35 @@ impl Segments {
         }
     }
 
+    /// Remove, oldest first, every segment of `bases` that ends at or before `floor`, forcing the
+    /// directory after each, so a crash leaves the segments present a run with no hole. Returns
+    /// the number removed.
+    ///
+    /// Precondition: `bases` is ascending.
+    pub(crate) fn recycle<R: Runtime>(
+        &mut self,
+        drv: &mut Driver<R>,
+        bases: &[u64],
+        floor: u64,
+    ) -> usize {
+        let mut removed = 0;
+        for &base in bases.iter().take_while(|&&b| b + self.segment <= floor) {
+            if let Some(file) = self.files.remove(&base) {
+                drv.close(file);
+            }
+            drv.remove(&self.path(base));
+            drv.sync_dir(&self.dir);
+            self.oldest = base + self.segment;
+            removed += 1;
+        }
+        removed
+    }
+
+    /// Returns whether a segment ends at or before `floor`, without listing the directory.
+    pub(crate) fn may_recycle(&self, floor: u64) -> bool {
+        self.oldest + self.segment <= floor
+    }
+
     /// Write and force the blocks of `batch`.
     pub(crate) fn write<R: Runtime>(&mut self, drv: &mut Driver<R>, batch: &Batch) {
         let bytes = &batch.blocks;
@@ -290,6 +357,9 @@ impl Segments {
             .filter(|b| b % self.segment == 0)
             .collect();
         bases.sort_unstable();
+        if let Some(&first) = bases.first() {
+            self.oldest = first;
+        }
         let mut files = BTreeMap::new();
         for base in bases {
             let file = match self.files.get(&base) {

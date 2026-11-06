@@ -8,7 +8,7 @@ use crate::runtime::Runtime;
 use super::block::{LogFinding, LogProblem, Mode, batch_at, scan};
 use super::page::{self, Verdict};
 use super::pager::{Damage, OpenError, Pager};
-use super::record::{Edit, Record};
+use super::record::{Edit, MapRoot, Record};
 use super::{Lsn, Pid};
 
 /// What recovery found and did.
@@ -50,15 +50,16 @@ impl<R: Runtime> Pager<R> {
         let ck_batch = img
             .batch_start(ck)
             .ok_or(damaged_at(ck, LogProblem::Damaged))?;
-        let redo = batch_at(&mut img, ck_batch)
+        let (redo, map) = batch_at(&mut img, ck_batch)
             .and_then(|b| b.records(img.block).ok())
             .and_then(|rs| {
                 rs.into_iter().find_map(|(lsn, r)| match r {
-                    Record::Checkpoint { redo, .. } if lsn == ck => Some(redo),
+                    Record::Checkpoint { redo, map, .. } if lsn == ck => Some((redo, map)),
                     _ => None,
                 })
             })
             .ok_or(damaged_at(ck, LogProblem::Damaged))?;
+        self.meta().map = map;
         let from = img
             .batch_start(redo)
             .ok_or(damaged_at(redo, LogProblem::Damaged))?;
@@ -80,6 +81,8 @@ impl<R: Runtime> Pager<R> {
         };
         let block = img.block;
         let end = s.end;
+        let (mut map, mut since) = (map, ck);
+        let mut unproven = None;
         scan(&mut img, from, Mode::Recovery, |batch, _| {
             if batch.start >= end {
                 return;
@@ -88,9 +91,23 @@ impl<R: Runtime> Pager<R> {
                 .records(block)
                 .expect("the first scan found every batch whole");
             for (lsn, record) in records {
+                if let Record::MapRoot { root, height } = record
+                    && lsn > since
+                {
+                    since = lsn;
+                    match replay.last.get(&root).filter(|&&l| l >= batch.start) {
+                        Some(&lsn) => map = Some(MapRoot { root, lsn, height }),
+                        None => unproven = Some((root, lsn)),
+                    }
+                }
                 self.replay(&mut replay, lsn, record);
             }
         });
+        if let Some((pid, at)) = unproven {
+            let damage = Damage::LogUnproven { at };
+            return Err(OpenError::Page(super::PageError { pid, damage }));
+        }
+        self.meta().map = map;
         for (pid, damage) in std::mem::take(&mut replay.unverified) {
             self.damage(pid, damage);
         }

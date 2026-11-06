@@ -824,6 +824,7 @@ impl<R: Runtime> Pager<R> {
         visit: &mut dyn FnMut(Pid, &mut [u8]) -> bool,
         damaged: &mut BTreeSet<Pid>,
     ) -> Result<Vec<u8>, BackupError> {
+        let mapped = self.mapped(pid).map_err(|_| BackupError::Quarantined)?;
         let first = self.read_disk(pid);
         let bytes = match first {
             Ok((mut buf, _)) => {
@@ -831,7 +832,7 @@ impl<R: Runtime> Pager<R> {
                     return Err(BackupError::Stopped);
                 }
                 let held = self.mem.lock_shared(pid.0, &self.rt);
-                if self.trusted(pid, &buf, held.as_deref()) {
+                if self.trusted(pid, &buf, held.as_deref(), mapped) {
                     return Ok(buf.to_vec());
                 }
                 Some(buf)
@@ -848,7 +849,7 @@ impl<R: Runtime> Pager<R> {
         let g = self.mem.lock_exclusive(pid.0, &self.rt);
         let again = self.read_disk(pid);
         if let Ok((buf, _)) = &again
-            && self.trusted(pid, buf, g.resident().then(|| &*g))
+            && self.trusted(pid, buf, g.resident().then(|| &*g), mapped)
         {
             return Ok(buf.to_vec());
         }
@@ -867,12 +868,17 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns whether the file's copy `buf` of `pid` is sound and nothing shows it a lost write:
-    /// this open has not refused the page as stale, and the pool holds it at no later LSN.
-    /// `image` is its resident copy under the caller's latch.
-    fn trusted(&self, pid: Pid, buf: &[u8], image: Option<&[u8]>) -> bool {
+    /// this open has not refused the page as stale, the pool holds it at no later LSN, and its
+    /// LSN is not below `mapped`, the page LSN map's entry for it. `image` is its resident copy
+    /// under the caller's latch.
+    fn trusted(&self, pid: Pid, buf: &[u8], image: Option<&[u8]>, mapped: Option<Lsn>) -> bool {
         let refused = self.meta().damaged.get(&pid).copied();
         let stale = matches!(refused, Some(Damage::Stale { .. }));
-        self.sound(pid, buf) && !stale && self.lost_write(pid, page::lsn(buf), image).is_none()
+        let behind = mapped.is_some_and(|m| page::lsn(buf) < m);
+        self.sound(pid, buf)
+            && !stale
+            && !behind
+            && self.lost_write(pid, page::lsn(buf), image).is_none()
     }
 
     fn copy_log(
@@ -883,11 +889,9 @@ impl<R: Runtime> Pager<R> {
         redo: Lsn,
         end: Lsn,
     ) -> Io<Vec<Part>> {
-        let mut img = {
-            let mut segments = self.segments.lock(&self.rt);
-            self.io(|d| segments.try_load(d))
-        }
-        .map_err(|(what, error)| BackupError::Io { what, error })?;
+        let (_pin, mut img) = self
+            .load_log()
+            .map_err(|(what, error)| BackupError::Io { what, error })?;
         let from = img.batch_start(redo).ok_or_else(|| read_failed(redo))?;
         let segment = img.segment;
         let mut parts = Vec::new();

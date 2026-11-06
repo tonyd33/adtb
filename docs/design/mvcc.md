@@ -294,9 +294,11 @@ nothing:
 - Every other id below the reservation reads as aborted. No id below the
   reservation reads as in progress until new transactions start.
 
-The retained log starts at its first segment. A commit record in a
-segment recycled before it is not read: an id whose status page lost
-the write of that commit reads as aborted.
+The retained log starts at its first segment; a recycle
+([storage.md §6](storage.md#6-write-ahead-and-checkpoints)) removes
+segments before it. A commit record in a recycled segment is not read:
+an id whose status page lost the write of that commit reads as aborted,
+the status page standing as authoritative.
 
 ### 4.3 Snapshots
 

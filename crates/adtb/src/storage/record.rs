@@ -7,6 +7,14 @@ pub struct Edit {
     pub bytes: Vec<u8>,
 }
 
+/// The root of the page LSN map, the least LSN it may have, and the tree's levels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MapRoot {
+    pub root: Pid,
+    pub lsn: Lsn,
+    pub height: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Record {
     /// `prev` is the page's LSN before the change.
@@ -31,9 +39,17 @@ pub enum Record {
     XidAllocation {
         next: u64,
     },
+    /// `map` is `None` in a record that carries none.
     Checkpoint {
         redo: Lsn,
         dirty: Vec<(Pid, Lsn)>,
+        map: Option<MapRoot>,
+    },
+    /// A new root of the page LSN map of `height` levels, in the batch that made it. The root's
+    /// LSN is that of its record before this one in the batch.
+    MapRoot {
+        root: Pid,
+        height: u32,
     },
     /// A safe snapshot, as the transactions layer encodes it, and the commit position it covers.
     SafeSnapshot {
@@ -49,6 +65,21 @@ const ABORT: u8 = 4;
 const XID_ALLOCATION: u8 = 5;
 const CHECKPOINT: u8 = 6;
 const SAFE_SNAPSHOT: u8 = 7;
+const MAP_ROOT: u8 = 8;
+
+fn put_map(out: &mut Vec<u8>, m: &MapRoot) {
+    put_u64(out, m.root.0);
+    put_u64(out, m.lsn.0);
+    put_u32(out, m.height);
+}
+
+fn map_root(b: &mut Reader<'_>) -> Result<MapRoot, Malformed> {
+    Ok(MapRoot {
+        root: Pid(b.u64()?),
+        lsn: Lsn(b.u64()?),
+        height: b.u32()?,
+    })
+}
 
 /// The bytes before a record's body: its tag and the body's length.
 const PREFIX: usize = 5;
@@ -142,14 +173,22 @@ impl Record {
                 put_u64(out, *next);
                 XID_ALLOCATION
             }
-            Record::Checkpoint { redo, dirty } => {
+            Record::Checkpoint { redo, dirty, map } => {
                 put_u64(out, redo.0);
                 put_u32(out, len32(dirty.len()));
                 for (pid, rec) in dirty {
                     put_u64(out, pid.0);
                     put_u64(out, rec.0);
                 }
+                if let Some(m) = map {
+                    put_map(out, m);
+                }
                 CHECKPOINT
+            }
+            Record::MapRoot { root, height } => {
+                put_u64(out, root.0);
+                put_u32(out, *height);
+                MAP_ROOT
             }
             Record::SafeSnapshot { at, snapshot } => {
                 put_u64(out, at.epoch);
@@ -206,8 +245,17 @@ impl Record {
                 for _ in 0..n {
                     dirty.push((Pid(b.u64()?), Lsn(b.u64()?)));
                 }
-                Record::Checkpoint { redo, dirty }
+                let map = if b.is_empty() {
+                    None
+                } else {
+                    Some(map_root(&mut b)?)
+                };
+                Record::Checkpoint { redo, dirty, map }
             }
+            MAP_ROOT => Record::MapRoot {
+                root: Pid(b.u64()?),
+                height: b.u32()?,
+            },
             SAFE_SNAPSHOT => {
                 let epoch = b.u64()?;
                 let lsn = Lsn(b.u64()?);

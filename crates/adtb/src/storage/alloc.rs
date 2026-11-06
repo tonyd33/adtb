@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use super::page::{self, FIRST_EDITABLE, HEADER_LEN, PageKind};
 use super::pager::{Damage, PageError, PageExclusive, PageShared, Pager};
-use super::record::Edit;
+use super::record::{Edit, Record};
 use super::{Lsn, Pid};
 
 /// Unchanged runs shorter than this between two changed ones are logged as changed.
@@ -215,9 +215,24 @@ impl<R: Runtime> Pager<R> {
                 r.pid
             );
         }
+        self.update_with_tail(new, pids, f, None)
+    }
+
+    /// Change `pids` as [`Pager::update_with`] does, logging `tail` after them in the same batch.
+    pub(crate) fn update_with_tail<F>(
+        &self,
+        new: Reservation<'_, R>,
+        pids: &[Pid],
+        f: F,
+        tail: Option<Record>,
+    ) -> Result<Lsn, PageError>
+    where
+        F: FnOnce(&mut [&mut [u8]]),
+    {
         let mut f = Some(f);
+        let mut tail = Some(tail);
         self.with_latched(pids, |pager, guards| {
-            pager.allocating(&new, guards, f.take().unwrap())
+            pager.allocating(&new, guards, f.take().unwrap(), tail.take().unwrap())
         })?
     }
 
@@ -243,7 +258,7 @@ impl<R: Runtime> Pager<R> {
         }
         let mut inner: Vec<&mut adtb_sys::pages::Exclusive<'p>> =
             guards.iter_mut().map(|g| g.inner()).collect();
-        self.allocating(&new, &mut inner, f)
+        self.allocating(&new, &mut inner, f, None)
     }
 
     /// Mark and format the pages of `new`, apply `f` to the pages under `guards`, and log all of
@@ -253,6 +268,7 @@ impl<R: Runtime> Pager<R> {
         new: &Reservation<'_, R>,
         guards: &mut [&mut adtb_sys::pages::Exclusive<'p>],
         f: F,
+        tail: Option<Record>,
     ) -> Result<Lsn, PageError>
     where
         F: FnOnce(&mut [&mut [u8]]),
@@ -321,7 +337,7 @@ impl<R: Runtime> Pager<R> {
         for m in &mut maps {
             all.push(m.inner());
         }
-        let lsn = self.apply(&mut all, edits, None);
+        let lsn = self.apply(&mut all, edits, tail);
         if let Some(&g) = groups.last() {
             let mut m = self.meta();
             m.groups = m.groups.max(g + 1);
@@ -357,16 +373,17 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns every page the allocation bitmap marks allocated, in order, leaving out the pages
-    /// the pager owns itself: the file header copies, the bitmap's pages and the quarantine
-    /// marks' page.
+    /// the pager owns itself: the file header copies, the bitmap's pages, the quarantine marks'
+    /// page and the page LSN map's pages.
     ///
-    /// Fails if an allocation bitmap page is damaged.
+    /// Fail if an allocation bitmap page or a map page is refused.
     pub fn allocated(&self) -> Result<Vec<Pid>, PageError> {
         let span = self.bitmap_span();
         let marks = self.quarantine_page();
+        let map = self.map_pages()?;
         let mut out = Vec::new();
         for g in 0.. {
-            let map = self.bitmap_page(g);
+            let bitmap = self.bitmap_page(g);
             let page = self.read_map(g)?.to_vec();
             if page::kind(&page) != PageKind::AllocationBitmap as u16 {
                 break;
@@ -376,7 +393,8 @@ impl<R: Runtime> Pager<R> {
                 (0..span)
                     .filter(|&i| bits[(i / 8) as usize] >> (i % 8) & 1 == 1)
                     .map(|i| Pid(g * span + i))
-                    .filter(|&p| p != map && p != marks && p >= Pid::FIRST_DATA),
+                    .filter(|&p| p != bitmap && p != marks && p >= Pid::FIRST_DATA)
+                    .filter(|p| !map.contains(p)),
             );
         }
         Ok(out)
