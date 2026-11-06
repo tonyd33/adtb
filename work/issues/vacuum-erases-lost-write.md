@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-05
-status: open
+status: resolved
 kind: bug
 priority: 350
 summary: "background vacuum prunes a heap page whose write was lost, so verify reports Orphan index findings instead of StalePage"
+closed: 2026-11-06
 tags:
   - class-damage-unreported
 ---
@@ -21,3 +22,9 @@ Reproduction: in crates/adtb-sim/tests/sim/verify.rs, `a_lost_write_is_a_stale_p
 Direction: vacuum must not write a page whose LSN is behind what the retained log says it must be (check `lost_write` before vacuum prunes a page), or verify must still name the page. Then remove the flag from the test.
 
 Defect class: Damage reported as nothing (here, reported as different damage).
+
+## 2026-11-06: fixed by the read-in gate
+
+Fixed in 0d1250ce (damage-readin-gate). Vacuum's read-in of a page whose write was lost is refused Stale, so it neither prunes nor frees it. `a_lost_write_is_a_stale_page_finding` in crates/adtb-sim/tests/sim/verify.rs runs with the background worker on and reports StalePage.
+
+## 2026-11-06: resolved
