@@ -12,7 +12,7 @@ use crate::catalog::{self, Catalog, Denial, KeptField, KeptRow};
 use crate::exec::{F64, Val};
 use crate::mvcc::Xid;
 use crate::runtime::Runtime;
-use crate::storage::{Pager, Pid};
+use crate::storage::{Damage, PageError, Pager, Pid};
 use crate::verify::{self, Depth};
 use crate::write::{self, Found, HoldWait, VerifyScope};
 
@@ -556,7 +556,7 @@ impl<R: Runtime> Engine<R> {
             started,
         };
         let mut found = self.verify_checks(scope, holding, waiting, &job)?;
-        if self.verifier.keeps() {
+        if self.db.admit_database().is_ok() {
             found.extend(self.db.quarantine_findings(&found));
         }
         let keep = self.verifier.keeps();
@@ -591,28 +591,45 @@ impl<R: Runtime> Engine<R> {
         } else {
             None
         };
-        if self.db.txns().quarantined().is_some() {
-            job.phase("pages", 0.1);
-            let mut found: BTreeSet<Found> = self.db.check_pages(scope)?.into_iter().collect();
-            let at = if matches!(scope, VerifyScope::Relation(_)) {
-                format!("relation {}: only its pages were checked", job.target)
-            } else {
-                "the database: only the pages and the log were checked".to_owned()
-            };
-            found.insert(Found::Structure { at });
-            return Ok(found);
-        }
+        let mut found = BTreeSet::new();
+        let damage = match self.snapshot_checks(scope, held.as_ref(), waiting, job, &mut found) {
+            Ok(()) => return Ok(found),
+            Err(e) => self.commit_log_damage(&e).ok_or(e)?,
+        };
+        job.phase("pages", 0.1);
+        found.extend(self.db.check_pages(scope)?);
+        found.insert(Found::of_page(damage));
+        let at = if matches!(scope, VerifyScope::Relation(_)) {
+            format!("relation {}: only its pages were checked", job.target)
+        } else {
+            "the database: only the pages and the log were checked".to_owned()
+        };
+        found.insert(Found::Structure { at });
+        Ok(found)
+    }
+
+    fn snapshot_checks(
+        &self,
+        scope: VerifyScope,
+        held: Option<&write::VacuumHold<'_, R>>,
+        waiting: HoldWait<'_>,
+        job: &Job<'_, R>,
+        found: &mut BTreeSet<Found>,
+    ) -> Result<(), write::Error> {
+        let holding = held.is_some();
         job.phase("waiting for a safe snapshot", 0.0);
         let snapshot = self.db.begin_verify()?;
         let tx = snapshot.txn();
-        let mut found = BTreeSet::new();
         job.phase("pages", 0.1);
         found.extend(self.db.check_pages(scope)?);
         job.phase("indexes", 0.4);
-        found.extend(match &held {
-            Some(held) => self.db.check_indexes_held(tx, scope, held)?,
-            None => self.db.check_indexes(tx, scope, waiting)?,
-        });
+        let mut indexed = Vec::new();
+        let checked = match held {
+            Some(held) => self.db.check_indexes_held(tx, scope, held, &mut indexed),
+            None => self.db.check_indexes(tx, scope, waiting, &mut indexed),
+        };
+        found.extend(indexed);
+        checked?;
         if !holding {
             found.extend(self.db.check_links(scope));
         }
@@ -643,14 +660,28 @@ impl<R: Runtime> Engine<R> {
                 verify::verify_with(&self.pager, &self.catalog.inventory(&clog), Depth::FILE);
             found.extend(report.findings.iter().filter_map(Found::of_problem));
         }
-        Ok(found)
+        Ok(())
+    }
+
+    /// Returns the damage that quarantined the commit log when `e` is that damage met by a read,
+    /// or the refusal of a transaction it causes. Returns `None` for an unreadable page.
+    fn commit_log_damage(&self, e: &write::Error) -> Option<PageError> {
+        let damage = self.db.txns().quarantined()?;
+        if matches!(damage.damage, Damage::Unreadable) {
+            return None;
+        }
+        match e {
+            write::Error::Page(p) if *p == damage => Some(damage),
+            write::Error::Transactions(_) => Some(damage),
+            _ => None,
+        }
     }
 
     /// Refuse every page of the heap kept rows lie in, as if each failed its checksum.
     pub(super) fn damage_kept_store(&self) {
         if let Ok(pages) = self.catalog.kept_pages(&self.pager) {
             for pid in pages {
-                self.pager.damage(pid, crate::storage::Damage::Checksum);
+                self.pager.damage(pid, Damage::Checksum);
             }
         }
     }

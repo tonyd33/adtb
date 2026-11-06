@@ -723,8 +723,12 @@ fn a_verify_checksum_finding_marks_what_holds_the_page() {
     let mut sim = flipped(35, apple);
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
+        let page = apple(&db);
         let found = api::printed(db.verify(None).unwrap());
-        assert!(found.iter().any(|r| r.starts_with("Checksum")), "{found:?}");
+        let at = format!("where: \"page {}: Checksum\" }}", page.0);
+        assert_eq!(1, found.len(), "{found:?}");
+        assert!(found[0].starts_with("Checksum {"), "{found:?}");
+        assert!(found[0].ends_with(&at), "{found:?}");
         assert_eq!(BTreeSet::from([apple_mark(&db)]), marks(&db));
         assert_eq!("app::identities.Apple", failed_on(&db, ALL));
         assert_eq!(12, api::query(&db, SIDES).len());

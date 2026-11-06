@@ -261,14 +261,16 @@ impl<R: Runtime> Database<R> {
     /// Check each index of `scope`: its structure, every row version `tx` sees has its entry, and
     /// every entry names a row version of its key. Holds off vacuum across each index, since an
     /// entry read must keep naming the slot it named, stopping as [`Database::hold_vacuum`] says
-    /// while another holds it off.
+    /// while another holds it off. Adds what it finds to `out`, a failure keeping what it found
+    /// before.
     pub fn check_indexes(
         &self,
         tx: &Txn,
         scope: VerifyScope,
         waiting: HoldWait<'_>,
-    ) -> Result<Vec<Found>, Error> {
-        self.index_checks(tx, scope, || self.hold_vacuum(waiting).map(Some))
+        out: &mut Vec<Found>,
+    ) -> Result<(), Error> {
+        self.index_checks(tx, scope, || self.hold_vacuum(waiting).map(Some), out)
     }
 
     /// Check each index of `scope` as [`Database::check_indexes`] does, under `_held`, the vacuum
@@ -278,8 +280,9 @@ impl<R: Runtime> Database<R> {
         tx: &Txn,
         scope: VerifyScope,
         _held: &VacuumHold<'_, R>,
-    ) -> Result<Vec<Found>, Error> {
-        self.index_checks(tx, scope, || Ok(None))
+        out: &mut Vec<Found>,
+    ) -> Result<(), Error> {
+        self.index_checks(tx, scope, || Ok(None), out)
     }
 
     fn index_checks<'a>(
@@ -287,17 +290,17 @@ impl<R: Runtime> Database<R> {
         tx: &Txn,
         scope: VerifyScope,
         hold: impl Fn() -> Result<Option<VacuumHold<'a, R>>, Error>,
-    ) -> Result<Vec<Found>, Error> {
-        let mut out = Vec::new();
+        out: &mut Vec<Found>,
+    ) -> Result<(), Error> {
         for r in self.rels.values() {
             if scope.covers(r.id) {
                 for (id, ix) in &r.indexes {
                     let _no_vacuum = hold()?;
-                    self.check_index(tx, r, *id, ix, &mut out)?;
+                    self.check_index(tx, r, *id, ix, out)?;
                 }
             }
         }
-        Ok(out)
+        Ok(())
     }
 
     /// Check the links between the versions on each heap page of `scope`.

@@ -1944,8 +1944,9 @@ fn orphans_beside_vacuum(seed: u64) -> Vec<String> {
         let snapshot = w.begin_verify().unwrap();
         started.store(true, Ordering::Release);
         let scope = VerifyScope::Relation(w.relation_named("app::rows").unwrap());
-        let found = w
-            .check_indexes(snapshot.txn(), scope, adtb::write::HoldWait::unbounded())
+        let mut found = Vec::new();
+        let waiting = adtb::write::HoldWait::unbounded();
+        w.check_indexes(snapshot.txn(), scope, waiting, &mut found)
             .unwrap();
         rt.join(cleaner);
         found
