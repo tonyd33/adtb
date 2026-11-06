@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-05
-status: open
+status: resolved
+closed: 2026-11-05
 kind: bug
 priority: 330
 summary: the verify that first finds commit-log damage quarantines the database and returns Fatal instead of its findings
@@ -21,3 +22,11 @@ The test crates/adtb-sim/tests/sim/clog_lost.rs `a_commit_whose_status_page_lost
 Direction: a verify that sets a whole-database mark finishes and returns its findings, with the mark taken after.
 
 Defect class: Damage reported as nothing.
+
+## 2026-11-05 resolved
+
+Landed as `fix: return a verify's findings when they quarantine the whole database`. Cause: the verify's own snapshot checks read statuses through the normal path; `Transactions::status` met the stale status page and returned an error that left `verify_run` before any row was built, and `quarantining` turned it into Fatal. Now, when the snapshot checks fail on the commit log's own damage (never `Unreadable`, which propagates), verify answers what a file marked at open answers plus that page's finding whatever the scope, keeps the findings it had gathered (an index Orphan found before the status page is still answered and marked), and marks the database after the rows, through `quarantine_findings`, outside `verify_checks`. The search test reverts each page an insert changes and requires the first verify to answer that page's exact StalePage and the expected mark.
+
+Review found `verify r` dropping the commit-log damage with no mark, an error guard catching every error, and gathered findings discarded; all fixed. 7 mutants killed. `check --changed` 3413 passed, campaign 48.
+
+This is a site fix in the class damage-marked-at-detection now owns; the fallback goes away when marking moves to detection. Left: clog-root-lost-write-panics (the search skips the root), sim-first-verify-task-deadlock (the server test runs a query first).
