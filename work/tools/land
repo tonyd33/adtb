@@ -4,7 +4,7 @@
 #                     `main` bookmark and the main working copy onto it, and forget WS
 #
 # Refuses before changing anything when the main working copy has changes, WS is unknown, a
-# commit to land has no description or adds a mutant site, or `vacuity --check` fails on WS.
+# commit to land has no description or adds a mutant site.
 # Refuses after the rebase when a landed commit has conflicts; the rebased commits stay in WS for
 # its agent to fix. Leaves WS's directory in place. A workspace taken with `slot` is not
 # forgotten: its directory becomes a free slot, its working copy an empty commit on the landed
@@ -66,10 +66,6 @@ for commit in $(jj -R "$main" log -r "@-..$tip" --no-graph -T 'commit_id.short()
   sites=$(grep ': mutant site: ' <<<"$findings" || true)
   [[ -z $sites ]] || die "mutant sites in $commit to remove first: $sites"
 done
-base=$(jj -R "$main" log -r @- --no-graph -T commit_id)
-landing=$(jj -R "$main" log -r "$tip" --no-graph -T commit_id)
-(cd "$wsroot" && "$root/work/tools/vacuity" --check "$base..$landing") ||
-  die "no vacuity record of $ws answers every mutant of its diff; run vacuity in $wsroot"
 
 jj -R "$main" rebase -b "$ws@" -d @-
 

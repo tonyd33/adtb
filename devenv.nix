@@ -93,7 +93,6 @@ in
     done
     if [[ -n $plan ]]; then
       house-check "$DEVENV_ROOT" -r "$revset"
-      vacuity --check "$revset"
     fi
   '';
 
@@ -123,10 +122,6 @@ in
 
   scripts.refusal-check.exec = ''
     "$DEVENV_ROOT/work/tools/refusal-check" "$@"
-  '';
-
-  scripts.vacuity.exec = ''
-    "$DEVENV_ROOT/work/tools/vacuity" "$@"
   '';
 
   scripts.suite.exec = ''

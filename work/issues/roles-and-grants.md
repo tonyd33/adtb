@@ -526,4 +526,4 @@ Ad hoc reads and writes run for a role under its own grants, change uotvruxr. Wo
 
 Slice 5, and any new grant form, waits for a socket call, by the 2026-10-31 wide review.
 
-Left for that later work: per-row redaction; rows of `sys::calls` and `sys::sessions`; export formats; printing a schema's grants and write states; a bound on schema constraint or default roots expansion. Round 4 test pins not tightened, in work that `vacuity-gate` should catch: `reindex_answers_one_way` compares answers only to each other, at-limit tests have no past-limit pin, the thousand-insert test checks `Ok(1)` with no row count, and three test names are stale.
+Left for that later work: per-row redaction; rows of `sys::calls` and `sys::sessions`; export formats; printing a schema's grants and write states; a bound on schema constraint or default roots expansion. Round 4 test pins not tightened: `reindex_answers_one_way` compares answers only to each other, at-limit tests have no past-limit pin, the thousand-insert test checks `Ok(1)` with no row count, and three test names are stale.

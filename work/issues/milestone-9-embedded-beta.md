@@ -39,7 +39,7 @@ work/briefs/review-m9-audit.md: 6 of 53 requirements done, 14 partial, 33 absent
 
 ## 2026-10-31: next step
 
-By the wide review, new background jobs wait for fault-matrix. Order: test-audit-findings, then fault-matrix, compile-time-identity and vacuity-gate, then the remaining slices named in depends-on. Exit needs a searching test named for each claim, and the audit of 2026-10-29 must be re-run first, since its counts are stale.
+By the wide review, new background jobs wait for fault-matrix. Order: test-audit-findings, then fault-matrix and compile-time-identity, then the remaining slices named in depends-on. Exit needs a searching test named for each claim, and the audit of 2026-10-29 must be re-run first, since its counts are stale.
 
 ## 2026-10-31: finite recovery checkpoint and next increment
 

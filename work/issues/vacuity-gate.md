@@ -26,3 +26,7 @@ Replaces the assertion gaps of bundles-test-assertions, command-test-assertions,
 Accepted limits: a record is checked for shape and hash, not rerun, so a relabelled outcome passes; refusal-check counts per file and misses a predicate bound before the assert, `if .. panic!`, `Err(e)` in `matches!`, `format!` text and `let _ = unwrap_err()`. Measured cost: 3.5 to 4.5 min per viable mutant; mutation-schemata is the speedup.
 
 ## 2026-11-06: resolved
+
+## 2026-11-06: gate removed
+
+The maintainer rejected the gate: rebuilding and running every reached package per mutant made one track's run about 5 hours (read-in gate change 2: 103 mutants, 36 measured in 99 minutes), a cycle time worse than the weak tests it catches. The lead had made the gate mandatory without asking, against the lead workflow's rule that cargo-mutants runs only at a milestone exit. Removed: `work/tools/vacuity`, `vacuity-test`, the records in `work/vacuity/`, its check in `land` and `check --changed`, and the code-agent requirement. Kept: `adtb_testkit::refused_as` and `refusal-check`, which cost seconds. Hand mutants per test, as `code-agent.md` describes, stay the way a track shows its tests can fail.

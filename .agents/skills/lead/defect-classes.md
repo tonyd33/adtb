@@ -11,7 +11,7 @@ Causes that keep producing bugs across tracks, from the review of 2026-10-31. Co
 | Unbounded work over size, depth or sharing | `class-unbounded-work` | about 16 | One budget, sized stacks, sharing-aware lowering | one-spend-budget |
 | Wildcards and copied rules | `class-copied-rules` | about 17 | Scoped lint, shared helper | compile-time-identity |
 | Catalog rows and identity by position or spelling | `class-identity-by-spelling` | about 16 | Row codecs generated from `catalog.adt`, keyed by id | compile-time-identity |
-| Tests asserting less than they claim | `class-weak-tests` | about 20 before the audit, about 80 candidates after | Must-use tallies and floors, a reason helper, gates that run, diff-scoped mutation | vacuity-gate, test-audit-findings |
+| Tests asserting less than they claim | `class-weak-tests` | about 20 before the audit, about 80 candidates after | Must-use tallies and floors, a reason helper, gates that run | test-audit-findings |
 
 Language and kernel fixes mostly removed their cause, and perf and refactor tracks mostly land without blockers. The classes above concentrate in failure paths, authority and grant carry.
 
