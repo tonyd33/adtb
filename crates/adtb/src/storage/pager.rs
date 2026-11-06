@@ -114,6 +114,8 @@ pub enum OpenError {
     Locked,
     /// `create` took the log directory, then failed on a page of the new file.
     Unformatted(PageError),
+    /// The options' segment size is not a positive multiple of their log block.
+    SegmentSize(u64),
     /// Neither copy of the file header verifies.
     NoHeader,
     /// Opening the data file failed.
@@ -240,7 +242,8 @@ pub(super) fn parent(path: &str) -> &str {
     }
 }
 
-pub(super) fn check_options(o: &Options) {
+/// Returns `SegmentSize` when the segment size is not a positive multiple of the log block.
+pub(super) fn check_options(o: &Options) -> Result<(), OpenError> {
     let block = o.log_block as usize;
     assert!(
         valid_page_size(o.page_size),
@@ -252,10 +255,9 @@ pub(super) fn check_options(o: &Options) {
         "log block {block} must be a power of two from 64 that divides {}",
         AlignedBuf::ALIGN
     );
-    assert!(
-        o.segment_size > 0 && o.segment_size.is_multiple_of(block as u64),
-        "segment size must be a positive multiple of the log block"
-    );
+    if o.segment_size == 0 || !o.segment_size.is_multiple_of(block as u64) {
+        return Err(OpenError::SegmentSize(o.segment_size));
+    }
     assert!(o.threads >= 1, "at least one thread uses the pool");
     let serves = o.pool_frames / LATCHES_PER_THREAD;
     assert!(
@@ -264,6 +266,7 @@ pub(super) fn check_options(o: &Options) {
         o.pool_frames,
         o.threads
     );
+    Ok(())
 }
 
 /// A shared latch on a resident page.
@@ -467,6 +470,7 @@ impl<R: Runtime> Pager<R> {
                 .map(|at| (at.epoch, at.lsn))
                 .into_iter()
                 .collect(),
+            log_start: Lsn(0),
         };
         let pager = Pager::assemble(rt, options, header, 1, data);
         let claimed = {
@@ -493,7 +497,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Open an existing database and recover it from its log.
     pub fn open(rt: R, options: &Options) -> Result<(Pager<R>, super::Recovery), OpenError> {
-        check_options(options);
+        check_options(options)?;
         let mut drv = Driver::new(rt.clone());
         let (data, _) = drv.open(&options.name, false).map_err(|e| match e {
             IoError::NotFound => OpenError::NotFound,

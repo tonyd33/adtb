@@ -96,7 +96,7 @@ pub(crate) fn create<R: Runtime>(
     options: &Options,
     hold: Hold<'_>,
 ) -> Result<Created<R>, OpenError> {
-    check_options(options);
+    check_options(options)?;
     let mut drv = Driver::new(rt.clone());
     let name = &options.name;
     let replace = match drv.open(name, false) {

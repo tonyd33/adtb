@@ -38,12 +38,12 @@ const SCRATCH: &str = "scratch";
 /// The smallest block a log writes.
 const MIN_LOG_BLOCK: u64 = 512;
 /// What joins a final name and the random tail of its private name.
-const PARTIAL: &str = ".partial-";
+pub(super) const PARTIAL: &str = ".partial-";
 
 const PAGES: &str = "pages";
 const LOG: &str = "log";
 
-const IO_CHUNK: u64 = 1 << 20;
+pub(super) const IO_CHUNK: u64 = 1 << 20;
 /// The page ids the first [`REGION`] bytes of a chunk of a page part hold, after their count.
 const CHUNK_PAGES: usize = REGION / 8 - 1;
 /// The chunks of one page part.
@@ -158,7 +158,7 @@ impl<R: Runtime> Fs<R> {
         }
     }
 
-    fn open(&mut self, path: &str, create: bool) -> Io<(FileId, u64)> {
+    pub(super) fn open(&mut self, path: &str, create: bool) -> Io<(FileId, u64)> {
         self.drv.open(path, create).map_err(io_error(path))
     }
 
@@ -186,7 +186,7 @@ impl<R: Runtime> Fs<R> {
     }
 
     /// Create a new private file beside `name` and return its path and id.
-    fn aside_file(&mut self, name: &str) -> Io<(String, FileId)> {
+    pub(super) fn aside_file(&mut self, name: &str) -> Io<(String, FileId)> {
         loop {
             let path = self.aside_name(name);
             match self.drv.create_new(&path) {
@@ -283,7 +283,7 @@ impl<R: Runtime> Fs<R> {
         self.run(&dir.clone(), Op::SyncDir { dir }).map(|_| ())
     }
 
-    fn list(&mut self, dir: &str) -> Io<Vec<String>> {
+    pub(super) fn list(&mut self, dir: &str) -> Io<Vec<String>> {
         let op = Op::List {
             dir: dir.to_owned(),
         };
@@ -331,7 +331,7 @@ impl<R: Runtime> Fs<R> {
         Ok(made)
     }
 
-    fn remove(&mut self, path: &str) -> Io<()> {
+    pub(super) fn remove(&mut self, path: &str) -> Io<()> {
         let op = Op::Remove {
             path: path.to_owned(),
         };
@@ -576,6 +576,7 @@ impl Manifest {
             encryption: small("encryption")?,
             bitmap_groups: number("bitmap_groups")?,
             history,
+            log_start: Lsn(0),
         };
         Some(Manifest {
             envelope: Envelope {
@@ -1357,6 +1358,7 @@ fn write_header<R: Runtime>(
     let excess = header.history.len().saturating_sub(HISTORY_CAPACITY);
     header.history.drain(..excess);
     header.epoch = m.end.epoch + rt.next_u64() % EPOCH_STEP + 1;
+    header.log_start = m.end.lsn;
     for (seq, copy) in [(1, 1u64), (2, 0)] {
         header.seq = seq;
         let offset = copy * u64::from(header.page_size);

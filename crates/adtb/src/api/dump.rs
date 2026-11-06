@@ -629,6 +629,7 @@ pub(super) fn restore_dump<R: Runtime>(
         create: Some(CreateOptions {
             after: Some(manifest.snapshot),
             replay: Some(held),
+            segment_size: options.create.as_ref().and_then(|c| c.segment_size),
         }),
         registrations: Vec::new(),
         ..options.clone()

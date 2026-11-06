@@ -285,3 +285,13 @@ home: https://www.postgresql.org/docs/
 
 - Data checksums are verified on every read of a data page; internal structures and temp files are not covered; `ignore_checksum_failure` bypasses the check. [V 2026-11-05] https://www.postgresql.org/docs/current/checksums.html
 - A checksum failure errors the reading query and is counted in `pg_stat_database.checksum_failures`/`checksum_last_failure`; nothing marks the page or relation durably, and there is no lost-write detection outside redo. [U] general knowledge, not checked in the docs
+
+## Continuous archiving
+
+- archive_command must return zero if and only if it succeeded; on zero PostgreSQL removes or recycles the segment, on nonzero it keeps it in pg_wal and retries periodically until it succeeds. A signal or shell status over 125 (or an ERROR/FATAL from an archive library) aborts the archiver, which the postmaster restarts. [V 2026-11-05] https://www.postgresql.org/docs/current/continuous-archiving.html
+- An archive command should refuse to overwrite an existing archive file (two servers sent to one directory). On a pre-existing file it succeeds only when the contents are identical and the existing file is fully persisted; different contents must fail. [V 2026-11-05] same page
+- A persistently failing archive fills pg_wal; if that file system fills, PostgreSQL does a PANIC shutdown, losing no committed transaction but staying offline until space is freed. The docs advise monitoring the archiver. [V 2026-11-05] same page
+- Only completed WAL segments are archived; archive_timeout forces a segment switch at least that often (a forced switch still archives a full-length file), and pg_switch_wal forces one by hand. [V 2026-11-05] same page
+- The timeline id is part of a segment's name, so a new timeline after an archive recovery never overwrites earlier WAL; each new timeline writes a small `.history` file to the archive naming its branch point, read by recovery to pick segments. [V 2026-11-05] same page
+- The docs give no rule on fsync of the archived file; the sample `cp` does not fsync. [V 2026-11-05] same page
+- A segment ready to archive is marked by `pg_wal/archive_status/SEG.ready`, renamed to `SEG.done` once archived. [U]

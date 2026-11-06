@@ -11,6 +11,8 @@ const CHECKSUM: usize = 8;
 const ATOMIC_PAGE_WRITES: u16 = 1;
 const BITMAP_GROUPS: usize = REGION - 8;
 const HISTORY: usize = 2048;
+/// Zero in a header written before the field existed.
+const LOG_START: usize = HISTORY - 8;
 const HISTORY_ENTRY: usize = 16;
 /// The ended epochs a header holds; a restore past it forgets the oldest.
 pub const HISTORY_CAPACITY: usize = (BITMAP_GROUPS - HISTORY - 4) / HISTORY_ENTRY;
@@ -38,6 +40,8 @@ pub struct FileHeader {
     /// Each epoch of the file's history before the current one, oldest first, with the log's end
     /// where it ended.
     pub history: Vec<(u64, Lsn)>,
+    /// Where this file's log starts in its epoch: 0, or a restored backup's end.
+    pub log_start: Lsn,
 }
 
 struct Cursor<'a> {
@@ -88,7 +92,8 @@ impl FileHeader {
         out.extend_from_slice(&self.quarantine.0.to_le_bytes());
         out.extend_from_slice(&self.epoch.to_le_bytes());
         out.extend_from_slice(&self.encryption.to_le_bytes());
-        out.resize(HISTORY, 0);
+        out.resize(LOG_START, 0);
+        out.extend_from_slice(&self.log_start.0.to_le_bytes());
         out.extend_from_slice(&(self.history.len() as u32).to_le_bytes());
         for (epoch, end) in &self.history {
             out.extend_from_slice(&epoch.to_le_bytes());
@@ -129,6 +134,11 @@ impl FileHeader {
             }
             .u64(),
             history: history(bytes)?,
+            log_start: Lsn(Cursor {
+                bytes,
+                at: LOG_START,
+            }
+            .u64()),
         };
         valid_page_size(header.page_size).then_some(header)
     }

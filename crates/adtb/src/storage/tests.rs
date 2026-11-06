@@ -133,6 +133,7 @@ fn header(seq: u64) -> FileHeader {
         encryption: 0,
         bitmap_groups: 3,
         history: vec![(1, Lsn(500)), (2, Lsn(900))],
+        log_start: Lsn(900),
     }
 }
 

@@ -639,6 +639,24 @@ Log before the redo LSN is no longer needed for recovery. Its segments
 may be recycled only once replication, archiving and change consumers
 no longer need them ([replication.md §1](replication.md#1-the-log-stream)).
 
+With a log archive set, the archiver publishes each complete segment, one
+whose every block is durable, under the file's id and epoch, in order and
+after the epoch's file naming the epoch whose log this one continues, or
+none. An epoch's first segment is the one holding the LSN where the file's
+own log starts: 0 for a new file, including one loaded from a dump, and the
+backup's end for a file restored from a backup, whose log continues the
+backup's epoch. It archives only segments from there. Its
+`archived_through()` is the end of the gapless run of segments published
+there from that first segment, each matching the log's bytes, and no further
+than the log's durable end. It is set only after the directory holding the
+last of them is forced; it is that first segment's base when the
+destination holds none, and `None` until its first pass since open has
+listed the destination, or when the published run does not start at the
+first segment.
+
+Invariant: with an archive set, a recycler keeps every segment while
+`archived_through()` is `None` or below the segment's end.
+
 Rulings: buffer/checkpoint/fuzzy
 
 ## 7. Recovery

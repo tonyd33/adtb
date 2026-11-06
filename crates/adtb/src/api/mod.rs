@@ -33,7 +33,7 @@ mod value;
 mod verify;
 
 use cause::{Broken, corrupt};
-use failed_open::{failed_create, finish_create, host_error};
+use failed_open::{failed_create, finish_create};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -118,6 +118,8 @@ pub struct CreateOptions {
     /// Whether open replays as a restore, and the grantee, privilege and target of each grant
     /// it keeps dormant though its role exists. A grant to a role that does not exist is dormant.
     pub(crate) replay: Option<BTreeSet<(String, String, String)>>,
+    #[doc(hidden)]
+    pub segment_size: Option<u64>,
 }
 
 /// The settings fixed while a handle is open.
@@ -139,6 +141,9 @@ pub struct OpenOptions {
     /// The directories a server exports into, none when empty. A relative one resolves as a file
     /// scan's path does. The in-process API is not confined to them.
     pub export_roots: Vec<PathBuf>,
+    /// The directory the log's complete segments are archived into, none when `None`. It must
+    /// exist: a pass that finds it absent fails and writes nothing.
+    pub log_archive: Option<PathBuf>,
     /// What open registers once its migrations apply, all or none.
     pub registrations: Vec<Registration>,
     /// The bodies of the schema's host functions, bound before migrations run.
@@ -149,6 +154,10 @@ pub struct OpenOptions {
 }
 
 impl OpenOptions {
+    fn archive_dir(&self) -> Option<String> {
+        self.log_archive.as_ref().map(|p| p.display().to_string())
+    }
+
     fn workers(&self) -> usize {
         self.workers.unwrap_or(DEFAULT_WORKERS).max(1)
     }
@@ -158,12 +167,15 @@ impl OpenOptions {
         let frames = self.pool_bytes.map_or(DEFAULT_POOL_FRAMES, |b| {
             usize::try_from(b / u64::from(PAGE_SIZE)).unwrap_or(usize::MAX)
         });
+        let defaults = storage::Options::new(name);
         storage::Options {
             page_size: PAGE_SIZE,
             pool_frames: frames.max(threads * LATCHES_PER_THREAD),
             threads,
             after: self.create.as_ref().and_then(|c| c.after),
-            ..storage::Options::new(name)
+            segment_size: (self.create.as_ref().and_then(|c| c.segment_size))
+                .unwrap_or(defaults.segment_size),
+            ..defaults
         }
     }
 
@@ -207,6 +219,11 @@ impl OpenOptions {
             shown("file_root", root, self.file_root.is_some()),
             shown("file_roots", roots, !self.file_roots.is_empty()),
             shown("host_fns", self.host_fns.names().join(", "), true),
+            shown(
+                "log_archive",
+                self.archive_dir().unwrap_or_default(),
+                self.log_archive.is_some(),
+            ),
         ]
     }
 }
@@ -330,6 +347,7 @@ struct Engine<R: Runtime> {
     verifier: Arc<verify::Verifier<R>>,
     /// The engine's background worker.
     background: Arc<maintenance::Background<R>>,
+    archiver: Option<Arc<storage::Archiver<R>>>,
     /// Whether the engine is open. A call holds it shared while it runs; close holds it
     /// exclusively.
     open: RwLock<bool>,
@@ -420,6 +438,9 @@ impl<R: Runtime> Engine<R> {
         });
         self.db.stop_rebuilds();
         self.background.stop();
+        if let Some(a) = &self.archiver {
+            a.stop();
+        }
         let was_open = std::mem::replace(&mut *self.open.write(&self.rt), false);
         let sched = self.sched.lock(&self.rt).clone();
         if let Some(s) = sched {
@@ -428,6 +449,9 @@ impl<R: Runtime> Engine<R> {
         self.stop_reindexing();
         if was_open {
             self.pager.close();
+            if let Some(a) = &self.archiver {
+                a.archive();
+            }
             #[cfg(target_os = "linux")]
             drop(self.held.lock(&self.rt).take());
         }
@@ -452,6 +476,9 @@ impl<R: Runtime> Database<R> {
         let engine = Arc::new(engine);
         *engine.reindexing.me.lock(&engine.rt) = Arc::downgrade(&engine);
         engine.background.start();
+        if let Some(a) = &engine.archiver {
+            a.start();
+        }
         let handles = Arc::new(LastHandle(engine.clone()));
         Database { engine, handles }
     }
@@ -526,6 +553,13 @@ impl<R: Runtime> Database<R> {
     #[doc(hidden)]
     pub fn reindex_threads(&self) -> usize {
         self.engine.reindexing.threads.lock(&self.engine.rt).len()
+    }
+
+    /// Returns the log archive's status as its last pass left it, `None` with no archive set.
+    /// Unspecified until the spec states where an operator sees the archive.
+    #[doc(hidden)]
+    pub fn archive_status(&self) -> Option<storage::ArchiveStatus> {
+        self.engine.archiver.as_ref().map(|a| a.status())
     }
 
     /// Panic the background worker's next read of a page with `text`.
@@ -858,7 +892,9 @@ impl<R: Runtime> Engine<R> {
                 storage::refuse_foreign_log(rt, &storage).map_err(failed_create)?;
                 return Err(corrupt(storage::OpenError::NoHeader));
             }
-            Err(storage::OpenError::Io(e)) => return Err(OpenError::Io(host_error(e))),
+            Err(e @ (storage::OpenError::Io(_) | storage::OpenError::SegmentSize(_))) => {
+                return Err(failed_create(e));
+            }
             Err(e) => return Err(corrupt(e)),
         };
         let opened = Engine::on(rt.clone(), pager.clone(), log, options).or_else(|e| {
@@ -941,6 +977,9 @@ impl<R: Runtime> Engine<R> {
         let background =
             maintenance::Background::new(verifier.clone(), parts.schema.clone(), &parts.settings)
                 .vacuuming(!options.no_background_vacuum);
+        let archiver = options
+            .archive_dir()
+            .map(|dest| Arc::new(storage::Archiver::new(pager.clone(), &dest)));
         Engine {
             rt,
             schema: parts.schema,
@@ -960,6 +999,7 @@ impl<R: Runtime> Engine<R> {
             catalog,
             verifier,
             background,
+            archiver,
             open: RwLock::new(true),
             audit_seeded: AtomicBool::new(false),
             closing: Lock::new(()),

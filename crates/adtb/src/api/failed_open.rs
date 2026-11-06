@@ -28,6 +28,10 @@ pub(super) fn failed_create(e: storage::OpenError) -> OpenError {
     match e {
         storage::OpenError::Locked => OpenError::Locked { pid: None },
         storage::OpenError::Io(e) => OpenError::Io(host_error(e)),
+        storage::OpenError::SegmentSize(n) => OpenError::Io(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("segment size {n} is not a positive multiple of the log block"),
+        )),
         other => corrupt(other),
     }
 }

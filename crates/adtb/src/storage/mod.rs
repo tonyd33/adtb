@@ -1,6 +1,7 @@
 //! Hold the file, pages and log: the pager, allocation, recovery, backup, dump and quarantine.
 
 mod alloc;
+mod archive;
 mod backup;
 mod block;
 mod crc;
@@ -23,6 +24,7 @@ mod verify;
 mod tests;
 
 pub use alloc::Reservation;
+pub use archive::{Archiver, Status as ArchiveStatus};
 pub use backup::{
     BackupError, BackupRun, Envelope, FORMAT, MANIFEST, Manifest, PROOF, Part, Proved,
     check_backup, make_scratch, manifest_hash, read_manifest, read_proof, remove_scratch,
