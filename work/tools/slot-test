@@ -8,6 +8,8 @@ scratch=$(realpath "$(mktemp -d)")
 trap 'rm -rf "$scratch"' EXIT
 mkdir "$scratch/tools"
 cp "$(dirname "$(realpath "$0")")"/{land,slot,workspace-gc,house-check,common.bash} "$scratch/tools/"
+printf "#!/usr/bin/env bash\n" >"$scratch/tools/vacuity"
+chmod +x "$scratch/tools/vacuity"
 
 export HOME=$scratch/home XDG_CONFIG_HOME=$scratch/home/.config XDG_CACHE_HOME=$scratch/home/.cache \
   XDG_DATA_HOME=$scratch/home/.local/share XDG_STATE_HOME=$scratch/home/.local/state \

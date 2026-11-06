@@ -2,20 +2,29 @@
 # check-reach [REVSET]   print, for each optional part of `check`, `run PART` or
 #                        `skip PART: REASON`, from the files REVSET changes (default main..@)
 # check-reach --summary  the same from `jj diff --summary` lines on stdin
+# check-reach --reaches PACKAGE [REVSET]   print the first path REVSET changes in the reach of
+#                        workspace package PACKAGE, or fail with 1 when there is none and 2 when
+#                        PACKAGE is no workspace package
 #
 # Parts: miri and loom (adtb-sys's reach), campaign (the campaign's reach), tree-sitter (adtb-lang's
 # reach and the texts it compares), docs, deny, and each work/tools/*-test (a tool file it names).
 # A crate's reach is the directories of the workspace packages its build links, tests and
 # examples included, from `cargo metadata`. A change to a file every build reads runs every part.
 set -euo pipefail
+shopt -s inherit_errexit
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$root"
 
+reaches=
+if [[ ${1:-} == --reaches ]]; then
+  reaches=${2:?usage: check-reach --reaches PACKAGE [REVSET]}
+  shift 2
+fi
 if [[ ${1:-} == --summary ]]; then
   summary=$(cat)
 else
-  summary=$(jj diff --summary -r "${1:-main..@}")
+  summary=$(jj --color=never diff --summary -r "${1:-main..@}")
 fi
 # A rename or copy, `R a/{b => c}/d`, changes both a/b/d and a/c/d.
 changed=$(sed -E 's/^[RC] (.*)\{(.*) => (.*)\}(.*)$/\1\2\4\n\1\3\4/; t; s/^. //' <<<"$summary")
@@ -43,6 +52,17 @@ touched() {
     done
   done <<<"$changed"
 }
+
+if [[ -n $reaches ]]; then
+  members=$(cargo metadata --locked --offline --format-version 1 --no-deps | jq -r '.packages[].name')
+  grep -qxF -- "$reaches" <<<"$members" || { echo "check-reach: no package $reaches" >&2; exit 2; }
+  dirs=$(reach Cargo.toml "$reaches")
+  # shellcheck disable=SC2086 # a list of paths without spaces
+  hit=$(touched $dirs)
+  [[ -n $hit ]] || exit 1
+  echo "$hit"
+  exit 0
+fi
 
 global=$(touched Cargo.toml Cargo.lock deny.toml clippy.toml rustfmt.toml devenv.nix devenv.lock devenv.yaml \
   flake.nix nix/ rust-toolchain .cargo/ .config/ || true)

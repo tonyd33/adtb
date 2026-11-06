@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+# vacuity-test [--shell]   prove vacuity, its gate in land and refusal-check on scratch repositories:
+#                          every case, or with `--shell` only those that build nothing, where a
+#                          cargo stand-in records the mutants cargo-mutants lists, `with 0`
+#                          caught and the rest SHIM_OUTCOME (default missed); fail on the first
+#                          broken expectation
+set -euo pipefail
+
+tools=$(dirname "$(realpath "$0")")
+scratch=$(realpath "$(mktemp -d)")
+trap 'rm -rf "$scratch"' EXIT
+export HOME=$scratch/home XDG_CONFIG_HOME=$scratch/home/.config TMPDIR=$scratch/tmp \
+  ADTB_MACHINE_LOCK=$scratch/suite.lock
+mkdir -p "$XDG_CONFIG_HOME/jj" "$TMPDIR" "$scratch/shim"
+printf '[user]\nname = "vacuity-test"\nemail = "vacuity-test@example.invalid"\n' >"$XDG_CONFIG_HOME/jj/config.toml"
+printf '[ui]\ncolor = "always"\n' | cat "$XDG_CONFIG_HOME/jj/config.toml" - >"$scratch/color.toml"
+unset CARGO_TARGET_DIR ADTB_MACHINE_LOCK_HELD
+real=$(command -v cargo)
+cat >"$scratch/shim/cargo" <<SHIM
+#!/usr/bin/env bash
+if [[ -n \${SHIM_FILES_FAIL:-} && " \$* " == *" --list-files "* ]]; then echo "shim: list-files failed" >&2; exit 3; fi
+[[ \${1:-} == mutants && " \$* " != *" --list"* ]] || exec "$real" "\$@"
+[[ -z \${SHIM_EXIT:-} ]] || exit "\$SHIM_EXIT"
+[[ -z \${SHIM_KILL:-} ]] || kill -9 "\$PPID"
+out= args=()
+while ((\$#)); do
+  case \$1 in
+    --output) out=\$2; shift 2 ;;
+    --in-place | --no-shuffle | --cargo-test-arg=*) shift ;;
+    --test-tool) shift 2 ;;
+    *) args+=("\$1"); shift ;;
+  esac
+done
+mkdir -p "\$out/mutants.out"
+"$real" "\${args[@]}" --list --json | jq --arg o "\${SHIM_OUTCOME:-MissedMutant}" '{outcomes: [.[] | {scenario: {Mutant: .},
+  summary: (if .name | endswith("with 0") then "CaughtMutant" else \$o end)}]}' >"\$out/mutants.out/outcomes.json"
+SHIM
+chmod +x "$scratch/shim/cargo"
+
+fail() {
+  printf 'vacuity-test: %s\n' "$1" >&2
+  exit 1
+}
+
+# Run vacuity with the arguments $3... in directory $1 and require it to fail with the line $2.
+refused() {
+  local dir=$1 want=$2 out
+  shift 2
+  if out=$(cd "$dir" && "$main/work/tools/vacuity" "$@" 2>&1); then
+    fail "expected the refusal '$want' from vacuity $* in $dir, got success: $out"
+  fi
+  grep -qxF -- "$want" <<<"$out" || fail "expected '$want' from vacuity $* in $dir, got: $out"
+}
+
+# Run the tool $2 with the arguments $3... in directory $1 and require it to succeed.
+passes() {
+  local dir=$1 tool=$2 out
+  shift 2
+  out=$(cd "$dir" && "$tool" "$@" 2>&1) || fail "expected $tool $* in $dir to pass, got: $out"
+}
+
+main=$scratch/repo
+jj git init "$main" >/dev/null 2>&1
+mkdir -p "$main/work/tools" "$main/calc/src/driver" "$main/calc/src/reporting" "$main/apps/campaign/src"
+cp "$tools"/{vacuity,code-commits,check-reach,common.bash,land,house-check} "$main/work/tools/"
+printf '[workspace]\nresolver = "3"\nmembers = ["calc"]\nexclude = ["apps/campaign"]\n' >"$main/Cargo.toml"
+printf '[package]\nname = "calc"\nversion = "0.1.0"\nedition = "2024"\n' >"$main/calc/Cargo.toml"
+printf '[package]\nname = "campaign"\nversion = "0.1.0"\nedition = "2024"\n\n[workspace]\n' >"$main/apps/campaign/Cargo.toml"
+printf '/target\n/apps/campaign/target\n' >"$main/.gitignore"
+calc() {
+  printf 'mod driver;\n\n%spub fn double(x: u32) -> u32 {\n    %s\n}\n' "${2:-}" "$1"
+  [[ -z ${3:-} ]] || return 0
+  printf '\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn doubles() {\n        assert!(super::double(2) > 0);\n    }\n\n    fn more() {}\n\n    fn most() {}\n}\n'
+}
+calc 'x + x' >"$main/calc/src/lib.rs"
+printf '#[path = "../reporting/mod.rs"]\nmod reporting;\n' >"$main/calc/src/driver/mod.rs"
+printf 'pub fn triple(x: u32) -> u32 {\n    x + x + x\n}\n' | tee "$main/calc/src/reporting/mod.rs" >"$main/apps/campaign/src/lib.rs"
+"$real" generate-lockfile --offline --manifest-path "$main/Cargo.toml" 2>/dev/null
+jj -R "$main" commit -m 'chore: seed' >/dev/null 2>&1
+jj -R "$main" bookmark create main -r @- >/dev/null 2>&1
+
+# Give track $1 a workspace at $scratch/$1 whose change writes $3 to file $2, and print its change id.
+track() {
+  jj -R "$main" workspace add --name "$1" -r main "$scratch/$1" >/dev/null 2>&1
+  printf '%s\n' "$3" >"$scratch/$1/$2"
+  jj -R "$scratch/$1" describe -m "feat: $1" >/dev/null 2>&1
+  jj -R "$scratch/$1" log --no-graph -r @ -T change_id
+}
+
+# Print the record lines of the four mutants of function $1 of file $2, with reason $3 where missed.
+body() {
+  printf '%s\t%s\treplace * with %s in %s\t1\tmissed\t%s\n' "$2" "$1" + "$1" "${3:-}" "$2" "$1" / "$1" "${3:-}"
+  printf '%s\t%s\treplace %s -> u32 with %s\t1\t%s\t%s\n' "$2" "$1" "$1" 0 caught '' "$2" "$1" "$1" 1 missed "${3:-}"
+}
+
+why='the test asserts only a positive result'
+export PATH=$scratch/shim:$PATH
+r=$scratch/r
+rchange=$(track r calc/src/lib.rs "$(calc 'x * 2')")
+t=$scratch/t
+change=$(track t calc/src/lib.rs "$(calc 'x * 2')")
+rec=$t/work/vacuity/$change.tsv
+refused "$t" "vacuity: no record work/vacuity/$change.tsv for main..@; run vacuity" --check
+passes "$t" "$main/work/tools/vacuity"
+[[ $(tail -n +2 "$rec") == "$(body double calc/src/lib.rs)" ]] || fail "the record of a run is: $(cat "$rec")"
+refused "$t" "vacuity: lines of work/vacuity/$change.tsv with a blank reason:" --check
+sed -i "s/\tmissed\t\$/\tmissed\t$why/" "$rec"
+passes "$t" "$main/work/tools/vacuity" --check
+passes "$t" env JJ_CONFIG="$scratch/color.toml" "$main/work/tools/vacuity" --check
+cp "$rec" "$scratch/kept"
+sed -i 's/\tcaught\t/\tkilled\t/' "$rec"
+refused "$t" "vacuity: lines of work/vacuity/$change.tsv with an outcome other than caught, missed, unviable or timeout:" --check
+cp "$scratch/kept" "$rec"
+printf 'calc/src/lib.rs\tdouble\treplace x with y\t1\tcaught\t\n' >>"$rec"
+refused "$t" "vacuity: lines of work/vacuity/$change.tsv matching nothing the diff lists:" --check
+printf 'none\t.\tcalc/src/lib.rs\tadds only tests\n' >>"$rec"
+refused "$t" "vacuity: none lines of work/vacuity/$change.tsv naming a file with mutants:" --check
+head -n -1 "$scratch/kept" >"$rec"
+refused "$t" "vacuity: mutants or none lines of the diff with no line in work/vacuity/$change.tsv:" --check
+sed "s/\tmissed\t.*/\tmissed\t /" "$scratch/kept" >"$rec"
+refused "$t" "vacuity: lines of work/vacuity/$change.tsv with a blank reason:" --check
+cp "$scratch/kept" "$rec"
+SHIM_FILES_FAIL=1 refused "$t" "shim: list-files failed" --check
+cp "$scratch/kept" "$rec"
+calc 'x * 2' '' notest >"$t/calc/src/lib.rs"
+refused "$t" "vacuity: work/vacuity/$change.tsv measured other code than main..@ holds; run vacuity" --check
+calc 'x * 2' >"$t/calc/src/lib.rs"
+SHIM_EXIT=4 refused "$t" "vacuity: cargo mutants exited 4 in .; logs in $t/target/vacuity/root/mutants.out"
+SHIM_OUTCOME=Weird refused "$t" 'vacuity: cargo-mutants gave outcomes vacuity does not know:'
+cp "$scratch/kept" "$rec"
+commit=$(jj -R "$t" log --no-graph -r @ -T commit_id)
+! (cd "$t" && SHIM_KILL=1 "$main/work/tools/vacuity" >/dev/null 2>&1) || fail "a killed run passed"
+cut="vacuity: a run was cut off; restore with: jj restore --from $commit calc/src/lib.rs, then rm target/vacuity-running"
+refused "$t" "$cut" --check
+refused "$t" "$cut"
+rm "$t/target/vacuity-running"
+passes "$t" "$main/work/tools/vacuity" --check
+
+t2=$scratch/t2
+first=$(track t2 calc/src/lib.rs "$(calc 'x * 2')")
+jj -R "$t2" new -m 'test: t2' >/dev/null 2>&1
+mkdir "$t2/calc/tests"
+printf '#[test]\nfn doubles_one() {\n    assert_eq!(2, calc::double(1));\n}\n' >"$t2/calc/tests/more.rs"
+second=$(jj -R "$t2" log --no-graph -r @ -T change_id)
+refused "$t2" "vacuity: the working copy differs from $first" --check 'main..@-'
+refused "$t2" "vacuity: make $first the working copy first: jj edit $first" 'main..@-'
+passes "$t2" "$main/work/tools/vacuity"
+[[ $(tail -n +2 "$t2/work/vacuity/$second.tsv") == "$(body double calc/src/lib.rs)" ]] ||
+  fail "the record of a two-commit track is: $(cat "$t2/work/vacuity/$second.tsv")"
+
+reasons=$(sed "s/\tmissed\t\$/\tmissed\t$why/" "$t2/work/vacuity/$second.tsv")
+echo "$reasons" >"$t2/work/vacuity/$second.tsv"
+printf '#[test]\nfn doubles_two() {\n    assert_eq!(4, calc::double(2));\n}\n' >"$t2/calc/tests/more.rs"
+passes "$t2" "$main/work/tools/vacuity"
+[[ $(tail -n +2 "$t2/work/vacuity/$second.tsv") == "$(body double calc/src/lib.rs)" ]] ||
+  fail "a run over other code kept the reasons: $(cat "$t2/work/vacuity/$second.tsv")"
+
+p=$scratch/p
+pchange=$(track p calc/src/reporting/mod.rs $'pub fn triple(x: u32) -> u32 {\n    x * 3\n}')
+passes "$p" "$main/work/tools/vacuity"
+[[ $(tail -n +2 "$p/work/vacuity/$pchange.tsv") == "$(body triple calc/src/reporting/mod.rs)" ]] ||
+  fail "the record of a change to a file reached by a path attribute is: $(cat "$p/work/vacuity/$pchange.tsv")"
+
+# Require the run in track $1, change $2, to leave the record $3 then pass once each blank reason is filled.
+filled() {
+  passes "$1" "$main/work/tools/vacuity"
+  [[ $(tail -n +2 "$1/work/vacuity/$2.tsv") == "$3" ]] || fail "the record of $1 is: $(cat "$1/work/vacuity/$2.tsv")"
+  sed -i "s/\t\$/\t$why/" "$1/work/vacuity/$2.tsv"
+  passes "$1" "$main/work/tools/vacuity" --check
+}
+b=$scratch/b
+bchange=$(track b calc/src/lib.rs "$(calc 'x * 2')")
+printf 'pub struct S;\n' >>"$b/apps/campaign/src/lib.rs"
+filled "$b" "$bchange" "$(body double calc/src/lib.rs; printf 'none\tapps/campaign\tapps/campaign/src/lib.rs\t\n')"
+cc=$scratch/cc
+ccchange=$(track cc calc/src/loose.rs 'pub struct L;')
+printf 'pub struct S;\n' | tee -a "$cc/apps/campaign/src/lib.rs" >>"$cc/calc/src/lib.rs"
+filled "$cc" "$ccchange" "$(printf 'none\t.\tcalc/src/lib.rs calc/src/loose.rs\t\nnone\tapps/campaign\tapps/campaign/src/lib.rs\t\n')"
+m=$scratch/m
+mchange=$(track m calc/src/lib.rs "$(calc 'x + x' | sed 's/^    fn more/    #[test]\n&/')")
+filled "$m" "$mchange" "$(printf 'none\t.\tcalc/src/lib.rs\t\n')"
+calc 'x + x' | sed 's/^    fn most/    #[test]\n&/' >"$m/calc/src/lib.rs"
+refused "$m" "vacuity: work/vacuity/$mchange.tsv measured other code than main..@ holds; run vacuity" --check
+calc 'x + x' | sed 's/^        assert!(super::double(2) > 0);/        assert!(true);\n&/' >"$m/calc/src/lib.rs"
+filled "$m" "$mchange" "$(printf 'none\t.\tcalc/src/lib.rs\t\n')"
+calc 'x + x' | sed 's/^        assert!(super::double(2) > 0);/&\n        assert!(true);/' >"$m/calc/src/lib.rs"
+refused "$m" "vacuity: work/vacuity/$mchange.tsv measured other code than main..@ holds; run vacuity" --check
+
+c=$scratch/c
+cchange=$(track c apps/campaign/src/lib.rs $'pub fn triple(x: u32) -> u32 {\n    x * 3\n}\n')
+passes "$c" "$main/work/tools/vacuity"
+[[ $(tail -n +2 "$c/work/vacuity/$cchange.tsv") == "$(body triple apps/campaign/src/lib.rs)" ]] ||
+  fail "the record of a change to another cargo workspace is: $(cat "$c/work/vacuity/$cchange.tsv")"
+
+ta=$scratch/ta
+tests=$'\n    #[test]\n    fn doubles_two() {\n        assert_eq!(4, super::double(2));\n    }\n}'
+tachange=$(track ta calc/src/lib.rs "$(calc 'x + x' | head -n -1)$tests")
+passes "$ta" "$main/work/tools/vacuity"
+[[ $(tail -n +2 "$ta/work/vacuity/$tachange.tsv") == none$'\t.\tcalc/src/lib.rs\t' ]] || fail "the record of a test-only change is: $(cat "$ta/work/vacuity/$tachange.tsv")"
+refused "$ta" "vacuity: lines of work/vacuity/$tachange.tsv with a blank reason:" --check
+sed -i 's/\t$/\t /' "$ta/work/vacuity/$tachange.tsv"
+refused "$ta" "vacuity: lines of work/vacuity/$tachange.tsv with a blank reason:" --check
+sed -i 's/\t $/\t/' "$ta/work/vacuity/$tachange.tsv"
+sed -i 's/\t$/\tadds only tests/' "$ta/work/vacuity/$tachange.tsv"
+passes "$ta" "$main/work/tools/vacuity" --check
+
+d=$scratch/d
+track d notes.md 'notes' >/dev/null
+passes "$d" "$main/work/tools/vacuity" --check
+
+track l calc/src/lib.rs "$(calc 'x * 2')" >/dev/null
+before=$(jj -R "$main" log --no-graph -r main -T commit_id)
+! "$main/work/tools/land" l >/dev/null 2>&1 || fail "land took a code change without a record"
+[[ $(jj -R "$main" log --no-graph -r main -T commit_id) == "$before" ]] || fail "a refused land moved main"
+calc 'x + x' $'pub fn zero() -> u32 {\n    0\n}\n\n' >"$main/calc/src/lib.rs"
+jj -R "$main" commit -m 'feat: zero' >/dev/null 2>&1
+jj -R "$main" bookmark set main -r @- >/dev/null 2>&1
+passes "$main" "$main/work/tools/land" t
+passes "$main" "$main/work/tools/vacuity" --check main
+
+k=$scratch/lint
+mkdir -p "$k/work/tools" "$k/crates/k/src"
+lint=("$tools/refusal-check" "$k")
+: >"$k/work/tools/refusal-allowlist"
+printf 'fn f(r: Result<u8, u8>) {\n    assert_eq!(Err(1), r);\n    let e = r.unwrap_err();\n    assert!(e > 0);\n}\n' >"$k/crates/k/src/lib.rs"
+passes "$k" "${lint[@]}"
+for site in 'assert!(r.is_err());' 'assert!(\n        r.is_ok()\n    );' 'assert!(e.to_string().contains("refused"));' \
+  'assert!(r.map(|v| { let w = v; w }).is_err());' 'assert!(matches!(r, Err(_)));' 'r.unwrap_err();' \
+  'r.expect_err("refused");' 'assert!(message.starts_with("refused"));' 'refused_with(r, "refused");'; do
+  printf 'fn f(r: Result<u8, u8>, e: u8, message: &str) {\n    %b\n}\n' "$site" >"$k/crates/k/src/lib.rs"
+  ! (cd "$k" && "${lint[@]}" >/dev/null 2>&1) || fail "refusal-check took $site"
+  printf '1 crates/k/src/lib.rs\n' >"$k/work/tools/refusal-allowlist"
+  passes "$k" "${lint[@]}"
+  : >"$k/work/tools/refusal-allowlist"
+done
+printf '1 crates/k/src/lib.rs\n' >"$k/work/tools/refusal-allowlist"
+printf 'fn f() {}\n' >"$k/crates/k/src/lib.rs"
+! (cd "$k" && "${lint[@]}" >/dev/null 2>&1) || fail "refusal-check took a stale allowlist line"
+
+if [[ ${1:-} == --shell ]]; then
+  echo 'vacuity-test: shell cases ok'
+  exit 0
+fi
+
+export PATH=${PATH#"$scratch/shim:"}
+r=$scratch/r
+change=$rchange
+passes "$r" "$main/work/tools/vacuity"
+[[ $(tail -n +2 "$r/work/vacuity/$change.tsv") == "$(body double calc/src/lib.rs)" ]] ||
+  fail "the record of a cargo-mutants run is: $(cat "$r/work/vacuity/$change.tsv")"
+sed -i "s/\tmissed\t\$/\tmissed\t$why/" "$r/work/vacuity/$change.tsv"
+passes "$r" "$main/work/tools/vacuity"
+[[ $(tail -n +2 "$r/work/vacuity/$change.tsv") == "$(body double calc/src/lib.rs "$why")" ]] ||
+  fail "a second run lost the reasons: $(cat "$r/work/vacuity/$change.tsv")"
+passes "$r" "$main/work/tools/vacuity" --check
+echo 'vacuity-test: all cases ok'

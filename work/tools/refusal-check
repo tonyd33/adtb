@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# refusal-check [DIR]   fail when the Rust files under crates/ and apps/ of the repository at DIR
+#                       (default this one) hold a weak refusal assertion at other sites than
+#                       work/tools/refusal-allowlist counts
+#
+# A weak refusal assertion is an assert holding `is_err()`, `is_ok()`, `matches!(.., Err(_))` or
+# `Ok(_)`, or `contains`, `starts_with` or `ends_with` on error or message text; a bare
+# `unwrap_err()` or `expect_err(..)` statement; or a call of `refused_with`. The allowlist holds a
+# `COUNT FILE` line per file with such sites. Assert a refusal with `adtb_testkit::refused_as`,
+# and lower a file's count when one of its sites goes.
+set -euo pipefail
+
+cd "${1:-$(dirname "$0")/../..}"
+args='(?:[^()]|(?<p>\((?:[^()]|(?&p))*\)))*?'
+text='(?:err|reason|refus|message|stderr|to_string\(\))\w*(?:\(\))?\s*\.(?:contains|starts_with|ends_with)\('
+weak="\.(?:is_err|is_ok)\(\)|$text|matches!\((?:[^()]|(?&p))*?(?:Err|Ok)\(_\)"
+bare='(?:^|[;{}])\s*[^=;{}]*\.(?:unwrap_err\(\)|expect_err(?&p))\s*;'
+pattern="assert(?:_eq|_ne)?!\((?=$args(?:$weak))|$bare|\brefused_with\("
+dirs=()
+for dir in crates apps; do
+  [[ ! -d $dir ]] || dirs+=("$dir")
+done
+found=
+if ((${#dirs[@]})); then
+  found=$(rg -P -U --count-matches --type rust "$pattern" "${dirs[@]}" || [[ $? == 1 ]])
+fi
+found=$(awk -F: 'NF { print $2, $1 }' <<<"$found" | LC_ALL=C sort -k2)
+allowed=$(LC_ALL=C sort -k2 work/tools/refusal-allowlist)
+if ! difference=$(diff <(echo "$allowed") <(echo "$found")); then
+  printf 'refusal-check: the allowlist (<) and the sites found (>) differ; assert a refusal with adtb_testkit::refused_as\n%s\n' \
+    "$difference" >&2
+  exit 1
+fi

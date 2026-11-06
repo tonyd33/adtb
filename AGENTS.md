@@ -122,8 +122,20 @@ root (devenv also puts each on PATH as `NAME`):
 - `size-check.sh` (`size-check` in the dev shell): fail when a non-test
   source passes the line limit or the allowlist in `size-allowlist` is
   stale.
+- `refusal-check`: fail when Rust code asserts a refusal weakly (`is_err()`, `is_ok()`,
+  `matches!(.., Err(_))`, a substring of its text, a bare `unwrap_err()`, a call of
+  `refused_with`) at other sites than `refusal-allowlist` counts. Assert a refusal with
+  `adtb_testkit::refused_as`, its value and whole reason.
+- `vacuity [REVSET]`: run cargo-mutants over the diff of REVSET (default `main..@`, your
+  change as `@`) under the machine lock, hours for a medium change, and write the record
+  `work/vacuity/CHANGE.tsv`; give each missed or timeout line a reason. `vacuity --check`,
+  which `land` and `check --changed` run, fails a code change whose record misses a mutant
+  of its diff, holds a stale line, lacks a reason, or measured other code or tests than the
+  change holds now. A run cut off leaves `target/vacuity-running` with the restore command.
+  A site of the adtb-mutant macro hides its operators from cargo-mutants.
 - `land WS [SUBJECT]`: land workspace WS on `main` and move the main
-  working copy onto it; refuses while the main working copy has changes.
+  working copy onto it; refuses while the main working copy has changes or
+  `vacuity --check` fails.
   A slot becomes free; any other workspace is forgotten.
 - `docs-site [build|serve|check]`: build or serve the site with mdBook; `check`
   builds it and runs lychee offline over its links and fragments. A new page

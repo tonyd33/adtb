@@ -38,6 +38,7 @@ in
     pkgs.tree-sitter
     pkgs.util-linux
     pkgs.cargo-deny
+    pkgs.cargo-mutants
     pkgs.cargo-nextest
     quandary
   ];
@@ -84,12 +85,16 @@ in
       cargo deny --manifest-path "$app" check
     fi
     size-check
+    refusal-check
     if part docs; then docs-check; fi
     if part tree-sitter; then tree-sitter-check; fi
     for t in "$DEVENV_ROOT"/work/tools/*-test; do
       if part "$(basename "$t")"; then "$t"; fi
     done
-    if [[ -n $plan ]]; then house-check "$DEVENV_ROOT" -r "$revset"; fi
+    if [[ -n $plan ]]; then
+      house-check "$DEVENV_ROOT" -r "$revset"
+      vacuity --check "$revset"
+    fi
   '';
 
   scripts.docs-build.exec = ''
@@ -114,6 +119,14 @@ in
 
   scripts.size-check.exec = ''
     "$DEVENV_ROOT/work/tools/size-check.sh"
+  '';
+
+  scripts.refusal-check.exec = ''
+    "$DEVENV_ROOT/work/tools/refusal-check" "$@"
+  '';
+
+  scripts.vacuity.exec = ''
+    "$DEVENV_ROOT/work/tools/vacuity" "$@"
   '';
 
   scripts.suite.exec = ''
