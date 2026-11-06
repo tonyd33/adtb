@@ -25,3 +25,7 @@ Adopted storage/damage-mark/damage-log (with derived-order/map-under-ser, record
 ## 2026-11-05 settle is a detection
 
 Under the revised recycle ruling, settling a status from a retained commit record means the status page lost a write: settle must record it as damage once the damage log lands, or recycling erases the only evidence verify had.
+
+## 2026-11-06 ruled: two changes
+
+Change 1 makes each detection a durable page-level record; change 2 derives object marks from the records and deletes caller-side marking. Rulings for change 1: `Record::Damaged { pid, damage }` is not a page record and never raises an expected LSN; a record is durable at the next force, sound per site only while its evidence outlives it; a checkpoint folds records into a damage list page named in the file header, a later full-page image dropping its entry, damage to the list page holding Database for the open. Recovery's page damage goes in its closing checkpoint batch after `clear_tail`, re-detected after a crash before it. Recovery's past-end log findings are written to the file header and forced before `clear_tail`, then folded; they derive no mark and verify reports them. A settle records `Damage::Settled`, which derives no mark, so a settled commit-log page does not quarantine the file. The lock-order trace of every `damage` site is a receipt table the one fresh review checks.
