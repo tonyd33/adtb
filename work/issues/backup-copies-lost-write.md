@@ -1,10 +1,12 @@
 ---
 created-at: 2026-11-05
 status: resolved
-closed: 2026-11-05
 kind: bug
 priority: 430
 summary: "a backup copies a page whose write was lost (evicted LSN newer than the file's) with a valid checksum, unlisted or listed but unspoiled, and the restore serves the old version"
+closed: 2026-11-05
+tags:
+  - class-damage-unreported
 ---
 
 # Backup copies a lost write as sound

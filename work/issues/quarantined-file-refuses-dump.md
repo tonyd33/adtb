@@ -1,10 +1,12 @@
 ---
 created-at: 2026-11-05
 status: resolved
-closed: 2026-11-05
 kind: bug
 priority: 480
 summary: A file quarantined whole refuses dump in process; catalog.md 11.2 and the ruling say it opens for verify and dump
+closed: 2026-11-05
+tags:
+  - class-damage-unreported
 ---
 
 # A file quarantined whole cannot be dumped

@@ -1,10 +1,12 @@
 ---
 created-at: 2026-11-04
 status: resolved
-closed: 2026-11-05
 kind: bug
 priority: 450
 summary: "A page a backup copies as damaged because its LSN is past the log end can read as sound in the restored file, whose log end passes it"
+closed: 2026-11-05
+tags:
+  - class-damage-unreported
 ---
 
 # Restore can launder a page past the log end

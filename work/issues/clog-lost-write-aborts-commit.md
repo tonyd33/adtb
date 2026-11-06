@@ -1,10 +1,12 @@
 ---
 created-at: 2026-11-05
 status: resolved
-closed: 2026-11-05
 kind: bug
 priority: 300
 summary: "a lost write to a commit-log status page is undone at reopen: abort_unresolved rewrites the acknowledged commit as aborted with a full-page image, verify then finds nothing, and the rows are gone"
+closed: 2026-11-05
+tags:
+  - class-damage-unreported
 ---
 
 # A lost commit-log write turns an acknowledged commit into an abort
