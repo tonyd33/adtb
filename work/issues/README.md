@@ -68,7 +68,9 @@ any of them:
 - `devex`: how fast an agent or contributor orients, builds, tests and checks;
 - `quality`: refactors, review findings and lint debt;
 - `milestone`: one ticket per milestone of `docs/plan.md`, depending on
-  the tickets that belong to it.
+  the tickets that belong to it;
+- `class-SLUG`: on a bug, the defect class of the Tag column of
+  `.agents/skills/lead/defect-classes.md`, or `class-none`.
 
 The first section is `## Report`: what is missing or wrong, stated
 concretely, a repro where one applies, and the root cause if known. Never

@@ -35,11 +35,12 @@ Be firm and opinionated about the project's design and direction. Refuse a reque
 - Choose work from `tix list --ready`. A design question goes to the
   design space, not to a track.
 - Give each agent one track, in its own workspace beside the main
-  checkout: `work/tools/slot NAME` prints its directory, `../adtb-slot-N`.
+  checkout: write its brief first, then `work/tools/slot NAME BRIEF` prints its
+  directory, `../adtb-slot-N`, or refuses the brief under the class rule of Wide view.
   It reuses the directory of a landed track, so its target/ stays valid,
   and adds a new one when none is usable. It refuses a slot with
   uncommitted work, commits not on main, untracked files or a running
-  process, and says why. Name the printed directory in the brief. Run
+  process, and says why. Name the printed directory in the dispatch prompt. Run
   `work/tools/slot-test` after changing `slot`, `land` or `workspace-gc`.
 - Have the worker establish access through its first useful workspace and
   jj commands under the active harness. Workspace creation or lead access is
@@ -90,6 +91,8 @@ Be firm and opinionated about the project's design and direction. Refuse a reque
   replaces an ignored file with no copy left.
 - Tell the agent to read [code-agent.md](code-agent.md) and its brief,
   both by absolute path.
+- Name the track's ticket in a `Ticket: STEM` line. A site fix in a class
+  whose mechanism ticket is open adds a `Site fix because: REASON` line.
 - A brief names the rulings it relies on, the design and spec sections by
   heading and line range, the tickets, the acceptance tests, the crates
   it may add, a short map of the crates it touches, and the landing order
@@ -107,7 +110,7 @@ Do not act as a relay for review findings. Before a ruling or a next-round brief
 
 - Name the finding's cause and check it against [the defect classes](defect-classes.md). A finding in a listed class goes to that class's mechanism, or the brief says why not.
 - State a ruling as the general rule it applies. If the rule is only the case in hand, say so, and look for what else breaks it across the code before adopting.
-- Every bug ticket carries the tag of its class (`class-SLUG`, listed in defect-classes.md with its mechanism ticket) or the tag `class-none`. Once a class has three tickets and its mechanism ticket is open, its next brief is the mechanism ticket; a site fix in it needs a `Site fix because:` line naming why it cannot wait. `work/tools/slot` refuses a brief that breaks this.
+- Every bug ticket carries the tag of its class (`class-SLUG`, listed in defect-classes.md with its mechanism ticket) or the tag `class-none`. Once a class has three instances (tickets neither wontfix nor its mechanism tickets) and a mechanism ticket is open or in progress, its next brief is a mechanism ticket; a site fix in it needs a `Site fix because:` line naming why it cannot wait. `work/tools/slot` refuses a brief that breaks this.
 - A ruling that makes a source authoritative (a log record, a page, a manifest) also rules what happens when that source is partial, unreadable or missing, and every reader of the ruling's outcome (open, dump, verify) is named in the brief.
 - A stop line for a round that asks for named tests is sized from them: about 40 lines per sim test and 20 per unit test, from the nearest existing one.
 - Ask whether the work reaches a user. Authority logic with no caller, or a setting nothing reads, is not done, whatever its tests say.

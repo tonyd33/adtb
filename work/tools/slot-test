@@ -114,6 +114,101 @@ names() {
   jj -R "$main" workspace list --ignore-working-copy -T 'name ++ "\n"' | LC_ALL=C sort | paste -sd' '
 }
 
+# Write ticket $1 of kind $2, status $3 and tags $4 in the repository the cases act on.
+ticket() {
+  printf -- '---\ncreated-at: 2026-11-05\nstatus: %s\nkind: %s\npriority: 10\nsummary: "%s"\ntags: [%s]\n---\n\n# %s\n' \
+    "$3" "$2" "$1" "$4" "$1" >"$main/work/issues/$1.md"
+}
+
+# Write a brief naming ticket $1, then the lines $2, and print its path.
+brief_for() {
+  printf 'Ticket: %s\n%s' "$1" "${2:-}" >"$scratch/brief-$1"
+  echo "$scratch/brief-$1"
+}
+
+# Require slot to give track $1 a workspace for brief $2, then land it.
+dispatched() {
+  local out
+  out=$("$slot" "$1" "$2" 2>&1) || fail "slot refused $1: $out"
+  "$land" "$1" >/dev/null 2>&1 || fail "landing $1"
+}
+
+# Require slot to refuse brief $2 with output containing $1 and create no workspace.
+gated() {
+  local before
+  before=$(names)
+  refused "$1" "$slot" gated "$2"
+  [[ $(names) == "$before" ]] || fail "a refused brief made a workspace: $(names)"
+}
+
+# Write the class table of $main with the rows "TAG STEMS" given, STEMS its mechanism cell.
+classes() {
+  local row
+  printf '| Class | Tag | Instances | Mechanism | Mechanism ticket |\n|---|---|---|---|---|\n' \
+    >"$main/.agents/skills/lead/defect-classes.md"
+  for row in "$@"; do
+    printf '| C | %s | 3 | m | %s |\n' "\`${row%% *}\`" "${row#* }" >>"$main/.agents/skills/lead/defect-classes.md"
+  done
+}
+
+# Cases of the dispatch gate over the class table and the tickets of $main.
+gate_cases() {
+  local site='Site fix because: the release cannot wait' fence='```'
+  gated 'no brief' "$scratch/no-such-brief"
+  printf 'no ticket line\n' >"$scratch/brief-none"
+  gated "names no ticket" "$scratch/brief-none"
+  printf '%s\nTicket: feat\n%s\n' "$fence" "$fence" >"$scratch/brief-fenced"
+  gated "names no ticket" "$scratch/brief-fenced"
+  gated "more than one 'Ticket:' line" "$(brief_for a1 $'Ticket: feat\n')"
+  gated 'no ticket ghost' "$(brief_for ghost)"
+  ticket bare bug open ''
+  gated 'bug ticket bare carries no class tag' "$(brief_for bare)"
+  ticket stray bug open class-y
+  gated 'bug ticket stray carries no class tag' "$(brief_for stray)"
+  ticket none bug open class-none
+  dispatched none "$(brief_for none)"
+  ticket both bug wontfix 'class-none, class-x'
+  gated 'both carries both class-none and class-x' "$(brief_for both)"
+
+  ticket mech bug open class-x
+  ticket a1 bug open class-x
+  ticket a2 bug resolved class-x
+  ticket w1 bug wontfix class-x
+  dispatched a1 "$(brief_for a1)"
+  ticket a3 bug in-progress class-x
+  gated 'a1 is in class-x, which has 3 instances while its mechanism tickets mech are open or in progress' "$(brief_for a1)"
+  gated 'mechanism tickets mech' "$(brief_for a1 'Site fix because:  ')"
+  gated 'mechanism tickets mech' "$(brief_for a1 "$fence"$'\n'"$site"$'\n'"$fence"$'\n')"
+  dispatched mech "$(brief_for mech)"
+  dispatched mech2 "$(brief_for mech2)"
+  dispatched a1 "$(brief_for a1 "$site")"
+  ticket f1 feature open class-x
+  dispatched f1 "$(brief_for f1)"
+  ticket a feature open ''
+  dispatched a "$(brief_for a)"
+  ticket mech bug wontfix class-x
+  dispatched a1 "$(brief_for a1)"
+  ticket mech2 bug in-progress class-x
+  gated 'mechanism tickets mech2 are open' "$(brief_for a1)"
+  ticket mech2 bug resolved class-x
+
+  ticket mz bug open class-z
+  ticket z1 bug open class-z
+  ticket z2 bug open class-z
+  ticket b bug open 'class-x, class-z'
+  gated 'b is in class-z, which has 3 instances' "$(brief_for b)"
+
+  classes 'class-x mech, mech2' 'class-z mz, ghost'
+  gated 'the Mechanism ticket cell of class-z in' "$brief"
+  gated 'names ghost, which is not a ticket' "$brief"
+  classes 'class-x '
+  gated 'the Mechanism ticket cell of class-x in' "$brief"
+  classes
+  gated 'has no class rows' "$brief"
+  rm "$main/.agents/skills/lead/defect-classes.md"
+  gated 'no class table' "$brief"
+}
+
 # Make a new seeded repository at $scratch/$1 the one the cases act on.
 new_repo() {
   main=$scratch/$1
@@ -126,7 +221,14 @@ new_repo() {
   printf 'pub fn dep() -> u32 { 1 }\n' >"$main/dep/src/lib.rs"
   printf '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2024"\n[dependencies]\ndep = { path = "../dep" }\n' >"$main/app/Cargo.toml"
   printf 'pub fn app() -> u32 { dep::dep() }\n' >"$main/app/src/lib.rs"
-  printf '/target\n/apps/campaign/target\n/ignored-work\n' >"$main/.gitignore"
+  printf '/target\n/apps/campaign/target\n/ignored-work\n/work/issues\n' >"$main/.gitignore"
+  mkdir -p "$main/.agents/skills/lead" "$main/work/issues"
+  classes 'class-x mech, mech2' 'class-z mz'
+  ticket feat feature open ''
+  ticket mech bug resolved class-x
+  ticket mech2 bug resolved class-x
+  ticket mz bug resolved class-z
+  brief=$(brief_for feat)
   jj -R "$main" describe -m 'chore: seed' >/dev/null 2>&1
   jj -R "$main" bookmark create main -r @ >/dev/null 2>&1
   jj -R "$main" new >/dev/null 2>&1
@@ -154,11 +256,11 @@ shell_cases() {
   local a b out before fake p1 p2 build
 
   # Concurrent calls take different directories.
-  [[ $("$slot" first 2>/dev/null | tail -1) == "$main-slot-1" ]] || fail "no first slot"
+  [[ $("$slot" first "$brief" 2>/dev/null | tail -1) == "$main-slot-1" ]] || fail "no first slot"
   "$land" first >/dev/null 2>&1 || fail "landing an empty track"
-  "$slot" p1 >"$scratch/p1" 2>/dev/null &
+  "$slot" p1 "$brief" >"$scratch/p1" 2>/dev/null &
   a=$!
-  "$slot" p2 >"$scratch/p2" 2>/dev/null &
+  "$slot" p2 "$brief" >"$scratch/p2" 2>/dev/null &
   b=$!
   wait "$a" || fail "slot p1 failed"
   wait "$b" || fail "slot p2 failed"
@@ -208,8 +310,8 @@ SHIM
   [[ $(names) != *odd* && -d $main-slot-foo ]] || fail "odd did not land as a plain workspace: $(names)"
 
   # Names.
-  refused 'not a workspace name' "$slot" 'a b'
-  refused 'reserved' "$slot" main
+  refused 'not a workspace name' "$slot" 'a b' "$brief"
+  refused 'reserved' "$slot" main "$brief"
   (
     # shellcheck source=work/tools/common.bash
     source "$main/work/tools/common.bash"
@@ -246,7 +348,7 @@ SHIM
   done
 
   # --clean keeps a just started track in a slot, under the cap and while in use above it.
-  [[ $("$slot" fresh 2>/dev/null | tail -1) == "$p2" ]] || fail "the free slot was not reused"
+  [[ $("$slot" fresh "$brief" 2>/dev/null | tail -1) == "$p2" ]] || fail "the free slot was not reused"
   fake_target "$p2"
   out=$(ADTB_GC_IDLE_HOURS=0 "$gc" --clean)
   [[ $out != *"cleaning $p2/target"* ]] || fail "--clean took a fresh track under the cap"
@@ -258,10 +360,10 @@ SHIM
   # Reuse above the cap empties debug and tmp and keeps the rest; under it, keeps them all.
   "$land" fresh >/dev/null 2>&1 || fail "landing fresh"
   fake_target "$p2"
-  [[ $("$slot" under 2>/dev/null | tail -1) == "$p2" ]] || fail "reuse under the cap"
+  [[ $("$slot" under "$brief" 2>/dev/null | tail -1) == "$p2" ]] || fail "reuse under the cap"
   [[ -f $p2/target/debug/deps/x ]] || fail "reuse under the cap cleared"
   "$land" under >/dev/null 2>&1 || fail "landing under"
-  [[ $(ADTB_SLOT_CAP_GB=0 "$slot" above "${p2##*-slot-}" 2>/dev/null | tail -1) == "$p2" ]] || fail "reuse above the cap"
+  [[ $(ADTB_SLOT_CAP_GB=0 "$slot" above "$brief" "${p2##*-slot-}" 2>/dev/null | tail -1) == "$p2" ]] || fail "reuse above the cap"
   [[ $(ls -A "$p2/target/debug") == .cargo-lock && -z $(ls -A "$p2/target/tmp") &&
     -f $p2/target/evidence ]] || fail "the cap did not clear debug and tmp alone"
   [[ $(ls -A "$p2/apps/campaign/target/debug") == .cargo-lock ]] || fail "the cap did not clear the campaign build"
@@ -348,6 +450,8 @@ retention_cases() {
   [[ $cases == 3 && $roots == 6 ]] || fail "retention matrix missed cases: $cases / $roots"
 }
 
+new_repo gate-repo
+gate_cases
 new_repo shell-repo
 machine_lock_cases
 shell_cases
@@ -362,7 +466,7 @@ retention_cases valid
 new_repo repo
 
 # A first track gets a new slot, builds and lands; the directory and target/ survive land.
-s1=$("$slot" track-a 2>/dev/null | tail -1)
+s1=$("$slot" track-a "$brief" 2>/dev/null | tail -1)
 [[ $s1 == "$main-slot-1" ]] || fail "first slot is $s1"
 cargo build --quiet --manifest-path "$s1/Cargo.toml"
 printf 'pub fn app() -> u32 { dep::dep() + 1 }\n' >"$s1/app/src/lib.rs"
@@ -382,10 +486,10 @@ jj -R "$main" describe -m 'feat: on main' >/dev/null 2>&1
 jj -R "$main" bookmark set main -r @ >/dev/null 2>&1
 jj -R "$main" new >/dev/null 2>&1
 printf 'pub fn lost() {}\n' >"$s1/app/src/work.rs"
-refused 'working copy changed' "$slot" track-x 1
+refused 'working copy changed' "$slot" track-x "$brief" 1
 [[ -f $s1/app/src/work.rs ]] || fail "a refusal removed the uncommitted file"
 [[ $(names) == 'default slot-1' ]] || fail "a refusal renamed a workspace: $(names)"
-s2=$("$slot" track-y 2>/dev/null | tail -1)
+s2=$("$slot" track-y "$brief" 2>/dev/null | tail -1)
 [[ $s2 == "$main-slot-2" ]] || fail "a dirty slot was not skipped: $s2"
 [[ -f $s1/app/src/work.rs ]] || fail "skipping removed the uncommitted file"
 "$land" track-y 'feat: track y' >/dev/null 2>&1 || fail "landing an empty track"
@@ -393,33 +497,33 @@ rm "$s1/app/src/work.rs"
 
 # Commits that never landed are refused.
 jj -R "$s1" describe -m 'feat: unlanded' >/dev/null 2>&1
-refused 'working copy changed' "$slot" track-x 1
+refused 'working copy changed' "$slot" track-x "$brief" 1
 printf 'pub fn more() {}\n' >"$s1/app/src/unlanded.rs"
 jj -R "$s1" new >/dev/null 2>&1
-refused 'commits not on main' "$slot" track-x 1
+refused 'commits not on main' "$slot" track-x "$brief" 1
 jj -R "$s1" new main >/dev/null 2>&1
 [[ ! -e $s1/app/src/unlanded.rs ]] || fail "the slot still holds the unlanded file"
 
 # A file jj ignores is refused: it is in no commit.
 printf 'notes\n' >"$s1/ignored-work"
-refused 'untracked files: ignored-work' "$slot" track-x 1
+refused 'untracked files: ignored-work' "$slot" track-x "$brief" 1
 rm "$s1/ignored-work"
 
 # A process inside the slot is refused.
 hold_dir "$s1/dep"
-refused 'in use by' "$slot" track-x 1
+refused 'in use by' "$slot" track-x "$brief" 1
 stop_sleeper
 
 # Reuse keeps target/ valid: the unchanged crate stays fresh and its source keeps its time.
-s=$("$slot" track-c 1 2>/dev/null | tail -1)
+s=$("$slot" track-c "$brief" 1 2>/dev/null | tail -1)
 [[ $s == "$s1" ]] || fail "reuse gave $s"
 has "$(names)" track-c
 [[ $(stat -c %Y.%y "$s1/dep/src/lib.rs") == "$dep_mtime" ]] || fail "reuse rewrote an unchanged source"
 [[ -f $s1/app/src/more.rs ]] || fail "reuse did not move the slot to main"
 out=$(cargo build --verbose --manifest-path "$s1/Cargo.toml" 2>&1)
 has "$out" 'Fresh dep'
-refused 'exists' "$slot" track-c
-refused 'reserved' "$slot" slot-9
+refused 'exists' "$slot" track-c "$brief"
+refused 'reserved' "$slot" slot-9 "$brief"
 
 # Landing after main moved rebases the slot; it stays usable and unchanged sources keep their time.
 printf 'pub fn later() {}\n' >"$main/app/src/later.rs"

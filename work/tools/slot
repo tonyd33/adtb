@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
-# slot NAME [N]   give track NAME a workspace in a slot directory beside the main checkout: reuse
-#                 a free slot, or add `MAIN-slot-M` when none is usable; print the directory last
+# slot NAME BRIEF [N]   give track NAME, briefed in BRIEF, a workspace in a slot directory beside
+#                       the main checkout: reuse a free slot, or add `MAIN-slot-M` when none is
+#                       usable; print the directory last
+#
+# First refuses BRIEF unless, outside fenced blocks, it has one `Ticket: STEM` line naming a
+# ticket of the main checkout, and the class table defect-classes.md has class rows whose
+# mechanism tickets are all tickets. A bug ticket needs a tag `class-none` or class tags of the
+# table. When a class has three or more instances (its tickets not wontfix and not its mechanism
+# tickets) and one of its mechanism tickets is open or in progress, only a mechanism ticket or a
+# brief with a `Site fix because: REASON` line passes.
 #
 # `land` frees a slot; its directory stays, so target/ stays valid for the next track. Refuses a
 # slot whose working copy has changes or a description, with commits not on main, holding files jj
@@ -11,8 +19,9 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
-name=${1:?usage: slot NAME [N]}
-only=${2:-}
+name=${1:?usage: slot NAME BRIEF [N]}
+brief=${2:?usage: slot NAME BRIEF [N]}
+only=${3:-}
 
 # shellcheck source=work/tools/common.bash
 source "$root/work/tools/common.bash"
@@ -58,6 +67,60 @@ unusable() {
 main=$(list | awk -F'\t' '$1 == "default" { print $2 }')
 [[ $name =~ ^[A-Za-z0-9._-]+$ ]] || die "$name is not a workspace name"
 [[ ! $name =~ ^slot-[0-9]+$ && $name != default && $name != main ]] || die "$name is reserved"
+
+issues() {
+  tix -C "$main/work/issues" list --status all "$@"
+}
+
+# Print the line of ticket $1 in the `tix list` output on stdin.
+row() {
+  awk -v stem="$1" '$3 == stem'
+}
+
+table=$main/.agents/skills/lead/defect-classes.md
+
+# Print the tag and the comma-separated mechanism tickets of each class row of $table, a tab between.
+class_rows() {
+  awk -F'|' '$3 ~ /^ *`class-[a-z0-9-]+` *$/ {
+    gsub(/[ `]/, "", $3); gsub(/ /, "", $(NF - 1)); print $3 "\t" $(NF - 1) }' "$table"
+}
+
+gate() {
+  local text ticket listed rows found none tag mechs stem live count classed=
+  [[ -f $brief ]] || die "no brief $brief"
+  text=$(awk '/^[[:space:]]*(```|~~~)/ { fenced = !fenced; next } !fenced' "$brief")
+  [[ $(grep -c '^Ticket:' <<<"$text") -le 1 ]] || die "$brief has more than one 'Ticket:' line"
+  ticket=$(sed -n 's/^Ticket: *\([A-Za-z0-9._-]\+\) *$/\1/p' <<<"$text")
+  [[ -n $ticket ]] || die "$brief names no ticket in a 'Ticket: STEM' line"
+  listed=$(issues) || die "tix cannot list $main/work/issues"
+  [[ -n $(row "$ticket" <<<"$listed") ]] || die "no ticket $ticket"
+  [[ -f $table ]] || die "no class table $table"
+  rows=$(class_rows)
+  [[ -n $rows ]] || die "$table has no class rows"
+  while IFS=$'\t' read -r tag mechs; do
+    [[ -n $mechs ]] || die "the Mechanism ticket cell of $tag in $table is empty"
+    for stem in ${mechs//,/ }; do
+      [[ -n $(row "$stem" <<<"$listed") ]] ||
+        die "the Mechanism ticket cell of $tag in $table names $stem, which is not a ticket"
+    done
+  done <<<"$rows"
+  found=$(issues --kind bug | row "$ticket")
+  [[ -n $found ]] || return 0
+  none=$(issues --tag class-none | row "$ticket")
+  while IFS=$'\t' read -r tag mechs; do
+    found=$(issues --tag "$tag" | row "$ticket")
+    [[ -n $found ]] || continue
+    [[ -z $none ]] || die "$ticket carries both class-none and $tag"
+    classed=1
+    count=$(issues --tag "$tag" | awk -v m=",$mechs," '$2 != "wontfix" && !index(m, "," $3 ",")' | wc -l)
+    live=$(awk -v m=",$mechs," 'index(m, "," $3 ",") && ($2 == "open" || $2 == "in-progress") { print $3 }' <<<"$listed" | paste -sd' ')
+    ((count >= 3)) && [[ -n $live && ,$mechs, != *",$ticket,"* ]] || continue
+    grep -Eq '^Site fix because: *[^[:space:]]' <<<"$text" ||
+      die "$ticket is in $tag, which has $count instances while its mechanism tickets $live are open or in progress: brief one of them, or give the brief a 'Site fix because: REASON' line"
+  done <<<"$rows"
+  [[ -n $classed || -n $none ]] || die "bug ticket $ticket carries no class tag: tag it class-none or a class listed in $table"
+}
+gate
 
 exec 7>>"$main/.jj/slot.lock"
 flock 7

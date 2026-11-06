@@ -133,8 +133,11 @@ root (devenv also puts each on PATH as `NAME`):
   `target/` size; clean the idle ones; `--guard` fails under 30 GB free;
   `--clear-build` empties an idle `debug` and `tmp` of WS's `target/` and
   `apps/campaign/target/`, `main` for the main checkout, and refuses while anything uses them.
-- `slot NAME [N]`: give a track a workspace in a reused directory, so its
-  `target/` stays valid; `land` frees it. `slot-test` proves `slot`, `land`,
+- `slot NAME BRIEF [N]`: give a track a workspace in a reused directory, so its
+  `target/` stays valid; `land` frees it. It refuses BRIEF when its one `Ticket: STEM` line names a
+  bug ticket with no class tag, or a site fix in a class of three or more instances while a
+  mechanism ticket of the class is open or in progress and the brief has no
+  `Site fix because: REASON` line. `slot-test` proves `slot`, `land`,
   `--clear-build` and the machine lock on scratch repositories, from a copy of the tools there; `--shell` runs the cases without cargo builds.
 
 ## Invariants and fixes

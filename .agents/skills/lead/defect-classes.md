@@ -1,17 +1,17 @@
 # Defect classes
 
-Causes that keep producing bugs across tracks, from the review of 2026-10-31. Counts are hand counts over fix commits and bug tickets, about 20% either way. Add a class when a third unrelated instance appears. Remove one when its mechanism has landed and a test or the compiler catches a new instance.
+Causes that keep producing bugs across tracks, from the review of 2026-10-31. Counts are hand counts over fix commits and bug tickets, about 20% either way. Add a class when a third unrelated instance appears. A bug ticket carries its row's tag, or `class-none`; `work/tools/slot` reads the Tag and Mechanism ticket columns, the Tag cell holds one tag and the Mechanism ticket cell one or more ticket stems, comma-separated. A class with three instances is gated while any of its mechanism tickets is open or in progress; resolved and wontfix both release it. Remove one when its mechanism has landed and a test or the compiler catches a new instance.
 
-| Class | Instances | Mechanism | Ticket |
-|---|---|---|---|
-| Multi-step change not atomic under failure, crash or race | about 20 | Build aside, publish last, memory updated under the latch | fault-matrix |
-| Damage or failure gives a panic, hang or flattened error | about 24 | Typed fatal payload and causes, read checks return `Result` | fault-matrix |
-| Damage reported as nothing: evidence of loss falls between two checks, each excusing it as the other's case | 8: a page past the log end, a foreign heap page, a heap page of the wrong frame read as empty, a restore laundering a page a backup listed damaged, a backup copying a lost write as sound, a lost commit-log write settled aborted, vacuum freeing a lost-write page so verify misreports, the first verify on whole-file damage returning Fatal. The 2026-11-05 audit found the cause of most: a page is checked against the retained log only in recovery, verify, scrub and the bounded evicted table, so every other read serves a stale page and later writes and frees build on it | Each finding keyed by what the evidence proves, checked over every bound, with a search that reaches each kind; open: one read-in gate against the retained log (damage-readin-gate) | fault-matrix, damage-readin-gate |
-| Authority and admission checked per entry path | about 18 | One admitted value required by every execution entry | admitted-gate |
-| Unbounded work over size, depth or sharing | about 16 | One budget, sized stacks, sharing-aware lowering | one-spend-budget |
-| Wildcards and copied rules | about 17 | Scoped lint, shared helper | compile-time-identity |
-| Catalog rows and identity by position or spelling | about 16 | Row codecs generated from `catalog.adt`, keyed by id | compile-time-identity |
-| Tests asserting less than they claim | about 20 before the audit, about 80 candidates after | Must-use tallies and floors, a reason helper, gates that run, diff-scoped mutation | test-audit-findings, vacuity-gate |
+| Class | Tag | Instances | Mechanism | Mechanism ticket |
+|---|---|---|---|---|
+| Multi-step change not atomic under failure, crash or race | `class-not-atomic` | about 20 | Build aside, publish last, memory updated under the latch | fault-matrix |
+| Damage or failure gives a panic, hang or flattened error | `class-failure-flattened` | about 24 | Typed fatal payload and causes, read checks return `Result` | fault-matrix |
+| Damage reported as nothing: evidence of loss falls between two checks, each excusing it as the other's case | `class-damage-unreported` | 8: a page past the log end, a foreign heap page, a heap page of the wrong frame read as empty, a restore laundering a page a backup listed damaged, a backup copying a lost write as sound, a lost commit-log write settled aborted, vacuum freeing a lost-write page so verify misreports, the first verify on whole-file damage returning Fatal. The 2026-11-05 audit found the cause of most: a page is checked against the retained log only in recovery, verify, scrub and the bounded evicted table, so every other read serves a stale page and later writes and frees build on it | Each finding keyed by what the evidence proves, checked over every bound, with a search that reaches each kind; open: one read-in gate against the retained log (damage-readin-gate) and damage marked durably where it is detected | damage-marked-at-detection, damage-readin-gate |
+| Authority and admission checked per entry path | `class-admission-per-path` | about 18 | One admitted value required by every execution entry | admitted-gate |
+| Unbounded work over size, depth or sharing | `class-unbounded-work` | about 16 | One budget, sized stacks, sharing-aware lowering | one-spend-budget |
+| Wildcards and copied rules | `class-copied-rules` | about 17 | Scoped lint, shared helper | compile-time-identity |
+| Catalog rows and identity by position or spelling | `class-identity-by-spelling` | about 16 | Row codecs generated from `catalog.adt`, keyed by id | compile-time-identity |
+| Tests asserting less than they claim | `class-weak-tests` | about 20 before the audit, about 80 candidates after | Must-use tallies and floors, a reason helper, gates that run, diff-scoped mutation | vacuity-gate, test-audit-findings |
 
 Language and kernel fixes mostly removed their cause, and perf and refactor tracks mostly land without blockers. The classes above concentrate in failure paths, authority and grant carry.
 
