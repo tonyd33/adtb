@@ -21,3 +21,7 @@ Rule to adopt through the design space: the component that detects damage (`Page
 ## 2026-11-05 ruled
 
 Adopted storage/damage-mark/damage-log (with derived-order/map-under-ser, record-full/overflow-database) and storage/readin-gate/open-map plus recycle (open-scan-cost/bound-by-recycle, backup-retention/live). Research: work/research/notes/damage-mechanism.md. Order: measure read_log per MiB first; if material, recycle lands with or before open-map; then damage-log. Briefs must carry: the map built by the coverage-checked scan, failing closed as LogUnproven; Unreadable never recorded; records kept in memory on a file marked whole; recovery records durable before clear_tail, with a crash search over that window; the map updated on every append (write-path cost named); every damage call site traced with its lock order and a scoped review; the holders walk under ser bounded. Recycle limits: never at or past redo, never a segment a running backup copies, never an unarchived one when an archive is set; the settle residual grows.
+
+## 2026-11-05 settle is a detection
+
+Under the revised recycle ruling, settling a status from a retained commit record means the status page lost a write: settle must record it as damage once the damage log lands, or recycling erases the only evidence verify had.
