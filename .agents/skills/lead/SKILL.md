@@ -107,6 +107,8 @@ Do not act as a relay for review findings. Before a ruling or a next-round brief
 
 - Name the finding's cause and check it against [the defect classes](defect-classes.md). A finding in a listed class goes to that class's mechanism, or the brief says why not.
 - State a ruling as the general rule it applies. If the rule is only the case in hand, say so, and look for what else breaks it across the code before adopting.
+- A ruling that makes a source authoritative (a log record, a page, a manifest) also rules what happens when that source is partial, unreadable or missing, and every reader of the ruling's outcome (open, dump, verify) is named in the brief.
+- A stop line for a round that asks for named tests is sized from them: about 40 lines per sim test and 20 per unit test, from the nearest existing one.
 - Ask whether the work reaches a user. Authority logic with no caller, or a setting nothing reads, is not done, whatever its tests say.
 
 - Prefer the enforcer that needs no one to remember it, in this order: type, lint, searching test, process. When a review shows a run-time heuristic can fire falsely or be missed, ask what the compiler could refuse instead.
