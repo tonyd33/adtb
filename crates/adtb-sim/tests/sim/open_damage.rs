@@ -99,7 +99,9 @@ fn seeded(seed: u64, pick: fn(&Database<SimRuntime>) -> Pid) -> (Files, Pid) {
     (sim.files(), page.unwrap())
 }
 
-fn assert_only_verify_runs(db: &Database<SimRuntime>) {
+/// Assert only `verify` runs on `db`, and its findings include one starting `finding`, or with
+/// none are only the note that a run quarantined whole keeps no findings.
+fn assert_only_verify_runs(db: &Database<SimRuntime>, finding: Option<&str>) {
     let marks = db.write_path().pager().quarantined();
     assert_eq!(BTreeSet::from([Quarantine::Database]), marks);
     let none = CallOptions::default();
@@ -113,9 +115,9 @@ fn assert_only_verify_runs(db: &Database<SimRuntime>) {
     );
     assert_eq!("the database", quarantined(db.registered("nope").map(drop)));
     let found = api::printed(db.verify(None).unwrap());
-    assert!(found.iter().any(|r| r.starts_with("Checksum")), "{found:?}");
+    assert_findings(&found, finding);
     let found = api::printed(db.verify_holding().unwrap());
-    assert!(found.iter().any(|r| r.starts_with("Checksum")), "{found:?}");
+    assert_findings(&found, finding);
 }
 
 fn assert_opens_for_verify(seed: u64, pick: fn(&Database<SimRuntime>) -> Pid) {
@@ -125,7 +127,7 @@ fn assert_opens_for_verify(seed: u64, pick: fn(&Database<SimRuntime>) -> Pid) {
     for round in 0..2 {
         finished(&mut sim, |rt| {
             let db = open(rt, &app()).unwrap_or_else(|e| panic!("round {round}: {e:?}"));
-            assert_only_verify_runs(&db);
+            assert_only_verify_runs(&db, Some("Checksum"));
             db.close().unwrap();
         });
     }
@@ -255,7 +257,7 @@ fn a_marked_open_applies_no_migration_and_refuses_no_log() {
     finished(&mut sim, |rt| {
         let db = open(rt, &Log::new([CLEAN])).unwrap();
         assert!(holds_users(&db), "the file's own committed migration reads");
-        assert_only_verify_runs(&db);
+        assert_only_verify_runs(&db, Some("Checksum"));
         db.close().unwrap();
     });
 }
@@ -398,7 +400,7 @@ fn opens_damaged(c: &Crashes, mut files: Files) -> bool {
             let db =
                 open(rt, &Log::new([CLEAN])).unwrap_or_else(|e| panic!("round {round}: {e:?}"));
             read = holds_users(&db);
-            assert_only_verify_runs(&db);
+            assert_only_verify_runs(&db, Some("Checksum"));
             db.close().unwrap();
         });
     }
@@ -467,7 +469,7 @@ fn an_aborted_writer_on_a_damaged_status_page_leaves_the_catalog_unread() {
                 let db = open(rt, &none())
                     .unwrap_or_else(|e| panic!("seed {seed}, round {round}: {e:?}"));
                 assert!(!catalog_read(&db), "seed {seed}, round {round}");
-                assert_only_verify_runs(&db);
+                assert_only_verify_runs(&db, Some("Checksum"));
                 db.close().unwrap();
             });
         }
@@ -532,7 +534,12 @@ fn dropping_a_transaction_on_a_damaged_commit_log_marks_the_database() {
     flip(&mut files, page.unwrap());
     let mut sim = Sim::with_files(40, Config::default(), files);
     finished(&mut sim, |rt| {
-        assert_only_verify_runs(&open(rt, &app()).unwrap());
+        let db = open(rt, &app()).unwrap();
+        assert_eq!(
+            Ok(()),
+            db.write_path().pager().read(page.unwrap()).map(drop)
+        );
+        assert_only_verify_runs(&db, None);
     });
 }
 
@@ -587,7 +594,21 @@ fn real_damaged(name: &str, pick: fn(&Database) -> Pid) -> std::path::PathBuf {
     path
 }
 
-fn assert_real_opens_for_verify(path: &std::path::Path, log: &Log) {
+/// Assert `found` holds a finding starting `finding`, or with none only the note that a run
+/// quarantined whole keeps no findings.
+fn assert_findings(found: &[String], finding: Option<&str>) {
+    let note =
+        "where: \"the database: quarantined whole, so the findings of this run are not kept\" }";
+    match finding {
+        Some(finding) => assert!(found.iter().any(|r| r.starts_with(finding)), "{found:?}"),
+        None => assert!(
+            matches!(found, [only] if only.starts_with("Structure {") && only.ends_with(note)),
+            "{found:?}"
+        ),
+    }
+}
+
+fn assert_real_opens_for_verify(path: &std::path::Path, log: &Log, finding: Option<&str>) {
     for round in 0..2 {
         let db = Database::open(path, log, &real_options())
             .unwrap_or_else(|e| panic!("round {round}: {e:?}"));
@@ -597,7 +618,7 @@ fn assert_real_opens_for_verify(path: &std::path::Path, log: &Log) {
             quarantined(db.query_text(SELECT, &[], &none))
         );
         let found = api::printed(db.verify(None).unwrap());
-        assert!(found.iter().any(|r| r.starts_with("Checksum")), "{found:?}");
+        assert_findings(&found, finding);
         db.close().unwrap();
     }
 }
@@ -605,9 +626,9 @@ fn assert_real_opens_for_verify(path: &std::path::Path, log: &Log) {
 #[test]
 fn a_real_file_with_a_damaged_catalog_page_opens_for_verify() {
     let path = real_damaged("catalog_root", catalog_root);
-    assert_real_opens_for_verify(&path, &app());
+    assert_real_opens_for_verify(&path, &app(), Some("Checksum"));
     let path = real_damaged("roles", roles_page);
-    assert_real_opens_for_verify(&path, &app());
+    assert_real_opens_for_verify(&path, &app(), Some("Checksum"));
     let found = adtb::verify_file(&path, &app(), &real_options()).unwrap();
     let found = api::printed(found);
     assert!(found.iter().any(|r| r.starts_with("Checksum")), "{found:?}");
@@ -616,7 +637,7 @@ fn a_real_file_with_a_damaged_catalog_page_opens_for_verify() {
 #[test]
 fn a_real_file_with_a_damaged_status_page_opens_under_another_log() {
     let path = real_damaged("status", status_page);
-    assert_real_opens_for_verify(&path, &Log::new([CLEAN]));
+    assert_real_opens_for_verify(&path, &Log::new([CLEAN]), Some("Checksum"));
 }
 
 #[test]
@@ -638,7 +659,7 @@ fn dropping_a_transaction_on_a_damaged_commit_log_of_a_real_file_does_not_panic(
     let mut bytes = std::fs::read(&path).unwrap();
     bytes[page.0 as usize * PAGE + 300] ^= 0x10;
     std::fs::write(&path, bytes).unwrap();
-    assert_real_opens_for_verify(&path, &app());
+    assert_real_opens_for_verify(&path, &app(), None);
 }
 
 /// Returns the files of a seeded, closed database with `nobody`, a role without `adhoc`, marked
@@ -763,7 +784,7 @@ fn a_call_refused_on_a_marked_database_writes_no_audit_row() {
 #[test]
 fn a_real_file_with_a_damaged_page_of_an_empty_grants_heap_opens_for_verify() {
     let path = real_damaged("grants", grants_page);
-    assert_real_opens_for_verify(&path, &app());
+    assert_real_opens_for_verify(&path, &app(), Some("Checksum"));
 }
 
 #[test]
@@ -828,7 +849,7 @@ fn a_commit_record_gone_from_the_log_on_a_damaged_status_page_leaves_the_catalog
         finished(&mut sim, |rt| {
             let db = open(rt, &app()).unwrap_or_else(|e| panic!("round {round}: {e:?}"));
             assert!(!catalog_read(&db), "round {round}");
-            assert_only_verify_runs(&db);
+            assert_only_verify_runs(&db, Some("Checksum"));
             db.close().unwrap();
         });
     }

@@ -506,50 +506,6 @@ fn an_unreadable_segment_stops_recovery() {
     assert_eq!(Some(LogProblem::Unreadable), s.fatal.map(|f| f.problem));
 }
 
-mod evicted {
-    use super::super::evicted::EvictedLsns;
-    use super::super::{Lsn, Pid};
-
-    #[test]
-    fn remembers_what_it_was_told() {
-        let mut t = EvictedLsns::new(8);
-        t.insert(Pid(5), Lsn(40));
-        t.insert(Pid(6), Lsn(41));
-        assert_eq!(Some(Lsn(40)), t.get(Pid(5)));
-        assert_eq!(Some(Lsn(41)), t.get(Pid(6)));
-        assert_eq!(None, t.get(Pid(7)));
-        t.insert(Pid(5), Lsn(90));
-        assert_eq!(Some(Lsn(90)), t.get(Pid(5)));
-    }
-
-    #[test]
-    fn never_grows_past_its_capacity() {
-        let mut t = EvictedLsns::new(10);
-        let capacity = t.capacity();
-        assert!(capacity >= 10);
-        for n in 0..100_000 {
-            t.insert(Pid(n), Lsn(n + 1));
-        }
-        assert_eq!(capacity, t.capacity());
-        assert!(t.len() <= capacity);
-    }
-
-    #[test]
-    fn a_page_it_dropped_is_never_reported_with_another_page_lsn() {
-        let mut t = EvictedLsns::new(4);
-        for n in 0..64 {
-            t.insert(Pid(n), Lsn(1000 + n));
-        }
-        for n in 0..64 {
-            if let Some(l) = t.get(Pid(n)) {
-                assert_eq!(Lsn(1000 + n), l);
-            }
-        }
-        let kept = (0..64).filter(|&n| t.get(Pid(n)).is_some()).count();
-        assert_eq!(t.capacity(), kept, "the newest pages fill every slot");
-    }
-}
-
 #[test]
 fn a_first_segment_opening_on_a_batch_begun_before_it_starts_at_the_next_batch() {
     let block = 512;
@@ -667,4 +623,43 @@ fn commits_from_a_batch_begun_before_the_first_segment_start_at_its_first_whole_
     held.remove(&0);
     let since = Lsn(block_at(16).0 + 50);
     assert_eq!(Ok((17..48).collect()), commits(held, since));
+}
+
+#[test]
+fn a_chain_break_after_a_replayed_change_refuses_the_page() {
+    let scratch = Scratch::new("storage", "chain-break");
+    let rt = || {
+        OsRuntime::with_faults(
+            scratch.path(),
+            Backend::Pool { threads: 1 },
+            Faults::default(),
+        )
+    };
+    let options = Options {
+        pool_frames: 16,
+        max_pages: 1024,
+        ..Options::new("chain.adt")
+    };
+    let pager = Pager::create(rt(), &options).expect("create pager");
+    let p = pager
+        .allocate(1, super::PageKind::HeapSlotted, 7)
+        .expect("allocate");
+    let updated = pager
+        .update(&[p], |x| x[0][page::HEADER_LEN] = 1)
+        .expect("update");
+    pager.flush_log();
+    pager.log().append(&Record::Change {
+        pid: p,
+        prev: Lsn(1),
+        edits: vec![],
+    });
+    pager.flush_log();
+    drop(pager);
+    let (pager, recovery) = Pager::open(rt(), &options).expect("open");
+    let damage = Damage::Stale {
+        expected: updated,
+        found: Lsn(1),
+    };
+    assert_eq!(vec![(p, damage)], recovery.damaged);
+    pager.close();
 }

@@ -12,6 +12,7 @@ mod watermark;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use clog::Settling;
 pub use clog::{CommitLog, PAGE_FORMAT};
 pub use conflict::{Probe, Write, check_write, probe_unique, read_before};
 pub use past::{Commit, Marker, Past};

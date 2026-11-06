@@ -2,7 +2,7 @@
 //! tree of `height` levels. A leaf holds one LSN per page; an interior page holds, for each
 //! child, its pid and the least LSN it may have. A zero word holds nothing.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::runtime::Runtime;
 
@@ -14,6 +14,65 @@ use super::record::{MapRoot, Record};
 use super::{Lsn, Pid};
 
 const FORMAT: u16 = 1;
+
+/// What a page read in from the file is checked against.
+#[derive(Debug)]
+pub(crate) enum Gate {
+    /// Recovery is replaying the log; no page has an expected LSN until it ends.
+    Recovering,
+    Armed(Expected),
+    /// The open could not read the map or prove the retained log: the database is held
+    /// quarantined and no page is checked.
+    Off,
+}
+
+impl Gate {
+    pub(crate) fn expected(&self, pid: Pid) -> Option<Lsn> {
+        match self {
+            Gate::Armed(e) => e.get(pid),
+            Gate::Recovering | Gate::Off => None,
+        }
+    }
+
+    pub(crate) fn raise(&mut self, pid: Pid, lsn: Lsn) {
+        if let Gate::Armed(e) = self {
+            e.raise(pid, lsn);
+        }
+    }
+}
+
+/// The LSN each page must have at least when read in.
+#[derive(Debug, Default)]
+pub(crate) struct Expected {
+    /// The page LSN map's entry of each page, by pid, zero for none.
+    folded: Vec<Lsn>,
+    /// Each page whose last record is past its folded entry, with that record's LSN.
+    logged: HashMap<Pid, Lsn>,
+}
+
+impl Expected {
+    pub(crate) fn new(folded: Vec<Lsn>) -> Expected {
+        Expected {
+            folded,
+            logged: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn get(&self, pid: Pid) -> Option<Lsn> {
+        let folded = self.folded.get(pid.0 as usize).copied();
+        self.logged.get(&pid).copied().or(folded)
+    }
+
+    /// Raise `pid`'s expected LSN to `lsn`, the LSN of its latest record.
+    pub(crate) fn raise(&mut self, pid: Pid, lsn: Lsn) {
+        if self.folded.get(pid.0 as usize).is_none_or(|&f| f < lsn) {
+            self.logged.insert(pid, lsn);
+        }
+    }
+}
+
+/// A visit of a map page: its pid, bytes, level and the first page it covers.
+type Visit<'v> = dyn FnMut(Pid, &[u8], u32, u64) + 'v;
 
 fn word(page: &[u8], i: usize) -> u64 {
     u64::from_le_bytes(
@@ -59,7 +118,9 @@ impl<R: Runtime> Pager<R> {
             }
             Ok(page) => return Ok(page),
         };
-        self.quarantine(Quarantine::Database).ok();
+        if !matches!(self.meta().gate, Gate::Recovering) {
+            self.quarantine(Quarantine::Database).ok();
+        }
         Err(refused)
     }
 
@@ -101,11 +162,33 @@ impl<R: Runtime> Pager<R> {
     /// Returns every page of the map. Fail with the first map page refused.
     pub fn map_pages(&self) -> Result<Vec<Pid>, PageError> {
         let mut out = Vec::new();
-        let map = self.meta().map;
-        if let Some(m) = map {
-            self.subtree(m.root, m.lsn, m.height, &mut out)?;
-        }
+        self.walk(&mut |pid, _, _, _| out.push(pid))?;
         Ok(out)
+    }
+
+    /// Returns the map's entry of every page it covers, by pid, zero for none. Fail with the
+    /// first map page refused.
+    pub(crate) fn map_entries(&self) -> Result<Vec<Lsn>, PageError> {
+        let mut out = Vec::new();
+        let per_leaf = self.per_leaf() as usize;
+        self.walk(&mut |_, page, level, base| {
+            if level == 1 {
+                let base = base as usize;
+                out.resize(out.len().max(base + per_leaf), Lsn(0));
+                for i in 0..per_leaf {
+                    out[base + i] = Lsn(word(page, i));
+                }
+            }
+        })?;
+        Ok(out)
+    }
+
+    fn walk(&self, visit: &mut Visit<'_>) -> Result<(), PageError> {
+        let map = self.meta().map;
+        match map {
+            Some(m) => self.subtree(m.root, m.lsn, m.height, 0, visit),
+            None => Ok(()),
+        }
     }
 
     fn subtree(
@@ -113,17 +196,20 @@ impl<R: Runtime> Pager<R> {
         pid: Pid,
         expected: Lsn,
         level: u32,
-        out: &mut Vec<Pid>,
+        base: u64,
+        visit: &mut Visit<'_>,
     ) -> Result<(), PageError> {
-        out.push(pid);
         let page = self.map_page(pid, expected)?;
+        visit(pid, &page, level, base);
         if level == 1 {
             return Ok(());
         }
+        let span = self.reach(level - 1);
         for slot in 0..self.fanout() as usize {
             let child = Pid(word(&page, 2 * slot));
             if child != Pid(0) {
-                self.subtree(child, Lsn(word(&page, 2 * slot + 1)), level - 1, out)?;
+                let (lsn, at) = (Lsn(word(&page, 2 * slot + 1)), base + slot as u64 * span);
+                self.subtree(child, lsn, level - 1, at, visit)?;
             }
         }
         Ok(())
@@ -240,4 +326,35 @@ pub(crate) fn folded<S: LogSource>(
     });
     let damaged = s.findings.iter().any(|f| f.lsn.0 < floor);
     (whole && !damaged && s.resumed == 0 && s.end.0 >= floor).then_some(last)
+}
+
+/// Returns the LSN of the last record of each page in the retained log of `img`, reading only
+/// each page record's page. Fail with the first LSN before `end`, the end of the log recovery
+/// kept, that the log cannot prove: a gap, an unreadable or missing block, or a batch whose records
+/// do not decode.
+pub(crate) fn retained<S: LogSource>(
+    img: &mut LogImage<S>,
+    end: Lsn,
+) -> Result<BTreeMap<Pid, Lsn>, Lsn> {
+    let mut last = BTreeMap::new();
+    let Some(first) = img.first_batch() else {
+        return if end == Lsn(0) { Ok(last) } else { Err(end) };
+    };
+    let block = img.block;
+    let mut undecoded = None;
+    let s = scan(img, first, Mode::Verify, |batch, _| {
+        if batch.start >= end || undecoded.is_some() {
+            return;
+        }
+        match batch.pages(block) {
+            Ok(pages) => last.extend(pages.into_iter().map(|(lsn, pid)| (pid, lsn))),
+            Err(_) => undecoded = Some(batch.start),
+        }
+    });
+    let found = s.findings.iter().map(|f| f.lsn).filter(|&at| at < end);
+    let short = (s.end < end).then_some(s.end);
+    match found.chain(short).chain(undecoded).min() {
+        Some(at) => Err(at),
+        None => Ok(last),
+    }
 }

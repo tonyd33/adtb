@@ -35,13 +35,18 @@ struct Replay {
     applied: usize,
 }
 
+/// Whether recovery armed the read-in gate: an error holds the map page refused, if that is why
+/// it did not.
+pub(crate) type Armed = Result<(), Option<super::PageError>>;
+
 fn damaged_at(lsn: Lsn, problem: LogProblem) -> OpenError {
     OpenError::Log(LogFinding { lsn, problem })
 }
 
 impl<R: Runtime> Pager<R> {
-    /// Replay the log and checkpoint. Returns what it did and the pages the file then holds.
-    pub(crate) fn recover(&self) -> Result<(Recovery, u64), OpenError> {
+    /// Replay the log, checkpoint and arm the read-in gate. Returns what it did, the pages the
+    /// file then holds and whether the gate is armed.
+    pub(crate) fn recover(&self) -> Result<(Recovery, u64, Armed), OpenError> {
         let mut img = {
             let mut segments = self.segments.lock(&self.rt);
             self.io(|d| segments.load(d))
@@ -126,7 +131,14 @@ impl<R: Runtime> Pager<R> {
             log: s.findings,
             damaged: self.damaged().into_iter().collect(),
         };
-        Ok((recovery, pages))
+        let armed = self.arm();
+        Ok((recovery, pages, armed))
+    }
+
+    /// Refuse `pid` as [`Pager::damage`] does, and drop its dirty entry.
+    fn damage_replayed(&self, pid: Pid, damage: Damage) {
+        self.damage(pid, damage);
+        self.meta().dirty.remove(&pid);
     }
 
     fn replay(&self, st: &mut Replay, lsn: Lsn, record: Record) {
@@ -139,7 +151,7 @@ impl<R: Runtime> Pager<R> {
         }
         if let Some(expected) = before.filter(|&l| l != prev && prev != Lsn::UNCHAINED) {
             st.unverified.remove(&pid);
-            self.damage(
+            self.damage_replayed(
                 pid,
                 Damage::Stale {
                     expected,
@@ -191,7 +203,7 @@ impl<R: Runtime> Pager<R> {
             }
             _ => {
                 drop(g);
-                self.damage(
+                self.damage_replayed(
                     pid,
                     Damage::Stale {
                         expected: prev,

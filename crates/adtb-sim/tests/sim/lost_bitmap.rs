@@ -7,7 +7,7 @@ use adtb::heap::refuse_named;
 use adtb::key::Value;
 use adtb::runtime::Threads;
 use adtb::storage::{
-    self, Crc32c, Damage, HEADER_LEN, Options, PageError, PageKind, Pager, Pid, Quarantine,
+    self, Crc32c, Damage, HEADER_LEN, Lsn, Options, PageError, PageKind, Pager, Pid, Quarantine,
 };
 use adtb::{CallOptions, Database, Error, FatalReason, Log, OpenOptions};
 use adtb_sim::{Config, Sim, SimRuntime};
@@ -320,13 +320,18 @@ fn a_bitmap_zeroed_in_place_refuses_and_overwrites_nothing() {
 #[test]
 fn every_allocator_path_refuses_a_zeroed_bitmap() {
     let (files, page) = one_group("a", first_users_page);
+    let at = Pid::FIRST_DATA.0 as usize * PAGE;
+    let damage = Damage::Stale {
+        expected: storage::lsn(&files[FILE][at..at + PAGE]),
+        found: Lsn(0),
+    };
     let files = zeroed(&files, Pid::FIRST_DATA);
     damaged_run(&files, "allocator paths", |db| {
         let w = db.write_path();
         let p = w.pager();
         let lost = PageError {
             pid: Pid::FIRST_DATA,
-            damage: Damage::Checksum,
+            damage,
         };
         assert_eq!(lost, p.free(page).unwrap_err(), "free");
         assert_eq!(lost, p.is_free(page).unwrap_err(), "is_free");
@@ -660,15 +665,26 @@ fn small_cut(files: &Files, pages: u64) -> Files {
     files
 }
 
-/// Assert every allocator path refuses the lost second group and the file keeps its pages.
-fn assert_second_group_refused(files: Files, named: Pid, what: &str) {
+/// Returns the damage a cut or zeroing of the second group's bitmap page in `files` gives it:
+/// stale, at the LSN that page has in `files`.
+fn lost_damage(files: &Files) -> Damage {
+    let at = SMALL_SPAN as usize * SMALL_PAGE;
+    Damage::Stale {
+        expected: storage::lsn(&files[FILE][at..at + SMALL_PAGE]),
+        found: Lsn(0),
+    }
+}
+
+/// Assert every allocator path refuses the lost second group with `damage` and the file keeps its
+/// pages.
+fn assert_second_group_refused(files: Files, named: Pid, damage: Damage, what: &str) {
     let before = files[FILE].clone();
     let mut sim = Sim::with_files(1, Config::default(), files);
     finished(&mut sim, |rt| {
         let pager = pager_of(rt);
         let lost = PageError {
             pid: Pid(SMALL_SPAN),
-            damage: Damage::Checksum,
+            damage,
         };
         assert_eq!(lost, pager.is_free(named).unwrap_err(), "{what}: is_free");
         assert_eq!(lost, pager.free(named).unwrap_err(), "{what}: free");
@@ -700,16 +716,18 @@ fn assert_second_group_refused(files: Files, named: Pid, what: &str) {
 #[test]
 fn a_cut_at_or_before_the_group_refuses_every_allocator_path() {
     let (files, named) = grown();
-    assert_second_group_refused(small_cut(&files, SMALL_SPAN), named, "at the group");
-    assert_second_group_refused(small_cut(&files, SMALL_SPAN - 100), named, "before it");
+    let cut = lost_damage(&files);
+    assert_second_group_refused(small_cut(&files, SMALL_SPAN), named, cut, "at the group");
+    assert_second_group_refused(small_cut(&files, SMALL_SPAN - 100), named, cut, "before it");
 }
 
 #[test]
 fn a_zeroed_second_bitmap_refuses_every_allocator_path() {
     let (mut files, named) = grown();
+    let lost = lost_damage(&files);
     let at = SMALL_SPAN as usize * SMALL_PAGE;
     files.get_mut(FILE).unwrap()[at..at + SMALL_PAGE].fill(0);
-    assert_second_group_refused(files, named, "zeroed");
+    assert_second_group_refused(files, named, lost, "zeroed");
 }
 
 #[test]
@@ -725,10 +743,11 @@ fn growing_into_a_group_stores_the_count_and_a_file_before_the_count_gains_it() 
         assert_eq!(Ok(false), pager.is_free(named));
     });
     assert!(stored_groups(&sim.files(), SMALL_PAGE).contains(&2));
+    let lost = lost_damage(&old);
     let mut blank = old;
     let at = SMALL_SPAN as usize * SMALL_PAGE;
     blank.get_mut(FILE).unwrap()[at..at + SMALL_PAGE].fill(0);
-    assert_second_group_refused(blank, named, "old file, zeroed");
+    assert_second_group_refused(blank, named, lost, "old file, zeroed");
 }
 
 /// Returns the files of a pager whose grant of a page in the second group is only in the log.
@@ -750,7 +769,13 @@ fn recovery_stores_the_count_so_a_later_cut_never_reuses_a_named_page() {
     finished(&mut sim, |rt| drop(pager_of(rt)));
     let recovered = sim.files();
     assert!(stored_groups(&recovered, SMALL_PAGE).contains(&2));
-    assert_second_group_refused(small_cut(&recovered, SMALL_SPAN), named, "after recovery");
+    let cut = lost_damage(&recovered);
+    assert_second_group_refused(
+        small_cut(&recovered, SMALL_SPAN),
+        named,
+        cut,
+        "after recovery",
+    );
 }
 
 #[test]

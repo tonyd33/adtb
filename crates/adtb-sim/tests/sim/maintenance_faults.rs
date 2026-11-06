@@ -1900,6 +1900,9 @@ fn a_valid_page_of_another_owner_or_lacking_the_slot_refuses_naming_its_holder()
                     (Foreign::Emptied, "lookup") => objects.iter().find(probed).expect("its index"),
                     _ => object,
                 };
+                let lsn = |f: &Files| storage::lsn(&f[FILE][at * PAGE..(at + 1) * PAGE]);
+                let stale = lsn(&image) < lsn(&pristine);
+                let blamed = if stale { Pid(at as u64) } else { blamed };
                 let page = (foreign != Foreign::Emptied).then_some(blamed);
                 let (image, owned) = (image.clone(), holder.clone());
                 let answer = rot_bounded(ROT_CASE_LIMIT, move || {

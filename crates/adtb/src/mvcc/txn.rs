@@ -141,12 +141,8 @@ impl<R: Runtime> Transactions<R> {
     /// be read.
     pub fn open(rt: R, pager: &Pager<R>, root: Pid) -> Result<Transactions<R>, PageError> {
         let mut clog = CommitLog::load(pager, root)?;
-        let found = clog
-            .status_pages()
-            .values()
-            .find_map(|&pid| pager.read_formatted(pid).err());
-        let damage = if found.is_some() || pager.is_quarantined(Quarantine::Database) {
-            found
+        let damage = if pager.is_quarantined(Quarantine::Database) {
+            clog.unresolved(pager).err()
         } else {
             clog.settle_unresolved(pager).err()
         };

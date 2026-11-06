@@ -466,7 +466,7 @@ fn crashes_keep_commits_and_abort_what_was_running() {
                 torn_p: 0.5,
                 ..Faults::default()
             },
-            4,
+            5,
         );
         crashes += c;
         committed += n;

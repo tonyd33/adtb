@@ -202,6 +202,21 @@ impl Record {
         out[start + 1..start + PREFIX].copy_from_slice(&body.to_le_bytes());
     }
 
+    /// Returns the page of the record at the start of `bytes`, if it is a page record, and the
+    /// number of bytes it takes, decoding nothing else.
+    pub fn page_of(bytes: &[u8]) -> Result<(Option<Pid>, usize), Malformed> {
+        let mut r = Reader { bytes };
+        let tag = r.take(1)?[0];
+        let len = r.u32()? as usize;
+        let mut b = Reader {
+            bytes: r.take(len)?,
+        };
+        let page = matches!(tag, CHANGE | IMAGE)
+            .then(|| b.u64().map(Pid))
+            .transpose()?;
+        Ok((page, PREFIX + len))
+    }
+
     /// Returns the record at the start of `bytes` and the number of bytes it takes.
     pub fn decode(bytes: &[u8]) -> Result<(Record, usize), Malformed> {
         let mut r = Reader { bytes };

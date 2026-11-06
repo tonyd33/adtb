@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -7,7 +7,7 @@ use adtb::heap::{FieldType, Flags, Heap, LargeStore};
 use adtb::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
 use adtb::mvcc::Transactions;
 use adtb::runtime::Threads;
-use adtb::storage::{PageKind, Pager, Pid, Quarantine};
+use adtb::storage::{Damage, PageKind, Pager, Pid, Quarantine, lsn};
 use adtb::verify::{self, Inventory, Problem, Report, Sum};
 use adtb::write::{Txn, VerifyScope};
 use adtb::{CallOptions, Capability, Database, Log};
@@ -499,8 +499,9 @@ fn a_flipped_page_is_a_checksum_finding() {
     });
 }
 
-#[test]
-fn a_lost_write_is_a_stale_page_finding() {
+/// Returns the files of a database whose first users page lost its last write, that page and the
+/// damage its read gives.
+fn lost_users_write() -> (BTreeMap<String, Vec<u8>>, Pid, Damage) {
     let mut sim = Sim::new(43, Config::default());
     let page = api::run(&mut sim, |rt| {
         let db = open_app(rt);
@@ -520,20 +521,107 @@ fn a_lost_write_is_a_stale_page_finding() {
         db.close().unwrap();
     });
     let mut files = sim.files();
-    let size = PAGE_SIZE;
-    let at = page.0 as usize * size;
-    let old = before[NAME][at..at + size].to_vec();
-    files.get_mut(NAME).unwrap()[at..at + size].copy_from_slice(&old);
+    let at = page.0 as usize * PAGE_SIZE;
+    let old = before[NAME][at..at + PAGE_SIZE].to_vec();
+    let stale = Damage::Stale {
+        expected: lsn(&files[NAME][at..at + PAGE_SIZE]),
+        found: lsn(&old),
+    };
+    files.get_mut(NAME).unwrap()[at..at + PAGE_SIZE].copy_from_slice(&old);
+    (files, page, stale)
+}
+
+#[test]
+fn a_lost_write_is_a_stale_page_finding() {
+    let (files, _, _) = lost_users_write();
     let mut sim = Sim::with_files(43, Config::default(), files);
     api::run(&mut sim, |rt| {
-        let quiet = adtb::OpenOptions {
-            no_background_vacuum: true,
-            ..api::options(2)
-        };
-        let db = Database::open_in(rt, NAME, &Log::new([APP]), &quiet).unwrap();
+        let db = open_app(rt);
         let got = verified(&db, None);
         assert_eq!(1, got.len(), "{got:?}");
         assert!(got[0].starts_with("StalePage"), "{got:?}");
+    });
+}
+
+#[test]
+fn a_heap_page_that_lost_a_write_is_refused_on_its_first_read_and_marks_its_heap() {
+    let (files, page, stale) = lost_users_write();
+    let mut sim = Sim::with_files(43, Config::default(), files);
+    api::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        let refused = api::failure(&db, "from u in app::users select u.name");
+        let what = "app::users.User".to_owned();
+        let want = adtb::Error::Fatal {
+            reason: adtb::FatalReason::Quarantined { what },
+        };
+        assert_eq!(want, refused);
+        let w = db.write_path();
+        let heap = w.heap_named("app::users", "User").unwrap().id().0;
+        assert_eq!(BTreeMap::from([(page, stale)]), w.pager().damaged());
+        assert_eq!(
+            BTreeSet::from([Quarantine::Heap(heap)]),
+            w.pager().quarantined()
+        );
+    });
+}
+
+#[test]
+fn a_directory_page_that_lost_the_write_freeing_a_page_is_refused_on_its_first_read() {
+    let quiet = adtb::OpenOptions {
+        no_background_vacuum: true,
+        ..api::options(2)
+    };
+    let open = |rt| Database::open_in(rt, NAME, &Log::new([APP]), &quiet).unwrap();
+    let pages = |db: &Database<SimRuntime>| {
+        let w = db.write_path();
+        let heap = w.heap_named("app::users", "User").unwrap();
+        heap.pages(w.pager()).unwrap()
+    };
+    let mut sim = Sim::new(47, Config::default());
+    let held = api::run(&mut sim, |rt| {
+        let db = open(rt);
+        for i in 1..=12 {
+            let name = format!("{i}{}", "n".repeat(1500));
+            api::results(
+                &db,
+                &format!(r#"insert users {{ id: users.key({i}), name: "{name}" }}"#),
+            );
+        }
+        api::results(&db, "delete u in users where u.id != users.key(12)");
+        let held = pages(&db);
+        db.close().unwrap();
+        held
+    });
+    let before = sim.files();
+    let kept = api::run(&mut sim, |rt| {
+        let db = open(rt);
+        api::query(&db, "vacuum users");
+        let kept = pages(&db);
+        db.close().unwrap();
+        kept
+    });
+    let after = sim.files();
+    let freed: Vec<Pid> = held.iter().filter(|p| !kept.contains(p)).copied().collect();
+    assert!(!freed.is_empty(), "{held:?} {kept:?}");
+    let at = |p: Pid| p.0 as usize * PAGE_SIZE..(p.0 as usize + 1) * PAGE_SIZE;
+    let leaves: Vec<Pid> = (Pid::FIRST_DATA.0..(after[NAME].len() / PAGE_SIZE) as u64)
+        .map(Pid)
+        .filter(|&p| after[NAME][at(p)] != before[NAME][at(p)])
+        .filter(|&p| adtb::storage::kind(&after[NAME][at(p)]) == PageKind::FreeSpaceMap as u16)
+        .collect();
+    assert_eq!(1, leaves.len(), "{leaves:?}");
+    let leaf = leaves[0];
+    let mut lost = after.clone();
+    lost.get_mut(NAME).unwrap()[at(leaf)].copy_from_slice(&before[NAME][at(leaf)]);
+    let damage = Damage::Stale {
+        expected: lsn(&after[NAME][at(leaf)]),
+        found: lsn(&before[NAME][at(leaf)]),
+    };
+    api::run(&mut Sim::with_files(47, Config::default(), lost), |rt| {
+        let db = open(rt);
+        let w = db.write_path();
+        let read = w.pager().read(leaf).map(drop);
+        assert_eq!(Err(adtb::storage::PageError { pid: leaf, damage }), read);
     });
 }
 
@@ -1513,7 +1601,7 @@ fn a_tree_check_out_of_retries_goes_on_past_the_changing_pair() {
 }
 
 /// Damage page `page` of `files`.
-fn flip(files: &mut std::collections::BTreeMap<String, Vec<u8>>, page: Pid) {
+fn flip(files: &mut BTreeMap<String, Vec<u8>>, page: Pid) {
     files.get_mut(NAME).unwrap()[page.0 as usize * PAGE_SIZE + 300] ^= 0x10;
 }
 

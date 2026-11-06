@@ -209,6 +209,18 @@ impl Batch {
         Lsn(self.start.0 + u64::from(self.blocks) * block as u64)
     }
 
+    /// Returns the page of each page record of the batch with the record's LSN.
+    pub fn pages(&self, block: usize) -> Result<Vec<(Lsn, Pid)>, Malformed> {
+        let mut out = Vec::new();
+        let mut k = 0;
+        while k < self.data.len() {
+            let (page, n) = Record::page_of(&self.data[k..])?;
+            out.extend(page.map(|pid| (data_lsn(self.start, k, block), pid)));
+            k += n;
+        }
+        Ok(out)
+    }
+
     /// Returns each record of the batch with its LSN.
     pub fn records(&self, block: usize) -> Result<Vec<(Lsn, Record)>, Malformed> {
         let mut out = Vec::new();

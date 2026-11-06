@@ -3,9 +3,11 @@ use std::sync::atomic::Ordering;
 
 use crate::runtime::Runtime;
 
+use super::page::Verdict;
 use super::page::{FIRST_EDITABLE, HEADER_LEN, PageKind};
 use super::pager::{PageError, PageExclusive, Pager};
-use super::{Damage, Pid};
+use super::{Damage, Lsn, Pid};
+use crate::mvcc::Settling;
 
 /// What a detected corruption stops.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -153,8 +155,16 @@ impl Holders {
 #[derive(Debug, Default)]
 pub(crate) struct Marks {
     pub(crate) set: BTreeSet<Quarantine>,
+    /// Marks held for this open only, never written.
+    pub(crate) held: BTreeSet<Quarantine>,
     pub(crate) page: Pid,
     pub(crate) unreadable: bool,
+}
+
+impl Marks {
+    fn any(&self) -> bool {
+        !self.set.is_empty() || !self.held.is_empty()
+    }
 }
 
 impl<R: Runtime> Pager<R> {
@@ -184,14 +194,14 @@ impl<R: Runtime> Pager<R> {
                 marks.unreadable = true;
             }
         }
-        self.any_mark
-            .store(!marks.set.is_empty(), Ordering::Release);
+        self.any_mark.store(marks.any(), Ordering::Release);
         Ok(())
     }
 
     /// Returns every object quarantined.
     pub fn quarantined(&self) -> BTreeSet<Quarantine> {
-        self.marks.lock(&self.rt).set.clone()
+        let marks = self.marks.lock(&self.rt);
+        marks.set.union(&marks.held).copied().collect()
     }
 
     /// Returns whether any object is quarantined, without taking a lock.
@@ -202,12 +212,15 @@ impl<R: Runtime> Pager<R> {
     /// Returns whether `object` is quarantined, by its own mark or the database's.
     pub fn is_quarantined(&self, object: Quarantine) -> bool {
         let marks = self.marks.lock(&self.rt);
-        marks.set.contains(&object) || marks.set.contains(&Quarantine::Database)
+        [object, Quarantine::Database]
+            .iter()
+            .any(|o| marks.set.contains(o) || marks.held.contains(o))
     }
 
     /// Mark `object` quarantined. The mark is durable on return, for every caller marking it,
     /// and lasts until [`Pager::release`] removes it. Marking an object already marked and
-    /// durable writes nothing.
+    /// durable writes nothing. While a mark is held for this open, the mark lives in memory only,
+    /// until the pager closes.
     ///
     /// Precondition: the calling thread holds no page latch.
     ///
@@ -221,6 +234,13 @@ impl<R: Runtime> Pager<R> {
             self.marks.lock(&self.rt).set.insert(object);
             self.any_mark.store(true, Ordering::Release);
         })
+    }
+
+    /// Mark `object` quarantined for this open only. From then on no change of the marks is
+    /// written.
+    pub(crate) fn hold_quarantine(&self, object: Quarantine) {
+        self.marks.lock(&self.rt).held.insert(object);
+        self.any_mark.store(true, Ordering::Release);
     }
 
     /// Remove the mark on `object`, once it is repaired. Durable on return.
@@ -314,14 +334,68 @@ impl<R: Runtime> Pager<R> {
             if let Some(release) = &release {
                 marks.set.remove(release);
             }
-            self.any_mark
-                .store(!marks.set.is_empty(), Ordering::Release);
+            self.any_mark.store(marks.any(), Ordering::Release);
         }
         drop(marks_page);
         self.wait_durable(lsn);
         if blank {
             self.write_out(pid, &g);
         }
+        Ok(())
+    }
+
+    /// Returns page `pid` as the file holds it, with the refusal when the file's copy lost a write
+    /// it must have, for the commit log to settle it from the log.
+    ///
+    /// Fail with any other refusal, or when the file's copy is blank, past the log, or fails its
+    /// checksum.
+    pub(crate) fn read_stale(
+        &self,
+        pid: Pid,
+        _: &Settling,
+    ) -> Result<(Vec<u8>, Option<PageError>), PageError> {
+        let e = match self.read_formatted(pid) {
+            Ok(page) => return Ok((page.to_vec(), None)),
+            Err(e) => e,
+        };
+        let Damage::Stale { expected, found } = e.damage else {
+            return Err(e);
+        };
+        if found == Lsn(0) || found > expected {
+            return Err(e);
+        }
+        match self.read_disk(pid) {
+            Ok((buf, Verdict::Valid)) => Ok((buf.to_vec(), Some(e))),
+            _ => Err(e),
+        }
+    }
+
+    /// Change page `pid`, which [`Pager::read_stale`] returned refused, from the file's copy
+    /// `copy` to `contents`, logging the change as one from that copy.
+    pub(crate) fn rewrite_stale(
+        &self,
+        pid: Pid,
+        _: &Settling,
+        copy: &[u8],
+        contents: &[u8],
+    ) -> Result<(), PageError> {
+        let mut g = match self.exclusive(pid) {
+            Ok(g) => g,
+            Err(e) if e.pid == pid && matches!(e.damage, Damage::Stale { .. }) => {
+                let mut g = self.mem.lock_exclusive(pid.0, &self.rt);
+                if !g.resident() {
+                    self.make_room(pid);
+                }
+                g.write(0, copy);
+                self.meta().damaged.remove(&pid);
+                PageExclusive::of(self, g)
+            }
+            Err(e) => return Err(e),
+        };
+        let new = self.reserve();
+        self.update_all_with(new, &mut [&mut g], |p| {
+            p[0][FIRST_EDITABLE..].copy_from_slice(&contents[FIRST_EDITABLE..]);
+        })?;
         Ok(())
     }
 
@@ -352,7 +426,12 @@ impl<R: Runtime> Pager<R> {
 
     fn change_marks(&self, f: impl FnOnce(&mut BTreeSet<Quarantine>)) -> Result<(), PageError> {
         let (page, unreadable) = {
-            let m = self.marks.lock(&self.rt);
+            let mut m = self.marks.lock(&self.rt);
+            if !m.held.is_empty() {
+                f(&mut m.set);
+                self.any_mark.store(m.any(), Ordering::Release);
+                return Ok(());
+            }
             (m.page, m.unreadable)
         };
         if unreadable {
@@ -365,8 +444,7 @@ impl<R: Runtime> Pager<R> {
         let set = {
             let mut marks = self.marks.lock(&self.rt);
             f(&mut marks.set);
-            self.any_mark
-                .store(!marks.set.is_empty(), Ordering::Release);
+            self.any_mark.store(marks.any(), Ordering::Release);
             marks.set.clone()
         };
         guard.update(|p| encode(p, &set));

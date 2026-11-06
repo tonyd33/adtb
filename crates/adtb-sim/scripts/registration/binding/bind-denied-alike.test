@@ -6,7 +6,7 @@ advance 2d
 query
   from b in catalog::bundles select b.renewed
 ----
-2026-01-01T00:00:00.610158Z
+2026-01-01T00:00:00.671433Z
 
 as web call web-1.0 error Denied { detail: "role `web` may call nothing in bundle web-1.0" }
 
@@ -15,7 +15,7 @@ as web call web-9.9 error Denied { detail: "role `web` may call nothing in bundl
 query
   from b in catalog::bundles select b.renewed
 ----
-2026-01-01T00:00:00.610158Z
+2026-01-01T00:00:00.671433Z
 
 query
   from a in catalog::audit.Denied where a.role == "web" select a.origin
@@ -31,7 +31,7 @@ as web call web-1.0 error Denied { detail: "role `web` may call nothing in bundl
 query
   from b in catalog::bundles select b.renewed
 ----
-2026-01-01T00:00:00.610158Z
+2026-01-01T00:00:00.671433Z
 
 grant
   grant call web-1.0::q to web
@@ -41,4 +41,4 @@ as web call web-1.0
 query
   from b in catalog::bundles select b.renewed
 ----
-2026-01-03T00:00:00.614965Z
+2026-01-03T00:00:00.677196Z

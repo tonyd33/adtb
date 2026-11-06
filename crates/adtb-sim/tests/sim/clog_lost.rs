@@ -560,31 +560,36 @@ fn kinds(db: &Database<SimRuntime>) -> BTreeMap<Pid, (&'static str, Quarantine)>
     kinds
 }
 
-#[test]
-fn the_first_verify_reports_and_marks_a_lost_write_of_each_page_an_insert_changes_but_the_clog_root()
- {
-    let mut sim = Sim::new(2, Config::default());
-    insert(&mut sim, "ann");
+/// Revert each page `work` changes in the files of `sim`, and assert its next read is refused
+/// and the first verify reports it. A status page is settled by the open of the commit log, and
+/// read after it. Returns how many pages of each kind it reverted.
+fn each_lost_write_refused(
+    sim: &mut Sim,
+    work: impl FnOnce(&Database<SimRuntime>),
+) -> BTreeMap<&'static str, usize> {
     let before = sim.files();
-    insert(&mut sim, "bo");
-    let after = sim.files();
-    let kinds = api::run(&mut sim, |rt| {
+    let kinds = api::run(sim, |rt| {
         let db = open(&rt);
+        work(&db);
         let kinds = kinds(&db);
         db.close().unwrap();
         kinds
     });
-    let lsn = |f: &Files, p: Pid| storage::lsn(&f[harness::NAME][p.0 as usize * DB_PAGE..]);
+    let after = sim.files();
+    let bytes = |f: &Files, p: Pid| f[harness::NAME][p.0 as usize * DB_PAGE..].to_vec();
+    let lsn = |f: &Files, p: Pid| storage::lsn(&bytes(f, p));
     let pages = (before[harness::NAME].len() / DB_PAGE) as u64;
     let changed = (Pid::FIRST_DATA.0..pages).map(Pid);
     let changed = changed.filter(|&p| lsn(&before, p) != lsn(&after, p));
     let mut reached = BTreeMap::new();
     for page in changed {
-        let (kind, mark) = *kinds.get(&page).unwrap_or(&("other", Quarantine::Database));
+        let by_kind = match storage::kind(&bytes(&after, page)) {
+            k if k == PageKind::AllocationBitmap as u16 => "bitmap",
+            k if k == PageKind::Quarantine as u16 => "marks",
+            _ => "other",
+        };
+        let (kind, mark) = *kinds.get(&page).unwrap_or(&(by_kind, Quarantine::Database));
         *reached.entry(kind).or_insert(0) += 1;
-        if kind == "root" {
-            continue;
-        }
         let lost = reverted(after.clone(), &before, page, DB_PAGE);
         let stale = format!(
             "\"page {}: Stale {{ expected: {:?}, found: {:?} }}\"",
@@ -592,6 +597,25 @@ fn the_first_verify_reports_and_marks_a_lost_write_of_each_page_an_insert_change
             lsn(&after, page),
             lsn(&before, page)
         );
+        let damage = Damage::Stale {
+            expected: lsn(&after, page),
+            found: lsn(&before, page),
+        };
+        let read = api::run(
+            &mut Sim::with_files(2, Config::default(), lost.clone()),
+            |rt| {
+                let db = open(&rt);
+                let read = db.write_path().pager().read(page).map(drop);
+                db.close().unwrap();
+                read
+            },
+        );
+        let refused = if kind == "status" {
+            Ok(())
+        } else {
+            Err(PageError { pid: page, damage })
+        };
+        assert_eq!(refused, read, "{kind} page {page:?}");
         api::run(&mut Sim::with_files(2, Config::default(), lost), |rt| {
             let db = open(&rt);
             let found = findings(api::sorted(db.verify(None).unwrap()));
@@ -602,6 +626,16 @@ fn the_first_verify_reports_and_marks_a_lost_write_of_each_page_an_insert_change
             db.close().unwrap();
         });
     }
+    reached
+}
+
+#[test]
+fn a_lost_write_of_each_page_an_insert_changes_is_refused_on_read_and_reported_by_verify() {
+    let mut sim = Sim::new(2, Config::default());
+    insert(&mut sim, "ann");
+    let reached = each_lost_write_refused(&mut sim, |db| {
+        api::results(db, r#"insert users { name: "bo" }"#);
+    });
     let want = [
         ("counters", 1),
         ("heap", 2),
@@ -610,4 +644,108 @@ fn the_first_verify_reports_and_marks_a_lost_write_of_each_page_an_insert_change
         ("status", 1),
     ];
     assert_eq!(BTreeMap::from(want), reached);
+}
+
+#[test]
+fn a_lost_write_of_each_page_an_allocating_insert_and_a_mark_change_is_refused_on_read() {
+    let mut sim = Sim::new(2, Config::default());
+    insert(&mut sim, "ann");
+    let reached = each_lost_write_refused(&mut sim, |db| {
+        let digit = "[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]";
+        api::results(
+            db,
+            &format!(
+                "insert users from (from a in {digit}, b in {digit}, c in {digit} select {{ name: \"n\" }})"
+            ),
+        );
+        let pager = db.write_path().pager();
+        pager.quarantine(Quarantine::Index(u32::MAX)).unwrap();
+        pager.release(Quarantine::Index(u32::MAX)).unwrap();
+    });
+    assert_eq!(Some(&1), reached.get("marks"), "{reached:?}");
+    assert!(
+        reached.get("bitmap").is_some_and(|&n| n >= 1),
+        "{reached:?}"
+    );
+}
+
+#[test]
+fn an_open_whose_log_cannot_settle_a_status_page_writes_no_mark() {
+    let mut create = adtb::CreateOptions::default();
+    create.segment_size = Some(64 << 10);
+    let options = adtb::OpenOptions {
+        create: Some(create),
+        ..api::options(2)
+    };
+    let open =
+        |rt: SimRuntime| Database::open_in(rt, harness::NAME, &Log::new([APP]), &options).unwrap();
+    let mut sim = Sim::new(6, Config::default());
+    let page = api::run(&mut sim, |rt| {
+        let db = open(rt);
+        api::results(&db, r#"insert users { name: "ann" }"#);
+        let page = *db
+            .write_path()
+            .txns()
+            .commit_log()
+            .status_pages()
+            .values()
+            .next_back()
+            .unwrap();
+        db.close().unwrap();
+        page
+    });
+    let before = sim.files();
+    api::run(&mut sim, |rt| {
+        let db = open(rt);
+        for i in 0..200 {
+            api::results(&db, &format!(r#"insert users {{ name: "{i}" }}"#));
+        }
+        db.close().unwrap();
+    });
+    let after = sim.files();
+    let at = page.0 as usize * DB_PAGE;
+    let old = storage::lsn(&before[harness::NAME][at..at + DB_PAGE]);
+    let segments: Vec<(&String, u64)> = after
+        .keys()
+        .filter_map(|k| Some((k, u64::from_str_radix(k.rsplit_once('/')?.1, 16).ok()?)))
+        .collect();
+    let (gap, base) = segments[..segments.len() - 1]
+        .iter()
+        .find(|(_, base)| *base > old.0)
+        .copied()
+        .expect("a segment after the status page's old write and before the last");
+    let mut lost = reverted(after.clone(), &before, page, DB_PAGE);
+    lost.remove(gap).unwrap();
+    let mut sim = Sim::with_files(6, Config::default(), lost);
+    api::run(&mut sim, |rt| {
+        let db = open(rt);
+        let w = db.write_path();
+        let found = w
+            .txns()
+            .quarantined()
+            .expect("the commit log is quarantined");
+        assert_eq!(page, found.pid);
+        let Damage::LogUnproven { at } = found.damage else {
+            panic!("{found:?}");
+        };
+        assert!(
+            old < at && at.0 <= base,
+            "{at:?} between {old:?} and {base}"
+        );
+        assert_eq!(
+            BTreeSet::from([Quarantine::Database]),
+            w.pager().quarantined()
+        );
+        db.close().unwrap();
+    });
+    let mut restored = reverted(sim.files(), &after, page, DB_PAGE);
+    restored.insert(gap.clone(), after[gap].clone());
+    let mut sim = Sim::with_files(6, Config::default(), restored);
+    let marks = api::run(&mut sim, |rt| {
+        let db = open(rt);
+        let marks = db.write_path().pager().quarantined();
+        db.close().unwrap();
+        marks
+    });
+    assert_eq!(BTreeSet::new(), marks);
 }

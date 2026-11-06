@@ -11,11 +11,11 @@ use super::alloc::diff;
 use super::block::{LogFinding, LogImage};
 use super::create::{Created, create};
 use super::driver::Driver;
-use super::evicted::EvictedLsns;
 use super::header::{self, FileHeader, REGION};
 use super::log::{FileSource, Log, Segments};
-use super::lsnmap::folded;
+use super::lsnmap::{Expected, Gate, folded, retained};
 use super::page::{self, FIRST_EDITABLE, Verdict, valid_page_size};
+use super::quarantine::Quarantine;
 use super::record::{Edit, MapRoot, Record};
 use super::{Lsn, Pid, Position};
 use adtb_sys::lock::Lock;
@@ -144,8 +144,10 @@ pub(crate) struct Meta {
     pub(crate) changed: BTreeSet<Pid>,
     /// Pages written since the last force of the data file.
     pub(crate) written: BTreeSet<Pid>,
-    /// The LSN of pages the pool dropped, checked when they are read back.
-    pub(crate) evicted: EvictedLsns,
+    /// The LSN each page must have at least when read in: its last record in the retained log, or
+    /// else the page LSN map's entry, as of the end of recovery, raised by every page record
+    /// logged since.
+    pub(crate) gate: Gate,
     pub(crate) damaged: BTreeMap<Pid, Damage>,
     /// The bitmap groups a batch has started: their bitmap pages are never blank. A batch counts
     /// here only once it is in the log and while its bitmap page is latched, so a checkpoint that
@@ -254,9 +256,6 @@ impl<R: Runtime> std::fmt::Debug for Shared<R> {
             .finish_non_exhaustive()
     }
 }
-
-/// Slots of the evicted-page LSN table per pool frame.
-const EVICTED_PER_FRAME: usize = 4;
 
 pub(super) fn parent(path: &str) -> &str {
     match path.rsplit_once('/') {
@@ -430,7 +429,7 @@ impl<R: Runtime> Pager<R> {
                 dirty: BTreeMap::new(),
                 changed: BTreeSet::new(),
                 written: BTreeSet::new(),
-                evicted: EvictedLsns::new(EVICTED_PER_FRAME * o.pool_frames),
+                gate: Gate::Recovering,
                 damaged: BTreeMap::new(),
                 groups: bitmap_groups,
                 overwritten: BTreeSet::new(),
@@ -500,6 +499,7 @@ impl<R: Runtime> Pager<R> {
             log_start: Lsn(0),
         };
         let pager = Pager::assemble(rt, options, header, 1, data);
+        pager.meta().gate = Gate::Armed(Expected::default());
         let claimed = {
             let mut segments = pager.segments.lock(&pager.rt);
             pager.io(|d| segments.claim(d))
@@ -565,7 +565,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     fn recover_and_mark(&self) -> Result<super::Recovery, OpenError> {
-        let (recovery, pages) = self.recover()?;
+        let (recovery, pages, armed) = self.recover()?;
         self.refuse_cut_pages(pages);
         let marks = self.header.lock(&self.rt).0.quarantine;
         if marks == Pid(0) {
@@ -577,7 +577,40 @@ impl<R: Runtime> Pager<R> {
             self.load_marks(marks)?;
         }
         self.check_map();
+        if let Err(map) = armed {
+            if map.is_some_and(|e| e.damage != Damage::Unreadable) {
+                self.quarantine(Quarantine::Database).ok();
+            }
+            self.hold_quarantine(Quarantine::Database);
+        }
         Ok(recovery)
+    }
+
+    /// End recovery: set each page's expected LSN from the page LSN map, then the retained log.
+    /// Turn the gate off, setting none, when the log cannot prove a record before the end
+    /// recovery kept, or fail with the map page refused.
+    pub(super) fn arm(&self) -> super::recovery::Armed {
+        let armed = self.map_entries().map_err(Some).and_then(|folded| {
+            let end = self.meta().recovered;
+            let (_pin, mut img) = self.load_log().map_err(|_| None)?;
+            let last = retained(&mut img, end).map_err(|_| None)?;
+            let mut expected = Expected::new(folded);
+            for (pid, lsn) in last {
+                expected.raise(pid, lsn);
+            }
+            Ok(expected)
+        });
+        let mut m = self.meta();
+        match armed {
+            Ok(expected) => {
+                m.gate = Gate::Armed(expected);
+                Ok(())
+            }
+            Err(e) => {
+                m.gate = Gate::Off;
+                Err(e)
+            }
+        }
     }
 
     pub fn page_size(&self) -> usize {
@@ -734,21 +767,21 @@ impl<R: Runtime> Pager<R> {
         Ok(Some(g))
     }
 
-    /// Returns `Stale` when the pool holds `pid` at an LSN past `found`, the LSN of the file's copy:
-    /// the LSN of `image`, its resident copy, changed or not, or else the LSN it had when last
-    /// evicted.
+    /// Returns `Stale` when `pid` must have an LSN past `found`, the LSN of the file's copy: the LSN
+    /// of `image`, its resident copy, changed or not, or else its expected LSN.
     ///
     /// Preconditions: the caller holds a latch on `pid` and `image` is the resident copy under it,
     /// or the caller judges again under one.
     pub(crate) fn lost_write(&self, pid: Pid, found: Lsn, image: Option<&[u8]>) -> Option<Damage> {
         let expected = match image {
             Some(image) => page::lsn(image),
-            None => self.meta().evicted.get(pid)?,
+            None => self.meta().gate.expected(pid)?,
         };
         (found < expected).then_some(Damage::Stale { expected, found })
     }
 
-    /// Refuse `pid` from now on, dropping its memory unwritten.
+    /// Refuse `pid` from now on, dropping its memory unwritten but leaving it in the dirty page
+    /// table, so recovery replays a logged change the file lacks.
     ///
     /// Preconditions: the caller holds no latch on `pid`.
     #[doc(hidden)]
@@ -762,7 +795,6 @@ impl<R: Runtime> Pager<R> {
         let mut m = self.meta();
         m.damaged.insert(pid, damage);
         m.changed.remove(&pid);
-        m.dirty.remove(&pid);
         drop(m);
         self.unreserve(pid);
         PageError { pid, damage }
@@ -856,10 +888,6 @@ impl<R: Runtime> Pager<R> {
         if self.meta().changed.contains(&pid) {
             self.write_out(pid, &g);
         }
-        let lsn = page::lsn(&g);
-        if lsn > Lsn(0) {
-            self.meta().evicted.insert(pid, lsn);
-        }
         g.evict();
     }
 
@@ -939,6 +967,7 @@ impl<R: Runtime> Pager<R> {
             log.append(&record);
             m.dirty.entry(pid).or_insert(lsn);
             m.changed.insert(pid);
+            m.gate.raise(pid, lsn);
             last = lsn;
         }
         if let Some(Record::MapRoot { root, height }) = &tail {

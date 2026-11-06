@@ -150,7 +150,7 @@ fn assert_refused_rows(got: &Result<Vec<String>, Error>, expected: &str, what: &
     );
 }
 
-fn assert_for_verify_only(got: &Result<Opened, OpenError>, what: &str) {
+fn assert_for_verify_only(got: &Result<Opened, OpenError>, finding: &str, what: &str) {
     let opened = got
         .as_ref()
         .unwrap_or_else(|e| panic!("{what}: did not open: {e:?}"));
@@ -158,7 +158,7 @@ fn assert_for_verify_only(got: &Result<Opened, OpenError>, what: &str) {
     assert_refused_rows(&opened.select, "the database", what);
     assert_refused(&opened.insert, "the database", what);
     assert!(
-        opened.verify.iter().any(|f| f.starts_with("Checksum")),
+        opened.verify.iter().any(|f| f.starts_with(finding)),
         "{what}: {:?}",
         opened.verify
     );
@@ -186,7 +186,7 @@ fn a_file_cut_before_the_first_roles_page_opens_for_verify() {
     let s = seeded();
     let files = cut(&s.files, s.roles.0 as usize * PAGE);
     for (round, got) in opened(files, 2, "cut at roles").iter().enumerate() {
-        assert_for_verify_only(got, &format!("round {round}"));
+        assert_for_verify_only(got, "Checksum", &format!("round {round}"));
     }
 }
 
@@ -194,14 +194,22 @@ fn a_file_cut_before_the_first_roles_page_opens_for_verify() {
 fn a_file_cut_inside_the_first_roles_page_opens_for_verify() {
     let s = seeded();
     let files = cut(&s.files, s.roles.0 as usize * PAGE + 100);
-    assert_for_verify_only(&opened(files, 1, "cut in roles")[0], "cut in roles");
+    assert_for_verify_only(
+        &opened(files, 1, "cut in roles")[0],
+        "Checksum",
+        "cut in roles",
+    );
 }
 
 #[test]
 fn a_file_cut_before_its_first_bitmap_page_opens_for_verify() {
     let s = seeded();
     let files = cut(&s.files, 2 * PAGE);
-    assert_for_verify_only(&opened(files, 1, "cut at bitmap")[0], "cut at bitmap");
+    assert_for_verify_only(
+        &opened(files, 1, "cut at bitmap")[0],
+        "Checksum",
+        "cut at bitmap",
+    );
 }
 
 #[test]
@@ -223,7 +231,11 @@ fn a_file_cut_before_a_relations_first_page_quarantines_that_relation() {
 fn a_zeroed_roles_page_opens_for_verify() {
     let s = seeded();
     let files = zeroed(&s.files, s.roles);
-    assert_for_verify_only(&opened(files, 1, "zeroed roles")[0], "zeroed roles");
+    assert_for_verify_only(
+        &opened(files, 1, "zeroed roles")[0],
+        "StalePage",
+        "zeroed roles",
+    );
 }
 
 #[test]

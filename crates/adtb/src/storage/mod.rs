@@ -10,7 +10,6 @@ mod digest;
 mod driver;
 mod dump;
 mod dump_crypt;
-mod evicted;
 mod header;
 mod log;
 mod lsnmap;

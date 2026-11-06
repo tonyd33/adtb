@@ -1388,6 +1388,33 @@ fn a_changed_page_with_a_corrupt_store_is_copied_from_the_pool() {
     });
 }
 
+#[test]
+fn a_page_that_lost_a_write_before_the_open_is_listed() {
+    let mut before = file_with_rows(4);
+    let pid = rot_users_page(&mut before);
+    let byte = pid.0 as usize * 8192 + 200;
+    before.get_mut(FILE).unwrap()[byte] ^= 0xff;
+    let mut sim = Sim::with_files(10, Config::default(), before.clone());
+    api::run(&mut sim, |rt| {
+        let db = open(rt);
+        api::results(
+            &db,
+            r#"update u in users where key u == users.key(0) set User { u with name: "later" }"#,
+        );
+        db.close().unwrap();
+    });
+    let mut files = sim.files();
+    let page = pid.0 as usize * 8192..(pid.0 as usize + 1) * 8192;
+    files.get_mut(FILE).unwrap()[page.clone()].copy_from_slice(&before[FILE][page]);
+    let mut sim = Sim::with_files(10, Config::default(), files);
+    api::run(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt, &Options::new(FILE)).unwrap();
+        let got = backup_with(&pager, TARGET, &mut |_, _| true).unwrap();
+        assert_eq!(vec![pid], got.damaged);
+        pager.close();
+    });
+}
+
 /// List a page the device refuses to read, and show the visit an empty page.
 #[test]
 fn an_unreadable_page_is_listed() {

@@ -8,8 +8,13 @@ use crate::storage::{
 
 use super::{Status, Xid};
 
-/// A status page holding ids in progress: its page, its first id and those ids.
-pub(crate) type Unresolved = (Pid, u64, Vec<u64>);
+/// A status page holding ids in progress: its page, its first id, those ids, and the file's copy
+/// when the page lost a write.
+pub(crate) type Unresolved = (Pid, u64, Vec<u64>, Option<Vec<u8>>);
+
+/// The right to read a status page that lost a write and write it back settled, which only the
+/// commit log holds: no code outside this module can make one.
+pub(crate) struct Settling(());
 
 /// The format version of commit log pages.
 pub const PAGE_FORMAT: u16 = 1;
@@ -284,17 +289,25 @@ impl CommitLog {
         pager: &Pager<R>,
     ) -> Result<(), PageError> {
         let (open, logged) = self.unresolved(pager)?;
-        for (pid, base, ids) in open {
-            pager.update(&[pid], |p| {
+        for (pid, base, ids, copy) in open {
+            let settle = |p: &mut [u8]| {
                 for &x in &ids {
                     let status = if logged.contains(&x) {
                         Status::Committed
                     } else {
                         Status::Aborted
                     };
-                    set_status(p[0], (x - base) as usize, status);
+                    set_status(p, (x - base) as usize, status);
                 }
-            })?;
+            };
+            match copy {
+                Some(copy) => {
+                    let mut settled = copy.clone();
+                    settle(&mut settled);
+                    pager.rewrite_stale(pid, &Settling(()), &copy, &settled)?;
+                }
+                None => drop(pager.update(&[pid], |p| settle(p[0]))?),
+            }
         }
         Ok(())
     }
@@ -303,33 +316,28 @@ impl CommitLog {
     /// and those ids, and the transaction of every commit record the retained log holds from the
     /// oldest LSN of those pages, past which lies every commit record changing them.
     ///
-    /// Fail with [`Damage::LogUnproven`], naming the page of that LSN, when the log from there to
-    /// the end recovery kept is not whole and readable. Before the log's first segment the status
-    /// page stands.
+    /// Fail with the refusal of a status page that cannot be read, other than one that lost a
+    /// write. Fail with [`Damage::LogUnproven`], naming the page of that LSN, when the log from
+    /// there to the end recovery kept is not whole and readable. Before the log's first segment
+    /// the status page stands.
     pub(crate) fn unresolved<R: Runtime>(
         &self,
         pager: &Pager<R>,
     ) -> Result<(Vec<Unresolved>, BTreeSet<u64>), PageError> {
         let (from, to) = (self.root.bound, self.root.reserved);
-        if from >= to {
-            return Ok((Vec::new(), BTreeSet::new()));
-        }
-        let (first, _) = locate(from, self.per_page);
-        let (last, _) = locate(Xid(to.0 - 1), self.per_page);
         let mut open = Vec::new();
         let mut oldest: Option<(Lsn, Pid)> = None;
-        for n in first..=last {
-            let pid = self.page(n);
+        for (&n, &pid) in &self.pages {
             let base = n * self.per_page;
-            let page = pager.read_formatted(pid)?;
+            let (page, refused) = pager.read_stale(pid, &Settling(()))?;
             let ids: Vec<u64> = (from.0.max(base)..to.0.min(base + self.per_page))
                 .filter(|&x| status_at(&page, (x - base) as usize) == Status::InProgress)
                 .collect();
-            if !ids.is_empty() {
+            if !ids.is_empty() || refused.is_some() {
                 if oldest.is_none_or(|(at, _)| lsn(&page) < at) {
                     oldest = Some((lsn(&page), pid));
                 }
-                open.push((pid, base, ids));
+                open.push((pid, base, ids, refused.map(|_| page)));
             }
         }
         let Some((since, pid)) = oldest else {

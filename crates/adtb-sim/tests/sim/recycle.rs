@@ -3,15 +3,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use adtb::runtime::{Clock, Instant, IoError, Op};
+use adtb::runtime::{IoError, Op};
 use adtb::storage::{
     BackupRun, Damage, Envelope, Finding, HEADER_LEN, Lsn, Options, PageError, PageKind, Pager,
     Pid, Quarantine,
 };
 use adtb::verify::{self, Inventory, Problem};
-use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::harness;
 use adtb_simkit::search::Hooked;
+use adtb_testkit::profile::every_case;
 
 type Files = BTreeMap<String, Vec<u8>>;
 
@@ -306,23 +307,28 @@ fn an_unreadable_map_page_is_refused_unmarked_and_read_by_the_next_open() {
     let mut out = None;
     harness::finished(&mut sim, |rt| {
         let hook = Hooked::new(&rt);
-        let (pager, _) = Pager::open(hook.clone(), &options()).unwrap();
         let at = leaf.0 * harness::PAGE as u64;
         hook.fail_when(move |op| match op {
             Op::Read { offset, .. } if *offset == at => Some(IoError::Failed),
             _ => None,
         });
+        let (pager, _) = Pager::open(hook, &options()).unwrap();
         out = Some((pager.map_pages(), pager.quarantined()));
         pager.close();
     });
     let (refused, marks) = out.unwrap();
     let damage = Damage::Unreadable;
     assert_eq!(
-        (Err(PageError { pid: leaf, damage }), BTreeSet::new()),
+        (
+            Err(PageError { pid: leaf, damage }),
+            BTreeSet::from([Quarantine::Database])
+        ),
         (refused, marks)
     );
-    let after = session(&mut sim, |pager, _| pager.map_pages().map(|m| m.len()));
-    assert_eq!(Ok(3), after);
+    let after = session(&mut sim, |pager, _| {
+        (pager.map_pages().map(|m| m.len()), pager.quarantined())
+    });
+    assert_eq!((Ok(3), BTreeSet::new()), after);
 }
 
 #[test]
@@ -377,56 +383,60 @@ fn crash_through_a_recycle(files: &Files, pages: &[Pid], written: &BTreeMap<Pid,
     });
     let opened = opened.files();
     let mut probe = Sim::with_files(4, Config::default(), files.clone());
-    let (began, ended) = session(&mut probe, |pager, rt| {
-        let began = rt.now().as_nanos();
-        assert!(pager.recycle_log() >= 2);
-        (began, rt.now().as_nanos())
-    });
+    probe.record();
+    session(&mut probe, |pager, _| assert!(pager.recycle_log() >= 2));
+    let recording = probe.recording();
     let headers = 0..Pid::FIRST_DATA.0 as usize * harness::PAGE;
     let log = |f: &Files| -> Vec<Vec<u8>> {
         let dir = format!("{}/", options().log_dir());
         let held = f.iter().filter(|(k, _)| k.starts_with(&dir));
         held.map(|(_, v)| v.clone()).collect()
     };
+    let phase = |left: &Files| {
+        if segments(left).len() < segments(files).len() {
+            Some(2)
+        } else if left[harness::NAME][headers.clone()] != opened[harness::NAME][headers.clone()] {
+            Some(1)
+        } else {
+            (log(left) != log(&opened)).then_some(0)
+        }
+    };
+    let mut phases: [Vec<usize>; 3] = Default::default();
+    for at in 0..=recording.len() {
+        if let Some(k) = phase(&recording.images(at, 1, 0)[0]) {
+            phases[k].push(at);
+        }
+    }
+    let per_phase = if every_case() { usize::MAX } else { 4 };
     let wanted: BTreeSet<Pid> = pages.iter().copied().collect();
     let mut kinds = [0; 3];
-    const STEPS: u64 = 96;
-    for k in 0..=STEPS {
-        let mut sim = Sim::with_files(4, Config::default(), files.clone());
-        sim.crash_at(Instant::from_nanos(began + (ended - began) * k / STEPS));
-        let outcome = sim.run(|rt| {
-            let (pager, _) = Pager::open(rt, &options()).unwrap();
-            pager.recycle_log();
-        });
-        let left = sim.files();
-        if outcome == Outcome::Crashed {
-            if segments(&left).len() < segments(files).len() {
-                kinds[2] += 1;
-            } else if left[harness::NAME][headers.clone()] != opened[harness::NAME][headers.clone()]
-            {
-                kinds[1] += 1;
-            } else if log(&left) != log(&opened) {
-                kinds[0] += 1;
-            }
+    for (k, points) in phases.iter().enumerate() {
+        let step = points.len().div_ceil(per_phase).max(1);
+        for &at in points.iter().step_by(step) {
+            let mut sim =
+                Sim::with_files(4, Config::default(), recording.images(at, 1, 0).remove(0));
+            let (findings, allocated, values) = session(&mut sim, |pager, _| {
+                pager.recycle_log();
+                let values: BTreeMap<Pid, u64> = written
+                    .keys()
+                    .map(|&pid| {
+                        let page = pager.read(pid).unwrap();
+                        let value = u64::from_le_bytes(
+                            page[HEADER_LEN..HEADER_LEN + 8].try_into().unwrap(),
+                        );
+                        (pid, value)
+                    })
+                    .collect();
+                (pager.verify().findings, pager.allocated().unwrap(), values)
+            });
+            let allocated: BTreeSet<Pid> = allocated.into_iter().collect();
+            assert_eq!(
+                (Vec::new(), &wanted, written),
+                (findings, &allocated, &values),
+                "phase {k}, crash after event {at}"
+            );
+            kinds[k] += 1;
         }
-        let (findings, allocated, values) = session(&mut sim, |pager, _| {
-            let values: BTreeMap<Pid, u64> = written
-                .keys()
-                .map(|&pid| {
-                    let page = pager.read(pid).unwrap();
-                    let value =
-                        u64::from_le_bytes(page[HEADER_LEN..HEADER_LEN + 8].try_into().unwrap());
-                    (pid, value)
-                })
-                .collect();
-            (pager.verify().findings, pager.allocated().unwrap(), values)
-        });
-        let allocated: BTreeSet<Pid> = allocated.into_iter().collect();
-        assert_eq!(
-            (Vec::new(), &wanted, written),
-            (findings, &allocated, &values),
-            "step {k}"
-        );
     }
     kinds
 }
@@ -461,4 +471,98 @@ fn a_crash_at_any_point_of_a_recycle_growing_the_map_reopens_with_every_write() 
         3,
         session(&mut grown, |pager, _| pager.map_pages().unwrap().len())
     );
+}
+
+#[test]
+fn a_change_to_a_page_damaged_before_its_write_is_replayed_by_the_next_open() {
+    let (mut sim, pages) = created(1);
+    let pid = pages[0];
+    session(&mut sim, |pager, _| {
+        put(pager, pid, 1);
+        pager.checkpoint();
+        put(pager, pid, 2);
+        pager.damage(pid, Damage::Checksum);
+        pager.checkpoint();
+    });
+    let value = session(&mut sim, |pager, _| {
+        let page = pager.read(pid).unwrap();
+        u64::from_le_bytes(page[HEADER_LEN..HEADER_LEN + 8].try_into().unwrap())
+    });
+    assert_eq!(2, value);
+}
+
+#[test]
+fn a_gap_in_the_retained_log_quarantines_the_database_for_the_open_and_marks_nothing() {
+    let (mut sim, pages) = created(8);
+    session(&mut sim, |pager, _| fill(pager, &pages, 3 * SEGMENT));
+    let files = sim.files();
+    let held = segments(&files);
+    assert!(held.len() >= 3, "{held:?}");
+    let gap = format!("{}/{:016x}", options().log_dir(), held[1]);
+    let mut gapped = files.clone();
+    gapped.remove(&gap).unwrap();
+    let mut sim = Sim::with_files(3, Config::default(), gapped);
+    let marks = session(&mut sim, |pager, _| pager.quarantined());
+    assert_eq!(BTreeSet::from([Quarantine::Database]), marks);
+    let mut back = sim.files();
+    back.insert(
+        gap,
+        files[&format!("{}/{:016x}", options().log_dir(), held[1])].clone(),
+    );
+    let marks = session(
+        &mut Sim::with_files(3, Config::default(), back),
+        |pager, _| pager.quarantined(),
+    );
+    assert_eq!(BTreeSet::new(), marks);
+}
+
+#[test]
+fn a_lost_write_whose_record_is_recycled_is_refused_on_its_first_read() {
+    let (mut sim, pages) = created(8);
+    let before = sim.files();
+    let pid = pages[0];
+    session(&mut sim, |pager, _| {
+        put(pager, pid, 1);
+        fill(pager, &pages[1..], 3 * SEGMENT);
+    });
+    assert!(session(&mut sim, |pager, _| pager.recycle_log()) >= 1);
+    let after = sim.files();
+    let first = segments(&after)[0];
+    let lost = reverted(after.clone(), &before, pid);
+    let read = session(
+        &mut Sim::with_files(3, Config::default(), lost),
+        |pager, _| pager.read(pid).map(drop),
+    );
+    let damage = Damage::Stale {
+        expected: lsn_of(&after, pid),
+        found: lsn_of(&before, pid),
+    };
+    assert!(lsn_of(&after, pid).0 < first, "{first}");
+    assert_eq!(Err(PageError { pid, damage }), read);
+}
+
+#[test]
+fn a_lost_write_past_the_maps_entry_of_its_page_is_refused_on_its_first_read() {
+    let (mut sim, pages) = created(8);
+    let pid = pages[0];
+    session(&mut sim, |pager, _| {
+        put(pager, pid, 1);
+        fill(pager, &pages[1..], 3 * SEGMENT);
+    });
+    assert!(session(&mut sim, |pager, _| pager.recycle_log()) >= 1);
+    let before = sim.files();
+    let first = segments(&before)[0];
+    assert!(lsn_of(&before, pid).0 < first, "{first}");
+    session(&mut sim, |pager, _| put(pager, pid, 2));
+    let after = sim.files();
+    let lost = reverted(after.clone(), &before, pid);
+    let read = session(
+        &mut Sim::with_files(3, Config::default(), lost),
+        |pager, _| pager.read(pid).map(drop),
+    );
+    let damage = Damage::Stale {
+        expected: lsn_of(&after, pid),
+        found: lsn_of(&before, pid),
+    };
+    assert_eq!(Err(PageError { pid, damage }), read);
 }

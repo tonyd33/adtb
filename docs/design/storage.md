@@ -405,7 +405,7 @@ operating error and never handed out as data.
 | Torn write | Checksum mismatch; repaired from a full-page image in the log (§5.2) |
 | Truncated file | After recovery, a bit of the allocation bitmap set past the end of the file refuses that page, and a bitmap page of a started group past the end of the file (§1.1) reads blank and is refused as below; a page a directory entry, index entry, version chain or out-of-line pointer names that reads all zero is refused on every read and write that reaches it through that name |
 | Lost or zeroed bitmap | A blank bitmap page of a started group (§1.1) is refused on every allocation, free and read of the bitmap, before anything is written, and marks the database (§8) |
-| Lost write | Page LSN older than the retained log says it must be, in recovery (§7) and in `verify` and scrub ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)); in `verify`, scrub and backup, a page whose last record is recycled, older than the page LSN map holds for it (§6); a page read back after the pool dropped it, older than it was then, while the pool's bounded table of dropped pages still holds it (§10.3) |
+| Lost write | Page LSN older than the retained log says it must be, in recovery (§7) and in `verify` and scrub ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)); in `verify`, scrub and backup, a page whose last record is recycled, older than the page LSN map holds for it (§6); on every read of a page from the file, an LSN below its expected LSN, refused as stale: its last record in the retained log, or else its entry in the page LSN map, or the LSN of the last record logged for it since the open. A blank page with an expected LSN is stale with LSN 0. The commit log alone reads a stale status page, settles it and writes it back ([mvcc.md §4.2](mvcc.md#42-the-commit-log)) |
 | Lost or misdirected log write | A page read from the file at or past the end of the log recovery kept, or past the log's next LSN once the open has written the page, refused as stale on every read, write, replay and backup that reads it, and in `verify` and scrub; a page LSN, on the page or as a record's previous LSN, that no retained record wrote: past the page's last record in a log with no gap, or at or past the end of the log recovery kept in a gapless log retained from at or before that end; in `verify` and scrub, as an `Unlogged` log finding (§7) |
 
 A page that fails verification on read quarantines the heap or index
@@ -693,6 +693,10 @@ Postconditions of a recycle:
   removed or closed.
 - The map holds, for every page below the file's end named by a removed
   segment, at least the LSN of its last record there.
+
+The expected LSNs a pager holds (§10.3) take 8 bytes of memory per page
+of the file, plus an entry per page the retained log names past its
+map entry.
 
 Rulings: buffer/checkpoint/fuzzy
 
@@ -1015,11 +1019,24 @@ comes back; any latch or optimistic read clears the mark.
 The pool reserves the range for `max_pages` page ids when it opens.
 The dirty page table, the set of pages changed since their last
 write, and the set written since the last data force sit beside the
-page memory under one lock. The pager remembers the LSN a page had
-when it was evicted, to catch a lost write when the page is read back,
-in a direct-mapped table of four slots per frame: a later eviction of
-a page sharing the slot replaces the entry, and the page it displaced
-is no longer checked until it is evicted again. The page LSN map
+page memory under one lock. The pager holds the expected LSN of every
+page (§3) from the open: the page LSN map's entries in an array of 8
+bytes per page of the file, about 1 GiB per TiB of file at 8 KiB pages,
+and the LSNs past them that the retained log or a later record gives in
+a hash table of one entry per page those records name. Recovery builds
+both as its last step, before the open reads any page recovery did not
+replay: it reads the whole map, then scans the retained log to the end
+recovery kept, decoding only the page and LSN of each record. A segment
+it cannot list, open or read, a block missing or a batch whose records
+do not decode before that end quarantines the whole database for that
+open and writes nothing, no mark included; a map page the open cannot
+read does the same. While the database is held quarantined this way,
+no page read in is checked against an expected LSN. Damaging a page
+outside recovery drops its memory but keeps its entry in the dirty page
+table, so a checkpoint's redo point stays at or before its oldest change
+the file lacks; until the page is written again, every checkpoint of
+that open keeps its redo point there and a recycle removes no segment
+from it on. The page LSN map
 (§6) is read through the pool like any page, from the root to a leaf,
 each page checked against its parent. Group commit is §10.1.
 Pages in flight for a read are held exclusive; writes go out under a

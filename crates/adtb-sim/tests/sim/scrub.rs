@@ -888,7 +888,10 @@ fn a_pass_reading_an_old_log_does_not_refuse_a_page_healed_since() {
     let mut sim = Sim::with_files(42, Config::default(), files);
     finished(&mut sim, |rt| {
         let db = open(rt.clone());
-        insert(&db, 4, 5);
+        let refused = api::failure(&db, r#"insert users { id: users.key(4), name: "user" }"#);
+        let what = "app::users key id".to_owned();
+        let reason = FatalReason::Quarantined { what };
+        assert_eq!(Error::Fatal { reason }, refused);
         flush(&db);
         set_io(&db, "0.00001");
         set_interval(&db, "Some { value: 0s }");

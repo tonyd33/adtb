@@ -250,8 +250,8 @@ write path turns this into the durable database mark
 ([storage.md §8](storage.md#8-quarantine)) when the failure reaches it;
 the in-memory state keeps the first damage for the transaction layer,
 which holds no reference to the marks. `Transactions::open` reads every
-status page before it writes any, so a status page damaged at rest
-quarantines the database at open, the open sets the mark and no id is
+status page before it writes any, so a status page damaged at rest,
+other than one that lost a write, quarantines the database at open, the open sets the mark and no id is
 resolved. A retained log too damaged to settle an id in progress does
 the same. A catalog row is then read only as
 [storage.md §8](storage.md#8-quarantine) states. From then on every transaction is refused with the corruption fault: no
@@ -283,6 +283,16 @@ kept. When that stretch of the log is not whole and readable (a segment
 it cannot list, open or read, a batch whose records do not decode, or a
 block missing), the open quarantines the whole database as a damaged
 status page does and settles no id.
+
+A status page whose LSN is below the one the pager expects of it
+([storage.md §3](storage.md#3-corruption-detection)) is refused stale to
+every reader but the commit log. The open of the commit log reads the
+file's copy of such a page, settles every id on it in progress from the
+same retained log, and writes it back as a change from that copy, so
+`verify` still reports the lost write. When the database is already
+quarantined whole, the open writes nothing but still reads that stretch
+of the retained log, and quarantines the database as above when it is
+not whole and readable.
 
 Postconditions, after a crash and recovery, on an open that quarantines
 nothing:
