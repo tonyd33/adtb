@@ -63,9 +63,7 @@ Be firm and opinionated about the project's design and direction. Refuse a reque
   Rebase the track onto main first, then run its check. Use targeted checks
   during implementation and review; assign final verification on the reviewed
   tree. Database, language or shared-runtime production changes and unbounded
-  impact get one full check. The fixture and isolated opt-in leaf-tool rules
-  in verification.md use complete affected-package checks with explicit
-  integration evidence. Name one owner so author and lead do not duplicate it.
+  impact get one full check. Name one owner so author and lead do not duplicate it.
 - Authors run `check --changed` for their round: fmt, clippy, the suite, size-check and
   house-check always, and Miri, Loom, the campaign, tree-sitter, docs, deny and each
   `work/tools/*-test` only when `work/tools/check-reach` finds a path of `main..@` in that
@@ -110,9 +108,9 @@ Do not act as a relay for review findings. Before a ruling or a next-round brief
 
 - Name the finding's cause and check it against [the defect classes](defect-classes.md). A finding in a listed class goes to that class's mechanism, or the brief says why not.
 - State a ruling as the general rule it applies. If the rule is only the case in hand, say so, and look for what else breaks it across the code before adopting.
-- Every bug ticket carries the tag of its class (`class-SLUG`, listed in defect-classes.md with its mechanism ticket) or the tag `class-none`. Once a class has three instances (tickets neither wontfix nor its mechanism tickets) and a mechanism ticket is open or in progress, its next brief is a mechanism ticket; a site fix in it needs a `Site fix because:` line naming why it cannot wait. `work/tools/slot` refuses a brief that breaks this.
+- Assign a bug ticket its class when triaging it into a track, not when filing it: the tag of its class (`class-SLUG`, listed in defect-classes.md with its mechanism ticket) or the tag `class-none`. Once a class has three instances (tickets neither wontfix nor its mechanism tickets) and a mechanism ticket is open or in progress, its next brief is a mechanism ticket; a site fix in it needs a `Site fix because:` line naming why it cannot wait. `work/tools/slot` refuses a brief that breaks this.
 - A ruling that makes a source authoritative (a log record, a page, a manifest) also rules what happens when that source is partial, unreadable or missing, and every reader of the ruling's outcome (open, dump, verify) is named in the brief.
-- A stop line for a round that asks for named tests is sized from them: about 40 lines per sim test and 20 per unit test, from the nearest existing one.
+- A brief's size is an estimate, not a stop line: about 40 lines per sim test and 20 per unit test, from the nearest existing one. The author says in its report when the change grew well past it.
 - Ask whether the work reaches a user. Authority logic with no caller, or a setting nothing reads, is not done, whatever its tests say.
 
 - Prefer the enforcer that needs no one to remember it, in this order: type, lint, searching test, process. When a review shows a run-time heuristic can fire falsely or be missed, ask what the compiler could refuse instead.
@@ -125,7 +123,7 @@ Do not act as a relay for review findings. Before a ruling or a next-round brief
   the lead rules on ambiguity and design constraints, not routine log triage.
   Keep independent work moving while replacing a known-invalid oracle; retain
   evidence and verify the valid property before claiming completion.
-- Judge tests by [Test value](../../../AGENTS.md#test-value). Ask each reviewer to name, for each new test that matters, the mutation that would make it fail, and to report assertions that cannot fail. Before deleting a test on an audit's word, check what covers it. A read-only finding is a candidate; mutation is the measure.
+- Judge tests by [Test value](../../../AGENTS.md#test-value). Ask each reviewer to report assertions that cannot fail. Before deleting a test on an audit's word, check what covers it.
 - Make runtime fixture cases the default. Require justification for retaining
   compiled Rust cases, separating reusable driver logic from input/expected
   data. A missing runner feature is a design question about the shared driver,
@@ -178,23 +176,13 @@ that the worker is unblocked.
 - After a review with blockers, review the delta yourself or with a fresh
   agent; a blocker-free round needs no new full review. Run the full check
   only on the final round.
-- A delta round that adds a mechanism the review never saw (a latch taken while another is held, a retry loop, a new thread or wait) gets a scoped review of that mechanism before landing, even after a blocker-free review. A fix round that held two page latches at once hung `find` against prune.
-- Overlap independent review of a stable snapshot with targeted tests and
-  mutations of the candidate. Give the reviewer an immutable revision; keep
-  mutation edits out of its view. Run the final full check after both converge.
-  When the author continues rewriting a jj change, duplicate the frozen revision
-  onto its existing stable parents with `jj duplicate REV`, then check out an
-  empty child of that duplicate in the review workspace. Compare its full tree
-  with REV and record the empty diff. An ordinary child of the author's change
-  rebases when the author amends it; a hash in the brief does not pin that checkout.
-  Keep the original revision as evidence provenance and never land the review copy.
 - Give every track that changes code a review by a fresh agent, in a child workspace, before it lands: the author's own checks do not count. Tell it to form its view before reading the receipt. Give a review that builds a slot, moved to the commit with `jj new REV`, so it reuses a build directory.
-- A review that runs no build is a read-only track, and its verdict rests on reading. Check yourself anything it says it could not confirm, such as the provenance of expected values, and rely on the author's mutants and the full check for the rest. Prefer a review with targeted builds and mutants when build capacity allows, and for `unsafe` or concurrency code.
-- A small edit of your own after a blocker-free review, such as a test or a stated precondition, needs no second review. Run a new test against the mutant it is meant to kill, and pass it through the full check.
+- A review that runs no build is a read-only track, and its verdict rests on reading. Check yourself anything it says it could not confirm, such as the provenance of expected values, and rely on the full check for the rest. Prefer a review with targeted builds for `unsafe` or concurrency code.
+- A small edit of your own after a blocker-free review, such as a test or a stated precondition, needs no second review. Pass it through the full check.
 - Commit an edit in the main checkout before the next command: a jj operation in a slot that runs beside one in the main checkout leaves the main working copy stale. To recover, copy the edited files aside, run `jj workspace update-stale`, and compare them before going on.
 - When a review finds an older wrong answer next to the change, a third in one subsystem means the cause is a class there, not a site: brief an audit of that subsystem for the class before the next fix in it.
 - A follow-up a review files that changes no answer, loses no data and opens no hang goes on the track's follow-ups ticket at its priority, not above the queue's wrong answers. Close a follow-ups ticket as wontfix when nothing on it has moved for a month of tracks.
-- Land a performance track on its measured saving, against a stop line in its brief. A change that adds code and does not move its measure stays unlanded: record why on the ticket, keep the commit, and free the workspace. Compare CPU time across sessions only with the load noted: load alone has moved it by about 20%.
+- Land a performance track on its measured saving, against the target in its brief. A change that adds code and does not move its measure stays unlanded: record why on the ticket, keep the commit, and free the workspace. Compare CPU time across sessions only with the load noted: load alone has moved it by about 20%.
 
 ## Land
 

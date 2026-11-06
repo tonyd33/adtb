@@ -131,7 +131,7 @@ denies, among others, `type_complexity` (name a `type` alias),
 `uninlined_format_args` and `self_named_module_files` (a module with
 children is `foo/mod.rs`, never `foo.rs` beside `foo/`).
 
-During implementation, run targeted checks and named mutation tests.
+During implementation, run targeted checks.
 For a code track, the brief names one owner for the authoritative `check`
 on the final reviewed tree. Run it before reporting only if you own it;
 otherwise report targeted results and the remaining owner.
@@ -187,7 +187,7 @@ if it provides completion notifications, use them. Avoid busy polling.
 Before repeating a command, preserve its canonical output artifacts at unique
 stage paths as well as stdout/stderr. Some tools keep failure details in files
 that the next invocation overwrites. For suite, preserve target/suite.txt before
-running the next case or mutation.
+running the next case.
 
 For a timeout, report the test, suite conditions and any isolated outcome.
 An isolated pass leaves the cause unresolved unless other evidence proves
@@ -249,37 +249,16 @@ Use targeted suites during each round; reserve the full check for the final
 reviewed tree and its assigned owner. A `--workspace` run or `work/tools/suite`
 while iterating is the largest avoidable cost measured across agents. Start from
 the files your brief names and `work/tools/codemap`; broad reading is the next
-largest. For performance tracks, follow the staged
-screen in verification.md: known regression first, primary improvement next,
-then expensive mutation and final verification only for surviving candidates.
-Do not use a provisional screen as correctness certification. Repeat checks only
-for changed inputs, failures or unresolved concerns. Run `work/tools/suite` in the background:
-it can wait out a whole `check`, and a foreground call with a harness timeout
-dies waiting. Run each mutant against the test expected to kill it, by name.
-Mutate every guard, branch and match arm your change adds, not one site for the
-whole change: delete it or invert it, and each must fail a test by name. A
-survivor is a missing test; add it before reporting. A stop line is a check-in:
-when a count reaches it, stop and report the size and what remains before going on.
-Count with `jj diff --stat` before starting each new file or test module, and stop
-before a file that would carry the count past the line, not after writing it.
-Write a file of more than about 150 lines in pieces, running `cargo fmt` and
-counting after each: formatting grows a file, and a whole module written in one
-pass has twice landed hundreds of lines past its line.
-Run mutants with `work/tools/mutants`, one build for all of them. Wrap each
-mutated expression in the `mutant` macro of the `adtb-mutant` crate, called by its
-full path with the ID, the original and the mutated expression; a statement goes
-by its expression, the mutated one `()`. The crate's doc comment shows the form;
-adtb, adtb-sys and adtb-lang depend on it. One ID names one site. List `ID FILTER` a line in a file under `target/`, FILTER
-naming the test expected to kill it, and run `work/tools/mutants FILE -p PACKAGE
---test BINARY`. Remove every site before reporting: `house-check` reports one and
-`land` refuses it. A mutant that is not an expression (a pattern, a type, a match
-arm) or that a source-searching test reads is still an edit, rebuild and run:
-restore the file with `cp` without `-p`, never `mv` of a backup, `cp -p` or
-`perl -i.keep` followed by a rename, so it gets a new mtime; cargo trusts mtimes.
+largest. A performance track reports a before and after benchmark of the workload its brief names.
+Repeat checks only for changed inputs, failures or unresolved concerns. Run `work/tools/suite`
+in the background: it can wait out a whole `check`, and a foreground call with a harness timeout
+dies waiting. A bug fix's regression test fails on the code before the fix: show that once, by
+running it on the parent revision or with the fix reverted, and record the failure in the
+receipt. The size in a brief is an estimate; say in the report when the change grew well past it.
 
 ## Scripts
 
-Keep your scripts, mutation drivers and their logs under your workspace's `target/`. A scratchpad
+Keep your scripts and their logs under your workspace's `target/`. A scratchpad
 directory may be shared with other agents in the session: a script there can be overwritten by
 another track, and running it can change that track's workspace.
 
