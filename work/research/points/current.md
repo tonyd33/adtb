@@ -581,6 +581,7 @@ accept:
   security/capability-names/any-relation: {title: 'A capability command names any relation, and an absent one answers as absent', reason: an operator must not need data grants}
   security/catalog/open: {title: Every role reads the whole catalog, reason: applications read the catalog only through registered queries; the ad hoc role is granted catalog constructor sets like any others}
   security/drop-grantor/refuse: {title: Refuse naming the rows while the role is grantor of any deployment row, reason: a drop must not bypass who may revoke a row nor the orphan refusal; one rule covers both shapes}
+  security/dump-key-audit/param-only-omitted: {title: 'The `encrypt` and `decrypt` operand must be a parameter, never part of the text, and a Call row''s `args` hash leaves that parameter''s value out', reason: 'the text never holds the passphrase and args omits it, so no fast hash of it is audited; local to two commands; keyed hashes change every row for no gain against a reader of the file'}
   security/encrypt/io-cost/staging: {title: Encrypt into a per-I/O staging buffer on write; decrypt in place in the frame on read, reason: 'encrypt into a staging buffer on write, so optimistic readers never see ciphertext'}
   security/encrypt/page: {title: The pager encrypts each page as it is written and decrypts it as it is read, reason: 'the pager owns every page write, so it encrypts there; the host cannot see engine-managed direct I/O'}
   security/export-occupied/refuse: {title: Refused, reason: same as backup}
