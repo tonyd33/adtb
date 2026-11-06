@@ -933,8 +933,32 @@ returns with the mark durable. When it fails, the mark still holds in
 memory until the pager closes. An I/O failure reading the marks' page at
 open fails the open and marks nothing.
 
-The pager reports a damaged page to its caller (§2.3); the caller maps
-the page to its heap or index and marks that:
+The marks of damaged pages are derived from the damage records (§6). One
+mapper takes each record not yet mapped this open, maps its page to the
+object holding it and marks that object; a record counts as mapped only once
+its marks are set. Which records are mapped is memory state, empty at every
+open, so every open maps every record again and a mark a crash lost comes
+back. The mapper runs at three points and nowhere else:
+
+- every open, once the catalog loads, whether the open succeeds or fails;
+- the end of an API call, holding no page latch and not the serialization
+  lock, whatever the call returns;
+- a commit, under its hold of the serialization lock and before it checks
+  the marks, while any record is unmapped. It maps only the records
+  unmapped when its mapping begins, and leaves out a record whose last
+  mapping was incomplete. Each record it maps runs the walks of every heap,
+  large-value store and index, each walk up to its bounded number of runs.
+  Damage a read of those walks detects, on a page with no record when the
+  mapping began, maps to the database with no walk of its own. A record
+  another call appends meanwhile, even on a page those walks then read,
+  waits for that call's end, the next commit or the next open.
+
+A settled status page, a stale log block and `Damage::Unreadable` map to
+nothing. A full damage list maps every record to the database. An `Order`,
+`Orphan` or `Missing` finding, and an index entry naming an unused slot,
+mark their index at the call that finds them. The failure a call returns
+names what its page's record was mapped to, and a failure of the
+transactions layer names the database once the database is marked. A page maps as follows:
 
 - a page of a constructor's heap, current or history, marks that heap; a
   page of an index marks that index, and a page of a history key index
@@ -946,27 +970,27 @@ the page to its heap or index and marks that:
 - a walk that stops on an I/O failure, or still stops on a shape when its
   runs are spent, leaves the mapping incomplete. An incomplete mapping that
   found no holder marks nothing, not even the database, and the call fails
-  as a storage failure naming the page; the next read that meets the page
-  maps it again;
+  as a storage failure naming the page; its record stays unmapped, and the
+  next open or end of a call maps it again. A commit does not, and the
+  page still refuses every read, so no commit writes through it;
 - a page of a relation of an engine module, a page of the large-value
   store every heap shares, and an allocated page a complete walk of every
   heap and index does not reach mark the database;
 - a page the allocation bitmap calls free, read before and after the walk,
-  marks nothing, and a page of the store of kept rows marks nothing;
+  marks nothing, and a page of the store of kept rows marks nothing. A walk
+  of that store stopped by damage leaves the mapping incomplete;
 - `Damage::Unreadable`, an I/O failure, marks nothing and stays a storage
   failure.
 
-An open that fails maps what it found the same way, with the catalog's
-structures, and marks nothing for a page they do not reach. When the
-catalog itself does not open, only a page of its root, its kept-rows heap
-or the commit log is mapped, to the database.
+An open maps with the catalog's structures, and marks nothing for a page
+they do not reach. When the catalog itself does not open, only a page of its
+root, its kept-rows heap or the commit log is mapped, to the database.
 
 An `Order`, `Orphan` or `Missing` finding comes from a check that holds off
 vacuum across its index, and vacuum is the one writer that frees a page of a
 tree, so concurrent writers cannot make the check's walks follow a freed page.
 
-The write path maps and marks once the failed call has unwound, holding
-no page latch. The planner and the
+The planner and the
 transactions layer read the marks and rely on them as follows
 ([execution.md §6](execution.md#6-quarantine)):
 

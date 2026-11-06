@@ -722,33 +722,31 @@ fn unsupported(what: &str) -> Error {
     Error::invalid(format!("{what} does not run in this engine yet"))
 }
 
-/// Mark what holds each page that failed verification while the database opened. A page of the
-/// catalog or commit log marks the database. A page nothing maps marks nothing. A failure to
-/// write a mark is left to the next open, which finds the same damage.
-fn mark_open_damage<R: Runtime>(rt: R, pager: &Pager<R>) {
-    let damaged: Vec<storage::Pid> = pager
-        .damaged()
-        .into_iter()
-        .filter(|(_, d)| !matches!(d, storage::Damage::Unreadable))
-        .map(|(pid, _)| pid)
-        .collect();
-    if damaged.is_empty() {
-        return;
-    }
-    let objects: BTreeSet<storage::Quarantine> = match Catalog::load(rt, pager) {
-        Ok((catalog, txns)) => damaged
-            .iter()
-            .flat_map(|&pid| catalog.holders(pager, &txns, pid))
-            .collect(),
-        Err(_) => damaged
-            .iter()
-            .filter(|&&pid| Catalog::opens_from(pager, pid))
-            .map(|_| storage::Quarantine::Database)
-            .collect(),
-    };
-    for object in objects {
-        pager.quarantine(object).ok();
-    }
+/// Map the damage recorded and not yet mapped through the catalog's structures and mark what
+/// holds it. A page of the catalog or commit log marks the database. A page nothing maps marks
+/// nothing. A failure to write a mark is left to the next open, which maps the same records.
+fn mark_open_damage<R: Runtime>(pager: &Pager<R>, catalog: &Catalog, txns: &Transactions<R>) {
+    pager.map_damage(
+        |pid| catalog.holders(pager, txns, pid),
+        |object| pager.quarantine(object),
+    );
+}
+
+/// Map the damage recorded after a failed open: by the catalog, else by `Catalog::opens_from`.
+fn mark_failed_open_damage<R: Runtime>(rt: R, pager: &Pager<R>) {
+    let mut loaded = None;
+    pager.map_damage(
+        |pid| match loaded.get_or_insert_with(|| Catalog::load(rt.clone(), pager).ok()) {
+            Some((catalog, txns)) => catalog.holders(pager, txns, pid),
+            None => Some(
+                Catalog::opens_from(pager, pid)
+                    .then_some(storage::Quarantine::Database)
+                    .into_iter()
+                    .collect(),
+            ),
+        },
+        |object| pager.quarantine(object),
+    );
 }
 
 /// Returns the damage an open that failed may still answer `verify` over: a page that failed
@@ -898,7 +896,7 @@ impl<R: Runtime> Engine<R> {
             Err(e) => return Err(corrupt(e)),
         };
         let opened = Engine::on(rt.clone(), pager.clone(), log, options).or_else(|e| {
-            mark_open_damage(rt.clone(), &pager);
+            mark_failed_open_damage(rt.clone(), &pager);
             let opened = open_damage(&pager).map_or(Err(e), |damage| {
                 Engine::unread(rt.clone(), pager.clone(), options, damage)
             });
@@ -1056,8 +1054,12 @@ impl<R: Runtime> Engine<R> {
         options: &OpenOptions,
     ) -> Result<Engine<R>, OpenError> {
         let (mut catalog, txns) = Catalog::open(rt.clone(), &pager).map_err(corrupt)?;
+        mark_open_damage(&pager, &catalog, &txns);
         let clog_damaged = txns.quarantined().is_some();
-        if clog_damaged {
+        if txns
+            .quarantined()
+            .is_some_and(|e| matches!(e.damage, storage::Damage::LogUnproven { .. }))
+        {
             pager.quarantine(storage::Quarantine::Database).ok();
         }
         let writable = !pager.is_quarantined(storage::Quarantine::Database);

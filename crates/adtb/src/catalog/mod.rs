@@ -848,17 +848,22 @@ impl Catalog {
 
     /// Returns what the damage at `pid` quarantines, found before the write path exists: the
     /// holder of a page the catalog's structures reach, and nothing for any other page. The roots
-    /// heap's damage marks the database.
+    /// heap's damage marks the database. Returns `None` when the mapping is incomplete.
     pub fn holders<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
         pid: Pid,
-    ) -> BTreeSet<Quarantine> {
+    ) -> Option<BTreeSet<Quarantine>> {
         let mut holdings = Holdings::new(&self.schema);
         holdings.roots(&self.roots, Some(Quarantine::Database));
         for (&(r, c), heap) in &self.heaps {
-            holdings.heaps(r, heap, self.kept.heap(r, c).map(|p| &**p));
+            let past = self.kept.heap(r, c);
+            holdings.heaps(r, heap, past.map(|p| &**p));
+            holdings.large(heap.large());
+            if let Some(p) = past {
+                holdings.large(p.large());
+            }
         }
         for (spec, index, _) in self.indexes.values() {
             let tree = index.tree();

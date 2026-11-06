@@ -2,7 +2,7 @@
 //! to the marks by, and the plans that avoid a quarantined index.
 
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::kernel::{Kind, Terms, Tm};
 use adtb_lang::schema::OnDelete;
@@ -47,8 +47,8 @@ impl<R: Runtime> Database<R> {
     /// Returns what the damage at `pid` quarantines: the constructor heap or index holding the
     /// page, current or history, and otherwise the database. Every heap shares the one
     /// large-value store, so its pages fall to the database. The roots heap's damage marks
-    /// nothing.
-    fn holders(&self, pid: Pid) -> BTreeSet<Quarantine> {
+    /// nothing. Add to `met` each page whose damage stopped a walk.
+    fn holders(&self, pid: Pid, met: &mut BTreeSet<Pid>) -> Option<BTreeSet<Quarantine>> {
         let mut holdings = Holdings::new(&self.schema);
         if let Some(kept) = &self.kept_store {
             holdings.roots(kept, None);
@@ -70,9 +70,10 @@ impl<R: Runtime> Database<R> {
                 holdings.trees(r.id, tree.owner(), std::iter::once(tree).chain(past));
             }
         }
-        self.pager.holders_of(pid, Some(Quarantine::Database), |h| {
-            holdings.walk(&self.pager, h);
-        })
+        self.pager
+            .holders_meeting(pid, Some(Quarantine::Database), met, |h| {
+                holdings.walk(&self.pager, h);
+            })
     }
 
     /// Returns the name a client sees of `object`.
@@ -101,14 +102,39 @@ impl<R: Runtime> Database<R> {
         self.pager.quarantine(object)
     }
 
-    /// Mark `objects`. Returns the failure of the call that found them.
+    /// Map the damage recorded and not yet mapped, setting each mark under the serialization
+    /// lock. Returns each object whose mark holds only in memory, with why.
     ///
-    /// Precondition: the calling thread holds no page latch.
-    fn mark(&self, objects: BTreeSet<Quarantine>) -> Error {
+    /// Precondition: the calling thread holds no page latch and not the serialization lock.
+    fn map_damage(&self) -> BTreeMap<Quarantine, PageError> {
+        self.pager.map_damage(
+            |pid| self.holders(pid, &mut BTreeSet::new()),
+            |o| self.set_mark(o),
+        )
+    }
+
+    /// Map the damage recorded and not yet mapped for a commit, so that a mark its damage sets
+    /// stops the commit. Leave out a record whose last mapping was incomplete, and map damage
+    /// the walks detect to the database with no walk of its own.
+    ///
+    /// Precondition: the calling thread holds the serialization lock and no page latch.
+    pub(super) fn map_committing(&self) {
+        self.pager.map_committing(
+            |pid, met| self.holders(pid, met),
+            |o| self.pager.quarantine(o),
+        );
+    }
+
+    /// Returns the failure naming `objects`, each failed mark of `failed` named with why.
+    fn quarantined_as(
+        &self,
+        objects: &BTreeSet<Quarantine>,
+        failed: &BTreeMap<Quarantine, PageError>,
+    ) -> Error {
         let mut names = Vec::new();
         for object in objects {
-            let mut name = self.quarantined_name(object);
-            if let Err(e) = self.set_mark(object) {
+            let mut name = self.quarantined_name(*object);
+            if let Some(e) = failed.get(object) {
                 name.push_str(&format!(" (the mark holds only in memory: {e:?})"));
             }
             names.push(name);
@@ -116,61 +142,60 @@ impl<R: Runtime> Database<R> {
         Error::Quarantined(names.join(", "))
     }
 
-    /// Returns `e`, with damage to a page or the commit log marked and turned into the failure
-    /// naming what is quarantined. An I/O failure stays as it is and sets no mark.
+    /// Returns `e` once the damage recorded is mapped, a failure on a damaged page turned into
+    /// the failure naming what its damage quarantines, and a failure of the transactions layer
+    /// into the failure naming the database once the database is marked. An orphan entry marks
+    /// its index. An I/O failure stays as it is.
     ///
-    /// Precondition: the calling thread holds no page latch.
+    /// Precondition: the calling thread holds no page latch and not the serialization lock.
     pub fn quarantining(&self, e: Error) -> Error {
-        let damage = |p: &PageError| !matches!(p.damage, Damage::Unreadable);
+        let mut failed = self.map_damage();
         match e {
-            Error::Page(p) if damage(&p) => {
-                let held = self.holders(p.pid);
-                if held.is_empty() {
-                    Error::Page(p)
-                } else {
-                    self.mark(held)
+            Error::Page(p) if p.damage != Damage::Unreadable => match self.pager.mapped_to(p.pid) {
+                Some(objects) if !objects.is_empty() => self.quarantined_as(&objects, &failed),
+                _ => Error::Page(p),
+            },
+            Error::OrphanEntry(index) => {
+                let object = Quarantine::Index(index);
+                if let Err(e) = self.set_mark(object) {
+                    failed.insert(object, e);
                 }
+                self.quarantined_as(&BTreeSet::from([object]), &failed)
             }
-            Error::OrphanEntry(index) => self.mark(BTreeSet::from([Quarantine::Index(index)])),
-            Error::Transactions(_) if self.txns.quarantined().as_ref().is_some_and(damage) => {
-                self.mark(BTreeSet::from([Quarantine::Database]))
+            Error::Transactions(_) if self.pager.is_quarantined(Quarantine::Database) => {
+                self.quarantined_as(&BTreeSet::from([Quarantine::Database]), &failed)
             }
             e => e,
         }
     }
 
-    /// Mark what `found` implicates: the index of an `Order`, `Orphan` or `Missing` finding and
-    /// the holder of a damaged page. Returns a finding for each mark that holds only in memory.
+    /// Mark the index of each `Order`, `Orphan` or `Missing` finding of `found`, and map the
+    /// damage recorded. Returns a finding for each mark that holds only in memory.
+    ///
+    /// Precondition: the calling thread holds no page latch and not the serialization lock.
     pub fn quarantine_findings(&self, found: &BTreeSet<Found>) -> Vec<Found> {
-        let mut objects = BTreeSet::new();
+        let mut failed = self.map_damage();
         for f in found {
-            match f {
-                Found::Order { index, .. }
-                | Found::Orphan { index, .. }
-                | Found::Missing { index, .. } => {
-                    if let Some(i) = self.indexes.get(&IndexId(*index)) {
-                        objects.insert(Quarantine::Index(i.index.tree().owner()));
-                    }
+            if let Found::Order { index, .. }
+            | Found::Orphan { index, .. }
+            | Found::Missing { index, .. } = f
+                && let Some(i) = self.indexes.get(&IndexId(*index))
+            {
+                let object = Quarantine::Index(i.index.tree().owner());
+                if let Err(e) = self.set_mark(object) {
+                    failed.insert(object, e);
                 }
-                Found::Checksum {
-                    page: Some(pid), ..
-                }
-                | Found::StalePage { page: pid, .. } => objects.append(&mut self.holders(*pid)),
-                _ => {}
-            }
-        }
-        let mut failed = Vec::new();
-        for object in objects {
-            if let Err(e) = self.set_mark(object) {
-                failed.push(Found::Structure {
-                    at: format!(
-                        "the mark of {} holds only in memory: {e:?}",
-                        self.quarantined_name(object)
-                    ),
-                });
             }
         }
         failed
+            .into_iter()
+            .map(|(object, e)| Found::Structure {
+                at: format!(
+                    "the mark of {} holds only in memory: {e:?}",
+                    self.quarantined_name(object)
+                ),
+            })
+            .collect()
     }
 
     /// Fail if the database is quarantined.

@@ -224,6 +224,10 @@ pub struct Shared<R: Runtime> {
     pub(crate) marks: Lock<super::quarantine::Marks>,
     /// Whether `marks` holds any mark. Set before a mark shows in `marks`.
     pub(crate) any_mark: std::sync::atomic::AtomicBool,
+    /// Whether a damage record may be unmapped. Set under the meta lock with the record.
+    pub(crate) any_unmapped: std::sync::atomic::AtomicBool,
+    /// How many damaged pages this open has walked the objects for.
+    pub(crate) walked: std::sync::atomic::AtomicU64,
     archive: Lock<Option<ArchiveHook>>,
     /// Held across a recycle of the log, taken before any other lock or latch.
     recycling: Lock<()>,
@@ -448,6 +452,8 @@ impl<R: Runtime> Pager<R> {
             alloc: Lock::new(Default::default()),
             marks: Lock::new(Default::default()),
             any_mark: std::sync::atomic::AtomicBool::new(false),
+            any_unmapped: std::sync::atomic::AtomicBool::new(false),
+            walked: std::sync::atomic::AtomicU64::new(0),
             archive: Lock::new(None),
             recycling: Lock::new(()),
             rt,
@@ -812,6 +818,10 @@ impl<R: Runtime> Pager<R> {
         m.damaged.insert(pid, damage);
         m.changed.remove(&pid);
         let logged = m.records.detect(&mut log, pid, damage, whole);
+        if m.records.page(pid) == Some(damage) {
+            m.records.detected_by.insert(pid, self.rt.current());
+        }
+        self.note_unmapped(&m.records);
         drop(m);
         drop(log);
         if let Some(end) = logged {
@@ -920,6 +930,7 @@ impl<R: Runtime> Pager<R> {
         let mut m = self.meta();
         m.changed.remove(&pid);
         m.written.insert(pid);
+        m.records.replaced(pid);
         let (word, bit) = ((pid.0 / 64) as usize, pid.0 % 64);
         if m.wrote.len() <= word {
             m.wrote.resize(word + 1, 0);

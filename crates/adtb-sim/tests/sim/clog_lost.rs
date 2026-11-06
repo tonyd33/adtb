@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use adtb::key::{Entry, Tid, Value};
 use adtb::mvcc::{CommitLog, Status, Transactions, Xid};
+use adtb::runtime::Runtime;
 use adtb::storage::{self, Damage, HEADER_LEN, Lsn, PageError, PageKind, Pager, Pid, Quarantine};
 use adtb::{Database, Error, FatalReason, Log};
 use adtb_sim::{Config, Sim, SimRuntime};
@@ -137,26 +138,11 @@ fn lost_write_in(mut sim: Sim) -> (Sim, Vec<Xid>, Vec<(String, String)>) {
         assert_eq!(vec![Status::Committed; bo.len()], statuses(&db, &bo));
         db.close().unwrap();
     });
-    let stale = format!(
-        "\"page {}: Stale {{ expected: {expected:?}, found: {found:?} }}\"",
-        page.0
-    );
     let settled = format!(
         "\"page {}: Settled {{ expected: {expected:?}, found: {found:?} }}\"",
         page.0
     );
-    let want = [
-        ("StalePage", stale.as_str()),
-        ("StalePage", settled.as_str()),
-        (
-            "Structure",
-            "\"the database: only the pages and the log were checked\"",
-        ),
-        (
-            "Structure",
-            "\"the database: quarantined whole, so the findings of this run are not kept\"",
-        ),
-    ];
+    let want = [("StalePage", settled.as_str())];
     let want = want.map(|(c, a)| (c.to_owned(), a.to_owned())).into();
     (sim, bo, want)
 }
@@ -186,6 +172,11 @@ fn a_settled_status_page_whose_log_is_recycled_is_a_finding_of_verify_that_marks
             api::results(&db, &format!("insert users {{ name: \"{name}{n}\" }}"));
             n += 1;
         }
+        assert_eq!(
+            BTreeSet::new(),
+            pager.quarantined(),
+            "the open and the commits"
+        );
         db.close().unwrap();
         settled
     });
@@ -216,61 +207,104 @@ fn a_settled_status_page_whose_log_is_recycled_is_a_finding_of_verify_that_marks
 }
 
 /// Assert a reopen of `sim` reads `bo` committed and refuses a query as quarantined whole.
-fn refused_on_reopen(sim: &mut Sim, bo: &[Xid]) {
+/// Assert a reopen of `sim` reads `bo` committed, keeps `marks` and serves the relation.
+fn served_on_reopen(sim: &mut Sim, bo: &[Xid], marks: &BTreeSet<Quarantine>) {
     api::run(sim, |rt| {
         let db = open(&rt);
         assert_eq!(vec![Status::Committed; bo.len()], statuses(&db, bo));
-        let names = api::failure(&db, "from u in app::users select u.name");
-        assert_eq!(quarantined(), names);
+        assert_eq!(*marks, db.write_path().pager().quarantined());
+        let names = api::query(&db, "from u in app::users select u.name");
+        assert_eq!(vec!["\"ann\"", "\"bo\""], names);
     });
 }
 
 #[test]
-fn the_first_verify_of_a_status_page_that_lost_a_write_reports_it_and_then_marks_the_database() {
+fn the_first_verify_of_a_settled_status_page_reports_its_lost_write_once_and_marks_nothing() {
     let (mut sim, bo, want) = lost_write();
     api::run(&mut sim, |rt| {
         let db = open(&rt);
         assert_eq!(want, findings(api::sorted(db.verify(None).unwrap())));
-        let marks = db.write_path().pager().quarantined();
-        assert_eq!(BTreeSet::from([Quarantine::Database]), marks);
+        assert_eq!(BTreeSet::new(), db.write_path().pager().quarantined());
+        let names = api::query(&db, "from u in app::users select u.name");
+        assert_eq!(vec!["\"ann\"", "\"bo\""], names);
+        db.close().unwrap();
+    });
+    served_on_reopen(&mut sim, &bo, &BTreeSet::new());
+}
+
+#[test]
+fn a_lost_write_verify_finds_on_a_settled_status_page_at_other_lsns_marks_the_database() {
+    let (mut sim, _, _) = lost_write();
+    api::run(&mut sim, |rt| {
+        let db = open(&rt);
+        let pager = db.write_path().pager().clone();
+        let recorded = pager.recorded().pages;
+        let settled = recorded
+            .into_iter()
+            .find(|(_, d)| matches!(d, Damage::Settled { .. }));
+        let (page, _) = settled.expect("the open settles a status page");
+        let mut io = rt.io();
+        let (file, _) = common::open(&rt, &mut io, harness::NAME, false).unwrap();
+        let at = page.0 * DB_PAGE as u64;
+        pager.flush_log();
+        pager.flush_pages(usize::MAX);
+        pager.checkpoint();
+        let mut copies = Vec::new();
+        for name in ["cy", "dee"] {
+            api::results(&db, &format!("insert users {{ name: \"{name}\" }}"));
+            pager.flush_log();
+            pager.flush_pages(usize::MAX);
+            copies.push(common::read(&rt, &mut io, file, at, DB_PAGE).unwrap());
+        }
+        let (found, expected) = (storage::lsn(&copies[0]), storage::lsn(&copies[1]));
+        assert!(
+            found < expected,
+            "the second insert rewrites the status page"
+        );
+        common::write(&rt, &mut io, file, at, &copies[0]).unwrap();
+        common::sync(&rt, &mut io, file).unwrap();
+        for p in 0..4096 {
+            pager.read(Pid(1 << 16 | p)).expect("a page never written");
+        }
+        let stale = Damage::Stale { expected, found };
+        assert!(matches!(
+            pager.recorded().pages[&page],
+            Damage::Settled { .. }
+        ));
+        let checked = pager.check_page(page, &pager.read_log(true));
+        let finding = format!("Page {{ pid: {page:?}, damage: {stale:?} }}");
+        assert!(format!("{checked:?}").contains(&finding), "{checked:?}");
+        let rows = findings(api::sorted(db.verify(None).unwrap()));
+        let row = (
+            "StalePage".to_owned(),
+            format!("\"page {}: {stale:?}\"", page.0),
+        );
+        assert!(rows.contains(&row), "{rows:?}");
+        let database = BTreeSet::from([Quarantine::Database]);
+        assert_eq!(database, pager.quarantined());
         let names = api::failure(&db, "from u in app::users select u.name");
         assert_eq!(quarantined(), names);
         db.close().unwrap();
     });
-    refused_on_reopen(&mut sim, &bo);
-}
-
-/// Returns `want` with the row saying what a run of `verify app::users` checked, and without the
-/// settled status page, which is no page of the relation.
-fn of_users(want: &[(String, String)]) -> Vec<(String, String)> {
-    let only = "\"the database: only the pages and the log were checked\"";
-    let of_users = "\"relation users: only its pages were checked\"";
-    let row =
-        |(c, a): &(String, String)| (c.clone(), if a == only { of_users } else { a }.to_owned());
-    want.iter()
-        .filter(|(_, a)| !a.contains("Settled"))
-        .map(row)
-        .collect()
 }
 
 #[test]
-fn verify_of_one_relation_reports_and_marks_a_status_page_that_lost_a_write() {
-    let (mut sim, bo, want) = lost_write();
+fn verify_of_one_relation_beside_a_settled_status_page_marks_nothing() {
+    let (mut sim, bo, _) = lost_write();
     api::run(&mut sim, |rt| {
         let db = open(&rt);
         let found = db.verify(Some("app::users")).unwrap();
-        assert_eq!(of_users(&want), findings(api::sorted(found)));
-        let marks = db.write_path().pager().quarantined();
-        assert_eq!(BTreeSet::from([Quarantine::Database]), marks);
+        assert_eq!(Vec::<(String, String)>::new(), findings(api::sorted(found)));
+        assert_eq!(BTreeSet::new(), db.write_path().pager().quarantined());
         db.close().unwrap();
     });
-    refused_on_reopen(&mut sim, &bo);
+    served_on_reopen(&mut sim, &bo, &BTreeSet::new());
 }
 
 #[test]
-fn an_index_finding_before_the_status_page_is_met_is_answered_and_marks_its_index() {
-    let (mut sim, bo, want) = lost_write();
-    api::run(&mut sim, |rt| {
+fn an_index_finding_beside_a_settled_status_page_marks_only_its_index() {
+    let (mut sim, bo, _) = lost_write();
+    let index = api::run(&mut sim, |rt| {
         let db = open(&rt);
         let w = db.write_path();
         let ix = w.index_named("app::users", "key id").unwrap();
@@ -287,17 +321,13 @@ fn an_index_finding_before_the_status_page_is_met_is_answered_and_marks_its_inde
             "\"page {} slot 400: holds no version of the entry's key\"",
             page.0
         );
-        let mut expected = vec![("Orphan".to_owned(), at)];
-        expected.extend(of_users(&want));
-        assert_eq!(expected, found);
-        let index = Quarantine::Index(ix.tree().owner());
-        assert_eq!(
-            BTreeSet::from([Quarantine::Database, index]),
-            w.pager().quarantined()
-        );
+        assert_eq!(vec![("Orphan".to_owned(), at)], found);
+        let index = BTreeSet::from([Quarantine::Index(ix.tree().owner())]);
+        assert_eq!(index, w.pager().quarantined());
         db.close().unwrap();
+        index
     });
-    refused_on_reopen(&mut sim, &bo);
+    served_on_reopen(&mut sim, &bo, &index);
 }
 
 #[test]
@@ -322,7 +352,7 @@ fn verify_meeting_an_unreadable_status_page_fails_and_marks_nothing() {
 }
 
 #[test]
-fn the_first_verify_through_a_server_of_a_status_page_that_lost_a_write_reports_it() {
+fn the_first_verify_through_a_server_of_a_settled_status_page_reports_it_once() {
     let (mut sim, bo, want) = lost_write();
     api::run(&mut sim, |rt| {
         let db = open(&rt);
@@ -332,13 +362,11 @@ fn the_first_verify_through_a_server_of_a_status_page_that_lost_a_write_reports_
             want,
             rows.iter().map(|r| task_finding(r)).collect::<Vec<_>>()
         );
-        let marks = db.write_path().pager().quarantined();
-        assert_eq!(BTreeSet::from([Quarantine::Database]), marks);
-        let refused = api::task(&rt, &owner, "app::users").unwrap_err();
-        assert_eq!(quarantined(), refused);
+        assert_eq!(BTreeSet::new(), db.write_path().pager().quarantined());
+        api::task(&rt, &owner, "app::users").unwrap();
         db.close().unwrap();
     });
-    refused_on_reopen(&mut sim, &bo);
+    served_on_reopen(&mut sim, &bo, &BTreeSet::new());
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -628,8 +656,9 @@ fn kinds(db: &Database<SimRuntime>) -> BTreeMap<Pid, (&'static str, Quarantine)>
 }
 
 /// Revert each page `work` changes in the files of `sim`, and assert its next read is refused
-/// and the first verify reports it. A status page is settled by the open of the commit log, and
-/// read after it. Returns how many pages of each kind it reverted.
+/// and the first verify reports it and marks its holder. A status page is settled by the open of
+/// the commit log, read after it, reported settled and marks nothing. Returns how many pages of
+/// each kind it reverted.
 fn each_lost_write_refused(
     sim: &mut Sim,
     work: impl FnOnce(&Database<SimRuntime>),
@@ -658,9 +687,11 @@ fn each_lost_write_refused(
         let (kind, mark) = *kinds.get(&page).unwrap_or(&(by_kind, Quarantine::Database));
         *reached.entry(kind).or_insert(0) += 1;
         let lost = reverted(after.clone(), &before, page, DB_PAGE);
+        let settled = kind == "status";
         let stale = format!(
-            "\"page {}: Stale {{ expected: {:?}, found: {:?} }}\"",
+            "\"page {}: {} {{ expected: {:?}, found: {:?} }}\"",
             page.0,
+            if settled { "Settled" } else { "Stale" },
             lsn(&after, page),
             lsn(&before, page)
         );
@@ -689,7 +720,12 @@ fn each_lost_write_refused(
             let want = ("StalePage".to_owned(), stale.clone());
             assert!(found.contains(&want), "{kind} page {page:?}: {found:?}");
             let marks = db.write_path().pager().quarantined();
-            assert_eq!(BTreeSet::from([mark]), marks, "{kind} page {page:?}");
+            let want = if settled {
+                BTreeSet::new()
+            } else {
+                BTreeSet::from([mark])
+            };
+            assert_eq!(want, marks, "{kind} page {page:?}");
             db.close().unwrap();
         });
     }

@@ -1108,15 +1108,30 @@ fn a_history_page_damaged_during_the_build_is_not_released_unrepaired() {
         db.on_reindex_phase(Arc::new(move |phase| {
             if phase == "build" && !once.swap(true, Ordering::AcqRel) {
                 d.damage_page(history_root(&d), Damage::Checksum);
-                refused_with(
-                    d.query_text(&r, &[], &CallOptions::default()),
-                    "fatal: app::ts key id is quarantined",
+                assert_eq!(
+                    BTreeSet::new(),
+                    marks(&d),
+                    "the detecting call has not ended"
+                );
+                assert_eq!(vec!["1007"], api::query(&d, &r), "a read of the heaps");
+                let key = d.write_path().index_named("app::ts", "key id").unwrap();
+                let key = Quarantine::Index(key.tree().owner());
+                assert_eq!(
+                    BTreeSet::from([key]),
+                    marks(&d),
+                    "the read's commit maps the damage"
                 );
             }
         }));
         api::results(&db, "reindex ts");
         wait_jobs(&rt, &db);
         assert!(db.write_path().pager().quarantined().is_empty());
+        let recorded = db.write_path().pager().recorded().pages;
+        assert_eq!(
+            BTreeMap::new(),
+            recorded,
+            "the rebuilt root leaves no record to map again"
+        );
         assert_eq!(vec!["1007"], api::query(&db, &read));
         assert_eq!(
             Vec::<String>::new(),

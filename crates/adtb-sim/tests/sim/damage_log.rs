@@ -293,6 +293,48 @@ fn rotted_after_its_write(
 }
 
 #[test]
+fn rot_under_a_page_the_pool_holds_is_recorded_until_a_change_writes_the_page_out() {
+    let (files, pages) = created(true);
+    let p = pages[1];
+    let mut sim = Sim::with_files(SEED, Config::default(), files);
+    harness::finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options(true)).unwrap();
+        let write_out = |value| {
+            put(&pager, p, value);
+            pager.flush_log();
+            pager.flush_pages(usize::MAX);
+        };
+        write_out(2);
+        let mut io = rt.io();
+        let (file, _) = common::open(&rt, &mut io, harness::NAME, false).unwrap();
+        let at = p.0 * harness::PAGE as u64;
+        let mut page = common::read(&rt, &mut io, file, at, harness::PAGE).unwrap();
+        page[harness::PAGE / 2] ^= 0xff;
+        common::write(&rt, &mut io, file, at, &page).unwrap();
+        common::sync(&rt, &mut io, file).unwrap();
+        let checked = pager.check_page(p, &pager.read_log(true));
+        let rotted = Finding::Page {
+            pid: p,
+            damage: Damage::Checksum,
+        };
+        assert_eq!(vec![rotted], checked);
+        assert_eq!(Some(&Damage::Checksum), pager.recorded().pages.get(&p));
+        assert_eq!(
+            2,
+            pager.read(p).unwrap()[HEADER_LEN],
+            "the pool's copy is served"
+        );
+        write_out(3);
+        assert_eq!(None, pager.recorded().pages.get(&p));
+        assert_eq!(
+            Vec::<Finding>::new(),
+            pager.check_page(p, &pager.read_log(true))
+        );
+        pager.close();
+    });
+}
+
+#[test]
 fn a_checksum_failure_of_a_page_written_since_the_checkpoint_is_listed_after_a_crash() {
     let (files, pages) = created(false);
     let p = pages[1];
@@ -676,8 +718,47 @@ fn one_damaged_page_past_the_lists_capacity_records_the_whole_file() {
             );
             let unlisted = pager.verify().findings.contains(&Finding::Unlisted);
             assert_eq!(full, unlisted, "{n} pages");
+            pager.map_damage(|_| Some(BTreeSet::new()), |o| pager.quarantine(o));
+            let database = BTreeSet::from([Quarantine::Database]);
+            let marks = if full { database } else { BTreeSet::new() };
+            assert_eq!(marks, pager.quarantined(), "{n} pages");
         });
     }
+}
+
+/// Returns `pager`'s marks after its records map through a walk that finds every page in the
+/// database, and how many pages it walked for.
+fn mapped_whole(pager: &Pager<SimRuntime>) -> (BTreeSet<Quarantine>, usize) {
+    let mut walked = 0;
+    let failed = pager.map_damage(
+        |_| {
+            walked += 1;
+            Some(BTreeSet::from([Quarantine::Database]))
+        },
+        |o| pager.quarantine(o),
+    );
+    assert_eq!(BTreeMap::new(), failed);
+    (pager.quarantined(), walked)
+}
+
+#[test]
+fn a_settled_status_page_and_stale_log_blocks_past_the_end_map_to_no_mark() {
+    let (files, root, status) = lost_status_page();
+    let ((recorded, mapped), _, _) = with_commit_log(files, root, |p| {
+        (p.recorded().pages.get(&status).copied(), mapped_whole(p))
+    });
+    assert!(
+        matches!(recorded, Some(Damage::Settled { .. })),
+        "{recorded:?}"
+    );
+    assert_eq!((BTreeSet::new(), 0), mapped, "a settled page");
+    let files = stale_past_the_end(harness::PAGE as u32, 2, None);
+    let mut sim = Sim::with_files(SEED, Config::default(), files);
+    harness::finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt, &options(false)).unwrap();
+        assert_reached("stale blocks past the end", pager.recorded().log.len(), 1);
+        assert_eq!((BTreeSet::new(), 0), mapped_whole(&pager), "stale blocks");
+    });
 }
 
 #[test]

@@ -10,7 +10,8 @@ use crate::catalog::Catalog;
 use crate::storage::{Damage, Options, Pager, Quarantine};
 
 use super::{
-    CreateOptions, Database, Log, OpenError, OpenOptions, file, mark_open_damage, open_damage,
+    CreateOptions, Database, Log, OpenError, OpenOptions, file, mark_failed_open_damage,
+    open_damage,
 };
 
 fn unreadable_root(scratch: &Scratch) -> (OsRuntime, Pager<OsRuntime>) {
@@ -25,7 +26,7 @@ fn unreadable_root(scratch: &Scratch) -> (OsRuntime, Pager<OsRuntime>) {
 fn an_unreadable_catalog_root_marks_nothing_and_opens_nothing() {
     let scratch = Scratch::new("open-damage", "unreadable-unmarked");
     let (rt, pager) = unreadable_root(&scratch);
-    mark_open_damage(rt, &pager);
+    mark_failed_open_damage(rt, &pager);
     assert!(!pager.is_quarantined(Quarantine::Database));
     assert!(open_damage(&pager).is_none());
     pager.close();

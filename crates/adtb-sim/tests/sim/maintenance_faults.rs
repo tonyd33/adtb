@@ -2441,6 +2441,7 @@ fn a_crash_during_a_scrub_pass_leaves_the_damage_filed_after_the_next_pass() {
     hook_rot_panics();
     let (pristine, _, objects) = scrub_fixture();
     let (mut defects, mut kept, deep) = (Vec::new(), [0; 2], profile::every_case());
+    let mut unmarked_whole = 0;
     for (kind, o) in sampled(&objects, 0).into_iter().enumerate() {
         let rot = ROTS[kind % ROTS.len()];
         let at = pages_of(&pristine[FILE], &o)[0];
@@ -2448,6 +2449,12 @@ fn a_crash_during_a_scrub_pass_leaves_the_damage_filed_after_the_next_pass() {
         let judge = |db: &_, early: &_| filed_as_read(db, early, at, rot, &o, &objects);
         let baseline = scrubbed(image.clone(), at, &[], judge);
         let baseline = baseline.and_then(|p| p.ok_or_else(|| "open refused".to_owned()));
+        if let Ok(p) = &baseline
+            && p.early.is_empty()
+            && o.mark == Quarantine::Database
+        {
+            unmarked_whole += 1;
+        }
         let first = match baseline.map(|p| p.touched.first().map(|t| t.0)) {
             Ok(Some(first)) => first.as_nanos(),
             Ok(_) => panic!("page {at}: the scrub never read it"),
@@ -2477,5 +2484,9 @@ fn a_crash_during_a_scrub_pass_leaves_the_damage_filed_after_the_next_pass() {
     println!("crashes with the mark kept, and before it: {kept:?}");
     assert_eq!(Vec::<String>::new(), defects, "{} defects", defects.len());
     assert_reached("a crash with the mark kept", kept[0], 1);
-    assert_reached("a crash before the mark", kept[1], 1);
+    assert_eq!(
+        0, kept[1],
+        "the next open marks from the record the scrub forced"
+    );
+    assert_reached("a file mark filed with no mark at open", unmarked_whole, 1);
 }

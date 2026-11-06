@@ -2,9 +2,10 @@
 //! one list page the file header names.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::Ordering;
 
 use crate::mvcc::Settling;
-use crate::runtime::Runtime;
+use crate::runtime::{Runtime, ThreadId};
 
 use super::block::{LogFinding, LogProblem};
 use super::log::Log;
@@ -47,8 +48,17 @@ pub(crate) struct Records {
     pub(crate) replayed: Vec<(Pid, Met)>,
     /// Whether the records differ from what the list page holds.
     pub(crate) unfolded: bool,
-    /// The damage found on a file quarantined whole, which is never logged or folded.
+    /// The damage held in memory only, never logged or folded: found on a file quarantined
+    /// whole, or in a file's copy while the pool holds a sound one.
     pub(crate) held: BTreeMap<Pid, Damage>,
+    /// Each page's damage mapped this open, with the objects it quarantines.
+    mapped: BTreeMap<Pid, (Damage, BTreeSet<Quarantine>)>,
+    /// Whether a full list was mapped this open.
+    full_mapped: bool,
+    /// Each page's damage whose last mapping was incomplete.
+    incomplete: BTreeMap<Pid, Damage>,
+    /// The thread whose read last detected each page's damage.
+    pub(crate) detected_by: BTreeMap<Pid, ThreadId>,
 }
 
 /// A record that changes the damage recorded of its page.
@@ -119,7 +129,38 @@ impl Records {
         }
         let changed = self.recorded.meet(pid, met);
         self.unfolded |= changed;
+        if self.page(pid).is_none() {
+            self.mapped.remove(&pid);
+            self.incomplete.remove(&pid);
+            self.detected_by.remove(&pid);
+        }
         changed
+    }
+
+    /// Drop the damage held of `pid`, but a settle, once the page is written out over the file's
+    /// copy.
+    pub(crate) fn replaced(&mut self, pid: Pid) {
+        if !matches!(self.held.get(&pid), Some(Damage::Settled { .. })) {
+            self.held.remove(&pid);
+        }
+    }
+
+    /// Returns each page whose damage is not mapped this open, and whether a full list is not. A
+    /// settled page maps to nothing, so it is never unmapped. `retried` false leaves out each
+    /// page whose last mapping of the same damage was incomplete.
+    fn unmapped(&self, retried: bool) -> (Vec<(Pid, Damage)>, bool) {
+        let pages = self.all().pages.into_iter();
+        let pages = pages.filter(|(pid, d)| {
+            !matches!(d, Damage::Settled { .. })
+                && self.mapped.get(pid).is_none_or(|m| m.0 != *d)
+                && (retried || self.incomplete.get(pid) != Some(d))
+        });
+        (pages.collect(), self.recorded.full && !self.full_mapped)
+    }
+
+    fn any_unmapped(&self) -> bool {
+        let (pages, full) = self.unmapped(true);
+        full || !pages.is_empty()
     }
 
     /// Returns the damage recorded or held of `pid`.
@@ -151,6 +192,9 @@ fn word(page: &[u8], at: usize) -> u64 {
 fn u32_at(page: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(page[at..at + 4].try_into().unwrap())
 }
+
+/// A damage record and what it quarantines, `None` when its mapping is incomplete.
+type Mapping = (Pid, Damage, Option<BTreeSet<Quarantine>>);
 
 /// Returns the list page `page` holds, `None` when it is no list page.
 fn decode(page: &[u8]) -> Option<Recorded> {
@@ -228,6 +272,135 @@ impl<R: Runtime> Pager<R> {
         self.meta().records.all()
     }
 
+    /// Map each damage record not mapped this open to the objects it quarantines, and mark each
+    /// object through `mark`. `holders` returns what the damage of a page quarantines, `None`
+    /// when the mapping is incomplete, which leaves the record unmapped. Every record of a full
+    /// list maps to the database with no walk. Returns each object whose mark failed, with why.
+    ///
+    /// Precondition: the calling thread holds no page latch, and neither the log lock nor the
+    /// meta lock.
+    ///
+    /// Postcondition: a record is mapped only once the marks of its objects are set, so a caller
+    /// that finds it unmapped may find those marks unset.
+    pub fn map_damage(
+        &self,
+        holders: impl FnMut(Pid) -> Option<BTreeSet<Quarantine>>,
+        mark: impl FnMut(Quarantine) -> Result<(), PageError>,
+    ) -> BTreeMap<Quarantine, PageError> {
+        if !self.any_unmapped.load(Ordering::Acquire) {
+            return BTreeMap::new();
+        }
+        let (pages, full) = self.meta().records.unmapped(true);
+        self.map_records(pages, full, holders, mark)
+    }
+
+    /// Map as [`Pager::map_damage`] does for a commit, leaving out each record whose last mapping
+    /// was incomplete. `holders` adds to its set each page whose damage stopped a walk. Map to
+    /// the database, with no walk, each such page with no record when the mapping began whose
+    /// damage this thread detected.
+    /// Returns each object whose mark failed, with why.
+    ///
+    /// Precondition: as for [`Pager::map_damage`].
+    pub fn map_committing(
+        &self,
+        mut holders: impl FnMut(Pid, &mut BTreeSet<Pid>) -> Option<BTreeSet<Quarantine>>,
+        mut mark: impl FnMut(Quarantine) -> Result<(), PageError>,
+    ) -> BTreeMap<Quarantine, PageError> {
+        if !self.any_unmapped.load(Ordering::Acquire) {
+            return BTreeMap::new();
+        }
+        let (pages, full, before) = {
+            let m = self.meta();
+            let (pages, full) = m.records.unmapped(false);
+            (pages, full, m.records.all().pages)
+        };
+        let mut met = BTreeSet::new();
+        let mut failed = self.map_records(pages, full, |pid| holders(pid, &mut met), &mut mark);
+        let me = self.rt.current();
+        let m = self.meta();
+        met.retain(|pid| !before.contains_key(pid) && m.records.detected_by.get(pid) == Some(&me));
+        drop(m);
+        if met.is_empty() {
+            return failed;
+        }
+        let (pages, _) = self.meta().records.unmapped(true);
+        let pages = pages.into_iter().filter(|(pid, _)| met.contains(pid));
+        let database = || Some(BTreeSet::from([Quarantine::Database]));
+        failed.extend(self.map_records(pages.collect(), false, |_| database(), mark));
+        failed
+    }
+
+    /// Map each of `pages` to what `holders` says it quarantines, or every page to the database
+    /// when `full`, and mark each object through `mark`. Returns each object whose mark failed,
+    /// with why.
+    fn map_records(
+        &self,
+        pages: Vec<(Pid, Damage)>,
+        full: bool,
+        mut holders: impl FnMut(Pid) -> Option<BTreeSet<Quarantine>>,
+        mut mark: impl FnMut(Quarantine) -> Result<(), PageError>,
+    ) -> BTreeMap<Quarantine, PageError> {
+        let database = BTreeSet::from([Quarantine::Database]);
+        let mut mapped: Vec<Mapping> = Vec::new();
+        for (pid, damage) in pages {
+            let objects = if full {
+                Some(database.clone())
+            } else {
+                holders(pid)
+            };
+            mapped.push((pid, damage, objects));
+        }
+        let mut objects: BTreeSet<Quarantine> = mapped
+            .iter()
+            .flat_map(|m| m.2.iter().flatten().copied())
+            .collect();
+        if full {
+            objects.insert(Quarantine::Database);
+        }
+        let failed = objects
+            .into_iter()
+            .filter_map(|o| mark(o).err().map(|e| (o, e)))
+            .collect();
+        let mut m = self.meta();
+        let records = &mut m.records;
+        records.full_mapped |= full;
+        for (pid, damage, objects) in mapped {
+            if records.page(pid) != Some(damage) {
+                continue;
+            }
+            match objects {
+                Some(objects) => {
+                    records.incomplete.remove(&pid);
+                    records.mapped.insert(pid, (damage, objects));
+                }
+                None => {
+                    records.incomplete.insert(pid, damage);
+                }
+            }
+        }
+        self.note_unmapped(records);
+        failed
+    }
+
+    /// Returns how many damaged pages this open has walked the objects for.
+    #[doc(hidden)]
+    pub fn walked(&self) -> u64 {
+        self.walked.load(Ordering::Relaxed)
+    }
+
+    /// Returns what the damage of `pid` was mapped to this open, `None` while it is not mapped.
+    pub fn mapped_to(&self, pid: Pid) -> Option<BTreeSet<Quarantine>> {
+        let m = self.meta();
+        let (damage, objects) = m.records.mapped.get(&pid)?;
+        (m.records.page(pid) == Some(*damage)).then(|| objects.clone())
+    }
+
+    /// Set whether `records` holds a record not mapped this open.
+    pub(super) fn note_unmapped(&self, records: &Records) {
+        self.any_unmapped
+            .store(records.any_unmapped(), Ordering::Release);
+    }
+
     /// Returns the page listing the damage recorded, `Pid(0)` while the file has none.
     pub fn damage_list_page(&self) -> Pid {
         self.header.lock(&self.rt).0.damage_list
@@ -247,6 +420,18 @@ impl<R: Runtime> Pager<R> {
         self.meta()
             .records
             .detect(&mut log, refusal.pid, damage, whole);
+    }
+
+    /// Hold `damage` of `pid` in memory, unlogged, leaving the page's memory as it is: for a
+    /// file's copy that fails while the pool holds a sound one. The hold ends at the page's next
+    /// write-out, and lasts the open when the page is never written out.
+    pub(super) fn hold_damage(&self, pid: Pid, damage: Damage) {
+        if damage == Damage::Unreadable {
+            return;
+        }
+        let mut m = self.meta();
+        m.records.held.insert(pid, damage);
+        self.note_unmapped(&m.records);
     }
 
     /// Allocate and format an empty list page and name it in the header.
@@ -308,6 +493,7 @@ impl<R: Runtime> Pager<R> {
         recorded.full |= header_full;
         records.recorded = recorded;
         records.unfolded = unfolded;
+        self.note_unmapped(records);
         let list = self.header.lock(&self.rt).0.damage_list;
         records.list = sound.then_some(list);
         Ok(())
@@ -334,6 +520,7 @@ impl<R: Runtime> Pager<R> {
         for (pid, damage) in refused {
             m.records.detect(&mut log, pid, damage, whole);
         }
+        self.note_unmapped(&m.records);
     }
 
     /// Returns the list page when a checkpoint is to fold the records into it: once recovery has

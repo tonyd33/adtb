@@ -42,7 +42,7 @@
 1 crates/adtb-sim/tests/sim/quarantine.rs
 1 crates/adtb-sim/tests/sim/real_file.rs
 1 crates/adtb-sim/tests/sim/reindex.rs
-4 crates/adtb-sim/tests/sim/reindex_review.rs
+3 crates/adtb-sim/tests/sim/reindex_review.rs
 6 crates/adtb-sim/tests/sim/server_adhoc.rs
 3 crates/adtb-sim/tests/sim/server_commands.rs
 2 crates/adtb-sim/tests/sim/tasks.rs

@@ -205,7 +205,7 @@ fn a_map_pointer_out_of_shape_stops_a_holder_walk_and_another_heaps_damage_marks
         h.walk(Some(Quarantine::Heap(7)), || a.held_pages(&pager));
         h.walk(Some(Quarantine::Heap(8)), || b.held_pages(&pager));
     });
-    assert_eq!(BTreeSet::from([Quarantine::Heap(8)]), holders);
+    assert_eq!(Some(BTreeSet::from([Quarantine::Heap(8)])), holders);
     assert_eq!(
         refused(a.root()),
         a.verify(&pager),

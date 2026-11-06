@@ -303,23 +303,30 @@ fn select_answer(db: &Database<SimRuntime>, text: &str) -> Result<Vec<String>, E
         .map(|mut r| api::printed(r.remove(0)))
 }
 
-fn assert_select_refused(files: Files, text: &'static str, what: &'static str) {
-    let got = within(what, move || {
+type Round = (Result<Vec<String>, Error>, BTreeSet<Quarantine>, Quarantine);
+
+/// Returns, for each of two opens of `files`, how `text` ends, the marks after it, and the mark of
+/// the users heap.
+fn selected_twice(files: Files, text: &'static str, what: &'static str) -> Vec<Round> {
+    within(what, move || {
         let mut sim = Sim::with_files(1, Config::default(), files);
         let mut got = Vec::new();
         for _ in 0..2 {
             finished(&mut sim, |rt| {
                 let db = open(rt).unwrap();
-                got.push((
-                    select_answer(&db, text),
-                    db.write_path().pager().quarantined(),
-                ));
+                let w = db.write_path();
+                let users = Quarantine::Heap(w.heap_named("app::users", "User").unwrap().id().0);
+                got.push((select_answer(&db, text), w.pager().quarantined(), users));
                 db.close().unwrap();
             });
         }
         got
-    });
-    for (round, (answer, marks)) in got.iter().enumerate() {
+    })
+}
+
+fn assert_select_refused(files: Files, text: &'static str, what: &'static str) {
+    let got = selected_twice(files, text, what);
+    for (round, (answer, marks, _)) in got.iter().enumerate() {
         let what = format!("{what}, round {round}");
         assert_refused_rows(answer, "app::users.User", &what);
         assert_eq!(1, marks.len(), "{what}: {marks:?}");
@@ -440,7 +447,21 @@ fn a_cut_that_loses_a_later_bitmap_group_refuses_the_select() {
     });
     assert!(high.unwrap().0 > span as u64, "a page in the second group");
     let files = cut(&sim.files(), (span - 100) * PAGE);
-    assert_select_refused(files, SELECT, "lost group");
+    let got = selected_twice(files, SELECT, "lost group");
+    for (round, (answer, marks, users)) in got.iter().enumerate() {
+        let what = format!("lost group, round {round}");
+        let refused = if round == 0 {
+            "app::users.User"
+        } else {
+            "the database"
+        };
+        assert_refused_rows(answer, refused, &what);
+        assert_eq!(
+            BTreeSet::from([Quarantine::Database, *users]),
+            *marks,
+            "{what}"
+        );
+    }
 }
 
 #[test]

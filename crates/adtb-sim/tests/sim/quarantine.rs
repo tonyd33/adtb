@@ -262,6 +262,10 @@ fn apple(db: &Database<SimRuntime>) -> Pid {
     heap_page(db, "app::identities", "Apple")
 }
 
+fn google(db: &Database<SimRuntime>) -> Pid {
+    heap_page(db, "app::identities", "Google")
+}
+
 fn user_index(db: &Database<SimRuntime>) -> Pid {
     index_page(db, "app::identities", USER_INDEX)
 }
@@ -773,7 +777,9 @@ fn a_failed_mark_does_not_hide_the_damage() {
         let what = failed_on(&db, ALL);
         assert!(what.starts_with("app::identities.Apple"), "{what}");
         assert!(what.contains("only in memory"), "{what}");
-        assert_eq!("app::identities.Apple", failed_on(&db, ALL));
+        let apple = apple_mark(&db);
+        assert_eq!(BTreeSet::from([apple, Quarantine::Database]), marks(&db));
+        assert_eq!("the database", failed_on(&db, ALL));
     });
 }
 
@@ -1105,7 +1111,7 @@ fn a_page_vacuum_frees_during_the_walk_marks_nothing() {
         let held = p.holders_of(pid, Some(Quarantine::Database), |_| {
             p.free(pid).unwrap();
         });
-        assert_eq!(BTreeSet::new(), held);
+        assert_eq!(Some(BTreeSet::new()), held);
     });
 }
 
@@ -1171,7 +1177,7 @@ fn a_failed_open_marks_the_heap_of_the_damage_it_met() {
 }
 
 #[test]
-fn a_failed_open_that_cannot_map_the_damage_writes_nothing() {
+fn a_failed_open_on_a_damaged_page_of_the_large_value_store_marks_the_database() {
     let later = "module app\nadd constraint nope =\n  from u in users\n  where u.name == \"zz\"\n  select u\n";
     let mut sim = Sim::new(58, Config::default());
     let page = api::run(&mut sim, |rt| {
@@ -1192,13 +1198,14 @@ fn a_failed_open_that_cannot_map_the_damage_writes_nothing() {
     let mut sim = Sim::with_files(58, Config::default(), files);
     api::run(&mut sim, |rt| {
         let got = Database::open_in(rt, FILE, &Log::new([APP, later]), &api::options(2));
-        assert!(
-            matches!(got, Err(adtb::OpenError::Corrupt { .. })),
-            "{:?}",
-            got.err()
+        let db = got.expect("a file quarantined whole opens for verify");
+        assert_eq!(
+            "the database",
+            failed_on(&db, "from u in users select u.id")
         );
     });
-    with_named_pager(&mut sim, |p| assert_eq!(BTreeSet::new(), p.quarantined()));
+    let database = BTreeSet::from([Quarantine::Database]);
+    with_named_pager(&mut sim, |p| assert_eq!(database, p.quarantined()));
 }
 
 fn commit_log_page(seed_no: u64, pick: impl FnOnce(&adtb::mvcc::CommitLog) -> Pid) -> Sim {
@@ -1814,7 +1821,7 @@ fn mapping_a_page_of_one_tree_never_marks_a_tree_changing_beside_it() {
         })
     };
     assert_eq!(1, got.len(), "{got:?}");
-    assert!(got.contains_key("{Index(43)}"), "{got:?}");
+    assert!(got.contains_key("Some({Index(43)})"), "{got:?}");
 }
 
 /// Delete and insert the entries of `a`, with `b` taking the pages freed, until `limit` from now.
@@ -1897,8 +1904,8 @@ fn mapping_a_page_of_a_changing_tree_finds_that_tree_or_nothing() {
             })
         })
     };
-    assert!(!got.contains_key("{Database}"), "{got:?}");
-    assert!(got.contains_key("{Index(41)}"), "{got:?}");
+    assert!(!got.contains_key("Some({Database})"), "{got:?}");
+    assert!(got.contains_key("Some({Index(41)})"), "{got:?}");
 }
 
 const LISTS: &str = r"module app
@@ -2047,7 +2054,7 @@ fn scripted(
     p: &Pager<SimRuntime>,
     pid: Pid,
     script: &[Result<Vec<Pid>, Stopped>],
-) -> (BTreeSet<Quarantine>, usize) {
+) -> (Option<BTreeSet<Quarantine>>, usize) {
     let mut walks = 0;
     let held = p.holders_of(pid, Some(Quarantine::Database), |h| {
         h.walk(Some(Quarantine::Index(7)), || {
@@ -2062,7 +2069,7 @@ fn scripted(
 fn a_walk_that_never_follows_its_tree_leaves_the_page_unmapped() {
     with_unheld_page(60, |p, pid| {
         let (held, walks) = scripted(p, pid, &[Err(Stopped::Shape)]);
-        assert_eq!(BTreeSet::new(), held);
+        assert_eq!(None, held);
         assert!((2..=64).contains(&walks), "{walks}");
     });
 }
@@ -2070,11 +2077,11 @@ fn a_walk_that_never_follows_its_tree_leaves_the_page_unmapped() {
 #[test]
 fn a_walk_that_stops_on_a_shape_is_run_again() {
     with_unheld_page(61, |p, pid| {
-        let index = BTreeSet::from([Quarantine::Index(7)]);
+        let index = Some(BTreeSet::from([Quarantine::Index(7)]));
         let script = [Err(Stopped::Shape), Err(Stopped::Shape), Ok(vec![pid])];
         assert_eq!((index, 3), scripted(p, pid, &script));
         let script = [Err(Stopped::Shape), Ok(Vec::new())];
-        let database = BTreeSet::from([Quarantine::Database]);
+        let database = Some(BTreeSet::from([Quarantine::Database]));
         assert_eq!((database, 2), scripted(p, pid, &script));
     });
 }
@@ -2082,21 +2089,21 @@ fn a_walk_that_stops_on_a_shape_is_run_again() {
 #[test]
 fn a_walk_marks_its_object_only_when_damage_stops_it_twice_in_a_row() {
     with_unheld_page(62, |p, pid| {
-        let index = BTreeSet::from([Quarantine::Index(7)]);
-        let database = BTreeSet::from([Quarantine::Database]);
-        let script = [Err(Stopped::Damage)];
+        let index = Some(BTreeSet::from([Quarantine::Index(7)]));
+        let database = Some(BTreeSet::from([Quarantine::Database]));
+        let script = [Err(Stopped::Damage(pid))];
         assert_eq!((index.clone(), 2), scripted(p, pid, &script));
-        let script = [Err(Stopped::Damage), Ok(Vec::new())];
+        let script = [Err(Stopped::Damage(pid)), Ok(Vec::new())];
         assert_eq!((database, 2), scripted(p, pid, &script));
         let script = [
-            Err(Stopped::Damage),
+            Err(Stopped::Damage(pid)),
             Err(Stopped::Shape),
-            Err(Stopped::Damage),
-            Err(Stopped::Damage),
+            Err(Stopped::Damage(pid)),
+            Err(Stopped::Damage(pid)),
         ];
         assert_eq!((index, 4), scripted(p, pid, &script));
-        let script = [Err(Stopped::Damage), Err(Stopped::Shape)];
-        assert_eq!(BTreeSet::new(), scripted(p, pid, &script).0);
+        let script = [Err(Stopped::Damage(pid)), Err(Stopped::Shape)];
+        assert_eq!(None, scripted(p, pid, &script).0);
     });
 }
 
@@ -2104,7 +2111,18 @@ fn a_walk_marks_its_object_only_when_damage_stops_it_twice_in_a_row() {
 fn a_walk_stopped_by_io_is_not_run_again_and_leaves_the_page_unmapped() {
     with_unheld_page(63, |p, pid| {
         let (held, walks) = scripted(p, pid, &[Err(Stopped::Io)]);
-        assert_eq!((BTreeSet::new(), 1), (held, walks));
+        assert_eq!((None, 1), (held, walks));
+    });
+}
+
+#[test]
+fn a_walk_of_an_object_whose_damage_marks_nothing_stopped_by_damage_leaves_the_page_unmapped() {
+    with_unheld_page(66, |p, pid| {
+        let other = Pid(pid.0 + 1);
+        let held = p.holders_of(pid, Some(Quarantine::Database), |h| {
+            h.walk(None, || Err(Stopped::Damage(other)));
+        });
+        assert_eq!(None, held);
     });
 }
 
@@ -2559,5 +2577,235 @@ fn a_read_of_the_past_fails_on_a_damaged_history_heap_without_the_history_key_in
         assert!(what.contains("app::identities.Apple"), "{what}");
         assert!(marks(&db).contains(&apple_mark(&db)));
         assert_eq!("app::identities.Apple", failed_on(&db, &at_first));
+    });
+}
+
+#[test]
+fn a_commit_writing_a_heap_whose_damage_is_recorded_and_not_yet_mapped_is_refused() {
+    let mut sim = Sim::new(96, Config::default());
+    api::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        let mut t = db.begin(&TxnOptions::default()).unwrap();
+        api::in_txn_results(&mut t, GOOGLE_901);
+        db.damage_page(google(&db), Damage::Checksum);
+        assert_eq!(BTreeSet::new(), marks(&db));
+        let what = quarantined(&t.commit(None).unwrap_err()).to_owned();
+        assert_eq!("app::identities.Google", what);
+        let google = mark_named(&db, "app::identities", "Google");
+        assert_eq!(BTreeSet::from([google]), marks(&db));
+    });
+}
+
+#[test]
+fn a_commit_whose_record_of_the_retention_window_is_damaged_is_refused_naming_the_database() {
+    let mut sim = Sim::new(97, Config::default());
+    api::run(&mut sim, |rt| {
+        let db = open_app(rt.clone());
+        seed(&db);
+        api::results(&db, "set setting RetentionWindow = { length: 1h }");
+        api::results(&db, GOOGLE_901);
+        let pager = db.write_path().pager();
+        let past = db.write_path().txns().history().unwrap().tree().root();
+        pager.flush_log();
+        pager.flush_pages(usize::MAX);
+        let mut io = rt.io();
+        let (file, _) = adtb_simkit::common::open(&rt, &mut io, FILE, false).unwrap();
+        let at = past.0 * API_PAGE as u64;
+        let mut page = adtb_simkit::common::read(&rt, &mut io, file, at, API_PAGE).unwrap();
+        page[300] ^= 0x10;
+        adtb_simkit::common::write(&rt, &mut io, file, at, &page).unwrap();
+        adtb_simkit::common::sync(&rt, &mut io, file).unwrap();
+        for p in 0..4096 {
+            pager.read(Pid(1 << 16 | p)).expect("a page never written");
+        }
+        let mut t = db.begin(&TxnOptions::default()).unwrap();
+        api::in_txn_results(&mut t, r#"insert users { name: "zed" }"#);
+        assert_eq!(
+            None,
+            pager.recorded().pages.get(&past),
+            "nothing read the page yet"
+        );
+        let what = quarantined(&t.commit(None).unwrap_err()).to_owned();
+        assert_eq!(Some(&Damage::Checksum), pager.recorded().pages.get(&past));
+        assert_eq!("the database", what);
+        assert_eq!(BTreeSet::from([Quarantine::Database]), marks(&db));
+    });
+}
+
+#[test]
+fn damage_another_thread_records_on_a_page_the_commits_walk_reads_marks_only_its_index() {
+    let mut during = 0;
+    for step in [0u64, 10, 20, 30, 40, 45, 50, 55, 57] {
+        let mut sim = Sim::new(0, Config::default());
+        api::run(&mut sim, |rt| {
+            let db = open_app(rt.clone());
+            seed(&db);
+            let (google_page, leaf) = (google(&db), user_index(&db));
+            let google = mark_named(&db, "app::identities", "Google");
+            let pager = db.write_path().pager().clone();
+            let mut t = db.begin(&TxnOptions::default()).unwrap();
+            api::in_txn_results(&mut t, GOOGLE_901);
+            pager.flush_log();
+            pager.flush_pages(usize::MAX);
+            for p in 0..4096 {
+                pager.read(Pid(1 << 16 | p)).expect("a page never written");
+            }
+            db.damage_page(google_page, Damage::Checksum);
+            let before = pager.walked();
+            let walked_then = Arc::new(Mutex::new(None));
+            let (other, rt2, then) = (db.clone(), rt.clone(), walked_then.clone());
+            let detecting = rt.spawn("detecting", move || {
+                let nap = Duration::from_micros(step * step * 40);
+                adtb_simkit::common::sleep(&rt2, &mut rt2.io(), nap);
+                *then.lock().unwrap() = Some(other.write_path().pager().walked());
+                other.damage_page(leaf, Damage::Checksum);
+            });
+            let what = quarantined(&t.commit(None).unwrap_err()).to_owned();
+            rt.join(detecting);
+            let then = walked_then.lock().unwrap().expect("the thread ran");
+            if then == before + 1 {
+                during += 1;
+            }
+            assert_ne!("the database", what, "step {step}");
+            let index = user_index_mark(&db);
+            assert_eq!(BTreeSet::from([google, index]), marks(&db), "step {step}");
+            assert_eq!(
+                Some(BTreeSet::from([index])),
+                pager.mapped_to(leaf),
+                "step {step}"
+            );
+        });
+    }
+    println!("{during} of 9 runs recorded the damage during the commit's walk");
+    adtb_simkit::seeds::assert_reached("a record appended during the commit's walk", during, 1);
+}
+
+#[test]
+fn a_commit_walks_no_record_whose_last_mapping_was_incomplete() {
+    let mut sim = Sim::new(65, Config::default());
+    api::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        let w = db.write_path();
+        let p = w.pager();
+        let unheld = p
+            .allocate(1, adtb::storage::PageKind::Quarantine, 0)
+            .unwrap();
+        let root = w.heap_named("app::identities", "Apple").unwrap();
+        let root = root.owned_pages(p).unwrap()[0];
+        db.damage_page(root, Damage::Unreadable);
+        db.damage_page(unheld, Damage::Checksum);
+        let mut walked = vec![p.walked()];
+        for i in 0..3 {
+            api::results(&db, &format!(r#"insert users {{ name: "w{i}" }}"#));
+            walked.push(p.walked());
+        }
+        assert_eq!(None, p.mapped_to(unheld));
+        assert_eq!(BTreeSet::new(), marks(&db));
+        let first = walked[0] + 1;
+        assert_eq!(vec![walked[0], first, first, first], walked);
+        let detail = format!(
+            "{:?}",
+            PageError {
+                pid: root,
+                damage: Damage::Unreadable
+            }
+        );
+        let failed = Error::Fatal {
+            reason: FatalReason::Storage { detail },
+        };
+        assert_eq!(failed, api::failure(&db, ALL));
+        assert_eq!(first + 1, p.walked(), "a failing call walks it again");
+    });
+}
+
+type Files = BTreeMap<String, Vec<u8>>;
+
+/// Returns `files` after a pager writing pages whole opens them and writes a byte of `pid`, then
+/// a close, or a crash once its log is durable.
+fn written_whole(files: Files, pid: Pid, crash: bool) -> Files {
+    let mut sim = Sim::with_files(98, Config::default(), files);
+    let body = |rt: SimRuntime| {
+        let options = Options {
+            page_size: API_PAGE as u32,
+            threads: 2,
+            atomic_page_writes: true,
+            ..Options::new(FILE)
+        };
+        let (p, _) = Pager::open(rt, &options).unwrap();
+        p.update(&[pid], |pages| pages[0][API_PAGE / 2] ^= 1)
+            .unwrap();
+        p.flush_log();
+        p
+    };
+    if crash {
+        adtb_simkit::common::run_then_crash(&mut sim, |rt, _| drop(body(rt.clone())));
+    } else {
+        finished(&mut sim, |rt| body(rt).close());
+    }
+    sim.files()
+}
+
+#[test]
+fn a_lost_write_recovery_finds_is_marked_by_an_open_that_succeeds_and_refuses_the_next() {
+    let mut sim = Sim::new(98, Config::default());
+    let (pid, users) = api::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        let pid = heap_page(&db, "app::users", "User");
+        let users = mark_named(&db, "app::users", "User");
+        db.close().unwrap();
+        (pid, users)
+    });
+    let first = sim.files();
+    let written = written_whole(first.clone(), pid, false);
+    let mut lost = written_whole(written, pid, true);
+    let at = pid.0 as usize * API_PAGE;
+    lost.get_mut(FILE).unwrap()[at..at + API_PAGE].copy_from_slice(&first[FILE][at..at + API_PAGE]);
+    let mut sim = Sim::with_files(98, Config::default(), lost);
+    api::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        assert!(
+            matches!(
+                db.write_path().pager().recorded().pages.get(&pid),
+                Some(Damage::Stale { .. })
+            ),
+            "recovery records the lost write"
+        );
+        assert_eq!(BTreeSet::from([users]), marks(&db));
+        db.close().unwrap();
+    });
+    api::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        assert_eq!(BTreeSet::from([users]), marks(&db));
+        assert_eq!(
+            "app::users.User",
+            failed_on(&db, "from u in users select u.id")
+        );
+        db.close().unwrap();
+    });
+}
+
+#[test]
+fn a_mark_a_crash_loses_before_it_is_written_is_set_again_by_the_next_open() {
+    let mut sim = Sim::new(99, Config::default());
+    let (pid, google) = api::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        let pid = google(&db);
+        let mark = mark_named(&db, "app::identities", "Google");
+        db.close().unwrap();
+        (pid, mark)
+    });
+    adtb_simkit::common::run_then_crash(&mut sim, |rt, _| {
+        let db = open_app(rt.clone());
+        db.damage_page(pid, Damage::Checksum);
+        assert_eq!(BTreeSet::new(), marks(&db));
+    });
+    api::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        assert_eq!(BTreeSet::from([google]), marks(&db));
+        db.close().unwrap();
     });
 }

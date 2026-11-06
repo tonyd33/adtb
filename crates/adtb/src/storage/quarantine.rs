@@ -78,8 +78,8 @@ fn encode(page: &mut [u8], marks: &BTreeSet<Quarantine>) {
 /// Why a walk of an object's pages stopped.
 #[derive(Clone, Copy, Debug)]
 pub enum Stopped {
-    /// On a page that failed its checksum or log position.
-    Damage,
+    /// On the page named, which failed its checksum or log position.
+    Damage(Pid),
     /// On a shape the walk could not follow, which proves nothing: the walk takes no latch, so
     /// the object may have changed under it.
     Shape,
@@ -92,7 +92,7 @@ impl From<PageError> for Stopped {
         if e.damage == Damage::Unreadable {
             Stopped::Io
         } else {
-            Stopped::Damage
+            Stopped::Damage(e.pid)
         }
     }
 }
@@ -109,8 +109,8 @@ fn settled(mut walk: impl FnMut() -> Result<Vec<Pid>, Stopped>) -> Result<Vec<Pi
         match walk() {
             Ok(pages) => return Ok(pages),
             Err(Stopped::Io) => return Err(Stopped::Io),
-            Err(Stopped::Damage) if damaged => return Err(Stopped::Damage),
-            Err(stop) => damaged = matches!(stop, Stopped::Damage),
+            Err(Stopped::Damage(at)) if damaged => return Err(Stopped::Damage(at)),
+            Err(stop) => damaged = matches!(stop, Stopped::Damage(_)),
         }
     }
     Err(Stopped::Shape)
@@ -122,11 +122,16 @@ pub struct Holders {
     pid: Pid,
     held: BTreeSet<Quarantine>,
     incomplete: bool,
+    /// Whether an object whose damage marks nothing holds the page.
+    unmarked: bool,
+    /// The pages whose damage stopped a walk.
+    met: BTreeSet<Pid>,
 }
 
 impl Holders {
     /// Take what `walk` finds of `object`, whose damage marks nothing when `None`. Leave the
-    /// mapping incomplete when the walk ends on anything but damage.
+    /// mapping incomplete when the walk ends on anything but damage, or on damage of an object
+    /// whose damage marks nothing.
     pub fn walk(
         &mut self,
         object: Option<Quarantine>,
@@ -134,7 +139,11 @@ impl Holders {
     ) {
         let holds = match settled(walk) {
             Ok(pages) => pages.contains(&self.pid),
-            Err(Stopped::Damage) => true,
+            Err(Stopped::Damage(at)) => {
+                self.met.insert(at);
+                self.incomplete |= object.is_none();
+                object.is_some()
+            }
             Err(Stopped::Shape | Stopped::Io) => {
                 self.incomplete = true;
                 false
@@ -145,7 +154,7 @@ impl Holders {
                 Some(o) => {
                     self.held.insert(o);
                 }
-                None => self.incomplete = true,
+                None => self.unmarked = true,
             }
         }
     }
@@ -454,16 +463,18 @@ impl<R: Runtime> Pager<R> {
         Ok(())
     }
 
-    /// Returns what the damage at `pid` quarantines. `walk` reports the pages of every object to
-    /// the [`Holders`]. A page in no object quarantines `unheld`, once every walk is complete.
+    /// Returns what the damage at `pid` quarantines, `None` when the mapping is incomplete and
+    /// found no holder. An object whose damage marks nothing that holds the page completes it.
+    /// `walk` reports the pages of every object to the [`Holders`]. A page in no
+    /// object quarantines `unheld`, once every walk is complete.
     ///
     /// Postconditions:
     ///
     /// - A page the allocation bitmap calls free, before or after the walk, quarantines nothing
     ///   unless a walk found it.
-    /// - A walk stopped by damage quarantines its object. One stopped by an I/O failure, or on a
-    ///   shape it could not follow in all its tries, leaves the page unmapped: `unheld` then plays
-    ///   no part.
+    /// - A walk stopped by damage quarantines its object, or leaves the mapping incomplete when
+    ///   the object's damage marks nothing. One stopped by an I/O failure, or on a shape it could
+    ///   not follow in all its tries, leaves the mapping incomplete: `unheld` then plays no part.
     /// - An allocation bitmap page quarantines the database, with no walk.
     /// - The database's mark stands alone, as it covers every object.
     pub fn holders_of(
@@ -471,23 +482,42 @@ impl<R: Runtime> Pager<R> {
         pid: Pid,
         unheld: Option<Quarantine>,
         walk: impl FnOnce(&mut Holders),
-    ) -> BTreeSet<Quarantine> {
+    ) -> Option<BTreeSet<Quarantine>> {
+        self.holders_meeting(pid, unheld, &mut BTreeSet::new(), walk)
+    }
+
+    /// Returns what [`Pager::holders_of`] does, adding to `met` each page whose damage stopped a
+    /// walk.
+    pub fn holders_meeting(
+        &self,
+        pid: Pid,
+        unheld: Option<Quarantine>,
+        met: &mut BTreeSet<Pid>,
+        walk: impl FnOnce(&mut Holders),
+    ) -> Option<BTreeSet<Quarantine>> {
         if self.is_bitmap_page(pid) {
-            return BTreeSet::from([Quarantine::Database]);
+            return Some(BTreeSet::from([Quarantine::Database]));
         }
+        self.walked.fetch_add(1, Ordering::Relaxed);
         let mut h = Holders {
             pid,
             held: BTreeSet::new(),
             incomplete: false,
+            unmarked: false,
+            met: BTreeSet::new(),
         };
         walk(&mut h);
+        met.append(&mut h.met);
         if h.held.contains(&Quarantine::Database) {
-            return BTreeSet::from([Quarantine::Database]);
+            return Some(BTreeSet::from([Quarantine::Database]));
         }
-        if !h.held.is_empty() || h.incomplete || self.called_free(pid) {
-            return h.held;
+        if h.incomplete && h.held.is_empty() && !h.unmarked {
+            return None;
         }
-        unheld.into_iter().collect()
+        if !h.held.is_empty() || h.unmarked || self.called_free(pid) {
+            return Some(h.held);
+        }
+        Some(unheld.into_iter().collect())
     }
 
     /// Returns whether the allocation bitmap calls `pid` free, or cannot be read to say.

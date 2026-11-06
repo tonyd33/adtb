@@ -307,6 +307,8 @@ impl<R: Runtime> Pager<R> {
                 None
             })
         };
+        let broken = broken.get(&pid).copied();
+        let broken = broken.filter(|&d| !self.settled_at(pid, d));
         let judge =
             |disk: &Result<(AlignedBuf, Verdict), Damage>, resident: Option<Lsn>, changed: bool| {
                 let bad = match disk {
@@ -327,8 +329,8 @@ impl<R: Runtime> Pager<R> {
                     _ => None,
                 };
                 let stale = future.or_else(|| {
-                    found.and_then(|found| match (broken.get(&pid), last.get(&pid)) {
-                        (Some(&d), _) if found < *end => Some(d),
+                    found.and_then(|found| match (broken, last.get(&pid)) {
+                        (Some(d), _) if found < *end => Some(d),
                         (None, Some(&expected)) if expected != found && found < *end => {
                             Some(Damage::Stale { expected, found })
                         }
@@ -379,6 +381,9 @@ impl<R: Runtime> Pager<R> {
         let (bad, found, stale, orphan, unlogged) = seen;
         if let Some(damage) = bad {
             findings.push(Finding::Page { pid, damage });
+            if found.is_some() {
+                self.hold_damage(pid, damage);
+            }
         }
         let Some(found) = found else {
             // Leave an unreadable page unrecorded for the next read to retry.
@@ -390,7 +395,7 @@ impl<R: Runtime> Pager<R> {
         if let Some(lsn) = unlogged {
             findings.push(unlogged_at(pid, lsn, found));
         }
-        if let Some(damage) = stale {
+        if let Some(damage) = stale.filter(|&d| !self.settled_at(pid, d)) {
             findings.push(Finding::Page { pid, damage });
             findings.extend(lost_record(pid, damage));
             self.damage(pid, damage);
@@ -398,6 +403,14 @@ impl<R: Runtime> Pager<R> {
             findings.push(Finding::Orphan(pid));
         }
         findings
+    }
+
+    /// Returns whether `pid` is recorded settled at the LSNs `damage` finds it stale at.
+    fn settled_at(&self, pid: Pid, damage: Damage) -> bool {
+        let Damage::Stale { expected, found } = damage else {
+            return false;
+        };
+        self.meta().records.page(pid) == Some(Damage::Settled { expected, found })
     }
 
     /// Returns the number of pages the data file spans now.

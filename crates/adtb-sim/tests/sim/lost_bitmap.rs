@@ -699,7 +699,7 @@ fn assert_second_group_refused(files: Files, named: Pid, damage: Damage, what: &
             "{what}: allocate"
         );
         assert_eq!(
-            BTreeSet::from([Quarantine::Database]),
+            Some(BTreeSet::from([Quarantine::Database])),
             pager.holders_of(Pid(SMALL_SPAN), None, |_| {}),
             "{what}"
         );

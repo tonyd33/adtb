@@ -82,6 +82,19 @@ fn nanos(t: SystemTime) -> u64 {
 /// takes shared; a reservation of more ids and a truncation take it alone. Every other call
 /// takes the lock over running transactions and snapshots, then, if it needs it, the commit log.
 ///
+/// Returns the damage recorded of a page of `clog` that it does not settle.
+fn recorded_damage<R: Runtime>(pager: &Pager<R>, clog: &CommitLog) -> Option<PageError> {
+    let recorded = pager.recorded();
+    let mut pages = vec![clog.root()];
+    pages.extend(clog.directory_pages());
+    pages.extend(clog.status_pages().values());
+    pages.into_iter().find_map(|pid| {
+        let damage = *recorded.pages.get(&pid)?;
+        let settled = matches!(damage, Damage::Settled { .. });
+        (!settled).then_some(PageError { pid, damage })
+    })
+}
+
 /// Once any commit log page fails verification the database is quarantined: from then on every
 /// call that starts, ends or reads for a transaction fails with [`Error::Corrupt`], naming the
 /// first page found damaged. The commit log stays readable through [`Transactions::commit_log`]
@@ -149,6 +162,7 @@ impl<R: Runtime> Transactions<R> {
         if let Some(e) = damage.filter(|e| e.damage == Damage::Unreadable) {
             return Err(e);
         }
+        let damage = damage.or_else(|| recorded_damage(pager, &clog));
         let txns = Transactions::over(rt, pager, clog);
         if let Some(e) = damage {
             txns.damaged(e);

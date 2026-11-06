@@ -246,8 +246,8 @@ before its commit record ([storage.md §8](storage.md#8-quarantine)).
 
 A commit log page that fails verification quarantines the whole
 database, since every relation's visibility reads the commit log. The
-write path turns this into the durable database mark
-([storage.md §8](storage.md#8-quarantine)) when the failure reaches it;
+durable database mark derives from the page's damage record
+([storage.md §8](storage.md#8-quarantine));
 the in-memory state keeps the first damage for the transaction layer,
 which holds no reference to the marks. `Transactions::open` reads every
 status page before it writes any, so a status page damaged at rest,
@@ -288,8 +288,11 @@ A status page whose LSN is below the one the pager expects of it
 ([storage.md §3](storage.md#3-corruption-detection)) is refused stale to
 every reader but the commit log. The open of the commit log reads the
 file's copy of such a page, settles every id on it in progress from the
-same retained log, and writes it back as a change from that copy, so
-`verify` still reports the lost write. When the database is already
+same retained log, and writes it back as a change from that copy. The
+settled page is correct and stays served: `verify` reports its lost write
+once, as a settled page, refuses nothing and marks nothing. A lost write
+it finds at other LSNs after the settle is new damage and quarantines the
+database. When the database is already
 quarantined whole, the open writes nothing but still reads that stretch
 of the retained log, and quarantines the database as above when it is
 not whole and readable.
