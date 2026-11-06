@@ -764,7 +764,15 @@ ran: `query` is the ordinal of the registered query or transaction in
 its bundle, or 0 for a refused binding, `name` a schema function called
 directly, and `text` the BLAKE3-256 hash of ad hoc text. `args`
 is the BLAKE3-256 hash of the call's arguments in the wire encoding at
-the bundle's pinned version ([wire.md](wire.md#4-value-encoding)).
+the bundle's pinned version ([wire.md](wire.md#4-value-encoding)). For
+ad hoc text, `args` hashes one line `name=value` per parameter, the
+value in its canonical text ([interop.md](interop.md#1-textual-value-syntax)),
+the lines sorted by name and each ending in a line feed; the parameter
+given as the passphrase of `dump` or `restore` (§9.5) is left out. A
+text that does not parse, whose passphrase operand is not a bare name,
+or with a value that does not print or a type outside the schema,
+hashes the parameter names alone instead: each name followed by a zero
+byte, sorted.
 `changes` is the change set in that encoding, or at the current
 version for an ad hoc commit. Because `changes` holds whole rows, a
 query may read it only under the column rule for catalog relations:
@@ -827,7 +835,7 @@ $ adtb ledger verify app.adt --digest digests/2026-10.txt
 Tamper evidence detects a change to history before the last exported
 digest; it does not prevent one.
 
-Rulings: security/audit/auth, security/audit/ops, security/audit/calls, security/audit/writes, security/audit-store/relation, security/tamper/ledger, spec/audit-relation/seq
+Rulings: security/audit/auth, security/audit/ops, security/audit/calls, security/audit/writes, security/audit-store/relation, security/tamper/ledger, spec/audit-relation/seq, security/dump-key-audit/param-only-omitted
 
 ## 9. Encryption at rest
 
@@ -927,11 +935,18 @@ plaintext, whether or not the database is encrypted, unless it is
 written with `--encrypt KEY` (`dump to "path" encrypt key`), which
 seals it under a key derived from the passphrase `key`, a `Text`, by
 Argon2id with a salt and parameters the dump's manifest records. A
-restore of it needs the same passphrase. A dump needs `maintain` and `read` on every
+restore of it needs the same passphrase, given as `restore from
+"path" to "file" decrypt key`; without it, or with a passphrase for a
+plaintext dump or a backup, the restore is refused with `Invalid`
+before anything is written. The passphrase is a parameter of the
+text, never written in it: a text whose `encrypt` or `decrypt` operand
+is anything but a parameter is refused. The names of an encrypted
+dump's entries, which name modules, relations, constructors and
+bundles, and their sizes stay visible. A dump needs `maintain` and `read` on every
 relation it dumps; its security section (roles, verifiers, deployment
 grants, peer mappings) is written only for a holder of `schema`.
 
-Rulings: security/encrypt/page, security/integrity/aead, security/nonce/random, security/keys/wrapped, security/kek/passphrase, security/kek/kms, security/kek/host, security/backup-crypt/as-stored, spec/dump-key/passphrase
+Rulings: security/encrypt/page, security/integrity/aead, security/nonce/random, security/keys/wrapped, security/kek/passphrase, security/kek/kms, security/kek/host, security/backup-crypt/as-stored, spec/dump-key/passphrase, spec/restore-key/decrypt-clause-invalid, security/dump-key-audit/param-only-omitted
 
 ## 10. Tenancy
 

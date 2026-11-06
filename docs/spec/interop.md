@@ -784,7 +784,13 @@ A dump is written in plaintext unless it is written with `--encrypt
 KEY` (`dump to "path" encrypt key` as a command), which encrypts every
 entry but the manifest's version fields under a key derived from the
 `Text` passphrase `key` ([security.md §9.5](security.md#95-backups-and-dumps)); a restore of
-an encrypted dump needs the passphrase. A restore with the wrong
+an encrypted dump needs the passphrase, given with `--decrypt KEY`
+(`restore from "path" to "file" decrypt key`). A restore of an
+encrypted dump without a passphrase, or of a plaintext dump or a
+backup with one, is refused with `Invalid` before anything is written.
+An encrypted dump keeps its entries' names, which name modules,
+relations, constructors and bundles, and their sizes visible.
+A restore with the wrong
 passphrase fails as a restore of a damaged dump does: authenticated
 encryption cannot tell a wrong key from damaged ciphertext. A restore
 that cannot authenticate or decode a dump fails with `Rejected {
@@ -855,7 +861,7 @@ query finds a violation, the restore fails with the violation reports
 and the file is not usable. No reader ever sees a state the
 constraints have not checked.
 
-Rulings: interop/dump/logical, interop/dump/schema/op-log, interop/dump/data/arrow-ipc, interop/dump/data/text-rows, interop/dump/roundtrip/same-ids, interop/dump/scope/bundles, interop/dump/scope/extensions, interop/dump/restore/offline-validate, spec/dump-key/passphrase, spec/dump-wrong-key/as-damaged, spec/dump-damaged/offset
+Rulings: interop/dump/logical, interop/dump/schema/op-log, interop/dump/data/arrow-ipc, interop/dump/data/text-rows, interop/dump/roundtrip/same-ids, interop/dump/scope/bundles, interop/dump/scope/extensions, interop/dump/restore/offline-validate, spec/dump-key/passphrase, spec/dump-wrong-key/as-damaged, spec/dump-damaged/offset, spec/restore-key/decrypt-clause-invalid
 
 ## 7. Backup and point-in-time restore
 

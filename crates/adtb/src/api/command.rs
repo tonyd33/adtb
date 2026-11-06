@@ -464,7 +464,7 @@ impl<R: Runtime> Engine<R> {
     }
 
     /// Returns the value of `t`, a term of `p` reading no relation.
-    fn value_of(
+    pub(super) fn value_of(
         &self,
         tx: &Txn,
         p: &Prepared,

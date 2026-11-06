@@ -57,6 +57,7 @@
   "constructor"
   "constructors"
   "create"
+  "decrypt"
   "default"
   "deferrable"
   "define"

@@ -95,6 +95,7 @@ pub enum Command {
     Restore {
         from: String,
         to: String,
+        decrypt: Option<Tm>,
         point: Option<RestorePoint>,
     },
     Backup {
@@ -157,11 +158,14 @@ impl Command {
             | Command::ArchiveAudit { through: t, .. }
             | Command::Dump {
                 encrypt: Some(t), ..
-            }
-            | Command::Restore {
-                point: Some(RestorePoint::AtInstant(t) | RestorePoint::AtPosition(t)),
-                ..
             } => vec![t],
+            Command::Restore { decrypt, point, .. } => {
+                let point = match point {
+                    Some(RestorePoint::AtInstant(t) | RestorePoint::AtPosition(t)) => Some(t),
+                    Some(RestorePoint::BeforeVersion(_)) | None => None,
+                };
+                decrypt.iter_mut().chain(point).collect()
+            }
             Command::Vacuum(_)
             | Command::Verify(_)
             | Command::Reindex { .. }
@@ -176,10 +180,6 @@ impl Command {
             | Command::RotateDek
             | Command::DestroyDek(_)
             | Command::Dump { encrypt: None, .. }
-            | Command::Restore {
-                point: Some(RestorePoint::BeforeVersion(_)) | None,
-                ..
-            }
             | Command::Backup { .. } => Vec::new(),
         }
     }
@@ -300,6 +300,21 @@ impl Checker<'_> {
             ));
         }
         Ok(rel)
+    }
+
+    fn passphrase(&mut self, e: &ast::Expr) -> R<Tm> {
+        let named = matches!(&e.kind, ast::ExprKind::Name(q) if q.module.is_none());
+        let param = named
+            && self
+                .synth(e)
+                .is_ok_and(|o| matches!(self.terms.kind(o.tm), Kind::Var(_)));
+        if !param {
+            return Err(diag(
+                e.span,
+                "the passphrase is a parameter of the text, never written in it",
+            ));
+        }
+        Ok(self.check(e, &Ty::Base(Base::Text))?.tm)
     }
 
     fn role_stmt(&mut self, r: &RoleStmt) -> R<()> {
@@ -690,13 +705,22 @@ impl Checker<'_> {
             ast::Command::Dump { path, encrypt } => Command::Dump {
                 path: path.clone(),
                 encrypt: match encrypt {
-                    Some(k) => Some(self.synth(k)?.tm),
+                    Some(k) => Some(self.passphrase(k)?),
                     None => None,
                 },
             },
-            ast::Command::Restore { from, to, point } => Command::Restore {
+            ast::Command::Restore {
+                from,
+                to,
+                decrypt,
+                point,
+            } => Command::Restore {
                 from: from.clone(),
                 to: to.clone(),
+                decrypt: match decrypt {
+                    Some(k) => Some(self.passphrase(k)?),
+                    None => None,
+                },
                 point: match point {
                     Some(p) => Some(self.restore_point(p)?),
                     None => None,

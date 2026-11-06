@@ -63,7 +63,7 @@ pub use backup::{
     ArchiveTarget, Proof, RestorePoint, Restored, proof_in, prove_in, restore_in, restore_report_in,
 };
 #[cfg(target_os = "linux")]
-pub use backup::{prove, restore};
+pub use backup::{prove, restore, restore_decrypted};
 pub use error::{Error, FatalReason, Fault, Limit, OpenError, RejectReason, RetryReason};
 pub use host::{Determinism, HostFns};
 pub use load::{Appender, Load, LoadOptions, LoadReport};

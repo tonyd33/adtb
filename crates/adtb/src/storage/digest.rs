@@ -11,14 +11,16 @@ pub(super) fn hex(bytes: &[u8]) -> String {
 }
 
 pub(super) fn unhex<const N: usize>(text: &str) -> Option<[u8; N]> {
-    let mut out = [0; N];
-    if text.len() != N * 2 {
+    unhex_all(text)?.try_into().ok()
+}
+
+pub(super) fn unhex_all(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
         return None;
     }
-    for (i, b) in out.iter_mut().enumerate() {
-        *b = u8::from_str_radix(text.get(i * 2..i * 2 + 2)?, 16).ok()?;
-    }
-    Some(out)
+    (0..text.len() / 2)
+        .map(|i| u8::from_str_radix(text.get(i * 2..i * 2 + 2)?, 16).ok())
+        .collect()
 }
 
 /// Returns `body` followed by a line holding the hash of `body`.

@@ -510,7 +510,7 @@ fn report(rt: &SimRuntime) -> Result<Restored, Error> {
     let archive = ArchiveTarget::path(DUMP).unwrap();
     restore_report_in(
         rt.clone(),
-        &archive,
+        (&archive, None),
         COPY,
         RestorePoint::Latest,
         &no_create(),
@@ -624,7 +624,7 @@ fn without(files: &Files, name: &str) -> Files {
     kept.retain(|p, _| !p.starts_with("d/"));
     let mut sim = Sim::with_files(8, Config::default(), kept);
     api::run(&mut sim, |rt| {
-        storage::write_dump(&rt, DUMP, e, snapshot, &entries).unwrap();
+        storage::write_dump(&rt, DUMP, e, snapshot, &entries, None).unwrap();
     });
     sim.files()
 }
@@ -637,7 +637,13 @@ fn assert_dormant(rt: &SimRuntime, (from, to): (&str, &str), owner: bool) {
     let id = answer(&src, read);
     src.close().unwrap();
     let archive = ArchiveTarget::path(from).unwrap();
-    let got = restore_report_in(rt.clone(), &archive, to, RestorePoint::Latest, &no_create());
+    let got = restore_report_in(
+        rt.clone(),
+        (&archive, None),
+        to,
+        RestorePoint::Latest,
+        &no_create(),
+    );
     let dormant = Dormant {
         id: id["grants.key(".len()..id.len() - 1].parse().unwrap(),
         grantee: "web".to_owned(),
@@ -884,11 +890,6 @@ fn a_restore_to_an_existing_path_and_a_dump_to_a_full_directory_are_refused() {
             Database::open_in(hook.clone(), FILE, &Log::new(app_log()), &api::options(2)).unwrap();
         hook.arm(|op, path| changes(op) && path.is_some_and(|p| p.starts_with(DUMP)));
         is_invalid_naming(&dump(&db), "holds files");
-        let sealed = run(&db, "dump to \"e\" encrypt \"k\"");
-        is_invalid_naming(
-            &sealed,
-            "`dump` with `encrypt` does not run in this engine yet",
-        );
         assert_eq!(
             0,
             hook.disarm(),
@@ -1082,7 +1083,7 @@ fn with_parts(
     kept.retain(|p, _| !p.starts_with("d/"));
     let mut sim = Sim::with_files(8, Config::default(), kept);
     api::run(&mut sim, |rt| {
-        storage::write_dump(&rt, DUMP, e, snapshot, &entries).unwrap();
+        storage::write_dump(&rt, DUMP, e, snapshot, &entries, None).unwrap();
     });
     sim.files()
 }
@@ -1635,7 +1636,7 @@ fn an_empty_part_is_read_and_named_and_a_dump_read_of_another_kind_is_damage() {
     let mut not_kind = lines;
     not_kind[1] = "kind backup".to_owned();
     let mut sim = Sim::with_files(22, Config::default(), sealed_with(&files, &not_kind));
-    let read = api::run(&mut sim, |rt| storage::read_dump(&rt, DUMP).map(drop));
+    let read = api::run(&mut sim, |rt| storage::read_dump(&rt, DUMP, None).map(drop));
     assert!(
         matches!(&read, Err(storage::BackupError::Damaged { part }) if part == "manifest"),
         "{read:?}"

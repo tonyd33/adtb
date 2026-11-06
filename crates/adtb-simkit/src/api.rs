@@ -6,9 +6,10 @@ use std::task::{Wake, Waker};
 use adtb::runtime::{ThreadId, Threads};
 use adtb::{
     AdHocTransaction, CallOptions, Completion, CreateOptions, Database, DynRows, Error,
-    Observation, OpenOptions, RejectReason, RoleSession, TaskOptions, TxnCallOptions,
+    Observation, OpenOptions, RejectReason, RoleSession, TaskOptions, TxnCallOptions, Value,
 };
 use adtb_lang::textual::print;
+use adtb_lang::types::Ty;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 
 /// Returns the options that open the database with `workers` workers, creating it if it does not
@@ -133,7 +134,17 @@ pub fn task_rows(
     session: &RoleSession<SimRuntime>,
     text: &str,
 ) -> Result<Vec<String>, Error> {
-    let task = session.submit_text(text, &[], TaskOptions::default())?;
+    task_bound(rt, session, text, &[])
+}
+
+/// Submit `text` as [`task_rows`] does, each free name bound by `params`.
+pub fn task_bound(
+    rt: &SimRuntime,
+    session: &RoleSession<SimRuntime>,
+    text: &str,
+    params: &[(&str, Ty, Value)],
+) -> Result<Vec<String>, Error> {
+    let task = session.submit_text(text, params, TaskOptions::default())?;
     let waker = Waker::from(Arc::new(Unpark {
         rt: rt.clone(),
         thread: rt.current(),

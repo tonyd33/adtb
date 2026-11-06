@@ -100,6 +100,28 @@ allow = [
     "portable-atomic-util",
     # BLAKE3-256 for the version hash of the operator log and the content hash of functions.
     "blake3",
+    # XChaCha20-Poly1305 in the STREAM construction, sealing an encrypted dump's entries.
+    "chacha20poly1305",
+    "aead",
+    "chacha20",
+    "poly1305",
+    # Argon2id, deriving an encrypted dump's key from its passphrase.
+    "argon2",
+    "blake2",
+    "base64ct",
+    # The RustCrypto traits, fixed-size arrays and constant-time comparisons the two above share.
+    "block-buffer",
+    "cipher",
+    "crypto-common",
+    "digest",
+    "generic-array",
+    "typenum",
+    "inout",
+    "opaque-debug",
+    "universal-hash",
+    "subtle",
+    # Zeroing a passphrase, a derived key and the KDF's memory when dropped.
+    "zeroize",
     # Fixed-size array views and stack arrays BLAKE3 uses.
     "arrayref",
     "arrayvec",

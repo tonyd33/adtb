@@ -12,7 +12,7 @@ use crate::catalog::{
 };
 use crate::exec::Val;
 use crate::runtime::Runtime;
-use crate::storage::{self, BackupError, DumpManifest, Envelope};
+use crate::storage::{self, BackupError, DumpManifest, Envelope, Passphrase};
 use crate::write::{self, Bounds, Local, Text, Txn};
 
 use super::backup::{CATALOG_VERSION, RestorePoint, refused};
@@ -477,12 +477,13 @@ impl<R: Runtime> Engine<R> {
     }
 
     /// Write the database as `tx` reads it to the dump directory `path`, with a `security` entry
-    /// when `secured`. Returns its manifest.
+    /// when `secured`, encrypted under `phrase` when given. Returns its manifest.
     pub(super) fn dump_to(
         &self,
         tx: &Txn,
         path: &str,
         secured: bool,
+        phrase: Option<&Passphrase>,
     ) -> Result<DumpManifest, Error> {
         let target = self.target(path)?;
         self.admit_dump()?;
@@ -545,20 +546,22 @@ impl<R: Runtime> Engine<R> {
             self.db.admit_heaps(r).map_err(failed)?;
         }
         let snapshot = self.db.read_position(tx);
-        storage::write_dump(&self.rt, &target, envelope, snapshot, &entries).map_err(refused)
+        storage::write_dump(&self.rt, &target, envelope, snapshot, &entries, phrase)
+            .map_err(refused)
     }
 }
 
-/// Restore the dump at `source` as the new database file `path` of runtime `rt`, which opens with
-/// `options`. Returns the dump's manifest and each dormant grant of the restored file.
+/// Restore the dump at `source`, encrypted under `phrase` when given, as the new database file
+/// `path` of runtime `rt`, which opens with `options`. Returns the dump's manifest and each
+/// dormant grant of the restored file.
 pub(super) fn restore_dump<R: Runtime>(
     rt: &R,
-    source: &str,
+    (source, phrase): (&str, Option<&Passphrase>),
     path: &str,
     to: RestorePoint,
     options: &OpenOptions,
 ) -> Result<(DumpManifest, Vec<Dormant>), Error> {
-    let (manifest, entries) = storage::read_dump(rt, source).map_err(dump_refused)?;
+    let (manifest, entries) = storage::read_dump(rt, source, phrase).map_err(dump_refused)?;
     let e = &manifest.envelope;
     if e.edition != EDITION || e.catalog_version > CATALOG_VERSION {
         return Err(Error::invalid(format!(

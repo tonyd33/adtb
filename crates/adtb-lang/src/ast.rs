@@ -1009,6 +1009,7 @@ pub enum Command {
     Restore {
         from: String,
         to: String,
+        decrypt: Option<Box<Expr>>,
         point: Option<RestorePoint>,
     },
     Backup {

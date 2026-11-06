@@ -10,6 +10,7 @@ use std::process::ExitCode;
 
 use adtb::{ArchiveTarget, CallOptions, CreateOptions, Log, OpenOptions, Proof, RestorePoint};
 use adtb_lang::textual::print;
+use adtb_lang::types::{Base, Ty};
 use clap::{Parser, Subcommand};
 
 use session::{Command, Session};
@@ -90,6 +91,8 @@ enum Tool {
         file: PathBuf,
         #[arg(value_name = "TARGET", help = "the dump directory")]
         target: PathBuf,
+        #[arg(long, value_name = "KEY", help = "encrypt under the passphrase KEY")]
+        encrypt: Option<String>,
         #[arg(
             long = "schema",
             value_name = "FILE",
@@ -105,6 +108,12 @@ enum Tool {
         source: PathBuf,
         #[arg(value_name = "PATH", help = "the new database file")]
         path: PathBuf,
+        #[arg(
+            long,
+            value_name = "KEY",
+            help = "decrypt a dump under the passphrase KEY"
+        )]
+        decrypt: Option<String>,
         #[arg(
             long = "to-position",
             value_name = "EPOCH/LSN",
@@ -141,16 +150,18 @@ fn main() -> ExitCode {
             Tool::Dump {
                 file,
                 target,
+                encrypt,
                 log: paths,
-            } => written(file, target, "dump", paths),
+            } => written(file, (target, encrypt.as_deref()), "dump", paths),
             Tool::Restore {
                 source,
                 path,
+                decrypt,
                 to_position,
                 to_time,
                 before_version,
             } => restored(
-                source,
+                (source, decrypt.as_deref()),
                 path,
                 to_position.as_deref(),
                 to_time.is_some(),
@@ -227,32 +238,45 @@ fn verified(file: &Path, paths: &[PathBuf]) -> Result<bool, String> {
 /// Copy the database `file` to `target`, then prove the copy when `verify`. Returns whether it is
 /// proven or unasked to be, or why it could not run.
 fn backed_up(file: &Path, target: &Path, verify: bool, paths: &[PathBuf]) -> Result<bool, String> {
-    written(file, target, "backup", paths)?;
+    written(file, (target, None), "backup", paths)?;
     if verify {
         return proved(target, paths);
     }
     Ok(true)
 }
 
-/// Run the command `command to "target"` on the database `file`. Returns true, or why it could
-/// not run.
-fn written(file: &Path, target: &Path, command: &str, paths: &[PathBuf]) -> Result<bool, String> {
+/// Run the command `command to "target"` on the database `file`, encrypting under `key` when
+/// given. Returns true, or why it could not run.
+fn written(
+    file: &Path,
+    (target, key): (&Path, Option<&str>),
+    command: &str,
+    paths: &[PathBuf],
+) -> Result<bool, String> {
     let failed = |e: &dyn std::fmt::Display| format!("{}: {e}", file.display());
     let log = log(paths)?;
     let db = adtb::open(file, &log, &OpenOptions::default()).map_err(|e| failed(&e))?;
     let absolute = std::path::absolute(target).map_err(|e| failed(&e))?;
-    let text = format!("{command} to {:?}", absolute.display().to_string());
-    db.query_text(&text, &[], &CallOptions::default())
+    let mut text = format!("{command} to {:?}", absolute.display().to_string());
+    let params: Vec<_> = key
+        .map(|k| ("k", Ty::Base(Base::Text), adtb::Value::text(k)))
+        .into_iter()
+        .collect();
+    if key.is_some() {
+        text.push_str(" encrypt k");
+    }
+    db.query_text(&text, &params, &CallOptions::default())
         .map_err(|e| failed(&e))?;
     db.close().map_err(|e| failed(&e))?;
     Ok(true)
 }
 
-/// Write the new database `path` from the backup or dump at `source`, up to `position` as `EPOCH/LSN`, an
+/// Write the new database `path` from the backup or dump at `source`, a dump decrypted under
+/// `key` when given, up to `position` as `EPOCH/LSN`, an
 /// instant if `timed`, or `before` a version, and print the pages its manifest lists as copied
 /// damaged. Returns true, or why it could not run.
 fn restored(
-    source: &Path,
+    (source, key): (&Path, Option<&str>),
     path: &Path,
     position: Option<&str>,
     timed: bool,
@@ -266,8 +290,9 @@ fn restored(
         (None, None) if timed => RestorePoint::Version(0),
         (None, None) => RestorePoint::Latest,
     };
-    let damaged =
-        adtb::restore(&archive, path, to, OpenOptions::default()).map_err(|e| failed(&e))?;
+    let key = key.map(|k| adtb::storage::Passphrase::new(k.to_owned()));
+    let damaged = adtb::restore_decrypted(&archive, path, to, OpenOptions::default(), key.as_ref())
+        .map_err(|e| failed(&e))?;
     let mut out = io::stdout();
     for page in damaged {
         writeln!(out, "page {page} was copied damaged").map_err(|e| failed(&e))?;

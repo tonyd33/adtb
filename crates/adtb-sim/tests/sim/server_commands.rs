@@ -185,10 +185,10 @@ const COMMANDS: &[Row] = &[
         spec: "`dump to \"path\" [encrypt key]`",
         capability: "`maintain` and `read` on every relation dumped, and `write_files` through a server; the security section only with `schema`",
         forms: &[],
-        unsupported: &["dump to \"x\" encrypt \"k\""],
+        unsupported: &[],
     },
     Row {
-        spec: "`restore from \"source\" to \"path\" [before version n \\| at instant t \\| at position p]`",
+        spec: "`restore from \"source\" to \"path\" [decrypt key] [before version n \\| at instant t \\| at position p]`",
         capability: "in process or on a closed file only",
         forms: &[],
         unsupported: &["restore from \"a\" to \"b\""],
@@ -321,11 +321,8 @@ fn grant_all(db: &Database<SimRuntime>, role: &str) {
 }
 
 /// The commands the engine does not run that no capability lets a role issue.
-const OWNER_ONLY_UNSUPPORTED: &[&str] = &[
-    "register bundle \"x.adb\"",
-    "dump to \"x\" encrypt \"k\"",
-    "restore from \"a\" to \"b\"",
-];
+const OWNER_ONLY_UNSUPPORTED: &[&str] =
+    &["register bundle \"x.adb\"", "restore from \"a\" to \"b\""];
 
 #[test]
 fn a_command_the_engine_does_not_run_is_refused_after_what_the_role_must_hold() {

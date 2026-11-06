@@ -199,7 +199,15 @@ fn commands_with_expressions_check() {
     );
     adhoc_accepts(&[("k", "Text")], "dump to \"d\" encrypt k");
     adhoc_accepts(&[], "dump to \"d\"");
-    adhoc_refuses(&[], "dump to \"d\" encrypt k", "supplies no value");
+    adhoc_accepts(
+        &[("k", "Text"), ("p", "Position")],
+        "restore from \"d\" to \"f\" decrypt k at position p",
+    );
+    adhoc_refuses(
+        &[("k", "I64")],
+        "restore from \"d\" to \"f\" decrypt k",
+        "expected Text",
+    );
     adhoc_accepts(&[], "restore from \"d\" to \"f\" before version 12");
     adhoc_accepts(
         &[("t", "Instant")],
@@ -1146,6 +1154,11 @@ fn every_command_keeps_the_terms_of_its_expressions() {
         ),
         (&[("k", "Text")], "dump to \"d\" encrypt k", "Text"),
         (
+            &[("k", "Text")],
+            "restore from \"d\" to \"f\" decrypt k",
+            "Text",
+        ),
+        (
             &[("t", "Instant")],
             "restore from \"d\" to \"f\" at instant t",
             "Instant",
@@ -1217,6 +1230,7 @@ fn commands_with_no_expression_keep_what_they_name() {
         Command::Restore {
             from: "d".into(),
             to: "f".into(),
+            decrypt: None,
             point: Some(RestorePoint::BeforeVersion(12)),
         },
         command_of(&[], "restore from \"d\" to \"f\" before version 12").2
@@ -1274,4 +1288,23 @@ explain web-2.4::login_key(u)",
         !n.terms.any(source, |k| matches!(k, Kind::Call { .. })),
         "a normal export source inlines its calls"
     );
+}
+
+#[test]
+fn a_passphrase_written_in_the_text_is_refused() {
+    let reason = "the passphrase is a parameter of the text, never written in it";
+    for (params, text) in [
+        (&[][..], "dump to \"d\" encrypt \"k\""),
+        (&[], "dump to \"d\" encrypt k"),
+        (&[], "restore from \"d\" to \"f\" decrypt users"),
+        (&[], "restore from \"d\" to \"f\" decrypt \"k\""),
+        (&[("k", "Text")], "dump to \"d\" encrypt (k ++ \"x\")"),
+        (
+            &[("k", "Text")],
+            "restore from \"d\" to \"f\" decrypt (k ++ \"x\")",
+        ),
+    ] {
+        let errs = adhoc(params, text).expect_err(text);
+        assert_eq!(vec![reason.to_owned()], errs, "{text}");
+    }
 }

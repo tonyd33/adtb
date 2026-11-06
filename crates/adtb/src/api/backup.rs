@@ -8,7 +8,7 @@ use adtb_lang::types::{Base, Ty};
 use crate::catalog::{self, Dormant};
 use crate::exec::Val;
 use crate::runtime::Runtime;
-use crate::storage::{self, BackupError, BackupRun, Envelope, Manifest, Proved};
+use crate::storage::{self, BackupError, BackupRun, Envelope, Manifest, Passphrase, Proved};
 use crate::write::{self, Bounds, Local, Stop, Txn};
 
 use super::error::{FatalReason, RejectReason};
@@ -80,6 +80,12 @@ pub(super) fn refused(e: BackupError) -> Error {
         BackupError::OtherKind(kind) => {
             Error::invalid(format!("this engine does not restore a {kind}"))
         }
+        BackupError::KeyMismatch { encrypted: true } => {
+            Error::invalid("the dump is encrypted: its restore needs a passphrase".to_owned())
+        }
+        BackupError::KeyMismatch { encrypted: false } => Error::invalid(
+            "the source is not an encrypted dump: its restore takes no passphrase".to_owned(),
+        ),
         BackupError::Stopped | BackupError::Quarantined => {
             Error::invalid("the backup stopped".to_owned())
         }
@@ -110,7 +116,7 @@ pub struct Restored {
 
 fn restored<R: Runtime>(
     rt: &R,
-    source: &str,
+    (source, phrase): (&str, Option<&Passphrase>),
     path: &str,
     to: RestorePoint,
     options: &OpenOptions,
@@ -118,7 +124,8 @@ fn restored<R: Runtime>(
     refuse_scheme(source)?;
     refuse_scheme(path)?;
     if storage::is_dump(rt, source).map_err(refused)? {
-        let (manifest, dormant) = super::dump::restore_dump(rt, source, path, to, options)?;
+        let (manifest, dormant) =
+            super::dump::restore_dump(rt, (source, phrase), path, to, options)?;
         return Ok(Restored {
             manifest: manifest.text(),
             damaged: Vec::new(),
@@ -126,6 +133,9 @@ fn restored<R: Runtime>(
         });
     }
     let (manifest, _) = storage::check_backup(rt, source).map_err(refused)?;
+    if phrase.is_some() {
+        return Err(refused(BackupError::KeyMismatch { encrypted: false }));
+    }
     let end = Position::from(manifest.end);
     if to != RestorePoint::Latest && to != RestorePoint::Position(end) {
         return Err(unreachable_point(&manifest));
@@ -164,19 +174,20 @@ pub fn restore_in<R: Runtime>(
     to: RestorePoint,
     options: &OpenOptions,
 ) -> Result<Vec<u64>, Error> {
-    Ok(restored(&rt, &archive.0, path, to, options)?.damaged)
+    Ok(restored(&rt, (&archive.0, None), path, to, options)?.damaged)
 }
 
-/// Restore `archive` as [`restore_in`] does. Returns what the restore wrote.
+/// Restore `archive` as [`restore_in`] does, an encrypted dump under `phrase`. Returns what the
+/// restore wrote.
 #[doc(hidden)]
 pub fn restore_report_in<R: Runtime>(
     rt: R,
-    archive: &ArchiveTarget,
+    (archive, phrase): (&ArchiveTarget, Option<&Passphrase>),
     path: &str,
     to: RestorePoint,
     options: &OpenOptions,
 ) -> Result<Restored, Error> {
-    restored(&rt, &archive.0, path, to, options)
+    restored(&rt, (&archive.0, phrase), path, to, options)
 }
 
 /// Restore the backup at `archive` as the new database file at `path`. A relative `archive` and
@@ -189,10 +200,23 @@ pub fn restore(
     to: RestorePoint,
     options: OpenOptions,
 ) -> Result<Vec<u64>, Error> {
+    restore_decrypted(archive, path, to, options, None)
+}
+
+/// Restore `archive` as [`restore`] does, an encrypted dump under `phrase`.
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub fn restore_decrypted(
+    archive: &ArchiveTarget,
+    path: impl AsRef<std::path::Path>,
+    to: RestorePoint,
+    options: OpenOptions,
+    phrase: Option<&Passphrase>,
+) -> Result<Vec<u64>, Error> {
     let (rt, path) = host_runtime(path.as_ref(), &options)?;
     let source = std::path::absolute(&archive.0).map_err(|e| Error::invalid(e.to_string()))?;
-    let archive = ArchiveTarget(source.to_string_lossy().into_owned());
-    restore_in(rt, &archive, &path, to, &options)
+    let source = source.to_string_lossy();
+    Ok(restored(&rt, (&source, phrase), &path, to, &options)?.damaged)
 }
 
 /// Returns the host's runtime, and `path` as an absolute path it can open.
@@ -356,28 +380,36 @@ impl<R: Runtime> Engine<R> {
     ) -> Option<Result<DynRows, Error>> {
         match c {
             Command::Backup { path, .. } => Some(self.backup_to(path, p, bounds)),
-            Command::Dump {
-                encrypt: Some(_), ..
-            } => Some(Err(super::unsupported("`dump` with `encrypt`"))),
             Command::Dump { .. } if tx.wrote() => Some(Err(Error::invalid(
                 "`dump` does not run in a transaction that has written",
             ))),
-            Command::Dump { path, .. } => {
+            Command::Dump { path, encrypt } => {
                 let secured = p
                     .issuer
                     .as_ref()
                     .is_none_or(|i| i.holds.as_ref().is_some_and(|h| h.schema_capability));
                 Some(
                     self.confine(path, p, bounds)
-                        .and_then(|()| self.dump_to(tx, path, secured))
+                        .and_then(|()| self.passphrase(tx, encrypt.as_ref(), p, local, bounds))
+                        .and_then(|phrase| self.dump_to(tx, path, secured, phrase.as_ref()))
                         .map(|manifest| manifest_row(p.schema(), &manifest.text())),
                 )
             }
-            Command::Restore { from, to, point } => {
+            Command::Restore {
+                from,
+                to,
+                point,
+                decrypt,
+            } => {
                 let at = point.as_ref().map_or(Ok(RestorePoint::Latest), |point| {
                     self.point_of(tx, point, p, local, bounds)
                 });
-                Some(at.and_then(|at| self.restore_from(from, to, at, p, bounds)))
+                let phrase = self.passphrase(tx, decrypt.as_ref(), p, local, bounds);
+                Some(
+                    at.and_then(|at| {
+                        self.restore_from(from, to, at, phrase?.as_ref(), (p, bounds))
+                    }),
+                )
             }
             _ => None,
         }
@@ -412,6 +444,25 @@ impl<R: Runtime> Engine<R> {
         Ok(at.map_or(RestorePoint::Version(0), |at| {
             RestorePoint::Position(Position::from(at))
         }))
+    }
+
+    /// Returns the passphrase `term` evaluates to, if any.
+    fn passphrase(
+        &self,
+        tx: &Txn,
+        term: Option<&adtb_lang::kernel::Tm>,
+        p: &Prepared,
+        local: &mut Local,
+        bounds: &Bounds,
+    ) -> Result<Option<Passphrase>, Error> {
+        let Some(term) = term else {
+            return Ok(None);
+        };
+        let value = self.value_of(tx, p, *term, local, bounds.clone());
+        match value.map_err(|e| self.write_error(TxnId(0), e))? {
+            Val::Text(text) => Ok(Some(Passphrase::new(text.to_string()))),
+            _ => Err(Error::invalid("a passphrase is a `Text`".to_owned())),
+        }
     }
 
     pub(super) fn target(&self, path: &str) -> Result<String, Error> {
@@ -494,8 +545,8 @@ impl<R: Runtime> Engine<R> {
         from: &str,
         to: &str,
         at: RestorePoint,
-        p: &Prepared,
-        bounds: &Bounds,
+        phrase: Option<&Passphrase>,
+        (p, bounds): (&Prepared, &Bounds),
     ) -> Result<DynRows, Error> {
         if bounds.confined {
             return Err(Error::invalid(
@@ -504,7 +555,7 @@ impl<R: Runtime> Engine<R> {
         }
         let (source, path) = (self.target(from)?, self.target(to)?);
         let options = OpenOptions::default();
-        let restored = restored(&self.rt, &source, &path, at, &options)?;
+        let restored = restored(&self.rt, (&source, phrase), &path, at, &options)?;
         Ok(manifest_row(p.schema(), &restored.manifest))
     }
 }

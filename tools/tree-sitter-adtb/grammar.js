@@ -20,7 +20,7 @@ const CONTEXTUAL = [
   'unique', 'interval', 'index', 'volatile', 'default', 'computed', 'lease', 'priority', 'budget',
   'hide', 'catalog', 'deterministic', 'arm', 'joins', 'before', 'carry', 'fill', 'retry',
   'read_only', 'deferrable', 'durability', 'unless', 'rejects', 'pins', 'sums', 'online', 'offline',
-  'incremental', 'encrypt', 'wasm', 'host', 'on_delete', 'to', 'at', 'reject', 'at_restore',
+  'incremental', 'encrypt', 'decrypt', 'wasm', 'host', 'on_delete', 'to', 'at', 'reject', 'at_restore',
   'default_generate', 'insert_from', 'exists_where', 'order', 'analyze',
 ];
 
@@ -657,6 +657,7 @@ module.exports = grammar({
       field('from', $.text),
       'to',
       field('to', $.text),
+      optional(seq(k($, 'decrypt'), expr($, 'key', '_prefix_e'))),
       optional(choice(
         seq(k($, 'before'), 'version', field('version', $.int)),
         seq(k($, 'at_restore'), choice('instant', 'position'), expr($, 'point', '_add_e')),

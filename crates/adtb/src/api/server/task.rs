@@ -424,10 +424,19 @@ impl<R: Runtime> RoleSession<R> {
             let err = Error::invalid(format!("parameter `{name}` has no type of the schema"));
             return Err(failed(&names_hash(&names), err));
         }
-        let typed: Vec<_> = params.iter().map(|(n, t, v)| (*n, t, v)).collect();
-        let args = match args_hash(&e.schema, &typed) {
-            Ok(args) => args,
-            Err(err) => return Err(failed(&names_hash(&names), err)),
+        let args = match parsed.as_ref().ok().and_then(|items| passphrases(items)) {
+            Some(secret) => {
+                let typed: Vec<_> = params
+                    .iter()
+                    .filter(|(n, ..)| !secret.contains(n))
+                    .map(|(n, t, v)| (*n, t, v))
+                    .collect();
+                match args_hash(&e.schema, &typed) {
+                    Ok(args) => args,
+                    Err(err) => return Err(failed(&names_hash(&names), err)),
+                }
+            }
+            None => names_hash(&names),
         };
         let capability_only = parsed
             .as_ref()
@@ -561,6 +570,21 @@ fn is_capability_command(item: &AdhocItem) -> bool {
         | ast::Command::Dump { .. }
         | ast::Command::Restore { .. } => false,
     }
+}
+
+/// Returns the parameters `items` give as the passphrase of a `dump` or `restore`, or `None` when
+/// an operand is not a bare name.
+fn passphrases(items: &[AdhocItem]) -> Option<Vec<&str>> {
+    let operands = items.iter().filter_map(|item| match item {
+        AdhocItem::Command(ast::Command::Dump { encrypt, .. }, _) => encrypt.as_ref(),
+        AdhocItem::Command(ast::Command::Restore { decrypt, .. }, _) => decrypt.as_deref(),
+        _ => None,
+    });
+    let names = operands.map(|k| match &k.kind {
+        ast::ExprKind::Name(q) if q.module.is_none() => Some(q.name.text.as_str()),
+        _ => None,
+    });
+    names.collect()
 }
 
 /// Returns every relation of a user module the relation names in `items` may denote.

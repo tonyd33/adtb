@@ -549,7 +549,7 @@ fn commands() {
 retire bundle web-2.3
 supersede bundle ios-4.1 by ios-4.2
 set setting VacuumBudget = { io: 0.2, cpu: 0.5 }
-restore from "s3://backups/app" to "restored.adt" before version 12
+restore from "s3://backups/app" to "restored.adt" decrypt k at position p
 grant call web::login_key to app
 map peer "deploy" on unix to web
 alter role web password p
@@ -565,6 +565,17 @@ temp relation staged : { email: Text } key email"#,
             },
             _
         )
+    ));
+    assert!(matches!(
+        &items[4],
+        AdhocItem::Command(
+            Command::Restore {
+                decrypt: Some(k),
+                point: Some(RestorePoint::AtPosition(_)),
+                ..
+            },
+            _
+        ) if matches!(&k.kind, ExprKind::Name(q) if q.name.text == "k")
     ));
     assert!(matches!(
         &items[5],

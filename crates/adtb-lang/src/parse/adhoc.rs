@@ -325,6 +325,11 @@ impl Parser<'_> {
         let from = self.text_lit()?;
         self.expect_word("to")?;
         let to = self.text_lit()?;
+        let decrypt = if self.eat_word("decrypt") {
+            Some(Box::new(self.prefix_e()?))
+        } else {
+            None
+        };
         let point = if self.at_word("before") {
             self.bump();
             self.expect_word("version")?;
@@ -340,7 +345,12 @@ impl Parser<'_> {
         } else {
             None
         };
-        Ok(Command::Restore { from, to, point })
+        Ok(Command::Restore {
+            from,
+            to,
+            decrypt,
+            point,
+        })
     }
 
     fn explain_target(&mut self) -> PResult<ExplainTarget> {

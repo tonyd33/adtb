@@ -7832,6 +7832,49 @@
             "type": "CHOICE",
             "members": [
               {
+                "type": "SEQ",
+                "members": [
+                  {
+                    "type": "SEQ",
+                    "members": [
+                      {
+                        "type": "SYMBOL",
+                        "name": "_kw_decrypt"
+                      },
+                      {
+                        "type": "STRING",
+                        "value": "decrypt"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "SEQ",
+                    "members": [
+                      {
+                        "type": "FIELD",
+                        "name": "key",
+                        "content": {
+                          "type": "SYMBOL",
+                          "name": "_prefix_e"
+                        }
+                      },
+                      {
+                        "type": "SYMBOL",
+                        "name": "_end"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "BLANK"
+              }
+            ]
+          },
+          {
+            "type": "CHOICE",
+            "members": [
+              {
                 "type": "CHOICE",
                 "members": [
                   {
@@ -12057,6 +12100,10 @@
     {
       "type": "SYMBOL",
       "name": "_kw_encrypt"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_kw_decrypt"
     },
     {
       "type": "SYMBOL",

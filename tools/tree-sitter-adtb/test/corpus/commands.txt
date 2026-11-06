@@ -120,6 +120,7 @@ dump to "f" encrypt "k"
 restore from "a" to "b" before version 1
 restore from "a" to "b" at instant x
 restore from "a" to "b" at position 1
+restore from "a" to "b" decrypt k at position 1
 backup to "f" incremental
 
 ---
@@ -152,6 +153,12 @@ backup to "f" incremental
   (restore_command
     (text)
     (text)
+    (int))
+  (restore_command
+    (text)
+    (text)
+    (name
+      (lower))
     (int))
   (backup_command
     (text)))

@@ -111,7 +111,7 @@ are identifiers elsewhere:
 add adhoc adopt after aggregate alter analyze apply archive arm asc
 assert at audit backup before budget call cancel carry cascade catalog
 clear commit compact computed configure conflict constructor
-constructors create default deferrable define dek deprecate desc
+constructors create decrypt default deferrable define dek deprecate desc
 destroy deterministic disable drop dump durability edition enable encrypt except explain
 export feed field fill finalize finish frozen generate grant hide host
 incremental index init install instant interval joins kek lease limit
@@ -1608,7 +1608,7 @@ command = "explain" [ "analyze" ] ( query_ref "(" [ call_args ] ")" | expr | wri
         | "rotate" "key" ( "kek" TEXT | "dek" )
         | "destroy" "key" "dek" INT
         | "dump" "to" TEXT [ "encrypt" prefix_e ]
-        | "restore" "from" TEXT "to" TEXT [ restore_point ]
+        | "restore" "from" TEXT "to" TEXT [ "decrypt" prefix_e ] [ restore_point ]
         | "backup" "to" TEXT [ "incremental" ]
 restore_point = "before" "version" INT
               | "at" "instant" add_e
@@ -1649,7 +1649,8 @@ backup to "backups/app" incremental
   migrations` applies migration files in order and needs `schema`;
   `print schema` returns the folded schema as a schema file.
 - `dump` writes plaintext unless `encrypt` gives a key: a `Text`
-  passphrase, a parameter.
+  passphrase, a parameter. `restore ... decrypt` gives the passphrase
+  of an encrypted dump, a parameter too.
   It needs `maintain` and `read` on every relation it dumps, and writes
   the security section only for a holder of `schema`.
   `restore` writes a new database file; it never replaces an open one.
@@ -1663,4 +1664,4 @@ The commands' effects and privileges are in
 [catalog.md](catalog.md#9-operational-commands) and
 [interop.md](interop.md#51-export).
 
-Rulings: spec/dump-key/passphrase
+Rulings: spec/dump-key/passphrase, spec/restore-key/decrypt-clause-invalid

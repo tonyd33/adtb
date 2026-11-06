@@ -84,7 +84,7 @@ fn dumped() -> Files {
 fn edited(added: &[(&str, &str)]) -> Files {
     let mut sim = Sim::with_files(2, Config::default(), dumped());
     api::run(&mut sim, |rt| {
-        let (manifest, mut entries) = storage::read_dump(&rt, DUMP).unwrap();
+        let (manifest, mut entries) = storage::read_dump(&rt, DUMP, None).unwrap();
         for (part, row) in added {
             let named = part.strip_suffix(".arrows").unwrap();
             let text_part = format!("{named}.txt");
@@ -100,7 +100,15 @@ fn edited(added: &[(&str, &str)]) -> Files {
             entries.insert(text_part, text.into_bytes());
         }
         let entries: Vec<(String, Vec<u8>)> = entries.into_iter().collect();
-        storage::write_dump(&rt, EDITED, manifest.envelope, manifest.snapshot, &entries).unwrap();
+        storage::write_dump(
+            &rt,
+            EDITED,
+            manifest.envelope,
+            manifest.snapshot,
+            &entries,
+            None,
+        )
+        .unwrap();
     });
     sim.files()
 }
@@ -303,11 +311,19 @@ fn a_stream_of_another_row_shape_in_a_part_is_refused_as_damage() {
     let files = edited(&[]);
     let mut sim = Sim::with_files(6, Config::default(), files);
     let moved = api::run(&mut sim, |rt| {
-        let (manifest, mut entries) = storage::read_dump(&rt, EDITED).unwrap();
+        let (manifest, mut entries) = storage::read_dump(&rt, EDITED, None).unwrap();
         let circles = entries[CIRCLES].clone();
         entries.insert(SQUARES.to_owned(), circles);
         let entries: Vec<(String, Vec<u8>)> = entries.into_iter().collect();
-        storage::write_dump(&rt, "m", manifest.envelope, manifest.snapshot, &entries).unwrap();
+        storage::write_dump(
+            &rt,
+            "m",
+            manifest.envelope,
+            manifest.snapshot,
+            &entries,
+            None,
+        )
+        .unwrap();
         let archive = ArchiveTarget::path("m").unwrap();
         restore_in(rt, &archive, COPY, RestorePoint::Latest, &no_create())
     });
@@ -361,14 +377,22 @@ fn a_restore_resumes_a_generator_past_every_restored_key() {
     let users = schema().relations.iter().position(|r| r.name == "users");
     let id = schema().ids.relations[&RelId(u32::try_from(users.unwrap()).unwrap())];
     let dee = api::run(&mut sim, |rt| {
-        let (manifest, mut entries) = storage::read_dump(&rt, DUMP).unwrap();
+        let (manifest, mut entries) = storage::read_dump(&rt, DUMP, None).unwrap();
         let text = std::str::from_utf8(&entries["generators"]).unwrap();
         let at = format!("generator {id} 3\n");
         assert!(text.contains(&at), "{text}");
         let text = text.replace(&at, &format!("generator {id} 1\n"));
         entries.insert("generators".to_owned(), text.into_bytes());
         let entries: Vec<(String, Vec<u8>)> = entries.into_iter().collect();
-        storage::write_dump(&rt, EDITED, manifest.envelope, manifest.snapshot, &entries).unwrap();
+        storage::write_dump(
+            &rt,
+            EDITED,
+            manifest.envelope,
+            manifest.snapshot,
+            &entries,
+            None,
+        )
+        .unwrap();
         restore(&rt).unwrap();
         let db = Database::open_in(rt, COPY, &log(), &no_create()).unwrap();
         run(&db, r#"insert users { name: "dee" }"#).unwrap();

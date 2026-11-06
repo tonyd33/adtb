@@ -34,6 +34,6 @@ pub use api::{
 };
 pub use api::{BundleDef, Callable, CtorRelation, Key, Pending, Rows, typed};
 #[cfg(target_os = "linux")]
-pub use api::{VerifyFileError, open, prove, restore, verify_file};
+pub use api::{VerifyFileError, open, prove, restore, restore_decrypted, verify_file};
 pub use exec::HostError;
 pub use exec::Val as Value;

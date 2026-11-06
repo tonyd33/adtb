@@ -4,11 +4,12 @@
 use std::path::PathBuf;
 
 use adtb::catalog::Dormant;
-use adtb::storage::Quarantine;
+use adtb::storage::{Passphrase, Quarantine};
 use adtb::{
     ArchiveTarget, CallOptions, Capability, Database, Log, OpenOptions, RestorePoint,
     restore_report_in,
 };
+use adtb_lang::types::{Base, Ty};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_testkit::refused_with;
@@ -160,7 +161,7 @@ fn restored(rt: &SimRuntime) -> (adtb::Restored, Database<SimRuntime>) {
     };
     let report = restore_report_in(
         rt.clone(),
-        &archive,
+        (&archive, None),
         "copy.adt",
         RestorePoint::Latest,
         &no_create,
@@ -304,18 +305,82 @@ fn a_dump_through_a_symlink_out_of_the_export_roots_is_refused() {
     nothing_written(&sim);
 }
 
+const PHRASE: &str = "a long passphrase";
+
+const ARGS: &str = "from a in catalog::audit.Call where a.role == \"ops\" select a.args";
+
+/// Returns the audit's `args` of `bytes`: their BLAKE3-256 hash printed as `Bytes`.
+fn printed_hash(bytes: &[u8]) -> String {
+    let hash = blake3::hash(bytes);
+    let hex: String = hash.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+    format!("0x{hex}")
+}
+
+/// The audit's `args` of `params`: each `name=value` line in canonical text, sorted by name.
+fn args_hash(params: &[(&str, &str)]) -> String {
+    let lines: String = params.iter().map(|(n, v)| format!("{n}={v}\n")).collect();
+    printed_hash(lines.as_bytes())
+}
+
 #[test]
-fn a_dump_through_a_server_is_refused_as_in_process() {
+fn a_text_that_does_not_parse_audits_only_the_names_of_its_parameters() {
+    let mut sim = Sim::new(548, Config::default());
+    api::run(&mut sim, |rt| {
+        let db = opened(&rt, "data", &OPS, true, true);
+        let key = [("k", Ty::Base(Base::Text), adtb::Value::text(PHRASE))];
+        let broken = "dump to \"out/d\" encrypt k )";
+        api::task_bound(&rt, &ops(&db), broken, &key).unwrap_err();
+        let names = printed_hash(b"k\0");
+        assert_ne!(names, args_hash(&[("k", &format!("{PHRASE:?}"))]));
+        assert_eq!(vec![names], rows(&db, ARGS));
+        db.close().unwrap();
+    });
+}
+
+#[test]
+fn an_encrypted_dump_through_a_server_restores_and_audits_no_passphrase() {
     let mut sim = Sim::new(546, Config::default());
     api::run(&mut sim, |rt| {
         let db = opened(&rt, "data", &OPS, true, true);
-        let encrypt = "dump to \"out/d\" encrypt \"k\"";
-        let reason = "`dump` with `encrypt` does not run in this engine yet";
-        refused_with(db.query_text(encrypt, &[], &CallOptions::default()), reason);
-        refused_with(api::task(&rt, &ops(&db), encrypt), reason);
+        let key = [("k", Ty::Base(Base::Text), adtb::Value::text(PHRASE))];
+        let text = "dump to \"out/d\" encrypt k";
+        api::task_bound(&rt, &ops(&db), text, &key).unwrap();
+        let src = every(&db);
+        let expected = args_hash(&[]);
+        assert_ne!(expected, args_hash(&[("k", &format!("{PHRASE:?}"))]));
+        assert_eq!(vec![expected], rows(&db, ARGS));
+        let every_audit = rows(&db, "catalog::audit");
+        assert!(
+            every_audit.iter().all(|r| !r.contains(PHRASE)),
+            "{every_audit:?}"
+        );
         db.close().unwrap();
+        let archive = ArchiveTarget::path("data/out/d").unwrap();
+        let phrase = Passphrase::new(PHRASE.to_owned());
+        let opts = OpenOptions {
+            create: None,
+            ..api::options(2)
+        };
+        let latest = RestorePoint::Latest;
+        restore_report_in(
+            rt.clone(),
+            (&archive, Some(&phrase)),
+            "copy.adt",
+            latest,
+            &opts,
+        )
+        .unwrap();
+        let copy = Database::open_in(rt, "copy.adt", &Log::new([APP, READS]), &opts);
+        let copy = copy.unwrap();
+        assert_eq!(src, every(&copy));
+        copy.close().unwrap();
     });
-    nothing_written(&sim);
+    let leaked = sim
+        .files()
+        .into_iter()
+        .filter(|(_, bytes)| bytes.windows(PHRASE.len()).any(|w| w == PHRASE.as_bytes()));
+    let leaked: Vec<_> = leaked.map(|(path, _)| path).collect();
+    assert!(leaked.is_empty(), "{leaked:?}");
 }
 
 #[test]

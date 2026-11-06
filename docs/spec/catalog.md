@@ -1837,7 +1837,7 @@ transaction, a function or a constraint.
 | `rotate key kek "uri"`, `rotate key dek` | [security.md](security.md#94-rotation) | `configure` |
 | `destroy key dek n` | [security.md](security.md#94-rotation) | `configure` |
 | `dump to "path" [encrypt key]` | [interop.md](interop.md#6-dump-and-restore) | `maintain` and `read` on every relation dumped, and `write_files` through a server; the security section only with `schema` |
-| `restore from "source" to "path" [before version n \| at instant t \| at position p]` | [interop.md](interop.md#6-dump-and-restore) | in process or on a closed file only |
+| `restore from "source" to "path" [decrypt key] [before version n \| at instant t \| at position p]` | [interop.md](interop.md#6-dump-and-restore) | in process or on a closed file only |
 | `backup to "target" [incremental]` | [interop.md](interop.md#71-backup) | `maintain`, and `write_files` through a server |
 
 Every command is available as an ad hoc statement over the server
@@ -1920,7 +1920,7 @@ need the file closed, such as an offline compaction (§11.3) or a
 restore ([interop.md](interop.md#6-dump-and-restore)), are available
 only on a file.
 
-Rulings: ops/admin/in-language, ops/admin/actions/commands, ops/admin/cli, ops/admin/role/capabilities
+Rulings: ops/admin/in-language, ops/admin/actions/commands, ops/admin/cli, ops/admin/role/capabilities, spec/restore-key/decrypt-clause-invalid
 
 ## 10. Configuration
 

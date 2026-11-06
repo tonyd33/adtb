@@ -121,10 +121,18 @@ type Edit = fn(&mut Entries);
 fn edited(files: &Files, edit: impl FnOnce(&mut Entries)) -> Files {
     let mut sim = Sim::with_files(2, Config::default(), files.clone());
     api::run(&mut sim, |rt| {
-        let (manifest, mut entries) = storage::read_dump(&rt, DUMP).unwrap();
+        let (manifest, mut entries) = storage::read_dump(&rt, DUMP, None).unwrap();
         edit(&mut entries);
         let entries: Vec<(String, Vec<u8>)> = entries.into_iter().collect();
-        storage::write_dump(&rt, EDITED, manifest.envelope, manifest.snapshot, &entries).unwrap();
+        storage::write_dump(
+            &rt,
+            EDITED,
+            manifest.envelope,
+            manifest.snapshot,
+            &entries,
+            None,
+        )
+        .unwrap();
     });
     sim.files()
 }
@@ -286,7 +294,7 @@ fn arrow_rs_reads_each_data_entry_of_a_dump_as_its_constructors_rows() {
     let (files, schema) = dumped();
     let mut sim = Sim::with_files(4, Config::default(), files);
     let read = api::run(&mut sim, |rt| {
-        let (_, entries) = storage::read_dump(&rt, DUMP).unwrap();
+        let (_, entries) = storage::read_dump(&rt, DUMP, None).unwrap();
         let log = Log::new(vec![APP.to_owned()]);
         let db = Database::open_in(rt, FILE, &log, &no_create()).unwrap();
         let mut read = 0;
@@ -333,7 +341,7 @@ fn a_user_sum_spelled_as_bool_or_option_dumps_as_a_user_sum() {
     let (files, _) = dumped();
     let mut sim = Sim::with_files(5, Config::default(), files);
     let types = api::run(&mut sim, |rt| {
-        let (_, entries) = storage::read_dump(&rt, DUMP).unwrap();
+        let (_, entries) = storage::read_dump(&rt, DUMP, None).unwrap();
         let types = |entry: &str| {
             let reader = StreamReader::try_new(Cursor::new(&entries[entry]), None).unwrap();
             let fields = reader.schema().fields().clone();

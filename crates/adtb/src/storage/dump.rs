@@ -11,7 +11,8 @@ use super::backup::{
     BackupError, Envelope, FIRST_LINE, Fs, Io, KIND as BACKUP, MANIFEST, MAX_EPOCH, Part,
     final_name, inside, io_error, make_parent, name_taken, occupied, publish_restored,
 };
-use super::digest::{hex, sealed, unsealed};
+use super::digest::{hex, sealed, unhex, unhex_all, unsealed};
+use super::dump_crypt::{DumpKey, Kdf, Passphrase, SALT};
 use super::header::REGION;
 use super::pager::parent;
 use super::{Lsn, Position};
@@ -23,6 +24,7 @@ const KIND: &str = "dump";
 const DATA_FORM: &str = "arrow";
 /// The directories of a dump that hold entries.
 const DIRS: [&str; 2] = ["data", "bundles"];
+const ENCRYPTED: &str = "encrypted 1";
 
 /// What a dump holds and the snapshot it was read at.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,11 +33,35 @@ pub struct DumpManifest {
     pub snapshot: Position,
     /// Each entry, its `len` the bytes before the zeros that pad its file to a whole region.
     pub parts: Vec<Part>,
+    /// The parameters and salt the key of an encrypted dump is derived under.
+    pub sealing: Option<(Kdf, [u8; SALT])>,
+}
+
+/// Returns the associated data of the sealed part of a manifest whose clear part is `clear`.
+fn manifest_ad(clear: &str) -> Vec<u8> {
+    format!("{MANIFEST}\n{clear}").into_bytes()
 }
 
 impl DumpManifest {
-    /// Returns the manifest as the text of its file.
+    /// Returns the manifest as text, every field in clear.
     pub fn text(&self) -> String {
+        sealed(self.clear() + &self.tail())
+    }
+
+    /// Returns the text of the manifest's file: of an encrypted dump, its clear part followed
+    /// by the rest sealed under `key`.
+    fn file_text<R: Runtime>(&self, rt: &R, key: Option<&DumpKey>) -> String {
+        let Some(key) = key else {
+            return self.text();
+        };
+        let clear = self.clear();
+        let opaque = key.seal(rt, &manifest_ad(&clear), self.tail().as_bytes());
+        sealed(format!("{clear}sealed {}\n", hex(&opaque)))
+    }
+
+    /// Returns the lines a restore reads before any key: the versions and, of an encrypted
+    /// dump, how its key is derived.
+    fn clear(&self) -> String {
         let e = &self.envelope;
         let mut body = String::new();
         for line in [
@@ -48,25 +74,40 @@ impl DumpManifest {
             format!("schema_version {}", e.schema_version),
             format!("schema_hash {}", e.schema_hash),
             format!("catalog_version {}", e.catalog_version),
-            format!("snapshot {}/{}", self.snapshot.epoch, self.snapshot.lsn.0),
-            "encrypted 0".to_owned(),
         ] {
             writeln!(body, "{line}").expect("a string takes any text");
+        }
+        if let Some((Kdf { m, t, p }, salt)) = &self.sealing {
+            let salt = hex(salt);
+            writeln!(body, "{ENCRYPTED}\nkdf argon2id {m} {t} {p}\nsalt {salt}")
+                .expect("a string takes any text");
+        }
+        body
+    }
+
+    fn tail(&self) -> String {
+        let s = &self.snapshot;
+        let mut body = format!("snapshot {}/{}\n", s.epoch, s.lsn.0);
+        if self.sealing.is_none() {
+            body.push_str("encrypted 0\n");
         }
         for p in &self.parts {
             writeln!(body, "part {} {} {}", p.name, p.len, p.hash)
                 .expect("a string takes any text");
         }
-        sealed(body)
+        body
     }
 
-    /// Returns the manifest `text` states, its lines in the order [`DumpManifest::text`] writes
-    /// them and its parts in ascending order of name.
-    fn parse(text: &str) -> Result<DumpManifest, BackupError> {
-        let damaged = || BackupError::Damaged {
-            part: MANIFEST.to_owned(),
-        };
-        let mut lines = unsealed(text).ok_or_else(damaged)?.lines();
+    /// Returns the manifest `text` states, with its lines in the order of
+    /// [`DumpManifest::file_text`] and its parts in ascending order of name, and the key derived
+    /// from `phrase` for an encrypted dump.
+    fn parse(
+        text: &str,
+        phrase: Option<&Passphrase>,
+    ) -> Result<(DumpManifest, Option<DumpKey>), BackupError> {
+        let damaged = manifest_damaged;
+        let body = unsealed(text).ok_or_else(damaged)?;
+        let mut lines = body.lines();
         if lines.next() != Some(FIRST_LINE) {
             return Err(damaged());
         }
@@ -92,20 +133,62 @@ impl DumpManifest {
         let schema_version = field("schema_version")?.parse().map_err(|_| damaged())?;
         let schema_hash = field("schema_hash")?.to_owned();
         let catalog_version = field("catalog_version")?.parse().map_err(|_| damaged())?;
-        let snapshot = field("snapshot")?;
+        let envelope = Envelope {
+            release,
+            edition,
+            schema_version,
+            schema_hash,
+            catalog_version,
+        };
+        let rest: Vec<&str> = lines.collect();
+        match (rest.first() == Some(&ENCRYPTED), phrase) {
+            (false, None) => Ok((DumpManifest::of(envelope, None, &rest)?, None)),
+            (true, Some(phrase)) => {
+                let [_, kdf, salt, opaque] = rest[..] else {
+                    return Err(manifest_damaged());
+                };
+                let kdf = Kdf::read(kdf).ok_or_else(manifest_damaged)?;
+                let salt = salt.strip_prefix("salt ").and_then(unhex);
+                let salt = salt.ok_or_else(manifest_damaged)?;
+                let clear = body.strip_suffix(&format!("{opaque}\n"));
+                let opened = clear.zip(opaque.strip_prefix("sealed ").and_then(unhex_all));
+                let key = DumpKey::derive(phrase, kdf, &salt).ok_or_else(manifest_damaged)?;
+                let tail = opened
+                    .and_then(|(clear, opaque)| key.open(&manifest_ad(clear), &opaque))
+                    .and_then(|tail| String::from_utf8(tail).ok())
+                    .ok_or_else(manifest_damaged)?;
+                let rest: Vec<&str> = tail.lines().collect();
+                let manifest = DumpManifest::of(envelope, Some((kdf, salt)), &rest)?;
+                Ok((manifest, Some(key)))
+            }
+            (encrypted, _) => Err(BackupError::KeyMismatch { encrypted }),
+        }
+    }
+
+    /// Returns the manifest whose lines after its envelope are `rest`, the snapshot first.
+    fn of(
+        envelope: Envelope,
+        sealing: Option<(Kdf, [u8; SALT])>,
+        rest: &[&str],
+    ) -> Result<DumpManifest, BackupError> {
+        let (snapshot, parts) = rest.split_first().ok_or_else(manifest_damaged)?;
         let snapshot = snapshot
-            .split_once('/')
+            .strip_prefix("snapshot ")
+            .and_then(|s| s.split_once('/'))
             .and_then(|(epoch, lsn)| {
                 Some(Position {
                     epoch: epoch.parse().ok().filter(|e| (1..=MAX_EPOCH).contains(e))?,
                     lsn: Lsn(lsn.parse().ok()?),
                 })
             })
-            .ok_or_else(damaged)?;
-        if field("encrypted")? != "0" {
-            return Err(damaged());
-        }
-        let parts: Vec<Part> = lines
+            .ok_or_else(manifest_damaged)?;
+        let parts = match (sealing, parts.split_first()) {
+            (Some(_), _) => parts,
+            (None, Some((&"encrypted 0", parts))) => parts,
+            (None, _) => return Err(manifest_damaged()),
+        };
+        let parts: Vec<Part> = parts
+            .iter()
             .map(|l| {
                 let mut words = l.strip_prefix("part ")?.rsplitn(3, ' ');
                 let (hash, len, name) = (words.next()?, words.next()?, words.next()?);
@@ -118,18 +201,19 @@ impl DumpManifest {
             .collect::<Option<_>>()
             .filter(|ps: &Vec<Part>| ps.iter().all(|p| entry_name(&p.name)))
             .filter(|ps| ps.windows(2).all(|w| w[0].name < w[1].name))
-            .ok_or_else(damaged)?;
+            .ok_or_else(manifest_damaged)?;
         Ok(DumpManifest {
-            envelope: Envelope {
-                release,
-                edition,
-                schema_version,
-                schema_hash,
-                catalog_version,
-            },
+            envelope,
             snapshot,
             parts,
+            sealing,
         })
+    }
+}
+
+fn manifest_damaged() -> BackupError {
+    BackupError::Damaged {
+        part: MANIFEST.to_owned(),
     }
 }
 
@@ -158,7 +242,7 @@ pub fn is_dump<R: Runtime>(rt: &R, source: &str) -> Io<bool> {
 }
 
 /// Write `entries`, each a path inside the dump and its bytes, to the absent or empty directory
-/// `target`, the manifest last.
+/// `target`, the manifest last, each sealed under a key `phrase` derives when given.
 ///
 /// Postconditions:
 /// - Until the dump is complete, sealed and forced, nothing exists at the target.
@@ -169,27 +253,37 @@ pub fn write_dump<R: Runtime>(
     envelope: Envelope,
     snapshot: Position,
     entries: &[(String, Vec<u8>)],
+    phrase: Option<&Passphrase>,
 ) -> Result<DumpManifest, BackupError> {
+    let sealing = phrase.map(|phrase| {
+        let mut salt = [0; SALT];
+        rt.fill(&mut salt);
+        let key = DumpKey::derive(phrase, Kdf::DUMP, &salt);
+        (key.expect("Argon2id takes the dump's parameters"), salt)
+    });
+    let key = sealing.as_ref().map(|(key, _)| key);
     let mut fs = Fs::new(rt.clone());
     let target = final_name(target);
     let taken = || BackupError::Occupied(target.to_owned());
     occupied(&mut fs, target, taken)?;
     make_parent(&mut fs, target, taken)?;
     let aside = fs.aside_dir(target)?;
-    let done = write_entries(&mut fs, &aside, entries).and_then(|mut parts| {
-        parts.sort_by(|a, b| a.name.cmp(&b.name));
-        let manifest = DumpManifest {
-            envelope,
-            snapshot,
-            parts,
-        };
-        let path = inside(&aside, MANIFEST);
-        let file = fs.create(&path)?;
-        fs.write_text(&path, file, &manifest.text())?;
-        fs.sync_dir(&aside)?;
-        fs.publish(&aside, target, taken)?;
-        Ok(manifest)
-    });
+    let done =
+        write_entries(&mut fs, &aside, entries, key.map(|key| (rt, key))).and_then(|mut parts| {
+            parts.sort_by(|a, b| a.name.cmp(&b.name));
+            let manifest = DumpManifest {
+                envelope,
+                snapshot,
+                parts,
+                sealing: sealing.as_ref().map(|&(_, salt)| (Kdf::DUMP, salt)),
+            };
+            let path = inside(&aside, MANIFEST);
+            let file = fs.create(&path)?;
+            fs.write_text(&path, file, &manifest.file_text(rt, key))?;
+            fs.sync_dir(&aside)?;
+            fs.publish(&aside, target, taken)?;
+            Ok(manifest)
+        });
     if done.is_err() {
         fs.discard(&aside).ok();
     }
@@ -200,6 +294,7 @@ fn write_entries<R: Runtime>(
     fs: &mut Fs<R>,
     aside: &str,
     entries: &[(String, Vec<u8>)],
+    key: Option<(&R, &DumpKey)>,
 ) -> Io<Vec<Part>> {
     for dir in DIRS {
         fs.make_dirs(&inside(aside, dir), || {
@@ -208,6 +303,14 @@ fn write_entries<R: Runtime>(
     }
     let mut parts = Vec::with_capacity(entries.len());
     for (name, bytes) in entries {
+        let sealed;
+        let bytes = match key {
+            Some((rt, key)) => {
+                sealed = key.seal(rt, name.as_bytes(), bytes);
+                &sealed
+            }
+            None => bytes,
+        };
         let path = inside(aside, name);
         let file = fs.create(&path)?;
         let mut padded = bytes.clone();
@@ -229,19 +332,28 @@ fn write_entries<R: Runtime>(
 }
 
 /// Returns the manifest of the dump at `source` and the bytes of each entry it lists, once
-/// every entry checks against its length and hash, in the manifest's order.
+/// every entry checks against its length and hash and, in a dump encrypted under `phrase`, opens
+/// under its key, in the manifest's order.
 pub fn read_dump<R: Runtime>(
     rt: &R,
     source: &str,
+    phrase: Option<&Passphrase>,
 ) -> Result<(DumpManifest, BTreeMap<String, Vec<u8>>), BackupError> {
     let mut fs = Fs::new(rt.clone());
     let text = fs
         .read_text(&inside(source, MANIFEST))?
         .ok_or_else(|| BackupError::Absent(source.to_owned()))?;
-    let manifest = DumpManifest::parse(&text)?;
+    let (manifest, key) = DumpManifest::parse(&text, phrase)?;
     let mut entries = BTreeMap::new();
     for part in &manifest.parts {
-        let bytes = read_entry(&mut fs, source, part)?;
+        let mut bytes = read_entry(&mut fs, source, part)?;
+        if let Some(key) = &key {
+            bytes = key
+                .open(part.name.as_bytes(), &bytes)
+                .ok_or(BackupError::Damaged {
+                    part: part.name.clone(),
+                })?;
+        }
         entries.insert(part.name.clone(), bytes);
     }
     Ok((manifest, entries))

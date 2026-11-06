@@ -110,6 +110,10 @@ pub enum BackupError {
     UnknownFormat(u32),
     /// The manifest is whole and describes something other than a backup.
     OtherKind(String),
+    /// The dump is encrypted and the restore has no passphrase, or the reverse.
+    KeyMismatch {
+        encrypted: bool,
+    },
     Io {
         what: String,
         error: IoError,
