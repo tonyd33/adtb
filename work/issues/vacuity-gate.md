@@ -4,6 +4,8 @@ status: open
 kind: bug
 priority: 403
 summary: a test that cannot fail lands unless a reviewer happens to notice
+tags:
+  - class-weak-tests
 ---
 
 # Vacuity gate
