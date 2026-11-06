@@ -277,6 +277,14 @@ arm) or that a source-searching test reads is still an edit, rebuild and run:
 restore the file with `cp` without `-p`, never `mv` of a backup, `cp -p` or
 `perl -i.keep` followed by a rename, so it gets a new mtime; cargo trusts mtimes.
 
+A code change lands only with its vacuity record. Once code and tests are final, make the change
+the working copy and run `work/tools/vacuity` in the background (an hour or more; it holds the
+machine lock and mutates sources in place, so run no jj command in the workspace meanwhile). Give
+each missed or timed-out mutant, and each `none` line, a reason naming why no test can kill it or
+the ticket that adds the test. Any later edit to the change's code or tests invalidates the record:
+rerun it. `work/tools/vacuity --check` before reporting. Hand mutants above stay the way to show a
+named test kills a named mechanism.
+
 ## Scripts
 
 Keep your scripts, mutation drivers and their logs under your workspace's `target/`. A scratchpad
