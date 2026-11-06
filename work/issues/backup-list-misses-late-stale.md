@@ -4,6 +4,8 @@ status: open
 kind: bug
 priority: 620
 summary: "a page found Stale after its backup copy, by evidence the lost-write check cannot see, is no longer listed in the manifest, so the proof passes"
+tags:
+  - class-damage-unreported
 ---
 
 # Backup manifest misses a page found stale after its copy

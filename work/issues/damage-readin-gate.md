@@ -4,6 +4,8 @@ status: open
 kind: bug
 priority: 360
 summary: "a page read in is checked against the retained log only in recovery, verify, scrub and the bounded evicted table, so a stale page is served as data and backup copies it as sound"
+tags:
+  - class-damage-unreported
 ---
 
 # Gate every read-in on the retained log's last record for the page

@@ -4,6 +4,8 @@ status: open
 kind: bug
 priority: 330
 summary: the verify that first finds commit-log damage quarantines the database and returns Fatal instead of its findings
+tags:
+  - class-damage-unreported
 ---
 
 # First verify on a stale commit-log page returns Fatal, not its findings

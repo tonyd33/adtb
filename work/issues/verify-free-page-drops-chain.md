@@ -4,6 +4,8 @@ status: open
 kind: bug
 priority: 365
 summary: "verify and scrub return no findings for a page the bitmap calls free, so a broken log chain recorded while the page was allocated is discarded"
+tags:
+  - class-damage-unreported
 ---
 
 # Verify drops a freed page's broken chain

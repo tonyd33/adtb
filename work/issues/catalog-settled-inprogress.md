@@ -4,6 +4,8 @@ status: open
 kind: bug
 priority: 420
 summary: "under a whole-database mark the catalog reads a readable InProgress status as settled-uncommitted, though the retained log may prove it committed"
+tags:
+  - class-damage-unreported
 ---
 
 # Catalog trusts InProgress as uncommitted under a commit-log quarantine

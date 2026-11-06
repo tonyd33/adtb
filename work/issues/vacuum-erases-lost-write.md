@@ -4,6 +4,8 @@ status: open
 kind: bug
 priority: 350
 summary: "background vacuum prunes a heap page whose write was lost, so verify reports Orphan index findings instead of StalePage"
+tags:
+  - class-damage-unreported
 ---
 
 # Vacuum erases the evidence of a lost heap write

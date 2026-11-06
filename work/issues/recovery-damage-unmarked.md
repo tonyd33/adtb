@@ -4,6 +4,8 @@ status: open
 kind: bug
 priority: 340
 summary: "recovery's Stale and Checksum pages are marked only when Engine::on fails; on a successful open they stay in memory and the next open serves them"
+tags:
+  - class-damage-unreported
 ---
 
 # Recovery-found page damage is not marked on a successful open

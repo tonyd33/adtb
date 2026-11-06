@@ -4,6 +4,8 @@ status: open
 kind: bug
 priority: 345
 summary: "recovery's log findings (a stale block past the end) are kept in Recovery.log, discarded by the caller, then erased by clear_tail"
+tags:
+  - class-damage-unreported
 ---
 
 # Recovery's log-tail findings are never reported

@@ -735,3 +735,9 @@ Going worse:
 - Stop lines passed three times (S5.5a production 1663 lines, S5.5b tests 538 against 300, clog-lost's fix round 194 against 120). The first two were write-in-one-pass, now a code-agent rule. The third was mine: I asked for six named tests and gave 120 lines. Moved to the lead skill: size a round's stop line from the tests it asks for.
 - Pinned sim-clock instants in the registration scripts moved twice in one track with the I/O done at open; each move is a collateral diff a reviewer must clear by hand. The earlier entry called the worker-off switch a debt; pinned instants are the same debt. Next: a ticket to assert renewal by relation (equal across lines, later than registration) instead of by instant.
 - My slips: one status message named the wrong track; main's working copy went stale twice from a slot's concurrent snapshot, recovered with `jj workspace update-stale` and nothing lost.
+
+### 2026-11-05: a failed bet, caught by the maintainer
+
+The maintainer asked whether the fixes were principled. In the class "Damage reported as nothing" they were not. The third-instance rule asks for an audit; I ran it at the eighth instance, and after it I kept briefing site fixes (verify-fatal, then queued recovery-damage-unmarked and four more) while the audit named one cause. The verify-fatal fix was itself a patch: an error caught on one path with a fallback, and its review found three holes in it. The cause is that detection and durable marking live in different places, so each caller that forgets to mark is a new instance.
+
+The rule was in prose and I read past it at dispatch. Moved to a tool: every bug ticket carries a class tag, and `slot` refuses a site-fix brief in a class with three tickets and an open mechanism ticket, unless the brief says why it cannot wait. Mechanism ticket for this class: damage-marked-at-detection, decided with damage-readin-gate. Until the tool lands, no damage-class brief but the mechanism.

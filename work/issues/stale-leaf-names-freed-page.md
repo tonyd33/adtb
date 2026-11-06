@@ -4,6 +4,8 @@ status: open
 kind: bug
 priority: 350
 summary: "a directory leaf whose write was lost can name a page vacate freed, and writers insert into it while the allocator hands it to another object"
+tags:
+  - class-damage-unreported
 ---
 
 # A stale directory leaf lets writers use a freed page

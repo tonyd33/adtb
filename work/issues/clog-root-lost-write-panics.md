@@ -4,6 +4,8 @@ status: open
 kind: bug
 priority: 300
 summary: "a lost write of the commit-log root panics the background thread after open: clog.rs:93 status 1025 resolved twice, from Committed to Committed"
+tags:
+  - class-damage-unreported
 ---
 
 # A lost write of the commit-log root panics after open

@@ -107,6 +107,7 @@ Do not act as a relay for review findings. Before a ruling or a next-round brief
 
 - Name the finding's cause and check it against [the defect classes](defect-classes.md). A finding in a listed class goes to that class's mechanism, or the brief says why not.
 - State a ruling as the general rule it applies. If the rule is only the case in hand, say so, and look for what else breaks it across the code before adopting.
+- Every bug ticket carries the tag of its class (`class-SLUG`, listed in defect-classes.md with its mechanism ticket) or the tag `class-none`. Once a class has three tickets and its mechanism ticket is open, its next brief is the mechanism ticket; a site fix in it needs a `Site fix because:` line naming why it cannot wait. `work/tools/slot` refuses a brief that breaks this.
 - A ruling that makes a source authoritative (a log record, a page, a manifest) also rules what happens when that source is partial, unreadable or missing, and every reader of the ruling's outcome (open, dump, verify) is named in the brief.
 - A stop line for a round that asks for named tests is sized from them: about 40 lines per sim test and 20 per unit test, from the nearest existing one.
 - Ask whether the work reaches a user. Authority logic with no caller, or a setting nothing reads, is not done, whatever its tests say.
