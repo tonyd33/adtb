@@ -4,8 +4,7 @@
 #
 # DIR defaults to the workspace holding this script.
 # Rules: an em dash anywhere; an added size-allowlist entry; an added lint expectation in Rust;
-# an asserted bare `.is_err()` in Rust; a mutant site or a mention of the crate by its Rust name,
-# in any file but the crate's own source;
+# an asserted bare `.is_err()` in Rust;
 # in Rust comments, markdown bold, a section sign, a rule id
 # or a recognized third-person doc verb; a doc summary of two sentences that each start
 # `Returns`, one of its lines added. List added ordinary comments other than `// SAFETY:` for invariant review.
@@ -47,7 +46,6 @@ jj diff --git "$@" | awk '
     if (index(text, "\342\200\224")) report("em dash")
     if (file == "work/tools/size-allowlist") report("size allowlist entry")
     if (file ~ /\.rs$/ && text ~ /#!?\[expect\(/) report("lint suppression: fix the code or justify it in the report")
-    if (file != "crates/adtb-mutant/src/lib.rs" && (text ~ /mutant[ \t]*!/ || text ~ /adtb_mut[a]nt/)) report("mutant site")
     if (file !~ /\.rs$/) next
     if (text ~ /assert!\($/) open_assert = 1
     if ((open_assert || text ~ /assert!\(/) && text ~ /\.is_err\(\)/) report("bare is_err: assert the refusal reason")

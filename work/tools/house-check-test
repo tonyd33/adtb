@@ -156,16 +156,4 @@ RS
 expect 1 'fixture.rs:4: bare is_err: assert the refusal reason:     assert!(got.is_err());
 fixture.rs:7: bare is_err: assert the refusal reason:             .is_err(),'
 
-bang='!'
-crate=adtb_mut; crate+=ant
-mkdir -p crates/adtb-mutant/src
-printf 'const KEPT: u32 = mutant%s(M1, 1, 2);\n' "$bang" >crates/adtb-mutant/src/lib.rs
-printf 'use %s::mutant as m;\nfn f() -> u32 { m%s[M2, 1, 2] }\n' "$crate" "$bang" >fixture.rs
-printf 'fn g() -> u32 { %s::site(1) }\n' "$crate" >crates/adtb-mutant/src/other.rs
-printf 'Wrap it in mutant %s{M3, a, b}.\n' "$bang" >notes.md
-expect 1 "crates/adtb-mutant/src/other.rs:1: mutant site: fn g() -> u32 { $crate::site(1) }
-fixture.rs:1: mutant site: use $crate::mutant as m;
-notes.md:1: mutant site: Wrap it in mutant $bang{M3, a, b}."
-rm -r crates notes.md
-
 printf 'house-check fixtures passed\n'

@@ -8,7 +8,6 @@ version = "0.1.0"
 dependencies = [
  "adtb-file",
  "adtb-lang",
- "adtb-mutant",
  "adtb-reference",
  "adtb-sys",
  "adtb-testkit",
@@ -99,7 +98,6 @@ version = "0.1.0"
 dependencies = [
  "adtb-heap-cap",
  "adtb-lang",
- "adtb-mutant",
  "adtb-testkit",
  "regex-syntax",
  "unicode-normalization",
@@ -111,13 +109,6 @@ version = "0.1.0"
 dependencies = [
  "adtb",
  "adtb-codegen",
- "adtb-lang",
-]
-
-[[package]]
-name = "adtb-mutant"
-version = "0.1.0"
-dependencies = [
  "adtb-lang",
 ]
 
@@ -208,7 +199,6 @@ name = "adtb-sys"
 version = "0.1.0"
 dependencies = [
  "adtb-heap-cap",
- "adtb-mutant",
  "adtb-sys",
  "io-uring",
  "libc",

@@ -8,7 +8,6 @@ version = "0.1.0"
 dependencies = [
  "adtb-file",
  "adtb-lang",
- "adtb-mutant",
  "adtb-sys",
  "argon2",
  "blake3",
@@ -51,14 +50,9 @@ name = "adtb-lang"
 version = "0.1.0"
 dependencies = [
  "adtb-heap-cap",
- "adtb-mutant",
  "regex-syntax",
  "unicode-normalization",
 ]
-
-[[package]]
-name = "adtb-mutant"
-version = "0.1.0"
 
 [[package]]
 name = "adtb-reference"
@@ -87,7 +81,6 @@ dependencies = [
 name = "adtb-sys"
 version = "0.1.0"
 dependencies = [
- "adtb-mutant",
  "io-uring",
  "libc",
 ]

@@ -7,7 +7,7 @@ set -euo pipefail
 scratch=$(realpath "$(mktemp -d)")
 trap 'rm -rf "$scratch"' EXIT
 mkdir "$scratch/tools"
-cp "$(dirname "$(realpath "$0")")"/{land,slot,workspace-gc,house-check,common.bash} "$scratch/tools/"
+cp "$(dirname "$(realpath "$0")")"/{land,slot,workspace-gc,common.bash} "$scratch/tools/"
 
 export HOME=$scratch/home XDG_CONFIG_HOME=$scratch/home/.config XDG_CACHE_HOME=$scratch/home/.cache \
   XDG_DATA_HOME=$scratch/home/.local/share XDG_STATE_HOME=$scratch/home/.local/state \
@@ -294,14 +294,6 @@ SHIM
   [[ -n $(jj -R "$main" log -r 'divergent()' --no-graph -T change_id) ]] || fail "no stranded commit"
   jj -R "$main" workspace forget p1 >/dev/null 2>&1
   jj -R "$main" abandon -r 'divergent()' >/dev/null 2>&1
-  # land refuses a track adding a mutant site and moves nothing.
-  # Each commit is checked: one that adds a site and a later one that removes it are refused.
-  printf 'fn f() -> u32 { %s_mutant::mutant%s(M1, 1, 2) }\n' adtb '!' >"$p2/site.rs"
-  jj -R "$p2" commit -m 'feat: site' >/dev/null 2>&1
-  rm "$p2/site.rs"
-  refused 'mutant site' "$land" p2 'feat: p2'
-  [[ $(main_tip) == "$before" ]] || fail "land moved main over a mutant site"
-  jj -R "$p2" abandon 'p2@-' >/dev/null 2>&1
   "$land" p2 >/dev/null 2>&1 || fail "landing p2"
 
   # A workspace in a directory that only resembles a slot lands like any other.

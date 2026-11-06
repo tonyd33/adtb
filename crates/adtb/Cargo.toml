@@ -9,7 +9,6 @@ publish.workspace = true
 [dependencies]
 adtb-file.workspace = true
 adtb-lang.workspace = true
-adtb-mutant.workspace = true
 adtb-reference = { workspace = true, optional = true }
 adtb-sys.workspace = true
 adtb-testkit = { workspace = true, optional = true }

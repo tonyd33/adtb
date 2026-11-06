@@ -13,7 +13,6 @@ latch-checks = []
 test-heap-cap = ["dep:adtb-heap-cap"]
 
 [dependencies]
-adtb-mutant.workspace = true
 adtb-heap-cap = { workspace = true, optional = true }
 libc = "0.2.186"
 
