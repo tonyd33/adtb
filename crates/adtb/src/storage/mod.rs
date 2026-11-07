@@ -32,7 +32,7 @@ pub use backup::{
     check_backup, make_scratch, manifest_hash, read_manifest, read_proof, remove_scratch,
     restore_file, scratch_file, withdraw_proof, write_proof,
 };
-pub use block::{LogFinding, LogProblem};
+pub use block::{LogFinding, LogProblem, Resolutions};
 pub use crc::{Crc32c, crc32c};
 pub(crate) use create::{Created, Hold, Unpublished, create, refuse_foreign_log, remove_leftover};
 pub use create::{aside, creating, marker, marker_bytes};

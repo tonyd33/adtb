@@ -852,3 +852,238 @@ fn an_open_whose_log_cannot_settle_a_status_page_writes_no_mark() {
     });
     assert_eq!(BTreeSet::new(), marks);
 }
+
+const ARCHIVE: &str = "store";
+
+/// How the second process of [`resolved_then_lost`] resolves its id.
+#[derive(Clone, Copy, Debug)]
+enum Resolve {
+    Commit,
+    Abort,
+}
+
+/// A database whose last status page lost the write of an id the log resolved.
+struct Lost {
+    files: Files,
+    page: Pid,
+    ids: Vec<Xid>,
+    stale: Damage,
+}
+
+fn engine_options(archived: bool) -> adtb::OpenOptions {
+    let mut create = adtb::CreateOptions::default();
+    create.segment_size = Some(64 << 10);
+    adtb::OpenOptions {
+        create: Some(create),
+        log_archive: archived.then(|| ARCHIVE.into()),
+        no_background_vacuum: true,
+        ..api::options(2)
+    }
+}
+
+/// Returns the base of each log segment of `files`.
+fn segment_bases(files: &Files) -> Vec<u64> {
+    let dir = format!("{}/", storage::Options::new(harness::NAME).log_dir());
+    let names = files.keys().filter_map(|k| k.strip_prefix(&dir));
+    names.map(|n| u64::from_str_radix(n, 16).unwrap()).collect()
+}
+
+/// Returns a database whose first process inserts a row, whose second resolves ids as `resolve`
+/// says, inserting a row for a commit, then logs past three segments, and, when `recycled`, whose
+/// third open recycles the log of the second; with every write of the last status page after the
+/// first process lost, and an archive set when `archived`.
+fn resolved_then_lost(resolve: Resolve, recycled: bool, archived: bool) -> Lost {
+    let options = engine_options(archived);
+    let open =
+        |rt: SimRuntime| Database::open_in(rt, harness::NAME, &Log::new([APP]), &options).unwrap();
+    let root = Files::from([(format!("{ARCHIVE}/keep"), Vec::new())]);
+    let mut sim = Sim::with_files(7, Config::default(), root);
+    let page = api::run(&mut sim, |rt| {
+        let db = open(rt);
+        api::results(&db, r#"insert users { name: "ann" }"#);
+        let txns = db.write_path().txns();
+        let pages = txns.commit_log().status_pages().clone();
+        db.close().unwrap();
+        *pages.values().next_back().unwrap()
+    });
+    let before = sim.files();
+    let (ids, resolved) = api::run(&mut sim, |rt| {
+        let db = open(rt);
+        let (pager, txns) = (db.write_path().pager(), db.write_path().txns());
+        let ids = match resolve {
+            Resolve::Commit => {
+                let first = txns.next();
+                api::results(&db, r#"insert users { name: "bo" }"#);
+                let ids: Vec<Xid> = (first.0..txns.next().0).map(Xid).collect();
+                let done = statuses(&db, &ids).into_iter().zip(ids);
+                done.filter_map(|(s, x)| (s == Status::Committed).then_some(x))
+                    .collect()
+            }
+            Resolve::Abort => {
+                let x = txns.begin(pager).unwrap();
+                txns.abort(pager, x).unwrap();
+                vec![x]
+            }
+        };
+        let resolved = pager.appended();
+        let segment = 64 << 10;
+        let scratch = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
+        while pager.appended().0 < resolved.0 + 3 * segment {
+            let bump = |p: &mut [&mut [u8]]| p[0][HEADER_LEN..].iter_mut().for_each(|b| *b ^= 1);
+            pager.update(&[scratch], bump).unwrap();
+            pager.flush_log();
+        }
+        db.close().unwrap();
+        (ids, resolved)
+    });
+    assert!(
+        !ids.is_empty(),
+        "{resolve:?}: the second process resolves an id"
+    );
+    if recycled {
+        api::run(&mut sim, |rt| open(rt).close().unwrap());
+        let first = segment_bases(&sim.files())[0];
+        assert!(
+            first >= resolved.0,
+            "{resolve:?}, archived {archived}: the recycle removes the resolution, first segment {first}"
+        );
+    }
+    let lsn = |f: &Files| storage::lsn(&f[harness::NAME][page.0 as usize * DB_PAGE..]);
+    let stale = Damage::Stale {
+        expected: lsn(&sim.files()),
+        found: lsn(&before),
+    };
+    let files = reverted(sim.files(), &before, page, DB_PAGE);
+    Lost {
+        files,
+        page,
+        ids,
+        stale,
+    }
+}
+
+/// Assert an open of a status page that lost the write of an id resolved as `resolve`, whose log
+/// is recycled, records the page's damage and quarantines the database, at that open and the next.
+fn refused_unproven(resolve: Resolve, archived: bool) {
+    let lost = resolved_then_lost(resolve, true, archived);
+    let options = engine_options(archived);
+    let damage = PageError {
+        pid: lost.page,
+        damage: lost.stale,
+    };
+    let whole = BTreeSet::from([Quarantine::Database]);
+    let mut sim = Sim::with_files(7, Config::default(), lost.files);
+    for open in 0..2 {
+        api::run(&mut sim, |rt| {
+            let db = Database::open_in(rt, harness::NAME, &Log::new([APP]), &options).unwrap();
+            let w = db.write_path();
+            let at = format!("{resolve:?}, archived {archived}, open {open}");
+            assert_eq!(Some(damage), w.txns().quarantined(), "{at}");
+            assert_eq!(
+                Some(&lost.stale),
+                w.pager().recorded().pages.get(&lost.page),
+                "{at}"
+            );
+            assert_eq!(whole, w.pager().quarantined(), "{at}");
+            let names = api::failure(&db, "from u in app::users select u.name");
+            assert_eq!(quarantined(), names, "{at}");
+            db.close().unwrap();
+        });
+    }
+}
+
+#[test]
+fn a_status_page_that_lost_a_commit_whose_record_is_recycled_quarantines_the_database() {
+    refused_unproven(Resolve::Commit, false);
+}
+
+#[test]
+fn a_status_page_that_lost_a_commit_whose_record_is_recycled_past_an_archive_quarantines_the_database()
+ {
+    refused_unproven(Resolve::Commit, true);
+}
+
+#[test]
+fn a_status_page_that_lost_an_abort_whose_record_is_recycled_quarantines_the_database() {
+    refused_unproven(Resolve::Abort, false);
+}
+
+#[test]
+fn a_status_page_that_lost_a_commit_whose_record_is_retained_settles_it_committed() {
+    let lost = resolved_then_lost(Resolve::Commit, false, false);
+    let mut sim = Sim::with_files(7, Config::default(), lost.files);
+    api::run(&mut sim, |rt| {
+        let db = open(&rt);
+        let w = db.write_path();
+        assert_eq!(
+            vec![Status::Committed; lost.ids.len()],
+            statuses(&db, &lost.ids)
+        );
+        let Damage::Stale { expected, found } = lost.stale else {
+            panic!("{:?} is a lost write", lost.stale);
+        };
+        let settled = Damage::Settled { expected, found };
+        assert_eq!(Some(&settled), w.pager().recorded().pages.get(&lost.page));
+        assert_eq!(BTreeSet::new(), w.pager().quarantined());
+        let names = api::query(&db, "from u in app::users select u.name");
+        assert_eq!(vec!["\"ann\"", "\"bo\""], names);
+        db.close().unwrap();
+    });
+}
+
+#[test]
+fn a_status_page_reverted_to_an_older_page_at_its_pid_is_refused() {
+    let options = harness::options(FRAMES);
+    let mut sim = Sim::new(8, Config::default());
+    let mut first = None;
+    harness::finished(&mut sim, |rt| {
+        let pager = Pager::create(rt, &options).unwrap();
+        let mut clog = CommitLog::create(&pager).unwrap();
+        let per = clog.ids_per_page();
+        clog.reserve(&pager, Xid(per), Xid::FIRST).unwrap();
+        for x in 1..per {
+            clog.abort(&pager, Xid(x)).unwrap();
+        }
+        clog.reserve(&pager, Xid(2 * per), Xid(per)).unwrap();
+        let old = clog.status_pages()[&0];
+        clog.truncate(&pager, Xid(per)).unwrap();
+        first = Some((clog.root(), old, per));
+        pager.close();
+    });
+    let (root, old, per) = first.unwrap();
+    let before = sim.files();
+    let committed = Xid(2 * per + 5);
+    harness::finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt, &options).unwrap();
+        let mut clog = CommitLog::open(&pager, root).unwrap();
+        clog.reserve(&pager, Xid(3 * per), Xid(per)).unwrap();
+        assert_eq!(
+            old,
+            clog.status_pages()[&2],
+            "the new status page reuses the freed pid"
+        );
+        clog.commit(&pager, committed).unwrap();
+        clog.reserve(&pager, Xid(4 * per), Xid(per)).unwrap();
+        pager.close();
+    });
+    let lsn = |f: &Files| storage::lsn(&f[harness::NAME][old.0 as usize * harness::PAGE..]);
+    let damage = PageError {
+        pid: old,
+        damage: Damage::Stale {
+            expected: lsn(&sim.files()),
+            found: lsn(&before),
+        },
+    };
+    let files = reverted(sim.files(), &before, old, harness::PAGE);
+    let mut sim = Sim::with_files(8, Config::default(), files);
+    harness::finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
+        assert_eq!(Some(damage), CommitLog::open(&pager, root).err());
+        let txns = Transactions::open(rt, &pager, root).unwrap();
+        assert_eq!(Some(damage), txns.quarantined());
+        assert_eq!(Some(&damage.damage), pager.recorded().pages.get(&old));
+        let intact = Xid(3 * per + 1);
+        let status = txns.commit_log().status(&pager, intact);
+        assert_eq!(Ok(Status::InProgress), status, "{intact:?} on page 3");
+    });
+}

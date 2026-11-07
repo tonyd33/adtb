@@ -484,16 +484,26 @@ pub fn scan<S: LogSource>(
     out
 }
 
-/// Returns the transaction of every commit record of `img` from the batch holding `since`, or
-/// from its first whole batch when that batch begins before its first segment.
+/// What a stretch of the log says of the commit log's status pages.
+#[derive(Debug, Default)]
+pub struct Resolutions {
+    pub commits: BTreeSet<u64>,
+    /// The LSN before each record of the pages asked of, with the page.
+    pub continued: BTreeSet<(Pid, Lsn)>,
+}
+
+/// Returns the transaction of every commit record of `img` from the batch holding
+/// `since`, or from its first whole batch when that batch begins before its first segment, and
+/// what each record there of one of `pages` continues from.
 ///
 /// Fail with the LSN of the first damage before `end`: a block it cannot read, a batch that
 /// does not decode, or a block missing.
-pub fn commits_from<S: LogSource>(
+pub fn resolutions_from<S: LogSource>(
     img: &mut LogImage<S>,
     since: Lsn,
     end: Lsn,
-) -> Result<BTreeSet<u64>, Lsn> {
+    pages: &BTreeSet<Pid>,
+) -> Result<Resolutions, Lsn> {
     let base = img.first().ok_or(since)?;
     let from = match (since >= base).then(|| img.batch_start(since)) {
         Some(None) => return Err(since),
@@ -501,11 +511,13 @@ pub fn commits_from<S: LogSource>(
         _ => img.first_batch().ok_or(since)?,
     };
     let block = img.block;
-    let mut commits = BTreeSet::new();
+    let mut out = Resolutions::default();
     let s = scan(img, from, Mode::Verify, |batch, _| {
         for (_, record) in batch.records(block).into_iter().flatten() {
             if let Record::Commit { xid, .. } = record {
-                commits.insert(xid);
+                out.commits.insert(xid);
+            } else if let Some(at) = record.page().filter(|at| pages.contains(&at.0)) {
+                out.continued.insert(at);
             }
         }
     });
@@ -517,6 +529,6 @@ pub fn commits_from<S: LogSource>(
     let short = (s.end < end).then_some(s.end);
     match undecoded.chain(short).min() {
         Some(at) => Err(at),
-        None => Ok(commits),
+        None => Ok(out),
     }
 }

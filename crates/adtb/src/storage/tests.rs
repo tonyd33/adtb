@@ -1,12 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_sys::os::{Backend, Faults, OsRuntime};
 use adtb_testkit::scratch::Scratch;
 
 use super::alloc::diff;
 use super::block::{
-    Batch, BlockState, InMemory, LogFinding, LogImage, LogProblem, Mode, Scan, commits_from, frame,
-    read_block, scan,
+    Batch, BlockState, InMemory, LogFinding, LogImage, LogProblem, Mode, Scan, frame, read_block,
+    resolutions_from, scan,
 };
 use super::crc::{Crc32c, crc32c, crc32c_skipping};
 use super::header::{FileHeader, choose};
@@ -575,7 +575,8 @@ fn block_at(n: u64) -> Lsn {
 
 fn commits(segments: BTreeMap<u64, Option<Vec<u8>>>, since: Lsn) -> Result<Vec<u64>, Lsn> {
     let mut img = LogImage::in_memory(BLOCK, SEGMENT, segments);
-    commits_from(&mut img, since, block_at(48)).map(|c| c.into_iter().collect())
+    resolutions_from(&mut img, since, block_at(48), &BTreeSet::new())
+        .map(|r| r.commits.into_iter().collect())
 }
 
 #[test]
@@ -615,8 +616,8 @@ fn commits_from_a_log_damaged_only_past_its_end_are_whole() {
     let mut short = committed_segments();
     short.remove(&(2 * SEGMENT));
     let mut img = LogImage::in_memory(BLOCK, SEGMENT, short);
-    let got = commits_from(&mut img, block_at(2), block_at(32));
-    assert_eq!(Ok((2..32).collect()), got);
+    let got = resolutions_from(&mut img, block_at(2), block_at(32), &BTreeSet::new());
+    assert_eq!(Ok((2..32).collect()), got.map(|r| r.commits));
 }
 
 #[test]

@@ -1,9 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::runtime::Runtime;
 use crate::storage::{
-    Damage, FIRST_EDITABLE, HEADER_LEN, Lsn, PageError, PageKind, PageShared, Pager, Pid, flags,
-    header_edit, kind, lsn,
+    Damage, FIRST_EDITABLE, HEADER_LEN, Lsn, PageError, PageKind, PageShared, Pager, Pid,
+    Resolutions, flags, format, header_edit, kind, lsn,
 };
 
 use super::{Status, Xid};
@@ -17,7 +17,7 @@ pub(crate) type Unresolved = (Pid, u64, Vec<u64>, Option<(Vec<u8>, PageError)>);
 pub(crate) struct Settling(());
 
 /// The format version of commit log pages.
-pub const PAGE_FORMAT: u16 = 1;
+pub const PAGE_FORMAT: u16 = 2;
 
 /// The page header flags of a root and a directory page; a status page has flags 0.
 const ROOT_PAGE: u16 = 1;
@@ -27,6 +27,9 @@ const ROOT_RESERVED: usize = HEADER_LEN;
 const ROOT_RESOLVED: usize = HEADER_LEN + 8;
 const ROOT_BOUND: usize = HEADER_LEN + 16;
 const ROOT_FIRST_DIRECTORY: usize = HEADER_LEN + 24;
+
+const STATUS_NUMBER: usize = HEADER_LEN;
+const STATUSES: usize = HEADER_LEN + 8;
 
 const DIRECTORY_NEXT: usize = HEADER_LEN;
 const DIRECTORY_COUNT: usize = HEADER_LEN + 8;
@@ -58,16 +61,25 @@ fn read_role<R: Runtime>(
     role: u16,
 ) -> Result<PageShared<'_>, PageError> {
     let page = pager.read(pid)?;
-    if kind(&page) == PageKind::CommitLog as u16 && flags(&page) == role {
+    if has_role(&page, role) {
         return Ok(page);
     }
     drop(page);
     Err(pager.damage(pid, Damage::Checksum))
 }
 
+fn has_role(page: &[u8], role: u16) -> bool {
+    kind(page) == PageKind::CommitLog as u16 && format(page) == PAGE_FORMAT && flags(page) == role
+}
+
+/// Returns whether `page` is status page `n`.
+fn is_status_page(page: &[u8], n: u64) -> bool {
+    has_role(page, 0) && u64_at(page, STATUS_NUMBER) == n
+}
+
 /// Returns the number of transaction ids one status page of a `page_size` page holds.
 pub(crate) fn per_page(page_size: usize) -> u64 {
-    ((page_size - HEADER_LEN) * 4) as u64
+    ((page_size - STATUSES) * 4) as u64
 }
 
 /// Returns the number of status pages one directory page of a `page_size` page names.
@@ -81,7 +93,7 @@ pub(crate) fn locate(x: Xid, per_page: u64) -> (u64, usize) {
 }
 
 pub(crate) fn status_at(page: &[u8], index: usize) -> Status {
-    let byte = page[HEADER_LEN + index / 4];
+    let byte = page[STATUSES + index / 4];
     Status::from_bits(byte >> (index % 4 * 2) & 0b11)
 }
 
@@ -100,7 +112,7 @@ pub(crate) fn set_status(page: &mut [u8], index: usize, status: Status) {
         old,
         "status {index} resolved twice, from {old:?} to {status:?}"
     );
-    page[HEADER_LEN + index / 4] |= (status as u8) << (index % 4 * 2);
+    page[STATUSES + index / 4] |= (status as u8) << (index % 4 * 2);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -292,7 +304,7 @@ impl CommitLog {
         for (pid, base, ids, copy) in open {
             let settle = |p: &mut [u8]| {
                 for &x in &ids {
-                    let status = if logged.contains(&x) {
+                    let status = if logged.commits.contains(&x) {
                         Status::Committed
                     } else {
                         Status::Aborted
@@ -314,23 +326,28 @@ impl CommitLog {
     }
 
     /// Returns each status page holding a reserved id still in progress, with the page's first id
-    /// and those ids, and the transaction of every commit record the retained log holds from the
-    /// oldest LSN of those pages, past which lies every commit record changing them.
+    /// and those ids, and what the retained log says of them from the oldest LSN of those pages,
+    /// past which lies every commit record changing them.
     ///
     /// Fail with the refusal of a status page that cannot be read, other than one that lost a
     /// write. Fail with [`Damage::LogUnproven`], naming the page of that LSN, when the log from
-    /// there to the end recovery kept is not whole and readable. Before the log's first segment
-    /// the status page stands.
+    /// there to the end recovery kept is not whole and readable. Fail with the refusal of a page
+    /// that lost a write when the file's copy is not the status page the directory names there,
+    /// or when the copy holds an id in progress and the retained log holds no record of the page
+    /// continuing from the copy.
     pub(crate) fn unresolved<R: Runtime>(
         &self,
         pager: &Pager<R>,
-    ) -> Result<(Vec<Unresolved>, BTreeSet<u64>), PageError> {
+    ) -> Result<(Vec<Unresolved>, Resolutions), PageError> {
         let (from, to) = (self.root.bound, self.root.reserved);
         let mut open = Vec::new();
         let mut oldest: Option<(Lsn, Pid)> = None;
         for (&n, &pid) in &self.pages {
             let base = n * self.per_page;
             let (page, refused) = pager.read_stale(pid, &Settling(()))?;
+            if let Some(e) = refused.filter(|_| !is_status_page(&page, n)) {
+                return Err(e);
+            }
             let ids: Vec<u64> = (from.0.max(base)..to.0.min(base + self.per_page))
                 .filter(|&x| status_at(&page, (x - base) as usize) == Status::InProgress)
                 .collect();
@@ -342,12 +359,26 @@ impl CommitLog {
             }
         }
         let Some((since, pid)) = oldest else {
-            return Ok((open, BTreeSet::new()));
+            return Ok((open, Resolutions::default()));
         };
-        let logged = pager.logged_commits_since(since).map_err(|at| PageError {
-            pid,
-            damage: Damage::LogUnproven { at },
-        })?;
+        let stale = open
+            .iter()
+            .filter_map(|(pid, _, _, copy)| copy.as_ref().map(|_| *pid))
+            .collect();
+        let logged = pager
+            .logged_resolutions_since(since, &stale)
+            .map_err(|at| PageError {
+                pid,
+                damage: Damage::LogUnproven { at },
+            })?;
+        for (pid, _, ids, copy) in &open {
+            let Some((copy, refusal)) = copy else {
+                continue;
+            };
+            if !ids.is_empty() && !logged.continued.contains(&(*pid, lsn(copy))) {
+                return Err(*refusal);
+            }
+        }
         Ok((open, logged))
     }
 
@@ -444,8 +475,12 @@ impl CommitLog {
             .collect();
         pager.update_with(new, &pids, |p| {
             root.write(p[0]);
-            for (d, page) in tail.iter().zip(p[1..].iter_mut()) {
+            let (dirs, statuses) = p[1..].split_at_mut(tail.len());
+            for (d, page) in tail.iter().zip(dirs) {
                 d.write(page);
+            }
+            for (&(n, _), page) in fresh.iter().zip(statuses) {
+                put_u64(page, STATUS_NUMBER, n);
             }
         })?;
         self.root = root;

@@ -32,7 +32,7 @@ impl Rng {
 fn status_bits_round_trip_without_disturbing_neighbours() {
     let mut page = vec![0; 4096];
     let n = per_page(page.len()) as usize;
-    assert_eq!((4096 - HEADER_LEN) * 4, n);
+    assert_eq!((4096 - HEADER_LEN - 8) * 4, n);
     for i in (0..n).step_by(3) {
         set_status(&mut page, i, Status::Committed);
     }
@@ -47,6 +47,11 @@ fn status_bits_round_trip_without_disturbing_neighbours() {
         };
         assert_eq!(want, status_at(&page, i), "index {i}");
     }
+    assert_eq!(
+        [0; HEADER_LEN + 8],
+        page[..HEADER_LEN + 8],
+        "the header and page number"
+    );
 }
 
 #[test]

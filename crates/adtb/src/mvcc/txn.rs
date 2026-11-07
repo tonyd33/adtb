@@ -145,7 +145,8 @@ impl<R: Runtime> Transactions<R> {
     ///   commit record of the retained log says so, and as aborted otherwise.
     /// - No id assigned before the crash is assigned again.
     /// - If a status page is damaged, or the retained log is too damaged to settle an id in
-    ///   progress, the database is quarantined.
+    ///   progress or does not prove the status of one on a status page that lost a write, the
+    ///   database is quarantined.
     /// - A file with a damaged status page, a log that cannot settle an id in progress, or the
     ///   database's mark has nothing written, and an id running at the crash still reads as in
     ///   progress.

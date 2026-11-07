@@ -221,7 +221,9 @@ Postconditions:
 ### 4.2 The commit log
 
 The commit log holds 2 bits per xid (in progress, committed, aborted)
-in commit log pages of the file. Commit positions are not in the
+in commit log pages of the file. A status page holds its page number,
+written when it is allocated: the identity of the file's copy of a
+status page the open settles from. Commit positions are not in the
 commit log; for the time-travel window a separate map gives them
 (§10.3). The commit log is found by its root page, whose page id the
 catalog records.
@@ -309,9 +311,14 @@ nothing:
 
 The retained log starts at its first segment; a recycle
 ([storage.md §6](storage.md#6-write-ahead-and-checkpoints)) removes
-segments before it. A commit record in a recycled segment is not read:
-an id whose status page lost the write of that commit reads as aborted,
-the status page standing as authoritative.
+segments before it. A record in a recycled segment is not read. The
+retained log proves the ids in progress on the file's copy of a status
+page refused stale when it holds a record of the page that changes it
+from that copy. When the copy holds an id in progress and the retained
+log holds no such record, or when the copy is not the status page of the
+number the directory names at its page id, the open settles no id: the
+page stays recorded as damage, stale, and quarantines the whole database
+as a damaged status page does. A recycled commit never reads as aborted.
 
 ### 4.3 Snapshots
 
