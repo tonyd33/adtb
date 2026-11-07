@@ -82,10 +82,12 @@ fn findings(db: &Database<SimRuntime>) -> Vec<String> {
     api::printed(api::result(db, "from f in sys::verify_findings select f"))
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn marks(db: &Database<SimRuntime>) -> BTreeSet<Quarantine> {
     db.write_path().pager().quarantined()
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn user_mark(db: &Database<SimRuntime>) -> Quarantine {
     let w = db.write_path();
     Quarantine::Index(
@@ -96,6 +98,7 @@ fn user_mark(db: &Database<SimRuntime>) -> Quarantine {
     )
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn user_index_pages(db: &Database<SimRuntime>) -> Vec<Pid> {
     let w = db.write_path();
     let index = w.index_named("app::identities", USER_INDEX).unwrap();
@@ -103,6 +106,7 @@ fn user_index_pages(db: &Database<SimRuntime>) -> Vec<Pid> {
 }
 
 /// Returns the entries `index` of `identities` holds, from a walk of the tree.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn entries(db: &Database<SimRuntime>, clause: &str) -> Vec<Entry> {
     let w = db.write_path();
     let index = w.index_named("app::identities", clause).unwrap();
@@ -259,6 +263,7 @@ fn a_write_keeps_its_uniqueness_check_across_a_rebuild() {
 }
 
 /// Returns the instant the run of seed `seed` reaches each phase.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn phase_times(seed: u64) -> Vec<(String, adtb::runtime::Instant)> {
     let times = Arc::new(Mutex::new(Vec::new()));
     let out = times.clone();
@@ -286,6 +291,7 @@ fn crash_body(rt: &SimRuntime) -> Database<SimRuntime> {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_crash_at_each_stage_keeps_an_index_that_finds_every_row_and_leaks_nothing() {
     adtb_heap_cap::raise_cap(3 << 30);
     for seed in seeds::sweep(0..1) {
@@ -440,6 +446,7 @@ fn a_crash_after_overwriting_a_damaged_root_replays_its_image() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn the_mark_of_a_verify_finding_is_released_by_a_rebuild() {
     api::once(7, |rt| {
         let db = open_app(rt.clone());
@@ -543,6 +550,7 @@ fn a_page_of_the_old_index_damaged_during_the_build_does_not_stop_it() {
 }
 
 /// Commit a second Google row with `gid` by a raw write to the heap, past the unique index.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn raw_duplicate(db: &Database<SimRuntime>, gid: &str) {
     let w = db.write_path();
     let heap = w.heap_named("app::identities", "Google").unwrap();
@@ -554,6 +562,7 @@ fn raw_duplicate(db: &Database<SimRuntime>, gid: &str) {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_unique_duplicate_fails_the_rebuild_keeping_the_old_index_mark_and_no_new_page() {
     api::once(10, |rt| {
         let db = open_app(rt.clone());
@@ -658,6 +667,7 @@ fn online_does_not_block_writes() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn reindex_of_a_relation_rebuilds_its_key_index_too() {
     api::once(14, |rt| {
         let db = open_app(rt.clone());
@@ -714,6 +724,7 @@ fn a_clause_with_no_in_over_several_indexes_is_invalid_and_names_in() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_quarantined_heap_fails_reindex_and_a_database_mark_stays() {
     api::once(17, |rt| {
         let db = open_app(rt);
@@ -788,6 +799,7 @@ fn real_options() -> OpenOptions {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_real_file_restores_a_damaged_index_and_keeps_it_across_a_reopen() {
     let path = scratch("damaged").join("app.adt");
     let path = path.to_str().unwrap().to_owned();

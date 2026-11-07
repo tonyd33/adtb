@@ -25,6 +25,15 @@ adtb-sys = { path = "crates/adtb-sys" }
 adtb-testkit = { path = "crates/adtb-testkit" }
 clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 
+[profile.dev.package.syn]
+opt-level = 3
+
+[profile.dev.package.proc-macro2]
+opt-level = 3
+
+[profile.dev.package.adtb-structure]
+opt-level = 3
+
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 unused_qualifications = "deny"

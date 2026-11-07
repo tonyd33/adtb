@@ -20,6 +20,7 @@ pub struct OrphanEntry {
 /// leaving the page readable.
 ///
 /// Preconditions: the caller holds no page latch.
+#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 pub fn refuse_named<R: Runtime, E: From<PageError> + From<OrphanEntry>>(
     pager: &Pager<R>,
     (heap, tid): (&Heap, Tid),

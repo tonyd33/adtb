@@ -195,6 +195,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "adtb-structure"
+version = "0.1.0"
+dependencies = [
+ "adtb-lang",
+ "syn 3.0.9",
+]
+
+[[package]]
 name = "adtb-sys"
 version = "0.1.0"
 dependencies = [

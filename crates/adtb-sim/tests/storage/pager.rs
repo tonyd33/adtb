@@ -1142,6 +1142,7 @@ fn a_damaged_bitmap_fails_allocation() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 fn allocation_reuses_a_damaged_free_page_without_reading_it() {
     let mut sim = Sim::new(3, Config::default());
     let client = Client::new();
@@ -1508,6 +1509,7 @@ fn linked(p: &Pager<SimRuntime>, index: Pid) -> BTreeSet<Pid> {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 fn a_crash_never_separates_an_allocation_from_its_link() {
     const SEEDS: Range<u64> = 0..10;
     silence_fatal_panics();

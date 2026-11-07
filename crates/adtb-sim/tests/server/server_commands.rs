@@ -799,6 +799,7 @@ fn a_cancelled_queued_text_records_a_failed_call() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn nothing_audits_under_a_database_quarantined_whole() {
     let mut sim = Sim::new(176, Config::default());
     run(&mut sim, |rt| {
@@ -844,6 +845,7 @@ fn quarantined(got: &Result<(), Error>) -> bool {
 
 type Mark = fn(&Database<SimRuntime>) -> Quarantine;
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn audit_heap(ctor: &str) -> impl Fn(&Database<SimRuntime>) -> Quarantine {
     move |db| {
         let heap = db.write_path().heap_named("catalog::audit", ctor);
@@ -851,11 +853,13 @@ fn audit_heap(ctor: &str) -> impl Fn(&Database<SimRuntime>) -> Quarantine {
     }
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn audit_key(db: &Database<SimRuntime>) -> Quarantine {
     let index = db.write_path().index_named("catalog::audit", "key seq");
     Quarantine::Index(index.expect("the audit has its key").tree().owner())
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn each_audit_mark(mut body: impl FnMut(u64, &SimRuntime, &Database<SimRuntime>)) {
     let call: Mark = |db| audit_heap("Call")(db);
     let denied: Mark = |db| audit_heap("Denied")(db);
@@ -911,6 +915,7 @@ fn an_audit_mark_stops_writes_and_lets_reads_refusals_and_verify_answer() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn an_audit_mark_writes_no_row_and_leaves_refusals_denied() {
     let mut sim = Sim::new(183, Config::default());
     run(&mut sim, |rt| {
@@ -1114,6 +1119,7 @@ fn counted(rt: &SimRuntime, workers: usize) -> Database<SimRuntime> {
 }
 
 /// Returns the transaction ids taken so far, one of them by this call.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn xids_taken(db: &Database<SimRuntime>) -> u64 {
     let write = db.write_path();
     let tx = write.begin().unwrap();

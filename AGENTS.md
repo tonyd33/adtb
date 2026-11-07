@@ -116,6 +116,14 @@ root (devenv also puts each on PATH as `NAME`):
 - `size-check.sh` (`size-check` in the dev shell): fail when a non-test
   source passes the line limit or the allowlist in `size-allowlist` is
   stale.
+- `structure-check [DIR]`: fail when a file has more sites than `structure-allowlist` allows of
+  a counted pattern, or fewer: the counts only fall. The rows: struct fields visible past their
+  module (`crate_fields`, `pub_fields`, counted by parsing with `crates/adtb-structure`),
+  `.xmin`/`.xmax` outside mvcc, and the `expect` attributes of `clippy::disallowed_methods`
+  (`clippy.toml` rejects `storage::page::owner`, `Pager::meta` and `Database::write_path` by
+  identity). `--counts` prints the allowlist lines for the tree. `--against REV` fails on a count
+  above the allowlist at REV; `check --changed` runs it against `main`, so a rise is the lead's
+  act on main. `structure-check-test` proves it on scratch files.
 - `refusal-check`: fail when Rust code asserts a refusal weakly (`is_err()`, `is_ok()`,
   `matches!(.., Err(_))`, a substring of its text, a bare `unwrap_err()`, a call of
   `refused_with`) at other sites than `refusal-allowlist` counts. Assert a refusal with
@@ -135,7 +143,10 @@ root (devenv also puts each on PATH as `NAME`):
   `target/` stays valid; `land` frees it. It refuses BRIEF when its one `Ticket: STEM` line names a
   bug ticket with no class tag, or a site fix in a class of three or more instances while a
   mechanism ticket of the class is open or in progress and the brief has no
-  `Site fix because: REASON` line. `slot-test` proves `slot`, `land`,
+  `Site fix because: REASON` line. It also refuses a BRIEF with no `## Contract` section holding text (a brief
+  that changes no code says `Contract: none, no code` on its own line), and any BRIEF while
+  `code-commits reviewed..main` prints more than 15 lines: run the quality review, then
+  `jj bookmark set reviewed -r main`. `slot-test` proves `slot`, `land`,
   `--clear-build` and the machine lock on scratch repositories, from a copy of the tools there; `--shell` runs the cases without cargo builds.
 
 ## Invariants and fixes

@@ -22,6 +22,7 @@ fn level(node: &[u8]) -> u32 {
 }
 
 /// Returns whether `node` is a map page of `owner`, one level below `parent` when it has one.
+#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 pub(super) fn shaped(node: &[u8], owner: u32, parent: Option<u32>) -> bool {
     storage::kind(node) == PageKind::VisibilityMap as u16
         && storage::owner(node) == owner

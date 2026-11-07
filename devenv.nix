@@ -85,6 +85,11 @@ in
       cargo nextest run -p adtb-sim --test storage --profile damage
     fi
     size-check
+    structure-check
+    if [[ -n $plan ]]; then
+      if [[ -z ''${2:-} ]]; then base=main; else base=$(jj --ignore-working-copy --color=never log --no-graph -r "roots($revset)-" -T 'commit_id ++ "\n"' | head -1); fi
+      if [[ -n $base ]]; then structure-check --against "$base"; fi
+    fi
     refusal-check
     if part docs; then docs-check; fi
     if part tree-sitter; then tree-sitter-check; fi
@@ -118,6 +123,10 @@ in
 
   scripts.size-check.exec = ''
     "$DEVENV_ROOT/work/tools/size-check.sh"
+  '';
+
+  scripts.structure-check.exec = ''
+    "$DEVENV_ROOT/work/tools/structure-check" "$@"
   '';
 
   scripts.refusal-check.exec = ''

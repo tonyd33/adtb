@@ -3,7 +3,8 @@
 #                                       that breaks a house rule, as FILE:LINE: RULE: TEXT
 #
 # DIR defaults to the workspace holding this script.
-# Rules: an em dash anywhere; an added size-allowlist entry; an added lint expectation in Rust;
+# Rules: an em dash anywhere; an added size-allowlist entry; an added lint expectation in Rust,
+# except one of clippy::disallowed_methods, which structure-check counts;
 # an asserted bare `.is_err()` in Rust;
 # in Rust comments, markdown bold, a section sign, a rule id
 # or a recognized third-person doc verb; a doc summary of two sentences that each start
@@ -25,15 +26,17 @@ jj diff --git "$@" | awk '
           "vacuums validates visits waits walks wraps writes", words)
     for (i in words) verbs[words[i]] = 1
   }
-  /^\+\+\+ / { file = substr($0, 7); block = 0; safety = -1; open_assert = 0; next }
+  /^\+\+\+ / { flush(); file = substr($0, 7); block = 0; safety = -1; open_assert = 0; next }
   /^@@ / {
+    flush()
     block = 0
     split($3, hunk, ",")
     line = substr(hunk[1], 2) - 1
     next
   }
-  /^-/ { next }
+  /^-/ { flush(); next }
   /^ / {
+    flush()
     line++
     text = substr($0, 2)
     summaries(0)
@@ -42,10 +45,15 @@ jj diff --git "$@" | awk '
   /^\+/ {
     line++
     text = substr($0, 2)
+    if (held != "") {
+      if (text !~ /^[ \t]*clippy::disallowed_methods,$/) flush()
+      held = ""
+    }
     summaries(1)
     if (index(text, "\342\200\224")) report("em dash")
     if (file == "work/tools/size-allowlist") report("size allowlist entry")
-    if (file ~ /\.rs$/ && text ~ /#!?\[expect\(/) report("lint suppression: fix the code or justify it in the report")
+    if (file ~ /\.rs$/ && text ~ /#!?\[expect\($/) held = sprintf("%s:%d: lint suppression: fix the code or justify it in the report: %s\n", file, line, text)
+    else if (file ~ /\.rs$/ && text ~ /#!?\[expect\(/ && text !~ /#!?\[expect\(clippy::disallowed_methods, /) report("lint suppression: fix the code or justify it in the report")
     if (file !~ /\.rs$/) next
     if (text ~ /assert!\($/) open_assert = 1
     if ((open_assert || text ~ /assert!\(/) && text ~ /\.is_err\(\)/) report("bare is_err: assert the refusal reason")
@@ -97,9 +105,16 @@ jj diff --git "$@" | awk '
     if (summary && returns && touched && d ~ /^Returns / && prev ~ /\.$/) report("two doc summaries above one item")
     prev = d
   }
+  function flush() {
+    if (held != "") {
+      printf "%s", held
+      found = 1
+      held = ""
+    }
+  }
   function report(rule) {
     printf "%s:%d: %s: %s\n", file, line, rule, text
     found = 1
   }
-  END { exit found }
+  END { flush(); exit found }
 '

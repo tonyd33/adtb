@@ -272,6 +272,7 @@ impl<R: Runtime> Pager<R> {
     /// to a blank page logs its whole image, which no earlier record need lead to.
     ///
     /// Fail on an I/O failure.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn latch_overwriting(&self, pid: Pid) -> Result<(PageExclusive<'_, R>, bool), PageError> {
         match self.exclusive(pid) {
             Ok(g) => Ok((g, false)),
@@ -292,6 +293,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Refuse `pid` again after a change to the blank page [`Pager::latch_overwriting`] gave failed.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn undo_overwrite(&self, pid: Pid) {
         self.damage(pid, Damage::Checksum);
         self.meta().overwritten.remove(&pid);
@@ -390,6 +392,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Change page `pid`, which [`Pager::read_stale`] returned refused, from the file's copy
     /// `copy` to `contents`, logging the change as one from that copy.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(crate) fn rewrite_stale(
         &self,
         pid: Pid,
@@ -530,11 +533,13 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Hold `pids`, pages of a tree a swap replaced, as retired until each one's own free.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn retire(&self, pids: impl IntoIterator<Item = Pid>) {
         self.meta().records.retired.extend(pids);
     }
 
     /// Stop holding `pids` as retired: the swap that would have replaced their tree failed.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn unretire(&self, pids: &[Pid]) {
         let mut m = self.meta();
         for p in pids {
@@ -543,6 +548,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns the pages held as retired, none of them freed since.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn retired(&self) -> Vec<Pid> {
         self.meta().records.retired.iter().copied().collect()
     }

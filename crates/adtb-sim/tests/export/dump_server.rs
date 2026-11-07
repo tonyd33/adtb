@@ -384,6 +384,7 @@ fn an_encrypted_dump_through_a_server_restores_and_audits_no_passphrase() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_file_quarantined_whole_dumps_through_a_server_and_refuses_every_other_text() {
     let mut sim = Sim::new(547, Config::default());
     api::run(&mut sim, |rt| {

@@ -12,6 +12,7 @@ impl Heap {
     /// Call `f` on every version on `pid` with each slot index entries may name for it: the roots
     /// of the chains of heap-only successors it lies on, as one latched read of the page shows. A
     /// sound page gives a version one root. A page no longer of the heap has none.
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     pub fn scan_rooted<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -49,6 +50,7 @@ impl Heap {
 
     /// Returns the rows of the chain index entries naming `at` reach on its page, or `None` when
     /// the slot holds no version: unused, dead, or a page no longer of the heap.
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     pub fn chain_rows<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -78,6 +80,7 @@ impl Heap {
 
     /// Returns what is wrong with the links of `pid`, as one latched read of the page shows. A
     /// page no longer of the heap has nothing wrong.
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     pub fn broken_links<R: Runtime>(
         &self,
         pager: &Pager<R>,

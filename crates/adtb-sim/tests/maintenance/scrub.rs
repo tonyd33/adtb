@@ -72,6 +72,7 @@ fn insert(db: &Database<SimRuntime>, from: i64, to: i64) {
     }
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn users_page<R: Runtime>(db: &Database<R>) -> Pid {
     let w = db.write_path();
     let pages = w
@@ -98,6 +99,7 @@ fn rot(rt: &SimRuntime, page: Pid) {
     common::write(rt, &mut io, file, at, &bytes).expect("the write");
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn flush<R: Runtime>(db: &Database<R>) {
     let pager = db.write_path().pager();
     pager.flush_log();
@@ -140,6 +142,7 @@ fn seeded(seed: u64, users: i64, settings: &[(&str, &str)]) -> (Files, Pid) {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn rot_is_found_and_marked_within_an_interval_with_no_call_touching_it() {
     let mut sim = Sim::new(1, Config::default());
     api::run(&mut sim, |rt| {
@@ -261,6 +264,7 @@ fn findings_of_a_scrub_are_kept_across_a_reopen_with_no_second_row() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_full_pass_drops_a_row_it_no_longer_finds() {
     let (files, page) = seeded(16, 5, &[("Some { value: 10min }", "1.0")]);
     let clean = files[FILE].clone();
@@ -321,6 +325,7 @@ fn a_pass_resumed_after_a_restart_keeps_what_its_first_part_found() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_database_marked_whole_writes_nothing_past_the_mark() {
     let mut sim = Sim::new(6, Config::default());
     let mut marks_page = None;
@@ -413,6 +418,7 @@ fn time_cursor_passes(seed: u64, files: &Files, page: Pid) -> Duration {
 
 /// Returns `files` with users from `from` to `to` added, a hundred to a transaction, and the
 /// first page of their heap with the last page of the file.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn grown(seed: u64, files: Files, from: i64, to: i64) -> (Files, Pid, Pid) {
     let mut sim = Sim::with_files(seed, Config::default(), files);
     let mut out = None;
@@ -863,6 +869,7 @@ fn in_pass(db: &Database<SimRuntime>) -> bool {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_pass_reading_an_old_log_does_not_refuse_a_page_healed_since() {
     let key = |db: &Database<SimRuntime>| {
         let w = db.write_path();
@@ -949,6 +956,7 @@ fn a_pass_reading_an_old_log_does_not_refuse_a_page_healed_since() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn rot_on_a_free_page_is_no_finding() {
     let mut sim = Sim::new(43, Config::default());
     finished(&mut sim, |rt| {
@@ -966,6 +974,7 @@ fn rot_on_a_free_page_is_no_finding() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn rot_on_a_free_page_then_reused_is_no_finding_and_no_mark() {
     for seed in 44..48 {
         let mut sim = Sim::new(seed, Config::default());
@@ -1160,6 +1169,7 @@ fn a_panic_in_a_kept_write_of_the_worker_ends_the_run_with_no_call_after_it() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_caught_panic_on_a_database_marked_whole_stays_in_memory() {
     let mut sim = Sim::new(54, Config::default());
     finished(&mut sim, |rt| {

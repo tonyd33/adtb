@@ -229,6 +229,7 @@ fn seed(db: &Database<SimRuntime>) {
     }
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn heap_page(db: &Database<SimRuntime>, relation: &str, ctor: &str) -> Pid {
     let w = db.write_path();
     w.heap_named(relation, ctor)
@@ -237,6 +238,7 @@ fn heap_page(db: &Database<SimRuntime>, relation: &str, ctor: &str) -> Pid {
         .unwrap()[0]
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn index_page(db: &Database<SimRuntime>, relation: &str, clause: &str) -> Pid {
     let w = db.write_path();
     let index = w.index_named(relation, clause).unwrap();
@@ -283,15 +285,18 @@ fn failed_on(db: &Database<SimRuntime>, text: &str) -> String {
     quarantined(&api::failure(db, text)).to_owned()
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn marks<R: Runtime>(db: &Database<R>) -> BTreeSet<Quarantine> {
     db.write_path().pager().quarantined()
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn apple_mark(db: &Database<SimRuntime>) -> Quarantine {
     let w = db.write_path();
     Quarantine::Heap(w.heap_named("app::identities", "Apple").unwrap().id().0)
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn user_index_mark(db: &Database<SimRuntime>) -> Quarantine {
     let w = db.write_path();
     Quarantine::Index(
@@ -505,6 +510,7 @@ fn an_io_failure_sets_no_mark_and_stays_a_storage_failure() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn concurrent_readers_of_one_damaged_page_set_one_mark() {
     for seed_no in adtb_simkit::seeds::sweep(20..22) {
         let mut sim = Sim::new(seed_no, Config::default());
@@ -588,6 +594,7 @@ fn a_file_with_a_damaged_catalog_page_opens_for_verify() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_file_with_a_damaged_catalog_root_opens_and_keeps_the_mark() {
     let mut sim = flipped(19, |db| db.write_path().pager().catalog_root());
     api::run(&mut sim, |rt| {
@@ -600,6 +607,7 @@ fn a_file_with_a_damaged_catalog_root_opens_and_keeps_the_mark() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_damaged_commit_log_page_marks_the_database_and_verify_runs() {
     let mut sim = Sim::new(30, Config::default());
     api::run(&mut sim, |rt| {
@@ -687,6 +695,7 @@ fn a_write_to_a_sum_reads_its_one_key_over_every_constructor() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn verify_findings_mark_the_index_they_name() {
     let mut sim = Sim::new(33, Config::default());
     api::run(&mut sim, |rt| {
@@ -740,6 +749,7 @@ fn a_verify_checksum_finding_marks_what_holds_the_page() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn verify_of_a_marked_database_still_runs() {
     let mut sim = Sim::new(36, Config::default());
     api::run(&mut sim, |rt| {
@@ -766,6 +776,7 @@ fn verify_of_a_marked_database_still_runs() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_failed_mark_does_not_hide_the_damage() {
     let mut sim = Sim::new(37, Config::default());
     api::run(&mut sim, |rt| {
@@ -784,6 +795,7 @@ fn a_failed_mark_does_not_hide_the_damage() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_mark_fails_a_call_of_an_open_transaction_and_leaves_it_open() {
     let mut sim = Sim::new(40, Config::default());
     api::run(&mut sim, |rt| {
@@ -800,6 +812,7 @@ fn a_mark_fails_a_call_of_an_open_transaction_and_leaves_it_open() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_damaged_large_value_page_marks_the_database() {
     let mut sim = Sim::new(41, Config::default());
     api::run(&mut sim, |rt| {
@@ -822,6 +835,7 @@ fn a_damaged_large_value_page_marks_the_database() {
 
 /// Run `body` over a seeded database with `mark` of it set and no page damaged, so that only the
 /// comparison of a call to the marks can fail the call.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn marked_undamaged(
     seed_no: u64,
     mark: impl FnOnce(&Database<SimRuntime>) -> Quarantine,
@@ -867,6 +881,7 @@ fn a_mark_fails_a_call_before_it_reads_anything() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_reference_mark_fails_a_write_that_names_only_the_referrer() {
     marked_undamaged(
         43,
@@ -896,6 +911,7 @@ fn an_index_mark_fails_a_write_it_covers_with_no_page_damaged() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn opening_a_marked_database_applies_no_migration() {
     let mut sim = Sim::new(45, Config::default());
     api::run(&mut sim, |rt| {
@@ -945,6 +961,7 @@ fn seed_many(db: &Database<SimRuntime>, n: i64) {
     }
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn index_pages(db: &Database<SimRuntime>) -> (Pid, Vec<Pid>) {
     let w = db.write_path();
     let index = w.index_named("app::identities", USER_INDEX).unwrap();
@@ -960,6 +977,7 @@ fn runs(db: &Database<SimRuntime>, text: &str) {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn two_finders_of_different_objects_keep_both_marks() {
     for s in adtb_simkit::seeds::sweep(0..6) {
         let mut sim = Sim::new(s, Config::default());
@@ -988,6 +1006,7 @@ fn two_finders_of_different_objects_keep_both_marks() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_second_finder_of_one_object_returns_with_the_mark_durable() {
     for s in adtb_simkit::seeds::sweep(0..6) {
         let mut sim = Sim::new(s, Config::default());
@@ -1043,6 +1062,7 @@ fn a_damaged_root_and_leaf_of_one_index_mark_the_index() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_walk_stopped_by_damage_marks_its_heap() {
     let mut sim = Sim::new(63, Config::default());
     api::run(&mut sim, |rt| {
@@ -1060,6 +1080,7 @@ fn a_walk_stopped_by_damage_marks_its_heap() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn an_io_failure_in_the_walk_marks_nothing() {
     let mut sim = Sim::new(64, Config::default());
     api::run(&mut sim, |rt| {
@@ -1082,6 +1103,7 @@ fn an_io_failure_in_the_walk_marks_nothing() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn rot_on_a_free_page_marks_nothing() {
     let mut sim = Sim::new(51, Config::default());
     api::run(&mut sim, |rt| {
@@ -1100,6 +1122,7 @@ fn rot_on_a_free_page_marks_nothing() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_page_vacuum_frees_during_the_walk_marks_nothing() {
     let mut sim = Sim::new(52, Config::default());
     api::run(&mut sim, |rt| {
@@ -1116,6 +1139,7 @@ fn a_page_vacuum_frees_during_the_walk_marks_nothing() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn an_allocated_page_every_walk_misses_marks_the_database() {
     let mut sim = Sim::new(53, Config::default());
     api::run(&mut sim, |rt| {
@@ -1177,6 +1201,7 @@ fn a_failed_open_marks_the_heap_of_the_damage_it_met() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_failed_open_on_a_damaged_page_of_the_large_value_store_marks_the_database() {
     let later = "module app\nadd constraint nope =\n  from u in users\n  where u.name == \"zz\"\n  select u\n";
     let mut sim = Sim::new(58, Config::default());
@@ -1208,6 +1233,7 @@ fn a_failed_open_on_a_damaged_page_of_the_large_value_store_marks_the_database()
     with_named_pager(&mut sim, |p| assert_eq!(database, p.quarantined()));
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn commit_log_page(seed_no: u64, pick: impl FnOnce(&adtb::mvcc::CommitLog) -> Pid) -> Sim {
     let mut sim = Sim::new(seed_no, Config::default());
     let page = api::run(&mut sim, |rt| {
@@ -1265,6 +1291,7 @@ fn a_file_with_a_damaged_commit_log_root_opens_and_keeps_the_mark() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_delete_reads_no_target_of_its_row() {
     let mut sim = Sim::new(70, Config::default());
     api::run(&mut sim, |rt| {
@@ -1303,6 +1330,7 @@ fn a_delete_reads_no_target_of_its_row() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn every_gate_path_refuses_a_call_over_a_marked_constructor() {
     let mut sim = Sim::new(71, Config::default());
     api::run(&mut sim, |rt| {
@@ -1322,6 +1350,7 @@ fn every_gate_path_refuses_a_call_over_a_marked_constructor() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_marked_database_opens_with_a_newer_log_and_a_bundle_needing_it() {
     let mut sim = Sim::new(72, Config::default());
     api::run(&mut sim, |rt| {
@@ -1351,6 +1380,7 @@ fn a_marked_database_opens_with_a_newer_log_and_a_bundle_needing_it() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_registered_call_on_a_reopened_marked_database_fails_with_quarantined() {
     let mut sim = Sim::new(73, Config::default());
     api::run(&mut sim, |rt| {
@@ -1373,6 +1403,7 @@ fn a_registered_call_on_a_reopened_marked_database_fails_with_quarantined() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn register_on_a_marked_database_fails_with_quarantined() {
     let mut sim = Sim::new(74, Config::default());
     api::run(&mut sim, |rt| {
@@ -1394,6 +1425,7 @@ fn register_on_a_marked_database_fails_with_quarantined() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn vacuum_of_a_marked_constructor_fails_with_quarantined() {
     let mut sim = Sim::new(75, Config::default());
     api::run(&mut sim, |rt| {
@@ -1406,6 +1438,7 @@ fn vacuum_of_a_marked_constructor_fails_with_quarantined() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn vacuum_of_a_relation_with_a_marked_index_fails_with_quarantined() {
     let mut sim = Sim::new(76, Config::default());
     api::run(&mut sim, |rt| {
@@ -1438,6 +1471,7 @@ fn with_history(db: &Database<SimRuntime>) {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_damaged_history_heap_page_marks_its_constructor() {
     let mut sim = Sim::new(77, Config::default());
     api::run(&mut sim, |rt| {
@@ -1454,6 +1488,7 @@ fn a_damaged_history_heap_page_marks_its_constructor() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_damaged_history_index_page_marks_its_key_index() {
     let mut sim = Sim::new(78, Config::default());
     api::run(&mut sim, |rt| {
@@ -1474,6 +1509,7 @@ fn a_damaged_history_index_page_marks_its_key_index() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn an_io_failure_on_the_marks_page_fails_the_load_and_marks_nothing() {
     let mut sim = Sim::new(83, Config::default());
     api::run(&mut sim, |rt| {
@@ -1490,6 +1526,7 @@ fn an_io_failure_on_the_marks_page_fails_the_load_and_marks_nothing() {
 
 const BOUNDED: &str = "from i in identities where i.id == identities.key(11) select i.user";
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn key_index_marked(db: &Database<SimRuntime>) -> btree::Index {
     let w = db.write_path();
     let key = w.index_named("app::identities", "key id").unwrap();
@@ -1500,6 +1537,7 @@ fn key_index_marked(db: &Database<SimRuntime>) -> btree::Index {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_probe_from_the_heaps_stops_on_the_check_of_its_call() {
     let mut sim = Sim::new(79, Config::default());
     api::run(&mut sim, |rt| {
@@ -1528,6 +1566,7 @@ fn a_probe_from_the_heaps_stops_on_the_check_of_its_call() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_probe_from_the_heaps_charges_the_versions_it_scans_to_the_grant() {
     let mut sim = Sim::new(80, Config::default());
     api::run(&mut sim, |rt| {
@@ -1557,6 +1596,7 @@ fn a_probe_from_the_heaps_charges_the_versions_it_scans_to_the_grant() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_fallback_gives_the_same_rows_after_updates_retags_and_deletes() {
     let mut sim = Sim::new(81, Config::default());
     api::run(&mut sim, |rt| {
@@ -1611,6 +1651,7 @@ fn a_fallback_gives_the_same_rows_after_updates_retags_and_deletes() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_fallback_finds_a_large_row_and_an_open_transactions_own_row() {
     let mut sim = Sim::new(82, Config::default());
     api::run(&mut sim, |rt| {
@@ -1658,6 +1699,7 @@ add relation identities : Identity key id generate sequence
 ";
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn writers_and_vacuum_under_verify_set_no_false_mark() {
     for s in adtb_simkit::seeds::sweep(0..1) {
         let mut sim = Sim::new(
@@ -1956,6 +1998,7 @@ fn real_lists(name: &str) -> (OsRuntime, Database) {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn mapping_a_damaged_heap_page_never_marks_an_index_that_is_changing() {
     let (rt, db) = real_lists("engine");
     db.query_text(
@@ -2036,6 +2079,7 @@ fn verify_of_indexes_that_are_changing_finds_and_marks_nothing() {
 }
 
 /// Run `body` with a page of a fresh pager that no walk holds.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn with_unheld_page(seed_no: u64, body: impl FnOnce(&Pager<SimRuntime>, Pid)) {
     let mut sim = Sim::new(seed_no, Config::default());
     api::run(&mut sim, |rt| {
@@ -2127,6 +2171,7 @@ fn a_walk_of_an_object_whose_damage_marks_nothing_stopped_by_damage_leaves_the_p
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_large_value_page_fails_as_storage_unmarked_while_its_store_walk_stops_then_maps_to_the_database()
  {
     let mut sim = Sim::new(64, Config::default());
@@ -2172,6 +2217,7 @@ const GOOGLE_901: &str =
     r#"insert identities.Google { id: identities.key(901), user: users.key(1), gid: "g901" }"#;
 const GOOGLE_901_IDS: &str = "from i in identities.Google where i.gid == \"g901\" select i.id";
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn mark_named(db: &Database<SimRuntime>, relation: &str, ctor: &str) -> Quarantine {
     Quarantine::Heap(db.write_path().heap_named(relation, ctor).unwrap().id().0)
 }
@@ -2179,6 +2225,7 @@ fn mark_named(db: &Database<SimRuntime>, relation: &str, ctor: &str) -> Quaranti
 /// Commit a transaction that runs `write`, with `mark` set after the write. Returns what the
 /// commit fails with.
 #[must_use]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn refused_commit(db: &Database<SimRuntime>, write: &str, mark: Quarantine) -> String {
     let mut t = db.begin(&TxnOptions::default()).unwrap();
     api::in_txn_results(&mut t, write);
@@ -2199,6 +2246,7 @@ fn a_commit_after_a_mark_on_an_index_covering_its_write_fails_and_leaves_nothing
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_commit_after_a_mark_on_its_heap_or_a_sibling_heap_fails_and_leaves_nothing() {
     for ctor in ["Google", "Apple", "EmailPass"] {
         let mut sim = Sim::new(91, Config::default());
@@ -2215,6 +2263,7 @@ fn a_commit_after_a_mark_on_its_heap_or_a_sibling_heap_fails_and_leaves_nothing(
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_commit_after_a_mark_its_write_checks_read_fails() {
     let mut sim = Sim::new(92, Config::default());
     api::run(&mut sim, |rt| {
@@ -2236,6 +2285,7 @@ fn a_commit_after_a_mark_its_write_checks_read_fails() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_commit_writing_nothing_a_mark_stops_runs() {
     let mut sim = Sim::new(93, Config::default());
     api::run(&mut sim, |rt| {
@@ -2253,6 +2303,7 @@ fn a_commit_writing_nothing_a_mark_stops_runs() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_transaction_that_only_read_commits_under_a_mark_on_what_it_read() {
     let mut sim = Sim::new(94, Config::default());
     api::run(&mut sim, |rt| {
@@ -2274,6 +2325,7 @@ fn a_transaction_that_only_read_commits_under_a_mark_on_what_it_read() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_statement_that_failed_leaves_no_write_for_the_commit_to_refuse() {
     let mut sim = Sim::new(95, Config::default());
     api::run(&mut sim, |rt| {
@@ -2293,6 +2345,7 @@ fn a_statement_that_failed_leaves_no_write_for_the_commit_to_refuse() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn transact_fails_once_when_a_mark_lands_before_its_commit() {
     let mut sim = Sim::new(96, Config::default());
     api::run(&mut sim, |rt| {
@@ -2315,6 +2368,7 @@ fn transact_fails_once_when_a_mark_lands_before_its_commit() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_mark_lsn_follows_every_commit_kept_before_it_and_refuses_every_commit_after() {
     let seeds = adtb_simkit::seeds::sweep(0..2);
     let mut refusing = 0;
@@ -2423,6 +2477,7 @@ fn a_mark_lsn_follows_every_commit_kept_before_it_and_refuses_every_commit_after
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_commit_waits_for_a_mark_being_set_and_is_refused() {
     let mut sim = Sim::new(100, Config::default());
     api::run(&mut sim, |rt| {
@@ -2518,6 +2573,7 @@ fn apple_history(db: &Database<SimRuntime>) -> (adtb::Position, adtb::Position) 
     (first, second)
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn damage_history_index(db: &Database<SimRuntime>) {
     let w = db.write_path();
     let past = w.history_index_named("app::identities").unwrap();
@@ -2559,6 +2615,7 @@ fn a_read_of_the_past_with_no_row_then_fails_alike_without_the_history_key_index
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_read_of_the_past_fails_on_a_damaged_history_heap_without_the_history_key_index() {
     let mut sim = Sim::new(99, Config::default());
     api::run(&mut sim, |rt| {
@@ -2598,6 +2655,7 @@ fn a_commit_writing_a_heap_whose_damage_is_recorded_and_not_yet_mapped_is_refuse
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_commit_whose_record_of_the_retention_window_is_damaged_is_refused_naming_the_database() {
     let mut sim = Sim::new(97, Config::default());
     api::run(&mut sim, |rt| {
@@ -2634,6 +2692,7 @@ fn a_commit_whose_record_of_the_retention_window_is_damaged_is_refused_naming_th
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn damage_another_thread_records_on_a_page_the_commits_walk_reads_marks_only_its_index() {
     let mut during = 0;
     for step in [0u64, 10, 20, 30, 40, 45, 50, 55, 57] {
@@ -2682,6 +2741,7 @@ fn damage_another_thread_records_on_a_page_the_commits_walk_reads_marks_only_its
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_commit_walks_no_record_whose_last_mapping_was_incomplete() {
     let mut sim = Sim::new(65, Config::default());
     api::run(&mut sim, |rt| {
@@ -2748,6 +2808,7 @@ fn written_whole(files: Files, pid: Pid, crash: bool) -> Files {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_lost_write_recovery_finds_is_marked_by_an_open_that_succeeds_and_refuses_the_next() {
     let mut sim = Sim::new(98, Config::default());
     let (pid, users) = api::run(&mut sim, |rt| {

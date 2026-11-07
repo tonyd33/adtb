@@ -42,6 +42,7 @@ impl Worker {
 impl<R: Runtime> Pager<R> {
     /// Write up to `max` changed pages, oldest first by the LSN that dirtied them, and force the
     /// data file. Returns the number written.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn flush_pages(&self, max: usize) -> usize {
         let oldest: Vec<Pid> = {
             let m = self.meta();
@@ -71,6 +72,7 @@ impl<R: Runtime> Pager<R> {
     /// Force the data file and drop from the dirty page table every page written before the force
     /// with no change since. A page changed since moves its `rec_lsn` up to the record its replay
     /// may start from, as `Meta::after_write` holds it.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(crate) fn sync_data(&self) {
         let _forcing = self.forcing.lock(&self.rt);
         let covered = std::mem::take(&mut self.meta().written);
@@ -113,6 +115,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Take a checkpoint, pinning its redo LSN when `pin`, in the hold of the log lock that logs
     /// the checkpoint record.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn checkpoint_pinning(&self, pin: bool) -> (Lsn, Lsn, u64) {
         let (mut list, (at, redo, groups, folded)) = loop {
             let list = self.list_to_fold();
@@ -212,6 +215,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns the dirty page table: each page's `rec_lsn`.
     #[doc(hidden)]
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn dirty_pages(&self) -> std::collections::BTreeMap<Pid, Lsn> {
         self.meta().dirty.clone()
     }

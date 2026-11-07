@@ -824,6 +824,7 @@ impl<R: Runtime> Pager<R> {
     /// failing is added to `damaged` and copied as stored with a checksum it fails, so a
     /// restore refuses it whatever its LSN, unless the allocation bitmap reads and calls it free or
     /// the pool's changed copy is to overwrite it. Only such a page is added.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn page_as_stored(
         &self,
         pid: Pid,
@@ -877,6 +878,7 @@ impl<R: Runtime> Pager<R> {
     /// this open has not refused the page as stale, the pool holds it at no later LSN, and its
     /// LSN is not below `mapped`, the page LSN map's entry for it. `image` is its resident copy
     /// under the caller's latch.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn trusted(&self, pid: Pid, buf: &[u8], image: Option<&[u8]>, mapped: Option<Lsn>) -> bool {
         let refused = self.meta().damaged.get(&pid).copied();
         let stale = matches!(refused, Some(Damage::Stale { .. }));

@@ -1560,6 +1560,7 @@ fn a_task_carrying_a_cancelled_token_never_runs() {
 }
 
 /// Set a mark on the key index of `items`, durable before it returns.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn mark_items_key_index<R: Runtime>(db: &Database<R>) -> adtb::storage::Quarantine {
     let w = db.write_path();
     let index = w.index_named("shop::items", "key id").unwrap();
@@ -1570,6 +1571,7 @@ fn mark_items_key_index<R: Runtime>(db: &Database<R>) -> adtb::storage::Quaranti
 
 /// Check that a server call and an interactive transaction, each with a mark set after its write
 /// and before its commit, fail and leave nothing.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_mark_before_commit_refuses_both_commits<R: Runtime>(rt: &R) {
     let f = open(rt, 0);
     let write = "insert items { n: 1 }
@@ -1616,6 +1618,7 @@ fn a_mark_before_commit_refuses_both_commits_on_a_real_file() {
 }
 
 /// Check that `verify` as a task runs under commit log damage and any other text fails.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_verify_task_runs_on_a_damaged_commit_log<R: Runtime>(rt: &R) {
     let f = open(rt, 1);
     let status = *f
@@ -1666,6 +1669,7 @@ fn a_verify_task_runs_on_a_damaged_commit_log_of_a_real_file() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_task_reading_a_quarantined_constructor_fails_before_running() {
     sim_once(|rt| {
         let log = "module app

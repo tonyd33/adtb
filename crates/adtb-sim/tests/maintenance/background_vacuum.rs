@@ -65,6 +65,7 @@ const BUMP: &str = "update i in items.A set A { i with n: i.n + 1 }
 update i in items.B set B { i with n: i.n + 1 }";
 
 /// Returns the LSN of each page of `heaps`.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn pages(db: &Database<SimRuntime>, heaps: &[(&str, &str)]) -> Vec<Lsn> {
     let w = db.write_path();
     heaps
@@ -145,6 +146,7 @@ fn dead_versions_leave_with_no_command() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn versions_past_the_retention_window_leave_with_no_further_writes() {
     api::once(22, |rt| {
         let db = open(rt.clone());
@@ -184,6 +186,7 @@ fn versions_past_the_retention_window_leave_with_no_further_writes() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_background_vacuum_gives_way_to_a_command_waiting_for_it() {
     let commands = [
         "verify",
@@ -219,6 +222,7 @@ const HOLDING: [&str; 5] = [
 ];
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_background_vacuum_gives_way_to_a_first_task_waiting_for_it() {
     let mut sim = Sim::new(25, Config::default());
     api::run(&mut sim, |rt| {
@@ -255,6 +259,7 @@ fn a_background_vacuum_gives_way_to_a_first_task_waiting_for_it() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_background_vacuum_writes_no_page_of_a_quarantined_heap() {
     api::once(23, |rt| {
         let db = open(rt.clone());
@@ -290,6 +295,7 @@ fn a_background_vacuum_writes_no_page_of_a_quarantined_heap() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_close_during_a_background_vacuum_returns_promptly_and_leaves_it_sound() {
     let mut sim = Sim::new(24, Config::default());
     api::run(&mut sim, |rt| {
@@ -310,6 +316,7 @@ fn a_close_during_a_background_vacuum_returns_promptly_and_leaves_it_sound() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_file_after_a_crash_with_the_background_vacuum_running_holds_clean() {
     crash::silence_fatal_panics();
     for seed in seeds::sweep(0..5) {
@@ -371,6 +378,7 @@ fn write(db: &Database<SimRuntime>, at: usize, next: u64) -> bool {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_background_vacuum_removes_no_version_a_transaction_reads() {
     let done = [(); 5].map(|()| Arc::new(AtomicUsize::new(0)));
     let mut overlapped = 0;
@@ -428,6 +436,7 @@ fn a_background_vacuum_removes_no_version_a_transaction_reads() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn the_background_vacuum_and_a_scrub_pass_together_stay_within_the_budget() {
     api::once(25, |rt| {
         let db = open(rt.clone());
@@ -507,6 +516,7 @@ fn a_relation_with_all_visible_pages_is_due_at_its_page_count() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn dead_versions_a_reader_holds_stay_counted_until_it_ends() {
     api::once(27, |rt| {
         let db = open(rt.clone());

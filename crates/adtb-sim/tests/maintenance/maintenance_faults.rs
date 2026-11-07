@@ -953,6 +953,7 @@ fn check_plan<R: Runtime>(db: &Database<R>, text: &str, line: &str) -> Result<()
 }
 
 /// Returns each heap with its full scan.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn scan_objects<R: Runtime>(db: &Database<R>) -> Vec<RotObject> {
     let reads = rot_reads(false);
     #[rustfmt::skip]
@@ -1054,6 +1055,7 @@ type IndexRows = (
 );
 
 /// Returns each index with its lookup of every key the fixture ever wrote to it.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn index_objects<R: Runtime>(db: &Database<R>) -> Vec<RotObject> {
     let text_key = |(k, want): (String, Vec<String>)| (k.clone(), Value::Text(k), want);
     let id_key = |(i, want): (i64, Vec<String>)| (i.to_string(), Value::I64(i), want);
@@ -1106,6 +1108,7 @@ fn index_objects<R: Runtime>(db: &Database<R>) -> Vec<RotObject> {
 }
 
 /// Returns the files of the closed fixture, the owners of its pages and its application objects.
+#[expect(clippy::disallowed_methods, reason = "until testing and heap owners")]
 fn rot_fixture() -> (Files, Owners, Vec<RotObject>) {
     let files = seeded_files(REINDEX);
     let mut sim = Sim::with_files(SEED, Config::default(), files);
@@ -1152,6 +1155,7 @@ fn rot_fixture() -> (Files, Owners, Vec<RotObject>) {
 }
 
 /// Returns the class of `page`, number `at` of a file whose application heaps have `owners`.
+#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 fn page_class(at: usize, page: &[u8], owners: &Owners) -> String {
     if at < Pid::FIRST_DATA.0 as usize {
         return "file header".into();
@@ -1525,6 +1529,7 @@ fn rot_opened(rt: SimRuntime, seen: &mut Seen) -> Result<Database<SimRuntime>, S
     db.ok_or_else(|| format!("open refused: {:?}", seen.open_refusal))
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn marks<R: Runtime>(db: &Database<R>) -> BTreeSet<Quarantine> {
     db.write_path().pager().quarantined()
 }
@@ -1556,6 +1561,7 @@ fn rot_commit(image: Files) -> Result<Tally, String> {
 /// to `rows` and read that commit back, before a close and after a reopen. Returns one case's
 /// tally.
 #[rustfmt::skip]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn rot_cross(image: Files, object: &RotObject, crossing: &Crossing, commit_after: bool, must_refuse: bool, damaged: Option<Pid>) -> Result<Tally, String> {
     let (mut seen, mut tally) = (Seen::default(), Tally::default());
     let mut sim = Sim::with_files(SEED, Config::default(), image);
@@ -1617,6 +1623,7 @@ fn reads_crossing(object: &RotObject, at: usize, page: &[u8]) -> Vec<Crossing> {
 }
 
 /// Returns the application heap pages and leaves of `file` owned by `object`.
+#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 fn pages_of(file: &[u8], object: &RotObject) -> Vec<usize> {
     let owned = |(_, page): &(usize, &[u8])| {
         let kind = PageKind::from_u16(storage::kind(page));
@@ -1859,6 +1866,7 @@ fn first_page_reads(name: &str) -> Vec<(&'static str, Crossing)> {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 fn a_valid_page_of_another_owner_or_lacking_the_slot_refuses_naming_its_holder() {
     hook_rot_panics();
     let (pristine, _, objects) = rot_fixture();
@@ -2112,6 +2120,7 @@ struct Pass<T> {
 /// Open `image`, give the next reads of page `at` the outcomes of `plan`, nap until the reads cover
 /// every data page and the pass reading page `at` has ended, `judge` the database, close and reopen.
 /// Returns `None` for an open refusing damage.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn scrubbed<T>(
     image: Files,
     at: usize,

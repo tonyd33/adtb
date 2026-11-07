@@ -28,6 +28,7 @@ fn roots() {
     task();
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn database() {
     type D = Database<OsRuntime>;
     black_box(D::open_in as fn(_, _, _, _) -> _);

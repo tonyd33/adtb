@@ -1,3 +1,4 @@
+#![expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_sys::os::{Backend, Faults, OsRuntime};
@@ -53,6 +54,7 @@ fn an_older_checkpoint_keeps_the_group_count_and_a_lower_one_never_lowers_it() {
 const SEGMENT: u64 = 16 * BLOCK as u64;
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until storage owners land")]
 fn a_map_root_whose_root_has_no_record_in_its_batch_refuses_the_open() {
     let scratch = Scratch::new("storage", "unproven-root");
     let rt = || {
@@ -107,6 +109,7 @@ fn a_page_past_the_reach_of_the_map_has_no_entry() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until storage owners land")]
 fn a_change_of_the_map_root_outside_a_fold_raises_the_root_lsn_the_pager_holds() {
     let scratch = Scratch::new("storage", "root-lsn");
     let rt = OsRuntime::with_faults(
@@ -132,6 +135,7 @@ fn a_change_of_the_map_root_outside_a_fold_raises_the_root_lsn_the_pager_holds()
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until storage owners land")]
 fn the_first_checkpoint_after_a_crash_names_the_map_root_at_its_replayed_lsn() {
     let scratch = Scratch::new("storage", "replayed-root");
     let rt = || {
@@ -177,6 +181,7 @@ fn the_first_checkpoint_after_a_crash_names_the_map_root_at_its_replayed_lsn() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until storage owners land")]
 fn a_recycle_keeps_every_expected_lsn_and_drops_the_later_ones_it_folded() {
     let scratch = Scratch::new("storage", "absorb");
     let rt = OsRuntime::with_faults(

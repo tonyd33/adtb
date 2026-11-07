@@ -4,6 +4,9 @@ disallowed-methods = [
   { path = "std::thread::spawn", reason = "threads come from the engine's scheduler interface" },
   { path = "std::thread::Builder::spawn", reason = "threads come from the engine's scheduler interface" },
   { path = "std::process::Command::new", reason = "a test spawns through adtb_heap_cap::test_child, which caps the child to fit its slots" },
+  { path = "adtb::storage::page::owner", reason = "the storage module owns page ownership; use its pager operations" },
+  { path = "adtb::storage::pager::Pager::meta", reason = "the pager owns its metadata; use a pager operation" },
+  { path = "adtb::api::Database::write_path", reason = "the write module owns the write path; use a Database operation" },
 ]
 allow-unwrap-in-tests = true
 allow-print-in-tests = true

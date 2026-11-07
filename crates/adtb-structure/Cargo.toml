@@ -1,0 +1,21 @@
+[package]
+name = "adtb-structure"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "adtb-structure"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+syn = { version = "3", default-features = false, features = ["full", "visit", "parsing", "derive"] }
+
+[dev-dependencies]
+adtb-lang = { workspace = true, features = ["test-heap-cap"] }
+
+[lints]
+workspace = true

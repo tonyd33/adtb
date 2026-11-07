@@ -3,12 +3,14 @@
 #                       the main checkout: reuse a free slot, or add `MAIN-slot-M` when none is
 #                       usable; print the directory last
 #
-# First refuses BRIEF unless, outside fenced blocks, it has one `Ticket: STEM` line naming a
-# ticket of the main checkout, and the class table defect-classes.md has class rows whose
-# mechanism tickets are all tickets. A bug ticket needs a tag `class-none` or class tags of the
+# First refuses BRIEF unless, outside fenced blocks, it has a `## Contract` section with text in it
+# or a line `Contract: none, no code`, and one `Ticket: STEM` line naming a ticket of the main
+# checkout, and the class table defect-classes.md has class rows whose mechanism tickets are all
+# tickets. A bug ticket needs a tag `class-none` or class tags of the
 # table. When a class has three or more instances (its tickets not wontfix and not its mechanism
 # tickets) and one of its mechanism tickets is open or in progress, only a mechanism ticket or a
-# brief with a `Site fix because: REASON` line passes.
+# brief with a `Site fix because: REASON` line passes. Then it refuses while `code-commits
+# reviewed..main` lists more than 15 commits: run the quality review and move `reviewed`.
 #
 # `land` frees a slot; its directory stays, so target/ stays valid for the next track. Refuses a
 # slot whose working copy has changes or a description, with commits not on main, holding files jj
@@ -85,10 +87,21 @@ class_rows() {
     gsub(/[ `]/, "", $3); gsub(/ /, "", $(NF - 1)); print $3 "\t" $(NF - 1) }' "$table"
 }
 
+# Succeed when the brief text $1 says `Contract: none, no code`, or has a `## Contract` section with a
+# line of text before the next heading; die when the section is empty. Fail without a section.
+contract() {
+  local body
+  grep -Eq '^Contract: none, no code[[:space:]]*$' <<<"$1" && return 0
+  grep -Eq '^## Contract[[:space:]]*$' <<<"$1" || return 1
+  body=$(awk '/^## Contract[[:space:]]*$/ { in_section = 1; next } /^#/ { in_section = 0 } in_section && NF' <<<"$1")
+  [[ -n $body ]] || die "$brief has an empty '## Contract' section: state the contract before the next heading"
+}
+
 gate() {
   local text ticket listed rows found none tag mechs stem live count classed=
   [[ -f $brief ]] || die "no brief $brief"
   text=$(awk '/^[[:space:]]*(```|~~~)/ { fenced = !fenced; next } !fenced' "$brief")
+  contract "$text" || die "$brief has no '## Contract' heading: add a Contract section stating what the track changes and its enforcer, or the line 'Contract: none, no code' when it changes no code"
   [[ $(grep -c '^Ticket:' <<<"$text") -le 1 ]] || die "$brief has more than one 'Ticket:' line"
   ticket=$(sed -n 's/^Ticket: *\([A-Za-z0-9._-]\+\) *$/\1/p' <<<"$text")
   [[ -n $ticket ]] || die "$brief names no ticket in a 'Ticket: STEM' line"
@@ -121,6 +134,20 @@ gate() {
   [[ -n $classed || -n $none ]] || die "bug ticket $ticket carries no class tag: tag it class-none or a class listed in $table"
 }
 gate
+
+# Refuse while more than 15 code commits sit past the `reviewed` bookmark.
+cadence() {
+  local pending count
+  jj -R "$main" --ignore-working-copy log -r reviewed --no-graph -T '' >/dev/null 2>&1 ||
+    die "no reviewed bookmark: set it with 'jj bookmark set reviewed -r main' after a quality review"
+  pending=$("$main/work/tools/code-commits" 'reviewed..main' 2>&1) ||
+    die "code-commits reviewed..main failed: $pending"
+  count=$(grep -c . <<<"$pending" || true)
+  if ((count > 15)); then
+    die "$count code commits are past the reviewed bookmark, over 15: run the quality review (.agents/skills/quality-review/SKILL.md), then 'jj bookmark set reviewed -r main'"
+  fi
+}
+cadence
 
 exec 7>>"$main/.jj/slot.lock"
 flock 7

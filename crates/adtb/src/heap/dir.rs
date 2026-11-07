@@ -111,6 +111,7 @@ fn parent_of(pid: Pid, node: &[u8]) -> Parent {
 
 /// Returns whether `node` is a directory page of `owner` whose entries fit its page, a child of
 /// `parent` when there is one, at a level `l` with `capacity^l` below [`POSITIONS`].
+#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 fn shaped(node: &[u8], owner: u32, page_size: usize, parent: Parent) -> bool {
     let cap = capacity(node);
     storage::kind(node) == PageKind::FreeSpaceMap as u16
@@ -576,6 +577,7 @@ impl Space {
         Ok(found)
     }
 
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     fn check_node<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -708,6 +710,7 @@ impl Space {
     }
 
     /// Returns whether the header of `page` names a heap kind, the space's owner and `position`.
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     fn claims(&self, page: &[u8], position: u32) -> bool {
         page::has_heap_kind(page)
             && storage::owner(page) == self.owner

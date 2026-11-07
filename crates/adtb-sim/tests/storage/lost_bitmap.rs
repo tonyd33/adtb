@@ -67,6 +67,7 @@ fn insert_users(db: &Database<SimRuntime>, ids: std::ops::Range<i64>, name: &str
     }
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn fill_first_group(db: &Database<SimRuntime>) {
     db.write_path()
         .pager()
@@ -74,6 +75,7 @@ fn fill_first_group(db: &Database<SimRuntime>) {
         .unwrap();
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn first_users_page(db: &Database<SimRuntime>) -> Pid {
     let w = db.write_path();
     w.heap_named("app::users", "User")
@@ -153,6 +155,7 @@ struct Kept {
 }
 
 impl Kept {
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     fn may_change(&self, page: Pid, bytes: &[u8]) -> bool {
         let kind = storage::kind(bytes);
         let owner = storage::owner(bytes);
@@ -166,6 +169,7 @@ impl Kept {
 
     /// Assert every byte of every page of `before` stands in `after`, leaving out the header copies,
     /// the marks page, the damage list and the pages `may_change` names.
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     fn check(&self, before: &Files, after: &Files, what: &str) {
         let (a, b) = (&before[FILE], &after[FILE]);
         assert!(b.len() >= a.len(), "{what}: the file shrank");
@@ -186,6 +190,7 @@ impl Kept {
 
 /// Run `body` on an open of `files`, and assert it changed no page beyond `writes`. Returns the
 /// files it left.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn damaged_writing(
     files: &Files,
     writes: Writes,
@@ -221,6 +226,7 @@ fn damaged_run(files: &Files, what: &str, body: impl FnOnce(&Database<SimRuntime
 }
 
 /// Assert a write finds the lost bitmap, marks the database, and every call then fails.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn assert_all_refused_as_database(db: &Database<SimRuntime>, what: &str) {
     assert_quarantined(&text(db, INSERT_OTHER), what);
     assert_eq!(
@@ -232,6 +238,7 @@ fn assert_all_refused_as_database(db: &Database<SimRuntime>, what: &str) {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_cut_losing_a_group_with_large_values_refuses_marks_and_stays_marked() {
     adtb_heap_cap::raise_cap(3 << 30);
     let row = "l".repeat(3 * PAGE);
@@ -257,6 +264,7 @@ fn a_cut_losing_a_group_with_large_values_refuses_marks_and_stays_marked() {
 
 /// Returns the files of a database with five users, whose last four commit on a status page lying
 /// in the second group, and that page.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn commits_on_a_status_page_in_group_one() -> (Files, Pid) {
     let mut sim = Sim::new(1, Config::default());
     let mut status = None;
@@ -287,6 +295,7 @@ fn commits_on_a_status_page_in_group_one() -> (Files, Pid) {
     (sim.files(), status)
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn assert_committed_rows_never_read_as_aborted(files: &Files, what: &str) {
     damaged_run(files, what, |db| {
         assert_quarantined(&text(db, SELECT), what);
@@ -320,6 +329,7 @@ fn a_bitmap_zeroed_in_place_refuses_and_overwrites_nothing() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn every_allocator_path_refuses_a_zeroed_bitmap() {
     let (files, page) = one_group("a", first_users_page);
     let at = Pid::FIRST_DATA.0 as usize * PAGE;
@@ -352,6 +362,7 @@ fn every_allocator_path_refuses_a_zeroed_bitmap() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_zeroed_directory_root_refuses_a_first_insert_and_marks_the_heap() {
     let (files, root) = one_group("a", |db| {
         let w = db.write_path();
@@ -374,6 +385,7 @@ fn a_zeroed_directory_root_refuses_a_first_insert_and_marks_the_heap() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_zeroed_large_store_page_refuses_vacuum_and_marks() {
     let row = "l".repeat(3 * PAGE);
     let (files, page) = one_group(&row, |db| {
@@ -394,6 +406,7 @@ fn a_zeroed_large_store_page_refuses_vacuum_and_marks() {
     });
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn index_page(root: bool) -> (Files, (Pid, Quarantine)) {
     one_group("a", |db| {
         let w = db.write_path();
@@ -408,6 +421,7 @@ fn index_page(root: bool) -> (Files, (Pid, Quarantine)) {
     })
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn assert_index_page_refused(root: bool, query: &str) {
     let (files, (page, mark)) = index_page(root);
     let files = zeroed(&files, page);
@@ -427,6 +441,7 @@ fn a_zeroed_index_root_refuses_a_probe_and_an_insert() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn zeroed_index_leaves_refuse_an_insert_that_latches_one() {
     let mut sim = Sim::new(1, Config::default());
     let mut leaves = Vec::new();
@@ -461,6 +476,7 @@ fn zeroed_index_leaves_refuse_an_insert_that_latches_one() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_migration_over_a_zeroed_bitmap_opens_for_verify_only() {
     const MORE: &str = "module more\nadd module more\nadd type T = { id: Key ts }\nadd relation ts : T key id generate sequence\n";
     let (files, ()) = one_group("a", |_| ());
@@ -480,6 +496,7 @@ fn a_migration_over_a_zeroed_bitmap_opens_for_verify_only() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_visibility_map_root_zeroed_refuses_vacuum_and_marks_the_heap() {
     let (files, (page, mark)) = one_group("a", |db| {
         let w = db.write_path();
@@ -523,6 +540,7 @@ fn before_the_group_count(files: &Files, page: usize) -> Files {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_file_before_the_count_opens_healthy_and_gains_it() {
     let (files, ()) = one_group("a", |_| ());
     let old = before_the_group_count(&files, PAGE);
@@ -549,6 +567,7 @@ fn a_file_before_the_count_refuses_a_zeroed_bitmap_inside_it() {
 
 /// Zero the page `pick` chooses, and assert the open neither panics nor answers: it marks the
 /// database, keeps every page, and leaves `verify`.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn assert_open_refuses(what: &str, pick: impl FnOnce(&Database<SimRuntime>) -> Pid) {
     let (files, page) = one_group("a", pick);
     let files = zeroed(&files, page);
@@ -567,11 +586,13 @@ fn assert_open_refuses(what: &str, pick: impl FnOnce(&Database<SimRuntime>) -> P
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_zeroed_commit_log_root_refuses_the_open_for_verify_only() {
     assert_open_refuses("clog root", |db| db.write_path().txns().commit_log().root());
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_zeroed_commit_log_directory_refuses_the_open_for_verify_only() {
     assert_open_refuses("clog directory", |db| {
         db.write_path().txns().commit_log().directory_pages()[0]
@@ -579,11 +600,13 @@ fn a_zeroed_commit_log_directory_refuses_the_open_for_verify_only() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_zeroed_counter_page_refuses_the_open() {
     assert_open_refuses("counters", |db| db.write_path().sequences_root());
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_zeroed_first_status_page_refuses_the_open() {
     assert_open_refuses("status", |db| {
         db.write_path().txns().commit_log().status_pages()[&0]
@@ -591,6 +614,7 @@ fn a_zeroed_first_status_page_refuses_the_open() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_zeroed_status_page_below_the_resolved_ids_refuses_the_open() {
     assert_open_refuses("resolved status", |db| {
         let w = db.write_path();
@@ -850,6 +874,7 @@ fn no_crash_while_crossing_a_group_refuses_a_healthy_file() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_page_vacuum_frees_and_another_heap_reuses_under_a_reader_is_not_refused() {
     let mut sim = Sim::new(1, Config::default());
     finished(&mut sim, |rt| {
@@ -903,6 +928,7 @@ fn rows_or_panic(db: &Database<SimRuntime>, query: &str, seed: u64) -> Vec<Strin
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn lookups_racing_a_vacuum_that_frees_slots_of_a_page_it_keeps_are_not_refused() {
     let seeds = sweep(0..8);
     let mut ran = 0;

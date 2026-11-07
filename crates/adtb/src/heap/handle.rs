@@ -309,6 +309,7 @@ impl Heap {
     }
 
     /// Returns the row format, flags and bytes of the version at `tid`, if a version is there.
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     fn raw<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -370,6 +371,7 @@ impl Heap {
     }
 
     /// Returns the pointers the version at `tid` holds, if a version of this heap is there.
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     pub fn pointers_at<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -446,6 +448,7 @@ impl Heap {
         Ok(())
     }
 
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     fn holds_page(&self, page: &[u8]) -> bool {
         page::is_heap(page) && storage::owner(page) == self.id
     }
@@ -554,6 +557,7 @@ impl Heap {
     /// Returns `page` with every version on it in the newest format, at the same slots, with the
     /// pointers the versions gained and dropped, or `None` if they would not fit. Values that move
     /// out of line are written by `xid`.
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     fn convert<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -606,6 +610,7 @@ impl Heap {
 
     /// Returns whether `page`, read under a latch as page `pid`, is a page of this heap that its
     /// directory names.
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     fn ours<R: Runtime>(&self, pager: &Pager<R>, pid: Pid, page: &[u8]) -> Result<bool, PageError> {
         if !page::is_heap(page) || storage::owner(page) != self.id {
             return Ok(false);
@@ -616,6 +621,7 @@ impl Heap {
     /// Returns page `pid` converted to the newest format, the values that move out of line written
     /// by `xid` while no page is latched, or `None` if the page is in the newest format, is not a
     /// page of this heap, or its versions would not fit.
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     fn preconvert<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -809,6 +815,7 @@ impl Heap {
 
     /// Returns whether `tid` names a slot of this heap holding a version, a dead mark or a
     /// redirect.
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     pub fn holds<R: Runtime>(&self, pager: &Pager<R>, tid: Tid) -> Result<bool, PageError> {
         let page = pager.read(Pid(tid.page()))?;
         Ok(page::is_heap(&page)
@@ -1012,6 +1019,7 @@ impl Heap {
 
     /// Flag the version `v` names kept on its page in `stage`. Returns false, changing nothing,
     /// when the page no longer holds a version there written as `v.header` says.
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     fn mark_kept<'p, R: Runtime>(
         &self,
         stage: &mut Stage<'p, R>,
@@ -1307,6 +1315,7 @@ impl Heap {
 
     /// Returns each page of the heap, its directory or its visibility map found wrong, with what
     /// is wrong with it, leaving out [`Heap::unsettled`] directory entries.
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     pub fn check<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<(Pid, String)>, PageError> {
         let check = self.space.check(pager)?;
         let mut problems = check.problems;
@@ -1426,6 +1435,7 @@ impl Heap {
 /// wrong heap: the first must be in `heap`, the successor of a moved version in another heap of
 /// `sum` and flagged retagged in, and any other successor in its predecessor's heap. The
 /// versions of one stretch of the chain on one page are read from one copy of that page.
+#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 pub fn walk<R: Runtime>(
     pager: &Pager<R>,
     heap: HeapNo,

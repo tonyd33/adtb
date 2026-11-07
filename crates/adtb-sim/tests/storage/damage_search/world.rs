@@ -263,6 +263,7 @@ pub fn is_data(path: Option<&str>) -> bool {
 
 /// Returns whether `op` is a write of whole pages to the data file, recording it in `trace` when
 /// it is.
+#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 pub fn write_out(trace: &Traced, op: &IoOp, path: Option<&str>) -> bool {
     let IoOp::Write { offset, buf, .. } = op else {
         return false;
@@ -370,6 +371,7 @@ fn applies<R: Runtime>(db: &Database<R>, version: u8) -> bool {
 }
 
 /// Returns whether the page of marks `db` writes holds the whole database's mark.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn durably_whole<R: Runtime>(db: &Database<R>) -> bool {
     const DATABASE: u32 = 1;
     let pager = db.write_path().pager();
@@ -389,6 +391,7 @@ fn durably_whole<R: Runtime>(db: &Database<R>) -> bool {
 
 /// Returns whether `db` holds a mark on the whole database, under which an open applies no
 /// migration.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn marked_whole<R: Runtime>(db: &Database<R>) -> bool {
     db.write_path()
         .pager()
@@ -401,6 +404,7 @@ pub fn present(rel: Rel, version: u8) -> bool {
     rel != Rel::Tags || version == 1
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn holdings<R: Runtime>(db: &Database<R>, version: u8) -> Holdings {
     let w = db.write_path();
     let mut out = Holdings::new();
@@ -437,6 +441,7 @@ fn holdings<R: Runtime>(db: &Database<R>, version: u8) -> Holdings {
 }
 
 /// Add the owners of the relations of `db` at schema `version` to `out`.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn ids<R: Runtime>(db: &Database<R>, version: u8, out: &mut Ids) {
     let w = db.write_path();
     for rel in RELS.into_iter().filter(|r| present(*r, version)) {
@@ -551,6 +556,7 @@ impl Runner<'_> {
 
     /// Run the operations from `next` up to the next crash or the end on one process. Returns
     /// whether every one ran.
+    #[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
     fn process(&mut self, hook: &Hooked) -> bool {
         let Some(mut db) = self.open(hook.clone(), self.acked.version) else {
             return false;
@@ -655,6 +661,7 @@ impl Runner<'_> {
         }
     }
 
+    #[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
     fn damage<R: Runtime>(&mut self, db: &Database<R>, i: usize) {
         let note = value(Rel::Scraps, i as i64, 0);
         let text = format!(r#"insert scraps {{ id: scraps.key({i}), note: "{note}" }}"#);
@@ -676,6 +683,7 @@ impl Runner<'_> {
     }
 
     /// Change rows of `users` until the log has grown by three segments, then recycle it.
+    #[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
     fn recycle<R: Runtime>(&mut self, db: &Database<R>, i: usize) {
         let pager = db.write_path().pager();
         let start = pager.appended().0;

@@ -75,6 +75,7 @@ fn chunk_at(page: &[u8], owner: u32, slot: usize) -> Option<Chunk> {
 
 /// Returns the chunk tuple in slot `slot` of `page`, if it is a page of store `owner` with a
 /// chunk there.
+#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 fn tuple_at(page: &[u8], owner: u32, slot: usize) -> Option<&[u8]> {
     if !page::is_heap(page) || storage::owner(page) != owner {
         return None;
@@ -182,6 +183,7 @@ impl LargeStore {
     }
 
     /// Insert `tuple` on some page, making the chunk at `tail` a tail in the same update.
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     fn insert<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -501,6 +503,7 @@ impl LargeStore {
     }
 
     /// Unmark touched page `pid` at `position` if it holds no head of count 0.
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     fn settle<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -667,6 +670,7 @@ impl LargeStore {
 
     /// Returns each page of the store found wrong, with what is wrong with it, leaving out
     /// [`LargeStore::unsettled`] directory entries.
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     pub fn check<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<(Pid, String)>, PageError> {
         let check = self.space.check(pager)?;
         let mut problems = check.problems;

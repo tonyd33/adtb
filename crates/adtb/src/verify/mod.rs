@@ -548,6 +548,7 @@ pub fn verify_with<R: Runtime>(pager: &Pager<R>, inventory: &Inventory, depth: D
 /// write since.
 ///
 /// Panics if `report` is not complete.
+#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 pub fn repair<R: Runtime>(
     pager: &Pager<R>,
     inventory: &Inventory,

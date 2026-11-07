@@ -86,6 +86,7 @@ fn timed(io: f64, cpu: f64) -> Duration {
 
 /// Returns what the pacer was charged by `vacuum items` of `wide` at a budget of 0.1, beside a
 /// scrub pass when `scrubbing`, and the time from its first step to the end.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn shared(scrubbing: bool) -> (Charged, Duration) {
     api::once(5, |rt| {
         let db = wide(&rt);
@@ -297,6 +298,7 @@ fn chunks(rows: &[String]) -> i64 {
 
 /// Returns the simulated time `vacuum items` of `db` takes at a budget of 1.0, its rows, and what
 /// the pacer was charged.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn stepped(rt: &SimRuntime, db: &Database<SimRuntime>) -> (Duration, Vec<String>, Charged) {
     budget(db, 1.0, 1.0);
     let began = rt.now();
@@ -350,6 +352,7 @@ fn no_step_of_a_vacuum_expiring_history_runs_longer_than_one_unit_of_work() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_long_wait_at_a_budget_of_0_opens_no_io_queue_per_sleep() {
     api::once(9, |rt| {
         let db = open(&rt);
@@ -389,6 +392,7 @@ fn a_long_wait_at_a_budget_of_0_opens_no_io_queue_per_sleep() {
 
 /// Returns the steps the pacer was charged by `vacuum items` of a relation of `ctors`
 /// constructors over the same rows, with a second index when `second`.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn steps(ctors: usize, second: bool) -> u64 {
     let names: Vec<String> = (0..ctors)
         .map(|c| format!("C{c} {{ f{c}: I64 }}"))
@@ -444,6 +448,7 @@ fn a_vacuum_walks_each_index_of_a_relation_once() {
 /// Run `vacuum items` of `wide_as(retained)` at a budget of 0.5, cancelled, or the database
 /// closed when `close`, once the pacer has been charged `at` steps when given. Returns the steps
 /// charged by then, the I/O queues the vacuum opened and what it returned.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn cancelled(retained: bool, at: Option<u64>, close: bool) -> (u64, usize, Result<(), Error>) {
     api::once(13, |rt| {
         let db = wide_as(&rt, false, retained);

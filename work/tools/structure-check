@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# structure-check [DIR]   fail when, in the repository at DIR (default this one), a counted
+#                         structure pattern occurs in a file more often than work/tools/structure-allowlist
+#                         allows, or the allowlist allows more than occurs. Counts only fall: lower the
+#                         allowlist line when a restructure removes sites, and delete it at 0.
+# structure-check --against REV [DIR]   fail when the allowlist holds a count above the one the
+#                         allowlist at revision REV holds (none counts as 0); passes when REV has no allowlist
+# structure-check --counts [DIR]   print the allowlist lines for the counts found
+#
+# The rows, their rules and the allowlist format are in the header of structure-allowlist. This
+# tool owns the patterns; no other tool counts them. Field rows come from the adtb-structure
+# binary, which parses the sources; the other rows are text matches.
+set -euo pipefail
+
+mode=check
+against=
+case ${1:-} in
+  --counts)
+    mode=counts
+    shift
+    ;;
+  --against)
+    mode=against
+    against=${2:?usage: structure-check --against REV [DIR]}
+    shift 2
+    ;;
+esac
+tools_root=$(cd "$(dirname "$0")/../.." && pwd)
+cd "${1:-$tools_root}"
+allowlist=work/tools/structure-allowlist
+
+roots=()
+for dir in crates apps; do
+  [[ ! -d $dir ]] || roots+=("$dir")
+done
+
+# Print `ROW PATH COUNT` for each file under the roots with matches of pattern $2, outside the globs $3...
+count() {
+  local row=$1 pattern=$2 glob out
+  local -a args=(--no-ignore --count-matches --no-heading -g '*.rs' -g '!**/target/**')
+  shift 2
+  for glob in "$@"; do
+    args+=(-g "!$glob")
+  done
+  ((${#roots[@]})) || return 0
+  out=$(rg "${args[@]}" -- "$pattern" "${roots[@]}" || [[ $? == 1 ]])
+  awk -F: -v row="$row" 'NF { print row, $1, $2 }' <<<"$out"
+}
+
+# Print `ROW PATH COUNT` of the field rows, for files in src directories.
+fields() {
+  ((${#roots[@]})) || return 0
+  cargo run --quiet --locked --offline --manifest-path "$tools_root/Cargo.toml" -p adtb-structure -- "${roots[@]}" |
+    awk '$2 ~ /^(crates|apps)\/[^\/]+\/src\//'
+}
+
+# Print the lines `ROW KIND COUNT FILE`, test files apart from production ones.
+found_counts() {
+  {
+    fields
+    count xmin_xmax '\.(xmin|xmax)\b' 'crates/adtb/src/mvcc/**'
+    count disallowed_methods 'clippy::disallowed_methods'
+  } | awk '
+    { kind = ($2 ~ /(^|\/)tests\// || $2 ~ /(^|\/)tests\.rs$/ || $2 ~ /_tests\.rs$/) ? "test" : "prod"
+      print $1, kind, $3, $2 }'
+}
+
+if [[ $mode == counts ]]; then
+  found=$(found_counts)
+  LC_ALL=C sort -k1,1 -k4 <<<"$found"
+  exit 0
+fi
+
+[[ -f $allowlist ]] || { echo "structure-check: no $allowlist" >&2; exit 1; }
+
+if [[ $mode == against ]]; then
+  old=$(jj --ignore-working-copy --color=never file show -r "$against" "$allowlist" 2>/dev/null) || exit 0
+  awk -v old="$old" '
+    function note(msg) { print "structure-check: " msg; bad = 1 }
+    BEGIN {
+      n = split(old, lines, "\n")
+      for (i = 1; i <= n; i++) {
+        if (lines[i] ~ /^[[:space:]]*(#|$)/) continue
+        split(lines[i], f, " ")
+        was[f[1] " " f[2] " " f[4]] = f[3]
+      }
+    }
+    /^[[:space:]]*(#|$)/ { next }
+    {
+      key = $1 " " $2 " " $4
+      before = (key in was) ? was[key] : 0
+      if ($3 > before)
+        note(key " allows " $3 ", the allowlist at the base allows " before ": a rise is the lead'"'"'s act on main")
+    }
+    END { exit bad }' "$allowlist" | LC_ALL=C sort
+  exit 0
+fi
+
+found=$(found_counts)
+
+awk -v list="$allowlist" '
+  function note(msg) { print "structure-check: " msg; bad = 1 }
+  BEGIN {
+    split("crate_fields pub_fields xmin_xmax disallowed_methods", names, " ")
+    for (i in names) row[names[i]] = 1
+    while ((getline line < list) > 0) {
+      if (line ~ /^[[:space:]]*(#|$)/) continue
+      n = split(line, f, " ")
+      key = f[1] " " f[2] " " f[4]
+      if (n != 4 || !(f[1] in row) || f[2] !~ /^(prod|test)$/ || f[3] !~ /^[0-9]+$/ || f[3] == 0)
+        note(list ": bad line: " line)
+      else if (key in allowed) note(list ": " key " listed twice")
+      else allowed[key] = f[3]
+    }
+  }
+  { key = $1 " " $2 " " $4; actual[key] = $3 }
+  END {
+    for (key in actual) {
+      have = actual[key]; want = (key in allowed) ? allowed[key] : 0
+      if (have > want)
+        note(key " has " have ", allowed " want ": remove the sites, do not raise the allowlist")
+    }
+    for (key in allowed) {
+      have = (key in actual) ? actual[key] : 0
+      if (have < allowed[key])
+        note(key " has " have ", allowed " allowed[key] ": stale, " (have ? "lower the allowlist line to " have : "delete the allowlist line"))
+    }
+    exit bad
+  }' <<<"$found" | LC_ALL=C sort

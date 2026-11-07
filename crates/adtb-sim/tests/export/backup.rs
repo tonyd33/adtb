@@ -174,6 +174,7 @@ fn file_with_rows(rows: i64) -> Files {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn backup_under_writers_restores_every_commit_acked_before_start_and_none_after_end() {
     for seed in sweep(0..2) {
         let acked: Arc<Mutex<Vec<(i64, Position)>>> = Arc::default();
@@ -218,6 +219,7 @@ fn backup_under_writers_restores_every_commit_acked_before_start_and_none_after_
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn restored_equals_ledger_at_end_position() {
     let mut sim = Sim::new(5, Config::default());
     let mut ledger = BTreeMap::new();
@@ -252,6 +254,7 @@ fn restored_equals_ledger_at_end_position() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn restored_verify_clean_all_checks() {
     let mut sim = Sim::with_files(6, Config::default(), backed_up(40));
     api::run(&mut sim, |rt| {
@@ -289,6 +292,7 @@ fn prove_reads_the_schema_from_the_file_without_the_callers_log() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn commits_not_blocked_during_backup() {
     let mut sim = Sim::new(7, Config::default());
     api::run(&mut sim, |rt| {
@@ -307,6 +311,7 @@ fn commits_not_blocked_during_backup() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn page_torn_mid_copy_retried_under_latch() {
     let mut sim = Sim::new(8, Config::default());
     let mut torn = 0;
@@ -333,6 +338,7 @@ fn page_torn_mid_copy_retried_under_latch() {
 
 /// Flip a byte of the first page of `users` in `files`, past every full-page image the next open
 /// replays, and return the page.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn rot_users_page(files: &mut Files) -> Pid {
     let mut sim = Sim::with_files(9, Config::default(), files.clone());
     let pid = api::run(&mut sim, |rt| {
@@ -372,6 +378,7 @@ fn rotted_page_listed_in_manifest_and_proof_failed() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn header_names_backup_checkpoint_not_later_one() {
     let mut sim = Sim::new(11, Config::default());
     let mut got = None;
@@ -410,6 +417,7 @@ fn header_names_backup_checkpoint_not_later_one() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn page_allocated_after_copy_rebuilt_from_log() {
     let mut sim = Sim::new(12, Config::default());
     let big = "x".repeat(2000);
@@ -640,6 +648,7 @@ fn restore_bumps_epoch_and_commit_continues() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn old_position_past_end_refused() {
     let mut sim = Sim::new(21, Config::default());
     api::run(&mut sim, |rt| {
@@ -823,6 +832,7 @@ fn a_role_backs_up_inside_the_export_roots() {
 
 /// A read-only check answers a log it cannot list as a finding, with no panic.
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_check_reports_a_log_it_cannot_read() {
     let mut sim = Sim::with_files(28, Config::default(), file_with_rows(2));
     api::run(&mut sim, |rt| {
@@ -848,6 +858,7 @@ fn a_check_reports_a_log_it_cannot_read() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn backup_of_quarantined_heap_lists_it() {
     api::once(27, |rt| {
         let db = open(rt);
@@ -865,6 +876,7 @@ fn backup_of_quarantined_heap_lists_it() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn backup_of_quarantined_database_refused() {
     api::once(28, |rt| {
         let db = open(rt);
@@ -922,6 +934,7 @@ add relation users : User key id generate sequence
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn cancel_leaves_no_manifest() {
     let mut sim = Sim::new(30, Config::default());
     api::run(&mut sim, |rt| {
@@ -969,6 +982,7 @@ fn cancel_leaves_no_manifest() {
 /// Keep every commit acknowledged under checkpoints and page flushes of other threads across a
 /// crash.
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn first_checkpoint_under_live_writers_keeps_every_acked_commit() {
     for seed in sweep(40..42) {
         let acked: Arc<Mutex<Vec<i64>>> = Arc::default();
@@ -1446,6 +1460,7 @@ fn an_unreadable_page_is_listed() {
 
 /// Fail a proof of a backup with listed damage even when a host function is missing.
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn listed_damage_outranks_a_missing_function() {
     const LOG: &str = r#"module app
 add module app
@@ -1595,6 +1610,7 @@ fn early_returns_close_their_files() {
 /// Keep the epochs a header holds, forget the oldest past its capacity, and refuse an epoch it never
 /// held.
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn history_truncates_at_capacity() {
     let files = resealed(backed_up(1), |body| {
         let lines: String = (1..=storage::HISTORY_CAPACITY as u64)
@@ -2257,6 +2273,7 @@ fn a_backup_crashed_anywhere() {
 /// Start a second backup to one target at each op of a first: one wins, whole, and the loser leaves
 /// nothing.
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn two_backups_to_one_target() {
     let workload = |hook: &Hooked, at: Option<u64>| {
         let db = Database::open_in(hook.clone(), FILE, &Log::new([APP]), &no_create()).unwrap();

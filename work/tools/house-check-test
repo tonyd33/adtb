@@ -84,6 +84,13 @@ fn unchanged() {}
     reason = "goes when the body splits"
 )]
 fn added() {}
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
+fn owned() {}
+#[expect(
+    clippy::disallowed_methods,
+    reason = "until testing and heap owners"
+)]
+fn owned_twice() {}
 RS
 mkdir -p work/tools
 printf '%s\n' 'crates/a/src/big.rs' >work/tools/size-allowlist

@@ -111,6 +111,7 @@ impl Target {
     const ALL: [Target; 3] = [Target::UsersHeap, Target::LargeStore, Target::UsersPage];
 
     /// Returns the target page and the page of the others heap standing for it, of another owner.
+    #[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
     fn pages(self, db: &Database<SimRuntime>) -> (Pid, Pid) {
         let w = db.write_path();
         let users = w.heap_named("app::users", "User").unwrap();
@@ -169,6 +170,7 @@ impl Replacement {
     }
 
     /// Overwrite the page of `target` in `db` in place with this replacement.
+    #[expect(clippy::disallowed_methods, reason = "until testing and heap owners")]
     fn apply(self, db: &Database<SimRuntime>, target: Target) {
         let (pid, others) = target.pages(db);
         let pager = db.write_path().pager();
@@ -224,6 +226,7 @@ impl Op {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_large_insert_after_its_directory_page_is_freed_refuses_in_bounded_time() {
     let what = "freed large directory".to_owned();
     bounded(&fixture(), what.clone(), move |db| {
@@ -302,6 +305,7 @@ fn point(pager: &Pager<SimRuntime>, dir: Pid, from: Pid, to: Pid) {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn an_entry_naming_a_foreign_page_quarantines_only_the_heap_of_its_directory() {
     let foreigns = [
         "another heap's page",
@@ -333,6 +337,7 @@ fn an_entry_naming_a_foreign_page_quarantines_only_the_heap_of_its_directory() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_read_over_an_entry_naming_a_large_value_or_map_page_blames_its_directory_page() {
     let mut cases = 0;
     for foreign in ["a large-value page", "another heap's map page"] {
@@ -366,6 +371,7 @@ fn a_read_over_an_entry_naming_a_large_value_or_map_page_blames_its_directory_pa
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn an_index_entry_outliving_its_page_refuses_the_index() {
     let what = "an index entry outliving its page".to_owned();
     bounded(&fixture(), what.clone(), move |db| {

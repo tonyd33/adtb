@@ -75,6 +75,7 @@ fn seeded_sim<T>(seed: u64, pick: impl FnOnce(&Database<SimRuntime>) -> T) -> (S
     (sim, picked)
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn last_status_page(db: &Database<SimRuntime>) -> Pid {
     *db.write_path()
         .txns()
@@ -86,6 +87,7 @@ fn last_status_page(db: &Database<SimRuntime>) -> Pid {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_file_quarantined_whole_dumps_and_restores_every_row() {
     let mut sim = Sim::new(1, Config::default());
     let rows = api::run(&mut sim, |rt| {
@@ -133,6 +135,7 @@ fn a_file_quarantined_whole_dumps_and_restores_every_row() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_damaged_heap_page_fails_the_dump_of_a_file_quarantined_whole() {
     let (mut sim, square) = seeded_sim(2, |db| {
         let w = db.write_path();
@@ -166,6 +169,7 @@ fn a_damaged_commit_log_fails_the_dump_that_meets_it() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_quarantined_heap_fails_the_dump_and_a_quarantined_index_does_not() {
     let (mut sim, ()) = seeded_sim(4, |db| {
         let w = db.write_path();
@@ -197,6 +201,7 @@ fn rewritten(seed: u64, sim: &Sim, page: Pid, from: Option<&Sim>) -> Sim {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_file_whose_catalog_cannot_be_read_refuses_the_dump() {
     let (sim, root) = seeded_sim(5, |db| db.write_path().pager().catalog_root());
     let mut sim = rewritten(5, &sim, root, None);
@@ -208,6 +213,7 @@ fn a_file_whose_catalog_cannot_be_read_refuses_the_dump() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_damaged_page_of_the_deployment_facts_fails_the_dump_as_storage_and_marks_nothing() {
     let (mut sim, ()) = seeded_sim(6, |_| ());
     let mut roots = None;
@@ -240,6 +246,7 @@ fn a_damaged_page_of_the_deployment_facts_fails_the_dump_as_storage_and_marks_no
 /// A change to a page the schema or row visibility is read from. Returns the page.
 type Change = fn(&Database<SimRuntime>) -> Pid;
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 const CHANGES: [Change; 2] = [
     |db| {
         api::results(db, "insert users { name: \"cy\" }");
@@ -254,6 +261,7 @@ const CHANGES: [Change; 2] = [
 ];
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_lost_write_to_the_commit_log_or_catalog_refuses_the_dump_of_a_file_quarantined_whole() {
     for (n, change) in CHANGES.into_iter().enumerate() {
         let (mut sim, ()) = seeded_sim(7, |_| ());

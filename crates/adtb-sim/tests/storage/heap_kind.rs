@@ -78,6 +78,7 @@ fn page_mut(files: &mut Files, pid: Pid) -> &mut [u8] {
 }
 
 /// Returns the TID, header and flags of every version of `t`'s heap.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn headers(db: &Database<SimRuntime>, t: Target) -> String {
     let w = db.write_path();
     let heap = w.heap_named("app::identities", t.ctor).unwrap();
@@ -85,6 +86,7 @@ fn headers(db: &Database<SimRuntime>, t: Target) -> String {
 }
 
 impl Fixture {
+    #[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
     fn new() -> Fixture {
         let mut sim = Sim::new(SEED, Config::default());
         let long = format!(
@@ -127,6 +129,7 @@ impl Fixture {
     /// Run `write` on the fixture with the first page of `t`'s heap replaced as `r` says, and
     /// assert it refuses as the heap quarantined, damaging only that page or, when `root`, only the
     /// directory's root, and leaves the page and the heap's versions unchanged.
+    #[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
     fn refuses(&self, t: Target, r: Replacement, form: &str, write: Write, root: bool) {
         let what = format!("{t:?} replaced by {r:?}, {form}");
         let pid = self.pages[t.ctor];

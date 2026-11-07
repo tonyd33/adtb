@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+checker=${1:-$(cd "$(dirname "$0")" && pwd)/structure-check}
+clippy_toml=$(cd "$(dirname "$0")/../.." && pwd)/clippy.toml
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+cd "$scratch"
+adtb=crates/adtb/src
+mkdir -p work/tools "$adtb/storage" "$adtb/mvcc" "$adtb/exec" crates/other/tests apps/app/src
+
+fail() {
+  printf 'structure-check-test: %s\n' "$1" >&2
+  exit 1
+}
+
+# Succeed when the checker, given the allowlist lines $@, passes; fail otherwise.
+passes() {
+  printf '%s\n' '# header' "$@" >work/tools/structure-allowlist
+  "$checker" "$scratch" >out.txt 2>&1 || fail "expected a pass, got: $(cat out.txt)"
+  [[ ! -s out.txt ]] || fail "a pass printed: $(cat out.txt)"
+}
+
+# Require the checker to fail with the whole output $1 for the allowlist lines $2....
+refuses() {
+  local want=$1
+  shift
+  printf '%s\n' '# header' "$@" >work/tools/structure-allowlist
+  if "$checker" "$scratch" >out.txt 2>&1; then
+    fail "expected a refusal, got a pass for: $*"
+  fi
+  [[ $(cat out.txt) == "$want" ]] || fail "expected '$want', got: $(cat out.txt)"
+}
+
+# Named, tuple, split, attributed and raw-identifier fields count; a macro's fields, pub(self)
+# fields and fields outside src directories do not.
+cat >"$adtb/exec/a.rs" <<'RS'
+pub struct A {
+    pub a: u32,
+    pub(crate) b: u32,
+    pub(super) c: u32,
+    pub(in crate::x) e: u32,
+    pub(self) f: u32,
+    d: u32,
+    #[doc = "x"] pub(crate) g: u32,
+    pub(crate)
+    h:
+        Vec<u8>,
+    pub r#type: u8,
+}
+pub struct T(pub(crate) Inner, pub u8, u8);
+union U {
+    pub z: u32,
+}
+macro_rules! fields {
+    ($f:ident) => {
+        struct M {
+            pub(crate) $f: u32,
+        }
+    };
+}
+fn f() {
+    let _ = x.meta();
+}
+RS
+printf 'pub struct P {\n    pub z: u32,\n}\n' >crates/other/tests/main.rs
+printf 'pub struct Q {\n    pub(crate) z: u32,\n}\n' >apps/app/src/lib.rs
+printf 'fn h() { let _ = x.xmin + y.xmax; let H { xmin, xmax } = h; }\n' >"$adtb/exec/c.rs"
+printf 'fn k() { x.xmin; x.xmax; }\n' >"$adtb/mvcc/row.rs"
+printf '#[expect(clippy::disallowed_methods, reason = "r")]\nfn a() {}\n#[expect(\n    clippy::disallowed_methods,\n    reason = "r"\n)]\nfn b() {}\n' >"$adtb/exec/b.rs"
+printf '#![expect(clippy::disallowed_methods, reason = "r")]\n' >"$adtb/exec/b_tests.rs"
+
+exact=(
+  'crate_fields prod 1 apps/app/src/lib.rs'
+  'crate_fields prod 6 crates/adtb/src/exec/a.rs'
+  'disallowed_methods prod 2 crates/adtb/src/exec/b.rs'
+  'disallowed_methods test 1 crates/adtb/src/exec/b_tests.rs'
+  'pub_fields prod 4 crates/adtb/src/exec/a.rs'
+  'xmin_xmax prod 2 crates/adtb/src/exec/c.rs'
+)
+passes "${exact[@]}"
+
+# --counts prints the allowlist lines for the tree.
+[[ $("$checker" --counts "$scratch") == "$(printf '%s\n' "${exact[@]}")" ]] ||
+  fail "--counts printed: $("$checker" --counts "$scratch")"
+
+# A rise in a listed file fails, in each field row.
+printf 'pub struct B {\n    pub e: u32,\n}\n' >>"$adtb/exec/a.rs"
+refuses 'structure-check: pub_fields prod crates/adtb/src/exec/a.rs has 5, allowed 4: remove the sites, do not raise the allowlist' "${exact[@]}"
+printf 'pub struct B2(pub(super) u8);\n' >>"$adtb/exec/a.rs"
+sed -i 's/pub e: u32/e: u32/' "$adtb/exec/a.rs"
+refuses 'structure-check: crate_fields prod crates/adtb/src/exec/a.rs has 7, allowed 6: remove the sites, do not raise the allowlist' "${exact[@]}"
+sed -i '/^pub struct B2/d; /^pub struct B {/,/^}/d' "$adtb/exec/a.rs"
+passes "${exact[@]}"
+
+# A fall without an allowlist edit fails as stale; the lowered line passes; at 0 the line must go.
+sed -i '/#\[doc = "x"\]/d' "$adtb/exec/a.rs"
+refuses 'structure-check: crate_fields prod crates/adtb/src/exec/a.rs has 5, allowed 6: stale, lower the allowlist line to 5' "${exact[@]}"
+passes 'crate_fields prod 1 apps/app/src/lib.rs' 'crate_fields prod 5 crates/adtb/src/exec/a.rs' "${exact[@]:2}"
+printf 'fn q() {}\n' >apps/app/src/lib.rs
+refuses 'structure-check: crate_fields prod apps/app/src/lib.rs has 0, allowed 1: stale, delete the allowlist line' 'crate_fields prod 1 apps/app/src/lib.rs' 'crate_fields prod 5 crates/adtb/src/exec/a.rs' "${exact[@]:2}"
+passes 'crate_fields prod 5 crates/adtb/src/exec/a.rs' "${exact[@]:2}"
+
+# A site in a file with no line fails; a test file is counted against the test kind alone.
+printf 'pub struct C {\n    pub(crate) z: u32,\n}\n' >"$adtb/exec/new.rs"
+refuses 'structure-check: crate_fields prod crates/adtb/src/exec/new.rs has 1, allowed 0: remove the sites, do not raise the allowlist' 'crate_fields prod 5 crates/adtb/src/exec/a.rs' "${exact[@]:2}"
+rm "$adtb/exec/new.rs"
+printf '#![expect(clippy::disallowed_methods, reason = "r")]\n#[expect(clippy::disallowed_methods, reason = "r")]\nfn t() {}\n' >"$adtb/exec/b_tests.rs"
+refuses 'structure-check: disallowed_methods test crates/adtb/src/exec/b_tests.rs has 2, allowed 1: remove the sites, do not raise the allowlist' 'crate_fields prod 5 crates/adtb/src/exec/a.rs' "${exact[@]:2}"
+
+# A malformed allowlist line fails.
+printf '%s\n' 'meta prod many crates/adtb/src/exec/a.rs' >work/tools/structure-allowlist
+if "$checker" "$scratch" >out.txt 2>&1; then
+  fail "expected a refusal of a bad allowlist line"
+fi
+grep -qxF 'structure-check: work/tools/structure-allowlist: bad line: meta prod many crates/adtb/src/exec/a.rs' out.txt ||
+  fail "bad line not reported: $(cat out.txt)"
+
+# A count above the base revision's allowlist fails, however the tree stands.
+jj git init . >/dev/null 2>&1
+printf '%s\n' '# header' 'crate_fields prod 5 crates/adtb/src/exec/a.rs' 'pub_fields prod 4 crates/adtb/src/exec/a.rs' >work/tools/structure-allowlist
+jj file track --include-ignored work/tools/structure-allowlist >/dev/null 2>&1
+jj describe -m base >/dev/null 2>&1
+jj new >/dev/null 2>&1
+printf '%s\n' '# header' 'crate_fields prod 5 crates/adtb/src/exec/a.rs' 'pub_fields prod 3 crates/adtb/src/exec/a.rs' >work/tools/structure-allowlist
+"$checker" --against @- "$scratch" >out.txt 2>&1 || fail "a fall against the base refused: $(cat out.txt)"
+printf '%s\n' '# header' 'crate_fields prod 6 crates/adtb/src/exec/a.rs' 'pub_fields prod 3 crates/adtb/src/exec/a.rs' >work/tools/structure-allowlist
+if "$checker" --against @- "$scratch" >out.txt 2>&1; then
+  fail "a raised count passed against the base"
+fi
+[[ $(cat out.txt) == 'structure-check: crate_fields prod crates/adtb/src/exec/a.rs allows 6, the allowlist at the base allows 5: a rise is the lead'"'"'s act on main' ]] ||
+  fail "rise against the base: $(cat out.txt)"
+printf '%s\n' '# header' 'crate_fields prod 5 crates/adtb/src/exec/a.rs' 'pub_fields prod 3 crates/adtb/src/exec/a.rs' 'xmin_xmax prod 1 crates/adtb/src/exec/c.rs' >work/tools/structure-allowlist
+if "$checker" --against @- "$scratch" >out.txt 2>&1; then
+  fail "a new line passed against the base"
+fi
+grep -q 'xmin_xmax prod crates/adtb/src/exec/c.rs allows 1, the allowlist at the base allows 0' out.txt || fail "new line against the base: $(cat out.txt)"
+
+# clippy rejects a disallowed function imported by name, and the expect that allows it is counted.
+mkdir -p demo/src
+printf '[package]\nname = "demo"\nversion = "0.1.0"\nedition = "2024"\n[workspace]\n' >demo/Cargo.toml
+printf 'disallowed-methods = [{ path = "demo::storage::owner", reason = "use the pager" }]\n' >demo/clippy.toml
+printf 'pub mod storage {\n    pub fn owner(page: u32) -> u32 {\n        page\n    }\n}\npub mod user {\n    use crate::storage::owner;\n    pub fn f() -> u32 {\n        owner(1)\n    }\n}\n' >demo/src/lib.rs
+clippy() { (cd demo && CARGO_TARGET_DIR=$scratch/demo-target cargo clippy --offline --quiet -- -D warnings 2>&1); }
+if out=$(clippy); then
+  fail "clippy accepted an imported disallowed function"
+fi
+[[ $out == *'use of a disallowed method `demo::storage::owner`'* ]] || fail "clippy refused for another reason: $out"
+sed -i 's|^    pub fn f|    #[expect(clippy::disallowed_methods, reason = "r")]\n    pub fn f|' demo/src/lib.rs
+clippy || fail "the expect did not allow the imported function"
+mkdir -p crates/demo && cp demo/src/lib.rs crates/demo/lib.rs
+"$checker" --counts "$scratch" | grep -qx 'disallowed_methods prod 1 crates/demo/lib.rs' || fail "the expect was not counted"
+
+# The checked in clippy.toml rejects each owned item by path.
+for item in adtb::storage::page::owner adtb::storage::pager::Pager::meta adtb::api::Database::write_path; do
+  grep -qF "path = \"$item\"" "$clippy_toml" || fail "clippy.toml does not disallow $item"
+done
+printf 'structure-check cases passed\n'

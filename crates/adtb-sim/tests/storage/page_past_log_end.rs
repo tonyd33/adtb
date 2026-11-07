@@ -61,6 +61,7 @@ fn planted() -> (Files, Pid) {
 }
 
 /// Returns a closed file holding every `identities.Google` row on one page, and that page.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn built() -> (Files, Pid) {
     let mut sim = Sim::new(SEED, Config::default());
     let page = api::run(&mut sim, |rt| {
@@ -213,6 +214,7 @@ fn wrong(entry: &str, page: Pid, met: &Met, reported: Reported) -> Option<String
 
 /// Returns how each entry, run on the file `name` of `files`, departs from the spec for its
 /// damaged page `page`.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn sweep(files: &Files, name: &str, page: Pid, reported: Reported) -> Vec<String> {
     let at = page.0 as usize * PAGE;
     let bytes = files[name][at..at + PAGE].to_vec();
@@ -259,6 +261,7 @@ fn every_entry_refuses_or_reports_a_page_past_the_log_end_and_leaves_it_unchange
 /// Returns a file whose page of `identities.Google` `damage` changed, given the end of the log its
 /// next open recovers, backed up once the log passes that end and restored as `RESTORED`, and the
 /// page.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn restored(damage: fn(&mut Files, Pid, Lsn)) -> (Files, Pid) {
     let (mut files, page) = built();
     let end = recovered_end(&files);

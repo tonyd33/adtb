@@ -385,6 +385,7 @@ fn findings(db: &Database<SimRuntime>) -> Vec<String> {
 }
 
 /// Returns the index of `relation` of `clause`.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn index(db: &Database<SimRuntime>, relation: &str, clause: &str) -> Index {
     db.write_path()
         .index_named(relation, clause)
@@ -392,6 +393,7 @@ fn index(db: &Database<SimRuntime>, relation: &str, clause: &str) -> Index {
 }
 
 /// Returns the entry of `index` of key `key`.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn entry(db: &Database<SimRuntime>, index: &Index, key: Value) -> Entry {
     index
         .probe(db.write_path().pager(), &[key])
@@ -400,6 +402,7 @@ fn entry(db: &Database<SimRuntime>, index: &Index, key: Value) -> Entry {
 }
 
 /// Add an entry of key 1000 to `relation`'s key index, naming a slot that holds nothing.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn plant_orphan(db: &Database<SimRuntime>, relation: &str, ctor: &str) -> Entry {
     let pager = db.write_path().pager();
     let heap = db.write_path().heap_named(relation, ctor).unwrap();
@@ -416,6 +419,7 @@ fn plant_orphan(db: &Database<SimRuntime>, relation: &str, ctor: &str) -> Entry 
 }
 
 /// Commit what `f` writes beneath the checks of the write path, as one transaction.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn beneath(db: &Database<SimRuntime>, f: impl FnOnce(&Txn)) {
     let w = db.write_path();
     let tx = w.begin().unwrap();
@@ -424,6 +428,7 @@ fn beneath(db: &Database<SimRuntime>, f: impl FnOnce(&Txn)) {
 }
 
 /// Returns the first page of the heap of `users`.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn users_page(db: &Database<SimRuntime>) -> Pid {
     let w = db.write_path();
     let heap = w.heap_named("app::users", "User").unwrap();
@@ -544,6 +549,7 @@ fn a_lost_write_is_a_stale_page_finding() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_heap_page_that_lost_a_write_is_refused_on_its_first_read_and_marks_its_heap() {
     let (files, page, stale) = lost_users_write();
     let mut sim = Sim::with_files(43, Config::default(), files);
@@ -566,6 +572,7 @@ fn a_heap_page_that_lost_a_write_is_refused_on_its_first_read_and_marks_its_heap
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_directory_page_that_lost_the_write_freeing_a_page_is_refused_on_its_first_read() {
     let quiet = adtb::OpenOptions {
         no_background_vacuum: true,
@@ -660,6 +667,7 @@ fn a_page_past_the_log_end_is_an_unlogged_finding_of_its_relation() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_misordered_leaf_is_an_order_finding() {
     api::once(44, |rt| {
         let db = open_app(rt);
@@ -675,6 +683,7 @@ fn a_misordered_leaf_is_an_order_finding() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_dropped_entry_is_a_missing_finding() {
     api::once(45, |rt| {
         let db = open_app(rt);
@@ -689,6 +698,7 @@ fn a_dropped_entry_is_a_missing_finding() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn an_entry_of_a_constructor_outside_its_set_is_an_orphan_finding() {
     api::once(46, |rt| {
         let db = open_app(rt);
@@ -716,6 +726,7 @@ fn stray_ends(db: &Database<SimRuntime>, a: i64, b: i64) -> (Entry, Tid) {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_stray_next_to_a_version_that_is_not_heap_only_is_reported_with_no_false_missing() {
     api::once(146, |rt| {
         let db = open_app(rt);
@@ -732,6 +743,7 @@ fn a_stray_next_to_a_version_that_is_not_heap_only_is_reported_with_no_false_mis
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_stray_next_lets_no_orphan_pass_on_the_row_it_names() {
     api::once(147, |rt| {
         let db = open_app(rt);
@@ -758,6 +770,7 @@ fn a_stray_next_lets_no_orphan_pass_on_the_row_it_names() {
 
 /// Plant in the version of identity `from` a stray `next` to the heap-only successor of identity
 /// 5, and expect verify to report it and nothing else.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn stray_into_a_chain(seed: u64, from: i64) {
     api::once(seed, |rt| {
         let db = open_app(rt);
@@ -802,6 +815,7 @@ fn a_stray_next_into_an_earlier_chain_is_reported_with_no_false_missing() {
 
 /// Run the hot update of identity 5 and `other`, on identity 6, in one transaction. Then plant in
 /// the version of identity 6 a stray `next` to the heap-only successor of identity 5.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn stray_under_one_writer(db: &Database<SimRuntime>, other: &str) {
     let mut t = db.begin(&adtb::TxnOptions::default()).unwrap();
     api::in_txn_results(
@@ -873,6 +887,7 @@ fn a_stray_next_from_a_version_its_writer_updated_is_reported_with_the_row_it_cu
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_holding_run_reports_a_stray_across_writers_once() {
     api::once(152, |rt| {
         let db = open_app(rt);
@@ -957,6 +972,7 @@ fn an_entry_naming_an_empty_slot_is_an_orphan_finding() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn verify_is_refused_and_audited_for_a_role_when_a_violation_holds_a_witness() {
     api::once(49, |rt| {
         let db = open_app(rt.clone());
@@ -1000,6 +1016,7 @@ fn verify_is_refused_and_audited_for_a_role_when_a_violation_holds_a_witness() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_role_reading_what_the_constraint_reads_sees_the_witness() {
     api::once(65, |rt| {
         let grant = "module app\ngrant read users to dba\n";
@@ -1036,6 +1053,7 @@ fn a_role_reading_what_the_constraint_reads_sees_the_witness() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_witness_refused_on_a_marked_database_is_denied_with_no_audit_row() {
     api::once(64, |rt| {
         let db = open_app(rt.clone());
@@ -1070,6 +1088,7 @@ fn a_witness_refused_on_a_marked_database_is_denied_with_no_audit_row() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_row_beneath_the_constraint_check_is_a_violation_with_it_as_witness() {
     api::once(48, |rt| {
         let db = open_app(rt);
@@ -1103,6 +1122,7 @@ fn a_row_beneath_the_constraint_check_is_a_violation_with_it_as_witness() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_leaked_page_is_a_structure_finding_only_where_no_writer_can_exist() {
     api::once(49, |rt| {
         let db = open_app(rt);
@@ -1191,6 +1211,7 @@ fn with_writers(rt: &SimRuntime, db: &Database<SimRuntime>, body: impl FnOnce())
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_run_under_concurrent_writers_finds_nothing_when_nothing_is_wrong() {
     for seed in adtb_simkit::seeds::sweep(0..3) {
         stressed(seed, |rt| {
@@ -1223,6 +1244,7 @@ fn a_run_under_concurrent_writers_finds_exactly_the_one_fault_planted() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_run_replaces_only_the_findings_of_its_scope() {
     api::once(50, |rt| {
         let db = open_app(rt);
@@ -1243,6 +1265,7 @@ fn a_run_replaces_only_the_findings_of_its_scope() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn findings_survive_a_reopen_and_the_next_run_replaces_them() {
     let mut sim = Sim::new(51, Config::default());
     let (kept, orphan) = api::run(&mut sim, |rt| {
@@ -1606,6 +1629,7 @@ fn flip(files: &mut BTreeMap<String, Vec<u8>>, page: Pid) {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn verify_r_reports_only_the_pages_and_constraints_of_r() {
     let mut sim = Sim::new(64, Config::default());
     let page = api::run(&mut sim, |rt| {
@@ -1629,6 +1653,7 @@ fn verify_r_reports_only_the_pages_and_constraints_of_r() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn verify_r_runs_only_the_constraints_that_read_r() {
     api::once(65, |rt| {
         let db = open_app(rt);
@@ -1670,6 +1695,7 @@ add constraint joined =
 ";
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn verify_r_keeps_a_damaged_page_a_constraint_of_r_read() {
     let mut sim = Sim::new(66, Config::default());
     let open = |rt| Database::open_in(rt, NAME, &Log::new([JOINED]), &api::options(2)).unwrap();
@@ -1696,6 +1722,7 @@ fn verify_r_keeps_a_damaged_page_a_constraint_of_r_read() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_constraint_over_the_query_memory_is_a_structure_finding() {
     api::once(67, |rt| {
         let options = adtb::OpenOptions {
@@ -1795,6 +1822,7 @@ add relation identities : Identity key id generate sequence
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_fault_planted_in_each_kind_of_index_is_a_missing_finding() {
     for clause in [
         "index (lower(email))",
@@ -1993,6 +2021,7 @@ const LIVE_ROWS: i64 = 3_000;
 /// Returns each `Orphan` finding of a check of the indexes with vacuum running beside it, over
 /// many live rows and a dead one with the last key, whose slot vacuum frees while the check is
 /// on the rows before it.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn orphans_beside_vacuum(seed: u64) -> Vec<String> {
     let config = Config {
         switch_rate: 0.3,

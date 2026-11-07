@@ -67,6 +67,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns whether `page`, read under a latch as the bitmap page of group `g`, can serve as
     /// one: it is a bitmap page, or blank in a group no batch has started.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn map_is_sound(&self, page: &[u8], g: u64) -> bool {
         page::kind(page) == PageKind::AllocationBitmap as u16
             || g >= self.meta().groups && page.iter().all(|&b| b == 0)
@@ -87,6 +88,7 @@ impl<R: Runtime> Pager<R> {
     /// Count every group the file reaches into as started. Returns the pages the file holds.
     ///
     /// Preconditions: recovery has written every page the log holds.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(crate) fn count_file_groups(&self) -> u64 {
         let pages = self.file_pages();
         let group = pages.saturating_sub(1) / self.bitmap_span();
@@ -101,6 +103,7 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Preconditions: recovery has written every page the log holds and armed the read-in gate,
     /// and the file holds `pages`.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(crate) fn refuse_cut_pages(&self, pages: u64) {
         let span = self.bitmap_span();
         let group = pages.saturating_sub(1) / span;
@@ -160,6 +163,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns a free page no allocator or reservation holds, held as reserved. A page the device
     /// could not read is skipped.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn hold_free_page(&self) -> Result<Pid, PageError> {
         let span = self.bitmap_span();
         let mut state = self.alloc.lock(&self.rt);
@@ -262,6 +266,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Mark and format the pages of `new`, apply `f` to the pages under `guards`, and log all of
     /// it in one batch.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn allocating<'p, F>(
         &'p self,
         new: &Reservation<'_, R>,
@@ -410,6 +415,7 @@ impl<R: Runtime> Pager<R> {
     /// Returns the exclusive latch on `pid`, a free page a reservation holds, without reading the
     /// file: when not resident it is read in with `header` and zero contents, and no longer
     /// refused. The latch's drop undoes both unless an allocation of `pid` committed.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(crate) fn latch_reserved(&self, pid: Pid, header: &[u8]) -> PageExclusive<'_, R> {
         let mut g = self.mem.lock_exclusive(pid.0, &self.rt);
         self.check_bound();
@@ -528,6 +534,7 @@ impl<'a, R: Runtime> Reservation<'a, R> {
 impl<R: Runtime> Drop for PageExclusive<'_, R> {
     /// Evict a reservation's blank frame no allocation committed, and refuse the page again as
     /// before it.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn drop(&mut self) {
         let Some(g) = self.g.take().filter(|_| self.blank) else {
             return;
@@ -548,6 +555,7 @@ impl<R: Runtime> Drop for PageExclusive<'_, R> {
 }
 
 impl<R: Runtime> Drop for Reservation<'_, R> {
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn drop(&mut self) {
         let mut m = self.pager.meta();
         for r in &self.pages {

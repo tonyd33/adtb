@@ -294,6 +294,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns every damage recorded and not cleared: the list's, the log's since and this
     /// open's.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn recorded(&self) -> Recorded {
         self.meta().records.all()
     }
@@ -308,6 +309,7 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Postcondition: a record is mapped only once the marks of its objects are set, so a caller
     /// that finds it unmapped may find those marks unset.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn map_damage(
         &self,
         holders: impl FnMut(Pid) -> Option<BTreeSet<Quarantine>>,
@@ -327,6 +329,7 @@ impl<R: Runtime> Pager<R> {
     /// Returns each object whose mark failed, with why.
     ///
     /// Precondition: as for [`Pager::map_damage`].
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn map_committing(
         &self,
         mut holders: impl FnMut(Pid, &mut BTreeSet<Pid>) -> Option<BTreeSet<Quarantine>>,
@@ -359,6 +362,7 @@ impl<R: Runtime> Pager<R> {
     /// Map each of `pages` to what `holders` says it quarantines, or every page to the database
     /// when `full`, and mark each object through `mark`. Returns each object whose mark failed,
     /// with why.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn map_records(
         &self,
         pages: Vec<(Pid, Damage)>,
@@ -415,6 +419,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns what the damage of `pid` was mapped to this open, `None` while it is not mapped.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn mapped_to(&self, pid: Pid) -> Option<BTreeSet<Quarantine>> {
         let m = self.meta();
         let (damage, objects) = m.records.mapped.get(&pid)?;
@@ -425,6 +430,7 @@ impl<R: Runtime> Pager<R> {
     /// as `damage` already. Returns the end of the damage record logged, `None` when none is.
     ///
     /// Postcondition: a reader that takes the latch next finds the page refused.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(super) fn publish_refusal(
         &self,
         latch: &pages::Exclusive<'_>,
@@ -461,6 +467,7 @@ impl<R: Runtime> Pager<R> {
     /// page's rewrite.
     ///
     /// Panic if `refusal` is not a lost write.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(crate) fn record_settled(&self, _: &Settling, refusal: PageError) {
         let Damage::Stale { expected, found } = refusal.damage else {
             panic!("only a status page that lost a write is settled");
@@ -476,6 +483,7 @@ impl<R: Runtime> Pager<R> {
     /// Hold `damage` of `pid` in memory, unlogged, leaving the page's memory as it is: for a
     /// file's copy that fails while the pool holds a sound one. The hold ends at the page's next
     /// write-out, and lasts the open when the page is never written out.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(super) fn hold_damage(&self, pid: Pid, damage: Damage) {
         if damage == Damage::Unreadable {
             return;
@@ -495,6 +503,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Give a new file its empty list page, recording from now on.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(super) fn create_damage_list(&self) -> Result<(), PageError> {
         let pid = self.format_damage_list()?;
         let mut m = self.meta();
@@ -508,6 +517,7 @@ impl<R: Runtime> Pager<R> {
     /// damaged list page quarantines the database, an unreadable one for this open only.
     ///
     /// Fail if the page cannot be created.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(super) fn load_damage_list(&self) -> Result<(), PageError> {
         let (pid, header_log, header_full) = {
             let h = self.header.lock(&self.rt);
@@ -552,6 +562,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Stop folding into the list page, which `e` refused, and quarantine the database: for this
     /// open only when the page cannot be read.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn refuse_list(&self, e: PageError) {
         self.meta().records.list = None;
         if e.damage != Damage::Unreadable {
@@ -562,6 +573,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Record every page recovery and the open refused, and log the records from now on, unless
     /// the file is quarantined whole.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(super) fn start_recording(&self) {
         let mut log = self.log();
         let whole = self.is_quarantined(Quarantine::Database);
@@ -576,6 +588,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns the list page when a checkpoint is to fold the records into it: once recovery has
     /// ended, while the page serves and the records differ from it.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(super) fn to_fold(&self) -> Option<Pid> {
         let m = self.meta();
         let r = &m.records;
@@ -598,6 +611,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns what a fold writes, for a checkpoint holding the log lock.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(super) fn records_to_fold(&self) -> Recorded {
         let capacity = self.damage_list_capacity();
         self.meta().records.snapshot(capacity)

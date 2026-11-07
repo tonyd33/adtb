@@ -117,5 +117,6 @@ for test in work/tools/*-test; do
     fi
   done
   [[ $test != */check-reach-test ]] || tools+=(crates/*/Cargo.toml apps/*/Cargo.toml)
+  [[ $test != */structure-check-test ]] || tools+=(crates/adtb-structure/ clippy.toml)
   part "$(basename "$test")" "$(basename -a "$test" "${tools[@]}" | paste -sd' ')" "$test" "${tools[@]}"
 done

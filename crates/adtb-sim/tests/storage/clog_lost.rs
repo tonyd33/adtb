@@ -42,6 +42,7 @@ fn open(rt: &SimRuntime) -> Database<SimRuntime> {
 }
 
 /// Returns the status of each of `ids` in the commit log of `db`.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn statuses(db: &Database<SimRuntime>, ids: &[Xid]) -> Vec<Status> {
     let w = db.write_path();
     let clog = w.txns().commit_log();
@@ -52,6 +53,7 @@ fn statuses(db: &Database<SimRuntime>, ids: &[Xid]) -> Vec<Status> {
 
 /// Insert a user named `name` in one process. Returns the last status page and the ids the
 /// process committed.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn insert(sim: &mut Sim, name: &str) -> (Pid, Vec<Xid>) {
     api::run(sim, |rt| {
         let db = open(&rt);
@@ -148,6 +150,7 @@ fn lost_write_in(mut sim: Sim) -> (Sim, Vec<Xid>, Vec<(String, String)>) {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_settled_status_page_whose_log_is_recycled_is_a_finding_of_verify_that_marks_nothing() {
     let segment = 1 << 16;
     let options = storage::Options {
@@ -208,6 +211,7 @@ fn a_settled_status_page_whose_log_is_recycled_is_a_finding_of_verify_that_marks
 
 /// Assert a reopen of `sim` reads `bo` committed and refuses a query as quarantined whole.
 /// Assert a reopen of `sim` reads `bo` committed, keeps `marks` and serves the relation.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn served_on_reopen(sim: &mut Sim, bo: &[Xid], marks: &BTreeSet<Quarantine>) {
     api::run(sim, |rt| {
         let db = open(&rt);
@@ -219,6 +223,7 @@ fn served_on_reopen(sim: &mut Sim, bo: &[Xid], marks: &BTreeSet<Quarantine>) {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn the_first_verify_of_a_settled_status_page_reports_its_lost_write_once_and_marks_nothing() {
     let (mut sim, bo, want) = lost_write();
     api::run(&mut sim, |rt| {
@@ -233,6 +238,7 @@ fn the_first_verify_of_a_settled_status_page_reports_its_lost_write_once_and_mar
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_lost_write_verify_finds_on_a_settled_status_page_at_other_lsns_marks_the_database() {
     let (mut sim, _, _) = lost_write();
     api::run(&mut sim, |rt| {
@@ -289,6 +295,7 @@ fn a_lost_write_verify_finds_on_a_settled_status_page_at_other_lsns_marks_the_da
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn verify_of_one_relation_beside_a_settled_status_page_marks_nothing() {
     let (mut sim, bo, _) = lost_write();
     api::run(&mut sim, |rt| {
@@ -302,6 +309,7 @@ fn verify_of_one_relation_beside_a_settled_status_page_marks_nothing() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn an_index_finding_beside_a_settled_status_page_marks_only_its_index() {
     let (mut sim, bo, _) = lost_write();
     let index = api::run(&mut sim, |rt| {
@@ -331,6 +339,7 @@ fn an_index_finding_beside_a_settled_status_page_marks_only_its_index() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn verify_meeting_an_unreadable_status_page_fails_and_marks_nothing() {
     let mut sim = Sim::new(3, Config::default());
     let (status, _) = insert(&mut sim, "ann");
@@ -352,6 +361,7 @@ fn verify_meeting_an_unreadable_status_page_fails_and_marks_nothing() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn the_first_verify_through_a_server_of_a_settled_status_page_reports_it_once() {
     let (mut sim, bo, want) = lost_write();
     api::run(&mut sim, |rt| {
@@ -573,6 +583,7 @@ fn a_segment_missing_after_the_status_pages_last_write_quarantines_the_database_
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_dump_is_refused_once_the_log_cannot_prove_a_status_page_that_lost_its_writes() {
     let quiet = adtb::OpenOptions {
         no_background_vacuum: true,
@@ -632,6 +643,7 @@ fn a_dump_is_refused_once_the_log_cannot_prove_a_status_page_that_lost_its_write
 
 /// Returns what each page of the commit log, the sequence counters and `app::users` is, and the
 /// mark its damage takes.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn kinds(db: &Database<SimRuntime>) -> BTreeMap<Pid, (&'static str, Quarantine)> {
     let w = db.write_path();
     let clog = w.txns().commit_log();
@@ -659,6 +671,7 @@ fn kinds(db: &Database<SimRuntime>) -> BTreeMap<Pid, (&'static str, Quarantine)>
 /// and the first verify reports it and marks its holder. A status page is settled by the open of
 /// the commit log, read after it, reported settled and marks nothing. Returns how many pages of
 /// each kind it reverted.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn each_lost_write_refused(
     sim: &mut Sim,
     work: impl FnOnce(&Database<SimRuntime>),
@@ -750,6 +763,7 @@ fn a_lost_write_of_each_page_an_insert_changes_is_refused_on_read_and_reported_b
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_lost_write_of_each_page_an_allocating_insert_and_a_mark_change_is_refused_on_read() {
     let mut sim = Sim::new(2, Config::default());
     insert(&mut sim, "ann");
@@ -773,6 +787,7 @@ fn a_lost_write_of_each_page_an_allocating_insert_and_a_mark_change_is_refused_o
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn an_open_whose_log_cannot_settle_a_status_page_writes_no_mark() {
     let mut create = adtb::CreateOptions::default();
     create.segment_size = Some(64 << 10);
@@ -892,6 +907,7 @@ fn segment_bases(files: &Files) -> Vec<u64> {
 /// says, inserting a row for a commit, then logs past three segments, and, when `recycled`, whose
 /// third open recycles the log of the second; with every write of the last status page after the
 /// first process lost, and an archive set when `archived`.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn resolved_then_lost(resolve: Resolve, recycled: bool, archived: bool) -> Lost {
     let options = engine_options(archived);
     let open =
@@ -964,6 +980,7 @@ fn resolved_then_lost(resolve: Resolve, recycled: bool, archived: bool) -> Lost 
 
 /// Assert an open of a status page that lost the write of an id resolved as `resolve`, whose log
 /// is recycled, records the page's damage and quarantines the database, at that open and the next.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn refused_unproven(resolve: Resolve, archived: bool) {
     let lost = resolved_then_lost(resolve, true, archived);
     let options = engine_options(archived);
@@ -1009,6 +1026,7 @@ fn a_status_page_that_lost_an_abort_whose_record_is_recycled_quarantines_the_dat
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_status_page_that_lost_a_commit_whose_record_is_retained_settles_it_committed() {
     let lost = resolved_then_lost(Resolve::Commit, false, false);
     let mut sim = Sim::with_files(7, Config::default(), lost.files);

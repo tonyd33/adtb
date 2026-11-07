@@ -7,7 +7,7 @@ set -euo pipefail
 scratch=$(realpath "$(mktemp -d)")
 trap 'rm -rf "$scratch"' EXIT
 mkdir "$scratch/tools"
-cp "$(dirname "$(realpath "$0")")"/{land,slot,workspace-gc,common.bash} "$scratch/tools/"
+cp "$(dirname "$(realpath "$0")")"/{land,slot,workspace-gc,code-commits,common.bash} "$scratch/tools/"
 
 export HOME=$scratch/home XDG_CONFIG_HOME=$scratch/home/.config XDG_CACHE_HOME=$scratch/home/.cache \
   XDG_DATA_HOME=$scratch/home/.local/share XDG_STATE_HOME=$scratch/home/.local/state \
@@ -120,9 +120,9 @@ ticket() {
     "$3" "$2" "$1" "$4" "$1" >"$main/work/issues/$1.md"
 }
 
-# Write a brief naming ticket $1, then the lines $2, and print its path.
+# Write a brief naming ticket $1 with a Contract section, then the lines $2, and print its path.
 brief_for() {
-  printf 'Ticket: %s\n%s' "$1" "${2:-}" >"$scratch/brief-$1"
+  printf 'Ticket: %s\n## Contract\ntext\n%s' "$1" "${2:-}" >"$scratch/brief-$1"
   echo "$scratch/brief-$1"
 }
 
@@ -155,11 +155,19 @@ classes() {
 gate_cases() {
   local site='Site fix because: the release cannot wait' fence='```'
   gated 'no brief' "$scratch/no-such-brief"
-  printf 'no ticket line\n' >"$scratch/brief-none"
+  printf '## Contract\nno ticket line\n' >"$scratch/brief-none"
   gated "names no ticket" "$scratch/brief-none"
-  printf '%s\nTicket: feat\n%s\n' "$fence" "$fence" >"$scratch/brief-fenced"
+  printf '## Contract\ntext\n%s\nTicket: feat\n%s\n' "$fence" "$fence" >"$scratch/brief-fenced"
   gated "names no ticket" "$scratch/brief-fenced"
   gated "more than one 'Ticket:' line" "$(brief_for a1 $'Ticket: feat\n')"
+  printf 'Ticket: feat\n' >"$scratch/brief-nocontract"
+  gated "has no '## Contract' heading" "$scratch/brief-nocontract"
+  printf 'Ticket: feat\n## Contracts\nContract: none, no code and more\n%s\n## Contract\n%s\n' "$fence" "$fence" >"$scratch/brief-fakecontract"
+  gated "has no '## Contract' heading" "$scratch/brief-fakecontract"
+  printf 'Ticket: feat\n## Contract\n\n## Next\ntext\n' >"$scratch/brief-emptycontract"
+  gated "has an empty '## Contract' section" "$scratch/brief-emptycontract"
+  printf 'Ticket: feat\nContract: none, no code\n' >"$scratch/brief-nocode"
+  dispatched nocode "$scratch/brief-nocode"
   gated 'no ticket ghost' "$(brief_for ghost)"
   ticket bare bug open ''
   gated 'bug ticket bare carries no class tag' "$(brief_for bare)"
@@ -231,6 +239,7 @@ new_repo() {
   brief=$(brief_for feat)
   jj -R "$main" describe -m 'chore: seed' >/dev/null 2>&1
   jj -R "$main" bookmark create main -r @ >/dev/null 2>&1
+  jj -R "$main" bookmark create reviewed -r @ >/dev/null 2>&1
   jj -R "$main" new >/dev/null 2>&1
   land=$main/work/tools/land
   slot=$main/work/tools/slot
@@ -442,8 +451,50 @@ retention_cases() {
   [[ $cases == 3 && $roots == 6 ]] || fail "retention matrix missed cases: $cases / $roots"
 }
 
+# Add $1 commits to main of kind $2: code, docs (a docs/ file that is not Markdown), work (a work/
+# file), md (a Markdown file at the root) or mixed (a docs/ file and code).
+add_commits() {
+  local i
+  for ((i = 0; i < $1; i++)); do
+    commits=$((commits + 1))
+    mkdir -p "$main/docs" "$main/work"
+    case $2 in
+      docs) printf 'page %s\n' "$commits" >"$main/docs/page.txt" ;;
+      work) printf 'note %s\n' "$commits" >"$main/work/note" ;;
+      md) printf 'page %s\n' "$commits" >"$main/page.md" ;;
+      mixed) printf 'page %s\n' "$commits" >"$main/docs/page.txt" ;&
+      code) printf 'pub fn app() -> u32 { dep::dep() + %s }\n' "$commits" >"$main/app/src/lib.rs" ;;
+    esac
+    jj -R "$main" describe -m "feat: commit $commits" >/dev/null 2>&1
+    jj -R "$main" bookmark set main -r @ >/dev/null 2>&1
+    jj -R "$main" new >/dev/null 2>&1
+  done
+}
+
+# The quality cadence: only commits that change code count, and over 15 refuse.
+cadence_cases() {
+  local commits=0 stub
+  add_commits 15 code
+  add_commits 1 docs
+  add_commits 1 work
+  add_commits 1 md
+  dispatched fifteen "$brief"
+  add_commits 1 mixed
+  gated '16 code commits are past the reviewed bookmark, over 15' "$brief"
+  jj -R "$main" bookmark set reviewed -r main >/dev/null 2>&1
+  dispatched reviewed "$brief"
+  stub=$(<"$main/work/tools/code-commits")
+  printf '#!/usr/bin/env bash\necho boom >&2\nexit 3\n' >"$main/work/tools/code-commits"
+  gated 'code-commits reviewed..main failed: boom' "$brief"
+  printf '%s\n' "$stub" >"$main/work/tools/code-commits"
+  jj -R "$main" bookmark delete reviewed >/dev/null 2>&1
+  gated "no reviewed bookmark: set it with 'jj bookmark set reviewed -r main'" "$brief"
+}
+
 new_repo gate-repo
 gate_cases
+new_repo cadence-repo
+cadence_cases
 new_repo shell-repo
 machine_lock_cases
 shell_cases

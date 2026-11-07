@@ -1,3 +1,4 @@
+#![expect(clippy::disallowed_methods, reason = "until storage owners land")]
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Deref;
 use std::sync::MutexGuard;

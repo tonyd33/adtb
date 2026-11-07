@@ -53,6 +53,7 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Postconditions: the stale blocks past the log's end are in the file header before the
     /// log's tail is cleared.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(crate) fn recover(&self) -> Result<(Recovery, u64, Armed), OpenError> {
         let mut img = {
             let mut segments = self.segments.lock(&self.rt);
@@ -169,11 +170,13 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Refuse `pid` as [`Pager::damage`] does, and drop its dirty entry.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn damage_replayed(&self, pid: Pid, damage: Damage) {
         self.damage(pid, damage);
         self.meta().dirty.remove(&pid);
     }
 
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn replay(&self, st: &mut Replay, lsn: Lsn, record: Record) {
         let met = match &record {
             Record::Damaged { pid, damage } => Some((*pid, Met::Damaged(*damage))),
@@ -261,6 +264,7 @@ impl<R: Runtime> Pager<R> {
         }
     }
 
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn mark_replayed(&self, st: &mut Replay, pid: Pid, lsn: Lsn) {
         let mut m = self.meta();
         m.changed.insert(pid);

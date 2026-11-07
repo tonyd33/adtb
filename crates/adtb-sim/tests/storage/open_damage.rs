@@ -48,6 +48,7 @@ fn quarantined<T: std::fmt::Debug>(got: Result<T, Error>) -> String {
     }
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn status_page<R: adtb::runtime::Runtime>(db: &Database<R>) -> Pid {
     *db.write_path()
         .txns()
@@ -58,6 +59,7 @@ fn status_page<R: adtb::runtime::Runtime>(db: &Database<R>) -> Pid {
         .unwrap()
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn roles_page<R: adtb::runtime::Runtime>(db: &Database<R>) -> Pid {
     let w = db.write_path();
     w.heap_named("catalog::roles", "Role")
@@ -66,6 +68,7 @@ fn roles_page<R: adtb::runtime::Runtime>(db: &Database<R>) -> Pid {
         .unwrap()[0]
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn grants_page<R: adtb::runtime::Runtime>(db: &Database<R>) -> Pid {
     let w = db.write_path();
     w.heap_named("catalog::grants", "RoleGrant")
@@ -74,14 +77,17 @@ fn grants_page<R: adtb::runtime::Runtime>(db: &Database<R>) -> Pid {
         .unwrap()[0]
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn catalog_root<R: adtb::runtime::Runtime>(db: &Database<R>) -> Pid {
     db.write_path().pager().catalog_root()
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn clog_root<R: adtb::runtime::Runtime>(db: &Database<R>) -> Pid {
     db.write_path().txns().commit_log().root()
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn clog_directory<R: adtb::runtime::Runtime>(db: &Database<R>) -> Pid {
     db.write_path().txns().commit_log().directory_pages()[0]
 }
@@ -101,6 +107,7 @@ fn seeded(seed: u64, pick: fn(&Database<SimRuntime>) -> Pid) -> (Files, Pid) {
 
 /// Assert only `verify` runs on `db`, and its findings include one starting `finding`, or with
 /// none are only the note that a run quarantined whole keeps no findings.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn assert_only_verify_runs(db: &Database<SimRuntime>, finding: Option<&str>) {
     let marks = db.write_path().pager().quarantined();
     assert_eq!(BTreeSet::from([Quarantine::Database]), marks);
@@ -503,6 +510,7 @@ fn a_file_whose_header_is_damaged_still_fails_open() {
     });
 }
 
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn dropped_on_damage(db: &Database<SimRuntime>) -> Pid {
     let mut open = db.begin(&TxnOptions::default()).unwrap();
     open.query_text(
@@ -523,6 +531,7 @@ fn dropped_on_damage(db: &Database<SimRuntime>) -> Pid {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn dropping_a_transaction_on_a_damaged_commit_log_marks_the_database() {
     let mut sim = Sim::new(40, Config::default());
     let mut page = None;
@@ -752,6 +761,7 @@ fn verify_of_a_relation_on_a_damaged_commit_log_says_only_its_pages_were_checked
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_heap_mark_adds_no_row() {
     let mut sim = Sim::new(53, Config::default());
     finished(&mut sim, |rt| {
@@ -791,6 +801,7 @@ fn a_real_file_with_a_damaged_page_of_an_empty_grants_heap_opens_for_verify() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn verify_file_of_a_real_file_marked_with_nothing_damaged_finds_the_mark() {
     let path = scratch("marked");
     let db = Database::open(&path, &app(), &real_options()).unwrap();
@@ -859,6 +870,7 @@ fn a_commit_record_gone_from_the_log_on_a_damaged_status_page_leaves_the_catalog
 }
 
 /// Returns the pages of `file`, each with its kind and owner.
+#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 fn page_kinds(file: &[u8]) -> BTreeMap<Pid, (u16, u32)> {
     file.chunks(PAGE)
         .enumerate()
@@ -962,6 +974,7 @@ fn a_row_that_does_not_decode_on_a_good_page_fails_open_unmarked() {
 /// A read fault lands on a page chosen by the seed, so some seeds fault the file header or a page
 /// the open passes over. A seed that faults a page the open needs refuses the open.
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn an_unreadable_page_fails_open_unmarked() {
     let (files, _) = seeded(62, status_page);
     let mut marks_of = Sim::with_files(62, Config::default(), files.clone());
@@ -991,6 +1004,7 @@ fn an_unreadable_page_fails_open_unmarked() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn the_roots_heap_marks_the_database_at_open_and_nothing_once_running() {
     let (mut files, _) = seeded(42, catalog_root);
     let mut sim = Sim::with_files(42, Config::default(), files.clone());

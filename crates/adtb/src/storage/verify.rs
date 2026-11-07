@@ -172,6 +172,7 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Fail with the LSN of the first damage before the end of the log recovery kept: a segment
     /// it cannot list, open or read, a batch whose records do not decode, or a block missing.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn logged_resolutions_since(
         &self,
         since: Lsn,
@@ -205,6 +206,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns what the retained log says of every page, as of now.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn read_log(&self, live: bool) -> RetainedLog {
         let end = self.log().next_lsn();
         self.flush_log();
@@ -289,6 +291,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns the end of the page numbers to check against `log`.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn pages_within(&self, log: &RetainedLog) -> u64 {
         let logged = log.last.keys().next_back().map_or(0, |p| p.0 + 1);
         let m = self.meta();
@@ -308,6 +311,7 @@ impl<R: Runtime> Pager<R> {
     /// damage. A page the allocation bitmap calls free has no finding but a chain break of its
     /// last incarnation the log holds and no settle excuses, unless already refused. Report the
     /// damage recorded of it as well.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn check_page(&self, pid: Pid, log: &RetainedLog) -> Vec<Finding> {
         let mut findings = self.judge_page(pid, log);
         let recorded = self.meta().records.page(pid);
@@ -320,6 +324,7 @@ impl<R: Runtime> Pager<R> {
         findings
     }
 
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn judge_page(&self, pid: Pid, log: &RetainedLog) -> Vec<Finding> {
         let mut findings = Vec::new();
         let RetainedLog {
@@ -456,6 +461,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns whether `pid` is recorded settled at the LSNs `damage` finds it stale at.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn settled_at(&self, pid: Pid, damage: Damage) -> bool {
         let Damage::Stale { expected, found } = damage else {
             return false;

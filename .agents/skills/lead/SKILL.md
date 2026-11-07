@@ -105,7 +105,7 @@ Rule on design and spec decisions yourself, including amending an accepted rulin
 - Mark the track's ticket `in-progress` with `branch` set to the
   workspace name.
 
-Every brief that changes code has a `## Contract` section: for each module it touches, the contract the module offers, the invariants the change relies on or adds, the module that owns each (private state, operations that keep it), and its enforcer. `slot` refuses a brief without it. A ruling that adds state names its owner module; one that cannot is a design pass, not a fix. Every review brief asks for the same table for the diff as found, before bugs, and a row with no owner or no enforcer is a blocker.
+Every brief that changes code has a `## Contract` section: for each module it touches, the contract the module offers, the invariants the change relies on or adds, the module that owns each (private state, operations that keep it), and its enforcer. `slot` refuses a brief without it; a brief that changes no code says `Contract: none, no code` on its own line. A ruling that adds state names its owner module; one that cannot is a design pass, not a fix. Every review brief asks for the same table for the diff as found, before bugs, and a row with no owner or no enforcer is a blocker.
 
 State the invariants of a correctness track in its brief, each with what enforces it: the type system, a searching test, or nothing with a written reason. Ask for a test that searches for breaks at every op and interleaving. A bug fix's report states its cause, its defect class and what stops the next instance; "this test" leaves the class open. A second review round finding the same kind of bug means the design is wrong: the next brief names the mechanism that replaces it, and lists no instances.
 
@@ -259,11 +259,11 @@ verification evidence.
 
 ## Quality cadence
 
-- After every 10 to 15 landed code commits past the `reviewed` bookmark,
-  counted by `work/tools/code-commits | wc -l` (commits that change only
-  docs/, work/ or Markdown files do not count), dispatch a fresh agent on the
-  [quality-review workflow](../quality-review/SKILL.md). After reading its
-  report, run `jj bookmark set reviewed -r main`.
+- `slot` refuses a track while `work/tools/code-commits | wc -l` (commits
+  past the `reviewed` bookmark that change a path outside docs/, work/ or
+  Markdown files) is over 15. Dispatch a fresh agent on the
+  [quality-review workflow](../quality-review/SKILL.md) before then. After
+  reading its report, run `jj bookmark set reviewed -r main`.
 - Spend about 15% of each milestone on one track over tickets tagged
   `quality`.
 - Run llvm-cov only at a milestone exit.

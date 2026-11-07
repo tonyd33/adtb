@@ -581,6 +581,7 @@ fn damaged(name: &str, pick: impl FnOnce(&Database) -> adtb::storage::Pid) -> Pa
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_damaged_constructor_page_of_a_real_file_quarantines_its_constructor() {
     let path = damaged("quarantine_heap", |db| {
         let w = db.write_path();
@@ -600,6 +601,7 @@ fn a_damaged_constructor_page_of_a_real_file_quarantines_its_constructor() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_damaged_index_page_of_a_real_file_quarantines_its_index() {
     let path = damaged("quarantine_index", |db| {
         let w = db.write_path();
@@ -620,6 +622,7 @@ fn a_damaged_index_page_of_a_real_file_quarantines_its_index() {
 }
 
 #[test]
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn open_returns_on_a_real_file_cut_before_the_first_roles_page() {
     let path = scratch("cut").join("shop.adt");
     let log = Log::new([SHOP]);

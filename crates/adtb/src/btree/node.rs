@@ -110,6 +110,7 @@ impl<'a> Node<'a> {
         self.count
     }
 
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     pub fn owner(&self) -> u32 {
         owner(self.page)
     }
@@ -417,6 +418,7 @@ pub struct Bounds<'a> {
 ///
 /// Panics if the items and fence keys do not fit, or if an item's child does
 /// not match the level.
+#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 pub fn build(page: &mut [u8], level: u16, items: &[Item], bounds: Bounds) {
     let Bounds { low, high, right } = bounds;
     let header = header_edit(FORMAT, kind_of(level), owner(page), flags(page));
@@ -452,6 +454,7 @@ pub fn build(page: &mut [u8], level: u16, items: &[Item], bounds: Bounds) {
     );
 }
 
+#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 fn set_flag(page: &mut [u8], flag: u16, on: bool) {
     let level = Node::new(page).expect("a marked page is a node").level();
     let rest = flags(page) & !flag;

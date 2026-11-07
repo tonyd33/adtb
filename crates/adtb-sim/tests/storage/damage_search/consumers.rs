@@ -275,6 +275,7 @@ fn unreadable(op: &IoOp, path: Option<&str>, pid: Pid) -> Option<IoError> {
 }
 
 /// Returns what an open of `files` with every page readable serves.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn reopen(seed: u64, files: Files, version: u8) -> Reopened {
     let mut sim = Sim::with_files(seed, Config::default(), files);
     let mut out = Reopened {
@@ -351,6 +352,7 @@ fn lookups<R: Runtime>(db: &Database<R>, rel: Rel, keys: &[i64]) -> Lookups {
 
 /// Run the consumers on the source through `hook`, and on its copies through `clean`, with
 /// `opening` cleared once the first open returns.
+#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn consume(
     hook: &Hooked,
     clean: &Hooked,

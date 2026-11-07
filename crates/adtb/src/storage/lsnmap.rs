@@ -144,6 +144,7 @@ impl<R: Runtime> Pager<R> {
     /// Returns the bytes of map page `pid`. Refuse it when it cannot be read, and also quarantine
     /// the database when it fails its checksum, is no map page, or its LSN is below `expected`, the
     /// LSN its parent gives it.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn map_page(&self, pid: Pid, expected: Lsn) -> Result<Vec<u8>, PageError> {
         let read = self.read(pid).map(|p| p.to_vec());
         let refused = match read {
@@ -166,6 +167,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Check the map's root against the LSN the checkpoint or the last fold gave it, quarantining
     /// the database when it is refused.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(super) fn check_map(&self) {
         let map = self.meta().map;
         if let Some(m) = map {
@@ -175,6 +177,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns the LSN the map holds for `pid`, refusing a map page whose LSN is below the one
     /// its parent gives it and quarantining the database.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(crate) fn mapped(&self, pid: Pid) -> Result<Option<Lsn>, PageError> {
         let Some(m) = self.meta().map else {
             return Ok(None);
@@ -223,6 +226,7 @@ impl<R: Runtime> Pager<R> {
         Ok(out)
     }
 
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn walk(&self, visit: &mut Visit<'_>) -> Result<(), PageError> {
         let map = self.meta().map;
         match map {
@@ -258,6 +262,7 @@ impl<R: Runtime> Pager<R> {
     /// Raise the map's entry of each page of `last` to its LSN, adding levels above the root
     /// until it reaches the highest. A page at or past the file's end no longer exists, and is
     /// dropped. Returns that end.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(crate) fn fold(&self, last: &BTreeMap<Pid, Lsn>) -> Result<u64, PageError> {
         let end = self.file_pages();
         let entries: Vec<(u64, Lsn)> = last
@@ -283,6 +288,7 @@ impl<R: Runtime> Pager<R> {
     /// Raise the folded expected LSN of each page of `last` below `end` to its LSN, once a
     /// checkpoint names the map that holds them, dropping the gate's later LSN of a page when it
     /// is no longer later.
+    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(crate) fn absorb_folded(&self, last: &BTreeMap<Pid, Lsn>, end: u64) {
         if let Gate::Armed(e) = &mut self.meta().gate {
             e.absorb(last.range(..Pid(end)));
