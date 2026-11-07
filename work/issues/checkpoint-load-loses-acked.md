@@ -2,10 +2,10 @@
 created-at: 2026-11-07
 status: open
 kind: bug
-priority: 105
-summary: "under the deep profile the checkpointer write-load crash search reopens with a page holding less than was acknowledged, with and without atomic page writes"
+priority: 420
+summary: "the checkpointer crash search restarts its write values for the run below the warm load's, so a durable unacknowledged write reads as lost acknowledged data at deep seeds"
 tags:
-  - class-not-atomic
+  - class-weak-tests
 ---
 
 # A crash under the checkpointer's write load loses acknowledged writes at deep seeds
@@ -22,3 +22,9 @@ Found while checking the damage search: on main (code of 6696efe4, periodic chec
 Both pass at the default profile. A crash image reopens clean with a page holding less than was acknowledged: acknowledged data lost. Not yet known whether it predates the in-session recycle (6696efe4): bisect against 51e37d1e first.
 
 Defect class: Multi-step change not atomic under failure, crash or race.
+
+## 2026-11-07, cause
+
+Not data loss. The crash search calls `load` twice (a warm load, then the run) and `load` numbers values from 1 each call, so the run's values restart below the warm load's. A durable but unacknowledged first write of the run (allowed to survive) is smaller than the last acknowledged warm value and fails `acked <= v`. Fails identically at 51e37d1e. A test-only fix (values numbered past the warm load's, two computed crash points as regression) is in slot-1, change qxtxotqw, paused by the structural freeze.
+
+Defect class: Tests asserting less than they claim.
