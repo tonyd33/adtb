@@ -78,7 +78,7 @@ Be firm and opinionated about the project's design and direction. Refuse a reque
 
 - Finish writing the brief and observe the successful write before dispatching
   or resuming its owner. A promised brief is not a usable assignment.
-- Pick the agent's model by the work. Sonnet: mechanical moves of tests or text, tooling and doc removals, timing and log studies, read-only locating. The strongest model: engine authoring under a correctness contract, every review, design research. Say which in the dispatch.
+- Pick the agent's model by the work. Sonnet: mechanical moves of tests or text, tooling and doc removals, timing and log studies, read-only locating. Opus: engine authoring under a correctness contract, every review, design research. Fable only rarely, for a problem Opus and the advisor have not resolved, with the reason in the dispatch. Say which model in the dispatch.
 - Write the brief to `work/briefs/brief-NAME.md` in the main checkout.
   jj ignores that directory; earlier briefs there, if any, are templates.
   Keep essential scope, acceptance commands and landing dependencies in a
