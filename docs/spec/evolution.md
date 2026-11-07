@@ -907,11 +907,12 @@ drop field Price.id
 
 The new key is validated against the existing rows like an added
 unique (§6.3), and runs as a staged change. A reference into `r` holds
-a value of `r`'s key, so the operator retypes every field whose type is
-`Key r` or `Key r.S`. Each such field, in any type, must be listed in
-the `carry` clause by type, constructor and field; the engine rewrites
-each listed field's value from the old key of the row it references to
-the new key of the same row. A rekey that leaves any such field
+a value of `r`'s key, so the operator retypes every field whose type
+holds `Key r` or `Key r.S`, directly or through the key of a relation
+it references, at any depth. Each such field, in any type, must be
+listed in the `carry` clause by type, constructor and field; the
+engine rewrites each listed field's value from the old key of the row
+it references to the new key of the same row. A rekey that leaves any such field
 unlisted is refused, and the report names each field. A field of `r`'s
 own type typed `Key r` that is not in the new key must be dropped in
 the same migration. The inverse is `rekey relation r key` with the old

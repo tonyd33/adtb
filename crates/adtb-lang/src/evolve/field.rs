@@ -737,17 +737,18 @@ impl Cx<'_> {
         let mut needed: Vec<(TypeId, Option<String>, String)> = Vec::new();
         for (j, t) in schema.types.iter().enumerate() {
             let def = TypeId(j as u32);
-            if def == own || schema.module(t.module).engine {
+            if schema.module(t.module).engine {
                 continue;
             }
+            let carried = |ty: &Ty| refers(&schema, ty, rel) && !(def == own && keys(ty, rel));
             for f in t.header() {
-                if refers(&f.ty, rel) {
+                if carried(&f.ty) {
                     needed.push((def, None, f.name.clone()));
                 }
             }
             for c in t.ctors() {
                 for f in &c.fields {
-                    if refers(&f.ty, rel) {
+                    if carried(&f.ty) {
                         let ctor =
                             (t.ctors().len() > 1 || c.name != t.name).then(|| c.name.clone());
                         needed.push((def, ctor, f.name.clone()));
@@ -815,10 +816,19 @@ impl Cx<'_> {
     }
 }
 
-pub(super) fn refers(t: &Ty, rel: RelId) -> bool {
+/// Returns whether a value of `t` holds a value of `Key rel`, directly or through the key of a
+/// relation it references.
+pub(super) fn refers(schema: &Schema, t: &Ty, rel: RelId) -> bool {
+    let mut rels = BTreeSet::new();
+    schema.reached(t, &mut BTreeSet::new(), &mut rels);
+    rels.contains(&rel)
+}
+
+/// Returns whether `t` is `Key rel` or a declared type with it among its arguments.
+fn keys(t: &Ty, rel: RelId) -> bool {
     match t {
         Ty::Key { rel: r, .. } => *r == rel,
-        Ty::Data { args, .. } => args.iter().any(|a| refers(a, rel)),
+        Ty::Data { args, .. } => args.iter().any(|a| keys(a, rel)),
         _ => false,
     }
 }

@@ -1,0 +1,13 @@
+seed 56
+migrate
+  module shop
+  add module shop
+  add type Price = { a: Text, b: Text, best: Option (Key stocks) }
+  add relation prices : Price key a
+  add type Stock = { price: Key prices, wh: Text }
+  add relation stocks : Stock key (price, wh)
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`rekey relation prices` is refused: field `Price.best` references `prices` and is not carried" } } }
+  module shop
+  rekey relation prices key b
+    carry Stock.price

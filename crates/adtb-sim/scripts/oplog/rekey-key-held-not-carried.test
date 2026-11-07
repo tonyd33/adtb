@@ -1,0 +1,15 @@
+seed 54
+migrate
+  module shop
+  add module shop
+  add type Price = { a: Text, b: Text }
+  add relation prices : Price key a
+  add type Stock = { price: Key prices, wh: Text }
+  add relation stocks : Stock key (price, wh)
+  add type Pick = { id: Key picks, stock: Key stocks }
+  add relation picks : Pick key id generate sequence
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`rekey relation prices` is refused: field `Pick.stock` references `prices` and is not carried" } } }
+  module shop
+  rekey relation prices key b
+    carry Stock.price

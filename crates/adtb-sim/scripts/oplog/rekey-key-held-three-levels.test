@@ -1,0 +1,45 @@
+seed 53
+migrate
+  module shop
+  add module shop
+  add type Price = { a: Text, b: Text }
+  add relation prices : Price key a
+  add type Stock = { price: Key prices, wh: Text }
+  add relation stocks : Stock key (price, wh)
+  add type Pick = { stock: Key stocks, line: I64 }
+  add relation picks : Pick key (stock, line)
+  add type Ship = { id: Key ships, pick: Key picks }
+  add relation ships : Ship key id generate sequence
+
+run
+  transact
+    insert prices { a: "a0", b: "b0" }
+    insert stocks { price: prices.key("a0"), wh: "w0" }
+    insert picks { stock: stocks.key(price: prices.key("a0"), wh: "w0"), line: 7 }
+    insert ships { pick: picks.key(stock: stocks.key(price: prices.key("a0"), wh: "w0"), line: 7) }
+
+migrate
+  module shop
+  rekey relation prices key b
+    carry Stock.price, Pick.stock, Ship.pick
+
+query
+  from s in ships select s.pick
+----
+picks.key(line: 7, stock: stocks.key(price: prices.key("b0"), wh: "w0"))
+
+reopen
+
+query
+  from s in ships, p in picks where s.pick == key p select p.line
+----
+7
+
+migrate
+  module shop
+  revert 0002
+
+query
+  from s in ships select s.pick
+----
+picks.key(line: 7, stock: stocks.key(price: prices.key("a0"), wh: "w0"))

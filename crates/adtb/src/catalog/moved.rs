@@ -354,11 +354,24 @@ enum Refs {
 }
 
 impl Refs {
-    /// Returns where a value of type `ty` of `schema` holds values of `Key rel`, or `None` when
-    /// it holds none.
+    /// Returns where a value of type `ty` of `schema` holds values of `Key rel`, directly or
+    /// through the key of a relation it references, or `None` when it holds none.
     fn of(schema: &Schema, ty: &Ty, rel: RelId) -> Option<Refs> {
+        Refs::within(schema, ty, rel, &mut BTreeSet::new())
+    }
+
+    /// Returns `of`, where `seen` holds the relations whose keys the path to `ty` passes through.
+    fn within(schema: &Schema, ty: &Ty, rel: RelId, seen: &mut BTreeSet<RelId>) -> Option<Refs> {
         let ctors: Vec<Vec<Ty>> = match layout::repr(schema, ty) {
             Ty::Key { rel: r, .. } if r == rel => return Some(Refs::Key),
+            Ty::Key { rel: s, .. } => {
+                if !seen.insert(s) {
+                    return None;
+                }
+                let refs = Refs::within(schema, &layout::key_value_ty(schema, s), rel, seen);
+                seen.remove(&s);
+                return refs;
+            }
             Ty::Record(fs) => vec![fs.into_iter().map(|(_, t)| t).collect()],
             t @ (Ty::Data { .. } | Ty::Sum { .. }) => layout::ctors(schema, &t)
                 .into_iter()
@@ -368,7 +381,11 @@ impl Refs {
         };
         let refs: Vec<Vec<Option<Refs>>> = ctors
             .iter()
-            .map(|fs| fs.iter().map(|t| Refs::of(schema, t, rel)).collect())
+            .map(|fs| {
+                fs.iter()
+                    .map(|t| Refs::within(schema, t, rel, seen))
+                    .collect()
+            })
             .collect();
         refs.iter()
             .flatten()

@@ -1,0 +1,44 @@
+seed 51
+migrate
+  module shop
+  add module shop
+  add type Price = { a: Text, b: Text }
+  add relation prices : Price key a
+  add type Stock = { price: Key prices, wh: Text, n: I64 }
+  add relation stocks : Stock key (price, wh)
+
+run
+  transact
+    insert prices { a: "a0", b: "b0" }
+    insert prices { a: "a1", b: "b1" }
+    insert stocks { price: prices.key("a0"), wh: "w0", n: 1 }
+    insert stocks { price: prices.key("a1"), wh: "w0", n: 2 }
+
+migrate
+  module shop
+  rekey relation prices key b
+    carry Stock.price
+
+query rowsort
+  from s in stocks select { price: s.price, wh: s.wh, n: s.n }
+----
+{ n: 1, price: prices.key("b0"), wh: "w0" }
+{ n: 2, price: prices.key("b1"), wh: "w0" }
+
+reopen
+
+query rowsort
+  from s in stocks, p in prices where s.price == key p select { a: p.a, wh: s.wh, n: s.n }
+----
+{ a: "a0", n: 1, wh: "w0" }
+{ a: "a1", n: 2, wh: "w0" }
+
+migrate
+  module shop
+  revert 0002
+
+query rowsort
+  from s in stocks select { price: s.price, wh: s.wh, n: s.n }
+----
+{ n: 1, price: prices.key("a0"), wh: "w0" }
+{ n: 2, price: prices.key("a1"), wh: "w0" }

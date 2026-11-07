@@ -1,0 +1,44 @@
+seed 55
+migrate
+  module shop
+  add module shop
+  add type Price = { a: Text, b: Text, best: Option (Key stocks) }
+  add relation prices : Price key a
+  add type Stock = { price: Key prices, wh: Text }
+  add relation stocks : Stock key (price, wh)
+
+run
+  transact
+    insert prices { a: "a0", b: "b0", best: None }
+    insert prices { a: "a1", b: "b1", best: None }
+    insert stocks { price: prices.key("a0"), wh: "w0" }
+  transact
+    insert prices { a: "a0", b: "b0", best: Some { value: stocks.key(price: prices.key("a0"), wh: "w0") } } unless conflict on key else update old set new
+
+migrate
+  module shop
+  rekey relation prices key b
+    carry Stock.price, Price.best
+
+query rowsort
+  from p in prices select { b: p.b, best: p.best }
+----
+{ b: "b0", best: Some { value: stocks.key(price: prices.key("b0"), wh: "w0") } }
+{ b: "b1", best: None }
+
+reopen
+
+query rowsort
+  from p in prices, s in stocks where p.best == Some { value: key s } select { a: p.a, wh: s.wh }
+----
+{ a: "a0", wh: "w0" }
+
+migrate
+  module shop
+  revert 0002
+
+query rowsort
+  from p in prices select { a: p.a, best: p.best }
+----
+{ a: "a0", best: Some { value: stocks.key(price: prices.key("a0"), wh: "w0") } }
+{ a: "a1", best: None }

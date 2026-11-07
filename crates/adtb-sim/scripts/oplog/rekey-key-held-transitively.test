@@ -1,0 +1,49 @@
+seed 52
+migrate
+  module shop
+  add module shop
+  add type Price = { a: Text, b: Text }
+  add relation prices : Price key a
+  add type Stock = { price: Key prices, wh: Text, n: I64 }
+  add relation stocks : Stock key (price, wh)
+  add type Pick = { id: Key picks, stock: Key stocks }
+  add relation picks : Pick key id generate sequence
+
+run
+  transact
+    insert prices { a: "a0", b: "b0" }
+    insert prices { a: "a1", b: "b1" }
+    insert stocks { price: prices.key("a0"), wh: "w0", n: 1 }
+    insert stocks { price: prices.key("a1"), wh: "w0", n: 2 }
+    insert picks { stock: stocks.key(price: prices.key("a1"), wh: "w0") }
+    insert picks { stock: stocks.key(price: prices.key("a0"), wh: "w0") }
+
+migrate
+  module shop
+  rekey relation prices key b
+    carry Stock.price, Pick.stock
+
+query rowsort
+  from p in picks select { id: p.id, stock: p.stock }
+----
+{ id: picks.key(1), stock: stocks.key(price: prices.key("b1"), wh: "w0") }
+{ id: picks.key(2), stock: stocks.key(price: prices.key("b0"), wh: "w0") }
+
+reopen
+
+query rowsort
+  from p in picks, s in stocks, r in prices where p.stock == key s and s.price == key r
+  select { id: p.id, a: r.a, n: s.n }
+----
+{ a: "a0", id: picks.key(2), n: 1 }
+{ a: "a1", id: picks.key(1), n: 2 }
+
+migrate
+  module shop
+  revert 0002
+
+query rowsort
+  from p in picks select { id: p.id, stock: p.stock }
+----
+{ id: picks.key(1), stock: stocks.key(price: prices.key("a1"), wh: "w0") }
+{ id: picks.key(2), stock: stocks.key(price: prices.key("a0"), wh: "w0") }
