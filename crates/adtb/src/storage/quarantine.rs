@@ -217,7 +217,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns every object quarantined.
-    pub fn quarantined(&self) -> BTreeSet<Quarantine> {
+    pub(crate) fn quarantined(&self) -> BTreeSet<Quarantine> {
         let marks = self.marks.lock(&self.rt);
         marks.set.union(&marks.held).copied().collect()
     }
@@ -228,7 +228,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns whether `object` is quarantined, by its own mark or the database's.
-    pub fn is_quarantined(&self, object: Quarantine) -> bool {
+    pub(crate) fn is_quarantined(&self, object: Quarantine) -> bool {
         let marks = self.marks.lock(&self.rt);
         [object, Quarantine::Database]
             .iter()

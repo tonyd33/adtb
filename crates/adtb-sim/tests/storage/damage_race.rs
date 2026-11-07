@@ -1,3 +1,4 @@
+use adtb::testing::Probe;
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -52,7 +53,7 @@ fn written() -> Written {
             .update(&[pid], |p| p[0][HEADER_LEN] = WRITTEN)
             .unwrap();
         let pad = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
-        while pager.appended().0 < 2 * SEGMENT + SEGMENT / 2 {
+        while Probe::of(&pager).appended().0 < 2 * SEGMENT + SEGMENT / 2 {
             pager
                 .update(&[pad], |p| {
                     p[0][HEADER_LEN..].iter_mut().for_each(|b| *b ^= 1);
@@ -181,8 +182,8 @@ fn switching(seed: u64, files: &Files) -> Sim {
 
 /// Returns the number of `pid`'s damage records in the retained log.
 fn records_of(pager: &Pager<SimRuntime>, pid: Pid) -> usize {
-    pager
-        .logged_damage()
+    Probe::of(pager)
+        .damage_in_log()
         .iter()
         .filter(|(p, _)| *p == pid)
         .count()
@@ -213,7 +214,7 @@ fn race(
         let (pager, _) = Pager::open(rt.clone(), &options()).unwrap();
         assert_eq!(
             whole,
-            pager.is_quarantined(Quarantine::Database),
+            Probe::of(&pager).marked(Quarantine::Database),
             "seed {seed}"
         );
         before(&pager);
@@ -228,7 +229,7 @@ fn race(
         rt.join(t);
         out = Some(Raced {
             seen: std::mem::take(&mut *seen.lock().unwrap()),
-            damaged: pager.damaged().get(&pid).copied(),
+            damaged: Probe::of(&pager).refusals().get(&pid).copied(),
             records: records_of(&pager, pid),
         });
     });
@@ -338,7 +339,7 @@ fn verify_of_a_file_quarantined_whole_refuses_the_page_that_lost_its_write() {
     let mut sim = Sim::with_files(1, Config::default(), gap);
     finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt, &options()).unwrap();
-        assert!(pager.is_quarantined(Quarantine::Database));
+        assert!(Probe::of(&pager).marked(Quarantine::Database));
         let found = pager.verify().findings;
         let page = Finding::Page {
             pid: w.pid,

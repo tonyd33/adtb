@@ -122,7 +122,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns the transaction of every commit record in the retained log, none when its segments
     /// cannot be listed or opened.
-    pub fn logged_commits(&self) -> BTreeSet<u64> {
+    pub(crate) fn logged_commits(&self) -> BTreeSet<u64> {
         let loaded = self.load_log();
         let mut commits = BTreeSet::new();
         let Ok((_pin, mut img)) = loaded else {
@@ -145,8 +145,8 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns each damage record in the retained log, in log order, none when its segments cannot
     /// be listed or opened.
-    #[doc(hidden)]
-    pub fn logged_damage(&self) -> Vec<(Pid, Damage)> {
+    #[cfg(feature = "testing")]
+    pub(crate) fn logged_damage(&self) -> Vec<(Pid, Damage)> {
         let mut damage = Vec::new();
         let Ok((_pin, mut img)) = self.load_log() else {
             return damage;

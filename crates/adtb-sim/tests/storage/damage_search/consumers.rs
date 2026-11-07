@@ -275,7 +275,6 @@ fn unreadable(op: &IoOp, path: Option<&str>, pid: Pid) -> Option<IoError> {
 }
 
 /// Returns what an open of `files` with every page readable serves.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn reopen(seed: u64, files: Files, version: u8) -> Reopened {
     let mut sim = Sim::with_files(seed, Config::default(), files);
     let mut out = Reopened {
@@ -286,7 +285,7 @@ fn reopen(seed: u64, files: Files, version: u8) -> Reopened {
     api::run(&mut sim, |rt| {
         match Database::open_in(rt, FILE, &world::log(version), &no_create()) {
             Ok(db) => {
-                out.marks = db.write_path().pager().quarantined();
+                out.marks = db.testing().probe().marks();
                 out.reads = relations(version)
                     .into_iter()
                     .map(|r| (r, read(&db, r)))
@@ -394,11 +393,12 @@ fn consume(
             .map(|f| format!("{f:?}"))
             .collect(),
     );
-    seen.marks = Some(w.pager().quarantined());
-    seen.settled = w
-        .pager()
-        .recorded()
-        .pages
+    seen.marks = Some(db.testing().probe().marks());
+    seen.settled = db
+        .testing()
+        .probe()
+        .records()
+        .pages()
         .iter()
         .filter(|(_, d)| matches!(d, Damage::Settled { .. }))
         .map(|(p, _)| *p)

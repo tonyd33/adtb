@@ -1,6 +1,7 @@
 //! The background scrub: one thread per engine that reads every page of the file over each
 //! `ScrubInterval`, without a call touching them.
 
+use adtb::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
@@ -142,7 +143,6 @@ fn seeded(seed: u64, users: i64, settings: &[(&str, &str)]) -> (Files, Pid) {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn rot_is_found_and_marked_within_an_interval_with_no_call_touching_it() {
     let mut sim = Sim::new(1, Config::default());
     api::run(&mut sim, |rt| {
@@ -159,9 +159,9 @@ fn rot_is_found_and_marked_within_an_interval_with_no_call_touching_it() {
         assert!(rows[0].starts_with("Checksum"), "{rows:?}");
         assert!(rows[0].contains(&format!("page {}", page.0)), "{rows:?}");
         assert!(
-            db.write_path()
-                .pager()
-                .quarantined()
+            db.testing()
+                .probe()
+                .marks()
                 .iter()
                 .any(|q| matches!(q, Quarantine::Heap(_))),
             "the heap holding the page is marked"
@@ -306,7 +306,7 @@ fn a_pass_resumed_after_a_restart_keeps_what_its_first_part_found() {
         let db = open(rt.clone());
         loop {
             nap(&rt, Duration::from_secs(60));
-            db.saved_scrub_page();
+            db.testing().scrub();
         }
     });
     assert_eq!(Outcome::Crashed, outcome);
@@ -315,11 +315,11 @@ fn a_pass_resumed_after_a_restart_keeps_what_its_first_part_found() {
         let db = open(rt.clone());
         let before = found(&db);
         assert_eq!(1, before.len(), "the row was kept: {before:?}");
-        let resumed = db.saved_scrub_page().flatten().expect("an unfinished pass");
-        assert!(resumed > page.0, "the page lies behind the cursor");
+        let resumed = db.testing().scrub().flatten().expect("an unfinished pass");
+        assert!(resumed > page, "the page lies behind the cursor");
         set_io(&db, "1.0");
         nap(&rt, Duration::from_secs(30));
-        assert_eq!(None, db.saved_scrub_page().flatten(), "the pass has ended");
+        assert_eq!(None, db.testing().scrub().flatten(), "the pass has ended");
         assert_eq!(before, found(&db), "the rest of the pass does not drop it");
     });
 }
@@ -346,10 +346,10 @@ fn a_database_marked_whole_writes_nothing_past_the_mark() {
         rot(&rt, status);
         nap(&rt, Duration::from_secs(660));
         assert!(
-            db.write_path().pager().is_quarantined(Quarantine::Database),
+            db.testing().probe().marked(Quarantine::Database),
             "the page no relation holds marks the database"
         );
-        held = db.held_findings();
+        held = db.testing().held_findings();
         assert_eq!(
             1, held,
             "the finding alone, held in memory with no failed write"
@@ -361,25 +361,24 @@ fn a_database_marked_whole_writes_nothing_past_the_mark() {
     finished(&mut sim, |rt| {
         let db = open(rt.clone());
         users = Some(users_page(&db));
-        let pager = db.write_path().pager();
-        let commits = pager.logged_commits();
-        let marks_before = pager.quarantined();
+        let probe = db.testing().probe();
+        let commits = probe.logged_commits();
+        let marks_before = probe.marks();
         rot(&rt, users_page(&db));
         nap(&rt, Duration::from_secs(3600));
-        assert!(db.held_findings() >= 2, "another pass finds them both");
+        assert!(
+            db.testing().held_findings() >= 2,
+            "another pass finds them both"
+        );
         assert_eq!(
             BTreeSet::from([Quarantine::Database]),
             marks_before,
             "the whole mark"
         );
-        assert_eq!(
-            marks_before,
-            pager.quarantined(),
-            "no mark past the whole mark"
-        );
+        assert_eq!(marks_before, probe.marks(), "no mark past the whole mark");
         assert_eq!(
             commits,
-            pager.logged_commits(),
+            probe.logged_commits(),
             "no log batch past the mark"
         );
     });
@@ -408,7 +407,7 @@ fn time_cursor_passes(seed: u64, files: &Files, page: Pid) -> Duration {
         let db = open(rt.clone());
         while at.is_none() {
             nap(&rt, Duration::from_secs(60));
-            if db.saved_scrub_page().flatten().is_some_and(|p| p > page.0) {
+            if db.testing().scrub().flatten().is_some_and(|p| p > page) {
                 at = Some(rt.now());
             }
         }
@@ -460,7 +459,7 @@ fn a_restart_in_the_middle_of_a_pass_resumes_at_or_before_and_finds_rot_behind_i
         let db = open(rt.clone());
         loop {
             nap(&rt, Duration::from_secs(60));
-            saved = db.saved_scrub_page().flatten().or(saved);
+            saved = db.testing().scrub().flatten().or(saved);
         }
     });
     assert_eq!(Outcome::Crashed, outcome);
@@ -472,14 +471,15 @@ fn a_restart_in_the_middle_of_a_pass_resumes_at_or_before_and_finds_rot_behind_i
     api::run(&mut sim, |rt| {
         let db = open(rt.clone());
         let resumed = db
-            .saved_scrub_page()
+            .testing()
+            .scrub()
             .expect("the cursor is in the file")
             .expect("the pass is unfinished");
         assert!(
             resumed >= saved,
-            "a cursor saved stays saved: {resumed} {saved}"
+            "a cursor saved stays saved: {resumed:?} {saved:?}"
         );
-        assert!(resumed > page.0, "the rot lies behind the cursor");
+        assert!(resumed > page, "the rot lies behind the cursor");
         set_io(&db, "1.0");
         nap(&rt, Duration::from_secs(10));
         assert_eq!(
@@ -511,7 +511,7 @@ fn short_opens_complete_a_pass() {
         });
         finished(&mut sim, |rt| {
             let db = open(rt);
-            seen.push(db.saved_scrub_page().flatten());
+            seen.push(db.testing().scrub().flatten());
             db.close().expect("the close");
         });
     }
@@ -519,7 +519,7 @@ fn short_opens_complete_a_pass() {
         seen.len() > 1,
         "one open does not finish the pass: {seen:?}"
     );
-    let moving: Vec<u64> = seen.iter().flatten().copied().collect();
+    let moving: Vec<Pid> = seen.iter().flatten().copied().collect();
     assert!(moving.is_sorted(), "the cursor moves on: {moving:?}");
 }
 
@@ -676,12 +676,12 @@ fn a_saved_cursor_of_an_idle_database_writes_nothing_on_close() {
     let mut sim = Sim::with_files(15, Config::default(), files);
     finished(&mut sim, |rt| {
         let db = open(rt);
-        assert_eq!(None, db.saved_scrub_page());
+        assert_eq!(None, db.testing().scrub());
         db.close().expect("the close");
     });
     finished(&mut sim, |rt| {
         let db = open(rt);
-        assert_eq!(None, db.saved_scrub_page(), "nothing has run to save");
+        assert_eq!(None, db.testing().scrub(), "nothing has run to save");
         db.close().expect("the close");
     });
 }
@@ -834,7 +834,7 @@ fn scrubbing_under_real_writers_finds_nothing() {
     });
     assert!(writes.load(Ordering::Relaxed) > 100, "the writers wrote");
     assert_eq!(Vec::<String>::new(), text(&db, FINDINGS));
-    assert!(db.saved_scrub_page().is_some(), "the worker made passes");
+    assert!(db.testing().scrub().is_some(), "the worker made passes");
 }
 
 #[test]
@@ -916,40 +916,33 @@ fn a_pass_reading_an_old_log_does_not_refuse_a_page_healed_since() {
             found(&db).iter().any(|r| r.starts_with("StalePage")),
             "verify finds the lost write"
         );
-        assert!(
-            !db.write_path().pager().quarantined().is_empty(),
-            "the mark"
-        );
+        assert!(!db.testing().probe().marks().is_empty(), "the mark");
         api::results(&db, "reindex users");
         for _ in 0..1000 {
-            if db.write_path().pager().quarantined().is_empty() {
+            if db.testing().probe().marks().is_empty() {
                 break;
             }
             nap(&rt, Duration::from_millis(10));
         }
         assert_eq!(
             BTreeSet::new(),
-            db.write_path().pager().quarantined(),
+            db.testing().probe().marks(),
             "the rebuild released the index"
         );
         assert!(
-            db.saved_scrub_page().flatten().is_none_or(|p| p <= root.0),
+            db.testing().scrub().flatten().is_none_or(|p| p <= root),
             "the pass has not passed the root yet"
         );
         set_interval(&db, "Some { value: 1h }");
         set_io(&db, "1.0");
         nap(&rt, Duration::from_secs(10));
-        assert_eq!(
-            Some(None),
-            db.saved_scrub_page(),
-            "the pass reached its end"
-        );
+        assert_eq!(Some(None), db.testing().scrub(), "the pass reached its end");
         assert_eq!(
             BTreeSet::new(),
-            db.write_path().pager().quarantined(),
+            db.testing().probe().marks(),
             "no pass marks the page reindex healed"
         );
-        assert!(!db.write_path().pager().damaged().contains_key(&root));
+        assert!(!db.testing().probe().refusals().contains_key(&root));
         api::results(&db, "verify");
         assert_eq!(Vec::<String>::new(), found(&db));
     });
@@ -968,8 +961,8 @@ fn rot_on_a_free_page_is_no_finding() {
         flush(&db);
         rot(&rt, page);
         nap(&rt, Duration::from_secs(1300));
-        assert_eq!(0, db.held_findings());
-        assert_eq!(BTreeSet::new(), pager.quarantined());
+        assert_eq!(0, db.testing().held_findings());
+        assert_eq!(BTreeSet::new(), Probe::of(pager).marks());
     });
 }
 
@@ -995,8 +988,8 @@ fn rot_on_a_free_page_then_reused_is_no_finding_and_no_mark() {
             set_interval(&db, "Some { value: 0s }");
             set_io(&db, "1.0");
             nap(&rt, Duration::from_secs(1));
-            assert_eq!(0, db.held_findings(), "seed {seed}");
-            assert_eq!(BTreeSet::new(), pager.quarantined(), "seed {seed}");
+            assert_eq!(0, db.testing().held_findings(), "seed {seed}");
+            assert_eq!(BTreeSet::new(), Probe::of(pager).marks(), "seed {seed}");
             assert_eq!(
                 next,
                 api::sorted(api::result(&db, USERS)).len() as i64,
@@ -1021,12 +1014,12 @@ fn a_budget_too_small_to_compute_waits_and_rechecks() {
                 api::sorted(api::result(&db, USERS)).len(),
                 "{io}: the engine runs"
             );
-            assert_eq!(0, db.held_findings(), "{io}: {:?}", found(&db));
+            assert_eq!(0, db.testing().held_findings(), "{io}: {:?}", found(&db));
             set_io(&db, "1.0");
             nap(&rt, Duration::from_secs(120));
             assert_eq!(
                 Some(None),
-                db.saved_scrub_page(),
+                db.testing().scrub(),
                 "{io}: a larger budget finishes the pass"
             );
         });
@@ -1041,9 +1034,9 @@ fn a_budget_too_small_to_compute_reads_little() {
         set_io(&db, "1e-300");
         set_interval(&db, "Some { value: 1h }");
         nap(&rt, Duration::from_secs(3 * 3600 + 600));
-        let saved = db.saved_scrub_page().flatten();
+        let saved = db.testing().scrub().flatten();
         assert!(
-            saved.is_none_or(|p| p <= Pid::FIRST_DATA.0 + 3),
+            saved.is_none_or(|p| p.0 <= Pid::FIRST_DATA.0 + 3),
             "one page each hour: {saved:?}"
         );
     });
@@ -1184,13 +1177,13 @@ fn a_caught_panic_on_a_database_marked_whole_stays_in_memory() {
         flush(&db);
         rot(&rt, stray);
         nap(&rt, Duration::from_secs(660));
-        assert!(db.write_path().pager().is_quarantined(Quarantine::Database));
-        assert_eq!(1, db.held_findings());
-        let before = db.write_path().pager().logged_commits();
+        assert!(db.testing().probe().marked(Quarantine::Database));
+        assert_eq!(1, db.testing().held_findings());
+        let before = db.testing().probe().logged_commits();
         db.fail_background("boom");
         nap(&rt, Duration::from_secs(660));
-        assert_eq!(2, db.held_findings());
-        assert_eq!(before, db.write_path().pager().logged_commits());
+        assert_eq!(2, db.testing().held_findings());
+        assert_eq!(before, db.testing().probe().logged_commits());
     });
 }
 
@@ -1208,7 +1201,7 @@ fn a_real_file_survives_a_tiny_budget_and_a_panic_in_the_worker() {
     assert_eq!(Vec::<String>::new(), text(&db, FINDINGS));
     db.fail_background("boom");
     for _ in 0..1000 {
-        if db.held_findings() > 0 {
+        if db.testing().held_findings() > 0 {
             break;
         }
         std::thread::sleep(Duration::from_millis(5));

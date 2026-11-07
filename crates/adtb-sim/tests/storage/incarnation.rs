@@ -1,6 +1,7 @@
 //! A page freed and allocated again is a new incarnation: nothing the log or the damage records
 //! hold of the incarnation before judges it.
 
+use adtb::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb::mvcc::{CommitLog, Transactions, Xid};
@@ -45,9 +46,9 @@ fn options(atomic: bool) -> Options {
 /// Recycle the log, then change `filler` until the log has grown by three segments.
 fn recycle_and_fill(pager: &Pager<SimRuntime>, filler: Pid) {
     pager.recycle_log();
-    let start = pager.appended().0;
+    let start = Probe::of(pager).appended().0;
     for n in (0..=u8::MAX).cycle() {
-        if pager.appended().0 >= start + 3 * SEGMENT {
+        if Probe::of(pager).appended().0 >= start + 3 * SEGMENT {
             return;
         }
         pager.update(&[filler], |v| v[0][HEADER_LEN] = n).unwrap();
@@ -130,11 +131,19 @@ fn intact(pager: &Pager<SimRuntime>, pid: Pid, ops: &Ops, when: &str) {
         pager.check_page(pid, &log),
         "{when}: scrub"
     );
-    assert_eq!(None, pager.recorded().pages.get(&pid), "{when}: recorded");
-    assert_eq!(None, pager.damaged().get(&pid), "{when}: refused");
+    assert_eq!(
+        None,
+        Probe::of(pager).records().pages().get(&pid),
+        "{when}: recorded"
+    );
+    assert_eq!(
+        None,
+        Probe::of(pager).refusals().get(&pid),
+        "{when}: refused"
+    );
     assert_eq!(
         BTreeSet::<Quarantine>::new(),
-        pager.quarantined(),
+        Probe::of(pager).marks(),
         "{when}: marks"
     );
 }
@@ -280,7 +289,7 @@ fn run(case: Case) -> Case {
                 let _ = pager.damage(p, Damage::Checksum);
                 assert_eq!(
                     Some(&Damage::Checksum),
-                    pager.recorded().pages.get(&p),
+                    Probe::of(&pager).records().pages().get(&p),
                     "{case:?}: the damage is recorded"
                 );
             }
@@ -381,7 +390,7 @@ fn a_status_page_settled_freed_and_reused_is_reported_by_nothing() {
     harness::finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
         let txns = Transactions::open(rt, &pager, root).unwrap();
-        let settled = pager.recorded().pages.get(&status).copied();
+        let settled = Probe::of(&pager).records().pages().get(&status).copied();
         assert!(
             matches!(settled, Some(Damage::Settled { .. })),
             "the open settles the status page: {settled:?}"
@@ -414,7 +423,7 @@ fn a_status_page_settled_freed_and_reused_is_reported_by_nothing() {
             .filter(of_status)
             .collect();
         assert_eq!(Vec::<Finding>::new(), found, "after a reopen");
-        assert_eq!(BTreeSet::<Quarantine>::new(), pager.quarantined());
+        assert_eq!(BTreeSet::<Quarantine>::new(), Probe::of(&pager).marks());
     });
 }
 

@@ -175,9 +175,9 @@ fn versions_past_the_retention_window_leave_with_no_further_writes() {
             kept(),
             "every kept version left once the window passed it"
         );
-        let steps = db.write_path().pacer().charged(&rt).steps;
+        let steps = db.testing().charged().steps;
         sleep(&rt, 2000);
-        let after = db.write_path().pacer().charged(&rt).steps;
+        let after = db.testing().charged().steps;
         assert_eq!(
             steps, after,
             "an empty history makes the relation due no more"
@@ -186,7 +186,6 @@ fn versions_past_the_retention_window_leave_with_no_further_writes() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_background_vacuum_gives_way_to_a_command_waiting_for_it() {
     let commands = [
         "verify",
@@ -201,9 +200,9 @@ fn a_background_vacuum_gives_way_to_a_command_waiting_for_it() {
                 running(&db),
                 "seed {seed}: the background vacuum still runs"
             );
-            let before = db.write_path().rebuild_waits();
+            let before = db.testing().rebuild_waits();
             api::results(&db, commands[seed as usize % 3]);
-            let waits = db.write_path().rebuild_waits() - before;
+            let waits = db.testing().rebuild_waits() - before;
             assert!(
                 waits <= 40,
                 "seed {seed}: {waits} waits of 5 ms for the lock"
@@ -222,7 +221,6 @@ const HOLDING: [&str; 5] = [
 ];
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_background_vacuum_gives_way_to_a_first_task_waiting_for_it() {
     let mut sim = Sim::new(25, Config::default());
     api::run(&mut sim, |rt| {
@@ -243,8 +241,8 @@ fn a_background_vacuum_gives_way_to_a_first_task_waiting_for_it() {
                     budget(&db, 0.01);
                     started(&rt, &db);
                     let owner = db.role_authority().session("owner").unwrap();
-                    let asked = db.write_path().vacuum_yields();
-                    api::task(&rt, &owner, text).map(|()| db.write_path().vacuum_yields() > asked)
+                    let asked = db.testing().vacuum_yields();
+                    api::task(&rt, &owner, text).map(|()| db.testing().vacuum_yields() > asked)
                 })
             }));
             let ran = match ran {
@@ -273,11 +271,11 @@ fn a_background_vacuum_writes_no_page_of_a_quarantined_heap() {
         let a = w.heap_named("app::items", "A").unwrap().id().0;
         w.pager().quarantine(Quarantine::Heap(a)).unwrap();
         let (items, others) = (pages(&db, &ITEMS), pages(&db, &[("app::others", "O")]));
-        let waits = w.rebuild_waits();
+        let waits = db.testing().rebuild_waits();
         budget(&db, 1.0);
         assert_eq!(
             waits,
-            w.rebuild_waits(),
+            db.testing().rebuild_waits(),
             "no vacuum holds the lock at a budget of 0"
         );
         sleep(&rt, 3000);
@@ -295,7 +293,6 @@ fn a_background_vacuum_writes_no_page_of_a_quarantined_heap() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_close_during_a_background_vacuum_returns_promptly_and_leaves_it_sound() {
     let mut sim = Sim::new(24, Config::default());
     api::run(&mut sim, |rt| {
@@ -304,9 +301,9 @@ fn a_close_during_a_background_vacuum_returns_promptly_and_leaves_it_sound() {
         db.close().unwrap();
         let took = rt.now().saturating_since(began);
         assert!(took < Duration::from_millis(500), "the close took {took:?}");
-        let steps = held.write_path().pacer().charged(&rt).steps;
+        let steps = held.testing().charged().steps;
         sleep(&rt, 1000);
-        let after = held.write_path().pacer().charged(&rt).steps;
+        let after = held.testing().charged().steps;
         assert_eq!(steps, after, "no vacuum step runs once the close returns");
     });
     api::run(&mut sim, |rt| {
@@ -316,7 +313,6 @@ fn a_close_during_a_background_vacuum_returns_promptly_and_leaves_it_sound() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_file_after_a_crash_with_the_background_vacuum_running_holds_clean() {
     crash::silence_fatal_panics();
     for seed in seeds::sweep(0..5) {
@@ -326,7 +322,7 @@ fn a_file_after_a_crash_with_the_background_vacuum_running_holds_clean() {
         let steps = Arc::new(AtomicU64::new(0));
         let seen = steps.clone();
         let outcome = crash::run_process(&mut sim, |rt| {
-            let db = open(rt.clone());
+            let db = open(rt);
             budget(&db, 1.0);
             let o = CallOptions::default();
             let mut n = 0_i64;
@@ -335,7 +331,7 @@ fn a_file_after_a_crash_with_the_background_vacuum_running_holds_clean() {
                 db.query_text(&t, &[], &o).ok();
                 let gone = format!("delete o in others where o.n < {}", n - 20);
                 db.query_text(&gone, &[], &o).ok();
-                let charged = db.write_path().pacer().charged(&rt).steps;
+                let charged = db.testing().charged().steps;
                 seen.store(charged, Ordering::Relaxed);
                 n += 1;
             }
@@ -378,7 +374,6 @@ fn write(db: &Database<SimRuntime>, at: usize, next: u64) -> bool {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_background_vacuum_removes_no_version_a_transaction_reads() {
     let done = [(); 5].map(|()| Arc::new(AtomicUsize::new(0)));
     let mut overlapped = 0;
@@ -408,12 +403,12 @@ fn a_background_vacuum_removes_no_version_a_transaction_reads() {
             for r in 0..8 {
                 let mut tx = db.begin(&read_only).unwrap();
                 let first = api::in_txn(&mut tx, read);
-                let steps = db.write_path().pacer().charged(&rt).steps;
+                let steps = db.testing().charged().steps;
                 for _ in 0..5 {
                     sleep(&rt, 50 + rt.next_u64() % 100);
                     assert_eq!(first, api::in_txn(&mut tx, read), "seed {seed}, read {r}");
                 }
-                let ran = db.write_path().pacer().charged(&rt).steps > steps;
+                let ran = db.testing().charged().steps > steps;
                 let now = api::query(&db, read);
                 overlapped += usize::from(ran && first.iter().any(|row| !now.contains(row)));
                 tx.commit(None).unwrap();
@@ -436,7 +431,6 @@ fn a_background_vacuum_removes_no_version_a_transaction_reads() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn the_background_vacuum_and_a_scrub_pass_together_stay_within_the_budget() {
     api::once(25, |rt| {
         let db = open(rt.clone());
@@ -462,7 +456,7 @@ fn the_background_vacuum_and_a_scrub_pass_together_stay_within_the_budget() {
             vacuumed && scrubbed,
             "a scrub pass ran beside the background vacuum"
         );
-        let charged = db.write_path().pacer().charged(&rt);
+        let charged = db.testing().charged();
         let window = rt
             .now()
             .saturating_since(charged.since.expect("a step was charged"));
@@ -516,7 +510,6 @@ fn a_relation_with_all_visible_pages_is_due_at_its_page_count() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn dead_versions_a_reader_holds_stay_counted_until_it_ends() {
     api::once(27, |rt| {
         let db = open(rt.clone());
@@ -529,11 +522,11 @@ fn dead_versions_a_reader_holds_stay_counted_until_it_ends() {
         };
         let mut tx = db.begin(&read_only).unwrap();
         assert_eq!(200, api::in_txn(&mut tx, "from i in items select i").len());
-        let steps = db.write_path().pacer().charged(&rt).steps;
+        let steps = db.testing().charged().steps;
         api::results(&db, "delete i in items where true");
         sleep(&rt, 2000);
         assert!(
-            db.write_path().pacer().charged(&rt).steps > steps,
+            db.testing().charged().steps > steps,
             "a vacuum ran while the reader held its versions"
         );
         tx.commit(None).unwrap();

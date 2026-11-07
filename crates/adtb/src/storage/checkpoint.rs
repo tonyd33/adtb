@@ -214,9 +214,9 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns the dirty page table: each page's `rec_lsn`.
-    #[doc(hidden)]
+    #[cfg(feature = "testing")]
     #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
-    pub fn dirty_pages(&self) -> std::collections::BTreeMap<Pid, Lsn> {
+    pub(crate) fn dirty_pages(&self) -> std::collections::BTreeMap<Pid, Lsn> {
         self.meta().dirty.clone()
     }
 

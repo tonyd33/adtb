@@ -1,3 +1,4 @@
+use adtb::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -319,7 +320,7 @@ impl Db {
         let at = self.txns.read_upto(id);
         self.txns.release(id);
         self.pager
-            .position(at.unwrap_or_else(|| self.pager.durable()))
+            .position(at.unwrap_or_else(|| Probe::of(&self.pager).durable()))
     }
 
     /// Returns the rows a read of the past at `at` sees, scanning.

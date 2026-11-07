@@ -213,7 +213,6 @@ fn a_file_whose_catalog_cannot_be_read_refuses_the_dump() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_damaged_page_of_the_deployment_facts_fails_the_dump_as_storage_and_marks_nothing() {
     let (mut sim, ()) = seeded_sim(6, |_| ());
     let mut roots = None;
@@ -238,7 +237,7 @@ fn a_damaged_page_of_the_deployment_facts_fails_the_dump_as_storage_and_marks_no
             }) => assert_eq!(detail, got),
             other => panic!("not Storage: {other:?}"),
         }
-        assert!(db.write_path().pager().quarantined().is_empty());
+        assert!(db.testing().probe().marks().is_empty());
         db.close().unwrap();
     });
 }

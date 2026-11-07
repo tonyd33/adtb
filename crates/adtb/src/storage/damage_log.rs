@@ -295,7 +295,7 @@ impl<R: Runtime> Pager<R> {
     /// Returns every damage recorded and not cleared: the list's, the log's since and this
     /// open's.
     #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
-    pub fn recorded(&self) -> Recorded {
+    pub(crate) fn recorded(&self) -> Recorded {
         self.meta().records.all()
     }
 
@@ -413,8 +413,8 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns how many damaged pages this open has walked the objects for.
-    #[doc(hidden)]
-    pub fn walked(&self) -> u64 {
+    #[cfg(feature = "testing")]
+    pub(crate) fn walked(&self) -> u64 {
         self.walked.load(Ordering::Relaxed)
     }
 

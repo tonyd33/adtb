@@ -1,6 +1,7 @@
 //! The database a case runs on, the operations a sequence is made of, and the run of a sequence
 //! across the processes its reopens, crashes and migration divide it into.
 
+use adtb::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -375,7 +376,7 @@ fn applies<R: Runtime>(db: &Database<R>, version: u8) -> bool {
 fn durably_whole<R: Runtime>(db: &Database<R>) -> bool {
     const DATABASE: u32 = 1;
     let pager = db.write_path().pager();
-    if !pager.is_quarantined(Quarantine::Database) {
+    if !Probe::of(pager).marked(Quarantine::Database) {
         return false;
     }
     let Ok(page) = pager.read(pager.quarantine_page()) else {
@@ -391,12 +392,8 @@ fn durably_whole<R: Runtime>(db: &Database<R>) -> bool {
 
 /// Returns whether `db` holds a mark on the whole database, under which an open applies no
 /// migration.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn marked_whole<R: Runtime>(db: &Database<R>) -> bool {
-    db.write_path()
-        .pager()
-        .quarantined()
-        .contains(&Quarantine::Database)
+    db.testing().probe().marks().contains(&Quarantine::Database)
 }
 
 /// Returns whether `rel` exists at schema `version`.
@@ -590,7 +587,7 @@ impl Runner<'_> {
                 Op::Reopen | Op::Migrate => {
                     let durable = durably_whole(&db);
                     if *op == Op::Migrate && self.acked.version + 1 == LAST {
-                        self.marked_before_drop = db.write_path().pager().quarantined();
+                        self.marked_before_drop = db.testing().probe().marks();
                     }
                     if let Err(e) = db.close() {
                         self.failed.insert(i, format!("close: {e:?}"));
@@ -686,8 +683,8 @@ impl Runner<'_> {
     #[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
     fn recycle<R: Runtime>(&mut self, db: &Database<R>, i: usize) {
         let pager = db.write_path().pager();
-        let start = pager.appended().0;
-        while pager.appended().0 < start + 3 * SEGMENT {
+        let start = Probe::of(pager).appended().0;
+        while Probe::of(pager).appended().0 < start + 3 * SEGMENT {
             let users = self.acked.last().get(&Rel::Users);
             let ids: Vec<i64> = users
                 .map(|r| r.keys().copied().take(4).collect())

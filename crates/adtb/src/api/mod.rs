@@ -26,6 +26,8 @@ mod server;
 mod settings;
 mod statements;
 mod stop;
+#[cfg(feature = "testing")]
+mod testing;
 mod text;
 mod txn;
 pub mod typed;
@@ -549,12 +551,6 @@ impl<R: Runtime> Database<R> {
         *self.engine.reindexing.hook.lock(&self.engine.rt) = Some(hook);
     }
 
-    /// Returns how many job threads are not yet joined.
-    #[doc(hidden)]
-    pub fn reindex_threads(&self) -> usize {
-        self.engine.reindexing.threads.lock(&self.engine.rt).len()
-    }
-
     /// Returns the log archive's status as its last pass left it, `None` with no archive set.
     /// Unspecified until the spec states where an operator sees the archive.
     #[doc(hidden)]
@@ -572,21 +568,6 @@ impl<R: Runtime> Database<R> {
     #[doc(hidden)]
     pub fn fail_kept_write(&self, text: &'static str) {
         *self.engine.verifier.fail_kept.lock(&self.engine.rt) = Some(text);
-    }
-
-    /// Returns the next page of the background scrub's pass as last saved in the file: the page,
-    /// `None` between passes, and `None` of the outer option when nothing has been saved.
-    #[doc(hidden)]
-    pub fn saved_scrub_page(&self) -> Option<Option<u64>> {
-        let cursor = self.engine.verifier.cursor()?;
-        Some(cursor.next.map(|p| p.0))
-    }
-
-    /// Returns the rows of `sys::verify_findings` the engine holds, which a read of a database
-    /// quarantined whole cannot show.
-    #[doc(hidden)]
-    pub fn held_findings(&self) -> usize {
-        self.engine.verifier.held_findings()
     }
 
     /// Refuse page `pid` as if it failed as `damage` says. Plants a fault for a test of quarantine.

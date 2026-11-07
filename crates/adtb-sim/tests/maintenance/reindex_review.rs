@@ -417,7 +417,7 @@ fn stress(name: &str, reindexes: usize, verify_beside: bool) {
     }
     let bad = bad.lock().unwrap().clone();
     assert!(bad.is_empty(), "{:#?}", &bad[..bad.len().min(8)]);
-    assert!(db.write_path().pager().quarantined().is_empty());
+    assert!(db.testing().probe().marks().is_empty());
     assert_eq!(Vec::<String>::new(), api::printed(db.verify(None).unwrap()));
     let every = |db: &Database| {
         for m in &models {
@@ -663,10 +663,10 @@ fn phantom_through_a_reindexing_index() {
 fn past_gate_rounds(db: &Database, rounds: u32) {
     let bulk = "update t in things.A set A { t with owner: t.owner + 100000 }";
     for r in 0..rounds {
-        let before = db.write_path().pager().appended();
+        let before = db.testing().probe().appended();
         let d = db.clone();
         let writer = std::thread::spawn(move || run(&d, bulk));
-        while db.write_path().pager().appended() == before {
+        while db.testing().probe().appended() == before {
             std::thread::yield_now();
         }
         run(db, "reindex things index (owner) in (A | B) offline").unwrap();
@@ -695,7 +695,7 @@ fn a_statement_past_the_gate_loses_no_entry() {
         }
     }));
     past_gate_rounds(&db, 3);
-    assert!(db.write_path().pager().quarantined().is_empty());
+    assert!(db.testing().probe().marks().is_empty());
     db.close().unwrap();
 }
 
@@ -752,7 +752,7 @@ fn offline_with_one_row(name: &str) -> (Database, Arc<AtomicBool>, Arc<AtomicBoo
 /// Wait until a call on `db` has paused for the rebuild, the first pause counted past `before`.
 fn wait_for_a_pause(db: &Database, before: u64, what: &str) {
     let start = Instant::now();
-    while db.write_path().rebuild_waits() == before {
+    while db.testing().rebuild_waits() == before {
         assert!(
             start.elapsed() < Duration::from_secs(5),
             "{what} never paused for the rebuild"
@@ -773,7 +773,7 @@ fn a_gated_write_stops_at_its_deadline() {
         },
     );
     let waited_out = timed_out.load(Ordering::Acquire);
-    let paused = db.write_path().rebuild_waits();
+    let paused = db.testing().rebuild_waits();
     go.store(true, Ordering::Release);
     assert_rejected("DeadlineExceeded", r.map(|_rows| ()), "the gated write");
     assert!(paused > 0, "the write never reached the gate");
@@ -1039,7 +1039,7 @@ fn history_root(db: &Database<SimRuntime>) -> adtb::storage::Pid {
 }
 
 fn marks(db: &Database<SimRuntime>) -> BTreeSet<Quarantine> {
-    db.write_path().pager().quarantined()
+    db.testing().probe().marks()
 }
 
 fn insert_ok(db: &Database<SimRuntime>, k: u32) -> bool {
@@ -1068,7 +1068,7 @@ fn a_damaged_history_key_index_is_rebuilt_from_the_history_heap() {
         );
         api::results(&db, "reindex ts");
         wait_jobs(&rt, &db);
-        assert!(db.write_path().pager().quarantined().is_empty());
+        assert!(db.testing().probe().marks().is_empty());
         assert_eq!(
             Vec::<String>::new(),
             api::printed(api::result(&db, "from f in sys::verify_findings select f"))
@@ -1084,7 +1084,7 @@ fn a_damaged_history_key_index_is_rebuilt_from_the_history_heap() {
     });
     api::run(&mut sim, move |rt| {
         let db = hist_open(rt);
-        assert!(db.write_path().pager().quarantined().is_empty());
+        assert!(db.testing().probe().marks().is_empty());
         assert_eq!(
             vec!["1007"],
             api::query(&db, &past.lock().unwrap()),
@@ -1120,8 +1120,8 @@ fn a_history_page_damaged_during_the_build_is_not_released_unrepaired() {
         }));
         api::results(&db, "reindex ts");
         wait_jobs(&rt, &db);
-        assert!(db.write_path().pager().quarantined().is_empty());
-        let recorded = db.write_path().pager().recorded().pages;
+        assert!(db.testing().probe().marks().is_empty());
+        let recorded = db.testing().probe().records().pages().clone();
         assert_eq!(
             BTreeMap::new(),
             recorded,
@@ -1245,7 +1245,7 @@ fn a_panic_after_the_swap_frees_no_page_of_the_new_index() {
             assert_eq!(vec![i.to_string()], got);
         }
         assert!(insert_ok(&db, 900), "the index takes a write");
-        assert!(db.write_path().pager().quarantined().is_empty());
+        assert!(db.testing().probe().marks().is_empty());
         let reached = tree.pages(db.write_path().pager()).unwrap();
         for p in reached {
             assert!(
@@ -1310,7 +1310,7 @@ fn a_job_joins_the_threads_of_jobs_before_it() {
                 rt.yield_now();
             }
         }
-        assert_eq!(1, db.reindex_threads());
+        assert_eq!(1, db.testing().reindex_threads());
         db.close().unwrap();
     });
 }
@@ -1709,7 +1709,7 @@ fn a_command_after_one_that_took_effect_never_reruns_it() {
             api::task(&rt, &session, TEXT).unwrap();
             let taken = xids_taken(&db) - before;
             wait_jobs(&rt, &db);
-            let waits = db.write_path().rebuild_waits();
+            let waits = db.testing().rebuild_waits();
             db.close().unwrap();
             (taken, waits)
         });

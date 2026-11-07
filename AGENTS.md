@@ -124,6 +124,10 @@ root (devenv also puts each on PATH as `NAME`):
   identity). `--counts` prints the allowlist lines for the tree. `--against REV` fails on a count
   above the allowlist at REV; `check --changed` runs it against `main`, so a rise is the lead's
   act on main. `structure-check-test` proves it on scratch files.
+- `feature-check [DIR]`: fail when a package of either workspace has a normal or build
+  dependency on adtb with its `testing` feature, enables `adtb/testing` from a feature of its own,
+  or adtb's default features include it, read from `cargo metadata`; a dev-dependency may enable
+  it. `check` runs it; `feature-check-test` proves it on scratch workspaces.
 - `refusal-check`: fail when Rust code asserts a refusal weakly (`is_err()`, `is_ok()`,
   `matches!(.., Err(_))`, a substring of its text, a bare `unwrap_err()`, a call of
   `refused_with`) at other sites than `refusal-allowlist` counts. Assert a refusal with

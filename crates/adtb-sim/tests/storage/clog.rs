@@ -1,3 +1,4 @@
+use adtb::testing::TxnProbe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
@@ -96,7 +97,7 @@ fn visibility_through_the_commit_log_matches_a_model() {
         let mut held: Vec<Held> = Vec::new();
         let mut checks = 0;
         let mut event = 0;
-        while txns.next().0 < 3 * txns.commit_log().ids_per_page() {
+        while TxnProbe::of(txns).next_xid().0 < 3 * txns.commit_log().ids_per_page() {
             event += 1;
             match rng.below(16) {
                 0..=3 => {
@@ -185,7 +186,7 @@ fn visibility_through_the_commit_log_matches_a_model() {
                         );
                     }
                 }
-                assert!(w <= txns.next());
+                assert!(w <= TxnProbe::of(txns).next_xid());
             }
         }
         assert!(
@@ -397,7 +398,7 @@ fn inspect(rt: SimRuntime, root: Pid, pages: &[Pid], assigned: &[Xid]) -> Report
         logged: v.commits.into_iter().collect(),
         findings: v.findings,
         structure,
-        next: Some(txns.next()),
+        next: Some(TxnProbe::of(&txns).next_xid()),
     }
 }
 
@@ -534,7 +535,7 @@ fn a_damaged_status_page_no_unresolved_id_lies_on_quarantines_the_database() {
     finished(&mut sim, |rt| {
         let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
         let txns = Transactions::create(rt, &pager).expect("commit log");
-        while txns.next().0 < 2 * txns.commit_log().ids_per_page() {
+        while TxnProbe::of(&txns).next_xid().0 < 2 * txns.commit_log().ids_per_page() {
             let x = txns.begin(&pager).expect("begin");
             txns.abort(&pager, x).expect("abort");
         }
@@ -549,7 +550,10 @@ fn a_damaged_status_page_no_unresolved_id_lies_on_quarantines_the_database() {
     finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("open");
         let txns = Transactions::open(rt, &pager, root).expect("the commit log opens");
-        assert_eq!(Some(status), txns.quarantined().map(|e| e.pid));
+        assert_eq!(
+            Some(status),
+            TxnProbe::of(&txns).commit_log_damage().map(|e| e.pid)
+        );
     });
 }
 
@@ -560,7 +564,9 @@ fn a_damaged_status_page_quarantines_the_database() {
     finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("open");
         let txns = Transactions::open(rt, &pager, root).expect("the commit log opens");
-        let damage = txns.quarantined().expect("the database is quarantined");
+        let damage = TxnProbe::of(&txns)
+            .commit_log_damage()
+            .expect("the database is quarantined");
         assert_eq!(status, damage.pid);
         let refused = adtb::mvcc::Error::Corrupt(damage);
         assert_eq!(Err(refused), txns.begin(&pager));

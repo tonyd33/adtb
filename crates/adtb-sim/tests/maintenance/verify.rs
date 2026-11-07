@@ -563,10 +563,13 @@ fn a_heap_page_that_lost_a_write_is_refused_on_its_first_read_and_marks_its_heap
         assert_eq!(want, refused);
         let w = db.write_path();
         let heap = w.heap_named("app::users", "User").unwrap().id().0;
-        assert_eq!(BTreeMap::from([(page, stale)]), w.pager().damaged());
+        assert_eq!(
+            BTreeMap::from([(page, stale)]),
+            db.testing().probe().refusals()
+        );
         assert_eq!(
             BTreeSet::from([Quarantine::Heap(heap)]),
-            w.pager().quarantined()
+            db.testing().probe().marks()
         );
     });
 }
@@ -1211,7 +1214,6 @@ fn with_writers(rt: &SimRuntime, db: &Database<SimRuntime>, body: impl FnOnce())
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_run_under_concurrent_writers_finds_nothing_when_nothing_is_wrong() {
     for seed in adtb_simkit::seeds::sweep(0..3) {
         stressed(seed, |rt| {
@@ -1221,7 +1223,7 @@ fn a_run_under_concurrent_writers_finds_nothing_when_nothing_is_wrong() {
                 let got = verified(&db, None);
                 assert_eq!(Vec::<String>::new(), got, "seed {seed}");
             });
-            let marks = db.write_path().pager().quarantined();
+            let marks = db.testing().probe().marks();
             assert!(marks.is_empty(), "seed {seed}: {marks:?}");
         });
     }

@@ -1,3 +1,4 @@
+use adtb::testing::Probe;
 use adtb_simkit::engine;
 use adtb_simkit::seeds;
 use std::ops::Range;
@@ -512,7 +513,7 @@ fn a_snapshot_reads_up_to_the_last_commit_before_it() {
         assert_eq!(None, txns.read_upto(before));
         assert_eq!(None, txns.read_upto(during));
         assert_eq!(Some(lsn), txns.read_upto(after));
-        assert!(pager.durable() <= lsn, "the commit was forced");
+        assert!(Probe::of(&pager).durable() <= lsn, "the commit was forced");
     });
 }
 

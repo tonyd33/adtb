@@ -99,7 +99,7 @@ fn call(db: &Database<SimRuntime>) -> Opened {
         db.query_text(INSERT, &[], &none).map(drop)
     };
     Opened {
-        marks: db.write_path().pager().quarantined(),
+        marks: db.testing().probe().marks(),
         select,
         verify: api::printed(db.verify(None).unwrap()),
         insert,
@@ -316,7 +316,11 @@ fn selected_twice(files: Files, text: &'static str, what: &'static str) -> Vec<R
                 let db = open(rt).unwrap();
                 let w = db.write_path();
                 let users = Quarantine::Heap(w.heap_named("app::users", "User").unwrap().id().0);
-                got.push((select_answer(&db, text), w.pager().quarantined(), users));
+                got.push((
+                    select_answer(&db, text),
+                    db.testing().probe().marks(),
+                    users,
+                ));
                 db.close().unwrap();
             });
         }
@@ -412,7 +416,7 @@ fn a_cut_page_ordinary_writes_grew_the_file_over_stays_refused() {
         let db = open_two(rt);
         let answer = select_answer(&db, SELECT);
         assert_refused_rows(&answer, "app::users.User", "after growth");
-        assert!(!db.write_path().pager().quarantined().is_empty());
+        assert!(!db.testing().probe().marks().is_empty());
         db.close().unwrap();
     });
 }
@@ -568,11 +572,7 @@ fn churn(rt: &SimRuntime, db: &Database<SimRuntime>, what: &str) {
     }
     stop.store(true, Ordering::Relaxed);
     rt.join(scans);
-    assert_eq!(
-        BTreeSet::new(),
-        db.write_path().pager().quarantined(),
-        "{what}"
-    );
+    assert_eq!(BTreeSet::new(), db.testing().probe().marks(), "{what}");
 }
 
 fn no_refusal_after_reopening(seed: u64, files: Files, what: &str) {
@@ -581,11 +581,7 @@ fn no_refusal_after_reopening(seed: u64, files: Files, what: &str) {
         let db = open_small(rt);
         let got = select_answer(&db, SELECT);
         assert!(got.is_ok(), "{what}: {got:?}");
-        assert_eq!(
-            BTreeSet::new(),
-            db.write_path().pager().quarantined(),
-            "{what}"
-        );
+        assert_eq!(BTreeSet::new(), db.testing().probe().marks(), "{what}");
         db.close().unwrap();
     });
 }
@@ -639,7 +635,7 @@ fn a_scan_of_a_listing_skips_the_pages_vacuum_freed_since() {
         let mut seen = 0;
         heap.scan_pages(w.pager(), &listing, |_| seen += 1).unwrap();
         assert_eq!(0, seen);
-        assert_eq!(BTreeSet::new(), w.pager().quarantined());
+        assert_eq!(BTreeSet::new(), db.testing().probe().marks());
         db.close().unwrap();
     });
 }
@@ -691,7 +687,7 @@ add relation users : User key id generate sequence
         api::results(&db, "reindex users");
         let marked = (0..600).any(|_| {
             common::sleep(&rt2, &mut rt2.io(), Duration::from_millis(100));
-            !db.write_path().pager().quarantined().is_empty()
+            !db.testing().probe().marks().is_empty()
         });
         assert!(marked, "the rebuild marked what it could not read");
         let got = select_answer(&db, SELECT);

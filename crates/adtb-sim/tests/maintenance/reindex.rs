@@ -82,9 +82,8 @@ fn findings(db: &Database<SimRuntime>) -> Vec<String> {
     api::printed(api::result(db, "from f in sys::verify_findings select f"))
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn marks(db: &Database<SimRuntime>) -> BTreeSet<Quarantine> {
-    db.write_path().pager().quarantined()
+    db.testing().probe().marks()
 }
 
 #[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
@@ -836,7 +835,7 @@ fn a_real_file_restores_a_damaged_index_and_keeps_it_across_a_reopen() {
         db.query_text(probe, &[], &adtb::CallOptions::default()),
         "fatal: app::identities index (user) in (Google | Apple) is quarantined",
     );
-    assert_eq!(1, db.write_path().pager().quarantined().len());
+    assert_eq!(1, db.testing().probe().marks().len());
     run(&db, USER_REINDEX);
     let idle = |db: &Database| {
         let rows = run(db, "from j in sys::jobs select j.id").remove(0);
@@ -845,14 +844,14 @@ fn a_real_file_restores_a_damaged_index_and_keeps_it_across_a_reopen() {
     while !idle(&db) {
         std::thread::yield_now();
     }
-    assert!(db.write_path().pager().quarantined().is_empty());
+    assert!(db.testing().probe().marks().is_empty());
     run(
         &db,
         r#"insert identities.Google { id: identities.key(100001), user: users.key(5), gid: "gnew" }"#,
     );
     db.close().unwrap();
     let db = Database::open(&path, &log, &real_options()).unwrap();
-    assert!(db.write_path().pager().quarantined().is_empty());
+    assert!(db.testing().probe().marks().is_empty());
     run(&db, probe);
     db.close().unwrap();
 }

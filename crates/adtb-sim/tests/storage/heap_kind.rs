@@ -154,11 +154,11 @@ impl Fixture {
             assert_eq!(format!("app::identities.{}", t.ctor), holder, "{what}");
             let w = db.write_path();
             let heap = w.heap_named("app::identities", t.ctor).unwrap();
-            let met: BTreeSet<Pid> = w.pager().damaged().into_keys().collect();
+            let met: BTreeSet<Pid> = db.testing().probe().refusals().into_keys().collect();
             let blamed = BTreeSet::from([if root { heap.root() } else { pid }]);
             assert_eq!(blamed, met, "{what}");
             let only = BTreeSet::from([Quarantine::Heap(heap.id().0)]);
-            assert_eq!(only, w.pager().quarantined(), "{what}");
+            assert_eq!(only, db.testing().probe().marks(), "{what}");
             db.close().unwrap();
         });
         let mut after = sim.files();

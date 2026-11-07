@@ -694,7 +694,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns the pages refused so far, each with what is wrong with it.
-    pub fn damaged(&self) -> BTreeMap<Pid, Damage> {
+    pub(crate) fn damaged(&self) -> BTreeMap<Pid, Damage> {
         self.meta().damaged.clone()
     }
 
@@ -1303,7 +1303,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns the LSN the next record appended takes.
-    pub fn appended(&self) -> Lsn {
+    pub(crate) fn appended(&self) -> Lsn {
         self.log().next_lsn()
     }
 
@@ -1440,8 +1440,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns the LSN of the checkpoint record the file header names.
-    #[doc(hidden)]
-    pub fn checkpoint_lsn(&self) -> Lsn {
+    pub(crate) fn checkpoint_lsn(&self) -> Lsn {
         self.header.lock(&self.rt).0.checkpoint
     }
 }

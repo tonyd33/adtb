@@ -1,3 +1,4 @@
+use adtb::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -62,8 +63,8 @@ fn a_new_database_quarantines_nothing() {
     let mut sim = Sim::new(1, Config::default());
     create(&mut sim);
     with_pager(&mut sim, |p| {
-        assert!(p.quarantined().is_empty());
-        assert!(!p.is_quarantined(Quarantine::Heap(1)));
+        assert!(Probe::of(p).marks().is_empty());
+        assert!(!Probe::of(p).marked(Quarantine::Heap(1)));
     });
 }
 
@@ -75,21 +76,21 @@ fn marks_survive_a_restart_until_released() {
         p.quarantine(Quarantine::Heap(7)).unwrap();
         p.quarantine(Quarantine::Index(3)).unwrap();
         p.quarantine(Quarantine::Heap(7)).unwrap();
-        assert!(p.is_quarantined(Quarantine::Heap(7)));
+        assert!(Probe::of(p).marked(Quarantine::Heap(7)));
         assert!(
-            !p.is_quarantined(Quarantine::Heap(3)),
+            !Probe::of(p).marked(Quarantine::Heap(3)),
             "heap and index ids are apart"
         );
     });
     with_pager(&mut sim, |p| {
         assert_eq!(
             BTreeSet::from([Quarantine::Heap(7), Quarantine::Index(3)]),
-            p.quarantined()
+            Probe::of(p).marks()
         );
         p.release(Quarantine::Heap(7)).unwrap();
     });
     with_pager(&mut sim, |p| {
-        assert_eq!(BTreeSet::from([Quarantine::Index(3)]), p.quarantined());
+        assert_eq!(BTreeSet::from([Quarantine::Index(3)]), Probe::of(p).marks());
         assert!(p.verify().findings.is_empty());
     });
 }
@@ -114,7 +115,7 @@ fn a_mark_is_durable_once_quarantine_returns() {
         assert_eq!(Outcome::Crashed, outcome);
         with_pager(&mut sim, |p| {
             assert!(
-                p.is_quarantined(Quarantine::Heap(40 + seed as u32)),
+                Probe::of(p).marked(Quarantine::Heap(40 + seed as u32)),
                 "seed {seed}"
             );
         });
@@ -127,8 +128,8 @@ fn a_database_mark_covers_every_object() {
     create(&mut sim);
     with_pager(&mut sim, |p| p.quarantine(Quarantine::Database).unwrap());
     with_pager(&mut sim, |p| {
-        assert!(p.is_quarantined(Quarantine::Heap(9)));
-        assert!(p.is_quarantined(Quarantine::Index(9)));
+        assert!(Probe::of(p).marked(Quarantine::Heap(9)));
+        assert!(Probe::of(p).marked(Quarantine::Index(9)));
     });
 }
 
@@ -145,7 +146,7 @@ fn a_damaged_mark_page_quarantines_the_database() {
     files.get_mut(NAME).unwrap()[page.0 as usize * PAGE + 200] ^= 0x10;
     let mut sim = Sim::with_files(4, Config::default(), files);
     with_pager(&mut sim, |p| {
-        assert!(p.is_quarantined(Quarantine::Database));
+        assert!(Probe::of(p).marked(Quarantine::Database));
         assert_eq!(
             Err(PageError {
                 pid: page,
@@ -285,9 +286,8 @@ fn failed_on(db: &Database<SimRuntime>, text: &str) -> String {
     quarantined(&api::failure(db, text)).to_owned()
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn marks<R: Runtime>(db: &Database<R>) -> BTreeSet<Quarantine> {
-    db.write_path().pager().quarantined()
+    db.testing().probe().marks()
 }
 
 #[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
@@ -518,7 +518,7 @@ fn concurrent_readers_of_one_damaged_page_set_one_mark() {
             let db = open_app(rt.clone());
             seed(&db);
             db.damage_page(apple(&db), Damage::Checksum);
-            let before = db.write_path().pager().durable();
+            let before = db.testing().probe().durable();
             let readers: Vec<_> = (0..4)
                 .map(|i| {
                     let db = db.clone();
@@ -535,10 +535,10 @@ fn concurrent_readers_of_one_damaged_page_set_one_mark() {
                 marks(&db),
                 "seed {seed_no}"
             );
-            assert!(db.write_path().pager().durable() > before, "seed {seed_no}");
-            let once = db.write_path().pager().durable();
+            assert!(db.testing().probe().durable() > before, "seed {seed_no}");
+            let once = db.testing().probe().durable();
             db.write_path().pager().quarantine(apple_mark(&db)).unwrap();
-            assert_eq!(once, db.write_path().pager().durable(), "seed {seed_no}");
+            assert_eq!(once, db.testing().probe().durable(), "seed {seed_no}");
         });
     }
 }
@@ -602,7 +602,7 @@ fn a_file_with_a_damaged_catalog_root_opens_and_keeps_the_mark() {
         got.unwrap().close().unwrap();
     });
     with_named_pager(&mut sim, |p| {
-        assert_eq!(BTreeSet::from([Quarantine::Database]), p.quarantined());
+        assert_eq!(BTreeSet::from([Quarantine::Database]), Probe::of(p).marks());
     });
 }
 
@@ -1019,7 +1019,7 @@ fn a_second_finder_of_one_object_returns_with_the_mark_durable() {
                         let p = db.write_path().pager();
                         p.quarantine(Quarantine::Heap(1000)).unwrap();
                         let at = adtb::storage::lsn(&p.read(p.quarantine_page()).unwrap());
-                        assert!(p.durable() > at, "seed {s} marker {i}");
+                        assert!(Probe::of(p).durable() > at, "seed {s} marker {i}");
                     })
                 })
                 .collect();
@@ -1185,7 +1185,7 @@ fn a_failed_open_marks_the_heap_of_the_damage_it_met() {
         );
     });
     with_named_pager(&mut sim, |p| {
-        let marks = p.quarantined();
+        let marks = Probe::of(p).marks();
         assert_eq!(1, marks.len(), "{marks:?}");
         assert!(
             matches!(marks.first(), Some(Quarantine::Heap(_))),
@@ -1230,7 +1230,7 @@ fn a_failed_open_on_a_damaged_page_of_the_large_value_store_marks_the_database()
         );
     });
     let database = BTreeSet::from([Quarantine::Database]);
-    with_named_pager(&mut sim, |p| assert_eq!(database, p.quarantined()));
+    with_named_pager(&mut sim, |p| assert_eq!(database, Probe::of(p).marks()));
 }
 
 #[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
@@ -1286,7 +1286,7 @@ fn a_file_with_a_damaged_commit_log_root_opens_and_keeps_the_mark() {
         got.unwrap().close().unwrap();
     });
     with_named_pager(&mut sim, |p| {
-        assert_eq!(BTreeSet::from([Quarantine::Database]), p.quarantined());
+        assert_eq!(BTreeSet::from([Quarantine::Database]), Probe::of(p).marks());
     });
 }
 
@@ -1520,7 +1520,7 @@ fn an_io_failure_on_the_marks_page_fails_the_load_and_marks_nothing() {
         db.damage_page(page, Damage::Unreadable);
         let e = p.load_marks(page).expect_err("the page cannot be read");
         assert_eq!(Damage::Unreadable, e.damage);
-        assert_eq!(BTreeSet::from([Quarantine::Index(5)]), p.quarantined());
+        assert_eq!(BTreeSet::from([Quarantine::Index(5)]), Probe::of(p).marks());
     });
 }
 
@@ -1699,7 +1699,6 @@ add relation identities : Identity key id generate sequence
 ";
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn writers_and_vacuum_under_verify_set_no_false_mark() {
     for s in adtb_simkit::seeds::sweep(0..1) {
         let mut sim = Sim::new(
@@ -1759,11 +1758,7 @@ fn writers_and_vacuum_under_verify_set_no_false_mark() {
             for t in writers {
                 rt.join(t);
             }
-            assert_eq!(
-                BTreeSet::new(),
-                db.write_path().pager().quarantined(),
-                "seed {s}"
-            );
+            assert_eq!(BTreeSet::new(), db.testing().probe().marks(), "seed {s}");
         });
     }
 }
@@ -2681,11 +2676,14 @@ fn a_commit_whose_record_of_the_retention_window_is_damaged_is_refused_naming_th
         api::in_txn_results(&mut t, r#"insert users { name: "zed" }"#);
         assert_eq!(
             None,
-            pager.recorded().pages.get(&past),
+            Probe::of(pager).records().pages().get(&past),
             "nothing read the page yet"
         );
         let what = quarantined(&t.commit(None).unwrap_err()).to_owned();
-        assert_eq!(Some(&Damage::Checksum), pager.recorded().pages.get(&past));
+        assert_eq!(
+            Some(&Damage::Checksum),
+            Probe::of(pager).records().pages().get(&past)
+        );
         assert_eq!("the database", what);
         assert_eq!(BTreeSet::from([Quarantine::Database]), marks(&db));
     });
@@ -2711,13 +2709,13 @@ fn damage_another_thread_records_on_a_page_the_commits_walk_reads_marks_only_its
                 pager.read(Pid(1 << 16 | p)).expect("a page never written");
             }
             db.damage_page(google_page, Damage::Checksum);
-            let before = pager.walked();
+            let before = Probe::of(&pager).walks();
             let walked_then = Arc::new(Mutex::new(None));
             let (other, rt2, then) = (db.clone(), rt.clone(), walked_then.clone());
             let detecting = rt.spawn("detecting", move || {
                 let nap = Duration::from_micros(step * step * 40);
                 adtb_simkit::common::sleep(&rt2, &mut rt2.io(), nap);
-                *then.lock().unwrap() = Some(other.write_path().pager().walked());
+                *then.lock().unwrap() = Some(other.testing().probe().walks());
                 other.damage_page(leaf, Damage::Checksum);
             });
             let what = quarantined(&t.commit(None).unwrap_err()).to_owned();
@@ -2756,10 +2754,10 @@ fn a_commit_walks_no_record_whose_last_mapping_was_incomplete() {
         let root = root.owned_pages(p).unwrap()[0];
         db.damage_page(root, Damage::Unreadable);
         db.damage_page(unheld, Damage::Checksum);
-        let mut walked = vec![p.walked()];
+        let mut walked = vec![Probe::of(p).walks()];
         for i in 0..3 {
             api::results(&db, &format!(r#"insert users {{ name: "w{i}" }}"#));
-            walked.push(p.walked());
+            walked.push(Probe::of(p).walks());
         }
         assert_eq!(None, p.mapped_to(unheld));
         assert_eq!(BTreeSet::new(), marks(&db));
@@ -2776,7 +2774,11 @@ fn a_commit_walks_no_record_whose_last_mapping_was_incomplete() {
             reason: FatalReason::Storage { detail },
         };
         assert_eq!(failed, api::failure(&db, ALL));
-        assert_eq!(first + 1, p.walked(), "a failing call walks it again");
+        assert_eq!(
+            first + 1,
+            Probe::of(p).walks(),
+            "a failing call walks it again"
+        );
     });
 }
 
@@ -2808,7 +2810,6 @@ fn written_whole(files: Files, pid: Pid, crash: bool) -> Files {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_lost_write_recovery_finds_is_marked_by_an_open_that_succeeds_and_refuses_the_next() {
     let mut sim = Sim::new(98, Config::default());
     let (pid, users) = api::run(&mut sim, |rt| {
@@ -2829,7 +2830,7 @@ fn a_lost_write_recovery_finds_is_marked_by_an_open_that_succeeds_and_refuses_th
         let db = open_app(rt);
         assert!(
             matches!(
-                db.write_path().pager().recorded().pages.get(&pid),
+                db.testing().probe().records().pages().get(&pid),
                 Some(Damage::Stale { .. })
             ),
             "recovery records the lost write"

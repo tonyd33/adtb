@@ -27,6 +27,7 @@ expect "M work/tools/land" 'run slot-test' 'skip suite-test' 'skip house-check-t
 expect "M work/tools/common.bash" 'run slot-test' 'run suite-test' 'skip house-check-test'
 expect "M work/tools/structure-check" 'run structure-check-test' 'skip slot-test' 'skip house-check-test'
 expect "M work/tools/structure-allowlist" 'run structure-check-test' 'skip slot-test'
+expect "M work/tools/feature-check" 'run feature-check-test' 'skip slot-test' 'skip structure-check-test'
 expect "M crates/adtb-structure/src/main.rs" 'run structure-check-test' 'skip slot-test'
 expect "M clippy.toml" 'run structure-check-test'
 expect "M Cargo.lock" 'run miri' 'run loom' 'run campaign' 'run tree-sitter' 'run docs' 'run deny'

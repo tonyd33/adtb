@@ -12,6 +12,8 @@ pub mod key;
 pub mod mvcc;
 pub mod plan;
 pub mod storage;
+#[cfg(feature = "testing")]
+pub mod testing;
 pub mod vacuum;
 pub mod verify;
 pub mod write;

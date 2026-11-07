@@ -1,6 +1,7 @@
 //! Full backups of a database under writers, restores of them to new files, and the test restore
 //! that proves one.
 
+use adtb::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -457,7 +458,7 @@ fn page_allocated_after_copy_rebuilt_from_log() {
         restore(&rt).unwrap();
         let db = open_at(rt, COPY).unwrap();
         assert_eq!(60, ids(&db).len());
-        assert!(db.write_path().pager().damaged().is_empty());
+        assert!(db.testing().probe().refusals().is_empty());
         assert_eq!(0, db.verify_holding().unwrap().count());
         insert(&db, 60..62);
         assert_eq!(62, ids(&db).len());
@@ -843,7 +844,7 @@ fn a_check_reports_a_log_it_cannot_read() {
             _ => None,
         });
         let pager = db.write_path().pager();
-        assert!(pager.logged_commits().is_empty());
+        assert!(Probe::of(pager).logged_commits().is_empty());
         let found = pager.verify().findings;
         assert!(
             found.iter().any(|f| matches!(

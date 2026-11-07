@@ -1529,9 +1529,8 @@ fn rot_opened(rt: SimRuntime, seen: &mut Seen) -> Result<Database<SimRuntime>, S
     db.ok_or_else(|| format!("open refused: {:?}", seen.open_refusal))
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn marks<R: Runtime>(db: &Database<R>) -> BTreeSet<Quarantine> {
-    db.write_path().pager().quarantined()
+    db.testing().probe().marks()
 }
 
 /// Open `image`, commit to `rows` with no read before it, and read `rows` before a close and after
@@ -1561,7 +1560,6 @@ fn rot_commit(image: Files) -> Result<Tally, String> {
 /// to `rows` and read that commit back, before a close and after a reopen. Returns one case's
 /// tally.
 #[rustfmt::skip]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn rot_cross(image: Files, object: &RotObject, crossing: &Crossing, commit_after: bool, must_refuse: bool, damaged: Option<Pid>) -> Result<Tally, String> {
     let (mut seen, mut tally) = (Seen::default(), Tally::default());
     let mut sim = Sim::with_files(SEED, Config::default(), image);
@@ -1571,7 +1569,7 @@ fn rot_cross(image: Files, object: &RotObject, crossing: &Crossing, commit_after
         if !marks(&db).is_empty() {
             return Err(format!("marked before the read: {:?}", marks(&db)));
         }
-        let pages = || db.write_path().pager().damaged();
+        let pages = || db.testing().probe().refusals();
         match rot_read(&db, &crossing.text)? {
             Err(what) if what == object.name && marks(&db) == BTreeSet::from([object.mark]) && damaged.is_none_or(|p| pages().contains_key(&p)) => {
                 tally.refused += 1;
@@ -2120,7 +2118,6 @@ struct Pass<T> {
 /// Open `image`, give the next reads of page `at` the outcomes of `plan`, nap until the reads cover
 /// every data page and the pass reading page `at` has ended, `judge` the database, close and reopen.
 /// Returns `None` for an open refusing damage.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn scrubbed<T>(
     image: Files,
     at: usize,
@@ -2144,7 +2141,7 @@ fn scrubbed<T>(
         let watch = watch(&hook, at as u64, pages - 1, plan);
         let whole = early.contains(&Quarantine::Database);
         let unread = || {
-            let known = db.write_path().pager().damaged();
+            let known = db.testing().probe().refusals();
             let w = watch.lock().unwrap();
             let seen = |p: &u64| w.read.contains(p) || known.contains_key(&Pid(*p));
             (Pid::FIRST_DATA.0..pages).find(|p| !whole && !seen(p))
@@ -2205,7 +2202,7 @@ fn names_page<R: Runtime>(db: &Database<R>, at: usize) -> Result<bool, String> {
     let named = format!("where: \"page {at}: ");
     Ok(match rot_read(db, FINDINGS)? {
         Ok(rows) => rows.iter().any(|r| r.contains(&named)),
-        Err(_) => db.held_findings() > 0,
+        Err(_) => db.testing().held_findings() > 0,
     })
 }
 
@@ -2226,7 +2223,7 @@ fn filed_as_read<R: Runtime>(db: &Database<R>, early: &BTreeSet<Quarantine>, at:
     };
     match rot_read(db, FINDINGS)? {
         Ok(rows) if rows.len() == 1 && rows[0].contains(&named) => {}
-        Err(what) if whole && what == object.name && db.held_findings() == usize::from(early.is_empty()) => {}
+        Err(what) if whole && what == object.name && db.testing().held_findings() == usize::from(early.is_empty()) => {}
         other => return Err(format!("findings {other:?}")),
     }
     for o in objects {

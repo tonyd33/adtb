@@ -1,6 +1,7 @@
 //! Recycling the log within one open: once the open's readers of the log have run, each cycle of
 //! the checkpointer that finds a whole segment below the floor recycles.
 
+use adtb::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -78,10 +79,10 @@ fn value_of<R: Runtime>(pager: &Pager<R>, pid: Pid) -> u64 {
 /// Write the pages of `pages` in turn, each forced, until the log has grown by `bytes`. Returns
 /// the last value written to each.
 fn load<R: Runtime>(pager: &Pager<R>, pages: &[Pid], bytes: u64) -> BTreeMap<Pid, u64> {
-    let start = pager.appended().0;
+    let start = Probe::of(pager).appended().0;
     let mut written = BTreeMap::new();
     for n in 0.. {
-        if pager.appended().0 >= start + bytes {
+        if Probe::of(pager).appended().0 >= start + bytes {
             break;
         }
         let pid = pages[n % pages.len()];
@@ -93,8 +94,8 @@ fn load<R: Runtime>(pager: &Pager<R>, pages: &[Pid], bytes: u64) -> BTreeMap<Pid
 
 /// Write as [`load`] does, letting the checkpointer run a cycle after each half threshold of log.
 fn paced(pager: &Pager<SimRuntime>, rt: &SimRuntime, pages: &[Pid], bytes: u64) {
-    let start = pager.appended().0;
-    while pager.appended().0 < start + bytes {
+    let start = Probe::of(pager).appended().0;
+    while Probe::of(pager).appended().0 < start + bytes {
         load(pager, pages, EVERY / 2);
         settle(rt);
     }
@@ -139,12 +140,12 @@ fn long_session_keeps_its_log_bounded(atomic: bool) {
     let (mut sim, pages) = created(64, atomic);
     let (wrote, retained, named, start, last) = session(&mut sim, atomic, |pager, rt| {
         storage::recycle_at_open(pager, None);
-        let start = pager.appended().0;
-        let mut named: Vec<u64> = vec![pager.checkpoint_lsn().0];
+        let start = Probe::of(pager).appended().0;
+        let mut named: Vec<u64> = vec![Probe::of(pager).checkpoint().0];
         let mut retained = 0;
         let mut wrote = BTreeMap::new();
         let mut n = 0u64;
-        while pager.appended().0 < start + 40 * EVERY {
+        while Probe::of(pager).appended().0 < start + 40 * EVERY {
             let pid = pages[n as usize % pages.len()];
             n += 1;
             put(pager, pid, n);
@@ -152,7 +153,7 @@ fn long_session_keeps_its_log_bounded(atomic: bool) {
             if !n.is_multiple_of(8) {
                 continue;
             }
-            let checkpoint = pager.checkpoint_lsn().0;
+            let checkpoint = Probe::of(pager).checkpoint().0;
             if named.last() != Some(&checkpoint) {
                 named.push(checkpoint);
             }
@@ -163,9 +164,9 @@ fn long_session_keeps_its_log_bounded(atomic: bool) {
                     "first segment {first:#x}, checkpoints {named:x?}"
                 );
             }
-            retained = retained.max(pager.appended().0 - first);
+            retained = retained.max(Probe::of(pager).appended().0 - first);
         }
-        named.push(pager.appended().0);
+        named.push(Probe::of(pager).appended().0);
         (wrote, retained, named, start, listed(rt, atomic)[0])
     });
     assert!(
@@ -207,15 +208,15 @@ fn the_checkpointer_recycles_nothing_until_the_opens_readers_of_the_log_have_run
     let (mut sim, pages) = created(16, false);
     let (held, after, start) = session(&mut sim, false, |pager, rt| {
         let at_open = listed(rt, false);
-        let first = pager.checkpoint_lsn();
+        let first = Probe::of(pager).checkpoint();
         paced(pager, rt, &pages, 6 * EVERY);
         assert!(
-            pager.checkpoint_lsn().0 >= first.0 + 4 * EVERY,
+            Probe::of(pager).checkpoint().0 >= first.0 + 4 * EVERY,
             "the checkpointer ran"
         );
         let held = listed(rt, false)[0] == at_open[0];
         storage::recycle_at_open(pager, None);
-        let start = pager.appended().0;
+        let start = Probe::of(pager).appended().0;
         paced(pager, rt, &pages, 6 * EVERY);
         (held, listed(rt, false)[0], start)
     });
@@ -239,7 +240,7 @@ fn an_archive_behind_keeps_every_segment_it_has_not_archived_within_a_session() 
         storage::recycle_at_open(pager, None);
         paced(pager, rt, &pages, 6 * EVERY);
         let stalled = listed(rt, false)[0];
-        let end = pager.appended().0;
+        let end = Probe::of(pager).appended().0;
         through.store(segment_of(end), Ordering::SeqCst);
         paced(pager, rt, &pages, 6 * EVERY);
         (stalled, listed(rt, false)[0], (stalled, segment_of(end)))
@@ -321,7 +322,7 @@ fn refused_while_changed_frees_the_floor(atomic: bool) {
         paced(pager, rt, &pages[1..], 8 * EVERY);
         (
             logged,
-            pager.dirty_pages().contains_key(&pid),
+            Probe::of(pager).dirty().contains_key(&pid),
             listed(rt, false)[0],
         )
     });
@@ -361,9 +362,9 @@ fn a_database_quarantined_whole_recycles_nothing_within_the_session() {
         storage::recycle_at_open(pager, None);
         let before = listed(rt, false);
         pager.quarantine(Quarantine::Database).unwrap();
-        let first = pager.checkpoint_lsn();
+        let first = Probe::of(pager).checkpoint();
         paced(pager, rt, &pages, 6 * EVERY);
-        let cycled = pager.checkpoint_lsn().0 >= first.0 + 4 * EVERY;
+        let cycled = Probe::of(pager).checkpoint().0 >= first.0 + 4 * EVERY;
         (before, listed(rt, false), cycled)
     });
     assert!(cycled, "the checkpointer ran");
@@ -412,9 +413,9 @@ fn crash_through_recycles_in_session(atomic: bool) {
             });
             hook.arm(|_, _| false);
             let mut log = Vec::new();
-            let start = pager.appended().0;
+            let start = Probe::of(&pager).appended().0;
             for n in 0.. {
-                if pager.appended().0 >= start + 6 * EVERY {
+                if Probe::of(&pager).appended().0 >= start + 6 * EVERY {
                     break;
                 }
                 let pid = pages[n % pages.len()];

@@ -91,6 +91,7 @@ in
       if [[ -n $base ]]; then structure-check --against "$base"; fi
     fi
     refusal-check
+    feature-check
     if part docs; then docs-check; fi
     if part tree-sitter; then tree-sitter-check; fi
     for t in "$DEVENV_ROOT"/work/tools/*-test; do
@@ -127,6 +128,10 @@ in
 
   scripts.structure-check.exec = ''
     "$DEVENV_ROOT/work/tools/structure-check" "$@"
+  '';
+
+  scripts.feature-check.exec = ''
+    "$DEVENV_ROOT/work/tools/feature-check" "$@"
   '';
 
   scripts.refusal-check.exec = ''

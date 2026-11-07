@@ -1,5 +1,6 @@
 //! Recycling the log: what it removes, what it keeps, and the page LSN map it folds into first.
 
+use adtb::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -70,10 +71,10 @@ fn put(pager: &Pager<SimRuntime>, pid: Pid, value: u64) {
 /// Write the pages of `pages` in turn until the log has grown by `bytes`. Returns the last value
 /// written to each.
 fn fill(pager: &Pager<SimRuntime>, pages: &[Pid], bytes: u64) -> BTreeMap<Pid, u64> {
-    let start = pager.appended().0;
+    let start = Probe::of(pager).appended().0;
     let mut written = BTreeMap::new();
     for n in 0.. {
-        if pager.appended().0 >= start + bytes {
+        if Probe::of(pager).appended().0 >= start + bytes {
             break;
         }
         let pid = pages[n % pages.len()];
@@ -132,7 +133,7 @@ fn the_log_holds_only_the_last_session_and_the_current_one() {
         });
         held.push((removed, segments(&sim.files()).len()));
     }
-    let written = session(&mut sim, |pager, _| pager.appended().0);
+    let written = session(&mut sim, |pager, _| Probe::of(pager).appended().0);
     assert!(written > 24 * SEGMENT, "{written}");
     assert!(held[1..].iter().all(|&(r, h)| r >= 2 && h <= 5), "{held:?}");
 }
@@ -241,18 +242,18 @@ fn recycles_while_a_backup_copies_its_pages_keep_the_log_it_copies() {
 fn recycled_across_a_boundary(pages: &[Pid], sim: &mut Sim) -> (Files, Files) {
     session(sim, |pager, _| {
         for n in 0.. {
-            if SEGMENT - pager.appended().0 % SEGMENT <= 1024 {
+            if SEGMENT - Probe::of(pager).appended().0 % SEGMENT <= 1024 {
                 break;
             }
             put(pager, pages[1 + n % 8], n as u64 + 1);
         }
-        let at = pager.appended().0;
+        let at = Probe::of(pager).appended().0;
         pager
             .update(&[pages[1]], |p| p[0][HEADER_LEN..].fill(9))
             .unwrap();
         pager.update(&[pages[0]], |p| p[0][HEADER_LEN] = 8).unwrap();
         pager.flush_log();
-        let end = pager.appended().0 - 1;
+        let end = Probe::of(pager).appended().0 - 1;
         assert_ne!(at / SEGMENT, end / SEGMENT, "the batch spans a boundary");
     });
     let written = sim.files();
@@ -313,7 +314,7 @@ fn a_lost_write_of_a_map_page_quarantines_the_database() {
         let mut sim = Sim::with_files(3, Config::default(), lost);
         let marks = session(&mut sim, |pager, _| {
             pager.verify();
-            pager.quarantined()
+            Probe::of(pager).marks()
         });
         assert_eq!(BTreeSet::from([Quarantine::Database]), marks, "{page:?}");
         reached += 1;
@@ -349,7 +350,7 @@ fn an_unreadable_map_page_is_refused_unmarked_and_read_by_the_next_open() {
             _ => None,
         });
         let (pager, _) = Pager::open(hook, &options()).unwrap();
-        out = Some((pager.map_pages(), pager.quarantined()));
+        out = Some((pager.map_pages(), Probe::of(&pager).marks()));
         pager.close();
     });
     let (refused, marks) = out.unwrap();
@@ -362,7 +363,7 @@ fn an_unreadable_map_page_is_refused_unmarked_and_read_by_the_next_open() {
         (refused, marks)
     );
     let after = session(&mut sim, |pager, _| {
-        (pager.map_pages().map(|m| m.len()), pager.quarantined())
+        (pager.map_pages().map(|m| m.len()), Probe::of(pager).marks())
     });
     assert_eq!((Ok(3), BTreeSet::new()), after);
 }
@@ -391,7 +392,12 @@ fn a_checksum_bad_map_page_quarantines_the_database_and_verify_reports_the_rest(
                 .iter()
                 .filter(|f| f.problem == Problem::Leaked);
             let leaked: Vec<Pid> = leaked.map(|f| f.pid).collect();
-            (findings, pager.quarantined(), pager.allocated(), leaked)
+            (
+                findings,
+                Probe::of(pager).marks(),
+                pager.allocated(),
+                leaked,
+            )
         });
         assert_eq!(BTreeSet::from([Quarantine::Database]), marks, "{bad:?}");
         let refused = PageError {
@@ -538,7 +544,7 @@ fn a_gap_in_the_retained_log_quarantines_the_database_for_the_open_and_marks_not
     let mut gapped = files.clone();
     gapped.remove(&gap).unwrap();
     let mut sim = Sim::with_files(3, Config::default(), gapped);
-    let marks = session(&mut sim, |pager, _| pager.quarantined());
+    let marks = session(&mut sim, |pager, _| Probe::of(pager).marks());
     assert_eq!(BTreeSet::from([Quarantine::Database]), marks);
     let mut back = sim.files();
     back.insert(
@@ -547,7 +553,7 @@ fn a_gap_in_the_retained_log_quarantines_the_database_for_the_open_and_marks_not
     );
     let marks = session(
         &mut Sim::with_files(3, Config::default(), back),
-        |pager, _| pager.quarantined(),
+        |pager, _| Probe::of(pager).marks(),
     );
     assert_eq!(BTreeSet::new(), marks);
 }

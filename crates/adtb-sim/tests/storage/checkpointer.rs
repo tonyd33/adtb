@@ -1,6 +1,7 @@
 //! The checkpointer: within one open, each time the log forced since the last checkpoint reaches
 //! the threshold, a background thread writes every changed page and takes a fuzzy checkpoint.
 
+use adtb::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -98,7 +99,7 @@ impl Load {
 /// Write until the log has grown by `bytes`: write `n` goes to a page of `pages[1..]` in turn, and
 /// every fourth also to the hot page `pages[0]`, each forced.
 fn load(rt: &SimRuntime, pager: &Pager<impl Runtime>, pages: &[Pid], bytes: u64) -> Load {
-    let start = pager.appended().0;
+    let start = Probe::of(pager).appended().0;
     let mut out = Load::default();
     let mut n = 0;
     let acked = |out: &mut Load, pid, value| {
@@ -108,10 +109,10 @@ fn load(rt: &SimRuntime, pager: &Pager<impl Runtime>, pages: &[Pid], bytes: u64)
             time: rt.now(),
             pid,
             value,
-            appended: pager.appended(),
+            appended: Probe::of(pager).appended(),
         });
     };
-    while pager.appended().0 < start + bytes {
+    while Probe::of(pager).appended().0 < start + bytes {
         n += 1;
         acked(&mut out, pages[1 + n as usize % (pages.len() - 1)], n);
         if n % 4 == 0 {
@@ -119,9 +120,9 @@ fn load(rt: &SimRuntime, pager: &Pager<impl Runtime>, pages: &[Pid], bytes: u64)
         }
         out.times.push(rt.now());
         out.samples.push((
-            pager.appended(),
-            pager.checkpoint_lsn(),
-            pager.dirty_pages(),
+            Probe::of(pager).appended(),
+            Probe::of(pager).checkpoint(),
+            Probe::of(pager).dirty(),
         ));
     }
     out
@@ -247,7 +248,7 @@ fn load_keeps_recovery_and_the_dirty_page_table_bounded(atomic: bool) {
             run.acked.splice(0..0, warm.acked);
             run.samples.splice(0..0, warm.samples);
             run.times.splice(0..0, warm.times);
-            *ledger.lock().unwrap() = (run, pager.appended());
+            *ledger.lock().unwrap() = (run, Probe::of(&pager).appended());
             Vec::new()
         },
         |at, image| {
@@ -320,13 +321,16 @@ fn crash_in_a_cycle_loses_nothing(atomic: bool) {
         1,
         |hook| {
             let (pager, _) = Pager::open(hook.clone(), &options(atomic)).unwrap();
-            let before = pager.checkpoint_lsn();
+            let before = Probe::of(&pager).checkpoint();
             let load = load(&hook.rt, &pager, &pages, EVERY);
             *wrote.lock().unwrap() = acked_by(&load.acked, usize::MAX);
             hook.arm(|_, _| false);
             let mut io = hook.rt.io();
             common::sleep(&hook.rt, &mut io, Duration::from_secs(1));
-            assert!(pager.checkpoint_lsn() > before, "the checkpointer ran");
+            assert!(
+                Probe::of(&pager).checkpoint() > before,
+                "the checkpointer ran"
+            );
             Vec::new()
         },
         |at, image| {
@@ -384,9 +388,9 @@ fn a_backup_taken_while_the_checkpointer_runs_restores_and_verifies_clean() {
         let mut during = None;
         let mut visit = |pid: Pid, _: &mut [u8]| {
             if pid == pages[0] && during.is_none() {
-                let before = pager.checkpoint_lsn();
+                let before = Probe::of(&pager).checkpoint();
                 let load = load(&rt, &pager, &pages[1..], 3 * EVERY);
-                during = Some((before, pager.checkpoint_lsn(), load));
+                during = Some((before, Probe::of(&pager).checkpoint(), load));
             }
             true
         };

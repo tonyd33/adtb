@@ -3,6 +3,7 @@
 //! read that meets no such page answers exactly, other relations of a heap's damage read exactly,
 //! and the file reopens.
 
+use adtb::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
@@ -330,7 +331,7 @@ fn an_entry_naming_a_foreign_page_quarantines_only_the_heap_of_its_directory() {
             let got = text(db, &Op::Insert.text());
             assert_eq!("app::users.User", quarantined(got, &what));
             let only = BTreeSet::from([Quarantine::Heap(users.id().0)]);
-            assert_eq!(only, pager.quarantined(), "{what}");
+            assert_eq!(only, Probe::of(pager).marks(), "{what}");
             assert_eq!(vec![r#""o""#], text(db, OTHERS).unwrap(), "{what}");
         });
     }
@@ -359,10 +360,10 @@ fn a_read_over_an_entry_naming_a_large_value_or_map_page_blames_its_directory_pa
                 };
                 point(pager, users.root(), users.pages(pager).unwrap()[0], named);
                 assert_eq!("app::users.User", quarantined(text(db, &read), w));
-                let met: BTreeSet<Pid> = pager.damaged().into_keys().collect();
+                let met: BTreeSet<Pid> = Probe::of(pager).refusals().into_keys().collect();
                 assert_eq!(BTreeSet::from([users.root()]), met, "{w}");
                 let only = BTreeSet::from([Quarantine::Heap(users.id().0)]);
-                assert_eq!(only, pager.quarantined(), "{w}");
+                assert_eq!(only, Probe::of(pager).marks(), "{w}");
             });
             cases += 1;
         }
@@ -384,8 +385,8 @@ fn an_index_entry_outliving_its_page_refuses_the_index() {
             "app::users key id",
             quarantined(text(db, &Op::Read.text()), &what)
         );
-        assert_eq!(0, pager.damaged().len(), "{what}");
-        let marks = Vec::from_iter(pager.quarantined());
+        assert_eq!(0, Probe::of(pager).refusals().len(), "{what}");
+        let marks = Vec::from_iter(Probe::of(pager).marks());
         assert!(
             matches!(marks[..], [Quarantine::Index(_)]),
             "{what}: {marks:?}"

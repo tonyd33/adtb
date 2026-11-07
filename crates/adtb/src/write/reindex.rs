@@ -401,12 +401,14 @@ impl<R: Runtime> Database<R> {
     }
 
     /// Returns how many pauses calls have made at a rebuild's gate or for the vacuum lock.
-    pub fn rebuild_waits(&self) -> u64 {
+    #[cfg(feature = "testing")]
+    pub(crate) fn rebuild_waits(&self) -> u64 {
         self.rebuild_waits.load(Ordering::Relaxed)
     }
 
     /// Returns how many times a call asked a background vacuum to give up the vacuum lock.
-    pub fn vacuum_yields(&self) -> u64 {
+    #[cfg(feature = "testing")]
+    pub(crate) fn vacuum_yields(&self) -> u64 {
         self.vacuum_yields.load(Ordering::Relaxed)
     }
 

@@ -1,6 +1,7 @@
 //! A bitmap page lost or zeroed is damage and never free space. Each damaged file refuses the call
 //! and marks, and leaves named pages as they were. A healthy file, cut by no fault, never refuses.
 
+use adtb::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb::heap::refuse_named;
@@ -226,19 +227,17 @@ fn damaged_run(files: &Files, what: &str, body: impl FnOnce(&Database<SimRuntime
 }
 
 /// Assert a write finds the lost bitmap, marks the database, and every call then fails.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn assert_all_refused_as_database(db: &Database<SimRuntime>, what: &str) {
     assert_quarantined(&text(db, INSERT_OTHER), what);
     assert_eq!(
         BTreeSet::from([Quarantine::Database]),
-        db.write_path().pager().quarantined(),
+        db.testing().probe().marks(),
         "{what}"
     );
     assert_quarantined(&text(db, SELECT), what);
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_cut_losing_a_group_with_large_values_refuses_marks_and_stays_marked() {
     adtb_heap_cap::raise_cap(3 << 30);
     let row = "l".repeat(3 * PAGE);
@@ -247,7 +246,7 @@ fn a_cut_losing_a_group_with_large_values_refuses_marks_and_stays_marked() {
         assert_quarantined(&text(db, INSERT_USER), "large insert");
         assert_quarantined(&text(db, INSERT_USER), "retry");
         assert_quarantined(&text(db, INSERT_OTHER), "other relation");
-        let marks = db.write_path().pager().quarantined();
+        let marks = db.testing().probe().marks();
         assert!(!marks.is_empty(), "{marks:?}");
         assert_quarantined(&text(db, SELECT), "select");
     });
@@ -295,13 +294,12 @@ fn commits_on_a_status_page_in_group_one() -> (Files, Pid) {
     (sim.files(), status)
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn assert_committed_rows_never_read_as_aborted(files: &Files, what: &str) {
     damaged_run(files, what, |db| {
         assert_quarantined(&text(db, SELECT), what);
         assert_eq!(
             BTreeSet::from([Quarantine::Database]),
-            db.write_path().pager().quarantined(),
+            db.testing().probe().marks(),
             "{what}"
         );
     });
@@ -377,10 +375,7 @@ fn a_zeroed_directory_root_refuses_a_first_insert_and_marks_the_heap() {
     let files = zeroed(&files, root.0);
     damaged_run(&files, "zero directory", |db| {
         assert_quarantined(&text(db, INSERT_USER), "insert");
-        assert_eq!(
-            BTreeSet::from([root.1]),
-            db.write_path().pager().quarantined()
-        );
+        assert_eq!(BTreeSet::from([root.1]), db.testing().probe().marks());
     });
 }
 
@@ -401,7 +396,7 @@ fn a_zeroed_large_store_page_refuses_vacuum_and_marks() {
         assert_quarantined(&text(db, "vacuum users"), "vacuum");
         assert_eq!(
             BTreeSet::from([Quarantine::Database]),
-            db.write_path().pager().quarantined()
+            db.testing().probe().marks()
         );
     });
 }
@@ -421,16 +416,12 @@ fn index_page(root: bool) -> (Files, (Pid, Quarantine)) {
     })
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn assert_index_page_refused(root: bool, query: &str) {
     let (files, (page, mark)) = index_page(root);
     let files = zeroed(&files, page);
     damaged_writing(&files, Writes::Row, query, |db| {
         assert_quarantined(&text(db, query), query);
-        assert!(
-            db.write_path().pager().quarantined().contains(&mark),
-            "{query}"
-        );
+        assert!(db.testing().probe().marks().contains(&mark), "{query}");
     });
 }
 
@@ -466,29 +457,18 @@ fn zeroed_index_leaves_refuse_an_insert_that_latches_one() {
     let files = leaves.iter().fold(sim.files(), |f, &p| zeroed(&f, p));
     damaged_writing(&files, Writes::Row, "zero leaves", |db| {
         assert_quarantined(&text(db, INSERT_USER), "insert");
-        assert!(
-            db.write_path()
-                .pager()
-                .quarantined()
-                .contains(&mark.unwrap())
-        );
+        assert!(db.testing().probe().marks().contains(&mark.unwrap()));
     });
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_migration_over_a_zeroed_bitmap_opens_for_verify_only() {
     const MORE: &str = "module more\nadd module more\nadd type T = { id: Key ts }\nadd relation ts : T key id generate sequence\n";
     let (files, ()) = one_group("a", |_| ());
     let mut sim = Sim::with_files(1, Config::default(), zeroed(&files, Pid::FIRST_DATA));
     finished(&mut sim, |rt| {
         let db = Database::open_in(rt, FILE, &Log::new([APP, MORE]), &options(256)).unwrap();
-        assert!(
-            db.write_path()
-                .pager()
-                .quarantined()
-                .contains(&Quarantine::Database)
-        );
+        assert!(db.testing().probe().marks().contains(&Quarantine::Database));
         assert_quarantined(&text(&db, SELECT), "select");
         assert!(!api::printed(db.verify(None).unwrap()).is_empty());
         db.close().unwrap();
@@ -511,7 +491,7 @@ fn a_visibility_map_root_zeroed_refuses_vacuum_and_marks_the_heap() {
     let files = zeroed(&files, page);
     damaged_run(&files, "zero vm", |db| {
         assert_quarantined(&text(db, "vacuum users"), "vacuum");
-        assert!(db.write_path().pager().quarantined().contains(&mark));
+        assert!(db.testing().probe().marks().contains(&mark));
     });
 }
 
@@ -540,7 +520,6 @@ fn before_the_group_count(files: &Files, page: usize) -> Files {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_file_before_the_count_opens_healthy_and_gains_it() {
     let (files, ()) = one_group("a", |_| ());
     let old = before_the_group_count(&files, PAGE);
@@ -548,7 +527,7 @@ fn a_file_before_the_count_opens_healthy_and_gains_it() {
     let mut sim = Sim::with_files(1, Config::default(), old);
     finished(&mut sim, |rt| {
         let db = open(rt);
-        assert_eq!(BTreeSet::new(), db.write_path().pager().quarantined());
+        assert_eq!(BTreeSet::new(), db.testing().probe().marks());
         assert_eq!(4, text(&db, SELECT).unwrap().len());
         text(&db, INSERT_OTHER).unwrap();
         db.close().unwrap();
@@ -567,16 +546,12 @@ fn a_file_before_the_count_refuses_a_zeroed_bitmap_inside_it() {
 
 /// Zero the page `pick` chooses, and assert the open neither panics nor answers: it marks the
 /// database, keeps every page, and leaves `verify`.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn assert_open_refuses(what: &str, pick: impl FnOnce(&Database<SimRuntime>) -> Pid) {
     let (files, page) = one_group("a", pick);
     let files = zeroed(&files, page);
     damaged_run(&files, what, |db| {
         assert!(
-            db.write_path()
-                .pager()
-                .quarantined()
-                .contains(&Quarantine::Database),
+            db.testing().probe().marks().contains(&Quarantine::Database),
             "{what}"
         );
         assert_quarantined(&text(db, SELECT), what);
@@ -770,7 +745,7 @@ fn growing_into_a_group_stores_the_count_and_a_file_before_the_count_gains_it() 
     let mut sim = Sim::with_files(1, Config::default(), old.clone());
     finished(&mut sim, |rt| {
         let pager = pager_of(rt);
-        assert_eq!(BTreeMap::new(), pager.damaged());
+        assert_eq!(BTreeMap::new(), Probe::of(&pager).refusals());
         assert_eq!(Ok(false), pager.is_free(named));
     });
     assert!(stored_groups(&sim.files(), SMALL_PAGE).contains(&2));
@@ -862,10 +837,10 @@ fn no_crash_while_crossing_a_group_refuses_a_healthy_file() {
                 let mut sim = Sim::with_files(seed, Config::default(), image);
                 finished(&mut sim, |rt| {
                     let pager = pager_of(rt);
-                    assert_eq!(BTreeMap::new(), pager.damaged(), "{what}");
+                    assert_eq!(BTreeMap::new(), Probe::of(&pager).refusals(), "{what}");
                     assert!(pager.allocated().is_ok(), "{what}");
                     assert!(pager.allocate(1, PageKind::Catalog, 1).is_ok(), "{what}");
-                    assert_eq!(BTreeSet::new(), pager.quarantined(), "{what}");
+                    assert_eq!(BTreeSet::new(), Probe::of(&pager).marks(), "{what}");
                     pager.close();
                 });
             }
@@ -917,7 +892,7 @@ fn a_page_vacuum_frees_and_another_heap_reuses_under_a_reader_is_not_refused() {
         let at = (&*heap, held[0].tid);
         let owner = index.tree().owner();
         refuse_named::<_, adtb::exec::Error>(pager, at, owner, named).expect("not refused");
-        assert_eq!(BTreeSet::new(), pager.quarantined());
+        assert_eq!(BTreeSet::new(), Probe::of(pager).marks());
         assert_eq!(Vec::<String>::new(), text(&db, SELECT).unwrap());
     });
 }
@@ -928,7 +903,6 @@ fn rows_or_panic(db: &Database<SimRuntime>, query: &str, seed: u64) -> Vec<Strin
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn lookups_racing_a_vacuum_that_frees_slots_of_a_page_it_keeps_are_not_refused() {
     let seeds = sweep(0..8);
     let mut ran = 0;
@@ -978,11 +952,7 @@ fn lookups_racing_a_vacuum_that_frees_slots_of_a_page_it_keeps_are_not_refused()
                 first_users_page(&db),
                 "seed {seed}: the page survives"
             );
-            assert_eq!(
-                BTreeSet::new(),
-                db.write_path().pager().quarantined(),
-                "seed {seed}"
-            );
+            assert_eq!(BTreeSet::new(), db.testing().probe().marks(), "seed {seed}");
             ran += 1;
         });
     }

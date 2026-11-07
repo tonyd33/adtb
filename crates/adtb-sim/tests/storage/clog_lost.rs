@@ -2,6 +2,7 @@
 //! record in the retained log, aborts only an id the log holds no commit record of, and writes
 //! nothing when the log it needs is not whole.
 
+use adtb::testing::{Probe, TxnProbe};
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb::key::{Entry, Tid, Value};
@@ -57,11 +58,9 @@ fn statuses(db: &Database<SimRuntime>, ids: &[Xid]) -> Vec<Status> {
 fn insert(sim: &mut Sim, name: &str) -> (Pid, Vec<Xid>) {
     api::run(sim, |rt| {
         let db = open(&rt);
-        let first = db.write_path().txns().next();
+        let first = db.testing().next_xid();
         api::results(&db, &format!("insert users {{ name: \"{name}\" }}"));
-        let ids: Vec<Xid> = (first.0..db.write_path().txns().next().0)
-            .map(Xid)
-            .collect();
+        let ids: Vec<Xid> = (first.0..db.testing().next_xid().0).map(Xid).collect();
         let done = statuses(&db, &ids);
         let committed = ids.into_iter().zip(done);
         let committed = committed.filter_map(|(x, s)| (s == Status::Committed).then_some(x));
@@ -150,7 +149,6 @@ fn lost_write_in(mut sim: Sim) -> (Sim, Vec<Xid>, Vec<(String, String)>) {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_settled_status_page_whose_log_is_recycled_is_a_finding_of_verify_that_marks_nothing() {
     let segment = 1 << 16;
     let options = storage::Options {
@@ -164,22 +162,18 @@ fn a_settled_status_page_whose_log_is_recycled_is_a_finding_of_verify_that_marks
     let (mut sim, bo, _) = lost_write_in(sim);
     let settled = api::run(&mut sim, |rt| {
         let db = open(&rt);
-        let pager = db.write_path().pager();
-        let recorded = pager.recorded().pages;
+        let probe = db.testing().probe();
+        let recorded = probe.records().pages().clone();
         let settled = recorded
             .into_iter()
             .find(|(_, d)| matches!(d, Damage::Settled { .. }));
         let name = "x".repeat(2000);
-        let (start, mut n) = (pager.appended(), 0);
-        while pager.appended().0 - start.0 <= 3 * segment {
+        let (start, mut n) = (probe.appended(), 0);
+        while probe.appended().0 - start.0 <= 3 * segment {
             api::results(&db, &format!("insert users {{ name: \"{name}{n}\" }}"));
             n += 1;
         }
-        assert_eq!(
-            BTreeSet::new(),
-            pager.quarantined(),
-            "the open and the commits"
-        );
+        assert_eq!(BTreeSet::new(), probe.marks(), "the open and the commits");
         db.close().unwrap();
         settled
     });
@@ -204,32 +198,30 @@ fn a_settled_status_page_whose_log_is_recycled_is_a_finding_of_verify_that_marks
             .collect();
         let want = ("StalePage".to_owned(), format!("{of_page}{damage:?}\""));
         assert_eq!(vec![want], rows);
-        assert_eq!(BTreeSet::new(), db.write_path().pager().quarantined());
+        assert_eq!(BTreeSet::new(), db.testing().probe().marks());
         db.close().unwrap();
     });
 }
 
 /// Assert a reopen of `sim` reads `bo` committed and refuses a query as quarantined whole.
 /// Assert a reopen of `sim` reads `bo` committed, keeps `marks` and serves the relation.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn served_on_reopen(sim: &mut Sim, bo: &[Xid], marks: &BTreeSet<Quarantine>) {
     api::run(sim, |rt| {
         let db = open(&rt);
         assert_eq!(vec![Status::Committed; bo.len()], statuses(&db, bo));
-        assert_eq!(*marks, db.write_path().pager().quarantined());
+        assert_eq!(*marks, db.testing().probe().marks());
         let names = api::query(&db, "from u in app::users select u.name");
         assert_eq!(vec!["\"ann\"", "\"bo\""], names);
     });
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn the_first_verify_of_a_settled_status_page_reports_its_lost_write_once_and_marks_nothing() {
     let (mut sim, bo, want) = lost_write();
     api::run(&mut sim, |rt| {
         let db = open(&rt);
         assert_eq!(want, findings(api::sorted(db.verify(None).unwrap())));
-        assert_eq!(BTreeSet::new(), db.write_path().pager().quarantined());
+        assert_eq!(BTreeSet::new(), db.testing().probe().marks());
         let names = api::query(&db, "from u in app::users select u.name");
         assert_eq!(vec!["\"ann\"", "\"bo\""], names);
         db.close().unwrap();
@@ -244,7 +236,7 @@ fn a_lost_write_verify_finds_on_a_settled_status_page_at_other_lsns_marks_the_da
     api::run(&mut sim, |rt| {
         let db = open(&rt);
         let pager = db.write_path().pager().clone();
-        let recorded = pager.recorded().pages;
+        let recorded = Probe::of(&pager).records().pages().clone();
         let settled = recorded
             .into_iter()
             .find(|(_, d)| matches!(d, Damage::Settled { .. }));
@@ -274,7 +266,7 @@ fn a_lost_write_verify_finds_on_a_settled_status_page_at_other_lsns_marks_the_da
         }
         let stale = Damage::Stale { expected, found };
         assert!(matches!(
-            pager.recorded().pages[&page],
+            Probe::of(&pager).records().pages()[&page],
             Damage::Settled { .. }
         ));
         let checked = pager.check_page(page, &pager.read_log(true));
@@ -287,7 +279,7 @@ fn a_lost_write_verify_finds_on_a_settled_status_page_at_other_lsns_marks_the_da
         );
         assert!(rows.contains(&row), "{rows:?}");
         let database = BTreeSet::from([Quarantine::Database]);
-        assert_eq!(database, pager.quarantined());
+        assert_eq!(database, Probe::of(&pager).marks());
         let names = api::failure(&db, "from u in app::users select u.name");
         assert_eq!(quarantined(), names);
         db.close().unwrap();
@@ -295,14 +287,13 @@ fn a_lost_write_verify_finds_on_a_settled_status_page_at_other_lsns_marks_the_da
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn verify_of_one_relation_beside_a_settled_status_page_marks_nothing() {
     let (mut sim, bo, _) = lost_write();
     api::run(&mut sim, |rt| {
         let db = open(&rt);
         let found = db.verify(Some("app::users")).unwrap();
         assert_eq!(Vec::<(String, String)>::new(), findings(api::sorted(found)));
-        assert_eq!(BTreeSet::new(), db.write_path().pager().quarantined());
+        assert_eq!(BTreeSet::new(), db.testing().probe().marks());
         db.close().unwrap();
     });
     served_on_reopen(&mut sim, &bo, &BTreeSet::new());
@@ -331,7 +322,7 @@ fn an_index_finding_beside_a_settled_status_page_marks_only_its_index() {
         );
         assert_eq!(vec![("Orphan".to_owned(), at)], found);
         let index = BTreeSet::from([Quarantine::Index(ix.tree().owner())]);
-        assert_eq!(index, w.pager().quarantined());
+        assert_eq!(index, db.testing().probe().marks());
         db.close().unwrap();
         index
     });
@@ -339,7 +330,6 @@ fn an_index_finding_beside_a_settled_status_page_marks_only_its_index() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn verify_meeting_an_unreadable_status_page_fails_and_marks_nothing() {
     let mut sim = Sim::new(3, Config::default());
     let (status, _) = insert(&mut sim, "ann");
@@ -355,13 +345,12 @@ fn verify_meeting_an_unreadable_status_page_fails_and_marks_nothing() {
             reason: FatalReason::Storage { detail },
         };
         assert_eq!(Some(want), db.verify(None).err());
-        assert_eq!(BTreeSet::new(), db.write_path().pager().quarantined());
+        assert_eq!(BTreeSet::new(), db.testing().probe().marks());
         db.close().unwrap();
     });
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn the_first_verify_through_a_server_of_a_settled_status_page_reports_it_once() {
     let (mut sim, bo, want) = lost_write();
     api::run(&mut sim, |rt| {
@@ -372,7 +361,7 @@ fn the_first_verify_through_a_server_of_a_settled_status_page_reports_it_once() 
             want,
             rows.iter().map(|r| task_finding(r)).collect::<Vec<_>>()
         );
-        assert_eq!(BTreeSet::new(), db.write_path().pager().quarantined());
+        assert_eq!(BTreeSet::new(), db.testing().probe().marks());
         api::task(&rt, &owner, "app::users").unwrap();
         db.close().unwrap();
     });
@@ -508,7 +497,7 @@ fn lost_past_the_first_segment(commits: usize) -> (Files, Pid, Pid, Vec<(Xid, St
         let scratch = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
         let x = txns.begin(&pager).unwrap();
         txns.commit(&pager, x).unwrap();
-        while pager.appended().0 <= options.segment_size {
+        while Probe::of(&pager).appended().0 <= options.segment_size {
             pager.update(&[scratch], |p| p[0][HEADER_LEN] ^= 1).unwrap();
             pager.flush_log();
         }
@@ -572,7 +561,7 @@ fn a_segment_missing_after_the_status_pages_last_write_quarantines_the_database_
         let (pager, _) = Pager::open(rt.clone(), &harness::options(FRAMES)).unwrap();
         assert_eq!(Some(damage), CommitLog::open(&pager, root).err());
         let txns = Transactions::open(rt, &pager, root).unwrap();
-        assert_eq!(Some(damage), txns.quarantined());
+        assert_eq!(Some(damage), TxnProbe::of(&txns).commit_log_damage());
         let clog = txns.commit_log();
         let got: Vec<Status> = ids
             .iter()
@@ -612,7 +601,7 @@ fn a_dump_is_refused_once_the_log_cannot_prove_a_status_page_that_lost_its_write
         let pager = db.write_path().pager();
         let scratch = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
         let pad = |to: u64| {
-            while pager.appended().0 < to {
+            while Probe::of(pager).appended().0 < to {
                 let bump =
                     |p: &mut [&mut [u8]]| p[0][HEADER_LEN..].iter_mut().for_each(|b| *b ^= 1);
                 pager.update(&[scratch], bump).unwrap();
@@ -628,7 +617,7 @@ fn a_dump_is_refused_once_the_log_cannot_prove_a_status_page_that_lost_its_write
     let mut sim = Sim::with_files(3, Config::default(), without_segment(lost, segment));
     api::run(&mut sim, |rt| {
         let db = open(&rt);
-        let damage = db.write_path().txns().quarantined();
+        let damage = db.testing().commit_log_damage();
         assert!(
             matches!(damage, Some(PageError { pid, damage: Damage::LogUnproven { .. } }) if pid == page),
             "{damage:?}"
@@ -732,7 +721,7 @@ fn each_lost_write_refused(
             let found = findings(api::sorted(db.verify(None).unwrap()));
             let want = ("StalePage".to_owned(), stale.clone());
             assert!(found.contains(&want), "{kind} page {page:?}: {found:?}");
-            let marks = db.write_path().pager().quarantined();
+            let marks = db.testing().probe().marks();
             let want = if settled {
                 BTreeSet::new()
             } else {
@@ -837,10 +826,9 @@ fn an_open_whose_log_cannot_settle_a_status_page_writes_no_mark() {
     let mut sim = Sim::with_files(6, Config::default(), lost);
     api::run(&mut sim, |rt| {
         let db = open(rt);
-        let w = db.write_path();
-        let found = w
-            .txns()
-            .quarantined()
+        let found = db
+            .testing()
+            .commit_log_damage()
             .expect("the commit log is quarantined");
         assert_eq!(page, found.pid);
         let Damage::LogUnproven { at } = found.damage else {
@@ -852,7 +840,7 @@ fn an_open_whose_log_cannot_settle_a_status_page_writes_no_mark() {
         );
         assert_eq!(
             BTreeSet::from([Quarantine::Database]),
-            w.pager().quarantined()
+            db.testing().probe().marks()
         );
         db.close().unwrap();
     });
@@ -861,7 +849,7 @@ fn an_open_whose_log_cannot_settle_a_status_page_writes_no_mark() {
     let mut sim = Sim::with_files(6, Config::default(), restored);
     let marks = api::run(&mut sim, |rt| {
         let db = open(rt);
-        let marks = db.write_path().pager().quarantined();
+        let marks = db.testing().probe().marks();
         db.close().unwrap();
         marks
     });
@@ -928,9 +916,11 @@ fn resolved_then_lost(resolve: Resolve, recycled: bool, archived: bool) -> Lost 
         let (pager, txns) = (db.write_path().pager(), db.write_path().txns());
         let ids = match resolve {
             Resolve::Commit => {
-                let first = txns.next();
+                let first = TxnProbe::of(txns).next_xid();
                 api::results(&db, r#"insert users { name: "bo" }"#);
-                let ids: Vec<Xid> = (first.0..txns.next().0).map(Xid).collect();
+                let ids: Vec<Xid> = (first.0..TxnProbe::of(txns).next_xid().0)
+                    .map(Xid)
+                    .collect();
                 let done = statuses(&db, &ids).into_iter().zip(ids);
                 done.filter_map(|(s, x)| (s == Status::Committed).then_some(x))
                     .collect()
@@ -941,10 +931,10 @@ fn resolved_then_lost(resolve: Resolve, recycled: bool, archived: bool) -> Lost 
                 vec![x]
             }
         };
-        let resolved = pager.appended();
+        let resolved = Probe::of(pager).appended();
         let segment = 64 << 10;
         let scratch = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
-        while pager.appended().0 < resolved.0 + 3 * segment {
+        while Probe::of(pager).appended().0 < resolved.0 + 3 * segment {
             let bump = |p: &mut [&mut [u8]]| p[0][HEADER_LEN..].iter_mut().for_each(|b| *b ^= 1);
             pager.update(&[scratch], bump).unwrap();
             pager.flush_log();
@@ -980,7 +970,6 @@ fn resolved_then_lost(resolve: Resolve, recycled: bool, archived: bool) -> Lost 
 
 /// Assert an open of a status page that lost the write of an id resolved as `resolve`, whose log
 /// is recycled, records the page's damage and quarantines the database, at that open and the next.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn refused_unproven(resolve: Resolve, archived: bool) {
     let lost = resolved_then_lost(resolve, true, archived);
     let options = engine_options(archived);
@@ -993,15 +982,14 @@ fn refused_unproven(resolve: Resolve, archived: bool) {
     for open in 0..2 {
         api::run(&mut sim, |rt| {
             let db = Database::open_in(rt, harness::NAME, &Log::new([APP]), &options).unwrap();
-            let w = db.write_path();
             let at = format!("{resolve:?}, archived {archived}, open {open}");
-            assert_eq!(Some(damage), w.txns().quarantined(), "{at}");
+            assert_eq!(Some(damage), db.testing().commit_log_damage(), "{at}");
             assert_eq!(
                 Some(&lost.stale),
-                w.pager().recorded().pages.get(&lost.page),
+                db.testing().probe().records().pages().get(&lost.page),
                 "{at}"
             );
-            assert_eq!(whole, w.pager().quarantined(), "{at}");
+            assert_eq!(whole, db.testing().probe().marks(), "{at}");
             let names = api::failure(&db, "from u in app::users select u.name");
             assert_eq!(quarantined(), names, "{at}");
             db.close().unwrap();
@@ -1026,13 +1014,11 @@ fn a_status_page_that_lost_an_abort_whose_record_is_recycled_quarantines_the_dat
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_status_page_that_lost_a_commit_whose_record_is_retained_settles_it_committed() {
     let lost = resolved_then_lost(Resolve::Commit, false, false);
     let mut sim = Sim::with_files(7, Config::default(), lost.files);
     api::run(&mut sim, |rt| {
         let db = open(&rt);
-        let w = db.write_path();
         assert_eq!(
             vec![Status::Committed; lost.ids.len()],
             statuses(&db, &lost.ids)
@@ -1041,8 +1027,11 @@ fn a_status_page_that_lost_a_commit_whose_record_is_retained_settles_it_committe
             panic!("{:?} is a lost write", lost.stale);
         };
         let settled = Damage::Settled { expected, found };
-        assert_eq!(Some(&settled), w.pager().recorded().pages.get(&lost.page));
-        assert_eq!(BTreeSet::new(), w.pager().quarantined());
+        assert_eq!(
+            Some(&settled),
+            db.testing().probe().records().pages().get(&lost.page)
+        );
+        assert_eq!(BTreeSet::new(), db.testing().probe().marks());
         let names = api::query(&db, "from u in app::users select u.name");
         assert_eq!(vec!["\"ann\"", "\"bo\""], names);
         db.close().unwrap();
@@ -1098,8 +1087,11 @@ fn a_status_page_reverted_to_an_older_page_at_its_pid_is_refused() {
         let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
         assert_eq!(Some(damage), CommitLog::open(&pager, root).err());
         let txns = Transactions::open(rt, &pager, root).unwrap();
-        assert_eq!(Some(damage), txns.quarantined());
-        assert_eq!(Some(&damage.damage), pager.recorded().pages.get(&old));
+        assert_eq!(Some(damage), TxnProbe::of(&txns).commit_log_damage());
+        assert_eq!(
+            Some(&damage.damage),
+            Probe::of(&pager).records().pages().get(&old)
+        );
         let intact = Xid(3 * per + 1);
         let status = txns.commit_log().status(&pager, intact);
         assert_eq!(Ok(Status::InProgress), status, "{intact:?} on page 3");

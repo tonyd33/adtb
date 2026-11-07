@@ -212,7 +212,7 @@ impl<R: Runtime> Transactions<R> {
     }
 
     /// Returns the damage that quarantined the database, if any.
-    pub fn quarantined(&self) -> Option<PageError> {
+    pub(crate) fn quarantined(&self) -> Option<PageError> {
         self.quarantine.get().copied()
     }
 
@@ -236,7 +236,7 @@ impl<R: Runtime> Transactions<R> {
     }
 
     /// Returns the id the next transaction gets.
-    pub fn next(&self) -> Xid {
+    pub(crate) fn next(&self) -> Xid {
         self.state.lock(&self.rt).next
     }
 

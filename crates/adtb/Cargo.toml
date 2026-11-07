@@ -26,6 +26,7 @@ zeroize = { version = "1.9.1", default-features = false, features = ["alloc"] }
 
 [features]
 plan-fixture = ["dep:adtb-reference", "dep:adtb-testkit"]
+testing = []
 
 [lints]
 workspace = true

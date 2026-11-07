@@ -58,7 +58,8 @@ impl Pacer {
         }
     }
 
-    pub fn charged<R: Runtime>(&self, rt: &R) -> Charged {
+    #[cfg(feature = "testing")]
+    pub(crate) fn charged<R: Runtime>(&self, rt: &R) -> Charged {
         self.state.lock(rt).charged
     }
 

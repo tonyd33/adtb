@@ -1,6 +1,7 @@
 //! The damage the pager records: each detection a record that a crash keeps or the next open finds
 //! again, folded by checkpoints into the damage list.
 
+use adtb::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb::mvcc::Transactions;
@@ -104,7 +105,7 @@ fn read_refused(pager: &Pager<Hooked>, pid: Pid) -> Damage {
 
 fn verify_refused(pager: &Pager<Hooked>, pid: Pid) -> Damage {
     let found = pager.verify().findings;
-    let damage = pager.damaged()[&pid];
+    let damage = Probe::of(pager).refusals()[&pid];
     assert!(found.contains(&Finding::Page { pid, damage }), "{found:?}");
     damage
 }
@@ -222,9 +223,9 @@ fn detected(site: &Site, rt: &SimRuntime) -> (Option<Damage>, Option<Damage>) {
     let (pager, _) = Pager::open(hook, &options(site.atomic)).unwrap();
     let damage = match site.detect {
         Some(detect) => detect(&pager, site.pid),
-        None => pager.damaged()[&site.pid],
+        None => Probe::of(&pager).refusals()[&site.pid],
     };
-    let recorded = pager.recorded().pages.get(&site.pid).copied();
+    let recorded = Probe::of(&pager).records().pages().get(&site.pid).copied();
     (Some(damage).filter(|d| *d != Damage::Unreadable), recorded)
 }
 
@@ -240,7 +241,7 @@ fn each_of_nine_detections_leaves_a_record_a_crash_keeps_but_an_unreadable_page_
         let mut after = Sim::with_files(SEED, Config::default(), sim.files());
         harness::finished(&mut after, |rt| {
             let (pager, _) = Pager::open(rt, &options(site.atomic)).unwrap();
-            let listed = pager.recorded().pages.get(&site.pid).copied();
+            let listed = Probe::of(&pager).records().pages().get(&site.pid).copied();
             let found = pager.verify().findings;
             let of_page = |f: &&Finding| matches!(f, Finding::Page { pid, .. } if *pid == site.pid);
             let found: Vec<&Finding> = found.iter().filter(of_page).collect();
@@ -318,14 +319,17 @@ fn rot_under_a_page_the_pool_holds_is_recorded_until_a_change_writes_the_page_ou
             damage: Damage::Checksum,
         };
         assert_eq!(vec![rotted], checked);
-        assert_eq!(Some(&Damage::Checksum), pager.recorded().pages.get(&p));
+        assert_eq!(
+            Some(&Damage::Checksum),
+            Probe::of(&pager).records().pages().get(&p)
+        );
         assert_eq!(
             2,
             pager.read(p).unwrap()[HEADER_LEN],
             "the pool's copy is served"
         );
         write_out(3);
-        assert_eq!(None, pager.recorded().pages.get(&p));
+        assert_eq!(None, Probe::of(&pager).records().pages().get(&p));
         assert_eq!(
             Vec::<Finding>::new(),
             pager.check_page(p, &pager.read_log(true))
@@ -352,7 +356,10 @@ fn a_checksum_failure_of_a_page_written_since_the_checkpoint_is_listed_after_a_c
     let mut sim = Sim::with_files(SEED, Config::default(), sim.files());
     harness::finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt, &options(false)).unwrap();
-        assert_eq!(Some(&Damage::Checksum), pager.recorded().pages.get(&p));
+        assert_eq!(
+            Some(&Damage::Checksum),
+            Probe::of(&pager).records().pages().get(&p)
+        );
         let want = Finding::Page {
             pid: p,
             damage: Damage::Checksum,
@@ -391,7 +398,7 @@ fn a_record_forced_before_a_whole_file_mark_is_kept_by_every_later_open_and_afte
         let opened = |sim: &mut Sim, when: &str, release: bool| {
             harness::finished(sim, |rt| {
                 let (pager, _) = Pager::open(rt, &options(false)).unwrap();
-                let listed = pager.recorded().pages.get(&p).copied();
+                let listed = Probe::of(&pager).records().pages().get(&p).copied();
                 assert_eq!(Some(Damage::Checksum), listed, "{what}: {when}");
                 let found = pager.verify().findings;
                 assert!(found.contains(&want), "{what}: {when}: {found:?}");
@@ -447,7 +454,7 @@ fn stale_past_the_end(page_size: u32, wide: usize, blocks: Option<usize>) -> Fil
         harness::finished(&mut sim, |rt| {
             let (pager, _) = Pager::open(rt, &o).unwrap();
             body(&pager);
-            end = Some(pager.durable());
+            end = Some(Probe::of(&pager).durable());
         });
         (sim.files(), end.unwrap())
     };
@@ -576,7 +583,7 @@ fn page_damage_recovery_finds_is_reported_after_a_crash_anywhere_in_the_open() {
                 );
                 assert_eq!(
                     Some(&Damage::Checksum),
-                    pager.recorded().pages.get(&q),
+                    Probe::of(&pager).records().pages().get(&q),
                     "crash at event {at}"
                 );
             });
@@ -630,7 +637,7 @@ fn with_commit_log<T>(
         let (pager, _) = Pager::open(rt.clone(), &harness::options(6)).unwrap();
         Transactions::open(rt, &pager, root).unwrap();
         let got = then(&pager);
-        out = Some((got, pager.quarantined()));
+        out = Some((got, Probe::of(&pager).marks()));
         pager.close();
     });
     let (got, marks) = out.unwrap();
@@ -648,8 +655,9 @@ fn findings_of(pager: &Pager<SimRuntime>, pid: Pid) -> Vec<Finding> {
 #[test]
 fn a_settled_status_page_is_a_finding_after_reopen_and_after_its_segment_is_recycled() {
     let (files, root, status) = lost_status_page();
-    let (recorded, marks, files) =
-        with_commit_log(files, root, |p| p.recorded().pages.get(&status).copied());
+    let (recorded, marks, files) = with_commit_log(files, root, |p| {
+        Probe::of(p).records().pages().get(&status).copied()
+    });
     let Some(damage @ Damage::Settled { .. }) = recorded else {
         panic!("the open settles the status page: {recorded:?}");
     };
@@ -662,8 +670,8 @@ fn a_settled_status_page_is_a_finding_after_reopen_and_after_its_segment_is_recy
     let (again, marks, files) = with_commit_log(files, root, |pager| {
         let found = findings_of(pager, status);
         let scratch = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
-        while pager.appended().0 <= 2 * segment {
-            put(pager, scratch, (pager.appended().0 % 251) as u8);
+        while Probe::of(pager).appended().0 <= 2 * segment {
+            put(pager, scratch, (Probe::of(pager).appended().0 % 251) as u8);
             pager.flush_log();
         }
         found
@@ -710,10 +718,10 @@ fn one_damaged_page_past_the_lists_capacity_records_the_whole_file() {
         let mut sim = Sim::with_files(SEED, Config::default(), files);
         harness::finished(&mut sim, |rt| {
             let (pager, _) = Pager::open(rt, &options(false)).unwrap();
-            let recorded = pager.recorded();
+            let records = Probe::of(&pager).records();
             assert_eq!(
                 (full, n.min(capacity)),
-                (recorded.full, recorded.pages.len()),
+                (records.full(), records.pages().len()),
                 "{n} pages"
             );
             let unlisted = pager.verify().findings.contains(&Finding::Unlisted);
@@ -721,7 +729,7 @@ fn one_damaged_page_past_the_lists_capacity_records_the_whole_file() {
             pager.map_damage(|_| Some(BTreeSet::new()), |o| pager.quarantine(o));
             let database = BTreeSet::from([Quarantine::Database]);
             let marks = if full { database } else { BTreeSet::new() };
-            assert_eq!(marks, pager.quarantined(), "{n} pages");
+            assert_eq!(marks, Probe::of(&pager).marks(), "{n} pages");
         });
     }
 }
@@ -738,14 +746,17 @@ fn mapped_whole(pager: &Pager<SimRuntime>) -> (BTreeSet<Quarantine>, usize) {
         |o| pager.quarantine(o),
     );
     assert_eq!(BTreeMap::new(), failed);
-    (pager.quarantined(), walked)
+    (Probe::of(pager).marks(), walked)
 }
 
 #[test]
 fn a_settled_status_page_and_stale_log_blocks_past_the_end_map_to_no_mark() {
     let (files, root, status) = lost_status_page();
     let ((recorded, mapped), _, _) = with_commit_log(files, root, |p| {
-        (p.recorded().pages.get(&status).copied(), mapped_whole(p))
+        (
+            Probe::of(p).records().pages().get(&status).copied(),
+            mapped_whole(p),
+        )
     });
     assert!(
         matches!(recorded, Some(Damage::Settled { .. })),
@@ -756,7 +767,11 @@ fn a_settled_status_page_and_stale_log_blocks_past_the_end_map_to_no_mark() {
     let mut sim = Sim::with_files(SEED, Config::default(), files);
     harness::finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt, &options(false)).unwrap();
-        assert_reached("stale blocks past the end", pager.recorded().log.len(), 1);
+        assert_reached(
+            "stale blocks past the end",
+            Probe::of(&pager).records().log().len(),
+            1,
+        );
         assert_eq!((BTreeSet::new(), 0), mapped_whole(&pager), "stale blocks");
     });
 }
@@ -771,19 +786,27 @@ fn a_file_marked_whole_writes_no_record_and_keeps_its_records_in_memory() {
         let (pager, _) = Pager::open(rt, &options(false)).unwrap();
         list = pager.damage_list_page();
         pager.quarantine(Quarantine::Database).unwrap();
-        let end = pager.appended();
+        let end = Probe::of(&pager).appended();
         pager.damage(p, Damage::Checksum);
-        assert_eq!(end, pager.appended(), "the record is not logged");
+        assert_eq!(
+            end,
+            Probe::of(&pager).appended(),
+            "the record is not logged"
+        );
         assert_eq!(
             Some(&Damage::Checksum),
-            pager.recorded().pages.get(&p),
+            Probe::of(&pager).records().pages().get(&p),
             "the record is in memory"
         );
         pager.close();
     });
     harness::finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt, &options(false)).unwrap();
-        assert_eq!(None, pager.recorded().pages.get(&p), "the next open");
+        assert_eq!(
+            None,
+            Probe::of(&pager).records().pages().get(&p),
+            "the next open"
+        );
         pager.close();
     });
     assert_eq!(
@@ -852,7 +875,11 @@ fn a_damaged_page_freed_or_freed_and_allocated_again_is_reported_by_nothing() {
     });
     for (what, files) in [("listed", listed), ("in the log", unlisted)] {
         let check = |pager: &Pager<SimRuntime>, when: &str| {
-            assert_eq!(None, pager.recorded().pages.get(&p), "{what}: {when}");
+            assert_eq!(
+                None,
+                Probe::of(pager).records().pages().get(&p),
+                "{what}: {when}"
+            );
             let found = pager.verify().findings;
             let of_p = |f: &&Finding| matches!(f, Finding::Page { pid, .. } if *pid == p);
             let found: Vec<&Finding> = found.iter().filter(of_p).collect();
@@ -861,7 +888,7 @@ fn a_damaged_page_freed_or_freed_and_allocated_again_is_reported_by_nothing() {
         let freed = |pager: &Pager<SimRuntime>| {
             assert_eq!(
                 Some(&Damage::Checksum),
-                pager.recorded().pages.get(&p),
+                Probe::of(pager).records().pages().get(&p),
                 "{what}: before the free"
             );
             pager.free(p).unwrap();
@@ -894,14 +921,25 @@ fn a_full_page_image_logged_after_the_record_drops_it() {
         pager.damage(p, Damage::Checksum);
     });
     let after = crashed(&planted, false, |pager| {
-        assert_eq!(Some(&Damage::Checksum), pager.recorded().pages.get(&p));
+        assert_eq!(
+            Some(&Damage::Checksum),
+            Probe::of(pager).records().pages().get(&p)
+        );
         put(pager, p, 9);
         pager.flush_log();
-        assert_eq!(None, pager.recorded().pages.get(&p), "after the image");
+        assert_eq!(
+            None,
+            Probe::of(pager).records().pages().get(&p),
+            "after the image"
+        );
     });
     let mut sim = Sim::with_files(SEED, Config::default(), after);
     harness::finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt, &options(false)).unwrap();
-        assert_eq!(None, pager.recorded().pages.get(&p), "after a crash");
+        assert_eq!(
+            None,
+            Probe::of(&pager).records().pages().get(&p),
+            "after a crash"
+        );
     });
 }

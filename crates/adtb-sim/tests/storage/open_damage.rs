@@ -1,6 +1,7 @@
 //! Opening, verifying and dropping a transaction on a file with a page no relation holds damaged:
 //! the file opens for `verify` only and every other call fails `Quarantined`.
 
+use adtb::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb::runtime::IoError;
@@ -107,9 +108,8 @@ fn seeded(seed: u64, pick: fn(&Database<SimRuntime>) -> Pid) -> (Files, Pid) {
 
 /// Assert only `verify` runs on `db`, and its findings include one starting `finding`, or with
 /// none are only the note that a run quarantined whole keeps no findings.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn assert_only_verify_runs(db: &Database<SimRuntime>, finding: Option<&str>) {
-    let marks = db.write_path().pager().quarantined();
+    let marks = db.testing().probe().marks();
     assert_eq!(BTreeSet::from([Quarantine::Database]), marks);
     let none = CallOptions::default();
     for text in [SELECT, INSERT, "from nothing in nowhere select 1", "vacuum"] {
@@ -510,7 +510,6 @@ fn a_file_whose_header_is_damaged_still_fails_open() {
     });
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn dropped_on_damage(db: &Database<SimRuntime>) -> Pid {
     let mut open = db.begin(&TxnOptions::default()).unwrap();
     open.query_text(
@@ -525,7 +524,7 @@ fn dropped_on_damage(db: &Database<SimRuntime>) -> Pid {
         "the database",
         quarantined(db.query_text(SELECT, &[], &CallOptions::default()))
     );
-    let marks = db.write_path().pager().quarantined();
+    let marks = db.testing().probe().marks();
     assert_eq!(BTreeSet::from([Quarantine::Database]), marks);
     status_page(db)
 }
@@ -968,13 +967,15 @@ fn a_row_that_does_not_decode_on_a_good_page_fails_open_unmarked() {
             );
         });
     }
-    assert_eq!(BTreeSet::new(), with_pager(&mut rounds, Pager::quarantined));
+    assert_eq!(
+        BTreeSet::new(),
+        with_pager(&mut rounds, |p| Probe::of(p).marks())
+    );
 }
 
 /// A read fault lands on a page chosen by the seed, so some seeds fault the file header or a page
 /// the open passes over. A seed that faults a page the open needs refuses the open.
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn an_unreadable_page_fails_open_unmarked() {
     let (files, _) = seeded(62, status_page);
     let mut marks_of = Sim::with_files(62, Config::default(), files.clone());
@@ -993,7 +994,7 @@ fn an_unreadable_page_fails_open_unmarked() {
                 refused += usize::from(detail.contains("Unreadable"));
             }
             if let Ok(db) = got {
-                let marks = db.write_path().pager().quarantined();
+                let marks = db.testing().probe().marks();
                 assert!(!marks.contains(&Quarantine::Database), "seed {seed}");
                 db.close().ok();
             }
@@ -1004,7 +1005,6 @@ fn an_unreadable_page_fails_open_unmarked() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn the_roots_heap_marks_the_database_at_open_and_nothing_once_running() {
     let (mut files, _) = seeded(42, catalog_root);
     let mut sim = Sim::with_files(42, Config::default(), files.clone());
@@ -1015,7 +1015,7 @@ fn the_roots_heap_marks_the_database_at_open_and_nothing_once_running() {
         assert!(!api::printed(db.verify(None).unwrap()).is_empty());
         assert_eq!(
             BTreeSet::new(),
-            db.write_path().pager().quarantined(),
+            db.testing().probe().marks(),
             "once running"
         );
         db.close().unwrap();
@@ -1037,7 +1037,7 @@ fn the_roots_heap_marks_the_database_at_open_and_nothing_once_running() {
         let db = open(rt, &app()).unwrap();
         assert_eq!(
             BTreeSet::from([Quarantine::Database]),
-            db.write_path().pager().quarantined(),
+            db.testing().probe().marks(),
             "at open"
         );
         db.close().unwrap();

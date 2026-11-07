@@ -1,3 +1,4 @@
+use adtb::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::panic::{self, AssertUnwindSafe};
@@ -985,7 +986,9 @@ fn replay_refuses_a_page_past_the_log_end_whose_change_it_redoes() {
 #[test]
 fn replay_heals_a_page_past_the_log_end_from_its_full_page_image() {
     let (mut sim, pid, _, _) = page_changed_past_log_end(PLAIN, true);
-    let (_, (damaged, read)) = opened(&mut sim, |p| (p.damaged(), p.read(pid).map(|_| ())));
+    let (_, (damaged, read)) = opened(&mut sim, |p| {
+        (Probe::of(p).refusals(), p.read(pid).map(|_| ()))
+    });
     assert_eq!(BTreeMap::new(), damaged);
     assert_eq!(Ok(()), read);
 }
@@ -1020,8 +1023,8 @@ fn a_page_whose_only_records_are_in_the_lost_log_tail_is_an_unlogged_write() {
     setup(&mut sim, &Client::new(), PLAIN);
     let (cut, pid) = with_pager(&mut sim, |p| {
         p.flush_log();
-        let cut = p.durable();
-        while p.appended().0 < cut.0 + 16 * PAGE as u64 {
+        let cut = Probe::of(p).durable();
+        while Probe::of(p).appended().0 < cut.0 + 16 * PAGE as u64 {
             p.reserve_xids(1);
         }
         let pid = p.allocate(1, PageKind::HeapSlotted, 7).unwrap();
@@ -1066,12 +1069,12 @@ fn a_page_whose_only_records_are_in_the_lost_log_tail_is_an_unlogged_write() {
         let mut sim = Sim::with_files(1, Config::default(), files.clone());
         let (_, read) = opened(&mut sim, |p| {
             let mut appends = 0;
-            while append_past && p.appended() <= highest {
+            while append_past && Probe::of(p).appended() <= highest {
                 p.reserve_xids(1);
                 appends += 1;
                 assert!(appends < 100_000, "the log passes LSN {highest:?}");
             }
-            let next = p.appended();
+            let next = Probe::of(p).appended();
             let read = |&(pid, found): &(Pid, Lsn)| (pid, found, p.read(pid).map(|_| ()));
             let read: Vec<_> = past.iter().map(read).collect();
             assert!(
@@ -1607,14 +1610,18 @@ fn guards_allocate_and_link_in_one_batch() {
         );
         let mut parent = p.exclusive(index).unwrap();
         let mut child = new.latch(pid);
-        let before = p.durable();
+        let before = Probe::of(p).durable();
         p.update_all_with(new, &mut [&mut parent, &mut child], |pages| {
             pages[0][HEADER_LEN..HEADER_LEN + 8].copy_from_slice(&pid.0.to_le_bytes());
             pages[1][HEADER_LEN] = 1;
         })
         .unwrap();
         drop((parent, child));
-        assert_eq!(before, p.durable(), "nothing is flushed until asked");
+        assert_eq!(
+            before,
+            Probe::of(p).durable(),
+            "nothing is flushed until asked"
+        );
         p.flush_log();
         (pid, allocated(p))
     });
@@ -1819,7 +1826,7 @@ fn a_lost_log_write_refuses_the_reopen_at_its_gap() {
         let change = |pid| p.update(&[pid], |v| v[0][HEADER_LEN] ^= 1).unwrap();
         change(pages[1]);
         p.flush_log();
-        cut = Some(p.durable());
+        cut = Some(Probe::of(&p).durable());
         rt.set_faults(Faults {
             lost_write_p: 1.0,
             ..Faults::default()

@@ -226,7 +226,7 @@ fn sweep(files: &Files, name: &str, page: Pid, reported: Reported) -> Vec<String
             defects.extend(wrong(entry, page, &enter(&db, &rt), reported));
             let w = db.write_path();
             let heap = w.heap_named("app::identities", "Google").unwrap().id().0;
-            let marked = w.pager().is_quarantined(Quarantine::Heap(heap));
+            let marked = db.testing().probe().marked(Quarantine::Heap(heap));
             if let Err(e) = db.close()
                 && !matches!(
                     e,
@@ -277,7 +277,7 @@ fn restored(damage: fn(&mut Files, Pid, Lsn)) -> (Files, Pid) {
         }
         let w = db.write_path();
         let heap = w.heap_named("app::identities", "Google").unwrap().id().0;
-        assert!(!w.pager().is_quarantined(Quarantine::Heap(heap)));
+        assert!(!db.testing().probe().marked(Quarantine::Heap(heap)));
         api::results(&db, "backup to \"bk0\"");
         let (manifest, _) = storage::read_manifest(&rt, "bk0").unwrap();
         assert_eq!(vec![page], manifest.damaged);

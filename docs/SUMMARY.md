@@ -61,3 +61,4 @@
   - [Server](design/server.md)
   - [Oracle](design/oracle.md)
   - [Structural verification](design/verify.md)
+  - [Test surface](design/testing.md)

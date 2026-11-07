@@ -283,6 +283,7 @@ impl<R: Runtime> Verifier<R> {
         (job, run, started)
     }
 
+    #[cfg(feature = "testing")]
     pub(super) fn held_findings(&self) -> usize {
         self.findings.lock(&self.rt).rows.len()
     }

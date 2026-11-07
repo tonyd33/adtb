@@ -1,3 +1,4 @@
+use adtb::testing::Probe;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -64,7 +65,10 @@ fn committers(
                     let lsn = pager.commit(xid, &[], |_| {}).unwrap();
                     let at = pager.wait_durable(lsn);
                     assert_eq!(lsn, at.lsn);
-                    assert!(pager.durable() > lsn, "acknowledged before it was durable");
+                    assert!(
+                        Probe::of(&pager).durable() > lsn,
+                        "acknowledged before it was durable"
+                    );
                     ledger.acknowledge(xid);
                     seen.lock().unwrap().events.push((xid, Some(at)));
                     if rt2.next_u64().is_multiple_of(3) {
@@ -224,7 +228,7 @@ fn waiting_for_a_record_already_durable_forces_nothing() {
         assert_eq!(first, pager.wait_durable(lsn));
         assert_eq!(batches, pager.batches());
         assert_eq!(Position { epoch: 1, lsn }, first);
-        assert!(pager.durable() > lsn);
+        assert!(Probe::of(&pager).durable() > lsn);
     });
 }
 
@@ -409,7 +413,7 @@ fn recovery_and_verify_read_the_log_a_chunk_at_a_time() {
         }
         pager.flush_log();
         assert!(
-            pager.durable().0 > 2 * 64 * 1024,
+            Probe::of(&pager).durable().0 > 2 * 64 * 1024,
             "the log spans several chunks"
         );
     });

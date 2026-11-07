@@ -1,5 +1,6 @@
 //! The continuous log archive: complete segments copied in order under the file's id and epoch.
 
+use adtb::testing::Probe;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -40,7 +41,7 @@ fn fill<R: Runtime>(pager: &Pager<R>, segments: u64) {
 }
 
 fn fill_page<R: Runtime>(pager: &Pager<R>, pid: Pid, segments: u64) {
-    while pager.durable().0 < segments * SEGMENT {
+    while Probe::of(pager).durable().0 < segments * SEGMENT {
         (pager.update(&[pid], |v| v[0][100] = v[0][100].wrapping_add(1))).unwrap();
         pager.flush_log();
     }
