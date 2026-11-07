@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# feature-check [DIR]   fail when, in the repository at DIR (default this one), a package of the
+#                       root workspace or of a workspace under apps/ has a normal or build
+#                       dependency on adtb with its `testing` feature, enables `adtb/testing`
+#                       from a feature of its own, or when adtb's default features include
+#                       `testing`. Dev-dependencies may enable it.
+set -euo pipefail
+
+root=$(cd "${1:-$(dirname "$0")/../..}" && pwd)
+manifests=("$root/Cargo.toml")
+for app in "$root"/apps/*/Cargo.toml; do
+  [[ ! -f $app ]] || manifests+=("$app")
+done
+
+found=
+bad=
+for manifest in "${manifests[@]}"; do
+  metadata=$(cargo metadata --no-deps --offline --format-version 1 --manifest-path "$manifest")
+  found+=$(jq -r '.packages[] | select(.name == "adtb") | .name' <<<"$metadata")
+  out=$(jq -r --arg root "$root/" '
+    .packages[]
+    | (.manifest_path | ltrimstr($root)) as $at
+    | ( .dependencies[]
+        | select(.name == "adtb" and .kind != "dev" and any(.features[]; . == "testing"))
+        | "\($at): a \(.kind // "normal") dependency on adtb enables testing" ),
+      ( .features | to_entries[] | select(any(.value[]; test("^adtb\\??/testing$")))
+        | "\($at): feature \(.key) enables adtb/testing" ),
+      ( select(.name == "adtb") | .features.default // [] | select(any(.[]; . == "testing"))
+        | "\($at): the default features include testing" )
+    | "feature-check: " + .' <<<"$metadata")
+  [[ -z $out ]] || bad+=$out$'\n'
+done
+[[ -n $found ]] || { echo "feature-check: no package adtb under $root" >&2; exit 1; }
+[[ -z $bad ]] || { printf '%s' "$bad"; exit 1; }
