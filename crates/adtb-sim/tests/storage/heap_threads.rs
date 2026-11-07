@@ -377,6 +377,8 @@ fn a_walk_beside_pruning_reaches_the_newest_version_of_its_row_and_no_other_row(
 }
 
 const KEPT_LARGE: usize = 60;
+/// The yields a kept row waits for the churner's next free before the run fails.
+const WAIT_YIELDS: usize = 10_000;
 
 fn large_row(key: i64) -> Vec<Value> {
     vec![Value::I64(key), Value::Bytes(vec![key as u8; 6000])]
@@ -421,8 +423,17 @@ fn large_values_written_beside_a_sweep_freeing_store_pages_stay_whole() {
             };
             let kept: Vec<(i64, Tid)> = (0..KEPT_LARGE as i64)
                 .map(|key| {
+                    let swept = freed.load(Ordering::Relaxed);
                     let tid = db.heap.insert(&db.pager, 2, &large_row(key)).unwrap();
-                    rt.yield_now();
+                    let waited = (0..WAIT_YIELDS)
+                        .take_while(|_| freed.load(Ordering::Relaxed) == swept)
+                        .inspect(|_| rt.yield_now())
+                        .count();
+                    assert!(
+                        waited < WAIT_YIELDS,
+                        "seed {seed}: row {key}: the churner freed nothing in {waited} yields, \
+                         {swept} chunks freed before"
+                    );
                     (key, tid)
                 })
                 .collect();

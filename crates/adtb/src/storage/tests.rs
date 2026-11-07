@@ -670,3 +670,43 @@ fn a_chain_break_after_a_replayed_change_refuses_the_page() {
     assert_eq!(vec![(p, damage)], recovery.damaged);
     pager.close();
 }
+
+#[test]
+fn verify_reports_a_chain_break_of_a_page_freed_since() {
+    let scratch = Scratch::new("storage", "freed-break");
+    let rt = OsRuntime::with_faults(
+        scratch.path(),
+        Backend::Pool { threads: 1 },
+        Faults::default(),
+    );
+    let options = Options {
+        pool_frames: 16,
+        max_pages: 1024,
+        ..Options::new("freed.adt")
+    };
+    let pager = Pager::create(rt, &options).expect("create pager");
+    let p = pager
+        .allocate(1, super::PageKind::HeapSlotted, 7)
+        .expect("allocate");
+    let updated = pager
+        .update(&[p], |x| x[0][page::HEADER_LEN] = 1)
+        .expect("update");
+    pager.log().append(&Record::Change {
+        pid: p,
+        prev: Lsn(1),
+        edits: vec![],
+    });
+    pager.free(p).expect("free");
+    pager.flush_log();
+    let broken = super::Finding::Page {
+        pid: p,
+        damage: Damage::Stale {
+            expected: updated,
+            found: Lsn(1),
+        },
+    };
+    let of_p = |f: &super::Finding| matches!(f, super::Finding::Page { pid, .. } if *pid == p);
+    let found: Vec<super::Finding> = pager.verify().findings.into_iter().filter(of_p).collect();
+    assert_eq!(vec![broken], found);
+    pager.close();
+}

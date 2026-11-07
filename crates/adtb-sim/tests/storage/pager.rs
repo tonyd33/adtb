@@ -4,7 +4,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use adtb::runtime::{Entropy, IoError, Threads};
+use adtb::runtime::{Entropy, IoError, Op, Threads};
 use adtb::storage::{
     Damage, Edit, Finding, HEADER_LEN, LATCHES_PER_THREAD, LogFinding, LogProblem, Lsn, OpenError,
     Options, PageError, PageKind, Pager, Pid,
@@ -15,6 +15,7 @@ use adtb_sim::{
 };
 
 use adtb_simkit::crash;
+use adtb_simkit::search::Hooked;
 use adtb_simkit::seeds;
 
 use adtb_testkit::profile::every_case;
@@ -1141,7 +1142,7 @@ fn a_damaged_bitmap_fails_allocation() {
 }
 
 #[test]
-fn allocation_skips_a_damaged_free_page() {
+fn allocation_reuses_a_damaged_free_page_without_reading_it() {
     let mut sim = Sim::new(3, Config::default());
     let client = Client::new();
     setup(&mut sim, &client, PLAIN);
@@ -1156,8 +1157,48 @@ fn allocation_skips_a_damaged_free_page() {
     data.resize((next.0 as usize + 1) * PAGE, 0);
     data[next.0 as usize * PAGE + 77] = 1;
     let mut sim = Sim::with_files(3, Config::default(), files);
-    let got = with_pager(&mut sim, |p| p.allocate(1, PageKind::HeapSlotted, 7));
-    assert_eq!(Ok(Pid(next.0 + 1)), got);
+    let got = with_pager(&mut sim, |p| {
+        let pid = p.allocate(1, PageKind::HeapSlotted, 7);
+        let read = p
+            .read(next)
+            .map(|g| (adtb::storage::kind(&g), adtb::storage::owner(&g), g[77]));
+        let of_next = |f: &Finding| matches!(f, Finding::Page { pid, .. } if *pid == next);
+        let found: Vec<Finding> = p.verify().findings.into_iter().filter(of_next).collect();
+        (pid, read, found)
+    });
+    let formatted = (PageKind::HeapSlotted as u16, 7, 0);
+    assert_eq!((Ok(next), Ok(formatted), Vec::new()), got);
+}
+
+#[test]
+fn verify_reports_the_damage_of_a_page_whose_bitmap_page_the_device_cannot_read() {
+    let mut sim = Sim::new(3, Config::default());
+    let client = Client::new();
+    setup(&mut sim, &client, PLAIN);
+    let p = client.world.lock().unwrap().pages[0];
+    let mut sim = flip(&mut sim, NAME, p.0 as usize * PAGE + HEADER_LEN);
+    let bitmap = Pid(2);
+    let mut found = None;
+    let outcome = sim.run(|rt| {
+        let hook = Hooked::new(&rt);
+        let at = bitmap.0 * PAGE as u64;
+        hook.fail_when(move |op| match op {
+            Op::Read { offset, .. } if *offset == at => Some(IoError::Failed),
+            _ => None,
+        });
+        let (pager, _) = Pager::open(hook, &options(PLAIN)).expect("open");
+        found = Some(pager.verify().findings);
+    });
+    assert_eq!(Outcome::Finished, outcome);
+    let unreadable = Finding::Page {
+        pid: bitmap,
+        damage: Damage::Unreadable,
+    };
+    let rotted = Finding::Page {
+        pid: p,
+        damage: Damage::Checksum,
+    };
+    assert_eq!(Some(vec![unreadable, rotted]), found);
 }
 
 #[test]
@@ -1563,7 +1604,7 @@ fn guards_allocate_and_link_in_one_batch() {
             adtb::storage::kind(&new.image(pid))
         );
         let mut parent = p.exclusive(index).unwrap();
-        let mut child = p.exclusive(pid).unwrap();
+        let mut child = new.latch(pid);
         let before = p.durable();
         p.update_all_with(new, &mut [&mut parent, &mut child], |pages| {
             pages[0][HEADER_LEN..HEADER_LEN + 8].copy_from_slice(&pid.0.to_le_bytes());

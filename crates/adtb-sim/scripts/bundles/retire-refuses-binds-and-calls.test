@@ -8,7 +8,7 @@ call web-1.0
 query
   retire bundle web-1.0
 ----
-Bundle { id: bundles.key(1), name: "web-1.0", family: "web", owner: "owner", pins: migrations.key(1), hash: 0x8c51cb1119c443dca8943c1b8a1307c3c3595a343380c1cbc48d689dd1f429ba, edition: "2026-10", catalog: None, hides_new: False, lease: None, renewed: 2026-01-01T00:00:00.144177Z, priority: Regular, memory_share: None, workers: None, state: Retired { at: 2026-01-01T00:00:00.157831Z } }
+Bundle { id: bundles.key(1), name: "web-1.0", family: "web", owner: "owner", pins: migrations.key(1), hash: 0x8c51cb1119c443dca8943c1b8a1307c3c3595a343380c1cbc48d689dd1f429ba, edition: "2026-10", catalog: None, hides_new: False, lease: None, renewed: t1, priority: Regular, memory_share: None, workers: None, state: Retired { at: t2 } }
 
 call web-1.0 1 error Retired { bundle: "web-1.0" }
 

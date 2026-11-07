@@ -1,8 +1,8 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Bound, Range};
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -1001,10 +1001,17 @@ fn repair_and_insert(tree: &BTree, pager: &Pager<SimRuntime>) -> usize {
     n
 }
 
-/// Records scattered inserts through a pool of four frames, so that a split
-/// and its parent's update often fall in different log batches.
+/// Record scattered inserts beside a thread forcing the log, switching threads
+/// at page accesses, so that a split and its parent's update often fall in
+/// different log batches.
 fn record_splits() -> (Sim, Pid) {
-    let mut sim = Sim::new(31, Config::default());
+    let mut sim = Sim::new(
+        31,
+        Config {
+            switch_rate: 0.3,
+            ..Config::default()
+        },
+    );
     let mut root = Pid(0);
     finished(&mut sim, |rt| {
         let pager = Pager::create(rt, &split_options()).expect("create");
@@ -1013,12 +1020,25 @@ fn record_splits() -> (Sim, Pid) {
     });
     sim.record();
     finished(&mut sim, |rt| {
-        let (pager, _) = Pager::open(rt, &split_options()).expect("open");
+        let (pager, _) = Pager::open(rt.clone(), &split_options()).expect("open");
+        let pager = Arc::new(pager);
+        let done = Arc::new(AtomicBool::new(false));
+        let forcer = {
+            let (pager, done, clock) = (pager.clone(), done.clone(), rt.clone());
+            rt.spawn("forcer", move || {
+                while !done.load(Relaxed) {
+                    pager.flush_log();
+                    clock.yield_now();
+                }
+            })
+        };
         let tree = BTree::open(root, OWNER);
         for i in 0..SPLIT_ENTRIES {
             let e = split_entry(i * 97 % SPLIT_ENTRIES);
             assert_eq!(tree.insert(&pager, &e), Ok(true));
         }
+        done.store(true, Relaxed);
+        rt.join(forcer);
         pager.flush_log();
     });
     (sim, root)

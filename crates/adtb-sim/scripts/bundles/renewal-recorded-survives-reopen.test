@@ -6,7 +6,7 @@ reopen
 query
   from b in catalog::bundles select b.renewed
 ----
-2026-01-01T00:00:00.142987Z
+t1
 
 advance 4h
 
@@ -16,7 +16,7 @@ call web-1.0 1
 query
   from b in catalog::bundles select b.renewed
 ----
-2026-01-01T04:00:00.156334Z
+t2
 
 bundle web-1.0 pins 1 edition "2026-10" lease 1d use names
 reopen
@@ -24,4 +24,4 @@ reopen
 query
   from b in catalog::bundles select b.renewed
 ----
-2026-01-01T04:00:00.156334Z
+t2

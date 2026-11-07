@@ -60,6 +60,12 @@
 //! - `assert VALUE` before `run`, `query`, `error`, `call` or `begin`, after any `as`: the call
 //!   or transaction runs for principal VALUE. With `in` or `assert` a body is one call.
 //!
+//! An instant is compared by rank, not value: `tN` in a row or an expected error, outside a text
+//! literal, stands for the instant of rank N, in time order, among the distinct instants the run
+//! produces where the script's tokens stand. A script with a token refuses one in a body. In a
+//! difference of such a script each instant produced appears as its token. Every instant a
+//! script compares is written as a token.
+//!
 //! `pins N` with no hash in a header or body gains the hash of the first N migrations of the log:
 //! of that open's in a bundle file, else of the script's, each `log` step's included.
 //!
@@ -73,6 +79,7 @@
 //! Set `ADTB_SCRIPTS` to a newline-separated list of script files and directories and run
 //! `scripts::by_hand` to run them; `work/tools/script` does that.
 
+mod clock;
 mod plan;
 mod read;
 mod role;

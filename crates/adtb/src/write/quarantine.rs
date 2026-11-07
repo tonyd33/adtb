@@ -53,6 +53,7 @@ impl<R: Runtime> Database<R> {
         if let Some(kept) = &self.kept_store {
             holdings.roots(kept, None);
         }
+        holdings.retired(self.pager.retired());
         let retained = self.retained.as_deref();
         for r in self.rels.values() {
             for c in &r.ctors {

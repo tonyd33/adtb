@@ -51,7 +51,8 @@ pub(crate) struct Records {
     /// Whether the records differ from what the list page holds.
     pub(crate) unfolded: bool,
     /// The damage held in memory only, never logged or folded: found on a file quarantined
-    /// whole, or in a file's copy while the pool holds a sound one.
+    /// whole, on a page freed and not allocated since, or in a file's copy while the pool holds a
+    /// sound one.
     pub(crate) held: BTreeMap<Pid, Damage>,
     /// Each page's damage mapped this open, with the objects it quarantines.
     mapped: BTreeMap<Pid, (Damage, BTreeSet<Quarantine>)>,
@@ -61,6 +62,10 @@ pub(crate) struct Records {
     incomplete: BTreeMap<Pid, Damage>,
     /// The thread whose read last detected each page's damage.
     pub(crate) detected_by: BTreeMap<Pid, ThreadId>,
+    /// The pages whose last record of their own this open logged or replayed is a free.
+    freed: BTreeSet<Pid>,
+    /// The pages of trees a swap replaced, each until its own free.
+    pub(crate) retired: BTreeSet<Pid>,
 }
 
 /// A record that changes the damage recorded of its page.
@@ -69,6 +74,8 @@ pub(crate) enum Met {
     Damaged(Damage),
     /// A full-page image, which drops all damage but [`Damage::Settled`].
     Image,
+    /// The first record of a page allocated or overwritten unread, which drops all damage.
+    Start,
     Freed,
 }
 
@@ -78,7 +85,7 @@ impl Recorded {
         match met {
             Met::Damaged(damage) => self.pages.insert(pid, damage) != Some(damage),
             Met::Image if matches!(self.pages.get(&pid), Some(Damage::Settled { .. })) => false,
-            Met::Image | Met::Freed => self.pages.remove(&pid).is_some(),
+            Met::Image | Met::Start | Met::Freed => self.pages.remove(&pid).is_some(),
         }
     }
 }
@@ -88,7 +95,9 @@ impl Records {
     /// is quarantined whole, which keeps it in memory. Returns the log's end after the record.
     ///
     /// A settled page found stale at the LSNs it was settled at keeps its record: the settle's
-    /// rewrite continues the page's chain from the stale copy.
+    /// rewrite continues the page's chain from the stale copy. Damage of a page freed and not
+    /// allocated since is held in memory, mapped this open and never logged; the page's next
+    /// chain start drops it.
     pub(crate) fn detect(
         &mut self,
         log: &mut Log,
@@ -104,7 +113,7 @@ impl Records {
         {
             return None;
         }
-        if whole {
+        if whole || self.freed.contains(&pid) {
             self.held.insert(pid, damage);
             return None;
         }
@@ -114,19 +123,34 @@ impl Records {
         Some(log.next_lsn())
     }
 
-    /// Drop the damage recorded of `pid`, which a batch frees, and log that in the batch unless
-    /// recovery has not ended or `whole` says the file is quarantined whole. Returns the LSN of
-    /// the record logged.
+    /// Drop the damage recorded of `pid`, which a batch frees, and log the free in the batch
+    /// unless recovery has not ended or `whole` says the file is quarantined whole. Returns the
+    /// LSN of the record logged.
     pub(crate) fn free(&mut self, log: &mut Log, pid: Pid, whole: bool) -> Option<Lsn> {
-        let logs = self.meet(pid, Met::Freed) && self.logging && !whole;
-        logs.then(|| log.append(&Record::Freed { pid }))
+        self.meet(pid, Met::Freed);
+        (self.logging && !whole).then(|| log.append(&Record::Freed { pid }))
+    }
+
+    /// Note that `met`, a record of `pid`, ends or starts an incarnation of the page.
+    pub(crate) fn bound(&mut self, pid: Pid, met: Met) {
+        match met {
+            Met::Freed => {
+                self.freed.insert(pid);
+                self.retired.remove(&pid);
+            }
+            Met::Start => {
+                self.freed.remove(&pid);
+            }
+            Met::Damaged(_) | Met::Image => {}
+        }
     }
 
     /// Apply what `met` does to the damage recorded of `pid`, to be folded, and to what is held of
     /// it. Returns whether that changes what is to be folded.
     pub(crate) fn meet(&mut self, pid: Pid, met: Met) -> bool {
+        self.bound(pid, met);
         let settled = matches!(self.held.get(&pid), Some(Damage::Settled { .. }));
-        if met == Met::Freed || met == Met::Image && !settled {
+        if met == Met::Freed || met == Met::Start || met == Met::Image && !settled {
             self.held.remove(&pid);
         }
         let changed = self.recorded.meet(pid, met);

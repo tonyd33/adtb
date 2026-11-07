@@ -198,6 +198,7 @@ pager.allocate(format, kind, owner) -> Result<Pid, PageError>
 pager.reserve() -> Reservation
 reservation.page(format, kind, owner) -> Result<Pid, PageError>
 reservation.image(pid) -> Vec<u8>                  // the page as allocation formats it
+reservation.latch(pid) -> PageExclusive            // the reserved page, never read from the file
 reservation.free(pid)                              // freed by the same update
 pager.update_with(reservation, &[pid, ...], |pages: &mut [&mut [u8]]| ...) -> Result<Lsn, PageError>
 pager.update_all_with(reservation, &mut [&mut Exclusive], |pages| ...) -> Result<Lsn, PageError>
@@ -267,20 +268,24 @@ Postconditions:
   which `flush_log` ensures for everything logged before it.
 - `reservation.page` holds a free page that no other reservation or
   allocation gets, and marks nothing; it fails when an allocation
-  bitmap page it reads is damaged, and a free page found damaged is
-  refused and skipped. Dropping a reservation unused gives its pages
-  back, with nothing logged. A caller may hold the latch of a free
-  page, one it found by a stale read, while it allocates or frees:
-  `reservation.page` waits for a free page's latch only after other
-  allocations can proceed.
+  bitmap page it reads is damaged. It never reads the free page, and
+  takes one refused while free unless the device could not read it.
+  `reservation.latch` of a page not resident gives it as
+  `reservation.image` does, whatever the file holds, and the caller of
+  `update_all_with` latches each reserved page that way. Dropping a
+  reservation unused gives its pages back, with nothing logged. A
+  caller may hold the latch of a free page, one it found by a stale
+  read, while it allocates or frees.
 - `update_with` and `update_all_with` take a reservation whose every
   page is among the pages they change. In the batch that holds the
   change, each reserved page is marked in the allocation bitmap and
   formatted with its format, kind and owner, flags zero and contents
-  zero, before the closure sees it. Each page the reservation frees is
-  cleared in the allocation bitmap in the same batch; its contents stay
-  until it is allocated again. A crash keeps the allocation or the
-  freeing and the change that links or unlinks it, or neither.
+  zero, before the closure sees it. Its record is a full-page image
+  that continues no chain (§7), so nothing logged of the page before
+  judges it. Each page the reservation frees is cleared in the
+  allocation bitmap in the same batch, with a freed record; its
+  contents stay until it is allocated again. A crash keeps the
+  allocation or the freeing and the change that links or unlinks it, or neither.
 - `allocate` is a reservation of one page allocated by an update that
   changes nothing else, and `free` one freed the same way. An
   allocation is not undone when the transaction that made it aborts.
@@ -407,7 +412,7 @@ operating error and never handed out as data.
 | Bit rot, latent sector error | Checksum (or tag) mismatch on read |
 | Misdirected write | The page id seeds the checksum; a page read from the wrong place fails it |
 | Torn write | Checksum mismatch; repaired from a full-page image in the log (§5.2) |
-| Truncated file | After recovery, a bit of the allocation bitmap set past the end of the file refuses that page, and a bitmap page of a started group past the end of the file (§1.1) reads blank and is refused as below; a page a directory entry, index entry, version chain or out-of-line pointer names that reads all zero is refused on every read and write that reaches it through that name |
+| Truncated file | After recovery, a bit of the allocation bitmap set past the end of the file refuses that page, and a bitmap page of a started group past the end of the file (§1.1) reads blank and is refused as below; at open, each bitmap page past the end of the file with an expected LSN is refused, whatever its group; a page a directory entry, index entry, version chain or out-of-line pointer names that reads all zero is refused on every read and write that reaches it through that name |
 | Lost or zeroed bitmap | A blank bitmap page of a started group (§1.1) is refused on every allocation, free and read of the bitmap, before anything is written, and marks the database (§8) |
 | Lost write | Page LSN older than the retained log says it must be, in recovery (§7) and in `verify` and scrub ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)); in `verify`, scrub and backup, a page whose last record is recycled, older than the page LSN map holds for it (§6); on every read of a page from the file, an LSN below its expected LSN, refused as stale: its last record in the retained log, or else its entry in the page LSN map, or the LSN of the last record logged for it since the open. A blank page with an expected LSN is stale with LSN 0. The commit log alone reads a stale status page, settles it and writes it back ([mvcc.md §4.2](mvcc.md#42-the-commit-log)) |
 | Lost or misdirected log write | A page read from the file at or past the end of the log recovery kept, or past the log's next LSN once the open has written the page, refused as stale on every read, write, replay and backup that reads it, and in `verify` and scrub; a page LSN, on the page or as a record's previous LSN, that no retained record wrote: past the page's last record in a log with no gap, or at or past the end of the log recovery kept in a gapless log retained from at or before that end; in `verify` and scrub, as an `Unlogged` log finding (§7) |
@@ -516,10 +521,15 @@ describes a change to one page, or a transaction or system event:
 | logical change | inserted and deleted rows of one constructor relation that has a registered consumer ([replication.md §7](replication.md#7-logical-change-records)) |
 | checkpoint | redo LSN and dirty page table (§6) |
 | damage | page id and its damage, other than a page the device cannot read (§8) |
-| freed | page id of a page a batch frees whose damage was recorded |
+| freed | page id of a page a batch frees |
 
 A damage or freed record is no page record: it changes no page,
 continues no page's chain of records and gives no page an expected LSN.
+
+The records of a page from one allocation to its next free are one
+incarnation. A full-page image whose previous LSN is unknown starts
+one: every allocation logs it, and so does a change of a page
+overwritten while damaged (§8). A freed record ends one.
 
 A retag, a split or any multi-page change is several page records in
 one transaction. A caller may rely on it being atomic: its versions
@@ -733,7 +743,10 @@ map entry.
 
 Every page the pager refuses as damaged, other than one the device
 cannot read, is recorded: the detection appends a damage record (§5.1)
-holding only the log lock, and forces it before it returns. Recovery's
+holding only the log lock, and forces it before it returns. The damage
+of a page whose last freed record follows its last allocation (§5.1),
+in the log the open replayed or wrote, is held in memory instead: it is mapped in that open as a record is, never
+logged, and the page's next allocation drops it. Recovery's
 detections are recorded once it ends (§7), and a file quarantined whole
 records in memory only (§8). A commit log status page settled from the
 log is recorded as settled before its rewrite is logged. A checkpoint
@@ -744,8 +757,9 @@ from the checkpoint finds in the log every record the list lacks. A
 checkpoint whose records have not changed since the last fold leaves
 the page alone. An entry is 24 bytes: the page id with the damage's kind in its top byte,
 then two LSNs. A full-page image of the page logged after its record
-removes its entry, unless it is settled; a batch that frees the page
-removes it of any kind, with a freed record. Nothing else removes one: a
+removes its entry, unless it is settled; the first record of an
+incarnation (§5.1) and a batch that frees the page remove it of any
+kind. Nothing else removes one: a
 page repaired outside the engine, such as by copying its bytes back,
 stays reported until an image or a free. Past the page's capacity the
 list records the whole file as damaged and lists no more pages. A list
@@ -812,9 +826,11 @@ refuses a page it reads at or past the end of the log it kept, unless a
 full-page image of it follows. A page it does not redo is refused by the
 first read, write or `verify` that reaches it.
 
-A full-page image of a page overwritten while damaged
-(§8) has an unknown previous LSN: it continues no chain and clears the
-page's damage.
+A full-page image with an unknown previous LSN, the first record of
+an incarnation (§5.1), continues no chain and clears the page's damage.
+`verify` reports a chain break of a page the allocation bitmap calls
+free while the retained log holds it, unless a settle of the page
+logged at those LSNs excuses it.
 
 The end of the log is found by batch. A batch is accepted when all of
 its blocks are present, each verifies, and they agree: the file's id,
@@ -1001,7 +1017,8 @@ transactions layer names the database once the database is marked. A page maps a
   store every heap shares, and an allocated page a complete walk of every
   heap and index does not reach mark the database;
 - a page the allocation bitmap calls free, read before and after the walk,
-  marks nothing, and a page of the store of kept rows marks nothing. A walk
+  marks nothing, and a page of the store of kept rows marks nothing. A
+  page whose bitmap page is refused counts as allocated. A walk
   of that store stopped by damage leaves the mapping incomplete;
 - `Damage::Unreadable`, an I/O failure, marks nothing and stays a storage
   failure.

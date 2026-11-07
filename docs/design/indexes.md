@@ -271,6 +271,11 @@ Postconditions of a rebuild, for subsystems reading or writing the index:
   the writer's own entry.
 - Each old page is marked deleted after the pages leading to it, then
   freed: a descent still in the old tree starts again from the root.
+- From the swap until its own free, each old page is held by the old
+  tree: damage to it marks nothing, not the database. The hold lasts
+  only the open; after a crash the next open frees what no structure
+  names, and an old page it cannot free stays allocated to no object,
+  so damage to it marks the database.
 - Vacuum does not run during a rebuild. One rebuild runs at a time.
 - A failed or stopped rebuild frees what it allocated and keeps the old
   index. The catalog root's `changing` marks the rebuild from its first

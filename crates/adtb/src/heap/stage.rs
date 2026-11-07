@@ -72,6 +72,14 @@ impl<'p, R: Runtime> Stage<'p, R> {
         Ok(())
     }
 
+    /// Stage `bytes` as the new contents of `pid`, which `new` reserves, latching it through `new`.
+    pub fn put_reserved(&mut self, new: &Reservation<'p, R>, pid: Pid, bytes: Vec<u8>) {
+        match self.find(pid) {
+            Some(i) => self.pages[i].1 = bytes,
+            None => self.pages.push((new.latch(pid), bytes)),
+        }
+    }
+
     /// Write every staged page back in one pager update, so a crash keeps all of them or none.
     pub fn commit(self, pager: &'p Pager<R>) -> Result<(), PageError> {
         self.commit_with(pager, pager.reserve())

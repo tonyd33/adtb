@@ -905,8 +905,8 @@ impl BTree {
             let a = new.page(FORMAT, kind_of(level), self.owner)?;
             let b = new.page(FORMAT, kind_of(level), self.owner)?;
             let root = [Item::link(Vec::new(), a), Item::link(sep.clone(), b)];
-            let mut ga = pager.exclusive(a)?;
-            let mut gb = pager.exclusive(b)?;
+            let mut ga = new.latch(a);
+            let mut gb = new.latch(b);
             let mut pages: Vec<&mut PageExclusive<'p, R>> = vec![g, &mut ga, &mut gb];
             pages.extend(below);
             pager.update_all_with(new, &mut pages, |p| {
@@ -934,7 +934,7 @@ impl BTree {
         }
         let mut new = pager.reserve();
         let q = new.page(FORMAT, kind_of(level), self.owner)?;
-        let mut gq = pager.exclusive(q)?;
+        let mut gq = new.latch(q);
         let mut pages: Vec<&mut PageExclusive<'p, R>> = vec![g, &mut gq];
         pages.extend(below);
         pager.update_all_with(new, &mut pages, |p| {

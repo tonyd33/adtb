@@ -635,9 +635,11 @@ impl<R: Runtime> Database<R> {
         old: &mut Replaced,
     ) -> Result<(), Error> {
         let (reached_pages, reached) = tree.reachable(&self.pager);
+        self.pager.retire(reached_pages.iter().copied());
         let kept = std::mem::take(made);
         let found_before = std::mem::replace(&mut old.found, false);
         if let Err(e) = tree.take_over(&self.pager, built, release) {
+            self.pager.unretire(&reached_pages);
             *made = kept;
             old.found = found_before;
             return Err(e.into());
@@ -650,6 +652,7 @@ impl<R: Runtime> Database<R> {
         let found = std::mem::replace(&mut old.found, false);
         (job.phase)("sweep", 0.85);
         let (strays, judged) = tree.strays(&self.pager).unwrap_or((Vec::new(), false));
+        self.pager.retire(strays.iter().copied());
         append_strays(&mut old.pages, strays);
         old.found = found && judged;
         Ok(())

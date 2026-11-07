@@ -1,0 +1,12 @@
+seed 37
+use auth
+log
+  module auth
+  rename field User.name to display
+bundle web-1.0 pins 1 edition "2026-10" lease 1d use names
+reopen
+
+query
+  from t1 in catalog::bundles select t1.name
+----
+"web-1.0"

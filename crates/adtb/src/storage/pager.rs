@@ -171,8 +171,14 @@ pub(crate) struct Meta {
     /// here only once it is in the log and while its bitmap page is latched, so a checkpoint that
     /// captures a lower count finds that page dirty and its redo point covers the batch.
     pub(crate) groups: u64,
-    /// Damaged pages latched blank, whose next change logs an unchained full-page image.
+    /// Pages latched blank, whose next change logs an unchained full-page image.
     pub(crate) overwritten: BTreeSet<Pid>,
+    /// The free pages reservations hold, each until its reservation and any blank latch of it
+    /// end.
+    pub(crate) reserved: BTreeSet<Pid>,
+    /// The reserved pages latched blank whose allocation has not committed, each with the
+    /// refusal its blank frame replaced.
+    pub(crate) blanked: BTreeMap<Pid, Option<Damage>>,
     /// The end of the log recovery kept when the pager opened, or zero for a pager created empty.
     pub(crate) recovered: Lsn,
     /// The page LSN map's root, `None` while the file has no map.
@@ -338,13 +344,16 @@ impl Deref for PageShared<'_> {
 
 /// The exclusive latch on a resident page, through which it changes.
 pub struct PageExclusive<'a, R: Runtime> {
-    pager: &'a Pager<R>,
-    g: pages::Exclusive<'a>,
+    pub(super) pager: &'a Pager<R>,
+    /// Taken only by the drop.
+    pub(super) g: Option<pages::Exclusive<'a>>,
+    /// Whether the frame is a reservation's blank one.
+    pub(super) blank: bool,
 }
 
 impl<R: Runtime> std::fmt::Debug for PageExclusive<'_, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.g.fmt(f)
+        self.latch().fmt(f)
     }
 }
 
@@ -352,30 +361,38 @@ impl<R: Runtime> Deref for PageExclusive<'_, R> {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
-        &self.g
+        self.latch()
     }
 }
 
 impl<'a, R: Runtime> PageExclusive<'a, R> {
     pub(crate) fn of(pager: &'a Pager<R>, g: pages::Exclusive<'a>) -> Self {
-        PageExclusive { pager, g }
+        PageExclusive {
+            pager,
+            g: Some(g),
+            blank: false,
+        }
+    }
+
+    fn latch(&self) -> &pages::Exclusive<'a> {
+        self.g.as_ref().expect("held until the drop")
     }
 
     pub(crate) fn inner(&mut self) -> &mut pages::Exclusive<'a> {
-        &mut self.g
+        self.g.as_mut().expect("held until the drop")
     }
 
     pub fn pid(&self) -> Pid {
-        Pid(self.g.pid())
+        Pid(self.latch().pid())
     }
 
     /// Change the page through `f`, which sees a copy, and log the bytes it changed.
     ///
     /// Returns the LSN of the record, or the LSN the next record gets if nothing changed.
     pub fn update(&mut self, f: impl FnOnce(&mut [u8])) -> Lsn {
-        let mut copy = self.g.to_vec();
+        let mut copy = self.latch().to_vec();
         f(&mut copy);
-        let edits = diff(&self.g, &copy);
+        let edits = diff(self.latch(), &copy);
         self.change(edits)
     }
 
@@ -384,7 +401,7 @@ impl<'a, R: Runtime> PageExclusive<'a, R> {
     /// Panics if an edit writes the page's LSN or checksum or past its end.
     pub fn change(&mut self, edits: Vec<Edit>) -> Lsn {
         let pager = self.pager;
-        pager.apply(&mut [&mut self.g], vec![edits], None)
+        pager.apply(&mut [self.inner()], vec![edits], None)
     }
 }
 
@@ -422,7 +439,7 @@ impl<'a, R: Runtime> PageOptimistic<'a, R> {
         let pager = self.pager;
         let g = self.o.upgrade()?;
         pager.check_bound();
-        Some(PageExclusive { pager, g })
+        Some(PageExclusive::of(pager, g))
     }
 }
 
@@ -460,6 +477,8 @@ impl<R: Runtime> Pager<R> {
                 records: Default::default(),
                 groups: bitmap_groups,
                 overwritten: BTreeSet::new(),
+                reserved: BTreeSet::new(),
+                blanked: BTreeMap::new(),
                 recovered: Lsn(0),
                 map: None,
                 wrote: Vec::new(),
@@ -711,7 +730,7 @@ impl<R: Runtime> Pager<R> {
         assert!(pid >= Pid::FIRST_DATA, "a change writes a file header page");
         loop {
             if let Some(g) = self.resident(pid)? {
-                return Ok(PageExclusive { pager: self, g });
+                return Ok(PageExclusive::of(self, g));
             }
         }
     }
@@ -765,7 +784,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Panic, in debug builds and when `latch-checks` is on, if the calling thread latches more
     /// than [`LATCHES_PER_THREAD`] pages.
-    fn check_bound(&self) {
+    pub(super) fn check_bound(&self) {
         let held = self.mem.latched_here();
         assert!(
             held <= LATCHES_PER_THREAD,
@@ -1000,10 +1019,10 @@ impl<R: Runtime> Pager<R> {
         let mut last = log.next_lsn();
         let mut m = self.meta();
         for (g, edits) in guards.iter_mut().zip(edits) {
-            if edits.is_empty() {
+            let pid = Pid(g.pid());
+            if edits.is_empty() && !m.overwritten.contains(&pid) {
                 continue;
             }
-            let pid = Pid(g.pid());
             let prev = page::lsn(g);
             let lsn = log.next_lsn();
             let rewritten = m.dirty.contains_key(&pid) && !m.changed.contains(&pid);
@@ -1030,9 +1049,14 @@ impl<R: Runtime> Pager<R> {
             };
             let (at, field) = page::lsn_field(lsn);
             g.write(at, &field);
-            if let Record::Image { .. } = record {
+            if let Record::Image { prev, .. } = record {
                 m.images.insert(pid, lsn);
-                m.records.meet(pid, Met::Image);
+                let met = if prev == Lsn::UNCHAINED {
+                    Met::Start
+                } else {
+                    Met::Image
+                };
+                m.records.meet(pid, met);
             }
             log.append(&record);
             if rewritten {
@@ -1106,7 +1130,7 @@ impl<R: Runtime> Pager<R> {
     {
         let edits = edits_by(guards.iter().map(|g| &***g), f);
         let mut inner: Vec<&mut pages::Exclusive<'_>> =
-            guards.iter_mut().map(|g| &mut g.g).collect();
+            guards.iter_mut().map(|g| g.inner()).collect();
         self.apply(&mut inner, edits, None)
     }
 
@@ -1121,7 +1145,7 @@ impl<R: Runtime> Pager<R> {
     {
         let edits = edits_by(guards.iter().map(|g| &***g), f);
         let mut inner: Vec<&mut pages::Exclusive<'_>> =
-            guards.iter_mut().map(|g| &mut g.g).collect();
+            guards.iter_mut().map(|g| g.inner()).collect();
         self.apply(&mut inner, edits, Some(self.commit_record(xid)))
     }
 
@@ -1141,6 +1165,16 @@ impl<R: Runtime> Pager<R> {
         pids: &[Pid],
         f: impl FnOnce(&'s Self, &mut [&mut pages::Exclusive<'s>]) -> T,
     ) -> Result<T, PageError> {
+        self.with_latched_by(pids, |pid| self.exclusive(pid), f)
+    }
+
+    /// Run `f` as [`Pager::with_latched`] does, taking each latch through `latch`.
+    pub(crate) fn with_latched_by<'s, T>(
+        &'s self,
+        pids: &[Pid],
+        latch: impl Fn(Pid) -> Result<PageExclusive<'s, R>, PageError>,
+        f: impl FnOnce(&'s Self, &mut [&mut pages::Exclusive<'s>]) -> T,
+    ) -> Result<T, PageError> {
         let distinct: BTreeSet<Pid> = pids.iter().copied().collect();
         assert_eq!(
             distinct.len(),
@@ -1151,13 +1185,14 @@ impl<R: Runtime> Pager<R> {
             pids.len() <= self.pool_frames,
             "a change needs more frames than the pool has"
         );
-        let mut held: BTreeMap<Pid, pages::Exclusive<'s>> = BTreeMap::new();
+        let mut held: BTreeMap<Pid, PageExclusive<'s, R>> = BTreeMap::new();
         for &pid in &distinct {
-            held.insert(pid, self.exclusive(pid)?.g);
+            held.insert(pid, latch(pid)?);
         }
-        let mut ordered: Vec<pages::Exclusive<'s>> =
+        let mut ordered: Vec<PageExclusive<'s, R>> =
             pids.iter().map(|p| held.remove(p).unwrap()).collect();
-        let mut refs: Vec<&mut pages::Exclusive<'s>> = ordered.iter_mut().collect();
+        let mut refs: Vec<&mut pages::Exclusive<'s>> =
+            ordered.iter_mut().map(PageExclusive::inner).collect();
         Ok(f(self, &mut refs))
     }
 

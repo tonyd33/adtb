@@ -1340,7 +1340,7 @@ fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> (usize, usize) {
 
 #[test]
 fn crashes_during_vacuum_recover_to_a_clean_database() {
-    const SEEDS: Range<u64> = 0..8;
+    const SEEDS: Range<u64> = 0..32;
     let (crashes, during): (Vec<usize>, Vec<usize>) = sweep(SEEDS)
         .map(|seed| {
             crash_loop(
@@ -1355,7 +1355,7 @@ fn crashes_during_vacuum_recover_to_a_clean_database() {
         .unzip();
     let (crashes, during) = (crashes.iter().sum::<usize>(), during.iter().sum::<usize>());
     assert!(
-        crashes > share(SEEDS, 10) && during > share(SEEDS, 3),
+        crashes > share(SEEDS, 40) && during > share(SEEDS, 12),
         "{crashes} crashes, {during} during vacuum"
     );
 }

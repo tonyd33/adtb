@@ -172,12 +172,17 @@ impl<R: Runtime> Pager<R> {
     fn replay(&self, st: &mut Replay, lsn: Lsn, record: Record) {
         let met = match &record {
             Record::Damaged { pid, damage } => Some((*pid, Met::Damaged(*damage))),
+            Record::Image { pid, prev, .. } if *prev == Lsn::UNCHAINED => Some((*pid, Met::Start)),
             Record::Image { pid, .. } => Some((*pid, Met::Image)),
             Record::Freed { pid } => Some((*pid, Met::Freed)),
             _ => None,
         };
-        if let Some(met) = met.filter(|_| lsn > st.ck) {
-            self.meta().records.replayed.push(met);
+        if let Some((pid, m)) = met {
+            let mut meta = self.meta();
+            meta.records.bound(pid, m);
+            if lsn > st.ck {
+                meta.records.replayed.push((pid, m));
+            }
         }
         let Some((pid, prev)) = record.page() else {
             return;

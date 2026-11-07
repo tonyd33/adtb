@@ -6,6 +6,7 @@ use super::block::{LogFinding, LogProblem, Mode, Resolutions, resolutions_from, 
 use super::log::parse_segment;
 use super::page::{self, Verdict};
 use super::pager::{Damage, Pager};
+use super::quarantine::Allocation;
 use super::record::Record;
 use super::{Lsn, Pid, Position};
 
@@ -215,6 +216,7 @@ impl<R: Runtime> Pager<R> {
         let mut safe_snapshots = Vec::new();
         let mut last: BTreeMap<Pid, Lsn> = BTreeMap::new();
         let mut broken: BTreeMap<Pid, Damage> = BTreeMap::new();
+        let mut settled: BTreeMap<Pid, Damage> = BTreeMap::new();
         let block = img.block;
         let first = img.first_batch();
         let s = first.map(|first| {
@@ -231,6 +233,13 @@ impl<R: Runtime> Pager<R> {
                         Record::SafeSnapshot { at, snapshot } => {
                             safe_snapshots.push((lsn, *at, snapshot.clone()));
                         }
+                        Record::Damaged {
+                            pid,
+                            damage: Damage::Settled { expected, found },
+                        } => {
+                            let (expected, found) = (*expected, *found);
+                            settled.insert(*pid, Damage::Stale { expected, found });
+                        }
                         _ => {}
                     }
                     let Some((pid, prev)) = record.page() else {
@@ -238,14 +247,18 @@ impl<R: Runtime> Pager<R> {
                     };
                     if prev == Lsn::UNCHAINED {
                         broken.remove(&pid);
+                        settled.remove(&pid);
                     }
                     let chained = prev != Lsn::UNCHAINED;
                     if let Some(expected) = last.insert(pid, lsn).filter(|&l| chained && l != prev)
                     {
-                        broken.entry(pid).or_insert(Damage::Stale {
+                        let damage = Damage::Stale {
                             expected,
                             found: prev,
-                        });
+                        };
+                        if settled.get(&pid) != Some(&damage) {
+                            broken.entry(pid).or_insert(damage);
+                        }
                     }
                 }
             })
@@ -292,8 +305,9 @@ impl<R: Runtime> Pager<R> {
     /// under its exclusive latch, which no write-out or eviction holds with.
     ///
     /// Judge a page by what holds it now. A file copy the pool's changed copy will overwrite is not
-    /// damage, and a page the allocation bitmap calls free has no finding unless already refused.
-    /// Report the damage recorded of it as well.
+    /// damage. A page the allocation bitmap calls free has no finding but a chain break of its
+    /// last incarnation the log holds and no settle excuses, unless already refused. Report the
+    /// damage recorded of it as well.
     pub fn check_page(&self, pid: Pid, log: &RetainedLog) -> Vec<Finding> {
         let mut findings = self.judge_page(pid, log);
         let recorded = self.meta().records.page(pid);
@@ -396,7 +410,11 @@ impl<R: Runtime> Pager<R> {
             if !wrong(&seen) {
                 return findings;
             }
-            if self.called_free(pid) {
+            if self.allocation(pid) == Allocation::Free {
+                if let Some(damage) = broken {
+                    findings.push(Finding::Page { pid, damage });
+                    findings.extend(lost_record(pid, damage));
+                }
                 return findings;
             }
             let g = self.mem.lock_exclusive(pid.0, &self.rt);

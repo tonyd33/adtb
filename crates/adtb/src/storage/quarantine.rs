@@ -9,6 +9,15 @@ use super::pager::{PageError, PageExclusive, Pager};
 use super::{Damage, Lsn, Pid};
 use crate::mvcc::Settling;
 
+/// What the allocation bitmap says of a page.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Allocation {
+    Allocated,
+    Free,
+    /// Its bitmap page is refused.
+    Unknown,
+}
+
 /// What a detected corruption stops.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Quarantine {
@@ -471,7 +480,7 @@ impl<R: Runtime> Pager<R> {
     /// Postconditions:
     ///
     /// - A page the allocation bitmap calls free, before or after the walk, quarantines nothing
-    ///   unless a walk found it.
+    ///   unless a walk found it. A page whose bitmap page is refused counts as allocated.
     /// - A walk stopped by damage quarantines its object, or leaves the mapping incomplete when
     ///   the object's damage marks nothing. One stopped by an I/O failure, or on a shape it could
     ///   not follow in all its tries, leaves the mapping incomplete: `unheld` then plays no part.
@@ -514,17 +523,36 @@ impl<R: Runtime> Pager<R> {
         if h.incomplete && h.held.is_empty() && !h.unmarked {
             return None;
         }
-        if !h.held.is_empty() || h.unmarked || self.called_free(pid) {
+        if !h.held.is_empty() || h.unmarked || self.allocation(pid) == Allocation::Free {
             return Some(h.held);
         }
         Some(unheld.into_iter().collect())
     }
 
-    /// Returns whether the allocation bitmap calls `pid` free, or cannot be read to say.
-    pub(super) fn called_free(&self, pid: Pid) -> bool {
+    /// Hold `pids`, pages of a tree a swap replaced, as retired until each one's own free.
+    pub fn retire(&self, pids: impl IntoIterator<Item = Pid>) {
+        self.meta().records.retired.extend(pids);
+    }
+
+    /// Stop holding `pids` as retired: the swap that would have replaced their tree failed.
+    pub fn unretire(&self, pids: &[Pid]) {
+        let mut m = self.meta();
+        for p in pids {
+            m.records.retired.remove(p);
+        }
+    }
+
+    /// Returns the pages held as retired, none of them freed since.
+    pub fn retired(&self) -> Vec<Pid> {
+        self.meta().records.retired.iter().copied().collect()
+    }
+
+    /// Returns what the allocation bitmap says of `pid`.
+    pub(super) fn allocation(&self, pid: Pid) -> Allocation {
         match self.is_free(pid) {
-            Ok(free) => free,
-            Err(e) => e.damage == Damage::Unreadable,
+            Ok(true) => Allocation::Free,
+            Ok(false) => Allocation::Allocated,
+            Err(_) => Allocation::Unknown,
         }
     }
 

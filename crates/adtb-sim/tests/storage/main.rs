@@ -13,6 +13,7 @@ mod heap;
 mod heap_claims;
 mod heap_kind;
 mod heap_threads;
+mod incarnation;
 mod io_contract;
 mod latches;
 mod lost_bitmap;

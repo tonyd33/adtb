@@ -6,7 +6,7 @@ use adtb_lang::types::RelId;
 use crate::btree::BTree;
 use crate::heap::{Heap, LargeStore};
 use crate::runtime::Runtime;
-use crate::storage::{Holders, Pager, Quarantine};
+use crate::storage::{Holders, Pager, Pid, Quarantine};
 
 /// What [`Holders`] walks to map a damaged page to its object. The damage of a relation of an
 /// engine module quarantines the database.
@@ -16,6 +16,7 @@ pub struct Holdings<'a> {
     heaps: Vec<(Option<Quarantine>, &'a Heap)>,
     trees: Vec<(Option<Quarantine>, BTree)>,
     large: Vec<LargeStore>,
+    retired: Vec<Pid>,
 }
 
 impl<'a> Holdings<'a> {
@@ -25,6 +26,7 @@ impl<'a> Holdings<'a> {
             heaps: Vec::new(),
             trees: Vec::new(),
             large: Vec::new(),
+            retired: Vec::new(),
         }
     }
 
@@ -44,6 +46,11 @@ impl<'a> Holdings<'a> {
     pub fn trees(&mut self, r: RelId, owner: u32, trees: impl IntoIterator<Item = BTree>) {
         let object = self.object(r, Quarantine::Index(owner));
         self.trees.extend(trees.into_iter().map(|t| (object, t)));
+    }
+
+    /// Add `pages`, of trees a swap replaced and no sweep has freed, whose damage marks nothing.
+    pub fn retired(&mut self, pages: Vec<Pid>) {
+        self.retired.extend(pages);
     }
 
     /// Add the large-value store `store`, whose damage quarantines the database.
@@ -73,5 +80,6 @@ impl<'a> Holdings<'a> {
         for (object, tree) in &self.trees {
             h.walk(*object, || tree.walk(pager));
         }
+        h.walk(None, || Ok(self.retired.clone()));
     }
 }

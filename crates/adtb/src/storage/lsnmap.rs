@@ -39,6 +39,14 @@ impl Gate {
             e.raise(pid, lsn);
         }
     }
+
+    /// Returns one past the last page with an expected LSN, 0 when none has one.
+    pub(crate) fn end(&self) -> u64 {
+        match self {
+            Gate::Armed(e) => e.end(),
+            Gate::Recovering | Gate::Off => 0,
+        }
+    }
 }
 
 /// The LSN each page must have at least when read in.
@@ -61,6 +69,16 @@ impl Expected {
     pub(crate) fn get(&self, pid: Pid) -> Option<Lsn> {
         let folded = self.folded.get(pid.0 as usize).copied();
         self.logged.get(&pid).copied().or(folded)
+    }
+
+    fn end(&self) -> u64 {
+        let folded = self
+            .folded
+            .iter()
+            .rposition(|&l| l > Lsn(0))
+            .map_or(0, |i| i + 1);
+        let logged = self.logged.keys().map(|p| p.0 + 1).max().unwrap_or(0);
+        (folded as u64).max(logged)
     }
 
     /// Raise `pid`'s expected LSN to `lsn`, the LSN of its latest record.

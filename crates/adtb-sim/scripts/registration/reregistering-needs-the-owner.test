@@ -16,14 +16,14 @@ reopen
 query
   from b in catalog::bundles where b.name == "shop-2.0" select b.renewed
 ----
-2026-01-01T00:00:01.303418Z
+t1
 
 as idle register shop-2.0 pins 3 edition "2026-10" use customer-names error Denied { detail: "bundle shop-2.0 is owned by role owner" }
 
 query
   from b in catalog::bundles where b.name == "shop-2.0" select b.renewed
 ----
-2026-01-01T00:00:01.303418Z
+t1
 
 call shop-2.0 error BundleSuperseded { bundle: "shop-2.0" }
 

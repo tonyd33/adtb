@@ -837,7 +837,7 @@ impl Space {
         arrangement.init(&mut image, position);
         let cat = category(page::free(&image), pager.page_size());
         let mut stage = Stage::new();
-        stage.put(pager, page, image)?;
+        stage.put_reserved(&new, page, image);
         let fresh = Change {
             page: Some(page),
             category: Some(cat),
@@ -1143,7 +1143,7 @@ impl Space {
         }
         let mut new = pager.reserve();
         let moved = new.page(1, PageKind::FreeSpaceMap, self.owner)?;
-        stage.put(pager, moved, new.image(moved))?;
+        stage.put_reserved(&new, moved, new.image(moved));
         let copy = stage.page(pager, moved)?;
         copy[CONTENTS..].copy_from_slice(&old[CONTENTS..]);
         copy[VM..VM + 8].fill(0);
@@ -1171,7 +1171,7 @@ impl Space {
         let cap = capacity(node);
         let mut new = pager.reserve();
         let child = new.page(1, PageKind::FreeSpaceMap, self.owner)?;
-        stage.put(pager, child, new.image(child))?;
+        stage.put_reserved(&new, child, new.image(child));
         init(stage.page(pager, child)?, l - 1, cap);
         push(stage.page(pager, parent)?, child, 0);
         stage.commit_with(pager, new)
@@ -1194,7 +1194,7 @@ impl Space {
         arrangement.init(&mut image, position);
         let cat = category(page::free(&image), pager.page_size());
         let mut stage = Stage::new();
-        stage.put(pager, page, image)?;
+        stage.put_reserved(&new, page, image);
         let node = self.node_mut(&mut stage, pager, leaf)?;
         let i = digit(u64::from(position), 0, capacity(node));
         if level(node) != 0 || count(node) != i {

@@ -11,7 +11,7 @@ call web-1.0
 query
   from b in catalog::bundles select b.renewed
 ----
-2026-01-01T00:00:00.138948Z
+t1
 
 advance 4h
 
@@ -20,4 +20,4 @@ call web-1.0 2 error Invalid { detail: "`add` takes 1 arguments, not 0" }
 query
   from b in catalog::bundles select b.renewed
 ----
-2026-01-01T00:00:00.138948Z
+t1

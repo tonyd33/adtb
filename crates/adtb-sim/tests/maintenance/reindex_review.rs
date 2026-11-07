@@ -11,7 +11,7 @@ use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use adtb::runtime::{Clock, Runtime, Threads};
-use adtb::storage::{Damage, Quarantine};
+use adtb::storage::{Damage, PageKind, Quarantine};
 use adtb::{
     CallOptions, CancelToken, Database, Log, OpenOptions, TxnCallOptions, TxnOptions, Value,
 };
@@ -1108,18 +1108,13 @@ fn a_history_page_damaged_during_the_build_is_not_released_unrepaired() {
         db.on_reindex_phase(Arc::new(move |phase| {
             if phase == "build" && !once.swap(true, Ordering::AcqRel) {
                 d.damage_page(history_root(&d), Damage::Checksum);
-                assert_eq!(
-                    BTreeSet::new(),
-                    marks(&d),
-                    "the detecting call has not ended"
-                );
                 assert_eq!(vec!["1007"], api::query(&d, &r), "a read of the heaps");
                 let key = d.write_path().index_named("app::ts", "key id").unwrap();
                 let key = Quarantine::Index(key.tree().owner());
                 assert_eq!(
                     BTreeSet::from([key]),
                     marks(&d),
-                    "the read's commit maps the damage"
+                    "a commit since the detection maps the damage"
                 );
             }
         }));
@@ -1259,6 +1254,47 @@ fn a_panic_after_the_swap_frees_no_page_of_the_new_index() {
             );
         }
         db.close().unwrap();
+    });
+}
+
+#[test]
+fn a_page_a_failed_sweep_freed_marks_the_database_once_reused_outside_every_walk() {
+    api::once(3, |rt| {
+        let db = hist_open(rt.clone());
+        for i in 1..=400 {
+            api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
+        }
+        let index = db.write_path().index_named("app::ts", "index (v)").unwrap();
+        let pages = index.tree().pages(db.write_path().pager()).unwrap();
+        assert!(pages.len() > 2, "a tree with a page between two to sweep");
+        let (scrapped, unreadable) = (pages[1], *pages.last().unwrap());
+        let d = db.clone();
+        db.on_reindex_phase(Arc::new(move |phase| {
+            if phase == "reclaim" {
+                d.damage_page(scrapped, Damage::Checksum);
+                d.damage_page(unreadable, Damage::Unreadable);
+            }
+        }));
+        api::results(&db, "reindex ts index (v)");
+        wait_jobs(&rt, &db);
+        let pager = db.write_path().pager();
+        assert_eq!(
+            Ok(true),
+            pager.is_free(scrapped),
+            "the sweep scraps the page"
+        );
+        assert_eq!(
+            Ok(false),
+            pager.is_free(unreadable),
+            "the sweep stops at the page"
+        );
+        let reused = (0..pages.len() + 64)
+            .map(|_| pager.allocate(1, PageKind::HeapSlotted, 77).unwrap())
+            .find(|&p| p == scrapped);
+        assert_eq!(Some(scrapped), reused, "an allocation reuses the page");
+        db.damage_page(scrapped, Damage::Checksum);
+        assert!(!insert_ok(&db, 900), "the commit maps the damage");
+        assert_eq!(BTreeSet::from([Quarantine::Database]), marks(&db));
     });
 }
 

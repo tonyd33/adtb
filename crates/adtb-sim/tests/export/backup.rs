@@ -185,13 +185,14 @@ fn backup_under_writers_restores_every_commit_acked_before_start_and_none_after_
             let before: Vec<_> = (0..16).map(|id| (id, commit(&db, id))).collect();
             a.lock().unwrap().extend(before);
             let stop = Arc::new(AtomicBool::new(false));
-            let (w, s, shared) = (db.clone(), stop.clone(), a.clone());
+            let (w, s, shared, clock) = (db.clone(), stop.clone(), a.clone(), rt.clone());
             let writer = rt.spawn("writer", move || {
                 let mut id = 16;
                 while !s.load(Ordering::Relaxed) {
                     let at = commit(&w, id);
                     shared.lock().unwrap().push((id, at));
                     id += 1;
+                    clock.yield_now();
                 }
             });
             let got = backup_with(db.write_path().pager(), TARGET, &mut |_, _| {

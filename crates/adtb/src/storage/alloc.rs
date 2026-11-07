@@ -1,7 +1,5 @@
 use crate::runtime::Runtime;
 
-use std::collections::BTreeSet;
-
 use super::page::{self, FIRST_EDITABLE, HEADER_LEN, PageKind};
 use super::pager::{Damage, PageError, PageExclusive, PageShared, Pager};
 use super::record::{Edit, Record};
@@ -98,13 +96,28 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Refuse each page the allocation bitmap marks allocated past the end of the file, the first
-    /// bitmap page when the file ends before it, and the last bitmap page the file holds when that
-    /// holds no bitmap.
+    /// bitmap page when the file ends before it, the last bitmap page the file holds when that
+    /// holds no bitmap, and each later bitmap page with an expected LSN as a blank copy of it.
     ///
-    /// Preconditions: recovery has written every page the log holds, and the file holds `pages`.
+    /// Preconditions: recovery has written every page the log holds and armed the read-in gate,
+    /// and the file holds `pages`.
     pub(crate) fn refuse_cut_pages(&self, pages: u64) {
         let span = self.bitmap_span();
         let group = pages.saturating_sub(1) / span;
+        self.refuse_cut_group(pages, group);
+        let end = self.meta().gate.end();
+        let later = (group + 1..).map(|g| self.bitmap_page(g));
+        for map in later.take_while(|m| m.0 < end) {
+            let expected = self.meta().gate.expected(map).filter(|&l| l > Lsn(0));
+            if let Some(expected) = expected {
+                let found = Lsn(0);
+                self.damage(map, Damage::Stale { expected, found });
+            }
+        }
+    }
+
+    fn refuse_cut_group(&self, pages: u64, group: u64) {
+        let span = self.bitmap_span();
         let map = self.bitmap_page(group);
         if map.0 >= pages {
             self.damage(map, Damage::Checksum);
@@ -124,8 +137,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Allocate a free page, set its header to `format`, `kind` and `owner`, and zero its contents.
     ///
-    /// Fails, allocating nothing, if an allocation bitmap page it reads is damaged. A free page
-    /// found damaged is refused from then on and the search goes on.
+    /// Fail, allocating nothing, if an allocation bitmap page it reads is damaged.
     ///
     /// Postconditions:
     ///
@@ -146,25 +158,8 @@ impl<R: Runtime> Pager<R> {
         }
     }
 
-    /// Returns a free page no allocator or reservation holds, and holds it.
-    fn reserve_page(&self) -> Result<(Pid, Lsn), PageError> {
-        loop {
-            let pid = self.hold_free_page()?;
-            // Latch outside the allocation lock: a free page can be latched by a thread waiting
-            // for that lock.
-            match self.exclusive(pid) {
-                Ok(g) => return Ok((pid, page::lsn(&g))),
-                Err(e) => {
-                    self.alloc.lock(&self.rt).reserved.remove(&pid);
-                    if e.pid != pid {
-                        return Err(e);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Returns a free page no allocator or reservation holds, held as reserved.
+    /// Returns a free page no allocator or reservation holds, held as reserved. A page the device
+    /// could not read is skipped.
     fn hold_free_page(&self) -> Result<Pid, PageError> {
         let span = self.bitmap_span();
         let mut state = self.alloc.lock(&self.rt);
@@ -175,18 +170,18 @@ impl<R: Runtime> Pager<R> {
             let bits = self.read_map(g)?[HEADER_LEN..].to_vec();
             let taken = |pid: u64| {
                 let i = (pid - first) as usize;
-                pid < Pid::FIRST_DATA.0
-                    || pid == map.0
-                    || bits[i / 8] >> (i % 8) & 1 == 1
-                    || state.reserved.contains(&Pid(pid))
-                    || self.meta().damaged.contains_key(&Pid(pid))
+                pid < Pid::FIRST_DATA.0 || pid == map.0 || bits[i / 8] >> (i % 8) & 1 == 1 || {
+                    let m = self.meta();
+                    m.reserved.contains(&Pid(pid))
+                        || m.damaged.get(&Pid(pid)) == Some(&Damage::Unreadable)
+                }
             };
             let Some(pid) = (first..first + span).find(|&p| !taken(p)) else {
                 g += 1;
                 continue;
             };
             state.group = g;
-            state.reserved.insert(Pid(pid));
+            self.meta().reserved.insert(Pid(pid));
             return Ok(Pid(pid));
         }
     }
@@ -231,7 +226,11 @@ impl<R: Runtime> Pager<R> {
     {
         let mut f = Some(f);
         let mut tail = Some(tail);
-        self.with_latched(pids, |pager, guards| {
+        let latch = |pid| match new.pages.iter().any(|r| r.pid == pid) {
+            true => Ok(new.latch(pid)),
+            false => self.exclusive(pid),
+        };
+        self.with_latched_by(pids, latch, |pager, guards| {
             pager.allocating(&new, guards, f.take().unwrap(), tail.take().unwrap())
         })?
     }
@@ -330,6 +329,13 @@ impl<R: Runtime> Pager<R> {
             }
             edits.push(diff(map, &bits));
         }
+        {
+            let mut m = self.meta();
+            m.overwritten.extend(new.pages.iter().map(|r| r.pid));
+            for r in &new.pages {
+                m.blanked.remove(&r.pid);
+            }
+        }
         let mut all: Vec<&mut adtb_sys::pages::Exclusive<'p>> = Vec::new();
         for g in guards.iter_mut() {
             all.push(g);
@@ -400,6 +406,31 @@ impl<R: Runtime> Pager<R> {
         }
         Ok(out)
     }
+
+    /// Returns the exclusive latch on `pid`, a free page a reservation holds, without reading the
+    /// file: when not resident it is read in with `header` and zero contents, and no longer
+    /// refused. The latch's drop undoes both unless an allocation of `pid` committed.
+    pub(crate) fn latch_reserved(&self, pid: Pid, header: &[u8]) -> PageExclusive<'_, R> {
+        let mut g = self.mem.lock_exclusive(pid.0, &self.rt);
+        self.check_bound();
+        if g.resident() {
+            return PageExclusive::of(self, g);
+        }
+        {
+            let mut m = self.meta();
+            let refusal = m.damaged.remove(&pid);
+            m.blanked.insert(pid, refusal);
+        }
+        self.make_room(pid);
+        let mut blank = vec![0; self.page_size];
+        blank[FIRST_EDITABLE..HEADER_LEN].copy_from_slice(header);
+        g.write(0, &blank);
+        PageExclusive {
+            pager: self,
+            g: Some(g),
+            blank: true,
+        }
+    }
 }
 
 /// Free pages held for one [`Pager::update_with`] or [`Pager::update_all_with`], which marks
@@ -414,7 +445,6 @@ pub struct Reservation<'a, R: Runtime> {
 #[derive(Debug)]
 struct Reserved {
     pid: Pid,
-    lsn: Lsn,
     format: u16,
     kind: PageKind,
     owner: u32,
@@ -429,15 +459,14 @@ impl<R: Runtime> std::fmt::Debug for Reservation<'_, R> {
     }
 }
 
-impl<R: Runtime> Reservation<'_, R> {
+impl<'a, R: Runtime> Reservation<'a, R> {
     /// Hold a free page, to be formatted with `format`, `kind` and `owner` when allocated.
     ///
     /// Fails if an allocation bitmap page is damaged.
     pub fn page(&mut self, format: u16, kind: PageKind, owner: u32) -> Result<Pid, PageError> {
-        let (pid, lsn) = self.pager.reserve_page()?;
+        let pid = self.pager.hold_free_page()?;
         self.pages.push(Reserved {
             pid,
-            lsn,
             format,
             kind,
             owner,
@@ -460,36 +489,77 @@ impl<R: Runtime> Reservation<'_, R> {
         self.freed.push(pid);
     }
 
-    /// Returns the page `pid` as allocation will format it, with the LSN it has now.
+    /// Returns the exclusive latch on `pid`, read without the file as [`Reservation::image`]
+    /// formats it when not resident. Latch a page reserved here only this way.
+    ///
+    /// Postconditions, which allocation relies on:
+    /// - Only this latch gives a page a blank frame. A reader other than the reservation meets
+    ///   the page as any free page, and waits on this latch while it is held.
+    /// - The allocation that commits `pid` logs its first change as an unchained full-page
+    ///   image, so nothing of the free page's contents or evidence judges the new page.
+    ///
+    /// Panic if `pid` is not reserved here.
+    pub fn latch(&self, pid: Pid) -> PageExclusive<'a, R> {
+        let r = self.reserved(pid);
+        let header = page::header_edit(r.format, r.kind, r.owner, 0);
+        self.pager.latch_reserved(pid, &header)
+    }
+
+    fn reserved(&self, pid: Pid) -> &Reserved {
+        self.pages
+            .iter()
+            .find(|r| r.pid == pid)
+            .unwrap_or_else(|| panic!("{pid:?} is not reserved here"))
+    }
+
+    /// Returns the contents of page `pid` as allocation will format it, from offset
+    /// [`FIRST_EDITABLE`].
     ///
     /// Panics if `pid` is not reserved here.
     pub fn image(&self, pid: Pid) -> Vec<u8> {
-        let r = self
-            .pages
-            .iter()
-            .find(|r| r.pid == pid)
-            .unwrap_or_else(|| panic!("{pid:?} is not reserved here"));
+        let r = self.reserved(pid);
         let mut out = vec![0; self.pager.page_size];
-        page::set_lsn(&mut out, r.lsn);
         out[FIRST_EDITABLE..HEADER_LEN]
             .copy_from_slice(&page::header_edit(r.format, r.kind, r.owner, 0));
         out
     }
 }
 
+impl<R: Runtime> Drop for PageExclusive<'_, R> {
+    /// Evict a reservation's blank frame no allocation committed, and refuse the page again as
+    /// before it.
+    fn drop(&mut self) {
+        let Some(g) = self.g.take().filter(|_| self.blank) else {
+            return;
+        };
+        let pid = Pid(g.pid());
+        let mut m = self.pager.meta();
+        let Some(refusal) = m.blanked.remove(&pid) else {
+            return;
+        };
+        if let Some(damage) = refusal {
+            m.damaged.insert(pid, damage);
+        }
+        m.reserved.remove(&pid);
+        drop(m);
+        g.evict();
+        self.pager.unreserve(pid);
+    }
+}
+
 impl<R: Runtime> Drop for Reservation<'_, R> {
     fn drop(&mut self) {
-        let mut state = self.pager.alloc.lock(&self.pager.rt);
+        let mut m = self.pager.meta();
         for r in &self.pages {
-            state.reserved.remove(&r.pid);
+            if !m.blanked.contains_key(&r.pid) {
+                m.reserved.remove(&r.pid);
+            }
         }
     }
 }
 
-/// What allocators share: the lowest bitmap group that may have a free page, and the pages
-/// reservations hold.
+/// What allocators share: the lowest bitmap group that may have a free page.
 #[derive(Debug, Default)]
 pub(crate) struct AllocState {
     pub(crate) group: u64,
-    pub(crate) reserved: BTreeSet<Pid>,
 }

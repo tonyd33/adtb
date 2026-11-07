@@ -240,7 +240,7 @@ impl Vm {
             root[CONTENTS..].fill(0);
             set_level(root, l + 1);
             set_child(root, 0, moved);
-            stage.put(pager, moved, new.image(moved))?;
+            stage.put_reserved(&new, moved, new.image(moved));
             stage.page(pager, moved)?[CONTENTS..].copy_from_slice(&contents);
             stage.commit_with(pager, new)?;
         }
@@ -262,7 +262,7 @@ impl Vm {
             let mut new = pager.reserve();
             let c = new.page(1, PageKind::VisibilityMap, self.owner)?;
             set_child(node, i, c);
-            stage.put(pager, c, new.image(c))?;
+            stage.put_reserved(&new, c, new.image(c));
             set_level(stage.page(pager, c)?, l - 1);
             stage.commit_with(pager, new)?;
             at = c;

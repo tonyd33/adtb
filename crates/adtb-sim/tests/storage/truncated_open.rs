@@ -450,12 +450,7 @@ fn a_cut_that_loses_a_later_bitmap_group_refuses_the_select() {
     let got = selected_twice(files, SELECT, "lost group");
     for (round, (answer, marks, users)) in got.iter().enumerate() {
         let what = format!("lost group, round {round}");
-        let refused = if round == 0 {
-            "app::users.User"
-        } else {
-            "the database"
-        };
-        assert_refused_rows(answer, refused, &what);
+        assert_refused_rows(answer, "the database", &what);
         assert_eq!(
             BTreeSet::from([Quarantine::Database, *users]),
             *marks,

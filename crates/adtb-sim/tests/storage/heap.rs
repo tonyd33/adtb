@@ -1284,3 +1284,73 @@ fn failed_writes_crash_and_recover_every_committed_change() {
         .sum();
     assert!(crashes > share(SEEDS, 5), "{crashes} crashes");
 }
+
+#[test]
+fn readers_with_a_stale_page_list_meet_a_freed_page_another_allocation_reserved_as_freed() {
+    let mut sim = Sim::new(12, Config::default());
+    finished(&mut sim, |rt| {
+        let (db, _) = Db::create(rt, 2);
+        let heap = &db.heaps[EMAIL];
+        let wide = |key: i64| {
+            vec![
+                Value::I64(key),
+                Value::Text(String::new()),
+                Value::Bytes(vec![key as u8; 900]),
+            ]
+        };
+        let mut rows = BTreeMap::new();
+        for key in 0.. {
+            rows.insert(heap.insert(&db.pager, 1, &wide(key)).unwrap(), wide(key));
+            if heap.pages(&db.pager).unwrap().len() == 2 * FRAMES {
+                break;
+            }
+        }
+        let pages = heap.pages(&db.pager).unwrap();
+        let victim = pages[1];
+        let gone: Vec<Tid> = rows
+            .keys()
+            .filter(|t| t.page() == victim.0)
+            .copied()
+            .collect();
+        for &t in &gone {
+            heap.delete(&db.pager, t, 2).unwrap();
+            rows.remove(&t);
+        }
+        let judge = |_: &Pager<SimRuntime>, h: &Header| {
+            Ok(if h.xmax == 2 {
+                Fate::Remove
+            } else {
+                Fate::Keep
+            })
+        };
+        let dead = heap.dead_slots(&db.pager, victim, judge).unwrap();
+        heap.prune(&db.pager, victim, judge, &dead, false).unwrap();
+        assert_eq!(
+            Ok(true),
+            db.pager.is_free(victim),
+            "the prune freed the page"
+        );
+        heap.scan(&db.pager, drop).unwrap();
+        let mut new = db.pager.reserve();
+        assert_eq!(Ok(victim), new.page(1, PageKind::HeapSlotted, 99));
+        let mut stale = BTreeMap::new();
+        let scanned = heap.scan_pages(&db.pager, &pages, |v| {
+            stale.insert(v.tid, v.row);
+        });
+        assert_eq!(
+            Ok(()),
+            scanned,
+            "a scan of the page list taken before the free"
+        );
+        assert_eq!(rows, stale);
+        let read = heap.read(&db.pager, gone[0]).map(|v| v.map(|v| v.row));
+        assert_eq!(Ok(None), read, "a read of a row id on the freed page");
+        let mut whole = BTreeMap::new();
+        let queried = heap.scan(&db.pager, |v| {
+            whole.insert(v.tid, v.row);
+        });
+        assert_eq!(Ok(()), queried, "a scan of the heap");
+        assert_eq!(rows, whole);
+        drop(new);
+    });
+}

@@ -18,6 +18,7 @@ use adtb_lang::types::Base;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::api::options;
 
+use super::clock;
 use super::read::{self, Head, Step};
 use super::role::{self, Handles, OWNER, called};
 use super::shown;
@@ -267,6 +268,7 @@ struct Script {
     handles: Handles,
     /// The position each `commit NAME position P` took, by P, in textual syntax.
     positions: BTreeMap<String, String>,
+    clock: clock::Clock,
     out: Vec<Differs>,
 }
 
@@ -392,19 +394,23 @@ impl Script {
     /// `pins N` in a body no bundle file takes a hash of the script's log.
     fn resolved(&self, mut step: Step) -> Result<Step, Differs> {
         let place = |text: &mut String| placed(text, &self.positions).map(|t| *text = t);
+        let compare = |text: &mut String| {
+            let t = placed(text, &self.positions)?;
+            *text = self.clock.place(&t)?;
+            Ok(())
+        };
         let mut done = Ok(());
+        for row in &mut step.rows {
+            done = done.and_then(|()| compare(row));
+        }
+        if !matches!(self.clock, clock::Clock::Untokened) && clock::tokened(&step.body) {
+            done = Err("a token in a body, which is input and never compared".to_owned());
+        }
         if !matches!(step.head, Head::Bundle { .. } | Head::Loose(_) | Head::Log) {
-            done = place(&mut step.body);
+            done = done.and_then(|()| place(&mut step.body));
             done = done.and_then(|()| pinned(&step.body, &self.log).map(|b| step.body = b));
         }
-        done = done.and_then(|()| match &mut step.head {
-            Head::Error(v)
-            | Head::Adhoc(v)
-            | Head::Failed(v)
-            | Head::Call { error: Some(v), .. }
-            | Head::Commit { error: Some(v), .. } => place(v),
-            _ => Ok(()),
-        });
+        done = done.and_then(|()| compared(&mut step.head).map_or(Ok(()), compare));
         match done {
             Ok(()) => Ok(step),
             Err(e) => Err(Differs::at(&step, e)),
@@ -549,12 +555,44 @@ impl Script {
     }
 }
 
-/// Run the script at `path`. Returns each directive that differs from it, shown.
+/// Run the script at `path`. Returns each directive that differs from it, shown, each instant
+/// it prints as its token.
+///
+/// A script that states a token runs twice: the first run learns the instants it prints from
+/// what differs, each token standing for an instant no run prints.
 pub(super) fn run_file(path: &Path) -> Vec<String> {
     let steps = match read::script(path) {
         Ok(s) => s,
         Err(e) => return vec![e],
     };
+    let tokened = steps.iter().any(|s| {
+        let mut head = s.head.clone();
+        let value = compared(&mut head).map(|v| v.clone());
+        s.rows.iter().chain(&value).any(|t| clock::tokened(t))
+    });
+    if !tokened {
+        return run_steps(path, steps, clock::Clock::Untokened);
+    }
+    let instants = clock::ranked(&run_steps(path, steps.clone(), clock::Clock::Learning));
+    let out = run_steps(path, steps, clock::Clock::Ranked(instants.clone()));
+    out.iter().map(|d| clock::shown(d, &instants)).collect()
+}
+
+/// Returns the value `head` compares an outcome with, besides the rows, if it states one.
+fn compared(head: &mut Head) -> Option<&mut String> {
+    match head {
+        Head::Error(v)
+        | Head::Adhoc(v)
+        | Head::Failed(v)
+        | Head::Call { error: Some(v), .. }
+        | Head::Commit { error: Some(v), .. } => Some(v),
+        _ => None,
+    }
+}
+
+/// Run `steps`, the script at `path`, its tokens standing for what `clock` says. Returns each
+/// directive that differs, shown.
+fn run_steps(path: &Path, steps: Vec<Step>, clock: clock::Clock) -> Vec<String> {
     let (seed, start) = match steps.first().map(|s| &s.head) {
         Some(Head::Seed(n)) => (*n, 1),
         _ => (0, 0),
@@ -570,6 +608,7 @@ pub(super) fn run_file(path: &Path) -> Vec<String> {
         bundles: Vec::new(),
         handles: Handles::default(),
         positions: BTreeMap::new(),
+        clock,
         out: Vec::new(),
     };
     let ran = panic::catch_unwind(AssertUnwindSafe(|| {
