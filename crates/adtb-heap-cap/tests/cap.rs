@@ -295,14 +295,17 @@ fn module_prefix(source: &Path) -> String {
 #[test]
 fn a_module_of_a_test_binary_prefixes_its_tests() {
     assert_eq!(
-        module_prefix(Path::new("crates/s/tests/sim/lost_bitmap.rs")),
+        module_prefix(Path::new("crates/s/tests/storage/lost_bitmap.rs")),
         "lost_bitmap::"
     );
     assert_eq!(
-        module_prefix(Path::new("crates/s/tests/sim/constraints/names.rs")),
+        module_prefix(Path::new("crates/s/tests/execution/constraints/names.rs")),
         "constraints::names::"
     );
-    assert_eq!(module_prefix(Path::new("crates/s/tests/sim/main.rs")), "");
+    assert_eq!(
+        module_prefix(Path::new("crates/s/tests/storage/main.rs")),
+        ""
+    );
     assert_eq!(module_prefix(Path::new("crates/s/tests/cap.rs")), "");
     assert_eq!(module_prefix(Path::new("crates/s/src/lib.rs")), "");
 }

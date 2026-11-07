@@ -289,6 +289,37 @@ fn every_area_has_its_test_holding_its_slots() {
     assert!(areas > 0, "no area under {}", root().display());
 }
 
+#[test]
+fn every_adtb_sim_override_names_the_binary_that_holds_its_tests() {
+    const BINARY: &str = "package(=adtb-sim) and binary(=";
+    let tests = crate_dir().join("tests");
+    let mut checked = 0;
+    for block in overrides() {
+        let Some((_, rest)) = block.split_once(BINARY) else {
+            continue;
+        };
+        let (binary, _) = rest.split_once(')').expect("a closed binary term");
+        let main = fs::read_to_string(tests.join(binary).join("main.rs"))
+            .unwrap_or_else(|e| panic!("binary `{binary}` has no main.rs: {e}"));
+        for (_, rest) in block
+            .match_indices("test(=")
+            .map(|(i, _)| block.split_at(i + 6))
+        {
+            let name = rest.split(')').next().unwrap_or_default();
+            let Some((module, _)) = name.split_once("::") else {
+                continue;
+            };
+            let declared = format!("mod {module};");
+            assert!(
+                main.lines().any(|line| line == declared),
+                "override names `{module}::` in binary `{binary}`, which does not declare it"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "no adtb-sim override names a test");
+}
+
 /// Returns the expected differences of probe `path`: the lines of the file beside it named
 /// with `.differs`.
 fn expected(path: &Path) -> Vec<String> {

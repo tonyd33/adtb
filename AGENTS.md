@@ -90,7 +90,7 @@ root (devenv also puts each on PATH as `NAME`):
 - `script PATH...`: run engine scripts (`crates/adtb-sim/scripts/AREA/*.test`, files or
   directories) on the simulator, engine only; prints each differing directive as `FILE:LINE`
   with the expected and actual value. The directives are in the doc comment of
-  `crates/adtb-sim/tests/sim/scripts/mod.rs`.
+  `crates/adtb-sim/tests/scripted/scripts/mod.rs`.
 - `adtb-probe --schema FILE [--data FILE] [--explain] [--checks NAME] TEXT`:
   check a text and run it on the reference and the engine side by side;
   `--checks app::c` prints the plan of each incremental check of

@@ -41,7 +41,7 @@ threads-required = 2
 
 # An area test of the engine scripts runs three scripts at once.
 [[profile.default.overrides]]
-filter = "package(=adtb-sim) and binary(=sim) and (test(=scripts::oplog) | test(=scripts::bundles) | test(=scripts::roles) | test(=scripts::authority) | test(=scripts::registered) | test(=scripts::registration) | test(=scripts::commands) | test(=scripts::api) | test(=scripts::past) | test(=scripts::longkey))"
+filter = "package(=adtb-sim) and binary(=scripted) and (test(=scripts::oplog) | test(=scripts::bundles) | test(=scripts::roles) | test(=scripts::authority) | test(=scripts::registered) | test(=scripts::registration) | test(=scripts::commands) | test(=scripts::api) | test(=scripts::past) | test(=scripts::longkey))"
 threads-required = 3
 
 # A test that spawns a capped binary belongs to the group naming the slots it holds. `test_child`
@@ -58,7 +58,7 @@ test-group = "slots-2"
 
 [[profile.default.overrides]]
 filter = """
-package(=adtb-sim) and binary(=sim) and (
+package(=adtb-sim) and binary(=server) and (
   test(=server_adhoc::a_chain_of_different_ors_runs_on_the_reduced_stack) or
   test(=server_adhoc::a_chain_of_match_arms_runs_to_its_limit) or
   test(=server_adhoc::a_comprehension_chain_runs_to_its_limit) or
