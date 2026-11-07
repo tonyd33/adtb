@@ -31,3 +31,7 @@ Lead rulings on its open questions:
 - Moving pager-level tests into `adtb` as unit tests is part of this ticket's exit (step T9), since it is what lets the internal modules stop being `pub mod`.
 - The harness's crash loop owns the post-crash check, every crash runs it by construction, and runtime.md §5 says so.
 - The report's other recommendations are accepted as written; `archive_status` goes to the spec through the spec-revision workflow when T-steps reach it.
+
+## 2026-11-07, T1 and T2 landed
+
+`adtb::testing` with `Testing`, `Probe` and `TxnProbe` (owned values only), its contract in docs/design/testing.md; every pager and transaction observer moved off `write_path`. Counts: `write_path()` 356 to 258, `.pager()` from tests 337 to 248, `doc(hidden)` in api/mod.rs 13 to 10, pager and transaction observers in tests 213 to 0 (the measure excludes `SimRuntime::recorded`, the simulator's own). `work/tools/feature-check` refuses any normal or build dependency on adtb with `testing`, read from cargo metadata. Next: T3.
