@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-07
-status: open
+status: wontfix
 kind: bug
 priority: 140
 summary: "an unreadable LSN map page refuses every relation's reads as the database, where storage.md says such a page is refused unmarked"
+closed: 2026-11-07
 tags:
   - class-failure-flattened
 ---
@@ -21,3 +22,9 @@ Not yet confirmed: whether a `Database` mark is set, and whether the page was un
 Direction: read the mark and the point the page is first met at seed 4 write 683. If the engine conforms, the fix is in the search's judge and this ticket closes as wontfix with that reason.
 
 Defect class: Damage or failure gives a panic, hang or flattened error.
+
+## 2026-11-07, resolution
+
+At seed 4 write 683 the page is first met in the open, which holds a `Database` mark in memory only and refuses every read as the database; the next open with the page readable holds no mark and serves every row. That is storage.md §8's open quarantine. The engine conforms; the search's judge was wrong and now accepts exactly that outcome.
+
+## 2026-11-07: wontfix

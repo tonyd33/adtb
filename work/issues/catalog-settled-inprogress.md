@@ -21,3 +21,7 @@ storage.md §8: the open trusts a catalog row only when its writer's and deleter
 Direction: `settled` returns `None` for `InProgress` while the database is under a commit-log mark, and a commit in `logged` takes precedence over an `InProgress` status. Test: a committed migration whose status write was lost, under the mark; verify reports the catalog unread instead of the old schema.
 
 Defect class: Damage reported as nothing.
+
+## 2026-11-07
+
+The damage search's catalog cells first matched this ticket by shape. At seed 3 write 608 the faulted statuses are Committed or Aborted, none InProgress: the cause was a migration run under a whole-database mark returning Ok unapplied (migrate-under-mark-silent). This ticket stays open on its own reading of the code; no search case reaches it yet.

@@ -24,3 +24,7 @@ storage.md §6 and §8: a stale page is refused on the reads that reach it and r
 Direction: find which check fails the open, and whether a freed incarnation's expected LSN still reaches recovery. The search gates this cell in `KNOWN`; the fix removes the gate entry and its pinned cases must then pass.
 
 Defect class: Damage or failure gives a panic, hang or flattened error.
+
+## 2026-11-07, round 2
+
+The search also files a pair under this ticket: lost write 644 (LostEarlier Directory of tags) then torn write 645, seed 3. Verify and scrub name page 570 `Stale { found: Lsn(0) }` while the file holds the next incarnation. Same cause suspected: the freed incarnation's evidence judges the next one. Split it out if the fix shows another cause.
