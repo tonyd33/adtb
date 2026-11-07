@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-07
-status: open
+status: resolved
 kind: bug
 priority: 17
 summary: "a global gitignore entry for work hides new files under work/tools, so a track's new tool lands untracked and check fails after landing; land does not refuse it"
+closed: 2026-11-07
 tags:
   - class-none
 ---
@@ -17,3 +18,9 @@ tags:
 The maintainer's global gitignore ignores `work`, so every new file under work/ is ignored by jj's snapshot unless tracked with `jj file track --include-ignored`. AGENTS.md says so for tickets only. Test-surface T1 and T2 added work/tools/feature-check and feature-check-test; both stayed untracked, the change landed without them, and `check` on main failed with exit 127 at the `feature-check` step. The slot's `check --changed` passed because it ran main's devenv, which had no such step yet, and the lead ran the tool by hand from the slot's directory, where the untracked file existed.
 
 Direction: `land` refuses when the workspace holds ignored files under directories the repository tracks files in (work/tools, work/issues, crates, apps, docs), naming each and the `jj file track --include-ignored` command; a slot-test case shows it.
+
+## 2026-11-07, resolved
+
+`land` lists the workspace's files with `git ls-files --others --exclude-per-directory=.gitignore` and an empty index, subtracts `jj file list`, and refuses before changing anything when any remain, printing a `printf %q` quoted `jj file track --include-ignored` command. Only the repository's `.gitignore` files count as its rules; a global ignore and `.git/info/exclude` do not. slot-test proves it with the global rule given through the scratch repository's `core.excludesFile` and through a scratch `XDG_CONFIG_HOME`, an info/exclude rule, a nested new directory, and a file name holding a quote and `$(`.
+
+## 2026-11-07: resolved
