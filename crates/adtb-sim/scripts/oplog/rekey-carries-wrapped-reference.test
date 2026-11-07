@@ -1,0 +1,44 @@
+seed 96
+migrate
+  module shop
+  add module shop
+  add type Price = { a: Text, b: Text }
+  add relation prices : Price key a
+  add type Order = { id: Key orders, opt: Option (Key prices), n: I64 }
+  add relation orders : Order key id generate sequence
+
+run
+  transact
+    insert prices { a: "a0", b: "b0" }
+    insert prices { a: "a1", b: "b1" }
+    insert orders { opt: Some { value: prices.key("a0") }, n: 1 }
+    insert orders { opt: None, n: 2 }
+
+migrate
+  module shop
+  rekey relation prices key b
+    carry Order.opt
+
+query rowsort
+  from o in orders select { opt: o.opt, n: o.n }
+----
+{ n: 1, opt: Some { value: prices.key("b0") } }
+{ n: 2, opt: None }
+
+query rowsort
+  from o in orders select match o.opt | Some s -> s.value.a | None -> "none"
+----
+"a0"
+"none"
+
+reopen
+
+migrate
+  module shop
+  revert 0002
+
+query rowsort
+  from o in orders select { opt: o.opt, n: o.n }
+----
+{ n: 1, opt: Some { value: prices.key("a0") } }
+{ n: 2, opt: None }

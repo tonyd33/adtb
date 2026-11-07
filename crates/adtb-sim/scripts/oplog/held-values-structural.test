@@ -1,0 +1,88 @@
+seed 97
+migrate
+  module m
+  add module m
+  add type K = A | B
+  add type T = A { x: Text } | B { x: Text } | C
+  add type S = A { x: Text } | B { x: Text }
+  add type Box a = A { x: a } | B { x: a } | C
+  add type H = { id: Key hs, v: T, o: Option T, b: Box Text, i: Box I64 }
+  add relation hs : H key id generate sequence
+
+run
+  transact
+    insert hs { v: A { x: "a" }, o: Some { value: B { x: "b" } }, b: A { x: "c" }, i: B { x: 1 } }
+    insert hs { v: B { x: "d" }, o: None, b: C, i: A { x: 2 } }
+    insert hs { v: C, o: Some { value: A { x: "e" } }, b: B { x: "f" }, i: C }
+
+migrate
+  module m
+  split constructor T.A into A1 { x: Text }
+    by match
+      | A { x } -> A1 { x: x }
+  split constructor Box.A into A1 { x: a }
+    by match
+      | A { x } -> A1 { x: x }
+
+query rowsort
+  from h in hs select { v: h.v, o: h.o, b: h.b, i: h.i }
+----
+{ b: A1 { x: "c" }, i: B { x: 1 }, o: Some { value: B { x: "b" } }, v: A1 { x: "a" } }
+{ b: C, i: A1 { x: 2 }, o: None, v: B { x: "d" } }
+{ b: B { x: "f" }, i: C, o: Some { value: A1 { x: "e" } }, v: C }
+
+migrate
+  module m
+  revert 0002
+
+query rowsort
+  from h in hs select { v: h.v, o: h.o, b: h.b, i: h.i }
+----
+{ b: A { x: "c" }, i: B { x: 1 }, o: Some { value: B { x: "b" } }, v: A { x: "a" } }
+{ b: C, i: A { x: 2 }, o: None, v: B { x: "d" } }
+{ b: B { x: "f" }, i: C, o: Some { value: A { x: "e" } }, v: C }
+
+migrate
+  module m
+  merge constructor T.(A | B) into M { k: K, x: Text }
+  merge constructor Box.(A | B) into M { k: K, x: a }
+
+query rowsort
+  from h in hs select { v: h.v, o: h.o, b: h.b, i: h.i }
+----
+{ b: M { k: A, x: "c" }, i: M { k: B, x: 1 }, o: Some { value: M { k: B, x: "b" } }, v: M { k: A, x: "a" } }
+{ b: C, i: M { k: A, x: 2 }, o: None, v: M { k: B, x: "d" } }
+{ b: M { k: B, x: "f" }, i: C, o: Some { value: M { k: A, x: "e" } }, v: C }
+
+migrate
+  module m
+  revert 0004
+
+query rowsort
+  from h in hs select { v: h.v, o: h.o, b: h.b, i: h.i }
+----
+{ b: A { x: "c" }, i: B { x: 1 }, o: Some { value: B { x: "b" } }, v: A { x: "a" } }
+{ b: C, i: A { x: 2 }, o: None, v: B { x: "d" } }
+{ b: B { x: "f" }, i: C, o: Some { value: A { x: "e" } }, v: C }
+
+migrate
+  module m
+  nest constructor T.(A | B) into N { s: S }
+
+query rowsort
+  from h in hs select { v: h.v, o: h.o, b: h.b, i: h.i }
+----
+{ b: A { x: "c" }, i: B { x: 1 }, o: Some { value: N { s: B { x: "b" } } }, v: N { s: A { x: "a" } } }
+{ b: C, i: A { x: 2 }, o: None, v: N { s: B { x: "d" } } }
+{ b: B { x: "f" }, i: C, o: Some { value: N { s: A { x: "e" } } }, v: C }
+
+migrate
+  module m
+  revert 0006
+
+query rowsort
+  from h in hs select { v: h.v, o: h.o, b: h.b, i: h.i }
+----
+{ b: A { x: "c" }, i: B { x: 1 }, o: Some { value: B { x: "b" } }, v: A { x: "a" } }
+{ b: C, i: A { x: 2 }, o: None, v: B { x: "d" } }
+{ b: B { x: "f" }, i: C, o: Some { value: A { x: "e" } }, v: C }

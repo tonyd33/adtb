@@ -1,0 +1,39 @@
+seed 83
+migrate
+  module m
+  add module m
+  add type K = A | B
+  add type T = A { x: Text } | B { x: Text }
+  add type R = { t: T, n: I64 }
+  add relation rs : R key t
+  add type H = { id: Key hs, r: Key rs, o: Option (Key rs) }
+  add relation hs : H key id generate sequence
+
+run
+  transact
+    insert rs { t: A { x: "a" }, n: 1 }
+    insert rs { t: B { x: "b" }, n: 2 }
+    insert hs { r: rs.key(A { x: "a" }), o: Some { value: rs.key(B { x: "b" }) } }
+
+migrate
+  module m
+  merge constructor T.(A | B) into M { k: K, x: Text }
+
+query rowsort
+  from h in hs select { r: h.r.n, o: match h.o | Some s -> s.value.n | None -> 0 }
+----
+{ o: 2, r: 1 }
+
+query rowsort
+  from h in hs select h.r
+----
+rs.key(M { k: A, x: "a" })
+
+migrate
+  module m
+  revert 0002
+
+query rowsort
+  from h in hs select { r: h.r, o: h.o }
+----
+{ o: Some { value: rs.key(B { x: "b" }) }, r: rs.key(A { x: "a" }) }

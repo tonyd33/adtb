@@ -1,0 +1,36 @@
+seed 99
+migrate
+  module m
+  add module m
+  add type S = A { x: Text } | B { y: I64 }
+  add type T = N { s: S } | C
+  add type H = { id: Key hs, v: T, o: Option T }
+  add relation hs : H key id generate sequence
+
+run
+  transact
+    insert hs { v: N { s: A { x: "a" } }, o: Some { value: N { s: B { y: 1 } } } }
+    insert hs { v: C, o: Some { value: N { s: A { x: "b" } } } }
+    insert hs { v: N { s: B { y: 2 } }, o: None }
+
+migrate
+  module m
+  unnest constructor T.N
+
+query rowsort
+  from h in hs select { v: h.v, o: h.o }
+----
+{ o: None, v: B { y: 2 } }
+{ o: Some { value: A { x: "b" } }, v: C }
+{ o: Some { value: B { y: 1 } }, v: A { x: "a" } }
+
+migrate
+  module m
+  revert 0002
+
+query rowsort
+  from h in hs select { v: h.v, o: h.o }
+----
+{ o: None, v: N { s: B { y: 2 } } }
+{ o: Some { value: N { s: A { x: "b" } } }, v: C }
+{ o: Some { value: N { s: B { y: 1 } } }, v: N { s: A { x: "a" } } }

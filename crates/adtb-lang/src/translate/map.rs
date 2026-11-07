@@ -293,11 +293,11 @@ impl<'a> Map<'a> {
     /// the position of the field it is in the layout at the earlier version and its name at the
     /// later one; `None` when both lay the key out alike or `rel` has no counterpart.
     ///
-    /// Fail when a field of the key has no counterpart at the later version.
+    /// Fail when a field of the key at either version has no counterpart at the other.
     pub fn key_order(&self, rel: RelId) -> Result<Option<Vec<(usize, String)>>, Loss> {
-        if self.relation(rel).is_none() {
+        let Some(later) = self.relation(rel) else {
             return Ok(None);
-        }
+        };
         let r = self.from.relation(rel);
         let pinned = key_names(self.from, rel);
         let image = |f: &String| {
@@ -315,8 +315,23 @@ impl<'a> Map<'a> {
                 })
         };
         let images = pinned.iter().map(image).collect::<Result<Vec<_>, _>>()?;
-        let mut order: Vec<_> = images.into_iter().enumerate().collect();
-        order.sort_by(|a, b| a.1.cmp(&b.1));
+        let order = key_names(self.to, later)
+            .into_iter()
+            .map(|n| match images.iter().position(|i| *i == n) {
+                Some(p) => Ok((p, n)),
+                None => Err(Loss::Field {
+                    ty: self.to.ty(self.to.relation(later).elem_def).name.clone(),
+                    id: self
+                        .to
+                        .ids
+                        .fields
+                        .get(&slot(self.to, self.to.relation(later).elem_def, 0, &n))
+                        .copied(),
+                    field: n,
+                    added: true,
+                }),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let moved = order.iter().enumerate().any(|(i, &(p, _))| i != p);
         Ok(moved.then_some(order))
     }

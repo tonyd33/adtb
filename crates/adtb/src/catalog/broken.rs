@@ -6,6 +6,7 @@ use adtb_lang::span::FileDiag;
 use adtb_lang::types::Ty;
 
 use crate::exec::{self, Val};
+use crate::key::Value;
 use crate::{plan, write};
 
 use super::Error;
@@ -95,6 +96,8 @@ pub enum Broken {
     RekeyedGone(CatRelId),
     /// The data holds a constructor the schema before lacks.
     ForeignCtor(CatCtorId),
+    /// A stored value has another shape than its type stores.
+    Unshaped(Value),
 }
 
 impl From<Broken> for Error {
@@ -160,6 +163,9 @@ impl fmt::Display for Broken {
             Broken::RoutedNotCtor => f.write_str("a routing gives a constructor"),
             Broken::UnnestedNotCtor => f.write_str("the unnested field holds a constructor"),
             Broken::RekeyedGone(r) => write!(f, "the rekeyed relation {r} is gone"),
+            Broken::Unshaped(v) => {
+                write!(f, "a stored value has another shape than its type: {v:?}")
+            }
             Broken::ForeignCtor(c) => write!(
                 f,
                 "the data holds only constructors of the schema before, not {c}"

@@ -1,0 +1,47 @@
+seed 98
+migrate
+  module m
+  add module m
+  add type T { h: I64 } = A { x: Text } | B
+  add type H = { id: Key hs, t: Tag T, o: Option (Tag T) }
+  add relation hs : H key id generate sequence
+
+run
+  transact
+    insert hs { t: tag(B { h: 1 }), o: Some { value: tag(A { h: 2, x: "a" }) } }
+    insert hs { t: tag(A { h: 3, x: "b" }), o: Some { value: tag(B { h: 4 }) } }
+
+migrate
+  module m
+  split constructor T.B into B2
+    by match
+      | B b -> B2 { h: b.h }
+
+query rowsort
+  from h in hs select { t: h.t, o: h.o }
+----
+{ o: Some { value: A }, t: B2 }
+{ o: Some { value: B2 }, t: A }
+
+migrate
+  module m
+  revert 0002
+
+query rowsort
+  from h in hs select { t: h.t, o: h.o }
+----
+{ o: Some { value: A }, t: B }
+{ o: Some { value: B }, t: A }
+
+migrate
+  module m
+  split constructor T.A into A1 { x: Text }
+    by match
+      | A a if a.h > 2 -> A1 { h: a.h, x: a.x }
+      | A a -> A1 { h: 0, x: a.x }
+
+query rowsort
+  from h in hs select { t: h.t, o: h.o }
+----
+{ o: Some { value: A1 }, t: B }
+{ o: Some { value: B }, t: A1 }

@@ -1,0 +1,44 @@
+seed 98
+migrate
+  module m
+  add module m
+  add type T = A { x: Text } | B | C
+  add type H = { id: Key hs, t: Tag T, o: Option (Tag T) }
+  add relation hs : H key id generate sequence
+
+run
+  transact
+    insert hs { t: tag(A { x: "a" }), o: Some { value: tag(B) } }
+    insert hs { t: tag(B), o: None }
+    insert hs { t: tag(C), o: Some { value: tag(C) } }
+
+migrate
+  module m
+  split constructor T.B into B2
+    by match
+      | B -> B2
+
+query rowsort
+  from h in hs select { t: h.t, o: h.o }
+----
+{ o: None, t: B2 }
+{ o: Some { value: B2 }, t: A }
+{ o: Some { value: C }, t: C }
+
+migrate
+  module m
+  revert 0002
+
+query rowsort
+  from h in hs select { t: h.t, o: h.o }
+----
+{ o: None, t: B }
+{ o: Some { value: B }, t: A }
+{ o: Some { value: C }, t: C }
+
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "split constructor T.A into A1 { x: Text } | A2 { x: Text }", detail: "hs: a stored tag names `T.A`, whose values the routing sends to no one product" } } }
+  module m
+  split constructor T.A into A1 { x: Text } | A2 { x: Text }
+    by match
+      | A { x } if x == "a" -> A1 { x: x }
+      | A { x } -> A2 { x: x }

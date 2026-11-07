@@ -1,0 +1,50 @@
+seed 99
+migrate
+  module m
+  add module m
+  add type Box a = Full { v: a, big: Bool } | Empty
+  add type H = { id: Key hs, t: Box Text, i: Box I64, o: Option (Box Text) }
+  add relation hs : H key id generate sequence
+
+run
+  transact
+    insert hs { t: Full { v: "a", big: false }, i: Full { v: 1, big: true }, o: Some { value: Full { v: "b", big: true } } }
+    insert hs { t: Empty, i: Full { v: 2, big: false }, o: None }
+
+migrate
+  module m
+  split constructor Box.Full into Small { v: a } | Big { v: a }
+    by match
+      | Full { v, big: false } -> Small { v: v }
+      | Full { v, big: true } -> Big { v: v }
+
+query rowsort
+  from h in hs select { t: h.t, i: h.i, o: h.o }
+----
+{ i: Big { v: 1 }, o: Some { value: Big { v: "b" } }, t: Small { v: "a" } }
+{ i: Small { v: 2 }, o: None, t: Empty }
+
+migrate
+  module m
+  revert 0002
+
+query rowsort
+  from h in hs select { t: h.t, i: h.i, o: h.o }
+----
+{ i: Full { big: true, v: 1 }, o: Some { value: Full { big: true, v: "b" } }, t: Full { big: false, v: "a" } }
+{ i: Full { big: false, v: 2 }, o: None, t: Empty }
+
+migrate
+  module m
+  add type D = { id: Key ds, d: Box (Box I64) }
+  add relation ds : D key id generate sequence
+
+run
+  insert ds { d: Full { v: Empty, big: false } }
+
+migrate refused MigrationRefused { version: 5, reason: Rejected { reason: SchemaRefused { operator: "split constructor Box.Full into Small { v: a } | Big { v: a }", detail: "ds: a stored value of `Box` holds a value of `Box` in a type argument" } } }
+  module m
+  split constructor Box.Full into Small { v: a } | Big { v: a }
+    by match
+      | Full { v, big: false } -> Small { v: v }
+      | Full { v, big: true } -> Big { v: v }
