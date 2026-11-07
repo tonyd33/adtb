@@ -142,6 +142,29 @@ impl<R: Runtime> Pager<R> {
         commits
     }
 
+    /// Returns each damage record in the retained log, in log order, none when its segments cannot
+    /// be listed or opened.
+    #[doc(hidden)]
+    pub fn logged_damage(&self) -> Vec<(Pid, Damage)> {
+        let mut damage = Vec::new();
+        let Ok((_pin, mut img)) = self.load_log() else {
+            return damage;
+        };
+        let block = img.block;
+        if let Some(first) = img.first_batch() {
+            scan(&mut img, first, Mode::Verify, |batch, _| {
+                if let Ok(records) = batch.records(block) {
+                    for (_, record) in records {
+                        if let Record::Damaged { pid, damage: d } = record {
+                            damage.push((pid, d));
+                        }
+                    }
+                }
+            });
+        }
+        damage
+    }
+
     /// Returns the transaction of every commit record in the retained log from the batch holding
     /// `since`, or from its first whole batch when that batch begins before its first segment.
     ///
@@ -362,7 +385,9 @@ impl<R: Runtime> Pager<R> {
         };
         // Twice: a page freed and allocated again between the latched read and the look at the
         // bitmap is judged afresh. The bitmap's latch is never taken under this page's.
+        let mut latched = None;
         for _ in 0..2 {
+            drop(latched.take());
             if !wrong(&seen) {
                 return findings;
             }
@@ -374,10 +399,12 @@ impl<R: Runtime> Pager<R> {
             let resident = g.resident().then(|| page::lsn(&g));
             let changed = self.meta().changed.contains(&pid);
             seen = judge(&disk, resident, changed);
+            latched = Some(g);
         }
-        if !wrong(&seen) || self.called_free(pid) {
+        if !wrong(&seen) {
             return findings;
         }
+        let latch = latched.expect("the second judgement holds its latch");
         let (bad, found, stale, orphan, unlogged) = seen;
         if let Some(damage) = bad {
             findings.push(Finding::Page { pid, damage });
@@ -388,7 +415,7 @@ impl<R: Runtime> Pager<R> {
         let Some(found) = found else {
             // Leave an unreadable page unrecorded for the next read to retry.
             if bad != Some(Damage::Unreadable) {
-                self.damage(pid, bad.unwrap_or(Damage::Checksum));
+                self.refuse_latched(latch, bad.unwrap_or(Damage::Checksum));
             }
             return findings;
         };
@@ -398,7 +425,7 @@ impl<R: Runtime> Pager<R> {
         if let Some(damage) = stale.filter(|&d| !self.settled_at(pid, d)) {
             findings.push(Finding::Page { pid, damage });
             findings.extend(lost_record(pid, damage));
-            self.damage(pid, damage);
+            self.refuse_latched(latch, damage);
         } else if orphan && unlogged.is_none() {
             findings.push(Finding::Orphan(pid));
         }

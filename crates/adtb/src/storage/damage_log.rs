@@ -4,6 +4,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::Ordering;
 
+use adtb_sys::pages;
+
 use crate::mvcc::Settling;
 use crate::runtime::{Runtime, ThreadId};
 
@@ -393,6 +395,31 @@ impl<R: Runtime> Pager<R> {
         let m = self.meta();
         let (damage, objects) = m.records.mapped.get(&pid)?;
         (m.records.page(pid) == Some(*damage)).then(|| objects.clone())
+    }
+
+    /// Refuse the page under `latch` as `damage` from now on and record it, unless it is refused
+    /// as `damage` already. Returns the end of the damage record logged, `None` when none is.
+    ///
+    /// Postcondition: a reader that takes the latch next finds the page refused.
+    pub(super) fn publish_refusal(
+        &self,
+        latch: &pages::Exclusive<'_>,
+        damage: Damage,
+    ) -> Option<Lsn> {
+        let pid = Pid(latch.pid());
+        let mut log = self.log();
+        let whole = self.is_quarantined(Quarantine::Database);
+        let mut m = self.meta();
+        let fresh = m.damaged.insert(pid, damage) != Some(damage);
+        m.changed.remove(&pid);
+        let logged = fresh
+            .then(|| m.records.detect(&mut log, pid, damage, whole))
+            .flatten();
+        if m.records.page(pid) == Some(damage) {
+            m.records.detected_by.insert(pid, self.rt.current());
+        }
+        self.note_unmapped(&m.records);
+        logged
     }
 
     /// Set whether `records` holds a record not mapped this open.

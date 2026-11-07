@@ -103,7 +103,8 @@ thread_local! {
 
 /// Call `hook` at every switch point the calling thread passes in page memory, until the
 /// returned guard drops: before it starts an optimistic read, takes a latch or upgrades to one,
-/// halfway through an optimistic copy, and before it validates an optimistic read.
+/// halfway through an optimistic copy, before it validates an optimistic read, and after it
+/// evicts a page.
 pub fn switch_points(hook: impl Fn() + 'static) -> SwitchPoints {
     let previous = SWITCH.with(|s| s.borrow_mut().replace(Box::new(hook)));
     SwitchPoints { previous }
@@ -454,6 +455,7 @@ impl Exclusive<'_> {
             .store_state(self.pid, word(EVICTED, self.version + 1));
         held::release(self.mem.id(), self.pid);
         self.done = true;
+        switch_point();
     }
 }
 

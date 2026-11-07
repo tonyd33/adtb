@@ -20,6 +20,7 @@ mod constraints;
 mod crash_images;
 mod create;
 mod damage_log;
+mod damage_race;
 mod derived_index;
 mod directory_damage;
 mod dump;

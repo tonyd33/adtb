@@ -797,8 +797,7 @@ impl<R: Runtime> Pager<R> {
             }
         };
         if let Some(damage) = damage {
-            drop(g);
-            return Err(self.damage(pid, damage));
+            return Err(self.refuse_latched(g, damage));
         }
         let (buf, _) = read.unwrap();
         g.write(0, &buf);
@@ -827,24 +826,21 @@ impl<R: Runtime> Pager<R> {
     /// lock.
     #[doc(hidden)]
     pub fn damage(&self, pid: Pid, damage: Damage) -> PageError {
-        let g = self.mem.lock_exclusive(pid.0, &self.rt);
-        if g.resident() {
-            g.evict();
+        self.refuse_latched(self.mem.lock_exclusive(pid.0, &self.rt), damage)
+    }
+
+    /// Refuse the page under `latch` as [`Pager::damage`] does, for a caller that judged it
+    /// damaged under that latch.
+    ///
+    /// Preconditions: the caller holds neither the log lock nor the meta lock.
+    pub(super) fn refuse_latched(&self, latch: pages::Exclusive<'_>, damage: Damage) -> PageError {
+        let pid = Pid(latch.pid());
+        let logged = self.publish_refusal(&latch, damage);
+        if latch.resident() {
+            latch.evict();
         } else {
-            drop(g);
+            drop(latch);
         }
-        let mut log = self.log();
-        let whole = self.is_quarantined(Quarantine::Database);
-        let mut m = self.meta();
-        m.damaged.insert(pid, damage);
-        m.changed.remove(&pid);
-        let logged = m.records.detect(&mut log, pid, damage, whole);
-        if m.records.page(pid) == Some(damage) {
-            m.records.detected_by.insert(pid, self.rt.current());
-        }
-        self.note_unmapped(&m.records);
-        drop(m);
-        drop(log);
         if let Some(end) = logged {
             self.force_below(end);
         }
