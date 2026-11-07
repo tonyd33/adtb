@@ -83,3 +83,9 @@ Next: the explain tests with a `plan` directive, `serde_json` approved as an adt
 Filed: explain-ctor-is-position (the document's `ctor` is a position, not the catalog id; scripts pair by name until fixed), explain-analyze-change-placement; explain-analyze-write-actual widened to queries.
 
 Next: the conformance-fit tests into conformance/ (6 api tests and the audit's others).
+
+## 2026-11-06: conformance-fit tests into conformance/
+
+`test: move adtb-sim's conformance-fit tests into the conformance suite`. 139 candidates in constraints.rs, constraints/, files.rs, api.rs and principal.rs bucketed: 57 move (14 already covered by existing files), 29 engine script, 53 stay in Rust (reopen, faults, threads, principals at bind, or a reference that lacks the part). Conformance +1142 lines, Rust -1681; constraints/paths.rs deleted. The `agree` histories now state each refused step as `error Violated` or `KeyViolation` and the rows left as a `query`; accepted trade: they no longer compare which constraint fired or the report rows between engine and reference, and the least-name rule keeps its own files (constraints/07-least-name-*). Admission is conformance-observable only as a schema that opens. No difference between reference and engine. Review found three weakened moves (a refused min/max update, an empty `Some` text in a file scan, a load collision that could come from the existing rows), all fixed. `check --changed` 3411 passed.
+
+Filed: refusal-detail-scripts (the 29 engine-script candidates).
