@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-04
-status: open
+status: resolved
 kind: bug
 priority: 380
 summary: "Migration conversion still finds constructors by name across schemas, falls back to field names, and keeps seven copies of the sorted-key-order rule; merge, nest and unnest of a held value refuse as split did"
+closed: 2026-11-06
 tags:
   - class-identity-by-spelling
 ---
@@ -40,3 +41,11 @@ Route every lookup across schemas through catalog ids, and make `layout::key_nam
 Also seen: a refusal of an operator over a source that does not build reports `operator: ""`.
 
 Left for change 2: merge, nest and unnest held-value routing, `Tag T` in splits, parametric held values, `carry` through `Option`, per-relation layouts hoisted out of the row loop.
+
+## 2026-11-06: change 2 landed
+
+`fix: route held values through merge, nest, unnest and parametric splits, split tags and rekey through Option`. Merge without `by`, nest and unnest of a type held as a value route it through `held_merges`, `held_nests`, `held_unnests` into `Moved.routes`, keyed by (type id, constructor id); a replaced constructor with no route is still refused. Routes are makers instantiated at each value's type arguments, so parametric held values split, merge and nest; an instantiation whose arguments reach the type itself (`Box (Box I64)`) is refused by `unreached`. A `Tag T` of a replaced constructor is routed when the routing sends every value of it to one product (`sole_product`, header fields or not); otherwise refused naming the constructor. A rekey carrying `Option (Key r)` rewrites through the wrapper (`Refs`). Conversion plans are built once per (relation, constructor), not per row. adtb-lang's `Map::key_order` was an eleventh copy of the key order rule; it now calls `key_names`. Tests: oplog scripts held-values-structural, split-held-tag, split-held-tag-header, split-held-parametric, merge-held-value-in-key, unnest-held-value, rekey-carries-wrapped-reference, exact rows forward and on revert; the forward shapes were refused on main. Review found no blockers; its wrong messages, raw ids in the tag refusal and test gaps fixed. Production +709 -238 against an estimate of 250. `check --changed`: one unrelated failure under load (filed real-file-verify-stale-page); full `check` on main after landing.
+
+Filed from it: held-value-routing-gaps (merge and nest of `Tag T` refused until the spec states an image, add field and nest over parametric held values), rekey-stale-held-key.
+
+## 2026-11-06: resolved
