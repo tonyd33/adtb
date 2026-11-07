@@ -23,3 +23,7 @@ A resident page's bytes change only through a logged change (`Pager::apply`: log
 Direction: the batch entry points take `&mut [PageExclusive]` and unwrap inside the pager; `inner` and `g` become private to pager.rs, with a constructor for the blank frame alloc.rs builds; the unlogged writers are named pager methods; `disallowed_methods` in clippy.toml refuses `adtb_sys::pages::Exclusive::write` outside the files that hold them.
 
 Defect class: Multi-step change not atomic under failure, crash or race.
+
+## 2026-11-07, correction
+
+The grep above missed two things. `heap/dir_tests.rs` writes a page through `inner()`, outside `storage/`. And `Shared::mem` (pager.rs) is `pub(crate)`: any module can latch a frame through `PageMemory::lock_exclusive` and write it, so the hatch is wider than `inner()`. The storage structure design (work/briefs/design-storage-structure-r1-report.md, local) folds this ticket into a sealed frame with seven named unlogged writers and `disallowed-methods` on `pages::Exclusive::write` and `PageMemory::lock_exclusive`.
