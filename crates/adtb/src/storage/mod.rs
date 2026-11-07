@@ -4,6 +4,7 @@ mod alloc;
 mod archive;
 mod backup;
 mod block;
+mod checkpoint;
 mod crc;
 mod create;
 mod damage_log;

@@ -23,6 +23,12 @@ pub(crate) struct Log {
     batches: u64,
     /// The redo LSN of the last checkpoint the file header durably names.
     redo: Lsn,
+    /// The LSN of the last checkpoint record the file header durably names.
+    checkpoint: Lsn,
+    /// The log forced past `checkpoint` that makes a checkpoint due, `None` while none falls due.
+    every: Option<u64>,
+    /// Whether a forced batch has found a checkpoint due since the last one.
+    due: bool,
     /// Where this open's log starts: the end of the log recovery kept.
     session: Lsn,
     /// The LSNs readers of the log hold it from, each with its number of holders.
@@ -79,6 +85,9 @@ impl Log {
             durable: Lsn(0),
             batches: 0,
             redo: Lsn(0),
+            checkpoint: Lsn(0),
+            every: None,
+            due: false,
             session: Lsn(0),
             pins: BTreeMap::new(),
         }
@@ -140,16 +149,39 @@ impl Log {
         Some(batch)
     }
 
-    /// Record that `batch` is forced.
-    pub(crate) fn forced(&mut self, batch: &Batch) {
+    /// Record that `batch` is forced. Returns true when it is the first batch since the last
+    /// checkpoint to make the next one due.
+    pub(crate) fn forced(&mut self, batch: &Batch) -> bool {
         assert_eq!(self.durable, batch.start, "batches are forced in order");
         self.durable = batch.end();
         self.batches += 1;
+        let newly = !self.due && self.checkpoint_due();
+        self.due |= newly;
+        newly
     }
 
-    /// Record that the file header durably names a checkpoint whose redo LSN is `redo`.
-    pub(crate) fn checkpointed(&mut self, redo: Lsn) {
+    /// Returns whether the log forced past the last checkpoint has reached the threshold.
+    pub(crate) fn checkpoint_due(&self) -> bool {
+        self.every
+            .is_some_and(|every| self.durable.0.saturating_sub(self.checkpoint.0) >= every)
+    }
+
+    /// Returns the LSN of the last checkpoint record the file header durably names.
+    pub(crate) fn last_checkpoint(&self) -> Lsn {
+        self.checkpoint
+    }
+
+    /// Make a checkpoint due once `every` bytes of log are forced past the last one.
+    pub(crate) fn checkpoint_every(&mut self, every: u64) {
+        self.every = Some(every);
+    }
+
+    /// Record that the file header durably names the checkpoint logged at `at`, whose redo LSN is
+    /// `redo`.
+    pub(crate) fn checkpointed(&mut self, at: Lsn, redo: Lsn) {
+        self.checkpoint = self.checkpoint.max(at);
         self.redo = self.redo.max(redo);
+        self.due = false;
     }
 
     pub(crate) fn pin(&mut self, at: Lsn) {

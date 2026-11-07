@@ -10,6 +10,7 @@ mod bundles;
 mod calls;
 mod catalog;
 mod checked_registration;
+mod checkpointer;
 mod checks;
 mod clog;
 mod clog_lost;

@@ -633,9 +633,33 @@ Invariants:
   table, only after an `fdatasync` of the data file covers the write.
 
 Checkpoints are fuzzy and never stop writers. Each dirty frame records
-the LSN that first dirtied it (`rec_lsn`). A checkpoint record holds
-the dirty page table and the redo LSN, the minimum `rec_lsn` over it;
-the file header is updated to point at the record.
+the LSN that first dirtied it (`rec_lsn`). Unless page writes are
+atomic, a change to a frame written since its last change logs a full
+image when the frame's latest image precedes the checkpoint the file
+header names, so a frame logs at most one such image per checkpoint
+interval. Once a force of the data file covers that write, the frame's
+`rec_lsn` rises to where replay of the page may start: under atomic
+page writes its first change since the write, else its latest image at
+that change. Every later write of the frame then writes a state whose
+last image lies at or after its `rec_lsn` (§5.2). A checkpoint record
+holds the dirty page table and the redo LSN, the minimum `rec_lsn` over
+it; the file header is updated to point at the record.
+
+Recovery, a create, a backup, a recycle and a close each take a
+checkpoint, and so does the checkpointer. From the end of an open's
+recovery, or from the publication of a created file, the checkpointer
+runs each time the log forced since the last checkpoint reaches the
+threshold of `storage::Options::checkpoint_every`: it writes every
+changed page, forces the data file and takes a checkpoint. Writers
+never wait for it. The redo LSN of each checkpoint the checkpointer
+takes is at or past the checkpoint before it, so recovery from the one
+the file header names reads at most the log since the one before: the
+threshold, what the cycle that took the named one logged, and what
+followed it. A page refused while changed in memory is the exception:
+it keeps its entry (§10.3), which holds the redo LSN until the next
+open. A close stops the checkpointer before its
+own checkpoint, waiting for a running checkpoint to end. The
+checkpointer recycles nothing.
 
 ```text
 checkpoint record

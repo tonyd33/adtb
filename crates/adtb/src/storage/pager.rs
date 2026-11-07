@@ -44,6 +44,12 @@ pub struct Options {
     /// The position a new file's history starts after: the file begins an epoch a random step
     /// of 1 to 2^32 above it, that position ending its epoch. `None` begins epoch 1.
     pub after: Option<Position>,
+    /// The log, in bytes, forced since the last checkpoint that makes the checkpointer write
+    /// every changed page and take the next. The redo LSN of the checkpoint it takes is at or
+    /// past the checkpoint before it, so recovery reads at most this much log plus what the
+    /// last two cycles logged,
+    /// unless a page refused while changed in memory holds the redo LSN until the next open.
+    pub checkpoint_every: u64,
 }
 
 /// The pages one thread latches at most at once: a B-link operation's four and the allocation
@@ -63,6 +69,7 @@ impl Options {
             threads: 1,
             stall_after: Duration::from_secs(10),
             after: None,
+            checkpoint_every: 64 << 20,
         }
     }
 
@@ -148,6 +155,12 @@ pub(crate) struct Meta {
     pub(crate) changed: BTreeSet<Pid>,
     /// Pages written since the last force of the data file.
     pub(crate) written: BTreeSet<Pid>,
+    /// The LSN of the latest full-page image of each page in the dirty page table.
+    pub(crate) images: BTreeMap<Pid, Lsn>,
+    /// For each page changed since its last write, the record replay of the page may start from
+    /// once a force covers that write: its first change since the write under atomic page writes,
+    /// else its latest image at that change.
+    pub(crate) after_write: BTreeMap<Pid, Lsn>,
     /// The LSN each page must have at least when read in: its last record in the retained log, or
     /// else the page LSN map's entry, as of the end of recovery, raised by every page record
     /// logged since.
@@ -182,10 +195,11 @@ pub(crate) struct Meta {
 ///   which snapshots the table under the same lock, never misses a page whose image precedes it.
 ///
 /// Lock order: the recycle lock, then page latches, then the flush lock, then the log lock, then
-/// the meta lock. The header, allocation, archive and driver locks are taken alone.
+/// the meta lock. The header, allocation, archive and driver locks are taken alone. The
+/// checkpointer lock is taken last, under any of these, and nothing is taken under it.
 ///
 /// Clones are handles on one pager.
-pub struct Pager<R: Runtime>(std::sync::Arc<Shared<R>>);
+pub struct Pager<R: Runtime>(pub(super) std::sync::Arc<Shared<R>>);
 
 impl<R: Runtime> Clone for Pager<R> {
     fn clone(&self) -> Self {
@@ -213,7 +227,7 @@ pub struct Shared<R: Runtime> {
     pub(crate) mem: PageMemory,
     drivers: Lock<BTreeMap<ThreadId, Driver<R>>>,
     /// Held by a force of the data file from taking `written` to dropping pages from `dirty`.
-    forcing: Lock<()>,
+    pub(super) forcing: Lock<()>,
     pub(super) header: Lock<(FileHeader, u64)>,
     pub(crate) log: Lock<Log>,
     /// Held by the one thread writing and forcing a batch: the group commit leader.
@@ -231,6 +245,7 @@ pub struct Shared<R: Runtime> {
     archive: Lock<Option<ArchiveHook>>,
     /// Held across a recycle of the log, taken before any other lock or latch.
     recycling: Lock<()>,
+    pub(super) checkpointer: Lock<super::checkpoint::Worker>,
 }
 
 /// Returns the LSN below which the log's archive holds every segment, `None` while it holds none.
@@ -438,6 +453,8 @@ impl<R: Runtime> Pager<R> {
                 dirty: BTreeMap::new(),
                 changed: BTreeSet::new(),
                 written: BTreeSet::new(),
+                images: BTreeMap::new(),
+                after_write: BTreeMap::new(),
                 gate: Gate::Recovering,
                 damaged: BTreeMap::new(),
                 records: Default::default(),
@@ -456,6 +473,7 @@ impl<R: Runtime> Pager<R> {
             walked: std::sync::atomic::AtomicU64::new(0),
             archive: Lock::new(None),
             recycling: Lock::new(()),
+            checkpointer: Lock::new(super::checkpoint::Worker::new(o.checkpoint_every)),
             rt,
         }))
     }
@@ -571,7 +589,10 @@ impl<R: Runtime> Pager<R> {
         header.atomic_page_writes = options.atomic_page_writes;
         let pager = Pager::assemble(rt, options, header, copy, data);
         match pager.recover_and_mark() {
-            Ok(recovery) => Ok((pager, recovery)),
+            Ok(recovery) => {
+                pager.start_checkpoints();
+                Ok((pager, recovery))
+            }
             Err(e) => {
                 pager.close_files();
                 Err(e)
@@ -930,6 +951,7 @@ impl<R: Runtime> Pager<R> {
         let mut m = self.meta();
         m.changed.remove(&pid);
         m.written.insert(pid);
+        m.after_write.remove(&pid);
         m.records.replaced(pid);
         let (word, bit) = ((pid.0 / 64) as usize, pid.0 % 64);
         if m.wrote.len() <= word {
@@ -988,6 +1010,7 @@ impl<R: Runtime> Pager<R> {
             let pid = Pid(g.pid());
             let prev = page::lsn(g);
             let lsn = log.next_lsn();
+            let rewritten = m.dirty.contains_key(&pid) && !m.changed.contains(&pid);
             for e in &edits {
                 g.write(e.offset as usize, &e.bytes);
             }
@@ -997,7 +1020,10 @@ impl<R: Runtime> Pager<R> {
                     prev: Lsn::UNCHAINED,
                     page: page::with_lsn(g, lsn),
                 }
-            } else if m.dirty.contains_key(&pid) || self.atomic_page_writes {
+            } else if m.changed.contains(&pid)
+                || self.atomic_page_writes
+                || (rewritten && m.images.get(&pid) >= Some(&log.last_checkpoint()))
+            {
                 Record::Change { pid, prev, edits }
             } else {
                 Record::Image {
@@ -1009,9 +1035,20 @@ impl<R: Runtime> Pager<R> {
             let (at, field) = page::lsn_field(lsn);
             g.write(at, &field);
             if let Record::Image { .. } = record {
+                m.images.insert(pid, lsn);
                 m.records.meet(pid, Met::Image);
             }
             log.append(&record);
+            if rewritten {
+                let start = if self.atomic_page_writes {
+                    Some(lsn)
+                } else {
+                    m.images.get(&pid).copied()
+                };
+                if let Some(start) = start {
+                    m.after_write.insert(pid, start);
+                }
+            }
             m.dirty.entry(pid).or_insert(lsn);
             m.changed.insert(pid);
             m.gate.raise(pid, lsn);
@@ -1242,7 +1279,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Return once every record below `lsn` is durable, leading a flush when no other thread
     /// is. A waiter rechecks durability between its attempts to lead.
-    fn force_below(&self, lsn: Lsn) {
+    pub(super) fn force_below(&self, lsn: Lsn) {
         loop {
             if self.durable() >= lsn {
                 return;
@@ -1258,93 +1295,12 @@ impl<R: Runtime> Pager<R> {
                 return;
             };
             self.io(|d| segments.write(d, &batch));
-            self.log().forced(&batch);
-        }
-    }
-
-    /// Write up to `max` changed pages, oldest first by the LSN that dirtied them, and force the
-    /// data file. Returns the number written.
-    pub fn flush_pages(&self, max: usize) -> usize {
-        let oldest: Vec<Pid> = {
-            let m = self.meta();
-            let mut by_lsn: Vec<(Lsn, Pid)> = m
-                .dirty
-                .iter()
-                .filter(|(p, _)| m.changed.contains(p))
-                .map(|(p, l)| (*l, *p))
-                .collect();
-            by_lsn.sort_unstable();
-            by_lsn.into_iter().take(max).map(|(_, p)| p).collect()
-        };
-        let mut n = 0;
-        for pid in oldest {
-            let Some(g) = self.mem.lock_shared(pid.0, &self.rt) else {
-                continue;
-            };
-            if self.meta().changed.contains(&pid) {
-                self.write_out(pid, &g);
-                n += 1;
+            let due = self.log().forced(&batch);
+            drop(segments);
+            if due {
+                self.wake_checkpointer();
             }
         }
-        self.sync_data();
-        n
-    }
-
-    /// Force the data file and drop from the dirty page table every page written before the force
-    /// with no change since.
-    pub(crate) fn sync_data(&self) {
-        let _forcing = self.forcing.lock(&self.rt);
-        let covered = std::mem::take(&mut self.meta().written);
-        self.io(|d| d.sync_all(&[self.data]));
-        let mut m = self.meta();
-        for pid in covered {
-            // A page in `written` was written after the take, and this force may have missed it.
-            if !m.changed.contains(&pid) && !m.written.contains(&pid) {
-                m.dirty.remove(&pid);
-            }
-        }
-    }
-
-    /// Log a fuzzy checkpoint of the dirty page table, force it, and point the file header at it.
-    pub fn checkpoint(&self) {
-        self.log_checkpoint();
-    }
-
-    /// Take a checkpoint as [`Pager::checkpoint`] does. Returns its LSN, its redo LSN and the
-    /// bitmap groups it captured.
-    pub(super) fn log_checkpoint(&self) -> (Lsn, Lsn, u64) {
-        let (mut list, (at, redo, groups, folded)) = loop {
-            let list = self.list_to_fold();
-            let mut log = self.log();
-            if list.is_none() && self.to_fold().is_some() {
-                continue;
-            }
-            let (groups, map) = {
-                let m = self.meta();
-                (m.groups, m.map)
-            };
-            let lsn = log.next_lsn();
-            let dirty: Vec<(Pid, Lsn)> = self.meta().dirty.iter().map(|(p, l)| (*p, *l)).collect();
-            let redo = dirty.iter().map(|(_, l)| *l).min().unwrap_or(lsn);
-            let folded = list.as_ref().map(|_| self.records_to_fold());
-            let at = log.append(&Record::Checkpoint { redo, dirty, map });
-            break (list, (at, redo, groups, folded));
-        };
-        // The fold is logged after the checkpoint record: every record before it is in the fold,
-        // and recovery from it reads every record after.
-        if let (Some(g), Some(folded)) = (&mut list, &folded) {
-            Self::fold_records(g, folded);
-        }
-        drop(list);
-        self.flush_log();
-        if folded.is_some() {
-            let mut h = self.header.lock(&self.rt);
-            h.0.log_damage.clear();
-            h.0.log_damage_full = false;
-        }
-        self.write_header(Some((at, groups)));
-        self.log().checkpointed(redo);
-        (at, redo, groups)
     }
 
     /// Bound what [`Pager::recycle_log`] removes by what `hook` says the archive holds.
@@ -1437,6 +1393,7 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Preconditions: every other call on the pager has returned, and none follows.
     pub fn close(&self) {
+        self.stop_checkpointer();
         self.flush_log();
         self.flush_pages(usize::MAX);
         self.checkpoint();
@@ -1467,7 +1424,9 @@ impl<R: Runtime> Pager<R> {
         self.rt.wall()
     }
 
-    pub(crate) fn checkpoint_lsn(&self) -> Lsn {
+    /// Returns the LSN of the checkpoint record the file header names.
+    #[doc(hidden)]
+    pub fn checkpoint_lsn(&self) -> Lsn {
         self.header.lock(&self.rt).0.checkpoint
     }
 }
