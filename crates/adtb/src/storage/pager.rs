@@ -14,7 +14,7 @@ use super::damage_log::Met;
 use super::driver::Driver;
 use super::header::{self, FileHeader, REGION};
 use super::log::{FileSource, Log, Segments};
-use super::lsnmap::{Expected, Gate, folded, retained};
+use super::lsnmap::{Expected, Gate, retained};
 use super::page::{self, FIRST_EDITABLE, Verdict, valid_page_size};
 use super::quarantine::Quarantine;
 use super::record::{Edit, MapRoot, Record};
@@ -47,8 +47,9 @@ pub struct Options {
     /// The log, in bytes, forced since the last checkpoint that makes the checkpointer write
     /// every changed page and take the next. The redo LSN of the checkpoint it takes is at or
     /// past the checkpoint before it, so recovery reads at most this much log plus what the
-    /// last two cycles logged,
-    /// unless a page refused while changed in memory holds the redo LSN until the next open.
+    /// last two cycles logged, unless a page refused on a file quarantined whole holds the redo
+    /// LSN. Once the open's readers of the log have run, a cycle also recycles to the redo LSN of
+    /// the checkpoint before the one it takes, unless a pin or the archive holds the log.
     pub checkpoint_every: u64,
 }
 
@@ -248,9 +249,9 @@ pub struct Shared<R: Runtime> {
     pub(crate) any_unmapped: std::sync::atomic::AtomicBool,
     /// How many damaged pages this open has walked the objects for.
     pub(crate) walked: std::sync::atomic::AtomicU64,
-    archive: Lock<Option<ArchiveHook>>,
+    pub(super) archive: Lock<Option<ArchiveHook>>,
     /// Held across a recycle of the log, taken before any other lock or latch.
-    recycling: Lock<()>,
+    pub(super) recycling: Lock<()>,
     pub(super) checkpointer: Lock<super::checkpoint::Worker>,
 }
 
@@ -265,6 +266,18 @@ pub(crate) struct LogPin<'p, R: Runtime> {
 }
 
 type PinnedLog<'p, R> = (LogPin<'p, R>, LogImage<FileSource<R>>);
+
+impl<'p, R: Runtime> LogPin<'p, R> {
+    /// Returns the pin of a hold `pager`'s log already counts at `at`.
+    pub(super) fn new(pager: &'p Pager<R>, at: Lsn) -> Self {
+        LogPin { pager, at }
+    }
+
+    /// Returns the LSN the log is held from.
+    pub(super) fn at(&self) -> Lsn {
+        self.at
+    }
+}
 
 impl<R: Runtime> Drop for LogPin<'_, R> {
     fn drop(&mut self) {
@@ -836,10 +849,11 @@ impl<R: Runtime> Pager<R> {
         (found < expected).then_some(Damage::Stale { expected, found })
     }
 
-    /// Refuse `pid` from now on, dropping its memory unwritten but leaving it in the dirty page
-    /// table, so recovery replays a logged change the file lacks. Record the damage unless it is
-    /// [`Damage::Unreadable`], durable on return once recovery has ended and unless the file is
-    /// quarantined whole.
+    /// Refuse `pid` from now on, dropping its memory. Memory holding changes the file lacks is
+    /// written first, so the next force of the data file drops its dirty entry; during recovery
+    /// or on a file quarantined whole it is dropped unwritten and its dirty entry stays, so
+    /// recovery replays them. Record the damage unless it is [`Damage::Unreadable`], durable on
+    /// return once recovery has ended and unless the file is quarantined whole.
     ///
     /// Preconditions: the caller holds no latch on `pid`, and neither the log lock nor the meta
     /// lock.
@@ -854,6 +868,9 @@ impl<R: Runtime> Pager<R> {
     /// Preconditions: the caller holds neither the log lock nor the meta lock.
     pub(super) fn refuse_latched(&self, latch: pages::Exclusive<'_>, damage: Damage) -> PageError {
         let pid = Pid(latch.pid());
+        if latch.resident() && self.writes_refused(pid) {
+            self.write_out(pid, &latch);
+        }
         let logged = self.publish_refusal(&latch, damage);
         if latch.resident() {
             latch.evict();
@@ -865,6 +882,16 @@ impl<R: Runtime> Pager<R> {
         }
         self.unreserve(pid);
         PageError { pid, damage }
+    }
+
+    /// Returns whether the resident copy of `pid` holds changes the file lacks and may be written
+    /// before it is refused: recovery has ended and the file is not quarantined whole.
+    fn writes_refused(&self, pid: Pid) -> bool {
+        if self.is_quarantined(Quarantine::Database) {
+            return false;
+        }
+        let m = self.meta();
+        m.changed.contains(&pid) && matches!(m.gate, Gate::Armed(_))
     }
 
     /// Stop counting `pid` as resident.
@@ -1072,6 +1099,11 @@ impl<R: Runtime> Pager<R> {
             m.dirty.entry(pid).or_insert(lsn);
             m.changed.insert(pid);
             m.gate.raise(pid, lsn);
+            if let Some(map) = m.map.as_mut()
+                && map.root == pid
+            {
+                map.lsn = lsn;
+            }
             last = lsn;
         }
         if !freed.is_empty() {
@@ -1337,55 +1369,6 @@ impl<R: Runtime> Pager<R> {
     /// Bound what [`Pager::recycle_log`] removes by what `hook` says the archive holds.
     pub fn set_archive(&self, hook: ArchiveHook) {
         *self.archive.lock(&self.rt) = Some(hook);
-    }
-
-    /// Remove every log segment that ends at or before the start of the batch holding the least
-    /// LSN still needed and, with an archive set, before what it holds, once the last LSN of each
-    /// page they name is folded into the page LSN map and a checkpoint names the map. Returns the
-    /// number removed. Remove nothing when a segment to fold cannot be read whole.
-    pub fn recycle_log(&self) -> usize {
-        let _one = self.recycling.lock(&self.rt);
-        let hook = self.archive.lock(&self.rt).clone();
-        let archived = match hook.map(|h| h()) {
-            None => u64::MAX,
-            Some(None) => return 0,
-            Some(Some(through)) => through.0,
-        };
-        let mut img = {
-            let mut segments = self.segments.lock(&self.rt);
-            if !segments.may_recycle(self.log().needed().0.min(archived)) {
-                return 0;
-            }
-            let Ok(img) = self.io(|d| segments.try_load(d)) else {
-                return 0;
-            };
-            img
-        };
-        let Some(start) = img.batch_start(self.log().needed()) else {
-            return 0;
-        };
-        let floor = start.0.min(archived);
-        img.bases.retain(|&b| b <= floor);
-        let Some(last) = folded(&mut img, floor) else {
-            return 0;
-        };
-        if self.fold(&last).is_err() {
-            return 0;
-        }
-        self.checkpoint();
-        let mut segments = self.segments.lock(&self.rt);
-        let needed = self.log().needed();
-        let floor = if needed.0 < floor {
-            let Some(start) = img.batch_start(needed) else {
-                return 0;
-            };
-            start.0
-        } else {
-            floor
-        };
-        let bases = std::mem::take(&mut img.bases);
-        drop(img);
-        self.io(|d| segments.recycle(d, &bases, floor))
     }
 
     /// Returns the log as its segments hold it now, pinned from its first segment while the pin

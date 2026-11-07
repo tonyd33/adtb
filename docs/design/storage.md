@@ -665,11 +665,18 @@ never wait for it. The redo LSN of each checkpoint the checkpointer
 takes is at or past the checkpoint before it, so recovery from the one
 the file header names reads at most the log since the one before: the
 threshold, what the cycle that took the named one logged, and what
-followed it. A page refused while changed in memory is the exception:
-it keeps its entry (§10.3), which holds the redo LSN until the next
-open. A close stops the checkpointer before its
-own checkpoint, waiting for a running checkpoint to end. The
-checkpointer recycles nothing.
+followed it. A page refused while changed in memory is written before
+its memory is dropped (§10.3), so it holds the redo LSN only until the
+next force. A close stops the checkpointer before its
+own checkpoint, waiting for a running checkpoint to end. Once the
+open's readers of the log have run, or from the publication of a
+created file, a cycle that finds a whole segment below the recycle's
+floor (below) recycles, and the recycle's checkpoint is the cycle's; the
+floor then comes from the checkpoint before it. Without a pin, an archive behind or
+a refused page holding it, the log retained after a cycle starts at the
+segment holding the redo LSN of the checkpoint before the one the
+header names. The checkpointer never recycles while the database is
+quarantined whole.
 
 ```text
 checkpoint record
@@ -681,16 +688,18 @@ checkpoint record
 Log before the redo LSN is no longer needed for recovery. A recycle
 removes the segments that end at or before the start of the batch
 holding the least of: the redo LSN of the last checkpoint the file
-header durably names, the start of the current open's log, and the LSN
-every running backup or reader of the log holds it from. It removes
+header durably names, the start of the current open's log until the
+open's readers of the log have run, and the LSN every running backup or
+reader of the log holds it from. A backup holds the log from the redo
+LSN of its checkpoint, pinned with the record that logs it, until it
+has copied the log. It removes
 the oldest first and forces the directory after each, so the segments
 present always run from the first of them with no hole. An open recycles once
 every reader of the log it found has run: recovery, the settling of the
 commit log, and the catalog's reads of a damaged commit log. With an
 archive set, the open first waits for one archive pass, however long it
 takes. An open that creates the file does not recycle. A close never
-recycles, so the log of the last open is read by the next before
-it goes. Replication and change consumers bound it too once they exist
+recycles. Replication and change consumers bound it too once they exist
 ([replication.md §1](replication.md#1-the-log-stream)).
 
 With a log archive set, the archiver publishes each complete segment, one
@@ -717,7 +726,9 @@ segment it cannot read whole is kept. The map is a radix tree of pages
 of kind `LsnMap`: a leaf holds one LSN per page of the file, and an
 interior page holds each child's page id and the least LSN that child
 may have. The checkpoint record carries the root's page id, LSN and
-height; a checkpoint record without them means no map. A fold that
+height; a checkpoint record without them means no map. The root's LSN
+there is that of the root's last change logged before the checkpoint
+record. A fold that
 makes a new root logs a record naming it in the same batch, and
 recovery adopts the later of that record and the checkpoint's root. A
 fold covers only pages below the file's end and grows the tree by a
@@ -1149,11 +1160,13 @@ do not decode before that end quarantines the whole database for that
 open and writes nothing, no mark included; a map page the open cannot
 read does the same. While the database is held quarantined this way,
 no page read in is checked against an expected LSN. Damaging a page
-outside recovery drops its memory but keeps its entry in the dirty page
-table, so a checkpoint's redo point stays at or before its oldest change
-the file lacks; until the page is written again, every checkpoint of
-that open keeps its redo point there and a recycle removes no segment
-from it on. The page LSN map
+outside recovery writes its memory first when it holds changes the file
+lacks, then drops it, so its entry leaves the dirty page table at the
+next force. On a file quarantined whole the memory is dropped unwritten
+and the entry stays, so a checkpoint's redo point stays at or before its
+oldest change the file lacks and a recycle removes no segment from it
+on. A recycle raises the expected LSNs of the pages it folded to their
+map entries, dropping a later LSN that is no longer later. The page LSN map
 (§6) is read through the pool like any page, from the root to a leaf,
 each page checked against its parent. Group commit is §10.1.
 Pages in flight for a read are held exclusive; writes go out under a

@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use adtb::runtime::{IoError, Op};
 use adtb::storage::{
-    BackupRun, Damage, Envelope, Finding, HEADER_LEN, Lsn, Options, PageError, PageKind, Pager,
-    Pid, Quarantine,
+    self, BackupRun, Damage, Envelope, Finding, HEADER_LEN, Lsn, Options, PageError, PageKind,
+    Pager, Pid, Quarantine,
 };
 use adtb::verify::{self, Inventory, Problem};
 use adtb_sim::{Config, Sim, SimRuntime};
@@ -81,6 +81,28 @@ fn fill(pager: &Pager<SimRuntime>, pages: &[Pid], bytes: u64) -> BTreeMap<Pid, u
         written.insert(pid, n as u64 + 1);
     }
     written
+}
+
+fn value_of(pager: &Pager<SimRuntime>, pid: Pid) -> u64 {
+    let page = pager.read(pid).unwrap();
+    u64::from_le_bytes(page[HEADER_LEN..HEADER_LEN + 8].try_into().unwrap())
+}
+
+/// Returns the value of each of `pages` in the file restored from the backup `sim` holds.
+fn restored_values(sim: &Sim, pages: &[Pid]) -> BTreeMap<Pid, u64> {
+    let mut copy = Sim::with_files(4, Config::default(), sim.files());
+    let mut out = BTreeMap::new();
+    harness::finished(&mut copy, |rt| {
+        storage::restore_file(&rt, "backup", "copy.adt", "copy.adt-log").unwrap();
+        let options = Options {
+            name: "copy.adt".into(),
+            ..options()
+        };
+        let (pager, _) = Pager::open(rt, &options).unwrap();
+        out = pages.iter().map(|&p| (p, value_of(&pager, p))).collect();
+        pager.close();
+    });
+    out
 }
 
 fn reverted(mut files: Files, from: &Files, pid: Pid) -> Files {
@@ -174,13 +196,15 @@ fn a_recycle_while_a_backup_copies_the_log_removes_nothing() {
 fn recycles_while_a_backup_copies_its_pages_keep_the_log_it_copies() {
     let (mut sim, pages) = created(8);
     session(&mut sim, |pager, _| fill(pager, &pages, 3 * SEGMENT));
-    let (during, backup) = session(&mut sim, |pager, _| {
+    let (during, backup, after) = session(&mut sim, |pager, _| {
+        storage::recycle_at_open(pager, None);
         let mut during = Vec::new();
         let mut visit = |pid: Pid, _: &mut [u8]| {
             if pid == pages[0] && during.is_empty() {
                 for _ in 0..2 {
                     fill(pager, &pages[1..], 2 * SEGMENT);
                     pager.flush_pages(usize::MAX);
+                    pager.checkpoint();
                     during.push(pager.recycle_log());
                 }
             }
@@ -193,11 +217,23 @@ fn recycles_while_a_backup_copies_its_pages_keep_the_log_it_copies() {
             name: &|q| format!("{q:?}"),
         };
         let backup = pager.backup(run).map(|m| (m.start, m.end));
-        (during, backup)
+        (during, backup, pager.recycle_log())
     });
-    assert!(during.len() == 2 && during[0] >= 2, "{during:?}");
+    assert_eq!(vec![0, 0], during);
     let (start, end) = backup.unwrap();
     assert!(end.lsn.0 - start.lsn.0 > 4 * SEGMENT, "{start:?} {end:?}");
+    assert!(
+        after >= 2,
+        "the backup's pin was not what held the log: {after}"
+    );
+    let restored = restored_values(&sim, &pages);
+    let values = session(&mut sim, |pager, _| {
+        pages
+            .iter()
+            .map(|&p| (p, value_of(pager, p)))
+            .collect::<BTreeMap<_, _>>()
+    });
+    assert_eq!(values, restored);
 }
 
 /// Returns the files of a closed session whose page `pages[0]` was last written in a batch

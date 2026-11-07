@@ -120,6 +120,11 @@ impl<R: Runtime> Pager<R> {
             let damage = Damage::LogUnproven { at };
             return Err(OpenError::Page(super::PageError { pid, damage }));
         }
+        if let Some(m) = map.as_mut()
+            && let Some(&lsn) = replay.last.get(&m.root)
+        {
+            m.lsn = m.lsn.max(lsn);
+        }
         self.meta().map = map;
         for (pid, damage) in std::mem::take(&mut replay.unverified) {
             self.damage(pid, damage);

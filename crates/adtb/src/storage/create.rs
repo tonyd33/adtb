@@ -191,6 +191,7 @@ impl Unpublished {
         if published.is_ok() {
             segments.dir = log;
             drop(segments);
+            pager.release_session_log();
             pager.start_checkpoints();
         }
         published

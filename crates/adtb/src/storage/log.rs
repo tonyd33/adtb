@@ -29,8 +29,9 @@ pub(crate) struct Log {
     every: Option<u64>,
     /// Whether a forced batch has found a checkpoint due since the last one.
     due: bool,
-    /// Where this open's log starts: the end of the log recovery kept.
-    session: Lsn,
+    /// Where this open's log starts, the end of the log recovery kept, until the open's readers of
+    /// the log have run; then `None`.
+    session: Option<Lsn>,
     /// The LSNs readers of the log hold it from, each with its number of holders.
     pins: BTreeMap<Lsn, usize>,
 }
@@ -88,7 +89,7 @@ impl Log {
             checkpoint: Lsn(0),
             every: None,
             due: false,
-            session: Lsn(0),
+            session: Some(Lsn(0)),
             pins: BTreeMap::new(),
         }
     }
@@ -113,7 +114,7 @@ impl Log {
         assert!(self.pending.is_empty());
         self.start = end;
         self.durable = end;
-        self.session = end;
+        self.session = Some(end);
         self.seq = seq;
     }
 
@@ -198,10 +199,21 @@ impl Log {
     }
 
     /// Returns the least LSN still needed: by recovery, the durable checkpoint's redo LSN; by a
-    /// reader, a pin; by the next open, the start of this open's log.
+    /// reader, a pin; until [`Log::release_session`], the start of this open's log.
     pub(crate) fn needed(&self) -> Lsn {
-        let kept = self.redo.min(self.session);
+        let kept = self.session.map_or(self.redo, |s| s.min(self.redo));
         self.pins.keys().next().map_or(kept, |&p| p.min(kept))
+    }
+
+    /// Stop holding the log from the start of this open, once every reader of it the open found
+    /// has run.
+    pub(crate) fn release_session(&mut self) {
+        self.session = None;
+    }
+
+    /// Returns whether the log may be recycled past the start of this open.
+    pub(crate) fn session_released(&self) -> bool {
+        self.session.is_none()
     }
 }
 

@@ -348,7 +348,10 @@ fn read_segment<R: Runtime>(
     })
 }
 
-/// Recycle `pager`'s log after a pass of `archiver`, unless the database is quarantined whole.
+/// Recycle `pager`'s log after a pass of `archiver`, unless the database is quarantined whole,
+/// and let the log of this open be recycled from then on.
+///
+/// Preconditions: every reader of the log the open found has run.
 pub fn recycle_at_open<R: Runtime>(pager: &Pager<R>, archiver: Option<&Archiver<R>>) {
     if pager.is_quarantined(Quarantine::Database) {
         return;
@@ -357,4 +360,5 @@ pub fn recycle_at_open<R: Runtime>(pager: &Pager<R>, archiver: Option<&Archiver<
         a.archive();
     }
     pager.recycle_log();
+    pager.release_session_log();
 }

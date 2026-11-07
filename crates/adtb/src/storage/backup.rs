@@ -753,7 +753,8 @@ impl<R: Runtime> Pager<R> {
         aside: &str,
     ) -> Result<Manifest, BackupError> {
         self.flush_pages(usize::MAX);
-        let (at, redo, groups) = self.log_checkpoint();
+        let (pin, at, groups) = self.pinned_checkpoint();
+        let redo = pin.at();
         let (mut parts, damaged) = self.copy_pages(fs, run, aside)?;
         if self.is_quarantined(Quarantine::Database) {
             return Err(BackupError::Quarantined);

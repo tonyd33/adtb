@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb::runtime::IoError;
-use adtb::storage::{Damage, Options, Pager, Pid, Quarantine};
+use adtb::storage::{Damage, Options, PageError, Pager, Pid, Quarantine};
 use adtb::{CallOptions, Database, Error, FatalReason, Log, OpenError, OpenOptions, TxnOptions};
 use adtb_sim::{Config, Faults, Sim, SimRuntime};
 use adtb_simkit::api;
@@ -536,9 +536,11 @@ fn dropping_a_transaction_on_a_damaged_commit_log_marks_the_database() {
     let mut sim = Sim::with_files(40, Config::default(), files);
     finished(&mut sim, |rt| {
         let db = open(rt, &app()).unwrap();
+        let pid = page.unwrap();
+        let damage = Damage::Checksum;
         assert_eq!(
-            Ok(()),
-            db.write_path().pager().read(page.unwrap()).map(drop)
+            Err(PageError { pid, damage }),
+            db.write_path().pager().read(pid).map(drop)
         );
         assert_only_verify_runs(&db, Some("Checksum"));
     });

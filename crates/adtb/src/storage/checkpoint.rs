@@ -1,18 +1,23 @@
 //! The checkpointer: a background thread that writes the dirty pages and takes a fuzzy
 //! checkpoint each time the log forced since the last checkpoint reaches the threshold of the
-//! pager's options.
+//! pager's options. Once the open's readers of the log have run, a cycle that finds a segment
+//! below the floor recycles, and the recycle's checkpoint is the cycle's.
 //!
 //! Lock order: the worker lock is a leaf, taken by a force under any page latch, with nothing
 //! taken under it. A cycle takes what a write-out and a checkpoint
 //! take: a page's shared latch, then the flush lock and the log lock to make the log durable to
 //! its LSN, then the meta lock; then the force lock and the meta lock; then the damage list's
-//! exclusive latch, the log lock and the meta lock; then the header lock alone.
+//! exclusive latch, the log lock and the meta lock; then the header lock alone. A recycling
+//! cycle takes the recycle lock first and holds it through the fold, the checkpoint and the
+//! removal, which take what a change of a map page and a checkpoint take.
 
 use std::sync::{Arc, Weak};
 
 use crate::runtime::{Runtime, ThreadId};
 
-use super::pager::{Pager, Shared};
+use super::lsnmap::folded;
+use super::pager::{LogPin, Pager, Shared};
+use super::quarantine::Quarantine;
 use super::record::Record;
 use super::{Lsn, Pid};
 
@@ -96,6 +101,19 @@ impl<R: Runtime> Pager<R> {
     /// Take a checkpoint as [`Pager::checkpoint`] does. Returns its LSN, its redo LSN and the
     /// bitmap groups it captured.
     pub(super) fn log_checkpoint(&self) -> (Lsn, Lsn, u64) {
+        self.checkpoint_pinning(false)
+    }
+
+    /// Take a checkpoint as [`Pager::checkpoint`] does, holding the log from its redo LSN while
+    /// the returned pin lives. Returns the pin, its LSN and the bitmap groups it captured.
+    pub(super) fn pinned_checkpoint(&self) -> (LogPin<'_, R>, Lsn, u64) {
+        let (at, redo, groups) = self.checkpoint_pinning(true);
+        (LogPin::new(self, redo), at, groups)
+    }
+
+    /// Take a checkpoint, pinning its redo LSN when `pin`, in the hold of the log lock that logs
+    /// the checkpoint record.
+    fn checkpoint_pinning(&self, pin: bool) -> (Lsn, Lsn, u64) {
         let (mut list, (at, redo, groups, folded)) = loop {
             let list = self.list_to_fold();
             let mut log = self.log();
@@ -111,6 +129,9 @@ impl<R: Runtime> Pager<R> {
             let redo = dirty.iter().map(|(_, l)| *l).min().unwrap_or(lsn);
             let folded = list.as_ref().map(|_| self.records_to_fold());
             let at = log.append(&Record::Checkpoint { redo, dirty, map });
+            if pin {
+                log.pin(redo);
+            }
             break (list, (at, redo, groups, folded));
         };
         // The fold is logged after the checkpoint record: every record before it is in the fold,
@@ -128,6 +149,65 @@ impl<R: Runtime> Pager<R> {
         self.write_header(Some((at, groups)));
         self.log().checkpointed(at, redo);
         (at, redo, groups)
+    }
+
+    /// Remove every log segment that ends at or before the start of the batch holding the least
+    /// LSN still needed and, with an archive set, before what it holds, once the last LSN of each
+    /// page they name is folded into the page LSN map and a checkpoint names the map. Returns the
+    /// number removed. Remove nothing when a segment to fold cannot be read whole.
+    pub fn recycle_log(&self) -> usize {
+        self.recycle().unwrap_or(0)
+    }
+
+    /// Recycle as [`Pager::recycle_log`] does. Returns the number of segments removed, or `None`
+    /// when it took no checkpoint.
+    pub(super) fn recycle(&self) -> Option<usize> {
+        let _one = self.recycling.lock(&self.rt);
+        let hook = self.archive.lock(&self.rt).clone();
+        let archived = match hook.map(|h| h()) {
+            None => u64::MAX,
+            Some(None) => return None,
+            Some(Some(through)) => through.0,
+        };
+        let mut img = {
+            let mut segments = self.segments.lock(&self.rt);
+            if !segments.may_recycle(self.log().needed().0.min(archived)) {
+                return None;
+            }
+            self.io(|d| segments.try_load(d)).ok()?
+        };
+        let start = img.batch_start(self.log().needed())?;
+        let floor = start.0.min(archived);
+        img.bases.retain(|&b| b <= floor);
+        let last = folded(&mut img, floor)?;
+        let end = self.fold(&last).ok()?;
+        self.checkpoint();
+        self.absorb_folded(&last, end);
+        let mut segments = self.segments.lock(&self.rt);
+        let needed = self.log().needed();
+        let floor = if needed.0 < floor {
+            let Some(start) = img.batch_start(needed) else {
+                return Some(0);
+            };
+            start.0
+        } else {
+            floor
+        };
+        let bases = std::mem::take(&mut img.bases);
+        drop(img);
+        Some(self.io(|d| segments.recycle(d, &bases, floor)))
+    }
+
+    /// Let recycling remove the log of this open, and let the checkpointer recycle. Call once
+    /// every reader of the log the open found has run.
+    pub fn release_session_log(&self) {
+        self.log().release_session();
+    }
+
+    /// Returns whether the checkpointer may recycle now: the open's readers of the log have run
+    /// and the database is not quarantined whole.
+    pub(super) fn recycles_in_session(&self) -> bool {
+        self.log().session_released() && !self.is_quarantined(Quarantine::Database)
     }
 
     /// Returns the dirty page table: each page's `rec_lsn`.
@@ -183,7 +263,9 @@ fn run<R: Runtime>(shared: &Weak<Shared<R>>) {
         }
         if pager.log().checkpoint_due() {
             pager.flush_pages(usize::MAX);
-            pager.checkpoint();
+            if !pager.recycles_in_session() || pager.recycle().is_none() {
+                pager.checkpoint();
+            }
             continue;
         }
         let rt = pager.rt.clone();

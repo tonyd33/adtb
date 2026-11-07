@@ -40,6 +40,15 @@ impl Gate {
         }
     }
 
+    /// Returns the number of pages whose expected LSN is past their folded entry.
+    #[cfg(test)]
+    pub(crate) fn later(&self) -> usize {
+        match self {
+            Gate::Armed(e) => e.logged.len(),
+            Gate::Recovering | Gate::Off => 0,
+        }
+    }
+
     /// Returns one past the last page with an expected LSN, 0 when none has one.
     pub(crate) fn end(&self) -> u64 {
         match self {
@@ -79,6 +88,19 @@ impl Expected {
             .map_or(0, |i| i + 1);
         let logged = self.logged.keys().map(|p| p.0 + 1).max().unwrap_or(0);
         (folded as u64).max(logged)
+    }
+
+    fn absorb<'a>(&mut self, last: impl Iterator<Item = (&'a Pid, &'a Lsn)>) {
+        for (&pid, &lsn) in last {
+            let at = pid.0 as usize;
+            if self.folded.len() <= at {
+                self.folded.resize(at + 1, Lsn(0));
+            }
+            self.folded[at] = self.folded[at].max(lsn);
+            if self.logged.get(&pid).is_some_and(|&l| l <= self.folded[at]) {
+                self.logged.remove(&pid);
+            }
+        }
     }
 
     /// Raise `pid`'s expected LSN to `lsn`, the LSN of its latest record.
@@ -235,8 +257,8 @@ impl<R: Runtime> Pager<R> {
 
     /// Raise the map's entry of each page of `last` to its LSN, adding levels above the root
     /// until it reaches the highest. A page at or past the file's end no longer exists, and is
-    /// dropped.
-    pub(crate) fn fold(&self, last: &BTreeMap<Pid, Lsn>) -> Result<(), PageError> {
+    /// dropped. Returns that end.
+    pub(crate) fn fold(&self, last: &BTreeMap<Pid, Lsn>) -> Result<u64, PageError> {
         let end = self.file_pages();
         let entries: Vec<(u64, Lsn)> = last
             .iter()
@@ -244,7 +266,7 @@ impl<R: Runtime> Pager<R> {
             .map(|(p, l)| (p.0, *l))
             .collect();
         let Some(&(top, _)) = entries.last() else {
-            return Ok(());
+            return Ok(end);
         };
         let map = self.meta().map;
         let mut map = match map {
@@ -255,9 +277,16 @@ impl<R: Runtime> Pager<R> {
             map = self.grown(Some(map))?;
         }
         self.fold_into(map.root, map.lsn, map.height, &entries)?;
-        let lsn = page::lsn(&self.read(map.root)?);
-        self.meta().map = Some(MapRoot { lsn, ..map });
-        Ok(())
+        Ok(end)
+    }
+
+    /// Raise the folded expected LSN of each page of `last` below `end` to its LSN, once a
+    /// checkpoint names the map that holds them, dropping the gate's later LSN of a page when it
+    /// is no longer later.
+    pub(crate) fn absorb_folded(&self, last: &BTreeMap<Pid, Lsn>, end: u64) {
+        if let Gate::Armed(e) = &mut self.meta().gate {
+            e.absorb(last.range(..Pid(end)));
+        }
     }
 
     /// Returns a new root one level above `below`, holding it as its first child, or a leaf

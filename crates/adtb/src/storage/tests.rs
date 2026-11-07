@@ -5,8 +5,8 @@ use adtb_testkit::scratch::Scratch;
 
 use super::alloc::diff;
 use super::block::{
-    Batch, BlockState, InMemory, LogFinding, LogImage, LogProblem, Mode, Scan, frame, read_block,
-    resolutions_from, scan,
+    Batch, BlockState, InMemory, LogFinding, LogImage, LogProblem, Mode, Scan, batch_at, frame,
+    read_block, resolutions_from, scan,
 };
 use super::crc::{Crc32c, crc32c, crc32c_skipping};
 use super::header::{FileHeader, choose};
@@ -103,6 +103,124 @@ fn a_page_past_the_reach_of_the_map_has_no_entry() {
     let per_leaf = ((pager.page_size() - page::HEADER_LEN) / 8) as u64;
     assert_eq!(Ok(Some(Lsn(1))), pager.mapped(Pid(1)));
     assert_eq!(Ok(None), pager.mapped(Pid(1 + per_leaf)));
+    pager.close();
+}
+
+#[test]
+fn a_change_of_the_map_root_outside_a_fold_raises_the_root_lsn_the_pager_holds() {
+    let scratch = Scratch::new("storage", "root-lsn");
+    let rt = OsRuntime::with_faults(
+        scratch.path(),
+        Backend::Pool { threads: 1 },
+        Faults::default(),
+    );
+    let options = Options {
+        pool_frames: 16,
+        max_pages: 1024,
+        ..Options::new("root-lsn.adt")
+    };
+    let pager = Pager::create(rt, &options).expect("create pager");
+    pager
+        .fold(&BTreeMap::from([(Pid(1), Lsn(1))]))
+        .expect("fold");
+    let root = pager.meta().map.expect("the fold made a map").root;
+    let lsn = pager
+        .update(&[root], |p| p[0][page::HEADER_LEN + 16] = 3)
+        .expect("change the root");
+    assert_eq!(Some(lsn), pager.meta().map.map(|m| m.lsn));
+    pager.close();
+}
+
+#[test]
+fn the_first_checkpoint_after_a_crash_names_the_map_root_at_its_replayed_lsn() {
+    let scratch = Scratch::new("storage", "replayed-root");
+    let rt = || {
+        OsRuntime::with_faults(
+            scratch.path(),
+            Backend::Pool { threads: 1 },
+            Faults::default(),
+        )
+    };
+    let options = Options {
+        pool_frames: 16,
+        max_pages: 1024,
+        ..Options::new("replayed-root.adt")
+    };
+    let pager = Pager::create(rt(), &options).expect("create pager");
+    pager
+        .fold(&BTreeMap::from([(Pid(1), Lsn(1))]))
+        .expect("fold");
+    pager.checkpoint();
+    let root = pager.meta().map.expect("the fold made a map").root;
+    let changed = pager
+        .update(&[root], |p| p[0][page::HEADER_LEN + 16] = 3)
+        .expect("change the root");
+    pager.flush_log();
+    drop(pager);
+    let (pager, _) = Pager::open(rt(), &options).expect("reopen");
+    pager.checkpoint();
+    let at = pager.checkpoint_lsn();
+    let (_pin, mut img) = pager.load_log().expect("load the log");
+    let start = img.batch_start(at).expect("the checkpoint's batch");
+    let block = img.block;
+    let records = batch_at(&mut img, start)
+        .expect("the batch")
+        .records(block)
+        .expect("records");
+    let named = records.into_iter().find_map(|(lsn, r)| match r {
+        Record::Checkpoint { map, .. } if lsn == at => map,
+        _ => None,
+    });
+    assert_eq!(Some((root, changed)), named.map(|m| (m.root, m.lsn)));
+    drop(img);
+    pager.close();
+}
+
+#[test]
+fn a_recycle_keeps_every_expected_lsn_and_drops_the_later_ones_it_folded() {
+    let scratch = Scratch::new("storage", "absorb");
+    let rt = OsRuntime::with_faults(
+        scratch.path(),
+        Backend::Pool { threads: 1 },
+        Faults::default(),
+    );
+    let options = Options {
+        page_size: 4096,
+        segment_size: 64 * 1024,
+        pool_frames: 16,
+        max_pages: 1024,
+        ..Options::new("absorb.adt")
+    };
+    let pager = Pager::create(rt, &options).expect("create pager");
+    pager.release_session_log();
+    let pages: Vec<Pid> = (0..40)
+        .map(|_| pager.allocate(1, page::PageKind::HeapSlotted, 7).unwrap())
+        .collect();
+    for n in 0..400u64 {
+        let pid = pages[n as usize % pages.len()];
+        pager
+            .update(&[pid], |p| p[0][page::HEADER_LEN] = n as u8)
+            .unwrap();
+        pager.flush_log();
+        if n % 40 == 39 {
+            pager.flush_pages(usize::MAX);
+            pager.checkpoint();
+        }
+    }
+    let expected = |p: &Pager<OsRuntime>| -> Vec<Option<Lsn>> {
+        let m = p.meta();
+        pages.iter().map(|&pid| m.gate.expected(pid)).collect()
+    };
+    let before = (expected(&pager), pager.meta().gate.later());
+    assert!(pager.recycle_log() >= 2, "the recycle removed segments");
+    let after = (expected(&pager), pager.meta().gate.later());
+    assert_eq!(before.0, after.0);
+    assert!(
+        after.1 < before.1,
+        "{} later LSNs held, {} before",
+        after.1,
+        before.1
+    );
     pager.close();
 }
 
