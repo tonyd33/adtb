@@ -28,7 +28,7 @@ use crash::crash_after;
 use draw::below;
 use harness::{PAGE, finished, options};
 use recovery::verify_after_crash;
-use seeds::{share, sweep};
+use seeds::{assert_reached, share, sweep};
 
 const FRAMES: usize = 64;
 
@@ -701,13 +701,17 @@ fn crash_options() -> Options {
     }
 }
 
-fn crash_workload(rt: SimRuntime, world: &Mutex<World>, steps: usize) {
+/// Run `steps` random inserts and deletes, forcing the log now and then. When `prefixed`, the
+/// inserted entries are `split_entry`s, which share a long prefix.
+fn crash_workload(rt: SimRuntime, world: &Mutex<World>, steps: usize, prefixed: bool) {
     let (pager, _) = Pager::open(rt.clone(), &crash_options()).expect("open");
     let tree = BTree::open(world.lock().unwrap().root.unwrap(), OWNER);
     let max = 200;
     for _ in 0..steps {
         let insert = below(&rt, 10) < 7;
-        let e = if insert {
+        let e = if insert && prefixed {
+            split_entry(below(&rt, 1 << 20) as u32)
+        } else if insert {
             gen_entry(&rt, max)
         } else {
             let w = world.lock().unwrap();
@@ -777,9 +781,9 @@ fn crash_config() -> Config {
 }
 
 /// Run the workload to its end, recording it, and replace `sim` by the forced
-/// state at the last log force inside an operation. When `seek` is set, take
-/// the last such force that leaves a split incomplete, if there is one.
-fn crash_at_a_flush(sim: &mut Sim, world: &Arc<Mutex<World>>, seed: u64, seek: bool) {
+/// state at the last log force inside an operation. When `prefixed`, take
+/// the first such force that leaves a split incomplete, if there is one.
+fn crash_at_a_flush(sim: &mut Sim, world: &Arc<Mutex<World>>, seed: u64, prefixed: bool) {
     let durable = {
         let mut w = world.lock().unwrap();
         w.spans.clear();
@@ -787,21 +791,20 @@ fn crash_at_a_flush(sim: &mut Sim, world: &Arc<Mutex<World>>, seed: u64, seek: b
     };
     sim.record();
     let w = world.clone();
-    finished(sim, move |rt| crash_workload(rt, &w, 600));
+    finished(sim, move |rt| crash_workload(rt, &w, 600, prefixed));
     let recording = sim.recording();
     let flushes = recording.flushes();
     let mut w = world.lock().unwrap();
     let root = w.root.unwrap();
     let inside: Vec<usize> = flushes
         .iter()
-        .rev()
         .copied()
         .filter(|&f| w.spans.iter().any(|&(s, e)| s < f && f < e))
         .collect();
     let at = inside
         .iter()
-        .find(|&&f| seek && incomplete_at(&recording, f, root, seed) > 0)
-        .or(inside.first())
+        .find(|&&f| prefixed && incomplete_at(&recording, f, root, seed) > 0)
+        .or(inside.last())
         .or(flushes.last())
         .copied()
         .expect("the workload forces the log");
@@ -810,14 +813,21 @@ fn crash_at_a_flush(sim: &mut Sim, world: &Arc<Mutex<World>>, seed: u64, seek: b
     w.durable = durable;
 }
 
-/// Returns the crashes of `rounds` runs crashed at a time, and the splits
-/// repaired after them and after as many runs cut at a log force inside an
-/// operation.
+/// What the runs of `crash_loop` reached.
+#[derive(Default)]
+struct Reached {
+    crashes: usize,
+    repaired: usize,
+    height: u16,
+}
+
+/// Returns what `rounds` runs crashed at a time reached, and as many runs cut at a
+/// log force inside an operation.
 ///
-/// Unless `seen` is set, each cut seeks a force that leaves a split
-/// incomplete, until one is repaired.
+/// The first two runs insert entries sharing a long prefix, the shape that leaves splits
+/// incomplete, and the first cut seeks a force that leaves one.
 #[must_use]
-fn crash_loop(seed: u64, rounds: usize, seen: bool) -> (usize, usize) {
+fn crash_loop(seed: u64, rounds: usize) -> Reached {
     let mut sim = Sim::new(seed, crash_config());
     let world = Arc::new(Mutex::new(World::default()));
     let w = world.clone();
@@ -827,20 +837,19 @@ fn crash_loop(seed: u64, rounds: usize, seen: bool) -> (usize, usize) {
         pager.flush_log();
         w.lock().unwrap().root = Some(tree.root());
     });
-    let mut crashes = 0;
-    let repaired = Arc::new(Mutex::new(0));
+    let reached = Arc::new(Mutex::new(Reached::default()));
     for round in 0..2 * rounds {
-        let repairs = repaired.clone();
+        let prefixed = round < 2;
+        let tally = reached.clone();
         if round % 2 == 0 {
             let at = sim.now() + crash_after(seed, round as u64, 2_000, 200_000);
             sim.crash_at(at);
             let w = world.clone();
-            if sim.run(move |rt| crash_workload(rt, &w, 600)) == Outcome::Crashed {
-                crashes += 1;
+            if sim.run(move |rt| crash_workload(rt, &w, 600, prefixed)) == Outcome::Crashed {
+                reached.lock().unwrap().crashes += 1;
             }
         } else {
-            let seek = !seen && *repaired.lock().unwrap() == 0;
-            crash_at_a_flush(&mut sim, &world, seed * 1000 + round as u64, seek);
+            crash_at_a_flush(&mut sim, &world, seed * 1000 + round as u64, round == 1);
         }
         let root = world.lock().unwrap().root.unwrap();
         let found = Arc::new(Mutex::new(None));
@@ -850,7 +859,10 @@ fn crash_loop(seed: u64, rounds: usize, seen: bool) -> (usize, usize) {
             let tree = BTree::open(root, OWNER);
             let recovered = tree.verify(&pager);
             if recovered.is_ok() {
-                *repairs.lock().unwrap() += tree.repair(&pager).expect("repair");
+                let mut tally = tally.lock().unwrap();
+                tally.repaired += tree.repair(&pager).expect("repair");
+                tally.height = tally.height.max(tree.height(&pager).expect("height"));
+                drop(tally);
                 assert_eq!(tree.repair(&pager), Ok(0), "seed {seed} round {round}");
                 assert_eq!(tree.verify(&pager), recovered);
                 let inventory = Inventory {
@@ -898,7 +910,7 @@ fn crash_loop(seed: u64, rounds: usize, seen: bool) -> (usize, usize) {
         w.ops.truncate(kept);
         w.durable = kept;
     }
-    (crashes, *repaired.lock().unwrap())
+    std::mem::take(&mut *reached.lock().unwrap())
 }
 
 #[test]
@@ -906,15 +918,18 @@ fn a_crashed_tree_recovers_a_prefix_of_its_operations() {
     const SEEDS: Range<u64> = 0..6;
     let mut crashes = 0;
     let mut repaired = 0;
+    let mut height = 0;
     for seed in sweep(SEEDS) {
-        let (c, r) = crash_loop(seed, 6, repaired > 0);
-        crashes += c;
-        repaired += r;
+        let reached = crash_loop(seed, 6);
+        crashes += reached.crashes;
+        repaired += reached.repaired;
+        height = height.max(reached.height);
     }
     assert!(crashes >= share(SEEDS, 10), "only {crashes} crashes");
+    assert_reached("incomplete splits repaired", repaired, share(SEEDS, 3));
     assert!(
-        repaired >= share(SEEDS, 1),
-        "no crash left a split incomplete"
+        height >= 2,
+        "no recovered tree had a root two levels above its leaves"
     );
 }
 
