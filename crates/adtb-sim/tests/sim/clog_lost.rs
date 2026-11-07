@@ -327,7 +327,6 @@ fn the_first_verify_through_a_server_of_a_status_page_that_lost_a_write_reports_
     api::run(&mut sim, |rt| {
         let db = open(&rt);
         let owner = db.role_authority().session("owner").unwrap();
-        api::task(&rt, &owner, "app::users").unwrap();
         let rows = api::task_rows(&rt, &owner, "verify").unwrap();
         assert_eq!(
             want,

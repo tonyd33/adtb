@@ -2,12 +2,14 @@
 //! waiting command, what it never writes, a close and a crash while it runs, and the snapshots
 //! it leaves readable.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use adtb::runtime::{Clock, Entropy, Runtime, Threads};
 use adtb::storage::{self, Lsn, Quarantine};
+use adtb::write::panic_text;
 use adtb::{
     CallOptions, Database, Error, Log, OpenOptions, RejectReason, TxnCallOptions, TxnOptions,
 };
@@ -89,9 +91,15 @@ fn vacuuming(rt: &SimRuntime) -> Database<SimRuntime> {
     fill(&db, 1500);
     api::results(&db, "delete i in items where true");
     budget(&db, 0.01);
+    started(rt, &db);
+    db
+}
+
+/// Wait until a background vacuum of `db` runs.
+fn started(rt: &SimRuntime, db: &Database<SimRuntime>) {
     for _ in 0..200 {
-        if running(&db) {
-            return db;
+        if running(db) {
+            return;
         }
         sleep(rt, 10);
     }
@@ -199,6 +207,51 @@ fn a_background_vacuum_gives_way_to_a_command_waiting_for_it() {
             );
         });
     }
+}
+
+/// The tasks that wait for the vacuum lock.
+const HOLDING: [&str; 5] = [
+    "verify",
+    "verify items",
+    "vacuum others",
+    "set setting VacuumBudget = { io: 0.01, cpu: 1.0 }",
+    "reindex items",
+];
+
+#[test]
+fn a_background_vacuum_gives_way_to_a_first_task_waiting_for_it() {
+    let mut sim = Sim::new(25, Config::default());
+    api::run(&mut sim, |rt| {
+        let db = open(rt);
+        budget(&db, 0.0);
+        fill(&db, 200);
+        api::results(&db, "delete i in items where true");
+        db.close().unwrap();
+    });
+    let files = sim.files();
+    let ran: Vec<(&str, Result<bool, String>)> = (0..)
+        .zip(HOLDING)
+        .map(|(seed, text)| {
+            let ran = catch_unwind(AssertUnwindSafe(|| {
+                let mut sim = Sim::with_files(seed, Config::default(), files.clone());
+                api::run(&mut sim, |rt| {
+                    let db = open(rt.clone());
+                    budget(&db, 0.01);
+                    started(&rt, &db);
+                    let owner = db.role_authority().session("owner").unwrap();
+                    let asked = db.write_path().vacuum_yields();
+                    api::task(&rt, &owner, text).map(|()| db.write_path().vacuum_yields() > asked)
+                })
+            }));
+            let ran = match ran {
+                Ok(done) => done.map_err(|e| format!("{e:?}")),
+                Err(payload) => Err(panic_text(&*payload).unwrap_or_default()),
+            };
+            (text, ran)
+        })
+        .collect();
+    let want: Vec<_> = HOLDING.iter().map(|&t| (t, Ok(true))).collect();
+    assert_eq!(want, ran);
 }
 
 #[test]

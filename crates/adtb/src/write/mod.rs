@@ -523,14 +523,15 @@ pub struct Database<R: Runtime> {
     options: exec::Options,
     grant: usize,
     files: Disk,
-    /// Held while a vacuum runs or the retention window changes, so that one runs at a time,
-    /// with what is set when another call fails to take it.
-    vacuuming: Lock<Option<Arc<AtomicBool>>>,
+    /// Held while a vacuum runs or the retention window changes, so that one runs at a time.
+    vacuuming: Lock<Option<reindex::Holder>>,
     dead: Lock<vacuums::Dead>,
     vacuums: vacuums::Vacuums,
     pacer: Arc<vacuum::Pacer>,
     /// How many pauses calls have made at a rebuild's gate or for the vacuum lock.
     rebuild_waits: AtomicU64,
+    /// How many times a call asked a background vacuum to give up the vacuum lock.
+    vacuum_yields: AtomicU64,
     /// The relations an offline rebuild holds writes to.
     offline: Lock<BTreeSet<RelId>>,
     /// Set once the engine closes: rebuilds stop and their gates refuse.
@@ -633,6 +634,7 @@ impl<R: Runtime> Database<R> {
             vacuums: vacuums::Vacuums::default(),
             pacer: Arc::new(vacuum::Pacer::new(0.1)),
             rebuild_waits: AtomicU64::new(0),
+            vacuum_yields: AtomicU64::new(0),
             offline: Lock::default(),
             rebuilds_stopped: AtomicBool::new(false),
             retained: None,

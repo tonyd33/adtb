@@ -24,7 +24,7 @@ use crate::heap::Heap;
 use crate::key::{CtorId, Entry};
 use crate::mvcc::Xid;
 use crate::plan::IndexId;
-use crate::runtime::{Instant, Io, Op, Runtime};
+use crate::runtime::{Instant, Io, Op, Runtime, ThreadId};
 use crate::storage::{self, Damage, Lsn, Pid, Quarantine};
 
 use super::past::Retained;
@@ -118,6 +118,17 @@ impl<'b> HoldWait<'b> {
             bounds.suspend.then_some(rerun),
         )
     }
+}
+
+/// The holder of the vacuum lock.
+pub(super) enum Holder {
+    /// One that keeps the lock until it is done.
+    Keeps,
+    /// One that gives the lock up once `asked` is set, looking at it each time `thread` unparks.
+    Yields {
+        asked: Arc<AtomicBool>,
+        thread: ThreadId,
+    },
 }
 
 /// The vacuum lock. Holds off vacuum, the one other writer that removes entries and frees slots,
@@ -329,20 +340,37 @@ impl<R: Runtime> Database<R> {
     /// Returns the vacuum lock unless another holds it. [`VACUUM_HOLDER`] runs exactly while one
     /// does, so a call that watches it and finds it ended finds the lock free.
     fn try_hold_vacuum(&self) -> Option<VacuumHold<'_, R>> {
-        self.try_hold_yielding(Arc::default())
+        self.try_hold(Holder::Keeps)
     }
 
-    /// Returns the vacuum lock as [`Database::try_hold_vacuum`] does, setting `asked` once
-    /// another call fails to take it.
+    /// Returns the vacuum lock as [`Database::try_hold_vacuum`] does, for the calling thread to
+    /// give up once `asked` is set. Another call that fails to take it sets `asked` and unparks
+    /// the calling thread.
     pub(super) fn try_hold_yielding(&self, asked: Arc<AtomicBool>) -> Option<VacuumHold<'_, R>> {
+        self.try_hold(Holder::Yields {
+            asked,
+            thread: self.rt.current(),
+        })
+    }
+
+    fn try_hold(&self, holder: Holder) -> Option<VacuumHold<'_, R>> {
         let mut held = self.vacuuming.lock(&self.rt);
-        if let Some(holder) = &*held {
-            holder.store(true, Ordering::Release);
-            return None;
+        match &*held {
+            Some(Holder::Keeps) => None,
+            Some(Holder::Yields { asked, thread }) => {
+                asked.store(true, Ordering::Release);
+                self.vacuum_yields.fetch_add(1, Ordering::Relaxed);
+                let thread = *thread;
+                drop(held);
+                self.rt.unpark(thread);
+                None
+            }
+            None => {
+                *held = Some(holder);
+                self.waits.started(VACUUM_HOLDER);
+                Some(VacuumHold { db: self })
+            }
         }
-        *held = Some(asked);
-        self.waits.started(VACUUM_HOLDER);
-        Some(VacuumHold { db: self })
     }
 
     /// Returns the vacuum lock for a call.
@@ -375,6 +403,11 @@ impl<R: Runtime> Database<R> {
     /// Returns how many pauses calls have made at a rebuild's gate or for the vacuum lock.
     pub fn rebuild_waits(&self) -> u64 {
         self.rebuild_waits.load(Ordering::Relaxed)
+    }
+
+    /// Returns how many times a call asked a background vacuum to give up the vacuum lock.
+    pub fn vacuum_yields(&self) -> u64 {
+        self.vacuum_yields.load(Ordering::Relaxed)
     }
 
     /// Returns whether an offline rebuild holds writes to any of `rels`.
