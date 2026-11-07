@@ -1,6 +1,9 @@
+use crate::runtime::{AlignedBuf, Runtime};
+
 use super::block::{LogFinding, LogProblem};
 use super::crc::crc32c_skipping;
 use super::page::{MAX_PAGE_SIZE, MIN_PAGE_SIZE, valid_page_size};
+use super::pager::Pager;
 use super::{Lsn, Pid};
 
 /// The bytes of a header copy at the start of its page; the rest of the page is unused.
@@ -252,5 +255,46 @@ pub fn choose(first: Option<FileHeader>, second: Option<FileHeader>) -> Option<(
         (Some(a), _) => Some((0, a)),
         (None, Some(b)) => Some((1, b)),
         (None, None) => None,
+    }
+}
+
+impl<R: Runtime> Pager<R> {
+    /// Write the next header copy, pointing at the checkpoint of `checkpoint` unless the header
+    /// already names a later one. The header's bitmap group count only rises.
+    pub(super) fn write_header(&self, checkpoint: Option<(Lsn, u64)>) {
+        let mut h = self.header.lock(&self.rt);
+        let (header, copy) = &mut *h;
+        if let Some((at, groups)) = checkpoint {
+            header.bitmap_groups = header.bitmap_groups.max(groups);
+            if at < header.checkpoint {
+                return;
+            }
+            header.checkpoint = at;
+        }
+        header.seq += 1;
+        *copy = 1 - *copy;
+        let bytes = header.encode(*copy);
+        let offset = *copy * self.page_size as u64;
+        self.io(|d| {
+            d.write_all(vec![(self.data, offset, AlignedBuf::from_slice(&bytes))]);
+            d.sync_all(&[self.data]);
+        });
+    }
+
+    /// Returns the page the file header names as the catalog's root, `Pid(0)` before one is set.
+    pub fn catalog_root(&self) -> Pid {
+        self.header.lock(&self.rt).0.catalog_root
+    }
+
+    /// Force the log, then write and force a header copy naming `root` as the catalog's root.
+    pub fn set_catalog_root(&self, root: Pid) {
+        self.flush_log();
+        self.header.lock(&self.rt).0.catalog_root = root;
+        self.write_header(None);
+    }
+
+    /// Returns the LSN of the checkpoint record the file header names.
+    pub(crate) fn checkpoint_lsn(&self) -> Lsn {
+        self.header.lock(&self.rt).0.checkpoint
     }
 }

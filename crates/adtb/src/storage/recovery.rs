@@ -1,16 +1,14 @@
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb_sys::pages;
-
 use crate::runtime::Runtime;
 
 use super::block::{LogFinding, LogProblem, Mode, batch_at, scan};
 use super::damage_log::Met;
 use super::header::LOG_DAMAGE_CAPACITY;
-use super::page::{self, Verdict};
+use super::page;
 use super::pager::{Damage, OpenError, Pager};
-use super::record::{Edit, MapRoot, Record};
+use super::record::{MapRoot, Record};
 use super::{Lsn, Pid};
 
 /// What recovery found and did.
@@ -213,46 +211,31 @@ impl<R: Runtime> Pager<R> {
         if lsn < st.redo || self.meta().damaged.contains_key(&pid) {
             return;
         }
-        let mut g = self.mem.lock_exclusive(pid.0, &self.rt);
-        if !g.resident() {
-            if let Entry::Vacant(slot) = st.unverified.entry(pid) {
-                self.make_room(pid);
-                let failed = match self.read_disk(pid) {
-                    Ok((buf, Verdict::Valid | Verdict::Blank)) => {
-                        let past = Damage::past_log_end(page::lsn(&buf), self.file_end(pid));
-                        if past.is_none() {
-                            g.write(0, &buf);
-                        }
-                        past
-                    }
-                    Ok((_, Verdict::Corrupt)) => Some(Damage::Checksum),
-                    Err(d) => Some(d),
-                };
-                if let Some(d) = failed {
-                    slot.insert(d);
-                    self.unreserve(pid);
-                }
+        if !self.hold(pid).resident() {
+            if let Entry::Vacant(slot) = st.unverified.entry(pid)
+                && let Some(d) = self.replay_page_in(pid)
+            {
+                slot.insert(d);
             }
             if st.unverified.contains_key(&pid) {
                 if let Record::Image { page, .. } = record {
                     st.unverified.remove(&pid);
-                    self.make_room(pid);
-                    self.install_image(st, &mut g, lsn, &page);
+                    self.install_image(st, pid, lsn, &page);
                 }
                 return;
             }
         }
-        let have = page::lsn(&g);
+        let have = page::lsn(&self.hold(pid));
         if have >= lsn {
             return;
         }
         match record {
-            Record::Image { page, .. } => self.install_image(st, &mut g, lsn, &page),
+            Record::Image { page, .. } => self.install_image(st, pid, lsn, &page),
             Record::Change { edits, .. } if have == prev => {
-                self.redo_change(st, &mut g, lsn, &edits);
+                self.replay_change(pid, &edits, lsn);
+                self.mark_replayed(st, pid, lsn);
             }
             _ => {
-                drop(g);
                 self.damage_replayed(
                     pid,
                     Damage::Stale {
@@ -272,18 +255,8 @@ impl<R: Runtime> Pager<R> {
         st.applied += 1;
     }
 
-    fn install_image(&self, st: &mut Replay, g: &mut pages::Exclusive<'_>, lsn: Lsn, image: &[u8]) {
-        assert_eq!(self.page_size, image.len(), "a page image is one page");
-        g.write(0, image);
-        g.write(0, &lsn.0.to_le_bytes());
-        self.mark_replayed(st, Pid(g.pid()), lsn);
-    }
-
-    fn redo_change(&self, st: &mut Replay, g: &mut pages::Exclusive<'_>, lsn: Lsn, edits: &[Edit]) {
-        for e in edits {
-            g.write(e.offset as usize, &e.bytes);
-        }
-        g.write(0, &lsn.0.to_le_bytes());
-        self.mark_replayed(st, Pid(g.pid()), lsn);
+    fn install_image(&self, st: &mut Replay, pid: Pid, lsn: Lsn, image: &[u8]) {
+        self.replay_image(pid, image, lsn);
+        self.mark_replayed(st, pid, lsn);
     }
 }

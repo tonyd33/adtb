@@ -15,8 +15,9 @@ use std::sync::{Arc, Weak};
 
 use crate::runtime::{Runtime, ThreadId};
 
+use super::log::LogPin;
 use super::lsnmap::folded;
-use super::pager::{LogPin, Pager, Shared};
+use super::pager::{Pager, Shared};
 use super::quarantine::Quarantine;
 use super::record::Record;
 use super::{Lsn, Pid};
@@ -57,7 +58,7 @@ impl<R: Runtime> Pager<R> {
         };
         let mut n = 0;
         for pid in oldest {
-            let Some(g) = self.mem.lock_shared(pid.0, &self.rt) else {
+            let Some(g) = self.shared_resident(pid) else {
                 continue;
             };
             if self.meta().changed.contains(&pid) {

@@ -1971,7 +1971,7 @@ fn a_failed_scrap_leaves_the_page_damaged() {
         assert_eq!(
             Some(pid),
             p.read(pid).err().map(|e| e.pid),
-            "the page reads as sound after a failed scrap"
+            "a failed scrap leaves the page refused"
         );
     });
 }

@@ -271,7 +271,8 @@ fn crc32c_is_the_same_however_the_bytes_are_split() {
 #[test]
 fn sealed_page_verifies_only_at_its_own_id() {
     let mut p = vec![0; 4096];
-    page::set_lsn(&mut p, Lsn(77));
+    let (at, field) = page::lsn_field(Lsn(77));
+    p[at..at + field.len()].copy_from_slice(&field);
     p[100] = 9;
     page::seal(Pid(5), &mut p);
     assert_eq!(Verdict::Valid, page::verify(Pid(5), &p));

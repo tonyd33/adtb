@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
+use std::time::SystemTime;
 
 use crate::runtime::{AlignedBuf, Done, FileId, IoError, Op, Runtime};
 
-use super::Lsn;
 use super::block::{LogImage, LogSource, Slot, data_lsn, frame};
 use super::driver::{Driver, fatal};
-use super::pager::parent;
+use super::pager::{ArchiveHook, PageError, Pager, edits_by, parent};
 use super::record::Record;
+use super::{Lsn, Pid, Position};
 
 /// The redo log's appender: the batch being filled, behind the log lock.
 #[derive(Debug)]
@@ -537,5 +538,196 @@ impl<R: Runtime> LogSource for FileSource<R> {
             }
             _ => Slot::Unreadable,
         }
+    }
+}
+
+/// A hold on the log from an LSN: no recycle removes the segment holding the start of its batch,
+/// or any later one, while it lives.
+pub(crate) struct LogPin<'p, R: Runtime> {
+    pager: &'p Pager<R>,
+    at: Lsn,
+}
+
+type PinnedLog<'p, R> = (LogPin<'p, R>, LogImage<FileSource<R>>);
+
+impl<'p, R: Runtime> LogPin<'p, R> {
+    /// Returns the pin of a hold `pager`'s log already counts at `at`.
+    pub(super) fn new(pager: &'p Pager<R>, at: Lsn) -> Self {
+        LogPin { pager, at }
+    }
+
+    /// Returns the LSN the log is held from.
+    pub(super) fn at(&self) -> Lsn {
+        self.at
+    }
+}
+
+impl<R: Runtime> Drop for LogPin<'_, R> {
+    fn drop(&mut self) {
+        self.pager.log().unpin(self.at);
+    }
+}
+
+impl<R: Runtime> Pager<R> {
+    /// Log a safe snapshot marker: `snapshot`, as the transactions layer encodes it, covering
+    /// every commit at or before `at`. Returns the marker's LSN; the marker is durable once the
+    /// log is flushed past it.
+    pub fn log_safe_snapshot(&self, at: Position, snapshot: &[u8]) -> Lsn {
+        self.log().append(&Record::SafeSnapshot {
+            at,
+            snapshot: snapshot.to_vec(),
+        })
+    }
+
+    /// Log that transaction ids below `next` are reserved.
+    pub fn reserve_xids(&self, next: u64) -> Lsn {
+        self.log().append(&Record::XidAllocation { next })
+    }
+
+    /// Returns the LSN below which every record is durable.
+    pub fn durable(&self) -> Lsn {
+        self.log().durable()
+    }
+
+    /// Write and force every record appended so far.
+    ///
+    /// Postcondition: every record appended before the call is durable.
+    pub fn flush_log(&self) {
+        let lsn = self.log().next_lsn();
+        self.force_below(lsn);
+    }
+
+    /// Returns the LSN the next record appended takes.
+    pub(crate) fn appended(&self) -> Lsn {
+        self.log().next_lsn()
+    }
+
+    /// Write and force every record below `end`.
+    pub fn flush_below(&self, end: Lsn) {
+        self.force_below(end);
+    }
+
+    /// Wait until the record at `lsn` is durable, and return its commit position.
+    ///
+    /// The first waiter that finds no batch being forced leads: it takes every record appended
+    /// so far as one batch, writes and forces it. Waiters whose record that batch holds return
+    /// with it; the rest wait for the next leader.
+    ///
+    /// Panic if no record was appended at `lsn`.
+    pub fn wait_durable(&self, lsn: Lsn) -> Position {
+        assert!(
+            lsn < self.log().next_lsn(),
+            "no record was appended at {lsn:?}"
+        );
+        self.force_below(Lsn(lsn.0 + 1));
+        self.position(lsn)
+    }
+
+    /// Returns the commit position of the record at `lsn`.
+    pub fn position(&self, lsn: Lsn) -> Position {
+        Position {
+            epoch: self.log().epoch,
+            lsn,
+        }
+    }
+
+    /// Returns the number of log batches forced since the pager opened.
+    pub fn batches(&self) -> u64 {
+        self.log().batches()
+    }
+
+    /// Return once every record below `lsn` is durable, leading a flush when no other thread
+    /// is. A waiter rechecks durability between its attempts to lead.
+    pub(super) fn force_below(&self, lsn: Lsn) {
+        loop {
+            if self.durable() >= lsn {
+                return;
+            }
+            let Some(mut segments) = self.segments.try_lock() else {
+                self.rt.yield_now();
+                continue;
+            };
+            if self.durable() >= lsn {
+                return;
+            }
+            let Some(batch) = self.log().take() else {
+                return;
+            };
+            self.io(|d| segments.write(d, &batch));
+            let due = self.log().forced(&batch);
+            drop(segments);
+            if due {
+                self.wake_checkpointer();
+            }
+        }
+    }
+
+    /// Bound what [`Pager::recycle_log`] removes by what `hook` says the archive holds.
+    pub fn set_archive(&self, hook: ArchiveHook) {
+        *self.archive.lock(&self.rt) = Some(hook);
+    }
+
+    /// Returns the log as its segments hold it now, pinned from its first segment while the pin
+    /// lives, or the path and failure of what it cannot read.
+    pub(crate) fn load_log(&self) -> Result<PinnedLog<'_, R>, (String, IoError)> {
+        let mut segments = self.segments.lock(&self.rt);
+        let img = self.io(|d| segments.try_load(d))?;
+        let at = img.first().unwrap_or(Lsn(0));
+        self.log().pin(at);
+        Ok((LogPin { pager: self, at }, img))
+    }
+
+    /// Change `pids` through `f` as [`Pager::update`] does, and log the commit record of
+    /// transaction `xid` after the page records, in the same batch.
+    ///
+    /// Returns the LSN of the commit record; the commit is durable once the log is flushed past
+    /// it. Fails, logging nothing, if a page is damaged.
+    pub fn commit<F>(&self, xid: u64, pids: &[Pid], f: F) -> Result<Lsn, PageError>
+    where
+        F: FnOnce(&mut [&mut [u8]]),
+    {
+        self.resolve(self.commit_record(xid), pids, f)
+    }
+
+    /// Commit as [`Pager::commit`] does, the commit record recording `wall_nanos`.
+    pub fn commit_at<F>(
+        &self,
+        xid: u64,
+        wall_nanos: u64,
+        pids: &[Pid],
+        f: F,
+    ) -> Result<Lsn, PageError>
+    where
+        F: FnOnce(&mut [&mut [u8]]),
+    {
+        self.resolve(Record::Commit { xid, wall_nanos }, pids, f)
+    }
+
+    /// Change `pids` through `f` and log the abort record of transaction `xid`, as
+    /// [`Pager::commit`] does.
+    pub fn abort<F>(&self, xid: u64, pids: &[Pid], f: F) -> Result<Lsn, PageError>
+    where
+        F: FnOnce(&mut [&mut [u8]]),
+    {
+        self.resolve(Record::Abort { xid }, pids, f)
+    }
+
+    fn resolve<F>(&self, record: Record, pids: &[Pid], f: F) -> Result<Lsn, PageError>
+    where
+        F: FnOnce(&mut [&mut [u8]]),
+    {
+        self.with_latched(pids, |pager, guards| {
+            let edits = edits_by(guards.iter().map(|g| &***g), f);
+            pager.apply(guards, edits, Some(record))
+        })
+    }
+
+    pub(super) fn commit_record(&self, xid: u64) -> Record {
+        let wall_nanos = self
+            .rt
+            .wall()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+        Record::Commit { xid, wall_nanos }
     }
 }

@@ -402,7 +402,7 @@ impl<R: Runtime> Pager<R> {
                 (bad, found, stale, orphan, unlogged)
             };
         let disk = self.read_disk(pid);
-        let resident = self.mem.lock_shared(pid.0, &self.rt).map(|g| page::lsn(&g));
+        let resident = self.shared_resident(pid).map(|g| page::lsn(&g));
         let mut seen = judge(&disk, resident, false);
         let wrong = |seen: &Judged| {
             seen.0.is_some() || seen.1.is_none() || seen.2.is_some() || seen.3 || seen.4.is_some()
@@ -422,7 +422,7 @@ impl<R: Runtime> Pager<R> {
                 }
                 return findings;
             }
-            let g = self.mem.lock_exclusive(pid.0, &self.rt);
+            let g = self.hold(pid);
             let disk = self.read_disk(pid);
             let resident = g.resident().then(|| page::lsn(&g));
             let changed = self.meta().changed.contains(&pid);

@@ -7,7 +7,8 @@ use super::block::{BlockState, read_block};
 use super::crc::crc32c;
 use super::driver::Driver;
 use super::log::parse_segment;
-use super::pager::{OpenError, Options, Pager, check_options, parent};
+use super::page::valid_page_size;
+use super::pager::{LATCHES_PER_THREAD, OpenError, Options, Pager, parent};
 
 const MAGIC: &[u8; 8] = b"adtbmake";
 const MARKER: usize = MAGIC.len() + 16 + 4;
@@ -441,4 +442,31 @@ fn listed<R: Runtime>(drv: &mut Driver<R>, dir: &str) -> Result<Option<Vec<Strin
         Err(e) => Err(OpenError::Io(e)),
         Ok(other) => unreachable!("list completed as {other:?}"),
     }
+}
+
+/// Returns `SegmentSize` when the segment size is not a positive multiple of the log block.
+pub(super) fn check_options(o: &Options) -> Result<(), OpenError> {
+    let block = o.log_block as usize;
+    assert!(
+        valid_page_size(o.page_size),
+        "page size {} is not allowed",
+        o.page_size
+    );
+    assert!(
+        block >= 64 && block.is_power_of_two() && AlignedBuf::ALIGN.is_multiple_of(block),
+        "log block {block} must be a power of two from 64 that divides {}",
+        AlignedBuf::ALIGN
+    );
+    if o.segment_size == 0 || !o.segment_size.is_multiple_of(block as u64) {
+        return Err(OpenError::SegmentSize(o.segment_size));
+    }
+    assert!(o.threads >= 1, "at least one thread uses the pool");
+    let serves = o.pool_frames / LATCHES_PER_THREAD;
+    assert!(
+        serves >= o.threads,
+        "a pool of {} frames serves at most {serves} threads, not {}",
+        o.pool_frames,
+        o.threads
+    );
+    Ok(())
 }

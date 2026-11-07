@@ -1,4 +1,3 @@
-#![expect(clippy::disallowed_methods, reason = "until storage owners land")]
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Deref;
 use std::sync::MutexGuard;
@@ -8,15 +7,15 @@ use adtb_sys::pages::{self, PageMemory, PageState};
 
 use crate::runtime::{AlignedBuf, FileId, IoError, Runtime, ThreadId};
 
-use super::alloc::diff;
-use super::block::{LogFinding, LogImage};
-use super::create::{Created, create};
+use super::alloc::{Reservation, diff};
+use super::block::LogFinding;
+use super::create::{Created, check_options, create};
 use super::damage_log::Met;
 use super::driver::Driver;
 use super::header::{self, FileHeader, REGION};
-use super::log::{FileSource, Log, Segments};
+use super::log::{Log, Segments};
 use super::lsnmap::{Expected, Gate, retained};
-use super::page::{self, FIRST_EDITABLE, Verdict, valid_page_size};
+use super::page::{self, FIRST_EDITABLE, HEADER_LEN, Verdict};
 use super::quarantine::Quarantine;
 use super::record::{Edit, MapRoot, Record};
 use super::{Lsn, Pid, Position};
@@ -173,14 +172,11 @@ pub(crate) struct Meta {
     /// here only once it is in the log and while its bitmap page is latched, so a checkpoint that
     /// captures a lower count finds that page dirty and its redo point covers the batch.
     pub(crate) groups: u64,
-    /// Pages latched blank, whose next change logs an unchained full-page image.
-    pub(crate) overwritten: BTreeSet<Pid>,
     /// The free pages reservations hold, each until its reservation and any blank latch of it
     /// end.
     pub(crate) reserved: BTreeSet<Pid>,
-    /// The reserved pages latched blank whose allocation has not committed, each with the
-    /// refusal its blank frame replaced.
-    pub(crate) blanked: BTreeMap<Pid, Option<Damage>>,
+    /// The reserved pages latched blank whose allocation has not committed.
+    pub(crate) blanked: BTreeSet<Pid>,
     /// The end of the log recovery kept when the pager opened, or zero for a pager created empty.
     pub(crate) recovered: Lsn,
     /// The page LSN map's root, `None` while the file has no map.
@@ -232,7 +228,7 @@ pub struct Shared<R: Runtime> {
     stall_after: Duration,
     pub(crate) data: FileId,
     pub(crate) atomic_page_writes: bool,
-    pub(crate) mem: PageMemory,
+    mem: PageMemory,
     drivers: Lock<BTreeMap<ThreadId, Driver<R>>>,
     /// Held by a force of the data file from taking `written` to dropping pages from `dirty`.
     pub(super) forcing: Lock<()>,
@@ -259,33 +255,6 @@ pub struct Shared<R: Runtime> {
 /// Returns the LSN below which the log's archive holds every segment, `None` while it holds none.
 pub type ArchiveHook = std::sync::Arc<dyn Fn() -> Option<Lsn> + Send + Sync>;
 
-/// A hold on the log from an LSN: no recycle removes the segment holding the start of its batch,
-/// or any later one, while it lives.
-pub(crate) struct LogPin<'p, R: Runtime> {
-    pager: &'p Pager<R>,
-    at: Lsn,
-}
-
-type PinnedLog<'p, R> = (LogPin<'p, R>, LogImage<FileSource<R>>);
-
-impl<'p, R: Runtime> LogPin<'p, R> {
-    /// Returns the pin of a hold `pager`'s log already counts at `at`.
-    pub(super) fn new(pager: &'p Pager<R>, at: Lsn) -> Self {
-        LogPin { pager, at }
-    }
-
-    /// Returns the LSN the log is held from.
-    pub(super) fn at(&self) -> Lsn {
-        self.at
-    }
-}
-
-impl<R: Runtime> Drop for LogPin<'_, R> {
-    fn drop(&mut self) {
-        self.pager.log().unpin(self.at);
-    }
-}
-
 impl<R: Runtime> std::fmt::Debug for Pager<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
@@ -307,33 +276,6 @@ pub(super) fn parent(path: &str) -> &str {
         Some((dir, _)) => dir,
         None => "",
     }
-}
-
-/// Returns `SegmentSize` when the segment size is not a positive multiple of the log block.
-pub(super) fn check_options(o: &Options) -> Result<(), OpenError> {
-    let block = o.log_block as usize;
-    assert!(
-        valid_page_size(o.page_size),
-        "page size {} is not allowed",
-        o.page_size
-    );
-    assert!(
-        block >= 64 && block.is_power_of_two() && AlignedBuf::ALIGN.is_multiple_of(block),
-        "log block {block} must be a power of two from 64 that divides {}",
-        AlignedBuf::ALIGN
-    );
-    if o.segment_size == 0 || !o.segment_size.is_multiple_of(block as u64) {
-        return Err(OpenError::SegmentSize(o.segment_size));
-    }
-    assert!(o.threads >= 1, "at least one thread uses the pool");
-    let serves = o.pool_frames / LATCHES_PER_THREAD;
-    assert!(
-        serves >= o.threads,
-        "a pool of {} frames serves at most {serves} threads, not {}",
-        o.pool_frames,
-        o.threads
-    );
-    Ok(())
 }
 
 /// A shared latch on a resident page.
@@ -358,16 +300,27 @@ impl Deref for PageShared<'_> {
 
 /// The exclusive latch on a resident page, through which it changes.
 pub struct PageExclusive<'a, R: Runtime> {
-    pub(super) pager: &'a Pager<R>,
     /// Taken only by the drop.
-    pub(super) g: Option<pages::Exclusive<'a>>,
-    /// Whether the frame is a reservation's blank one.
-    pub(super) blank: bool,
+    held: Option<Held<'a, R>>,
+    kind: Kind,
+}
+
+/// Where the bytes under an exclusive latch came from: whether its next change starts a chain,
+/// and what its drop undoes.
+#[derive(Clone, Copy)]
+enum Kind {
+    /// The page as read in or as last changed.
+    Latched,
+    /// A reservation's blank frame no allocation has committed, with the refusal it replaced.
+    Blank { prior: Option<Damage> },
+    /// A damaged page overwritten unread: its next change starts a chain, and its drop before
+    /// one refuses the page again.
+    Overwriting,
 }
 
 impl<R: Runtime> std::fmt::Debug for PageExclusive<'_, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.latch().fmt(f)
+        self.held().g.fmt(f)
     }
 }
 
@@ -375,38 +328,30 @@ impl<R: Runtime> Deref for PageExclusive<'_, R> {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
-        self.latch()
+        self.held()
     }
 }
 
 impl<'a, R: Runtime> PageExclusive<'a, R> {
-    pub(crate) fn of(pager: &'a Pager<R>, g: pages::Exclusive<'a>) -> Self {
-        PageExclusive {
-            pager,
-            g: Some(g),
-            blank: false,
-        }
+    fn held(&self) -> &Held<'a, R> {
+        self.held.as_ref().expect("held until the drop")
     }
 
-    fn latch(&self) -> &pages::Exclusive<'a> {
-        self.g.as_ref().expect("held until the drop")
-    }
-
-    pub(crate) fn inner(&mut self) -> &mut pages::Exclusive<'a> {
-        self.g.as_mut().expect("held until the drop")
+    fn held_mut(&mut self) -> &mut Held<'a, R> {
+        self.held.as_mut().expect("held until the drop")
     }
 
     pub fn pid(&self) -> Pid {
-        Pid(self.latch().pid())
+        self.held().pid()
     }
 
     /// Change the page through `f`, which sees a copy, and log the bytes it changed.
     ///
     /// Returns the LSN of the record, or the LSN the next record gets if nothing changed.
     pub fn update(&mut self, f: impl FnOnce(&mut [u8])) -> Lsn {
-        let mut copy = self.latch().to_vec();
+        let mut copy = self.to_vec();
         f(&mut copy);
-        let edits = diff(self.latch(), &copy);
+        let edits = diff(self, &copy);
         self.change(edits)
     }
 
@@ -414,8 +359,245 @@ impl<'a, R: Runtime> PageExclusive<'a, R> {
     ///
     /// Panics if an edit writes the page's LSN or checksum or past its end.
     pub fn change(&mut self, edits: Vec<Edit>) -> Lsn {
+        let pager = self.held().pager;
+        pager.apply(&mut [self], vec![edits], None)
+    }
+}
+
+impl<R: Runtime> Drop for PageExclusive<'_, R> {
+    /// Undo a frame no logged change took over: evict a reservation's blank frame and refuse the
+    /// page again as before it, or refuse a damaged page overwritten unread.
+    fn drop(&mut self) {
+        let Some(held) = self.held.take() else {
+            return;
+        };
+        match self.kind {
+            Kind::Latched => {}
+            Kind::Blank { prior } => held.unblank(prior),
+            Kind::Overwriting => {
+                held.pager.refuse_latched(held, Damage::Checksum);
+            }
+        }
+    }
+}
+
+/// An exclusive latch taken without reading the page in, resident or not. Only pager.rs writes
+/// through it.
+pub(crate) struct Held<'a, R: Runtime> {
+    pager: &'a Pager<R>,
+    g: pages::Exclusive<'a>,
+}
+
+impl<R: Runtime> Deref for Held<'_, R> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.g
+    }
+}
+
+impl<'a, R: Runtime> Held<'a, R> {
+    pub(crate) fn pid(&self) -> Pid {
+        Pid(self.g.pid())
+    }
+
+    pub(crate) fn resident(&self) -> bool {
+        self.g.resident()
+    }
+
+    /// Returns the latch as the guard a logged change goes through.
+    ///
+    /// Panic if the page is not resident.
+    fn latched(self) -> PageExclusive<'a, R> {
+        assert!(
+            self.resident(),
+            "a logged change applies to a resident page"
+        );
+        PageExclusive {
+            held: Some(self),
+            kind: Kind::Latched,
+        }
+    }
+
+    /// Fill the frame with `buf`, the page as read from the file.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "permanent: the page-in writer clippy.toml admits"
+    )]
+    fn read_in(&mut self, buf: &[u8]) {
+        self.g.write(0, buf);
+    }
+
+    /// Install `image`, a logged full-page image, as the page at `lsn`.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "permanent: the replay writer of a logged image clippy.toml admits"
+    )]
+    fn install_image(&mut self, image: &[u8], lsn: Lsn) {
+        assert_eq!(
+            self.pager.page_size,
+            image.len(),
+            "a page image is one page"
+        );
+        self.g.write(0, image);
+        let (at, field) = page::lsn_field(lsn);
+        self.g.write(at, &field);
+    }
+
+    /// Apply `edits` to the page and give it `lsn`, the LSN of the record logging them.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "permanent: the writer of a logged or replayed change clippy.toml admits"
+    )]
+    fn apply_change(&mut self, edits: &[Edit], lsn: Lsn) {
+        for e in edits {
+            self.g.write(e.offset as usize, &e.bytes);
+        }
+        let (at, field) = page::lsn_field(lsn);
+        self.g.write(at, &field);
+    }
+
+    /// Returns the guard of a reservation's blank frame: the page with `header` and zero
+    /// contents, standing in for `prior`, its refusal before.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "permanent: the blank-frame writer clippy.toml admits"
+    )]
+    fn blank(mut self, header: &[u8], prior: Option<Damage>) -> PageExclusive<'a, R> {
+        self.pager.make_room(self.pid());
+        let mut blank = vec![0; self.pager.page_size];
+        blank[FIRST_EDITABLE..HEADER_LEN].copy_from_slice(header);
+        self.g.write(0, &blank);
+        PageExclusive {
+            held: Some(self),
+            kind: Kind::Blank { prior },
+        }
+    }
+
+    /// Returns the guard of a damaged page overwritten unread, its frame zero unless resident.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "permanent: the overwrite writer clippy.toml admits"
+    )]
+    fn overwrite(mut self) -> PageExclusive<'a, R> {
+        if !self.resident() {
+            self.pager.make_room(self.pid());
+            self.g.write(0, &vec![0; self.pager.page_size]);
+        }
+        PageExclusive {
+            held: Some(self),
+            kind: Kind::Overwriting,
+        }
+    }
+
+    /// Returns the guard of the page holding `copy`, the file's copy a settle changes from.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "permanent: the settle's restore writer clippy.toml admits"
+    )]
+    fn restore_copy(mut self, copy: &[u8]) -> PageExclusive<'a, R> {
+        if !self.resident() {
+            self.pager.make_room(self.pid());
+        }
+        self.g.write(0, copy);
+        self.latched()
+    }
+
+    /// Evict a reservation's blank frame no allocation committed, and refuse the page again with
+    /// `prior`.
+    fn unblank(self, prior: Option<Damage>) {
+        let pid = self.pid();
+        let mut m = self.pager.own_meta();
+        if !m.blanked.remove(&pid) {
+            return;
+        }
+        if let Some(damage) = prior {
+            m.damaged.insert(pid, damage);
+        }
+        m.reserved.remove(&pid);
+        drop(m);
         let pager = self.pager;
-        pager.apply(&mut [self.inner()], vec![edits], None)
+        self.g.evict();
+        pager.unreserve(pid);
+    }
+}
+
+impl<R: Runtime> Pager<R> {
+    /// Returns the exclusive latch on `pid`, a free page a reservation holds, without reading the
+    /// file: when not resident it is read in with `header` and zero contents, and no longer
+    /// refused. The latch's drop undoes both unless an allocation of `pid` committed.
+    pub(super) fn latch_blank(&self, pid: Pid, header: &[u8]) -> PageExclusive<'_, R> {
+        let held = self.hold(pid);
+        self.check_bound();
+        if held.resident() {
+            return held.latched();
+        }
+        let refusal = {
+            let mut m = self.own_meta();
+            let refusal = m.damaged.remove(&pid);
+            m.blanked.insert(pid);
+            refusal
+        };
+        held.blank(header, refusal)
+    }
+
+    /// Returns the exclusive latch on `pid`, damaged, over a blank frame unless resident, and no
+    /// longer refused. Its next change logs an unchained image; its drop before one refuses the
+    /// page again.
+    pub(super) fn latch_overwritten(&self, pid: Pid) -> PageExclusive<'_, R> {
+        let g = self.hold(pid).overwrite();
+        self.own_meta().damaged.remove(&pid);
+        g
+    }
+
+    /// Returns the exclusive latch on `pid` holding `copy`, the file's copy of a page refused as
+    /// stale, and no longer refused.
+    pub(super) fn latch_restored(&self, pid: Pid, copy: &[u8]) -> PageExclusive<'_, R> {
+        let g = self.hold(pid).restore_copy(copy);
+        self.own_meta().damaged.remove(&pid);
+        g
+    }
+
+    /// Read `pid` in for replay from the file's copy. Returns why the copy cannot be read in,
+    /// leaving the page not resident.
+    ///
+    /// Preconditions: `pid` is not resident.
+    pub(super) fn replay_page_in(&self, pid: Pid) -> Option<Damage> {
+        let mut g = self.hold(pid);
+        self.make_room(pid);
+        let failed = match self.read_disk(pid) {
+            Ok((buf, Verdict::Valid | Verdict::Blank)) => {
+                let past = Damage::past_log_end(page::lsn(&buf), self.file_end(pid));
+                if past.is_none() {
+                    g.read_in(&buf);
+                }
+                past
+            }
+            Ok((_, Verdict::Corrupt)) => Some(Damage::Checksum),
+            Err(d) => Some(d),
+        };
+        if failed.is_some() {
+            self.unreserve(pid);
+        }
+        failed
+    }
+
+    /// Install `image`, the logged full-page image at `lsn`, as page `pid`.
+    pub(super) fn replay_image(&self, pid: Pid, image: &[u8], lsn: Lsn) {
+        let mut g = self.hold(pid);
+        if !g.resident() {
+            self.make_room(pid);
+        }
+        g.install_image(image, lsn);
+    }
+
+    /// Apply `edits`, the logged change at `lsn`, to page `pid`.
+    ///
+    /// Preconditions: `pid` is resident.
+    pub(super) fn replay_change(&self, pid: Pid, edits: &[Edit], lsn: Lsn) {
+        let mut g = self.hold(pid);
+        assert!(g.resident(), "a replayed change applies to a resident page");
+        g.apply_change(edits, lsn);
     }
 }
 
@@ -449,11 +631,15 @@ impl<'a, R: Runtime> PageOptimistic<'a, R> {
     }
 
     /// Take the exclusive latch if no exclusive latch was taken since this read began.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "permanent: the optimistic upgrade clippy.toml admits"
+    )]
     pub fn upgrade(self) -> Option<PageExclusive<'a, R>> {
         let pager = self.pager;
         let g = self.o.upgrade()?;
         pager.check_bound();
-        Some(PageExclusive::of(pager, g))
+        Some(Held { pager, g }.latched())
     }
 }
 
@@ -490,9 +676,8 @@ impl<R: Runtime> Pager<R> {
                 damaged: BTreeMap::new(),
                 records: Default::default(),
                 groups: bitmap_groups,
-                overwritten: BTreeSet::new(),
                 reserved: BTreeSet::new(),
-                blanked: BTreeMap::new(),
+                blanked: BTreeSet::new(),
                 recovered: Lsn(0),
                 map: None,
                 wrote: Vec::new(),
@@ -565,7 +750,7 @@ impl<R: Runtime> Pager<R> {
             log_damage_full: false,
         };
         let pager = Pager::assemble(rt, options, header, 1, data);
-        pager.meta().gate = Gate::Armed(Expected::default());
+        pager.own_meta().gate = Gate::Armed(Expected::default());
         let claimed = {
             let mut segments = pager.segments.lock(&pager.rt);
             pager.io(|d| segments.claim(d))
@@ -662,7 +847,7 @@ impl<R: Runtime> Pager<R> {
     /// recovery kept, or fail with the map page refused.
     pub(super) fn arm(&self) -> super::recovery::Armed {
         let armed = self.map_entries().map_err(Some).and_then(|folded| {
-            let end = self.meta().recovered;
+            let end = self.own_meta().recovered;
             let (_pin, mut img) = self.load_log().map_err(|_| None)?;
             let last = retained(&mut img, end).map_err(|_| None)?;
             let mut expected = Expected::new(folded);
@@ -671,7 +856,7 @@ impl<R: Runtime> Pager<R> {
             }
             Ok(expected)
         });
-        let mut m = self.meta();
+        let mut m = self.own_meta();
         match armed {
             Ok(expected) => {
                 m.gate = Gate::Armed(expected);
@@ -695,10 +880,14 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns the pages refused so far, each with what is wrong with it.
     pub(crate) fn damaged(&self) -> BTreeMap<Pid, Damage> {
-        self.meta().damaged.clone()
+        self.own_meta().damaged.clone()
     }
 
     pub(crate) fn meta(&self) -> MutexGuard<'_, Meta> {
+        self.own_meta()
+    }
+
+    fn own_meta(&self) -> MutexGuard<'_, Meta> {
         self.meta.lock(&self.rt)
     }
 
@@ -717,7 +906,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     fn refused(&self, pid: Pid) -> Result<(), PageError> {
-        match self.meta().damaged.get(&pid) {
+        match self.own_meta().damaged.get(&pid) {
             Some(&damage) => Err(PageError { pid, damage }),
             None => Ok(()),
         }
@@ -733,9 +922,27 @@ impl<R: Runtime> Pager<R> {
                 self.check_bound();
                 return Ok(PageShared { g });
             }
-            if let Some(g) = self.resident(pid)? {
-                return Ok(PageShared { g: g.share() });
+            if let Some(held) = self.resident(pid)? {
+                return Ok(PageShared { g: held.g.share() });
             }
+        }
+    }
+
+    /// Returns a shared latch on page `pid` if it is resident, reading nothing.
+    pub(crate) fn shared_resident(&self, pid: Pid) -> Option<PageShared<'_>> {
+        let g = self.mem.lock_shared(pid.0, &self.rt)?;
+        Some(PageShared { g })
+    }
+
+    /// Returns the exclusive latch on page `pid` without reading it in.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "permanent: the exclusive latch clippy.toml admits, which only pager.rs writes through"
+    )]
+    pub(crate) fn hold(&self, pid: Pid) -> Held<'_, R> {
+        Held {
+            pager: self,
+            g: self.mem.lock_exclusive(pid.0, &self.rt),
         }
     }
 
@@ -743,8 +950,8 @@ impl<R: Runtime> Pager<R> {
     pub fn exclusive(&self, pid: Pid) -> Result<PageExclusive<'_, R>, PageError> {
         assert!(pid >= Pid::FIRST_DATA, "a change writes a file header page");
         loop {
-            if let Some(g) = self.resident(pid)? {
-                return Ok(PageExclusive::of(self, g));
+            if let Some(held) = self.resident(pid)? {
+                return Ok(held.latched());
             }
         }
     }
@@ -808,14 +1015,14 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns the exclusive latch on `pid` with the page resident, or `None` if it was found
     /// damaged by another thread meanwhile and the caller should look again.
-    fn resident(&self, pid: Pid) -> Result<Option<pages::Exclusive<'_>>, PageError> {
+    fn resident(&self, pid: Pid) -> Result<Option<Held<'_, R>>, PageError> {
         self.refused(pid)?;
-        let mut g = self.mem.lock_exclusive(pid.0, &self.rt);
+        let mut g = self.hold(pid);
         self.check_bound();
         if g.resident() {
             return Ok(Some(g));
         }
-        if self.meta().damaged.contains_key(&pid) {
+        if self.own_meta().damaged.contains_key(&pid) {
             return Ok(None);
         }
         self.make_room(pid);
@@ -833,7 +1040,7 @@ impl<R: Runtime> Pager<R> {
             return Err(self.refuse_latched(g, damage));
         }
         let (buf, _) = read.unwrap();
-        g.write(0, &buf);
+        g.read_in(&buf);
         Ok(Some(g))
     }
 
@@ -845,7 +1052,7 @@ impl<R: Runtime> Pager<R> {
     pub(crate) fn lost_write(&self, pid: Pid, found: Lsn, image: Option<&[u8]>) -> Option<Damage> {
         let expected = match image {
             Some(image) => page::lsn(image),
-            None => self.meta().gate.expected(pid)?,
+            None => self.own_meta().gate.expected(pid)?,
         };
         (found < expected).then_some(Damage::Stale { expected, found })
     }
@@ -860,21 +1067,21 @@ impl<R: Runtime> Pager<R> {
     /// lock.
     #[doc(hidden)]
     pub fn damage(&self, pid: Pid, damage: Damage) -> PageError {
-        self.refuse_latched(self.mem.lock_exclusive(pid.0, &self.rt), damage)
+        self.refuse_latched(self.hold(pid), damage)
     }
 
     /// Refuse the page under `latch` as [`Pager::damage`] does, for a caller that judged it
     /// damaged under that latch.
     ///
     /// Preconditions: the caller holds neither the log lock nor the meta lock.
-    pub(super) fn refuse_latched(&self, latch: pages::Exclusive<'_>, damage: Damage) -> PageError {
-        let pid = Pid(latch.pid());
+    pub(super) fn refuse_latched(&self, latch: Held<'_, R>, damage: Damage) -> PageError {
+        let pid = latch.pid();
         if latch.resident() && self.writes_refused(pid) {
             self.write_out(pid, &latch);
         }
         let logged = self.publish_refusal(&latch, damage);
         if latch.resident() {
-            latch.evict();
+            latch.g.evict();
         } else {
             drop(latch);
         }
@@ -891,13 +1098,13 @@ impl<R: Runtime> Pager<R> {
         if self.is_quarantined(Quarantine::Database) {
             return false;
         }
-        let m = self.meta();
+        let m = self.own_meta();
         m.changed.contains(&pid) && matches!(m.gate, Gate::Armed(_))
     }
 
     /// Stop counting `pid` as resident.
     pub(crate) fn unreserve(&self, pid: Pid) {
-        let mut m = self.meta();
+        let mut m = self.own_meta();
         if let Some(i) = m.resident.iter().position(|p| *p == pid) {
             m.resident.swap_remove(i);
         }
@@ -916,7 +1123,7 @@ impl<R: Runtime> Pager<R> {
     /// again under one.
     pub(crate) fn file_end(&self, pid: Pid) -> Lsn {
         let (word, bit) = ((pid.0 / 64) as usize, pid.0 % 64);
-        let m = self.meta();
+        let m = self.own_meta();
         if m.wrote.get(word).is_some_and(|w| w >> bit & 1 == 1) {
             drop(m);
             return self.log().next_lsn();
@@ -937,11 +1144,15 @@ impl<R: Runtime> Pager<R> {
     /// Count `pid` as resident, first evicting pages by the clock while the pool is full.
     ///
     /// Panics when every frame stays latched for longer than the pool's stall bound.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "permanent: eviction's try-lock clippy.toml admits"
+    )]
     pub(crate) fn make_room(&self, pid: Pid) {
         let mut since = None;
         loop {
             let victim = {
-                let mut m = self.meta();
+                let mut m = self.own_meta();
                 if m.resident.len() < self.pool_frames {
                     m.resident.push(pid);
                     return;
@@ -980,7 +1191,7 @@ impl<R: Runtime> Pager<R> {
 
     fn evict(&self, g: pages::Exclusive<'_>) {
         let pid = Pid(g.pid());
-        if self.meta().changed.contains(&pid) {
+        if self.own_meta().changed.contains(&pid) {
             self.write_out(pid, &g);
         }
         g.evict();
@@ -991,7 +1202,7 @@ impl<R: Runtime> Pager<R> {
         let staged = self.staged(pid, bytes);
         let offset = pid.0 * self.page_size as u64;
         self.io(|d| d.write_all(vec![(self.data, offset, staged)]));
-        let mut m = self.meta();
+        let mut m = self.own_meta();
         m.changed.remove(&pid);
         m.written.insert(pid);
         m.after_write.remove(&pid);
@@ -1018,22 +1229,25 @@ impl<R: Runtime> Pager<R> {
     /// Returns the LSN of `tail`, or else of the last page record.
     pub(crate) fn apply(
         &self,
-        guards: &mut [&mut pages::Exclusive<'_>],
+        guards: &mut [&mut PageExclusive<'_, R>],
         edits: Vec<Vec<Edit>>,
         tail: Option<Record>,
     ) -> Lsn {
-        self.apply_freeing(guards, edits, &[], tail)
+        self.apply_freeing(guards, edits, None, tail)
     }
 
-    /// Apply as [`Pager::apply`] does, and drop the damage recorded of `freed`, the pages the
-    /// batch frees, logging that in the batch before `tail`.
-    pub(crate) fn apply_freeing(
+    /// Apply as [`Pager::apply`] does, for the allocation `new` when given: each page it
+    /// allocates is no longer blank and its record starts a chain, and the damage recorded of
+    /// each page it frees is dropped, logged in the batch before `tail`.
+    pub(super) fn apply_freeing(
         &self,
-        guards: &mut [&mut pages::Exclusive<'_>],
+        guards: &mut [&mut PageExclusive<'_, R>],
         edits: Vec<Vec<Edit>>,
-        freed: &[Pid],
+        new: Option<&Reservation<'_, R>>,
         tail: Option<Record>,
     ) -> Lsn {
+        let allocated: Vec<Pid> = new.map(|n| n.allocated().collect()).unwrap_or_default();
+        let freed = new.map_or(&[][..], Reservation::freed);
         let size = self.page_size;
         for e in edits.iter().flatten() {
             let at = e.offset as usize;
@@ -1045,23 +1259,26 @@ impl<R: Runtime> Pager<R> {
         }
         let mut log = self.log();
         let mut last = log.next_lsn();
-        let mut m = self.meta();
+        let mut m = self.own_meta();
+        for pid in &allocated {
+            m.blanked.remove(pid);
+        }
         for (g, edits) in guards.iter_mut().zip(edits) {
-            let pid = Pid(g.pid());
-            if edits.is_empty() && !m.overwritten.contains(&pid) {
+            let pid = g.pid();
+            let start = matches!(g.kind, Kind::Overwriting) || allocated.contains(&pid);
+            if edits.is_empty() && !start {
                 continue;
             }
             let prev = page::lsn(g);
             let lsn = log.next_lsn();
             let rewritten = m.dirty.contains_key(&pid) && !m.changed.contains(&pid);
-            for e in &edits {
-                g.write(e.offset as usize, &e.bytes);
-            }
-            let record = if m.overwritten.remove(&pid) {
+            g.held_mut().apply_change(&edits, lsn);
+            let record = if start {
+                g.kind = Kind::Latched;
                 Record::Image {
                     pid,
                     prev: Lsn::UNCHAINED,
-                    page: page::with_lsn(g, lsn),
+                    page: g.to_vec(),
                 }
             } else if m.changed.contains(&pid)
                 || self.atomic_page_writes
@@ -1072,11 +1289,9 @@ impl<R: Runtime> Pager<R> {
                 Record::Image {
                     pid,
                     prev,
-                    page: page::with_lsn(g, lsn),
+                    page: g.to_vec(),
                 }
             };
-            let (at, field) = page::lsn_field(lsn);
-            g.write(at, &field);
             if let Record::Image { prev, .. } = record {
                 m.images.insert(pid, lsn);
                 let met = if prev == Lsn::UNCHAINED {
@@ -1116,7 +1331,7 @@ impl<R: Runtime> Pager<R> {
         if let Some(Record::MapRoot { root, height }) = &tail {
             let lsn = guards
                 .iter()
-                .find(|g| Pid(g.pid()) == *root)
+                .find(|g| g.pid() == *root)
                 .map(|g| page::lsn(g));
             m.map = Some(MapRoot {
                 root: *root,
@@ -1162,9 +1377,7 @@ impl<R: Runtime> Pager<R> {
         F: FnOnce(&mut [&mut [u8]]),
     {
         let edits = edits_by(guards.iter().map(|g| &***g), f);
-        let mut inner: Vec<&mut pages::Exclusive<'_>> =
-            guards.iter_mut().map(|g| g.inner()).collect();
-        self.apply(&mut inner, edits, None)
+        self.apply(guards, edits, None)
     }
 
     /// Change several pages under their exclusive latches through `f`, as
@@ -1177,18 +1390,7 @@ impl<R: Runtime> Pager<R> {
         F: FnOnce(&mut [&mut [u8]]),
     {
         let edits = edits_by(guards.iter().map(|g| &***g), f);
-        let mut inner: Vec<&mut pages::Exclusive<'_>> =
-            guards.iter_mut().map(|g| g.inner()).collect();
-        self.apply(&mut inner, edits, Some(self.commit_record(xid)))
-    }
-
-    fn commit_record(&self, xid: u64) -> Record {
-        let wall_nanos = self
-            .rt
-            .wall()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
-        Record::Commit { xid, wall_nanos }
+        self.apply(guards, edits, Some(self.commit_record(xid)))
     }
 
     /// Run `f` with exclusive latches on `pids`, taken in page order, passing them in the order
@@ -1196,7 +1398,7 @@ impl<R: Runtime> Pager<R> {
     pub(crate) fn with_latched<'s, T>(
         &'s self,
         pids: &[Pid],
-        f: impl FnOnce(&'s Self, &mut [&mut pages::Exclusive<'s>]) -> T,
+        f: impl FnOnce(&'s Self, &mut [&mut PageExclusive<'s, R>]) -> T,
     ) -> Result<T, PageError> {
         self.with_latched_by(pids, |pid| self.exclusive(pid), f)
     }
@@ -1206,7 +1408,7 @@ impl<R: Runtime> Pager<R> {
         &'s self,
         pids: &[Pid],
         latch: impl Fn(Pid) -> Result<PageExclusive<'s, R>, PageError>,
-        f: impl FnOnce(&'s Self, &mut [&mut pages::Exclusive<'s>]) -> T,
+        f: impl FnOnce(&'s Self, &mut [&mut PageExclusive<'s, R>]) -> T,
     ) -> Result<T, PageError> {
         let distinct: BTreeSet<Pid> = pids.iter().copied().collect();
         assert_eq!(
@@ -1224,184 +1426,8 @@ impl<R: Runtime> Pager<R> {
         }
         let mut ordered: Vec<PageExclusive<'s, R>> =
             pids.iter().map(|p| held.remove(p).unwrap()).collect();
-        let mut refs: Vec<&mut pages::Exclusive<'s>> =
-            ordered.iter_mut().map(PageExclusive::inner).collect();
+        let mut refs: Vec<&mut PageExclusive<'s, R>> = ordered.iter_mut().collect();
         Ok(f(self, &mut refs))
-    }
-
-    /// Change `pids` through `f` as [`Pager::update`] does, and log the commit record of
-    /// transaction `xid` after the page records, in the same batch.
-    ///
-    /// Returns the LSN of the commit record; the commit is durable once the log is flushed past
-    /// it. Fails, logging nothing, if a page is damaged.
-    pub fn commit<F>(&self, xid: u64, pids: &[Pid], f: F) -> Result<Lsn, PageError>
-    where
-        F: FnOnce(&mut [&mut [u8]]),
-    {
-        self.resolve(self.commit_record(xid), pids, f)
-    }
-
-    /// Commit as [`Pager::commit`] does, the commit record recording `wall_nanos`.
-    pub fn commit_at<F>(
-        &self,
-        xid: u64,
-        wall_nanos: u64,
-        pids: &[Pid],
-        f: F,
-    ) -> Result<Lsn, PageError>
-    where
-        F: FnOnce(&mut [&mut [u8]]),
-    {
-        self.resolve(Record::Commit { xid, wall_nanos }, pids, f)
-    }
-
-    /// Change `pids` through `f` and log the abort record of transaction `xid`, as
-    /// [`Pager::commit`] does.
-    pub fn abort<F>(&self, xid: u64, pids: &[Pid], f: F) -> Result<Lsn, PageError>
-    where
-        F: FnOnce(&mut [&mut [u8]]),
-    {
-        self.resolve(Record::Abort { xid }, pids, f)
-    }
-
-    fn resolve<F>(&self, record: Record, pids: &[Pid], f: F) -> Result<Lsn, PageError>
-    where
-        F: FnOnce(&mut [&mut [u8]]),
-    {
-        self.with_latched(pids, |pager, guards| {
-            let edits = edits_by(guards.iter().map(|g| &***g), f);
-            pager.apply(guards, edits, Some(record))
-        })
-    }
-
-    /// Log a safe snapshot marker: `snapshot`, as the transactions layer encodes it, covering
-    /// every commit at or before `at`. Returns the marker's LSN; the marker is durable once the
-    /// log is flushed past it.
-    pub fn log_safe_snapshot(&self, at: Position, snapshot: &[u8]) -> Lsn {
-        self.log().append(&Record::SafeSnapshot {
-            at,
-            snapshot: snapshot.to_vec(),
-        })
-    }
-
-    /// Log that transaction ids below `next` are reserved.
-    pub fn reserve_xids(&self, next: u64) -> Lsn {
-        self.log().append(&Record::XidAllocation { next })
-    }
-
-    /// Returns the LSN below which every record is durable.
-    pub fn durable(&self) -> Lsn {
-        self.log().durable()
-    }
-
-    /// Write and force every record appended so far.
-    ///
-    /// Postcondition: every record appended before the call is durable.
-    pub fn flush_log(&self) {
-        let lsn = self.log().next_lsn();
-        self.force_below(lsn);
-    }
-
-    /// Returns the LSN the next record appended takes.
-    pub(crate) fn appended(&self) -> Lsn {
-        self.log().next_lsn()
-    }
-
-    /// Write and force every record below `end`.
-    pub fn flush_below(&self, end: Lsn) {
-        self.force_below(end);
-    }
-
-    /// Wait until the record at `lsn` is durable, and return its commit position.
-    ///
-    /// The first waiter that finds no batch being forced leads: it takes every record appended
-    /// so far as one batch, writes and forces it. Waiters whose record that batch holds return
-    /// with it; the rest wait for the next leader.
-    ///
-    /// Panics if no record was appended at `lsn`.
-    pub fn wait_durable(&self, lsn: Lsn) -> Position {
-        assert!(
-            lsn < self.log().next_lsn(),
-            "no record was appended at {lsn:?}"
-        );
-        self.force_below(Lsn(lsn.0 + 1));
-        self.position(lsn)
-    }
-
-    /// Returns the commit position of the record at `lsn`.
-    pub fn position(&self, lsn: Lsn) -> Position {
-        Position {
-            epoch: self.log().epoch,
-            lsn,
-        }
-    }
-
-    /// Returns the number of log batches forced since the pager opened.
-    pub fn batches(&self) -> u64 {
-        self.log().batches()
-    }
-
-    /// Return once every record below `lsn` is durable, leading a flush when no other thread
-    /// is. A waiter rechecks durability between its attempts to lead.
-    pub(super) fn force_below(&self, lsn: Lsn) {
-        loop {
-            if self.durable() >= lsn {
-                return;
-            }
-            let Some(mut segments) = self.segments.try_lock() else {
-                self.rt.yield_now();
-                continue;
-            };
-            if self.durable() >= lsn {
-                return;
-            }
-            let Some(batch) = self.log().take() else {
-                return;
-            };
-            self.io(|d| segments.write(d, &batch));
-            let due = self.log().forced(&batch);
-            drop(segments);
-            if due {
-                self.wake_checkpointer();
-            }
-        }
-    }
-
-    /// Bound what [`Pager::recycle_log`] removes by what `hook` says the archive holds.
-    pub fn set_archive(&self, hook: ArchiveHook) {
-        *self.archive.lock(&self.rt) = Some(hook);
-    }
-
-    /// Returns the log as its segments hold it now, pinned from its first segment while the pin
-    /// lives, or the path and failure of what it cannot read.
-    pub(crate) fn load_log(&self) -> Result<PinnedLog<'_, R>, (String, IoError)> {
-        let mut segments = self.segments.lock(&self.rt);
-        let img = self.io(|d| segments.try_load(d))?;
-        let at = img.first().unwrap_or(Lsn(0));
-        self.log().pin(at);
-        Ok((LogPin { pager: self, at }, img))
-    }
-
-    /// Write the next header copy, pointing at the checkpoint of `checkpoint` unless the header
-    /// already names a later one. The header's bitmap group count only rises.
-    pub(super) fn write_header(&self, checkpoint: Option<(Lsn, u64)>) {
-        let mut h = self.header.lock(&self.rt);
-        let (header, copy) = &mut *h;
-        if let Some((at, groups)) = checkpoint {
-            header.bitmap_groups = header.bitmap_groups.max(groups);
-            if at < header.checkpoint {
-                return;
-            }
-            header.checkpoint = at;
-        }
-        header.seq += 1;
-        *copy = 1 - *copy;
-        let bytes = header.encode(*copy);
-        let offset = *copy * self.page_size as u64;
-        self.io(|d| {
-            d.write_all(vec![(self.data, offset, AlignedBuf::from_slice(&bytes))]);
-            d.sync_all(&[self.data]);
-        });
     }
 
     /// Write every changed page, take a checkpoint, and close the data file and every log segment.
@@ -1422,31 +1448,14 @@ impl<R: Runtime> Pager<R> {
         });
     }
 
-    /// Returns the page the file header names as the catalog's root, `Pid(0)` before one is set.
-    pub fn catalog_root(&self) -> Pid {
-        self.header.lock(&self.rt).0.catalog_root
-    }
-
-    /// Force the log, then write and force a header copy naming `root` as the catalog's root.
-    pub fn set_catalog_root(&self, root: Pid) {
-        self.flush_log();
-        self.header.lock(&self.rt).0.catalog_root = root;
-        self.write_header(None);
-    }
-
     /// Returns the wall-clock time of the runtime the pager runs on.
     pub fn wall(&self) -> SystemTime {
         self.rt.wall()
     }
-
-    /// Returns the LSN of the checkpoint record the file header names.
-    pub(crate) fn checkpoint_lsn(&self) -> Lsn {
-        self.header.lock(&self.rt).0.checkpoint
-    }
 }
 
 /// Returns the edits `f` makes to copies of `pages`.
-fn edits_by<'p, F>(pages: impl Iterator<Item = &'p [u8]>, f: F) -> Vec<Vec<Edit>>
+pub(super) fn edits_by<'p, F>(pages: impl Iterator<Item = &'p [u8]>, f: F) -> Vec<Vec<Edit>>
 where
     F: FnOnce(&mut [&mut [u8]]),
 {

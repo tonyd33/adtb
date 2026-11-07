@@ -1,3 +1,7 @@
+#![expect(
+    clippy::disallowed_methods,
+    reason = "permanent: tests the latch primitive itself"
+)]
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
 use loom::sync::Arc;

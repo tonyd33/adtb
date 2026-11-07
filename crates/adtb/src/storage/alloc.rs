@@ -259,9 +259,7 @@ impl<R: Runtime> Pager<R> {
                 r.pid
             );
         }
-        let mut inner: Vec<&mut adtb_sys::pages::Exclusive<'p>> =
-            guards.iter_mut().map(|g| g.inner()).collect();
-        self.allocating(&new, &mut inner, f, None)
+        self.allocating(&new, guards, f, None)
     }
 
     /// Mark and format the pages of `new`, apply `f` to the pages under `guards`, and log all of
@@ -270,7 +268,7 @@ impl<R: Runtime> Pager<R> {
     fn allocating<'p, F>(
         &'p self,
         new: &Reservation<'_, R>,
-        guards: &mut [&mut adtb_sys::pages::Exclusive<'p>],
+        guards: &mut [&mut PageExclusive<'p, R>],
         f: F,
         tail: Option<Record>,
     ) -> Result<Lsn, PageError>
@@ -298,7 +296,7 @@ impl<R: Runtime> Pager<R> {
         }
         let mut copies: Vec<Vec<u8>> = guards.iter().map(|g| g.to_vec()).collect();
         for (copy, g) in copies.iter_mut().zip(guards.iter()) {
-            if let Some(r) = new.pages.iter().find(|r| r.pid.0 == g.pid()) {
+            if let Some(r) = new.pages.iter().find(|r| r.pid == g.pid()) {
                 copy[FIRST_EDITABLE..HEADER_LEN]
                     .copy_from_slice(&page::header_edit(r.format, r.kind, r.owner, 0));
                 copy[HEADER_LEN..].fill(0);
@@ -334,21 +332,14 @@ impl<R: Runtime> Pager<R> {
             }
             edits.push(diff(map, &bits));
         }
-        {
-            let mut m = self.meta();
-            m.overwritten.extend(new.pages.iter().map(|r| r.pid));
-            for r in &new.pages {
-                m.blanked.remove(&r.pid);
-            }
-        }
-        let mut all: Vec<&mut adtb_sys::pages::Exclusive<'p>> = Vec::new();
+        let mut all: Vec<&mut PageExclusive<'p, R>> = Vec::new();
         for g in guards.iter_mut() {
             all.push(g);
         }
         for m in &mut maps {
-            all.push(m.inner());
+            all.push(m);
         }
-        let lsn = self.apply_freeing(&mut all, edits, &new.freed, tail);
+        let lsn = self.apply_freeing(&mut all, edits, Some(new), tail);
         if let Some(&g) = groups.last() {
             let mut m = self.meta();
             m.groups = m.groups.max(g + 1);
@@ -410,32 +401,6 @@ impl<R: Runtime> Pager<R> {
             );
         }
         Ok(out)
-    }
-
-    /// Returns the exclusive latch on `pid`, a free page a reservation holds, without reading the
-    /// file: when not resident it is read in with `header` and zero contents, and no longer
-    /// refused. The latch's drop undoes both unless an allocation of `pid` committed.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
-    pub(crate) fn latch_reserved(&self, pid: Pid, header: &[u8]) -> PageExclusive<'_, R> {
-        let mut g = self.mem.lock_exclusive(pid.0, &self.rt);
-        self.check_bound();
-        if g.resident() {
-            return PageExclusive::of(self, g);
-        }
-        {
-            let mut m = self.meta();
-            let refusal = m.damaged.remove(&pid);
-            m.blanked.insert(pid, refusal);
-        }
-        self.make_room(pid);
-        let mut blank = vec![0; self.page_size];
-        blank[FIRST_EDITABLE..HEADER_LEN].copy_from_slice(header);
-        g.write(0, &blank);
-        PageExclusive {
-            pager: self,
-            g: Some(g),
-            blank: true,
-        }
     }
 }
 
@@ -508,7 +473,17 @@ impl<'a, R: Runtime> Reservation<'a, R> {
     pub fn latch(&self, pid: Pid) -> PageExclusive<'a, R> {
         let r = self.reserved(pid);
         let header = page::header_edit(r.format, r.kind, r.owner, 0);
-        self.pager.latch_reserved(pid, &header)
+        self.pager.latch_blank(pid, &header)
+    }
+
+    /// Returns the pages this reservation allocates.
+    pub(super) fn allocated(&self) -> impl Iterator<Item = Pid> + '_ {
+        self.pages.iter().map(|r| r.pid)
+    }
+
+    /// Returns the pages this reservation frees.
+    pub(super) fn freed(&self) -> &[Pid] {
+        &self.freed
     }
 
     fn reserved(&self, pid: Pid) -> &Reserved {
@@ -531,35 +506,12 @@ impl<'a, R: Runtime> Reservation<'a, R> {
     }
 }
 
-impl<R: Runtime> Drop for PageExclusive<'_, R> {
-    /// Evict a reservation's blank frame no allocation committed, and refuse the page again as
-    /// before it.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
-    fn drop(&mut self) {
-        let Some(g) = self.g.take().filter(|_| self.blank) else {
-            return;
-        };
-        let pid = Pid(g.pid());
-        let mut m = self.pager.meta();
-        let Some(refusal) = m.blanked.remove(&pid) else {
-            return;
-        };
-        if let Some(damage) = refusal {
-            m.damaged.insert(pid, damage);
-        }
-        m.reserved.remove(&pid);
-        drop(m);
-        g.evict();
-        self.pager.unreserve(pid);
-    }
-}
-
 impl<R: Runtime> Drop for Reservation<'_, R> {
     #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn drop(&mut self) {
         let mut m = self.pager.meta();
         for r in &self.pages {
-            if !m.blanked.contains_key(&r.pid) {
+            if !m.blanked.contains(&r.pid) {
                 m.reserved.remove(&r.pid);
             }
         }

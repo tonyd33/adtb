@@ -639,6 +639,10 @@ impl<'a> Optimistic<'a> {
 }
 
 #[cfg(all(test, not(adtb_loom)))]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "permanent: tests the latch primitive itself"
+)]
 mod tests {
     use super::{PageMemory, PageState};
     use crate::runtime::{ThreadId, Threads};

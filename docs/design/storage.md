@@ -355,8 +355,15 @@ Invariants:
 
 - A page under a shared or exclusive latch is resident and is not
   evicted or written by the pager until the latch is released.
-- Only an exclusive latch changes a page. Releasing it after a change
-  increments the version; so does eviction.
+- A resident page's bytes change only by a logged change under its
+  exclusive latch, or by one of the writers in `storage/pager.rs`: a
+  page-in, recovery's replay of an image or a change, a reservation's
+  blank frame, an overwrite of a damaged page that the next logged
+  change starts a chain from, and a settle's restore of the file's
+  copy. No code outside `storage/pager.rs` holds a latch that can
+  write.
+- Releasing an exclusive latch after a change increments the version;
+  so does eviction.
 - The record of a change is appended while its page's exclusive latch
   is held, so the LSN order of one page's records is the order of its
   changes.

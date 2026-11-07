@@ -4,15 +4,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::Ordering;
 
-use adtb_sys::pages;
-
 use crate::mvcc::Settling;
 use crate::runtime::{Runtime, ThreadId};
 
 use super::block::{LogFinding, LogProblem};
 use super::log::Log;
 use super::page::{self, HEADER_LEN, PageKind};
-use super::pager::{Damage, PageError, PageExclusive, Pager};
+use super::pager::{Damage, Held, PageError, PageExclusive, Pager};
 use super::quarantine::Quarantine;
 use super::record::{Record, damage_of, damage_words};
 use super::{Lsn, Pid};
@@ -431,12 +429,8 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Postcondition: a reader that takes the latch next finds the page refused.
     #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
-    pub(super) fn publish_refusal(
-        &self,
-        latch: &pages::Exclusive<'_>,
-        damage: Damage,
-    ) -> Option<Lsn> {
-        let pid = Pid(latch.pid());
+    pub(super) fn publish_refusal(&self, latch: &Held<'_, R>, damage: Damage) -> Option<Lsn> {
+        let pid = latch.pid();
         let mut log = self.log();
         let whole = self.is_quarantined(Quarantine::Database);
         let mut m = self.meta();

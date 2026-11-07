@@ -838,7 +838,7 @@ impl<R: Runtime> Pager<R> {
                 if !visit(pid, &mut buf) {
                     return Err(BackupError::Stopped);
                 }
-                let held = self.mem.lock_shared(pid.0, &self.rt);
+                let held = self.shared_resident(pid);
                 if self.trusted(pid, &buf, held.as_deref(), mapped) {
                     return Ok(buf.to_vec());
                 }
@@ -853,7 +853,7 @@ impl<R: Runtime> Pager<R> {
         };
         // Reading the bitmap under this latch can deadlock with a writer latching in page order.
         let free = matches!(self.is_free(pid), Ok(true));
-        let g = self.mem.lock_exclusive(pid.0, &self.rt);
+        let g = self.hold(pid);
         let again = self.read_disk(pid);
         if let Ok((buf, _)) = &again
             && self.trusted(pid, buf, g.resident().then(|| &*g), mapped)

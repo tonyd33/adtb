@@ -269,34 +269,18 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns the exclusive latch on `pid`, over a blank page when it is damaged. The next change
-    /// to a blank page logs its whole image, which no earlier record need lead to.
+    /// to a blank page logs its whole image, which no earlier record need lead to; dropping the
+    /// latch before one refuses the page again.
     ///
     /// Fail on an I/O failure.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn latch_overwriting(&self, pid: Pid) -> Result<(PageExclusive<'_, R>, bool), PageError> {
         match self.exclusive(pid) {
             Ok(g) => Ok((g, false)),
             Err(e) if e.pid == pid && e.damage != Damage::Unreadable => {
-                let mut g = self.mem.lock_exclusive(pid.0, &self.rt);
-                if !g.resident() {
-                    self.make_room(pid);
-                    g.write(0, &vec![0; self.page_size]);
-                }
-                let mut m = self.meta();
-                m.damaged.remove(&pid);
-                m.overwritten.insert(pid);
-                drop(m);
-                Ok((PageExclusive::of(self, g), true))
+                Ok((self.latch_overwritten(pid), true))
             }
             Err(e) => Err(e),
         }
-    }
-
-    /// Refuse `pid` again after a change to the blank page [`Pager::latch_overwriting`] gave failed.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
-    fn undo_overwrite(&self, pid: Pid) {
-        self.damage(pid, Damage::Checksum);
-        self.meta().overwritten.remove(&pid);
     }
 
     /// Give `pid` the contents of `from` and free `from`, removing the mark on `release` if one is
@@ -335,20 +319,10 @@ impl<R: Runtime> Pager<R> {
             }
             set
         };
-        let done = self.update_all_with(new, &mut [&mut g, &mut marks_page], |p| {
+        let lsn = self.update_all_with(new, &mut [&mut g, &mut marks_page], |p| {
             p[0][FIRST_EDITABLE..].copy_from_slice(&contents[FIRST_EDITABLE..]);
             encode(p[1], &set);
-        });
-        let lsn = match done {
-            Ok(lsn) => lsn,
-            Err(e) => {
-                drop(g);
-                if blank {
-                    self.undo_overwrite(pid);
-                }
-                return Err(e);
-            }
-        };
+        })?;
         {
             let mut marks = self.marks.lock(&self.rt);
             if let Some(release) = &release {
@@ -392,7 +366,6 @@ impl<R: Runtime> Pager<R> {
 
     /// Change page `pid`, which [`Pager::read_stale`] returned refused, from the file's copy
     /// `copy` to `contents`, logging the change as one from that copy.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(crate) fn rewrite_stale(
         &self,
         pid: Pid,
@@ -403,13 +376,7 @@ impl<R: Runtime> Pager<R> {
         let mut g = match self.exclusive(pid) {
             Ok(g) => g,
             Err(e) if e.pid == pid && matches!(e.damage, Damage::Stale { .. }) => {
-                let mut g = self.mem.lock_exclusive(pid.0, &self.rt);
-                if !g.resident() {
-                    self.make_room(pid);
-                }
-                g.write(0, copy);
-                self.meta().damaged.remove(&pid);
-                PageExclusive::of(self, g)
+                self.latch_restored(pid, copy)
             }
             Err(e) => return Err(e),
         };
@@ -426,16 +393,10 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Fail, leaving `pid` as it was, if an allocation bitmap page cannot be read.
     pub fn scrap(&self, pid: Pid) -> Result<(), PageError> {
-        let (mut g, blank) = self.latch_overwriting(pid)?;
+        let (mut g, _) = self.latch_overwriting(pid)?;
         let mut new = self.reserve();
         new.free(pid);
-        if let Err(e) = self.update_all_with(new, &mut [&mut g], |p| p[0][HEADER_LEN] = 1) {
-            drop(g);
-            if blank {
-                self.undo_overwrite(pid);
-            }
-            return Err(e);
-        }
+        self.update_all_with(new, &mut [&mut g], |p| p[0][HEADER_LEN] = 1)?;
         self.write_out(pid, &g);
         Ok(())
     }

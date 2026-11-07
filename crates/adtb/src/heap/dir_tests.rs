@@ -68,10 +68,25 @@ fn set_map(pager: &Pager<OsRuntime>, root: Pid, map: Pid) {
         .unwrap();
 }
 
-/// Zero every byte of `pid` in memory, unlogged.
-fn zero(pager: &Pager<OsRuntime>, pid: Pid) {
-    let zeros = vec![0; pager.page_size()];
-    pager.exclusive(pid).unwrap().inner().write(0, &zeros);
+/// Point the one entry of `parent` that names `child` at `unwritten`, a page never written,
+/// which reads as zeros.
+fn redirect(pager: &Pager<OsRuntime>, parent: Pid, child: Pid, unwritten: Pid) {
+    const LOW: u64 = (1 << 48) - 1;
+    pager
+        .update(&[parent], |p| {
+            let at: Vec<usize> = (CONTENTS..p[0].len())
+                .step_by(8)
+                .filter(|&at| {
+                    let word = u64::from_le_bytes(p[0][at..at + 8].try_into().unwrap());
+                    word & LOW == child.0
+                })
+                .collect();
+            assert_eq!(1, at.len(), "{parent:?} names {child:?} once");
+            let word = u64::from_le_bytes(p[0][at[0]..at[0] + 8].try_into().unwrap());
+            let word = word & !LOW | unwritten.0;
+            p[0][at[0]..at[0] + 8].copy_from_slice(&word.to_le_bytes());
+        })
+        .unwrap();
 }
 
 fn refused<T>(pid: Pid) -> Result<T, PageError> {
@@ -265,7 +280,7 @@ fn an_all_zero_page_an_entry_names_stops_a_holder_walk_and_refuses_the_page_nami
         owned.len(),
         "a root at level 1, two leaves and three pages"
     );
-    zero(&pager, owned[2]);
+    redirect(&pager, s.root(), owned[2], Pid(1 << 20));
     let damaged = pager.damaged();
     assert!(
         matches!(s.held(&pager), Err(Stopped::Shape)),
@@ -276,7 +291,7 @@ fn an_all_zero_page_an_entry_names_stops_a_holder_walk_and_refuses_the_page_nami
 
     let s = space(&pager, 1);
     let page = s.pages(&pager).unwrap()[0];
-    zero(&pager, page);
+    redirect(&pager, s.root(), page, Pid((1 << 20) + 1));
     assert_eq!(
         refused(s.root()),
         s.find(&pager, 1, Arrangement::Slotted, 1)
@@ -284,7 +299,7 @@ fn an_all_zero_page_an_entry_names_stops_a_holder_walk_and_refuses_the_page_nami
 
     for (what, at, blamed) in [("a map leaf", 3, 1), ("a map root", 1, 0)] {
         let (heap, map) = heap_over_two_leaves(&pager, 20 + at as u32);
-        zero(&pager, map[at]);
+        redirect(&pager, map[blamed], map[at], Pid((1 << 20) + 2 + at as u64));
         let damaged = pager.damaged();
         let held = heap.held_pages(&pager);
         assert!(matches!(held, Err(Stopped::Shape)), "{what}: {held:?}");
