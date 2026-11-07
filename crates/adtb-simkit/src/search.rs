@@ -19,7 +19,7 @@ pub type Files = BTreeMap<String, Vec<u8>>;
 /// How many times the images a crash search draws around a rename, where the order of names counts.
 const RENAME_IMAGES: usize = 4;
 
-type Before = Arc<dyn Fn(&Op) -> Option<IoError> + Send + Sync>;
+type Before = Arc<dyn Fn(&Op, Option<&str>) -> Option<IoError> + Send + Sync>;
 type During = Box<dyn FnOnce() + Send>;
 type Eligible = Arc<dyn Fn(&Op, Option<&str>) -> bool + Send + Sync>;
 
@@ -29,6 +29,8 @@ pub enum Action {
     Fail,
     /// Run the closure, then submit the op.
     Run(During),
+    /// Complete a write as written without submitting it.
+    Lose,
 }
 
 impl std::fmt::Debug for Action {
@@ -36,6 +38,7 @@ impl std::fmt::Debug for Action {
         f.write_str(match self {
             Action::Fail => "Fail",
             Action::Run(_) => "Run",
+            Action::Lose => "Lose",
         })
     }
 }
@@ -47,6 +50,7 @@ struct Plan {
     names: Vec<&'static str>,
     at: Option<u64>,
     action: Option<Action>,
+    also: BTreeMap<u64, Action>,
     struck: Option<String>,
     write_or_sync: Option<WriteOrSync>,
     first_event: usize,
@@ -74,7 +78,7 @@ impl std::fmt::Debug for Hooked {
 
 impl Hooked {
     pub fn new(rt: &SimRuntime) -> Hooked {
-        let pass: Before = Arc::new(|_| None);
+        let pass: Before = Arc::new(|_, _| None);
         Hooked {
             rt: rt.clone(),
             before: Arc::new(Mutex::new(pass)),
@@ -86,7 +90,29 @@ impl Hooked {
         }
     }
 
+    /// Returns a hook on `rt`, a later process of the same simulation, that shares this hook's
+    /// failures, plan and numbering of eligible ops.
+    pub fn rebound(&self, rt: &SimRuntime) -> Hooked {
+        Hooked {
+            rt: rt.clone(),
+            before: self.before.clone(),
+            during: Arc::default(),
+            held: Arc::default(),
+            open: Arc::default(),
+            paths: Arc::default(),
+            plan: self.plan.clone(),
+        }
+    }
+
     pub fn fail_when(&self, before: impl Fn(&Op) -> Option<IoError> + Send + Sync + 'static) {
+        *self.before.lock().unwrap() = Arc::new(move |op, _| before(op));
+    }
+
+    /// Fail each op `before` answers an error for, given the op and the path it names.
+    pub fn fail_named(
+        &self,
+        before: impl Fn(&Op, Option<&str>) -> Option<IoError> + Send + Sync + 'static,
+    ) {
         *self.before.lock().unwrap() = Arc::new(before);
     }
 
@@ -106,6 +132,12 @@ impl Hooked {
         plan.action = Some(action);
     }
 
+    /// Take `action` at eligible op `at` as well as at the op [`Hooked::plan`] names, leaving the
+    /// op the search reports struck unchanged.
+    pub fn plan_also(&self, at: u64, action: Action) {
+        self.plan.lock().unwrap().also.insert(at, action);
+    }
+
     /// Start numbering the ops `eligible` accepts, given each with the path it names, and the device
     /// events a crash search covers.
     pub fn arm(&self, eligible: impl Fn(&Op, Option<&str>) -> bool + Send + Sync + 'static) {
@@ -119,6 +151,7 @@ impl Hooked {
         let mut plan = self.plan.lock().unwrap();
         plan.eligible = None;
         plan.action = None;
+        plan.also.clear();
         plan.seen
     }
 
@@ -158,7 +191,7 @@ impl Hooked {
         plan.seen += 1;
         plan.names.push(op_name(op));
         if plan.at != Some(number) {
-            return None;
+            return plan.also.remove(&number);
         }
         plan.struck = Some(format!("{} of {path:?}", op_name(op)));
         plan.write_or_sync = match op {
@@ -267,6 +300,10 @@ impl Runtime for Hooked {
 
 impl HookedIo {
     fn fail(&mut self, op: Op, error: IoError) -> Ticket {
+        self.answer(op, Err(error))
+    }
+
+    fn answer(&mut self, op: Op, result: Result<Done, IoError>) -> Ticket {
         self.tickets += 1;
         let ticket = Ticket(self.tickets);
         let buf = match op {
@@ -276,7 +313,7 @@ impl HookedIo {
         self.failed.push_back(Completion {
             ticket,
             buf,
-            result: Err(error),
+            result,
         });
         ticket
     }
@@ -285,7 +322,7 @@ impl HookedIo {
 impl Io for HookedIo {
     fn submit(&mut self, op: Op) -> Ticket {
         let before = self.hook.before.lock().unwrap().clone();
-        if let Some(error) = before(&op) {
+        if let Some(error) = before(&op, self.hook.path_of(&op).as_deref()) {
             return self.fail(op, error);
         }
         match self.hook.strike(&op) {
@@ -297,6 +334,10 @@ impl Io for HookedIo {
                 return self.fail(op, error);
             }
             Some(Action::Run(body)) => body(),
+            Some(Action::Lose) if matches!(op, Op::Write { .. }) => {
+                return self.answer(op, Ok(Done::Written));
+            }
+            Some(Action::Lose) => panic!("only a write can be lost, not a {}", op_name(&op)),
             None => {}
         }
         if let Op::Close { file } = op {

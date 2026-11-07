@@ -1,8 +1,9 @@
 # The default run stays under 20 seconds a test; a test still running at 60 is killed. The walks
-# of six migrations belong to the deep profile.
+# of six migrations belong to the deep profile, the damage search but one pinned case of it to
+# the damage and deep ones.
 [profile.default]
 slow-timeout = { period = "20s", terminate-after = 3 }
-default-filter = "not (binary(=differential) and (test(=every_schema_walk_keeps_engine_equal_to_reference) or test(=every_operator_keeps_its_laws)))"
+default-filter = "not (binary(=differential) and (test(=every_schema_walk_keeps_engine_equal_to_reference) or test(=every_operator_keeps_its_laws))) and not (binary(=storage) and test(/^damage_search::/) and not test(=damage_search::a_pinned_known_failure_still_shows))"
 
 # Runs a shell over every manual page, about 40 s under load.
 [[profile.default.overrides]]
@@ -104,9 +105,19 @@ max-threads = 64
 
 # For iteration: one seed per `profile::sweep` sweep, and no crash sweeps.
 [profile.quick]
-default-filter = "not test(/crash/) and not (binary(=differential) and (test(=every_schema_walk_keeps_engine_equal_to_reference) or test(=every_operator_keeps_its_laws)))"
+default-filter = "not test(/crash/) and not (binary(=differential) and (test(=every_schema_walk_keeps_engine_equal_to_reference) or test(=every_operator_keeps_its_laws))) and not (binary(=storage) and test(/^damage_search::/) and not test(=damage_search::a_pinned_known_failure_still_shows))"
+
+# The damage search's per-change tier: eight cases of each page kind and fault.
+[profile.damage]
+default-filter = "binary(=storage) and test(/^damage_search::/)"
+slow-timeout = { period = "120s", terminate-after = 5 }
 
 # Every sweep at `profile::DEEP` times its default count of seeds or cases.
 [profile.deep]
 default-filter = "all()"
 slow-timeout = { period = "120s", terminate-after = 10 }
+
+# The damage search at 32 cases of each page kind and fault, with its pairs and its concurrent tier.
+[[profile.deep.overrides]]
+filter = "binary(=storage) and test(/^damage_search::/)"
+slow-timeout = { period = "300s", terminate-after = 12 }

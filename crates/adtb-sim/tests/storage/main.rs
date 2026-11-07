@@ -7,6 +7,7 @@ mod commit;
 mod crash_images;
 mod damage_log;
 mod damage_race;
+mod damage_search;
 mod directory_damage;
 mod faults;
 mod heap;

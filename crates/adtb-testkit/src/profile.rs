@@ -6,7 +6,8 @@ use std::ops::Range;
 /// How many times its default count a sweep runs under the nextest profile `deep`.
 pub const DEEP: u64 = 8;
 
-fn is(profile: &str) -> bool {
+/// Returns whether the nextest profile `profile` runs.
+pub fn is(profile: &str) -> bool {
     std::env::var("NEXTEST_PROFILE").is_ok_and(|p| p == profile)
 }
 

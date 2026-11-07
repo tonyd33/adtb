@@ -7,7 +7,8 @@
 #                        PACKAGE is no workspace package
 #
 # Parts: miri and loom (adtb-sys's reach), campaign (the campaign's reach), tree-sitter (adtb-lang's
-# reach and the texts it compares), docs, deny, and each work/tools/*-test (a tool file it names).
+# reach and the texts it compares), damage-search (the storage layer, its consumers and the
+# simulator), docs, deny, and each work/tools/*-test (a tool file it names).
 # A crate's reach is the directories of the workspace packages its build links, tests and
 # examples included, from `cargo metadata`. A change to a file every build reads runs every part.
 set -euo pipefail
@@ -91,6 +92,21 @@ texts="tools/ docs/spec/ conformance/ apps/campaign/"
   part campaign "$app" $app
   part tree-sitter "$lang $texts or its tool" $lang $texts work/tools/tree-sitter-check
 }
+# The damage search's reach: every module of crates/adtb that reads, writes, frees, marks or
+# reports pages itself, and the helpers the search runs on. The list is kept by hand: a new module
+# that does any of those goes in it.
+storage="crates/adtb/src/storage/ crates/adtb/src/heap/ crates/adtb/src/btree/ crates/adtb/src/mvcc/
+  crates/adtb/src/vacuum/ crates/adtb/src/verify/ crates/adtb/src/catalog/ crates/adtb/src/write/
+  crates/adtb/src/history.rs crates/adtb/src/api/mod.rs crates/adtb/src/api/failed_open.rs
+  crates/adtb/src/api/verify.rs crates/adtb/src/api/maintenance.rs crates/adtb/src/api/migrate.rs
+  crates/adtb/src/api/file.rs crates/adtb/src/api/error.rs crates/adtb/src/api/cause.rs
+  crates/adtb/src/api/txn.rs crates/adtb/src/api/settings.rs crates/adtb/src/api/bundle.rs
+  crates/adtb/src/api/backup.rs crates/adtb/src/exec/store.rs
+  crates/adtb/src/api/dump.rs crates/adtb-sys/src/pages/ crates/adtb-sim/src/ crates/adtb-simkit/src/
+  crates/adtb-testkit/src/profile.rs crates/adtb-sim/tests/storage/main.rs
+  crates/adtb-sim/tests/storage/damage_search/"
+# shellcheck disable=SC2086 # a list of paths without spaces
+part damage-search "the storage layer, its consumers or the simulator" $storage
 part docs "docs/, book.toml or its tools" docs/ book.toml work/tools/docs-site tools/docs-site/
 part deny "a manifest, lock or deny.toml" Cargo.lock deny.toml apps/campaign/Cargo. crates/*/Cargo.toml
 for test in work/tools/*-test; do

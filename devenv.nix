@@ -81,6 +81,9 @@ in
       cargo deny check
       cargo deny --manifest-path "$app" check
     fi
+    if part damage-search; then
+      cargo nextest run -p adtb-sim --test storage --profile damage
+    fi
     size-check
     refusal-check
     if part docs; then docs-check; fi
