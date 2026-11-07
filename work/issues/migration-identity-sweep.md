@@ -4,6 +4,8 @@ status: open
 kind: bug
 priority: 380
 summary: "Migration conversion still finds constructors by name across schemas, falls back to field names, and keeps seven copies of the sorted-key-order rule; merge, nest and unnest of a held value refuse as split did"
+tags:
+  - class-identity-by-spelling
 ---
 
 # Identity by name and position left in migration conversion
