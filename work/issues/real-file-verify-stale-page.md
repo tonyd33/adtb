@@ -21,3 +21,7 @@ First step: run the test repeatedly under load (the suite's concurrency) and cap
 ## 2026-11-06: cause
 
 Reproduced without outside load at about 0.9% (5 of 572 runs). Page 13 is the commit-log status page the test damages. `Pager::damage` evicts the frame and releases its latch before it inserts the page into `meta.damaged`; in that gap another thread's `Pager::resident` takes the latch, finds the page neither resident nor damaged, reads the blank file copy and refuses it as Stale with found Lsn 0, and its own `damage` call then overwrites the Checksum record (the last record wins). A false finding of the wrong kind; no acknowledged write lost. With the file quarantined whole the same gap could hand the reader the older file copy as data; production callers that refuse an in-memory page (clog.rs, heap/dir.rs) meet the same gap. Class: class-not-atomic, the refusal published after the latch that ends residency is released. Fix: publish the refusal under the exclusive latch before residency ends.
+
+## 2026-11-06: the worse half is real
+
+The fix track's simulator search, on main: with the file quarantined whole (the read-in gate off), a reader racing the refusal was handed the file's older copy as data (seed 1: byte 0xa1 after three reads of the in-memory 0xb2). With the gate armed, seed 13 recorded Stale over the real Checksum.
