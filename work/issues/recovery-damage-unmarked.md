@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-05
-status: open
+status: resolved
 kind: bug
 priority: 340
 summary: "recovery's Stale and Checksum pages are marked only when Engine::on fails; on a successful open they stay in memory and the next open serves them"
+closed: 2026-11-06
 tags:
   - class-damage-unreported
 ---
@@ -15,3 +16,9 @@ tags:
 ## 2026-11-05
 
 From the damage-reporting audit, confirmed in code: api/mod.rs `Engine::open` calls `mark_open_damage` only inside `Engine::on(...).or_else`. When the open succeeds, damage recovery recorded through `Pager::damage` lives only in the in-memory map, and recovery's closing checkpoint moves redo past the chain evidence, so after a reopen the page reads as valid until a verify over the full retained log finds it. storage.md §7 says recovery quarantines it. Direction: map and mark recovery's damage on every open. Test: a lost write recovery detects, open, close, reopen, read the page's relation: refused Quarantined. Defect class: Damage reported as nothing.
+
+## 2026-11-06: fixed
+
+By damage-marked-at-detection change 2 (`fix: derive quarantine marks from the damage records`): every open maps every record, so recovery's Stale and Checksum pages are marked on a successful open. Test: the lost write recovery detects, open succeeds, reopen refuses the relation naming the heap; on main the marks were empty after the open.
+
+## 2026-11-06: resolved

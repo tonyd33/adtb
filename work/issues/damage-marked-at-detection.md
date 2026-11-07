@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-05
-status: open
+status: resolved
 kind: bug
 priority: 290
 summary: "damage is made durable by whichever caller's error path carries it (failed open, verify's quarantine_findings, a query's quarantining), so each path that forgets to mark absorbs it"
+closed: 2026-11-06
 tags:
   - class-damage-unreported
 ---
@@ -35,3 +36,11 @@ Change 1 makes each detection a durable page-level record; change 2 derives obje
 `feat: record every detected page damage durably`. `Pager::damage` appends `Record::Damaged` under the log lock and forces it before returning, except during recovery before `start_recording`; `Unreadable` is never recorded. A checkpoint folds changed records into a damage list page named in the file header (24-byte entries; past capacity the whole file is recorded and verify reports `Unlisted`). A free drops an entry of any kind through `Record::Freed`; a full-page image after the record drops a non-Settled entry. Recovery writes stale log blocks past the end to the header and forces them before `clear_tail` (62 entries, an overflow bit past them). A settle records `Damage::Settled`, reported as `Found::Settled`, which never marks. On a file marked whole the list page may change: a checkpoint folds what the log holds, and later detections stay in memory. Callers still mark as before; change 2 derives the marks.
 
 Review r1: blockers B1 (a checksum record lost after a crash when the page was written since the checkpoint), B2 (stale log findings past 62 dropped), B3 (a settled status page marking the database through verify), B4 (the site sweep claiming every site), and a record outliving a free; delta review D1 (a record forced before a whole-file mark lost at the next checkpoint). Each fixed with a test shown failing without its fix. 15 of 23 production `damage` sites are reached by a named test; the receipt lists the 8 others with reasons. Expectations changed by the contract: open_damage allows the list page to change on a whole file and keeps a Checksum row planted before the mark; catalog's migration test keeps a hand-repaired page's finding; 26 script instants moved with the list page's I/O. Filed: damaged-record-after-free, mark-change-crash-window. `check --changed` on 5fabbe16: suite 3468 passed, campaign 48 passed, house-check listing one ordering-invariant comment, kept.
+
+## 2026-11-06: change 2 landed
+
+`fix: derive quarantine marks from the damage records`. One mapper, `Pager::map_damage`, maps the records not yet mapped through `holders` and sets the marks; it runs at every open (success or failure), at the end of an API call that met damage (`quarantining`, `quarantine_findings`), and in a commit under `ser` before `admit_commit` (`map_committing`, mapping only the records unmapped when the hold began, and a page met by its own walk only when this thread's read detected it). Settled, log findings, `Unlisted` and `Unreadable` map to no mark; a list overflow, a damaged list page and a blank bitmap page of a started group map to Database. The caller-side page marking is gone; the failure a call returns names the quarantine from the marks. Index findings (Order, Orphan, Missing, OrphanEntry) still mark their index at the detecting call. Ruling (a): verify does not refuse a page recorded Settled at its settled LSNs and reports it once; a stale finding at other LSNs maps to Database. Review and delta review: a commit marking the whole database for another thread's concurrent damage (fixed: `Records::detected_by`), and four smaller findings, fixed. Full-suite tests changed to the contract: a lost bitmap group now marks {Database, users heap}, as storage.md's failure table states; a history page damaged during a reindex is marked at the detecting call's end, not at detection, and the reindex's full-page image drops the record and releases it. `check --changed` 3477 of 3478 passed, the one timeout btree-crash-test-slow; full `check` on main after landing.
+
+Closes recovery-damage-unmarked and mark-change-crash-window (page damage). Still open from the class: damaged-record-after-free, verify-free-page-drops-chain, catalog-settled-inprogress, backup-list-misses-late-stale, incomplete-mapping-never-retried; damage held in memory only (a whole-file mark, a sound resident page) is not re-derived at open.
+
+## 2026-11-06: resolved
