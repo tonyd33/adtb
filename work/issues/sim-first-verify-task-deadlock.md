@@ -4,6 +4,8 @@ status: open
 kind: bug
 priority: 320
 summary: "a verify submitted as the first task of a process deadlocks the simulator with every thread parked, on a healthy file"
+tags:
+  - class-failure-flattened
 ---
 
 # A first verify task deadlocks the simulator
