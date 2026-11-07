@@ -31,3 +31,13 @@ Lead rulings:
 ## 2026-11-07: M1 landed
 
 `feat: start a page's log chain at allocation and log every free`. Every allocation goes through `Reservation::latch` (the only source of a blank frame) and logs an unchained full image; every free logs `Freed`; the damage fold drops a page's entries at a chain start; damage between a free and the next chain start is held, not logged; retired, unswept index pages are holders until their own `Freed`; a failed allocation's blank latch is undone; a lost bitmap page of any group past the file end is refused at open by its LSN map entry; three-way allocation answer. Seven rounds: reach floors that depended on allocation's disk read were rebuilt by construction, script tests now compare simulated instants by rank (`t1`, `t2`), a writer loop yields. Review blocker (retired set by bare pid, ended at sweep end) and delta blocker (my reserved-page gate refused healthy pages as Unreadable) both fixed. Closed: verify-free-page-drops-chain, damaged-record-after-free, verify-break-after-reuse, unreadable-bitmap-hides-group. Next: the class search, then the evidence authority.
+
+## 2026-11-07, class search landed
+
+The class search landed in 5efd6885: crates/adtb-sim/tests/storage/damage_search/, 11 page kinds (owner-classified) by 6 faults by 7 consumers. 393 cells are reached by a consumer that ran, 12 are asserted to end at the open, and 15 are listed in `UNREACHED` (damage-search-unreached). The judge checks each refusal's mark against storage.md §8's mapping. Failing cells on main are gated in `KNOWN` by fault, kind, owner, consumer and cause, each with a pinned case rerun in every tier:
+
+- freed-lost-write-fails-open, settled-status-marks-database, walk-damage-marks-database, unread-walk-marks-database, migrate-under-mark-silent, migrate-applies-under-mark.
+
+Tiers: about 1 s in the default suite (one pinned rerun), `--profile damage` (about 130 s) in `check --changed` when check-reach finds a storage change, and `--profile deep` (about 520 s).
+
+Remaining here: the evidence authority, designed through the design space from the gated cells, one consumer at a time.
