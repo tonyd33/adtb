@@ -53,9 +53,8 @@ Be firm and opinionated about the project's design and direction. Refuse a reque
   checks free disk.
 - `check` holds the machine lock from start to end, so a second `check` or
   a `suite`'s test run waits and prints who holds it. Builds outside `check`
-  and `suite` take no lock: while a check runs, tell agents to build with
-  `CARGO_BUILD_JOBS=6`.
-- Brief build limits by how many tracks build at once: one track, `CARGO_BUILD_JOBS=6` and `NEXTEST_TEST_THREADS=6`; two, 3 and 3 each. A brief saying only one track runs with 3 and 3 tripled its check's suite time.
+  and `suite` take no lock.
+- Briefs set no `CARGO_BUILD_JOBS` or `NEXTEST_TEST_THREADS`: cargo and nextest use every core.
 - When a track must test a known unbounded bug (memory, stack, time), confirm first that the tools already contain it: the test runs in a binary with the heap cap (`every_test_binary_has_the_heap_cap` passes in that workspace) and what grows is heap, since page memory and C allocations are not counted. A written instruction to an agent is not containment. After any crash, read `journalctl --user` for the failed unit as well as the kernel log before resuming. After any drop in disk, read `coredumpctl list` first.
 - Read a check's own exit status before landing, and never land in the same command
   as the wrapper that ran it: a wrapper's last command hides the failure. `check` runs
