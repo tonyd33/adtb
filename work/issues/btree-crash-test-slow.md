@@ -2,7 +2,7 @@
 created-at: 2026-11-06
 status: open
 kind: bug
-priority: 300
+priority: 150
 summary: a_crashed_tree_recovers_a_prefix_of_its_operations takes about 22 s alone and times out under full-suite load
 tags:
   - class-none
@@ -15,3 +15,7 @@ tags:
 `btree::a_crashed_tree_recovers_a_prefix_of_its_operations` takes about 22 s alone, both on main and on the damage-log change 2 tree (2026-11-06), and was terminated at 60 s in a full `check --changed` suite. A full check fails on it without any change to the btree.
 
 Expected: the test fits its slow-timeout with margin under the full suite, by a smaller search, a bound on the model's work, or a declared slower group with the reason stated.
+
+## 2026-11-06: raised to 150
+
+It timed out in three of today's full checks (damage-log change 2, migration identity change 2, the sim split), each time failing a check on a change that does not touch the btree, and in a baseline suite under load; alone it takes 22 to 32 s against the 60 s limit.
