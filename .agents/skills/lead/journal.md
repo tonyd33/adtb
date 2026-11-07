@@ -751,3 +751,9 @@ Cause: each defect class that reached a review got its own mechanism (vacuity ga
 Moved to the lead skill and to the workflow: a gate, check or required step that lengthens every track needs its time per track stated and the maintainer's approval first. Removed: the vacuity gate, hand mutants and their tooling, review copy mechanics, the verification protocols; the class tag moved to triage; brief sizes are estimates. A bug fix shows its regression test failing on pre-fix code once.
 
 My slips: a claim of progress made before checking freshness; `land` chained after a grep of a check log, instead of reading the check's exit status first. The grep's failures were suite-test's own fixtures, so the landing was right, by luck.
+
+### 2026-11-06: a failed check pushed
+
+After landing the checkpointer I ran the full `check` on main in the background with `echo "check exit $?"` last, so the job reported exit 0. I then read the log's last line and pushed in the same command: the line said `check exit 100`. The suite had failed only in a timeout already ticketed, but `check` stops at the suite, so Loom, Miri, the campaign, deny, size-check, refusal-check, docs, tree-sitter and the tool tests never ran on what I pushed. The same slip as the last entry, one level up: a status read in the command that acts on it.
+
+Moved to the lead skill: read a check's exit status in a command of its own, and push only in a later one; a background job's reported status is the last command's, so it ends with the check itself, not an echo. The btree timeout that keeps failing full checks is raised to the top of the queue.

@@ -56,8 +56,10 @@ Be firm and opinionated about the project's design and direction. Refuse a reque
   and `suite` take no lock.
 - Briefs set no `CARGO_BUILD_JOBS` or `NEXTEST_TEST_THREADS`: cargo and nextest use every core.
 - When a track must test a known unbounded bug (memory, stack, time), confirm first that the tools already contain it: the test runs in a binary with the heap cap (`every_test_binary_has_the_heap_cap` passes in that workspace) and what grows is heap, since page memory and C allocations are not counted. A written instruction to an agent is not containment. After any crash, read `journalctl --user` for the failed unit as well as the kernel log before resuming. After any drop in disk, read `coredumpctl list` first.
-- Read a check's own exit status before landing, and never land in the same command
-  as the wrapper that ran it: a wrapper's last command hides the failure. `check` runs
+- Read a check's own exit status before landing or pushing, in a command of its own,
+  and never land or push in the same command as the wrapper that ran it or the read of
+  its log: a wrapper's last command hides the failure. A background check ends with the
+  check itself, so the job's status is the check's. `check` runs
   the main checkout's dev shell, so a branch older than a tool main added exits 127.
   Rebase the track onto main first, then run its check. Use targeted checks
   during implementation and review; assign final verification on the reviewed
