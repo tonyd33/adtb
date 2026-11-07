@@ -35,3 +35,7 @@ Lead rulings on its open questions:
 ## 2026-11-07, T1 and T2 landed
 
 `adtb::testing` with `Testing`, `Probe` and `TxnProbe` (owned values only), its contract in docs/design/testing.md; every pager and transaction observer moved off `write_path`. Counts: `write_path()` 356 to 258, `.pager()` from tests 337 to 248, `doc(hidden)` in api/mod.rs 13 to 10, pager and transaction observers in tests 213 to 0 (the measure excludes `SimRuntime::recorded`, the simulator's own). `work/tools/feature-check` refuses any normal or build dependency on adtb with `testing`, read from cargo metadata. Next: T3.
+
+## 2026-11-07, T3 landed
+
+Plants, fault controls and knobs go through `adtb::testing` (`Plant` with `Planted`, `Knobs::with_segment_size`); `write_path` deleted. Counts: `write_path` 258 to 0, `.pager()` 248 to 0, `CreateOptions` pub fields 25 to 24. `mark_of` asks the engine's mapping (`relation_mark`, `heap_mark`, `index_mark`); `own_mark` added for tests that plant a mark naming one heap or index, a separate promise in docs/design/testing.md §3.1 (lead ruling: kept, it names a mark's identity and holds no mapping rule). Next: T4 to T8, alternating with storage owners.
