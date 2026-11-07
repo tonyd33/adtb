@@ -38,7 +38,6 @@ in
     pkgs.tree-sitter
     pkgs.util-linux
     pkgs.cargo-deny
-    pkgs.cargo-mutants
     pkgs.cargo-nextest
     quandary
   ];

@@ -36,7 +36,7 @@ above remain historical estimates, not a current inventory.
   the checked cases. They do not establish a general vacuity gate or remove
   the catalog-identity, admission and resource-budget causes.
 
-Measured regressions and mutants support these bounded enforcement points.
+Measured regressions support these bounded enforcement points.
 There is not yet enough subsequent work to measure class-wide recurrence.
 
 

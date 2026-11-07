@@ -252,8 +252,8 @@ verification evidence.
   report, run `jj bookmark set reviewed -r main`.
 - Spend about 15% of each milestone on one track over tickets tagged
   `quality`.
-- Run cargo-mutants and llvm-cov only at a milestone exit.
-- Before adding a gate, check or required step that lengthens every track, state its time per track and get the maintainer's approval. A per-landing cargo-mutants gate cost one track about 5 hours and was removed.
+- Run llvm-cov only at a milestone exit.
+- Before adding a gate, check or required step that lengthens every track, state its time per track and get the maintainer's approval.
 
 ## Follow-up queue
 
