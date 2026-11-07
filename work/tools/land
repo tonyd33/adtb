@@ -3,8 +3,9 @@
 #                     rebase its commits, describe its working-copy commit as SUBJECT, move the
 #                     `main` bookmark and the main working copy onto it, and forget WS
 #
-# Refuses before changing anything when the main working copy has changes, WS is unknown or a
-# commit to land has no description.
+# Refuses before changing anything when the main working copy has changes, WS is unknown, a
+# commit to land has no description or WS holds a file jj does not track that the repository's
+# .gitignore files do not ignore.
 # Refuses after the rebase when a landed commit has conflicts; the rebased commits stay in WS for
 # its agent to fix. Leaves WS's directory in place. A workspace taken with `slot` is not
 # forgotten: its directory becomes a free slot, its working copy an empty commit on the landed
@@ -30,6 +31,23 @@ workspace_root() {
     awk -F'\t' -v name="$1" '$1 == name { print $2 }'
 }
 
+# Prints the files of workspace root $1 that jj does not track and no .gitignore of the repository
+# ignores.
+unignored_untracked() {
+  local gitdir
+  gitdir=$(jj -R "$1" git root)
+  awk 'NR == FNR { tracked[$0] = 1; next } !($0 in tracked)' \
+    <(jj -R "$1" file list -T 'path ++ "\n"') \
+    <(GIT_INDEX_FILE="$1/.jj/no-index" git --git-dir="$gitdir" --work-tree="$1" \
+      ls-files -z --others --exclude-per-directory=.gitignore | tr '\0' '\n') | LC_ALL=C sort
+}
+
+# Prints $1 as a fileset naming that one file from the workspace root.
+root_file() {
+  local quoted=${1//\\/\\\\}
+  printf 'root-file:"%s"' "${quoted//\"/\\\"}"
+}
+
 main=$(workspace_root default)
 wsroot=$(workspace_root "$ws")
 [[ -n $wsroot ]] || die "no workspace named $ws"
@@ -44,6 +62,22 @@ if [[ -n $slot ]]; then
 fi
 
 jj -R "$wsroot" status
+
+hidden=$(unignored_untracked "$wsroot")
+if [[ -n $hidden ]]; then
+  command=(jj -R "$wsroot" file track --include-ignored)
+  while IFS= read -r file; do
+    command+=("$(root_file "$file")")
+  done <<<"$hidden"
+  printf 'land: files jj does not track and the repository'"'"'s .gitignore files do not ignore:\n' >&2
+  while IFS= read -r file; do
+    printf '  %s\n' "$file" >&2
+  done <<<"$hidden"
+  printf 'land: track them with the command below, or delete them if the track does not need them:\n' >&2
+  printf '%q ' "${command[@]}" >&2
+  printf '\n' >&2
+  exit 1
+fi
 
 pending=$(jj -R "$main" diff --summary)
 if [[ -n $pending ]]; then

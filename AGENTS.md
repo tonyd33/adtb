@@ -132,7 +132,8 @@ root (devenv also puts each on PATH as `NAME`):
   `refused_with`) at other sites than `refusal-allowlist` counts. Assert a refusal with
   `adtb_testkit::refused_as`, its value and whole reason.
 - `land WS [SUBJECT]`: land workspace WS on `main` and move the main
-  working copy onto it; refuses while the main working copy has changes.
+  working copy onto it; refuses while the main working copy has changes, or WS holds a file jj
+  does not track that its .gitignore files do not ignore.
   A slot becomes free; any other workspace is forgotten.
 - `docs-site [build|serve|check]`: build or serve the site with mdBook; `check`
   builds it and runs lychee offline over its links and fragments. A new page

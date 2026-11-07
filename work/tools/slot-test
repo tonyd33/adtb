@@ -260,6 +260,55 @@ fake_target() {
   done
 }
 
+# land refuses every file jj does not track that the repository's .gitignore files leave visible: one
+# an ignore rule outside them hides (a global ignore file given as $1, config or xdg, or info/exclude)
+# and any other; a file the repository's own .gitignore hides lands.
+ignore_cases() {
+  local ws out want before odd="tool-it's \$(false) x"
+  case $1 in
+  config)
+    git config --file "$(jj -R "$main" git root)/config" core.excludesFile "$scratch/global-ignore"
+    printf 'tool-*\n' >"$scratch/global-ignore"
+    ;;
+  xdg)
+    [[ $XDG_CONFIG_HOME == "$scratch"/* ]] || fail "XDG_CONFIG_HOME is not scratch: $XDG_CONFIG_HOME"
+    mkdir -p "$XDG_CONFIG_HOME/git"
+    printf 'tool-*\n' >"$XDG_CONFIG_HOME/git/ignore"
+    ;;
+  esac
+  printf 'hid-*\n' >>"$(jj -R "$main" git root)/info/exclude"
+  ws=$("$slot" hidden "$brief" 2>/dev/null | tail -1)
+  mkdir -p "$ws/work/tools/sub" "$ws/fresh/deep" "$ws/work/newdir"
+  touch "$ws/work/tools/tool-new" "$ws/work/tools/sub/tool-deeper" "$ws/tool-top" "$ws/fresh/deep/tool-alone" \
+    "$ws/work/newdir/tool-x" "$ws/app/src/hid-one"
+  [[ -z $(jj -R "$ws" file list 'root-file:work/tools/tool-new' 2>/dev/null) ]] || fail "the global ignore did not hide the file from jj"
+  want="land: files jj does not track and the repository's .gitignore files do not ignore:
+  app/src/hid-one
+  fresh/deep/tool-alone
+  tool-top
+  work/newdir/tool-x
+  work/tools/sub/tool-deeper
+  work/tools/tool-new
+land: track them with the command below, or delete them if the track does not need them:
+jj -R $ws file track --include-ignored root-file:\\\"app/src/hid-one\\\" root-file:\\\"fresh/deep/tool-alone\\\" root-file:\\\"tool-top\\\" root-file:\\\"work/newdir/tool-x\\\" root-file:\\\"work/tools/sub/tool-deeper\\\" root-file:\\\"work/tools/tool-new\\\" "
+  before=$(main_tip)
+  out=$("$land" hidden 'fix: hidden' 2>&1 >/dev/null) && fail "land accepted hidden files"
+  [[ $out == "$want" ]] || fail "refusal differs: $out"
+  [[ $(main_tip) == "$before" && $(names) == *hidden* ]] || fail "a refused land changed the repository"
+
+  touch "$ws/$odd"
+  out=$("$land" hidden 'fix: hidden' 2>&1 >/dev/null) && fail "land accepted a file named $odd"
+  has "$out" "tool-it"
+  eval "$(tail -1 <<<"$out")" >/dev/null 2>&1 || fail "the printed command failed: $out"
+  [[ $(jj -R "$ws" file list -T 'path ++ "\n"') == *"$odd"* ]] || fail "the printed command did not track $odd"
+
+  printf '/app/src/generated.rs\n' >>"$ws/.gitignore"
+  touch "$ws/app/src/generated.rs"
+  "$land" hidden 'fix: hidden' >/dev/null 2>&1 || fail "land refused tracked files and a repository-ignored file"
+  [[ -f $main/work/tools/tool-new && ! -e $main/app/src/generated.rs ]] || fail "the landed tree differs"
+  rm -rf "$XDG_CONFIG_HOME/git"
+}
+
 # Cases that need no cargo. Each leaves every slot free or names its own track.
 shell_cases() {
   local a b out before fake p1 p2 build
@@ -498,6 +547,10 @@ cadence_cases
 new_repo shell-repo
 machine_lock_cases
 shell_cases
+new_repo ignore-config
+ignore_cases config
+new_repo ignore-xdg
+ignore_cases xdg
 retention_cases missing
 if [[ ${1:-} == --shell ]]; then
   echo 'slot-test: shell cases ok'
