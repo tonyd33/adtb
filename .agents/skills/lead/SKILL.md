@@ -73,6 +73,9 @@ Rule on design and spec decisions yourself, including amending an accepted rulin
   part's reach; it prints each part it skips and why. After `land`, run
   `work/tools/check-reach TESTED..main`, TESTED the checked revision: run the full `check` on
   main when it prints `run` for a part the author's run skipped, else reuse the receipt.
+- A track that adds or changes a seeded search in `adtb-sim` runs those tests under
+  `--profile deep` before landing, filtered to them; `check` runs the default seeds only, so
+  a deep failure otherwise lands unseen.
 - Before starting a track, list the files the running tracks change. A
   track that changes a shared signature (pager, heap or B-link tree calls)
   does not run beside tracks that call it: land it first and branch the
