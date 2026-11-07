@@ -1,0 +1,13 @@
+# Ad hoc text that does not parse, names nothing declared, mistypes, or leaves a name free is refused with Invalid.
+schema
+  module test
+  type Customer = { id: Key customers, name: Text }
+  relation customers : Customer key id generate sequence
+error Invalid
+  from c in
+error Invalid
+  from c in nothing select c
+error Invalid
+  from c in customers where c.name == 1 select c
+error Invalid
+  from c in customers where c.name == n select c

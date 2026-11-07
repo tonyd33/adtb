@@ -1,0 +1,94 @@
+# Every constraint example of the constraints part is admitted over a schema that declares the indexes it names.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Bytes }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation users : User key id generate sequence
+  relation identities : Identity
+    key id generate uuidv7
+    unique (email) in EmailPass
+    unique (gid) in Google
+    unique (sub) in Apple
+    index (user)
+  set OAuth of identities = Google | Apple
+  fn display_name (i: Identity) -> Text = match i
+    | EmailPass e -> e.email
+    | Google g    -> g.gid
+    | Apple a     -> a.sub
+  constraint login_present =
+    from i in identities
+    where match i
+      | EmailPass e -> scalar_len(e.email) == 0
+      | Google g    -> scalar_len(g.gid) == 0
+      | Apple a     -> scalar_len(a.sub) == 0
+    select i
+  type Entry = { id: Key entries, posted: Instant }
+  relation entries : Entry key id generate sequence
+  type Line = { id: Key lines, entry: Key entries on delete cascade, amount: I64 }
+  relation lines : Line
+    key id generate sequence
+    index (entry)
+  type Booking { id: Key bookings, resource: Text, during: Span Instant }
+    = Room { seats: I64 }
+    | Desk
+  relation bookings : Booking
+    key id generate sequence
+    interval index (resource, during) in (Room | Desk)
+  type Account { id: Key accounts, owner: Key users, opened: Instant }
+    = Open
+    | Closed { closed: Instant }
+  relation accounts : Account key id generate sequence
+  type Event = { id: Key events, at: Instant, body: Text }
+  relation events : Event key id generate sequence
+  type Place { id: Key places }
+    = US   { zip: Text, state: Text }
+    | Intl { country: Text, postcode: Text }
+  relation places : Place
+    key id generate sequence
+    index (zip) in US
+  type Email = new Text where matches(self, "^[^@]+@[^@]+$")
+  type Contact = { id: Key contacts, email: Email }
+  relation contacts : Contact key id generate sequence
+  constraint has_identity =
+    from u in users
+    where not exists i in identities where i.user == key u
+    select u
+  check email_length_check on identities.EmailPass (scalar_len(email) <= 254)
+  constraint email_length =
+    from x in identities.EmailPass where not (scalar_len(x.email) <= 254) select x
+  constraint zip_state =
+    from a in places.US, b in places.US
+    where a.zip == b.zip and a.state != b.state
+    select { zip: a.zip }
+  constraint no_double_booking =
+    from a in bookings.(Room | Desk), b in bookings.(Room | Desk)
+    where a.resource == b.resource and overlaps(a.during, b.during) and key a != key b
+    select { a: key a, b: key b }
+  constraint identity_limit =
+    from u in users
+    where count(i for i in identities where i.user == key u) > 5
+    select u
+  constraint balanced =
+    from e in entries
+    where sum(l.amount for l in lines where l.entry == key e) != 0
+    select e
+  check login_valid on identities (match self
+    | EmailPass e -> scalar_len(e.email) <= 254
+    | Google g    -> scalar_len(g.gid) > 0
+    | Apple a     -> true)
+  constraint append_only = from e in deleted(events) select e
+  constraint no_reopen =
+    from o in deleted(accounts.Closed), n in inserted(accounts.Open)
+    where key o == key n
+    select n
+  constraint opened_fixed =
+    from o in deleted(accounts), n in inserted(accounts)
+    where key o == key n and o.opened != n.opened
+    select n
+query
+  count(u for u in users)
+----
+0

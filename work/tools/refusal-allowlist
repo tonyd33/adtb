@@ -26,7 +26,7 @@
 14 crates/adtb-sim/tests/sim/backup.rs
 1 crates/adtb-sim/tests/sim/bundles.rs
 2 crates/adtb-sim/tests/sim/calls.rs
-4 crates/adtb-sim/tests/sim/constraints.rs
+3 crates/adtb-sim/tests/sim/constraints.rs
 2 crates/adtb-sim/tests/sim/create.rs
 1 crates/adtb-sim/tests/sim/derived_index.rs
 9 crates/adtb-sim/tests/sim/dump.rs

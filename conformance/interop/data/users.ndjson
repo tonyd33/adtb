@@ -1,3 +1,4 @@
 {"id": "3", "name": "cy", "nick": {"Some": {"value": "c"}}}
 {"name": "dee", "id": "4"}
 {"id": "5", "name": "eve", "nick": "None"}
+{"id": "6", "name": "fay", "nick": {"Some": {"value": ""}}}

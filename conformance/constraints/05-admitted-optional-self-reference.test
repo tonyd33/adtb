@@ -1,0 +1,69 @@
+# A join through an optional self-reference within one constructor is admitted and holds from either end, a row naming itself included.
+schema
+  module test
+  type Campaign = { id: Key campaigns, name: Text }
+  relation campaigns : Campaign key id generate sequence
+  type Entity { id: Key entities, campaign: Key campaigns, name: Text }
+    = Npc
+    | Pc { player: Text }
+    | Place { parent: Option (Key entities.Place) }
+  relation entities : Entity key id generate sequence
+  set Characters of entities = Npc | Pc
+  type Quest { id: Key quests, campaign: Key campaigns, giver: Option (Key entities.Characters) }
+    = Open
+    | Done { outcome: Text }
+  relation quests : Quest key id generate sequence
+  type Discovery { id: Key discoveries, party: Key entities }
+    = KnowsEntity { entity: Key entities }
+    | KnowsQuest { quest: Key quests }
+  relation discoveries : Discovery key id generate sequence
+  type Session = { id: Key sessions, campaign: Key campaigns, number: I64 }
+  relation sessions : Session key id generate sequence
+  type Encounter = { id: Key encounters, session: Key sessions }
+  relation encounters : Encounter key id generate sequence
+  type Combatant { id: Key combatants, encounter: Key encounters, who: Key entities.Characters }
+    = Cast
+    | Extra { kind: Text }
+  relation combatants : Combatant key id generate sequence
+  constraint parent_in_campaign =
+    from l in entities.Place, p in entities.Place
+    where l.parent == Some { value: key p } and (p.campaign != l.campaign or key p == key l)
+    select l
+run
+  transact
+    insert campaigns { id: campaigns.key(1), name: "one" }
+    insert campaigns { id: campaigns.key(2), name: "two" }
+    insert entities.Npc { id: entities.key(1), campaign: campaigns.key(1), name: "ann" }
+    insert entities.Npc { id: entities.key(2), campaign: campaigns.key(2), name: "bo" }
+    insert entities.Pc { id: entities.key(3), campaign: campaigns.key(1), name: "cy", player: "p" }
+run
+  insert entities.Place { id: entities.key(10), campaign: campaigns.key(1), name: "realm", parent: None }
+error Violated
+  insert entities.Place { id: entities.key(11), campaign: campaigns.key(2), name: "town", parent: (match entities.key(10) | Npc _ -> None | Pc _ -> None | Place x -> Some { value: key x }) }
+run
+  insert entities.Place { id: entities.key(11), campaign: campaigns.key(1), name: "town", parent: (match entities.key(10) | Npc _ -> None | Pc _ -> None | Place x -> Some { value: key x }) }
+error Violated
+  update e in entities where key e == entities.key(10) set match e
+    | Npc n -> n
+    | Pc p -> p
+    | Place l -> Place { l with parent: (match entities.key(10) | Npc _ -> None | Pc _ -> None | Place x -> Some { value: key x }) }
+error Violated
+  update e in entities where key e == entities.key(10) set match e
+    | Npc n -> n
+    | Pc p -> p
+    | Place l -> Place { l with campaign: campaigns.key(2) }
+run
+  update e in entities where key e == entities.key(11) set match e
+    | Npc n -> n
+    | Pc p -> p
+    | Place l -> Place { l with parent: None }
+run
+  update e in entities where key e == entities.key(10) set match e
+    | Npc n -> n
+    | Pc p -> p
+    | Place l -> Place { l with campaign: campaigns.key(2) }
+query rowsort
+  from l in entities.Place select { id: value(key l), campaign: value(l.campaign), parent: l.parent }
+----
+{ campaign: 1, id: 11, parent: None }
+{ campaign: 2, id: 10, parent: None }

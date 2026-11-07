@@ -1,0 +1,41 @@
+# A change set of hundreds of rows is checked whole: one unbalanced row among them fails the statement, and the balanced set commits.
+schema
+  module test
+  type Entry = { id: Key entries, posted: I64 }
+  relation entries : Entry key id generate sequence
+  type Line = { id: Key lines, entry: Key entries on delete cascade, amount: I64, at: I64 }
+  relation lines : Line key id generate sequence index (entry, amount)
+  constraint balanced =
+    from e in entries
+    where sum(l.amount for l in lines where l.entry == key e) != 0
+    select e
+run
+  insert entries from (
+    from a in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+         b in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    select Entry { id: entries.key(a * 10 + b), posted: 0 })
+error Violated
+  transact
+    insert lines from (from e in entries
+      select Line { id: lines.key(value(key e) * 10), entry: key e, amount: 2, at: 0 })
+    insert lines from (from e in entries
+      select Line { id: lines.key(value(key e) * 10 + 1), entry: key e, amount: -2, at: 0 })
+    insert lines { id: lines.key(1), entry: entries.key(7), amount: 1, at: 0 }
+query
+  count(l for l in lines)
+----
+0
+run
+  transact
+    insert lines from (from e in entries
+      select Line { id: lines.key(value(key e) * 10), entry: key e, amount: 2, at: 0 })
+    insert lines from (from e in entries
+      select Line { id: lines.key(value(key e) * 10 + 1), entry: key e, amount: -2, at: 0 })
+query
+  count(e for e in entries)
+----
+200
+query
+  count(l for l in lines)
+----
+400

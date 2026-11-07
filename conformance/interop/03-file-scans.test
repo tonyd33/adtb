@@ -29,11 +29,12 @@ query
   from c in read_csv("data/contacts-text.csv", Contact) select c.via
 ----
 Email { addr: "a@b.example" }
-# NDJSON reads the JSON mapping; a missing member of an Option field is None.
+# NDJSON reads the JSON mapping; a missing member of an Option field is None, and a Some of empty text is Some.
 query rowsort
   from p in read_ndjson("data/users.ndjson", Person) select p.nick
 ----
 None
+Some { value: "" }
 Some { value: "c" }
 # A file whose content does not convert fails at read.
 error BadInput

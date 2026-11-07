@@ -5,9 +5,6 @@ use adtb_simkit::support;
 #[path = "constraints/names.rs"]
 mod names;
 
-#[path = "constraints/paths.rs"]
-mod paths;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -16,13 +13,12 @@ use adtb::exec::{self, Budget, Val};
 use adtb::mvcc::Limits;
 use adtb::plan::Catalog;
 use adtb::storage::Pager;
-use adtb::write::{self, Bindings, Database, Rejection as WRejection, Rows, Setup};
+use adtb::write::{self, Bindings, Database, Rejection as WRejection, Setup};
 use adtb_lang::check::check_adhoc;
 use adtb_lang::kernel::{Terms, Tm};
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_adhoc};
 use adtb_lang::schema::Schema;
-use adtb_reference::{Abort, Rejection, Value};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 
 use adtb_testkit::fixture::Fixture;
@@ -93,85 +89,6 @@ type Assignment = { id: Key assignments, user: Key users, org: Text, task: Text 
 relation assignments : Assignment key id generate sequence
 ";
 
-/// Every constraint example of the constraints part over [`SPEC`] that the part admits.
-const ADMITTED: &[(&str, &str)] = &[
-    (
-        "has_identity",
-        "constraint has_identity =
-  from u in users
-  where not exists i in identities where i.user == key u
-  select u",
-    ),
-    (
-        "email_length check",
-        "check email_length on identities.EmailPass (scalar_len(email) <= 254)",
-    ),
-    (
-        "email_length denial",
-        "constraint email_length =
-  from x in identities.EmailPass where not (scalar_len(x.email) <= 254) select x",
-    ),
-    (
-        "domain",
-        r#"type Email = new Text where matches(self, "^[^@]+@[^@]+$")
-type Contact = { id: Key contacts, email: Email }
-relation contacts : Contact key id generate sequence"#,
-    ),
-    (
-        "zip_state",
-        "constraint zip_state =
-  from a in places.US, b in places.US
-  where a.zip == b.zip and a.state != b.state
-  select { zip: a.zip }",
-    ),
-    (
-        "no_double_booking",
-        "constraint no_double_booking =
-  from a in bookings.(Room | Desk), b in bookings.(Room | Desk)
-  where a.resource == b.resource and overlaps(a.during, b.during) and key a != key b
-  select { a: key a, b: key b }",
-    ),
-    (
-        "identity_limit",
-        "constraint identity_limit =
-  from u in users
-  where count(i for i in identities where i.user == key u) > 5
-  select u",
-    ),
-    (
-        "balanced",
-        "constraint balanced =
-  from e in entries
-  where sum(l.amount for l in lines where l.entry == key e) != 0
-  select e",
-    ),
-    (
-        "login_valid",
-        "check login_valid on identities (match self
-  | EmailPass e -> scalar_len(e.email) <= 254
-  | Google g    -> scalar_len(g.gid) > 0
-  | Apple a     -> true)",
-    ),
-    (
-        "append_only",
-        "constraint append_only = from e in deleted(events) select e",
-    ),
-    (
-        "no_reopen",
-        "constraint no_reopen =
-  from o in deleted(accounts.Closed), n in inserted(accounts.Open)
-  where key o == key n
-  select n",
-    ),
-    (
-        "opened_fixed",
-        "constraint opened_fixed =
-  from o in deleted(accounts), n in inserted(accounts)
-  where key o == key n and o.opened != n.opened
-  select n",
-    ),
-];
-
 /// Returns each constraint of schema `src` that the engine refuses, with why.
 fn refusals(src: &str) -> Vec<(String, String)> {
     let f = Fixture::new(src);
@@ -191,22 +108,6 @@ fn refused(src: &str) -> (String, String) {
     }
 }
 
-#[test]
-fn every_admitted_example_of_the_constraints_part_is_admitted() {
-    assert_eq!(Vec::<(String, String)>::new(), refusals(SPEC));
-    for (name, decl) in ADMITTED {
-        let why = refusals(&format!("{SPEC}\n{decl}\n"));
-        assert!(why.is_empty(), "{name} is refused: {why:?}");
-    }
-}
-
-#[test]
-fn has_identity_without_a_declared_index_on_identities_is_admitted_through_the_implied_one() {
-    let src = SPEC.replacen("  index (user)\n", "", 1);
-    let why = refusals(&format!("{src}\n{}\n", ADMITTED[0].1));
-    assert_eq!(Vec::<(String, String)>::new(), why);
-}
-
 /// A sum whose constructors each hold their own reference field `parent`.
 const PLACES: &str = r"
 type Spot { id: Key spots, zone: Text }
@@ -215,16 +116,6 @@ type Spot { id: Key spots, zone: Text }
   | Mark   { label: Text }
 relation spots : Spot key id generate sequence
 ";
-
-#[test]
-fn a_join_on_a_field_each_constructor_holds_is_admitted_through_their_implied_indexes() {
-    let decl = "constraint parent_in_zone =
-  from l in spots.(Region | Town), p in spots.(Region | Town)
-  where l.parent == Some { value: key p } and p.zone != l.zone
-  select l";
-    let why = refusals(&format!("{PLACES}\n{decl}\n"));
-    assert_eq!(Vec::<(String, String)>::new(), why);
-}
 
 #[test]
 fn a_join_on_a_field_one_constructor_has_no_index_on_is_refused_naming_the_set() {
@@ -375,6 +266,11 @@ fn min_and_max_need_an_index_on_the_field_within_the_group() {
     assert!(refusals(&format!("{indexed}\n{decl}\n")).is_empty());
 }
 
+const NO_DOUBLE_BOOKING: &str = "constraint no_double_booking =
+  from a in bookings.(Room | Desk), b in bookings.(Room | Desk)
+  where a.resource == b.resource and overlaps(a.during, b.during) and key a != key b
+  select { a: key a, b: key b }";
+
 #[test]
 fn an_exclusion_over_a_range_needs_an_interval_index_after_its_equality_fields() {
     let plain = SPEC.replacen(
@@ -382,7 +278,7 @@ fn an_exclusion_over_a_range_needs_an_interval_index_after_its_equality_fields()
         "index (resource) in (Room | Desk)",
         1,
     );
-    let why = refusals(&format!("{plain}\n{}\n", ADMITTED[5].1));
+    let why = refusals(&format!("{plain}\n{NO_DOUBLE_BOOKING}\n"));
     assert!(
         !why.is_empty() && why.iter().all(|(_, d)| d.ends_with(
             "an exclusion under `overlaps` on during needs interval index (resource, during) in app::bookings"
@@ -485,12 +381,6 @@ store by_name
 }
 
 #[test]
-fn a_migration_declaring_has_identity_with_no_declared_index_is_admitted() {
-    let got = migrate(&format!("{RUNNING}{HAS_IDENTITY}"), None);
-    assert!(matches!(got.as_slice(), [Ok(())]), "{got:?}");
-}
-
-#[test]
 fn dropping_an_index_an_admitted_constraint_needs_is_refused_naming_the_constraint() {
     let by_email = "add constraint by_email =
   from u in users
@@ -528,40 +418,6 @@ fn dropping_the_declared_index_leading_a_reference_field_brings_back_the_implied
 /// An abort as the two sides are compared: what it is, and the rows it reports.
 type Failed = (String, BTreeSet<Val>);
 
-fn erase(v: &Value) -> Val {
-    match v {
-        Value::Int(x) => Val::Int(*x),
-        Value::Text(t) => Val::text(t),
-        Value::Bytes(b) => Val::Bytes(Arc::from(b.as_slice())),
-        Value::Instant(x) => Val::Instant(*x),
-        Value::Ctor(c, fs) => Val::ctor(*c, fs.iter().map(|(_, x)| erase(x)).collect()),
-        Value::Record(fs) => Val::record(fs.iter().map(|(_, x)| erase(x)).collect()),
-        Value::Key(x) => erase(x),
-        Value::Set(s) => Val::set(s.iter().map(erase).collect()),
-        other => panic!("no constraint history here holds {other:?}"),
-    }
-}
-
-fn erase_db(db: &adtb_reference::Database) -> Rows {
-    db.iter()
-        .filter(|(_, rows)| !rows.is_empty())
-        .map(|(k, rows)| (*k, rows.iter().map(erase).collect()))
-        .collect()
-}
-
-fn reference_error(a: &Abort) -> Failed {
-    match a {
-        Abort::Reject(Rejection::Violated { constraint, report }) => (
-            format!("Violated {constraint}"),
-            report.iter().map(erase).collect(),
-        ),
-        Abort::Reject(Rejection::KeyViolation { relation, .. }) => {
-            (format!("KeyViolation {relation}"), BTreeSet::new())
-        }
-        other => (format!("{other:?}"), BTreeSet::new()),
-    }
-}
-
 fn engine_error(schema: &Schema, e: &write::Error) -> Failed {
     match e {
         write::Error::Rejected(WRejection::Violated { constraint, report }) => {
@@ -593,18 +449,6 @@ fn prepare(f: &Fixture, text: &str) -> Prepared {
         item: normal.items[0],
         terms: normal.terms,
     }
-}
-
-/// What each statement of a history did, and the rows left after it.
-type Outcomes = (Vec<Result<(), Failed>>, Rows);
-
-fn reference(src: &str, steps: &[&str]) -> Outcomes {
-    let mut f = Fixture::new(src);
-    let out = steps
-        .iter()
-        .map(|s| f.run(s).map(drop).map_err(|a| reference_error(&a)))
-        .collect();
-    (out, erase_db(&f.db))
 }
 
 fn database(
@@ -660,52 +504,6 @@ fn with_engine<T>(
     got.unwrap_or_else(|| panic!("seed {seed}: the run gave nothing"))
 }
 
-fn engine(seed: u64, src: &str, steps: &[&str]) -> Outcomes {
-    with_engine(seed, src, |f, db| {
-        let mut out = Vec::new();
-        for s in steps {
-            let p = prepare(f, s);
-            let tx = db.begin().expect("a transaction");
-            match db.statement(&tx, &p.terms, p.item, &[], 0) {
-                Ok(_) => {
-                    db.commit(tx).expect("a commit");
-                    out.push(Ok(()));
-                }
-                Err(e) => {
-                    db.abort(tx).expect("an abort");
-                    out.push(Err(engine_error(&f.schema, &e)));
-                }
-            }
-        }
-        let tx = db.begin().expect("a transaction");
-        let rows = db.rows(&tx).expect("the rows");
-        db.abort(tx).expect("an abort");
-        (out, rows)
-    })
-}
-
-/// Asserts that the reference gives each statement of the history the outcome `steps` gives
-/// it, `true` for success, and that the engine agrees with it on every statement and on the
-/// rows left.
-fn agree(name: &str, src: &str, steps: &[(&str, bool)]) {
-    let texts: Vec<&str> = steps.iter().map(|(s, _)| *s).collect();
-    let want = reference(src, &texts);
-    for (i, ((s, ok), got)) in steps.iter().zip(&want.0).enumerate() {
-        assert_eq!(
-            *ok,
-            got.is_ok(),
-            "{name}: the reference on step {i} `{s}`: {got:?}"
-        );
-    }
-    for seed in 0..3 {
-        let got = engine(seed, src, &texts);
-        for (i, (w, g)) in want.0.iter().zip(&got.0).enumerate() {
-            assert_eq!(w, g, "{name}, seed {seed}: step {i} `{}`", texts[i]);
-        }
-        assert_eq!(want.1, got.1, "{name}, seed {seed}: the rows left");
-    }
-}
-
 const PEOPLE: &str = r"
 type User = { id: Key users, name: Text }
 relation users : User key id generate sequence index (name)
@@ -723,231 +521,6 @@ const HAS_ONE: &str = "constraint has_identity =
   select u
 ";
 
-#[test]
-fn at_least_one_identity_holds_against_inserts_deletes_and_moves() {
-    agree(
-        "has_identity",
-        &format!("{PEOPLE}{HAS_ONE}"),
-        &[
-            (r#"insert users { id: users.key(1), name: "ann" }"#, false),
-            (
-                r#"transact
-  insert users { id: users.key(1), name: "ann" }
-  insert identities.Google { id: identities.key(1), user: users.key(1), gid: "g1" }"#,
-                true,
-            ),
-            (
-                r#"transact
-  insert users { id: users.key(2), name: "bo" }
-  insert identities.Google { id: identities.key(2), user: users.key(2), gid: "g2" }
-  insert identities.EmailPass { id: identities.key(3), user: users.key(2), email: "b" }"#,
-                true,
-            ),
-            (
-                "delete i in identities where key i == identities.key(1)",
-                false,
-            ),
-            (
-                "delete i in identities where key i == identities.key(2)",
-                true,
-            ),
-            (
-                "update i in identities where key i == identities.key(3) set match i
-  | EmailPass e -> EmailPass { e with user: users.key(1) }
-  | Google g -> g",
-                false,
-            ),
-            (
-                "transact
-  delete i in identities where key i == identities.key(1)
-  delete u in users where key u == users.key(1)",
-                true,
-            ),
-        ],
-    );
-}
-
-#[test]
-fn a_constraint_through_two_nested_reads_sees_a_change_to_the_inner_one() {
-    let src = format!(
-        "{PEOPLE}
-constraint not_banned =
-  from u in users
-  where exists i in identities.Google where i.user == key u
-    and exists b in bans where b.gid == i.gid
-  select u
-"
-    );
-    agree(
-        "not_banned",
-        &src,
-        &[
-            (
-                r#"transact
-  insert users { id: users.key(1), name: "ann" }
-  insert identities.Google { id: identities.key(1), user: users.key(1), gid: "g1" }
-  insert bans { gid: "g9" }"#,
-                true,
-            ),
-            (r#"insert bans { gid: "g1" }"#, false),
-            (r#"delete b in bans where b.gid == "g9""#, true),
-            (
-                r#"insert identities.Google { id: identities.key(2), user: users.key(1), gid: "g9" }"#,
-                true,
-            ),
-            (r#"insert bans { gid: "g9" }"#, false),
-        ],
-    );
-}
-
-#[test]
-fn a_count_per_owner_holds_as_rows_join_leave_and_move_between_groups() {
-    let src = format!(
-        "{PEOPLE}
-constraint identity_limit =
-  from u in users
-  where count(i for i in identities where i.user == key u) > 2
-  select u
-"
-    );
-    agree(
-        "identity_limit",
-        &src,
-        &[
-            (r#"insert users { id: users.key(1), name: "ann" }"#, true),
-            (r#"insert users { id: users.key(2), name: "bo" }"#, true),
-            (
-                r#"insert identities from [
-  Google { id: identities.key(1), user: users.key(1), gid: "g1" },
-  EmailPass { id: identities.key(2), user: users.key(1), email: "e1" },
-  Google { id: identities.key(3), user: users.key(2), gid: "g3" }]"#,
-                true,
-            ),
-            (
-                r#"insert identities.Google { id: identities.key(4), user: users.key(1), gid: "g4" }"#,
-                false,
-            ),
-            (
-                "update i in identities where key i == identities.key(3) set match i
-  | EmailPass e -> e
-  | Google g -> Google { g with user: users.key(1) }",
-                false,
-            ),
-            (
-                r#"transact
-  delete i in identities where key i == identities.key(1)
-  insert identities.Google { id: identities.key(4), user: users.key(1), gid: "g4" }"#,
-                true,
-            ),
-        ],
-    );
-}
-
-const LEDGER: &str = r"
-type Entry = { id: Key entries, posted: I64 }
-relation entries : Entry key id generate sequence
-type Line = { id: Key lines, entry: Key entries on delete cascade, amount: I64, at: I64 }
-relation lines : Line key id generate sequence index (entry, amount)
-";
-
-const BALANCED: &str = "constraint balanced =
-  from e in entries
-  where sum(l.amount for l in lines where l.entry == key e) != 0
-  select e
-";
-
-#[test]
-fn a_sum_per_group_holds_and_a_cascade_reaches_it() {
-    agree(
-        "balanced",
-        &format!("{LEDGER}{BALANCED}"),
-        &[
-            ("insert entries { id: entries.key(1), posted: 0 }", true),
-            (
-                "insert lines { id: lines.key(1), entry: entries.key(1), amount: 5, at: 0 }",
-                false,
-            ),
-            (
-                "insert lines from [
-  Line { id: lines.key(1), entry: entries.key(1), amount: 5, at: 0 },
-  Line { id: lines.key(2), entry: entries.key(1), amount: -5, at: 0 }]",
-                true,
-            ),
-            (
-                "update l in lines where key l == lines.key(2) set Line { l with amount: -4 }",
-                false,
-            ),
-            ("delete e in entries where key e == entries.key(1)", true),
-        ],
-    );
-}
-
-#[test]
-fn min_and_max_per_group_hold() {
-    let src = format!(
-        "{LEDGER}
-constraint capped =
-  from e in entries
-  where match max(l.amount for l in lines where l.entry == key e)
-    | None -> false
-    | Some m -> m.value > 10
-  select e
-"
-    );
-    agree(
-        "capped",
-        &src,
-        &[
-            ("insert entries { id: entries.key(1), posted: 0 }", true),
-            (
-                "insert lines { id: lines.key(1), entry: entries.key(1), amount: 10, at: 0 }",
-                true,
-            ),
-            (
-                "insert lines { id: lines.key(2), entry: entries.key(1), amount: 11, at: 0 }",
-                false,
-            ),
-            (
-                "update l in lines where key l == lines.key(1) set Line { l with amount: 12 }",
-                false,
-            ),
-        ],
-    );
-}
-
-#[test]
-fn a_constraint_through_a_reference_sees_a_change_to_its_target() {
-    let src = format!(
-        "{LEDGER}
-constraint after_posting =
-  from l in lines where l.at < l.entry.posted select l
-"
-    );
-    agree(
-        "after_posting",
-        &src,
-        &[
-            ("insert entries { id: entries.key(1), posted: 10 }", true),
-            (
-                "insert lines { id: lines.key(1), entry: entries.key(1), amount: 1, at: 5 }",
-                false,
-            ),
-            (
-                "insert lines { id: lines.key(1), entry: entries.key(1), amount: 1, at: 20 }",
-                true,
-            ),
-            (
-                "update e in entries where key e == entries.key(1) set Entry { e with posted: 30 }",
-                false,
-            ),
-            (
-                "update e in entries where key e == entries.key(1) set Entry { e with posted: 15 }",
-                true,
-            ),
-        ],
-    );
-}
-
 const ROSTER: &str = r"
 type Membership = { id: Key memberships, user: Text, org: Text }
 relation memberships : Membership key id generate sequence unique (user, org)
@@ -958,183 +531,6 @@ constraint assigned_member =
   where not exists m in memberships where m.user == a.user and m.org == a.org
   select a
 ";
-
-#[test]
-fn an_inclusion_holds_from_both_sides() {
-    agree(
-        "assigned_member",
-        ROSTER,
-        &[
-            (
-                r#"insert memberships { id: memberships.key(1), user: "u", org: "o1" }"#,
-                true,
-            ),
-            (
-                r#"insert assignments { id: assignments.key(1), user: "u", org: "o1", task: "t1" }"#,
-                true,
-            ),
-            (
-                r#"insert assignments { id: assignments.key(2), user: "u", org: "o2", task: "t2" }"#,
-                false,
-            ),
-            (r#"delete m in memberships where m.user == "u""#, false),
-            (
-                r#"update m in memberships where m.user == "u" set Membership { m with org: "o3" }"#,
-                false,
-            ),
-            (
-                r#"transact
-  delete a in assignments where a.org == "o1"
-  delete m in memberships where m.org == "o1""#,
-                true,
-            ),
-        ],
-    );
-}
-
-#[test]
-fn a_functional_dependency_and_an_exclusion_hold() {
-    let src = r"
-type Place { id: Key places }
-  = US   { zip: Text, state: Text }
-  | Intl { country: Text, postcode: Text }
-relation places : Place key id generate sequence index (zip) in US
-constraint zip_state =
-  from a in places.US, b in places.US
-  where a.zip == b.zip and a.state != b.state
-  select { zip: a.zip }
-type Booking { id: Key bookings, resource: Text, during: Span I64 }
-  = Room { seats: I64 }
-  | Desk
-relation bookings : Booking
-  key id generate sequence
-  interval index (resource, during) in (Room | Desk)
-constraint no_double_booking =
-  from a in bookings.(Room | Desk), b in bookings.(Room | Desk)
-  where a.resource == b.resource and overlaps(a.during, b.during) and key a != key b
-  select { a: key a, b: key b }
-";
-    agree(
-        "zip_state and no_double_booking",
-        src,
-        &[
-            (
-                r#"insert places.US { id: places.key(1), zip: "1", state: "A" }"#,
-                true,
-            ),
-            (
-                r#"insert places.US { id: places.key(2), zip: "1", state: "B" }"#,
-                false,
-            ),
-            (
-                r#"insert places.Intl { id: places.key(2), country: "x", postcode: "1" }"#,
-                true,
-            ),
-            (
-                r#"insert bookings.Room { id: bookings.key(1), resource: "r1", during: span(10, 20), seats: 4 }"#,
-                true,
-            ),
-            (
-                r#"insert bookings.Desk { id: bookings.key(2), resource: "r1", during: span(15, 16) }"#,
-                false,
-            ),
-            (
-                r#"insert bookings.Desk { id: bookings.key(2), resource: "r2", during: span(15, 16) }"#,
-                true,
-            ),
-            (
-                r#"update b in bookings.Desk where key b == bookings.key(2) set Desk { b with resource: "r1" }"#,
-                false,
-            ),
-        ],
-    );
-}
-
-#[test]
-fn transition_constraints_read_the_change_and_the_pre_state() {
-    let src = r"
-type User = { id: Key users, name: Text }
-relation users : User key id generate sequence index (name)
-constraint name_not_reused =
-  from n in inserted(users), o in prior(users)
-  where o.name == n.name and key o != key n
-  select n
-constraint name_kept =
-  from n in users, o in prior(users)
-  where key o == key n and o.name != n.name
-  select n
-type Event = { id: Key events, body: Text }
-relation events : Event key id generate sequence
-constraint append_only = from e in deleted(events) select e
-";
-    agree(
-        "transitions",
-        src,
-        &[
-            (r#"insert users { id: users.key(1), name: "ann" }"#, true),
-            (r#"insert users { id: users.key(2), name: "bo" }"#, true),
-            (r#"insert users { id: users.key(3), name: "ann" }"#, false),
-            (
-                r#"update u in users where key u == users.key(2) set User { u with name: "cy" }"#,
-                false,
-            ),
-            (
-                r#"transact
-  delete u in users where key u == users.key(1)
-  insert users { id: users.key(3), name: "ann" }"#,
-                false,
-            ),
-            (
-                r#"transact
-  delete u in users where key u == users.key(1)
-  insert users { id: users.key(3), name: "dee" }"#,
-                true,
-            ),
-            (r#"insert events { id: events.key(1), body: "a" }"#, true),
-            ("delete e in events", false),
-        ],
-    );
-}
-
-/// Returns statements inserting entries `1..=n`, ten to a statement.
-fn ledger_entries(n: i64) -> Vec<String> {
-    (0..n / 10)
-        .map(|k| {
-            let rows: Vec<String> = (1..=10)
-                .map(|j| format!("Entry {{ id: entries.key({}), posted: 0 }}", k * 10 + j))
-                .collect();
-            format!("insert entries from [{}]", rows.join(", "))
-        })
-        .collect()
-}
-
-/// Returns one statement inserting two lines into every entry that balance it, and when
-/// `skewed` a third line into entry 7.
-fn ledger_lines(skewed: bool) -> String {
-    let extra = if skewed {
-        "\n  insert lines { id: lines.key(1), entry: entries.key(7), amount: 1, at: 0 }"
-    } else {
-        ""
-    };
-    format!(
-        "transact
-  insert lines from (from e in entries
-    select Line {{ id: lines.key(value(key e) * 10), entry: key e, amount: 2, at: 0 }})
-  insert lines from (from e in entries
-    select Line {{ id: lines.key(value(key e) * 10 + 1), entry: key e, amount: -2, at: 0 }}){extra}"
-    )
-}
-
-#[test]
-fn a_large_change_set_is_checked_whole() {
-    let entries = ledger_entries(200);
-    let bad = ledger_lines(true);
-    let good = ledger_lines(false);
-    let mut steps: Vec<(&str, bool)> = entries.iter().map(|e| (e.as_str(), true)).collect();
-    steps.push((bad.as_str(), false));
-    steps.push((good.as_str(), true));
-    agree("a large change set", &format!("{LEDGER}{BALANCED}"), &steps);
-}
 
 /// Runs `a` and `b` in two transactions in the order `order` gives, a sequence over `'a'` and
 /// `'b'` for a statement and `'A'` and `'B'` for a commit. Returns how each ended.
@@ -1327,29 +723,6 @@ fn a_transition_read_in_an_if_condition_is_refused() {
         )],
         why
     );
-}
-
-#[test]
-fn two_nots_around_a_transition_read_cancel() {
-    let decl = "constraint no_reopen =
-  from n in inserted(accounts.Open)
-  where not (not (exists o in deleted(accounts.Closed) where key o == key n))
-  select n";
-    let why = refusals(&format!("{SPEC}\n{decl}\n"));
-    assert!(
-        why.iter().all(|(_, d)| !d.contains("under negation")),
-        "{why:?}"
-    );
-}
-
-#[test]
-fn a_prior_read_under_negation_is_admitted() {
-    let decl = "constraint was_there =
-  from n in inserted(accounts)
-  where not exists o in prior(accounts) where key o == key n
-  select n";
-    let why = refusals(&format!("{SPEC}\n{decl}\n"));
-    assert!(why.iter().all(|(_, d)| !d.contains("is read")), "{why:?}");
 }
 
 #[test]

@@ -26,6 +26,8 @@ error Violated
   insert lines { id: lines.key(2), entry: entries.key(1), amount: -1 }
 error Violated
   update e in entries set Entry { e with cap: 9 }
+error Violated
+  update l in lines where key l == lines.key(1) set Line { l with amount: 12 }
 run
   insert lines { id: lines.key(2), entry: entries.key(1), amount: -2 }
 query

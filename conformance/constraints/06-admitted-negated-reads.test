@@ -1,0 +1,31 @@
+# A transition read under two nots is not under negation, and a prior read may be under negation: both are admitted.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Account { id: Key accounts, owner: Key users }
+    = Open
+    | Closed { closed: I64 }
+  relation accounts : Account key id generate sequence
+  constraint no_reopen =
+    from n in inserted(accounts.Open)
+    where not (not (exists o in deleted(accounts.Closed) where key o == key n))
+    select n
+  type Badge = { id: Key badges, name: Text }
+  relation badges : Badge key id generate sequence
+  constraint was_there =
+    from n in inserted(badges)
+    where not exists o in prior(badges) where key o == key n
+    select n
+run
+  insert users { id: users.key(1), name: "ann" }
+  insert accounts.Closed { id: accounts.key(1), owner: users.key(1), closed: 5 }
+  insert accounts.Open { id: accounts.key(2), owner: users.key(1) }
+error Violated
+  update a in accounts.Closed set Open { owner: a.owner }
+error Violated
+  insert badges { id: badges.key(1), name: "b" }
+query
+  from a in accounts.Open select value(key a)
+----
+2

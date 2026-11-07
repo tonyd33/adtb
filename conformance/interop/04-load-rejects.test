@@ -1,0 +1,74 @@
+# A load with rejects routes each failed record to the rejects relation under one load per statement; a violation aborts the whole load.
+schema
+  module test
+  type Small = { id: I64, name: Text }
+  type Staged = { line: I64, id: I64, name: Text }
+  relation outs : Small key id
+  relation out_rejects : RejectedRow key (load, line)
+# A record that does not convert and a reject both go to the rejects relation with their line, source, raw text and reason.
+run
+  insert outs from (
+    from r in read_csv("data/scan/rejects.csv", Small)
+    select Small { id: r.id, name: if r.name == "" then reject "no name" else r.name })
+  rejects into out_rejects
+query rowsort
+  from o in outs select o.id
+----
+1
+4
+query rowsort
+  from j in out_rejects select { line: j.line, source: j.source, raw: j.raw }
+----
+{ line: 2, raw: "x,bo", source: "data/scan/rejects.csv" }
+{ line: 3, raw: "3,", source: "data/scan/rejects.csv" }
+query
+  from j in out_rejects where j.line == 3 select j.reason
+----
+"no name"
+query
+  from j in out_rejects where j.line == 2 select matches(j.reason, "`id`")
+----
+true
+query
+  count(l for l in (from j in out_rejects select j.load))
+----
+1
+# Each load with rejects has a load of its own.
+run
+  insert outs from (from r in read_csv("data/scan/one-bad.csv", Small) select r)
+  rejects into out_rejects
+query
+  count(l for l in (from j in out_rejects select j.load))
+----
+2
+# A constraint violation aborts the whole load and keeps no rejects.
+run
+  delete j in out_rejects
+  delete o in outs
+error KeyViolation
+  insert outs from (from r in read_csv("data/scan/key-clash.csv", Small) select r)
+  rejects into out_rejects
+query
+  count(j for j in out_rejects)
+----
+0
+# A staged load lands in a temp relation, then moves with rejects named by the temp relation.
+run
+  delete o in outs
+  temp relation stage : Staged key line
+  temp relation stage_rejects : RejectedRow key (load, line)
+  insert stage from (from r in read_csv("data/scan/staged.csv", Staged) select r)
+  delete s in stage where s.line == 3
+  insert outs from (
+    from s in stage
+    select Small { id: s.id, name: if s.name == "" then reject "no name" else s.name })
+  rejects into stage_rejects
+  insert out_rejects from (from j in stage_rejects select j)
+query
+  from o in outs select o.name
+----
+"ann"
+query
+  from j in out_rejects select { line: j.line, source: j.source, reason: j.reason }
+----
+{ line: 2, reason: "no name", source: "stage" }

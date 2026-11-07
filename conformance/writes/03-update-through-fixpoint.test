@@ -1,0 +1,30 @@
+# An update or delete whose target is a fixpoint over a relation writes the rows of that relation, and no other relation.
+schema
+  module test
+  type Row = { id: I64, public: Text, secret: Text }
+  relation left : Row key id
+  relation right : Row key id
+run
+  insert left Row { id: 1, public: "left one", secret: "left secret" }
+  insert left Row { id: 2, public: "left two", secret: "left secret" }
+  insert right Row { id: 1, public: "right one", secret: "right secret" }
+run
+  update x in (fix rows = left union rows in rows) set x
+run
+  update x in (
+      fix a = b, b = (from seed in left where seed.id == 1 select seed) union a
+      in from x in a where key x == left.key(1) select x)
+    set Row { x with public: "changed" }
+run
+  delete x in (
+      fix rows = (from seed in left where seed.id == 2 select seed)
+                 union (from x in rows select x)
+      in rows union [])
+query
+  left
+----
+Row { id: 1, public: "changed", secret: "left secret" }
+query
+  right
+----
+Row { id: 1, public: "right one", secret: "right secret" }

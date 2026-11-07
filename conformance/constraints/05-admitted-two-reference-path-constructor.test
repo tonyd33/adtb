@@ -1,0 +1,85 @@
+# A path through two references from one constructor is admitted and holds from each relation on the path and from a retag into and out of that constructor.
+schema
+  module test
+  type Campaign = { id: Key campaigns, name: Text }
+  relation campaigns : Campaign key id generate sequence
+  type Entity { id: Key entities, campaign: Key campaigns, name: Text }
+    = Npc
+    | Pc { player: Text }
+    | Place { parent: Option (Key entities.Place) }
+  relation entities : Entity key id generate sequence
+  set Characters of entities = Npc | Pc
+  type Quest { id: Key quests, campaign: Key campaigns, giver: Option (Key entities.Characters) }
+    = Open
+    | Done { outcome: Text }
+  relation quests : Quest key id generate sequence
+  type Discovery { id: Key discoveries, party: Key entities }
+    = KnowsEntity { entity: Key entities }
+    | KnowsQuest { quest: Key quests }
+  relation discoveries : Discovery key id generate sequence
+  type Session = { id: Key sessions, campaign: Key campaigns, number: I64 }
+  relation sessions : Session key id generate sequence
+  type Encounter = { id: Key encounters, session: Key sessions }
+  relation encounters : Encounter key id generate sequence
+  type Combatant { id: Key combatants, encounter: Key encounters, who: Key entities.Characters }
+    = Cast
+    | Extra { kind: Text }
+  relation combatants : Combatant key id generate sequence
+  constraint cast_in_campaign =
+    from c in combatants.Cast
+    where c.who.campaign != c.encounter.session.campaign
+    select c
+run
+  transact
+    insert campaigns { id: campaigns.key(1), name: "one" }
+    insert campaigns { id: campaigns.key(2), name: "two" }
+    insert entities.Npc { id: entities.key(1), campaign: campaigns.key(1), name: "ann" }
+    insert entities.Npc { id: entities.key(2), campaign: campaigns.key(2), name: "bo" }
+    insert entities.Pc { id: entities.key(3), campaign: campaigns.key(1), name: "cy", player: "p" }
+run
+  transact
+    insert sessions { id: sessions.key(1), campaign: campaigns.key(1), number: 1 }
+    insert sessions { id: sessions.key(2), campaign: campaigns.key(2), number: 1 }
+    insert encounters { id: encounters.key(1), session: sessions.key(1) }
+    insert encounters { id: encounters.key(2), session: sessions.key(2) }
+error Violated
+  insert combatants.Cast from (from w in entities.Characters where key w == entities.key(2) select { id: combatants.key(1), encounter: encounters.key(1), who: key w })
+run
+  insert combatants.Cast from (from w in entities.Characters where key w == entities.key(1) select { id: combatants.key(1), encounter: encounters.key(1), who: key w })
+error Violated
+  update e in encounters where key e == encounters.key(1) set Encounter { e with session: sessions.key(2) }
+error Violated
+  update s in sessions where key s == sessions.key(1) set Session { s with campaign: campaigns.key(2) }
+error Violated
+  update e in entities where key e == entities.key(1) set match e
+    | Npc n -> Npc { n with campaign: campaigns.key(2) }
+    | Pc p -> p
+    | Place l -> l
+run
+  update c in combatants where key c == combatants.key(1) set match c
+    | Cast k -> Extra { encounter: encounters.key(2), who: k.who, kind: "rat" }
+    | Extra x -> x
+error Violated
+  update c in combatants where key c == combatants.key(1) set match c
+    | Cast k -> k
+    | Extra x -> Cast { encounter: encounters.key(2), who: x.who }
+run
+  update c in combatants where key c == combatants.key(1) set match c
+    | Cast k -> k
+    | Extra x -> Cast { encounter: encounters.key(1), who: x.who }
+run
+  transact
+    update s in sessions where key s == sessions.key(2) set Session { s with campaign: campaigns.key(1) }
+    update e in entities where key e == entities.key(2) set match e
+      | Npc n -> Npc { n with campaign: campaigns.key(1) }
+      | Pc p -> p
+      | Place l -> l
+query
+  from c in combatants.Cast select { id: value(key c), encounter: value(c.encounter) }
+----
+{ encounter: 1, id: 1 }
+query rowsort
+  from s in sessions select { id: value(key s), campaign: value(s.campaign) }
+----
+{ campaign: 1, id: 1 }
+{ campaign: 1, id: 2 }

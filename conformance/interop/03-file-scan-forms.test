@@ -1,0 +1,71 @@
+# A file scan is a set of the records of every file its path matches, each file read by its format's record rules.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Small = { id: I64, name: Text }
+  type Named = { name: Text }
+  type Identity { id: Key identities, user: Key users } = Google { gid: Text } | Apple { sub: Text }
+  relation identities : Identity key id generate sequence
+run
+  insert users { id: users.key(1), name: "ann" }
+# A glob reads every file it matches as one relation, and a glob that matches nothing is empty.
+query rowsort
+  from r in read_csv("data/scan/logs/a-*.csv", Small) select r.id
+----
+1
+2
+query
+  count(r for r in read_csv("data/scan/logs/z-*.csv", Small))
+----
+0
+# Equal records are one row.
+query
+  count(r for r in read_csv("data/scan/twice.csv", Small))
+----
+1
+# A blank line is no record, and a CRLF ends a record like LF.
+query
+  from r in read_csv("data/scan/blank-one.csv", Named) select r.name
+----
+"ann"
+query rowsort
+  from r in read_csv("data/scan/blank-two.csv", Small) select r.id
+----
+1
+2
+# A bare carriage return ends a record.
+query rowsort
+  from r in read_csv("data/scan/cr.csv", Small) select r.id
+----
+1
+2
+# A leading byte order mark is not part of the file.
+query
+  from r in read_csv("data/scan/bom.csv", Small) select r.name
+----
+"ann"
+query
+  from r in read_ndjson("data/scan/bom.ndjson", Small) select r.name
+----
+"ann"
+# NDJSON reads members in any order, ignores a member no field names, and a blank line is no record.
+query rowsort
+  from r in read_ndjson("data/scan/members.ndjson", Small) select r.name
+----
+"ann"
+"bo"
+# An NDJSON sum row is an object of one member named by its constructor.
+query
+  read_ndjson("data/scan/identity.ndjson", Identity)
+----
+Google { id: identities.key(7), user: users.key(1), gid: "g-1" }
+# A glob of many stars matches in polynomial time.
+query
+  count(r for r in read_csv("data/stars/*a*a*a*a*a*a*a*a*a*a*a*a*b", Small))
+----
+0
+query
+  from r in read_csv("data/stars/*a*a*a*a*a*a*a*a*a*.c?v", Small) select r.id
+----
+1

@@ -1,0 +1,41 @@
+# A temp relation is keyed by its whole row without a key clause, may hold an anonymous record, and updates and deletes like any relation.
+schema
+  module test
+  type Small = { id: I64, name: Text }
+  type Pair = { a: I64, b: I64 }
+  type Count = { n: I64 }
+  relation counts : Count key n
+  relation smalls : Small key id
+run
+  temp relation pairs : Pair
+  insert pairs { a: 1, b: 1 }
+  insert pairs { a: 1, b: 2 }
+  insert counts { n: count(p for p in pairs) }
+query
+  from c in counts select c.n
+----
+2
+error KeyViolation
+  temp relation pairs : Pair
+  insert pairs { a: 1, b: 2 }
+  insert pairs { a: 1, b: 2 }
+run
+  delete c in counts
+  temp relation sums : { a: I64, b: I64 } key a
+  insert sums { a: 1, b: 2 }
+  insert counts from (from s in sums select { n: s.a + s.b })
+query
+  from c in counts select c.n
+----
+3
+run
+  temp relation stage : Small key id
+  insert stage { id: 1, name: "ann" }
+  insert stage { id: 2, name: "bo" }
+  update s in stage where s.id == 2 set Small { s with name: "BO" }
+  delete s in stage where s.id == 1
+  insert smalls from (from s in stage select s)
+query
+  smalls
+----
+Small { id: 2, name: "BO" }

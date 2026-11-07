@@ -1,0 +1,47 @@
+# A join on a reference field is admitted through the index each reference field implies, with no index declared.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+  relation identities : Identity key id generate sequence
+  constraint has_identity =
+    from u in users
+    where not exists i in identities where i.user == key u
+    select u
+  type Spot { id: Key spots, zone: Text }
+    = Region { parent: Option (Key spots.(Region | Town)) }
+    | Town   { parent: Option (Key spots.(Region | Town)) }
+    | Mark   { label: Text }
+  relation spots : Spot key id generate sequence
+  constraint parent_in_zone =
+    from l in spots.(Region | Town), p in spots.(Region | Town)
+    where l.parent == Some { value: key p } and p.zone != l.zone
+    select l
+error Violated
+  insert users { id: users.key(1), name: "ann" }
+run
+  transact
+    insert users { id: users.key(1), name: "ann" }
+    insert identities.Google { id: identities.key(1), user: users.key(1), gid: "g" }
+error Violated
+  delete i in identities
+# each constructor of the set holds its own parent field
+run
+  insert spots.Region { id: spots.key(1), zone: "a", parent: None }
+  insert spots.Town { id: spots.key(2), zone: "a", parent: (match spots.key(1) | Region x -> Some { value: key x } | Town x -> Some { value: key x } | Mark _ -> None) }
+  insert spots.Mark { id: spots.key(3), zone: "b", label: "m" }
+error Violated
+  insert spots.Region { id: spots.key(4), zone: "b", parent: (match spots.key(2) | Region x -> Some { value: key x } | Town x -> Some { value: key x } | Mark _ -> None) }
+error Violated
+  update s in spots.Region where key s == spots.key(1) set Region { s with zone: "b" }
+run
+  insert spots.Region { id: spots.key(4), zone: "a", parent: (match spots.key(2) | Region x -> Some { value: key x } | Town x -> Some { value: key x } | Mark _ -> None) }
+query rowsort
+  from s in spots.(Region | Town) select value(key s)
+----
+1
+2
+4

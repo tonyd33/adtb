@@ -1,0 +1,2 @@
+id,name,nick,owner,level,pos.x,pos.y,via.tag,via.Email.addr,via.Phone.num,amount,ratio
+1,ann,,1,High,3,4,Email,a@b.example,,12.50,0.5

@@ -1,0 +1,92 @@
+# A join through an optional reference written the other way round is admitted and holds like the join it mirrors.
+schema
+  module test
+  type Campaign = { id: Key campaigns, name: Text }
+  relation campaigns : Campaign key id generate sequence
+  type Entity { id: Key entities, campaign: Key campaigns, name: Text }
+    = Npc
+    | Pc { player: Text }
+    | Place { parent: Option (Key entities.Place) }
+  relation entities : Entity key id generate sequence
+  set Characters of entities = Npc | Pc
+  type Quest { id: Key quests, campaign: Key campaigns, giver: Option (Key entities.Characters) }
+    = Open
+    | Done { outcome: Text }
+  relation quests : Quest key id generate sequence
+  type Discovery { id: Key discoveries, party: Key entities }
+    = KnowsEntity { entity: Key entities }
+    | KnowsQuest { quest: Key quests }
+  relation discoveries : Discovery key id generate sequence
+  type Session = { id: Key sessions, campaign: Key campaigns, number: I64 }
+  relation sessions : Session key id generate sequence
+  type Encounter = { id: Key encounters, session: Key sessions }
+  relation encounters : Encounter key id generate sequence
+  type Combatant { id: Key combatants, encounter: Key encounters, who: Key entities.Characters }
+    = Cast
+    | Extra { kind: Text }
+  relation combatants : Combatant key id generate sequence
+  constraint giver_in_campaign =
+    from q in quests, c in entities.Characters
+    where Some { value: key c } == q.giver and q.campaign != c.campaign
+    select q
+run
+  transact
+    insert campaigns { id: campaigns.key(1), name: "one" }
+    insert campaigns { id: campaigns.key(2), name: "two" }
+    insert entities.Npc { id: entities.key(1), campaign: campaigns.key(1), name: "ann" }
+    insert entities.Npc { id: entities.key(2), campaign: campaigns.key(2), name: "bo" }
+    insert entities.Pc { id: entities.key(3), campaign: campaigns.key(1), name: "cy", player: "p" }
+run
+  insert quests.Open { id: quests.key(1), campaign: campaigns.key(1), giver: None }
+error Violated
+  insert quests.Open { id: quests.key(2), campaign: campaigns.key(1), giver: (match entities.key(2) | Npc x -> Some { value: key x } | Pc x -> Some { value: key x } | Place _ -> None) }
+run
+  insert quests.Open { id: quests.key(2), campaign: campaigns.key(1), giver: (match entities.key(1) | Npc x -> Some { value: key x } | Pc x -> Some { value: key x } | Place _ -> None) }
+error Violated
+  update q in quests where key q == quests.key(1) set match q
+    | Open o -> Open { o with giver: (match entities.key(2) | Npc x -> Some { value: key x } | Pc x -> Some { value: key x } | Place _ -> None) }
+    | Done d -> d
+run
+  update q in quests where key q == quests.key(1) set match q
+    | Open o -> Open { o with giver: (match entities.key(3) | Npc x -> Some { value: key x } | Pc x -> Some { value: key x } | Place _ -> None) }
+    | Done d -> d
+error Violated
+  update e in entities where key e == entities.key(1) set match e
+    | Npc n -> Npc { n with campaign: campaigns.key(2) }
+    | Pc p -> p
+    | Place l -> l
+error Violated
+  update e in entities where key e == entities.key(3) set match e
+    | Npc n -> n
+    | Pc p -> Npc { campaign: campaigns.key(2), name: p.name }
+    | Place l -> l
+run
+  update e in entities where key e == entities.key(3) set match e
+    | Npc n -> n
+    | Pc p -> Npc { campaign: p.campaign, name: p.name }
+    | Place l -> l
+error Violated
+  update q in quests where key q == quests.key(2) set match q
+    | Open o -> Done { campaign: campaigns.key(2), giver: o.giver, outcome: "x" }
+    | Done d -> d
+run
+  update q in quests where key q == quests.key(2) set match q
+    | Open o -> Done { campaign: o.campaign, giver: o.giver, outcome: "x" }
+    | Done d -> d
+run
+  transact
+    delete q in quests where key q == quests.key(2)
+    update e in entities where key e == entities.key(1) set match e
+      | Npc n -> Npc { n with campaign: campaigns.key(2) }
+      | Pc p -> p
+      | Place l -> l
+query rowsort
+  from e in entities select { id: value(key e), campaign: value(e.campaign) }
+----
+{ campaign: 1, id: 3 }
+{ campaign: 2, id: 1 }
+{ campaign: 2, id: 2 }
+query
+  from q in quests select { id: value(key q), giver: q.giver }
+----
+{ giver: Some { value: entities.key(3) }, id: 1 }

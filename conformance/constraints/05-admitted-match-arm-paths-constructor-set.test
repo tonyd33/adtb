@@ -1,0 +1,85 @@
+# Paths inside the arms of a match over a sum, to a constructor set and to a sum, are admitted and hold from every relation an arm reaches, a retag of the matched row included.
+schema
+  module test
+  type Campaign = { id: Key campaigns, name: Text }
+  relation campaigns : Campaign key id generate sequence
+  type Entity { id: Key entities, campaign: Key campaigns, name: Text }
+    = Npc
+    | Pc { player: Text }
+    | Place { parent: Option (Key entities.Place) }
+  relation entities : Entity key id generate sequence
+  set Characters of entities = Npc | Pc
+  type Quest { id: Key quests, campaign: Key campaigns, giver: Option (Key entities.Characters) }
+    = Open
+    | Done { outcome: Text }
+  relation quests : Quest key id generate sequence
+  type Discovery { id: Key discoveries, party: Key entities }
+    = KnowsEntity { entity: Key entities }
+    | KnowsQuest { quest: Key quests }
+  relation discoveries : Discovery key id generate sequence
+  type Session = { id: Key sessions, campaign: Key campaigns, number: I64 }
+  relation sessions : Session key id generate sequence
+  type Encounter = { id: Key encounters, session: Key sessions }
+  relation encounters : Encounter key id generate sequence
+  type Combatant { id: Key combatants, encounter: Key encounters, who: Key entities.Characters }
+    = Cast
+    | Extra { kind: Text }
+  relation combatants : Combatant key id generate sequence
+  constraint discovery_in_campaign =
+    from d in discoveries
+    where d.party.campaign != (match d
+      | KnowsEntity k -> k.entity.campaign
+      | KnowsQuest q -> q.quest.campaign)
+    select d
+run
+  transact
+    insert campaigns { id: campaigns.key(1), name: "one" }
+    insert campaigns { id: campaigns.key(2), name: "two" }
+    insert entities.Npc { id: entities.key(1), campaign: campaigns.key(1), name: "ann" }
+    insert entities.Npc { id: entities.key(2), campaign: campaigns.key(2), name: "bo" }
+    insert entities.Pc { id: entities.key(3), campaign: campaigns.key(1), name: "cy", player: "p" }
+run
+  insert quests.Open { id: quests.key(1), campaign: campaigns.key(1), giver: None }
+error Violated
+  insert discoveries.KnowsEntity { id: discoveries.key(1), party: entities.key(1), entity: entities.key(2) }
+run
+  insert discoveries.KnowsEntity { id: discoveries.key(1), party: entities.key(1), entity: entities.key(3) }
+run
+  insert discoveries.KnowsQuest { id: discoveries.key(2), party: entities.key(1), quest: quests.key(1) }
+error Violated
+  update q in quests where key q == quests.key(1) set match q
+    | Open o -> Open { o with campaign: campaigns.key(2) }
+    | Done d -> d
+error Violated
+  update e in entities where key e == entities.key(3) set match e
+    | Npc n -> n
+    | Pc p -> Pc { p with campaign: campaigns.key(2) }
+    | Place l -> l
+error Violated
+  update e in entities where key e == entities.key(1) set match e
+    | Npc n -> Npc { n with campaign: campaigns.key(2) }
+    | Pc p -> p
+    | Place l -> l
+error Violated
+  update d in discoveries where key d == discoveries.key(2) set match d
+    | KnowsEntity k -> k
+    | KnowsQuest q -> KnowsEntity { party: q.party, entity: entities.key(2) }
+run
+  update d in discoveries where key d == discoveries.key(2) set match d
+    | KnowsEntity k -> k
+    | KnowsQuest q -> KnowsEntity { party: q.party, entity: entities.key(3) }
+run
+  transact
+    delete d in discoveries
+    update e in entities where key e == entities.key(1) set match e
+      | Npc n -> Npc { n with campaign: campaigns.key(2) }
+      | Pc p -> p
+      | Place l -> l
+query
+  count(d for d in discoveries)
+----
+0
+query
+  from e in entities where key e == entities.key(1) select value(e.campaign)
+----
+2

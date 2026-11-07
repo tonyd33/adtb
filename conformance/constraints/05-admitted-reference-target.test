@@ -1,0 +1,27 @@
+# A constraint through a reference sees a change to the row the reference names.
+schema
+  module test
+  type Entry = { id: Key entries, posted: I64 }
+  relation entries : Entry key id generate sequence
+  type Line = { id: Key lines, entry: Key entries on delete cascade, amount: I64, at: I64 }
+  relation lines : Line key id generate sequence index (entry, amount)
+  constraint after_posting =
+    from l in lines where l.at < l.entry.posted select l
+run
+  insert entries { id: entries.key(1), posted: 10 }
+error Violated
+  insert lines { id: lines.key(1), entry: entries.key(1), amount: 1, at: 5 }
+run
+  insert lines { id: lines.key(1), entry: entries.key(1), amount: 1, at: 20 }
+error Violated
+  update e in entries where key e == entries.key(1) set Entry { e with posted: 30 }
+run
+  update e in entries where key e == entries.key(1) set Entry { e with posted: 15 }
+query
+  from e in entries select e.posted
+----
+15
+query
+  from l in lines select l.at
+----
+20

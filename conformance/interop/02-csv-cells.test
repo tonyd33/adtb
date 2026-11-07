@@ -1,0 +1,51 @@
+# A CSV file maps each cell by its column's name to the field of the declared row type.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Via = Email { addr: Text } | Phone { num: Text }
+  type Level = Low | High
+  type Point = { x: I32, y: I32 }
+  type Wide = { id: I64, name: Text, nick: Option Text, owner: Key users, level: Level,
+                pos: Point, via: Via, amount: Decimal 2, ratio: F64 }
+  type Small = { id: I64, name: Text }
+  type Nick = { id: I64, nick: Option Text }
+  type Identity { id: Key identities, user: Key users } = Google { gid: Text } | Apple { sub: Text }
+  relation identities : Identity key id generate sequence
+run
+  insert users { id: users.key(1), name: "ann" }
+  insert users { id: users.key(2), name: "bo" }
+# Columns are read by name in any order, and a column no field names is ignored.
+query rowsort
+  from r in read_csv("data/scan/by-name.csv", Small) select r.name
+----
+"ann"
+"bo"
+query rowsort
+  from r in read_csv("data/scan/by-name.csv", Small) select r.id
+----
+1
+2
+# Every type mapping of a cell: an empty Option, a key, an enumeration, record and sum columns, a decimal and a float.
+query
+  read_csv("data/scan/wide.csv", Wide)
+----
+Wide { id: 1, name: "ann", nick: None, owner: users.key(1), level: High, pos: Point { x: 3, y: 4 }, via: Email { addr: "a@b.example" }, amount: 12.50, ratio: 0.5 }
+# An empty unquoted cell is None, and a quoted empty one is Some of the empty text.
+query rowsort
+  from r in read_csv("data/scan/nicks.csv", Nick) select r.nick
+----
+None
+Some { value: "" }
+Some { value: "cy" }
+# A missing column of an Option field reads None.
+query
+  from r in read_csv("data/scan/ids.csv", Nick) select r.nick
+----
+None
+# A sum row type reads its constructor from the tag column and its fields from the constructor's columns.
+query rowsort
+  read_csv("data/scan/identities.csv", Identity)
+----
+Apple { id: identities.key(8), user: users.key(2), sub: "s-2" }
+Google { id: identities.key(7), user: users.key(1), gid: "g-1" }
