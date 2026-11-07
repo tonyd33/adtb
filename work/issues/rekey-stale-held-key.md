@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-06
-status: open
+status: resolved
 kind: bug
 priority: 350
-summary: a rekey of r is accepted by the checker and refused at apply, naming no field, when another relation holds Key r in its key
+summary: "a rekey of r is accepted by the checker and refused at apply, naming no field, when another relation holds Key r in its key"
+closed: 2026-11-06
 tags:
   - class-none
 ---
@@ -25,3 +26,9 @@ On main and with change 2: when relation `s` has a key field typed `Key r`, a re
 ## 2026-11-06 ruled: explicit carry at any depth
 
 The direct case (a `Key r` in `s`'s key, carried) already works on main. The transitive case (a `Key s` field elsewhere, when `s`'s key holds `Key r`) is refused at apply naming no field; evolution.md §4.10 is silent on it. Ruled: the `carry` clause lists every field whose type holds `Key r` directly or through the key of a relation it references, at any depth; the checker requires each and names a missing one; apply rewrites each listed field from the old key of the referenced row to the new. Carry keeps its rule that the author names every field whose stored value the rekey rewrites. Rejected: implicit rewriting (unnamed rewrites), refusing the rekey (loses an expressible migration).
+
+## 2026-11-06: fixed
+
+`fix: require and rewrite carried keys held through another relation's key`. evolution.md §4.10 and the schema-change.md `rekey` row: a rekey of `r` retypes every field whose type holds `Key r` or `Key r.S`, directly or through the key of a relation it references, at any depth, and each must be listed in `carry`; a field of `r`'s own type typed `Key r` directly stays excluded, as the spec already states. Checker: `refers` follows `Key s` into `s`'s key type (`Schema::reached`) and names a missing field. Apply: `Refs::within` follows `Key s` into `layout::key_value_ty(s)`, guarded against key cycles, so the fill rewrites the nested key from the referenced row's old key to its new. Scripts (oplog/rekey-key-held-*, rekey-own-field-held-*): two and three levels and an own-type field held through another key, exact rows forward, after reopen and on revert, and the exact refusals; the transitive script failed on main with "picks: a key field has no value in stored keys". Review: no blockers; the own-type field the checker skipped but apply rewrote, and the spec wording, fixed. `check --changed`: only the ticketed btree timeout; the steps after the suite run by hand, all exit 0.
+
+## 2026-11-06: resolved
