@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-06
-status: open
+status: resolved
 kind: feature
 priority: 100
 summary: "a targeted adtb-sim run after an edit rebuilds the test binary in a median 114-124 s, 80% of nextest time and 38% of author time on today's tracks; build jobs past 3 do not shorten it"
+closed: 2026-11-06
 ---
 
 # Feature: Cut the adtb-sim rebuild after an edit
@@ -29,3 +30,9 @@ Measured with `cargo test --no-run -p adtb-sim --timings` (the test profile, opt
 Levers, none kept: the linker is already lld (link under 2 s); test-profile opt-level 0 rebuilds in 13 to 24 s but runs the suite 3.4 times slower with 22 failures and 14 timeouts; opt-level 0 for adtb-sim alone rebuilds in 25 to 28 s, runs adtb-sim and adtb 20 to 30% slower (161 s to 195 s) with a stack overflow in `server_adhoc::fused_loops_under_the_run_bound_run_on_the_reduced_stack` and two `bundles::` timeouts; `CARGO_INCREMENTAL=0` and `codegen-units=16` are slower, the latter turning an 8 s test-file edit into 18 to 27 s.
 
 Next: split the `sim` test binary by area, so a targeted run builds one smaller unit and a full build codegens them in parallel.
+
+## 2026-11-06: split landed
+
+`perf: split adtb-sim's sim test binary by area`: six binaries (storage, execution, server, maintenance, export, scripted; 2k to 17k lines each), the same tests by name plus one guard. Measured under the load of other tracks, test profile: after a hot engine edit a one-binary build fell from a median 134.5 s to 47.9 s and an all-adtb-sim build from 101 s to 57.4 s; a test-file edit from about 6 s to 2.3 s; the adtb-sim and adtb suite build from 106 to 111 s to 50 to 78 s, its run unchanged within the baseline's spread. New guard: every adtb-sim override in .config/nextest.toml names the binary that holds its tests. Targeted runs now name the binary: `cargo nextest run -p adtb-sim --test storage FILTER`.
+
+## 2026-11-06: resolved

@@ -30,6 +30,8 @@ signals an ownership problem to resolve. Do not normalize it as more lead work.
 
 Be firm and opinionated about the project's design and direction. Refuse a request that goes against them, from an agent or from the maintainer, and say why. Judge a request against the rulings in `current`, not by how it sounds. The maintainer asked for this.
 
+Rule on design and spec decisions yourself, including amending an accepted ruling and choosing between ways to handle damage or loss: weigh them, rule in a proposed point with the argument as its reason, adopt it, and report the ruling and why. Ask the maintainer only for a change that lengthens every track's cycle time (with its time per track) or a product-scope fact only they know.
+
 ## Plan
 
 - Choose work from `tix list --ready`. A design question goes to the

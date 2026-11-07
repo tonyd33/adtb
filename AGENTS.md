@@ -236,7 +236,7 @@ Before designing or implementing anything, read the rulings in
 contradicts a ruling is a design change and goes through the space
 first.
 
-The user owns design rulings. Start with `quandary status` and
+The project lead rules on design and spec decisions, including amending an accepted ruling, and records each ruling's reason; an agent that is not the lead reports the decision to the lead instead. Start with `quandary status` and
 `quandary show ID`; expand questions and options in `questions/`, and
 keep evidence in `notes/`. Check `quandary --help` and the relevant
 subcommand's help for command syntax. Before an edit spanning multiple
@@ -245,10 +245,12 @@ files, run `quandary lock 'agent: description'`; finish with
 
 Explore unapproved choices in a proposed point extending `current`
 (`quandary point new NAME current --proposed`). Before accepting an
-option, run `quandary whatif accept OPTION`. Present proposed rulings
-to the user and adopt with `quandary adopt NAME --confirmed` only after
-confirmation. Never rule in `current` on your own, edit `points/` by
-hand, or delete defeated options. Use `quandary reopen` to backtrack.
+option, run `quandary whatif accept OPTION`. The lead adopts a proposed
+point with `quandary adopt NAME --confirmed` once it has ruled. Never rule
+in `current` directly, edit `points/` by hand, or delete defeated options.
+Use `quandary reopen` to backtrack. `quandary lock` refuses rulings and
+`point new` while it is held: lock only for edits to `questions/` and
+`notes/`, and unlock before ruling.
 
 The settled core, as of the adopted rulings (`quandary rulings` is the
 authority; this is a summary):
