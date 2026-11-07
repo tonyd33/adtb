@@ -1243,6 +1243,7 @@ fn behind_a_damaged_commit_log(
         };
         let d = Db::load_with(&rt, &world, false);
         let status = d.txns.commit_log().status_pages()[&0];
+        let pager = d.pager.clone();
         let db = database(&rt, d, &schema, &normal, &catalog, None, None);
         let params: Vec<(Var, Val)> = s.t.map(|v| (v, Val::text("x"))).into_iter().collect();
         let first = db.begin().expect("a transaction");
@@ -1250,7 +1251,6 @@ fn behind_a_damaged_commit_log(
         db.statement(&second, &s.p.terms, s.p.item, &params, 0)
             .expect("the second statement");
         db.commit(second).expect("the second commits");
-        let pager = db.pager().clone();
         pager.flush_log();
         pager.flush_pages(usize::MAX);
         for p in 0..4096 {
@@ -1318,10 +1318,11 @@ relation tags : Label key id generate sequence",
             db: &f.db,
         };
         let d = Db::load_with(&rt, &world, false);
+        let pager = d.pager.clone();
         let db = database(&rt, d, &schema, &normal, &catalog, None, None);
         run_txn(&db, &schema, &item, "").expect("the item commits");
         run_txn(&db, &schema, &tag, "").expect("the tag commits");
-        let page = db.pager().read(db.sequences_root()).expect("the counters");
+        let page = pager.read(db.sequences_root()).expect("the counters");
         let n = &page[HEADER_LEN..HEADER_LEN + 4];
         counters = Some(u32::from_le_bytes(n.try_into().expect("4 bytes")));
     });

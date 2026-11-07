@@ -12,6 +12,7 @@ use std::time::Duration;
 use adtb::key::Tid;
 use adtb::runtime::{Clock, Runtime, Threads};
 use adtb::storage::{HEADER_LEN, Pid, Quarantine};
+use adtb::testing::{Failed, Plant};
 use adtb::{CallOptions, CreateOptions, Database, Error, FatalReason, Log, OpenError, OpenOptions};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::harness::finished;
@@ -57,13 +58,8 @@ fn seeded() -> Seeded {
     finished(&mut sim, |rt| {
         let db = open(rt).unwrap();
         api::results(&db, r#"insert users { id: users.key(1), name: "a" }"#);
-        let w = db.write_path();
-        let first = |relation, ctor| {
-            w.heap_named(relation, ctor)
-                .unwrap()
-                .pages(w.pager())
-                .unwrap()[0]
-        };
+        let t = db.testing();
+        let first = |relation, ctor| t.pages(t.heap(relation, ctor).unwrap()).unwrap()[0];
         pages = Some((first("catalog::roles", "Role"), first("app::users", "User")));
         db.close().unwrap();
     });
@@ -314,8 +310,8 @@ fn selected_twice(files: Files, text: &'static str, what: &'static str) -> Vec<R
         for _ in 0..2 {
             finished(&mut sim, |rt| {
                 let db = open(rt).unwrap();
-                let w = db.write_path();
-                let users = Quarantine::Heap(w.heap_named("app::users", "User").unwrap().id().0);
+                let t = db.testing();
+                let users = t.mark_of(t.heap("app::users", "User").unwrap()).unwrap();
                 got.push((
                     select_answer(&db, text),
                     db.testing().probe().marks(),
@@ -379,12 +375,8 @@ fn a_cut_page_ordinary_writes_grew_the_file_over_stays_refused() {
                 &format!(r#"insert users {{ id: users.key({i}), name: "{name}" }}"#),
             );
         }
-        let w = db.write_path();
-        let pages = w
-            .heap_named("app::users", "User")
-            .unwrap()
-            .pages(w.pager())
-            .unwrap();
+        let t = db.testing();
+        let pages = t.pages(t.heap("app::users", "User").unwrap()).unwrap();
         last = pages.last().copied();
         db.close().unwrap();
     });
@@ -429,8 +421,12 @@ fn a_cut_that_loses_a_later_bitmap_group_refuses_the_select() {
     let mut high = None;
     finished(&mut sim, |rt| {
         let db = open(rt).unwrap();
-        let p = db.write_path().pager();
-        p.update(&[Pid::FIRST_DATA], |v| v[0][HEADER_LEN..].fill(0xff))
+        db.testing()
+            .plant(Plant::Write {
+                page: Pid::FIRST_DATA,
+                at: HEADER_LEN,
+                bytes: vec![0xff; PAGE - HEADER_LEN],
+            })
             .unwrap();
         let name = "x".repeat(2500);
         for i in 0..40 {
@@ -439,11 +435,9 @@ fn a_cut_that_loses_a_later_bitmap_group_refuses_the_select() {
                 &format!(r#"insert users {{ id: users.key({i}), name: "{name}" }}"#),
             );
         }
-        let w = db.write_path();
-        high = w
-            .heap_named("app::users", "User")
-            .unwrap()
-            .pages(w.pager())
+        let t = db.testing();
+        high = t
+            .pages(t.heap("app::users", "User").unwrap())
             .unwrap()
             .last()
             .copied();
@@ -474,9 +468,12 @@ fn a_zeroed_large_value_page_refuses_the_select() {
             &db,
             &format!(r#"insert users {{ id: users.key(1), name: "{name}" }}"#),
         );
-        let w = db.write_path();
-        let heap = w.heap_named("app::users", "User").unwrap();
-        page = heap.large().pages(w.pager()).unwrap().first().copied();
+        let t = db.testing();
+        page = t
+            .pages(t.large("app::users", "User").unwrap())
+            .unwrap()
+            .first()
+            .copied();
         db.close().unwrap();
     });
     let files = zeroed(&sim.files(), page.unwrap());
@@ -500,9 +497,8 @@ fn a_zeroed_directory_page_refuses_the_select() {
     let mut node = None;
     finished(&mut sim, |rt| {
         let db = open(rt).unwrap();
-        let w = db.write_path();
-        let heap = w.heap_named("app::users", "User").unwrap();
-        let owned = heap.owned_pages(w.pager()).unwrap();
+        let t = db.testing();
+        let owned = t.owned(t.heap("app::users", "User").unwrap()).unwrap();
         node = owned.first().copied();
         db.close().unwrap();
     });
@@ -623,18 +619,13 @@ fn a_scan_of_a_listing_skips_the_pages_vacuum_freed_since() {
     finished(&mut sim, |rt| {
         let db = open_small(rt);
         api::results(&db, INSERT);
-        let w = db.write_path();
-        let heap = w.heap_named("app::users", "User").unwrap();
-        let listing = heap.pages(w.pager()).unwrap();
+        let t = db.testing();
+        let heap = t.heap("app::users", "User").unwrap();
+        let listing = t.pages(heap).unwrap();
         api::results(&db, "delete u in users");
         api::results(&db, "vacuum users");
-        assert!(
-            w.pager().is_free(listing[0]).unwrap(),
-            "vacuum freed the page"
-        );
-        let mut seen = 0;
-        heap.scan_pages(w.pager(), &listing, |_| seen += 1).unwrap();
-        assert_eq!(0, seen);
+        assert!(t.is_free(listing[0]).unwrap(), "vacuum freed the page");
+        assert_eq!(0, t.versions(heap, Some(&listing)).unwrap().len());
         assert_eq!(BTreeSet::new(), db.testing().probe().marks());
         db.close().unwrap();
     });
@@ -675,9 +666,12 @@ add relation users : User key id generate sequence
     finished(&mut sim, |rt| {
         let db = reopen(rt);
         api::results(&db, INSERT);
-        let w = db.write_path();
-        let heap = w.heap_named("app::users", "User").unwrap();
-        page = heap.pages(w.pager()).unwrap().first().copied();
+        let t = db.testing();
+        page = t
+            .pages(t.heap("app::users", "User").unwrap())
+            .unwrap()
+            .first()
+            .copied();
         db.close().unwrap();
     });
     let mut sim = Sim::with_files(1, Config::default(), zeroed(&sim.files(), page.unwrap()));
@@ -702,10 +696,12 @@ fn a_read_of_a_version_on_a_zeroed_page_is_refused() {
     let mut sim = Sim::with_files(1, Config::default(), zeroed(&s.files, s.users));
     finished(&mut sim, |rt| {
         let db = open(rt).unwrap();
-        let w = db.write_path();
-        let heap = w.heap_named("app::users", "User").unwrap();
-        let got = heap.read(w.pager(), Tid::new(s.users.0, 0).unwrap());
-        assert_eq!(s.users, got.unwrap_err().pid);
+        let t = db.testing();
+        let heap = t.heap("app::users", "User").unwrap();
+        match t.read(heap, Tid::new(s.users.0, 0).unwrap()) {
+            Err(Failed::Page(e)) => assert_eq!(s.users, e.pid),
+            other => panic!("not refused: {other:?}"),
+        }
         db.close().unwrap();
     });
 }
@@ -721,9 +717,12 @@ fn a_large_value_write_over_a_zeroed_page_of_the_store_is_refused() {
             &db,
             &format!(r#"insert users {{ id: users.key(1), name: "{name}" }}"#),
         );
-        let w = db.write_path();
-        let heap = w.heap_named("app::users", "User").unwrap();
-        page = heap.large().pages(w.pager()).unwrap().last().copied();
+        let t = db.testing();
+        page = t
+            .pages(t.large("app::users", "User").unwrap())
+            .unwrap()
+            .last()
+            .copied();
         db.close().unwrap();
     });
     let files = zeroed(&sim.files(), page.unwrap());

@@ -1,16 +1,110 @@
-//! What tests observe of a running engine: marks, damage evidence, log positions, maintenance
-//! counters, the scrub cursor and held findings. Every answer is a value built at the call; no
-//! answer borrows from the engine. Every observation but [`Probe::damage_in_log`] and
-//! [`Probe::logged_commits`] reads memory only and changes nothing. Those two read the retained
-//! log as `verify` does: they pin it, open its segments and take the simulator's fault draws.
+//! What tests observe of a running engine, and the controls that drive it where no public call
+//! reaches. Every answer is a value built at the call; no answer borrows from the engine.
+//! [`Plant`] lists every change a test makes to the engine's state beneath its public calls.
+//! Every observation but [`Probe::page`], [`Probe::damage_in_log`] and [`Probe::logged_commits`]
+//! leaves the engine as it found it, reading memory only. [`Probe::page`] reads through the pager
+//! as any reader does. The other two read the retained log as `verify` does: they pin it, open its
+//! segments and take the simulator's fault draws.
+
+mod control;
+mod object;
+mod plant;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Database;
+use crate::btree;
 use crate::mvcc::{Transactions, Xid};
 use crate::runtime::Runtime;
-use crate::storage::{Damage, LogFinding, Lsn, PageError, Pager, Pid, Quarantine};
+use crate::storage::{Damage, LogFinding, Lsn, PageError, Pager, Pid, Position, Quarantine};
 use crate::vacuum::Charged;
+use crate::write;
+
+pub use control::{PageHold, VacuumHold};
+pub use object::{CommitLogPages, Object};
+pub use plant::{Plant, Planted, Site};
+
+/// The settings of an open only tests give. Each changes scheduling, never what a call returns
+/// on success.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Knobs {
+    no_background_vacuum: bool,
+    segment_size: Option<u64>,
+}
+
+impl Knobs {
+    /// Returns the knobs that start no background vacuum worker.
+    pub fn without_background_vacuum() -> Knobs {
+        Knobs {
+            no_background_vacuum: true,
+            ..Knobs::default()
+        }
+    }
+
+    /// Returns these knobs creating a file whose log segments are `bytes` each. An open of an
+    /// existing file keeps the size it was created with.
+    ///
+    /// Precondition: `bytes` is a positive multiple of the log block, 512 bytes, or open fails
+    /// with an I/O error of kind `InvalidInput`.
+    pub fn with_segment_size(self, bytes: u64) -> Knobs {
+        Knobs {
+            segment_size: Some(bytes),
+            ..self
+        }
+    }
+
+    pub(crate) fn background_vacuum(&self) -> bool {
+        !self.no_background_vacuum
+    }
+
+    pub(crate) fn segment_size(&self) -> Option<u64> {
+        self.segment_size
+    }
+}
+
+/// Why a control of this module did nothing.
+#[derive(Debug)]
+pub enum Failed {
+    /// The database has no such structure.
+    Absent(Object),
+    /// The object has no listing of the pages asked for.
+    Unlisted(Object),
+    /// The database has no relation of the name given.
+    /// The object is no relation's key index.
+    NotKey(Object),
+    /// The change found nothing to change.
+    Unchanged,
+    Page(PageError),
+    Tree(btree::Error),
+    Heap(crate::heap::Error),
+    Orphan(crate::heap::OrphanEntry),
+    Write(write::Error),
+    Txn(crate::mvcc::Error),
+}
+
+impl From<PageError> for Failed {
+    fn from(e: PageError) -> Failed {
+        Failed::Page(e)
+    }
+}
+
+impl From<btree::Error> for Failed {
+    fn from(e: btree::Error) -> Failed {
+        Failed::Tree(e)
+    }
+}
+
+impl From<crate::heap::OrphanEntry> for Failed {
+    fn from(e: crate::heap::OrphanEntry) -> Failed {
+        Failed::Orphan(e)
+    }
+}
+
+impl From<crate::heap::Error> for Failed {
+    fn from(e: crate::heap::Error) -> Failed {
+        Failed::Heap(e)
+    }
+}
 
 /// The observations of one open database.
 #[derive(Debug)]
@@ -38,7 +132,7 @@ impl<'a, R: Runtime> Testing<'a, R> {
 
     /// Returns the probe over the database's transactions.
     pub fn txn_probe(self) -> TxnProbe<'a, R> {
-        TxnProbe::of(self.db.tested_write_path().txns())
+        TxnProbe::of(self.db.tested_db().txns())
     }
 
     /// Returns the id the next transaction gets.
@@ -54,17 +148,17 @@ impl<'a, R: Runtime> Testing<'a, R> {
     /// Returns the steps the vacuum pacer charged since its budget last changed.
     pub fn charged(self) -> Charged {
         let rt = self.db.tested_runtime();
-        self.db.tested_write_path().pacer().charged(rt)
+        self.db.tested_db().pacer().charged(rt)
     }
 
     /// Returns how many pauses calls have made at a rebuild's gate or for the vacuum lock.
     pub fn rebuild_waits(self) -> u64 {
-        self.db.tested_write_path().rebuild_waits()
+        self.db.tested_db().rebuild_waits()
     }
 
     /// Returns how many times a call asked a background vacuum to give up the vacuum lock.
     pub fn vacuum_yields(self) -> u64 {
-        self.db.tested_write_path().vacuum_yields()
+        self.db.tested_db().vacuum_yields()
     }
 
     /// Returns how many reindex job threads are not yet joined.
@@ -184,6 +278,25 @@ impl<'a, R: Runtime> Probe<'a, R> {
     /// Returns each dirty page with the LSN of the change that first dirtied it.
     pub fn dirty(self) -> BTreeMap<Pid, Lsn> {
         self.pager.dirty_pages()
+    }
+
+    /// Returns the bytes of `page` as a reader sees them, refusing it as any read does.
+    pub fn page(self, page: Pid) -> Result<Vec<u8>, PageError> {
+        Ok(self.pager.read(page)?.to_vec())
+    }
+
+    pub fn page_size(self) -> usize {
+        self.pager.page_size()
+    }
+
+    /// Returns the objects the damage of `page` was mapped to, `None` while it is not mapped.
+    pub fn mapped_to(self, page: Pid) -> Option<BTreeSet<Quarantine>> {
+        self.pager.mapped_to(page)
+    }
+
+    /// Returns whether `at` lies on the history of this file, as a restore to it checks.
+    pub fn on_history(self, at: Position) -> bool {
+        self.pager.on_history(at)
     }
 
     /// Returns how many damaged pages this open has walked the objects for.

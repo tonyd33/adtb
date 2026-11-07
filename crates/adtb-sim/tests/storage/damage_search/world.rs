@@ -1,7 +1,7 @@
 //! The database a case runs on, the operations a sequence is made of, and the run of a sequence
 //! across the processes its reopens, crashes and migration divide it into.
 
-use adtb::testing::Probe;
+use adtb::testing::{Failed, Knobs, Object, Plant};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -289,13 +289,11 @@ pub fn write_out(trace: &Traced, op: &IoOp, path: Option<&str>) -> bool {
 }
 
 pub fn options() -> OpenOptions {
-    let mut create = CreateOptions::default();
-    create.segment_size = Some(SEGMENT);
     OpenOptions {
-        create: Some(create),
+        create: Some(CreateOptions::default()),
         workers: Some(2),
         pool_bytes: Some(48 * PAGE as u64),
-        no_background_vacuum: true,
+        testing: Knobs::without_background_vacuum().with_segment_size(SEGMENT),
         ..OpenOptions::default()
     }
 }
@@ -372,14 +370,13 @@ fn applies<R: Runtime>(db: &Database<R>, version: u8) -> bool {
 }
 
 /// Returns whether the page of marks `db` writes holds the whole database's mark.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn durably_whole<R: Runtime>(db: &Database<R>) -> bool {
     const DATABASE: u32 = 1;
-    let pager = db.write_path().pager();
-    if !Probe::of(pager).marked(Quarantine::Database) {
+    let t = db.testing();
+    if !t.probe().marked(Quarantine::Database) {
         return false;
     }
-    let Ok(page) = pager.read(pager.quarantine_page()) else {
+    let Ok(page) = t.probe().page(t.root(Object::Marks).unwrap()) else {
         return false;
     };
     if storage::kind(&page) != PageKind::Quarantine as u16 {
@@ -401,68 +398,53 @@ pub fn present(rel: Rel, version: u8) -> bool {
     rel != Rel::Tags || version == 1
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn holdings<R: Runtime>(db: &Database<R>, version: u8) -> Holdings {
-    let w = db.write_path();
+    let t = db.testing();
     let mut out = Holdings::new();
     for rel in RELS.into_iter().filter(|r| present(*r, version)) {
         let q = rel.qualified();
-        let heap = w.heap_named(&q, rel.ctor()).expect("the relation's heap");
-        let index = w
-            .index_named(&q, "key id")
-            .expect("the relation's key index");
-        let mut pages = heap.owned_pages(w.pager()).expect("the heap's pages");
-        pages.extend(index.tree().pages(w.pager()).expect("the index's pages"));
+        let heap = t.heap(&q, rel.ctor()).expect("the relation's heap");
+        let index = t.index(&q, "key id").expect("the relation's key index");
+        let mut pages = t.owned(heap).expect("the heap's pages");
+        pages.extend(t.pages(index).expect("the index's pages"));
         out.extend(pages.into_iter().map(|p| (p, Some(rel))));
-        if let Some(h) = w.history_heap_named(&q, rel.ctor()) {
-            let pages = h.owned_pages(w.pager()).expect("the history heap's pages");
+        if let Some(h) = t.history(&q, rel.ctor()) {
+            let pages = t.owned(h).expect("the history heap's pages");
             out.extend(pages.into_iter().map(|p| (p, Some(rel))));
         }
-        if let Some(ix) = w.history_index_named(&q) {
-            let pages = ix
-                .tree()
-                .pages(w.pager())
-                .expect("the history index's pages");
+        if let Some(ix) = t.history_index(&q) {
+            let pages = t.pages(ix).expect("the history index's pages");
             out.extend(pages.into_iter().map(|p| (p, Some(rel))));
         }
-        let large = heap
-            .large()
-            .owned_pages(w.pager())
-            .expect("the store's pages");
+        let large = t.large(&q, rel.ctor()).expect("the relation's store");
+        let large = t.owned(large).expect("the store's pages");
         out.extend(large.into_iter().map(|p| (p, None)));
     }
-    for p in w.pager().allocated().expect("the allocated pages") {
+    for p in t.allocated().expect("the allocated pages") {
         out.entry(p).or_insert(None);
     }
     out
 }
 
 /// Add the owners of the relations of `db` at schema `version` to `out`.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn ids<R: Runtime>(db: &Database<R>, version: u8, out: &mut Ids) {
-    let w = db.write_path();
+    let t = db.testing();
     for rel in RELS.into_iter().filter(|r| present(*r, version)) {
         let q = rel.qualified();
-        let heap = w.heap_named(&q, rel.ctor()).expect("the relation's heap");
-        let index = w
-            .index_named(&q, "key id")
-            .expect("the relation's key index");
-        out.heaps.insert(heap.id().0, rel);
-        out.indexes.insert(index.tree().owner(), rel);
-        out.large.insert(heap.large().id());
-        out.key_indexes.insert(rel, index.tree().owner());
-        out.marks.insert(
-            rel,
-            (
-                Quarantine::Heap(heap.id().0),
-                Quarantine::Index(index.tree().owner()),
-            ),
-        );
-        if let Some(h) = w.history_heap_named(&q, rel.ctor()) {
-            out.heaps.insert(h.id().0, rel);
+        let heap = t.heap(&q, rel.ctor()).expect("the relation's heap");
+        let index = t.index(&q, "key id").expect("the relation's key index");
+        let large = t.large(&q, rel.ctor()).expect("the relation's store");
+        out.heaps.insert(t.owner(heap).unwrap(), rel);
+        out.indexes.insert(t.owner(index).unwrap(), rel);
+        out.large.insert(t.owner(large).unwrap());
+        out.key_indexes.insert(rel, t.owner(index).unwrap());
+        out.marks
+            .insert(rel, (t.mark_of(heap).unwrap(), t.mark_of(index).unwrap()));
+        if let Some(h) = t.history(&q, rel.ctor()) {
+            out.heaps.insert(t.owner(h).unwrap(), rel);
         }
-        if let Some(ix) = w.history_index_named(&q) {
-            out.indexes.insert(ix.tree().owner(), rel);
+        if let Some(ix) = t.history_index(&q) {
+            out.indexes.insert(t.owner(ix).unwrap(), rel);
         }
     }
 }
@@ -553,7 +535,6 @@ impl Runner<'_> {
 
     /// Run the operations from `next` up to the next crash or the end on one process. Returns
     /// whether every one ran.
-    #[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
     fn process(&mut self, hook: &Hooked) -> bool {
         let Some(mut db) = self.open(hook.clone(), self.acked.version) else {
             return false;
@@ -577,10 +558,8 @@ impl Runner<'_> {
                     }
                 }
                 Op::Checkpoint => {
-                    let pager = db.write_path().pager();
-                    pager.flush_log();
-                    pager.flush_pages(usize::MAX);
-                    pager.checkpoint();
+                    db.testing().flush();
+                    db.testing().checkpoint();
                 }
                 Op::Recycle => self.recycle(&db, i),
                 Op::Damage => self.damage(&db, i),
@@ -658,7 +637,6 @@ impl Runner<'_> {
         }
     }
 
-    #[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
     fn damage<R: Runtime>(&mut self, db: &Database<R>, i: usize) {
         let note = value(Rel::Scraps, i as i64, 0);
         let text = format!(r#"insert scraps {{ id: scraps.key({i}), note: "{note}" }}"#);
@@ -666,25 +644,30 @@ impl Runner<'_> {
             self.failed.insert(i, format!("{e:?}"));
             return;
         }
-        let w = db.write_path();
-        let heap = w.heap_named(&Rel::Scraps.qualified(), Rel::Scraps.ctor());
-        match heap.expect("the heap of scraps").pages(w.pager()) {
+        let t = db.testing();
+        let heap = t.heap(&Rel::Scraps.qualified(), Rel::Scraps.ctor());
+        match t.pages(heap.expect("the heap of scraps")) {
             Ok(pages) => {
                 self.damaged = Some(pages[0]);
-                db.damage_page(pages[0], Damage::Checksum);
+                db.testing()
+                    .plant(Plant::Refuse {
+                        page: pages[0],
+                        damage: Damage::Checksum,
+                    })
+                    .unwrap();
             }
-            Err(e) => {
+            Err(Failed::Page(e)) => {
                 self.failed.insert(i, format!("{e:?}"));
             }
+            Err(other) => panic!("the heap of scraps lists its pages or fails on one: {other:?}"),
         }
     }
 
     /// Change rows of `users` until the log has grown by three segments, then recycle it.
-    #[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
     fn recycle<R: Runtime>(&mut self, db: &Database<R>, i: usize) {
-        let pager = db.write_path().pager();
-        let start = Probe::of(pager).appended().0;
-        while Probe::of(pager).appended().0 < start + 3 * SEGMENT {
+        let t = db.testing();
+        let start = t.probe().appended().0;
+        while t.probe().appended().0 < start + 3 * SEGMENT {
             let users = self.acked.last().get(&Rel::Users);
             let ids: Vec<i64> = users
                 .map(|r| r.keys().copied().take(4).collect())
@@ -698,7 +681,7 @@ impl Runner<'_> {
                 return;
             }
         }
-        pager.recycle_log();
+        t.recycle_log();
     }
 }
 

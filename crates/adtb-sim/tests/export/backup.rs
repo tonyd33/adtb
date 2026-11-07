@@ -1,7 +1,7 @@
 //! Full backups of a database under writers, restores of them to new files, and the test restore
 //! that proves one.
 
-use adtb::testing::Probe;
+use adtb::testing::Plant;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -85,6 +85,15 @@ fn envelope() -> Envelope {
         schema_hash: "00".into(),
         catalog_version: 1,
     }
+}
+
+/// Back `db` up to `target`, calling `visit` with each page as it is first read.
+fn db_backup<R: Runtime>(
+    db: &Database<R>,
+    target: &str,
+    visit: &mut dyn FnMut(Pid, &mut [u8]) -> bool,
+) -> Result<Manifest, BackupError> {
+    db.testing().backup(target, envelope(), visit)
 }
 
 /// Back `pager` up to `target`, calling `visit` with each page as it is first read.
@@ -175,7 +184,6 @@ fn file_with_rows(rows: i64) -> Files {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn backup_under_writers_restores_every_commit_acked_before_start_and_none_after_end() {
     for seed in sweep(0..2) {
         let acked: Arc<Mutex<Vec<(i64, Position)>>> = Arc::default();
@@ -197,7 +205,7 @@ fn backup_under_writers_restores_every_commit_acked_before_start_and_none_after_
                     clock.yield_now();
                 }
             });
-            let got = backup_with(db.write_path().pager(), TARGET, &mut |_, _| {
+            let got = db_backup(&db, TARGET, &mut |_, _| {
                 rt.yield_now();
                 true
             })
@@ -220,7 +228,6 @@ fn backup_under_writers_restores_every_commit_acked_before_start_and_none_after_
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn restored_equals_ledger_at_end_position() {
     let mut sim = Sim::new(5, Config::default());
     let mut ledger = BTreeMap::new();
@@ -231,7 +238,7 @@ fn restored_equals_ledger_at_end_position() {
             ledger.insert(id, commit(&db, id));
         }
         let mut next = 20;
-        let got = backup_with(db.write_path().pager(), TARGET, &mut |_, _| {
+        let got = db_backup(&db, TARGET, &mut |_, _| {
             ledger.insert(next, commit(&db, next));
             next += 1;
             true
@@ -255,7 +262,6 @@ fn restored_equals_ledger_at_end_position() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn restored_verify_clean_all_checks() {
     let mut sim = Sim::with_files(6, Config::default(), backed_up(40));
     api::run(&mut sim, |rt| {
@@ -265,10 +271,9 @@ fn restored_verify_clean_all_checks() {
         );
         restore(&rt).unwrap();
         let db = open_at(rt, COPY).unwrap();
-        assert_eq!(0, db.verify_holding().unwrap().count());
-        let w = db.write_path();
-        let quiet = w.hold_vacuum(adtb::write::HoldWait::unbounded()).unwrap();
-        assert!(w.pager().verify().findings.is_empty());
+        assert_eq!(0, db.testing().verify_holding().unwrap().count());
+        let quiet = db.testing().hold_vacuum();
+        assert!(db.testing().verify_pages().findings.is_empty());
         drop(quiet);
         db.close().unwrap();
     });
@@ -293,14 +298,13 @@ fn prove_reads_the_schema_from_the_file_without_the_callers_log() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn commits_not_blocked_during_backup() {
     let mut sim = Sim::new(7, Config::default());
     api::run(&mut sim, |rt| {
         let db = open(rt);
         insert(&db, 0..8);
         let mut next = 8;
-        backup_with(db.write_path().pager(), TARGET, &mut |_, _| {
+        db_backup(&db, TARGET, &mut |_, _| {
             commit(&db, next);
             next += 1;
             true
@@ -312,7 +316,6 @@ fn commits_not_blocked_during_backup() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn page_torn_mid_copy_retried_under_latch() {
     let mut sim = Sim::new(8, Config::default());
     let mut torn = 0;
@@ -321,7 +324,7 @@ fn page_torn_mid_copy_retried_under_latch() {
         let db = open(rt);
         insert(&db, 0..8);
         got = Some(
-            backup_with(db.write_path().pager(), TARGET, &mut |_, page| {
+            db_backup(&db, TARGET, &mut |_, page| {
                 if !page.is_empty() && torn == 0 && page.iter().any(|&b| b != 0) {
                     page[100] ^= 0xff;
                     torn += 1;
@@ -339,17 +342,12 @@ fn page_torn_mid_copy_retried_under_latch() {
 
 /// Flip a byte of the first page of `users` in `files`, past every full-page image the next open
 /// replays, and return the page.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn rot_users_page(files: &mut Files) -> Pid {
     let mut sim = Sim::with_files(9, Config::default(), files.clone());
     let pid = api::run(&mut sim, |rt| {
         let db = open(rt);
-        let w = db.write_path();
-        let pid = w
-            .heap_named("app::users", "User")
-            .unwrap()
-            .pages(w.pager())
-            .unwrap()[0];
+        let t = db.testing();
+        let pid = t.pages(t.heap("app::users", "User").unwrap()).unwrap()[0];
         db.close().unwrap();
         pid
     });
@@ -379,17 +377,16 @@ fn rotted_page_listed_in_manifest_and_proof_failed() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn header_names_backup_checkpoint_not_later_one() {
     let mut sim = Sim::new(11, Config::default());
     let mut got = None;
     api::run(&mut sim, |rt| {
         let db = open(rt);
         insert(&db, 0..4);
-        let pager = db.write_path().pager().clone();
+        let t = db.testing();
         let last = {
             let mut copied = 0;
-            backup_with(&pager, "probe", &mut |pid, _| {
+            db_backup(&db, "probe", &mut |pid, _| {
                 copied = copied.max(pid.0);
                 true
             })
@@ -397,12 +394,12 @@ fn header_names_backup_checkpoint_not_later_one() {
             copied
         };
         let mut id = 100;
-        let manifest = backup_with(&pager, TARGET, &mut |pid, _| {
+        let manifest = db_backup(&db, TARGET, &mut |pid, _| {
             if pid.0 == last {
                 commit(&db, id);
                 id += 1;
-                pager.flush_pages(usize::MAX);
-                pager.checkpoint();
+                t.flush_pages(usize::MAX);
+                t.checkpoint();
             }
             true
         })
@@ -418,7 +415,6 @@ fn header_names_backup_checkpoint_not_later_one() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn page_allocated_after_copy_rebuilt_from_log() {
     let mut sim = Sim::new(12, Config::default());
     let big = "x".repeat(2000);
@@ -428,14 +424,14 @@ fn page_allocated_after_copy_rebuilt_from_log() {
         insert(&db, 0..2);
         let last = {
             let mut copied = 0;
-            backup_with(db.write_path().pager(), "probe", &mut |pid, _| {
+            db_backup(&db, "probe", &mut |pid, _| {
                 copied = copied.max(pid.0);
                 true
             })
             .unwrap();
             copied
         };
-        let manifest = backup_with(db.write_path().pager(), TARGET, &mut |pid, _| {
+        let manifest = db_backup(&db, TARGET, &mut |pid, _| {
             if pid.0 == last {
                 for id in 2..60 {
                     let text = format!(r#"insert users {{ id: users.key({id}), name: "{big}" }}"#);
@@ -459,7 +455,7 @@ fn page_allocated_after_copy_rebuilt_from_log() {
         let db = open_at(rt, COPY).unwrap();
         assert_eq!(60, ids(&db).len());
         assert!(db.testing().probe().refusals().is_empty());
-        assert_eq!(0, db.verify_holding().unwrap().count());
+        assert_eq!(0, db.testing().verify_holding().unwrap().count());
         insert(&db, 60..62);
         assert_eq!(62, ids(&db).len());
         db.close().unwrap();
@@ -649,14 +645,13 @@ fn restore_bumps_epoch_and_commit_continues() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn old_position_past_end_refused() {
     let mut sim = Sim::new(21, Config::default());
     api::run(&mut sim, |rt| {
         let db = open(rt.clone());
         insert(&db, 0..2);
         let inside = commit(&db, 2);
-        let manifest = backup_with(db.write_path().pager(), TARGET, &mut |_, _| true).unwrap();
+        let manifest = db_backup(&db, TARGET, &mut |_, _| true).unwrap();
         let lost = commit(&db, 3);
         assert!(lost.lsn >= manifest.end.lsn.0);
         db.close().unwrap();
@@ -833,7 +828,6 @@ fn a_role_backs_up_inside_the_export_roots() {
 
 /// A read-only check answers a log it cannot list as a finding, with no panic.
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_check_reports_a_log_it_cannot_read() {
     let mut sim = Sim::with_files(28, Config::default(), file_with_rows(2));
     api::run(&mut sim, |rt| {
@@ -843,9 +837,9 @@ fn a_check_reports_a_log_it_cannot_read() {
             Op::List { dir } if dir.starts_with(FILE) => Some(IoError::Failed),
             _ => None,
         });
-        let pager = db.write_path().pager();
-        assert!(Probe::of(pager).logged_commits().is_empty());
-        let found = pager.verify().findings;
+        let t = db.testing();
+        assert!(t.probe().logged_commits().is_empty());
+        let found = t.verify_pages().findings;
         assert!(
             found.iter().any(|f| matches!(
                 f,
@@ -859,14 +853,13 @@ fn a_check_reports_a_log_it_cannot_read() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn backup_of_quarantined_heap_lists_it() {
     api::once(27, |rt| {
         let db = open(rt);
         insert(&db, 0..2);
-        let w = db.write_path();
-        let heap = w.heap_named("app::users", "User").unwrap().id().0;
-        w.pager().quarantine(Quarantine::Heap(heap)).unwrap();
+        let t = db.testing();
+        let heap = t.mark_of(t.heap("app::users", "User").unwrap()).unwrap();
+        t.plant(Plant::Mark(heap)).unwrap();
         let rows = db
             .query_text("backup to \"bk\"", &[], &CallOptions::default())
             .unwrap();
@@ -877,13 +870,11 @@ fn backup_of_quarantined_heap_lists_it() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn backup_of_quarantined_database_refused() {
     api::once(28, |rt| {
         let db = open(rt);
-        db.write_path()
-            .pager()
-            .quarantine(Quarantine::Database)
+        db.testing()
+            .plant(Plant::Mark(Quarantine::Database))
             .unwrap();
         match backup_text(&db) {
             Err(Error::Fatal {
@@ -935,7 +926,6 @@ add relation users : User key id generate sequence
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn cancel_leaves_no_manifest() {
     let mut sim = Sim::new(30, Config::default());
     api::run(&mut sim, |rt| {
@@ -961,7 +951,7 @@ fn cancel_leaves_no_manifest() {
             "{cancelled:?}"
         );
         let mut seen = 0;
-        let got = backup_with(db.write_path().pager(), TARGET, &mut |_, _| {
+        let got = db_backup(&db, TARGET, &mut |_, _| {
             seen += 1;
             seen < 2
         });
@@ -983,7 +973,6 @@ fn cancel_leaves_no_manifest() {
 /// Keep every commit acknowledged under checkpoints and page flushes of other threads across a
 /// crash.
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn first_checkpoint_under_live_writers_keeps_every_acked_commit() {
     for seed in sweep(40..42) {
         let acked: Arc<Mutex<Vec<i64>>> = Arc::default();
@@ -1015,17 +1004,16 @@ fn first_checkpoint_under_live_writers_keeps_every_acked_commit() {
                     })
                 })
                 .collect();
-            let pager = db.write_path().pager().clone();
             assert_eq!(2, threads.len());
-            let other = pager.clone();
+            let other = db.clone();
             rt.spawn("flusher", move || {
                 loop {
-                    other.flush_pages(usize::MAX);
+                    other.testing().flush_pages(usize::MAX);
                 }
             });
             loop {
-                pager.flush_pages(usize::MAX);
-                pager.checkpoint();
+                db.testing().flush_pages(usize::MAX);
+                db.testing().checkpoint();
                 rt.yield_now();
             }
         });
@@ -1038,7 +1026,11 @@ fn first_checkpoint_under_live_writers_keeps_every_acked_commit() {
             for id in &acked {
                 assert!(rows.contains(id), "seed {seed}: commit {id} lost");
             }
-            assert_eq!(0, db.verify_holding().unwrap().count(), "seed {seed}");
+            assert_eq!(
+                0,
+                db.testing().verify_holding().unwrap().count(),
+                "seed {seed}"
+            );
             db.close().unwrap();
         });
     }
@@ -1461,7 +1453,6 @@ fn an_unreadable_page_is_listed() {
 
 /// Fail a proof of a backup with listed damage even when a host function is missing.
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn listed_damage_outranks_a_missing_function() {
     const LOG: &str = r#"module app
 add module app
@@ -1488,12 +1479,8 @@ add relation users : User key id generate sequence
     let pid = api::run(&mut sim, |rt| {
         let db = Database::open_in(rt, FILE, &log, &opening()).unwrap();
         api::results(&db, r#"insert users { id: users.key(1), name: "a" }"#);
-        let w = db.write_path();
-        let pid = w
-            .heap_named("app::users", "User")
-            .unwrap()
-            .pages(w.pager())
-            .unwrap()[0];
+        let t = db.testing();
+        let pid = t.pages(t.heap("app::users", "User").unwrap()).unwrap()[0];
         db.close().unwrap();
         pid
     });
@@ -1611,7 +1598,6 @@ fn early_returns_close_their_files() {
 /// Keep the epochs a header holds, forget the oldest past its capacity, and refuse an epoch it never
 /// held.
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn history_truncates_at_capacity() {
     let files = resealed(backed_up(1), |body| {
         let lines: String = (1..=storage::HISTORY_CAPACITY as u64)
@@ -1626,9 +1612,9 @@ fn history_truncates_at_capacity() {
     api::run(&mut sim, |rt| {
         restore(&rt).unwrap();
         let db = open_at(rt, COPY).unwrap();
-        let pager = db.write_path().pager();
+        let t = db.testing();
         let on = |epoch, lsn| {
-            pager.on_history(storage::Position {
+            t.probe().on_history(storage::Position {
                 epoch,
                 lsn: Lsn(lsn),
             })
@@ -2257,7 +2243,10 @@ fn a_backup_crashed_anywhere() {
             let retried = api::run(&mut sim, |rt| {
                 let db = open_at(rt.clone(), FILE).unwrap();
                 assert_eq!(rows_upto(SEARCH_ROWS), ids(&db), "{label}");
-                assert!(db.verify_holding().unwrap().next().is_none(), "{label}");
+                assert!(
+                    db.testing().verify_holding().unwrap().next().is_none(),
+                    "{label}"
+                );
                 if published {
                     storage::check_backup(&rt, TARGET).expect("what is published is whole");
                 }
@@ -2274,7 +2263,6 @@ fn a_backup_crashed_anywhere() {
 /// Start a second backup to one target at each op of a first: one wins, whole, and the loser leaves
 /// nothing.
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn two_backups_to_one_target() {
     let workload = |hook: &Hooked, at: Option<u64>| {
         let db = Database::open_in(hook.clone(), FILE, &Log::new([APP]), &no_create()).unwrap();
@@ -2285,7 +2273,7 @@ fn two_backups_to_one_target() {
                 (db.clone(), second.clone(), thread.clone(), hook.clone());
             let body = move || {
                 let run = move || {
-                    let got = backup_with(db.write_path().pager(), TARGET, &mut |_, _| true);
+                    let got = db_backup(&db, TARGET, &mut |_, _| true);
                     *second.lock().unwrap() = Some(got.map(|_| ()));
                 };
                 *thread.lock().unwrap() = Some(spawner.spawn("second backup", run));
@@ -2293,7 +2281,7 @@ fn two_backups_to_one_target() {
             hook.plan(at, Action::Run(Box::new(body)));
         }
         hook.arm(searched);
-        let first = backup_with(db.write_path().pager(), TARGET, &mut |_, _| true).map(|_| ());
+        let first = db_backup(&db, TARGET, &mut |_, _| true).map(|_| ());
         hook.disarm();
         if at.is_some() {
             let joined = thread.lock().unwrap().take();
@@ -2355,7 +2343,10 @@ fn assert_restore_state(base: &Files, files: &Files, crashed: bool, seed: u64, l
         }
         let db = open_at(rt, COPY).unwrap();
         assert_eq!(rows_upto(SEARCH_ROWS), ids(&db), "{label}");
-        assert!(db.verify_holding().unwrap().next().is_none(), "{label}");
+        assert!(
+            db.testing().verify_holding().unwrap().next().is_none(),
+            "{label}"
+        );
         commit(&db, LATER_ROW);
         db.close().unwrap();
     });

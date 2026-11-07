@@ -12,6 +12,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use adtb::runtime::{Clock, Runtime, Threads};
 use adtb::storage::{Damage, PageKind, Quarantine};
+use adtb::testing::{Knobs, Object, Plant};
 use adtb::{
     CallOptions, CancelToken, Database, Log, OpenOptions, TxnCallOptions, TxnOptions, Value,
 };
@@ -457,7 +458,7 @@ fn stress(name: &str, reindexes: usize, verify_beside: bool) {
     every(&db);
     assert_eq!(
         Vec::<String>::new(),
-        api::printed(db.verify_holding().unwrap())
+        api::printed(db.testing().verify_holding().unwrap())
     );
     db.close().unwrap();
 }
@@ -689,11 +690,11 @@ fn a_statement_past_the_gate_loses_no_entry() {
         x.query_text(&t, &[], &TxnCallOptions::default()).unwrap();
     }
     x.commit(None).unwrap();
-    db.on_reindex_phase(Arc::new(|phase| {
+    db.testing().on_reindex_phase(|phase| {
         if phase == "build" {
             std::thread::sleep(Duration::from_millis(30));
         }
-    }));
+    });
     past_gate_rounds(&db, 3);
     assert!(db.testing().probe().marks().is_empty());
     db.close().unwrap();
@@ -707,7 +708,7 @@ fn hold_build(db: &Database) -> (Arc<AtomicBool>, Arc<AtomicBool>) {
         Arc::new(AtomicBool::new(false)),
     );
     let (g, t) = (go.clone(), timed_out.clone());
-    db.on_reindex_phase(Arc::new(move |phase| {
+    db.testing().on_reindex_phase(move |phase| {
         if phase == "build" {
             let start = Instant::now();
             while !g.load(Ordering::Acquire) {
@@ -718,7 +719,7 @@ fn hold_build(db: &Database) -> (Arc<AtomicBool>, Arc<AtomicBool>) {
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
-    }));
+    });
     (go, timed_out)
 }
 
@@ -726,7 +727,7 @@ const GATED_INSERT: &str = r#"insert things.A { id: things.key(2), owner: 2, not
 
 fn offline_with_one_row(name: &str) -> (Database, Arc<AtomicBool>, Arc<AtomicBool>) {
     let options = OpenOptions {
-        no_background_vacuum: true,
+        testing: Knobs::without_background_vacuum(),
         ..api::options(4)
     };
     let db = Database::open(path(name), &Log::new([APP]), &options).unwrap();
@@ -842,7 +843,7 @@ fn a_closed_job_leaves_a_clean_file() {
     let db = open(&p);
     assert_eq!(
         Vec::<String>::new(),
-        api::printed(db.verify_holding().unwrap())
+        api::printed(db.testing().verify_holding().unwrap())
     );
     db.close().unwrap();
 }
@@ -901,15 +902,15 @@ fn seq_body(rt: &SimRuntime, times: Option<Times>) {
         api::results(&db, &format!("insert ps {{ k: {i}, v: {i} }}"));
     }
     let (w, clock) = (db.clone(), rt.clone());
-    db.on_reindex_phase(Arc::new(move |phase| {
+    db.testing().on_reindex_phase(move |phase| {
         if phase == "build" {
             api::results(&w, "insert gs { v: 1 }");
         }
-        w.write_path().pager().flush_log();
+        w.testing().flush_log();
         if let Some(t) = &times {
             t.lock().unwrap().push((phase.to_owned(), clock.now()));
         }
-    }));
+    });
     api::results(&db, "reindex ps index (v)");
     wait_jobs(rt, &db);
     db.close().unwrap();
@@ -936,7 +937,7 @@ fn a_crash_at_the_swap_after_a_sequence_is_used_leaves_a_clean_file() {
         let db = seq_open(rt);
         assert_eq!(
             Vec::<String>::new(),
-            api::printed(db.verify_holding().unwrap())
+            api::printed(db.testing().verify_holding().unwrap())
         );
         db.close().unwrap();
     });
@@ -983,7 +984,7 @@ fn a_crash_anywhere_in_the_job_leaves_a_clean_file() {
             let db = seq_open(rt);
             assert_eq!(
                 Vec::<String>::new(),
-                api::printed(db.verify_holding().unwrap()),
+                api::printed(db.testing().verify_holding().unwrap()),
                 "point {i}"
             );
             assert_eq!(
@@ -1031,11 +1032,8 @@ fn seed_history(db: &Database<SimRuntime>) -> String {
 }
 
 fn history_root(db: &Database<SimRuntime>) -> adtb::storage::Pid {
-    db.write_path()
-        .history_index_named("app::ts")
-        .unwrap()
-        .tree()
-        .root()
+    let t = db.testing();
+    t.root(t.history_index("app::ts").unwrap()).unwrap()
 }
 
 fn marks(db: &Database<SimRuntime>) -> BTreeSet<Quarantine> {
@@ -1056,7 +1054,12 @@ fn a_damaged_history_key_index_is_rebuilt_from_the_history_heap() {
         let db = hist_open(rt.clone());
         let read = seed_history(&db);
         assert_eq!(vec!["1007"], api::query(&db, &read), "before the damage");
-        db.damage_page(history_root(&db), Damage::Checksum);
+        db.testing()
+            .plant(Plant::Refuse {
+                page: history_root(&db),
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         refused_with(
             db.query_text(&read, &[], &CallOptions::default()),
             "fatal: app::ts key id is quarantined",
@@ -1077,7 +1080,7 @@ fn a_damaged_history_key_index_is_rebuilt_from_the_history_heap() {
         assert_eq!(vec!["1007"], api::query(&db, &read), "after the rebuild");
         assert_eq!(
             Vec::<String>::new(),
-            api::printed(db.verify_holding().unwrap())
+            api::printed(db.testing().verify_holding().unwrap())
         );
         *keep.lock().unwrap() = read;
         db.close().unwrap();
@@ -1092,7 +1095,7 @@ fn a_damaged_history_key_index_is_rebuilt_from_the_history_heap() {
         );
         assert_eq!(
             Vec::<String>::new(),
-            api::printed(db.verify_holding().unwrap())
+            api::printed(db.testing().verify_holding().unwrap())
         );
         db.close().unwrap();
     });
@@ -1105,19 +1108,24 @@ fn a_history_page_damaged_during_the_build_is_not_released_unrepaired() {
         let read = seed_history(&db);
         let (d, r) = (db.clone(), read.clone());
         let once = AtomicBool::new(false);
-        db.on_reindex_phase(Arc::new(move |phase| {
+        db.testing().on_reindex_phase(move |phase| {
             if phase == "build" && !once.swap(true, Ordering::AcqRel) {
-                d.damage_page(history_root(&d), Damage::Checksum);
+                d.testing()
+                    .plant(Plant::Refuse {
+                        page: history_root(&d),
+                        damage: Damage::Checksum,
+                    })
+                    .unwrap();
                 assert_eq!(vec!["1007"], api::query(&d, &r), "a read of the heaps");
-                let key = d.write_path().index_named("app::ts", "key id").unwrap();
-                let key = Quarantine::Index(key.tree().owner());
+                let t = d.testing();
+                let key = t.mark_of(t.index("app::ts", "key id").unwrap()).unwrap();
                 assert_eq!(
                     BTreeSet::from([key]),
                     marks(&d),
                     "a commit since the detection maps the damage"
                 );
             }
-        }));
+        });
         api::results(&db, "reindex ts");
         wait_jobs(&rt, &db);
         assert!(db.testing().probe().marks().is_empty());
@@ -1130,7 +1138,7 @@ fn a_history_page_damaged_during_the_build_is_not_released_unrepaired() {
         assert_eq!(vec!["1007"], api::query(&db, &read));
         assert_eq!(
             Vec::<String>::new(),
-            api::printed(db.verify_holding().unwrap())
+            api::printed(db.testing().verify_holding().unwrap())
         );
         db.close().unwrap();
     });
@@ -1141,17 +1149,26 @@ fn a_history_tree_that_cannot_be_rebuilt_keeps_the_mark() {
     api::once(3, |rt| {
         let db = hist_open(rt.clone());
         let read = seed_history(&db);
-        let w = db.write_path();
-        let heap = w.history_heap_named("app::ts", "T").unwrap();
-        let page = heap.pages(w.pager()).unwrap()[0];
-        db.damage_page(history_root(&db), Damage::Checksum);
+        let t = db.testing();
+        let page = t.pages(t.history("app::ts", "T").unwrap()).unwrap()[0];
+        db.testing()
+            .plant(Plant::Refuse {
+                page: history_root(&db),
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         refused_with(
             db.query_text(&read, &[], &CallOptions::default()),
             "fatal: app::ts key id is quarantined",
         );
         let before = marks(&db);
         assert_eq!(1, before.len(), "{before:?}");
-        db.damage_page(page, Damage::Checksum);
+        db.testing()
+            .plant(Plant::Refuse {
+                page,
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         api::results(&db, "reindex ts");
         wait_jobs(&rt, &db);
         assert!(
@@ -1166,8 +1183,8 @@ fn a_history_tree_that_cannot_be_rebuilt_keeps_the_mark() {
 }
 
 fn heap_mark(db: &Database<SimRuntime>) -> Quarantine {
-    let w = db.write_path();
-    Quarantine::Heap(w.heap_named("app::ts", "T").unwrap().id().0)
+    let t = db.testing();
+    t.mark_of(t.heap("app::ts", "T").unwrap()).unwrap()
 }
 
 #[test]
@@ -1179,14 +1196,15 @@ fn a_heap_marked_while_the_rebuild_waits_stops_it() {
         }
         let phases = Arc::new(Mutex::new(Vec::new()));
         let saw = phases.clone();
-        db.on_reindex_phase(Arc::new(move |p| saw.lock().unwrap().push(p.to_owned())));
-        let held = db.write_path().holding_off_vacuum();
+        db.testing()
+            .on_reindex_phase(move |p| saw.lock().unwrap().push(p.to_owned()));
+        let held = db.testing().hold_vacuum();
         api::results(&db, "reindex ts index (v)");
         for _ in 0..2000 {
             rt.yield_now();
         }
         assert!(phases.lock().unwrap().is_empty());
-        db.write_path().pager().quarantine(heap_mark(&db)).unwrap();
+        db.testing().plant(Plant::Mark(heap_mark(&db))).unwrap();
         drop(held);
         wait_jobs(&rt, &db);
         assert!(
@@ -1210,14 +1228,14 @@ fn a_heap_marked_during_the_build_stops_the_swap() {
         let mark = heap_mark(&db);
         let reclaimed = Arc::new(AtomicBool::new(false));
         let r = reclaimed.clone();
-        db.on_reindex_phase(Arc::new(move |p| {
+        db.testing().on_reindex_phase(move |p| {
             if p == "build" {
-                d.write_path().pager().quarantine(mark).unwrap();
+                d.testing().plant(Plant::Mark(mark)).unwrap();
             }
             if p == "reclaim" {
                 r.store(true, Ordering::Release);
             }
-        }));
+        });
         api::results(&db, "reindex ts index (v)");
         wait_jobs(&rt, &db);
         assert!(!reclaimed.load(Ordering::Acquire), "the swap ran");
@@ -1232,12 +1250,17 @@ fn a_panic_after_the_swap_frees_no_page_of_the_new_index() {
         for i in 1..=400 {
             api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
         }
-        let index = db.write_path().index_named("app::ts", "index (v)").unwrap();
-        let tree = index.tree();
-        let pages = tree.pages(db.write_path().pager()).unwrap();
+        let t = db.testing();
+        let pages = t.pages(t.index("app::ts", "index (v)").unwrap()).unwrap();
         assert!(pages.len() > 1, "a tree of one page has no page to lose");
-        db.damage_page(*pages.last().unwrap(), Damage::Checksum);
-        db.on_reindex_phase(Arc::new(|p| assert_ne!("sweep", p, "the injected failure")));
+        db.testing()
+            .plant(Plant::Refuse {
+                page: *pages.last().unwrap(),
+                damage: Damage::Checksum,
+            })
+            .unwrap();
+        db.testing()
+            .on_reindex_phase(|p| assert_ne!("sweep", p, "the injected failure"));
         api::results(&db, "reindex ts index (v)");
         wait_jobs(&rt, &db);
         for i in [1, 77, 400] {
@@ -1246,12 +1269,9 @@ fn a_panic_after_the_swap_frees_no_page_of_the_new_index() {
         }
         assert!(insert_ok(&db, 900), "the index takes a write");
         assert!(db.testing().probe().marks().is_empty());
-        let reached = tree.pages(db.write_path().pager()).unwrap();
-        for p in reached {
-            assert!(
-                !db.write_path().pager().is_free(p).unwrap(),
-                "{p:?} was freed"
-            );
+        let rebuilt = t.pages(t.index("app::ts", "index (v)").unwrap()).unwrap();
+        for p in rebuilt {
+            assert!(!t.is_free(p).unwrap(), "{p:?} was freed");
         }
         db.close().unwrap();
     });
@@ -1264,35 +1284,53 @@ fn a_page_a_failed_sweep_freed_marks_the_database_once_reused_outside_every_walk
         for i in 1..=400 {
             api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
         }
-        let index = db.write_path().index_named("app::ts", "index (v)").unwrap();
-        let pages = index.tree().pages(db.write_path().pager()).unwrap();
+        let t = db.testing();
+        let pages = t.pages(t.index("app::ts", "index (v)").unwrap()).unwrap();
         assert!(pages.len() > 2, "a tree with a page between two to sweep");
         let (scrapped, unreadable) = (pages[1], *pages.last().unwrap());
         let d = db.clone();
-        db.on_reindex_phase(Arc::new(move |phase| {
+        db.testing().on_reindex_phase(move |phase| {
             if phase == "reclaim" {
-                d.damage_page(scrapped, Damage::Checksum);
-                d.damage_page(unreadable, Damage::Unreadable);
+                d.testing()
+                    .plant(Plant::Refuse {
+                        page: scrapped,
+                        damage: Damage::Checksum,
+                    })
+                    .unwrap();
+                d.testing()
+                    .plant(Plant::Refuse {
+                        page: unreadable,
+                        damage: Damage::Unreadable,
+                    })
+                    .unwrap();
             }
-        }));
+        });
         api::results(&db, "reindex ts index (v)");
         wait_jobs(&rt, &db);
-        let pager = db.write_path().pager();
-        assert_eq!(
-            Ok(true),
-            pager.is_free(scrapped),
-            "the sweep scraps the page"
-        );
+        assert_eq!(Ok(true), t.is_free(scrapped), "the sweep scraps the page");
         assert_eq!(
             Ok(false),
-            pager.is_free(unreadable),
+            t.is_free(unreadable),
             "the sweep stops at the page"
         );
         let reused = (0..pages.len() + 64)
-            .map(|_| pager.allocate(1, PageKind::HeapSlotted, 77).unwrap())
+            .map(|_| {
+                t.plant(Plant::Orphan {
+                    kind: PageKind::HeapSlotted,
+                    owner: 77,
+                })
+                .unwrap()
+                .page()
+                .unwrap()
+            })
             .find(|&p| p == scrapped);
         assert_eq!(Some(scrapped), reused, "an allocation reuses the page");
-        db.damage_page(scrapped, Damage::Checksum);
+        db.testing()
+            .plant(Plant::Refuse {
+                page: scrapped,
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         assert!(!insert_ok(&db, 900), "the commit maps the damage");
         assert_eq!(BTreeSet::from([Quarantine::Database]), marks(&db));
     });
@@ -1328,7 +1366,7 @@ fn a_read_runs_while_gated_writes_fill_the_workers() {
         let (clock, s2, rd, out) = (rt.clone(), session, read_done, seen.clone());
         let threads = Arc::new(Mutex::new(Vec::new()));
         let th = threads.clone();
-        db.on_reindex_phase(Arc::new(move |phase| {
+        db.testing().on_reindex_phase(move |phase| {
             if phase == "build" {
                 for i in 0..2 {
                     let (c, s) = (clock.clone(), s2.clone());
@@ -1357,7 +1395,7 @@ fn a_read_runs_while_gated_writes_fill_the_workers() {
                 }
                 *out.lock().unwrap() = Some(rd.load(Ordering::Acquire));
             }
-        }));
+        });
         api::results(&db, "reindex ts index (v) offline");
         wait_jobs(&rt, &db);
         for t in std::mem::take(&mut *threads.lock().unwrap()) {
@@ -1387,15 +1425,15 @@ fn a_failed_force_at_the_swap_crashes_and_loses_no_row() {
             api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
         }
         let (w, clock) = (db.clone(), rt.clone());
-        db.on_reindex_phase(Arc::new(move |p| {
+        db.testing().on_reindex_phase(move |p| {
             if p == "swap" {
-                w.write_path().pager().flush_log();
+                w.testing().flush_log();
                 clock.set_faults(Faults {
                     fail_p: 1.0,
                     ..Faults::default()
                 });
             }
-        }));
+        });
         api::results(&db, "reindex ts index (v)");
         wait_jobs(&rt, &db);
         rt.set_faults(Faults::default());
@@ -1411,7 +1449,7 @@ fn a_failed_force_at_the_swap_crashes_and_loses_no_row() {
         let db = hist_open(rt);
         assert_eq!(
             Vec::<String>::new(),
-            api::printed(db.verify_holding().unwrap())
+            api::printed(db.testing().verify_holding().unwrap())
         );
         for i in [1, 77, 400] {
             let got = api::query(&db, &format!("from t in ts where t.v == {i} select t.v"));
@@ -1429,11 +1467,14 @@ fn a_reindex_repairs_damage_under_a_crashed_change_the_open_could_not_free() {
         for i in 1..=400 {
             api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
         }
-        let index = db.write_path().index_named("app::ts", "index (v)").unwrap();
-        let pager = db.write_path().pager();
-        let page = *index.tree().pages(pager).unwrap().last().unwrap();
-        let at = page.0 as usize * pager.page_size() + 300;
-        adtb::catalog::Catalog::naming_sequences(pager, pager.catalog_root()).unwrap();
+        let t = db.testing();
+        let page = *t
+            .pages(t.index("app::ts", "index (v)").unwrap())
+            .unwrap()
+            .last()
+            .unwrap();
+        let at = page.0 as usize * t.probe().page_size() + 300;
+        t.plant(Plant::NamingSequences).unwrap();
         db.close().unwrap();
         at
     });
@@ -1458,7 +1499,7 @@ fn a_reindex_repairs_damage_under_a_crashed_change_the_open_could_not_free() {
         let db = hist_open(rt);
         assert_eq!(
             Vec::<String>::new(),
-            api::printed(db.verify_holding().unwrap()),
+            api::printed(db.testing().verify_holding().unwrap()),
             "the next open frees what the crashed change left"
         );
         db.close().unwrap();
@@ -1482,7 +1523,7 @@ fn read_beside_tasks_waiting_on_a_rebuild(caller: &'static str) -> bool {
         let (clock, s2, rd, out) = (rt.clone(), session, read_done, seen.clone());
         let threads = Arc::new(Mutex::new(Vec::new()));
         let th = threads.clone();
-        db.on_reindex_phase(Arc::new(move |phase| {
+        db.testing().on_reindex_phase(move |phase| {
             if phase == "build" {
                 for _ in 0..2 {
                     let (c, s) = (clock.clone(), s2.clone());
@@ -1509,7 +1550,7 @@ fn read_beside_tasks_waiting_on_a_rebuild(caller: &'static str) -> bool {
                 }
                 *out.lock().unwrap() = Some(rd.load(Ordering::Acquire));
             }
-        }));
+        });
         api::results(&db, "reindex ts index (v)");
         wait_jobs(&rt, &db);
         for t in std::mem::take(&mut *threads.lock().unwrap()) {
@@ -1658,11 +1699,7 @@ fn assert_rejected(reason: &str, r: Result<(), adtb::Error>, what: &str) {
 
 /// Returns the transaction ids taken so far, one of them by this call.
 fn xids_taken(db: &Database<SimRuntime>) -> u64 {
-    let write = db.write_path();
-    let tx = write.begin().unwrap();
-    let xid = tx.xid().unwrap().0;
-    write.abort(tx).unwrap();
-    xid
+    db.testing().take_xid().unwrap().0
 }
 
 const CHANGE_THEN_VACUUM: &str = "set setting RetentionWindow = { length: 2h }\nvacuum ts";
@@ -1675,7 +1712,7 @@ fn a_set_setting_then_vacuum_waiting_on_the_lock_changes_the_row_once() {
         let before = xids_taken(&db);
         api::task(&rt, &session, CHANGE_THEN_VACUUM).unwrap();
         let alone = xids_taken(&db) - before;
-        let hold = db.write_path().holding_off_vacuum();
+        let hold = db.testing().hold_vacuum();
         let before = xids_taken(&db);
         let (c, s) = (rt.clone(), session);
         let t = rt.spawn("c", move || {
@@ -1723,8 +1760,8 @@ fn a_command_after_one_that_took_effect_never_reruns_it() {
 }
 
 fn changing_words(db: &Database<SimRuntime>) -> u64 {
-    let pager = db.write_path().pager();
-    let page = pager.read(pager.catalog_root()).unwrap();
+    let t = db.testing();
+    let page = t.probe().page(t.root(Object::Catalog).unwrap()).unwrap();
     let mut found = 0;
     for at in (0..page.len() - 8).step_by(8) {
         let v = u64::from_le_bytes(page[at..at + 8].try_into().unwrap());
@@ -1745,23 +1782,23 @@ fn a_panic_inside_the_swap_frees_neither_tree_until_the_next_open() {
         }
         let w = db.clone();
         let before = Arc::new(Mutex::new(Vec::new()));
-        db.on_reindex_phase(Arc::new(move |p| {
-            let pager = w.write_path().pager();
+        db.testing().on_reindex_phase(move |p| {
+            let t = w.testing();
             if p == "build" {
-                *before.lock().unwrap() = pager.allocated().unwrap();
+                *before.lock().unwrap() = t.allocated().unwrap();
             }
             if p == "swap" {
                 let was = before.lock().unwrap().clone();
-                let new: Vec<_> = pager
+                let new: Vec<_> = t
                     .allocated()
                     .unwrap()
                     .into_iter()
                     .filter(|p| !was.contains(p))
                     .collect();
                 assert_eq!(1, new.len());
-                pager.free(new[0]).unwrap();
+                t.plant(Plant::Free(new[0])).unwrap();
             }
-        }));
+        });
         api::results(&db, "reindex ts index (v)");
         wait_jobs(&rt, &db);
         let found = api::printed(api::result(&db, "from f in sys::verify_findings select f"));
@@ -1778,7 +1815,7 @@ fn a_panic_inside_the_swap_frees_neither_tree_until_the_next_open() {
         let db = hist_open(rt);
         assert_eq!(
             Vec::<String>::new(),
-            api::printed(db.verify_holding().unwrap())
+            api::printed(db.testing().verify_holding().unwrap())
         );
         assert_eq!(0, changing_words(&db));
         for i in 1..=3 {
@@ -1801,12 +1838,12 @@ fn a_reindex_then_vacuum_waiting_on_the_lock_starts_one_job() {
         let session = Arc::new(db.role_authority().session("owner").unwrap());
         let scans = Arc::new(Mutex::new(0u32));
         let s = scans.clone();
-        db.on_reindex_phase(Arc::new(move |phase| {
+        db.testing().on_reindex_phase(move |phase| {
             if phase == "scan" {
                 *s.lock().unwrap() += 1;
             }
-        }));
-        let hold = db.write_path().holding_off_vacuum();
+        });
+        let hold = db.testing().hold_vacuum();
         let (c, se) = (rt.clone(), session);
         let t = rt.spawn("c", move || {
             api::task(&c, &se, "reindex ts index (v)\nvacuum ts").unwrap();

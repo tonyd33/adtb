@@ -1,4 +1,4 @@
-use adtb::testing::Probe;
+use adtb::testing::{CommitLogPages, Failed, Object, Plant, Probe};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -230,20 +230,17 @@ fn seed(db: &Database<SimRuntime>) {
     }
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn heap_page(db: &Database<SimRuntime>, relation: &str, ctor: &str) -> Pid {
-    let w = db.write_path();
-    w.heap_named(relation, ctor)
-        .unwrap()
-        .pages(w.pager())
-        .unwrap()[0]
+    let t = db.testing();
+    t.pages(t.heap(relation, ctor).unwrap()).unwrap()[0]
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn index_page(db: &Database<SimRuntime>, relation: &str, clause: &str) -> Pid {
-    let w = db.write_path();
-    let index = w.index_named(relation, clause).unwrap();
-    *index.tree().pages(w.pager()).unwrap().last().unwrap()
+    let t = db.testing();
+    *t.pages(t.index(relation, clause).unwrap())
+        .unwrap()
+        .last()
+        .unwrap()
 }
 
 /// Returns a simulator over a seeded file with page `pick` picks flipped on disk.
@@ -290,21 +287,16 @@ fn marks<R: Runtime>(db: &Database<R>) -> BTreeSet<Quarantine> {
     db.testing().probe().marks()
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn apple_mark(db: &Database<SimRuntime>) -> Quarantine {
-    let w = db.write_path();
-    Quarantine::Heap(w.heap_named("app::identities", "Apple").unwrap().id().0)
+    let t = db.testing();
+    t.mark_of(t.heap("app::identities", "Apple").unwrap())
+        .unwrap()
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn user_index_mark(db: &Database<SimRuntime>) -> Quarantine {
-    let w = db.write_path();
-    Quarantine::Index(
-        w.index_named("app::identities", USER_INDEX)
-            .unwrap()
-            .tree()
-            .owner(),
-    )
+    let t = db.testing();
+    t.mark_of(t.index("app::identities", USER_INDEX).unwrap())
+        .unwrap()
 }
 
 fn call(db: &Database<SimRuntime>, query: &str, args: &[Val]) -> Result<Vec<String>, Error> {
@@ -457,10 +449,12 @@ fn a_plan_over_the_index_is_replanned_with_the_same_rows() {
             .join("\n")
         };
         assert!(shown(&db).contains("Probe"), "{}", shown(&db));
-        db.damage_page(
-            index_page(&db, "app::identities", "index (gid) in Google"),
-            Damage::Checksum,
-        );
+        db.testing()
+            .plant(Plant::Refuse {
+                page: index_page(&db, "app::identities", "index (gid) in Google"),
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         let what = quarantined(&call(&db, "by_gid", &gid).unwrap_err()).to_owned();
         assert!(what.contains("(gid)"), "{what}");
         assert_eq!(before, call(&db, "by_gid", &gid).unwrap());
@@ -478,7 +472,12 @@ fn a_key_lookup_runs_from_the_heaps_while_its_index_is_quarantined() {
         let deref = "from n in [identities.key(11)] select n.id";
         let before = (api::query(&db, text), api::query(&db, deref));
         let page = index_page(&db, "app::identities", "key id");
-        db.damage_page(page, Damage::Checksum);
+        db.testing()
+            .plant(Plant::Refuse {
+                page,
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         let what = failed_on(&db, text);
         assert!(what.contains("key id"), "{what}");
         assert_eq!(before, (api::query(&db, text), api::query(&db, deref)));
@@ -491,7 +490,12 @@ fn an_io_failure_sets_no_mark_and_stays_a_storage_failure() {
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
-        db.damage_page(apple(&db), Damage::Unreadable);
+        db.testing()
+            .plant(Plant::Refuse {
+                page: apple(&db),
+                damage: Damage::Unreadable,
+            })
+            .unwrap();
         assert!(
             matches!(
                 api::failure(&db, ALL),
@@ -510,14 +514,18 @@ fn an_io_failure_sets_no_mark_and_stays_a_storage_failure() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn concurrent_readers_of_one_damaged_page_set_one_mark() {
     for seed_no in adtb_simkit::seeds::sweep(20..22) {
         let mut sim = Sim::new(seed_no, Config::default());
         api::run(&mut sim, |rt| {
             let db = open_app(rt.clone());
             seed(&db);
-            db.damage_page(apple(&db), Damage::Checksum);
+            db.testing()
+                .plant(Plant::Refuse {
+                    page: apple(&db),
+                    damage: Damage::Checksum,
+                })
+                .unwrap();
             let before = db.testing().probe().durable();
             let readers: Vec<_> = (0..4)
                 .map(|i| {
@@ -537,7 +545,7 @@ fn concurrent_readers_of_one_damaged_page_set_one_mark() {
             );
             assert!(db.testing().probe().durable() > before, "seed {seed_no}");
             let once = db.testing().probe().durable();
-            db.write_path().pager().quarantine(apple_mark(&db)).unwrap();
+            db.testing().plant(Plant::Mark(apple_mark(&db))).unwrap();
             assert_eq!(once, db.testing().probe().durable(), "seed {seed_no}");
         });
     }
@@ -549,7 +557,12 @@ fn a_bad_catalog_page_marks_the_database() {
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
-        db.damage_page(heap_page(&db, "catalog::roles", "Role"), Damage::Checksum);
+        db.testing()
+            .plant(Plant::Refuse {
+                page: heap_page(&db, "catalog::roles", "Role"),
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         assert_eq!(
             "the database",
             failed_on(&db, "from r in catalog::roles select r.name")
@@ -594,9 +607,8 @@ fn a_file_with_a_damaged_catalog_page_opens_for_verify() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_file_with_a_damaged_catalog_root_opens_and_keeps_the_mark() {
-    let mut sim = flipped(19, |db| db.write_path().pager().catalog_root());
+    let mut sim = flipped(19, |db| db.testing().root(Object::Catalog).unwrap());
     api::run(&mut sim, |rt| {
         let got = Database::open_in(rt, FILE, &Log::new([APP]), &api::options(2));
         got.unwrap().close().unwrap();
@@ -607,15 +619,24 @@ fn a_file_with_a_damaged_catalog_root_opens_and_keeps_the_mark() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_damaged_commit_log_page_marks_the_database_and_verify_runs() {
     let mut sim = Sim::new(30, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
-        let clog = db.write_path().txns().commit_log();
-        let page = *clog.status_pages().values().next_back().unwrap();
-        db.damage_page(page, Damage::Checksum);
+        let page = *db
+            .testing()
+            .commit_log()
+            .status()
+            .values()
+            .next_back()
+            .unwrap();
+        db.testing()
+            .plant(Plant::Refuse {
+                page,
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         let got = api::failure(&db, r#"insert users { id: users.key(99), name: "x" }"#);
         assert_eq!("the database", quarantined(&got));
         assert_eq!(BTreeSet::from([Quarantine::Database]), marks(&db));
@@ -695,16 +716,19 @@ fn a_write_to_a_sum_reads_its_one_key_over_every_constructor() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn verify_findings_mark_the_index_they_name() {
     let mut sim = Sim::new(33, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
-        let w = db.write_path();
-        let ix = w.index_named("app::identities", USER_INDEX).unwrap();
-        let gone = ix.probe(w.pager(), &[Value::I64(5)]).unwrap().remove(0);
-        assert!(ix.delete(w.pager(), &gone).unwrap());
+        let t = db.testing();
+        let ix = t.index("app::identities", USER_INDEX).unwrap();
+        let gone = t.entries(ix, &[Value::I64(5)]).unwrap().remove(0);
+        t.plant(Plant::DropEntry {
+            index: ix,
+            entry: gone,
+        })
+        .unwrap();
         let found = api::printed(db.verify(Some("identities")).unwrap());
         assert!(found[0].starts_with("Missing"), "{found:?}");
         assert_eq!(BTreeSet::from([user_index_mark(&db)]), marks(&db));
@@ -714,17 +738,21 @@ fn verify_findings_mark_the_index_they_name() {
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
-        let w = db.write_path();
-        let heap = w.heap_named("app::identities", "Google").unwrap();
-        let page = heap.pages(w.pager()).unwrap()[0];
-        let ix = w.index_named("app::identities", USER_INDEX).unwrap();
-        let ctor = *ix.ctors().iter().next().unwrap();
+        let t = db.testing();
+        let heap = t.heap("app::identities", "Google").unwrap();
+        let page = t.pages(heap).unwrap()[0];
+        let ix = t.index("app::identities", USER_INDEX).unwrap();
+        let ctor = *t.ctors(ix).unwrap().iter().next().unwrap();
         let orphan = Entry {
             key: vec![Value::I64(1000)],
             ctor,
             tid: Tid::new(page.0, 400).unwrap(),
         };
-        assert!(ix.insert(w.pager(), &orphan).unwrap());
+        t.plant(Plant::AddEntry {
+            index: ix,
+            entry: orphan,
+        })
+        .unwrap();
         let found = api::printed(db.verify(None).unwrap());
         assert!(found.iter().any(|r| r.starts_with("Orphan")), "{found:?}");
         assert_eq!(BTreeSet::from([user_index_mark(&db)]), marks(&db));
@@ -749,15 +777,13 @@ fn a_verify_checksum_finding_marks_what_holds_the_page() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn verify_of_a_marked_database_still_runs() {
     let mut sim = Sim::new(36, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
-        db.write_path()
-            .pager()
-            .quarantine(Quarantine::Database)
+        db.testing()
+            .plant(Plant::Mark(Quarantine::Database))
             .unwrap();
         db.close().unwrap();
     });
@@ -776,15 +802,24 @@ fn verify_of_a_marked_database_still_runs() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_failed_mark_does_not_hide_the_damage() {
     let mut sim = Sim::new(37, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
-        let pager = db.write_path().pager();
-        db.damage_page(pager.quarantine_page(), Damage::Checksum);
-        db.damage_page(apple(&db), Damage::Checksum);
+        let marks_page = db.testing().root(Object::Marks).unwrap();
+        db.testing()
+            .plant(Plant::Refuse {
+                page: marks_page,
+                damage: Damage::Checksum,
+            })
+            .unwrap();
+        db.testing()
+            .plant(Plant::Refuse {
+                page: apple(&db),
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         let what = failed_on(&db, ALL);
         assert!(what.starts_with("app::identities.Apple"), "{what}");
         assert!(what.contains("only in memory"), "{what}");
@@ -795,7 +830,6 @@ fn a_failed_mark_does_not_hide_the_damage() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_mark_fails_a_call_of_an_open_transaction_and_leaves_it_open() {
     let mut sim = Sim::new(40, Config::default());
     api::run(&mut sim, |rt| {
@@ -803,7 +837,7 @@ fn a_mark_fails_a_call_of_an_open_transaction_and_leaves_it_open() {
         seed(&db);
         let mut t = db.begin(&TxnOptions::default()).unwrap();
         assert_eq!(18, api::in_txn(&mut t, ALL).len());
-        db.write_path().pager().quarantine(apple_mark(&db)).unwrap();
+        db.testing().plant(Plant::Mark(apple_mark(&db))).unwrap();
         let got = t.query_text(ALL, &[], &TxnCallOptions::default());
         assert_eq!("app::identities.Apple", quarantined(&got.unwrap_err()));
         assert_eq!(12, api::in_txn(&mut t, SIDES).len());
@@ -812,7 +846,6 @@ fn a_mark_fails_a_call_of_an_open_transaction_and_leaves_it_open() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_damaged_large_value_page_marks_the_database() {
     let mut sim = Sim::new(41, Config::default());
     api::run(&mut sim, |rt| {
@@ -825,17 +858,47 @@ fn a_damaged_large_value_page_marks_the_database() {
                    insert identities.Apple {{ id: identities.key(1), user: users.key(1), sub: "{long}" }}"#
             ),
         );
-        let w = db.write_path();
-        let heap = w.heap_named("app::identities", "Apple").unwrap();
-        let pages = heap.large().owned_pages(w.pager()).unwrap();
-        db.damage_page(*pages.last().unwrap(), Damage::Checksum);
+        let t = db.testing();
+        let large = t.large("app::identities", "Apple").unwrap();
+        let pages = t.owned(large).unwrap();
+        db.testing()
+            .plant(Plant::Refuse {
+                page: *pages.last().unwrap(),
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         assert_eq!("the database", failed_on(&db, ROWS));
+    });
+}
+
+#[test]
+fn the_mark_of_a_large_value_store_is_the_one_its_damage_sets() {
+    let mut sim = Sim::new(41, Config::default());
+    api::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        let long = "x".repeat(40_000);
+        api::results(
+            &db,
+            &format!(
+                r#"insert users {{ id: users.key(1), name: "n" }}
+                   insert identities.Apple {{ id: identities.key(1), user: users.key(1), sub: "{long}" }}"#
+            ),
+        );
+        let t = db.testing();
+        let large = t.large("app::identities", "Apple").unwrap();
+        let page = *t.owned(large).unwrap().last().unwrap();
+        t.plant(Plant::Refuse {
+            page,
+            damage: Damage::Checksum,
+        })
+        .unwrap();
+        failed_on(&db, ROWS);
+        assert_eq!(BTreeSet::from([t.mark_of(large).unwrap()]), marks(&db));
     });
 }
 
 /// Run `body` over a seeded database with `mark` of it set and no page damaged, so that only the
 /// comparison of a call to the marks can fail the call.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn marked_undamaged(
     seed_no: u64,
     mark: impl FnOnce(&Database<SimRuntime>) -> Quarantine,
@@ -845,7 +908,7 @@ fn marked_undamaged(
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
-        db.write_path().pager().quarantine(mark(&db)).unwrap();
+        db.testing().plant(Plant::Mark(mark(&db))).unwrap();
         body(&db);
     });
 }
@@ -881,13 +944,12 @@ fn a_mark_fails_a_call_before_it_reads_anything() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_reference_mark_fails_a_write_that_names_only_the_referrer() {
     marked_undamaged(
         43,
         |db| {
-            let w = db.write_path();
-            Quarantine::Heap(w.heap_named("app::users", "User").unwrap().id().0)
+            let t = db.testing();
+            t.mark_of(t.heap("app::users", "User").unwrap()).unwrap()
         },
         |db| {
             assert_eq!(
@@ -911,14 +973,12 @@ fn an_index_mark_fails_a_write_it_covers_with_no_page_damaged() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn opening_a_marked_database_applies_no_migration() {
     let mut sim = Sim::new(45, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
-        db.write_path()
-            .pager()
-            .quarantine(Quarantine::Database)
+        db.testing()
+            .plant(Plant::Mark(Quarantine::Database))
             .unwrap();
         db.close().unwrap();
     });
@@ -961,13 +1021,12 @@ fn seed_many(db: &Database<SimRuntime>, n: i64) {
     }
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn index_pages(db: &Database<SimRuntime>) -> (Pid, Vec<Pid>) {
-    let w = db.write_path();
-    let index = w.index_named("app::identities", USER_INDEX).unwrap();
-    let pages = index.tree().pages(w.pager()).unwrap();
+    let t = db.testing();
+    let index = t.index("app::identities", USER_INDEX).unwrap();
+    let pages = t.pages(index).unwrap();
     assert!(pages.len() >= 3, "{pages:?}");
-    (index.tree().root(), pages)
+    (t.root(index).unwrap(), pages)
 }
 
 fn runs(db: &Database<SimRuntime>, text: &str) {
@@ -977,7 +1036,6 @@ fn runs(db: &Database<SimRuntime>, text: &str) {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn two_finders_of_different_objects_keep_both_marks() {
     for s in adtb_simkit::seeds::sweep(0..6) {
         let mut sim = Sim::new(s, Config::default());
@@ -987,8 +1045,8 @@ fn two_finders_of_different_objects_keep_both_marks() {
                 .map(|i| {
                     let db = db.clone();
                     rt.spawn(&format!("marker {i}"), move || {
-                        let p = db.write_path().pager();
-                        p.quarantine(Quarantine::Heap(1000 + i)).unwrap();
+                        let t = db.testing();
+                        t.plant(Plant::Mark(Quarantine::Heap(1000 + i))).unwrap();
                     })
                 })
                 .collect();
@@ -1006,7 +1064,6 @@ fn two_finders_of_different_objects_keep_both_marks() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_second_finder_of_one_object_returns_with_the_mark_durable() {
     for s in adtb_simkit::seeds::sweep(0..6) {
         let mut sim = Sim::new(s, Config::default());
@@ -1016,10 +1073,11 @@ fn a_second_finder_of_one_object_returns_with_the_mark_durable() {
                 .map(|i| {
                     let db = db.clone();
                     rt.spawn(&format!("marker {i}"), move || {
-                        let p = db.write_path().pager();
-                        p.quarantine(Quarantine::Heap(1000)).unwrap();
-                        let at = adtb::storage::lsn(&p.read(p.quarantine_page()).unwrap());
-                        assert!(Probe::of(p).durable() > at, "seed {s} marker {i}");
+                        let t = db.testing();
+                        t.plant(Plant::Mark(Quarantine::Heap(1000))).unwrap();
+                        let marks_page = t.root(Object::Marks).unwrap();
+                        let at = adtb::storage::lsn(&t.probe().page(marks_page).unwrap());
+                        assert!(t.probe().durable() > at, "seed {s} marker {i}");
                     })
                 })
                 .collect();
@@ -1038,8 +1096,18 @@ fn two_damaged_pages_of_one_index_mark_the_index() {
         seed(&db);
         seed_many(&db, 900);
         let (_, pages) = index_pages(&db);
-        db.damage_page(pages[pages.len() - 1], Damage::Checksum);
-        db.damage_page(pages[pages.len() - 2], Damage::Checksum);
+        db.testing()
+            .plant(Plant::Refuse {
+                page: pages[pages.len() - 1],
+                damage: Damage::Checksum,
+            })
+            .unwrap();
+        db.testing()
+            .plant(Plant::Refuse {
+                page: pages[pages.len() - 2],
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         db.verify(Some("identities")).unwrap();
         assert_eq!(BTreeSet::from([user_index_mark(&db)]), marks(&db));
     });
@@ -1054,25 +1122,39 @@ fn a_damaged_root_and_leaf_of_one_index_mark_the_index() {
         seed_many(&db, 900);
         let (root, pages) = index_pages(&db);
         let leaf = *pages.iter().rev().find(|p| **p != root).unwrap();
-        db.damage_page(root, Damage::Checksum);
-        db.damage_page(leaf, Damage::Checksum);
+        db.testing()
+            .plant(Plant::Refuse {
+                page: root,
+                damage: Damage::Checksum,
+            })
+            .unwrap();
+        db.testing()
+            .plant(Plant::Refuse {
+                page: leaf,
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         db.verify(None).unwrap();
         assert_eq!(BTreeSet::from([user_index_mark(&db)]), marks(&db));
     });
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_walk_stopped_by_damage_marks_its_heap() {
     let mut sim = Sim::new(63, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
-        let w = db.write_path();
-        let heap = w.heap_named("app::identities", "Apple").unwrap();
-        let owned = heap.owned_pages(w.pager()).unwrap();
+        let t = db.testing();
+        let heap = t.heap("app::identities", "Apple").unwrap();
+        let owned = t.owned(heap).unwrap();
         for pid in owned {
-            db.damage_page(pid, Damage::Checksum);
+            db.testing()
+                .plant(Plant::Refuse {
+                    page: pid,
+                    damage: Damage::Checksum,
+                })
+                .unwrap();
         }
         db.verify(Some("identities")).unwrap();
         assert_eq!(BTreeSet::from([apple_mark(&db)]), marks(&db));
@@ -1080,21 +1162,34 @@ fn a_walk_stopped_by_damage_marks_its_heap() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn an_io_failure_in_the_walk_marks_nothing() {
     let mut sim = Sim::new(64, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
-        let w = db.write_path();
-        let heap = w.heap_named("app::identities", "Apple").unwrap();
-        let p = w.pager();
-        let unheld = p
-            .allocate(1, adtb::storage::PageKind::Quarantine, 0)
+        let t = db.testing();
+        let heap = t.heap("app::identities", "Apple").unwrap();
+        let unheld = t
+            .plant(Plant::Orphan {
+                kind: adtb::storage::PageKind::Quarantine,
+                owner: 0,
+            })
+            .unwrap()
+            .page()
             .unwrap();
-        let root = heap.owned_pages(p).unwrap()[0];
-        db.damage_page(root, Damage::Unreadable);
-        db.damage_page(unheld, Damage::Checksum);
+        let root = t.owned(heap).unwrap()[0];
+        db.testing()
+            .plant(Plant::Refuse {
+                page: root,
+                damage: Damage::Unreadable,
+            })
+            .unwrap();
+        db.testing()
+            .plant(Plant::Refuse {
+                page: unheld,
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         let found = api::printed(db.verify(None).unwrap());
         let checksum = format!("where: \"page {}: Checksum\"", unheld.0);
         assert!(found.iter().any(|r| r.contains(&checksum)), "{found:?}");
@@ -1103,18 +1198,27 @@ fn an_io_failure_in_the_walk_marks_nothing() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn rot_on_a_free_page_marks_nothing() {
     let mut sim = Sim::new(51, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
-        let p = db.write_path().pager();
-        let mut new = p.reserve();
-        let pid = new.page(1, adtb::storage::PageKind::Quarantine, 0).unwrap();
-        p.update_with(new, &[pid], |_| {}).unwrap();
-        p.free(pid).unwrap();
-        db.damage_page(pid, Damage::Checksum);
+        let t = db.testing();
+        let pid = t
+            .plant(Plant::Orphan {
+                kind: adtb::storage::PageKind::Quarantine,
+                owner: 0,
+            })
+            .unwrap()
+            .page()
+            .unwrap();
+        t.plant(Plant::Free(pid)).unwrap();
+        db.testing()
+            .plant(Plant::Refuse {
+                page: pid,
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         let found = api::printed(db.verify(None).unwrap());
         assert!(found.iter().any(|r| r.starts_with("Checksum")), "{found:?}");
         assert_eq!(BTreeSet::new(), marks(&db));
@@ -1122,15 +1226,13 @@ fn rot_on_a_free_page_marks_nothing() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_page_vacuum_frees_during_the_walk_marks_nothing() {
     let mut sim = Sim::new(52, Config::default());
-    api::run(&mut sim, |rt| {
-        let db = open_app(rt);
-        let p = db.write_path().pager();
-        let mut new = p.reserve();
-        let pid = new.page(1, adtb::storage::PageKind::Quarantine, 0).unwrap();
-        p.update_with(new, &[pid], |_| {}).unwrap();
+    create(&mut sim);
+    with_pager(&mut sim, |p| {
+        let pid = p
+            .allocate(1, adtb::storage::PageKind::Quarantine, 0)
+            .unwrap();
         let held = p.holders_of(pid, Some(Quarantine::Database), |_| {
             p.free(pid).unwrap();
         });
@@ -1139,17 +1241,26 @@ fn a_page_vacuum_frees_during_the_walk_marks_nothing() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn an_allocated_page_every_walk_misses_marks_the_database() {
     let mut sim = Sim::new(53, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
-        let p = db.write_path().pager();
-        let mut new = p.reserve();
-        let pid = new.page(1, adtb::storage::PageKind::Quarantine, 0).unwrap();
-        p.update_with(new, &[pid], |_| {}).unwrap();
-        db.damage_page(pid, Damage::Checksum);
+        let pid = db
+            .testing()
+            .plant(Plant::Orphan {
+                kind: adtb::storage::PageKind::Quarantine,
+                owner: 0,
+            })
+            .unwrap()
+            .page()
+            .unwrap();
+        db.testing()
+            .plant(Plant::Refuse {
+                page: pid,
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         db.verify(None).unwrap();
         assert_eq!(BTreeSet::from([Quarantine::Database]), marks(&db));
     });
@@ -1161,7 +1272,7 @@ fn rot_in_the_kept_store_is_a_finding_with_no_mark() {
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
-        db.damage_kept_store();
+        db.testing().plant(Plant::RefuseKeptStore).unwrap();
         let found = api::printed(db.verify(None).unwrap());
         assert!(found.iter().any(|r| r.starts_with("Checksum")), "{found:?}");
         assert_eq!(BTreeSet::new(), marks(&db));
@@ -1201,7 +1312,6 @@ fn a_failed_open_marks_the_heap_of_the_damage_it_met() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_failed_open_on_a_damaged_page_of_the_large_value_store_marks_the_database() {
     let later = "module app\nadd constraint nope =\n  from u in users\n  where u.name == \"zz\"\n  select u\n";
     let mut sim = Sim::new(58, Config::default());
@@ -1212,9 +1322,9 @@ fn a_failed_open_on_a_damaged_page_of_the_large_value_store_marks_the_database()
             &db,
             &format!(r#"insert users {{ id: users.key(1), name: "{long}" }}"#),
         );
-        let w = db.write_path();
-        let heap = w.heap_named("app::users", "User").unwrap();
-        let page = *heap.large().owned_pages(w.pager()).unwrap().last().unwrap();
+        let t = db.testing();
+        let large = t.large("app::users", "User").unwrap();
+        let page = *t.owned(large).unwrap().last().unwrap();
         db.close().unwrap();
         page
     });
@@ -1233,13 +1343,12 @@ fn a_failed_open_on_a_damaged_page_of_the_large_value_store_marks_the_database()
     with_named_pager(&mut sim, |p| assert_eq!(database, Probe::of(p).marks()));
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
-fn commit_log_page(seed_no: u64, pick: impl FnOnce(&adtb::mvcc::CommitLog) -> Pid) -> Sim {
+fn commit_log_page(seed_no: u64, pick: impl FnOnce(CommitLogPages) -> Pid) -> Sim {
     let mut sim = Sim::new(seed_no, Config::default());
     let page = api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
-        let page = pick(&db.write_path().txns().commit_log());
+        let page = pick(db.testing().commit_log());
         db.close().unwrap();
         page
     });
@@ -1250,9 +1359,7 @@ fn commit_log_page(seed_no: u64, pick: impl FnOnce(&adtb::mvcc::CommitLog) -> Pi
 
 #[test]
 fn a_file_with_a_damaged_commit_log_status_page_opens_for_verify() {
-    let mut sim = commit_log_page(58, |clog| {
-        *clog.status_pages().values().next_back().unwrap()
-    });
+    let mut sim = commit_log_page(58, |clog| *clog.status().values().next_back().unwrap());
     for _ in 0..2 {
         api::run(&mut sim, |rt| {
             let db = open_app(rt);
@@ -1280,7 +1387,7 @@ fn a_file_with_a_damaged_commit_log_status_page_opens_for_verify() {
 
 #[test]
 fn a_file_with_a_damaged_commit_log_root_opens_and_keeps_the_mark() {
-    let mut sim = commit_log_page(59, adtb::mvcc::CommitLog::root);
+    let mut sim = commit_log_page(59, |clog| clog.root());
     api::run(&mut sim, |rt| {
         let got = Database::open_in(rt, FILE, &Log::new([APP]), &api::options(2));
         got.unwrap().close().unwrap();
@@ -1291,7 +1398,6 @@ fn a_file_with_a_damaged_commit_log_root_opens_and_keeps_the_mark() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_delete_reads_no_target_of_its_row() {
     let mut sim = Sim::new(70, Config::default());
     api::run(&mut sim, |rt| {
@@ -1302,10 +1408,10 @@ fn a_delete_reads_no_target_of_its_row() {
             "insert notes { id: notes.key(5), about: users.key(1) }",
         );
         let users = {
-            let w = db.write_path();
-            Quarantine::Heap(w.heap_named("app::users", "User").unwrap().id().0)
+            let t = db.testing();
+            t.mark_of(t.heap("app::users", "User").unwrap()).unwrap()
         };
-        db.write_path().pager().quarantine(users).unwrap();
+        db.testing().plant(Plant::Mark(users)).unwrap();
         runs(&db, "from i in identities.Google select i.user");
         runs(&db, "delete n in notes where key n == notes.key(5)");
         assert_eq!(
@@ -1330,13 +1436,12 @@ fn a_delete_reads_no_target_of_its_row() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn every_gate_path_refuses_a_call_over_a_marked_constructor() {
     let mut sim = Sim::new(71, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
-        db.write_path().pager().quarantine(apple_mark(&db)).unwrap();
+        db.testing().plant(Plant::Mark(apple_mark(&db))).unwrap();
         for text in [
             "from i in identities select match i | EmailPass e -> 1 | Google g -> 2 | Apple a -> 3",
             r#"update i in identities.Google where key i == identities.key(11) set Apple { i with sub: "m" }"#,
@@ -1350,14 +1455,12 @@ fn every_gate_path_refuses_a_call_over_a_marked_constructor() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_marked_database_opens_with_a_newer_log_and_a_bundle_needing_it() {
     let mut sim = Sim::new(72, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
-        db.write_path()
-            .pager()
-            .quarantine(Quarantine::Database)
+        db.testing()
+            .plant(Plant::Mark(Quarantine::Database))
             .unwrap();
         db.close().unwrap();
     });
@@ -1380,15 +1483,13 @@ fn a_marked_database_opens_with_a_newer_log_and_a_bundle_needing_it() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_registered_call_on_a_reopened_marked_database_fails_with_quarantined() {
     let mut sim = Sim::new(73, Config::default());
     api::run(&mut sim, |rt| {
         let db = Database::open_in(rt, FILE, &Log::new([APP]), &api::options(2)).unwrap();
         seed(&db);
-        db.write_path()
-            .pager()
-            .quarantine(Quarantine::Database)
+        db.testing()
+            .plant(Plant::Mark(Quarantine::Database))
             .unwrap();
         db.close().unwrap();
     });
@@ -1403,14 +1504,12 @@ fn a_registered_call_on_a_reopened_marked_database_fails_with_quarantined() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn register_on_a_marked_database_fails_with_quarantined() {
     let mut sim = Sim::new(74, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
-        db.write_path()
-            .pager()
-            .quarantine(Quarantine::Database)
+        db.testing()
+            .plant(Plant::Mark(Quarantine::Database))
             .unwrap();
         let auth = db.role_authority();
         let session = auth.session("owner").unwrap();
@@ -1425,28 +1524,25 @@ fn register_on_a_marked_database_fails_with_quarantined() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn vacuum_of_a_marked_constructor_fails_with_quarantined() {
     let mut sim = Sim::new(75, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
-        db.write_path().pager().quarantine(apple_mark(&db)).unwrap();
+        db.testing().plant(Plant::Mark(apple_mark(&db))).unwrap();
         assert_eq!("app::identities.Apple", failed_on(&db, "vacuum identities"));
         runs(&db, "vacuum users");
     });
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn vacuum_of_a_relation_with_a_marked_index_fails_with_quarantined() {
     let mut sim = Sim::new(76, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
-        db.write_path()
-            .pager()
-            .quarantine(user_index_mark(&db))
+        db.testing()
+            .plant(Plant::Mark(user_index_mark(&db)))
             .unwrap();
         assert_eq!(
             format!("app::identities {USER_INDEX}"),
@@ -1471,123 +1567,105 @@ fn with_history(db: &Database<SimRuntime>) {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_damaged_history_heap_page_marks_its_constructor() {
     let mut sim = Sim::new(77, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         with_history(&db);
-        let w = db.write_path();
-        let past = w.history_heap_named("app::identities", "Apple").unwrap();
-        let page = *past.owned_pages(w.pager()).unwrap().last().unwrap();
-        db.damage_page(page, Damage::Checksum);
+        let t = db.testing();
+        let past = t.history("app::identities", "Apple").unwrap();
+        let page = *t.owned(past).unwrap().last().unwrap();
+        db.testing()
+            .plant(Plant::Refuse {
+                page,
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         db.verify(None).unwrap();
         assert_eq!(BTreeSet::from([apple_mark(&db)]), marks(&db));
     });
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_damaged_history_index_page_marks_its_key_index() {
     let mut sim = Sim::new(78, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         with_history(&db);
-        let w = db.write_path();
-        let past = w.history_index_named("app::identities").unwrap();
-        let page = *past.tree().pages(w.pager()).unwrap().last().unwrap();
-        db.damage_page(page, Damage::Checksum);
+        let t = db.testing();
+        let past = t.history_index("app::identities").unwrap();
+        let page = *t.pages(past).unwrap().last().unwrap();
+        db.testing()
+            .plant(Plant::Refuse {
+                page,
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         db.verify(None).unwrap();
-        let key = w.index_named("app::identities", "key id").unwrap();
-        assert_eq!(
-            BTreeSet::from([Quarantine::Index(key.tree().owner())]),
-            marks(&db)
-        );
+        let key = t.index("app::identities", "key id").unwrap();
+        assert_eq!(BTreeSet::from([t.mark_of(key).unwrap()]), marks(&db));
     });
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn an_io_failure_on_the_marks_page_fails_the_load_and_marks_nothing() {
     let mut sim = Sim::new(83, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
-        let p = db.write_path().pager();
-        let page = p.quarantine_page();
-        p.quarantine(Quarantine::Index(5)).unwrap();
-        db.damage_page(page, Damage::Unreadable);
-        let e = p.load_marks(page).expect_err("the page cannot be read");
+        let t = db.testing();
+        let page = t.root(Object::Marks).unwrap();
+        t.plant(Plant::Mark(Quarantine::Index(5))).unwrap();
+        db.testing()
+            .plant(Plant::Refuse {
+                page,
+                damage: Damage::Unreadable,
+            })
+            .unwrap();
+        let e = match t.plant(Plant::LoadMarks(page)) {
+            Err(Failed::Page(e)) => e,
+            other => panic!("the page cannot be read: {other:?}"),
+        };
         assert_eq!(Damage::Unreadable, e.damage);
-        assert_eq!(BTreeSet::from([Quarantine::Index(5)]), Probe::of(p).marks());
+        assert_eq!(BTreeSet::from([Quarantine::Index(5)]), t.probe().marks());
     });
 }
 
 const BOUNDED: &str = "from i in identities where i.id == identities.key(11) select i.user";
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
-fn key_index_marked(db: &Database<SimRuntime>) -> btree::Index {
-    let w = db.write_path();
-    let key = w.index_named("app::identities", "key id").unwrap();
-    w.pager()
-        .quarantine(Quarantine::Index(key.tree().owner()))
-        .unwrap();
+fn key_index_marked(db: &Database<SimRuntime>) -> Object {
+    let t = db.testing();
+    let key = t.index("app::identities", "key id").unwrap();
+    t.plant(Plant::Mark(t.mark_of(key).unwrap())).unwrap();
     key
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_probe_from_the_heaps_stops_on_the_check_of_its_call() {
     let mut sim = Sim::new(79, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let before = api::query(&db, BOUNDED);
-        key_index_marked(&db);
+        let key = key_index_marked(&db);
         assert_eq!(before, api::query(&db, BOUNDED));
-        let w = db.write_path();
-        let (id, routes) = w.key_probe("app::identities").unwrap();
-        let snapshot = w.begin_verify().unwrap();
-        let store = w.store_at(snapshot.txn());
-        let grant = adtb::exec::Budget::new(1 << 30).admit(1 << 30).unwrap();
-        let check = || Err(adtb::exec::Error::Cancelled);
-        let got = store.probe(
-            id,
-            &[],
-            &routes,
-            adtb::exec::ProbeBounds {
-                grant: &grant,
-                check: &check,
-            },
-        );
+        let got = db.testing().probe_heaps(key, &[], 1 << 30, true).unwrap();
         assert!(matches!(got, Err(adtb::exec::Error::Cancelled)), "{got:?}");
     });
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_probe_from_the_heaps_charges_the_versions_it_scans_to_the_grant() {
     let mut sim = Sim::new(80, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
-        key_index_marked(&db);
-        let w = db.write_path();
-        let (id, routes) = w.key_probe("app::identities").unwrap();
-        let snapshot = w.begin_verify().unwrap();
-        let store = w.store_at(snapshot.txn());
-        let grant = adtb::exec::Budget::new(8).admit(8).unwrap();
-        let check = || Ok(());
-        let got = store.probe(
-            id,
-            &[Value::I64(i64::MAX)],
-            &routes,
-            adtb::exec::ProbeBounds {
-                grant: &grant,
-                check: &check,
-            },
-        );
+        let key = key_index_marked(&db);
+        let got = db
+            .testing()
+            .probe_heaps(key, &[Value::I64(i64::MAX)], 8, false)
+            .unwrap();
         assert!(
             matches!(got, Err(adtb::exec::Error::StatementLimit(_))),
             "{got:?}"
@@ -1596,7 +1674,6 @@ fn a_probe_from_the_heaps_charges_the_versions_it_scans_to_the_grant() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_fallback_gives_the_same_rows_after_updates_retags_and_deletes() {
     let mut sim = Sim::new(81, Config::default());
     api::run(&mut sim, |rt| {
@@ -1627,11 +1704,9 @@ fn a_fallback_gives_the_same_rows_after_updates_retags_and_deletes() {
             .map(|t| api::sorted(api::result(&db, t)))
             .collect();
         for rel in ["app::users", "app::identities"] {
-            let w = db.write_path();
-            let key = w.index_named(rel, "key id").unwrap();
-            w.pager()
-                .quarantine(Quarantine::Index(key.tree().owner()))
-                .unwrap();
+            let t = db.testing();
+            let key = t.index(rel, "key id").unwrap();
+            t.plant(Plant::Mark(t.mark_of(key).unwrap())).unwrap();
         }
         let after: Vec<_> = texts
             .iter()
@@ -1651,7 +1726,6 @@ fn a_fallback_gives_the_same_rows_after_updates_retags_and_deletes() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_fallback_finds_a_large_row_and_an_open_transactions_own_row() {
     let mut sim = Sim::new(82, Config::default());
     api::run(&mut sim, |rt| {
@@ -1666,9 +1740,8 @@ fn a_fallback_finds_a_large_row_and_an_open_transactions_own_row() {
         );
         let text = "from i in identities where i.id == identities.key(900) select i.user";
         let before = api::query(&db, text);
-        db.write_path()
-            .pager()
-            .quarantine(user_index_mark(&db))
+        db.testing()
+            .plant(Plant::Mark(user_index_mark(&db)))
             .unwrap();
         key_index_marked(&db);
         assert_eq!(before, api::query(&db, text));
@@ -1993,7 +2066,6 @@ fn real_lists(name: &str) -> (OsRuntime, Database) {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn mapping_a_damaged_heap_page_never_marks_an_index_that_is_changing() {
     let (rt, db) = real_lists("engine");
     db.query_text(
@@ -2002,13 +2074,14 @@ fn mapping_a_damaged_heap_page_never_marks_an_index_that_is_changing() {
         &CallOptions::default(),
     )
     .unwrap();
-    let w = db.write_path();
-    let page = w
-        .heap_named("app::us", "U")
-        .unwrap()
-        .pages(w.pager())
-        .unwrap()[0];
-    db.damage_page(page, Damage::Checksum);
+    let t = db.testing();
+    let page = t.pages(t.heap("app::us", "U").unwrap()).unwrap()[0];
+    db.testing()
+        .plant(Plant::Refuse {
+            page,
+            damage: Damage::Checksum,
+        })
+        .unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     let writers: Vec<_> = (0..3)
         .map(|writer| {
@@ -2023,12 +2096,12 @@ fn mapping_a_damaged_heap_page_never_marks_an_index_that_is_changing() {
             let (db, stop) = (db.clone(), stop.clone());
             rt.spawn(&format!("mapper {i}"), move || {
                 while !stop.load(Ordering::Relaxed) {
-                    let e = db
-                        .write_path()
-                        .quarantining(adtb::write::Error::Page(PageError {
-                            pid: page,
-                            damage: Damage::Checksum,
-                        }));
+                    let met = PageError {
+                        pid: page,
+                        damage: Damage::Checksum,
+                    };
+                    let planted = db.testing().plant(Plant::FailOn(met)).unwrap();
+                    let e = planted.refused().expect("a page error is refused");
                     assert!(
                         matches!(&e, adtb::write::Error::Quarantined(what) if what == "app::us.U"),
                         "{e:?}"
@@ -2042,7 +2115,7 @@ fn mapping_a_damaged_heap_page_never_marks_an_index_that_is_changing() {
     for t in writers.into_iter().chain(mappers) {
         rt.join(t);
     }
-    let heap = Quarantine::Heap(w.heap_named("app::us", "U").unwrap().id().0);
+    let heap = t.mark_of(t.heap("app::us", "U").unwrap()).unwrap();
     assert_eq!(BTreeSet::from([heap]), marks(&db));
 }
 
@@ -2074,15 +2147,13 @@ fn verify_of_indexes_that_are_changing_finds_and_marks_nothing() {
 }
 
 /// Run `body` with a page of a fresh pager that no walk holds.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn with_unheld_page(seed_no: u64, body: impl FnOnce(&Pager<SimRuntime>, Pid)) {
     let mut sim = Sim::new(seed_no, Config::default());
-    api::run(&mut sim, |rt| {
-        let db = open_app(rt);
-        let p = db.write_path().pager();
-        let mut new = p.reserve();
-        let pid = new.page(1, adtb::storage::PageKind::Quarantine, 0).unwrap();
-        p.update_with(new, &[pid], |_| {}).unwrap();
+    create(&mut sim);
+    with_pager(&mut sim, |p| {
+        let pid = p
+            .allocate(1, adtb::storage::PageKind::Quarantine, 0)
+            .unwrap();
         body(p, pid);
     });
 }
@@ -2166,7 +2237,6 @@ fn a_walk_of_an_object_whose_damage_marks_nothing_stopped_by_damage_leaves_the_p
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_large_value_page_fails_as_storage_unmarked_while_its_store_walk_stops_then_maps_to_the_database()
  {
     let mut sim = Sim::new(64, Config::default());
@@ -2180,15 +2250,17 @@ fn a_large_value_page_fails_as_storage_unmarked_while_its_store_walk_stops_then_
                    insert identities.Apple {{ id: identities.key(1), user: users.key(1), sub: "{long}" }}"#
             ),
         );
-        let w = db.write_path();
-        let large = w.heap_named("app::identities", "Apple").unwrap().large();
-        let page = *large.owned_pages(w.pager()).unwrap().last().unwrap();
-        db.damage_page(page, Damage::Checksum);
+        let t = db.testing();
+        let large = t.large("app::identities", "Apple").unwrap();
+        let page = *t.owned(large).unwrap().last().unwrap();
+        db.testing()
+            .plant(Plant::Refuse {
+                page,
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         let flip = || {
-            let root = large.root();
-            w.pager()
-                .update(&[root], |v| adtb::storage::flip_owner(v[0]))
-                .unwrap()
+            t.plant(Plant::FlipOwner(t.root(large).unwrap())).unwrap();
         };
         flip();
         for attempt in 0..2 {
@@ -2212,19 +2284,18 @@ const GOOGLE_901: &str =
     r#"insert identities.Google { id: identities.key(901), user: users.key(1), gid: "g901" }"#;
 const GOOGLE_901_IDS: &str = "from i in identities.Google where i.gid == \"g901\" select i.id";
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn mark_named(db: &Database<SimRuntime>, relation: &str, ctor: &str) -> Quarantine {
-    Quarantine::Heap(db.write_path().heap_named(relation, ctor).unwrap().id().0)
+    let t = db.testing();
+    t.mark_of(t.heap(relation, ctor).unwrap()).unwrap()
 }
 
 /// Commit a transaction that runs `write`, with `mark` set after the write. Returns what the
 /// commit fails with.
 #[must_use]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn refused_commit(db: &Database<SimRuntime>, write: &str, mark: Quarantine) -> String {
     let mut t = db.begin(&TxnOptions::default()).unwrap();
     api::in_txn_results(&mut t, write);
-    db.write_path().pager().quarantine(mark).unwrap();
+    db.testing().plant(Plant::Mark(mark)).unwrap();
     quarantined(&t.commit(None).unwrap_err()).to_owned()
 }
 
@@ -2241,7 +2312,6 @@ fn a_commit_after_a_mark_on_an_index_covering_its_write_fails_and_leaves_nothing
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_commit_after_a_mark_on_its_heap_or_a_sibling_heap_fails_and_leaves_nothing() {
     for ctor in ["Google", "Apple", "EmailPass"] {
         let mut sim = Sim::new(91, Config::default());
@@ -2251,14 +2321,13 @@ fn a_commit_after_a_mark_on_its_heap_or_a_sibling_heap_fails_and_leaves_nothing(
             let mark = mark_named(&db, "app::identities", ctor);
             let what = refused_commit(&db, GOOGLE_901, mark);
             assert_eq!(format!("app::identities.{ctor}"), what);
-            db.write_path().pager().release(mark).unwrap();
+            db.testing().plant(Plant::Unmark(mark)).unwrap();
             assert!(api::query(&db, GOOGLE_901_IDS).is_empty(), "{ctor}");
         });
     }
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_commit_after_a_mark_its_write_checks_read_fails() {
     let mut sim = Sim::new(92, Config::default());
     api::run(&mut sim, |rt| {
@@ -2267,7 +2336,7 @@ fn a_commit_after_a_mark_its_write_checks_read_fails() {
         let note = "insert notes { id: notes.key(901), about: users.key(1) }";
         let mark = mark_named(&db, "app::users", "User");
         assert_eq!("app::users.User", refused_commit(&db, note, mark));
-        db.write_path().pager().release(mark).unwrap();
+        db.testing().plant(Plant::Unmark(mark)).unwrap();
         let tag = r#"insert users { id: users.key(99), name: "n" }
                      insert tags { id: tags.key(901), owner: users.key(99) }"#;
         let mark = apple_mark(&db);
@@ -2280,7 +2349,6 @@ fn a_commit_after_a_mark_its_write_checks_read_fails() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_commit_writing_nothing_a_mark_stops_runs() {
     let mut sim = Sim::new(93, Config::default());
     api::run(&mut sim, |rt| {
@@ -2291,14 +2359,13 @@ fn a_commit_writing_nothing_a_mark_stops_runs() {
             &mut t,
             "insert notes { id: notes.key(901), about: users.key(1) }",
         );
-        db.write_path().pager().quarantine(apple_mark(&db)).unwrap();
+        db.testing().plant(Plant::Mark(apple_mark(&db))).unwrap();
         t.commit(None).unwrap();
         assert_eq!(1, api::query(&db, "from n in notes select n.id").len());
     });
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_transaction_that_only_read_commits_under_a_mark_on_what_it_read() {
     let mut sim = Sim::new(94, Config::default());
     api::run(&mut sim, |rt| {
@@ -2312,15 +2379,14 @@ fn a_transaction_that_only_read_commits_under_a_mark_on_what_it_read() {
             let mut t = db.begin(&opts).unwrap();
             assert_eq!(18, api::in_txn(&mut t, ALL).len());
             let mark = apple_mark(&db);
-            db.write_path().pager().quarantine(mark).unwrap();
+            db.testing().plant(Plant::Mark(mark)).unwrap();
             t.commit(None).unwrap();
-            db.write_path().pager().release(mark).unwrap();
+            db.testing().plant(Plant::Unmark(mark)).unwrap();
         }
     });
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_statement_that_failed_leaves_no_write_for_the_commit_to_refuse() {
     let mut sim = Sim::new(95, Config::default());
     api::run(&mut sim, |rt| {
@@ -2331,16 +2397,14 @@ fn a_statement_that_failed_leaves_no_write_for_the_commit_to_refuse() {
             r#"insert identities.Google { id: identities.key(11), user: users.key(1), gid: "r" }"#;
         t.query_text(repeat, &[], &TxnCallOptions::default())
             .unwrap_err();
-        db.write_path()
-            .pager()
-            .quarantine(user_index_mark(&db))
+        db.testing()
+            .plant(Plant::Mark(user_index_mark(&db)))
             .unwrap();
         t.commit(None).unwrap();
     });
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn transact_fails_once_when_a_mark_lands_before_its_commit() {
     let mut sim = Sim::new(96, Config::default());
     api::run(&mut sim, |rt| {
@@ -2350,9 +2414,8 @@ fn transact_fails_once_when_a_mark_lands_before_its_commit() {
         let got = db.transact(&TxnOptions::default(), 3, |t| {
             attempts += 1;
             api::in_txn_results(t, GOOGLE_901);
-            db.write_path()
-                .pager()
-                .quarantine(user_index_mark(&db))
+            db.testing()
+                .plant(Plant::Mark(user_index_mark(&db)))
                 .unwrap();
             Ok(())
         });
@@ -2363,7 +2426,6 @@ fn transact_fails_once_when_a_mark_lands_before_its_commit() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_mark_lsn_follows_every_commit_kept_before_it_and_refuses_every_commit_after() {
     let seeds = adtb_simkit::seeds::sweep(0..2);
     let mut refusing = 0;
@@ -2429,7 +2491,12 @@ fn a_mark_lsn_follows_every_commit_kept_before_it_and_refuses_every_commit_after
                         rt.yield_now();
                     }
                     let page = index_page(&db, "app::notes", "index (about)");
-                    db.damage_page(page, Damage::Checksum);
+                    db.testing()
+                        .plant(Plant::Refuse {
+                            page,
+                            damage: Damage::Checksum,
+                        })
+                        .unwrap();
                     while marks(&db).is_empty() {
                         drop(db.verify(Some("notes")));
                     }
@@ -2439,9 +2506,9 @@ fn a_mark_lsn_follows_every_commit_kept_before_it_and_refuses_every_commit_after
                 rt.join(w);
             }
             rt.join(marker);
-            let w = db.write_path();
-            let pager = w.pager();
-            let marked = adtb::storage::lsn(&pager.read(pager.quarantine_page()).unwrap());
+            let t = db.testing();
+            let marks_page = t.root(Object::Marks).unwrap();
+            let marked = adtb::storage::lsn(&t.probe().page(marks_page).unwrap());
             let kept = kept.lock().unwrap();
             for &at in kept.iter() {
                 assert!(
@@ -2472,7 +2539,6 @@ fn a_mark_lsn_follows_every_commit_kept_before_it_and_refuses_every_commit_after
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_commit_waits_for_a_mark_being_set_and_is_refused() {
     let mut sim = Sim::new(100, Config::default());
     api::run(&mut sim, |rt| {
@@ -2506,16 +2572,20 @@ fn a_commit_waits_for_a_mark_being_set_and_is_refused() {
         while !wrote.load(Ordering::Acquire) {
             rt.yield_now();
         }
-        db.damage_page(user_index(&db), Damage::Checksum);
+        db.testing()
+            .plant(Plant::Refuse {
+                page: user_index(&db),
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         let pause = |rt: &SimRuntime| {
             let until = rt.now() + Duration::from_millis(50);
             while rt.now() < until {
                 rt.yield_now();
             }
         };
-        let w = db.write_path();
-        let pager = w.pager();
-        let held = pager.exclusive(pager.quarantine_page()).unwrap();
+        let t = db.testing();
+        let held = t.hold_page(t.root(Object::Marks).unwrap()).unwrap();
         let finder = {
             let db = db.clone();
             rt.spawn("finder", move || {
@@ -2568,11 +2638,15 @@ fn apple_history(db: &Database<SimRuntime>) -> (adtb::Position, adtb::Position) 
     (first, second)
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn damage_history_index(db: &Database<SimRuntime>) {
-    let w = db.write_path();
-    let past = w.history_index_named("app::identities").unwrap();
-    db.damage_page(past.tree().root(), Damage::Checksum);
+    let t = db.testing();
+    let past = t.history_index("app::identities").unwrap();
+    db.testing()
+        .plant(Plant::Refuse {
+            page: t.root(past).unwrap(),
+            damage: Damage::Checksum,
+        })
+        .unwrap();
 }
 
 #[test]
@@ -2610,7 +2684,6 @@ fn a_read_of_the_past_with_no_row_then_fails_alike_without_the_history_key_index
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_read_of_the_past_fails_on_a_damaged_history_heap_without_the_history_key_index() {
     let mut sim = Sim::new(99, Config::default());
     api::run(&mut sim, |rt| {
@@ -2620,10 +2693,15 @@ fn a_read_of_the_past_fails_on_a_damaged_history_heap_without_the_history_key_in
         let at_first = past_of(first, PAST_APPLE);
         damage_history_index(&db);
         failed_on(&db, &at_first);
-        let w = db.write_path();
-        let heap = w.history_heap_named("app::identities", "Apple").unwrap();
-        for page in heap.pages(w.pager()).unwrap() {
-            db.damage_page(page, Damage::Checksum);
+        let t = db.testing();
+        let heap = t.history("app::identities", "Apple").unwrap();
+        for page in t.pages(heap).unwrap() {
+            db.testing()
+                .plant(Plant::Refuse {
+                    page,
+                    damage: Damage::Checksum,
+                })
+                .unwrap();
         }
         let what = failed_on(&db, &at_first);
         assert!(what.contains("app::identities.Apple"), "{what}");
@@ -2640,7 +2718,12 @@ fn a_commit_writing_a_heap_whose_damage_is_recorded_and_not_yet_mapped_is_refuse
         seed(&db);
         let mut t = db.begin(&TxnOptions::default()).unwrap();
         api::in_txn_results(&mut t, GOOGLE_901);
-        db.damage_page(google(&db), Damage::Checksum);
+        db.testing()
+            .plant(Plant::Refuse {
+                page: google(&db),
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         assert_eq!(BTreeSet::new(), marks(&db));
         let what = quarantined(&t.commit(None).unwrap_err()).to_owned();
         assert_eq!("app::identities.Google", what);
@@ -2650,7 +2733,6 @@ fn a_commit_writing_a_heap_whose_damage_is_recorded_and_not_yet_mapped_is_refuse
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_commit_whose_record_of_the_retention_window_is_damaged_is_refused_naming_the_database() {
     let mut sim = Sim::new(97, Config::default());
     api::run(&mut sim, |rt| {
@@ -2658,10 +2740,8 @@ fn a_commit_whose_record_of_the_retention_window_is_damaged_is_refused_naming_th
         seed(&db);
         api::results(&db, "set setting RetentionWindow = { length: 1h }");
         api::results(&db, GOOGLE_901);
-        let pager = db.write_path().pager();
-        let past = db.write_path().txns().history().unwrap().tree().root();
-        pager.flush_log();
-        pager.flush_pages(usize::MAX);
+        let past = db.testing().root(Object::CommitTimes).unwrap();
+        db.testing().flush();
         let mut io = rt.io();
         let (file, _) = adtb_simkit::common::open(&rt, &mut io, FILE, false).unwrap();
         let at = past.0 * API_PAGE as u64;
@@ -2670,19 +2750,22 @@ fn a_commit_whose_record_of_the_retention_window_is_damaged_is_refused_naming_th
         adtb_simkit::common::write(&rt, &mut io, file, at, &page).unwrap();
         adtb_simkit::common::sync(&rt, &mut io, file).unwrap();
         for p in 0..4096 {
-            pager.read(Pid(1 << 16 | p)).expect("a page never written");
+            db.testing()
+                .probe()
+                .page(Pid(1 << 16 | p))
+                .expect("a page never written");
         }
         let mut t = db.begin(&TxnOptions::default()).unwrap();
         api::in_txn_results(&mut t, r#"insert users { name: "zed" }"#);
         assert_eq!(
             None,
-            Probe::of(pager).records().pages().get(&past),
+            db.testing().probe().records().pages().get(&past),
             "nothing read the page yet"
         );
         let what = quarantined(&t.commit(None).unwrap_err()).to_owned();
         assert_eq!(
             Some(&Damage::Checksum),
-            Probe::of(pager).records().pages().get(&past)
+            db.testing().probe().records().pages().get(&past)
         );
         assert_eq!("the database", what);
         assert_eq!(BTreeSet::from([Quarantine::Database]), marks(&db));
@@ -2690,7 +2773,6 @@ fn a_commit_whose_record_of_the_retention_window_is_damaged_is_refused_naming_th
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn damage_another_thread_records_on_a_page_the_commits_walk_reads_marks_only_its_index() {
     let mut during = 0;
     for step in [0u64, 10, 20, 30, 40, 45, 50, 55, 57] {
@@ -2700,23 +2782,35 @@ fn damage_another_thread_records_on_a_page_the_commits_walk_reads_marks_only_its
             seed(&db);
             let (google_page, leaf) = (google(&db), user_index(&db));
             let google = mark_named(&db, "app::identities", "Google");
-            let pager = db.write_path().pager().clone();
             let mut t = db.begin(&TxnOptions::default()).unwrap();
             api::in_txn_results(&mut t, GOOGLE_901);
-            pager.flush_log();
-            pager.flush_pages(usize::MAX);
+            db.testing().flush();
             for p in 0..4096 {
-                pager.read(Pid(1 << 16 | p)).expect("a page never written");
+                db.testing()
+                    .probe()
+                    .page(Pid(1 << 16 | p))
+                    .expect("a page never written");
             }
-            db.damage_page(google_page, Damage::Checksum);
-            let before = Probe::of(&pager).walks();
+            db.testing()
+                .plant(Plant::Refuse {
+                    page: google_page,
+                    damage: Damage::Checksum,
+                })
+                .unwrap();
+            let before = db.testing().probe().walks();
             let walked_then = Arc::new(Mutex::new(None));
             let (other, rt2, then) = (db.clone(), rt.clone(), walked_then.clone());
             let detecting = rt.spawn("detecting", move || {
                 let nap = Duration::from_micros(step * step * 40);
                 adtb_simkit::common::sleep(&rt2, &mut rt2.io(), nap);
                 *then.lock().unwrap() = Some(other.testing().probe().walks());
-                other.damage_page(leaf, Damage::Checksum);
+                other
+                    .testing()
+                    .plant(Plant::Refuse {
+                        page: leaf,
+                        damage: Damage::Checksum,
+                    })
+                    .unwrap();
             });
             let what = quarantined(&t.commit(None).unwrap_err()).to_owned();
             rt.join(detecting);
@@ -2729,7 +2823,7 @@ fn damage_another_thread_records_on_a_page_the_commits_walk_reads_marks_only_its
             assert_eq!(BTreeSet::from([google, index]), marks(&db), "step {step}");
             assert_eq!(
                 Some(BTreeSet::from([index])),
-                pager.mapped_to(leaf),
+                db.testing().probe().mapped_to(leaf),
                 "step {step}"
             );
         });
@@ -2739,27 +2833,41 @@ fn damage_another_thread_records_on_a_page_the_commits_walk_reads_marks_only_its
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_commit_walks_no_record_whose_last_mapping_was_incomplete() {
     let mut sim = Sim::new(65, Config::default());
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
-        let w = db.write_path();
-        let p = w.pager();
-        let unheld = p
-            .allocate(1, adtb::storage::PageKind::Quarantine, 0)
+        let t = db.testing();
+        let unheld = t
+            .plant(Plant::Orphan {
+                kind: adtb::storage::PageKind::Quarantine,
+                owner: 0,
+            })
+            .unwrap()
+            .page()
             .unwrap();
-        let root = w.heap_named("app::identities", "Apple").unwrap();
-        let root = root.owned_pages(p).unwrap()[0];
-        db.damage_page(root, Damage::Unreadable);
-        db.damage_page(unheld, Damage::Checksum);
-        let mut walked = vec![Probe::of(p).walks()];
+        let root = t
+            .owned(t.heap("app::identities", "Apple").unwrap())
+            .unwrap()[0];
+        db.testing()
+            .plant(Plant::Refuse {
+                page: root,
+                damage: Damage::Unreadable,
+            })
+            .unwrap();
+        db.testing()
+            .plant(Plant::Refuse {
+                page: unheld,
+                damage: Damage::Checksum,
+            })
+            .unwrap();
+        let mut walked = vec![t.probe().walks()];
         for i in 0..3 {
             api::results(&db, &format!(r#"insert users {{ name: "w{i}" }}"#));
-            walked.push(Probe::of(p).walks());
+            walked.push(t.probe().walks());
         }
-        assert_eq!(None, p.mapped_to(unheld));
+        assert_eq!(None, t.probe().mapped_to(unheld));
         assert_eq!(BTreeSet::new(), marks(&db));
         let first = walked[0] + 1;
         assert_eq!(vec![walked[0], first, first, first], walked);
@@ -2776,7 +2884,7 @@ fn a_commit_walks_no_record_whose_last_mapping_was_incomplete() {
         assert_eq!(failed, api::failure(&db, ALL));
         assert_eq!(
             first + 1,
-            Probe::of(p).walks(),
+            t.probe().walks(),
             "a failing call walks it again"
         );
     });
@@ -2862,7 +2970,12 @@ fn a_mark_a_crash_loses_before_it_is_written_is_set_again_by_the_next_open() {
     });
     adtb_simkit::common::run_then_crash(&mut sim, |rt, _| {
         let db = open_app(rt.clone());
-        db.damage_page(pid, Damage::Checksum);
+        db.testing()
+            .plant(Plant::Refuse {
+                page: pid,
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         assert_eq!(BTreeSet::new(), marks(&db));
     });
     api::run(&mut sim, |rt| {

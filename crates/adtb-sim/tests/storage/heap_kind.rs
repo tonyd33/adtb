@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use adtb::batch::BatchBuilder;
 use adtb::key::Value;
-use adtb::storage::{self, FIRST_EDITABLE, PageKind, Pid, Quarantine};
+use adtb::storage::{self, FIRST_EDITABLE, PageKind, Pid};
 use adtb::{ArrowSchema, CallOptions, Database, Error, FatalReason, LoadOptions, Log, RecordBatch};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
@@ -78,15 +78,13 @@ fn page_mut(files: &mut Files, pid: Pid) -> &mut [u8] {
 }
 
 /// Returns the TID, header and flags of every version of `t`'s heap.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn headers(db: &Database<SimRuntime>, t: Target) -> String {
-    let w = db.write_path();
-    let heap = w.heap_named("app::identities", t.ctor).unwrap();
-    format!("{:?}", heap.headers(w.pager()).unwrap())
+    let testing = db.testing();
+    let heap = testing.heap("app::identities", t.ctor).unwrap();
+    format!("{:?}", testing.headers(heap).unwrap())
 }
 
 impl Fixture {
-    #[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
     fn new() -> Fixture {
         let mut sim = Sim::new(SEED, Config::default());
         let long = format!(
@@ -102,19 +100,20 @@ impl Fixture {
                 );
             }
             api::results(&db, &format!("insert {long}"));
-            let w = db.write_path();
+            let testing = db.testing();
             let (mut pages, mut versions) = (BTreeMap::new(), BTreeMap::new());
             for t in TARGETS {
                 versions.insert(t.ctor, headers(&db, t));
-                let heap = w.heap_named("app::identities", t.ctor).unwrap();
-                let pid = heap.pages(w.pager()).unwrap()[0];
+                let heap = testing.heap("app::identities", t.ctor).unwrap();
+                let pid = testing.pages(heap).unwrap()[0];
                 assert_eq!(
                     t.kinds.0 as u16,
-                    storage::kind(&w.pager().read(pid).unwrap()),
+                    storage::kind(&testing.probe().page(pid).unwrap()),
                     "{t:?}"
                 );
                 pages.insert(t.ctor, pid);
-                pages.insert("large", heap.large().pages(w.pager()).unwrap()[0]);
+                let large = testing.large("app::identities", t.ctor).unwrap();
+                pages.insert("large", testing.pages(large).unwrap()[0]);
             }
             db.close().unwrap();
             (pages, versions)
@@ -129,7 +128,6 @@ impl Fixture {
     /// Run `write` on the fixture with the first page of `t`'s heap replaced as `r` says, and
     /// assert it refuses as the heap quarantined, damaging only that page or, when `root`, only the
     /// directory's root, and leaves the page and the heap's versions unchanged.
-    #[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
     fn refuses(&self, t: Target, r: Replacement, form: &str, write: Write, root: bool) {
         let what = format!("{t:?} replaced by {r:?}, {form}");
         let pid = self.pages[t.ctor];
@@ -152,12 +150,16 @@ impl Fixture {
                 panic!("{what}: not Quarantined: {got:?}");
             };
             assert_eq!(format!("app::identities.{}", t.ctor), holder, "{what}");
-            let w = db.write_path();
-            let heap = w.heap_named("app::identities", t.ctor).unwrap();
-            let met: BTreeSet<Pid> = db.testing().probe().refusals().into_keys().collect();
-            let blamed = BTreeSet::from([if root { heap.root() } else { pid }]);
+            let testing = db.testing();
+            let heap = testing.heap("app::identities", t.ctor).unwrap();
+            let met: BTreeSet<Pid> = testing.probe().refusals().into_keys().collect();
+            let blamed = BTreeSet::from([if root {
+                testing.root(heap).unwrap()
+            } else {
+                pid
+            }]);
             assert_eq!(blamed, met, "{what}");
-            let only = BTreeSet::from([Quarantine::Heap(heap.id().0)]);
+            let only = BTreeSet::from([testing.mark_of(heap).unwrap()]);
             assert_eq!(only, db.testing().probe().marks(), "{what}");
             db.close().unwrap();
         });

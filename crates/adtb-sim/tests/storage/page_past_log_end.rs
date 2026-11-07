@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use adtb::runtime::Runtime;
-use adtb::storage::{self, Lsn, Options, Pager, Pid, Quarantine};
+use adtb::storage::{self, Lsn, Options, Pager, Pid};
+use adtb::testing::Knobs;
 use adtb::{
     ArchiveTarget, CallOptions, Database, Error, FatalReason, Log, OpenOptions, RestorePoint,
     restore_in,
@@ -47,7 +48,7 @@ fn open(rt: SimRuntime) -> Database<SimRuntime> {
 
 fn open_at(rt: SimRuntime, name: &str) -> Database<SimRuntime> {
     let options = OpenOptions {
-        no_background_vacuum: true,
+        testing: Knobs::without_background_vacuum(),
         ..api::options(2)
     };
     Database::open_in(rt, name, &Log::new([APP]), &options).expect("the file opens")
@@ -61,7 +62,6 @@ fn planted() -> (Files, Pid) {
 }
 
 /// Returns a closed file holding every `identities.Google` row on one page, and that page.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn built() -> (Files, Pid) {
     let mut sim = Sim::new(SEED, Config::default());
     let page = api::run(&mut sim, |rt| {
@@ -76,9 +76,10 @@ fn built() -> (Files, Pid) {
                 ),
             );
         }
-        let w = db.write_path();
-        let heap = w.heap_named("app::identities", "Google").unwrap();
-        let pages = heap.pages(w.pager()).unwrap();
+        let t = db.testing();
+        let pages = t
+            .pages(t.heap("app::identities", "Google").unwrap())
+            .unwrap();
         assert_eq!(1, pages.len(), "one page holds every Google row");
         db.close().unwrap();
         pages[0]
@@ -214,7 +215,6 @@ fn wrong(entry: &str, page: Pid, met: &Met, reported: Reported) -> Option<String
 
 /// Returns how each entry, run on the file `name` of `files`, departs from the spec for its
 /// damaged page `page`.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn sweep(files: &Files, name: &str, page: Pid, reported: Reported) -> Vec<String> {
     let at = page.0 as usize * PAGE;
     let bytes = files[name][at..at + PAGE].to_vec();
@@ -224,9 +224,11 @@ fn sweep(files: &Files, name: &str, page: Pid, reported: Reported) -> Vec<String
         let marked = api::run(&mut sim, |rt| {
             let db = open_at(rt.clone(), name);
             defects.extend(wrong(entry, page, &enter(&db, &rt), reported));
-            let w = db.write_path();
-            let heap = w.heap_named("app::identities", "Google").unwrap().id().0;
-            let marked = db.testing().probe().marked(Quarantine::Heap(heap));
+            let t = db.testing();
+            let heap = t
+                .mark_of(t.heap("app::identities", "Google").unwrap())
+                .unwrap();
+            let marked = t.probe().marked(heap);
             if let Err(e) = db.close()
                 && !matches!(
                     e,
@@ -261,7 +263,6 @@ fn every_entry_refuses_or_reports_a_page_past_the_log_end_and_leaves_it_unchange
 /// Returns a file whose page of `identities.Google` `damage` changed, given the end of the log its
 /// next open recovers, backed up once the log passes that end and restored as `RESTORED`, and the
 /// page.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn restored(damage: fn(&mut Files, Pid, Lsn)) -> (Files, Pid) {
     let (mut files, page) = built();
     let end = recovered_end(&files);
@@ -275,9 +276,11 @@ fn restored(damage: fn(&mut Files, Pid, Lsn)) -> (Files, Pid) {
             );
             api::results(&db, &apple);
         }
-        let w = db.write_path();
-        let heap = w.heap_named("app::identities", "Google").unwrap().id().0;
-        assert!(!db.testing().probe().marked(Quarantine::Heap(heap)));
+        let t = db.testing();
+        let heap = t
+            .mark_of(t.heap("app::identities", "Google").unwrap())
+            .unwrap();
+        assert!(!t.probe().marked(heap));
         api::results(&db, "backup to \"bk0\"");
         let (manifest, _) = storage::read_manifest(&rt, "bk0").unwrap();
         assert_eq!(vec![page], manifest.damaged);

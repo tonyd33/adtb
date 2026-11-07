@@ -120,8 +120,6 @@ pub struct CreateOptions {
     /// Whether open replays as a restore, and the grantee, privilege and target of each grant
     /// it keeps dormant though its role exists. A grant to a role that does not exist is dormant.
     pub(crate) replay: Option<BTreeSet<(String, String, String)>>,
-    #[doc(hidden)]
-    pub segment_size: Option<u64>,
 }
 
 /// The settings fixed while a handle is open.
@@ -150,12 +148,25 @@ pub struct OpenOptions {
     pub registrations: Vec<Registration>,
     /// The bodies of the schema's host functions, bound before migrations run.
     pub host_fns: HostFns,
-    /// Start no background vacuum. Unspecified; for tests of the command and the scrub.
-    #[doc(hidden)]
-    pub no_background_vacuum: bool,
+    #[cfg(feature = "testing")]
+    pub testing: crate::testing::Knobs,
 }
 
 impl OpenOptions {
+    fn segment_size(&self) -> Option<u64> {
+        #[cfg(feature = "testing")]
+        return self.testing.segment_size();
+        #[cfg(not(feature = "testing"))]
+        None
+    }
+
+    fn background_vacuum(&self) -> bool {
+        #[cfg(feature = "testing")]
+        return self.testing.background_vacuum();
+        #[cfg(not(feature = "testing"))]
+        true
+    }
+
     fn archive_dir(&self) -> Option<String> {
         self.log_archive.as_ref().map(|p| p.display().to_string())
     }
@@ -175,8 +186,7 @@ impl OpenOptions {
             pool_frames: frames.max(threads * LATCHES_PER_THREAD),
             threads,
             after: self.create.as_ref().and_then(|c| c.after),
-            segment_size: (self.create.as_ref().and_then(|c| c.segment_size))
-                .unwrap_or(defaults.segment_size),
+            segment_size: self.segment_size().unwrap_or(defaults.segment_size),
             ..defaults
         }
     }
@@ -538,54 +548,11 @@ impl<R: Runtime> Database<R> {
     /// worker's included, for the whole run. Returns the rows it wrote.
     ///
     /// Precondition: no other call runs on this database while it runs.
-    #[doc(hidden)]
-    pub fn verify_holding(&self) -> Result<DynRows, Error> {
+    pub(crate) fn verify_holding(&self) -> Result<DynRows, Error> {
         let e = &*self.engine;
         let _open = e.enter()?;
         e.verified_holding(&e.schema)
             .map_err(|w| e.write_error(TxnId(0), w))
-    }
-
-    #[doc(hidden)]
-    pub fn on_reindex_phase(&self, hook: reindex::PhaseHook) {
-        *self.engine.reindexing.hook.lock(&self.engine.rt) = Some(hook);
-    }
-
-    /// Returns the log archive's status as its last pass left it, `None` with no archive set.
-    /// Unspecified until the spec states where an operator sees the archive.
-    #[doc(hidden)]
-    pub fn archive_status(&self) -> Option<storage::ArchiveStatus> {
-        self.engine.archiver.as_ref().map(|a| a.status())
-    }
-
-    /// Panic the background worker's next read of a page with `text`.
-    #[doc(hidden)]
-    pub fn fail_background(&self, text: &'static str) {
-        self.engine.background.fail(text);
-    }
-
-    /// Panic the next write of kept findings with `text`, after its first replacement.
-    #[doc(hidden)]
-    pub fn fail_kept_write(&self, text: &'static str) {
-        *self.engine.verifier.fail_kept.lock(&self.engine.rt) = Some(text);
-    }
-
-    /// Refuse page `pid` as if it failed as `damage` says. Plants a fault for a test of quarantine.
-    #[doc(hidden)]
-    pub fn damage_page(&self, pid: storage::Pid, damage: storage::Damage) {
-        self.engine.pager.damage(pid, damage);
-    }
-
-    /// Refuse the pages of the store of kept rows. Plants a fault for a test of `verify`.
-    #[doc(hidden)]
-    pub fn damage_kept_store(&self) {
-        self.engine.damage_kept_store();
-    }
-
-    /// Returns the write path, for tests that plant faults beneath it.
-    #[doc(hidden)]
-    pub fn write_path(&self) -> &write::Database<R> {
-        &self.engine.db
     }
 
     /// Returns each incremental check the constraint or check `name`, by qualified name, is
@@ -956,7 +923,7 @@ impl<R: Runtime> Engine<R> {
         });
         let background =
             maintenance::Background::new(verifier.clone(), parts.schema.clone(), &parts.settings)
-                .vacuuming(!options.no_background_vacuum);
+                .vacuuming(options.background_vacuum());
         let archiver = storage::Archiver::bounding(&pager, options.archive_dir());
         Engine {
             rt,

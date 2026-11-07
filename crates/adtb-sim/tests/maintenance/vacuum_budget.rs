@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use adtb::runtime::{Clock, Runtime, Threads};
+use adtb::testing::Knobs;
 use adtb::vacuum::Charged;
 use adtb::{CallOptions, CancelToken, Database, Error, Log, OpenOptions, RejectReason};
 use adtb_sim::SimRuntime;
@@ -228,7 +229,7 @@ const WIDE_ROWS: i64 = 1500;
 fn wide_as(rt: &SimRuntime, big: bool, retained: bool) -> Database<SimRuntime> {
     let options = OpenOptions {
         pool_bytes: Some(256 * 1024),
-        no_background_vacuum: true,
+        testing: Knobs::without_background_vacuum(),
         ..api::options(2)
     };
     let db = Database::open_in(rt.clone(), "wide.adt", &Log::new([WIDE]), &options)
@@ -262,7 +263,7 @@ fn wide_as(rt: &SimRuntime, big: bool, retained: bool) -> Database<SimRuntime> {
 fn expired(rt: &SimRuntime) -> Database<SimRuntime> {
     let options = OpenOptions {
         pool_bytes: Some(256 * 1024),
-        no_background_vacuum: true,
+        testing: Knobs::without_background_vacuum(),
         ..api::options(2)
     };
     let db = Database::open_in(rt.clone(), "expired.adt", &Log::new([WIDE]), &options)

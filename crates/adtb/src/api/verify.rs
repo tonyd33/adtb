@@ -172,7 +172,7 @@ pub(super) struct Verifier<R: Runtime> {
     /// The findings of `verify` and the scrub.
     pub(super) findings: Lock<Findings>,
     /// The text to panic with in the next kept write, after its first replacement.
-    pub(super) fail_kept: Lock<Option<&'static str>>,
+    pub(super) fail_kept: Lock<Option<String>>,
 }
 
 /// The rows a replacement of a group's findings leaves it with.
@@ -679,6 +679,7 @@ impl<R: Runtime> Engine<R> {
     }
 
     /// Refuse every page of the heap kept rows lie in, as if each failed its checksum.
+    #[cfg(feature = "testing")]
     pub(super) fn damage_kept_store(&self) {
         if let Ok(pages) = self.catalog.kept_pages(&self.pager) {
             for pid in pages {

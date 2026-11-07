@@ -12,6 +12,7 @@ use std::time::Duration;
 use adtb::batch::{self, Batch, BatchBuilder, Type};
 use adtb::key::Scalar;
 use adtb::runtime::{Clock, Io, Op, Runtime, ThreadId, Threads};
+use adtb::testing::{Knobs, Plant};
 use adtb::{
     CallOptions, CancelToken, Completion, CreateOptions, Database, Determinism, Error, Format,
     HostFns, Log, Observation, OpenOptions, Pins, Registration, RejectReason, RetryReason,
@@ -165,7 +166,7 @@ fn open_under<R: Runtime>(rt: &R, rows: usize, workers: usize, memory: Option<u6
         &Log::new([SCHEMA]),
         &OpenOptions {
             query_memory_bytes: memory,
-            no_background_vacuum: true,
+            testing: Knobs::without_background_vacuum(),
             ..options(rt, &seen, &gate, workers)
         },
     )
@@ -1560,18 +1561,17 @@ fn a_task_carrying_a_cancelled_token_never_runs() {
 }
 
 /// Set a mark on the key index of `items`, durable before it returns.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn mark_items_key_index<R: Runtime>(db: &Database<R>) -> adtb::storage::Quarantine {
-    let w = db.write_path();
-    let index = w.index_named("shop::items", "key id").unwrap();
-    let mark = adtb::storage::Quarantine::Index(index.tree().owner());
-    w.pager().quarantine(mark).unwrap();
+    let t = db.testing();
+    let mark = t
+        .mark_of(t.index("shop::items", "key id").unwrap())
+        .unwrap();
+    t.plant(Plant::Mark(mark)).unwrap();
     mark
 }
 
 /// Check that a server call and an interactive transaction, each with a mark set after its write
 /// and before its commit, fail and leave nothing.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_mark_before_commit_refuses_both_commits<R: Runtime>(rt: &R) {
     let f = open(rt, 0);
     let write = "insert items { n: 1 }
@@ -1587,9 +1587,8 @@ from n in [1] select gate(n)";
         other => panic!("the server's commit is refused: {other:?}"),
     }
     assert_eq!(0, f.items());
-    f.db.write_path()
-        .pager()
-        .release(mark_items_key_index(&f.db))
+    f.db.testing()
+        .plant(Plant::Unmark(mark_items_key_index(&f.db)))
         .unwrap();
     let mut t = f.db.begin(&TxnOptions::default()).unwrap();
     t.query_text("insert items { n: 2 }", &[], &TxnCallOptions::default())
@@ -1618,19 +1617,22 @@ fn a_mark_before_commit_refuses_both_commits_on_a_real_file() {
 }
 
 /// Check that `verify` as a task runs under commit log damage and any other text fails.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_verify_task_runs_on_a_damaged_commit_log<R: Runtime>(rt: &R) {
     let f = open(rt, 1);
     let status = *f
         .db
-        .write_path()
-        .txns()
+        .testing()
         .commit_log()
-        .status_pages()
+        .status()
         .values()
         .next_back()
         .unwrap();
-    f.db.damage_page(status, adtb::storage::Damage::Checksum);
+    f.db.testing()
+        .plant(Plant::Refuse {
+            page: status,
+            damage: adtb::storage::Damage::Checksum,
+        })
+        .unwrap();
     let refused = |text: &str| {
         let got = f.owner.submit_text(text, &[], read_opts());
         let err = match got {
@@ -1669,7 +1671,6 @@ fn a_verify_task_runs_on_a_damaged_commit_log_of_a_real_file() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_task_reading_a_quarantined_constructor_fails_before_running() {
     sim_once(|rt| {
         let log = "module app
@@ -1689,11 +1690,11 @@ add relation items : Item key id generate sequence
             "insert items.A { id: items.key(1), n: 1 }
              insert items.B { id: items.key(2), m: 2 }",
         );
-        let w = db.write_path();
-        let heap = w.heap_named("app::items", "B").unwrap();
-        w.pager()
-            .quarantine(adtb::storage::Quarantine::Heap(heap.id().0))
-            .unwrap();
+        let t = db.testing();
+        t.plant(Plant::Mark(
+            t.mark_of(t.heap("app::items", "B").unwrap()).unwrap(),
+        ))
+        .unwrap();
         let session = db.role_authority().session("owner").unwrap();
         let failed = |text: &str| {
             let task = session.submit_text(text, &[], read_opts()).unwrap();

@@ -1,7 +1,7 @@
 //! The background scrub: one thread per engine that reads every page of the file over each
 //! `ScrubInterval`, without a call touching them.
 
-use adtb::testing::Probe;
+use adtb::testing::{Knobs, Object, Plant, Site};
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
@@ -40,7 +40,7 @@ fn app() -> Log {
 
 fn open(rt: SimRuntime) -> Database<SimRuntime> {
     let options = OpenOptions {
-        no_background_vacuum: true,
+        testing: Knobs::without_background_vacuum(),
         ..api::options(2)
     };
     Database::open_in(rt, FILE, &app(), &options).expect("the file opens")
@@ -73,13 +73,10 @@ fn insert(db: &Database<SimRuntime>, from: i64, to: i64) {
     }
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn users_page<R: Runtime>(db: &Database<R>) -> Pid {
-    let w = db.write_path();
-    let pages = w
-        .heap_named("app::users", "User")
-        .expect("the heap")
-        .pages(w.pager())
+    let t = db.testing();
+    let pages = t
+        .pages(t.heap("app::users", "User").expect("the heap"))
         .expect("its pages");
     *pages.last().expect("a heap has a page")
 }
@@ -100,12 +97,9 @@ fn rot(rt: &SimRuntime, page: Pid) {
     common::write(rt, &mut io, file, at, &bytes).expect("the write");
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn flush<R: Runtime>(db: &Database<R>) {
-    let pager = db.write_path().pager();
-    pager.flush_log();
-    pager.flush_pages(usize::MAX);
-    pager.checkpoint();
+    db.testing().flush();
+    db.testing().checkpoint();
 }
 
 fn found(db: &Database<SimRuntime>) -> Vec<String> {
@@ -264,7 +258,6 @@ fn findings_of_a_scrub_are_kept_across_a_reopen_with_no_second_row() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_full_pass_drops_a_row_it_no_longer_finds() {
     let (files, page) = seeded(16, 5, &[("Some { value: 10min }", "1.0")]);
     let clean = files[FILE].clone();
@@ -281,14 +274,22 @@ fn a_full_pass_drops_a_row_it_no_longer_finds() {
     api::run(&mut sim, |rt| {
         let db = open(rt.clone());
         assert_eq!(1, found(&db).len(), "the row outlives the reopen");
-        let pager = db.write_path().pager();
-        let from = pager.allocate(1, PageKind::HeapSlotted, 0).unwrap();
-        pager
-            .update(&[from], |p| {
-                p[0][FIRST_EDITABLE..].copy_from_slice(&clean[at + FIRST_EDITABLE..at + PAGE]);
+        let t = db.testing();
+        let from = t
+            .plant(Plant::Orphan {
+                kind: PageKind::HeapSlotted,
+                owner: 0,
             })
+            .unwrap()
+            .page()
             .unwrap();
-        pager.replace_contents(page, from, None).unwrap();
+        t.plant(Plant::Write {
+            page: from,
+            at: FIRST_EDITABLE,
+            bytes: clean[at + FIRST_EDITABLE..at + PAGE].to_vec(),
+        })
+        .unwrap();
+        t.plant(Plant::Replace { page, from }).unwrap();
         nap(&rt, Duration::from_secs(660));
         assert_eq!(Vec::<String>::new(), found(&db), "the page reads clean now");
     });
@@ -325,7 +326,6 @@ fn a_pass_resumed_after_a_restart_keeps_what_its_first_part_found() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_database_marked_whole_writes_nothing_past_the_mark() {
     let mut sim = Sim::new(6, Config::default());
     let mut marks_page = None;
@@ -336,12 +336,16 @@ fn a_database_marked_whole_writes_nothing_past_the_mark() {
         set_interval(&db, "Some { value: 10min }");
         insert(&db, 0, 3);
         let status = db
-            .write_path()
-            .pager()
-            .allocate(1, PageKind::HeapSlotted, 7)
-            .expect("a page no relation holds");
+            .testing()
+            .plant(Plant::Orphan {
+                kind: PageKind::HeapSlotted,
+                owner: 7,
+            })
+            .expect("a page no relation holds")
+            .page()
+            .unwrap();
         flush(&db);
-        marks_page = Some(db.write_path().pager().quarantine_page());
+        marks_page = Some(db.testing().root(Object::Marks).unwrap());
         status_page = Some(status);
         rot(&rt, status);
         nap(&rt, Duration::from_secs(660));
@@ -417,7 +421,6 @@ fn time_cursor_passes(seed: u64, files: &Files, page: Pid) -> Duration {
 
 /// Returns `files` with users from `from` to `to` added, a hundred to a transaction, and the
 /// first page of their heap with the last page of the file.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn grown(seed: u64, files: Files, from: i64, to: i64) -> (Files, Pid, Pid) {
     let mut sim = Sim::with_files(seed, Config::default(), files);
     let mut out = None;
@@ -430,12 +433,8 @@ fn grown(seed: u64, files: Files, from: i64, to: i64) -> (Files, Pid, Pid) {
                 .collect();
             api::results(&db, &text);
         }
-        let w = db.write_path();
-        let pages = w
-            .heap_named("app::users", "User")
-            .unwrap()
-            .pages(w.pager())
-            .unwrap();
+        let t = db.testing();
+        let pages = t.pages(t.heap("app::users", "User").unwrap()).unwrap();
         db.close().expect("the close");
         out = Some((pages[0], last_page(&rt)));
     });
@@ -702,7 +701,7 @@ fn host_options() -> OpenOptions {
     OpenOptions {
         create: Some(CreateOptions::default()),
         workers: Some(2),
-        no_background_vacuum: true,
+        testing: Knobs::without_background_vacuum(),
         ..OpenOptions::default()
     }
 }
@@ -869,14 +868,11 @@ fn in_pass(db: &Database<SimRuntime>) -> bool {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_pass_reading_an_old_log_does_not_refuse_a_page_healed_since() {
     let key = |db: &Database<SimRuntime>| {
-        let w = db.write_path();
-        let index = w
-            .index_named("app::users", "key id")
-            .expect("the key index");
-        index.tree().root()
+        let t = db.testing();
+        t.root(t.index("app::users", "key id").expect("the key index"))
+            .unwrap()
     };
     let mut root = None;
     let mut sim = Sim::new(42, Config::default());
@@ -949,38 +945,50 @@ fn a_pass_reading_an_old_log_does_not_refuse_a_page_healed_since() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn rot_on_a_free_page_is_no_finding() {
     let mut sim = Sim::new(43, Config::default());
     finished(&mut sim, |rt| {
         let db = open(rt.clone());
         set_interval(&db, "Some { value: 10min }");
-        let pager = db.write_path().pager();
-        let page = pager.allocate(1, PageKind::HeapSlotted, 7).expect("a page");
-        pager.free(page).expect("the free");
+        let t = db.testing();
+        let page = t
+            .plant(Plant::Orphan {
+                kind: PageKind::HeapSlotted,
+                owner: 7,
+            })
+            .expect("a page")
+            .page()
+            .unwrap();
+        t.plant(Plant::Free(page)).expect("the free");
         flush(&db);
         rot(&rt, page);
         nap(&rt, Duration::from_secs(1300));
         assert_eq!(0, db.testing().held_findings());
-        assert_eq!(BTreeSet::new(), Probe::of(pager).marks());
+        assert_eq!(BTreeSet::new(), t.probe().marks());
     });
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn rot_on_a_free_page_then_reused_is_no_finding_and_no_mark() {
     for seed in 44..48 {
         let mut sim = Sim::new(seed, Config::default());
         finished(&mut sim, |rt| {
             let db = open(rt.clone());
             set_interval(&db, "None");
-            let pager = db.write_path().pager();
-            let page = pager.allocate(1, PageKind::HeapSlotted, 7).expect("a page");
-            pager.free(page).expect("the free");
+            let t = db.testing();
+            let page = t
+                .plant(Plant::Orphan {
+                    kind: PageKind::HeapSlotted,
+                    owner: 7,
+                })
+                .expect("a page")
+                .page()
+                .unwrap();
+            t.plant(Plant::Free(page)).expect("the free");
             flush(&db);
             rot(&rt, page);
             let mut next = 0;
-            while pager.is_free(page).expect("the bitmap") {
+            while t.is_free(page).expect("the bitmap") {
                 insert(&db, next, next + 1);
                 next += 1;
                 assert!(next < 1000, "seed {seed}: no insert reused page {page:?}");
@@ -989,7 +997,7 @@ fn rot_on_a_free_page_then_reused_is_no_finding_and_no_mark() {
             set_io(&db, "1.0");
             nap(&rt, Duration::from_secs(1));
             assert_eq!(0, db.testing().held_findings(), "seed {seed}");
-            assert_eq!(BTreeSet::new(), Probe::of(pager).marks(), "seed {seed}");
+            assert_eq!(BTreeSet::new(), t.probe().marks(), "seed {seed}");
             assert_eq!(
                 next,
                 api::sorted(api::result(&db, USERS)).len() as i64,
@@ -1053,7 +1061,12 @@ fn a_panic_in_the_worker_leaves_a_finding_and_the_engine_running() {
         while !in_pass(&db) {
             nap(&rt, Duration::from_millis(1));
         }
-        db.fail_background("boom");
+        db.testing()
+            .plant(Plant::Panic {
+                site: Site::BackgroundRead,
+                message: "boom".into(),
+            })
+            .unwrap();
         nap(&rt, Duration::from_secs(1));
         let rows = found(&db);
         assert_eq!(1, rows.len(), "{rows:?}");
@@ -1075,7 +1088,12 @@ fn a_lookalike_fatal_message_is_an_ordinary_worker_failure() {
     finished(&mut sim, |rt| {
         let db = open(rt.clone());
         set_interval(&db, "Some { value: 0s }");
-        db.fail_background("fatal I/O error: write: a test");
+        db.testing()
+            .plant(Plant::Panic {
+                site: Site::BackgroundRead,
+                message: "fatal I/O error: write: a test".into(),
+            })
+            .unwrap();
         nap(&rt, Duration::from_secs(1));
         assert_eq!(1, found(&db).len());
         assert_eq!(
@@ -1115,7 +1133,12 @@ fn a_caught_panic_keeps_what_the_pass_found_beside_its_finding_across_a_reopen()
         rot(&rt, users_page(&db));
         nap(&rt, Duration::from_secs(3600 + 60));
         assert_eq!(1, found(&db).len(), "the rot is found first");
-        db.fail_background("boom");
+        db.testing()
+            .plant(Plant::Panic {
+                site: Site::BackgroundRead,
+                message: "boom".into(),
+            })
+            .unwrap();
         nap(&rt, Duration::from_secs(3600 + 60));
         two_rows(found(&db));
         db.close().expect("the close");
@@ -1137,7 +1160,12 @@ fn a_panic_in_a_kept_write_of_the_worker_ends_the_run_with_no_call_after_it() {
             insert(&db, 0, 3);
             flush(&db);
             rot(&rt, users_page(&db));
-            db.fail_kept_write("halfway");
+            db.testing()
+                .plant(Plant::Panic {
+                    site: Site::KeptWrite,
+                    message: "halfway".into(),
+                })
+                .unwrap();
             nap(&rt, Duration::from_secs(24 * 3600));
             after.store(true, Ordering::Relaxed);
         })
@@ -1162,7 +1190,6 @@ fn a_panic_in_a_kept_write_of_the_worker_ends_the_run_with_no_call_after_it() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_caught_panic_on_a_database_marked_whole_stays_in_memory() {
     let mut sim = Sim::new(54, Config::default());
     finished(&mut sim, |rt| {
@@ -1170,17 +1197,26 @@ fn a_caught_panic_on_a_database_marked_whole_stays_in_memory() {
         set_interval(&db, "Some { value: 10min }");
         insert(&db, 0, 3);
         let stray = db
-            .write_path()
-            .pager()
-            .allocate(1, PageKind::HeapSlotted, 7)
-            .expect("a page no relation holds");
+            .testing()
+            .plant(Plant::Orphan {
+                kind: PageKind::HeapSlotted,
+                owner: 7,
+            })
+            .expect("a page no relation holds")
+            .page()
+            .unwrap();
         flush(&db);
         rot(&rt, stray);
         nap(&rt, Duration::from_secs(660));
         assert!(db.testing().probe().marked(Quarantine::Database));
         assert_eq!(1, db.testing().held_findings());
         let before = db.testing().probe().logged_commits();
-        db.fail_background("boom");
+        db.testing()
+            .plant(Plant::Panic {
+                site: Site::BackgroundRead,
+                message: "boom".into(),
+            })
+            .unwrap();
         nap(&rt, Duration::from_secs(660));
         assert_eq!(2, db.testing().held_findings());
         assert_eq!(before, db.testing().probe().logged_commits());
@@ -1199,7 +1235,12 @@ fn a_real_file_survives_a_tiny_budget_and_a_panic_in_the_worker() {
     );
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(Vec::<String>::new(), text(&db, FINDINGS));
-    db.fail_background("boom");
+    db.testing()
+        .plant(Plant::Panic {
+            site: Site::BackgroundRead,
+            message: "boom".into(),
+        })
+        .unwrap();
     for _ in 0..1000 {
         if db.testing().held_findings() > 0 {
             break;

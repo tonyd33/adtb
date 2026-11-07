@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use adtb::catalog::Catalog;
 use adtb::storage::{FatalIo, OpenError, Options, PageKind, Pager, Pid};
+use adtb::testing::Knobs;
 use adtb::{CallOptions, CreateOptions, Database, Log, OpenOptions, verify};
 use adtb_lang::schema::ValueDef;
 use adtb_lang::textual::print;
@@ -434,7 +435,7 @@ fn commit_under_faults(dir: &Path, backend: Backend, seed: u64) -> Commits {
         create: Some(CreateOptions::default()),
         workers: Some(2),
         pool_bytes: Some(POOL_BYTES),
-        no_background_vacuum: true,
+        testing: Knobs::without_background_vacuum(),
         ..OpenOptions::default()
     };
     let db = Database::open_in(rt.clone(), "shop.adt", &Log::new([CUSTOMERS]), &create)

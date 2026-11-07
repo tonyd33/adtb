@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use adtb::catalog::Dormant;
 use adtb::storage::{Passphrase, Quarantine};
+use adtb::testing::Plant;
 use adtb::{
     ArchiveTarget, CallOptions, Capability, Database, Log, OpenOptions, RestorePoint,
     restore_report_in,
@@ -384,14 +385,14 @@ fn an_encrypted_dump_through_a_server_restores_and_audits_no_passphrase() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_file_quarantined_whole_dumps_through_a_server_and_refuses_every_other_text() {
     let mut sim = Sim::new(547, Config::default());
     api::run(&mut sim, |rt| {
         let db = opened(&rt, "data", &OPS, true, true);
         let src = every(&db);
-        let pager = db.write_path().pager();
-        pager.quarantine(Quarantine::Database).unwrap();
+        db.testing()
+            .plant(Plant::Mark(Quarantine::Database))
+            .unwrap();
         let reason = "fatal: the database is quarantined";
         for text in ["app::users", "print schema", "dump to \"out/e\"\nverify"] {
             refused_with(api::task(&rt, &ops(&db), text), reason);

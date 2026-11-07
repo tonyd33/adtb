@@ -2,7 +2,7 @@
 //! record in the retained log, aborts only an id the log holds no commit record of, and writes
 //! nothing when the log it needs is not whole.
 
-use adtb::testing::{Probe, TxnProbe};
+use adtb::testing::{Knobs, Object, Plant, Probe, TxnProbe};
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb::key::{Entry, Tid, Value};
@@ -43,18 +43,29 @@ fn open(rt: &SimRuntime) -> Database<SimRuntime> {
 }
 
 /// Returns the status of each of `ids` in the commit log of `db`.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn statuses(db: &Database<SimRuntime>, ids: &[Xid]) -> Vec<Status> {
-    let w = db.write_path();
-    let clog = w.txns().commit_log();
     ids.iter()
-        .map(|&x| clog.status(w.pager(), x).unwrap())
+        .map(|&x| db.testing().status(x).unwrap())
         .collect()
+}
+
+/// Flip every byte past the header of `page`, as one logged change.
+fn bump(db: &Database<SimRuntime>, page: Pid) {
+    let t = db.testing();
+    let bytes = t.probe().page(page).unwrap()[HEADER_LEN..]
+        .iter()
+        .map(|b| b ^ 1)
+        .collect();
+    t.plant(Plant::Write {
+        page,
+        at: HEADER_LEN,
+        bytes,
+    })
+    .unwrap();
 }
 
 /// Insert a user named `name` in one process. Returns the last status page and the ids the
 /// process committed.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn insert(sim: &mut Sim, name: &str) -> (Pid, Vec<Xid>) {
     api::run(sim, |rt| {
         let db = open(&rt);
@@ -64,10 +75,10 @@ fn insert(sim: &mut Sim, name: &str) -> (Pid, Vec<Xid>) {
         let done = statuses(&db, &ids);
         let committed = ids.into_iter().zip(done);
         let committed = committed.filter_map(|(x, s)| (s == Status::Committed).then_some(x));
-        let txns = db.write_path().txns();
-        let page = *txns
+        let page = *db
+            .testing()
             .commit_log()
-            .status_pages()
+            .status()
             .values()
             .next_back()
             .unwrap();
@@ -230,13 +241,12 @@ fn the_first_verify_of_a_settled_status_page_reports_its_lost_write_once_and_mar
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_lost_write_verify_finds_on_a_settled_status_page_at_other_lsns_marks_the_database() {
     let (mut sim, _, _) = lost_write();
     api::run(&mut sim, |rt| {
         let db = open(&rt);
-        let pager = db.write_path().pager().clone();
-        let recorded = Probe::of(&pager).records().pages().clone();
+        let t = db.testing();
+        let recorded = t.probe().records().pages().clone();
         let settled = recorded
             .into_iter()
             .find(|(_, d)| matches!(d, Damage::Settled { .. }));
@@ -244,14 +254,12 @@ fn a_lost_write_verify_finds_on_a_settled_status_page_at_other_lsns_marks_the_da
         let mut io = rt.io();
         let (file, _) = common::open(&rt, &mut io, harness::NAME, false).unwrap();
         let at = page.0 * DB_PAGE as u64;
-        pager.flush_log();
-        pager.flush_pages(usize::MAX);
-        pager.checkpoint();
+        t.flush();
+        t.checkpoint();
         let mut copies = Vec::new();
         for name in ["cy", "dee"] {
             api::results(&db, &format!("insert users {{ name: \"{name}\" }}"));
-            pager.flush_log();
-            pager.flush_pages(usize::MAX);
+            t.flush();
             copies.push(common::read(&rt, &mut io, file, at, DB_PAGE).unwrap());
         }
         let (found, expected) = (storage::lsn(&copies[0]), storage::lsn(&copies[1]));
@@ -262,14 +270,16 @@ fn a_lost_write_verify_finds_on_a_settled_status_page_at_other_lsns_marks_the_da
         common::write(&rt, &mut io, file, at, &copies[0]).unwrap();
         common::sync(&rt, &mut io, file).unwrap();
         for p in 0..4096 {
-            pager.read(Pid(1 << 16 | p)).expect("a page never written");
+            t.probe()
+                .page(Pid(1 << 16 | p))
+                .expect("a page never written");
         }
         let stale = Damage::Stale { expected, found };
         assert!(matches!(
-            Probe::of(&pager).records().pages()[&page],
+            t.probe().records().pages()[&page],
             Damage::Settled { .. }
         ));
-        let checked = pager.check_page(page, &pager.read_log(true));
+        let checked = t.check_page(page);
         let finding = format!("Page {{ pid: {page:?}, damage: {stale:?} }}");
         assert!(format!("{checked:?}").contains(&finding), "{checked:?}");
         let rows = findings(api::sorted(db.verify(None).unwrap()));
@@ -279,7 +289,7 @@ fn a_lost_write_verify_finds_on_a_settled_status_page_at_other_lsns_marks_the_da
         );
         assert!(rows.contains(&row), "{rows:?}");
         let database = BTreeSet::from([Quarantine::Database]);
-        assert_eq!(database, Probe::of(&pager).marks());
+        assert_eq!(database, t.probe().marks());
         let names = api::failure(&db, "from u in app::users select u.name");
         assert_eq!(quarantined(), names);
         db.close().unwrap();
@@ -300,28 +310,30 @@ fn verify_of_one_relation_beside_a_settled_status_page_marks_nothing() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn an_index_finding_beside_a_settled_status_page_marks_only_its_index() {
     let (mut sim, bo, _) = lost_write();
     let index = api::run(&mut sim, |rt| {
         let db = open(&rt);
-        let w = db.write_path();
-        let ix = w.index_named("app::users", "key id").unwrap();
-        let heap = w.heap_named("app::users", "User").unwrap();
-        let page = heap.pages(w.pager()).unwrap()[0];
+        let t = db.testing();
+        let ix = t.index("app::users", "key id").unwrap();
+        let page = t.pages(t.heap("app::users", "User").unwrap()).unwrap()[0];
         let orphan = Entry {
             key: vec![Value::I64(1000)],
-            ctor: *ix.ctors().iter().next().unwrap(),
+            ctor: *t.ctors(ix).unwrap().iter().next().unwrap(),
             tid: Tid::new(page.0, 400).unwrap(),
         };
-        assert!(ix.insert(w.pager(), &orphan).unwrap());
+        t.plant(Plant::AddEntry {
+            index: ix,
+            entry: orphan,
+        })
+        .unwrap();
         let found = findings(api::sorted(db.verify(Some("app::users")).unwrap()));
         let at = format!(
             "\"page {} slot 400: holds no version of the entry's key\"",
             page.0
         );
         assert_eq!(vec![("Orphan".to_owned(), at)], found);
-        let index = BTreeSet::from([Quarantine::Index(ix.tree().owner())]);
+        let index = BTreeSet::from([t.mark_of(ix).unwrap()]);
         assert_eq!(index, db.testing().probe().marks());
         db.close().unwrap();
         index
@@ -335,7 +347,12 @@ fn verify_meeting_an_unreadable_status_page_fails_and_marks_nothing() {
     let (status, _) = insert(&mut sim, "ann");
     api::run(&mut sim, |rt| {
         let db = open(&rt);
-        db.damage_page(status, Damage::Unreadable);
+        db.testing()
+            .plant(Plant::Refuse {
+                page: status,
+                damage: Damage::Unreadable,
+            })
+            .unwrap();
         let unreadable = PageError {
             pid: status,
             damage: Damage::Unreadable,
@@ -572,10 +589,9 @@ fn a_segment_missing_after_the_status_pages_last_write_quarantines_the_database_
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_dump_is_refused_once_the_log_cannot_prove_a_status_page_that_lost_its_writes() {
     let quiet = adtb::OpenOptions {
-        no_background_vacuum: true,
+        testing: Knobs::without_background_vacuum(),
         ..api::options(2)
     };
     let open = |rt: &SimRuntime| {
@@ -584,10 +600,10 @@ fn a_dump_is_refused_once_the_log_cannot_prove_a_status_page_that_lost_its_write
     let mut sim = Sim::new(3, Config::default());
     let page = api::run(&mut sim, |rt| {
         let db = open(&rt);
-        let txns = db.write_path().txns();
-        let page = *txns
+        let page = *db
+            .testing()
             .commit_log()
-            .status_pages()
+            .status()
             .values()
             .next_back()
             .unwrap();
@@ -598,14 +614,19 @@ fn a_dump_is_refused_once_the_log_cannot_prove_a_status_page_that_lost_its_write
     let segment = storage::Options::new(harness::NAME).segment_size;
     api::run(&mut sim, |rt| {
         let db = open(&rt);
-        let pager = db.write_path().pager();
-        let scratch = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
+        let t = db.testing();
+        let scratch = t
+            .plant(Plant::Orphan {
+                kind: PageKind::HeapSlotted,
+                owner: 7,
+            })
+            .unwrap()
+            .page()
+            .unwrap();
         let pad = |to: u64| {
-            while Probe::of(pager).appended().0 < to {
-                let bump =
-                    |p: &mut [&mut [u8]]| p[0][HEADER_LEN..].iter_mut().for_each(|b| *b ^= 1);
-                pager.update(&[scratch], bump).unwrap();
-                pager.flush_log();
+            while t.probe().appended().0 < to {
+                bump(&db, scratch);
+                t.flush_log();
             }
         };
         pad(segment);
@@ -632,26 +653,26 @@ fn a_dump_is_refused_once_the_log_cannot_prove_a_status_page_that_lost_its_write
 
 /// Returns what each page of the commit log, the sequence counters and `app::users` is, and the
 /// mark its damage takes.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn kinds(db: &Database<SimRuntime>) -> BTreeMap<Pid, (&'static str, Quarantine)> {
-    let w = db.write_path();
-    let clog = w.txns().commit_log();
+    let t = db.testing();
+    let clog = t.commit_log();
     let mut kinds = BTreeMap::new();
     kinds.insert(clog.root(), ("root", Quarantine::Database));
-    kinds.insert(w.sequences_root(), ("counters", Quarantine::Database));
-    for &p in clog.status_pages().values() {
+    let counters = t.root(Object::Sequences).unwrap();
+    kinds.insert(counters, ("counters", Quarantine::Database));
+    for &p in clog.status().values() {
         kinds.insert(p, ("status", Quarantine::Database));
     }
-    for p in clog.directory_pages() {
+    for &p in clog.directory() {
         kinds.insert(p, ("directory", Quarantine::Database));
     }
-    let heap = w.heap_named("app::users", "User").unwrap();
-    for p in heap.owned_pages(w.pager()).unwrap() {
-        kinds.insert(p, ("heap", Quarantine::Heap(heap.id().0)));
+    let heap = t.heap("app::users", "User").unwrap();
+    for p in t.owned(heap).unwrap() {
+        kinds.insert(p, ("heap", t.mark_of(heap).unwrap()));
     }
-    let tree = w.index_named("app::users", "key id").unwrap().tree();
-    for p in tree.pages(w.pager()).unwrap() {
-        kinds.insert(p, ("index", Quarantine::Index(tree.owner())));
+    let index = t.index("app::users", "key id").unwrap();
+    for p in t.pages(index).unwrap() {
+        kinds.insert(p, ("index", t.mark_of(index).unwrap()));
     }
     kinds
 }
@@ -660,7 +681,6 @@ fn kinds(db: &Database<SimRuntime>) -> BTreeMap<Pid, (&'static str, Quarantine)>
 /// and the first verify reports it and marks its holder. A status page is settled by the open of
 /// the commit log, read after it, reported settled and marks nothing. Returns how many pages of
 /// each kind it reverted.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn each_lost_write_refused(
     sim: &mut Sim,
     work: impl FnOnce(&Database<SimRuntime>),
@@ -705,7 +725,7 @@ fn each_lost_write_refused(
             &mut Sim::with_files(2, Config::default(), lost.clone()),
             |rt| {
                 let db = open(&rt);
-                let read = db.write_path().pager().read(page).map(drop);
+                let read = db.testing().probe().page(page).map(drop);
                 db.close().unwrap();
                 read
             },
@@ -752,7 +772,6 @@ fn a_lost_write_of_each_page_an_insert_changes_is_refused_on_read_and_reported_b
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_lost_write_of_each_page_an_allocating_insert_and_a_mark_change_is_refused_on_read() {
     let mut sim = Sim::new(2, Config::default());
     insert(&mut sim, "ann");
@@ -764,9 +783,9 @@ fn a_lost_write_of_each_page_an_allocating_insert_and_a_mark_change_is_refused_o
                 "insert users from (from a in {digit}, b in {digit}, c in {digit} select {{ name: \"n\" }})"
             ),
         );
-        let pager = db.write_path().pager();
-        pager.quarantine(Quarantine::Index(u32::MAX)).unwrap();
-        pager.release(Quarantine::Index(u32::MAX)).unwrap();
+        let t = db.testing();
+        t.plant(Plant::Mark(Quarantine::Index(u32::MAX))).unwrap();
+        t.plant(Plant::Unmark(Quarantine::Index(u32::MAX))).unwrap();
     });
     assert_eq!(Some(&1), reached.get("marks"), "{reached:?}");
     assert!(
@@ -776,12 +795,10 @@ fn a_lost_write_of_each_page_an_allocating_insert_and_a_mark_change_is_refused_o
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn an_open_whose_log_cannot_settle_a_status_page_writes_no_mark() {
-    let mut create = adtb::CreateOptions::default();
-    create.segment_size = Some(64 << 10);
     let options = adtb::OpenOptions {
-        create: Some(create),
+        create: Some(adtb::CreateOptions::default()),
+        testing: Knobs::default().with_segment_size(64 << 10),
         ..api::options(2)
     };
     let open =
@@ -791,10 +808,9 @@ fn an_open_whose_log_cannot_settle_a_status_page_writes_no_mark() {
         let db = open(rt);
         api::results(&db, r#"insert users { name: "ann" }"#);
         let page = *db
-            .write_path()
-            .txns()
+            .testing()
             .commit_log()
-            .status_pages()
+            .status()
             .values()
             .next_back()
             .unwrap();
@@ -874,12 +890,10 @@ struct Lost {
 }
 
 fn engine_options(archived: bool) -> adtb::OpenOptions {
-    let mut create = adtb::CreateOptions::default();
-    create.segment_size = Some(64 << 10);
     adtb::OpenOptions {
-        create: Some(create),
+        create: Some(adtb::CreateOptions::default()),
         log_archive: archived.then(|| ARCHIVE.into()),
-        no_background_vacuum: true,
+        testing: Knobs::without_background_vacuum().with_segment_size(64 << 10),
         ..api::options(2)
     }
 }
@@ -895,7 +909,6 @@ fn segment_bases(files: &Files) -> Vec<u64> {
 /// says, inserting a row for a commit, then logs past three segments, and, when `recycled`, whose
 /// third open recycles the log of the second; with every write of the last status page after the
 /// first process lost, and an archive set when `archived`.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn resolved_then_lost(resolve: Resolve, recycled: bool, archived: bool) -> Lost {
     let options = engine_options(archived);
     let open =
@@ -905,39 +918,38 @@ fn resolved_then_lost(resolve: Resolve, recycled: bool, archived: bool) -> Lost 
     let page = api::run(&mut sim, |rt| {
         let db = open(rt);
         api::results(&db, r#"insert users { name: "ann" }"#);
-        let txns = db.write_path().txns();
-        let pages = txns.commit_log().status_pages().clone();
+        let pages = db.testing().commit_log().status().clone();
         db.close().unwrap();
         *pages.values().next_back().unwrap()
     });
     let before = sim.files();
     let (ids, resolved) = api::run(&mut sim, |rt| {
         let db = open(rt);
-        let (pager, txns) = (db.write_path().pager(), db.write_path().txns());
+        let t = db.testing();
         let ids = match resolve {
             Resolve::Commit => {
-                let first = TxnProbe::of(txns).next_xid();
+                let first = t.next_xid();
                 api::results(&db, r#"insert users { name: "bo" }"#);
-                let ids: Vec<Xid> = (first.0..TxnProbe::of(txns).next_xid().0)
-                    .map(Xid)
-                    .collect();
+                let ids: Vec<Xid> = (first.0..t.next_xid().0).map(Xid).collect();
                 let done = statuses(&db, &ids).into_iter().zip(ids);
                 done.filter_map(|(s, x)| (s == Status::Committed).then_some(x))
                     .collect()
             }
-            Resolve::Abort => {
-                let x = txns.begin(pager).unwrap();
-                txns.abort(pager, x).unwrap();
-                vec![x]
-            }
+            Resolve::Abort => vec![t.take_xid().unwrap()],
         };
-        let resolved = Probe::of(pager).appended();
+        let resolved = t.probe().appended();
         let segment = 64 << 10;
-        let scratch = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
-        while Probe::of(pager).appended().0 < resolved.0 + 3 * segment {
-            let bump = |p: &mut [&mut [u8]]| p[0][HEADER_LEN..].iter_mut().for_each(|b| *b ^= 1);
-            pager.update(&[scratch], bump).unwrap();
-            pager.flush_log();
+        let scratch = t
+            .plant(Plant::Orphan {
+                kind: PageKind::HeapSlotted,
+                owner: 7,
+            })
+            .unwrap()
+            .page()
+            .unwrap();
+        while t.probe().appended().0 < resolved.0 + 3 * segment {
+            bump(&db, scratch);
+            t.flush_log();
         }
         db.close().unwrap();
         (ids, resolved)

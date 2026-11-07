@@ -8,7 +8,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use adtb::runtime::{Clock, Entropy, Runtime, Threads};
-use adtb::storage::{self, Lsn, Quarantine};
+use adtb::storage::{self, Lsn};
+use adtb::testing::Plant;
 use adtb::write::panic_text;
 use adtb::{
     CallOptions, Database, Error, Log, OpenOptions, RejectReason, TxnCallOptions, TxnOptions,
@@ -65,13 +66,12 @@ const BUMP: &str = "update i in items.A set A { i with n: i.n + 1 }
 update i in items.B set B { i with n: i.n + 1 }";
 
 /// Returns the LSN of each page of `heaps`.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn pages(db: &Database<SimRuntime>, heaps: &[(&str, &str)]) -> Vec<Lsn> {
-    let w = db.write_path();
+    let t = db.testing();
     heaps
         .iter()
-        .flat_map(|(r, c)| w.heap_named(r, c).unwrap().pages(w.pager()).unwrap())
-        .map(|p| storage::lsn(&w.pager().read(p).unwrap()))
+        .flat_map(|(r, c)| t.pages(t.heap(r, c).unwrap()).unwrap())
+        .map(|p| storage::lsn(&t.probe().page(p).unwrap()))
         .collect()
 }
 
@@ -146,7 +146,6 @@ fn dead_versions_leave_with_no_command() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn versions_past_the_retention_window_leave_with_no_further_writes() {
     api::once(22, |rt| {
         let db = open(rt.clone());
@@ -157,15 +156,9 @@ fn versions_past_the_retention_window_leave_with_no_further_writes() {
         }
         sleep(&rt, 1000);
         let kept = || {
-            let w = db.write_path();
+            let t = db.testing();
             (ITEMS.iter())
-                .map(|(r, c)| {
-                    w.history_heap_named(r, c)
-                        .unwrap()
-                        .pages(w.pager())
-                        .unwrap()
-                        .len()
-                })
+                .map(|(r, c)| t.pages(t.history(r, c).unwrap()).unwrap().len())
                 .sum::<usize>()
         };
         assert!(kept() > 0, "the window keeps the old versions");
@@ -257,7 +250,6 @@ fn a_background_vacuum_gives_way_to_a_first_task_waiting_for_it() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_background_vacuum_writes_no_page_of_a_quarantined_heap() {
     api::once(23, |rt| {
         let db = open(rt.clone());
@@ -267,9 +259,9 @@ fn a_background_vacuum_writes_no_page_of_a_quarantined_heap() {
             &db,
             "delete i in items where true\ndelete o in others where true",
         );
-        let w = db.write_path();
-        let a = w.heap_named("app::items", "A").unwrap().id().0;
-        w.pager().quarantine(Quarantine::Heap(a)).unwrap();
+        let t = db.testing();
+        let a = t.mark_of(t.heap("app::items", "A").unwrap()).unwrap();
+        t.plant(Plant::Mark(a)).unwrap();
         let (items, others) = (pages(&db, &ITEMS), pages(&db, &[("app::others", "O")]));
         let waits = db.testing().rebuild_waits();
         budget(&db, 1.0);

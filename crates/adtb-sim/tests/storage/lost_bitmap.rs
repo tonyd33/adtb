@@ -1,10 +1,9 @@
 //! A bitmap page lost or zeroed is damage and never free space. Each damaged file refuses the call
 //! and marks, and leaves named pages as they were. A healthy file, cut by no fault, never refuses.
 
-use adtb::testing::Probe;
+use adtb::testing::{Failed, Knobs, Object, Plant, Probe};
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb::heap::refuse_named;
 use adtb::key::Value;
 use adtb::runtime::Threads;
 use adtb::storage::{
@@ -68,21 +67,19 @@ fn insert_users(db: &Database<SimRuntime>, ids: std::ops::Range<i64>, name: &str
     }
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn fill_first_group(db: &Database<SimRuntime>) {
-    db.write_path()
-        .pager()
-        .update(&[Pid::FIRST_DATA], |v| v[0][HEADER_LEN..].fill(0xff))
+    db.testing()
+        .plant(Plant::Write {
+            page: Pid::FIRST_DATA,
+            at: HEADER_LEN,
+            bytes: vec![0xff; PAGE - HEADER_LEN],
+        })
         .unwrap();
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn first_users_page(db: &Database<SimRuntime>) -> Pid {
-    let w = db.write_path();
-    w.heap_named("app::users", "User")
-        .unwrap()
-        .pages(w.pager())
-        .unwrap()[0]
+    let t = db.testing();
+    t.pages(t.heap("app::users", "User").unwrap()).unwrap()[0]
 }
 
 /// Returns the files of a database whose first group is full and whose users live in the second.
@@ -191,7 +188,6 @@ impl Kept {
 
 /// Run `body` on an open of `files`, and assert it changed no page beyond `writes`. Returns the
 /// files it left.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn damaged_writing(
     files: &Files,
     writes: Writes,
@@ -202,16 +198,18 @@ fn damaged_writing(
     let mut kept = None;
     finished(&mut sim, |rt| {
         let quiet = OpenOptions {
-            no_background_vacuum: true,
+            testing: Knobs::without_background_vacuum(),
             ..options(256)
         };
         let db = Database::open_in(rt, FILE, &Log::new([APP]), &quiet).unwrap();
-        let w = db.write_path();
+        let t = db.testing();
         kept = Some(Kept {
-            marks: w.pager().quarantine_page(),
-            list: w.pager().damage_list_page(),
-            users: w.heap_named("app::users", "User").map_or(0, |h| h.id().0),
-            counters: w.sequences_root(),
+            marks: t.root(Object::Marks).unwrap(),
+            list: t.root(Object::DamageList).unwrap(),
+            users: t
+                .heap("app::users", "User")
+                .map_or(0, |h| t.owner(h).unwrap()),
+            counters: t.root(Object::Sequences).unwrap(),
             writes,
         });
         body(&db);
@@ -263,7 +261,6 @@ fn a_cut_losing_a_group_with_large_values_refuses_marks_and_stays_marked() {
 
 /// Returns the files of a database with five users, whose last four commit on a status page lying
 /// in the second group, and that page.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn commits_on_a_status_page_in_group_one() -> (Files, Pid) {
     let mut sim = Sim::new(1, Config::default());
     let mut status = None;
@@ -271,22 +268,11 @@ fn commits_on_a_status_page_in_group_one() -> (Files, Pid) {
         let db = open(rt);
         insert_users(&db, 0..1, "a");
         fill_first_group(&db);
-        let w = db.write_path();
+        let t = db.testing();
         let per_page = ((PAGE - HEADER_LEN) * 4) as u64;
-        while w
-            .txns()
-            .begin(w.pager())
-            .map(|x| {
-                w.txns().abort(w.pager(), x).unwrap();
-                x.0
-            })
-            .unwrap()
-            < per_page
-        {}
+        while t.take_xid().unwrap().0 < per_page {}
         insert_users(&db, 1..5, "a");
-        let log = w.txns().commit_log();
-        status = log.status_pages().get(&1).copied();
-        drop(log);
+        status = t.commit_log().status().get(&1).copied();
         db.close().unwrap();
     });
     let status = status.unwrap();
@@ -327,7 +313,6 @@ fn a_bitmap_zeroed_in_place_refuses_and_overwrites_nothing() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn every_allocator_path_refuses_a_zeroed_bitmap() {
     let (files, page) = one_group("a", first_users_page);
     let at = Pid::FIRST_DATA.0 as usize * PAGE;
@@ -337,39 +322,39 @@ fn every_allocator_path_refuses_a_zeroed_bitmap() {
     };
     let files = zeroed(&files, Pid::FIRST_DATA);
     damaged_run(&files, "allocator paths", |db| {
-        let w = db.write_path();
-        let p = w.pager();
+        let t = db.testing();
         let lost = PageError {
             pid: Pid::FIRST_DATA,
             damage,
         };
-        assert_eq!(lost, p.free(page).unwrap_err(), "free");
-        assert_eq!(lost, p.is_free(page).unwrap_err(), "is_free");
-        assert_eq!(lost, p.allocated().unwrap_err(), "allocated");
+        let refused = |got: Result<_, Failed>| match got {
+            Err(Failed::Page(e)) => e,
+            other => panic!("not refused: {other:?}"),
+        };
+        assert_eq!(lost, refused(t.plant(Plant::Free(page))), "free");
+        assert_eq!(lost, t.is_free(page).unwrap_err(), "is_free");
+        assert_eq!(lost, t.allocated().unwrap_err(), "allocated");
         assert_eq!(
             lost,
-            p.allocate(1, PageKind::Catalog, 1).unwrap_err(),
+            refused(t.plant(Plant::Orphan {
+                kind: PageKind::Catalog,
+                owner: 1
+            })),
             "allocate"
-        );
-        assert_eq!(
-            lost,
-            p.reserve().page(1, PageKind::Catalog, 1).unwrap_err(),
-            "reserve"
         );
     });
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_zeroed_directory_root_refuses_a_first_insert_and_marks_the_heap() {
     let (files, root) = one_group("a", |db| {
-        let w = db.write_path();
-        let heap = w.heap_named("app::users", "User").unwrap();
-        let data = heap.pages(w.pager()).unwrap();
-        let owned = heap.owned_pages(w.pager()).unwrap();
+        let t = db.testing();
+        let heap = t.heap("app::users", "User").unwrap();
+        let data = t.pages(heap).unwrap();
+        let owned = t.owned(heap).unwrap();
         (
             owned.into_iter().find(|p| !data.contains(p)).unwrap(),
-            Quarantine::Heap(heap.id().0),
+            t.mark_of(heap).unwrap(),
         )
     });
     let files = zeroed(&files, root.0);
@@ -380,16 +365,11 @@ fn a_zeroed_directory_root_refuses_a_first_insert_and_marks_the_heap() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_zeroed_large_store_page_refuses_vacuum_and_marks() {
     let row = "l".repeat(3 * PAGE);
     let (files, page) = one_group(&row, |db| {
-        let w = db.write_path();
-        w.heap_named("app::users", "User")
-            .unwrap()
-            .large()
-            .pages(w.pager())
-            .unwrap()[0]
+        let t = db.testing();
+        t.pages(t.large("app::users", "User").unwrap()).unwrap()[0]
     });
     let files = zeroed(&files, page);
     damaged_writing(&files, Writes::Vacuum, "zero large page", |db| {
@@ -401,18 +381,17 @@ fn a_zeroed_large_store_page_refuses_vacuum_and_marks() {
     });
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn index_page(root: bool) -> (Files, (Pid, Quarantine)) {
     one_group("a", |db| {
-        let w = db.write_path();
-        let tree = w.index_named("app::users", "index (tag)").unwrap().tree();
-        let pages = tree.reachable(w.pager()).0;
+        let t = db.testing();
+        let index = t.index("app::users", "index (tag)").unwrap();
+        let pages = t.reachable(index).unwrap().0;
         let pick = if root {
-            tree.root()
+            t.root(index).unwrap()
         } else {
             *pages.last().unwrap()
         };
-        (pick, Quarantine::Index(tree.owner()))
+        (pick, t.mark_of(index).unwrap())
     })
 }
 
@@ -432,7 +411,6 @@ fn a_zeroed_index_root_refuses_a_probe_and_an_insert() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn zeroed_index_leaves_refuse_an_insert_that_latches_one() {
     let mut sim = Sim::new(1, Config::default());
     let mut leaves = Vec::new();
@@ -443,14 +421,14 @@ fn zeroed_index_leaves_refuse_an_insert_that_latches_one() {
             .map(|i| format!("insert users {{ id: users.key({i}), name: \"r\", tag: {i} }}\n"))
             .collect();
         text(&db, &rows).unwrap();
-        let w = db.write_path();
-        let tree = w.index_named("app::users", "index (tag)").unwrap().tree();
-        for page in tree.reachable(w.pager()).0 {
-            if storage::kind(&w.pager().read(page).unwrap()) == PageKind::IndexLeaf as u16 {
+        let t = db.testing();
+        let index = t.index("app::users", "index (tag)").unwrap();
+        for page in t.reachable(index).unwrap().0 {
+            if storage::kind(&t.probe().page(page).unwrap()) == PageKind::IndexLeaf as u16 {
                 leaves.push(page);
             }
         }
-        mark = Some(Quarantine::Index(tree.owner()));
+        mark = Some(t.mark_of(index).unwrap());
         db.close().unwrap();
     });
     assert!(leaves.len() > 1, "the index has an inner page");
@@ -476,17 +454,16 @@ fn a_migration_over_a_zeroed_bitmap_opens_for_verify_only() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_visibility_map_root_zeroed_refuses_vacuum_and_marks_the_heap() {
     let (files, (page, mark)) = one_group("a", |db| {
-        let w = db.write_path();
-        let heap = w.heap_named("app::users", "User").unwrap();
-        let owned = heap.owned_pages(w.pager()).unwrap();
+        let t = db.testing();
+        let heap = t.heap("app::users", "User").unwrap();
+        let owned = t.owned(heap).unwrap();
         let vm = owned
             .into_iter()
-            .find(|&p| storage::kind(&w.pager().read(p).unwrap()) == PageKind::VisibilityMap as u16)
+            .find(|&p| storage::kind(&t.probe().page(p).unwrap()) == PageKind::VisibilityMap as u16)
             .unwrap();
-        (vm, Quarantine::Heap(heap.id().0))
+        (vm, t.mark_of(heap).unwrap())
     });
     let files = zeroed(&files, page);
     damaged_run(&files, "zero vm", |db| {
@@ -561,48 +538,37 @@ fn assert_open_refuses(what: &str, pick: impl FnOnce(&Database<SimRuntime>) -> P
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_zeroed_commit_log_root_refuses_the_open_for_verify_only() {
-    assert_open_refuses("clog root", |db| db.write_path().txns().commit_log().root());
+    assert_open_refuses("clog root", |db| db.testing().commit_log().root());
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_zeroed_commit_log_directory_refuses_the_open_for_verify_only() {
     assert_open_refuses("clog directory", |db| {
-        db.write_path().txns().commit_log().directory_pages()[0]
+        db.testing().commit_log().directory()[0]
     });
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_zeroed_counter_page_refuses_the_open() {
-    assert_open_refuses("counters", |db| db.write_path().sequences_root());
-}
-
-#[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
-fn a_zeroed_first_status_page_refuses_the_open() {
-    assert_open_refuses("status", |db| {
-        db.write_path().txns().commit_log().status_pages()[&0]
+    assert_open_refuses("counters", |db| {
+        db.testing().root(Object::Sequences).unwrap()
     });
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
+fn a_zeroed_first_status_page_refuses_the_open() {
+    assert_open_refuses("status", |db| db.testing().commit_log().status()[&0]);
+}
+
+#[test]
 fn a_zeroed_status_page_below_the_resolved_ids_refuses_the_open() {
     assert_open_refuses("resolved status", |db| {
-        let w = db.write_path();
+        let t = db.testing();
         let per_page = ((PAGE - HEADER_LEN) * 4) as u64;
-        loop {
-            let x = w.txns().begin(w.pager()).unwrap();
-            w.txns().abort(w.pager(), x).unwrap();
-            if x.0 > per_page {
-                break;
-            }
-        }
+        while t.take_xid().unwrap().0 <= per_page {}
         insert_users(db, 10..11, "a");
-        w.txns().commit_log().status_pages()[&0]
+        t.commit_log().status()[&0]
     });
 }
 
@@ -849,28 +815,21 @@ fn no_crash_while_crossing_a_group_refuses_a_healthy_file() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_page_vacuum_frees_and_another_heap_reuses_under_a_reader_is_not_refused() {
     let mut sim = Sim::new(1, Config::default());
     finished(&mut sim, |rt| {
         let db = open(rt);
         insert_users(&db, 0..4, "u");
-        let w = db.write_path();
-        let pager = w.pager();
-        let heap = w.heap_named("app::users", "User").unwrap();
-        let index = w.index_named("app::users", "key id").unwrap();
-        let listing = heap.pages(pager).unwrap();
+        let t = db.testing();
+        let heap = t.heap("app::users", "User").unwrap();
+        let index = t.index("app::users", "key id").unwrap();
+        let listing = t.pages(heap).unwrap();
         let key = [Value::I64(1)];
-        let held = index.probe(pager, &key).unwrap();
+        let held = t.entries(index, &key).unwrap();
         assert_eq!(1, held.len());
         api::results(&db, "delete u in users");
         api::results(&db, "vacuum users");
-        let others = || {
-            w.heap_named("app::others", "Other")
-                .unwrap()
-                .pages(pager)
-                .unwrap()
-        };
+        let others = || t.pages(t.heap("app::others", "Other").unwrap()).unwrap();
         for i in 0..64 {
             if others().contains(&listing[0]) {
                 break;
@@ -885,14 +844,9 @@ fn a_page_vacuum_frees_and_another_heap_reuses_under_a_reader_is_not_refused() {
             "others reuses {:?}",
             listing[0]
         );
-        let mut found = 0;
-        heap.scan_pages(pager, &listing, |_| found += 1).unwrap();
-        assert_eq!(0, found);
-        let named = || Ok(index.probe(pager, &key).unwrap().contains(&held[0]));
-        let at = (&*heap, held[0].tid);
-        let owner = index.tree().owner();
-        refuse_named::<_, adtb::exec::Error>(pager, at, owner, named).expect("not refused");
-        assert_eq!(BTreeSet::new(), Probe::of(pager).marks());
+        assert_eq!(0, t.versions(heap, Some(&listing)).unwrap().len());
+        t.refuse_named(heap, index, &held[0]).expect("not refused");
+        assert_eq!(BTreeSet::new(), t.probe().marks());
         assert_eq!(Vec::<String>::new(), text(&db, SELECT).unwrap());
     });
 }

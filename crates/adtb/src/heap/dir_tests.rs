@@ -515,7 +515,6 @@ fn damage_is_recorded_outside_storage_only_by_these_functions() {
     damage_sites(&src, &src, &mut found);
     let expected = [
         "api/error.rs::a_damaged_page_met_writing_catalog_rows_is_a_storage_failure",
-        "api/mod.rs::damage_page",
         "api/verify.rs::damage_kept_store",
         "heap/dir.rs::refuse",
         "heap/large.rs::chunks",
@@ -524,6 +523,7 @@ fn damage_is_recorded_outside_storage_only_by_these_functions() {
         "heap/vm.rs::child",
         "mvcc/clog.rs::read_role",
         "mvcc/clog.rs::unresolved",
+        "testing/plant.rs::plant",
         "write/sequence.rs::open",
         "write/verify.rs::every_other_problem_is_a_finding",
     ];

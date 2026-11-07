@@ -3,12 +3,12 @@
 //! read that meets no such page answers exactly, other relations of a heap's damage read exactly,
 //! and the file reopens.
 
-use adtb::testing::Probe;
+use adtb::testing::Plant;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
-use adtb::storage::{self, FIRST_EDITABLE, PageKind, Pager, Pid, Quarantine};
+use adtb::storage::{self, FIRST_EDITABLE, PageKind, Pid, Quarantine};
 use adtb::{CallOptions, Database, Error, FatalReason, Log};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
@@ -112,19 +112,18 @@ impl Target {
     const ALL: [Target; 3] = [Target::UsersHeap, Target::LargeStore, Target::UsersPage];
 
     /// Returns the target page and the page of the others heap standing for it, of another owner.
-    #[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
     fn pages(self, db: &Database<SimRuntime>) -> (Pid, Pid) {
-        let w = db.write_path();
-        let users = w.heap_named("app::users", "User").unwrap();
-        let others = w.heap_named("app::others", "Other").unwrap();
-        let first = |pages: Vec<Pid>| pages[0];
+        let t = db.testing();
+        let users = t.heap("app::users", "User").unwrap();
+        let others = t.heap("app::others", "Other").unwrap();
+        let first = |heap| t.pages(heap).unwrap()[0];
         match self {
-            Target::UsersHeap => (users.root(), others.root()),
-            Target::LargeStore => (users.large().root(), others.root()),
-            Target::UsersPage => (
-                first(users.pages(w.pager()).unwrap()),
-                first(others.pages(w.pager()).unwrap()),
-            ),
+            Target::UsersHeap => (t.root(users).unwrap(), t.root(others).unwrap()),
+            Target::LargeStore => {
+                let large = t.large("app::users", "User").unwrap();
+                (t.root(large).unwrap(), t.root(others).unwrap())
+            }
+            Target::UsersPage => (first(users), first(others)),
         }
     }
 
@@ -171,26 +170,26 @@ impl Replacement {
     }
 
     /// Overwrite the page of `target` in `db` in place with this replacement.
-    #[expect(clippy::disallowed_methods, reason = "until testing and heap owners")]
+    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     fn apply(self, db: &Database<SimRuntime>, target: Target) {
         let (pid, others) = target.pages(db);
-        let pager = db.write_path().pager();
-        let source = pager.read(others).unwrap().to_vec();
+        let t = db.testing();
+        let source = t.probe().page(others).unwrap();
         let shape = || {
-            let page = pager.read(pid).unwrap();
+            let page = t.probe().page(pid).unwrap();
             (storage::kind(&page), storage::owner(&page))
         };
         let before = shape();
-        pager
-            .update(&[pid], |v| match self {
-                Replacement::Kind(k) => {
-                    v[0][KIND..KIND + 2].copy_from_slice(&(k as u16).to_le_bytes());
-                }
-                Replacement::Others => {
-                    v[0][FIRST_EDITABLE..].copy_from_slice(&source[FIRST_EDITABLE..]);
-                }
-            })
-            .unwrap();
+        let (at, bytes) = match self {
+            Replacement::Kind(k) => (KIND, (k as u16).to_le_bytes().to_vec()),
+            Replacement::Others => (FIRST_EDITABLE, source[FIRST_EDITABLE..].to_vec()),
+        };
+        t.plant(Plant::Write {
+            page: pid,
+            at,
+            bytes,
+        })
+        .unwrap();
         assert_ne!(before, shape(), "{self:?} changes the page's kind or owner");
     }
 }
@@ -227,12 +226,11 @@ impl Op {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_large_insert_after_its_directory_page_is_freed_refuses_in_bounded_time() {
     let what = "freed large directory".to_owned();
     bounded(&fixture(), what.clone(), move |db| {
         let root = Target::LargeStore.pages(db).0;
-        db.write_path().pager().free(root).unwrap();
+        db.testing().plant(Plant::Free(root)).unwrap();
         let got = text(db, &Op::LargeInsert.text());
         assert_eq!("the database", quarantined(got, &what));
     });
@@ -291,22 +289,23 @@ fn every_call_over_a_foreign_page_in_a_directory_answers_in_bounded_time() {
 }
 
 /// Make the one entry of directory page `dir` naming `from` name `to`.
-fn point(pager: &Pager<SimRuntime>, dir: Pid, from: Pid, to: Pid) {
-    let page = pager.read(dir).unwrap().to_vec();
+fn point(db: &Database<SimRuntime>, dir: Pid, from: Pid, to: Pid) {
+    let page = db.testing().probe().page(dir).unwrap();
     let id = |pid: Pid| pid.0.to_le_bytes()[..6].to_vec();
     let found: Vec<usize> = (FIRST_EDITABLE..page.len() - 6)
         .filter(|&at| page[at..at + 6] == id(from))
         .collect();
     assert_eq!(1, found.len(), "{dir:?} names {from:?} at {found:?}");
-    pager
-        .update(&[dir], |v| {
-            v[0][found[0]..found[0] + 6].copy_from_slice(&id(to));
+    db.testing()
+        .plant(Plant::Write {
+            page: dir,
+            at: found[0],
+            bytes: id(to),
         })
         .unwrap();
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn an_entry_naming_a_foreign_page_quarantines_only_the_heap_of_its_directory() {
     let foreigns = [
         "another heap's page",
@@ -316,29 +315,28 @@ fn an_entry_naming_a_foreign_page_quarantines_only_the_heap_of_its_directory() {
     for foreign in foreigns {
         let what = format!("an entry naming {foreign}");
         bounded(&fixture(), what.clone(), move |db| {
-            let w = db.write_path();
-            let pager = w.pager();
-            let users = w.heap_named("app::users", "User").unwrap();
+            let t = db.testing();
+            let users = t.heap("app::users", "User").unwrap();
+            let root = t.root(users).unwrap();
             let named = match foreign {
                 "another heap's page" => Target::UsersPage.pages(db).1,
-                "its own directory page" => users.root(),
+                "its own directory page" => root,
                 _ => Pid::FIRST_DATA,
             };
-            let kind = storage::kind(&pager.read(named).unwrap());
+            let kind = storage::kind(&t.probe().page(named).unwrap());
             let bitmap = kind == PageKind::AllocationBitmap as u16;
             assert_eq!(foreign.contains("bitmap"), bitmap, "{what}: {kind}");
-            point(pager, users.root(), users.pages(pager).unwrap()[0], named);
+            point(db, root, t.pages(users).unwrap()[0], named);
             let got = text(db, &Op::Insert.text());
             assert_eq!("app::users.User", quarantined(got, &what));
-            let only = BTreeSet::from([Quarantine::Heap(users.id().0)]);
-            assert_eq!(only, Probe::of(pager).marks(), "{what}");
+            let only = BTreeSet::from([t.mark_of(users).unwrap()]);
+            assert_eq!(only, t.probe().marks(), "{what}");
             assert_eq!(vec![r#""o""#], text(db, OTHERS).unwrap(), "{what}");
         });
     }
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_read_over_an_entry_naming_a_large_value_or_map_page_blames_its_directory_page() {
     let mut cases = 0;
     for foreign in ["a large-value page", "another heap's map page"] {
@@ -347,23 +345,25 @@ fn a_read_over_an_entry_naming_a_large_value_or_map_page_blames_its_directory_pa
             let (w, read) = (what.clone(), read.clone());
             bounded(&fixture(), what, move |db| {
                 let w = &w;
-                let path = db.write_path();
-                let pager = path.pager();
-                let users = path.heap_named("app::users", "User").unwrap();
-                let others = path.heap_named("app::others", "Other").unwrap();
+                let t = db.testing();
+                let users = t.heap("app::users", "User").unwrap();
+                let others = t.heap("app::others", "Other").unwrap();
+                let root = t.root(users).unwrap();
                 let map = PageKind::VisibilityMap as u16;
                 let named = match foreign {
-                    "a large-value page" => users.large().pages(pager).unwrap()[0],
-                    _ => *(others.owned_pages(pager).unwrap().iter())
-                        .find(|&&p| storage::kind(&pager.read(p).unwrap()) == map)
+                    "a large-value page" => {
+                        t.pages(t.large("app::users", "User").unwrap()).unwrap()[0]
+                    }
+                    _ => *(t.owned(others).unwrap().iter())
+                        .find(|&&p| storage::kind(&t.probe().page(p).unwrap()) == map)
                         .expect("the others heap has a map page"),
                 };
-                point(pager, users.root(), users.pages(pager).unwrap()[0], named);
+                point(db, root, t.pages(users).unwrap()[0], named);
                 assert_eq!("app::users.User", quarantined(text(db, &read), w));
-                let met: BTreeSet<Pid> = Probe::of(pager).refusals().into_keys().collect();
-                assert_eq!(BTreeSet::from([users.root()]), met, "{w}");
-                let only = BTreeSet::from([Quarantine::Heap(users.id().0)]);
-                assert_eq!(only, Probe::of(pager).marks(), "{w}");
+                let met: BTreeSet<Pid> = t.probe().refusals().into_keys().collect();
+                assert_eq!(BTreeSet::from([root]), met, "{w}");
+                let only = BTreeSet::from([t.mark_of(users).unwrap()]);
+                assert_eq!(only, t.probe().marks(), "{w}");
             });
             cases += 1;
         }
@@ -372,21 +372,20 @@ fn a_read_over_an_entry_naming_a_large_value_or_map_page_blames_its_directory_pa
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn an_index_entry_outliving_its_page_refuses_the_index() {
     let what = "an index entry outliving its page".to_owned();
     bounded(&fixture(), what.clone(), move |db| {
-        let pager = db.write_path().pager();
-        let users = db.write_path().heap_named("app::users", "User").unwrap();
+        let t = db.testing();
+        let users = t.heap("app::users", "User").unwrap();
         Replacement::Others.apply(db, Target::UsersPage);
         let pid = Target::UsersPage.pages(db).0;
-        point(pager, users.root(), pid, Pid(0));
+        point(db, t.root(users).unwrap(), pid, Pid(0));
         assert_eq!(
             "app::users key id",
             quarantined(text(db, &Op::Read.text()), &what)
         );
-        assert_eq!(0, Probe::of(pager).refusals().len(), "{what}");
-        let marks = Vec::from_iter(Probe::of(pager).marks());
+        assert_eq!(0, t.probe().refusals().len(), "{what}");
+        let marks = Vec::from_iter(t.probe().marks());
         assert!(
             matches!(marks[..], [Quarantine::Index(_)]),
             "{what}: {marks:?}"

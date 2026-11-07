@@ -120,8 +120,7 @@ root (devenv also puts each on PATH as `NAME`):
   a counted pattern, or fewer: the counts only fall. The rows: struct fields visible past their
   module (`crate_fields`, `pub_fields`, counted by parsing with `crates/adtb-structure`),
   `.xmin`/`.xmax` outside mvcc, and the `expect` attributes of `clippy::disallowed_methods`
-  (`clippy.toml` rejects `storage::page::owner`, `Pager::meta` and `Database::write_path` by
-  identity). `--counts` prints the allowlist lines for the tree. `--against REV` fails on a count
+  (`clippy.toml` rejects `storage::page::owner` and `Pager::meta` by identity). `--counts` prints the allowlist lines for the tree. `--against REV` fails on a count
   above the allowlist at REV; `check --changed` runs it against `main`, so a rise is the lead's
   act on main. `structure-check-test` proves it on scratch files.
 - `feature-check [DIR]`: fail when a package of either workspace has a normal or build

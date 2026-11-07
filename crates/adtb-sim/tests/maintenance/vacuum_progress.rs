@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use adtb::runtime::{Runtime, Threads};
+use adtb::testing::Knobs;
 use adtb::{Database, Log, OpenOptions, Value};
 use adtb_sim::SimRuntime;
 use adtb_simkit::{api, common, seeds};
@@ -152,7 +153,7 @@ fn watch(seed: u64) -> Seen {
         let log = Log::new([shape.schema().as_str()]);
         let options = OpenOptions {
             pool_bytes: Some(POOL),
-            no_background_vacuum: true,
+            testing: Knobs::without_background_vacuum(),
             ..api::options(2)
         };
         let db = Database::open_in(rt.clone(), "progress.adt", &log, &options)

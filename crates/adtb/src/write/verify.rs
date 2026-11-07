@@ -5,10 +5,14 @@ use std::sync::Arc;
 use adtb_lang::types::RelId;
 
 use crate::btree::{self, Index};
+#[cfg(feature = "testing")]
+use crate::catalog::relation_mark;
 use crate::exec::{AtSnapshot, Histories, Store};
 use crate::heap::Heap;
 use crate::key::{CtorId, Tid};
 use crate::mvcc::Safety;
+#[cfg(feature = "testing")]
+use crate::plan::HeapId;
 use crate::plan::IndexId;
 use crate::runtime::Runtime;
 use crate::storage::{self, Damage, PageError, Pid};
@@ -502,46 +506,85 @@ impl<R: Runtime> Database<R> {
     fn ctor_id(&self, r: &Rel, c: u32) -> u64 {
         self.schema.ids.ctors[&(self.schema.relation(r.id).elem_def, c)]
     }
+}
 
-    /// Returns the id of relation `relation`, by qualified name.
-    pub fn relation_named(&self, relation: &str) -> Option<RelId> {
-        self.rels
-            .values()
-            .find(|r| r.qualified == relation)
-            .map(|r| r.id)
-    }
-
+#[cfg(feature = "testing")]
+impl<R: Runtime> Database<R> {
     /// Returns the heap of constructor `ctor` of relation `relation`, by qualified name.
-    pub fn heap_named(&self, relation: &str, ctor: &str) -> Option<Arc<Heap>> {
+    pub(crate) fn heap_named(&self, relation: &str, ctor: &str) -> Option<HeapId> {
         let r = self.rels.values().find(|r| r.qualified == relation)?;
-        let c = r.ctors.iter().find(|c| c.name == ctor)?;
-        Some(self.heaps[&c.heap].heap.clone())
+        Some(r.ctors.iter().find(|c| c.name == ctor)?.heap)
     }
 
-    /// Returns the key index of relation `relation`, by qualified name, and its constructors.
-    pub fn key_probe(&self, relation: &str) -> Option<(IndexId, BTreeSet<u32>)> {
-        let r = self.rels.values().find(|r| r.qualified == relation)?;
-        Some((r.key_index, r.all_ctors().into_iter().collect()))
-    }
-
-    /// Returns the history heap of constructor `ctor` of relation `relation`, by qualified name.
-    pub fn history_heap_named(&self, relation: &str, ctor: &str) -> Option<Arc<Heap>> {
-        let r = self.rels.values().find(|r| r.qualified == relation)?;
-        let c = r.ctors.iter().find(|c| c.name == ctor)?;
-        Some(self.retained.as_ref()?.heaps.get(&c.heap)?.heap.clone())
-    }
-
-    /// Returns the history key index of relation `relation`, by qualified name.
-    pub fn history_index_named(&self, relation: &str) -> Option<Index> {
-        let r = self.rels.values().find(|r| r.qualified == relation)?;
-        self.retained.as_ref()?.indexes.get(&r.key_index).cloned()
+    /// Returns the key index of relation `relation`, by qualified name.
+    pub(crate) fn key_index_named(&self, relation: &str) -> Option<IndexId> {
+        Some(
+            self.rels
+                .values()
+                .find(|r| r.qualified == relation)?
+                .key_index,
+        )
     }
 
     /// Returns the index of relation `relation`, by qualified name, of clause `clause`.
-    pub fn index_named(&self, relation: &str, clause: &str) -> Option<Index> {
+    pub(crate) fn index_named(&self, relation: &str, clause: &str) -> Option<IndexId> {
         let r = self.rels.values().find(|r| r.qualified == relation)?;
         let (id, _) = r.indexes.iter().find(|(_, ix)| ix.clause == clause)?;
-        Some(self.indexes[id].index.clone())
+        Some(*id)
+    }
+
+    /// Returns the relation index `id` belongs to.
+    pub(crate) fn relation_of_index(&self, id: IndexId) -> Option<RelId> {
+        let r = self
+            .rels
+            .values()
+            .find(|r| r.indexes.iter().any(|(i, _)| *i == id))?;
+        Some(r.id)
+    }
+
+    /// Returns the constructors key index `id` routes, `None` when `id` is no relation's key
+    /// index.
+    pub(crate) fn key_routes(&self, id: IndexId) -> Option<BTreeSet<u32>> {
+        let r = self.rels.values().find(|r| r.key_index == id)?;
+        Some(r.all_ctors().into_iter().collect())
+    }
+
+    pub(crate) fn heap_of(&self, id: HeapId) -> Option<Arc<Heap>> {
+        Some(self.heaps.get(&id)?.heap.clone())
+    }
+
+    /// Returns the history heap of heap `id`.
+    pub(crate) fn history_heap_of(&self, id: HeapId) -> Option<Arc<Heap>> {
+        Some(self.retained.as_ref()?.heaps.get(&id)?.heap.clone())
+    }
+
+    pub(crate) fn index_of(&self, id: IndexId) -> Option<Index> {
+        Some(self.indexes.get(&id)?.index.clone())
+    }
+
+    /// Returns the history key index of the relation whose key index is `key`.
+    pub(crate) fn history_index_of(&self, key: IndexId) -> Option<Index> {
+        self.retained.as_ref()?.indexes.get(&key).cloned()
+    }
+
+    /// Returns the mark damage to heap `id` or its history heap sets, as the holdings walk maps it.
+    pub(crate) fn heap_mark(&self, id: HeapId) -> Option<storage::Quarantine> {
+        let r = self
+            .rels
+            .values()
+            .find(|r| r.ctors.iter().any(|c| c.heap == id))?;
+        let object = storage::Quarantine::Heap(self.heaps.get(&id)?.heap.id().0);
+        Some(relation_mark(&self.schema, r.id, object))
+    }
+
+    /// Returns the mark damage to index `id` or its history tree sets, as the holdings walk maps it.
+    pub(crate) fn index_mark(&self, id: IndexId) -> Option<storage::Quarantine> {
+        let r = self
+            .rels
+            .values()
+            .find(|r| r.indexes.iter().any(|(i, _)| *i == id))?;
+        let object = storage::Quarantine::Index(self.indexes.get(&id)?.index.tree().owner());
+        Some(relation_mark(&self.schema, r.id, object))
     }
 }
 

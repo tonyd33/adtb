@@ -1,8 +1,10 @@
 use crate::runtime::Runtime;
-use crate::storage::{Pager, Pid};
+use crate::storage::{self, Pager, Pid};
+use crate::testing::Site;
 use crate::write;
 
 use super::Database;
+use super::reindex::PhaseHook;
 
 impl<R: Runtime> Database<R> {
     /// Returns the surface tests observe this database through.
@@ -18,7 +20,7 @@ impl<R: Runtime> Database<R> {
         &self.engine.pager
     }
 
-    pub(crate) fn tested_write_path(&self) -> &write::Database<R> {
+    pub(crate) fn tested_db(&self) -> &write::Database<R> {
         &self.engine.db
     }
 
@@ -37,5 +39,27 @@ impl<R: Runtime> Database<R> {
     /// quarantined whole cannot show.
     pub(crate) fn held_findings(&self) -> usize {
         self.engine.verifier.held_findings()
+    }
+
+    pub(crate) fn refuse_kept_store(&self) {
+        self.engine.damage_kept_store();
+    }
+
+    /// Panic at `site` with `message` the next time the engine passes it.
+    pub(crate) fn panic_at(&self, site: Site, message: String) {
+        match site {
+            Site::BackgroundRead => self.engine.background.fail(message),
+            Site::KeptWrite => {
+                *self.engine.verifier.fail_kept.lock(&self.engine.rt) = Some(message);
+            }
+        }
+    }
+
+    pub(crate) fn set_phase_hook(&self, hook: PhaseHook) {
+        *self.engine.reindexing.hook.lock(&self.engine.rt) = Some(hook);
+    }
+
+    pub(crate) fn archive_state(&self) -> Option<storage::ArchiveStatus> {
+        self.engine.archiver.as_ref().map(|a| a.status())
     }
 }

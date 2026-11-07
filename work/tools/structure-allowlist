@@ -15,7 +15,7 @@
 #                     literals are not counted. The row ends when the fields become private
 #                     (ticket structure-version-owner).
 # disallowed_methods: mentions of clippy::disallowed_methods in an expect or allow attribute. The
-#                     lint rejects storage::page::owner, Pager::meta and Database::write_path
+#                     lint rejects storage::page::owner and Pager::meta
 #                     (clippy.toml); each allowed site carries an expect, or its file one inner
 #                     expect where the file owns the item.
 crate_fields prod 1 crates/adtb-codegen/src/emit.rs
@@ -71,34 +71,18 @@ disallowed_methods prod 1 crates/adtb-bench/src/native/reporting/mod.rs
 disallowed_methods prod 1 crates/adtb-heap-cap/src/lib.rs
 disallowed_methods test 1 crates/adtb-reference/tests/wide.rs
 disallowed_methods prod 1 crates/adtb-sim/src/sim.rs
-disallowed_methods test 4 crates/adtb-sim/tests/execution/tasks.rs
-disallowed_methods test 17 crates/adtb-sim/tests/export/backup.rs
-disallowed_methods test 7 crates/adtb-sim/tests/export/dump_quarantine.rs
-disallowed_methods test 1 crates/adtb-sim/tests/export/dump_server.rs
-disallowed_methods test 58 crates/adtb-sim/tests/export/quarantine.rs
-disallowed_methods test 3 crates/adtb-sim/tests/maintenance/background_vacuum.rs
-disallowed_methods test 7 crates/adtb-sim/tests/maintenance/maintenance_faults.rs
-disallowed_methods test 11 crates/adtb-sim/tests/maintenance/reindex.rs
+disallowed_methods test 5 crates/adtb-sim/tests/maintenance/maintenance_faults.rs
 disallowed_methods test 1 crates/adtb-sim/tests/maintenance/reindex_review.rs
-disallowed_methods test 9 crates/adtb-sim/tests/maintenance/scrub.rs
-disallowed_methods test 28 crates/adtb-sim/tests/maintenance/verify.rs
-disallowed_methods test 3 crates/adtb-sim/tests/server/api_real_file.rs
-disallowed_methods test 6 crates/adtb-sim/tests/server/server_commands.rs
-disallowed_methods test 10 crates/adtb-sim/tests/storage/clog_lost.rs
-disallowed_methods test 1 crates/adtb-sim/tests/storage/damage_search/consumers.rs
-disallowed_methods test 7 crates/adtb-sim/tests/storage/damage_search/world.rs
-disallowed_methods test 7 crates/adtb-sim/tests/storage/directory_damage.rs
-disallowed_methods test 3 crates/adtb-sim/tests/storage/heap_kind.rs
+disallowed_methods test 1 crates/adtb-sim/tests/storage/damage_search/world.rs
+disallowed_methods test 2 crates/adtb-sim/tests/storage/directory_damage.rs
 disallowed_methods test 1 crates/adtb-sim/tests/storage/incarnation.rs
-disallowed_methods test 18 crates/adtb-sim/tests/storage/lost_bitmap.rs
-disallowed_methods test 10 crates/adtb-sim/tests/storage/open_damage.rs
-disallowed_methods test 3 crates/adtb-sim/tests/storage/page_past_log_end.rs
+disallowed_methods test 2 crates/adtb-sim/tests/storage/lost_bitmap.rs
+disallowed_methods test 1 crates/adtb-sim/tests/storage/open_damage.rs
 disallowed_methods test 2 crates/adtb-sim/tests/storage/pager.rs
 disallowed_methods test 1 crates/adtb-sim/tests/storage/truncated_open.rs
 disallowed_methods prod 1 crates/adtb-sys/src/os/mod.rs
 disallowed_methods test 1 crates/adtb-sys/src/os/tests.rs
 disallowed_methods test 1 crates/adtb-testkit/tests/front_fuzz.rs
-disallowed_methods prod 1 crates/adtb/src/api/instances.rs
 disallowed_methods prod 3 crates/adtb/src/btree/node.rs
 disallowed_methods test 1 crates/adtb/src/btree/tests.rs
 disallowed_methods prod 3 crates/adtb/src/heap/dir.rs
@@ -184,7 +168,7 @@ pub_fields prod 10 crates/adtb-testkit/src/spec.rs
 pub_fields prod 3 crates/adtb/src/api/arrow.rs
 pub_fields prod 3 crates/adtb/src/api/backup.rs
 pub_fields prod 4 crates/adtb/src/api/load.rs
-pub_fields prod 25 crates/adtb/src/api/mod.rs
+pub_fields prod 24 crates/adtb/src/api/mod.rs
 pub_fields prod 13 crates/adtb/src/api/server/binding.rs
 pub_fields prod 2 crates/adtb/src/api/server/task.rs
 pub_fields prod 15 crates/adtb/src/api/text.rs

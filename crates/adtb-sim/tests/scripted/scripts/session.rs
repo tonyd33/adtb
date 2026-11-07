@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use adtb::catalog::version_hash;
 use adtb::runtime::{Clock, Done, Io, Op, Runtime, Threads};
+use adtb::testing::Knobs;
 use adtb::{CallOptions, Database, Error, Log, OpenError, OpenOptions, Registration, Value};
 use adtb_conformance::engine::{self, Ended};
 use adtb_conformance::{Difference, Directive, Got, Kind, panic_message};
@@ -602,7 +603,7 @@ fn run_steps(path: &Path, steps: Vec<Step>, clock: clock::Clock) -> Vec<String> 
         next: start,
         log: Vec::new(),
         options: OpenOptions {
-            no_background_vacuum: true,
+            testing: Knobs::without_background_vacuum(),
             ..options(4)
         },
         bundles: Vec::new(),

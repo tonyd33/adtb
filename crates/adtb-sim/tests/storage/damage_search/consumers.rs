@@ -351,7 +351,6 @@ fn lookups<R: Runtime>(db: &Database<R>, rel: Rel, keys: &[i64]) -> Lookups {
 
 /// Run the consumers on the source through `hook`, and on its copies through `clean`, with
 /// `opening` cleared once the first open returns.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn consume(
     hook: &Hooked,
     clean: &Hooked,
@@ -384,11 +383,10 @@ fn consume(
         }
     }
     seen.verify = Some(verify(&db));
-    let w = db.write_path();
-    let log = w.scrub_log();
     seen.scrubbed = Some(pid);
     seen.scrub = Some(
-        w.scrub_page(pid, &log)
+        db.testing()
+            .scrub_page(pid)
             .iter()
             .map(|f| format!("{f:?}"))
             .collect(),

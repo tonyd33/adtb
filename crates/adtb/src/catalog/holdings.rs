@@ -8,6 +8,23 @@ use crate::heap::{Heap, LargeStore};
 use crate::runtime::Runtime;
 use crate::storage::{Holders, Pager, Pid, Quarantine};
 
+/// What damage to a large-value store quarantines.
+pub const LARGE_MARK: Quarantine = Quarantine::Database;
+
+/// What damage to a page no heap, tree or store holds quarantines.
+pub const UNHELD_MARK: Quarantine = Quarantine::Database;
+
+/// Returns what damage to a heap or tree of relation `r` quarantines: `object`, or the database
+/// for a relation of an engine module.
+pub fn relation_mark(schema: &Schema, r: RelId, object: Quarantine) -> Quarantine {
+    let module = &schema.module(schema.relation(r).module).name;
+    if ENGINE_MODULES.contains(&module.as_str()) {
+        Quarantine::Database
+    } else {
+        object
+    }
+}
+
 /// What [`Holders`] walks to map a damaged page to its object. The damage of a relation of an
 /// engine module quarantines the database.
 #[derive(Debug)]
@@ -61,12 +78,7 @@ impl<'a> Holdings<'a> {
     }
 
     fn object(&self, r: RelId, object: Quarantine) -> Option<Quarantine> {
-        let module = &self.schema.module(self.schema.relation(r).module).name;
-        Some(if ENGINE_MODULES.contains(&module.as_str()) {
-            Quarantine::Database
-        } else {
-            object
-        })
+        Some(relation_mark(self.schema, r, object))
     }
 
     /// Report the pages of every heap and tree to `h`.
@@ -75,7 +87,7 @@ impl<'a> Holdings<'a> {
             h.walk(*object, || heap.held_pages(pager));
         }
         for store in &self.large {
-            h.walk(Some(Quarantine::Database), || store.held_pages(pager));
+            h.walk(Some(LARGE_MARK), || store.held_pages(pager));
         }
         for (object, tree) in &self.trees {
             h.walk(*object, || tree.walk(pager));

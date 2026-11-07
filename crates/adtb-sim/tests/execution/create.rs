@@ -83,7 +83,7 @@ fn opened_or_retried<R: Runtime>(
         Err(e) => panic!("an open after the crash: {e:?}"),
     };
     if every_case() {
-        assert!(db.verify_holding().unwrap().next().is_none());
+        assert!(db.testing().verify_holding().unwrap().next().is_none());
     }
     let mut t = db.begin(&TxnOptions::default()).unwrap();
     let insert = r#"insert users { id: users.key(1), name: "ann" }"#;

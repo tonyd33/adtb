@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 
 use adtb::catalog::Catalog;
 use adtb::storage::{Damage, Finding, Options, Pager, Pid, Quarantine};
+use adtb::testing::{Object, Plant};
 use adtb::{ArchiveTarget, CallOptions, Database, Error, FatalReason, Log, RestorePoint};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::{api, harness};
@@ -75,25 +76,23 @@ fn seeded_sim<T>(seed: u64, pick: impl FnOnce(&Database<SimRuntime>) -> T) -> (S
     (sim, picked)
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn last_status_page(db: &Database<SimRuntime>) -> Pid {
-    *db.write_path()
-        .txns()
+    *db.testing()
         .commit_log()
-        .status_pages()
+        .status()
         .values()
         .next_back()
         .unwrap()
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_file_quarantined_whole_dumps_and_restores_every_row() {
     let mut sim = Sim::new(1, Config::default());
     let rows = api::run(&mut sim, |rt| {
         let (db, rows) = seeded(&rt);
-        let pager = db.write_path().pager();
-        pager.quarantine(Quarantine::Database).unwrap();
+        db.testing()
+            .plant(Plant::Mark(Quarantine::Database))
+            .unwrap();
         db.close().unwrap();
         rows
     });
@@ -135,18 +134,22 @@ fn a_file_quarantined_whole_dumps_and_restores_every_row() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_damaged_heap_page_fails_the_dump_of_a_file_quarantined_whole() {
     let (mut sim, square) = seeded_sim(2, |db| {
-        let w = db.write_path();
-        let square = w.heap_named("app::shapes", "Square").unwrap();
-        square.pages(w.pager()).unwrap()[0]
+        let t = db.testing();
+        t.pages(t.heap("app::shapes", "Square").unwrap()).unwrap()[0]
     });
     writes_nothing(&mut sim, |rt| {
         let db = open(&rt, FILE);
-        let pager = db.write_path().pager();
-        pager.quarantine(Quarantine::Database).unwrap();
-        db.damage_page(square, Damage::Checksum);
+        db.testing()
+            .plant(Plant::Mark(Quarantine::Database))
+            .unwrap();
+        db.testing()
+            .plant(Plant::Refuse {
+                page: square,
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         for _ in 0..2 {
             assert_eq!("app::shapes.Square", quarantined(run(&db, DUMP)));
         }
@@ -159,7 +162,12 @@ fn a_damaged_commit_log_fails_the_dump_that_meets_it() {
     let (mut sim, page) = seeded_sim(3, last_status_page);
     writes_nothing(&mut sim, |rt| {
         let db = open(&rt, FILE);
-        db.damage_page(page, Damage::Checksum);
+        db.testing()
+            .plant(Plant::Refuse {
+                page,
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         assert_eq!("the database", quarantined(run(&db, DUMP)));
         let insert = run(&db, "insert users { name: \"cy\" }");
         assert_eq!("the database", quarantined(insert));
@@ -169,16 +177,16 @@ fn a_damaged_commit_log_fails_the_dump_that_meets_it() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_quarantined_heap_fails_the_dump_and_a_quarantined_index_does_not() {
     let (mut sim, ()) = seeded_sim(4, |db| {
-        let w = db.write_path();
-        let index = w.index_named("app::users", "index (name)").unwrap();
-        let owner = index.tree().owner();
-        w.pager().quarantine(Quarantine::Index(owner)).unwrap();
+        let t = db.testing();
+        let index = t
+            .mark_of(t.index("app::users", "index (name)").unwrap())
+            .unwrap();
+        t.plant(Plant::Mark(index)).unwrap();
         run(db, DUMP).unwrap();
-        let square = w.heap_named("app::shapes", "Square").unwrap().id().0;
-        w.pager().quarantine(Quarantine::Heap(square)).unwrap();
+        let square = t.mark_of(t.heap("app::shapes", "Square").unwrap()).unwrap();
+        t.plant(Plant::Mark(square)).unwrap();
     });
     writes_nothing(&mut sim, |rt| {
         let db = open(&rt, FILE);
@@ -201,9 +209,8 @@ fn rewritten(seed: u64, sim: &Sim, page: Pid, from: Option<&Sim>) -> Sim {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_file_whose_catalog_cannot_be_read_refuses_the_dump() {
-    let (sim, root) = seeded_sim(5, |db| db.write_path().pager().catalog_root());
+    let (sim, root) = seeded_sim(5, |db| db.testing().root(Object::Catalog).unwrap());
     let mut sim = rewritten(5, &sim, root, None);
     writes_nothing(&mut sim, |rt| {
         let db = open(&rt, FILE);
@@ -229,7 +236,12 @@ fn a_damaged_page_of_the_deployment_facts_fails_the_dump_as_storage_and_marks_no
     writes_nothing(&mut sim, |rt| {
         let db = open(&rt, FILE);
         let page = roots.unwrap();
-        db.damage_page(page, Damage::Checksum);
+        db.testing()
+            .plant(Plant::Refuse {
+                page,
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         let detail = format!("PageError {{ pid: Pid({}), damage: Checksum }}", page.0);
         match run(&db, DUMP) {
             Err(Error::Fatal {
@@ -245,7 +257,6 @@ fn a_damaged_page_of_the_deployment_facts_fails_the_dump_as_storage_and_marks_no
 /// A change to a page the schema or row visibility is read from. Returns the page.
 type Change = fn(&Database<SimRuntime>) -> Pid;
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 const CHANGES: [Change; 2] = [
     |db| {
         api::results(db, "insert users { name: \"cy\" }");
@@ -253,14 +264,15 @@ const CHANGES: [Change; 2] = [
     },
     |db| {
         db.role_authority().create_role("later").unwrap();
-        let w = db.write_path();
-        let roles = w.heap_named("catalog::roles", "Role").unwrap();
-        *roles.pages(w.pager()).unwrap().last().unwrap()
+        let t = db.testing();
+        *t.pages(t.heap("catalog::roles", "Role").unwrap())
+            .unwrap()
+            .last()
+            .unwrap()
     },
 ];
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_lost_write_to_the_commit_log_or_catalog_refuses_the_dump_of_a_file_quarantined_whole() {
     for (n, change) in CHANGES.into_iter().enumerate() {
         let (mut sim, ()) = seeded_sim(7, |_| ());
@@ -268,8 +280,9 @@ fn a_lost_write_to_the_commit_log_or_catalog_refuses_the_dump_of_a_file_quaranti
         let page = api::run(&mut sim, |rt| {
             let db = open(&rt, FILE);
             let page = change(&db);
-            let pager = db.write_path().pager();
-            pager.quarantine(Quarantine::Database).unwrap();
+            db.testing()
+                .plant(Plant::Mark(Quarantine::Database))
+                .unwrap();
             db.close().unwrap();
             page
         });
@@ -277,7 +290,7 @@ fn a_lost_write_to_the_commit_log_or_catalog_refuses_the_dump_of_a_file_quaranti
         writes_nothing(&mut sim, |rt| {
             let db = open(&rt, FILE);
             assert_eq!("the database", quarantined(run(&db, DUMP)), "change {n}");
-            let found = db.write_path().pager().verify().findings;
+            let found = db.testing().verify_pages().findings;
             let lost = |f: &Finding| matches!(f, Finding::Page { pid, .. } if *pid == page);
             assert!(found.iter().any(lost), "change {n}: {found:?}");
             db.close().unwrap();

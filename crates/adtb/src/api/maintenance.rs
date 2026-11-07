@@ -40,7 +40,7 @@ struct Control {
     window: Duration,
     stop: bool,
     woken: bool,
-    fail: Option<&'static str>,
+    fail: Option<String>,
     thread: Option<ThreadId>,
     vacuum_thread: Option<ThreadId>,
     vacuums: bool,
@@ -180,7 +180,8 @@ impl<R: Runtime> Background<R> {
     }
 
     /// Panic the worker's next read of a page with `text`.
-    pub(super) fn fail(&self, text: &'static str) {
+    #[cfg(feature = "testing")]
+    pub(super) fn fail(&self, text: String) {
         let mut c = self.control.lock(&self.rt);
         c.fail = Some(text);
         c.woken = true;

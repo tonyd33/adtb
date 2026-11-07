@@ -10,6 +10,7 @@ use adtb::catalog::version_hash;
 use adtb::key::Scalar;
 use adtb::runtime::{Clock, Io, Op, Runtime, ThreadId, Threads};
 use adtb::storage::Quarantine;
+use adtb::testing::Plant;
 use adtb::{
     CallOptions, Capability, Completion, Database, Determinism, Error, HostFns, Log, Observation,
     OpenOptions, Registration, RejectReason, RetryReason, RoleSession, Task, TaskOptions,
@@ -799,15 +800,13 @@ fn a_cancelled_queued_text_records_a_failed_call() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn nothing_audits_under_a_database_quarantined_whole() {
     let mut sim = Sim::new(176, Config::default());
     run(&mut sim, |rt| {
         let db = opened_secrets(&rt);
         let owner = db.role_authority().session("owner").expect("session");
-        db.write_path()
-            .pager()
-            .quarantine(Quarantine::Database)
+        db.testing()
+            .plant(Plant::Mark(Quarantine::Database))
             .expect("mark");
         task(&rt, &owner, "verify").expect("verify runs and writes no row");
         let got = format!("{:?}", task(&rt, &owner, "from s in secrets select s"));
@@ -845,21 +844,26 @@ fn quarantined(got: &Result<(), Error>) -> bool {
 
 type Mark = fn(&Database<SimRuntime>) -> Quarantine;
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn audit_heap(ctor: &str) -> impl Fn(&Database<SimRuntime>) -> Quarantine {
     move |db| {
-        let heap = db.write_path().heap_named("catalog::audit", ctor);
-        Quarantine::Heap(heap.expect("the audit declares it").id().0)
+        let t = db.testing();
+        let heap = t
+            .heap("catalog::audit", ctor)
+            .expect("the audit declares it");
+        t.own_mark(heap).unwrap().expect("a heap has its own mark")
     }
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn audit_key(db: &Database<SimRuntime>) -> Quarantine {
-    let index = db.write_path().index_named("catalog::audit", "key seq");
-    Quarantine::Index(index.expect("the audit has its key").tree().owner())
+    let t = db.testing();
+    let index = t
+        .index("catalog::audit", "key seq")
+        .expect("the audit has its key");
+    t.own_mark(index)
+        .unwrap()
+        .expect("an index has its own mark")
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn each_audit_mark(mut body: impl FnMut(u64, &SimRuntime, &Database<SimRuntime>)) {
     let call: Mark = |db| audit_heap("Call")(db);
     let denied: Mark = |db| audit_heap("Denied")(db);
@@ -875,7 +879,7 @@ fn each_audit_mark(mut body: impl FnMut(u64, &SimRuntime, &Database<SimRuntime>)
             )
             .expect("schema database opens");
             write(&db, "insert secrets { salary: 1 }");
-            db.write_path().pager().quarantine(mark(&db)).expect("mark");
+            db.testing().plant(Plant::Mark(mark(&db))).expect("mark");
             body(seed, &rt, &db);
         });
     }
@@ -915,7 +919,6 @@ fn an_audit_mark_stops_writes_and_lets_reads_refusals_and_verify_answer() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn an_audit_mark_writes_no_row_and_leaves_refusals_denied() {
     let mut sim = Sim::new(183, Config::default());
     run(&mut sim, |rt| {
@@ -923,17 +926,15 @@ fn an_audit_mark_writes_no_row_and_leaves_refusals_denied() {
         adhoc_and(&db, "ops", Capability::Monitor);
         let ops = db.role_authority().session("ops").expect("session");
         let owner = db.role_authority().session("owner").expect("session");
-        db.write_path()
-            .pager()
-            .quarantine(audit_key(&db))
+        db.testing()
+            .plant(Plant::Mark(audit_key(&db)))
             .expect("mark");
         denied(task(&rt, &ops, "from s in secrets select s"));
         task(&rt, &owner, "verify").expect("verify");
         let rows = "from a in catalog::audit select a.seq";
         let audit = query(&db, rows);
-        db.write_path()
-            .pager()
-            .release(audit_key(&db))
+        db.testing()
+            .plant(Plant::Unmark(audit_key(&db)))
             .expect("release");
         assert_eq!(audit, query(&db, rows), "no row was written");
         assert_eq!(0, audit_denied(&db, "ops"));
@@ -1119,13 +1120,8 @@ fn counted(rt: &SimRuntime, workers: usize) -> Database<SimRuntime> {
 }
 
 /// Returns the transaction ids taken so far, one of them by this call.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn xids_taken(db: &Database<SimRuntime>) -> u64 {
-    let write = db.write_path();
-    let tx = write.begin().unwrap();
-    let xid = tx.xid().unwrap().0;
-    write.abort(tx).unwrap();
-    xid
+    db.testing().take_xid().unwrap().0
 }
 
 fn value(db: &Database<SimRuntime>) -> Vec<String> {

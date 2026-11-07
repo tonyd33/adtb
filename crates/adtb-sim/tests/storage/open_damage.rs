@@ -1,7 +1,7 @@
 //! Opening, verifying and dropping a transaction on a file with a page no relation holds damaged:
 //! the file opens for `verify` only and every other call fails `Quarantined`.
 
-use adtb::testing::Probe;
+use adtb::testing::{Object, Plant, Probe};
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb::runtime::IoError;
@@ -49,48 +49,36 @@ fn quarantined<T: std::fmt::Debug>(got: Result<T, Error>) -> String {
     }
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn status_page<R: adtb::runtime::Runtime>(db: &Database<R>) -> Pid {
-    *db.write_path()
-        .txns()
+    *db.testing()
         .commit_log()
-        .status_pages()
+        .status()
         .values()
         .next_back()
         .unwrap()
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn roles_page<R: adtb::runtime::Runtime>(db: &Database<R>) -> Pid {
-    let w = db.write_path();
-    w.heap_named("catalog::roles", "Role")
-        .unwrap()
-        .pages(w.pager())
-        .unwrap()[0]
+    let t = db.testing();
+    t.pages(t.heap("catalog::roles", "Role").unwrap()).unwrap()[0]
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn grants_page<R: adtb::runtime::Runtime>(db: &Database<R>) -> Pid {
-    let w = db.write_path();
-    w.heap_named("catalog::grants", "RoleGrant")
-        .unwrap()
-        .owned_pages(w.pager())
+    let t = db.testing();
+    t.owned(t.heap("catalog::grants", "RoleGrant").unwrap())
         .unwrap()[0]
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn catalog_root<R: adtb::runtime::Runtime>(db: &Database<R>) -> Pid {
-    db.write_path().pager().catalog_root()
+    db.testing().root(Object::Catalog).unwrap()
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn clog_root<R: adtb::runtime::Runtime>(db: &Database<R>) -> Pid {
-    db.write_path().txns().commit_log().root()
+    db.testing().commit_log().root()
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn clog_directory<R: adtb::runtime::Runtime>(db: &Database<R>) -> Pid {
-    db.write_path().txns().commit_log().directory_pages()[0]
+    db.testing().commit_log().directory()[0]
 }
 
 /// Returns the files of a seeded, closed database and the page `pick` picks.
@@ -123,7 +111,7 @@ fn assert_only_verify_runs(db: &Database<SimRuntime>, finding: Option<&str>) {
     assert_eq!("the database", quarantined(db.registered("nope").map(drop)));
     let found = api::printed(db.verify(None).unwrap());
     assert_findings(&found, finding);
-    let found = api::printed(db.verify_holding().unwrap());
+    let found = api::printed(db.testing().verify_holding().unwrap());
     assert_findings(&found, finding);
 }
 
@@ -518,7 +506,12 @@ fn dropped_on_damage(db: &Database<SimRuntime>) -> Pid {
         &adtb::TxnCallOptions::default(),
     )
     .unwrap();
-    db.damage_page(status_page(db), Damage::Checksum);
+    db.testing()
+        .plant(Plant::Refuse {
+            page: status_page(db),
+            damage: Damage::Checksum,
+        })
+        .unwrap();
     drop(open);
     assert_eq!(
         "the database",
@@ -530,7 +523,6 @@ fn dropped_on_damage(db: &Database<SimRuntime>) -> Pid {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn dropping_a_transaction_on_a_damaged_commit_log_marks_the_database() {
     let mut sim = Sim::new(40, Config::default());
     let mut page = None;
@@ -548,7 +540,7 @@ fn dropping_a_transaction_on_a_damaged_commit_log_marks_the_database() {
         let damage = Damage::Checksum;
         assert_eq!(
             Err(PageError { pid, damage }),
-            db.write_path().pager().read(pid).map(drop)
+            db.testing().probe().page(pid).map(drop)
         );
         assert_only_verify_runs(&db, Some("Checksum"));
     });
@@ -560,7 +552,12 @@ fn dropping_a_transaction_on_a_database_already_quarantined_does_not_panic() {
     finished(&mut sim, |rt| {
         let db = open(rt, &app()).unwrap();
         let first = db.begin(&TxnOptions::default()).unwrap();
-        db.damage_page(status_page(&db), Damage::Checksum);
+        db.testing()
+            .plant(Plant::Refuse {
+                page: status_page(&db),
+                damage: Damage::Checksum,
+            })
+            .unwrap();
         let got = db.query_text(INSERT, &[], &CallOptions::default());
         assert_eq!("the database", quarantined(got));
         drop(first);
@@ -659,7 +656,12 @@ fn dropping_a_transaction_on_a_damaged_commit_log_of_a_real_file_does_not_panic(
     open.query_text(INSERT, &[], &adtb::TxnCallOptions::default())
         .unwrap();
     let page = status_page(&db);
-    db.damage_page(page, Damage::Checksum);
+    db.testing()
+        .plant(Plant::Refuse {
+            page,
+            damage: Damage::Checksum,
+        })
+        .unwrap();
     drop(open);
     let none = CallOptions::default();
     assert_eq!(
@@ -709,7 +711,7 @@ fn verify_of_a_marked_database_keeps_no_findings_and_writes_no_page() {
         let db = open(rt, &app()).unwrap();
         assert!(catalog_read(&db));
         assert_names_the_mark(&api::printed(db.verify(None).unwrap()));
-        assert_names_the_mark(&api::printed(db.verify_holding().unwrap()));
+        assert_names_the_mark(&api::printed(db.testing().verify_holding().unwrap()));
         assert_names_the_mark(&api::printed(db.verify(Some("users")).unwrap()));
         db.close().unwrap();
     });
@@ -760,14 +762,13 @@ fn verify_of_a_relation_on_a_damaged_commit_log_says_only_its_pages_were_checked
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_heap_mark_adds_no_row() {
     let mut sim = Sim::new(53, Config::default());
     finished(&mut sim, |rt| {
         let db = open(rt, &app()).unwrap();
-        let w = db.write_path();
-        let heap = w.heap_named("app::users", "User").unwrap();
-        w.pager().quarantine(Quarantine::Heap(heap.id().0)).unwrap();
+        let t = db.testing();
+        let heap = t.mark_of(t.heap("app::users", "User").unwrap()).unwrap();
+        t.plant(Plant::Mark(heap)).unwrap();
         let rows = api::printed(db.verify(None).unwrap());
         assert!(!rows.iter().any(|r| r.contains(MARK_ROW)), "{rows:?}");
         db.close().unwrap();
@@ -800,13 +801,11 @@ fn a_real_file_with_a_damaged_page_of_an_empty_grants_heap_opens_for_verify() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn verify_file_of_a_real_file_marked_with_nothing_damaged_finds_the_mark() {
     let path = scratch("marked");
     let db = Database::open(&path, &app(), &real_options()).unwrap();
-    db.write_path()
-        .pager()
-        .quarantine(Quarantine::Database)
+    db.testing()
+        .plant(Plant::Mark(Quarantine::Database))
         .unwrap();
     db.close().unwrap();
     let found = api::printed(adtb::verify_file(&path, &app(), &real_options()).unwrap());
@@ -1011,7 +1010,7 @@ fn the_roots_heap_marks_the_database_at_open_and_nothing_once_running() {
     let mut page = None;
     finished(&mut sim, |rt| {
         let db = open(rt, &app()).unwrap();
-        db.damage_kept_store();
+        db.testing().plant(Plant::RefuseKeptStore).unwrap();
         assert!(!api::printed(db.verify(None).unwrap()).is_empty());
         assert_eq!(
             BTreeSet::new(),

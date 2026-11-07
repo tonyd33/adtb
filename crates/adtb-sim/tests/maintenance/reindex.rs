@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use adtb::key::{Entry, Value};
 use adtb::runtime::{Clock, Threads};
 use adtb::storage::{Damage, Pid, Quarantine};
+use adtb::testing::Plant;
 use adtb::{Database, Log, OpenOptions};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::{api, crash, seeds};
@@ -71,7 +72,7 @@ fn wait_for_jobs(rt: &SimRuntime, db: &Database<SimRuntime>) {
 }
 
 fn verified(db: &Database<SimRuntime>) -> Vec<String> {
-    api::printed(db.verify_holding().expect("verify runs"))
+    api::printed(db.testing().verify_holding().expect("verify runs"))
 }
 
 fn verified_live(db: &Database<SimRuntime>) -> Vec<String> {
@@ -86,35 +87,22 @@ fn marks(db: &Database<SimRuntime>) -> BTreeSet<Quarantine> {
     db.testing().probe().marks()
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn user_mark(db: &Database<SimRuntime>) -> Quarantine {
-    let w = db.write_path();
-    Quarantine::Index(
-        w.index_named("app::identities", USER_INDEX)
-            .unwrap()
-            .tree()
-            .owner(),
-    )
+    let t = db.testing();
+    t.mark_of(t.index("app::identities", USER_INDEX).unwrap())
+        .unwrap()
 }
 
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn user_index_pages(db: &Database<SimRuntime>) -> Vec<Pid> {
-    let w = db.write_path();
-    let index = w.index_named("app::identities", USER_INDEX).unwrap();
-    index.tree().pages(w.pager()).unwrap()
+    let t = db.testing();
+    t.pages(t.index("app::identities", USER_INDEX).unwrap())
+        .unwrap()
 }
 
 /// Returns the entries `index` of `identities` holds, from a walk of the tree.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn entries(db: &Database<SimRuntime>, clause: &str) -> Vec<Entry> {
-    let w = db.write_path();
-    let index = w.index_named("app::identities", clause).unwrap();
-    index
-        .range(
-            w.pager(),
-            std::ops::Bound::Unbounded,
-            std::ops::Bound::Unbounded,
-        )
+    let t = db.testing();
+    t.all_entries(t.index("app::identities", clause).unwrap())
         .unwrap()
 }
 
@@ -141,14 +129,14 @@ fn the_result_names_the_job_and_the_row_shows_its_phase_while_it_runs() {
         seed_rows(&db, 3);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let (shown, reader) = (seen.clone(), db.clone());
-        db.on_reindex_phase(Arc::new(move |phase| {
+        db.testing().on_reindex_phase(move |phase| {
             if phase == "build" {
                 *shown.lock().unwrap() = api::printed(api::result(
                     &reader,
                     "from j in sys::jobs select { k: j.kind, t: j.target, p: j.phase, d: j.done }",
                 ));
             }
-        }));
+        });
         let got = api::printed(api::results(&db, USER_REINDEX).remove(0));
         assert_eq!(1, got.len(), "{got:?}");
         assert!(got[0].starts_with("{ job: "), "{got:?}");
@@ -173,9 +161,9 @@ fn a_panic_in_the_job_removes_its_row_and_keeps_the_old_index_and_a_finding() {
         let db = open_app(rt.clone());
         seed_rows(&db, 3);
         let before = entries(&db, USER_INDEX);
-        db.on_reindex_phase(Arc::new(|phase| {
+        db.testing().on_reindex_phase(|phase| {
             assert_ne!("catch up", phase, "the injected failure");
-        }));
+        });
         api::results(&db, USER_REINDEX);
         wait_for_jobs(&rt, &db);
         assert_eq!(before, entries(&db, USER_INDEX));
@@ -225,11 +213,11 @@ fn a_commit_landing_in_each_phase_is_in_the_new_index() {
         seed_rows(&db, 10);
         let next = Arc::new(Mutex::new(100));
         let (writer, counter) = (db.clone(), next.clone());
-        db.on_reindex_phase(Arc::new(move |_| {
+        db.testing().on_reindex_phase(move |_| {
             let mut n = counter.lock().unwrap();
             insert_user(&writer, *n);
             *n += 1;
-        }));
+        });
         api::results(&db, USER_REINDEX);
         wait_for_jobs(&rt, &db);
         let end = *next.lock().unwrap();
@@ -247,13 +235,13 @@ fn a_write_keeps_its_uniqueness_check_across_a_rebuild() {
         seed_rows(&db, 5);
         let refused = Arc::new(Mutex::new(Vec::new()));
         let (writer, out) = (db.clone(), refused.clone());
-        db.on_reindex_phase(Arc::new(move |phase| {
+        db.testing().on_reindex_phase(move |phase| {
             let e = api::failure(
                 &writer,
                 r#"insert identities.Google { id: identities.key(9000), user: users.key(1), gid: "g1" }"#,
             );
             out.lock().unwrap().push(format!("{phase}: {e:?}"));
-        }));
+        });
         api::results(&db, "reindex identities index (gid) in Google");
         wait_for_jobs(&rt, &db);
         assert!(refused.lock().unwrap().len() >= 4, "{refused:?}");
@@ -262,7 +250,6 @@ fn a_write_keeps_its_uniqueness_check_across_a_rebuild() {
 }
 
 /// Returns the instant the run of seed `seed` reaches each phase.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn phase_times(seed: u64) -> Vec<(String, adtb::runtime::Instant)> {
     let times = Arc::new(Mutex::new(Vec::new()));
     let out = times.clone();
@@ -271,10 +258,10 @@ fn phase_times(seed: u64) -> Vec<(String, adtb::runtime::Instant)> {
         let db = crash_body(&rt);
         let (clock, seen) = (rt.clone(), out);
         let flushing = db.clone();
-        db.on_reindex_phase(Arc::new(move |phase| {
+        db.testing().on_reindex_phase(move |phase| {
             seen.lock().unwrap().push((phase.to_owned(), clock.now()));
-            flushing.write_path().pager().flush_log();
-        }));
+            flushing.testing().flush_log();
+        });
         api::results(&db, USER_REINDEX);
         wait_for_jobs(&rt, &db);
         db.close().unwrap();
@@ -285,12 +272,11 @@ fn phase_times(seed: u64) -> Vec<(String, adtb::runtime::Instant)> {
 fn crash_body(rt: &SimRuntime) -> Database<SimRuntime> {
     let db = open_app(rt.clone());
     seed_rows(&db, 40);
-    db.on_reindex_phase(Arc::new(|_| {}));
+    db.testing().on_reindex_phase(|_| {});
     db
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_crash_at_each_stage_keeps_an_index_that_finds_every_row_and_leaks_nothing() {
     adtb_heap_cap::raise_cap(3 << 30);
     for seed in seeds::sweep(0..1) {
@@ -303,9 +289,9 @@ fn a_crash_at_each_stage_keeps_an_index_that_finds_every_row_and_leaks_nothing()
             let ran = sim.run(|rt| {
                 let db = crash_body(&rt);
                 let flushing = db.clone();
-                db.on_reindex_phase(Arc::new(move |_| {
-                    flushing.write_path().pager().flush_log();
-                }));
+                db.testing().on_reindex_phase(move |_| {
+                    flushing.testing().flush_log();
+                });
                 api::results(&db, USER_REINDEX);
                 wait_for_jobs(&rt, &db);
                 db.close().unwrap();
@@ -402,20 +388,25 @@ fn restore_damaged_root(
     let db = open_app(rt.clone());
     seed_rows(&db, 5);
     let root = user_index_pages(&db)[0];
-    db.damage_page(root, Damage::Checksum);
+    db.testing()
+        .plant(Plant::Refuse {
+            page: root,
+            damage: Damage::Checksum,
+        })
+        .unwrap();
     api::failure(
         &db,
         "from g in identities.Google where g.user == users.key(3) select g.gid",
     );
     assert_eq!(BTreeSet::from([user_mark(&db)]), marks(&db));
     let clock = rt.clone();
-    db.on_reindex_phase(Arc::new(move |phase| {
+    db.testing().on_reindex_phase(move |phase| {
         if phase == "reclaim"
             && let Some(at) = &report
         {
             *at.lock().unwrap() = Some(clock.now());
         }
-    }));
+    });
     api::results(&db, USER_REINDEX);
     wait_for_jobs(rt, &db);
     db.close().unwrap();
@@ -445,15 +436,15 @@ fn a_crash_after_overwriting_a_damaged_root_replays_its_image() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn the_mark_of_a_verify_finding_is_released_by_a_rebuild() {
     api::once(7, |rt| {
         let db = open_app(rt.clone());
         seed_rows(&db, 10);
-        let w = db.write_path();
-        let index = w.index_named("app::identities", USER_INDEX).unwrap();
+        let t = db.testing();
+        let index = t.index("app::identities", USER_INDEX).unwrap();
         let entry = entries(&db, USER_INDEX).remove(0);
-        assert!(index.delete(w.pager(), &entry).unwrap());
+        let gone = entry.clone();
+        t.plant(Plant::DropEntry { index, entry: gone }).unwrap();
         let found = api::printed(db.verify(None).unwrap());
         assert!(found.iter().any(|f| f.contains("Missing")), "{found:?}");
         assert_eq!(BTreeSet::from([user_mark(&db)]), marks(&db));
@@ -479,9 +470,9 @@ fn a_crash_at_each_stage_of_a_release_leaves_the_mark_and_old_index_or_neither()
         let db = open_app(rt.clone());
         quarantine_user_index(&db);
         let clock = rt.clone();
-        db.on_reindex_phase(Arc::new(move |phase| {
+        db.testing().on_reindex_phase(move |phase| {
             seen.lock().unwrap().push((phase.to_owned(), clock.now()));
-        }));
+        });
         api::results(&db, USER_REINDEX);
         wait_for_jobs(&rt, &db);
         db.close().unwrap();
@@ -495,7 +486,7 @@ fn a_crash_at_each_stage_of_a_release_leaves_the_mark_and_old_index_or_neither()
         let ran = sim.run(|rt| {
             let db = open_app(rt.clone());
             quarantine_user_index(&db);
-            db.on_reindex_phase(Arc::new(|_| {}));
+            db.testing().on_reindex_phase(|_| {});
             api::results(&db, USER_REINDEX);
             wait_for_jobs(&rt, &db);
             db.close().unwrap();
@@ -534,11 +525,16 @@ fn a_page_of_the_old_index_damaged_during_the_build_does_not_stop_it() {
         seed_rows(&db, 300);
         let page = *user_index_pages(&db).last().unwrap();
         let hit = db.clone();
-        db.on_reindex_phase(Arc::new(move |phase| {
+        db.testing().on_reindex_phase(move |phase| {
             if phase == "build" {
-                hit.damage_page(page, Damage::Checksum);
+                hit.testing()
+                    .plant(Plant::Refuse {
+                        page,
+                        damage: Damage::Checksum,
+                    })
+                    .unwrap();
             }
-        }));
+        });
         api::results(&db, USER_REINDEX);
         wait_for_jobs(&rt, &db);
         assert_eq!(Vec::<String>::new(), findings(&db));
@@ -549,39 +545,36 @@ fn a_page_of_the_old_index_damaged_during_the_build_does_not_stop_it() {
 }
 
 /// Commit a second Google row with `gid` by a raw write to the heap, past the unique index.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn raw_duplicate(db: &Database<SimRuntime>, gid: &str) {
-    let w = db.write_path();
-    let heap = w.heap_named("app::identities", "Google").unwrap();
-    let txns = w.txns();
-    let x = txns.begin(w.pager()).unwrap();
+    let t = db.testing();
+    let heap = t.heap("app::identities", "Google").unwrap();
     let row = vec![Value::I64(7777), Value::I64(1), Value::Text(gid.to_owned())];
-    heap.insert(w.pager(), x.0, &row).unwrap();
-    txns.commit(w.pager(), x).unwrap();
+    t.plant(Plant::Insert {
+        heap,
+        rows: vec![row],
+    })
+    .unwrap();
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_unique_duplicate_fails_the_rebuild_keeping_the_old_index_mark_and_no_new_page() {
     api::once(10, |rt| {
         let db = open_app(rt.clone());
         seed_rows(&db, 5);
         raw_duplicate(&db, "g1");
-        let w = db.write_path();
-        let owner = w
-            .index_named("app::identities", GID_INDEX)
-            .unwrap()
-            .tree()
-            .owner();
-        w.pager().quarantine(Quarantine::Index(owner)).unwrap();
+        let t = db.testing();
+        let mark = t
+            .mark_of(t.index("app::identities", GID_INDEX).unwrap())
+            .unwrap();
+        t.plant(Plant::Mark(mark)).unwrap();
         let before = entries(&db, GID_INDEX);
-        let allocated = w.pager().allocated().unwrap();
+        let allocated = t.allocated().unwrap();
         api::results(&db, "reindex identities index (gid) in Google");
         wait_for_jobs(&rt, &db);
         assert_eq!(before, entries(&db, GID_INDEX));
-        assert_eq!(BTreeSet::from([Quarantine::Index(owner)]), marks(&db));
+        assert_eq!(BTreeSet::from([mark]), marks(&db));
         assert!(
-            allocated.len() + 2 >= w.pager().allocated().unwrap().len(),
+            allocated.len() + 2 >= t.allocated().unwrap().len(),
             "the new pages are freed"
         );
         let got = findings(&db);
@@ -625,7 +618,7 @@ fn writes_during(seed: u64, how: &str) -> bool {
             (db.clone(), done.clone(), rt.clone(), thread.clone());
         let during = Arc::new(Mutex::new(None));
         let saw = during.clone();
-        db.on_reindex_phase(Arc::new(move |phase| {
+        db.testing().on_reindex_phase(move |phase| {
             if phase == "build" {
                 let (w, f) = (writer.clone(), finished.clone());
                 *held.lock().unwrap() = Some(clock.spawn("writer", move || {
@@ -640,7 +633,7 @@ fn writes_during(seed: u64, how: &str) -> bool {
                 }
                 *saw.lock().unwrap() = Some(finished.load(Ordering::Acquire));
             }
-        }));
+        });
         api::results(&db, &format!("{USER_REINDEX} {how}"));
         wait_for_jobs(&rt, &db);
         let joined = thread.lock().unwrap().take().unwrap();
@@ -666,15 +659,15 @@ fn online_does_not_block_writes() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn reindex_of_a_relation_rebuilds_its_key_index_too() {
     api::once(14, |rt| {
         let db = open_app(rt.clone());
         seed_rows(&db, 5);
-        let w = db.write_path();
-        let key = w.index_named("app::identities", "key id").unwrap();
-        let mark = Quarantine::Index(key.tree().owner());
-        w.pager().quarantine(mark).unwrap();
+        let t = db.testing();
+        let mark = t
+            .mark_of(t.index("app::identities", "key id").unwrap())
+            .unwrap();
+        t.plant(Plant::Mark(mark)).unwrap();
         api::results(&db, "reindex identities");
         wait_for_jobs(&rt, &db);
         assert_eq!(BTreeSet::new(), marks(&db));
@@ -723,23 +716,23 @@ fn a_clause_with_no_in_over_several_indexes_is_invalid_and_names_in() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_quarantined_heap_fails_reindex_and_a_database_mark_stays() {
     api::once(17, |rt| {
         let db = open_app(rt);
         seed_rows(&db, 3);
-        let w = db.write_path();
-        let heap = w.heap_named("app::identities", "Apple").unwrap();
-        let mark = Quarantine::Heap(heap.id().0);
-        w.pager().quarantine(mark).unwrap();
+        let t = db.testing();
+        let mark = t
+            .mark_of(t.heap("app::identities", "Apple").unwrap())
+            .unwrap();
+        t.plant(Plant::Mark(mark)).unwrap();
         let e = api::failure(&db, "reindex identities");
         assert!(format!("{e:?}").contains("Quarantined"), "{e:?}");
         assert_eq!(
             Vec::<String>::new(),
             api::printed(api::result(&db, "from j in sys::jobs select j.id"))
         );
-        w.pager().release(mark).unwrap();
-        w.pager().quarantine(Quarantine::Database).unwrap();
+        t.plant(Plant::Unmark(mark)).unwrap();
+        t.plant(Plant::Mark(Quarantine::Database)).unwrap();
         let e = api::failure(&db, "reindex identities");
         assert!(format!("{e:?}").contains("Quarantined"), "{e:?}");
         assert_eq!(BTreeSet::from([Quarantine::Database]), marks(&db));
@@ -756,7 +749,7 @@ fn a_close_stops_a_running_job_before_its_swap_and_the_old_index_stays() {
         let (seen, clock) = (phases.clone(), rt.clone());
         let started = Arc::new(AtomicBool::new(false));
         let scanning = started.clone();
-        db.on_reindex_phase(Arc::new(move |phase| {
+        db.testing().on_reindex_phase(move |phase| {
             seen.lock().unwrap().push(phase.to_owned());
             if phase == "scan" {
                 scanning.store(true, Ordering::Release);
@@ -764,7 +757,7 @@ fn a_close_stops_a_running_job_before_its_swap_and_the_old_index_stays() {
                     clock.yield_now();
                 }
             }
-        }));
+        });
         api::results(&db, USER_REINDEX);
         while !started.load(Ordering::Acquire) {
             rt.yield_now();
@@ -798,7 +791,6 @@ fn real_options() -> OpenOptions {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_real_file_restores_a_damaged_index_and_keeps_it_across_a_reopen() {
     let path = scratch("damaged").join("app.adt");
     let path = path.to_str().unwrap().to_owned();
@@ -818,11 +810,11 @@ fn a_real_file_restores_a_damaged_index_and_keeps_it_across_a_reopen() {
         );
     }
     let (page, page_size) = {
-        let w = db.write_path();
-        let index = w.index_named("app::identities", USER_INDEX).unwrap();
+        let t = db.testing();
+        let index = t.index("app::identities", USER_INDEX).unwrap();
         (
-            *index.tree().pages(w.pager()).unwrap().last().unwrap(),
-            w.pager().page_size(),
+            *t.pages(index).unwrap().last().unwrap(),
+            t.probe().page_size(),
         )
     };
     db.close().unwrap();

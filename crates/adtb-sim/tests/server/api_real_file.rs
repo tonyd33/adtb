@@ -581,12 +581,11 @@ fn damaged(name: &str, pick: impl FnOnce(&Database) -> adtb::storage::Pid) -> Pa
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_damaged_constructor_page_of_a_real_file_quarantines_its_constructor() {
     let path = damaged("quarantine_heap", |db| {
-        let w = db.write_path();
-        let heap = w.heap_named("app::identities", "Apple").unwrap();
-        heap.pages(w.pager()).unwrap()[0]
+        let t = db.testing();
+        t.pages(t.heap("app::identities", "Apple").unwrap())
+            .unwrap()[0]
     });
     let db = Database::open(&path, &Log::new([SUM]), &options()).unwrap();
     runs(&db, SIDES);
@@ -601,14 +600,13 @@ fn a_damaged_constructor_page_of_a_real_file_quarantines_its_constructor() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn a_damaged_index_page_of_a_real_file_quarantines_its_index() {
     let path = damaged("quarantine_index", |db| {
-        let w = db.write_path();
-        let index = w
-            .index_named("app::identities", "index (user) in (Google | Apple)")
+        let t = db.testing();
+        let index = t
+            .index("app::identities", "index (user) in (Google | Apple)")
             .unwrap();
-        *index.tree().pages(w.pager()).unwrap().last().unwrap()
+        *t.pages(index).unwrap().last().unwrap()
     });
     let db = Database::open(&path, &Log::new([SUM]), &options()).unwrap();
     assert!(quarantined(&db, BY_USER).contains("(user)"));
@@ -622,19 +620,14 @@ fn a_damaged_index_page_of_a_real_file_quarantines_its_index() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn open_returns_on_a_real_file_cut_before_the_first_roles_page() {
     let path = scratch("cut").join("shop.adt");
     let log = Log::new([SHOP]);
     let at = {
         let db = adtb::open(&path, &log, &options()).expect("create");
-        let w = db.write_path();
-        let page = w
-            .heap_named("catalog::roles", "Role")
-            .unwrap()
-            .pages(w.pager())
-            .unwrap()[0];
-        let at = page.0 * w.pager().page_size() as u64;
+        let t = db.testing();
+        let page = t.pages(t.heap("catalog::roles", "Role").unwrap()).unwrap()[0];
+        let at = page.0 * t.probe().page_size() as u64;
         db.close().expect("a close");
         at
     };

@@ -13,6 +13,7 @@ use std::time::Duration;
 use adtb::key::Value;
 use adtb::runtime::{Clock, FileId, Instant, IoError, Op, Runtime, Threads};
 use adtb::storage::{self, PageKind, Pid, Quarantine};
+use adtb::testing::Knobs;
 use adtb::{
     CallOptions, Database, DynRows, Error, FatalReason, Log, OpenError, OpenOptions,
     TxnCallOptions, TxnOptions,
@@ -317,9 +318,9 @@ fn maintain(
         }
         Maintenance::Reindex => {
             let seen = ledger.clone();
-            db.on_reindex_phase(Arc::new(move |phase| {
+            db.testing().on_reindex_phase(move |phase| {
                 seen.lock().unwrap().phases.insert(phase.to_owned());
-            }));
+            });
             enter_step(hook, ledger);
             query(&db, "reindex filler").map_err(|e| failed("reindex", e))?;
             settle(&db, hook, workload.name).map_err(|e| failed("jobs", e))?;
@@ -546,7 +547,7 @@ fn assert_recovered(
                 panic!("{label}: {acknowledged} acknowledged steps, {attempted} attempted, migrated {migrated}, rows {rows:?}")
             });
         assert_found_by_index(&db, state.rows, label);
-        let findings = db.verify_holding().expect("verify runs");
+        let findings = db.testing().verify_holding().expect("verify runs");
         assert_eq!(Vec::<String>::new(), api::printed(findings), "{label}");
         db.close()
             .unwrap_or_else(|e| panic!("{label}: close: {e:?}"));
@@ -953,7 +954,6 @@ fn check_plan<R: Runtime>(db: &Database<R>, text: &str, line: &str) -> Result<()
 }
 
 /// Returns each heap with its full scan.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn scan_objects<R: Runtime>(db: &Database<R>) -> Vec<RotObject> {
     let reads = rot_reads(false);
     #[rustfmt::skip]
@@ -963,16 +963,15 @@ fn scan_objects<R: Runtime>(db: &Database<R>) -> Vec<RotObject> {
         ("docs", "Small", reads[5].clone()),
         ("docs", "Big", reads[6].clone()),
     ];
-    let w = db.write_path();
+    let t = db.testing();
     let mut objects = Vec::new();
     for (rel, ctor, (text, want)) in scans {
         let name = format!("app::{rel}.{ctor}");
-        let heap = w.heap_named(&format!("app::{rel}"), ctor).unwrap();
+        let heap = t.heap(&format!("app::{rel}"), ctor).unwrap();
         let mut live = 0;
-        for pid in heap.pages(w.pager()).expect("its pages") {
-            let mut on_page = 0;
-            let count = |v: adtb::heap::Version| on_page += usize::from(v.header.xmax == 0);
-            heap.scan_pages(w.pager(), &[pid], count).unwrap();
+        for pid in t.pages(heap).expect("its pages") {
+            let versions = t.versions(heap, Some(&[pid])).unwrap();
+            let on_page = versions.iter().filter(|v| v.header.xmax == 0).count();
             assert!(on_page > 0, "{name} {pid:?} holds no row a scan returns");
             live += on_page;
         }
@@ -986,11 +985,12 @@ fn scan_objects<R: Runtime>(db: &Database<R>) -> Vec<RotObject> {
             key,
         }];
         let of_rows = rel == "rows";
-        let (owner, mark) = (heap.id().0, Quarantine::Heap(heap.id().0));
+        let (owner, mark) = (t.owner(heap).unwrap(), t.mark_of(heap).unwrap());
         #[rustfmt::skip]
         objects.push(RotObject { is_heap: true, owner, mark, name, of_rows, reads: reads.clone() });
         if ctor == "Big" {
-            let (owner, name) = (heap.large().id(), "the database".to_owned());
+            let large = t.large(&format!("app::{rel}"), ctor).unwrap();
+            let (owner, name) = (t.owner(large).unwrap(), "the database".to_owned());
             #[rustfmt::skip]
             objects.push(RotObject { is_heap: true, owner, mark: Quarantine::Database, name, of_rows, reads });
         }
@@ -1055,7 +1055,6 @@ type IndexRows = (
 );
 
 /// Returns each index with its lookup of every key the fixture ever wrote to it.
-#[expect(clippy::disallowed_methods, reason = "until adtb::testing covers it")]
 fn index_objects<R: Runtime>(db: &Database<R>) -> Vec<RotObject> {
     let text_key = |(k, want): (String, Vec<String>)| (k.clone(), Value::Text(k), want);
     let id_key = |(i, want): (i64, Vec<String>)| (i.to_string(), Value::I64(i), want);
@@ -1081,15 +1080,16 @@ fn index_objects<R: Runtime>(db: &Database<R>) -> Vec<RotObject> {
         ("docs", "index (note) in Small", "(note)", r#"from d in docs.Small where d.note == "{}" select d.id"#, (0..SMALL_DOCS).map(|i| (format!("n{i}"), doc(i))).map(text_key).collect()),
         ("docs", "key id", "(id)", "from d in docs where d.id == docs.key({}) select d.id", (0..last).map(|i| (i, doc(i))).map(id_key).collect()),
     ];
-    let w = db.write_path();
+    let t = db.testing();
     let mut objects = Vec::new();
     for (rel, clause, field, form, keys) in indexes {
-        let index = w.index_named(&format!("app::{rel}"), clause).unwrap();
+        let index = t.index(&format!("app::{rel}"), clause).unwrap();
+        let schema = t.key_schema(index).unwrap();
         let mut reads = Vec::new();
         for (spelled, value, want) in keys {
             let text = form.replace("{}", &spelled);
             let plan = format!("Probe {rel} {field}");
-            let key = index.schema().encode(&[value]);
+            let key = schema.encode(&[value]);
             reads.push(Crossing {
                 text,
                 want,
@@ -1097,10 +1097,10 @@ fn index_objects<R: Runtime>(db: &Database<R>) -> Vec<RotObject> {
                 key,
             });
         }
-        let owner = index.tree().owner();
+        let (owner, mark) = (t.owner(index).unwrap(), t.mark_of(index).unwrap());
         #[rustfmt::skip]
         objects.push(RotObject {
-            is_heap: false, owner, mark: Quarantine::Index(owner), name: format!("app::{rel} {clause}"),
+            is_heap: false, owner, mark, name: format!("app::{rel} {clause}"),
             of_rows: rel == "rows", reads,
         });
     }
@@ -1108,7 +1108,7 @@ fn index_objects<R: Runtime>(db: &Database<R>) -> Vec<RotObject> {
 }
 
 /// Returns the files of the closed fixture, the owners of its pages and its application objects.
-#[expect(clippy::disallowed_methods, reason = "until testing and heap owners")]
+#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 fn rot_fixture() -> (Files, Owners, Vec<RotObject>) {
     let files = seeded_files(REINDEX);
     let mut sim = Sim::with_files(SEED, Config::default(), files);
@@ -1126,12 +1126,12 @@ fn rot_fixture() -> (Files, Owners, Vec<RotObject>) {
         });
         let docs: String = small.chain(big).collect();
         commit(&db, &docs, || {}).expect("the documents commit");
-        let w = db.write_path();
+        let t = db.testing();
         #[rustfmt::skip]
         let heaps = [("app::rows", "Row"), ("app::filler", "Filler"), ("app::docs", "Small"), ("app::docs", "Big")];
         let pages = |(rel, ctor): &(&str, &str)| {
-            let heap = w.heap_named(rel, ctor).expect("the heap");
-            heap.pages(w.pager()).expect("its pages")
+            let heap = t.heap(rel, ctor).expect("the heap");
+            t.pages(heap).expect("its pages")
         };
         let heaps: Vec<Vec<Pid>> = heaps.iter().map(pages).collect();
         let mut objects = scan_objects(&db);
@@ -2129,7 +2129,7 @@ fn scrubbed<T>(
     let got = finished_run(&mut sim, |rt| -> Result<Option<Pass<T>>, String> {
         let hook = Hooked::new(&rt);
         let options = OpenOptions {
-            no_background_vacuum: true,
+            testing: Knobs::without_background_vacuum(),
             ..no_create(REINDEX)
         };
         let db = match Database::open_in(hook.clone(), FILE, &rot_log(), &options) {

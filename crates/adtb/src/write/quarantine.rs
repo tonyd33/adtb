@@ -9,7 +9,7 @@ use adtb_lang::schema::OnDelete;
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
 use crate::btree::Index;
-use crate::catalog::Holdings;
+use crate::catalog::{Holdings, UNHELD_MARK};
 use crate::plan::{Catalog, HeapId, IndexId};
 use crate::runtime::Runtime;
 use crate::storage::{Damage, PageError, Pid, Quarantine};
@@ -72,7 +72,7 @@ impl<R: Runtime> Database<R> {
             }
         }
         self.pager
-            .holders_meeting(pid, Some(Quarantine::Database), met, |h| {
+            .holders_meeting(pid, Some(UNHELD_MARK), met, |h| {
                 holdings.walk(&self.pager, h);
             })
     }

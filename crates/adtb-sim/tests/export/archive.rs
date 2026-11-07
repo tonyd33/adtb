@@ -1,6 +1,6 @@
 //! The continuous log archive: complete segments copied in order under the file's id and epoch.
 
-use adtb::testing::Probe;
+use adtb::testing::{Knobs, Probe};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -502,11 +502,10 @@ fn a_restored_epoch_archives_from_its_branch_to_its_own_directory() {
 fn an_engine_shows_its_archive_and_archives_into_it() {
     let mut sim = rooted(9);
     let through = api::run(&mut sim, |rt| {
-        let mut create = CreateOptions::default();
-        create.segment_size = Some(SEGMENT);
         let options = OpenOptions {
             log_archive: Some(DEST.into()),
-            create: Some(create),
+            create: Some(CreateOptions::default()),
+            testing: Knobs::default().with_segment_size(SEGMENT),
             ..api::options(2)
         };
         let db = Database::open_in(rt.clone(), "db.adt", &Log::new([APP]), &options).unwrap();
@@ -517,7 +516,7 @@ fn an_engine_shows_its_archive_and_archives_into_it() {
         assert_eq!(vec![format!("\"{DEST}\"")], shown);
         insert(&db, 0..ROWS);
         common::sleep(&rt, &mut rt.io(), Duration::from_secs(3));
-        let through = db.archive_status().expect("an archive is set");
+        let through = db.testing().archive_status().expect("an archive is set");
         insert(&db, ROWS..2 * ROWS);
         db.close().unwrap();
         through
@@ -585,10 +584,9 @@ fn a_new_file_after_a_position_archives_its_own_log_from_the_start() {
 fn a_segment_size_off_the_log_block_is_refused() {
     let mut sim = rooted(19);
     let refused = api::run(&mut sim, |rt| {
-        let mut create = CreateOptions::default();
-        create.segment_size = Some(SEGMENT + 1);
         let options = OpenOptions {
-            create: Some(create),
+            create: Some(CreateOptions::default()),
+            testing: Knobs::default().with_segment_size(SEGMENT + 1),
             ..api::options(2)
         };
         match Database::open_in(rt, "db.adt", &Log::new([APP]), &options) {
@@ -614,15 +612,14 @@ fn engine_session(
     api::run(sim, |rt| {
         let hook = Hooked::new(&rt);
         hook.fail_when(move |op| refused(op).then_some(IoError::Full));
-        let mut create = CreateOptions::default();
-        create.segment_size = Some(SEGMENT);
         let options = OpenOptions {
             log_archive: archive.then(|| DEST.into()),
-            create: Some(create),
+            create: Some(CreateOptions::default()),
+            testing: Knobs::default().with_segment_size(SEGMENT),
             ..api::options(2)
         };
         let db = Database::open_in(hook, "db.adt", &Log::new([APP]), &options)?;
-        let status = db.archive_status();
+        let status = db.testing().archive_status();
         insert(&db, rows);
         db.close().unwrap();
         Ok(status)

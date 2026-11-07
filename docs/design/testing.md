@@ -3,7 +3,10 @@
 `adtb::testing` is what the test harness observes of a running engine
 that no public interface shows: quarantine marks, damage evidence, log
 positions, maintenance counters, the background scrub's cursor and the
-findings the engine holds. It exists only with the `testing` feature of
+findings the engine holds. It also holds the controls a test drives the
+engine with where no public call reaches: faults planted beneath the
+checks of the write path, flushes, holds and hooks, and the settings an
+open takes only in tests. It exists only with the `testing` feature of
 `adtb`, which only the tests of `adtb-sim` enable.
 
 ## 1. Entry points
@@ -19,20 +22,44 @@ TxnProbe::of(&Transactions<R>) -> TxnProbe<'_, R>
 | Entry | Observations |
 | --- | --- |
 | `Testing` | `next_xid`, `commit_log_damage`, `charged` (the vacuum pacer's steps), `rebuild_waits`, `vacuum_yields`, `reindex_threads`, `scrub` (the saved cursor), `held_findings` |
-| `Probe` | `marks`, `marked`, `refusals`, `records`, `damage_in_log`, `logged_commits`, `appended`, `durable`, `checkpoint`, `dirty`, `walks` |
+| `Probe` | `marks`, `marked`, `refusals`, `records`, `damage_in_log`, `logged_commits`, `appended`, `durable`, `checkpoint`, `dirty`, `walks`, `page`, `page_size`, `mapped_to`, `on_history` |
 | `TxnProbe` | `next_xid`, `commit_log_damage` |
+
+Controls, all on `Testing`:
+
+| Group | Calls |
+| --- | --- |
+| Addressing | `heap`, `history`, `large`, `index`, `history_index` (an `Object` by qualified name), `mark_of`, `own_mark`, `owner`, `root`, `pages`, `owned`, `reachable`, `commit_log`, `ctors`, `key_schema` |
+| Reading an object | `entries`, `all_entries`, `versions`, `read`, `headers`, `status`, `is_free`, `allocated` |
+| Changing the engine | `plant(Plant)` |
+| Durability | `flush`, `flush_log`, `flush_pages`, `checkpoint`, `recycle_log` |
+| Holds and hooks | `hold_vacuum`, `hold_page`, `on_reindex_phase`, `take_xid` |
+| Checks | `verify_holding`, `verify_pages`, `check_page`, `scrub_page`, `check_indexes`, `probe_heaps`, `refuse_named`, `backup`, `archive_status` |
+
+`OpenOptions::testing` carries `Knobs`, the settings only a test gives
+an open: `Knobs::without_background_vacuum()` starts no background
+vacuum worker, and `with_segment_size(bytes)` creates a file whose log
+segments are `bytes` each, a positive multiple of the 512-byte log
+block, or open fails with an I/O error of kind `InvalidInput`. An open
+of an existing file keeps the segment size it was created with.
 
 ## 2. Contract
 
 Postconditions:
 
-- Every observation returns a value built at the call: a set, a map, a
-  count, an LSN, an id or a flag. No observation returns a reference
-  into the engine, and no type of this module holds one past the
-  borrow of the database or the pager it was made from.
-- Every observation but `damage_in_log` and `logged_commits` reads
-  memory only and changes neither the engine's state nor what a later
-  call returns.
+- Every observation and control returns a value built at the call: a
+  set, a map, a count, an LSN, an id, a flag, a page's bytes, an entry,
+  a version or a finding. None returns a reference into the engine, and
+  no type of this module holds one past the borrow of the database or
+  the pager it was made from. The guards `VacuumHold` and `PageHold`
+  hold their lock until dropped and expose nothing of it.
+- The observations of `Testing`, `TxnProbe` and `Probe`, except
+  `Probe::page`, `damage_in_log` and `logged_commits`, read memory only
+  and change neither the engine's state nor what a later call returns.
+- `Probe::page`, and every call that reads an object, reads through the
+  pager as any reader does: a refused page answers its `PageError`, and
+  a read that meets damage records it as any read records it. None of
+  them sets a mark.
 - `damage_in_log` and `logged_commits` read the retained log as
   `verify` does: they pin the log while they read, list its directory
   and open its segments through the runtime, which records which
@@ -57,12 +84,132 @@ feature. No package of the repository has a normal or build dependency
 on `adtb` that enables it, no feature of a package enables it, and
 `adtb`'s default features exclude it. `check` fails otherwise.
 
-## 3. Ownership
+## 3. Controls
+
+An `Object` names a structure by the id the catalog gives it: a
+constructor's heap, its history heap or large-value store by `HeapId`,
+an index or the history key index of a relation by `IndexId`, or one of
+the engine's own structures (the commit log, the commit times tree, the
+catalog, the counters, the marks page, the damage list). A test finds
+one by qualified name and holds no reference into the engine.
+
+`plant(Plant)` is the one way a test changes the engine's state beneath
+its public calls; every variant of `Plant` is one such change. The
+other controls only drive the engine (write, wait, hold, hook) or read
+it, and say below which of them record damage or set marks.
+
+### 3.1 Objects
+
+- A call on an `Object` resolves its id against the engine's current
+  catalog at the call. After a rebuild an `Index` names the rebuilt
+  tree. An object the catalog no longer holds answers
+  `Failed::Absent`; a structure with no listing of pages answers
+  `Failed::Unlisted`.
+- `mark_of` answers the mark the engine sets for damage to a page of the
+  object, as the engine's own mapping of pages to marks gives it.
+- `own_mark` answers the mark that names a heap or an index alone, as a
+  `Mark` plant sets it and admission of a call checks it; a history heap
+  or index answers its relation's heap's or key index's. A large-value
+  store or an engine structure answers none.
+- `owner`, `root`, `pages`, `owned`, `reachable`, `ctors`, `key_schema`,
+  `commit_log`, `entries`, `all_entries`, `versions`, `read`, `headers`,
+  `status`, `is_free` and `allocated` answer what the structure holds
+  at the call, read through the pager.
+
+Not promised: the order of `owned`, or of the pages `reachable` lists;
+which pages of a structure a later write reuses.
+
+### 3.2 Plants
+
+- `Refuse { page, damage }` makes every later read of the page fail as
+  `damage` says and records the damage; it sets no mark until a call
+  maps the damage. `RefuseKeptStore` does that for each page of the
+  store of kept findings.
+- `Mark` and `Unmark` set and clear a mark durably.
+- `Panic { site, message }` panics the engine once at `site` with
+  `message`: `BackgroundRead` at the background worker's next read of a
+  page, `KeptWrite` at the next write of kept findings after its first
+  replacement.
+- `AddEntry`, `AddRawEntry`, `DropEntry`, `MisorderLeaf` and `NextTid`
+  change an index or a heap beneath every check of the write path. An
+  entry change that finds nothing to change answers `Failed::Unchanged`.
+- `Write`, `FlipOwner` and `Replace` change a page as one logged change;
+  `Free` frees a page in the allocation bitmap whatever names it;
+  `NamingSequences` leaves the catalog as a crash inside naming the
+  counters page leaves it.
+- `Orphan { kind, owner }` allocates a page no structure names, its
+  contents zero, and answers `Planted::Page`.
+- `Insert { heap, rows }` commits the rows as one transaction of the
+  write path, with no index entry and no check, and answers
+  `Planted::Tids`.
+- `LoadMarks(page)` reads the marks from `page` as an open does and
+  replaces the marks held in memory; an unreadable page answers its
+  `PageError` and leaves them.
+- `FailOn(error)` fails as the write path fails on meeting `error`,
+  mapping the damage and setting the marks that sets, and answers
+  `Planted::Refused`.
+
+Not promised: that a plant leaves the file in a state a real fault
+could reach beyond the one it names. A test reads what the engine does
+about the plant, not that the plant was possible. Which thread or order
+the engine meets a `Panic` plant in when two could reach its site.
+
+### 3.3 Driving
+
+- `flush` writes the log, then every changed page; `flush_log` writes
+  the log; `flush_pages(max)` writes at most `max` changed pages whose
+  changes are durable and answers how many; `checkpoint` takes a
+  checkpoint; `recycle_log` removes the segments no recovery or archive
+  needs and answers how many. None records damage or sets a mark.
+- `hold_vacuum` holds the vacuum lock until its guard drops, holding off
+  vacuum, the background worker's included, and every rebuild.
+  `hold_page` holds the page's exclusive latch until its guard drops.
+- `on_reindex_phase` calls its hook with the name of each phase of every
+  later rebuild as the phase starts, on the rebuild's thread.
+- `take_xid` begins a transaction and aborts it, writing nothing else;
+  it answers the id it took.
+
+Not promised: when a write-out the engine starts on its own lands
+relative to these calls; the set of phase names `on_reindex_phase`
+reports.
+
+### 3.4 Checks
+
+- `verify_holding` runs `verify` over the whole database with the checks
+  that hold only with no writer, holding off vacuum for the run, and
+  answers its rows. It records damage, sets marks and keeps findings as
+  `verify` does. Precondition: no other call runs on the database
+  meanwhile.
+- `verify_pages` checks every page and the retained log; `check_page`
+  checks one page against the retained log; `scrub_page` does what the
+  background scrub does for one page. Each refuses from now on a page
+  whose contents it finds lost, recording the damage, and sets no mark.
+- `check_indexes` checks the indexes of the relation an index belongs
+  to, at a snapshot taken before its callback runs, holding off vacuum
+  across each index. `probe_heaps` probes a key index from its
+  relation's heaps as a read does while that index is marked.
+  `refuse_named` runs a read's check of the version an entry names
+  before it refuses the index: a page the heap does not own is refused
+  and its damage recorded, and a free slot answers an orphan entry.
+  They record damage they meet and set no mark; the caller decides what
+  a finding marks.
+- `backup` copies the database to a target as a backup does, calling
+  its visitor with each page as it is first read; it records damage it
+  meets and sets no mark.
+- `archive_status` answers the log archive's status as its last pass
+  left it, `None` with no archive set. It reads memory only.
+
+Not promised: the findings' order, or their text beyond their kind and
+the page or object they name.
+
+## 4. Ownership
 
 The module owns the mapping from engine internals to its answers. When
 storage, transactions or maintenance change how they keep a fact, this
 module changes and no test does. The answers carry the engine's
 vocabulary types (`Pid`, `Lsn`, `Damage`, `Quarantine`, `PageError`,
-`Xid`, `LogFinding`, `vacuum::Charged`) and this module's own `Records`
-(one snapshot, read through `pages`, `log` and `full`), never a pager,
-a heap, an index or the write path.
+`Xid`, `LogFinding`, `vacuum::Charged`, `Entry`, `Version`, `Status`
+and the findings of the checks) and this module's own types (`Records`,
+`Object`, `Plant`, `Planted`, `Site`, `CommitLogPages`, `Failed`,
+`Knobs` and the guards `VacuumHold` and `PageHold`), never a pager, a
+heap, an index or the write path.

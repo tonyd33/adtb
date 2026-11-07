@@ -152,7 +152,7 @@ mkdir -p crates/demo && cp demo/src/lib.rs crates/demo/lib.rs
 "$checker" --counts "$scratch" | grep -qx 'disallowed_methods prod 1 crates/demo/lib.rs' || fail "the expect was not counted"
 
 # The checked in clippy.toml rejects each owned item by path.
-for item in adtb::storage::page::owner adtb::storage::pager::Pager::meta adtb::api::Database::write_path; do
+for item in adtb::storage::page::owner adtb::storage::pager::Pager::meta; do
   grep -qF "path = \"$item\"" "$clippy_toml" || fail "clippy.toml does not disallow $item"
 done
 printf 'structure-check cases passed\n'
