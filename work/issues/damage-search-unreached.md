@@ -25,3 +25,8 @@ Not judged, from the round 1 review: `judge_copy` ignores the refusals of backup
 Direction: reach each listed cell or state the rule that makes it unreachable, and judge the three consumers.
 
 Defect class: Tests asserting less than they claim.
+
+## 2026-11-07, delta review
+
+- A Read cell counts as reached for history heap and visibility map pages that the scan never reads; only Index requires a read that touches the page.
+- Under a lasting fault, any unreadable page that is not a relation page explains a failed read of any relation.
