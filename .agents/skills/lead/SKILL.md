@@ -105,6 +105,8 @@ Rule on design and spec decisions yourself, including amending an accepted rulin
 - Mark the track's ticket `in-progress` with `branch` set to the
   workspace name.
 
+Every brief that changes code has a `## Contract` section: for each module it touches, the contract the module offers, the invariants the change relies on or adds, the module that owns each (private state, operations that keep it), and its enforcer. `slot` refuses a brief without it. A ruling that adds state names its owner module; one that cannot is a design pass, not a fix. Every review brief asks for the same table for the diff as found, before bugs, and a row with no owner or no enforcer is a blocker.
+
 State the invariants of a correctness track in its brief, each with what enforces it: the type system, a searching test, or nothing with a written reason. Ask for a test that searches for breaks at every op and interleaving. A bug fix's report states its cause, its defect class and what stops the next instance; "this test" leaves the class open. A second review round finding the same kind of bug means the design is wrong: the next brief names the mechanism that replaces it, and lists no instances.
 
 ## Wide view
@@ -184,7 +186,7 @@ that the worker is unblocked.
 - Run at most 2 tracks that build at once, until the maintainer says otherwise: tracks spend most of their time waiting on builds. A read-only track, one that runs no build, is exempt. Run at most 5 agents at once in all.
 - In a fix round, ask for no failing-evidence builds; the reviewer's reproduction is the evidence. Judge a test's worth by what it checks, not by a mutation. Let the author run its post-review `check` while the delta reviewer reads.
 - When a track lands, dispatch the next brief before reporting to the user.
-- A review of a large surface always finds something, so "until a review is clean" does not end. A blocker is a defect this track's diff introduces or makes reachable, that loses acknowledged data or gives a wrong answer through normal use. Anything else, including a defect the base already has, goes on a ticket, and severe ones go first in the queue. Holding a track back does not protect anyone from a bug already on main. A track gets at most one delta review after its redesign, limited to that round's diff; a further blocker is fixed and checked with no new review. Past that, land or abandon it, and say which.
+- A review of a large surface always finds something, so "until a review is clean" does not end. A blocker is a defect this track's diff introduces or makes reachable, that loses acknowledged data or gives a wrong answer through normal use, or structure the diff adds without an owner: state or an invariant that no one module owns behind private fields, an internal made visible past its module, a fix that adds a rule every caller must remember instead of an operation that keeps it, or a contract the diff relies on that no design or module doc states. Anything else, including a defect the base already has, goes on a ticket, and severe ones go first in the queue. Holding a track back does not protect anyone from a bug already on main. A track gets at most one delta review after its redesign, limited to that round's diff; a further blocker is fixed and checked with no new review. Past that, land or abandon it, and say which.
 - After a review with blockers, review the delta yourself or with a fresh
   agent; a blocker-free round needs no new full review. Run the full check
   only on the final round.

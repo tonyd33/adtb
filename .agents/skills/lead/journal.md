@@ -769,3 +769,7 @@ The settle review found a reused status page pid whose old incarnation's copy pa
 ## 2026-11-07: a deep failure landed unseen
 
 Periodic checkpoint change 2 added crash searches whose deep seeds lose acknowledged writes; the track ran only `check --changed`, which runs default seeds, and nobody ran deep. The damage search's author found it while running the whole storage binary under deep. Rule added: a track that adds or changes a seeded search runs it under `--profile deep` before landing.
+
+## 2026-11-07: a week of instances, structure unreviewed
+
+The maintainer found a raw page guard handed out of the pager by reading one commit, and froze ticket work. The cause was mine: my blocker rule counted only lost data and wrong answers, so every review brief I wrote hunted bugs and no reviewer was asked about structure; my M1 and checkpoint rulings added maps to the pager's `Meta` (`blanked`, `reserved`, `records.retired`) instead of an owner for them; the quality review, scoped to diffs, cannot see structure, and ran ten tracks late. Changed the same day: a blocker now includes ownerless state, internals made visible and unstated contracts; every code brief carries a `## Contract` section and every review the same table first. Bet: within two restructure tracks the storage counts (crate-visible pager fields, `.meta()` sites outside the owner) fall, and no damage ticket is filed whose cause is two maps disagreeing.
