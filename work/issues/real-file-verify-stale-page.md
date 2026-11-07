@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-06
-status: open
+status: resolved
 kind: bug
 priority: 330
 summary: a real-file open_damage test found a page Stale with found Lsn(0) once under full-suite load; it passes alone
+closed: 2026-11-06
 tags:
   - class-not-atomic
 ---
@@ -25,3 +26,9 @@ Reproduced without outside load at about 0.9% (5 of 572 runs). Page 13 is the co
 ## 2026-11-06: the worse half is real
 
 The fix track's simulator search, on main: with the file quarantined whole (the read-in gate off), a reader racing the refusal was handed the file's older copy as data (seed 1: byte 0xa1 after three reads of the in-memory 0xb2). With the gate armed, seed 13 recorded Stale over the real Checksum.
+
+## 2026-11-06: fixed
+
+`fix: publish a page refusal before ending its residency, under the latch`. Rule: a page's refusal is published (in `damaged` and the damage record) before its residency ends, under the same exclusive latch. `Pager::damage` latches, calls `publish_refusal(&latch, ..)` (damage_log.rs), then evicts; `publish_refusal` borrows the latch and `evict` consumes it, so the compiler orders them. `resident()` and verify's `judge_page` (two latched judgements, a bitmap look before each, the second keeping its latch) refuse under the latch that judged, through `refuse_latched`; `publish_refusal` logs no second record for a page already refused with the same damage. The other refusal sites judge resident or staged bytes or no page, so a reader in their gap gets the bytes it had. adtb-sys gains a simulator switch point after `Exclusive::evict`, without which the race was unreachable. Tests (damage_race.rs, 5): searches over 64 seeds of a refusal racing a reader (gate armed: refused as Checksum, one record; quarantined whole: never the file copy), verify racing a reader (one record), two readers racing a read-in (one record), each with a reach floor on reads begun inside the refusal window; and verify of a file quarantined whole refusing a lost write as Stale. On the parent: seed 13 recorded Stale over Checksum, seed 1 served the older file copy, and about 18% of seeds logged two records. The real-file test passed 300 of 300 stress runs, against 4 failures in 300 before. Review and delta review: a weak reach floor, a third judgement that broke a scrub test, and a test that pinned the stale copy, all fixed. `check --changed` exit 1 only in house-check, rerun clean; full `check` on main after landing.
+
+## 2026-11-06: resolved
