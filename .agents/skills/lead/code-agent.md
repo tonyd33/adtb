@@ -252,11 +252,9 @@ the files your brief names and `work/tools/codemap`; broad reading is the next
 largest. A performance track reports a before and after benchmark of the workload its brief names.
 Repeat checks only for changed inputs, failures or unresolved concerns. Run `work/tools/suite`
 in the background: it can wait out a whole `check`, and a foreground call with a harness timeout
-dies waiting. A bug fix's regression test fails on the code before the fix: show that once, by
-running it on the parent revision or with the fix reverted, and record the failure in the
-receipt. Show every test's failure in one build: revert all the fixes together, or check out the
-parent with the new tests, and run them all at once. Never one build per test, fix or mutant: each
-costs a two-minute rebuild of adtb-sim. Run `house-check` and `size-check` before `check`; when a
+dies waiting. A bug fix comes with a regression test: write it before the fix and watch it fail, as part of
+the work, not as a separate step. Do not rebuild to break code on purpose: each rebuild of
+adtb-sim costs two minutes. Run `house-check` and `size-check` before `check`; when a
 `check` fails only in `house-check`, rerun `house-check`, not `check`. The size in a brief is an estimate; say in the report when the change grew well past it.
 
 ## Scripts

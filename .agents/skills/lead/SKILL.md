@@ -172,7 +172,7 @@ that the worker is unblocked.
   at that note. Use one evolving receipt and a concise final ticket update.
   Fix trivial rebase fallout yourself.
 - Run at most 2 tracks that build at once, until the maintainer says otherwise: tracks spend most of their time waiting on builds. A read-only track, one that runs no build, is exempt. Run at most 5 agents at once in all.
-- In a fix round, ask for each fix's failing evidence in one batched build, never one build per fix. Let the author run its post-review `check` while the delta reviewer reads.
+- In a fix round, ask for no failing-evidence builds; the reviewer's reproduction is the evidence. Judge a test's worth by what it checks, not by a mutation. Let the author run its post-review `check` while the delta reviewer reads.
 - When a track lands, dispatch the next brief before reporting to the user.
 - A review of a large surface always finds something, so "until a review is clean" does not end. A blocker is a defect this track's diff introduces or makes reachable, that loses acknowledged data or gives a wrong answer through normal use. Anything else, including a defect the base already has, goes on a ticket, and severe ones go first in the queue. Holding a track back does not protect anyone from a bug already on main. A track gets at most one delta review after its redesign, limited to that round's diff; a further blocker is fixed and checked with no new review. Past that, land or abandon it, and say which.
 - After a review with blockers, review the delta yourself or with a fresh

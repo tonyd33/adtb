@@ -148,7 +148,7 @@ Before writing code a correctness rule depends on, state the rule and what enfor
 
 ## Test value
 
-A test earns its place by being able to fail when the behaviour breaks. Before adding one, name the change to the code that would make it fail, and try it when the code is at hand.
+A test earns its place by checking behaviour a user or caller relies on, at the level where that contract is stated, that no stronger test already covers. That is a judgement made when writing and reviewing it. Being able to fail is not enough: a test of a constructor fails when an assignment is deleted and is still worthless. Do not break code on purpose to prove a test can fail.
 
 A test failure is evidence to assess, not an automatic requirement. Before
 changing behavior or architecture to satisfy it, identify the governing contract
@@ -163,7 +163,7 @@ fixes need no new artifact or approval.
 
 - Assert the exact outcome: the refusal reason and value, not `is_err` or a substring. Do not compare two answers only with each other when both could be the same wrong answer. Do not repeat the code's own predicate as the expected value. An expected value comes from outside the code under test.
 - A loop or sweep checks that it ran, and that it reached the case it is for. No `|| true`, ignored results or skipped conditions on what is under test. A script's check must report its failure.
-- A test of a mechanism that runs beside the code under test (a worker, a pacer, a sweep, an interleaved command) asserts the mechanism ran where the property needs it, and is shown failing with the mechanism turned off. Work it cannot observe, such as work after the last measured step, counts as unmeasured, not as zero.
+- A test of a mechanism that runs beside the code under test (a worker, a pacer, a sweep, an interleaved command) asserts the mechanism ran where the property needs it. Work it cannot observe, such as work after the last measured step, counts as unmeasured, not as zero.
 - A name claims only what the test checks.
 - For a general property, write the test that searches: every op, every interleaving, generated pairs, n against 2n. One input from a review confirms that input alone.
 - Do not pin a detail no contract states, or test the standard library, a derive or a getter. Do not add what a stronger test in the same binary covers. When removing a test, name its valid property and retained or replacement coverage, or explain why its assertion has no contractual property to preserve.
