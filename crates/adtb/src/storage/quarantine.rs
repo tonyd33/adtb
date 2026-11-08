@@ -494,24 +494,18 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Hold `pids`, pages of a tree a swap replaced, as retired until each one's own free.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn retire(&self, pids: impl IntoIterator<Item = Pid>) {
-        self.meta().records.retired.extend(pids);
+        self.evidence().retire(pids);
     }
 
     /// Stop holding `pids` as retired: the swap that would have replaced their tree failed.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn unretire(&self, pids: &[Pid]) {
-        let mut m = self.meta();
-        for p in pids {
-            m.records.retired.remove(p);
-        }
+        self.evidence().unretire(pids);
     }
 
     /// Returns the pages held as retired, none of them freed since.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn retired(&self) -> Vec<Pid> {
-        self.meta().records.retired.iter().copied().collect()
+        self.evidence().retired()
     }
 
     /// Returns what the allocation bitmap says of `pid`.

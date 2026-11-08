@@ -104,15 +104,14 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Preconditions: recovery has written every page the log holds and armed the read-in gate,
     /// and the file holds `pages`.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(crate) fn refuse_cut_pages(&self, pages: u64) {
         let span = self.bitmap_span();
         let group = pages.saturating_sub(1) / span;
         self.refuse_cut_group(pages, group);
-        let end = self.meta().gate.end();
+        let end = self.evidence().expected_end();
         let later = (group + 1..).map(|g| self.bitmap_page(g));
         for map in later.take_while(|m| m.0 < end) {
-            let expected = self.meta().gate.expected(map).filter(|&l| l > Lsn(0));
+            let expected = self.evidence().expected(map).filter(|&l| l > Lsn(0));
             if let Some(expected) = expected {
                 let found = Lsn(0);
                 self.damage(map, Damage::Stale { expected, found });
@@ -175,11 +174,11 @@ impl<R: Runtime> Pager<R> {
             let bits = self.read_map(g)?[HEADER_LEN..].to_vec();
             let taken = |pid: u64| {
                 let i = (pid - first) as usize;
-                pid < Pid::FIRST_DATA.0 || pid == map.0 || bits[i / 8] >> (i % 8) & 1 == 1 || {
-                    let m = self.meta();
-                    m.reserved.contains(&Pid(pid))
-                        || m.damaged.get(&Pid(pid)) == Some(&Damage::Unreadable)
-                }
+                pid < Pid::FIRST_DATA.0
+                    || pid == map.0
+                    || bits[i / 8] >> (i % 8) & 1 == 1
+                    || self.meta().reserved.contains(&Pid(pid))
+                    || self.refusal(Pid(pid)) == Some(Damage::Unreadable)
             };
             let Some(pid) = (first..first + span).find(|&p| !taken(p)) else {
                 g += 1;

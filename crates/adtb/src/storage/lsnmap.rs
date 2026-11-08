@@ -2,7 +2,7 @@
 //! tree of `height` levels. A leaf holds one LSN per page; an interior page holds, for each
 //! child, its pid and the least LSN it may have. A zero word holds nothing.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use crate::runtime::Runtime;
 
@@ -15,102 +15,6 @@ use super::record::{MapRoot, Record};
 use super::{Lsn, Pid};
 
 const FORMAT: u16 = 1;
-
-/// What a page read in from the file is checked against.
-#[derive(Debug)]
-pub(crate) enum Gate {
-    /// Recovery is replaying the log; no page has an expected LSN until it ends.
-    Recovering,
-    Armed(Expected),
-    /// The open could not read the map or prove the retained log: the database is held
-    /// quarantined and no page is checked.
-    Off,
-}
-
-impl Gate {
-    pub(crate) fn expected(&self, pid: Pid) -> Option<Lsn> {
-        match self {
-            Gate::Armed(e) => e.get(pid),
-            Gate::Recovering | Gate::Off => None,
-        }
-    }
-
-    pub(crate) fn raise(&mut self, pid: Pid, lsn: Lsn) {
-        if let Gate::Armed(e) = self {
-            e.raise(pid, lsn);
-        }
-    }
-
-    /// Returns the number of pages whose expected LSN is past their folded entry.
-    #[cfg(test)]
-    pub(crate) fn later(&self) -> usize {
-        match self {
-            Gate::Armed(e) => e.logged.len(),
-            Gate::Recovering | Gate::Off => 0,
-        }
-    }
-
-    /// Returns one past the last page with an expected LSN, 0 when none has one.
-    pub(crate) fn end(&self) -> u64 {
-        match self {
-            Gate::Armed(e) => e.end(),
-            Gate::Recovering | Gate::Off => 0,
-        }
-    }
-}
-
-/// The LSN each page must have at least when read in.
-#[derive(Debug, Default)]
-pub(crate) struct Expected {
-    /// The page LSN map's entry of each page, by pid, zero for none.
-    folded: Vec<Lsn>,
-    /// Each page whose last record is past its folded entry, with that record's LSN.
-    logged: HashMap<Pid, Lsn>,
-}
-
-impl Expected {
-    pub(crate) fn new(folded: Vec<Lsn>) -> Expected {
-        Expected {
-            folded,
-            logged: HashMap::new(),
-        }
-    }
-
-    pub(crate) fn get(&self, pid: Pid) -> Option<Lsn> {
-        let folded = self.folded.get(pid.0 as usize).copied();
-        self.logged.get(&pid).copied().or(folded)
-    }
-
-    fn end(&self) -> u64 {
-        let folded = self
-            .folded
-            .iter()
-            .rposition(|&l| l > Lsn(0))
-            .map_or(0, |i| i + 1);
-        let logged = self.logged.keys().map(|p| p.0 + 1).max().unwrap_or(0);
-        (folded as u64).max(logged)
-    }
-
-    fn absorb<'a>(&mut self, last: impl Iterator<Item = (&'a Pid, &'a Lsn)>) {
-        for (&pid, &lsn) in last {
-            let at = pid.0 as usize;
-            if self.folded.len() <= at {
-                self.folded.resize(at + 1, Lsn(0));
-            }
-            self.folded[at] = self.folded[at].max(lsn);
-            if self.logged.get(&pid).is_some_and(|&l| l <= self.folded[at]) {
-                self.logged.remove(&pid);
-            }
-        }
-    }
-
-    /// Raise `pid`'s expected LSN to `lsn`, the LSN of its latest record.
-    pub(crate) fn raise(&mut self, pid: Pid, lsn: Lsn) {
-        if self.folded.get(pid.0 as usize).is_none_or(|&f| f < lsn) {
-            self.logged.insert(pid, lsn);
-        }
-    }
-}
 
 /// A visit of a map page: its pid, bytes, level and the first page it covers.
 type Visit<'v> = dyn FnMut(Pid, &[u8], u32, u64) + 'v;
@@ -145,7 +49,6 @@ impl<R: Runtime> Pager<R> {
     /// Returns the bytes of map page `pid`. Refuse it when it cannot be read, and also quarantine
     /// the database when it fails its checksum, is no map page, or its LSN is below `expected`, the
     /// LSN its parent gives it.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn map_page(&self, pid: Pid, expected: Lsn) -> Result<Vec<u8>, PageError> {
         let read = self.read(pid).map(|p| p.to_vec());
         let refused = match read {
@@ -160,7 +63,7 @@ impl<R: Runtime> Pager<R> {
             }
             Ok(page) => return Ok(page),
         };
-        if !matches!(self.meta().gate, Gate::Recovering) {
+        if !self.evidence().recovering() {
             self.quarantine(Quarantine::Database).ok();
         }
         Err(refused)
@@ -285,11 +188,8 @@ impl<R: Runtime> Pager<R> {
     /// Raise the folded expected LSN of each page of `last` below `end` to its LSN, once a
     /// checkpoint names the map that holds them, dropping the gate's later LSN of a page when it
     /// is no longer later.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(crate) fn absorb_folded(&self, last: &BTreeMap<Pid, Lsn>, end: u64) {
-        if let Gate::Armed(e) = &mut self.meta().gate {
-            e.absorb(last.range(..Pid(end)));
-        }
+        self.evidence().absorb_folded(last, end);
     }
 
     /// Returns a new root one level above `below`, holding it as its first child, or a leaf

@@ -770,6 +770,10 @@ The expected LSNs a pager holds (§10.3) take 8 bytes of memory per page
 of the file, plus an entry per page the retained log names past its
 map entry.
 
+The pager keeps, for each page, the LSN a copy read from the file must
+reach, whether the page is refused and why, its damage record (below),
+and what that damage was mapped to this open.
+
 Every page the pager refuses as damaged, other than one the device
 cannot read, is recorded: the detection appends a damage record (§5.1)
 in the hold of the log that refuses the page, and forces it before it

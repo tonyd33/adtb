@@ -179,7 +179,6 @@ fn the_first_checkpoint_after_a_crash_names_the_map_root_at_its_replayed_lsn() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until storage owners land")]
 fn a_recycle_keeps_every_expected_lsn_and_drops_the_later_ones_it_folded() {
     let scratch = Scratch::new("storage", "absorb");
     let rt = OsRuntime::with_faults(
@@ -211,12 +210,12 @@ fn a_recycle_keeps_every_expected_lsn_and_drops_the_later_ones_it_folded() {
         }
     }
     let expected = |p: &Pager<OsRuntime>| -> Vec<Option<Lsn>> {
-        let m = p.meta();
-        pages.iter().map(|&pid| m.gate.expected(pid)).collect()
+        let e = p.evidence();
+        pages.iter().map(|&pid| e.expected(pid)).collect()
     };
-    let before = (expected(&pager), pager.meta().gate.later());
+    let before = (expected(&pager), pager.evidence().later());
     assert!(pager.recycle_log() >= 2, "the recycle removed segments");
-    let after = (expected(&pager), pager.meta().gate.later());
+    let after = (expected(&pager), pager.evidence().later());
     assert_eq!(before.0, after.0);
     assert!(
         after.1 < before.1,

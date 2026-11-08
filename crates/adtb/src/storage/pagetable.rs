@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::MutexGuard;
 
-use super::damage_log::Refusal;
+use super::evidence::Refusal;
 use super::pager::{Appending, Forcing, Wrote};
 use super::recovery::Replaying;
 use super::{Lsn, Pid};
@@ -208,7 +208,7 @@ mod tests {
     use adtb_testkit::profile::{assert_reached, sweep};
 
     use super::{DirtyTable, Logged};
-    use crate::storage::damage_log::refusal_for_test;
+    use crate::storage::evidence::refusal_for_test;
     use crate::storage::pager::{appending_for_test, forcing_for_test, wrote_for_test};
     use crate::storage::recovery::replaying_for_test;
     use crate::storage::{Lsn, Pid};

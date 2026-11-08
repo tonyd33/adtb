@@ -2,33 +2,18 @@
 //! one list page the file header names.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::Ordering;
 
 use crate::mvcc::Settling;
-use crate::runtime::{Runtime, ThreadId};
+use crate::runtime::Runtime;
 
 use super::block::{LogFinding, LogProblem};
 use super::error::Damage;
-use super::log::Log;
+use super::evidence::{Mapping, Met, meet_recorded};
 use super::page::{self, HEADER_LEN, PageKind};
-use super::pager::{Held, PageError, PageExclusive, Pager};
+use super::pager::{PageError, PageExclusive, Pager};
 use super::quarantine::Quarantine;
-use super::record::{Record, damage_of, damage_words};
+use super::record::{damage_of, damage_words};
 use super::{Lsn, Pid};
-
-/// The refusal of a page whose resident copy is dropped.
-pub(super) struct Refusal(Pid);
-
-impl Refusal {
-    pub(super) fn pid(&self) -> Pid {
-        self.0
-    }
-}
-
-#[cfg(test)]
-pub(super) fn refusal_for_test(pid: Pid) -> Refusal {
-    Refusal(pid)
-}
 
 const FORMAT: u16 = 1;
 const COUNT: usize = HEADER_LEN;
@@ -51,184 +36,15 @@ pub struct Recorded {
     pub full: bool,
 }
 
-/// What the pager records of damage, under the meta lock.
-#[derive(Debug, Default)]
-pub(crate) struct Records {
-    pub(crate) recorded: Recorded,
-    /// Whether a detection logs its record. Off until the open's recovery ends.
-    pub(crate) logging: bool,
-    /// The list page, while a checkpoint may write it.
-    pub(crate) list: Option<Pid>,
-    /// What replay met past the checkpoint it started from, in log order.
-    pub(crate) replayed: Vec<(Pid, Met)>,
-    /// Whether the records differ from what the list page holds.
-    pub(crate) unfolded: bool,
-    /// The damage held in memory only, never logged or folded: found on a file quarantined
-    /// whole, on a page freed and not allocated since, or in a file's copy while the pool holds a
-    /// sound one.
-    pub(crate) held: BTreeMap<Pid, Damage>,
-    /// Each page's damage mapped this open, with the objects it quarantines.
-    mapped: BTreeMap<Pid, (Damage, BTreeSet<Quarantine>)>,
-    /// Whether a full list was mapped this open.
-    full_mapped: bool,
-    /// Each page's damage whose last mapping was incomplete.
-    incomplete: BTreeMap<Pid, Damage>,
-    /// The thread whose read last detected each page's damage.
-    pub(crate) detected_by: BTreeMap<Pid, ThreadId>,
-    /// The pages whose last record of their own this open logged or replayed is a free.
-    freed: BTreeSet<Pid>,
-    /// The pages of trees a swap replaced, each until its own free.
-    pub(crate) retired: BTreeSet<Pid>,
-}
-
-/// A record that changes the damage recorded of its page.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Met {
-    Damaged(Damage),
-    /// A full-page image, which drops all damage but [`Damage::Settled`].
-    Image,
-    /// The first record of a page allocated or overwritten unread, which drops all damage.
-    Start,
-    Freed,
-}
-
 impl Recorded {
     /// Apply what `met` does to the damage recorded of `pid`. Returns whether that changes it.
-    pub(crate) fn meet(&mut self, pid: Pid, met: Met) -> bool {
-        match met {
-            Met::Damaged(damage) => self.pages.insert(pid, damage) != Some(damage),
-            Met::Image if matches!(self.pages.get(&pid), Some(Damage::Settled { .. })) => false,
-            Met::Image | Met::Start | Met::Freed => self.pages.remove(&pid).is_some(),
-        }
-    }
-}
-
-impl Records {
-    /// Record `damage` of `pid` and log it, unless recovery has not ended or `whole` says the file
-    /// is quarantined whole, which keeps it in memory. Returns the log's end after the record.
-    ///
-    /// A settled page found stale at the LSNs it was settled at keeps its record: the settle's
-    /// rewrite continues the page's chain from the stale copy. Damage of a page freed and not
-    /// allocated since is held in memory, mapped this open and never logged; the page's next
-    /// chain start drops it.
-    pub(crate) fn detect(
-        &mut self,
-        log: &mut Log,
-        pid: Pid,
-        damage: Damage,
-        whole: bool,
-    ) -> Option<Lsn> {
-        if damage == Damage::Unreadable || !self.logging {
-            return None;
-        }
-        if let Damage::Stale { expected, found } = damage
-            && self.page(pid) == Some(Damage::Settled { expected, found })
-        {
-            return None;
-        }
-        if whole || self.freed.contains(&pid) {
-            self.held.insert(pid, damage);
-            return None;
-        }
-        self.held.remove(&pid);
-        self.meet(pid, Met::Damaged(damage));
-        log.append(&Record::Damaged { pid, damage });
-        Some(log.next_lsn())
-    }
-
-    /// Returns the list page while the records are to be folded into it.
-    pub(crate) fn to_fold(&self) -> Option<Pid> {
-        if !self.logging || !self.unfolded {
-            return None;
-        }
-        self.list
-    }
-
-    /// Drop the damage recorded of `pid`, which a batch frees, and log the free in the batch
-    /// unless recovery has not ended or `whole` says the file is quarantined whole. Returns the
-    /// LSN of the record logged.
-    pub(crate) fn free(&mut self, log: &mut Log, pid: Pid, whole: bool) -> Option<Lsn> {
-        self.meet(pid, Met::Freed);
-        (self.logging && !whole).then(|| log.append(&Record::Freed { pid }))
-    }
-
-    /// Note that `met`, a record of `pid`, ends or starts an incarnation of the page.
-    pub(crate) fn bound(&mut self, pid: Pid, met: Met) {
-        match met {
-            Met::Freed => {
-                self.freed.insert(pid);
-                self.retired.remove(&pid);
-            }
-            Met::Start => {
-                self.freed.remove(&pid);
-            }
-            Met::Damaged(_) | Met::Image => {}
-        }
-    }
-
-    /// Apply what `met` does to the damage recorded of `pid`, to be folded, and to what is held of
-    /// it. Returns whether that changes what is to be folded.
-    pub(crate) fn meet(&mut self, pid: Pid, met: Met) -> bool {
-        self.bound(pid, met);
-        let settled = matches!(self.held.get(&pid), Some(Damage::Settled { .. }));
-        if met == Met::Freed || met == Met::Start || met == Met::Image && !settled {
-            self.held.remove(&pid);
-        }
-        let changed = self.recorded.meet(pid, met);
-        self.unfolded |= changed;
-        if self.page(pid).is_none() {
-            self.mapped.remove(&pid);
-            self.incomplete.remove(&pid);
-            self.detected_by.remove(&pid);
+    pub(super) fn meet(&mut self, pid: Pid, met: Met) -> bool {
+        let mut recorded = self.pages.remove(&pid);
+        let changed = meet_recorded(&mut recorded, met);
+        if let Some(damage) = recorded {
+            self.pages.insert(pid, damage);
         }
         changed
-    }
-
-    /// Drop the damage held of `pid`, but a settle, once the page is written out over the file's
-    /// copy.
-    pub(crate) fn replaced(&mut self, pid: Pid) {
-        if !matches!(self.held.get(&pid), Some(Damage::Settled { .. })) {
-            self.held.remove(&pid);
-        }
-    }
-
-    /// Returns each page whose damage is not mapped this open, and whether a full list is not. A
-    /// settled page maps to nothing, so it is never unmapped. `retried` false leaves out each
-    /// page whose last mapping of the same damage was incomplete.
-    fn unmapped(&self, retried: bool) -> (Vec<(Pid, Damage)>, bool) {
-        let pages = self.all().pages.into_iter();
-        let pages = pages.filter(|(pid, d)| {
-            !matches!(d, Damage::Settled { .. })
-                && self.mapped.get(pid).is_none_or(|m| m.0 != *d)
-                && (retried || self.incomplete.get(pid) != Some(d))
-        });
-        (pages.collect(), self.recorded.full && !self.full_mapped)
-    }
-
-    fn any_unmapped(&self) -> bool {
-        let (pages, full) = self.unmapped(true);
-        full || !pages.is_empty()
-    }
-
-    /// Returns the damage recorded or held of `pid`.
-    pub(crate) fn page(&self, pid: Pid) -> Option<Damage> {
-        let held = self.held.get(&pid);
-        held.or_else(|| self.recorded.pages.get(&pid)).copied()
-    }
-
-    /// Returns the damage recorded and held.
-    pub(crate) fn all(&self) -> Recorded {
-        let mut all = self.recorded.clone();
-        all.pages.extend(&self.held);
-        all
-    }
-
-    /// Returns what a fold writes, counting the list full when it holds more than `capacity`.
-    pub(super) fn snapshot(&mut self, capacity: usize) -> Recorded {
-        self.unfolded = false;
-        let r = &mut self.recorded;
-        r.full |= r.pages.len() + r.log.len() > capacity;
-        r.clone()
     }
 }
 
@@ -239,9 +55,6 @@ fn word(page: &[u8], at: usize) -> u64 {
 fn u32_at(page: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(page[at..at + 4].try_into().unwrap())
 }
-
-/// A damage record and what it quarantines, `None` when its mapping is incomplete.
-type Mapping = (Pid, Damage, Option<BTreeSet<Quarantine>>);
 
 /// Returns the list page `page` holds, `None` when it is no list page.
 fn decode(page: &[u8]) -> Option<Recorded> {
@@ -315,9 +128,8 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns every damage recorded and not cleared: the list's, the log's since and this
     /// open's.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(crate) fn recorded(&self) -> Recorded {
-        self.meta().records.all()
+        self.evidence().all()
     }
 
     /// Map each damage record not mapped this open to the objects it quarantines, and mark each
@@ -330,16 +142,15 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Postcondition: a record is mapped only once the marks of its objects are set, so a caller
     /// that finds it unmapped may find those marks unset.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn map_damage(
         &self,
         holders: impl FnMut(Pid) -> Option<BTreeSet<Quarantine>>,
         mark: impl FnMut(Quarantine) -> Result<(), PageError>,
     ) -> BTreeMap<Quarantine, PageError> {
-        if !self.any_unmapped.load(Ordering::Acquire) {
+        if !self.any_unmapped() {
             return BTreeMap::new();
         }
-        let (pages, full) = self.meta().records.unmapped(true);
+        let (pages, full) = self.evidence().unmapped(true);
         self.map_records(pages, full, holders, mark)
     }
 
@@ -350,30 +161,29 @@ impl<R: Runtime> Pager<R> {
     /// Returns each object whose mark failed, with why.
     ///
     /// Precondition: as for [`Pager::map_damage`].
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn map_committing(
         &self,
         mut holders: impl FnMut(Pid, &mut BTreeSet<Pid>) -> Option<BTreeSet<Quarantine>>,
         mut mark: impl FnMut(Quarantine) -> Result<(), PageError>,
     ) -> BTreeMap<Quarantine, PageError> {
-        if !self.any_unmapped.load(Ordering::Acquire) {
+        if !self.any_unmapped() {
             return BTreeMap::new();
         }
         let (pages, full, before) = {
-            let m = self.meta();
-            let (pages, full) = m.records.unmapped(false);
-            (pages, full, m.records.all().pages)
+            let e = self.evidence();
+            let (pages, full) = e.unmapped(false);
+            (pages, full, e.all().pages)
         };
         let mut met = BTreeSet::new();
         let mut failed = self.map_records(pages, full, |pid| holders(pid, &mut met), &mut mark);
         let me = self.rt.current();
-        let m = self.meta();
-        met.retain(|pid| !before.contains_key(pid) && m.records.detected_by.get(pid) == Some(&me));
-        drop(m);
+        let e = self.evidence();
+        met.retain(|pid| !before.contains_key(pid) && e.detected_by(*pid) == Some(me));
+        drop(e);
         if met.is_empty() {
             return failed;
         }
-        let (pages, _) = self.meta().records.unmapped(true);
+        let (pages, _) = self.evidence().unmapped(true);
         let pages = pages.into_iter().filter(|(pid, _)| met.contains(pid));
         let database = || Some(BTreeSet::from([Quarantine::Database]));
         failed.extend(self.map_records(pages.collect(), false, |_| database(), mark));
@@ -383,7 +193,6 @@ impl<R: Runtime> Pager<R> {
     /// Map each of `pages` to what `holders` says it quarantines, or every page to the database
     /// when `full`, and mark each object through `mark`. Returns each object whose mark failed,
     /// with why.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn map_records(
         &self,
         pages: Vec<(Pid, Damage)>,
@@ -412,53 +221,19 @@ impl<R: Runtime> Pager<R> {
             .into_iter()
             .filter_map(|o| mark(o).err().map(|e| (o, e)))
             .collect();
-        let mut m = self.meta();
-        let records = &mut m.records;
-        records.full_mapped |= full;
-        for (pid, damage, objects) in mapped {
-            if records.page(pid) != Some(damage) {
-                continue;
-            }
-            match objects {
-                Some(objects) => {
-                    records.incomplete.remove(&pid);
-                    records.mapped.insert(pid, (damage, objects));
-                }
-                None => {
-                    records.incomplete.insert(pid, damage);
-                }
-            }
-        }
-        self.note_unmapped(records);
+        self.evidence().mapped(full, mapped);
         failed
     }
 
     /// Returns how many damaged pages this open has walked the objects for.
     #[cfg(feature = "testing")]
     pub(crate) fn walked(&self) -> u64 {
-        self.walked.load(Ordering::Relaxed)
+        self.walked.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Returns what the damage of `pid` was mapped to this open, `None` while it is not mapped.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn mapped_to(&self, pid: Pid) -> Option<BTreeSet<Quarantine>> {
-        let m = self.meta();
-        let (damage, objects) = m.records.mapped.get(&pid)?;
-        (m.records.page(pid) == Some(*damage)).then(|| objects.clone())
-    }
-
-    /// Refuse the page under `latch` as `damage` from now on and record it, unless it is refused
-    /// as `damage` already. Returns the end of the damage record logged, `None` when none is.
-    ///
-    /// Postcondition: a reader that takes the latch next finds the page refused.
-    pub(super) fn publish_refusal(&self, latch: &Held<'_, R>, damage: Damage) -> Option<Lsn> {
-        self.append().refuse(&Refusal(latch.pid()), damage)
-    }
-
-    /// Set whether `records` holds a record not mapped this open.
-    pub(super) fn note_unmapped(&self, records: &Records) {
-        self.any_unmapped
-            .store(records.any_unmapped(), Ordering::Release);
+        self.evidence().mapped_to(pid)
     }
 
     /// Returns the page listing the damage recorded, `Pid(0)` while the file has none.
@@ -478,19 +253,6 @@ impl<R: Runtime> Pager<R> {
         self.append().record_damage(refusal.pid, damage);
     }
 
-    /// Hold `damage` of `pid` in memory, unlogged, leaving the page's memory as it is: for a
-    /// file's copy that fails while the pool holds a sound one. The hold ends at the page's next
-    /// write-out, and lasts the open when the page is never written out.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
-    pub(super) fn hold_damage(&self, pid: Pid, damage: Damage) {
-        if damage == Damage::Unreadable {
-            return;
-        }
-        let mut m = self.meta();
-        m.records.held.insert(pid, damage);
-        self.note_unmapped(&m.records);
-    }
-
     /// Allocate and format an empty list page and name it in the header.
     fn format_damage_list(&self) -> Result<Pid, PageError> {
         let mut new = self.reserve();
@@ -501,12 +263,9 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Give a new file its empty list page, recording from now on.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(super) fn create_damage_list(&self) -> Result<(), PageError> {
         let pid = self.format_damage_list()?;
-        let mut m = self.meta();
-        m.records.list = Some(pid);
-        m.records.logging = true;
+        self.evidence().create_list(pid);
         Ok(())
     }
 
@@ -515,7 +274,6 @@ impl<R: Runtime> Pager<R> {
     /// damaged list page quarantines the database, an unreadable one for this open only.
     ///
     /// Fail if the page cannot be created.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(super) fn load_damage_list(&self) -> Result<(), PageError> {
         let (pid, header_log, header_full) = {
             let h = self.header.lock(&self.rt);
@@ -541,28 +299,15 @@ impl<R: Runtime> Pager<R> {
             Some(Recorded::default())
         };
         let list = self.header.lock(&self.rt).0.damage_list;
-        let mut m = self.meta();
-        let records = &mut m.records;
-        let sound = base.is_some();
-        let mut recorded = base.unwrap_or_default();
-        let mut unfolded = !header_log.is_empty() || header_full;
-        for (pid, met) in std::mem::take(&mut records.replayed) {
-            unfolded |= recorded.meet(pid, met);
-        }
-        recorded.log.extend(header_log);
-        recorded.full |= header_full;
-        records.recorded = recorded;
-        records.unfolded = unfolded;
-        self.note_unmapped(records);
-        records.list = sound.then_some(list);
+        self.evidence()
+            .load_list(base, list, header_log, header_full);
         Ok(())
     }
 
     /// Stop folding into the list page, which `e` refused, and quarantine the database: for this
     /// open only when the page cannot be read.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn refuse_list(&self, e: PageError) {
-        self.meta().records.list = None;
+        self.evidence().drop_list();
         if e.damage != Damage::Unreadable {
             self.quarantine(Quarantine::Database).ok();
         }
@@ -577,9 +322,8 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns the list page when a checkpoint is to fold the records into it: once recovery has
     /// ended, while the page serves and the records differ from it.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(super) fn to_fold(&self) -> Option<Pid> {
-        self.meta().records.to_fold()
+        self.evidence().to_fold()
     }
 
     /// Returns the latch on the list page when [`Pager::to_fold`] names it.

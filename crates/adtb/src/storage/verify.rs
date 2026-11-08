@@ -4,6 +4,7 @@ use crate::runtime::{AlignedBuf, Runtime};
 
 use super::block::{LogFinding, LogProblem, Mode, Resolutions, resolutions_from, scan};
 use super::error::Damage;
+use super::evidence::{self, Against, file_copy};
 use super::log::parse_segment;
 use super::page::{self, Verdict};
 use super::pager::Pager;
@@ -173,14 +174,14 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Fail with the LSN of the first damage before the end of the log recovery kept: a segment
     /// it cannot list, open or read, a batch whose records do not decode, or a block missing.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn logged_resolutions_since(
         &self,
         since: Lsn,
         pages: &BTreeSet<Pid>,
     ) -> Result<Resolutions, Lsn> {
         let (_pin, mut img) = self.load_log().map_err(|_| since)?;
-        resolutions_from(&mut img, since, self.meta().recovered, pages)
+        let recovered = self.evidence().recovered();
+        resolutions_from(&mut img, since, recovered, pages)
     }
 
     /// Check every page and the retained log. A page whose LSN is at or past the log's end when the
@@ -207,7 +208,6 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns what the retained log says of every page, as of now.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn read_log(&self, live: bool) -> RetainedLog {
         let end = self.log().next_lsn();
         self.flush_log();
@@ -270,7 +270,7 @@ impl<R: Runtime> Pager<R> {
             .as_ref()
             .is_some_and(|s| s.resumed == 0 && first == Some(Lsn(0)));
         let gapless = s.as_ref().is_some_and(|s| s.resumed == 0);
-        let recovered = self.meta().recovered;
+        let recovered = self.evidence().recovered();
         let recovered = (gapless && first.is_some_and(|f| f <= recovered)).then_some(recovered);
         let findings = s.iter().flat_map(|s| &s.findings);
         let findings = findings
@@ -292,15 +292,10 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns the end of the page numbers to check against `log`.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn pages_within(&self, log: &RetainedLog) -> u64 {
         let logged = log.last.keys().next_back().map_or(0, |p| p.0 + 1);
-        let m = self.meta();
-        let end = |pages: Option<&Pid>| pages.map_or(0, |p| p.0 + 1);
-        let refused = end(m.damaged.keys().next_back());
-        let recorded = end(m.records.all().pages.keys().next_back());
-        drop(m);
-        self.file_pages().max(logged).max(refused).max(recorded)
+        let evidence = self.evidence().end();
+        self.file_pages().max(logged).max(evidence)
     }
 
     /// Check page `pid` against `log`, refusing it from now on if its contents are lost. Read the
@@ -312,10 +307,9 @@ impl<R: Runtime> Pager<R> {
     /// damage. A page the allocation bitmap calls free has no finding but a chain break of its
     /// last incarnation the log holds and no settle excuses, unless already refused. Report the
     /// damage recorded of it as well.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn check_page(&self, pid: Pid, log: &RetainedLog) -> Vec<Finding> {
         let mut findings = self.judge_page(pid, log);
-        let recorded = self.meta().records.page(pid);
+        let recorded = self.evidence().damage(pid);
         if let Some(damage) = recorded {
             let found = Finding::Page { pid, damage };
             if !findings.contains(&found) {
@@ -325,7 +319,6 @@ impl<R: Runtime> Pager<R> {
         findings
     }
 
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn judge_page(&self, pid: Pid, log: &RetainedLog) -> Vec<Finding> {
         let mut findings = Vec::new();
         let RetainedLog {
@@ -338,7 +331,7 @@ impl<R: Runtime> Pager<R> {
             live,
             ..
         } = log;
-        let known = self.meta().damaged.get(&pid).copied();
+        let known = self.refusal(pid);
         if let Some(damage) = known {
             findings.push(Finding::Page { pid, damage });
             findings.extend(lost_record(pid, damage));
@@ -359,21 +352,18 @@ impl<R: Runtime> Pager<R> {
         let broken = broken.filter(|&d| !self.settled_at(pid, d));
         let judge =
             |disk: &Result<(AlignedBuf, Verdict), Damage>, resident: Option<Lsn>, changed: bool| {
-                let bad = match disk {
-                    _ if changed => None,
-                    Err(d) => Some(*d),
-                    Ok((_, Verdict::Corrupt)) => Some(Damage::Checksum),
-                    Ok(_) => None,
+                let judged = self.judge(pid, file_copy(disk), Against::LogEnd);
+                let bad = match judged {
+                    evidence::Judged::Bad(d) if !changed => Some(d),
+                    _ => None,
                 };
                 let found = match (disk, resident) {
                     (Ok((_, Verdict::Corrupt)) | Err(_), r) => r,
                     (Ok(_), Some(l)) => Some(l),
                     (Ok((buf, _)), None) => Some(page::lsn(buf)),
                 };
-                let future = match (disk, resident) {
-                    (Ok((buf, Verdict::Valid)), None) => {
-                        Damage::past_log_end(page::lsn(buf), self.file_end(pid))
-                    }
+                let future = match (judged, resident) {
+                    (evidence::Judged::Stale(d), None) => Some(d),
                     _ => None,
                 };
                 let stale = future.or_else(|| {
@@ -438,7 +428,7 @@ impl<R: Runtime> Pager<R> {
         if let Some(damage) = bad {
             findings.push(Finding::Page { pid, damage });
             if found.is_some() {
-                self.hold_damage(pid, damage);
+                self.evidence().hold(pid, damage);
             }
         }
         let Some(found) = found else {
@@ -462,12 +452,11 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns whether `pid` is recorded settled at the LSNs `damage` finds it stale at.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn settled_at(&self, pid: Pid, damage: Damage) -> bool {
         let Damage::Stale { expected, found } = damage else {
             return false;
         };
-        self.meta().records.page(pid) == Some(Damage::Settled { expected, found })
+        self.evidence().damage(pid) == Some(Damage::Settled { expected, found })
     }
 
     /// Returns the number of pages the data file spans now.

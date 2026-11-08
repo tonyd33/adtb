@@ -15,6 +15,7 @@ use super::block::{
 use super::digest::{hex, sealed, unhex, unsealed};
 use super::driver::Driver;
 use super::error::Damage;
+use super::evidence::{Against, Judged};
 use super::header::{FileHeader, HISTORY_CAPACITY, REGION};
 use super::log::{FileSource, parse_segment, segment_name};
 use super::page::{self, spoil, valid_page_size};
@@ -878,15 +879,12 @@ impl<R: Runtime> Pager<R> {
     /// this open has not refused the page as stale, the pool holds it at no later LSN, and its
     /// LSN is not below `mapped`, the page LSN map's entry for it. `image` is its resident copy
     /// under the caller's latch.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn trusted(&self, pid: Pid, buf: &[u8], image: Option<&[u8]>, mapped: Option<Lsn>) -> bool {
-        let refused = self.meta().damaged.get(&pid).copied();
-        let stale = matches!(refused, Some(Damage::Stale { .. }));
+        let stale = matches!(self.refusal(pid), Some(Damage::Stale { .. }));
         let behind = mapped.is_some_and(|m| page::lsn(buf) < m);
-        self.sound(pid, buf)
-            && !stale
-            && !behind
-            && self.lost_write(pid, page::lsn(buf), image).is_none()
+        let against = image.map_or(Against::Expected, |i| Against::Resident(page::lsn(i)));
+        let file = Ok((page::lsn(buf), page::verify(pid, buf)));
+        !stale && !behind && self.judge(pid, file, against) == Judged::Sound
     }
 
     fn copy_log(

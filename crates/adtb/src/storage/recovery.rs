@@ -5,9 +5,9 @@ use crate::runtime::{IoError, Runtime};
 
 use super::block::{LogFinding, LogProblem, Mode, batch_at, scan};
 use super::create::check_options;
-use super::damage_log::Met;
 use super::driver::Driver;
 use super::error::{Damage, OpenError};
+use super::evidence::Met;
 use super::header::{self, FileHeader, LOG_DAMAGE_CAPACITY, REGION};
 use super::page;
 use super::pager::{Options, Pager};
@@ -133,7 +133,6 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Postconditions: the stale blocks past the log's end are in the file header before the
     /// log's tail is cleared.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(crate) fn recover(&self) -> Result<(Recovery, u64, Armed), OpenError> {
         let mut img = {
             let mut segments = self.segments.lock(&self.rt);
@@ -165,7 +164,7 @@ impl<R: Runtime> Pager<R> {
         }
         self.log()
             .resume(s.end, s.last_seq.expect("a batch was accepted") + 1);
-        self.meta().recovered = s.end;
+        self.evidence().recovered_to(&Replaying(()), s.end);
         let mut replay = Replay {
             replaying: Replaying(()),
             redo,
@@ -259,7 +258,6 @@ impl<R: Runtime> Pager<R> {
         self.dirty_table().replay_refused(&st.replaying, pid);
     }
 
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn replay(&self, st: &mut Replay, lsn: Lsn, record: Record) {
         let met = match &record {
             Record::Damaged { pid, damage } => Some((*pid, Met::Damaged(*damage))),
@@ -269,18 +267,15 @@ impl<R: Runtime> Pager<R> {
             _ => None,
         };
         if let Some((pid, m)) = met {
-            let mut meta = self.meta();
-            meta.records.bound(pid, m);
-            if lsn > st.ck {
-                meta.records.replayed.push((pid, m));
-            }
+            self.evidence()
+                .replay_met(&st.replaying, pid, m, lsn > st.ck);
         }
         let Some((pid, prev)) = record.page() else {
             return;
         };
         let before = st.last.insert(pid, lsn);
         if prev == Lsn::UNCHAINED {
-            self.meta().damaged.remove(&pid);
+            self.evidence().unrefuse(pid);
         }
         if let Some(expected) = before.filter(|&l| l != prev && prev != Lsn::UNCHAINED) {
             st.unverified.remove(&pid);
@@ -294,7 +289,7 @@ impl<R: Runtime> Pager<R> {
             );
             return;
         }
-        if lsn < st.redo || self.meta().damaged.contains_key(&pid) {
+        if lsn < st.redo || self.refusal(pid).is_some() {
             return;
         }
         if !self.hold(pid).resident() {

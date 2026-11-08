@@ -8,13 +8,13 @@ use adtb_sys::pages::{self, PageMemory, PageState};
 use crate::runtime::{AlignedBuf, FileId, Runtime, ThreadId};
 
 use super::alloc::{Reservation, diff};
-use super::damage_log::{Met, Recorded, Refusal};
+use super::damage_log::Recorded;
 use super::driver::Driver;
 use super::error::{Damage, OpenError};
+use super::evidence::{Against, Evidence, Met, Refusal, Unmapped, file_copy};
 use super::header::FileHeader;
 use super::holding::{Holding, NO_HOLDER};
 use super::log::{Log, Segments};
-use super::lsnmap::{Expected, Gate, retained};
 use super::page::{self, FIRST_EDITABLE, HEADER_LEN, Verdict};
 use super::pagetable::{DirtyTable, Logged};
 use super::quarantine::Quarantine;
@@ -69,12 +69,7 @@ pub struct PageError {
 #[derive(Debug)]
 pub(crate) struct Meta {
     table: DirtyTable,
-    /// The LSN each page must have at least when read in: its last record in the retained log, or
-    /// else the page LSN map's entry, as of the end of recovery, raised by every page record
-    /// logged since.
-    pub(crate) gate: Gate,
-    pub(crate) damaged: BTreeMap<Pid, Damage>,
-    pub(crate) records: super::damage_log::Records,
+    evidence: Evidence,
     /// The bitmap groups a batch has started: their bitmap pages are never blank. A batch counts
     /// here only once it is in the log and while its bitmap page is latched, so a checkpoint that
     /// captures a lower count finds that page dirty and its redo point covers the batch.
@@ -84,8 +79,6 @@ pub(crate) struct Meta {
     pub(crate) reserved: BTreeSet<Pid>,
     /// The reserved pages latched blank whose allocation has not committed.
     pub(crate) blanked: BTreeSet<Pid>,
-    /// The end of the log recovery kept when the pager opened, or zero for a pager created empty.
-    pub(crate) recovered: Lsn,
     /// Resident pages and pages being read in, in clock order.
     resident: Vec<Pid>,
     hand: usize,
@@ -105,6 +98,23 @@ impl Deref for Locked<'_> {
 impl DerefMut for Locked<'_> {
     fn deref_mut(&mut self) -> &mut DirtyTable {
         &mut self.0.table
+    }
+}
+
+/// The evidence of every page, under the meta lock.
+pub(super) struct Evidential<'a>(Holding<'a, Meta>);
+
+impl Deref for Evidential<'_> {
+    type Target = Evidence;
+
+    fn deref(&self) -> &Evidence {
+        &self.0.evidence
+    }
+}
+
+impl DerefMut for Evidential<'_> {
+    fn deref_mut(&mut self) -> &mut Evidence {
+        &mut self.0.evidence
     }
 }
 
@@ -213,20 +223,16 @@ impl<R: Runtime> Append<'_, R> {
                 page: g.to_vec(),
             }
         };
-        let kind = if let Record::Image { prev, .. } = record {
-            let met = if prev == Lsn::UNCHAINED {
-                Met::Start
-            } else {
-                Met::Image
-            };
-            m.records.meet(pid, met);
-            Logged::Image
-        } else {
-            Logged::Change
+        let (kind, met) = match record {
+            Record::Image { prev, .. } if prev == Lsn::UNCHAINED => {
+                (Logged::Image, Some(Met::Start))
+            }
+            Record::Image { .. } => (Logged::Image, Some(Met::Image)),
+            _ => (Logged::Change, None),
         };
         log.append(&record);
         m.table.logged(&self.witness, pid, lsn, kind);
-        m.gate.raise(pid, lsn);
+        m.evidence.logged_page(&self.witness, pid, lsn, met);
         if let Some(map) = map.as_mut()
             && map.root == pid
         {
@@ -241,10 +247,11 @@ impl<R: Runtime> Append<'_, R> {
         let whole = self.pager.is_quarantined(Quarantine::Database);
         let mut last = None;
         for &pid in pids {
+            let log = &mut self.log.log;
             last = self
                 .meta
-                .records
-                .free(&mut self.log.log, pid, whole)
+                .evidence
+                .free(&self.witness, log, pid, whole)
                 .or(last);
         }
         last
@@ -262,21 +269,19 @@ impl<R: Runtime> Append<'_, R> {
         self.log.log.append(record)
     }
 
-    /// Refuse the page `refusal` names as `damage` from now on and record it, unless it is refused
-    /// as `damage` already. Returns the end of the damage record logged, `None` when none is.
-    pub(super) fn refuse(&mut self, refusal: &Refusal, damage: Damage) -> Option<Lsn> {
-        let pid = refusal.pid();
+    /// Refuse the page under `latch` as `damage` from now on, its resident copy dropped, and
+    /// record it, unless it is refused as `damage` already. Returns the end of the damage record
+    /// logged, `None` when none is.
+    pub(super) fn refuse(&mut self, latch: &Held<'_, R>, damage: Damage) -> Option<Lsn> {
+        let refusal = Refusal::of(latch);
         let whole = self.pager.is_quarantined(Quarantine::Database);
+        let by = self.pager.rt.current();
         let m = &mut *self.meta;
-        let fresh = m.damaged.insert(pid, damage) != Some(damage);
-        m.table.refused(refusal);
-        let logged = fresh
-            .then(|| m.records.detect(&mut self.log.log, pid, damage, whole))
-            .flatten();
-        if m.records.page(pid) == Some(damage) {
-            m.records.detected_by.insert(pid, self.pager.rt.current());
-        }
-        self.pager.note_unmapped(&m.records);
+        let log = &mut self.log.log;
+        let logged = m
+            .evidence
+            .refuse(&self.witness, log, &refusal, damage, whole, by);
+        m.table.refused(&refusal);
         logged
     }
 
@@ -284,25 +289,24 @@ impl<R: Runtime> Append<'_, R> {
     /// quarantined whole. Returns the log's end after the record.
     pub(super) fn record_damage(&mut self, pid: Pid, damage: Damage) -> Option<Lsn> {
         let whole = self.pager.is_quarantined(Quarantine::Database);
+        let log = &mut self.log.log;
         self.meta
-            .records
-            .detect(&mut self.log.log, pid, damage, whole)
+            .evidence
+            .record(&self.witness, log, pid, damage, whole)
     }
 
     /// Record every page refused so far, and log the records from now on.
     pub(super) fn start_recording(&mut self) {
         let whole = self.pager.is_quarantined(Quarantine::Database);
-        let m = &mut *self.meta;
-        m.records.logging = true;
-        for (&pid, &damage) in &m.damaged {
-            m.records.detect(&mut self.log.log, pid, damage, whole);
-        }
-        self.pager.note_unmapped(&m.records);
+        let log = &mut self.log.log;
+        self.meta
+            .evidence
+            .start_recording(&self.witness, log, whole);
     }
 
     /// Returns whether a checkpoint is to fold the damage records into the list page.
     pub(super) fn folds(&self) -> bool {
-        self.meta.records.to_fold().is_some()
+        self.meta.evidence.to_fold().is_some()
     }
 
     /// Log a checkpoint of the dirty page table and the map root, pinning its redo LSN when `pin`,
@@ -313,7 +317,7 @@ impl<R: Runtime> Append<'_, R> {
         let lsn = log.next_lsn();
         let dirty = m.table.snapshot();
         let redo = dirty.iter().map(|(_, l)| *l).min().unwrap_or(lsn);
-        let folded = fold.then(|| m.records.snapshot(self.pager.damage_list_capacity()));
+        let folded = fold.then(|| m.evidence.snapshot(self.pager.damage_list_capacity()));
         let at = log.append(&Record::Checkpoint {
             redo,
             dirty,
@@ -415,8 +419,7 @@ pub struct Shared<R: Runtime> {
     pub(crate) marks: Lock<super::quarantine::Marks>,
     /// Whether `marks` holds any mark. Set before a mark shows in `marks`.
     pub(crate) any_mark: std::sync::atomic::AtomicBool,
-    /// Whether a damage record may be unmapped. Set under the meta lock with the record.
-    pub(crate) any_unmapped: std::sync::atomic::AtomicBool,
+    unmapped: Unmapped,
     /// How many damaged pages this open has walked the objects for.
     pub(crate) walked: AtomicU64,
     pub(super) archive: Lock<Option<ArchiveHook>>,
@@ -685,7 +688,7 @@ impl<'a, R: Runtime> Held<'a, R> {
             return;
         }
         if let Some(damage) = prior {
-            m.damaged.insert(pid, damage);
+            m.evidence.restore(pid, damage);
         }
         m.reserved.remove(&pid);
         drop(m);
@@ -707,7 +710,7 @@ impl<R: Runtime> Pager<R> {
         }
         let refusal = {
             let mut m = self.own_meta();
-            let refusal = m.damaged.remove(&pid);
+            let refusal = m.evidence.unrefuse(pid);
             m.blanked.insert(pid);
             refusal
         };
@@ -719,7 +722,7 @@ impl<R: Runtime> Pager<R> {
     /// page again.
     pub(super) fn latch_overwritten(&self, pid: Pid) -> PageExclusive<'_, R> {
         let g = self.hold(pid).overwrite();
-        self.own_meta().damaged.remove(&pid);
+        self.evidence().unrefuse(pid);
         g
     }
 
@@ -727,7 +730,7 @@ impl<R: Runtime> Pager<R> {
     /// stale, and no longer refused.
     pub(super) fn latch_restored(&self, pid: Pid, copy: &[u8]) -> PageExclusive<'_, R> {
         let g = self.hold(pid).restore_copy(copy);
-        self.own_meta().damaged.remove(&pid);
+        self.evidence().unrefuse(pid);
         g
     }
 
@@ -738,19 +741,11 @@ impl<R: Runtime> Pager<R> {
     pub(super) fn replay_page_in(&self, pid: Pid) -> Option<Damage> {
         let mut g = self.hold(pid);
         self.make_room(pid);
-        let failed = match self.read_disk(pid) {
-            Ok((buf, Verdict::Valid | Verdict::Blank)) => {
-                let past = Damage::past_log_end(page::lsn(&buf), self.file_end(pid));
-                if past.is_none() {
-                    g.read_in(&buf);
-                }
-                past
-            }
-            Ok((_, Verdict::Corrupt)) => Some(Damage::Checksum),
-            Err(d) => Some(d),
-        };
-        if failed.is_some() {
-            self.unreserve(pid);
+        let read = self.read_disk(pid);
+        let failed = self.judge(pid, file_copy(&read), Against::LogEnd).damage();
+        match read {
+            Ok((buf, _)) if failed.is_none() => g.read_in(&buf),
+            _ => self.unreserve(pid),
         }
         failed
     }
@@ -825,6 +820,8 @@ impl<R: Runtime> Pager<R> {
         data: FileId,
     ) -> Self {
         let bitmap_groups = header.bitmap_groups;
+        let evidence = Evidence::new();
+        let unmapped = evidence.unmapped_flag();
         let log = Log::new(header.log_block as usize, header.epoch, header.file_id);
         let segments = Segments::new(
             o.log_dir(),
@@ -848,20 +845,17 @@ impl<R: Runtime> Pager<R> {
             segments: Lock::new(segments),
             meta: Lock::new(Meta {
                 table: DirtyTable::new(o.atomic_page_writes),
-                gate: Gate::Recovering,
-                damaged: BTreeMap::new(),
-                records: Default::default(),
+                evidence,
                 groups: bitmap_groups,
                 reserved: BTreeSet::new(),
                 blanked: BTreeSet::new(),
-                recovered: Lsn(0),
                 resident: Vec::new(),
                 hand: 0,
             }),
             alloc: Lock::new(Default::default()),
             marks: Lock::new(Default::default()),
             any_mark: std::sync::atomic::AtomicBool::new(false),
-            any_unmapped: std::sync::atomic::AtomicBool::new(false),
+            unmapped,
             walked: AtomicU64::new(0),
             archive: Lock::new(None),
             recycling: Lock::new(()),
@@ -907,7 +901,7 @@ impl<R: Runtime> Pager<R> {
             log_damage_full: false,
         };
         let pager = Pager::assemble(rt, options, header, 1, data);
-        pager.own_meta().gate = Gate::Armed(Expected::default());
+        pager.evidence().arm_created();
         let claimed = {
             let mut segments = pager.segments.lock(&pager.rt);
             pager.io(|d| segments.claim(d))
@@ -930,33 +924,6 @@ impl<R: Runtime> Pager<R> {
         Ok(pager)
     }
 
-    /// End recovery: set each page's expected LSN from the page LSN map, then the retained log.
-    /// Turn the gate off, setting none, when the log cannot prove a record before the end
-    /// recovery kept, or fail with the map page refused.
-    pub(super) fn arm(&self) -> super::recovery::Armed {
-        let armed = self.map_entries().map_err(Some).and_then(|folded| {
-            let end = self.own_meta().recovered;
-            let (_pin, mut img) = self.load_log().map_err(|_| None)?;
-            let last = retained(&mut img, end).map_err(|_| None)?;
-            let mut expected = Expected::new(folded);
-            for (pid, lsn) in last {
-                expected.raise(pid, lsn);
-            }
-            Ok(expected)
-        });
-        let mut m = self.own_meta();
-        match armed {
-            Ok(expected) => {
-                m.gate = Gate::Armed(expected);
-                Ok(())
-            }
-            Err(e) => {
-                m.gate = Gate::Off;
-                Err(e)
-            }
-        }
-    }
-
     pub fn page_size(&self) -> usize {
         self.page_size
     }
@@ -964,11 +931,6 @@ impl<R: Runtime> Pager<R> {
     /// Returns the most threads the pool serves: those that may latch pages at once.
     pub fn max_threads(&self) -> usize {
         self.pool_frames / LATCHES_PER_THREAD
-    }
-
-    /// Returns the pages refused so far, each with what is wrong with it.
-    pub(crate) fn damaged(&self) -> BTreeMap<Pid, Damage> {
-        self.own_meta().damaged.clone()
     }
 
     pub(crate) fn meta(&self) -> Holding<'_, Meta> {
@@ -1015,6 +977,15 @@ impl<R: Runtime> Pager<R> {
         Locked(self.own_meta())
     }
 
+    pub(super) fn evidence(&self) -> Evidential<'_> {
+        Evidential(self.own_meta())
+    }
+
+    /// Returns whether a damage record may be unmapped, without the meta lock.
+    pub(super) fn any_unmapped(&self) -> bool {
+        self.unmapped.any()
+    }
+
     /// Returns whether the frame of `pid` holds changes the file lacks.
     pub(super) fn is_unwritten(&self, pid: Pid) -> bool {
         self.own_meta().table.is_unwritten(pid)
@@ -1052,8 +1023,8 @@ impl<R: Runtime> Pager<R> {
     }
 
     fn refused(&self, pid: Pid) -> Result<(), PageError> {
-        match self.own_meta().damaged.get(&pid) {
-            Some(&damage) => Err(PageError { pid, damage }),
+        match self.refusal(pid) {
+            Some(damage) => Err(PageError { pid, damage }),
             None => Ok(()),
         }
     }
@@ -1168,39 +1139,18 @@ impl<R: Runtime> Pager<R> {
         if g.resident() {
             return Ok(Some(g));
         }
-        if self.own_meta().damaged.contains_key(&pid) {
+        if self.refusal(pid).is_some() {
             return Ok(None);
         }
         self.make_room(pid);
         let read = self.read_disk(pid);
-        let damage = match &read {
-            Err(d) => Some(*d),
-            Ok((_, Verdict::Corrupt)) => Some(Damage::Checksum),
-            Ok((buf, _)) => {
-                let found = page::lsn(buf);
-                Damage::past_log_end(found, self.file_end(pid))
-                    .or_else(|| self.lost_write(pid, found, None))
-            }
-        };
-        if let Some(damage) = damage {
+        let judged = self.judge(pid, file_copy(&read), Against::Expected);
+        if let Some(damage) = judged.damage() {
             return Err(self.refuse_latched(g, damage));
         }
         let (buf, _) = read.unwrap();
         g.read_in(&buf);
         Ok(Some(g))
-    }
-
-    /// Returns `Stale` when `pid` must have an LSN past `found`, the LSN of the file's copy: the LSN
-    /// of `image`, its resident copy, changed or not, or else its expected LSN.
-    ///
-    /// Preconditions: the caller holds a latch on `pid` and `image` is the resident copy under it,
-    /// or the caller judges again under one.
-    pub(crate) fn lost_write(&self, pid: Pid, found: Lsn, image: Option<&[u8]>) -> Option<Damage> {
-        let expected = match image {
-            Some(image) => page::lsn(image),
-            None => self.own_meta().gate.expected(pid)?,
-        };
-        (found < expected).then_some(Damage::Stale { expected, found })
     }
 
     /// Refuse `pid` from now on, dropping its memory. Memory holding changes the file lacks is
@@ -1225,7 +1175,7 @@ impl<R: Runtime> Pager<R> {
         if latch.resident() && self.writes_refused(pid) {
             self.write_out(pid, &latch);
         }
-        let logged = self.publish_refusal(&latch, damage);
+        let logged = self.append().refuse(&latch, damage);
         if latch.resident() {
             latch.g.evict();
         } else {
@@ -1245,7 +1195,7 @@ impl<R: Runtime> Pager<R> {
             return false;
         }
         let m = self.own_meta();
-        m.table.is_unwritten(pid) && matches!(m.gate, Gate::Armed(_))
+        m.table.is_unwritten(pid) && m.evidence.armed()
     }
 
     /// Stop counting `pid` as resident.
@@ -1256,12 +1206,6 @@ impl<R: Runtime> Pager<R> {
         }
     }
 
-    /// Returns whether the file's copy `buf` of `pid` verifies and is behind [`Pager::file_end`].
-    pub(crate) fn sound(&self, pid: Pid, buf: &[u8]) -> bool {
-        !matches!(page::verify(pid, buf), Verdict::Corrupt)
-            && Damage::past_log_end(page::lsn(buf), self.file_end(pid)).is_none()
-    }
-
     /// Returns the LSN the file's copy of `pid` is below: the log's next LSN once this open has
     /// written the page, and the end of the log recovery kept before.
     ///
@@ -1270,7 +1214,7 @@ impl<R: Runtime> Pager<R> {
     pub(crate) fn file_end(&self, pid: Pid) -> Lsn {
         let end = {
             let m = self.own_meta();
-            m.table.file_end(pid, m.recovered)
+            m.table.file_end(pid, m.evidence.recovered())
         };
         end.unwrap_or_else(|| self.log().next_lsn())
     }
@@ -1347,8 +1291,9 @@ impl<R: Runtime> Pager<R> {
         let offset = pid.0 * self.page_size as u64;
         self.io(|d| d.write_all(vec![(self.data, offset, staged)]));
         let mut m = self.own_meta();
-        m.table.written_out(Wrote(pid));
-        m.records.replaced(pid);
+        let wrote = Wrote(pid);
+        m.evidence.written_out(&wrote);
+        m.table.written_out(wrote);
     }
 
     /// Returns `bytes` sealed for the device, once the log holds everything the page depends on.

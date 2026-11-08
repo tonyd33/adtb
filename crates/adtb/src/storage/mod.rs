@@ -13,6 +13,7 @@ mod driver;
 mod dump;
 mod dump_crypt;
 mod error;
+mod evidence;
 mod header;
 mod holding;
 mod log;
@@ -25,6 +26,8 @@ mod record;
 mod recovery;
 mod verify;
 
+#[cfg(test)]
+mod evidence_tests;
 #[cfg(test)]
 mod tests;
 
