@@ -1,13 +1,13 @@
 //! The textual syntax over the engine's values: they read back as printed, and print exactly as
 //! the reference prints the same values, whether built directly or read back from the engine.
 
-use adtb::plan::fixture;
+use crate::plan::fixture;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use adtb::exec::{self, Budget, Call, Options as XOptions, Val};
-use adtb::plan::{Options as PlanOptions, Rewrites, plan};
+use crate::exec::{self, Budget, Call, Options as XOptions, Val};
+use crate::plan::{Options as PlanOptions, Rewrites, plan};
 use adtb_lang::textual::{self, Form};
 use adtb_lang::types::Ty;
 use adtb_reference::Value;
@@ -15,11 +15,11 @@ use adtb_sim::{Config, Outcome, Sim};
 use adtb_testkit::Rng;
 use adtb_testkit::draw::draw;
 
+use crate::test_world::load;
 use adtb_lang::schema::Schema;
-use adtb_simkit::load;
 use fixture::Fixture;
 
-use crate::exec::{options, planner, read_only};
+use super::exec_tests::{options, planner, read_only};
 
 const SCHEMA: &str = r"
 type Money = { amount: Decimal 2, currency: Text }

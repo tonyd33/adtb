@@ -4,8 +4,11 @@ use std::ops::Range;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 
-use adtb::exec::{self, Scheduler, Val};
-use adtb::write::{self, Database, Rejection as WRejection, Rows};
+use crate::exec::{self, Scheduler, Val};
+use crate::test_world::support::{to_ref, to_val};
+use crate::test_world::write_path::{self, WritePath};
+use crate::test_world::{PAGE, finished};
+use crate::write::{self, Database, Rejection as WRejection, Rows};
 use adtb_harness::common;
 use adtb_harness::damage::DataFile;
 use adtb_harness::seeds::{share, sweep};
@@ -14,9 +17,6 @@ use adtb_lang::schema::Schema;
 use adtb_lang::types::Ty;
 use adtb_reference::{Abort, Rejection, Value};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
-use adtb_simkit::harness::{PAGE, finished};
-use adtb_simkit::load::{self, WritePath};
-use adtb_simkit::support::{to_ref, to_val};
 use adtb_testkit::fixture::Fixture;
 use adtb_testkit::uuid;
 use adtb_testkit::writes::fixture;
@@ -232,7 +232,12 @@ fn prepare(w: &WritePath<SimRuntime>, s: &Step) -> Prepared {
 fn rekeyed(rows: &Rows, to: &Schema, from: &Schema) -> Rows {
     rows.iter()
         .filter(|((r, _), _)| !from.module(from.relation(*r).module).engine)
-        .map(|((r, c), vs)| ((load::relation_of(to, from, *r), *c), vs.clone()))
+        .map(|((r, c), vs)| {
+            (
+                (adtb_harness::load::relation_of(to, from, *r), *c),
+                vs.clone(),
+            )
+        })
         .collect()
 }
 
@@ -269,7 +274,7 @@ type Statements = Option<Vec<Prepared>>;
 
 fn engine(seed: u64, case: &Case, f: &Fixture, mode: Mode, prepared: &mut Statements) -> Outcomes {
     let mut got = None;
-    let mut sim = load::sim(seed, Config::default(), f);
+    let mut sim = write_path::sim(seed, Config::default(), f);
     let result = sim.run(|rt| got = Some(run_engine(&rt, f, &case.steps, mode, prepared)));
     assert_eq!(Outcome::Finished, result, "seed {seed}, case {}", case.name);
     got.unwrap_or_else(|| panic!("seed {seed}, case {}: the run gave no outcomes", case.name))
@@ -920,11 +925,11 @@ fn concurrent_writers_keep_keys_and_uniques_and_lose_no_update() {
     let f = shop();
     let mut commits = 0;
     for seed in sweep(SEEDS) {
-        let mut sim = load::sim(seed, Config::default(), &f);
+        let mut sim = write_path::sim(seed, Config::default(), &f);
         let done: Arc<std::sync::Mutex<Vec<Done>>> = Arc::default();
         let mut finals = None;
         let result = sim.run(|rt| {
-            use adtb::runtime::{Entropy, Threads};
+            use crate::runtime::{Entropy, Threads};
             let w = WritePath::loaded(&rt, &f, None);
             let preps = Arc::new([
                 prep(&w, INC, false),
@@ -1025,7 +1030,7 @@ fn concurrent_writers_keep_keys_and_uniques_and_lose_no_update() {
 
 #[test]
 fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
-    use adtb::runtime::Threads;
+    use crate::runtime::Threads;
     let f = Fixture::new(SHOP);
     type Slot<T> = Arc<std::sync::Mutex<T>>;
     let load = |rt: &SimRuntime,
@@ -1039,7 +1044,7 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
         let tag = Arc::new(prep(&w, TAG, true));
         let w = Arc::new(w);
         started.lock().unwrap().replace({
-            use adtb::runtime::Clock;
+            use crate::runtime::Clock;
             rt.now().as_nanos()
         });
         let clients: Vec<_> = (0..3)
@@ -1096,7 +1101,7 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
         let created: Slot<bool> = Arc::default();
         let drawn: Slot<BTreeSet<Val>> = Arc::default();
         let at = begun + span * (1 + seed) / 6;
-        sim.crash_at(adtb::runtime::Instant::from_nanos(at));
+        sim.crash_at(crate::runtime::Instant::from_nanos(at));
         let first = sim.run(|rt| load(&rt, &created, &acked, &submitted, &drawn, &Arc::default()));
         if first == Outcome::Crashed && !acked.lock().unwrap().is_empty() {
             crashed += 1;
@@ -1173,12 +1178,12 @@ fn behind_a_damaged_commit_log(
     seed: u64,
     text: &str,
     over_t: bool,
-) -> (adtb::storage::Pid, Result<(), String>) {
-    use adtb::runtime::Runtime;
-    use adtb::storage::Pid;
+) -> (crate::storage::Pid, Result<(), String>) {
+    use crate::runtime::Runtime;
+    use crate::storage::Pid;
     let f = shop();
     let mut out = None;
-    let mut sim = load::sim(seed, Config::default(), &f);
+    let mut sim = write_path::sim(seed, Config::default(), &f);
     let result = sim.run(|rt| {
         let w = WritePath::loaded(&rt, &f, None);
         let s = prep(&w, text, over_t);
@@ -1236,7 +1241,7 @@ fn a_unique_probe_meeting_a_damaged_commit_log_fails_the_statement() {
 
 #[test]
 fn only_a_sequence_key_has_a_counter() {
-    use adtb::storage::HEADER_LEN;
+    use crate::storage::HEADER_LEN;
     let f = Fixture::new(
         "type Item = { id: I64, n: I64 }
 relation items : Item key id
@@ -1244,7 +1249,7 @@ type Label = { id: Key tags, name: Text }
 relation tags : Label key id generate sequence",
     );
     let mut counters = None;
-    let mut sim = load::sim(0, Config::default(), &f);
+    let mut sim = write_path::sim(0, Config::default(), &f);
     finished(&mut sim, |rt| {
         let w = WritePath::loaded(&rt, &f, None);
         let item = prep(&w, "insert items { id: 7, n: 0 }", false);

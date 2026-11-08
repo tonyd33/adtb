@@ -21,9 +21,9 @@ use crate::mvcc::{Limits, Snapshot, Transactions, Xid};
 use crate::plan;
 use crate::runtime::Runtime;
 use crate::storage::{Damage, LogFinding, Lsn, PageError, Pager, Pid, Position, Quarantine};
-use crate::vacuum::Charged;
 use crate::write;
 
+pub use crate::vacuum::Charged;
 pub use control::{PageHold, VacuumHold};
 pub use object::{CommitLogPages, Object};
 pub use plant::{Plant, Planted, Site};

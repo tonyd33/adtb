@@ -3,21 +3,35 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb::Database;
 use adtb::exec::Val;
 use adtb::key::Value as Stored;
+use adtb::testing::Knobs;
+use adtb::{Database, OpenOptions, TxnOptions};
 use adtb_lang::schema::ValueDef;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
-use adtb_simkit::load;
+use adtb_simkit::{load, open};
 use adtb_testkit::fixture::Fixture;
 
 use crate::constraints::read;
-use crate::exec::{options, read_only};
 
 const DECLS: &str = "type Item = { id: Key items, name: Text }
 relation items : Item key id generate sequence
 type Count = { id: Key counts, n: I64 }
 relation counts : Count key id generate sequence";
+
+fn options() -> OpenOptions {
+    OpenOptions {
+        testing: Knobs::without_background_vacuum(),
+        ..open::options(1)
+    }
+}
+
+fn read_only() -> TxnOptions {
+    TxnOptions {
+        read_only: true,
+        ..TxnOptions::default()
+    }
+}
 
 /// Returns the fixture of items 1 to `n`, item `i` named `item{i}` and a run of letters, and of
 /// one count.

@@ -12,8 +12,9 @@ unit tests.
 
 The harness the simulator's tests share is two crates (§5):
 `adtb-harness`, which names no engine type, holds the crash loop,
-failure searches, byte damage and runs of a simulation; `adtb-simkit`
-holds the opens, the loading of rows, the pager options
+failure searches, byte damage, the loading of rows through a session
+and runs of a simulation; `adtb-simkit` holds the opens, the loading
+of rows through the public API, the pager options
 `harness::{PAGE, NAME, options}` and the isolation workload over the
 engine. The component world, a pager and structures a test builds
 without a catalog, is `adtb`'s own test module `test_world`, for its
@@ -252,9 +253,11 @@ through the store `store` answers.
 
 `adtb-harness` holds what the simulator's tests share above `adtb_sim`
 that names no engine type: the crash loop, the failure searches, byte
-damage over the file layout and runs of a simulation. It depends on
-`adtb-sim`, `adtb-sys` and `adtb-testkit` only, so `adtb`'s unit tests
-use it as `adtb-sim`'s tests do. `adtb-simkit` holds what names the
+damage over the file layout, the loading of rows through any session
+that runs ad hoc statements, and runs of a simulation. It depends on
+`adtb-sim`, `adtb-sys`, `adtb-testkit`, `adtb-lang` and
+`adtb-reference` only, so `adtb`'s unit tests use it as `adtb-sim`'s
+tests do. `adtb-simkit` holds what names the
 engine: the opens, the loading of rows and the isolation workload
 over the engine ([runtime.md §6](runtime.md#6-isolation-histories)).
 Tests that build a pager or a structure below the public API and
@@ -262,8 +265,7 @@ Tests that build a pager or a structure below the public API and
 layer they test, build their world with `test_world`. Tests of
 `adtb-sim` that still build one (in the storage, execution, export,
 maintenance and server binaries) open the engine's pager themselves
-over `adtb_simkit::harness::{PAGE, NAME, options}`, and simkit's
-`load::WritePath` builds its pager the same way.
+over `adtb_simkit::harness::{PAGE, NAME, options}`.
 
 - The crash loop recognises a fatal I/O failure by the
   `adtb_sys::runtime::FatalIo` payload.
@@ -275,12 +277,8 @@ over `adtb_simkit::harness::{PAGE, NAME, options}`, and simkit's
 - A test's database is bound by the engine's own catalog: the harness
   assigns no owner, store or constructor id to a structure of an engine
   database. Rows reach it through the public interface, by `load`.
-  One test is the exception: the read of the past in the executor's
-  tests copies deleted versions into a heap and large-value store it
-  creates on the engine's pager under owners 95000 and 95001, since no
-  call gives a store reading at a past position.
-- `load::WritePath` is the one harness site that builds the write path
-  outside a database.
+- The write path outside a database is built only inside `adtb`, by
+  `test_world::write_path`.
 
 - A test defines no crash loop, world type or byte-damage helper of its
   own. Every crash loop is `crash_loop`, and every round of it runs the
@@ -292,9 +290,10 @@ over `adtb_simkit::harness::{PAGE, NAME, options}`, and simkit's
   test may call `Database::open_in` and `Sim::crash_at` directly, to
   test the public open and the simulator.
 - Local open helpers remain. `work/tools/structure-allowlist` counts
-  them, in `adtb-sim`'s tests and in `adtb`'s unit-test files (`tests.rs`,
-  `*_tests.rs`, `tests/`) and `test_world`, by name: functions taking parameters whose name begins or ends
-  with an `open` form, closures bound to an `open` form, and `fn engine`
+  them, in `adtb-sim`'s tests and in `adtb`'s unit-test files
+  (`tests.rs`, `*_tests.rs`, `tests/`) and `test_world`, by name:
+  functions taking parameters whose name begins or ends with an `open`
+  form, closures bound to an `open` form, and `fn engine`
   where it opens the engine. A helper under another name is not
   counted. The size products left are counted the same way. The counts
   only fall.
@@ -311,6 +310,10 @@ Round::crash(body) -> bool; Round::crash_after_setup(setup, body: FnOnce(rt, T))
 Round::{seed, index, ledger, sim}
 Reopened::{allows(&Violation), settle(&Ledger), last()}
 process::{run(&mut sim, body) -> T, once(seed, body) -> T, finished(&mut sim, body)}
+load::{Session, load(&session, &schema, &rows, Running) -> Option<Txn>,
+       running(&session, &schema, &rows) -> Txn, rows_of(to, from, &rows),
+       relation_of(to, from, rel), staged(&mut to, from),
+       made_once(&MADE, decls, &rows, make) -> Files}
 damage::DataFile::{new(name, page_size), range(page), bytes, page, page_mut,
                    flip(files, page, at), zero, replace, truncate, extend, cut}
                                              // page: impl Into<u64>, a Pid among them
@@ -324,10 +327,8 @@ harness::{PAGE, NAME, options(pool_frames)}  // a small file's pager options
 load::{open(rt, decls), open_with(rt, decls, &OpenOptions),
        rows_with_noise(&db, &schema, &rows) -> AdHocTransaction,
        committed_noise(&db, &schema, &rows), running_noise(&db, &schema, &rows),
-       files(decls, &schema, &rows, &OpenOptions), write_files(&fixture),
-       sim(seed, config, &fixture), rows_of(to, from, &rows), relation_of(to, from, rel)}
-load::WritePath::{of(rt, &fixture, pool), loaded(rt, &fixture, pool), reopen(rt, pool),
-                  db, schema, program, into_db, ty, prepare}
+       files(decls, &schema, &rows, &OpenOptions)}
+support::to_val(&schema, &ty, &value) -> Val
 api::{run, once}; harness::finished           // the process calls, re-exported
 ```
 
@@ -340,6 +341,12 @@ fixture::Storage::{create(rt, &Options), reopen(rt, &Layout), layout,
 fixture::Parts::{new, verify}                // a world a test keeps in its own fields
 recovery::verify_after_crash(&pager, &inventory)
 rows::{row_type, key_of, pair, replay, Op, Rows, Live}
+load::{FILE, options(workers), open, open_with, rows_with_noise, committed_noise,
+       running_noise, files}                 // as adtb_simkit::load
+support::{stored, to_val, to_ref, row_ty}
+write_path::{write_files(&fixture), sim(seed, config, &fixture)}
+write_path::WritePath::{of(rt, &fixture, pool), loaded(rt, &fixture, pool), reopen(rt, pool),
+                        db, schema, program, into_db, ty, prepare}
 finished                                     // adtb_harness::process::finished
 ```
 

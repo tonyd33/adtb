@@ -21,7 +21,6 @@
 4 crates/adtb-lang/tests/textual.rs
 1 crates/adtb-probe/tests/probe.rs
 1 crates/adtb-reference/tests/textual.rs
-2 crates/adtb-sim/tests/execution/calls.rs
 3 crates/adtb-sim/tests/execution/constraints.rs
 2 crates/adtb-sim/tests/execution/create.rs
 1 crates/adtb-sim/tests/execution/derived_index.rs
@@ -64,3 +63,4 @@
 1 crates/adtb/src/mvcc/txn.rs
 2 crates/adtb/src/plan/tests/mod.rs
 1 crates/adtb/src/storage/tests.rs
+2 crates/adtb/src/write/calls_tests.rs

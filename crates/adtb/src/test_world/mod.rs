@@ -1,8 +1,11 @@
 //! Hold the page size, file name and options of pager tests, and the component world they build.
 
 pub mod fixture;
+pub mod load;
 pub mod recovery;
 pub mod rows;
+pub mod support;
+pub mod write_path;
 
 pub use adtb_harness::process::finished;
 use adtb_sim::SimRuntime;

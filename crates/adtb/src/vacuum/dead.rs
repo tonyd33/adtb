@@ -12,7 +12,6 @@ const NODE_BYTES: usize = 64;
 pub struct DeadSet {
     heaps: BTreeMap<u32, BTreeMap<Pid, Vec<u64>>>,
     bytes: usize,
-    len: usize,
 }
 
 impl DeadSet {
@@ -37,10 +36,7 @@ impl DeadSet {
                 bits.resize(word + 1, 0);
             }
             let bit = 1 << (s % 64);
-            if bits[word] & bit == 0 {
-                bits[word] |= bit;
-                self.len += 1;
-            }
+            bits[word] |= bit;
         }
     }
 
@@ -71,11 +67,6 @@ impl DeadSet {
                 (pid, slots)
             })
             .collect()
-    }
-
-    /// Returns the number of dead TIDs.
-    pub fn len(&self) -> usize {
-        self.len
     }
 
     /// Returns whether the set holds no page.

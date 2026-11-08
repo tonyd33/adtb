@@ -248,7 +248,7 @@ pub_fields prod 41 crates/adtb/src/write/mod.rs
 pub_fields prod 6 crates/adtb/src/write/past.rs
 pub_fields prod 6 crates/adtb/src/write/reindex.rs
 pub_fields prod 33 crates/adtb/src/write/schema.rs
-xmin_xmax test 1 crates/adtb-sim/tests/execution/exec.rs
+xmin_xmax test 1 crates/adtb/src/exec/exec_tests.rs
 xmin_xmax test 14 crates/adtb/src/history_tests.rs
 xmin_xmax test 1 crates/adtb-sim/tests/maintenance/maintenance_faults.rs
 xmin_xmax test 9 crates/adtb/src/vacuum/vacuum_tests.rs
@@ -276,6 +276,7 @@ xmin_xmax prod 2 crates/adtb/src/write/verify.rs
 crash_allows test 1 crates/adtb/src/storage/pager_tests.rs
 crash_allows prod 2 crates/adtb-harness/src/crash.rs
 crash_loops prod 1 crates/adtb-harness/src/crash.rs
+sim_test_offsets test 1 crates/adtb/src/exec/exec_tests.rs
 sim_test_offsets test 1 crates/adtb/src/storage/file_damage_tests.rs
 sim_test_offsets test 1 crates/adtb/src/storage/pager_tests.rs
 sim_test_offsets test 2 crates/adtb/src/vacuum/vacuum_tests.rs
@@ -291,8 +292,8 @@ sim_test_opens test 1 crates/adtb/src/storage/damage_race_tests.rs
 sim_test_opens test 1 crates/adtb/src/storage/pager_tests.rs
 sim_test_opens test 2 crates/adtb/src/storage/real_file_tests.rs
 sim_test_opens test 1 crates/adtb/src/test_world/fixture.rs
+sim_test_opens test 2 crates/adtb/src/test_world/load.rs
 sim_test_opens test 1 crates/adtb/src/test_world/mod.rs
-sim_test_offsets test 1 crates/adtb-sim/tests/execution/exec.rs
 sim_test_offsets test 1 crates/adtb-sim/tests/export/quarantine.rs
 sim_test_offsets test 1 crates/adtb-sim/tests/maintenance/scrub.rs
 sim_test_offsets test 2 crates/adtb-sim/tests/maintenance/verify.rs
@@ -339,3 +340,4 @@ sim_test_opens test 1 crates/adtb-sim/tests/storage/damage_search/world.rs
 sim_test_opens test 4 crates/adtb-sim/tests/storage/io_contract.rs
 sim_test_opens test 2 crates/adtb-sim/tests/storage/open_damage.rs
 sim_test_opens test 4 crates/adtb-sim/tests/storage/truncated_open.rs
+sim_test_opens test 1 crates/adtb/src/test_world/write_path.rs

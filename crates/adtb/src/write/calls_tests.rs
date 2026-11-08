@@ -5,15 +5,15 @@ use std::sync::{Arc, Mutex};
 use std::task::{Wake, Waker};
 use std::time::Duration;
 
-use adtb::exec::{
+use crate::exec::{
     Admission, Entry, Exceeded, Priority, Refusal, Refused, Resumable, Scheduler, Step, Stopped,
     Task, Val,
 };
-use adtb::mvcc::{Cause, Waits, Watch, Xid};
-use adtb::runtime::{Instant, Io, Op, Runtime, ThreadId, Threads};
-use adtb::write::{self, Bounds, Database, Deferral, Failed, Local, Text, Txn};
-use adtb::{CallOptions, CreateOptions, Log as SchemaLog, OpenOptions, Registration};
-use adtb::{TxnCallOptions, TxnOptions, Value};
+use crate::mvcc::{Cause, Waits, Watch, Xid};
+use crate::runtime::{Instant, Io, Op, Runtime, ThreadId, Threads};
+use crate::write::{self, Bounds, Database, Deferral, Failed, Local, Text, Txn};
+use crate::{CallOptions, CreateOptions, Log as SchemaLog, OpenOptions, Registration};
+use crate::{TxnCallOptions, TxnOptions, Value};
 use adtb_lang::check::check_adhoc;
 use adtb_lang::kernel::{Terms, Tm};
 use adtb_lang::norm;
@@ -23,8 +23,8 @@ use adtb_sim::{Config, Outcome, SimRuntime};
 use adtb_sys::os::{Backend, OsRuntime};
 use adtb_testkit::fixture::Fixture;
 
+use crate::test_world::write_path::{self, WritePath};
 use adtb_harness::seeds::sweep;
-use adtb_simkit::load::{self, WritePath};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Event {
@@ -642,7 +642,7 @@ fn sim_seeds(name: &str, body: impl Fn(&SimRuntime)) {
 fn sim_seeds_in(name: &str, seeds: Range<u64>, rows: &'static str, body: impl Fn(&SimRuntime)) {
     *SIM_ROWS.lock().unwrap() = rows;
     for seed in sweep(seeds) {
-        let mut sim = load::sim(
+        let mut sim = write_path::sim(
             seed,
             Config {
                 switch_rate: 0.3,
@@ -655,17 +655,20 @@ fn sim_seeds_in(name: &str, seeds: Range<u64>, rows: &'static str, body: impl Fn
     }
 }
 
+/// Returns the directory of the workspace's `target/tmp`.
+fn target_tmp() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp")
+}
+
 fn real() -> OsRuntime {
-    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("calls");
+    let dir = target_tmp().join("calls");
     std::fs::create_dir_all(&dir).unwrap();
     OsRuntime::new(dir, Backend::Pool { threads: 2 })
 }
 
 /// Returns a runtime over a new directory of its own, `name`.
 fn real_in(name: &str) -> OsRuntime {
-    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("calls-db")
-        .join(name);
+    let dir = target_tmp().join("calls-db").join(name);
     if dir.exists() {
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -1606,9 +1609,9 @@ fn counter_options() -> OpenOptions {
     }
 }
 
-fn counter_value<R: Runtime>(db: &adtb::Database<R>) -> Vec<Value> {
+fn counter_value<R: Runtime>(db: &crate::Database<R>) -> Vec<Value> {
     let calls = db.registered("counter").unwrap();
-    let adtb::Called::Rows(rows) = calls.call(1, &[], &CallOptions::default()).unwrap() else {
+    let crate::Called::Rows(rows) = calls.call(1, &[], &CallOptions::default()).unwrap() else {
         panic!("the query returns rows")
     };
     rows.collect::<Result<_, _>>().unwrap()
@@ -1617,7 +1620,7 @@ fn counter_value<R: Runtime>(db: &adtb::Database<R>) -> Vec<Value> {
 #[test]
 fn a_synchronous_call_still_blocks_on_a_transaction_sim() {
     sim_seeds_in("synchronous", 0..2, ONE, |rt| {
-        let db = adtb::Database::open_in(
+        let db = crate::Database::open_in(
             rt.clone(),
             "counter.adt",
             &SchemaLog::new([COUNTERS]),
@@ -1652,12 +1655,12 @@ fn a_synchronous_call_still_blocks_on_a_transaction_sim() {
 
 #[test]
 fn a_synchronous_call_still_blocks_on_a_transaction_real() {
-    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("calls-synchronous");
+    let dir = target_tmp().join("calls-synchronous");
     if dir.exists() {
         std::fs::remove_dir_all(&dir).unwrap();
     }
     std::fs::create_dir_all(&dir).unwrap();
-    let db = adtb::open(
+    let db = crate::open(
         dir.join("counter.adt"),
         &SchemaLog::new([COUNTERS]),
         &counter_options(),

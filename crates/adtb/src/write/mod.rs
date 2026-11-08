@@ -20,6 +20,11 @@ mod stream;
 mod vacuums;
 mod verify;
 
+#[cfg(test)]
+mod calls_tests;
+#[cfg(test)]
+mod write_tests;
+
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -701,6 +706,13 @@ impl<R: Runtime> Database<R> {
     /// Returns the transactions layer.
     pub fn txns(&self) -> &Transactions<R> {
         &self.txns
+    }
+
+    /// Returns the history heap the database keeps the past versions of `heap` in, `None` when
+    /// it keeps none.
+    #[cfg(test)]
+    pub(crate) fn history_heap(&self, heap: HeapId) -> Option<&StoredHeap> {
+        self.retained.as_ref()?.heaps.get(&heap)
     }
 
     /// Returns the planner's description of the relations the database runs.

@@ -18,7 +18,7 @@ pub mod storage;
 mod test_world;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
-pub mod vacuum;
+mod vacuum;
 pub mod verify;
 pub mod write;
 

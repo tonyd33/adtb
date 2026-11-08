@@ -84,6 +84,7 @@ name = "adtb-harness"
 version = "0.1.0"
 dependencies = [
  "adtb-lang",
+ "adtb-reference",
  "adtb-sim",
  "adtb-sys",
  "adtb-testkit",

@@ -7,12 +7,17 @@ mod run;
 mod vacuum_tests;
 #[cfg(test)]
 mod vacuum_threads_tests;
+#[cfg(test)]
 mod verify;
 
-pub use dead::DeadSet;
-pub use pace::{Charged, Pacer};
+#[cfg(any(test, feature = "testing"))]
+pub use pace::Charged;
+pub use pace::Pacer;
 pub use run::{
-    Error, Freed, Horizon, Phase, Progress, Report, Step, Sum, expire, insert, judge, judge_within,
-    prune, update, vacuum, vacuum_keeping,
+    Error, Freed, Horizon, Phase, Progress, Report, Step, Sum, expire, insert, update, vacuum,
+    vacuum_keeping,
 };
+#[cfg(test)]
+pub use run::{judge, prune};
+#[cfg(test)]
 pub use verify::verify;

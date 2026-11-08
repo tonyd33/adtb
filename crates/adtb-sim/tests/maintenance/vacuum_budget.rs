@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use adtb::runtime::{Clock, Runtime, Threads};
+use adtb::testing::Charged;
 use adtb::testing::Knobs;
-use adtb::vacuum::Charged;
 use adtb::{CallOptions, CancelToken, Database, Error, Log, OpenOptions, RejectReason};
 use adtb_harness::common;
 use adtb_sim::SimRuntime;

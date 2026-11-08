@@ -1,4 +1,4 @@
-use adtb::plan::fixture;
+use crate::plan::fixture;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -6,19 +6,19 @@ use std::ops::{Bound, ControlFlow};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use adtb::batch;
-use adtb::exec::{
+use crate::batch;
+use crate::exec::{
     self, Budget, Call, Error, Exceeded, Histories, Options as XOptions, Program, Reads, Rows,
     Scheduler, Store, StoredHeap, Val,
 };
-use adtb::heap::{FieldType, Header, Heap, HeapNo, LargeStore};
-use adtb::key::{CtorId, Tid, Value as KValue};
-use adtb::mvcc::{ScanId, SerializationFailure, Xid};
-use adtb::plan::{Error as PlanError, HeapId, Options as PlanOptions, Rewrites, plan};
-use adtb::runtime::{IoError, OpKind};
-use adtb::storage::{PageError, Pid};
-use adtb::testing::Knobs;
-use adtb::{OpenOptions, TxnCallOptions, TxnOptions};
+use crate::heap::{FieldType, Header, HeapNo};
+use crate::key::{CtorId, Tid, Value as KValue};
+use crate::mvcc::{ScanId, SerializationFailure, Xid};
+use crate::plan::{Error as PlanError, HeapId, Options as PlanOptions, Rewrites, plan};
+use crate::runtime::{IoError, OpKind};
+use crate::storage::{PageError, Pid};
+use crate::testing::Knobs;
+use crate::{OpenOptions, TxnCallOptions, TxnOptions};
 use adtb_lang::kernel::Var;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::Ty;
@@ -28,16 +28,17 @@ use adtb_testkit::uuid;
 
 use fixture::{Fixture, variants};
 
+use crate::catalog::layout::field_type;
+use crate::test_world::finished;
+use crate::test_world::load;
+use crate::test_world::support::{row_ty, stored, to_ref, to_val};
 use adtb_harness::seeds::sweep;
-use adtb_simkit::harness::finished;
-use adtb_simkit::support::{field_type, row_ty, stored, to_ref, to_val};
-use adtb_simkit::{load, open};
 
 /// Returns the fixture of `db`: its schema, the planner's catalog of its relations, and the
 /// declarations and rows of `f`, each relation's rows under the database's relation of its name.
-pub(crate) fn planner<R: adtb::runtime::Runtime>(db: &adtb::Database<R>, f: &Fixture) -> Fixture {
+pub(crate) fn planner<R: crate::runtime::Runtime>(db: &crate::Database<R>, f: &Fixture) -> Fixture {
     let schema = db.schema().clone();
-    let rows = load::rows_of(&schema, &f.schema, &f.db);
+    let rows = adtb_harness::load::rows_of(&schema, &f.schema, &f.db);
     f.rebound(schema, db.testing().plan_catalog(), rows)
 }
 
@@ -45,7 +46,7 @@ pub(crate) fn planner<R: adtb::runtime::Runtime>(db: &adtb::Database<R>, f: &Fix
 /// database per declarations.
 fn planned(f: &Fixture) -> Fixture {
     thread_local! {
-        static PLANNED: RefCell<BTreeMap<String, (Schema, adtb::plan::Catalog)>> =
+        static PLANNED: RefCell<BTreeMap<String, (Schema, crate::plan::Catalog)>> =
             const { RefCell::new(BTreeMap::new()) };
     }
     let known = PLANNED.with_borrow(|p| p.get(f.decls()).cloned());
@@ -60,7 +61,7 @@ fn planned(f: &Fixture) -> Fixture {
         PLANNED.with_borrow_mut(|p| p.insert(f.decls().to_owned(), got.clone()));
         got
     });
-    let rows = load::rows_of(&schema, &f.schema, &f.db);
+    let rows = adtb_harness::load::rows_of(&schema, &f.schema, &f.db);
     f.rebound(schema, catalog, rows)
 }
 
@@ -76,7 +77,7 @@ fn loaded(seed: u64, f: &Fixture) -> Sim {
 pub(crate) fn options() -> OpenOptions {
     OpenOptions {
         testing: Knobs::without_background_vacuum(),
-        ..open::options(1)
+        ..load::options(1)
     }
 }
 
@@ -197,6 +198,17 @@ fn with_store_as<T>(
     running: Running,
     body: impl FnOnce(Over<'_>) -> T,
 ) -> T {
+    with_database(seed, f, workers, running, |_, over| body(over))
+}
+
+/// Run `body` as [`with_store_as`] does, over the database the store is of as well.
+fn with_database<T>(
+    seed: u64,
+    f: &Fixture,
+    workers: usize,
+    running: Running,
+    body: impl FnOnce(&crate::Database<SimRuntime>, Over<'_>) -> T,
+) -> T {
     let mut out = None;
     let mut sim = loaded(seed, f);
     finished(&mut sim, |rt| {
@@ -214,7 +226,7 @@ fn with_store_as<T>(
             .store(&reader)
             .expect("the transaction is open");
         let pool = (workers > 0).then(|| Scheduler::start(rt.clone(), workers));
-        out = Some(body((&rt, &store, pool.as_ref())));
+        out = Some(body(&db, (&rt, &store, pool.as_ref())));
         if let Some(p) = pool {
             p.shutdown();
         }
@@ -765,8 +777,13 @@ impl Reads for Deleted {
 }
 
 /// Returns `store` reading the past through [`Deleted`], with every other deleted version of
-/// `heap` copied to its history heap, and the number of distinct rows those versions hold.
-fn with_past(store: &Store<SimRuntime>, heap: HeapId) -> (Arc<Store<SimRuntime>>, usize) {
+/// its heap copied to `history`, the history heap the database keeps for it, and the number of
+/// distinct rows those versions hold.
+fn with_past(
+    store: &Store<SimRuntime>,
+    heap: HeapId,
+    history: &StoredHeap,
+) -> (Arc<Store<SimRuntime>>, usize) {
     let current = &store.heaps[&heap];
     let reads = Deleted {
         now: store.reads.clone(),
@@ -782,26 +799,21 @@ fn with_past(store: &Store<SimRuntime>, heap: HeapId) -> (Arc<Store<SimRuntime>>
             deleted.push(v);
         }
     }
-    let large = LargeStore::create(&store.pager, 95_000).expect("a large-value store");
-    let past = Heap::create(&store.pager, 95_001, current.row.clone(), large).expect("a heap");
     for v in deleted.iter().step_by(2) {
-        let copied = past
+        let copied = history
+            .heap
             .copy_version(&store.pager, &current.heap, v)
             .expect("a copy");
         assert!(copied.is_some(), "the version at {:?} is copied", v.tid);
     }
     let distinct: BTreeSet<String> = deleted.iter().map(|v| format!("{:?}", v.row)).collect();
-    let history = StoredHeap {
-        heap: Arc::new(past),
-        ..current.clone()
-    };
     let store = Store {
         pager: store.pager.clone(),
         reads: Arc::new(reads),
         heaps: store.heaps.clone(),
         indexes: store.indexes.clone(),
         history: Histories {
-            heaps: [(heap, history)].into(),
+            heaps: [(heap, history.clone())].into(),
             indexes: Default::default(),
         },
         past: None,
@@ -819,8 +831,12 @@ fn a_read_of_the_past_holds_the_deleted_rows_it_passed_within_its_grant() {
         morsel_rows: 16,
         ..XOptions::default()
     };
-    let (want, got) = with_store_as(0, &f, 0, Running::None, |(rt, store, _)| {
-        let (past, want) = with_past(store, heap);
+    let (want, got) = with_database(0, &f, 0, Running::None, |db, (rt, store, _)| {
+        let history = db
+            .tested_db()
+            .history_heap(heap)
+            .expect("the database keeps the history of the heap");
+        let (past, want) = with_past(store, heap, history);
         let budget = Budget::new(1 << 30);
         let got: Vec<_> = cases
             .iter()
@@ -997,8 +1013,8 @@ fn stopped_scan_beside_a_writer_of_its_row(
 /// each by its key, then commit `reader` and then `writer`. Returns whether either failed with
 /// a serialization failure.
 fn skew(
-    mut reader: adtb::AdHocTransaction<'_, SimRuntime>,
-    mut writer: adtb::AdHocTransaction<'_, SimRuntime>,
+    mut reader: crate::AdHocTransaction<'_, SimRuntime>,
+    mut writer: crate::AdHocTransaction<'_, SimRuntime>,
 ) -> bool {
     let touch = |key: u32| {
         format!(
@@ -1712,7 +1728,7 @@ fn a_call_removes_its_spill_file_when_it_ends() {
 
 /// Returns the files in `dir` of the simulated file system.
 fn listed(rt: &SimRuntime, dir: &str) -> Vec<String> {
-    use adtb::runtime::{Done, Io, Op, Runtime, Threads};
+    use crate::runtime::{Done, Io, Op, Runtime, Threads};
     let mut io = rt.io();
     let t = io.submit(Op::List { dir: dir.into() });
     loop {

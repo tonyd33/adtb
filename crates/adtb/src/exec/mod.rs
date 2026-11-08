@@ -20,7 +20,11 @@ mod value;
 mod wide;
 
 #[cfg(test)]
+mod exec_tests;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod textual_tests;
 
 pub use broken::Broken;
 pub(crate) use host::canonical;

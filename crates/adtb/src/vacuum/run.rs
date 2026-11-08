@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use crate::btree::{self, Index};
-use crate::heap::{self, Fate, Header, Heap, LargeStore, Pruned, Updated};
+use crate::heap::{self, Fate, Header, Heap, LargeStore, Updated};
 use crate::history::{self, History};
 use crate::key::{CtorId, Tid, Value};
 use crate::mvcc::{Status, Transactions, Xid};
 use crate::runtime::Runtime;
-use crate::storage::{PageError, Pager, Pid, Walk};
+use crate::storage::{PageError, Pager, Walk};
 
 use super::dead::DeadSet;
 
@@ -161,12 +161,13 @@ pub fn judge<R: Runtime>(
 
 /// Prune page `pid` of `heap` of the versions dead to every snapshot its watermark admits,
 /// leaving its all-visible bit as it is unless the page changes.
+#[cfg(test)]
 pub fn prune<R: Runtime>(
     pager: &Pager<R>,
     txns: &Transactions<R>,
     heap: &Heap,
-    pid: Pid,
-) -> Result<Pruned, PageError> {
+    pid: crate::storage::Pid,
+) -> Result<heap::Pruned, PageError> {
     let w = Horizon::now(txns, heap);
     heap.prune(pager, pid, |p, h| judge_within(txns, p, &w, h), &[], false)
 }
@@ -232,6 +233,7 @@ pub struct Progress {
 }
 
 impl Progress {
+    #[cfg(test)]
     pub fn new() -> Progress {
         Progress::default()
     }
