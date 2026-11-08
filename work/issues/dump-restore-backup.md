@@ -37,7 +37,7 @@ From round 7, not fixed: `Unformatted` has no test, since a host page fault cann
 
 ## 2026-10-31: S4 landed
 
-Full backup, restore and prove build aside and publish last. A log belongs to its file by `file_id` in every block. A failed open removes only what it made, and a lock is held only while the path names the locked inode. Seven rounds. The search harness is `crates/adtb-simkit/src/search.rs`. Open: the gaps listed above, an ignored red test `a_failed_read_of_the_test_database_records_no_verdict`, and two restores of one backup sharing a file id. S5 to S7 follow fault-matrix.
+Full backup, restore and prove build aside and publish last. A log belongs to its file by `file_id` in every block. A failed open removes only what it made, and a lock is held only while the path names the locked inode. Seven rounds. The search harness is `crates/adtb-harness/src/search.rs`. Open: the gaps listed above, an ignored red test `a_failed_read_of_the_test_database_records_no_verdict`, and two restores of one backup sharing a file id. S5 to S7 follow fault-matrix.
 
 ## 2026-11-03: S5.1 landed
 
