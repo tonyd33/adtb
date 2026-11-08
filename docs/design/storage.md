@@ -273,9 +273,12 @@ Postconditions:
   `reservation.latch` of a page not resident gives it as
   `reservation.image` does, whatever the file holds, and the caller of
   `update_all_with` latches each reserved page that way. Dropping a
-  reservation unused gives its pages back, with nothing logged. A
-  caller may hold the latch of a free page, one it found by a stale
-  read, while it allocates or frees.
+  reservation unused gives its pages back, with nothing logged; a page
+  latched through `reservation.latch` goes back once that latch ends
+  too. A caller may hold its own latches while it reserves, latches a
+  reserved page or allocates, among them the latch of a free page it
+  found by a stale read; the allocator latches allocation bitmap pages
+  after them.
 - `update_with` and `update_all_with` take a reservation whose every
   page is among the pages they change. In the batch that holds the
   change, each reserved page is marked in the allocation bitmap and

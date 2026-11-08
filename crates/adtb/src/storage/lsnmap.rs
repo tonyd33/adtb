@@ -33,11 +33,11 @@ fn set_word(page: &mut [u8], i: usize, v: u64) {
 
 impl<R: Runtime> Pager<R> {
     fn per_leaf(&self) -> u64 {
-        ((self.page_size - HEADER_LEN) / 8) as u64
+        ((self.page_size() - HEADER_LEN) / 8) as u64
     }
 
     fn fanout(&self) -> u64 {
-        ((self.page_size - HEADER_LEN) / 16) as u64
+        ((self.page_size() - HEADER_LEN) / 16) as u64
     }
 
     /// Returns the number of pages a map page at `level` covers, saturating.

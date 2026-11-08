@@ -1,5 +1,5 @@
+use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BTreeSet};
 
 use crate::runtime::{IoError, Runtime};
 
@@ -8,7 +8,7 @@ use super::create::check_options;
 use super::driver::Driver;
 use super::error::{Damage, OpenError};
 use super::evidence::Met;
-use super::header::{self, FileHeader, LOG_DAMAGE_CAPACITY, REGION};
+use super::header::{self, FileHeader, REGION};
 use super::page;
 use super::pager::{Options, Pager};
 use super::quarantine::Quarantine;
@@ -107,11 +107,10 @@ impl<R: Runtime> Pager<R> {
     pub(super) fn recover_and_mark(&self) -> Result<Recovery, OpenError> {
         let (recovery, pages, armed) = self.recover()?;
         self.refuse_cut_pages(pages);
-        let marks = self.header.lock(&self.rt).0.quarantine;
+        let marks = self.quarantine_page();
         if marks == Pid(0) {
             let (new, marks) = self.reserve_marks()?;
             self.format_marks(new, marks)?;
-            self.header.lock(&self.rt).0.quarantine = marks;
         } else {
             self.load_marks(marks)?;
         }
@@ -135,7 +134,7 @@ impl<R: Runtime> Pager<R> {
     /// log's tail is cleared.
     pub(crate) fn recover(&self) -> Result<(Recovery, u64, Armed), OpenError> {
         let mut img = {
-            let mut segments = self.segments.lock(&self.rt);
+            let mut segments = self.segments().lock(self.rt());
             self.io(|d| segments.load(d))
         };
         let ck = self.checkpoint_lsn();
@@ -212,7 +211,7 @@ impl<R: Runtime> Pager<R> {
         }
         self.keep_log_findings(&s.findings);
         {
-            let mut segments = self.segments.lock(&self.rt);
+            let mut segments = self.segments().lock(self.rt());
             self.io(|d| segments.clear_tail(d, &mut img, s.end));
         }
         self.flush_pages(usize::MAX);
@@ -220,7 +219,7 @@ impl<R: Runtime> Pager<R> {
             self.dirty_table().snapshot().is_empty(),
             "recovery left a dirty page"
         );
-        let pages = self.count_file_groups();
+        let pages = self.count_file_groups(&replay.replaying);
         let armed = self.arm();
         let recovery = Recovery {
             redo,
@@ -236,18 +235,7 @@ impl<R: Runtime> Pager<R> {
     /// marking the header full when some do not, and force the header when that changes it.
     fn keep_log_findings(&self, findings: &[LogFinding]) {
         let stale = findings.iter().filter(|f| f.problem == LogProblem::Stale);
-        let changed = {
-            let mut h = self.header.lock(&self.rt);
-            let mut kept: BTreeSet<LogFinding> = h.0.log_damage.iter().copied().collect();
-            kept.extend(stale);
-            let full = h.0.log_damage_full || kept.len() > LOG_DAMAGE_CAPACITY;
-            let kept: Vec<LogFinding> = kept.into_iter().take(LOG_DAMAGE_CAPACITY).collect();
-            let changed = kept != h.0.log_damage || full != h.0.log_damage_full;
-            h.0.log_damage = kept;
-            h.0.log_damage_full = full;
-            changed
-        };
-        if changed {
+        if self.header().keep_log_findings(self.rt(), stale) {
             self.write_header(None);
         }
     }

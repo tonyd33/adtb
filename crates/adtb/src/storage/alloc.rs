@@ -1,9 +1,11 @@
 use crate::runtime::Runtime;
 
+pub(super) use self::owner::{Allocation, Hold};
 use super::error::Damage;
 use super::page::{self, FIRST_EDITABLE, HEADER_LEN, PageKind};
 use super::pager::{PageError, PageExclusive, PageShared, Pager};
 use super::record::{Edit, Record};
+use super::recovery::Replaying;
 use super::{Lsn, Pid};
 
 /// Unchanged runs shorter than this between two changed ones are logged as changed.
@@ -53,7 +55,7 @@ fn first_difference(old: &[u8], new: &[u8], mut i: usize) -> usize {
 impl<R: Runtime> Pager<R> {
     /// Returns the number of pages one allocation bitmap page covers.
     fn bitmap_span(&self) -> u64 {
-        ((self.page_size - HEADER_LEN) * 8) as u64
+        ((self.page_size() - HEADER_LEN) * 8) as u64
     }
 
     /// Returns the bitmap page that covers group `g` of [`Self::bitmap_span`] pages.
@@ -68,10 +70,9 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns whether `page`, read under a latch as the bitmap page of group `g`, can serve as
     /// one: it is a bitmap page, or blank in a group no batch has started.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn map_is_sound(&self, page: &[u8], g: u64) -> bool {
         page::kind(page) == PageKind::AllocationBitmap as u16
-            || g >= self.meta().groups && page.iter().all(|&b| b == 0)
+            || g >= self.allocation().started() && page.iter().all(|&b| b == 0)
     }
 
     /// Returns the bitmap page of group `g` under a shared latch. Refuses it, from then on, when
@@ -89,12 +90,10 @@ impl<R: Runtime> Pager<R> {
     /// Count every group the file reaches into as started. Returns the pages the file holds.
     ///
     /// Preconditions: recovery has written every page the log holds.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
-    pub(crate) fn count_file_groups(&self) -> u64 {
+    pub(super) fn count_file_groups(&self, replaying: &Replaying) -> u64 {
         let pages = self.file_pages();
         let group = pages.saturating_sub(1) / self.bitmap_span();
-        let mut m = self.meta();
-        m.groups = m.groups.max(group + 1);
+        self.allocation().replayed_through(replaying, group + 1);
         pages
     }
 
@@ -163,11 +162,10 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns a free page no allocator or reservation holds, held as reserved. A page the device
     /// could not read is skipped.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn hold_free_page(&self) -> Result<Pid, PageError> {
         let span = self.bitmap_span();
-        let mut state = self.alloc.lock(&self.rt);
-        let mut g = state.group;
+        let mut state = self.allocation().lock(self.rt());
+        let mut g = state.group();
         loop {
             let map = self.bitmap_page(g);
             let first = g * span;
@@ -177,15 +175,14 @@ impl<R: Runtime> Pager<R> {
                 pid < Pid::FIRST_DATA.0
                     || pid == map.0
                     || bits[i / 8] >> (i % 8) & 1 == 1
-                    || self.meta().reserved.contains(&Pid(pid))
+                    || state.is_held(Pid(pid))
                     || self.refusal(Pid(pid)) == Some(Damage::Unreadable)
             };
             let Some(pid) = (first..first + span).find(|&p| !taken(p)) else {
                 g += 1;
                 continue;
             };
-            state.group = g;
-            self.meta().reserved.insert(Pid(pid));
+            state.hold(g, Pid(pid));
             return Ok(Pid(pid));
         }
     }
@@ -315,7 +312,6 @@ impl<R: Runtime> Pager<R> {
 
     /// Mark and format the pages of `new`, apply `f` to the pages under `guards`, and log all of
     /// it in one batch.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn allocating<'p, F>(
         &'p self,
         new: &Reservation<'_, R>,
@@ -327,7 +323,7 @@ impl<R: Runtime> Pager<R> {
         F: FnOnce(&mut [&mut [u8]]),
     {
         let span = self.bitmap_span();
-        let mut state = self.alloc.lock(&self.rt);
+        let mut state = self.allocation().lock(self.rt());
         let mut groups: Vec<u64> = new
             .pages
             .iter()
@@ -379,7 +375,7 @@ impl<R: Runtime> Pager<R> {
                 let byte = &mut bits[HEADER_LEN + i / 8];
                 assert!(*byte >> (i % 8) & 1 == 1, "{p:?} is not allocated");
                 *byte &= !(1 << (i % 8));
-                state.group = state.group.min(g);
+                state.lower_group(g);
             }
             edits.push(diff(map, &bits));
         }
@@ -391,10 +387,7 @@ impl<R: Runtime> Pager<R> {
             all.push(m);
         }
         let lsn = self.apply_freeing(&mut all, edits, Some(new), tail);
-        if let Some(&g) = groups.last() {
-            let mut m = self.meta();
-            m.groups = m.groups.max(g + 1);
-        }
+        state.committed(new.allocated(), groups.last().map(|g| g + 1));
         Ok(lsn)
     }
 
@@ -550,7 +543,7 @@ impl<'a, R: Runtime> Reservation<'a, R> {
     /// Panics if `pid` is not reserved here.
     pub fn image(&self, pid: Pid) -> Vec<u8> {
         let r = self.reserved(pid);
-        let mut out = vec![0; self.pager.page_size];
+        let mut out = vec![0; self.pager.page_size()];
         out[FIRST_EDITABLE..HEADER_LEN]
             .copy_from_slice(&page::header_edit(r.format, r.kind, r.owner, 0));
         out
@@ -558,21 +551,169 @@ impl<'a, R: Runtime> Reservation<'a, R> {
 }
 
 impl<R: Runtime> Drop for Reservation<'_, R> {
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn drop(&mut self) {
-        let mut m = self.pager.meta();
+        let mut state = self.pager.allocation().lock(self.pager.rt());
         for r in &self.pages {
-            if !m.blanked.contains(&r.pid) {
-                m.reserved.remove(&r.pid);
-            }
+            state.release(r.pid, Hold::Reservation);
         }
     }
 }
 
-/// What allocators share: the lowest bitmap group that may have a free page.
-#[derive(Debug, Default)]
-pub(crate) struct AllocState {
-    pub(crate) group: u64,
+mod owner {
+    use std::collections::BTreeMap;
+    use std::sync::MutexGuard;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use adtb_sys::lock::Lock;
+
+    use crate::runtime::Runtime;
+    use crate::storage::Pid;
+    use crate::storage::recovery::Replaying;
+
+    /// What allocators share: under the allocation lock, the lowest bitmap group that may have a
+    /// free page and the free pages held; beside it, the bitmap groups a batch has started.
+    ///
+    /// The allocation lock is held across the search for a free page, which latches and may read
+    /// in a bitmap page, and across marking pages allocated, which applies the batch. A holder of
+    /// a reserved page's latch takes it to latch the page blank or end that latch.
+    ///
+    /// Invariants:
+    ///
+    /// - A free page is held while its reservation or a blank latch of it lives, and released
+    ///   once neither does.
+    /// - The started count only rises. A batch counts its groups only once it is in the log and
+    ///   while their bitmap pages are latched, so a checkpoint that captures a lower count finds
+    ///   those pages dirty and its redo point covers the batch.
+    #[derive(Debug)]
+    pub(in crate::storage) struct Allocation {
+        state: Lock<State>,
+        started: AtomicU64,
+    }
+
+    #[derive(Debug, Default)]
+    struct State {
+        group: u64,
+        held: BTreeMap<Pid, Holds>,
+    }
+
+    /// What holds a free page.
+    #[derive(Debug, Default)]
+    struct Holds {
+        reservation: bool,
+        blank: bool,
+    }
+
+    /// One holder of a free page.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(in crate::storage) enum Hold {
+        /// The reservation holding it, until the reservation drops.
+        Reservation,
+        /// The blank latch of it, until an allocation of it commits or the latch drops.
+        Blank,
+    }
+
+    /// The allocation lock, held.
+    pub(in crate::storage) struct AllocGuard<'a> {
+        owner: &'a Allocation,
+        state: MutexGuard<'a, State>,
+    }
+
+    impl Allocation {
+        /// Returns the state of a file whose header counts `started` groups, holding no page.
+        pub(in crate::storage) fn new(started: u64) -> Allocation {
+            Allocation {
+                state: Lock::new(State::default()),
+                started: AtomicU64::new(started),
+            }
+        }
+
+        pub(in crate::storage) fn lock<R: Runtime>(&self, rt: &R) -> AllocGuard<'_> {
+            AllocGuard {
+                owner: self,
+                state: self.state.lock(rt),
+            }
+        }
+
+        /// Returns the bitmap groups a batch has started, without the allocation lock.
+        pub(in crate::storage) fn started(&self) -> u64 {
+            self.started.load(Ordering::Acquire)
+        }
+
+        /// Count every group below `groups` as started, as recovery found the file.
+        pub(in crate::storage) fn replayed_through(&self, _: &Replaying, groups: u64) {
+            self.started.fetch_max(groups, Ordering::Release);
+        }
+    }
+
+    impl AllocGuard<'_> {
+        /// Returns the lowest bitmap group that may have a free page.
+        pub(in crate::storage) fn group(&self) -> u64 {
+            self.state.group
+        }
+
+        /// Returns whether a reservation or a blank latch holds `pid`.
+        pub(in crate::storage) fn is_held(&self, pid: Pid) -> bool {
+            self.state.held.contains_key(&pid)
+        }
+
+        /// Returns whether a blank latch holds `pid`.
+        pub(in crate::storage) fn is_blank(&self, pid: Pid) -> bool {
+            self.state.held.get(&pid).is_some_and(|h| h.blank)
+        }
+
+        /// Hold `pid`, a free page of group `g`, for a reservation, and search from `g` next.
+        pub(in crate::storage) fn hold(&mut self, g: u64, pid: Pid) {
+            self.state.group = g;
+            let holds = self.state.held.entry(pid).or_default();
+            holds.reservation = true;
+        }
+
+        /// Search from group `g` next when it is lower: a batch freed a page in it.
+        pub(in crate::storage) fn lower_group(&mut self, g: u64) {
+            self.state.group = self.state.group.min(g);
+        }
+
+        /// Hold `pid` by its blank latch too.
+        ///
+        /// Panic if no reservation holds `pid`.
+        pub(in crate::storage) fn blank(&mut self, pid: Pid) {
+            let holds = self.state.held.get_mut(&pid);
+            let holds = holds.filter(|h| h.reservation);
+            holds.expect("only a reserved page is latched blank").blank = true;
+        }
+
+        /// Stop holding `pid` by `hold`, releasing it once nothing holds it.
+        pub(in crate::storage) fn release(&mut self, pid: Pid, hold: Hold) {
+            let Some(holds) = self.state.held.get_mut(&pid) else {
+                return;
+            };
+            match hold {
+                Hold::Reservation => holds.reservation = false,
+                Hold::Blank => holds.blank = false,
+            }
+            if !holds.reservation && !holds.blank {
+                self.state.held.remove(&pid);
+            }
+        }
+
+        /// End the blank latches of `allocated`, which a logged batch allocated, and count every
+        /// group below `started` as started.
+        ///
+        /// Preconditions: the batch is in the log and the caller latches the bitmap page of each
+        /// group it allocated in or freed from.
+        pub(in crate::storage) fn committed(
+            &mut self,
+            allocated: impl Iterator<Item = Pid>,
+            started: Option<u64>,
+        ) {
+            for pid in allocated {
+                self.release(pid, Hold::Blank);
+            }
+            if let Some(started) = started {
+                self.owner.started.fetch_max(started, Ordering::Release);
+            }
+        }
+    }
 }
 
 /// Returns the edits `f` makes to copies of `pages`.
@@ -589,4 +730,71 @@ where
         .zip(&copies)
         .map(|(old, new)| diff(old, new))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use adtb_sys::os::{Backend, OsRuntime};
+    use adtb_testkit::scratch::Scratch;
+
+    use super::{Allocation, Hold};
+    use crate::storage::Pid;
+    use crate::storage::recovery::replaying_for_test;
+
+    const P: Pid = Pid(9);
+
+    fn runtime(scratch: &Scratch) -> OsRuntime {
+        OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 })
+    }
+
+    #[test]
+    fn a_page_reserved_and_latched_blank_is_released_only_once_both_end() {
+        let scratch = Scratch::new("storage", "alloc-holds");
+        let rt = runtime(&scratch);
+        for (first, second) in [
+            (Hold::Reservation, Hold::Blank),
+            (Hold::Blank, Hold::Reservation),
+        ] {
+            let alloc = Allocation::new(0);
+            let mut held = alloc.lock(&rt);
+            held.hold(0, P);
+            held.blank(P);
+            held.release(P, first);
+            assert!(held.is_held(P), "the page left when {first:?} ended alone");
+            held.release(P, second);
+            assert!(!held.is_held(P), "the page stayed once both ended");
+        }
+    }
+
+    #[test]
+    fn a_committed_allocation_ends_the_blank_latch_and_the_reservation_releases_the_page() {
+        let scratch = Scratch::new("storage", "alloc-commit");
+        let rt = runtime(&scratch);
+        let alloc = Allocation::new(0);
+        let mut held = alloc.lock(&rt);
+        held.hold(0, P);
+        held.blank(P);
+        held.committed([P].into_iter(), None);
+        assert!(!held.is_blank(P));
+        assert!(held.is_held(P));
+        held.release(P, Hold::Reservation);
+        assert!(!held.is_held(P));
+    }
+
+    #[test]
+    fn the_started_count_never_falls() {
+        let scratch = Scratch::new("storage", "alloc-started");
+        let rt = runtime(&scratch);
+        let alloc = Allocation::new(4);
+        alloc.lock(&rt).committed(std::iter::empty(), None);
+        assert_eq!(4, alloc.started());
+        alloc.lock(&rt).committed(std::iter::empty(), Some(7));
+        assert_eq!(7, alloc.started());
+        alloc.lock(&rt).committed(std::iter::empty(), Some(3));
+        assert_eq!(7, alloc.started());
+        alloc.replayed_through(&replaying_for_test(), 5);
+        assert_eq!(7, alloc.started());
+        alloc.replayed_through(&replaying_for_test(), 9);
+        assert_eq!(9, alloc.started());
+    }
 }

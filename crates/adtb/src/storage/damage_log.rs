@@ -123,7 +123,7 @@ fn encode(page: &mut [u8], r: &Recorded) {
 impl<R: Runtime> Pager<R> {
     /// Returns the entries one list page holds.
     pub fn damage_list_capacity(&self) -> usize {
-        (self.page_size - ENTRIES) / ENTRY
+        (self.page_size() - ENTRIES) / ENTRY
     }
 
     /// Returns every damage recorded and not cleared: the list's, the log's since and this
@@ -176,7 +176,7 @@ impl<R: Runtime> Pager<R> {
         };
         let mut met = BTreeSet::new();
         let mut failed = self.map_records(pages, full, |pid| holders(pid, &mut met), &mut mark);
-        let me = self.rt.current();
+        let me = self.rt().current();
         let e = self.evidence();
         met.retain(|pid| !before.contains_key(pid) && e.detected_by(*pid) == Some(me));
         drop(e);
@@ -228,7 +228,7 @@ impl<R: Runtime> Pager<R> {
     /// Returns how many damaged pages this open has walked the objects for.
     #[cfg(feature = "testing")]
     pub(crate) fn walked(&self) -> u64 {
-        self.walked.load(std::sync::atomic::Ordering::Relaxed)
+        self.evidence().walked()
     }
 
     /// Returns what the damage of `pid` was mapped to this open, `None` while it is not mapped.
@@ -238,7 +238,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns the page listing the damage recorded, `Pid(0)` while the file has none.
     pub fn damage_list_page(&self) -> Pid {
-        self.header.lock(&self.rt).0.damage_list
+        self.evidence().list_page()
     }
 
     /// Record that the commit log settles the page `refusal` refused from the log. Call before the
@@ -253,12 +253,11 @@ impl<R: Runtime> Pager<R> {
         self.append().record_damage(refusal.pid, damage);
     }
 
-    /// Allocate and format an empty list page and name it in the header.
+    /// Allocate and format an empty list page. Returns the page.
     fn format_damage_list(&self) -> Result<Pid, PageError> {
         let mut new = self.reserve();
         let pid = new.page(FORMAT, PageKind::DamageList, 0)?;
         self.update_with(new, &[pid], |p| encode(p[0], &Recorded::default()))?;
-        self.header.lock(&self.rt).0.damage_list = pid;
         Ok(pid)
     }
 
@@ -275,11 +274,11 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Fail if the page cannot be created.
     pub(super) fn load_damage_list(&self) -> Result<(), PageError> {
-        let (pid, header_log, header_full) = {
-            let h = self.header.lock(&self.rt);
-            (h.0.damage_list, h.0.log_damage.clone(), h.0.log_damage_full)
-        };
-        let base = if pid != Pid(0) {
+        let (header_log, header_full) =
+            self.read_header(|h| (h.log_damage.clone(), h.log_damage_full));
+        let mut list = self.damage_list_page();
+        let base = if list != Pid(0) {
+            let pid = list;
             let read = self.read(pid).map(|p| decode(&p));
             match read {
                 Ok(Some(base)) => Some(base),
@@ -295,10 +294,9 @@ impl<R: Runtime> Pager<R> {
         } else if self.is_quarantined(Quarantine::Database) {
             None
         } else {
-            self.format_damage_list()?;
+            list = self.format_damage_list()?;
             Some(Recorded::default())
         };
-        let list = self.header.lock(&self.rt).0.damage_list;
         self.evidence()
             .load_list(base, list, header_log, header_full);
         Ok(())

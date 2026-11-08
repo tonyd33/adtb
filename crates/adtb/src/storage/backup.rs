@@ -716,7 +716,7 @@ impl<R: Runtime> Pager<R> {
     ///   directory made above the target stays.
     /// - A target another run got to first answers `Occupied`.
     pub fn backup(&self, run: &mut BackupRun<'_>) -> Result<Manifest, BackupError> {
-        let mut fs = Fs::new(self.rt.clone());
+        let mut fs = Fs::new(self.rt().clone());
         let target = final_name(run.target).to_owned();
         let taken = || BackupError::Occupied(target.clone());
         occupied(&mut fs, &target, taken)?;
@@ -772,7 +772,7 @@ impl<R: Runtime> Pager<R> {
             file_pages: self.file_pages(),
             start: self.position(redo),
             end: self.position(end),
-            end_time: wall_micros(self.rt.wall()),
+            end_time: wall_micros(self.rt().wall()),
             parent: None,
             parts,
             damaged: damaged.into_iter().collect(),
@@ -784,7 +784,7 @@ impl<R: Runtime> Pager<R> {
     /// Returns the header a restore starts from. It names the backup's checkpoint, whatever later
     /// one the file names, whose redo point would skip the repair of pages copied before it.
     fn taken_header(&self, checkpoint: Lsn, groups: u64) -> FileHeader {
-        let mut header = self.header.lock(&self.rt).0.clone();
+        let mut header = self.read_header(FileHeader::clone);
         header.seq = 0;
         header.checkpoint = checkpoint;
         header.bitmap_groups = groups;
@@ -803,7 +803,7 @@ impl<R: Runtime> Pager<R> {
             parts: Vec::new(),
             open: None,
             pids: Vec::new(),
-            pages: Vec::with_capacity(CHUNK_PAGES * self.page_size),
+            pages: Vec::with_capacity(CHUNK_PAGES * self.page_size()),
         };
         let mut damaged = BTreeSet::new();
         for n in Pid::FIRST_DATA.0..self.file_pages() {
@@ -866,7 +866,7 @@ impl<R: Runtime> Pager<R> {
         }
         let mut copy = match (again, bytes) {
             (Ok((buf, _)), _) | (Err(_), Some(buf)) => buf.to_vec(),
-            (Err(_), None) => unreadable_page(self.page_size),
+            (Err(_), None) => unreadable_page(self.page_size()),
         };
         if !free {
             damaged.insert(pid);
@@ -921,10 +921,7 @@ impl<R: Runtime> Pager<R> {
     /// before its end, or in the current one at or before the log's end. A header that has
     /// forgotten epochs takes one older than those it holds, up to the oldest one's end.
     pub fn on_history(&self, at: Position) -> bool {
-        let (epoch, ended) = {
-            let h = self.header.lock(&self.rt);
-            (h.0.epoch, h.0.history.clone())
-        };
+        let (epoch, ended) = self.read_header(|h| (h.epoch, h.history.clone()));
         if at.epoch == epoch {
             return at.lsn <= self.durable();
         }

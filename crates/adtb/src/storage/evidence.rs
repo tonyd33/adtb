@@ -244,6 +244,8 @@ pub(super) struct Evidence {
     recovered: Lsn,
     /// Whether a detection logs its record. Off until the open's recovery ends.
     logging: bool,
+    /// The list page the file header names, `Pid(0)` while the file has none.
+    named: Pid,
     /// The list page, while a checkpoint may write it.
     list: Option<Pid>,
     /// What replay met past the checkpoint it started from, in log order.
@@ -259,15 +261,19 @@ pub(super) struct Evidence {
     freed: BTreeSet<Pid>,
     unmapped_pages: usize,
     unmapped: Unmapped,
+    /// How many damaged pages this open has walked the objects for.
+    walked: u64,
 }
 
 impl Evidence {
-    pub(super) fn new() -> Evidence {
+    /// Returns the evidence of a file whose header names the list page `named`, recovering.
+    pub(super) fn new(named: Pid) -> Evidence {
         Evidence {
             pages: BTreeMap::new(),
             gate: Gate::Recovering,
             recovered: Lsn(0),
             logging: false,
+            named,
             list: None,
             replayed: Vec::new(),
             unfolded: false,
@@ -277,6 +283,7 @@ impl Evidence {
             freed: BTreeSet::new(),
             unmapped_pages: 0,
             unmapped: Unmapped(Arc::new(AtomicBool::new(false))),
+            walked: 0,
         }
     }
 
@@ -504,6 +511,7 @@ impl Evidence {
 
     /// Serve `list` as the list page of a new file, recording from now on.
     pub(super) fn create_list(&mut self, list: Pid) {
+        self.named = list;
         self.list = Some(list);
         self.logging = true;
     }
@@ -515,7 +523,7 @@ impl Evidence {
 
     /// Take `base`, the list page's records, `None` when the page does not serve, then what replay
     /// met past it and `header_log` and `header_full`, the log findings the file header holds, as
-    /// the records. Serve `list` as the list page when `base` is given.
+    /// the records. Name `list` as the list page, and serve it when `base` is given.
     pub(super) fn load_list(
         &mut self,
         base: Option<Recorded>,
@@ -539,6 +547,7 @@ impl Evidence {
         self.log.extend(header_log);
         self.full = recorded.full || header_full;
         self.unfolded = unfolded;
+        self.named = list;
         self.list = sound.then_some(list);
         self.publish();
     }
@@ -657,6 +666,22 @@ impl Evidence {
             .filter(|(_, p)| p.retired)
             .map(|(&pid, _)| pid)
             .collect()
+    }
+
+    /// Returns the list page the file header names, `Pid(0)` while the file has none.
+    pub(super) fn list_page(&self) -> Pid {
+        self.named
+    }
+
+    /// Count one damaged page whose objects a mapping walks.
+    pub(super) fn walked_one(&mut self) {
+        self.walked += 1;
+    }
+
+    /// Returns how many damaged pages this open has walked the objects for.
+    #[cfg(feature = "testing")]
+    pub(super) fn walked(&self) -> u64 {
+        self.walked
     }
 
     /// Returns the list page while the records are to be folded into it.

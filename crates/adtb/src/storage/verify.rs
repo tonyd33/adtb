@@ -8,7 +8,7 @@ use super::evidence::{self, Against, file_copy};
 use super::log::parse_segment;
 use super::page::{self, Verdict};
 use super::pager::Pager;
-use super::quarantine::Allocation;
+use super::quarantine::Bitmapped;
 use super::record::Record;
 use super::{Lsn, Pid, Position};
 
@@ -432,7 +432,7 @@ impl<R: Runtime> Pager<R> {
             if !wrong(&seen) {
                 return findings;
             }
-            if self.allocation(pid) == Allocation::Free {
+            if self.bitmapped(pid) == Bitmapped::Free {
                 if let Some(damage) = broken {
                     findings.push(Finding::Page { pid, damage });
                     findings.extend(lost_record(pid, damage));
@@ -487,7 +487,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns the number of pages the data file spans now.
     pub(crate) fn file_pages(&self) -> u64 {
-        let len = self.io(|d| d.size(self.data));
-        len.div_ceil(self.page_size as u64)
+        let len = self.io(|d| d.size(self.data()));
+        len.div_ceil(self.page_size() as u64)
     }
 }

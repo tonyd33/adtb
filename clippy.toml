@@ -5,7 +5,6 @@ disallowed-methods = [
   { path = "std::thread::Builder::spawn", reason = "threads come from the engine's scheduler interface" },
   { path = "std::process::Command::new", reason = "a test spawns through adtb_heap_cap::test_child, which caps the child to fit its slots" },
   { path = "adtb::storage::page::owner", reason = "the storage module owns page ownership; use its pager operations" },
-  { path = "adtb::storage::pager::Pager::meta", reason = "the pager owns its metadata; use a pager operation" },
   { path = "adtb_sys::pages::Exclusive::write", reason = "a resident page changes only by a logged change or one of pager.rs's own writers" },
   { path = "adtb_sys::pages::PageMemory::lock_exclusive", reason = "pager.rs owns the exclusive latch; use Pager::exclusive or Pager::hold" },
   { path = "adtb_sys::pages::PageMemory::try_lock_exclusive", reason = "pager.rs owns the exclusive latch; use Pager::exclusive or Pager::hold" },

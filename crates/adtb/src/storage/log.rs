@@ -188,11 +188,14 @@ impl Log {
         self.due = false;
     }
 
-    pub(crate) fn pin(&mut self, at: Lsn) {
+    /// Hold the log from `at` until the returned pin is given to a [`LogPin`] and that drops.
+    pub(super) fn pin(&mut self, at: Lsn) -> Pinned {
         *self.pins.entry(at).or_default() += 1;
+        Pinned(at)
     }
 
-    pub(crate) fn unpin(&mut self, at: Lsn) {
+    fn unpin(&mut self, pin: Pinned) {
+        let Pinned(at) = pin;
         if let Some(n) = self.pins.get_mut(&at) {
             *n -= 1;
             if *n == 0 {
@@ -543,30 +546,42 @@ impl<R: Runtime> LogSource for FileSource<R> {
     }
 }
 
+/// A count of a hold on the log, made only by [`Log::pin`] and given back only by the drop of
+/// the [`LogPin`] holding it.
+#[derive(Debug)]
+#[must_use]
+pub(super) struct Pinned(Lsn);
+
 /// A hold on the log from an LSN: no recycle removes the segment holding the start of its batch,
 /// or any later one, while it lives.
 pub(crate) struct LogPin<'p, R: Runtime> {
     pager: &'p Pager<R>,
-    at: Lsn,
+    /// Taken only by the drop.
+    pinned: Option<Pinned>,
 }
 
 type PinnedLog<'p, R> = (LogPin<'p, R>, LogImage<FileSource<R>>);
 
 impl<'p, R: Runtime> LogPin<'p, R> {
-    /// Returns the pin of a hold `pager`'s log already counts at `at`.
-    pub(super) fn new(pager: &'p Pager<R>, at: Lsn) -> Self {
-        LogPin { pager, at }
+    /// Returns the hold `pinned` counts on `pager`'s log, given back when it drops.
+    pub(super) fn new(pager: &'p Pager<R>, pinned: Pinned) -> Self {
+        LogPin {
+            pager,
+            pinned: Some(pinned),
+        }
     }
 
     /// Returns the LSN the log is held from.
     pub(super) fn at(&self) -> Lsn {
-        self.at
+        self.pinned.as_ref().expect("held until the drop").0
     }
 }
 
 impl<R: Runtime> Drop for LogPin<'_, R> {
     fn drop(&mut self) {
-        self.pager.log().unpin(self.at);
+        if let Some(pinned) = self.pinned.take() {
+            self.pager.log().unpin(pinned);
+        }
     }
 }
 
@@ -645,8 +660,8 @@ impl<R: Runtime> Pager<R> {
             if self.durable() >= lsn {
                 return;
             }
-            let Some(mut segments) = self.segments.try_lock() else {
-                self.rt.yield_now();
+            let Some(mut segments) = self.segments().try_lock() else {
+                self.rt().yield_now();
                 continue;
             };
             if self.durable() >= lsn {
@@ -666,17 +681,17 @@ impl<R: Runtime> Pager<R> {
 
     /// Bound what [`Pager::recycle_log`] removes by what `hook` says the archive holds.
     pub fn set_archive(&self, hook: ArchiveHook) {
-        *self.archive.lock(&self.rt) = Some(hook);
+        *self.archive_hook().lock(self.rt()) = Some(hook);
     }
 
     /// Returns the log as its segments hold it now, pinned from its first segment while the pin
     /// lives, or the path and failure of what it cannot read.
     pub(crate) fn load_log(&self) -> Result<PinnedLog<'_, R>, (String, IoError)> {
-        let mut segments = self.segments.lock(&self.rt);
+        let mut segments = self.segments().lock(self.rt());
         let img = self.io(|d| segments.try_load(d))?;
         let at = img.first().unwrap_or(Lsn(0));
-        self.log().pin(at);
-        Ok((LogPin { pager: self, at }, img))
+        let pinned = self.log().pin(at);
+        Ok((LogPin::new(self, pinned), img))
     }
 
     /// Change `pids` through `f` as [`Pager::update`] does, and log the commit record of
@@ -726,10 +741,34 @@ impl<R: Runtime> Pager<R> {
 
     pub(super) fn commit_record(&self, xid: u64) -> Record {
         let wall_nanos = self
-            .rt
+            .rt()
             .wall()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
         Record::Commit { xid, wall_nanos }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Log;
+    use crate::storage::Lsn;
+
+    #[test]
+    fn each_pin_holds_the_log_from_its_lsn_until_it_is_given_back() {
+        let mut log = Log::new(512, 1, [0; 16]);
+        log.checkpointed(Lsn(100), Lsn(100));
+        log.release_session();
+        assert_eq!(Lsn(100), log.needed());
+        let first = log.pin(Lsn(40));
+        let second = log.pin(Lsn(40));
+        let later = log.pin(Lsn(60));
+        assert_eq!(Lsn(40), log.needed());
+        log.unpin(first);
+        assert_eq!(Lsn(40), log.needed());
+        log.unpin(second);
+        assert_eq!(Lsn(60), log.needed());
+        log.unpin(later);
+        assert_eq!(Lsn(100), log.needed());
     }
 }

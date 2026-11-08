@@ -38,7 +38,7 @@ impl Catalog {
         let store = Arc::new(Store {
             pager: pager.clone(),
             reads: Arc::new(AtSnapshot {
-                rt: pager.rt.clone(),
+                rt: pager.rt().clone(),
                 pager: pager.clone(),
                 txns: Arc::new(m.txns.clone()),
                 snapshot: m.snapshot.clone(),
@@ -243,7 +243,7 @@ fn run_denial<R: Runtime>(
         cancel: Arc::new(AtomicBool::new(false)),
         deadline: None,
     };
-    let v = match exec::execute(store.pager.rt.clone(), program, call, &[]) {
+    let v = match exec::execute(store.pager.rt().clone(), program, call, &[]) {
         Ok(v) => v,
         Err(exec::Error::Fault(f)) => {
             return Ok(Err(Denied::Fault(format!(

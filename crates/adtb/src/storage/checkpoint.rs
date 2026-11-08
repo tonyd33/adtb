@@ -11,12 +11,12 @@
 //! cycle takes the recycle lock first and holds it through the fold, the checkpoint and the
 //! removal, which take what a change of a map page and a checkpoint take.
 
-use std::sync::{Arc, Weak};
+use std::sync::Weak;
 
 use crate::runtime::{Runtime, ThreadId};
 
 use super::Lsn;
-use super::log::LogPin;
+use super::log::{LogPin, Pinned};
 use super::lsnmap::folded;
 use super::pager::{Pager, Shared};
 use super::quarantine::Quarantine;
@@ -62,9 +62,9 @@ impl<R: Runtime> Pager<R> {
     /// with no change since. A page changed since moves its `rec_lsn` up to the record its replay
     /// may start from.
     pub(crate) fn sync_data(&self) {
-        let held = self.forcing.lock(&self.rt);
+        let held = self.forcing().lock(self.rt());
         let covered = self.dirty_table().forcing(&held);
-        self.io(|d| d.sync_all(&[self.data]));
+        self.io(|d| d.sync_all(&[self.data()]));
         self.dirty_table().forced(covered);
     }
 
@@ -76,20 +76,23 @@ impl<R: Runtime> Pager<R> {
     /// Take a checkpoint as [`Pager::checkpoint`] does. Returns its LSN, its redo LSN and the
     /// bitmap groups it captured.
     pub(super) fn log_checkpoint(&self) -> (Lsn, Lsn, u64) {
-        self.checkpoint_pinning(false)
+        let (at, redo, groups, _) = self.checkpoint_pinning(false);
+        (at, redo, groups)
     }
 
     /// Take a checkpoint as [`Pager::checkpoint`] does, holding the log from its redo LSN while
     /// the returned pin lives. Returns the pin, its LSN and the bitmap groups it captured.
     pub(super) fn pinned_checkpoint(&self) -> (LogPin<'_, R>, Lsn, u64) {
-        let (at, redo, groups) = self.checkpoint_pinning(true);
-        (LogPin::new(self, redo), at, groups)
+        let (at, _, groups, pinned) = self.checkpoint_pinning(true);
+        let pinned = pinned.expect("a pinning checkpoint pins its redo LSN");
+        (LogPin::new(self, pinned), at, groups)
     }
 
     /// Take a checkpoint, pinning its redo LSN when `pin`, in the hold of the log lock that logs
-    /// the checkpoint record.
-    fn checkpoint_pinning(&self, pin: bool) -> (Lsn, Lsn, u64) {
-        let (mut list, (at, redo, groups, folded)) = loop {
+    /// the checkpoint record. Returns its LSN, its redo LSN, the bitmap groups it captured and
+    /// the pin.
+    fn checkpoint_pinning(&self, pin: bool) -> (Lsn, Lsn, u64, Option<Pinned>) {
+        let (mut list, (at, redo, groups, folded, pinned)) = loop {
             let list = self.list_to_fold();
             let mut append = self.append();
             if list.is_none() && append.folds() {
@@ -106,13 +109,11 @@ impl<R: Runtime> Pager<R> {
         drop(list);
         self.flush_log();
         if folded.is_some() {
-            let mut h = self.header.lock(&self.rt);
-            h.0.log_damage.clear();
-            h.0.log_damage_full = false;
+            self.header().clear_log_findings(self.rt());
         }
         self.write_header(Some((at, groups)));
         self.log().checkpointed(at, redo);
-        (at, redo, groups)
+        (at, redo, groups, pinned)
     }
 
     /// Remove every log segment that ends at or before the start of the batch holding the least
@@ -126,15 +127,15 @@ impl<R: Runtime> Pager<R> {
     /// Recycle as [`Pager::recycle_log`] does. Returns the number of segments removed, or `None`
     /// when it took no checkpoint.
     pub(super) fn recycle(&self) -> Option<usize> {
-        let _one = self.recycling.lock(&self.rt);
-        let hook = self.archive.lock(&self.rt).clone();
+        let _one = self.recycling().lock(self.rt());
+        let hook = self.archive_hook().lock(self.rt()).clone();
         let archived = match hook.map(|h| h()) {
             None => u64::MAX,
             Some(None) => return None,
             Some(Some(through)) => through.0,
         };
         let mut img = {
-            let mut segments = self.segments.lock(&self.rt);
+            let mut segments = self.segments().lock(self.rt());
             if !segments.may_recycle(self.log().needed().0.min(archived)) {
                 return None;
             }
@@ -147,7 +148,7 @@ impl<R: Runtime> Pager<R> {
         let end = self.fold(&last).ok()?;
         self.checkpoint();
         self.absorb_folded(&last, end);
-        let mut segments = self.segments.lock(&self.rt);
+        let mut segments = self.segments().lock(self.rt());
         let needed = self.log().needed();
         let floor = if needed.0 < floor {
             let Some(start) = img.batch_start(needed) else {
@@ -183,21 +184,21 @@ impl<R: Runtime> Pager<R> {
     /// Make checkpoints fall due from now on, each once the log forced since the last reaches the
     /// threshold.
     pub(super) fn start_checkpoints(&self) {
-        let every = self.checkpointer.lock(&self.rt).every;
+        let every = self.checkpointer().lock(self.rt()).every;
         self.log().checkpoint_every(every);
     }
 
     /// Wake the checkpointer, starting it if it has not run, unless it is stopped.
     pub(super) fn wake_checkpointer(&self) {
-        let mut w = self.checkpointer.lock(&self.rt);
+        let mut w = self.checkpointer().lock(self.rt());
         if w.stop {
             return;
         }
         match w.thread {
-            Some(t) => self.rt.unpark(t),
+            Some(t) => self.rt().unpark(t),
             None => {
-                let shared = Arc::downgrade(&self.0);
-                w.thread = Some(self.rt.spawn_daemon("checkpoint", move || run(&shared)));
+                let shared = self.downgrade();
+                w.thread = Some(self.rt().spawn_daemon("checkpoint", move || run(&shared)));
             }
         }
     }
@@ -205,13 +206,13 @@ impl<R: Runtime> Pager<R> {
     /// Stop the checkpointer, waiting for a running checkpoint to end. No later wake starts it.
     pub(super) fn stop_checkpointer(&self) {
         let thread = {
-            let mut w = self.checkpointer.lock(&self.rt);
+            let mut w = self.checkpointer().lock(self.rt());
             w.stop = true;
             w.thread.take()
         };
         if let Some(t) = thread {
-            self.rt.unpark(t);
-            self.rt.join(t);
+            self.rt().unpark(t);
+            self.rt().join(t);
         }
     }
 }
@@ -219,10 +220,10 @@ impl<R: Runtime> Pager<R> {
 /// Write every changed page and take a checkpoint whenever one is due, until stopped.
 fn run<R: Runtime>(shared: &Weak<Shared<R>>) {
     loop {
-        let Some(pager) = shared.upgrade().map(Pager) else {
+        let Some(pager) = Pager::upgrade(shared) else {
             return;
         };
-        if pager.checkpointer.lock(&pager.rt).stop {
+        if pager.checkpointer().lock(pager.rt()).stop {
             return;
         }
         if pager.log().checkpoint_due() {
@@ -232,7 +233,7 @@ fn run<R: Runtime>(shared: &Weak<Shared<R>>) {
             }
             continue;
         }
-        let rt = pager.rt.clone();
+        let rt = pager.rt().clone();
         drop(pager);
         rt.park();
     }

@@ -1,3 +1,7 @@
+use std::collections::BTreeSet;
+
+use adtb_sys::lock::Lock;
+
 use crate::runtime::{AlignedBuf, Runtime};
 
 use super::block::{LogFinding, LogProblem};
@@ -258,11 +262,83 @@ pub fn choose(first: Option<FileHeader>, second: Option<FileHeader>) -> Option<(
     }
 }
 
-impl<R: Runtime> Pager<R> {
-    /// Write the next header copy, pointing at the checkpoint of `checkpoint` unless the header
-    /// already names a later one. The header's bitmap group count only rises.
-    pub(super) fn write_header(&self, checkpoint: Option<(Lsn, u64)>) {
-        let mut h = self.header.lock(&self.rt);
+/// The file header as last written and the copy it was written to, under the header lock.
+///
+/// Invariants:
+///
+/// - Each write takes the other copy and the next sequence number.
+/// - The checkpoint and the bitmap group count only rise.
+/// - A copy written, or the header read, names the marks page and the damage list page their
+///   owners name at the time; the header keeps no value of its own for either past the open.
+#[derive(Debug)]
+pub(super) struct Header(Lock<(FileHeader, u64)>);
+
+impl Header {
+    /// Returns the header of a file opened from `header`, read from copy `copy`.
+    pub(super) fn new(header: FileHeader, copy: u64) -> Header {
+        Header(Lock::new((header, copy)))
+    }
+
+    /// Returns what `f` reads of the header as last written, naming `marks` as the marks page
+    /// and `list` as the damage list page.
+    pub(super) fn read<R: Runtime, T>(
+        &self,
+        rt: &R,
+        marks: Pid,
+        list: Pid,
+        f: impl FnOnce(&FileHeader) -> T,
+    ) -> T {
+        let mut h = self.0.lock(rt);
+        h.0.quarantine = marks;
+        h.0.damage_list = list;
+        f(&h.0)
+    }
+
+    /// Name `root` as the catalog's root from the next write.
+    pub(super) fn set_catalog_root<R: Runtime>(&self, rt: &R, root: Pid) {
+        self.0.lock(rt).0.catalog_root = root;
+    }
+
+    /// Add `stale`, stale log blocks recovery found, to those the header holds, the lowest that
+    /// fit, marking the header full when some do not. Returns whether that changed the header.
+    pub(super) fn keep_log_findings<'a, R: Runtime>(
+        &self,
+        rt: &R,
+        stale: impl Iterator<Item = &'a LogFinding>,
+    ) -> bool {
+        let mut h = self.0.lock(rt);
+        let mut kept: BTreeSet<LogFinding> = h.0.log_damage.iter().copied().collect();
+        kept.extend(stale);
+        let full = h.0.log_damage_full || kept.len() > LOG_DAMAGE_CAPACITY;
+        let kept: Vec<LogFinding> = kept.into_iter().take(LOG_DAMAGE_CAPACITY).collect();
+        let changed = kept != h.0.log_damage || full != h.0.log_damage_full;
+        h.0.log_damage = kept;
+        h.0.log_damage_full = full;
+        changed
+    }
+
+    /// Drop the log findings from the next write.
+    ///
+    /// Preconditions: a fold of the damage records that holds them is logged and forced.
+    pub(super) fn clear_log_findings<R: Runtime>(&self, rt: &R) {
+        let mut h = self.0.lock(rt);
+        h.0.log_damage.clear();
+        h.0.log_damage_full = false;
+    }
+
+    /// Pass `write` the next copy and its bytes, naming `marks` as the marks page, `list` as the
+    /// damage list page and the checkpoint of `checkpoint` unless the header names a later one,
+    /// under the header lock. Write nothing when it names a later one. The bitmap group count
+    /// rises to the checkpoint's in either case.
+    pub(super) fn write_next<R: Runtime>(
+        &self,
+        rt: &R,
+        checkpoint: Option<(Lsn, u64)>,
+        marks: Pid,
+        list: Pid,
+        write: impl FnOnce(u64, &[u8]),
+    ) {
+        let mut h = self.0.lock(rt);
         let (header, copy) = &mut *h;
         if let Some((at, groups)) = checkpoint {
             header.bitmap_groups = header.bitmap_groups.max(groups);
@@ -271,30 +347,49 @@ impl<R: Runtime> Pager<R> {
             }
             header.checkpoint = at;
         }
+        header.quarantine = marks;
+        header.damage_list = list;
         header.seq += 1;
         *copy = 1 - *copy;
-        let bytes = header.encode(*copy);
-        let offset = *copy * self.page_size as u64;
-        self.io(|d| {
-            d.write_all(vec![(self.data, offset, AlignedBuf::from_slice(&bytes))]);
-            d.sync_all(&[self.data]);
-        });
+        write(*copy, &header.encode(*copy));
+    }
+}
+
+impl<R: Runtime> Pager<R> {
+    /// Write the next header copy, pointing at the checkpoint of `checkpoint` unless the header
+    /// already names a later one. The header's bitmap group count only rises.
+    pub(super) fn write_header(&self, checkpoint: Option<(Lsn, u64)>) {
+        let (marks, list) = (self.quarantine_page(), self.damage_list_page());
+        self.header()
+            .write_next(self.rt(), checkpoint, marks, list, |copy, bytes| {
+                let offset = copy * self.page_size() as u64;
+                self.io(|d| {
+                    d.write_all(vec![(self.data(), offset, AlignedBuf::from_slice(bytes))]);
+                    d.sync_all(&[self.data()]);
+                });
+            });
+    }
+
+    /// Returns what `f` reads of the header as a copy written now would hold it.
+    pub(super) fn read_header<T>(&self, f: impl FnOnce(&FileHeader) -> T) -> T {
+        let (marks, list) = (self.quarantine_page(), self.damage_list_page());
+        self.header().read(self.rt(), marks, list, f)
     }
 
     /// Returns the page the file header names as the catalog's root, `Pid(0)` before one is set.
     pub fn catalog_root(&self) -> Pid {
-        self.header.lock(&self.rt).0.catalog_root
+        self.read_header(|h| h.catalog_root)
     }
 
     /// Force the log, then write and force a header copy naming `root` as the catalog's root.
     pub fn set_catalog_root(&self, root: Pid) {
         self.flush_log();
-        self.header.lock(&self.rt).0.catalog_root = root;
+        self.header().set_catalog_root(self.rt(), root);
         self.write_header(None);
     }
 
     /// Returns the LSN of the checkpoint record the file header names.
     pub(crate) fn checkpoint_lsn(&self) -> Lsn {
-        self.header.lock(&self.rt).0.checkpoint
+        self.read_header(|h| h.checkpoint)
     }
 }

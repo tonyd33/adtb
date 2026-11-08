@@ -7,17 +7,17 @@ use adtb_sys::pages::{self, PageMemory, PageState};
 
 use crate::runtime::{AlignedBuf, FileId, Runtime, ThreadId};
 
-use super::alloc::{Reservation, diff};
+use super::alloc::{Allocation, Hold, Reservation, diff};
 use super::damage_log::Recorded;
 use super::driver::Driver;
 use super::error::{Damage, OpenError};
 use super::evidence::{Against, Evidence, Met, Refusal, Unmapped, file_copy};
-use super::header::FileHeader;
+use super::header::{FileHeader, Header};
 use super::holding::{Holding, NO_HOLDER};
-use super::log::{Log, Segments};
+use super::log::{Log, Pinned, Segments};
 use super::page::{self, FIRST_EDITABLE, HEADER_LEN, Verdict};
 use super::pagetable::{DirtyTable, Logged};
-use super::quarantine::Quarantine;
+use super::quarantine::{Marks, Quarantine};
 use super::record::{Edit, MapRoot, Record};
 use super::recovery::Replaying;
 use super::{Lsn, Pid, Position};
@@ -67,18 +67,9 @@ pub struct PageError {
 
 /// What the pool knows of its pages beyond their memory and state words.
 #[derive(Debug)]
-pub(crate) struct Meta {
+struct Meta {
     table: DirtyTable,
     evidence: Evidence,
-    /// The bitmap groups a batch has started: their bitmap pages are never blank. A batch counts
-    /// here only once it is in the log and while its bitmap page is latched, so a checkpoint that
-    /// captures a lower count finds that page dirty and its redo point covers the batch.
-    pub(crate) groups: u64,
-    /// The free pages reservations hold, each until its reservation and any blank latch of it
-    /// end.
-    pub(crate) reserved: BTreeSet<Pid>,
-    /// The reserved pages latched blank whose allocation has not committed.
-    pub(crate) blanked: BTreeSet<Pid>,
     /// Resident pages and pages being read in, in clock order.
     resident: Vec<Pid>,
     hand: usize,
@@ -182,18 +173,11 @@ pub(super) struct Append<'a, R: Runtime> {
     witness: Appending,
 }
 
-/// A checkpoint's LSN, its redo LSN, the bitmap groups it captured and, when it folds, the
-/// damage records to fold into the list page.
-pub(super) type Checkpointed = (Lsn, Lsn, u64, Option<Recorded>);
+/// A checkpoint's LSN, its redo LSN, the bitmap groups it captured, the damage records to fold
+/// into the list page when it folds, and the pin of its redo LSN when it pins.
+pub(super) type Checkpointed = (Lsn, Lsn, u64, Option<Recorded>, Option<Pinned>);
 
 impl<R: Runtime> Append<'_, R> {
-    /// Mark each page of `pids`, which the batch allocates, no longer blank.
-    fn unblank(&mut self, pids: &[Pid]) {
-        for pid in pids {
-            self.meta.blanked.remove(pid);
-        }
-    }
-
     /// Apply `edits` to the page under `g` and log its record: a full image starting a chain when
     /// `start`, else the record [`DirtyTable::record_kind`] chooses. Returns the record's LSN.
     fn change_page(&mut self, g: &mut PageExclusive<'_, R>, edits: Vec<Edit>, start: bool) -> Lsn {
@@ -323,10 +307,9 @@ impl<R: Runtime> Append<'_, R> {
             dirty,
             map: *map,
         });
-        if pin {
-            log.pin(redo);
-        }
-        (at, redo, m.groups, folded)
+        let pinned = pin.then(|| log.pin(redo));
+        let groups = self.pager.allocation().started();
+        (at, redo, groups, folded, pinned)
     }
 }
 
@@ -365,7 +348,19 @@ pub(super) fn wrote_for_test(pid: Pid) -> Wrote {
 ///   checkpoint, which takes its snapshot in the same hold, sees all of them or none.
 ///
 /// Clones are handles on one pager.
-pub struct Pager<R: Runtime>(pub(super) std::sync::Arc<Shared<R>>);
+pub struct Pager<R: Runtime>(std::sync::Arc<Shared<R>>);
+
+impl<R: Runtime> Pager<R> {
+    /// Returns a handle on this pager that does not keep it open.
+    pub(super) fn downgrade(&self) -> std::sync::Weak<Shared<R>> {
+        std::sync::Arc::downgrade(&self.0)
+    }
+
+    /// Returns a handle on the pager `weak` names, `None` once every other handle has dropped.
+    pub(super) fn upgrade(weak: &std::sync::Weak<Shared<R>>) -> Option<Pager<R>> {
+        weak.upgrade().map(Pager)
+    }
+}
 
 impl<R: Runtime> Clone for Pager<R> {
     fn clone(&self) -> Self {
@@ -394,38 +389,33 @@ impl<R: Runtime> Deref for Pager<R> {
 /// either lock and takes either panics, except for the meta lock an [`Append`] takes under its
 /// log lock.
 pub struct Shared<R: Runtime> {
-    pub(crate) rt: R,
-    pub(crate) name: String,
-    pub(crate) page_size: usize,
+    rt: R,
+    name: String,
+    page_size: usize,
     pool_frames: usize,
     stall_after: Duration,
-    pub(crate) data: FileId,
+    data: FileId,
     mem: PageMemory,
     drivers: Lock<BTreeMap<ThreadId, Driver<R>>>,
     /// Held by a force of the data file from taking the pages written to dropping pages from the
     /// dirty page table.
-    pub(super) forcing: Lock<Forcing>,
-    pub(super) header: Lock<(FileHeader, u64)>,
+    forcing: Lock<Forcing>,
+    header: Header,
     log: Lock<Appended>,
     /// The thread holding the log lock, `NO_HOLDER` while none does.
     log_holder: AtomicU64,
     /// The thread holding the meta lock, `NO_HOLDER` while none does.
     meta_holder: AtomicU64,
     /// Held by the one thread writing and forcing a batch: the group commit leader.
-    pub(crate) segments: Lock<Segments>,
+    segments: Lock<Segments>,
     meta: Lock<Meta>,
-    /// Held across a search for a free page and across marking pages allocated.
-    pub(crate) alloc: Lock<super::alloc::AllocState>,
-    pub(crate) marks: Lock<super::quarantine::Marks>,
-    /// Whether `marks` holds any mark. Set before a mark shows in `marks`.
-    pub(crate) any_mark: std::sync::atomic::AtomicBool,
+    alloc: Allocation,
+    marks: Marks,
     unmapped: Unmapped,
-    /// How many damaged pages this open has walked the objects for.
-    pub(crate) walked: AtomicU64,
-    pub(super) archive: Lock<Option<ArchiveHook>>,
+    archive: Lock<Option<ArchiveHook>>,
     /// Held across a recycle of the log, taken before any other lock or latch.
-    pub(super) recycling: Lock<()>,
-    pub(super) checkpointer: Lock<super::checkpoint::Worker>,
+    recycling: Lock<()>,
+    checkpointer: Lock<super::checkpoint::Worker>,
 }
 
 /// Returns the LSN below which the log's archive holds every segment, `None` while it holds none.
@@ -683,18 +673,17 @@ impl<'a, R: Runtime> Held<'a, R> {
     /// `prior`.
     fn unblank(self, prior: Option<Damage>) {
         let pid = self.pid();
-        let mut m = self.pager.own_meta();
-        if !m.blanked.remove(&pid) {
+        let pager = self.pager;
+        let mut alloc = pager.allocation().lock(&pager.rt);
+        if !alloc.is_blank(pid) {
             return;
         }
         if let Some(damage) = prior {
-            m.evidence.restore(pid, damage);
+            pager.evidence().restore(pid, damage);
         }
-        m.reserved.remove(&pid);
-        drop(m);
-        let pager = self.pager;
         self.g.evict();
         pager.unreserve(pid);
+        alloc.release(pid, Hold::Blank);
     }
 }
 
@@ -709,10 +698,9 @@ impl<R: Runtime> Pager<R> {
             return held.latched();
         }
         let refusal = {
-            let mut m = self.own_meta();
-            let refusal = m.evidence.unrefuse(pid);
-            m.blanked.insert(pid);
-            refusal
+            let mut alloc = self.allocation().lock(&self.rt);
+            alloc.blank(pid);
+            self.evidence().unrefuse(pid)
         };
         held.blank(header, refusal)
     }
@@ -819,8 +807,9 @@ impl<R: Runtime> Pager<R> {
         copy: u64,
         data: FileId,
     ) -> Self {
-        let bitmap_groups = header.bitmap_groups;
-        let evidence = Evidence::new();
+        let alloc = Allocation::new(header.bitmap_groups);
+        let marks = Marks::new(header.quarantine);
+        let evidence = Evidence::new(header.damage_list);
         let unmapped = evidence.unmapped_flag();
         let log = Log::new(header.log_block as usize, header.epoch, header.file_id);
         let segments = Segments::new(
@@ -838,7 +827,7 @@ impl<R: Runtime> Pager<R> {
             mem: PageMemory::reserve(header.page_size as usize, o.max_pages),
             drivers: Lock::new(BTreeMap::new()),
             forcing: Lock::new(Forcing(())),
-            header: Lock::new((header, copy)),
+            header: Header::new(header, copy),
             log: Lock::new(Appended { log, map: None }),
             log_holder: AtomicU64::new(NO_HOLDER),
             meta_holder: AtomicU64::new(NO_HOLDER),
@@ -846,17 +835,12 @@ impl<R: Runtime> Pager<R> {
             meta: Lock::new(Meta {
                 table: DirtyTable::new(o.atomic_page_writes),
                 evidence,
-                groups: bitmap_groups,
-                reserved: BTreeSet::new(),
-                blanked: BTreeSet::new(),
                 resident: Vec::new(),
                 hand: 0,
             }),
-            alloc: Lock::new(Default::default()),
-            marks: Lock::new(Default::default()),
-            any_mark: std::sync::atomic::AtomicBool::new(false),
+            alloc,
+            marks,
             unmapped,
-            walked: AtomicU64::new(0),
             archive: Lock::new(None),
             recycling: Lock::new(()),
             checkpointer: Lock::new(super::checkpoint::Worker::new(o.checkpoint_every)),
@@ -912,7 +896,6 @@ impl<R: Runtime> Pager<R> {
         }
         let made = pager.reserve_marks().and_then(|(new, marks)| {
             pager.format_marks(new, marks)?;
-            pager.header.lock(&pager.rt).0.quarantine = marks;
             pager.create_damage_list()
         });
         if let Err(e) = made {
@@ -933,8 +916,44 @@ impl<R: Runtime> Pager<R> {
         self.pool_frames / LATCHES_PER_THREAD
     }
 
-    pub(crate) fn meta(&self) -> Holding<'_, Meta> {
-        self.own_meta()
+    pub(crate) fn rt(&self) -> &R {
+        &self.rt
+    }
+
+    pub(super) fn data(&self) -> FileId {
+        self.data
+    }
+
+    pub(super) fn segments(&self) -> &Lock<Segments> {
+        &self.segments
+    }
+
+    pub(super) fn forcing(&self) -> &Lock<Forcing> {
+        &self.forcing
+    }
+
+    pub(super) fn archive_hook(&self) -> &Lock<Option<ArchiveHook>> {
+        &self.archive
+    }
+
+    pub(super) fn recycling(&self) -> &Lock<()> {
+        &self.recycling
+    }
+
+    pub(super) fn checkpointer(&self) -> &Lock<super::checkpoint::Worker> {
+        &self.checkpointer
+    }
+
+    pub(super) fn allocation(&self) -> &Allocation {
+        &self.alloc
+    }
+
+    pub(super) fn marks(&self) -> &Marks {
+        &self.marks
+    }
+
+    pub(super) fn header(&self) -> &Header {
+        &self.header
     }
 
     fn own_meta(&self) -> Holding<'_, Meta> {
@@ -1341,7 +1360,6 @@ impl<R: Runtime> Pager<R> {
         }
         let mut append = self.append();
         let mut last = append.log.log.next_lsn();
-        append.unblank(&allocated);
         for (g, edits) in guards.iter_mut().zip(edits) {
             let start = matches!(g.kind, Kind::Overwriting) || allocated.contains(&g.pid());
             if edits.is_empty() && !start {

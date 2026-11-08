@@ -36,9 +36,9 @@ fn an_older_checkpoint_keeps_the_group_count_and_a_lower_one_never_lowers_it() {
     pager.write_header(Some((Lsn(u64::MAX / 2), 7)));
     pager.write_header(Some((Lsn(1), 9)));
     pager.write_header(Some((Lsn(u64::MAX / 2), 3)));
-    let at_header = pager.header.lock(&pager.rt).0.checkpoint;
+    let at_header = pager.checkpoint_lsn();
     assert_eq!(Lsn(u64::MAX / 2), at_header);
-    assert_eq!(9, pager.header.lock(&pager.rt).0.bitmap_groups);
+    assert_eq!(9, pager.read_header(|h| h.bitmap_groups));
     pager.write_header(None);
     pager.close();
     let file = std::fs::read(scratch.path().join("count.adt")).expect("read the file");
@@ -326,6 +326,73 @@ fn header_copy_round_trips_and_binds_its_copy_number() {
     let mut torn = bytes;
     torn[70] ^= 0x10;
     assert_eq!(None, FileHeader::decode(1, &torn));
+}
+
+#[test]
+fn a_header_written_names_the_marks_and_list_pages_as_they_are_at_the_write() {
+    let scratch = Scratch::new("storage", "header-owners");
+    let rt = OsRuntime::with_faults(
+        scratch.path(),
+        Backend::Pool { threads: 1 },
+        Faults::none(4096),
+    );
+    let options = Options {
+        pool_frames: 16,
+        max_pages: 1024,
+        ..Options::new("owners.adt")
+    };
+    let pager = Pager::create(rt, &options).expect("create pager");
+    let first = (pager.quarantine_page(), pager.damage_list_page());
+    let (new, marks) = pager.reserve_marks().expect("reserve a marks page");
+    pager
+        .format_marks(new, marks)
+        .expect("format the marks page");
+    pager.create_damage_list().expect("format a list page");
+    let now = (pager.quarantine_page(), pager.damage_list_page());
+    assert_ne!(first.0, now.0);
+    assert_ne!(first.1, now.1);
+    assert_eq!(now, pager.read_header(|h| (h.quarantine, h.damage_list)));
+    pager.write_header(None);
+    let file = std::fs::read(scratch.path().join("owners.adt")).expect("read the file");
+    let page = pager.page_size();
+    let copies = [
+        FileHeader::decode(0, &file[..page]),
+        FileHeader::decode(1, &file[page..]),
+    ];
+    let [first_copy, second_copy] = copies;
+    let (_, newest) = choose(first_copy, second_copy).expect("a copy verifies");
+    assert_eq!(now, (newest.quarantine, newest.damage_list));
+    pager.close();
+}
+
+#[test]
+fn a_reservation_outliving_its_blank_latch_keeps_the_page_from_another() {
+    let scratch = Scratch::new("storage", "reservation-holds");
+    let rt = OsRuntime::with_faults(
+        scratch.path(),
+        Backend::Pool { threads: 1 },
+        Faults::none(4096),
+    );
+    let options = Options {
+        pool_frames: 16,
+        max_pages: 1024,
+        ..Options::new("holds.adt")
+    };
+    let pager = Pager::create(rt, &options).expect("create pager");
+    let kind = page::PageKind::HeapSlotted;
+    let mut first = pager.reserve();
+    let pid = first.page(1, kind, 7).expect("reserve a page");
+    let blank = first.latch(pid);
+    assert!(pager.allocation().lock(pager.rt()).is_blank(pid));
+    drop(blank);
+    assert!(pager.allocation().lock(pager.rt()).is_held(pid));
+    let mut second = pager.reserve();
+    let other = second.page(1, kind, 7).expect("reserve another page");
+    assert_ne!(pid, other);
+    drop(second);
+    drop(first);
+    assert!(!pager.allocation().lock(pager.rt()).is_held(pid));
+    pager.close();
 }
 
 #[test]

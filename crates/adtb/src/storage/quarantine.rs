@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::sync::atomic::Ordering;
 
 use crate::runtime::Runtime;
 
@@ -11,7 +10,7 @@ use crate::mvcc::Settling;
 
 /// What the allocation bitmap says of a page.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum Allocation {
+pub(super) enum Bitmapped {
     Allocated,
     Free,
     /// Its bitmap page is refused.
@@ -169,19 +168,198 @@ impl Holders {
     }
 }
 
-/// The marks in memory, and whether their page could be read at open.
-#[derive(Debug, Default)]
-pub(crate) struct Marks {
-    pub(crate) set: BTreeSet<Quarantine>,
-    /// Marks held for this open only, never written.
-    pub(crate) held: BTreeSet<Quarantine>,
-    pub(crate) page: Pid,
-    pub(crate) unreadable: bool,
-}
+pub(super) use self::marks::{Destination, Marks};
 
-impl Marks {
-    fn any(&self) -> bool {
-        !self.set.is_empty() || !self.held.is_empty()
+mod marks {
+    use std::collections::BTreeSet;
+    use std::sync::MutexGuard;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use adtb_sys::lock::Lock;
+
+    use super::Quarantine;
+    use crate::runtime::Runtime;
+    use crate::storage::Pid;
+
+    /// The marks in memory, under the marks lock, a leaf, and whether any is set, read without
+    /// it.
+    ///
+    /// Invariants:
+    ///
+    /// - The flag is set exactly while a mark is set or held; it changes with the marks in one
+    ///   hold of the lock.
+    /// - The set mirrors the marks page unless a mark is held for this open or the page could
+    ///   not be read at open.
+    #[derive(Debug)]
+    pub(in crate::storage) struct Marks {
+        state: Lock<State>,
+        any: AtomicBool,
+    }
+
+    #[derive(Debug, Default)]
+    struct State {
+        set: BTreeSet<Quarantine>,
+        /// Marks held for this open only, never written.
+        held: BTreeSet<Quarantine>,
+        page: Pid,
+        unreadable: bool,
+    }
+
+    /// Where a change of the marks goes.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(in crate::storage) enum Destination {
+        /// Memory only: a mark is held for this open.
+        Memory,
+        /// Nowhere: the page, named, could not be read at open.
+        Unreadable(Pid),
+        /// The page named.
+        Page(Pid),
+    }
+
+    impl Marks {
+        /// Returns the marks of a file whose header names `page`, none set until they are
+        /// loaded.
+        pub(in crate::storage) fn new(page: Pid) -> Marks {
+            Marks {
+                state: Lock::new(State {
+                    page,
+                    ..State::default()
+                }),
+                any: AtomicBool::new(false),
+            }
+        }
+
+        fn lock<R: Runtime>(&self, rt: &R) -> Guard<'_> {
+            Guard {
+                any: &self.any,
+                state: self.state.lock(rt),
+            }
+        }
+
+        /// Take `read`, the marks the page `page` holds, `None` when it does not decode, which
+        /// marks the database and stops every write of the marks.
+        pub(in crate::storage) fn load<R: Runtime>(
+            &self,
+            rt: &R,
+            page: Pid,
+            read: Option<BTreeSet<Quarantine>>,
+        ) {
+            let mut m = self.lock(rt);
+            m.state.page = page;
+            match read {
+                Some(set) => m.state.set = set,
+                None => {
+                    m.state.set = BTreeSet::from([Quarantine::Database]);
+                    m.state.unreadable = true;
+                }
+            }
+        }
+
+        /// Hold the marks on page `page`, formatted empty.
+        pub(in crate::storage) fn formatted<R: Runtime>(&self, rt: &R, page: Pid) {
+            self.lock(rt).state.page = page;
+        }
+
+        /// Returns the page holding the marks.
+        pub(in crate::storage) fn page<R: Runtime>(&self, rt: &R) -> Pid {
+            self.lock(rt).state.page
+        }
+
+        /// Returns the page holding the marks, or `Err` with it when it could not be read at open.
+        pub(in crate::storage) fn readable_page<R: Runtime>(&self, rt: &R) -> Result<Pid, Pid> {
+            let m = self.lock(rt);
+            match m.state.unreadable {
+                true => Err(m.state.page),
+                false => Ok(m.state.page),
+            }
+        }
+
+        /// Returns where a change of the marks goes now.
+        pub(in crate::storage) fn destination<R: Runtime>(&self, rt: &R) -> Destination {
+            let m = self.lock(rt);
+            if !m.state.held.is_empty() {
+                Destination::Memory
+            } else if m.state.unreadable {
+                Destination::Unreadable(m.state.page)
+            } else {
+                Destination::Page(m.state.page)
+            }
+        }
+
+        /// Returns whether any object is quarantined, without the lock.
+        pub(in crate::storage) fn any(&self) -> bool {
+            self.any.load(Ordering::Acquire)
+        }
+
+        /// Returns every mark, set or held.
+        pub(in crate::storage) fn all<R: Runtime>(&self, rt: &R) -> BTreeSet<Quarantine> {
+            let m = self.lock(rt);
+            m.state.set.union(&m.state.held).copied().collect()
+        }
+
+        /// Returns whether any of `objects` is marked, set or held.
+        pub(in crate::storage) fn any_of<R: Runtime>(
+            &self,
+            rt: &R,
+            objects: &[Quarantine],
+        ) -> bool {
+            let m = self.lock(rt);
+            let marked = |o| m.state.set.contains(o) || m.state.held.contains(o);
+            objects.iter().any(marked)
+        }
+
+        /// Returns the set as `f` would change it, changing nothing.
+        pub(in crate::storage) fn changed<R: Runtime>(
+            &self,
+            rt: &R,
+            f: impl FnOnce(&mut BTreeSet<Quarantine>),
+        ) -> BTreeSet<Quarantine> {
+            let mut set = self.lock(rt).state.set.clone();
+            f(&mut set);
+            set
+        }
+
+        /// Change the set through `f`, in memory only.
+        pub(in crate::storage) fn change<R: Runtime>(
+            &self,
+            rt: &R,
+            f: impl FnOnce(&mut BTreeSet<Quarantine>),
+        ) {
+            f(&mut self.lock(rt).state.set);
+        }
+
+        /// Change the set through `f`. Returns the set, for the caller to write to the marks
+        /// page.
+        ///
+        /// Preconditions: the caller latches the marks page, which [`Marks::destination`] named
+        /// as the place of the change before the latch.
+        pub(in crate::storage) fn change_on_page<R: Runtime>(
+            &self,
+            rt: &R,
+            f: impl FnOnce(&mut BTreeSet<Quarantine>),
+        ) -> BTreeSet<Quarantine> {
+            let mut m = self.lock(rt);
+            f(&mut m.state.set);
+            m.state.set.clone()
+        }
+
+        /// Hold `object` marked for this open only.
+        pub(in crate::storage) fn hold<R: Runtime>(&self, rt: &R, object: Quarantine) {
+            self.lock(rt).state.held.insert(object);
+        }
+    }
+
+    /// The marks lock, held. Its drop sets the flag from the marks.
+    struct Guard<'a> {
+        any: &'a AtomicBool,
+        state: MutexGuard<'a, State>,
+    }
+
+    impl Drop for Guard<'_> {
+        fn drop(&mut self) {
+            let any = !self.state.set.is_empty() || !self.state.held.is_empty();
+            self.any.store(any, Ordering::Release);
+        }
     }
 }
 
@@ -203,36 +381,24 @@ impl<R: Runtime> Pager<R> {
             Err(e) if e.damage == Damage::Unreadable => return Err(e),
             Err(_) => None,
         };
-        let mut marks = self.marks.lock(&self.rt);
-        marks.page = page;
-        match read {
-            Some(set) => marks.set = set,
-            None => {
-                marks.set = BTreeSet::from([Quarantine::Database]);
-                marks.unreadable = true;
-            }
-        }
-        self.any_mark.store(marks.any(), Ordering::Release);
+        self.marks().load(self.rt(), page, read);
         Ok(())
     }
 
     /// Returns every object quarantined.
     pub(crate) fn quarantined(&self) -> BTreeSet<Quarantine> {
-        let marks = self.marks.lock(&self.rt);
-        marks.set.union(&marks.held).copied().collect()
+        self.marks().all(self.rt())
     }
 
     /// Returns whether any object is quarantined, without taking a lock.
     pub fn any_quarantined(&self) -> bool {
-        self.any_mark.load(Ordering::Acquire)
+        self.marks().any()
     }
 
     /// Returns whether `object` is quarantined, by its own mark or the database's.
     pub(crate) fn is_quarantined(&self, object: Quarantine) -> bool {
-        let marks = self.marks.lock(&self.rt);
-        [object, Quarantine::Database]
-            .iter()
-            .any(|o| marks.set.contains(o) || marks.held.contains(o))
+        self.marks()
+            .any_of(self.rt(), &[object, Quarantine::Database])
     }
 
     /// Mark `object` quarantined. The mark is durable on return, for every caller marking it,
@@ -249,16 +415,16 @@ impl<R: Runtime> Pager<R> {
             set.insert(object);
         })
         .inspect_err(|_| {
-            self.marks.lock(&self.rt).set.insert(object);
-            self.any_mark.store(true, Ordering::Release);
+            self.marks().change(self.rt(), |set| {
+                set.insert(object);
+            });
         })
     }
 
     /// Mark `object` quarantined for this open only. From then on no change of the marks is
     /// written.
     pub(crate) fn hold_quarantine(&self, object: Quarantine) {
-        self.marks.lock(&self.rt).held.insert(object);
-        self.any_mark.store(true, Ordering::Release);
+        self.marks().hold(self.rt(), object);
     }
 
     /// Remove the mark on `object`, once it is repaired. Durable on return.
@@ -298,38 +464,28 @@ impl<R: Runtime> Pager<R> {
         release: Option<Quarantine>,
     ) -> Result<(), PageError> {
         let contents = self.read(from)?.to_vec();
-        let (page, unreadable) = {
-            let m = self.marks.lock(&self.rt);
-            (m.page, m.unreadable)
-        };
-        if unreadable {
-            return Err(PageError {
-                pid: page,
+        let page = self
+            .marks()
+            .readable_page(self.rt())
+            .map_err(|pid| PageError {
+                pid,
                 damage: Damage::Checksum,
-            });
-        }
+            })?;
         let mut marks_page = self.exclusive(page)?;
         let (mut g, blank) = self.latch_overwriting(pid)?;
         let mut new = self.reserve();
         new.free(from);
-        let set = {
-            let mut set = self.marks.lock(&self.rt).set.clone();
+        let unmark = |set: &mut BTreeSet<Quarantine>| {
             if let Some(release) = &release {
                 set.remove(release);
             }
-            set
         };
+        let set = self.marks().changed(self.rt(), unmark);
         let lsn = self.update_all_with(new, &mut [&mut g, &mut marks_page], |p| {
             p[0][FIRST_EDITABLE..].copy_from_slice(&contents[FIRST_EDITABLE..]);
             encode(p[1], &set);
         })?;
-        {
-            let mut marks = self.marks.lock(&self.rt);
-            if let Some(release) = &release {
-                marks.set.remove(release);
-            }
-            self.any_mark.store(marks.any(), Ordering::Release);
-        }
+        self.marks().change(self.rt(), unmark);
         drop(marks_page);
         self.wait_durable(lsn);
         if blank {
@@ -403,32 +559,37 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns the page holding the marks.
     pub fn quarantine_page(&self) -> Pid {
-        self.marks.lock(&self.rt).page
+        self.marks().page(self.rt())
     }
 
     fn change_marks(&self, f: impl FnOnce(&mut BTreeSet<Quarantine>)) -> Result<(), PageError> {
-        let (page, unreadable) = {
-            let mut m = self.marks.lock(&self.rt);
-            if !m.held.is_empty() {
-                f(&mut m.set);
-                self.any_mark.store(m.any(), Ordering::Release);
+        let page = match self.marks().destination(self.rt()) {
+            Destination::Memory => {
+                self.marks().change(self.rt(), f);
                 return Ok(());
             }
-            (m.page, m.unreadable)
+            Destination::Unreadable(page) => {
+                return Err(self.read(page).err().unwrap_or(PageError {
+                    pid: page,
+                    damage: Damage::Checksum,
+                }));
+            }
+            Destination::Page(page) => page,
         };
-        if unreadable {
-            return Err(self.read(page).err().unwrap_or(PageError {
-                pid: page,
-                damage: Damage::Checksum,
-            }));
-        }
+        self.change_marks_on(page, f)
+    }
+
+    /// Change the marks through `f` and write them to their page `page`, durable on return,
+    /// whether or not a mark was held for this open since `page` was named.
+    ///
+    /// Fail, changing nothing, if the page is refused.
+    fn change_marks_on(
+        &self,
+        page: Pid,
+        f: impl FnOnce(&mut BTreeSet<Quarantine>),
+    ) -> Result<(), PageError> {
         let mut guard = self.exclusive(page)?;
-        let set = {
-            let mut marks = self.marks.lock(&self.rt);
-            f(&mut marks.set);
-            self.any_mark.store(marks.any(), Ordering::Release);
-            marks.set.clone()
-        };
+        let set = self.marks().change_on_page(self.rt(), f);
         guard.update(|p| encode(p, &set));
         let lsn = super::page::lsn(&guard);
         drop(guard);
@@ -471,7 +632,7 @@ impl<R: Runtime> Pager<R> {
         if self.is_bitmap_page(pid) {
             return Some(BTreeSet::from([Quarantine::Database]));
         }
-        self.walked.fetch_add(1, Ordering::Relaxed);
+        self.evidence().walked_one();
         let mut h = Holders {
             pid,
             held: BTreeSet::new(),
@@ -487,7 +648,7 @@ impl<R: Runtime> Pager<R> {
         if h.incomplete && h.held.is_empty() && !h.unmarked {
             return None;
         }
-        if !h.held.is_empty() || h.unmarked || self.allocation(pid) == Allocation::Free {
+        if !h.held.is_empty() || h.unmarked || self.bitmapped(pid) == Bitmapped::Free {
             return Some(h.held);
         }
         Some(unheld.into_iter().collect())
@@ -509,11 +670,11 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns what the allocation bitmap says of `pid`.
-    pub(super) fn allocation(&self, pid: Pid) -> Allocation {
+    pub(super) fn bitmapped(&self, pid: Pid) -> Bitmapped {
         match self.is_free(pid) {
-            Ok(true) => Allocation::Free,
-            Ok(false) => Allocation::Allocated,
-            Err(_) => Allocation::Unknown,
+            Ok(true) => Bitmapped::Free,
+            Ok(false) => Bitmapped::Allocated,
+            Err(_) => Bitmapped::Unknown,
         }
     }
 
@@ -524,7 +685,102 @@ impl<R: Runtime> Pager<R> {
         pid: Pid,
     ) -> Result<(), PageError> {
         self.update_with(new, &[pid], |p| encode(p[0], &BTreeSet::new()))?;
-        self.marks.lock(&self.rt).page = pid;
+        self.marks().formatted(self.rt(), pid);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use adtb_sys::os::{Backend, Faults, OsRuntime};
+    use adtb_testkit::scratch::Scratch;
+
+    use super::{Destination, Marks, Quarantine};
+    use crate::storage::Pid;
+    use crate::storage::pager::{Options, Pager};
+
+    const PAGE: Pid = Pid(5);
+
+    #[test]
+    fn the_any_flag_follows_the_marks_after_every_change() {
+        let scratch = Scratch::new("storage", "marks-any");
+        let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
+        let marks = Marks::new(PAGE);
+        marks.load(&rt, PAGE, Some(BTreeSet::new()));
+        assert!(!marks.any());
+        let heap = Quarantine::Heap(1);
+        let index = Quarantine::Index(2);
+        let set = marks.change_on_page(&rt, |s| {
+            s.insert(heap);
+        });
+        assert_eq!(BTreeSet::from([heap]), set);
+        assert!(marks.any());
+        marks.change_on_page(&rt, |s| {
+            s.insert(index);
+        });
+        marks.change_on_page(&rt, |s| {
+            s.remove(&heap);
+        });
+        assert!(marks.any());
+        let set = marks.change_on_page(&rt, |s| {
+            s.remove(&index);
+        });
+        assert_eq!(BTreeSet::new(), set);
+        assert!(!marks.any());
+        marks.hold(&rt, Quarantine::Database);
+        assert!(marks.any());
+        assert_eq!(Destination::Memory, marks.destination(&rt));
+        marks.change(&rt, |s| {
+            s.insert(heap);
+        });
+        marks.change(&rt, |s| {
+            s.remove(&heap);
+        });
+        assert!(marks.any());
+    }
+
+    #[test]
+    fn marks_whose_page_does_not_decode_mark_the_database_and_take_no_write() {
+        let scratch = Scratch::new("storage", "marks-unreadable");
+        let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
+        let marks = Marks::new(PAGE);
+        assert!(!marks.any());
+        marks.load(&rt, PAGE, None);
+        assert!(marks.any());
+        assert_eq!(BTreeSet::from([Quarantine::Database]), marks.all(&rt));
+        assert_eq!(Destination::Unreadable(PAGE), marks.destination(&rt));
+    }
+
+    #[test]
+    fn a_mark_whose_page_was_named_before_a_hold_is_on_the_page_after_a_crash() {
+        let scratch = Scratch::new("storage", "marks-hold-race");
+        let rt = || {
+            OsRuntime::with_faults(
+                scratch.path(),
+                Backend::Pool { threads: 1 },
+                Faults::none(4096),
+            )
+        };
+        let options = Options {
+            pool_frames: 16,
+            max_pages: 1024,
+            ..Options::new("marks-hold-race.adt")
+        };
+        let pager = Pager::create(rt(), &options).expect("create pager");
+        let Destination::Page(page) = pager.marks().destination(pager.rt()) else {
+            panic!("a new file's marks go to their page");
+        };
+        pager.hold_quarantine(Quarantine::Database);
+        pager
+            .change_marks_on(page, |s| {
+                s.insert(Quarantine::Heap(1));
+            })
+            .expect("write the marks");
+        drop(pager);
+        let (pager, _) = Pager::open(rt(), &options).expect("reopen");
+        assert_eq!(BTreeSet::from([Quarantine::Heap(1)]), pager.quarantined());
+        pager.close();
     }
 }

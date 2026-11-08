@@ -3,7 +3,8 @@
 //! gapless. The tail past the last complete segment is never archived, so a restore from the
 //! archive reaches at most the end of the last complete segment.
 //!
-//! Lock order: at open, the header lock alone; before the first pass, the segments lock alone. In
+//! Lock order: at open, the marks lock, then the meta lock, then the header lock, each brief and
+//! never nested in each other; before the first pass, the segments lock alone. In
 //! a pass, the pass lock, then the log lock or the status lock, each brief and never nested in
 //! each other. A pass never takes the segments lock: a complete segment is never written again.
 
@@ -77,8 +78,7 @@ impl<R: Runtime> Archiver<R> {
 
     /// Returns an archiver of `pager`'s log into `dest`.
     pub fn new(pager: Pager<R>, dest: &str) -> Archiver<R> {
-        let (id, epoch, segment, start, branch) = {
-            let h = &pager.header.lock(&pager.rt).0;
+        let (id, epoch, segment, start, branch) = pager.read_header(|h| {
             let branch = h.history.last().copied().filter(|_| h.log_start.0 > 0);
             (
                 hex(&h.file_id),
@@ -87,7 +87,7 @@ impl<R: Runtime> Archiver<R> {
                 h.log_start.0,
                 branch,
             )
-        };
+        });
         let mut text = match branch {
             Some((epoch, end)) => format!("adtb archive epoch\nparent {epoch} {}\n", end.0),
             None => "adtb archive epoch\nparent none\n".to_owned(),
@@ -108,7 +108,7 @@ impl<R: Runtime> Archiver<R> {
     }
 
     pub fn status(&self) -> Status {
-        self.status.lock(&self.pager.rt).clone()
+        self.status.lock(self.pager.rt()).clone()
     }
 
     /// Returns the LSN below which every segment of this epoch is published at the destination.
@@ -120,25 +120,25 @@ impl<R: Runtime> Archiver<R> {
     /// Start a thread that runs a pass every second until [`stop`](Self::stop).
     pub fn start(self: &Arc<Self>) {
         let me = self.clone();
-        let thread = self.pager.rt.spawn_daemon("archive", move || me.run());
-        self.control.lock(&self.pager.rt).thread = Some(thread);
+        let thread = self.pager.rt().spawn_daemon("archive", move || me.run());
+        self.control.lock(self.pager.rt()).thread = Some(thread);
     }
 
     /// Stop the thread and wait for it to end.
     pub fn stop(&self) {
         let thread = {
-            let mut c = self.control.lock(&self.pager.rt);
+            let mut c = self.control.lock(self.pager.rt());
             c.stop = true;
             c.thread.take()
         };
         if let Some(t) = thread {
-            self.pager.rt.unpark(t);
-            self.pager.rt.join(t);
+            self.pager.rt().unpark(t);
+            self.pager.rt().join(t);
         }
     }
 
     fn run(&self) {
-        let rt = &self.pager.rt;
+        let rt = self.pager.rt();
         let mut io = rt.io();
         let mut timer = false;
         while !self.control.lock(rt).stop {
@@ -160,9 +160,9 @@ impl<R: Runtime> Archiver<R> {
 
     /// Run a pass and record its outcome in the status.
     pub fn archive(&self) {
-        let log_dir = self.pager.segments.lock(&self.pager.rt).dir.clone();
+        let log_dir = self.pager.segments().lock(self.pager.rt()).dir.clone();
         let failure = self.pass(&log_dir).err();
-        self.status.lock(&self.pager.rt).failure = failure;
+        self.status.lock(self.pager.rt()).failure = failure;
     }
 
     /// Publish every complete segment of the log not yet at the destination, in order.
@@ -173,7 +173,7 @@ impl<R: Runtime> Archiver<R> {
     /// - A published name is never replaced.
     /// - `through` moves only past a segment whose name a forced directory holds.
     fn pass(&self, log_dir: &str) -> Io<()> {
-        let rt = &self.pager.rt;
+        let rt = self.pager.rt();
         let mut checked = self.pass.lock(rt);
         let mut fs = Fs::new(rt.clone());
         for dir in [parent(&self.dir), self.dir.as_str()] {

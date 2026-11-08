@@ -221,7 +221,7 @@ impl Unpublished {
         let aside = self.aside();
         let log = log_of(&self.name);
         hold(&aside)?;
-        let mut segments = pager.segments.lock(&pager.rt);
+        let mut segments = pager.segments().lock(pager.rt());
         let published = pager.io(|drv| {
             rename(drv, &log_of(&aside), &log, false).map_err(|e| match e {
                 IoError::Exists => OpenError::LogPresent,
@@ -336,12 +336,12 @@ fn owner<R: Runtime>(
 /// Remove the reserved directory of `pager`'s file when it holds only a whole marker naming the
 /// file's id, as a crash after a create's commit point leaves it. A failure leaves it.
 pub(crate) fn remove_leftover<R: Runtime>(pager: &Pager<R>, options: &Options, hold: Hold<'_>) {
-    let mut drv = Driver::new(pager.rt.clone());
+    let mut drv = Driver::new(pager.rt().clone());
     let reserved = creating(&options.name);
     if !matches!(listed(&mut drv, &reserved), Ok(Some(_))) {
         return;
     }
-    let file_id = pager.header.lock(&pager.rt).0.file_id;
+    let file_id = pager.read_header(|h| h.file_id);
     let Ok(Some((id, entries))) = owner(&mut drv, options, hold) else {
         return;
     };

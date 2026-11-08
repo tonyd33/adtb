@@ -27,7 +27,7 @@ fn log() -> Log {
 
 /// Returns evidence past recovery, recording and logging.
 fn recording(log: &mut Log) -> Evidence {
-    let mut e = Evidence::new();
+    let mut e = Evidence::new(Pid(0));
     e.start_recording(&appending_for_test(), log, false);
     e
 }
@@ -48,7 +48,7 @@ fn folded(e: &mut Evidence) -> Option<Damage> {
 #[test]
 fn a_refusal_is_recorded_by_the_step_that_refuses() {
     let mut log = log();
-    let mut e = Evidence::new();
+    let mut e = Evidence::new(Pid(0));
     assert_eq!(None, refuse(&mut e, &mut log, P, Damage::Checksum));
     assert_eq!(
         (Some(Damage::Checksum), None),
@@ -180,7 +180,7 @@ const END: Lsn = Lsn(100);
 
 /// Returns evidence whose page `P` must reach LSN 50 when read in.
 fn expecting() -> Evidence {
-    let mut e = Evidence::new();
+    let mut e = Evidence::new(Pid(0));
     e.arm_created();
     e.logged_page(&appending_for_test(), P, Lsn(50), None);
     e
@@ -230,7 +230,7 @@ fn against_the_expected_lsn_a_copy_below_it_or_past_the_log_is_stale() {
         judged(&e, Pid(10), Lsn(1), a),
         "no expected LSN"
     );
-    let unarmed = Evidence::new();
+    let unarmed = Evidence::new(Pid(0));
     assert_eq!(Judged::Sound, judged(&unarmed, P, Lsn(1), a), "recovering");
 }
 
