@@ -649,6 +649,13 @@ Invariants:
 - A written frame is counted clean, and drops out of the dirty page
   table, only after an `fdatasync` of the data file covers the write.
 
+The dirty page table holds, per page, the LSN that first dirtied it,
+the LSN of its latest full image and, while the frame holds changes
+the file lacks, where replay of the page may start once a force covers
+its last write. An entry leaves in exactly two ways: a data force
+covers a write of the page with no change since, or recovery refuses
+the page and drops its entry.
+
 Checkpoints are fuzzy and never stop writers. Each dirty frame records
 the LSN that first dirtied it (`rec_lsn`). Unless page writes are
 atomic, a change to a frame written since its last change logs a full

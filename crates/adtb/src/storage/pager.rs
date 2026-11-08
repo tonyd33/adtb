@@ -11,11 +11,13 @@ use super::alloc::{Reservation, diff};
 use super::block::LogFinding;
 use super::create::{Created, check_options, create};
 use super::damage_log::Met;
+use super::damage_log::Refusal;
 use super::driver::Driver;
 use super::header::{self, FileHeader, REGION};
 use super::log::{Log, Segments};
 use super::lsnmap::{Expected, Gate, retained};
 use super::page::{self, FIRST_EDITABLE, HEADER_LEN, Verdict};
+use super::pagetable::{DirtyTable, Logged};
 use super::quarantine::Quarantine;
 use super::record::{Edit, MapRoot, Record};
 use super::{Lsn, Pid, Position};
@@ -150,18 +152,7 @@ impl From<PageError> for OpenError {
 /// What the pool knows of its pages beyond their memory and state words.
 #[derive(Debug)]
 pub(crate) struct Meta {
-    /// The dirty page table: each page's `rec_lsn`.
-    pub(crate) dirty: BTreeMap<Pid, Lsn>,
-    /// Pages changed since they were last written.
-    pub(crate) changed: BTreeSet<Pid>,
-    /// Pages written since the last force of the data file.
-    pub(crate) written: BTreeSet<Pid>,
-    /// The LSN of the latest full-page image of each page in the dirty page table.
-    pub(crate) images: BTreeMap<Pid, Lsn>,
-    /// For each page changed since its last write, the record replay of the page may start from
-    /// once a force covers that write: its first change since the write under atomic page writes,
-    /// else its latest image at that change.
-    pub(crate) after_write: BTreeMap<Pid, Lsn>,
+    table: DirtyTable,
     /// The LSN each page must have at least when read in: its last record in the retained log, or
     /// else the page LSN map's entry, as of the end of recovery, raised by every page record
     /// logged since.
@@ -181,11 +172,55 @@ pub(crate) struct Meta {
     pub(crate) recovered: Lsn,
     /// The page LSN map's root, `None` while the file has no map.
     pub(crate) map: Option<MapRoot>,
-    /// The pages this open wrote to the file, one bit per page number.
-    pub(crate) wrote: Vec<u64>,
     /// Resident pages and pages being read in, in clock order.
     resident: Vec<Pid>,
     hand: usize,
+}
+
+impl Meta {
+    pub(super) fn refused(&mut self, refusal: &Refusal) {
+        self.table.refused(refusal);
+    }
+}
+
+/// The dirty page table, under the meta lock.
+pub(super) struct Locked<'a>(MutexGuard<'a, Meta>);
+
+impl Deref for Locked<'_> {
+    type Target = DirtyTable;
+
+    fn deref(&self) -> &DirtyTable {
+        &self.0.table
+    }
+}
+
+impl std::ops::DerefMut for Locked<'_> {
+    fn deref_mut(&mut self) -> &mut DirtyTable {
+        &mut self.0.table
+    }
+}
+
+/// The value of the lock a force of the data file holds.
+#[derive(Debug)]
+pub(super) struct Forcing(());
+
+/// A write of a page to the data file.
+pub(super) struct Wrote(Pid);
+
+impl Wrote {
+    pub(super) fn pid(&self) -> Pid {
+        self.0
+    }
+}
+
+#[cfg(test)]
+pub(super) fn forcing_for_test() -> Forcing {
+    Forcing(())
+}
+
+#[cfg(test)]
+pub(super) fn wrote_for_test(pid: Pid) -> Wrote {
+    Wrote(pid)
 }
 
 /// The data file, its buffer pool and its redo log, shared by every thread of the engine.
@@ -227,11 +262,11 @@ pub struct Shared<R: Runtime> {
     pool_frames: usize,
     stall_after: Duration,
     pub(crate) data: FileId,
-    pub(crate) atomic_page_writes: bool,
     mem: PageMemory,
     drivers: Lock<BTreeMap<ThreadId, Driver<R>>>,
-    /// Held by a force of the data file from taking `written` to dropping pages from `dirty`.
-    pub(super) forcing: Lock<()>,
+    /// Held by a force of the data file from taking the pages written to dropping pages from the
+    /// dirty page table.
+    pub(super) forcing: Lock<Forcing>,
     pub(super) header: Lock<(FileHeader, u64)>,
     pub(crate) log: Lock<Log>,
     /// Held by the one thread writing and forcing a batch: the group commit leader.
@@ -659,19 +694,14 @@ impl<R: Runtime> Pager<R> {
             pool_frames: o.pool_frames,
             stall_after: o.stall_after,
             data,
-            atomic_page_writes: o.atomic_page_writes,
             mem: PageMemory::reserve(header.page_size as usize, o.max_pages),
             drivers: Lock::new(BTreeMap::new()),
-            forcing: Lock::new(()),
+            forcing: Lock::new(Forcing(())),
             header: Lock::new((header, copy)),
             log: Lock::new(log),
             segments: Lock::new(segments),
             meta: Lock::new(Meta {
-                dirty: BTreeMap::new(),
-                changed: BTreeSet::new(),
-                written: BTreeSet::new(),
-                images: BTreeMap::new(),
-                after_write: BTreeMap::new(),
+                table: DirtyTable::new(o.atomic_page_writes),
                 gate: Gate::Recovering,
                 damaged: BTreeMap::new(),
                 records: Default::default(),
@@ -680,7 +710,6 @@ impl<R: Runtime> Pager<R> {
                 blanked: BTreeSet::new(),
                 recovered: Lsn(0),
                 map: None,
-                wrote: Vec::new(),
                 resident: Vec::new(),
                 hand: 0,
             }),
@@ -891,6 +920,15 @@ impl<R: Runtime> Pager<R> {
         self.meta.lock(&self.rt)
     }
 
+    pub(super) fn dirty_table(&self) -> Locked<'_> {
+        Locked(self.own_meta())
+    }
+
+    /// Returns whether the frame of `pid` holds changes the file lacks.
+    pub(super) fn is_unwritten(&self, pid: Pid) -> bool {
+        self.own_meta().table.is_unwritten(pid)
+    }
+
     pub(crate) fn log(&self) -> MutexGuard<'_, Log> {
         self.log.lock(&self.rt)
     }
@@ -1099,7 +1137,7 @@ impl<R: Runtime> Pager<R> {
             return false;
         }
         let m = self.own_meta();
-        m.changed.contains(&pid) && matches!(m.gate, Gate::Armed(_))
+        m.table.is_unwritten(pid) && matches!(m.gate, Gate::Armed(_))
     }
 
     /// Stop counting `pid` as resident.
@@ -1122,13 +1160,11 @@ impl<R: Runtime> Pager<R> {
     /// Preconditions: the caller holds a latch on `pid` that no write-out holds with, or judges
     /// again under one.
     pub(crate) fn file_end(&self, pid: Pid) -> Lsn {
-        let (word, bit) = ((pid.0 / 64) as usize, pid.0 % 64);
-        let m = self.own_meta();
-        if m.wrote.get(word).is_some_and(|w| w >> bit & 1 == 1) {
-            drop(m);
-            return self.log().next_lsn();
-        }
-        m.recovered
+        let end = {
+            let m = self.own_meta();
+            m.table.file_end(pid, m.recovered)
+        };
+        end.unwrap_or_else(|| self.log().next_lsn())
     }
 
     /// Returns the page `pid` as the file holds it, verified.
@@ -1191,7 +1227,7 @@ impl<R: Runtime> Pager<R> {
 
     fn evict(&self, g: pages::Exclusive<'_>) {
         let pid = Pid(g.pid());
-        if self.own_meta().changed.contains(&pid) {
+        if self.is_unwritten(pid) {
             self.write_out(pid, &g);
         }
         g.evict();
@@ -1203,15 +1239,8 @@ impl<R: Runtime> Pager<R> {
         let offset = pid.0 * self.page_size as u64;
         self.io(|d| d.write_all(vec![(self.data, offset, staged)]));
         let mut m = self.own_meta();
-        m.changed.remove(&pid);
-        m.written.insert(pid);
-        m.after_write.remove(&pid);
+        m.table.written_out(Wrote(pid));
         m.records.replaced(pid);
-        let (word, bit) = ((pid.0 / 64) as usize, pid.0 % 64);
-        if m.wrote.len() <= word {
-            m.wrote.resize(word + 1, 0);
-        }
-        m.wrote[word] |= 1 << bit;
     }
 
     /// Returns `bytes` sealed for the device, once the log holds everything the page depends on.
@@ -1271,7 +1300,6 @@ impl<R: Runtime> Pager<R> {
             }
             let prev = page::lsn(g);
             let lsn = log.next_lsn();
-            let rewritten = m.dirty.contains_key(&pid) && !m.changed.contains(&pid);
             g.held_mut().apply_change(&edits, lsn);
             let record = if start {
                 g.kind = Kind::Latched;
@@ -1280,10 +1308,7 @@ impl<R: Runtime> Pager<R> {
                     prev: Lsn::UNCHAINED,
                     page: g.to_vec(),
                 }
-            } else if m.changed.contains(&pid)
-                || self.atomic_page_writes
-                || (rewritten && m.images.get(&pid) >= Some(&log.last_checkpoint()))
-            {
+            } else if m.table.record_kind(pid, log.last_checkpoint()) == Logged::Change {
                 Record::Change { pid, prev, edits }
             } else {
                 Record::Image {
@@ -1292,28 +1317,19 @@ impl<R: Runtime> Pager<R> {
                     page: g.to_vec(),
                 }
             };
-            if let Record::Image { prev, .. } = record {
-                m.images.insert(pid, lsn);
+            let kind = if let Record::Image { prev, .. } = record {
                 let met = if prev == Lsn::UNCHAINED {
                     Met::Start
                 } else {
                     Met::Image
                 };
                 m.records.meet(pid, met);
-            }
+                Logged::Image
+            } else {
+                Logged::Change
+            };
             log.append(&record);
-            if rewritten {
-                let start = if self.atomic_page_writes {
-                    Some(lsn)
-                } else {
-                    m.images.get(&pid).copied()
-                };
-                if let Some(start) = start {
-                    m.after_write.insert(pid, start);
-                }
-            }
-            m.dirty.entry(pid).or_insert(lsn);
-            m.changed.insert(pid);
+            m.table.logged(pid, lsn, kind);
             m.gate.raise(pid, lsn);
             if let Some(map) = m.map.as_mut()
                 && map.root == pid

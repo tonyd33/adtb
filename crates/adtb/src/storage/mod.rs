@@ -17,6 +17,7 @@ mod log;
 mod lsnmap;
 mod page;
 mod pager;
+mod pagetable;
 mod quarantine;
 mod record;
 mod recovery;

@@ -425,7 +425,7 @@ impl<R: Runtime> Pager<R> {
             let g = self.hold(pid);
             let disk = self.read_disk(pid);
             let resident = g.resident().then(|| page::lsn(&g));
-            let changed = self.meta().changed.contains(&pid);
+            let changed = self.is_unwritten(pid);
             seen = judge(&disk, resident, changed);
             latched = Some(g);
         }

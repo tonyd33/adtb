@@ -15,6 +15,20 @@ use super::quarantine::Quarantine;
 use super::record::{Record, damage_of, damage_words};
 use super::{Lsn, Pid};
 
+/// The refusal of a page whose resident copy is dropped.
+pub(super) struct Refusal(Pid);
+
+impl Refusal {
+    pub(super) fn pid(&self) -> Pid {
+        self.0
+    }
+}
+
+#[cfg(test)]
+pub(super) fn refusal_for_test(pid: Pid) -> Refusal {
+    Refusal(pid)
+}
+
 const FORMAT: u16 = 1;
 const COUNT: usize = HEADER_LEN;
 const FLAGS: usize = COUNT + 4;
@@ -435,7 +449,7 @@ impl<R: Runtime> Pager<R> {
         let whole = self.is_quarantined(Quarantine::Database);
         let mut m = self.meta();
         let fresh = m.damaged.insert(pid, damage) != Some(damage);
-        m.changed.remove(&pid);
+        m.refused(&Refusal(pid));
         let logged = fresh
             .then(|| m.records.detect(&mut log, pid, damage, whole))
             .flatten();

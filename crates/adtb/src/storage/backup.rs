@@ -824,7 +824,6 @@ impl<R: Runtime> Pager<R> {
     /// failing is added to `damaged` and copied as stored with a checksum it fails, so a
     /// restore refuses it whatever its LSN, unless the allocation bitmap reads and calls it free or
     /// the pool's changed copy is to overwrite it. Only such a page is added.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn page_as_stored(
         &self,
         pid: Pid,
@@ -860,7 +859,7 @@ impl<R: Runtime> Pager<R> {
         {
             return Ok(buf.to_vec());
         }
-        if g.resident() && self.meta().changed.contains(&pid) {
+        if g.resident() && self.is_unwritten(pid) {
             return Ok(self.staged(pid, &g).to_vec());
         }
         let mut copy = match (again, bytes) {

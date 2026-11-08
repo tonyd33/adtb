@@ -15,12 +15,12 @@ use std::sync::{Arc, Weak};
 
 use crate::runtime::{Runtime, ThreadId};
 
+use super::Lsn;
 use super::log::LogPin;
 use super::lsnmap::folded;
 use super::pager::{Pager, Shared};
 use super::quarantine::Quarantine;
 use super::record::Record;
-use super::{Lsn, Pid};
 
 /// The checkpointer's thread, started on the first checkpoint that falls due.
 #[derive(Debug)]
@@ -43,25 +43,14 @@ impl Worker {
 impl<R: Runtime> Pager<R> {
     /// Write up to `max` changed pages, oldest first by the LSN that dirtied them, and force the
     /// data file. Returns the number written.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub fn flush_pages(&self, max: usize) -> usize {
-        let oldest: Vec<Pid> = {
-            let m = self.meta();
-            let mut by_lsn: Vec<(Lsn, Pid)> = m
-                .dirty
-                .iter()
-                .filter(|(p, _)| m.changed.contains(p))
-                .map(|(p, l)| (*l, *p))
-                .collect();
-            by_lsn.sort_unstable();
-            by_lsn.into_iter().take(max).map(|(_, p)| p).collect()
-        };
+        let oldest = self.dirty_table().oldest(max);
         let mut n = 0;
         for pid in oldest {
             let Some(g) = self.shared_resident(pid) else {
                 continue;
             };
-            if self.meta().changed.contains(&pid) {
+            if self.is_unwritten(pid) {
                 self.write_out(pid, &g);
                 n += 1;
             }
@@ -72,28 +61,12 @@ impl<R: Runtime> Pager<R> {
 
     /// Force the data file and drop from the dirty page table every page written before the force
     /// with no change since. A page changed since moves its `rec_lsn` up to the record its replay
-    /// may start from, as `Meta::after_write` holds it.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
+    /// may start from.
     pub(crate) fn sync_data(&self) {
-        let _forcing = self.forcing.lock(&self.rt);
-        let covered = std::mem::take(&mut self.meta().written);
+        let held = self.forcing.lock(&self.rt);
+        let covered = self.dirty_table().forcing(&held);
         self.io(|d| d.sync_all(&[self.data]));
-        let mut m = self.meta();
-        for pid in covered {
-            // A page in `written` was written after the take, and this force may have missed it.
-            if m.written.contains(&pid) {
-                continue;
-            }
-            let start = m.after_write.remove(&pid);
-            if !m.changed.contains(&pid) {
-                m.dirty.remove(&pid);
-                m.images.remove(&pid);
-            } else if let Some(start) = start
-                && let Some(rec_lsn) = m.dirty.get_mut(&pid)
-            {
-                *rec_lsn = start.max(*rec_lsn);
-            }
-        }
+        self.dirty_table().forced(covered);
     }
 
     /// Log a fuzzy checkpoint of the dirty page table, force it, and point the file header at it.
@@ -129,7 +102,7 @@ impl<R: Runtime> Pager<R> {
                 (m.groups, m.map)
             };
             let lsn = log.next_lsn();
-            let dirty: Vec<(Pid, Lsn)> = self.meta().dirty.iter().map(|(p, l)| (*p, *l)).collect();
+            let dirty = self.dirty_table().snapshot();
             let redo = dirty.iter().map(|(_, l)| *l).min().unwrap_or(lsn);
             let folded = list.as_ref().map(|_| self.records_to_fold());
             let at = log.append(&Record::Checkpoint { redo, dirty, map });
@@ -216,9 +189,8 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns the dirty page table: each page's `rec_lsn`.
     #[cfg(feature = "testing")]
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
-    pub(crate) fn dirty_pages(&self) -> std::collections::BTreeMap<Pid, Lsn> {
-        self.meta().dirty.clone()
+    pub(crate) fn dirty_pages(&self) -> std::collections::BTreeMap<super::Pid, Lsn> {
+        self.dirty_table().snapshot().into_iter().collect()
     }
 
     /// Make checkpoints fall due from now on, each once the log forced since the last reaches the

@@ -26,7 +26,16 @@ pub struct Recovery {
     pub damaged: Vec<(Pid, Damage)>,
 }
 
+/// The replay of the log at an open.
+pub(super) struct Replaying(());
+
+#[cfg(test)]
+pub(super) fn replaying_for_test() -> Replaying {
+    Replaying(())
+}
+
 struct Replay {
+    replaying: Replaying,
     redo: Lsn,
     /// The checkpoint replay starts from.
     ck: Lsn,
@@ -85,6 +94,7 @@ impl<R: Runtime> Pager<R> {
             .resume(s.end, s.last_seq.expect("a batch was accepted") + 1);
         self.meta().recovered = s.end;
         let mut replay = Replay {
+            replaying: Replaying(()),
             redo,
             ck,
             last: BTreeMap::new(),
@@ -134,7 +144,10 @@ impl<R: Runtime> Pager<R> {
             self.io(|d| segments.clear_tail(d, &mut img, s.end));
         }
         self.flush_pages(usize::MAX);
-        assert!(self.meta().dirty.is_empty(), "recovery left a dirty page");
+        assert!(
+            self.dirty_table().snapshot().is_empty(),
+            "recovery left a dirty page"
+        );
         let pages = self.count_file_groups();
         let armed = self.arm();
         let recovery = Recovery {
@@ -168,10 +181,9 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Refuse `pid` as [`Pager::damage`] does, and drop its dirty entry.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
-    fn damage_replayed(&self, pid: Pid, damage: Damage) {
+    fn damage_replayed(&self, st: &Replay, pid: Pid, damage: Damage) {
         self.damage(pid, damage);
-        self.meta().dirty.remove(&pid);
+        self.dirty_table().replay_refused(&st.replaying, pid);
     }
 
     #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
@@ -200,6 +212,7 @@ impl<R: Runtime> Pager<R> {
         if let Some(expected) = before.filter(|&l| l != prev && prev != Lsn::UNCHAINED) {
             st.unverified.remove(&pid);
             self.damage_replayed(
+                st,
                 pid,
                 Damage::Stale {
                     expected,
@@ -237,6 +250,7 @@ impl<R: Runtime> Pager<R> {
             }
             _ => {
                 self.damage_replayed(
+                    st,
                     pid,
                     Damage::Stale {
                         expected: prev,
@@ -247,11 +261,8 @@ impl<R: Runtime> Pager<R> {
         }
     }
 
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn mark_replayed(&self, st: &mut Replay, pid: Pid, lsn: Lsn) {
-        let mut m = self.meta();
-        m.changed.insert(pid);
-        m.dirty.entry(pid).or_insert(lsn);
+        self.dirty_table().replayed(&st.replaying, pid, lsn);
         st.applied += 1;
     }
 
