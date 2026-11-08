@@ -39,3 +39,7 @@ Lead rulings on its open questions:
 ## 2026-11-07, T3 landed
 
 Plants, fault controls and knobs go through `adtb::testing` (`Plant` with `Planted`, `Knobs::with_segment_size`); `write_path` deleted. Counts: `write_path` 258 to 0, `.pager()` 248 to 0, `CreateOptions` pub fields 25 to 24. `mark_of` asks the engine's mapping (`relation_mark`, `heap_mark`, `index_mark`); `own_mark` added for tests that plant a mark naming one heap or index, a separate promise in docs/design/testing.md §3.1 (lead ruling: kept, it names a mark's identity and holds no mapping rule). Next: T4 to T8, alternating with storage owners.
+
+## 2026-11-07, T4 landed
+
+One `Faults` in `adtb_sys::runtime` (was two, with different draw orders), with no default: every site states its geometry, fixed for a runtime's life in both backends. Pure decisions per op kind (`decide_write`, `decide_read`, `decide_allocate`, `decide_force`) and for an unforced write at a crash (`decide_unforced`), their draw order stated in runtime.md §3 and checked by sweeps in runtime/tests.rs with a recording draw source. Both backends apply fates and draw nothing for an op themselves; the simulator's draws are unchanged (crash image digests, damage profile). The real backend now answers `Full` under `no_space`, with an io_contract case. Counts: `struct Faults` 2 to 1; pub fields in os/faults.rs, disk.rs and sim.rs 27 to 7, with 17 in the new runtime files. Next: T5.
