@@ -5,7 +5,7 @@
 //!
 //! Lock order: the worker lock is a leaf, taken by a force under any page latch, with nothing
 //! taken under it. A cycle takes what a write-out and a checkpoint
-//! take: a page's shared latch, then the flush lock and the log lock to make the log durable to
+//! take: a page's shared latch, then the segments lock and the log lock to make the log durable to
 //! its LSN, then the meta lock; then the force lock and the meta lock; then the damage list's
 //! exclusive latch, the log lock and the meta lock; then the header lock alone. A recycling
 //! cycle takes the recycle lock first and holds it through the fold, the checkpoint and the
@@ -20,7 +20,6 @@ use super::log::LogPin;
 use super::lsnmap::folded;
 use super::pager::{Pager, Shared};
 use super::quarantine::Quarantine;
-use super::record::Record;
 
 /// The checkpointer's thread, started on the first checkpoint that falls due.
 #[derive(Debug)]
@@ -89,27 +88,15 @@ impl<R: Runtime> Pager<R> {
 
     /// Take a checkpoint, pinning its redo LSN when `pin`, in the hold of the log lock that logs
     /// the checkpoint record.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn checkpoint_pinning(&self, pin: bool) -> (Lsn, Lsn, u64) {
         let (mut list, (at, redo, groups, folded)) = loop {
             let list = self.list_to_fold();
-            let mut log = self.log();
-            if list.is_none() && self.to_fold().is_some() {
+            let mut append = self.append();
+            if list.is_none() && append.folds() {
                 continue;
             }
-            let (groups, map) = {
-                let m = self.meta();
-                (m.groups, m.map)
-            };
-            let lsn = log.next_lsn();
-            let dirty = self.dirty_table().snapshot();
-            let redo = dirty.iter().map(|(_, l)| *l).min().unwrap_or(lsn);
-            let folded = list.as_ref().map(|_| self.records_to_fold());
-            let at = log.append(&Record::Checkpoint { redo, dirty, map });
-            if pin {
-                log.pin(redo);
-            }
-            break (list, (at, redo, groups, folded));
+            let ck = append.checkpoint(list.is_some(), pin);
+            break (list, ck);
         };
         // The fold is logged after the checkpoint record: every record before it is in the fold,
         // and recovery from it reads every record after.

@@ -14,10 +14,11 @@ use super::block::{
 };
 use super::digest::{hex, sealed, unhex, unsealed};
 use super::driver::Driver;
+use super::error::Damage;
 use super::header::{FileHeader, HISTORY_CAPACITY, REGION};
 use super::log::{FileSource, parse_segment, segment_name};
 use super::page::{self, spoil, valid_page_size};
-use super::pager::{Damage, Pager, parent};
+use super::pager::{Pager, parent};
 use super::quarantine::Quarantine;
 use super::record::Record;
 use super::{Lsn, Pid, Position};

@@ -1,4 +1,4 @@
-use super::pager::Damage;
+use super::error::Damage;
 use super::{Lsn, Pid, Position};
 
 /// Bytes written at `offset` of a page.

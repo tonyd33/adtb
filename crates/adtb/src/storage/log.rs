@@ -3,9 +3,10 @@ use std::time::SystemTime;
 
 use crate::runtime::{AlignedBuf, Done, FileId, IoError, Op, Runtime};
 
+use super::alloc::edits_by;
 use super::block::{LogImage, LogSource, Slot, data_lsn, frame};
 use super::driver::{Driver, fatal};
-use super::pager::{ArchiveHook, PageError, Pager, edits_by, parent};
+use super::pager::{ArchiveHook, PageError, Pager, parent};
 use super::record::Record;
 use super::{Lsn, Pid, Position};
 
@@ -50,7 +51,7 @@ impl Batch {
     }
 }
 
-/// The log's segment files, behind the flush lock, which one flusher holds at a time.
+/// The log's segment files, behind the segments lock, which one flusher holds at a time.
 #[derive(Debug)]
 pub(crate) struct Segments {
     pub(crate) dir: String,
@@ -128,7 +129,8 @@ impl Log {
     /// Take every record appended so far as the next batch, framed in blocks, and start the batch
     /// after it.
     ///
-    /// Preconditions: the caller holds the flush lock, and forces the batch before taking another.
+    /// Preconditions: the caller holds the segments lock, and forces the batch before taking
+    /// another.
     pub(crate) fn take(&mut self) -> Option<Batch> {
         if self.pending.is_empty() {
             return None;

@@ -1,14 +1,59 @@
 //! Building a database in a reserved directory beside its own names, and publishing it.
 
+use std::time::Duration;
+
 use crate::runtime::{AlignedBuf, Done, IoError, Op, Runtime};
 
 use super::Lsn;
 use super::block::{BlockState, read_block};
 use super::crc::crc32c;
 use super::driver::Driver;
+use super::error::OpenError;
 use super::log::parse_segment;
 use super::page::valid_page_size;
-use super::pager::{LATCHES_PER_THREAD, OpenError, Options, Pager, parent};
+use super::pager::{LATCHES_PER_THREAD, Options, Pager, parent};
+
+impl Options {
+    pub fn new(name: &str) -> Options {
+        Options {
+            name: name.to_owned(),
+            page_size: 8192,
+            log_block: 512,
+            segment_size: 16 << 20,
+            pool_frames: 1024,
+            max_pages: 1 << 24,
+            atomic_page_writes: false,
+            threads: 1,
+            stall_after: Duration::from_secs(10),
+            after: None,
+            checkpoint_every: 64 << 20,
+        }
+    }
+
+    /// Returns the path of the directory holding the log's segments.
+    pub fn log_dir(&self) -> String {
+        format!("{}-log", self.name)
+    }
+}
+
+impl<R: Runtime> Pager<R> {
+    /// Create an empty database: its data file, its first log segment and a first checkpoint,
+    /// built as [`create`] does and published.
+    ///
+    /// Panic if `options` breaks a limit of the file format.
+    pub fn create(rt: R, options: &Options) -> Result<Pager<R>, OpenError> {
+        let (pager, new) = match create(rt.clone(), options, &mut |_| Ok(()))? {
+            Created::Finished(pager) => return Ok(pager),
+            Created::Built(pager, new) => (pager, new),
+        };
+        if let Err(e) = new.publish(&pager, &mut |_| Ok(())) {
+            pager.close();
+            new.discard(rt, &mut |_| Ok(()))?;
+            return Err(e);
+        }
+        Ok(pager)
+    }
+}
 
 const MAGIC: &[u8; 8] = b"adtbmake";
 const MARKER: usize = MAGIC.len() + 16 + 4;

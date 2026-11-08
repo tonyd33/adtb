@@ -648,6 +648,10 @@ Invariants:
   frame's page LSN.
 - A written frame is counted clean, and drops out of the dirty page
   table, only after an `fdatasync` of the data file covers the write.
+- A record and every in-memory consequence of it (the page's dirty
+  entry, its expected LSN, its damage record, the LSN map root) are
+  made in one hold of the log, so a checkpoint, which takes its
+  snapshot in the same hold, sees all of them or none.
 
 The dirty page table holds, per page, the LSN that first dirtied it,
 the LSN of its latest full image and, while the frame holds changes
@@ -768,7 +772,8 @@ map entry.
 
 Every page the pager refuses as damaged, other than one the device
 cannot read, is recorded: the detection appends a damage record (§5.1)
-holding only the log lock, and forces it before it returns. The damage
+in the hold of the log that refuses the page, and forces it before it
+returns. The damage
 of a page whose last freed record follows its last allocation (§5.1),
 in the log the open replayed or wrote, is held in memory instead: it is mapped in that open as a record is, never
 logged, and the page's next allocation drops it. Recovery's
@@ -1123,7 +1128,7 @@ Non-binding.
 
 A committing transaction appends its commit record and waits until the
 log is durable past it. The first waiter that finds no batch being
-forced becomes the leader: under the flush lock it takes every record
+forced becomes the leader: under the segments lock it takes every record
 appended so far as one batch, writes and forces it, and records it
 durable. Appending takes only the log lock, so records keep arriving
 while a batch is forced. Waiters spin through the runtime, checking

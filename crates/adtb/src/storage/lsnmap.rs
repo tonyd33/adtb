@@ -7,8 +7,9 @@ use std::collections::{BTreeMap, HashMap};
 use crate::runtime::Runtime;
 
 use super::block::{LogImage, LogSource, Mode, scan};
+use super::error::Damage;
 use super::page::{self, HEADER_LEN, PageKind};
-use super::pager::{Damage, PageError, Pager};
+use super::pager::{PageError, Pager};
 use super::quarantine::Quarantine;
 use super::record::{MapRoot, Record};
 use super::{Lsn, Pid};
@@ -167,9 +168,8 @@ impl<R: Runtime> Pager<R> {
 
     /// Check the map's root against the LSN the checkpoint or the last fold gave it, quarantining
     /// the database when it is refused.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(super) fn check_map(&self) {
-        let map = self.meta().map;
+        let map = self.map_root();
         if let Some(m) = map {
             drop(self.map_page(m.root, m.lsn));
         }
@@ -177,9 +177,8 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns the LSN the map holds for `pid`, refusing a map page whose LSN is below the one
     /// its parent gives it and quarantining the database.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(crate) fn mapped(&self, pid: Pid) -> Result<Option<Lsn>, PageError> {
-        let Some(m) = self.meta().map else {
+        let Some(m) = self.map_root() else {
             return Ok(None);
         };
         if pid.0 >= self.reach(m.height) {
@@ -226,9 +225,8 @@ impl<R: Runtime> Pager<R> {
         Ok(out)
     }
 
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     fn walk(&self, visit: &mut Visit<'_>) -> Result<(), PageError> {
-        let map = self.meta().map;
+        let map = self.map_root();
         match map {
             Some(m) => self.subtree(m.root, m.lsn, m.height, 0, visit),
             None => Ok(()),
@@ -262,7 +260,6 @@ impl<R: Runtime> Pager<R> {
     /// Raise the map's entry of each page of `last` to its LSN, adding levels above the root
     /// until it reaches the highest. A page at or past the file's end no longer exists, and is
     /// dropped. Returns that end.
-    #[expect(clippy::disallowed_methods, reason = "until storage owners land")]
     pub(crate) fn fold(&self, last: &BTreeMap<Pid, Lsn>) -> Result<u64, PageError> {
         let end = self.file_pages();
         let entries: Vec<(u64, Lsn)> = last
@@ -273,7 +270,7 @@ impl<R: Runtime> Pager<R> {
         let Some(&(top, _)) = entries.last() else {
             return Ok(end);
         };
-        let map = self.meta().map;
+        let map = self.map_root();
         let mut map = match map {
             Some(m) => m,
             None => self.grown(None)?,

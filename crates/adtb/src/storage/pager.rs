@@ -1,25 +1,25 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Deref;
-use std::sync::MutexGuard;
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use adtb_sys::pages::{self, PageMemory, PageState};
 
-use crate::runtime::{AlignedBuf, FileId, IoError, Runtime, ThreadId};
+use crate::runtime::{AlignedBuf, FileId, Runtime, ThreadId};
 
 use super::alloc::{Reservation, diff};
-use super::block::LogFinding;
-use super::create::{Created, check_options, create};
-use super::damage_log::Met;
-use super::damage_log::Refusal;
+use super::damage_log::{Met, Recorded, Refusal};
 use super::driver::Driver;
-use super::header::{self, FileHeader, REGION};
+use super::error::{Damage, OpenError};
+use super::header::FileHeader;
+use super::holding::{Holding, NO_HOLDER};
 use super::log::{Log, Segments};
 use super::lsnmap::{Expected, Gate, retained};
 use super::page::{self, FIRST_EDITABLE, HEADER_LEN, Verdict};
 use super::pagetable::{DirtyTable, Logged};
 use super::quarantine::Quarantine;
 use super::record::{Edit, MapRoot, Record};
+use super::recovery::Replaying;
 use super::{Lsn, Pid, Position};
 use adtb_sys::lock::Lock;
 
@@ -59,94 +59,10 @@ pub struct Options {
 /// bitmap page.
 pub const LATCHES_PER_THREAD: usize = 5;
 
-impl Options {
-    pub fn new(name: &str) -> Options {
-        Options {
-            name: name.to_owned(),
-            page_size: 8192,
-            log_block: 512,
-            segment_size: 16 << 20,
-            pool_frames: 1024,
-            max_pages: 1 << 24,
-            atomic_page_writes: false,
-            threads: 1,
-            stall_after: Duration::from_secs(10),
-            after: None,
-            checkpoint_every: 64 << 20,
-        }
-    }
-
-    /// Returns the path of the directory holding the log's segments.
-    pub fn log_dir(&self) -> String {
-        format!("{}-log", self.name)
-    }
-}
-
-/// Why a page cannot be handed out.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Damage {
-    /// The page fails its checksum.
-    Checksum,
-    /// The device refused to read it.
-    Unreadable,
-    /// The page's LSN is not the one the log says it must be: a lost page write when `found` is
-    /// before `expected`, a lost log record when past it.
-    Stale { expected: Lsn, found: Lsn },
-    /// The page holds ids in progress that the log, damaged at `at`, cannot settle.
-    LogUnproven { at: Lsn },
-    /// A commit log status page lost the write to `expected` and was settled from the log at
-    /// `found`. The page serves again.
-    Settled { expected: Lsn, found: Lsn },
-}
-
-impl Damage {
-    /// Returns the damage of a page the file holds at LSN `found`, other than a blank one, when the
-    /// log holds no record at or past `end`.
-    pub(crate) fn past_log_end(found: Lsn, end: Lsn) -> Option<Damage> {
-        (found >= end && found != Lsn(0)).then_some(Damage::Stale {
-            expected: end,
-            found,
-        })
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PageError {
     pub pid: Pid,
     pub damage: Damage,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OpenError {
-    NotFound,
-    /// `create` found a nonempty file.
-    Exists,
-    /// `create` found the log directory holding what the new file did not write.
-    LogPresent,
-    /// `create` found its reserved directory holding what no create left.
-    Reserved,
-    /// Another open holds the lock on a file `create` would remove or rename.
-    Locked,
-    /// `create` took the log directory, then failed on a page of the new file.
-    Unformatted(PageError),
-    /// The options' segment size is not a positive multiple of their log block.
-    SegmentSize(u64),
-    /// Neither copy of the file header verifies.
-    NoHeader,
-    /// Opening the data file failed.
-    Io(IoError),
-    /// A whole copy of the file header is written in this layout, which this engine does not read.
-    OtherLayout(u32),
-    /// The log is damaged where recovery needs it.
-    Log(LogFinding),
-    /// A page opening needs, an allocation bitmap page or the quarantine marks', is damaged.
-    Page(PageError),
-}
-
-impl From<PageError> for OpenError {
-    fn from(e: PageError) -> OpenError {
-        OpenError::Page(e)
-    }
 }
 
 /// What the pool knows of its pages beyond their memory and state words.
@@ -170,21 +86,13 @@ pub(crate) struct Meta {
     pub(crate) blanked: BTreeSet<Pid>,
     /// The end of the log recovery kept when the pager opened, or zero for a pager created empty.
     pub(crate) recovered: Lsn,
-    /// The page LSN map's root, `None` while the file has no map.
-    pub(crate) map: Option<MapRoot>,
     /// Resident pages and pages being read in, in clock order.
     resident: Vec<Pid>,
     hand: usize,
 }
 
-impl Meta {
-    pub(super) fn refused(&mut self, refusal: &Refusal) {
-        self.table.refused(refusal);
-    }
-}
-
 /// The dirty page table, under the meta lock.
-pub(super) struct Locked<'a>(MutexGuard<'a, Meta>);
+pub(super) struct Locked<'a>(Holding<'a, Meta>);
 
 impl Deref for Locked<'_> {
     type Target = DirtyTable;
@@ -194,9 +102,227 @@ impl Deref for Locked<'_> {
     }
 }
 
-impl std::ops::DerefMut for Locked<'_> {
+impl DerefMut for Locked<'_> {
     fn deref_mut(&mut self) -> &mut DirtyTable {
         &mut self.0.table
+    }
+}
+
+/// The log lock's value: the log and the page LSN map root its records name, `None` while the
+/// file has no map.
+pub(super) struct Appended {
+    log: Log,
+    map: Option<MapRoot>,
+}
+
+/// The log lock, held without the meta lock.
+pub(crate) struct LogGuard<'a>(Holding<'a, Appended>);
+
+impl Deref for LogGuard<'_> {
+    type Target = Log;
+
+    fn deref(&self) -> &Log {
+        &self.0.log
+    }
+}
+
+impl DerefMut for LogGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Log {
+        &mut self.0.log
+    }
+}
+
+mod witness {
+    use super::{Append, Appended, Holding, Meta, Pager, Runtime};
+
+    /// The witness of an [`Append`]: the log and meta locks held together.
+    pub(in crate::storage) struct Appending(());
+
+    impl<'a, R: Runtime> Append<'a, R> {
+        pub(super) fn new(
+            pager: &'a Pager<R>,
+            log: Holding<'a, Appended>,
+            meta: Holding<'a, Meta>,
+        ) -> Self {
+            Append {
+                pager,
+                log,
+                meta,
+                witness: Appending(()),
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::storage) fn appending_for_test() -> Appending {
+        Appending(())
+    }
+}
+
+pub(super) use witness::Appending;
+#[cfg(test)]
+pub(super) use witness::appending_for_test;
+
+/// The log and meta locks, held together: a record and its in-memory consequences are made in
+/// one hold.
+pub(super) struct Append<'a, R: Runtime> {
+    pager: &'a Pager<R>,
+    log: Holding<'a, Appended>,
+    meta: Holding<'a, Meta>,
+    witness: Appending,
+}
+
+/// A checkpoint's LSN, its redo LSN, the bitmap groups it captured and, when it folds, the
+/// damage records to fold into the list page.
+pub(super) type Checkpointed = (Lsn, Lsn, u64, Option<Recorded>);
+
+impl<R: Runtime> Append<'_, R> {
+    /// Mark each page of `pids`, which the batch allocates, no longer blank.
+    fn unblank(&mut self, pids: &[Pid]) {
+        for pid in pids {
+            self.meta.blanked.remove(pid);
+        }
+    }
+
+    /// Apply `edits` to the page under `g` and log its record: a full image starting a chain when
+    /// `start`, else the record [`DirtyTable::record_kind`] chooses. Returns the record's LSN.
+    fn change_page(&mut self, g: &mut PageExclusive<'_, R>, edits: Vec<Edit>, start: bool) -> Lsn {
+        let pid = g.pid();
+        let Appended { log, map } = &mut *self.log;
+        let m = &mut *self.meta;
+        let prev = page::lsn(g);
+        let lsn = log.next_lsn();
+        g.held_mut().apply_change(&edits, lsn);
+        let record = if start {
+            g.kind = Kind::Latched;
+            Record::Image {
+                pid,
+                prev: Lsn::UNCHAINED,
+                page: g.to_vec(),
+            }
+        } else if m
+            .table
+            .record_kind(&self.witness, pid, log.last_checkpoint())
+            == Logged::Change
+        {
+            Record::Change { pid, prev, edits }
+        } else {
+            Record::Image {
+                pid,
+                prev,
+                page: g.to_vec(),
+            }
+        };
+        let kind = if let Record::Image { prev, .. } = record {
+            let met = if prev == Lsn::UNCHAINED {
+                Met::Start
+            } else {
+                Met::Image
+            };
+            m.records.meet(pid, met);
+            Logged::Image
+        } else {
+            Logged::Change
+        };
+        log.append(&record);
+        m.table.logged(&self.witness, pid, lsn, kind);
+        m.gate.raise(pid, lsn);
+        if let Some(map) = map.as_mut()
+            && map.root == pid
+        {
+            map.lsn = lsn;
+        }
+        lsn
+    }
+
+    /// Drop the damage recorded of each page of `pids`, which the batch frees, logging each free
+    /// unless the file is quarantined whole. Returns the LSN of the last free logged.
+    fn free(&mut self, pids: &[Pid]) -> Option<Lsn> {
+        let whole = self.pager.is_quarantined(Quarantine::Database);
+        let mut last = None;
+        for &pid in pids {
+            last = self
+                .meta
+                .records
+                .free(&mut self.log.log, pid, whole)
+                .or(last);
+        }
+        last
+    }
+
+    /// Make the page `root`, at `lsn`, the map's root of `height` levels and log the record naming
+    /// it. Returns the record's LSN.
+    fn map_root(&mut self, root: Pid, lsn: Lsn, height: u32) -> Lsn {
+        self.log.map = Some(MapRoot { root, lsn, height });
+        self.log.log.append(&Record::MapRoot { root, height })
+    }
+
+    /// Log `record`, which changes no page. Returns its LSN.
+    fn record(&mut self, record: &Record) -> Lsn {
+        self.log.log.append(record)
+    }
+
+    /// Refuse the page `refusal` names as `damage` from now on and record it, unless it is refused
+    /// as `damage` already. Returns the end of the damage record logged, `None` when none is.
+    pub(super) fn refuse(&mut self, refusal: &Refusal, damage: Damage) -> Option<Lsn> {
+        let pid = refusal.pid();
+        let whole = self.pager.is_quarantined(Quarantine::Database);
+        let m = &mut *self.meta;
+        let fresh = m.damaged.insert(pid, damage) != Some(damage);
+        m.table.refused(refusal);
+        let logged = fresh
+            .then(|| m.records.detect(&mut self.log.log, pid, damage, whole))
+            .flatten();
+        if m.records.page(pid) == Some(damage) {
+            m.records.detected_by.insert(pid, self.pager.rt.current());
+        }
+        self.pager.note_unmapped(&m.records);
+        logged
+    }
+
+    /// Record `damage` of `pid`, logging it unless recovery has not ended or the file is
+    /// quarantined whole. Returns the log's end after the record.
+    pub(super) fn record_damage(&mut self, pid: Pid, damage: Damage) -> Option<Lsn> {
+        let whole = self.pager.is_quarantined(Quarantine::Database);
+        self.meta
+            .records
+            .detect(&mut self.log.log, pid, damage, whole)
+    }
+
+    /// Record every page refused so far, and log the records from now on.
+    pub(super) fn start_recording(&mut self) {
+        let whole = self.pager.is_quarantined(Quarantine::Database);
+        let m = &mut *self.meta;
+        m.records.logging = true;
+        for (&pid, &damage) in &m.damaged {
+            m.records.detect(&mut self.log.log, pid, damage, whole);
+        }
+        self.pager.note_unmapped(&m.records);
+    }
+
+    /// Returns whether a checkpoint is to fold the damage records into the list page.
+    pub(super) fn folds(&self) -> bool {
+        self.meta.records.to_fold().is_some()
+    }
+
+    /// Log a checkpoint of the dirty page table and the map root, pinning its redo LSN when `pin`,
+    /// and take the damage records to fold when `fold`.
+    pub(super) fn checkpoint(&mut self, fold: bool, pin: bool) -> Checkpointed {
+        let Appended { log, map } = &mut *self.log;
+        let m = &mut *self.meta;
+        let lsn = log.next_lsn();
+        let dirty = m.table.snapshot();
+        let redo = dirty.iter().map(|(_, l)| *l).min().unwrap_or(lsn);
+        let folded = fold.then(|| m.records.snapshot(self.pager.damage_list_capacity()));
+        let at = log.append(&Record::Checkpoint {
+            redo,
+            dirty,
+            map: *map,
+        });
+        if pin {
+            log.pin(redo);
+        }
+        (at, redo, m.groups, folded)
     }
 }
 
@@ -230,12 +356,9 @@ pub(super) fn wrote_for_test(pid: Pid) -> Wrote {
 /// - A page is written only under a latch, and only once the log is durable past its LSN.
 /// - A page is in the dirty page table from the change that dirties its clean page, which logs a
 ///   full-page image, until a data file force covers a write of it with no change since.
-/// - A page record and its dirty page table entry are made under the log lock, so a checkpoint,
-///   which snapshots the table under the same lock, never misses a page whose image precedes it.
-///
-/// Lock order: the recycle lock, then page latches, then the flush lock, then the log lock, then
-/// the meta lock. The header, allocation, archive and driver locks are taken alone. The
-/// checkpointer lock is taken last, under any of these, and nothing is taken under it.
+/// - A record and every in-memory consequence of it (the page's dirty entry, its expected
+///   LSN, its damage record, the LSN map root) are made in one hold of the log, so a
+///   checkpoint, which takes its snapshot in the same hold, sees all of them or none.
 ///
 /// Clones are handles on one pager.
 pub struct Pager<R: Runtime>(pub(super) std::sync::Arc<Shared<R>>);
@@ -255,6 +378,17 @@ impl<R: Runtime> Deref for Pager<R> {
 }
 
 /// The state every handle on one pager shares.
+///
+/// Lock order, as the code takes them: the recycle lock; page latches, with the allocation lock
+/// taken after a data page's latch and before a bitmap page's; the segments lock; the log lock;
+/// the meta lock; the marks lock. Only an [`Append`] holds the log and meta locks together. The
+/// force lock is taken with no latch held and before the meta lock, the archive and header locks
+/// under the recycle lock alone. The marks, driver and checkpointer locks are leaves. A latch
+/// tried under the meta lock waits for nothing.
+///
+/// The accessors of the log and meta locks check their order at runtime: a thread that holds
+/// either lock and takes either panics, except for the meta lock an [`Append`] takes under its
+/// log lock.
 pub struct Shared<R: Runtime> {
     pub(crate) rt: R,
     pub(crate) name: String,
@@ -268,10 +402,14 @@ pub struct Shared<R: Runtime> {
     /// dirty page table.
     pub(super) forcing: Lock<Forcing>,
     pub(super) header: Lock<(FileHeader, u64)>,
-    pub(crate) log: Lock<Log>,
+    log: Lock<Appended>,
+    /// The thread holding the log lock, `NO_HOLDER` while none does.
+    log_holder: AtomicU64,
+    /// The thread holding the meta lock, `NO_HOLDER` while none does.
+    meta_holder: AtomicU64,
     /// Held by the one thread writing and forcing a batch: the group commit leader.
     pub(crate) segments: Lock<Segments>,
-    pub(crate) meta: Lock<Meta>,
+    meta: Lock<Meta>,
     /// Held across a search for a free page and across marking pages allocated.
     pub(crate) alloc: Lock<super::alloc::AllocState>,
     pub(crate) marks: Lock<super::quarantine::Marks>,
@@ -280,7 +418,7 @@ pub struct Shared<R: Runtime> {
     /// Whether a damage record may be unmapped. Set under the meta lock with the record.
     pub(crate) any_unmapped: std::sync::atomic::AtomicBool,
     /// How many damaged pages this open has walked the objects for.
-    pub(crate) walked: std::sync::atomic::AtomicU64,
+    pub(crate) walked: AtomicU64,
     pub(super) archive: Lock<Option<ArchiveHook>>,
     /// Held across a recycle of the log, taken before any other lock or latch.
     pub(super) recycling: Lock<()>,
@@ -679,7 +817,13 @@ impl<'a, R: Runtime> PageOptimistic<'a, R> {
 }
 
 impl<R: Runtime> Pager<R> {
-    fn assemble(rt: R, o: &Options, header: FileHeader, copy: u64, data: FileId) -> Self {
+    pub(super) fn assemble(
+        rt: R,
+        o: &Options,
+        header: FileHeader,
+        copy: u64,
+        data: FileId,
+    ) -> Self {
         let bitmap_groups = header.bitmap_groups;
         let log = Log::new(header.log_block as usize, header.epoch, header.file_id);
         let segments = Segments::new(
@@ -698,7 +842,9 @@ impl<R: Runtime> Pager<R> {
             drivers: Lock::new(BTreeMap::new()),
             forcing: Lock::new(Forcing(())),
             header: Lock::new((header, copy)),
-            log: Lock::new(log),
+            log: Lock::new(Appended { log, map: None }),
+            log_holder: AtomicU64::new(NO_HOLDER),
+            meta_holder: AtomicU64::new(NO_HOLDER),
             segments: Lock::new(segments),
             meta: Lock::new(Meta {
                 table: DirtyTable::new(o.atomic_page_writes),
@@ -709,7 +855,6 @@ impl<R: Runtime> Pager<R> {
                 reserved: BTreeSet::new(),
                 blanked: BTreeSet::new(),
                 recovered: Lsn(0),
-                map: None,
                 resident: Vec::new(),
                 hand: 0,
             }),
@@ -717,29 +862,12 @@ impl<R: Runtime> Pager<R> {
             marks: Lock::new(Default::default()),
             any_mark: std::sync::atomic::AtomicBool::new(false),
             any_unmapped: std::sync::atomic::AtomicBool::new(false),
-            walked: std::sync::atomic::AtomicU64::new(0),
+            walked: AtomicU64::new(0),
             archive: Lock::new(None),
             recycling: Lock::new(()),
             checkpointer: Lock::new(super::checkpoint::Worker::new(o.checkpoint_every)),
             rt,
         }))
-    }
-
-    /// Create an empty database: its data file, its first log segment and a first checkpoint,
-    /// built as [`create`] does and published.
-    ///
-    /// Panics if `options` breaks a limit of the file format.
-    pub fn create(rt: R, options: &Options) -> Result<Pager<R>, OpenError> {
-        let (pager, new) = match create(rt.clone(), options, &mut |_| Ok(()))? {
-            Created::Finished(pager) => return Ok(pager),
-            Created::Built(pager, new) => (pager, new),
-        };
-        if let Err(e) = new.publish(&pager, &mut |_| Ok(())) {
-            pager.close();
-            new.discard(rt, &mut |_| Ok(()))?;
-            return Err(e);
-        }
-        Ok(pager)
     }
 
     /// Returns the pager of a new database whose id is `file_id` in the empty file `data` and
@@ -802,75 +930,6 @@ impl<R: Runtime> Pager<R> {
         Ok(pager)
     }
 
-    /// Open an existing database and recover it from its log.
-    pub fn open(rt: R, options: &Options) -> Result<(Pager<R>, super::Recovery), OpenError> {
-        check_options(options)?;
-        let mut drv = Driver::new(rt.clone());
-        let (data, _) = drv.open(&options.name, false).map_err(|e| match e {
-            IoError::NotFound => OpenError::NotFound,
-            e => OpenError::Io(e),
-        })?;
-        let read = |drv: &mut Driver<R>, at: u64| drv.read(data, at, REGION).ok();
-        let first = read(&mut drv, 0).and_then(|b| FileHeader::decode(0, &b));
-        let mut second: Option<FileHeader> = None;
-        for at in header::second_copy_offsets() {
-            let found = read(&mut drv, at)
-                .and_then(|b| FileHeader::decode(1, &b))
-                .filter(|h| u64::from(h.page_size) == at);
-            if let Some(h) = found
-                && second.as_ref().is_none_or(|s| h.seq > s.seq)
-            {
-                second = Some(h);
-            }
-        }
-        let Some((copy, mut header)) = header::choose(first, second) else {
-            let layout = read(&mut drv, 0)
-                .and_then(|b| header::other_layout(0, &b))
-                .or_else(|| {
-                    header::second_copy_offsets()
-                        .find_map(|at| read(&mut drv, at).and_then(|b| header::other_layout(1, &b)))
-                });
-            drv.close(data);
-            return Err(layout.map_or(OpenError::NoHeader, OpenError::OtherLayout));
-        };
-        header.atomic_page_writes = options.atomic_page_writes;
-        let pager = Pager::assemble(rt, options, header, copy, data);
-        match pager.recover_and_mark() {
-            Ok(recovery) => {
-                pager.start_checkpoints();
-                Ok((pager, recovery))
-            }
-            Err(e) => {
-                pager.close_files();
-                Err(e)
-            }
-        }
-    }
-
-    fn recover_and_mark(&self) -> Result<super::Recovery, OpenError> {
-        let (recovery, pages, armed) = self.recover()?;
-        self.refuse_cut_pages(pages);
-        let marks = self.header.lock(&self.rt).0.quarantine;
-        if marks == Pid(0) {
-            let (new, marks) = self.reserve_marks()?;
-            self.format_marks(new, marks)?;
-            self.header.lock(&self.rt).0.quarantine = marks;
-        } else {
-            self.load_marks(marks)?;
-        }
-        self.load_damage_list()?;
-        self.start_recording();
-        self.checkpoint();
-        self.check_map();
-        if let Err(map) = armed {
-            if map.is_some_and(|e| e.damage != Damage::Unreadable) {
-                self.quarantine(Quarantine::Database).ok();
-            }
-            self.hold_quarantine(Quarantine::Database);
-        }
-        Ok(recovery)
-    }
-
     /// End recovery: set each page's expected LSN from the page LSN map, then the retained log.
     /// Turn the gate off, setting none, when the log cannot prove a record before the end
     /// recovery kept, or fail with the map page refused.
@@ -912,12 +971,44 @@ impl<R: Runtime> Pager<R> {
         self.own_meta().damaged.clone()
     }
 
-    pub(crate) fn meta(&self) -> MutexGuard<'_, Meta> {
+    pub(crate) fn meta(&self) -> Holding<'_, Meta> {
         self.own_meta()
     }
 
-    fn own_meta(&self) -> MutexGuard<'_, Meta> {
-        self.meta.lock(&self.rt)
+    fn own_meta(&self) -> Holding<'_, Meta> {
+        let me = self.rt.current();
+        assert_ne!(
+            self.log_holder.load(Ordering::Relaxed),
+            me.0,
+            "the meta lock is taken under the log lock only by an append"
+        );
+        self.take_meta(me)
+    }
+
+    fn take_meta(&self, me: ThreadId) -> Holding<'_, Meta> {
+        assert_ne!(
+            self.meta_holder.load(Ordering::Relaxed),
+            me.0,
+            "a thread holding the meta lock does not take it again"
+        );
+        Holding::take(&self.meta, &self.meta_holder, &self.rt, me)
+    }
+
+    /// Take the log lock.
+    ///
+    /// Panic if the calling thread holds the log lock or the meta lock.
+    fn take_log(&self, me: ThreadId) -> Holding<'_, Appended> {
+        assert_ne!(
+            self.log_holder.load(Ordering::Relaxed),
+            me.0,
+            "a thread holding the log lock does not take it again"
+        );
+        assert_ne!(
+            self.meta_holder.load(Ordering::Relaxed),
+            me.0,
+            "the log lock is never taken under the meta lock"
+        );
+        Holding::take(&self.log, &self.log_holder, &self.rt, me)
     }
 
     pub(super) fn dirty_table(&self) -> Locked<'_> {
@@ -929,8 +1020,25 @@ impl<R: Runtime> Pager<R> {
         self.own_meta().table.is_unwritten(pid)
     }
 
-    pub(crate) fn log(&self) -> MutexGuard<'_, Log> {
-        self.log.lock(&self.rt)
+    pub(super) fn log(&self) -> LogGuard<'_> {
+        LogGuard(self.take_log(self.rt.current()))
+    }
+
+    /// Take the log lock, then the meta lock.
+    pub(super) fn append(&self) -> Append<'_, R> {
+        let me = self.rt.current();
+        let log = self.take_log(me);
+        Append::new(self, log, self.take_meta(me))
+    }
+
+    /// Returns the page LSN map's root, `None` while the file has no map.
+    pub(super) fn map_root(&self) -> Option<MapRoot> {
+        self.take_log(self.rt.current()).map
+    }
+
+    /// Make `map` the page LSN map's root, as recovery found it.
+    pub(super) fn recover_map_root(&self, _: &Replaying, map: Option<MapRoot>) {
+        self.take_log(self.rt.current()).map = map;
     }
 
     /// Run `f` on the calling thread's I/O queue.
@@ -1286,127 +1394,34 @@ impl<R: Runtime> Pager<R> {
                 e.bytes.len()
             );
         }
-        let mut log = self.log();
-        let mut last = log.next_lsn();
-        let mut m = self.own_meta();
-        for pid in &allocated {
-            m.blanked.remove(pid);
-        }
+        let mut append = self.append();
+        let mut last = append.log.log.next_lsn();
+        append.unblank(&allocated);
         for (g, edits) in guards.iter_mut().zip(edits) {
-            let pid = g.pid();
-            let start = matches!(g.kind, Kind::Overwriting) || allocated.contains(&pid);
+            let start = matches!(g.kind, Kind::Overwriting) || allocated.contains(&g.pid());
             if edits.is_empty() && !start {
                 continue;
             }
-            let prev = page::lsn(g);
-            let lsn = log.next_lsn();
-            g.held_mut().apply_change(&edits, lsn);
-            let record = if start {
-                g.kind = Kind::Latched;
-                Record::Image {
-                    pid,
-                    prev: Lsn::UNCHAINED,
-                    page: g.to_vec(),
-                }
-            } else if m.table.record_kind(pid, log.last_checkpoint()) == Logged::Change {
-                Record::Change { pid, prev, edits }
-            } else {
-                Record::Image {
-                    pid,
-                    prev,
-                    page: g.to_vec(),
-                }
-            };
-            let kind = if let Record::Image { prev, .. } = record {
-                let met = if prev == Lsn::UNCHAINED {
-                    Met::Start
-                } else {
-                    Met::Image
-                };
-                m.records.meet(pid, met);
-                Logged::Image
-            } else {
-                Logged::Change
-            };
-            log.append(&record);
-            m.table.logged(pid, lsn, kind);
-            m.gate.raise(pid, lsn);
-            if let Some(map) = m.map.as_mut()
-                && map.root == pid
-            {
-                map.lsn = lsn;
-            }
-            last = lsn;
+            last = append.change_page(g, edits, start);
         }
         if !freed.is_empty() {
-            let whole = self.is_quarantined(Quarantine::Database);
-            for &pid in freed {
-                last = m.records.free(&mut log, pid, whole).unwrap_or(last);
+            last = append.free(freed).unwrap_or(last);
+        }
+        match tail {
+            Some(Record::MapRoot { root, height }) => {
+                let lsn = guards
+                    .iter()
+                    .find(|g| g.pid() == root)
+                    .map(|g| page::lsn(g));
+                append.map_root(
+                    root,
+                    lsn.expect("a map root is logged with its page"),
+                    height,
+                )
             }
+            Some(record) => append.record(&record),
+            None => last,
         }
-        if let Some(Record::MapRoot { root, height }) = &tail {
-            let lsn = guards
-                .iter()
-                .find(|g| g.pid() == *root)
-                .map(|g| page::lsn(g));
-            m.map = Some(MapRoot {
-                root: *root,
-                lsn: lsn.expect("a map root is logged with its page"),
-                height: *height,
-            });
-        }
-        tail.map_or(last, |r| log.append(&r))
-    }
-
-    /// Apply `changes` to their pages and log them, every page or none.
-    ///
-    /// Returns the LSN of the last record logged. Fails, changing nothing, if a page is damaged.
-    ///
-    /// Panics if a page appears twice, if the pool cannot hold every page at once, or if an edit
-    /// writes the page's LSN or checksum or past its end.
-    pub fn change(&self, changes: &[(Pid, Vec<Edit>)]) -> Result<Lsn, PageError> {
-        let pids: Vec<Pid> = changes.iter().map(|(p, _)| *p).collect();
-        let edits: Vec<Vec<Edit>> = changes.iter().map(|(_, e)| e.clone()).collect();
-        self.with_latched(&pids, |pager, guards| pager.apply(guards, edits, None))
-    }
-
-    /// Modify `pids` together through `f`, which sees a copy of every page at once, and log what
-    /// changed.
-    ///
-    /// Returns the LSN of the last record logged. Fails, calling nothing, if a page is damaged.
-    ///
-    /// Panics if `f` changes a page's LSN or checksum, or as [`Pager::change`] does.
-    pub fn update<F>(&self, pids: &[Pid], f: F) -> Result<Lsn, PageError>
-    where
-        F: FnOnce(&mut [&mut [u8]]),
-    {
-        self.with_latched(pids, |pager, guards| {
-            let edits = edits_by(guards.iter().map(|g| &***g), f);
-            pager.apply(guards, edits, None)
-        })
-    }
-
-    /// Change several pages under their exclusive latches through `f`, which sees a copy of
-    /// each, logging every record in one batch.
-    pub fn update_all<F>(&self, guards: &mut [&mut PageExclusive<'_, R>], f: F) -> Lsn
-    where
-        F: FnOnce(&mut [&mut [u8]]),
-    {
-        let edits = edits_by(guards.iter().map(|g| &***g), f);
-        self.apply(guards, edits, None)
-    }
-
-    /// Change several pages under their exclusive latches through `f`, as
-    /// [`Pager::update_all`] does, and log the commit record of transaction `xid` after the page
-    /// records, in the same batch.
-    ///
-    /// Returns the LSN of the commit record.
-    pub fn commit_all<F>(&self, xid: u64, guards: &mut [&mut PageExclusive<'_, R>], f: F) -> Lsn
-    where
-        F: FnOnce(&mut [&mut [u8]]),
-    {
-        let edits = edits_by(guards.iter().map(|g| &***g), f);
-        self.apply(guards, edits, Some(self.commit_record(xid)))
     }
 
     /// Run `f` with exclusive latches on `pids`, taken in page order, passing them in the order
@@ -1457,7 +1472,7 @@ impl<R: Runtime> Pager<R> {
         self.close_files();
     }
 
-    fn close_files(&self) {
+    pub(super) fn close_files(&self) {
         self.io(|d| {
             self.segments.lock(&self.rt).close(d);
             d.close(self.data);
@@ -1468,20 +1483,4 @@ impl<R: Runtime> Pager<R> {
     pub fn wall(&self) -> SystemTime {
         self.rt.wall()
     }
-}
-
-/// Returns the edits `f` makes to copies of `pages`.
-pub(super) fn edits_by<'p, F>(pages: impl Iterator<Item = &'p [u8]>, f: F) -> Vec<Vec<Edit>>
-where
-    F: FnOnce(&mut [&mut [u8]]),
-{
-    let originals: Vec<&[u8]> = pages.collect();
-    let mut copies: Vec<Vec<u8>> = originals.iter().map(|p| p.to_vec()).collect();
-    let mut views: Vec<&mut [u8]> = copies.iter_mut().map(Vec::as_mut_slice).collect();
-    f(&mut views);
-    originals
-        .iter()
-        .zip(&copies)
-        .map(|(old, new)| diff(old, new))
-        .collect()
 }

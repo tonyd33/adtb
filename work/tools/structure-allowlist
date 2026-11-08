@@ -61,7 +61,7 @@ crate_fields prod 1 crates/adtb/src/storage/backup.rs
 crate_fields prod 8 crates/adtb/src/storage/damage_log.rs
 crate_fields prod 1 crates/adtb/src/storage/driver.rs
 crate_fields prod 5 crates/adtb/src/storage/log.rs
-crate_fields prod 26 crates/adtb/src/storage/pager.rs
+crate_fields prod 23 crates/adtb/src/storage/pager.rs
 crate_fields prod 4 crates/adtb/src/storage/quarantine.rs
 crate_fields prod 6 crates/adtb/src/write/past.rs
 crate_fields prod 4 crates/adtb/src/write/reindex.rs
@@ -97,13 +97,12 @@ disallowed_methods prod 3 crates/adtb/src/heap/rooted.rs
 disallowed_methods prod 1 crates/adtb/src/heap/vm.rs
 disallowed_methods prod 6 crates/adtb/src/storage/alloc.rs
 disallowed_methods prod 1 crates/adtb/src/storage/backup.rs
-disallowed_methods prod 1 crates/adtb/src/storage/checkpoint.rs
-disallowed_methods prod 14 crates/adtb/src/storage/damage_log.rs
-disallowed_methods prod 6 crates/adtb/src/storage/lsnmap.rs
+disallowed_methods prod 10 crates/adtb/src/storage/damage_log.rs
+disallowed_methods prod 2 crates/adtb/src/storage/lsnmap.rs
 disallowed_methods prod 9 crates/adtb/src/storage/pager.rs
 disallowed_methods prod 3 crates/adtb/src/storage/quarantine.rs
 disallowed_methods prod 2 crates/adtb/src/storage/recovery.rs
-disallowed_methods test 5 crates/adtb/src/storage/tests.rs
+disallowed_methods test 2 crates/adtb/src/storage/tests.rs
 disallowed_methods prod 6 crates/adtb/src/storage/verify.rs
 disallowed_methods prod 1 crates/adtb/src/verify/mod.rs
 pub_fields prod 1 crates/adtb-bench/src/native/control_fixture.rs

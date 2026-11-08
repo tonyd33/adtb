@@ -1,7 +1,8 @@
 use crate::runtime::Runtime;
 
+use super::error::Damage;
 use super::page::{self, FIRST_EDITABLE, HEADER_LEN, PageKind};
-use super::pager::{Damage, PageError, PageExclusive, PageShared, Pager};
+use super::pager::{PageError, PageExclusive, PageShared, Pager};
 use super::record::{Edit, Record};
 use super::{Lsn, Pid};
 
@@ -188,6 +189,57 @@ impl<R: Runtime> Pager<R> {
             self.meta().reserved.insert(Pid(pid));
             return Ok(Pid(pid));
         }
+    }
+
+    /// Apply `changes` to their pages and log them, every page or none.
+    ///
+    /// Returns the LSN of the last record logged. Fails, changing nothing, if a page is damaged.
+    ///
+    /// Panic if a page appears twice, if the pool cannot hold every page at once, or if an
+    /// edit writes the page's LSN or checksum or past its end.
+    pub fn change(&self, changes: &[(Pid, Vec<Edit>)]) -> Result<Lsn, PageError> {
+        let pids: Vec<Pid> = changes.iter().map(|(p, _)| *p).collect();
+        let edits: Vec<Vec<Edit>> = changes.iter().map(|(_, e)| e.clone()).collect();
+        self.with_latched(&pids, |pager, guards| pager.apply(guards, edits, None))
+    }
+
+    /// Modify `pids` together through `f`, which sees a copy of every page at once, and log what
+    /// changed.
+    ///
+    /// Returns the LSN of the last record logged. Fails, calling nothing, if a page is damaged.
+    ///
+    /// Panic if `f` changes a page's LSN or checksum, or as [`Pager::change`] does.
+    pub fn update<F>(&self, pids: &[Pid], f: F) -> Result<Lsn, PageError>
+    where
+        F: FnOnce(&mut [&mut [u8]]),
+    {
+        self.with_latched(pids, |pager, guards| {
+            let edits = edits_by(guards.iter().map(|g| &***g), f);
+            pager.apply(guards, edits, None)
+        })
+    }
+
+    /// Change several pages under their exclusive latches through `f`, which sees a copy of
+    /// each, logging every record in one batch.
+    pub fn update_all<F>(&self, guards: &mut [&mut PageExclusive<'_, R>], f: F) -> Lsn
+    where
+        F: FnOnce(&mut [&mut [u8]]),
+    {
+        let edits = edits_by(guards.iter().map(|g| &***g), f);
+        self.apply(guards, edits, None)
+    }
+
+    /// Change several pages under their exclusive latches through `f`, as
+    /// [`Pager::update_all`] does, and log the commit record of transaction `xid` after the page
+    /// records, in the same batch.
+    ///
+    /// Returns the LSN of the commit record.
+    pub fn commit_all<F>(&self, xid: u64, guards: &mut [&mut PageExclusive<'_, R>], f: F) -> Lsn
+    where
+        F: FnOnce(&mut [&mut [u8]]),
+    {
+        let edits = edits_by(guards.iter().map(|g| &***g), f);
+        self.apply(guards, edits, Some(self.commit_record(xid)))
     }
 
     /// Change `pids` through `f` as [`Pager::update`] does, allocating every page of `new` in the
@@ -522,4 +574,20 @@ impl<R: Runtime> Drop for Reservation<'_, R> {
 #[derive(Debug, Default)]
 pub(crate) struct AllocState {
     pub(crate) group: u64,
+}
+
+/// Returns the edits `f` makes to copies of `pages`.
+pub(super) fn edits_by<'p, F>(pages: impl Iterator<Item = &'p [u8]>, f: F) -> Vec<Vec<Edit>>
+where
+    F: FnOnce(&mut [&mut [u8]]),
+{
+    let originals: Vec<&[u8]> = pages.collect();
+    let mut copies: Vec<Vec<u8>> = originals.iter().map(|p| p.to_vec()).collect();
+    let mut views: Vec<&mut [u8]> = copies.iter_mut().map(Vec::as_mut_slice).collect();
+    f(&mut views);
+    originals
+        .iter()
+        .zip(&copies)
+        .map(|(old, new)| diff(old, new))
+        .collect()
 }

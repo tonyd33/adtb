@@ -12,7 +12,9 @@ mod digest;
 mod driver;
 mod dump;
 mod dump_crypt;
+mod error;
 mod header;
+mod holding;
 mod log;
 mod lsnmap;
 mod page;
@@ -45,14 +47,15 @@ pub use dump::{
     write_dump,
 };
 pub use dump_crypt::Passphrase;
+pub use error::{Damage, OpenError};
 pub use header::HISTORY_CAPACITY;
 pub use page::{
     FIRST_EDITABLE, HEADER_LEN, MAX_PAGE_SIZE, MIN_PAGE_SIZE, PageKind, flags, flip_owner, format,
     header_edit, kind, lsn, owner, seal,
 };
 pub use pager::{
-    ArchiveHook, Damage, LATCHES_PER_THREAD, OpenError, Options, PageError, PageExclusive,
-    PageOptimistic, PageShared, Pager,
+    ArchiveHook, LATCHES_PER_THREAD, Options, PageError, PageExclusive, PageOptimistic, PageShared,
+    Pager,
 };
 pub use quarantine::{Holders, Quarantine, Stopped};
 pub use record::Edit;

@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::MutexGuard;
 
 use super::damage_log::Refusal;
-use super::pager::{Forcing, Wrote};
+use super::pager::{Appending, Forcing, Wrote};
 use super::recovery::Replaying;
 use super::{Lsn, Pid};
 
@@ -65,7 +65,7 @@ impl DirtyTable {
     /// `last_checkpoint` the file header names: a full image when the change dirties a clean
     /// frame, or follows a write of the frame whose latest image precedes `last_checkpoint`,
     /// unless page writes are atomic.
-    pub(super) fn record_kind(&self, pid: Pid, last_checkpoint: Lsn) -> Logged {
+    pub(super) fn record_kind(&self, _: &Appending, pid: Pid, last_checkpoint: Lsn) -> Logged {
         let change = self.atomic
             || self
                 .pages
@@ -78,10 +78,8 @@ impl DirtyTable {
         }
     }
 
-    /// Enter the page record `kind` of `pid`, logged at `lsn`.
-    ///
-    /// Preconditions: the caller holds the log lock that logged the record.
-    pub(super) fn logged(&mut self, pid: Pid, lsn: Lsn, kind: Logged) {
+    /// Enter the page record `kind` of `pid`, logged at `lsn` in the hold of `_`.
+    pub(super) fn logged(&mut self, _: &Appending, pid: Pid, lsn: Lsn, kind: Logged) {
         let rewritten = self.pages.get(&pid).is_some_and(|d| d.unwritten.is_none());
         let d = self.pages.entry(pid).or_insert(Dirty {
             rec_lsn: lsn,
@@ -211,7 +209,7 @@ mod tests {
 
     use super::{DirtyTable, Logged};
     use crate::storage::damage_log::refusal_for_test;
-    use crate::storage::pager::{forcing_for_test, wrote_for_test};
+    use crate::storage::pager::{appending_for_test, forcing_for_test, wrote_for_test};
     use crate::storage::recovery::replaying_for_test;
     use crate::storage::{Lsn, Pid};
 
@@ -347,6 +345,7 @@ mod tests {
     fn the_table_answers_as_the_six_collections_did() {
         let mut reached = Reached::default();
         let replaying = replaying_for_test();
+        let appending = appending_for_test();
         for seed in sweep(0..64) {
             let mut rng = Rng::new(seed);
             let atomic = seed % 4 == 3;
@@ -370,7 +369,7 @@ mod tests {
                         let kind = model.record_kind(pid, last_checkpoint);
                         assert_eq!(
                             kind,
-                            table.record_kind(pid, last_checkpoint),
+                            table.record_kind(&appending, pid, last_checkpoint),
                             "seed {seed} step {step}: record_kind({})",
                             pid.0
                         );
@@ -390,7 +389,7 @@ mod tests {
                             reached.covered_logged += 1;
                         }
                         model.logged(pid, next, kind);
-                        table.logged(pid, next, kind);
+                        table.logged(&appending, pid, next, kind);
                         next = Lsn(next.0 + 1 + rng.below(3));
                     }
                     6..=8 => {

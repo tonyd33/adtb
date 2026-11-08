@@ -1,13 +1,17 @@
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::runtime::Runtime;
+use crate::runtime::{IoError, Runtime};
 
 use super::block::{LogFinding, LogProblem, Mode, batch_at, scan};
+use super::create::check_options;
 use super::damage_log::Met;
-use super::header::LOG_DAMAGE_CAPACITY;
+use super::driver::Driver;
+use super::error::{Damage, OpenError};
+use super::header::{self, FileHeader, LOG_DAMAGE_CAPACITY, REGION};
 use super::page;
-use super::pager::{Damage, OpenError, Pager};
+use super::pager::{Options, Pager};
+use super::quarantine::Quarantine;
 use super::record::{MapRoot, Record};
 use super::{Lsn, Pid};
 
@@ -55,6 +59,75 @@ fn damaged_at(lsn: Lsn, problem: LogProblem) -> OpenError {
 }
 
 impl<R: Runtime> Pager<R> {
+    /// Open an existing database and recover it from its log.
+    pub fn open(rt: R, options: &Options) -> Result<(Pager<R>, Recovery), OpenError> {
+        check_options(options)?;
+        let mut drv = Driver::new(rt.clone());
+        let (data, _) = drv.open(&options.name, false).map_err(|e| match e {
+            IoError::NotFound => OpenError::NotFound,
+            e => OpenError::Io(e),
+        })?;
+        let read = |drv: &mut Driver<R>, at: u64| drv.read(data, at, REGION).ok();
+        let first = read(&mut drv, 0).and_then(|b| FileHeader::decode(0, &b));
+        let mut second: Option<FileHeader> = None;
+        for at in header::second_copy_offsets() {
+            let found = read(&mut drv, at)
+                .and_then(|b| FileHeader::decode(1, &b))
+                .filter(|h| u64::from(h.page_size) == at);
+            if let Some(h) = found
+                && second.as_ref().is_none_or(|s| h.seq > s.seq)
+            {
+                second = Some(h);
+            }
+        }
+        let Some((copy, mut header)) = header::choose(first, second) else {
+            let layout = read(&mut drv, 0)
+                .and_then(|b| header::other_layout(0, &b))
+                .or_else(|| {
+                    header::second_copy_offsets()
+                        .find_map(|at| read(&mut drv, at).and_then(|b| header::other_layout(1, &b)))
+                });
+            drv.close(data);
+            return Err(layout.map_or(OpenError::NoHeader, OpenError::OtherLayout));
+        };
+        header.atomic_page_writes = options.atomic_page_writes;
+        let pager = Pager::assemble(rt, options, header, copy, data);
+        match pager.recover_and_mark() {
+            Ok(recovery) => {
+                pager.start_checkpoints();
+                Ok((pager, recovery))
+            }
+            Err(e) => {
+                pager.close_files();
+                Err(e)
+            }
+        }
+    }
+
+    pub(super) fn recover_and_mark(&self) -> Result<Recovery, OpenError> {
+        let (recovery, pages, armed) = self.recover()?;
+        self.refuse_cut_pages(pages);
+        let marks = self.header.lock(&self.rt).0.quarantine;
+        if marks == Pid(0) {
+            let (new, marks) = self.reserve_marks()?;
+            self.format_marks(new, marks)?;
+            self.header.lock(&self.rt).0.quarantine = marks;
+        } else {
+            self.load_marks(marks)?;
+        }
+        self.load_damage_list()?;
+        self.start_recording();
+        self.checkpoint();
+        self.check_map();
+        if let Err(map) = armed {
+            if map.is_some_and(|e| e.damage != Damage::Unreadable) {
+                self.quarantine(Quarantine::Database).ok();
+            }
+            self.hold_quarantine(Quarantine::Database);
+        }
+        Ok(recovery)
+    }
+
     /// Replay the log, write every page it replayed and arm the read-in gate. Returns what it did,
     /// the pages the file then holds and whether the gate is armed.
     ///
@@ -79,7 +152,7 @@ impl<R: Runtime> Pager<R> {
                 })
             })
             .ok_or(damaged_at(ck, LogProblem::Damaged))?;
-        self.meta().map = map;
+        self.recover_map_root(&Replaying(()), map);
         let from = img
             .batch_start(redo)
             .ok_or(damaged_at(redo, LogProblem::Damaged))?;
@@ -134,7 +207,7 @@ impl<R: Runtime> Pager<R> {
         {
             m.lsn = m.lsn.max(lsn);
         }
-        self.meta().map = map;
+        self.recover_map_root(&replay.replaying, map);
         for (pid, damage) in std::mem::take(&mut replay.unverified) {
             self.damage(pid, damage);
         }

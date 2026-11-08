@@ -3,9 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::runtime::{AlignedBuf, Runtime};
 
 use super::block::{LogFinding, LogProblem, Mode, Resolutions, resolutions_from, scan};
+use super::error::Damage;
 use super::log::parse_segment;
 use super::page::{self, Verdict};
-use super::pager::{Damage, Pager};
+use super::pager::Pager;
 use super::quarantine::Allocation;
 use super::record::Record;
 use super::{Lsn, Pid, Position};

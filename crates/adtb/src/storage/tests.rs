@@ -10,9 +10,10 @@ use super::block::{
     read_block, resolutions_from, scan,
 };
 use super::crc::{Crc32c, crc32c, crc32c_skipping};
+use super::error::{Damage, OpenError};
 use super::header::{FileHeader, choose};
 use super::page::{self, Verdict};
-use super::pager::{Damage, OpenError, Options, PageError, Pager};
+use super::pager::{Options, PageError, Pager};
 use super::record::{Edit, MapRoot, Record};
 use super::{Lsn, Pid, Position};
 
@@ -54,7 +55,6 @@ fn an_older_checkpoint_keeps_the_group_count_and_a_lower_one_never_lowers_it() {
 const SEGMENT: u64 = 16 * BLOCK as u64;
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until storage owners land")]
 fn a_map_root_whose_root_has_no_record_in_its_batch_refuses_the_open() {
     let scratch = Scratch::new("storage", "unproven-root");
     let rt = || {
@@ -73,7 +73,7 @@ fn a_map_root_whose_root_has_no_record_in_its_batch_refuses_the_open() {
     pager
         .fold(&BTreeMap::from([(Pid(1), Lsn(1))]))
         .expect("fold");
-    let root = pager.meta().map.expect("the fold made a map").root;
+    let root = pager.map_root().expect("the fold made a map").root;
     pager.flush_log();
     let at = pager.log().append(&Record::MapRoot { root, height: 1 });
     pager.flush_log();
@@ -109,7 +109,6 @@ fn a_page_past_the_reach_of_the_map_has_no_entry() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until storage owners land")]
 fn a_change_of_the_map_root_outside_a_fold_raises_the_root_lsn_the_pager_holds() {
     let scratch = Scratch::new("storage", "root-lsn");
     let rt = OsRuntime::with_faults(
@@ -126,16 +125,15 @@ fn a_change_of_the_map_root_outside_a_fold_raises_the_root_lsn_the_pager_holds()
     pager
         .fold(&BTreeMap::from([(Pid(1), Lsn(1))]))
         .expect("fold");
-    let root = pager.meta().map.expect("the fold made a map").root;
+    let root = pager.map_root().expect("the fold made a map").root;
     let lsn = pager
         .update(&[root], |p| p[0][page::HEADER_LEN + 16] = 3)
         .expect("change the root");
-    assert_eq!(Some(lsn), pager.meta().map.map(|m| m.lsn));
+    assert_eq!(Some(lsn), pager.map_root().map(|m| m.lsn));
     pager.close();
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until storage owners land")]
 fn the_first_checkpoint_after_a_crash_names_the_map_root_at_its_replayed_lsn() {
     let scratch = Scratch::new("storage", "replayed-root");
     let rt = || {
@@ -155,7 +153,7 @@ fn the_first_checkpoint_after_a_crash_names_the_map_root_at_its_replayed_lsn() {
         .fold(&BTreeMap::from([(Pid(1), Lsn(1))]))
         .expect("fold");
     pager.checkpoint();
-    let root = pager.meta().map.expect("the fold made a map").root;
+    let root = pager.map_root().expect("the fold made a map").root;
     let changed = pager
         .update(&[root], |p| p[0][page::HEADER_LEN + 16] = 3)
         .expect("change the root");
@@ -833,4 +831,44 @@ fn verify_reports_a_chain_break_of_a_page_freed_since() {
     let found: Vec<super::Finding> = pager.verify().findings.into_iter().filter(of_p).collect();
     assert_eq!(vec![broken], found);
     pager.close();
+}
+
+fn order_pager(name: &str) -> (Scratch, Pager<OsRuntime>) {
+    let scratch = Scratch::new("storage", name);
+    let rt = OsRuntime::with_faults(
+        scratch.path(),
+        Backend::Pool { threads: 1 },
+        Faults::none(4096),
+    );
+    let options = Options {
+        pool_frames: 16,
+        max_pages: 1024,
+        ..Options::new("order.adt")
+    };
+    let pager = Pager::create(rt, &options).expect("create pager");
+    (scratch, pager)
+}
+
+#[test]
+#[should_panic(expected = "the log lock is never taken under the meta lock")]
+fn taking_the_log_under_the_meta_lock_panics() {
+    let (_scratch, pager) = order_pager("meta-then-log");
+    let _meta = pager.dirty_table();
+    drop(pager.log());
+}
+
+#[test]
+#[should_panic(expected = "the meta lock is taken under the log lock only by an append")]
+fn taking_the_meta_lock_under_the_log_outside_an_append_panics() {
+    let (_scratch, pager) = order_pager("log-then-meta");
+    let _log = pager.log();
+    drop(pager.dirty_table());
+}
+
+#[test]
+#[should_panic(expected = "a thread holding the log lock does not take it again")]
+fn an_append_under_a_held_log_guard_panics() {
+    let (_scratch, pager) = order_pager("append-under-log");
+    let _log = pager.log();
+    drop(pager.append());
 }
