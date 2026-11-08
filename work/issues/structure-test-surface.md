@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-07
-status: open
+status: resolved
 kind: feature
 priority: 11
 summary: tests reach engine internals through write_path at 356 sites and rebuild the harness per file; tests get one stated surface so engine internals can be sealed
+closed: 2026-11-08
 ---
 
 # Feature: A stated test surface over one harness and one fault mechanism
@@ -71,3 +72,7 @@ T9 runs in four parts, each landed after its own review: 1 the engine-free kit, 
 ## 2026-11-08, T9 part 3 landed
 
 write.rs, calls.rs, exec.rs and textual.rs (88 tests) run as adtb unit tests under write/ and exec/, assertions and seed caching kept, longest 15.3 s. `load::WritePath` left simkit for `test_world::write_path`, so `write::Database::new` outside crates/adtb/src is 0. The noise loader is engine-free in `adtb_harness::load` (`Session`, `load`, `running`, `made_once`). exec's `with_past` copies into the history heap the engine's catalog made for the relation, so owners 95000/95001 are gone, and testing.md §5 has no exceptions left. `vacuum` is private (`Charged` re-exported from `adtb::testing`); its test-only items are gated `cfg(test)` and the unread `DeadSet::len` deleted. `pub mod` in lib.rs 13 to 12; internal-layer lines named from adtb-sim 205 to 184, from simkit 12 to 7. Deferred to part 4: catalog.rs, oplog.rs, grant_rows.rs. Lead ruling from the review: the loaders convert values through `adtb_lang::textual` print and parse instead of `to_val`, removing simkit's support.rs and its `catalog::layout` use; about 50 lines of `Session` impl and wrappers stay duplicated between simkit and `test_world`, since adtb's unit tests cannot depend on simkit. Next: part 4.
+
+## 2026-11-08, T9 part 4 landed; T9 and the program done
+
+The remaining adtb-sim tests that named engine layers run as adtb unit tests: 391 tests in 21 new `*_tests.rs` files (catalog, oplog, grant_rows, commit, page_past_log_end, archive, lost_bitmap, clog_lost, open_damage moved whole; constraints, quarantine, write_states, verify, scrub, faults, host_fns, api split; backup, dump, past, dump_quarantine moved whole, since splitting them would duplicate their search and crash helpers). Every layer module is private: `pub mod` in lib.rs 12 to 3 (`batch`, `key`, `testing`); internal-layer lines named from adtb-sim 184 to 0 and from simkit 7 to 0, so the compiler refuses those paths and no structure-check row is needed. Only named items are re-exported: at the root `version_hash`, `Dormant`, `Passphrase`, `CheckPlan`, `DeltaPart` (renamed from `Part`); in `adtb::testing` the page vocabulary, `LogPosition` (renamed so it does not clash with `adtb::Position`), `manifest_hash` (test-only users, so not at the root), and the `page`, `create` and `dump` modules. The loaders convert values through `adtb_lang::textual` in `adtb_harness::load::convert`; simkit's support.rs and harness.rs are gone, its run/once/finished re-exports dropped, the `plan-fixture` feature dropped. Dead code privacy exposed is deleted, notably the planner's unread `params`. The refused call `admit` handed back existed only under `cfg(test)` and had no production reader, so the field and its doc clause are gone; its test became `a_call_is_refused_too_large_overloaded_or_after_shutdown`, the only test of the TooLarge and ShutDown refusals. Review found 2077 test bodies before and after with no assertion, seed or constant changed. Structure-allowlist rises at new paths (moved rows, heap/handle split, sim_test_opens +6 and sim_test_offsets +1 from split helpers) accepted at landing. Suite 3532 passed in 143 s, longest test 10.4 s. The ticket's exits hold: tests reach the engine through the public API and `adtb::testing`, or live in adtb.
