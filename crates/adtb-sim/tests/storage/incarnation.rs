@@ -150,7 +150,7 @@ enum Evidence {
     ReadThenFreed,
     /// It is freed, then its last write is lost.
     LostWhileFree,
-    /// It is freed, its last write is lost, and a stale read refuses it.
+    /// It is freed, its last write is lost, and a read takes the lost write unrefused.
     ReadWhileFree,
     /// It is freed, and damage of it is recorded after the free.
     RecordedAfterFree,
@@ -269,13 +269,8 @@ fn run(case: Case) -> Case {
                 ops.free(&pager, p);
             }
             Evidence::ReadWhileFree => {
-                assert_eq!(
-                    Err(PageError {
-                        pid: p,
-                        damage: lost
-                    }),
-                    pager.read(p).map(drop)
-                );
+                assert_eq!(Ok(1), pager.read(p).map(|g| g[HEADER_LEN]), "{case:?}");
+                assert_eq!(None, Probe::of(&pager).refusals().get(&p), "{case:?}");
             }
             Evidence::RecordedAfterFree => drop(pager.damage(p, Damage::Checksum)),
             Evidence::RecordedAfterRecycle => {
@@ -501,4 +496,39 @@ fn a_failed_allocation_leaves_its_free_page_refused_as_before() {
         damage: Damage::Checksum,
     };
     assert_eq!(Err(refusal), read);
+}
+
+#[test]
+fn a_free_page_whose_last_write_was_lost_is_read_unrefused_after_a_reopen() {
+    let options = options(false);
+    let mut sim = Sim::new(SEED, Config::default());
+    let mut freed = None;
+    harness::finished(&mut sim, |rt| {
+        let pager = Pager::create(rt, &options).unwrap();
+        let p = pager.allocate(1, PageKind::HeapSlotted, OLD_OWNER).unwrap();
+        pager.update(&[p], |v| v[0][HEADER_LEN] = 1).unwrap();
+        freed = Some(p);
+        pager.close();
+    });
+    let p = freed.unwrap();
+    let written = sim.files();
+    harness::finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt, &options).unwrap();
+        pager.update(&[p], |v| v[0][HEADER_LEN] = 2).unwrap();
+        pager.free(p).unwrap();
+        pager.close();
+    });
+    let files = reverted(sim.files(), &written, p);
+    let mut sim = Sim::with_files(SEED, Config::default(), files);
+    harness::finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt, &options).unwrap();
+        assert_eq!(
+            Ok(1),
+            pager.read(p).map(|g| g[HEADER_LEN]),
+            "the lost write"
+        );
+        assert_eq!(None, Probe::of(&pager).records().pages().get(&p));
+        assert_eq!(None, Probe::of(&pager).refusals().get(&p));
+        pager.close();
+    });
 }

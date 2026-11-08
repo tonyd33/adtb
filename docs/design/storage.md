@@ -424,7 +424,7 @@ operating error and never handed out as data.
 | Torn write | Checksum mismatch; repaired from a full-page image in the log (§5.2) |
 | Truncated file | After recovery, a bit of the allocation bitmap set past the end of the file refuses that page, and a bitmap page of a started group past the end of the file (§1.1) reads blank and is refused as below; at open, each bitmap page past the end of the file with an expected LSN is refused, whatever its group; a page a directory entry, index entry, version chain or out-of-line pointer names that reads all zero is refused on every read and write that reaches it through that name |
 | Lost or zeroed bitmap | A blank bitmap page of a started group (§1.1) is refused on every allocation, free and read of the bitmap, before anything is written, and marks the database (§8) |
-| Lost write | Page LSN older than the retained log says it must be, in recovery (§7) and in `verify` and scrub ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)); in `verify`, scrub and backup, a page whose last record is recycled, older than the page LSN map holds for it (§6); on every read of a page from the file, an LSN below its expected LSN, refused as stale: its last record in the retained log, or else its entry in the page LSN map, or the LSN of the last record logged for it since the open. A blank page with an expected LSN is stale with LSN 0. The commit log alone reads a stale status page, settles it and writes it back ([mvcc.md §4.2](mvcc.md#42-the-commit-log)) |
+| Lost write | Page LSN older than the retained log says it must be, in recovery (§7) and in `verify` and scrub ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)); in `verify`, scrub and backup, a page whose last record is recycled, older than the page LSN map holds for it (§6); on every read of a page from the file, an LSN below its expected LSN, refused as stale: its last record in the retained log, or else its entry in the page LSN map, or the LSN of the last record logged for it since the open. A blank page with an expected LSN is stale with LSN 0. A copy below its expected LSN of a page the allocation bitmap calls free is not refused at read-in: the expected LSN is of the incarnation a free ended (§5.1), whose lost write `verify` reports as a chain break (§7). A page whose bitmap page is refused counts as allocated. The commit log alone reads a stale status page, settles it and writes it back ([mvcc.md §4.2](mvcc.md#42-the-commit-log)) |
 | Lost or misdirected log write | A page read from the file at or past the end of the log recovery kept, or past the log's next LSN once the open has written the page, refused as stale on every read, write, replay and backup that reads it, and in `verify` and scrub; a page LSN, on the page or as a record's previous LSN, that no retained record wrote: past the page's last record in a log with no gap, or at or past the end of the log recovery kept in a gapless log retained from at or before that end; in `verify` and scrub, as an `Unlogged` log finding (§7) |
 
 A page that fails verification on read quarantines the heap or index
@@ -773,9 +773,19 @@ The expected LSNs a pager holds (§10.3) take 8 bytes of memory per page
 of the file, plus an entry per page the retained log names past its
 map entry.
 
-The pager keeps, for each page, the LSN a copy read from the file must
-reach, whether the page is refused and why, its damage record (below),
-and what that damage was mapped to this open.
+The pager keeps, for each page, evidence of its current incarnation
+(§5.1): the LSN a copy read from the file must reach, whether the page
+is refused and why, its damage record (below), and what that damage was
+mapped to this open. A chain start or a free ends an incarnation, and
+nothing of one incarnation judges another. It drops the page's damage
+record and mapping. The expected LSN stays, raised only by later
+records, and is not applied to a copy of a free page (§3). At a free, a
+refusal as stale ends: it is the ended incarnation's lost write. Any
+other refusal but an unreadable page's is the free copy's own damage,
+held as below and mapped to nothing with no walk; the page stays
+refused. The evidence keeps one entry for
+each page whose last record this open logged or replayed is a freed
+record, until the page's next allocation or the close.
 
 Every page the pager refuses as damaged, other than one the device
 cannot read, is recorded: the detection appends a damage record (§5.1)

@@ -11,13 +11,13 @@ use super::alloc::{Allocation, Hold, Reservation, diff};
 use super::damage_log::Recorded;
 use super::driver::Driver;
 use super::error::{Damage, OpenError};
-use super::evidence::{Against, Evidence, Met, Refusal, Unmapped, file_copy};
+use super::evidence::{Against, Evidence, Judged, Met, Refusal, Unmapped, file_copy};
 use super::header::{FileHeader, Header};
 use super::holding::{Holding, NO_HOLDER};
 use super::log::{Log, Pinned, Segments};
 use super::page::{self, FIRST_EDITABLE, HEADER_LEN, Verdict};
 use super::pagetable::{DirtyTable, Logged};
-use super::quarantine::{Marks, Quarantine};
+use super::quarantine::{Bitmapped, Marks, Quarantine};
 use super::record::{Edit, MapRoot, Record};
 use super::recovery::Replaying;
 use super::{Lsn, Pid, Position};
@@ -1150,7 +1150,8 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns the exclusive latch on `pid` with the page resident, or `None` if it was found
-    /// damaged by another thread meanwhile and the caller should look again.
+    /// damaged by another thread meanwhile and the caller should look again. A copy below its
+    /// expected LSN of a page the allocation bitmap calls free is read in unrefused.
     fn resident(&self, pid: Pid) -> Result<Option<Held<'_, R>>, PageError> {
         self.refused(pid)?;
         let mut g = self.hold(pid);
@@ -1163,8 +1164,11 @@ impl<R: Runtime> Pager<R> {
         }
         self.make_room(pid);
         let read = self.read_disk(pid);
-        let judged = self.judge(pid, file_copy(&read), Against::Expected);
-        if let Some(damage) = judged.damage() {
+        let refused = match self.judge(pid, file_copy(&read), Against::Expected) {
+            Judged::Behind(_) if self.bitmapped(pid) == Bitmapped::Free => None,
+            judged => judged.damage(),
+        };
+        if let Some(damage) = refused {
             return Err(self.refuse_latched(g, damage));
         }
         let (buf, _) = read.unwrap();

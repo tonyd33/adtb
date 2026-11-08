@@ -932,3 +932,20 @@ fn a_full_page_image_logged_after_the_record_drops_it() {
         );
     });
 }
+
+#[test]
+fn the_damage_of_a_page_freed_since_maps_to_nothing_with_no_walk() {
+    let (files, pages) = created(false);
+    let p = pages[0];
+    closed(&files, false, |pager| {
+        pager.damage(p, Damage::Checksum);
+        pager.free(p).unwrap();
+        assert_eq!(
+            Some(&Damage::Checksum),
+            Probe::of(pager).records().pages().get(&p),
+            "held as the free copy's damage"
+        );
+        assert_eq!((BTreeSet::new(), 0), mapped_whole(pager));
+        assert_eq!(Some(BTreeSet::new()), pager.mapped_to(p));
+    });
+}

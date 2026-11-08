@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use super::evidence::{Against, Evidence, Judged, Met, refusal_for_test};
+use super::evidence::{Against, Evidence, Judged, Met, Pending, refusal_for_test};
 use super::page::Verdict;
 use crate::runtime::ThreadId;
 use crate::storage::error::Damage;
@@ -43,6 +43,26 @@ fn logged(e: &mut Evidence, pid: Pid, met: Met) {
 
 fn folded(e: &mut Evidence) -> Option<Damage> {
     e.snapshot(usize::MAX).pages.get(&P).copied()
+}
+
+/// Returns each page whose damage is unmapped, with that damage, and whether a full list is.
+fn unmapped(e: &Evidence) -> (Vec<(Pid, Damage)>, bool) {
+    let (pages, full) = e.unmapped(true);
+    (
+        pages
+            .iter()
+            .filter_map(|p| Some((p.pid(), e.damage(p.pid())?)))
+            .collect(),
+        full,
+    )
+}
+
+/// Enter the mapping of each of `pending` to the database.
+fn map(e: &mut Evidence, pending: Vec<Pending>) {
+    e.mapped(
+        false,
+        pending.into_iter().map(|p| (p, database())).collect(),
+    );
 }
 
 #[test]
@@ -123,7 +143,8 @@ fn the_mapping_goes_with_the_damage() {
     let mut e = recording(&mut log);
     let objects = BTreeSet::from([Quarantine::Database]);
     refuse(&mut e, &mut log, P, Damage::Checksum);
-    e.mapped(false, vec![(P, Damage::Checksum, Some(objects.clone()))]);
+    let (pending, _) = e.unmapped(true);
+    map(&mut e, pending);
     assert_eq!(Some(objects), e.mapped_to(P));
     assert_eq!(Some(BY), e.detected_by(P));
     logged(&mut e, P, Met::Image);
@@ -132,7 +153,7 @@ fn the_mapping_goes_with_the_damage() {
     refuse(&mut e, &mut log, P, Damage::Checksum);
     assert_eq!(
         (vec![(P, Damage::Checksum)], false),
-        e.unmapped(true),
+        unmapped(&e),
         "the same damage again is unmapped"
     );
 }
@@ -149,10 +170,11 @@ fn a_list_that_overflows_with_every_record_mapped_is_unmapped() {
     let mut e = recording(&mut log);
     let flag = e.unmapped_flag();
     e.record(&appending_for_test(), &mut log, P, Damage::Checksum, false);
-    e.mapped(false, vec![(P, Damage::Checksum, database())]);
+    let (pending, _) = e.unmapped(true);
+    map(&mut e, pending);
     assert!(!flag.any(), "every record is mapped");
     e.snapshot(0);
-    assert_eq!((Vec::new(), true), e.unmapped(true));
+    assert_eq!((Vec::new(), true), unmapped(&e));
     assert!(flag.any(), "the full list is unmapped");
     e.mapped(true, Vec::new());
     assert!(!flag.any(), "the full list is mapped");
@@ -165,14 +187,16 @@ fn a_write_out_that_exposes_an_unmapped_record_raises_the_flag() {
     let flag = e.unmapped_flag();
     e.record(&appending_for_test(), &mut log, P, STALE, false);
     e.hold(P, Damage::Checksum);
-    e.mapped(false, vec![(P, Damage::Checksum, database())]);
+    let (pending, _) = e.unmapped(true);
+    map(&mut e, pending);
     assert!(!flag.any(), "the held damage is mapped");
     e.written_out(&wrote_for_test(P));
-    assert_eq!((vec![(P, STALE)], false), e.unmapped(true));
+    assert_eq!((vec![(P, STALE)], false), unmapped(&e));
     assert!(flag.any(), "the record the hold covered is unmapped");
-    e.mapped(false, vec![(P, STALE, INCOMPLETE)]);
+    let (pending, _) = e.unmapped(true);
+    e.mapped(false, vec![(pending[0], INCOMPLETE)]);
     assert!(flag.any(), "an incomplete mapping leaves it unmapped");
-    e.mapped(false, vec![(P, STALE, database())]);
+    map(&mut e, pending);
     assert!(!flag.any(), "the last record is mapped");
 }
 
@@ -197,6 +221,13 @@ fn stale(expected: u64, found: u64) -> Judged {
     })
 }
 
+fn behind(expected: u64, found: u64) -> Judged {
+    Judged::Behind(Damage::Stale {
+        expected: Lsn(expected),
+        found: Lsn(found),
+    })
+}
+
 #[test]
 fn a_copy_that_fails_to_read_or_verify_is_bad_whatever_it_is_judged_against() {
     let e = expecting();
@@ -213,14 +244,14 @@ fn a_copy_that_fails_to_read_or_verify_is_bad_whatever_it_is_judged_against() {
 }
 
 #[test]
-fn against_the_expected_lsn_a_copy_below_it_or_past_the_log_is_stale() {
+fn against_the_expected_lsn_a_copy_below_it_is_behind_and_one_past_the_log_stale() {
     let e = expecting();
     let a = Against::Expected;
     assert_eq!(Judged::Sound, judged(&e, P, Lsn(50), a));
-    assert_eq!(stale(50, 49), judged(&e, P, Lsn(49), a));
+    assert_eq!(behind(50, 49), judged(&e, P, Lsn(49), a));
     let blank = e.judge(P, Ok((Lsn(0), Verdict::Blank)), a, END);
     assert_eq!(
-        stale(50, 0),
+        behind(50, 0),
         blank,
         "a blank copy of a page with an expected LSN"
     );
@@ -235,12 +266,12 @@ fn against_the_expected_lsn_a_copy_below_it_or_past_the_log_is_stale() {
 }
 
 #[test]
-fn against_the_resident_lsn_a_copy_below_it_or_past_the_log_is_stale() {
+fn against_the_resident_lsn_a_copy_below_it_is_behind_and_one_past_the_log_stale() {
     let e = expecting();
     let a = Against::Resident(Lsn(60));
     assert_eq!(Judged::Sound, judged(&e, P, Lsn(60), a));
     assert_eq!(
-        stale(60, 55),
+        behind(60, 55),
         judged(&e, P, Lsn(55), a),
         "the expected LSN plays no part"
     );
@@ -256,4 +287,78 @@ fn against_the_log_end_only_a_copy_past_it_is_stale() {
     assert_eq!(stale(100, 100), judged(&e, P, END, a));
     let blank = e.judge(P, Ok((Lsn(0), Verdict::Blank)), a, Lsn(0));
     assert_eq!(Judged::Sound, blank, "LSN 0 is never past the log");
+}
+
+#[test]
+fn a_free_holds_a_refusal_as_the_free_copys_damage_and_ends_a_stale_one() {
+    for (damage, refused, held) in [
+        (
+            Damage::Checksum,
+            Some(Damage::Checksum),
+            Some(Damage::Checksum),
+        ),
+        (STALE, None, None),
+        (Damage::Unreadable, Some(Damage::Unreadable), None),
+    ] {
+        let mut log = log();
+        let mut e = recording(&mut log);
+        refuse(&mut e, &mut log, P, damage);
+        e.free(&appending_for_test(), &mut log, P, false);
+        assert_eq!(
+            (refused, held, None),
+            (e.refusal(P), e.damage(P), folded(&mut e)),
+            "{damage:?}: nothing folded"
+        );
+        let mapped = held.map(|_| BTreeSet::new());
+        let after_free = (unmapped(&e), e.mapped_to(P));
+        let at = log.next_lsn();
+        refuse(&mut e, &mut log, P, damage);
+        assert_eq!(at, log.next_lsn(), "{damage:?}: nothing logged");
+        let again = (damage != Damage::Unreadable).then_some(damage);
+        assert_eq!(again, e.damage(P), "{damage:?} refused again is held");
+        assert_eq!(
+            ((Vec::new(), false), mapped),
+            after_free,
+            "{damage:?}: the free copy's damage maps to nothing"
+        );
+    }
+}
+
+#[test]
+fn a_mapping_of_one_incarnation_maps_nothing_of_the_next() {
+    let mut log = log();
+    let mut e = recording(&mut log);
+    refuse(&mut e, &mut log, P, Damage::Checksum);
+    let (begun, _) = e.unmapped(true);
+    e.unrefuse(P);
+    logged(&mut e, P, Met::Start);
+    refuse(&mut e, &mut log, P, Damage::Checksum);
+    map(&mut e, begun);
+    assert_eq!(
+        (vec![(P, Damage::Checksum)], false),
+        unmapped(&e),
+        "after a chain start"
+    );
+    let (begun, _) = e.unmapped(true);
+    e.free(&appending_for_test(), &mut log, P, false);
+    map(&mut e, begun);
+    assert_eq!(Some(BTreeSet::new()), e.mapped_to(P), "after a free");
+}
+
+#[test]
+fn a_freed_pages_copy_is_not_judged_by_the_dead_incarnations_expected_lsn() {
+    let mut log = log();
+    let mut e = expecting();
+    e.free(&appending_for_test(), &mut log, P, false);
+    let a = Against::Expected;
+    assert_eq!(Judged::Sound, judged(&e, P, Lsn(20), a));
+    let blank = e.judge(P, Ok((Lsn(0), Verdict::Blank)), a, END);
+    assert_eq!(Judged::Sound, blank, "a blank copy");
+    assert_eq!(stale(100, 100), judged(&e, P, END, a), "past the log");
+    e.logged_page(&appending_for_test(), P, Lsn(60), Some(Met::Start));
+    assert_eq!(
+        behind(60, 55),
+        judged(&e, P, Lsn(55), a),
+        "the next incarnation"
+    );
 }

@@ -8,7 +8,7 @@ use crate::runtime::Runtime;
 
 use super::block::{LogFinding, LogProblem};
 use super::error::Damage;
-use super::evidence::{Mapping, Met, meet_recorded};
+use super::evidence::{Mapping, Met, Pending, meet_recorded};
 use super::page::{self, HEADER_LEN, PageKind};
 use super::pager::{PageError, PageExclusive, Pager};
 use super::quarantine::Quarantine;
@@ -184,7 +184,7 @@ impl<R: Runtime> Pager<R> {
             return failed;
         }
         let (pages, _) = self.evidence().unmapped(true);
-        let pages = pages.into_iter().filter(|(pid, _)| met.contains(pid));
+        let pages = pages.into_iter().filter(|p| met.contains(&p.pid()));
         let database = || Some(BTreeSet::from([Quarantine::Database]));
         failed.extend(self.map_records(pages.collect(), false, |_| database(), mark));
         failed
@@ -195,24 +195,24 @@ impl<R: Runtime> Pager<R> {
     /// with why.
     fn map_records(
         &self,
-        pages: Vec<(Pid, Damage)>,
+        pages: Vec<Pending>,
         full: bool,
         mut holders: impl FnMut(Pid) -> Option<BTreeSet<Quarantine>>,
         mut mark: impl FnMut(Quarantine) -> Result<(), PageError>,
     ) -> BTreeMap<Quarantine, PageError> {
         let database = BTreeSet::from([Quarantine::Database]);
         let mut mapped: Vec<Mapping> = Vec::new();
-        for (pid, damage) in pages {
+        for p in pages {
             let objects = if full {
                 Some(database.clone())
             } else {
-                holders(pid)
+                holders(p.pid())
             };
-            mapped.push((pid, damage, objects));
+            mapped.push((p, objects));
         }
         let mut objects: BTreeSet<Quarantine> = mapped
             .iter()
-            .flat_map(|m| m.2.iter().flatten().copied())
+            .flat_map(|m| m.1.iter().flatten().copied())
             .collect();
         if full {
             objects.insert(Quarantine::Database);

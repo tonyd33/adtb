@@ -126,8 +126,30 @@ pub(super) fn refusal_for_test(pid: Pid) -> Refusal {
     Refusal(pid)
 }
 
+/// An incarnation of a page, live, or ended by a free and not started again since. The generation
+/// tells one from another within the open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Incarnation {
+    Live(u64),
+    Freed(u64),
+}
+
+/// A damage record not mapped this open: its page, its damage and the incarnation it is of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Pending {
+    pid: Pid,
+    damage: Damage,
+    of: Incarnation,
+}
+
+impl Pending {
+    pub(super) fn pid(&self) -> Pid {
+        self.pid
+    }
+}
+
 /// A damage record and what it quarantines, `None` when its mapping is incomplete.
-pub(super) type Mapping = (Pid, Damage, Option<BTreeSet<Quarantine>>);
+pub(super) type Mapping = (Pending, Option<BTreeSet<Quarantine>>);
 
 /// A file's copy of a page as read: its LSN and verdict, or why it cannot be read.
 pub(super) type FileCopy = Result<(Lsn, Verdict), Damage>;
@@ -157,22 +179,25 @@ pub(super) enum Judged {
     Sound,
     /// The copy cannot be read or fails its checksum.
     Bad(Damage),
-    /// The copy's LSN is at or past the log's end, or below what it must reach.
+    /// The copy's LSN is at or past the log's end.
     Stale(Damage),
+    /// The copy's LSN is below what it must reach.
+    Behind(Damage),
 }
 
 impl Judged {
     pub(super) fn damage(self) -> Option<Damage> {
         match self {
             Judged::Sound => None,
-            Judged::Bad(d) | Judged::Stale(d) => Some(d),
+            Judged::Bad(d) | Judged::Stale(d) | Judged::Behind(d) => Some(d),
         }
     }
 }
 
-/// What the pager holds of one page with something to say.
-#[derive(Debug, Default)]
+/// What the pager holds of one incarnation of a page with something to say.
+#[derive(Debug)]
 struct PageEvidence {
+    incarnation: Incarnation,
     /// Why the page is never handed out.
     refusal: Option<Damage>,
     /// The damage recorded in the log or the list, to be folded.
@@ -192,8 +217,22 @@ struct PageEvidence {
 }
 
 impl PageEvidence {
+    fn new(incarnation: Incarnation) -> PageEvidence {
+        PageEvidence {
+            incarnation,
+            refusal: None,
+            recorded: None,
+            held: None,
+            mapped: None,
+            incomplete: None,
+            detected_by: None,
+            retired: false,
+        }
+    }
+
     fn is_empty(&self) -> bool {
-        self.refusal.is_none()
+        matches!(self.incarnation, Incarnation::Live(_))
+            && self.refusal.is_none()
             && self.recorded.is_none()
             && self.held.is_none()
             && self.mapped.is_none()
@@ -231,7 +270,9 @@ impl Unmapped {
 ///
 /// Invariants:
 ///
-/// - A page has an entry only while it has something to say.
+/// - A page has an entry only while it has something to say or its last record this open logged
+///   or replayed is a free.
+/// - No two incarnations of a page share a generation.
 /// - An entry with no damage recorded or held has no mapping and no detecting thread.
 /// - `unmapped_pages` counts the entries whose damage is unmapped, and the [`Unmapped`] flag is
 ///   set exactly while one is or a full list is unmapped. Every method that changes either sets
@@ -257,8 +298,8 @@ pub(super) struct Evidence {
     /// Whether the list ran out of room, so the whole file counts as damaged.
     full: bool,
     full_mapped: bool,
-    /// The pages whose last record of their own this open logged or replayed is a free.
-    freed: BTreeSet<Pid>,
+    /// The last generation an incarnation took.
+    generation: u64,
     unmapped_pages: usize,
     unmapped: Unmapped,
     /// How many damaged pages this open has walked the objects for.
@@ -280,7 +321,7 @@ impl Evidence {
             log: BTreeSet::new(),
             full: false,
             full_mapped: false,
-            freed: BTreeSet::new(),
+            generation: 0,
             unmapped_pages: 0,
             unmapped: Unmapped(Arc::new(AtomicBool::new(false))),
             walked: 0,
@@ -293,9 +334,14 @@ impl Evidence {
     }
 
     /// Apply `f` to the evidence of `pid`, drop its mapping once it has no damage and the entry
-    /// once it says nothing, and set the unmapped count and flag.
+    /// once it says nothing, and set the unmapped count and flag. An entry made here takes the next
+    /// generation.
     fn update<T>(&mut self, pid: Pid, f: impl FnOnce(&mut PageEvidence) -> T) -> T {
-        let p = self.pages.entry(pid).or_default();
+        let generation = &mut self.generation;
+        let p = self.pages.entry(pid).or_insert_with(|| {
+            *generation += 1;
+            PageEvidence::new(Incarnation::Live(*generation))
+        });
         let before = p.unmapped(true).is_some();
         let out = f(p);
         if p.damage().is_none() {
@@ -333,7 +379,7 @@ impl Evidence {
         {
             return None;
         }
-        if whole || self.freed.contains(&pid) {
+        if whole || self.is_freed(pid) {
             self.update(pid, |p| p.held = Some(damage));
             return None;
         }
@@ -342,20 +388,32 @@ impl Evidence {
         Some(log.next_lsn())
     }
 
-    /// Note that `met`, a record of `pid`, ends or starts an incarnation of the page.
+    /// Note that `met`, a record of `pid`, ends or starts an incarnation of the page: drop what
+    /// was mapped of the one it ends and which thread detected its damage.
     fn bound(&mut self, pid: Pid, met: Met) {
-        match met {
-            Met::Freed => {
-                self.freed.insert(pid);
-                if self.pages.contains_key(&pid) {
-                    self.update(pid, |p| p.retired = false);
-                }
-            }
-            Met::Start => {
-                self.freed.remove(&pid);
-            }
-            Met::Damaged(_) | Met::Image => {}
-        }
+        let freed = match met {
+            Met::Freed => true,
+            Met::Start if self.pages.contains_key(&pid) => false,
+            Met::Start | Met::Damaged(_) | Met::Image => return,
+        };
+        self.generation += 1;
+        let generation = self.generation;
+        self.update(pid, |p| {
+            p.incarnation = if freed {
+                p.retired = false;
+                Incarnation::Freed(generation)
+            } else {
+                Incarnation::Live(generation)
+            };
+            p.mapped = None;
+            p.incomplete = None;
+            p.detected_by = None;
+        });
+    }
+
+    fn is_freed(&self, pid: Pid) -> bool {
+        let p = self.pages.get(&pid);
+        p.is_some_and(|p| matches!(p.incarnation, Incarnation::Freed(_)))
     }
 
     /// Apply what `met` does to the damage recorded of `pid`, to be folded, and to what is held of
@@ -377,8 +435,8 @@ impl Evidence {
     }
 
     /// Refuse the page `refusal` names as `damage` from now on and record it, unless it is refused
-    /// as `damage` already, noting `by` as the thread that detected it. Returns the end of the
-    /// damage record logged, `None` when none is.
+    /// as `damage` already, noting `by` as the thread that detected it. Returns the
+    /// end of the damage record logged, `None` when none is.
     pub(super) fn refuse(
         &mut self,
         _: &Appending,
@@ -433,9 +491,11 @@ impl Evidence {
         }
     }
 
-    /// Drop the damage recorded of `pid`, which a batch frees, and log the free in the batch
-    /// unless recovery has not ended or `whole` says the file is quarantined whole. Returns the
-    /// LSN of the record logged.
+    /// End the incarnation of `pid`, which a batch frees, with its damage recorded, and log the
+    /// free in the batch unless recovery has not ended or `whole` says the file is quarantined
+    /// whole. End a refusal as stale, the ended incarnation's lost write, and hold any other but
+    /// an unreadable one as the damage of the free copy, mapped to nothing. Returns the LSN of the
+    /// record logged.
     pub(super) fn free(
         &mut self,
         _: &Appending,
@@ -444,6 +504,14 @@ impl Evidence {
         whole: bool,
     ) -> Option<Lsn> {
         self.meet(pid, Met::Freed);
+        self.update(pid, |p| match p.refusal {
+            Some(Damage::Stale { .. }) => p.refusal = None,
+            Some(Damage::Unreadable) | None => {}
+            Some(damage) => {
+                p.held = Some(damage);
+                p.mapped = Some((damage, BTreeSet::new()));
+            }
+        });
         (self.logging && !whole).then(|| log.append(&Record::Freed { pid }))
     }
 
@@ -569,12 +637,13 @@ impl Evidence {
         }
     }
 
-    /// Enter each of `mapped` whose damage has not changed since its mapping began, and whether a
-    /// full list was mapped.
+    /// Enter each of `mapped` whose damage and incarnation have not changed since its mapping
+    /// began, and whether a full list was mapped.
     pub(super) fn mapped(&mut self, full: bool, mapped: Vec<Mapping>) {
         self.full_mapped |= full;
-        for (pid, damage, objects) in mapped {
-            if self.damage(pid) != Some(damage) {
+        for (Pending { pid, damage, of }, objects) in mapped {
+            let p = self.pages.get(&pid);
+            if p.is_none_or(|p| p.damage() != Some(damage) || p.incarnation != of) {
                 continue;
             }
             self.update(pid, |p| match objects {
@@ -642,9 +711,13 @@ impl Evidence {
 
     /// Returns each page whose damage is not mapped this open, and whether a full list is not.
     /// `retried` false leaves out each page whose last mapping of the same damage was incomplete.
-    pub(super) fn unmapped(&self, retried: bool) -> (Vec<(Pid, Damage)>, bool) {
+    pub(super) fn unmapped(&self, retried: bool) -> (Vec<Pending>, bool) {
         let pages = self.pages.iter();
-        let pages = pages.filter_map(|(&pid, p)| Some((pid, p.unmapped(retried)?)));
+        let pages = pages.filter_map(|(&pid, p)| {
+            let damage = p.unmapped(retried)?;
+            let of = p.incarnation;
+            Some(Pending { pid, damage, of })
+        });
         (pages.collect(), self.full && !self.full_mapped)
     }
 
@@ -726,7 +799,7 @@ impl Evidence {
     }
 
     /// Returns the judgement of `file`, the file's copy of `pid`, below `file_end` and reaching
-    /// what `against` names.
+    /// what `against` names. A page freed this open has no expected LSN.
     pub(super) fn judge(
         &self,
         pid: Pid,
@@ -740,16 +813,19 @@ impl Evidence {
             Ok((found, Verdict::Valid | Verdict::Blank)) => found,
         };
         let expected = match against {
+            Against::Expected if self.is_freed(pid) => None,
             Against::Expected => self.gate.expected(pid),
             Against::Resident(lsn) => Some(lsn),
             Against::LogEnd => None,
         };
-        let behind = expected
+        if let Some(damage) = Damage::past_log_end(found, file_end) {
+            return Judged::Stale(damage);
+        }
+        expected
             .filter(|&expected| found < expected)
-            .map(|expected| Damage::Stale { expected, found });
-        Damage::past_log_end(found, file_end)
-            .or(behind)
-            .map_or(Judged::Sound, Judged::Stale)
+            .map_or(Judged::Sound, |expected| {
+                Judged::Behind(Damage::Stale { expected, found })
+            })
     }
 }
 
