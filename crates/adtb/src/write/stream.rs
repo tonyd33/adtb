@@ -66,8 +66,7 @@ impl<R: Runtime> Database<R> {
         {
             return Ok(None);
         }
-        let params: Vec<_> = text.params.iter().map(|(v, _)| *v).collect();
-        let program = self.program(text.schema, &terms, root, &params, text.caller.cloned())?;
+        let program = self.program(text.schema, &terms, root, text.caller.cloned())?;
         let options = exec::Options {
             fix_rounds: bounds.fix_rounds.unwrap_or(self.options.fix_rounds),
             ..self.options

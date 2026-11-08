@@ -428,6 +428,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Remove the mark on `object`, once it is repaired. Durable on return.
+    #[cfg(any(test, feature = "testing"))]
     pub fn release(&self, object: Quarantine) -> Result<(), PageError> {
         self.change_marks(|set| {
             set.remove(&object);

@@ -307,6 +307,7 @@ impl Catalog {
     ///
     /// Fail with [`Error::Refused`] when no reader of `bundle` is live, and as [`enforcing`]
     /// does for the drops left pending.
+    #[cfg(test)]
     pub fn release<R: Runtime>(
         &mut self,
         pager: &Pager<R>,

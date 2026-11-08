@@ -291,7 +291,7 @@ fn pins_its_hash<B: BundleDef>() {
     let source =
         adtb_lang::signature::replay(MIGRATIONS[..pins].iter().copied()).expect("the log replays");
     let schema = source.schema().expect("the source builds");
-    let hash: String = adtb::catalog::version_hash(&schema, &source)
+    let hash: String = adtb::version_hash(&schema, &source)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();

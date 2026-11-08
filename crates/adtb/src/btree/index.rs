@@ -1,7 +1,9 @@
 use std::collections::BTreeSet;
 use std::ops::Bound;
 
-use crate::key::{CtorId, CtorType, Dir, Entry, KeySchema, KeyType, SumType, Value, ovarint};
+use crate::key::{CtorId, Entry, KeySchema, Value, ovarint};
+#[cfg(test)]
+use crate::key::{CtorType, Dir, KeyType, SumType};
 use crate::runtime::Runtime;
 use crate::storage::{PageError, Pager, Walk};
 
@@ -125,6 +127,7 @@ impl Index {
     /// Delete `entry`. Returns false if it was not in the index.
     ///
     /// Panics if its constructor is not in the index's set.
+    #[cfg(any(test, feature = "testing"))]
     pub fn delete<R: Runtime>(&self, pager: &Pager<R>, entry: &Entry) -> Result<bool, Error> {
         self.tree.delete(pager, &self.encode(entry))
     }
@@ -192,6 +195,7 @@ impl Index {
     }
 
     /// Returns the entries of `key` and constructor `ctor`, in TID order.
+    #[cfg(any(test, feature = "testing"))]
     pub fn probe_ctor<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -234,6 +238,7 @@ impl Index {
 
 /// How an index keys a value-level sum field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(test)]
 pub enum SumKey {
     /// The whole value.
     Whole,
@@ -246,6 +251,7 @@ pub enum SumKey {
 
 /// Returns `sum` with every constructor's fields dropped, the type of its
 /// tags.
+#[cfg(test)]
 pub fn tag_type(sum: &SumType) -> SumType {
     let ctors = sum
         .ctors()
@@ -261,6 +267,7 @@ pub fn tag_type(sum: &SumType) -> SumType {
 /// Returns the bytes that start every key whose first component is a value
 /// of `sum` built by `ctor`, whether the index keys the whole value or its
 /// tag.
+#[cfg(test)]
 pub fn tag_prefix(sum: &SumType, ctor: u32, dir: Dir) -> Vec<u8> {
     let schema = KeySchema::new(vec![(KeyType::Sum(tag_type(sum)), dir)]);
     schema.encode(&[Value::Sum {
@@ -269,10 +276,12 @@ pub fn tag_prefix(sum: &SumType, ctor: u32, dir: Dir) -> Vec<u8> {
     }])
 }
 
+#[cfg(test)]
 impl SumKey {
     /// Returns the type of the key component for a field of type `sum`.
     ///
     /// Panics if a `Field` names a constructor or field `sum` lacks.
+    #[cfg(test)]
     pub fn key_type(&self, sum: &SumType) -> KeyType {
         match *self {
             SumKey::Whole => KeyType::Sum(sum.clone()),
@@ -285,6 +294,7 @@ impl SumKey {
     /// index holds no entry for it.
     ///
     /// Panics if `v` is not a sum value.
+    #[cfg(test)]
     pub fn component(&self, v: &Value) -> Option<Value> {
         let Value::Sum { ctor, fields } = v else {
             panic!("{v:?} is not a sum value");

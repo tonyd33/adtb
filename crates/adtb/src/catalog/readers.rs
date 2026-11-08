@@ -48,6 +48,7 @@ pub enum Read {
 /// A drop that has applied and whose object stays enforced while a live reader pinned to a
 /// version holding the object remains.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(test)]
 pub struct PendingDrop {
     /// The qualified name of the dropped constraint or check, or of the relation of a dropped
     /// unique or old key followed by its clause.
@@ -426,6 +427,7 @@ impl Catalog {
 
     /// Returns the pending drops with the bundles holding each, in the order they applied,
     /// those of one migration by object.
+    #[cfg(test)]
     pub fn pending_drops(&self) -> Vec<PendingDrop> {
         let mut out: Vec<PendingDrop> = self
             .readers

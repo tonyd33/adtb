@@ -1557,7 +1557,7 @@ fn a_task_carrying_a_cancelled_token_never_runs() {
 }
 
 /// Set a mark on the key index of `items`, durable before it returns.
-fn mark_items_key_index<R: Runtime>(db: &Database<R>) -> adtb::storage::Quarantine {
+fn mark_items_key_index<R: Runtime>(db: &Database<R>) -> adtb::testing::Quarantine {
     let t = db.testing();
     let mark = t
         .mark_of(t.index("shop::items", "key id").unwrap())
@@ -1626,7 +1626,7 @@ fn a_verify_task_runs_on_a_damaged_commit_log<R: Runtime>(rt: &R) {
     f.db.testing()
         .plant(Plant::Refuse {
             page: status,
-            damage: adtb::storage::Damage::Checksum,
+            damage: adtb::testing::Damage::Checksum,
         })
         .unwrap();
     let refused = |text: &str| {

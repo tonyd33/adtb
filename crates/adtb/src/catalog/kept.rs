@@ -131,6 +131,7 @@ fn row_of(fields: &[Value]) -> Result<KeptRow, Error> {
 
 impl Catalog {
     /// Returns the page ids of the heap kept rows lie in.
+    #[cfg(any(test, feature = "testing"))]
     pub fn kept_pages<R: Runtime>(
         &self,
         pager: &Pager<R>,

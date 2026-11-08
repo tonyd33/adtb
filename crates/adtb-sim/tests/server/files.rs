@@ -1,6 +1,7 @@
 //! File scans of CSV and NDJSON files, loads from them, and temp relations, through the
 //! in-process API of the engine.
 
+use adtb_harness::process::once;
 use adtb_simkit::api;
 
 use std::path::{Path, PathBuf};
@@ -12,7 +13,7 @@ use adtb::{
 use adtb_sim::SimRuntime;
 
 use adtb_simkit::open::options;
-use api::{failure, in_txn, in_txn_results, once, printed, result, results, sorted};
+use api::{failure, in_txn, in_txn_results, printed, result, results, sorted};
 
 const SCHEMA: &str = r"module test
 add module test

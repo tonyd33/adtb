@@ -3,16 +3,15 @@
 //! read that meets no such page answers exactly, other relations of a heap's damage read exactly,
 //! and the file reopens.
 
-use adtb::testing::Plant;
+use adtb::testing::{PageKind, Pid, Plant, Quarantine, page, page::FIRST_EDITABLE};
+use adtb_harness::process::finished;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
-use adtb::storage::{self, FIRST_EDITABLE, PageKind, Pid, Quarantine};
 use adtb::{CallOptions, Database, Error, FatalReason, Log};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
-use adtb_simkit::harness::finished;
 use adtb_simkit::open;
 use adtb_testkit::profile::{assert_reached, every_case};
 
@@ -174,7 +173,7 @@ impl Replacement {
         let source = t.probe().page(others).unwrap();
         let shape = || {
             let page = t.probe().page(pid).unwrap();
-            (storage::kind(&page), storage::owner(&page))
+            (page::kind(&page), page::owner(&page))
         };
         let before = shape();
         let (at, bytes) = match self {
@@ -320,7 +319,7 @@ fn an_entry_naming_a_foreign_page_quarantines_only_the_heap_of_its_directory() {
                 "its own directory page" => root,
                 _ => Pid::FIRST_DATA,
             };
-            let kind = storage::kind(&t.probe().page(named).unwrap());
+            let kind = page::kind(&t.probe().page(named).unwrap());
             let bitmap = kind == PageKind::AllocationBitmap as u16;
             assert_eq!(foreign.contains("bitmap"), bitmap, "{what}: {kind}");
             point(db, root, t.pages(users).unwrap()[0], named);
@@ -352,7 +351,7 @@ fn a_read_over_an_entry_naming_a_large_value_or_map_page_blames_its_directory_pa
                         t.pages(t.large("app::users", "User").unwrap()).unwrap()[0]
                     }
                     _ => *(t.owned(others).unwrap().iter())
-                        .find(|&&p| storage::kind(&t.probe().page(p).unwrap()) == map)
+                        .find(|&&p| page::kind(&t.probe().page(p).unwrap()) == map)
                         .expect("the others heap has a map page"),
                 };
                 point(db, root, t.pages(users).unwrap()[0], named);

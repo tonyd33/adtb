@@ -6,9 +6,9 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
 use std::time::Duration;
 
-use adtb::catalog::version_hash;
 use adtb::runtime::{Clock, Done, Io, Op, Runtime, Threads};
 use adtb::testing::Knobs;
+use adtb::version_hash;
 use adtb::{CallOptions, Database, Error, Log, OpenError, OpenOptions, Registration, Value};
 use adtb_conformance::engine::{self, Ended};
 use adtb_conformance::{Difference, Directive, Got, Kind, panic_message};

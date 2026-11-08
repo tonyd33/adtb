@@ -1,6 +1,7 @@
 //! A role's binding of a bundle and its registered calls: call grants, ownership, the checks at
 //! submit and on leaving the queue, definer rights, audit rows and lease renewal.
 
+use adtb_harness::process::once;
 use adtb_simkit::api;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,7 +22,7 @@ use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_testkit::profile::{assert_reached, share, sweep};
 
 use adtb_simkit::open::options;
-use api::{once, query, sorted};
+use api::{query, sorted};
 
 const SHOP: &str = r#"module shop
 add module shop
@@ -141,7 +142,7 @@ fn version_hash(log: &[&str]) -> String {
         source = source.migrate(&file, text).expect("the migration applies");
     }
     let schema = source.schema().expect("the source builds");
-    adtb::catalog::version_hash(&schema, &source)
+    adtb::version_hash(&schema, &source)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()

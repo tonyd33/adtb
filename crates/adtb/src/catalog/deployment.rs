@@ -242,6 +242,7 @@ impl Deployment {
     }
 
     #[doc(hidden)]
+    #[cfg(test)]
     pub fn roots(&self) -> &Heap {
         &self.roots
     }

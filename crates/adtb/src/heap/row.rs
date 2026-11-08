@@ -532,10 +532,6 @@ impl Layout {
         }
     }
 
-    pub fn fields(&self) -> &[FieldType] {
-        &self.fields
-    }
-
     /// Returns whether every field lies in the fixed part.
     pub fn is_fixed(&self) -> bool {
         self.vars == 0

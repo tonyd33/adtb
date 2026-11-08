@@ -1,6 +1,7 @@
 //! `reindex`: its job row, rebuilds under writers and across crashes, and the release of a
 //! quarantined index.
 
+use adtb_harness::process;
 use adtb_testkit::refused_with;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -9,8 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use adtb::key::{Entry, Value};
 use adtb::runtime::{Clock, Threads};
-use adtb::storage::{Damage, HEADER_LEN, Pid, Quarantine};
-use adtb::testing::Plant;
+use adtb::testing::{Damage, Pid, Plant, Quarantine, page::HEADER_LEN};
 use adtb::{Database, Log, OpenOptions};
 use adtb_harness::damage::{DataFile, Files};
 use adtb_harness::{crash, seeds};
@@ -127,7 +127,7 @@ fn assert_every_row_found(db: &Database<SimRuntime>, users: impl Iterator<Item =
 
 #[test]
 fn the_result_names_the_job_and_the_row_shows_its_phase_while_it_runs() {
-    api::once(1, |rt| {
+    process::once(1, |rt| {
         let db = open_app(rt.clone());
         seed_rows(&db, 3);
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -160,7 +160,7 @@ fn the_result_names_the_job_and_the_row_shows_its_phase_while_it_runs() {
 
 #[test]
 fn a_panic_in_the_job_removes_its_row_and_keeps_the_old_index_and_a_finding() {
-    api::once(2, |rt| {
+    process::once(2, |rt| {
         let db = open_app(rt.clone());
         seed_rows(&db, 3);
         let before = entries(&db, USER_INDEX);
@@ -182,7 +182,7 @@ fn a_panic_in_the_job_removes_its_row_and_keeps_the_old_index_and_a_finding() {
 #[test]
 fn a_rebuild_under_writers_loses_no_row() {
     for seed in seeds::sweep(0..1) {
-        api::once(seed, |rt| {
+        process::once(seed, |rt| {
             let db = open_app(rt.clone());
             seed_rows(&db, 80);
             let stop = Arc::new(AtomicBool::new(false));
@@ -211,7 +211,7 @@ fn a_rebuild_under_writers_loses_no_row() {
 
 #[test]
 fn a_commit_landing_in_each_phase_is_in_the_new_index() {
-    api::once(3, |rt| {
+    process::once(3, |rt| {
         let db = open_app(rt.clone());
         seed_rows(&db, 10);
         let next = Arc::new(Mutex::new(100));
@@ -233,7 +233,7 @@ fn a_commit_landing_in_each_phase_is_in_the_new_index() {
 
 #[test]
 fn a_write_keeps_its_uniqueness_check_across_a_rebuild() {
-    api::once(4, |rt| {
+    process::once(4, |rt| {
         let db = open_app(rt.clone());
         seed_rows(&db, 5);
         let refused = Arc::new(Mutex::new(Vec::new()));
@@ -257,7 +257,7 @@ fn phase_times(seed: u64) -> Vec<(String, adtb::runtime::Instant)> {
     let times = Arc::new(Mutex::new(Vec::new()));
     let out = times.clone();
     let mut sim = Sim::new(seed, Config::default());
-    api::run(&mut sim, move |rt| {
+    process::run(&mut sim, move |rt| {
         let db = crash_body(&rt);
         let (clock, seen) = (rt.clone(), out);
         let flushing = db.clone();
@@ -300,7 +300,7 @@ fn a_crash_at_each_stage_keeps_an_index_that_finds_every_row_and_leaks_nothing()
                 db.close().unwrap();
             });
             assert_eq!(Outcome::Crashed, ran, "seed {seed} phase {phase}");
-            api::run(&mut sim, |rt| {
+            process::run(&mut sim, |rt| {
                 let db = open_app(rt);
                 assert_every_row_found(&db, 1..=40, &format!("seed {seed} phase {phase}"));
                 assert_eq!(
@@ -317,7 +317,7 @@ fn a_crash_at_each_stage_keeps_an_index_that_finds_every_row_and_leaks_nothing()
 /// Returns a simulator over a seeded file with the last page of the user index flipped on disk.
 fn with_damaged_user_index(seed: u64, top: bool) -> Sim {
     let mut sim = Sim::new(seed, Config::default());
-    let page = api::run(&mut sim, |rt| {
+    let page = process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed_rows(&db, 300);
         let pages = user_index_pages(&db);
@@ -360,7 +360,7 @@ fn both_examples_run(db: &Database<SimRuntime>, id: u32) {
 fn a_quarantined_index_is_restored_whichever_page_is_damaged() {
     for (seed, top) in [(5, false), (6, true)] {
         let mut sim = with_damaged_user_index(seed, top);
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             let db = open_app(rt.clone());
             quarantine_user_index(&db);
             api::results(&db, USER_REINDEX);
@@ -371,7 +371,7 @@ fn a_quarantined_index_is_restored_whichever_page_is_damaged() {
             assert_eq!(Vec::<String>::new(), verified(&db), "top {top}");
             db.close().unwrap();
         });
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             let db = open_app(rt);
             assert_eq!(BTreeSet::new(), marks(&db), "the release survives restart");
             assert_every_row_found(&db, 1..=2, "after restart");
@@ -420,7 +420,7 @@ fn a_crash_after_overwriting_a_damaged_root_replays_its_image() {
     let at = Arc::new(Mutex::new(None));
     let mut sim = Sim::new(19, Config::default());
     let report = at.clone();
-    api::run(&mut sim, move |rt| restore_damaged_root(&rt, Some(report)));
+    process::run(&mut sim, move |rt| restore_damaged_root(&rt, Some(report)));
     let at = at.lock().unwrap().expect("the rebuild reclaims");
     crash::silence_fatal_panics();
     let mut sim = Sim::new(19, Config::default());
@@ -429,7 +429,7 @@ fn a_crash_after_overwriting_a_damaged_root_replays_its_image() {
         Outcome::Crashed,
         sim.run(|rt| restore_damaged_root(&rt, Some(Arc::new(Mutex::new(None)))))
     );
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         assert_eq!(BTreeSet::new(), marks(&db));
         assert_every_row_found(&db, 1..=5, "after the crash");
@@ -440,7 +440,7 @@ fn a_crash_after_overwriting_a_damaged_root_replays_its_image() {
 
 #[test]
 fn the_mark_of_a_verify_finding_is_released_by_a_rebuild() {
-    api::once(7, |rt| {
+    process::once(7, |rt| {
         let db = open_app(rt.clone());
         seed_rows(&db, 10);
         let t = db.testing();
@@ -469,7 +469,7 @@ fn a_crash_at_each_stage_of_a_release_leaves_the_mark_and_old_index_or_neither()
     let times = Arc::new(Mutex::new(Vec::new()));
     let seen = times.clone();
     let mut sim = Sim::with_files(8, Config::default(), files.clone());
-    api::run(&mut sim, move |rt| {
+    process::run(&mut sim, move |rt| {
         let db = open_app(rt.clone());
         quarantine_user_index(&db);
         let clock = rt.clone();
@@ -495,7 +495,7 @@ fn a_crash_at_each_stage_of_a_release_leaves_the_mark_and_old_index_or_neither()
             db.close().unwrap();
         });
         assert_eq!(Outcome::Crashed, ran, "phase {phase}");
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             let db = open_app(rt.clone());
             if marks(&db).is_empty() {
                 assert!(
@@ -512,7 +512,7 @@ fn a_crash_at_each_stage_of_a_release_leaves_the_mark_and_old_index_or_neither()
             }
             db.close().unwrap();
         });
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             let db = open_app(rt);
             assert_eq!(BTreeSet::new(), marks(&db), "{phase}");
             assert_eq!(Vec::<String>::new(), verified(&db), "{phase}");
@@ -523,7 +523,7 @@ fn a_crash_at_each_stage_of_a_release_leaves_the_mark_and_old_index_or_neither()
 
 #[test]
 fn a_page_of_the_old_index_damaged_during_the_build_does_not_stop_it() {
-    api::once(9, |rt| {
+    process::once(9, |rt| {
         let db = open_app(rt.clone());
         seed_rows(&db, 300);
         let page = *user_index_pages(&db).last().unwrap();
@@ -561,7 +561,7 @@ fn raw_duplicate(db: &Database<SimRuntime>, gid: &str) {
 
 #[test]
 fn a_unique_duplicate_fails_the_rebuild_keeping_the_old_index_mark_and_no_new_page() {
-    api::once(10, |rt| {
+    process::once(10, |rt| {
         let db = open_app(rt.clone());
         seed_rows(&db, 5);
         raw_duplicate(&db, "g1");
@@ -591,7 +591,7 @@ fn a_unique_duplicate_fails_the_rebuild_keeping_the_old_index_mark_and_no_new_pa
 
 #[test]
 fn a_deleted_row_and_a_new_one_of_one_key_are_no_duplicate() {
-    api::once(11, |rt| {
+    process::once(11, |rt| {
         let db = open_app(rt.clone());
         seed_rows(&db, 3);
         api::results(
@@ -612,7 +612,7 @@ fn a_deleted_row_and_a_new_one_of_one_key_are_no_duplicate() {
 
 /// Returns whether a write of a row and of a row's name went through during the rebuild.
 fn writes_during(seed: u64, how: &str) -> bool {
-    api::once(seed, |rt| {
+    process::once(seed, |rt| {
         let db = open_app(rt.clone());
         seed_rows(&db, 5);
         let done = Arc::new(AtomicBool::new(false));
@@ -663,7 +663,7 @@ fn online_does_not_block_writes() {
 
 #[test]
 fn reindex_of_a_relation_rebuilds_its_key_index_too() {
-    api::once(14, |rt| {
+    process::once(14, |rt| {
         let db = open_app(rt.clone());
         seed_rows(&db, 5);
         let t = db.testing();
@@ -682,7 +682,7 @@ fn reindex_of_a_relation_rebuilds_its_key_index_too() {
 
 #[test]
 fn a_clause_with_no_in_names_the_one_index_of_those_fields() {
-    api::once(15, |rt| {
+    process::once(15, |rt| {
         let db = open_app(rt.clone());
         seed_rows(&db, 3);
         api::results(&db, "reindex identities index (user)");
@@ -703,7 +703,7 @@ add relation ts : T key id generate sequence
 
 #[test]
 fn a_clause_with_no_in_over_several_indexes_is_invalid_and_names_in() {
-    api::once(16, |rt| {
+    process::once(16, |rt| {
         let db = Database::open_in(
             rt,
             "ambiguous.adt",
@@ -720,7 +720,7 @@ fn a_clause_with_no_in_over_several_indexes_is_invalid_and_names_in() {
 
 #[test]
 fn a_quarantined_heap_fails_reindex_and_a_database_mark_stays() {
-    api::once(17, |rt| {
+    process::once(17, |rt| {
         let db = open_app(rt);
         seed_rows(&db, 3);
         let t = db.testing();
@@ -745,7 +745,7 @@ fn a_quarantined_heap_fails_reindex_and_a_database_mark_stays() {
 #[test]
 fn a_close_stops_a_running_job_before_its_swap_and_the_old_index_stays() {
     let mut sim = Sim::new(18, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt.clone());
         seed_rows(&db, 5);
         let phases = Arc::new(Mutex::new(Vec::new()));
@@ -769,7 +769,7 @@ fn a_close_stops_a_running_job_before_its_swap_and_the_old_index_stays() {
         let phases = phases.lock().unwrap().clone();
         assert!(!phases.iter().any(|p| p == "swap"), "{phases:?}");
     });
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         assert_every_row_found(&db, 1..=5, "after the close");
         assert_eq!(Vec::<String>::new(), verified(&db));

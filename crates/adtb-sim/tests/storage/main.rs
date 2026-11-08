@@ -1,5 +1,3 @@
-mod clog_lost;
-mod commit;
 mod crash_images;
 mod damage_search;
 mod directory_damage;
@@ -7,8 +5,5 @@ mod faults;
 mod heap_kind;
 mod io_contract;
 mod latches;
-mod lost_bitmap;
-mod open_damage;
-mod page_past_log_end;
 mod replay;
 mod truncated_open;

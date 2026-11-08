@@ -202,7 +202,8 @@ mod tests {
         }
     }
 
-    /// Returns `text` with comments and literals blanked and each `#[cfg(test)]` item removed.
+    /// Returns `text` with comments and literals blanked and each `#[cfg(test)]` item or field
+    /// removed.
     fn code(text: &str) -> Vec<char> {
         let mut c: Vec<char> = text.chars().collect();
         let mut i = 0;
@@ -253,8 +254,18 @@ mod tests {
         let gate: Vec<char> = "#[cfg(test)]".chars().collect();
         while let Some(at) = (0..c.len()).find(|&j| c[j..].starts_with(&gate)) {
             let (mut depth, mut j) = (0, at + gate.len());
-            while !(depth == 0 && c[j] == ';') && !(depth == 1 && c[j] == '}') {
-                depth += i32::from(c[j] == '{') - i32::from(c[j] == '}');
+            loop {
+                match c[j] {
+                    ';' | ',' if depth == 0 => break,
+                    '}' if depth == 0 => {
+                        j -= 1;
+                        break;
+                    }
+                    '}' if depth == 1 => break,
+                    '{' | '(' | '[' => depth += 1,
+                    '}' | ')' | ']' => depth -= 1,
+                    _ => {}
+                }
                 j += 1;
             }
             c[at..=j].fill(' ');

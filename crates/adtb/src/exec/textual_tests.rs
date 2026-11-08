@@ -148,7 +148,6 @@ fn engine(f: &Fixture, text: &str) -> (Ty, Val, Schema) {
             &e.catalog,
             &n.terms,
             t,
-            &[],
             PlanOptions {
                 rewrites: Rewrites::ALL,
                 hiding: false,

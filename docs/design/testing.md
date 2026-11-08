@@ -7,16 +7,22 @@ findings the engine holds. It also holds the controls a test drives the
 engine with where no public call reaches: faults planted beneath the
 checks of the write path, flushes, holds and hooks, and the settings an
 open takes only in tests. It exists only with the `testing` feature of
-`adtb`, which only the tests of `adtb-sim` enable, and in `adtb`'s own
-unit tests.
+`adtb`, which only the tests of `adtb-sim`, `adtb-testkit` and `adtb-shell` enable,
+and in `adtb`'s own unit tests.
+
+The public API and `adtb::testing` are all a test outside `adtb` names
+of the engine. Every layer module of `adtb` is private; `batch` and
+`key` are public as the row values the load and call surfaces take.
+The compiler refuses a path into a layer from another crate. A test
+that needs a pager, a structure or the write path below them is a unit
+test of `adtb`, beside the layer it tests.
 
 The harness the simulator's tests share is two crates (§5):
 `adtb-harness`, which names no engine type, holds the crash loop,
 failure searches, byte damage, the loading of rows through a session
 and runs of a simulation; `adtb-simkit` holds the opens, the loading
-of rows through the public API, the pager options
-`harness::{PAGE, NAME, options}` and the isolation workload over the
-engine. The component world, a pager and structures a test builds
+of rows through the public API, the query helpers and the isolation
+workload over the engine. The component world, a pager and structures a test builds
 without a catalog, is `adtb`'s own test module `test_world`, for its
 unit tests.
 
@@ -33,7 +39,7 @@ TxnProbe::of(&Transactions<R>) -> TxnProbe<'_, R>
 | Entry | Observations |
 | --- | --- |
 | `Testing` | `next_xid`, `commit_log_damage`, `charged` (the vacuum pacer's steps), `rebuild_waits`, `vacuum_yields`, `tracked` (the transactions the serializer tracks), `snapshot` (the snapshot a transaction reads, `None` once it has ended), `store` (§2.1), `plan_catalog` (the planner's description of every relation the database runs, as its write path plans with it), `reindex_threads`, `scrub` (the saved cursor), `held_findings` |
-| `Probe` | `marks`, `marked`, `refusals`, `records`, `damage_in_log`, `logged_commits`, `safe_snapshots` (each safe snapshot marker as `(Position, Snapshot)`: the commit position it covers and its snapshot), `appended`, `durable`, `checkpoint`, `dirty`, `walks`, `page`, `page_size`, `mapped_to`, `on_history` |
+| `Probe` | `marks`, `marked`, `refusals`, `records`, `damage_in_log`, `logged_commits`, `safe_snapshots` (each safe snapshot marker as `(LogPosition, Snapshot)`: the commit position it covers and its snapshot), `appended`, `durable`, `checkpoint`, `dirty`, `walks`, `page`, `page_size`, `mapped_to`, `on_history` |
 | `TxnProbe` | `next_xid`, `commit_log_damage` |
 
 Controls, all on `Testing`:
@@ -46,6 +52,22 @@ Controls, all on `Testing`:
 | Durability | `flush`, `flush_log`, `flush_pages`, `checkpoint`, `recycle_log` |
 | Holds and hooks | `hold_vacuum`, `hold_page`, `on_reindex_phase`, `take_xid` |
 | Checks | `verify_holding`, `verify_pages`, `check_page`, `scrub_page`, `check_indexes`, `probe_heaps`, `refuse_named`, `backup`, `archive_status` |
+
+The module also names the vocabulary its answers carry and the layouts
+a test of the file reads, re-exported from the layers:
+
+```text
+Damage, LogFinding, Lsn, PageError, PageKind, Pid, LogPosition, Quarantine
+manifest_hash(&text) -> String                 // the hash a manifest's checksum line holds
+Flags, Limits, Snapshot, Xid, Charged
+Rewrites, with_rewrites                        // the planner's rewrite hook
+panic_text(&payload) -> Option<String>         // the text of a panic payload
+page::{HEADER_LEN, FIRST_EDITABLE, Crc32c, kind, lsn, owner, seal}
+                                               // the page header, storage.md §2.1
+create::{creating, marker, marker_bytes, aside} // the names a create leaves
+dump::{read_dump, write_dump, file_schema, read_rows, write_rows, BATCH_LIMIT}
+                                               // a dump's entries and their encoding
+```
 
 `OpenOptions::testing` carries `Knobs`, the settings only a test gives
 an open: `Knobs::without_background_vacuum()` starts no background
@@ -242,8 +264,8 @@ The module owns the mapping from engine internals to its answers. When
 storage, transactions or maintenance change how they keep a fact, this
 module changes and no test does. The answers carry the engine's
 vocabulary types (`Pid`, `Lsn`, `Damage`, `Quarantine`, `PageError`,
-`Xid`, `LogFinding`, `vacuum::Charged`, `Entry`, `Version`, `Status`,
-`plan::Catalog` and the findings of the checks) and this module's own
+`Xid`, `LogFinding`, `Charged`, `Entry`, `Version`, `Status`,
+the planner's `Catalog` and the findings of the checks) and this module's own
 types (`Records`, `Object`, `Plant`, `Planted`, `Site`,
 `CommitLogPages`, `Failed`, `Knobs` and the guards `VacuumHold` and
 `PageHold`), never a pager, a heap, an index or the write path, except
@@ -258,14 +280,14 @@ that runs ad hoc statements, and runs of a simulation. It depends on
 `adtb-sim`, `adtb-sys`, `adtb-testkit`, `adtb-lang` and
 `adtb-reference` only, so `adtb`'s unit tests use it as `adtb-sim`'s
 tests do. `adtb-simkit` holds what names the
-engine: the opens, the loading of rows and the isolation workload
+engine, through the public API and `adtb::testing` only: the opens,
+the loading of rows, the query helpers and the isolation workload
 over the engine ([runtime.md §6](runtime.md#6-isolation-histories)).
-Tests that build a pager or a structure below the public API and
-`adtb::testing` are of two kinds. Unit tests of `adtb`, beside the
-layer they test, build their world with `test_world`. Tests of
-`adtb-sim` that still build one (in the storage, execution, export,
-maintenance and server binaries) open the engine's pager themselves
-over `adtb_simkit::harness::{PAGE, NAME, options}`.
+Only unit tests of `adtb`, beside the layer they test, build a pager
+or a structure below the public API, with `test_world`. `test_world`
+repeats the opens, the loading of rows and the query helpers of
+`adtb-simkit` over the same public calls: a unit test of `adtb` cannot
+depend on `adtb-simkit`, which links a second `adtb`.
 
 - The crash loop recognises a fatal I/O failure by the
   `adtb_sys::runtime::FatalIo` payload.
@@ -313,7 +335,8 @@ process::{run(&mut sim, body) -> T, once(seed, body) -> T, finished(&mut sim, bo
 load::{Session, load(&session, &schema, &rows, Running) -> Option<Txn>,
        running(&session, &schema, &rows) -> Txn, rows_of(to, from, &rows),
        relation_of(to, from, rel), staged(&mut to, from),
-       made_once(&MADE, decls, &rows, make) -> Files}
+       made_once(&MADE, decls, &rows, make) -> Files,
+       convert(&schema, &ty, &value) -> V}    // V: Textual, through print and parse
 damage::DataFile::{new(name, page_size), range(page), bytes, page, page_mut,
                    flip(files, page, at), zero, replace, truncate, extend, cut}
                                              // page: impl Into<u64>, a Pid among them
@@ -323,13 +346,12 @@ damage::DataFile::{new(name, page_size), range(page), bytes, page, page_mut,
 
 ```text
 open::{FILE, options(workers), open, opened}
-harness::{PAGE, NAME, options(pool_frames)}  // a small file's pager options
 load::{open(rt, decls), open_with(rt, decls, &OpenOptions),
        rows_with_noise(&db, &schema, &rows) -> AdHocTransaction,
        committed_noise(&db, &schema, &rows), running_noise(&db, &schema, &rows),
        files(decls, &schema, &rows, &OpenOptions)}
-support::to_val(&schema, &ty, &value) -> Val
-api::{run, once}; harness::finished           // the process calls, re-exported
+api::{printed, sorted, result, query, results, last, failure, is_invalid,
+      in_txn_results, in_txn, task, task_rows, task_bound, damaged_dump_part}
 ```
 
 `adtb`'s `test_world`, under `cfg(test)`:
@@ -341,8 +363,13 @@ fixture::Storage::{create(rt, &Options), reopen(rt, &Layout), layout,
 fixture::Parts::{new, verify}                // a world a test keeps in its own fields
 recovery::verify_after_crash(&pager, &inventory)
 rows::{row_type, key_of, pair, replay, Op, Rows, Live}
-load::{FILE, options(workers), open, open_with, rows_with_noise, committed_noise,
-       running_noise, files}                 // as adtb_simkit::load
+load::{FILE, options(workers), open_in, opened, open, open_with, rows_with_noise,
+       committed_noise, running_noise, files} // as adtb_simkit::{open, load}
+api::{printed, sorted, result, query, results, failure, is_invalid, in_txn_results,
+      task, task_rows, task_bound, damaged_dump_part, damaged_backup_part}
+                                             // as adtb_simkit::api
+grants::{catalog_relation, deploy_fields, create_role, deployment_grant,
+         DeploymentRow, deployment_row}      // catalog rows of grants and roles
 support::{stored, to_val, to_ref, row_ty}
 write_path::{write_files(&fixture), sim(seed, config, &fixture)}
 write_path::WritePath::{of(rt, &fixture, pool), loaded(rt, &fixture, pool), reopen(rt, pool),
@@ -399,6 +426,9 @@ Postconditions of `load`:
   prune committed noise versions from the full pages they reach.
 - `rows_with_noise` runs both under one held read-only transaction, so
   every committed noise version is in the file when it returns.
+- Each value a session writes is the reference value converted by
+  `convert`: printed in `adtb_lang::textual`'s form for its type and
+  read back.
 - `files` answers a simulator's files after `committed_noise` in a
   database opened with the options given, which start no background
   vacuum, made once per thread for each declarations and rows.

@@ -1,26 +1,27 @@
 //! The `Log` rows of `catalog::grants`, beside its `Deployment` rows: their ids, their targets,
 //! the refusal of a grant to a missing role, dormant rows on replay, and crashes.
 
-use adtb_simkit::api;
-use adtb_simkit::grants;
-use adtb_simkit::harness;
-use adtb_simkit::open;
+use crate::test_world as harness;
+use crate::test_world::api;
+use crate::test_world::grants;
+use crate::test_world::load as open;
+use adtb_harness::process::{finished, once, run};
 use adtb_testkit::refused_with;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb::catalog::{Catalog, Dormant, Error as CatalogError, layout, values};
-use adtb::key::Value;
-use adtb::mvcc::Transactions;
-use adtb::storage::Pager;
-use adtb::verify::{self, Depth};
-use adtb::{Capability, Database, Error, Log, OpenError, RejectReason};
+use crate::catalog::{Catalog, Dormant, Error as CatalogError, layout, values};
+use crate::key::Value;
+use crate::mvcc::Transactions;
+use crate::storage::Pager;
+use crate::verify::{self, Depth};
+use crate::{Capability, Database, Error, Log, OpenError, RejectReason};
 use adtb_lang::evolve::Granted;
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use adtb_simkit::open::options;
-use api::{once, query, run};
-use harness::{finished, options as pager_options};
+use crate::test_world::load::options;
+use api::query;
+use harness::options as pager_options;
 
 const SHOP: &str = r"module shop
 add module shop
@@ -43,7 +44,7 @@ type LogRow = (i64, bool, bool);
 type Seen = (u64, Vec<LogRow>, Vec<i64>);
 
 fn opened(rt: &SimRuntime, log: &[&str]) -> Database<SimRuntime> {
-    open::open(rt, open::FILE, &Log::new(log.iter().copied()), &options(2))
+    open::open_in(rt, open::FILE, &Log::new(log.iter().copied()), &options(2))
         .unwrap_or_else(|e| panic!("the database opens at {}: {e:?}", log.len()))
 }
 
@@ -120,7 +121,7 @@ add constraint paid =
         db.query_text(
             "insert customers { name: \"ann\" }",
             &[],
-            &adtb::CallOptions::default(),
+            &crate::CallOptions::default(),
         )
         .expect("a customer");
         by_id(&db)
@@ -173,7 +174,7 @@ add constraint paid =
         fifth[&card]
     );
     run(&mut sim, |rt| {
-        let (version, detail) = refusal(open::open(
+        let (version, detail) = refusal(open::open_in(
             &rt,
             open::FILE,
             &Log::new(
@@ -224,7 +225,7 @@ fn a_grant_to_a_missing_role_is_refused_and_publishes_nothing() {
         (query(&db, audit), by_id(&db))
     });
     run(&mut sim, |rt| {
-        let (version, detail) = refusal(open::open(
+        let (version, detail) = refusal(open::open_in(
             &rt,
             open::FILE,
             &Log::new([SHOP, ghost].iter().copied()),
@@ -571,7 +572,7 @@ fn a_crash_at_every_flush_of_recording_a_legacy_grant_keeps_or_writes_its_row() 
             .deploy(
                 &pager,
                 &txns,
-                &[adtb::catalog::Rewrite {
+                &[crate::catalog::Rewrite {
                     relation: r,
                     deleted: rows,
                     inserted: Vec::new(),
@@ -1258,7 +1259,7 @@ fn an_operator_grant_closing_a_cycle_of_options_is_refused() {
 fn a_refused_empty_revoke_refuses_the_open_and_names_it() {
     once(304, |rt| {
         let log = [SHOP, "module shop\nrevoke read customers from web\n"];
-        let (version, detail) = refusal(open::open(
+        let (version, detail) = refusal(open::open_in(
             &rt,
             open::FILE,
             &Log::new(log.iter().copied()),

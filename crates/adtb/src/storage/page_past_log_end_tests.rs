@@ -2,18 +2,19 @@
 
 use std::time::Duration;
 
-use adtb::runtime::Runtime;
-use adtb::storage::{self, HEADER_LEN, Lsn, Options, Pager, Pid};
-use adtb::testing::Knobs;
-use adtb::{
+use crate::runtime::Runtime;
+use crate::storage::{self, HEADER_LEN, Lsn, Options, Pager, Pid};
+use crate::test_world::api;
+use crate::test_world::load as open;
+use crate::testing::Knobs;
+use crate::{
     ArchiveTarget, CallOptions, Database, Error, FatalReason, Log, OpenOptions, RestorePoint,
     restore_in,
 };
 use adtb_harness::common;
 use adtb_harness::damage::DataFile;
+use adtb_harness::process;
 use adtb_sim::{Config, Sim, SimRuntime};
-use adtb_simkit::api;
-use adtb_simkit::open;
 
 use adtb_harness::damage::Files;
 
@@ -61,7 +62,7 @@ fn planted() -> (Files, Pid) {
 /// Returns a closed file holding every `identities.Google` row on one page, and that page.
 fn built() -> (Files, Pid) {
     let mut sim = Sim::new(SEED, Config::default());
-    let page = api::run(&mut sim, |rt| {
+    let page = process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &Log::new([APP]), &options());
         for i in 1..=3 {
             api::results(
@@ -94,14 +95,14 @@ fn stamp(files: &mut Files, page: Pid, lsn: u64) {
 /// Returns the end of the log the next open of `files` recovers.
 fn recovered_end(files: &Files) -> Lsn {
     let mut sim = Sim::with_files(SEED, Config::default(), files.clone());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let (pager, recovery) = Pager::open(rt, &Options::new(FILE)).unwrap();
         pager.close();
         recovery.end
     })
 }
 
-fn answered(got: Result<Vec<adtb::DynRows>, Error>) -> Met {
+fn answered(got: Result<Vec<crate::DynRows>, Error>) -> Met {
     match got {
         Err(Error::Fatal {
             reason: FatalReason::Quarantined { what },
@@ -216,7 +217,7 @@ fn sweep(files: &Files, name: &str, page: Pid, reported: Reported) -> Vec<String
     let mut defects = Vec::new();
     for (entry, enter) in ENTRIES {
         let mut sim = Sim::with_files(SEED, Config::default(), files.clone());
-        let marked = api::run(&mut sim, |rt| {
+        let marked = process::run(&mut sim, |rt| {
             let db = open::opened(&rt, name, &Log::new([APP]), &options());
             defects.extend(wrong(entry, page, &enter(&db, &rt), reported));
             let t = db.testing();
@@ -263,7 +264,7 @@ fn restored(damage: fn(&mut Files, Pid, Lsn)) -> (Files, Pid) {
     let end = recovered_end(&files);
     damage(&mut files, page, end);
     let mut sim = Sim::with_files(SEED, Config::default(), files);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &Log::new([APP]), &options());
         for i in 21..=23 {
             let apple = format!(

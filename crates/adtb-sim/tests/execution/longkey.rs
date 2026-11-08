@@ -1,3 +1,4 @@
+use adtb_harness::process::run;
 use adtb_simkit::api;
 use adtb_simkit::open;
 
@@ -5,7 +6,7 @@ use adtb::{CallOptions, Error, Log, RejectReason};
 use adtb_sim::{Config, Sim};
 
 use adtb_simkit::open::options;
-use api::{result, run, sorted};
+use api::{result, sorted};
 
 const BASE: &str = "module app\nadd module app\n\
     add type Item = { id: I64, text: Text }\n\

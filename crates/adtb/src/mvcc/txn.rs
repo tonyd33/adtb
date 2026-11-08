@@ -442,6 +442,7 @@ impl<R: Runtime> Transactions<R> {
     }
 
     /// Run `f` on the snapshots and replica reports that bound reclamation.
+    #[cfg(any(test, feature = "testing"))]
     pub fn with_holds<T>(&self, f: impl FnOnce(&mut Holds) -> T) -> T {
         f(&mut self.state.lock(&self.rt).holds)
     }
@@ -458,6 +459,7 @@ impl<R: Runtime> Transactions<R> {
     /// Preconditions: those of [`CommitLog::truncate`].
     ///
     /// Panics if a transaction below `bound` is running, or if `bound` is not assigned yet.
+    #[cfg(any(test, feature = "testing"))]
     pub fn truncate(&self, pager: &Pager<R>, bound: Xid) -> Result<(), Error> {
         self.admit()?;
         let st = self.state.lock(&self.rt);

@@ -2,6 +2,7 @@
 //! checked against the row types of their constructor relations, and inserted as one change set
 //! at commit, all or nothing, a crash included.
 
+use adtb_harness::process::{once, run};
 use adtb_simkit::api;
 use adtb_simkit::open;
 
@@ -16,7 +17,7 @@ use adtb::{
 use adtb_sim::{Config, Sim, SimRuntime};
 
 use adtb_simkit::open::options;
-use api::{once, query, run};
+use api::query;
 
 const SHOP: &str = r#"module shop
 add module shop

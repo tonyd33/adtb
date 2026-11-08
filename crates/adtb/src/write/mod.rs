@@ -23,6 +23,12 @@ mod verify;
 #[cfg(test)]
 mod calls_tests;
 #[cfg(test)]
+mod constraints_tests;
+#[cfg(test)]
+mod past_tests;
+#[cfg(test)]
+mod write_states_tests;
+#[cfg(test)]
 mod write_tests;
 
 use std::cell::RefCell;
@@ -60,11 +66,10 @@ pub use input::Local;
 pub use past::Retained;
 pub(crate) use past::position;
 pub use reindex::{Failure, HoldWait, Rebuild, VacuumHold, panic_text};
-pub use restore::Restoring;
 pub use rot::Rot;
 pub use stream::{Produced, Production};
 pub use vacuums::Due;
-pub use verify::{Found, VerifyScope, VerifySnapshot};
+pub use verify::{Found, VerifyScope};
 
 use schema::Rels;
 pub(crate) use sequence::Sequences;
@@ -737,6 +742,7 @@ impl<R: Runtime> Database<R> {
         self
     }
 
+    #[cfg(test)]
     pub fn pager(&self) -> &Pager<R> {
         &self.pager
     }
@@ -857,6 +863,7 @@ impl<R: Runtime> Database<R> {
     ///
     /// On an `Err` that [ends the transaction](Error::ends_transaction), abort `tx`. On any other
     /// `Err` the statement has no effect and `tx` goes on.
+    #[cfg(test)]
     pub fn statement(
         &self,
         tx: &Txn,
@@ -976,9 +983,8 @@ impl<R: Runtime> Database<R> {
 
     /// Returns the operators of term `t` of `text` as a statement of `tx` would run it.
     pub fn explain(&self, tx: &Txn, text: Text<'_>, t: Tm) -> Result<Node, Error> {
-        let params: Vec<Var> = text.params.iter().map(|(v, _)| *v).collect();
         self.stmt(tx, text, t, 0, &Bounds::default(), self.rt.now())
-            .explain(&params)
+            .explain()
     }
 
     /// Vacuum the constructor relations of `rel` together, within the budget of
@@ -1114,6 +1120,7 @@ impl<R: Runtime> Database<R> {
     }
 
     /// Returns every row of every relation variable the catalog describes, as `tx` reads them.
+    #[cfg(test)]
     pub fn rows(&self, tx: &Txn) -> Result<Rows, Error> {
         let s = eval::Stmt::reader(self, tx);
         let mut out = Rows::new();
@@ -1252,6 +1259,7 @@ impl<R: Runtime> Database<R> {
 
     /// Returns the page of the database's generated counters, for [`Setup::sequences`] when
     /// it is opened again.
+    #[cfg(any(test, feature = "testing"))]
     pub fn sequences_root(&self) -> Pid {
         self.sequences.lock(&self.rt).root()
     }

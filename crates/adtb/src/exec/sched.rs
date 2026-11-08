@@ -79,18 +79,10 @@ pub enum Refusal {
     ShutDown,
 }
 
-/// A call [`Scheduler::admit`] refused, handed back to be stopped or admitted again.
+/// Why [`Scheduler::admit`] refused a call.
+#[derive(Debug)]
 pub struct Refused {
     pub reason: Refusal,
-    pub call: Box<dyn Resumable>,
-}
-
-impl std::fmt::Debug for Refused {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Refused")
-            .field("reason", &self.reason)
-            .finish_non_exhaustive()
-    }
 }
 
 /// A call the scheduler runs in steps on its workers.
@@ -363,6 +355,7 @@ impl<R: Runtime> Scheduler<R> {
         self.threads.contains(&thread)
     }
 
+    #[cfg(test)]
     pub fn runtime(&self) -> &R {
         &self.rt
     }
@@ -377,7 +370,7 @@ impl<R: Runtime> Scheduler<R> {
 
     /// Queue `call` to run once it is first in the ready order and a worker is free.
     ///
-    /// Refuse `call`, queueing nothing and handing it back: with `ShutDown` once the scheduler
+    /// Refuse `call`, queueing nothing: with `ShutDown` once the scheduler
     /// has shut down, with `TooLarge` when its bytes alone pass the admission byte bound, and
     /// with `Overloaded` when the calls admitted and not yet started would pass the admission
     /// bounds.
@@ -395,7 +388,7 @@ impl<R: Runtime> Scheduler<R> {
                 None
             };
             if let Some(reason) = refusal {
-                return Err(Refused { reason, call });
+                return Err(Refused { reason });
             }
             let id = c.next;
             c.next = CallId(id.0 + 1);
@@ -444,6 +437,7 @@ impl<R: Runtime> Scheduler<R> {
     }
 
     /// Returns how many tasks the workers have run, not counting those run by `help`.
+    #[cfg(test)]
     pub fn ran(&self) -> usize {
         self.inner.ran.load(Ordering::Acquire)
     }

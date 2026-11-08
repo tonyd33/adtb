@@ -1,4 +1,3 @@
-mod catalog;
 mod checked_registration;
 mod checks;
 mod constraints;
@@ -9,8 +8,6 @@ mod key_renames;
 mod loads;
 mod longkey;
 mod noise;
-mod oplog;
-mod past;
 mod plans;
 mod scheduler;
 mod ssi;

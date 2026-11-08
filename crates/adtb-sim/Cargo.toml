@@ -15,7 +15,7 @@ blake3 = { version = "1.8.3", default-features = false }
 adtb-conformance.workspace = true
 adtb-harness.workspace = true
 adtb-lang = { workspace = true, features = ["test-heap-cap"] }
-adtb = { workspace = true, features = ["plan-fixture", "testing"] }
+adtb = { workspace = true, features = ["testing"] }
 adtb-isolation.workspace = true
 adtb-reference.workspace = true
 adtb-simkit.workspace = true

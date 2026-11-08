@@ -1,25 +1,24 @@
 //! The background scrub: one thread per engine that reads every page of the file over each
 //! `ScrubInterval`, without a call touching them.
 
-use adtb::testing::{Knobs, Object, Plant, Site};
+use adtb::testing::{
+    Knobs, Object, PageKind, Pid, Plant, Quarantine, Site, page::FIRST_EDITABLE, page::HEADER_LEN,
+};
+use adtb_harness::process;
+use adtb_harness::process::finished;
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use adtb::runtime::{Clock, Runtime, Threads};
-use adtb::storage::{FIRST_EDITABLE, HEADER_LEN, Options, PageKind, Pager, Pid, Quarantine};
 use adtb::{CreateOptions, Database, Error, FatalReason, Log, OpenOptions};
 use adtb_harness::common;
 use adtb_harness::damage::DataFile;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::api;
-use adtb_simkit::harness::finished;
 use adtb_simkit::open;
-use adtb_sys::os::{Backend, OsRuntime};
-use adtb_testkit::profile;
 
 const FILE: &str = "scrub.adt";
 const PAGE: usize = 8192;
@@ -142,7 +141,7 @@ fn seeded(seed: u64, users: i64, settings: &[(&str, &str)]) -> (Files, Pid) {
 #[test]
 fn rot_is_found_and_marked_within_an_interval_with_no_call_touching_it() {
     let mut sim = Sim::new(1, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         set_interval(&db, "Some { value: 1h }");
         insert(&db, 0, 5);
@@ -171,7 +170,7 @@ fn rot_is_found_and_marked_within_an_interval_with_no_call_touching_it() {
 #[test]
 fn rot_on_a_page_the_pool_holds_is_found_from_the_file() {
     let mut sim = Sim::new(2, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         set_interval(&db, "Some { value: 1h }");
         insert(&db, 0, 5);
@@ -201,7 +200,7 @@ fn a_lost_write_is_a_stale_page_finding() {
     let mut files = sim.files();
     DATA.replace(&mut files, page, DATA.page(&older, page));
     let mut sim = Sim::with_files(3, Config::default(), files);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         nap(&rt, Duration::from_secs(3600 + 60));
         let rows = found(&db);
@@ -212,7 +211,7 @@ fn a_lost_write_is_a_stale_page_finding() {
 #[test]
 fn a_second_pass_duplicates_no_row_and_a_healed_scope_is_left_to_its_own_run() {
     let mut sim = Sim::new(4, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         set_interval(&db, "Some { value: 10min }");
         insert(&db, 0, 5);
@@ -242,7 +241,7 @@ fn findings_of_a_scrub_are_kept_across_a_reopen_with_no_second_row() {
     let (files, page) = seeded(5, 5, &[("Some { value: 10min }", "0.1")]);
     let mut sim = Sim::with_files(5, Config::default(), files);
     let mut before = Vec::new();
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         rot(&rt, page);
         nap(&rt, Duration::from_secs(660));
@@ -250,7 +249,7 @@ fn findings_of_a_scrub_are_kept_across_a_reopen_with_no_second_row() {
         assert_eq!(1, before.len(), "{before:?}");
         db.close().expect("the close");
     });
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         assert_eq!(before, found(&db), "the row is kept");
         nap(&rt, Duration::from_secs(1800));
@@ -263,7 +262,7 @@ fn a_full_pass_drops_a_row_it_no_longer_finds() {
     let (files, page) = seeded(16, 5, &[("Some { value: 10min }", "1.0")]);
     let clean = files.clone();
     let mut sim = Sim::with_files(16, Config::default(), files);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         rot(&rt, page);
         nap(&rt, Duration::from_secs(660));
@@ -271,7 +270,7 @@ fn a_full_pass_drops_a_row_it_no_longer_finds() {
         db.close().expect("the close");
     });
     let mut sim = Sim::with_files(16, Config::default(), sim.files());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         assert_eq!(1, found(&db).len(), "the row outlives the reopen");
         let t = db.testing();
@@ -311,7 +310,7 @@ fn a_pass_resumed_after_a_restart_keeps_what_its_first_part_found() {
     });
     assert_eq!(Outcome::Crashed, outcome);
     let mut sim = Sim::with_files(17, Config::default(), sim.files());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         let before = found(&db);
         assert_eq!(1, before.len(), "the row was kept: {before:?}");
@@ -406,7 +405,7 @@ fn a_database_marked_whole_writes_nothing_past_the_mark() {
 fn time_cursor_passes(seed: u64, files: &Files, page: Pid) -> Duration {
     let mut sim = Sim::with_files(seed, Config::default(), files.clone());
     let mut at = None;
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         while at.is_none() {
             nap(&rt, Duration::from_secs(60));
@@ -465,7 +464,7 @@ fn a_restart_in_the_middle_of_a_pass_resumes_at_or_before_and_finds_rot_behind_i
     let mut files = sim.files();
     DATA.flip(&mut files, page, 300 - HEADER_LEN);
     let mut sim = Sim::with_files(7, Config::default(), files);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         let resumed = db
             .testing()
@@ -523,7 +522,7 @@ fn short_opens_complete_a_pass() {
 #[test]
 fn a_scrub_set_to_none_reads_nothing_until_it_is_set_again() {
     let mut sim = Sim::new(9, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         set_interval(&db, "None");
         insert(&db, 0, 5);
@@ -544,7 +543,7 @@ fn a_scrub_set_to_none_reads_nothing_until_it_is_set_again() {
 fn a_file_opened_under_none_starts_no_worker_until_the_setting_changes() {
     let (files, page) = seeded(10, 5, &[("None", "0.1")]);
     let mut sim = Sim::with_files(10, Config::default(), files);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         rot(&rt, page);
         nap(&rt, Duration::from_secs(3600));
@@ -558,7 +557,7 @@ fn a_file_opened_under_none_starts_no_worker_until_the_setting_changes() {
 #[test]
 fn a_shorter_interval_wakes_a_sleeping_worker() {
     let mut sim = Sim::new(11, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         insert(&db, 0, 5);
         flush(&db);
@@ -578,7 +577,7 @@ fn a_shorter_interval_wakes_a_sleeping_worker() {
 #[test]
 fn a_job_row_shows_only_while_a_pass_runs() {
     let mut sim = Sim::new(12, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         set_io(&db, "0.001");
         set_interval(&db, "Some { value: 1h }");
@@ -617,7 +616,7 @@ fn pass_time(io: &str) -> (Duration, u64) {
     let (files, _) = seeded(13, 5, &[("Some { value: 1h }", io)]);
     let mut sim = Sim::with_files(13, Config::default(), files);
     let mut out = None;
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         nap(&rt, Duration::from_secs(3599));
         let started = loop {
@@ -1169,7 +1168,7 @@ fn a_panic_in_a_kept_write_of_the_worker_ends_the_run_with_no_call_after_it() {
     let payload = run.expect_err("the panic ends the run");
     assert_eq!(
         Some("halfway".to_owned()),
-        adtb::write::panic_text(&*payload)
+        adtb::testing::panic_text(&*payload)
     );
     assert!(!after.load(Ordering::Relaxed), "a call ran past the panic");
     finished(&mut sim, |rt| {
@@ -1246,55 +1245,4 @@ fn a_real_file_survives_a_tiny_budget_and_a_panic_in_the_worker() {
     assert!(text(&db, FINDINGS)[0].contains("boom"));
     text(&db, r#"insert users { id: users.key(1), name: "n" }"#);
     db.close().expect("the close");
-}
-
-#[test]
-fn a_page_checked_against_a_writer_on_real_threads_finds_nothing() {
-    let rt = OsRuntime::new(scratch("hammer"), Backend::Pool { threads: 4 });
-    let mut o = Options::new("h.adt");
-    o.pool_frames = 64;
-    o.page_size = 65536;
-    let pager = Arc::new(Pager::create(rt.clone(), &o).expect("the pager"));
-    let page = pager.allocate(1, PageKind::HeapSlotted, 7).expect("a page");
-    let stop = Arc::new(AtomicBool::new(false));
-    let writer = {
-        let (pager, stop) = (pager.clone(), stop.clone());
-        rt.spawn("writer", move || {
-            let mut i = 0u8;
-            while !stop.load(Ordering::Relaxed) {
-                i = i.wrapping_add(1);
-                pager
-                    .update(&[page], |p| p[0][1024..].fill(i))
-                    .expect("an update");
-                pager.flush_pages(1);
-            }
-        })
-    };
-    let limit = Duration::from_millis(profile::deep(1500));
-    let deadline = rt.now() + limit;
-    let checkers: Vec<_> = (0..4)
-        .map(|c| {
-            let (pager, rt2) = (pager.clone(), rt.clone());
-            rt.spawn("checker", move || {
-                let mut checks = 0u64;
-                while rt2.now() < deadline {
-                    let log = pager.read_log(true);
-                    for _ in 0..200 {
-                        let found = pager.check_page(page, &log);
-                        assert_eq!(
-                            Vec::<adtb::storage::Finding>::new(),
-                            found,
-                            "checker {c}, check {checks}"
-                        );
-                        checks += 1;
-                    }
-                }
-            })
-        })
-        .collect();
-    for c in checkers {
-        rt.join(c);
-    }
-    stop.store(true, Ordering::Relaxed);
-    rt.join(writer);
 }

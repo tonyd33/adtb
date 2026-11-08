@@ -5,10 +5,10 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use adtb::runtime::{Clock, Runtime, Threads};
-use adtb::testing::Charged;
-use adtb::testing::Knobs;
+use adtb::testing::{Charged, Knobs};
 use adtb::{CallOptions, CancelToken, Database, Error, Log, OpenOptions, RejectReason};
 use adtb_harness::common;
+use adtb_harness::process;
 use adtb_sim::SimRuntime;
 use adtb_simkit::api;
 use adtb_simkit::open;
@@ -76,7 +76,7 @@ fn vacuum(db: &Database<SimRuntime>) -> i64 {
 
 /// Returns the simulated time `vacuum items` of `wide` takes at budget `io`, `cpu`.
 fn timed(io: f64, cpu: f64) -> Duration {
-    api::once(5, |rt| {
+    process::once(5, |rt| {
         let db = wide(&rt);
         budget(&db, io, cpu);
         let began = rt.now();
@@ -88,7 +88,7 @@ fn timed(io: f64, cpu: f64) -> Duration {
 /// Returns what the pacer was charged by `vacuum items` of `wide` at a budget of 0.1, beside a
 /// scrub pass when `scrubbing`, and the time from its first step to the end.
 fn shared(scrubbing: bool) -> (Charged, Duration) {
-    api::once(5, |rt| {
+    process::once(5, |rt| {
         let db = wide(&rt);
         if scrubbing {
             budget(&db, 0.2, 1.0);
@@ -153,7 +153,7 @@ fn vacuum_and_a_scrub_pass_together_stay_within_the_budget() {
 
 #[test]
 fn a_budget_of_0_does_no_vacuum_work_until_the_call_is_cancelled() {
-    api::once(6, |rt| {
+    process::once(6, |rt| {
         let db = open::opened(&rt, "budget.adt", &Log::new([SCHEMA]), &pooled());
         fill(&db);
         budget(&db, 0.0, 1.0);
@@ -188,7 +188,7 @@ fn a_budget_of_0_does_no_vacuum_work_until_the_call_is_cancelled() {
 
 #[test]
 fn a_close_stops_a_vacuum_waiting_on_its_budget() {
-    api::once(7, |rt| {
+    process::once(7, |rt| {
         let db = open::opened(&rt, "budget.adt", &Log::new([SCHEMA]), &pooled());
         fill(&db);
         budget(&db, 0.0, 1.0);
@@ -325,7 +325,7 @@ fn paced_throughout(what: &str, took: Duration, charged: Charged, parts: u32) {
 fn no_step_of_a_vacuum_runs_longer_than_one_unit_of_work() {
     for (seed, big, retained) in [(8, false, false), (11, true, false), (12, false, true)] {
         let what = format!("big {big}, retained {retained}");
-        api::once(seed, |rt| {
+        process::once(seed, |rt| {
             let db = wide_as(&rt, big, retained);
             let (took, rows, charged) = stepped(&rt, &db);
             assert!(
@@ -342,7 +342,7 @@ fn no_step_of_a_vacuum_runs_longer_than_one_unit_of_work() {
 
 #[test]
 fn no_step_of_a_vacuum_expiring_history_runs_longer_than_one_unit_of_work() {
-    api::once(14, |rt| {
+    process::once(14, |rt| {
         let db = expired(&rt);
         let (took, rows, charged) = stepped(&rt, &db);
         assert_eq!(1500, count(&rows, "removed: "));
@@ -352,7 +352,7 @@ fn no_step_of_a_vacuum_expiring_history_runs_longer_than_one_unit_of_work() {
 
 #[test]
 fn a_long_wait_at_a_budget_of_0_opens_no_io_queue_per_sleep() {
-    api::once(9, |rt| {
+    process::once(9, |rt| {
         let db = open::opened(&rt, "budget.adt", &Log::new([SCHEMA]), &pooled());
         fill(&db);
         budget(&db, 0.0, 1.0);
@@ -401,7 +401,7 @@ fn steps(ctors: usize, second: bool) -> u64 {
         names.join("\n  | "),
         if second { "  index (m)\n" } else { "" }
     );
-    api::once(10, |rt| {
+    process::once(10, |rt| {
         let options = OpenOptions {
             pool_bytes: Some(256 * 1024),
             ..open::options(2)
@@ -441,7 +441,7 @@ fn a_vacuum_walks_each_index_of_a_relation_once() {
 /// closed when `close`, once the pacer has been charged `at` steps when given. Returns the steps
 /// charged by then, the I/O queues the vacuum opened and what it returned.
 fn cancelled(retained: bool, at: Option<u64>, close: bool) -> (u64, usize, Result<(), Error>) {
-    api::once(13, |rt| {
+    process::once(13, |rt| {
         let db = wide_as(&rt, false, retained);
         budget(&db, 0.5, 1.0);
         let token = CancelToken::new();

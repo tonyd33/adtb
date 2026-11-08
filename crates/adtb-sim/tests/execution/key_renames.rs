@@ -4,6 +4,7 @@
 use std::ops::Range;
 
 use adtb::Log;
+use adtb_harness::process;
 use adtb_harness::{draw, seeds};
 use adtb_sim::{Config, Sim};
 use adtb_simkit::api;
@@ -62,7 +63,7 @@ fn renamed(seed: u64, types: &[&str], at: usize, to: &str) {
         names[at]
     );
     let mut sim = Sim::new(seed, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(
             &rt,
             open::FILE,
@@ -83,7 +84,7 @@ fn renamed(seed: u64, types: &[&str], at: usize, to: &str) {
             );
         }
     });
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(
             &rt,
             open::FILE,
@@ -119,7 +120,7 @@ fn a_rename_of_a_composite_key_field_keeps_every_stored_row_and_reference() {
     renamed(SEEDS.end, &["Text", "Text"], 0, GAPS[2]);
     same_types += 1;
     for seed in seeds::sweep(SEEDS) {
-        let types: Vec<&str> = api::once(seed, |rt| {
+        let types: Vec<&str> = process::once(seed, |rt| {
             let len = 2 + draw::below(&rt, 3);
             (0..len)
                 .map(|_| TYPES[draw::below(&rt, TYPES.len())])

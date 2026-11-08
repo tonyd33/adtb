@@ -1,5 +1,6 @@
 //! File scans through a role session: `file_roots` confines them, the in-process API is not.
 
+use adtb_harness::process::once;
 use adtb_simkit::api;
 
 use std::path::{Path, PathBuf};
@@ -14,7 +15,7 @@ use adtb::{
 use adtb_sim::SimRuntime;
 
 use adtb_simkit::open::options;
-use api::{once, printed, results};
+use api::{printed, results};
 
 const SCHEMA: &str = "module shop
 add module shop
@@ -147,7 +148,7 @@ impl Server {
             source = source.migrate(&file, text).expect("the migration applies");
         }
         let schema = source.schema().expect("the source builds");
-        let hash: String = adtb::catalog::version_hash(&schema, &source)
+        let hash: String = adtb::version_hash(&schema, &source)
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();

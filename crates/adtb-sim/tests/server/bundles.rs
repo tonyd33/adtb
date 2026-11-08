@@ -2,14 +2,15 @@
 //! pinned version, immutability, supersession at open, leases, retirement and supersession by
 //! command, and their persistence across reopen and crash.
 
+use adtb_harness::process::{once, run};
 use adtb_simkit::api;
 use adtb_simkit::open;
 
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use adtb::catalog::version_hash;
 use adtb::runtime::{Clock, Done, Io, Op, Runtime, Threads};
+use adtb::version_hash;
 use adtb::{
     CallOptions, Called, Database, Error, Log, OpenError, OpenOptions, Registration, RejectReason,
     Value,
@@ -20,7 +21,7 @@ use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_testkit::sections::{Section, expectations, sections};
 
 use adtb_simkit::open::options;
-use api::{once, printed, query, results, run};
+use api::{printed, query, results};
 
 const V1: &str = r"module auth
 add module auth

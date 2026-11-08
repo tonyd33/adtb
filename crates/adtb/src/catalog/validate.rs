@@ -219,16 +219,8 @@ fn run_denial<R: Runtime>(
     hosts: &Arc<exec::Hosts>,
 ) -> Result<Result<Vec<String>, Denied>, Error> {
     let terms = &normal.terms;
-    let p = plan::plan(
-        schema,
-        normal,
-        catalog,
-        terms,
-        t,
-        &[],
-        plan::Options::default(),
-    )
-    .map_err(|e| Error::from(Broken::Plan(e)))?;
+    let p = plan::plan(schema, normal, catalog, terms, t, plan::Options::default())
+        .map_err(|e| Error::from(Broken::Plan(e)))?;
     let mut program = exec::compile(schema, catalog, &p, None).map_err(failed)?;
     program.shared.hosts = hosts.clone();
     let program = Arc::new(program);

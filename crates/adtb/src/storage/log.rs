@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+#[cfg(any(test, feature = "testing"))]
 use std::time::SystemTime;
 
 use crate::runtime::{AlignedBuf, Done, FileId, IoError, Op, Runtime, fatal};
@@ -107,6 +108,7 @@ impl Log {
     }
 
     /// Returns the number of batches forced since open.
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn batches(&self) -> u64 {
         self.batches
     }
@@ -649,6 +651,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns the number of log batches forced since the pager opened.
+    #[cfg(any(test, feature = "testing"))]
     pub fn batches(&self) -> u64 {
         self.log().batches()
     }
@@ -699,6 +702,7 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Returns the LSN of the commit record; the commit is durable once the log is flushed past
     /// it. Fails, logging nothing, if a page is damaged.
+    #[cfg(any(test, feature = "testing"))]
     pub fn commit<F>(&self, xid: u64, pids: &[Pid], f: F) -> Result<Lsn, PageError>
     where
         F: FnOnce(&mut [&mut [u8]]),
@@ -739,6 +743,7 @@ impl<R: Runtime> Pager<R> {
         })
     }
 
+    #[cfg(any(test, feature = "testing"))]
     pub(super) fn commit_record(&self, xid: u64) -> Record {
         let wall_nanos = self
             .rt()

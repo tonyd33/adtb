@@ -1,15 +1,15 @@
 //! The data entries of a dump as Arrow IPC streams: what arrow-rs reads from them, and a restore
 //! reading them and not the text form.
 
+use adtb_harness::process;
 use std::collections::BTreeMap;
 use std::io::Cursor;
 
 use ::arrow_ipc::reader::StreamReader;
 use adtb::batch::Datum;
 use adtb::batch::ipc::{FileField, FileType};
-use adtb::catalog::arrows::{self, file_schema};
 use adtb::key::{F32, F64, Scalar, Value as Key};
-use adtb::storage;
+use adtb::testing::dump::{self, file_schema};
 use adtb::{
     ArchiveTarget, CallOptions, Database, Error, Log, OpenOptions, RestorePoint, Value, restore_in,
 };
@@ -88,7 +88,7 @@ fn relation(schema: &Schema, name: &str) -> RelId {
 /// schema of `FILE`.
 fn dumped() -> (Files, Schema) {
     let mut sim = Sim::new(1, Config::default());
-    let schema = api::run(&mut sim, |rt| {
+    let schema = process::run(&mut sim, |rt| {
         let db = Database::open_in(rt, FILE, &Log::new(vec![APP.to_owned()]), &options()).unwrap();
         let schema = db.schema().clone();
         for doc in ROWS {
@@ -120,11 +120,11 @@ type Edit = fn(&mut Entries);
 /// Returns `files` with the dump at `DUMP` written again at `EDITED`, its entries edited by `edit`.
 fn edited(files: &Files, edit: impl FnOnce(&mut Entries)) -> Files {
     let mut sim = Sim::with_files(2, Config::default(), files.clone());
-    api::run(&mut sim, |rt| {
-        let (manifest, mut entries) = storage::read_dump(&rt, DUMP, None).unwrap();
+    process::run(&mut sim, |rt| {
+        let (manifest, mut entries) = dump::read_dump(&rt, DUMP, None).unwrap();
         edit(&mut entries);
         let entries: Vec<(String, Vec<u8>)> = entries.into_iter().collect();
-        storage::write_dump(
+        dump::write_dump(
             &rt,
             EDITED,
             manifest.envelope,
@@ -154,7 +154,7 @@ fn printed(db: &Database<SimRuntime>, name: &str) -> Vec<String> {
 /// on `FILE` and on `COPY`.
 fn restore(files: &Files, from: &str) -> Result<Vec<Pair>, Error> {
     let mut sim = Sim::with_files(3, Config::default(), files.clone());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let archive = ArchiveTarget::path(from).unwrap();
         restore_in(
             rt.clone(),
@@ -284,8 +284,8 @@ fn sorted(mut rows: Vec<Vec<Datum>>) -> Vec<Vec<Datum>> {
 fn arrow_rs_reads_each_data_entry_of_a_dump_as_its_constructors_rows() {
     let (files, schema) = dumped();
     let mut sim = Sim::with_files(4, Config::default(), files);
-    let read = api::run(&mut sim, |rt| {
-        let (_, entries) = storage::read_dump(&rt, DUMP, None).unwrap();
+    let read = process::run(&mut sim, |rt| {
+        let (_, entries) = dump::read_dump(&rt, DUMP, None).unwrap();
         let log = Log::new(vec![APP.to_owned()]);
         let db = Database::open_in(rt, FILE, &log, &no_create()).unwrap();
         let mut read = 0;
@@ -331,8 +331,8 @@ fn arrow_rs_reads_each_data_entry_of_a_dump_as_its_constructors_rows() {
 fn a_user_sum_spelled_as_bool_or_option_dumps_as_a_user_sum() {
     let (files, _) = dumped();
     let mut sim = Sim::with_files(5, Config::default(), files);
-    let types = api::run(&mut sim, |rt| {
-        let (_, entries) = storage::read_dump(&rt, DUMP, None).unwrap();
+    let types = process::run(&mut sim, |rt| {
+        let (_, entries) = dump::read_dump(&rt, DUMP, None).unwrap();
         let types = |entry: &str| {
             let reader = StreamReader::try_new(Cursor::new(&entries[entry]), None).unwrap();
             let fields = reader.schema().fields().clone();
@@ -367,8 +367,8 @@ fn a_dump_whose_relations_span_several_record_batches_restores_the_same_rows() {
             let ctors = schema.ty(schema.relation(r).elem_def).ctors();
             for (c, ctor) in (0..).zip(ctors) {
                 let entry = format!("data/app::{name}.{}.arrows", ctor.name);
-                let rows = arrows::read_rows(&schema, r, c, &e[&entry]).unwrap();
-                let stream = arrows::write_rows(&schema, r, c, &rows, 1);
+                let rows = dump::read_rows(&schema, r, c, &e[&entry]).unwrap();
+                let stream = dump::write_rows(&schema, r, c, &rows, 1);
                 let reader = StreamReader::try_new(Cursor::new(&stream), None).unwrap();
                 assert_eq!(rows.len(), reader.count(), "{entry}: one batch a row");
                 e.insert(entry, stream);

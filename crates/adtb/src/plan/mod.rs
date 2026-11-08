@@ -6,7 +6,7 @@
 mod broken;
 mod catalog;
 pub mod explain;
-#[cfg(any(test, feature = "plan-fixture"))]
+#[cfg(test)]
 pub mod fixture;
 mod lower;
 mod terms;
@@ -30,9 +30,9 @@ use adtb_lang::types::{CtorSet, RelId, Ty};
 pub struct Plan {
     /// The arena of every scalar expression of the plan.
     pub terms: Terms,
-    pub params: Vec<Var>,
     pub root: Eval,
     /// The type of `root`'s value.
+    #[cfg(test)]
     pub ty: Ty,
     pub reads: Reads,
 }
@@ -135,7 +135,12 @@ pub enum Source {
     /// One row that binds nothing.
     Unit,
     /// One row per row of the heap, binding `var` to it.
-    Scan { heap: HeapId, ctor: u32, var: Var },
+    Scan {
+        heap: HeapId,
+        #[cfg(test)]
+        ctor: u32,
+        var: Var,
+    },
 }
 
 /// Steps applied to each row in turn, then the end that consumes it.
@@ -325,6 +330,7 @@ impl Rewrites {
         flatten: true,
     };
 
+    #[cfg(any(test, feature = "testing"))]
     pub const NONE: Rewrites = Rewrites {
         index_scan: false,
         index_join: false,
@@ -355,6 +361,7 @@ thread_local! {
 /// its caller passes, and returns its result. A nested call restores the outer setting when it
 /// returns.
 #[doc(hidden)]
+#[cfg(any(test, feature = "testing"))]
 pub fn with_rewrites<T>(rewrites: Rewrites, f: impl FnOnce() -> T) -> T {
     struct Restore(Option<Rewrites>);
     impl Drop for Restore {

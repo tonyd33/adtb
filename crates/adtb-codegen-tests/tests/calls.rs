@@ -2,6 +2,7 @@
 //! agrees with the ad hoc text of the same query, and the generated ids and ordinals agree with
 //! those the database assigns.
 
+use adtb_harness::process::once;
 use adtb_simkit::api;
 
 use std::sync::Arc;
@@ -18,7 +19,7 @@ use adtb_lang::textual::print;
 use adtb_sim::SimRuntime;
 
 use adtb_simkit::open::options;
-use api::{once, printed, result, sorted};
+use api::{printed, result, sorted};
 use queries::Error;
 use schema::{Customer, Customers, Payment, Tier};
 
@@ -98,7 +99,7 @@ fn the_bundle_pins_the_hash_of_the_version_it_names() {
     let source =
         adtb_lang::signature::replay(schema::LOG[..pins].iter().copied()).expect("the log replays");
     let schema = source.schema().expect("the source builds");
-    let hash: String = adtb::catalog::version_hash(&schema, &source)
+    let hash: String = adtb::version_hash(&schema, &source)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();

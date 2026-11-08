@@ -3,13 +3,14 @@
 
 use std::path::PathBuf;
 
-use adtb::catalog::Dormant;
-use adtb::storage::{Passphrase, Quarantine};
-use adtb::testing::Plant;
+use adtb::Dormant;
+use adtb::Passphrase;
+use adtb::testing::{Plant, Quarantine};
 use adtb::{
     ArchiveTarget, CallOptions, Capability, Database, Log, OpenOptions, RestorePoint,
     restore_report_in,
 };
+use adtb_harness::process;
 use adtb_lang::types::{Base, Ty};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
@@ -112,7 +113,7 @@ fn nothing_written(sim: &Sim) {
 #[test]
 fn each_missing_authority_refuses_a_dump_and_writes_nothing() {
     let mut sim = Sim::new(541, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         for (lacking, reason) in [
             (Capability::Maintain, "denied: role `ops` lacks `maintain`"),
             (
@@ -189,7 +190,7 @@ const ROLES: &str = "from r in catalog::roles select r.name";
 #[test]
 fn a_role_holding_schema_dumps_what_restores_to_the_same_rows_and_roles() {
     let mut sim = Sim::new(542, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = opened(
             &rt,
             "data",
@@ -217,7 +218,7 @@ fn a_role_holding_schema_dumps_what_restores_to_the_same_rows_and_roles() {
 #[test]
 fn a_dump_by_a_role_without_schema_restores_the_owner_alone_and_its_log_grants_dormant() {
     let mut sim = Sim::new(543, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = opened(&rt, "data", &OPS, true, true);
         api::task(&rt, &ops(&db), DUMP).unwrap();
         let src = every(&db);
@@ -270,7 +271,7 @@ fn a_dump_by_a_role_without_schema_restores_the_owner_alone_and_its_log_grants_d
 #[test]
 fn a_dump_path_outside_the_export_roots_or_existing_is_refused() {
     let mut sim = Sim::new(544, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = opened(&rt, "data", &OPS, true, true);
         for path in ["d", "out/../d", "out", "/d"] {
             let reason = format!("denied: path `{path}` is outside export_roots");
@@ -297,7 +298,7 @@ fn a_dump_through_a_symlink_out_of_the_export_roots_is_refused() {
     std::fs::create_dir_all(base.join("outside")).unwrap();
     std::os::unix::fs::symlink(base.join("outside"), base.join("out/link")).unwrap();
     let mut sim = Sim::new(545, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let root = base.to_str().unwrap();
         let db = opened(&rt, root, &OPS, true, true);
         let reason = "denied: path `out/link/d` is outside export_roots";
@@ -327,7 +328,7 @@ fn args_hash(params: &[(&str, &str)]) -> String {
 #[test]
 fn a_text_that_does_not_parse_audits_only_the_names_of_its_parameters() {
     let mut sim = Sim::new(548, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = opened(&rt, "data", &OPS, true, true);
         let key = [("k", Ty::Base(Base::Text), adtb::Value::text(PHRASE))];
         let broken = "dump to \"out/d\" encrypt k )";
@@ -342,7 +343,7 @@ fn a_text_that_does_not_parse_audits_only_the_names_of_its_parameters() {
 #[test]
 fn an_encrypted_dump_through_a_server_restores_and_audits_no_passphrase() {
     let mut sim = Sim::new(546, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = opened(&rt, "data", &OPS, true, true);
         let key = [("k", Ty::Base(Base::Text), adtb::Value::text(PHRASE))];
         let text = "dump to \"out/d\" encrypt k";
@@ -388,7 +389,7 @@ fn an_encrypted_dump_through_a_server_restores_and_audits_no_passphrase() {
 #[test]
 fn a_file_quarantined_whole_dumps_through_a_server_and_refuses_every_other_text() {
     let mut sim = Sim::new(547, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = opened(&rt, "data", &OPS, true, true);
         let src = every(&db);
         db.testing()

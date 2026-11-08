@@ -26,7 +26,6 @@ use super::{Database, Error, HoldWait, Txn, VacuumHold};
 pub enum VerifyScope {
     Database,
     Relation(RelId),
-    Scrub,
 }
 
 impl VerifyScope {
@@ -34,7 +33,6 @@ impl VerifyScope {
         match self {
             VerifyScope::Database => true,
             VerifyScope::Relation(r) => r == rel,
-            VerifyScope::Scrub => false,
         }
     }
 }
@@ -209,7 +207,7 @@ impl<R: Runtime> Database<R> {
         let mut out = Vec::new();
         let within = match scope {
             VerifyScope::Relation(rel) => Some(self.pages_of(rel, &mut out)?),
-            VerifyScope::Database | VerifyScope::Scrub => None,
+            VerifyScope::Database => None,
         };
         for f in v.findings {
             let page = match f {

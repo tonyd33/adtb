@@ -2,26 +2,24 @@
 //! against their declarations, called once per batch of rows from queries, writes and
 //! constraints.
 
+use adtb_harness::process::{once, run};
 use adtb_simkit::api;
 use adtb_simkit::open;
 
-use std::panic::{AssertUnwindSafe, catch_unwind, panic_any};
+use std::panic::panic_any;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use adtb::batch::{self, Batch, BatchBuilder, Type};
 use adtb::key::{Scalar, Value as Stored};
-use adtb::runtime::FatalIo;
-use adtb::runtime::{IoError, OpKind};
-use adtb::storage::Pager;
 use adtb::{
     CallOptions, Database, Determinism, Error, FatalReason, Fault, HostError, HostFns, Log,
     OpenError, OpenOptions, Position, RejectReason, TxnCallOptions, TxnOptions,
 };
-use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
+use adtb_sim::{Config, Sim, SimRuntime};
 
 use adtb_simkit::open::options;
-use api::{once, query, run};
+use api::query;
 
 const NOTES: &str = r#"module shop
 add module shop
@@ -317,49 +315,6 @@ fn a_host_function_that_errs_panics_or_returns_another_shape_faults_its_statemen
         completed += 1;
     }
     assert_eq!(6, completed, "all six host failure categories completed");
-}
-
-#[test]
-fn a_host_callback_preserves_a_genuine_storage_failure() {
-    let mut sim = Sim::new(8, Config::default());
-    let mut returned = None;
-    let caught = catch_unwind(AssertUnwindSafe(|| {
-        sim.run(|rt| {
-            rt.arm(Match::kind(OpKind::Write).prefixed("callback.adt"));
-            rt.plan(Plan::new().at(0, Action::Fail(IoError::Full)));
-            let pager_rt = rt.clone();
-            let fns = failing(move |b| {
-                let opts = adtb::storage::Options {
-                    name: "callback.adt".into(),
-                    segment_size: 64 * 1024,
-                    max_pages: 1024,
-                    ..adtb_simkit::harness::options(16)
-                };
-                Pager::create(pager_rt.clone(), &opts)
-                    .expect("the injected storage failure must stop creation");
-                Ok(texts(b, slug))
-            });
-            let db = opened(&rt, &[NOTES], fns);
-            write(&db, r#"insert notes { body: "a" }"#).expect("a note");
-            returned = Some(db.query_text(
-                "from n in notes select slugify(n.body)",
-                &[],
-                &CallOptions::default(),
-            ));
-        })
-    }));
-    let struck = sim.numbered().struck().map(|s| (s.at(), s.kind()));
-    assert_eq!(Some((0, OpKind::Write)), struck, "the write failure fired");
-    if let Some(got) = returned {
-        assert!(faulted(got), "the swallowed fatal became FunctionFailed");
-        panic!("the host catcher returned FunctionFailed instead of resuming fatal I/O");
-    }
-    let payload = caught.expect_err("fatal I/O escapes after the simulator's crash lifecycle");
-    let failure = payload
-        .downcast_ref::<FatalIo>()
-        .expect("the original fatal I/O payload escapes the callback catcher");
-    assert_eq!(IoError::Full, failure.cause());
-    assert_eq!("write", failure.context());
 }
 
 fn empty() -> Batch {

@@ -4,10 +4,8 @@ use std::ops::Range;
 
 use std::sync::{Arc, Mutex};
 
-use adtb::mvcc::Limits;
-use adtb::mvcc::Snapshot;
 use adtb::runtime::{Entropy, ThreadId, Threads};
-use adtb::testing::Knobs;
+use adtb::testing::{Knobs, Limits, Snapshot};
 use adtb::{Error, OpenOptions, Position, RejectReason, RetryReason, TxnId, Value};
 use adtb_isolation::{self as iso, Outcome as Ended, SCENARIOS, Step};
 use adtb_sim::SimRuntime;

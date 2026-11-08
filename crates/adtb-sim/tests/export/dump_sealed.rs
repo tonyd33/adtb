@@ -1,8 +1,9 @@
 //! Dumps encrypted under a passphrase: the round trip, and the refusals of a restore of one
 //! damaged, given the wrong passphrase or none.
 
-use adtb::storage::{self, Passphrase};
+use adtb::Passphrase;
 use adtb::{ArchiveTarget, CallOptions, Database, Error, Log, RejectReason, RestorePoint, Value};
+use adtb_harness::process;
 use adtb_harness::search::Files;
 use adtb_lang::types::{Base, Ty};
 use adtb_sim::{Config, Sim};
@@ -27,7 +28,7 @@ const RELATIONS: [&str; 3] = ["app::users", "app::shapes", "catalog::roles"];
 /// under [`PHRASE`] at [`SEALED`] and its backup at `b`.
 fn dumped() -> Files {
     let mut sim = Sim::new(1, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = Database::open_in(rt, "app.adt", &Log::new([APP]), &open::options(2)).unwrap();
         let rows = format!(
             "transact\n  insert users {{ name: \"{MARK}\" }}\n  insert shapes.Circle {{ name: \"c\", r: 2 }}"
@@ -51,7 +52,7 @@ fn dumped() -> Files {
 /// of [`RELATIONS`] in the restored file. Asserts a refused restore writes nothing.
 fn restored(files: &Files, source: &str, phrase: Option<&str>) -> Result<Vec<String>, Error> {
     let mut sim = Sim::with_files(2, Config::default(), files.clone());
-    let got = api::run(&mut sim, |rt| {
+    let got = process::run(&mut sim, |rt| {
         let archive = ArchiveTarget::path(source).unwrap();
         let phrase = phrase.map(|p| Passphrase::new(p.to_owned()));
         let opts = open::options(2);
@@ -123,7 +124,8 @@ fn edited(files: &Files, key: &str, line: &str) -> Files {
     let body = &text[..text.rfind("checksum ").unwrap()];
     let old = body.lines().find(|l| l.starts_with(key)).unwrap();
     let body = body.replacen(old, line, 1);
-    let mut sealed = format!("{body}checksum {}\n", storage::manifest_hash(&body)).into_bytes();
+    let mut sealed =
+        format!("{body}checksum {}\n", adtb::testing::manifest_hash(&body)).into_bytes();
     sealed.resize(bytes.len(), 0);
     let mut out = files.clone();
     out.insert("e/manifest".to_owned(), sealed);

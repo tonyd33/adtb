@@ -48,10 +48,12 @@ impl Holds {
     }
 
     /// Replace what `replica` last reported with `oldest`, the oldest snapshot it holds per heap.
+    #[cfg(any(test, feature = "testing"))]
     pub fn report_replica(&mut self, replica: u64, oldest: BTreeMap<u32, Xid>) {
         self.replicas.insert(replica, oldest);
     }
 
+    #[cfg(any(test, feature = "testing"))]
     pub fn forget_replica(&mut self, replica: u64) {
         self.replicas.remove(&replica);
     }

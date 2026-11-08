@@ -93,6 +93,7 @@ pub fn check_write<E>(
 /// header holds `xmin` and `xmax`, reads before: the inserter of a version the snapshot misses,
 /// or the deleter of a version it sees, when that writer has not aborted and the snapshot does
 /// not count it as committed.
+#[cfg(test)]
 pub fn read_before<E>(
     reader: Option<Xid>,
     snapshot: &Snapshot,

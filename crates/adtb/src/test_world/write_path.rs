@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use adtb_harness::load::{self, Files, Made, Running, Session};
+use adtb_harness::load::{self, Files, Made, Running, Session, convert};
 use adtb_lang::check::{Checker, Context, Program, check_adhoc};
 use adtb_lang::kernel::{Terms, Tm, Var};
 use adtb_lang::norm;
@@ -22,8 +22,6 @@ use crate::exec::{self, Budget, Scheduler};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 use crate::write::{self, Bindings, Setup, Txn};
-
-use super::support::to_val;
 
 /// A write path over the engine's catalog of a file of the simulator, outside a database.
 pub struct WritePath<R: Runtime> {
@@ -210,7 +208,7 @@ impl<R: Runtime> Session for WritePath<R> {
     }
 
     fn hold(&self) -> Txn {
-        self.db.begin().expect("a transaction begins")
+        self.db.begin_read(false).expect("a reader begins")
     }
 
     fn run(&self, tx: &mut Txn, text: &str, params: &[(&str, Ty, Value)]) {
@@ -219,7 +217,7 @@ impl<R: Runtime> Session for WritePath<R> {
         let values: Vec<_> = typed
             .iter()
             .zip(params)
-            .map(|((var, t), (_, _, v))| (*var, to_val(&self.schema, t, v)))
+            .map(|((var, t), (_, _, v))| (*var, convert(&self.schema, t, v)))
             .collect();
         self.db
             .statement(tx, &terms, item, &values, 0)

@@ -181,7 +181,6 @@ pub enum Sink {
     Group {
         var: u32,
         by: Eval,
-        rows: bool,
         aggs: Vec<GroupAgg>,
         order: Vec<Option<Option<usize>>>,
     },
@@ -246,12 +245,11 @@ pub struct HeapInfo {
 pub struct Program {
     pub root: Eval,
     /// The type of the root's value.
+    #[cfg(test)]
     pub ty: Ty,
-    pub params: Vec<u32>,
     pub vars: usize,
     pub heaps: BTreeMap<HeapId, HeapInfo>,
     pub shared: Shared,
-    pub reads: plan::Reads,
 }
 
 /// The fault constructors of the prelude's `Fault`, by the executor's fault order.
@@ -311,8 +309,8 @@ pub fn compile(
     }
     Ok(Program {
         root,
+        #[cfg(test)]
         ty: plan.ty.clone(),
-        params: plan.params.iter().map(|v| v.0).collect(),
         vars: plan.terms.vars.len(),
         heaps: infos,
         shared: Shared {
@@ -321,7 +319,6 @@ pub fn compile(
             fault_ctors: fault_ctors(schema),
             hosts: Arc::default(),
         },
-        reads: plan.reads.clone(),
     })
 }
 
@@ -648,7 +645,6 @@ impl Lower<'_> {
                 Sink::Group {
                     var: var.0,
                     by: self.eval(by)?,
-                    rows: *rows,
                     aggs: compiled,
                     order: names.into_iter().map(|(_, o)| o).collect(),
                 }

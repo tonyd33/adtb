@@ -23,6 +23,7 @@ impl Budget {
     }
 
     /// Returns the bytes the grants now admitted hold.
+    #[cfg(test)]
     pub fn granted(&self) -> usize {
         self.granted.load(Ordering::Acquire)
     }
@@ -73,11 +74,13 @@ impl Grant {
     }
 
     /// Returns the most the query held at once.
+    #[cfg(any(test, feature = "testing"))]
     pub fn peak(&self) -> usize {
         self.peak.load(Ordering::Acquire)
     }
 
     /// Returns the bytes the query wrote to its spill file.
+    #[cfg(any(test, feature = "testing"))]
     pub fn spilled(&self) -> usize {
         self.spilled.load(Ordering::Acquire)
     }

@@ -2,19 +2,21 @@
 //! record in the retained log, aborts only an id the log holds no commit record of, and writes
 //! nothing when the log it needs is not whole.
 
-use adtb::testing::{Knobs, Object, Plant, Probe, TxnProbe};
+use crate::testing::{Knobs, Object, Plant, Probe, TxnProbe};
+use adtb_harness::process;
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb::key::{Entry, Tid, Value};
-use adtb::mvcc::{CommitLog, Status, Transactions, Xid};
-use adtb::runtime::Runtime;
-use adtb::storage::{self, Damage, HEADER_LEN, Lsn, PageError, PageKind, Pager, Pid, Quarantine};
-use adtb::{Database, Error, FatalReason, Log};
+use crate::key::{Entry, Tid, Value};
+use crate::mvcc::{CommitLog, Status, Transactions, Xid};
+use crate::runtime::Runtime;
+use crate::storage::{self, Damage, HEADER_LEN, Lsn, PageError, PageKind, Pager, Pid, Quarantine};
+use crate::test_world as harness;
+use crate::test_world::api;
+use crate::test_world::load as open;
+use crate::{Database, Error, FatalReason, Log};
 use adtb_harness::common;
 use adtb_harness::damage::{DataFile, Files};
 use adtb_sim::{Config, Sim, SimRuntime};
-use adtb_simkit::open;
-use adtb_simkit::{api, harness};
 use adtb_testkit::profile::assert_reached;
 
 const APP: &str = r"module app
@@ -58,7 +60,7 @@ fn bump(db: &Database<SimRuntime>, page: Pid) {
 /// Insert a user named `name` in one process. Returns the last status page and the ids the
 /// process committed.
 fn insert(sim: &mut Sim, name: &str) -> (Pid, Vec<Xid>) {
-    api::run(sim, |rt| {
+    process::run(sim, |rt| {
         let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
         let first = db.testing().next_xid();
         api::results(&db, &format!("insert users {{ name: \"{name}\" }}"));
@@ -134,7 +136,7 @@ fn lost_write_in(mut sim: Sim) -> (Sim, Vec<Xid>, Vec<(String, String)>) {
     let lost = reverted(sim.files(), &before, page, DB);
     assert_ne!(lost, sim.files(), "the revert loses a write");
     let mut sim = Sim::with_files(1, Config::default(), lost);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
         let names = api::query(&db, "from u in app::users select u.name");
         assert_eq!(vec!["\"ann\"", "\"bo\""], names);
@@ -160,9 +162,9 @@ fn a_settled_status_page_whose_log_is_recycled_is_a_finding_of_verify_that_marks
         ..storage::Options::new(harness::NAME)
     };
     let mut sim = Sim::new(1, Config::default());
-    api::run(&mut sim, |rt| Pager::create(rt, &options).unwrap().close());
+    process::run(&mut sim, |rt| Pager::create(rt, &options).unwrap().close());
     let (mut sim, bo, _) = lost_write_in(sim);
-    let settled = api::run(&mut sim, |rt| {
+    let settled = process::run(&mut sim, |rt| {
         let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
         let probe = db.testing().probe();
         let recorded = probe.records().pages().clone();
@@ -179,7 +181,7 @@ fn a_settled_status_page_whose_log_is_recycled_is_a_finding_of_verify_that_marks
         db.close().unwrap();
         settled
     });
-    let recycled = api::run(&mut sim, |rt| {
+    let recycled = process::run(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt, &options).unwrap();
         let recycled = pager.recycle_log();
         pager.close();
@@ -189,7 +191,7 @@ fn a_settled_status_page_whose_log_is_recycled_is_a_finding_of_verify_that_marks
     let Some((page, damage)) = settled else {
         panic!("the open settles a status page");
     };
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
         assert_eq!(vec![Status::Committed; bo.len()], statuses(&db, &bo));
         let rows = findings(api::sorted(db.verify(None).unwrap()));
@@ -208,7 +210,7 @@ fn a_settled_status_page_whose_log_is_recycled_is_a_finding_of_verify_that_marks
 /// Assert a reopen of `sim` reads `bo` committed and refuses a query as quarantined whole.
 /// Assert a reopen of `sim` reads `bo` committed, keeps `marks` and serves the relation.
 fn served_on_reopen(sim: &mut Sim, bo: &[Xid], marks: &BTreeSet<Quarantine>) {
-    api::run(sim, |rt| {
+    process::run(sim, |rt| {
         let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
         assert_eq!(vec![Status::Committed; bo.len()], statuses(&db, bo));
         assert_eq!(*marks, db.testing().probe().marks());
@@ -220,7 +222,7 @@ fn served_on_reopen(sim: &mut Sim, bo: &[Xid], marks: &BTreeSet<Quarantine>) {
 #[test]
 fn the_first_verify_of_a_settled_status_page_reports_its_lost_write_once_and_marks_nothing() {
     let (mut sim, bo, want) = lost_write();
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
         assert_eq!(want, findings(api::sorted(db.verify(None).unwrap())));
         assert_eq!(BTreeSet::new(), db.testing().probe().marks());
@@ -234,7 +236,7 @@ fn the_first_verify_of_a_settled_status_page_reports_its_lost_write_once_and_mar
 #[test]
 fn a_lost_write_verify_finds_on_a_settled_status_page_at_other_lsns_marks_the_database() {
     let (mut sim, _, _) = lost_write();
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
         let t = db.testing();
         let recorded = t.probe().records().pages().clone();
@@ -290,7 +292,7 @@ fn a_lost_write_verify_finds_on_a_settled_status_page_at_other_lsns_marks_the_da
 #[test]
 fn verify_of_one_relation_beside_a_settled_status_page_marks_nothing() {
     let (mut sim, bo, _) = lost_write();
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
         let found = db.verify(Some("app::users")).unwrap();
         assert_eq!(Vec::<(String, String)>::new(), findings(api::sorted(found)));
@@ -303,7 +305,7 @@ fn verify_of_one_relation_beside_a_settled_status_page_marks_nothing() {
 #[test]
 fn an_index_finding_beside_a_settled_status_page_marks_only_its_index() {
     let (mut sim, bo, _) = lost_write();
-    let index = api::run(&mut sim, |rt| {
+    let index = process::run(&mut sim, |rt| {
         let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
         let t = db.testing();
         let ix = t.index("app::users", "key id").unwrap();
@@ -336,7 +338,7 @@ fn an_index_finding_beside_a_settled_status_page_marks_only_its_index() {
 fn verify_meeting_an_unreadable_status_page_fails_and_marks_nothing() {
     let mut sim = Sim::new(3, Config::default());
     let (status, _) = insert(&mut sim, "ann");
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
         db.testing()
             .plant(Plant::Refuse {
@@ -361,7 +363,7 @@ fn verify_meeting_an_unreadable_status_page_fails_and_marks_nothing() {
 #[test]
 fn the_first_verify_through_a_server_of_a_settled_status_page_reports_it_once() {
     let (mut sim, bo, want) = lost_write();
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
         let owner = db.role_authority().session("owner").unwrap();
         let rows = api::task_rows(&rt, &owner, "verify").unwrap();
@@ -436,7 +438,7 @@ fn session(sim: &mut Sim, root: Option<Pid>, ops: &[Op], end: End) -> Session {
         }
     };
     match end {
-        End::Close => harness::finished(sim, |rt| body(&rt)),
+        End::Close => process::finished(sim, |rt| body(&rt)),
         End::Crash => common::run_then_crash(sim, |rt, _| body(rt)),
     }
     out.unwrap()
@@ -448,7 +450,7 @@ fn reopened(seed: u64, files: &Files, root: Pid, ids: &[Xid]) -> [Vec<Status>; 2
     [false, true].map(|alone| {
         let mut sim = Sim::with_files(seed, Config::default(), files.clone());
         let mut out = None;
-        harness::finished(&mut sim, |rt| {
+        process::finished(&mut sim, |rt| {
             let (pager, _) = Pager::open(rt.clone(), &harness::options(FRAMES)).unwrap();
             out = Some(if alone {
                 let clog = CommitLog::open(&pager, root).unwrap();
@@ -499,7 +501,7 @@ fn lost_past_the_first_segment(commits: usize) -> (Files, Pid, Pid, Vec<(Xid, St
     let options = harness::options(FRAMES);
     let mut sim = Sim::new(5, Config::default());
     let mut out = None;
-    harness::finished(&mut sim, |rt| {
+    process::finished(&mut sim, |rt| {
         let pager = Pager::create(rt.clone(), &options).unwrap();
         let txns = Transactions::create(rt, &pager).unwrap();
         let scratch = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
@@ -517,7 +519,7 @@ fn lost_past_the_first_segment(commits: usize) -> (Files, Pid, Pid, Vec<(Xid, St
     let (root, page) = out.unwrap();
     let before = sim.files();
     let mut ids = Vec::new();
-    harness::finished(&mut sim, |rt| {
+    process::finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
         let txns = Transactions::open(rt, &pager, root).unwrap();
         for _ in 0..commits {
@@ -560,7 +562,7 @@ fn a_segment_missing_after_the_status_pages_last_write_quarantines_the_database_
         damage: Damage::LogUnproven { at: Lsn(segment) },
     };
     let mut sim = Sim::with_files(5, Config::default(), files);
-    harness::finished(&mut sim, |rt| {
+    process::finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt.clone(), &harness::options(FRAMES)).unwrap();
         assert_eq!(Some(damage), CommitLog::open(&pager, root).err());
         let txns = Transactions::open(rt, &pager, root).unwrap();
@@ -576,7 +578,7 @@ fn a_segment_missing_after_the_status_pages_last_write_quarantines_the_database_
 
 #[test]
 fn a_dump_is_refused_once_the_log_cannot_prove_a_status_page_that_lost_its_writes() {
-    let quiet = adtb::OpenOptions {
+    let quiet = crate::OpenOptions {
         testing: Knobs::without_background_vacuum(),
         ..open::options(2)
     };
@@ -584,7 +586,7 @@ fn a_dump_is_refused_once_the_log_cannot_prove_a_status_page_that_lost_its_write
         Database::open_in(rt.clone(), harness::NAME, &Log::new([APP]), &quiet).unwrap()
     };
     let mut sim = Sim::new(3, Config::default());
-    let page = api::run(&mut sim, |rt| {
+    let page = process::run(&mut sim, |rt| {
         let db = open(&rt);
         let page = *db
             .testing()
@@ -598,7 +600,7 @@ fn a_dump_is_refused_once_the_log_cannot_prove_a_status_page_that_lost_its_write
     });
     let before = sim.files();
     let segment = storage::Options::new(harness::NAME).segment_size;
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open(&rt);
         let t = db.testing();
         let scratch = t
@@ -622,7 +624,7 @@ fn a_dump_is_refused_once_the_log_cannot_prove_a_status_page_that_lost_its_write
     });
     let lost = reverted(sim.files(), &before, page, DB);
     let mut sim = Sim::with_files(3, Config::default(), without_segment(lost, segment));
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open(&rt);
         let damage = db.testing().commit_log_damage();
         assert!(
@@ -631,7 +633,7 @@ fn a_dump_is_refused_once_the_log_cannot_prove_a_status_page_that_lost_its_write
         );
         db.close().unwrap();
     });
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open(&rt);
         assert_eq!(quarantined(), api::failure(&db, "dump to \"d\""));
     });
@@ -672,7 +674,7 @@ fn each_lost_write_refused(
     work: impl FnOnce(&Database<SimRuntime>),
 ) -> BTreeMap<&'static str, usize> {
     let before = sim.files();
-    let kinds = api::run(sim, |rt| {
+    let kinds = process::run(sim, |rt| {
         let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
         work(&db);
         let kinds = kinds(&db);
@@ -707,7 +709,7 @@ fn each_lost_write_refused(
             expected: lsn(&after, page),
             found: lsn(&before, page),
         };
-        let read = api::run(
+        let read = process::run(
             &mut Sim::with_files(2, Config::default(), lost.clone()),
             |rt| {
                 let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
@@ -722,7 +724,7 @@ fn each_lost_write_refused(
             Err(PageError { pid: page, damage })
         };
         assert_eq!(refused, read, "{kind} page {page:?}");
-        api::run(&mut Sim::with_files(2, Config::default(), lost), |rt| {
+        process::run(&mut Sim::with_files(2, Config::default(), lost), |rt| {
             let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
             let found = findings(api::sorted(db.verify(None).unwrap()));
             let want = ("StalePage".to_owned(), stale.clone());
@@ -782,15 +784,15 @@ fn a_lost_write_of_each_page_an_allocating_insert_and_a_mark_change_is_refused_o
 
 #[test]
 fn an_open_whose_log_cannot_settle_a_status_page_writes_no_mark() {
-    let options = adtb::OpenOptions {
-        create: Some(adtb::CreateOptions::default()),
+    let options = crate::OpenOptions {
+        create: Some(crate::CreateOptions::default()),
         testing: Knobs::default().with_segment_size(64 << 10),
         ..open::options(2)
     };
     let open =
         |rt: SimRuntime| Database::open_in(rt, harness::NAME, &Log::new([APP]), &options).unwrap();
     let mut sim = Sim::new(6, Config::default());
-    let page = api::run(&mut sim, |rt| {
+    let page = process::run(&mut sim, |rt| {
         let db = open(rt);
         api::results(&db, r#"insert users { name: "ann" }"#);
         let page = *db
@@ -804,7 +806,7 @@ fn an_open_whose_log_cannot_settle_a_status_page_writes_no_mark() {
         page
     });
     let before = sim.files();
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open(rt);
         for i in 0..200 {
             api::results(&db, &format!(r#"insert users {{ name: "{i}" }}"#));
@@ -825,7 +827,7 @@ fn an_open_whose_log_cannot_settle_a_status_page_writes_no_mark() {
     let mut lost = reverted(after.clone(), &before, page, DB);
     lost.remove(gap).unwrap();
     let mut sim = Sim::with_files(6, Config::default(), lost);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open(rt);
         let found = db
             .testing()
@@ -848,7 +850,7 @@ fn an_open_whose_log_cannot_settle_a_status_page_writes_no_mark() {
     let mut restored = reverted(sim.files(), &after, page, DB);
     restored.insert(gap.clone(), after[gap].clone());
     let mut sim = Sim::with_files(6, Config::default(), restored);
-    let marks = api::run(&mut sim, |rt| {
+    let marks = process::run(&mut sim, |rt| {
         let db = open(rt);
         let marks = db.testing().probe().marks();
         db.close().unwrap();
@@ -874,9 +876,9 @@ struct Lost {
     stale: Damage,
 }
 
-fn engine_options(archived: bool) -> adtb::OpenOptions {
-    adtb::OpenOptions {
-        create: Some(adtb::CreateOptions::default()),
+fn engine_options(archived: bool) -> crate::OpenOptions {
+    crate::OpenOptions {
+        create: Some(crate::CreateOptions::default()),
         log_archive: archived.then(|| ARCHIVE.into()),
         testing: Knobs::without_background_vacuum().with_segment_size(64 << 10),
         ..open::options(2)
@@ -900,7 +902,7 @@ fn resolved_then_lost(resolve: Resolve, recycled: bool, archived: bool) -> Lost 
         |rt: SimRuntime| Database::open_in(rt, harness::NAME, &Log::new([APP]), &options).unwrap();
     let root = Files::from([(format!("{ARCHIVE}/keep"), Vec::new())]);
     let mut sim = Sim::with_files(7, Config::default(), root);
-    let page = api::run(&mut sim, |rt| {
+    let page = process::run(&mut sim, |rt| {
         let db = open(rt);
         api::results(&db, r#"insert users { name: "ann" }"#);
         let pages = db.testing().commit_log().status().clone();
@@ -908,7 +910,7 @@ fn resolved_then_lost(resolve: Resolve, recycled: bool, archived: bool) -> Lost 
         *pages.values().next_back().unwrap()
     });
     let before = sim.files();
-    let (ids, resolved) = api::run(&mut sim, |rt| {
+    let (ids, resolved) = process::run(&mut sim, |rt| {
         let db = open(rt);
         let t = db.testing();
         let ids = match resolve {
@@ -944,7 +946,7 @@ fn resolved_then_lost(resolve: Resolve, recycled: bool, archived: bool) -> Lost 
         "{resolve:?}: the second process resolves an id"
     );
     if recycled {
-        api::run(&mut sim, |rt| open(rt).close().unwrap());
+        process::run(&mut sim, |rt| open(rt).close().unwrap());
         let first = segment_bases(&sim.files())[0];
         assert!(
             first >= resolved.0,
@@ -977,7 +979,7 @@ fn refused_unproven(resolve: Resolve, archived: bool) {
     let whole = BTreeSet::from([Quarantine::Database]);
     let mut sim = Sim::with_files(7, Config::default(), lost.files);
     for open in 0..2 {
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             let db = Database::open_in(rt, harness::NAME, &Log::new([APP]), &options).unwrap();
             let at = format!("{resolve:?}, archived {archived}, open {open}");
             assert_eq!(Some(damage), db.testing().commit_log_damage(), "{at}");
@@ -1014,7 +1016,7 @@ fn a_status_page_that_lost_an_abort_whose_record_is_recycled_quarantines_the_dat
 fn a_status_page_that_lost_a_commit_whose_record_is_retained_settles_it_committed() {
     let lost = resolved_then_lost(Resolve::Commit, false, false);
     let mut sim = Sim::with_files(7, Config::default(), lost.files);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
         assert_eq!(
             vec![Status::Committed; lost.ids.len()],
@@ -1040,7 +1042,7 @@ fn a_status_page_reverted_to_an_older_page_at_its_pid_is_refused() {
     let options = harness::options(FRAMES);
     let mut sim = Sim::new(8, Config::default());
     let mut first = None;
-    harness::finished(&mut sim, |rt| {
+    process::finished(&mut sim, |rt| {
         let pager = Pager::create(rt, &options).unwrap();
         let mut clog = CommitLog::create(&pager).unwrap();
         let per = clog.ids_per_page();
@@ -1057,7 +1059,7 @@ fn a_status_page_reverted_to_an_older_page_at_its_pid_is_refused() {
     let (root, old, per) = first.unwrap();
     let before = sim.files();
     let committed = Xid(2 * per + 5);
-    harness::finished(&mut sim, |rt| {
+    process::finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt, &options).unwrap();
         let mut clog = CommitLog::open(&pager, root).unwrap();
         clog.reserve(&pager, Xid(3 * per), Xid(per)).unwrap();
@@ -1080,7 +1082,7 @@ fn a_status_page_reverted_to_an_older_page_at_its_pid_is_refused() {
     };
     let files = reverted(sim.files(), &before, old, PAGER);
     let mut sim = Sim::with_files(8, Config::default(), files);
-    harness::finished(&mut sim, |rt| {
+    process::finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
         assert_eq!(Some(damage), CommitLog::open(&pager, root).err());
         let txns = Transactions::open(rt, &pager, root).unwrap();

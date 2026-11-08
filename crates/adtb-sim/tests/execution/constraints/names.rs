@@ -1,4 +1,5 @@
 use adtb::{CallOptions, Database, Error, Log, OpenOptions, RejectReason, Value};
+use adtb_harness::process;
 use adtb_lang::check::check_schema;
 use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::textual::{Form, parse};
@@ -149,7 +150,7 @@ fn canonical_unique_names_cover_constructor_orders_scopes_paths_and_ids() {
             *reached.entry("named").or_insert(0usize) += 1;
             continue;
         }
-        api::once(0, |rt| {
+        process::once(0, |rt| {
             let log = Log::new([case.get("decls")]);
             let db = Database::open_in(rt.clone(), "names.adt", &log, &open::options(4))
                 .expect("public open");

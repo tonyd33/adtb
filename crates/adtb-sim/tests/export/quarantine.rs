@@ -1,15 +1,14 @@
-use adtb::testing::{CommitLogPages, Failed, Object, Plant, Probe};
-use std::collections::{BTreeMap, BTreeSet};
+use adtb::testing::{Damage, Failed, Object, PageError, Pid, Plant, Quarantine, page::HEADER_LEN};
+use adtb_harness::process;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use adtb::btree::{self, BTree};
-use adtb::exec::Val;
+use adtb::Value as Val;
 use adtb::key::{Entry, Tid, Value};
 use adtb::runtime::{Clock, Io, Op, Runtime, Threads};
-use adtb::storage::{Damage, HEADER_LEN, Options, PageError, Pager, Pid, Quarantine, Stopped};
 use adtb::{
     CallOptions, Called, Database, Error, FatalReason, Log, OpenOptions, Registration,
     TxnCallOptions, TxnOptions,
@@ -17,147 +16,9 @@ use adtb::{
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 
 use adtb_harness::damage::DataFile;
+use adtb_simkit::api;
 use adtb_simkit::open;
-use adtb_simkit::{api, harness};
 use adtb_sys::os::{Backend, OsRuntime};
-
-use harness::{NAME, PAGE, finished};
-
-fn options() -> Options {
-    Options {
-        segment_size: 64 * 1024,
-        max_pages: 1024,
-        ..harness::options(16)
-    }
-}
-
-fn create(sim: &mut Sim) {
-    finished(sim, |rt| {
-        Pager::create(rt, &options()).unwrap();
-    });
-}
-
-fn with_pager<T>(sim: &mut Sim, body: impl FnOnce(&Pager<SimRuntime>) -> T) -> T {
-    let mut out = None;
-    finished(sim, |rt| {
-        let (p, _) = Pager::open(rt, &options()).unwrap();
-        out = Some(body(&p));
-    });
-    out.unwrap()
-}
-
-fn with_named_pager<T>(sim: &mut Sim, body: impl FnOnce(&Pager<SimRuntime>) -> T) -> T {
-    let mut out = None;
-    finished(sim, |rt| {
-        let options = Options {
-            page_size: API_PAGE as u32,
-            threads: 2,
-            ..Options::new(FILE)
-        };
-        let (p, _) = Pager::open(rt, &options).unwrap();
-        out = Some(body(&p));
-    });
-    out.unwrap()
-}
-
-#[test]
-fn a_new_database_quarantines_nothing() {
-    let mut sim = Sim::new(1, Config::default());
-    create(&mut sim);
-    with_pager(&mut sim, |p| {
-        assert!(Probe::of(p).marks().is_empty());
-        assert!(!Probe::of(p).marked(Quarantine::Heap(1)));
-    });
-}
-
-#[test]
-fn marks_survive_a_restart_until_released() {
-    let mut sim = Sim::new(2, Config::default());
-    create(&mut sim);
-    with_pager(&mut sim, |p| {
-        p.quarantine(Quarantine::Heap(7)).unwrap();
-        p.quarantine(Quarantine::Index(3)).unwrap();
-        p.quarantine(Quarantine::Heap(7)).unwrap();
-        assert!(Probe::of(p).marked(Quarantine::Heap(7)));
-        assert!(
-            !Probe::of(p).marked(Quarantine::Heap(3)),
-            "heap and index ids are apart"
-        );
-    });
-    with_pager(&mut sim, |p| {
-        assert_eq!(
-            BTreeSet::from([Quarantine::Heap(7), Quarantine::Index(3)]),
-            Probe::of(p).marks()
-        );
-        p.release(Quarantine::Heap(7)).unwrap();
-    });
-    with_pager(&mut sim, |p| {
-        assert_eq!(BTreeSet::from([Quarantine::Index(3)]), Probe::of(p).marks());
-        assert!(p.verify().findings.is_empty());
-    });
-}
-
-#[test]
-fn a_mark_is_durable_once_quarantine_returns() {
-    for seed in 0..8 {
-        let mut sim = Sim::new(seed, Config::default());
-        create(&mut sim);
-        sim.crash_at(sim.now() + Duration::from_secs(1));
-        let outcome = sim.run(|rt| {
-            let (p, _) = Pager::open(rt.clone(), &options()).unwrap();
-            p.quarantine(Quarantine::Heap(40 + seed as u32)).unwrap();
-            let mut io = rt.io();
-            io.submit(Op::Timer {
-                at: rt.now() + Duration::from_secs(10),
-            });
-            loop {
-                rt.park();
-            }
-        });
-        assert_eq!(Outcome::Crashed, outcome);
-        with_pager(&mut sim, |p| {
-            assert!(
-                Probe::of(p).marked(Quarantine::Heap(40 + seed as u32)),
-                "seed {seed}"
-            );
-        });
-    }
-}
-
-#[test]
-fn a_database_mark_covers_every_object() {
-    let mut sim = Sim::new(3, Config::default());
-    create(&mut sim);
-    with_pager(&mut sim, |p| p.quarantine(Quarantine::Database).unwrap());
-    with_pager(&mut sim, |p| {
-        assert!(Probe::of(p).marked(Quarantine::Heap(9)));
-        assert!(Probe::of(p).marked(Quarantine::Index(9)));
-    });
-}
-
-#[test]
-fn a_damaged_mark_page_quarantines_the_database() {
-    let mut sim = Sim::new(4, Config::default());
-    create(&mut sim);
-    let page = with_pager(&mut sim, |p| {
-        p.quarantine(Quarantine::Index(5)).unwrap();
-        p.quarantine_page()
-    });
-    with_pager(&mut sim, |_| ());
-    let mut files = sim.files();
-    DataFile::new(NAME, PAGE).flip(&mut files, page, 200 - HEADER_LEN);
-    let mut sim = Sim::with_files(4, Config::default(), files);
-    with_pager(&mut sim, |p| {
-        assert!(Probe::of(p).marked(Quarantine::Database));
-        assert_eq!(
-            Err(PageError {
-                pid: page,
-                damage: Damage::Checksum,
-            }),
-            p.quarantine(Quarantine::Heap(1))
-        );
-    });
-}
 
 const APP: &str = r"module app
 add module app
@@ -249,7 +110,7 @@ fn index_page(db: &Database<SimRuntime>, relation: &str, clause: &str) -> Pid {
 /// Returns a simulator over a seeded file with page `pick` picks flipped on disk.
 fn flipped(seed_no: u64, pick: impl FnOnce(&Database<SimRuntime>) -> Pid) -> Sim {
     let mut sim = Sim::new(seed_no, Config::default());
-    let page = api::run(&mut sim, |rt| {
+    let page = process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let page = pick(&db);
@@ -314,7 +175,7 @@ fn call(db: &Database<SimRuntime>, query: &str, args: &[Val]) -> Result<Vec<Stri
 #[test]
 fn a_damaged_constructor_page_stops_only_the_calls_that_read_it() {
     let mut sim = flipped(10, apple);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         assert_eq!(12, api::query(&db, SIDES).len());
         assert!(
@@ -328,7 +189,7 @@ fn a_damaged_constructor_page_stops_only_the_calls_that_read_it() {
         assert_eq!(6, api::query(&db, "from u in users select u.id").len());
         db.close().unwrap();
     });
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         assert_eq!(
             BTreeSet::from([apple_mark(&db)]),
@@ -343,11 +204,11 @@ fn a_damaged_constructor_page_stops_only_the_calls_that_read_it() {
 #[test]
 fn a_crash_before_the_mark_finds_the_damage_again() {
     let mut sim = flipped(11, apple);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         assert_eq!(12, api::query(&db, SIDES).len());
     });
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         assert!(marks(&db).is_empty());
         assert_eq!("app::identities.Apple", failed_on(&db, ALL));
@@ -370,7 +231,7 @@ fn the_mark_of_a_discovering_call_survives_a_crash() {
         }
     });
     assert_eq!(Outcome::Crashed, outcome);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         assert_eq!(BTreeSet::from([apple_mark(&db)]), marks(&db));
     });
@@ -379,7 +240,7 @@ fn the_mark_of_a_discovering_call_survives_a_crash() {
 #[test]
 fn a_damaged_index_page_costs_only_plans_and_stops_writes_it_covers() {
     let mut sim = flipped(13, user_index);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         let what = failed_on(&db, BY_USER);
         assert!(what.contains(USER_INDEX), "{what}");
@@ -399,7 +260,7 @@ fn a_damaged_index_page_costs_only_plans_and_stops_writes_it_covers() {
         api::results(&db, &insert("EmailPass", 901));
         db.close().unwrap();
     });
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         assert_eq!(1, api::query(&db, BY_USER).len(), "across restart");
         let what = failed_on(
@@ -413,7 +274,7 @@ fn a_damaged_index_page_costs_only_plans_and_stops_writes_it_covers() {
 #[test]
 fn a_registered_call_fails_whichever_arm_its_arguments_reach() {
     let mut sim = flipped(14, apple);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         let google = Val::Int(11);
         assert_eq!(
@@ -438,7 +299,7 @@ fn a_registered_call_fails_whichever_arm_its_arguments_reach() {
 #[test]
 fn a_plan_over_the_index_is_replanned_with_the_same_rows() {
     let mut sim = Sim::new(15, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let gid = [Val::text("g3")];
@@ -468,7 +329,7 @@ fn a_plan_over_the_index_is_replanned_with_the_same_rows() {
 #[test]
 fn a_key_lookup_runs_from_the_heaps_while_its_index_is_quarantined() {
     let mut sim = Sim::new(16, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let text = "from n in identities where n.id == identities.key(11) select n.user";
@@ -490,7 +351,7 @@ fn a_key_lookup_runs_from_the_heaps_while_its_index_is_quarantined() {
 #[test]
 fn an_io_failure_sets_no_mark_and_stays_a_storage_failure() {
     let mut sim = Sim::new(17, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         db.testing()
@@ -520,7 +381,7 @@ fn an_io_failure_sets_no_mark_and_stays_a_storage_failure() {
 fn concurrent_readers_of_one_damaged_page_set_one_mark() {
     for seed_no in adtb_harness::seeds::sweep(20..22) {
         let mut sim = Sim::new(seed_no, Config::default());
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             let db = open_app(rt.clone());
             seed(&db);
             db.testing()
@@ -557,7 +418,7 @@ fn concurrent_readers_of_one_damaged_page_set_one_mark() {
 #[test]
 fn a_bad_catalog_page_marks_the_database() {
     let mut sim = Sim::new(18, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         db.testing()
@@ -581,7 +442,7 @@ fn a_bad_catalog_page_marks_the_database() {
         );
         db.close().unwrap();
     });
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         assert_eq!(
             "the database",
@@ -598,7 +459,7 @@ fn a_bad_catalog_page_marks_the_database() {
 #[test]
 fn a_file_with_a_damaged_catalog_page_opens_for_verify() {
     let mut sim = flipped(19, |db| heap_page(db, "catalog::roles", "Role"));
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         assert_eq!(
             "the database",
@@ -610,21 +471,9 @@ fn a_file_with_a_damaged_catalog_page_opens_for_verify() {
 }
 
 #[test]
-fn a_file_with_a_damaged_catalog_root_opens_and_keeps_the_mark() {
-    let mut sim = flipped(19, |db| db.testing().root(Object::Catalog).unwrap());
-    api::run(&mut sim, |rt| {
-        let got = Database::open_in(rt, FILE, &Log::new([APP]), &open::options(2));
-        got.unwrap().close().unwrap();
-    });
-    with_named_pager(&mut sim, |p| {
-        assert_eq!(BTreeSet::from([Quarantine::Database]), Probe::of(p).marks());
-    });
-}
-
-#[test]
 fn a_damaged_commit_log_page_marks_the_database_and_verify_runs() {
     let mut sim = Sim::new(30, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let page = *db
@@ -655,7 +504,7 @@ fn a_damaged_commit_log_page_marks_the_database_and_verify_runs() {
 #[test]
 fn a_reference_check_reads_the_target_and_a_delete_reads_the_referrers() {
     let mut sim = flipped(31, |db| heap_page(db, "app::users", "User"));
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         let what = failed_on(&db, "from u in users select u");
         assert_eq!("app::users.User", what);
@@ -673,7 +522,7 @@ fn a_reference_check_reads_the_target_and_a_delete_reads_the_referrers() {
         api::results(db, "insert notes { id: notes.key(1), about: users.key(1) }");
         heap_page(db, "app::notes", "Note")
     });
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         let what = failed_on(&db, "from n in notes select n");
         assert_eq!("app::notes.Note", what);
@@ -688,7 +537,7 @@ fn a_reference_check_reads_the_target_and_a_delete_reads_the_referrers() {
 #[test]
 fn a_constraint_check_reads_what_its_query_reads() {
     let mut sim = flipped(39, apple);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         assert_eq!("app::identities.Apple", failed_on(&db, ROWS));
         assert_eq!(
@@ -705,7 +554,7 @@ fn a_constraint_check_reads_what_its_query_reads() {
 #[test]
 fn a_write_to_a_sum_reads_its_one_key_over_every_constructor() {
     let mut sim = flipped(32, apple);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         assert_eq!("app::identities.Apple", failed_on(&db, ALL));
         assert_eq!(
@@ -721,7 +570,7 @@ fn a_write_to_a_sum_reads_its_one_key_over_every_constructor() {
 #[test]
 fn verify_findings_mark_the_index_they_name() {
     let mut sim = Sim::new(33, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let t = db.testing();
@@ -738,7 +587,7 @@ fn verify_findings_mark_the_index_they_name() {
         assert_eq!(1, api::query(&db, BY_USER).len());
     });
     let mut sim = Sim::new(34, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let t = db.testing();
@@ -765,7 +614,7 @@ fn verify_findings_mark_the_index_they_name() {
 #[test]
 fn a_verify_checksum_finding_marks_what_holds_the_page() {
     let mut sim = flipped(35, apple);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         let page = apple(&db);
         let found = api::printed(db.verify(None).unwrap());
@@ -782,7 +631,7 @@ fn a_verify_checksum_finding_marks_what_holds_the_page() {
 #[test]
 fn verify_of_a_marked_database_still_runs() {
     let mut sim = Sim::new(36, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         db.testing()
@@ -790,7 +639,7 @@ fn verify_of_a_marked_database_still_runs() {
             .unwrap();
         db.close().unwrap();
     });
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         assert_eq!("the database", failed_on(&db, ALL));
         let rows = api::printed(db.verify(Some("users")).unwrap());
@@ -807,7 +656,7 @@ fn verify_of_a_marked_database_still_runs() {
 #[test]
 fn a_failed_mark_does_not_hide_the_damage() {
     let mut sim = Sim::new(37, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let marks_page = db.testing().root(Object::Marks).unwrap();
@@ -835,7 +684,7 @@ fn a_failed_mark_does_not_hide_the_damage() {
 #[test]
 fn a_mark_fails_a_call_of_an_open_transaction_and_leaves_it_open() {
     let mut sim = Sim::new(40, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let mut t = db.begin(&TxnOptions::default()).unwrap();
@@ -851,7 +700,7 @@ fn a_mark_fails_a_call_of_an_open_transaction_and_leaves_it_open() {
 #[test]
 fn a_damaged_large_value_page_marks_the_database() {
     let mut sim = Sim::new(41, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         let long = "x".repeat(40_000);
         api::results(
@@ -877,7 +726,7 @@ fn a_damaged_large_value_page_marks_the_database() {
 #[test]
 fn the_mark_of_a_large_value_store_is_the_one_its_damage_sets() {
     let mut sim = Sim::new(41, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         let long = "x".repeat(40_000);
         api::results(
@@ -908,7 +757,7 @@ fn marked_undamaged(
     body: impl FnOnce(&Database<SimRuntime>),
 ) {
     let mut sim = Sim::new(seed_no, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         db.testing().plant(Plant::Mark(mark(&db))).unwrap();
@@ -978,14 +827,14 @@ fn an_index_mark_fails_a_write_it_covers_with_no_page_damaged() {
 #[test]
 fn opening_a_marked_database_applies_no_migration() {
     let mut sim = Sim::new(45, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         db.testing()
             .plant(Plant::Mark(Quarantine::Database))
             .unwrap();
         db.close().unwrap();
     });
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let later = "module app\nadd type Z = { id: Key zs }\nadd relation zs : Z key id generate sequence\n";
         let options = OpenOptions {
             registrations: vec![reads()],
@@ -1002,7 +851,7 @@ fn hash_log() -> String {
     let file = parse_migration(APP, ParseOptions::default()).ok().unwrap();
     let source = Source::default().migrate(&file, APP).unwrap();
     let schema = source.schema().unwrap();
-    adtb::catalog::version_hash(&schema, &source)
+    adtb::version_hash(&schema, &source)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
@@ -1042,7 +891,7 @@ fn runs(db: &Database<SimRuntime>, text: &str) {
 fn two_finders_of_different_objects_keep_both_marks() {
     for s in adtb_harness::seeds::sweep(0..6) {
         let mut sim = Sim::new(s, Config::default());
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             let db = open_app(rt.clone());
             let finders: Vec<_> = (0..2u32)
                 .map(|i| {
@@ -1059,7 +908,7 @@ fn two_finders_of_different_objects_keep_both_marks() {
             assert_eq!(2, marks(&db).len(), "seed {s}: {:?}", marks(&db));
             db.close().unwrap();
         });
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             let db = open_app(rt);
             assert_eq!(2, marks(&db).len(), "seed {s}: {:?}", marks(&db));
         });
@@ -1070,7 +919,7 @@ fn two_finders_of_different_objects_keep_both_marks() {
 fn a_second_finder_of_one_object_returns_with_the_mark_durable() {
     for s in adtb_harness::seeds::sweep(0..6) {
         let mut sim = Sim::new(s, Config::default());
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             let db = open_app(rt.clone());
             let finders: Vec<_> = (0..3u32)
                 .map(|i| {
@@ -1079,7 +928,7 @@ fn a_second_finder_of_one_object_returns_with_the_mark_durable() {
                         let t = db.testing();
                         t.plant(Plant::Mark(Quarantine::Heap(1000))).unwrap();
                         let marks_page = t.root(Object::Marks).unwrap();
-                        let at = adtb::storage::lsn(&t.probe().page(marks_page).unwrap());
+                        let at = adtb::testing::page::lsn(&t.probe().page(marks_page).unwrap());
                         assert!(t.probe().durable() > at, "seed {s} marker {i}");
                     })
                 })
@@ -1094,7 +943,7 @@ fn a_second_finder_of_one_object_returns_with_the_mark_durable() {
 #[test]
 fn two_damaged_pages_of_one_index_mark_the_index() {
     let mut sim = Sim::new(50, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         seed_many(&db, 900);
@@ -1119,7 +968,7 @@ fn two_damaged_pages_of_one_index_mark_the_index() {
 #[test]
 fn a_damaged_root_and_leaf_of_one_index_mark_the_index() {
     let mut sim = Sim::new(62, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         seed_many(&db, 900);
@@ -1145,7 +994,7 @@ fn a_damaged_root_and_leaf_of_one_index_mark_the_index() {
 #[test]
 fn a_walk_stopped_by_damage_marks_its_heap() {
     let mut sim = Sim::new(63, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let t = db.testing();
@@ -1167,14 +1016,14 @@ fn a_walk_stopped_by_damage_marks_its_heap() {
 #[test]
 fn an_io_failure_in_the_walk_marks_nothing() {
     let mut sim = Sim::new(64, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let t = db.testing();
         let heap = t.heap("app::identities", "Apple").unwrap();
         let unheld = t
             .plant(Plant::Orphan {
-                kind: adtb::storage::PageKind::Quarantine,
+                kind: adtb::testing::PageKind::Quarantine,
                 owner: 0,
             })
             .unwrap()
@@ -1203,13 +1052,13 @@ fn an_io_failure_in_the_walk_marks_nothing() {
 #[test]
 fn rot_on_a_free_page_marks_nothing() {
     let mut sim = Sim::new(51, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let t = db.testing();
         let pid = t
             .plant(Plant::Orphan {
-                kind: adtb::storage::PageKind::Quarantine,
+                kind: adtb::testing::PageKind::Quarantine,
                 owner: 0,
             })
             .unwrap()
@@ -1229,30 +1078,15 @@ fn rot_on_a_free_page_marks_nothing() {
 }
 
 #[test]
-fn a_page_vacuum_frees_during_the_walk_marks_nothing() {
-    let mut sim = Sim::new(52, Config::default());
-    create(&mut sim);
-    with_pager(&mut sim, |p| {
-        let pid = p
-            .allocate(1, adtb::storage::PageKind::Quarantine, 0)
-            .unwrap();
-        let held = p.holders_of(pid, Some(Quarantine::Database), |_| {
-            p.free(pid).unwrap();
-        });
-        assert_eq!(Some(BTreeSet::new()), held);
-    });
-}
-
-#[test]
 fn an_allocated_page_every_walk_misses_marks_the_database() {
     let mut sim = Sim::new(53, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let pid = db
             .testing()
             .plant(Plant::Orphan {
-                kind: adtb::storage::PageKind::Quarantine,
+                kind: adtb::testing::PageKind::Quarantine,
                 owner: 0,
             })
             .unwrap()
@@ -1272,7 +1106,7 @@ fn an_allocated_page_every_walk_misses_marks_the_database() {
 #[test]
 fn rot_in_the_kept_store_is_a_finding_with_no_mark() {
     let mut sim = Sim::new(54, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         db.testing().plant(Plant::RefuseKeptStore).unwrap();
@@ -1283,127 +1117,9 @@ fn rot_in_the_kept_store_is_a_finding_with_no_mark() {
 }
 
 #[test]
-fn a_failed_open_marks_the_heap_of_the_damage_it_met() {
-    let mut sim = flipped(57, apple);
-    let later = "module app\nadd constraint nope =\n  from a in identities.Apple\n  where a.sub == \"zz\"\n  select a\n";
-    api::run(&mut sim, |rt| {
-        let opts = OpenOptions {
-            registrations: vec![reads()],
-            ..open::options(2)
-        };
-        let got = Database::open_in(rt, FILE, &Log::new([APP, later]), &opts);
-        assert!(
-            matches!(got, Err(adtb::OpenError::Corrupt { .. })),
-            "{:?}",
-            got.err()
-        );
-    });
-    with_named_pager(&mut sim, |p| {
-        let marks = Probe::of(p).marks();
-        assert_eq!(1, marks.len(), "{marks:?}");
-        assert!(
-            matches!(marks.first(), Some(Quarantine::Heap(_))),
-            "{marks:?}"
-        );
-    });
-    api::run(&mut sim, |rt| {
-        let db = open_app(rt);
-        assert_eq!(BTreeSet::from([apple_mark(&db)]), marks(&db));
-        assert_eq!("app::identities.Apple", failed_on(&db, ALL));
-        api::query(&db, SIDES);
-    });
-}
-
-#[test]
-fn a_failed_open_on_a_damaged_page_of_the_large_value_store_marks_the_database() {
-    let later = "module app\nadd constraint nope =\n  from u in users\n  where u.name == \"zz\"\n  select u\n";
-    let mut sim = Sim::new(58, Config::default());
-    let page = api::run(&mut sim, |rt| {
-        let db = open_app(rt);
-        let long = "x".repeat(40_000);
-        api::results(
-            &db,
-            &format!(r#"insert users {{ id: users.key(1), name: "{long}" }}"#),
-        );
-        let t = db.testing();
-        let large = t.large("app::users", "User").unwrap();
-        let page = *t.owned(large).unwrap().last().unwrap();
-        db.close().unwrap();
-        page
-    });
-    let mut files = sim.files();
-    DATA.flip(&mut files, page, 300 - HEADER_LEN);
-    let mut sim = Sim::with_files(58, Config::default(), files);
-    api::run(&mut sim, |rt| {
-        let got = Database::open_in(rt, FILE, &Log::new([APP, later]), &open::options(2));
-        let db = got.expect("a file quarantined whole opens for verify");
-        assert_eq!(
-            "the database",
-            failed_on(&db, "from u in users select u.id")
-        );
-    });
-    let database = BTreeSet::from([Quarantine::Database]);
-    with_named_pager(&mut sim, |p| assert_eq!(database, Probe::of(p).marks()));
-}
-
-fn commit_log_page(seed_no: u64, pick: impl FnOnce(CommitLogPages) -> Pid) -> Sim {
-    let mut sim = Sim::new(seed_no, Config::default());
-    let page = api::run(&mut sim, |rt| {
-        let db = open_app(rt);
-        seed(&db);
-        let page = pick(db.testing().commit_log());
-        db.close().unwrap();
-        page
-    });
-    let mut files = sim.files();
-    DATA.flip(&mut files, page, 300 - HEADER_LEN);
-    Sim::with_files(seed_no, Config::default(), files)
-}
-
-#[test]
-fn a_file_with_a_damaged_commit_log_status_page_opens_for_verify() {
-    let mut sim = commit_log_page(58, |clog| *clog.status().values().next_back().unwrap());
-    for _ in 0..2 {
-        api::run(&mut sim, |rt| {
-            let db = open_app(rt);
-            assert_eq!(BTreeSet::from([Quarantine::Database]), marks(&db));
-            assert_eq!(
-                "the database",
-                failed_on(&db, "from u in users select u.id")
-            );
-            assert_eq!(
-                "the database",
-                failed_on(&db, r#"insert users { id: users.key(99), name: "x" }"#)
-            );
-            assert_eq!(
-                "the database",
-                quarantined(&db.begin(&TxnOptions::default()).err().unwrap())
-            );
-            let e = call(&db, "through_fn", &[]).expect_err("fails");
-            assert_eq!("the database", quarantined(&e));
-            let found = api::printed(db.verify(None).unwrap());
-            assert!(found.iter().any(|r| r.starts_with("Checksum")), "{found:?}");
-            db.close().unwrap();
-        });
-    }
-}
-
-#[test]
-fn a_file_with_a_damaged_commit_log_root_opens_and_keeps_the_mark() {
-    let mut sim = commit_log_page(59, |clog| clog.root());
-    api::run(&mut sim, |rt| {
-        let got = Database::open_in(rt, FILE, &Log::new([APP]), &open::options(2));
-        got.unwrap().close().unwrap();
-    });
-    with_named_pager(&mut sim, |p| {
-        assert_eq!(BTreeSet::from([Quarantine::Database]), Probe::of(p).marks());
-    });
-}
-
-#[test]
 fn a_delete_reads_no_target_of_its_row() {
     let mut sim = Sim::new(70, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         api::results(
@@ -1441,7 +1157,7 @@ fn a_delete_reads_no_target_of_its_row() {
 #[test]
 fn every_gate_path_refuses_a_call_over_a_marked_constructor() {
     let mut sim = Sim::new(71, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         db.testing().plant(Plant::Mark(apple_mark(&db))).unwrap();
@@ -1460,14 +1176,14 @@ fn every_gate_path_refuses_a_call_over_a_marked_constructor() {
 #[test]
 fn a_marked_database_opens_with_a_newer_log_and_a_bundle_needing_it() {
     let mut sim = Sim::new(72, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         db.testing()
             .plant(Plant::Mark(Quarantine::Database))
             .unwrap();
         db.close().unwrap();
     });
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let later = "module app\nadd type Z = { id: Key zs }\nadd relation zs : Z key id generate sequence\n";
         let needs = Registration::new(
             "zr",
@@ -1488,7 +1204,7 @@ fn a_marked_database_opens_with_a_newer_log_and_a_bundle_needing_it() {
 #[test]
 fn a_registered_call_on_a_reopened_marked_database_fails_with_quarantined() {
     let mut sim = Sim::new(73, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = Database::open_in(rt, FILE, &Log::new([APP]), &open::options(2)).unwrap();
         seed(&db);
         db.testing()
@@ -1497,7 +1213,7 @@ fn a_registered_call_on_a_reopened_marked_database_fails_with_quarantined() {
         db.close().unwrap();
     });
     for _ in 0..2 {
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             let db = open_app(rt);
             let e = call(&db, "through_fn", &[]).expect_err("fails");
             assert_eq!("the database", quarantined(&e));
@@ -1509,7 +1225,7 @@ fn a_registered_call_on_a_reopened_marked_database_fails_with_quarantined() {
 #[test]
 fn register_on_a_marked_database_fails_with_quarantined() {
     let mut sim = Sim::new(74, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         db.testing()
             .plant(Plant::Mark(Quarantine::Database))
@@ -1529,7 +1245,7 @@ fn register_on_a_marked_database_fails_with_quarantined() {
 #[test]
 fn vacuum_of_a_marked_constructor_fails_with_quarantined() {
     let mut sim = Sim::new(75, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         db.testing().plant(Plant::Mark(apple_mark(&db))).unwrap();
@@ -1541,7 +1257,7 @@ fn vacuum_of_a_marked_constructor_fails_with_quarantined() {
 #[test]
 fn vacuum_of_a_relation_with_a_marked_index_fails_with_quarantined() {
     let mut sim = Sim::new(76, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         db.testing()
@@ -1572,7 +1288,7 @@ fn with_history(db: &Database<SimRuntime>) {
 #[test]
 fn a_damaged_history_heap_page_marks_its_constructor() {
     let mut sim = Sim::new(77, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         with_history(&db);
@@ -1593,7 +1309,7 @@ fn a_damaged_history_heap_page_marks_its_constructor() {
 #[test]
 fn a_damaged_history_index_page_marks_its_key_index() {
     let mut sim = Sim::new(78, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         with_history(&db);
@@ -1615,7 +1331,7 @@ fn a_damaged_history_index_page_marks_its_key_index() {
 #[test]
 fn an_io_failure_on_the_marks_page_fails_the_load_and_marks_nothing() {
     let mut sim = Sim::new(83, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         let t = db.testing();
         let page = t.root(Object::Marks).unwrap();
@@ -1635,8 +1351,6 @@ fn an_io_failure_on_the_marks_page_fails_the_load_and_marks_nothing() {
     });
 }
 
-const BOUNDED: &str = "from i in identities where i.id == identities.key(11) select i.user";
-
 fn key_index_marked(db: &Database<SimRuntime>) -> Object {
     let t = db.testing();
     let key = t.index("app::identities", "key id").unwrap();
@@ -1645,41 +1359,9 @@ fn key_index_marked(db: &Database<SimRuntime>) -> Object {
 }
 
 #[test]
-fn a_probe_from_the_heaps_stops_on_the_check_of_its_call() {
-    let mut sim = Sim::new(79, Config::default());
-    api::run(&mut sim, |rt| {
-        let db = open_app(rt);
-        seed(&db);
-        let before = api::query(&db, BOUNDED);
-        let key = key_index_marked(&db);
-        assert_eq!(before, api::query(&db, BOUNDED));
-        let got = db.testing().probe_heaps(key, &[], 1 << 30, true).unwrap();
-        assert!(matches!(got, Err(adtb::exec::Error::Cancelled)), "{got:?}");
-    });
-}
-
-#[test]
-fn a_probe_from_the_heaps_charges_the_versions_it_scans_to_the_grant() {
-    let mut sim = Sim::new(80, Config::default());
-    api::run(&mut sim, |rt| {
-        let db = open_app(rt);
-        seed(&db);
-        let key = key_index_marked(&db);
-        let got = db
-            .testing()
-            .probe_heaps(key, &[Value::I64(i64::MAX)], 8, false)
-            .unwrap();
-        assert!(
-            matches!(got, Err(adtb::exec::Error::StatementLimit(_))),
-            "{got:?}"
-        );
-    });
-}
-
-#[test]
 fn a_fallback_gives_the_same_rows_after_updates_retags_and_deletes() {
     let mut sim = Sim::new(81, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         api::results(
@@ -1731,7 +1413,7 @@ fn a_fallback_gives_the_same_rows_after_updates_retags_and_deletes() {
 #[test]
 fn a_fallback_finds_a_large_row_and_an_open_transactions_own_row() {
     let mut sim = Sim::new(82, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let big = "x".repeat(40_000);
@@ -1784,7 +1466,7 @@ fn writers_and_vacuum_under_verify_set_no_false_mark() {
                 ..Config::default()
             },
         );
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             let options = OpenOptions {
                 pool_bytes: Some(64 * 8192),
                 ..open::options(2)
@@ -1839,12 +1521,6 @@ fn writers_and_vacuum_under_verify_set_no_false_mark() {
     }
 }
 
-fn entry(i: u32) -> Vec<u8> {
-    let mut v = i.to_be_bytes().to_vec();
-    v.resize(500, 7);
-    v
-}
-
 /// Returns a new scratch directory for a test on real threads.
 fn scratch(name: &str) -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
@@ -1856,169 +1532,6 @@ fn scratch(name: &str) -> PathBuf {
     }
     std::fs::create_dir_all(&dir).unwrap();
     dir
-}
-
-/// Returns a pager on real threads and three trees of it.
-fn real_trees(name: &str) -> (OsRuntime, Arc<Pager<OsRuntime>>, [BTree; 3]) {
-    let rt = OsRuntime::new(scratch(name), Backend::Pool { threads: 4 });
-    let mut o = Options::new("w.adt");
-    o.threads = 70;
-    o.pool_frames = 8192;
-    o.page_size = 4096;
-    let pager = Arc::new(Pager::create(rt.clone(), &o).unwrap());
-    let trees = [41, 42, 43].map(|owner| BTree::create(&*pager, owner).unwrap());
-    (rt, pager, trees)
-}
-
-/// Yield until `limit` passes.
-fn wait(rt: &OsRuntime, limit: Duration) {
-    let deadline = rt.now() + limit;
-    while rt.now() < deadline {
-        rt.yield_now();
-    }
-}
-
-/// Run `mutate` and `map` on 64 threads until `limit` passes. Returns each mapping `map` answered,
-/// with how many times.
-fn mapped_under_churn<T: std::fmt::Debug>(
-    rt: &OsRuntime,
-    limit: Duration,
-    mutate: impl FnOnce() + Send + 'static,
-    map: impl Fn() -> T + Send + Sync + 'static,
-) -> BTreeMap<String, u64> {
-    let map = Arc::new(map);
-    let stop = Arc::new(AtomicBool::new(false));
-    let got = Arc::new(Mutex::new(BTreeMap::new()));
-    let mappers: Vec<_> = (0..64)
-        .map(|i| {
-            let (map, stop, got) = (map.clone(), stop.clone(), got.clone());
-            rt.spawn(&format!("mapper {i}"), move || {
-                while !stop.load(Ordering::Relaxed) {
-                    let held = map();
-                    *got.lock()
-                        .unwrap()
-                        .entry(format!("{held:?}"))
-                        .or_insert(0u64) += 1;
-                }
-            })
-        })
-        .collect();
-    let mutator = rt.spawn("mutator", mutate);
-    wait(rt, limit);
-    stop.store(true, Ordering::Relaxed);
-    for m in mappers {
-        rt.join(m);
-    }
-    rt.join(mutator);
-    Arc::try_unwrap(got).unwrap().into_inner().unwrap()
-}
-
-#[test]
-fn mapping_a_page_of_one_tree_never_marks_a_tree_changing_beside_it() {
-    let (rt, pager, [a, b, c]) = real_trees("beside");
-    for i in 0..400 {
-        a.insert(&*pager, &entry(i)).unwrap();
-        c.insert(&*pager, &entry(i)).unwrap();
-    }
-    let damaged = *c.pages(&*pager).unwrap().last().unwrap();
-    pager.damage(damaged, Damage::Checksum);
-    let limit = Duration::from_millis(1200);
-    let mutate = churn_tree(&rt, limit, &pager, a, b);
-    let got = {
-        let p = pager;
-        mapped_under_churn(&rt, limit, mutate, move || {
-            p.holders_of(damaged, Some(Quarantine::Database), |h| {
-                h.walk(Some(Quarantine::Index(41)), || a.walk(&*p));
-                h.walk(Some(Quarantine::Index(43)), || c.walk(&*p));
-            })
-        })
-    };
-    assert_eq!(1, got.len(), "{got:?}");
-    assert!(got.contains_key("Some({Index(43)})"), "{got:?}");
-}
-
-/// Delete and insert the entries of `a`, with `b` taking the pages freed, until `limit` from now.
-fn churn_tree(
-    rt: &OsRuntime,
-    limit: Duration,
-    p: &Arc<Pager<OsRuntime>>,
-    a: BTree,
-    b: BTree,
-) -> impl FnOnce() + Send + 'static {
-    let deadline = rt.now() + limit;
-    let (rt, p) = (rt.clone(), p.clone());
-    move || {
-        let mut n = 0;
-        while rt.now() < deadline {
-            for i in 0..400 {
-                a.delete(&*p, &entry(i)).unwrap();
-                if i % 2 == 0 {
-                    b.insert(&*p, &entry(n)).unwrap();
-                    n += 1;
-                }
-            }
-            for i in 0..400 {
-                a.insert(&*p, &entry(i)).unwrap();
-            }
-        }
-    }
-}
-
-#[test]
-fn a_walk_of_a_changing_tree_never_stops_on_damage() {
-    let (rt, pager, [a, b, _]) = real_trees("walk");
-    for i in 0..400 {
-        a.insert(&*pager, &entry(i)).unwrap();
-    }
-    let limit = Duration::from_millis(1200);
-    let mutate = churn_tree(&rt, limit, &pager, a, b);
-    let got = {
-        let p = pager;
-        mapped_under_churn(&rt, limit, mutate, move || a.walk(&*p).map(|_| ()))
-    };
-    assert!(!got.contains_key("Err(Damage)"), "{got:?}");
-}
-
-#[test]
-fn mapping_a_page_of_a_changing_tree_finds_that_tree_or_nothing() {
-    let (rt, pager, [a, _, _]) = real_trees("within");
-    for i in 0..400 {
-        a.insert(&*pager, &entry(i)).unwrap();
-    }
-    let pages = a.pages(&*pager).unwrap();
-    let damaged = pages[pages.len() - pages.len() / 2];
-    pager.damage(damaged, Damage::Checksum);
-    let deadline = rt.now() + Duration::from_millis(300);
-    let mutate = {
-        let p = pager.clone();
-        let rt = rt.clone();
-        move || {
-            while rt.now() < deadline {
-                for i in 0..400 {
-                    match a.delete(&*p, &entry(i)) {
-                        Ok(_) | Err(btree::Error::Page(_)) => {}
-                        Err(e) => panic!("delete {i}: {e:?}"),
-                    }
-                }
-                for i in 0..400 {
-                    match a.insert(&*p, &entry(i)) {
-                        Ok(_) | Err(btree::Error::Page(_)) => {}
-                        Err(e) => panic!("insert {i}: {e:?}"),
-                    }
-                }
-            }
-        }
-    };
-    let got = {
-        let p = pager;
-        mapped_under_churn(&rt, Duration::from_millis(300), mutate, move || {
-            p.holders_of(damaged, Some(Quarantine::Database), |h| {
-                h.walk(Some(Quarantine::Index(41)), || a.walk(&*p));
-            })
-        })
-    };
-    assert!(!got.contains_key("Some({Database})"), "{got:?}");
-    assert!(got.contains_key("Some({Index(41)})"), "{got:?}");
 }
 
 const LISTS: &str = r"module app
@@ -2069,60 +1582,6 @@ fn real_lists(name: &str) -> (OsRuntime, Database) {
 }
 
 #[test]
-fn mapping_a_damaged_heap_page_never_marks_an_index_that_is_changing() {
-    let (rt, db) = real_lists("engine");
-    db.query_text(
-        r#"insert us { id: us.key(1), name: "a" }"#,
-        &[],
-        &CallOptions::default(),
-    )
-    .unwrap();
-    let t = db.testing();
-    let page = t.pages(t.heap("app::us", "U").unwrap()).unwrap()[0];
-    db.testing()
-        .plant(Plant::Refuse {
-            page,
-            damage: Damage::Checksum,
-        })
-        .unwrap();
-    let stop = Arc::new(AtomicBool::new(false));
-    let writers: Vec<_> = (0..3)
-        .map(|writer| {
-            let (db, stop) = (db.clone(), stop.clone());
-            rt.spawn(&format!("writer {writer}"), move || {
-                churn_lists(&db, writer, &stop);
-            })
-        })
-        .collect();
-    let mappers: Vec<_> = (0..48)
-        .map(|i| {
-            let (db, stop) = (db.clone(), stop.clone());
-            rt.spawn(&format!("mapper {i}"), move || {
-                while !stop.load(Ordering::Relaxed) {
-                    let met = PageError {
-                        pid: page,
-                        damage: Damage::Checksum,
-                    };
-                    let planted = db.testing().plant(Plant::FailOn(met)).unwrap();
-                    let e = planted.refused().expect("a page error is refused");
-                    assert!(
-                        matches!(&e, adtb::write::Error::Quarantined(what) if what == "app::us.U"),
-                        "{e:?}"
-                    );
-                }
-            })
-        })
-        .collect();
-    wait(&rt, Duration::from_millis(1100));
-    stop.store(true, Ordering::Relaxed);
-    for t in writers.into_iter().chain(mappers) {
-        rt.join(t);
-    }
-    let heap = t.mark_of(t.heap("app::us", "U").unwrap()).unwrap();
-    assert_eq!(BTreeSet::from([heap]), marks(&db));
-}
-
-#[test]
 fn verify_of_indexes_that_are_changing_finds_and_marks_nothing() {
     let (rt, db) = real_lists("verify");
     let stop = Arc::new(AtomicBool::new(false));
@@ -2149,101 +1608,11 @@ fn verify_of_indexes_that_are_changing_finds_and_marks_nothing() {
     assert_eq!(BTreeSet::new(), marks(&db));
 }
 
-/// Run `body` with a page of a fresh pager that no walk holds.
-fn with_unheld_page(seed_no: u64, body: impl FnOnce(&Pager<SimRuntime>, Pid)) {
-    let mut sim = Sim::new(seed_no, Config::default());
-    create(&mut sim);
-    with_pager(&mut sim, |p| {
-        let pid = p
-            .allocate(1, adtb::storage::PageKind::Quarantine, 0)
-            .unwrap();
-        body(p, pid);
-    });
-}
-
-/// Returns what holds `pid` when one walk of `object` gives each of `script` in turn, its last
-/// again and again, and how many walks ran.
-fn scripted(
-    p: &Pager<SimRuntime>,
-    pid: Pid,
-    script: &[Result<Vec<Pid>, Stopped>],
-) -> (Option<BTreeSet<Quarantine>>, usize) {
-    let mut walks = 0;
-    let held = p.holders_of(pid, Some(Quarantine::Database), |h| {
-        h.walk(Some(Quarantine::Index(7)), || {
-            walks += 1;
-            script[(walks - 1).min(script.len() - 1)].clone()
-        });
-    });
-    (held, walks)
-}
-
-#[test]
-fn a_walk_that_never_follows_its_tree_leaves_the_page_unmapped() {
-    with_unheld_page(60, |p, pid| {
-        let (held, walks) = scripted(p, pid, &[Err(Stopped::Shape)]);
-        assert_eq!(None, held);
-        assert!((2..=64).contains(&walks), "{walks}");
-    });
-}
-
-#[test]
-fn a_walk_that_stops_on_a_shape_is_run_again() {
-    with_unheld_page(61, |p, pid| {
-        let index = Some(BTreeSet::from([Quarantine::Index(7)]));
-        let script = [Err(Stopped::Shape), Err(Stopped::Shape), Ok(vec![pid])];
-        assert_eq!((index, 3), scripted(p, pid, &script));
-        let script = [Err(Stopped::Shape), Ok(Vec::new())];
-        let database = Some(BTreeSet::from([Quarantine::Database]));
-        assert_eq!((database, 2), scripted(p, pid, &script));
-    });
-}
-
-#[test]
-fn a_walk_marks_its_object_only_when_damage_stops_it_twice_in_a_row() {
-    with_unheld_page(62, |p, pid| {
-        let index = Some(BTreeSet::from([Quarantine::Index(7)]));
-        let database = Some(BTreeSet::from([Quarantine::Database]));
-        let script = [Err(Stopped::Damage(pid))];
-        assert_eq!((index.clone(), 2), scripted(p, pid, &script));
-        let script = [Err(Stopped::Damage(pid)), Ok(Vec::new())];
-        assert_eq!((database, 2), scripted(p, pid, &script));
-        let script = [
-            Err(Stopped::Damage(pid)),
-            Err(Stopped::Shape),
-            Err(Stopped::Damage(pid)),
-            Err(Stopped::Damage(pid)),
-        ];
-        assert_eq!((index, 4), scripted(p, pid, &script));
-        let script = [Err(Stopped::Damage(pid)), Err(Stopped::Shape)];
-        assert_eq!(None, scripted(p, pid, &script).0);
-    });
-}
-
-#[test]
-fn a_walk_stopped_by_io_is_not_run_again_and_leaves_the_page_unmapped() {
-    with_unheld_page(63, |p, pid| {
-        let (held, walks) = scripted(p, pid, &[Err(Stopped::Io)]);
-        assert_eq!((None, 1), (held, walks));
-    });
-}
-
-#[test]
-fn a_walk_of_an_object_whose_damage_marks_nothing_stopped_by_damage_leaves_the_page_unmapped() {
-    with_unheld_page(66, |p, pid| {
-        let other = Pid(pid.0 + 1);
-        let held = p.holders_of(pid, Some(Quarantine::Database), |h| {
-            h.walk(None, || Err(Stopped::Damage(other)));
-        });
-        assert_eq!(None, held);
-    });
-}
-
 #[test]
 fn a_large_value_page_fails_as_storage_unmarked_while_its_store_walk_stops_then_maps_to_the_database()
  {
     let mut sim = Sim::new(64, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         let long = "x".repeat(40_000);
         api::results(
@@ -2305,7 +1674,7 @@ fn refused_commit(db: &Database<SimRuntime>, write: &str, mark: Quarantine) -> S
 #[test]
 fn a_commit_after_a_mark_on_an_index_covering_its_write_fails_and_leaves_nothing() {
     let mut sim = Sim::new(90, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let what = refused_commit(&db, GOOGLE_901, user_index_mark(&db));
@@ -2318,7 +1687,7 @@ fn a_commit_after_a_mark_on_an_index_covering_its_write_fails_and_leaves_nothing
 fn a_commit_after_a_mark_on_its_heap_or_a_sibling_heap_fails_and_leaves_nothing() {
     for ctor in ["Google", "Apple", "EmailPass"] {
         let mut sim = Sim::new(91, Config::default());
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             let db = open_app(rt);
             seed(&db);
             let mark = mark_named(&db, "app::identities", ctor);
@@ -2333,7 +1702,7 @@ fn a_commit_after_a_mark_on_its_heap_or_a_sibling_heap_fails_and_leaves_nothing(
 #[test]
 fn a_commit_after_a_mark_its_write_checks_read_fails() {
     let mut sim = Sim::new(92, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let note = "insert notes { id: notes.key(901), about: users.key(1) }";
@@ -2354,7 +1723,7 @@ fn a_commit_after_a_mark_its_write_checks_read_fails() {
 #[test]
 fn a_commit_writing_nothing_a_mark_stops_runs() {
     let mut sim = Sim::new(93, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let mut t = db.begin(&TxnOptions::default()).unwrap();
@@ -2371,7 +1740,7 @@ fn a_commit_writing_nothing_a_mark_stops_runs() {
 #[test]
 fn a_transaction_that_only_read_commits_under_a_mark_on_what_it_read() {
     let mut sim = Sim::new(94, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let read_only = TxnOptions {
@@ -2392,7 +1761,7 @@ fn a_transaction_that_only_read_commits_under_a_mark_on_what_it_read() {
 #[test]
 fn a_statement_that_failed_leaves_no_write_for_the_commit_to_refuse() {
     let mut sim = Sim::new(95, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let mut t = db.begin(&TxnOptions::default()).unwrap();
@@ -2410,7 +1779,7 @@ fn a_statement_that_failed_leaves_no_write_for_the_commit_to_refuse() {
 #[test]
 fn transact_fails_once_when_a_mark_lands_before_its_commit() {
     let mut sim = Sim::new(96, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let mut attempts = 0;
@@ -2438,7 +1807,7 @@ fn a_mark_lsn_follows_every_commit_kept_before_it_and_refuses_every_commit_after
             ..Config::default()
         };
         let mut sim = Sim::new(seed_no, config);
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             let db = open_app(rt.clone());
             seed(&db);
             let kept = Arc::new(Mutex::new(Vec::new()));
@@ -2511,7 +1880,7 @@ fn a_mark_lsn_follows_every_commit_kept_before_it_and_refuses_every_commit_after
             rt.join(marker);
             let t = db.testing();
             let marks_page = t.root(Object::Marks).unwrap();
-            let marked = adtb::storage::lsn(&t.probe().page(marks_page).unwrap());
+            let marked = adtb::testing::page::lsn(&t.probe().page(marks_page).unwrap());
             let kept = kept.lock().unwrap();
             for &at in kept.iter() {
                 assert!(
@@ -2544,7 +1913,7 @@ fn a_mark_lsn_follows_every_commit_kept_before_it_and_refuses_every_commit_after
 #[test]
 fn a_commit_waits_for_a_mark_being_set_and_is_refused() {
     let mut sim = Sim::new(100, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt.clone());
         seed(&db);
         let (wrote, go, done) = (
@@ -2655,7 +2024,7 @@ fn damage_history_index(db: &Database<SimRuntime>) {
 #[test]
 fn a_read_of_the_past_runs_without_its_damaged_history_key_index() {
     let mut sim = Sim::new(97, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let (first, second) = apple_history(&db);
@@ -2674,7 +2043,7 @@ fn a_read_of_the_past_runs_without_its_damaged_history_key_index() {
 #[test]
 fn a_read_of_the_past_with_no_row_then_fails_alike_without_the_history_key_index() {
     let mut sim = Sim::new(98, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let (first, _) = apple_history(&db);
@@ -2689,7 +2058,7 @@ fn a_read_of_the_past_with_no_row_then_fails_alike_without_the_history_key_index
 #[test]
 fn a_read_of_the_past_fails_on_a_damaged_history_heap_without_the_history_key_index() {
     let mut sim = Sim::new(99, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let (first, _) = apple_history(&db);
@@ -2716,7 +2085,7 @@ fn a_read_of_the_past_fails_on_a_damaged_history_heap_without_the_history_key_in
 #[test]
 fn a_commit_writing_a_heap_whose_damage_is_recorded_and_not_yet_mapped_is_refused() {
     let mut sim = Sim::new(96, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let mut t = db.begin(&TxnOptions::default()).unwrap();
@@ -2738,7 +2107,7 @@ fn a_commit_writing_a_heap_whose_damage_is_recorded_and_not_yet_mapped_is_refuse
 #[test]
 fn a_commit_whose_record_of_the_retention_window_is_damaged_is_refused_naming_the_database() {
     let mut sim = Sim::new(97, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt.clone());
         seed(&db);
         api::results(&db, "set setting RetentionWindow = { length: 1h }");
@@ -2780,7 +2149,7 @@ fn damage_another_thread_records_on_a_page_the_commits_walk_reads_marks_only_its
     let mut during = 0;
     for step in [0u64, 10, 20, 30, 40, 45, 50, 55, 57] {
         let mut sim = Sim::new(0, Config::default());
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             let db = open_app(rt.clone());
             seed(&db);
             let (google_page, leaf) = (google(&db), user_index(&db));
@@ -2838,13 +2207,13 @@ fn damage_another_thread_records_on_a_page_the_commits_walk_reads_marks_only_its
 #[test]
 fn a_commit_walks_no_record_whose_last_mapping_was_incomplete() {
     let mut sim = Sim::new(65, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let t = db.testing();
         let unheld = t
             .plant(Plant::Orphan {
-                kind: adtb::storage::PageKind::Quarantine,
+                kind: adtb::testing::PageKind::Quarantine,
                 owner: 0,
             })
             .unwrap()
@@ -2893,76 +2262,10 @@ fn a_commit_walks_no_record_whose_last_mapping_was_incomplete() {
     });
 }
 
-type Files = BTreeMap<String, Vec<u8>>;
-
-/// Returns `files` after a pager writing pages whole opens them and writes a byte of `pid`, then
-/// a close, or a crash once its log is durable.
-fn written_whole(files: Files, pid: Pid, crash: bool) -> Files {
-    let mut sim = Sim::with_files(98, Config::default(), files);
-    let body = |rt: SimRuntime| {
-        let options = Options {
-            page_size: API_PAGE as u32,
-            threads: 2,
-            atomic_page_writes: true,
-            ..Options::new(FILE)
-        };
-        let (p, _) = Pager::open(rt, &options).unwrap();
-        p.update(&[pid], |pages| pages[0][API_PAGE / 2] ^= 1)
-            .unwrap();
-        p.flush_log();
-        p
-    };
-    if crash {
-        adtb_harness::common::run_then_crash(&mut sim, |rt, _| drop(body(rt.clone())));
-    } else {
-        finished(&mut sim, |rt| body(rt).close());
-    }
-    sim.files()
-}
-
-#[test]
-fn a_lost_write_recovery_finds_is_marked_by_an_open_that_succeeds_and_refuses_the_next() {
-    let mut sim = Sim::new(98, Config::default());
-    let (pid, users) = api::run(&mut sim, |rt| {
-        let db = open_app(rt);
-        seed(&db);
-        let pid = heap_page(&db, "app::users", "User");
-        let users = mark_named(&db, "app::users", "User");
-        db.close().unwrap();
-        (pid, users)
-    });
-    let first = sim.files();
-    let written = written_whole(first.clone(), pid, false);
-    let mut lost = written_whole(written, pid, true);
-    DATA.replace(&mut lost, pid, DATA.page(&first, pid));
-    let mut sim = Sim::with_files(98, Config::default(), lost);
-    api::run(&mut sim, |rt| {
-        let db = open_app(rt);
-        assert!(
-            matches!(
-                db.testing().probe().records().pages().get(&pid),
-                Some(Damage::Stale { .. })
-            ),
-            "recovery records the lost write"
-        );
-        assert_eq!(BTreeSet::from([users]), marks(&db));
-        db.close().unwrap();
-    });
-    api::run(&mut sim, |rt| {
-        let db = open_app(rt);
-        assert_eq!(BTreeSet::from([users]), marks(&db));
-        assert_eq!(
-            "app::users.User",
-            failed_on(&db, "from u in users select u.id")
-        );
-        db.close().unwrap();
-    });
-}
-
 #[test]
 fn a_mark_a_crash_loses_before_it_is_written_is_set_again_by_the_next_open() {
     let mut sim = Sim::new(99, Config::default());
-    let (pid, google) = api::run(&mut sim, |rt| {
+    let (pid, google) = process::run(&mut sim, |rt| {
         let db = open_app(rt);
         seed(&db);
         let pid = google(&db);
@@ -2980,7 +2283,7 @@ fn a_mark_a_crash_loses_before_it_is_written_is_set_again_by_the_next_open() {
             .unwrap();
         assert_eq!(BTreeSet::new(), marks(&db));
     });
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open_app(rt);
         assert_eq!(BTreeSet::from([google]), marks(&db));
         db.close().unwrap();

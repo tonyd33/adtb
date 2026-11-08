@@ -8,7 +8,6 @@ use adtb::{
     AdHocTransaction, CallOptions, Completion, Database, DynRows, Error, Observation, RejectReason,
     RoleSession, TaskOptions, TxnCallOptions, Value,
 };
-pub use adtb_harness::process::{once, run};
 use adtb_lang::textual::print;
 use adtb_lang::types::Ty;
 use adtb_sim::SimRuntime;
@@ -146,15 +145,5 @@ pub fn damaged_dump_part<T: std::fmt::Debug>(got: Result<T, Error>) -> String {
             reason: RejectReason::DumpDamaged { part },
         }) => part,
         other => panic!("not DumpDamaged: {other:?}"),
-    }
-}
-
-/// Returns the part a backup refused as damaged. Panics on any other outcome.
-pub fn damaged_backup_part<T: std::fmt::Debug>(got: Result<T, Error>) -> String {
-    match got {
-        Err(Error::Rejected {
-            reason: RejectReason::BackupDamaged { part },
-        }) => part,
-        other => panic!("not BackupDamaged: {other:?}"),
     }
 }

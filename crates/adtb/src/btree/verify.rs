@@ -4,8 +4,12 @@ use crate::runtime::Runtime;
 use crate::storage::{self, Lsn, Pager, Pid, Stopped};
 
 use super::leaf;
-use super::node::{self, Item, Malformed, Node};
-use super::tree::{BTree, Error, Split, node_of, visit};
+#[cfg(any(test, feature = "testing"))]
+use super::node;
+use super::node::{Item, Malformed, Node};
+#[cfg(any(test, feature = "testing"))]
+use super::tree::Split;
+use super::tree::{BTree, Error, node_of, visit};
 
 struct Page {
     incomplete: bool,
@@ -389,6 +393,7 @@ impl BTree {
 
     /// Swap the first two entries of leaf `pid`. Plants a fault for a test of the checks.
     #[doc(hidden)]
+    #[cfg(any(test, feature = "testing"))]
     pub fn misorder_leaf<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), Error> {
         let (mut items, bounds) = {
             let page = pager.read(pid)?;
@@ -409,6 +414,7 @@ impl BTree {
     /// Finish every split whose page lacks its downlink. Returns the number
     /// this pass finished, which leaves out any another thread finished
     /// first.
+    #[cfg(any(test, feature = "testing"))]
     pub fn repair<R: Runtime>(&self, pager: &Pager<R>) -> Result<usize, Error> {
         let height = self.height(pager)?;
         let mut finished = 0;

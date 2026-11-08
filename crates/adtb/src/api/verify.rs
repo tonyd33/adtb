@@ -104,7 +104,6 @@ fn fields(f: Found) -> (u32, Vec<KeptField>) {
 fn group(scope: VerifyScope, schema: &Schema) -> String {
     match scope {
         VerifyScope::Database => "database".into(),
-        VerifyScope::Scrub => SCRUB.into(),
         VerifyScope::Relation(r) => format!("relation {}", schema.ids.relations[&r]),
     }
 }
@@ -552,7 +551,7 @@ impl<R: Runtime> Engine<R> {
             kind: VERIFY_JOB,
             target: match scope {
                 VerifyScope::Relation(r) => schema.relation(r).name.clone(),
-                VerifyScope::Database | VerifyScope::Scrub => String::new(),
+                VerifyScope::Database => String::new(),
             },
             started,
         };
@@ -638,7 +637,6 @@ impl<R: Runtime> Engine<R> {
         let reads = |r: &BTreeSet<RelId>| match scope {
             VerifyScope::Database => true,
             VerifyScope::Relation(rel) => r.contains(&rel),
-            VerifyScope::Scrub => false,
         };
         let denied = self
             .catalog

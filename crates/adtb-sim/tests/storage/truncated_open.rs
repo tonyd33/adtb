@@ -11,14 +11,13 @@ use std::time::Duration;
 
 use adtb::key::Tid;
 use adtb::runtime::{Clock, Runtime, Threads};
-use adtb::storage::{HEADER_LEN, Pid, Quarantine};
-use adtb::testing::{Failed, Plant};
+use adtb::testing::{Failed, Pid, Plant, Quarantine, page::HEADER_LEN};
 use adtb::{CallOptions, CreateOptions, Database, Error, FatalReason, Log, OpenError, OpenOptions};
 use adtb_harness::common;
 use adtb_harness::damage::{DataFile, Files};
+use adtb_harness::process::finished;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::api;
-use adtb_simkit::harness::finished;
 use adtb_simkit::open;
 use adtb_testkit::profile::{assert_reached, every_case, share, sweep};
 

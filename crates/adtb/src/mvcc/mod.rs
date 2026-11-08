@@ -14,13 +14,17 @@ mod clog_tests;
 #[cfg(test)]
 mod tests;
 
+pub use clog::CommitLog;
 pub(crate) use clog::Settling;
-pub use clog::{CommitLog, PAGE_FORMAT};
-pub use conflict::{Probe, Write, check_write, probe_unique, read_before};
-pub use past::{Commit, Marker, Past};
+#[cfg(test)]
+pub use conflict::read_before;
+pub use conflict::{Probe, Write, check_write, probe_unique};
+pub use past::{Marker, Past};
 pub use snapshot::Snapshot;
 pub use ssi::{Access, Limits, Safety, ScanId, SerialId, Serializer};
-pub use txn::{PastError, RESERVATION, Transactions};
+#[cfg(test)]
+pub use txn::RESERVATION;
+pub use txn::{PastError, Transactions};
 pub use wait::{Waits, Watch};
 pub use watermark::{Holds, Scope, SnapshotId};
 

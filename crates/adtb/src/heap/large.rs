@@ -146,6 +146,7 @@ impl LargeStore {
     }
 
     /// Returns every page of the store, in directory order.
+    #[cfg(any(test, feature = "testing"))]
     pub fn pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
         self.space.pages(pager)
     }
@@ -245,6 +246,7 @@ impl LargeStore {
 
     /// Returns the pages a sweep reads: those touched since the sweep that last left them, in
     /// position order.
+    #[cfg(any(test, feature = "testing"))]
     pub fn touched<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
         Ok(self
             .space
@@ -281,6 +283,7 @@ impl LargeStore {
     }
 
     /// Returns the TID and header of every chunk of the value `pointer` names, first to last.
+    #[cfg(any(test, feature = "testing"))]
     pub fn chunks<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -531,6 +534,7 @@ impl LargeStore {
 
     /// Set the count of the head at `head` to `count`, marking its page touched when the count
     /// is 0. Refuses the page when no head is at `head`.
+    #[cfg(any(test, feature = "testing"))]
     pub fn recount<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -647,6 +651,7 @@ impl LargeStore {
 
     /// Returns what is wrong with the store's directory and pages, directory entries promising
     /// too little included.
+    #[cfg(any(test, feature = "testing"))]
     pub fn verify<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<String>, PageError> {
         let mut problems = self.check(pager)?;
         problems.extend(self.unsettled(pager)?);
@@ -664,6 +669,7 @@ impl LargeStore {
     }
 
     /// Set every inner directory entry to what its child holds, each in an update of its own.
+    #[cfg(any(test, feature = "testing"))]
     pub fn settle_directory<R: Runtime>(&self, pager: &Pager<R>) -> Result<(), PageError> {
         self.space.settle(pager)
     }

@@ -82,6 +82,7 @@ impl Sequences {
         Ok(Sequences { pid, counters })
     }
 
+    #[cfg(any(test, feature = "testing"))]
     pub fn root(&self) -> Pid {
         self.pid
     }

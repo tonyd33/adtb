@@ -193,6 +193,7 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Panic if a page appears twice, if the pool cannot hold every page at once, or if an
     /// edit writes the page's LSN or checksum or past its end.
+    #[cfg(any(test, feature = "testing"))]
     pub fn change(&self, changes: &[(Pid, Vec<Edit>)]) -> Result<Lsn, PageError> {
         let pids: Vec<Pid> = changes.iter().map(|(p, _)| *p).collect();
         let edits: Vec<Vec<Edit>> = changes.iter().map(|(_, e)| e.clone()).collect();
@@ -230,6 +231,7 @@ impl<R: Runtime> Pager<R> {
     /// records, in the same batch.
     ///
     /// Returns the LSN of the commit record.
+    #[cfg(any(test, feature = "testing"))]
     pub fn commit_all<F>(&self, xid: u64, guards: &mut [&mut PageExclusive<'_, R>], f: F) -> Lsn
     where
         F: FnOnce(&mut [&mut [u8]]),

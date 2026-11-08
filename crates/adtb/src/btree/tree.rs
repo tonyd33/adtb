@@ -443,6 +443,7 @@ impl BTree {
         Ok(self.descend_to(pager, self.root, key, 0, Side::At, f)?.1)
     }
 
+    #[cfg(any(test, feature = "testing"))]
     pub fn contains<R: Runtime>(&self, pager: &Pager<R>, entry: &[u8]) -> Result<bool, Error> {
         self.at_leaf(pager, entry, |n| leaf::contains(n, entry))
     }
@@ -571,6 +572,7 @@ impl BTree {
     ///
     /// A leaf the delete empties is unlinked and freed when it has a left
     /// sibling under the same parent and is not the rightmost of its level.
+    #[cfg(any(test, feature = "testing"))]
     pub fn delete<R: Runtime>(&self, pager: &Pager<R>, entry: &[u8]) -> Result<bool, Error> {
         let leaf = self.descend(pager, self.root, entry, 0)?.pid;
         let (mut g, passed) = self.claim(pager, leaf, entry, 0)?;

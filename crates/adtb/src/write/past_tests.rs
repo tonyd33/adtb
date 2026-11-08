@@ -2,14 +2,16 @@
 //! and `at instant` blocks, their refusals, vacuum moving versions to history, and a crash and
 //! reopen with history kept.
 
-use adtb_simkit::api;
-use adtb_simkit::open;
+use crate::test_world::api;
+use crate::test_world::load as open;
+use adtb_harness::process;
+use adtb_harness::process::run;
 
 use std::time::SystemTime;
 
-use adtb::catalog::version_hash;
-use adtb::runtime::Clock;
-use adtb::{
+use crate::catalog::version_hash;
+use crate::runtime::Clock;
+use crate::{
     CallOptions, Database, Error, Log, OpenError, OpenOptions, Position, Registration,
     RejectReason, TxnCallOptions, TxnOptions, Value,
 };
@@ -18,8 +20,8 @@ use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::types::{Base, Ty};
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use adtb_simkit::open::options;
-use api::{run, sorted};
+use crate::test_world::load::options;
+use api::sorted;
 
 const STOCK: &str = r"module stock
 add module stock
@@ -148,7 +150,7 @@ fn with_history<T>(
     seed: u64,
     body: impl FnOnce(&SimRuntime, &Database<SimRuntime>, Position, Position) -> T,
 ) -> T {
-    api::once(seed, |rt| {
+    process::once(seed, |rt| {
         let (db, first, second) = history(&rt);
         body(&rt, &db, first, second)
     })
@@ -247,14 +249,14 @@ fn history_survives_a_crash_and_reopen() {
         db.close().expect("close");
     });
     let report = run(&mut sim, |rt| {
-        let options = adtb::storage::Options {
+        let options = crate::storage::Options {
             page_size: 8192,
             threads: 4,
-            ..adtb::storage::Options::new("stock.adt")
+            ..crate::storage::Options::new("stock.adt")
         };
-        let (pager, _) = adtb::storage::Pager::open(rt.clone(), &options).expect("the pager");
-        let (catalog, txns) = adtb::catalog::Catalog::open(rt, &pager).expect("the catalog");
-        adtb::verify::verify(&pager, &catalog.inventory(&txns.commit_log()))
+        let (pager, _) = crate::storage::Pager::open(rt.clone(), &options).expect("the pager");
+        let (catalog, txns) = crate::catalog::Catalog::open(rt, &pager).expect("the catalog");
+        crate::verify::verify(&pager, &catalog.inventory(&txns.commit_log()))
     });
     assert!(report.is_clean() && report.complete, "{report:#?}");
 }
@@ -273,7 +275,7 @@ fn reports(migrations: &[&str], block: &[&str]) -> Registration {
 
 #[test]
 fn a_registered_block_pinned_past_the_databases_version_is_refused_at_open() {
-    api::once(22, |rt| {
+    process::once(22, |rt| {
         let opts = OpenOptions {
             registrations: vec![reports(&[STOCK], &[STOCK, RENAME])],
             ..options(2)

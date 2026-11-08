@@ -274,20 +274,26 @@ fn raised_tests(source: &str) -> Vec<(String, usize)> {
     raised
 }
 
-/// Returns the module path, with a trailing `::`, of a source under `tests/BINARY/`, a module of
-/// the test binary rooted at `tests/BINARY/main.rs`, and the empty string for any other source.
+/// Returns the module path, with a trailing `::`, of a source under `src/`, a module of the
+/// crate rooted at `src/lib.rs`, or under `tests/BINARY/`, a module of the test binary rooted at
+/// `tests/BINARY/main.rs`, and the empty string for any other source.
 fn module_prefix(source: &Path) -> String {
     let parts: Vec<_> = source.iter().filter_map(|part| part.to_str()).collect();
-    let Some(tests) = parts.iter().rposition(|part| *part == "tests") else {
-        return String::new();
+    let below = if let Some(src) = parts.iter().position(|part| *part == "src") {
+        &parts[src + 1..]
+    } else {
+        let Some(tests) = parts.iter().rposition(|part| *part == "tests") else {
+            return String::new();
+        };
+        let Some(below_binary) = parts.get(tests + 2..) else {
+            return String::new();
+        };
+        below_binary
     };
-    let Some(below_binary) = parts.get(tests + 2..) else {
-        return String::new();
-    };
-    below_binary
+    below
         .iter()
         .map(|part| part.strip_suffix(".rs").unwrap_or(part))
-        .filter(|module| !matches!(*module, "main" | "mod"))
+        .filter(|module| !matches!(*module, "main" | "mod" | "lib"))
         .map(|module| format!("{module}::"))
         .collect()
 }
@@ -308,6 +314,14 @@ fn a_module_of_a_test_binary_prefixes_its_tests() {
     );
     assert_eq!(module_prefix(Path::new("crates/s/tests/cap.rs")), "");
     assert_eq!(module_prefix(Path::new("crates/s/src/lib.rs")), "");
+    assert_eq!(
+        module_prefix(Path::new("crates/s/src/storage/lost_bitmap_tests.rs")),
+        "storage::lost_bitmap_tests::"
+    );
+    assert_eq!(
+        module_prefix(Path::new("crates/s/src/plan/tests/mod.rs")),
+        "plan::tests::"
+    );
 }
 
 /// Returns each `test(=NAME)` override of a nextest config with its `threads-required`.

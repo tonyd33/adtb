@@ -22,28 +22,31 @@ mod wide;
 #[cfg(test)]
 mod exec_tests;
 #[cfg(test)]
+mod host_fns_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod textual_tests;
 
 pub use broken::Broken;
 pub(crate) use host::canonical;
-pub use host::{HostBody, HostCall, HostError, Hosts};
+pub use host::{HostBody, HostError, Hosts};
 pub use ir::{Program, compile};
 pub use memory::{Arena, Budget, Grant};
 pub(crate) use prim::print;
 pub use rot::{Rot, detail};
-pub use sched::{
-    Admission, Admitted, Entry, Priority, Refusal, Refused, Resumable, Scheduler, Step, Stopped,
-    Task,
-};
+#[cfg(test)]
+pub use sched::{Admission, Task};
+pub use sched::{Admitted, Entry, Priority, Refusal, Refused, Resumable, Scheduler, Step, Stopped};
 pub use store::{
-    AtSnapshot, Histories, IndexedRows, Listing, Named, PastReads, ProbeBounds, Reads, Store,
-    StoredHeap, StoredIndex,
+    AtSnapshot, Histories, IndexedRows, Named, PastReads, ProbeBounds, Reads, Store, StoredHeap,
+    StoredIndex,
 };
 pub(crate) use store::{Conv, conv, from_stored, to_key, to_stored};
 pub use stream::{Produced, Production, produce};
-pub use value::{F32, F64, Val};
+#[cfg(test)]
+pub use value::F32;
+pub use value::{F64, Val};
 pub(crate) use wide::decimal_fits;
 
 use std::sync::Arc;

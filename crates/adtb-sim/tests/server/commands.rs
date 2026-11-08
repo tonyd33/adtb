@@ -1,12 +1,13 @@
 //! Commands of ad hoc text run in process: explain, explain analyze, vacuum and set setting.
 
+use adtb_harness::process::once;
 use adtb_simkit::api;
 
 use adtb::{Database, Log};
 use adtb_sim::SimRuntime;
 
 use adtb_simkit::open::options;
-use api::{once, printed, result, results};
+use api::{printed, result, results};
 
 const SCHEMA: &str = r"module app
 add module app

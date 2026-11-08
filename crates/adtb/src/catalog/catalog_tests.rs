@@ -1,19 +1,20 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb::catalog::{Catalog, Error, applied, declared, version_hash};
-use adtb::key::{CtorId, Value};
-use adtb::mvcc::{Scope, Transactions};
-use adtb::plan::{Element, IndexId};
-use adtb::storage::{Damage, HEADER_LEN, Options, Pager, Pid};
-use adtb::verify::{self, Finding, Problem, Report};
+use crate::catalog::{Catalog, Error, applied, declared, version_hash};
+use crate::key::{CtorId, Value};
+use crate::mvcc::{Scope, Transactions};
+use crate::plan::{Element, IndexId};
+use crate::storage::{Damage, HEADER_LEN, Options, Pager, Pid};
+use crate::verify::{self, Finding, Problem, Report};
+use adtb_harness::process::finished;
 use adtb_lang::types::RelId;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 
+use crate::test_world as harness;
 use adtb_harness::damage::DataFile;
-use adtb_simkit::harness;
 
-use harness::{PAGE, finished, options};
+use harness::{PAGE, options};
 
 const FRAMES: usize = 64;
 
@@ -415,7 +416,7 @@ fn a_header_naming_no_catalog_is_created_again() {
     let mut sim = Sim::new(7, Config::default());
     finished(&mut sim, |rt| {
         let pager = Pager::create(rt, &options(FRAMES)).expect("create");
-        adtb::heap::LargeStore::create(&pager, 1).expect("a stray page");
+        crate::heap::LargeStore::create(&pager, 1).expect("a stray page");
         pager.flush_log();
     });
     finished(&mut sim, |rt| {

@@ -2,18 +2,17 @@
 //! waiting command, what it never writes, a close and a crash while it runs, and the snapshots
 //! it leaves readable.
 
+use adtb::testing::{Lsn, Plant, page, panic_text};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use adtb::runtime::{Clock, Entropy, Runtime, Threads};
-use adtb::storage::{self, Lsn};
-use adtb::testing::Plant;
-use adtb::write::panic_text;
 use adtb::{
     CallOptions, Database, Error, Log, OpenOptions, RejectReason, TxnCallOptions, TxnOptions,
 };
+use adtb_harness::process;
 use adtb_harness::{common, crash, seeds};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::api;
@@ -72,7 +71,7 @@ fn pages(db: &Database<SimRuntime>, heaps: &[(&str, &str)]) -> Vec<Lsn> {
     heaps
         .iter()
         .flat_map(|(r, c)| t.pages(t.heap(r, c).unwrap()).unwrap())
-        .map(|p| storage::lsn(&t.probe().page(p).unwrap()))
+        .map(|p| page::lsn(&t.probe().page(p).unwrap()))
         .collect()
 }
 
@@ -111,7 +110,7 @@ fn started(rt: &SimRuntime, db: &Database<SimRuntime>) {
 /// Returns the pages of `items` after 200 rows, after 6 rounds of updating every row, or of
 /// inserting 150 rows in a transaction that rolls back, and after 6 more.
 fn grown(io: f64, aborted: bool) -> (usize, usize, usize) {
-    api::once(21, |rt| {
+    process::once(21, |rt| {
         let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
         budget(&db, io);
         fill(&db, 200);
@@ -148,7 +147,7 @@ fn dead_versions_leave_with_no_command() {
 
 #[test]
 fn versions_past_the_retention_window_leave_with_no_further_writes() {
-    api::once(22, |rt| {
+    process::once(22, |rt| {
         let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
         api::results(&db, "set setting RetentionWindow = { length: 2s }");
         fill(&db, 100);
@@ -187,7 +186,7 @@ fn a_background_vacuum_gives_way_to_a_command_waiting_for_it() {
         "set setting VacuumBudget = { io: 0.01, cpu: 1.0 }",
     ];
     for seed in seeds::sweep(0..3) {
-        api::once(seed, |rt| {
+        process::once(seed, |rt| {
             let db = vacuuming(&rt);
             sleep(&rt, rt.next_u64() % 2000);
             assert!(
@@ -217,7 +216,7 @@ const HOLDING: [&str; 5] = [
 #[test]
 fn a_background_vacuum_gives_way_to_a_first_task_waiting_for_it() {
     let mut sim = Sim::new(25, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
         budget(&db, 0.0);
         fill(&db, 200);
@@ -230,7 +229,7 @@ fn a_background_vacuum_gives_way_to_a_first_task_waiting_for_it() {
         .map(|(seed, text)| {
             let ran = catch_unwind(AssertUnwindSafe(|| {
                 let mut sim = Sim::with_files(seed, Config::default(), files.clone());
-                api::run(&mut sim, |rt| {
+                process::run(&mut sim, |rt| {
                     let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
                     budget(&db, 0.01);
                     started(&rt, &db);
@@ -252,7 +251,7 @@ fn a_background_vacuum_gives_way_to_a_first_task_waiting_for_it() {
 
 #[test]
 fn a_background_vacuum_writes_no_page_of_a_quarantined_heap() {
-    api::once(23, |rt| {
+    process::once(23, |rt| {
         let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
         budget(&db, 0.0);
         fill(&db, 300);
@@ -288,7 +287,7 @@ fn a_background_vacuum_writes_no_page_of_a_quarantined_heap() {
 #[test]
 fn a_close_during_a_background_vacuum_returns_promptly_and_leaves_it_sound() {
     let mut sim = Sim::new(24, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = vacuuming(&rt);
         let (held, began) = (db.clone(), rt.now());
         db.close().unwrap();
@@ -299,7 +298,7 @@ fn a_close_during_a_background_vacuum_returns_promptly_and_leaves_it_sound() {
         let after = held.testing().charged().steps;
         assert_eq!(steps, after, "no vacuum step runs once the close returns");
     });
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
         assert_eq!(Vec::<String>::new(), api::printed(db.verify(None).unwrap()));
     });
@@ -310,7 +309,7 @@ fn a_file_after_a_crash_with_the_background_vacuum_running_holds_clean() {
     crash::silence_fatal_panics();
     for seed in seeds::sweep(0..5) {
         let mut sim = Sim::new(seed, Config::default());
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled())
                 .close()
                 .unwrap();
@@ -339,7 +338,7 @@ fn a_file_after_a_crash_with_the_background_vacuum_running_holds_clean() {
             steps > 0,
             "seed {seed}: the background vacuum ran before the crash"
         );
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
             let found = api::printed(db.verify(None).unwrap());
             assert_eq!(Vec::<String>::new(), found, "seed {seed}");
@@ -375,7 +374,7 @@ fn a_background_vacuum_removes_no_version_a_transaction_reads() {
     let done = [(); 5].map(|()| Arc::new(AtomicUsize::new(0)));
     let mut overlapped = 0;
     for seed in seeds::sweep(0..4) {
-        api::once(seed, |rt| {
+        process::once(seed, |rt| {
             let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
             budget(&db, 1.0);
             fill(&db, 60);
@@ -429,7 +428,7 @@ fn a_background_vacuum_removes_no_version_a_transaction_reads() {
 
 #[test]
 fn the_background_vacuum_and_a_scrub_pass_together_stay_within_the_budget() {
-    api::once(25, |rt| {
+    process::once(25, |rt| {
         let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
         budget(&db, 0.0);
         fill(&db, 2000);
@@ -479,7 +478,7 @@ fn removed(db: &Database<SimRuntime>, rel: &str) -> i64 {
 
 #[test]
 fn a_relation_with_all_visible_pages_is_due_at_its_page_count() {
-    api::once(26, |rt| {
+    process::once(26, |rt| {
         let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
         let t = "t".repeat(700);
         for from in (1..=600).step_by(100) {
@@ -508,7 +507,7 @@ fn a_relation_with_all_visible_pages_is_due_at_its_page_count() {
 
 #[test]
 fn dead_versions_a_reader_holds_stay_counted_until_it_ends() {
-    api::once(27, |rt| {
+    process::once(27, |rt| {
         let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
         budget(&db, 1.0);
         fill(&db, 200);
@@ -539,7 +538,7 @@ fn dead_versions_a_reader_holds_stay_counted_until_it_ends() {
 /// Assert `quiet` is vacuumed of its deleted rows while `churn` runs during each background
 /// vacuum, so the relation it writes is due again as each one ends.
 fn vacuumed_beside(churn: &'static str, quiet: &str) {
-    api::once(28, |rt| {
+    process::once(28, |rt| {
         let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
         budget(&db, 1.0);
         fill(&db, 1500);
@@ -583,7 +582,7 @@ fn a_relation_due_beside_one_that_churns_is_still_vacuumed() {
 
 #[test]
 fn versions_a_failed_call_inserted_count_as_dead() {
-    api::once(29, |rt| {
+    process::once(29, |rt| {
         let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
         budget(&db, 1.0);
         fill(&db, 1);

@@ -1,10 +1,10 @@
 //! The faults a case injects, the write-outs it injects them at, and the run of one case: the
 //! sequence with its fault, then every consumer.
 
+use adtb::testing::{Pid, page};
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb::runtime::{IoError, OpKind};
-use adtb::storage::{self, Pid};
 use adtb_sim::{Action, Match, Plan as SimPlan, SimRuntime};
 use adtb_sys::runtime::Faults;
 
@@ -306,7 +306,7 @@ fn faulted(plan: &Plan, points: &[Point]) -> Option<Ran> {
 /// whole or not at all.
 fn sealed(pid: Pid, page: &[u8]) -> bool {
     let mut copy = page.to_vec();
-    storage::seal(pid, &mut copy);
+    page::seal(pid, &mut copy);
     copy == page
 }
 

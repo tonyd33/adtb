@@ -17,16 +17,41 @@ use std::sync::Arc;
 use crate::Database;
 use crate::btree;
 use crate::exec;
-use crate::mvcc::{Limits, Snapshot, Transactions, Xid};
+use crate::mvcc::Transactions;
 use crate::plan;
 use crate::runtime::Runtime;
-use crate::storage::{Damage, LogFinding, Lsn, PageError, Pager, Pid, Position, Quarantine};
+use crate::storage::Pager;
 use crate::write;
 
+pub use crate::heap::Flags;
+pub use crate::mvcc::{Limits, Snapshot, Xid};
+pub use crate::plan::{Rewrites, with_rewrites};
+use crate::storage::Position;
+pub use crate::storage::{
+    Damage, LogFinding, Lsn, PageError, PageKind, Pid, Position as LogPosition, Quarantine,
+    manifest_hash,
+};
 pub use crate::vacuum::Charged;
+pub use crate::write::panic_text;
 pub use control::{PageHold, VacuumHold};
 pub use object::{CommitLogPages, Object};
 pub use plant::{Plant, Planted, Site};
+
+/// Read and seal the header every page of the file begins with.
+pub mod page {
+    pub use crate::storage::{Crc32c, FIRST_EDITABLE, HEADER_LEN, kind, lsn, owner, seal};
+}
+
+/// Read, write and encode the entries of a dump.
+pub mod dump {
+    pub use crate::catalog::arrows::{BATCH_LIMIT, file_schema, read_rows, write_rows};
+    pub use crate::storage::{read_dump, write_dump};
+}
+
+/// Name the files a create leaves beside the database it makes until it finishes.
+pub mod create {
+    pub use crate::storage::{aside, creating, marker, marker_bytes};
+}
 
 /// The settings of an open only tests give. Each changes scheduling, never what a call returns
 /// on success.

@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use adtb::runtime::{OpKind, Runtime};
-use adtb::storage::{aside, creating, marker, marker_bytes};
+use adtb::testing::{create::aside, create::creating, create::marker, create::marker_bytes};
 use adtb::{Database, Log, OpenError, OpenOptions, TxnCallOptions, TxnOptions};
+use adtb_harness::process;
 use adtb_harness::search::{self, Files};
 use adtb_sim::{Config, Match, Sim, SimRuntime};
 use adtb_simkit::api;
@@ -174,7 +175,7 @@ fn a_create_crashed_anywhere_is_retried() {
             };
             let logged = first_block(&image);
             let mut sim = Sim::with_files(at as u64, Config::default(), image);
-            let names = api::run(&mut sim, |rt| {
+            let names = process::run(&mut sim, |rt| {
                 opened_or_retried(|o| Database::open_in(rt.clone(), FILE, &log(), o))
             });
             assert_eq!(vec![r#""ann""#], names, "event {at}, {stage:?}");
@@ -218,7 +219,7 @@ fn a_create_crashed_anywhere_is_retried() {
 fn a_create_under_a_regular_file_is_not_a_directory() {
     let plain = Files::from([("plain".to_owned(), Vec::new())]);
     let mut sim = Sim::with_files(1, Config::default(), plain);
-    let got = api::run(&mut sim, |rt| {
+    let got = process::run(&mut sim, |rt| {
         Database::open_in(rt, "plain/create.adt", &log(), &open::options(2)).map(drop)
     });
     let Err(OpenError::Io(e)) = got else {
@@ -238,7 +239,7 @@ fn a_create_under_a_regular_file_is_not_a_directory() {
 /// A create in a directory that does not exist answers the host's error, not damage.
 #[test]
 fn a_create_in_a_missing_directory_is_not_found() {
-    let got = api::once(1, |rt| {
+    let got = process::once(1, |rt| {
         Database::open_in(rt, "missing/create.adt", &log(), &open::options(2)).map(drop)
     });
     let Err(OpenError::Io(e)) = got else {
@@ -253,7 +254,7 @@ fn created(seed: u64) -> Files {
     let mut made = MADE.lock().unwrap();
     let files = made.entry(seed).or_insert_with(|| {
         let mut sim = Sim::new(seed, Config::default());
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             let db = Database::open_in(rt, FILE, &log(), &open::options(2)).unwrap();
             db.close().unwrap();
         });
@@ -289,7 +290,7 @@ fn built() -> (Files, [u8; 16]) {
 /// Create `FILE` over `files` on the simulator. Returns the outcome and the files after it.
 fn create_over(files: Files) -> (Result<(), OpenError>, Files) {
     let mut sim = Sim::with_files(1, Config::default(), files);
-    let got = api::run(&mut sim, |rt| {
+    let got = process::run(&mut sim, |rt| {
         Database::open_in(rt, FILE, &log(), &open::options(2)).map(|db| db.close().unwrap())
     });
     (got, sim.files())
@@ -481,7 +482,7 @@ fn opened_over(files: &Files) -> Vec<(Files, BTreeSet<String>)> {
         .into_iter()
         .map(|options| {
             let mut sim = Sim::with_files(1, Config::default(), files.clone());
-            api::run(&mut sim, |rt| {
+            process::run(&mut sim, |rt| {
                 let db = Database::open_in(rt, FILE, &log(), &options).expect("the open");
                 db.close().unwrap();
             });
@@ -596,7 +597,7 @@ fn an_empty_file_beside_its_own_published_log_is_rolled_forward() {
     );
     files.insert(FILE.to_owned(), Vec::new());
     let mut sim = Sim::with_files(1, Config::default(), files.clone());
-    let got = api::run(&mut sim, |rt| {
+    let got = process::run(&mut sim, |rt| {
         Database::open_in(rt, FILE, &log(), &no_create()).map(drop)
     });
     assert!(

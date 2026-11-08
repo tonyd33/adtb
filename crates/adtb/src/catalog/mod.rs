@@ -31,6 +31,12 @@ pub(crate) use holdings::UNHELD_MARK;
 pub(crate) use holdings::{LARGE_MARK, relation_mark};
 
 #[cfg(test)]
+mod catalog_tests;
+#[cfg(test)]
+mod grant_rows_tests;
+#[cfg(test)]
+mod oplog_tests;
+#[cfg(test)]
 mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -54,7 +60,6 @@ use crate::runtime::Runtime;
 use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid, Quarantine};
 use crate::verify::{self, Depth, Inventory, Problem, Report, Sum};
 
-pub use adtb_lang::schema::field_path;
 pub use broken::Broken;
 pub use deploy::Rewrite;
 pub use deployment::{Deployed, Deployment, Fact, Mark, Origin};
@@ -64,10 +69,14 @@ pub use keying::{IndexKeys, element_types};
 use keying::{broken, index_keys, row_key};
 pub use layout::OrderKeys;
 pub use oplog::{Hash, try_version_hash, version_hash};
-pub use readers::{PendingDrop, Read, Reader, source_at, stale};
+#[cfg(test)]
+pub use readers::PendingDrop;
+pub use readers::{Read, Reader, source_at, stale};
 pub(crate) use root::Changing;
 pub use rot::{Rot, detail};
-pub use rows::{IndexSpec, Rows, Step, applied, declared, indexed_fields, indexes};
+pub use rows::{IndexSpec, Rows, Step, indexed_fields, indexes};
+#[cfg(test)]
+pub use rows::{applied, declared};
 pub use validate::Denial;
 
 use change::Data;
@@ -975,6 +984,7 @@ impl Catalog {
     }
 
     /// Returns the page the file header names as the catalog's root.
+    #[cfg(test)]
     pub fn root(&self) -> Pid {
         self.root
     }
@@ -985,6 +995,7 @@ impl Catalog {
             .unwrap_or_else(|| panic!("relation {r:?} has a heap for constructor {ctor}"))
     }
 
+    #[cfg(test)]
     pub fn index_of(&self, id: u64) -> &Index {
         &self
             .indexes
@@ -1151,6 +1162,7 @@ impl Catalog {
     }
 
     /// Returns the order key of each constructor of every declared sum.
+    #[cfg(test)]
     pub fn order_keys(&self) -> &OrderKeys {
         &self.keys
     }

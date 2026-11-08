@@ -3,6 +3,7 @@
     reason = "drives real threads and clocks against a real file; removing it needs these races on the simulator"
 )]
 
+use adtb_harness::process;
 use adtb_testkit::refused_with;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -11,8 +12,7 @@ use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use adtb::runtime::{Clock, Runtime, Threads};
-use adtb::storage::{Damage, HEADER_LEN, PageKind, Quarantine};
-use adtb::testing::{Knobs, Object, Plant};
+use adtb::testing::{Damage, Knobs, Object, PageKind, Plant, Quarantine, page::HEADER_LEN};
 use adtb::{
     CallOptions, CancelToken, Database, Log, OpenOptions, TxnCallOptions, TxnOptions, Value,
 };
@@ -926,7 +926,7 @@ fn a_crash_at_the_swap_after_a_sequence_is_used_leaves_a_clean_file() {
     let times = Arc::new(Mutex::new(Vec::new()));
     let t2 = times.clone();
     let mut sim = Sim::new(5, Config::default());
-    api::run(&mut sim, move |rt| seq_body(&rt, Some(t2)));
+    process::run(&mut sim, move |rt| seq_body(&rt, Some(t2)));
     let at = times
         .lock()
         .unwrap()
@@ -938,7 +938,7 @@ fn a_crash_at_the_swap_after_a_sequence_is_used_leaves_a_clean_file() {
     let mut sim = Sim::new(5, Config::default());
     sim.crash_at(at);
     assert_eq!(Outcome::Crashed, sim.run(|rt| seq_body(&rt, None)));
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = seq_open(rt);
         assert_eq!(
             Vec::<String>::new(),
@@ -969,7 +969,7 @@ fn a_crash_anywhere_in_the_job_leaves_a_clean_file() {
     let times = Arc::new(Mutex::new(Vec::new()));
     let t2 = times.clone();
     let mut sim = Sim::new(7, Config::default());
-    api::run(&mut sim, move |rt| crash_job_body(&rt, Some(t2)));
+    process::run(&mut sim, move |rt| crash_job_body(&rt, Some(t2)));
     let (from, to) = {
         let t = times.lock().unwrap();
         (t[0], t[1])
@@ -985,7 +985,7 @@ fn a_crash_anywhere_in_the_job_leaves_a_clean_file() {
             sim.run(|rt| crash_job_body(&rt, None)),
             "point {i}"
         );
-        api::run(&mut sim, move |rt| {
+        process::run(&mut sim, move |rt| {
             let db = seq_open(rt);
             assert_eq!(
                 Vec::<String>::new(),
@@ -1032,7 +1032,7 @@ fn seed_history(db: &Database<SimRuntime>) -> String {
     )
 }
 
-fn history_root(db: &Database<SimRuntime>) -> adtb::storage::Pid {
+fn history_root(db: &Database<SimRuntime>) -> adtb::testing::Pid {
     let t = db.testing();
     t.root(t.history_index("app::ts").unwrap()).unwrap()
 }
@@ -1051,7 +1051,7 @@ fn a_damaged_history_key_index_is_rebuilt_from_the_history_heap() {
     let mut sim = Sim::new(3, Config::default());
     let past = Arc::new(Mutex::new(String::new()));
     let keep = past.clone();
-    api::run(&mut sim, move |rt| {
+    process::run(&mut sim, move |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
         let read = seed_history(&db);
         assert_eq!(vec!["1007"], api::query(&db, &read), "before the damage");
@@ -1086,7 +1086,7 @@ fn a_damaged_history_key_index_is_rebuilt_from_the_history_heap() {
         *keep.lock().unwrap() = read;
         db.close().unwrap();
     });
-    api::run(&mut sim, move |rt| {
+    process::run(&mut sim, move |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
         assert!(db.testing().probe().marks().is_empty());
         assert_eq!(
@@ -1104,7 +1104,7 @@ fn a_damaged_history_key_index_is_rebuilt_from_the_history_heap() {
 
 #[test]
 fn a_history_page_damaged_during_the_build_is_not_released_unrepaired() {
-    api::once(3, |rt| {
+    process::once(3, |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
         let read = seed_history(&db);
         let (d, r) = (db.clone(), read.clone());
@@ -1147,7 +1147,7 @@ fn a_history_page_damaged_during_the_build_is_not_released_unrepaired() {
 
 #[test]
 fn a_history_tree_that_cannot_be_rebuilt_keeps_the_mark() {
-    api::once(3, |rt| {
+    process::once(3, |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
         let read = seed_history(&db);
         let t = db.testing();
@@ -1190,7 +1190,7 @@ fn heap_mark(db: &Database<SimRuntime>) -> Quarantine {
 
 #[test]
 fn a_heap_marked_while_the_rebuild_waits_stops_it() {
-    api::once(3, |rt| {
+    process::once(3, |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
         for i in 1..=5 {
             api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
@@ -1220,7 +1220,7 @@ fn a_heap_marked_while_the_rebuild_waits_stops_it() {
 
 #[test]
 fn a_heap_marked_during_the_build_stops_the_swap() {
-    api::once(3, |rt| {
+    process::once(3, |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
         for i in 1..=5 {
             api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
@@ -1246,7 +1246,7 @@ fn a_heap_marked_during_the_build_stops_the_swap() {
 
 #[test]
 fn a_panic_after_the_swap_frees_no_page_of_the_new_index() {
-    api::once(3, |rt| {
+    process::once(3, |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
         for i in 1..=400 {
             api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
@@ -1280,7 +1280,7 @@ fn a_panic_after_the_swap_frees_no_page_of_the_new_index() {
 
 #[test]
 fn a_page_a_failed_sweep_freed_marks_the_database_once_reused_outside_every_walk() {
-    api::once(3, |rt| {
+    process::once(3, |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
         for i in 1..=400 {
             api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
@@ -1339,7 +1339,7 @@ fn a_page_a_failed_sweep_freed_marks_the_database_once_reused_outside_every_walk
 
 #[test]
 fn a_job_joins_the_threads_of_jobs_before_it() {
-    api::once(3, |rt| {
+    process::once(3, |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
         api::results(&db, "insert ts { id: ts.key(1), v: 1 }");
         for _ in 0..4 {
@@ -1356,7 +1356,7 @@ fn a_job_joins_the_threads_of_jobs_before_it() {
 
 #[test]
 fn a_read_runs_while_gated_writes_fill_the_workers() {
-    api::once(3, |rt| {
+    process::once(3, |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
         for i in 1..=20 {
             api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
@@ -1446,7 +1446,7 @@ fn a_failed_force_at_the_swap_crashes_and_loses_no_row() {
         "a failed force was caught as a failed rebuild"
     );
     sim.set_faults(Faults::none(512));
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
         assert_eq!(
             Vec::<String>::new(),
@@ -1463,7 +1463,7 @@ fn a_failed_force_at_the_swap_crashes_and_loses_no_row() {
 #[test]
 fn a_reindex_repairs_damage_under_a_crashed_change_the_open_could_not_free() {
     let mut sim = Sim::new(4, Config::default());
-    let damaged = api::run(&mut sim, |rt| {
+    let damaged = process::run(&mut sim, |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
         for i in 1..=400 {
             api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
@@ -1483,7 +1483,7 @@ fn a_reindex_repairs_damage_under_a_crashed_change_the_open_could_not_free() {
     let mut files = sim.files();
     DataFile::new(HIST_FILE, size).flip(&mut files, page, 300 - HEADER_LEN);
     let mut sim = Sim::with_files(4, Config::default(), files);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
         api::results(&db, "reindex ts index (v)");
         wait_jobs(&rt, &db);
@@ -1497,7 +1497,7 @@ fn a_reindex_repairs_damage_under_a_crashed_change_the_open_could_not_free() {
         }
         db.close().unwrap();
     });
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
         assert_eq!(
             Vec::<String>::new(),
@@ -1514,7 +1514,7 @@ const READ_WAIT_MS: u32 = 5_000;
 /// Run `caller` as two tasks on a database of two workers while an online rebuild holds its build
 /// phase, and a read task beside them. Returns whether the read ran during the rebuild.
 fn read_beside_tasks_waiting_on_a_rebuild(caller: &'static str) -> bool {
-    api::once(3, move |rt| {
+    process::once(3, move |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
         for i in 1..=20 {
             api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
@@ -1708,7 +1708,7 @@ const CHANGE_THEN_VACUUM: &str = "set setting RetentionWindow = { length: 2h }\n
 
 #[test]
 fn a_set_setting_then_vacuum_waiting_on_the_lock_changes_the_row_once() {
-    let extra = api::once(3, |rt| {
+    let extra = process::once(3, |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
         let session = Arc::new(db.role_authority().session("owner").unwrap());
         let before = xids_taken(&db);
@@ -1738,7 +1738,7 @@ fn a_command_after_one_that_took_effect_never_reruns_it() {
         "set setting RetentionWindow = { length: 2h }\nreindex ts index (v)\nvacuum ts";
     let mut polled = 0;
     for seed in 0..10 {
-        let (taken, waits) = api::once(seed, |rt| {
+        let (taken, waits) = process::once(seed, |rt| {
             let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
             for i in 1..=20 {
                 api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
@@ -1777,7 +1777,7 @@ fn changing_words(db: &Database<SimRuntime>) -> u64 {
 #[test]
 fn a_panic_inside_the_swap_frees_neither_tree_until_the_next_open() {
     let mut sim = Sim::new(5, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
         for i in 1..=3 {
             api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
@@ -1813,7 +1813,7 @@ fn a_panic_inside_the_swap_frees_neither_tree_until_the_next_open() {
         assert_eq!(1, changing_words(&db), "changing stays set");
         db.close().unwrap();
     });
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
         assert_eq!(
             Vec::<String>::new(),
@@ -1832,7 +1832,7 @@ fn a_panic_inside_the_swap_frees_neither_tree_until_the_next_open() {
 
 #[test]
 fn a_reindex_then_vacuum_waiting_on_the_lock_starts_one_job() {
-    let scans = api::once(3, |rt| {
+    let scans = process::once(3, |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
         for i in 1..=50 {
             api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));

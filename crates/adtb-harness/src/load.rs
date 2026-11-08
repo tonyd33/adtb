@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::thread::LocalKey;
 
 use adtb_lang::schema::{Schema, ValueDef};
+use adtb_lang::textual::{self, Form, Textual};
 use adtb_lang::types::{RelId, Ty};
 use adtb_reference::Value;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
@@ -294,6 +295,14 @@ fn changed(
         })
         .collect();
     any.then_some(Value::Ctor(*c, fs))
+}
+
+/// Returns reference value `v` of type `ty` of `schema` as a value of `V`, through its textual
+/// syntax.
+pub fn convert<V: Textual>(schema: &Schema, ty: &Ty, v: &Value) -> V {
+    let form = Form::of(schema, ty);
+    let text = textual::print(v, &form).unwrap_or_else(|e| panic!("{v:?} prints: {e}"));
+    textual::parse(&text, &form).unwrap_or_else(|e| panic!("`{text}` reads back: {e}"))
 }
 
 /// The contents of a simulator's files, by name.

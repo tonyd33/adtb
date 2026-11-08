@@ -1,7 +1,7 @@
 //! The operators of a statement for `explain`: one per write form, over the plan of each query
 //! the statement evaluates.
 
-use adtb_lang::kernel::{Kind, Tm, Var};
+use adtb_lang::kernel::{Kind, Tm};
 use adtb_lang::types::{RelId, Ty};
 
 use crate::plan::explain::{Arm, Describe, Node, ctor_name};
@@ -26,22 +26,16 @@ impl<R: Runtime> Database<R> {
 }
 
 impl<R: Runtime> Stmt<'_, R> {
-    /// Returns the operators of the statement, its parameters `params`.
-    pub fn explain(&self, params: &[Var]) -> Result<Node, Error> {
-        let mut scope: Vec<Var> = params.to_vec();
-        scope.extend(self.input_vars());
+    /// Returns the operators of the statement.
+    pub fn explain(&self) -> Result<Node, Error> {
         let d = Describe::new(self.schema(), &self.db.catalog);
         let root = self.root();
         match self.terms().kind(root) {
             Kind::Transact(b, _) => {
                 let b = *b;
-                Ok(Node::new(
-                    "Transact",
-                    "",
-                    vec![self.block_node(&d, b, &mut scope)?],
-                ))
+                Ok(Node::new("Transact", "", vec![self.block_node(&d, b)?]))
             }
-            _ => self.write_node(&d, root, &mut scope),
+            _ => self.write_node(&d, root),
         }
     }
 
@@ -53,80 +47,74 @@ impl<R: Runtime> Stmt<'_, R> {
         self.schema().relation(r).name.clone()
     }
 
-    fn query_node(&self, d: &Describe<'_>, t: Tm, scope: &[Var]) -> Result<Node, Error> {
-        Ok(d.plan(&self.plan_of(t, scope)?))
+    fn query_node(&self, d: &Describe<'_>, t: Tm) -> Result<Node, Error> {
+        Ok(d.plan(&self.plan_of(t)?))
     }
 
-    fn block_node(&self, d: &Describe<'_>, t: Tm, scope: &mut Vec<Var>) -> Result<Node, Error> {
+    fn block_node(&self, d: &Describe<'_>, t: Tm) -> Result<Node, Error> {
         match self.terms().kind(t).clone() {
             Kind::Block(w, mut k) => {
-                let mut steps = vec![self.write_node(d, w, scope)?];
+                let mut steps = vec![self.write_node(d, w)?];
                 while let Kind::Block(w, next) = self.terms().kind(k).clone() {
-                    steps.push(self.write_node(d, w, scope)?);
+                    steps.push(self.write_node(d, w)?);
                     k = next;
                 }
-                steps.push(self.block_node(d, k, scope)?);
+                steps.push(self.block_node(d, k)?);
                 Ok(Node::new("Then", "", steps))
             }
-            Kind::LetBang(x, w, k) => {
-                let bound = self.write_node(d, w, scope)?;
-                scope.push(x);
-                let rest = self.block_node(d, k, scope);
-                scope.pop();
+            Kind::LetBang(_, w, k) => {
+                let bound = self.write_node(d, w)?;
+                let rest = self.block_node(d, k);
                 Ok(Node::new("Let", "", vec![bound, rest?]))
             }
-            Kind::Let(x, e, k) => {
-                let bound = self.query_node(d, e, scope)?;
-                scope.push(x);
-                let rest = self.block_node(d, k, scope);
-                scope.pop();
+            Kind::Let(_, e, k) => {
+                let bound = self.query_node(d, e)?;
+                let rest = self.block_node(d, k);
                 Ok(Node::new("Let", "", vec![bound, rest?]))
             }
-            _ => self.write_node(d, t, scope),
+            _ => self.write_node(d, t),
         }
     }
 
     /// Returns the operators of `t`, a write or, outside a write, a query.
-    fn write_node(&self, d: &Describe<'_>, t: Tm, scope: &mut Vec<Var>) -> Result<Node, Error> {
+    fn write_node(&self, d: &Describe<'_>, t: Tm) -> Result<Node, Error> {
         let kind = self.terms().kind(t).clone();
-        let leaf = |kind: &str, r: RelId, rows: Tm, scope: &[Var]| -> Result<Node, Error> {
+        let leaf = |kind: &str, r: RelId, rows: Tm| -> Result<Node, Error> {
             Ok(Node::new(
                 kind,
                 self.rel_name(r),
-                vec![self.query_node(d, rows, scope)?],
+                vec![self.query_node(d, rows)?],
             ))
         };
         match kind {
             Kind::Skip => Ok(Node::new("Skip", "", Vec::new())),
-            Kind::Insert(r, rows) => leaf("Insert", r, rows, scope),
-            Kind::Delete(r, rows) => leaf("Delete", r, rows, scope),
-            Kind::Replace(r, rows, _) => leaf("Replace", r, rows, scope),
-            Kind::Upsert { rel, rows, .. } => leaf("Upsert", rel, rows, scope),
+            Kind::Insert(r, rows) => leaf("Insert", r, rows),
+            Kind::Delete(r, rows) => leaf("Delete", r, rows),
+            Kind::Replace(r, rows, _) => leaf("Replace", r, rows),
+            Kind::Upsert { rel, rows, .. } => leaf("Upsert", rel, rows),
             Kind::Rejects { into, insert } => Ok(Node::new(
                 "Rejects into",
                 self.rel_name(into),
-                vec![self.write_node(d, insert, scope)?],
+                vec![self.write_node(d, insert)?],
             )),
             Kind::Par(ws) => {
                 let mut children = Vec::with_capacity(ws.len());
                 for w in ws {
-                    children.push(self.write_node(d, w, scope)?);
+                    children.push(self.write_node(d, w)?);
                 }
                 Ok(Node::new("Together", "", children))
             }
             Kind::Fail(_) => Ok(Node::new("Fail", "", Vec::new())),
             Kind::If(_, a, b) if self.is_write(t) => {
-                let a = self.write_node(d, a, scope)?;
-                let b = self.write_node(d, b, scope)?;
+                let a = self.write_node(d, a)?;
+                let b = self.write_node(d, b)?;
                 Ok(Node::new("If", "", vec![a, b]))
             }
             Kind::Case { scrutinee, arms } if self.is_write(t) => {
                 let ty = self.terms().ty(scrutinee).clone();
                 let mut n = Node::new("Route by constructor", "", Vec::new());
-                for (c, x, w) in arms {
-                    scope.push(x);
-                    let child = self.write_node(d, w, scope);
-                    scope.pop();
+                for (c, _, w) in arms {
+                    let child = self.write_node(d, w);
                     n.arms.push(Arm {
                         ctor: c,
                         name: ctor_name(self.schema(), &ty, c),
@@ -135,14 +123,12 @@ impl<R: Runtime> Stmt<'_, R> {
                 }
                 Ok(n)
             }
-            Kind::Let(x, e, w) if self.is_write(t) => {
-                let bound = self.query_node(d, e, scope)?;
-                scope.push(x);
-                let rest = self.write_node(d, w, scope);
-                scope.pop();
+            Kind::Let(_, e, w) if self.is_write(t) => {
+                let bound = self.query_node(d, e)?;
+                let rest = self.write_node(d, w);
                 Ok(Node::new("Let", "", vec![bound, rest?]))
             }
-            _ => self.query_node(d, t, scope),
+            _ => self.query_node(d, t),
         }
     }
 }

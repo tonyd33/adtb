@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
-use adtb_harness::load::{self, Files, Made, Running, Session};
+use adtb_harness::load::{self, Files, Made, Running, Session, convert};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::Ty;
 use adtb_reference::Value;
@@ -13,10 +13,9 @@ use adtb_testkit::corpus::migration;
 
 use crate::runtime::Runtime;
 use crate::{
-    AdHocTransaction, CreateOptions, Database, Log, OpenOptions, TxnCallOptions, TxnOptions,
+    AdHocTransaction, CreateOptions, Database, Log, OpenError, OpenOptions, TxnCallOptions,
+    TxnOptions,
 };
-
-use super::support::to_val;
 
 /// The data file a test's database lives in.
 pub const FILE: &str = "app.adt";
@@ -31,6 +30,26 @@ pub fn options(workers: usize) -> OpenOptions {
     }
 }
 
+/// Open the database in `file` with the schema `log` and `options`.
+pub fn open_in(
+    rt: &SimRuntime,
+    file: &str,
+    log: &Log,
+    options: &OpenOptions,
+) -> Result<Database<SimRuntime>, OpenError> {
+    Database::open_in(rt.clone(), file, log, options)
+}
+
+/// Open the database as [`open_in`] does. Panics, naming `file`, when it fails.
+pub fn opened(
+    rt: &SimRuntime,
+    file: &str,
+    log: &Log,
+    options: &OpenOptions,
+) -> Database<SimRuntime> {
+    open_in(rt, file, log, options).unwrap_or_else(|e| panic!("{file} opens: {e:?}"))
+}
+
 /// Open the database in [`FILE`] whose first migration adds module `app` with `decls`, creating
 /// it if it does not exist.
 pub fn open(rt: &SimRuntime, decls: &str) -> Database<SimRuntime> {
@@ -39,12 +58,15 @@ pub fn open(rt: &SimRuntime, decls: &str) -> Database<SimRuntime> {
 
 /// Open the database as [`open`] does, with `options`.
 pub fn open_with(rt: &SimRuntime, decls: &str, options: &OpenOptions) -> Database<SimRuntime> {
-    Database::open_in(rt.clone(), FILE, &Log::new([migration(decls)]), options)
-        .unwrap_or_else(|e| panic!("{FILE} opens: {e:?}"))
+    opened(rt, FILE, &Log::new([migration(decls)]), options)
 }
 
-/// Load `rows`, the rows of a reference database over `schema`, into `db` by relation name, as
-/// [`adtb_harness::load::load`] with [`Running::Left`] does. Returns the transaction left running.
+/// Load `rows`, the rows of a reference database over `schema`, into `db` by relation name,
+/// as [`committed_noise`] does, then begin the transaction [`running_noise`] returns, holding the
+/// read-only transaction until its writes are done. Returns that transaction.
+///
+/// Postconditions: those of [`committed_noise`] and [`running_noise`], every committed noise
+/// version present.
 pub fn rows_with_noise<'a, R: Runtime>(
     db: &'a Database<R>,
     schema: &Schema,
@@ -124,7 +146,7 @@ impl<'a, R: Runtime> Session for Api<'a, R> {
         let schema = self.0.schema();
         let params: Vec<_> = params
             .iter()
-            .map(|(n, t, v)| (*n, t.clone(), to_val(schema, t, v)))
+            .map(|(n, t, v)| (*n, t.clone(), convert(schema, t, v)))
             .collect();
         tx.query_text(text, &params, &TxnCallOptions::default())
             .unwrap_or_else(|e| panic!("`{text}` loads: {e:?}"));

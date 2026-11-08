@@ -23,14 +23,21 @@ mod heap_threads_tests;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
 pub use dir::max_fanout;
-pub use handle::{Heap, HeapNo, Judge, Link, Pruned, Updated, Upgrade, Version, fits, walk};
-pub use large::{Chunk, ChunkCheck, LargeStore};
+#[cfg(test)]
+pub use handle::Pruned;
+pub use handle::{Heap, HeapNo, Link, Updated, Version, fits, walk};
+pub use large::LargeStore;
 pub use named::{OrphanEntry, refuse_named};
 pub use prune::Fate;
+#[cfg(test)]
+pub use row::Pointer;
 pub(crate) use row::put_uvarint;
-pub use row::{CtorType, FIXED_SUM_PAYLOAD, FieldType, Layout, POINTER_LEN, Pointer, Stored};
-pub use version::{Flags, HEADER_LEN, Header, header_at, tid_bits, tid_from_bits};
+pub use row::{CtorType, FieldType};
+#[cfg(test)]
+pub use version::HEADER_LEN;
+pub use version::{Flags, Header, header_at};
 
 use crate::key::Tid;
 use crate::storage::PageError;

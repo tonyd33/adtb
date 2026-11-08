@@ -1,3 +1,4 @@
+use adtb_harness::process::{once, run};
 use adtb_simkit::api;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -9,7 +10,7 @@ use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_testkit::profile::{count, sweep};
 
 use adtb_simkit::open::options;
-use api::{once, result, run, sorted};
+use api::{result, sorted};
 
 fn opened(rt: &SimRuntime) -> Database<SimRuntime> {
     Database::open_in(rt.clone(), "roles.adt", &Log::default(), &options(2))
@@ -677,7 +678,7 @@ fn version_hash(log: &[&str]) -> String {
         source = source.migrate(&file, text).expect("the migration applies");
     }
     let schema = source.schema().expect("the source builds");
-    adtb::catalog::version_hash(&schema, &source)
+    adtb::version_hash(&schema, &source)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()

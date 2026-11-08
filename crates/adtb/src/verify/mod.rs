@@ -1,5 +1,10 @@
 //! Check a file's structures against each other and report each problem.
 
+#[cfg(test)]
+mod scrub_tests;
+#[cfg(test)]
+mod verify_tests;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
@@ -62,6 +67,7 @@ pub enum Problem {
 
 impl Problem {
     /// Returns whether [`repair`] mends the problem.
+    #[cfg(any(test, feature = "testing"))]
     pub fn repairable(&self) -> bool {
         matches!(
             self,
@@ -82,6 +88,7 @@ pub struct Depth {
 }
 
 impl Depth {
+    #[cfg(test)]
     pub const FULL: Depth = Depth {
         log: true,
         indexes: true,
@@ -117,6 +124,7 @@ pub struct Report {
 
 impl Report {
     /// Returns whether nothing is wrong.
+    #[cfg(test)]
     pub fn is_clean(&self) -> bool {
         self.findings.is_empty() && self.log.is_empty()
     }
@@ -131,6 +139,7 @@ impl Report {
     }
 
     /// Returns the findings [`repair`] does not mend.
+    #[cfg(test)]
     pub fn unrepairable(&self) -> Vec<&Finding> {
         self.findings
             .iter()
@@ -472,6 +481,7 @@ pub(crate) fn entries<R: Runtime>(
 /// allocation bitmap against the pages the structures refer to.
 ///
 /// Precondition: no write is in progress.
+#[cfg(test)]
 pub fn verify<R: Runtime>(pager: &Pager<R>, inventory: &Inventory) -> Report {
     verify_with(pager, inventory, Depth::FULL)
 }
@@ -549,6 +559,7 @@ pub fn verify_with<R: Runtime>(pager: &Pager<R>, inventory: &Inventory, depth: D
 ///
 /// Panics if `report` is not complete.
 #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
+#[cfg(test)]
 pub fn repair<R: Runtime>(
     pager: &Pager<R>,
     inventory: &Inventory,

@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "adtb-file",
  "adtb-harness",
+ "adtb-heap-cap",
  "adtb-lang",
  "adtb-reference",
  "adtb-sim",
@@ -54,6 +55,7 @@ version = "0.1.0"
 dependencies = [
  "adtb",
  "adtb-codegen",
+ "adtb-harness",
  "adtb-lang",
  "adtb-sim",
  "adtb-simkit",

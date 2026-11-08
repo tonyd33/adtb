@@ -96,6 +96,7 @@ impl Heap {
     /// Mark the version at `at` hot-updated with successor `next`. Plants a fault for a test of
     /// the checks.
     #[doc(hidden)]
+    #[cfg(any(test, feature = "testing"))]
     pub fn plant_next<R: Runtime>(
         &self,
         pager: &Pager<R>,

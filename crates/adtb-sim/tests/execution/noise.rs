@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb::exec::Val;
+use adtb::Value as Val;
 use adtb::key::Value as Stored;
 use adtb::testing::Knobs;
 use adtb::{Database, OpenOptions, TxnOptions};

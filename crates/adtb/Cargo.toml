@@ -9,9 +9,7 @@ publish.workspace = true
 [dependencies]
 adtb-file.workspace = true
 adtb-lang.workspace = true
-adtb-reference = { workspace = true, optional = true }
 adtb-sys.workspace = true
-adtb-testkit = { workspace = true, optional = true }
 blake3 = { version = "1.8.3", default-features = false }
 chacha20poly1305 = { version = "0.10.1", default-features = false, features = ["alloc", "stream"] }
 argon2 = { version = "0.5.3", default-features = false, features = ["zeroize"] }
@@ -25,7 +23,6 @@ unicode-normalization = { version = "0.1.26", default-features = false }
 zeroize = { version = "1.9.1", default-features = false, features = ["alloc"] }
 
 [features]
-plan-fixture = ["dep:adtb-reference", "dep:adtb-testkit"]
 testing = []
 
 [lints]
@@ -33,6 +30,7 @@ workspace = true
 
 [dev-dependencies]
 adtb-harness.workspace = true
+adtb-heap-cap.workspace = true
 adtb-lang = { workspace = true, features = ["test-heap-cap"] }
 adtb-reference.workspace = true
 adtb-sim.workspace = true

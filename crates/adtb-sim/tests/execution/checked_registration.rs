@@ -2,6 +2,7 @@
 //! family it comes to own, the recheck of its bundles at each migration, and their persistence
 //! across reopen and crash.
 
+use adtb_harness::process::run;
 use adtb_simkit::api;
 use adtb_simkit::open;
 
@@ -17,7 +18,7 @@ use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_testkit::profile::sweep;
 
 use adtb_simkit::open::options;
-use api::{query, run};
+use api::query;
 
 const SHOP: &str = r"module shop
 add module shop
@@ -77,7 +78,7 @@ fn hash(migrations: &[&str]) -> String {
             .unwrap_or_else(|r| panic!("`{text}` applies: {r:?}"));
     }
     let schema = source.schema().expect("the source builds");
-    adtb::catalog::version_hash(&schema, &source)
+    adtb::version_hash(&schema, &source)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()

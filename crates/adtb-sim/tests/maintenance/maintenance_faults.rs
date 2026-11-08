@@ -2,6 +2,7 @@
 //! migration run after acknowledged commits, and rot each page of the closed file. Every expected
 //! row comes from a table written here.
 
+use adtb::testing::{Knobs, PageKind, Pid, Quarantine, page, page::HEADER_LEN};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::panic::{self, AssertUnwindSafe};
@@ -12,8 +13,6 @@ use std::time::Duration;
 
 use adtb::key::Value;
 use adtb::runtime::{Instant, IoError, OpKind, Runtime, Threads};
-use adtb::storage::{self, HEADER_LEN, PageKind, Pid, Quarantine};
-use adtb::testing::Knobs;
 use adtb::{
     CallOptions, Database, DynRows, Error, FatalReason, Log, OpenError, OpenOptions,
     TxnCallOptions, TxnOptions,
@@ -21,6 +20,7 @@ use adtb::{
 use adtb_harness::common;
 use adtb_harness::crash::silence_fatal_panics;
 use adtb_harness::damage::DataFile;
+use adtb_harness::process;
 use adtb_harness::search::{self, Files};
 use adtb_lang::textual::print;
 use adtb_sim::{Action, Config, Match, OpLog, Outcome, Plan, Planned, Sim, SimRuntime};
@@ -274,7 +274,7 @@ fn failed(what: &str, e: impl std::fmt::Debug) -> String {
 
 fn seeded_files(workload: Workload) -> Files {
     let mut sim = Sim::new(SEED, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let opts = OpenOptions {
             create: open::options(2).create,
             ..no_create(workload)
@@ -415,7 +415,7 @@ fn run_workload(
 fn plain_open_cost(workload: Workload, files: &Files) -> (usize, usize) {
     let mut sim = Sim::with_files(SEED, Config::default(), files.clone());
     sim.record();
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = Database::open_in(rt.clone(), FILE, &old_log(), &no_create(workload))
             .expect("the control opens");
         commit(&db, workload.change, || {}).expect("the control commits");
@@ -559,7 +559,7 @@ fn assert_recovered(
         "{label}: the ledger"
     );
     let mut sim = Sim::with_files(SEED, Config::default(), files);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = Database::open_in(rt.clone(), FILE, &old_log(), &no_create(workload))
             .unwrap_or_else(|e| panic!("{label}: reopen: {e:?}"));
         settle(&db, &rt, label).unwrap_or_else(|e| panic!("{label}: jobs: {e:?}"));
@@ -646,7 +646,7 @@ fn search_failures(workload: Workload) -> String {
     let (lead, _) = step_lead(workload, &files);
     let ledger = Shared::default();
     let mut baseline = Sim::with_files(SEED, Config::default(), files.clone());
-    api::run(&mut baseline, |rt| {
+    process::run(&mut baseline, |rt| {
         run_workload(&rt, workload, &ledger, writes_and_forces()).expect("the baseline runs");
     });
     let also = step_positions(&ledger.lock().unwrap().marks(), lead);
@@ -1140,7 +1140,7 @@ fn index_objects<R: Runtime>(db: &Database<R>) -> Vec<RotObject> {
 fn rot_fixture() -> (Files, Owners, Vec<RotObject>) {
     let files = seeded_files(REINDEX);
     let mut sim = Sim::with_files(SEED, Config::default(), files);
-    let (heaps, indexes, objects) = api::run(&mut sim, |rt| {
+    let (heaps, indexes, objects) = process::run(&mut sim, |rt| {
         let db = Database::open_in(rt, FILE, &rot_log(), &no_create(REINDEX))
             .expect("the fixture opens");
         commit(&db, CHANGE_TEXT, || {}).expect("the change commits");
@@ -1177,7 +1177,7 @@ fn rot_fixture() -> (Files, Owners, Vec<RotObject>) {
     let heaps = heaps
         .iter()
         .flatten()
-        .map(|p| storage::owner(&bytes[DATA.range(*p)]))
+        .map(|p| page::owner(&bytes[DATA.range(*p)]))
         .collect();
     (files, (heaps, indexes), objects)
 }
@@ -1191,16 +1191,16 @@ fn page_class(at: usize, page: &[u8], owners: &Owners) -> String {
     if page.iter().all(|&b| b == 0) {
         return "blank".into();
     }
-    match PageKind::from_u16(storage::kind(page)) {
+    match PageKind::from_u16(page::kind(page)) {
         Some(PageKind::HeapFixed | PageKind::HeapSlotted) => {
-            if owners.0.contains(&storage::owner(page)) {
+            if owners.0.contains(&page::owner(page)) {
                 "application heap".into()
             } else {
                 "other heap".into()
             }
         }
         Some(PageKind::IndexLeaf | PageKind::IndexInner) => {
-            if owners.1.contains(&storage::owner(page)) {
+            if owners.1.contains(&page::owner(page)) {
                 "application btree".into()
             } else {
                 "other btree".into()
@@ -1634,13 +1634,13 @@ fn reads_crossing(object: &RotObject, at: usize, page: &[u8]) -> Vec<Crossing> {
 #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 fn pages_of(file: &[u8], object: &RotObject) -> Vec<usize> {
     let owned = |(_, page): &(usize, &[u8])| {
-        let kind = PageKind::from_u16(storage::kind(page));
+        let kind = PageKind::from_u16(page::kind(page));
         let wanted: &[PageKind] = if object.is_heap {
             &[PageKind::HeapFixed, PageKind::HeapSlotted]
         } else {
             &[PageKind::IndexLeaf]
         };
-        kind.is_some_and(|k| wanted.contains(&k)) && storage::owner(page) == object.owner
+        kind.is_some_and(|k| wanted.contains(&k)) && page::owner(page) == object.owner
     };
     let pages = file
         .chunks(PAGE)
@@ -1775,7 +1775,7 @@ const SLOT_COUNT_AT: usize = 32;
 
 /// Write the checksum of `page` as page `at` into its header, as the pager seals a page.
 fn sealed_as(at: usize, page: &mut [u8]) {
-    let sum = storage::Crc32c::new()
+    let sum = page::Crc32c::new()
         .update(&(at as u64).to_le_bytes())
         .update(&page[..CHECKSUM_AT])
         .update(&[0; 4])
@@ -1807,7 +1807,7 @@ fn foreign_image(pristine: &Files, at: usize, foreign: Foreign, donors: (usize, 
         Foreign::Leaf => page(donors.1),
         Foreign::Emptied => {
             let mut b = page(at);
-            let kind = PageKind::from_u16(storage::kind(&b));
+            let kind = PageKind::from_u16(page::kind(&b));
             assert_eq!(Some(PageKind::HeapSlotted), kind, "page {at}");
             b[SLOT_COUNT_AT..SLOT_COUNT_AT + 2].fill(0);
             b
@@ -1882,7 +1882,7 @@ fn a_valid_page_of_another_owner_or_lacking_the_slot_refuses_naming_its_holder()
     for (o, object) in objects.iter().filter(|o| o.is_heap).enumerate() {
         let at = first(object);
         let directory = file.chunks(PAGE).position(|p| {
-            storage::kind(p) == PageKind::FreeSpaceMap as u16 && storage::owner(p) == object.owner
+            page::kind(p) == PageKind::FreeSpaceMap as u16 && page::owner(p) == object.owner
         });
         let directory = Pid(directory.expect("the heap's directory root") as u64);
         let blamed = match object.mark {
@@ -1909,7 +1909,7 @@ fn a_valid_page_of_another_owner_or_lacking_the_slot_refuses_naming_its_holder()
                     (Foreign::Emptied, "lookup") => objects.iter().find(probed).expect("its index"),
                     _ => object,
                 };
-                let lsn = |f: &Files| storage::lsn(DATA.page(f, Pid(at as u64)));
+                let lsn = |f: &Files| page::lsn(DATA.page(f, Pid(at as u64)));
                 let stale = lsn(&image) < lsn(&pristine);
                 let blamed = if stale { Pid(at as u64) } else { blamed };
                 let page = (foreign != Foreign::Emptied).then_some(blamed);
@@ -2041,7 +2041,7 @@ fn sampled(objects: &[RotObject], from: usize) -> Vec<RotObject> {
 fn scrub_fixture() -> (Files, Owners, Vec<RotObject>) {
     let (files, owners, objects) = rot_fixture();
     let mut sim = Sim::with_files(SEED, Config::default(), files);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = Database::open_in(rt, FILE, &rot_log(), &no_create(REINDEX))
             .expect("the fixture opens");
         query(&db, SCRUB_SETTINGS).expect("the settings");

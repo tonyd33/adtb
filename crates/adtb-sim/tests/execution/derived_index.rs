@@ -2,6 +2,7 @@
 //! in-process API: building them by migration, keeping them through crashes, and checking them
 //! between concurrent writers.
 
+use adtb_harness::process::{once, run};
 use adtb_simkit::api;
 use adtb_simkit::open;
 
@@ -15,7 +16,7 @@ use adtb::{
 use adtb_sim::{Config, Sim, SimRuntime};
 
 use adtb_simkit::open::options;
-use api::{once, query, run};
+use api::query;
 
 const BILLING: &str = r"module billing
 add module billing

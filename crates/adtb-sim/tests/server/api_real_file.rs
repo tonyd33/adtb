@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use adtb::storage::HEADER_LEN;
+use adtb::testing::page::HEADER_LEN;
 use adtb::{
     CallOptions, CreateOptions, Database, Log, OpenError, OpenOptions, TxnCallOptions, TxnOptions,
 };
@@ -405,7 +405,7 @@ fn stamp_layout(file: &mut [u8], at: usize, copy: u64, layout: u32) {
     let region = &mut file[at..at + REGION];
     region[12..16].copy_from_slice(&layout.to_le_bytes());
     region[8..12].fill(0);
-    let sum = adtb::storage::Crc32c::new()
+    let sum = adtb::testing::page::Crc32c::new()
         .update(&copy.to_le_bytes())
         .update(region)
         .finish();
@@ -564,7 +564,7 @@ fn runs(db: &Database, text: &str) {
 }
 
 /// Returns a seeded file under a new directory with the page `pick` picks flipped.
-fn damaged(name: &str, pick: impl FnOnce(&Database) -> adtb::storage::Pid) -> PathBuf {
+fn damaged(name: &str, pick: impl FnOnce(&Database) -> adtb::testing::Pid) -> PathBuf {
     let path = scratch(name).join("app.adt");
     let db = Database::open(&path, &Log::new([SUM]), &options()).unwrap();
     runs(

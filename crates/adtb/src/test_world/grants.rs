@@ -1,12 +1,13 @@
-//! Write roles and grants into a catalog from a test.
+//! Write roles and grants into a catalog from a unit test.
 
-use adtb::catalog::{Catalog, OWNER_ROLE, Rewrite, values};
-use adtb::key::Value;
-use adtb::mvcc::Transactions;
-use adtb::runtime::Runtime;
-use adtb::storage::Pager;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
+
+use crate::catalog::{Catalog, OWNER_ROLE, Rewrite, values};
+use crate::key::Value;
+use crate::mvcc::Transactions;
+use crate::runtime::Runtime;
+use crate::storage::Pager;
 
 /// Returns relation `catalog::name` of `schema` and its one constructor `ctor`.
 pub fn catalog_relation(schema: &Schema, name: &str, ctor: &str) -> (RelId, u32) {

@@ -377,7 +377,7 @@ fn checks_at(text: &str, pin: usize) {
 fn browser_bundle_pins_the_current_schema_hash() {
     let source = version(MIGRATIONS.len());
     let schema = source.schema().unwrap();
-    let hash = adtb::catalog::version_hash(&schema, &source);
+    let hash = adtb::version_hash(&schema, &source);
     let hex: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
     let bundle = parse_bundle(WEB_BUNDLE, Options::default()).ok().unwrap();
     assert_eq!(bundle.header.pins.hash.as_deref(), Some(hex.as_str()));

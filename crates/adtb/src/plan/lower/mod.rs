@@ -27,7 +27,7 @@ const PROBE_COST: f64 = 4.0;
 /// The rows the fixed cost model assumes an unnested set holds.
 const SET_ROWS: f64 = 10.0;
 
-/// Returns the plan of `root`, a normal form in `terms` whose free variables are `params`.
+/// Returns the plan of `root`, a normal form in `terms`.
 ///
 /// Preconditions:
 /// - `root` is a normal form `adtb_lang::norm` returned for `schema`, in the arena `terms`.
@@ -39,7 +39,6 @@ pub fn plan(
     catalog: &Catalog,
     terms: &Terms,
     root: Tm,
-    params: &[Var],
     options: Options,
 ) -> Result<Plan, Error> {
     let input = Input {
@@ -48,7 +47,6 @@ pub fn plan(
         catalog,
         terms,
         root,
-        params,
     };
     plan_in(&input, options, false)
 }
@@ -64,7 +62,6 @@ pub fn plan_bounded(
     catalog: &Catalog,
     terms: &Terms,
     root: Tm,
-    params: &[Var],
 ) -> Result<Plan, Error> {
     let input = Input {
         schema,
@@ -72,19 +69,17 @@ pub fn plan_bounded(
         catalog,
         terms,
         root,
-        params,
     };
     plan_in(&input, Options::default(), true)
 }
 
-/// What [`plan`] plans: `root`, a normal form in `terms` whose free variables are `params`.
+/// What [`plan`] plans: `root`, a normal form in `terms`.
 struct Input<'a> {
     schema: &'a Schema,
     normal: &'a NormalProgram,
     catalog: &'a Catalog,
     terms: &'a Terms,
     root: Tm,
-    params: &'a [Var],
 }
 
 fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Result<Plan, Error> {
@@ -94,7 +89,6 @@ fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Result<Plan, E
         catalog,
         terms,
         root,
-        params,
     } = *input;
     user_code(schema, terms, root)?;
     let mut p = Planner {
@@ -118,8 +112,8 @@ fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Result<Plan, E
     collect_eval(catalog, &root, &mut reads);
     Ok(Plan {
         terms: p.t,
-        params: params.to_vec(),
         root,
+        #[cfg(test)]
         ty: terms.ty(input.root).clone(),
         reads,
     })

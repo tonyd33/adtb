@@ -88,6 +88,7 @@ pub fn owner(page: &[u8]) -> u32 {
 }
 
 /// Flip a bit of the page's owner, which a second flip undoes.
+#[cfg(any(test, feature = "testing"))]
 pub fn flip_owner(page: &mut [u8]) {
     page[OWNER] ^= 1;
 }

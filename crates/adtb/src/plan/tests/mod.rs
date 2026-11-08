@@ -10,12 +10,12 @@ use super::fixture::{Fixture, running, variants};
 use super::*;
 use interp::Interp;
 
-fn plan_with(f: &Fixture, terms: &Terms, t: Tm, params: &[Var], rewrites: Rewrites) -> Plan {
+fn plan_with(f: &Fixture, terms: &Terms, t: Tm, rewrites: Rewrites) -> Plan {
     let options = Options {
         rewrites,
         hiding: false,
     };
-    plan(&f.schema, &f.normal, &f.catalog, terms, t, params, options)
+    plan(&f.schema, &f.normal, &f.catalog, terms, t, options)
         .unwrap_or_else(|e| panic!("no plan: {e}"))
 }
 
@@ -31,10 +31,9 @@ fn outcome(f: &Fixture, text: &str, params: &[(&str, &str, Value)]) -> R<Value> 
         .iter()
         .map(|(name, _, v)| (n.params[*name], v.clone()))
         .collect();
-    let vars: Vec<Var> = bound.iter().map(|(v, _)| *v).collect();
     let want = f.reference(text, params);
     for (name, rw) in variants() {
-        let p = plan_with(f, &n.terms, t, &vars, rw);
+        let p = plan_with(f, &n.terms, t, rw);
         assert_eq!(want, run(f, &p, &bound), "`{text}` with {name}");
     }
     want
@@ -59,7 +58,7 @@ fn agrees_query(f: &Fixture, decl: &str, args: Vec<Value>) {
     let want = adtb_reference::Interpreter::new(&f.schema, &f.program, &f.db)
         .eval(&q.terms, q.body, &bound);
     for (name, rw) in variants() {
-        let p = plan_with(f, &q.terms, q.body, &q.params, rw);
+        let p = plan_with(f, &q.terms, q.body, rw);
         assert_eq!(want, run(f, &p, &bound), "`{decl}` with {name}");
     }
     assert!(want.is_ok(), "`{decl}` aborts: {want:?}");
@@ -67,8 +66,7 @@ fn agrees_query(f: &Fixture, decl: &str, args: Vec<Value>) {
 
 fn adhoc_plan(f: &Fixture, text: &str, params: &[(&str, &str)], rw: Rewrites) -> Plan {
     let (n, t) = f.normal(text, params);
-    let vars: Vec<Var> = params.iter().map(|(name, _)| n.params[*name]).collect();
-    plan_with(f, &n.terms, t, &vars, rw)
+    plan_with(f, &n.terms, t, rw)
 }
 
 fn key(i: i64) -> Value {
@@ -500,7 +498,7 @@ fn an_option_parameter_chooses_the_pipelines_at_start() {
         agrees_query(&f, SEARCH, args);
     }
     let q = f.query(SEARCH);
-    let p = plan_with(&f, &q.terms, q.body, &q.params, Rewrites::ALL);
+    let p = plan_with(&f, &q.terms, q.body, Rewrites::ALL);
     let spine = &query_of(&p.root).spine;
     assert!(matches!(spine, Spine::Case(..)), "{spine:?}");
     assert_eq!(4, pipelines(spine).len());
@@ -508,7 +506,6 @@ fn an_option_parameter_chooses_the_pipelines_at_start() {
         &f,
         &q.terms,
         q.body,
-        &q.params,
         Rewrites {
             unswitch: false,
             ..Rewrites::ALL
@@ -639,7 +636,6 @@ fn a_call_of_a_host_function_plans() {
         &f.catalog,
         &n.terms,
         t,
-        &[],
         Options::default(),
     )
     .map(|_| ());
@@ -656,7 +652,6 @@ fn a_write_is_refused() {
         &f.catalog,
         &n.terms,
         t,
-        &[],
         Options::default(),
     )
     .map(|_| ());
@@ -680,7 +675,6 @@ fn a_function_value_in_a_normal_form_is_an_internal_error() {
         &f.catalog,
         &terms,
         t,
-        &[],
         Options::default(),
     )
     .map(|_| ());
@@ -706,7 +700,6 @@ fn a_dereference_of_a_value_that_is_not_a_key_is_an_internal_error() {
         &f.catalog,
         &terms,
         t,
-        &[],
         Options::default(),
     )
     .map(|_| ());
@@ -716,14 +709,7 @@ fn a_dereference_of_a_value_that_is_not_a_key_is_an_internal_error() {
 /// Returns the bounded plan of `text` over the set parameter `xs` of type `ty`.
 fn bounded(f: &Fixture, text: &str, ty: &str) -> Result<Plan, Error> {
     let (normal, t) = f.normal(text, &[("xs", ty)]);
-    plan_bounded(
-        &f.schema,
-        &f.normal,
-        &f.catalog,
-        &normal.terms,
-        t,
-        &[normal.params["xs"]],
-    )
+    plan_bounded(&f.schema, &f.normal, &f.catalog, &normal.terms, t)
 }
 
 #[test]
@@ -735,7 +721,7 @@ fn a_bounded_plan_reads_every_relation_through_an_index_probe() {
     let shown = format!("{:?}", p.root);
     assert!(!shown.contains("Scan {"), "{shown}");
     let (normal, t) = f.normal(text, &[("xs", "Set (Key users)")]);
-    let none = plan_with(&f, &normal.terms, t, &[normal.params["xs"]], Rewrites::NONE);
+    let none = plan_with(&f, &normal.terms, t, Rewrites::NONE);
     assert!(format!("{:?}", none.root).contains("Scan {"));
 }
 

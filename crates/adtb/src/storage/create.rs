@@ -41,6 +41,7 @@ impl<R: Runtime> Pager<R> {
     /// built as [`create`] does and published.
     ///
     /// Panic if `options` breaks a limit of the file format.
+    #[cfg(any(test, feature = "testing"))]
     pub fn create(rt: R, options: &Options) -> Result<Pager<R>, OpenError> {
         let (pager, new) = match create(rt.clone(), options, &mut |_| Ok(()))? {
             Created::Finished(pager) => return Ok(pager),

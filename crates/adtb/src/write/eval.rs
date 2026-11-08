@@ -373,14 +373,14 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             }
         }
         let params: Vec<Var> = env.keys().copied().collect();
-        let key = (a, t, params.clone());
+        let key = (a, t, params);
         let cached = self.plans.borrow().get(&key).cloned();
         let program = match cached {
             Some(p) => p,
             None => {
-                let x =
-                    self.db
-                        .program(self.schema, self.arena(a), t, &params, self.caller.clone())?;
+                let x = self
+                    .db
+                    .program(self.schema, self.arena(a), t, self.caller.clone())?;
                 let x = Arc::new(x);
                 self.plans.borrow_mut().insert(key, x.clone());
                 x
@@ -393,10 +393,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         self.fill(a, &ty, v)
     }
 
-    /// Returns the plan of term `t` of the statement, its free variables among `params`.
-    pub fn plan_of(&self, t: Tm, params: &[Var]) -> Result<crate::plan::Plan, Error> {
-        self.db
-            .plan(self.schema, self.arena(Arena::Statement), t, params)
+    /// Returns the plan of term `t` of the statement.
+    pub fn plan_of(&self, t: Tm) -> Result<crate::plan::Plan, Error> {
+        self.db.plan(self.schema, self.arena(Arena::Statement), t)
     }
 
     pub fn schema(&self) -> &'a Schema {
@@ -412,10 +411,6 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     }
 
     /// Returns the variables standing for reads of temp relations and file scans.
-    pub fn input_vars(&self) -> impl Iterator<Item = Var> + '_ {
-        self.inputs.keys().copied()
-    }
-
     fn fill(&self, a: Arena, ty: &Ty, v: Val) -> Result<Val, Error> {
         let occurrences = match a {
             Arena::Statement => &self.fresh,
@@ -1420,13 +1415,12 @@ fn normalise(plus: &mut Rows, minus: &mut Rows) {
 }
 
 impl<R: Runtime> Database<R> {
-    /// Returns the plan of term `t` of `terms`, its free variables among `params`.
+    /// Returns the plan of term `t` of `terms`.
     pub(super) fn plan(
         &self,
         schema: &Schema,
         terms: &Terms,
         t: Tm,
-        params: &[Var],
     ) -> Result<crate::plan::Plan, Error> {
         let usable = self.usable_catalog();
         crate::plan::plan(
@@ -1435,7 +1429,6 @@ impl<R: Runtime> Database<R> {
             usable.as_deref().unwrap_or(&self.catalog),
             terms,
             t,
-            params,
             crate::plan::Options::default(),
         )
         .map_err(|e| match e {
@@ -1444,17 +1437,15 @@ impl<R: Runtime> Database<R> {
         })
     }
 
-    /// Returns the program of term `t` of `terms` run for `caller`, its free variables among
-    /// `params` and its host functions bound.
+    /// Returns the program of term `t` of `terms` run for `caller`, its host functions bound.
     pub(super) fn program(
         &self,
         schema: &Schema,
         terms: &Terms,
         t: Tm,
-        params: &[Var],
         caller: Option<Val>,
     ) -> Result<exec::Program, Error> {
-        let plan = self.plan(schema, terms, t, params)?;
+        let plan = self.plan(schema, terms, t)?;
         let mut program = exec::compile(schema, &self.catalog, &plan, caller)?;
         program.shared.hosts = self.hosts.clone();
         Ok(program)

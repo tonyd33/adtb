@@ -1,20 +1,20 @@
 //! A bitmap page lost or zeroed is damage and never free space. Each damaged file refuses the call
 //! and marks, and leaves named pages as they were. A healthy file, cut by no fault, never refuses.
 
-use adtb::testing::{Failed, Knobs, Object, Plant, Probe};
+use crate::testing::{Failed, Knobs, Object, Plant, Probe};
+use adtb_harness::process::finished;
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb::key::Value;
-use adtb::runtime::Threads;
-use adtb::storage::{
+use crate::key::Value;
+use crate::runtime::Threads;
+use crate::storage::{
     self, Crc32c, Damage, HEADER_LEN, Lsn, Options, PageError, PageKind, Pager, Pid, Quarantine,
 };
-use adtb::{CallOptions, Database, Error, FatalReason, Log, OpenOptions};
+use crate::test_world::api;
+use crate::test_world::load as open;
+use crate::{CallOptions, Database, Error, FatalReason, Log, OpenOptions};
 use adtb_harness::damage::{DataFile, Files};
 use adtb_sim::{Config, Sim, SimRuntime};
-use adtb_simkit::api;
-use adtb_simkit::harness::finished;
-use adtb_simkit::open;
 use adtb_testkit::profile::sweep;
 
 const FILE: &str = "lost_bitmap.adt";

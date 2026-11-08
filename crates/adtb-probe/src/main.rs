@@ -8,8 +8,8 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use adtb::DeltaPart;
 use adtb::runtime::Runtime;
-use adtb::write::Part;
 use adtb::{CreateOptions, Database, Log, OpenOptions, Value};
 use adtb_conformance::{
     Difference, Directive, Got, Kind, Script, migrations, panic_message, run_engine_in,
@@ -370,9 +370,9 @@ fn checks<R: Runtime>(rt: R, schema: &str, dir: &Path, name: &str) -> Result<Str
     for p in plans? {
         let on = match &p.trigger {
             None => "any change".to_owned(),
-            Some((rel, Part::Inserted)) => format!("insert into {rel}"),
-            Some((rel, Part::Deleted)) => format!("delete from {rel}"),
-            Some((rel, Part::Changed)) => format!("change to {rel}"),
+            Some((rel, DeltaPart::Inserted)) => format!("insert into {rel}"),
+            Some((rel, DeltaPart::Deleted)) => format!("delete from {rel}"),
+            Some((rel, DeltaPart::Changed)) => format!("change to {rel}"),
         };
         let plan = p.plan.text();
         let plan = plan.trim_end_matches('\n').replace('\n', "\n  ");

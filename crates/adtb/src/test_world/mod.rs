@@ -1,6 +1,8 @@
 //! Hold the page size, file name and options of pager tests, and the component world they build.
 
+pub mod api;
 pub mod fixture;
+pub mod grants;
 pub mod load;
 pub mod recovery;
 pub mod rows;

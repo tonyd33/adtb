@@ -28,14 +28,17 @@ impl Snapshot {
         }
     }
 
+    #[cfg(any(test, feature = "testing"))]
     pub fn xmin(&self) -> Xid {
         self.xmin
     }
 
+    #[cfg(any(test, feature = "testing"))]
     pub fn xmax(&self) -> Xid {
         self.xmax
     }
 
+    #[cfg(any(test, feature = "testing"))]
     pub fn in_progress(&self) -> &[Xid] {
         &self.in_progress
     }

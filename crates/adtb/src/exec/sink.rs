@@ -227,7 +227,6 @@ impl<R: Runtime> Ctx<R> {
                 by,
                 aggs,
                 order,
-                ..
             } => self.group(set, *var, by, aggs, order, env)?,
             Sink::Top { keys, var, .. } => {
                 let n = count.expect("a top's count").int()?;

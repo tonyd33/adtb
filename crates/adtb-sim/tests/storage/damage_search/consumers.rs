@@ -6,11 +6,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use adtb::runtime::{IoError, OpKind, Runtime};
-use adtb::storage::{Damage, Pid, Quarantine};
+use adtb::testing::{Damage, Pid, Quarantine};
 use adtb::{
     ArchiveTarget, CallOptions, Database, Error, FatalReason, OpenOptions, Proof, RestorePoint,
     prove_in, restore_in,
 };
+use adtb_harness::process;
 use adtb_harness::search::Files;
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
 use adtb_simkit::api;
@@ -227,7 +228,7 @@ pub fn run(
     let failed = sim.logged(unreadable.clone());
     let mut failed_in_open = 0;
     let ran = catch_unwind(AssertUnwindSafe(|| {
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             if lasting {
                 rt.plan(Plan::new().rule(unreadable, Action::Fail(IoError::Failed)));
             }
@@ -259,7 +260,7 @@ fn reopen(seed: u64, files: Files, version: u8) -> Reopened {
         marks: BTreeSet::new(),
         reads: BTreeMap::new(),
     };
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         match Database::open_in(rt, FILE, &world::log(version), &no_create()) {
             Ok(db) => {
                 out.marks = db.testing().probe().marks();

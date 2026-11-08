@@ -69,6 +69,7 @@ enum Point {
     Heap(u32),
     /// An open scan of a heap, conflicting as a heap lock does.
     Scan(u32, ScanId),
+    #[cfg(test)]
     Schema(u64),
 }
 
@@ -327,6 +328,7 @@ impl Serializer {
     }
 
     /// Record that `id` scanned all of `heap`.
+    #[cfg(test)]
     pub fn read_heap(&mut self, id: SerialId, heap: u32) -> Result<(), SerializationFailure> {
         if self.records(id)? {
             self.lock_heap(id, heap);
@@ -381,6 +383,7 @@ impl Serializer {
     }
 
     /// Record that `id` ran a statement at schema version `version`.
+    #[cfg(test)]
     pub fn read_schema(&mut self, id: SerialId, version: u64) -> Result<(), SerializationFailure> {
         if self.records(id)? {
             self.lock(id, Point::Schema(version));
@@ -574,6 +577,7 @@ impl Serializer {
 
     /// Record a bulk load by `id` that fills `heaps` and adds entries for the constructors given
     /// with each index of `indexes`.
+    #[cfg(test)]
     pub fn bulk_insert(
         &mut self,
         id: SerialId,
@@ -596,6 +600,7 @@ impl Serializer {
     }
 
     /// Record a migration by `id` that produces schema version `version`.
+    #[cfg(test)]
     pub fn migrate(&mut self, id: SerialId, version: u64) -> Result<(), SerializationFailure> {
         self.check(id)?;
         let readers = self
@@ -608,6 +613,7 @@ impl Serializer {
 
     /// Replace every tuple, page and heap lock on `heaps` and every lock on `indexes` by heap
     /// locks on each heap of `into`, for a split or merge of constructors that rewrites them.
+    #[cfg(test)]
     pub fn rewrite(&mut self, heaps: &[u32], indexes: &[Pid], into: &[u32]) {
         let mut holders = BTreeSet::new();
         for (id, s) in &self.sxacts {
@@ -957,21 +963,25 @@ impl Serializer {
     }
 
     /// Returns the transactions `id` read before they wrote.
+    #[cfg(test)]
     pub fn writers_after(&self, id: SerialId) -> BTreeSet<SerialId> {
         self.get(id).outs.clone()
     }
 
     /// Returns the transactions that read before `id` wrote.
+    #[cfg(test)]
     pub fn readers_before(&self, id: SerialId) -> BTreeSet<SerialId> {
         self.get(id).ins.clone()
     }
 
     /// Returns the number of transactions the serializer still tracks, running or committed.
+    #[cfg(any(test, feature = "testing"))]
     pub fn tracked(&self) -> usize {
         self.sxacts.len()
     }
 
     /// Returns the number of SIREAD locks held, each range and index lock counted once.
+    #[cfg(test)]
     pub fn held(&self) -> usize {
         self.held
     }

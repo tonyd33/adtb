@@ -1,21 +1,22 @@
-use adtb::testing::Probe;
+use crate::testing::Probe;
+use adtb_harness::process;
+use adtb_harness::process::finished;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use adtb::runtime::{Clock, Entropy, Io, Op, OpKind, Runtime, Threads};
-use adtb::storage::{Lsn, Options, Pager, Position};
+use crate::runtime::{Clock, Entropy, Io, Op, OpKind, Runtime, Threads};
+use crate::storage::{Lsn, Options, Pager, Position};
 use adtb_sim::{Config, Finding, FindingKind, Ledger, Match, Outcome, Recovered, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 
+use crate::test_world as harness;
+use crate::test_world::api;
+use crate::test_world::load as open;
 use adtb_harness::{crash, search};
-use adtb_simkit::api;
-use adtb_simkit::harness;
-use adtb_simkit::open;
 use adtb_testkit::profile::assert_reached;
 
 use crash::{Reopened, Rounds, crash_loop, silence_fatal_panics};
-use harness::finished;
 
 fn options() -> Options {
     Options {
@@ -315,7 +316,7 @@ fn opening_with_too_small_a_pool_for_its_threads_panics() {
 
 #[test]
 fn a_pool_serves_five_frames_per_thread() {
-    assert_eq!(5, adtb::storage::LATCHES_PER_THREAD);
+    assert_eq!(5, crate::storage::LATCHES_PER_THREAD);
     let mut sim = Sim::new(8, Config::default());
     create(&mut sim);
     finished(&mut sim, |rt| {
@@ -338,7 +339,7 @@ fn a_pool_every_frame_of_which_stays_latched_reports_a_stall() {
         let pages: Vec<_> = (0..6)
             .map(|_| {
                 pager
-                    .allocate(1, adtb::storage::PageKind::HeapSlotted, 1)
+                    .allocate(1, crate::storage::PageKind::HeapSlotted, 1)
                     .unwrap()
             })
             .collect();
@@ -397,7 +398,7 @@ fn recovery_and_verify_read_the_log_a_chunk_at_a_time() {
     finished(&mut sim, move |rt| {
         let pager = Pager::create(rt, &b).unwrap();
         let pid = pager
-            .allocate(1, adtb::storage::PageKind::HeapSlotted, 1)
+            .allocate(1, crate::storage::PageKind::HeapSlotted, 1)
             .unwrap();
         for i in 0..3000u64 {
             pager
@@ -448,20 +449,20 @@ const COMMIT_PAIRS: [&str; 3] = [
        insert rows { id: rows.key(31), name: "second-b" }"#,
 ];
 
-fn public_commit_db<R: Runtime>(rt: R) -> adtb::Database<R> {
+fn public_commit_db<R: Runtime>(rt: R) -> crate::Database<R> {
     let mut opts = open::options(1);
     opts.pool_bytes = Some(1024 * 1024);
-    adtb::Database::open_in(rt, "commit.adt", &adtb::Log::new([COMMIT_SCHEMA]), &opts)
+    crate::Database::open_in(rt, "commit.adt", &crate::Log::new([COMMIT_SCHEMA]), &opts)
         .expect("the commit fixture opens")
 }
 
 fn commit_pair<R: Runtime>(
-    db: &adtb::Database<R>,
+    db: &crate::Database<R>,
     text: &str,
     before_commit: impl FnOnce(),
-) -> adtb::Position {
-    let mut tx = db.begin(&adtb::TxnOptions::default()).expect("begin");
-    tx.query_text(text, &[], &adtb::TxnCallOptions::default())
+) -> crate::Position {
+    let mut tx = db.begin(&crate::TxnOptions::default()).expect("begin");
+    tx.query_text(text, &[], &crate::TxnCallOptions::default())
         .expect("insert both rows");
     before_commit();
     tx.commit(None).expect("acknowledge both rows")
@@ -476,7 +477,7 @@ enum CommitStage {
 #[derive(Default)]
 struct PublicCommitSeen {
     attempted: usize,
-    acknowledged: Vec<adtb::Position>,
+    acknowledged: Vec<crate::Position>,
     /// The ops numbered when each commit was attempted, and when it returned.
     commits: Vec<(u64, Option<u64>)>,
 }
@@ -515,13 +516,13 @@ fn recovered_commit_prefix(files: search::Files, acknowledged: usize, attempted:
         ],
     ];
     let mut reopened = Sim::with_files(83, Config::default(), files);
-    let rows = api::run(&mut reopened, |rt| {
+    let rows = process::run(&mut reopened, |rt| {
         let db = public_commit_db(rt);
         let mut results = db
             .query_text(
                 "from r in rows select { id: r.id, name: r.name }",
                 &[],
-                &adtb::CallOptions::default(),
+                &crate::CallOptions::default(),
             )
             .expect("read recovered rows");
         assert_eq!(1, results.len(), "one recovered result at {at}");
@@ -543,7 +544,7 @@ fn public_commits_preserve_acknowledged_pairs_under_write_and_sync_failure() {
     let seed = 83;
     let seen = Arc::new(Mutex::new(PublicCommitSeen::default()));
     let mut initial = Sim::new(seed, Config::default());
-    let seed_ack = api::run(&mut initial, |rt| {
+    let seed_ack = process::run(&mut initial, |rt| {
         let db = public_commit_db(rt);
         commit_pair(&db, COMMIT_PAIRS[0], || {})
     });
@@ -567,7 +568,7 @@ fn public_commits_preserve_acknowledged_pairs_under_write_and_sync_failure() {
         rt.disarm();
     };
     let mut baseline = Sim::with_files(seed, Config::default(), files.clone());
-    api::run(&mut baseline, |rt| workload(&rt));
+    process::run(&mut baseline, |rt| workload(&rt));
     assert_eq!(
         2,
         seen.lock().unwrap().attempted,
@@ -632,7 +633,7 @@ fn public_commits_preserve_acknowledged_pairs_under_write_and_sync_failure() {
 fn public_commits_preserve_acknowledged_pairs_under_crashes_at_sampled_events() {
     let seed = 83;
     let mut initial = Sim::new(seed, Config::default());
-    api::run(&mut initial, |rt| {
+    process::run(&mut initial, |rt| {
         let db = public_commit_db(rt);
         commit_pair(&db, COMMIT_PAIRS[0], || {});
     });

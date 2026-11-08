@@ -16,6 +16,7 @@ adtb.workspace = true
 adtb-lang.workspace = true
 
 [dev-dependencies]
+adtb = { workspace = true, features = ["testing"] }
 adtb-heap-cap.workspace = true
 adtb-lang = { workspace = true, features = ["test-heap-cap"] }
 

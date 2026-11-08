@@ -111,7 +111,6 @@ fn cases_of(f: &Fixture, text: &str, params: &[(&str, &str, Value)]) -> Vec<Case
         .iter()
         .map(|(name, _, v)| (n.params[*name], v.clone()))
         .collect();
-    let vars: Vec<Var> = bound.iter().map(|(v, _)| *v).collect();
     let want = f.reference(text, params);
     let ty = n.terms.ty(t).clone();
     variants()
@@ -123,7 +122,6 @@ fn cases_of(f: &Fixture, text: &str, params: &[(&str, &str, Value)]) -> Vec<Case
                 &f.catalog,
                 &n.terms,
                 t,
-                &vars,
                 PlanOptions {
                     rewrites,
                     hiding: false,
@@ -1231,7 +1229,6 @@ fn a_call_of_a_wasm_function_is_refused_before_it_reaches_the_executor_and_a_hos
             &f.catalog,
             &n.terms,
             t,
-            &[],
             PlanOptions::default(),
         )
         .map(|_| ());

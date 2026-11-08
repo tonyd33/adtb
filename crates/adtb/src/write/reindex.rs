@@ -32,10 +32,6 @@ use super::schema::{Indexed, Rel};
 use super::{Bounds, Broken, Database, Error, Rerun, Stop, Txn};
 
 /// One index to rebuild, how, and who follows it.
-#[expect(
-    missing_debug_implementations,
-    reason = "holds a closure; removing it needs the phase callback to be a Debug type"
-)]
 pub struct Rebuild<'a> {
     pub rel: RelId,
     pub index: IndexId,

@@ -3,10 +3,10 @@
 //! with the damage reported and marked as the mapping of damage to marks says, or with a storage
 //! failure the contract allows; anything else is a violation.
 
+use adtb::testing::{Pid, Quarantine, page};
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb::Proof;
-use adtb::storage::{self, Pid, Quarantine};
 
 use super::case::{Fault, Plan};
 use super::consumers::{Backup, Consumer, Copy, Dumped, Finding, Lookups, Observed, Read};
@@ -188,7 +188,7 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
                 continue;
             };
             let rel = ids.owner(kind, w.owner);
-            let found = storage::lsn(&world::page(&case.observed.files, w.pid)).0;
+            let found = page::lsn(&world::page(&case.observed.files, w.pid)).0;
             let stale = is_lost(hit.fault) && found < w.lsn;
             let alive = !freed(kind) || plan.held_at_end(w.pid);
             let must_report =

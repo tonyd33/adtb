@@ -4,7 +4,6 @@ mod bundles;
 mod commands;
 mod embedding;
 mod files;
-mod grant_rows;
 mod host_fns;
 mod principal;
 mod registered;

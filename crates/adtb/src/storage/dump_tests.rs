@@ -5,21 +5,23 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
 
-use adtb::catalog::{Catalog, Dormant, version_hash};
-use adtb::key::Value;
-use adtb::runtime::{IoError, Op, OpKind, Runtime as _};
-use adtb::storage::{self, Envelope, Lsn, Pager};
-use adtb::{
+use crate::catalog::{Catalog, Dormant, version_hash};
+use crate::key::Value;
+use crate::runtime::{IoError, Op, OpKind, Runtime as _};
+use crate::storage::{self, Envelope, Lsn, Pager};
+use crate::test_world::api;
+use crate::test_world::grants;
+use crate::test_world::load as open;
+use crate::{
     ArchiveTarget, CallOptions, Called, Capability, Database, Error, FatalReason, Log, OpenOptions,
     Position, Registration, RejectReason, RestorePoint, Restored, TxnCallOptions, TxnOptions,
     restore_in, restore_report_in,
 };
+use adtb_harness::process;
 use adtb_harness::search::{self, Files};
 use adtb_lang::evolve::Source;
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
-use adtb_simkit::open;
-use adtb_simkit::{api, grants};
 use adtb_testkit::corpus;
 use adtb_testkit::profile::{assert_reached, count, every_case};
 
@@ -52,7 +54,7 @@ fn app_log() -> Vec<String> {
     vec![APP.to_owned(), LATER.to_owned()]
 }
 
-fn run<R: adtb::runtime::Runtime>(db: &Database<R>, text: &str) -> Result<(), Error> {
+fn run<R: crate::runtime::Runtime>(db: &Database<R>, text: &str) -> Result<(), Error> {
     db.query_text(text, &[], &CallOptions::default()).map(drop)
 }
 
@@ -121,7 +123,7 @@ fn every_relation(db: &Database<SimRuntime>) -> Vec<String> {
         .collect()
 }
 
-fn dump<R: adtb::runtime::Runtime>(db: &Database<R>) -> Result<(), Error> {
+fn dump<R: crate::runtime::Runtime>(db: &Database<R>) -> Result<(), Error> {
     run(db, &format!("dump to \"{DUMP}\""))
 }
 
@@ -288,7 +290,7 @@ fn register_bundles(rt: &SimRuntime, db: &Database<SimRuntime>) -> Vec<CatalogRo
 /// of [`register_bundles`], the third user deleted, and its dump, and the position the dump's snapshot reads.
 fn dumped() -> (Files, Position) {
     let mut sim = Sim::new(1, Config::default());
-    let at = api::run(&mut sim, |rt| {
+    let at = process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &Log::new(&[APP.to_owned()]), &open::options(2));
         run(&db, ROWS).unwrap();
         db.close().unwrap();
@@ -349,7 +351,7 @@ fn a_restored_dump_answers_every_relation_and_query_as_its_source() {
             .map(adtb_testkit::cases::Query::text)
             .collect();
         let mut sim = Sim::new(seed, Config::default());
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             let db = open::opened(&rt, FILE, &Log::new(&log), &open::options(2));
             for w in &case.load {
                 run(&db, w).unwrap_or_else(|e| panic!("{}: `{w}`: {e:?}", script.name));
@@ -369,7 +371,7 @@ fn a_restored_dump_answers_every_relation_and_query_as_its_source() {
 fn a_restore_keeps_deprecated_rows_ids_and_the_next_generated_key() {
     let (files, _) = dumped();
     let mut sim = Sim::with_files(2, Config::default(), files);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
         assert_same(&rt, &app_log(), &[], "app");
         let copy = open::opened(&rt, COPY, &Log::new(app_log()), &open::options(2));
@@ -390,7 +392,7 @@ fn a_restore_keeps_deprecated_rows_ids_and_the_next_generated_key() {
 fn a_restore_keeps_roles_capabilities_and_the_next_role_id() {
     let (files, _) = dumped();
     let mut sim = Sim::with_files(3, Config::default(), files);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
         assert_same(&rt, &app_log(), &[], "deployed");
         let (src, copy) = (
@@ -436,7 +438,7 @@ fn outcome(db: &Database<SimRuntime>, name: &str) -> Result<Vec<String>, RejectR
 fn each_restored_bundle_answers_or_refuses_its_calls_as_its_source() {
     let (files, _) = dumped();
     let mut sim = Sim::with_files(9, Config::default(), files);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let given = OpenOptions {
             registrations: vec![bundle("new-1.0", "", HELLO)],
             ..no_create()
@@ -501,7 +503,7 @@ fn granted_log() -> [String; 2] {
 /// after a deployment grant.
 fn granted() -> Files {
     let mut sim = Sim::new(4, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         open::opened(&rt, FILE, &Log::new(&[APP.to_owned()]), &open::options(2))
             .close()
             .unwrap();
@@ -528,7 +530,7 @@ fn report(rt: &SimRuntime) -> Result<Restored, Error> {
 /// grants.
 fn restored_grants() -> ([[String; 2]; 2], Vec<Dormant>) {
     let mut sim = Sim::with_files(4, Config::default(), granted());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let log = granted_log();
         let dormant = report(&rt).unwrap().dormant;
         let rows = [FILE, COPY].map(|name| {
@@ -603,8 +605,8 @@ fn owner_only(files: &Files) -> Files {
 /// Returns the dump in `files` as one written without `security`, whose `generators` hold no next
 /// key of `catalog::roles` or `catalog::grants`.
 fn unsecured(files: &Files) -> Files {
-    let schema = adtb::catalog::engine_schema();
-    let id = |n| schema.ids.relations[&adtb::catalog::values::relation(&schema, n)];
+    let schema = crate::catalog::engine_schema();
+    let id = |n| schema.ids.relations[&crate::catalog::values::relation(&schema, n)];
     let drawn = ["roles", "grants"].map(|n| format!("generator {} ", id(n)));
     let kept = |n: &str, t: &str| match n {
         "generators" => t
@@ -630,7 +632,7 @@ fn without(files: &Files, name: &str) -> Files {
     let mut kept = files.clone();
     kept.retain(|p, _| !p.starts_with("d/"));
     let mut sim = Sim::with_files(8, Config::default(), kept);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         storage::write_dump(&rt, DUMP, e, snapshot, &entries, None).unwrap();
     });
     sim.files()
@@ -672,19 +674,19 @@ fn assert_dormant(rt: &SimRuntime, (from, to): (&str, &str), owner: bool) {
 #[test]
 fn a_restore_without_the_role_of_a_log_grant_reports_it_dormant() {
     let mut sim = Sim::with_files(5, Config::default(), owner_only(&granted()));
-    api::run(&mut sim, |rt| assert_dormant(&rt, (DUMP, COPY), true));
+    process::run(&mut sim, |rt| assert_dormant(&rt, (DUMP, COPY), true));
 }
 
 #[test]
 fn a_dump_without_security_restores_the_owner_alone_and_log_grants_dormant() {
     let mut sim = Sim::with_files(6, Config::default(), unsecured(&granted()));
-    api::run(&mut sim, |rt| assert_dormant(&rt, (DUMP, COPY), true));
+    process::run(&mut sim, |rt| assert_dormant(&rt, (DUMP, COPY), true));
 }
 
 #[test]
 fn a_dormant_grant_stays_dormant_through_a_dump_and_restore_once_its_role_exists() {
     let mut sim = Sim::with_files(7, Config::default(), owner_only(&granted()));
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         assert_dormant(&rt, (DUMP, COPY), true);
         let copy = open::opened(&rt, COPY, &Log::new(granted_log()), &open::options(2));
         copy.role_authority().create_role("web").unwrap();
@@ -698,7 +700,7 @@ fn a_dormant_grant_stays_dormant_through_a_dump_and_restore_once_its_role_exists
 fn a_restored_file_begins_an_epoch_past_the_dump_and_keeps_no_past() {
     let (files, at) = dumped();
     let mut sim = Sim::with_files(3, Config::default(), files);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
         let copy = open::opened(&rt, COPY, &Log::new(app_log()), &open::options(2));
         let past = format!(
@@ -743,7 +745,7 @@ fn expired(bundle: &str) -> Result<Vec<String>, RejectReason> {
 #[test]
 fn a_lease_latched_in_the_dumping_session_stays_expired_after_restore() {
     let mut sim = Sim::new(17, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &Log::new(app_log()), &open::options(2));
         run(&db, "set setting LeaseGrace = { grace: 60s }").unwrap();
         let owner = db.role_authority().session("owner").unwrap();
@@ -764,7 +766,7 @@ fn a_lease_latched_in_the_dumping_session_stays_expired_after_restore() {
 #[test]
 fn a_registration_after_the_dump_snapshot_leaves_its_family_unowned_in_the_restore() {
     let mut sim = Sim::new(18, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &Log::new(app_log()), &open::options(2));
         let read_only = TxnOptions {
             read_only: true,
@@ -801,7 +803,7 @@ fn a_registration_after_the_dump_snapshot_leaves_its_family_unowned_in_the_resto
 #[test]
 fn a_dump_in_a_transaction_that_wrote_is_refused_and_a_read_only_one_dumps_its_snapshot() {
     let mut sim = Sim::new(16, Config::default());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &Log::new(&[APP.to_owned()]), &open::options(2));
         run(&db, ROWS).unwrap();
         let mut wrote = db.begin(&TxnOptions::default()).unwrap();
@@ -840,7 +842,7 @@ fn a_dump_in_a_transaction_that_wrote_is_refused_and_a_read_only_one_dumps_its_s
 fn a_restore_point_other_than_the_snapshot_is_unavailable() {
     let (files, at) = dumped();
     let mut sim = Sim::with_files(4, Config::default(), files);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let other = Position {
             lsn: at.lsn + 1,
             ..at
@@ -886,7 +888,7 @@ fn a_restore_to_an_existing_path_and_a_dump_to_a_full_directory_are_refused() {
     let (mut files, _) = dumped();
     files.insert(COPY.to_owned(), b"mine".to_vec());
     let mut sim = Sim::with_files(5, Config::default(), files.clone());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         rt.arm(changes().prefixed(COPY));
         is_invalid_naming(&restore_dump(&rt), "exists");
         assert_eq!(
@@ -923,9 +925,9 @@ add constraint slugged = from n in notes where slugify(n.body) != n.body select 
 #[test]
 fn a_restore_lacking_a_host_function_refuses_naming_it_and_one_given_it_restores() {
     let mut sim = Sim::new(6, Config::default());
-    api::run(&mut sim, |rt| {
-        let mut host_fns = adtb::HostFns::new();
-        host_fns.register("slugify", "1.0", adtb::Determinism::Deterministic, |b| {
+    process::run(&mut sim, |rt| {
+        let mut host_fns = crate::HostFns::new();
+        host_fns.register("slugify", "1.0", crate::Determinism::Deterministic, |b| {
             Ok(b.clone())
         });
         let options = OpenOptions {
@@ -945,7 +947,7 @@ fn a_restore_lacking_a_host_function_refuses_naming_it_and_one_given_it_restores
         );
         let mut io = rt.io();
         let listed = adtb_harness::common::complete(&rt, &mut io, Op::List { dir: String::new() });
-        let Ok(adtb::runtime::Done::Listed(top)) = listed.result else {
+        let Ok(crate::runtime::Done::Listed(top)) = listed.result else {
             panic!("{listed:?}");
         };
         let left: Vec<&String> = top.iter().filter(|p| p.starts_with(COPY)).collect();
@@ -1002,7 +1004,7 @@ fn a_flipped_byte_in_any_part_or_its_padding_is_named_and_nothing_is_written() {
         }
         bytes[at as usize] ^= 0x20;
         let mut sim = Sim::with_files(7, Config::default(), bad.clone());
-        let got = api::run(&mut sim, |rt| {
+        let got = process::run(&mut sim, |rt| {
             restore(&rt, RestorePoint::Latest, &no_create())
         });
         assert_eq!(*name, api::damaged_dump_part(got), "{name} at {at}");
@@ -1081,7 +1083,7 @@ fn with_parts(
     let mut kept = files.clone();
     kept.retain(|p, _| !p.starts_with("d/"));
     let mut sim = Sim::with_files(8, Config::default(), kept);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         storage::write_dump(&rt, DUMP, e, snapshot, &entries, None).unwrap();
     });
     sim.files()
@@ -1106,7 +1108,7 @@ fn resealed(files: &Files, edit: impl Fn(&str) -> String) -> Files {
 /// Returns what a restore of the dump in `files` answers, asserting it changed no file.
 fn refused_with(files: Files) -> Result<(), Error> {
     let mut sim = Sim::with_files(15, Config::default(), files.clone());
-    let got = api::run(&mut sim, |rt| {
+    let got = process::run(&mut sim, |rt| {
         restore(&rt, RestorePoint::Latest, &no_create())
     });
     assert_eq!(files, sim.files(), "the refused restore wrote: {got:?}");
@@ -1384,7 +1386,7 @@ fn a_dump_of_another_release_or_an_older_catalog_version_restores() {
         |_, t| t.to_owned(),
     );
     let mut sim = Sim::with_files(17, Config::default(), older);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
         assert_same(&rt, &app_log(), &[], "another release");
     });
@@ -1403,7 +1405,7 @@ enum Answer {
 /// path at the target, asserting a refused one changed no file.
 fn answered(files: &Files) -> (Answer, u64) {
     let mut sim = Sim::with_files(18, Config::default(), files.clone());
-    let (got, changed) = api::run(&mut sim, |rt| {
+    let (got, changed) = process::run(&mut sim, |rt| {
         rt.arm(changes().prefixed(COPY));
         let got = restore_dump(&rt);
         (got, rt.disarm())
@@ -1634,7 +1636,7 @@ fn an_empty_part_is_read_and_named_and_a_dump_read_of_another_kind_is_damage() {
     let mut not_kind = lines;
     not_kind[1] = "kind backup".to_owned();
     let mut sim = Sim::with_files(22, Config::default(), sealed_with(&files, &not_kind));
-    let read = api::run(&mut sim, |rt| storage::read_dump(&rt, DUMP, None).map(drop));
+    let read = process::run(&mut sim, |rt| storage::read_dump(&rt, DUMP, None).map(drop));
     assert!(
         matches!(&read, Err(storage::BackupError::Damaged { part }) if part == "manifest"),
         "{read:?}"
@@ -1654,7 +1656,7 @@ fn a_refused_restore_to_a_nested_path_removes_the_directories_it_made_and_no_oth
         },
     );
     let mut sim = Sim::with_files(19, Config::default(), bad.clone());
-    let got = api::run(&mut sim, |rt| {
+    let got = process::run(&mut sim, |rt| {
         let archive = ArchiveTarget::path(DUMP).unwrap();
         restore_in(
             rt,
@@ -1667,7 +1669,7 @@ fn a_refused_restore_to_a_nested_path_removes_the_directories_it_made_and_no_oth
     });
     assert_eq!("ids", api::damaged_dump_part(got));
     let mut io_sim = sim;
-    let dirs = api::run(&mut io_sim, |rt| {
+    let dirs = process::run(&mut io_sim, |rt| {
         let mut io = rt.io();
         let listed = adtb_harness::common::complete(
             &rt,
@@ -1678,7 +1680,7 @@ fn a_refused_restore_to_a_nested_path_removes_the_directories_it_made_and_no_oth
         );
         listed.result
     });
-    let Ok(adtb::runtime::Done::Listed(left)) = dirs else {
+    let Ok(crate::runtime::Done::Listed(left)) = dirs else {
         panic!("{dirs:?}");
     };
     assert_eq!(vec!["keep/mine".to_owned()], left);
@@ -1689,7 +1691,7 @@ fn a_refused_restore_to_a_nested_path_removes_the_directories_it_made_and_no_oth
 fn a_storage_failure_building_the_restored_file_is_fatal_and_leaves_nothing() {
     let (files, _) = dumped();
     let mut sim = Sim::with_files(21, Config::default(), files.clone());
-    let got = api::run(&mut sim, |rt| {
+    let got = process::run(&mut sim, |rt| {
         let partial = Match::kind(OpKind::CreateNew).containing(".partial");
         rt.plan(Plan::new().rule(partial, Action::Fail(IoError::Failed)));
         restore_dump(&rt)
@@ -1711,7 +1713,7 @@ fn a_restore_to_a_free_path_with_an_occupied_log_directory_is_refused_naming_it(
     let (mut files, _) = dumped();
     files.insert(format!("{COPY}-log/x"), b"x".to_vec());
     let mut sim = Sim::with_files(20, Config::default(), files.clone());
-    let got = api::run(&mut sim, |rt| {
+    let got = process::run(&mut sim, |rt| {
         restore(&rt, RestorePoint::Latest, &no_create())
     });
     is_invalid_naming(&got, &format!("`{COPY}-log` exists"));
@@ -1748,7 +1750,7 @@ fn ids_are_compared_as_rows_not_as_text() {
         ids_only(|ids| ids.replacen("types.key(1024)", "types.key(1030)", 1)),
     );
     let mut sim = Sim::with_files(9, Config::default(), reordered);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
     });
     assert_eq!("ids", api::damaged_dump_part(refused_with(one_off)));
@@ -1782,7 +1784,7 @@ fn assert_restored_or_absent(files: &Files, seed: u64, label: &str) {
     }
     assert!(has_log, "{label}: a file without its log");
     let mut sim = Sim::with_files(seed, Config::default(), files.clone());
-    api::run(&mut sim, |rt| assert_same(&rt, &app_log(), &[], label));
+    process::run(&mut sim, |rt| assert_same(&rt, &app_log(), &[], label));
 }
 
 fn restore_dump(rt: &SimRuntime) -> Result<(), Error> {
@@ -1864,7 +1866,7 @@ fn assert_dumped_or_absent(files: &Files, seed: u64, label: &str) {
         return;
     }
     let mut sim = Sim::with_files(seed, Config::default(), files.clone());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         restore(&rt, RestorePoint::Latest, &no_create())
             .unwrap_or_else(|e| panic!("{label}: {e:?}"));
         assert_same(&rt, &app_log(), &[], label);

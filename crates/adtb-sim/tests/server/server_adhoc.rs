@@ -1,5 +1,6 @@
 //! Ad hoc text of a role: charged against its own grants, and revealing nothing it cannot read.
 
+use adtb_harness::process::run;
 use adtb_testkit::refused_with;
 use std::ffi::{c_int, c_ulong};
 use std::path::PathBuf;
@@ -14,7 +15,7 @@ use adtb::{
 use adtb_lang::schema::ValueDef;
 use adtb_lang::types::{Base, RelId, Ty, TypeId};
 use adtb_sim::{Config, Sim, SimRuntime};
-use adtb_simkit::api::{query, run};
+use adtb_simkit::api::query;
 use adtb_simkit::open::options;
 
 const SCHEMA: &str = r#"module shop

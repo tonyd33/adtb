@@ -3,14 +3,15 @@
 
 use std::collections::BTreeSet;
 
-use adtb::catalog::Catalog;
-use adtb::storage::{Damage, Finding, HEADER_LEN, Options, Pager, Pid, Quarantine};
-use adtb::testing::{Object, Plant};
-use adtb::{ArchiveTarget, CallOptions, Database, Error, FatalReason, Log, RestorePoint};
+use crate::catalog::Catalog;
+use crate::storage::{Damage, Finding, HEADER_LEN, Options, Pager, Pid, Quarantine};
+use crate::test_world::api;
+use crate::test_world::load as open;
+use crate::testing::{Object, Plant};
+use crate::{ArchiveTarget, CallOptions, Database, Error, FatalReason, Log, RestorePoint};
 use adtb_harness::damage::DataFile;
+use adtb_harness::process;
 use adtb_sim::{Config, Sim, SimRuntime};
-use adtb_simkit::open;
-use adtb_simkit::{api, harness};
 
 const FILE: &str = "app.adt";
 const COPY: &str = "copy.adt";
@@ -38,7 +39,7 @@ fn seeded(rt: &SimRuntime) -> (Database<SimRuntime>, Vec<Vec<String>>) {
     (db, rows)
 }
 
-fn quarantined(got: Result<Vec<adtb::DynRows>, Error>) -> String {
+fn quarantined(got: Result<Vec<crate::DynRows>, Error>) -> String {
     match got {
         Err(Error::Fatal {
             reason: FatalReason::Quarantined { what },
@@ -47,7 +48,7 @@ fn quarantined(got: Result<Vec<adtb::DynRows>, Error>) -> String {
     }
 }
 
-fn run(db: &Database<SimRuntime>, text: &str) -> Result<Vec<adtb::DynRows>, Error> {
+fn run(db: &Database<SimRuntime>, text: &str) -> Result<Vec<crate::DynRows>, Error> {
     db.query_text(text, &[], &CallOptions::default())
 }
 
@@ -58,14 +59,14 @@ fn names(sim: &Sim) -> BTreeSet<String> {
 /// Run `body` as one process of `sim`, asserting it leaves the names of the files as they were.
 fn writes_nothing(sim: &mut Sim, body: impl FnOnce(SimRuntime)) {
     let before = names(sim);
-    api::run(sim, body);
+    process::run(sim, body);
     assert_eq!(before, names(sim));
 }
 
 /// Returns a simulator over `FILE` holding [`ROWS`], and the page `pick` picks of it.
 fn seeded_sim<T>(seed: u64, pick: impl FnOnce(&Database<SimRuntime>) -> T) -> (Sim, T) {
     let mut sim = Sim::new(seed, Config::default());
-    let picked = api::run(&mut sim, |rt| {
+    let picked = process::run(&mut sim, |rt| {
         let (db, _) = seeded(&rt);
         let picked = pick(&db);
         db.close().unwrap();
@@ -86,7 +87,7 @@ fn last_status_page(db: &Database<SimRuntime>) -> Pid {
 #[test]
 fn a_file_quarantined_whole_dumps_and_restores_every_row() {
     let mut sim = Sim::new(1, Config::default());
-    let rows = api::run(&mut sim, |rt| {
+    let rows = process::run(&mut sim, |rt| {
         let (db, rows) = seeded(&rt);
         db.testing()
             .plant(Plant::Mark(Quarantine::Database))
@@ -95,7 +96,7 @@ fn a_file_quarantined_whole_dumps_and_restores_every_row() {
         rows
     });
     let before = names(&sim);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, FILE, &Log::new([APP]), &open::options(2));
         run(&db, DUMP).unwrap();
         let refused = [
@@ -114,7 +115,7 @@ fn a_file_quarantined_whole_dumps_and_restores_every_row() {
         }
         db.close().unwrap();
         let archive = ArchiveTarget::path("d").unwrap();
-        adtb::restore_in(
+        crate::restore_in(
             rt.clone(),
             &archive,
             COPY,
@@ -220,7 +221,7 @@ fn a_file_whose_catalog_cannot_be_read_refuses_the_dump() {
 fn a_damaged_page_of_the_deployment_facts_fails_the_dump_as_storage_and_marks_nothing() {
     let (mut sim, ()) = seeded_sim(6, |_| ());
     let mut roots = None;
-    harness::finished(&mut sim, |rt| {
+    process::finished(&mut sim, |rt| {
         let options = Options {
             page_size: PAGE as u32,
             threads: 2,
@@ -274,7 +275,7 @@ fn a_lost_write_to_the_commit_log_or_catalog_refuses_the_dump_of_a_file_quaranti
     for (n, change) in CHANGES.into_iter().enumerate() {
         let (mut sim, ()) = seeded_sim(7, |_| ());
         let before = Sim::with_files(7, Config::default(), sim.files());
-        let page = api::run(&mut sim, |rt| {
+        let page = process::run(&mut sim, |rt| {
             let db = open::opened(&rt, FILE, &Log::new([APP]), &open::options(2));
             let page = change(&db);
             db.testing()

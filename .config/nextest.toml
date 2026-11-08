@@ -21,19 +21,19 @@ filter = "test(=truncated_open::a_cut_that_loses_a_later_bitmap_group_refuses_th
 threads-required = 3
 
 [[profile.default.overrides]]
-filter = "test(=lost_bitmap::a_cut_losing_a_group_with_large_values_refuses_marks_and_stays_marked)"
+filter = "test(=storage::lost_bitmap_tests::a_cut_losing_a_group_with_large_values_refuses_marks_and_stays_marked)"
 threads-required = 2
 
 [[profile.default.overrides]]
-filter = "test(=lost_bitmap::a_blank_status_page_refuses_and_never_aborts_committed_rows)"
+filter = "test(=storage::lost_bitmap_tests::a_blank_status_page_refuses_and_never_aborts_committed_rows)"
 threads-required = 2
 
 [[profile.default.overrides]]
-filter = "test(=lost_bitmap::no_crash_while_crossing_a_group_refuses_a_healthy_file)"
+filter = "test(=storage::lost_bitmap_tests::no_crash_while_crossing_a_group_refuses_a_healthy_file)"
 threads-required = 2
 
 [[profile.default.overrides]]
-filter = "test(=lost_bitmap::a_crash_in_recovery_then_a_cut_never_reuses_a_named_page)"
+filter = "test(=storage::lost_bitmap_tests::a_crash_in_recovery_then_a_cut_never_reuses_a_named_page)"
 threads-required = 2
 
 [[profile.default.overrides]]

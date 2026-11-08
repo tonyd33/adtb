@@ -1,23 +1,24 @@
 //! The operator log over the simulator: migrations after the first, their data maps, version
 //! hashes, inverses and revert.
 
-use adtb_simkit::api;
-use adtb_simkit::harness;
-use adtb_simkit::open;
+use crate::test_world as harness;
+use crate::test_world::api;
+use crate::test_world::load as open;
+use adtb_harness::process::{finished, run};
 
 use std::collections::BTreeSet;
 
-use adtb::catalog::{self, Catalog, Error as CatalogError};
-use adtb::mvcc::{Scope, Transactions};
-use adtb::storage::Pager;
-use adtb::verify::{self, Depth};
-use adtb::{CallOptions, Database, Log, OpenError};
+use crate::catalog::{self, Catalog, Error as CatalogError};
+use crate::mvcc::{Scope, Transactions};
+use crate::storage::Pager;
+use crate::verify::{self, Depth};
+use crate::{CallOptions, Database, Log, OpenError};
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use adtb_simkit::grants;
-use adtb_simkit::open::options;
-use api::{query, run};
-use harness::{finished, options as pager_options};
+use crate::test_world::grants;
+use crate::test_world::load::options;
+use api::query;
+use harness::options as pager_options;
 
 const SHOP: &str = r"module shop
 add module shop
@@ -32,7 +33,7 @@ add relation payments : Payment
 ";
 
 fn opened(rt: &SimRuntime, log: &[&str]) -> Database<SimRuntime> {
-    open::open(rt, open::FILE, &Log::new(log.iter().copied()), &options(4))
+    open::open_in(rt, open::FILE, &Log::new(log.iter().copied()), &options(4))
         .unwrap_or_else(|e| panic!("the database opens at {}: {e:?}", log.len()))
 }
 
@@ -57,7 +58,7 @@ fn after(seed: u64, later: &[&str], body: impl FnOnce(Result<Database<SimRuntime
     let mut log = vec![SHOP];
     log.extend_from_slice(later);
     run(&mut sim, |rt| {
-        body(open::open(
+        body(open::open_in(
             &rt,
             open::FILE,
             &Log::new(log.iter().copied()),
@@ -190,7 +191,7 @@ fn the_migrations_rows_hold_the_chained_version_hash_of_each_version() {
             .iter()
             .filter_map(|(_, row)| {
                 row.iter().find_map(|v| match v {
-                    adtb::key::Value::Bytes(b) if b.len() == 32 => Some(b.clone()),
+                    crate::key::Value::Bytes(b) if b.len() == 32 => Some(b.clone()),
                     _ => None,
                 })
             })

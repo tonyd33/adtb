@@ -47,6 +47,7 @@ pub(super) fn chained(schema: &Schema, previous: Hash, ops: &[OperatorRow]) -> H
 /// Returns the resolved operators of migration `number` of `source` in ordinal order.
 ///
 /// Panics if the migration does not resolve.
+#[cfg(test)]
 pub fn operators(schema: &Schema, source: &Source, number: u64) -> Vec<OperatorRow> {
     resolved_operators(schema, source, number)
         .unwrap_or_else(|ds| panic!("logged migration {number} resolves: {ds:?}"))

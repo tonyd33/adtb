@@ -8,6 +8,7 @@ use adtb::{
     AdHocTransaction, Database, Error, InTxn, OpenError, OpenOptions, Registered, Registration,
     RejectReason, RetryReason, TxnCallOptions, TxnId, TxnOptions, Value,
 };
+use adtb_harness::process;
 use adtb_isolation::Aborted;
 use adtb_lang::textual::Form;
 use adtb_sim::{Config, Sim, SimRuntime};
@@ -343,7 +344,7 @@ pub fn created() -> BTreeMap<String, Vec<u8>> {
     FILES
         .get_or_init(|| {
             let mut sim = Sim::new(0, Config::default());
-            api::run(&mut sim, |rt| {
+            process::run(&mut sim, |rt| {
                 drop(Elems::open(&rt, &options()).expect("the workload's database opens"));
             });
             sim.files()
@@ -361,7 +362,7 @@ pub fn simulate_with<T>(
     body: impl FnOnce(&SimRuntime, &Arc<Elems>) -> T,
 ) -> T {
     let mut sim = Sim::with_files(seed, Config::default(), created());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let elems = Arc::new(Elems::open(&rt, options).expect("the workload's database opens"));
         let out = body(&rt, &elems);
         assert_eq!(Vec::<String>::new(), elems.verify(), "seed {seed}");

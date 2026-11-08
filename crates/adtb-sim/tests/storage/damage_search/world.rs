@@ -1,14 +1,13 @@
 //! The database a case runs on, the operations a sequence is made of, and the run of a sequence
 //! across the processes its reopens, crashes and migration divide it into.
 
-use adtb::testing::{Failed, Knobs, Object, Plant};
+use adtb::testing::{Damage, Failed, Knobs, Object, PageKind, Pid, Plant, Quarantine, page};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use adtb::runtime::{OpKind, Runtime, Threads};
-use adtb::storage::{self, Damage, PageKind, Pid, Quarantine};
 use adtb::{CreateOptions, Database, Error, Log, OpenOptions, TxnCallOptions, TxnOptions};
 use adtb_harness::damage::DataFile;
 use adtb_harness::search::Files;
@@ -276,9 +275,9 @@ fn trace(writes: &OpLog, during: &[(usize, usize)]) -> Trace {
             trace.writes.push(WriteOut {
                 op: number as u64,
                 pid: Pid(offset / PAGE as u64 + i as u64),
-                kind: storage::kind(page),
-                owner: storage::owner(page),
-                lsn: storage::lsn(page).0,
+                kind: page::kind(page),
+                owner: page::owner(page),
+                lsn: page::lsn(page).0,
                 during,
             });
         }
@@ -377,10 +376,10 @@ fn durably_whole<R: Runtime>(db: &Database<R>) -> bool {
     let Ok(page) = t.probe().page(t.root(Object::Marks).unwrap()) else {
         return false;
     };
-    if storage::kind(&page) != PageKind::Quarantine as u16 {
+    if page::kind(&page) != PageKind::Quarantine as u16 {
         return false;
     }
-    let at = storage::HEADER_LEN;
+    let at = page::HEADER_LEN;
     let word = |i: usize| u64::from_le_bytes(page[i..i + 8].try_into().unwrap());
     (0..word(at) as usize).any(|n| word(at + 8 + n * 8) as u32 == DATABASE)
 }

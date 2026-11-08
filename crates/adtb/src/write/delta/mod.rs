@@ -472,15 +472,7 @@ impl Compiler<'_> {
                 }
             }
             let inputs = self.inputs_of(t);
-            let params: Vec<Var> = inputs.iter().map(|i| i.var).collect();
-            match plan::plan_bounded(
-                self.schema,
-                self.normal,
-                self.catalog,
-                self.terms,
-                t,
-                &params,
-            ) {
+            match plan::plan_bounded(self.schema, self.normal, self.catalog, self.terms, t) {
                 Ok(plan) => deltas.push(Delta {
                     inputs,
                     trigger,

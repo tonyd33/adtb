@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use adtb::runtime::Runtime;
 use adtb::{AdHocTransaction, Database, Log, OpenOptions, TxnCallOptions, TxnOptions};
-use adtb_harness::load::{self, Files, Made, Running, Session};
+use adtb_harness::load::{self, Files, Made, Running, Session, convert};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::Ty;
 use adtb_reference::Value;
@@ -14,7 +14,6 @@ use adtb_sim::SimRuntime;
 use adtb_testkit::corpus::migration;
 
 use crate::open::{self, FILE};
-use crate::support::to_val;
 
 /// Open the database in [`FILE`] whose first migration adds module `app` with `decls`, creating
 /// it if it does not exist.
@@ -112,7 +111,7 @@ impl<'a, R: Runtime> Session for Api<'a, R> {
         let schema = self.0.schema();
         let params: Vec<_> = params
             .iter()
-            .map(|(n, t, v)| (*n, t.clone(), to_val(schema, t, v)))
+            .map(|(n, t, v)| (*n, t.clone(), convert(schema, t, v)))
             .collect();
         tx.query_text(text, &params, &TxnCallOptions::default())
             .unwrap_or_else(|e| panic!("`{text}` loads: {e:?}"));

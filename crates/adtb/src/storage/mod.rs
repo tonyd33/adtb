@@ -27,13 +27,27 @@ mod recovery;
 mod verify;
 
 #[cfg(test)]
+mod archive_tests;
+#[cfg(test)]
+mod backup_tests;
+#[cfg(test)]
 mod checkpointer_tests;
+#[cfg(test)]
+mod clog_lost_tests;
+#[cfg(test)]
+mod commit_tests;
 #[cfg(test)]
 mod damage_log_tests;
 #[cfg(test)]
 mod damage_race_tests;
 #[cfg(test)]
+mod dump_quarantine_tests;
+#[cfg(test)]
+mod dump_tests;
+#[cfg(test)]
 mod evidence_tests;
+#[cfg(test)]
+mod faults_tests;
 #[cfg(test)]
 mod file_damage_tests;
 #[cfg(test)]
@@ -41,7 +55,15 @@ mod in_session_tests;
 #[cfg(test)]
 mod incarnation_tests;
 #[cfg(test)]
+mod lost_bitmap_tests;
+#[cfg(test)]
+mod open_damage_tests;
+#[cfg(test)]
+mod page_past_log_end_tests;
+#[cfg(test)]
 mod pager_tests;
+#[cfg(test)]
+mod quarantine_tests;
 #[cfg(test)]
 mod real_file_tests;
 #[cfg(test)]
@@ -50,38 +72,46 @@ mod recycle_tests;
 mod tests;
 
 pub use alloc::Reservation;
-pub use archive::{Archiver, Status as ArchiveStatus, recycle_at_open};
+#[cfg(any(test, feature = "testing"))]
+pub use archive::Status as ArchiveStatus;
+pub use archive::{Archiver, recycle_at_open};
 pub use backup::{
-    BackupError, BackupRun, Envelope, FORMAT, MANIFEST, Manifest, PROOF, Part, Proved,
-    check_backup, make_scratch, manifest_hash, read_manifest, read_proof, remove_scratch,
-    restore_file, scratch_file, withdraw_proof, write_proof,
+    BackupError, BackupRun, Envelope, Manifest, Proved, check_backup, make_scratch, manifest_hash,
+    read_manifest, read_proof, remove_scratch, restore_file, scratch_file, withdraw_proof,
+    write_proof,
 };
+#[cfg(test)]
+pub use backup::{MANIFEST, PROOF, Part};
 pub use block::{LogFinding, LogProblem, Resolutions};
-pub use crc::{Crc32c, crc32c};
+#[cfg(any(test, feature = "testing"))]
+pub use crc::Crc32c;
+pub use create::creating;
 pub(crate) use create::{Created, Hold, Unpublished, create, refuse_foreign_log, remove_leftover};
-pub use create::{aside, creating, marker, marker_bytes};
-pub use damage_log::Recorded;
+#[cfg(any(test, feature = "testing"))]
+pub use create::{aside, marker, marker_bytes};
 pub(crate) use driver::Driver;
 pub use dump::{
-    DUMP_FORMAT, DumpManifest, discard_aside, is_dump, publish_database, read_dump, restore_aside,
-    write_dump,
+    DumpManifest, discard_aside, is_dump, publish_database, read_dump, restore_aside, write_dump,
 };
 pub use dump_crypt::Passphrase;
 pub use error::{Damage, OpenError};
+#[cfg(test)]
 pub use header::HISTORY_CAPACITY;
 pub use page::{
-    FIRST_EDITABLE, HEADER_LEN, MAX_PAGE_SIZE, MIN_PAGE_SIZE, PageKind, flags, flip_owner, format,
-    header_edit, kind, lsn, owner, seal,
+    FIRST_EDITABLE, HEADER_LEN, PageKind, flags, format, header_edit, kind, lsn, owner,
 };
+#[cfg(any(test, feature = "testing"))]
+pub use page::{flip_owner, seal};
 pub use pager::{
-    ArchiveHook, LATCHES_PER_THREAD, Options, PageError, PageExclusive, PageOptimistic, PageShared,
-    Pager,
+    LATCHES_PER_THREAD, Options, PageError, PageExclusive, PageOptimistic, PageShared, Pager,
 };
 pub use quarantine::{Holders, Quarantine, Stopped};
+#[cfg(test)]
 pub use record::Edit;
 pub(crate) use record::{Malformed, Reader};
-pub use recovery::Recovery;
-pub use verify::{Finding, RetainedLog, Verification};
+#[cfg(any(test, feature = "testing"))]
+pub use verify::Verification;
+pub use verify::{Finding, RetainedLog};
 
 /// How a paced walk ended, with the number of things it did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,6 +122,7 @@ pub enum Walk {
 }
 
 impl Walk {
+    #[cfg(any(test, feature = "testing"))]
     pub fn count(self) -> usize {
         match self {
             Walk::Done(n) | Walk::Stopped(n) => n,

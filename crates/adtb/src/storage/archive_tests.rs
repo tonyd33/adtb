@@ -1,20 +1,21 @@
 //! The continuous log archive: complete segments copied in order under the file's id and epoch.
 
-use adtb::testing::{Knobs, Probe};
+use crate::testing::{Knobs, Probe};
+use adtb_harness::process;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use adtb::runtime::{IoError, OpKind, Runtime};
-use adtb::storage::{
+use crate::runtime::{IoError, OpKind, Runtime};
+use crate::storage::{
     self, ArchiveStatus, Archiver, BackupError, BackupRun, Envelope, Lsn, Options, PageKind, Pager,
     Pid, Position,
 };
-use adtb::{CallOptions, CreateOptions, Database, Log, OpenOptions};
+use crate::test_world::api;
+use crate::test_world::load as open;
+use crate::{CallOptions, CreateOptions, Database, Log, OpenOptions};
 use adtb_harness::common;
 use adtb_harness::search::{self, Files};
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
-use adtb_simkit::api;
-use adtb_simkit::open;
 
 const FILE: &str = "archived.adt";
 const COPY: &str = "copy.adt";
@@ -59,7 +60,7 @@ fn segments(files: &Files, log_dir: &str) -> Vec<u64> {
 /// Returns a closed file whose first three segments are complete, none archived.
 fn filled() -> Files {
     let mut sim = rooted(1);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let pager = Pager::create(rt, &options(FILE)).unwrap();
         fill(&pager, 3);
         pager.close();
@@ -75,7 +76,7 @@ fn archived(
     body: impl FnOnce(&Pager<SimRuntime>),
 ) -> (ArchiveStatus, Files) {
     let mut sim = Sim::with_files(seed, Config::default(), files);
-    let status = api::run(&mut sim, |rt| {
+    let status = process::run(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt, &options(FILE)).unwrap();
         body(&pager);
         let archiver = Archiver::new(pager.clone(), DEST);
@@ -183,7 +184,7 @@ fn assert_archived(
 #[test]
 fn every_complete_segment_is_archived_in_order_under_its_hash() {
     let mut sim = rooted(2);
-    let (first, last, epoch) = api::run(&mut sim, |rt| {
+    let (first, last, epoch) = process::run(&mut sim, |rt| {
         let pager = Pager::create(rt, &options(FILE)).unwrap();
         let archiver = Archiver::new(pager.clone(), DEST);
         assert_eq!(None, archiver.archived_through());
@@ -260,7 +261,7 @@ fn a_segment_missing_from_the_log_stops_the_archive_with_a_recorded_failure() {
 fn a_failed_copy_holds_through_and_the_next_pass_catches_up_gapless() {
     for kind in ["create", "rename", "force"] {
         let mut sim = rooted(6);
-        let (failed, caught_up) = api::run(&mut sim, |rt| {
+        let (failed, caught_up) = process::run(&mut sim, |rt| {
             let pager = Pager::create(rt.clone(), &options(FILE)).unwrap();
             let archiver = Archiver::new(pager.clone(), DEST);
             fill(&pager, 2);
@@ -362,13 +363,13 @@ fn envelope() -> Envelope {
 #[test]
 fn an_archive_of_another_history_is_claimed_only_where_it_matches_the_log() {
     let mut sim = rooted(10);
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let pager = Pager::create(rt, &options(FILE)).unwrap();
         fill(&pager, 3);
         pager.close();
     });
     let mut rolled = sim.files();
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt, &options(FILE)).unwrap();
         fill(&pager, 6);
         let archiver = Archiver::new(pager.clone(), DEST);
@@ -418,7 +419,7 @@ fn two_names_for_one_segment_are_refused() {
 #[test]
 fn a_missing_destination_is_refused_and_not_made() {
     let mut sim = Sim::new(15, Config::default());
-    let status = api::run(&mut sim, |rt| {
+    let status = process::run(&mut sim, |rt| {
         let pager = Pager::create(rt, &options(FILE)).unwrap();
         fill(&pager, 1);
         let archiver = Archiver::new(pager.clone(), DEST);
@@ -435,7 +436,7 @@ fn a_missing_destination_is_refused_and_not_made() {
 #[test]
 fn a_restored_epoch_archives_from_its_branch_to_its_own_directory() {
     let mut sim = rooted(8);
-    let end = api::run(&mut sim, |rt| {
+    let end = process::run(&mut sim, |rt| {
         let pager = Pager::create(rt.clone(), &options(FILE)).unwrap();
         fill(&pager, 2);
         let pid = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
@@ -501,7 +502,7 @@ fn a_restored_epoch_archives_from_its_branch_to_its_own_directory() {
 #[test]
 fn an_engine_shows_its_archive_and_archives_into_it() {
     let mut sim = rooted(9);
-    let through = api::run(&mut sim, |rt| {
+    let through = process::run(&mut sim, |rt| {
         let options = OpenOptions {
             log_archive: Some(DEST.into()),
             create: Some(CreateOptions::default()),
@@ -554,7 +555,7 @@ fn insert<R: Runtime>(db: &Database<R>, ids: std::ops::Range<i64>) {
 #[test]
 fn a_new_file_after_a_position_archives_its_own_log_from_the_start() {
     let mut sim = rooted(18);
-    let status = api::run(&mut sim, |rt| {
+    let status = process::run(&mut sim, |rt| {
         let after = Position {
             epoch: 1,
             lsn: Lsn(10 * SEGMENT + 5),
@@ -583,14 +584,14 @@ fn a_new_file_after_a_position_archives_its_own_log_from_the_start() {
 #[test]
 fn a_segment_size_off_the_log_block_is_refused() {
     let mut sim = rooted(19);
-    let refused = api::run(&mut sim, |rt| {
+    let refused = process::run(&mut sim, |rt| {
         let options = OpenOptions {
             create: Some(CreateOptions::default()),
             testing: Knobs::default().with_segment_size(SEGMENT + 1),
             ..open::options(2)
         };
         match Database::open_in(rt, "db.adt", &Log::new([APP]), &options) {
-            Err(adtb::OpenError::Io(e)) => (e.kind(), e.to_string()),
+            Err(crate::OpenError::Io(e)) => (e.kind(), e.to_string()),
             other => panic!("not refused as invalid input: {:?}", other.err()),
         }
     });
@@ -608,8 +609,8 @@ fn engine_session(
     archive: bool,
     refused: Match,
     rows: std::ops::Range<i64>,
-) -> Result<Option<ArchiveStatus>, adtb::OpenError> {
-    api::run(sim, |rt| {
+) -> Result<Option<ArchiveStatus>, crate::OpenError> {
+    process::run(sim, |rt| {
         rt.plan(Plan::new().rule(refused, Action::Fail(IoError::Full)));
         let options = OpenOptions {
             log_archive: archive.then(|| DEST.into()),

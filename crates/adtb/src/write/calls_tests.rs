@@ -22,6 +22,7 @@ use adtb_lang::schema::Schema;
 use adtb_sim::{Config, Outcome, SimRuntime};
 use adtb_sys::os::{Backend, OsRuntime};
 use adtb_testkit::fixture::Fixture;
+use adtb_testkit::scratch::Scratch;
 
 use crate::test_world::write_path::{self, WritePath};
 use adtb_harness::seeds::sweep;
@@ -278,7 +279,7 @@ fn admission_bounds_entries_and_bytes<R: Runtime>(rt: &R) {
 
 /// A refused call is handed back; one larger than the byte bound is refused as too large with
 /// nothing queued, and every call after shutdown is refused.
-fn a_refused_call_is_handed_back<R: Runtime>(rt: &R) {
+fn a_call_is_refused_too_large_overloaded_or_after_shutdown<R: Runtime>(rt: &R) {
     let pool = Scheduler::start_with(
         rt.clone(),
         0,
@@ -292,22 +293,13 @@ fn a_refused_call_is_handed_back<R: Runtime>(rt: &R) {
         .admit(entry(Priority::Regular, 0, 101, None), note("big", &log))
         .unwrap_err();
     assert_eq!(Refusal::TooLarge, big.reason);
-    big.call.stop(Stopped::Cancelled);
     pool.admit(plain(0), note("a", &log)).unwrap();
     let full = pool.admit(plain(0), note("b", &log)).unwrap_err();
     assert_eq!(Refusal::Overloaded, full.reason);
     pool.shutdown();
-    let closed = pool.admit(plain(0), full.call).unwrap_err();
+    let closed = pool.admit(plain(0), note("c", &log)).unwrap_err();
     assert_eq!(Refusal::ShutDown, closed.reason);
-    closed.call.stop(Stopped::Cancelled);
-    assert_eq!(
-        vec![
-            Event::Stopped("big", Stopped::Cancelled),
-            Event::Stopped("a", Stopped::ShutDown),
-            Event::Stopped("b", Stopped::Cancelled),
-        ],
-        log.events()
-    );
+    assert_eq!(vec![Event::Stopped("a", Stopped::ShutDown)], log.events());
 }
 
 fn calls_run_by_priority_then_start<R: Runtime>(rt: &R) {
@@ -596,11 +588,14 @@ fn shutdown_stops_queued_and_waiting_calls<R: Runtime>(rt: &R) {
     assert!(!log.has(&Event::Done("waiting")));
 }
 
-/// Admit `call`, admitting it again while the admission queue is full.
-fn admit_retrying<R: Runtime>(pool: &Scheduler<R>, entry: Entry, mut call: Box<dyn Resumable>) {
-    while let Err(Refused { reason, call: back }) = pool.admit(entry, call) {
+/// Admit the call `make` makes, making and admitting another while the admission queue is full.
+fn admit_retrying<R: Runtime>(
+    pool: &Scheduler<R>,
+    entry: Entry,
+    make: impl Fn() -> Box<dyn Resumable>,
+) {
+    while let Err(Refused { reason }) = pool.admit(entry, make()) {
         assert_eq!(Refusal::Overloaded, reason);
-        call = back;
         pool.runtime().yield_now();
     }
 }
@@ -620,16 +615,17 @@ fn waiting_calls_leave_the_admission_bound<R: Runtime>(rt: &R) {
     waits.started(X);
     let names = ["w0", "w1", "w2", "w3", "w4", "w5"];
     for (i, name) in names.into_iter().enumerate() {
-        admit_retrying(&pool, plain(i as u64), gate(name, X, &waits, &log));
+        admit_retrying(&pool, plain(i as u64), || gate(name, X, &waits, &log));
     }
     log.until(|es| names.iter().all(|n| es.contains(&Event::Waiting(n))));
-    let end = End {
-        name: "end",
-        on: X,
-        waits,
-        log: log.clone(),
-    };
-    admit_retrying(&pool, entry(Priority::AdHoc, 9, 0, None), Box::new(end));
+    admit_retrying(&pool, entry(Priority::AdHoc, 9, 0, None), || {
+        Box::new(End {
+            name: "end",
+            on: X,
+            waits: waits.clone(),
+            log: log.clone(),
+        })
+    });
     log.until(|es| names.iter().all(|n| es.contains(&Event::Done(n))));
     pool.shutdown();
 }
@@ -655,25 +651,18 @@ fn sim_seeds_in(name: &str, seeds: Range<u64>, rows: &'static str, body: impl Fn
     }
 }
 
-/// Returns the directory of the workspace's `target/tmp`.
-fn target_tmp() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp")
+/// Returns a runtime over a new scratch directory, and the directory, which the runtime must not
+/// outlive.
+fn real() -> (Scratch, OsRuntime) {
+    real_in("rt")
 }
 
-fn real() -> OsRuntime {
-    let dir = target_tmp().join("calls");
-    std::fs::create_dir_all(&dir).unwrap();
-    OsRuntime::new(dir, Backend::Pool { threads: 2 })
-}
-
-/// Returns a runtime over a new directory of its own, `name`.
-fn real_in(name: &str) -> OsRuntime {
-    let dir = target_tmp().join("calls-db").join(name);
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-    std::fs::create_dir_all(&dir).unwrap();
-    OsRuntime::new(dir, Backend::Pool { threads: 2 })
+/// Returns a runtime over a new scratch directory labelled `name`, and the directory, which the
+/// runtime must not outlive.
+fn real_in(name: &str) -> (Scratch, OsRuntime) {
+    let dir = Scratch::new("calls", name);
+    let rt = OsRuntime::new(dir.path(), Backend::Pool { threads: 2 });
+    (dir, rt)
 }
 
 #[test]
@@ -683,17 +672,22 @@ fn admission_bounds_entries_and_bytes_sim() {
 
 #[test]
 fn admission_bounds_entries_and_bytes_real() {
-    admission_bounds_entries_and_bytes(&real());
+    let (_dir, rt) = real();
+    admission_bounds_entries_and_bytes(&rt);
 }
 
 #[test]
-fn a_refused_call_is_handed_back_sim() {
-    sim_seeds("refused", a_refused_call_is_handed_back);
+fn a_call_is_refused_too_large_overloaded_or_after_shutdown_sim() {
+    sim_seeds(
+        "refused",
+        a_call_is_refused_too_large_overloaded_or_after_shutdown,
+    );
 }
 
 #[test]
-fn a_refused_call_is_handed_back_real() {
-    a_refused_call_is_handed_back(&real());
+fn a_call_is_refused_too_large_overloaded_or_after_shutdown_real() {
+    let (_dir, rt) = real();
+    a_call_is_refused_too_large_overloaded_or_after_shutdown(&rt);
 }
 
 #[test]
@@ -703,7 +697,8 @@ fn calls_run_by_priority_then_start_sim() {
 
 #[test]
 fn calls_run_by_priority_then_start_real() {
-    calls_run_by_priority_then_start(&real());
+    let (_dir, rt) = real();
+    calls_run_by_priority_then_start(&rt);
 }
 
 #[test]
@@ -713,7 +708,8 @@ fn queued_calls_stop_on_cancel_and_deadline_sim() {
 
 #[test]
 fn queued_calls_stop_on_cancel_and_deadline_real() {
-    queued_calls_stop_on_cancel_and_deadline(&real());
+    let (_dir, rt) = real();
+    queued_calls_stop_on_cancel_and_deadline(&rt);
 }
 
 #[test]
@@ -723,7 +719,8 @@ fn waiting_calls_stop_on_cancel_and_deadline_sim() {
 
 #[test]
 fn waiting_calls_stop_on_cancel_and_deadline_real() {
-    waiting_calls_stop_on_cancel_and_deadline(&real());
+    let (_dir, rt) = real();
+    waiting_calls_stop_on_cancel_and_deadline(&rt);
 }
 
 #[test]
@@ -735,7 +732,8 @@ fn a_registration_racing_the_end_is_woken_sim() {
 
 #[test]
 fn a_registration_racing_the_end_is_woken_real() {
-    a_registration_racing_the_end_is_woken(&real(), 200);
+    let (_dir, rt) = real();
+    a_registration_racing_the_end_is_woken(&rt, 200);
 }
 
 #[test]
@@ -747,7 +745,8 @@ fn a_wake_during_a_step_runs_the_call_again_sim() {
 
 #[test]
 fn a_wake_during_a_step_runs_the_call_again_real() {
-    a_wake_during_a_step_runs_the_call_again(&real(), 200);
+    let (_dir, rt) = real();
+    a_wake_during_a_step_runs_the_call_again(&rt, 200);
 }
 
 #[test]
@@ -757,7 +756,7 @@ fn a_queued_end_runs_while_every_call_waits_sim() {
 
 #[test]
 fn a_queued_end_runs_while_every_call_waits_real() {
-    let rt = real();
+    let (_dir, rt) = real();
     for _ in 0..20 {
         a_queued_end_runs_while_every_call_waits(&rt);
     }
@@ -770,7 +769,7 @@ fn a_call_past_its_deadline_never_runs_sim() {
 
 #[test]
 fn a_call_past_its_deadline_never_runs_real() {
-    let rt = real();
+    let (_dir, rt) = real();
     for _ in 0..20 {
         a_call_past_its_deadline_never_runs(&rt);
     }
@@ -783,7 +782,8 @@ fn shutdown_stops_queued_and_waiting_calls_sim() {
 
 #[test]
 fn shutdown_stops_queued_and_waiting_calls_real() {
-    shutdown_stops_queued_and_waiting_calls(&real());
+    let (_dir, rt) = real();
+    shutdown_stops_queued_and_waiting_calls(&rt);
 }
 
 #[test]
@@ -793,7 +793,8 @@ fn waiting_calls_leave_the_admission_bound_sim() {
 
 #[test]
 fn waiting_calls_leave_the_admission_bound_real() {
-    waiting_calls_leave_the_admission_bound(&real());
+    let (_dir, rt) = real();
+    waiting_calls_leave_the_admission_bound(&rt);
 }
 
 const ITEMS: &str =
@@ -1095,7 +1096,8 @@ fn a_queued_commit_runs_while_every_write_waits_sim() {
 
 #[test]
 fn a_queued_commit_runs_while_every_write_waits_real() {
-    a_queued_commit_runs_while_every_write_waits(&real_in("queued-commit"));
+    let (_dir, rt) = real_in("queued-commit");
+    a_queued_commit_runs_while_every_write_waits(&rt);
 }
 
 fn waiting_writes_resume_after_an_abort<R: Holds>(rt: &R) {
@@ -1112,7 +1114,8 @@ fn waiting_writes_resume_after_an_abort_sim() {
 
 #[test]
 fn waiting_writes_resume_after_an_abort_real() {
-    waiting_writes_resume_after_an_abort(&real_in("queued-abort"));
+    let (_dir, rt) = real_in("queued-abort");
+    waiting_writes_resume_after_an_abort(&rt);
 }
 
 #[test]
@@ -1179,7 +1182,8 @@ fn a_two_statement_call_suspends_and_resumes_sim() {
 
 #[test]
 fn a_two_statement_call_suspends_and_resumes_real() {
-    a_two_statement_call_suspends_and_resumes(&real_in("two-statements"));
+    let (_dir, rt) = real_in("two-statements");
+    a_two_statement_call_suspends_and_resumes(&rt);
 }
 
 /// A write waiting for a transaction stops at its deadline, aborting its own.
@@ -1218,7 +1222,8 @@ fn a_waiting_write_stops_at_its_deadline_sim() {
 
 #[test]
 fn a_waiting_write_stops_at_its_deadline_real() {
-    a_waiting_write_stops_at_its_deadline(&real_in("waiting-deadline"));
+    let (_dir, rt) = real_in("waiting-deadline");
+    a_waiting_write_stops_at_its_deadline(&rt);
 }
 
 /// A suspended wait counts toward the statement's time limit: the rerun fails once the limit
@@ -1354,7 +1359,8 @@ fn a_cancel_racing_shutdown_stops_once_sim() {
 
 #[test]
 fn a_cancel_racing_shutdown_stops_once_real() {
-    a_cancel_racing_shutdown_stops_once(&real());
+    let (_dir, rt) = real();
+    a_cancel_racing_shutdown_stops_once(&rt);
 }
 
 /// Dropping a scheduler without shutting it down stops its waiting calls.
@@ -1376,7 +1382,8 @@ fn a_dropped_scheduler_stops_its_calls_sim() {
 
 #[test]
 fn a_dropped_scheduler_stops_its_calls_real() {
-    a_dropped_scheduler_stops_its_calls(&real());
+    let (_dir, rt) = real();
+    a_dropped_scheduler_stops_its_calls(&rt);
 }
 
 /// A call waiting with an alarm is woken at it, though its dependency is not ready.
@@ -1436,7 +1443,8 @@ fn an_alarm_wakes_a_waiting_call_sim() {
 
 #[test]
 fn an_alarm_wakes_a_waiting_call_real() {
-    an_alarm_wakes_a_waiting_call(&real());
+    let (_dir, rt) = real();
+    an_alarm_wakes_a_waiting_call(&rt);
 }
 
 /// Of two transactions each holding the item the other next writes, the second to wait fails
@@ -1517,7 +1525,8 @@ fn a_deadlock_between_suspended_calls_fails_the_second_waiter_sim() {
 
 #[test]
 fn a_deadlock_between_suspended_calls_fails_the_second_waiter_real() {
-    a_deadlock_fails_the_second_waiter(&real_in("suspended-deadlock"), true, Duration::ZERO);
+    let (_dir, rt) = real_in("suspended-deadlock");
+    a_deadlock_fails_the_second_waiter(&rt, true, Duration::ZERO);
 }
 
 #[test]
@@ -1655,11 +1664,8 @@ fn a_synchronous_call_still_blocks_on_a_transaction_sim() {
 
 #[test]
 fn a_synchronous_call_still_blocks_on_a_transaction_real() {
-    let dir = target_tmp().join("calls-synchronous");
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-    std::fs::create_dir_all(&dir).unwrap();
+    let scratch = Scratch::new("calls", "synchronous");
+    let dir = scratch.path();
     let db = crate::open(
         dir.join("counter.adt"),
         &SchemaLog::new([COUNTERS]),

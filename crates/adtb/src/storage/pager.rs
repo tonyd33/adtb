@@ -451,6 +451,7 @@ pub struct PageShared<'a> {
 }
 
 impl PageShared<'_> {
+    #[cfg(any(test, feature = "testing"))]
     pub fn pid(&self) -> Pid {
         Pid(self.g.pid())
     }
@@ -770,6 +771,7 @@ impl<R: Runtime> std::fmt::Debug for PageOptimistic<'_, R> {
 }
 
 impl<'a, R: Runtime> PageOptimistic<'a, R> {
+    #[cfg(any(test, feature = "testing"))]
     pub fn pid(&self) -> Pid {
         Pid(self.o.pid())
     }
@@ -791,6 +793,7 @@ impl<'a, R: Runtime> PageOptimistic<'a, R> {
         clippy::disallowed_methods,
         reason = "permanent: the optimistic upgrade clippy.toml admits"
     )]
+    #[cfg(any(test, feature = "testing"))]
     pub fn upgrade(self) -> Option<PageExclusive<'a, R>> {
         let pager = self.pager;
         let g = self.o.upgrade()?;
@@ -912,6 +915,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns the most threads the pool serves: those that may latch pages at once.
+    #[cfg(any(test, feature = "testing"))]
     pub fn max_threads(&self) -> usize {
         self.pool_frames / LATCHES_PER_THREAD
     }

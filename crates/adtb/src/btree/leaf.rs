@@ -84,6 +84,7 @@ pub fn contains(n: &Node, x: &[u8]) -> Result<bool, Malformed> {
 }
 
 /// Returns the number of entries of leaf `n`, counting each of a posting's.
+#[cfg(any(test, feature = "testing"))]
 pub fn len(n: &Node) -> Result<usize, Malformed> {
     let mut total = 0;
     for i in 0..n.count() {
@@ -303,6 +304,7 @@ pub fn insert(page: &mut [u8], x: &[u8]) -> bool {
 /// Remove the entry at `place`, which the leaf `page` holds.
 ///
 /// Panics if the page is not a leaf or holds no entry there.
+#[cfg(any(test, feature = "testing"))]
 pub fn remove(page: &mut [u8], place: Place) {
     let n = Node::new(page).expect("a leaf removed from is a node");
     let mut it = n.item(place.cell).expect("a leaf removed from is a node");

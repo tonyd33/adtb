@@ -806,7 +806,7 @@ fn restore_prints_the_listed_damage_and_exits_zero() {
         .unwrap()
         .0;
     let body = format!("{body}damaged 3\n");
-    let sealed = format!("{body}checksum {}\n", adtb::storage::manifest_hash(&body));
+    let sealed = format!("{body}checksum {}\n", adtb::testing::manifest_hash(&body));
     let mut bytes = sealed.into_bytes();
     bytes.resize(bytes.len().next_multiple_of(4096), 0);
     std::fs::write(&at, bytes).unwrap();

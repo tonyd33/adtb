@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use adtb::plan::{Rewrites, with_rewrites};
+use adtb::testing::{Rewrites, with_rewrites};
 use adtb::{
     CallOptions, Called, CreateOptions, Database, Error, Log, OpenError, OpenOptions, Registration,
     RejectReason,
@@ -982,7 +982,7 @@ fn law_bundles(log: &[String], to: &[String], case: &Case) -> Result<Vec<Pinned>
         );
         p.is_ok_and(|p| normal(&schema, &program, body).is_some_and(|q| p.query(&q).is_ok()))
     };
-    let hash: String = adtb::catalog::version_hash(&schema, &source)
+    let hash: String = adtb::version_hash(&schema, &source)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();

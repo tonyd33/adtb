@@ -1,11 +1,11 @@
 //! A restore writes the dumped rows unchecked, builds every index and checks every constraint
 //! once: a dump that violates one is refused with the violation and leaves nothing at the target.
 
+use adtb_harness::process;
 use std::sync::OnceLock;
 
-use adtb::catalog::arrows;
 use adtb::runtime::OpKind;
-use adtb::storage;
+use adtb::testing::dump;
 use adtb::{
     ArchiveTarget, CallOptions, Database, Error, FatalReason, Log, OpenOptions, RejectReason,
     RestorePoint, Value, restore_in,
@@ -15,7 +15,6 @@ use adtb_lang::schema::Schema;
 use adtb_lang::textual::{print_document, read_document};
 use adtb_lang::types::RelId;
 use adtb_sim::{Config, Match, Sim, SimRuntime};
-use adtb_simkit::api;
 use adtb_simkit::open;
 
 const FILE: &str = "app.adt";
@@ -69,7 +68,7 @@ fn dumped() -> Files {
     static DUMPED: OnceLock<Files> = OnceLock::new();
     let made = || {
         let mut sim = Sim::new(1, Config::default());
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             let db = Database::open_in(rt, FILE, &log(), &open::options(2)).unwrap();
             run(&db, ROWS).unwrap();
             run(&db, &format!("dump to \"{DUMP}\"")).unwrap();
@@ -84,8 +83,8 @@ fn dumped() -> Files {
 /// read into the Arrow entry it names and the text entry beside it.
 fn edited(added: &[(&str, &str)]) -> Files {
     let mut sim = Sim::with_files(2, Config::default(), dumped());
-    api::run(&mut sim, |rt| {
-        let (manifest, mut entries) = storage::read_dump(&rt, DUMP, None).unwrap();
+    process::run(&mut sim, |rt| {
+        let (manifest, mut entries) = dump::read_dump(&rt, DUMP, None).unwrap();
         for (part, row) in added {
             let named = part.strip_suffix(".arrows").unwrap();
             let text_part = format!("{named}.txt");
@@ -95,13 +94,13 @@ fn edited(added: &[(&str, &str)]) -> Files {
             let (_, ctor) = named.rsplit_once('.').unwrap();
             let ctor = schema().ty(elem).ctor_index(ctor).unwrap();
             let stream =
-                arrows::write_rows(schema(), doc.relation, ctor, &doc.rows, arrows::BATCH_LIMIT);
+                dump::write_rows(schema(), doc.relation, ctor, &doc.rows, dump::BATCH_LIMIT);
             entries.insert((*part).to_owned(), stream);
             let text = print_document(schema(), &doc).unwrap();
             entries.insert(text_part, text.into_bytes());
         }
         let entries: Vec<(String, Vec<u8>)> = entries.into_iter().collect();
-        storage::write_dump(
+        dump::write_dump(
             &rt,
             EDITED,
             manifest.envelope,
@@ -119,7 +118,7 @@ fn schema() -> &'static Schema {
     static SCHEMA: OnceLock<Schema> = OnceLock::new();
     SCHEMA.get_or_init(|| {
         let mut sim = Sim::new(4, Config::default());
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             let db = Database::open_in(rt, FILE, &log(), &open::options(2)).unwrap();
             let schema = db.schema().clone();
             db.close().unwrap();
@@ -150,12 +149,12 @@ fn restore(rt: &SimRuntime) -> Result<Vec<u64>, Error> {
 /// is asserted unchanged and `COPY` to open as a path that never held a database does.
 fn refused(files: &Files) -> RejectReason {
     let mut sim = Sim::with_files(3, Config::default(), files.clone());
-    let reason = api::run(&mut sim, |rt| match restore(&rt) {
+    let reason = process::run(&mut sim, |rt| match restore(&rt) {
         Err(Error::Rejected { reason }) => reason,
         other => panic!("not refused: {other:?}"),
     });
     assert_eq!(files, &sim.files(), "the refused restore wrote");
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         let open = |name: &str| {
             let got = Database::open_in(rt.clone(), name, &log(), &no_create()).map(drop);
             got.map_err(|e| format!("{e:?}").replace(name, "PATH"))
@@ -202,7 +201,7 @@ fn twins() -> RejectReason {
 #[test]
 fn a_restored_dump_holds_every_index_so_its_constraints_hold_against_later_writes() {
     let mut sim = Sim::with_files(5, Config::default(), edited(&[]));
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         restore(&rt).unwrap();
         let db = Database::open_in(rt, COPY, &log(), &no_create()).unwrap();
         let refusal = |text: &str| match run(&db, text) {
@@ -311,12 +310,12 @@ fn a_dump_violating_any_constraint_form_is_refused_with_its_violation_and_leaves
 fn a_stream_of_another_row_shape_in_a_part_is_refused_as_damage() {
     let files = edited(&[]);
     let mut sim = Sim::with_files(6, Config::default(), files);
-    let moved = api::run(&mut sim, |rt| {
-        let (manifest, mut entries) = storage::read_dump(&rt, EDITED, None).unwrap();
+    let moved = process::run(&mut sim, |rt| {
+        let (manifest, mut entries) = dump::read_dump(&rt, EDITED, None).unwrap();
         let circles = entries[CIRCLES].clone();
         entries.insert(SQUARES.to_owned(), circles);
         let entries: Vec<(String, Vec<u8>)> = entries.into_iter().collect();
-        storage::write_dump(
+        dump::write_dump(
             &rt,
             "m",
             manifest.envelope,
@@ -377,15 +376,15 @@ fn a_restore_resumes_a_generator_past_every_restored_key() {
     let mut sim = Sim::with_files(7, Config::default(), dumped());
     let users = schema().relations.iter().position(|r| r.name == "users");
     let id = schema().ids.relations[&RelId(u32::try_from(users.unwrap()).unwrap())];
-    let dee = api::run(&mut sim, |rt| {
-        let (manifest, mut entries) = storage::read_dump(&rt, DUMP, None).unwrap();
+    let dee = process::run(&mut sim, |rt| {
+        let (manifest, mut entries) = dump::read_dump(&rt, DUMP, None).unwrap();
         let text = std::str::from_utf8(&entries["generators"]).unwrap();
         let at = format!("generator {id} 3\n");
         assert!(text.contains(&at), "{text}");
         let text = text.replace(&at, &format!("generator {id} 1\n"));
         entries.insert("generators".to_owned(), text.into_bytes());
         let entries: Vec<(String, Vec<u8>)> = entries.into_iter().collect();
-        storage::write_dump(
+        dump::write_dump(
             &rt,
             EDITED,
             manifest.envelope,

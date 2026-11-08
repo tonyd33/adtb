@@ -290,7 +290,7 @@ fn restored(
         (None, None) if timed => RestorePoint::Version(0),
         (None, None) => RestorePoint::Latest,
     };
-    let key = key.map(|k| adtb::storage::Passphrase::new(k.to_owned()));
+    let key = key.map(|k| adtb::Passphrase::new(k.to_owned()));
     let damaged = adtb::restore_decrypted(&archive, path, to, OpenOptions::default(), key.as_ref())
         .map_err(|e| failed(&e))?;
     let mut out = io::stdout();

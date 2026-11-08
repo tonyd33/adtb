@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use adtb::runtime::{Entropy, OpKind, Threads};
 use adtb_harness::crash::{Crashes, Reopen, Rounds, crash_loop};
+use adtb_harness::process;
 use adtb_harness::seeds::{assert_reached, share, sweep};
 use adtb_isolation::{self as iso, Op, Outcome as Ended};
 use adtb_sim::{Action, Config, Ledger, Match, Plan, Sim, SimRuntime};
-use adtb_simkit::api;
 use adtb_simkit::elle::{self, Elems, Kind};
 use adtb_simkit::open::FILE;
 use adtb_sys::runtime::Faults;
@@ -239,7 +239,7 @@ fn history(seed: u64) -> Searched {
         |rt, _| recovered(&rt, &b),
     );
     book(&b).process = CRASHES;
-    let last = api::run(&mut sim, |rt| {
+    let last = process::run(&mut sim, |rt| {
         let e = opened(&rt);
         clients(&rt, &e, &b, out.ledger());
         let lists = e.lists(0..KEYS);
@@ -320,7 +320,7 @@ fn unflushed_reads(seed: u64) -> (Vec<iso::Txn>, Crashes<Reopen>, usize) {
         |r| {
             let (l, b) = (r.ledger().clone(), b.clone());
             if r.index() == 1 {
-                return api::run(r.sim(), |rt| {
+                return process::run(r.sim(), |rt| {
                     let e = opened(&rt);
                     let id = book(&b).begin();
                     let mut tx = e.begin(Kind::ReadWrite).unwrap();

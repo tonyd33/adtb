@@ -1,3 +1,4 @@
+use adtb_harness::process::once;
 use adtb_simkit::api;
 use adtb_simkit::open;
 
@@ -7,7 +8,7 @@ use adtb::{
 use adtb_sim::SimRuntime;
 
 use adtb_simkit::open::options;
-use api::{once, result};
+use api::result;
 
 fn open_with(rt: SimRuntime, declarations: &str, field: &str) -> Database<SimRuntime> {
     let schema = format!(

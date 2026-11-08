@@ -1,3 +1,4 @@
+use adtb_harness::process;
 use adtb_simkit::api;
 use adtb_simkit::open;
 
@@ -23,7 +24,7 @@ const INSERT_MAPPING: &str = r#"insert catalog::peer_mappings {
 
 #[test]
 fn ordinary_program_insert_into_catalog_is_denied() {
-    api::once(0, |rt| {
+    process::once(0, |rt| {
         let db = Database::open_in(rt, "system.adt", &Log::new([SCHEMA]), &open::options(2))
             .expect("open database");
         let result = db.query_text(INSERT_MAPPING, &[], &CallOptions::default());
@@ -61,7 +62,7 @@ fn mappings_empty(db: &Database<SimRuntime>) {
 
 #[test]
 fn every_system_relation_refuses_even_an_empty_delete_and_appender() {
-    api::once(0, |rt| {
+    process::once(0, |rt| {
         let db = open::opened(&rt, "system.adt", &Log::new([SCHEMA]), &open::options(2));
         let mut load = db.load(&LoadOptions::default()).expect("open load");
         let mut relations = 0;
@@ -101,7 +102,7 @@ fn every_system_relation_refuses_even_an_empty_delete_and_appender() {
 
 #[test]
 fn every_program_write_shape_is_checked_before_dead_code_elimination() {
-    api::once(0, |rt| {
+    process::once(0, |rt| {
         let db = open::opened(&rt, "system.adt", &Log::new([SCHEMA]), &open::options(2));
         let cases = [
             format!("if false then {INSERT_MAPPING} else skip"),
@@ -132,7 +133,7 @@ fn every_program_write_shape_is_checked_before_dead_code_elimination() {
 
 #[test]
 fn a_denied_interactive_call_keeps_prior_user_changes_and_transaction_open() {
-    api::once(0, |rt| {
+    process::once(0, |rt| {
         let db = open::opened(&rt, "system.adt", &Log::new([SCHEMA]), &open::options(2));
         let mut txn = db.begin(&TxnOptions::default()).expect("begin");
         txn.query_text("insert items { id: 1 }", &[], &TxnCallOptions::default())
@@ -159,7 +160,7 @@ fn a_denied_interactive_call_keeps_prior_user_changes_and_transaction_open() {
 
 #[test]
 fn registered_transactions_cannot_hide_a_system_write_in_an_unreached_branch() {
-    api::once(0, |rt| {
+    process::once(0, |rt| {
         let body = format!(
             "import example\ntxn corrupt () -> {{}} =\n transact\n  if false then {INSERT_MAPPING} else skip\n  return {{}}"
         );
@@ -187,7 +188,7 @@ fn registered_transactions_cannot_hide_a_system_write_in_an_unreached_branch() {
 
 #[test]
 fn native_setting_commands_and_temp_user_writes_remain_legal() {
-    api::once(0, |rt| {
+    process::once(0, |rt| {
         let db = open::opened(&rt, "system.adt", &Log::new([SCHEMA]), &open::options(2));
         db.query_text(
             "set setting RetryLimit = { retries: 3 }",
@@ -229,7 +230,7 @@ fn native_setting_commands_and_temp_user_writes_remain_legal() {
 fn bundled(name: &str, body: &str) -> Registration {
     let source = adtb_lang::signature::replay([SCHEMA]).expect("replay fixture");
     let schema = source.schema().expect("build fixture schema");
-    let hash: String = adtb::catalog::version_hash(&schema, &source)
+    let hash: String = adtb::version_hash(&schema, &source)
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
@@ -241,7 +242,7 @@ fn bundled(name: &str, body: &str) -> Registration {
 
 #[test]
 fn denied_open_retains_unchecked_headers_without_registering_or_renewing_calls() {
-    api::once(0, |rt| {
+    process::once(0, |rt| {
         let good = "import example\nquery ids () -> Set I64 = from i in items select i.id";
         let original = OpenOptions {
             registrations: vec![bundled("old-1.0", good)],
@@ -337,7 +338,7 @@ impl adtb::CtorRelation for SystemTarget {
 
 #[test]
 fn typed_wrappers_and_arrow_loads_share_the_program_boundary() {
-    api::once(0, |rt| {
+    process::once(0, |rt| {
         let opts = OpenOptions {
             registrations: vec![bundled(
                 "safe-1.0",
@@ -395,7 +396,7 @@ fn typed_wrappers_and_arrow_loads_share_the_program_boundary() {
 
 #[test]
 fn system_reads_remain_queries_and_volatile_user_writes_still_have_their_own_error() {
-    api::once(0, |rt| {
+    process::once(0, |rt| {
         let db = open::opened(&rt, "system.adt", &Log::new([SCHEMA]), &open::options(2));
         db.query_text(
             "from c in sys::calls select c.id",

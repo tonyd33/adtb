@@ -240,6 +240,7 @@ impl CommitLog {
 
     /// Load the commit log rooted at `root` from a recovered pager, and settle every reserved id
     /// still in progress as [`CommitLog::settle_unresolved`] does.
+    #[cfg(any(test, feature = "testing"))]
     pub fn open<R: Runtime>(pager: &Pager<R>, root: Pid) -> Result<CommitLog, PageError> {
         let mut clog = CommitLog::load(pager, root)?;
         clog.settle_unresolved(pager)?;
@@ -513,6 +514,7 @@ impl CommitLog {
     /// damaged.
     ///
     /// Panics if `x` is not reserved or has resolved.
+    #[cfg(any(test, feature = "testing"))]
     pub fn commit<R: Runtime>(&self, pager: &Pager<R>, x: Xid) -> Result<Lsn, PageError> {
         let (pid, i) = self.slot(x);
         pager.commit(x.0, &[pid], |p| set_status(p[0], i, Status::Committed))
@@ -555,6 +557,7 @@ impl CommitLog {
     /// it, and none has an aborted deleter below it in `xmax`.
     ///
     /// Panics if `bound` is past the reservation.
+    #[cfg(any(test, feature = "testing"))]
     pub fn truncate<R: Runtime>(&mut self, pager: &Pager<R>, bound: Xid) -> Result<(), PageError> {
         assert!(
             bound <= self.root.reserved,

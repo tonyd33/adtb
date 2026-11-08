@@ -1,14 +1,15 @@
 //! A page of a heap's directory relabelled to another kind, or holding a page of another owner,
 //! is refused by every write that meets it as a read refuses it, and is left unchanged.
 
+use adtb::testing::{PageKind, Pid, page, page::FIRST_EDITABLE};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use adtb::batch::BatchBuilder;
 use adtb::key::Value;
-use adtb::storage::{self, FIRST_EDITABLE, PageKind, Pid};
 use adtb::{ArrowSchema, CallOptions, Database, Error, FatalReason, LoadOptions, Log, RecordBatch};
 use adtb_harness::damage::{DataFile, Files};
+use adtb_harness::process;
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::open;
@@ -81,7 +82,7 @@ impl Fixture {
             r#"identities.Apple {{ id: identities.key(20), tag: 0, sub: "{}" }}"#,
             "l".repeat(3 * PAGE)
         );
-        let (pages, versions) = api::run(&mut sim, |rt| {
+        let (pages, versions) = process::run(&mut sim, |rt| {
             let db = open::opened(&rt, FILE, &Log::new([APP]), &open::options(2));
             for t in TARGETS {
                 api::results(
@@ -98,7 +99,7 @@ impl Fixture {
                 let pid = testing.pages(heap).unwrap()[0];
                 assert_eq!(
                     t.kinds.0 as u16,
-                    storage::kind(&testing.probe().page(pid).unwrap()),
+                    page::kind(&testing.probe().page(pid).unwrap()),
                     "{t:?}"
                 );
                 pages.insert(t.ctor, pid);
@@ -128,9 +129,9 @@ impl Fixture {
             Replacement::Kind(k) => page[KIND..KIND + 2].copy_from_slice(&(k as u16).to_le_bytes()),
             Replacement::Large => page[FIRST_EDITABLE..].copy_from_slice(&large[FIRST_EDITABLE..]),
         }
-        storage::seal(pid, page);
+        page::seal(pid, page);
         let mut sim = Sim::with_files(SEED, Config::default(), files.clone());
-        api::run(&mut sim, |rt| {
+        process::run(&mut sim, |rt| {
             let db = open::opened(&rt, FILE, &Log::new([APP]), &open::options(2));
             let got = write(&db, t);
             let Err(Error::Fatal {
@@ -162,7 +163,7 @@ impl Fixture {
         DATA.page_mut(&mut after, pid)
             .copy_from_slice(DATA.page(&self.files, pid));
         let mut sim = Sim::with_files(SEED, Config::default(), after);
-        let versions = api::run(&mut sim, |rt| {
+        let versions = process::run(&mut sim, |rt| {
             headers(
                 &open::opened(&rt, FILE, &Log::new([APP]), &open::options(2)),
                 t,

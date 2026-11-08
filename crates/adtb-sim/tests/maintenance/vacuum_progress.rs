@@ -9,6 +9,7 @@ use std::time::Duration;
 use adtb::runtime::{Runtime, Threads};
 use adtb::testing::Knobs;
 use adtb::{Database, Log, OpenOptions, Value};
+use adtb_harness::process;
 use adtb_harness::{common, seeds};
 use adtb_sim::SimRuntime;
 use adtb_simkit::api;
@@ -151,7 +152,7 @@ fn vacuumed(printed: &[String]) -> BTreeSet<i64> {
 fn watch(seed: u64) -> Seen {
     let shape = Shape::of(seed);
     let what = format!("seed {seed}, {shape:?}");
-    api::once(seed, |rt| {
+    process::once(seed, |rt| {
         let log = Log::new([shape.schema().as_str()]);
         let options = OpenOptions {
             pool_bytes: Some(POOL),
