@@ -205,7 +205,14 @@ enum Op {
 }
 struct Completion { ticket, buf: Option<AlignedBuf>, result: Result<Done, IoError> }
 enum IoError { NotFound, Exists, NotADirectory, Full, Failed }
+op.kind() -> OpKind   // the op's variant without its arguments: Open, CreateNew, ..., Timer
 ```
+
+A `Ticket` is made only by a backend, for an op submitted to it, with
+`Ticket::new(n)`; `Ticket::NONE` is the ticket a simulated process that
+has stopped answers. `clippy.toml` refuses `Ticket::new` at every other
+site, and each backend calls it under an `expect` that
+`work/tools/structure-check` counts.
 
 Paths are relative to the database directory, separated by `/`; the
 empty path is the database directory itself, which always exists. A
@@ -366,6 +373,80 @@ sim.set_faults(faults)   // from now on; the sector and atomic unit stay
 sim.crash_at(t); sim.run(|rt| ...) -> Finished | Crashed
 ```
 
+A plan acts on chosen ops, from inside a run or between runs:
+
+```text
+sim.plan(plan); rt.plan(plan)    // in place of the plan before
+rt.extend(plan)                  // added to the plan, its rules after
+sim.own_plan(owner, plan)        // and refuse every later plan
+Plan::new().rule(ops: Match, action).first(ops, action).at(n, action)
+  .lasting()                     // its rules outlive the run
+Match::any() | Match::kind(k) | Match::kinds(ks) | Match::any_of(ms)
+  .path(p) | .prefixed(p) | .suffixed(p) | .containing(p)
+                                 // the path an op names
+  .from_containing(p)            // a rename's source path
+  .offset(o) | .covers(o) | .whole(unit)   // a read's or write's range
+  .creating()                    // an open that creates
+  .except(m)
+Action::Fail(IoError) | Action::Lose | Action::Run(closure) | Action::Hold
+rt.arm(ops: Match); rt.disarm() -> u64
+sim.numbered(), rt.numbered() -> Numbered { kinds, struck, armed_at }
+sim.counted(ops), rt.counted(ops: Match) -> Count  // count.get()
+sim.logged(ops), rt.logged(ops: Match) -> OpLog    // log.entries()
+Submitted { ticket, at, completed, kind, path, from, offset, length,
+            bytes, recorded, planned }
+rt.files_open() -> usize; rt.files() -> files as a reader sees them
+```
+
+The path an op names is the path its file was opened at, a rename's
+new name, and otherwise its own path or directory. A match holds no
+code: every test it makes is one of the forms above.
+
+Postconditions of a plan:
+
+- The first rule that matches an op acts on it; a `first` rule acts on
+  one op and is then dropped. While armed, an op no rule acted on and
+  that the armed match accepts gets the next number, counting on from
+  earlier ops, and the action at that number is taken; `disarm` drops
+  the numbered actions not taken and returns how many ops were
+  numbered. `struck` is the first numbered op an action was taken at.
+- The rules end with the run that set them, even one that panics,
+  unless planned `lasting`; those last through the simulation's later
+  processes. Numbering, numbered actions,
+  counts and logs last across the simulation's processes, so a search
+  numbers the ops of a run and its restarts as one sequence.
+- `Fail(e)` completes the op with `e`, and `Lose` completes a write as
+  `Written`; neither changes the device, and a crash lands nothing of
+  such an op still queued. A planned op completes through the
+  simulator's one completion path, so its completion unparks its
+  submitter (§2).
+- `Run` runs its closure on the submitting thread before the op is
+  queued; the op then runs as any other. A `Run` is planned with
+  `first` or `at`; a `rule` of one panics.
+- A `Fail` that may match a `Close` panics when planned, and a numbered
+  `Fail` that comes to a `Close` panics there: a failed close would
+  leave its file open.
+- A `Lose` whose match may take an op other than a write panics when
+  planned.
+- A plan after `own_plan` panics, naming the owner.
+- A held op never completes. It is pending, so the deadlock rule does
+  not fire; the clock skips it when choosing the next due event; a crash
+  takes it as an op in flight.
+- A count counts each op its match accepts, at submission. A log holds
+  each such op with its ticket, the time it was submitted and the time
+  it completed, its path and range, a write's bytes, the device events
+  recorded before it and the action planned for it. The simulator's
+  tickets are one sequence across its queues, in submission order, so
+  a later ticket is a later submission.
+- Matching, numbering, counting and logging draw nothing from the seed,
+  so a run with no plan replays as it did before plans.
+
+Limit: when every thread waits and an op is held, the clock moves to a
+scheduled crash. A run that waits on a held op and on nothing else
+then ends as a crash, where without the crash it would fail.
+
+The real backend has no plans.
+
 The storage outlives a run, so the run after a crash is a restart of
 the process over what the crash left. `Faults` is the policy of §3,
 its fates decided as §3 states from the simulator's seed; its own
@@ -382,7 +463,10 @@ Postconditions of the simulator:
   seed replays a run byte for byte, trace and files alike.
 - A run fails when any thread panics, or when a live thread that is no
   daemon is blocked with no completion pending and only a daemon's timer
-  left.
+  left. A run whose threads return with an op held fails, whether or
+  not a crash is scheduled. A run where no thread can run while an op
+  is held fails when no crash is scheduled; with a crash scheduled, the
+  clock moves to it (the limit in §5).
 - A run ends when every thread that is no daemon has returned and every
   daemon is idle: blocked, with only daemons' timers left. Those timers
   do not fire and do not move the clock.
@@ -566,7 +650,9 @@ them: only the thread holding it runs. Every call into the interfaces
 of §1 and §2 except the clock and entropy is a switch point, where the
 scheduler advances the clock by a random step, delivers the completions
 due, and hands the baton to a random runnable thread. When no thread is
-runnable the clock jumps to the next completion. A crash makes every
+runnable the clock jumps to the next completion; a held op is never
+due, so the clock passes it for the next completion, timer or crash. A
+crash makes every
 thread unwind from its switch point.
 
 `Config::switch_rate` adds the switch points of page memory: at each

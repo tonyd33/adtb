@@ -5,13 +5,13 @@ use adtb::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb::mvcc::Transactions;
-use adtb::runtime::{IoError, Op, Runtime};
+use adtb::runtime::{IoError, OpKind, Runtime};
 use adtb::storage::{
     self, Damage, FIRST_EDITABLE, Finding, HEADER_LEN, LogFinding, LogProblem, Options, PageKind,
     Pager, Pid, Quarantine,
 };
-use adtb_sim::{Config, Sim, SimIo, SimRuntime};
-use adtb_simkit::search::{self, Hooked};
+use adtb_sim::{Action, Config, Match, Plan, Sim, SimIo, SimRuntime};
+use adtb_simkit::search;
 use adtb_simkit::{common, harness};
 use adtb_testkit::profile::assert_reached;
 
@@ -96,21 +96,21 @@ struct Site {
     pid: Pid,
     atomic: bool,
     unreadable: bool,
-    detect: Option<fn(&Pager<Hooked>, Pid) -> Damage>,
+    detect: Option<fn(&Pager<SimRuntime>, Pid) -> Damage>,
 }
 
-fn read_refused(pager: &Pager<Hooked>, pid: Pid) -> Damage {
+fn read_refused(pager: &Pager<SimRuntime>, pid: Pid) -> Damage {
     pager.read(pid).unwrap_err().damage
 }
 
-fn verify_refused(pager: &Pager<Hooked>, pid: Pid) -> Damage {
+fn verify_refused(pager: &Pager<SimRuntime>, pid: Pid) -> Damage {
     let found = pager.verify().findings;
     let damage = Probe::of(pager).refusals()[&pid];
     assert!(found.contains(&Finding::Page { pid, damage }), "{found:?}");
     damage
 }
 
-fn refused_dirty(pager: &Pager<Hooked>, pid: Pid) -> Damage {
+fn refused_dirty(pager: &Pager<SimRuntime>, pid: Pid) -> Damage {
     put(pager, pid, 2);
     pager.flush_log();
     pager.damage(pid, Damage::Checksum).damage
@@ -212,15 +212,12 @@ fn sites() -> Vec<Site> {
 
 /// Returns the damage `site` finds and what the pager records of its page after the call.
 fn detected(site: &Site, rt: &SimRuntime) -> (Option<Damage>, Option<Damage>) {
-    let hook = Hooked::new(rt);
     if site.unreadable {
         let at = site.pid.0 * harness::PAGE as u64;
-        hook.fail_when(move |op| match op {
-            Op::Read { offset, .. } if *offset == at => Some(IoError::Failed),
-            _ => None,
-        });
+        let reads = Match::kind(OpKind::Read).offset(at);
+        rt.plan(Plan::new().rule(reads, Action::Fail(IoError::Failed)));
     }
-    let (pager, _) = Pager::open(hook, &options(site.atomic)).unwrap();
+    let (pager, _) = Pager::open(rt.clone(), &options(site.atomic)).unwrap();
     let damage = match site.detect {
         Some(detect) => detect(&pager, site.pid),
         None => Probe::of(&pager).refusals()[&site.pid],
@@ -512,9 +509,9 @@ fn stale_log_blocks_past_the_end_are_reported_after_a_crash_anywhere_in_the_open
         SEED,
         12,
         2,
-        |hook| {
-            hook.arm(|_, _| true);
-            let (pager, _) = Pager::open(hook.clone(), &options(false)).unwrap();
+        |rt| {
+            rt.arm(Match::any());
+            let (pager, _) = Pager::open(rt.clone(), &options(false)).unwrap();
             pager.close();
             Vec::new()
         },
@@ -565,9 +562,9 @@ fn page_damage_recovery_finds_is_reported_after_a_crash_anywhere_in_the_open() {
         SEED,
         12,
         2,
-        |hook| {
-            hook.arm(|_, _| true);
-            let (pager, _) = Pager::open(hook.clone(), &options(true)).unwrap();
+        |rt| {
+            rt.arm(Match::any());
+            let (pager, _) = Pager::open(rt.clone(), &options(true)).unwrap();
             pager.close();
             Vec::new()
         },
@@ -844,9 +841,9 @@ fn one_stale_log_block_past_what_the_header_holds_records_the_whole_file() {
         SEED,
         12,
         2,
-        |hook| {
-            hook.arm(|_, _| true);
-            let (pager, _) = Pager::open(hook.clone(), &sized(16384)).unwrap();
+        |rt| {
+            rt.arm(Match::any());
+            let (pager, _) = Pager::open(rt.clone(), &sized(16384)).unwrap();
             pager.close();
             Vec::new()
         },

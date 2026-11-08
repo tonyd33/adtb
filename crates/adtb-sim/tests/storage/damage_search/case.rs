@@ -2,17 +2,15 @@
 //! sequence with its fault, then every consumer.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-use adtb::runtime::{IoError, Op as IoOp};
+use adtb::runtime::{IoError, OpKind};
 use adtb::storage::{self, Pid};
-use adtb_simkit::search::{Action, Hooked};
+use adtb_sim::{Action, Match, Plan as SimPlan, SimRuntime};
 use adtb_sys::runtime::Faults;
 
 use super::consumers;
 use super::judge::{self, Hit, Verdicts};
-use super::world::{self, CREATING, Kind, Op, PAGE, Ran, Rel, Rows, Traced, WriteOut};
+use super::world::{self, CREATING, Kind, Op, PAGE, Ran, Rel, Rows, WriteOut};
 
 /// How a case damages its page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -75,10 +73,7 @@ pub struct Plan {
 /// Returns the plan of `ops`: one run counting its write-outs, and one observing its holdings.
 /// The observing run reads pages, and its write-outs are numbered differently.
 pub fn plan(seed: u64, ops: Vec<Op>, concurrent: bool) -> Plan {
-    let count = |h: &Hooked, t: &Traced| {
-        let t = t.clone();
-        h.arm(move |op, path| world::write_out(&t, op, path));
-    };
+    let count = |_: &SimRuntime| {};
     let clean = world::run(seed, &ops, &count, false, concurrent);
     let observed = world::run(seed, &ops, &count, true, concurrent);
     Plan {
@@ -157,71 +152,45 @@ pub struct Point {
     pub injection: Injection,
 }
 
-/// Set the faults of `points` on `hook`, numbering write-outs into `trace`, each at the write of
-/// its write-out in `plan`. At most one of them is no lost write.
-fn arm(hook: &Hooked, trace: &Traced, plan: &Plan, points: &[Point]) {
-    let t = trace.clone();
-    hook.arm(move |op, path| world::write_out(&t, op, path));
-    for (i, point) in points.iter().enumerate() {
+/// Plan the faults of `points` on `rt`, each at the write of its write-out in `plan`. At most one of
+/// them is no lost write.
+fn arm(rt: &SimRuntime, plan: &Plan, points: &[Point]) {
+    let failing = points.iter().filter(|p| p.injection != Injection::Lost);
+    assert!(failing.count() <= 1, "at most one point plans failures");
+    let mut planned = SimPlan::new();
+    for point in points {
         let w = plan.clean.trace.writes[point.at];
-        let action = injected(hook, point.injection, w.pid);
-        if i == 0 {
-            hook.plan(w.op, action);
-        } else {
-            hook.plan_also(w.op, action);
-        }
+        planned = planned.at(w.op, injected(rt, point.injection, w.pid));
     }
+    rt.plan(planned);
 }
 
-/// Returns the action that injects `injection` at its write, setting on `hook` the failures
-/// that follow it for the page `pid`.
-fn injected(hook: &Hooked, injection: Injection, pid: Pid) -> Action {
-    let on = Arc::new(AtomicU64::new(0));
+/// Returns the action that injects `injection` at its write, planning there the ops that fail
+/// after it for the page `pid`.
+fn injected(rt: &SimRuntime, injection: Injection, pid: Pid) -> Action {
+    let rt = rt.clone();
     match injection {
         Injection::Lost => Action::Lose,
-        Injection::Torn => {
-            let rt = hook.rt.clone();
-            let armed = on.clone();
-            hook.fail_named(move |op, path| {
-                let force = matches!(op, IoOp::Sync { .. }) && world::is_data(path);
-                (force && on.load(Ordering::SeqCst) == 1).then_some(IoError::Failed)
+        Injection::Torn => Action::Run(Box::new(move || {
+            rt.set_faults(Faults {
+                torn_p: 1.0,
+                ..Faults::none(512)
             });
-            Action::Run(Box::new(move || {
-                rt.set_faults(Faults {
-                    torn_p: 1.0,
-                    ..Faults::none(512)
-                });
-                armed.store(1, Ordering::SeqCst);
-            }))
-        }
-        Injection::Unreadable { lasting } => {
-            let armed = on.clone();
-            hook.fail_named(move |op, path| unreadable(op, path, pid, lasting, &on));
-            Action::Run(Box::new(move || armed.store(1, Ordering::SeqCst)))
-        }
+            let forces = world::on_data(Match::kind(OpKind::Sync));
+            let failed = Action::Fail(IoError::Failed);
+            rt.extend(SimPlan::new().rule(forces, failed).lasting());
+        })),
+        Injection::Unreadable { lasting } => Action::Run(Box::new(move || {
+            let reads = world::on_data(Match::kind(OpKind::Read)).covers(pid.0 * PAGE as u64);
+            let failed = Action::Fail(IoError::Failed);
+            let then = if lasting {
+                SimPlan::new().rule(reads, failed)
+            } else {
+                SimPlan::new().first(reads, failed)
+            };
+            rt.extend(then.lasting());
+        })),
     }
-}
-
-/// Returns the failure of a read of `pid` while `on` counts it armed: 1 armed, 2 spent.
-fn unreadable(
-    op: &IoOp,
-    path: Option<&str>,
-    pid: Pid,
-    lasting: bool,
-    on: &AtomicU64,
-) -> Option<IoError> {
-    let IoOp::Read { offset, buf, .. } = op else {
-        return None;
-    };
-    let at = pid.0 * PAGE as u64;
-    let covers = *offset <= at && at < offset + buf.len() as u64;
-    if !covers || !world::is_data(path) || on.load(Ordering::SeqCst) != 1 {
-        return None;
-    }
-    if !lasting {
-        on.store(2, Ordering::SeqCst);
-    }
-    Some(IoError::Failed)
 }
 
 /// What one case showed, for the judge and the floor.
@@ -233,6 +202,8 @@ pub struct Outcome {
     pub overlaps: usize,
     /// Whether the consumers' open of the faulted file succeeded.
     pub opened: bool,
+    /// Whether a process after the first a planned read failure struck in had one too.
+    pub failed_after_restart: bool,
     pub verdicts: Verdicts,
 }
 
@@ -287,6 +258,11 @@ fn run_all(plan: &Plan, points: &[Point]) -> Option<Outcome> {
         failed: ran.failed,
         overlaps: ran.overlaps,
         opened: matches!(observed.open, Some(Ok(()))),
+        failed_after_restart: ran
+            .failed_reads
+            .iter()
+            .position(|n| *n > 0)
+            .is_some_and(|first| ran.failed_reads[first + 1..].iter().any(|n| *n > 0)),
         verdicts,
     })
 }
@@ -316,7 +292,7 @@ fn keys(allowed: &[Rows]) -> BTreeMap<Rel, Vec<i64>> {
 /// Returns the run of `plan` with the faults of `points`, or `None` when a write-out of one of
 /// them never came as it did in the run with no fault.
 fn faulted(plan: &Plan, points: &[Point]) -> Option<Ran> {
-    let arming = |h: &Hooked, t: &Traced| arm(h, t, plan, points);
+    let arming = |rt: &SimRuntime| arm(rt, plan, points);
     let ran = world::run(plan.seed, &plan.ops, &arming, false, plan.concurrent);
     let reached = |p: &Point| {
         let w = plan.clean.trace.writes[p.at];

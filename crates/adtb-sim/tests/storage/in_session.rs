@@ -7,11 +7,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use adtb::runtime::{Done, Op, Runtime};
+use adtb::runtime::{Done, Op, OpKind, Runtime};
 use adtb::storage::{
     self, Damage, Finding, HEADER_LEN, Lsn, Options, PageError, PageKind, Pager, Pid, Quarantine,
 };
-use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_sim::{Config, Match, Sim, SimRuntime};
 use adtb_simkit::search::each_crash_image;
 use adtb_simkit::{common, harness};
 
@@ -397,21 +397,12 @@ fn crash_through_recycles_in_session(atomic: bool) {
         5,
         24,
         1,
-        |hook| {
-            let (pager, _) = Pager::open(hook.clone(), &options(atomic)).unwrap();
+        |rt| {
+            let (pager, _) = Pager::open(rt.clone(), &options(atomic)).unwrap();
             storage::recycle_at_open(&pager, None);
             load(&pager, &pages, 2 * EVERY);
-            let (seen, rt, dir) = (Arc::clone(&removals), hook.rt.clone(), dir.clone());
-            hook.fail_when(move |op| {
-                if let Op::Remove { path } = op
-                    && let Some(name) = path.strip_prefix(&dir)
-                {
-                    let base = u64::from_str_radix(name, 16).unwrap();
-                    seen.lock().unwrap().push((rt.recorded(), base));
-                }
-                None
-            });
-            hook.arm(|_, _| false);
+            let removes = rt.logged(Match::kind(OpKind::Remove).prefixed(&dir));
+            rt.arm(Match::kinds([]));
             let mut log = Vec::new();
             let start = Probe::of(&pager).appended().0;
             for n in 0.. {
@@ -420,11 +411,19 @@ fn crash_through_recycles_in_session(atomic: bool) {
                 }
                 let pid = pages[n % pages.len()];
                 put(&pager, pid, n as u64 + 1_000_000);
-                log.push((hook.rt.recorded(), pid, n as u64 + 1_000_000));
+                log.push((rt.recorded(), pid, n as u64 + 1_000_000));
             }
-            let mut io = hook.rt.io();
-            common::sleep(&hook.rt, &mut io, Duration::from_secs(1));
+            let mut io = rt.io();
+            common::sleep(rt, &mut io, Duration::from_secs(1));
             *acked.lock().unwrap() = log;
+            *removals.lock().unwrap() = removes
+                .entries()
+                .iter()
+                .map(|e| {
+                    let name = &e.path().unwrap()[dir.len()..];
+                    (e.recorded(), u64::from_str_radix(name, 16).unwrap())
+                })
+                .collect();
             let removed = removals.lock().unwrap();
             removed
                 .iter()

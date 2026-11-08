@@ -6,12 +6,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use adtb::runtime::{Clock, Instant, Op, Runtime, Threads};
+use adtb::runtime::{Clock, Instant, OpKind, Runtime, Threads};
 use adtb::storage::{
     self, BackupRun, Crc32c, Damage, Envelope, HEADER_LEN, Lsn, Options, PageKind, Pager, Pid,
 };
-use adtb_sim::{Config, Outcome, Sim, SimRuntime};
-use adtb_simkit::search::{Action, Hooked, each_crash_image};
+use adtb_sim::{Action, Config, Match, Outcome, Plan, Sim, SimRuntime, Submitted};
+use adtb_simkit::search::each_crash_image;
 use adtb_simkit::{common, harness};
 use adtb_sys::runtime::Faults;
 use adtb_testkit::profile::every_case;
@@ -239,13 +239,13 @@ fn load_keeps_recovery_and_the_dirty_page_table_bounded(atomic: bool) {
         7,
         8,
         1,
-        |hook| {
-            let (pager, _) = Pager::open(hook.clone(), &options(atomic)).unwrap();
-            let warm = load(&hook.rt, &pager, &pages, 2 * EVERY);
-            hook.arm(|_, _| false);
-            let mut run = load(&hook.rt, &pager, &pages, 10 * EVERY);
-            let mut io = hook.rt.io();
-            common::sleep(&hook.rt, &mut io, Duration::from_secs(1));
+        |rt| {
+            let (pager, _) = Pager::open(rt.clone(), &options(atomic)).unwrap();
+            let warm = load(rt, &pager, &pages, 2 * EVERY);
+            rt.arm(Match::kinds([]));
+            let mut run = load(rt, &pager, &pages, 10 * EVERY);
+            let mut io = rt.io();
+            common::sleep(rt, &mut io, Duration::from_secs(1));
             run.acked.splice(0..0, warm.acked);
             run.samples.splice(0..0, warm.samples);
             run.times.splice(0..0, warm.times);
@@ -320,14 +320,14 @@ fn crash_in_a_cycle_loses_nothing(atomic: bool) {
         9,
         24,
         1,
-        |hook| {
-            let (pager, _) = Pager::open(hook.clone(), &options(atomic)).unwrap();
+        |rt| {
+            let (pager, _) = Pager::open(rt.clone(), &options(atomic)).unwrap();
             let before = Probe::of(&pager).checkpoint();
-            let load = load(&hook.rt, &pager, &pages, EVERY);
+            let load = load(rt, &pager, &pages, EVERY);
             *wrote.lock().unwrap() = acked_by(&load.acked, usize::MAX);
-            hook.arm(|_, _| false);
-            let mut io = hook.rt.io();
-            common::sleep(&hook.rt, &mut io, Duration::from_secs(1));
+            rt.arm(Match::kinds([]));
+            let mut io = rt.io();
+            common::sleep(rt, &mut io, Duration::from_secs(1));
             assert!(
                 Probe::of(&pager).checkpoint() > before,
                 "the checkpointer ran"
@@ -433,27 +433,24 @@ fn a_close_while_the_checkpointer_runs_waits_for_it_and_the_next_open_replays_no
     let (files, pages) = created(false);
     let mut sim = Sim::with_files(6, Config::default(), files);
     let mut wrote = BTreeMap::new();
-    let mut struck = None;
     harness::finished(&mut sim, |rt| {
-        let hook = Hooked::new(&rt);
-        let (pager, _) = Pager::open(hook.clone(), &options(false)).unwrap();
+        let (pager, _) = Pager::open(rt.clone(), &options(false)).unwrap();
         let load = load(&rt, &pager, &pages, EVERY);
         wrote = acked_by(&load.acked, usize::MAX);
         let closer = pager;
-        let spawner = hook.clone();
-        hook.plan(
+        let spawner = rt.clone();
+        rt.plan(Plan::new().at(
             0,
             Action::Run(Box::new(move || {
                 spawner.spawn("close", move || closer.close());
             })),
-        );
-        hook.arm(|op, path| matches!(op, Op::Write { .. }) && path == Some(harness::NAME));
+        ));
+        rt.arm(Match::kind(OpKind::Write).path(harness::NAME));
         let mut io = rt.io();
         common::sleep(&rt, &mut io, Duration::from_secs(1));
-        struck = hook.struck();
     });
     assert!(
-        struck.is_some(),
+        sim.numbered().struck().is_some(),
         "the close began during the checkpointer's write"
     );
     let got = reopen(sim.files(), false, &pages);
@@ -482,23 +479,11 @@ fn torn_run(files: &Files, pages: &[Pid], crash: Option<Instant>) -> (Sim, Load,
     if let Some(at) = crash {
         sim.crash_at(at);
     }
-    let writes: Arc<Mutex<Vec<Instant>>> = Arc::default();
-    let seen = writes.clone();
     let hot = pages[0].0 * harness::PAGE as u64;
+    let writes = sim.logged(Match::kind(OpKind::Write).path(harness::NAME).offset(hot));
     let mut done = Load::default();
     let outcome = sim.run(|rt| {
-        let hook = Hooked::new(&rt);
-        let (pager, _) = Pager::open(hook.clone(), &options(false)).unwrap();
-        let clock = rt.clone();
-        hook.arm(move |op, path| {
-            if let Op::Write { offset, .. } = op
-                && *offset == hot
-                && path == Some(harness::NAME)
-            {
-                seen.lock().unwrap().push(clock.now());
-            }
-            false
-        });
+        let (pager, _) = Pager::open(rt.clone(), &options(false)).unwrap();
         done = load(&rt, &pager, pages, 12 * EVERY);
         let mut io = rt.io();
         common::sleep(&rt, &mut io, Duration::from_secs(1));
@@ -509,7 +494,7 @@ fn torn_run(files: &Files, pages: &[Pid], crash: Option<Instant>) -> (Sim, Load,
         Outcome::Finished
     };
     assert_eq!(expected, outcome);
-    let times = writes.lock().unwrap().clone();
+    let times = writes.entries().iter().map(Submitted::at).collect();
     (sim, done, times)
 }
 

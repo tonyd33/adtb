@@ -9,7 +9,7 @@ mod world;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb_testkit::profile::{self, every_case};
+use adtb_testkit::profile::{self, assert_reached, every_case};
 use case::{FAULTS, Fault, Injection, Point};
 use consumers::{CONSUMERS, Consumer};
 use judge::Violation;
@@ -1107,6 +1107,13 @@ struct Found {
 fn shard(fault: Fault) -> String {
     let tier = tier();
     let found = search(fault, &tier, false);
+    if fault == Fault::UnreadableLasting {
+        assert_reached(
+            "a lasting unreadable page failing reads after a restart",
+            found.failed_after_restart,
+            1,
+        );
+    }
     report(fault, &found, tier.per_kind)
 }
 
@@ -1182,6 +1189,8 @@ struct Searched {
     found: Vec<Found>,
     /// The cases a vacuum on a second thread ran during a write of.
     overlapped: usize,
+    /// The cases whose planned read failures struck again after a restart.
+    failed_after_restart: usize,
 }
 
 /// Returns the cases of `fault` the tier asks, with a vacuum beside each write when
@@ -1196,6 +1205,7 @@ fn search(fault: Fault, tier: &Tier, concurrent: bool) -> Searched {
         failed_opens: BTreeMap::new(),
         found: Vec::new(),
         overlapped: 0,
+        failed_after_restart: 0,
     };
     let done = |kind: Kind, s: &Searched| {
         let counted = s.cases.get(&kind).copied().unwrap_or(0);
@@ -1234,6 +1244,9 @@ fn search(fault: Fault, tier: &Tier, concurrent: bool) -> Searched {
                 }
                 if outcome.overlaps > 0 {
                     s.overlapped += 1;
+                }
+                if outcome.failed_after_restart {
+                    s.failed_after_restart += 1;
                 }
                 s.reached
                     .extend(outcome.verdicts.reached.iter().map(|c| (kind, *c)));

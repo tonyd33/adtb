@@ -10,13 +10,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use adtb::batch::{self, Batch, BatchBuilder, Type};
 use adtb::key::{Scalar, Value as Stored};
-use adtb::runtime::{IoError, Op};
+use adtb::runtime::{IoError, OpKind};
 use adtb::storage::{FatalIo, Pager};
 use adtb::{
     CallOptions, Database, Determinism, Error, FatalReason, Fault, HostError, HostFns, Log,
     OpenError, OpenOptions, Position, RejectReason, TxnCallOptions, TxnOptions,
 };
-use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
 
 use api::{once, options, query, run};
 
@@ -313,23 +313,12 @@ fn a_host_function_that_errs_panics_or_returns_another_shape_faults_its_statemen
 #[test]
 fn a_host_callback_preserves_a_genuine_storage_failure() {
     let mut sim = Sim::new(8, Config::default());
-    let struck = Arc::new(AtomicUsize::new(0));
     let mut returned = None;
     let caught = catch_unwind(AssertUnwindSafe(|| {
         sim.run(|rt| {
-            let hook = adtb_simkit::search::Hooked::new(&rt);
-            let failures = Arc::clone(&struck);
-            hook.fail_when(move |op| {
-                if matches!(op, Op::Write { .. })
-                    && failures
-                        .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed)
-                        .is_ok()
-                {
-                    Some(IoError::Full)
-                } else {
-                    None
-                }
-            });
+            rt.arm(Match::kind(OpKind::Write).prefixed("callback.adt"));
+            rt.plan(Plan::new().at(0, Action::Fail(IoError::Full)));
+            let pager_rt = rt.clone();
             let fns = failing(move |b| {
                 let opts = adtb::storage::Options {
                     name: "callback.adt".into(),
@@ -337,7 +326,7 @@ fn a_host_callback_preserves_a_genuine_storage_failure() {
                     max_pages: 1024,
                     ..adtb_simkit::harness::options(16)
                 };
-                Pager::create(hook.clone(), &opts)
+                Pager::create(pager_rt.clone(), &opts)
                     .expect("the injected storage failure must stop creation");
                 Ok(texts(b, slug))
             });
@@ -350,7 +339,8 @@ fn a_host_callback_preserves_a_genuine_storage_failure() {
             ));
         })
     }));
-    assert_eq!(1, struck.load(Ordering::Relaxed), "the write failure fired");
+    let struck = sim.numbered().struck().map(|s| (s.at(), s.kind()));
+    assert_eq!(Some((0, OpKind::Write)), struck, "the write failure fired");
     if let Some(got) = returned {
         assert!(faulted(got), "the swallowed fatal became FunctionFailed");
         panic!("the host catcher returned FunctionFailed instead of resuming fatal I/O");

@@ -9,6 +9,7 @@ disallowed-methods = [
   { path = "adtb_sys::pages::Exclusive::write", reason = "a resident page changes only by a logged change or one of pager.rs's own writers" },
   { path = "adtb_sys::pages::PageMemory::lock_exclusive", reason = "pager.rs owns the exclusive latch; use Pager::exclusive or Pager::hold" },
   { path = "adtb_sys::pages::PageMemory::try_lock_exclusive", reason = "pager.rs owns the exclusive latch; use Pager::exclusive or Pager::hold" },
+  { path = "adtb_sys::runtime::Ticket::new", reason = "a ticket is made only by a backend, for an op submitted to it" },
   { path = "adtb_sys::pages::Optimistic::upgrade", reason = "pager.rs owns the exclusive latch; use PageOptimistic::upgrade" },
 ]
 allow-unwrap-in-tests = true

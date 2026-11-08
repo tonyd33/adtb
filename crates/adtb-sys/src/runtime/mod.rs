@@ -110,8 +110,19 @@ pub trait Entropy {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FileId(pub u32);
 
+/// The name of one submitted op, unique within its queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Ticket(pub u64);
+pub struct Ticket(u64);
+
+impl Ticket {
+    /// The ticket of an op submitted to a simulated process that has stopped running.
+    pub const NONE: Ticket = Ticket(u64::MAX);
+
+    /// Returns the ticket numbered `n`. Only a backend calls it, for an op submitted to it.
+    pub const fn new(n: u64) -> Ticket {
+        Ticket(n)
+    }
+}
 
 /// A request to the I/O backend.
 ///
@@ -193,6 +204,48 @@ pub enum Op {
     Timer {
         at: Instant,
     },
+}
+
+/// The kind of an [`Op`], without its arguments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OpKind {
+    Open,
+    CreateNew,
+    Read,
+    Write,
+    Size,
+    Allocate,
+    Sync,
+    SyncDir,
+    List,
+    Remove,
+    RemoveDir,
+    Rename,
+    CreateDir,
+    Close,
+    Timer,
+}
+
+impl Op {
+    pub fn kind(&self) -> OpKind {
+        match self {
+            Op::Open { .. } => OpKind::Open,
+            Op::CreateNew { .. } => OpKind::CreateNew,
+            Op::Read { .. } => OpKind::Read,
+            Op::Write { .. } => OpKind::Write,
+            Op::Size { .. } => OpKind::Size,
+            Op::Allocate { .. } => OpKind::Allocate,
+            Op::Sync { .. } => OpKind::Sync,
+            Op::SyncDir { .. } => OpKind::SyncDir,
+            Op::List { .. } => OpKind::List,
+            Op::Remove { .. } => OpKind::Remove,
+            Op::RemoveDir { .. } => OpKind::RemoveDir,
+            Op::Rename { .. } => OpKind::Rename,
+            Op::CreateDir { .. } => OpKind::CreateDir,
+            Op::Close { .. } => OpKind::Close,
+            Op::Timer { .. } => OpKind::Timer,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]

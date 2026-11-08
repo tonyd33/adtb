@@ -13,6 +13,7 @@ mod loads;
 mod longkey;
 mod oplog;
 mod past;
+mod plans;
 mod scheduler;
 mod ssi;
 mod system_writes;

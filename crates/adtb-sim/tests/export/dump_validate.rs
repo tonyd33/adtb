@@ -4,7 +4,7 @@
 use std::sync::OnceLock;
 
 use adtb::catalog::arrows;
-use adtb::runtime::Op;
+use adtb::runtime::OpKind;
 use adtb::storage;
 use adtb::{
     ArchiveTarget, CallOptions, Database, Error, FatalReason, Log, OpenOptions, RejectReason,
@@ -13,9 +13,9 @@ use adtb::{
 use adtb_lang::schema::Schema;
 use adtb_lang::textual::{print_document, read_document};
 use adtb_lang::types::RelId;
-use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_sim::{Config, Match, Sim, SimRuntime};
 use adtb_simkit::api;
-use adtb_simkit::search::{self, Files, Hooked};
+use adtb_simkit::search::{self, Files};
 
 const FILE: &str = "app.adt";
 const DUMP: &str = "d";
@@ -338,26 +338,26 @@ fn a_violating_restore_with_any_op_failed_publishes_nothing() {
     let stray = r#"Pin { id: 2, owner: users.key(9), email: Email("a@b") }"#;
     let base = edited(&[(PINS, stray)]);
     let expected = violated("app::pins.Pin.owner", rows("app::pins", &[stray]));
-    let workload = |hook: &Hooked| {
-        hook.arm(|op: &Op, _: Option<&str>| match op {
-            Op::Close { .. } | Op::Timer { .. } => false,
-            Op::Rename { from, .. } => !from.contains(".creating/"),
-            _ => true,
-        });
+    let workload = |rt: &SimRuntime| {
+        rt.arm(
+            Match::any()
+                .except(Match::kinds([OpKind::Close, OpKind::Timer]))
+                .except(Match::kind(OpKind::Rename).from_containing(".creating/")),
+        );
         let archive = ArchiveTarget::path(EDITED).unwrap();
         let got = restore_in(
-            hook.clone(),
+            rt.clone(),
             &archive,
             COPY,
             RestorePoint::Latest,
             &no_create(),
         );
-        hook.disarm();
+        rt.disarm();
         got.map(drop)
     };
     let mut reached = 0;
     search::each_fatal_failure(&base, 13, 4, &[], workload, |failed| {
-        let label = format!("op {} {}", failed.at, failed.op);
+        let label = format!("op {} {}", failed.at, failed.struck);
         match &failed.out {
             Some(Err(Error::Rejected { reason })) => assert_eq!(&expected, reason, "{label}"),
             Some(Err(Error::Fatal {

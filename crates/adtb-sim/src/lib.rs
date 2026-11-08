@@ -11,9 +11,11 @@ mod check;
 mod disk;
 #[cfg(all(debug_assertions, not(test)))]
 mod instances;
+mod plan;
 mod rng;
 mod sim;
 
 pub use check::{Fate, Finding, FindingKind, Ledger, Recovered, Violation, check};
 pub use disk::Recording;
+pub use plan::{Action, Count, Match, Numbered, OpLog, Plan, Planned, Struck, Submitted};
 pub use sim::{Config, Outcome, Sim, SimIo, SimRuntime};

@@ -2,11 +2,10 @@ use adtb_simkit::common;
 
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind, panic_any};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use adtb::runtime::{AlignedBuf, Done, Io, IoError, Op, Runtime, Threads};
-use adtb_sim::{Config, Outcome, Sim, SimIo, SimRuntime};
+use adtb::runtime::{AlignedBuf, Done, Io, IoError, Op, OpKind, Runtime, Threads};
+use adtb_sim::{Action, Config, Match, Outcome, Plan, Sim, SimIo, SimRuntime};
 use adtb_sys::runtime::Faults;
 use common::{
     SECTOR, allocate, complete, open, read, run, run_then_crash, sector, sync, sync_dir, write,
@@ -610,35 +609,19 @@ enum StorageFailure {
     LogCreate,
 }
 
-fn fail_storage_operation(
-    rt: SimRuntime,
-    case: StorageFailure,
-    cause: IoError,
-    struck: Arc<Mutex<Vec<String>>>,
-) {
-    let hook = adtb_simkit::search::Hooked::new(&rt);
-    hook.fail_when(move |op| {
-        let context = match (case, op) {
-            (StorageFailure::Write, Op::Write { .. }) => "write".to_owned(),
-            (StorageFailure::LogCreate, Op::CreateNew { path }) if path.contains("-log/") => {
-                format!("create {path}")
-            }
-            _ => return None,
-        };
-        let mut struck = struck.lock().unwrap();
-        if !struck.is_empty() {
-            return None;
-        }
-        struck.push(context);
-        Some(cause)
+fn fail_storage_operation(rt: SimRuntime, case: StorageFailure, cause: IoError) {
+    rt.arm(match case {
+        StorageFailure::Write => Match::kind(OpKind::Write),
+        StorageFailure::LogCreate => Match::kind(OpKind::CreateNew).containing("-log/"),
     });
+    rt.plan(Plan::new().at(0, Action::Fail(cause)));
     let options = adtb::storage::Options {
         name: "fatal.adt".into(),
         segment_size: 64 * 1024,
         max_pages: 1024,
         ..adtb_simkit::harness::options(16)
     };
-    adtb::storage::Pager::create(hook, &options)
+    adtb::storage::Pager::create(rt, &options)
         .expect("a planted fatal I/O failure must stop creation");
 }
 
@@ -650,9 +633,8 @@ fn failed_storage_operations_preserve_their_typed_io_cause() {
         (StorageFailure::LogCreate, IoError::Failed),
     ] {
         let mut sim = Sim::new(32, Config::default());
-        let struck = Arc::new(Mutex::new(Vec::new()));
         let caught = catch_unwind(AssertUnwindSafe(|| {
-            sim.run(|rt| fail_storage_operation(rt, case, cause, Arc::clone(&struck)))
+            sim.run(|rt| fail_storage_operation(rt, case, cause))
         }));
         let payload = caught.expect_err("the planted storage failure must stop the process");
         let failure = payload
@@ -664,9 +646,13 @@ fn failed_storage_operations_preserve_their_typed_io_cause() {
                 )
             });
         assert_eq!(cause, failure.cause(), "{case:?}");
-        let struck = struck.lock().unwrap();
-        assert_eq!(1, struck.len(), "{case:?}: the planted failure ran");
-        assert_eq!(struck[0], failure.context(), "{case:?}");
+        let numbered = sim.numbered();
+        let struck = numbered.struck().expect("the planted failure ran");
+        let context = match struck.kind() {
+            OpKind::Write => "write".to_owned(),
+            _ => format!("create {}", struck.path().unwrap()),
+        };
+        assert_eq!(context, failure.context(), "{case:?}");
         assert_eq!(None, adtb::write::panic_text(&*payload), "{case:?}");
         ran += 1;
     }
@@ -681,14 +667,12 @@ fn genuine_storage_io_failures_are_accepted_as_process_crashes() {
         (StorageFailure::LogCreate, IoError::Failed),
     ] {
         let mut sim = Sim::new(33, Config::default());
-        let struck = Arc::new(Mutex::new(Vec::new()));
         let outcome = adtb_simkit::crash::run_process(&mut sim, |rt| {
-            fail_storage_operation(rt, case, cause, Arc::clone(&struck));
+            fail_storage_operation(rt, case, cause);
         });
         assert_eq!(Outcome::Crashed, outcome, "{case:?}");
-        assert_eq!(
-            1,
-            struck.lock().unwrap().len(),
+        assert!(
+            sim.numbered().struck().is_some(),
             "{case:?}: the planted failure ran"
         );
         ran += 1;

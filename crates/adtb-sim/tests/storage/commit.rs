@@ -3,9 +3,11 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use adtb::runtime::{Clock, Entropy, Io, Op, Runtime, Threads};
+use adtb::runtime::{Clock, Entropy, Io, Op, OpKind, Runtime, Threads};
 use adtb::storage::{Lsn, Options, Pager, Position};
-use adtb_sim::{Config, Finding, FindingKind, Ledger, Outcome, Recovered, Sim, SimRuntime, check};
+use adtb_sim::{
+    Config, Finding, FindingKind, Ledger, Match, Outcome, Recovered, Sim, SimRuntime, check,
+};
 use adtb_sys::runtime::Faults;
 
 use adtb_simkit::harness;
@@ -482,7 +484,20 @@ enum CommitStage {
 struct PublicCommitSeen {
     attempted: usize,
     acknowledged: Vec<adtb::Position>,
-    stages: Vec<CommitStage>,
+    /// The ops numbered when each commit was attempted, and when it returned.
+    commits: Vec<(u64, Option<u64>)>,
+}
+
+impl PublicCommitSeen {
+    /// Returns the stage op `at` was submitted in.
+    fn stage(&self, at: u64) -> CommitStage {
+        let open = |&(start, end): &(u64, Option<u64>)| start <= at && end.is_none_or(|e| at < e);
+        if self.commits.iter().any(open) {
+            CommitStage::Commit
+        } else {
+            CommitStage::Statements
+        }
+    }
 }
 
 fn recovered_commit_prefix(files: search::Files, acknowledged: usize, attempted: usize, at: u64) {
@@ -541,31 +556,25 @@ fn public_commits_preserve_acknowledged_pairs_under_write_and_sync_failure() {
     });
     assert!(seed_ack.lsn > 0, "the seed is publicly acknowledged");
     let files = initial.files();
-    let workload = |hook: &search::Hooked| {
+    let workload = |rt: &SimRuntime| {
         *seen.lock().unwrap() = PublicCommitSeen::default();
-        let db = public_commit_db(hook.clone());
-        let observing = seen.clone();
-        hook.arm(move |op, _| {
-            if !matches!(op, Op::Write { .. } | Op::Sync { .. }) {
-                return false;
-            }
-            let mut seen = observing.lock().unwrap();
-            let stage = if seen.attempted == seen.acknowledged.len() {
-                CommitStage::Statements
-            } else {
-                CommitStage::Commit
-            };
-            seen.stages.push(stage);
-            true
-        });
+        let db = public_commit_db(rt.clone());
+        rt.arm(Match::kinds([OpKind::Write, OpKind::Sync]));
+        let numbered = || rt.numbered().kinds().len() as u64;
         for text in &COMMIT_PAIRS[1..] {
-            let position = commit_pair(&db, text, || seen.lock().unwrap().attempted += 1);
-            seen.lock().unwrap().acknowledged.push(position);
+            let position = commit_pair(&db, text, || {
+                let mut seen = seen.lock().unwrap();
+                seen.attempted += 1;
+                seen.commits.push((numbered(), None));
+            });
+            let mut seen = seen.lock().unwrap();
+            seen.acknowledged.push(position);
+            seen.commits.last_mut().unwrap().1 = Some(numbered());
         }
-        hook.disarm();
+        rt.disarm();
     };
     let mut baseline = Sim::with_files(seed, Config::default(), files.clone());
-    api::run(&mut baseline, |rt| workload(&search::Hooked::new(&rt)));
+    api::run(&mut baseline, |rt| workload(&rt));
     assert_eq!(
         2,
         seen.lock().unwrap().attempted,
@@ -580,25 +589,25 @@ fn public_commits_preserve_acknowledged_pairs_under_write_and_sync_failure() {
     let (mut writes, mut syncs, mut before_ack, mut after_ack) = (0, 0, 0, 0);
     let mut positions = BTreeSet::new();
     search::each_fatal_failure(&files, seed, 4, &[], workload, |failed| {
-        assert_eq!(None, failed.out, "failure {}: {}", failed.at, failed.op);
+        assert_eq!(None, failed.out, "failure {}: {}", failed.at, failed.struck);
         assert!(positions.insert(failed.at), "a distinct failure position");
-        match failed.write_or_sync {
-            Some(search::WriteOrSync::Write) => writes += 1,
-            Some(search::WriteOrSync::Sync) => syncs += 1,
-            None => panic!("the search only fails writes and file forces"),
+        match failed.struck.kind() {
+            OpKind::Write => writes += 1,
+            OpKind::Sync => syncs += 1,
+            other => panic!("the search only fails writes and file forces, not {other:?}"),
         }
         let (acked, attempted, stage) = {
             let seen = seen.lock().unwrap();
             (
                 seen.acknowledged.clone(),
                 seen.attempted,
-                seen.stages[failed.at as usize],
+                seen.stage(failed.at),
             )
         };
         eprintln!(
             "failure {} {:?}: struck {stage:?}; acknowledged {}, attempted {attempted}",
             failed.at,
-            failed.write_or_sync,
+            failed.struck.kind(),
             acked.len()
         );
         assert!(
@@ -644,16 +653,16 @@ fn public_commits_preserve_acknowledged_pairs_under_crashes_at_sampled_events() 
         seed,
         3,
         2,
-        |hook| {
-            let db = public_commit_db(hook.clone());
-            hook.arm(|_, _| true);
+        |rt| {
+            let db = public_commit_db(rt.clone());
+            rt.arm(Match::any());
             for text in &COMMIT_PAIRS[1..] {
                 commit_pair(&db, text, || {
-                    attempts.lock().unwrap().push(hook.rt.recorded());
+                    attempts.lock().unwrap().push(rt.recorded());
                 });
-                acks.lock().unwrap().push(hook.rt.recorded());
+                acks.lock().unwrap().push(rt.recorded());
             }
-            hook.disarm();
+            rt.disarm();
             acks.lock().unwrap().clone()
         },
         |at, image| {

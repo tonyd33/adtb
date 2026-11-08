@@ -7,11 +7,11 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use adtb::runtime::{Op as IoOp, Runtime, Threads};
+use adtb::runtime::{OpKind, Runtime, Threads};
 use adtb::storage::{self, Damage, PageKind, Pid, Quarantine};
 use adtb::{CreateOptions, Database, Error, Log, OpenOptions, TxnCallOptions, TxnOptions};
-use adtb_sim::{Config, Outcome, Sim};
-use adtb_simkit::search::{Files, Hooked};
+use adtb_sim::{Config, Match, OpLog, Outcome, Planned, Sim, SimRuntime, Submitted};
+use adtb_simkit::search::Files;
 use adtb_simkit::{common, crash};
 
 pub const FILE: &str = "search.adt";
@@ -226,16 +226,11 @@ pub struct WriteOut {
     pub during: usize,
 }
 
-/// The pages of the writes a run numbered, in order, with the operation running and a count
-/// of the writes so far.
+/// The pages of the writes a run numbered, in order.
 #[derive(Clone, Debug, Default)]
 pub struct Trace {
     pub writes: Vec<WriteOut>,
-    pub during: usize,
-    pub ops: u64,
 }
-
-pub type Traced = Arc<Mutex<Trace>>;
 
 /// The operation index of the write-outs of the create.
 pub const CREATING: usize = usize::MAX;
@@ -252,40 +247,41 @@ pub fn page(files: &Files, pid: Pid) -> Vec<u8> {
     out
 }
 
-/// Returns whether `path` names the data file, under its own name or the name it is created at.
-pub fn is_data(path: Option<&str>) -> bool {
-    path.is_some_and(|p| {
-        p == FILE
-            || p.strip_prefix(FILE)
-                .and_then(|rest| rest.strip_prefix(".creating/"))
-                .is_some_and(|name| !name.contains('/') && !name.contains('-'))
-    })
+/// Returns `ops` limited to those on the data file, under its name or as its create builds it.
+pub fn on_data(ops: Match) -> Match {
+    ops.prefixed(FILE).except(Match::any().containing("-"))
 }
 
-/// Returns whether `op` is a write of whole pages to the data file, recording it in `trace` when
-/// it is.
+/// Returns the match of the writes of whole pages to the data file.
+pub fn write_outs() -> Match {
+    on_data(Match::kind(OpKind::Write)).whole(PAGE as u64)
+}
+
+/// Returns the pages of `writes`, the operation each ran during given by `during`: the index in
+/// `writes` from which each operation ran.
 #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
-pub fn write_out(trace: &Traced, op: &IoOp, path: Option<&str>) -> bool {
-    let IoOp::Write { offset, buf, .. } = op else {
-        return false;
-    };
-    if !is_data(path) || offset % PAGE as u64 != 0 || buf.len() % PAGE != 0 {
-        return false;
+fn trace(writes: &OpLog, during: &[(usize, usize)]) -> Trace {
+    let mut trace = Trace::default();
+    let writes = writes.entries();
+    for (number, write) in writes.iter().enumerate() {
+        let during = during
+            .iter()
+            .rev()
+            .find(|(from, _)| *from <= number)
+            .map_or(CREATING, |(_, i)| *i);
+        let offset = write.offset().unwrap();
+        for (i, page) in write.bytes().unwrap().chunks(PAGE).enumerate() {
+            trace.writes.push(WriteOut {
+                op: number as u64,
+                pid: Pid(offset / PAGE as u64 + i as u64),
+                kind: storage::kind(page),
+                owner: storage::owner(page),
+                lsn: storage::lsn(page).0,
+                during,
+            });
+        }
     }
-    let mut t = trace.lock().unwrap();
-    let (during, number) = (t.during, t.ops);
-    t.ops += 1;
-    for (i, page) in buf.chunks(PAGE).enumerate() {
-        t.writes.push(WriteOut {
-            op: number,
-            pid: Pid(offset / PAGE as u64 + i as u64),
-            kind: storage::kind(page),
-            owner: storage::owner(page),
-            lsn: storage::lsn(page).0,
-            during,
-        });
-    }
-    true
+    trace
 }
 
 pub fn options() -> OpenOptions {
@@ -476,16 +472,21 @@ pub struct Ran {
     pub applied_under_mark: BTreeSet<usize>,
     /// The marks the file held when the migration that drops a relation began.
     pub marked_before_drop: BTreeSet<Quarantine>,
+    /// The reads of the data file a plan failed, by process.
+    pub failed_reads: Vec<usize>,
     pub files: Files,
 }
 
-/// The faults a run applies, set on the hook of its first process.
-pub type Arm<'a> = &'a dyn Fn(&Hooked, &Traced);
+/// The faults a run plans at numbered write-outs, set in its first process and kept by the
+/// simulation for the later ones.
+pub type Arm<'a> = &'a dyn Fn(&SimRuntime);
 
 /// The state one run carries across its processes.
 struct Runner<'a> {
     ops: &'a [Op],
-    trace: Traced,
+    writes: OpLog,
+    /// The length of `writes` when each operation began, with its index.
+    during: Vec<(usize, usize)>,
     acked: Acked,
     held: Vec<Holdings>,
     ids: Ids,
@@ -535,18 +536,18 @@ impl Runner<'_> {
 
     /// Run the operations from `next` up to the next crash or the end on one process. Returns
     /// whether every one ran.
-    fn process(&mut self, hook: &Hooked) -> bool {
-        let Some(mut db) = self.open(hook.clone(), self.acked.version) else {
+    fn process(&mut self, rt: &SimRuntime) -> bool {
+        let Some(mut db) = self.open(rt.clone(), self.acked.version) else {
             return false;
         };
         while self.next < self.ops.len() {
             let i = self.next;
             let op = &self.ops[i];
-            self.trace.lock().unwrap().during = i;
+            self.during.push((self.writes.len(), i));
             self.next += 1;
             match op {
                 Op::Insert(rel, _) | Op::Update(rel, _) | Op::Delete(rel, _) if self.concurrent => {
-                    self.beside_vacuum(hook, &db, op, *rel, i);
+                    self.beside_vacuum(rt, &db, op, *rel, i);
                 }
                 Op::Insert(..) | Op::Update(..) | Op::Delete(..) => {
                     self.commit(&db, op, i);
@@ -576,7 +577,7 @@ impl Runner<'_> {
                     } else {
                         self.acked.version
                     };
-                    let Some(again) = self.open(hook.clone(), version) else {
+                    let Some(again) = self.open(rt.clone(), version) else {
                         return false;
                     };
                     db = again;
@@ -604,7 +605,7 @@ impl Runner<'_> {
                 return true;
             }
         }
-        self.trace.lock().unwrap().during = self.ops.len();
+        self.during.push((self.writes.len(), self.ops.len()));
         if let Err(e) = db.close() {
             self.failed.insert(self.ops.len(), format!("close: {e:?}"));
         }
@@ -613,11 +614,18 @@ impl Runner<'_> {
 
     /// Commit `op` while a second thread vacuums `rel`, and count the commits the vacuum ran
     /// during.
-    fn beside_vacuum(&mut self, hook: &Hooked, db: &Database<Hooked>, op: &Op, rel: Rel, i: usize) {
+    fn beside_vacuum(
+        &mut self,
+        rt: &SimRuntime,
+        db: &Database<SimRuntime>,
+        op: &Op,
+        rel: Rel,
+        i: usize,
+    ) {
         let state = Arc::new(AtomicU8::new(0));
         let failure = Arc::new(Mutex::new(None));
         let (db2, state2, failure2) = (db.clone(), state.clone(), failure.clone());
-        let thread = hook.spawn("vacuum", move || {
+        let thread = rt.spawn("vacuum", move || {
             state2.store(1, Ordering::SeqCst);
             let text = format!("vacuum {}", rel.name());
             if let Err(e) = db2.query_text(&text, &[], &adtb::CallOptions::default()) {
@@ -628,7 +636,7 @@ impl Runner<'_> {
         let before = state.load(Ordering::SeqCst);
         self.commit(db, op, i);
         let after = state.load(Ordering::SeqCst);
-        hook.join(thread);
+        rt.join(thread);
         if before < 2 && after >= 1 {
             self.overlaps += 1;
         }
@@ -685,14 +693,15 @@ impl Runner<'_> {
     }
 }
 
-/// Run `ops` from a new file on a simulation seeded `seed`, with `arm` setting the faults on the
-/// hook every process shares, observing the holdings after each operation when `observe`, and
+/// Run `ops` from a new file on a simulation seeded `seed`, with `arm` planning the faults every
+/// process shares, observing the holdings after each operation when `observe`, and
 /// vacuuming a write's relation on a second thread during the write when `concurrent`.
 pub fn run(seed: u64, ops: &[Op], arm: Arm<'_>, observe: bool, concurrent: bool) -> Ran {
     let mut sim = Sim::new(seed, Config::default());
     let mut runner = Runner {
         ops,
-        trace: Traced::default(),
+        writes: sim.logged(write_outs()),
+        during: Vec::new(),
         acked: Acked {
             states: vec![Rows::new()],
             version: 0,
@@ -710,8 +719,9 @@ pub fn run(seed: u64, ops: &[Op], arm: Arm<'_>, observe: bool, concurrent: bool)
         applied_under_mark: BTreeSet::new(),
         marked_before_drop: BTreeSet::new(),
     };
-    runner.trace.lock().unwrap().during = CREATING;
-    let mut shared: Option<Hooked> = None;
+    let reads = sim.logged(on_data(Match::kind(OpKind::Read)));
+    let mut starts = Vec::new();
+    let mut armed = false;
     let mut cut = None;
     crash::silence_fatal_panics();
     loop {
@@ -720,17 +730,14 @@ pub fn run(seed: u64, ops: &[Op], arm: Arm<'_>, observe: bool, concurrent: bool)
             sim.crash_at(sim.now() + Duration::from_secs(500));
         }
         let mut whole = false;
+        starts.push(reads.len());
         let outcome = crash::run_process(&mut sim, |rt| {
-            let hook = match &shared {
-                Some(h) => h.rebound(&rt),
-                None => {
-                    let h = Hooked::new(&rt);
-                    arm(&h, &runner.trace);
-                    shared = Some(h.clone());
-                    h
-                }
-            };
-            whole = runner.process(&hook);
+            if !armed {
+                rt.arm(write_outs());
+                arm(&rt);
+                armed = true;
+            }
+            whole = runner.process(&rt);
             if whole && runner.next > 0 && ops[runner.next - 1] == Op::Crash {
                 let mut io = rt.io();
                 common::sleep(&rt, &mut io, Duration::from_secs(1000));
@@ -750,7 +757,21 @@ pub fn run(seed: u64, ops: &[Op], arm: Arm<'_>, observe: bool, concurrent: bool)
             break;
         }
     }
-    let trace = runner.trace.lock().unwrap().clone();
+    assert_eq!(
+        runner.writes.len(),
+        sim.numbered().kinds().len(),
+        "the trace numbers the write-outs as the plan does"
+    );
+    let trace = trace(&runner.writes, &runner.during);
+    let reads = reads.entries();
+    starts.push(reads.len());
+    let failed_reads = starts
+        .windows(2)
+        .map(|w| {
+            let failed = |r: &&Submitted| matches!(r.planned(), Some(Planned::Fail(_)));
+            reads[w[0]..w[1]].iter().filter(failed).count()
+        })
+        .collect();
     Ran {
         acked: runner.acked,
         trace,
@@ -764,6 +785,7 @@ pub fn run(seed: u64, ops: &[Op], arm: Arm<'_>, observe: bool, concurrent: bool)
         under_mark: runner.under_mark,
         applied_under_mark: runner.applied_under_mark,
         marked_before_drop: runner.marked_before_drop,
+        failed_reads,
         files: sim.files(),
     }
 }

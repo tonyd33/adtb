@@ -2,7 +2,7 @@
 //! migration run after acknowledged commits, and rot each page of the closed file. Every expected
 //! row comes from a table written here.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,7 +11,7 @@ use std::thread;
 use std::time::Duration;
 
 use adtb::key::Value;
-use adtb::runtime::{Clock, FileId, Instant, IoError, Op, Runtime, Threads};
+use adtb::runtime::{Instant, IoError, OpKind, Runtime, Threads};
 use adtb::storage::{self, PageKind, Pid, Quarantine};
 use adtb::testing::Knobs;
 use adtb::{
@@ -19,9 +19,9 @@ use adtb::{
     TxnCallOptions, TxnOptions,
 };
 use adtb_lang::textual::print;
-use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_sim::{Action, Config, Match, OpLog, Outcome, Plan, Planned, Sim, SimRuntime};
 use adtb_simkit::crash::silence_fatal_panics;
-use adtb_simkit::search::{self, Files, Hooked, WriteOrSync};
+use adtb_simkit::search::{self, Files};
 use adtb_simkit::{api, common};
 use adtb_testkit::profile::{self, assert_reached};
 
@@ -203,15 +203,41 @@ struct Mark {
 struct Ledger {
     attempts: Vec<usize>,
     acks: Vec<usize>,
-    marks: Vec<Mark>,
+    /// The ops numbered at each attempt and at each acknowledgement.
+    attempted_at: Vec<u64>,
+    acked_at: Vec<u64>,
+    /// The ops numbered where the maintenance action starts, and where it ends.
+    step_ops: Option<(u64, Option<u64>)>,
+    /// The eligible ops, in their numbers' order.
+    eligible: Option<OpLog>,
     /// Device event count where the maintenance action starts.
     step_start: usize,
-    in_step: bool,
     phases: BTreeSet<String>,
     removed: i64,
 }
 
 impl Ledger {
+    /// Returns each eligible op of the run with the answers given before it.
+    fn marks(&self) -> Vec<Mark> {
+        let entries = self
+            .eligible
+            .as_ref()
+            .map(OpLog::entries)
+            .unwrap_or_default();
+        let before = |at: &[u64], n: u64| at.iter().filter(|&&a| a <= n).count();
+        (0..entries.len() as u64)
+            .zip(&entries)
+            .map(|(n, e)| Mark {
+                attempted: before(&self.attempted_at, n),
+                acked: before(&self.acked_at, n),
+                in_step: self
+                    .step_ops
+                    .is_some_and(|(start, end)| start <= n && end.is_none_or(|end| n < end)),
+                data_write: e.kind() == OpKind::Write && e.path() == Some(FILE),
+            })
+            .collect()
+    }
+
     fn counts_at(&self, event: usize) -> (usize, usize) {
         (
             self.acks.iter().filter(|&&e| e <= event).count(),
@@ -293,22 +319,22 @@ fn commit<R: Runtime>(
     tx.commit(None).map(|_| ())
 }
 
-fn enter_step(hook: &Hooked, ledger: &Shared) {
+fn enter_step(rt: &SimRuntime, ledger: &Shared) {
     let mut ledger = ledger.lock().unwrap();
-    ledger.step_start = hook.rt.recorded();
-    ledger.in_step = true;
+    ledger.step_start = rt.recorded();
+    ledger.step_ops = Some((numbered(rt), None));
 }
 
 /// Run `workload.maintenance` on `db`, returning the database it leaves open.
 fn maintain(
-    hook: &Hooked,
+    rt: &SimRuntime,
     workload: Workload,
-    db: Database<Hooked>,
+    db: Database<SimRuntime>,
     ledger: &Shared,
-) -> Result<Database<Hooked>, String> {
+) -> Result<Database<SimRuntime>, String> {
     match workload.maintenance {
         Maintenance::Vacuum => {
-            enter_step(hook, ledger);
+            enter_step(rt, ledger);
             let mut rows = query(&db, "vacuum filler").map_err(|e| failed("vacuum", e))?;
             let removed: i64 = rows
                 .remove(0)
@@ -321,84 +347,81 @@ fn maintain(
             db.testing().on_reindex_phase(move |phase| {
                 seen.lock().unwrap().phases.insert(phase.to_owned());
             });
-            enter_step(hook, ledger);
+            enter_step(rt, ledger);
             query(&db, "reindex filler").map_err(|e| failed("reindex", e))?;
-            settle(&db, hook, workload.name).map_err(|e| failed("jobs", e))?;
+            settle(&db, rt, workload.name).map_err(|e| failed("jobs", e))?;
         }
         Maintenance::Migrate => {
             db.close().map_err(|e| failed("close", e))?;
-            enter_step(hook, ledger);
-            return Database::open_in(hook.clone(), FILE, &new_log(), &no_create(workload))
+            enter_step(rt, ledger);
+            return Database::open_in(rt.clone(), FILE, &new_log(), &no_create(workload))
                 .map_err(|e| failed("migrate", e));
         }
     }
     Ok(db)
 }
 
-/// Run `workload` on the hooked runtime, numbering what `eligible` accepts after `CHANGE_TEXT` is
-/// acknowledged. Returns the first refusal the public API answers.
+fn numbered(rt: &SimRuntime) -> u64 {
+    rt.numbered().kinds().len() as u64
+}
+
+fn writes_and_forces() -> Match {
+    Match::kinds([OpKind::Write, OpKind::Sync])
+}
+
+/// Run `workload`, numbering what `eligible` matches after `CHANGE_TEXT` is acknowledged. Returns
+/// the first refusal the public API answers.
 fn run_workload(
-    hook: &Hooked,
+    rt: &SimRuntime,
     workload: Workload,
     ledger: &Shared,
-    eligible: impl Fn(&Op) -> bool + Send + Sync + 'static,
+    eligible: Match,
 ) -> Result<(), String> {
     *ledger.lock().unwrap() = Ledger::default();
     let mark = |attempting: bool| {
         let mut ledger = ledger.lock().unwrap();
         if attempting {
-            ledger.attempts.push(hook.rt.recorded());
+            ledger.attempts.push(rt.recorded());
+            ledger.attempted_at.push(numbered(rt));
         } else {
-            ledger.acks.push(hook.rt.recorded());
+            ledger.acks.push(rt.recorded());
+            ledger.acked_at.push(numbered(rt));
         }
     };
-    let db = Database::open_in(hook.clone(), FILE, &old_log(), &no_create(workload))
+    let db = Database::open_in(rt.clone(), FILE, &old_log(), &no_create(workload))
         .expect("the workload opens before the search arms");
     commit(&db, workload.change, || mark(true)).expect("the change commits before the search arms");
     mark(false);
-    let observing = ledger.clone();
-    hook.arm(move |op, path| {
-        if !eligible(op) {
-            return false;
-        }
-        let mut ledger = observing.lock().unwrap();
-        let mark = Mark {
-            attempted: ledger.attempts.len(),
-            acked: ledger.acks.len(),
-            in_step: ledger.in_step,
-            data_write: matches!(op, Op::Write { .. }) && path == Some(FILE),
-        };
-        ledger.marks.push(mark);
-        true
-    });
+    ledger.lock().unwrap().eligible = Some(rt.logged(eligible.clone()));
+    rt.arm(eligible);
     mark(true);
-    let db = maintain(hook, workload, db, ledger)?;
-    ledger.lock().unwrap().in_step = false;
+    let db = maintain(rt, workload, db, ledger)?;
+    if let Some((_, end)) = &mut ledger.lock().unwrap().step_ops {
+        *end = Some(numbered(rt));
+    }
     mark(false);
     commit(&db, workload.last, || mark(true)).map_err(|e| failed("last commit", e))?;
     mark(false);
     let closed = db.close().map_err(|e| failed("close", e));
-    hook.disarm();
+    rt.disarm();
     closed
 }
 
 /// Returns the eligible ops and device events of an open with no migration to apply, at the point
 /// `run_workload` opens the migrating log. Those lead the migrating open, before its apply.
 fn plain_open_cost(workload: Workload, files: &Files) -> (usize, usize) {
-    let eligible = |op: &Op| matches!(op, Op::Write { .. } | Op::Sync { .. });
     let mut sim = Sim::with_files(SEED, Config::default(), files.clone());
     sim.record();
     api::run(&mut sim, |rt| {
-        let hook = Hooked::new(&rt);
-        let db = Database::open_in(hook.clone(), FILE, &old_log(), &no_create(workload))
+        let db = Database::open_in(rt.clone(), FILE, &old_log(), &no_create(workload))
             .expect("the control opens");
         commit(&db, workload.change, || {}).expect("the control commits");
         db.close().expect("the control closes");
-        hook.arm(move |op, _| eligible(op));
+        rt.arm(writes_and_forces());
         let before = rt.recorded();
-        let db = Database::open_in(hook.clone(), FILE, &old_log(), &no_create(workload))
+        let db = Database::open_in(rt.clone(), FILE, &old_log(), &no_create(workload))
             .expect("the control reopens");
-        let cost = (hook.disarm() as usize, rt.recorded() - before);
+        let cost = (rt.disarm() as usize, rt.recorded() - before);
         db.close().expect("the control closes");
         cost
     })
@@ -619,12 +642,11 @@ fn search_failures(workload: Workload) -> String {
     let files = seeded_files(workload);
     let (lead, _) = step_lead(workload, &files);
     let ledger = Shared::default();
-    let eligible = |op: &Op| matches!(op, Op::Write { .. } | Op::Sync { .. });
     let mut baseline = Sim::with_files(SEED, Config::default(), files.clone());
     api::run(&mut baseline, |rt| {
-        run_workload(&Hooked::new(&rt), workload, &ledger, eligible).expect("the baseline runs");
+        run_workload(&rt, workload, &ledger, writes_and_forces()).expect("the baseline runs");
     });
-    let also = step_positions(&ledger.lock().unwrap().marks, lead);
+    let also = step_positions(&ledger.lock().unwrap().marks(), lead);
     let (mut writes, mut syncs, mut in_action, mut data_writes, mut after_action) = (0, 0, 0, 0, 0);
     let (mut absent_in_action, mut absent, mut applied) = (0, 0, 0);
     let mut positions = BTreeSet::new();
@@ -633,19 +655,20 @@ fn search_failures(workload: Workload) -> String {
         SEED,
         FAILED_OPS,
         &also,
-        |hook| run_workload(hook, workload, &ledger, eligible),
+        |rt| run_workload(rt, workload, &ledger, writes_and_forces()),
         |failure| {
             let at = failure.at;
             assert!(positions.insert(at), "{name}: failure {at} twice");
-            match failure.write_or_sync {
-                Some(WriteOrSync::Write) => writes += 1,
-                Some(WriteOrSync::Sync) => syncs += 1,
-                None => panic!("the search only fails writes and file forces"),
+            match failure.struck.kind() {
+                OpKind::Write => writes += 1,
+                OpKind::Sync => syncs += 1,
+                other => panic!("the search only fails writes and file forces, not {other:?}"),
             }
             let (acked, attempted, mark, struck_inside) = {
                 let ledger = ledger.lock().unwrap();
-                let mark = ledger.marks[at as usize];
-                let struck_inside = inside(&ledger.marks, lead).contains(&at);
+                let marks = ledger.marks();
+                let mark = marks[at as usize];
+                let struck_inside = inside(&marks, lead).contains(&at);
                 (
                     ledger.acks.len(),
                     ledger.attempts.len(),
@@ -655,7 +678,7 @@ fn search_failures(workload: Workload) -> String {
             };
             let label = format!(
                 "{name} failure {at} of {}: stage ({}, {}), inside {struck_inside}",
-                failure.op, mark.attempted, mark.acked
+                failure.struck, mark.attempted, mark.acked
             );
             assert_eq!(
                 None, failure.out,
@@ -714,8 +737,8 @@ fn search_crashes(workload: Workload) -> String {
         SEED,
         CRASH_POINTS,
         CRASH_IMAGES,
-        |hook| {
-            run_workload(hook, workload, &ledger, |_| true).expect("the crash baseline runs");
+        |rt| {
+            run_workload(rt, workload, &ledger, Match::any()).expect("the crash baseline runs");
             let ledger = ledger.lock().unwrap();
             let (start, ack) = (ledger.step_start + lead_events, ledger.acks[MAINTAIN]);
             assert!(start < ack, "{name}: the action has device events");
@@ -756,10 +779,11 @@ fn search_crashes(workload: Workload) -> String {
     assert_ran(workload, &ledger.lock().unwrap());
     let data_writes = {
         let ledger = ledger.lock().unwrap();
-        let ops = inside(&ledger.marks, 0);
+        let marks = ledger.marks();
+        let ops = inside(&marks, 0);
         ops.iter()
             .skip(lead_ops)
-            .filter(|&&at| ledger.marks[at as usize].data_write)
+            .filter(|&&at| marks[at as usize].data_write)
             .count()
     };
     let reached = format!(
@@ -823,8 +847,8 @@ fn an_open_that_migrates_has_made_the_migration_durable_when_it_returns() {
         SEED,
         1,
         CRASH_IMAGES,
-        |hook| {
-            run_workload(hook, workload, &ledger, |_| true).expect("the baseline runs");
+        |rt| {
+            run_workload(rt, workload, &ledger, Match::any()).expect("the baseline runs");
             *ack.lock().unwrap() = ledger.lock().unwrap().acks[MAINTAIN];
             vec![*ack.lock().unwrap()]
         },
@@ -2048,62 +2072,76 @@ fn scrub_fixture() -> (Files, Owners, Vec<RotObject>) {
 }
 
 /// The data pages read since a search armed, each read of one page with when it ran and whether it
-/// failed, whether a read of the last page followed one at or past that page, and the outcomes of
-/// its next reads, a failure for each `true`.
+/// failed, and whether a read of the last page followed one at or past that page.
 #[derive(Default)]
-struct Watch {
-    data: Option<FileId>,
+struct ScrubSeen {
     read: BTreeSet<u64>,
-    page: u64,
-    last: u64,
     past: bool,
     ended: bool,
     touched: Vec<(Instant, bool)>,
-    plan: VecDeque<bool>,
 }
 
-impl Watch {
-    fn saw(&mut self, pages: Range<u64>, now: Instant, failed: bool) {
-        if pages.contains(&self.page) {
+impl ScrubSeen {
+    fn saw(&mut self, pages: Range<u64>, page: u64, last: u64, now: Instant, failed: bool) {
+        if pages.contains(&page) {
             self.touched.push((now, failed));
         }
-        let past = self.past || pages.contains(&self.page) || self.page < Pid::FIRST_DATA.0;
-        self.ended |= pages.contains(&self.last) && past;
-        self.past |= pages.end > self.page;
+        let past = self.past || pages.contains(&page) || page < Pid::FIRST_DATA.0;
+        self.ended |= pages.contains(&last) && past;
+        self.past |= pages.end > page;
         self.read.extend(pages);
     }
 }
 
-fn watch(hook: &Hooked, page: u64, last: u64, plan: &[bool]) -> Arc<Mutex<Watch>> {
-    let w = Arc::new(Mutex::new(Watch {
+/// The reads of the data file since a search armed, with the outcomes planned for the next reads
+/// of `page`: a failure for each `true`.
+struct Watch {
+    rt: SimRuntime,
+    reads: OpLog,
+    page: u64,
+    last: u64,
+    plan: Vec<bool>,
+}
+
+impl Watch {
+    fn seen(&self) -> ScrubSeen {
+        let mut seen = ScrubSeen::default();
+        for read in self.reads.entries() {
+            let (offset, len) = (read.offset().unwrap(), read.length().unwrap());
+            let failed = matches!(read.planned(), Some(Planned::Fail(_)));
+            let pages = if failed {
+                self.page..self.page + 1
+            } else {
+                offset / PAGE as u64..(offset + len).div_ceil(PAGE as u64)
+            };
+            seen.saw(pages, self.page, self.last, read.at(), failed);
+        }
+        seen
+    }
+
+    /// Returns how many planned failures have not struck.
+    fn left(&self) -> usize {
+        let reached = self.rt.numbered().kinds().len();
+        self.plan.iter().skip(reached).filter(|f| **f).count()
+    }
+}
+
+fn watch(rt: &SimRuntime, page: u64, last: u64, plan: &[bool]) -> Watch {
+    let reads = rt.logged(Match::kind(OpKind::Read).path(FILE));
+    rt.arm(
+        Match::kind(OpKind::Read)
+            .path(FILE)
+            .offset(page * PAGE as u64),
+    );
+    let failures = (0..plan.len() as u64).filter(|&i| plan[i as usize]);
+    rt.plan(failures.fold(Plan::new(), |p, i| p.at(i, Action::Fail(IoError::Failed))));
+    Watch {
+        rt: rt.clone(),
+        reads,
         page,
         last,
-        plan: plan.iter().copied().collect(),
-        ..Watch::default()
-    }));
-    let pages =
-        |offset: u64, len: usize| offset / PAGE as u64..(offset + len as u64).div_ceil(PAGE as u64);
-    let (seen, rt) = (w.clone(), hook.rt.clone());
-    hook.arm(move |op, path| {
-        if let (Op::Read { file, offset, buf }, Some(FILE)) = (op, path) {
-            let mut w = seen.lock().unwrap();
-            w.data = Some(*file);
-            w.saw(pages(*offset, buf.len()), rt.now(), false);
-        }
-        false
-    });
-    let (fails, rt) = (w.clone(), hook.rt.clone());
-    hook.fail_when(move |op| {
-        let mut w = fails.lock().unwrap();
-        let at = w.page * PAGE as u64;
-        let hit =
-            matches!(op, Op::Read { file, offset, .. } if w.data == Some(*file) && *offset == at);
-        (hit && w.plan.pop_front() == Some(true)).then(|| {
-            w.saw(pages(at, PAGE), rt.now(), true);
-            IoError::Failed
-        })
-    });
-    w
+        plan: plan.to_vec(),
+    }
 }
 
 /// What a scrub search saw of a case: the open's marks, each read of the page, how many planned
@@ -2122,31 +2160,30 @@ fn scrubbed<T>(
     image: Files,
     at: usize,
     plan: &[bool],
-    judge: impl FnOnce(&Database<Hooked>, &BTreeSet<Quarantine>) -> Result<T, String>,
+    judge: impl FnOnce(&Database<SimRuntime>, &BTreeSet<Quarantine>) -> Result<T, String>,
 ) -> Result<Option<Pass<T>>, String> {
     let pages = (image[FILE].len() / PAGE) as u64;
     let mut sim = Sim::with_files(SEED, Config::default(), image);
     let got = finished_run(&mut sim, |rt| -> Result<Option<Pass<T>>, String> {
-        let hook = Hooked::new(&rt);
         let options = OpenOptions {
             testing: Knobs::without_background_vacuum(),
             ..no_create(REINDEX)
         };
-        let db = match Database::open_in(hook.clone(), FILE, &rot_log(), &options) {
+        let db = match Database::open_in(rt.clone(), FILE, &rot_log(), &options) {
             Ok(db) => db,
             Err(OpenError::Corrupt { .. }) => return Ok(None),
             Err(e) => return Err(format!("open: {e:?}")),
         };
         let early = marks(&db);
-        let watch = watch(&hook, at as u64, pages - 1, plan);
+        let watch = watch(&rt, at as u64, pages - 1, plan);
         let whole = early.contains(&Quarantine::Database);
         let unread = || {
             let known = db.testing().probe().refusals();
-            let w = watch.lock().unwrap();
+            let w = watch.seen();
             let seen = |p: &u64| w.read.contains(p) || known.contains_key(&Pid(*p));
             (Pid::FIRST_DATA.0..pages).find(|p| !whole && !seen(p))
         };
-        let ended = || watch.lock().unwrap().ended;
+        let ended = || watch.seen().ended;
         let mut done = whole;
         for _ in 0..SCRUB_NAPS {
             if done {
@@ -2165,9 +2202,7 @@ fn scrubbed<T>(
         if !done {
             return Err("no pass ended after reading the page".to_owned());
         }
-        let w = watch.lock().unwrap();
-        let (touched, left) = (w.touched.clone(), w.plan.iter().filter(|f| **f).count());
-        drop(w);
+        let (touched, left) = (watch.seen().touched, watch.left());
         let judged = judge(&db, &early)?;
         rot_close(db)?;
         Ok(Some(Pass {
@@ -2423,15 +2458,14 @@ fn one_check(touched: &[(Instant, bool)], reads: usize) -> bool {
     span.is_some_and(|ns| ns < 1_000_000_000)
 }
 
-/// Run `image` on a hooked runtime as `scrubbed` does until a crash at `crash`. Returns the files.
+/// Run `image` as `scrubbed` does until a crash at `crash`. Returns the files.
 fn crashed(image: Files, crash: Instant) -> Result<Files, String> {
     let mut sim = Sim::with_files(SEED, Config::default(), image);
     sim.crash_at(crash);
     let outcome = sim.run(|rt| {
-        let hook = Hooked::new(&rt);
-        let _db = Database::open_in(hook.clone(), FILE, &rot_log(), &no_create(REINDEX))
+        let _db = Database::open_in(rt.clone(), FILE, &rot_log(), &no_create(REINDEX))
             .expect("the image opens");
-        let _watch = watch(&hook, 0, 0, &[]);
+        let _watch = watch(&rt, 0, 0, &[]);
         loop {
             common::sleep(&rt, &mut rt.io(), Duration::from_secs(60));
         }

@@ -5,12 +5,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use adtb::runtime::{Op, Runtime};
+use adtb::runtime::{OpKind, Runtime};
 use adtb::storage::{aside, creating, marker, marker_bytes};
 use adtb::{Database, Log, OpenError, OpenOptions, TxnCallOptions, TxnOptions};
-use adtb_sim::{Config, Sim};
+use adtb_sim::{Config, Match, Sim, SimRuntime};
 use adtb_simkit::api;
-use adtb_simkit::search::{self, Files, Hooked};
+use adtb_simkit::search::{self, Files};
 use adtb_testkit::profile::{assert_reached, every_case};
 
 const FILE: &str = "create.adt";
@@ -61,8 +61,8 @@ fn stage(image: &Files) -> Stage {
     }
 }
 
-fn every_op(op: &Op, _: Option<&str>) -> bool {
-    !matches!(op, Op::Close { .. } | Op::Timer { .. })
+fn every_op() -> Match {
+    Match::any().except(Match::kinds([OpKind::Close, OpKind::Timer]))
 }
 
 /// Open `FILE` without `create`, else create it, then commit a row. Returns the names of the
@@ -146,10 +146,10 @@ fn read_image(dir: &Path, at: &Path, into: &mut Files) {
 /// is retried again on a real file through the host's open.
 #[test]
 fn a_create_crashed_anywhere_is_retried() {
-    let workload = |hook: &Hooked| {
-        hook.arm(every_op);
-        let db = Database::open_in(hook.clone(), FILE, &log(), &api::options(2)).unwrap();
-        hook.disarm();
+    let workload = |rt: &SimRuntime| {
+        rt.arm(every_op());
+        let db = Database::open_in(rt.clone(), FILE, &log(), &api::options(2)).unwrap();
+        rt.disarm();
         db.close().unwrap();
     };
     let mut reached = BTreeMap::new();

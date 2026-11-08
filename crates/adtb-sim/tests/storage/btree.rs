@@ -1,22 +1,19 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Bound, Range};
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
 use adtb::btree::build::BuildError;
 use adtb::btree::{BTree, Cursor, Error, Index, SumKey, tag_prefix};
 use adtb::key::{
     CtorId, CtorType, Dir, Entry, KeySchema, KeyType, OrderKey, Scalar, SumType, Tid, Value,
 };
-use adtb::runtime::{
-    Clock, Completion, Entropy, Instant, Io, Op, Runtime, ThreadId, Threads, Ticket,
-};
+use adtb::runtime::{Entropy, OpKind, Runtime, Threads};
 use adtb::storage::{Options, Pager, Pid};
 use adtb::verify::Inventory;
-use adtb_sim::{Config, Outcome, Recording, Sim, SimIo, SimRuntime};
+use adtb_sim::{Config, Match, Outcome, Recording, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 
 use adtb_simkit::crash;
@@ -119,87 +116,6 @@ fn scan(
     .expect("scan")
 }
 
-/// A runtime that counts the page reads its I/O queues submit.
-#[derive(Clone)]
-struct Counted {
-    rt: SimRuntime,
-    reads: Arc<AtomicUsize>,
-}
-
-struct CountedIo {
-    io: SimIo,
-    reads: Arc<AtomicUsize>,
-}
-
-impl Clock for Counted {
-    fn now(&self) -> Instant {
-        self.rt.now()
-    }
-
-    fn wall(&self) -> SystemTime {
-        self.rt.wall()
-    }
-}
-
-impl Threads for Counted {
-    fn spawn<F>(&self, name: &str, body: F) -> ThreadId
-    where
-        F: FnOnce() + Send + 'static,
-    {
-        self.rt.spawn(name, body)
-    }
-
-    fn current(&self) -> ThreadId {
-        self.rt.current()
-    }
-
-    fn park(&self) {
-        self.rt.park();
-    }
-
-    fn unpark(&self, thread: ThreadId) {
-        self.rt.unpark(thread);
-    }
-
-    fn yield_now(&self) {
-        self.rt.yield_now();
-    }
-
-    fn join(&self, thread: ThreadId) {
-        self.rt.join(thread);
-    }
-}
-
-impl Entropy for Counted {
-    fn next_u64(&self) -> u64 {
-        self.rt.next_u64()
-    }
-}
-
-impl Runtime for Counted {
-    type Io = CountedIo;
-
-    fn io(&self) -> CountedIo {
-        CountedIo {
-            io: self.rt.io(),
-            reads: self.reads.clone(),
-        }
-    }
-}
-
-impl Io for CountedIo {
-    fn submit(&mut self, op: Op) -> Ticket {
-        if matches!(op, Op::Read { .. }) {
-            self.reads.fetch_add(1, Relaxed);
-        }
-        self.io.submit(op)
-    }
-
-    fn poll(&mut self) -> Option<Completion> {
-        self.io.poll()
-    }
-}
-
 const WINDOW: usize = 2000;
 
 /// Run a random workload of `ops` operations against a `BTreeSet` model.
@@ -209,19 +125,15 @@ const WINDOW: usize = 2000;
 fn model_run(seed: u64, ops: usize, expected_height: u16) {
     let mut sim = Sim::new(seed, Config::default());
     finished(&mut sim, |rt| {
-        let reads = Arc::new(AtomicUsize::new(0));
-        let counted = Counted {
-            rt: rt.clone(),
-            reads: reads.clone(),
-        };
-        let pager = &mut Pager::create(counted, &options(FRAMES)).expect("create");
+        let reads = rt.counted(Match::kind(OpKind::Read));
+        let pager = &mut Pager::create(rt.clone(), &options(FRAMES)).expect("create");
         let rt = &rt;
         let tree = BTree::create(pager, OWNER).expect("create tree");
         let max = BTree::max_entry_len(PAGE);
         let mut model: BTreeSet<Vec<u8>> = BTreeSet::new();
         let mut window_reads = 0;
         for op in 0..ops {
-            let before = reads.load(Relaxed);
+            let before = reads.get();
             match below(rt, 20) {
                 0..=11 => {
                     let e = gen_stemmed(rt, max);
@@ -272,11 +184,11 @@ fn model_run(seed: u64, ops: usize, expected_height: u16) {
                     assert_eq!(tree.contains(pager, &e), Ok(model.contains(&e)));
                 }
             }
-            window_reads += reads.load(Relaxed) - before;
+            window_reads += reads.get() - before;
             if (op + 1) % WINDOW == 0 {
                 let height = usize::from(tree.height(pager).unwrap());
                 assert!(
-                    window_reads <= (height + 1) * WINDOW,
+                    window_reads <= ((height + 1) * WINDOW) as u64,
                     "{window_reads} page reads in the {WINDOW} operations to {op}, height {height}"
                 );
                 window_reads = 0;

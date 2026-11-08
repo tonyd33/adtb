@@ -4,15 +4,14 @@ use adtb::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use adtb::runtime::{IoError, Op};
+use adtb::runtime::{IoError, OpKind};
 use adtb::storage::{
     self, BackupRun, Damage, Envelope, Finding, HEADER_LEN, Lsn, Options, PageError, PageKind,
     Pager, Pid, Quarantine,
 };
 use adtb::verify::{self, Inventory, Problem};
-use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
 use adtb_simkit::harness;
-use adtb_simkit::search::Hooked;
 use adtb_testkit::profile::every_case;
 
 type Files = BTreeMap<String, Vec<u8>>;
@@ -343,13 +342,9 @@ fn an_unreadable_map_page_is_refused_unmarked_and_read_by_the_next_open() {
     let (mut sim, _, _, leaf) = mapped();
     let mut out = None;
     harness::finished(&mut sim, |rt| {
-        let hook = Hooked::new(&rt);
-        let at = leaf.0 * harness::PAGE as u64;
-        hook.fail_when(move |op| match op {
-            Op::Read { offset, .. } if *offset == at => Some(IoError::Failed),
-            _ => None,
-        });
-        let (pager, _) = Pager::open(hook, &options()).unwrap();
+        let reads = Match::kind(OpKind::Read).offset(leaf.0 * harness::PAGE as u64);
+        rt.plan(Plan::new().rule(reads, Action::Fail(IoError::Failed)));
+        let (pager, _) = Pager::open(rt, &options()).unwrap();
         out = Some((pager.map_pages(), Probe::of(&pager).marks()));
         pager.close();
     });

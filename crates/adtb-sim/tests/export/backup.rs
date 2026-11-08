@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use adtb::runtime::{Done, IoError, Op, Runtime, Threads};
+use adtb::runtime::{Done, IoError, Op, OpKind, Runtime, Threads};
 use adtb::storage::{
     self, BackupError, BackupRun, Damage, Envelope, Lsn, Manifest, Options, PageKind, Pager, Pid,
     Quarantine,
@@ -16,8 +16,8 @@ use adtb::{
     HostFns, Log, OpenOptions, Position, Proof, RejectReason, RestorePoint, TxnCallOptions,
     TxnOptions, proof_in, prove_in, restore_in,
 };
-use adtb_sim::{Config, Outcome, Sim, SimRuntime};
-use adtb_simkit::search::{self, Action, Files, Hooked};
+use adtb_sim::{Action, Config, Match, Outcome, Plan, Sim, SimRuntime, Struck};
+use adtb_simkit::search::{self, Files};
 use adtb_simkit::{api, common};
 use adtb_sys::runtime::Faults;
 use adtb_testkit::profile::{assert_reached, every_case, sweep};
@@ -832,12 +832,9 @@ fn a_role_backs_up_inside_the_export_roots() {
 fn a_check_reports_a_log_it_cannot_read() {
     let mut sim = Sim::with_files(28, Config::default(), file_with_rows(2));
     api::run(&mut sim, |rt| {
-        let hook = Hooked::new(&rt);
-        let db = Database::open_in(hook.clone(), FILE, &Log::new([APP]), &no_create()).unwrap();
-        hook.fail_when(|op| match op {
-            Op::List { dir } if dir.starts_with(FILE) => Some(IoError::Failed),
-            _ => None,
-        });
+        let db = Database::open_in(rt.clone(), FILE, &Log::new([APP]), &no_create()).unwrap();
+        let lists = Match::kind(OpKind::List).prefixed(FILE);
+        rt.plan(Plan::new().rule(lists, Action::Fail(IoError::Failed)));
         let t = db.testing();
         assert!(t.probe().logged_commits().is_empty());
         let found = t.verify_pages().findings;
@@ -848,7 +845,7 @@ fn a_check_reports_a_log_it_cannot_read() {
             )),
             "{found:?}"
         );
-        hook.fail_when(|_| None);
+        rt.plan(Plan::new());
         db.close().unwrap();
     });
 }
@@ -1046,22 +1043,44 @@ fn page_written_during_a_force_stays_dirty_through_a_checkpoint() {
     sim.record();
     sim.crash_at(sim.now() + std::time::Duration::from_secs(1));
     let mut changed = None;
+    let updated = Arc::new(AtomicBool::new(false));
+    let published = sim.logged(Match::kind(OpKind::Rename).path(FILE));
+    let mut logs = None;
     let outcome = sim.run(|rt| {
-        let hook = Hooked::new(&rt);
-        let pager = Arc::new(Pager::create(hook.clone(), &options).unwrap());
+        let pager = Arc::new(Pager::create(rt.clone(), &options).unwrap());
+        let data = published.entries()[0].from().unwrap().to_owned();
         let pid = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
         changed = Some(pid);
         pager.update(&[pid], |v| v[0][100] = 1).unwrap();
         pager.flush_log();
         let second = pager.clone();
-        let spawner = rt.clone();
-        hook.during_next_force(move || {
+        let (spawner, first, marked, seen) =
+            (rt.clone(), rt.clone(), updated.clone(), updated.clone());
+        let during = Action::Run(Box::new(move || {
+            let (waker, waiter) = (first.clone(), first.current());
             spawner.spawn("second force", move || {
                 second.update(&[pid], |v| v[0][100] = 2).unwrap();
+                marked.store(true, Ordering::SeqCst);
+                waker.unpark(waiter);
                 second.flush_log();
                 second.flush_pages(usize::MAX);
             });
-        });
+            while !seen.load(Ordering::SeqCst) {
+                first.park();
+            }
+        }));
+        let data_forces = Match::kind(OpKind::Sync).path(&data);
+        let page = pid.0 * u64::from(options.page_size);
+        logs = Some((
+            rt.logged(data_forces.clone()),
+            rt.logged(Match::kind(OpKind::Write).path(&data).covers(page)),
+            page,
+        ));
+        rt.plan(
+            Plan::new()
+                .first(data_forces.clone(), during)
+                .rule(data_forces, Action::Hold),
+        );
         rt.spawn("first force", move || {
             pager.flush_pages(usize::MAX);
             pager.checkpoint();
@@ -1071,6 +1090,30 @@ fn page_written_during_a_force_stays_dirty_through_a_checkpoint() {
         unreachable!("the crash comes first");
     });
     assert_eq!(Outcome::Crashed, outcome);
+    assert!(
+        updated.load(Ordering::SeqCst),
+        "the page changed during the first force"
+    );
+    let (forces, writes, page) = logs.expect("the run planned");
+    let forces = forces.entries();
+    assert!(
+        forces.len() >= 2,
+        "a later force of the data file was held: {forces:?}"
+    );
+    let first = &forces[0];
+    let changed_write = writes
+        .entries()
+        .into_iter()
+        .find(|w| {
+            let at = (page - w.offset().unwrap()) as usize;
+            w.bytes().unwrap()[at + 100] == 2
+        })
+        .expect("the changed page was written");
+    let completed = first.completed().expect("the first force completed");
+    assert!(
+        first.ticket() < changed_write.ticket() && changed_write.at() < completed,
+        "the page's write came during the first force: {first:?}, {changed_write:?}"
+    );
     let pid = changed.unwrap();
     let recording = sim.recording();
     let images = recording.images(recording.len(), 64, 31);
@@ -1430,17 +1473,13 @@ fn an_unreadable_page_is_listed() {
     let options = pager_options(FILE, false, 1 << 20);
     let mut sim = Sim::new(50, Config::default());
     api::run(&mut sim, |rt| {
-        let hook = Hooked::new(&rt);
-        let pager = Pager::create(hook.clone(), &options).unwrap();
+        let pager = Pager::create(rt.clone(), &options).unwrap();
         let page = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
         pager.update(&[page], |v| v[0][100] = 7).unwrap();
         pager.flush_log();
         pager.flush_pages(usize::MAX);
-        let offset = page.0 * 4096;
-        hook.fail_when(move |op| match op {
-            Op::Read { offset: at, .. } if *at == offset => Some(IoError::Failed),
-            _ => None,
-        });
+        let reads = Match::kind(OpKind::Read).offset(page.0 * 4096);
+        rt.plan(Plan::new().rule(reads, Action::Fail(IoError::Failed)));
         let mut empty = false;
         let manifest = backup_with(&pager, TARGET, &mut |at, bytes| {
             empty |= at == page && bytes.is_empty();
@@ -1540,17 +1579,11 @@ fn an_absent_source_and_an_unreadable_manifest_differ() {
             &no_create(),
         );
         is_invalid_naming(&got.map(|_| ()), "nowhere");
-        let hook = Hooked::new(&rt);
-        let opened = AtomicBool::new(false);
-        hook.fail_when(move |op| match op {
-            Op::Open { path, .. } if path.ends_with("/manifest") => {
-                opened.store(true, Ordering::SeqCst);
-                None
-            }
-            Op::Read { .. } if opened.load(Ordering::SeqCst) => Some(IoError::Failed),
-            _ => None,
-        });
-        let got = restore_in(hook, &archive(), COPY, RestorePoint::Latest, &no_create());
+        rt.plan(fail_reads_after_open(
+            &rt,
+            Match::kind(OpKind::Open).suffixed("/manifest"),
+        ));
+        let got = restore_in(rt, &archive(), COPY, RestorePoint::Latest, &no_create());
         assert!(
             matches!(
                 got,
@@ -1569,30 +1602,26 @@ fn early_returns_close_their_files() {
     let options = pager_options(FILE, false, 1 << 20);
     let mut sim = Sim::new(61, Config::default());
     api::run(&mut sim, |rt| {
-        let hook = Hooked::new(&rt);
-        let pager = Pager::create(hook.clone(), &options).unwrap();
+        let pager = Pager::create(rt.clone(), &options).unwrap();
         for _ in 0..700 {
             pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
         }
         pager.flush_log();
         pager.flush_pages(usize::MAX);
-        let open = hook.files_open();
+        let open = rt.files_open();
         let got = backup_with(&pager, TARGET, &mut |at, _| at.0 < 600);
         assert_eq!(Some(BackupError::Stopped), got.err());
-        assert_eq!(open, hook.files_open(), "a stop among the pages");
+        assert_eq!(open, rt.files_open(), "a stop among the pages");
         let got = backup_with(&pager, TARGET, &mut |at, _| at != Pid(0));
         assert_eq!(Some(BackupError::Stopped), got.err(), "a stop in the log");
-        assert_eq!(open, hook.files_open(), "a stop in the log");
-        manifest_absent(&hook);
+        assert_eq!(open, rt.files_open(), "a stop in the log");
+        manifest_absent(&rt);
         backup_with(&pager, TARGET, &mut |_, _| true).unwrap();
-        let writes = AtomicU64::new(0);
-        hook.fail_when(move |op| match op {
-            Op::Write { .. } if writes.fetch_add(1, Ordering::SeqCst) == 2 => Some(IoError::Full),
-            _ => None,
-        });
-        let got = storage::restore_file(&hook, TARGET, COPY, &format!("{COPY}-log"));
+        rt.arm(Match::kind(OpKind::Write));
+        rt.plan(Plan::new().at(2, Action::Fail(IoError::Full)));
+        let got = storage::restore_file(&rt, TARGET, COPY, &format!("{COPY}-log"));
         assert!(matches!(got, Err(BackupError::Io { .. })), "{got:?}");
-        assert_eq!(open, hook.files_open(), "a failed restore");
+        assert_eq!(open, rt.files_open(), "a failed restore");
     });
 }
 
@@ -1634,20 +1663,14 @@ fn history_truncates_at_capacity() {
 fn a_commit_finishes_during_a_backup_statement() {
     let mut sim = Sim::new(63, Config::default());
     api::run(&mut sim, |rt| {
-        let hook = Hooked::new(&rt);
-        let db = Database::open_in(hook.clone(), FILE, &Log::new([APP]), &options()).unwrap();
-        insert_hooked(&db, 0..2);
+        let db = Database::open_in(rt.clone(), FILE, &Log::new([APP]), &options()).unwrap();
+        insert(&db, 0..2);
         let committed = Arc::new(AtomicBool::new(false));
         let started = Arc::new(AtomicBool::new(false));
         let (done, began, committer) = (committed.clone(), started.clone(), db.clone());
-        hook.fail_when(move |op| {
-            if let Op::CreateNew { path } = op
-                && path.starts_with("bk.partial-")
-            {
-                began.store(true, Ordering::SeqCst);
-            }
-            None
-        });
+        let begins = Match::kind(OpKind::CreateNew).prefixed("bk.partial-");
+        let begin = Action::Run(Box::new(move || began.store(true, Ordering::SeqCst)));
+        rt.plan(Plan::new().first(begins, begin));
         let waiter = rt.clone();
         let during = started.clone();
         let thread = rt.spawn("committer", move || {
@@ -1670,17 +1693,10 @@ fn a_commit_finishes_during_a_backup_statement() {
     });
 }
 
-fn insert_hooked(db: &Database<Hooked>, ids: std::ops::Range<i64>) {
-    for id in ids {
-        db.query_text(&insert_text(id), &[], &CallOptions::default())
-            .unwrap();
-    }
-}
-
-/// Returns a running source through `hook` with a backup of it in `bk`.
-fn hooked_source(hook: &Hooked) -> Database<Hooked> {
-    let db = Database::open_in(hook.clone(), FILE, &Log::new([APP]), &options()).unwrap();
-    insert_hooked(&db, 0..2);
+/// Returns a running source with a backup of it in `bk`.
+fn backed_up_source(rt: &SimRuntime) -> Database<SimRuntime> {
+    let db = Database::open_in(rt.clone(), FILE, &Log::new([APP]), &options()).unwrap();
+    insert(&db, 0..2);
     db.query_text(
         &format!("backup to \"{TARGET}\""),
         &[],
@@ -1690,7 +1706,7 @@ fn hooked_source(hook: &Hooked) -> Database<Hooked> {
     db
 }
 
-fn restore_text(db: &Database<Hooked>) -> Result<(), Error> {
+fn restore_text(db: &Database<SimRuntime>) -> Result<(), Error> {
     db.query_text(
         &format!("restore from \"{TARGET}\" to \"{COPY}\""),
         &[],
@@ -1704,17 +1720,11 @@ fn restore_text(db: &Database<Hooked>) -> Result<(), Error> {
 fn a_failed_read_of_the_restored_log_leaves_the_source_alive() {
     let mut sim = Sim::new(70, Config::default());
     api::run(&mut sim, |rt| {
-        let hook = Hooked::new(&rt);
-        let db = hooked_source(&hook);
-        let log_open = AtomicBool::new(false);
-        hook.fail_when(move |op| match op {
-            Op::Open { path, .. } if path.starts_with("copy.adt-log") => {
-                log_open.store(true, Ordering::SeqCst);
-                None
-            }
-            Op::Read { .. } if log_open.load(Ordering::SeqCst) => Some(IoError::Failed),
-            _ => None,
-        });
+        let db = backed_up_source(&rt);
+        rt.plan(fail_reads_after_open(
+            &rt,
+            Match::kind(OpKind::Open).prefixed("copy.adt-log"),
+        ));
         let got = restore_text(&db);
         assert!(
             matches!(
@@ -1725,8 +1735,8 @@ fn a_failed_read_of_the_restored_log_leaves_the_source_alive() {
             ),
             "{got:?}"
         );
-        hook.fail_when(|_| None);
-        insert_hooked(&db, 2..3);
+        rt.plan(Plan::new());
+        insert(&db, 2..3);
         assert!(!sim_has(&rt, COPY), "the file of the failed restore");
         assert!(
             !sim_has(&rt, "copy.adt-log"),
@@ -1803,8 +1813,7 @@ fn a_file_at_a_target_or_log_directory_is_occupied() {
 fn only_directories_a_run_creates_are_forced() {
     let mut sim = Sim::new(77, Config::default());
     api::run(&mut sim, |rt| {
-        let hook = Hooked::new(&rt);
-        let pager = Pager::create(hook.clone(), &pager_options(FILE, false, 1 << 20)).unwrap();
+        let pager = Pager::create(rt.clone(), &pager_options(FILE, false, 1 << 20)).unwrap();
         let mut io = rt.io();
         for dir in ["up", "up/mid"] {
             let dir = dir.to_owned();
@@ -1812,24 +1821,24 @@ fn only_directories_a_run_creates_are_forced() {
                 .result
                 .unwrap();
         }
-        let forced: Arc<Mutex<BTreeSet<String>>> = Arc::default();
-        let seen = forced.clone();
-        hook.fail_when(move |op| {
-            if let Op::SyncDir { dir } = op {
-                seen.lock().unwrap().insert(dir.clone());
-            }
-            match op {
-                Op::SyncDir { dir } if dir == "up" || dir.is_empty() => Some(IoError::Failed),
-                _ => None,
-            }
-        });
+        let forces = rt.logged(Match::kind(OpKind::SyncDir));
+        let refused = |dir| Match::kind(OpKind::SyncDir).path(dir);
+        rt.plan(
+            Plan::new()
+                .rule(refused("up"), Action::Fail(IoError::Failed))
+                .rule(refused(""), Action::Fail(IoError::Failed)),
+        );
         backup_with(&pager, "up/mid/bk", &mut |_, _| true).unwrap();
-        storage::restore_file(&hook, "up/mid/bk", "up/mid/new/copy.adt", "up/mid/new/log").unwrap();
-        let forced = forced.lock().unwrap();
+        storage::restore_file(&rt, "up/mid/bk", "up/mid/new/copy.adt", "up/mid/new/log").unwrap();
+        let forced: BTreeSet<String> = forces
+            .entries()
+            .iter()
+            .filter_map(|e| e.path().map(str::to_owned))
+            .collect();
         for dir in ["up/mid", "up/mid/new"] {
             assert!(forced.contains(dir), "{dir}: {forced:?}");
         }
-        hook.fail_when(|_| None);
+        rt.plan(Plan::new());
         pager.close();
     });
 }
@@ -2116,26 +2125,42 @@ fn final_files(files: &Files) -> Files {
 }
 
 /// Accept every op of a run, and of the source only those a failure may answer without ending it.
-fn searched(op: &Op, path: Option<&str>) -> bool {
-    if matches!(op, Op::Close { .. } | Op::Timer { .. }) {
-        return false;
-    }
-    let source = path.is_some_and(|p| p == FILE || p.starts_with("backup.adt-log"));
-    !source || matches!(op, Op::Read { .. } | Op::Open { .. } | Op::List { .. })
+fn searched() -> Match {
+    let source = Match::any_of([
+        Match::any().path(FILE),
+        Match::any().prefixed("backup.adt-log"),
+    ]);
+    let answered = Match::kinds([OpKind::Read, OpKind::Open, OpKind::List]);
+    Match::any()
+        .except(Match::kinds([OpKind::Close, OpKind::Timer]))
+        .except(source.except(answered))
 }
 
-/// Returns whether `op` is anything but a rename on the database a test restore opened.
-fn on_the_test_database(op: &Op, path: Option<&str>) -> bool {
-    let tail = path
-        .and_then(|p| p.split_once("scratch.partial-"))
-        .map(|(_, tail)| tail);
-    !matches!(op, Op::Rename { .. })
-        && tail.is_some_and(|tail| tail.contains("/restored.adt") && !is_aside(tail))
+/// Returns `ops` limited to those on the database a test restore opened, but its renames.
+fn on_the_test_database(ops: Match) -> Match {
+    ops.containing("scratch.partial-")
+        .containing("/restored.adt")
+        .except(Match::any().containing("/restored.adt.partial-"))
+        .except(Match::any().containing("/restored.adt-log.partial-"))
+        .except(Match::kind(OpKind::Rename))
 }
 
 /// Returns whether a failure of the op `struck` may leave a private name behind.
-fn stops_a_cleanup(struck: &str) -> bool {
-    ["Remove", "List"].iter().any(|op| struck.starts_with(op))
+fn stops_a_cleanup(struck: &Struck) -> bool {
+    matches!(
+        struck.kind(),
+        OpKind::Remove | OpKind::RemoveDir | OpKind::List
+    )
+}
+
+/// Returns a plan failing every read once an open `opening` matches has come.
+fn fail_reads_after_open(rt: &SimRuntime, opening: Match) -> Plan {
+    let planner = rt.clone();
+    let then = Action::Run(Box::new(move || {
+        let reads = Match::kind(OpKind::Read);
+        planner.plan(Plan::new().rule(reads, Action::Fail(IoError::Failed)));
+    }));
+    Plan::new().first(opening, then)
 }
 
 fn asides_at_top(rt: &SimRuntime) -> Vec<String> {
@@ -2154,15 +2179,6 @@ struct BackupOutcome {
     asides: Vec<String>,
 }
 
-fn hooked_backup(db: &Database<Hooked>) -> Result<(), Error> {
-    db.query_text(
-        &format!("backup to \"{TARGET}\""),
-        &[],
-        &CallOptions::default(),
-    )
-    .map(|_| ())
-}
-
 /// Assert the retry's answer and what the published backup restores to.
 fn assert_backup_outcome(published: bool, retried: &Result<(), Error>, files: Files, label: &str) {
     let mut expected = rows_upto(SEARCH_ROWS);
@@ -2179,17 +2195,17 @@ fn assert_backup_outcome(published: bool, retried: &Result<(), Error>, files: Fi
 /// by which.
 #[test]
 fn a_backup_with_any_op_failed() {
-    let workload = |hook: &Hooked| {
-        let db = Database::open_in(hook.clone(), FILE, &Log::new([APP]), &no_create()).unwrap();
-        let files_open = hook.files_open();
-        hook.arm(searched);
-        let got = hooked_backup(&db);
-        hook.disarm();
-        assert_eq!(files_open, hook.files_open(), "{:?}", hook.struck());
-        let published = sim_has(&hook.rt, TARGET);
-        let asides = asides_at_top(&hook.rt);
-        insert_hooked(&db, LATER_ROW..LATER_ROW + 1);
-        let retried = hooked_backup(&db);
+    let workload = |rt: &SimRuntime| {
+        let db = Database::open_in(rt.clone(), FILE, &Log::new([APP]), &no_create()).unwrap();
+        let files_open = rt.files_open();
+        rt.arm(searched());
+        let got = backup_text(&db);
+        rt.disarm();
+        assert_eq!(files_open, rt.files_open(), "{:?}", rt.numbered().struck());
+        let published = sim_has(rt, TARGET);
+        let asides = asides_at_top(rt);
+        insert(&db, LATER_ROW..LATER_ROW + 1);
+        let retried = backup_text(&db);
         db.close().unwrap();
         BackupOutcome {
             got,
@@ -2204,13 +2220,13 @@ fn a_backup_with_any_op_failed() {
         FAILURES,
         workload,
         |failed| {
-            let label = format!("op {} {}", failed.at, failed.op);
+            let label = format!("op {} {}", failed.at, failed.struck);
             let out = failed.out;
             assert!(
                 out.got.is_err() || out.published,
                 "{label}: answered success with nothing published"
             );
-            if !stops_a_cleanup(&failed.op) && out.got.is_err() {
+            if !stops_a_cleanup(&failed.struck) && out.got.is_err() {
                 assert!(out.asides.is_empty(), "{label}: {:?}", out.asides);
             }
             assert_backup_outcome(out.published, &out.retried, failed.files, &label);
@@ -2222,11 +2238,11 @@ fn a_backup_with_any_op_failed() {
 /// absent or whole.
 #[test]
 fn a_backup_crashed_anywhere() {
-    let workload = |hook: &Hooked| {
-        let db = Database::open_in(hook.clone(), FILE, &Log::new([APP]), &no_create()).unwrap();
-        hook.arm(searched);
-        hooked_backup(&db).unwrap();
-        hook.disarm();
+    let workload = |rt: &SimRuntime| {
+        let db = Database::open_in(rt.clone(), FILE, &Log::new([APP]), &no_create()).unwrap();
+        rt.arm(searched());
+        backup_text(&db).unwrap();
+        rt.disarm();
         db.close().unwrap();
     };
     let files = file_with_rows(SEARCH_ROWS);
@@ -2265,13 +2281,13 @@ fn a_backup_crashed_anywhere() {
 /// nothing.
 #[test]
 fn two_backups_to_one_target() {
-    let workload = |hook: &Hooked, at: Option<u64>| {
-        let db = Database::open_in(hook.clone(), FILE, &Log::new([APP]), &no_create()).unwrap();
+    let workload = |rt: &SimRuntime, at: Option<u64>| {
+        let db = Database::open_in(rt.clone(), FILE, &Log::new([APP]), &no_create()).unwrap();
         let second = Arc::new(Mutex::new(None));
         let thread = Arc::new(Mutex::new(None));
         if let Some(at) = at {
             let (db, second, thread, spawner) =
-                (db.clone(), second.clone(), thread.clone(), hook.clone());
+                (db.clone(), second.clone(), thread.clone(), rt.clone());
             let body = move || {
                 let run = move || {
                     let got = db_backup(&db, TARGET, &mut |_, _| true);
@@ -2279,15 +2295,15 @@ fn two_backups_to_one_target() {
                 };
                 *thread.lock().unwrap() = Some(spawner.spawn("second backup", run));
             };
-            hook.plan(at, Action::Run(Box::new(body)));
+            rt.plan(Plan::new().at(at, Action::Run(Box::new(body))));
         }
-        hook.arm(searched);
+        rt.arm(searched());
         let first = db_backup(&db, TARGET, &mut |_, _| true).map(|_| ());
-        hook.disarm();
+        rt.disarm();
         if at.is_some() {
             let joined = thread.lock().unwrap().take();
             let joined = joined.expect("the second run started");
-            hook.join(joined);
+            rt.join(joined);
             let second = second.lock().unwrap().take().expect("the thread ended");
             let wins = usize::from(first.is_ok()) + usize::from(second.is_ok());
             assert_eq!(1, wins, "op {at:?}: {first:?} {second:?}");
@@ -2353,9 +2369,9 @@ fn assert_restore_state(base: &Files, files: &Files, crashed: bool, seed: u64, l
     });
 }
 
-fn hooked_restore(hook: &Hooked) -> Result<(), Error> {
+fn restore_copy(rt: &SimRuntime) -> Result<(), Error> {
     let got = restore_in(
-        hook.clone(),
+        rt.clone(),
         &archive(),
         COPY,
         RestorePoint::Latest,
@@ -2368,21 +2384,21 @@ fn hooked_restore(hook: &Hooked) -> Result<(), Error> {
 #[test]
 fn a_restore_with_any_op_failed() {
     let base = backed_up(SEARCH_ROWS);
-    let workload = |hook: &Hooked| {
-        hook.arm(searched);
-        let got = hooked_restore(hook);
-        hook.disarm();
-        (got, hook.files_open())
+    let workload = |rt: &SimRuntime| {
+        rt.arm(searched());
+        let got = restore_copy(rt);
+        rt.disarm();
+        (got, rt.files_open())
     };
     search::each_failure(&base, 93, FAILURES, workload, |failed| {
-        let label = format!("op {} {}", failed.at, failed.op);
+        let label = format!("op {} {}", failed.at, failed.struck);
         let (got, files_open) = failed.out;
         assert_eq!(0, files_open, "{label}");
         assert!(
             got.is_err() || failed.files.contains_key(COPY),
             "{label}: answered success with nothing published"
         );
-        if !stops_a_cleanup(&failed.op) && got.is_err() {
+        if !stops_a_cleanup(&failed.struck) && got.is_err() {
             let left: Vec<_> = failed.files.keys().filter(|p| is_aside(p)).collect();
             assert!(left.is_empty(), "{label}: {left:?}");
         }
@@ -2394,10 +2410,10 @@ fn a_restore_with_any_op_failed() {
 #[test]
 fn a_restore_crashed_anywhere() {
     let base = backed_up(SEARCH_ROWS);
-    let workload = |hook: &Hooked| {
-        hook.arm(searched);
-        hooked_restore(hook).unwrap();
-        hook.disarm();
+    let workload = |rt: &SimRuntime| {
+        rt.arm(searched());
+        restore_copy(rt).unwrap();
+        rt.disarm();
     };
     search::each_crash(
         &base,
@@ -2424,10 +2440,10 @@ fn segments_of(files: &Files, log_dir: &str) -> Files {
 #[test]
 fn an_open_after_a_restore_crashed_between_its_renames_refuses() {
     let base = backed_up(SEARCH_ROWS);
-    let workload = |hook: &Hooked| {
-        hook.arm(searched);
-        hooked_restore(hook).unwrap();
-        hook.disarm();
+    let workload = |rt: &SimRuntime| {
+        rt.arm(searched());
+        restore_copy(rt).unwrap();
+        rt.disarm();
     };
     let log_dir = format!("{COPY}-log");
     let mut between = 0;
@@ -2468,12 +2484,12 @@ fn an_open_after_a_restore_crashed_between_its_renames_refuses() {
 #[test]
 fn an_open_at_each_op_of_a_restore() {
     let (restore_won, open_won) = (AtomicU64::new(0), AtomicU64::new(0));
-    let workload = |hook: &Hooked, at: Option<u64>| {
+    let workload = |rt: &SimRuntime, at: Option<u64>| {
         let opened = Arc::new(Mutex::new(None));
         let thread = Arc::new(Mutex::new(None));
         if let Some(at) = at {
             let (other, opened, thread, spawner) =
-                (hook.clone(), opened.clone(), thread.clone(), hook.clone());
+                (rt.clone(), opened.clone(), thread.clone(), rt.clone());
             let body = move || {
                 let run = move || {
                     let log = Log::new([APP]);
@@ -2483,15 +2499,15 @@ fn an_open_at_each_op_of_a_restore() {
                 };
                 *thread.lock().unwrap() = Some(spawner.spawn("opener", run));
             };
-            hook.plan(at, Action::Run(Box::new(body)));
+            rt.plan(Plan::new().at(at, Action::Run(Box::new(body))));
         }
-        hook.arm(searched);
-        let restored = hooked_restore(hook);
-        hook.disarm();
+        rt.arm(searched());
+        let restored = restore_copy(rt);
+        rt.disarm();
         if at.is_some() {
             let joined = thread.lock().unwrap().take();
             let joined = joined.expect("the second run started");
-            hook.join(joined);
+            rt.join(joined);
             let opened = opened.lock().unwrap().take().expect("the thread ended");
             assert!(
                 restored.is_ok() || opened.is_ok(),
@@ -2503,7 +2519,7 @@ fn an_open_at_each_op_of_a_restore() {
                 &open_won
             };
             tally.fetch_add(1, Ordering::Relaxed);
-            let db = open_at(hook.rt.clone(), COPY).expect("the winner's database opens");
+            let db = open_at(rt.clone(), COPY).expect("the winner's database opens");
             let expected = if restored.is_ok() {
                 rows_upto(SEARCH_ROWS)
             } else {
@@ -2634,27 +2650,27 @@ fn a_backup_refuses_a_block_of_another_file_in_the_log() {
 /// Start a second restore to one path at each op of a first: one wins, whole.
 #[test]
 fn two_restores_to_one_path() {
-    let workload = |hook: &Hooked, at: Option<u64>| {
+    let workload = |rt: &SimRuntime, at: Option<u64>| {
         let second = Arc::new(Mutex::new(None));
         let thread = Arc::new(Mutex::new(None));
         if let Some(at) = at {
             let (other, second, thread, spawner) =
-                (hook.clone(), second.clone(), thread.clone(), hook.clone());
+                (rt.clone(), second.clone(), thread.clone(), rt.clone());
             let body = move || {
                 let run = move || {
-                    *second.lock().unwrap() = Some(hooked_restore(&other));
+                    *second.lock().unwrap() = Some(restore_copy(&other));
                 };
                 *thread.lock().unwrap() = Some(spawner.spawn("second restore", run));
             };
-            hook.plan(at, Action::Run(Box::new(body)));
+            rt.plan(Plan::new().at(at, Action::Run(Box::new(body))));
         }
-        hook.arm(searched);
-        let first = hooked_restore(hook);
-        hook.disarm();
+        rt.arm(searched());
+        let first = restore_copy(rt);
+        rt.disarm();
         if at.is_some() {
             let joined = thread.lock().unwrap().take();
             let joined = joined.expect("the second run started");
-            hook.join(joined);
+            rt.join(joined);
             let second = second.lock().unwrap().take().expect("the thread ended");
             assert!(
                 first.is_ok() != second.is_ok(),
@@ -2696,25 +2712,25 @@ fn assert_prove_state(base: &Files, files: &Files, seed: u64, label: &str) {
     });
 }
 
-fn hooked_prove(hook: &Hooked) -> Result<Proof, Error> {
-    prove_in(hook.clone(), &archive(), &Log::new([APP]), &no_create())
+fn prove_archive(rt: &SimRuntime) -> Result<Proof, Error> {
+    prove_in(rt.clone(), &archive(), &Log::new([APP]), &no_create())
 }
 
 /// Fail each op of a prove: the backup stays, and no proof but a true one shows.
 #[test]
 fn a_prove_with_any_op_failed() {
     let base = backed_up(SEARCH_ROWS);
-    let workload = |hook: &Hooked| {
-        hook.arm(|op, path| searched(op, path) && !on_the_test_database(op, path));
-        let got = hooked_prove(hook);
-        hook.disarm();
-        (got, hook.files_open())
+    let workload = |rt: &SimRuntime| {
+        rt.arm(searched().except(on_the_test_database(Match::any())));
+        let got = prove_archive(rt);
+        rt.disarm();
+        (got, rt.files_open())
     };
     search::each_failure(&base, 96, FAILURES, workload, |failed| {
-        let label = format!("op {} {}", failed.at, failed.op);
+        let label = format!("op {} {}", failed.at, failed.struck);
         let (got, files_open) = failed.out;
         assert_eq!(0, files_open, "{label}");
-        if !stops_a_cleanup(&failed.op) && got.is_err() {
+        if !stops_a_cleanup(&failed.struck) && got.is_err() {
             let left: Vec<_> = failed.files.keys().filter(|p| is_aside(p)).collect();
             assert!(left.is_empty(), "{label}: {left:?}");
         }
@@ -2727,14 +2743,14 @@ fn a_prove_with_any_op_failed() {
 #[ignore = "an open answers an unreadable log as `Corrupt` with text only, so a prove records a failed proof; a typed cause of `Corrupt` removes this"]
 fn a_failed_read_of_the_test_database_records_no_verdict() {
     let base = backed_up(SEARCH_ROWS);
-    let workload = |hook: &Hooked| {
-        hook.arm(|op, path| matches!(op, Op::Read { .. }) && on_the_test_database(op, path));
-        let got = hooked_prove(hook);
-        hook.disarm();
+    let workload = |rt: &SimRuntime| {
+        rt.arm(on_the_test_database(Match::kind(OpKind::Read)));
+        let got = prove_archive(rt);
+        rt.disarm();
         got
     };
     search::each_failure(&base, 96, FAILURES, workload, |failed| {
-        let label = format!("op {} {}", failed.at, failed.op);
+        let label = format!("op {} {}", failed.at, failed.struck);
         assert!(
             matches!(failed.out, Err(_) | Ok(Proof::Proven)),
             "{label}: a false verdict: {:?}",
@@ -2747,10 +2763,10 @@ fn a_failed_read_of_the_test_database_records_no_verdict() {
 #[test]
 fn a_prove_crashed_anywhere() {
     let base = backed_up(SEARCH_ROWS);
-    let workload = |hook: &Hooked| {
-        hook.arm(searched);
-        assert_eq!(Ok(Proof::Proven), hooked_prove(hook));
-        hook.disarm();
+    let workload = |rt: &SimRuntime| {
+        rt.arm(searched());
+        assert_eq!(Ok(Proof::Proven), prove_archive(rt));
+        rt.disarm();
     };
     let proof = format!("{TARGET}/{}", storage::PROOF);
     let mut retried = BTreeSet::new();
@@ -2779,32 +2795,32 @@ fn a_prove_crashed_anywhere() {
 /// Start a second prove at each op of a first: neither sees the other's scratch, and both prove it.
 #[test]
 fn two_proves_of_one_backup() {
-    let workload = |hook: &Hooked, at: Option<u64>| {
+    let workload = |rt: &SimRuntime, at: Option<u64>| {
         let second = Arc::new(Mutex::new(None));
         let thread = Arc::new(Mutex::new(None));
         if let Some(at) = at {
             let (other, second, thread, spawner) =
-                (hook.clone(), second.clone(), thread.clone(), hook.clone());
+                (rt.clone(), second.clone(), thread.clone(), rt.clone());
             let body = move || {
                 let run = move || {
-                    *second.lock().unwrap() = Some(hooked_prove(&other));
+                    *second.lock().unwrap() = Some(prove_archive(&other));
                 };
                 *thread.lock().unwrap() = Some(spawner.spawn("second prove", run));
             };
-            hook.plan(at, Action::Run(Box::new(body)));
+            rt.plan(Plan::new().at(at, Action::Run(Box::new(body))));
         }
-        hook.arm(searched);
-        let first = hooked_prove(hook);
-        hook.disarm();
+        rt.arm(searched());
+        let first = prove_archive(rt);
+        rt.disarm();
         assert_eq!(Ok(Proof::Proven), first, "op {at:?}");
         if at.is_some() {
             let joined = thread.lock().unwrap().take();
             let joined = joined.expect("the second run started");
-            hook.join(joined);
+            rt.join(joined);
             let second = second.lock().unwrap().take().expect("the thread ended");
             assert_eq!(Ok(Proof::Proven), second, "op {at:?}");
         }
-        assert_eq!(Proof::Proven, proof_in(hook, &archive()).unwrap());
+        assert_eq!(Proof::Proven, proof_in(rt, &archive()).unwrap());
     };
     let base = backed_up(SEARCH_ROWS);
     search::each_start(&base, 98, STARTS, workload, |at, files| {
@@ -2823,10 +2839,10 @@ fn two_proves_of_one_backup() {
 fn a_failed_restore_keeps_the_directories_above_it() {
     let mut sim = Sim::with_files(99, Config::default(), backed_up(2));
     api::run(&mut sim, |rt| {
-        let hook = Hooked::new(&rt);
-        hook.fail_when(|op| matches!(op, Op::Write { .. }).then_some(IoError::Full));
-        let got = storage::restore_file(&hook, TARGET, "deep/er/copy.adt", "deep/er/log");
+        rt.plan(Plan::new().rule(Match::kind(OpKind::Write), Action::Fail(IoError::Full)));
+        let got = storage::restore_file(&rt, TARGET, "deep/er/copy.adt", "deep/er/log");
         assert!(matches!(got, Err(BackupError::Io { .. })), "{got:?}");
+        rt.plan(Plan::new());
         let mut io = rt.io();
         let dir = "deep/er".to_owned();
         let listed = common::complete(&rt, &mut io, Op::List { dir }).result;
@@ -2842,17 +2858,11 @@ fn a_failed_read_of_a_part_is_not_damage() {
     api::run(&mut sim, |rt| {
         let log = Log::new([APP]);
         prove_in(rt.clone(), &archive(), &log, &no_create()).unwrap();
-        let hook = Hooked::new(&rt);
-        let opened = AtomicBool::new(false);
-        hook.fail_when(move |op| match op {
-            Op::Open { path, .. } if path.starts_with("bk/pages/") => {
-                opened.store(true, Ordering::SeqCst);
-                None
-            }
-            Op::Read { .. } if opened.load(Ordering::SeqCst) => Some(IoError::Failed),
-            _ => None,
-        });
-        let got = prove_in(hook, &archive(), &log, &no_create());
+        rt.plan(fail_reads_after_open(
+            &rt,
+            Match::kind(OpKind::Open).prefixed("bk/pages/"),
+        ));
+        let got = prove_in(rt.clone(), &archive(), &log, &no_create());
         assert!(
             matches!(
                 got,
@@ -2862,6 +2872,7 @@ fn a_failed_read_of_a_part_is_not_damage() {
             ),
             "{got:?}"
         );
+        rt.plan(Plan::new());
         assert_eq!(Proof::Proven, proof_in(&rt, &archive()).unwrap());
     });
 }
@@ -2883,17 +2894,11 @@ fn a_file_as_a_source_is_absent_and_a_proof_read_can_fail() {
         is_invalid_naming(&got.map(|_| ()), "no backup");
         let log = Log::new([APP]);
         prove_in(rt.clone(), &archive(), &log, &no_create()).unwrap();
-        let hook = Hooked::new(&rt);
-        let opened = AtomicBool::new(false);
-        hook.fail_when(move |op| match op {
-            Op::Open { path, .. } if path == "bk/proof" => {
-                opened.store(true, Ordering::SeqCst);
-                None
-            }
-            Op::Read { .. } if opened.load(Ordering::SeqCst) => Some(IoError::Failed),
-            _ => None,
-        });
-        let got = proof_in(&hook, &archive());
+        rt.plan(fail_reads_after_open(
+            &rt,
+            Match::kind(OpKind::Open).path("bk/proof"),
+        ));
+        let got = proof_in(&rt, &archive());
         assert!(
             matches!(
                 got,
@@ -2929,28 +2934,21 @@ fn a_manifest_naming_no_checkpoint_record_is_damaged() {
 fn a_restore_that_fails_its_check_never_shows_a_file() {
     let mut sim = Sim::with_files(80, Config::default(), backed_up(2));
     api::run(&mut sim, |rt| {
-        let hook = Hooked::new(&rt);
-        let seen = Arc::new(AtomicBool::new(false));
-        let (saw, probe) = (seen.clone(), rt);
-        let log_open = AtomicBool::new(false);
-        hook.fail_when(move |op| {
-            if sim_has(&probe, COPY) {
-                saw.store(true, Ordering::SeqCst);
-            }
-            match op {
-                Op::Open { path, .. } if path.starts_with("copy.adt-log") => {
-                    log_open.store(true, Ordering::SeqCst);
-                    None
-                }
-                Op::Read { .. } if log_open.load(Ordering::SeqCst) => Some(IoError::Failed),
-                _ => None,
-            }
-        });
-        let got = restore_in(hook, &archive(), COPY, RestorePoint::Latest, &no_create());
+        let names_the_file = Match::any_of([
+            Match::kind(OpKind::Open).creating(),
+            Match::kinds([OpKind::CreateNew, OpKind::Rename]),
+        ]);
+        let shown = rt.counted(names_the_file.path(COPY));
+        rt.plan(fail_reads_after_open(
+            &rt,
+            Match::kind(OpKind::Open).prefixed("copy.adt-log"),
+        ));
+        let got = restore_in(rt, &archive(), COPY, RestorePoint::Latest, &no_create());
         assert!(got.is_err(), "{got:?}");
-        assert!(
-            !seen.load(Ordering::SeqCst),
-            "a file another thread could open"
+        assert_eq!(
+            0,
+            shown.get(),
+            "an op put a file another thread could open at {COPY}"
         );
     });
 }

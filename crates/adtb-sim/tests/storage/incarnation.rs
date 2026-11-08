@@ -5,12 +5,11 @@ use adtb::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb::mvcc::{CommitLog, Transactions, Xid};
-use adtb::runtime::{IoError, Op as IoOp, Runtime};
+use adtb::runtime::{IoError, OpKind, Runtime};
 use adtb::storage::{
     self, Damage, Finding, HEADER_LEN, Options, PageError, PageKind, Pager, Pid, Quarantine,
 };
-use adtb_sim::{Config, Sim, SimRuntime};
-use adtb_simkit::search::Hooked;
+use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
 use adtb_simkit::{common, harness};
 use adtb_testkit::profile::{assert_reached, every_case};
 
@@ -441,13 +440,9 @@ fn allocation_skips_a_free_page_the_device_could_not_read() {
     });
     let p = freed.unwrap();
     harness::finished(&mut sim, |rt| {
-        let hook = Hooked::new(&rt);
-        let at = p.0 * harness::PAGE as u64;
-        hook.fail_when(move |op| match op {
-            IoOp::Read { offset, .. } if *offset == at => Some(IoError::Failed),
-            _ => None,
-        });
-        let (pager, _) = Pager::open(hook, &options).unwrap();
+        let reads = Match::kind(OpKind::Read).offset(p.0 * harness::PAGE as u64);
+        rt.plan(Plan::new().rule(reads, Action::Fail(IoError::Failed)));
+        let (pager, _) = Pager::open(rt, &options).unwrap();
         let unreadable = PageError {
             pid: p,
             damage: Damage::Unreadable,

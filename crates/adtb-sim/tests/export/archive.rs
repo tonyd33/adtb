@@ -2,17 +2,16 @@
 
 use adtb::testing::{Knobs, Probe};
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use adtb::runtime::{IoError, Op, Runtime};
+use adtb::runtime::{IoError, OpKind, Runtime};
 use adtb::storage::{
     self, ArchiveStatus, Archiver, BackupError, BackupRun, Envelope, Lsn, Options, PageKind, Pager,
     Pid, Position,
 };
 use adtb::{CallOptions, CreateOptions, Database, Log, OpenOptions};
-use adtb_sim::{Config, Sim, SimRuntime};
-use adtb_simkit::search::{self, Files, Hooked};
+use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
+use adtb_simkit::search::{self, Files};
 use adtb_simkit::{api, common};
 
 const FILE: &str = "archived.adt";
@@ -260,30 +259,29 @@ fn a_failed_copy_holds_through_and_the_next_pass_catches_up_gapless() {
     for kind in ["create", "rename", "force"] {
         let mut sim = rooted(6);
         let (failed, caught_up) = api::run(&mut sim, |rt| {
-            let hook = Hooked::new(&rt);
-            let pager = Pager::create(hook.clone(), &options(FILE)).unwrap();
+            let pager = Pager::create(rt.clone(), &options(FILE)).unwrap();
             let archiver = Archiver::new(pager.clone(), DEST);
             fill(&pager, 2);
             archiver.archive();
-            let renamed = AtomicBool::new(false);
-            hook.fail_when(move |op| {
-                let refused = match op {
-                    Op::CreateNew { path } => kind == "create" && path.starts_with(DEST),
-                    Op::Rename { to, .. } if to.starts_with(DEST) => {
-                        renamed.store(true, Ordering::SeqCst);
-                        kind == "rename"
-                    }
-                    Op::SyncDir { dir } => {
-                        kind == "force" && renamed.load(Ordering::SeqCst) && dir.starts_with(DEST)
-                    }
-                    _ => false,
-                };
-                refused.then_some(IoError::Full)
-            });
+            let full = || Action::Fail(IoError::Full);
+            let renames = Match::kind(OpKind::Rename).prefixed(DEST);
+            let plan = match kind {
+                "create" => Plan::new().rule(Match::kind(OpKind::CreateNew).prefixed(DEST), full()),
+                "rename" => Plan::new().rule(renames, full()),
+                _ => {
+                    let planner = rt.clone();
+                    let forces = Match::kind(OpKind::SyncDir).prefixed(DEST);
+                    let after = Action::Run(Box::new(move || {
+                        planner.plan(Plan::new().rule(forces, full()));
+                    }));
+                    Plan::new().first(renames, after)
+                }
+            };
+            rt.plan(plan);
             fill(&pager, 4);
             archiver.archive();
             let failed = archiver.status();
-            hook.fail_when(|_| None);
+            rt.plan(Plan::new());
             archiver.archive();
             let caught_up = archiver.status();
             pager.close();
@@ -308,12 +306,12 @@ fn a_failed_copy_holds_through_and_the_next_pass_catches_up_gapless() {
 /// the archive.
 #[test]
 fn a_crash_during_an_archive_copy_publishes_no_partial_segment_and_the_next_pass_finishes() {
-    let workload = |hook: &Hooked| {
-        let (pager, _) = Pager::open(hook.clone(), &options(FILE)).unwrap();
+    let workload = |rt: &SimRuntime| {
+        let (pager, _) = Pager::open(rt.clone(), &options(FILE)).unwrap();
         let archiver = Archiver::new(pager.clone(), DEST);
-        hook.arm(|_, path| path.is_some_and(|p| p.starts_with(DEST)));
+        rt.arm(Match::any().prefixed(DEST));
         archiver.archive();
-        hook.disarm();
+        rt.disarm();
         pager.close();
     };
     let is_segment = |path: &str| {
@@ -606,19 +604,18 @@ fn a_segment_size_off_the_log_block_is_refused() {
 fn engine_session(
     sim: &mut Sim,
     archive: bool,
-    refused: fn(&Op) -> bool,
+    refused: Match,
     rows: std::ops::Range<i64>,
 ) -> Result<Option<ArchiveStatus>, adtb::OpenError> {
     api::run(sim, |rt| {
-        let hook = Hooked::new(&rt);
-        hook.fail_when(move |op| refused(op).then_some(IoError::Full));
+        rt.plan(Plan::new().rule(refused, Action::Fail(IoError::Full)));
         let options = OpenOptions {
             log_archive: archive.then(|| DEST.into()),
             create: Some(CreateOptions::default()),
             testing: Knobs::default().with_segment_size(SEGMENT),
             ..api::options(2)
         };
-        let db = Database::open_in(hook, "db.adt", &Log::new([APP]), &options)?;
+        let db = Database::open_in(rt, "db.adt", &Log::new([APP]), &options)?;
         let status = db.testing().archive_status();
         insert(&db, rows);
         db.close().unwrap();
@@ -626,22 +623,22 @@ fn engine_session(
     })
 }
 
-fn none(_: &Op) -> bool {
-    false
+fn none() -> Match {
+    Match::kinds([])
 }
 
-fn archive_creates(op: &Op) -> bool {
-    matches!(op, Op::CreateNew { path } if path.starts_with(DEST))
+fn archive_creates() -> Match {
+    Match::kind(OpKind::CreateNew).prefixed(DEST)
 }
 
 #[test]
 fn an_engine_recycles_only_the_segments_its_archive_holds() {
     let mut sim = rooted(20);
-    engine_session(&mut sim, true, none, 0..3 * ROWS).unwrap();
-    engine_session(&mut sim, true, archive_creates, 3 * ROWS..6 * ROWS).unwrap();
+    engine_session(&mut sim, true, none(), 0..3 * ROWS).unwrap();
+    engine_session(&mut sim, true, archive_creates(), 3 * ROWS..6 * ROWS).unwrap();
     let behind = sim.files();
     let log = "db.adt-log";
-    let status = engine_session(&mut sim, true, archive_creates, 0..0).unwrap();
+    let status = engine_session(&mut sim, true, archive_creates(), 0..0).unwrap();
     let status = status.expect("an archive is set");
     let through = status
         .through
@@ -654,7 +651,7 @@ fn an_engine_recycles_only_the_segments_its_archive_holds() {
     );
     assert_eq!(through, kept[0], "{kept:?}");
     let mut unarchived = Sim::with_files(21, Config::default(), behind);
-    engine_session(&mut unarchived, false, none, 0..0).unwrap();
+    engine_session(&mut unarchived, false, none(), 0..0).unwrap();
     let first = segments(&unarchived.files(), log)[0];
     assert!(
         first > through,
@@ -665,7 +662,7 @@ fn an_engine_recycles_only_the_segments_its_archive_holds() {
 #[test]
 fn a_create_that_fails_to_publish_its_log_archives_nothing() {
     let mut sim = rooted(22);
-    let published = |op: &Op| matches!(op, Op::Rename { to, .. } if to == "db.adt-log");
+    let published = Match::kind(OpKind::Rename).path("db.adt-log");
     let refused = engine_session(&mut sim, true, published, 0..0).is_err();
     let under: Vec<String> = sim
         .files()

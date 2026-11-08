@@ -34,6 +34,13 @@ Invariants:
 `os` holds the real runtime over the host
 ([runtime.md §2](runtime.md#2-io-interface)).
 
+```text
+enum OpKind { Open, CreateNew, Read, Write, Size, Allocate, Sync, SyncDir, List, Remove,
+              RemoveDir, Rename, CreateDir, Close, Timer }
+Op::kind(&self) -> OpKind
+Ticket::new(n: u64) -> Ticket; Ticket::NONE
+```
+
 `runtime` also owns, in `crates/adtb-sys/src/runtime/faults.rs`, the
 device fault decisions of
 [runtime.md §3](runtime.md#3-faults-a-backend-may-produce), which

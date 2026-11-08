@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use adtb::catalog::{Catalog, Dormant, version_hash};
 use adtb::key::Value;
-use adtb::runtime::{IoError, Op, Runtime as _};
+use adtb::runtime::{IoError, Op, OpKind, Runtime as _};
 use adtb::storage::{self, Envelope, Lsn, Pager};
 use adtb::{
     ArchiveTarget, CallOptions, Called, Capability, Database, Error, FatalReason, Log, OpenOptions,
@@ -16,8 +16,8 @@ use adtb::{
 };
 use adtb_lang::evolve::Source;
 use adtb_lang::parse::{Options, parse_migration};
-use adtb_sim::{Config, Sim, SimRuntime};
-use adtb_simkit::search::{self, Files, Hooked};
+use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
+use adtb_simkit::search::{self, Files};
 use adtb_simkit::{api, grants};
 use adtb_testkit::corpus;
 use adtb_testkit::profile::{assert_reached, count, every_case};
@@ -851,18 +851,20 @@ fn a_restore_point_other_than_the_snapshot_is_unavailable() {
     });
 }
 
-fn changes(op: &Op) -> bool {
-    match op {
-        Op::Open { create, .. } => *create,
-        Op::CreateNew { .. }
-        | Op::CreateDir { .. }
-        | Op::Write { .. }
-        | Op::Allocate { .. }
-        | Op::Remove { .. }
-        | Op::RemoveDir { .. }
-        | Op::Rename { .. } => true,
-        _ => false,
-    }
+/// Returns the match of the ops that change the names or bytes on the device.
+fn changes() -> Match {
+    Match::any_of([
+        Match::kind(OpKind::Open).creating(),
+        Match::kinds([
+            OpKind::CreateNew,
+            OpKind::CreateDir,
+            OpKind::Write,
+            OpKind::Allocate,
+            OpKind::Remove,
+            OpKind::RemoveDir,
+            OpKind::Rename,
+        ]),
+    ])
 }
 
 fn is_invalid_naming(got: &Result<(), Error>, word: &str) {
@@ -878,21 +880,20 @@ fn a_restore_to_an_existing_path_and_a_dump_to_a_full_directory_are_refused() {
     files.insert(COPY.to_owned(), b"mine".to_vec());
     let mut sim = Sim::with_files(5, Config::default(), files.clone());
     api::run(&mut sim, |rt| {
-        let hook = Hooked::new(&rt);
-        hook.arm(|op, path| changes(op) && path.is_some_and(|p| p.starts_with(COPY)));
-        is_invalid_naming(&hooked_restore(&hook), "exists");
+        rt.arm(changes().prefixed(COPY));
+        is_invalid_naming(&restore_dump(&rt), "exists");
         assert_eq!(
             0,
-            hook.disarm(),
+            rt.disarm(),
             "the refused restore changed a path at the target"
         );
         let db =
-            Database::open_in(hook.clone(), FILE, &Log::new(app_log()), &api::options(2)).unwrap();
-        hook.arm(|op, path| changes(op) && path.is_some_and(|p| p.starts_with(DUMP)));
+            Database::open_in(rt.clone(), FILE, &Log::new(app_log()), &api::options(2)).unwrap();
+        rt.arm(changes().prefixed(DUMP));
         is_invalid_naming(&dump(&db), "holds files");
         assert_eq!(
             0,
-            hook.disarm(),
+            rt.disarm(),
             "the refused dump changed a path at the target"
         );
         db.close().unwrap();
@@ -1405,10 +1406,9 @@ enum Answer {
 fn answered(files: &Files) -> (Answer, u64) {
     let mut sim = Sim::with_files(18, Config::default(), files.clone());
     let (got, changed) = api::run(&mut sim, |rt| {
-        let hook = Hooked::new(&rt);
-        hook.arm(|op, path| changes(op) && path.is_some_and(|p| p.starts_with(COPY)));
-        let got = hooked_restore(&hook);
-        (got, hook.disarm())
+        rt.arm(changes().prefixed(COPY));
+        let got = restore_dump(&rt);
+        (got, rt.disarm())
     });
     if got.is_err() {
         assert_eq!(*files, sim.files(), "the refused restore wrote: {got:?}");
@@ -1692,12 +1692,9 @@ fn a_storage_failure_building_the_restored_file_is_fatal_and_leaves_nothing() {
     let (files, _) = dumped();
     let mut sim = Sim::with_files(21, Config::default(), files.clone());
     let got = api::run(&mut sim, |rt| {
-        let hook = Hooked::new(&rt);
-        hook.fail_when(|op| match op {
-            Op::CreateNew { path } if path.contains(".partial") => Some(IoError::Failed),
-            _ => None,
-        });
-        hooked_restore(&hook)
+        let partial = Match::kind(OpKind::CreateNew).containing(".partial");
+        rt.plan(Plan::new().rule(partial, Action::Fail(IoError::Failed)));
+        restore_dump(&rt)
     });
     assert!(
         matches!(
@@ -1769,12 +1766,10 @@ fn is_aside(path: &str) -> bool {
 
 /// Accept every op but a close, a timer and the renames of the restored database's create, whose
 /// undo renames a log directory into a child, which the simulator does not model.
-fn searched(op: &Op, _: Option<&str>) -> bool {
-    match op {
-        Op::Close { .. } | Op::Timer { .. } => false,
-        Op::Rename { from, .. } => !from.contains(".creating/"),
-        _ => true,
-    }
+fn searched() -> Match {
+    Match::any()
+        .except(Match::kinds([OpKind::Close, OpKind::Timer]))
+        .except(Match::kind(OpKind::Rename).from_containing(".creating/"))
 }
 
 /// Assert `files` holds no part of a restore at `COPY`, or a whole one answering as its source.
@@ -1792,10 +1787,10 @@ fn assert_restored_or_absent(files: &Files, seed: u64, label: &str) {
     api::run(&mut sim, |rt| assert_same(&rt, &app_log(), &[], label));
 }
 
-fn hooked_restore(hook: &Hooked) -> Result<(), Error> {
+fn restore_dump(rt: &SimRuntime) -> Result<(), Error> {
     let archive = ArchiveTarget::path(DUMP).unwrap();
     restore_in(
-        hook.clone(),
+        rt.clone(),
         &archive,
         COPY,
         RestorePoint::Latest,
@@ -1807,14 +1802,14 @@ fn hooked_restore(hook: &Hooked) -> Result<(), Error> {
 #[test]
 fn a_restore_with_any_op_failed_publishes_all_or_nothing() {
     let (base, _) = dumped();
-    let workload = |hook: &Hooked| {
-        hook.arm(searched);
-        let got = hooked_restore(hook);
-        hook.disarm();
+    let workload = |rt: &SimRuntime| {
+        rt.arm(searched());
+        let got = restore_dump(rt);
+        rt.disarm();
         got
     };
     search::each_fatal_failure(&base, 11, FAILURES, &[], workload, |failed| {
-        let label = format!("op {} {}", failed.at, failed.op);
+        let label = format!("op {} {}", failed.at, failed.struck);
         match &failed.out {
             Some(Ok(())) => assert!(
                 failed.files.contains_key(COPY),
@@ -1832,7 +1827,8 @@ fn a_restore_with_any_op_failed_publishes_all_or_nothing() {
                 );
                 assert!(
                     !failed.files.contains_key(COPY)
-                        || failed.op.starts_with("SyncDir of Some(\"\")"),
+                        || (failed.struck.kind(), failed.struck.path())
+                            == (OpKind::SyncDir, Some("")),
                     "{label}: published, {e:?}"
                 );
             }
@@ -1845,10 +1841,10 @@ fn a_restore_with_any_op_failed_publishes_all_or_nothing() {
 #[test]
 fn a_restore_crashed_anywhere_leaves_nothing_or_the_whole_file() {
     let (base, _) = dumped();
-    let workload = |hook: &Hooked| {
-        hook.arm(searched);
-        hooked_restore(hook).unwrap();
-        hook.disarm();
+    let workload = |rt: &SimRuntime| {
+        rt.arm(searched());
+        restore_dump(rt).unwrap();
+        rt.disarm();
     };
     search::each_crash(
         &base,
@@ -1884,11 +1880,11 @@ fn undumped() -> Files {
     files
 }
 
-fn hooked_dump(hook: &Hooked) -> Result<(), Error> {
-    let db = Database::open_in(hook.clone(), FILE, &Log::new(app_log()), &api::options(2)).unwrap();
-    hook.arm(|op, path| searched(op, path) && path.is_some_and(|p| p.starts_with(DUMP)));
+fn armed_dump(rt: &SimRuntime) -> Result<(), Error> {
+    let db = Database::open_in(rt.clone(), FILE, &Log::new(app_log()), &api::options(2)).unwrap();
+    rt.arm(searched().prefixed(DUMP));
     let got = dump(&db);
-    hook.disarm();
+    rt.disarm();
     db.close().unwrap();
     got
 }
@@ -1896,8 +1892,8 @@ fn hooked_dump(hook: &Hooked) -> Result<(), Error> {
 #[test]
 fn a_dump_with_any_op_failed_writes_all_or_nothing() {
     let base = undumped();
-    search::each_failure(&base, 13, FAILURES, hooked_dump, |failed| {
-        let label = format!("op {} {}", failed.at, failed.op);
+    search::each_failure(&base, 13, FAILURES, armed_dump, |failed| {
+        let label = format!("op {} {}", failed.at, failed.struck);
         let whole = failed.files.contains_key(&format!("{DUMP}/manifest"));
         assert_eq!(failed.out.is_ok(), whole, "{label}: {:?}", failed.out);
         assert_dumped_or_absent(&failed.files, 13, &label);
@@ -1912,7 +1908,7 @@ fn a_dump_crashed_anywhere_leaves_nothing_or_the_whole_dump() {
         14,
         CRASH_POINTS,
         CRASH_IMAGES,
-        |hook| hooked_dump(hook).unwrap(),
+        |rt| armed_dump(rt).unwrap(),
         |image| image.contains_key(&format!("{DUMP}/manifest")),
         |at, image| assert_dumped_or_absent(&image, at as u64, &format!("event {at}")),
     );

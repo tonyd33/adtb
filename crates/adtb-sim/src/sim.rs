@@ -9,12 +9,13 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 
 use adtb::runtime::{
-    AlignedBuf, Clock, Completion, Done, Entropy, Faults, FileId, Instant, Io, Op, Runtime,
-    ThreadId, Threads, Ticket,
+    AlignedBuf, Clock, Completion, Done, Entropy, Faults, FileId, Instant, Io, IoError, Op, OpKind,
+    Runtime, ThreadId, Threads, Ticket,
 };
 use adtb_sys::pages;
 
 use crate::disk::{Ctx, Disk, InFlight, Ino, Recording};
+use crate::plan::{Action, Count, Match, Numbered, OpLog, Plan, Planner};
 use crate::rng::Rng;
 
 fn check_geometry(faults: &Faults) {
@@ -73,6 +74,7 @@ enum Phase {
     Crashed,
     Panicked(Box<dyn Any + Send>),
     Deadlocked(String),
+    Held(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,6 +99,23 @@ struct Event {
     submitter: usize,
     op: Op,
     upto: u64,
+    injected: Option<Injected>,
+    logged: Vec<(OpLog, usize)>,
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "permanent: the simulator makes the tickets of the ops submitted to it"
+)]
+fn ticket(n: u64) -> Ticket {
+    Ticket::new(n)
+}
+
+/// The outcome a plan gives an op in place of running it on the disk.
+#[derive(Clone, Copy, Debug)]
+enum Injected {
+    Fail(IoError),
+    Lose,
 }
 
 struct State {
@@ -114,13 +133,16 @@ struct State {
     threads: Vec<SimThread>,
     current: usize,
     events: BTreeMap<(u64, u64), Event>,
+    held: Vec<Event>,
     rings: Vec<VecDeque<Completion>>,
-    handles: Vec<Option<Ino>>,
+    handles: Vec<Option<(Ino, String)>>,
     next_ticket: u64,
 }
 
+/// Lock order: `plan` is never taken while `state` is held.
 struct Shared {
     state: Mutex<State>,
+    plan: Mutex<Planner>,
     turn: Condvar,
     os: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -192,6 +214,7 @@ impl Sim {
             threads: Vec::new(),
             current: 0,
             events: BTreeMap::new(),
+            held: Vec::new(),
             rings: Vec::new(),
             handles: Vec::new(),
             next_ticket: 0,
@@ -199,6 +222,7 @@ impl Sim {
         Sim {
             shared: Arc::new(Shared {
                 state: Mutex::new(state),
+                plan: Mutex::default(),
                 turn: Condvar::new(),
                 os: Mutex::new(Vec::new()),
             }),
@@ -236,12 +260,39 @@ impl Sim {
         lock(&self.shared.state).crash_at = Some(at.as_nanos());
     }
 
+    /// Act on the ops of the next run as `plan` states, in place of the plan before. The rules end
+    /// with that run; the numbered actions last until taken or disarmed.
+    pub fn plan(&mut self, plan: Plan) {
+        lock(&self.shared.plan).plan(plan);
+    }
+
+    /// Act as [`Sim::plan`] does, and panic at any later plan of this simulation, naming `owner`.
+    pub fn own_plan(&mut self, owner: &'static str, plan: Plan) {
+        lock(&self.shared.plan).own(owner, plan);
+    }
+
+    /// Returns the ops numbered so far, in this run and earlier ones.
+    pub fn numbered(&self) -> Numbered {
+        lock(&self.shared.plan).numbered()
+    }
+
+    /// Returns a count of the ops `ops` matches submitted from now on, in this run and later ones.
+    pub fn counted(&mut self, ops: Match) -> Count {
+        lock(&self.shared.plan).counted(ops)
+    }
+
+    /// Returns a log of the ops `ops` matches submitted from now on, in this run and later ones.
+    pub fn logged(&mut self, ops: Match) -> OpLog {
+        lock(&self.shared.plan).logged(ops)
+    }
+
     /// Run `body` as the first thread of a new process, until every thread but the idle daemons has
     /// returned or the process crashes. A daemon's timer left pending at the end does not move the
     /// clock.
     ///
     /// Panics with the payload of any thread that panics, or when a live thread that is no daemon is
-    /// blocked and only a daemon's timer can still fire.
+    /// blocked and only a daemon's timer can still fire, and when its threads return with an op
+    /// held, whether or not a crash is scheduled.
     pub fn run<F: FnOnce(SimRuntime)>(&mut self, body: F) -> Outcome {
         let process = {
             let mut st = lock(&self.shared.state);
@@ -278,6 +329,7 @@ impl Sim {
                     .wait_while(st, |st| matches!(st.phase, Phase::Running)),
             );
         }
+        lock(&self.shared.plan).end_run();
         let handles = std::mem::take(&mut *lock(&self.shared.os));
         for h in handles {
             if let Err(payload) = h.join() {
@@ -296,6 +348,10 @@ impl Sim {
             Phase::Deadlocked(why) => {
                 drop(st);
                 panic!("deadlock: {why}")
+            }
+            Phase::Held(ops) => {
+                drop(st);
+                panic!("the run ends with an op held: {ops}")
             }
             Phase::Idle | Phase::Running => unreachable!(),
         }
@@ -362,12 +418,34 @@ fn switch<'a>(shared: &'a Shared, mut st: Guard<'a>, me: usize) -> Result<Guard<
             }
             continue;
         }
-        st.events.clear();
-        if st
+        let ended = st
             .threads
             .iter()
-            .all(|t| t.daemon || t.status == Status::Done)
+            .all(|t| t.daemon || t.status == Status::Done);
+        if !ended
+            && !st.held.is_empty()
+            && let Some(crash) = st.crash_at
         {
+            let crashed = !st.advance(crash);
+            assert!(crashed, "advancing the clock to the crash crashes");
+            wake_all(shared, &st);
+            return Err(Halt);
+        }
+        st.events.clear();
+        if !st.held.is_empty() {
+            let held = std::mem::take(&mut st.held);
+            let ops: Vec<String> = held
+                .iter()
+                .map(|e| {
+                    format!(
+                        "{:?} {:?}",
+                        e.op.kind(),
+                        st.path_of(&e.op).unwrap_or_default()
+                    )
+                })
+                .collect();
+            st.phase = Phase::Held(ops.join(", "));
+        } else if ended {
             st.phase = Phase::Finished;
         } else {
             let blocked: Vec<String> = st
@@ -460,41 +538,91 @@ impl State {
     fn ino(&self, file: FileId) -> Ino {
         self.handles
             .get(file.0 as usize)
-            .copied()
-            .flatten()
+            .and_then(|h| h.as_ref())
+            .map(|(ino, _)| *ino)
             .unwrap_or_else(|| panic!("{file:?} is not open in this process"))
+    }
+
+    /// Returns the path `op` names: the path a file was opened at, and a rename's new name.
+    fn path_of(&self, op: &Op) -> Option<String> {
+        match op {
+            Op::Open { path, .. }
+            | Op::CreateNew { path }
+            | Op::Remove { path }
+            | Op::RemoveDir { path } => Some(path.clone()),
+            Op::SyncDir { dir } | Op::List { dir } | Op::CreateDir { dir } => Some(dir.clone()),
+            Op::Rename { to, .. } => Some(to.clone()),
+            Op::Read { file, .. }
+            | Op::Write { file, .. }
+            | Op::Size { file }
+            | Op::Allocate { file, .. }
+            | Op::Sync { file }
+            | Op::Close { file } => self
+                .handles
+                .get(file.0 as usize)
+                .and_then(|h| h.as_ref())
+                .map(|(_, path)| path.clone()),
+            Op::Timer { .. } => None,
+        }
+    }
+
+    fn opened(&mut self, ino: Ino, path: String, len: u64) -> Done {
+        self.handles.push(Some((ino, path)));
+        Done::Opened {
+            file: FileId((self.handles.len() - 1) as u32),
+            len,
+        }
     }
 
     fn deliver(&mut self, event: Event) {
         let Event {
             ring,
-            ticket,
+            ticket: id,
             submitter,
             op,
             upto,
+            injected,
+            logged,
         } = event;
         let now = self.now;
-        trace!(self.trace, "t={now} complete {ticket}");
-        let (buf, result) = match op {
+        trace!(self.trace, "t={now} complete {id}");
+        for (log, at) in logged {
+            log.complete(at, Instant::from_nanos(now));
+        }
+        let (buf, result) = match injected {
+            None => self.perform(op, upto),
+            Some(injected) => {
+                trace!(self.trace, "  planned {injected:?}");
+                let buf = match op {
+                    Op::Read { buf, .. } | Op::Write { buf, .. } => Some(buf),
+                    _ => None,
+                };
+                let result = match injected {
+                    Injected::Fail(error) => Err(error),
+                    Injected::Lose => Ok(Done::Written),
+                };
+                (buf, result)
+            }
+        };
+        trace!(self.trace, "  {result:?}");
+        self.rings[ring].push_back(Completion {
+            ticket: ticket(id),
+            buf,
+            result,
+        });
+        self.unpark(submitter);
+    }
+
+    /// Run `op` on the disk. Returns its buffer and result.
+    fn perform(&mut self, op: Op, upto: u64) -> (Option<AlignedBuf>, Result<Done, IoError>) {
+        match op {
             Op::Open { path, create } => {
-                let r = self.disk.open(&path, create).map(|(ino, len)| {
-                    self.handles.push(Some(ino));
-                    Done::Opened {
-                        file: FileId((self.handles.len() - 1) as u32),
-                        len,
-                    }
-                });
-                (None, r)
+                let r = self.disk.open(&path, create);
+                (None, r.map(|(ino, len)| self.opened(ino, path, len)))
             }
             Op::CreateNew { path } => {
-                let r = self.disk.create_new(&path).map(|(ino, len)| {
-                    self.handles.push(Some(ino));
-                    Done::Opened {
-                        file: FileId((self.handles.len() - 1) as u32),
-                        len,
-                    }
-                });
-                (None, r)
+                let r = self.disk.create_new(&path);
+                (None, r.map(|(ino, len)| self.opened(ino, path, len)))
             }
             Op::Read {
                 file,
@@ -550,19 +678,12 @@ impl State {
                 (None, Ok(Done::Closed))
             }
             Op::Timer { .. } => (None, Ok(Done::Fired)),
-        };
-        trace!(self.trace, "  {result:?}");
-        self.rings[ring].push_back(Completion {
-            ticket: Ticket(ticket),
-            buf,
-            result,
-        });
-        self.unpark(submitter);
+        }
     }
 
     fn close(&mut self, file: FileId) {
         self.ino(file);
-        let busy = self.events.values().any(|e| match &e.op {
+        let busy = self.events.values().chain(&self.held).any(|e| match &e.op {
             Op::Read { file: f, .. }
             | Op::Write { file: f, .. }
             | Op::Size { file: f }
@@ -588,8 +709,11 @@ impl State {
         let now = self.now;
         trace!(self.trace, "t={now} crash");
         let events = std::mem::take(&mut self.events);
+        let held = std::mem::take(&mut self.held);
         let in_flight = events
             .into_values()
+            .chain(held)
+            .filter(|e| e.injected.is_none())
             .filter_map(|e| match e.op {
                 Op::Write { file, offset, buf } => Some(InFlight {
                     ino: self.ino(file),
@@ -678,6 +802,54 @@ impl SimRuntime {
             .disk
             .recording()
             .map_or(0, Recording::len)
+    }
+
+    /// Returns the contents of every file as a reader would see it now.
+    pub fn files(&self) -> BTreeMap<String, Vec<u8>> {
+        lock(&self.shared.state).disk.files()
+    }
+
+    /// Returns the number of files this process has open.
+    pub fn files_open(&self) -> usize {
+        lock(&self.shared.state).handles.iter().flatten().count()
+    }
+
+    /// Act on the ops of the rest of this run as `plan` states, in place of the plan before. The
+    /// rules end with the run; the numbered actions last until taken or disarmed.
+    pub fn plan(&self, plan: Plan) {
+        lock(&self.shared.plan).plan(plan);
+    }
+
+    /// Add the rules and numbered actions of `plan` to the plan, its rules after the plan's own.
+    pub fn extend(&self, plan: Plan) {
+        lock(&self.shared.plan).extend(plan);
+    }
+
+    /// Number the ops `ops` matches from now on, continuing the numbers of earlier ops.
+    pub fn arm(&self, ops: Match) {
+        let recorded = self.recorded();
+        lock(&self.shared.plan).arm(ops, recorded);
+    }
+
+    /// Stop numbering ops and drop the plan's numbered actions not taken. Returns how many ops
+    /// were numbered.
+    pub fn disarm(&self) -> u64 {
+        lock(&self.shared.plan).disarm()
+    }
+
+    /// Returns the ops numbered so far, in this process and earlier ones.
+    pub fn numbered(&self) -> Numbered {
+        lock(&self.shared.plan).numbered()
+    }
+
+    /// Returns a count of the ops `ops` matches submitted from now on.
+    pub fn counted(&self, ops: Match) -> Count {
+        lock(&self.shared.plan).counted(ops)
+    }
+
+    /// Returns a log of the ops `ops` matches submitted from now on.
+    pub fn logged(&self, ops: Match) -> OpLog {
+        lock(&self.shared.plan).logged(ops)
     }
 }
 
@@ -828,8 +1000,31 @@ pub struct SimIo {
 
 impl Io for SimIo {
     fn submit(&mut self, op: Op) -> Ticket {
+        let Some(st) = self.rt.enter() else {
+            return Ticket::NONE;
+        };
+        let path = st.path_of(&op);
+        drop(st);
+        let mut decision = lock(&self.rt.shared.plan).decide(&op, path.as_deref());
+        let (injected, hold) = match decision.take_action() {
+            None => (None, false),
+            Some(Action::Run(body)) => {
+                body();
+                (None, false)
+            }
+            Some(Action::Fail(error)) => (Some(Injected::Fail(error)), false),
+            Some(Action::Lose) => {
+                assert!(
+                    op.kind() == OpKind::Write,
+                    "only a write can be lost, not a {:?}",
+                    op.kind()
+                );
+                (Some(Injected::Lose), false)
+            }
+            Some(Action::Hold) => (None, true),
+        };
         let Some(mut st) = self.rt.enter() else {
-            return Ticket(u64::MAX);
+            return Ticket::NONE;
         };
         let ticket = st.next_ticket;
         st.next_ticket += 1;
@@ -848,18 +1043,39 @@ impl Io for SimIo {
         );
         let upto = st.disk.seq();
         let submitter = st.current;
-        st.events.insert(
-            (due, ticket),
-            Event {
-                ring: self.ring,
-                ticket,
-                submitter,
-                op,
-                upto,
-            },
+        let recorded = st.disk.recording().map_or(0, Recording::len);
+        let entry = decision.entry(
+            &op,
+            path,
+            self::ticket(ticket),
+            Instant::from_nanos(now),
+            recorded,
         );
+        let logged = decision
+            .into_logs()
+            .into_iter()
+            .map(|log| {
+                let at = log.push(entry.clone());
+                (log, at)
+            })
+            .collect();
+        let event = Event {
+            ring: self.ring,
+            ticket,
+            submitter,
+            op,
+            upto,
+            injected,
+            logged,
+        };
+        if hold {
+            trace!(st.trace, "  held");
+            st.held.push(event);
+        } else {
+            st.events.insert((due, ticket), event);
+        }
         drop(self.rt.reschedule(st));
-        Ticket(ticket)
+        self::ticket(ticket)
     }
 
     fn poll(&mut self) -> Option<Completion> {

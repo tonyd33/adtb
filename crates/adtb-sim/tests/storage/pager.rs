@@ -5,18 +5,18 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use adtb::runtime::{Entropy, IoError, Op, Threads};
+use adtb::runtime::{Entropy, IoError, OpKind, Threads};
 use adtb::storage::{
     Damage, Edit, Finding, HEADER_LEN, LATCHES_PER_THREAD, LogFinding, LogProblem, Lsn, OpenError,
     Options, PageError, PageKind, Pager, Pid,
 };
 use adtb_sim::{
-    Config, Fate, FindingKind, Ledger, Outcome, Recovered, Sim, SimRuntime, Violation, check,
+    Action, Config, Fate, FindingKind, Ledger, Match, Outcome, Plan, Recovered, Sim, SimRuntime,
+    Violation, check,
 };
 use adtb_sys::runtime::Faults;
 
 use adtb_simkit::crash;
-use adtb_simkit::search::Hooked;
 use adtb_simkit::seeds;
 
 use adtb_testkit::profile::every_case;
@@ -1191,13 +1191,9 @@ fn verify_reports_the_damage_of_a_page_whose_bitmap_page_the_device_cannot_read(
     let bitmap = Pid(2);
     let mut found = None;
     let outcome = sim.run(|rt| {
-        let hook = Hooked::new(&rt);
-        let at = bitmap.0 * PAGE as u64;
-        hook.fail_when(move |op| match op {
-            Op::Read { offset, .. } if *offset == at => Some(IoError::Failed),
-            _ => None,
-        });
-        let (pager, _) = Pager::open(hook, &options(PLAIN)).expect("open");
+        let reads = Match::kind(OpKind::Read).offset(bitmap.0 * PAGE as u64);
+        rt.plan(Plan::new().rule(reads, Action::Fail(IoError::Failed)));
+        let (pager, _) = Pager::open(rt, &options(PLAIN)).expect("open");
         found = Some(pager.verify().findings);
     });
     assert_eq!(Outcome::Finished, outcome);

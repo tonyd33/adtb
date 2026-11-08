@@ -4,18 +4,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-use adtb::runtime::{IoError, Op as IoOp, Runtime};
+use adtb::runtime::{IoError, OpKind, Runtime};
 use adtb::storage::{Damage, Pid, Quarantine};
 use adtb::{
     ArchiveTarget, CallOptions, Database, Error, FatalReason, OpenOptions, Proof, RestorePoint,
     prove_in, restore_in,
 };
-use adtb_sim::{Config, Sim};
+use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
 use adtb_simkit::api;
-use adtb_simkit::search::{Files, Hooked};
+use adtb_simkit::search::Files;
 
 use super::world::{self, FILE, PAGE, Ran, Rel};
 
@@ -223,36 +221,24 @@ pub fn run(
 ) -> Observed {
     let mut sim = Sim::with_files(seed, Config::default(), ran.files.clone());
     let mut seen = Observed::default();
-    let opening = Arc::new(AtomicBool::new(true));
-    let met = Arc::new(AtomicBool::new(false));
+    let unreadable = Match::kind(OpKind::Read)
+        .path(FILE)
+        .covers(pid.0 * PAGE as u64);
+    let failed = sim.logged(unreadable.clone());
+    let mut failed_in_open = 0;
     let ran = catch_unwind(AssertUnwindSafe(|| {
         api::run(&mut sim, |rt| {
-            let hook = Hooked::new(&rt);
             if lasting {
-                let (opening, met) = (opening.clone(), met.clone());
-                hook.fail_named(move |op, path| {
-                    let failed = unreadable(op, path, pid);
-                    if failed.is_some() && opening.load(Ordering::SeqCst) {
-                        met.store(true, Ordering::SeqCst);
-                    }
-                    failed
-                });
+                rt.plan(Plan::new().rule(unreadable, Action::Fail(IoError::Failed)));
             }
-            consume(
-                &hook,
-                &Hooked::new(&rt),
-                pid,
-                version,
-                keys,
-                &opening,
-                &mut seen,
-            );
+            let mut opened = || failed_in_open = failed.len();
+            consume(&rt, pid, version, keys, &mut opened, &mut seen);
         });
         if lasting {
             seen.reopened = Some(reopen(seed, sim.files(), version));
         }
     }));
-    seen.met_in_open = met.load(Ordering::SeqCst);
+    seen.met_in_open = lasting && failed_in_open > 0;
     if let Err(payload) = ran {
         let text = payload
             .downcast_ref::<String>()
@@ -263,15 +249,6 @@ pub fn run(
     }
     seen.files = sim.files();
     seen
-}
-
-fn unreadable(op: &IoOp, path: Option<&str>, pid: Pid) -> Option<IoError> {
-    let IoOp::Read { offset, buf, .. } = op else {
-        return None;
-    };
-    let at = pid.0 * PAGE as u64;
-    let covers = *offset <= at && at < offset + buf.len() as u64;
-    (covers && path == Some(FILE)).then_some(IoError::Failed)
 }
 
 /// Returns what an open of `files` with every page readable serves.
@@ -349,20 +326,19 @@ fn lookups<R: Runtime>(db: &Database<R>, rel: Rel, keys: &[i64]) -> Lookups {
     }
 }
 
-/// Run the consumers on the source through `hook`, and on its copies through `clean`, with
-/// `opening` cleared once the first open returns.
+/// Run the consumers on the source and on its copies, calling `opened` once the first open
+/// returns.
 fn consume(
-    hook: &Hooked,
-    clean: &Hooked,
+    rt: &SimRuntime,
     pid: Pid,
     version: u8,
     keys: &BTreeMap<Rel, Vec<i64>>,
-    opening: &AtomicBool,
+    opened: &mut dyn FnMut(),
     seen: &mut Observed,
 ) {
-    let opened = Database::open_in(hook.clone(), FILE, &world::log(version), &no_create());
-    opening.store(false, Ordering::SeqCst);
-    let db = match opened {
+    let open = Database::open_in(rt.clone(), FILE, &world::log(version), &no_create());
+    opened();
+    let db = match open {
         Ok(db) => db,
         Err(e) => {
             seen.open = Some(Err(format!("{e:?}")));
@@ -409,10 +385,10 @@ fn consume(
     let made = text(&format!("backup to \"{BACKUP}\""));
     let (proof, copy) = if made.is_ok() {
         let target = ArchiveTarget::path(BACKUP).expect("a target path");
-        let proof = prove_in(clean.clone(), &target, &world::log(version), &no_create());
+        let proof = prove_in(rt.clone(), &target, &world::log(version), &no_create());
         (
             Some(proof.map_err(|e| format!("{e:?}"))),
-            Some(restored(clean, BACKUP, "copy.adt", version)),
+            Some(restored(rt, BACKUP, "copy.adt", version)),
         )
     } else {
         (None, None)
@@ -421,7 +397,7 @@ fn consume(
     let made = text(&format!("dump to \"{DUMP}\""));
     let copy = made
         .is_ok()
-        .then(|| restored(clean, DUMP, "dumped.adt", version));
+        .then(|| restored(rt, DUMP, "dumped.adt", version));
     seen.dump = Some(Dumped { made, copy });
     if let Err(e) = db.close() {
         seen.open = Some(Err(format!("close: {e:?}")));

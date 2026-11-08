@@ -71,7 +71,7 @@ disallowed_methods prod 1 crates/adtb-bench/src/native/crash_tests/mod.rs
 disallowed_methods prod 1 crates/adtb-bench/src/native/reporting/mod.rs
 disallowed_methods prod 1 crates/adtb-heap-cap/src/lib.rs
 disallowed_methods test 1 crates/adtb-reference/tests/wide.rs
-disallowed_methods prod 1 crates/adtb-sim/src/sim.rs
+disallowed_methods prod 2 crates/adtb-sim/src/sim.rs
 disallowed_methods test 5 crates/adtb-sim/tests/maintenance/maintenance_faults.rs
 disallowed_methods test 1 crates/adtb-sim/tests/maintenance/reindex_review.rs
 disallowed_methods test 1 crates/adtb-sim/tests/storage/damage_search/world.rs
@@ -82,7 +82,7 @@ disallowed_methods test 2 crates/adtb-sim/tests/storage/lost_bitmap.rs
 disallowed_methods test 1 crates/adtb-sim/tests/storage/open_damage.rs
 disallowed_methods test 2 crates/adtb-sim/tests/storage/pager.rs
 disallowed_methods test 1 crates/adtb-sim/tests/storage/truncated_open.rs
-disallowed_methods prod 1 crates/adtb-sys/src/os/mod.rs
+disallowed_methods prod 2 crates/adtb-sys/src/os/mod.rs
 disallowed_methods test 1 crates/adtb-sys/src/os/tests.rs
 disallowed_methods test 1 crates/adtb-sys/src/pages/loom_tests.rs
 disallowed_methods prod 1 crates/adtb-sys/src/pages/mod.rs
@@ -155,11 +155,11 @@ pub_fields prod 5 crates/adtb-sim/src/sim.rs
 pub_fields prod 2 crates/adtb-simkit/src/common.rs
 pub_fields prod 4 crates/adtb-simkit/src/engine.rs
 pub_fields prod 6 crates/adtb-simkit/src/grants.rs
-pub_fields prod 7 crates/adtb-simkit/src/search.rs
+pub_fields prod 5 crates/adtb-simkit/src/search.rs
 pub_fields prod 15 crates/adtb-simkit/src/support.rs
 pub_fields prod 2 crates/adtb-sys/src/os/faults.rs
 pub_fields prod 11 crates/adtb-sys/src/runtime/faults.rs
-pub_fields prod 6 crates/adtb-sys/src/runtime/mod.rs
+pub_fields prod 5 crates/adtb-sys/src/runtime/mod.rs
 pub_fields prod 12 crates/adtb-testkit/src/cases/mod.rs
 pub_fields prod 8 crates/adtb-testkit/src/cases/walk.rs
 pub_fields prod 1 crates/adtb-testkit/src/corpus.rs

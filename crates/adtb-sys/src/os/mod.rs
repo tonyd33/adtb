@@ -336,6 +336,14 @@ impl Threads for OsRuntime {
     }
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "permanent: the real backend makes the tickets of the ops submitted to it"
+)]
+fn ticket(n: u64) -> Ticket {
+    Ticket::new(n)
+}
+
 /// One I/O queue of an [`OsRuntime`].
 #[derive(Debug)]
 pub struct OsIo {
@@ -346,7 +354,7 @@ pub struct OsIo {
 
 impl Io for OsIo {
     fn submit(&mut self, op: Op) -> Ticket {
-        let ticket = Ticket(self.next);
+        let ticket = ticket(self.next);
         self.next += 1;
         let waiter = Waiter {
             ring: Arc::clone(&self.ring),
