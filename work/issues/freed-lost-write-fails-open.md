@@ -3,12 +3,12 @@ created-at: 2026-11-07
 status: open
 kind: bug
 priority: 135
-summary: "after a crash, a lost write of a heap or directory page's freed incarnation fails the open with Corrupt Stale found Lsn(0) instead of opening and reporting the page"
+summary: "after a crash, a lost write of a page of a relation whose drop is pending fails the open, because finishing the drop refuses an incomplete walk, instead of opening and reporting the page"
 tags:
   - class-failure-flattened
 ---
 
-# A lost write of a freed incarnation fails the open after a crash
+# A lost write under a pending drop fails the open after a crash
 
 ## Report
 
@@ -28,3 +28,7 @@ Defect class: Damage or failure gives a panic, hang or flattened error.
 ## 2026-11-07, round 2
 
 The search also files a pair under this ticket: lost write 644 (LostEarlier Directory of tags) then torn write 645, seed 3. Verify and scrub name page 570 `Stale { found: Lsn(0) }` while the file holds the next incarnation. Same cause suspected: the freed incarnation's evidence judges the next one. Split it out if the fix shows another cause.
+
+## 2026-11-08, cause retargeted
+
+Storage owners step 6 traced the open-fails cases (seed 6 at 684, seed 3 at 641): the refused page is not freed. It belongs to a relation whose drop is still pending: `Catalog::checking` keeps pending-dropped objects, so their pages stay allocated, and the open's migration (`migrate` -> `Catalog::apply` -> `free_leaked` -> `verify_with`) reads the page, refuses it for its live incarnation's lost write, and fails the open because `free_leaked` refuses an incomplete walk. The search files these as a freed incarnation only because its oracle drops the owner at the dropping Migrate op while the engine keeps it pending. Direction: finishing a pending drop over a damaged page must not fail the open (report the page, quarantine its owner); the search's oracle counts a pending drop as still holding its pages.
