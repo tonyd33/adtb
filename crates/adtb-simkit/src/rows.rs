@@ -7,8 +7,6 @@ use adtb::key::{Scalar, Tid, Value};
 
 pub const EMAIL: usize = 0;
 pub const APPLE: usize = 2;
-pub const HEAP_IDS: [u32; 3] = [10, 11, 12];
-pub const LARGE_ID: u32 = 9;
 
 /// Each key's heap and row.
 pub type Rows = BTreeMap<i64, (usize, Vec<Value>)>;

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use adtb::batch::{Batch, BatchBuilder, Column, Schema};
 use adtb::heap::{
-    CtorType, Error, Fate, FieldType, Flags, Header, Heap, HeapNo, LargeStore, Link, Updated, walk,
+    CtorType, Error, Fate, FieldType, Flags, Header, Heap, HeapNo, Link, Updated, max_fanout, walk,
 };
 use adtb::key::{CtorId, Scalar, Tid, Value};
 use adtb::runtime::{Entropy, Threads};
@@ -24,7 +24,7 @@ use adtb_simkit::fixture::{Layout, Parts, Storage};
 use crash::{Reopen, Rounds, crash_loop};
 use harness::{PAGE, finished, options};
 use recovery::verify_after_crash;
-use rows::{APPLE, EMAIL, LARGE_ID, Live, Op, Rows, key_of, pair, replay, row_type};
+use rows::{APPLE, EMAIL, Live, Op, Rows, key_of, pair, replay, row_type};
 use seeds::{share, sweep};
 
 const GOOGLE: usize = 1;
@@ -855,7 +855,6 @@ fn a_page_whose_rows_outgrow_it_keeps_its_format_and_takes_no_insert() {
     });
 }
 
-const NOTES_ID: u32 = 40;
 const NOTES: i64 = 40;
 const NOTE_LEN: usize = 1100;
 
@@ -879,18 +878,30 @@ fn tight_options() -> Options {
     }
 }
 
-/// Create a store and a heap of [`NOTES`] short notes on one page, and return their TIDs.
-fn write_notes(pager: &Pager<SimRuntime>) -> (LargeStore, Heap, Vec<Tid>) {
-    let large = LargeStore::create(pager, LARGE_ID).unwrap();
-    let heap = Heap::create(pager, NOTES_ID, note_type(), large).unwrap();
+/// Create the file of [`tight_options`] with a store and a heap of [`NOTES`] short notes on one
+/// page, and return it with their TIDs.
+fn write_notes(rt: &SimRuntime) -> (Storage, Vec<Tid>) {
+    let mut s = Storage::create(rt, &tight_options());
+    let large = s.large();
+    let fanout = max_fanout(s.pager().page_size());
+    let pager = s.pager().clone();
+    let heap = s.heap(note_type(), large, fanout);
     let tids: Vec<Tid> = (0..NOTES)
         .map(|k| {
             let row = [Value::I64(k), Value::Bytes(vec![1; 8])];
-            heap.insert(pager, 1, &row).unwrap()
+            heap.insert(&pager, 1, &row).unwrap()
         })
         .collect();
     assert!(tids.iter().all(|t| t.page() == tids[0].page()));
-    (large, heap, tids)
+    (s, tids)
+}
+
+/// Returns the pager and the one heap of `s`, its notes able to lengthen.
+fn lengthening(s: Storage) -> (Pager<SimRuntime>, Heap) {
+    let (pager, _, heaps, _) = s.split();
+    let [mut heap] = <[Heap; 1]>::try_from(heaps).expect("one heap");
+    heap.add_format(note_type(), Box::new(lengthen)).unwrap();
+    (pager, heap)
 }
 
 fn notes_inventory(heap: &Heap) -> Inventory<'_> {
@@ -907,9 +918,8 @@ fn notes_inventory(heap: &Heap) -> Inventory<'_> {
 fn a_conversion_moving_many_values_out_of_line_fits_a_pool_of_a_few_frames() {
     let mut sim = Sim::new(11, Config::default());
     finished(&mut sim, |rt| {
-        let pager = Pager::create(rt, &tight_options()).unwrap();
-        let (_, mut heap, tids) = write_notes(&pager);
-        heap.add_format(note_type(), Box::new(lengthen)).unwrap();
+        let (s, tids) = write_notes(&rt);
+        let (pager, heap) = lengthening(s);
         let fresh = [Value::I64(NOTES), Value::Bytes(vec![2; 8])];
         let t = heap.insert(&pager, 2, &fresh).unwrap();
         assert_eq!(tids[0].page(), t.page());
@@ -931,21 +941,14 @@ fn a_crash_while_a_conversion_counts_its_values_leaves_no_count_too_low() {
     let (mut crashes, mut left) = (0, 0);
     for step in 0..24u64 {
         let mut sim = Sim::new(step, Config::default());
-        let mut roots = None;
+        let mut layout = None;
         finished(&mut sim, |rt| {
-            let pager = Pager::create(rt, &tight_options()).unwrap();
-            let (large, heap, _) = write_notes(&pager);
-            pager.checkpoint();
-            roots = Some((large.root(), heap.root()));
+            let (s, _) = write_notes(&rt);
+            s.pager().checkpoint();
+            layout = Some(s.layout());
         });
-        let (store, root) = roots.unwrap();
-        let open = |rt: SimRuntime| {
-            let (pager, _) = Pager::open(rt, &tight_options()).unwrap();
-            let large = LargeStore::open(LARGE_ID, store);
-            let mut heap = Heap::open(&pager, NOTES_ID, root, note_type(), large).unwrap();
-            heap.add_format(note_type(), Box::new(lengthen)).unwrap();
-            (pager, heap)
-        };
+        let layout = layout.unwrap();
+        let open = |rt: SimRuntime| lengthening(Storage::reopen(&rt, &layout).unwrap());
         let out = crash_loop(
             &mut sim,
             step,

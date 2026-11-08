@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use crate::exec;
 use crate::runtime::Runtime;
 use crate::storage::{self, Pager, Pid};
 use crate::testing::Site;
@@ -22,6 +25,20 @@ impl<R: Runtime> Database<R> {
 
     pub(crate) fn tested_db(&self) -> &write::Database<R> {
         &self.engine.db
+    }
+
+    /// Returns the store the statements of `txn` read, `None` once it has ended.
+    ///
+    /// Precondition: `txn` is a transaction of this database, or this panics.
+    pub(crate) fn tested_store(
+        &self,
+        txn: &super::AdHocTransaction<'_, R>,
+    ) -> Option<Arc<exec::Store<R>>> {
+        assert!(
+            std::ptr::eq(txn.engine, &*self.engine),
+            "the transaction is one of this database"
+        );
+        Some(self.engine.db.store(txn.tested_txn()?))
     }
 
     /// Returns how many reindex job threads are not yet joined.

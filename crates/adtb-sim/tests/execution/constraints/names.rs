@@ -80,14 +80,8 @@ fn reference_fixture(case: &Case) -> Fixture {
     assert_eq!(case.get("entry"), "engine");
     let source = adtb_lang::signature::replay([case.get("decls")]).expect("case log applies");
     let schema = source.schema().expect("case schema");
-    Fixture {
-        program: check_schema(&schema).expect("case checks"),
-        schema,
-        db: BTreeMap::new(),
-        supply: Default::default(),
-        closed: BTreeMap::new(),
-        files: Default::default(),
-    }
+    let program = check_schema(&schema).expect("case checks");
+    Fixture::of_schema(schema, program)
 }
 
 fn form(schema: &Schema) -> Form {

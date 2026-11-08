@@ -1,35 +1,25 @@
-use adtb::plan::fixture as planfix;
-use std::ops::Range;
-
-use adtb_simkit::support;
-
-use adtb_simkit::common;
-use adtb_simkit::damage::DataFile;
-
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 
-use adtb::exec::{self, Budget, Scheduler, Val};
-use adtb::mvcc::Limits;
-use adtb::plan::Catalog;
-use adtb::write::{self, Bindings, Database, Rejection as WRejection, Rows, Setup};
-use adtb_lang::check::check_adhoc;
+use adtb::exec::{self, Scheduler, Val};
+use adtb::write::{self, Database, Rejection as WRejection, Rows};
 use adtb_lang::kernel::{Terms, Tm, Var};
-use adtb_lang::norm::{self, NormalProgram};
-use adtb_lang::parse::{Options, parse_adhoc};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::Ty;
 use adtb_reference::{Abort, Rejection, Value};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_simkit::common;
+use adtb_simkit::damage::DataFile;
+use adtb_simkit::harness::{PAGE, finished};
+use adtb_simkit::load::{self, WritePath};
+use adtb_simkit::seeds::{share, sweep};
+use adtb_simkit::support::{to_ref, to_val};
 use adtb_testkit::fixture::Fixture;
 use adtb_testkit::uuid;
 use adtb_testkit::writes::fixture;
-
-use adtb_simkit::harness::{PAGE, finished};
-use adtb_simkit::seeds::{share, sweep};
-use support::{Db, World, to_ref, to_val};
 
 /// One statement of a case: its text, its parameters as name, type and value, and the clock it
 /// runs at.
@@ -221,33 +211,29 @@ struct Prepared {
     clock: i64,
 }
 
-fn prepare(f: &Fixture, s: &Step) -> Prepared {
-    let items = parse_adhoc(&s.text, Options::default())
-        .ok()
-        .unwrap_or_else(|_| panic!("`{}` does not parse", s.text));
-    let tys: BTreeMap<String, Ty> = s
-        .params
+fn prepare(w: &WritePath<SimRuntime>, s: &Step) -> Prepared {
+    let types: Vec<(&str, &str)> = s.params.iter().map(|(n, t, _)| (*n, *t)).collect();
+    let (terms, item, typed) = w.prepare(&s.text, &types);
+    let params = typed
         .iter()
-        .map(|(n, t, _)| (n.to_string(), f.ty(t)))
-        .collect();
-    let adhoc = check_adhoc(&f.schema, &f.program, &items, &tys)
-        .unwrap_or_else(|ds| panic!("`{}` does not check: {ds:?}", s.text));
-    let normal = norm::adhoc(&f.schema, &f.program, &adhoc)
-        .unwrap_or_else(|e| panic!("`{}` has no normal form: {e:?}", s.text));
-    let params = s
-        .params
-        .iter()
-        .map(|(n, _, v)| {
-            let var = normal.params[*n];
-            (var, to_val(&f.schema, &normal.terms.var_info(var).ty, v))
-        })
+        .zip(&s.params)
+        .map(|((var, ty), (_, _, v))| (*var, to_val(w.schema(), ty, v)))
         .collect();
     Prepared {
-        item: normal.items[0],
-        terms: normal.terms,
+        item,
+        terms,
         params,
         clock: s.clock,
     }
+}
+
+/// Returns the rows of `rows`, over `from`, of each relation outside the engine's modules, keyed
+/// by the relation of `to` of the same module and name.
+fn rekeyed(rows: &Rows, to: &Schema, from: &Schema) -> Rows {
+    rows.iter()
+        .filter(|((r, _), _)| !from.module(from.relation(*r).module).engine)
+        .map(|((r, c), vs)| ((load::relation_of(to, from, *r), *c), vs.clone()))
+        .collect()
 }
 
 type Outcomes = (Vec<Result<Got, Failed>>, Rows);
@@ -278,20 +264,13 @@ struct Mode {
     one: bool,
 }
 
-fn engine(seed: u64, case: &Case, mode: Mode) -> Outcomes {
-    let f = (case.fixture)();
-    let catalog = Arc::new(planfix::catalog(&f.schema));
-    let normal: Arc<NormalProgram> =
-        Arc::new(norm::program(&f.schema, &f.program).expect("the schema normalises"));
-    let prepared: Vec<Prepared> = case.steps.iter().map(|s| prepare(&f, s)).collect();
-    let schema = Arc::new(f.schema.clone());
+/// The statements of a case as the engine runs them, prepared by its first run.
+type Statements = Option<Vec<Prepared>>;
+
+fn engine(seed: u64, case: &Case, f: &Fixture, mode: Mode, prepared: &mut Statements) -> Outcomes {
     let mut got = None;
-    let mut sim = Sim::new(seed, Config::default());
-    let result = sim.run(|rt| {
-        got = Some(run_engine(
-            &rt, &f, &schema, &normal, &catalog, &prepared, mode,
-        ));
-    });
+    let mut sim = load::sim(seed, Config::default(), f);
+    let result = sim.run(|rt| got = Some(run_engine(&rt, f, &case.steps, mode, prepared)));
     assert_eq!(Outcome::Finished, result, "seed {seed}, case {}", case.name);
     got.unwrap_or_else(|| panic!("seed {seed}, case {}: the run gave no outcomes", case.name))
 }
@@ -299,24 +278,18 @@ fn engine(seed: u64, case: &Case, mode: Mode) -> Outcomes {
 fn run_engine(
     rt: &SimRuntime,
     f: &Fixture,
-    schema: &Arc<Schema>,
-    normal: &Arc<NormalProgram>,
-    catalog: &Arc<Catalog>,
-    prepared: &[Prepared],
+    steps: &[Step],
     mode: Mode,
+    prepared: &mut Statements,
 ) -> Outcomes {
-    let world = World {
-        schema: &f.schema,
-        normal,
-        catalog,
-        db: &f.db,
-    };
-    let d = Db::load_with(rt, &world, false);
     let pool = (mode.workers > 0).then(|| Scheduler::start(rt.clone(), mode.workers));
-    let db = database(rt, d, schema, normal, catalog, pool.clone(), None);
+    let w = WritePath::loaded(rt, f, pool.clone());
+    let prepared = prepared.get_or_insert_with(|| steps.iter().map(|s| prepare(&w, s)).collect());
+    let (db, schema) = (w.db(), w.schema().as_ref());
+    let ours = |rows: &Rows| rekeyed(rows, &f.schema, schema);
     let mut out = Vec::new();
     let mut open = None;
-    for p in prepared {
+    for p in prepared.iter() {
         let tx = match open.take() {
             Some(tx) => tx,
             None => db.begin().expect("a transaction"),
@@ -325,8 +298,8 @@ fn run_engine(
         out.push(match &got {
             Ok(o) => Ok(Got {
                 result: o.result.clone(),
-                inserted: o.inserted.clone(),
-                deleted: o.deleted.clone(),
+                inserted: ours(&o.inserted),
+                deleted: ours(&o.deleted),
             }),
             Err(e) => Err(engine_error(schema, e)),
         });
@@ -343,44 +316,12 @@ fn run_engine(
         db.commit(tx).expect("a commit");
     }
     let tx = db.begin().expect("a transaction");
-    let rows = db.rows(&tx).expect("the rows");
+    let rows = ours(&db.rows(&tx).expect("the rows"));
     db.abort(tx).expect("an abort");
     if let Some(p) = pool {
         p.shutdown();
     }
     (out, rows)
-}
-
-fn database(
-    rt: &SimRuntime,
-    d: Db,
-    schema: &Arc<Schema>,
-    normal: &Arc<NormalProgram>,
-    catalog: &Arc<Catalog>,
-    pool: Option<Arc<Scheduler<SimRuntime>>>,
-    sequences: Option<adtb::storage::Pid>,
-) -> Database<SimRuntime> {
-    let (pager, txns, heaps, indexes) = d.bindings();
-    let sequences =
-        sequences.unwrap_or_else(|| support::counters(&pager, schema, catalog, &indexes));
-    Database::new(
-        rt.clone(),
-        Setup {
-            schema: schema.clone(),
-            normal: normal.clone(),
-            catalog: catalog.clone(),
-            pager,
-            txns,
-            bindings: Bindings { heaps, indexes },
-            budget: Budget::new(1 << 30),
-            grant: 64 << 20,
-            pool,
-            options: exec::Options::default(),
-            limits: Limits::default(),
-            sequences,
-        },
-    )
-    .expect("a database over the fixture")
 }
 
 /// Returns `v` with every value `map` names replaced.
@@ -790,9 +731,12 @@ fn check_all(seeds: Range<u64>, mode: Mode) {
     let mut runs = 0;
     for case in &cases() {
         let want = reference(case);
+        let f = (case.fixture)();
+        let mut prepared = None;
         for seed in sweep(seeds.clone()) {
             runs += 1;
-            match panic::catch_unwind(AssertUnwindSafe(|| engine(seed, case, mode))) {
+            let run = || engine(seed, case, &f, mode, &mut prepared);
+            match panic::catch_unwind(AssertUnwindSafe(run)) {
                 Ok(got) => {
                     if let Err(d) = agree(case, &want, &got) {
                         bad.push(format!("seed {seed}: {d}"));
@@ -844,15 +788,30 @@ fn write_examples_in_one_transaction_agree_and_failed_statements_leave_no_effect
     );
 }
 
-#[test]
-fn write_examples_on_several_workers_agree_for_every_seed() {
+/// Check every example on three workers for `seeds`.
+fn on_several_workers(seeds: Range<u64>) {
     check_all(
-        0..3,
+        seeds,
         Mode {
             workers: 3,
             one: false,
         },
     );
+}
+
+#[test]
+fn write_examples_on_several_workers_agree_for_seed_0() {
+    on_several_workers(0..1);
+}
+
+#[test]
+fn write_examples_on_several_workers_agree_for_seed_1() {
+    on_several_workers(1..2);
+}
+
+#[test]
+fn write_examples_on_several_workers_agree_for_seed_2() {
+    on_several_workers(2..3);
 }
 
 const SHOP: &str = "type Counter = { id: Key counters, n: I64 }
@@ -883,13 +842,13 @@ struct Prep {
 }
 
 /// Prepare `text`, a statement over parameter `t` of type `Text` when `over_t`.
-fn prep(f: &Fixture, text: &str, over_t: bool) -> Prep {
+fn prep(w: &WritePath<SimRuntime>, text: &str, over_t: bool) -> Prep {
     let params = if over_t {
         vec![("t", "Text", Value::text(""))]
     } else {
         Vec::new()
     };
-    let p = prepare(f, &with(text, params));
+    let p = prepare(w, &with(text, params));
     let t = p.params.first().map(|(v, _)| *v);
     Prep { p, t }
 }
@@ -959,39 +918,29 @@ fn is_expected_failure(e: &str) -> bool {
 fn concurrent_writers_keep_keys_and_uniques_and_lose_no_update() {
     const SEEDS: Range<u64> = 0..4;
     let f = shop();
-    let catalog = Arc::new(planfix::catalog(&f.schema));
-    let normal = Arc::new(norm::program(&f.schema, &f.program).expect("the schema normalises"));
-    let schema = Arc::new(f.schema.clone());
-    let preps = Arc::new([
-        prep(&f, INC, false),
-        prep(&f, TAG, true),
-        prep(&f, UPSERT, true),
-        prep(&f, DROP, true),
-    ]);
-    let failing = Arc::new(prep(&f, FAILING, false));
     let mut commits = 0;
     for seed in sweep(SEEDS) {
-        let mut sim = Sim::new(seed, Config::default());
+        let mut sim = load::sim(seed, Config::default(), &f);
         let done: Arc<std::sync::Mutex<Vec<Done>>> = Arc::default();
         let mut finals = None;
         let result = sim.run(|rt| {
             use adtb::runtime::{Entropy, Threads};
-            let world = World {
-                schema: &f.schema,
-                normal: &normal,
-                catalog: &catalog,
-                db: &f.db,
-            };
-            let d = Db::load_with(&rt, &world, false);
-            let db = Arc::new(database(&rt, d, &schema, &normal, &catalog, None, None));
+            let w = WritePath::loaded(&rt, &f, None);
+            let preps = Arc::new([
+                prep(&w, INC, false),
+                prep(&w, TAG, true),
+                prep(&w, UPSERT, true),
+                prep(&w, DROP, true),
+            ]);
+            let failing = Arc::new(prep(&w, FAILING, false));
+            let w = Arc::new(w);
             let clients: Vec<_> = (0..4)
                 .map(|c| {
-                    let (db, rt2, preps, done, schema, failing) = (
-                        db.clone(),
+                    let (w, rt2, preps, done, failing) = (
+                        w.clone(),
                         rt.clone(),
                         preps.clone(),
                         done.clone(),
-                        schema.clone(),
                         failing.clone(),
                     );
                     rt.spawn(&format!("client {c}"), move || {
@@ -999,8 +948,14 @@ fn concurrent_writers_keep_keys_and_uniques_and_lose_no_update() {
                             let op = (rt2.next_u64() % 4) as usize;
                             let name = ["a", "b", "c"][(rt2.next_u64() % 3) as usize].to_string();
                             let also = (rt2.next_u64() % 2 == 0).then_some(failing.as_ref());
-                            let result =
-                                run_txn_with(&db, &schema, &preps[op], &name, also, &mut |_| {});
+                            let result = run_txn_with(
+                                w.db(),
+                                w.schema(),
+                                &preps[op],
+                                &name,
+                                also,
+                                &mut |_| {},
+                            );
                             done.lock().unwrap().push(Done { op, result });
                         }
                     })
@@ -1009,9 +964,13 @@ fn concurrent_writers_keep_keys_and_uniques_and_lose_no_update() {
             for c in clients {
                 rt.join(c);
             }
-            let tx = db.begin().expect("a transaction");
-            finals = Some(db.rows(&tx).expect("the rows"));
-            db.abort(tx).expect("an abort");
+            let tx = w.db().begin().expect("a transaction");
+            finals = Some(rekeyed(
+                &w.db().rows(&tx).expect("the rows"),
+                &f.schema,
+                w.schema(),
+            ));
+            w.db().abort(tx).expect("an abort");
         });
         assert_eq!(Outcome::Finished, result, "seed {seed}");
         let rows = finals.expect("the run finished");
@@ -1068,39 +1027,28 @@ fn concurrent_writers_keep_keys_and_uniques_and_lose_no_update() {
 fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
     use adtb::runtime::Threads;
     let f = Fixture::new(SHOP);
-    let catalog = Arc::new(planfix::catalog(&f.schema));
-    let normal = Arc::new(norm::program(&f.schema, &f.program).expect("the schema normalises"));
-    let schema = Arc::new(f.schema.clone());
-    let tag = Arc::new(prep(&f, TAG, true));
-    let world = World {
-        schema: &f.schema,
-        normal: &normal,
-        catalog: &catalog,
-        db: &f.db,
-    };
     type Slot<T> = Arc<std::sync::Mutex<T>>;
     let load = |rt: &SimRuntime,
-                roots: &Slot<Option<support::Roots>>,
+                created: &Slot<bool>,
                 acked: &Slot<BTreeMap<String, Val>>,
                 submitted: &Slot<BTreeSet<String>>,
                 drawn: &Slot<BTreeSet<Val>>,
                 started: &Slot<Option<u64>>| {
-        let (d, mut r) = Db::build(rt, &world, None).expect("a new database");
-        let db = Arc::new(database(rt, d, &schema, &normal, &catalog, None, None));
-        r.sequences = Some(db.sequences_root());
-        *roots.lock().unwrap() = Some(r);
+        let w = WritePath::of(rt, &f, None);
+        *created.lock().unwrap() = true;
+        let tag = Arc::new(prep(&w, TAG, true));
+        let w = Arc::new(w);
         started.lock().unwrap().replace({
             use adtb::runtime::Clock;
             rt.now().as_nanos()
         });
         let clients: Vec<_> = (0..3)
             .map(|c| {
-                let (db, tag, acked, submitted, schema, drawn) = (
-                    db.clone(),
+                let (w, tag, acked, submitted, drawn) = (
+                    w.clone(),
                     tag.clone(),
                     acked.clone(),
                     submitted.clone(),
-                    schema.clone(),
                     drawn.clone(),
                 );
                 rt.spawn(&format!("client {c}"), move || {
@@ -1110,7 +1058,7 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
                         let mut seen = |k: &Val| {
                             drawn.lock().unwrap().insert(k.clone());
                         };
-                        match run_txn_with(&db, &schema, &tag, &name, None, &mut seen) {
+                        match run_txn_with(w.db(), w.schema(), &tag, &name, None, &mut seen) {
                             Ok(k) => {
                                 acked.lock().unwrap().insert(name, k);
                             }
@@ -1145,31 +1093,31 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
         let mut sim = Sim::new(seed, Config::default());
         let acked: Arc<std::sync::Mutex<BTreeMap<String, Val>>> = Arc::default();
         let submitted: Arc<std::sync::Mutex<BTreeSet<String>>> = Arc::default();
-        let roots: Arc<std::sync::Mutex<Option<support::Roots>>> = Arc::default();
+        let created: Slot<bool> = Arc::default();
         let drawn: Slot<BTreeSet<Val>> = Arc::default();
         let at = begun + span * (1 + seed) / 6;
         sim.crash_at(adtb::runtime::Instant::from_nanos(at));
-        let first = sim.run(|rt| load(&rt, &roots, &acked, &submitted, &drawn, &Arc::default()));
+        let first = sim.run(|rt| load(&rt, &created, &acked, &submitted, &drawn, &Arc::default()));
         if first == Outcome::Crashed && !acked.lock().unwrap().is_empty() {
             crashed += 1;
         }
-        let roots = roots.lock().unwrap().clone();
-        let Some(roots) = roots else {
+        if !*created.lock().unwrap() {
             assert!(
                 acked.lock().unwrap().is_empty(),
-                "seed {seed}: commits were acknowledged before the roots were recorded"
+                "seed {seed}: commits were acknowledged before the file was created"
             );
             continue;
-        };
+        }
         let mut after = None;
         let result = sim.run(|rt| {
-            let (d, _) = Db::build(&rt, &world, Some(&roots))
+            let w = WritePath::reopen(&rt, None)
                 .unwrap_or_else(|| panic!("seed {seed}: the database does not reopen"));
-            let db = database(&rt, d, &schema, &normal, &catalog, None, roots.sequences);
-            let tx = db.begin().expect("a transaction");
-            let rows = db.rows(&tx).expect("the rows");
-            db.abort(tx).expect("an abort");
-            let next = run_txn(&db, &schema, &tag, "after").expect("an insert after recovery");
+            let tag = prep(&w, TAG, true);
+            let tx = w.db().begin().expect("a transaction");
+            let rows = rekeyed(&w.db().rows(&tx).expect("the rows"), &f.schema, w.schema());
+            w.db().abort(tx).expect("an abort");
+            let next =
+                run_txn(w.db(), w.schema(), &tag, "after").expect("an insert after recovery");
             after = Some((rows, next));
         });
         assert_eq!(Outcome::Finished, result, "seed {seed}");
@@ -1229,23 +1177,14 @@ fn behind_a_damaged_commit_log(
     use adtb::runtime::Runtime;
     use adtb::storage::Pid;
     let f = shop();
-    let catalog = Arc::new(planfix::catalog(&f.schema));
-    let normal = Arc::new(norm::program(&f.schema, &f.program).expect("the schema normalises"));
-    let schema = Arc::new(f.schema.clone());
-    let s = prep(&f, text, over_t);
     let mut out = None;
-    let mut sim = Sim::new(seed, Config::default());
+    let mut sim = load::sim(seed, Config::default(), &f);
     let result = sim.run(|rt| {
-        let world = World {
-            schema: &f.schema,
-            normal: &normal,
-            catalog: &catalog,
-            db: &f.db,
-        };
-        let d = Db::load_with(&rt, &world, false);
-        let status = d.txns.commit_log().status_pages()[&0];
-        let pager = d.pager.clone();
-        let db = database(&rt, d, &schema, &normal, &catalog, None, None);
+        let w = WritePath::loaded(&rt, &f, None);
+        let s = prep(&w, text, over_t);
+        let db = w.db();
+        let status = db.txns().commit_log().status_pages()[&0];
+        let pager = db.pager().clone();
         let params: Vec<(Var, Val)> = s.t.map(|v| (v, Val::text("x"))).into_iter().collect();
         let first = db.begin().expect("a transaction");
         let second = db.begin().expect("a transaction");
@@ -1304,25 +1243,15 @@ relation items : Item key id
 type Label = { id: Key tags, name: Text }
 relation tags : Label key id generate sequence",
     );
-    let catalog = Arc::new(planfix::catalog(&f.schema));
-    let normal = Arc::new(norm::program(&f.schema, &f.program).expect("the schema normalises"));
-    let schema = Arc::new(f.schema.clone());
-    let item = prep(&f, "insert items { id: 7, n: 0 }", false);
-    let tag = prep(&f, "insert tags { name: \"a\" }", false);
     let mut counters = None;
-    let mut sim = Sim::new(0, Config::default());
+    let mut sim = load::sim(0, Config::default(), &f);
     finished(&mut sim, |rt| {
-        let world = World {
-            schema: &f.schema,
-            normal: &normal,
-            catalog: &catalog,
-            db: &f.db,
-        };
-        let d = Db::load_with(&rt, &world, false);
-        let pager = d.pager.clone();
-        let db = database(&rt, d, &schema, &normal, &catalog, None, None);
-        run_txn(&db, &schema, &item, "").expect("the item commits");
-        run_txn(&db, &schema, &tag, "").expect("the tag commits");
+        let w = WritePath::loaded(&rt, &f, None);
+        let item = prep(&w, "insert items { id: 7, n: 0 }", false);
+        let tag = prep(&w, "insert tags { name: \"a\" }", false);
+        let (db, schema, pager) = (w.db(), w.schema(), w.db().pager());
+        run_txn(db, schema, &item, "").expect("the item commits");
+        run_txn(db, schema, &tag, "").expect("the tag commits");
         let page = pager.read(db.sequences_root()).expect("the counters");
         let n = &page[HEADER_LEN..HEADER_LEN + 4];
         counters = Some(u32::from_le_bytes(n.try_into().expect("4 bytes")));

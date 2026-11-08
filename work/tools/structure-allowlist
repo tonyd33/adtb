@@ -161,7 +161,6 @@ pub_fields prod 5 crates/adtb-sim/src/sim.rs
 pub_fields prod 2 crates/adtb-simkit/src/common.rs
 pub_fields prod 6 crates/adtb-simkit/src/grants.rs
 pub_fields prod 5 crates/adtb-simkit/src/search.rs
-pub_fields prod 15 crates/adtb-simkit/src/support.rs
 pub_fields prod 2 crates/adtb-sys/src/os/faults.rs
 pub_fields prod 11 crates/adtb-sys/src/runtime/faults.rs
 pub_fields prod 5 crates/adtb-sys/src/runtime/mod.rs
@@ -247,7 +246,7 @@ pub_fields prod 41 crates/adtb/src/write/mod.rs
 pub_fields prod 6 crates/adtb/src/write/past.rs
 pub_fields prod 6 crates/adtb/src/write/reindex.rs
 pub_fields prod 33 crates/adtb/src/write/schema.rs
-xmin_xmax test 2 crates/adtb-sim/tests/execution/exec.rs
+xmin_xmax test 1 crates/adtb-sim/tests/execution/exec.rs
 xmin_xmax test 10 crates/adtb-sim/tests/execution/history.rs
 xmin_xmax test 1 crates/adtb-sim/tests/maintenance/maintenance_faults.rs
 xmin_xmax test 9 crates/adtb-sim/tests/maintenance/vacuum.rs

@@ -267,6 +267,15 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         }
     }
 
+    /// Returns the write path's transaction, `None` once it has ended.
+    #[cfg(feature = "testing")]
+    pub(crate) fn tested_txn(&self) -> Option<&Txn> {
+        match &self.state {
+            State::Open(tx) => Some(tx),
+            State::Ended(_) | State::Closed => None,
+        }
+    }
+
     /// Returns whether the engine ended the transaction with a serialization failure.
     pub(super) fn serialization_failed(&self) -> bool {
         matches!(&self.state, State::Ended(e) if e.is_serialization())

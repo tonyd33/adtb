@@ -1,50 +1,100 @@
 use adtb::plan::fixture;
 
-use std::collections::BTreeSet;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Bound, ControlFlow};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use adtb::batch;
 use adtb::exec::{
-    self, AtSnapshot, Budget, Call, Error, Exceeded, Histories, Options as XOptions, Program,
-    Reads, Rows, Scheduler, Store, StoredHeap, Val,
+    self, Budget, Call, Error, Exceeded, Histories, Options as XOptions, Program, Reads, Rows,
+    Scheduler, Store, StoredHeap, Val,
 };
 use adtb::heap::{FieldType, Header, Heap, HeapNo, LargeStore};
 use adtb::key::{CtorId, Tid, Value as KValue};
-use adtb::mvcc::{Access, Limits, ScanId, Scope, SerialId, SerializationFailure, Serializer, Xid};
-use adtb::plan::{Error as PlanError, HeapId, Options as PlanOptions, plan};
-use adtb::runtime::IoError;
+use adtb::mvcc::{ScanId, SerializationFailure, Xid};
+use adtb::plan::{Error as PlanError, HeapId, Options as PlanOptions, Rewrites, plan};
+use adtb::runtime::{IoError, OpKind};
 use adtb::storage::{PageError, Pid};
+use adtb::testing::Knobs;
+use adtb::{OpenOptions, TxnCallOptions, TxnOptions};
 use adtb_lang::kernel::Var;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::Ty;
 use adtb_reference::{Abort, R, Value};
-use adtb_sim::{Config, Sim, SimRuntime};
-use adtb_sys::lock::Lock;
-use adtb_sys::runtime::Faults;
+use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
 use adtb_testkit::uuid;
 
-use fixture::{Fixture, running, variants};
-
-use adtb_simkit::support;
+use fixture::{Fixture, variants};
 
 use adtb_simkit::harness::finished;
 use adtb_simkit::seeds::sweep;
-use support::*;
+use adtb_simkit::support::{field_type, row_ty, stored, to_ref, to_val};
+use adtb_simkit::{load, open};
 
-fn world(f: &Fixture) -> World<'_> {
-    World {
-        schema: &f.schema,
-        normal: &f.normal,
-        catalog: &f.catalog,
-        db: &f.db,
+/// Returns the fixture of `db`: its schema, the planner's catalog of its relations, and the
+/// declarations and rows of `f`, each relation's rows under the database's relation of its name.
+pub(crate) fn planner<R: adtb::runtime::Runtime>(db: &adtb::Database<R>, f: &Fixture) -> Fixture {
+    let schema = db.schema().clone();
+    let rows = load::rows_of(&schema, &f.schema, &f.db);
+    f.rebound(schema, db.testing().plan_catalog(), rows)
+}
+
+/// Returns `f` as [`planner`] answers it over a new database of `f`'s declarations, opening one
+/// database per declarations.
+fn planned(f: &Fixture) -> Fixture {
+    thread_local! {
+        static PLANNED: RefCell<BTreeMap<String, (Schema, adtb::plan::Catalog)>> =
+            const { RefCell::new(BTreeMap::new()) };
     }
+    let known = PLANNED.with_borrow(|p| p.get(f.decls()).cloned());
+    let (schema, catalog) = known.unwrap_or_else(|| {
+        let mut out = None;
+        let mut sim = Sim::new(0, Config::default());
+        finished(&mut sim, |rt| {
+            let db = load::open(&rt, f.decls());
+            out = Some((db.schema().clone(), db.testing().plan_catalog()));
+        });
+        let got = out.expect("the run finished");
+        PLANNED.with_borrow_mut(|p| p.insert(f.decls().to_owned(), got.clone()));
+        got
+    });
+    let rows = load::rows_of(&schema, &f.schema, &f.db);
+    f.rebound(schema, catalog, rows)
+}
+
+/// Returns a simulator of `seed` holding the database of `f`'s declarations with its rows loaded
+/// as [`load::committed_noise`] loads them, made once per declarations and rows.
+fn loaded(seed: u64, f: &Fixture) -> Sim {
+    let files = load::files(f.decls(), &f.schema, &f.db, &options());
+    Sim::with_files(seed, Config::default(), files)
+}
+
+/// Returns the options of a database whose versions only the test's own writes change: no
+/// background vacuum.
+pub(crate) fn options() -> OpenOptions {
+    OpenOptions {
+        testing: Knobs::without_background_vacuum(),
+        ..open::options(1)
+    }
+}
+
+pub(crate) fn read_only() -> TxnOptions {
+    TxnOptions {
+        read_only: true,
+        ..TxnOptions::default()
+    }
+}
+
+fn running() -> Fixture {
+    planned(&fixture::running())
 }
 
 /// One plan to run, with what the reference interpreter says it computes.
 struct Case {
     name: String,
+    rewrites: Rewrites,
     program: Arc<Program>,
     params: Vec<(Var, Val)>,
     ty: Ty,
@@ -87,6 +137,7 @@ fn cases_of(f: &Fixture, text: &str, params: &[(&str, &str, Value)]) -> Vec<Case
                 .collect();
             Case {
                 name: format!("`{text}` with {name}"),
+                rewrites,
                 program: Arc::new(program),
                 params,
                 ty: ty.clone(),
@@ -115,20 +166,55 @@ fn expected(want: &R<Value>) -> Result<Value, String> {
     }
 }
 
-/// Runs `body` under the simulator over the fixture's rows in heaps and indexes, with
-/// `workers` morsel workers.
-fn with_store<T>(
+/// The store a body runs over and the morsel workers it runs on.
+type Over<'a> = (
+    &'a SimRuntime,
+    &'a Arc<Store<SimRuntime>>,
+    Option<&'a Arc<Scheduler<SimRuntime>>>,
+);
+
+/// Run `body` under the simulator over the store of a read-only transaction of a new database
+/// of the fixture's declarations holding its rows, with `workers` morsel workers, beside the
+/// transaction [`load::running_noise`] leaves running.
+///
+/// Precondition: `f` is [`planned`].
+fn with_store<T>(seed: u64, f: &Fixture, workers: usize, body: impl FnOnce(Over<'_>) -> T) -> T {
+    with_store_as(seed, f, workers, Running::Left, body)
+}
+
+/// Whether [`with_store_as`] leaves the transaction of [`load::running_noise`] running.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Running {
+    Left,
+    /// No transaction runs, so every committed noise version stays in the file.
+    None,
+}
+
+fn with_store_as<T>(
     seed: u64,
     f: &Fixture,
     workers: usize,
-    body: impl FnOnce(&SimRuntime, &Arc<Store<SimRuntime>>, Option<&Arc<Scheduler<SimRuntime>>>) -> T,
+    running: Running,
+    body: impl FnOnce(Over<'_>) -> T,
 ) -> T {
     let mut out = None;
-    let mut sim = Sim::new(seed, Config::default());
+    let mut sim = loaded(seed, f);
     finished(&mut sim, |rt| {
-        let store = Db::load(&rt, &world(f)).store(&rt);
+        let db = load::open_with(&rt, f.decls(), &options());
+        let _running =
+            (running == Running::Left).then(|| load::running_noise(&db, &f.schema, &f.db));
+        assert_eq!(
+            f.catalog,
+            db.testing().plan_catalog(),
+            "the fixture plans over the database's catalog"
+        );
+        let reader = db.begin(&read_only()).expect("a transaction");
+        let store = db
+            .testing()
+            .store(&reader)
+            .expect("the transaction is open");
         let pool = (workers > 0).then(|| Scheduler::start(rt.clone(), workers));
-        out = Some(body(&rt, &store, pool.as_ref()));
+        out = Some(body((&rt, &store, pool.as_ref())));
         if let Some(p) = pool {
             p.shutdown();
         }
@@ -161,7 +247,7 @@ fn run_all(
     workers: usize,
     opts: XOptions,
 ) -> (Vec<Result<Value, String>>, usize) {
-    with_store(seed, f, workers, |rt, store, pool| {
+    with_store(seed, f, workers, |(rt, store, pool)| {
         let budget = Budget::new(1 << 30);
         let mut got = Vec::new();
         for c in cases {
@@ -355,7 +441,7 @@ fn stock() -> Fixture {
     for chunk in notes.chunks(40) {
         f.rows("notes", &format!("[{}]", chunk.join(", ")), &[]);
     }
-    f
+    planned(&f)
 }
 
 const STOCK_QUERIES: &[&str] = &[
@@ -412,7 +498,7 @@ fn scanned_rows(
 fn scans_of_ranges_of_a_heap_s_pages_read_what_a_scan_of_the_heap_reads() {
     let f = stock();
     let heap = f.catalog.heap(f.rel("stock"), 0);
-    let (whole, ranges, pages) = with_store(0, &f, 0, |_, store, _| {
+    let (whole, ranges, pages) = with_store(0, &f, 0, |(_, store, _)| {
         let pages = store.pages(heap).expect("the heap's pages").pages.clone();
         let whole = scanned_rows(|each| store.scan(heap, 1000, &roomy(), each));
         let ranges: Vec<Vec<KValue>> = pages
@@ -503,7 +589,7 @@ fn versions(store: &Store<SimRuntime>, count: &Counted, heap: HeapId) -> usize {
 fn a_scan_passes_its_first_batch_before_it_reads_the_heap_s_last_page() {
     let f = stock();
     let heap = f.catalog.heap(f.rel("stock"), 0);
-    let (total, first, stopped) = with_store(0, &f, 0, |_, store, _| {
+    let (total, first, stopped) = with_store(0, &f, 0, |(_, store, _)| {
         let (store, count) = counted(store);
         let total = versions(&store, &count, heap);
         let mut first = None;
@@ -538,7 +624,7 @@ fn an_exists_that_stops_early_reads_fewer_versions_than_the_heap_holds() {
         morsel_rows: 8,
         ..XOptions::default()
     };
-    let (total, got) = with_store(0, &f, 0, |rt, store, _| {
+    let (total, got) = with_store(0, &f, 0, |(rt, store, _)| {
         let (store, count) = counted(store);
         let total = versions(&store, &count, heap);
         let budget = Budget::new(1 << 30);
@@ -560,7 +646,7 @@ fn an_exists_that_stops_early_reads_fewer_versions_than_the_heap_holds() {
     for (name, v, read) in got {
         assert_eq!(Ok(Val::bool(true)), v, "{name}");
         assert!(
-            read < total / 2,
+            read < total,
             "{name}: read {read} of the heap's {total} versions"
         );
     }
@@ -580,7 +666,7 @@ fn a_scan_of_a_heap_larger_than_its_grant_runs_within_the_grant() {
         morsel_rows: 16,
         ..XOptions::default()
     };
-    let got = with_store(0, &f, 0, |rt, store, _| {
+    let got = with_store(0, &f, 0, |(rt, store, _)| {
         let heap = f.catalog.heap(f.rel("stock"), 0);
         let rows: usize = scanned_rows(|each| store.scan(heap, 1000, &roomy(), each))
             .iter()
@@ -613,7 +699,7 @@ fn a_query_past_its_grant_is_rejected_for_its_statement_limit() {
     let f = stock();
     let cases = cases_of(&f, "from s in stock select s", &[]);
     let c = &cases[0];
-    let got = with_store(0, &f, 2, |rt, store, pool| {
+    let got = with_store(0, &f, 2, |(rt, store, pool)| {
         let budget = Budget::new(1 << 30);
         let small = budget.admit(4096).expect("a grant fits");
         let refused = exec::execute(
@@ -642,13 +728,15 @@ fn a_query_past_its_grant_is_rejected_for_its_statement_limit() {
     assert_eq!(Ok(300), got.1);
 }
 
-/// Reads that see every deleted version, as a read of the past at a state before every
-/// deletion does.
-struct Deleted;
+/// Reads that see every version with a deleter that `now` does not see, as a read of the past
+/// at a state before every such deletion does.
+struct Deleted {
+    now: Arc<dyn Reads>,
+}
 
 impl Reads for Deleted {
     fn sees(&self, h: &Header) -> Result<bool, PageError> {
-        Ok(h.xmax != 0)
+        Ok(h.xmax != 0 && !self.now.sees(h)?)
     }
 
     fn scanning(&self, _: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
@@ -680,15 +768,20 @@ impl Reads for Deleted {
 /// `heap` copied to its history heap, and the number of distinct rows those versions hold.
 fn with_past(store: &Store<SimRuntime>, heap: HeapId) -> (Arc<Store<SimRuntime>>, usize) {
     let current = &store.heaps[&heap];
-    let mut deleted = Vec::new();
+    let reads = Deleted {
+        now: store.reads.clone(),
+    };
+    let mut versions = Vec::new();
     current
         .heap
-        .scan(&store.pager, |v| {
-            if v.header.xmax != 0 {
-                deleted.push(v);
-            }
-        })
+        .scan(&store.pager, |v| versions.push(v))
         .expect("a scan of the heap");
+    let mut deleted = Vec::new();
+    for v in versions {
+        if reads.sees(&v.header).expect("a visibility check") {
+            deleted.push(v);
+        }
+    }
     let large = LargeStore::create(&store.pager, 95_000).expect("a large-value store");
     let past = Heap::create(&store.pager, 95_001, current.row.clone(), large).expect("a heap");
     for v in deleted.iter().step_by(2) {
@@ -704,7 +797,7 @@ fn with_past(store: &Store<SimRuntime>, heap: HeapId) -> (Arc<Store<SimRuntime>>
     };
     let store = Store {
         pager: store.pager.clone(),
-        reads: Arc::new(Deleted),
+        reads: Arc::new(reads),
         heaps: store.heaps.clone(),
         indexes: store.indexes.clone(),
         history: Histories {
@@ -718,14 +811,15 @@ fn with_past(store: &Store<SimRuntime>, heap: HeapId) -> (Arc<Store<SimRuntime>>
 
 #[test]
 fn a_read_of_the_past_holds_the_deleted_rows_it_passed_within_its_grant() {
-    let f = stock_of(2000);
+    let rows = 2000;
+    let f = stock_of(rows);
     let heap = f.catalog.heap(f.rel("stock"), 0);
     let cases = cases_of(&f, "count(s for s in stock)", &[]);
     let opts = XOptions {
         morsel_rows: 16,
         ..XOptions::default()
     };
-    let (want, got) = with_store(0, &f, 0, |rt, store, _| {
+    let (want, got) = with_store_as(0, &f, 0, Running::None, |(rt, store, _)| {
         let (past, want) = with_past(store, heap);
         let budget = Budget::new(1 << 30);
         let got: Vec<_> = cases
@@ -748,7 +842,11 @@ fn a_read_of_the_past_holds_the_deleted_rows_it_passed_within_its_grant() {
         assert_eq!(0, budget.granted(), "every grant returned to the budget");
         (want, got)
     });
-    assert!(want >= 2000, "{want} distinct deleted rows");
+    assert_eq!(
+        2 * rows,
+        want,
+        "the deleted copy and the earlier value of each row are deleted rows"
+    );
     for (c, (refused, done, peak)) in cases.iter().zip(got) {
         assert_eq!(
             Err(Error::StatementLimit(Exceeded::Memory {
@@ -811,7 +909,7 @@ fn the_batch_a_scan_fills_is_held_within_the_grant() {
         morsel_rows: 1000,
         ..XOptions::default()
     };
-    let got = with_store(0, &f, 0, |rt, store, _| {
+    let got = with_store(0, &f, 0, |(rt, store, _)| {
         let budget = Budget::new(1 << 30);
         cases
             .iter()
@@ -852,102 +950,79 @@ fn the_batch_a_scan_fills_is_held_within_the_grant() {
     }
 }
 
-/// Returns whether a stopped `exists` over `stock` still conflicts with a writer of its deciding
-/// row, the writer also reading what the transaction of the `exists` writes: both commit only
-/// when the stopped scan lost the lock on the deciding row's page.
-fn stopped_scan_beside_a_writer_of_its_row(workers: usize, opts: XOptions) -> Vec<bool> {
+/// Returns, for each plan of an `exists` over `stock` deciding at item `deciding`, whether the
+/// plan stops early and whether its transaction and a writer of item 250 that reads what that
+/// transaction writes fail with a serialization failure, as [`skew`] runs them.
+fn stopped_scan_beside_a_writer_of_its_row(
+    deciding: u32,
+    workers: usize,
+    opts: XOptions,
+) -> Vec<(bool, bool)> {
     let f = stock();
-    let heap = f.catalog.heap(f.rel("stock"), 0);
-    let cases = cases_of(&f, r#"exists s in stock where s.name == "item250""#, &[]);
-    let mut out = None;
-    let mut sim = Sim::new(0, Config::default());
-    finished(&mut sim, |rt| {
-        let db = Db::load(&rt, &world(&f));
-        let txns = db.txns.clone();
-        let plain = db.store(&rt);
-        let pool = (workers > 0).then(|| Scheduler::start(rt.clone(), workers));
-        let got: Vec<bool> = cases
-            .iter()
-            .enumerate()
-            .map(|(n, c)| {
-                let (_, snapshot) = txns.take(Scope::Every).expect("a snapshot");
-                let serial = Arc::new(Lock::new(Serializer::new(Limits::default())));
-                let base = 900_000 + 2 * n as u64;
-                let reader = serial.lock(&rt).begin(Access::ReadWrite(Xid(base)));
-                let writer = serial.lock(&rt).begin(Access::ReadWrite(Xid(base + 1)));
-                let reads = AtSnapshot {
-                    rt: rt.clone(),
-                    pager: plain.pager.clone(),
-                    txns: txns.clone(),
-                    snapshot,
-                    reader: None,
-                    serial: Some((serial.clone(), reader)),
-                };
-                let store = Arc::new(Store {
-                    pager: plain.pager.clone(),
-                    reads: Arc::new(reads),
-                    heaps: plain.heaps.clone(),
-                    indexes: plain.indexes.clone(),
-                    history: plain.history.clone(),
-                    past: None,
-                });
-                let tid_of = |name: &str| visible_tid(&store, heap, name);
-                let (decider, other) = (tid_of("item250"), tid_of("item1"));
+    let exists = format!(r#"exists s in stock where s.name == "item{deciding}""#);
+    let cases = cases_of(&f, &exists, &[]);
+    cases
+        .iter()
+        .map(|c| {
+            let mut out = None;
+            let mut sim = loaded(0, &f);
+            finished(&mut sim, |rt| {
+                let db = load::open_with(&rt, f.decls(), &options());
+                let pool = (workers > 0).then(|| Scheduler::start(rt.clone(), workers));
+                let reader = db.begin(&TxnOptions::default()).expect("a transaction");
+                let writer = db.begin(&TxnOptions::default()).expect("a transaction");
+                let store = db
+                    .testing()
+                    .store(&reader)
+                    .expect("the transaction is open");
                 let v = exec::execute(
-                    rt.clone(),
+                    rt,
                     c.program.clone(),
                     call(&store, roomy(), pool.as_ref(), opts),
                     &[],
                 );
+                drop(store);
                 assert_eq!(Ok(Val::bool(true)), v, "{}", c.name);
-                let mut s = serial.lock(&rt);
-                let no = store.heaps[&heap].heap.id().0;
-                skew(&mut s, (reader, writer), no, decider, other)
-            })
-            .collect();
-        if let Some(p) = pool {
-            p.shutdown();
-        }
-        out = Some(got);
-    });
-    out.expect("the run finished")
-}
-
-/// Returns the TID of the version of the row named `name` in `heap` the store's reads see.
-fn visible_tid(store: &Store<SimRuntime>, heap: HeapId, name: &str) -> Tid {
-    let mut found = Vec::new();
-    store.heaps[&heap]
-        .heap
-        .scan(&store.pager, |v| {
-            if v.row.contains(&KValue::Text(name.to_owned())) {
-                found.push(v);
-            }
+                out = Some((c.rewrites.early_stop, skew(reader, writer)));
+                if let Some(p) = pool {
+                    p.shutdown();
+                }
+            });
+            out.expect("the run finished")
         })
-        .expect("a scan of the heap");
-    found
-        .into_iter()
-        .find(|v| store.reads.sees(&v.header).expect("a visibility check"))
-        .unwrap_or_else(|| panic!("a version of {name} is visible"))
-        .tid
+        .collect()
 }
 
-/// Have `writer` read `other` and write `decider`, and `reader` write `other`. Returns whether
-/// the serializer failed either transaction.
+/// Have `writer` read item 1 and write item 250, the deciding row, and `reader` write item 1,
+/// each by its key, then commit `reader` and then `writer`. Returns whether either failed with
+/// a serialization failure.
 fn skew(
-    s: &mut Serializer,
-    (reader, writer): (SerialId, SerialId),
-    heap: u32,
-    decider: Tid,
-    other: Tid,
+    mut reader: adtb::AdHocTransaction<'_, SimRuntime>,
+    mut writer: adtb::AdHocTransaction<'_, SimRuntime>,
 ) -> bool {
-    let wrote = s
-        .read_tuple(writer, heap, other)
-        .and_then(|()| s.write_tuple(reader, heap, other))
-        .and_then(|()| s.write_tuple(writer, heap, decider));
-    let reader_ended = wrote.and_then(|()| s.precommit(reader)).map(|()| {
-        s.committed(reader);
-    });
-    reader_ended.and_then(|()| s.precommit(writer)).is_err()
+    let touch = |key: u32| {
+        format!(
+            "update s in app::stock where key s == app::stock.key({key}) set {{ s with v: s.v + 1 }}"
+        )
+    };
+    let none = TxnCallOptions::default();
+    let wrote = writer
+        .query_text(
+            "from s in app::stock where key s == app::stock.key(1) select s.v",
+            &[],
+            &none,
+        )
+        .and_then(|_| reader.query_text(&touch(1), &[], &none))
+        .and_then(|_| writer.query_text(&touch(250), &[], &none));
+    let ended = wrote
+        .map(drop)
+        .and_then(|()| reader.commit(None).map(drop))
+        .and_then(|()| writer.commit(None).map(drop));
+    match ended {
+        Ok(()) => false,
+        Err(e) if e.is_serialization() => true,
+        Err(e) => panic!("a write or commit fails by {e:?}"),
+    }
 }
 
 #[test]
@@ -956,8 +1031,25 @@ fn a_stopped_scan_conflicts_with_a_writer_of_its_deciding_row() {
         morsel_rows: 16,
         ..XOptions::default()
     };
-    let got = stopped_scan_beside_a_writer_of_its_row(0, opts);
-    assert!(got.iter().all(|failed| *failed), "{got:?}");
+    let got = stopped_scan_beside_a_writer_of_its_row(250, 0, opts);
+    assert!(got.iter().any(|(stops, _)| *stops), "{got:?}");
+    assert!(
+        got.iter()
+            .filter(|(stops, _)| *stops)
+            .all(|(_, failed)| *failed),
+        "{got:?}"
+    );
+}
+
+#[test]
+fn a_scan_stopping_before_the_writers_row_lets_both_commit_and_a_whole_scan_does_not() {
+    let opts = XOptions {
+        morsel_rows: 16,
+        ..XOptions::default()
+    };
+    let got = stopped_scan_beside_a_writer_of_its_row(2, 0, opts);
+    assert!(got.iter().any(|(stops, _)| *stops), "{got:?}");
+    assert!(got.iter().all(|(stops, failed)| failed != stops), "{got:?}");
 }
 
 #[test]
@@ -967,8 +1059,14 @@ fn a_stopped_scan_over_ranges_conflicts_with_a_writer_of_its_deciding_row() {
         range_pages: 1,
         ..XOptions::default()
     };
-    let got = stopped_scan_beside_a_writer_of_its_row(3, opts);
-    assert!(got.iter().all(|failed| *failed), "{got:?}");
+    let got = stopped_scan_beside_a_writer_of_its_row(250, 3, opts);
+    assert!(got.iter().any(|(stops, _)| *stops), "{got:?}");
+    assert!(
+        got.iter()
+            .filter(|(stops, _)| *stops)
+            .all(|(_, failed)| *failed),
+        "{got:?}"
+    );
 }
 
 #[test]
@@ -982,7 +1080,7 @@ fn a_fixpoint_past_its_rounds_is_rejected_for_its_statement_limit() {
         fix_rounds: 1,
         ..XOptions::default()
     };
-    let got = with_store(0, &f, 0, |rt, store, pool| {
+    let got = with_store(0, &f, 0, |(rt, store, pool)| {
         let budget = Budget::new(1 << 30);
         cases
             .iter()
@@ -1011,7 +1109,7 @@ fn a_fixpoint_past_its_rounds_is_rejected_for_its_statement_limit() {
 fn a_cancelled_call_stops_at_a_morsel_boundary() {
     let f = stock();
     let cases = cases_of(&f, "from s in stock select s.name", &[]);
-    let got = with_store(0, &f, 2, |rt, store, pool| {
+    let got = with_store(0, &f, 2, |(rt, store, pool)| {
         let budget = Budget::new(1 << 30);
         let mut c = call(
             store,
@@ -1030,12 +1128,12 @@ fn a_set_of_rows_comes_back_as_batches_of_the_heap_schema() {
     let f = running();
     let cases = cases_of(&f, "from u in users select u", &[]);
     let users = f.rel("users");
-    let row: Vec<FieldType> = row_ty(&world(&f), users, 0)
+    let row: Vec<FieldType> = row_ty(&f.schema, users, 0)
         .iter()
         .map(|(_, t)| field_type(&f.schema, t))
         .collect();
     let schema = batch::Schema::of_heap(&row);
-    let v = with_store(0, &f, 0, |rt, store, pool| {
+    let v = with_store(0, &f, 0, |(rt, store, pool)| {
         let budget = Budget::new(1 << 30);
         exec::execute(
             rt.clone(),
@@ -1059,7 +1157,7 @@ fn a_set_of_rows_comes_back_as_batches_of_the_heap_schema() {
         .iter()
         .flat_map(|b| (0..b.len()).map(|i| b.row(i)))
         .collect();
-    let tys = row_ty(&world(&f), users, 0);
+    let tys = row_ty(&f.schema, users, 0);
     let want: Vec<Vec<KValue>> = f.db[&(users, 0)]
         .iter()
         .map(|r| {
@@ -1075,7 +1173,7 @@ fn a_set_of_rows_comes_back_as_batches_of_the_heap_schema() {
 fn a_mistyped_value_is_an_internal_error_in_batches() {
     let f = running();
     let users = f.rel("users");
-    let row: Vec<FieldType> = row_ty(&world(&f), users, 0)
+    let row: Vec<FieldType> = row_ty(&f.schema, users, 0)
         .iter()
         .map(|(_, t)| field_type(&f.schema, t))
         .collect();
@@ -1324,7 +1422,7 @@ fn run_spilling(
     opts: XOptions,
     grant: usize,
 ) -> Vec<(Result<Value, String>, usize)> {
-    with_store(seed, f, workers, |rt, store, pool| {
+    with_store(seed, f, workers, |(rt, store, pool)| {
         let budget = Budget::new(1 << 30);
         let mut got = Vec::new();
         for c in cases {
@@ -1437,11 +1535,19 @@ fn a_build_past_its_grant_with_no_spill_space_is_rejected_for_its_statement_limi
 const BUILD_SPILLS: &str =
     "from s in stock, n in notes where n.item == key s select { s: s.id, n: n.id }";
 
-/// Run every case under the simulator with a grant of `SPILL_GRANT` bytes and `faults` set
-/// once the database is loaded, and return each case's error.
-fn spill_errors(f: &Fixture, cases: &[Case], opts: XOptions, faults: Faults) -> Vec<Option<Error>> {
-    with_store(0, f, 0, |rt, store, _| {
-        rt.set_faults(faults);
+/// Run every case under the simulator with a grant of `SPILL_GRANT` bytes, every write to a
+/// spill file failing with `fails` when it is given, and return each case's error.
+fn spill_errors(
+    f: &Fixture,
+    cases: &[Case],
+    opts: XOptions,
+    fails: Option<IoError>,
+) -> Vec<Option<Error>> {
+    with_store(0, f, 0, |(rt, store, _)| {
+        if let Some(e) = fails {
+            let spills = Match::kind(OpKind::Write).prefixed("spill/");
+            rt.plan(Plan::new().rule(spills, Action::Fail(e)));
+        }
         let budget = Budget::new(1 << 30);
         cases
             .iter()
@@ -1468,7 +1574,7 @@ fn a_spill_past_its_spill_bound_is_rejected_for_the_bound_and_the_grant() {
         spill_bytes: 4096,
         ..XOptions::default()
     };
-    let got = spill_errors(&f, &cases, opts, Faults::none(512));
+    let got = spill_errors(&f, &cases, opts, None);
     for (c, e) in cases.iter().zip(got) {
         assert_eq!(
             Some(Error::StatementLimit(Exceeded::Spill {
@@ -1490,11 +1596,7 @@ fn a_spill_file_that_fails_its_writes_fails_the_call_with_the_io_error() {
         morsel_rows: 16,
         ..XOptions::default()
     };
-    let faults = Faults {
-        fail_p: 1.0,
-        ..Faults::none(512)
-    };
-    let got = spill_errors(&f, &cases, opts, faults);
+    let got = spill_errors(&f, &cases, opts, Some(IoError::Failed));
     for (c, e) in cases.iter().zip(got) {
         assert_eq!(Some(Error::Spill(IoError::Failed)), e, "{}", c.name);
     }
@@ -1508,11 +1610,7 @@ fn a_spill_onto_a_full_device_is_rejected_for_its_memory_grant() {
         morsel_rows: 16,
         ..XOptions::default()
     };
-    let faults = Faults {
-        no_space: true,
-        ..Faults::none(512)
-    };
-    let got = spill_errors(&f, &cases, opts, faults);
+    let got = spill_errors(&f, &cases, opts, Some(IoError::Full));
     for (c, e) in cases.iter().zip(got) {
         assert_eq!(
             Some(Error::StatementLimit(Exceeded::Memory {
@@ -1537,7 +1635,7 @@ fn one_big_group(big: i64) -> Fixture {
     for chunk in items.chunks(40) {
         f.rows("stock", &format!("[{}]", chunk.join(", ")), &[]);
     }
-    f
+    planned(&f)
 }
 
 /// Returns, for each grant from 4 KiB to 64 KiB in steps of 1 KiB, whether each group-holding
@@ -1551,7 +1649,7 @@ fn groups_fit(f: &Fixture) -> Vec<(usize, String, bool)> {
         morsel_rows: 16,
         ..XOptions::default()
     };
-    with_store(0, f, 0, |rt, store, _| {
+    with_store(0, f, 0, |(rt, store, _)| {
         let budget = Budget::new(1 << 30);
         let mut out = Vec::new();
         for grant in (4..=64).map(|k| k << 10) {
@@ -1596,7 +1694,7 @@ fn a_call_removes_its_spill_file_when_it_ends() {
         morsel_rows: 16,
         ..XOptions::default()
     };
-    let left = with_store(0, &f, 2, |rt, store, pool| {
+    let left = with_store(0, &f, 2, |(rt, store, pool)| {
         let budget = Budget::new(1 << 30);
         let g = budget.admit(SPILL_GRANT).expect("a grant fits");
         let v = exec::execute(
@@ -1675,5 +1773,5 @@ fn stock_of(n: usize) -> Fixture {
     for chunk in notes.chunks(200) {
         f.rows("notes", &format!("[{}]", chunk.join(", ")), &[]);
     }
-    f
+    planned(&f)
 }

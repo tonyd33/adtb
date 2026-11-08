@@ -1,28 +1,20 @@
 use adtb::plan::fixture as planfix;
 
-use adtb_simkit::support;
-
 #[path = "constraints/names.rs"]
 mod names;
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::collections::BTreeSet;
 
 use adtb::catalog::{Catalog as Stored, Error as CatalogError};
-use adtb::exec::{self, Budget, Val};
-use adtb::mvcc::Limits;
-use adtb::plan::Catalog;
+use adtb::exec::Val;
 use adtb::storage::Pager;
-use adtb::write::{self, Bindings, Database, Rejection as WRejection, Setup};
-use adtb_lang::check::check_adhoc;
-use adtb_lang::kernel::{Terms, Tm};
-use adtb_lang::norm::{self, NormalProgram};
-use adtb_lang::parse::{Options, parse_adhoc};
-use adtb_lang::schema::Schema;
+use adtb::write;
+use adtb::{CallOptions, Database, Error, RejectReason, TxnCallOptions, TxnOptions};
+use adtb_lang::norm;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_simkit::load;
 
 use adtb_testkit::fixture::Fixture;
-use support::{Db, World};
 
 /// The running schema at version 12, the extension of the constraints part, and its migration
 /// 0013 adding an index on the owner of every identity.
@@ -415,93 +407,31 @@ fn dropping_the_declared_index_leading_a_reference_field_brings_back_the_implied
     assert!(matches!(got.as_slice(), [Ok(()), Ok(())]), "{got:?}");
 }
 
-/// An abort as the two sides are compared: what it is, and the rows it reports.
-type Failed = (String, BTreeSet<Val>);
-
-fn engine_error(schema: &Schema, e: &write::Error) -> Failed {
-    match e {
-        write::Error::Rejected(WRejection::Violated { constraint, report }) => {
-            (format!("Violated {constraint}"), report.clone())
-        }
-        write::Error::Rejected(WRejection::KeyViolation { relation, .. }) => (
-            format!("KeyViolation {}", schema.relation(*relation).name),
-            BTreeSet::new(),
-        ),
-        other => (format!("{other:?}"), BTreeSet::new()),
-    }
-}
-
-/// A statement's normal form.
-struct Prepared {
-    terms: Terms,
-    item: Tm,
-}
-
-fn prepare(f: &Fixture, text: &str) -> Prepared {
-    let items = parse_adhoc(text, Options::default())
-        .ok()
-        .unwrap_or_else(|_| panic!("`{text}` does not parse"));
-    let adhoc = check_adhoc(&f.schema, &f.program, &items, &BTreeMap::new())
-        .unwrap_or_else(|ds| panic!("`{text}` does not check: {ds:?}"));
-    let normal = norm::adhoc(&f.schema, &f.program, &adhoc)
-        .unwrap_or_else(|e| panic!("`{text}` has no normal form: {e:?}"));
-    Prepared {
-        item: normal.items[0],
-        terms: normal.terms,
-    }
-}
-
-fn database(
-    rt: &SimRuntime,
-    f: &Fixture,
-    normal: &Arc<NormalProgram>,
-    catalog: &Arc<Catalog>,
-) -> Database<SimRuntime> {
-    let world = World {
-        schema: &f.schema,
-        normal,
-        catalog,
-        db: &f.db,
-    };
-    let (pager, txns, heaps, indexes) = Db::load_with(rt, &world, false).bindings();
-    let sequences = support::counters(&pager, &f.schema, catalog, &indexes);
-    Database::new(
-        rt.clone(),
-        Setup {
-            schema: Arc::new(f.schema.clone()),
-            normal: normal.clone(),
-            catalog: catalog.clone(),
-            pager,
-            txns,
-            bindings: Bindings { heaps, indexes },
-            budget: Budget::new(1 << 30),
-            grant: 64 << 20,
-            pool: None,
-            options: exec::Options::default(),
-            limits: Limits::default(),
-            sequences,
-        },
-    )
-    .expect("a database over the fixture")
-}
-
-/// Runs `body` over a database of schema `src` in a simulation of `seed`.
-fn with_engine<T>(
-    seed: u64,
-    src: &str,
-    body: impl FnOnce(&Fixture, &Database<SimRuntime>) -> T,
-) -> T {
-    let f = Fixture::new(src);
-    let catalog = Arc::new(planfix::catalog(&f.schema));
-    let normal = Arc::new(norm::program(&f.schema, &f.program).expect("the schema normalises"));
+/// Run `body` over a new database of the declarations `src` in a simulation of `seed`, and
+/// return what it returns.
+fn with_engine<T>(seed: u64, src: &str, body: impl FnOnce(&Database<SimRuntime>) -> T) -> T {
     let mut got = None;
     let mut sim = Sim::new(seed, Config::default());
-    let outcome = sim.run(|rt| {
-        let db = database(&rt, &f, &normal, &catalog);
-        got = Some(body(&f, &db));
-    });
+    let outcome = sim.run(|rt| got = Some(body(&load::open(&rt, src))));
     assert_eq!(Outcome::Finished, outcome, "seed {seed}");
     got.unwrap_or_else(|| panic!("seed {seed}: the run gave nothing"))
+}
+
+/// Returns the rows `text` reads in a read-only transaction of its own.
+pub(crate) fn read(db: &Database<SimRuntime>, text: &str) -> BTreeSet<Val> {
+    let mut rows = db
+        .query_text(text, &[], &CallOptions::default())
+        .unwrap_or_else(|e| panic!("`{text}` runs: {e:?}"));
+    let [rows] = rows.as_mut_slice() else {
+        panic!("`{text}` holds one statement")
+    };
+    rows.map(|r| r.expect("a row")).collect()
+}
+
+/// Run `text` as a transaction of its own. Panics, naming `what`, when it fails.
+fn run(db: &Database<SimRuntime>, text: &str, what: &str) {
+    db.query_text(text, &[], &CallOptions::default())
+        .unwrap_or_else(|e| panic!("{what} fails: {e:?}"));
 }
 
 const PEOPLE: &str = r"
@@ -535,40 +465,48 @@ constraint assigned_member =
 /// Runs `a` and `b` in two transactions in the order `order` gives, a sequence over `'a'` and
 /// `'b'` for a statement and `'A'` and `'B'` for a commit. Returns how each ended.
 fn interleave(
-    f: &Fixture,
     db: &Database<SimRuntime>,
     a: &str,
     b: &str,
     order: &str,
-) -> (Result<(), String>, Result<(), String>) {
-    let pa = prepare(f, a);
-    let pb = prepare(f, b);
-    let mut ends: [Result<(), String>; 2] = [Ok(()), Ok(())];
+) -> (Result<(), Error>, Result<(), Error>) {
+    let mut ends: [Result<(), Error>; 2] = [Ok(()), Ok(())];
     let mut open = [
-        Some(db.begin().expect("a transaction")),
-        Some(db.begin().expect("a transaction")),
+        Some(db.begin(&TxnOptions::default()).expect("a transaction")),
+        Some(db.begin(&TxnOptions::default()).expect("a transaction")),
     ];
     for step in order.chars() {
         let i = usize::from(step.eq_ignore_ascii_case(&'b'));
         if ends[i].is_err() {
             continue;
         }
-        let tx = open[i].take().expect("an open transaction");
+        let mut tx = open[i].take().expect("an open transaction");
         if step.is_ascii_lowercase() {
-            let p = if i == 0 { &pa } else { &pb };
-            match db.statement(&tx, &p.terms, p.item, &[], 0) {
+            let text = if i == 0 { a } else { b };
+            match tx.query_text(text, &[], &TxnCallOptions::default()) {
                 Ok(_) => open[i] = Some(tx),
                 Err(e) => {
-                    ends[i] = Err(format!("{:?}", engine_error(&f.schema, &e)));
-                    db.abort(tx).expect("an abort");
+                    ends[i] = Err(e);
+                    tx.rollback().expect("a rollback");
                 }
             }
-        } else if let Err(e) = db.commit(tx) {
-            ends[i] = Err(format!("{:?}", engine_error(&f.schema, &e)));
+        } else if let Err(e) = tx.commit(None) {
+            ends[i] = Err(e);
         }
     }
     let [ra, rb] = ends;
     (ra, rb)
+}
+
+/// Returns whether `e` is a serialization failure or a violation of a constraint.
+fn serial_or_violated(e: &Error) -> bool {
+    e.is_serialization()
+        || matches!(
+            e,
+            Error::Rejected {
+                reason: RejectReason::Violated { .. }
+            }
+        )
 }
 
 /// Asserts that after `setup`, two transactions running `a` and `b`, each of which keeps the
@@ -578,21 +516,10 @@ fn interleave(
 fn serial(name: &str, src: &str, setup: &str, a: &str, b: &str, denial: &str) {
     for order in ["abAB", "abBA", "aAbB", "baAB", "baBA", "bBaA"] {
         for seed in 0..2 {
-            let (ra, rb, left) = with_engine(seed, src, |f, db| {
-                let p = prepare(f, setup);
-                let tx = db.begin().expect("a transaction");
-                db.statement(&tx, &p.terms, p.item, &[], 0)
-                    .unwrap_or_else(|e| panic!("{name}, seed {seed}: the setup fails: {e:?}"));
-                db.commit(tx).expect("a commit");
-                let (ra, rb) = interleave(f, db, a, b, order);
-                let q = prepare(f, denial);
-                let tx = db.begin().expect("a transaction");
-                let left = db
-                    .statement(&tx, &q.terms, q.item, &[], 0)
-                    .expect("the denial query runs")
-                    .result;
-                db.abort(tx).expect("an abort");
-                (ra, rb, left)
+            let (ra, rb, left) = with_engine(seed, src, |db| {
+                run(db, setup, &format!("{name}, seed {seed}: the setup"));
+                let (ra, rb) = interleave(db, a, b, order);
+                (ra, rb, read(db, denial))
             });
             let ctx = format!("{name}, order {order}, seed {seed}: {ra:?} {rb:?}");
             if order.starts_with("aA") || order.starts_with("bB") {
@@ -602,15 +529,11 @@ fn serial(name: &str, src: &str, setup: &str, a: &str, b: &str, denial: &str) {
             }
             for e in [&ra, &rb].into_iter().filter_map(|r| r.as_ref().err()) {
                 assert!(
-                    e.contains("Serialization") || e.contains("Violated"),
+                    serial_or_violated(e),
                     "{ctx}: a failure other than serialization or the constraint"
                 );
             }
-            assert_eq!(
-                Val::set(BTreeSet::new()),
-                left,
-                "{ctx}: the constraint is violated"
-            );
+            assert_eq!(BTreeSet::new(), left, "{ctx}: the constraint is violated");
         }
     }
 }
@@ -769,29 +692,14 @@ fn deleting_a_referenced_row_reads_its_referrers_through_the_implied_index() {
   insert notes { id: notes.key(10), about: users.key(3) }";
     for order in ["abAB", "abBA", "aAbB", "baAB", "baBA", "bBaA"] {
         for seed in 0..2 {
-            let (ra, rb, notes) = with_engine(seed, OWNED, |f, db| {
-                let p = prepare(f, setup);
-                let tx = db.begin().expect("a transaction");
-                db.statement(&tx, &p.terms, p.item, &[], 0)
-                    .unwrap_or_else(|e| panic!("seed {seed}: the setup fails: {e:?}"));
-                db.commit(tx).expect("a commit");
-                let (ra, rb) = interleave(f, db, a, b, order);
-                let q = prepare(f, "from n in notes select n.id");
-                let tx = db.begin().expect("a transaction");
-                let notes = db
-                    .statement(&tx, &q.terms, q.item, &[], 0)
-                    .expect("the query runs")
-                    .result;
-                db.abort(tx).expect("an abort");
-                (ra, rb, notes)
+            let (ra, rb, notes) = with_engine(seed, OWNED, |db| {
+                run(db, setup, &format!("seed {seed}: the setup"));
+                let (ra, rb) = interleave(db, a, b, order);
+                (ra, rb, read(db, "from n in notes select n.id"))
             });
             let ctx = format!("order {order}, seed {seed}: {ra:?} {rb:?}");
             assert!(ra.is_ok() && rb.is_ok(), "{ctx}: a probe conflicts");
-            assert_eq!(
-                Val::set(BTreeSet::from([Val::Int(10)])),
-                notes,
-                "{ctx}: the cascade"
-            );
+            assert_eq!(BTreeSet::from([Val::Int(10)]), notes, "{ctx}: the cascade");
         }
     }
 }

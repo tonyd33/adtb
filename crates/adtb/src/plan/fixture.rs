@@ -20,6 +20,7 @@ use crate::plan::{
 
 #[derive(Debug)]
 pub struct Fixture {
+    decls: String,
     pub schema: Schema,
     pub program: Program,
     pub normal: NormalProgram,
@@ -40,11 +41,33 @@ impl Fixture {
         let normal = norm::program(&schema, &program).expect("the schema's bodies normalise");
         let catalog = catalog(&schema);
         Fixture {
+            decls: src.to_owned(),
             schema,
             program,
             normal,
             catalog,
             db: Database::new(),
+        }
+    }
+
+    /// Returns the declarations of module `app` the fixture was made from.
+    pub fn decls(&self) -> &str {
+        &self.decls
+    }
+
+    /// Returns the fixture of this one's declarations over `schema`, planned by `catalog`,
+    /// holding `db`.
+    pub fn rebound(&self, schema: Schema, catalog: Catalog, db: Database) -> Fixture {
+        let program =
+            check_schema(&schema).unwrap_or_else(|ds| panic!("the schema does not check: {ds:?}"));
+        let normal = norm::program(&schema, &program).expect("the schema's bodies normalise");
+        Fixture {
+            decls: self.decls.clone(),
+            schema,
+            program,
+            normal,
+            catalog,
+            db,
         }
     }
 

@@ -1,7 +1,3 @@
-use adtb::plan::fixture as planfix;
-
-use adtb_simkit::support;
-
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,25 +6,25 @@ use std::task::{Wake, Waker};
 use std::time::Duration;
 
 use adtb::exec::{
-    self, Admission, Budget, Entry, Exceeded, Priority, Refusal, Refused, Resumable, Scheduler,
-    Step, Stopped, Task, Val,
+    Admission, Entry, Exceeded, Priority, Refusal, Refused, Resumable, Scheduler, Step, Stopped,
+    Task, Val,
 };
-use adtb::mvcc::{Cause, Limits, Waits, Watch, Xid};
+use adtb::mvcc::{Cause, Waits, Watch, Xid};
 use adtb::runtime::{Instant, Io, Op, Runtime, ThreadId, Threads};
-use adtb::write::{self, Bindings, Bounds, Database, Deferral, Failed, Local, Setup, Text, Txn};
+use adtb::write::{self, Bounds, Database, Deferral, Failed, Local, Text, Txn};
 use adtb::{CallOptions, CreateOptions, Log as SchemaLog, OpenOptions, Registration};
 use adtb::{TxnCallOptions, TxnOptions, Value};
 use adtb_lang::check::check_adhoc;
 use adtb_lang::kernel::{Terms, Tm};
-use adtb_lang::norm::{self, NormalProgram};
+use adtb_lang::norm;
 use adtb_lang::parse::{Options, parse_adhoc};
 use adtb_lang::schema::Schema;
-use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Outcome, SimRuntime};
 use adtb_sys::os::{Backend, OsRuntime};
 use adtb_testkit::fixture::Fixture;
 
+use adtb_simkit::load::{self, WritePath};
 use adtb_simkit::seeds::sweep;
-use support::{Db, World};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Event {
@@ -639,17 +635,20 @@ fn waiting_calls_leave_the_admission_bound<R: Runtime>(rt: &R) {
 }
 
 fn sim_seeds(name: &str, body: impl Fn(&SimRuntime)) {
-    sim_seeds_in(name, SEEDS, body);
+    sim_seeds_in(name, SEEDS, ONE, body);
 }
 
-fn sim_seeds_in(name: &str, seeds: Range<u64>, body: impl Fn(&SimRuntime)) {
+/// Run `body` in a simulator of each seed of `seeds` holding the items `rows`.
+fn sim_seeds_in(name: &str, seeds: Range<u64>, rows: &'static str, body: impl Fn(&SimRuntime)) {
+    *SIM_ROWS.lock().unwrap() = rows;
     for seed in sweep(seeds) {
-        let mut sim = Sim::new(
+        let mut sim = load::sim(
             seed,
             Config {
                 switch_rate: 0.3,
                 ..Config::default()
             },
+            &items_fixture(rows),
         );
         let outcome = sim.run(|rt| body(&rt));
         assert_eq!(Outcome::Finished, outcome, "{name}, seed {seed}");
@@ -813,13 +812,13 @@ struct Prepared {
     items: Vec<Tm>,
 }
 
-fn prepare(f: &Fixture, text: &str) -> Prepared {
+fn prepare<R: Runtime>(w: &WritePath<R>, text: &str) -> Prepared {
     let items = parse_adhoc(text, Options::default())
         .ok()
         .unwrap_or_else(|_| panic!("`{text}` does not parse"));
-    let adhoc = check_adhoc(&f.schema, &f.program, &items, &BTreeMap::new())
+    let adhoc = check_adhoc(w.schema(), w.program(), &items, &BTreeMap::new())
         .unwrap_or_else(|ds| panic!("`{text}` does not check: {ds:?}"));
-    let normal = norm::adhoc(&f.schema, &f.program, &adhoc)
+    let normal = norm::adhoc(w.schema(), w.program(), &adhoc)
         .unwrap_or_else(|e| panic!("`{text}` has no normal form: {e:?}"));
     Prepared {
         items: normal.items,
@@ -834,43 +833,46 @@ struct Items<R: Runtime> {
     texts: BTreeMap<&'static str, Prepared>,
 }
 
-fn items<R: Runtime>(rt: &R, rows: &str) -> Arc<Items<R>> {
+/// Returns the fixture of the items `rows`.
+fn items_fixture(rows: &str) -> Fixture {
     let mut f = Fixture::new(ITEMS);
     f.rows("items", rows);
-    let catalog = Arc::new(planfix::catalog(&f.schema));
-    let normal: Arc<NormalProgram> =
-        Arc::new(norm::program(&f.schema, &f.program).expect("the schema normalises"));
-    let schema = Arc::new(f.schema.clone());
-    let world = World {
-        schema: &f.schema,
-        normal: &normal,
-        catalog: &catalog,
-        db: &f.db,
-    };
-    let (pager, txns, heaps, indexes) = Db::load_with(rt, &world, false).bindings();
-    let sequences = support::counters(&pager, &schema, &catalog, &indexes);
-    let db = Database::new(
-        rt.clone(),
-        Setup {
-            schema: schema.clone(),
-            normal,
-            catalog,
-            pager,
-            txns,
-            bindings: Bindings { heaps, indexes },
-            budget: Budget::new(1 << 30),
-            grant: 64 << 20,
-            pool: None,
-            options: exec::Options::default(),
-            limits: Limits::default(),
-            sequences,
-        },
-    )
-    .expect("a database over the fixture");
+    f
+}
+
+/// The rows the simulator [`sim_seeds_in`] made holds.
+static SIM_ROWS: Mutex<&str> = Mutex::new("");
+
+/// A runtime the calls run on, making the database of the items it is given.
+trait Holds: Runtime {
+    /// Returns the write path over the items `rows`.
+    fn write_path(&self, rows: &'static str) -> WritePath<Self>;
+}
+
+impl Holds for OsRuntime {
+    fn write_path(&self, rows: &'static str) -> WritePath<OsRuntime> {
+        WritePath::of(self, &items_fixture(rows), None)
+    }
+}
+
+impl Holds for SimRuntime {
+    /// Preconditions: the simulator is the one [`sim_seeds_in`] made for `rows`.
+    fn write_path(&self, rows: &'static str) -> WritePath<SimRuntime> {
+        assert_eq!(
+            *SIM_ROWS.lock().unwrap(),
+            rows,
+            "the simulator holds the items"
+        );
+        WritePath::loaded(self, &items_fixture(rows), None)
+    }
+}
+
+fn items<R: Holds>(rt: &R, rows: &'static str) -> Arc<Items<R>> {
+    let w = rt.write_path(rows);
     Arc::new(Items {
-        texts: TEXTS.into_iter().map(|t| (t, prepare(&f, t))).collect(),
-        schema,
-        db,
+        texts: TEXTS.into_iter().map(|t| (t, prepare(&w, t))).collect(),
+        schema: w.schema().clone(),
+        db: w.into_db(),
     })
 }
 
@@ -1033,7 +1035,7 @@ const BUMPS: [&str; 4] = ["b0", "b1", "b2", "b3"];
 
 /// Four bumps wait on a transaction holding the item, on two workers; a queued call then ends
 /// that transaction. Returns the log.
-fn bumps_behind<R: Runtime>(rt: &R, commit: bool) -> (Arc<Items<R>>, Arc<Log<R>>) {
+fn bumps_behind<R: Holds>(rt: &R, commit: bool) -> (Arc<Items<R>>, Arc<Log<R>>) {
     let items = items(rt, ONE);
     let pool = Scheduler::start(rt.clone(), 2);
     let log = Log::new(rt);
@@ -1066,7 +1068,7 @@ fn bumps_behind<R: Runtime>(rt: &R, commit: bool) -> (Arc<Items<R>>, Arc<Log<R>>
     (items, log)
 }
 
-fn a_queued_commit_runs_while_every_write_waits<R: Runtime>(rt: &R) {
+fn a_queued_commit_runs_while_every_write_waits<R: Holds>(rt: &R) {
     let (items, log) = bumps_behind(rt, true);
     for n in BUMPS {
         assert!(
@@ -1093,7 +1095,7 @@ fn a_queued_commit_runs_while_every_write_waits_real() {
     a_queued_commit_runs_while_every_write_waits(&real_in("queued-commit"));
 }
 
-fn waiting_writes_resume_after_an_abort<R: Runtime>(rt: &R) {
+fn waiting_writes_resume_after_an_abort<R: Holds>(rt: &R) {
     let (items, log) = bumps_behind(rt, false);
     let done = log.count(|e| matches!(e, Event::Done(n) if n.starts_with('b')));
     assert_eq!(1, done, "{:?}", log.events());
@@ -1136,7 +1138,7 @@ fn a_cancelled_waiting_write_leaves_the_others_waiting() {
 
 /// A call of two statements suspends at its second, and once woken reruns both, the first's
 /// insert undone in between.
-fn a_two_statement_call_suspends_and_resumes<R: Runtime>(rt: &R) {
+fn a_two_statement_call_suspends_and_resumes<R: Holds>(rt: &R) {
     let items = items(rt, ONE);
     let pool = Scheduler::start(rt.clone(), 1);
     let log = Log::new(rt);
@@ -1178,7 +1180,7 @@ fn a_two_statement_call_suspends_and_resumes_real() {
 }
 
 /// A write waiting for a transaction stops at its deadline, aborting its own.
-fn a_waiting_write_stops_at_its_deadline<R: Runtime>(rt: &R) {
+fn a_waiting_write_stops_at_its_deadline<R: Holds>(rt: &R) {
     let items = items(rt, ONE);
     let pool = Scheduler::start(rt.clone(), 1);
     let log = Log::new(rt);
@@ -1436,7 +1438,7 @@ fn an_alarm_wakes_a_waiting_call_real() {
 
 /// Of two transactions each holding the item the other next writes, the second to wait fails
 /// with a deadlock and the first goes on, whether the waits suspend or block.
-fn a_deadlock_fails_the_second_waiter<R: Runtime>(rt: &R, suspend: bool, settle: Duration) {
+fn a_deadlock_fails_the_second_waiter<R: Holds>(rt: &R, suspend: bool, settle: Duration) {
     let items = items(rt, TWO);
     let log = Log::new(rt);
     let t1 = items.db.begin().unwrap();
@@ -1505,7 +1507,7 @@ fn blocking<R: Runtime>(mut w: Write<R>) {
 
 #[test]
 fn a_deadlock_between_suspended_calls_fails_the_second_waiter_sim() {
-    sim_seeds("suspended deadlock", |rt| {
+    sim_seeds_in("suspended deadlock", SEEDS, TWO, |rt| {
         a_deadlock_fails_the_second_waiter(rt, true, Duration::ZERO);
     });
 }
@@ -1517,7 +1519,7 @@ fn a_deadlock_between_suspended_calls_fails_the_second_waiter_real() {
 
 #[test]
 fn a_deadlock_between_blocked_writes_fails_the_second_waiter_sim() {
-    sim_seeds("blocking deadlock", |rt| {
+    sim_seeds_in("blocking deadlock", SEEDS, TWO, |rt| {
         a_deadlock_fails_the_second_waiter(rt, false, Duration::from_millis(20));
     });
 }
@@ -1614,7 +1616,7 @@ fn counter_value<R: Runtime>(db: &adtb::Database<R>) -> Vec<Value> {
 
 #[test]
 fn a_synchronous_call_still_blocks_on_a_transaction_sim() {
-    sim_seeds_in("synchronous", 0..2, |rt| {
+    sim_seeds_in("synchronous", 0..2, ONE, |rt| {
         let db = adtb::Database::open_in(
             rt.clone(),
             "counter.adt",

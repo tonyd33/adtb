@@ -3,8 +3,6 @@
 
 use adtb::plan::fixture;
 
-use adtb_simkit::support;
-
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -17,8 +15,11 @@ use adtb_sim::{Config, Outcome, Sim};
 use adtb_testkit::Rng;
 use adtb_testkit::draw::draw;
 
+use adtb_lang::schema::Schema;
+use adtb_simkit::load;
 use fixture::Fixture;
-use support::*;
+
+use crate::exec::{options, planner, read_only};
 
 const SCHEMA: &str = r"
 type Money = { amount: Decimal 2, currency: Text }
@@ -131,36 +132,38 @@ fn a_value_built_both_ways_prints_as_the_reference_prints_it() {
     }
 }
 
-/// Returns the value the engine computes for ad hoc `text`, with its type.
-fn engine(f: &Fixture, text: &str) -> (Ty, Val) {
-    let (n, t) = f.normal(text, &[]);
-    let p = plan(
-        &f.schema,
-        &f.normal,
-        &f.catalog,
-        &n.terms,
-        t,
-        &[],
-        PlanOptions {
-            rewrites: Rewrites::ALL,
-            hiding: false,
-        },
-    )
-    .unwrap_or_else(|e| panic!("`{text}` has no plan: {e}"));
-    let program = Arc::new(
-        exec::compile(&f.schema, &f.catalog, &p, None)
-            .unwrap_or_else(|e| panic!("`{text}` does not compile: {e:?}")),
-    );
-    let world = World {
-        schema: &f.schema,
-        normal: &f.normal,
-        catalog: &f.catalog,
-        db: &f.db,
-    };
+/// Returns the value the engine computes for ad hoc `text` over the rows of `f`, with its type
+/// and the engine's schema.
+fn engine(f: &Fixture, text: &str) -> (Ty, Val, Schema) {
     let mut out = None;
     let mut sim = Sim::new(1, Config::default());
     let result = sim.run(|rt| {
-        let store = Db::load(&rt, &world).store(&rt);
+        let db = load::open_with(&rt, SCHEMA, &options());
+        let _running = load::rows_with_noise(&db, &f.schema, &f.db);
+        let e = planner(&db, f);
+        let (n, t) = e.normal(text, &[]);
+        let p = plan(
+            &e.schema,
+            &e.normal,
+            &e.catalog,
+            &n.terms,
+            t,
+            &[],
+            PlanOptions {
+                rewrites: Rewrites::ALL,
+                hiding: false,
+            },
+        )
+        .unwrap_or_else(|e| panic!("`{text}` has no plan: {e}"));
+        let program = Arc::new(
+            exec::compile(&e.schema, &e.catalog, &p, None)
+                .unwrap_or_else(|e| panic!("`{text}` does not compile: {e:?}")),
+        );
+        let reader = db.begin(&read_only()).expect("a transaction");
+        let store = db
+            .testing()
+            .store(&reader)
+            .expect("the transaction is open");
         let budget = Budget::new(1 << 30);
         let call = Call {
             store,
@@ -170,13 +173,12 @@ fn engine(f: &Fixture, text: &str) -> (Ty, Val) {
             cancel: Arc::new(AtomicBool::new(false)),
             deadline: None,
         };
-        out = Some(exec::execute(rt, program.clone(), call, &[]));
+        let v = exec::execute(rt, program, call, &[])
+            .unwrap_or_else(|e| panic!("`{text}` fails in the engine: {e:?}"));
+        out = Some((n.terms.ty(t).clone(), v, e.schema));
     });
     assert_eq!(Outcome::Finished, result);
-    let v = out
-        .expect("the run finished")
-        .unwrap_or_else(|e| panic!("`{text}` fails in the engine: {e:?}"));
-    (n.terms.ty(t).clone(), v)
+    out.expect("the run finished")
 }
 
 fn stored() -> Fixture {
@@ -235,14 +237,14 @@ fn rows_read_back_from_the_engine_print_as_the_reference_prints_them() {
         "from t in taggings select { doc: t.doc, w: { tag: t.tag, weight: t.weight } }",
         "from d in docs select d.id",
     ] {
-        let (ty, v) = engine(&f, text);
+        let (ty, v, schema) = engine(&f, text);
         let want = f
             .reference(text, &[])
             .unwrap_or_else(|e| panic!("`{text}` fails in the reference: {e:?}"));
-        let form = Form::of(&f.schema, &ty);
+        let form = Form::of(&schema, &ty);
         let printed = textual::print(&v, &form).unwrap_or_else(|e| panic!("`{text}`: {e}"));
         assert_eq!(
-            adtb_reference::textual::print(&f.schema, &want, &ty),
+            adtb_reference::textual::print(&schema, &want, &ty),
             Ok(printed.clone()),
             "`{text}`"
         );

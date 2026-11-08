@@ -703,6 +703,12 @@ impl<R: Runtime> Database<R> {
         &self.txns
     }
 
+    /// Returns the planner's description of the relations the database runs.
+    #[cfg(feature = "testing")]
+    pub(crate) fn planned(&self) -> &Catalog {
+        &self.catalog
+    }
+
     /// Returns the normal program of the schema the database runs.
     pub fn normal(&self) -> &NormalProgram {
         &self.normal
@@ -1257,7 +1263,8 @@ impl<R: Runtime> Database<R> {
             .draw(&self.pager, sequence::LOADS, held.saturating_add(1))
     }
 
-    fn store(&self, tx: &Txn) -> Arc<exec::Store<R>> {
+    /// Returns the store the statements of `tx` read.
+    pub(crate) fn store(&self, tx: &Txn) -> Arc<exec::Store<R>> {
         let reads = exec::AtSnapshot {
             rt: self.rt.clone(),
             pager: self.pager.clone(),

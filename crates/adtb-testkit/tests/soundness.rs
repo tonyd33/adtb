@@ -273,17 +273,6 @@ fn draw_args(schema: &Schema, ty: &Ty, params: usize, rng: &mut Rng) -> Option<(
     Some((args, ty))
 }
 
-fn fixture_of(schema: Schema, program: Program) -> Fixture {
-    Fixture {
-        schema,
-        program,
-        db: Database::new(),
-        supply: Supply::default(),
-        closed: BTreeMap::new(),
-        files: InMemory::default(),
-    }
-}
-
 /// Calls registered query `q` of the bundle that reads `module` on arguments drawn from `rng`
 /// and judges its result.
 fn call_query(
@@ -376,7 +365,7 @@ fn spec_corpus_results_inhabit_their_types() {
             }
         }
         let (queries, txns, module, adhoc) = (p.queries, p.txns, p.module, p.adhoc);
-        let mut fx = fixture_of(p.schema, p.program);
+        let mut fx = Fixture::of_schema(p.schema, p.program);
         for q in &queries {
             call_query(&fx, module, q, &at, &mut rng, &mut out);
         }
@@ -512,7 +501,7 @@ fn conformance_schema(body: &str) -> Option<Fixture> {
     }
     let schema = build(&files).ok()?;
     let program = check_schema(&schema).ok()?;
-    Some(fixture_of(schema, program))
+    Some(Fixture::of_schema(schema, program))
 }
 
 /// Runs the statements of every script of the conformance suite in order, each script on a

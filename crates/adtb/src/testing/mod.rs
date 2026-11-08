@@ -12,10 +12,13 @@ mod object;
 mod plant;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::Database;
 use crate::btree;
+use crate::exec;
 use crate::mvcc::{Limits, Snapshot, Transactions, Xid};
+use crate::plan;
 use crate::runtime::Runtime;
 use crate::storage::{Damage, LogFinding, Lsn, PageError, Pager, Pid, Position, Quarantine};
 use crate::vacuum::Charged;
@@ -184,6 +187,21 @@ impl<'a, R: Runtime> Testing<'a, R> {
     /// Returns the snapshot `txn` reads, `None` once it has ended.
     pub fn snapshot(self, txn: &crate::AdHocTransaction<'_, R>) -> Option<Snapshot> {
         txn.tested_snapshot().cloned()
+    }
+
+    /// Returns the executor's store as the statements of `txn` read it: at its snapshot, under
+    /// its entry in the serializer. `None` once `txn` has ended.
+    ///
+    /// Preconditions:
+    /// - `txn` is a transaction of this database, or this panics;
+    /// - the caller only reads through the store, and drops it before `txn` ends.
+    pub fn store(self, txn: &crate::AdHocTransaction<'_, R>) -> Option<Arc<exec::Store<R>>> {
+        self.db.tested_store(txn)
+    }
+
+    /// Returns the planner's description of every relation the database runs.
+    pub fn plan_catalog(self) -> plan::Catalog {
+        self.db.tested_db().planned().clone()
     }
 
     /// Returns how many reindex job threads are not yet joined.

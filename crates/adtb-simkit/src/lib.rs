@@ -10,6 +10,7 @@ pub mod elle;
 pub mod fixture;
 pub mod grants;
 pub mod harness;
+pub mod load;
 pub mod open;
 pub mod recovery;
 pub mod rows;

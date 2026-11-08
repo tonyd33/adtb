@@ -17,6 +17,7 @@ use adtb_reference::{
 
 #[derive(Debug)]
 pub struct Fixture {
+    decls: Option<String>,
     pub schema: Schema,
     pub program: Program,
     pub db: Database,
@@ -39,6 +40,7 @@ impl Fixture {
         let program =
             check_schema(&schema).unwrap_or_else(|ds| panic!("the schema does not check: {ds:?}"));
         Fixture {
+            decls: Some(src.to_owned()),
             schema,
             program,
             db: Database::new(),
@@ -46,6 +48,25 @@ impl Fixture {
             closed: BTreeMap::new(),
             files: InMemory::default(),
         }
+    }
+
+    /// Returns the fixture of `schema`, checked as `program`, holding no row.
+    pub fn of_schema(schema: Schema, program: Program) -> Fixture {
+        Fixture {
+            decls: None,
+            schema,
+            program,
+            db: Database::new(),
+            supply: Supply::default(),
+            closed: BTreeMap::new(),
+            files: InMemory::default(),
+        }
+    }
+
+    /// Returns the declarations of module `app` the fixture was made from, `None` for one made
+    /// by [`Fixture::of_schema`].
+    pub fn decls(&self) -> Option<&str> {
+        self.decls.as_deref()
     }
 
     /// Returns the declared type `name` of the module and the index of its constructor `ctor`.

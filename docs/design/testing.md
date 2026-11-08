@@ -24,7 +24,7 @@ TxnProbe::of(&Transactions<R>) -> TxnProbe<'_, R>
 
 | Entry | Observations |
 | --- | --- |
-| `Testing` | `next_xid`, `commit_log_damage`, `charged` (the vacuum pacer's steps), `rebuild_waits`, `vacuum_yields`, `tracked` (the transactions the serializer tracks), `snapshot` (the snapshot a transaction reads, `None` once it has ended), `reindex_threads`, `scrub` (the saved cursor), `held_findings` |
+| `Testing` | `next_xid`, `commit_log_damage`, `charged` (the vacuum pacer's steps), `rebuild_waits`, `vacuum_yields`, `tracked` (the transactions the serializer tracks), `snapshot` (the snapshot a transaction reads, `None` once it has ended), `store` (§2.1), `plan_catalog` (the planner's description of every relation the database runs, as its write path plans with it), `reindex_threads`, `scrub` (the saved cursor), `held_findings` |
 | `Probe` | `marks`, `marked`, `refusals`, `records`, `damage_in_log`, `logged_commits`, `safe_snapshots` (each safe snapshot marker as `(Position, Snapshot)`: the commit position it covers and its snapshot), `appended`, `durable`, `checkpoint`, `dirty`, `walks`, `page`, `page_size`, `mapped_to`, `on_history` |
 | `TxnProbe` | `next_xid`, `commit_log_damage` |
 
@@ -57,7 +57,8 @@ Postconditions:
   a version or a finding. None returns a reference into the engine, and
   no type of this module holds one past the borrow of the database or
   the pager it was made from. The guards `VacuumHold` and `PageHold`
-  hold their lock until dropped and expose nothing of it.
+  hold their lock until dropped and expose nothing of it. `store` is
+  the one exception (§2.1).
 - The observations of `Testing`, `TxnProbe` and `Probe`, except
   `Probe::page`, `damage_in_log`, `logged_commits` and `safe_snapshots`,
   read memory only and change neither the engine's state nor what a
@@ -91,6 +92,23 @@ Invariant: no build of a package without its tests has the `testing`
 feature. No package of the repository has a normal or build dependency
 on `adtb` that enables it, no feature of a package enables it, and
 `adtb`'s default features exclude it. `check` fails otherwise.
+
+### 2.1 The store
+
+`store(&txn)` answers the executor's store as the statements of `txn`
+read it: at its snapshot, under its entry in the serializer, over the
+heaps and indexes the engine's catalog binds. It is the one handle
+below the public interface, for the tests of the executor's contract,
+which run a plan over a store. `None` once `txn` has ended.
+
+Preconditions:
+
+- `txn` is a transaction of this database, or the call panics.
+- The caller only reads through the store, and drops it before `txn`
+  ends.
+
+Not promised: what the store reads after `txn` ends or the schema
+changes.
 
 ## 3. Controls
 
@@ -216,18 +234,29 @@ The module owns the mapping from engine internals to its answers. When
 storage, transactions or maintenance change how they keep a fact, this
 module changes and no test does. The answers carry the engine's
 vocabulary types (`Pid`, `Lsn`, `Damage`, `Quarantine`, `PageError`,
-`Xid`, `LogFinding`, `vacuum::Charged`, `Entry`, `Version`, `Status`
-and the findings of the checks) and this module's own types (`Records`,
-`Object`, `Plant`, `Planted`, `Site`, `CommitLogPages`, `Failed`,
-`Knobs` and the guards `VacuumHold` and `PageHold`), never a pager, a
-heap, an index or the write path.
+`Xid`, `LogFinding`, `vacuum::Charged`, `Entry`, `Version`, `Status`,
+`plan::Catalog` and the findings of the checks) and this module's own
+types (`Records`, `Object`, `Plant`, `Planted`, `Site`,
+`CommitLogPages`, `Failed`, `Knobs` and the guards `VacuumHold` and
+`PageHold`), never a pager, a heap, an index or the write path, except
+through the store `store` answers.
 
 ## 5. Harness
 
 `adtb-simkit` holds what the simulator's test binaries share above
-`adtb_sim`: the crash loop, the opens, the component world, byte
-damage and the isolation workload over the engine
-([runtime.md §6](runtime.md#6-isolation-histories)).
+`adtb_sim`: the crash loop, the opens, the loading of rows, the
+component world, byte damage and the isolation workload over the
+engine ([runtime.md §6](runtime.md#6-isolation-histories)).
+
+- A test's database is bound by the engine's own catalog: the harness
+  assigns no owner, store or constructor id to a structure of an engine
+  database. Rows reach it through the public interface, by `load`.
+  One test is the exception: the read of the past in the executor's
+  tests copies deleted versions into a heap and large-value store it
+  creates on the engine's pager under owners 95000 and 95001, since no
+  call gives a store reading at a past position.
+- `load::WritePath` is the one harness site that builds the write path
+  outside a database.
 
 - A test defines no crash loop, world type or byte-damage helper of its
   own. Every crash loop is `crash_loop`, and every round of it runs the
@@ -258,6 +287,13 @@ open::{FILE, options(workers), open, opened, reopen}
 fixture::Storage::{create(rt, &Options), reopen(rt, &Layout), layout,
                    commit_log, large, heap, index, tree, pager, split, parts, verify}
 fixture::Parts::{new, verify}                // a world a test keeps in its own fields
+load::{open(rt, decls), open_with(rt, decls, &OpenOptions),
+       rows_with_noise(&db, &schema, &rows) -> AdHocTransaction,
+       committed_noise(&db, &schema, &rows), running_noise(&db, &schema, &rows),
+       files(decls, &schema, &rows, &OpenOptions), write_files(&fixture),
+       sim(seed, config, &fixture), rows_of(to, from, &rows), relation_of(to, from, rel)}
+load::WritePath::{of(rt, &fixture, pool), loaded(rt, &fixture, pool), reopen(rt, pool),
+                  db, schema, program, into_db, ty, prepare}
 damage::DataFile::{new(name, page_size), of(&Options), range, bytes, page,
                    page_mut, flip(files, pid, at), zero, replace, truncate, extend, cut}
 ```
@@ -289,6 +325,38 @@ the simulated device through `Database::open_in`, and `opened` fails
 naming the file where `open` returns an error; `options(workers)`
 creates the database when it does not exist. `reopen` opens a pager
 over its file, recovering it from its log.
+
+Postconditions of `load`:
+
+- `open` opens, through `open::opened`, the database whose first
+  migration adds module `app` with the declarations given.
+- `committed_noise` loads the rows of a reference database by relation
+  module and name, in interactive transactions, holding a read-only
+  transaction begun before its first write until its last ends. After
+  it each row is the one version of its key a later snapshot sees, and
+  the file holds, hidden from that snapshot, the row's earlier value
+  and its deleted copy, each committed and deleted by a committed
+  transaction, and its aborted copy unless a later write pruned that
+  version from a full page. Where a field outside the key is text or an
+  instant, the earlier value and the copies differ from the row and
+  from one another; otherwise the copies are the row and there is no
+  earlier value.
+- `running_noise` begins a transaction that replaces each row that has
+  an earlier value by a running copy, distinct from the others, and
+  deletes each other row, and answers it not ended. Its writes may
+  prune committed noise versions from the full pages they reach.
+- `rows_with_noise` runs both under one held read-only transaction, so
+  every committed noise version is in the file when it returns.
+- `files` answers a simulator's files after `committed_noise` in a
+  database opened with the options given, which start no background
+  vacuum, made once per thread for each declarations and rows.
+- `WritePath` builds the write path over a file the engine's catalog
+  created, migrated and loaded as `committed_noise` loads, with the
+  catalog's bindings and counters. It is for the tests of the write
+  path's own contract, which drive statements one change set at a
+  time. `write_files` answers the simulator's files after that load,
+  made once per thread for each declarations and rows, `sim` a
+  simulator holding them, and `WritePath::loaded` opens them.
 
 Postconditions of `Storage`:
 

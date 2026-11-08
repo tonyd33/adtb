@@ -11,6 +11,7 @@ mod isolation;
 mod key_renames;
 mod loads;
 mod longkey;
+mod noise;
 mod oplog;
 mod past;
 mod plans;

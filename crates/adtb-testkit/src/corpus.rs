@@ -213,7 +213,7 @@ fn statements(body: &str) -> Option<Vec<String>> {
 
 /// Returns the migration adding module `app` with `decls`, each declaration in order, each
 /// relation of a type the module declares moved up to follow its type.
-fn migration(decls: &str) -> String {
+pub fn migration(decls: &str) -> String {
     let mut items: Vec<String> = Vec::new();
     for line in decls.lines() {
         let indented = line.starts_with(' ') || line.starts_with("--") || line.trim().is_empty();

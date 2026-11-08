@@ -11,12 +11,12 @@ pub struct HeapId(pub u64);
 pub struct IndexId(pub u64);
 
 /// The heaps and indexes of every relation variable a planned term may read.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Catalog {
     pub relations: BTreeMap<RelId, RelationDesc>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RelationDesc {
     /// The heap of each constructor of the relation's sum.
     pub heaps: BTreeMap<u32, HeapId>,
@@ -26,7 +26,7 @@ pub struct RelationDesc {
     pub indexes: Vec<IndexDesc>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IndexDesc {
     pub id: IndexId,
     pub ctors: CtorSet,
