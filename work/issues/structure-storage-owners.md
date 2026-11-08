@@ -33,3 +33,7 @@ The frame is sealed. `PageExclusive` and `Held` have private fields, `inner` and
 ## 2026-11-07, step 8 input from the step 2 review
 
 `DirtyTable::refused` drops the page's entry at the next covering force even when the refused copy was dropped unwritten, so the frame's changes the file lacks leave the table. Existing behaviour on main. The design's `refused(pid, wrote_first)` keeps the entry in that case; step 8 decides it with `freed_durable`, with a search case of a refused unwritten page and a covering force.
+
+## 2026-11-07, step 2 landed
+
+`DirtyTable` in storage/pagetable.rs owns what were six Meta fields (`dirty`, `changed`, `written`, `images`, `after_write`, `wrote`) as one map whose entry carries every per-page fact, so the subset rules hold by representation. Each mutator takes a witness only its caller can make: `forcing` the held force lock (its `Covered` borrows the guard, so two forces cannot overlap), `written_out` a `Wrote` from the data write, `refused` a `Refusal` from `publish_refusal`, `replayed` and `replay_refused` a `Replaying` from recovery. `logged` and `record_kind` close in step 3 with the `Append` guard. `Meta.table` is private to pager.rs; `Shared::atomic_page_writes` moved into the table. storage.md §6 states the table and both ways an entry leaves. Counts: pager.rs crate-visible fields 33 to 26; uses of the six facts outside pager.rs 19 to 0. The search test checks the table against main's six collections, reaching a write, a change and a refusal of a covered page during a force. Next: step 3, `Append`.
