@@ -4,6 +4,9 @@ status: open
 kind: bug
 priority: 480
 summary: "a damaged dirty page's dirty-table entry outlives a free of the page and pins the redo point for the open"
+tags:
+  - class-none
+  - engine
 ---
 
 # Damaged dirty entry outlives a free
