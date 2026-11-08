@@ -10,7 +10,7 @@ use adtb_lang::types::RelId;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 
-use adtb_simkit::damage::DataFile;
+use adtb_harness::damage::DataFile;
 use adtb_simkit::harness;
 
 use harness::{PAGE, finished, options};

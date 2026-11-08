@@ -5,10 +5,10 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::Once;
 use std::time::Duration;
 
-use adtb::storage::FatalIo;
 use adtb_sim::{
     Finding, FindingKind, Ledger, Outcome, Recovered, Sim, SimRuntime, Violation, check,
 };
+use adtb_sys::runtime::FatalIo;
 use adtb_sys::runtime::Faults;
 
 /// Keep panic-hook reports of [`FatalIo`] off stderr for the rest of the process.

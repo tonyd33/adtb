@@ -7,8 +7,8 @@ use adtb::catalog::Catalog;
 use adtb::storage::{Damage, Finding, HEADER_LEN, Options, Pager, Pid, Quarantine};
 use adtb::testing::{Object, Plant};
 use adtb::{ArchiveTarget, CallOptions, Database, Error, FatalReason, Log, RestorePoint};
+use adtb_harness::damage::DataFile;
 use adtb_sim::{Config, Sim, SimRuntime};
-use adtb_simkit::damage::DataFile;
 use adtb_simkit::open;
 use adtb_simkit::{api, harness};
 

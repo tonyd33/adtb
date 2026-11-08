@@ -23,8 +23,8 @@ use adtb_sim::{Config, Outcome, SimRuntime};
 use adtb_sys::os::{Backend, OsRuntime};
 use adtb_testkit::fixture::Fixture;
 
+use adtb_harness::seeds::sweep;
 use adtb_simkit::load::{self, WritePath};
-use adtb_simkit::seeds::sweep;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Event {

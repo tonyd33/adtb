@@ -18,8 +18,8 @@ use adtb::{
     HostFns, Log, Observation, OpenOptions, Pins, Registration, RejectReason, RetryReason,
     RoleSession, Task, TaskOptions, TxnCallOptions, TxnOptions, Value,
 };
+use adtb_harness::seeds::sweep;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
-use adtb_simkit::seeds::sweep;
 use adtb_sys::os::{Backend, OsRuntime};
 
 const SCHEMA: &str = r#"module shop

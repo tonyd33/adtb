@@ -16,11 +16,12 @@ use adtb::testing::{Knobs, Object, Plant};
 use adtb::{
     CallOptions, CancelToken, Database, Log, OpenOptions, TxnCallOptions, TxnOptions, Value,
 };
+use adtb_harness::damage::DataFile;
+use adtb_harness::seeds::assert_reached;
+use adtb_harness::{common, crash};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
-use adtb_simkit::damage::DataFile;
+use adtb_simkit::api;
 use adtb_simkit::open;
-use adtb_simkit::seeds::assert_reached;
-use adtb_simkit::{api, common, crash};
 use adtb_sys::runtime::Faults;
 
 const APP: &str = r"module app

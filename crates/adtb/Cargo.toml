@@ -32,6 +32,8 @@ testing = []
 workspace = true
 
 [dev-dependencies]
+adtb-harness.workspace = true
 adtb-lang = { workspace = true, features = ["test-heap-cap"] }
 adtb-reference.workspace = true
+adtb-sim.workspace = true
 adtb-testkit.workspace = true

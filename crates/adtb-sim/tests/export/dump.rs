@@ -14,11 +14,11 @@ use adtb::{
     Position, Registration, RejectReason, RestorePoint, Restored, TxnCallOptions, TxnOptions,
     restore_in, restore_report_in,
 };
+use adtb_harness::search::{self, Files};
 use adtb_lang::evolve::Source;
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
 use adtb_simkit::open;
-use adtb_simkit::search::{self, Files};
 use adtb_simkit::{api, grants};
 use adtb_testkit::corpus;
 use adtb_testkit::profile::{assert_reached, count, every_case};
@@ -256,7 +256,7 @@ fn register_bundles(rt: &SimRuntime, db: &Database<SimRuntime>) -> Vec<CatalogRo
     }
     run(db, "supersede bundle app-0.9 by app-1.0").unwrap();
     run(db, "retire bundle old-1.0").unwrap();
-    adtb_simkit::common::sleep(rt, &mut rt.io(), Duration::from_secs(3 * 3600));
+    adtb_harness::common::sleep(rt, &mut rt.io(), Duration::from_secs(3 * 3600));
     run(db, "set setting LeaseGrace = { grace: 2h }").unwrap();
     let key = |text: &str| {
         let key = answer(db, text);
@@ -749,7 +749,7 @@ fn a_lease_latched_in_the_dumping_session_stays_expired_after_restore() {
         let owner = db.role_authority().session("owner").unwrap();
         let short = bundle("s-1.0", " lease 1h", HELLO);
         db.role_authority().register(&owner, &short).unwrap();
-        adtb_simkit::common::sleep(&rt, &mut rt.io(), Duration::from_secs(2 * 3600));
+        adtb_harness::common::sleep(&rt, &mut rt.io(), Duration::from_secs(2 * 3600));
         run(&db, "set setting LeaseGrace = { grace: 100h }").unwrap();
         dump(&db).unwrap();
         assert_eq!(expired("s-1.0"), outcome(&db, "s-1.0"), "source");
@@ -944,7 +944,7 @@ fn a_restore_lacking_a_host_function_refuses_naming_it_and_one_given_it_restores
             "{got:?}"
         );
         let mut io = rt.io();
-        let listed = adtb_simkit::common::complete(&rt, &mut io, Op::List { dir: String::new() });
+        let listed = adtb_harness::common::complete(&rt, &mut io, Op::List { dir: String::new() });
         let Ok(adtb::runtime::Done::Listed(top)) = listed.result else {
             panic!("{listed:?}");
         };
@@ -1669,7 +1669,7 @@ fn a_refused_restore_to_a_nested_path_removes_the_directories_it_made_and_no_oth
     let mut io_sim = sim;
     let dirs = api::run(&mut io_sim, |rt| {
         let mut io = rt.io();
-        let listed = adtb_simkit::common::complete(
+        let listed = adtb_harness::common::complete(
             &rt,
             &mut io,
             Op::List {

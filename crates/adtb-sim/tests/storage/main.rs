@@ -11,7 +11,6 @@ mod damage_search;
 mod directory_damage;
 mod faults;
 mod heap;
-mod heap_claims;
 mod heap_kind;
 mod heap_threads;
 mod in_session;

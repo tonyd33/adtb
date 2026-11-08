@@ -13,10 +13,10 @@ use adtb::vacuum::{self, Report, Sum};
 use adtb_sim::{Config, Fate, Ledger, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 
-use adtb_simkit::crash;
+use adtb_harness::crash;
+use adtb_harness::seeds;
 use adtb_simkit::harness;
 use adtb_simkit::rows;
-use adtb_simkit::seeds;
 
 use adtb_simkit::fixture::{Layout, Parts, Storage};
 use crash::{Reopen, Rounds, crash_loop};

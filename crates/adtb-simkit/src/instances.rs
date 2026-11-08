@@ -4,7 +4,7 @@ use std::hint::black_box;
 
 use adtb::{AdHocTransaction, Database, Load, Registered, RoleAuthority, RoleSession, Task};
 
-use crate::SimRuntime;
+use adtb_sim::SimRuntime;
 
 /// Compile the engine at [`SimRuntime`] in this crate. Dependents at an opt level that shares
 /// generics link these instances.

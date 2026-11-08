@@ -29,6 +29,8 @@ mod verify;
 #[cfg(test)]
 mod evidence_tests;
 #[cfg(test)]
+mod file_damage_tests;
+#[cfg(test)]
 mod tests;
 
 pub use alloc::Reservation;
@@ -44,7 +46,6 @@ pub(crate) use create::{Created, Hold, Unpublished, create, refuse_foreign_log, 
 pub use create::{aside, creating, marker, marker_bytes};
 pub use damage_log::Recorded;
 pub(crate) use driver::Driver;
-pub use driver::{FATAL_IO, FatalIo};
 pub use dump::{
     DUMP_FORMAT, DumpManifest, discard_aside, is_dump, publish_database, read_dump, restore_aside,
     write_dump,
@@ -94,6 +95,12 @@ impl Lsn {
 impl Pid {
     /// The first page id that is not a file header copy.
     pub const FIRST_DATA: Pid = Pid(2);
+}
+
+impl From<Pid> for u64 {
+    fn from(pid: Pid) -> u64 {
+        pid.0
+    }
 }
 
 /// The place of a record in the primary's log: the epoch, which rises at each promotion and

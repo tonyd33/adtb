@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 adtb.workspace = true
+adtb-harness.workspace = true
 adtb-isolation.workspace = true
 adtb-lang.workspace = true
 adtb-reference.workspace = true

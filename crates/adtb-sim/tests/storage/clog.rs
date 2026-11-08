@@ -10,13 +10,13 @@ use adtb_sim::{Config, Fate, Finding, Ledger, Recovered, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 use adtb_testkit::Rng;
 
-use adtb_simkit::crash;
-use adtb_simkit::draw;
+use adtb_harness::crash;
+use adtb_harness::draw;
+use adtb_harness::seeds;
 use adtb_simkit::harness;
 use adtb_simkit::recovery;
-use adtb_simkit::seeds;
 
-use adtb_simkit::damage::{DataFile, Files};
+use adtb_harness::damage::{DataFile, Files};
 use crash::{Reopened, Rounds, crash_loop};
 use draw::below;
 use harness::{PAGE, finished, options};
@@ -525,7 +525,11 @@ fn written(seed: u64) -> (BTreeMap<String, Vec<u8>>, Pid, Pid) {
 /// Returns `files` with a byte in the middle of page `pid` of the data file inverted.
 fn flipped(mut files: Files, pid: Pid) -> Files {
     let options = options(FRAMES);
-    DataFile::of(&options).flip(&mut files, pid, PAGE / 2 - HEADER_LEN);
+    DataFile::new(&options.name, options.page_size as usize).flip(
+        &mut files,
+        pid,
+        PAGE / 2 - HEADER_LEN,
+    );
     files
 }
 

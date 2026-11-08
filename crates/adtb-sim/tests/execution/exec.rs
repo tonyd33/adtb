@@ -28,8 +28,8 @@ use adtb_testkit::uuid;
 
 use fixture::{Fixture, variants};
 
+use adtb_harness::seeds::sweep;
 use adtb_simkit::harness::finished;
-use adtb_simkit::seeds::sweep;
 use adtb_simkit::support::{field_type, row_ty, stored, to_ref, to_val};
 use adtb_simkit::{load, open};
 

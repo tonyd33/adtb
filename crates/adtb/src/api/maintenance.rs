@@ -180,7 +180,7 @@ impl<R: Runtime> Background<R> {
     }
 
     /// Panic the worker's next read of a page with `text`.
-    #[cfg(feature = "testing")]
+    #[cfg(any(test, feature = "testing"))]
     pub(super) fn fail(&self, text: String) {
         let mut c = self.control.lock(&self.rt);
         c.fail = Some(text);

@@ -3,11 +3,11 @@
 
 use adtb::storage::{self, Passphrase};
 use adtb::{ArchiveTarget, CallOptions, Database, Error, Log, RejectReason, RestorePoint, Value};
+use adtb_harness::search::Files;
 use adtb_lang::types::{Base, Ty};
 use adtb_sim::{Config, Sim};
 use adtb_simkit::api;
 use adtb_simkit::open;
-use adtb_simkit::search::Files;
 
 const APP: &str = r"module app
 add module app

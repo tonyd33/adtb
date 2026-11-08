@@ -13,13 +13,13 @@ use adtb::storage;
 use adtb::{
     ArchiveTarget, CallOptions, Database, Error, Log, OpenOptions, RestorePoint, Value, restore_in,
 };
+use adtb_harness::search::Files;
 use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::textual::read_document;
 use adtb_lang::types::{RelId, Ty};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::open;
-use adtb_simkit::search::Files;
 use arrow_schema::{DataType, UnionMode};
 
 use crate::arrow_ipc;

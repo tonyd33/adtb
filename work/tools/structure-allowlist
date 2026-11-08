@@ -30,11 +30,11 @@
 #                     fixture::Storage, or calls `Database::open_in` in its own body. The lines
 #                     left are local open helpers and helpers whose names only mention an open.
 # sim_test_damage:    definitions of `fn flip`, `zeroed`, `damage` or `damaged_part` in
-#                     crates/adtb-sim/tests: byte damage goes through adtb_simkit::damage.
+#                     crates/adtb-sim/tests: byte damage goes through adtb_harness::damage.
 # sim_test_offsets:   in crates/adtb-sim/tests, a product with a page size (`PAGE`, `*_PAGE`,
 #                     `PAGE_SIZE`, `page_size`, `8192`, `4096`), or `.get_mut(NAME)` /
 #                     `.get_mut(FILE)` on a device's files: a page's bytes come from
-#                     adtb_simkit::damage::DataFile. The lines left count sizes, not offsets.
+#                     adtb_harness::damage::DataFile. The lines left count sizes, not offsets.
 # crash_loops, crash_allows, sim_test_opens and sim_test_damage count names: a helper under
 #                     another name escapes them. sim_test_offsets counts spellings of arithmetic.
 crate_fields prod 1 crates/adtb-codegen/src/emit.rs
@@ -158,9 +158,9 @@ pub_fields prod 6 crates/adtb-server/src/wire/primitives.rs
 pub_fields prod 6 crates/adtb-server/src/wire/reassembly.rs
 pub_fields prod 2 crates/adtb-sim/src/check.rs
 pub_fields prod 5 crates/adtb-sim/src/sim.rs
-pub_fields prod 2 crates/adtb-simkit/src/common.rs
+pub_fields prod 2 crates/adtb-harness/src/common.rs
 pub_fields prod 6 crates/adtb-simkit/src/grants.rs
-pub_fields prod 5 crates/adtb-simkit/src/search.rs
+pub_fields prod 5 crates/adtb-harness/src/search.rs
 pub_fields prod 2 crates/adtb-sys/src/os/faults.rs
 pub_fields prod 11 crates/adtb-sys/src/runtime/faults.rs
 pub_fields prod 5 crates/adtb-sys/src/runtime/mod.rs
@@ -273,8 +273,8 @@ xmin_xmax prod 2 crates/adtb/src/write/past.rs
 xmin_xmax prod 2 crates/adtb/src/write/reindex.rs
 xmin_xmax prod 2 crates/adtb/src/write/verify.rs
 crash_allows test 1 crates/adtb-sim/tests/storage/pager.rs
-crash_allows prod 2 crates/adtb-simkit/src/crash.rs
-crash_loops prod 1 crates/adtb-simkit/src/crash.rs
+crash_allows prod 2 crates/adtb-harness/src/crash.rs
+crash_loops prod 1 crates/adtb-harness/src/crash.rs
 sim_test_offsets test 1 crates/adtb-sim/tests/execution/exec.rs
 sim_test_offsets test 1 crates/adtb-sim/tests/export/quarantine.rs
 sim_test_offsets test 1 crates/adtb-sim/tests/maintenance/scrub.rs

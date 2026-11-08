@@ -3,11 +3,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb::runtime::{IoError, OpKind};
 use adtb_sim::{Action, Config, Outcome, Plan, Sim, SimRuntime, Struck};
+use adtb_sys::runtime::{IoError, OpKind};
 use adtb_testkit::profile::{assert_reached, count, every_case};
 
-use crate::{api, crash};
+use crate::{crash, process};
 
 pub type Files = BTreeMap<String, Vec<u8>>;
 
@@ -89,7 +89,7 @@ pub struct Failed<T> {
 /// Returns the kind of each op `workload` numbers on a device holding `files`, run with no fault.
 fn eligible_ops<T>(files: &Files, seed: u64, workload: &impl Fn(&SimRuntime) -> T) -> Vec<OpKind> {
     let mut sim = Sim::with_files(seed, Config::default(), files.clone());
-    api::run(&mut sim, |rt| {
+    process::run(&mut sim, |rt| {
         workload(&rt);
     });
     sim.numbered().kinds().to_vec()
@@ -238,7 +238,7 @@ pub fn each_crash_image(
 ) {
     let mut sim = Sim::with_files(seed, Config::default(), files.clone());
     sim.record();
-    let also = api::run(&mut sim, |rt| workload(&rt));
+    let also = process::run(&mut sim, |rt| workload(&rt));
     let first = sim.numbered().armed_at();
     let recording = sim.recording();
     let every: Vec<u64> = (first as u64..=recording.len() as u64).collect();
@@ -287,7 +287,7 @@ pub fn each_start(
     let total = kinds.len();
     for at in chosen_starts(&kinds, most) {
         let mut sim = Sim::with_files(seed, Config::default(), files.clone());
-        api::run(&mut sim, |rt| workload(&rt, Some(at)));
+        process::run(&mut sim, |rt| workload(&rt, Some(at)));
         assert!(
             sim.numbered().struck().is_some(),
             "op {at} of {total} came up in the workload"

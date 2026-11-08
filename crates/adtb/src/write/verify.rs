@@ -5,13 +5,13 @@ use std::sync::Arc;
 use adtb_lang::types::RelId;
 
 use crate::btree::{self, Index};
-#[cfg(feature = "testing")]
+#[cfg(any(test, feature = "testing"))]
 use crate::catalog::relation_mark;
 use crate::exec::{AtSnapshot, Histories, Store};
 use crate::heap::Heap;
 use crate::key::{CtorId, Tid};
 use crate::mvcc::Safety;
-#[cfg(feature = "testing")]
+#[cfg(any(test, feature = "testing"))]
 use crate::plan::HeapId;
 use crate::plan::IndexId;
 use crate::runtime::Runtime;
@@ -508,7 +508,7 @@ impl<R: Runtime> Database<R> {
     }
 }
 
-#[cfg(feature = "testing")]
+#[cfg(any(test, feature = "testing"))]
 impl<R: Runtime> Database<R> {
     /// Returns the heap of constructor `ctor` of relation `relation`, by qualified name.
     pub(crate) fn heap_named(&self, relation: &str, ctor: &str) -> Option<HeapId> {

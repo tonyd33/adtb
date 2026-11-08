@@ -3,9 +3,11 @@
 use std::ops::Add;
 use std::time::{Duration, SystemTime};
 
+mod fatal;
 mod faults;
 
 pub use crate::buf::AlignedBuf;
+pub use fatal::{FATAL_IO, FatalIo, fatal};
 pub use faults::{
     AllocateFate, Draw, Faults, ForceFate, Landing, ReadFate, WriteFate, decide_allocate,
     decide_force, decide_read, decide_unforced, decide_write,

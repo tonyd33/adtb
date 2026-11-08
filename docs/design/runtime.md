@@ -341,7 +341,7 @@ Postconditions, in the order of the draws:
 A failed write or `fdatasync` is not retried by the engine; the
 process crashes and recovers ([README.md §4](README.md#4-errors)).
 
-Storage raises fatal I/O as an `adtb::storage::FatalIo` panic payload
+Storage raises fatal I/O as an `adtb_sys::runtime::FatalIo` panic payload
 carrying the original `IoError` and diagnostic operation context. An
 engine catch must resume that payload. Simulation helpers recognize it
 only outside `Sim::run`, after the simulator has applied its crash
@@ -478,7 +478,7 @@ Postconditions of the simulator:
 - A thread a daemon spawns is no daemon.
 
 After the crash and recovery of every round, the harness's crash loop
-(`adtb_simkit::crash::crash_loop`, [testing.md §5](testing.md#5-harness))
+(`adtb_harness::crash::crash_loop`, [testing.md §5](testing.md#5-harness))
 checks with `adtb_sim::check` that every acknowledged commit is
 present, that no unacknowledged state is reported as committed, and
 that `verify` finds no structural, cross or logical violation

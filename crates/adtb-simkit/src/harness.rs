@@ -1,7 +1,7 @@
 //! Hold the page size, file name and options of pager tests.
 
 use adtb::storage::Options;
-use adtb_sim::{Outcome, Sim, SimRuntime};
+pub use adtb_harness::process::finished;
 
 pub const PAGE: usize = 4096;
 pub const NAME: &str = "app.adt";
@@ -15,9 +15,4 @@ pub fn options(pool_frames: usize) -> Options {
         pool_frames,
         ..Options::new(NAME)
     }
-}
-
-/// Run `body` as a process that must finish.
-pub fn finished(sim: &mut Sim, body: impl FnOnce(SimRuntime)) {
-    assert_eq!(Outcome::Finished, sim.run(body));
 }

@@ -8,9 +8,9 @@ use adtb::batch::BatchBuilder;
 use adtb::key::Value;
 use adtb::storage::{self, FIRST_EDITABLE, PageKind, Pid};
 use adtb::{ArrowSchema, CallOptions, Database, Error, FatalReason, LoadOptions, Log, RecordBatch};
+use adtb_harness::damage::{DataFile, Files};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
-use adtb_simkit::damage::{DataFile, Files};
 use adtb_simkit::open;
 
 type Write = fn(&Database<SimRuntime>, Target) -> Result<(), Error>;

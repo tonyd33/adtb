@@ -6,8 +6,8 @@ use adtb::storage::HEADER_LEN;
 use adtb::{
     CallOptions, CreateOptions, Database, Log, OpenError, OpenOptions, TxnCallOptions, TxnOptions,
 };
+use adtb_harness::damage::{DataFile, Files};
 use adtb_lang::textual::print;
-use adtb_simkit::damage::{DataFile, Files};
 use adtb_sys::os::{Backend, OsRuntime};
 
 const SHOP: &str = r"module shop

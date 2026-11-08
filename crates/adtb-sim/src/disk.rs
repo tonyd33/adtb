@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::ops::Range;
 
-use adtb::runtime::{
+use adtb_sys::runtime::{
     AllocateFate, Faults, ForceFate, IoError, Landing, ReadFate, WriteFate, decide_allocate,
     decide_force, decide_read, decide_unforced, decide_write,
 };

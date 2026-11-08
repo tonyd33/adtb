@@ -1,7 +1,7 @@
 //! What a crash leaves on the device: pinned byte for byte on fixed seeds, and stated for allocate
 //! as assertions on the image.
 
-use adtb_simkit::common;
+use adtb_harness::common;
 
 use std::collections::BTreeMap;
 use std::time::Duration;

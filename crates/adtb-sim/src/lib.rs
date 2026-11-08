@@ -9,8 +9,6 @@ macro_rules! trace {
 
 mod check;
 mod disk;
-#[cfg(all(debug_assertions, not(test)))]
-mod instances;
 mod plan;
 mod rng;
 mod sim;

@@ -176,7 +176,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns the dirty page table: each page's `rec_lsn`.
-    #[cfg(feature = "testing")]
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn dirty_pages(&self) -> std::collections::BTreeMap<super::Pid, Lsn> {
         self.dirty_table().snapshot().into_iter().collect()
     }

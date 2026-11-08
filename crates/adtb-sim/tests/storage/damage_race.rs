@@ -10,8 +10,9 @@ use adtb::storage::{
 };
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use adtb_simkit::damage::{DataFile, Files};
-use adtb_simkit::{harness, seeds};
+use adtb_harness::damage::{DataFile, Files};
+use adtb_harness::seeds;
+use adtb_simkit::harness;
 
 use harness::{NAME, PAGE, finished};
 use seeds::{assert_reached, share, sweep};

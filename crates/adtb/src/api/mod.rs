@@ -26,7 +26,7 @@ mod server;
 mod settings;
 mod statements;
 mod stop;
-#[cfg(feature = "testing")]
+#[cfg(any(test, feature = "testing"))]
 mod testing;
 mod text;
 mod txn;
@@ -148,29 +148,29 @@ pub struct OpenOptions {
     pub registrations: Vec<Registration>,
     /// The bodies of the schema's host functions, bound before migrations run.
     pub host_fns: HostFns,
-    #[cfg(feature = "testing")]
+    #[cfg(any(test, feature = "testing"))]
     pub testing: crate::testing::Knobs,
 }
 
 impl OpenOptions {
     fn segment_size(&self) -> Option<u64> {
-        #[cfg(feature = "testing")]
+        #[cfg(any(test, feature = "testing"))]
         return self.testing.segment_size();
-        #[cfg(not(feature = "testing"))]
+        #[cfg(not(any(test, feature = "testing")))]
         None
     }
 
     fn limits(&self) -> Limits {
-        #[cfg(feature = "testing")]
+        #[cfg(any(test, feature = "testing"))]
         return self.testing.limits();
-        #[cfg(not(feature = "testing"))]
+        #[cfg(not(any(test, feature = "testing")))]
         Limits::default()
     }
 
     fn background_vacuum(&self) -> bool {
-        #[cfg(feature = "testing")]
+        #[cfg(any(test, feature = "testing"))]
         return self.testing.background_vacuum();
-        #[cfg(not(feature = "testing"))]
+        #[cfg(not(any(test, feature = "testing")))]
         true
     }
 

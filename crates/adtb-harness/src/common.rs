@@ -2,8 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb::runtime::{AlignedBuf, Completion, Done, FileId, Io, IoError, Op, Runtime, Threads};
 use adtb_sim::{Finding, FindingKind, Ledger, Recovered, SimIo, SimRuntime};
+use adtb_sys::runtime::{AlignedBuf, Completion, Done, FileId, Io, IoError, Op, Runtime, Threads};
 
 pub const SECTOR: usize = 512;
 
@@ -217,7 +217,7 @@ impl Recovered for Store {
 }
 
 pub fn sleep(rt: &SimRuntime, io: &mut SimIo, d: std::time::Duration) {
-    use adtb::runtime::Clock;
+    use adtb_sys::runtime::Clock;
     let at = rt.now() + d;
     assert_eq!(Ok(Done::Fired), complete(rt, io, Op::Timer { at }).result);
 }

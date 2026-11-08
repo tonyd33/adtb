@@ -13,9 +13,10 @@ use adtb::verify::{self, Inventory, Problem, Report, Sum};
 use adtb::{CallOptions, Capability, Database, Log};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 
-use adtb_simkit::damage::DataFile;
+use adtb_harness::crash;
+use adtb_harness::damage::DataFile;
 use adtb_simkit::open;
-use adtb_simkit::{api, crash, harness};
+use adtb_simkit::{api, harness};
 use adtb_sys::runtime::Faults;
 
 use harness::{finished, options};
@@ -906,7 +907,7 @@ fn a_holding_run_reports_a_stray_across_writers_once() {
 
 #[test]
 fn a_run_finds_nothing_under_writers_of_hot_chains_some_rolled_back() {
-    for seed in adtb_simkit::seeds::sweep(0..1) {
+    for seed in adtb_harness::seeds::sweep(0..1) {
         stressed(seed, |rt| {
             let db = open_stressed(rt.clone());
             seed_app(&db);
@@ -1238,7 +1239,7 @@ fn with_writers(rt: &SimRuntime, db: &Database<SimRuntime>, body: impl FnOnce())
 
 #[test]
 fn a_run_under_concurrent_writers_finds_nothing_when_nothing_is_wrong() {
-    for seed in adtb_simkit::seeds::sweep(0..3) {
+    for seed in adtb_harness::seeds::sweep(0..3) {
         stressed(seed, |rt| {
             let db = open_stressed(rt.clone());
             seed_app(&db);
@@ -1254,7 +1255,7 @@ fn a_run_under_concurrent_writers_finds_nothing_when_nothing_is_wrong() {
 
 #[test]
 fn a_run_under_concurrent_writers_finds_exactly_the_one_fault_planted() {
-    for seed in adtb_simkit::seeds::sweep(100..103) {
+    for seed in adtb_harness::seeds::sweep(100..103) {
         stressed(seed, |rt| {
             let db = open_stressed(rt.clone());
             seed_app(&db);
@@ -1355,7 +1356,7 @@ fn a_running_verify_has_a_job_row_and_a_finished_one_none() {
 
 #[test]
 fn a_live_tree_check_finds_nothing_while_writers_split_and_unlink_pages() {
-    for seed in adtb_simkit::seeds::sweep(200..203) {
+    for seed in adtb_harness::seeds::sweep(200..203) {
         stressed(seed, |rt| {
             let db = Db::create(rt.clone());
             let tree = db.tree;
@@ -1395,7 +1396,7 @@ fn a_live_tree_check_finds_nothing_while_writers_split_and_unlink_pages() {
 
 #[test]
 fn repeated_runs_find_nothing_while_writers_delete_and_vacuum() {
-    for seed in adtb_simkit::seeds::sweep(300..302) {
+    for seed in adtb_harness::seeds::sweep(300..302) {
         stressed(seed, |rt| {
             let db = open_stressed(rt.clone());
             seed_app(&db);
@@ -1566,7 +1567,7 @@ add relation users : User key id generate sequence
 
 #[test]
 fn a_vacuum_during_the_index_phase_leaves_no_false_orphan() {
-    for seed in adtb_simkit::seeds::sweep(0..4) {
+    for seed in adtb_harness::seeds::sweep(0..4) {
         stressed(seed, |rt| {
             let db = open_stressed(rt.clone());
             let rows: String = (0..120)
@@ -1621,7 +1622,7 @@ fn a_failed_store_write_returns_the_findings_and_says_they_were_not_kept() {
 
 #[test]
 fn a_tree_check_out_of_retries_goes_on_past_the_changing_pair() {
-    for seed in adtb_simkit::seeds::sweep(210..213) {
+    for seed in adtb_harness::seeds::sweep(210..213) {
         stressed(seed, |rt| {
             let db = Db::create(rt.clone());
             let tree = db.tree;
@@ -1879,7 +1880,7 @@ fn a_fault_planted_in_each_kind_of_index_is_a_missing_finding() {
 
 #[test]
 fn a_run_under_writers_of_expression_and_path_indexes_finds_nothing() {
-    for seed in adtb_simkit::seeds::sweep(400..402) {
+    for seed in adtb_harness::seeds::sweep(400..402) {
         stressed(seed, |rt| {
             let options = adtb::OpenOptions {
                 pool_bytes: Some(64 * PAGE_SIZE as u64),
@@ -1991,7 +1992,7 @@ fn findings_survive_a_crash_and_a_later_migration() {
 #[test]
 fn a_file_after_a_crash_of_writers_and_vacuums_holds_clean() {
     crash::silence_fatal_panics();
-    for seed in adtb_simkit::seeds::sweep(0..5) {
+    for seed in adtb_harness::seeds::sweep(0..5) {
         let config = Config {
             faults: Faults {
                 torn_p: 0.5,
@@ -2096,7 +2097,7 @@ fn orphans_beside_vacuum(seed: u64) -> Vec<String> {
 
 #[test]
 fn a_check_of_the_indexes_beside_vacuum_finds_no_orphan() {
-    for seed in adtb_simkit::seeds::sweep(0..1) {
+    for seed in adtb_harness::seeds::sweep(0..1) {
         let orphans = orphans_beside_vacuum(seed);
         assert!(orphans.is_empty(), "seed {seed}: {orphans:?}");
     }

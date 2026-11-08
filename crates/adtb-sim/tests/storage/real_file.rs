@@ -5,12 +5,13 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
 use adtb::catalog::Catalog;
-use adtb::storage::{FatalIo, OpenError, Options, PageKind, Pager, Pid};
+use adtb::runtime::FatalIo;
+use adtb::storage::{OpenError, Options, PageKind, Pager, Pid};
 use adtb::testing::Knobs;
 use adtb::{CallOptions, CreateOptions, Database, Log, OpenOptions, verify};
+use adtb_harness::seeds::{assert_reached, sweep};
 use adtb_lang::schema::ValueDef;
 use adtb_lang::textual::print;
-use adtb_simkit::seeds::{assert_reached, sweep};
 use adtb_sys::os::{Backend, Faults, Loss, OsRuntime};
 
 const SCHEMA: &str = r"module shop
@@ -247,7 +248,7 @@ macro_rules! on_both_backends {
             $(
                 #[test]
                 fn $name() {
-                    if let Some(backend) = adtb_simkit::backends::uring(64) {
+                    if let Some(backend) = adtb_harness::backends::uring(64) {
                         super::$name(backend);
                     }
                 }

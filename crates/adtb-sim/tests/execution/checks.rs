@@ -1,5 +1,5 @@
-use adtb_simkit::common;
-use adtb_simkit::seeds;
+use adtb_harness::common;
+use adtb_harness::seeds;
 
 use std::ops::Range;
 use std::time::Duration;

@@ -12,10 +12,11 @@ use adtb::runtime::{Clock, Threads};
 use adtb::storage::{Damage, HEADER_LEN, Pid, Quarantine};
 use adtb::testing::Plant;
 use adtb::{Database, Log, OpenOptions};
+use adtb_harness::damage::{DataFile, Files};
+use adtb_harness::{crash, seeds};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
-use adtb_simkit::damage::{DataFile, Files};
+use adtb_simkit::api;
 use adtb_simkit::open;
-use adtb_simkit::{api, crash, seeds};
 
 const APP: &str = r"module app
 add module app

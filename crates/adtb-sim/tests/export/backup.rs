@@ -16,11 +16,12 @@ use adtb::{
     HostFns, Log, OpenOptions, Position, Proof, RejectReason, RestorePoint, TxnCallOptions,
     TxnOptions, proof_in, prove_in, restore_in,
 };
+use adtb_harness::common;
+use adtb_harness::damage::DataFile;
+use adtb_harness::search::{self, Files};
 use adtb_sim::{Action, Config, Match, Outcome, Plan, Sim, SimRuntime, Struck};
-use adtb_simkit::damage::DataFile;
+use adtb_simkit::api;
 use adtb_simkit::open;
-use adtb_simkit::search::{self, Files};
-use adtb_simkit::{api, common};
 use adtb_sys::runtime::Faults;
 use adtb_testkit::profile::{assert_reached, every_case, sweep};
 
@@ -1368,7 +1369,7 @@ fn pager_with_bitmap(options: &Options) -> (Files, Pid, Pid) {
 fn a_corrupt_page_under_an_unreadable_bitmap_is_listed() {
     let options = pager_options(FILE, false, 1 << 20);
     let (mut files, used, bitmap) = pager_with_bitmap(&options);
-    let data = DataFile::of(&options);
+    let data = DataFile::new(&options.name, options.page_size as usize);
     data.flip(&mut files, bitmap, 200 - HEADER_LEN);
     data.flip(&mut files, used, 200 - HEADER_LEN);
     let mut sim = Sim::with_files(46, Config::default(), files);
@@ -1395,7 +1396,11 @@ fn a_corrupt_free_page_is_not_listed() {
         free
     });
     files = sim.files();
-    DataFile::of(&options).flip(&mut files, free, 200 - HEADER_LEN);
+    DataFile::new(&options.name, options.page_size as usize).flip(
+        &mut files,
+        free,
+        200 - HEADER_LEN,
+    );
     let mut sim = Sim::with_files(48, Config::default(), files);
     api::run(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt, &options).unwrap();
@@ -1427,7 +1432,9 @@ fn a_changed_page_with_a_corrupt_store_is_copied_from_the_pool() {
                     &rt,
                     &mut io,
                     file,
-                    DataFile::of(&options).range(page).start as u64,
+                    DataFile::new(&options.name, options.page_size as usize)
+                        .range(page)
+                        .start as u64,
                     &vec![0xee; 4096],
                 )
                 .unwrap();
@@ -1481,8 +1488,11 @@ fn an_unreadable_page_is_listed() {
         pager.update(&[page], |v| v[0][100] = 7).unwrap();
         pager.flush_log();
         pager.flush_pages(usize::MAX);
-        let reads =
-            Match::kind(OpKind::Read).offset(DataFile::of(&options).range(page).start as u64);
+        let reads = Match::kind(OpKind::Read).offset(
+            DataFile::new(&options.name, options.page_size as usize)
+                .range(page)
+                .start as u64,
+        );
         rt.plan(Plan::new().rule(reads, Action::Fail(IoError::Failed)));
         let mut empty = false;
         let manifest = backup_with(&pager, TARGET, &mut |at, bytes| {
@@ -1852,7 +1862,11 @@ fn only_directories_a_run_creates_are_forced() {
 fn a_restore_under_a_rotted_bitmap_opens_and_lists_it() {
     let options = pager_options(FILE, false, 1 << 20);
     let (mut files, used, bitmap) = pager_with_bitmap(&options);
-    DataFile::of(&options).flip(&mut files, bitmap, 200 - HEADER_LEN);
+    DataFile::new(&options.name, options.page_size as usize).flip(
+        &mut files,
+        bitmap,
+        200 - HEADER_LEN,
+    );
     let mut sim = Sim::with_files(79, Config::default(), files);
     api::run(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
@@ -2078,7 +2092,11 @@ fn a_lost_write_changed_again_before_its_copy_restores_both_changes() {
 fn a_listed_page_a_replayed_image_overwrites_restores_healed() {
     let options = pager_options(FILE, false, 1 << 20);
     let (mut files, used, _) = pager_with_bitmap(&options);
-    DataFile::of(&options).flip(&mut files, used, 200 - HEADER_LEN);
+    DataFile::new(&options.name, options.page_size as usize).flip(
+        &mut files,
+        used,
+        200 - HEADER_LEN,
+    );
     let mut sim = Sim::with_files(52, Config::default(), files);
     api::run(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt.clone(), &options).unwrap();

@@ -1,4 +1,4 @@
-use adtb_simkit::common;
+use adtb_harness::common;
 
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind, panic_any};
@@ -572,7 +572,7 @@ fn ordinary_panics_are_not_accepted_as_fatal_io_crashes() {
     ] {
         let mut sim = Sim::new(31, Config::default());
         let caught = catch_unwind(AssertUnwindSafe(|| {
-            adtb_simkit::crash::run_process(&mut sim, |_| match case {
+            adtb_harness::crash::run_process(&mut sim, |_| match case {
                 OrdinaryPanic::Owned => panic_any(MESSAGE.to_owned()),
                 OrdinaryPanic::Borrowed => panic_any(MESSAGE),
                 OrdinaryPanic::Other => panic_any(17_u32),
@@ -638,7 +638,7 @@ fn failed_storage_operations_preserve_their_typed_io_cause() {
         }));
         let payload = caught.expect_err("the planted storage failure must stop the process");
         let failure = payload
-            .downcast_ref::<adtb::storage::FatalIo>()
+            .downcast_ref::<adtb::runtime::FatalIo>()
             .unwrap_or_else(|| {
                 panic!(
                     "{case:?}: expected typed fatal I/O, found {:?}",
@@ -667,7 +667,7 @@ fn genuine_storage_io_failures_are_accepted_as_process_crashes() {
         (StorageFailure::LogCreate, IoError::Failed),
     ] {
         let mut sim = Sim::new(33, Config::default());
-        let outcome = adtb_simkit::crash::run_process(&mut sim, |rt| {
+        let outcome = adtb_harness::crash::run_process(&mut sim, |rt| {
             fail_storage_operation(rt, case, cause);
         });
         assert_eq!(Outcome::Crashed, outcome, "{case:?}");

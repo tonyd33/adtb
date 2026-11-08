@@ -10,13 +10,13 @@ use adtb::{
     ArchiveTarget, CallOptions, Database, Error, FatalReason, Log, OpenOptions, RejectReason,
     RestorePoint, Value, restore_in,
 };
+use adtb_harness::search::{self, Files};
 use adtb_lang::schema::Schema;
 use adtb_lang::textual::{print_document, read_document};
 use adtb_lang::types::RelId;
 use adtb_sim::{Config, Match, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::open;
-use adtb_simkit::search::{self, Files};
 
 const FILE: &str = "app.adt";
 const DUMP: &str = "d";

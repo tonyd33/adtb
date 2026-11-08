@@ -7,10 +7,14 @@ findings the engine holds. It also holds the controls a test drives the
 engine with where no public call reaches: faults planted beneath the
 checks of the write path, flushes, holds and hooks, and the settings an
 open takes only in tests. It exists only with the `testing` feature of
-`adtb`, which only the tests of `adtb-sim` enable.
+`adtb`, which only the tests of `adtb-sim` enable, and in `adtb`'s own
+unit tests.
 
-The harness the simulator's tests share, crashes, opens, component
-worlds and byte damage, is `adtb-simkit` (§5).
+The harness the simulator's tests share is two crates (§5):
+`adtb-harness`, which names no engine type, holds the crash loop,
+failure searches, byte damage and runs of a simulation; `adtb-simkit`
+holds the opens, the loading of rows, component worlds and the
+isolation workload over the engine.
 
 ## 1. Entry points
 
@@ -243,10 +247,21 @@ through the store `store` answers.
 
 ## 5. Harness
 
-`adtb-simkit` holds what the simulator's test binaries share above
-`adtb_sim`: the crash loop, the opens, the loading of rows, the
-component world, byte damage and the isolation workload over the
-engine ([runtime.md §6](runtime.md#6-isolation-histories)).
+`adtb-harness` holds what the simulator's tests share above `adtb_sim`
+that names no engine type: the crash loop, the failure searches, byte
+damage over the file layout and runs of a simulation. It depends on
+`adtb-sim`, `adtb-sys` and `adtb-testkit` only, so `adtb`'s unit tests
+use it as `adtb-sim`'s tests do. `adtb-simkit` holds what names the
+engine: the opens, the loading of rows, the component world and the
+isolation workload over the engine
+([runtime.md §6](runtime.md#6-isolation-histories)).
+
+- The crash loop recognises a fatal I/O failure by the
+  `adtb_sys::runtime::FatalIo` payload.
+- Byte damage addresses a page by its number in the file and the page
+  size the file was created with. A flip lands in the page body, past
+  the page header of `damage::HEADER_LEN` bytes, the engine's
+  page header length.
 
 - A test's database is bound by the engine's own catalog: the harness
   assigns no owner, store or constructor id to a structure of an engine
@@ -274,6 +289,8 @@ engine ([runtime.md §6](runtime.md#6-isolation-histories)).
   counted. The size products left are counted the same way. The counts
   only fall.
 
+`adtb_harness`:
+
 ```text
 crash::crash_loop(&mut sim, seed, faults, Rounds::new(count, base, span),
                   workload: FnMut(&mut Round), recovered: FnMut(SimRuntime, &Ledger) -> T)
@@ -283,6 +300,15 @@ Checked::{crashed(), allowed() -> &[Violation], reopened() -> &T}
 Round::crash(body) -> bool; Round::crash_after_setup(setup, body: FnOnce(rt, T)) -> bool
 Round::{seed, index, ledger, sim}
 Reopened::{allows(&Violation), settle(&Ledger), last()}
+process::{run(&mut sim, body) -> T, once(seed, body) -> T, finished(&mut sim, body)}
+damage::DataFile::{new(name, page_size), range(page), bytes, page, page_mut,
+                   flip(files, page, at), zero, replace, truncate, extend, cut}
+                                             // page: impl Into<u64>, a Pid among them
+```
+
+`adtb_simkit`:
+
+```text
 open::{FILE, options(workers), open, opened, reopen}
 fixture::Storage::{create(rt, &Options), reopen(rt, &Layout), layout,
                    commit_log, large, heap, index, tree, pager, split, parts, verify}
@@ -294,8 +320,7 @@ load::{open(rt, decls), open_with(rt, decls, &OpenOptions),
        sim(seed, config, &fixture), rows_of(to, from, &rows), relation_of(to, from, rel)}
 load::WritePath::{of(rt, &fixture, pool), loaded(rt, &fixture, pool), reopen(rt, pool),
                   db, schema, program, into_db, ty, prepare}
-damage::DataFile::{new(name, page_size), of(&Options), range, bytes, page,
-                   page_mut, flip(files, pid, at), zero, replace, truncate, extend, cut}
+api::{run, once}; harness::finished           // the process calls, re-exported
 ```
 
 Postconditions of `crash_loop`:

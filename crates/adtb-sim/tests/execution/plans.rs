@@ -2,8 +2,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use adtb::runtime::{AlignedBuf, Clock, Done, Faults, Io, IoError, Op, OpKind, Runtime, Threads};
+use adtb_harness::common::{self, complete, open, run, sector, sleep, write};
 use adtb_sim::{Action, Config, Match, Outcome, Plan, Planned, Sim};
-use adtb_simkit::common::{self, complete, open, run, sector, sleep, write};
 use adtb_testkit::profile::assert_reached;
 
 fn held_writes() -> Plan {

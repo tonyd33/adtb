@@ -15,6 +15,8 @@ mod version;
 mod vm;
 
 #[cfg(test)]
+mod claims_tests;
+#[cfg(test)]
 mod tests;
 
 pub use dir::max_fanout;

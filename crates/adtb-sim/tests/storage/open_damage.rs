@@ -7,9 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use adtb::runtime::IoError;
 use adtb::storage::{Damage, HEADER_LEN, Options, PageError, Pager, Pid, Quarantine};
 use adtb::{CallOptions, Database, Error, FatalReason, Log, OpenError, OpenOptions, TxnOptions};
+use adtb_harness::damage::{DataFile, Files};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
-use adtb_simkit::damage::{DataFile, Files};
 use adtb_simkit::harness::finished;
 use adtb_simkit::open;
 use adtb_sys::runtime::Faults;
@@ -422,7 +422,7 @@ fn opens_damaged(c: &Crashes, mut files: Files) -> bool {
 /// damaged file does not read as migrated. The first flush after holds the proof, and does.
 #[test]
 fn a_crashed_migration_on_a_damaged_status_page_does_not_read_as_applied() {
-    for seed in adtb_simkit::seeds::sweep(30..31) {
+    for seed in adtb_harness::seeds::sweep(30..31) {
         let c = Crashes::of(seed);
         let commit = c.commit_flush();
         let before = c.recovered(c.image(commit - 1));
@@ -456,7 +456,7 @@ fn catalog_read(db: &Database<SimRuntime>) -> bool {
 
 #[test]
 fn an_aborted_writer_on_a_damaged_status_page_leaves_the_catalog_unread() {
-    for seed in adtb_simkit::seeds::sweep(33..34) {
+    for seed in adtb_harness::seeds::sweep(33..34) {
         let c = Crashes::of(seed);
         let commit = c.commit_flush();
         let mut sim = Sim::with_files(seed, Config::default(), c.image(commit - 1));
@@ -925,7 +925,7 @@ fn a_flip_of_any_page_kind_opens_and_verify_finds_it() {
     let (files, _) = seeded(seed, status_page);
     let kinds = page_kinds(&files[FILE]);
     let count = kinds.values().map(|k| k.0).collect::<BTreeSet<_>>().len();
-    let flips = usize::try_from(adtb_simkit::seeds::sweep(0..count as u64).end).unwrap();
+    let flips = usize::try_from(adtb_harness::seeds::sweep(0..count as u64).end).unwrap();
     for page in flip_order(&kinds).into_iter().take(flips) {
         let mut flipped = files.clone();
         DATA.flip(&mut flipped, page, 300 - HEADER_LEN);
@@ -996,7 +996,7 @@ fn an_unreadable_page_fails_open_unmarked() {
     let marks = with_pager(&mut marks_of, Pager::quarantine_page);
     let mark_bytes = |f: &Files| DATA.page(f, marks).to_vec();
     let mut refused = 0;
-    for seed in adtb_simkit::seeds::sweep(0..16) {
+    for seed in adtb_harness::seeds::sweep(0..16) {
         let mut sim = Sim::with_files(seed, Config::default(), files.clone());
         sim.set_faults(Faults {
             latent_p: 0.02,

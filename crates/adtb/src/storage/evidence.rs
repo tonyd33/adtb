@@ -752,7 +752,7 @@ impl Evidence {
     }
 
     /// Returns how many damaged pages this open has walked the objects for.
-    #[cfg(feature = "testing")]
+    #[cfg(any(test, feature = "testing"))]
     pub(super) fn walked(&self) -> u64 {
         self.walked
     }

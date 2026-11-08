@@ -11,8 +11,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use adtb::batch::{self, Batch, BatchBuilder, Type};
 use adtb::key::{Scalar, Value as Stored};
+use adtb::runtime::FatalIo;
 use adtb::runtime::{IoError, OpKind};
-use adtb::storage::{FatalIo, Pager};
+use adtb::storage::Pager;
 use adtb::{
     CallOptions, Database, Determinism, Error, FatalReason, Fault, HostError, HostFns, Log,
     OpenError, OpenOptions, Position, RejectReason, TxnCallOptions, TxnOptions,

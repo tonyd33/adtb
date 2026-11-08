@@ -8,10 +8,10 @@ use std::sync::Mutex;
 use adtb::runtime::{OpKind, Runtime};
 use adtb::storage::{aside, creating, marker, marker_bytes};
 use adtb::{Database, Log, OpenError, OpenOptions, TxnCallOptions, TxnOptions};
+use adtb_harness::search::{self, Files};
 use adtb_sim::{Config, Match, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::open;
-use adtb_simkit::search::{self, Files};
 use adtb_testkit::profile::{assert_reached, every_case};
 
 const FILE: &str = "create.adt";

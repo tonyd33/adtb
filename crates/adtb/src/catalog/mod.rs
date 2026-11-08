@@ -27,7 +27,7 @@ pub mod values;
 
 pub use holdings::Holdings;
 pub(crate) use holdings::UNHELD_MARK;
-#[cfg(feature = "testing")]
+#[cfg(any(test, feature = "testing"))]
 pub(crate) use holdings::{LARGE_MARK, relation_mark};
 
 #[cfg(test)]

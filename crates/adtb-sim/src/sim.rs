@@ -8,11 +8,11 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 
-use adtb::runtime::{
+use adtb_sys::pages;
+use adtb_sys::runtime::{
     AlignedBuf, Clock, Completion, Done, Entropy, Faults, FileId, Instant, Io, IoError, Op, OpKind,
     Runtime, ThreadId, Threads, Ticket,
 };
-use adtb_sys::pages;
 
 use crate::disk::{Ctx, Disk, InFlight, Ino, Recording};
 use crate::plan::{Action, Count, Match, Numbered, OpLog, Plan, Planner};

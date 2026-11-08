@@ -1,0 +1,18 @@
+[package]
+name = "adtb-harness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+adtb-sim.workspace = true
+adtb-sys.workspace = true
+adtb-testkit.workspace = true
+
+[dev-dependencies]
+adtb-lang = { workspace = true, features = ["test-heap-cap"] }
+
+[lints]
+workspace = true

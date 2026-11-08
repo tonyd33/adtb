@@ -226,7 +226,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns how many damaged pages this open has walked the objects for.
-    #[cfg(feature = "testing")]
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn walked(&self) -> u64 {
         self.evidence().walked()
     }

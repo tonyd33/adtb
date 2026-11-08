@@ -45,7 +45,7 @@ impl Rng {
     }
 }
 
-impl adtb::runtime::Draw for Rng {
+impl adtb_sys::runtime::Draw for Rng {
     fn chance(&mut self, p: f64) -> bool {
         Rng::chance(self, p)
     }

@@ -358,7 +358,7 @@ impl Txn {
         self.xid
     }
 
-    #[cfg(feature = "testing")]
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn snapshot(&self) -> &Snapshot {
         &self.snapshot
     }
@@ -704,7 +704,7 @@ impl<R: Runtime> Database<R> {
     }
 
     /// Returns the planner's description of the relations the database runs.
-    #[cfg(feature = "testing")]
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn planned(&self) -> &Catalog {
         &self.catalog
     }
@@ -1203,7 +1203,7 @@ impl<R: Runtime> Database<R> {
     }
 
     /// Returns how many transactions the serializer tracks.
-    #[cfg(feature = "testing")]
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn tracked(&self) -> usize {
         self.ser.lock(&self.rt).tracked()
     }

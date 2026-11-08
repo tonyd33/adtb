@@ -283,7 +283,7 @@ impl<R: Runtime> Verifier<R> {
         (job, run, started)
     }
 
-    #[cfg(feature = "testing")]
+    #[cfg(any(test, feature = "testing"))]
     pub(super) fn held_findings(&self) -> usize {
         self.findings.lock(&self.rt).rows.len()
     }
@@ -679,7 +679,7 @@ impl<R: Runtime> Engine<R> {
     }
 
     /// Refuse every page of the heap kept rows lie in, as if each failed its checksum.
-    #[cfg(feature = "testing")]
+    #[cfg(any(test, feature = "testing"))]
     pub(super) fn damage_kept_store(&self) {
         if let Ok(pages) = self.catalog.kept_pages(&self.pager) {
             for pid in pages {

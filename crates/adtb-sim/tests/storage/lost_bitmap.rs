@@ -10,9 +10,9 @@ use adtb::storage::{
     self, Crc32c, Damage, HEADER_LEN, Lsn, Options, PageError, PageKind, Pager, Pid, Quarantine,
 };
 use adtb::{CallOptions, Database, Error, FatalReason, Log, OpenOptions};
+use adtb_harness::damage::{DataFile, Files};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
-use adtb_simkit::damage::{DataFile, Files};
 use adtb_simkit::harness::finished;
 use adtb_simkit::open;
 use adtb_testkit::profile::sweep;

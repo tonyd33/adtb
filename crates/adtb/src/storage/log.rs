@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::time::SystemTime;
 
-use crate::runtime::{AlignedBuf, Done, FileId, IoError, Op, Runtime};
+use crate::runtime::{AlignedBuf, Done, FileId, IoError, Op, Runtime, fatal};
 
 use super::alloc::edits_by;
 use super::block::{LogImage, LogSource, Slot, data_lsn, frame};
-use super::driver::{Driver, fatal};
+use super::driver::Driver;
 use super::pager::{ArchiveHook, PageError, Pager, parent};
 use super::record::Record;
 use super::{Lsn, Pid, Position};

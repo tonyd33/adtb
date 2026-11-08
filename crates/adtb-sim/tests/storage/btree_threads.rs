@@ -10,10 +10,10 @@ use adtb::storage::{PageKind, Pager, Pid, Walk, kind};
 use adtb_sim::{Config, Recording, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 
-use adtb_simkit::crash;
-use adtb_simkit::draw;
+use adtb_harness::crash;
+use adtb_harness::draw;
+use adtb_harness::seeds;
 use adtb_simkit::harness;
-use adtb_simkit::seeds;
 
 use crash::{Reopen, Rounds, crash_loop};
 use draw::below;

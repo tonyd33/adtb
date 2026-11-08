@@ -147,7 +147,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns each damage record in the retained log, in log order, none when its segments cannot
     /// be listed or opened.
-    #[cfg(feature = "testing")]
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn logged_damage(&self) -> Vec<(Pid, Damage)> {
         let mut damage = Vec::new();
         let Ok((_pin, mut img)) = self.load_log() else {
@@ -172,7 +172,7 @@ impl<R: Runtime> Pager<R> {
     /// it covers and its snapshot's bytes. None when its segments cannot be listed or opened.
     ///
     /// Panic at a batch whose records do not decode.
-    #[cfg(feature = "testing")]
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn logged_safe_snapshots(&self) -> Vec<(Position, Vec<u8>)> {
         let mut markers = Vec::new();
         let Ok((_pin, mut img)) = self.load_log() else {

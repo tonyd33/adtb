@@ -10,10 +10,11 @@ use adtb::mvcc::{CommitLog, Status, Transactions, Xid};
 use adtb::runtime::Runtime;
 use adtb::storage::{self, Damage, HEADER_LEN, Lsn, PageError, PageKind, Pager, Pid, Quarantine};
 use adtb::{Database, Error, FatalReason, Log};
+use adtb_harness::common;
+use adtb_harness::damage::{DataFile, Files};
 use adtb_sim::{Config, Sim, SimRuntime};
-use adtb_simkit::damage::{DataFile, Files};
 use adtb_simkit::open;
-use adtb_simkit::{api, common, harness};
+use adtb_simkit::{api, harness};
 use adtb_testkit::profile::assert_reached;
 
 const APP: &str = r"module app

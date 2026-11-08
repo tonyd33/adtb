@@ -1,8 +1,9 @@
-use adtb::heap::{Error, FieldType, Header, Heap, LargeStore, WriteTarget};
-use adtb::key::{Scalar, Value};
-use adtb::runtime::Threads;
-use adtb::storage::{Options, Pager};
 use adtb_sim::{Config, Outcome, Sim};
+
+use super::{Error, FieldType, Header, Heap, LargeStore, WriteTarget};
+use crate::key::{Scalar, Value};
+use crate::runtime::Threads;
+use crate::storage::{Options, Pager};
 
 fn options() -> Options {
     Options {

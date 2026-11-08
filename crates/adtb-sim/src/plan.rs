@@ -6,7 +6,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use adtb::runtime::{Instant, IoError, Op, OpKind, Ticket};
+use adtb_sys::runtime::{Instant, IoError, Op, OpKind, Ticket};
 
 /// A set of ops, chosen by kind, by the path an op names and by its other arguments.
 ///

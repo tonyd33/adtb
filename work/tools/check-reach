@@ -102,7 +102,7 @@ storage="crates/adtb/src/storage/ crates/adtb/src/heap/ crates/adtb/src/btree/ c
   crates/adtb/src/api/file.rs crates/adtb/src/api/error.rs crates/adtb/src/api/cause.rs
   crates/adtb/src/api/txn.rs crates/adtb/src/api/settings.rs crates/adtb/src/api/bundle.rs
   crates/adtb/src/api/backup.rs crates/adtb/src/exec/store.rs
-  crates/adtb/src/api/dump.rs crates/adtb-sys/src/pages/ crates/adtb-sim/src/ crates/adtb-simkit/src/
+  crates/adtb/src/api/dump.rs crates/adtb-sys/src/pages/ crates/adtb-sim/src/ crates/adtb-simkit/src/ crates/adtb-harness/src/
   crates/adtb-testkit/src/profile.rs crates/adtb-sim/tests/storage/main.rs
   crates/adtb-sim/tests/storage/damage_search/"
 # shellcheck disable=SC2086 # a list of paths without spaces

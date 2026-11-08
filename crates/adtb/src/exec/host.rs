@@ -94,7 +94,7 @@ impl HostCall {
             })
         }));
         let out = match ran {
-            Err(payload) if payload.is::<crate::storage::FatalIo>() => resume_unwind(payload),
+            Err(payload) if payload.is::<crate::runtime::FatalIo>() => resume_unwind(payload),
             other => other.ok().flatten(),
         };
         Ok(out.ok_or(Fault::FunctionFailed))

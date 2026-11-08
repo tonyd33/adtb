@@ -9,12 +9,13 @@ use adtb::{
     ArchiveTarget, CallOptions, Database, Error, FatalReason, Log, OpenOptions, RestorePoint,
     restore_in,
 };
+use adtb_harness::common;
+use adtb_harness::damage::DataFile;
 use adtb_sim::{Config, Sim, SimRuntime};
-use adtb_simkit::damage::DataFile;
+use adtb_simkit::api;
 use adtb_simkit::open;
-use adtb_simkit::{api, common};
 
-use adtb_simkit::damage::Files;
+use adtb_harness::damage::Files;
 
 const SEED: u64 = 61;
 const FILE: &str = "past_end.adt";

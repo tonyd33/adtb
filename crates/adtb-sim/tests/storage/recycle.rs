@@ -10,8 +10,8 @@ use adtb::storage::{
     Pager, Pid, Quarantine,
 };
 use adtb::verify::{self, Inventory, Problem};
+use adtb_harness::damage::{DataFile, Files};
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
-use adtb_simkit::damage::{DataFile, Files};
 use adtb_simkit::harness;
 use adtb_testkit::profile::every_case;
 

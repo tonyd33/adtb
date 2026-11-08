@@ -1,5 +1,5 @@
+use adtb_harness::seeds;
 use adtb_simkit::elle::{self, Elems, Kind, Reply, Req, Worker, simulate, simulate_with};
-use adtb_simkit::seeds;
 use std::ops::Range;
 
 use std::sync::{Arc, Mutex};

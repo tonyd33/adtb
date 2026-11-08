@@ -289,7 +289,7 @@ fn a_rename_into_the_parent_is_forced_by_both_directories_on_the_sim() {
     for seed in 0..16 {
         for synced in PARENT_SYNCS {
             let mut sim = Sim::new(seed, Config::default());
-            adtb_simkit::common::run_then_crash(&mut sim, |rt, io| {
+            adtb_harness::common::run_then_crash(&mut sim, |rt, io| {
                 rename_into_the_parent(rt, io, synced);
             });
             let files = sim.files().into_keys().collect();
@@ -556,7 +556,7 @@ fn on_pool(name: &str, body: fn(&OsRuntime)) {
 }
 
 fn on_uring(name: &str, body: fn(&OsRuntime)) {
-    if let Some(backend) = adtb_simkit::backends::uring(4) {
+    if let Some(backend) = adtb_harness::backends::uring(4) {
         body(&OsRuntime::new(scratch(name), backend));
     }
 }
@@ -616,7 +616,7 @@ macro_rules! contract {
                 fn $name() {
                     super::on_faulty(
                         concat!("faulty-uring-", stringify!($name)),
-                        adtb_simkit::backends::uring(4),
+                        adtb_harness::backends::uring(4),
                         super::$name::<adtb_sys::os::OsRuntime>,
                     )
                 }
@@ -694,7 +694,7 @@ fn unaligned_requests_fail_on_the_uring() {
 #[test]
 fn a_refused_ring_fails_the_test_unless_its_absence_is_declared() {
     let absent = std::env::var("ADTB_URING").as_deref() == Ok("absent");
-    let chosen = std::panic::catch_unwind(|| adtb_simkit::backends::uring(u32::MAX));
+    let chosen = std::panic::catch_unwind(|| adtb_harness::backends::uring(u32::MAX));
     match chosen {
         Ok(backend) => {
             assert!(absent, "a refused ring is not chosen");
@@ -744,7 +744,7 @@ fn writes_submitted_before_a_drop_have_landed_when_it_returns_on_the_pool() {
 
 #[test]
 fn writes_submitted_before_a_drop_have_landed_when_it_returns_on_the_uring() {
-    if let Some(backend) = adtb_simkit::backends::uring(4) {
+    if let Some(backend) = adtb_harness::backends::uring(4) {
         writes_submitted_before_a_drop_have_landed_when_it_returns("uring-drop-drains", backend);
     }
 }

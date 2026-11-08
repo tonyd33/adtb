@@ -8,27 +8,10 @@ use adtb::{
     AdHocTransaction, CallOptions, Completion, Database, DynRows, Error, Observation, RejectReason,
     RoleSession, TaskOptions, TxnCallOptions, Value,
 };
+pub use adtb_harness::process::{once, run};
 use adtb_lang::textual::print;
 use adtb_lang::types::Ty;
-use adtb_sim::{Config, Outcome, Sim, SimRuntime};
-
-/// Runs `body` as one process of `sim` and returns what it returns.
-pub fn run<T>(sim: &mut Sim, body: impl FnOnce(SimRuntime) -> T) -> T {
-    finished(sim, body, "the run")
-}
-
-/// Runs `body` as the one process of a new simulation seeded `seed` and returns what it returns.
-pub fn once<T>(seed: u64, body: impl FnOnce(SimRuntime) -> T) -> T {
-    let mut sim = Sim::new(seed, Config::default());
-    finished(&mut sim, body, &format!("the run of seed {seed}"))
-}
-
-fn finished<T>(sim: &mut Sim, body: impl FnOnce(SimRuntime) -> T, what: &str) -> T {
-    let mut got = None;
-    let outcome = sim.run(|rt| got = Some(body(rt)));
-    assert_eq!(Outcome::Finished, outcome, "{what} finishes");
-    got.expect("the run returns")
-}
+use adtb_sim::SimRuntime;
 
 /// Returns each row of `rows`, printed, in order.
 pub fn printed(rows: DynRows) -> Vec<String> {
