@@ -232,11 +232,11 @@ impl<R: Runtime> Append<'_, R> {
         let mut last = None;
         for &pid in pids {
             let log = &mut self.log.log;
-            last = self
-                .meta
-                .evidence
-                .free(&self.witness, log, pid, whole)
-                .or(last);
+            let freed = self.meta.evidence.free(&self.witness, log, pid, whole);
+            if let Some(lsn) = freed {
+                self.meta.table.freeing(&self.witness, pid, lsn);
+                last = Some(lsn);
+            }
         }
         last
     }
@@ -342,7 +342,9 @@ pub(super) fn wrote_for_test(pid: Pid) -> Wrote {
 ///
 /// - A page is written only under a latch, and only once the log is durable past its LSN.
 /// - A page is in the dirty page table from the change that dirties its clean page, which logs a
-///   full-page image, until a data file force covers a write of it with no change since.
+///   full-page image, until a data file force covers a write of it with no change since, or, for
+///   a page refused holding changes the file lacks, until a free of it is durable or a chain
+///   start of it is logged and then written.
 /// - A record and every in-memory consequence of it (the page's dirty entry, its expected
 ///   LSN, its damage record, the LSN map root) are made in one hold of the log, so a
 ///   checkpoint, which takes its snapshot in the same hold, sees all of them or none.
@@ -1196,14 +1198,14 @@ impl<R: Runtime> Pager<R> {
 
     /// Refuse `pid` from now on, dropping its memory. Memory holding changes the file lacks is
     /// written first, so the next force of the data file drops its dirty entry; during recovery
-    /// or on a file quarantined whole it is dropped unwritten and its dirty entry stays, so
-    /// recovery replays them. Record the damage unless it is [`Damage::Unreadable`], durable on
-    /// return once recovery has ended and unless the file is quarantined whole.
+    /// or on a file quarantined whole it is dropped unwritten and its dirty entry stays until a
+    /// free of the page is durable, so recovery replays them. Record the damage unless it is
+    /// [`Damage::Unreadable`], durable on return once recovery has ended and unless the file is
+    /// quarantined whole.
     ///
     /// Preconditions: the caller holds no latch on `pid`, and neither the log lock nor the meta
     /// lock.
-    #[doc(hidden)]
-    pub fn damage(&self, pid: Pid, damage: Damage) -> PageError {
+    pub(crate) fn damage(&self, pid: Pid, damage: Damage) -> PageError {
         self.refuse_latched(self.hold(pid), damage)
     }
 
@@ -1240,7 +1242,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Stop counting `pid` as resident.
-    pub(crate) fn unreserve(&self, pid: Pid) {
+    pub(super) fn unreserve(&self, pid: Pid) {
         let mut m = self.own_meta();
         if let Some(i) = m.resident.iter().position(|p| *p == pid) {
             m.resident.swap_remove(i);
@@ -1252,7 +1254,7 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Preconditions: the caller holds a latch on `pid` that no write-out holds with, or judges
     /// again under one.
-    pub(crate) fn file_end(&self, pid: Pid) -> Lsn {
+    pub(super) fn file_end(&self, pid: Pid) -> Lsn {
         let end = {
             let m = self.own_meta();
             m.table.file_end(pid, m.evidence.recovered())
@@ -1261,7 +1263,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns the page `pid` as the file holds it, verified.
-    pub(crate) fn read_disk(&self, pid: Pid) -> Result<(AlignedBuf, Verdict), Damage> {
+    pub(super) fn read_disk(&self, pid: Pid) -> Result<(AlignedBuf, Verdict), Damage> {
         let size = self.page_size;
         let buf = self
             .io(|d| d.read(self.data, pid.0 * size as u64, size))
@@ -1277,7 +1279,7 @@ impl<R: Runtime> Pager<R> {
         clippy::disallowed_methods,
         reason = "permanent: eviction's try-lock clippy.toml admits"
     )]
-    pub(crate) fn make_room(&self, pid: Pid) {
+    pub(super) fn make_room(&self, pid: Pid) {
         let mut since = None;
         loop {
             let victim = {
@@ -1327,7 +1329,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Write `bytes`, page `pid` under a latch the caller holds, to the file.
-    pub(crate) fn write_out(&self, pid: Pid, bytes: &[u8]) {
+    pub(super) fn write_out(&self, pid: Pid, bytes: &[u8]) {
         let staged = self.staged(pid, bytes);
         let offset = pid.0 * self.page_size as u64;
         self.io(|d| d.write_all(vec![(self.data, offset, staged)]));

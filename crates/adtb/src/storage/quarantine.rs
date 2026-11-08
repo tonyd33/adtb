@@ -437,8 +437,7 @@ impl<R: Runtime> Pager<R> {
     /// Read the marks from their page into memory. A damaged page quarantines the database.
     ///
     /// Fail, marking nothing, if the page cannot be read.
-    #[doc(hidden)]
-    pub fn load_marks(&self, page: Pid) -> Result<(), PageError> {
+    pub(crate) fn load_marks(&self, page: Pid) -> Result<(), PageError> {
         let read = match self.read(page) {
             Ok(p) => decode(&p),
             Err(e) if e.damage == Damage::Unreadable => return Err(e),

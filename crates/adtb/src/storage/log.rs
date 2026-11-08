@@ -675,6 +675,7 @@ impl<R: Runtime> Pager<R> {
             };
             self.io(|d| segments.write(d, &batch));
             let due = self.log().forced(&batch);
+            self.dirty_table().freed_durable(batch.end());
             drop(segments);
             if due {
                 self.wake_checkpointer();

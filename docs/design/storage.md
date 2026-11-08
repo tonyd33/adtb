@@ -651,6 +651,9 @@ Invariants:
   frame's page LSN.
 - A written frame is counted clean, and drops out of the dirty page
   table, only after an `fdatasync` of the data file covers the write.
+- The checkpoint never passes a logged change that the file's copy
+  lacks, unless a later image of the page was written or a free of it
+  since is durable.
 - A record and every in-memory consequence of it (the page's dirty
   entry, its expected LSN, its damage record, the LSN map root) are
   made in one hold of the log, so a checkpoint, which takes its
@@ -659,9 +662,11 @@ Invariants:
 The dirty page table holds, per page, the LSN that first dirtied it,
 the LSN of its latest full image and, while the frame holds changes
 the file lacks, where replay of the page may start once a force covers
-its last write. An entry leaves in exactly two ways: a data force
-covers a write of the page with no change since, or recovery refuses
-the page and drops its entry.
+its last write. An entry leaves when a data force covers a write of
+the page with no change since, or when recovery refuses the page. A
+page refused with changes the file lacks keeps its entry and its
+`rec_lsn` through every force until a free of it is durable, or a
+chain start of it is logged and then written.
 
 Checkpoints are fuzzy and never stop writers. Each dirty frame records
 the LSN that first dirtied it (`rec_lsn`). Unless page writes are
@@ -1204,11 +1209,12 @@ no page read in is checked against an expected LSN. Damaging a page
 outside recovery writes its memory first when it holds changes the file
 lacks, then drops it, so its entry leaves the dirty page table at the
 next force. On a file quarantined whole the memory is dropped unwritten
-and the entry stays, so a checkpoint's redo point stays at or before its
-oldest change the file lacks and a recycle removes no segment from it
-on. A recycle raises the expected LSNs of the pages it folded to their
-map entries, dropping a later LSN that is no longer later. The page LSN map
-(§6) is read through the pool like any page, from the root to a leaf,
+and the entry stays until a free of the page is durable (§6), so a
+checkpoint's redo point stays at or before its oldest change the file
+lacks and a recycle removes no segment from it on. A recycle raises
+the expected LSNs of the pages it folded to their map entries,
+dropping a later LSN that is no longer later. The page LSN map (§6)
+is read through the pool like any page, from the root to a leaf,
 each page checked against its parent. Group commit is §10.1.
 Pages in flight for a read are held exclusive; writes go out under a
 shared latch. Recovery and `verify` read the log in chunks of 64 KiB,

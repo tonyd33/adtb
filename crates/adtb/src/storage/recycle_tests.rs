@@ -598,3 +598,115 @@ fn a_lost_write_past_the_maps_entry_of_its_page_is_refused_on_its_first_read() {
     };
     assert_eq!(Err(PageError { pid, damage }), read);
 }
+
+/// Set `pid` to 1, write it out by reading `pages` through the pool, then set it to 2, each change
+/// forced. Returns the LSN of each change.
+fn changed_after_its_write(pager: &Pager<SimRuntime>, pid: Pid, pages: &[Pid]) -> [Lsn; 2] {
+    let set = |value: u64| {
+        let lsn = pager
+            .update(&[pid], |p| {
+                p[0][HEADER_LEN..HEADER_LEN + 8].copy_from_slice(&value.to_le_bytes());
+            })
+            .unwrap();
+        pager.flush_log();
+        lsn
+    };
+    let first = set(1);
+    for &other in pages {
+        drop(pager.read(other).unwrap());
+    }
+    let (file, _) = pager.read_disk(pid).unwrap();
+    assert_eq!(1u64.to_le_bytes(), file[HEADER_LEN..HEADER_LEN + 8]);
+    [first, set(2)]
+}
+
+/// In one session, change `pid` after its write and refuse it under a whole quarantine with that
+/// change unwritten; force the data file and take a checkpoint; lift the quarantine, free `pid`
+/// and recycle past the change. Assert the dirty entry of `pid` after the force and after the
+/// free. Returns the LSN of each change, of the checkpoint and of the free, and the session's disk
+/// events.
+fn refused_then_freed(pid: Pid, pages: &[Pid], sim: &mut Sim) -> ([Lsn; 4], adtb_sim::Recording) {
+    sim.record();
+    let lsns = session(sim, |pager, _| {
+        pager.release_session_log();
+        let [first, lost] = changed_after_its_write(pager, pid, pages);
+        pager.quarantine(Quarantine::Database).unwrap();
+        pager.damage(pid, Damage::Checksum);
+        pager.flush_pages(usize::MAX);
+        let dirty = Probe::of(pager).dirty();
+        assert_eq!(Some(&first), dirty.get(&pid), "{dirty:?}");
+        let (ck, _, _) = pager.log_checkpoint();
+        pager.release(Quarantine::Database).unwrap();
+        let freed = pager.free(pid).unwrap();
+        pager.flush_log();
+        let dirty = Probe::of(pager).dirty();
+        assert!(!dirty.contains_key(&pid), "{dirty:?}");
+        for _ in 0..2 {
+            fill(pager, pages, SEGMENT);
+            pager.flush_pages(usize::MAX);
+            pager.checkpoint();
+        }
+        assert!(pager.recycle_log() >= 1);
+        [first, lost, ck, freed]
+    });
+    let kept = segments(&sim.files())[0];
+    assert!(lsns[1].0 < kept, "{lsns:?} {kept}");
+    (lsns, sim.recording())
+}
+
+#[test]
+fn a_change_refused_unwritten_under_a_whole_quarantine_reads_back_after_the_close() {
+    let (mut sim, pages) = created(40);
+    let pid = pages[0];
+    session(&mut sim, |pager, _| {
+        pager.quarantine(Quarantine::Database).unwrap();
+        changed_after_its_write(pager, pid, &pages[1..]);
+        pager.damage(pid, Damage::Checksum);
+    });
+    let read = session(&mut sim, |pager, _| {
+        pager
+            .read(pid)
+            .map(|p| u64::from_le_bytes(p[HEADER_LEN..HEADER_LEN + 8].try_into().unwrap()))
+    });
+    assert_eq!(Ok(2), read);
+}
+
+#[test]
+fn a_change_dropped_unwritten_with_its_page_is_replayed_until_the_page_is_durably_freed() {
+    let (mut sim, pages) = created(40);
+    let pid = pages[0];
+    session(&mut sim, |pager, _| fill(pager, &pages[1..], 3 * SEGMENT));
+    session(&mut sim, |pager, _| assert!(pager.recycle_log() >= 1));
+    let ([first, lost, ck, freed], recording) = refused_then_freed(pid, &pages[1..], &mut sim);
+    let mut past_checkpoint = 0;
+    let mut freed_seen = 0;
+    for at in 0..=recording.len() {
+        let mut crashed =
+            Sim::with_files(4, Config::default(), recording.images(at, 1, 0).remove(0));
+        let mut seen = None;
+        harness::finished(&mut crashed, |rt| {
+            let (pager, recovery) = Pager::open(rt, &options()).unwrap();
+            let read = (!pager.is_free(pid).unwrap()).then(|| {
+                pager
+                    .read(pid)
+                    .map(|p| u64::from_le_bytes(p[HEADER_LEN..HEADER_LEN + 8].try_into().unwrap()))
+            });
+            seen = Some((recovery.end, read));
+            pager.close();
+        });
+        let (end, read) = seen.unwrap();
+        let expected = match () {
+            () if end <= first => Some(Ok(0)),
+            () if end <= lost => Some(Ok(1)),
+            () if end <= freed => Some(Ok(2)),
+            () => None,
+        };
+        assert_eq!(expected, read, "crash after event {at}, log end {end:?}");
+        past_checkpoint += usize::from(ck < end && end <= freed);
+        freed_seen += usize::from(end > freed);
+    }
+    assert!(
+        past_checkpoint >= 1 && freed_seen >= 1,
+        "{past_checkpoint} {freed_seen}"
+    );
+}

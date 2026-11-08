@@ -25,22 +25,30 @@ pub(super) struct DirtyTable {
     written: BTreeSet<Pid>,
     /// The pages this open wrote to the file, one bit per page number.
     wrote: Vec<u64>,
+    /// The freed record logged of each page whose frame was dropped holding changes the file
+    /// lacks, by its LSN.
+    freeing: BTreeSet<(Lsn, Pid)>,
 }
 
 #[derive(Debug)]
 struct Dirty {
     rec_lsn: Lsn,
     image: Option<Lsn>,
-    /// Present while the frame holds changes the file lacks.
-    unwritten: Option<Unwritten>,
+    frame: Frame,
 }
 
 #[derive(Debug)]
-struct Unwritten {
-    /// The record replay of the page may start from once a force covers the write these changes
-    /// follow: their first change under atomic page writes, else the latest image at that change.
-    /// `None` when no write precedes them or a force that covers the write has ended.
-    since_write: Option<Lsn>,
+enum Frame {
+    /// The file holds every change of the page, once a force covers its last write.
+    Written,
+    /// The frame holds changes the file lacks. `since_write` is the record replay of the page may
+    /// start from once a force covers the write these changes follow: their first change under
+    /// atomic page writes, else the latest image at that change. `None` when no write precedes
+    /// them or a force that covers the write has ended.
+    Unwritten { since_write: Option<Lsn> },
+    /// The frame was dropped holding changes the file lacks: replay of the page starts at
+    /// `rec_lsn` until the freed record logged at `freed` is durable.
+    Lost { freed: Option<Lsn> },
 }
 
 /// The pages written before a force of the data file began, for the force holding `'f`.
@@ -58,6 +66,7 @@ impl DirtyTable {
             pages: BTreeMap::new(),
             written: BTreeSet::new(),
             wrote: Vec::new(),
+            freeing: BTreeSet::new(),
         }
     }
 
@@ -67,10 +76,9 @@ impl DirtyTable {
     /// unless page writes are atomic.
     pub(super) fn record_kind(&self, _: &Appending, pid: Pid, last_checkpoint: Lsn) -> Logged {
         let change = self.atomic
-            || self
-                .pages
-                .get(&pid)
-                .is_some_and(|d| d.unwritten.is_some() || d.image >= Some(last_checkpoint));
+            || self.pages.get(&pid).is_some_and(|d| {
+                matches!(d.frame, Frame::Unwritten { .. }) || d.image >= Some(last_checkpoint)
+            });
         if change {
             Logged::Change
         } else {
@@ -80,28 +88,27 @@ impl DirtyTable {
 
     /// Enter the page record `kind` of `pid`, logged at `lsn` in the hold of `_`.
     pub(super) fn logged(&mut self, _: &Appending, pid: Pid, lsn: Lsn, kind: Logged) {
-        let rewritten = self.pages.get(&pid).is_some_and(|d| d.unwritten.is_none());
         let d = self.pages.entry(pid).or_insert(Dirty {
             rec_lsn: lsn,
             image: None,
-            unwritten: None,
+            frame: Frame::Unwritten { since_write: None },
         });
         if kind == Logged::Image {
             d.image = Some(lsn);
         }
-        if rewritten {
+        if !matches!(d.frame, Frame::Unwritten { .. }) {
             let since_write = if self.atomic { Some(lsn) } else { d.image };
-            d.unwritten = Some(Unwritten { since_write });
-        } else if d.unwritten.is_none() {
-            d.unwritten = Some(Unwritten { since_write: None });
+            d.frame = Frame::Unwritten { since_write };
         }
     }
 
     /// Enter a write of a page to the file.
     pub(super) fn written_out(&mut self, wrote: Wrote) {
         let pid = wrote.pid();
-        if let Some(d) = self.pages.get_mut(&pid) {
-            d.unwritten = None;
+        if let Some(d) = self.pages.get_mut(&pid)
+            && matches!(d.frame, Frame::Unwritten { .. })
+        {
+            d.frame = Frame::Written;
         }
         self.written.insert(pid);
         let (word, bit) = ((pid.0 / 64) as usize, pid.0 % 64);
@@ -122,7 +129,8 @@ impl DirtyTable {
 
     /// Enter that a force of the data file covers `covered`: drop each page written since with no
     /// change since, and raise the `rec_lsn` of each changed since to where its replay may start.
-    /// Leave a page written again since the force began: the force may have missed that write.
+    /// Leave a page written again since the force began, since the force may have missed that
+    /// write, and a page whose frame was dropped with changes the file lacks.
     pub(super) fn forced(&mut self, covered: Covered<'_>) {
         for pid in covered.pages {
             if self.written.contains(&pid) {
@@ -131,23 +139,55 @@ impl DirtyTable {
             let Some(d) = self.pages.get_mut(&pid) else {
                 continue;
             };
-            match &mut d.unwritten {
-                None => {
+            match &mut d.frame {
+                Frame::Written => {
                     self.pages.remove(&pid);
                 }
-                Some(u) => {
-                    if let Some(start) = u.since_write.take() {
+                Frame::Unwritten { since_write } => {
+                    if let Some(start) = since_write.take() {
                         d.rec_lsn = start.max(d.rec_lsn);
                     }
                 }
+                Frame::Lost { .. } => {}
             }
         }
     }
 
-    /// Enter that the resident copy of the page `refusal` names is dropped unwritten.
+    /// Enter that the resident copy of the page `refusal` names is dropped. A copy dropped holding
+    /// changes the file lacks keeps the page's entry, and so its `rec_lsn`, until a free of the
+    /// page is durable or a record starting its next chain is logged.
     pub(super) fn refused(&mut self, refusal: &Refusal<'_>) {
-        if let Some(d) = self.pages.get_mut(&refusal.pid()) {
-            d.unwritten = None;
+        if let Some(d) = self.pages.get_mut(&refusal.pid())
+            && let Frame::Unwritten { .. } = d.frame
+        {
+            d.frame = Frame::Lost { freed: None };
+        }
+    }
+
+    /// Enter the freed record of `pid` logged at `lsn` in the hold of `_`.
+    pub(super) fn freeing(&mut self, _: &Appending, pid: Pid, lsn: Lsn) {
+        if let Some(d) = self.pages.get_mut(&pid)
+            && let Frame::Lost { freed } = &mut d.frame
+        {
+            *freed = Some(lsn);
+            self.freeing.insert((lsn, pid));
+        }
+    }
+
+    /// Enter that the log is durable below `end`: drop the entry of each page whose frame was
+    /// dropped with changes the file lacks and whose freed record since is durable.
+    pub(super) fn freed_durable(&mut self, end: Lsn) {
+        while let Some(&(lsn, pid)) = self.freeing.first()
+            && lsn < end
+        {
+            self.freeing.pop_first();
+            if self
+                .pages
+                .get(&pid)
+                .is_some_and(|d| matches!(d.frame, Frame::Lost { freed: Some(f) } if f == lsn))
+            {
+                self.pages.remove(&pid);
+            }
         }
     }
 
@@ -156,10 +196,10 @@ impl DirtyTable {
         let d = self.pages.entry(pid).or_insert(Dirty {
             rec_lsn: lsn,
             image: None,
-            unwritten: None,
+            frame: Frame::Unwritten { since_write: None },
         });
-        if d.unwritten.is_none() {
-            d.unwritten = Some(Unwritten { since_write: None });
+        if !matches!(d.frame, Frame::Unwritten { .. }) {
+            d.frame = Frame::Unwritten { since_write: None };
         }
     }
 
@@ -178,7 +218,7 @@ impl DirtyTable {
         let mut by_lsn: Vec<(Lsn, Pid)> = self
             .pages
             .iter()
-            .filter(|(_, d)| d.unwritten.is_some())
+            .filter(|(_, d)| matches!(d.frame, Frame::Unwritten { .. }))
             .map(|(p, d)| (d.rec_lsn, *p))
             .collect();
         by_lsn.sort_unstable();
@@ -187,7 +227,9 @@ impl DirtyTable {
 
     /// Returns whether the frame of `pid` holds changes the file lacks.
     pub(super) fn is_unwritten(&self, pid: Pid) -> bool {
-        self.pages.get(&pid).is_some_and(|d| d.unwritten.is_some())
+        self.pages
+            .get(&pid)
+            .is_some_and(|d| matches!(d.frame, Frame::Unwritten { .. }))
     }
 
     /// Returns the LSN the file's copy of `pid` is below, given the end `recovered` of the log
@@ -217,7 +259,8 @@ mod tests {
     const STEPS: usize = 300;
     const RECOVERED: Lsn = Lsn(7);
 
-    /// The six collections the pager kept before the table, with the algorithm it ran over them.
+    /// The table's facts as plain collections, with the pages refused holding changes the file
+    /// lacks and the freed record logged of each.
     #[derive(Default)]
     struct Model {
         atomic: bool,
@@ -227,6 +270,7 @@ mod tests {
         replay_start: BTreeMap<Pid, Lsn>,
         written: BTreeSet<Pid>,
         wrote: BTreeSet<Pid>,
+        lost: BTreeMap<Pid, Option<Lsn>>,
     }
 
     impl Model {
@@ -258,6 +302,7 @@ mod tests {
                 }
             }
             self.unwritten.insert(pid);
+            self.lost.remove(&pid);
         }
 
         fn written_out(&mut self, pid: Pid) {
@@ -270,6 +315,9 @@ mod tests {
         fn forced(&mut self, covered: BTreeSet<Pid>) -> bool {
             let mut raised = false;
             for pid in covered.difference(&self.written) {
+                if self.lost.contains_key(pid) {
+                    continue;
+                }
                 let start = self.replay_start.remove(pid);
                 if !self.unwritten.contains(pid) {
                     self.rec_lsn.remove(pid);
@@ -283,16 +331,41 @@ mod tests {
         }
 
         fn refused(&mut self, pid: Pid) {
-            self.unwritten.remove(&pid);
+            if self.unwritten.remove(&pid) {
+                self.lost.insert(pid, None);
+            }
             self.replay_start.remove(&pid);
+        }
+
+        fn freeing(&mut self, pid: Pid, lsn: Lsn) {
+            if let Some(freed) = self.lost.get_mut(&pid) {
+                *freed = Some(lsn);
+            }
+        }
+
+        fn freed_durable(&mut self, end: Lsn) -> usize {
+            let durable: Vec<Pid> = self
+                .lost
+                .iter()
+                .filter(|(_, f)| f.is_some_and(|f| f < end))
+                .map(|(p, _)| *p)
+                .collect();
+            for pid in &durable {
+                self.lost.remove(pid);
+                self.rec_lsn.remove(pid);
+                self.image.remove(pid);
+            }
+            durable.len()
         }
 
         fn replayed(&mut self, pid: Pid, lsn: Lsn) {
             self.rec_lsn.entry(pid).or_insert(lsn);
             self.unwritten.insert(pid);
+            self.lost.remove(&pid);
         }
 
         fn replay_refused(&mut self, pid: Pid) {
+            self.lost.remove(&pid);
             self.rec_lsn.remove(&pid);
             self.image.remove(&pid);
             self.unwritten.remove(&pid);
@@ -319,6 +392,56 @@ mod tests {
         refused_dirty: usize,
         replay_refused_dirty: usize,
         change_after_write: usize,
+        lost_covered: usize,
+        lost_freed: usize,
+        lost_logged: usize,
+    }
+
+    impl Reached {
+        fn assert_all(&self) {
+            assert_reached("a force raising a rec_lsn", self.raised, 1);
+            assert_reached(
+                "a write of a page a running force covers",
+                self.covered_written,
+                1,
+            );
+            assert_reached(
+                "a change to a page a running force covers",
+                self.covered_logged,
+                1,
+            );
+            assert_reached(
+                "a refusal of a page a running force covers",
+                self.covered_refused,
+                1,
+            );
+            assert_reached("a refusal of a dirty page", self.refused_dirty, 1);
+            assert_reached(
+                "a recovery refusal of a dirty page",
+                self.replay_refused_dirty,
+                1,
+            );
+            assert_reached(
+                "a change after a write logged without an image",
+                self.change_after_write,
+                1,
+            );
+            assert_reached(
+                "a force covering a page refused with changes the file lacks",
+                self.lost_covered,
+                1,
+            );
+            assert_reached(
+                "a durable free dropping a page refused with changes the file lacks",
+                self.lost_freed,
+                1,
+            );
+            assert_reached(
+                "a record logged of a page refused with changes the file lacks",
+                self.lost_logged,
+                1,
+            );
+        }
     }
 
     fn agree(seed: u64, step: usize, table: &DirtyTable, model: &Model) {
@@ -340,9 +463,9 @@ mod tests {
         }
     }
 
-    /// Check that generated sequences of the table's operations answer as the six collections did.
+    /// Check that generated sequences of the table's operations answer as its model does.
     #[test]
-    fn the_table_answers_as_the_six_collections_did() {
+    fn the_table_answers_as_its_model_over_plain_collections() {
         let mut reached = Reached::default();
         let replaying = replaying_for_test();
         let appending = appending_for_test();
@@ -364,7 +487,7 @@ mod tests {
             for step in 0..STEPS {
                 let pid = Pid(rng.below(PAGES));
                 let in_covered = forcing.as_ref().is_some_and(|(_, c)| c.contains(&pid));
-                match rng.below(16) {
+                match rng.below(18) {
                     0..=5 => {
                         let kind = model.record_kind(pid, last_checkpoint);
                         assert_eq!(
@@ -388,6 +511,9 @@ mod tests {
                         if in_covered {
                             reached.covered_logged += 1;
                         }
+                        if model.lost.contains_key(&pid) {
+                            reached.lost_logged += 1;
+                        }
                         model.logged(pid, next, kind);
                         table.logged(&appending, pid, next, kind);
                         next = Lsn(next.0 + 1 + rng.below(3));
@@ -405,6 +531,9 @@ mod tests {
                             forcing = Some((table.forcing(&held), covered));
                         }
                         Some((covered, modelled)) => {
+                            let lost = modelled.difference(&model.written);
+                            reached.lost_covered +=
+                                lost.filter(|p| model.lost.contains_key(p)).count();
                             if model.forced(modelled) {
                                 reached.raised += 1;
                             }
@@ -433,37 +562,88 @@ mod tests {
                         model.replay_refused(pid);
                         table.replay_refused(&replaying, pid);
                     }
+                    14 => {
+                        model.freeing(pid, next);
+                        table.freeing(&appending, pid, next);
+                        next = Lsn(next.0 + 1);
+                    }
+                    15 => {
+                        let end = Lsn(next.0 - rng.below(4));
+                        reached.lost_freed += model.freed_durable(end);
+                        table.freed_durable(end);
+                    }
                     _ => last_checkpoint = Lsn(last_checkpoint.0.max(next.0 - rng.below(8))),
                 }
                 agree(seed, step, &table, &model);
             }
         }
-        assert_reached("a force raising a rec_lsn", reached.raised, 1);
-        assert_reached(
-            "a write of a page a running force covers",
-            reached.covered_written,
-            1,
+        reached.assert_all();
+    }
+
+    /// Change page 1 at 10, write it, change it at 12 and refuse it.
+    fn refused_after_a_write(table: &mut DirtyTable) {
+        let appending = appending_for_test();
+        table.logged(&appending, Pid(1), Lsn(10), Logged::Image);
+        table.written_out(wrote_for_test(Pid(1)));
+        table.logged(&appending, Pid(1), Lsn(12), Logged::Change);
+        table.refused(&refusal_for_test(Pid(1)));
+    }
+
+    fn force(table: &mut DirtyTable) {
+        let lock = std::sync::Mutex::new(forcing_for_test());
+        let held = lock
+            .lock()
+            .expect("the test's forcing lock is never poisoned");
+        let covered = table.forcing(&held);
+        table.forced(covered);
+    }
+
+    #[test]
+    fn a_page_refused_with_changes_the_file_lacks_keeps_its_rec_lsn_through_a_covering_force() {
+        let mut table = DirtyTable::new(false);
+        refused_after_a_write(&mut table);
+        force(&mut table);
+        assert_eq!(vec![(Pid(1), Lsn(10))], table.snapshot());
+        assert_eq!(
+            (false, Vec::<Pid>::new()),
+            (table.is_unwritten(Pid(1)), table.oldest(1))
         );
-        assert_reached(
-            "a change to a page a running force covers",
-            reached.covered_logged,
-            1,
-        );
-        assert_reached(
-            "a refusal of a page a running force covers",
-            reached.covered_refused,
-            1,
-        );
-        assert_reached("a refusal of a dirty page", reached.refused_dirty, 1);
-        assert_reached(
-            "a recovery refusal of a dirty page",
-            reached.replay_refused_dirty,
-            1,
-        );
-        assert_reached(
-            "a change after a write logged without an image",
-            reached.change_after_write,
-            1,
-        );
+    }
+
+    #[test]
+    fn a_page_refused_after_its_last_write_leaves_at_the_next_covering_force() {
+        let mut table = DirtyTable::new(false);
+        let appending = appending_for_test();
+        table.logged(&appending, Pid(1), Lsn(10), Logged::Image);
+        table.written_out(wrote_for_test(Pid(1)));
+        table.refused(&refusal_for_test(Pid(1)));
+        force(&mut table);
+        assert_eq!(Vec::<(Pid, Lsn)>::new(), table.snapshot());
+    }
+
+    #[test]
+    fn a_page_refused_with_changes_the_file_lacks_leaves_once_its_free_is_durable() {
+        let mut table = DirtyTable::new(false);
+        refused_after_a_write(&mut table);
+        table.freeing(&appending_for_test(), Pid(1), Lsn(14));
+        table.freed_durable(Lsn(14));
+        force(&mut table);
+        assert_eq!(vec![(Pid(1), Lsn(10))], table.snapshot());
+        table.freed_durable(Lsn(15));
+        assert_eq!(Vec::<(Pid, Lsn)>::new(), table.snapshot());
+    }
+
+    #[test]
+    fn a_durable_free_leaves_the_entry_of_a_later_incarnation() {
+        let mut table = DirtyTable::new(false);
+        let appending = appending_for_test();
+        refused_after_a_write(&mut table);
+        table.freeing(&appending, Pid(1), Lsn(14));
+        table.logged(&appending, Pid(1), Lsn(16), Logged::Image);
+        table.freed_durable(Lsn(17));
+        assert_eq!(vec![(Pid(1), Lsn(10))], table.snapshot());
+        assert!(table.is_unwritten(Pid(1)));
+        table.refused(&refusal_for_test(Pid(1)));
+        assert_eq!(vec![(Pid(1), Lsn(10))], table.snapshot());
     }
 }
