@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use super::evidence::{Against, Evidence, Judged, Met, Pending, refusal_for_test};
+use super::evidence::{Against, Begun, Evidence, Judged, Met, refusal_for_test};
 use super::page::Verdict;
 use crate::runtime::ThreadId;
 use crate::storage::error::Damage;
@@ -47,7 +47,7 @@ fn folded(e: &mut Evidence) -> Option<Damage> {
 
 /// Returns each page whose damage is unmapped, with that damage, and whether a full list is.
 fn unmapped(e: &Evidence) -> (Vec<(Pid, Damage)>, bool) {
-    let (pages, full) = e.unmapped(true);
+    let (pages, full, _) = e.begin_mapping(true);
     (
         pages
             .iter()
@@ -57,10 +57,11 @@ fn unmapped(e: &Evidence) -> (Vec<(Pid, Damage)>, bool) {
     )
 }
 
-/// Enter the mapping of each of `pending` to the database.
-fn map(e: &mut Evidence, pending: Vec<Pending>) {
+/// Enter the mapping of each record of `begun` to the database.
+fn map(e: &mut Evidence, (pending, _, at): Begun) {
     e.mapped(
         false,
+        at,
         pending.into_iter().map(|p| (p, database())).collect(),
     );
 }
@@ -123,7 +124,7 @@ fn damage_between_a_free_and_the_next_chain_start_is_held() {
         (Some(Damage::Checksum), None),
         (e.damage(P), folded(&mut e))
     );
-    e.unrefuse(P);
+    e.unrefuse(&refusal_for_test(P));
     logged(&mut e, P, Met::Start);
     assert!(refuse(&mut e, &mut log, P, Damage::Checksum).is_some());
     assert_eq!(
@@ -143,13 +144,13 @@ fn the_mapping_goes_with_the_damage() {
     let mut e = recording(&mut log);
     let objects = BTreeSet::from([Quarantine::Database]);
     refuse(&mut e, &mut log, P, Damage::Checksum);
-    let (pending, _) = e.unmapped(true);
-    map(&mut e, pending);
+    let begun = e.begin_mapping(true);
+    map(&mut e, begun);
     assert_eq!(Some(objects), e.mapped_to(P));
     assert_eq!(Some(BY), e.detected_by(P));
     logged(&mut e, P, Met::Image);
     assert_eq!((None, None), (e.mapped_to(P), e.detected_by(P)));
-    e.unrefuse(P);
+    e.unrefuse(&refusal_for_test(P));
     refuse(&mut e, &mut log, P, Damage::Checksum);
     assert_eq!(
         (vec![(P, Damage::Checksum)], false),
@@ -170,13 +171,14 @@ fn a_list_that_overflows_with_every_record_mapped_is_unmapped() {
     let mut e = recording(&mut log);
     let flag = e.unmapped_flag();
     e.record(&appending_for_test(), &mut log, P, Damage::Checksum, false);
-    let (pending, _) = e.unmapped(true);
-    map(&mut e, pending);
+    let begun = e.begin_mapping(true);
+    map(&mut e, begun);
     assert!(!flag.any(), "every record is mapped");
     e.snapshot(0);
     assert_eq!((Vec::new(), true), unmapped(&e));
     assert!(flag.any(), "the full list is unmapped");
-    e.mapped(true, Vec::new());
+    let (_, _, at) = e.begin_mapping(true);
+    e.mapped(true, at, Vec::new());
     assert!(!flag.any(), "the full list is mapped");
 }
 
@@ -187,16 +189,16 @@ fn a_write_out_that_exposes_an_unmapped_record_raises_the_flag() {
     let flag = e.unmapped_flag();
     e.record(&appending_for_test(), &mut log, P, STALE, false);
     e.hold(P, Damage::Checksum);
-    let (pending, _) = e.unmapped(true);
-    map(&mut e, pending);
+    let begun = e.begin_mapping(true);
+    map(&mut e, begun);
     assert!(!flag.any(), "the held damage is mapped");
     e.written_out(&wrote_for_test(P));
     assert_eq!((vec![(P, STALE)], false), unmapped(&e));
     assert!(flag.any(), "the record the hold covered is unmapped");
-    let (pending, _) = e.unmapped(true);
-    e.mapped(false, vec![(pending[0], INCOMPLETE)]);
+    let (pending, _, at) = e.begin_mapping(true);
+    e.mapped(false, at, vec![(pending[0], INCOMPLETE)]);
     assert!(flag.any(), "an incomplete mapping leaves it unmapped");
-    map(&mut e, pending);
+    map(&mut e, (pending, false, at));
     assert!(!flag.any(), "the last record is mapped");
 }
 
@@ -329,8 +331,8 @@ fn a_mapping_of_one_incarnation_maps_nothing_of_the_next() {
     let mut log = log();
     let mut e = recording(&mut log);
     refuse(&mut e, &mut log, P, Damage::Checksum);
-    let (begun, _) = e.unmapped(true);
-    e.unrefuse(P);
+    let begun = e.begin_mapping(true);
+    e.unrefuse(&refusal_for_test(P));
     logged(&mut e, P, Met::Start);
     refuse(&mut e, &mut log, P, Damage::Checksum);
     map(&mut e, begun);
@@ -339,7 +341,7 @@ fn a_mapping_of_one_incarnation_maps_nothing_of_the_next() {
         unmapped(&e),
         "after a chain start"
     );
-    let (begun, _) = e.unmapped(true);
+    let begun = e.begin_mapping(true);
     e.free(&appending_for_test(), &mut log, P, false);
     map(&mut e, begun);
     assert_eq!(Some(BTreeSet::new()), e.mapped_to(P), "after a free");
@@ -360,5 +362,54 @@ fn a_freed_pages_copy_is_not_judged_by_the_dead_incarnations_expected_lsn() {
         behind(60, 55),
         judged(&e, P, Lsn(55), a),
         "the next incarnation"
+    );
+}
+
+/// Returns the records of `begun` still current, each mapped to the database.
+fn current(e: &Evidence, (pending, _, at): &Begun) -> Vec<Pid> {
+    let mapped = pending.iter().map(|p| (*p, database())).collect();
+    e.current(*at, mapped)
+        .iter()
+        .map(|(p, _)| p.pid())
+        .collect()
+}
+
+#[test]
+fn a_record_superseded_after_its_mapping_begins_maps_nothing_and_its_successor_maps() {
+    let mut log = log();
+    let mut e = recording(&mut log);
+    refuse(&mut e, &mut log, P, STALE);
+    let begun = e.begin_mapping(true);
+    refuse(&mut e, &mut log, P, Damage::Checksum);
+    assert_eq!(Vec::<Pid>::new(), current(&e, &begun), "superseded");
+    map(&mut e, begun);
+    assert_eq!(
+        (None, (vec![(P, Damage::Checksum)], false)),
+        (e.mapped_to(P), unmapped(&e)),
+        "the successor is unmapped"
+    );
+    let begun = e.begin_mapping(true);
+    map(&mut e, begun);
+    assert_eq!(database(), e.mapped_to(P), "the successor maps on its own");
+}
+
+#[test]
+fn only_a_change_of_damage_or_incarnation_supersedes_a_record() {
+    let mut log = log();
+    let mut e = recording(&mut log);
+    refuse(&mut e, &mut log, P, Damage::Checksum);
+    let begun = e.begin_mapping(true);
+    refuse(&mut e, &mut log, P, Damage::Checksum);
+    e.retire([P]);
+    assert_eq!(vec![P], current(&e, &begun), "the same damage again");
+    e.unretire(&[P]);
+    e.unrefuse(&refusal_for_test(P));
+    refuse(&mut e, &mut log, P, STALE);
+    e.unrefuse(&refusal_for_test(P));
+    refuse(&mut e, &mut log, P, Damage::Checksum);
+    assert_eq!(
+        Vec::<Pid>::new(),
+        current(&e, &begun),
+        "replaced and found again"
     );
 }

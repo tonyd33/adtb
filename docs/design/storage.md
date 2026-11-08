@@ -795,7 +795,9 @@ of a page whose last freed record follows its last allocation (§5.1),
 in the log the open replayed or wrote, is held in memory instead: it is mapped in that open as a record is, never
 logged, and the page's next allocation drops it. Recovery's
 detections are recorded once it ends (§7), and a file quarantined whole
-records in memory only (§8). A commit log status page settled from the
+records in memory only (§8). The commit log reads a status page it may
+settle without refusing it or recording its damage; one it does not
+settle is then refused and recorded as any other. A commit log status page settled from the
 log is recorded as settled before its rewrite is logged. A checkpoint
 folds every record into the damage list, one page of kind damage list the file header names
 (§1.2): it takes the records under the log lock with the checkpoint
@@ -1023,7 +1025,10 @@ open fails the open and marks nothing.
 The marks of damaged pages are derived from the damage records (§6). One
 mapper takes each record not yet mapped this open, maps its page to the
 object holding it and marks that object; a record counts as mapped only once
-its marks are set. Which records are mapped is memory state, empty at every
+its marks are set. A record whose damage or incarnation changes before its
+walks end, such as a status page those walks settle, is no longer damage: it
+sets no mark and is not mapped, and the record that replaced it maps on its
+own. Which records are mapped is memory state, empty at every
 open, so every open maps every record again and a mark a crash lost comes
 back. The mapper runs at three points and nowhere else:
 

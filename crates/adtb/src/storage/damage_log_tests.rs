@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::mvcc::Transactions;
 use crate::runtime::{IoError, OpKind, Runtime};
 use crate::storage::{
-    self, Damage, FIRST_EDITABLE, Finding, HEADER_LEN, LogFinding, LogProblem, Options, PageKind,
-    Pager, Pid, Quarantine,
+    self, Damage, FIRST_EDITABLE, Finding, HEADER_LEN, LogFinding, LogProblem, Lsn, Options,
+    PageKind, Pager, Pid, Quarantine,
 };
 use crate::test_world as harness;
 use adtb_harness::common;
@@ -681,6 +681,91 @@ fn a_settled_status_page_is_a_finding_after_reopen_and_after_its_segment_is_recy
         (found, marks),
         "after the recycle"
     );
+}
+
+#[test]
+fn a_settle_in_the_open_that_reads_the_page_stale_logs_no_stale_record() {
+    let (files, root, status) = lost_status_page();
+    let (recorded, _, files) = with_commit_log(files, root, |p| {
+        Probe::of(p).records().pages().get(&status).copied()
+    });
+    let Some(settled @ Damage::Settled { .. }) = recorded else {
+        panic!("the open settles the status page: {recorded:?}");
+    };
+    let (logged, marks, _) = with_commit_log(files, root, |p| Probe::of(p).damage_in_log());
+    assert_eq!(
+        (vec![(status, settled)], BTreeSet::new()),
+        (logged, marks),
+        "the settle's only record, and no mark"
+    );
+}
+
+#[test]
+fn a_status_page_settled_during_its_walk_marks_nothing() {
+    let (files, root, status) = lost_status_page();
+    let mut sim = Sim::with_files(SEED, Config::default(), files);
+    harness::finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &harness::options(6)).unwrap();
+        let Damage::Stale { expected, found } = read_refused(&pager, status) else {
+            panic!("the status page lost a write");
+        };
+        let mut walks = 0;
+        let failed = pager.map_damage(
+            |_| {
+                walks += 1;
+                Transactions::open(rt.clone(), &pager, root).unwrap();
+                Some(BTreeSet::from([Quarantine::Database]))
+            },
+            |o| pager.quarantine(o),
+        );
+        assert_eq!(BTreeMap::new(), failed);
+        assert_reached("walks of the stale record", walks, 1);
+        assert_eq!(
+            (BTreeSet::new(), Some(&Damage::Settled { expected, found })),
+            (
+                Probe::of(&pager).marks(),
+                Probe::of(&pager).records().pages().get(&status)
+            ),
+            "the settle supersedes the record its walk maps"
+        );
+    });
+}
+
+#[test]
+fn a_record_superseded_during_its_walk_marks_nothing_and_its_successor_maps() {
+    let (files, pages) = created(false);
+    let p = pages[0];
+    let stale = Damage::Stale {
+        expected: Lsn(90),
+        found: Lsn(30),
+    };
+    closed(&files, false, |pager| {
+        pager.damage(p, Damage::Checksum);
+        let failed = pager.map_damage(
+            |pid| {
+                pager.damage(pid, stale);
+                Some(BTreeSet::from([Quarantine::Heap(1)]))
+            },
+            |o| pager.quarantine(o),
+        );
+        assert_eq!(BTreeMap::new(), failed);
+        assert_eq!(
+            (BTreeSet::new(), None),
+            (Probe::of(pager).marks(), pager.mapped_to(p)),
+            "the superseded record"
+        );
+        let failed = pager.map_damage(
+            |_| Some(BTreeSet::from([Quarantine::Heap(2)])),
+            |o| pager.quarantine(o),
+        );
+        assert_eq!(BTreeMap::new(), failed);
+        let successor = BTreeSet::from([Quarantine::Heap(2)]);
+        assert_eq!(
+            (successor.clone(), Some(successor)),
+            (Probe::of(pager).marks(), pager.mapped_to(p)),
+            "the successor maps on its own"
+        );
+    });
 }
 
 /// Returns the files after damaging `n` distinct pages of a new file, a checkpoint and a close.

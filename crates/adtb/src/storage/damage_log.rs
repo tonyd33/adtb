@@ -8,7 +8,7 @@ use crate::runtime::Runtime;
 
 use super::block::{LogFinding, LogProblem};
 use super::error::Damage;
-use super::evidence::{Mapping, Met, Pending, meet_recorded};
+use super::evidence::{Begun, Mapping, Met, meet_recorded};
 use super::page::{self, HEADER_LEN, PageKind};
 use super::pager::{PageError, PageExclusive, Pager};
 use super::quarantine::Quarantine;
@@ -140,8 +140,12 @@ impl<R: Runtime> Pager<R> {
     /// Precondition: the calling thread holds no page latch, and neither the log lock nor the
     /// meta lock.
     ///
-    /// Postcondition: a record is mapped only once the marks of its objects are set, so a caller
-    /// that finds it unmapped may find those marks unset.
+    /// Postconditions:
+    ///
+    /// - A record is mapped only once the marks of its objects are set, so a caller that finds it
+    ///   unmapped may find those marks unset.
+    /// - A record whose damage or incarnation changes before its walk ends sets no mark and is not
+    ///   mapped; the record that replaced it is unmapped, for the next mapping.
     pub fn map_damage(
         &self,
         holders: impl FnMut(Pid) -> Option<BTreeSet<Quarantine>>,
@@ -150,8 +154,13 @@ impl<R: Runtime> Pager<R> {
         if !self.any_unmapped() {
             return BTreeMap::new();
         }
-        let (pages, full) = self.evidence().unmapped(true);
-        self.map_records(pages, full, holders, mark)
+        let begun = self.evidence().begin_mapping(true);
+        self.map_records(begun, holders, mark)
+    }
+
+    /// Returns whether a damage record of a page is not mapped this open, leaving out a full list.
+    pub(crate) fn any_record_unmapped(&self) -> bool {
+        self.any_unmapped() && !self.evidence().begin_mapping(true).0.is_empty()
     }
 
     /// Map as [`Pager::map_damage`] does for a commit, leaving out each record whose last mapping
@@ -169,13 +178,12 @@ impl<R: Runtime> Pager<R> {
         if !self.any_unmapped() {
             return BTreeMap::new();
         }
-        let (pages, full, before) = {
+        let (begun, before) = {
             let e = self.evidence();
-            let (pages, full) = e.unmapped(false);
-            (pages, full, e.all().pages)
+            (e.begin_mapping(false), e.all().pages)
         };
         let mut met = BTreeSet::new();
-        let mut failed = self.map_records(pages, full, |pid| holders(pid, &mut met), &mut mark);
+        let mut failed = self.map_records(begun, |pid| holders(pid, &mut met), &mut mark);
         let me = self.rt().current();
         let e = self.evidence();
         met.retain(|pid| !before.contains_key(pid) && e.detected_by(*pid) == Some(me));
@@ -183,20 +191,19 @@ impl<R: Runtime> Pager<R> {
         if met.is_empty() {
             return failed;
         }
-        let (pages, _) = self.evidence().unmapped(true);
-        let pages = pages.into_iter().filter(|p| met.contains(&p.pid()));
+        let (mut pages, _, epoch) = self.evidence().begin_mapping(true);
+        pages.retain(|p| met.contains(&p.pid()));
         let database = || Some(BTreeSet::from([Quarantine::Database]));
-        failed.extend(self.map_records(pages.collect(), false, |_| database(), mark));
+        failed.extend(self.map_records((pages, false, epoch), |_| database(), mark));
         failed
     }
 
     /// Map each of `pages` to what `holders` says it quarantines, or every page to the database
-    /// when `full`, and mark each object through `mark`. Returns each object whose mark failed,
-    /// with why.
+    /// when `full`, and mark each object of a record still current since `begun` through `mark`.
+    /// Returns each object whose mark failed, with why.
     fn map_records(
         &self,
-        pages: Vec<Pending>,
-        full: bool,
+        (pages, full, begun): Begun,
         mut holders: impl FnMut(Pid) -> Option<BTreeSet<Quarantine>>,
         mut mark: impl FnMut(Quarantine) -> Result<(), PageError>,
     ) -> BTreeMap<Quarantine, PageError> {
@@ -210,6 +217,7 @@ impl<R: Runtime> Pager<R> {
             };
             mapped.push((p, objects));
         }
+        let mapped = self.evidence().current(begun, mapped);
         let mut objects: BTreeSet<Quarantine> = mapped
             .iter()
             .flat_map(|m| m.1.iter().flatten().copied())
@@ -221,7 +229,7 @@ impl<R: Runtime> Pager<R> {
             .into_iter()
             .filter_map(|o| mark(o).err().map(|e| (o, e)))
             .collect();
-        self.evidence().mapped(full, mapped);
+        self.evidence().mapped(full, begun, mapped);
         failed
     }
 
@@ -245,7 +253,7 @@ impl<R: Runtime> Pager<R> {
     /// page's rewrite.
     ///
     /// Panic if `refusal` is not a lost write.
-    pub(crate) fn record_settled(&self, _: &Settling, refusal: PageError) {
+    pub(super) fn record_settled(&self, _: &Settling, refusal: PageError) {
         let Damage::Stale { expected, found } = refusal.damage else {
             panic!("only a status page that lost a write is settled");
         };

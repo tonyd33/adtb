@@ -680,7 +680,7 @@ impl<'a, R: Runtime> Held<'a, R> {
             return;
         }
         if let Some(damage) = prior {
-            pager.evidence().restore(pid, damage);
+            pager.evidence().restore(&Refusal::of(&self), damage);
         }
         self.g.evict();
         pager.unreserve(pid);
@@ -701,7 +701,7 @@ impl<R: Runtime> Pager<R> {
         let refusal = {
             let mut alloc = self.allocation().lock(&self.rt);
             alloc.blank(pid);
-            self.evidence().unrefuse(pid)
+            self.evidence().unrefuse(&Refusal::of(&held))
         };
         held.blank(header, refusal)
     }
@@ -710,17 +710,31 @@ impl<R: Runtime> Pager<R> {
     /// longer refused. Its next change logs an unchained image; its drop before one refuses the
     /// page again.
     pub(super) fn latch_overwritten(&self, pid: Pid) -> PageExclusive<'_, R> {
-        let g = self.hold(pid).overwrite();
-        self.evidence().unrefuse(pid);
-        g
+        let held = self.hold(pid);
+        self.evidence().unrefuse(&Refusal::of(&held));
+        held.overwrite()
     }
 
-    /// Returns the exclusive latch on `pid` holding `copy`, the file's copy of a page refused as
-    /// stale, and no longer refused.
-    pub(super) fn latch_restored(&self, pid: Pid, copy: &[u8]) -> PageExclusive<'_, R> {
-        let g = self.hold(pid).restore_copy(copy);
-        self.evidence().unrefuse(pid);
-        g
+    /// Returns the exclusive latch on the page `stale` refuses, holding `copy`, the file's copy
+    /// of that page, and no longer refused.
+    ///
+    /// Fail with `stale` when the page is resident, and with the page's refusal when it is refused
+    /// other than as stale.
+    pub(super) fn latch_restored(
+        &self,
+        stale: PageError,
+        copy: &[u8],
+    ) -> Result<PageExclusive<'_, R>, PageError> {
+        let held = self.hold(stale.pid);
+        if held.resident() {
+            return Err(stale);
+        }
+        match self.refusal(stale.pid) {
+            None | Some(Damage::Stale { .. }) => {}
+            Some(damage) => return Err(PageError { damage, ..stale }),
+        }
+        self.evidence().unrefuse(&Refusal::of(&held));
+        Ok(held.restore_copy(copy))
     }
 
     /// Read `pid` in for replay from the file's copy. Returns why the copy cannot be read in,

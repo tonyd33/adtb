@@ -145,7 +145,7 @@ impl DirtyTable {
     }
 
     /// Enter that the resident copy of the page `refusal` names is dropped unwritten.
-    pub(super) fn refused(&mut self, refusal: &Refusal) {
+    pub(super) fn refused(&mut self, refusal: &Refusal<'_>) {
         if let Some(d) = self.pages.get_mut(&refusal.pid()) {
             d.unwritten = None;
         }

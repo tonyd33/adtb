@@ -690,10 +690,15 @@ fn mark_open_damage<R: Runtime>(pager: &Pager<R>, catalog: &Catalog, txns: &Tran
 }
 
 /// Map the damage recorded after a failed open: by the catalog, else by `Catalog::opens_from`.
+/// Load the catalog before the mapping begins, and only while a record of a page is unmapped.
 fn mark_failed_open_damage<R: Runtime>(rt: R, pager: &Pager<R>) {
-    let mut loaded = None;
+    let loaded = if pager.any_record_unmapped() {
+        Catalog::load(rt, pager).ok()
+    } else {
+        None
+    };
     pager.map_damage(
-        |pid| match loaded.get_or_insert_with(|| Catalog::load(rt.clone(), pager).ok()) {
+        |pid| match &loaded {
             Some((catalog, txns)) => catalog.holders(pager, txns, pid),
             None => Some(
                 Catalog::opens_from(pager, pid)

@@ -66,79 +66,12 @@ struct Known {
 }
 
 const BLANK_OPEN: &str = "freed-lost-write-fails-open";
-const SETTLED_MARKS: &str = "settled-status-marks-database";
 const UNREAD_MARKS: &str = "unread-walk-marks-database";
 const UNDER_MARK: &str = "migrate-under-mark-silent";
 const BESIDE: &str = "walk-damage-marks-database";
 const APPLIED_UNDER_MARK: &str = "migrate-applies-under-mark";
 
 const KNOWN: &[Known] = &[
-    Known {
-        fault: Fault::LostCurrent,
-        kind: Kind::CommitLog,
-        owner: None,
-        consumer: Consumer::Verify,
-        what: "the database is marked for a settled status page",
-        ticket: SETTLED_MARKS,
-        seed: 3,
-        at: 637,
-        then: None,
-    },
-    Known {
-        fault: Fault::LostCurrent,
-        kind: Kind::CommitLog,
-        owner: None,
-        consumer: Consumer::Read,
-        what: "refused the database with a Database mark for a settled status page",
-        ticket: SETTLED_MARKS,
-        seed: 3,
-        at: 637,
-        then: None,
-    },
-    Known {
-        fault: Fault::LostCurrent,
-        kind: Kind::CommitLog,
-        owner: None,
-        consumer: Consumer::Read,
-        what: "by key: refused the database with a Database mark for a settled status page",
-        ticket: SETTLED_MARKS,
-        seed: 3,
-        at: 637,
-        then: None,
-    },
-    Known {
-        fault: Fault::Recycled,
-        kind: Kind::CommitLog,
-        owner: None,
-        consumer: Consumer::Verify,
-        what: "the database is marked for a settled status page",
-        ticket: SETTLED_MARKS,
-        seed: 35,
-        at: 641,
-        then: None,
-    },
-    Known {
-        fault: Fault::Recycled,
-        kind: Kind::CommitLog,
-        owner: None,
-        consumer: Consumer::Read,
-        what: "refused the database with a Database mark for a settled status page",
-        ticket: SETTLED_MARKS,
-        seed: 35,
-        at: 641,
-        then: None,
-    },
-    Known {
-        fault: Fault::Recycled,
-        kind: Kind::CommitLog,
-        owner: None,
-        consumer: Consumer::Read,
-        what: "by key: refused the database with a Database mark for a settled status page",
-        ticket: SETTLED_MARKS,
-        seed: 35,
-        at: 641,
-        then: None,
-    },
     Known {
         fault: Fault::UnreadableLasting,
         kind: Kind::Heap,
@@ -1383,11 +1316,11 @@ fn known(
 
 #[test]
 fn a_pinned_known_failure_still_shows() {
-    let cheapest = KNOWN
+    let pinned = KNOWN
         .iter()
-        .find(|k| k.ticket == SETTLED_MARKS && k.consumer == Consumer::Verify)
-        .expect("the settled status page's entry is known");
-    rerun(cheapest);
+        .find(|k| k.ticket == UNREAD_MARKS && k.consumer == Consumer::Verify)
+        .expect("the unread walk's entry is known");
+    rerun(pinned);
 }
 
 #[test]

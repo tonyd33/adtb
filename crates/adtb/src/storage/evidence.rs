@@ -3,6 +3,7 @@
 //! memory, and what that damage was mapped to this open.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -107,13 +108,15 @@ pub(super) fn meet_recorded(recorded: &mut Option<Damage>, met: Met) -> bool {
     }
 }
 
-/// The refusal of a page whose resident copy is dropped.
-pub(super) struct Refusal(Pid);
+/// The right to set, lift or set again the refusal of a page, borrowed from the page's latch, so
+/// the latch is held wherever a refusal changes. Replay changes refusals under the `Replaying`
+/// witness instead.
+pub(super) struct Refusal<'a>(Pid, PhantomData<&'a ()>);
 
-impl Refusal {
+impl<'a> Refusal<'a> {
     /// Returns the refusal of the page under `latch`.
-    pub(super) fn of<R: Runtime>(latch: &Held<'_, R>) -> Refusal {
-        Refusal(latch.pid())
+    pub(super) fn of<R: Runtime>(latch: &'a Held<'_, R>) -> Refusal<'a> {
+        Refusal(latch.pid(), PhantomData)
     }
 
     pub(super) fn pid(&self) -> Pid {
@@ -122,8 +125,8 @@ impl Refusal {
 }
 
 #[cfg(test)]
-pub(super) fn refusal_for_test(pid: Pid) -> Refusal {
-    Refusal(pid)
+pub(super) fn refusal_for_test(pid: Pid) -> Refusal<'static> {
+    Refusal(pid, PhantomData)
 }
 
 /// An incarnation of a page, live, or ended by a free and not started again since. The generation
@@ -150,6 +153,14 @@ impl Pending {
 
 /// A damage record and what it quarantines, `None` when its mapping is incomplete.
 pub(super) type Mapping = (Pending, Option<BTreeSet<Quarantine>>);
+
+/// A count of the changes of any page's damage or incarnation. A record whose page changed past
+/// the epoch its mapping began at is superseded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct Epoch(u64);
+
+/// The records a mapping takes, whether a full list is unmapped, and the epoch it begins at.
+pub(super) type Begun = (Vec<Pending>, bool, Epoch);
 
 /// A file's copy of a page as read: its LSN and verdict, or why it cannot be read.
 pub(super) type FileCopy = Result<(Lsn, Verdict), Damage>;
@@ -214,6 +225,8 @@ struct PageEvidence {
     detected_by: Option<ThreadId>,
     /// A page of a tree a swap replaced, until its own free.
     retired: bool,
+    /// The epoch of the last change of the damage or the incarnation.
+    changed: Epoch,
 }
 
 impl PageEvidence {
@@ -227,6 +240,7 @@ impl PageEvidence {
             incomplete: None,
             detected_by: None,
             retired: false,
+            changed: Epoch(0),
         }
     }
 
@@ -300,6 +314,8 @@ pub(super) struct Evidence {
     full_mapped: bool,
     /// The last generation an incarnation took.
     generation: u64,
+    /// The last change of any page's damage or incarnation.
+    epoch: Epoch,
     unmapped_pages: usize,
     unmapped: Unmapped,
     /// How many damaged pages this open has walked the objects for.
@@ -322,6 +338,7 @@ impl Evidence {
             full: false,
             full_mapped: false,
             generation: 0,
+            epoch: Epoch(0),
             unmapped_pages: 0,
             unmapped: Unmapped(Arc::new(AtomicBool::new(false))),
             walked: 0,
@@ -335,7 +352,7 @@ impl Evidence {
 
     /// Apply `f` to the evidence of `pid`, drop its mapping once it has no damage and the entry
     /// once it says nothing, and set the unmapped count and flag. An entry made here takes the next
-    /// generation.
+    /// generation. A change of the damage or the incarnation takes the next epoch.
     fn update<T>(&mut self, pid: Pid, f: impl FnOnce(&mut PageEvidence) -> T) -> T {
         let generation = &mut self.generation;
         let p = self.pages.entry(pid).or_insert_with(|| {
@@ -343,7 +360,12 @@ impl Evidence {
             PageEvidence::new(Incarnation::Live(*generation))
         });
         let before = p.unmapped(true).is_some();
+        let was = (p.damage(), p.incarnation);
         let out = f(p);
+        if (p.damage(), p.incarnation) != was {
+            self.epoch.0 += 1;
+            p.changed = self.epoch;
+        }
         if p.damage().is_none() {
             p.mapped = None;
             p.incomplete = None;
@@ -441,7 +463,7 @@ impl Evidence {
         &mut self,
         _: &Appending,
         log: &mut Log,
-        refusal: &Refusal,
+        refusal: &Refusal<'_>,
         damage: Damage,
         whole: bool,
         by: ThreadId,
@@ -537,17 +559,26 @@ impl Evidence {
         }
     }
 
-    /// Stop refusing `pid`. Returns its refusal.
-    pub(super) fn unrefuse(&mut self, pid: Pid) -> Option<Damage> {
+    /// Stop refusing the page `refusal` names. Returns its refusal.
+    pub(super) fn unrefuse(&mut self, refusal: &Refusal<'_>) -> Option<Damage> {
+        self.lift(refusal.pid())
+    }
+
+    /// Stop refusing `pid`, whose replayed record starts a chain.
+    pub(super) fn replay_start(&mut self, _: &Replaying, pid: Pid) {
+        self.lift(pid);
+    }
+
+    fn lift(&mut self, pid: Pid) -> Option<Damage> {
         if !self.pages.contains_key(&pid) {
             return None;
         }
         self.update(pid, |p| p.refusal.take())
     }
 
-    /// Refuse `pid` as `damage` again, undoing a latch that stopped refusing it.
-    pub(super) fn restore(&mut self, pid: Pid, damage: Damage) {
-        self.update(pid, |p| p.refusal = Some(damage));
+    /// Refuse the page `refusal` names as `damage` again, undoing a latch that stopped refusing it.
+    pub(super) fn restore(&mut self, refusal: &Refusal<'_>, damage: Damage) {
+        self.update(refusal.pid(), |p| p.refusal = Some(damage));
     }
 
     /// Set the end of the log recovery kept.
@@ -637,15 +668,28 @@ impl Evidence {
         }
     }
 
-    /// Enter each of `mapped` whose damage and incarnation have not changed since its mapping
-    /// began, and whether a full list was mapped.
-    pub(super) fn mapped(&mut self, full: bool, mapped: Vec<Mapping>) {
+    /// Returns whether the record `pending` names is still current: its damage and incarnation
+    /// unchanged since `begun`, the epoch its mapping began at.
+    fn is_current(&self, begun: Epoch, pending: &Pending) -> bool {
+        let p = self.pages.get(&pending.pid);
+        p.is_some_and(|p| p.changed <= begun && p.incarnation == pending.of)
+    }
+
+    /// Returns each of `mapped` still current since `begun`, the epoch its mapping began at.
+    pub(super) fn current(&self, begun: Epoch, mut mapped: Vec<Mapping>) -> Vec<Mapping> {
+        mapped.retain(|(p, _)| self.is_current(begun, p));
+        mapped
+    }
+
+    /// Enter each of `mapped` still current since `begun`, the epoch its mapping began at, and
+    /// whether a full list was mapped.
+    pub(super) fn mapped(&mut self, full: bool, begun: Epoch, mapped: Vec<Mapping>) {
         self.full_mapped |= full;
-        for (Pending { pid, damage, of }, objects) in mapped {
-            let p = self.pages.get(&pid);
-            if p.is_none_or(|p| p.damage() != Some(damage) || p.incarnation != of) {
+        for (pending, objects) in mapped {
+            if !self.is_current(begun, &pending) {
                 continue;
             }
+            let Pending { pid, damage, .. } = pending;
             self.update(pid, |p| match objects {
                 Some(objects) => {
                     p.incomplete = None;
@@ -709,16 +753,17 @@ impl Evidence {
         last.map_or(0, |(pid, _)| pid.0 + 1)
     }
 
-    /// Returns each page whose damage is not mapped this open, and whether a full list is not.
-    /// `retried` false leaves out each page whose last mapping of the same damage was incomplete.
-    pub(super) fn unmapped(&self, retried: bool) -> (Vec<Pending>, bool) {
+    /// Returns each page whose damage is not mapped this open, whether a full list is not, and
+    /// the epoch the mapping begins at. `retried` false leaves out each page whose last mapping of
+    /// the same damage was incomplete.
+    pub(super) fn begin_mapping(&self, retried: bool) -> Begun {
         let pages = self.pages.iter();
         let pages = pages.filter_map(|(&pid, p)| {
             let damage = p.unmapped(retried)?;
             let of = p.incarnation;
             Some(Pending { pid, damage, of })
         });
-        (pages.collect(), self.full && !self.full_mapped)
+        (pages.collect(), self.full && !self.full_mapped, self.epoch)
     }
 
     pub(super) fn detected_by(&self, pid: Pid) -> Option<ThreadId> {

@@ -3,14 +3,14 @@ use std::collections::BTreeMap;
 use crate::runtime::Runtime;
 use crate::storage::{
     Damage, FIRST_EDITABLE, HEADER_LEN, Lsn, PageError, PageKind, PageShared, Pager, Pid,
-    Resolutions, flags, format, header_edit, kind, lsn,
+    Resolutions, StaleCopy, flags, format, header_edit, kind, lsn,
 };
 
 use super::{Status, Xid};
 
 /// A status page holding ids in progress: its page, its first id, those ids, and the file's copy
-/// with its refusal when the page lost a write.
-pub(crate) type Unresolved = (Pid, u64, Vec<u64>, Option<(Vec<u8>, PageError)>);
+/// with its judgement when the page lost a write.
+pub(crate) type Unresolved<'a, R> = (Pid, u64, Vec<u64>, Option<(Vec<u8>, StaleCopy<'a, R>)>);
 
 /// The right to read a status page that lost a write and write it back settled, which only the
 /// commit log holds: no code outside this module can make one.
@@ -294,7 +294,13 @@ impl CommitLog {
     /// Record every reserved id still in progress as committed when the retained log holds its
     /// commit record, and as aborted otherwise, as [`CommitLog::unresolved`] reads them.
     ///
-    /// Fail as [`CommitLog::unresolved`] does, writing nothing.
+    /// Fail as [`CommitLog::unresolved`] does, settling no page. Otherwise fail at the first status
+    /// page that cannot be settled, leaving each page before it settled and refusing each later
+    /// one that lost a write:
+    ///
+    /// - with the page's refusal when it is refused other than as stale, recording nothing more;
+    /// - with its stale refusal when it is resident, leaving it unrefused and unrecorded;
+    /// - with the failure of its rewrite, a page that lost a write then recorded settled.
     ///
     /// Postcondition: on success every id below [`CommitLog::reserved`] has resolved.
     pub(crate) fn settle_unresolved<R: Runtime>(
@@ -314,11 +320,10 @@ impl CommitLog {
                 }
             };
             match copy {
-                Some((copy, refusal)) => {
+                Some((copy, stale)) => {
                     let mut settled = copy.clone();
                     settle(&mut settled);
-                    pager.record_settled(&Settling(()), refusal);
-                    pager.rewrite_stale(pid, &Settling(()), &copy, &settled)?;
+                    stale.settle(&Settling(()), &copy, &settled)?;
                 }
                 None => drop(pager.update(&[pid], |p| settle(p[0]))?),
             }
@@ -336,19 +341,20 @@ impl CommitLog {
     /// that lost a write when the file's copy is not the status page the directory names there,
     /// or when the copy holds an id in progress and the retained log holds no record of the page
     /// continuing from the copy.
-    pub(crate) fn unresolved<R: Runtime>(
+    pub(crate) fn unresolved<'p, R: Runtime>(
         &self,
-        pager: &Pager<R>,
-    ) -> Result<(Vec<Unresolved>, Resolutions), PageError> {
+        pager: &'p Pager<R>,
+    ) -> Result<(Vec<Unresolved<'p, R>>, Resolutions), PageError> {
         let (from, to) = (self.root.bound, self.root.reserved);
         let mut open = Vec::new();
         let mut oldest: Option<(Lsn, Pid)> = None;
         for (&n, &pid) in &self.pages {
             let base = n * self.per_page;
             let (page, refused) = pager.read_stale(pid, &Settling(()))?;
-            if let Some(e) = refused.filter(|_| !is_status_page(&page, n)) {
-                return Err(e);
-            }
+            let refused = match refused {
+                Some(stale) if !is_status_page(&page, n) => return Err(stale.refuse()),
+                refused => refused,
+            };
             let ids: Vec<u64> = (from.0.max(base)..to.0.min(base + self.per_page))
                 .filter(|&x| status_at(&page, (x - base) as usize) == Status::InProgress)
                 .collect();
@@ -372,13 +378,13 @@ impl CommitLog {
                 pid,
                 damage: Damage::LogUnproven { at },
             })?;
-        for (pid, _, ids, copy) in &open {
-            let Some((copy, refusal)) = copy else {
-                continue;
-            };
-            if !ids.is_empty() && !logged.continued.contains(&(*pid, lsn(copy))) {
-                return Err(*refusal);
-            }
+        let unproven = open.iter().position(|(pid, _, ids, copy)| {
+            copy.as_ref().is_some_and(|(copy, _)| {
+                !ids.is_empty() && !logged.continued.contains(&(*pid, lsn(copy)))
+            })
+        });
+        if let Some((_, stale)) = unproven.and_then(|i| open.swap_remove(i).3) {
+            return Err(stale.refuse());
         }
         Ok((open, logged))
     }

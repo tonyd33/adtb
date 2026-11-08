@@ -105,6 +105,7 @@ pub use page::{flip_owner, seal};
 pub use pager::{
     LATCHES_PER_THREAD, Options, PageError, PageExclusive, PageOptimistic, PageShared, Pager,
 };
+pub(crate) use quarantine::StaleCopy;
 pub use quarantine::{Holders, Quarantine, Stopped};
 #[cfg(test)]
 pub use record::Edit;

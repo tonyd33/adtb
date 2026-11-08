@@ -263,7 +263,7 @@ impl<R: Runtime> Pager<R> {
         };
         let before = st.last.insert(pid, lsn);
         if prev == Lsn::UNCHAINED {
-            self.evidence().unrefuse(pid);
+            self.evidence().replay_start(&st.replaying, pid);
         }
         if let Some(expected) = before.filter(|&l| l != prev && prev != Lsn::UNCHAINED) {
             st.unverified.remove(&pid);

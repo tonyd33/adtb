@@ -2,11 +2,74 @@ use std::collections::BTreeSet;
 
 use crate::runtime::Runtime;
 
+use super::evidence::{Against, Judged, file_copy};
 use super::page::Verdict;
 use super::page::{FIRST_EDITABLE, HEADER_LEN, PageKind};
 use super::pager::{PageError, PageExclusive, Pager};
 use super::{Damage, Lsn, Pid};
 use crate::mvcc::Settling;
+
+/// A status page whose file's copy lost a write, as [`Pager::read_stale`] judged it. Dropped
+/// unsettled, it refuses the page and records its damage.
+#[must_use = "a stale copy dropped unsettled refuses its page"]
+pub(crate) struct StaleCopy<'a, R: Runtime> {
+    pager: &'a Pager<R>,
+    lost: Option<PageError>,
+}
+
+impl<'a, R: Runtime> StaleCopy<'a, R> {
+    fn of(pager: &'a Pager<R>, pid: Pid, damage: Damage) -> StaleCopy<'a, R> {
+        StaleCopy {
+            pager,
+            lost: Some(PageError { pid, damage }),
+        }
+    }
+
+    fn take(&mut self) -> PageError {
+        let lost = self.lost.take();
+        lost.expect("a stale copy holds its refusal until it is settled or refused")
+    }
+
+    /// Refuse the page and record its damage. Returns the refusal.
+    ///
+    /// Preconditions: as for [`Pager::damage`].
+    pub(crate) fn refuse(mut self) -> PageError {
+        let e = self.take();
+        self.pager.damage(e.pid, e.damage)
+    }
+
+    /// Latch the page over `copy`, the file's copy, record it settled, then change it to
+    /// `contents`, logging the change as one from that copy.
+    ///
+    /// Fail, recording nothing, when the page is refused other than as stale or resident.
+    pub(crate) fn settle(
+        mut self,
+        settling: &Settling,
+        copy: &[u8],
+        contents: &[u8],
+    ) -> Result<(), PageError> {
+        let e = self.take();
+        let pager = self.pager;
+        let mut g = pager.latch_restored(e, copy)?;
+        pager.record_settled(settling, e);
+        let new = pager.reserve();
+        pager.update_all_with(new, &mut [&mut g], |p| {
+            p[0][FIRST_EDITABLE..].copy_from_slice(&contents[FIRST_EDITABLE..]);
+        })?;
+        Ok(())
+    }
+}
+
+impl<R: Runtime> Drop for StaleCopy<'_, R> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        if let Some(e) = self.lost.take() {
+            self.pager.damage(e.pid, e.damage);
+        }
+    }
+}
 
 /// What the allocation bitmap says of a page.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -495,8 +558,9 @@ impl<R: Runtime> Pager<R> {
         Ok(())
     }
 
-    /// Returns page `pid` as the file holds it, with the refusal when the file's copy lost a write
-    /// it must have, for the commit log to settle it from the log.
+    /// Returns page `pid` as the file holds it, with its judgement as stale when the file's copy
+    /// lost a write it must have, for the commit log to settle it from the log. A page neither
+    /// resident nor refused is judged without refusing it or recording its damage.
     ///
     /// Fail with any other refusal, or when the file's copy is blank, past the log, or fails its
     /// checksum.
@@ -504,7 +568,10 @@ impl<R: Runtime> Pager<R> {
         &self,
         pid: Pid,
         _: &Settling,
-    ) -> Result<(Vec<u8>, Option<PageError>), PageError> {
+    ) -> Result<(Vec<u8>, Option<StaleCopy<'_, R>>), PageError> {
+        if let Some((copy, damage)) = self.judge_quietly(pid) {
+            return Ok((copy, Some(StaleCopy::of(self, pid, damage))));
+        }
         let e = match self.read_formatted(pid) {
             Ok(page) => return Ok((page.to_vec(), None)),
             Err(e) => e,
@@ -516,32 +583,29 @@ impl<R: Runtime> Pager<R> {
             return Err(e);
         }
         match self.read_disk(pid) {
-            Ok((buf, Verdict::Valid)) => Ok((buf.to_vec(), Some(e))),
+            Ok((buf, Verdict::Valid)) => {
+                Ok((buf.to_vec(), Some(StaleCopy::of(self, pid, e.damage))))
+            }
             _ => Err(e),
         }
     }
 
-    /// Change page `pid`, which [`Pager::read_stale`] returned refused, from the file's copy
-    /// `copy` to `contents`, logging the change as one from that copy.
-    pub(crate) fn rewrite_stale(
-        &self,
-        pid: Pid,
-        _: &Settling,
-        copy: &[u8],
-        contents: &[u8],
-    ) -> Result<(), PageError> {
-        let mut g = match self.exclusive(pid) {
-            Ok(g) => g,
-            Err(e) if e.pid == pid && matches!(e.damage, Damage::Stale { .. }) => {
-                self.latch_restored(pid, copy)
-            }
-            Err(e) => return Err(e),
+    /// Returns the file's copy of `pid` and its damage when the page is neither resident nor
+    /// refused, and the copy is valid, allocated and behind its expected LSN with an LSN of its
+    /// own, refusing nothing.
+    fn judge_quietly(&self, pid: Pid) -> Option<(Vec<u8>, Damage)> {
+        let held = self.hold(pid);
+        if held.resident() || self.refusal(pid).is_some() {
+            return None;
+        }
+        let read = self.read_disk(pid);
+        let judged = self.judge(pid, file_copy(&read), Against::Expected);
+        let Judged::Behind(damage @ Damage::Stale { found, .. }) = judged else {
+            return None;
         };
-        let new = self.reserve();
-        self.update_all_with(new, &mut [&mut g], |p| {
-            p[0][FIRST_EDITABLE..].copy_from_slice(&contents[FIRST_EDITABLE..]);
-        })?;
-        Ok(())
+        let (buf, verdict) = read.ok()?;
+        let lost = verdict == Verdict::Valid && found != Lsn(0);
+        (lost && self.bitmapped(pid) != Bitmapped::Free).then(|| (buf.to_vec(), damage))
     }
 
     /// Free damaged page `pid`, overwriting it, so no later read of the file finds the damage.
