@@ -11,12 +11,13 @@ use adtb::storage::{
     self, BackupRun, Crc32c, Damage, Envelope, HEADER_LEN, Lsn, Options, PageKind, Pager, Pid,
 };
 use adtb_sim::{Action, Config, Match, Outcome, Plan, Sim, SimRuntime, Submitted};
+use adtb_simkit::damage::{DataFile, Files};
 use adtb_simkit::search::each_crash_image;
 use adtb_simkit::{common, harness};
 use adtb_sys::runtime::Faults;
 use adtb_testkit::profile::every_case;
 
-type Files = BTreeMap<String, Vec<u8>>;
+const PAGER: DataFile = DataFile::new(harness::NAME, harness::PAGE);
 
 const EVERY: u64 = 256 * 1024;
 const FRAMES: usize = 16;
@@ -166,10 +167,8 @@ fn log_bytes(files: &Files, lsn: Lsn, n: usize) -> Vec<u8> {
 /// checksum word at byte 8 zeroed, matches. The header holds its sequence number at byte 16 and
 /// the record's LSN at byte 64; the record holds its redo LSN after a tag byte and a length word.
 fn header_checkpoint(files: &Files) -> (Lsn, Lsn) {
-    let data = &files[harness::NAME];
     let copy = |n: u64| {
-        let at = n as usize * harness::PAGE;
-        let region = &data[at..at + 4096];
+        let region = &PAGER.page(files, Pid(n))[..4096];
         let word = |o: usize| u64::from_le_bytes(region[o..o + 8].try_into().unwrap());
         let sum = Crc32c::new()
             .update(&n.to_le_bytes())
@@ -340,7 +339,7 @@ fn crash_in_a_cycle_loses_nothing(atomic: bool) {
                 .unwrap()
                 .get_or_insert_with(|| image.clone())
                 .clone();
-            let header = 0..Pid::FIRST_DATA.0 as usize * harness::PAGE;
+            let header = 0..PAGER.range(Pid::FIRST_DATA).start;
             let log = |f: &Files| -> Vec<Vec<u8>> {
                 let dir = format!("{}/", options(atomic).log_dir());
                 let held = f.iter().filter(|(k, _)| k.starts_with(&dir));
@@ -479,7 +478,7 @@ fn torn_run(files: &Files, pages: &[Pid], crash: Option<Instant>) -> (Sim, Load,
     if let Some(at) = crash {
         sim.crash_at(at);
     }
-    let hot = pages[0].0 * harness::PAGE as u64;
+    let hot = PAGER.range(pages[0]).start as u64;
     let writes = sim.logged(Match::kind(OpKind::Write).path(harness::NAME).offset(hot));
     let mut done = Load::default();
     let outcome = sim.run(|rt| {
@@ -513,7 +512,7 @@ fn a_crash_tearing_a_write_of_a_page_whose_rec_lsn_was_raised_loses_no_acknowled
         "no write of the hot page began after its rec_lsn was raised"
     );
     let wrote = acked_by(&done.acked, usize::MAX);
-    let hot = format!("@{} units", pages[0].0 * harness::PAGE as u64);
+    let hot = format!("@{} units", PAGER.range(pages[0]).start);
     let most = if every_case() { crashes.len() } else { 4 };
     let mut tore = 0;
     for &t in crashes.iter().take(most) {

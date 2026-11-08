@@ -3,6 +3,7 @@
 //! between concurrent writers.
 
 use adtb_simkit::api;
+use adtb_simkit::open;
 
 use std::sync::{Arc, Mutex};
 
@@ -13,7 +14,8 @@ use adtb::{
 };
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use api::{once, options, query, run};
+use adtb_simkit::open::options;
+use api::{once, query, run};
 
 const BILLING: &str = r"module billing
 add module billing
@@ -29,20 +31,6 @@ const LOWER_UNIQUE: &str = "module billing\nadd unique (lower(email)) in invoice
 const EMAILS: &str = "from i in invoices select i.email";
 
 const SEEDS: std::ops::Range<u64> = 0..3;
-
-fn open_with(rt: &SimRuntime, log: &[&str]) -> Database<SimRuntime> {
-    Database::open_in(
-        rt.clone(),
-        "app.adt",
-        &Log::new(log.iter().copied()),
-        &options(2),
-    )
-    .expect("the database opens")
-}
-
-fn open(rt: &SimRuntime) -> Database<SimRuntime> {
-    open_with(rt, &[BILLING])
-}
 
 fn write(db: &Database<SimRuntime>, text: &str) -> Result<(), Error> {
     db.query_text(text, &[], &CallOptions::default()).map(drop)
@@ -93,7 +81,12 @@ fn by_ref(db: &Database<SimRuntime>, r: &str) -> Vec<String> {
 fn an_expression_index_finds_every_row_whose_expression_equals_the_value() {
     for seed in SEEDS {
         once(seed, |rt| {
-            let db = open(&rt);
+            let db = open::opened(
+                &rt,
+                open::FILE,
+                &Log::new([BILLING].iter().copied()),
+                &options(2),
+            );
             for e in ["Ann@X", "bo@x", "ANN@x"] {
                 write(&db, &insert(e, "Draft")).expect("the insert");
             }
@@ -122,7 +115,12 @@ fn an_expression_index_finds_every_row_whose_expression_equals_the_value() {
 #[test]
 fn a_path_index_holds_only_rows_whose_field_holds_its_constructor() {
     once(0, |rt| {
-        let db = open(&rt);
+        let db = open::opened(
+            &rt,
+            open::FILE,
+            &Log::new([BILLING].iter().copied()),
+            &options(2),
+        );
         write(&db, &insert("a@x", "Draft")).expect("a draft");
         write(&db, &insert("b@x", &paid("r1"))).expect("a paid invoice");
         write(&db, &insert("c@x", "Draft")).expect("another draft");
@@ -142,7 +140,12 @@ fn a_path_index_holds_only_rows_whose_field_holds_its_constructor() {
 fn an_expression_unique_added_over_rows_sharing_its_value_is_refused() {
     let mut sim = Sim::new(1, Config::default());
     run(&mut sim, |rt| {
-        let db = open(&rt);
+        let db = open::opened(
+            &rt,
+            open::FILE,
+            &Log::new([BILLING].iter().copied()),
+            &options(2),
+        );
         write(&db, &insert("Ann@X", "Draft")).expect("the first");
         write(&db, &insert("ANN@x", "Draft")).expect("the second");
         db.close().expect("close");
@@ -160,13 +163,23 @@ fn an_expression_unique_added_over_rows_sharing_its_value_is_refused() {
 fn an_expression_unique_added_by_migration_holds_for_later_writes() {
     let mut sim = Sim::new(2, Config::default());
     run(&mut sim, |rt| {
-        let db = open(&rt);
+        let db = open::opened(
+            &rt,
+            open::FILE,
+            &Log::new([BILLING].iter().copied()),
+            &options(2),
+        );
         write(&db, &insert("Ann@X", "Draft")).expect("the first");
         write(&db, &insert("bo@x", "Draft")).expect("the second");
         db.close().expect("close");
     });
     run(&mut sim, |rt| {
-        let db = open_with(&rt, &[BILLING, LOWER_UNIQUE]);
+        let db = open::opened(
+            &rt,
+            open::FILE,
+            &Log::new([BILLING, LOWER_UNIQUE].iter().copied()),
+            &options(2),
+        );
         let got = write(&db, &insert("aNN@x", "Draft")).expect_err("a duplicate lowered email");
         assert!(is_violated(&got), "{got:?}");
         write(&db, &insert("cy@x", "Draft")).expect("a new lowered email");
@@ -179,7 +192,12 @@ fn a_migration_adding_an_expression_unique_survives_a_crash_whole_or_not_at_all(
     let seed = 3;
     let mut sim = Sim::new(seed, Config::default());
     run(&mut sim, |rt| {
-        let db = open(&rt);
+        let db = open::opened(
+            &rt,
+            open::FILE,
+            &Log::new([BILLING].iter().copied()),
+            &options(2),
+        );
         for e in ["Ann@X", "bo@x", "cy@x"] {
             write(&db, &insert(e, "Draft")).expect("the insert");
         }
@@ -187,14 +205,24 @@ fn a_migration_adding_an_expression_unique_survives_a_crash_whole_or_not_at_all(
     });
     sim.record();
     run(&mut sim, |rt| {
-        std::mem::forget(open_with(&rt, &[BILLING, LOWER_UNIQUE]));
+        std::mem::forget(open::opened(
+            &rt,
+            open::FILE,
+            &Log::new([BILLING, LOWER_UNIQUE].iter().copied()),
+            &options(2),
+        ));
     });
     let recording = sim.recording();
     for at in 0..=recording.len() {
         let files = recording.images(at, 1, seed + at as u64).swap_remove(0);
         let mut sim = Sim::with_files(seed + at as u64, Config::default(), files);
         run(&mut sim, |rt| {
-            let db = open_with(&rt, &[BILLING, LOWER_UNIQUE]);
+            let db = open::opened(
+                &rt,
+                open::FILE,
+                &Log::new([BILLING, LOWER_UNIQUE].iter().copied()),
+                &options(2),
+            );
             assert_eq!(
                 vec![r#""Ann@X""#, r#""bo@x""#, r#""cy@x""#],
                 query(&db, EMAILS),
@@ -215,10 +243,22 @@ fn a_migration_adding_an_expression_unique_survives_a_crash_whole_or_not_at_all(
 fn expression_and_path_indexes_hold_every_committed_row_after_a_crash() {
     let seed = 4;
     let mut sim = Sim::new(seed, Config::default());
-    run(&mut sim, |rt| drop(open(&rt)));
+    run(&mut sim, |rt| {
+        drop(open::opened(
+            &rt,
+            open::FILE,
+            &Log::new([BILLING].iter().copied()),
+            &options(2),
+        ));
+    });
     sim.record();
     run(&mut sim, |rt| {
-        let db = open(&rt);
+        let db = open::opened(
+            &rt,
+            open::FILE,
+            &Log::new([BILLING].iter().copied()),
+            &options(2),
+        );
         for (i, e) in ["Ann@X", "bo@x", "cy@x"].into_iter().enumerate() {
             write(&db, &insert(e, &paid(&format!("r{i}")))).expect("the insert");
         }
@@ -229,7 +269,12 @@ fn expression_and_path_indexes_hold_every_committed_row_after_a_crash() {
         let files = recording.images(at, 1, seed + at as u64).swap_remove(0);
         let mut sim = Sim::with_files(seed + at as u64, Config::default(), files);
         run(&mut sim, |rt| {
-            let db = open(&rt);
+            let db = open::opened(
+                &rt,
+                open::FILE,
+                &Log::new([BILLING].iter().copied()),
+                &options(2),
+            );
             let held = query(&db, EMAILS);
             for (i, e) in ["Ann@X", "bo@x", "cy@x"].into_iter().enumerate() {
                 let quoted = format!("{e:?}");
@@ -260,7 +305,12 @@ fn expression_and_path_indexes_hold_every_committed_row_after_a_crash() {
 fn a_writer_of_a_path_unique_value_committed_after_its_snapshot_fails_to_serialize() {
     for seed in SEEDS {
         once(seed, |rt| {
-            let db = open(&rt);
+            let db = open::opened(
+                &rt,
+                open::FILE,
+                &Log::new([BILLING].iter().copied()),
+                &options(2),
+            );
             let mut a = db.begin(&TxnOptions::default()).expect("begin a");
             let mut b = db.begin(&TxnOptions::default()).expect("begin b");
             in_txn(&mut a, EMAILS).expect("a reads");
@@ -282,7 +332,12 @@ fn a_writer_of_a_path_unique_value_committed_after_its_snapshot_fails_to_seriali
 fn an_upsert_on_a_path_unique_against_a_row_committed_after_its_snapshot_fails_to_serialize() {
     for seed in SEEDS {
         once(seed, |rt| {
-            let db = open(&rt);
+            let db = open::opened(
+                &rt,
+                open::FILE,
+                &Log::new([BILLING].iter().copied()),
+                &options(2),
+            );
             let upsert = |email: &str| {
                 format!(
                     r#"insert invoices {{ status: Paid {{ ref: "r9" }}, email: "{email}", n: 0 }}
@@ -314,7 +369,12 @@ fn an_upsert_on_a_path_unique_against_a_row_committed_after_its_snapshot_fails_t
 fn a_writer_of_a_path_unique_value_another_is_writing_waits_and_fails_if_it_commits() {
     for seed in SEEDS {
         once(seed, |rt| {
-            let db = open(&rt);
+            let db = open::opened(
+                &rt,
+                open::FILE,
+                &Log::new([BILLING].iter().copied()),
+                &options(2),
+            );
             let events: Arc<Mutex<Vec<&str>>> = Arc::new(Mutex::new(Vec::new()));
             let mut a = db.begin(&TxnOptions::default()).expect("begin a");
             in_txn(&mut a, &insert("a@x", &paid("r9"))).expect("a inserts");
@@ -358,7 +418,12 @@ fn a_writer_of_a_path_unique_value_another_is_writing_waits_and_fails_if_it_comm
 fn a_writer_of_a_path_unique_value_another_is_writing_proceeds_if_it_aborts() {
     for seed in SEEDS {
         once(seed, |rt| {
-            let db = open(&rt);
+            let db = open::opened(
+                &rt,
+                open::FILE,
+                &Log::new([BILLING].iter().copied()),
+                &options(2),
+            );
             let mut a = db.begin(&TxnOptions::default()).expect("begin a");
             in_txn(&mut a, &insert("a@x", &paid("r9"))).expect("a inserts");
             let ended = Arc::new(Mutex::new(None));

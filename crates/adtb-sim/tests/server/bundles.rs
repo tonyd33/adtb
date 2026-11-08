@@ -3,6 +3,7 @@
 //! command, and their persistence across reopen and crash.
 
 use adtb_simkit::api;
+use adtb_simkit::open;
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -18,7 +19,8 @@ use adtb_lang::parse::{Options, parse_migration};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_testkit::sections::{Section, expectations, sections};
 
-use api::{once, options, printed, query, results, run};
+use adtb_simkit::open::options;
+use api::{once, printed, query, results, run};
 
 const V1: &str = r"module auth
 add module auth
@@ -85,16 +87,9 @@ fn with(regs: Vec<Registration>) -> OpenOptions {
     }
 }
 
-fn open(
-    rt: &SimRuntime,
-    migrations: &[&str],
-    regs: Vec<Registration>,
-) -> Result<Database<SimRuntime>, OpenError> {
-    Database::open_in(rt.clone(), "app.adt", &log(migrations), &with(regs))
-}
-
 fn opened(rt: &SimRuntime, migrations: &[&str], regs: Vec<Registration>) -> Database<SimRuntime> {
-    open(rt, migrations, regs).unwrap_or_else(|e| panic!("the database opens: {e:?}"))
+    open::open(rt, open::FILE, &log(migrations), &with(regs))
+        .unwrap_or_else(|e| panic!("the database opens: {e:?}"))
 }
 
 fn reason(e: &Error) -> &RejectReason {
@@ -753,7 +748,7 @@ fn a_conflict_branch_naming_old_reads_the_relation_unless_new_constructors_are_h
                     opened(&rt, &before, registered());
                 });
                 run(&mut sim, |rt| {
-                    let got = open(&rt, &log, registered());
+                    let got = open::open(&rt, open::FILE, &self::log(&log), &with(registered()));
                     if blocks && !hides {
                         assert_eq!(
                             refused,
@@ -771,7 +766,7 @@ fn a_conflict_branch_naming_old_reads_the_relation_unless_new_constructors_are_h
             }
             seed += 1;
             once(seed, |rt| {
-                let got = open(&rt, &log, registered());
+                let got = open::open(&rt, open::FILE, &self::log(&log), &with(registered()));
                 if blocks && !hides {
                     assert_eq!(link_stale(), refusal(got, "web-1.0"), "{name}{clauses}");
                     reached.insert((name, hides, "stale"));
@@ -933,10 +928,13 @@ fn pinned_fields_follow_each_surviving_owner_identity() {
             let db = opened(&rt, &pin, vec![]);
             write(&db, parts[3]).expect("the pinned rows are written before evolution");
             drop(db);
-            let db = open(&rt, &log, vec![bundle("fields-1.0", &pin, "", parts[2])])
-                .unwrap_or_else(|e| {
-                    panic!("{}: the evolved database opens: {e:?}", path.display())
-                });
+            let db = open::open(
+                &rt,
+                open::FILE,
+                &self::log(&log),
+                &with(vec![bundle("fields-1.0", &pin, "", parts[2])]),
+            )
+            .unwrap_or_else(|e| panic!("{}: the evolved database opens: {e:?}", path.display()));
             let mut got = rows(call(&db, "fields-1.0", 1, &[]));
             got.sort();
             let expected: Vec<_> = parts[4].lines().collect();
@@ -995,16 +993,18 @@ fn key_answers(seed: u64, rel: &Section, op: Option<&Section>, bodies: &[&Sectio
     }
     let op = op.expect("an operator follows the pin");
     let log = [rel.text.as_str(), op.text.as_str()];
-    run(&mut sim, |rt| match open(&rt, &log, bundled()) {
-        Ok(db) => {
-            key_rows(op, &db, &case);
-            (1..=bodies.len() as u32)
-                .map(|i| key_answer(&db, i, rel.part("observe")))
-                .collect()
-        }
-        got => {
-            let (operator, detail) = refused_migration(got, 2);
-            vec![format!("refused {operator:?} {detail:?}")]
+    run(&mut sim, |rt| {
+        match open::open(&rt, open::FILE, &self::log(&log), &with(bundled())) {
+            Ok(db) => {
+                key_rows(op, &db, &case);
+                (1..=bodies.len() as u32)
+                    .map(|i| key_answer(&db, i, rel.part("observe")))
+                    .collect()
+            }
+            got => {
+                let (operator, detail) = refused_migration(got, 2);
+                vec![format!("refused {operator:?} {detail:?}")]
+            }
         }
     })
 }
@@ -1289,7 +1289,10 @@ fn assert_reader_blocks(
             opened(&rt, &before, registered());
         });
         run(&mut sim, |rt| {
-            let (_, detail) = refused_migration(open(&rt, &log, registered()), 4);
+            let (_, detail) = refused_migration(
+                open::open(&rt, open::FILE, &self::log(&log), &with(registered())),
+                4,
+            );
             assert_eq!(READER_REFUSED, detail, "{clauses}: {body}");
         });
     }
@@ -1299,7 +1302,10 @@ fn assert_reader_blocks(
                 bundle: "web-1.0".into(),
                 ctor: "Tone.Dye".into(),
             },
-            refusal(open(&rt, &log, registered()), "web-1.0"),
+            refusal(
+                open::open(&rt, open::FILE, &self::log(&log), &with(registered())),
+                "web-1.0"
+            ),
             "{clauses}: {body}",
         );
     });
@@ -1492,7 +1498,12 @@ fn a_sole_access_shape_blocks_enable_only_when_it_reads_the_field() {
                 assert_eq!(
                     "query `run`: `inserted` reads the change of a statement, only in a constraint",
                     invalid(
-                        open(&rt, &pin, vec![bundle("web-1.0", &pin, "", &text)]),
+                        open::open(
+                            &rt,
+                            open::FILE,
+                            &log(&pin),
+                            &with(vec![bundle("web-1.0", &pin, "", &text)])
+                        ),
                         "web-1.0"
                     ),
                 );
@@ -1804,7 +1815,10 @@ fn a_removal_is_refused_while_a_stored_field_of_each_shape_holds_the_constructor
             results(&db, &insert);
         });
         run(&mut sim, |rt| {
-            let (operator, detail) = refused_migration(open(&rt, &log, vec![]), 4);
+            let (operator, detail) = refused_migration(
+                open::open(&rt, open::FILE, &self::log(&log), &with(vec![])),
+                4,
+            );
             assert_eq!(format!("remove constructor {held}.{name}"), operator);
             assert_eq!(
                 format!("a field of hs holds a value of {held}.{name}; it cannot be removed"),

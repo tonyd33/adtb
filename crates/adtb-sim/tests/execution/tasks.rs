@@ -147,10 +147,6 @@ struct Fixture<R: Runtime> {
     gate: Arc<Gate>,
 }
 
-fn open<R: Runtime>(rt: &R, rows: usize) -> Fixture<R> {
-    open_with(rt, rows, 2)
-}
-
 /// Returns a database with `rows` items whose tasks run on `workers` workers.
 fn open_with<R: Runtime>(rt: &R, rows: usize, workers: usize) -> Fixture<R> {
     open_under(rt, rows, workers, None)
@@ -358,7 +354,7 @@ fn read_opts() -> TaskOptions {
 #[test]
 fn a_task_returns_what_the_call_returns() {
     sim_once(|rt| {
-        let f = open(rt, 3000);
+        let f = open_with(rt, 3000, 2);
         let task = f.submit(1, read_opts());
         let (rows, done) = drive(rt, &task);
         assert_eq!(rows.len(), ints(&rows).len(), "each element once");
@@ -421,7 +417,7 @@ fn drive_released<R: Runtime>(
 #[test]
 fn a_streamed_set_repeats_no_element_across_units() {
     sim_once(|rt| {
-        let f = open(rt, ROWS);
+        let f = open_with(rt, ROWS, 2);
         let task = f.submit(6, read_opts());
         let (rows, held) = drive_released(rt, &task, 1);
         assert_eq!(rows.len(), ints(&rows).len(), "each element once");
@@ -457,7 +453,7 @@ fn a_streamed_partitioned_join_returns_what_the_call_returns() {
 #[test]
 fn an_arrow_task_returns_record_batches() {
     sim_once(|rt| {
-        let f = open(rt, 100);
+        let f = open_with(rt, 100, 2);
         let task = f.submit(
             1,
             TaskOptions {
@@ -487,7 +483,7 @@ fn an_arrow_task_returns_record_batches() {
 /// A reader that supplies little capacity and takes nothing stops production short of the
 /// result: rows evaluated, not rows sent, stay within one unit of work past the capacity.
 fn a_slow_reader_stops_production<R: Runtime>(rt: &R) {
-    let f = open(rt, ROWS);
+    let f = open_with(rt, ROWS, 2);
     let task = f.submit(1, read_opts());
     let (_, waker) = wakes(rt);
     task.supply(1);
@@ -526,7 +522,7 @@ fn a_slow_reader_stops_production_real() {
 #[test]
 fn observe_never_runs_a_statement() {
     sim_once(|rt| {
-        let f = open(rt, 3000);
+        let f = open_with(rt, 3000, 2);
         let task = f.submit(1, read_opts());
         let (_, waker) = wakes(rt);
         let mut laid = false;
@@ -553,7 +549,7 @@ fn observe_never_runs_a_statement() {
 
 /// A pending observation registered before a batch is formed is woken.
 fn a_pending_observe_wakes<R: Runtime>(rt: &R) {
-    let f = open(rt, 10);
+    let f = open_with(rt, 10, 2);
     let task = f.submit(1, read_opts());
     let (count, waker) = wakes(rt);
     while !matches!(task.observe(&waker), Observation::Pending) {}
@@ -577,7 +573,7 @@ fn a_pending_observe_wakes_real() {
 
 /// Capacity supplied while production waits for it wakes production.
 fn a_supply_wakes_a_waiting_producer<R: Runtime>(rt: &R) {
-    let f = open(rt, 1000);
+    let f = open_with(rt, 1000, 2);
     let task = f.submit(1, read_opts());
     let (_, waker) = wakes(rt);
     let mut n = 0;
@@ -609,7 +605,7 @@ fn a_supply_wakes_a_waiting_producer_real() {
 #[test]
 fn the_snapshot_is_held_until_drained() {
     sim_once(|rt| {
-        let f = open(rt, 100);
+        let f = open_with(rt, 100, 2);
         let task = f.submit(1, read_opts());
         let (_, waker) = wakes(rt);
         task.supply(usize::MAX);
@@ -632,7 +628,7 @@ fn the_snapshot_is_held_until_drained() {
 #[test]
 fn a_dropped_task_releases_its_snapshot() {
     sim_once(|rt| {
-        let f = open(rt, 3000);
+        let f = open_with(rt, 3000, 2);
         let task = f.submit(1, read_opts());
         let (_, waker) = wakes(rt);
         task.supply(1);
@@ -648,7 +644,7 @@ fn a_dropped_task_releases_its_snapshot() {
 #[test]
 fn a_transferred_batch_stays_charged_until_released() {
     sim_once(|rt| {
-        let f = open(rt, 3000);
+        let f = open_with(rt, 3000, 2);
         let task = f.submit(1, read_opts());
         let (_, waker) = wakes(rt);
         task.supply(1);
@@ -669,7 +665,7 @@ fn a_transferred_batch_stays_charged_until_released() {
 /// A write that waits for a transaction which then commits fails its attempt with a
 /// serialization failure and reruns; only the committed attempt's result is handed out.
 fn a_retried_write_publishes_only_the_committed_attempt<R: Runtime>(rt: &R) {
-    let f = open(rt, 0);
+    let f = open_with(rt, 0, 2);
     let mut txn = f.db.begin(&TxnOptions::default()).unwrap();
     txn.query_text(UPDATE, &[], &TxnCallOptions::default())
         .unwrap();
@@ -709,7 +705,7 @@ fn a_retried_write_publishes_only_the_committed_attempt_real() {
 #[test]
 fn cancel_before_commit_has_no_effect() {
     sim_once(|rt| {
-        let f = open(rt, 0);
+        let f = open_with(rt, 0, 2);
         let mut txn = f.db.begin(&TxnOptions::default()).unwrap();
         txn.query_text(UPDATE, &[], &TxnCallOptions::default())
             .unwrap();
@@ -731,7 +727,7 @@ fn cancel_before_commit_has_no_effect() {
 #[test]
 fn cancel_after_commit_keeps_the_commit() {
     sim_once(|rt| {
-        let f = open(rt, 0);
+        let f = open_with(rt, 0, 2);
         let task = f.submit(3, read_opts());
         while f.items() == 0 {
             sleep(rt, Duration::from_millis(1));
@@ -754,7 +750,7 @@ fn cancel_after_commit_keeps_the_commit() {
 
 /// A cancel racing the commit settles once: cancelled exactly when nothing was written.
 fn cancel_racing_commit_settles_once<R: Runtime>(rt: &R) {
-    let f = open(rt, 0);
+    let f = open_with(rt, 0, 2);
     for round in 0..4 {
         let before = f.items();
         let task = f.submit(3, read_opts());
@@ -787,7 +783,7 @@ fn cancel_racing_commit_settles_once_real() {
 #[test]
 fn idle_before_commit_fails_stream_idle() {
     sim_once(|rt| {
-        let f = open(rt, 3000);
+        let f = open_with(rt, 3000, 2);
         let task = f.submit(1, read_opts());
         let (_, waker) = wakes(rt);
         task.supply(1);
@@ -809,7 +805,7 @@ fn idle_before_commit_fails_stream_idle() {
 #[test]
 fn idle_after_commit_marks_output_incomplete() {
     sim_once(|rt| {
-        let f = open(rt, 0);
+        let f = open_with(rt, 0, 2);
         let task = f.submit(3, read_opts());
         while f.items() == 0 {
             sleep(rt, Duration::from_millis(1));
@@ -838,7 +834,7 @@ fn idle_after_commit_marks_output_incomplete() {
 #[test]
 fn a_drained_write_keeps_its_outcome() {
     sim_once(|rt| {
-        let f = open(rt, 0);
+        let f = open_with(rt, 0, 2);
         let task = f.submit(3, read_opts());
         let (rows, done) = drive(rt, &task);
         assert_eq!(1, rows.len());
@@ -867,7 +863,7 @@ fn a_drained_write_keeps_its_outcome() {
 #[test]
 fn a_drained_read_keeps_its_outcome() {
     sim_seeds("drained read", |rt| {
-        let f = open(rt, 100);
+        let f = open_with(rt, 100, 2);
         let task = f.submit(1, read_opts());
         let (_, waker) = wakes(rt);
         task.supply(usize::MAX);
@@ -897,7 +893,7 @@ fn a_drained_read_keeps_its_outcome() {
 #[test]
 fn an_early_drained_then_cancelled_read_settles() {
     sim_once(|rt| {
-        let f = open(rt, 3000);
+        let f = open_with(rt, 3000, 2);
         let task = f.submit(1, read_opts());
         let (_, waker) = wakes(rt);
         task.supply(1);
@@ -928,7 +924,7 @@ fn an_early_drained_then_cancelled_read_settles() {
 #[test]
 fn an_early_drained_then_dropped_read_releases_its_snapshot() {
     sim_once(|rt| {
-        let f = open(rt, 3000);
+        let f = open_with(rt, 3000, 2);
         let task = f.submit(1, read_opts());
         let (_, waker) = wakes(rt);
         task.supply(1);
@@ -944,7 +940,7 @@ fn an_early_drained_then_dropped_read_releases_its_snapshot() {
 #[test]
 fn closing_the_database_stops_its_tasks() {
     sim_once(|rt| {
-        let f = open(rt, 3000);
+        let f = open_with(rt, 3000, 2);
         let task = f.submit(1, read_opts());
         let (_, waker) = wakes(rt);
         task.supply(1);
@@ -967,7 +963,7 @@ fn closing_the_database_stops_its_tasks() {
 #[test]
 fn a_role_other_than_the_owner_is_refused() {
     sim_once(|rt| {
-        let f = open(rt, 0);
+        let f = open_with(rt, 0, 2);
         let authority = f.db.role_authority();
         authority.create_role("web").unwrap();
         let web = authority.session("web").unwrap();
@@ -999,7 +995,7 @@ fn a_role_other_than_the_owner_is_refused() {
 #[test]
 fn ad_hoc_text_runs_as_a_task() {
     sim_once(|rt| {
-        let f = open(rt, 50);
+        let f = open_with(rt, 50, 2);
         let task = f
             .owner
             .submit_text(
@@ -1024,7 +1020,7 @@ fn ad_hoc_text_runs_as_a_task() {
 #[test]
 fn a_waiting_write_fails_at_its_statement_limit() {
     sim_once(|rt| {
-        let f = open(rt, 0);
+        let f = open_with(rt, 0, 2);
         let mut txn = f.db.begin(&TxnOptions::default()).unwrap();
         txn.query_text(UPDATE, &[], &TxnCallOptions::default())
             .unwrap();
@@ -1056,7 +1052,7 @@ fn a_waiting_write_fails_at_its_statement_limit() {
 #[test]
 fn a_finished_task_holds_no_memory_grant() {
     sim_once(|rt| {
-        let f = open(rt, 10);
+        let f = open_with(rt, 10, 2);
         let finished: Vec<Task<SimRuntime>> = (0..4)
             .map(|_| {
                 let task = f.submit(2, read_opts());
@@ -1109,7 +1105,7 @@ fn a_deferrable_read_task_waits_without_its_worker() {
 #[test]
 fn a_slow_reader_is_no_statement_time() {
     sim_once(|rt| {
-        let f = open(rt, ROWS);
+        let f = open_with(rt, ROWS, 2);
         let task = f.submit(
             1,
             TaskOptions {
@@ -1163,7 +1159,7 @@ fn a_call_stating_no_priority_runs_first_in_its_class() {
 #[test]
 fn an_abandoned_output_forms_no_more_batches() {
     sim_once(|rt| {
-        let f = open(rt, 3000);
+        let f = open_with(rt, 3000, 2);
         let task = f
             .owner
             .submit_text(
@@ -1197,7 +1193,7 @@ fn an_abandoned_output_forms_no_more_batches() {
 #[test]
 fn an_expired_read_forms_no_more_batches() {
     sim_once(|rt| {
-        let f = open(rt, 3000);
+        let f = open_with(rt, 3000, 2);
         let task = f.submit(1, read_opts());
         let (_, waker) = wakes(rt);
         task.supply(1);
@@ -1253,7 +1249,7 @@ fn a_caller_token_stops_a_queued_task() {
 #[test]
 fn a_caller_token_stops_a_waiting_task() {
     sim_once(|rt| {
-        let f = open(rt, 0);
+        let f = open_with(rt, 0, 2);
         let mut txn = f.db.begin(&TxnOptions::default()).unwrap();
         txn.query_text(UPDATE, &[], &TxnCallOptions::default())
             .unwrap();
@@ -1541,7 +1537,7 @@ fn a_task_carrying_a_cancelled_token_never_runs() {
             },
         );
         let outcome = sim.run(|rt| {
-            let f = open(&rt, 0);
+            let f = open_with(&rt, 0, 2);
             let token = CancelToken::new();
             token.cancel();
             let task = f.submit(5, carrying(&token));
@@ -1573,7 +1569,7 @@ fn mark_items_key_index<R: Runtime>(db: &Database<R>) -> adtb::storage::Quaranti
 /// Check that a server call and an interactive transaction, each with a mark set after its write
 /// and before its commit, fail and leave nothing.
 fn a_mark_before_commit_refuses_both_commits<R: Runtime>(rt: &R) {
-    let f = open(rt, 0);
+    let f = open_with(rt, 0, 2);
     let write = "insert items { n: 1 }
 from n in [1] select gate(n)";
     let task = f.owner.submit_text(write, &[], read_opts()).unwrap();
@@ -1618,7 +1614,7 @@ fn a_mark_before_commit_refuses_both_commits_on_a_real_file() {
 
 /// Check that `verify` as a task runs under commit log damage and any other text fails.
 fn a_verify_task_runs_on_a_damaged_commit_log<R: Runtime>(rt: &R) {
-    let f = open(rt, 1);
+    let f = open_with(rt, 1, 2);
     let status = *f
         .db
         .testing()
@@ -1682,7 +1678,7 @@ add relation items : Item key id generate sequence
             rt.clone(),
             "marks.adt",
             &Log::new([log]),
-            &adtb_simkit::api::options(2),
+            &adtb_simkit::open::options(2),
         )
         .unwrap();
         adtb_simkit::api::results(

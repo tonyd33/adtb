@@ -51,6 +51,19 @@ impl Ledger {
     pub fn fate(&self, id: u64) -> Option<Fate> {
         self.fates.lock().unwrap().get(&id).copied()
     }
+
+    /// Acknowledge each commit in doubt that `committed` holds and abort every other.
+    pub fn settle(&self, committed: &BTreeSet<u64>) {
+        for (id, fate) in self.fates.lock().unwrap().iter_mut() {
+            if *fate == Fate::InDoubt {
+                *fate = if committed.contains(id) {
+                    Fate::Acknowledged
+                } else {
+                    Fate::Aborted
+                };
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

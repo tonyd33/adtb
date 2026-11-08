@@ -3,6 +3,7 @@
 //! across reopen and crash.
 
 use adtb_simkit::api;
+use adtb_simkit::open;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -15,7 +16,8 @@ use adtb_lang::parse::{Options, parse_migration};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_testkit::profile::sweep;
 
-use api::{options, query, run};
+use adtb_simkit::open::options;
+use api::{query, run};
 
 const SHOP: &str = r"module shop
 add module shop
@@ -39,24 +41,17 @@ query emails () -> Set Text = from c in customers select c.email
 
 const ROLES: [&str; 4] = ["web", "ops", "app", "idle"];
 
-fn open(
-    rt: &SimRuntime,
-    log: &[&str],
-    regs: Vec<Registration>,
-) -> Result<Database<SimRuntime>, OpenError> {
-    Database::open_in(
-        rt.clone(),
+fn opened(rt: &SimRuntime, log: &[&str]) -> Database<SimRuntime> {
+    open::open(
+        rt,
         "shop.adt",
         &Log::new(log.iter().copied()),
         &OpenOptions {
-            registrations: regs,
+            registrations: Vec::new(),
             ..options(2)
         },
     )
-}
-
-fn opened(rt: &SimRuntime, log: &[&str]) -> Database<SimRuntime> {
-    open(rt, log, Vec::new()).unwrap_or_else(|e| panic!("the database opens: {e:?}"))
+    .unwrap_or_else(|e| panic!("the database opens: {e:?}"))
 }
 
 /// Returns the database at the shop schema with every role of `ROLES` and the grants of
@@ -195,7 +190,15 @@ fn a_header_an_open_recorded_and_failed_claims_nothing() {
         db.close().expect("close");
         let early = bundle("shop-1.0", &[SHOP, GRANTS], NAMES);
         assert!(matches!(
-            open(&rt, &[SHOP], vec![early.clone()]),
+            open::open(
+                &rt,
+                "shop.adt",
+                &Log::new([SHOP].iter().copied()),
+                &OpenOptions {
+                    registrations: vec![early.clone()],
+                    ..options(2)
+                }
+            ),
             Err(OpenError::RegistrationRefused { .. })
         ));
         let db = opened(&rt, &[SHOP, GRANTS]);
@@ -369,7 +372,15 @@ fn a_function_too_deep_to_run_is_refused_at_its_definition() {
     run(&mut sim, |rt| {
         shop(&rt).close().expect("close");
         let fns = deepening_fns(43);
-        match open(&rt, &[SHOP, GRANTS, fns.as_str()], Vec::new()) {
+        match open::open(
+            &rt,
+            "shop.adt",
+            &Log::new([SHOP, GRANTS, fns.as_str()].iter().copied()),
+            &OpenOptions {
+                registrations: Vec::new(),
+                ..options(2)
+            },
+        ) {
             Err(OpenError::MigrationRefused { version: 3, reason }) => {
                 let got = format!("{reason:?}");
                 assert!(
@@ -449,7 +460,15 @@ fn a_planned_body_past_the_run_bound_is_refused_at_its_definition() {
             run(&mut sim, |rt| {
                 shop(&rt).close().expect("close");
                 let migration = planned_body(k, body);
-                match open(&rt, &[SHOP, GRANTS, migration.as_str()], Vec::new()) {
+                match open::open(
+                    &rt,
+                    "shop.adt",
+                    &Log::new([SHOP, GRANTS, migration.as_str()].iter().copied()),
+                    &OpenOptions {
+                        registrations: Vec::new(),
+                        ..options(2)
+                    },
+                ) {
                     Ok(_) => assert!(passes, "{body} at d{k} is defined"),
                     Err(OpenError::MigrationRefused { reason, .. }) => {
                         let got = format!("{reason:?}");
@@ -508,7 +527,16 @@ fn a_tall_function_chain_is_defined_up_to_its_limit() {
         let mut sim = Sim::new(seed, Config::default());
         run(&mut sim, |rt| {
             shop(&rt).close().expect("close");
-            open(&rt, &[SHOP, GRANTS, fns.as_str()], Vec::new()).map(drop)
+            open::open(
+                &rt,
+                "shop.adt",
+                &Log::new([SHOP, GRANTS, fns.as_str()].iter().copied()),
+                &OpenOptions {
+                    registrations: Vec::new(),
+                    ..options(2)
+                },
+            )
+            .map(drop)
         })
     };
     opens(388, chain(31)).expect("the tallest chain");

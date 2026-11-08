@@ -5,7 +5,8 @@ use adtb_simkit::api;
 use adtb::{Database, Log};
 use adtb_sim::SimRuntime;
 
-use api::{once, options, printed, result, results};
+use adtb_simkit::open::options;
+use api::{once, printed, result, results};
 
 const SCHEMA: &str = r"module app
 add module app

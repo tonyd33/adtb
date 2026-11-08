@@ -6,6 +6,7 @@ use adtb::{ArchiveTarget, CallOptions, Database, Error, Log, RejectReason, Resto
 use adtb_lang::types::{Base, Ty};
 use adtb_sim::{Config, Sim};
 use adtb_simkit::api;
+use adtb_simkit::open;
 use adtb_simkit::search::Files;
 
 const APP: &str = r"module app
@@ -27,7 +28,7 @@ const RELATIONS: [&str; 3] = ["app::users", "app::shapes", "catalog::roles"];
 fn dumped() -> Files {
     let mut sim = Sim::new(1, Config::default());
     api::run(&mut sim, |rt| {
-        let db = Database::open_in(rt, "app.adt", &Log::new([APP]), &api::options(2)).unwrap();
+        let db = Database::open_in(rt, "app.adt", &Log::new([APP]), &open::options(2)).unwrap();
         let rows = format!(
             "transact\n  insert users {{ name: \"{MARK}\" }}\n  insert shapes.Circle {{ name: \"c\", r: 2 }}"
         );
@@ -53,7 +54,7 @@ fn restored(files: &Files, source: &str, phrase: Option<&str>) -> Result<Vec<Str
     let got = api::run(&mut sim, |rt| {
         let archive = ArchiveTarget::path(source).unwrap();
         let phrase = phrase.map(|p| Passphrase::new(p.to_owned()));
-        let opts = api::options(2);
+        let opts = open::options(2);
         let latest = RestorePoint::Latest;
         adtb::restore_report_in(
             rt.clone(),

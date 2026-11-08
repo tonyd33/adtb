@@ -20,7 +20,8 @@ use adtb_lang::evolve::Source;
 use adtb_lang::parse::{Options as ParseOptions, parse_migration};
 use adtb_lang::types::{Base, Ty};
 use adtb_sim::{Config, Sim, SimRuntime};
-use adtb_simkit::api::{once, options, query, results, run, task};
+use adtb_simkit::api::{once, query, results, run, task};
+use adtb_simkit::open::options;
 
 const SCHEMA: &str = "module example\nadd module example\nadd type Item = { id: Key items, value: I64 }\nadd relation items : Item key id\n";
 

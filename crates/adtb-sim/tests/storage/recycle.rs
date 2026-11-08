@@ -11,10 +11,11 @@ use adtb::storage::{
 };
 use adtb::verify::{self, Inventory, Problem};
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
+use adtb_simkit::damage::{DataFile, Files};
 use adtb_simkit::harness;
 use adtb_testkit::profile::every_case;
 
-type Files = BTreeMap<String, Vec<u8>>;
+const PAGER: DataFile = DataFile::new(harness::NAME, harness::PAGE);
 
 const SEGMENT: u64 = 64 * 1024;
 
@@ -106,18 +107,12 @@ fn restored_values(sim: &Sim, pages: &[Pid]) -> BTreeMap<Pid, u64> {
 }
 
 fn reverted(mut files: Files, from: &Files, pid: Pid) -> Files {
-    let at = pid.0 as usize * harness::PAGE;
-    let name = harness::NAME;
-    files.get_mut(name).unwrap()[at..at + harness::PAGE]
-        .copy_from_slice(&from[name][at..at + harness::PAGE]);
+    PAGER.replace(&mut files, pid, PAGER.page(from, pid));
     files
 }
 
 fn lsn_of(files: &Files, pid: Pid) -> Lsn {
-    let at = pid.0 as usize * harness::PAGE;
-    Lsn(u64::from_le_bytes(
-        files[harness::NAME][at..at + 8].try_into().unwrap(),
-    ))
+    storage::lsn(PAGER.page(files, pid))
 }
 
 #[test]
@@ -342,7 +337,7 @@ fn an_unreadable_map_page_is_refused_unmarked_and_read_by_the_next_open() {
     let (mut sim, _, _, leaf) = mapped();
     let mut out = None;
     harness::finished(&mut sim, |rt| {
-        let reads = Match::kind(OpKind::Read).offset(leaf.0 * harness::PAGE as u64);
+        let reads = Match::kind(OpKind::Read).offset(PAGER.range(leaf).start as u64);
         rt.plan(Plan::new().rule(reads, Action::Fail(IoError::Failed)));
         let (pager, _) = Pager::open(rt, &options()).unwrap();
         out = Some((pager.map_pages(), Probe::of(&pager).marks()));
@@ -370,7 +365,7 @@ fn a_checksum_bad_map_page_quarantines_the_database_and_verify_reports_the_rest(
     for bad in [root, leaf] {
         let mut files = sim.files();
         for pid in [bad, data] {
-            files.get_mut(harness::NAME).unwrap()[pid.0 as usize * harness::PAGE + 100] ^= 1;
+            PAGER.flip(&mut files, pid, 100 - HEADER_LEN);
         }
         let mut sim = Sim::with_files(3, Config::default(), files);
         let (findings, marks, allocated, leaked) = session(&mut sim, |pager, _| {
@@ -423,7 +418,7 @@ fn crash_through_a_recycle(files: &Files, pages: &[Pid], written: &BTreeMap<Pid,
     probe.record();
     session(&mut probe, |pager, _| assert!(pager.recycle_log() >= 2));
     let recording = probe.recording();
-    let headers = 0..Pid::FIRST_DATA.0 as usize * harness::PAGE;
+    let headers = 0..PAGER.range(Pid::FIRST_DATA).start;
     let log = |f: &Files| -> Vec<Vec<u8>> {
         let dir = format!("{}/", options().log_dir());
         let held = f.iter().filter(|(k, _)| k.starts_with(&dir));

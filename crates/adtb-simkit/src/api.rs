@@ -5,22 +5,12 @@ use std::task::{Wake, Waker};
 
 use adtb::runtime::{ThreadId, Threads};
 use adtb::{
-    AdHocTransaction, CallOptions, Completion, CreateOptions, Database, DynRows, Error,
-    Observation, OpenOptions, RejectReason, RoleSession, TaskOptions, TxnCallOptions, Value,
+    AdHocTransaction, CallOptions, Completion, Database, DynRows, Error, Observation, RejectReason,
+    RoleSession, TaskOptions, TxnCallOptions, Value,
 };
 use adtb_lang::textual::print;
 use adtb_lang::types::Ty;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
-
-/// Returns the options that open the database with `workers` workers, creating it if it does not
-/// exist.
-pub fn options(workers: usize) -> OpenOptions {
-    OpenOptions {
-        create: Some(CreateOptions::default()),
-        workers: Some(workers),
-        ..OpenOptions::default()
-    }
-}
 
 /// Runs `body` as one process of `sim` and returns what it returns.
 pub fn run<T>(sim: &mut Sim, body: impl FnOnce(SimRuntime) -> T) -> T {
@@ -163,5 +153,25 @@ pub fn task_bound(
             Observation::Done(Completion::Failed(e)) => return Err(e),
             Observation::Done(_) => return Ok(rows),
         }
+    }
+}
+
+/// Returns the part a dump refused as damaged. Panics on any other outcome.
+pub fn damaged_dump_part<T: std::fmt::Debug>(got: Result<T, Error>) -> String {
+    match got {
+        Err(Error::Rejected {
+            reason: RejectReason::DumpDamaged { part },
+        }) => part,
+        other => panic!("not DumpDamaged: {other:?}"),
+    }
+}
+
+/// Returns the part a backup refused as damaged. Panics on any other outcome.
+pub fn damaged_backup_part<T: std::fmt::Debug>(got: Result<T, Error>) -> String {
+    match got {
+        Err(Error::Rejected {
+            reason: RejectReason::BackupDamaged { part },
+        }) => part,
+        other => panic!("not BackupDamaged: {other:?}"),
     }
 }

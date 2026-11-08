@@ -5,16 +5,15 @@ use std::time::Duration;
 
 use adtb::runtime::{Clock, Entropy, Io, Op, OpKind, Runtime, Threads};
 use adtb::storage::{Lsn, Options, Pager, Position};
-use adtb_sim::{
-    Config, Finding, FindingKind, Ledger, Match, Outcome, Recovered, Sim, SimRuntime, check,
-};
+use adtb_sim::{Config, Finding, FindingKind, Ledger, Match, Outcome, Recovered, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 
 use adtb_simkit::harness;
+use adtb_simkit::open;
 use adtb_simkit::{api, crash, search};
 use adtb_testkit::profile::assert_reached;
 
-use crash::{crash_after, run_process, silence_fatal_panics};
+use crash::{Reopened, Rounds, crash_loop, silence_fatal_panics};
 use harness::finished;
 
 fn options() -> Options {
@@ -143,13 +142,14 @@ fn a_commit_acknowledged_before_another_begins_has_the_earlier_position() {
     assert!(pairs > 1000, "{pairs} ordered pairs");
 }
 
+/// What a reopened pager shows the checks: the commits its log holds and the findings of `verify`.
 #[derive(Debug, Default)]
-struct Reopened {
+struct Logged {
     commits: BTreeSet<u64>,
     findings: Vec<Finding>,
 }
 
-impl Recovered for Reopened {
+impl Recovered for Logged {
     fn committed(&self) -> BTreeSet<u64> {
         self.commits.clone()
     }
@@ -159,61 +159,53 @@ impl Recovered for Reopened {
     }
 }
 
+impl Reopened for Logged {}
+
 #[test]
 fn every_acknowledged_commit_survives_a_crash() {
-    silence_fatal_panics();
     for seed in 0..12 {
+        let faults = Faults {
+            torn_p: 0.5,
+            ..Faults::none(512)
+        };
         let mut sim = Sim::new(
             seed,
             Config {
-                faults: Faults {
-                    torn_p: 0.5,
-                    ..Faults::none(512)
-                },
+                faults,
                 ..Config::default()
             },
         );
         create(&mut sim);
-        let ledger = Ledger::new();
         let seen = Arc::new(Mutex::new(Seen::default()));
-        for round in 0..3u64 {
-            sim.crash_at(sim.now() + crash_after(seed, round, 500, 20_000));
-            let (l, s) = (ledger.clone(), seen.clone());
-            let outcome = run_process(&mut sim, |rt| {
-                let (pager, _) = Pager::open(rt.clone(), &options()).unwrap();
-                committers(&rt, &pager, &l, &s, 5, 1000);
-            });
-            assert_eq!(Outcome::Crashed, outcome);
-            let mut reopened = Reopened::default();
-            finished(&mut sim, |rt| {
+        let out = crash_loop(
+            &mut sim,
+            seed,
+            faults,
+            Rounds::new(3, 500, 20_000),
+            |r| {
+                let (l, s) = (r.ledger().clone(), seen.clone());
+                r.crash(|rt| {
+                    let (pager, _) = Pager::open(rt.clone(), &options()).unwrap();
+                    committers(&rt, &pager, &l, &s, 5, 1000);
+                });
+            },
+            |rt, _| {
                 let (pager, _) = Pager::open(rt, &options()).unwrap();
                 let v = pager.verify();
-                reopened.commits = v.commits.into_iter().collect();
-                reopened.findings = v
-                    .findings
-                    .iter()
-                    .map(|f| Finding {
-                        kind: FindingKind::Structure,
-                        at: format!("{f:?}"),
-                    })
-                    .collect();
-            });
-            let violations = check(&ledger, &reopened);
-            assert!(
-                violations.is_empty(),
-                "seed {seed} round {round}: {violations:?}"
-            );
-            let max = seen.lock().unwrap().next;
-            for x in 1..=max {
-                if ledger.fate(x) == Some(adtb_sim::Fate::InDoubt) {
-                    if reopened.commits.contains(&x) {
-                        ledger.acknowledge(x);
-                    } else {
-                        ledger.abort(x);
-                    }
+                Logged {
+                    commits: v.commits.into_iter().collect(),
+                    findings: v
+                        .findings
+                        .iter()
+                        .map(|f| Finding {
+                            kind: FindingKind::Structure,
+                            at: format!("{f:?}"),
+                        })
+                        .collect(),
                 }
-            }
-        }
+            },
+        );
+        assert_eq!(3, out.crashed(), "seed {seed}");
     }
 }
 
@@ -456,7 +448,7 @@ const COMMIT_PAIRS: [&str; 3] = [
 ];
 
 fn public_commit_db<R: Runtime>(rt: R) -> adtb::Database<R> {
-    let mut opts = api::options(1);
+    let mut opts = open::options(1);
     opts.pool_bytes = Some(1024 * 1024);
     adtb::Database::open_in(rt, "commit.adt", &adtb::Log::new([COMMIT_SCHEMA]), &opts)
         .expect("the commit fixture opens")

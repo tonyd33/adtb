@@ -2,7 +2,7 @@
 //! hold of the incarnation before judges it.
 
 use adtb::testing::Probe;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use adtb::mvcc::{CommitLog, Transactions, Xid};
 use adtb::runtime::{IoError, OpKind, Runtime};
@@ -10,10 +10,11 @@ use adtb::storage::{
     self, Damage, Finding, HEADER_LEN, Options, PageError, PageKind, Pager, Pid, Quarantine,
 };
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
+use adtb_simkit::damage::{DataFile, Files};
 use adtb_simkit::{common, harness};
 use adtb_testkit::profile::{assert_reached, every_case};
 
-type Files = BTreeMap<String, Vec<u8>>;
+const PAGER: DataFile = DataFile::new(harness::NAME, harness::PAGE);
 
 const SEED: u64 = 23;
 const OLD_OWNER: u32 = 7;
@@ -55,16 +56,9 @@ fn recycle_and_fill(pager: &Pager<SimRuntime>, filler: Pid) {
     }
 }
 
-fn page_of(files: &Files, pid: Pid) -> &[u8] {
-    let at = pid.0 as usize * harness::PAGE;
-    &files[harness::NAME][at..at + harness::PAGE]
-}
-
 /// Returns `files` with page `pid` set to its bytes in `from`.
 fn reverted(mut files: Files, from: &Files, pid: Pid) -> Files {
-    let old = page_of(from, pid).to_vec();
-    let at = pid.0 as usize * harness::PAGE;
-    files.get_mut(harness::NAME).unwrap()[at..at + harness::PAGE].copy_from_slice(&old);
+    PAGER.replace(&mut files, pid, PAGER.page(from, pid));
     files
 }
 
@@ -239,15 +233,15 @@ fn run(case: Case) -> Case {
     recycled(&mut sim);
     let second = sim.files();
     let lost = Damage::Stale {
-        expected: storage::lsn(page_of(&second, p)),
-        found: storage::lsn(page_of(&first, p)),
+        expected: storage::lsn(PAGER.page(&second, p)),
+        found: storage::lsn(PAGER.page(&first, p)),
     };
     let files = match evidence {
         Evidence::RecordedAfterFree | Evidence::RecordedAfterRecycle => second,
         _ => {
             assert_ne!(
-                storage::lsn(page_of(&second, p)),
-                storage::lsn(page_of(&first, p)),
+                storage::lsn(PAGER.page(&second, p)),
+                storage::lsn(PAGER.page(&first, p)),
                 "{case:?}: the second open wrote the page"
             );
             reverted(second, &first, p)
@@ -440,7 +434,7 @@ fn allocation_skips_a_free_page_the_device_could_not_read() {
     });
     let p = freed.unwrap();
     harness::finished(&mut sim, |rt| {
-        let reads = Match::kind(OpKind::Read).offset(p.0 * harness::PAGE as u64);
+        let reads = Match::kind(OpKind::Read).offset(PAGER.range(p).start as u64);
         rt.plan(Plan::new().rule(reads, Action::Fail(IoError::Failed)));
         let (pager, _) = Pager::open(rt, &options).unwrap();
         let unreadable = PageError {

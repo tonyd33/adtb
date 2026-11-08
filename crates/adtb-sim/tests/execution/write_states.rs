@@ -2,6 +2,7 @@
 //! simulator.
 
 use adtb_simkit::api;
+use adtb_simkit::open;
 
 use adtb::RejectReason;
 use adtb::catalog::{Catalog, Error as CatalogError, PendingDrop, Read, Reader};
@@ -12,19 +13,12 @@ use adtb::{CallOptions, Database, Error, Log, OpenError};
 use adtb_lang::types::RelId;
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use api::{options, query, run};
-
-fn open(rt: &SimRuntime, log: &[&str]) -> Result<Database<SimRuntime>, OpenError> {
-    Database::open_in(
-        rt.clone(),
-        "app.adt",
-        &Log::new(log.iter().copied()),
-        &options(4),
-    )
-}
+use adtb_simkit::open::options;
+use api::{query, run};
 
 fn opened(rt: &SimRuntime, log: &[&str]) -> Database<SimRuntime> {
-    open(rt, log).unwrap_or_else(|e| panic!("the database opens at {}: {e:?}", log.len()))
+    open::open(rt, open::FILE, &Log::new(log.iter().copied()), &options(4))
+        .unwrap_or_else(|e| panic!("the database opens at {}: {e:?}", log.len()))
 }
 
 fn write(db: &Database<SimRuntime>, text: &str) {
@@ -105,7 +99,14 @@ fn after(seed: u64, later: &[&str], body: impl FnOnce(Result<Database<SimRuntime
     });
     let mut log = vec![SHOP];
     log.extend_from_slice(later);
-    run(&mut sim, |rt| body(open(&rt, &log)));
+    run(&mut sim, |rt| {
+        body(open::open(
+            &rt,
+            open::FILE,
+            &Log::new(log.iter().copied()),
+            &options(4),
+        ));
+    });
 }
 
 const ADD_WIRE: &str = "module shop\nadd constructor Payment.Wire { iban: Text }\n";
@@ -430,7 +431,14 @@ fn a_value_constructor_a_stored_value_holds_is_neither_disabled_nor_removed() {
         });
         let mut log = vec![SHOP, ADD_OKTA, enable];
         log.extend_from_slice(later);
-        run(&mut sim, |rt| refusal(open(&rt, &log)))
+        run(&mut sim, |rt| {
+            refusal(open::open(
+                &rt,
+                open::FILE,
+                &Log::new(log.iter().copied()),
+                &options(4),
+            ))
+        })
     };
     let (version, detail) = stored(17, &[disable]);
     assert_eq!(4, version);
@@ -452,7 +460,14 @@ fn refused_after(seed: u64, before: &[&str], stored: &str, later: &[&str]) -> (u
         write(&db, stored);
     });
     log.extend_from_slice(later);
-    run(&mut sim, |rt| refusal(open(&rt, &log)))
+    run(&mut sim, |rt| {
+        refusal(open::open(
+            &rt,
+            open::FILE,
+            &Log::new(log.iter().copied()),
+            &options(4),
+        ))
+    })
 }
 
 #[test]
@@ -535,7 +550,12 @@ fn removing_the_last_constructor_of_a_named_set_is_refused() {
         opened(&rt, &[SHOP, deprecate]);
     });
     run(&mut sim, |rt| {
-        let (version, detail) = refusal(open(&rt, &[SHOP, deprecate, remove]));
+        let (version, detail) = refusal(open::open(
+            &rt,
+            open::FILE,
+            &Log::new([SHOP, deprecate, remove].iter().copied()),
+            &options(4),
+        ));
         assert_eq!(3, version);
         assert!(detail.contains("Simple"), "{detail}");
     });
@@ -558,7 +578,12 @@ add relation charges : Charge key id generate sequence
         );
     });
     run(&mut sim, |rt| {
-        let (version, detail) = refusal(open(&rt, &[SHOP, refer, deprecate, remove]));
+        let (version, detail) = refusal(open::open(
+            &rt,
+            open::FILE,
+            &Log::new([SHOP, refer, deprecate, remove].iter().copied()),
+            &options(4),
+        ));
         assert_eq!(4, version);
         assert!(
             detail.contains("charges") || detail.contains("Charge"),
@@ -590,7 +615,12 @@ fn a_staged_migration_that_finds_a_duplicate_is_discarded_naming_the_operator_an
         write(&db, r#"insert customers { name: "ann" }"#);
     });
     run(&mut sim, |rt| {
-        let (version, detail) = refusal(open(&rt, &[SHOP, unique]));
+        let (version, detail) = refusal(open::open(
+            &rt,
+            open::FILE,
+            &Log::new([SHOP, unique].iter().copied()),
+            &options(4),
+        ));
         assert_eq!(2, version);
         assert!(detail.contains("unique (name)"), "{detail}");
         assert!(

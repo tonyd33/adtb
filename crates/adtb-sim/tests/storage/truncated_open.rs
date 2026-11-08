@@ -4,7 +4,7 @@
     reason = "a real thread bounds a run that may never return; removing it needs the simulator to bound a run by its own steps"
 )]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
@@ -15,7 +15,9 @@ use adtb::storage::{HEADER_LEN, Pid, Quarantine};
 use adtb::testing::{Failed, Plant};
 use adtb::{CallOptions, CreateOptions, Database, Error, FatalReason, Log, OpenError, OpenOptions};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_simkit::damage::{DataFile, Files};
 use adtb_simkit::harness::finished;
+use adtb_simkit::open;
 use adtb_simkit::{api, common};
 use adtb_testkit::profile::{assert_reached, every_case, share, sweep};
 
@@ -32,7 +34,7 @@ const SELECT: &str = "from u in users select u.id";
 const INSERT: &str = r#"insert users { id: users.key(9), name: "x" }"#;
 const ROW: &str = "users.key(1)";
 
-type Files = BTreeMap<String, Vec<u8>>;
+const DATA: DataFile = DataFile::new(FILE, PAGE);
 
 struct Seeded {
     files: Files,
@@ -48,15 +50,11 @@ struct Opened {
     insert: Result<(), Error>,
 }
 
-fn open(rt: SimRuntime) -> Result<Database<SimRuntime>, OpenError> {
-    Database::open_in(rt, FILE, &Log::new([APP]), &api::options(2))
-}
-
 fn seeded() -> Seeded {
     let mut sim = Sim::new(1, Config::default());
     let mut pages = None;
     finished(&mut sim, |rt| {
-        let db = open(rt).unwrap();
+        let db = open::open(&rt, FILE, &Log::new([APP]), &open::options(2)).unwrap();
         api::results(&db, r#"insert users { id: users.key(1), name: "a" }"#);
         let t = db.testing();
         let first = |relation, ctor| t.pages(t.heap(relation, ctor).unwrap()).unwrap()[0];
@@ -71,16 +69,10 @@ fn seeded() -> Seeded {
     }
 }
 
-fn cut(files: &Files, len: usize) -> Files {
+/// Returns a copy of `files` that `change` has changed.
+fn changed(files: &Files, change: impl FnOnce(&mut Files)) -> Files {
     let mut files = files.clone();
-    files.get_mut(FILE).unwrap().truncate(len);
-    files
-}
-
-fn zeroed(files: &Files, page: Pid) -> Files {
-    let mut files = files.clone();
-    let at = page.0 as usize * PAGE;
-    files.get_mut(FILE).unwrap()[at..at + PAGE].fill(0);
+    change(&mut files);
     files
 }
 
@@ -118,11 +110,13 @@ fn opened(files: Files, rounds: usize, what: &str) -> Vec<Result<Opened, OpenErr
         let mut got = Vec::new();
         for _ in 0..rounds {
             finished(&mut sim, |rt| {
-                got.push(open(rt).map(|db| {
-                    let opened = call(&db);
-                    db.close().unwrap();
-                    opened
-                }));
+                got.push(
+                    open::open(&rt, FILE, &Log::new([APP]), &open::options(2)).map(|db| {
+                        let opened = call(&db);
+                        db.close().unwrap();
+                        opened
+                    }),
+                );
             });
         }
         got
@@ -180,7 +174,7 @@ fn assert_nothing_silently_lost(got: &Result<Opened, OpenError>, what: &str) -> 
 #[test]
 fn a_file_cut_before_the_first_roles_page_opens_for_verify() {
     let s = seeded();
-    let files = cut(&s.files, s.roles.0 as usize * PAGE);
+    let files = changed(&s.files, |f| DATA.truncate(f, s.roles.0 as usize));
     for (round, got) in opened(files, 2, "cut at roles").iter().enumerate() {
         assert_for_verify_only(got, "Checksum", &format!("round {round}"));
     }
@@ -189,7 +183,7 @@ fn a_file_cut_before_the_first_roles_page_opens_for_verify() {
 #[test]
 fn a_file_cut_inside_the_first_roles_page_opens_for_verify() {
     let s = seeded();
-    let files = cut(&s.files, s.roles.0 as usize * PAGE + 100);
+    let files = changed(&s.files, |f| DATA.cut(f, DATA.range(s.roles).start + 100));
     assert_for_verify_only(
         &opened(files, 1, "cut in roles")[0],
         "Checksum",
@@ -200,7 +194,7 @@ fn a_file_cut_inside_the_first_roles_page_opens_for_verify() {
 #[test]
 fn a_file_cut_before_its_first_bitmap_page_opens_for_verify() {
     let s = seeded();
-    let files = cut(&s.files, 2 * PAGE);
+    let files = changed(&s.files, |f| DATA.truncate(f, 2));
     assert_for_verify_only(
         &opened(files, 1, "cut at bitmap")[0],
         "Checksum",
@@ -211,7 +205,7 @@ fn a_file_cut_before_its_first_bitmap_page_opens_for_verify() {
 #[test]
 fn a_file_cut_before_a_relations_first_page_quarantines_that_relation() {
     let s = seeded();
-    let files = cut(&s.files, s.users.0 as usize * PAGE);
+    let files = changed(&s.files, |f| DATA.truncate(f, s.users.0 as usize));
     for (round, got) in opened(files, 2, "cut at users").iter().enumerate() {
         let what = format!("round {round}");
         let opened = got
@@ -226,7 +220,7 @@ fn a_file_cut_before_a_relations_first_page_quarantines_that_relation() {
 #[test]
 fn a_zeroed_roles_page_opens_for_verify() {
     let s = seeded();
-    let files = zeroed(&s.files, s.roles);
+    let files = changed(&s.files, |f| DATA.zero(f, s.roles));
     assert_for_verify_only(
         &opened(files, 1, "zeroed roles")[0],
         "StalePage",
@@ -237,12 +231,12 @@ fn a_zeroed_roles_page_opens_for_verify() {
 #[test]
 fn a_write_to_a_zeroed_page_of_a_relation_is_refused() {
     let s = seeded();
-    let files = zeroed(&s.files, s.users);
+    let files = changed(&s.files, |f| DATA.zero(f, s.users));
     let got = within("insert", move || {
         let mut sim = Sim::with_files(1, Config::default(), files);
         let mut got = None;
         finished(&mut sim, |rt| {
-            let db = open(rt).unwrap();
+            let db = open::open(&rt, FILE, &Log::new([APP]), &open::options(2)).unwrap();
             let none = CallOptions::default();
             got = Some(db.query_text(INSERT, &[], &none).map(drop));
             db.close().unwrap();
@@ -259,7 +253,7 @@ fn open_returns_on_a_file_cut_at_every_sector_of_its_first_pages() {
     for sectors in sweep(1..65) {
         let len = sectors as usize * SECTOR;
         let what = format!("cut at {len} bytes");
-        let got = opened(cut(&s.files, len), 1, &what);
+        let got = opened(changed(&s.files, |f| DATA.cut(f, len)), 1, &what);
         opens += usize::from(assert_nothing_silently_lost(&got[0], &what));
     }
     assert_reached("a cut file that opened", opens, share(1..65, 30));
@@ -273,9 +267,10 @@ fn open_returns_on_a_file_cut_at_pages_across_it() {
     let stride = pages.div_ceil(lengths.end as usize);
     let mut opens = 0;
     for i in lengths {
-        let len = ((i as usize * stride + 1) * PAGE).min(pages * PAGE);
+        let kept = (i as usize * stride + 1).min(pages);
+        let len = DATA.range(Pid(kept as u64)).start;
         let what = format!("cut at {len} bytes");
-        let got = opened(cut(&s.files, len), 1, &what);
+        let got = opened(changed(&s.files, |f| DATA.cut(f, len)), 1, &what);
         opens += usize::from(assert_nothing_silently_lost(&got[0], &what));
     }
     assert_reached("a cut file that opened", opens, share(0..64, 32));
@@ -288,7 +283,7 @@ fn open_returns_on_a_file_cut_at_each_of_its_last_pages() {
     let mut opens = 0;
     for page in s.roles.0 as usize..pages {
         let what = format!("cut at page {page}");
-        let got = opened(cut(&s.files, page * PAGE), 1, &what);
+        let got = opened(changed(&s.files, |f| DATA.truncate(f, page)), 1, &what);
         opens += usize::from(assert_nothing_silently_lost(&got[0], &what));
     }
     assert_reached("a cut file that opened", opens, 1);
@@ -309,7 +304,7 @@ fn selected_twice(files: Files, text: &'static str, what: &'static str) -> Vec<R
         let mut got = Vec::new();
         for _ in 0..2 {
             finished(&mut sim, |rt| {
-                let db = open(rt).unwrap();
+                let db = open::open(&rt, FILE, &Log::new([APP]), &open::options(2)).unwrap();
                 let t = db.testing();
                 let users = t.mark_of(t.heap("app::users", "User").unwrap()).unwrap();
                 got.push((
@@ -337,14 +332,14 @@ fn assert_select_refused(files: Files, text: &'static str, what: &'static str) {
 #[test]
 fn a_select_over_a_zeroed_page_is_refused_and_marks_the_heap() {
     let s = seeded();
-    assert_select_refused(zeroed(&s.files, s.users), SELECT, "scan");
+    assert_select_refused(changed(&s.files, |f| DATA.zero(f, s.users)), SELECT, "scan");
 }
 
 #[test]
 fn a_select_by_key_over_a_zeroed_page_is_refused_and_marks_the_heap() {
     let s = seeded();
     assert_select_refused(
-        zeroed(&s.files, s.users),
+        changed(&s.files, |f| DATA.zero(f, s.users)),
         "from u in users where key u == users.key(1) select u.id",
         "probe",
     );
@@ -359,7 +354,7 @@ add relation others : Other key id generate sequence
 ";
 
 fn open_two(rt: SimRuntime) -> Database<SimRuntime> {
-    Database::open_in(rt, FILE, &Log::new([TWO]), &api::options(2)).unwrap()
+    Database::open_in(rt, FILE, &Log::new([TWO]), &open::options(2)).unwrap()
 }
 
 #[test]
@@ -384,7 +379,7 @@ fn a_cut_page_ordinary_writes_grew_the_file_over_stays_refused() {
     let mut sim = Sim::with_files(
         1,
         Config::default(),
-        cut(&sim.files(), last.0 as usize * PAGE),
+        changed(&sim.files(), |f| DATA.truncate(f, last.0 as usize)),
     );
     finished(&mut sim, |rt| {
         let db = open_two(rt);
@@ -398,9 +393,8 @@ fn a_cut_page_ordinary_writes_grew_the_file_over_stays_refused() {
         db.close().unwrap();
     });
     let files = sim.files();
-    let at = last.0 as usize * PAGE;
     assert!(
-        files[FILE][at..at + PAGE].iter().all(|&b| b == 0),
+        DATA.page(&files, last).iter().all(|&b| b == 0),
         "the file grew over the cut page"
     );
     let mut sim = Sim::with_files(1, Config::default(), files);
@@ -420,7 +414,7 @@ fn a_cut_that_loses_a_later_bitmap_group_refuses_the_select() {
     let span = (PAGE - HEADER_LEN) * 8;
     let mut high = None;
     finished(&mut sim, |rt| {
-        let db = open(rt).unwrap();
+        let db = open::open(&rt, FILE, &Log::new([APP]), &open::options(2)).unwrap();
         db.testing()
             .plant(Plant::Write {
                 page: Pid::FIRST_DATA,
@@ -444,7 +438,7 @@ fn a_cut_that_loses_a_later_bitmap_group_refuses_the_select() {
         db.close().unwrap();
     });
     assert!(high.unwrap().0 > span as u64, "a page in the second group");
-    let files = cut(&sim.files(), (span - 100) * PAGE);
+    let files = changed(&sim.files(), |f| DATA.truncate(f, span - 100));
     let got = selected_twice(files, SELECT, "lost group");
     for (round, (answer, marks, users)) in got.iter().enumerate() {
         let what = format!("lost group, round {round}");
@@ -462,7 +456,7 @@ fn a_zeroed_large_value_page_refuses_the_select() {
     let mut sim = Sim::new(1, Config::default());
     let mut page = None;
     finished(&mut sim, |rt| {
-        let db = open(rt).unwrap();
+        let db = open::open(&rt, FILE, &Log::new([APP]), &open::options(2)).unwrap();
         let name = "x".repeat(4 * PAGE);
         api::results(
             &db,
@@ -476,12 +470,12 @@ fn a_zeroed_large_value_page_refuses_the_select() {
             .copied();
         db.close().unwrap();
     });
-    let files = zeroed(&sim.files(), page.unwrap());
+    let files = changed(&sim.files(), |f| DATA.zero(f, page.unwrap()));
     let got = within("large", move || {
         let mut sim = Sim::with_files(1, Config::default(), files);
         let mut got = None;
         finished(&mut sim, |rt| {
-            let db = open(rt).unwrap();
+            let db = open::open(&rt, FILE, &Log::new([APP]), &open::options(2)).unwrap();
             got = Some(select_answer(&db, "from u in users select u.name"));
             db.close().unwrap();
         });
@@ -496,19 +490,23 @@ fn a_zeroed_directory_page_refuses_the_select() {
     let mut sim = Sim::with_files(1, Config::default(), s.files);
     let mut node = None;
     finished(&mut sim, |rt| {
-        let db = open(rt).unwrap();
+        let db = open::open(&rt, FILE, &Log::new([APP]), &open::options(2)).unwrap();
         let t = db.testing();
         let owned = t.owned(t.heap("app::users", "User").unwrap()).unwrap();
         node = owned.first().copied();
         db.close().unwrap();
     });
-    assert_select_refused(zeroed(&sim.files(), node.unwrap()), SELECT, "directory");
+    assert_select_refused(
+        changed(&sim.files(), |f| DATA.zero(f, node.unwrap())),
+        SELECT,
+        "directory",
+    );
 }
 
 fn open_small(rt: SimRuntime) -> Database<SimRuntime> {
     let options = OpenOptions {
         pool_bytes: Some(64 * PAGE as u64),
-        ..api::options(2)
+        ..open::options(2)
     };
     Database::open_in(rt, FILE, &Log::new([APP]), &options).unwrap()
 }
@@ -633,12 +631,12 @@ fn a_scan_of_a_listing_skips_the_pages_vacuum_freed_since() {
 
 fn refused_on_zeroed_users(text: &'static str) {
     let s = seeded();
-    let files = zeroed(&s.files, s.users);
+    let files = changed(&s.files, |f| DATA.zero(f, s.users));
     let got = within(text, move || {
         let mut sim = Sim::with_files(1, Config::default(), files);
         let mut got = None;
         finished(&mut sim, |rt| {
-            let db = open(rt).unwrap();
+            let db = open::open(&rt, FILE, &Log::new([APP]), &open::options(2)).unwrap();
             got = Some(db.query_text(text, &[], &CallOptions::default()).map(drop));
             db.close().unwrap();
         });
@@ -660,7 +658,7 @@ add type User = { id: Key users, name: Text }
 add relation users : User key id generate sequence
   index (name)
 ";
-    let reopen = |rt| Database::open_in(rt, FILE, &Log::new([INDEXED]), &api::options(2)).unwrap();
+    let reopen = |rt| Database::open_in(rt, FILE, &Log::new([INDEXED]), &open::options(2)).unwrap();
     let mut sim = Sim::new(1, Config::default());
     let mut page = None;
     finished(&mut sim, |rt| {
@@ -674,7 +672,11 @@ add relation users : User key id generate sequence
             .copied();
         db.close().unwrap();
     });
-    let mut sim = Sim::with_files(1, Config::default(), zeroed(&sim.files(), page.unwrap()));
+    let mut sim = Sim::with_files(
+        1,
+        Config::default(),
+        changed(&sim.files(), |f| DATA.zero(f, page.unwrap())),
+    );
     finished(&mut sim, |rt| {
         let rt2 = rt.clone();
         let db = reopen(rt);
@@ -693,9 +695,13 @@ add relation users : User key id generate sequence
 #[test]
 fn a_read_of_a_version_on_a_zeroed_page_is_refused() {
     let s = seeded();
-    let mut sim = Sim::with_files(1, Config::default(), zeroed(&s.files, s.users));
+    let mut sim = Sim::with_files(
+        1,
+        Config::default(),
+        changed(&s.files, |f| DATA.zero(f, s.users)),
+    );
     finished(&mut sim, |rt| {
-        let db = open(rt).unwrap();
+        let db = open::open(&rt, FILE, &Log::new([APP]), &open::options(2)).unwrap();
         let t = db.testing();
         let heap = t.heap("app::users", "User").unwrap();
         match t.read(heap, Tid::new(s.users.0, 0).unwrap()) {
@@ -711,7 +717,7 @@ fn a_large_value_write_over_a_zeroed_page_of_the_store_is_refused() {
     let mut sim = Sim::new(1, Config::default());
     let mut page = None;
     finished(&mut sim, |rt| {
-        let db = open(rt).unwrap();
+        let db = open::open(&rt, FILE, &Log::new([APP]), &open::options(2)).unwrap();
         let name = "x".repeat(PAGE / 3);
         api::results(
             &db,
@@ -725,12 +731,12 @@ fn a_large_value_write_over_a_zeroed_page_of_the_store_is_refused() {
             .copied();
         db.close().unwrap();
     });
-    let files = zeroed(&sim.files(), page.unwrap());
+    let files = changed(&sim.files(), |f| DATA.zero(f, page.unwrap()));
     let got = within("large insert", move || {
         let mut sim = Sim::with_files(1, Config::default(), files);
         let mut got = None;
         finished(&mut sim, |rt| {
-            let db = open(rt).unwrap();
+            let db = open::open(&rt, FILE, &Log::new([APP]), &open::options(2)).unwrap();
             let name = "y".repeat(PAGE / 3);
             let text = format!(r#"insert users {{ id: users.key(2), name: "{name}" }}"#);
             got = Some(db.query_text(&text, &[], &CallOptions::default()).map(drop));
@@ -749,7 +755,7 @@ const HEADER_COPY: usize = 4096;
 fn with_create(create: bool) -> OpenOptions {
     OpenOptions {
         create: create.then(CreateOptions::default),
-        ..api::options(2)
+        ..open::options(2)
     }
 }
 
@@ -778,7 +784,7 @@ fn a_file_cut_short_beside_its_log_never_opens_as_a_new_database() {
     for len in lengths {
         for create in [true, false] {
             let what = format!("cut at {len} bytes, create {create}");
-            let files = cut(&s.files, len);
+            let files = changed(&s.files, |f| DATA.cut(f, len));
             let mut sim = Sim::with_files(1, Config::default(), files.clone());
             let dirs = sim.dirs();
             let mut got = None;
@@ -816,7 +822,7 @@ fn a_file_cut_short_beside_its_log_never_opens_as_a_new_database() {
 /// file or directory changes, appears or goes.
 #[test]
 fn a_real_file_cut_to_nothing_beside_its_log_refuses() {
-    let files = cut(&seeded().files, 0);
+    let files = changed(&seeded().files, |f| DATA.cut(f, 0));
     for create in [true, false] {
         let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
             .join("truncated_open")

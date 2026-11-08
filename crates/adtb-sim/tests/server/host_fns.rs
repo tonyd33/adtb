@@ -3,6 +3,7 @@
 //! constraints.
 
 use adtb_simkit::api;
+use adtb_simkit::open;
 
 use std::panic::{AssertUnwindSafe, catch_unwind, panic_any};
 use std::sync::Arc;
@@ -18,7 +19,8 @@ use adtb::{
 };
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
 
-use api::{once, options, query, run};
+use adtb_simkit::open::options;
+use api::{once, query, run};
 
 const NOTES: &str = r#"module shop
 add module shop
@@ -75,17 +77,9 @@ fn with(fns: HostFns) -> OpenOptions {
     }
 }
 
-fn open(rt: &SimRuntime, log: &[&str], fns: HostFns) -> Result<Database<SimRuntime>, OpenError> {
-    Database::open_in(
-        rt.clone(),
-        "app.adt",
-        &Log::new(log.iter().copied()),
-        &with(fns),
-    )
-}
-
 fn opened(rt: &SimRuntime, log: &[&str], fns: HostFns) -> Database<SimRuntime> {
-    open(rt, log, fns).unwrap_or_else(|e| panic!("the database opens: {e:?}"))
+    open::open(rt, open::FILE, &Log::new(log.iter().copied()), &with(fns))
+        .unwrap_or_else(|e| panic!("the database opens: {e:?}"))
 }
 
 fn deterministic() -> HostFns {
@@ -157,7 +151,13 @@ fn a_constraint_reaching_a_host_function_holds_at_every_write() {
 #[test]
 fn a_missing_host_function_a_constraint_reaches_fails_open() {
     once(3, |rt| {
-        let got = open(&rt, &[NOTES, SLUGGED], HostFns::new()).map(drop);
+        let got = open::open(
+            &rt,
+            open::FILE,
+            &Log::new([NOTES, SLUGGED].iter().copied()),
+            &with(HostFns::new()),
+        )
+        .map(drop);
         assert!(
             matches!(&got, Err(OpenError::HostFnMissing { name }) if name == "slugify"),
             "{got:?}"
@@ -191,10 +191,11 @@ fn a_missing_host_function_nothing_stored_reaches_fails_only_the_call_that_reach
 #[test]
 fn a_host_function_supplied_at_another_version_fails_open() {
     once(5, |rt| {
-        let got = open(
+        let got = open::open(
             &rt,
-            &[NOTES],
-            slugify("2.0", Determinism::Deterministic, &Arc::default()),
+            open::FILE,
+            &Log::new([NOTES].iter().copied()),
+            &with(slugify("2.0", Determinism::Deterministic, &Arc::default())),
         )
         .map(drop);
         assert!(
@@ -207,10 +208,11 @@ fn a_host_function_supplied_at_another_version_fails_open() {
 #[test]
 fn a_host_function_supplied_at_another_determinism_fails_open() {
     once(6, |rt| {
-        let got = open(
+        let got = open::open(
             &rt,
-            &[NOTES],
-            slugify("1.0", Determinism::Volatile, &Arc::default()),
+            open::FILE,
+            &Log::new([NOTES].iter().copied()),
+            &with(slugify("1.0", Determinism::Volatile, &Arc::default())),
         )
         .map(drop);
         assert!(
@@ -236,7 +238,13 @@ fn a_shipped_redefinition_lets_open_bind_the_new_version() {
         );
     });
     run(&mut sim, |rt| {
-        let got = open(&rt, &[NOTES, REDEFINE], deterministic()).map(drop);
+        let got = open::open(
+            &rt,
+            open::FILE,
+            &Log::new([NOTES, REDEFINE].iter().copied()),
+            &with(deterministic()),
+        )
+        .map(drop);
         assert!(
             matches!(&got, Err(OpenError::HostFnMismatch { name }) if name == "slugify"),
             "the catalog records 2.0 once the redefinition applied: {got:?}"
@@ -397,7 +405,14 @@ fn an_index_build_over_rows_its_host_function_keys_alike_is_refused() {
         write(&db, r#"insert notes { body: "a b" }"#).expect("a note of the same slug");
     });
     run(&mut sim, |rt| {
-        match open(&rt, &[NOTES, SLUG_UNIQUE], deterministic()).map(drop) {
+        match open::open(
+            &rt,
+            open::FILE,
+            &Log::new([NOTES, SLUG_UNIQUE].iter().copied()),
+            &with(deterministic()),
+        )
+        .map(drop)
+        {
             Err(OpenError::MigrationRefused {
                 version: 2,
                 reason:
@@ -418,7 +433,14 @@ fn a_migration_validates_a_constraint_reaching_a_host_function_over_existing_row
         write(&db, r#"insert notes { body: "Not A Slug" }"#).expect("a note");
     });
     run(&mut sim, |rt| {
-        match open(&rt, &[NOTES, SLUGGED], deterministic()).map(drop) {
+        match open::open(
+            &rt,
+            open::FILE,
+            &Log::new([NOTES, SLUGGED].iter().copied()),
+            &with(deterministic()),
+        )
+        .map(drop)
+        {
             Err(OpenError::MigrationRefused {
                 version: 2,
                 reason:
@@ -447,10 +469,11 @@ fn a_staged_job_reaching_a_host_function_before_its_redefinition_fails_open() {
         write(&db, r#"insert notes { body: "a-slug" }"#).expect("a note");
     });
     run(&mut sim, |rt| {
-        let got = open(
+        let got = open::open(
             &rt,
-            &[NOTES, SLUGGED, REDEFINE],
-            slugify("2.0", Determinism::Deterministic, &Arc::default()),
+            open::FILE,
+            &Log::new([NOTES, SLUGGED, REDEFINE].iter().copied()),
+            &with(slugify("2.0", Determinism::Deterministic, &Arc::default())),
         )
         .map(drop);
         assert!(
@@ -459,10 +482,11 @@ fn a_staged_job_reaching_a_host_function_before_its_redefinition_fails_open() {
         );
     });
     run(&mut sim, |rt| {
-        let got = open(
+        let got = open::open(
             &rt,
-            &[NOTES, SLUG_UNIQUE, REDEFINE],
-            slugify("2.0", Determinism::Deterministic, &Arc::default()),
+            open::FILE,
+            &Log::new([NOTES, SLUG_UNIQUE, REDEFINE].iter().copied()),
+            &with(slugify("2.0", Determinism::Deterministic, &Arc::default())),
         )
         .map(drop);
         assert!(

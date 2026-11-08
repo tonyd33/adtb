@@ -4,6 +4,7 @@ use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::textual::{Form, parse};
 use adtb_reference::{Abort, Rejection, Value as RefValue};
 use adtb_simkit::api;
+use adtb_simkit::open;
 use adtb_testkit::fixture::Fixture;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -156,7 +157,7 @@ fn canonical_unique_names_cover_constructor_orders_scopes_paths_and_ids() {
         }
         api::once(0, |rt| {
             let log = Log::new([case.get("decls")]);
-            let db = Database::open_in(rt.clone(), "names.adt", &log, &api::options(4))
+            let db = Database::open_in(rt.clone(), "names.adt", &log, &open::options(4))
                 .expect("public open");
             let row_form = form(db.schema());
             let read = |text: &str| parse::<Value>(text, &row_form).expect("external engine value");

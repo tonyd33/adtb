@@ -4,6 +4,7 @@
 use adtb_simkit::api;
 use adtb_simkit::grants;
 use adtb_simkit::harness;
+use adtb_simkit::open;
 use adtb_testkit::refused_with;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,7 +18,8 @@ use adtb::{Capability, Database, Error, Log, OpenError, RejectReason};
 use adtb_lang::evolve::Granted;
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use api::{once, options, query, run};
+use adtb_simkit::open::options;
+use api::{once, query, run};
 use harness::{finished, options as pager_options};
 
 const SHOP: &str = r"module shop
@@ -40,17 +42,9 @@ type LogRow = (i64, bool, bool);
 /// A reopened catalog's version, `Log` rows and `Deployment` row ids.
 type Seen = (u64, Vec<LogRow>, Vec<i64>);
 
-fn open(rt: &SimRuntime, log: &[&str]) -> Result<Database<SimRuntime>, OpenError> {
-    Database::open_in(
-        rt.clone(),
-        "app.adt",
-        &Log::new(log.iter().copied()),
-        &options(2),
-    )
-}
-
 fn opened(rt: &SimRuntime, log: &[&str]) -> Database<SimRuntime> {
-    open(rt, log).unwrap_or_else(|e| panic!("the database opens at {}: {e:?}", log.len()))
+    open::open(rt, open::FILE, &Log::new(log.iter().copied()), &options(2))
+        .unwrap_or_else(|e| panic!("the database opens at {}: {e:?}", log.len()))
 }
 
 /// Returns each row of `catalog::grants`, printed, by its id.
@@ -179,9 +173,15 @@ add constraint paid =
         fifth[&card]
     );
     run(&mut sim, |rt| {
-        let (version, detail) = refusal(open(
+        let (version, detail) = refusal(open::open(
             &rt,
-            &[SHOP, grant, revoke, regrant, rename, option, split, paid],
+            open::FILE,
+            &Log::new(
+                [SHOP, grant, revoke, regrant, rename, option, split, paid]
+                    .iter()
+                    .copied(),
+            ),
+            &options(2),
         ));
         assert_eq!(8, version);
         assert!(detail.contains("paid"), "{detail}");
@@ -224,7 +224,12 @@ fn a_grant_to_a_missing_role_is_refused_and_publishes_nothing() {
         (query(&db, audit), by_id(&db))
     });
     run(&mut sim, |rt| {
-        let (version, detail) = refusal(open(&rt, &[SHOP, ghost]));
+        let (version, detail) = refusal(open::open(
+            &rt,
+            open::FILE,
+            &Log::new([SHOP, ghost].iter().copied()),
+            &options(2),
+        ));
         assert_eq!(2, version);
         assert!(detail.contains("role `ghost`"), "{detail}");
     });
@@ -1253,7 +1258,12 @@ fn an_operator_grant_closing_a_cycle_of_options_is_refused() {
 fn a_refused_empty_revoke_refuses_the_open_and_names_it() {
     once(304, |rt| {
         let log = [SHOP, "module shop\nrevoke read customers from web\n"];
-        let (version, detail) = refusal(open(&rt, &log));
+        let (version, detail) = refusal(open::open(
+            &rt,
+            open::FILE,
+            &Log::new(log.iter().copied()),
+            &options(2),
+        ));
         assert_eq!(2, version);
         assert!(
             detail.contains("revoke read customers from web"),

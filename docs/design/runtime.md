@@ -476,16 +476,20 @@ Postconditions of the simulator:
 - A daemon that stays runnable hides a deadlock and keeps the run going.
 - A thread a daemon spawns is no daemon.
 
-After each run, and after each simulated crash and recovery, the
-simulator checks that every acknowledged commit is present, that no
-unacknowledged state is reported as committed, and that `verify`
-finds no structural, cross or logical violation
+After the crash and recovery of every round, the harness's crash loop
+(`adtb_simkit::crash::crash_loop`, [testing.md §5](testing.md#5-harness))
+checks with `adtb_sim::check` that every acknowledged commit is
+present, that no unacknowledged state is reported as committed, and
+that `verify` finds no structural, cross or logical violation
 ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)).
-The client records each commit in a ledger outside the process as
-submitted, then acknowledged or aborted. A commit still in doubt at a
-crash may be present or absent; one aborted, or never submitted, is
-reported as committed only by a bug. The reopened database supplies
-the commits it reports and the findings of `verify`.
+The reopened database's `allows` filters the result: a violation it
+allows is returned with the round, and every other one fails it. The
+client records each commit in a ledger outside the process as
+submitted, then acknowledged or aborted.
+A commit still in doubt at a crash may be present or absent; one
+aborted, or never submitted, is reported as committed only by a bug.
+The reopened database supplies the commits it reports and the findings
+of `verify`.
 
 Rulings: buffer/test/dst, buffer/test/dst-threads/sim-scheduler
 

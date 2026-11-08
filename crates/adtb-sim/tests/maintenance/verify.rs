@@ -7,12 +7,14 @@ use adtb::heap::{FieldType, Flags, Heap, LargeStore};
 use adtb::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
 use adtb::mvcc::Transactions;
 use adtb::runtime::Threads;
-use adtb::storage::{Damage, PageKind, Pager, Pid, Quarantine, lsn};
+use adtb::storage::{Damage, HEADER_LEN, PageKind, Pager, Pid, Quarantine, lsn};
 use adtb::testing::{Knobs, Object, Plant};
 use adtb::verify::{self, Inventory, Problem, Report, Sum};
 use adtb::{CallOptions, Capability, Database, Log};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 
+use adtb_simkit::damage::DataFile;
+use adtb_simkit::open;
 use adtb_simkit::{api, crash, harness};
 use adtb_sys::runtime::Faults;
 
@@ -359,9 +361,10 @@ add constraint named =
 
 const NAME: &str = "verify.adt";
 const PAGE_SIZE: usize = 8192;
+const DATA: DataFile = DataFile::new(NAME, PAGE_SIZE);
 
 fn open_app(rt: SimRuntime) -> Database<SimRuntime> {
-    Database::open_in(rt, NAME, &Log::new([APP]), &api::options(2)).expect("the database opens")
+    Database::open_in(rt, NAME, &Log::new([APP]), &open::options(2)).expect("the database opens")
 }
 
 fn seed_app(db: &Database<SimRuntime>) {
@@ -462,7 +465,7 @@ fn a_retag_and_a_removed_constructor_leave_no_finding() {
             rt,
             NAME,
             &Log::new([APP, add, deprecate, remove]),
-            &api::options(2),
+            &open::options(2),
         )
         .expect("the database opens");
         seed_app(&db);
@@ -486,8 +489,7 @@ fn a_flipped_page_is_a_checksum_finding() {
         page
     });
     let mut files = sim.files();
-    let size = PAGE_SIZE;
-    files.get_mut(NAME).unwrap()[page.0 as usize * size + 300] ^= 0x10;
+    DATA.flip(&mut files, page, 300 - HEADER_LEN);
     let mut sim = Sim::with_files(42, Config::default(), files);
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
@@ -519,13 +521,12 @@ fn lost_users_write() -> (BTreeMap<String, Vec<u8>>, Pid, Damage) {
         db.close().unwrap();
     });
     let mut files = sim.files();
-    let at = page.0 as usize * PAGE_SIZE;
-    let old = before[NAME][at..at + PAGE_SIZE].to_vec();
+    let old = DATA.page(&before, page).to_vec();
     let stale = Damage::Stale {
-        expected: lsn(&files[NAME][at..at + PAGE_SIZE]),
+        expected: lsn(DATA.page(&files, page)),
         found: lsn(&old),
     };
-    files.get_mut(NAME).unwrap()[at..at + PAGE_SIZE].copy_from_slice(&old);
+    DATA.replace(&mut files, page, &old);
     (files, page, stale)
 }
 
@@ -567,7 +568,7 @@ fn a_heap_page_that_lost_a_write_is_refused_on_its_first_read_and_marks_its_heap
 fn a_directory_page_that_lost_the_write_freeing_a_page_is_refused_on_its_first_read() {
     let quiet = adtb::OpenOptions {
         testing: Knobs::without_background_vacuum(),
-        ..api::options(2)
+        ..open::options(2)
     };
     let open = |rt| Database::open_in(rt, NAME, &Log::new([APP]), &quiet).unwrap();
     let pages = |db: &Database<SimRuntime>| {
@@ -600,19 +601,18 @@ fn a_directory_page_that_lost_the_write_freeing_a_page_is_refused_on_its_first_r
     let after = sim.files();
     let freed: Vec<Pid> = held.iter().filter(|p| !kept.contains(p)).copied().collect();
     assert!(!freed.is_empty(), "{held:?} {kept:?}");
-    let at = |p: Pid| p.0 as usize * PAGE_SIZE..(p.0 as usize + 1) * PAGE_SIZE;
     let leaves: Vec<Pid> = (Pid::FIRST_DATA.0..(after[NAME].len() / PAGE_SIZE) as u64)
         .map(Pid)
-        .filter(|&p| after[NAME][at(p)] != before[NAME][at(p)])
-        .filter(|&p| adtb::storage::kind(&after[NAME][at(p)]) == PageKind::FreeSpaceMap as u16)
+        .filter(|&p| DATA.page(&after, p) != DATA.page(&before, p))
+        .filter(|&p| adtb::storage::kind(DATA.page(&after, p)) == PageKind::FreeSpaceMap as u16)
         .collect();
     assert_eq!(1, leaves.len(), "{leaves:?}");
     let leaf = leaves[0];
     let mut lost = after.clone();
-    lost.get_mut(NAME).unwrap()[at(leaf)].copy_from_slice(&before[NAME][at(leaf)]);
+    DATA.replace(&mut lost, leaf, DATA.page(&before, leaf));
     let damage = Damage::Stale {
-        expected: lsn(&after[NAME][at(leaf)]),
-        found: lsn(&before[NAME][at(leaf)]),
+        expected: lsn(DATA.page(&after, leaf)),
+        found: lsn(DATA.page(&before, leaf)),
     };
     api::run(&mut Sim::with_files(47, Config::default(), lost), |rt| {
         let db = open(rt);
@@ -632,8 +632,7 @@ fn a_page_past_the_log_end_is_an_unlogged_finding_of_its_relation() {
         page
     });
     let mut files = sim.files();
-    let at = page.0 as usize * PAGE_SIZE;
-    let bytes = &mut files.get_mut(NAME).unwrap()[at..at + PAGE_SIZE];
+    let bytes = DATA.page_mut(&mut files, page);
     bytes[..8].copy_from_slice(&(1u64 << 40).to_le_bytes());
     adtb::storage::seal(page, bytes);
     let mut sim = Sim::with_files(45, Config::default(), files);
@@ -1034,7 +1033,7 @@ fn a_role_reading_what_the_constraint_reads_sees_the_witness() {
                 .unwrap();
         }
         db.close().unwrap();
-        let db = Database::open_in(rt.clone(), NAME, &Log::new([APP, grant]), &api::options(2))
+        let db = Database::open_in(rt.clone(), NAME, &Log::new([APP, grant]), &open::options(2))
             .expect("the database opens");
         seed_app(&db);
         let t = db.testing();
@@ -1178,7 +1177,7 @@ fn stressed(seed: u64, body: impl FnOnce(SimRuntime)) {
 fn open_stressed(rt: SimRuntime) -> Database<SimRuntime> {
     let options = adtb::OpenOptions {
         pool_bytes: Some(64 * PAGE_SIZE as u64),
-        ..api::options(2)
+        ..open::options(2)
     };
     Database::open_in(rt, NAME, &Log::new([APP]), &options).expect("the database opens")
 }
@@ -1540,7 +1539,7 @@ add relation users : User key id generate sequence
         );
         let options = adtb::OpenOptions {
             host_fns: fns,
-            ..api::options(2)
+            ..open::options(2)
         };
         let db = Database::open_in(rt, NAME, &Log::new([LOG]), &options).unwrap();
         run_text(&db, r#"insert users { id: users.key(1), name: "a" }"#);
@@ -1657,11 +1656,6 @@ fn a_tree_check_out_of_retries_goes_on_past_the_changing_pair() {
     }
 }
 
-/// Damage page `page` of `files`.
-fn flip(files: &mut BTreeMap<String, Vec<u8>>, page: Pid) {
-    files.get_mut(NAME).unwrap()[page.0 as usize * PAGE_SIZE + 300] ^= 0x10;
-}
-
 #[test]
 fn verify_r_reports_only_the_pages_and_constraints_of_r() {
     let mut sim = Sim::new(64, Config::default());
@@ -1675,7 +1669,7 @@ fn verify_r_reports_only_the_pages_and_constraints_of_r() {
         page
     });
     let mut files = sim.files();
-    flip(&mut files, page);
+    DATA.flip(&mut files, page, 300 - HEADER_LEN);
     let mut sim = Sim::with_files(64, Config::default(), files);
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
@@ -1730,7 +1724,7 @@ add constraint joined =
 #[test]
 fn verify_r_keeps_a_damaged_page_a_constraint_of_r_read() {
     let mut sim = Sim::new(66, Config::default());
-    let open = |rt| Database::open_in(rt, NAME, &Log::new([JOINED]), &api::options(2)).unwrap();
+    let open = |rt| Database::open_in(rt, NAME, &Log::new([JOINED]), &open::options(2)).unwrap();
     let page = api::run(&mut sim, |rt| {
         let db = open(rt);
         run_text(&db, r#"insert users { id: users.key(1), name: "a" }"#);
@@ -1745,7 +1739,7 @@ fn verify_r_keeps_a_damaged_page_a_constraint_of_r_read() {
         page
     });
     let mut files = sim.files();
-    flip(&mut files, page);
+    DATA.flip(&mut files, page, 300 - HEADER_LEN);
     let mut sim = Sim::with_files(66, Config::default(), files);
     api::run(&mut sim, |rt| {
         let got = verified(&open(rt), Some("users"));
@@ -1758,7 +1752,7 @@ fn a_constraint_over_the_query_memory_is_a_structure_finding() {
     api::once(67, |rt| {
         let options = adtb::OpenOptions {
             query_memory_bytes: Some(4096),
-            ..api::options(2)
+            ..open::options(2)
         };
         let log = "module app
 add module app
@@ -1818,7 +1812,7 @@ add relation identities : Identity key id generate sequence
 ";
     let mut sim = Sim::new(68, Config::default());
     let first = api::run(&mut sim, |rt| {
-        let db = Database::open_in(rt, NAME, &Log::new([plain]), &api::options(2)).unwrap();
+        let db = Database::open_in(rt, NAME, &Log::new([plain]), &open::options(2)).unwrap();
         run_text(
             &db,
             r#"insert identities { id: identities.key(1), gid: "g" }"#,
@@ -1835,7 +1829,7 @@ add relation identities : Identity key id generate sequence
     });
     let mut sim = Sim::with_files(68, Config::default(), sim.files());
     api::run(&mut sim, |rt| {
-        let db = Database::open_in(rt, NAME, &Log::new([plain, gone]), &api::options(2)).unwrap();
+        let db = Database::open_in(rt, NAME, &Log::new([plain, gone]), &open::options(2)).unwrap();
         assert_eq!(1, findings(&db).len(), "{first:?}");
         assert_eq!(Vec::<String>::new(), verified(&db, None));
         assert_eq!(Vec::<String>::new(), findings(&db));
@@ -1843,7 +1837,7 @@ add relation identities : Identity key id generate sequence
     });
     let mut sim = Sim::with_files(68, Config::default(), sim.files());
     api::run(&mut sim, |rt| {
-        let db = Database::open_in(rt, NAME, &Log::new([plain, gone]), &api::options(2)).unwrap();
+        let db = Database::open_in(rt, NAME, &Log::new([plain, gone]), &open::options(2)).unwrap();
         run_text(&db, r#"insert users { id: users.key(1), name: "a" }"#);
         plant_orphan(&db, "app::users", "User");
         let got = verified(&db, None);
@@ -1864,7 +1858,7 @@ fn a_fault_planted_in_each_kind_of_index_is_a_missing_finding() {
         "unique (status.Paid.ref)",
     ] {
         api::once(69, |rt| {
-            let db = Database::open_in(rt, NAME, &Log::new([BILLING]), &api::options(2)).unwrap();
+            let db = Database::open_in(rt, NAME, &Log::new([BILLING]), &open::options(2)).unwrap();
             run_text(
                 &db,
                 r#"insert invoices { id: invoices.key(1), status: Paid { ref: "p" }, email: "A", n: 0, score: 0.5, note: "" }"#,
@@ -1889,7 +1883,7 @@ fn a_run_under_writers_of_expression_and_path_indexes_finds_nothing() {
         stressed(seed, |rt| {
             let options = adtb::OpenOptions {
                 pool_bytes: Some(64 * PAGE_SIZE as u64),
-                ..api::options(2)
+                ..open::options(2)
             };
             let db = Database::open_in(rt.clone(), NAME, &Log::new([BILLING]), &options).unwrap();
             let stop = Arc::new(AtomicBool::new(false));
@@ -1943,7 +1937,7 @@ fn a_file_after_evolution_and_history_holds_clean() {
     let remove = "module app\nremove constructor Identity.Apple\n";
     let mut sim = Sim::new(70, Config::default());
     api::run(&mut sim, |rt| {
-        let db = Database::open_in(rt, NAME, &Log::new([APP, add]), &api::options(2)).unwrap();
+        let db = Database::open_in(rt, NAME, &Log::new([APP, add]), &open::options(2)).unwrap();
         run_text(&db, r#"insert users { id: users.key(1), name: "a" }"#);
         run_text(
             &db,
@@ -1959,7 +1953,7 @@ fn a_file_after_evolution_and_history_holds_clean() {
     let mut sim = Sim::with_files(70, Config::default(), sim.files());
     api::run(&mut sim, |rt| {
         let log = Log::new([APP, add, deprecate, remove]);
-        let db = Database::open_in(rt, NAME, &log, &api::options(2)).unwrap();
+        let db = Database::open_in(rt, NAME, &log, &open::options(2)).unwrap();
         run_text(&db, "set setting RetentionWindow = { length: 1h }");
         run_text(
             &db,
@@ -1989,7 +1983,7 @@ fn findings_survive_a_crash_and_a_later_migration() {
     });
     let more = "module app\nadd field User.age: I64 fill 0\n";
     api::run(&mut sim, move |rt| {
-        let db = Database::open_in(rt, NAME, &Log::new([APP, more]), &api::options(2)).unwrap();
+        let db = Database::open_in(rt, NAME, &Log::new([APP, more]), &open::options(2)).unwrap();
         assert_eq!(kept, findings(&db));
     });
 }
@@ -2007,7 +2001,7 @@ fn a_file_after_a_crash_of_writers_and_vacuums_holds_clean() {
         };
         let mut sim = Sim::new(seed, config);
         let open =
-            |rt| Database::open_in(rt, NAME, &Log::new([BILLING]), &api::options(2)).unwrap();
+            |rt| Database::open_in(rt, NAME, &Log::new([BILLING]), &open::options(2)).unwrap();
         api::run(&mut sim, |rt| open(rt).close().unwrap());
         sim.crash_at(sim.now() + crash::crash_after(seed, 1, 2_000, 300_000));
         let outcome = crash::run_process(&mut sim, |rt| {
@@ -2062,7 +2056,7 @@ fn orphans_beside_vacuum(seed: u64) -> Vec<String> {
             rt.clone(),
             "hold.adt",
             &Log::new([ROWS_LOG]),
-            &api::options(2),
+            &open::options(2),
         )
         .unwrap();
         let digit = "[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]";

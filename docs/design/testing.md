@@ -9,6 +9,9 @@ checks of the write path, flushes, holds and hooks, and the settings an
 open takes only in tests. It exists only with the `testing` feature of
 `adtb`, which only the tests of `adtb-sim` enable.
 
+The harness the simulator's tests share, crashes, opens, component
+worlds and byte damage, is `adtb-simkit` (§5).
+
 ## 1. Entry points
 
 ```text
@@ -213,3 +216,95 @@ and the findings of the checks) and this module's own types (`Records`,
 `Object`, `Plant`, `Planted`, `Site`, `CommitLogPages`, `Failed`,
 `Knobs` and the guards `VacuumHold` and `PageHold`), never a pager, a
 heap, an index or the write path.
+
+## 5. Harness
+
+`adtb-simkit` holds what the simulator's test binaries share above
+`adtb_sim`: the crash loop, the opens, the component world and byte
+damage.
+
+- A test defines no crash loop, world type or byte-damage helper of its
+  own. Every crash loop is `crash_loop`, and every round of it runs the
+  check. Two tests crash a run more than once outside it: the history
+  search of `execution/isolation.rs`, until the isolation search runs
+  the engine (T7), and the damage search, whose crashes are steps of a
+  generated sequence judged after the run.
+- A test opens a database through `open` or a call of
+  `Database::open_in` in its own body, and a world through `Storage`. A
+  test may call `Database::open_in` and `Sim::crash_at` directly, to
+  test the public open and the simulator.
+- Local open helpers remain. `work/tools/structure-allowlist` counts
+  them by name: functions taking parameters whose name begins or ends
+  with an `open` form, closures bound to an `open` form, and `fn engine`
+  where it opens the engine. A helper under another name is not
+  counted. The size products left are counted the same way. The counts
+  only fall.
+
+```text
+crash::crash_loop(&mut sim, seed, faults, Rounds::new(count, base, span),
+                  workload: FnMut(&mut Round), recovered: FnMut(SimRuntime, &Ledger) -> T)
+  -> Crashes<T>                                // T: Reopened (adtb_sim::Recovered)
+Crashes::{rounds() -> &[Checked<T>], ledger(), allowed() -> (round, &Violation)..., crashed()}
+Checked::{crashed(), allowed() -> &[Violation], reopened() -> &T}
+Round::crash(body) -> bool; Round::{seed, index, ledger, sim}
+Reopened::{allows(&Violation), settle(&Ledger), last()}
+open::{FILE, options(workers), open, opened, reopen}
+fixture::Storage::{create(rt, &Options), reopen(rt, &Layout), layout,
+                   commit_log, large, heap, index, tree, pager, split, parts, verify}
+fixture::Parts::{new, verify}                // a world a test keeps in its own fields
+damage::DataFile::{new(name, page_size), of(&Options), range, bytes, page,
+                   page_mut, flip(files, pid, at), zero, replace, truncate, extend, cut}
+```
+
+Postconditions of `crash_loop`:
+
+- Each round runs the workload, which crashes its process through
+  `Round::crash` (under `faults`, at `crash_after(seed, round, base,
+  span)`) or ends its run another way through `Round::sim`. The loop
+  then runs `recovered` as a process under no faults, with `faults`'s
+  sector and atomic unit, and fails, naming the seed and round, unless
+  it finishes.
+- Every round runs `adtb_sim::check` of what `recovered` returns
+  against the loop's ledger, which the workloads of every round record
+  their commits in. A violation the reopened database's `allows` does
+  not accept fails the loop, naming the seed and round; one it accepts
+  is returned with the round, and `Crashes::allowed` lists them all. The check covers `verify`: it holds the
+  reopened database's findings. No round skips the check.
+- After a passing check the reopened database settles the commits in
+  doubt, by default acknowledging those it reports committed and
+  aborting the rest, so a later round's check holds them to that fate.
+- The loop ends after `count` rounds, or after the first round whose
+  reopened database is `last`.
+
+Postconditions of the opens: `open` opens the database in a file of
+the simulated device through `Database::open_in`, and `opened` fails
+naming the file where `open` returns an error; `options(workers)`
+creates the database when it does not exist. `reopen` opens a pager
+over its file, recovering it from its log.
+
+Postconditions of `Storage`:
+
+- `create` makes the file and no structure. Each structure made after
+  takes the next owner id of one counter, from 1, so no two structures
+  of a world share an owner.
+- `layout` answers where each structure lies, as a value that outlives
+  the process. `reopen` of it answers a world holding the same
+  structures, under the same owners and roots, in the order `create`'s
+  world made them.
+- `verify`, and `Parts::verify` over the same structures held
+  elsewhere, run `verify` over every structure of the world, heap `i`
+  as constructor `i` of one sum that every index ranges over, then
+  `repair` and a second pass, and answer what either pass finds that
+  is not mended.
+
+Postconditions of `DataFile`: a page's bytes are the page-size run at
+its id in the data file ([storage.md §1](storage.md#1-the-file));
+`flip(files, pid, at)` inverts byte `at` of the page's body, the bytes
+past its header ([storage.md §2.1](storage.md#21-page-header)), and
+fails unless `at` lies inside the body. `truncate` keeps the first
+`pages` pages, `extend` adds zero pages up to `pages`, `cut` keeps the
+first bytes.
+
+Not promised: which damage the engine detects, that a change yields a
+given `Damage` on read, or a log segment's layout, which byte damage
+does not address.

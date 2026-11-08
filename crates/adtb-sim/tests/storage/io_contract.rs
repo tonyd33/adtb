@@ -30,7 +30,7 @@ fn done<R: Runtime>(rt: &R, io: &mut R::Io, op: Op) -> Result<Done, IoError> {
     complete(rt, io, op).result
 }
 
-fn open<R: Runtime>(
+fn open_file<R: Runtime>(
     rt: &R,
     io: &mut R::Io,
     path: &str,
@@ -84,7 +84,7 @@ fn block(fill: u8) -> Vec<u8> {
 
 fn write_then_read<R: Runtime>(rt: &R) {
     let mut io = rt.io();
-    let (file, len) = open(rt, &mut io, "f", true).unwrap();
+    let (file, len) = open_file(rt, &mut io, "f", true).unwrap();
     assert_eq!(0, len);
     write(rt, &mut io, file, 0, &block(1));
     write(rt, &mut io, file, 2 * BLOCK as u64, &block(3));
@@ -97,9 +97,9 @@ fn write_then_read<R: Runtime>(rt: &R) {
 
 fn open_reports_the_length<R: Runtime>(rt: &R) {
     let mut io = rt.io();
-    let (file, _) = open(rt, &mut io, "f", true).unwrap();
+    let (file, _) = open_file(rt, &mut io, "f", true).unwrap();
     write(rt, &mut io, file, 0, &[7; 2 * BLOCK]);
-    let (again, len) = open(rt, &mut io, "f", true).unwrap();
+    let (again, len) = open_file(rt, &mut io, "f", true).unwrap();
     assert_eq!(2 * BLOCK as u64, len);
     assert_eq!(
         vec![7; BLOCK],
@@ -109,7 +109,7 @@ fn open_reports_the_length<R: Runtime>(rt: &R) {
 
 fn short_read_past_the_end<R: Runtime>(rt: &R) {
     let mut io = rt.io();
-    let (file, _) = open(rt, &mut io, "f", true).unwrap();
+    let (file, _) = open_file(rt, &mut io, "f", true).unwrap();
     write(rt, &mut io, file, 0, &block(1));
     assert_eq!(block(1), read(rt, &mut io, file, 0, 4 * BLOCK));
     assert_eq!(
@@ -120,7 +120,7 @@ fn short_read_past_the_end<R: Runtime>(rt: &R) {
 
 fn allocate_extends_with_zeros<R: Runtime>(rt: &R) {
     let mut io = rt.io();
-    let (file, _) = open(rt, &mut io, "f", true).unwrap();
+    let (file, _) = open_file(rt, &mut io, "f", true).unwrap();
     write(rt, &mut io, file, 0, &block(1));
     let len = 4 * BLOCK as u64;
     assert_eq!(
@@ -145,7 +145,7 @@ fn allocate_extends_with_zeros<R: Runtime>(rt: &R) {
 
 fn size_counts_completed_writes<R: Runtime>(rt: &R) {
     let mut io = rt.io();
-    let (file, _) = open(rt, &mut io, "f", true).unwrap();
+    let (file, _) = open_file(rt, &mut io, "f", true).unwrap();
     assert_eq!(0, size(rt, &mut io, file));
     write(rt, &mut io, file, 3 * BLOCK as u64, &block(2));
     assert_eq!(4 * BLOCK as u64, size(rt, &mut io, file));
@@ -153,8 +153,11 @@ fn size_counts_completed_writes<R: Runtime>(rt: &R) {
 
 fn missing_files_are_not_found<R: Runtime>(rt: &R) {
     let mut io = rt.io();
-    assert_eq!(Err(IoError::NotFound), open(rt, &mut io, "nope", false));
-    assert_eq!(Err(IoError::NotFound), open(rt, &mut io, "d/f", true));
+    assert_eq!(
+        Err(IoError::NotFound),
+        open_file(rt, &mut io, "nope", false)
+    );
+    assert_eq!(Err(IoError::NotFound), open_file(rt, &mut io, "d/f", true));
     assert_eq!(Err(IoError::NotFound), list(rt, &mut io, "d"));
     let path = "nope".into();
     assert_eq!(
@@ -174,7 +177,7 @@ fn directories_hold_files<R: Runtime>(rt: &R) {
     );
     assert_eq!(Ok(BTreeSet::new()), list(rt, &mut io, "d"));
     for name in ["d/a", "d/b", "e"] {
-        open(rt, &mut io, name, true).unwrap();
+        open_file(rt, &mut io, name, true).unwrap();
     }
     let expect = |names: &[&str]| Ok(names.iter().map(|&n| n.to_owned()).collect());
     assert_eq!(expect(&["d/a", "d/b"]), list(rt, &mut io, "d"));
@@ -211,14 +214,14 @@ fn directories_hold_files<R: Runtime>(rt: &R) {
 
 fn below_a_file_and_absent_directories<R: Runtime>(rt: &R) {
     let mut io = rt.io();
-    open(rt, &mut io, "plain", true).unwrap();
+    open_file(rt, &mut io, "plain", true).unwrap();
     assert_eq!(
         Err(IoError::NotADirectory),
-        open(rt, &mut io, "plain/x", false)
+        open_file(rt, &mut io, "plain/x", false)
     );
     assert_eq!(
         Err(IoError::NotADirectory),
-        open(rt, &mut io, "plain/x", true)
+        open_file(rt, &mut io, "plain/x", true)
     );
     let path = || "plain/x".to_owned();
     for op in [
@@ -253,7 +256,7 @@ pub(crate) fn rename_into_the_parent<R: Runtime>(rt: &R, io: &mut R::Io, synced:
         assert_eq!(Ok(Done::Synced), done(rt, io, Op::SyncDir { dir }));
     };
     create_dir(rt, io, "d").unwrap();
-    open(rt, io, "d/f", true).unwrap();
+    open_file(rt, io, "d/f", true).unwrap();
     force(io, "d");
     force(io, "");
     assert_eq!(Ok(Done::Renamed), rename(rt, io, "d/f", "f", false));
@@ -301,10 +304,10 @@ fn renames_refuse_an_occupied_name<R: Runtime>(rt: &R) {
     for dir in ["d", "d/empty", "d/full", "d/src", "d/src/inner"] {
         create_dir(rt, &mut io, dir).unwrap();
     }
-    let (held, _) = open(rt, &mut io, "d/src/inner/f", true).unwrap();
+    let (held, _) = open_file(rt, &mut io, "d/src/inner/f", true).unwrap();
     write(rt, &mut io, held, 0, &block(7));
     for path in ["d/full/g", "d/file", "d/other"] {
-        open(rt, &mut io, path, true).unwrap();
+        open_file(rt, &mut io, path, true).unwrap();
     }
     let mut refused = |from, to, error| {
         assert_eq!(
@@ -326,9 +329,9 @@ fn renames_refuse_an_occupied_name<R: Runtime>(rt: &R) {
     );
     assert_eq!(
         Err(IoError::NotFound),
-        open(rt, &mut io, "d/src/inner/f", false)
+        open_file(rt, &mut io, "d/src/inner/f", false)
     );
-    let (again, _) = open(rt, &mut io, "d/empty/inner/f", false).unwrap();
+    let (again, _) = open_file(rt, &mut io, "d/empty/inner/f", false).unwrap();
     assert_eq!(block(7), read(rt, &mut io, again, 0, BLOCK));
     write(rt, &mut io, held, 0, &block(8));
     assert_eq!(
@@ -341,28 +344,31 @@ fn renames_refuse_an_occupied_name<R: Runtime>(rt: &R) {
         rename(rt, &mut io, "d/empty", "d/fresh", false),
         "onto nothing"
     );
-    let (other, _) = open(rt, &mut io, "d/other", false).unwrap();
+    let (other, _) = open_file(rt, &mut io, "d/other", false).unwrap();
     write(rt, &mut io, other, 0, &block(9));
     assert_eq!(
         Ok(Done::Renamed),
         rename(rt, &mut io, "d/other", "d/file", true),
         "a replacing rename"
     );
-    let (file, len) = open(rt, &mut io, "d/file", false).unwrap();
+    let (file, len) = open_file(rt, &mut io, "d/file", false).unwrap();
     assert_eq!(BLOCK as u64, len);
     assert_eq!(block(9), read(rt, &mut io, file, 0, BLOCK));
-    assert_eq!(Err(IoError::NotFound), open(rt, &mut io, "d/other", false));
+    assert_eq!(
+        Err(IoError::NotFound),
+        open_file(rt, &mut io, "d/other", false)
+    );
     let dir = "d".into();
     assert_eq!(Ok(Done::Synced), done(rt, &mut io, Op::SyncDir { dir }));
 }
 
 fn removed_files_are_gone_but_open<R: Runtime>(rt: &R) {
     let mut io = rt.io();
-    let (file, _) = open(rt, &mut io, "f", true).unwrap();
+    let (file, _) = open_file(rt, &mut io, "f", true).unwrap();
     write(rt, &mut io, file, 0, &block(5));
     let path = "f".into();
     assert_eq!(Ok(Done::Removed), done(rt, &mut io, Op::Remove { path }));
-    assert_eq!(Err(IoError::NotFound), open(rt, &mut io, "f", false));
+    assert_eq!(Err(IoError::NotFound), open_file(rt, &mut io, "f", false));
     assert_eq!(
         block(5),
         read(rt, &mut io, file, 0, BLOCK),
@@ -372,17 +378,17 @@ fn removed_files_are_gone_but_open<R: Runtime>(rt: &R) {
 
 fn closed_files_reopen<R: Runtime>(rt: &R) {
     let mut io = rt.io();
-    let (file, _) = open(rt, &mut io, "f", true).unwrap();
+    let (file, _) = open_file(rt, &mut io, "f", true).unwrap();
     write(rt, &mut io, file, 0, &block(6));
     assert_eq!(Ok(Done::Closed), done(rt, &mut io, Op::Close { file }));
-    let (again, len) = open(rt, &mut io, "f", false).unwrap();
+    let (again, len) = open_file(rt, &mut io, "f", false).unwrap();
     assert_eq!(BLOCK as u64, len);
     assert_eq!(block(6), read(rt, &mut io, again, 0, BLOCK));
 }
 
 fn every_op_completes_once<R: Runtime>(rt: &R) {
     let mut io = rt.io();
-    let (file, _) = open(rt, &mut io, "f", true).unwrap();
+    let (file, _) = open_file(rt, &mut io, "f", true).unwrap();
     let mut tickets: BTreeSet<Ticket> = (0..32u8)
         .map(|i| {
             let buf = AlignedBuf::from_slice(&block(i));
@@ -421,7 +427,7 @@ fn queues_on_many_threads_complete<R: Runtime>(rt: &R) {
             rt.spawn("worker", move || {
                 let rt = &rt2;
                 let mut io = rt.io();
-                let (file, _) = open(rt, &mut io, &format!("w{w}"), true).unwrap();
+                let (file, _) = open_file(rt, &mut io, &format!("w{w}"), true).unwrap();
                 let tickets: BTreeSet<Ticket> = (0..16u8)
                     .map(|i| {
                         let buf = AlignedBuf::from_slice(&block(w * 16 + i));
@@ -642,7 +648,7 @@ contract!(
 
 fn unaligned_requests_fail(rt: &OsRuntime) {
     let mut io = rt.io();
-    let (file, _) = open(rt, &mut io, "f", true).unwrap();
+    let (file, _) = open_file(rt, &mut io, "f", true).unwrap();
     write(rt, &mut io, file, 0, &block(1));
     let unaligned = [
         Op::Write {
@@ -712,7 +718,7 @@ fn writes_submitted_before_a_drop_have_landed_when_it_returns(name: &str, backen
     let dir = scratch(name);
     let rt = OsRuntime::new(&dir, backend);
     let mut io = rt.io();
-    let (file, _) = open(&rt, &mut io, "f", true).unwrap();
+    let (file, _) = open_file(&rt, &mut io, "f", true).unwrap();
     for i in 0..SUBMITTED {
         let buf = AlignedBuf::from_slice(&block(i + 1));
         io.submit(Op::Write {

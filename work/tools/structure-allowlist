@@ -19,6 +19,24 @@
 #                     PageMemory::lock_exclusive, PageMemory::try_lock_exclusive and
 #                     Optimistic::upgrade (clippy.toml); each allowed site carries an expect, or its
 #                     file one inner expect where the file owns the item.
+# crash_loops:        definitions of a function whose name holds `crash_loop`: the harness's one
+#                     crash loop, which runs the ledger check after every round.
+# crash_allows:       definitions of `fn allows`: what a crash loop's reopened database tolerates.
+# sim_test_opens:     in crates/adtb-sim/tests, by name: a function taking parameters whose name
+#                     begins with `open`, `opened`, `opens`, `opening` or a `reopen` form, or ends
+#                     with `_open`, `_opened`, `_opens` or a `_reopen` form; a closure bound to
+#                     `open`, `opened`, `opens`, `opening` or a `reopen` form; and `fn engine` whose
+#                     body begins with `Engine::open`. A test opens through adtb_simkit::open or
+#                     fixture::Storage, or calls `Database::open_in` in its own body. The lines
+#                     left are local open helpers and helpers whose names only mention an open.
+# sim_test_damage:    definitions of `fn flip`, `zeroed`, `damage` or `damaged_part` in
+#                     crates/adtb-sim/tests: byte damage goes through adtb_simkit::damage.
+# sim_test_offsets:   in crates/adtb-sim/tests, a product with a page size (`PAGE`, `*_PAGE`,
+#                     `PAGE_SIZE`, `page_size`, `8192`, `4096`), or `.get_mut(NAME)` /
+#                     `.get_mut(FILE)` on a device's files: a page's bytes come from
+#                     adtb_simkit::damage::DataFile. The lines left count sizes, not offsets.
+# crash_loops, crash_allows, sim_test_opens and sim_test_damage count names: a helper under
+#                     another name escapes them. sim_test_offsets counts spellings of arithmetic.
 crate_fields prod 1 crates/adtb-codegen/src/emit.rs
 crate_fields prod 6 crates/adtb-lang/src/check/pat.rs
 crate_fields prod 1 crates/adtb-lang/src/check/query.rs
@@ -268,3 +286,65 @@ xmin_xmax prod 1 crates/adtb/src/write/mod.rs
 xmin_xmax prod 2 crates/adtb/src/write/past.rs
 xmin_xmax prod 2 crates/adtb/src/write/reindex.rs
 xmin_xmax prod 2 crates/adtb/src/write/verify.rs
+crash_allows test 1 crates/adtb-sim/tests/storage/pager.rs
+crash_allows prod 2 crates/adtb-simkit/src/crash.rs
+crash_loops prod 1 crates/adtb-simkit/src/crash.rs
+sim_test_offsets test 1 crates/adtb-sim/tests/execution/exec.rs
+sim_test_offsets test 1 crates/adtb-sim/tests/export/quarantine.rs
+sim_test_offsets test 1 crates/adtb-sim/tests/maintenance/scrub.rs
+sim_test_offsets test 2 crates/adtb-sim/tests/maintenance/vacuum.rs
+sim_test_offsets test 2 crates/adtb-sim/tests/maintenance/verify.rs
+sim_test_offsets test 2 crates/adtb-sim/tests/storage/damage_search/world.rs
+sim_test_offsets test 1 crates/adtb-sim/tests/storage/directory_damage.rs
+sim_test_offsets test 1 crates/adtb-sim/tests/storage/heap_kind.rs
+sim_test_offsets test 3 crates/adtb-sim/tests/storage/lost_bitmap.rs
+sim_test_offsets test 1 crates/adtb-sim/tests/storage/open_damage.rs
+sim_test_offsets test 1 crates/adtb-sim/tests/storage/pager.rs
+sim_test_offsets test 4 crates/adtb-sim/tests/storage/truncated_open.rs
+sim_test_opens test 5 crates/adtb-sim/tests/execution/catalog.rs
+sim_test_opens test 2 crates/adtb-sim/tests/execution/checked_registration.rs
+sim_test_opens test 2 crates/adtb-sim/tests/execution/create.rs
+sim_test_opens test 1 crates/adtb-sim/tests/execution/history.rs
+sim_test_opens test 1 crates/adtb-sim/tests/execution/isolation.rs
+sim_test_opens test 1 crates/adtb-sim/tests/execution/loads.rs
+sim_test_opens test 2 crates/adtb-sim/tests/execution/oplog.rs
+sim_test_opens test 2 crates/adtb-sim/tests/execution/tasks.rs
+sim_test_opens test 5 crates/adtb-sim/tests/execution/write_states.rs
+sim_test_opens test 2 crates/adtb-sim/tests/export/backup.rs
+sim_test_opens test 1 crates/adtb-sim/tests/export/dump_server.rs
+sim_test_opens test 1 crates/adtb-sim/tests/export/dump_validate.rs
+sim_test_opens test 1 crates/adtb-sim/tests/export/quarantine.rs
+sim_test_opens test 2 crates/adtb-sim/tests/maintenance/maintenance_faults.rs
+sim_test_opens test 1 crates/adtb-sim/tests/maintenance/reindex.rs
+sim_test_opens test 1 crates/adtb-sim/tests/maintenance/reindex_review.rs
+sim_test_opens test 4 crates/adtb-sim/tests/maintenance/verify.rs
+sim_test_opens test 1 crates/adtb-sim/tests/scripted/scripts/session.rs
+sim_test_opens test 1 crates/adtb-sim/tests/server/api.rs
+sim_test_opens test 1 crates/adtb-sim/tests/server/api_real_file.rs
+sim_test_opens test 3 crates/adtb-sim/tests/server/bundles.rs
+sim_test_opens test 2 crates/adtb-sim/tests/server/grant_rows.rs
+sim_test_opens test 1 crates/adtb-sim/tests/server/host_fns.rs
+sim_test_opens test 1 crates/adtb-sim/tests/server/principal.rs
+sim_test_opens test 2 crates/adtb-sim/tests/server/server_adhoc.rs
+sim_test_opens test 2 crates/adtb-sim/tests/server/server_authority.rs
+sim_test_opens test 1 crates/adtb-sim/tests/server/server_binding.rs
+sim_test_opens test 2 crates/adtb-sim/tests/server/server_commands.rs
+sim_test_opens test 1 crates/adtb-sim/tests/server/server_files.rs
+sim_test_opens test 1 crates/adtb-sim/tests/storage/btree.rs
+sim_test_opens test 1 crates/adtb-sim/tests/storage/btree_threads.rs
+sim_test_opens test 2 crates/adtb-sim/tests/storage/checkpointer.rs
+sim_test_opens test 1 crates/adtb-sim/tests/storage/clog.rs
+sim_test_opens test 3 crates/adtb-sim/tests/storage/clog_lost.rs
+sim_test_opens test 1 crates/adtb-sim/tests/storage/commit.rs
+sim_test_opens test 1 crates/adtb-sim/tests/storage/damage_log.rs
+sim_test_opens test 1 crates/adtb-sim/tests/storage/damage_race.rs
+sim_test_opens test 2 crates/adtb-sim/tests/storage/damage_search/consumers.rs
+sim_test_opens test 1 crates/adtb-sim/tests/storage/damage_search/judge.rs
+sim_test_opens test 1 crates/adtb-sim/tests/storage/damage_search/mod.rs
+sim_test_opens test 1 crates/adtb-sim/tests/storage/damage_search/world.rs
+sim_test_opens test 1 crates/adtb-sim/tests/storage/heap.rs
+sim_test_opens test 4 crates/adtb-sim/tests/storage/io_contract.rs
+sim_test_opens test 2 crates/adtb-sim/tests/storage/open_damage.rs
+sim_test_opens test 1 crates/adtb-sim/tests/storage/pager.rs
+sim_test_opens test 2 crates/adtb-sim/tests/storage/real_file.rs
+sim_test_opens test 4 crates/adtb-sim/tests/storage/truncated_open.rs

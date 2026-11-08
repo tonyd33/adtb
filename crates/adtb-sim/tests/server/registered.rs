@@ -2,14 +2,15 @@
 //! principal a call runs for, and the recheck of a registration when the schema changes.
 
 use adtb_simkit::api;
+use adtb_simkit::open;
 
 use adtb::{
     CallOptions, Called, Database, Error, InTxn, Log, OpenOptions, Registration, RejectReason,
     TxnCallOptions, TxnOptions, Value,
 };
-use adtb_sim::SimRuntime;
 
-use api::{once, options, printed, result};
+use adtb_simkit::open::options;
+use api::{once, printed, result};
 
 const SHOP: &str = r#"module shop
 add module shop
@@ -73,11 +74,6 @@ fn with(regs: Vec<Registration>) -> OpenOptions {
     }
 }
 
-fn open(rt: &SimRuntime) -> Database<SimRuntime> {
-    Database::open_in(rt.clone(), "app.adt", &log(), &with(vec![app()]))
-        .expect("the database opens with its registration")
-}
-
 fn text(t: &str) -> Value {
     Value::text(t)
 }
@@ -99,7 +95,7 @@ fn reason(e: &Error) -> &RejectReason {
 #[test]
 fn a_registered_transaction_commits_and_returns_its_result_and_position() {
     once(1, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with(vec![app()]));
         let app = db.registered("app").expect("app is registered");
         let commit =
             |n: &str| match app.call(SIGN_UP, &[text(n), text("1111")], &CallOptions::default()) {
@@ -136,7 +132,7 @@ fn a_registered_transaction_commits_and_returns_its_result_and_position() {
 #[test]
 fn ordinals_follow_declaration_order() {
     once(2, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with(vec![app()]));
         let app = db.registered("app").expect("app is registered");
         let order = [
             "method", "whose", "names", "methods", "sign_up", "me", "mine",
@@ -155,7 +151,7 @@ fn ordinals_follow_declaration_order() {
 #[test]
 fn an_assertion_that_is_no_principal_is_invalid() {
     once(15, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with(vec![app()]));
         let app = db.registered("app").expect("app is registered");
         let got = app.call(ME, &[], &asserting(text("ann")));
         assert!(
@@ -171,7 +167,7 @@ fn an_assertion_that_is_no_principal_is_invalid() {
 #[test]
 fn a_registration_calls_only_in_a_transaction_of_its_own_database() {
     once(27, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with(vec![app()]));
         let other = Database::open_in(rt, "other.adt", &log(), &with(vec![app()]))
             .expect("a second database opens");
         let app = other.registered("app").expect("app is registered");

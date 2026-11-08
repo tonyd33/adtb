@@ -13,7 +13,7 @@ use adtb::key::{
 use adtb::runtime::{Entropy, OpKind, Runtime, Threads};
 use adtb::storage::{Options, Pager, Pid};
 use adtb::verify::Inventory;
-use adtb_sim::{Config, Match, Outcome, Recording, Sim, SimRuntime};
+use adtb_sim::{Config, Match, Recording, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 
 use adtb_simkit::crash;
@@ -22,7 +22,7 @@ use adtb_simkit::harness;
 use adtb_simkit::recovery;
 use adtb_simkit::seeds;
 
-use crash::crash_after;
+use crash::{Reopen, Rounds, crash_loop};
 use draw::below;
 use harness::{PAGE, finished, options};
 use recovery::verify_after_crash;
@@ -726,12 +726,72 @@ fn crash_at_a_flush(sim: &mut Sim, world: &Arc<Mutex<World>>, seed: u64, prefixe
     w.durable = durable;
 }
 
-/// What the runs of `crash_loop` reached.
+/// What the runs of `crash_rounds` reached.
 #[derive(Default)]
 struct Reached {
     crashes: usize,
     repaired: usize,
     height: u16,
+}
+
+/// Returns what checking the tree `world` holds in a reopened file finds wrong, adding what it
+/// reached to `reached`. The tree must verify, repair once and then not again, pass the
+/// whole-file `verify`, and hold the entries of a prefix of its operations at least as long as
+/// the durable one, to which the world's operations are then cut.
+fn reopen(rt: SimRuntime, world: &Mutex<World>, reached: &mut Reached) -> Reopen {
+    let root = world.lock().unwrap().root.unwrap();
+    let (pager, _) = Pager::open(rt, &crash_options()).expect("reopen");
+    let tree = BTree::open(root, OWNER);
+    let entries = match tree.verify(&pager) {
+        Ok(entries) => entries,
+        Err(e) => {
+            return Reopen::found(vec![format!("the tree fails its check: {e:?}")]);
+        }
+    };
+    let mut problems = Vec::new();
+    reached.repaired += tree.repair(&pager).expect("repair");
+    reached.height = reached.height.max(tree.height(&pager).expect("height"));
+    let again = tree.repair(&pager);
+    if again != Ok(0) {
+        problems.push(format!("a second repair answers {again:?}"));
+    }
+    if tree.verify(&pager).as_ref() != Ok(&entries) {
+        problems.push("the repaired tree holds other entries".into());
+    }
+    let inventory = Inventory {
+        trees: vec![tree],
+        ..Inventory::default()
+    };
+    problems.extend(verify_after_crash(&pager, &inventory));
+    pager.flush_log();
+    let mut w = world.lock().unwrap();
+    let mut model = BTreeSet::new();
+    for op in &w.ops[..w.durable] {
+        apply(&mut model, op);
+    }
+    let mut kept = None;
+    for k in w.durable..=w.ops.len() {
+        if model.iter().eq(entries.iter()) {
+            kept = Some(k);
+            break;
+        }
+        if k < w.ops.len() {
+            apply(&mut model, &w.ops[k]);
+        }
+    }
+    match kept {
+        Some(k) => {
+            w.ops.truncate(k);
+            w.durable = k;
+        }
+        None => problems.push(format!(
+            "{} entries match no prefix of {} operations from {}",
+            entries.len(),
+            w.ops.len(),
+            w.durable
+        )),
+    }
+    Reopen::found(problems)
 }
 
 /// Returns what `rounds` runs crashed at a time reached, and as many runs cut at a
@@ -740,7 +800,7 @@ struct Reached {
 /// The first two runs insert entries sharing a long prefix, the shape that leaves splits
 /// incomplete, and the first cut seeks a force that leaves one.
 #[must_use]
-fn crash_loop(seed: u64, rounds: usize) -> Reached {
+fn crash_rounds(seed: u64, rounds: usize) -> Reached {
     let mut sim = Sim::new(seed, crash_config());
     let world = Arc::new(Mutex::new(World::default()));
     let w = world.clone();
@@ -750,80 +810,29 @@ fn crash_loop(seed: u64, rounds: usize) -> Reached {
         pager.flush_log();
         w.lock().unwrap().root = Some(tree.root());
     });
-    let reached = Arc::new(Mutex::new(Reached::default()));
-    for round in 0..2 * rounds {
-        let prefixed = round < 2;
-        let tally = reached.clone();
-        if round % 2 == 0 {
-            let at = sim.now() + crash_after(seed, round as u64, 2_000, 200_000);
-            sim.crash_at(at);
-            let w = world.clone();
-            if sim.run(move |rt| crash_workload(rt, &w, 600, prefixed)) == Outcome::Crashed {
-                reached.lock().unwrap().crashes += 1;
+    let mut reached = Reached::default();
+    let rounds = Rounds::new(2 * rounds, 2_000, 200_000);
+    let out = crash_loop(
+        &mut sim,
+        seed,
+        crash_config().faults,
+        rounds,
+        |r| {
+            let round = r.index();
+            let prefixed = round < 2;
+            if round % 2 == 0 {
+                let w = world.clone();
+                r.crash(move |rt| crash_workload(rt, &w, 600, prefixed));
+            } else {
+                let sim = r.sim();
+                sim.set_faults(crash_config().faults);
+                crash_at_a_flush(sim, &world, seed * 1000 + round as u64, round == 1);
             }
-        } else {
-            crash_at_a_flush(&mut sim, &world, seed * 1000 + round as u64, round == 1);
-        }
-        let root = world.lock().unwrap().root.unwrap();
-        let found = Arc::new(Mutex::new(None));
-        let f = found.clone();
-        finished(&mut sim, move |rt| {
-            let (pager, _) = Pager::open(rt, &crash_options()).expect("reopen");
-            let tree = BTree::open(root, OWNER);
-            let recovered = tree.verify(&pager);
-            if recovered.is_ok() {
-                let mut tally = tally.lock().unwrap();
-                tally.repaired += tree.repair(&pager).expect("repair");
-                tally.height = tally.height.max(tree.height(&pager).expect("height"));
-                drop(tally);
-                assert_eq!(tree.repair(&pager), Ok(0), "seed {seed} round {round}");
-                assert_eq!(tree.verify(&pager), recovered);
-                let inventory = Inventory {
-                    trees: vec![tree],
-                    ..Inventory::default()
-                };
-                let problems = verify_after_crash(&pager, &inventory);
-                assert!(
-                    problems.is_empty(),
-                    "seed {seed} round {round}: {problems:#?}"
-                );
-                pager.flush_log();
-            }
-            *f.lock().unwrap() = Some(recovered);
-        });
-        let entries = found
-            .lock()
-            .unwrap()
-            .take()
-            .unwrap()
-            .unwrap_or_else(|e| panic!("seed {seed} round {round}: {e:?}"));
-        let mut w = world.lock().unwrap();
-        let mut model = BTreeSet::new();
-        for op in &w.ops[..w.durable] {
-            apply(&mut model, op);
-        }
-        let mut kept = None;
-        for k in w.durable..=w.ops.len() {
-            if model.iter().eq(entries.iter()) {
-                kept = Some(k);
-                break;
-            }
-            if k < w.ops.len() {
-                apply(&mut model, &w.ops[k]);
-            }
-        }
-        let kept = kept.unwrap_or_else(|| {
-            panic!(
-                "seed {seed} round {round}: {} entries match no prefix of {} operations from {}",
-                entries.len(),
-                w.ops.len(),
-                w.durable
-            )
-        });
-        w.ops.truncate(kept);
-        w.durable = kept;
-    }
-    std::mem::take(&mut *reached.lock().unwrap())
+        },
+        |rt, _| reopen(rt, &world, &mut reached),
+    );
+    reached.crashes = out.crashed();
+    reached
 }
 
 #[test]
@@ -833,7 +842,7 @@ fn a_crashed_tree_recovers_a_prefix_of_its_operations() {
     let mut repaired = 0;
     let mut height = 0;
     for seed in sweep(SEEDS) {
-        let reached = crash_loop(seed, 6);
+        let reached = crash_rounds(seed, 6);
         crashes += reached.crashes;
         repaired += reached.repaired;
         height = height.max(reached.height);

@@ -8,7 +8,8 @@ use adtb::{Capability, Database, Error, Log, OpenOptions, Registration, RejectRe
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_testkit::profile::{count, sweep};
 
-use api::{once, options, result, run, sorted};
+use adtb_simkit::open::options;
+use api::{once, result, run, sorted};
 
 fn opened(rt: &SimRuntime) -> Database<SimRuntime> {
     Database::open_in(rt.clone(), "roles.adt", &Log::default(), &options(2))

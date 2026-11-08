@@ -17,6 +17,7 @@ use adtb::{
 use adtb_lang::evolve::Source;
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
+use adtb_simkit::open;
 use adtb_simkit::search::{self, Files};
 use adtb_simkit::{api, grants};
 use adtb_testkit::corpus;
@@ -43,13 +44,8 @@ const LATER: &str = "module app\nadd constructor Shape.Dot { at: I64 }\ndeprecat
 fn no_create() -> OpenOptions {
     OpenOptions {
         create: None,
-        ..api::options(2)
+        ..open::options(2)
     }
-}
-
-fn open(rt: &SimRuntime, name: &str, log: &[String]) -> Database<SimRuntime> {
-    Database::open_in(rt.clone(), name, &Log::new(log), &api::options(2))
-        .unwrap_or_else(|e| panic!("{name} opens: {e:?}"))
 }
 
 fn app_log() -> Vec<String> {
@@ -137,7 +133,7 @@ fn restore(rt: &SimRuntime, to: RestorePoint, options: &OpenOptions) -> Result<(
 /// Give `FILE` roles `web` and `gone`, a credential and a peer mapping of `web`, a capability
 /// granted to it, a setting and their audit rows, then drop `gone`.
 fn deploy(rt: &SimRuntime) {
-    let db = open(rt, FILE, &[APP.to_owned()]);
+    let db = open::opened(rt, FILE, &Log::new(&[APP.to_owned()]), &open::options(2));
     let authority = db.role_authority();
     for role in ["web", "gone"] {
         authority.create_role(role).unwrap();
@@ -293,21 +289,21 @@ fn register_bundles(rt: &SimRuntime, db: &Database<SimRuntime>) -> Vec<CatalogRo
 fn dumped() -> (Files, Position) {
     let mut sim = Sim::new(1, Config::default());
     let at = api::run(&mut sim, |rt| {
-        let db = open(&rt, FILE, &[APP.to_owned()]);
+        let db = open::opened(&rt, FILE, &Log::new(&[APP.to_owned()]), &open::options(2));
         run(&db, ROWS).unwrap();
         db.close().unwrap();
         deploy(&rt);
-        let db = open(&rt, FILE, &app_log());
+        let db = open::opened(&rt, FILE, &Log::new(app_log()), &open::options(2));
         let feed = register_bundles(&rt, &db);
         db.close().unwrap();
         write_rows(&rt, feed);
         let gui = OpenOptions {
             registrations: vec![bundle("gui-1.0", "", HELLO)],
-            ..api::options(2)
+            ..open::options(2)
         };
         let db = Database::open_in(rt.clone(), FILE, &Log::new(app_log()), &gui).unwrap();
         db.close().unwrap();
-        let db = open(&rt, FILE, &app_log());
+        let db = open::opened(&rt, FILE, &Log::new(app_log()), &open::options(2));
         run(&db, "delete u in users where u.name == \"cy\"").unwrap();
         let t = db.begin(&TxnOptions::default()).unwrap();
         let at = t.commit(None).unwrap();
@@ -320,7 +316,10 @@ fn dumped() -> (Files, Position) {
 
 /// Assert the restored `COPY` answers every relation and `queries` as `FILE` does.
 fn assert_same(rt: &SimRuntime, log: &[String], queries: &[String], label: &str) {
-    let (src, copy) = (open(rt, FILE, log), open(rt, COPY, log));
+    let (src, copy) = (
+        open::opened(rt, FILE, &Log::new(log), &open::options(2)),
+        open::opened(rt, COPY, &Log::new(log), &open::options(2)),
+    );
     for text in every_relation(&src).iter().chain(queries) {
         assert_eq!(answer(&src, text), answer(&copy, text), "{label}: `{text}`");
     }
@@ -351,7 +350,7 @@ fn a_restored_dump_answers_every_relation_and_query_as_its_source() {
             .collect();
         let mut sim = Sim::new(seed, Config::default());
         api::run(&mut sim, |rt| {
-            let db = open(&rt, FILE, &log);
+            let db = open::opened(&rt, FILE, &Log::new(&log), &open::options(2));
             for w in &case.load {
                 run(&db, w).unwrap_or_else(|e| panic!("{}: `{w}`: {e:?}", script.name));
             }
@@ -373,9 +372,9 @@ fn a_restore_keeps_deprecated_rows_ids_and_the_next_generated_key() {
     api::run(&mut sim, |rt| {
         restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
         assert_same(&rt, &app_log(), &[], "app");
-        let copy = open(&rt, COPY, &app_log());
+        let copy = open::opened(&rt, COPY, &Log::new(app_log()), &open::options(2));
         assert_eq!("3", answer(&copy, "from s in shapes.Square select s.side"));
-        let src = open(&rt, FILE, &app_log());
+        let src = open::opened(&rt, FILE, &Log::new(app_log()), &open::options(2));
         let drawn = "from u in users where u.name == \"dee\" select u.id";
         for db in [&src, &copy] {
             run(db, "insert users { name: \"dee\" }").unwrap();
@@ -394,7 +393,10 @@ fn a_restore_keeps_roles_capabilities_and_the_next_role_id() {
     api::run(&mut sim, |rt| {
         restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
         assert_same(&rt, &app_log(), &[], "deployed");
-        let (src, copy) = (open(&rt, FILE, &app_log()), open(&rt, COPY, &app_log()));
+        let (src, copy) = (
+            open::opened(&rt, FILE, &Log::new(app_log()), &open::options(2)),
+            open::opened(&rt, COPY, &Log::new(app_log()), &open::options(2)),
+        );
         let authority = copy.role_authority();
         let web = authority.session("web").unwrap();
         authority.require(&web, Capability::Assert, false).unwrap();
@@ -440,7 +442,10 @@ fn each_restored_bundle_answers_or_refuses_its_calls_as_its_source() {
             ..no_create()
         };
         restore(&rt, RestorePoint::Latest, &given).unwrap();
-        let (src, copy) = (open(&rt, FILE, &app_log()), open(&rt, COPY, &app_log()));
+        let (src, copy) = (
+            open::opened(&rt, FILE, &Log::new(app_log()), &open::options(2)),
+            open::opened(&rt, COPY, &Log::new(app_log()), &open::options(2)),
+        );
         for (name, expected) in bundle_outcomes() {
             assert_eq!(expected, outcome(&src, name), "source {name}");
             assert_eq!(expected, outcome(&copy, name), "restored {name}");
@@ -497,9 +502,11 @@ fn granted_log() -> [String; 2] {
 fn granted() -> Files {
     let mut sim = Sim::new(4, Config::default());
     api::run(&mut sim, |rt| {
-        open(&rt, FILE, &[APP.to_owned()]).close().unwrap();
+        open::opened(&rt, FILE, &Log::new(&[APP.to_owned()]), &open::options(2))
+            .close()
+            .unwrap();
         deploy(&rt);
-        let db = open(&rt, FILE, &granted_log());
+        let db = open::opened(&rt, FILE, &Log::new(granted_log()), &open::options(2));
         dump(&db).unwrap();
         db.close().unwrap();
     });
@@ -525,7 +532,7 @@ fn restored_grants() -> ([[String; 2]; 2], Vec<Dormant>) {
         let log = granted_log();
         let dormant = report(&rt).unwrap().dormant;
         let rows = [FILE, COPY].map(|name| {
-            let db = open(&rt, name, &log);
+            let db = open::opened(&rt, name, &Log::new(&log), &open::options(2));
             let rows = grant_rows(&db);
             db.close().unwrap();
             rows
@@ -575,7 +582,7 @@ fn log_grant_ids_that_do_not_pair_with_the_replayed_grants_are_refused_naming_id
         ("twice", grants(twice)),
         ("none", grants(|_| String::new())),
     ] {
-        assert_eq!("ids", damaged_part(refused_with(bad)), "{label}");
+        assert_eq!("ids", api::damaged_dump_part(refused_with(bad)), "{label}");
     }
 }
 
@@ -632,7 +639,7 @@ fn without(files: &Files, name: &str) -> Files {
 /// Restore the dump at `from` to `to` on `rt`, asserting its report and `to` hold the log grant
 /// of `FILE` dormant, and `to` no role but the schema owner when `owner` holds.
 fn assert_dormant(rt: &SimRuntime, (from, to): (&str, &str), owner: bool) {
-    let src = open(rt, FILE, &granted_log());
+    let src = open::opened(rt, FILE, &Log::new(granted_log()), &open::options(2));
     let read = "from g in catalog::grants where g.privilege == \"read\" select g.id";
     let id = answer(&src, read);
     src.close().unwrap();
@@ -651,7 +658,7 @@ fn assert_dormant(rt: &SimRuntime, (from, to): (&str, &str), owner: bool) {
         target: "app::users frozen (id, name)".to_owned(),
     };
     assert_eq!(vec![dormant], got.unwrap().dormant, "{from}");
-    let copy = open(rt, to, &granted_log());
+    let copy = open::opened(rt, to, &Log::new(granted_log()), &open::options(2));
     assert_eq!(id, answer(&copy, read), "{from}");
     let rows = answer(&copy, "from g in catalog::grants select g.dormant");
     assert_eq!("True", rows, "{from}");
@@ -679,7 +686,7 @@ fn a_dormant_grant_stays_dormant_through_a_dump_and_restore_once_its_role_exists
     let mut sim = Sim::with_files(7, Config::default(), owner_only(&granted()));
     api::run(&mut sim, |rt| {
         assert_dormant(&rt, (DUMP, COPY), true);
-        let copy = open(&rt, COPY, &granted_log());
+        let copy = open::opened(&rt, COPY, &Log::new(granted_log()), &open::options(2));
         copy.role_authority().create_role("web").unwrap();
         run(&copy, "dump to \"again\"").unwrap();
         copy.close().unwrap();
@@ -693,7 +700,7 @@ fn a_restored_file_begins_an_epoch_past_the_dump_and_keeps_no_past() {
     let mut sim = Sim::with_files(3, Config::default(), files);
     api::run(&mut sim, |rt| {
         restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
-        let copy = open(&rt, COPY, &app_log());
+        let copy = open::opened(&rt, COPY, &Log::new(app_log()), &open::options(2));
         let past = format!(
             "at commit Position {{ epoch: {}, lsn: {} }} {{ from u in users select u.name }}",
             at.epoch, at.lsn
@@ -737,7 +744,7 @@ fn expired(bundle: &str) -> Result<Vec<String>, RejectReason> {
 fn a_lease_latched_in_the_dumping_session_stays_expired_after_restore() {
     let mut sim = Sim::new(17, Config::default());
     api::run(&mut sim, |rt| {
-        let db = open(&rt, FILE, &app_log());
+        let db = open::opened(&rt, FILE, &Log::new(app_log()), &open::options(2));
         run(&db, "set setting LeaseGrace = { grace: 60s }").unwrap();
         let owner = db.role_authority().session("owner").unwrap();
         let short = bundle("s-1.0", " lease 1h", HELLO);
@@ -747,7 +754,7 @@ fn a_lease_latched_in_the_dumping_session_stays_expired_after_restore() {
         dump(&db).unwrap();
         assert_eq!(expired("s-1.0"), outcome(&db, "s-1.0"), "source");
         restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
-        let copy = open(&rt, COPY, &app_log());
+        let copy = open::opened(&rt, COPY, &Log::new(app_log()), &open::options(2));
         assert_eq!(expired("s-1.0"), outcome(&copy, "s-1.0"), "restored");
         copy.close().unwrap();
         db.close().unwrap();
@@ -758,7 +765,7 @@ fn a_lease_latched_in_the_dumping_session_stays_expired_after_restore() {
 fn a_registration_after_the_dump_snapshot_leaves_its_family_unowned_in_the_restore() {
     let mut sim = Sim::new(18, Config::default());
     api::run(&mut sim, |rt| {
-        let db = open(&rt, FILE, &app_log());
+        let db = open::opened(&rt, FILE, &Log::new(app_log()), &open::options(2));
         let read_only = TxnOptions {
             read_only: true,
             ..TxnOptions::default()
@@ -779,7 +786,7 @@ fn a_registration_after_the_dump_snapshot_leaves_its_family_unowned_in_the_resto
             .unwrap();
         reader.commit(None).unwrap();
         restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
-        let copy = open(&rt, COPY, &app_log());
+        let copy = open::opened(&rt, COPY, &Log::new(app_log()), &open::options(2));
         let authority = copy.role_authority();
         authority.create_role("ops").unwrap();
         let ops = authority.session("ops").unwrap();
@@ -795,7 +802,7 @@ fn a_registration_after_the_dump_snapshot_leaves_its_family_unowned_in_the_resto
 fn a_dump_in_a_transaction_that_wrote_is_refused_and_a_read_only_one_dumps_its_snapshot() {
     let mut sim = Sim::new(16, Config::default());
     api::run(&mut sim, |rt| {
-        let db = open(&rt, FILE, &[APP.to_owned()]);
+        let db = open::opened(&rt, FILE, &Log::new(&[APP.to_owned()]), &open::options(2));
         run(&db, ROWS).unwrap();
         let mut wrote = db.begin(&TxnOptions::default()).unwrap();
         let call = TxnCallOptions::default();
@@ -821,7 +828,7 @@ fn a_dump_in_a_transaction_that_wrote_is_refused_and_a_read_only_one_dumps_its_s
             .unwrap();
         reader.commit(None).unwrap();
         restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
-        let copy = open(&rt, COPY, &[APP.to_owned()]);
+        let copy = open::opened(&rt, COPY, &Log::new(&[APP.to_owned()]), &open::options(2));
         let names = "from u in users select u.name";
         assert_eq!("\"ann\"\n\"bo\"\n\"cy\"", answer(&copy, names));
         copy.close().unwrap();
@@ -888,7 +895,7 @@ fn a_restore_to_an_existing_path_and_a_dump_to_a_full_directory_are_refused() {
             "the refused restore changed a path at the target"
         );
         let db =
-            Database::open_in(rt.clone(), FILE, &Log::new(app_log()), &api::options(2)).unwrap();
+            Database::open_in(rt.clone(), FILE, &Log::new(app_log()), &open::options(2)).unwrap();
         rt.arm(changes().prefixed(DUMP));
         is_invalid_naming(&dump(&db), "holds files");
         assert_eq!(
@@ -923,7 +930,7 @@ fn a_restore_lacking_a_host_function_refuses_naming_it_and_one_given_it_restores
         });
         let options = OpenOptions {
             host_fns,
-            ..api::options(2)
+            ..open::options(2)
         };
         let db = Database::open_in(rt.clone(), FILE, &Log::new([HOSTED]), &options).unwrap();
         run(&db, "insert notes { body: \"a\" }").unwrap();
@@ -968,15 +975,6 @@ fn parts(files: &Files) -> Vec<(String, u64)> {
         .collect()
 }
 
-fn damaged_part(got: Result<(), Error>) -> String {
-    match got {
-        Err(Error::Rejected {
-            reason: RejectReason::DumpDamaged { part },
-        }) => part,
-        other => panic!("not DumpDamaged: {other:?}"),
-    }
-}
-
 #[test]
 fn a_flipped_byte_in_any_part_or_its_padding_is_named_and_nothing_is_written() {
     let (mut files, _) = dumped();
@@ -1007,7 +1005,7 @@ fn a_flipped_byte_in_any_part_or_its_padding_is_named_and_nothing_is_written() {
         let got = api::run(&mut sim, |rt| {
             restore(&rt, RestorePoint::Latest, &no_create())
         });
-        assert_eq!(*name, damaged_part(got), "{name} at {at}");
+        assert_eq!(*name, api::damaged_dump_part(got), "{name} at {at}");
         assert_eq!(bad, sim.files(), "{name}: the restore wrote");
         checked += 1;
     }
@@ -1234,7 +1232,7 @@ fn a_dump_that_decodes_wrong_is_refused_naming_its_part_and_writes_nothing() {
         ),
     ];
     for (part, bad) in cases.into_iter().chain(more) {
-        assert_eq!(part, damaged_part(refused_with(bad)), "{part}");
+        assert_eq!(part, api::damaged_dump_part(refused_with(bad)), "{part}");
     }
     let newer = reissued(&files, |e| e.catalog_version += 1, |_, t| t.to_owned());
     let version = format!("catalog version {}", e.catalog_version + 1);
@@ -1280,7 +1278,7 @@ fn deployment_state_that_decodes_wrong_is_refused_naming_its_part_and_writes_not
     ];
     let named = ["security", "security", "security", "settings", "audit"];
     for (part, bad) in named.into_iter().zip(cases) {
-        assert_eq!(part, damaged_part(refused_with(bad)), "{part}");
+        assert_eq!(part, api::damaged_dump_part(refused_with(bad)), "{part}");
     }
     let (index, app, tool) = ("bundles/index", "bundles/app-1.0", "bundles/tool-1.0");
     assert!(text(index).contains("family 2 tool\n"), "{}", text(index));
@@ -1370,7 +1368,7 @@ fn deployment_state_that_decodes_wrong_is_refused_naming_its_part_and_writes_not
         (tool, without(&files, "security")),
     ];
     for (part, bad) in bundles {
-        assert_eq!(part, damaged_part(refused_with(bad)), "{part}");
+        assert_eq!(part, api::damaged_dump_part(refused_with(bad)), "{part}");
     }
 }
 
@@ -1667,7 +1665,7 @@ fn a_refused_restore_to_a_nested_path_removes_the_directories_it_made_and_no_oth
         )
         .map(drop)
     });
-    assert_eq!("ids", damaged_part(got));
+    assert_eq!("ids", api::damaged_dump_part(got));
     let mut io_sim = sim;
     let dirs = api::run(&mut io_sim, |rt| {
         let mut io = rt.io();
@@ -1753,7 +1751,7 @@ fn ids_are_compared_as_rows_not_as_text() {
     api::run(&mut sim, |rt| {
         restore(&rt, RestorePoint::Latest, &no_create()).unwrap();
     });
-    assert_eq!("ids", damaged_part(refused_with(one_off)));
+    assert_eq!("ids", api::damaged_dump_part(refused_with(one_off)));
 }
 
 const FAILURES: u64 = 4;
@@ -1881,7 +1879,7 @@ fn undumped() -> Files {
 }
 
 fn armed_dump(rt: &SimRuntime) -> Result<(), Error> {
-    let db = Database::open_in(rt.clone(), FILE, &Log::new(app_log()), &api::options(2)).unwrap();
+    let db = Database::open_in(rt.clone(), FILE, &Log::new(app_log()), &open::options(2)).unwrap();
     rt.arm(searched().prefixed(DUMP));
     let got = dump(&db);
     rt.disarm();

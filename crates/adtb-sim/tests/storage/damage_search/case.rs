@@ -10,7 +10,7 @@ use adtb_sys::runtime::Faults;
 
 use super::consumers;
 use super::judge::{self, Hit, Verdicts};
-use super::world::{self, CREATING, Kind, Op, PAGE, Ran, Rel, Rows, WriteOut};
+use super::world::{self, CREATING, Kind, Op, Ran, Rel, Rows, WriteOut};
 
 /// How a case damages its page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -181,7 +181,8 @@ fn injected(rt: &SimRuntime, injection: Injection, pid: Pid) -> Action {
             rt.extend(SimPlan::new().rule(forces, failed).lasting());
         })),
         Injection::Unreadable { lasting } => Action::Run(Box::new(move || {
-            let reads = world::on_data(Match::kind(OpKind::Read)).covers(pid.0 * PAGE as u64);
+            let reads = world::on_data(Match::kind(OpKind::Read))
+                .covers(world::DATA.range(pid).start as u64);
             let failed = Action::Fail(IoError::Failed);
             let then = if lasting {
                 SimPlan::new().rule(reads, failed)

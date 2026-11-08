@@ -2,10 +2,12 @@
 
 use std::path::{Path, PathBuf};
 
+use adtb::storage::HEADER_LEN;
 use adtb::{
     CallOptions, CreateOptions, Database, Log, OpenError, OpenOptions, TxnCallOptions, TxnOptions,
 };
 use adtb_lang::textual::print;
+use adtb_simkit::damage::{DataFile, Files};
 use adtb_sys::os::{Backend, OsRuntime};
 
 const SHOP: &str = r"module shop
@@ -574,9 +576,9 @@ fn damaged(name: &str, pick: impl FnOnce(&Database) -> adtb::storage::Pid) -> Pa
     );
     let page = pick(&db);
     db.close().unwrap();
-    let mut bytes = std::fs::read(&path).unwrap();
-    bytes[page.0 as usize * 8192 + 300] ^= 0x10;
-    std::fs::write(&path, bytes).unwrap();
+    let mut files = Files::from([("file".to_owned(), std::fs::read(&path).unwrap())]);
+    DataFile::new("file", 8192).flip(&mut files, page, 300 - HEADER_LEN);
+    std::fs::write(&path, &files["file"]).unwrap();
     path
 }
 

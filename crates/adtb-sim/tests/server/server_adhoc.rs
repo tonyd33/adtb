@@ -14,7 +14,8 @@ use adtb::{
 use adtb_lang::schema::ValueDef;
 use adtb_lang::types::{Base, RelId, Ty, TypeId};
 use adtb_sim::{Config, Sim, SimRuntime};
-use adtb_simkit::api::{options, query, run};
+use adtb_simkit::api::{query, run};
+use adtb_simkit::open::options;
 
 const SCHEMA: &str = r#"module shop
 add module shop

@@ -12,7 +12,9 @@ use adtb::storage::{
 use adtb::{CallOptions, Database, Error, FatalReason, Log, OpenOptions};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
+use adtb_simkit::damage::{DataFile, Files};
 use adtb_simkit::harness::finished;
+use adtb_simkit::open;
 use adtb_testkit::profile::sweep;
 
 const FILE: &str = "lost_bitmap.adt";
@@ -32,19 +34,15 @@ const SELECT: &str = "from u in users select u.id";
 const INSERT_OTHER: &str = r#"insert others { id: others.key(1), name: "o" }"#;
 const INSERT_USER: &str = r#"insert users { id: users.key(90), name: "u", tag: 1 }"#;
 const HEADER_REGION: usize = 4096;
+const DATA: DataFile = DataFile::new(FILE, PAGE);
+const SMALL: DataFile = DataFile::new(FILE, SMALL_PAGE);
 const ROOTS_HEAP: u32 = 2;
-
-type Files = BTreeMap<String, Vec<u8>>;
 
 fn options(frames: u64) -> OpenOptions {
     OpenOptions {
         pool_bytes: Some(frames * PAGE as u64),
-        ..api::options(2)
+        ..open::options(2)
     }
-}
-
-fn open(rt: SimRuntime) -> Database<SimRuntime> {
-    Database::open_in(rt, FILE, &Log::new([APP]), &options(256)).unwrap()
 }
 
 fn text(db: &Database<SimRuntime>, query: &str) -> Result<Vec<String>, Error> {
@@ -86,7 +84,7 @@ fn first_users_page(db: &Database<SimRuntime>) -> Pid {
 fn two_groups(row: &str) -> Files {
     let mut sim = Sim::new(1, Config::default());
     finished(&mut sim, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, FILE, &Log::new([APP]), &options(256));
         fill_first_group(&db);
         insert_users(&db, 0..3, row);
         assert!(first_users_page(&db).0 > SPAN as u64, "a page in group 1");
@@ -100,25 +98,12 @@ fn one_group<T>(row: &str, pick: impl FnOnce(&Database<SimRuntime>) -> T) -> (Fi
     let mut sim = Sim::new(1, Config::default());
     let mut picked = None;
     finished(&mut sim, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, FILE, &Log::new([APP]), &options(256));
         insert_users(&db, 0..4, row);
         picked = Some(pick(&db));
         db.close().unwrap();
     });
     (sim.files(), picked.unwrap())
-}
-
-fn cut(files: &Files, pages: usize) -> Files {
-    let mut files = files.clone();
-    files.get_mut(FILE).unwrap().truncate(pages * PAGE);
-    files
-}
-
-fn zeroed(files: &Files, page: Pid) -> Files {
-    let mut files = files.clone();
-    let at = page.0 as usize * PAGE;
-    files.get_mut(FILE).unwrap()[at..at + PAGE].fill(0);
-    files
 }
 
 fn assert_quarantined<T: std::fmt::Debug>(got: &Result<T, Error>, what: &str) {
@@ -239,7 +224,8 @@ fn assert_all_refused_as_database(db: &Database<SimRuntime>, what: &str) {
 fn a_cut_losing_a_group_with_large_values_refuses_marks_and_stays_marked() {
     adtb_heap_cap::raise_cap(3 << 30);
     let row = "l".repeat(3 * PAGE);
-    let files = cut(&two_groups(&row), SPAN - 100);
+    let mut files = two_groups(&row);
+    DATA.truncate(&mut files, SPAN - 100);
     let after = damaged_run(&files, "lost group", |db| {
         assert_quarantined(&text(db, INSERT_USER), "large insert");
         assert_quarantined(&text(db, INSERT_USER), "retry");
@@ -265,7 +251,7 @@ fn commits_on_a_status_page_in_group_one() -> (Files, Pid) {
     let mut sim = Sim::new(1, Config::default());
     let mut status = None;
     finished(&mut sim, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, FILE, &Log::new([APP]), &options(256));
         insert_users(&db, 0..1, "a");
         fill_first_group(&db);
         let t = db.testing();
@@ -295,14 +281,19 @@ fn assert_committed_rows_never_read_as_aborted(files: &Files, what: &str) {
 fn a_blank_status_page_refuses_and_never_aborts_committed_rows() {
     adtb_heap_cap::raise_cap(3 << 30);
     let (files, status) = commits_on_a_status_page_in_group_one();
-    assert_committed_rows_never_read_as_aborted(&zeroed(&files, status), "zeroed status");
-    assert_committed_rows_never_read_as_aborted(&cut(&files, SPAN), "cut at the group");
+    let mut zeroed = files.clone();
+    DATA.zero(&mut zeroed, status);
+    assert_committed_rows_never_read_as_aborted(&zeroed, "zeroed status");
+    let mut cut = files;
+    DATA.truncate(&mut cut, SPAN);
+    assert_committed_rows_never_read_as_aborted(&cut, "cut at the group");
 }
 
 #[test]
 fn a_bitmap_zeroed_in_place_refuses_and_overwrites_nothing() {
     let (files, ()) = one_group("a", |_| ());
-    let files = zeroed(&files, Pid::FIRST_DATA);
+    let mut files = files;
+    DATA.zero(&mut files, Pid::FIRST_DATA);
     let after = damaged_run(&files, "zeroed map", |db| {
         assert_all_refused_as_database(db, "zeroed map");
     });
@@ -315,12 +306,12 @@ fn a_bitmap_zeroed_in_place_refuses_and_overwrites_nothing() {
 #[test]
 fn every_allocator_path_refuses_a_zeroed_bitmap() {
     let (files, page) = one_group("a", first_users_page);
-    let at = Pid::FIRST_DATA.0 as usize * PAGE;
     let damage = Damage::Stale {
-        expected: storage::lsn(&files[FILE][at..at + PAGE]),
+        expected: storage::lsn(DATA.page(&files, Pid::FIRST_DATA)),
         found: Lsn(0),
     };
-    let files = zeroed(&files, Pid::FIRST_DATA);
+    let mut files = files;
+    DATA.zero(&mut files, Pid::FIRST_DATA);
     damaged_run(&files, "allocator paths", |db| {
         let t = db.testing();
         let lost = PageError {
@@ -357,7 +348,8 @@ fn a_zeroed_directory_root_refuses_a_first_insert_and_marks_the_heap() {
             t.mark_of(heap).unwrap(),
         )
     });
-    let files = zeroed(&files, root.0);
+    let mut files = files;
+    DATA.zero(&mut files, root.0);
     damaged_run(&files, "zero directory", |db| {
         assert_quarantined(&text(db, INSERT_USER), "insert");
         assert_eq!(BTreeSet::from([root.1]), db.testing().probe().marks());
@@ -371,7 +363,8 @@ fn a_zeroed_large_store_page_refuses_vacuum_and_marks() {
         let t = db.testing();
         t.pages(t.large("app::users", "User").unwrap()).unwrap()[0]
     });
-    let files = zeroed(&files, page);
+    let mut files = files;
+    DATA.zero(&mut files, page);
     damaged_writing(&files, Writes::Vacuum, "zero large page", |db| {
         assert_quarantined(&text(db, "vacuum users"), "vacuum");
         assert_eq!(
@@ -397,7 +390,8 @@ fn index_page(root: bool) -> (Files, (Pid, Quarantine)) {
 
 fn assert_index_page_refused(root: bool, query: &str) {
     let (files, (page, mark)) = index_page(root);
-    let files = zeroed(&files, page);
+    let mut files = files;
+    DATA.zero(&mut files, page);
     damaged_writing(&files, Writes::Row, query, |db| {
         assert_quarantined(&text(db, query), query);
         assert!(db.testing().probe().marks().contains(&mark), "{query}");
@@ -416,7 +410,7 @@ fn zeroed_index_leaves_refuse_an_insert_that_latches_one() {
     let mut leaves = Vec::new();
     let mut mark = None;
     finished(&mut sim, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, FILE, &Log::new([APP]), &options(256));
         let rows: String = (0..900)
             .map(|i| format!("insert users {{ id: users.key({i}), name: \"r\", tag: {i} }}\n"))
             .collect();
@@ -432,7 +426,10 @@ fn zeroed_index_leaves_refuse_an_insert_that_latches_one() {
         db.close().unwrap();
     });
     assert!(leaves.len() > 1, "the index has an inner page");
-    let files = leaves.iter().fold(sim.files(), |f, &p| zeroed(&f, p));
+    let mut files = sim.files();
+    for &p in &leaves {
+        DATA.zero(&mut files, p);
+    }
     damaged_writing(&files, Writes::Row, "zero leaves", |db| {
         assert_quarantined(&text(db, INSERT_USER), "insert");
         assert!(db.testing().probe().marks().contains(&mark.unwrap()));
@@ -443,7 +440,9 @@ fn zeroed_index_leaves_refuse_an_insert_that_latches_one() {
 fn a_migration_over_a_zeroed_bitmap_opens_for_verify_only() {
     const MORE: &str = "module more\nadd module more\nadd type T = { id: Key ts }\nadd relation ts : T key id generate sequence\n";
     let (files, ()) = one_group("a", |_| ());
-    let mut sim = Sim::with_files(1, Config::default(), zeroed(&files, Pid::FIRST_DATA));
+    let mut files = files;
+    DATA.zero(&mut files, Pid::FIRST_DATA);
+    let mut sim = Sim::with_files(1, Config::default(), files);
     finished(&mut sim, |rt| {
         let db = Database::open_in(rt, FILE, &Log::new([APP, MORE]), &options(256)).unwrap();
         assert!(db.testing().probe().marks().contains(&Quarantine::Database));
@@ -465,30 +464,30 @@ fn a_visibility_map_root_zeroed_refuses_vacuum_and_marks_the_heap() {
             .unwrap();
         (vm, t.mark_of(heap).unwrap())
     });
-    let files = zeroed(&files, page);
+    let mut files = files;
+    DATA.zero(&mut files, page);
     damaged_run(&files, "zero vm", |db| {
         assert_quarantined(&text(db, "vacuum users"), "vacuum");
         assert!(db.testing().probe().marks().contains(&mark));
     });
 }
 
-fn stored_groups(files: &Files, page: usize) -> [u64; 2] {
+fn stored_groups(files: &Files, data: DataFile) -> [u64; 2] {
     [0, 1].map(|copy| {
-        let at = copy * page + HEADER_REGION - 8;
-        u64::from_le_bytes(files[FILE][at..at + 8].try_into().unwrap())
+        let at = HEADER_REGION - 8;
+        u64::from_le_bytes(data.page(files, Pid(copy))[at..at + 8].try_into().unwrap())
     })
 }
 
 /// Returns `files` as an engine that never stored the group count would have left them.
-fn before_the_group_count(files: &Files, page: usize) -> Files {
+fn before_the_group_count(files: &Files, data: DataFile) -> Files {
     let mut files = files.clone();
-    let file = files.get_mut(FILE).unwrap();
     for copy in 0..2 {
-        let region = &mut file[copy * page..copy * page + HEADER_REGION];
+        let region = &mut data.page_mut(&mut files, Pid(copy))[..HEADER_REGION];
         region[HEADER_REGION - 8..].fill(0);
         region[8..12].fill(0);
         let sum = Crc32c::new()
-            .update(&(copy as u64).to_le_bytes())
+            .update(&copy.to_le_bytes())
             .update(region)
             .finish();
         region[8..12].copy_from_slice(&sum.to_le_bytes());
@@ -499,23 +498,25 @@ fn before_the_group_count(files: &Files, page: usize) -> Files {
 #[test]
 fn a_file_before_the_count_opens_healthy_and_gains_it() {
     let (files, ()) = one_group("a", |_| ());
-    let old = before_the_group_count(&files, PAGE);
-    assert_eq!([0, 0], stored_groups(&old, PAGE));
+    let old = before_the_group_count(&files, DATA);
+    assert_eq!([0, 0], stored_groups(&old, DATA));
     let mut sim = Sim::with_files(1, Config::default(), old);
     finished(&mut sim, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, FILE, &Log::new([APP]), &options(256));
         assert_eq!(BTreeSet::new(), db.testing().probe().marks());
         assert_eq!(4, text(&db, SELECT).unwrap().len());
         text(&db, INSERT_OTHER).unwrap();
         db.close().unwrap();
     });
-    assert!(stored_groups(&sim.files(), PAGE).contains(&1));
+    assert!(stored_groups(&sim.files(), DATA).contains(&1));
 }
 
 #[test]
 fn a_file_before_the_count_refuses_a_zeroed_bitmap_inside_it() {
     let (files, ()) = one_group("a", |_| ());
-    let old = before_the_group_count(&zeroed(&files, Pid::FIRST_DATA), PAGE);
+    let mut files = files;
+    DATA.zero(&mut files, Pid::FIRST_DATA);
+    let old = before_the_group_count(&files, DATA);
     damaged_run(&old, "old zero", |db| {
         assert_all_refused_as_database(db, "old zero");
     });
@@ -525,7 +526,8 @@ fn a_file_before_the_count_refuses_a_zeroed_bitmap_inside_it() {
 /// database, keeps every page, and leaves `verify`.
 fn assert_open_refuses(what: &str, pick: impl FnOnce(&Database<SimRuntime>) -> Pid) {
     let (files, page) = one_group("a", pick);
-    let files = zeroed(&files, page);
+    let mut files = files;
+    DATA.zero(&mut files, page);
     damaged_run(&files, what, |db| {
         assert!(
             db.testing().probe().marks().contains(&Quarantine::Database),
@@ -625,19 +627,15 @@ fn grown() -> (Files, Pid) {
 
 fn small_cut(files: &Files, pages: u64) -> Files {
     let mut files = files.clone();
-    files
-        .get_mut(FILE)
-        .unwrap()
-        .truncate(pages as usize * SMALL_PAGE);
+    SMALL.truncate(&mut files, pages as usize);
     files
 }
 
 /// Returns the damage a cut or zeroing of the second group's bitmap page in `files` gives it:
 /// stale, at the LSN that page has in `files`.
 fn lost_damage(files: &Files) -> Damage {
-    let at = SMALL_SPAN as usize * SMALL_PAGE;
     Damage::Stale {
-        expected: storage::lsn(&files[FILE][at..at + SMALL_PAGE]),
+        expected: storage::lsn(SMALL.page(files, Pid(SMALL_SPAN))),
         found: Lsn(0),
     }
 }
@@ -697,28 +695,26 @@ fn a_cut_at_or_before_the_group_refuses_every_allocator_path() {
 fn a_zeroed_second_bitmap_refuses_every_allocator_path() {
     let (mut files, named) = grown();
     let lost = lost_damage(&files);
-    let at = SMALL_SPAN as usize * SMALL_PAGE;
-    files.get_mut(FILE).unwrap()[at..at + SMALL_PAGE].fill(0);
+    SMALL.zero(&mut files, Pid(SMALL_SPAN));
     assert_second_group_refused(files, named, lost, "zeroed");
 }
 
 #[test]
 fn growing_into_a_group_stores_the_count_and_a_file_before_the_count_gains_it() {
     let (files, named) = grown();
-    assert!(stored_groups(&files, SMALL_PAGE).contains(&2));
-    let old = before_the_group_count(&files, SMALL_PAGE);
-    assert_eq!([0, 0], stored_groups(&old, SMALL_PAGE));
+    assert!(stored_groups(&files, SMALL).contains(&2));
+    let old = before_the_group_count(&files, SMALL);
+    assert_eq!([0, 0], stored_groups(&old, SMALL));
     let mut sim = Sim::with_files(1, Config::default(), old.clone());
     finished(&mut sim, |rt| {
         let pager = pager_of(rt);
         assert_eq!(BTreeMap::new(), Probe::of(&pager).refusals());
         assert_eq!(Ok(false), pager.is_free(named));
     });
-    assert!(stored_groups(&sim.files(), SMALL_PAGE).contains(&2));
+    assert!(stored_groups(&sim.files(), SMALL).contains(&2));
     let lost = lost_damage(&old);
     let mut blank = old;
-    let at = SMALL_SPAN as usize * SMALL_PAGE;
-    blank.get_mut(FILE).unwrap()[at..at + SMALL_PAGE].fill(0);
+    SMALL.zero(&mut blank, Pid(SMALL_SPAN));
     assert_second_group_refused(blank, named, lost, "old file, zeroed");
 }
 
@@ -740,7 +736,7 @@ fn recovery_stores_the_count_so_a_later_cut_never_reuses_a_named_page() {
     let mut sim = Sim::with_files(1, Config::default(), files);
     finished(&mut sim, |rt| drop(pager_of(rt)));
     let recovered = sim.files();
-    assert!(stored_groups(&recovered, SMALL_PAGE).contains(&2));
+    assert!(stored_groups(&recovered, SMALL).contains(&2));
     let cut = lost_damage(&recovered);
     assert_second_group_refused(
         small_cut(&recovered, SMALL_SPAN),
@@ -818,7 +814,7 @@ fn no_crash_while_crossing_a_group_refuses_a_healthy_file() {
 fn a_page_vacuum_frees_and_another_heap_reuses_under_a_reader_is_not_refused() {
     let mut sim = Sim::new(1, Config::default());
     finished(&mut sim, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, FILE, &Log::new([APP]), &options(256));
         insert_users(&db, 0..4, "u");
         let t = db.testing();
         let heap = t.heap("app::users", "User").unwrap();
@@ -867,7 +863,7 @@ fn lookups_racing_a_vacuum_that_frees_slots_of_a_page_it_keeps_are_not_refused()
         };
         let mut sim = Sim::new(seed, config);
         finished(&mut sim, |rt| {
-            let db = open(rt.clone());
+            let db = open::opened(&rt, FILE, &Log::new([APP]), &options(256));
             insert_users(&db, 0..4, "kept");
             let page = first_users_page(&db);
             let reader = {

@@ -9,10 +9,12 @@ use std::sync::{Arc, Mutex};
 
 use adtb::key::{Entry, Value};
 use adtb::runtime::{Clock, Threads};
-use adtb::storage::{Damage, Pid, Quarantine};
+use adtb::storage::{Damage, HEADER_LEN, Pid, Quarantine};
 use adtb::testing::Plant;
 use adtb::{Database, Log, OpenOptions};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_simkit::damage::{DataFile, Files};
+use adtb_simkit::open;
 use adtb_simkit::{api, crash, seeds};
 
 const APP: &str = r"module app
@@ -38,7 +40,7 @@ const USER_REINDEX: &str = "reindex identities index (user) in (Google | Apple)"
 const PHASES: [&str; 6] = ["waiting", "scan", "build", "catch up", "swap", "reclaim"];
 
 fn open_app(rt: SimRuntime) -> Database<SimRuntime> {
-    Database::open_in(rt, FILE, &Log::new([APP]), &api::options(2)).expect("the database opens")
+    Database::open_in(rt, FILE, &Log::new([APP]), &open::options(2)).expect("the database opens")
 }
 
 fn user_text(i: u32) -> String {
@@ -328,7 +330,7 @@ fn with_damaged_user_index(seed: u64, top: bool) -> Sim {
         page
     });
     let mut files = sim.files();
-    files.get_mut(FILE).unwrap()[page.0 as usize * API_PAGE + 300] ^= 0x10;
+    DataFile::new(FILE, API_PAGE).flip(&mut files, page, 300 - HEADER_LEN);
     Sim::with_files(seed, Config::default(), files)
 }
 
@@ -705,7 +707,7 @@ fn a_clause_with_no_in_over_several_indexes_is_invalid_and_names_in() {
             rt,
             "ambiguous.adt",
             &Log::new([AMBIGUOUS]),
-            &api::options(2),
+            &open::options(2),
         )
         .expect("the database opens");
         let e = api::failure(&db, "reindex ts index (a)");
@@ -787,7 +789,7 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 fn real_options() -> OpenOptions {
-    api::options(2)
+    open::options(2)
 }
 
 #[test]
@@ -818,9 +820,9 @@ fn a_real_file_restores_a_damaged_index_and_keeps_it_across_a_reopen() {
         )
     };
     db.close().unwrap();
-    let mut bytes = std::fs::read(&path).unwrap();
-    bytes[page.0 as usize * page_size + 300] ^= 0x10;
-    std::fs::write(&path, bytes).unwrap();
+    let mut files = Files::from([("file".to_owned(), std::fs::read(&path).unwrap())]);
+    DataFile::new("file", page_size).flip(&mut files, page, 300 - HEADER_LEN);
+    std::fs::write(&path, &files["file"]).unwrap();
     let db = Database::open(&path, &log, &real_options()).unwrap();
     let probe = "from g in identities.Google where g.user == users.key(5) select g.gid";
     refused_with(

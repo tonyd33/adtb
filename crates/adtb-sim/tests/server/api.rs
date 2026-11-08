@@ -2,6 +2,7 @@
 //! retrying closure.
 
 use adtb_simkit::api;
+use adtb_simkit::open;
 
 use std::sync::{Arc, Mutex};
 
@@ -13,7 +14,8 @@ use adtb::{
 use adtb_lang::types::{Base, Ty};
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use api::{in_txn, once, options, printed, query, result, run};
+use adtb_simkit::open::options;
+use api::{in_txn, once, printed, query, result, run};
 
 const SHOP: &str = r"module shop
 add module shop
@@ -45,10 +47,6 @@ const SEEDS: std::ops::Range<u64> = 0..3;
 
 fn log() -> Log {
     Log::new([SHOP])
-}
-
-fn open(rt: &SimRuntime) -> Database<SimRuntime> {
-    Database::open_in(rt.clone(), "app.adt", &log(), &options(4)).expect("the database opens")
 }
 
 fn text(t: &str) -> Value {
@@ -90,7 +88,7 @@ fn a_missing_file_is_not_found_without_create() {
 fn open_creates_the_file_and_applies_the_first_migration() {
     for seed in SEEDS {
         once(seed, |rt| {
-            let db = open(&rt);
+            let db = open::opened(&rt, open::FILE, &log(), &options(4));
             assert!(
                 query(&db, NAMES).is_empty(),
                 "seed {seed}: a new database holds no customers"
@@ -109,7 +107,7 @@ fn open_creates_the_file_and_applies_the_first_migration() {
 #[test]
 fn results_carry_their_type() {
     once(0, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let out = db
             .query_text("count(c for c in customers)", &[], &CallOptions::default())
             .expect("a count");
@@ -126,12 +124,12 @@ fn results_carry_their_type() {
 fn a_process_that_exits_without_closing_loses_nothing_committed() {
     let mut sim = Sim::new(2, Config::default());
     run(&mut sim, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         sign_up(&db, "ann");
         std::mem::forget(db);
     });
     run(&mut sim, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         assert_eq!(vec![r#""ann""#], query(&db, NAMES));
     });
 }
@@ -139,7 +137,7 @@ fn a_process_that_exits_without_closing_loses_nothing_committed() {
 #[test]
 fn parameters_bind_free_names_by_name() {
     once(0, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         sign_up(&db, "ann");
         sign_up(&db, "bob");
         let mut out = db
@@ -156,7 +154,7 @@ fn parameters_bind_free_names_by_name() {
 #[test]
 fn every_item_of_a_text_returns_its_result_in_order() {
     once(0, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         sign_up(&db, "ann");
         let out = db
             .query_text(
@@ -178,7 +176,7 @@ from c in customers select c.name"#,
 #[test]
 fn a_failing_item_applies_nothing_of_its_text() {
     once(0, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let got = db.query_text(
             r#"insert notes { id: notes.key(1), body: "a" }
 insert notes { id: notes.key(1), body: "b" }"#,
@@ -197,7 +195,7 @@ insert notes { id: notes.key(1), body: "b" }"#,
 #[test]
 fn a_fail_in_a_block_is_a_user_error() {
     once(0, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let err = db
             .query_text(
                 r#"transact
@@ -220,7 +218,7 @@ fn a_fail_in_a_block_is_a_user_error() {
 #[test]
 fn a_block_returns_its_result() {
     once(0, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let mut out = db
             .query_text(SIGN_UP, &name("ann"), &CallOptions::default())
             .expect("the block commits");
@@ -232,7 +230,7 @@ fn a_block_returns_its_result() {
 fn an_interactive_transaction_sees_its_own_writes_and_publishes_them_at_commit() {
     for seed in SEEDS {
         once(seed, |rt| {
-            let db = open(&rt);
+            let db = open::opened(&rt, open::FILE, &log(), &options(4));
             let mut t = db.begin(&TxnOptions::default()).expect("begin");
             t.query_text(SIGN_UP, &name("ann"), &TxnCallOptions::default())
                 .expect("the sign up");
@@ -251,7 +249,7 @@ fn an_interactive_transaction_sees_its_own_writes_and_publishes_them_at_commit()
 #[test]
 fn rollback_and_drop_discard_a_transaction() {
     once(0, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let mut t = db.begin(&TxnOptions::default()).expect("begin");
         t.query_text(SIGN_UP, &name("ann"), &TxnCallOptions::default())
             .expect("the sign up");
@@ -268,7 +266,7 @@ fn rollback_and_drop_discard_a_transaction() {
 fn a_deferrable_transaction_begins_once_the_writers_running_at_its_snapshot_end() {
     for seed in SEEDS {
         once(seed, |rt| {
-            let db = open(&rt);
+            let db = open::opened(&rt, open::FILE, &log(), &options(4));
             let events = Arc::new(Mutex::new(Vec::new()));
             let mut w = db.begin(&TxnOptions::default()).expect("begin the writer");
             w.query_text(
@@ -307,7 +305,7 @@ fn a_deferrable_transaction_begins_once_the_writers_running_at_its_snapshot_end(
 #[test]
 fn a_serialization_failure_names_the_transaction_by_its_id() {
     once(0, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         seed_note(&db);
         let mut a = db.begin(&TxnOptions::default()).expect("begin a");
         let mut b = db.begin(&TxnOptions::default()).expect("begin b");
@@ -371,7 +369,7 @@ fn the_round_limit_of_an_open_rejects_a_longer_fixpoint() {
 #[test]
 fn the_round_limit_of_a_call_rejects_an_unbounded_fixpoint() {
     once(0, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let call = CallOptions {
             fix_rounds: Some(20),
             ..CallOptions::default()
@@ -397,7 +395,7 @@ fn the_round_limit_of_a_call_rejects_an_unbounded_fixpoint() {
 #[test]
 fn a_read_after_a_position_past_the_history_is_refused() {
     once(0, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let mut t = db.begin(&TxnOptions::default()).expect("begin");
         t.query_text(
             r#"insert notes { body: "a" }"#,
@@ -432,7 +430,7 @@ fn a_read_after_a_position_past_the_history_is_refused() {
 #[test]
 fn a_call_whose_deadline_passed_before_it_starts_is_refused_with_deadline_exceeded() {
     once(0, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let opts = CallOptions {
             deadline: Some(std::time::SystemTime::UNIX_EPOCH),
             ..CallOptions::default()
@@ -480,7 +478,7 @@ fn seed_note(db: &Database<SimRuntime>) {
 fn concurrent_interactive_transactions_fail_one_with_a_serialization_failure() {
     for seed in SEEDS {
         once(seed, |rt| {
-            let db = open(&rt);
+            let db = open::opened(&rt, open::FILE, &log(), &options(4));
             seed_note(&db);
             let mut a = db.begin(&TxnOptions::default()).expect("begin a");
             let mut b = db.begin(&TxnOptions::default()).expect("begin b");
@@ -511,7 +509,7 @@ fn concurrent_interactive_transactions_fail_one_with_a_serialization_failure() {
 fn a_write_skew_between_interactive_transactions_does_not_commit_both() {
     for seed in SEEDS {
         once(seed, |rt| {
-            let db = open(&rt);
+            let db = open::opened(&rt, open::FILE, &log(), &options(4));
             let count = "count(n for n in notes)";
             let mut a = db.begin(&TxnOptions::default()).expect("begin a");
             let mut b = db.begin(&TxnOptions::default()).expect("begin b");
@@ -544,7 +542,7 @@ fn a_write_skew_between_interactive_transactions_does_not_commit_both() {
 fn the_retrying_closure_reruns_after_a_serialization_failure() {
     for seed in SEEDS {
         once(seed, |rt| {
-            let db = open(&rt);
+            let db = open::opened(&rt, open::FILE, &log(), &options(4));
             seed_note(&db);
             let mut runs = 0;
             let done = db
@@ -574,7 +572,7 @@ fn the_retrying_closure_reruns_after_a_serialization_failure() {
 #[test]
 fn the_retrying_closure_returns_the_failure_once_its_attempts_are_spent() {
     once(0, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         seed_note(&db);
         let mut runs = 0;
         let got = db.transact(&TxnOptions::default(), 2, |t| {
@@ -596,7 +594,7 @@ fn the_retrying_closure_returns_the_failure_once_its_attempts_are_spent() {
 #[test]
 fn the_retrying_closure_does_not_rerun_other_failures() {
     once(0, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let mut runs = 0;
         let got = db.transact(&TxnOptions::default(), 5, |t| {
             runs += 1;
@@ -623,7 +621,7 @@ fn the_retrying_closure_does_not_rerun_other_failures() {
 fn concurrent_text_from_many_threads_commits_every_write() {
     for seed in SEEDS {
         once(seed, |rt| {
-            let db = open(&rt);
+            let db = open::opened(&rt, open::FILE, &log(), &options(4));
             seed_note(&db);
             let failed = Arc::new(Mutex::new(Vec::new()));
             let threads: Vec<_> = (0..4)
@@ -676,11 +674,13 @@ fn verified(rt: SimRuntime) -> (adtb::verify::Report, bool) {
 fn a_closed_file_verifies_clean_with_every_page_accounted_for() {
     let mut sim = Sim::new(7, Config::default());
     run(&mut sim, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         sign_up(&db, "ann");
         db.close().expect("close");
     });
-    run(&mut sim, |rt| drop(open(&rt)));
+    run(&mut sim, |rt| {
+        drop(open::opened(&rt, open::FILE, &log(), &options(4)));
+    });
     let (report, named) = run(&mut sim, verified);
     assert!(named, "the counters page is named");
     assert!(report.is_clean() && report.complete, "{report:#?}");
@@ -691,14 +691,20 @@ fn a_crash_as_the_first_open_names_its_counters_page_leaks_no_page() {
     let seed = 11;
     let mut sim = Sim::new(seed, Config::default());
     sim.record();
-    run(&mut sim, |rt| std::mem::forget(open(&rt)));
+    run(&mut sim, |rt| {
+        std::mem::forget(open::opened(&rt, open::FILE, &log(), &options(4)));
+    });
     let recording = sim.recording();
     let flushes = recording.flushes();
     let from = flushes[flushes.len().saturating_sub(3)];
     for at in from..=recording.len() {
         let files = recording.images(at, 1, seed + at as u64).swap_remove(0);
         let mut sim = Sim::with_files(seed + at as u64, Config::default(), files);
-        run(&mut sim, |rt| open(&rt).close().expect("close"));
+        run(&mut sim, |rt| {
+            open::opened(&rt, open::FILE, &log(), &options(4))
+                .close()
+                .expect("close");
+        });
         let (report, named) = run(&mut sim, verified);
         assert!(named, "crash at {at}: the counters page is named");
         assert!(
@@ -944,7 +950,7 @@ fn exists_beside_an_insert(
 fn an_exists_that_stopped_at_a_row_does_not_conflict_with_an_insert_beside_it() {
     for seed in SEEDS {
         let ends = once(seed, |rt| {
-            let db = open(&rt);
+            let db = open::opened(&rt, open::FILE, &log(), &options(4));
             seed_notes(&db);
             exists_beside_an_insert(&db, r#"exists n in notes where n.body == "first""#)
         });
@@ -956,7 +962,7 @@ fn an_exists_that_stopped_at_a_row_does_not_conflict_with_an_insert_beside_it() 
 fn an_exists_that_read_every_row_conflicts_with_an_insert_beside_it() {
     for seed in SEEDS {
         let ends = once(seed, |rt| {
-            let db = open(&rt);
+            let db = open::opened(&rt, open::FILE, &log(), &options(4));
             seed_notes(&db);
             exists_beside_an_insert(&db, r#"exists n in notes where n.body == "none""#)
         });

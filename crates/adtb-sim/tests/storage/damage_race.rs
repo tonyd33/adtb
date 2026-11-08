@@ -1,5 +1,5 @@
 use adtb::testing::Probe;
-use std::collections::BTreeMap;
+
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -10,12 +10,13 @@ use adtb::storage::{
 };
 use adtb_sim::{Config, Sim, SimRuntime};
 
+use adtb_simkit::damage::{DataFile, Files};
 use adtb_simkit::{harness, seeds};
 
 use harness::{NAME, PAGE, finished};
 use seeds::{assert_reached, share, sweep};
 
-type Files = BTreeMap<String, Vec<u8>>;
+const PAGER: DataFile = DataFile::new(NAME, PAGE);
 
 const SEEDS: Range<u64> = 0..64;
 const SEGMENT: u64 = 64 * 1024;
@@ -88,9 +89,7 @@ fn lost(w: &Written) -> (Files, Lsn) {
         pager.close();
     });
     let mut files = sim.files();
-    let at = w.pid.0 as usize * PAGE..(w.pid.0 as usize + 1) * PAGE;
-    let file = files.get_mut(NAME).unwrap();
-    file[at.clone()].copy_from_slice(&w.files[NAME][at]);
+    PAGER.replace(&mut files, w.pid, PAGER.page(&w.files, w.pid));
     (files, lsn.unwrap())
 }
 
@@ -119,7 +118,7 @@ struct Window {
 }
 
 impl Window {
-    fn open(&self) -> bool {
+    fn is_open(&self) -> bool {
         self.start.load(Ordering::Acquire) && !self.end.load(Ordering::Acquire)
     }
 }
@@ -152,7 +151,7 @@ fn reader(
             }
         }
         for _ in 0..16 {
-            let inside = window.open();
+            let inside = window.is_open();
             marks.start.store(true, Ordering::Release);
             let read = p.read(pid).map(|g| g[HEADER_LEN]);
             marks.end.store(true, Ordering::Release);

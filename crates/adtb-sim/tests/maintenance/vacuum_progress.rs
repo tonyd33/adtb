@@ -10,6 +10,7 @@ use adtb::runtime::{Runtime, Threads};
 use adtb::testing::Knobs;
 use adtb::{Database, Log, OpenOptions, Value};
 use adtb_sim::SimRuntime;
+use adtb_simkit::open;
 use adtb_simkit::{api, common, seeds};
 
 const WATCH: &str = "from v in sys::vacuums \
@@ -154,7 +155,7 @@ fn watch(seed: u64) -> Seen {
         let options = OpenOptions {
             pool_bytes: Some(POOL),
             testing: Knobs::without_background_vacuum(),
-            ..api::options(2)
+            ..open::options(2)
         };
         let db = Database::open_in(rt.clone(), "progress.adt", &log, &options)
             .expect("the database opens");

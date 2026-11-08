@@ -90,6 +90,7 @@ design files of their own.
 | Histories and anomalies | test harnesses | `adtb-isolation` | [runtime.md §6](runtime.md#6-isolation-histories) | `adtb_isolation`: `check`, `run`, `Scenario` |
 | The test oracle | `adtb-reference` | test harness, `adtb-conformance` | [oracle.md](oracle.md) | `adtb_reference`: `Interpreter`, `Value` |
 | Engine observations for tests | `adtb` under the `testing` feature | the tests of `adtb-sim` | [testing.md](testing.md) | `adtb::testing`: `Testing`, `Probe` |
+| Crash loop, opens, worlds and byte damage | `adtb-simkit` | the tests of `adtb-sim` | [testing.md §5](testing.md#5-harness) | `adtb_simkit`: `crash::crash_loop`, `open`, `fixture::Storage`, `damage::DataFile` |
 
 Rulings: project/arch/crates/by-boundary
 

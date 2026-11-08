@@ -1,4 +1,5 @@
 use adtb_simkit::api;
+use adtb_simkit::open;
 
 use adtb::runtime::{Clock, Done, Io, Op, Runtime, Threads};
 use adtb::{
@@ -23,7 +24,7 @@ const INSERT_MAPPING: &str = r#"insert catalog::peer_mappings {
 #[test]
 fn ordinary_program_insert_into_catalog_is_denied() {
     api::once(0, |rt| {
-        let db = Database::open_in(rt, "system.adt", &Log::new([SCHEMA]), &api::options(2))
+        let db = Database::open_in(rt, "system.adt", &Log::new([SCHEMA]), &open::options(2))
             .expect("open database");
         let result = db.query_text(INSERT_MAPPING, &[], &CallOptions::default());
         assert!(
@@ -46,11 +47,6 @@ fn ordinary_program_insert_into_catalog_is_denied() {
     });
 }
 
-fn open(rt: SimRuntime) -> Database<SimRuntime> {
-    Database::open_in(rt, "system.adt", &Log::new([SCHEMA]), &api::options(2))
-        .expect("open database")
-}
-
 fn denied<T: Debug>(result: Result<T, Error>, relation: &str) {
     let expected = format!("programs cannot write system relation `{relation}`");
     assert!(
@@ -66,7 +62,7 @@ fn mappings_empty(db: &Database<SimRuntime>) {
 #[test]
 fn every_system_relation_refuses_even_an_empty_delete_and_appender() {
     api::once(0, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, "system.adt", &Log::new([SCHEMA]), &open::options(2));
         let mut load = db.load(&LoadOptions::default()).expect("open load");
         let mut relations = 0;
         for module in &db.schema().modules {
@@ -106,7 +102,7 @@ fn every_system_relation_refuses_even_an_empty_delete_and_appender() {
 #[test]
 fn every_program_write_shape_is_checked_before_dead_code_elimination() {
     api::once(0, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, "system.adt", &Log::new([SCHEMA]), &open::options(2));
         let cases = [
             format!("if false then {INSERT_MAPPING} else skip"),
             format!("{INSERT_MAPPING} unless conflict on key else skip"),
@@ -137,7 +133,7 @@ fn every_program_write_shape_is_checked_before_dead_code_elimination() {
 #[test]
 fn a_denied_interactive_call_keeps_prior_user_changes_and_transaction_open() {
     api::once(0, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, "system.adt", &Log::new([SCHEMA]), &open::options(2));
         let mut txn = db.begin(&TxnOptions::default()).expect("begin");
         txn.query_text("insert items { id: 1 }", &[], &TxnCallOptions::default())
             .expect("user insert");
@@ -169,7 +165,7 @@ fn registered_transactions_cannot_hide_a_system_write_in_an_unreached_branch() {
         );
         let opts = OpenOptions {
             registrations: vec![Registration::new("bad", body)],
-            ..api::options(2)
+            ..open::options(2)
         };
         let got = Database::open_in(rt.clone(), "bad.adt", &Log::new([SCHEMA]), &opts);
         match got {
@@ -183,7 +179,7 @@ fn registered_transactions_cannot_hide_a_system_write_in_an_unreached_branch() {
             }
             other => panic!("registration must fail with Denied: {other:?}"),
         }
-        let db = open(rt);
+        let db = open::opened(&rt, "system.adt", &Log::new([SCHEMA]), &open::options(2));
         mappings_empty(&db);
         db.close().expect("close database");
     });
@@ -192,7 +188,7 @@ fn registered_transactions_cannot_hide_a_system_write_in_an_unreached_branch() {
 #[test]
 fn native_setting_commands_and_temp_user_writes_remain_legal() {
     api::once(0, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, "system.adt", &Log::new([SCHEMA]), &open::options(2));
         db.query_text(
             "set setting RetryLimit = { retries: 3 }",
             &[],
@@ -249,7 +245,7 @@ fn denied_open_retains_unchecked_headers_without_registering_or_renewing_calls()
         let good = "import example\nquery ids () -> Set I64 = from i in items select i.id";
         let original = OpenOptions {
             registrations: vec![bundled("old-1.0", good)],
-            ..api::options(2)
+            ..open::options(2)
         };
         let db = Database::open_in(rt.clone(), "system.adt", &Log::new([SCHEMA]), &original)
             .expect("register original bundle");
@@ -293,7 +289,7 @@ fn denied_open_retains_unchecked_headers_without_registering_or_renewing_calls()
             }
             other => panic!("expected denied bundle: {other:?}"),
         }
-        let db = open(rt);
+        let db = open::opened(&rt, "system.adt", &Log::new([SCHEMA]), &open::options(2));
         mappings_empty(&db);
         assert_eq!(
             vec!["\"bad-1.0\"", "\"new-1.0\"", "\"old-1.0\""],
@@ -347,7 +343,7 @@ fn typed_wrappers_and_arrow_loads_share_the_program_boundary() {
                 "safe-1.0",
                 "import example\nquery ids () -> Set I64 = from i in items select i.id",
             )],
-            ..api::options(2)
+            ..open::options(2)
         };
         let db = Database::open_in(rt, "typed.adt", &Log::new([SCHEMA]), &opts)
             .expect("open safe bundle");
@@ -400,7 +396,7 @@ fn typed_wrappers_and_arrow_loads_share_the_program_boundary() {
 #[test]
 fn system_reads_remain_queries_and_volatile_user_writes_still_have_their_own_error() {
     api::once(0, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, "system.adt", &Log::new([SCHEMA]), &open::options(2));
         db.query_text(
             "from c in sys::calls select c.id",
             &[],

@@ -10,13 +10,15 @@ use adtb::storage::{self, FIRST_EDITABLE, PageKind, Pid};
 use adtb::{ArrowSchema, CallOptions, Database, Error, FatalReason, LoadOptions, Log, RecordBatch};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
+use adtb_simkit::damage::{DataFile, Files};
+use adtb_simkit::open;
 
-type Files = BTreeMap<String, Vec<u8>>;
 type Write = fn(&Database<SimRuntime>, Target) -> Result<(), Error>;
 
 const SEED: u64 = 73;
 const FILE: &str = "heap_kind.adt";
 const PAGE: usize = 8192;
+const DATA: DataFile = DataFile::new(FILE, PAGE);
 const KIND: usize = 14;
 const APP: &str = r"module app
 add module app
@@ -25,10 +27,6 @@ add type Identity { id: Key identities, tag: I64 }
   | Apple  { sub: Text }
 add relation identities : Identity key id generate sequence
 ";
-
-fn open(rt: SimRuntime) -> Database<SimRuntime> {
-    Database::open_in(rt, FILE, &Log::new([APP]), &api::options(2)).expect("the file opens")
-}
 
 /// A constructor whose heap holds the page replaced: its own field, the key of its first row, the
 /// kind of its pages and the other heap kind, and what a retag sets its row to.
@@ -69,14 +67,6 @@ struct Fixture {
     versions: BTreeMap<&'static str, String>,
 }
 
-fn bytes(files: &Files, pid: Pid) -> &[u8] {
-    &files[FILE][pid.0 as usize * PAGE..(pid.0 as usize + 1) * PAGE]
-}
-
-fn page_mut(files: &mut Files, pid: Pid) -> &mut [u8] {
-    &mut files.get_mut(FILE).unwrap()[pid.0 as usize * PAGE..(pid.0 as usize + 1) * PAGE]
-}
-
 /// Returns the TID, header and flags of every version of `t`'s heap.
 fn headers(db: &Database<SimRuntime>, t: Target) -> String {
     let testing = db.testing();
@@ -92,7 +82,7 @@ impl Fixture {
             "l".repeat(3 * PAGE)
         );
         let (pages, versions) = api::run(&mut sim, |rt| {
-            let db = open(rt);
+            let db = open::opened(&rt, FILE, &Log::new([APP]), &open::options(2));
             for t in TARGETS {
                 api::results(
                     &db,
@@ -131,9 +121,9 @@ impl Fixture {
     fn refuses(&self, t: Target, r: Replacement, form: &str, write: Write, root: bool) {
         let what = format!("{t:?} replaced by {r:?}, {form}");
         let pid = self.pages[t.ctor];
-        let large = bytes(&self.files, self.pages["large"]).to_vec();
+        let large = DATA.page(&self.files, self.pages["large"]).to_vec();
         let mut files = self.files.clone();
-        let page = page_mut(&mut files, pid);
+        let page = DATA.page_mut(&mut files, pid);
         match r {
             Replacement::Kind(k) => page[KIND..KIND + 2].copy_from_slice(&(k as u16).to_le_bytes()),
             Replacement::Large => page[FIRST_EDITABLE..].copy_from_slice(&large[FIRST_EDITABLE..]),
@@ -141,7 +131,7 @@ impl Fixture {
         storage::seal(pid, page);
         let mut sim = Sim::with_files(SEED, Config::default(), files.clone());
         api::run(&mut sim, |rt| {
-            let db = open(rt);
+            let db = open::opened(&rt, FILE, &Log::new([APP]), &open::options(2));
             let got = write(&db, t);
             let Err(Error::Fatal {
                 reason: FatalReason::Quarantined { what: holder },
@@ -165,13 +155,19 @@ impl Fixture {
         });
         let mut after = sim.files();
         assert_eq!(
-            bytes(&files, pid),
-            bytes(&after, pid),
+            DATA.page(&files, pid),
+            DATA.page(&after, pid),
             "{what}: the page changed"
         );
-        page_mut(&mut after, pid).copy_from_slice(bytes(&self.files, pid));
+        DATA.page_mut(&mut after, pid)
+            .copy_from_slice(DATA.page(&self.files, pid));
         let mut sim = Sim::with_files(SEED, Config::default(), after);
-        let versions = api::run(&mut sim, |rt| headers(&open(rt), t));
+        let versions = api::run(&mut sim, |rt| {
+            headers(
+                &open::opened(&rt, FILE, &Log::new([APP]), &open::options(2)),
+                t,
+            )
+        });
         assert_eq!(
             self.versions[t.ctor], versions,
             "{what}: the versions changed"

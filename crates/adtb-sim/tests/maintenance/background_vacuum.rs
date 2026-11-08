@@ -15,6 +15,7 @@ use adtb::{
     CallOptions, Database, Error, Log, OpenOptions, RejectReason, TxnCallOptions, TxnOptions,
 };
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_simkit::open;
 use adtb_simkit::{api, common, crash, seeds};
 
 const SCHEMA: &str = r"module app
@@ -32,12 +33,11 @@ add relation wides : Wide key id generate sequence
 
 const NAME: &str = "background.adt";
 
-fn open(rt: SimRuntime) -> Database<SimRuntime> {
-    let options = OpenOptions {
+fn pooled() -> OpenOptions {
+    OpenOptions {
         pool_bytes: Some(256 * 1024),
-        ..api::options(2)
-    };
-    Database::open_in(rt, NAME, &Log::new([SCHEMA]), &options).expect("the database opens")
+        ..open::options(2)
+    }
 }
 
 /// Insert `rows` rows into `items` and into `others`, 100 to a call.
@@ -87,7 +87,7 @@ fn running(db: &Database<SimRuntime>) -> bool {
 
 /// Returns `db` once a background vacuum of 1500 deleted rows of `items` runs at a budget of 0.01.
 fn vacuuming(rt: &SimRuntime) -> Database<SimRuntime> {
-    let db = open(rt.clone());
+    let db = open::opened(rt, NAME, &Log::new([SCHEMA]), &pooled());
     budget(&db, 0.0);
     fill(&db, 1500);
     api::results(&db, "delete i in items where true");
@@ -111,7 +111,7 @@ fn started(rt: &SimRuntime, db: &Database<SimRuntime>) {
 /// inserting 150 rows in a transaction that rolls back, and after 6 more.
 fn grown(io: f64, aborted: bool) -> (usize, usize, usize) {
     api::once(21, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
         budget(&db, io);
         fill(&db, 200);
         let one = pages(&db, &ITEMS).len();
@@ -148,7 +148,7 @@ fn dead_versions_leave_with_no_command() {
 #[test]
 fn versions_past_the_retention_window_leave_with_no_further_writes() {
     api::once(22, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
         api::results(&db, "set setting RetentionWindow = { length: 2s }");
         fill(&db, 100);
         for _ in 0..3 {
@@ -217,7 +217,7 @@ const HOLDING: [&str; 5] = [
 fn a_background_vacuum_gives_way_to_a_first_task_waiting_for_it() {
     let mut sim = Sim::new(25, Config::default());
     api::run(&mut sim, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
         budget(&db, 0.0);
         fill(&db, 200);
         api::results(&db, "delete i in items where true");
@@ -230,7 +230,7 @@ fn a_background_vacuum_gives_way_to_a_first_task_waiting_for_it() {
             let ran = catch_unwind(AssertUnwindSafe(|| {
                 let mut sim = Sim::with_files(seed, Config::default(), files.clone());
                 api::run(&mut sim, |rt| {
-                    let db = open(rt.clone());
+                    let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
                     budget(&db, 0.01);
                     started(&rt, &db);
                     let owner = db.role_authority().session("owner").unwrap();
@@ -252,7 +252,7 @@ fn a_background_vacuum_gives_way_to_a_first_task_waiting_for_it() {
 #[test]
 fn a_background_vacuum_writes_no_page_of_a_quarantined_heap() {
     api::once(23, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
         budget(&db, 0.0);
         fill(&db, 300);
         api::results(
@@ -299,7 +299,7 @@ fn a_close_during_a_background_vacuum_returns_promptly_and_leaves_it_sound() {
         assert_eq!(steps, after, "no vacuum step runs once the close returns");
     });
     api::run(&mut sim, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
         assert_eq!(Vec::<String>::new(), api::printed(db.verify(None).unwrap()));
     });
 }
@@ -309,12 +309,16 @@ fn a_file_after_a_crash_with_the_background_vacuum_running_holds_clean() {
     crash::silence_fatal_panics();
     for seed in seeds::sweep(0..5) {
         let mut sim = Sim::new(seed, Config::default());
-        api::run(&mut sim, |rt| open(rt).close().unwrap());
+        api::run(&mut sim, |rt| {
+            open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled())
+                .close()
+                .unwrap();
+        });
         sim.crash_at(sim.now() + crash::crash_after(seed, 1, 200_000, 2_000_000));
         let steps = Arc::new(AtomicU64::new(0));
         let seen = steps.clone();
         let outcome = crash::run_process(&mut sim, |rt| {
-            let db = open(rt);
+            let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
             budget(&db, 1.0);
             let o = CallOptions::default();
             let mut n = 0_i64;
@@ -335,7 +339,7 @@ fn a_file_after_a_crash_with_the_background_vacuum_running_holds_clean() {
             "seed {seed}: the background vacuum ran before the crash"
         );
         api::run(&mut sim, |rt| {
-            let db = open(rt);
+            let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
             let found = api::printed(db.verify(None).unwrap());
             assert_eq!(Vec::<String>::new(), found, "seed {seed}");
         });
@@ -371,7 +375,7 @@ fn a_background_vacuum_removes_no_version_a_transaction_reads() {
     let mut overlapped = 0;
     for seed in seeds::sweep(0..4) {
         api::once(seed, |rt| {
-            let db = open(rt.clone());
+            let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
             budget(&db, 1.0);
             fill(&db, 60);
             let writers: Vec<_> = (0..2_u64)
@@ -425,7 +429,7 @@ fn a_background_vacuum_removes_no_version_a_transaction_reads() {
 #[test]
 fn the_background_vacuum_and_a_scrub_pass_together_stay_within_the_budget() {
     api::once(25, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
         budget(&db, 0.0);
         fill(&db, 2000);
         api::results(&db, "delete i in items where true");
@@ -475,7 +479,7 @@ fn removed(db: &Database<SimRuntime>, rel: &str) -> i64 {
 #[test]
 fn a_relation_with_all_visible_pages_is_due_at_its_page_count() {
     api::once(26, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
         let t = "t".repeat(700);
         for from in (1..=600).step_by(100) {
             let text: String = (from..from + 100)
@@ -504,7 +508,7 @@ fn a_relation_with_all_visible_pages_is_due_at_its_page_count() {
 #[test]
 fn dead_versions_a_reader_holds_stay_counted_until_it_ends() {
     api::once(27, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
         budget(&db, 1.0);
         fill(&db, 200);
         sleep(&rt, 1000);
@@ -535,7 +539,7 @@ fn dead_versions_a_reader_holds_stay_counted_until_it_ends() {
 /// vacuum, so the relation it writes is due again as each one ends.
 fn vacuumed_beside(churn: &'static str, quiet: &str) {
     api::once(28, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
         budget(&db, 1.0);
         fill(&db, 1500);
         sleep(&rt, 2000);
@@ -579,7 +583,7 @@ fn a_relation_due_beside_one_that_churns_is_still_vacuumed() {
 #[test]
 fn versions_a_failed_call_inserted_count_as_dead() {
     api::once(29, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, NAME, &Log::new([SCHEMA]), &pooled());
         budget(&db, 1.0);
         fill(&db, 1);
         sleep(&rt, 1000);

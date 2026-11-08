@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use adtb::batch::{Batch, BatchBuilder, Column, Schema};
 use adtb::heap::{
@@ -12,7 +11,7 @@ use adtb::key::{CtorId, Scalar, Tid, Value};
 use adtb::runtime::{Entropy, Threads};
 use adtb::storage::{self, Options, PageKind, Pager, Pid};
 use adtb::verify::{Inventory, Sum};
-use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Fate as LedgerFate, Ledger, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 
 use adtb_simkit::crash;
@@ -21,10 +20,11 @@ use adtb_simkit::recovery;
 use adtb_simkit::rows;
 use adtb_simkit::seeds;
 
-use crash::{crash_after, run_process, silence_fatal_panics};
+use adtb_simkit::fixture::{Layout, Parts, Storage};
+use crash::{Reopen, Rounds, crash_loop};
 use harness::{PAGE, finished, options};
 use recovery::verify_after_crash;
-use rows::{APPLE, EMAIL, HEAP_IDS, LARGE_ID, Live, Op, Rows, key_of, pair, replay, row_type};
+use rows::{APPLE, EMAIL, LARGE_ID, Live, Op, Rows, key_of, pair, replay, row_type};
 use seeds::{share, sweep};
 
 const GOOGLE: usize = 1;
@@ -54,42 +54,33 @@ fn make_row(heap: usize, key: i64, r: u64) -> Vec<Value> {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Roots {
-    large: Pid,
-    heaps: [Pid; 3],
-}
-
 struct Db {
     pager: Pager<SimRuntime>,
     heaps: Vec<Heap>,
+    ids: [HeapNo; 3],
 }
 
 impl Db {
-    fn create(rt: SimRuntime, fanout: u16) -> (Db, Roots) {
-        let pager = Pager::create(rt, &options(FRAMES)).expect("create");
-        let large = LargeStore::create(&pager, LARGE_ID).expect("large store");
-        let heaps: Vec<Heap> = (0..3)
-            .map(|h| {
-                Heap::create_with_fanout(&pager, HEAP_IDS[h], row_type(h), large, fanout)
-                    .expect("heap")
-            })
-            .collect();
-        let roots = Roots {
-            large: large.root(),
-            heaps: [heaps[0].root(), heaps[1].root(), heaps[2].root()],
-        };
-        pager.flush_log();
-        (Db { pager, heaps }, roots)
+    fn create(rt: &SimRuntime, fanout: u16) -> (Db, Layout) {
+        let mut s = Storage::create(rt, &options(FRAMES));
+        let large = s.large();
+        for h in 0..3 {
+            s.heap(row_type(h), large, fanout);
+        }
+        s.pager().flush_log();
+        let layout = s.layout();
+        (Db::of(s), layout)
     }
 
-    fn open(rt: SimRuntime, roots: Roots) -> Option<Db> {
-        let (pager, _) = Pager::open(rt, &options(FRAMES)).ok()?;
-        let large = LargeStore::open(LARGE_ID, roots.large);
-        let heaps = (0..3)
-            .map(|h| Heap::open(&pager, HEAP_IDS[h], roots.heaps[h], row_type(h), large).unwrap())
-            .collect();
-        Some(Db { pager, heaps })
+    fn of(s: Storage) -> Db {
+        let (pager, _, heaps, _) = s.split();
+        let ids = [0, 1, 2].map(|h| heaps[h].id());
+        Db { pager, heaps, ids }
+    }
+
+    /// Returns what the whole-file `verify` finds, freeing leaked pages first.
+    fn verify_file(&self) -> Vec<String> {
+        Parts::new(&self.pager, None, &self.heaps, &[], &[]).verify()
     }
 }
 
@@ -188,9 +179,7 @@ fn check_links(db: &mut Db) -> Vec<String> {
             let next = v.header.next.map(|n| {
                 db.heaps
                     .iter()
-                    .find_map(|h| {
-                        walk(&db.pager, h.id(), &HEAP_IDS.map(HeapNo), n, |_| true).unwrap()
-                    })
+                    .find_map(|h| walk(&db.pager, h.id(), &db.ids, n, |_| true).unwrap())
                     .expect("a successor in a heap of the sum")
             });
             let (moved, hot) = (
@@ -232,7 +221,7 @@ fn inserts_updates_deletes_and_retags_match_a_model() {
     for seed in 0..3 {
         let mut sim = Sim::new(seed, Config::default());
         finished(&mut sim, |rt| {
-            let (mut db, _) = Db::create(rt.clone(), 4);
+            let (mut db, _) = Db::create(&rt, 4);
             let mut live = Live::new();
             let mut first: BTreeMap<i64, (u32, Tid)> = BTreeMap::new();
             let mut next_key = 0;
@@ -247,7 +236,7 @@ fn inserts_updates_deletes_and_retags_match_a_model() {
                     None => {}
                 }
                 if let Op::Insert { key, .. } = op {
-                    first.insert(key, (HEAP_IDS[live[&key].0], live[&key].1));
+                    first.insert(key, (db.ids[live[&key].0].0, live[&key].1));
                 }
                 db.pager.commit(xid, &[], |_| {}).unwrap();
                 if xid % 250 == 0 {
@@ -261,16 +250,12 @@ fn inserts_updates_deletes_and_retags_match_a_model() {
             }
             for (key, (heap, tid, _)) in &live {
                 let (h, t) = first[key];
-                let end = walk(&db.pager, HeapNo(h), &HEAP_IDS.map(HeapNo), t, |l| {
+                let end = walk(&db.pager, HeapNo(h), &db.ids, t, |l| {
                     l.header.next.is_none()
                 })
                 .unwrap()
                 .expect("chain ends");
-                assert_eq!(
-                    (HeapNo(HEAP_IDS[*heap]), *tid),
-                    (end.heap, end.tid),
-                    "key {key}"
-                );
+                assert_eq!((db.ids[*heap], *tid), (end.heap, end.tid), "key {key}");
             }
             assert!(
                 hot > 0 && cold > 0,
@@ -286,7 +271,7 @@ fn inserts_updates_deletes_and_retags_match_a_model() {
 fn a_chain_runs_across_pages_and_through_a_retag_and_back() {
     let mut sim = Sim::new(1, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, 4);
+        let (mut db, _) = Db::create(&rt, 4);
         let pager = &mut db.pager;
         let row = |n: usize| {
             vec![
@@ -312,16 +297,10 @@ fn a_chain_runs_across_pages_and_through_a_retag_and_back() {
         let mut links: Vec<Link> = Vec::new();
         assert_eq!(
             None,
-            walk(
-                pager,
-                HeapNo(HEAP_IDS[EMAIL]),
-                &HEAP_IDS.map(HeapNo),
-                first,
-                |l| {
-                    links.push(*l);
-                    false
-                }
-            )
+            walk(pager, db.ids[EMAIL], &db.ids, first, |l| {
+                links.push(*l);
+                false
+            })
             .unwrap()
         );
         assert_eq!(33, links.len());
@@ -330,17 +309,14 @@ fn a_chain_runs_across_pages_and_through_a_retag_and_back() {
         assert_eq!(Some(there), tail[0].header.next);
         assert!(tail[0].flags.contains(Flags::MOVED));
         assert_eq!(50, tail[0].header.xmax);
-        assert_eq!(
-            (there, HeapNo(HEAP_IDS[GOOGLE])),
-            (tail[1].tid, tail[1].heap)
-        );
+        assert_eq!((there, db.ids[GOOGLE]), (tail[1].tid, tail[1].heap));
         assert!(
             tail[1]
                 .flags
                 .contains(Flags::MOVED.with(Flags::RETAGGED_IN))
         );
         assert_eq!(Some(back), tail[1].header.next);
-        assert_eq!((back, HeapNo(HEAP_IDS[EMAIL])), (tail[2].tid, tail[2].heap));
+        assert_eq!((back, db.ids[EMAIL]), (tail[2].tid, tail[2].heap));
         assert_eq!(Flags::RETAGGED_IN, tail[2].flags);
         assert_eq!((50, 0, None), {
             let h = tail[2].header;
@@ -351,13 +327,9 @@ fn a_chain_runs_across_pages_and_through_a_retag_and_back() {
         for w in links.windows(2) {
             assert_eq!(Some(w[1].tid), w[0].header.next);
         }
-        let newest = walk(
-            pager,
-            HeapNo(HEAP_IDS[EMAIL]),
-            &HEAP_IDS.map(HeapNo),
-            first,
-            |l| l.header.next.is_none(),
-        )
+        let newest = walk(pager, db.ids[EMAIL], &db.ids, first, |l| {
+            l.header.next.is_none()
+        })
         .unwrap();
         assert_eq!(Some(back), newest.map(|l| l.tid));
     });
@@ -367,7 +339,7 @@ fn a_chain_runs_across_pages_and_through_a_retag_and_back() {
 fn a_heap_only_update_stays_on_its_page_and_flags_both_versions() {
     let mut sim = Sim::new(2, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, 4);
+        let (mut db, _) = Db::create(&rt, 4);
         let pager = &mut db.pager;
         let heap = &mut db.heaps[APPLE];
         let t = heap
@@ -407,7 +379,7 @@ fn a_heap_only_update_stays_on_its_page_and_flags_both_versions() {
 fn an_aborted_successor_is_replaced_by_the_next_writer() {
     let mut sim = Sim::new(3, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, 4);
+        let (mut db, _) = Db::create(&rt, 4);
         let pager = &mut db.pager;
         let row = vec![Value::I64(1), Value::Text("x".into()), Value::Bytes(vec![])];
         let t = db.heaps[EMAIL].insert(pager, 1, &row).unwrap();
@@ -431,7 +403,7 @@ fn an_aborted_successor_is_replaced_by_the_next_writer() {
 fn large_values_go_out_of_line_and_a_retag_keeps_their_pointers() {
     let mut sim = Sim::new(4, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, 64);
+        let (mut db, _) = Db::create(&rt, 64);
         let pager = &mut db.pager;
         let large = db.heaps[EMAIL].large();
         let big: Vec<u8> = (0..50_000u32).map(|i| (i * 7 + i / 300) as u8).collect();
@@ -485,7 +457,7 @@ fn large_values_go_out_of_line_and_a_retag_keeps_their_pointers() {
 fn rows_too_large_for_a_page_are_refused() {
     let mut sim = Sim::new(5, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, 4);
+        let (mut db, _) = Db::create(&rt, 4);
         let pager = &mut db.pager;
         let large = db.heaps[EMAIL].large();
         let over = |e: Result<_, Error>| match e {
@@ -515,7 +487,7 @@ fn rows_too_large_for_a_page_are_refused() {
 fn the_directory_splits_and_its_root_stays() {
     let mut sim = Sim::new(6, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, 3);
+        let (mut db, _) = Db::create(&rt, 3);
         let root = db.heaps[EMAIL].root();
         let mut tids = Vec::new();
         for key in 0..200 {
@@ -546,7 +518,7 @@ fn the_directory_splits_and_its_root_stays() {
 fn an_insert_past_filled_pages_finds_room_under_another_directory_entry() {
     let mut sim = Sim::new(12, Config::default());
     finished(&mut sim, |rt| {
-        let (db, _) = Db::create(rt, 2);
+        let (db, _) = Db::create(&rt, 2);
         let heap = &db.heaps[EMAIL];
         let wide = |key: i64| {
             vec![
@@ -620,7 +592,7 @@ fn settle_all_visible(db: &Db, heap: usize, gone: u64) {
 fn writes_between_all_visible_pages_of_deep_directories_stay_within_the_latch_bound() {
     let mut sim = Sim::new(13, Config::default());
     finished(&mut sim, |rt| {
-        let (db, _) = Db::create(rt, 2);
+        let (db, _) = Db::create(&rt, 2);
         let mut rows = BTreeMap::new();
         for key in 0..80 {
             let h = if key % 2 == 0 { EMAIL } else { GOOGLE };
@@ -674,7 +646,7 @@ fn writes_between_all_visible_pages_of_deep_directories_stay_within_the_latch_bo
 fn a_reopened_heap_finds_room_through_its_directory() {
     let mut sim = Sim::new(7, Config::default());
     finished(&mut sim, |rt| {
-        let (db, roots) = Db::create(rt, 3);
+        let (db, _) = Db::create(&rt, 3);
         for key in 0..40 {
             let row = vec![
                 Value::I64(key),
@@ -686,8 +658,8 @@ fn a_reopened_heap_finds_room_through_its_directory() {
         let pages = db.heaps[EMAIL].pages(&db.pager).unwrap().len();
         let reopened = Heap::open(
             &db.pager,
-            HEAP_IDS[EMAIL],
-            roots.heaps[EMAIL],
+            db.ids[EMAIL].0,
+            db.heaps[EMAIL].root(),
             row_type(EMAIL),
             db.heaps[EMAIL].large(),
         )
@@ -707,7 +679,7 @@ fn a_reopened_heap_finds_room_through_its_directory() {
 fn a_heap_scan_builds_a_batch_that_reads_back_its_rows() {
     let mut sim = Sim::new(8, Config::default());
     finished(&mut sim, |rt| {
-        let (db, _) = Db::create(rt, 4);
+        let (db, _) = Db::create(&rt, 4);
         let ctor = |id, fields| CtorType {
             id: CtorId(id),
             fields,
@@ -779,7 +751,7 @@ fn counter_type(note: bool) -> Vec<FieldType> {
 fn an_old_format_page_is_read_as_it_is_and_converted_on_insert() {
     let mut sim = Sim::new(8, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, 4);
+        let (mut db, _) = Db::create(&rt, 4);
         let pager = &mut db.pager;
         let large = db.heaps[EMAIL].large();
         let mut heap = Heap::create(pager, 30, counter_type(false), large).unwrap();
@@ -828,7 +800,7 @@ fn an_old_format_page_is_read_as_it_is_and_converted_on_insert() {
 fn a_page_whose_rows_outgrow_it_keeps_its_format_and_takes_no_insert() {
     let mut sim = Sim::new(9, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, 4);
+        let (mut db, _) = Db::create(&rt, 4);
         let pager = &mut db.pager;
         let large = db.heaps[EMAIL].large();
         let mut heap = Heap::create(pager, 31, counter_type(false), large).unwrap();
@@ -956,7 +928,6 @@ fn a_conversion_moving_many_values_out_of_line_fits_a_pool_of_a_few_frames() {
 
 #[test]
 fn a_crash_while_a_conversion_counts_its_values_leaves_no_count_too_low() {
-    silence_fatal_panics();
     let (mut crashes, mut left) = (0, 0);
     for step in 0..24u64 {
         let mut sim = Sim::new(step, Config::default());
@@ -975,33 +946,39 @@ fn a_crash_while_a_conversion_counts_its_values_leaves_no_count_too_low() {
             heap.add_format(note_type(), Box::new(lengthen)).unwrap();
             (pager, heap)
         };
-        sim.crash_at(sim.now() + Duration::from_micros(9_000 + step * 1100));
-        let outcome = run_process(&mut sim, |rt| {
-            let (pager, heap) = open(rt);
-            let fresh = [Value::I64(NOTES), Value::Bytes(vec![2; 8])];
-            heap.insert(&pager, 2, &fresh).unwrap();
-            pager.flush_log();
-        });
-        if outcome == Outcome::Crashed {
-            crashes += 1;
-        }
-        let mut problems = Vec::new();
-        finished(&mut sim, |rt| {
-            let (pager, heap) = open(rt);
-            let inventory = notes_inventory(&heap);
-            left += usize::from(!adtb::verify::verify(&pager, &inventory).findings.is_empty());
-            problems = verify_after_crash(&pager, &inventory);
-            let mut rows = 0;
-            heap.scan(&pager, |v| {
-                rows += 1;
-                if key_of(&v.row) < NOTES {
-                    assert_eq!(Value::Bytes(long_note(&v.row)), v.row[1]);
+        let out = crash_loop(
+            &mut sim,
+            step,
+            Faults::none(512),
+            Rounds::new(1, 9_000, 26_400),
+            |r| {
+                r.crash(|rt| {
+                    let (pager, heap) = open(rt);
+                    let fresh = [Value::I64(NOTES), Value::Bytes(vec![2; 8])];
+                    heap.insert(&pager, 2, &fresh).unwrap();
+                    pager.flush_log();
+                });
+            },
+            |rt, _| {
+                let (pager, heap) = open(rt);
+                let inventory = notes_inventory(&heap);
+                left += usize::from(!adtb::verify::verify(&pager, &inventory).findings.is_empty());
+                let mut problems = verify_after_crash(&pager, &inventory);
+                let mut rows = 0;
+                heap.scan(&pager, |v| {
+                    rows += 1;
+                    if key_of(&v.row) < NOTES && Value::Bytes(long_note(&v.row)) != v.row[1] {
+                        problems.push(format!("note {} lost its lengthened value", key_of(&v.row)));
+                    }
+                })
+                .unwrap();
+                if rows < NOTES as usize {
+                    problems.push(format!("{rows} rows"));
                 }
-            })
-            .unwrap();
-            assert!(rows >= NOTES as usize, "step {step}: {rows} rows");
-        });
-        assert!(problems.is_empty(), "step {step}: {problems:#?}");
+                Reopen::found(problems)
+            },
+        );
+        crashes += out.crashed();
     }
     eprintln!("{crashes} of 24 runs crashed, {left} left findings for repair");
     assert!(crashes > 4, "{crashes} crashes");
@@ -1018,7 +995,6 @@ fn unsettled(pager: &Pager<SimRuntime>, inventory: &Inventory) -> bool {
 
 #[test]
 fn a_crash_while_pruning_raises_entries_leaves_what_repair_mends() {
-    silence_fatal_panics();
     let (mut crashes, mut caught) = (0, 0);
     for step in 0..40u64 {
         let mut sim = Sim::new(
@@ -1030,7 +1006,7 @@ fn a_crash_while_pruning_raises_entries_leaves_what_repair_mends() {
         );
         let mut roots = None;
         finished(&mut sim, |rt| {
-            let (db, r) = Db::create(rt, 2);
+            let (db, r) = Db::create(&rt, 2);
             let wide = |key: i64| {
                 vec![
                     Value::I64(key),
@@ -1049,9 +1025,8 @@ fn a_crash_while_pruning_raises_entries_leaves_what_repair_mends() {
             roots = Some(r);
         });
         let roots = roots.unwrap();
-        sim.crash_at(sim.now() + Duration::from_micros(85_000 + step * 3_500));
-        let outcome = run_process(&mut sim, |rt| {
-            let db = Arc::new(Db::open(rt.clone(), roots).unwrap());
+        let prune = |rt: SimRuntime| {
+            let db = Arc::new(Db::of(Storage::reopen(&rt, &roots).unwrap()));
             let done = Arc::new(AtomicBool::new(false));
             let (d, stop, r) = (db.clone(), done.clone(), rt.clone());
             let flusher = rt.spawn("flusher", move || {
@@ -1074,22 +1049,29 @@ fn a_crash_while_pruning_raises_entries_leaves_what_repair_mends() {
             }
             done.store(true, Ordering::Relaxed);
             rt.join(flusher);
-        });
-        crashes += usize::from(outcome == Outcome::Crashed);
-        let mut problems = Vec::new();
-        finished(&mut sim, |rt| {
-            let db = Db::open(rt, roots).unwrap();
-            let inventory = Inventory {
-                sums: vec![Sum {
-                    heaps: (0..3).map(|h| (CtorId(h as u32), &db.heaps[h])).collect(),
-                    indexes: Vec::new(),
-                }],
-                ..Inventory::default()
-            };
-            caught += usize::from(unsettled(&db.pager, &inventory));
-            problems = verify_after_crash(&db.pager, &inventory);
-        });
-        assert!(problems.is_empty(), "step {step}: {problems:#?}");
+        };
+        let out = crash_loop(
+            &mut sim,
+            step,
+            Faults::none(512),
+            Rounds::new(1, 85_000, 140_000),
+            |r| {
+                r.crash(prune);
+            },
+            |rt, _| {
+                let db = Db::of(Storage::reopen(&rt, &roots).unwrap());
+                let inventory = Inventory {
+                    sums: vec![Sum {
+                        heaps: (0..3).map(|h| (CtorId(h as u32), &db.heaps[h])).collect(),
+                        indexes: Vec::new(),
+                    }],
+                    ..Inventory::default()
+                };
+                caught += usize::from(unsettled(&db.pager, &inventory));
+                Reopen::found(verify_after_crash(&db.pager, &inventory))
+            },
+        );
+        crashes += out.crashed();
     }
     eprintln!("{crashes} of 40 runs crashed, {caught} left entries to settle");
     assert!(crashes > 16, "{crashes} crashes");
@@ -1098,30 +1080,40 @@ fn a_crash_while_pruning_raises_entries_leaves_what_repair_mends() {
 
 /// What the client knows, kept outside the simulated process so it survives crashes.
 struct World {
-    roots: Roots,
+    roots: Layout,
     next_xid: u64,
     next_key: i64,
     ops: BTreeMap<u64, Op>,
-    committed: BTreeSet<u64>,
-    acked: BTreeSet<u64>,
-    in_doubt: BTreeSet<u64>,
 }
 
-fn workload(rt: SimRuntime, world: &Mutex<World>, steps: usize) {
-    let roots = world.lock().unwrap().roots;
-    let Some(mut db) = Db::open(rt.clone(), roots) else {
+impl World {
+    /// Returns every transaction `ledger` holds as acknowledged, or as in doubt when `logged`
+    /// holds it.
+    fn committed(&self, ledger: &Ledger, logged: &BTreeSet<u64>) -> BTreeSet<u64> {
+        self.ops
+            .keys()
+            .copied()
+            .filter(|x| match ledger.fate(*x) {
+                Some(LedgerFate::Acknowledged) => true,
+                Some(LedgerFate::InDoubt) => logged.contains(x),
+                _ => false,
+            })
+            .collect()
+    }
+}
+
+fn workload(rt: SimRuntime, world: &Mutex<World>, ledger: &Ledger, steps: usize) {
+    let roots = world.lock().unwrap().roots.clone();
+    let Some(mut db) = Storage::reopen(&rt, &roots).ok().map(Db::of) else {
         return;
     };
-    let committed = world.lock().unwrap().committed.clone();
+    let committed = world.lock().unwrap().committed(ledger, &BTreeSet::new());
     let (mut live, _) = current(&mut db, |x| committed.contains(&x));
     let mut unacked = Vec::new();
     let ack = |db: &mut Db, unacked: &mut Vec<u64>| {
         db.pager.flush_log();
-        let mut w = world.lock().unwrap();
         for x in unacked.drain(..) {
-            w.in_doubt.remove(&x);
-            w.committed.insert(x);
-            w.acked.insert(x);
+            ledger.acknowledge(x);
         }
     };
     let mut next = || rt.next_u64();
@@ -1134,9 +1126,9 @@ fn workload(rt: SimRuntime, world: &Mutex<World>, steps: usize) {
                     w.next_xid += 1;
                     let xid = w.next_xid;
                     w.ops.insert(xid, op.clone());
-                    w.in_doubt.insert(xid);
                     (op, xid)
                 };
+                ledger.submit(xid);
                 perform(&mut db, &mut live, &op, xid).expect("perform");
                 db.pager.commit(xid, &[], |_| {}).unwrap();
                 unacked.push(xid);
@@ -1152,33 +1144,24 @@ fn workload(rt: SimRuntime, world: &Mutex<World>, steps: usize) {
     ack(&mut db, &mut unacked);
 }
 
-/// Reopen the database and check it against every committed operation; settle the commits left
-/// in doubt by what the log holds.
-fn inspect(rt: SimRuntime, world: &Mutex<World>) -> Vec<String> {
-    let roots = world.lock().unwrap().roots;
-    let Some(mut db) = Db::open(rt, roots) else {
-        return vec!["open failed".into()];
+/// Reopen the database and check it against every committed operation, those left in doubt
+/// counted committed when the log holds them.
+fn inspect(rt: SimRuntime, world: &Mutex<World>, ledger: &Ledger) -> Reopen {
+    let roots = world.lock().unwrap().roots.clone();
+    let Some(mut db) = Storage::reopen(&rt, &roots).ok().map(Db::of) else {
+        return Reopen::found(vec!["open failed".into()]);
     };
     let v = db.pager.verify();
     let mut problems: Vec<String> = v.findings.iter().map(|f| format!("{f:?}")).collect();
     let logged: BTreeSet<u64> = v.commits.into_iter().collect();
-    let mut w = world.lock().unwrap();
-    for x in w.acked.iter().filter(|x| !logged.contains(x)) {
-        problems.push(format!("acknowledged {x} is not in the log"));
-    }
-    let doubt: Vec<u64> = std::mem::take(&mut w.in_doubt).into_iter().collect();
-    for x in doubt {
-        if logged.contains(&x) {
-            w.committed.insert(x);
-        }
-    }
+    let w = world.lock().unwrap();
+    let committed = w.committed(ledger, &logged);
     let mut expected = BTreeMap::new();
     for (xid, op) in &w.ops {
-        if w.committed.contains(xid) {
+        if committed.contains(xid) {
             replay(&mut expected, op);
         }
     }
-    let committed = w.committed.clone();
     drop(w);
     let (found, dupes) = current(&mut db, |x| committed.contains(&x));
     problems.extend(dupes);
@@ -1196,24 +1179,16 @@ fn inspect(rt: SimRuntime, world: &Mutex<World>) -> Vec<String> {
         }
     }
     problems.extend(verify(&mut db));
-    let inventory = Inventory {
-        sums: vec![Sum {
-            heaps: (0..3).map(|h| (CtorId(h as u32), &db.heaps[h])).collect(),
-            indexes: Vec::new(),
-        }],
-        ..Inventory::default()
-    };
-    problems.extend(verify_after_crash(&db.pager, &inventory));
-    problems
+    problems.extend(db.verify_file());
+    Reopen::new(logged, problems)
 }
 
 #[must_use]
-fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> usize {
-    silence_fatal_panics();
+fn crash_rounds(seed: u64, faults: Faults, rounds: usize) -> usize {
     let mut sim = Sim::new(seed, Config::default());
     let mut roots = None;
     finished(&mut sim, |rt| {
-        let (db, r) = Db::create(rt, 3);
+        let (db, r) = Db::create(&rt, 3);
         db.pager.checkpoint();
         roots = Some(r);
     });
@@ -1222,31 +1197,27 @@ fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> usize {
         next_xid: 0,
         next_key: 0,
         ops: BTreeMap::new(),
-        committed: BTreeSet::new(),
-        acked: BTreeSet::new(),
-        in_doubt: BTreeSet::new(),
     }));
-    let mut crashes = 0;
-    for round in 0..rounds {
-        sim.set_faults(faults);
-        let at = sim.now() + crash_after(seed, round as u64, 2000, 80_000);
-        sim.crash_at(at);
-        let w = world.clone();
-        if run_process(&mut sim, |rt| workload(rt, &w, 300)) == Outcome::Crashed {
-            crashes += 1;
-        }
-        sim.set_faults(Faults::none(512));
-        let mut problems = Vec::new();
-        let w = world.clone();
-        finished(&mut sim, |rt| problems = inspect(rt, &w));
-        assert!(
-            problems.is_empty(),
-            "seed {seed} round {round}: {problems:#?}"
-        );
-    }
+    let rounds = Rounds::new(rounds, 2000, 80_000);
+    let out = crash_loop(
+        &mut sim,
+        seed,
+        faults,
+        rounds,
+        |r| {
+            let (l, w) = (r.ledger().clone(), world.clone());
+            r.crash(|rt| workload(rt, &w, &l, 300));
+        },
+        |rt, ledger| inspect(rt, &world, ledger),
+    );
     let w = world.lock().unwrap();
-    assert!(!w.acked.is_empty(), "seed {seed} acknowledged nothing");
-    crashes
+    assert!(
+        w.ops
+            .keys()
+            .any(|x| out.ledger().fate(*x) == Some(LedgerFate::Acknowledged)),
+        "seed {seed} acknowledged nothing"
+    );
+    out.crashed()
 }
 
 #[test]
@@ -1254,7 +1225,7 @@ fn crashes_with_torn_writes_keep_every_committed_change() {
     const SEEDS: Range<u64> = 0..8;
     let crashes: usize = sweep(SEEDS)
         .map(|seed| {
-            crash_loop(
+            crash_rounds(
                 seed,
                 Faults {
                     torn_p: 0.5,
@@ -1272,7 +1243,7 @@ fn failed_writes_crash_and_recover_every_committed_change() {
     const SEEDS: Range<u64> = 100..106;
     let crashes: usize = sweep(SEEDS)
         .map(|seed| {
-            crash_loop(
+            crash_rounds(
                 seed,
                 Faults {
                     torn_p: 0.3,
@@ -1290,7 +1261,7 @@ fn failed_writes_crash_and_recover_every_committed_change() {
 fn readers_with_a_stale_page_list_meet_a_freed_page_another_allocation_reserved_as_freed() {
     let mut sim = Sim::new(12, Config::default());
     finished(&mut sim, |rt| {
-        let (db, _) = Db::create(rt, 2);
+        let (db, _) = Db::create(&rt, 2);
         let heap = &db.heaps[EMAIL];
         let wide = |key: i64| {
             vec![

@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use adtb::btree::{BTree, Entries};
 use adtb::runtime::{Entropy, Threads};
 use adtb::storage::{PageKind, Pager, Pid, Walk, kind};
-use adtb_sim::{Config, Outcome, Recording, Sim, SimRuntime};
+use adtb_sim::{Config, Recording, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 
 use adtb_simkit::crash;
@@ -15,7 +15,7 @@ use adtb_simkit::draw;
 use adtb_simkit::harness;
 use adtb_simkit::seeds;
 
-use crash::crash_after;
+use crash::{Reopen, Rounds, crash_loop};
 use draw::below;
 use harness::{PAGE, finished, options};
 use seeds::{share, sweep};
@@ -579,7 +579,7 @@ fn crash_at_a_flush(sim: &mut Sim, world: &Arc<Mutex<World>>, seed: u64, shape: 
 /// the rounds whose crash left a split for repair to finish, of those and of
 /// `cuts` runs cut at a log force inside an insert.
 #[must_use]
-fn threaded_crash_loop(seed: u64, rounds: usize, cuts: usize, shape: Shape) -> (usize, usize) {
+fn threaded_crash_rounds(seed: u64, rounds: usize, cuts: usize, shape: Shape) -> (usize, usize) {
     let mut sim = Sim::new(seed, crash_config());
     let world = Arc::new(Mutex::new(World {
         ops: vec![Vec::new(); THREADS],
@@ -594,57 +594,81 @@ fn threaded_crash_loop(seed: u64, rounds: usize, cuts: usize, shape: Shape) -> (
         pager.flush_log();
         w.lock().unwrap().root = Some(tree.root());
     });
-    let (mut crashes, mut repaired) = (0, 0);
-    for round in 0..rounds + cuts {
-        let cut = round % 2 == 1 && round < 2 * cuts;
-        if !cut {
-            let at = sim.now() + crash_after(seed, round as u64, 2_000, 150_000);
-            sim.crash_at(at);
-            let w = world.clone();
-            if sim.run(move |rt| crash_run(rt, &w, shape)) == Outcome::Crashed {
-                crashes += 1;
+    let mut repaired = 0;
+    let out = crash_loop(
+        &mut sim,
+        seed,
+        crash_config().faults,
+        Rounds::new(rounds + cuts, 2_000, 150_000),
+        |r| {
+            let round = r.index();
+            if round % 2 == 1 && round < 2 * cuts {
+                let sim = r.sim();
+                sim.set_faults(crash_config().faults);
+                crash_at_a_flush(sim, &world, seed * 1000 + round as u64, shape);
+            } else {
+                let w = world.clone();
+                r.crash(move |rt| crash_run(rt, &w, shape));
             }
-        } else {
-            crash_at_a_flush(&mut sim, &world, seed * 1000 + round as u64, shape);
+        },
+        |rt, _| reopen(rt, &world, shape, &mut repaired),
+    );
+    (out.crashed(), repaired)
+}
+
+/// Returns what checking the tree `world` holds in a reopened file finds wrong, counting in
+/// `repaired` a reopen that finished a split. The tree must verify, repair once and then not
+/// again, own every allocated page, and hold for each thread the entries of a prefix of its
+/// operations at least as long as the durable one, to which the thread's operations are then cut.
+fn reopen(rt: SimRuntime, world: &Mutex<World>, shape: Shape, repaired: &mut usize) -> Reopen {
+    let root = world.lock().unwrap().root.unwrap();
+    let (pager, _) = Pager::open(rt, &options(24)).expect("reopen");
+    let tree = BTree::open(root, OWNER);
+    let entries = match tree.verify(&pager) {
+        Ok(entries) => entries,
+        Err(e) => {
+            return Reopen::found(vec![format!("the tree fails its check: {e:?}")]);
         }
-        let root = world.lock().unwrap().root.unwrap();
-        let mut found = None;
-        finished(&mut sim, |rt| {
-            let (pager, _) = Pager::open(rt, &options(24)).expect("reopen");
-            let tree = BTree::open(root, OWNER);
-            let entries = tree
-                .verify(&pager)
-                .unwrap_or_else(|e| panic!("seed {seed} round {round}: {e:?}"));
-            repaired += usize::from(tree.repair(&pager).expect("repair") > 0);
-            assert_eq!(tree.repair(&pager), Ok(0), "seed {seed} round {round}");
-            assert_eq!(tree.verify(&pager).as_ref(), Ok(&entries));
-            let pages: BTreeSet<Pid> = tree.pages(&pager).unwrap().into_iter().collect();
-            let allocated: BTreeSet<Pid> = pager.allocated().unwrap().into_iter().collect();
-            assert_eq!(allocated, pages, "seed {seed} round {round}: pages leaked");
-            pager.flush_log();
-            found = Some(entries);
-        });
-        let ids: Vec<u32> = found.unwrap().iter().map(|e| shape.decode(e)).collect();
-        let mut w = world.lock().unwrap();
-        for t in 0..THREADS {
-            let mine: BTreeSet<u32> = ids
-                .iter()
-                .copied()
-                .filter(|id| (id >> 24) as usize == t)
-                .collect();
-            let kept = matching_prefix(&w.ops[t], w.durable[t], &mine).unwrap_or_else(|| {
-                panic!(
-                    "seed {seed} round {round} thread {t}: {} entries match no prefix of {} operations from {}",
-                    mine.len(),
-                    w.ops[t].len(),
-                    w.durable[t]
-                )
-            });
-            w.ops[t].truncate(kept);
-            w.durable[t] = kept;
+    };
+    let mut problems = Vec::new();
+    *repaired += usize::from(tree.repair(&pager).expect("repair") > 0);
+    let again = tree.repair(&pager);
+    if again != Ok(0) {
+        problems.push(format!("a second repair answers {again:?}"));
+    }
+    if tree.verify(&pager).as_ref() != Ok(&entries) {
+        problems.push("the repaired tree holds other entries".into());
+    }
+    let pages: BTreeSet<Pid> = tree.pages(&pager).unwrap().into_iter().collect();
+    let allocated: BTreeSet<Pid> = pager.allocated().unwrap().into_iter().collect();
+    if allocated != pages {
+        problems.push(format!(
+            "pages leaked: allocated {allocated:?}, the tree's {pages:?}"
+        ));
+    }
+    pager.flush_log();
+    let ids: Vec<u32> = entries.iter().map(|e| shape.decode(e)).collect();
+    let mut w = world.lock().unwrap();
+    for t in 0..THREADS {
+        let mine: BTreeSet<u32> = ids
+            .iter()
+            .copied()
+            .filter(|id| (id >> 24) as usize == t)
+            .collect();
+        match matching_prefix(&w.ops[t], w.durable[t], &mine) {
+            Some(kept) => {
+                w.ops[t].truncate(kept);
+                w.durable[t] = kept;
+            }
+            None => problems.push(format!(
+                "thread {t}: {} entries match no prefix of {} operations from {}",
+                mine.len(),
+                w.ops[t].len(),
+                w.durable[t]
+            )),
         }
     }
-    (crashes, repaired)
+    Reopen::found(problems)
 }
 
 #[test]
@@ -657,7 +681,7 @@ fn threads_crashed_together_recover_a_prefix_of_each_threads_operations() {
         } else {
             Shape::Grouped
         };
-        let (c, r) = threaded_crash_loop(seed, 5, 2, shape);
+        let (c, r) = threaded_crash_rounds(seed, 5, 2, shape);
         crashes += c;
         repaired += r;
     }

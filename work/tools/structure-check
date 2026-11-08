@@ -47,6 +47,16 @@ count() {
   awk -F: -v row="$row" 'NF { print row, $1, $2 }' <<<"$out"
 }
 
+# Print `ROW PATH COUNT` for each file under directory $2 with matches of pattern $3, passing rg
+# the flags $4...
+count_under() {
+  local row=$1 dir=$2 pattern=$3 out
+  shift 3
+  [[ -d $dir ]] || return 0
+  out=$(rg --no-ignore --count-matches --no-heading -g '*.rs' "$@" -- "$pattern" "$dir" || [[ $? == 1 ]])
+  awk -F: -v row="$row" 'NF { print row, $1, $2 }' <<<"$out"
+}
+
 # Print `ROW PATH COUNT` of the field rows, for files in src directories.
 fields() {
   ((${#roots[@]})) || return 0
@@ -60,6 +70,11 @@ found_counts() {
     fields
     count xmin_xmax '\.(xmin|xmax)\b' 'crates/adtb/src/mvcc/**'
     count disallowed_methods 'clippy::disallowed_methods'
+    count crash_loops '\bfn \w*crash_loop\w*\b'
+    count crash_allows '\bfn allows\b'
+    count_under sim_test_opens crates/adtb-sim/tests '\bfn ((re)?open(ed|s|ing)?(_\w+)?|\w+_(re)?open(ed|s)?)(<[^>]*>)?\((?!\))|\blet (mut )?(re)?open(ed|s|ing)? = (move )?\||\bfn engine\b[^{;]*\{\s*(let \w+ = )?Engine::open' -P -U
+    count_under sim_test_damage crates/adtb-sim/tests '\bfn (flip|zeroed|damage|damaged_part)\b'
+    count_under sim_test_offsets crates/adtb-sim/tests '\* ?(\w+::|self\.|options\.)?(PAGE\w*|\w*_PAGE|page_size|8192|4096)\b|\b(PAGE\w*|\w*_PAGE|page_size|8192|4096)( as u(size|64))? ?\*|\.get_mut\((\w+::)?(NAME|FILE)\)'
   } | awk '
     { kind = ($2 ~ /(^|\/)tests\// || $2 ~ /(^|\/)tests\.rs$/ || $2 ~ /_tests\.rs$/) ? "test" : "prod"
       print $1, kind, $3, $2 }'
@@ -101,7 +116,7 @@ found=$(found_counts)
 awk -v list="$allowlist" '
   function note(msg) { print "structure-check: " msg; bad = 1 }
   BEGIN {
-    split("crate_fields pub_fields xmin_xmax disallowed_methods", names, " ")
+    split("crate_fields pub_fields xmin_xmax disallowed_methods crash_loops crash_allows sim_test_opens sim_test_damage sim_test_offsets", names, " ")
     for (i in names) row[names[i]] = 1
     while ((getline line < list) > 0) {
       if (line ~ /^[[:space:]]*(#|$)/) continue

@@ -13,6 +13,7 @@ use adtb::{CallOptions, Database, Error, FatalReason, Log};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::harness::finished;
+use adtb_simkit::open;
 use adtb_testkit::profile::{assert_reached, every_case};
 
 const FILE: &str = "directory_damage.adt";
@@ -30,10 +31,6 @@ const KIND: usize = 14;
 const BOUND: Duration = Duration::from_secs(5);
 
 type Files = BTreeMap<String, Vec<u8>>;
-
-fn open(rt: SimRuntime) -> Database<SimRuntime> {
-    Database::open_in(rt, FILE, &Log::new([APP]), &api::options(2)).unwrap()
-}
 
 fn text(db: &Database<SimRuntime>, query: &str) -> Result<Vec<String>, Error> {
     db.query_text(query, &[], &CallOptions::default())
@@ -53,7 +50,7 @@ fn insert(id: u32, name: &str) -> String {
 fn fixture() -> Files {
     let mut sim = Sim::new(1, Config::default());
     finished(&mut sim, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, FILE, &Log::new([APP]), &open::options(2));
         api::results(&db, &insert(1, "a"));
         api::results(&db, &insert(2, &large()));
         api::results(&db, r#"insert others { id: others.key(1), name: "o" }"#);
@@ -78,7 +75,7 @@ fn bounded(
     std::thread::spawn(move || {
         let mut sim = Sim::with_files(1, Config::default(), files);
         finished(&mut sim, |rt| {
-            let db = open(rt);
+            let db = open::opened(&rt, FILE, &Log::new([APP]), &open::options(2));
             body(&db);
             db.close().unwrap();
         });

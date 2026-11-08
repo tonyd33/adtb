@@ -3,6 +3,7 @@
 //! reopen with history kept.
 
 use adtb_simkit::api;
+use adtb_simkit::open;
 
 use std::time::SystemTime;
 
@@ -17,7 +18,8 @@ use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::types::{Base, Ty};
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use api::{options, run, sorted};
+use adtb_simkit::open::options;
+use api::{run, sorted};
 
 const STOCK: &str = r"module stock
 add module stock
@@ -35,14 +37,6 @@ rename field Item.Open.qty to count
 ";
 
 const NAMES: &str = "from i in items select i.name";
-
-fn open_with(rt: &SimRuntime, log: &Log) -> Database<SimRuntime> {
-    Database::open_in(rt.clone(), "stock.adt", log, &options(2)).expect("the database opens")
-}
-
-fn open(rt: &SimRuntime) -> Database<SimRuntime> {
-    open_with(rt, &Log::new([STOCK]))
-}
 
 /// Returns each row of the one result of `text`, sorted, or the rejection.
 fn read(db: &Database<SimRuntime>, text: &str) -> Result<Vec<String>, Error> {
@@ -132,7 +126,7 @@ fn unavailable(e: &Error) -> Position {
 /// first position returned and `ann` renamed `cy` and `bo` closed at the second, a safe snapshot
 /// kept after each.
 fn history(rt: &SimRuntime) -> (Database<SimRuntime>, Position, Position) {
-    let db = open(rt);
+    let db = open::opened(rt, "stock.adt", &Log::new([STOCK]), &options(2));
     keep(&db, "1h");
     let first = commit(
         &db,
@@ -164,7 +158,7 @@ fn with_history<T>(
 fn a_quiescent_commit_survives_a_crash_before_any_history_read() {
     let mut sim = Sim::new(27, Config::default());
     let committed = run(&mut sim, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, "stock.adt", &Log::new([STOCK]), &options(2));
         keep(&db, "1h");
         let committed = commit(
             &db,
@@ -174,7 +168,7 @@ fn a_quiescent_commit_survives_a_crash_before_any_history_read() {
         committed
     });
     run(&mut sim, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, "stock.adt", &Log::new([STOCK]), &options(2));
         assert_eq!(names(&["ann"]), rows(&db, &past_names(committed)));
         assert_eq!(
             vec![format!("{{ lsn: {} }}", committed.lsn)],
@@ -220,7 +214,7 @@ fn a_read_before_a_migration_that_rewrote_what_it_reads_is_unavailable() {
         first
     });
     run(&mut sim, |rt| {
-        let db = open_with(&rt, &Log::new([STOCK, RENAME]));
+        let db = open::opened(&rt, "stock.adt", &Log::new([STOCK, RENAME]), &options(2));
         mark(&db);
         let e = read(&db, &past_names(first)).expect_err("the items heaps are new");
         unavailable(&e);
@@ -243,7 +237,7 @@ fn history_survives_a_crash_and_reopen() {
         (first, second)
     });
     run(&mut sim, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, "stock.adt", &Log::new([STOCK]), &options(2));
         assert_eq!(names(&["ann", "bo"]), rows(&db, &past_names(first)));
         assert_eq!(names(&["bo", "cy"]), rows(&db, &past_names(second)));
         commit(&db, "delete i in items where key i == items.key(1)");

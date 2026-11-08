@@ -10,16 +10,19 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use adtb::runtime::{Clock, Runtime, Threads};
-use adtb::storage::{FIRST_EDITABLE, Options, PageKind, Pager, Pid, Quarantine};
+use adtb::storage::{FIRST_EDITABLE, HEADER_LEN, Options, PageKind, Pager, Pid, Quarantine};
 use adtb::{CreateOptions, Database, Error, FatalReason, Log, OpenOptions};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_simkit::damage::DataFile;
 use adtb_simkit::harness::finished;
+use adtb_simkit::open;
 use adtb_simkit::{api, common};
 use adtb_sys::os::{Backend, OsRuntime};
 use adtb_testkit::profile;
 
 const FILE: &str = "scrub.adt";
 const PAGE: usize = 8192;
+const DATA: DataFile = DataFile::new(FILE, PAGE);
 const APP: &str = r"module app
 add module app
 add type User = { id: Key users, name: Text }
@@ -38,12 +41,11 @@ fn app() -> Log {
     Log::new([APP])
 }
 
-fn open(rt: SimRuntime) -> Database<SimRuntime> {
-    let options = OpenOptions {
+fn unvacuumed() -> OpenOptions {
+    OpenOptions {
         testing: Knobs::without_background_vacuum(),
-        ..api::options(2)
-    };
-    Database::open_in(rt, FILE, &app(), &options).expect("the file opens")
+        ..open::options(2)
+    }
 }
 
 fn nap(rt: &SimRuntime, d: Duration) {
@@ -91,7 +93,7 @@ fn last_page(rt: &SimRuntime) -> Pid {
 fn rot(rt: &SimRuntime, page: Pid) {
     let mut io = rt.io();
     let (file, _) = common::open(rt, &mut io, FILE, false).expect("the file");
-    let at = page.0 * PAGE as u64;
+    let at = DATA.range(page).start as u64;
     let mut bytes = common::read(rt, &mut io, file, at, PAGE).expect("the page");
     bytes[300] ^= 0x10;
     common::write(rt, &mut io, file, at, &bytes).expect("the write");
@@ -124,7 +126,7 @@ fn seeded(seed: u64, users: i64, settings: &[(&str, &str)]) -> (Files, Pid) {
     let mut sim = Sim::new(seed, Config::default());
     let mut page = None;
     finished(&mut sim, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         for (every, io) in settings {
             set_interval(&db, every);
             set_io(&db, io);
@@ -140,7 +142,7 @@ fn seeded(seed: u64, users: i64, settings: &[(&str, &str)]) -> (Files, Pid) {
 fn rot_is_found_and_marked_within_an_interval_with_no_call_touching_it() {
     let mut sim = Sim::new(1, Config::default());
     api::run(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         set_interval(&db, "Some { value: 1h }");
         insert(&db, 0, 5);
         flush(&db);
@@ -169,7 +171,7 @@ fn rot_is_found_and_marked_within_an_interval_with_no_call_touching_it() {
 fn rot_on_a_page_the_pool_holds_is_found_from_the_file() {
     let mut sim = Sim::new(2, Config::default());
     api::run(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         set_interval(&db, "Some { value: 1h }");
         insert(&db, 0, 5);
         flush(&db);
@@ -188,7 +190,7 @@ fn a_lost_write_is_a_stale_page_finding() {
     let (older, page) = seeded(3, 3, &[("Some { value: 1h }", "0.1")]);
     let mut sim = Sim::with_files(3, Config::default(), older.clone());
     finished(&mut sim, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         api::results(
             &db,
             r#"update u in users where key u == users.key(1) set User { u with name: "newer" }"#,
@@ -196,12 +198,10 @@ fn a_lost_write_is_a_stale_page_finding() {
         db.close().expect("the close");
     });
     let mut files = sim.files();
-    let at = page.0 as usize * PAGE;
-    files.get_mut(FILE).expect("the file")[at..at + PAGE]
-        .copy_from_slice(&older[FILE][at..at + PAGE]);
+    DATA.replace(&mut files, page, DATA.page(&older, page));
     let mut sim = Sim::with_files(3, Config::default(), files);
     api::run(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         nap(&rt, Duration::from_secs(3600 + 60));
         let rows = found(&db);
         assert!(rows.iter().any(|r| r.starts_with("StalePage")), "{rows:?}");
@@ -212,7 +212,7 @@ fn a_lost_write_is_a_stale_page_finding() {
 fn a_second_pass_duplicates_no_row_and_a_healed_scope_is_left_to_its_own_run() {
     let mut sim = Sim::new(4, Config::default());
     api::run(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         set_interval(&db, "Some { value: 10min }");
         insert(&db, 0, 5);
         flush(&db);
@@ -242,7 +242,7 @@ fn findings_of_a_scrub_are_kept_across_a_reopen_with_no_second_row() {
     let mut sim = Sim::with_files(5, Config::default(), files);
     let mut before = Vec::new();
     api::run(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         rot(&rt, page);
         nap(&rt, Duration::from_secs(660));
         before = found(&db);
@@ -250,7 +250,7 @@ fn findings_of_a_scrub_are_kept_across_a_reopen_with_no_second_row() {
         db.close().expect("the close");
     });
     api::run(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         assert_eq!(before, found(&db), "the row is kept");
         nap(&rt, Duration::from_secs(1800));
         assert_eq!(before, found(&db), "the pass after a reopen adds no row");
@@ -260,19 +260,18 @@ fn findings_of_a_scrub_are_kept_across_a_reopen_with_no_second_row() {
 #[test]
 fn a_full_pass_drops_a_row_it_no_longer_finds() {
     let (files, page) = seeded(16, 5, &[("Some { value: 10min }", "1.0")]);
-    let clean = files[FILE].clone();
+    let clean = files.clone();
     let mut sim = Sim::with_files(16, Config::default(), files);
     api::run(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         rot(&rt, page);
         nap(&rt, Duration::from_secs(660));
         assert_eq!(1, found(&db).len());
         db.close().expect("the close");
     });
-    let at = page.0 as usize * PAGE;
     let mut sim = Sim::with_files(16, Config::default(), sim.files());
     api::run(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         assert_eq!(1, found(&db).len(), "the row outlives the reopen");
         let t = db.testing();
         let from = t
@@ -286,7 +285,7 @@ fn a_full_pass_drops_a_row_it_no_longer_finds() {
         t.plant(Plant::Write {
             page: from,
             at: FIRST_EDITABLE,
-            bytes: clean[at + FIRST_EDITABLE..at + PAGE].to_vec(),
+            bytes: DATA.page(&clean, page)[FIRST_EDITABLE..].to_vec(),
         })
         .unwrap();
         t.plant(Plant::Replace { page, from }).unwrap();
@@ -298,13 +297,12 @@ fn a_full_pass_drops_a_row_it_no_longer_finds() {
 #[test]
 fn a_pass_resumed_after_a_restart_keeps_what_its_first_part_found() {
     let (mut rotted, page) = seeded(17, 5, &[("Some { value: 1h }", "0.00001")]);
-    let at = page.0 as usize * PAGE;
-    rotted.get_mut(FILE).expect("the file")[at + 300] ^= 0x10;
+    DATA.flip(&mut rotted, page, 300 - HEADER_LEN);
     let crash = time_cursor_passes(17, &rotted, page) + Duration::from_secs(1);
     let mut sim = Sim::with_files(17, Config::default(), rotted);
     sim.crash_at(adtb::runtime::Instant::from_nanos(crash.as_nanos() as u64));
     let outcome = sim.run(|rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         loop {
             nap(&rt, Duration::from_secs(60));
             db.testing().scrub();
@@ -313,7 +311,7 @@ fn a_pass_resumed_after_a_restart_keeps_what_its_first_part_found() {
     assert_eq!(Outcome::Crashed, outcome);
     let mut sim = Sim::with_files(17, Config::default(), sim.files());
     api::run(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         let before = found(&db);
         assert_eq!(1, before.len(), "the row was kept: {before:?}");
         let resumed = db.testing().scrub().flatten().expect("an unfinished pass");
@@ -332,7 +330,7 @@ fn a_database_marked_whole_writes_nothing_past_the_mark() {
     let mut status_page = None;
     let mut held = 0;
     finished(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         set_interval(&db, "Some { value: 10min }");
         insert(&db, 0, 3);
         let status = db
@@ -363,7 +361,7 @@ fn a_database_marked_whole_writes_nothing_past_the_mark() {
     let status = status_page.expect("the page");
     let mut users = None;
     finished(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         users = Some(users_page(&db));
         let probe = db.testing().probe();
         let commits = probe.logged_commits();
@@ -408,7 +406,7 @@ fn time_cursor_passes(seed: u64, files: &Files, page: Pid) -> Duration {
     let mut sim = Sim::with_files(seed, Config::default(), files.clone());
     let mut at = None;
     api::run(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         while at.is_none() {
             nap(&rt, Duration::from_secs(60));
             if db.testing().scrub().flatten().is_some_and(|p| p > page) {
@@ -425,7 +423,7 @@ fn grown(seed: u64, files: Files, from: i64, to: i64) -> (Files, Pid, Pid) {
     let mut sim = Sim::with_files(seed, Config::default(), files);
     let mut out = None;
     finished(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         for chunk in (from..to).collect::<Vec<_>>().chunks(100) {
             let text: String = chunk
                 .iter()
@@ -455,7 +453,7 @@ fn a_restart_in_the_middle_of_a_pass_resumes_at_or_before_and_finds_rot_behind_i
     let mut saved = None;
     sim.crash_at(adtb::runtime::Instant::from_nanos(crash.as_nanos() as u64));
     let outcome = sim.run(|rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         loop {
             nap(&rt, Duration::from_secs(60));
             saved = db.testing().scrub().flatten().or(saved);
@@ -464,11 +462,10 @@ fn a_restart_in_the_middle_of_a_pass_resumes_at_or_before_and_finds_rot_behind_i
     assert_eq!(Outcome::Crashed, outcome);
     let saved = saved.expect("a long pass saves its cursor while it runs");
     let mut files = sim.files();
-    let at = page.0 as usize * PAGE;
-    files.get_mut(FILE).expect("the file")[at + 300] ^= 0x10;
+    DATA.flip(&mut files, page, 300 - HEADER_LEN);
     let mut sim = Sim::with_files(7, Config::default(), files);
     api::run(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         let resumed = db
             .testing()
             .scrub()
@@ -504,12 +501,12 @@ fn short_opens_complete_a_pass() {
     while !seen.iter().any(Option::is_none) {
         assert!(seen.len() < 30, "no pass ended: {seen:?}");
         finished(&mut sim, |rt| {
-            let db = open(rt.clone());
+            let db = open::opened(&rt, FILE, &app(), &unvacuumed());
             nap(&rt, Duration::from_secs(1));
             db.close().expect("the close");
         });
         finished(&mut sim, |rt| {
-            let db = open(rt);
+            let db = open::opened(&rt, FILE, &app(), &unvacuumed());
             seen.push(db.testing().scrub().flatten());
             db.close().expect("the close");
         });
@@ -526,7 +523,7 @@ fn short_opens_complete_a_pass() {
 fn a_scrub_set_to_none_reads_nothing_until_it_is_set_again() {
     let mut sim = Sim::new(9, Config::default());
     api::run(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         set_interval(&db, "None");
         insert(&db, 0, 5);
         flush(&db);
@@ -547,7 +544,7 @@ fn a_file_opened_under_none_starts_no_worker_until_the_setting_changes() {
     let (files, page) = seeded(10, 5, &[("None", "0.1")]);
     let mut sim = Sim::with_files(10, Config::default(), files);
     api::run(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         rot(&rt, page);
         nap(&rt, Duration::from_secs(3600));
         assert_eq!(Vec::<String>::new(), found(&db));
@@ -561,7 +558,7 @@ fn a_file_opened_under_none_starts_no_worker_until_the_setting_changes() {
 fn a_shorter_interval_wakes_a_sleeping_worker() {
     let mut sim = Sim::new(11, Config::default());
     api::run(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         insert(&db, 0, 5);
         flush(&db);
         rot(&rt, users_page(&db));
@@ -581,7 +578,7 @@ fn a_shorter_interval_wakes_a_sleeping_worker() {
 fn a_job_row_shows_only_while_a_pass_runs() {
     let mut sim = Sim::new(12, Config::default());
     api::run(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         set_io(&db, "0.001");
         set_interval(&db, "Some { value: 1h }");
         assert_eq!(
@@ -620,7 +617,7 @@ fn pass_time(io: &str) -> (Duration, u64) {
     let mut sim = Sim::with_files(13, Config::default(), files);
     let mut out = None;
     api::run(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         nap(&rt, Duration::from_secs(3599));
         let started = loop {
             if let Some(us) = job_started(&db) {
@@ -658,7 +655,7 @@ fn the_budget_holds_on_the_simulated_clock() {
 fn a_process_ending_with_the_worker_asleep_does_not_move_the_clock() {
     let mut sim = Sim::new(14, Config::default());
     finished(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         nap(&rt, Duration::from_secs(1));
         db.close().expect("the close");
     });
@@ -674,12 +671,12 @@ fn a_saved_cursor_of_an_idle_database_writes_nothing_on_close() {
     let (files, _) = seeded(15, 2, &[]);
     let mut sim = Sim::with_files(15, Config::default(), files);
     finished(&mut sim, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         assert_eq!(None, db.testing().scrub());
         db.close().expect("the close");
     });
     finished(&mut sim, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         assert_eq!(None, db.testing().scrub(), "nothing has run to save");
         db.close().expect("the close");
     });
@@ -728,9 +725,9 @@ fn a_real_file_rots_and_the_worker_finds_it() {
     text(&db, "set setting VacuumBudget = { io: 1.0, cpu: 1.0 }");
     flush(&db);
     let page = users_page(&db);
-    let at = page.0 * PAGE as u64;
+    let at = DATA.range(page).start;
     let mut bytes = std::fs::read(&path).expect("the file");
-    bytes[at as usize + 300] ^= 0x10;
+    bytes[at + 300] ^= 0x10;
     std::fs::write(&path, &bytes).expect("the rot");
     text(
         &db,
@@ -841,7 +838,7 @@ fn scrubbing_under_real_writers_finds_nothing() {
 fn a_parked_thread_beside_an_open_database_is_a_deadlock() {
     let mut sim = Sim::new(40, Config::default());
     sim.run(|rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         rt.park();
         drop(db);
     });
@@ -851,7 +848,7 @@ fn a_parked_thread_beside_an_open_database_is_a_deadlock() {
 fn a_database_never_closed_does_not_move_the_clock_at_the_end() {
     let mut sim = Sim::new(41, Config::default());
     finished(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         nap(&rt, Duration::from_secs(1));
         std::mem::forget(db);
     });
@@ -877,7 +874,7 @@ fn a_pass_reading_an_old_log_does_not_refuse_a_page_healed_since() {
     let mut root = None;
     let mut sim = Sim::new(42, Config::default());
     finished(&mut sim, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         set_interval(&db, "None");
         insert(&db, 0, 3);
         root = Some(key(&db));
@@ -886,17 +883,15 @@ fn a_pass_reading_an_old_log_does_not_refuse_a_page_healed_since() {
     let root = root.expect("the root");
     let older = sim.files();
     finished(&mut sim, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         insert(&db, 3, 4);
         db.close().expect("the close");
     });
-    let at = root.0 as usize * PAGE;
     let mut files = sim.files();
-    files.get_mut(FILE).expect("the file")[at..at + PAGE]
-        .copy_from_slice(&older[FILE][at..at + PAGE]);
+    DATA.replace(&mut files, root, DATA.page(&older, root));
     let mut sim = Sim::with_files(42, Config::default(), files);
     finished(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         let refused = api::failure(&db, r#"insert users { id: users.key(4), name: "user" }"#);
         let what = "app::users key id".to_owned();
         let reason = FatalReason::Quarantined { what };
@@ -948,7 +943,7 @@ fn a_pass_reading_an_old_log_does_not_refuse_a_page_healed_since() {
 fn rot_on_a_free_page_is_no_finding() {
     let mut sim = Sim::new(43, Config::default());
     finished(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         set_interval(&db, "Some { value: 10min }");
         let t = db.testing();
         let page = t
@@ -973,7 +968,7 @@ fn rot_on_a_free_page_then_reused_is_no_finding_and_no_mark() {
     for seed in 44..48 {
         let mut sim = Sim::new(seed, Config::default());
         finished(&mut sim, |rt| {
-            let db = open(rt.clone());
+            let db = open::opened(&rt, FILE, &app(), &unvacuumed());
             set_interval(&db, "None");
             let t = db.testing();
             let page = t
@@ -1012,7 +1007,7 @@ fn a_budget_too_small_to_compute_waits_and_rechecks() {
     for (seed, io) in [(48, "1e-300"), (52, "1e-20")] {
         let mut sim = Sim::new(seed, Config::default());
         finished(&mut sim, |rt| {
-            let db = open(rt.clone());
+            let db = open::opened(&rt, FILE, &app(), &unvacuumed());
             insert(&db, 0, 3);
             set_interval(&db, "Some { value: 1min }");
             set_io(&db, io);
@@ -1038,7 +1033,7 @@ fn a_budget_too_small_to_compute_waits_and_rechecks() {
 fn a_budget_too_small_to_compute_reads_little() {
     let mut sim = Sim::new(49, Config::default());
     finished(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         set_io(&db, "1e-300");
         set_interval(&db, "Some { value: 1h }");
         nap(&rt, Duration::from_secs(3 * 3600 + 600));
@@ -1054,7 +1049,7 @@ fn a_budget_too_small_to_compute_reads_little() {
 fn a_panic_in_the_worker_leaves_a_finding_and_the_engine_running() {
     let mut sim = Sim::new(50, Config::default());
     finished(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         insert(&db, 0, 3);
         set_io(&db, "0.001");
         set_interval(&db, "Some { value: 0s }");
@@ -1086,7 +1081,7 @@ fn a_panic_in_the_worker_leaves_a_finding_and_the_engine_running() {
 fn a_lookalike_fatal_message_is_an_ordinary_worker_failure() {
     let mut sim = Sim::new(51, Config::default());
     finished(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         set_interval(&db, "Some { value: 0s }");
         db.testing()
             .plant(Plant::Panic {
@@ -1126,7 +1121,7 @@ fn a_caught_panic_keeps_what_the_pass_found_beside_its_finding_across_a_reopen()
         );
     };
     finished(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         set_interval(&db, "Some { value: 1h }");
         insert(&db, 0, 3);
         flush(&db);
@@ -1144,7 +1139,7 @@ fn a_caught_panic_keeps_what_the_pass_found_beside_its_finding_across_a_reopen()
         db.close().expect("the close");
     });
     finished(&mut sim, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         two_rows(found(&db));
     });
 }
@@ -1155,7 +1150,7 @@ fn a_panic_in_a_kept_write_of_the_worker_ends_the_run_with_no_call_after_it() {
     let after = AtomicBool::new(false);
     let run = catch_unwind(AssertUnwindSafe(|| {
         sim.run(|rt| {
-            let db = open(rt.clone());
+            let db = open::opened(&rt, FILE, &app(), &unvacuumed());
             set_interval(&db, "Some { value: 1h }");
             insert(&db, 0, 3);
             flush(&db);
@@ -1177,7 +1172,7 @@ fn a_panic_in_a_kept_write_of_the_worker_ends_the_run_with_no_call_after_it() {
     );
     assert!(!after.load(Ordering::Relaxed), "a call ran past the panic");
     finished(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         nap(&rt, Duration::from_secs(3600 + 60));
         assert_eq!(
             Vec::<String>::new(),
@@ -1193,7 +1188,7 @@ fn a_panic_in_a_kept_write_of_the_worker_ends_the_run_with_no_call_after_it() {
 fn a_caught_panic_on_a_database_marked_whole_stays_in_memory() {
     let mut sim = Sim::new(54, Config::default());
     finished(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &app(), &unvacuumed());
         set_interval(&db, "Some { value: 10min }");
         insert(&db, 0, 3);
         let stray = db

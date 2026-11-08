@@ -20,7 +20,8 @@ use adtb_lang::types::{Base, Ty};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_testkit::profile::{assert_reached, share, sweep};
 
-use api::{once, options, query, sorted};
+use adtb_simkit::open::options;
+use api::{once, query, sorted};
 
 const SHOP: &str = r#"module shop
 add module shop

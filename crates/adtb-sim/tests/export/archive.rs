@@ -11,6 +11,7 @@ use adtb::storage::{
 };
 use adtb::{CallOptions, CreateOptions, Database, Log, OpenOptions};
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
+use adtb_simkit::open;
 use adtb_simkit::search::{self, Files};
 use adtb_simkit::{api, common};
 
@@ -504,7 +505,7 @@ fn an_engine_shows_its_archive_and_archives_into_it() {
             log_archive: Some(DEST.into()),
             create: Some(CreateOptions::default()),
             testing: Knobs::default().with_segment_size(SEGMENT),
-            ..api::options(2)
+            ..open::options(2)
         };
         let db = Database::open_in(rt.clone(), "db.adt", &Log::new([APP]), &options).unwrap();
         let shown = api::query(
@@ -585,7 +586,7 @@ fn a_segment_size_off_the_log_block_is_refused() {
         let options = OpenOptions {
             create: Some(CreateOptions::default()),
             testing: Knobs::default().with_segment_size(SEGMENT + 1),
-            ..api::options(2)
+            ..open::options(2)
         };
         match Database::open_in(rt, "db.adt", &Log::new([APP]), &options) {
             Err(adtb::OpenError::Io(e)) => (e.kind(), e.to_string()),
@@ -613,7 +614,7 @@ fn engine_session(
             log_archive: archive.then(|| DEST.into()),
             create: Some(CreateOptions::default()),
             testing: Knobs::default().with_segment_size(SEGMENT),
-            ..api::options(2)
+            ..open::options(2)
         };
         let db = Database::open_in(rt, "db.adt", &Log::new([APP]), &options)?;
         let status = db.testing().archive_status();

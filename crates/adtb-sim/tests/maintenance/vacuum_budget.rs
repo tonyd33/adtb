@@ -9,6 +9,7 @@ use adtb::testing::Knobs;
 use adtb::vacuum::Charged;
 use adtb::{CallOptions, CancelToken, Database, Error, Log, OpenOptions, RejectReason};
 use adtb_sim::SimRuntime;
+use adtb_simkit::open;
 use adtb_simkit::{api, common};
 
 const SCHEMA: &str = r"module app
@@ -25,13 +26,11 @@ const ROWS: i64 = 200;
 /// The rows `fill` deletes.
 const DELETED: i64 = ROWS - ROWS / 3;
 
-fn open(rt: &SimRuntime) -> Database<SimRuntime> {
-    let options = OpenOptions {
+fn pooled() -> OpenOptions {
+    OpenOptions {
         pool_bytes: Some(256 * 1024),
-        ..api::options(2)
-    };
-    Database::open_in(rt.clone(), "budget.adt", &Log::new([SCHEMA]), &options)
-        .expect("the database opens")
+        ..open::options(2)
+    }
 }
 
 /// Insert `ROWS` rows and delete all but every third.
@@ -154,7 +153,7 @@ fn vacuum_and_a_scrub_pass_together_stay_within_the_budget() {
 #[test]
 fn a_budget_of_0_does_no_vacuum_work_until_the_call_is_cancelled() {
     api::once(6, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, "budget.adt", &Log::new([SCHEMA]), &pooled());
         fill(&db);
         budget(&db, 0.0, 1.0);
         let token = CancelToken::new();
@@ -189,7 +188,7 @@ fn a_budget_of_0_does_no_vacuum_work_until_the_call_is_cancelled() {
 #[test]
 fn a_close_stops_a_vacuum_waiting_on_its_budget() {
     api::once(7, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, "budget.adt", &Log::new([SCHEMA]), &pooled());
         fill(&db);
         budget(&db, 0.0, 1.0);
         let vacuuming = db.clone();
@@ -230,7 +229,7 @@ fn wide_as(rt: &SimRuntime, big: bool, retained: bool) -> Database<SimRuntime> {
     let options = OpenOptions {
         pool_bytes: Some(256 * 1024),
         testing: Knobs::without_background_vacuum(),
-        ..api::options(2)
+        ..open::options(2)
     };
     let db = Database::open_in(rt.clone(), "wide.adt", &Log::new([WIDE]), &options)
         .expect("the database opens");
@@ -264,7 +263,7 @@ fn expired(rt: &SimRuntime) -> Database<SimRuntime> {
     let options = OpenOptions {
         pool_bytes: Some(256 * 1024),
         testing: Knobs::without_background_vacuum(),
-        ..api::options(2)
+        ..open::options(2)
     };
     let db = Database::open_in(rt.clone(), "expired.adt", &Log::new([WIDE]), &options)
         .expect("the database opens");
@@ -353,7 +352,7 @@ fn no_step_of_a_vacuum_expiring_history_runs_longer_than_one_unit_of_work() {
 #[test]
 fn a_long_wait_at_a_budget_of_0_opens_no_io_queue_per_sleep() {
     api::once(9, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, "budget.adt", &Log::new([SCHEMA]), &pooled());
         fill(&db);
         budget(&db, 0.0, 1.0);
         let token = CancelToken::new();
@@ -404,7 +403,7 @@ fn steps(ctors: usize, second: bool) -> u64 {
     api::once(10, |rt| {
         let options = OpenOptions {
             pool_bytes: Some(256 * 1024),
-            ..api::options(2)
+            ..open::options(2)
         };
         let db = Database::open_in(rt, "passes.adt", &Log::new([schema.as_str()]), &options)
             .expect("the database opens");

@@ -11,14 +11,14 @@ use adtb::catalog::arrows::{self, file_schema};
 use adtb::key::{F32, F64, Scalar, Value as Key};
 use adtb::storage;
 use adtb::{
-    ArchiveTarget, CallOptions, Database, Error, Log, OpenOptions, RejectReason, RestorePoint,
-    Value, restore_in,
+    ArchiveTarget, CallOptions, Database, Error, Log, OpenOptions, RestorePoint, Value, restore_in,
 };
 use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::textual::read_document;
 use adtb_lang::types::{RelId, Ty};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
+use adtb_simkit::open;
 use adtb_simkit::search::Files;
 use arrow_schema::{DataType, UnionMode};
 
@@ -65,7 +65,7 @@ Empty { id: 5 }
 const THING: &str = "data/app::items.Thing.arrows";
 
 fn options() -> OpenOptions {
-    api::options(2)
+    open::options(2)
 }
 
 fn no_create() -> OpenOptions {
@@ -205,15 +205,6 @@ fn a_restore_reads_the_arrow_entries_and_not_the_text_entries() {
     assert_restores_the_source(&without, EDITED, "no text entry");
 }
 
-fn damaged_part(got: Result<Vec<Pair>, Error>) -> String {
-    match got {
-        Err(Error::Rejected {
-            reason: RejectReason::DumpDamaged { part },
-        }) => part,
-        other => panic!("not DumpDamaged: {other:?}"),
-    }
-}
-
 #[test]
 fn a_missing_damaged_cut_or_misplaced_stream_is_refused_naming_its_entry() {
     let (files, _) = dumped();
@@ -233,7 +224,7 @@ fn a_missing_damaged_cut_or_misplaced_stream_is_refused_naming_its_entry() {
     ];
     for (label, edit) in cases {
         let got = restore(&edited(&files, edit), EDITED);
-        assert_eq!(THING, damaged_part(got), "{label}");
+        assert_eq!(THING, api::damaged_dump_part(got), "{label}");
     }
 }
 

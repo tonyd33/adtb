@@ -9,13 +9,15 @@ use adtb::btree::{self, BTree};
 use adtb::exec::Val;
 use adtb::key::{Entry, Tid, Value};
 use adtb::runtime::{Clock, Io, Op, Runtime, Threads};
-use adtb::storage::{Damage, Options, PageError, Pager, Pid, Quarantine, Stopped};
+use adtb::storage::{Damage, HEADER_LEN, Options, PageError, Pager, Pid, Quarantine, Stopped};
 use adtb::{
     CallOptions, Called, Database, Error, FatalReason, Log, OpenOptions, Registration,
     TxnCallOptions, TxnOptions,
 };
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 
+use adtb_simkit::damage::DataFile;
+use adtb_simkit::open;
 use adtb_simkit::{api, harness};
 use adtb_sys::os::{Backend, OsRuntime};
 
@@ -143,7 +145,7 @@ fn a_damaged_mark_page_quarantines_the_database() {
     });
     with_pager(&mut sim, |_| ());
     let mut files = sim.files();
-    files.get_mut(NAME).unwrap()[page.0 as usize * PAGE + 200] ^= 0x10;
+    DataFile::new(NAME, PAGE).flip(&mut files, page, 200 - HEADER_LEN);
     let mut sim = Sim::with_files(4, Config::default(), files);
     with_pager(&mut sim, |p| {
         assert!(Probe::of(p).marked(Quarantine::Database));
@@ -183,6 +185,7 @@ add constraint no_apple_tags =
 
 const FILE: &str = "quarantine.adt";
 const API_PAGE: usize = 8192;
+const DATA: DataFile = DataFile::new(FILE, API_PAGE);
 const SIDES: &str = "from i in identities.(EmailPass | Google) select i.id";
 const ALL: &str = "from i in identities select i.id";
 const BY_USER: &str = "from i in identities.Google where i.user == users.key(3) select i.gid";
@@ -208,7 +211,7 @@ query through_fn () -> Set (Key identities) = every_id()
 fn open_app(rt: SimRuntime) -> Database<SimRuntime> {
     let options = OpenOptions {
         registrations: vec![reads()],
-        ..api::options(2)
+        ..open::options(2)
     };
     Database::open_in(rt, FILE, &Log::new([APP]), &options).expect("the database opens")
 }
@@ -254,7 +257,7 @@ fn flipped(seed_no: u64, pick: impl FnOnce(&Database<SimRuntime>) -> Pid) -> Sim
         page
     });
     let mut files = sim.files();
-    files.get_mut(FILE).unwrap()[page.0 as usize * API_PAGE + 300] ^= 0x10;
+    DATA.flip(&mut files, page, 300 - HEADER_LEN);
     Sim::with_files(seed_no, Config::default(), files)
 }
 
@@ -610,7 +613,7 @@ fn a_file_with_a_damaged_catalog_page_opens_for_verify() {
 fn a_file_with_a_damaged_catalog_root_opens_and_keeps_the_mark() {
     let mut sim = flipped(19, |db| db.testing().root(Object::Catalog).unwrap());
     api::run(&mut sim, |rt| {
-        let got = Database::open_in(rt, FILE, &Log::new([APP]), &api::options(2));
+        let got = Database::open_in(rt, FILE, &Log::new([APP]), &open::options(2));
         got.unwrap().close().unwrap();
     });
     with_named_pager(&mut sim, |p| {
@@ -986,7 +989,7 @@ fn opening_a_marked_database_applies_no_migration() {
         let later = "module app\nadd type Z = { id: Key zs }\nadd relation zs : Z key id generate sequence\n";
         let options = OpenOptions {
             registrations: vec![reads()],
-            ..api::options(2)
+            ..open::options(2)
         };
         let db = Database::open_in(rt, FILE, &Log::new([APP, later]), &options).unwrap();
         assert_eq!("the database", failed_on(&db, "from z in zs select z"));
@@ -1286,7 +1289,7 @@ fn a_failed_open_marks_the_heap_of_the_damage_it_met() {
     api::run(&mut sim, |rt| {
         let opts = OpenOptions {
             registrations: vec![reads()],
-            ..api::options(2)
+            ..open::options(2)
         };
         let got = Database::open_in(rt, FILE, &Log::new([APP, later]), &opts);
         assert!(
@@ -1329,10 +1332,10 @@ fn a_failed_open_on_a_damaged_page_of_the_large_value_store_marks_the_database()
         page
     });
     let mut files = sim.files();
-    files.get_mut(FILE).unwrap()[page.0 as usize * API_PAGE + 300] ^= 0x10;
+    DATA.flip(&mut files, page, 300 - HEADER_LEN);
     let mut sim = Sim::with_files(58, Config::default(), files);
     api::run(&mut sim, |rt| {
-        let got = Database::open_in(rt, FILE, &Log::new([APP, later]), &api::options(2));
+        let got = Database::open_in(rt, FILE, &Log::new([APP, later]), &open::options(2));
         let db = got.expect("a file quarantined whole opens for verify");
         assert_eq!(
             "the database",
@@ -1353,7 +1356,7 @@ fn commit_log_page(seed_no: u64, pick: impl FnOnce(CommitLogPages) -> Pid) -> Si
         page
     });
     let mut files = sim.files();
-    files.get_mut(FILE).unwrap()[page.0 as usize * API_PAGE + 300] ^= 0x10;
+    DATA.flip(&mut files, page, 300 - HEADER_LEN);
     Sim::with_files(seed_no, Config::default(), files)
 }
 
@@ -1389,7 +1392,7 @@ fn a_file_with_a_damaged_commit_log_status_page_opens_for_verify() {
 fn a_file_with_a_damaged_commit_log_root_opens_and_keeps_the_mark() {
     let mut sim = commit_log_page(59, |clog| clog.root());
     api::run(&mut sim, |rt| {
-        let got = Database::open_in(rt, FILE, &Log::new([APP]), &api::options(2));
+        let got = Database::open_in(rt, FILE, &Log::new([APP]), &open::options(2));
         got.unwrap().close().unwrap();
     });
     with_named_pager(&mut sim, |p| {
@@ -1472,7 +1475,7 @@ fn a_marked_database_opens_with_a_newer_log_and_a_bundle_needing_it() {
         );
         let opts = OpenOptions {
             registrations: vec![needs],
-            ..api::options(2)
+            ..open::options(2)
         };
         let db = Database::open_in(rt, FILE, &Log::new([APP, later]), &opts)
             .expect("a marked file opens");
@@ -1486,7 +1489,7 @@ fn a_marked_database_opens_with_a_newer_log_and_a_bundle_needing_it() {
 fn a_registered_call_on_a_reopened_marked_database_fails_with_quarantined() {
     let mut sim = Sim::new(73, Config::default());
     api::run(&mut sim, |rt| {
-        let db = Database::open_in(rt, FILE, &Log::new([APP]), &api::options(2)).unwrap();
+        let db = Database::open_in(rt, FILE, &Log::new([APP]), &open::options(2)).unwrap();
         seed(&db);
         db.testing()
             .plant(Plant::Mark(Quarantine::Database))
@@ -1784,7 +1787,7 @@ fn writers_and_vacuum_under_verify_set_no_false_mark() {
         api::run(&mut sim, |rt| {
             let options = OpenOptions {
                 pool_bytes: Some(64 * 8192),
-                ..api::options(2)
+                ..open::options(2)
             };
             let db = Database::open_in(rt.clone(), "s.adt", &Log::new([SAPP]), &options).unwrap();
             for i in 1..=5 {
@@ -2744,7 +2747,7 @@ fn a_commit_whose_record_of_the_retention_window_is_damaged_is_refused_naming_th
         db.testing().flush();
         let mut io = rt.io();
         let (file, _) = adtb_simkit::common::open(&rt, &mut io, FILE, false).unwrap();
-        let at = past.0 * API_PAGE as u64;
+        let at = DATA.range(past).start as u64;
         let mut page = adtb_simkit::common::read(&rt, &mut io, file, at, API_PAGE).unwrap();
         page[300] ^= 0x10;
         adtb_simkit::common::write(&rt, &mut io, file, at, &page).unwrap();
@@ -2931,8 +2934,7 @@ fn a_lost_write_recovery_finds_is_marked_by_an_open_that_succeeds_and_refuses_th
     let first = sim.files();
     let written = written_whole(first.clone(), pid, false);
     let mut lost = written_whole(written, pid, true);
-    let at = pid.0 as usize * API_PAGE;
-    lost.get_mut(FILE).unwrap()[at..at + API_PAGE].copy_from_slice(&first[FILE][at..at + API_PAGE]);
+    DATA.replace(&mut lost, pid, DATA.page(&first, pid));
     let mut sim = Sim::with_files(98, Config::default(), lost);
     api::run(&mut sim, |rt| {
         let db = open_app(rt);

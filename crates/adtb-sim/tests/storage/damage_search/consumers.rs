@@ -15,7 +15,7 @@ use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::search::Files;
 
-use super::world::{self, FILE, PAGE, Ran, Rel};
+use super::world::{self, FILE, Ran, Rel};
 
 /// The consumers a case runs, in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -223,7 +223,7 @@ pub fn run(
     let mut seen = Observed::default();
     let unreadable = Match::kind(OpKind::Read)
         .path(FILE)
-        .covers(pid.0 * PAGE as u64);
+        .covers(world::DATA.range(pid).start as u64);
     let failed = sim.logged(unreadable.clone());
     let mut failed_in_open = 0;
     let ran = catch_unwind(AssertUnwindSafe(|| {

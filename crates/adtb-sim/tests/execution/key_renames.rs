@@ -3,8 +3,9 @@
 
 use std::ops::Range;
 
-use adtb::{Database, Log};
-use adtb_sim::{Config, Sim, SimRuntime};
+use adtb::Log;
+use adtb_sim::{Config, Sim};
+use adtb_simkit::open;
 use adtb_simkit::{api, draw, seeds};
 
 const SEEDS: Range<u64> = 0..3;
@@ -45,16 +46,6 @@ fn schema(names: &[&str], types: &[&str]) -> String {
     )
 }
 
-fn open(rt: &SimRuntime, log: &[&str]) -> Database<SimRuntime> {
-    Database::open_in(
-        rt.clone(),
-        "app.adt",
-        &Log::new(log.iter().copied()),
-        &api::options(2),
-    )
-    .unwrap_or_else(|e| panic!("the database opens at {}: {e:?}", log.len()))
-}
-
 /// Store `ROWS` rows of a relation keyed by fields `NAMES[..types.len()]` of types `types`, each
 /// referenced by a row of `orders`, rename key field `NAMES[at]` to `to`, and read back each row
 /// with its values under the new names, through the relation and through its reference.
@@ -71,7 +62,12 @@ fn renamed(seed: u64, types: &[&str], at: usize, to: &str) {
     );
     let mut sim = Sim::new(seed, Config::default());
     api::run(&mut sim, |rt| {
-        let db = open(&rt, &[&first]);
+        let db = open::opened(
+            &rt,
+            open::FILE,
+            &Log::new([&first].iter().copied()),
+            &open::options(2),
+        );
         for row in 0..ROWS {
             let key: Vec<String> = (0..names.len())
                 .map(|f| format!("{}: {}", names[f], literal(types[f], seed, row, f)))
@@ -87,7 +83,12 @@ fn renamed(seed: u64, types: &[&str], at: usize, to: &str) {
         }
     });
     api::run(&mut sim, |rt| {
-        let db = open(&rt, &[&first, &rename]);
+        let db = open::opened(
+            &rt,
+            open::FILE,
+            &Log::new([&first, &rename].iter().copied()),
+            &open::options(2),
+        );
         for row in 0..ROWS {
             let held = |x: &str| -> String {
                 let terms: Vec<String> = (0..after.len())

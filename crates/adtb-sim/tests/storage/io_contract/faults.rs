@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use adtb::runtime::{AlignedBuf, Done, IoError, Op, Runtime};
 use adtb_sys::os::{Backend, Faults, OsIo, OsRuntime};
 
-use super::{BLOCK, block, complete, done, list, open, read, scratch, write};
+use super::{BLOCK, block, complete, done, list, open_file, read, scratch, write};
 
 const SEEDS: u64 = 24;
 
@@ -69,7 +69,7 @@ fn a_full_device_refuses_growth_and_keeps_overwrites(on: On) {
     let quiet = Faults::none(4096);
     let rt = &on.faulty(&on.scratch("faults-full"), quiet);
     let mut io = rt.io();
-    let (file, _) = open(rt, &mut io, "f", true).unwrap();
+    let (file, _) = open_file(rt, &mut io, "f", true).unwrap();
     write(rt, &mut io, file, 0, &block(1));
     rt.set_faults(Faults {
         no_space: true,
@@ -111,7 +111,7 @@ fn plain(dir: &Path) -> OsRuntime {
 }
 
 fn failing_write(rt: &OsRuntime, io: &mut OsIo, data: &[u8]) {
-    let (file, _) = open(rt, io, "f", false).unwrap();
+    let (file, _) = open_file(rt, io, "f", false).unwrap();
     let buf = AlignedBuf::from_slice(data);
     let c = complete(
         rt,
@@ -133,7 +133,7 @@ fn failing_write(rt: &OsRuntime, io: &mut OsIo, data: &[u8]) {
 fn failed_writes_allocations_and_forces_complete_with_failed(on: On) {
     let rt = on.faulty(&on.scratch("faults-fail"), Faults::none(4096));
     let mut io = rt.io();
-    let (file, _) = open(&rt, &mut io, "f", true).unwrap();
+    let (file, _) = open_file(&rt, &mut io, "f", true).unwrap();
     rt.set_faults(Faults {
         fail_p: 1.0,
         ..Faults::none(4096)
@@ -155,7 +155,7 @@ fn failed_writes_allocations_and_forces_complete_with_failed(on: On) {
 fn a_lost_write_completes_and_never_lands(on: On) {
     let rt = on.faulty(&on.scratch("faults-lost"), Faults::none(4096));
     let mut io = rt.io();
-    let (file, _) = open(&rt, &mut io, "f", true).unwrap();
+    let (file, _) = open_file(&rt, &mut io, "f", true).unwrap();
     write(&rt, &mut io, file, 0, &block(1));
     rt.set_faults(Faults {
         lost_write_p: 1.0,
@@ -170,7 +170,7 @@ fn a_lost_write_completes_and_never_lands(on: On) {
 fn a_misdirected_write_lands_at_another_offset_of_the_file(on: On) {
     let rt = on.faulty(&on.scratch("faults-misdirect"), Faults::none(4096));
     let mut io = rt.io();
-    let (file, _) = open(&rt, &mut io, "f", true).unwrap();
+    let (file, _) = open_file(&rt, &mut io, "f", true).unwrap();
     for i in 0..4u8 {
         write(
             &rt,
@@ -199,7 +199,7 @@ fn a_misdirected_write_lands_at_another_offset_of_the_file(on: On) {
 fn a_latent_sector_fails_reads_until_it_is_rewritten(on: On) {
     let rt = on.faulty(&on.scratch("faults-latent"), Faults::none(4096));
     let mut io = rt.io();
-    let (file, _) = open(&rt, &mut io, "f", true).unwrap();
+    let (file, _) = open_file(&rt, &mut io, "f", true).unwrap();
     write(&rt, &mut io, file, 0, &block(1));
     write(&rt, &mut io, file, BLOCK as u64, &block(2));
     rt.set_faults(Faults {
@@ -231,7 +231,7 @@ fn a_latent_sector_fails_reads_until_it_is_rewritten(on: On) {
 fn a_rotted_bit_is_seen_by_every_later_read(on: On) {
     let rt = on.faulty(&on.scratch("faults-rot"), Faults::none(4096));
     let mut io = rt.io();
-    let (file, _) = open(&rt, &mut io, "f", true).unwrap();
+    let (file, _) = open_file(&rt, &mut io, "f", true).unwrap();
     write(&rt, &mut io, file, 0, &block(0x55));
     rt.set_faults(Faults {
         corrupt_p: 1.0,
@@ -253,7 +253,7 @@ fn forced_file(on: On, name: &str, seed: u64, faults: Faults) -> (OsRuntime, Pat
     let dir = on.scratch(&format!("{name}-{seed}"));
     let rt = on.faulty(&dir, Faults { seed, ..faults });
     let mut io = rt.io();
-    let (file, _) = open(&rt, &mut io, "f", true).unwrap();
+    let (file, _) = open_file(&rt, &mut io, "f", true).unwrap();
     write(&rt, &mut io, file, 0, &block(1));
     assert_eq!(Ok(Done::Synced), done(&rt, &mut io, Op::Sync { file }));
     let root = Op::SyncDir { dir: String::new() };
@@ -264,7 +264,7 @@ fn forced_file(on: On, name: &str, seed: u64, faults: Faults) -> (OsRuntime, Pat
 fn read_back(dir: &Path, len: usize) -> Vec<u8> {
     let rt = plain(dir);
     let mut io = rt.io();
-    let (file, _) = open(&rt, &mut io, "f", false).unwrap();
+    let (file, _) = open_file(&rt, &mut io, "f", false).unwrap();
     read(&rt, &mut io, file, 0, len)
 }
 
@@ -273,7 +273,7 @@ fn a_failed_force_loses_writes_and_a_later_force_succeeds_without_them(on: On) {
     for seed in 0..SEEDS {
         let (rt, dir) = forced_file(on, "faults-fsyncgate", seed, Faults::none(4096));
         let mut io = rt.io();
-        let (file, _) = open(&rt, &mut io, "f", false).unwrap();
+        let (file, _) = open_file(&rt, &mut io, "f", false).unwrap();
         write(&rt, &mut io, file, 0, &block(2));
         rt.set_faults(Faults {
             seed,
@@ -304,7 +304,7 @@ fn a_crash_keeps_forced_writes_and_any_subset_of_the_rest(on: On) {
     for seed in 0..SEEDS {
         let (rt, dir) = forced_file(on, "faults-crash", seed, Faults::none(4096));
         let mut io = rt.io();
-        let (file, _) = open(&rt, &mut io, "f", false).unwrap();
+        let (file, _) = open_file(&rt, &mut io, "f", false).unwrap();
         write(&rt, &mut io, file, BLOCK as u64, &block(2));
         write(&rt, &mut io, file, 2 * BLOCK as u64, &block(3));
         rt.crash();
@@ -347,7 +347,7 @@ fn a_torn_write_lands_in_any_subset_of_its_atomic_units(on: On) {
         };
         let (rt, dir) = forced_file(on, "faults-torn", seed, faults);
         let mut io = rt.io();
-        let (file, _) = open(&rt, &mut io, "f", false).unwrap();
+        let (file, _) = open_file(&rt, &mut io, "f", false).unwrap();
         let whole: Vec<u8> = (2..6u8).flat_map(block).collect();
         write(&rt, &mut io, file, 0, &whole);
         rt.crash();
@@ -386,15 +386,15 @@ fn a_crash_keeps_a_prefix_of_unforced_creations_and_removals(on: On) {
         );
         let root = Op::SyncDir { dir: String::new() };
         assert_eq!(Ok(Done::Synced), done(&rt, &mut io, root), "seed {seed}");
-        open(&rt, &mut io, "d/kept", true).unwrap();
+        open_file(&rt, &mut io, "d/kept", true).unwrap();
         let d = Op::SyncDir { dir: "d".into() };
         assert_eq!(Ok(Done::Synced), done(&rt, &mut io, d), "seed {seed}");
-        open(&rt, &mut io, "d/a", true).unwrap();
+        open_file(&rt, &mut io, "d/a", true).unwrap();
         let remove = Op::Remove {
             path: "d/kept".into(),
         };
         assert_eq!(Ok(Done::Removed), done(&rt, &mut io, remove), "seed {seed}");
-        open(&rt, &mut io, "d/b", true).unwrap();
+        open_file(&rt, &mut io, "d/b", true).unwrap();
         rt.crash();
         let rt = plain(&dir);
         let mut io = rt.io();
@@ -428,7 +428,7 @@ fn a_crash_may_lose_an_unforced_rename_and_removed_directory_whole(on: On) {
         for name in ["from", "gone"] {
             super::create_dir(&rt, &mut io, name).unwrap();
         }
-        open(&rt, &mut io, "from/f", true).unwrap();
+        open_file(&rt, &mut io, "from/f", true).unwrap();
         let force = |d: &str| Op::SyncDir { dir: d.to_owned() };
         for d in ["from", ""] {
             assert_eq!(
@@ -463,7 +463,7 @@ fn a_crash_may_lose_an_unforced_rename_and_removed_directory_whole(on: On) {
         } else {
             "from/f"
         };
-        open(&rt, &mut io, inner, false).unwrap();
+        open_file(&rt, &mut io, inner, false).unwrap();
         seen.insert(names.into_iter().collect::<Vec<_>>());
     }
     assert_eq!(3, seen.len(), "every prefix: {seen:?}");
@@ -486,7 +486,7 @@ fn a_crash_that_loses_a_directory_loses_its_files(on: On) {
             super::create_dir(&rt, &mut io, "d"),
             "seed {seed}"
         );
-        let (file, _) = open(&rt, &mut io, "d/f", true).unwrap();
+        let (file, _) = open_file(&rt, &mut io, "d/f", true).unwrap();
         write(&rt, &mut io, file, 0, &block(1));
         assert_eq!(
             Ok(Done::Synced),

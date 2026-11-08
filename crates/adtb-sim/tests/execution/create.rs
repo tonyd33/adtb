@@ -10,6 +10,7 @@ use adtb::storage::{aside, creating, marker, marker_bytes};
 use adtb::{Database, Log, OpenError, OpenOptions, TxnCallOptions, TxnOptions};
 use adtb_sim::{Config, Match, Sim, SimRuntime};
 use adtb_simkit::api;
+use adtb_simkit::open;
 use adtb_simkit::search::{self, Files};
 use adtb_testkit::profile::{assert_reached, every_case};
 
@@ -31,7 +32,7 @@ fn log() -> Log {
 fn no_create() -> OpenOptions {
     OpenOptions {
         create: None,
-        ..api::options(2)
+        ..open::options(2)
     }
 }
 
@@ -79,7 +80,7 @@ fn opened_or_retried<R: Runtime>(
             assert_eq!(Vec::<String>::new(), names(&db));
             db
         }
-        Err(OpenError::NotFound) => open(&api::options(2)).expect("the retried create"),
+        Err(OpenError::NotFound) => open(&open::options(2)).expect("the retried create"),
         Err(e) => panic!("an open after the crash: {e:?}"),
     };
     if every_case() {
@@ -148,7 +149,7 @@ fn read_image(dir: &Path, at: &Path, into: &mut Files) {
 fn a_create_crashed_anywhere_is_retried() {
     let workload = |rt: &SimRuntime| {
         rt.arm(every_op());
-        let db = Database::open_in(rt.clone(), FILE, &log(), &api::options(2)).unwrap();
+        let db = Database::open_in(rt.clone(), FILE, &log(), &open::options(2)).unwrap();
         rt.disarm();
         db.close().unwrap();
     };
@@ -218,7 +219,7 @@ fn a_create_under_a_regular_file_is_not_a_directory() {
     let plain = Files::from([("plain".to_owned(), Vec::new())]);
     let mut sim = Sim::with_files(1, Config::default(), plain);
     let got = api::run(&mut sim, |rt| {
-        Database::open_in(rt, "plain/create.adt", &log(), &api::options(2)).map(drop)
+        Database::open_in(rt, "plain/create.adt", &log(), &open::options(2)).map(drop)
     });
     let Err(OpenError::Io(e)) = got else {
         panic!("{got:?}")
@@ -227,7 +228,7 @@ fn a_create_under_a_regular_file_is_not_a_directory() {
 
     let dir = scratch("under-a-file");
     std::fs::write(dir.join("plain"), b"").unwrap();
-    let got = adtb::open(dir.join("plain").join(FILE), &log(), &api::options(2)).map(drop);
+    let got = adtb::open(dir.join("plain").join(FILE), &log(), &open::options(2)).map(drop);
     let Err(OpenError::Io(e)) = got else {
         panic!("{got:?}")
     };
@@ -238,7 +239,7 @@ fn a_create_under_a_regular_file_is_not_a_directory() {
 #[test]
 fn a_create_in_a_missing_directory_is_not_found() {
     let got = api::once(1, |rt| {
-        Database::open_in(rt, "missing/create.adt", &log(), &api::options(2)).map(drop)
+        Database::open_in(rt, "missing/create.adt", &log(), &open::options(2)).map(drop)
     });
     let Err(OpenError::Io(e)) = got else {
         panic!("{got:?}")
@@ -253,7 +254,7 @@ fn created(seed: u64) -> Files {
     let files = made.entry(seed).or_insert_with(|| {
         let mut sim = Sim::new(seed, Config::default());
         api::run(&mut sim, |rt| {
-            let db = Database::open_in(rt, FILE, &log(), &api::options(2)).unwrap();
+            let db = Database::open_in(rt, FILE, &log(), &open::options(2)).unwrap();
             db.close().unwrap();
         });
         sim.files()
@@ -289,7 +290,7 @@ fn built() -> (Files, [u8; 16]) {
 fn create_over(files: Files) -> (Result<(), OpenError>, Files) {
     let mut sim = Sim::with_files(1, Config::default(), files);
     let got = api::run(&mut sim, |rt| {
-        Database::open_in(rt, FILE, &log(), &api::options(2)).map(|db| db.close().unwrap())
+        Database::open_in(rt, FILE, &log(), &open::options(2)).map(|db| db.close().unwrap())
     });
     (got, sim.files())
 }
@@ -406,7 +407,7 @@ fn a_create_over_a_link_in_the_reserved_directory_is_reserved() {
         ]),
     );
     std::os::unix::fs::symlink(dir.join("mine"), dir.join(format!("{file}-log"))).unwrap();
-    let got = adtb::open(dir.join(FILE), &log(), &api::options(2)).map(drop);
+    let got = adtb::open(dir.join(FILE), &log(), &open::options(2)).map(drop);
     assert!(is_reserved(&got), "{got:?}");
     let kept = std::fs::read(dir.join("mine/0000000000000000")).unwrap();
     assert_eq!(b"keep".to_vec(), kept);
@@ -436,7 +437,7 @@ fn a_create_over_a_held_reserved_file_is_locked() {
     write_image(&dir, &planted);
     let held = std::fs::File::open(dir.join(&file)).unwrap();
     held.try_lock().unwrap();
-    let got = adtb::open(dir.join(FILE), &log(), &api::options(2)).map(drop);
+    let got = adtb::open(dir.join(FILE), &log(), &open::options(2)).map(drop);
     assert!(
         matches!(got, Err(OpenError::Locked { pid: None })),
         "{got:?}"
@@ -445,7 +446,7 @@ fn a_create_over_a_held_reserved_file_is_locked() {
     read_image(&dir, &dir, &mut after);
     assert_eq!(planted, after);
     drop(held);
-    let db = adtb::open(dir.join(FILE), &log(), &api::options(2)).expect("the create");
+    let db = adtb::open(dir.join(FILE), &log(), &open::options(2)).expect("the create");
     db.close().unwrap();
     assert!(!dir.join(creating(FILE)).exists());
 }
@@ -468,7 +469,7 @@ fn under_reserved(files: &Files) -> Files {
 fn either_open() -> Vec<OpenOptions> {
     let mut each = vec![no_create()];
     if every_case() {
-        each.push(api::options(2));
+        each.push(open::options(2));
     }
     each
 }

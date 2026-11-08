@@ -1,19 +1,20 @@
 //! A page the file holds at an LSN past the log's end, met by every entry that reads or writes it.
 
-use std::collections::BTreeMap;
 use std::time::Duration;
 
 use adtb::runtime::Runtime;
-use adtb::storage::{self, Lsn, Options, Pager, Pid};
+use adtb::storage::{self, HEADER_LEN, Lsn, Options, Pager, Pid};
 use adtb::testing::Knobs;
 use adtb::{
     ArchiveTarget, CallOptions, Database, Error, FatalReason, Log, OpenOptions, RestorePoint,
     restore_in,
 };
 use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_simkit::damage::DataFile;
+use adtb_simkit::open;
 use adtb_simkit::{api, common};
 
-type Files = BTreeMap<String, Vec<u8>>;
+use adtb_simkit::damage::Files;
 
 const SEED: u64 = 61;
 const FILE: &str = "past_end.adt";
@@ -42,16 +43,11 @@ enum Met {
 
 type Enter = fn(&Database<SimRuntime>, &SimRuntime) -> Met;
 
-fn open(rt: SimRuntime) -> Database<SimRuntime> {
-    open_at(rt, FILE)
-}
-
-fn open_at(rt: SimRuntime, name: &str) -> Database<SimRuntime> {
-    let options = OpenOptions {
+fn options() -> OpenOptions {
+    OpenOptions {
         testing: Knobs::without_background_vacuum(),
-        ..api::options(2)
-    };
-    Database::open_in(rt, name, &Log::new([APP]), &options).expect("the file opens")
+        ..open::options(2)
+    }
 }
 
 /// Returns a closed file whose one page of `identities.Google` carries LSN `PAST`, and that page.
@@ -65,7 +61,7 @@ fn planted() -> (Files, Pid) {
 fn built() -> (Files, Pid) {
     let mut sim = Sim::new(SEED, Config::default());
     let page = api::run(&mut sim, |rt| {
-        let db = open(rt);
+        let db = open::opened(&rt, FILE, &Log::new([APP]), &options());
         for i in 1..=3 {
             api::results(
                 &db,
@@ -89,8 +85,7 @@ fn built() -> (Files, Pid) {
 
 /// Set the LSN of `page` in `files` to `lsn`, sealed.
 fn stamp(files: &mut Files, page: Pid, lsn: u64) {
-    let at = page.0 as usize * PAGE;
-    let bytes = &mut files.get_mut(FILE).unwrap()[at..at + PAGE];
+    let bytes = DataFile::new(FILE, PAGE).page_mut(files, page);
     bytes[..8].copy_from_slice(&lsn.to_le_bytes());
     storage::seal(page, bytes);
 }
@@ -154,7 +149,7 @@ fn backup(db: &Database<SimRuntime>, rt: &SimRuntime) -> Met {
     let archive = ArchiveTarget::path("bk").unwrap();
     let options = OpenOptions {
         create: None,
-        ..api::options(2)
+        ..open::options(2)
     };
     let latest = RestorePoint::Latest;
     let restored = restore_in(rt.clone(), &archive, "copy.adt", latest, &options);
@@ -216,13 +211,12 @@ fn wrong(entry: &str, page: Pid, met: &Met, reported: Reported) -> Option<String
 /// Returns how each entry, run on the file `name` of `files`, departs from the spec for its
 /// damaged page `page`.
 fn sweep(files: &Files, name: &str, page: Pid, reported: Reported) -> Vec<String> {
-    let at = page.0 as usize * PAGE;
-    let bytes = files[name][at..at + PAGE].to_vec();
+    let bytes = DataFile::new(name, PAGE).page(files, page).to_vec();
     let mut defects = Vec::new();
     for (entry, enter) in ENTRIES {
         let mut sim = Sim::with_files(SEED, Config::default(), files.clone());
         let marked = api::run(&mut sim, |rt| {
-            let db = open_at(rt.clone(), name);
+            let db = open::opened(&rt, name, &Log::new([APP]), &options());
             defects.extend(wrong(entry, page, &enter(&db, &rt), reported));
             let t = db.testing();
             let heap = t
@@ -244,7 +238,7 @@ fn sweep(files: &Files, name: &str, page: Pid, reported: Reported) -> Vec<String
         if !marked && entry != "backup" {
             defects.push(format!("{entry}: {GOOGLE} is not quarantined"));
         }
-        if sim.files()[name][at..at + PAGE] != bytes[..] {
+        if DataFile::new(name, PAGE).page(&sim.files(), page) != bytes {
             defects.push(format!("{entry}: the page changed"));
         }
     }
@@ -269,7 +263,7 @@ fn restored(damage: fn(&mut Files, Pid, Lsn)) -> (Files, Pid) {
     damage(&mut files, page, end);
     let mut sim = Sim::with_files(SEED, Config::default(), files);
     api::run(&mut sim, |rt| {
-        let db = open(rt.clone());
+        let db = open::opened(&rt, FILE, &Log::new([APP]), &options());
         for i in 21..=23 {
             let apple = format!(
                 r#"insert identities.Apple {{ id: identities.key({i}), tag: "v{i}", sub: "s{i}" }}"#
@@ -294,7 +288,7 @@ fn restored(damage: fn(&mut Files, Pid, Lsn)) -> (Files, Pid) {
         let archive = ArchiveTarget::path("bk0").unwrap();
         let options = OpenOptions {
             create: None,
-            ..api::options(2)
+            ..open::options(2)
         };
         let got = restore_in(rt, &archive, RESTORED, RestorePoint::Latest, &options);
         assert_eq!(vec![page.0], got.unwrap());
@@ -314,7 +308,7 @@ fn a_page_a_backup_copied_past_the_log_end_stays_refused_in_the_restored_file() 
 #[test]
 fn a_page_a_backup_copied_rotted_stays_refused_in_the_restored_file() {
     let (files, page) = restored(|files, page, _| {
-        files.get_mut(FILE).unwrap()[page.0 as usize * PAGE + 200] ^= 0xff;
+        DataFile::new(FILE, PAGE).flip(files, page, 200 - HEADER_LEN);
     });
     assert_eq!(
         Vec::<String>::new(),

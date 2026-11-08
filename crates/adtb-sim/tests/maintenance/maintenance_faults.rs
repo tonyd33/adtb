@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use adtb::key::Value;
 use adtb::runtime::{Instant, IoError, OpKind, Runtime, Threads};
-use adtb::storage::{self, PageKind, Pid, Quarantine};
+use adtb::storage::{self, HEADER_LEN, PageKind, Pid, Quarantine};
 use adtb::testing::Knobs;
 use adtb::{
     CallOptions, Database, DynRows, Error, FatalReason, Log, OpenError, OpenOptions,
@@ -21,6 +21,8 @@ use adtb::{
 use adtb_lang::textual::print;
 use adtb_sim::{Action, Config, Match, OpLog, Outcome, Plan, Planned, Sim, SimRuntime};
 use adtb_simkit::crash::silence_fatal_panics;
+use adtb_simkit::damage::DataFile;
+use adtb_simkit::open;
 use adtb_simkit::search::{self, Files};
 use adtb_simkit::{api, common};
 use adtb_testkit::profile::{self, assert_reached};
@@ -251,7 +253,7 @@ type Shared = Arc<Mutex<Ledger>>;
 fn no_create(workload: Workload) -> OpenOptions {
     let mut opts = OpenOptions {
         create: None,
-        ..api::options(2)
+        ..open::options(2)
     };
     opts.pool_bytes = Some(workload.pool_bytes);
     opts
@@ -273,7 +275,7 @@ fn seeded_files(workload: Workload) -> Files {
     let mut sim = Sim::new(SEED, Config::default());
     api::run(&mut sim, |rt| {
         let opts = OpenOptions {
-            create: api::options(2).create,
+            create: open::options(2).create,
             ..no_create(workload)
         };
         let db = Database::open_in(rt, FILE, &old_log(), &opts).expect("the fixture opens");
@@ -867,6 +869,7 @@ fn an_open_that_migrates_has_made_the_migration_durable_when_it_returns() {
 }
 
 const PAGE: usize = 8192;
+const DATA: DataFile = DataFile::new(FILE, PAGE);
 /// Wall time a case may take before it counts as a hang. A hung case leaks its thread.
 const ROT_CASE_LIMIT: Duration = Duration::from_secs(20);
 const ROT_ROW: i64 = 50;
@@ -1173,7 +1176,7 @@ fn rot_fixture() -> (Files, Owners, Vec<RotObject>) {
     let heaps = heaps
         .iter()
         .flatten()
-        .map(|p| storage::owner(&bytes[p.0 as usize * PAGE..(p.0 as usize + 1) * PAGE]))
+        .map(|p| storage::owner(&bytes[DATA.range(*p)]))
         .collect();
     (files, (heaps, indexes), objects)
 }
@@ -1205,18 +1208,6 @@ fn page_class(at: usize, page: &[u8], owners: &Owners) -> String {
         Some(kind) => format!("{kind:?}"),
         None => "unknown".into(),
     }
-}
-
-/// Returns a copy of `page` under `rot`, the same bytes when it changes nothing.
-fn rotted(page: &[u8], at: usize, rot: Rot) -> Vec<u8> {
-    let mut out = page.to_vec();
-    match rot {
-        Rot::Flip => out[(at * 2_654_435_761) % PAGE] ^= 1 << (at % 8),
-        Rot::Zeroed => out.fill(0),
-        Rot::Torn if page[PAGE / 2..].iter().any(|&b| b != 0) => out[PAGE / 2..].fill(0),
-        Rot::Torn => out[..PAGE / 2].fill(0),
-    }
-    out
 }
 
 #[derive(Default)]
@@ -1470,15 +1461,9 @@ fn page_rot_gives_the_written_rows_or_a_refusal_naming_damage() {
     let mut reached = BTreeSet::new();
     for (kind, rot) in ROTS.into_iter().enumerate() {
         for at in rot_sample(&classes, kind) {
-            let page = &file[at * PAGE..(at + 1) * PAGE];
+            let page = &file[DATA.range(Pid(at as u64))];
             let class = page_class(at, page, &owners);
-            let bytes = rotted(page, at, rot);
-            assert_ne!(
-                page, bytes,
-                "page {at} {class} {rot:?}: nothing was damaged"
-            );
-            let mut image = pristine.clone();
-            image.get_mut(FILE).unwrap()[at * PAGE..(at + 1) * PAGE].copy_from_slice(&bytes);
+            let image = rotted_image(&pristine, at, rot);
             reached.insert(at);
             let tally = table.entry((class.clone(), rot)).or_default();
             tally.cases += 1;
@@ -1679,11 +1664,8 @@ fn a_read_crossing_a_rotted_page_gives_the_written_rows_or_refuses_naming_it() {
                 vec![own[kind * own.len() / ROTS.len()]]
             };
             for at in sample {
-                let page = &file[at * PAGE..(at + 1) * PAGE];
-                let bytes = rotted(page, at, rot);
-                assert_ne!(page, bytes, "page {at} {rot:?}");
-                let mut image = pristine.clone();
-                image.get_mut(FILE).unwrap()[at * PAGE..(at + 1) * PAGE].copy_from_slice(&bytes);
+                let page = &file[DATA.range(Pid(at as u64))];
+                let image = rotted_image(&pristine, at, rot);
                 let reads = reads_crossing(object, at, page);
                 let take = if deep { reads.len() } else { 1 };
                 for (n, crossing) in reads.into_iter().take(take).enumerate() {
@@ -1735,11 +1717,7 @@ fn a_commit_through_a_rotted_page_of_its_target_loses_no_row() {
     for rot in ROTS {
         for object in objects.iter().filter(|o| o.of_rows) {
             for at in pages_of(file, object) {
-                let page = &file[at * PAGE..(at + 1) * PAGE];
-                let bytes = rotted(page, at, rot);
-                assert_ne!(page, bytes, "page {at} {rot:?}");
-                let mut image = pristine.clone();
-                image.get_mut(FILE).unwrap()[at * PAGE..(at + 1) * PAGE].copy_from_slice(&bytes);
+                let image = rotted_image(&pristine, at, rot);
                 let tally = table.entry((object.name.clone(), rot)).or_default();
                 tally.cases += 1;
                 match rot_bounded(ROT_CASE_LIMIT, move || rot_commit(image)) {
@@ -1822,7 +1800,7 @@ const FOREIGN: [Foreign; 3] = [Foreign::Heap, Foreign::Leaf, Foreign::Emptied];
 /// another owner and an index leaf.
 fn foreign_image(pristine: &Files, at: usize, foreign: Foreign, donors: (usize, usize)) -> Files {
     let file = &pristine[FILE];
-    let page = |p: usize| file[p * PAGE..(p + 1) * PAGE].to_vec();
+    let page = |p: usize| file[DATA.range(Pid(p as u64))].to_vec();
     let mut bytes = match foreign {
         Foreign::Heap => page(donors.0),
         Foreign::Leaf => page(donors.1),
@@ -1836,7 +1814,7 @@ fn foreign_image(pristine: &Files, at: usize, foreign: Foreign, donors: (usize, 
     };
     sealed_as(at, &mut bytes);
     let mut image = pristine.clone();
-    image.get_mut(FILE).unwrap()[at * PAGE..(at + 1) * PAGE].copy_from_slice(&bytes);
+    DATA.replace(&mut image, Pid(at as u64), &bytes);
     image
 }
 
@@ -1930,7 +1908,7 @@ fn a_valid_page_of_another_owner_or_lacking_the_slot_refuses_naming_its_holder()
                     (Foreign::Emptied, "lookup") => objects.iter().find(probed).expect("its index"),
                     _ => object,
                 };
-                let lsn = |f: &Files| storage::lsn(&f[FILE][at * PAGE..(at + 1) * PAGE]);
+                let lsn = |f: &Files| storage::lsn(DATA.page(f, Pid(at as u64)));
                 let stale = lsn(&image) < lsn(&pristine);
                 let blamed = if stale { Pid(at as u64) } else { blamed };
                 let page = (foreign != Foreign::Emptied).then_some(blamed);
@@ -2131,7 +2109,7 @@ fn watch(rt: &SimRuntime, page: u64, last: u64, plan: &[bool]) -> Watch {
     rt.arm(
         Match::kind(OpKind::Read)
             .path(FILE)
-            .offset(page * PAGE as u64),
+            .offset(DATA.range(Pid(page)).start as u64),
     );
     let failures = (0..plan.len() as u64).filter(|&i| plan[i as usize]);
     rt.plan(failures.fold(Plan::new(), |p, i| p.at(i, Action::Fail(IoError::Failed))));
@@ -2295,12 +2273,27 @@ struct Scrubbed {
     unfound: usize,
 }
 
+/// Returns `pristine` with page `at` of the data file under `rot`.
 fn rotted_image(pristine: &Files, at: usize, rot: Rot) -> Files {
     let mut image = pristine.clone();
-    let page = &mut image.get_mut(FILE).unwrap()[at * PAGE..(at + 1) * PAGE];
-    let bytes = rotted(page, at, rot);
-    assert_ne!(page, &bytes[..], "page {at} {rot:?}: nothing was damaged");
-    page.copy_from_slice(&bytes);
+    let pid = Pid(at as u64);
+    match rot {
+        Rot::Flip => DATA.flip(&mut image, pid, (at * 2_654_435_761) % (PAGE - HEADER_LEN)),
+        Rot::Zeroed => DATA.zero(&mut image, pid),
+        Rot::Torn => {
+            let page = DATA.page_mut(&mut image, pid);
+            if page[PAGE / 2..].iter().any(|&b| b != 0) {
+                page[PAGE / 2..].fill(0);
+            } else {
+                page[..PAGE / 2].fill(0);
+            }
+        }
+    }
+    assert_ne!(
+        DATA.page(pristine, pid),
+        DATA.page(&image, pid),
+        "page {at} {rot:?}: nothing was damaged"
+    );
     image
 }
 
@@ -2331,7 +2324,7 @@ fn the_scrub_files_rot_on_a_page_no_call_reads_as_a_read_would() {
             sample.insert(own[kind * own.len() / ROTS.len()]);
         }
         for at in sample {
-            let class = page_class(at, &file[at * PAGE..(at + 1) * PAGE], &owners);
+            let class = page_class(at, &file[DATA.range(Pid(at as u64))], &owners);
             let (image, object) = (rotted_image(&pristine, at, rot), holder.get(&at).cloned());
             let all = objects.clone();
             let label = format!("page {at} {class} {rot:?}");

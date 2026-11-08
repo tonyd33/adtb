@@ -15,12 +15,14 @@ use adtb_sim::{
     Violation, check,
 };
 use adtb_sys::runtime::Faults;
+use std::cell::Cell;
 
 use adtb_simkit::crash;
+use adtb_simkit::damage::DataFile;
 use adtb_simkit::seeds;
 
 use adtb_testkit::profile::every_case;
-use crash::{crash_after, run_process, silence_fatal_panics};
+use crash::{Reopen, Reopened, Rounds, crash_loop, run_process, silence_fatal_panics};
 use seeds::{assert_reached, share, sweep};
 
 const PAGE: usize = 4096;
@@ -28,6 +30,7 @@ const SLOT: usize = 16;
 const SLOTS: usize = (PAGE - HEADER_LEN) / SLOT;
 const PAGES: usize = 24;
 const NAME: &str = "app.adt";
+const DATA: DataFile = DataFile::new(NAME, PAGE);
 /// How the database is laid out on the simulated device.
 #[derive(Clone, Copy, Debug)]
 struct Layout {
@@ -322,6 +325,14 @@ struct Report {
     findings: Vec<Finding>,
     commits: BTreeSet<u64>,
     pages: BTreeMap<Pid, Option<Vec<u8>>>,
+    /// Whether the faults may damage the file.
+    damage_allowed: bool,
+    /// Whether the log was found damaged or lost a write.
+    log_trouble: bool,
+    /// Each way the pages disagree with what the client wrote.
+    problems: Vec<String>,
+    /// Every transaction a page shows.
+    visible: BTreeSet<u64>,
 }
 
 impl Recovered for Report {
@@ -336,7 +347,30 @@ impl Recovered for Report {
                 kind: FindingKind::Structure,
                 at: format!("{f:?}"),
             })
+            .chain(self.problems.iter().map(|p| adtb_sim::Finding {
+                kind: FindingKind::Logic,
+                at: p.clone(),
+            }))
             .collect()
+    }
+}
+
+impl Reopened for Report {
+    fn allows(&self, v: &Violation) -> bool {
+        match v {
+            Violation::Lost(_) => self.log_trouble || self.open.is_some(),
+            Violation::Found(f) => self.damage_allowed && f.kind == FindingKind::Structure,
+            Violation::Phantom(_) => false,
+        }
+    }
+
+    /// Acknowledge each commit in doubt that the log holds or a page shows, and abort the rest.
+    fn settle(&self, ledger: &Ledger) {
+        ledger.settle(&self.commits.union(&self.visible).copied().collect());
+    }
+
+    fn last(&self) -> bool {
+        self.open.is_some()
     }
 }
 
@@ -359,7 +393,7 @@ fn inspect(rt: SimRuntime, pages: &[Pid], layout: Layout) -> Report {
         open: None,
         findings,
         commits: v.commits.into_iter().collect(),
-        pages: BTreeMap::new(),
+        ..Report::default()
     };
     for &pid in pages {
         report
@@ -393,37 +427,23 @@ fn slots(pid: Pid, page: &[u8], world: &World) -> Result<Vec<u64>, String> {
     Ok(out)
 }
 
-/// Check what `report` shows against the client's records, given the fates of `ledger`, and
-/// returns the violations that remain once those the reported damage explains are dropped.
-fn judge(
-    report: &Report,
-    ledger: &Ledger,
-    world: &World,
-    trace: &str,
-    damage_allowed: bool,
-) -> Vec<String> {
-    let mut problems = Vec::new();
+/// Record in `report` each way its pages disagree with the client's records, given the fates of
+/// `ledger`, and every transaction they show. `lost_log_write` tells whether the faults lost a write
+/// to the log.
+fn judge(report: &mut Report, ledger: &Ledger, world: &World, lost_log_write: bool) {
     if let Some(e) = report.open {
         let damage = matches!(
             e,
             OpenError::NoHeader | OpenError::Log(_) | OpenError::Page(_)
         );
-        if !(damage && damage_allowed) {
-            problems.push(format!("open failed: {e:?}"));
+        if !(damage && report.damage_allowed) {
+            report.problems.push(format!("open failed: {e:?}"));
         }
-        return problems;
+        return;
     }
-    let log_trouble = report.findings.iter().any(|f| matches!(f, Finding::Log(_)))
-        || trace
-            .lines()
-            .any(|l| l.starts_with("fault lost write") && l.contains("-log/"));
-    for v in check(ledger, report) {
-        match v {
-            Violation::Lost(_) if log_trouble => {}
-            Violation::Found(_) if damage_allowed => {}
-            v => problems.push(format!("{v:?}")),
-        }
-    }
+    report.log_trouble =
+        report.findings.iter().any(|f| matches!(f, Finding::Log(_))) || lost_log_write;
+    let mut problems = Vec::new();
     for (pid, page) in &report.pages {
         let Some(page) = page else {
             let reported = report.findings.iter().any(|f| match f {
@@ -442,8 +462,11 @@ fn judge(
                 continue;
             }
         };
+        report
+            .visible
+            .extend(shown.iter().copied().filter(|&x| x != 0));
         for (s, &x) in shown.iter().enumerate() {
-            if x != 0 && !log_trouble && !report.commits.contains(&x) {
+            if x != 0 && !report.log_trouble && !report.commits.contains(&x) {
                 problems.push(format!("{pid:?} slot {s} shows {x}, which never committed"));
             }
             if x != 0 && ledger.fate(x) == Some(Fate::Aborted) {
@@ -456,7 +479,7 @@ fn judge(
                     && ws.iter().any(|(p, ss)| p == pid && ss.contains(&s))
             });
             if let Some((w, _)) = newer_acked
-                && !log_trouble
+                && !report.log_trouble
             {
                 problems.push(format!(
                     "{pid:?} slot {s} shows {x}, losing acknowledged {w}"
@@ -464,27 +487,18 @@ fn judge(
             }
         }
     }
-    problems
+    report.problems = problems;
 }
 
-/// Settle every commit left in doubt by what the reopened database shows.
-fn resolve(report: &Report, ledger: &Ledger, world: &World) {
-    let visible: BTreeSet<u64> = report
-        .pages
-        .iter()
-        .filter_map(|(pid, p)| p.as_ref().map(|p| (pid, p)))
-        .filter_map(|(pid, p)| slots(*pid, p, world).ok())
-        .flatten()
-        .collect();
-    for &xid in world.writes.keys() {
-        if ledger.fate(xid) == Some(Fate::InDoubt) {
-            if report.commits.contains(&xid) || visible.contains(&xid) {
-                ledger.acknowledge(xid);
-            } else {
-                ledger.abort(xid);
-            }
-        }
-    }
+/// Returns each violation of `ledger` and each page problem `report` shows, with no damage
+/// allowed and no log write lost.
+fn judged(mut report: Report, ledger: &Ledger, world: &World) -> Vec<String> {
+    judge(&mut report, ledger, world, false);
+    check(ledger, &report)
+        .into_iter()
+        .filter(|v| !report.allows(v))
+        .map(|v| format!("{v:?}"))
+        .collect()
 }
 
 /// The fewest crashes under every fault that may leave one file refusing to open: the measured
@@ -534,6 +548,8 @@ struct Tally {
     logs: usize,
     reopened: usize,
     unopenable: usize,
+    /// Each acknowledged commit a round allowed lost, by seed, round and id.
+    lost: Vec<(u64, usize, u64)>,
 }
 
 /// Returns the findings `rate` asks of `seeds` seeds run, at least one unless `rate` asks none.
@@ -584,14 +600,13 @@ impl Tally {
 }
 
 /// Crash a random workload `rounds` times under `faults`, reopening and checking after each.
-fn crash_loop(
+fn crash_rounds(
     seed: u64,
     faults: Faults,
     layout: Layout,
     damage_allowed: bool,
     rounds: usize,
 ) -> Tally {
-    silence_fatal_panics();
     let quiet = Faults {
         atomic_unit: if layout.atomic { PAGE as u64 } else { 512 },
         ..Faults::none(512)
@@ -609,40 +624,55 @@ fn crash_loop(
     );
     let client = Client::new();
     setup(&mut sim, &client, layout);
+    let world = client.world;
+    let lost_log_write = Cell::new(false);
+    let rounds = Rounds::new(rounds, 500, 60_000);
+    let out = crash_loop(
+        &mut sim,
+        seed,
+        faults,
+        rounds,
+        |r| {
+            let c = Client {
+                ledger: r.ledger().clone(),
+                world: world.clone(),
+            };
+            r.crash(|rt| {
+                if layout.threads == 0 {
+                    workload(rt, &c, layout, 400);
+                } else {
+                    concurrent(rt, &c, layout, 150);
+                }
+            });
+            lost_log_write.set(
+                r.sim()
+                    .trace()
+                    .lines()
+                    .any(|l| l.starts_with("fault lost write") && l.contains("-log/")),
+            );
+        },
+        |rt, ledger| {
+            let pages = world.lock().unwrap().pages.clone();
+            let mut report = inspect(rt, &pages, layout);
+            report.damage_allowed = damage_allowed;
+            judge(
+                &mut report,
+                ledger,
+                &world.lock().unwrap(),
+                lost_log_write.get(),
+            );
+            report
+        },
+    );
     let mut tally = Tally::default();
-    for round in 0..rounds {
-        sim.set_faults(faults);
-        let at = sim.now() + crash_after(seed, round as u64, 500, 60_000);
-        sim.crash_at(at);
-        let c = client.clone();
-        let body = |rt: SimRuntime| {
-            if layout.threads == 0 {
-                workload(rt, &c, layout, 400);
-            } else {
-                concurrent(rt, &c, layout, 150);
-            }
-        };
-        if run_process(&mut sim, body) == Outcome::Crashed {
-            tally.crashes += 1;
+    for (round, v) in out.allowed() {
+        if let Violation::Lost(x) = v {
+            tally.lost.push((seed, round, *x));
         }
-        sim.set_faults(quiet);
-        let pages = client.world.lock().unwrap().pages.clone();
-        let mut report = Report::default();
-        let outcome = sim.run(|rt| report = inspect(rt, &pages, layout));
-        assert_eq!(Outcome::Finished, outcome);
-        let world = client.world.lock().unwrap();
-        let problems = judge(
-            &report,
-            &client.ledger,
-            &world,
-            &sim.trace(),
-            damage_allowed,
-        );
-        assert!(
-            problems.is_empty(),
-            "seed {seed} round {round}: {problems:#?}\nfindings {:?}",
-            report.findings
-        );
+    }
+    for round in out.rounds() {
+        let report = round.reopened();
+        tally.crashes += usize::from(round.crashed());
         tally.findings += report.findings.len();
         for f in &report.findings {
             match f {
@@ -651,20 +681,18 @@ fn crash_loop(
                 Finding::Orphan(_) | Finding::Unlisted => {}
             }
         }
-        resolve(&report, &client.ledger, &world);
         if report.open.is_some() {
             tally.unopenable += 1;
-            break;
+        } else {
+            tally.reopened += 1;
         }
-        tally.reopened += 1;
     }
-    tally.acked = client
-        .world
+    tally.acked = world
         .lock()
         .unwrap()
         .writes
         .keys()
-        .filter(|&&x| client.ledger.fate(x) == Some(Fate::Acknowledged))
+        .filter(|&&x| out.ledger().fate(x) == Some(Fate::Acknowledged))
         .count();
     tally
 }
@@ -673,7 +701,7 @@ fn seeds(range: Range<u64>, faults: Faults, layout: Layout, damage_allowed: bool
     let mut total = Tally::default();
     for seed in sweep(range) {
         total.seeds += 1;
-        let t = crash_loop(seed, faults, layout, damage_allowed, 4);
+        let t = crash_rounds(seed, faults, layout, damage_allowed, 4);
         total.crashes += t.crashes;
         total.acked += t.acked;
         total.findings += t.findings;
@@ -681,6 +709,7 @@ fn seeds(range: Range<u64>, faults: Faults, layout: Layout, damage_allowed: bool
         total.logs += t.logs;
         total.reopened += t.reopened;
         total.unopenable += t.unopenable;
+        total.lost.extend(t.lost);
     }
     total
 }
@@ -699,6 +728,11 @@ fn crashes_with_torn_writes_lose_nothing_and_find_nothing() {
     );
     assert!(t.crashes > share(SEEDS, 20), "{t:?}");
     assert!(t.acked > share(SEEDS, 200), "{t:?}");
+    assert_eq!(
+        Vec::<(u64, usize, u64)>::new(),
+        t.lost,
+        "no fault of the cell loses a write or damages the file"
+    );
 }
 
 #[test]
@@ -720,6 +754,11 @@ fn torn_log_blocks_lose_no_acknowledged_commit() {
     );
     assert!(t.crashes > share(SEEDS, 20), "{t:?}");
     assert!(t.acked > share(SEEDS, 200), "{t:?}");
+    assert_eq!(
+        Vec::<(u64, usize, u64)>::new(),
+        t.lost,
+        "no fault of the cell loses a write or damages the file"
+    );
 }
 
 #[test]
@@ -740,6 +779,11 @@ fn atomic_page_writes_need_no_images() {
         false,
     );
     assert!(t.crashes > share(SEEDS, 10), "{t:?}");
+    assert_eq!(
+        Vec::<(u64, usize, u64)>::new(),
+        t.lost,
+        "no fault of the cell loses a write or damages the file"
+    );
 }
 
 #[test]
@@ -888,11 +932,12 @@ fn with_pager<T>(sim: &mut Sim, body: impl FnOnce(&mut Pager<SimRuntime>) -> T) 
     out.unwrap()
 }
 
-/// Returns a copy of `sim`'s device after a clean reopen, with one bit of `path` flipped.
-fn flip(sim: &mut Sim, path: &str, at: usize) -> Sim {
+/// Returns a copy of `sim`'s device after a clean reopen, with byte `at` of the body of page `pid`
+/// inverted.
+fn flipped(sim: &mut Sim, pid: Pid, at: usize) -> Sim {
     with_pager(sim, |_| ());
     let mut files = sim.files();
-    files.get_mut(path).unwrap()[at] ^= 0x20;
+    DATA.flip(&mut files, pid, at);
     Sim::with_files(1, Config::default(), files)
 }
 
@@ -919,15 +964,14 @@ fn page_changed_past_log_end(layout: Layout, change: bool) -> (Sim, Pid, Lsn, Ls
     });
     assert_eq!(Outcome::Finished, outcome);
     let files = sim.files();
-    let written = adtb::storage::lsn(&files[NAME][pid.0 as usize * PAGE..]);
+    let written = adtb::storage::lsn(DATA.page(&files, pid));
     let past = Lsn(1 << 40);
     (planted(files, pid, past), pid, written, past)
 }
 
 /// Returns a device holding `files` with page `pid` resealed at LSN `lsn`.
 fn planted(mut files: BTreeMap<String, Vec<u8>>, pid: Pid, lsn: Lsn) -> Sim {
-    let at = pid.0 as usize * PAGE;
-    let page = &mut files.get_mut(NAME).unwrap()[at..at + PAGE];
+    let page = DATA.page_mut(&mut files, pid);
     page[..8].copy_from_slice(&lsn.0.to_le_bytes());
     adtb::storage::seal(pid, page);
     Sim::with_files(1, Config::default(), files)
@@ -1048,9 +1092,9 @@ fn a_page_whose_only_records_are_in_the_lost_log_tail_is_an_unlogged_write() {
         let from = cut.0.saturating_sub(base).min(segment) as usize;
         bytes[from..].fill(0);
     }
-    let data = &files[NAME];
-    let past: Vec<(Pid, Lsn)> = (Pid::FIRST_DATA.0..(data.len() / PAGE) as u64)
-        .map(|n| (Pid(n), adtb::storage::lsn(&data[n as usize * PAGE..])))
+    let pages = (DATA.bytes(&files).len() / PAGE) as u64;
+    let past: Vec<(Pid, Lsn)> = (Pid::FIRST_DATA.0..pages)
+        .map(|n| (Pid(n), adtb::storage::lsn(DATA.page(&files, Pid(n)))))
         .filter(|&(_, lsn)| lsn >= cut)
         .collect();
     assert!(past.iter().any(|&(p, _)| p == pid), "{past:?}");
@@ -1113,11 +1157,7 @@ fn a_change_to_a_page_past_the_log_end_is_refused_and_reported_on_every_verify()
     let (end, (first, again)) = opened(&mut sim, |p| (p.verify().findings, p.verify().findings));
     assert_eq!(past_end(pid, end, past).to_vec(), first);
     assert_eq!(first, again);
-    let at = pid.0 as usize * PAGE;
-    assert_eq!(
-        planted[NAME][at..at + PAGE],
-        sim.files()[NAME][at..at + PAGE]
-    );
+    assert_eq!(DATA.page(&planted, pid), DATA.page(&sim.files(), pid));
 }
 
 #[test]
@@ -1126,7 +1166,7 @@ fn a_rotted_page_is_refused_and_reported() {
     let client = Client::new();
     setup(&mut sim, &client, PLAIN);
     let pid = client.world.lock().unwrap().pages[3];
-    let mut sim = flip(&mut sim, NAME, pid.0 as usize * PAGE + 1000);
+    let mut sim = flipped(&mut sim, pid, 1000 - HEADER_LEN);
     let (read, findings) = with_pager(&mut sim, |p| {
         let read = p.read(pid).map(|_| ()).map_err(|e| e.damage);
         (read, p.verify().findings)
@@ -1143,7 +1183,7 @@ fn a_damaged_bitmap_fails_allocation() {
     let mut sim = Sim::new(2, Config::default());
     let client = Client::new();
     setup(&mut sim, &client, PLAIN);
-    let mut sim = flip(&mut sim, NAME, 2 * PAGE + 500);
+    let mut sim = flipped(&mut sim, Pid(2), 500 - HEADER_LEN);
     let got = with_pager(&mut sim, |p| p.allocate(1, PageKind::HeapSlotted, 7));
     assert_eq!(
         Pid(2),
@@ -1160,13 +1200,12 @@ fn allocation_reuses_a_damaged_free_page_without_reading_it() {
     let last = *client.world.lock().unwrap().pages.last().unwrap();
     let next = Pid(last.0 + 1);
     let mut files = sim.files();
-    let data = files.get_mut(NAME).unwrap();
     assert!(
-        data.len() <= next.0 as usize * PAGE,
+        DATA.bytes(&files).len() <= DATA.range(next).start,
         "page {next:?} is past the file's end"
     );
-    data.resize((next.0 as usize + 1) * PAGE, 0);
-    data[next.0 as usize * PAGE + 77] = 1;
+    DATA.extend(&mut files, next.0 as usize + 1);
+    DATA.page_mut(&mut files, next)[77] = 1;
     let mut sim = Sim::with_files(3, Config::default(), files);
     let got = with_pager(&mut sim, |p| {
         let pid = p.allocate(1, PageKind::HeapSlotted, 7);
@@ -1187,11 +1226,11 @@ fn verify_reports_the_damage_of_a_page_whose_bitmap_page_the_device_cannot_read(
     let client = Client::new();
     setup(&mut sim, &client, PLAIN);
     let p = client.world.lock().unwrap().pages[0];
-    let mut sim = flip(&mut sim, NAME, p.0 as usize * PAGE + HEADER_LEN);
+    let mut sim = flipped(&mut sim, p, 0);
     let bitmap = Pid(2);
     let mut found = None;
     let outcome = sim.run(|rt| {
-        let reads = Match::kind(OpKind::Read).offset(bitmap.0 * PAGE as u64);
+        let reads = Match::kind(OpKind::Read).offset(DATA.range(bitmap).start as u64);
         rt.plan(Plan::new().rule(reads, Action::Fail(IoError::Failed)));
         let (pager, _) = Pager::open(rt, &options(PLAIN)).expect("open");
         found = Some(pager.verify().findings);
@@ -1222,45 +1261,53 @@ fn allocations_survive_crashes_and_never_repeat() {
                 ..Config::default()
             },
         );
-        silence_fatal_panics();
         let client = Client::new();
         sim.set_faults(Faults::none(512));
         setup(&mut sim, &client, PLAIN);
         let durable: Arc<Mutex<BTreeSet<Pid>>> = Arc::default();
-        for round in 0..4u64 {
-            sim.set_faults(Faults {
-                torn_p: 0.5,
-                fail_p: 0.01,
-                ..Faults::none(512)
-            });
-            sim.crash_at(sim.now() + Duration::from_micros(300 + (seed * 31 + round * 977) % 9000));
-            let d = durable.clone();
-            run_process(&mut sim, |rt| {
-                let Ok((p, _)) = Pager::open(rt, &options(PLAIN)) else {
-                    return;
-                };
-                loop {
-                    let pid = p.allocate(1, PageKind::HeapSlotted, 9).expect("allocate");
-                    p.flush_log();
-                    assert!(d.lock().unwrap().insert(pid), "{pid:?} allocated twice");
-                    if pid.0.is_multiple_of(5) {
-                        d.lock().unwrap().remove(&pid);
-                        p.free(pid).expect("free");
+        let faults = Faults {
+            torn_p: 0.5,
+            fail_p: 0.01,
+            ..Faults::none(512)
+        };
+        crash_loop(
+            &mut sim,
+            seed,
+            faults,
+            Rounds::new(4, 300, 9000),
+            |r| {
+                let d = durable.clone();
+                r.crash(|rt| {
+                    let Ok((p, _)) = Pager::open(rt, &options(PLAIN)) else {
+                        return;
+                    };
+                    loop {
+                        let pid = p.allocate(1, PageKind::HeapSlotted, 9).expect("allocate");
                         p.flush_log();
+                        assert!(d.lock().unwrap().insert(pid), "{pid:?} allocated twice");
+                        if pid.0.is_multiple_of(5) {
+                            d.lock().unwrap().remove(&pid);
+                            p.free(pid).expect("free");
+                            p.flush_log();
+                        }
                     }
+                });
+            },
+            |rt, _| {
+                let (p, _) = Pager::open(rt, &options(PLAIN)).expect("open");
+                let mut problems: Vec<String> = p
+                    .verify()
+                    .findings
+                    .iter()
+                    .map(|f| format!("{f:?}"))
+                    .collect();
+                let fresh = p.allocate(1, PageKind::HeapSlotted, 9).expect("allocate");
+                if durable.lock().unwrap().contains(&fresh) {
+                    problems.push(format!("{fresh:?} handed out twice"));
                 }
-            });
-        }
-        sim.set_faults(Faults::none(512));
-        let held = durable.lock().unwrap().clone();
-        with_pager(&mut sim, |p| {
-            let fresh = p.allocate(1, PageKind::HeapSlotted, 9).expect("allocate");
-            assert!(
-                !held.contains(&fresh),
-                "seed {seed}: {fresh:?} handed out twice"
-            );
-            assert!(p.verify().findings.is_empty());
-        });
+                Reopen::found(problems)
+            },
+        );
     }
 }
 
@@ -1300,7 +1347,7 @@ fn crash_replay_at_every_flush_boundary() {
                 Outcome::Finished,
                 replay.run(|rt| report = inspect(rt, &world.pages, PLAIN))
             );
-            let problems = judge(&report, &ledger, &world, "", false);
+            let problems = judged(report, &ledger, &world);
             assert!(problems.is_empty(), "flush boundary {at}: {problems:#?}");
         }
     }
@@ -1382,7 +1429,7 @@ fn threads_finish_and_every_acknowledged_write_stays() {
             sim.run(|rt| report = inspect(rt, &pages, THREADED))
         );
         let world = client.world.lock().unwrap();
-        let problems = judge(&report, &client.ledger, &world, "", false);
+        let problems = judged(report, &client.ledger, &world);
         assert!(problems.is_empty(), "seed {seed}: {problems:#?}");
         let acked = world
             .writes
@@ -1514,7 +1561,6 @@ fn linked(p: &Pager<SimRuntime>, index: Pid) -> BTreeSet<Pid> {
 #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 fn a_crash_never_separates_an_allocation_from_its_link() {
     const SEEDS: Range<u64> = 0..10;
-    silence_fatal_panics();
     let mut leaks_possible_before = 0;
     for seed in sweep(SEEDS) {
         let mut sim = Sim::new(seed, Config::default());
@@ -1522,49 +1568,58 @@ fn a_crash_never_separates_an_allocation_from_its_link() {
         setup(&mut sim, &client, PLAIN);
         let index = client.world.lock().unwrap().pages[0];
         let before = with_pager(&mut sim, |p| allocated(p));
-        for round in 0..4u64 {
-            sim.set_faults(Faults {
-                torn_p: 0.5,
-                ..Faults::none(512)
-            });
-            sim.crash_at(sim.now() + crash_after(seed, round, 20_000, 80_000));
-            run_process(&mut sim, |rt| {
-                let Ok((p, _)) = Pager::open(rt, &options(PLAIN)) else {
-                    return;
-                };
-                let used = linked(&p, index).len();
-                for slot in used..SLOTS {
-                    let mut new = p.reserve();
-                    let pid = new.page(1, PageKind::HeapSlotted, 9).unwrap();
-                    p.update_with(new, &[index, pid], |pages| {
-                        let at = HEADER_LEN + slot * 8;
-                        pages[0][at..at + 8].copy_from_slice(&pid.0.to_le_bytes());
-                        pages[1][HEADER_LEN] = 0xab;
-                    })
-                    .unwrap();
-                    if slot % 7 == 0 {
-                        p.flush_log();
+        let faults = Faults {
+            torn_p: 0.5,
+            ..Faults::none(512)
+        };
+        crash_loop(
+            &mut sim,
+            seed,
+            faults,
+            Rounds::new(4, 20_000, 80_000),
+            |r| {
+                r.crash(|rt| {
+                    let Ok((p, _)) = Pager::open(rt, &options(PLAIN)) else {
+                        return;
+                    };
+                    let used = linked(&p, index).len();
+                    for slot in used..SLOTS {
+                        let mut new = p.reserve();
+                        let pid = new.page(1, PageKind::HeapSlotted, 9).unwrap();
+                        p.update_with(new, &[index, pid], |pages| {
+                            let at = HEADER_LEN + slot * 8;
+                            pages[0][at..at + 8].copy_from_slice(&pid.0.to_le_bytes());
+                            pages[1][HEADER_LEN] = 0xab;
+                        })
+                        .unwrap();
+                        if slot % 7 == 0 {
+                            p.flush_log();
+                        }
+                        leaks_possible_before += 1;
                     }
-                    leaks_possible_before += 1;
+                });
+            },
+            |rt, _| {
+                let (p, _) = Pager::open(rt, &options(PLAIN)).expect("open");
+                let fresh: BTreeSet<Pid> = allocated(&p).difference(&before).copied().collect();
+                let links = linked(&p, index);
+                let mut problems = Vec::new();
+                if fresh != links {
+                    problems.push(format!("allocations {fresh:?} and links {links:?} differ"));
                 }
-            });
-            sim.set_faults(Faults::none(512));
-            with_pager(&mut sim, |p| {
-                let fresh: BTreeSet<Pid> = allocated(p).difference(&before).copied().collect();
-                let links = linked(p, index);
-                assert_eq!(
-                    fresh, links,
-                    "seed {seed} round {round}: allocations and links differ"
-                );
                 for &pid in &links {
                     let page = p.read(pid).unwrap();
-                    assert_eq!(PageKind::HeapSlotted as u16, adtb::storage::kind(&page));
-                    assert_eq!(9, adtb::storage::owner(&page));
-                    assert_eq!(0xab, page[HEADER_LEN]);
-                    assert!(page[HEADER_LEN + 1..].iter().all(|&b| b == 0));
+                    let made = adtb::storage::kind(&page) == PageKind::HeapSlotted as u16
+                        && adtb::storage::owner(&page) == 9
+                        && page[HEADER_LEN] == 0xab
+                        && page[HEADER_LEN + 1..].iter().all(|&b| b == 0);
+                    if !made {
+                        problems.push(format!("{pid:?} is not the page its link was made with"));
+                    }
                 }
-            });
-        }
+                Reopen::found(problems)
+            },
+        );
     }
     assert!(
         leaks_possible_before > share(SEEDS, 50),
@@ -1650,7 +1705,7 @@ fn a_damaged_bitmap_fails_a_reservation() {
     let mut sim = Sim::new(34, Config::default());
     let client = Client::new();
     setup(&mut sim, &client, PLAIN);
-    let mut sim = flip(&mut sim, NAME, 2 * PAGE + 500);
+    let mut sim = flipped(&mut sim, Pid(2), 500 - HEADER_LEN);
     let got = with_pager(&mut sim, |p| p.reserve().page(1, PageKind::HeapSlotted, 7));
     assert_eq!(
         Pid(2),
@@ -1856,7 +1911,6 @@ fn a_lost_log_write_refuses_the_reopen_at_its_gap() {
 #[test]
 fn a_crash_never_separates_freeing_from_unlinking() {
     const SEEDS: Range<u64> = 0..10;
-    silence_fatal_panics();
     let mut freed = 0;
     for seed in sweep(SEEDS) {
         let mut sim = Sim::new(seed + 50, Config::default());
@@ -1864,52 +1918,59 @@ fn a_crash_never_separates_freeing_from_unlinking() {
         setup(&mut sim, &client, PLAIN);
         let index = client.world.lock().unwrap().pages[0];
         let before = with_pager(&mut sim, |p| allocated(p));
-        for round in 0..4u64 {
-            sim.set_faults(Faults {
-                torn_p: 0.5,
-                ..Faults::none(512)
-            });
-            sim.crash_at(sim.now() + crash_after(seed, round, 20_000, 80_000));
-            run_process(&mut sim, |rt| {
-                let Ok((p, _)) = Pager::open(rt.clone(), &options(PLAIN)) else {
-                    return;
-                };
-                for _ in 0..400 {
-                    let page = p.read(index).unwrap().to_vec();
-                    let at = |s: usize| HEADER_LEN + s * 8;
-                    let pid_at =
-                        |s: usize| u64::from_le_bytes(page[at(s)..at(s) + 8].try_into().unwrap());
-                    let s = (rt.next_u64() % 40) as usize;
-                    let pid = pid_at(s);
-                    if pid == 0 {
-                        let mut new = p.reserve();
-                        let fresh = new.page(1, PageKind::HeapSlotted, 9).unwrap();
-                        p.update_with(new, &[index, fresh], |v| {
-                            v[0][at(s)..at(s) + 8].copy_from_slice(&fresh.0.to_le_bytes());
-                        })
-                        .unwrap();
-                    } else {
-                        let mut new = p.reserve();
-                        new.free(Pid(pid));
-                        p.update_with(new, &[index], |v| v[0][at(s)..at(s) + 8].fill(0))
+        let faults = Faults {
+            torn_p: 0.5,
+            ..Faults::none(512)
+        };
+        crash_loop(
+            &mut sim,
+            seed,
+            faults,
+            Rounds::new(4, 20_000, 80_000),
+            |r| {
+                r.crash(|rt| {
+                    let Ok((p, _)) = Pager::open(rt.clone(), &options(PLAIN)) else {
+                        return;
+                    };
+                    for _ in 0..400 {
+                        let page = p.read(index).unwrap().to_vec();
+                        let at = |s: usize| HEADER_LEN + s * 8;
+                        let pid_at = |s: usize| {
+                            u64::from_le_bytes(page[at(s)..at(s) + 8].try_into().unwrap())
+                        };
+                        let s = (rt.next_u64() % 40) as usize;
+                        let pid = pid_at(s);
+                        if pid == 0 {
+                            let mut new = p.reserve();
+                            let fresh = new.page(1, PageKind::HeapSlotted, 9).unwrap();
+                            p.update_with(new, &[index, fresh], |v| {
+                                v[0][at(s)..at(s) + 8].copy_from_slice(&fresh.0.to_le_bytes());
+                            })
                             .unwrap();
-                        freed += 1;
+                        } else {
+                            let mut new = p.reserve();
+                            new.free(Pid(pid));
+                            p.update_with(new, &[index], |v| v[0][at(s)..at(s) + 8].fill(0))
+                                .unwrap();
+                            freed += 1;
+                        }
+                        if rt.next_u64().is_multiple_of(5) {
+                            p.flush_log();
+                        }
                     }
-                    if rt.next_u64().is_multiple_of(5) {
-                        p.flush_log();
-                    }
-                }
-            });
-            sim.set_faults(Faults::none(512));
-            with_pager(&mut sim, |p| {
-                let fresh: BTreeSet<Pid> = allocated(p).difference(&before).copied().collect();
-                assert_eq!(
-                    fresh,
-                    linked(p, index),
-                    "seed {seed} round {round}: allocations and links differ"
-                );
-            });
-        }
+                });
+            },
+            |rt, _| {
+                let (p, _) = Pager::open(rt, &options(PLAIN)).expect("open");
+                let fresh: BTreeSet<Pid> = allocated(&p).difference(&before).copied().collect();
+                let links = linked(&p, index);
+                Reopen::found(if fresh == links {
+                    Vec::new()
+                } else {
+                    vec![format!("allocations {fresh:?} and links {links:?} differ")]
+                })
+            },
+        );
     }
     assert!(freed > share(SEEDS, 50), "{freed} frees");
 }

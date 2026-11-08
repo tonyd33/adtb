@@ -4,6 +4,7 @@ use std::ops::Range;
 use adtb_simkit::support;
 
 use adtb_simkit::common;
+use adtb_simkit::damage::DataFile;
 
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1258,7 +1259,7 @@ fn behind_a_damaged_commit_log(
         }
         let mut io = rt.io();
         let (file, _) = common::open(&rt, &mut io, "app.adt", false).expect("the data file");
-        let at = status.0 * PAGE as u64;
+        let at = DataFile::new("app.adt", PAGE).range(status).start as u64;
         common::write(&rt, &mut io, file, at, &[0xa5; PAGE]).expect("a write");
         common::sync(&rt, &mut io, file).expect("a sync");
         let ended = db.statement(&first, &s.p.terms, s.p.item, &params, 0);

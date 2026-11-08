@@ -3,6 +3,7 @@
 
 use adtb_simkit::api;
 use adtb_simkit::harness;
+use adtb_simkit::open;
 
 use std::collections::BTreeSet;
 
@@ -14,7 +15,8 @@ use adtb::{CallOptions, Database, Log, OpenError};
 use adtb_sim::{Config, Sim, SimRuntime};
 
 use adtb_simkit::grants;
-use api::{options, query, run};
+use adtb_simkit::open::options;
+use api::{query, run};
 use harness::{finished, options as pager_options};
 
 const SHOP: &str = r"module shop
@@ -29,17 +31,9 @@ add relation payments : Payment
   index (customer)
 ";
 
-fn open(rt: &SimRuntime, log: &[&str]) -> Result<Database<SimRuntime>, OpenError> {
-    Database::open_in(
-        rt.clone(),
-        "app.adt",
-        &Log::new(log.iter().copied()),
-        &options(4),
-    )
-}
-
 fn opened(rt: &SimRuntime, log: &[&str]) -> Database<SimRuntime> {
-    open(rt, log).unwrap_or_else(|e| panic!("the database opens at {}: {e:?}", log.len()))
+    open::open(rt, open::FILE, &Log::new(log.iter().copied()), &options(4))
+        .unwrap_or_else(|e| panic!("the database opens at {}: {e:?}", log.len()))
 }
 
 fn write(db: &Database<SimRuntime>, text: &str) {
@@ -62,7 +56,14 @@ fn after(seed: u64, later: &[&str], body: impl FnOnce(Result<Database<SimRuntime
     });
     let mut log = vec![SHOP];
     log.extend_from_slice(later);
-    run(&mut sim, |rt| body(open(&rt, &log)));
+    run(&mut sim, |rt| {
+        body(open::open(
+            &rt,
+            open::FILE,
+            &Log::new(log.iter().copied()),
+            &options(4),
+        ));
+    });
 }
 
 const TAGS: &str = "module shop\nadd type Label = { id: Key labels, name: Text }\nadd relation labels : Label key id generate sequence\n";

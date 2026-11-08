@@ -13,7 +13,8 @@ use adtb::{
 };
 use adtb_sim::SimRuntime;
 
-use api::{once, options, printed, results};
+use adtb_simkit::open::options;
+use api::{once, printed, results};
 
 const SCHEMA: &str = "module shop
 add module shop

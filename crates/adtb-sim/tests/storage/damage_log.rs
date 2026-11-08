@@ -11,11 +11,12 @@ use adtb::storage::{
     Pager, Pid, Quarantine,
 };
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimIo, SimRuntime};
+use adtb_simkit::damage::{DataFile, Files};
 use adtb_simkit::search;
 use adtb_simkit::{common, harness};
 use adtb_testkit::profile::assert_reached;
 
-type Files = BTreeMap<String, Vec<u8>>;
+const PAGER: DataFile = DataFile::new(harness::NAME, harness::PAGE);
 
 const SEED: u64 = 11;
 const PAGES: usize = 4;
@@ -70,22 +71,15 @@ fn crashed(files: &Files, atomic: bool, body: impl FnOnce(&Pager<SimRuntime>)) -
     sim.files()
 }
 
-fn page_of(files: &Files, pid: Pid) -> Vec<u8> {
-    let at = pid.0 as usize * harness::PAGE;
-    files[harness::NAME][at..at + harness::PAGE].to_vec()
-}
-
 fn with_page(mut files: Files, pid: Pid, page: &[u8]) -> Files {
-    let at = pid.0 as usize * harness::PAGE;
-    files.get_mut(harness::NAME).unwrap()[at..at + harness::PAGE].copy_from_slice(page);
+    PAGER.replace(&mut files, pid, page);
     files
 }
 
 /// Returns `files` with page `pid` failing its checksum.
-fn rotted(files: Files, pid: Pid) -> Files {
-    let mut page = page_of(&files, pid);
-    page[harness::PAGE / 2] ^= 0xff;
-    with_page(files, pid, &page)
+fn rotted(mut files: Files, pid: Pid) -> Files {
+    PAGER.flip(&mut files, pid, harness::PAGE / 2 - HEADER_LEN);
+    files
 }
 
 /// One `damage` call site: the file it starts from, the page it finds damaged, and the call
@@ -122,7 +116,7 @@ fn sites() -> Vec<Site> {
     let p = pages[1];
     let newer = closed(&files, false, |pager| put(pager, p, 2));
     let bitmap = Pid(2);
-    let mut map = page_of(&files, bitmap);
+    let mut map = PAGER.page(&files, bitmap).to_vec();
     map[FIRST_EDITABLE..HEADER_LEN].copy_from_slice(&storage::header_edit(
         1,
         PageKind::HeapSlotted,
@@ -131,9 +125,7 @@ fn sites() -> Vec<Site> {
     ));
     storage::seal(bitmap, &mut map);
     let mut cut = files.clone();
-    cut.get_mut(harness::NAME)
-        .unwrap()
-        .truncate(pages[2].0 as usize * harness::PAGE);
+    PAGER.truncate(&mut cut, pages[2].0 as usize);
     let q = apages[1];
     let unreplayed = crashed(&atomic, true, |pager| {
         put(pager, q, 2);
@@ -162,7 +154,7 @@ fn sites() -> Vec<Site> {
         ),
         site(
             "read, lost write",
-            with_page(newer, p, &page_of(&files, p)),
+            with_page(newer, p, PAGER.page(&files, p)),
             p,
             false,
             Some(read_refused),
@@ -188,7 +180,7 @@ fn sites() -> Vec<Site> {
         site("replay, checksum", rotted(unreplayed, q), q, true, None),
         site(
             "replay, lost write",
-            with_page(lost, q, &page_of(&atomic, q)),
+            with_page(lost, q, PAGER.page(&atomic, q)),
             q,
             true,
             None,
@@ -213,7 +205,7 @@ fn sites() -> Vec<Site> {
 /// Returns the damage `site` finds and what the pager records of its page after the call.
 fn detected(site: &Site, rt: &SimRuntime) -> (Option<Damage>, Option<Damage>) {
     if site.unreadable {
-        let at = site.pid.0 * harness::PAGE as u64;
+        let at = PAGER.range(site.pid).start as u64;
         let reads = Match::kind(OpKind::Read).offset(at);
         rt.plan(Plan::new().rule(reads, Action::Fail(IoError::Failed)));
     }
@@ -278,7 +270,7 @@ fn rotted_after_its_write(
     pager.flush_log();
     pager.flush_pages(usize::MAX);
     let (file, _) = common::open(rt, io, harness::NAME, false).unwrap();
-    let at = p.0 * harness::PAGE as u64;
+    let at = PAGER.range(p).start as u64;
     let mut page = common::read(rt, io, file, at, harness::PAGE).unwrap();
     page[harness::PAGE / 2] ^= 0xff;
     common::write(rt, io, file, at, &page).unwrap();
@@ -305,7 +297,7 @@ fn rot_under_a_page_the_pool_holds_is_recorded_until_a_change_writes_the_page_ou
         write_out(2);
         let mut io = rt.io();
         let (file, _) = common::open(&rt, &mut io, harness::NAME, false).unwrap();
-        let at = p.0 * harness::PAGE as u64;
+        let at = PAGER.range(p).start as u64;
         let mut page = common::read(&rt, &mut io, file, at, harness::PAGE).unwrap();
         page[harness::PAGE / 2] ^= 0xff;
         common::write(&rt, &mut io, file, at, &page).unwrap();
@@ -617,7 +609,7 @@ fn lost_status_page() -> (Files, Pid, Pid) {
         txns.begin(&pager).unwrap();
         pager.close();
     });
-    let files = with_page(sim.files(), status, &page_of(&before, status));
+    let files = with_page(sim.files(), status, PAGER.page(&before, status));
     (files, root, status)
 }
 
@@ -807,8 +799,8 @@ fn a_file_marked_whole_writes_no_record_and_keeps_its_records_in_memory() {
         pager.close();
     });
     assert_eq!(
-        page_of(&files, list),
-        page_of(&sim.files(), list),
+        PAGER.page(&files, list),
+        PAGER.page(&sim.files(), list),
         "the list page is unchanged"
     );
 }

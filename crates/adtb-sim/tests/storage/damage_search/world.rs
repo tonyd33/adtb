@@ -11,11 +11,13 @@ use adtb::runtime::{OpKind, Runtime, Threads};
 use adtb::storage::{self, Damage, PageKind, Pid, Quarantine};
 use adtb::{CreateOptions, Database, Error, Log, OpenOptions, TxnCallOptions, TxnOptions};
 use adtb_sim::{Config, Match, OpLog, Outcome, Planned, Sim, SimRuntime, Submitted};
+use adtb_simkit::damage::DataFile;
 use adtb_simkit::search::Files;
 use adtb_simkit::{common, crash};
 
 pub const FILE: &str = "search.adt";
 pub const PAGE: usize = 8192;
+pub const DATA: DataFile = DataFile::new(FILE, PAGE);
 pub const SEGMENT: u64 = 64 * 1024;
 
 const APP: &str = r"module app
@@ -237,12 +239,12 @@ pub const CREATING: usize = usize::MAX;
 
 /// Returns the bytes the data file of `files` holds for page `pid`, zeros past its end.
 pub fn page(files: &Files, pid: Pid) -> Vec<u8> {
-    let data = &files[FILE];
-    let at = pid.0 as usize * PAGE;
+    let data = DATA.bytes(files);
+    let range = DATA.range(pid);
     let mut out = vec![0; PAGE];
-    if at < data.len() {
-        let end = (at + PAGE).min(data.len());
-        out[..end - at].copy_from_slice(&data[at..end]);
+    if range.start < data.len() {
+        let end = range.end.min(data.len());
+        out[..end - range.start].copy_from_slice(&data[range.start..end]);
     }
     out
 }
@@ -505,7 +507,7 @@ struct Runner<'a> {
 impl Runner<'_> {
     /// Open the file, and once more when the first open fails, as an operator would after a
     /// failure that may have cleared.
-    fn open<R: Runtime>(&mut self, rt: R, version: u8) -> Option<Database<R>> {
+    fn open_with_retry<R: Runtime>(&mut self, rt: R, version: u8) -> Option<Database<R>> {
         let first = Database::open_in(rt.clone(), FILE, &log(version), &options());
         match first.or_else(|_| Database::open_in(rt, FILE, &log(version), &options())) {
             Ok(db) => Some(db),
@@ -537,7 +539,7 @@ impl Runner<'_> {
     /// Run the operations from `next` up to the next crash or the end on one process. Returns
     /// whether every one ran.
     fn process(&mut self, rt: &SimRuntime) -> bool {
-        let Some(mut db) = self.open(rt.clone(), self.acked.version) else {
+        let Some(mut db) = self.open_with_retry(rt.clone(), self.acked.version) else {
             return false;
         };
         while self.next < self.ops.len() {
@@ -563,7 +565,7 @@ impl Runner<'_> {
                     db.testing().checkpoint();
                 }
                 Op::Recycle => self.recycle(&db, i),
-                Op::Damage => self.damage(&db, i),
+                Op::Damage => self.refuse_scraps(&db, i),
                 Op::Reopen | Op::Migrate => {
                     let durable = durably_whole(&db);
                     if *op == Op::Migrate && self.acked.version + 1 == LAST {
@@ -577,7 +579,7 @@ impl Runner<'_> {
                     } else {
                         self.acked.version
                     };
-                    let Some(again) = self.open(rt.clone(), version) else {
+                    let Some(again) = self.open_with_retry(rt.clone(), version) else {
                         return false;
                     };
                     db = again;
@@ -645,7 +647,7 @@ impl Runner<'_> {
         }
     }
 
-    fn damage<R: Runtime>(&mut self, db: &Database<R>, i: usize) {
+    fn refuse_scraps<R: Runtime>(&mut self, db: &Database<R>, i: usize) {
         let note = value(Rel::Scraps, i as i64, 0);
         let text = format!(r#"insert scraps {{ id: scraps.key({i}), note: "{note}" }}"#);
         if let Err(e) = db.query_text(&text, &[], &adtb::CallOptions::default()) {

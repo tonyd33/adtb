@@ -17,7 +17,7 @@ use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::textual::{Form, print};
 use adtb_lang::types::Base;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
-use adtb_simkit::api::options;
+use adtb_simkit::open::options;
 
 use super::clock;
 use super::read::{self, Head, Step};

@@ -11,7 +11,8 @@ use adtb::{
 };
 use adtb_sim::SimRuntime;
 
-use api::{failure, in_txn, in_txn_results, once, options, printed, result, results, sorted};
+use adtb_simkit::open::options;
+use api::{failure, in_txn, in_txn_results, once, printed, result, results, sorted};
 
 const SCHEMA: &str = r"module test
 add module test

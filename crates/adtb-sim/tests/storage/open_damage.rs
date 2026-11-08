@@ -5,11 +5,13 @@ use adtb::testing::{Object, Plant, Probe};
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb::runtime::IoError;
-use adtb::storage::{Damage, Options, PageError, Pager, Pid, Quarantine};
+use adtb::storage::{Damage, HEADER_LEN, Options, PageError, Pager, Pid, Quarantine};
 use adtb::{CallOptions, Database, Error, FatalReason, Log, OpenError, OpenOptions, TxnOptions};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
+use adtb_simkit::damage::{DataFile, Files};
 use adtb_simkit::harness::finished;
+use adtb_simkit::open;
 use adtb_sys::runtime::Faults;
 
 const FILE: &str = "open_damage.adt";
@@ -27,18 +29,10 @@ add relation others : Other key id generate sequence
 const INSERT: &str = r#"insert users { id: users.key(9), name: "x" }"#;
 const SELECT: &str = "from u in users select u.id";
 
-type Files = BTreeMap<String, Vec<u8>>;
-
-fn open(rt: SimRuntime, log: &Log) -> Result<Database<SimRuntime>, OpenError> {
-    Database::open_in(rt, FILE, log, &api::options(2))
-}
+const DATA: DataFile = DataFile::new(FILE, PAGE);
 
 fn app() -> Log {
     Log::new([APP])
-}
-
-fn flip(files: &mut Files, page: Pid) {
-    files.get_mut(FILE).unwrap()[page.0 as usize * PAGE + 300] ^= 0x10;
 }
 
 fn quarantined<T: std::fmt::Debug>(got: Result<T, Error>) -> String {
@@ -87,7 +81,7 @@ fn seeded(seed: u64, pick: fn(&Database<SimRuntime>) -> Pid) -> (Files, Pid) {
     let mut sim = Sim::new(seed, Config::default());
     let mut page = None;
     finished(&mut sim, |rt| {
-        let db = open(rt, &app()).unwrap();
+        let db = open::open(&rt, FILE, &app(), &open::options(2)).unwrap();
         api::results(&db, r#"insert users { id: users.key(1), name: "a" }"#);
         page = Some(pick(&db));
         db.close().unwrap();
@@ -118,11 +112,12 @@ fn assert_only_verify_runs(db: &Database<SimRuntime>, finding: Option<&str>) {
 
 fn assert_opens_for_verify(seed: u64, pick: fn(&Database<SimRuntime>) -> Pid) {
     let (mut files, page) = seeded(seed, pick);
-    flip(&mut files, page);
+    DATA.flip(&mut files, page, 300 - HEADER_LEN);
     let mut sim = Sim::with_files(seed, Config::default(), files);
     for round in 0..2 {
         finished(&mut sim, |rt| {
-            let db = open(rt, &app()).unwrap_or_else(|e| panic!("round {round}: {e:?}"));
+            let db = open::open(&rt, FILE, &app(), &open::options(2))
+                .unwrap_or_else(|e| panic!("round {round}: {e:?}"));
             assert_only_verify_runs(&db, Some("Checksum"));
             db.close().unwrap();
         });
@@ -162,10 +157,10 @@ fn a_damaged_commit_log_directory_opens_for_verify() {
 #[test]
 fn verify_of_an_unread_catalog_says_what_it_did_not_check() {
     let (mut files, page) = seeded(6, catalog_root);
-    flip(&mut files, page);
+    DATA.flip(&mut files, page, 300 - HEADER_LEN);
     let mut sim = Sim::with_files(6, Config::default(), files);
     finished(&mut sim, |rt| {
-        let db = open(rt, &app()).unwrap();
+        let db = open::open(&rt, FILE, &app(), &open::options(2)).unwrap();
         let found = api::printed(db.verify(None).unwrap());
         assert!(
             found
@@ -224,10 +219,15 @@ fn an_open_of_a_damaged_file_writes_only_the_mark() {
     for (n, pick) in picks.into_iter().enumerate() {
         let seed = 10 + n as u64;
         let (mut files, page) = seeded(seed, pick);
-        flip(&mut files, page);
+        DATA.flip(&mut files, page, 300 - HEADER_LEN);
         let before = files[FILE].clone();
         let mut sim = Sim::with_files(seed, Config::default(), files);
-        finished(&mut sim, |rt| open(rt, &app()).unwrap().close().unwrap());
+        finished(&mut sim, |rt| {
+            open::open(&rt, FILE, &app(), &open::options(2))
+                .unwrap()
+                .close()
+                .unwrap();
+        });
         let marked = sim.files()[FILE].clone();
         let marks = with_pager(&mut sim, Pager::quarantine_page);
         let mut expected = BTreeSet::from([marks.0]);
@@ -237,7 +237,12 @@ fn an_open_of_a_damaged_file_writes_only_the_mark() {
         assert_eq!(expected, changed(&before, &marked), "pick {n}");
         let list = with_pager(&mut sim, Pager::damage_list_page);
         let mut sim = Sim::with_files(seed, Config::default(), sim.files());
-        finished(&mut sim, |rt| open(rt, &app()).unwrap().close().unwrap());
+        finished(&mut sim, |rt| {
+            open::open(&rt, FILE, &app(), &open::options(2))
+                .unwrap()
+                .close()
+                .unwrap();
+        });
         let mut second = changed(&marked, &sim.files()[FILE]);
         second.remove(&list.0);
         assert_eq!(BTreeSet::new(), second, "pick {n}, the second open");
@@ -247,10 +252,10 @@ fn an_open_of_a_damaged_file_writes_only_the_mark() {
 #[test]
 fn a_marked_open_applies_no_migration_and_refuses_no_log() {
     let (mut files, page) = seeded(20, status_page);
-    flip(&mut files, page);
+    DATA.flip(&mut files, page, 300 - HEADER_LEN);
     let mut sim = Sim::with_files(20, Config::default(), files);
     finished(&mut sim, |rt| {
-        let db = open(rt, &Log::new([CLEAN])).unwrap();
+        let db = open::open(&rt, FILE, &Log::new([CLEAN]), &open::options(2)).unwrap();
         assert!(holds_users(&db), "the file's own committed migration reads");
         assert_only_verify_runs(&db, Some("Checksum"));
         db.close().unwrap();
@@ -266,7 +271,12 @@ fn a_marked_open_resolves_no_id() {
         p.quarantine_page()
     });
     let before = sim.files()[FILE].clone();
-    finished(&mut sim, |rt| open(rt, &app()).unwrap().close().unwrap());
+    finished(&mut sim, |rt| {
+        open::open(&rt, FILE, &app(), &open::options(2))
+            .unwrap()
+            .close()
+            .unwrap();
+    });
     let mut other = changed(&before, &sim.files()[FILE]);
     other.remove(&marks.0);
     assert_eq!(BTreeSet::new(), other);
@@ -303,13 +313,13 @@ impl Crashes {
         let mut start = 0;
         let mut status = None;
         finished(&mut sim, |rt| {
-            let db = open(rt.clone(), &none()).unwrap();
+            let db = open::open(&rt, FILE, &none(), &open::options(2)).unwrap();
             status = Some(status_page(&db));
             db.close().unwrap();
             start = rt.recorded();
             let small = OpenOptions {
                 pool_bytes: Some(32 * PAGE as u64),
-                ..api::options(2)
+                ..open::options(2)
             };
             let long = Log::new([long_migration()]);
             Database::open_in(rt, FILE, &long, &small)
@@ -341,7 +351,7 @@ impl Crashes {
         let mut sim = Sim::with_files(self.seed, Config::default(), self.image(flush));
         let mut migrated = false;
         finished(&mut sim, |rt| {
-            migrated = holds_users(&open(rt, &none()).unwrap());
+            migrated = holds_users(&open::open(&rt, FILE, &none(), &open::options(2)).unwrap());
         });
         migrated
     }
@@ -386,14 +396,14 @@ fn differing(a: &[u8], b: &[u8]) -> usize {
 /// whether the file's own migration read. Each open is for `verify` alone and writes only the
 /// mark past the file header.
 fn opens_damaged(c: &Crashes, mut files: Files) -> bool {
-    flip(&mut files, c.status);
+    DATA.flip(&mut files, c.status, 300 - HEADER_LEN);
     let before = files[FILE].clone();
     let mut sim = Sim::with_files(c.seed, Config::default(), files);
     let mut read = false;
     for round in 0..2 {
         finished(&mut sim, |rt| {
-            let db =
-                open(rt, &Log::new([CLEAN])).unwrap_or_else(|e| panic!("round {round}: {e:?}"));
+            let db = open::open(&rt, FILE, &Log::new([CLEAN]), &open::options(2))
+                .unwrap_or_else(|e| panic!("round {round}: {e:?}"));
             read = holds_users(&db);
             assert_only_verify_runs(&db, Some("Checksum"));
             db.close().unwrap();
@@ -451,7 +461,7 @@ fn an_aborted_writer_on_a_damaged_status_page_leaves_the_catalog_unread() {
         let commit = c.commit_flush();
         let mut sim = Sim::with_files(seed, Config::default(), c.image(commit - 1));
         finished(&mut sim, |rt| {
-            let db = open(rt, &none()).unwrap();
+            let db = open::open(&rt, FILE, &none(), &open::options(2)).unwrap();
             assert!(
                 !holds_users(&db),
                 "seed {seed}: recovery aborts the migration"
@@ -459,11 +469,11 @@ fn an_aborted_writer_on_a_damaged_status_page_leaves_the_catalog_unread() {
             db.close().unwrap();
         });
         let mut files = sim.files();
-        flip(&mut files, c.status);
+        DATA.flip(&mut files, c.status, 300 - HEADER_LEN);
         let mut sim = Sim::with_files(seed, Config::default(), files);
         for round in 0..2 {
             finished(&mut sim, |rt| {
-                let db = open(rt, &none())
+                let db = open::open(&rt, FILE, &none(), &open::options(2))
                     .unwrap_or_else(|e| panic!("seed {seed}, round {round}: {e:?}"));
                 assert!(!catalog_read(&db), "seed {seed}, round {round}");
                 assert_only_verify_runs(&db, Some("Checksum"));
@@ -476,21 +486,24 @@ fn an_aborted_writer_on_a_damaged_status_page_leaves_the_catalog_unread() {
 #[test]
 fn a_committed_migration_on_a_damaged_status_page_reads_from_the_retained_log() {
     let (mut files, page) = seeded(31, status_page);
-    flip(&mut files, page);
+    DATA.flip(&mut files, page, 300 - HEADER_LEN);
     let mut sim = Sim::with_files(31, Config::default(), files);
     finished(&mut sim, |rt| {
-        assert!(holds_users(&open(rt, &app()).unwrap()));
+        assert!(holds_users(
+            &open::open(&rt, FILE, &app(), &open::options(2)).unwrap()
+        ));
     });
 }
 
 #[test]
 fn a_file_whose_header_is_damaged_still_fails_open() {
     let (mut files, _) = seeded(32, status_page);
-    let header = PAGE * Pid::FIRST_DATA.0 as usize;
-    files.get_mut(FILE).unwrap()[..header].fill(0x5a);
+    for copy in (0..Pid::FIRST_DATA.0).map(Pid) {
+        DATA.page_mut(&mut files, copy).fill(0x5a);
+    }
     let mut sim = Sim::with_files(32, Config::default(), files);
     finished(&mut sim, |rt| {
-        let got = open(rt, &app());
+        let got = open::open(&rt, FILE, &app(), &open::options(2));
         assert!(
             matches!(got, Err(OpenError::Corrupt { .. })),
             "{:?}",
@@ -528,15 +541,15 @@ fn dropping_a_transaction_on_a_damaged_commit_log_marks_the_database() {
     let mut sim = Sim::new(40, Config::default());
     let mut page = None;
     finished(&mut sim, |rt| {
-        let db = open(rt, &app()).unwrap();
+        let db = open::open(&rt, FILE, &app(), &open::options(2)).unwrap();
         page = Some(dropped_on_damage(&db));
         db.close().unwrap();
     });
     let mut files = sim.files();
-    flip(&mut files, page.unwrap());
+    DATA.flip(&mut files, page.unwrap(), 300 - HEADER_LEN);
     let mut sim = Sim::with_files(40, Config::default(), files);
     finished(&mut sim, |rt| {
-        let db = open(rt, &app()).unwrap();
+        let db = open::open(&rt, FILE, &app(), &open::options(2)).unwrap();
         let pid = page.unwrap();
         let damage = Damage::Checksum;
         assert_eq!(
@@ -551,7 +564,7 @@ fn dropping_a_transaction_on_a_damaged_commit_log_marks_the_database() {
 fn dropping_a_transaction_on_a_database_already_quarantined_does_not_panic() {
     let mut sim = Sim::new(41, Config::default());
     finished(&mut sim, |rt| {
-        let db = open(rt, &app()).unwrap();
+        let db = open::open(&rt, FILE, &app(), &open::options(2)).unwrap();
         let first = db.begin(&TxnOptions::default()).unwrap();
         db.testing()
             .plant(Plant::Refuse {
@@ -597,9 +610,9 @@ fn real_damaged(name: &str, pick: fn(&Database) -> Pid) -> std::path::PathBuf {
     .unwrap();
     let page = pick(&db);
     db.close().unwrap();
-    let mut bytes = std::fs::read(&path).unwrap();
-    bytes[page.0 as usize * PAGE + 300] ^= 0x10;
-    std::fs::write(&path, bytes).unwrap();
+    let mut files = Files::from([(FILE.to_owned(), std::fs::read(&path).unwrap())]);
+    DATA.flip(&mut files, page, 300 - HEADER_LEN);
+    std::fs::write(&path, &files[FILE]).unwrap();
     path
 }
 
@@ -670,9 +683,9 @@ fn dropping_a_transaction_on_a_damaged_commit_log_of_a_real_file_does_not_panic(
         quarantined(db.query_text(SELECT, &[], &none))
     );
     db.close().unwrap();
-    let mut bytes = std::fs::read(&path).unwrap();
-    bytes[page.0 as usize * PAGE + 300] ^= 0x10;
-    std::fs::write(&path, bytes).unwrap();
+    let mut files = Files::from([(FILE.to_owned(), std::fs::read(&path).unwrap())]);
+    DATA.flip(&mut files, page, 300 - HEADER_LEN);
+    std::fs::write(&path, &files[FILE]).unwrap();
     assert_real_opens_for_verify(&path, &app(), Some("Checksum"));
 }
 
@@ -681,7 +694,7 @@ fn dropping_a_transaction_on_a_damaged_commit_log_of_a_real_file_does_not_panic(
 fn marked_by_hand(seed: u64) -> (Files, Pid) {
     let mut sim = Sim::new(seed, Config::default());
     finished(&mut sim, |rt| {
-        let db = open(rt, &app()).unwrap();
+        let db = open::open(&rt, FILE, &app(), &open::options(2)).unwrap();
         api::results(&db, r#"insert users { id: users.key(1), name: "a" }"#);
         db.role_authority().create_role("nobody").unwrap();
         db.close().unwrap();
@@ -709,7 +722,7 @@ fn verify_of_a_marked_database_keeps_no_findings_and_writes_no_page() {
     let before = files[FILE].clone();
     let mut sim = Sim::with_files(50, Config::default(), files);
     finished(&mut sim, |rt| {
-        let db = open(rt, &app()).unwrap();
+        let db = open::open(&rt, FILE, &app(), &open::options(2)).unwrap();
         assert!(catalog_read(&db));
         assert_names_the_mark(&api::printed(db.verify(None).unwrap()));
         assert_names_the_mark(&api::printed(db.testing().verify_holding().unwrap()));
@@ -724,10 +737,10 @@ fn verify_of_a_marked_database_keeps_no_findings_and_writes_no_page() {
 #[test]
 fn verify_names_the_mark_once_with_no_row_about_keeping() {
     let (mut files, page) = seeded(51, status_page);
-    flip(&mut files, page);
+    DATA.flip(&mut files, page, 300 - HEADER_LEN);
     let mut sim = Sim::with_files(51, Config::default(), files);
     finished(&mut sim, |rt| {
-        let db = open(rt, &app()).unwrap();
+        let db = open::open(&rt, FILE, &app(), &open::options(2)).unwrap();
         let rows = api::printed(db.verify(None).unwrap());
         assert_names_the_mark(&rows);
         assert!(
@@ -740,10 +753,10 @@ fn verify_names_the_mark_once_with_no_row_about_keeping() {
 #[test]
 fn verify_of_a_relation_on_a_damaged_commit_log_says_only_its_pages_were_checked() {
     let (mut files, page) = seeded(52, status_page);
-    flip(&mut files, page);
+    DATA.flip(&mut files, page, 300 - HEADER_LEN);
     let mut sim = Sim::with_files(52, Config::default(), files);
     finished(&mut sim, |rt| {
-        let db = open(rt, &app()).unwrap();
+        let db = open::open(&rt, FILE, &app(), &open::options(2)).unwrap();
         let rows = api::printed(db.verify(Some("users")).unwrap());
         assert!(
             rows.iter()
@@ -766,7 +779,7 @@ fn verify_of_a_relation_on_a_damaged_commit_log_says_only_its_pages_were_checked
 fn a_heap_mark_adds_no_row() {
     let mut sim = Sim::new(53, Config::default());
     finished(&mut sim, |rt| {
-        let db = open(rt, &app()).unwrap();
+        let db = open::open(&rt, FILE, &app(), &open::options(2)).unwrap();
         let t = db.testing();
         let heap = t.mark_of(t.heap("app::users", "User").unwrap()).unwrap();
         t.plant(Plant::Mark(heap)).unwrap();
@@ -782,7 +795,7 @@ fn a_call_refused_on_a_marked_database_writes_no_audit_row() {
     let before = files[FILE].clone();
     let mut sim = Sim::with_files(54, Config::default(), files);
     finished(&mut sim, |rt| {
-        let db = open(rt.clone(), &app()).unwrap();
+        let db = open::open(&rt, FILE, &app(), &open::options(2)).unwrap();
         let nobody = db.role_authority().session("nobody").unwrap();
         for text in ["verify", SELECT, "from nothing in nowhere select 1"] {
             let what = quarantined(api::task(&rt, &nobody, text));
@@ -827,7 +840,7 @@ fn with_old_segments_gone(seed: u64) -> (Files, Pid) {
             ..Options::new(FILE)
         };
         Pager::create(rt.clone(), &options).unwrap().close();
-        let db = open(rt, &app()).unwrap();
+        let db = open::open(&rt, FILE, &app(), &open::options(2)).unwrap();
         let name = "x".repeat(2000);
         for n in 2..80 {
             let insert = format!(r#"insert users {{ id: users.key({n}), name: "{name}" }}"#);
@@ -852,15 +865,16 @@ fn a_commit_record_gone_from_the_log_on_a_damaged_status_page_leaves_the_catalog
     let (mut files, status) = with_old_segments_gone(seed);
     let mut intact = Sim::with_files(seed, Config::default(), files.clone());
     finished(&mut intact, |rt| {
-        let db = open(rt, &app()).unwrap();
+        let db = open::open(&rt, FILE, &app(), &open::options(2)).unwrap();
         assert!(holds_users(&db), "the status page settles it");
         db.close().unwrap();
     });
-    flip(&mut files, status);
+    DATA.flip(&mut files, status, 300 - HEADER_LEN);
     let mut sim = Sim::with_files(seed, Config::default(), files);
     for round in 0..2 {
         finished(&mut sim, |rt| {
-            let db = open(rt, &app()).unwrap_or_else(|e| panic!("round {round}: {e:?}"));
+            let db = open::open(&rt, FILE, &app(), &open::options(2))
+                .unwrap_or_else(|e| panic!("round {round}: {e:?}"));
             assert!(!catalog_read(&db), "round {round}");
             assert_only_verify_runs(&db, Some("Checksum"));
             db.close().unwrap();
@@ -914,11 +928,11 @@ fn a_flip_of_any_page_kind_opens_and_verify_finds_it() {
     let flips = usize::try_from(adtb_simkit::seeds::sweep(0..count as u64).end).unwrap();
     for page in flip_order(&kinds).into_iter().take(flips) {
         let mut flipped = files.clone();
-        flip(&mut flipped, page);
+        DATA.flip(&mut flipped, page, 300 - HEADER_LEN);
         let mut sim = Sim::with_files(seed, Config::default(), flipped);
         for round in 0..2 {
             finished(&mut sim, |rt| {
-                let db = open(rt, &app())
+                let db = open::open(&rt, FILE, &app(), &open::options(2))
                     .unwrap_or_else(|e| panic!("{page:?} {:?} round {round}: {e:?}", kinds[&page]));
                 let rows = api::printed(db.verify(None).unwrap());
                 assert!(
@@ -959,7 +973,7 @@ fn a_row_that_does_not_decode_on_a_good_page_fails_open_unmarked() {
     let mut rounds = Sim::with_files(61, Config::default(), sim.files());
     for round in 0..2 {
         finished(&mut rounds, |rt| {
-            let got = open(rt, &app());
+            let got = open::open(&rt, FILE, &app(), &open::options(2));
             assert!(
                 matches!(got, Err(OpenError::Corrupt { .. })),
                 "round {round}: {:?}",
@@ -979,8 +993,8 @@ fn a_row_that_does_not_decode_on_a_good_page_fails_open_unmarked() {
 fn an_unreadable_page_fails_open_unmarked() {
     let (files, _) = seeded(62, status_page);
     let mut marks_of = Sim::with_files(62, Config::default(), files.clone());
-    let marks = with_pager(&mut marks_of, Pager::quarantine_page).0 as usize * PAGE;
-    let mark_bytes = |f: &Files| f[FILE][marks..marks + PAGE].to_vec();
+    let marks = with_pager(&mut marks_of, Pager::quarantine_page);
+    let mark_bytes = |f: &Files| DATA.page(f, marks).to_vec();
     let mut refused = 0;
     for seed in adtb_simkit::seeds::sweep(0..16) {
         let mut sim = Sim::with_files(seed, Config::default(), files.clone());
@@ -989,7 +1003,7 @@ fn an_unreadable_page_fails_open_unmarked() {
             ..Faults::none(512)
         });
         finished(&mut sim, |rt| {
-            let got = open(rt, &app());
+            let got = open::open(&rt, FILE, &app(), &open::options(2));
             if let Err(OpenError::Corrupt { detail }) = &got {
                 refused += usize::from(detail.contains("Unreadable"));
             }
@@ -1010,7 +1024,7 @@ fn the_roots_heap_marks_the_database_at_open_and_nothing_once_running() {
     let mut sim = Sim::with_files(42, Config::default(), files.clone());
     let mut page = None;
     finished(&mut sim, |rt| {
-        let db = open(rt, &app()).unwrap();
+        let db = open::open(&rt, FILE, &app(), &open::options(2)).unwrap();
         db.testing().plant(Plant::RefuseKeptStore).unwrap();
         assert!(!api::printed(db.verify(None).unwrap()).is_empty());
         assert_eq!(
@@ -1031,10 +1045,10 @@ fn the_roots_heap_marks_the_database_at_open_and_nothing_once_running() {
         let (catalog, _) = adtb::catalog::Catalog::load(rt, &p).unwrap();
         page = Some(catalog.kept_pages(&p).unwrap()[0]);
     });
-    flip(&mut files, page.unwrap());
+    DATA.flip(&mut files, page.unwrap(), 300 - HEADER_LEN);
     let mut sim = Sim::with_files(42, Config::default(), files);
     finished(&mut sim, |rt| {
-        let db = open(rt, &app()).unwrap();
+        let db = open::open(&rt, FILE, &app(), &open::options(2)).unwrap();
         assert_eq!(
             BTreeSet::from([Quarantine::Database]),
             db.testing().probe().marks(),
@@ -1076,7 +1090,7 @@ fn an_io_failure_opening_the_file_is_not_a_missing_header() {
             opened("empty.adt")
         );
         let Err(OpenError::Io(e)) =
-            Database::open_in(rt, "blocker/open.adt", &app(), &api::options(2))
+            Database::open_in(rt, "blocker/open.adt", &app(), &open::options(2))
         else {
             panic!("the open is no I/O failure");
         };

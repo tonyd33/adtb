@@ -6,9 +6,7 @@ use std::sync::{Arc, Mutex};
 use adtb::mvcc::{CommitLog, Scope, Snapshot, SnapshotId, Status, Transactions, Xid};
 use adtb::storage::{Edit, HEADER_LEN, PageKind, Pager, Pid};
 use adtb::verify::Inventory;
-use adtb_sim::{
-    Config, Fate, Finding, Ledger, Outcome, Recovered, Sim, SimRuntime, Violation, check,
-};
+use adtb_sim::{Config, Fate, Finding, Ledger, Recovered, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 use adtb_testkit::Rng;
 
@@ -18,9 +16,10 @@ use adtb_simkit::harness;
 use adtb_simkit::recovery;
 use adtb_simkit::seeds;
 
-use crash::{crash_after, run_process, silence_fatal_panics};
+use adtb_simkit::damage::{DataFile, Files};
+use crash::{Reopened, Rounds, crash_loop};
 use draw::below;
-use harness::{NAME, PAGE, finished, options};
+use harness::{PAGE, finished, options};
 use recovery::verify_after_crash;
 use seeds::{share, sweep};
 
@@ -290,11 +289,11 @@ struct World {
 #[derive(Debug, Default)]
 struct Report {
     statuses: BTreeMap<Xid, Status>,
-    logged: BTreeSet<u64>,
     findings: Vec<adtb::storage::Finding>,
     /// What the whole-file `verify` finds, leaked pages freed first.
     structure: Vec<String>,
-    next: Option<Xid>,
+    /// Each way the commit log disagrees with the log's commit records or the ids handed out.
+    problems: Vec<String>,
 }
 
 impl Recovered for Report {
@@ -315,9 +314,15 @@ impl Recovered for Report {
                 kind: adtb_sim::FindingKind::Structure,
                 at,
             })
+            .chain(self.problems.iter().map(|at| Finding {
+                kind: adtb_sim::FindingKind::Logic,
+                at: at.clone(),
+            }))
             .collect()
     }
 }
+
+impl Reopened for Report {}
 
 fn workload(rt: SimRuntime, root: Pid, pages: &[Pid], ledger: &Ledger, world: &Mutex<World>) {
     let Ok((pager, _)) = Pager::open(rt.clone(), &options(FRAMES)) else {
@@ -382,7 +387,7 @@ fn workload(rt: SimRuntime, root: Pid, pages: &[Pid], ledger: &Ledger, world: &M
 fn inspect(rt: SimRuntime, root: Pid, pages: &[Pid], assigned: &[Xid]) -> Report {
     let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("open");
     let txns = Transactions::open(rt, &pager, root).expect("open the commit log");
-    let statuses = assigned
+    let statuses: BTreeMap<Xid, Status> = assigned
         .iter()
         .map(|&x| (x, txns.status(&pager, x).expect("status")))
         .collect();
@@ -394,66 +399,62 @@ fn inspect(rt: SimRuntime, root: Pid, pages: &[Pid], assigned: &[Xid]) -> Report
         ..Inventory::default()
     };
     let structure = verify_after_crash(&pager, &inventory);
+    let logged: BTreeSet<u64> = v.commits.into_iter().collect();
+    let mut problems = Vec::new();
+    for (&x, &s) in &statuses {
+        if s == Status::InProgress {
+            problems.push(format!("{x:?} is still in progress"));
+        }
+        if (s == Status::Committed) != logged.contains(&x.0) {
+            problems.push(format!(
+                "{x:?} reads {s:?} against the log's commit records"
+            ));
+        }
+    }
+    let next = TxnProbe::of(&txns).next_xid();
+    if let Some(&last) = assigned.last()
+        && next <= last
+    {
+        problems.push(format!("next id {next:?} after {last:?}"));
+    }
     Report {
         statuses,
-        logged: v.commits.into_iter().collect(),
         findings: v.findings,
         structure,
-        next: Some(TxnProbe::of(&txns).next_xid()),
+        problems,
     }
 }
 
+/// Returns how many of `rounds` runs of a random workload under `faults` crashed, and how many of
+/// its commits the ledger acknowledged.
 #[must_use]
-fn crash_loop(seed: u64, faults: Faults, rounds: u64) -> (usize, usize) {
-    silence_fatal_panics();
+fn crash_rounds(seed: u64, faults: Faults, rounds: usize) -> (usize, usize) {
     let mut sim = Sim::new(seed, Config::default());
     let (root, pages) = setup(&mut sim, 6);
-    let ledger = Ledger::new();
     let world = Arc::new(Mutex::new(World::default()));
-    let mut crashes = 0;
-    for round in 0..rounds {
-        sim.set_faults(faults);
-        sim.crash_at(sim.now() + crash_after(seed, round, 400, 40_000));
-        let (l, w) = (ledger.clone(), world.clone());
-        if run_process(&mut sim, |rt| workload(rt, root, &pages, &l, &w)) == Outcome::Crashed {
-            crashes += 1;
-        }
-        sim.set_faults(Faults::none(512));
-        let assigned = world.lock().unwrap().assigned.clone();
-        let mut report = Report::default();
-        let at = format!("seed {seed} round {round}");
-        let outcome = sim.run(|rt| report = inspect(rt, root, &pages, &assigned));
-        assert_eq!(Outcome::Finished, outcome, "{at}");
-        assert_eq!(Vec::<Violation>::new(), check(&ledger, &report), "{at}");
-        for (&x, &s) in &report.statuses {
-            assert_ne!(Status::InProgress, s, "{at}: {x:?} is still in progress");
-            assert_eq!(
-                s == Status::Committed,
-                report.logged.contains(&x.0),
-                "{at}: {x:?} reads {s:?} against the log's commit records"
-            );
-        }
-        if let Some(&last) = assigned.last() {
-            assert!(report.next > Some(last), "{at}: next id {:?}", report.next);
-        }
-        for (&x, &s) in &report.statuses {
-            if ledger.fate(x.0) == Some(Fate::InDoubt) {
-                if s == Status::Committed {
-                    ledger.acknowledge(x.0);
-                } else {
-                    ledger.abort(x.0);
-                }
-            }
-        }
-    }
+    let rounds = Rounds::new(rounds, 400, 40_000);
+    let out = crash_loop(
+        &mut sim,
+        seed,
+        faults,
+        rounds,
+        |r| {
+            let (l, w) = (r.ledger().clone(), world.clone());
+            r.crash(|rt| workload(rt, root, &pages, &l, &w));
+        },
+        |rt, _| {
+            let assigned = world.lock().unwrap().assigned.clone();
+            inspect(rt, root, &pages, &assigned)
+        },
+    );
     let committed = world
         .lock()
         .unwrap()
         .assigned
         .iter()
-        .filter(|x| ledger.fate(x.0) == Some(Fate::Acknowledged))
+        .filter(|x| out.ledger().fate(x.0) == Some(Fate::Acknowledged))
         .count();
-    (crashes, committed)
+    (out.crashed(), committed)
 }
 
 #[test]
@@ -462,7 +463,7 @@ fn crashes_keep_commits_and_abort_what_was_running() {
     let mut crashes = 0;
     let mut committed = 0;
     for seed in sweep(SEEDS) {
-        let (c, n) = crash_loop(
+        let (c, n) = crash_rounds(
             seed,
             Faults {
                 torn_p: 0.5,
@@ -485,7 +486,7 @@ fn failed_writes_crash_and_recover_the_commit_log() {
     const SEEDS: Range<u64> = 100..106;
     let mut crashes = 0;
     for seed in sweep(SEEDS) {
-        crashes += crash_loop(
+        crashes += crash_rounds(
             seed,
             Faults {
                 torn_p: 0.5,
@@ -521,11 +522,10 @@ fn written(seed: u64) -> (BTreeMap<String, Vec<u8>>, Pid, Pid) {
     (sim.files(), root, status)
 }
 
-/// Returns `files` with page `pid` of the data file damaged.
-fn damage(mut files: BTreeMap<String, Vec<u8>>, pid: Pid) -> BTreeMap<String, Vec<u8>> {
-    let data = files.get_mut(NAME).expect("the data file");
-    let at = pid.0 as usize * PAGE + PAGE / 2;
-    data[at] ^= 0xff;
+/// Returns `files` with a byte in the middle of page `pid` of the data file inverted.
+fn flipped(mut files: Files, pid: Pid) -> Files {
+    let options = options(FRAMES);
+    DataFile::of(&options).flip(&mut files, pid, PAGE / 2 - HEADER_LEN);
     files
 }
 
@@ -547,7 +547,7 @@ fn a_damaged_status_page_no_unresolved_id_lies_on_quarantines_the_database() {
         out = Some((clog.root(), clog.status_pages()[&0]));
     });
     let (root, status) = out.unwrap();
-    let mut sim = Sim::with_files(2, Config::default(), damage(sim.files(), status));
+    let mut sim = Sim::with_files(2, Config::default(), flipped(sim.files(), status));
     finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("open");
         let txns = Transactions::open(rt, &pager, root).expect("the commit log opens");
@@ -561,7 +561,7 @@ fn a_damaged_status_page_no_unresolved_id_lies_on_quarantines_the_database() {
 #[test]
 fn a_damaged_status_page_quarantines_the_database() {
     let (files, root, status) = written(1);
-    let mut sim = Sim::with_files(1, Config::default(), damage(files, status));
+    let mut sim = Sim::with_files(1, Config::default(), flipped(files, status));
     finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("open");
         let txns = Transactions::open(rt, &pager, root).expect("the commit log opens");
@@ -590,7 +590,7 @@ fn a_damaged_status_page_quarantines_the_database() {
 #[test]
 fn a_damaged_root_refuses_to_open_the_commit_log() {
     let (files, root, _) = written(2);
-    let mut sim = Sim::with_files(2, Config::default(), damage(files, root));
+    let mut sim = Sim::with_files(2, Config::default(), flipped(files, root));
     finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("open");
         let e = Transactions::open(rt, &pager, root).expect_err("the root is damaged");

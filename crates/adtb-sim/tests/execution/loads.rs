@@ -3,6 +3,7 @@
 //! at commit, all or nothing, a crash included.
 
 use adtb_simkit::api;
+use adtb_simkit::open;
 
 use std::sync::Arc;
 
@@ -14,7 +15,8 @@ use adtb::{
 };
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use api::{once, options, query, run};
+use adtb_simkit::open::options;
+use api::{once, query, run};
 
 const SHOP: &str = r#"module shop
 add module shop
@@ -37,10 +39,6 @@ add constraint paid =
 
 fn log() -> Log {
     Log::new([SHOP])
-}
-
-fn open(rt: &SimRuntime) -> Database<SimRuntime> {
-    Database::open_in(rt.clone(), "app.adt", &log(), &options(4)).expect("the database opens")
 }
 
 fn reason(e: &Error) -> &RejectReason {
@@ -107,7 +105,7 @@ fn customer(load: &mut Load<'_, SimRuntime>, k: i64, name: &str) {
 #[test]
 fn an_appender_offers_the_row_type_of_its_constructor_relation() {
     once(0, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let mut load = db.load(&LoadOptions::default()).expect("a load");
         let card = load.appender("payments.Card").expect("payments.Card");
         let names: Vec<&str> = card
@@ -139,7 +137,7 @@ fn an_appender_offers_the_row_type_of_its_constructor_relation() {
 #[test]
 fn a_load_into_one_relation_commits_every_row_and_fills_generated_keys_and_defaults() {
     once(1, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let mut load = db.load(&LoadOptions::default()).expect("a load");
         let rows: Vec<Vec<Stored>> = (0..50).map(|i| vec![text(&format!("n{i:02}"))]).collect();
         push(&mut load, "notes", &["body"], &rows).expect("the notes push");
@@ -163,7 +161,7 @@ fn a_load_into_one_relation_commits_every_row_and_fills_generated_keys_and_defau
 #[test]
 fn equal_rows_of_a_load_are_each_inserted() {
     once(2, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let mut load = db.load(&LoadOptions::default()).expect("a load");
         let same = vec![text("same")];
         push(&mut load, "notes", &["body"], &[same.clone(), same]).expect("the push");
@@ -175,7 +173,7 @@ fn equal_rows_of_a_load_are_each_inserted() {
 #[test]
 fn a_load_into_several_relations_is_one_change_set_checked_at_commit() {
     once(3, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let mut load = db.load(&LoadOptions::default()).expect("a load");
         customer(&mut load, 1, "ann");
         customer(&mut load, 2, "bob");
@@ -192,7 +190,7 @@ fn a_load_into_several_relations_is_one_change_set_checked_at_commit() {
 #[test]
 fn a_load_breaking_a_constraint_aborts_with_the_violation_and_inserts_nothing() {
     once(4, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let mut load = db.load(&LoadOptions::default()).expect("a load");
         customer(&mut load, 1, "ann");
         push(
@@ -215,7 +213,7 @@ fn a_load_breaking_a_constraint_aborts_with_the_violation_and_inserts_nothing() 
 #[test]
 fn two_staged_rows_with_one_key_fail_with_a_key_violation_at_commit() {
     once(5, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let mut load = db.load(&LoadOptions::default()).expect("a load");
         push(
             &mut load,
@@ -267,7 +265,7 @@ fn a_load_across_a_rename_that_reorders_a_key_inserts_by_the_new_names_and_names
 #[test]
 fn two_identical_staged_rows_with_one_key_fail_with_a_key_violation_at_commit() {
     once(5, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let mut load = db.load(&LoadOptions::default()).expect("a load");
         let row = vec![Stored::I64(7), text("a"), text("x")];
         push(
@@ -292,7 +290,7 @@ fn two_identical_staged_rows_with_one_key_fail_with_a_key_violation_at_commit() 
 #[test]
 fn a_row_equal_to_another_once_its_default_is_filled_still_violates_the_key() {
     once(5, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let mut load = db.load(&LoadOptions::default()).expect("a load");
         push(
             &mut load,
@@ -320,7 +318,7 @@ fn a_row_equal_to_another_once_its_default_is_filled_still_violates_the_key() {
 #[test]
 fn a_batch_of_another_schema_is_refused_at_push_and_stages_nothing() {
     once(6, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let mut load = db.load(&LoadOptions::default()).expect("a load");
         let full = load.appender("notes").expect("notes").schema().clone();
         let wrong_type = Arc::new(ArrowSchema {
@@ -358,7 +356,7 @@ fn a_batch_of_another_schema_is_refused_at_push_and_stages_nothing() {
 #[test]
 fn a_load_dropped_without_commit_discards_its_staging() {
     once(7, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let mut load = db.load(&LoadOptions::default()).expect("a load");
         push(&mut load, "notes", &["body"], &[vec![text("gone")]]).expect("the push");
         drop(load);
@@ -369,7 +367,7 @@ fn a_load_dropped_without_commit_discards_its_staging() {
 #[test]
 fn a_key_committed_after_the_load_opened_fails_it_with_a_serialization_failure() {
     once(8, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let mut load = db.load(&LoadOptions::default()).expect("a load");
         push(
             &mut load,
@@ -396,7 +394,7 @@ fn a_key_committed_after_the_load_opened_fails_it_with_a_serialization_failure()
 #[test]
 fn loaded_text_is_normalized_to_nfc() {
     once(9, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let mut load = db.load(&LoadOptions::default()).expect("a load");
         push(&mut load, "notes", &["body"], &[vec![text("cafe\u{301}")]]).expect("the push");
         load.commit().expect("commit");
@@ -410,7 +408,7 @@ fn loaded_text_is_normalized_to_nfc() {
 #[test]
 fn a_cancelled_load_inserts_nothing() {
     once(10, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let tok = CancelToken::new();
         let mut load = db
             .load(&LoadOptions {
@@ -430,7 +428,7 @@ fn a_cancelled_load_inserts_nothing() {
 fn reopened(seed: u64, files: std::collections::BTreeMap<String, Vec<u8>>) -> (usize, usize) {
     let mut sim = Sim::with_files(seed, Config::default(), files);
     run(&mut sim, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let customers = query(&db, "from c in customers select key c").len();
         let cards = query(&db, "from p in payments.Card select key p").len();
         (customers, cards)
@@ -442,10 +440,12 @@ fn a_crash_during_a_loads_commit_reopens_to_all_of_it_or_none() {
     let seed = 11;
     let mut sim = Sim::new(seed, Config::default());
     sim.record();
-    run(&mut sim, |rt| drop(open(&rt)));
+    run(&mut sim, |rt| {
+        drop(open::opened(&rt, open::FILE, &log(), &options(4)));
+    });
     let start = sim.recording().len();
     run(&mut sim, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
         let mut load = db.load(&LoadOptions::default()).expect("a load");
         for k in 1..=40 {
             customer(&mut load, k, &format!("c{k}"));

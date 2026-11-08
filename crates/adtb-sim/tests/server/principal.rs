@@ -1,22 +1,20 @@
 use adtb_simkit::api;
+use adtb_simkit::open;
 
 use adtb::{
     CallOptions, Database, Error, Log, OpenOptions, Registration, RejectReason, TxnOptions, Value,
 };
 use adtb_sim::SimRuntime;
 
-use api::{once, options, result};
-
-fn open(rt: SimRuntime, field: &str) -> Database<SimRuntime> {
-    open_with(rt, "", field)
-}
+use adtb_simkit::open::options;
+use api::{once, result};
 
 fn open_with(rt: SimRuntime, declarations: &str, field: &str) -> Database<SimRuntime> {
     let schema = format!(
         "module identity\nadd module identity\n{declarations}\nadd type Principal = EndUser {{ {field} }} | Service {{ name: Text }} | Anonymous\n"
     );
-    Database::open_in(
-        rt,
+    open::opened(
+        &rt,
         "principal.adt",
         &Log::new([schema]),
         &OpenOptions {
@@ -27,7 +25,6 @@ fn open_with(rt: SimRuntime, declarations: &str, field: &str) -> Database<SimRun
             ..options(2)
         },
     )
-    .expect("the custom principal schema opens")
 }
 
 #[test]
@@ -250,7 +247,7 @@ fn accepted_by_every_entry(db: &Database<SimRuntime>, field: Value) {
 #[test]
 fn an_out_of_range_asserted_integer_is_invalid_at_every_entry() {
     once(421, |rt| {
-        let db = open(rt, "level: I8");
+        let db = open_with(rt, "", "level: I8");
         refused_by_every_entry(&db, Value::Int(256));
     });
 }
@@ -258,7 +255,7 @@ fn an_out_of_range_asserted_integer_is_invalid_at_every_entry() {
 #[test]
 fn a_nested_nullary_constructor_with_fields_is_an_invalid_assertion() {
     once(422, |rt| {
-        let db = open(rt, "ready: Bool");
+        let db = open_with(rt, "", "ready: Bool");
         refused_by_every_entry(&db, Value::ctor(0, vec![Value::Int(7)]));
     });
 }
@@ -271,7 +268,7 @@ fn text_construction_normalizes_canonical_equivalents() {
 #[test]
 fn valid_integer_limits_and_anonymous_and_owner_controls_remain_accepted() {
     once(423, |rt| {
-        let db = open(rt, "level: I8");
+        let db = open_with(rt, "", "level: I8");
         accepted_by_every_entry(&db, Value::Int(-128));
         accepted_by_every_entry(&db, Value::Int(127));
         let principal = db.schema().ty(db.schema().principal);
@@ -294,7 +291,7 @@ fn valid_integer_limits_and_anonymous_and_owner_controls_remain_accepted() {
 #[test]
 fn service_assertion_denial_precedes_nested_field_validation() {
     once(424, |rt| {
-        let db = open(rt, "level: I8");
+        let db = open_with(rt, "", "level: I8");
         let service = db
             .schema()
             .ty(db.schema().principal)
@@ -316,7 +313,7 @@ fn service_assertion_denial_precedes_nested_field_validation() {
 #[test]
 fn text_construction_canonicalizes_but_raw_noncanonical_assertions_are_refused() {
     once(425, |rt| {
-        let db = open(rt, "name: Text");
+        let db = open_with(rt, "", "name: Text");
         accepted_by_every_entry(&db, Value::text("e\u{301}"));
         refused_by_every_entry(&db, Value::Text(std::sync::Arc::from("e\u{301}")));
     });
@@ -395,13 +392,13 @@ fn key_shape_validation_does_not_authorize_or_require_a_target_row() {
 #[test]
 fn spans_require_valid_ordered_endpoints_and_dates_keep_their_range() {
     once(429, |rt| {
-        let db = open(rt, "during: Span I8");
+        let db = open_with(rt, "", "during: Span I8");
         accepted_by_every_entry(&db, Value::ctor(0, vec![Value::Int(-1), Value::Int(1)]));
         refused_by_every_entry(&db, Value::ctor(0, vec![Value::Int(2), Value::Int(1)]));
         refused_by_every_entry(&db, Value::ctor(0, vec![Value::Int(-129), Value::Int(1)]));
     });
     once(430, |rt| {
-        let db = open(rt, "at: Date");
+        let db = open_with(rt, "", "at: Date");
         accepted_by_every_entry(&db, Value::Date(0));
         refused_by_every_entry(&db, Value::Date(i32::MAX));
     });

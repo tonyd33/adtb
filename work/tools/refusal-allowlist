@@ -29,7 +29,7 @@
 2 crates/adtb-sim/tests/execution/tasks.rs
 2 crates/adtb-sim/tests/execution/write_states.rs
 1 crates/adtb-sim/tests/export/arrow_ipc.rs
-14 crates/adtb-sim/tests/export/backup.rs
+13 crates/adtb-sim/tests/export/backup.rs
 9 crates/adtb-sim/tests/export/dump.rs
 9 crates/adtb-sim/tests/export/dump_server.rs
 1 crates/adtb-sim/tests/export/quarantine.rs

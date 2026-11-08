@@ -4,10 +4,12 @@
 use std::collections::BTreeSet;
 
 use adtb::catalog::Catalog;
-use adtb::storage::{Damage, Finding, Options, Pager, Pid, Quarantine};
+use adtb::storage::{Damage, Finding, HEADER_LEN, Options, Pager, Pid, Quarantine};
 use adtb::testing::{Object, Plant};
 use adtb::{ArchiveTarget, CallOptions, Database, Error, FatalReason, Log, RestorePoint};
 use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_simkit::damage::DataFile;
+use adtb_simkit::open;
 use adtb_simkit::{api, harness};
 
 const FILE: &str = "app.adt";
@@ -29,12 +31,8 @@ const READS: [&str; 2] = ["app::users", "app::shapes"];
 const DUMP: &str = "dump to \"d\"";
 const PAGE: usize = 8192;
 
-fn open(rt: &SimRuntime, file: &str) -> Database<SimRuntime> {
-    Database::open_in(rt.clone(), file, &Log::new([APP]), &api::options(2)).unwrap()
-}
-
 fn seeded(rt: &SimRuntime) -> (Database<SimRuntime>, Vec<Vec<String>>) {
-    let db = open(rt, FILE);
+    let db = open::opened(rt, FILE, &Log::new([APP]), &open::options(2));
     api::results(&db, ROWS);
     let rows = READS.map(|r| api::query(&db, r)).to_vec();
     (db, rows)
@@ -98,7 +96,7 @@ fn a_file_quarantined_whole_dumps_and_restores_every_row() {
     });
     let before = names(&sim);
     api::run(&mut sim, |rt| {
-        let db = open(&rt, FILE);
+        let db = open::opened(&rt, FILE, &Log::new([APP]), &open::options(2));
         run(&db, DUMP).unwrap();
         let refused = [
             "from u in users select u.name",
@@ -121,10 +119,10 @@ fn a_file_quarantined_whole_dumps_and_restores_every_row() {
             &archive,
             COPY,
             RestorePoint::Latest,
-            &api::options(2),
+            &open::options(2),
         )
         .unwrap();
-        let copy = open(&rt, COPY);
+        let copy = open::opened(&rt, COPY, &Log::new([APP]), &open::options(2));
         assert_eq!(rows, READS.map(|r| api::query(&copy, r)).to_vec());
         copy.close().unwrap();
     });
@@ -140,7 +138,7 @@ fn a_damaged_heap_page_fails_the_dump_of_a_file_quarantined_whole() {
         t.pages(t.heap("app::shapes", "Square").unwrap()).unwrap()[0]
     });
     writes_nothing(&mut sim, |rt| {
-        let db = open(&rt, FILE);
+        let db = open::opened(&rt, FILE, &Log::new([APP]), &open::options(2));
         db.testing()
             .plant(Plant::Mark(Quarantine::Database))
             .unwrap();
@@ -161,7 +159,7 @@ fn a_damaged_heap_page_fails_the_dump_of_a_file_quarantined_whole() {
 fn a_damaged_commit_log_fails_the_dump_that_meets_it() {
     let (mut sim, page) = seeded_sim(3, last_status_page);
     writes_nothing(&mut sim, |rt| {
-        let db = open(&rt, FILE);
+        let db = open::opened(&rt, FILE, &Log::new([APP]), &open::options(2));
         db.testing()
             .plant(Plant::Refuse {
                 page,
@@ -189,7 +187,7 @@ fn a_quarantined_heap_fails_the_dump_and_a_quarantined_index_does_not() {
         t.plant(Plant::Mark(square)).unwrap();
     });
     writes_nothing(&mut sim, |rt| {
-        let db = open(&rt, FILE);
+        let db = open::opened(&rt, FILE, &Log::new([APP]), &open::options(2));
         let got = run(&db, "dump to \"e\"");
         assert_eq!("app::shapes.Square", quarantined(got));
         db.close().unwrap();
@@ -199,11 +197,10 @@ fn a_quarantined_heap_fails_the_dump_and_a_quarantined_index_does_not() {
 /// Returns `sim` with page `page` of `FILE` flipped on disk, or set to its bytes in `from`.
 fn rewritten(seed: u64, sim: &Sim, page: Pid, from: Option<&Sim>) -> Sim {
     let mut files = sim.files();
-    let at = page.0 as usize * PAGE;
-    let bytes = &mut files.get_mut(FILE).unwrap()[at..at + PAGE];
+    let data = DataFile::new(FILE, PAGE);
     match from {
-        Some(old) => bytes.copy_from_slice(&old.files()[FILE][at..at + PAGE]),
-        None => bytes[300] ^= 0x10,
+        Some(old) => data.replace(&mut files, page, data.page(&old.files(), page)),
+        None => data.flip(&mut files, page, 300 - HEADER_LEN),
     }
     Sim::with_files(seed, Config::default(), files)
 }
@@ -213,7 +210,7 @@ fn a_file_whose_catalog_cannot_be_read_refuses_the_dump() {
     let (sim, root) = seeded_sim(5, |db| db.testing().root(Object::Catalog).unwrap());
     let mut sim = rewritten(5, &sim, root, None);
     writes_nothing(&mut sim, |rt| {
-        let db = open(&rt, FILE);
+        let db = open::opened(&rt, FILE, &Log::new([APP]), &open::options(2));
         assert_eq!("the database", quarantined(run(&db, DUMP)));
         db.close().unwrap();
     });
@@ -234,7 +231,7 @@ fn a_damaged_page_of_the_deployment_facts_fails_the_dump_as_storage_and_marks_no
         roots = Some(catalog.deployment().roots().owned_pages(&pager).unwrap()[0]);
     });
     writes_nothing(&mut sim, |rt| {
-        let db = open(&rt, FILE);
+        let db = open::opened(&rt, FILE, &Log::new([APP]), &open::options(2));
         let page = roots.unwrap();
         db.testing()
             .plant(Plant::Refuse {
@@ -278,7 +275,7 @@ fn a_lost_write_to_the_commit_log_or_catalog_refuses_the_dump_of_a_file_quaranti
         let (mut sim, ()) = seeded_sim(7, |_| ());
         let before = Sim::with_files(7, Config::default(), sim.files());
         let page = api::run(&mut sim, |rt| {
-            let db = open(&rt, FILE);
+            let db = open::opened(&rt, FILE, &Log::new([APP]), &open::options(2));
             let page = change(&db);
             db.testing()
                 .plant(Plant::Mark(Quarantine::Database))
@@ -288,7 +285,7 @@ fn a_lost_write_to_the_commit_log_or_catalog_refuses_the_dump_of_a_file_quaranti
         });
         let mut sim = rewritten(7, &sim, page, Some(&before));
         writes_nothing(&mut sim, |rt| {
-            let db = open(&rt, FILE);
+            let db = open::opened(&rt, FILE, &Log::new([APP]), &open::options(2));
             assert_eq!("the database", quarantined(run(&db, DUMP)), "change {n}");
             let found = db.testing().verify_pages().findings;
             let lost = |f: &Finding| matches!(f, Finding::Page { pid, .. } if *pid == page);

@@ -1,17 +1,15 @@
 use adtb_simkit::api;
+use adtb_simkit::open;
 
-use adtb::{CallOptions, Database, Error, Log, OpenError, RejectReason};
-use adtb_sim::{Config, Sim, SimRuntime};
+use adtb::{CallOptions, Error, Log, RejectReason};
+use adtb_sim::{Config, Sim};
 
-use api::{options, result, run, sorted};
+use adtb_simkit::open::options;
+use api::{result, run, sorted};
 
 const BASE: &str = "module app\nadd module app\n\
     add type Item = { id: I64, text: Text }\n\
     add relation items : Item key id\n";
-
-fn open(rt: SimRuntime, log: &[&str]) -> Result<Database<SimRuntime>, OpenError> {
-    Database::open_in(rt, "app.adt", &Log::new(log.iter().copied()), &options(2))
-}
 
 fn insert(id: i64, text: &str) -> String {
     format!(r#"insert items {{ id: {id}, text: "{text}" }}"#)
@@ -45,7 +43,13 @@ fn oversized_append_aborts_the_whole_load() {
     let schema = format!("{BASE}  index (text)\n");
     let mut sim = Sim::new(7, Config::default());
     run(&mut sim, |rt| {
-        let db = open(rt, &[&schema]).expect("create");
+        let db = open::open(
+            &rt,
+            open::FILE,
+            &Log::new([&schema].iter().copied()),
+            &options(2),
+        )
+        .expect("create");
         db.query_text(&insert(0, "before"), &[], &CallOptions::default())
             .expect("before");
         let mut load = db.load(&LoadOptions::default()).expect("load");
@@ -68,7 +72,13 @@ fn oversized_append_aborts_the_whole_load() {
         db.close().expect("close");
     });
     run(&mut sim, |rt| {
-        let db = open(rt, &[&schema]).expect("reopen");
+        let db = open::open(
+            &rt,
+            open::FILE,
+            &Log::new([&schema].iter().copied()),
+            &options(2),
+        )
+        .expect("reopen");
         assert_eq!(
             vec!["0", "3"],
             sorted(result(&db, "from i in items select i.id"))

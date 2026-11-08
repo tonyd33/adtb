@@ -15,6 +15,7 @@ use adtb_lang::textual::{print_document, read_document};
 use adtb_lang::types::RelId;
 use adtb_sim::{Config, Match, Sim, SimRuntime};
 use adtb_simkit::api;
+use adtb_simkit::open;
 use adtb_simkit::search::{self, Files};
 
 const FILE: &str = "app.adt";
@@ -55,7 +56,7 @@ fn log() -> Log {
 fn no_create() -> OpenOptions {
     OpenOptions {
         create: None,
-        ..api::options(2)
+        ..open::options(2)
     }
 }
 
@@ -69,7 +70,7 @@ fn dumped() -> Files {
     let made = || {
         let mut sim = Sim::new(1, Config::default());
         api::run(&mut sim, |rt| {
-            let db = Database::open_in(rt, FILE, &log(), &api::options(2)).unwrap();
+            let db = Database::open_in(rt, FILE, &log(), &open::options(2)).unwrap();
             run(&db, ROWS).unwrap();
             run(&db, &format!("dump to \"{DUMP}\"")).unwrap();
             db.close().unwrap();
@@ -119,7 +120,7 @@ fn schema() -> &'static Schema {
     SCHEMA.get_or_init(|| {
         let mut sim = Sim::new(4, Config::default());
         api::run(&mut sim, |rt| {
-            let db = Database::open_in(rt, FILE, &log(), &api::options(2)).unwrap();
+            let db = Database::open_in(rt, FILE, &log(), &open::options(2)).unwrap();
             let schema = db.schema().clone();
             db.close().unwrap();
             schema

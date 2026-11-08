@@ -13,6 +13,7 @@ use adtb::{
 use adtb_lang::types::{Base, Ty};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
+use adtb_simkit::open;
 use adtb_testkit::refused_with;
 
 const APP: &str = r"module app
@@ -43,7 +44,7 @@ fn opts(root: PathBuf) -> OpenOptions {
     OpenOptions {
         file_root: Some(root),
         export_roots: vec!["out".into()],
-        ..api::options(2)
+        ..open::options(2)
     }
 }
 
@@ -158,7 +159,7 @@ fn restored(rt: &SimRuntime) -> (adtb::Restored, Database<SimRuntime>) {
     let archive = ArchiveTarget::path("data/out/d").unwrap();
     let no_create = OpenOptions {
         create: None,
-        ..api::options(2)
+        ..open::options(2)
     };
     let report = restore_report_in(
         rt.clone(),
@@ -360,7 +361,7 @@ fn an_encrypted_dump_through_a_server_restores_and_audits_no_passphrase() {
         let phrase = Passphrase::new(PHRASE.to_owned());
         let opts = OpenOptions {
             create: None,
-            ..api::options(2)
+            ..open::options(2)
         };
         let latest = RestorePoint::Latest;
         restore_report_in(

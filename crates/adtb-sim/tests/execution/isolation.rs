@@ -122,7 +122,7 @@ fn faults() -> Faults {
     }
 }
 
-fn open(rt: SimRuntime, roots: Roots, group_commit: Option<Duration>) -> Arc<Engine> {
+fn engine(rt: SimRuntime, roots: Roots, group_commit: Option<Duration>) -> Arc<Engine> {
     let e = Engine::open(rt, roots, Limits::default()).expect("the database reopens");
     Arc::new(match group_commit {
         Some(delay) => e.with_group_commit(delay),
@@ -158,12 +158,12 @@ fn history(seed: u64) -> (Vec<iso::Txn>, u64) {
     for round in 0..CRASHES {
         let after = 500 + (seed * 7919 + round * 104_729) % 20_000;
         sim.crash_at(sim.now() + Duration::from_micros(after));
-        let outcome = sim.run(|rt| clients(&open(rt, roots, delay), &b));
+        let outcome = sim.run(|rt| clients(&engine(rt, roots, delay), &b));
         if outcome == Outcome::Crashed {
             crashed += 1;
         }
         let mut problems = Vec::new();
-        finished(&mut sim, |rt| problems = open(rt, roots, None).verify());
+        finished(&mut sim, |rt| problems = engine(rt, roots, None).verify());
         assert!(
             problems.is_empty(),
             "seed {seed} round {round}: {problems:#?}"
@@ -171,7 +171,7 @@ fn history(seed: u64) -> (Vec<iso::Txn>, u64) {
     }
     let mut last = Vec::new();
     finished(&mut sim, |rt| {
-        let e = open(rt, roots, delay);
+        let e = engine(rt, roots, delay);
         clients(&e, &b);
         let reader = e.begin(Kind::ReadOnly);
         for key in 0..KEYS {
@@ -239,7 +239,7 @@ fn unflushed_reads(seed: u64) -> Vec<iso::Txn> {
     let b = Arc::new(Mutex::new(Book::default()));
     sim.crash_at(sim.now() + Duration::from_millis(100));
     let crashed = sim.run(|rt| {
-        let e = open(rt, roots, Some(Duration::from_secs(1)));
+        let e = engine(rt, roots, Some(Duration::from_secs(1)));
         let rt = &e.rt;
         let (e2, b2) = (e.clone(), b.clone());
         let writer = rt.spawn("writer", move || {
@@ -284,7 +284,7 @@ fn unflushed_reads(seed: u64) -> Vec<iso::Txn> {
         "seed {seed}: the writer's commit was forced"
     );
     finished(&mut sim, |rt| {
-        let e = open(rt, roots, None);
+        let e = engine(rt, roots, None);
         let id = book(&b).begin();
         let tx = e.begin(Kind::ReadWrite);
         let elem = book(&b).elem();

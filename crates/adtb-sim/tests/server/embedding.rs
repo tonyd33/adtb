@@ -2,6 +2,7 @@
 //! with registrations and clones still held, and results as Arrow record batches.
 
 use adtb_simkit::api;
+use adtb_simkit::open;
 use adtb_simkit::seeds;
 
 use std::time::Duration;
@@ -15,7 +16,8 @@ use adtb::{
 };
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use api::{in_txn, once, options, printed, result, run};
+use adtb_simkit::open::options;
+use api::{in_txn, once, printed, result, run};
 
 const SHOP: &str = r"module shop
 add module shop
@@ -55,10 +57,6 @@ fn with_app() -> OpenOptions {
         registrations: vec![Registration::new("app", APP)],
         ..options(4)
     }
-}
-
-fn open(rt: &SimRuntime) -> Database<SimRuntime> {
-    Database::open_in(rt.clone(), "app.adt", &log(), &with_app()).expect("the database opens")
 }
 
 fn names(db: &Database<SimRuntime>) -> Vec<String> {
@@ -118,7 +116,7 @@ fn a_token_once_cancelled_stays_cancelled_and_clones_share_it() {
 #[test]
 fn a_call_started_with_a_cancelled_token_returns_cancelled_without_running() {
     once(0, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with_app());
         let tok = CancelToken::new();
         tok.cancel();
         let got = db.query_text(r#"insert customers { name: "ann" }"#, &[], &cancelled(&tok));
@@ -139,7 +137,7 @@ fn a_call_started_with_a_cancelled_token_returns_cancelled_without_running() {
 #[test]
 fn a_cancelled_call_in_a_transaction_has_no_effect_and_leaves_it_open() {
     once(1, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with_app());
         let tok = CancelToken::new();
         tok.cancel();
         let mut t = db.begin(&TxnOptions::default()).expect("begin");
@@ -171,7 +169,7 @@ fn a_cancelled_call_in_a_transaction_has_no_effect_and_leaves_it_open() {
 #[test]
 fn a_call_whose_deadline_has_passed_returns_deadline_exceeded_without_running() {
     once(2, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with_app());
         let opts = CallOptions {
             deadline: Some(rt.wall()),
             ..CallOptions::default()
@@ -188,7 +186,7 @@ fn a_call_whose_deadline_has_passed_returns_deadline_exceeded_without_running() 
 #[test]
 fn a_call_with_a_deadline_to_come_runs() {
     once(3, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with_app());
         let opts = CallOptions {
             deadline: Some(rt.wall() + Duration::from_secs(60)),
             limit: Some(Duration::from_secs(60)),
@@ -203,7 +201,7 @@ fn a_call_with_a_deadline_to_come_runs() {
 #[test]
 fn a_transaction_whose_deadline_has_passed_refuses_its_calls() {
     once(4, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with_app());
         let opts = TxnOptions {
             deadline: Some(rt.wall() + Duration::from_secs(1)),
             ..TxnOptions::default()
@@ -232,7 +230,7 @@ fn racing(
 ) -> bool {
     let mut sim = Sim::new(seed, Config::default());
     let returned = run(&mut sim, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with_app());
         let tok = CancelToken::new();
         let turns = rt.next_u64() % 4000;
         let canceller = {
@@ -257,7 +255,9 @@ fn racing(
         db.close().expect("close");
         got.is_ok()
     });
-    let present = run(&mut sim, |rt| names(&open(&rt)) == vec![r#""ann""#]);
+    let present = run(&mut sim, |rt| {
+        names(&open::opened(&rt, open::FILE, &log(), &with_app())) == vec![r#""ann""#]
+    });
     assert_eq!(returned, present, "seed {seed}: the reopened file agrees");
     returned
 }
@@ -306,14 +306,14 @@ fn a_cancellation_racing_a_registered_transaction_either_commits_or_has_no_effec
 fn a_registration_held_past_close_refuses_its_calls_and_keeps_nothing_open() {
     let mut sim = Sim::new(5, Config::default());
     run(&mut sim, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with_app());
         let app = db.registered("app").expect("app binds");
         db.close().expect("close");
         let got = app.call(NAMES, &[], &CallOptions::default());
         assert!(got.as_ref().is_err_and(is_closed), "{got:?}");
         assert_eq!("app", app.name());
         assert_eq!(Some(NAMES), app.ordinal("names"));
-        let again = open(&rt);
+        let again = open::opened(&rt, open::FILE, &log(), &with_app());
         again
             .query_text(
                 r#"insert customers { name: "ann" }"#,
@@ -329,7 +329,7 @@ fn a_registration_held_past_close_refuses_its_calls_and_keeps_nothing_open() {
 #[test]
 fn closing_one_handle_closes_the_database_for_its_clones() {
     once(6, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with_app());
         let other = db.clone();
         db.close().expect("close");
         let got = other.query_text("from c in customers select c", &[], &CallOptions::default());
@@ -350,7 +350,7 @@ fn closing_one_handle_closes_the_database_for_its_clones() {
 fn a_transaction_open_at_close_ends_uncommitted() {
     let mut sim = Sim::new(7, Config::default());
     run(&mut sim, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with_app());
         let other = db.clone();
         let mut t = other.begin(&TxnOptions::default()).expect("begin");
         t.query_text(
@@ -363,7 +363,9 @@ fn a_transaction_open_at_close_ends_uncommitted() {
         let got = t.commit(None);
         assert!(got.as_ref().is_err_and(is_closed), "{got:?}");
     });
-    let after = run(&mut sim, |rt| names(&open(&rt)));
+    let after = run(&mut sim, |rt| {
+        names(&open::opened(&rt, open::FILE, &log(), &with_app()))
+    });
     assert!(
         after.is_empty(),
         "nothing of the open transaction committed"
@@ -373,7 +375,7 @@ fn a_transaction_open_at_close_ends_uncommitted() {
 #[test]
 fn a_dropped_transaction_of_a_closed_database_rolls_back_quietly() {
     once(8, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with_app());
         let other = db.clone();
         let mut t = other.begin(&TxnOptions::default()).expect("begin");
         t.query_text(
@@ -384,7 +386,7 @@ fn a_dropped_transaction_of_a_closed_database_rolls_back_quietly() {
         .expect("the insert");
         db.close().expect("close");
         drop(t);
-        let again = open(&rt);
+        let again = open::opened(&rt, open::FILE, &log(), &with_app());
         assert_eq!(Vec::<String>::new(), names(&again));
         again.close().expect("close");
     });
@@ -432,7 +434,7 @@ fn text(t: &str) -> Datum {
 #[test]
 fn a_record_result_is_one_column_per_field_in_declared_order() {
     once(9, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with_app());
         seed_shop(&db);
         let (fields, rows) = arrow(&db, CUSTOMERS);
         let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
@@ -451,7 +453,7 @@ fn a_record_result_is_one_column_per_field_in_declared_order() {
 #[test]
 fn a_sum_result_is_one_union_column_whose_children_carry_constructor_ids() {
     once(10, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with_app());
         seed_shop(&db);
         let (fields, rows) = arrow(&db, PAYMENTS);
         assert_eq!(1, fields.len());
@@ -482,7 +484,7 @@ fn a_sum_result_is_one_union_column_whose_children_carry_constructor_ids() {
 #[test]
 fn a_result_of_one_constructor_is_the_columns_of_its_fields() {
     once(11, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with_app());
         seed_shop(&db);
         let (fields, rows) = arrow(&db, CARDS);
         let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
@@ -497,7 +499,7 @@ fn a_result_of_one_constructor_is_the_columns_of_its_fields() {
 #[test]
 fn a_result_of_base_values_is_one_column_named_value() {
     once(12, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with_app());
         seed_shop(&db);
         let (fields, rows) = arrow(&db, NAMES);
         assert_eq!(
@@ -514,7 +516,7 @@ fn a_result_of_base_values_is_one_column_named_value() {
 #[test]
 fn a_registered_transaction_as_arrow_returns_its_result() {
     once(13, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with_app());
         let app = db.registered("app").expect("app binds");
         let stream = app
             .call_arrow(SIGN_UP, &[Value::text("ann")], &CallOptions::default())
@@ -534,7 +536,7 @@ fn a_registered_transaction_as_arrow_returns_its_result() {
 #[test]
 fn a_large_result_streams_in_several_batches_of_one_schema() {
     once(14, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with_app());
         db.query_text(
             "insert customers from (from a in [0, 1, 2], b in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], \
              c in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], d in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] \
@@ -556,7 +558,7 @@ fn a_large_result_streams_in_several_batches_of_one_schema() {
 #[test]
 fn the_open_time_settings_show_read_only_in_sys_process_options() {
     once(15, |rt| {
-        let db = open(&rt);
+        let db = open::opened(&rt, open::FILE, &log(), &with_app());
         let mut got = printed(result(
             &db,
             r#"from o in sys::process_options select o.name ++ "=" ++ o.value ++ (if o.derived then " derived" else "")"#,

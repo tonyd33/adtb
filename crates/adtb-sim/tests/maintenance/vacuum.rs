@@ -3,33 +3,28 @@ use std::ops::{Bound, Range};
 
 use std::sync::{Arc, Mutex};
 
-use adtb::btree::{BTree, Index};
-use adtb::heap::{FieldType, Flags, HEADER_LEN, Header, Heap, HeapNo, LargeStore, header_at, walk};
+use adtb::btree::Index;
+use adtb::heap::{FieldType, Flags, HEADER_LEN, Header, Heap, HeapNo, header_at, walk};
 use adtb::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
 use adtb::mvcc::{Scope, Snapshot, SnapshotId, Status, Transactions, Xid};
 use adtb::runtime::Entropy;
 use adtb::storage::{Pager, Pid};
 use adtb::vacuum::{self, Report, Sum};
-use adtb::verify;
-use adtb::verify::Inventory;
-use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Fate, Ledger, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 
 use adtb_simkit::crash;
 use adtb_simkit::harness;
-use adtb_simkit::recovery;
 use adtb_simkit::rows;
 use adtb_simkit::seeds;
 
-use crash::{crash_after, run_process, silence_fatal_panics};
+use adtb_simkit::fixture::{Layout, Parts, Storage};
+use crash::{Reopen, Rounds, crash_loop};
 use harness::{PAGE, finished, options};
-use recovery::verify_after_crash;
-use rows::{APPLE, EMAIL, HEAP_IDS, LARGE_ID, Live, Op, Rows, key_of, pair, replay, row_type};
+use rows::{APPLE, EMAIL, Live, Op, Rows, key_of, pair, replay, row_type};
 use seeds::{share, sweep};
 
 const FRAMES: usize = 16;
-
-const INDEX_IDS: [u32; 2] = [20, 21];
 
 /// The fields of each heap that some index keys.
 fn indexed(heap: usize) -> &'static [usize] {
@@ -97,75 +92,47 @@ fn entries(heap: usize, row: &[Value], tid: Tid) -> Vec<(usize, Entry)> {
     out
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Roots {
-    clog: Pid,
-    large: Pid,
-    heaps: [Pid; 3],
-    indexes: [Pid; 2],
-}
-
 struct Db {
     pager: Pager<SimRuntime>,
     txns: Transactions<SimRuntime>,
     heaps: Vec<Heap>,
     indexes: Vec<Index>,
+    ids: [HeapNo; 3],
 }
 
 impl Db {
-    fn create(rt: SimRuntime, fanout: u16) -> (Db, Roots) {
-        let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
-        let txns = Transactions::create(rt, &pager).expect("commit log");
-        let large = LargeStore::create(&pager, LARGE_ID).expect("large store");
-        let heaps: Vec<Heap> = (0..3)
-            .map(|h| {
-                Heap::create_with_fanout(&pager, HEAP_IDS[h], row_type(h), large, fanout)
-                    .expect("heap")
-            })
-            .collect();
-        let [s0, s1] = schemas();
-        let [c0, c1] = index_ctors();
-        let indexes = vec![
-            Index::create(&pager, INDEX_IDS[0], s0, c0).expect("index"),
-            Index::create(&pager, INDEX_IDS[1], s1, c1).expect("index"),
-        ];
-        let roots = Roots {
-            clog: txns.commit_log().root(),
-            large: large.root(),
-            heaps: [heaps[0].root(), heaps[1].root(), heaps[2].root()],
-            indexes: [indexes[0].tree().root(), indexes[1].tree().root()],
-        };
-        pager.flush_log();
-        (
-            Db {
-                pager,
-                txns,
-                heaps,
-                indexes,
-            },
-            roots,
-        )
+    fn create(rt: &SimRuntime, fanout: u16) -> (Db, Layout) {
+        let s = Db::world(rt, fanout);
+        s.pager().flush_log();
+        let layout = s.layout();
+        (Db::of(s), layout)
     }
 
-    fn open(rt: SimRuntime, roots: Roots) -> Option<Db> {
-        let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).ok()?;
-        let txns = Transactions::open(rt, &pager, roots.clog).ok()?;
-        let large = LargeStore::open(LARGE_ID, roots.large);
-        let heaps = (0..3)
-            .map(|h| Heap::open(&pager, HEAP_IDS[h], roots.heaps[h], row_type(h), large).unwrap())
-            .collect();
+    /// Returns a world holding a commit log, a large store, the three heaps and the two indexes.
+    fn world(rt: &SimRuntime, fanout: u16) -> Storage {
+        let mut s = Storage::create(rt, &options(FRAMES));
+        s.commit_log(rt);
+        let large = s.large();
+        for h in 0..3 {
+            s.heap(row_type(h), large, fanout);
+        }
         let [s0, s1] = schemas();
         let [c0, c1] = index_ctors();
-        let indexes = vec![
-            Index::open(BTree::open(roots.indexes[0], INDEX_IDS[0]), s0, c0),
-            Index::open(BTree::open(roots.indexes[1], INDEX_IDS[1]), s1, c1),
-        ];
-        Some(Db {
+        s.index(s0, c0);
+        s.index(s1, c1);
+        s
+    }
+
+    fn of(s: Storage) -> Db {
+        let (pager, txns, heaps, indexes) = s.split();
+        let ids = [0, 1, 2].map(|h| heaps[h].id());
+        Db {
             pager,
-            txns,
+            txns: txns.expect("the world's commit log"),
             heaps,
             indexes,
-        })
+            ids,
+        }
     }
 
     fn vacuum(&mut self, budget: usize) -> Report {
@@ -184,6 +151,7 @@ impl Db {
             txns,
             heaps,
             indexes,
+            ..
         } = self;
         let sum = Sum {
             heaps: heaps
@@ -237,21 +205,14 @@ impl Db {
 
     /// Returns what the whole-file `verify` finds, freeing leaked pages first.
     fn verify_file(&mut self) -> Vec<String> {
-        let clog = self.txns.commit_log();
-        let inventory = Inventory {
-            commit_log: Some(&clog),
-            sums: vec![verify::Sum {
-                heaps: self
-                    .heaps
-                    .iter()
-                    .enumerate()
-                    .map(|(i, h)| (CtorId(i as u32), h))
-                    .collect(),
-                indexes: self.indexes.iter().collect(),
-            }],
-            ..Inventory::default()
-        };
-        verify_after_crash(&self.pager, &inventory)
+        Parts::new(
+            &self.pager,
+            Some(&self.txns),
+            &self.heaps,
+            &self.indexes,
+            &[],
+        )
+        .verify()
     }
 
     fn index(&mut self, heap: usize, row: &[Value], tid: Tid) {
@@ -293,7 +254,7 @@ impl Db {
             if !heaps.contains(&h) {
                 continue;
             }
-            let found = self.chain_visible(snapshot, HEAP_IDS[h], e.tid);
+            let found = self.chain_visible(snapshot, self.ids[h].0, e.tid);
             if let Some(tid) = found {
                 let v = self.heaps[h]
                     .read(&self.pager, tid)
@@ -308,11 +269,13 @@ impl Db {
     /// Returns the version `snapshot` sees among the one at `tid` and its heap-only successors on
     /// its page.
     fn chain_visible(&mut self, snapshot: &Snapshot, heap: u32, tid: Tid) -> Option<Tid> {
-        let Db { pager, txns, .. } = self;
+        let Db {
+            pager, txns, ids, ..
+        } = self;
         let mut seen = None;
         let mut first = true;
         let mut checks = Vec::new();
-        walk(pager, HeapNo(heap), &HEAP_IDS.map(HeapNo), tid, |l| {
+        walk(pager, HeapNo(heap), &ids[..], tid, |l| {
             if l.tid.page() != tid.page() || !first && !l.flags.contains(Flags::HEAP_ONLY) {
                 return true;
             }
@@ -498,6 +461,8 @@ struct Client {
     long: Option<Running>,
     /// Transactions committed and not yet acknowledged.
     done: Vec<Xid>,
+    /// Where each commit is recorded as submitted before it is made.
+    ledger: Option<Ledger>,
 }
 
 impl Client {
@@ -508,6 +473,7 @@ impl Client {
             ops: BTreeMap::new(),
             long: None,
             done: Vec::new(),
+            ledger: None,
         }
     }
 }
@@ -542,6 +508,9 @@ impl Client {
 
     fn finish(&mut self, db: &mut Db, run: Running, commit: bool) {
         if commit {
+            if let Some(ledger) = &self.ledger {
+                ledger.submit(run.xid.0);
+            }
             db.txns.commit(&db.pager, run.xid).expect("commit");
             self.done.push(run.xid);
             for k in &run.keys {
@@ -602,7 +571,7 @@ fn take(db: &mut Db, next: &mut impl FnMut() -> u64) -> Held {
     let scope = if heaps.len() == 3 {
         Scope::Every
     } else {
-        Scope::Heaps(heaps.iter().map(|&h| HEAP_IDS[h]).collect())
+        Scope::Heaps(heaps.iter().map(|&h| db.ids[h].0).collect())
     };
     let (id, snapshot) = db.txns.take(scope).unwrap();
     let expected = db.scan_visible(&snapshot, &heaps).rows;
@@ -652,7 +621,7 @@ fn vacuum_keeps_what_live_snapshots_see_and_cleans_the_rest() {
     for seed in 0..4 {
         let mut sim = Sim::new(seed, Config::default());
         finished(&mut sim, |rt| {
-            let (mut db, _) = Db::create(rt.clone(), 4);
+            let (mut db, _) = Db::create(&rt, 4);
             let mut client = Client::new(Live::new(), 0);
             let mut held: Vec<Held> = Vec::new();
             let mut next = || rt.next_u64();
@@ -734,7 +703,7 @@ fn vacuum_keeps_what_live_snapshots_see_and_cleans_the_rest() {
 fn a_heap_only_chain_keeps_its_first_slot_as_a_redirect() {
     let mut sim = Sim::new(31, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, 4);
+        let (mut db, _) = Db::create(&rt, 4);
         let pager = &mut db.pager;
         let row = |n: i32| {
             vec![
@@ -763,15 +732,9 @@ fn a_heap_only_chain_keeps_its_first_slot_as_a_redirect() {
         assert_eq!(2, report.freed, "{report:?}");
         assert_eq!(1, report.all_visible, "{report:?}");
         let pager = &mut db.pager;
-        let found = walk(
-            pager,
-            HeapNo(HEAP_IDS[EMAIL]),
-            &HEAP_IDS.map(HeapNo),
-            first,
-            |_| true,
-        )
-        .unwrap()
-        .unwrap();
+        let found = walk(pager, db.ids[EMAIL], &db.ids, first, |_| true)
+            .unwrap()
+            .unwrap();
         assert_eq!(at, found.tid);
         assert_eq!(None, db.heaps[EMAIL].read(pager, first).unwrap());
         assert!(db.heaps[EMAIL].all_visible(pager, Pid(at.page())).unwrap());
@@ -786,7 +749,7 @@ fn a_heap_only_chain_keeps_its_first_slot_as_a_redirect() {
 fn a_write_clears_the_all_visible_bit() {
     let mut sim = Sim::new(32, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, 4);
+        let (mut db, _) = Db::create(&rt, 4);
         let x = db.txns.begin(&db.pager).unwrap();
         let mut tids = Vec::new();
         for key in 0..40 {
@@ -816,7 +779,7 @@ fn a_write_clears_the_all_visible_bit() {
 fn empty_pages_leave_the_heap_and_their_positions_are_reused() {
     let mut sim = Sim::new(33, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, 3);
+        let (mut db, _) = Db::create(&rt, 3);
         let row = |key: i64| {
             vec![
                 Value::I64(key),
@@ -869,7 +832,7 @@ fn empty_pages_leave_the_heap_and_their_positions_are_reused() {
 fn an_aborted_large_value_leaves_no_chunk_behind() {
     let mut sim = Sim::new(34, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, 64);
+        let (mut db, _) = Db::create(&rt, 64);
         let large = db.heaps[EMAIL].large();
         let big: Vec<u8> = (0..50_000u32).map(|i| (i * 7 + i / 300) as u8).collect();
         let row = vec![Value::I64(1), Value::Text("a".into()), Value::Bytes(big)];
@@ -891,7 +854,7 @@ fn an_aborted_large_value_leaves_no_chunk_behind() {
 fn the_sweep_reads_only_pages_written_since_the_last() {
     let mut sim = Sim::new(37, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, 64);
+        let (mut db, _) = Db::create(&rt, 64);
         let large = db.heaps[EMAIL].large();
         let big = |n: u8| {
             vec![
@@ -927,7 +890,7 @@ fn the_sweep_reads_only_pages_written_since_the_last() {
 fn a_value_no_version_points_at_waits_for_its_writer_then_goes() {
     let mut sim = Sim::new(38, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, 64);
+        let (mut db, _) = Db::create(&rt, 64);
         let large = db.heaps[EMAIL].large();
         let x = db.txns.begin(&db.pager).unwrap();
         large.write(&db.pager, x.0, &vec![5; 30_000]).unwrap();
@@ -958,7 +921,7 @@ fn counter_type(note: bool) -> Vec<FieldType> {
 fn vacuum_reopens_a_page_conversion_left_full() {
     let mut sim = Sim::new(35, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, 4);
+        let (mut db, _) = Db::create(&rt, 4);
         let pager = &mut db.pager;
         let large = db.heaps[EMAIL].large();
         let mut heap = Heap::create(pager, 31, counter_type(false), large).unwrap();
@@ -1033,7 +996,7 @@ fn vacuum_reopens_a_page_conversion_left_full() {
 fn a_walk_from_an_entry_read_before_vacuum_ends_on_a_page_the_large_store_took() {
     let mut sim = Sim::new(37, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, 4);
+        let (mut db, _) = Db::create(&rt, 4);
         let row = vec![Value::I64(1), Value::I32(0)];
         let x = db.txns.begin(&db.pager).unwrap();
         let t = db.heaps[APPLE].insert(&db.pager, x.0, &row).unwrap();
@@ -1053,14 +1016,7 @@ fn a_walk_from_an_entry_read_before_vacuum_ends_on_a_page_the_large_store_took()
         assert!(store.contains(&Pid(t.page())), "{t:?} is not in {store:?}");
         assert_eq!(
             None,
-            walk(
-                &db.pager,
-                HeapNo(HEAP_IDS[APPLE]),
-                &HEAP_IDS.map(HeapNo),
-                t,
-                |_| true
-            )
-            .unwrap()
+            walk(&db.pager, db.ids[APPLE], &db.ids, t, |_| true).unwrap()
         );
     });
 }
@@ -1069,7 +1025,7 @@ fn a_walk_from_an_entry_read_before_vacuum_ends_on_a_page_the_large_store_took()
 fn a_chain_ends_where_vacuum_freed_the_successor() {
     let mut sim = Sim::new(36, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, 4);
+        let (mut db, _) = Db::create(&rt, 4);
         let row = vec![Value::I64(1), Value::I32(0)];
         let x = db.txns.begin(&db.pager).unwrap();
         let t = db.heaps[APPLE].insert(&db.pager, x.0, &row).unwrap();
@@ -1077,7 +1033,7 @@ fn a_chain_ends_where_vacuum_freed_the_successor() {
         db.txns.commit(&db.pager, x).unwrap();
         let (old_id, _) = db
             .txns
-            .take(Scope::Heaps(BTreeSet::from([HEAP_IDS[APPLE]])))
+            .take(Scope::Heaps(BTreeSet::from([db.ids[APPLE].0])))
             .unwrap();
         let x = db.txns.begin(&db.pager).unwrap();
         let (apple, email) = pair(&mut db.heaps, APPLE, EMAIL);
@@ -1100,14 +1056,7 @@ fn a_chain_ends_where_vacuum_freed_the_successor() {
         assert_eq!(moved, reused, "the freed slot is taken again");
         assert_eq!(
             None,
-            walk(
-                &db.pager,
-                HeapNo(HEAP_IDS[APPLE]),
-                &HEAP_IDS.map(HeapNo),
-                t,
-                |l| l.tid == reused
-            )
-            .unwrap()
+            walk(&db.pager, db.ids[APPLE], &db.ids, t, |l| l.tid == reused).unwrap()
         );
         db.txns.release(old_id);
         assert_eq!(Vec::<String>::new(), db.verify());
@@ -1141,10 +1090,14 @@ fn forge_next(pager: &Pager<SimRuntime>, at: Tid, to: Tid) {
 fn a_walk_ends_at_a_retagged_in_version_of_another_sums_heap() {
     let mut sim = Sim::new(38, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, 4);
-        let large = LargeStore::create(&db.pager, 30).unwrap();
-        let other = Heap::create(&db.pager, 20, row_type(EMAIL), large).unwrap();
-        let other_in = Heap::create(&db.pager, 21, row_type(EMAIL), large).unwrap();
+        let mut s = Db::world(&rt, 4);
+        let large = s.large();
+        s.heap(row_type(EMAIL), large, 4);
+        s.heap(row_type(EMAIL), large, 4);
+        let mut db = Db::of(s);
+        let others = db.heaps.split_off(3);
+        let (other, other_in) = (&others[0], &others[1]);
+        let others_sum = [other.id(), other_in.id()];
         let email_row = |k: i64| vec![Value::I64(k), Value::Text("o".into()), Value::Bytes(vec![])];
         let x = db.txns.begin(&db.pager).unwrap();
         let t = db.heaps[APPLE]
@@ -1158,19 +1111,17 @@ fn a_walk_ends_at_a_retagged_in_version_of_another_sums_heap() {
             .retag(&db.pager, t, x.0, email, &email_row(1))
             .unwrap();
         let stray = other
-            .retag(&db.pager, o, x.0, &other_in, &email_row(2))
+            .retag(&db.pager, o, x.0, other_in, &email_row(2))
             .unwrap();
         db.txns.commit(&db.pager, x).unwrap();
-        let sum = HEAP_IDS.map(HeapNo);
-        let start = HeapNo(HEAP_IDS[APPLE]);
+        let sum = db.ids;
+        let start = db.ids[APPLE];
         let reached = walk(&db.pager, start, &sum, t, |l| l.tid == moved).unwrap();
         assert_eq!(Some(moved), reached.map(|l| l.tid));
         forge_next(&db.pager, t, stray);
-        let stray_link = walk(&db.pager, HeapNo(20), &[HeapNo(20), HeapNo(21)], o, |l| {
-            l.tid == stray
-        })
-        .unwrap()
-        .expect("the stray version is retagged in from its own sum");
+        let stray_link = walk(&db.pager, others_sum[0], &others_sum, o, |l| l.tid == stray)
+            .unwrap()
+            .expect("the stray version is retagged in from its own sum");
         assert!(stray_link.flags.contains(Flags::RETAGGED_IN));
         assert_eq!(x.0, stray_link.header.xmin);
         assert_eq!(None, walk(&db.pager, start, &sum, t, |_| false).unwrap());
@@ -1183,18 +1134,17 @@ fn a_walk_ends_at_a_retagged_in_version_of_another_sums_heap() {
 
 /// What the client knows, kept outside the simulated process so it survives crashes.
 struct World {
-    roots: Roots,
+    roots: Layout,
     next_key: i64,
     ops: BTreeMap<Xid, Vec<Op>>,
-    acked: BTreeSet<Xid>,
     vacuums: usize,
     vacuuming: bool,
     crashed_vacuuming: usize,
 }
 
-fn workload(rt: SimRuntime, world: &Mutex<World>, steps: usize) {
-    let roots = world.lock().unwrap().roots;
-    let Some(mut db) = Db::open(rt.clone(), roots) else {
+fn workload(rt: SimRuntime, world: &Mutex<World>, ledger: &Ledger, steps: usize) {
+    let roots = world.lock().unwrap().roots.clone();
+    let Some(mut db) = Storage::reopen(&rt, &roots).ok().map(Db::of) else {
         return;
     };
     let (scan, _) = db.fresh_visible();
@@ -1204,6 +1154,7 @@ fn workload(rt: SimRuntime, world: &Mutex<World>, steps: usize) {
         .map(|(k, (h, row))| (*k, (*h, scan.tids[k], row.clone())))
         .collect();
     let mut client = Client::new(live, world.lock().unwrap().next_key);
+    client.ledger = Some(ledger.clone());
     let mut held: Vec<Held> = Vec::new();
     let mut next = || rt.next_u64();
     let mut unacked: Vec<Xid> = Vec::new();
@@ -1238,20 +1189,23 @@ fn workload(rt: SimRuntime, world: &Mutex<World>, steps: usize) {
             21 => db.pager.checkpoint(),
             _ => {
                 db.pager.flush_log();
-                let mut w = world.lock().unwrap();
-                w.acked.extend(unacked.drain(..));
+                for x in unacked.drain(..) {
+                    ledger.acknowledge(x.0);
+                }
             }
         }
     }
     db.pager.flush_log();
-    world.lock().unwrap().acked.extend(unacked);
+    for x in unacked {
+        ledger.acknowledge(x.0);
+    }
 }
 
 /// Reopen the database, check it against every committed transaction, vacuum it and check again.
-fn inspect(rt: SimRuntime, world: &Mutex<World>) -> Vec<String> {
-    let roots = world.lock().unwrap().roots;
-    let Some(mut db) = Db::open(rt, roots) else {
-        return vec!["open failed".into()];
+fn inspect(rt: SimRuntime, world: &Mutex<World>) -> Reopen {
+    let roots = world.lock().unwrap().roots.clone();
+    let Some(mut db) = Storage::reopen(&rt, &roots).ok().map(Db::of) else {
+        return Reopen::found(vec!["open failed".into()]);
     };
     let v = db.pager.verify();
     let mut problems: Vec<String> = v.findings.iter().map(|f| format!("{f:?}")).collect();
@@ -1261,9 +1215,6 @@ fn inspect(rt: SimRuntime, world: &Mutex<World>) -> Vec<String> {
         if db.txns.status(&db.pager, *x).unwrap() == Status::Committed {
             committed.insert(*x);
         }
-    }
-    for x in w.acked.iter().filter(|x| !committed.contains(x)) {
-        problems.push(format!("acknowledged {x:?} did not commit"));
     }
     let mut client = Client::new(Live::new(), 0);
     client.ops = w.ops.clone();
@@ -1290,17 +1241,16 @@ fn inspect(rt: SimRuntime, world: &Mutex<World>) -> Vec<String> {
         problems.extend(db.check_visibility_map(&[]));
         db.vacuum(usize::MAX);
     }
-    problems
+    Reopen::new(committed.iter().map(|x| x.0).collect(), problems)
 }
 
 /// Returns the number of crashes, and of those that fell during a vacuum.
 #[must_use]
-fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> (usize, usize) {
-    silence_fatal_panics();
+fn crash_rounds(seed: u64, faults: Faults, rounds: usize) -> (usize, usize) {
     let mut sim = Sim::new(seed, Config::default());
     let mut roots = None;
     finished(&mut sim, |rt| {
-        let (db, r) = Db::create(rt, 3);
+        let (db, r) = Db::create(&rt, 3);
         db.pager.checkpoint();
         roots = Some(r);
     });
@@ -1308,35 +1258,34 @@ fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> (usize, usize) {
         roots: roots.unwrap(),
         next_key: 0,
         ops: BTreeMap::new(),
-        acked: BTreeSet::new(),
         vacuums: 0,
         vacuuming: false,
         crashed_vacuuming: 0,
     }));
-    let mut crashes = 0;
-    for round in 0..rounds {
-        sim.set_faults(faults);
-        let at = sim.now() + crash_after(seed, round as u64, 2000, 80_000);
-        sim.crash_at(at);
-        let w = world.clone();
-        if run_process(&mut sim, |rt| workload(rt, &w, 300)) == Outcome::Crashed {
-            crashes += 1;
-            let mut w = world.lock().unwrap();
-            w.crashed_vacuuming += usize::from(w.vacuuming);
-            w.vacuuming = false;
-        }
-        sim.set_faults(Faults::none(512));
-        let mut problems = Vec::new();
-        let w = world.clone();
-        finished(&mut sim, |rt| problems = inspect(rt, &w));
-        assert!(
-            problems.is_empty(),
-            "seed {seed} round {round}: {problems:#?}"
-        );
-    }
+    let rounds = Rounds::new(rounds, 2000, 80_000);
+    let out = crash_loop(
+        &mut sim,
+        seed,
+        faults,
+        rounds,
+        |r| {
+            let (l, w) = (r.ledger().clone(), world.clone());
+            if r.crash(|rt| workload(rt, &w, &l, 300)) {
+                let mut w = world.lock().unwrap();
+                w.crashed_vacuuming += usize::from(w.vacuuming);
+                w.vacuuming = false;
+            }
+        },
+        |rt, _| inspect(rt, &world),
+    );
     let w = world.lock().unwrap();
-    assert!(!w.acked.is_empty(), "seed {seed} acknowledged nothing");
-    (crashes, w.crashed_vacuuming)
+    assert!(
+        w.ops
+            .keys()
+            .any(|x| out.ledger().fate(x.0) == Some(Fate::Acknowledged)),
+        "seed {seed} acknowledged nothing"
+    );
+    (out.crashed(), w.crashed_vacuuming)
 }
 
 #[test]
@@ -1344,7 +1293,7 @@ fn crashes_during_vacuum_recover_to_a_clean_database() {
     const SEEDS: Range<u64> = 0..32;
     let (crashes, during): (Vec<usize>, Vec<usize>) = sweep(SEEDS)
         .map(|seed| {
-            crash_loop(
+            crash_rounds(
                 seed,
                 Faults {
                     torn_p: 0.5,
@@ -1366,7 +1315,7 @@ fn failed_writes_during_vacuum_crash_and_recover_clean() {
     const SEEDS: Range<u64> = 100..106;
     let (crashes, during): (Vec<usize>, Vec<usize>) = sweep(SEEDS)
         .map(|seed| {
-            crash_loop(
+            crash_rounds(
                 seed,
                 Faults {
                     torn_p: 0.3,
@@ -1387,7 +1336,7 @@ fn failed_writes_during_vacuum_crash_and_recover_clean() {
 /// Returns a database whose three heaps each hold 40 dead rows, one of them with a value of 50
 /// chunks stored out of line, indexed by keys long enough to fill several leaves.
 fn dead_rows(rt: SimRuntime) -> Db {
-    let (mut db, _) = Db::create(rt, 8);
+    let (mut db, _) = Db::create(&rt, 8);
     let x = db.txns.begin(&db.pager).unwrap();
     let mut tids = Vec::new();
     for heap in 0..3 {

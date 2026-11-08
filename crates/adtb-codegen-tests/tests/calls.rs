@@ -17,7 +17,8 @@ use adtb_codegen_tests::shop::{queries, schema};
 use adtb_lang::textual::print;
 use adtb_sim::SimRuntime;
 
-use api::{once, options, printed, result, sorted};
+use adtb_simkit::open::options;
+use api::{once, printed, result, sorted};
 use queries::Error;
 use schema::{Customer, Customers, Payment, Tier};
 

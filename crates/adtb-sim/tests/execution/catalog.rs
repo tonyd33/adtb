@@ -4,12 +4,13 @@ use adtb::catalog::{Catalog, Error, applied, declared, version_hash};
 use adtb::key::{CtorId, Value};
 use adtb::mvcc::{Scope, Transactions};
 use adtb::plan::{Element, IndexId};
-use adtb::storage::{Damage, Options, Pager, Pid};
+use adtb::storage::{Damage, HEADER_LEN, Options, Pager, Pid};
 use adtb::verify::{self, Finding, Problem, Report};
 use adtb_lang::types::RelId;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 
+use adtb_simkit::damage::DataFile;
 use adtb_simkit::harness;
 
 use harness::{PAGE, finished, options};
@@ -750,25 +751,6 @@ fn a_function_naming_a_wasm_module_no_migration_installs_is_refused() {
     });
 }
 
-/// Returns `files` with page `pid` of the data file damaged.
-fn damage(mut files: BTreeMap<String, Vec<u8>>, pid: Pid) -> BTreeMap<String, Vec<u8>> {
-    let data = files.get_mut("app.adt").expect("the data file");
-    data[pid.0 as usize * PAGE + PAGE / 2] ^= 0xff;
-    files
-}
-
-/// Returns `files` with page `pid` of the data file as `from` holds it.
-fn restore(
-    mut files: BTreeMap<String, Vec<u8>>,
-    from: &BTreeMap<String, Vec<u8>>,
-    pid: Pid,
-) -> BTreeMap<String, Vec<u8>> {
-    let at = pid.0 as usize * PAGE..(pid.0 as usize + 1) * PAGE;
-    let data = files.get_mut("app.adt").expect("the data file");
-    data[at.clone()].copy_from_slice(&from["app.adt"][at]);
-    files
-}
-
 /// Returns the files of `files` once recovered, with every page written and checkpointed.
 fn recovered(seed: u64, files: BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Vec<u8>> {
     let mut sim = Sim::with_files(seed, Config::default(), files);
@@ -812,14 +794,18 @@ fn an_unfinished_migration_over_a_damaged_page_is_freed_once_the_page_reads() {
         if !frees {
             continue;
         }
-        let mut sim = Sim::with_files(seed, Config::default(), damage(files.clone(), pid));
+        let data = DataFile::new(harness::NAME, PAGE);
+        let mut damaged = files.clone();
+        data.flip(&mut damaged, pid, PAGE / 2 - HEADER_LEN);
+        let mut sim = Sim::with_files(seed, Config::default(), damaged);
         let outcome = sim.run(|rt| {
             let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
             Catalog::open(rt, &pager).expect("the open leaves the sweep for a later open");
             pager.close();
         });
         assert_eq!(Outcome::Finished, outcome, "at {at}");
-        let mended = restore(sim.files(), &files, pid);
+        let mut mended = sim.files();
+        data.replace(&mut mended, pid, data.page(&files, pid));
         let mut sim = Sim::with_files(seed, Config::default(), mended);
         let reopened = |rt| assert_eq!((true, 0), check_reopened_but(rt, Some(pid)), "at {at}");
         let outcome = sim.run(reopened);
