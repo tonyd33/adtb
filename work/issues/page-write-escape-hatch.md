@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-07
-status: open
+status: resolved
 kind: bug
 priority: 300
 summary: "PageExclusive::inner is pub(crate) and hands out pages::Exclusive, whose write is pub, so any adtb module can change a page unlogged; the logged-change invariant holds by convention only"
+closed: 2026-11-07
 tags:
   - class-not-atomic
 ---
@@ -27,3 +28,9 @@ Defect class: Multi-step change not atomic under failure, crash or race.
 ## 2026-11-07, correction
 
 The grep above missed two things. `heap/dir_tests.rs` writes a page through `inner()`, outside `storage/`. And `Shared::mem` (pager.rs) is `pub(crate)`: any module can latch a frame through `PageMemory::lock_exclusive` and write it, so the hatch is wider than `inner()`. The storage structure design (work/briefs/design-storage-structure-r1-report.md, local) folds this ticket into a sealed frame with seven named unlogged writers and `disallowed-methods` on `pages::Exclusive::write` and `PageMemory::lock_exclusive`.
+
+## 2026-11-07, resolved
+
+Closed by storage owners step 1: `inner` is deleted, no type obtainable outside storage/pager.rs writes page bytes, and clippy's `disallowed_methods` rejects every adtb-sys path to a writable page guard except at pager.rs's named writers.
+
+## 2026-11-07: resolved
