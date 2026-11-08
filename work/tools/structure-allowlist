@@ -163,7 +163,6 @@ pub_fields prod 6 crates/adtb-server/src/wire/reassembly.rs
 pub_fields prod 2 crates/adtb-sim/src/check.rs
 pub_fields prod 5 crates/adtb-sim/src/sim.rs
 pub_fields prod 2 crates/adtb-simkit/src/common.rs
-pub_fields prod 4 crates/adtb-simkit/src/engine.rs
 pub_fields prod 6 crates/adtb-simkit/src/grants.rs
 pub_fields prod 5 crates/adtb-simkit/src/search.rs
 pub_fields prod 15 crates/adtb-simkit/src/support.rs
@@ -261,7 +260,6 @@ xmin_xmax test 1 crates/adtb-sim/tests/maintenance/verify.rs
 xmin_xmax test 1 crates/adtb-sim/tests/storage/clog.rs
 xmin_xmax test 15 crates/adtb-sim/tests/storage/heap.rs
 xmin_xmax test 5 crates/adtb-sim/tests/storage/heap_threads.rs
-xmin_xmax prod 11 crates/adtb-simkit/src/engine.rs
 xmin_xmax prod 3 crates/adtb/src/catalog/history.rs
 xmin_xmax prod 2 crates/adtb/src/catalog/kept.rs
 xmin_xmax prod 7 crates/adtb/src/catalog/mod.rs

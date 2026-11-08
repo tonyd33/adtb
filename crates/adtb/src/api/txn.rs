@@ -258,6 +258,15 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         }
     }
 
+    /// Returns the snapshot the transaction reads, `None` once it has ended.
+    #[cfg(feature = "testing")]
+    pub(crate) fn tested_snapshot(&self) -> Option<&crate::mvcc::Snapshot> {
+        match &self.state {
+            State::Open(tx) => Some(tx.snapshot()),
+            State::Ended(_) | State::Closed => None,
+        }
+    }
+
     /// Returns whether the engine ended the transaction with a serialization failure.
     pub(super) fn serialization_failed(&self) -> bool {
         matches!(&self.state, State::Ended(e) if e.is_serialization())

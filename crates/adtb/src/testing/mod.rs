@@ -1,10 +1,11 @@
 //! What tests observe of a running engine, and the controls that drive it where no public call
 //! reaches. Every answer is a value built at the call; no answer borrows from the engine.
 //! [`Plant`] lists every change a test makes to the engine's state beneath its public calls.
-//! Every observation but [`Probe::page`], [`Probe::damage_in_log`] and [`Probe::logged_commits`]
-//! leaves the engine as it found it, reading memory only. [`Probe::page`] reads through the pager
-//! as any reader does. The other two read the retained log as `verify` does: they pin it, open its
-//! segments and take the simulator's fault draws.
+//! Every observation but [`Probe::page`], [`Probe::damage_in_log`], [`Probe::logged_commits`]
+//! and [`Probe::safe_snapshots`] leaves the engine as it found it, reading memory only.
+//! [`Probe::page`] reads through the pager as any reader does. The other three read the retained
+//! log as `verify` does: they pin it, open its segments and take the simulator's fault draws.
+//! [`Probe::safe_snapshots`] writes the log first.
 
 mod control;
 mod object;
@@ -14,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Database;
 use crate::btree;
-use crate::mvcc::{Transactions, Xid};
+use crate::mvcc::{Limits, Snapshot, Transactions, Xid};
 use crate::runtime::Runtime;
 use crate::storage::{Damage, LogFinding, Lsn, PageError, Pager, Pid, Position, Quarantine};
 use crate::vacuum::Charged;
@@ -30,6 +31,7 @@ pub use plant::{Plant, Planted, Site};
 pub struct Knobs {
     no_background_vacuum: bool,
     segment_size: Option<u64>,
+    limits: Option<Limits>,
 }
 
 impl Knobs {
@@ -53,12 +55,24 @@ impl Knobs {
         }
     }
 
+    /// Returns these knobs promoting the serializer's read locks at `limits`.
+    pub fn with_limits(self, limits: Limits) -> Knobs {
+        Knobs {
+            limits: Some(limits),
+            ..self
+        }
+    }
+
     pub(crate) fn background_vacuum(&self) -> bool {
         !self.no_background_vacuum
     }
 
     pub(crate) fn segment_size(&self) -> Option<u64> {
         self.segment_size
+    }
+
+    pub(crate) fn limits(&self) -> Limits {
+        self.limits.unwrap_or_default()
     }
 }
 
@@ -161,6 +175,17 @@ impl<'a, R: Runtime> Testing<'a, R> {
         self.db.tested_db().vacuum_yields()
     }
 
+    /// Returns how many transactions the serializer still tracks, running or kept for a running
+    /// one's conflicts.
+    pub fn tracked(self) -> usize {
+        self.db.tested_db().tracked()
+    }
+
+    /// Returns the snapshot `txn` reads, `None` once it has ended.
+    pub fn snapshot(self, txn: &crate::AdHocTransaction<'_, R>) -> Option<Snapshot> {
+        txn.tested_snapshot().cloned()
+    }
+
     /// Returns how many reindex job threads are not yet joined.
     pub fn reindex_threads(self) -> usize {
         self.db.reindex_threads()
@@ -258,6 +283,23 @@ impl<'a, R: Runtime> Probe<'a, R> {
     /// segments cannot be listed or opened.
     pub fn logged_commits(self) -> BTreeSet<u64> {
         self.pager.logged_commits()
+    }
+
+    /// Returns each safe snapshot marker in the retained log, in log order, after writing the
+    /// log: the commit position it covers and its snapshot. Nothing when its segments cannot be
+    /// listed or opened.
+    ///
+    /// Panic at a marker or a batch of the log that does not decode.
+    pub fn safe_snapshots(self) -> Vec<(Position, Snapshot)> {
+        self.pager.flush_log();
+        self.pager
+            .logged_safe_snapshots()
+            .into_iter()
+            .map(|(at, bytes)| {
+                let snapshot = Snapshot::decode(&bytes).expect("a marker's snapshot decodes");
+                (at, snapshot)
+            })
+            .collect()
     }
 
     /// Returns the LSN the next record appended takes.

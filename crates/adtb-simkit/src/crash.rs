@@ -169,6 +169,30 @@ impl Round<'_> {
         crashed
     }
 
+    /// Run `setup` and then `body` with what it returns as a process under the loop's faults,
+    /// crashing at this round's time counted from when `setup` returns. Returns whether it
+    /// crashed.
+    pub fn crash_after_setup<T>(
+        &mut self,
+        setup: impl FnOnce(&SimRuntime) -> T,
+        body: impl FnOnce(SimRuntime, T),
+    ) -> bool {
+        self.sim.set_faults(self.faults);
+        let after = crash_after(
+            self.seed,
+            self.index as u64,
+            self.rounds.base,
+            self.rounds.span,
+        );
+        let crashed = run_process(self.sim, |rt| {
+            let set = setup(&rt);
+            rt.crash_after(after);
+            body(rt, set);
+        }) == Outcome::Crashed;
+        self.crashed |= crashed;
+        crashed
+    }
+
     /// Returns the simulation, for a round that ends its run another way than [`Round::crash`].
     pub fn sim(&mut self) -> &mut Sim {
         self.sim

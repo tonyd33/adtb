@@ -358,6 +358,11 @@ impl Txn {
         self.xid
     }
 
+    #[cfg(feature = "testing")]
+    pub(crate) fn snapshot(&self) -> &Snapshot {
+        &self.snapshot
+    }
+
     fn writer(&self) -> Result<Xid, Error> {
         self.xid.ok_or_else(|| Broken::ReadOnly.into())
     }
@@ -1189,6 +1194,12 @@ impl<R: Runtime> Database<R> {
                 Err(e)
             }
         }
+    }
+
+    /// Returns how many transactions the serializer tracks.
+    #[cfg(feature = "testing")]
+    pub(crate) fn tracked(&self) -> usize {
+        self.ser.lock(&self.rt).tracked()
     }
 
     /// Abort `tx` and release what it holds.

@@ -784,6 +784,14 @@ impl SimRuntime {
 }
 
 impl SimRuntime {
+    /// Crash this run once the clock has moved `after` past now, in place of any crash scheduled
+    /// before.
+    pub fn crash_after(&self, after: Duration) {
+        let mut st = lock(&self.shared.state);
+        let after = u64::try_from(after.as_nanos()).expect("a crash within the clock's range");
+        st.crash_at = Some(st.now + after);
+    }
+
     /// Change the faults the device injects from now on, from inside a run.
     ///
     /// Panic if `faults` changes the device's sector or atomic unit.

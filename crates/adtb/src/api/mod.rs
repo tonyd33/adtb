@@ -160,6 +160,13 @@ impl OpenOptions {
         None
     }
 
+    fn limits(&self) -> Limits {
+        #[cfg(feature = "testing")]
+        return self.testing.limits();
+        #[cfg(not(feature = "testing"))]
+        Limits::default()
+    }
+
     fn background_vacuum(&self) -> bool {
         #[cfg(feature = "testing")]
         return self.testing.background_vacuum();
@@ -761,7 +768,7 @@ fn setup_of<R: Runtime>(
             fix_rounds: options.fix_rounds.unwrap_or(defaults.fix_rounds),
             ..defaults
         },
-        limits: Limits::default(),
+        limits: options.limits(),
         sequences: catalog.sequences().unwrap_or(storage::Pid(0)),
     }
 }

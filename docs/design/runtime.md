@@ -371,6 +371,7 @@ Sim::new(seed, Config {
 })
 sim.set_faults(faults)   // from now on; the sector and atomic unit stay
 sim.crash_at(t); sim.run(|rt| ...) -> Finished | Crashed
+rt.crash_after(d)        // inside a run: crash it at now + d, in place of sim.crash_at
 ```
 
 A plan acts on chosen ops, from inside a run or between runs:
@@ -553,6 +554,46 @@ script appends to a key another open transaction has appended to, so
 an engine whose inserts wait on a conflicting writer never blocks one.
 A serializable database runs each scenario with no anomaly; for write
 skew that means one side aborts.
+
+The simulator's tests run both on the engine's public write path,
+through `adtb_simkit::elle::Elems`: an `adtb::Database` on the
+simulator opened on §7.4's schema with `append` and `read_elems`
+registered, and `Client`, its implementation of the `Database` trait.
+
+```text
+Elems::open(rt, &OpenOptions) -> Result<Elems, OpenError>   // options: elle::options()
+Elems::{begin(Kind) -> Result<Txn, Error>, append(&mut Txn, k, e) -> Result<(), Error>,
+        read(&mut Txn, k) -> Result<Vec<i64>, Error>, lists(keys) -> Vec<Vec<i64>>,
+        verify() -> Vec<String>, database()}
+Kind::{ReadWrite, ReadOnly, Deferrable}; Client(&Elems): adtb_isolation::Database
+elle::aborted(Error) -> Aborted
+elle::created() -> BTreeMap<String, Vec<u8>>
+elle::simulate_with(seed, &OpenOptions, body: FnOnce(&SimRuntime, &Arc<Elems>) -> T) -> T
+elle::simulate(seed, body) -> T
+```
+
+Preconditions:
+
+- `simulate_with`'s options create the file `elle::options()` creates.
+
+Postconditions:
+
+- `begin(kind)` begins an interactive transaction: `ReadOnly` as
+  read-only, `Deferrable` as read-only and deferrable, `ReadWrite` as
+  neither. `Client::begin` begins a `ReadWrite` one.
+- `append(k, e)` calls the registered `append` in the transaction;
+  `read(k)` calls `read_elems` and returns the elements ordered by
+  `pos`, the transaction's own appends included. Each returns the
+  engine's error as it is.
+- `aborted` maps a serialization failure and a violation of
+  `unique (k, pos)` to `Aborted` and panics at any other error.
+  `Client`'s operations and its commit fail through it, so two appends
+  at one position of a list leave at most one of them committed.
+- `created` returns the files of a new workload database as
+  `elle::options()` creates it, built once per process.
+- `simulate_with` runs `body` in a simulated process of `seed` over
+  those files, opened with the options, then panics when `verify`
+  finds anything; `simulate` does so with `elle::options()`.
 
 ## 7. Notes for the implementation
 

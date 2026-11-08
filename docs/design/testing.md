@@ -24,8 +24,8 @@ TxnProbe::of(&Transactions<R>) -> TxnProbe<'_, R>
 
 | Entry | Observations |
 | --- | --- |
-| `Testing` | `next_xid`, `commit_log_damage`, `charged` (the vacuum pacer's steps), `rebuild_waits`, `vacuum_yields`, `reindex_threads`, `scrub` (the saved cursor), `held_findings` |
-| `Probe` | `marks`, `marked`, `refusals`, `records`, `damage_in_log`, `logged_commits`, `appended`, `durable`, `checkpoint`, `dirty`, `walks`, `page`, `page_size`, `mapped_to`, `on_history` |
+| `Testing` | `next_xid`, `commit_log_damage`, `charged` (the vacuum pacer's steps), `rebuild_waits`, `vacuum_yields`, `tracked` (the transactions the serializer tracks), `snapshot` (the snapshot a transaction reads, `None` once it has ended), `reindex_threads`, `scrub` (the saved cursor), `held_findings` |
+| `Probe` | `marks`, `marked`, `refusals`, `records`, `damage_in_log`, `logged_commits`, `safe_snapshots` (each safe snapshot marker as `(Position, Snapshot)`: the commit position it covers and its snapshot), `appended`, `durable`, `checkpoint`, `dirty`, `walks`, `page`, `page_size`, `mapped_to`, `on_history` |
 | `TxnProbe` | `next_xid`, `commit_log_damage` |
 
 Controls, all on `Testing`:
@@ -41,10 +41,12 @@ Controls, all on `Testing`:
 
 `OpenOptions::testing` carries `Knobs`, the settings only a test gives
 an open: `Knobs::without_background_vacuum()` starts no background
-vacuum worker, and `with_segment_size(bytes)` creates a file whose log
+vacuum worker, `with_segment_size(bytes)` creates a file whose log
 segments are `bytes` each, a positive multiple of the 512-byte log
-block, or open fails with an I/O error of kind `InvalidInput`. An open
-of an existing file keeps the segment size it was created with.
+block, or open fails with an I/O error of kind `InvalidInput`, and
+`with_limits(limits)` promotes the serializer's read locks at `limits`
+in place of the defaults. An open of an existing file keeps the segment
+size it was created with.
 
 ## 2. Contract
 
@@ -57,18 +59,21 @@ Postconditions:
   the pager it was made from. The guards `VacuumHold` and `PageHold`
   hold their lock until dropped and expose nothing of it.
 - The observations of `Testing`, `TxnProbe` and `Probe`, except
-  `Probe::page`, `damage_in_log` and `logged_commits`, read memory only
-  and change neither the engine's state nor what a later call returns.
+  `Probe::page`, `damage_in_log`, `logged_commits` and `safe_snapshots`,
+  read memory only and change neither the engine's state nor what a
+  later call returns.
 - `Probe::page`, and every call that reads an object, reads through the
   pager as any reader does: a refused page answers its `PageError`, and
   a read that meets damage records it as any read records it. None of
   them sets a mark.
-- `damage_in_log` and `logged_commits` read the retained log as
-  `verify` does: they pin the log while they read, list its directory
-  and open its segments through the runtime, which records which
-  segments are open and, under the simulator, takes fault draws a
-  later operation would otherwise take. They return nothing when the
-  segments cannot be listed or opened.
+- `damage_in_log`, `logged_commits` and `safe_snapshots` read the
+  retained log as `verify` does: they pin the log while they read, list
+  its directory and open its segments through the runtime, which
+  records which segments are open and, under the simulator, takes fault
+  draws a later operation would otherwise take. `safe_snapshots` first
+  writes and forces every record appended so far. They return nothing when the
+  segments cannot be listed or opened. `safe_snapshots` panics at a
+  marker or a batch of the retained log that does not decode.
 - `marked(object)` holds when the object or the whole database is
   marked, as admission of a call checks it.
 
@@ -220,15 +225,15 @@ heap, an index or the write path.
 ## 5. Harness
 
 `adtb-simkit` holds what the simulator's test binaries share above
-`adtb_sim`: the crash loop, the opens, the component world and byte
-damage.
+`adtb_sim`: the crash loop, the opens, the component world, byte
+damage and the isolation workload over the engine
+([runtime.md §6](runtime.md#6-isolation-histories)).
 
 - A test defines no crash loop, world type or byte-damage helper of its
   own. Every crash loop is `crash_loop`, and every round of it runs the
-  check. Two tests crash a run more than once outside it: the history
-  search of `execution/isolation.rs`, until the isolation search runs
-  the engine (T7), and the damage search, whose crashes are steps of a
-  generated sequence judged after the run.
+  check. One test crashes a run more than once outside it: the damage
+  search, whose crashes are steps of a generated sequence judged after
+  the run.
 - A test opens a database through `open` or a call of
   `Database::open_in` in its own body, and a world through `Storage`. A
   test may call `Database::open_in` and `Sim::crash_at` directly, to
@@ -246,7 +251,8 @@ crash::crash_loop(&mut sim, seed, faults, Rounds::new(count, base, span),
   -> Crashes<T>                                // T: Reopened (adtb_sim::Recovered)
 Crashes::{rounds() -> &[Checked<T>], ledger(), allowed() -> (round, &Violation)..., crashed()}
 Checked::{crashed(), allowed() -> &[Violation], reopened() -> &T}
-Round::crash(body) -> bool; Round::{seed, index, ledger, sim}
+Round::crash(body) -> bool; Round::crash_after_setup(setup, body: FnOnce(rt, T)) -> bool
+Round::{seed, index, ledger, sim}
 Reopened::{allows(&Violation), settle(&Ledger), last()}
 open::{FILE, options(workers), open, opened, reopen}
 fixture::Storage::{create(rt, &Options), reopen(rt, &Layout), layout,
@@ -260,7 +266,9 @@ Postconditions of `crash_loop`:
 
 - Each round runs the workload, which crashes its process through
   `Round::crash` (under `faults`, at `crash_after(seed, round, base,
-  span)`) or ends its run another way through `Round::sim`. The loop
+  span)` from the run's start), through `Round::crash_after_setup` (the
+  same, counted from when `setup` returns, so no crash falls in
+  `setup`), or ends its run another way through `Round::sim`. The loop
   then runs `recovered` as a process under no faults, with `faults`'s
   sector and atomic unit, and fails, naming the seed and round, unless
   it finishes.

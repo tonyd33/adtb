@@ -168,6 +168,32 @@ impl<R: Runtime> Pager<R> {
         damage
     }
 
+    /// Returns each safe snapshot record in the retained log, in log order: the commit position
+    /// it covers and its snapshot's bytes. None when its segments cannot be listed or opened.
+    ///
+    /// Panic at a batch whose records do not decode.
+    #[cfg(feature = "testing")]
+    pub(crate) fn logged_safe_snapshots(&self) -> Vec<(Position, Vec<u8>)> {
+        let mut markers = Vec::new();
+        let Ok((_pin, mut img)) = self.load_log() else {
+            return markers;
+        };
+        let block = img.block;
+        if let Some(first) = img.first_batch() {
+            scan(&mut img, first, Mode::Verify, |batch, _| {
+                let records = batch
+                    .records(block)
+                    .expect("a batch of the retained log decodes");
+                for (_, record) in records {
+                    if let Record::SafeSnapshot { at, snapshot } = record {
+                        markers.push((at, snapshot));
+                    }
+                }
+            });
+        }
+        markers
+    }
+
     /// Returns the transaction of every commit record in the retained log from the batch holding
     /// `since`, or from its first whole batch when that batch begins before its first
     /// segment, and what each record there of one of `pages` continues from.
