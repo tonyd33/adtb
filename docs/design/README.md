@@ -92,7 +92,7 @@ design files of their own.
 | The test oracle | `adtb-reference` | test harness, `adtb-conformance` | [oracle.md](oracle.md) | `adtb_reference`: `Interpreter`, `Value` |
 | Engine observations for tests | `adtb` under the `testing` feature | the tests of `adtb-sim` | [testing.md](testing.md) | `adtb::testing`: `Testing`, `Probe` |
 | Crash loop, failure searches and byte damage | `adtb-harness` | the tests of `adtb-sim` and `adtb` | [testing.md §5](testing.md#5-harness) | `adtb_harness`: `crash::crash_loop`, `search`, `damage::DataFile` |
-| Opens, rows and worlds | `adtb-simkit` | the tests of `adtb-sim` | [testing.md §5](testing.md#5-harness) | `adtb_simkit`: `open`, `load`, `fixture::Storage` |
+| Opens and rows | `adtb-simkit` | the tests of `adtb-sim` | [testing.md §5](testing.md#5-harness) | `adtb_simkit`: `open`, `load` |
 
 Rulings: project/arch/crates/by-boundary
 

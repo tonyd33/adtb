@@ -1,20 +1,20 @@
-use adtb::testing::TxnProbe;
+use crate::testing::TxnProbe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
-use adtb::mvcc::{CommitLog, Scope, Snapshot, SnapshotId, Status, Transactions, Xid};
-use adtb::storage::{Edit, HEADER_LEN, PageKind, Pager, Pid};
-use adtb::verify::Inventory;
+use crate::mvcc::{CommitLog, Scope, Snapshot, SnapshotId, Status, Transactions, Xid};
+use crate::storage::{Edit, HEADER_LEN, PageKind, Pager, Pid};
+use crate::verify::Inventory;
 use adtb_sim::{Config, Fate, Finding, Ledger, Recovered, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 use adtb_testkit::Rng;
 
+use crate::test_world as harness;
+use crate::test_world::recovery;
 use adtb_harness::crash;
 use adtb_harness::draw;
 use adtb_harness::seeds;
-use adtb_simkit::harness;
-use adtb_simkit::recovery;
 
 use adtb_harness::damage::{DataFile, Files};
 use crash::{Reopened, Rounds, crash_loop};
@@ -289,7 +289,7 @@ struct World {
 #[derive(Debug, Default)]
 struct Report {
     statuses: BTreeMap<Xid, Status>,
-    findings: Vec<adtb::storage::Finding>,
+    findings: Vec<crate::storage::Finding>,
     /// What the whole-file `verify` finds, leaked pages freed first.
     structure: Vec<String>,
     /// Each way the commit log disagrees with the log's commit records or the ids handed out.
@@ -573,7 +573,7 @@ fn a_damaged_status_page_quarantines_the_database() {
             .commit_log_damage()
             .expect("the database is quarantined");
         assert_eq!(status, damage.pid);
-        let refused = adtb::mvcc::Error::Corrupt(damage);
+        let refused = crate::mvcc::Error::Corrupt(damage);
         assert_eq!(Err(refused), txns.begin(&pager));
         assert_eq!(Some(refused), txns.take(Scope::Every).err());
         assert_eq!(Err(damage), txns.status(&pager, Xid(1)));
@@ -583,7 +583,7 @@ fn a_damaged_status_page_quarantines_the_database() {
             commit_log: Some(&clog),
             ..Inventory::default()
         };
-        let report = adtb::verify::verify(&pager, &inventory);
+        let report = crate::verify::verify(&pager, &inventory);
         assert!(
             !report.is_clean(),
             "verify reports the damaged status page: {report:?}"

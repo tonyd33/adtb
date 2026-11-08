@@ -13,8 +13,11 @@ unit tests.
 The harness the simulator's tests share is two crates (§5):
 `adtb-harness`, which names no engine type, holds the crash loop,
 failure searches, byte damage and runs of a simulation; `adtb-simkit`
-holds the opens, the loading of rows, component worlds and the
-isolation workload over the engine.
+holds the opens, the loading of rows, the pager options
+`harness::{PAGE, NAME, options}` and the isolation workload over the
+engine. The component world, a pager and structures a test builds
+without a catalog, is `adtb`'s own test module `test_world`, for its
+unit tests.
 
 ## 1. Entry points
 
@@ -252,9 +255,15 @@ that names no engine type: the crash loop, the failure searches, byte
 damage over the file layout and runs of a simulation. It depends on
 `adtb-sim`, `adtb-sys` and `adtb-testkit` only, so `adtb`'s unit tests
 use it as `adtb-sim`'s tests do. `adtb-simkit` holds what names the
-engine: the opens, the loading of rows, the component world and the
-isolation workload over the engine
-([runtime.md §6](runtime.md#6-isolation-histories)).
+engine: the opens, the loading of rows and the isolation workload
+over the engine ([runtime.md §6](runtime.md#6-isolation-histories)).
+Tests that build a pager or a structure below the public API and
+`adtb::testing` are of two kinds. Unit tests of `adtb`, beside the
+layer they test, build their world with `test_world`. Tests of
+`adtb-sim` that still build one (in the storage, execution, export,
+maintenance and server binaries) open the engine's pager themselves
+over `adtb_simkit::harness::{PAGE, NAME, options}`, and simkit's
+`load::WritePath` builds its pager the same way.
 
 - The crash loop recognises a fatal I/O failure by the
   `adtb_sys::runtime::FatalIo` payload.
@@ -283,7 +292,8 @@ isolation workload over the engine
   test may call `Database::open_in` and `Sim::crash_at` directly, to
   test the public open and the simulator.
 - Local open helpers remain. `work/tools/structure-allowlist` counts
-  them by name: functions taking parameters whose name begins or ends
+  them, in `adtb-sim`'s tests and in `adtb`'s unit-test files (`tests.rs`,
+  `*_tests.rs`, `tests/`) and `test_world`, by name: functions taking parameters whose name begins or ends
   with an `open` form, closures bound to an `open` form, and `fn engine`
   where it opens the engine. A helper under another name is not
   counted. The size products left are counted the same way. The counts
@@ -309,10 +319,8 @@ damage::DataFile::{new(name, page_size), range(page), bytes, page, page_mut,
 `adtb_simkit`:
 
 ```text
-open::{FILE, options(workers), open, opened, reopen}
-fixture::Storage::{create(rt, &Options), reopen(rt, &Layout), layout,
-                   commit_log, large, heap, index, tree, pager, split, parts, verify}
-fixture::Parts::{new, verify}                // a world a test keeps in its own fields
+open::{FILE, options(workers), open, opened}
+harness::{PAGE, NAME, options(pool_frames)}  // a small file's pager options
 load::{open(rt, decls), open_with(rt, decls, &OpenOptions),
        rows_with_noise(&db, &schema, &rows) -> AdHocTransaction,
        committed_noise(&db, &schema, &rows), running_noise(&db, &schema, &rows),
@@ -321,6 +329,18 @@ load::{open(rt, decls), open_with(rt, decls, &OpenOptions),
 load::WritePath::{of(rt, &fixture, pool), loaded(rt, &fixture, pool), reopen(rt, pool),
                   db, schema, program, into_db, ty, prepare}
 api::{run, once}; harness::finished           // the process calls, re-exported
+```
+
+`adtb`'s `test_world`, under `cfg(test)`:
+
+```text
+PAGE, NAME, options(pool_frames), reopen(rt, &Options) -> Result<Pager, OpenError>
+fixture::Storage::{create(rt, &Options), reopen(rt, &Layout), layout,
+                   commit_log, large, heap, index, tree, pager, split, parts, verify}
+fixture::Parts::{new, verify}                // a world a test keeps in its own fields
+recovery::verify_after_crash(&pager, &inventory)
+rows::{row_type, key_of, pair, replay, Op, Rows, Live}
+finished                                     // adtb_harness::process::finished
 ```
 
 Postconditions of `crash_loop`:

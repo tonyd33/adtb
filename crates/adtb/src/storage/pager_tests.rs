@@ -1,12 +1,12 @@
-use adtb::testing::Probe;
+use crate::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use adtb::runtime::{Entropy, IoError, OpKind, Threads};
-use adtb::storage::{
+use crate::runtime::{Entropy, IoError, OpKind, Threads};
+use crate::storage::{
     Damage, Edit, Finding, HEADER_LEN, LATCHES_PER_THREAD, LogFinding, LogProblem, Lsn, OpenError,
     Options, PageError, PageKind, Pager, Pid,
 };
@@ -964,7 +964,7 @@ fn page_changed_past_log_end(layout: Layout, change: bool) -> (Sim, Pid, Lsn, Ls
     });
     assert_eq!(Outcome::Finished, outcome);
     let files = sim.files();
-    let written = adtb::storage::lsn(DATA.page(&files, pid));
+    let written = crate::storage::lsn(DATA.page(&files, pid));
     let past = Lsn(1 << 40);
     (planted(files, pid, past), pid, written, past)
 }
@@ -973,7 +973,7 @@ fn page_changed_past_log_end(layout: Layout, change: bool) -> (Sim, Pid, Lsn, Ls
 fn planted(mut files: BTreeMap<String, Vec<u8>>, pid: Pid, lsn: Lsn) -> Sim {
     let page = DATA.page_mut(&mut files, pid);
     page[..8].copy_from_slice(&lsn.0.to_le_bytes());
-    adtb::storage::seal(pid, page);
+    crate::storage::seal(pid, page);
     Sim::with_files(1, Config::default(), files)
 }
 
@@ -1094,7 +1094,7 @@ fn a_page_whose_only_records_are_in_the_lost_log_tail_is_an_unlogged_write() {
     }
     let pages = (DATA.bytes(&files).len() / PAGE) as u64;
     let past: Vec<(Pid, Lsn)> = (Pid::FIRST_DATA.0..pages)
-        .map(|n| (Pid(n), adtb::storage::lsn(DATA.page(&files, Pid(n)))))
+        .map(|n| (Pid(n), crate::storage::lsn(DATA.page(&files, Pid(n)))))
         .filter(|&(_, lsn)| lsn >= cut)
         .collect();
     assert!(past.iter().any(|&(p, _)| p == pid), "{past:?}");
@@ -1211,7 +1211,7 @@ fn allocation_reuses_a_damaged_free_page_without_reading_it() {
         let pid = p.allocate(1, PageKind::HeapSlotted, 7);
         let read = p
             .read(next)
-            .map(|g| (adtb::storage::kind(&g), adtb::storage::owner(&g), g[77]));
+            .map(|g| (crate::storage::kind(&g), crate::storage::owner(&g), g[77]));
         let of_next = |f: &Finding| matches!(f, Finding::Page { pid, .. } if *pid == next);
         let found: Vec<Finding> = p.verify().findings.into_iter().filter(of_next).collect();
         (pid, read, found)
@@ -1609,8 +1609,8 @@ fn a_crash_never_separates_an_allocation_from_its_link() {
                 }
                 for &pid in &links {
                     let page = p.read(pid).unwrap();
-                    let made = adtb::storage::kind(&page) == PageKind::HeapSlotted as u16
-                        && adtb::storage::owner(&page) == 9
+                    let made = crate::storage::kind(&page) == PageKind::HeapSlotted as u16
+                        && crate::storage::owner(&page) == 9
                         && page[HEADER_LEN] == 0xab
                         && page[HEADER_LEN + 1..].iter().all(|&b| b == 0);
                     if !made {
@@ -1660,7 +1660,7 @@ fn guards_allocate_and_link_in_one_batch() {
         let pid = new.page(3, PageKind::IndexLeaf, 4).unwrap();
         assert_eq!(
             PageKind::IndexLeaf as u16,
-            adtb::storage::kind(&new.image(pid))
+            crate::storage::kind(&new.image(pid))
         );
         let mut parent = p.exclusive(index).unwrap();
         let mut child = new.latch(pid);
@@ -1682,7 +1682,7 @@ fn guards_allocate_and_link_in_one_batch() {
     assert!(lsns.contains(&pid));
     with_pager(&mut sim, |p| {
         assert_eq!(BTreeSet::from([pid]), linked(p, index));
-        assert_eq!(3, adtb::storage::format(&p.read(pid).unwrap()));
+        assert_eq!(3, crate::storage::format(&p.read(pid).unwrap()));
     });
 }
 
@@ -1760,7 +1760,7 @@ fn flush_first_under(
         p.update(&[pid], |v| v[0][HEADER_LEN] ^= 1).unwrap();
     }
     p.flush_pages(usize::MAX);
-    let before = adtb::storage::lsn(&p.read(pages[0]).unwrap());
+    let before = crate::storage::lsn(&p.read(pages[0]).unwrap());
     let changed = p.update(&[pages[0]], |v| v[0][HEADER_LEN + 1] = 7).unwrap();
     p.flush_log();
     rt.set_faults(faults);

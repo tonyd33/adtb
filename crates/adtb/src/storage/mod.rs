@@ -27,9 +27,25 @@ mod recovery;
 mod verify;
 
 #[cfg(test)]
+mod checkpointer_tests;
+#[cfg(test)]
+mod damage_log_tests;
+#[cfg(test)]
+mod damage_race_tests;
+#[cfg(test)]
 mod evidence_tests;
 #[cfg(test)]
 mod file_damage_tests;
+#[cfg(test)]
+mod in_session_tests;
+#[cfg(test)]
+mod incarnation_tests;
+#[cfg(test)]
+mod pager_tests;
+#[cfg(test)]
+mod real_file_tests;
+#[cfg(test)]
+mod recycle_tests;
 #[cfg(test)]
 mod tests;
 

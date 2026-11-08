@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 
-use adtb::heap::{FieldType, Heap};
-use adtb::key::{Scalar, Tid, Value};
+use crate::heap::{FieldType, Heap};
+use crate::key::{Scalar, Tid, Value};
 
 pub const EMAIL: usize = 0;
 pub const APPLE: usize = 2;

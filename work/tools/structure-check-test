@@ -108,6 +108,23 @@ rm "$adtb/exec/new.rs"
 printf '#![expect(clippy::disallowed_methods, reason = "r")]\n#[expect(clippy::disallowed_methods, reason = "r")]\nfn t() {}\n' >"$adtb/exec/b_tests.rs"
 refuses 'structure-check: disallowed_methods test crates/adtb/src/exec/b_tests.rs has 2, allowed 1: remove the sites, do not raise the allowlist' 'crate_fields prod 5 crates/adtb/src/exec/a.rs' "${exact[@]:2}"
 
+# An open helper and a page offset count in adtb's unit-test files (`tests.rs`, `*_tests.rs`,
+# `tests/`) and its test world, nested files included, and in no other adtb source.
+mkdir -p "$adtb/heap" "$adtb/plan/tests/deep" "$adtb/test_world/inner"
+helper='fn open_world(rt: u8) {}\nfn at(page: usize) -> usize {\n    page * PAGE\n}\n'
+tested=(heap/x_tests.rs heap/tests.rs plan/tests/deep/case.rs test_world/mod.rs test_world/inner/kit.rs)
+for f in "${tested[@]}" heap/y.rs; do
+  printf '%b' "$helper" >"$adtb/$f"
+done
+counts=$("$checker" --counts "$scratch")
+for f in "${tested[@]}"; do
+  for row in sim_test_opens sim_test_offsets; do
+    grep -qxF "$row test 1 crates/adtb/src/$f" <<<"$counts" || fail "not counted: $row in $f: $counts"
+  done
+done
+! grep -q 'sim_test_\w* .* crates/adtb/src/heap/y.rs' <<<"$counts" || fail "counted adtb source outside its tests: $counts"
+rm -r "$adtb/heap" "$adtb/plan" "$adtb/test_world"
+
 # A malformed allowlist line fails.
 printf '%s\n' 'meta prod many crates/adtb/src/exec/a.rs' >work/tools/structure-allowlist
 if "$checker" "$scratch" >out.txt 2>&1; then

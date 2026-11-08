@@ -17,6 +17,10 @@ mod vm;
 #[cfg(test)]
 mod claims_tests;
 #[cfg(test)]
+mod heap_tests;
+#[cfg(test)]
+mod heap_threads_tests;
+#[cfg(test)]
 mod tests;
 
 pub use dir::max_fanout;

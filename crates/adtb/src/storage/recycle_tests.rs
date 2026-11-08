@@ -1,18 +1,18 @@
 //! Recycling the log: what it removes, what it keeps, and the page LSN map it folds into first.
 
-use adtb::testing::Probe;
+use crate::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use adtb::runtime::{IoError, OpKind};
-use adtb::storage::{
+use crate::runtime::{IoError, OpKind};
+use crate::storage::{
     self, BackupRun, Damage, Envelope, Finding, HEADER_LEN, Lsn, Options, PageError, PageKind,
     Pager, Pid, Quarantine,
 };
-use adtb::verify::{self, Inventory, Problem};
+use crate::test_world as harness;
+use crate::verify::{self, Inventory, Problem};
 use adtb_harness::damage::{DataFile, Files};
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
-use adtb_simkit::harness;
 use adtb_testkit::profile::every_case;
 
 const PAGER: DataFile = DataFile::new(harness::NAME, harness::PAGE);

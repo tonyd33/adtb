@@ -105,7 +105,8 @@ else. A variable holding a command does not word-split; define a
 function. `grep` is ugrep. Your workspace is jj only: `git` fails
 there, so use `jj diff` and `jj log`. Engine integration tests are in
 `crates/adtb-sim/tests`, one test binary per area directory (`storage`, `execution`,
-`server`, `maintenance`, `export`, `scripted`); `crates/adtb` has unit tests only. tix:
+`server`, `maintenance`, `export`, `scripted`); `crates/adtb` has unit tests only, and its
+component tests over the simulator sit beside their layer as `MODULE/NAME_tests.rs`. tix:
 `direnv exec MAIN tix -C $PWD/work/issues CMD` from your workspace root,
 where MAIN is the main checkout (a later `-C` resolves against the
 first).

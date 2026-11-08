@@ -3,24 +3,24 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use adtb::batch::{Batch, BatchBuilder, Column, Schema};
-use adtb::heap::{
+use crate::batch::{Batch, BatchBuilder, Column, Schema};
+use crate::heap::{
     CtorType, Error, Fate, FieldType, Flags, Header, Heap, HeapNo, Link, Updated, max_fanout, walk,
 };
-use adtb::key::{CtorId, Scalar, Tid, Value};
-use adtb::runtime::{Entropy, Threads};
-use adtb::storage::{self, Options, PageKind, Pager, Pid};
-use adtb::verify::{Inventory, Sum};
+use crate::key::{CtorId, Scalar, Tid, Value};
+use crate::runtime::{Entropy, Threads};
+use crate::storage::{self, Options, PageKind, Pager, Pid};
+use crate::verify::{Inventory, Sum};
 use adtb_sim::{Config, Fate as LedgerFate, Ledger, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 
+use crate::test_world as harness;
+use crate::test_world::recovery;
+use crate::test_world::rows;
 use adtb_harness::crash;
 use adtb_harness::seeds;
-use adtb_simkit::harness;
-use adtb_simkit::recovery;
-use adtb_simkit::rows;
 
-use adtb_simkit::fixture::{Layout, Parts, Storage};
+use crate::test_world::fixture::{Layout, Parts, Storage};
 use crash::{Reopen, Rounds, crash_loop};
 use harness::{PAGE, finished, options};
 use recovery::verify_after_crash;
@@ -466,9 +466,9 @@ fn rows_too_large_for_a_page_are_refused() {
         };
         let wide = vec![scalar(Scalar::Decimal(0)); 300];
         over(Heap::create(pager, 20, wide.clone(), large).map(|_| ()));
-        over(adtb::heap::fits(pager.page_size(), wide));
+        over(crate::heap::fits(pager.page_size(), wide));
         let narrow = vec![scalar(Scalar::Decimal(0)); 100];
-        assert_eq!(Ok(()), adtb::heap::fits(pager.page_size(), narrow));
+        assert_eq!(Ok(()), crate::heap::fits(pager.page_size(), narrow));
         let empties = vec![scalar(Scalar::Text); 4000];
         over(Heap::create(pager, 22, empties, large).map(|_| ()));
         let many = vec![scalar(Scalar::Text); 400];
@@ -632,11 +632,11 @@ fn writes_between_all_visible_pages_of_deep_directories_stay_within_the_latch_bo
             }],
             ..Inventory::default()
         };
-        let report = adtb::verify::verify(&db.pager, &inventory);
+        let report = crate::verify::verify(&db.pager, &inventory);
         let wrong: Vec<_> = report
             .findings
             .iter()
-            .filter(|f| !matches!(f.problem, adtb::verify::Problem::Overcounted { .. }))
+            .filter(|f| !matches!(f.problem, crate::verify::Problem::Overcounted { .. }))
             .collect();
         assert!(wrong.is_empty(), "{wrong:#?}");
     });
@@ -931,7 +931,7 @@ fn a_conversion_moving_many_values_out_of_line_fits_a_pool_of_a_few_frames() {
             NOTES as usize,
             heap.out_of_line(&pager).unwrap().unwrap().len()
         );
-        let report = adtb::verify::verify(&pager, &notes_inventory(&heap));
+        let report = crate::verify::verify(&pager, &notes_inventory(&heap));
         assert!(report.findings.is_empty(), "{:#?}", report.findings);
     });
 }
@@ -965,7 +965,11 @@ fn a_crash_while_a_conversion_counts_its_values_leaves_no_count_too_low() {
             |rt, _| {
                 let (pager, heap) = open(rt);
                 let inventory = notes_inventory(&heap);
-                left += usize::from(!adtb::verify::verify(&pager, &inventory).findings.is_empty());
+                left += usize::from(
+                    !crate::verify::verify(&pager, &inventory)
+                        .findings
+                        .is_empty(),
+                );
                 let mut problems = verify_after_crash(&pager, &inventory);
                 let mut rows = 0;
                 heap.scan(&pager, |v| {
@@ -990,10 +994,10 @@ fn a_crash_while_a_conversion_counts_its_values_leaves_no_count_too_low() {
 
 /// Returns whether `pager` holds a directory entry promising less than its child holds.
 fn unsettled(pager: &Pager<SimRuntime>, inventory: &Inventory) -> bool {
-    adtb::verify::verify(pager, inventory)
+    crate::verify::verify(pager, inventory)
         .findings
         .iter()
-        .any(|f| matches!(f.problem, adtb::verify::Problem::Unsettled(_)))
+        .any(|f| matches!(f.problem, crate::verify::Problem::Unsettled(_)))
 }
 
 #[test]

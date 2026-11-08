@@ -6,7 +6,6 @@ mod constraints;
 mod create;
 mod derived_index;
 mod exec;
-mod history;
 mod isolation;
 mod key_renames;
 mod loads;

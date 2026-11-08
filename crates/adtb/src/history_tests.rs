@@ -1,23 +1,23 @@
-use adtb::testing::Probe;
+use crate::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use adtb::btree::{BTree, Index};
-use adtb::heap::{FieldType, Heap, LargeStore};
-use adtb::history::{self, History};
-use adtb::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
-use adtb::mvcc::{Marker, Past, PastError, Scope, Transactions};
-use adtb::runtime::Threads;
-use adtb::storage::{Options, Pager, Pid, Position};
-use adtb::vacuum::{self, Report, Sum};
-use adtb::verify::{self, Inventory};
+use crate::btree::{BTree, Index};
+use crate::heap::{FieldType, Header, Heap, HeapNo, LargeStore, Version, walk};
+use crate::history::History;
+use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
+use crate::mvcc::{Marker, Past, PastError, Scope, Transactions};
+use crate::runtime::{Runtime, Threads};
+use crate::storage::{Options, PageError, Pager, Pid, Position};
+use crate::vacuum::{self, Error, Report, Sum};
+use crate::verify::{self, Inventory};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 
-use adtb_simkit::harness;
-use adtb_simkit::recovery;
+use crate::test_world as harness;
+use crate::test_world::recovery;
 
 use harness::{finished, options};
 use recovery::verify_after_crash;
@@ -335,7 +335,7 @@ impl Db {
     fn scan_at(&self, marker: &Marker) -> State {
         let mut heaps = vec![&self.past_heap];
         heaps.extend(&self.heap);
-        let rows = history::rows(&self.pager, &self.txns, marker, &heaps).expect("rows");
+        let rows = rows(&self.pager, &self.txns, marker, &heaps).expect("rows");
         let mut out = State::new();
         for row in rows {
             let (k, v) = pair(&row);
@@ -350,7 +350,7 @@ impl Db {
     /// Returns the value a read of the past at `at` finds for `k`, probing by key.
     fn probe_at(&self, at: Position, k: i64) -> Option<i64> {
         let marker = self.txns.pin(&self.pager, at, self.upto()).expect("pin");
-        let found = history::probe(
+        let found = probe(
             &self.pager,
             &self.txns,
             &marker,
@@ -375,7 +375,7 @@ impl Db {
         let history = self.history();
         let mut out = State::new();
         for k in keys {
-            let found = history::probe(
+            let found = probe(
                 &self.pager,
                 &self.txns,
                 &marker,
@@ -618,7 +618,7 @@ fn versions_past_the_window_are_freed_and_reads_there_are_unavailable() {
         check_reads(&db, &recent, "within the window");
         let after = Position {
             epoch: db.upto().epoch,
-            lsn: adtb::storage::Lsn(db.upto().lsn.0 + 1),
+            lsn: crate::storage::Lsn(db.upto().lsn.0 + 1),
         };
         assert_eq!(
             Err(PastError::Unavailable {
@@ -632,7 +632,7 @@ fn versions_past_the_window_are_freed_and_reads_there_are_unavailable() {
         let cutoff = db.txns.cutoff().expect("a cutoff");
         for (tid, h, _) in history {
             let t = record
-                .committed_at(&db.pager, adtb::mvcc::Xid(h.xmax))
+                .committed_at(&db.pager, crate::mvcc::Xid(h.xmax))
                 .expect("ledger");
             assert!(
                 t.is_some_and(|t| t >= cutoff),
@@ -1070,7 +1070,7 @@ fn a_moved_version_keeps_its_out_of_line_values_until_the_window_passes() {
             "the current heap's copy is swept: {report:?}"
         );
         let marker = txns.pin(&pager, at, at).expect("pin");
-        let rows = history::rows(&pager, &txns, &marker, &[&heap, &past_heap]).expect("rows");
+        let rows = rows(&pager, &txns, &marker, &[&heap, &past_heap]).expect("rows");
         txns.unpin(&marker);
         assert_eq!(vec![row], rows);
         let until = pager.wall() + window * 2;
@@ -1205,21 +1205,21 @@ fn a_marker_a_read_of_the_past_used_survives_a_crash() {
 
 #[test]
 fn a_history_heap_write_that_fails_on_a_page_is_a_page_error() {
-    let damaged = adtb::storage::PageError {
+    let damaged = PageError {
         pid: Pid(7),
-        damage: adtb::storage::Damage::Unreadable,
+        damage: crate::storage::Damage::Unreadable,
     };
-    let e = adtb::write::Error::from(vacuum::Error::Heap(adtb::heap::Error::Page(damaged)));
+    let e = crate::write::Error::from(Error::Heap(crate::heap::Error::Page(damaged)));
     assert!(
-        matches!(e, adtb::write::Error::Page(p) if p == damaged),
+        matches!(e, crate::write::Error::Page(p) if p == damaged),
         "{e:?}"
     );
-    let e = adtb::write::Error::from(vacuum::Error::Heap(adtb::heap::Error::TooLarge {
+    let e = crate::write::Error::from(Error::Heap(crate::heap::Error::TooLarge {
         len: 9000,
         limit: 4000,
     }));
     assert_eq!(
-        adtb::write::Error::from(adtb::write::Broken::VacuumTooLarge {
+        crate::write::Error::from(crate::write::Broken::VacuumTooLarge {
             len: 9000,
             limit: 4000
         }),
@@ -1247,15 +1247,15 @@ fn store_scan_sees_history_pages_created_during_its_current_walk() {
         );
         let heap = Arc::new(db.heap.take().expect("current heap"));
         let past = Arc::new(db.past_heap);
-        let stored = |heap: Arc<Heap>| adtb::exec::StoredHeap {
+        let stored = |heap: Arc<Heap>| crate::exec::StoredHeap {
             heap,
             row: row_type(),
-            sum: vec![adtb::heap::HeapNo(HEAP)],
+            sum: vec![HeapNo(HEAP)],
         };
-        let id = adtb::plan::HeapId(u64::from(HEAP));
-        let store = adtb::exec::Store {
+        let id = crate::plan::HeapId(u64::from(HEAP));
+        let store = crate::exec::Store {
             pager: db.pager.clone(),
-            reads: Arc::new(adtb::exec::AtSnapshot {
+            reads: Arc::new(crate::exec::AtSnapshot {
                 rt,
                 pager: db.pager.clone(),
                 txns: Arc::new(db.txns),
@@ -1265,13 +1265,13 @@ fn store_scan_sees_history_pages_created_during_its_current_walk() {
             }),
             heaps: BTreeMap::from([(id, stored(heap.clone()))]),
             indexes: BTreeMap::new(),
-            history: adtb::exec::Histories {
+            history: crate::exec::Histories {
                 heaps: BTreeMap::from([(id, stored(past.clone()))]),
                 indexes: BTreeMap::new(),
             },
             past: None,
         };
-        let grant = adtb::exec::Budget::new(1 << 30)
+        let grant = crate::exec::Budget::new(1 << 30)
             .admit(64 << 20)
             .expect("a grant fits");
         let mut moved = false;
@@ -1293,9 +1293,9 @@ fn store_scan_sees_history_pages_created_during_its_current_walk() {
                         Pid(last.page()),
                         |_, h| {
                             Ok(if h.xmax != 0 {
-                                adtb::heap::Fate::Remove
+                                crate::heap::Fate::Remove
                             } else {
-                                adtb::heap::Fate::Keep
+                                crate::heap::Fate::Keep
                             })
                         },
                         &[last.slot()],
@@ -1319,4 +1319,92 @@ fn store_scan_sees_history_pages_created_during_its_current_walk() {
             .expect("stopped scan");
         assert_eq!(calls, 1);
     });
+}
+
+fn sees<R: Runtime>(
+    txns: &Transactions<R>,
+    pager: &Pager<R>,
+    marker: &Marker,
+    h: &Header,
+) -> Result<bool, PageError> {
+    marker
+        .snapshot
+        .sees(None, h.xmin, h.xmax, |x| txns.status(pager, x))
+}
+
+/// Returns the rows of a constructor as the safe snapshot of `marker` reads them, from `heaps`,
+/// its current heap, while it has one, and its history heap, each row once.
+///
+/// Precondition: `marker` is held by [`Transactions::pin`].
+fn rows<R: Runtime>(
+    pager: &Pager<R>,
+    txns: &Transactions<R>,
+    marker: &Marker,
+    heaps: &[&Heap],
+) -> Result<Vec<Vec<Value>>, PageError> {
+    let mut seen: BTreeMap<(u64, u64), Vec<Vec<Value>>> = BTreeMap::new();
+    let mut versions: Vec<Version> = Vec::new();
+    for heap in heaps {
+        heap.scan(pager, |v| versions.push(v))?;
+    }
+    let mut out = Vec::new();
+    for v in versions {
+        if !sees(txns, pager, marker, &v.header)? {
+            continue;
+        }
+        let same = seen.entry((v.header.xmin, v.header.xmax)).or_default();
+        if same.contains(&v.row) {
+            continue;
+        }
+        same.push(v.row.clone());
+        out.push(v.row);
+    }
+    Ok(out)
+}
+
+/// Returns the row of constructor `ctor` keyed `key` as the safe snapshot of `marker` reads it:
+/// the version reached from an entry of `index`, the current key index, through `current` and
+/// the other heaps of `sum`, the heaps of its relation, or else the version an entry of `into`'s
+/// history key index names.
+///
+/// Precondition: `marker` is held by [`Transactions::pin`].
+fn probe<R: Runtime>(
+    pager: &Pager<R>,
+    txns: &Transactions<R>,
+    marker: &Marker,
+    ctor: CtorId,
+    (current, sum, index): (&Heap, &[HeapNo], &Index),
+    into: &History,
+    key: &[Value],
+) -> Result<Option<Vec<Value>>, Error> {
+    for e in index.probe_ctor(pager, key, ctor)? {
+        let mut failed = None;
+        let link = walk(pager, current.id(), sum, e.tid, |l| {
+            sees(txns, pager, marker, &l.header).unwrap_or_else(|err| {
+                failed = Some(err);
+                true
+            })
+        })?;
+        if let Some(err) = failed {
+            return Err(Error::Page(err));
+        }
+        if let Some(l) = link
+            && l.heap == current.id()
+            && let Some(v) = current.read(pager, l.tid)?
+        {
+            return Ok(Some(v.row));
+        }
+    }
+    let past = into.heap(ctor);
+    for e in into.index.probe(pager, key)? {
+        if e.ctor != ctor {
+            continue;
+        }
+        if let Some(v) = past.read(pager, e.tid)?
+            && sees(txns, pager, marker, &v.header)?
+        {
+            return Ok(Some(v.row));
+        }
+    }
+    Ok(None)
 }

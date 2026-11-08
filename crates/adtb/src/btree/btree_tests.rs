@@ -5,22 +5,22 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 
-use adtb::btree::build::BuildError;
-use adtb::btree::{BTree, Cursor, Error, Index, SumKey, tag_prefix};
-use adtb::key::{
+use crate::btree::build::BuildError;
+use crate::btree::{BTree, Cursor, Error, Index, SumKey, tag_prefix};
+use crate::key::{
     CtorId, CtorType, Dir, Entry, KeySchema, KeyType, OrderKey, Scalar, SumType, Tid, Value,
 };
-use adtb::runtime::{Entropy, OpKind, Runtime, Threads};
-use adtb::storage::{Options, Pager, Pid};
-use adtb::verify::Inventory;
+use crate::runtime::{Entropy, OpKind, Runtime, Threads};
+use crate::storage::{Options, Pager, Pid};
+use crate::verify::Inventory;
 use adtb_sim::{Config, Match, Recording, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 
+use crate::test_world as harness;
+use crate::test_world::recovery;
 use adtb_harness::crash;
 use adtb_harness::draw;
 use adtb_harness::seeds;
-use adtb_simkit::harness;
-use adtb_simkit::recovery;
 
 use crash::{Reopen, Rounds, crash_loop};
 use draw::below;

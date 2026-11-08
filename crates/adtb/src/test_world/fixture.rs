@@ -3,16 +3,15 @@
 
 use std::collections::BTreeSet;
 
-use adtb::btree::{BTree, Index};
-use adtb::heap::{FieldType, Heap, LargeStore};
-use adtb::key::{CtorId, KeySchema};
-use adtb::mvcc::Transactions;
-use adtb::storage::{OpenError, Options, PageError, Pager, Pid};
-use adtb::verify::{Inventory, Sum};
+use crate::btree::{BTree, Index};
+use crate::heap::{FieldType, Heap, LargeStore};
+use crate::key::{CtorId, KeySchema};
+use crate::mvcc::Transactions;
+use crate::storage::{OpenError, Options, PageError, Pager, Pid};
+use crate::verify::{Inventory, Sum};
 use adtb_sim::SimRuntime;
 
-use crate::open;
-use crate::recovery::verify_after_crash;
+use super::recovery::verify_after_crash;
 
 #[derive(Clone, Debug)]
 struct HeapAt {
@@ -44,7 +43,7 @@ pub struct Layout {
 }
 
 /// Why a world did not reopen.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Refused {
     Open(OpenError),
     Page(PageError),
@@ -96,7 +95,7 @@ impl Storage {
 
     /// Reopen the world `layout` describes, recovering its file from the log.
     pub fn reopen(rt: &SimRuntime, layout: &Layout) -> Result<Storage, Refused> {
-        let pager = open::reopen(rt, &layout.options).map_err(Refused::Open)?;
+        let pager = super::reopen(rt, &layout.options).map_err(Refused::Open)?;
         let txns = layout
             .commit_log
             .map(|root| Transactions::open(rt.clone(), &pager, root))
@@ -270,7 +269,7 @@ impl<'a> Parts<'a> {
     }
 
     /// Returns what `verify` finds wrong with the world, as
-    /// [`verify_after_crash`](crate::recovery::verify_after_crash) does, over every structure in
+    /// [`verify_after_crash`](super::recovery::verify_after_crash) does, over every structure in
     /// it: heap `i` as constructor `i` of one sum that every index ranges over.
     pub fn verify(&self) -> Vec<String> {
         let clog = self.txns.map(Transactions::commit_log);
@@ -290,9 +289,9 @@ impl<'a> Parts<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::{finished, options};
-    use crate::rows::row_type;
-    use adtb::key::{Dir, KeyType, Scalar};
+    use crate::key::{Dir, KeyType, Scalar};
+    use crate::test_world::rows::row_type;
+    use crate::test_world::{finished, options};
     use adtb_sim::{Config, Sim};
 
     /// Returns the owner ids of the large stores, heaps, indexes and trees of `s`, and the roots
@@ -330,6 +329,23 @@ mod tests {
             assert!(s.txns.is_some(), "the commit log reopens");
             assert_eq!(made, owners(&s));
             assert_eq!(Vec::<String>::new(), s.verify());
+        });
+    }
+
+    #[test]
+    fn a_world_whose_file_is_gone_is_refused_as_not_found() {
+        let mut made = None;
+        finished(&mut Sim::new(4, Config::default()), |rt| {
+            let s = Storage::create(&rt, &options(16));
+            s.pager.flush_log();
+            made = Some(s.layout());
+        });
+        let layout = made.expect("the world is made");
+        finished(&mut Sim::new(4, Config::default()), |rt| {
+            assert_eq!(
+                Some(Refused::Open(OpenError::NotFound)),
+                Storage::reopen(&rt, &layout).err()
+            );
         });
     }
 }

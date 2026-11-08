@@ -10,6 +10,8 @@ mod wait;
 mod watermark;
 
 #[cfg(test)]
+mod clog_tests;
+#[cfg(test)]
 mod tests;
 
 pub(crate) use clog::Settling;

@@ -1,7 +1,7 @@
 //! Verify a pager's file after a simulated crash.
 
-use adtb::storage::Pager;
-use adtb::verify::{Inventory, repair, verify};
+use crate::storage::Pager;
+use crate::verify::{Inventory, repair, verify};
 use adtb_sim::SimRuntime;
 
 /// Returns what `verify` finds wrong with the file after a crash: every finding `repair` does not

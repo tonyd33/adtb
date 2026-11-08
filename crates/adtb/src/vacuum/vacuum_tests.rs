@@ -3,22 +3,22 @@ use std::ops::{Bound, Range};
 
 use std::sync::{Arc, Mutex};
 
-use adtb::btree::Index;
-use adtb::heap::{FieldType, Flags, HEADER_LEN, Header, Heap, HeapNo, header_at, walk};
-use adtb::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
-use adtb::mvcc::{Scope, Snapshot, SnapshotId, Status, Transactions, Xid};
-use adtb::runtime::Entropy;
-use adtb::storage::{Pager, Pid};
-use adtb::vacuum::{self, Report, Sum};
+use crate::btree::Index;
+use crate::heap::{FieldType, Flags, HEADER_LEN, Header, Heap, HeapNo, header_at, walk};
+use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
+use crate::mvcc::{Scope, Snapshot, SnapshotId, Status, Transactions, Xid};
+use crate::runtime::Entropy;
+use crate::storage::{Pager, Pid};
+use crate::vacuum::{self, Report, Sum};
 use adtb_sim::{Config, Fate, Ledger, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 
+use crate::test_world as harness;
+use crate::test_world::rows;
 use adtb_harness::crash;
 use adtb_harness::seeds;
-use adtb_simkit::harness;
-use adtb_simkit::rows;
 
-use adtb_simkit::fixture::{Layout, Parts, Storage};
+use crate::test_world::fixture::{Layout, Parts, Storage};
 use crash::{Reopen, Rounds, crash_loop};
 use harness::{PAGE, finished, options};
 use rows::{APPLE, EMAIL, Live, Op, Rows, key_of, pair, replay, row_type};

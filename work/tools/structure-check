@@ -57,6 +57,16 @@ count_under() {
   awk -F: -v row="$row" 'NF { print row, $1, $2 }' <<<"$out"
 }
 
+# Print `ROW PATH COUNT` for each unit-test file of adtb (`tests.rs`, `*_tests.rs`, `tests/`,
+# `test_world/`) with matches of pattern $2, passing rg the flags $3...
+count_adtb_tests() {
+  local row=$1 pattern=$2 dir=crates/adtb/src out
+  shift 2
+  [[ -d $dir ]] || return 0
+  out=$(rg --no-ignore --count-matches --no-heading -g 'tests.rs' -g '*_tests.rs' -g '**/tests/**/*.rs' -g '**/test_world/**/*.rs' "$@" -- "$pattern" "$dir" || [[ $? == 1 ]])
+  awk -F: -v row="$row" 'NF { print row, $1, $2 }' <<<"$out"
+}
+
 # Print `ROW PATH COUNT` of the field rows, for files in src directories.
 fields() {
   ((${#roots[@]})) || return 0
@@ -73,10 +83,12 @@ found_counts() {
     count crash_loops '\bfn \w*crash_loop\w*\b'
     count crash_allows '\bfn allows\b'
     count_under sim_test_opens crates/adtb-sim/tests '\bfn ((re)?open(ed|s|ing)?(_\w+)?|\w+_(re)?open(ed|s)?)(<[^>]*>)?\((?!\))|\blet (mut )?(re)?open(ed|s|ing)? = (move )?\||\bfn engine\b[^{;]*\{\s*(let \w+ = )?Engine::open' -P -U
+    count_adtb_tests sim_test_opens '\bfn ((re)?open(ed|s|ing)?(_\w+)?|\w+_(re)?open(ed|s)?)(<[^>]*>)?\((?!\))|\blet (mut )?(re)?open(ed|s|ing)? = (move )?\||\bfn engine\b[^{;]*\{\s*(let \w+ = )?Engine::open' -P -U
     count_under sim_test_damage crates/adtb-sim/tests '\bfn (flip|zeroed|damage|damaged_part)\b'
     count_under sim_test_offsets crates/adtb-sim/tests '\* ?(\w+::|self\.|options\.)?(PAGE\w*|\w*_PAGE|page_size|8192|4096)\b|\b(PAGE\w*|\w*_PAGE|page_size|8192|4096)( as u(size|64))? ?\*|\.get_mut\((\w+::)?(NAME|FILE)\)'
+    count_adtb_tests sim_test_offsets '\* ?(\w+::|self\.|options\.)?(PAGE\w*|\w*_PAGE|page_size|8192|4096)\b|\b(PAGE\w*|\w*_PAGE|page_size|8192|4096)( as u(size|64))? ?\*|\.get_mut\((\w+::)?(NAME|FILE)\)'
   } | awk '
-    { kind = ($2 ~ /(^|\/)tests\// || $2 ~ /(^|\/)tests\.rs$/ || $2 ~ /_tests\.rs$/) ? "test" : "prod"
+    { kind = ($2 ~ /(^|\/)tests\// || $2 ~ /(^|\/)tests\.rs$/ || $2 ~ /_tests\.rs$/ || $2 ~ /\/test_world\//) ? "test" : "prod"
       print $1, kind, $3, $2 }'
 }
 

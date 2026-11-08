@@ -1,20 +1,20 @@
 //! The damage the pager records: each detection a record that a crash keeps or the next open finds
 //! again, folded by checkpoints into the damage list.
 
-use adtb::testing::Probe;
+use crate::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb::mvcc::Transactions;
-use adtb::runtime::{IoError, OpKind, Runtime};
-use adtb::storage::{
+use crate::mvcc::Transactions;
+use crate::runtime::{IoError, OpKind, Runtime};
+use crate::storage::{
     self, Damage, FIRST_EDITABLE, Finding, HEADER_LEN, LogFinding, LogProblem, Options, PageKind,
     Pager, Pid, Quarantine,
 };
+use crate::test_world as harness;
 use adtb_harness::common;
 use adtb_harness::damage::{DataFile, Files};
 use adtb_harness::search;
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimIo, SimRuntime};
-use adtb_simkit::harness;
 use adtb_testkit::profile::assert_reached;
 
 const PAGER: DataFile = DataFile::new(harness::NAME, harness::PAGE);

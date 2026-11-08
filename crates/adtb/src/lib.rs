@@ -7,11 +7,15 @@ pub mod btree;
 pub mod catalog;
 pub mod exec;
 pub mod heap;
-pub mod history;
+mod history;
+#[cfg(test)]
+mod history_tests;
 pub mod key;
 pub mod mvcc;
 pub mod plan;
 pub mod storage;
+#[cfg(test)]
+mod test_world;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod vacuum;

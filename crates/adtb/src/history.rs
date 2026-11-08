@@ -1,11 +1,9 @@
 //! Read and keep a relation's rows as of a past time.
 
-use std::collections::BTreeMap;
-
 use crate::btree::Index;
-use crate::heap::{Fate, Flags, Header, Heap, HeapNo, Version, walk};
+use crate::heap::{Fate, Flags, Header, Heap};
 use crate::key::{CtorId, Entry, Value};
-use crate::mvcc::{Marker, Status, Transactions, Xid};
+use crate::mvcc::{Status, Transactions, Xid};
 use crate::runtime::Runtime;
 use crate::storage::{PageError, Pager};
 use crate::vacuum::{Error, Horizon};
@@ -33,7 +31,7 @@ impl std::fmt::Debug for History<'_> {
 }
 
 impl History<'_> {
-    fn heap(&self, ctor: CtorId) -> &Heap {
+    pub(crate) fn heap(&self, ctor: CtorId) -> &Heap {
         self.heaps
             .iter()
             .find(|(c, _)| *c == ctor)
@@ -158,92 +156,4 @@ fn held<R: Runtime>(
         }
     })?;
     Ok(found)
-}
-
-fn sees<R: Runtime>(
-    txns: &Transactions<R>,
-    pager: &Pager<R>,
-    marker: &Marker,
-    h: &Header,
-) -> Result<bool, PageError> {
-    marker
-        .snapshot
-        .sees(None, h.xmin, h.xmax, |x| txns.status(pager, x))
-}
-
-/// Returns the rows of a constructor as the safe snapshot of `marker` reads them, from `heaps`,
-/// its current heap, while it has one, and its history heap, each row once.
-///
-/// Precondition: `marker` is held by [`Transactions::pin`].
-pub fn rows<R: Runtime>(
-    pager: &Pager<R>,
-    txns: &Transactions<R>,
-    marker: &Marker,
-    heaps: &[&Heap],
-) -> Result<Vec<Vec<Value>>, PageError> {
-    let mut seen: BTreeMap<(u64, u64), Vec<Vec<Value>>> = BTreeMap::new();
-    let mut versions: Vec<Version> = Vec::new();
-    for heap in heaps {
-        heap.scan(pager, |v| versions.push(v))?;
-    }
-    let mut out = Vec::new();
-    for v in versions {
-        if !sees(txns, pager, marker, &v.header)? {
-            continue;
-        }
-        let same = seen.entry((v.header.xmin, v.header.xmax)).or_default();
-        if same.contains(&v.row) {
-            continue;
-        }
-        same.push(v.row.clone());
-        out.push(v.row);
-    }
-    Ok(out)
-}
-
-/// Returns the row of constructor `ctor` keyed `key` as the safe snapshot of `marker` reads it:
-/// the version reached from an entry of `index`, the current key index, through `current` and
-/// the other heaps of `sum`, the heaps of its relation, or else the version an entry of `into`'s
-/// history key index names.
-///
-/// Precondition: `marker` is held by [`Transactions::pin`].
-pub fn probe<R: Runtime>(
-    pager: &Pager<R>,
-    txns: &Transactions<R>,
-    marker: &Marker,
-    ctor: CtorId,
-    (current, sum, index): (&Heap, &[HeapNo], &Index),
-    into: &History,
-    key: &[Value],
-) -> Result<Option<Vec<Value>>, Error> {
-    for e in index.probe_ctor(pager, key, ctor)? {
-        let mut failed = None;
-        let link = walk(pager, current.id(), sum, e.tid, |l| {
-            sees(txns, pager, marker, &l.header).unwrap_or_else(|err| {
-                failed = Some(err);
-                true
-            })
-        })?;
-        if let Some(err) = failed {
-            return Err(Error::Page(err));
-        }
-        if let Some(l) = link
-            && l.heap == current.id()
-            && let Some(v) = current.read(pager, l.tid)?
-        {
-            return Ok(Some(v.row));
-        }
-    }
-    let past = into.heap(ctor);
-    for e in into.index.probe(pager, key)? {
-        if e.ctor != ctor {
-            continue;
-        }
-        if let Some(v) = past.read(pager, e.tid)?
-            && sees(txns, pager, marker, &v.header)?
-        {
-            return Ok(Some(v.row));
-        }
-    }
-    Ok(None)
 }

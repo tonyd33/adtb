@@ -1,20 +1,20 @@
 //! The checkpointer: within one open, each time the log forced since the last checkpoint reaches
 //! the threshold, a background thread writes every changed page and takes a fuzzy checkpoint.
 
-use adtb::testing::Probe;
+use crate::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use adtb::runtime::{Clock, Instant, OpKind, Runtime, Threads};
-use adtb::storage::{
+use crate::runtime::{Clock, Instant, OpKind, Runtime, Threads};
+use crate::storage::{
     self, BackupRun, Crc32c, Damage, Envelope, HEADER_LEN, Lsn, Options, PageKind, Pager, Pid,
 };
+use crate::test_world as harness;
 use adtb_harness::common;
 use adtb_harness::damage::{DataFile, Files};
 use adtb_harness::search::each_crash_image;
 use adtb_sim::{Action, Config, Match, Outcome, Plan, Sim, SimRuntime, Submitted};
-use adtb_simkit::harness;
 use adtb_sys::runtime::Faults;
 use adtb_testkit::profile::every_case;
 

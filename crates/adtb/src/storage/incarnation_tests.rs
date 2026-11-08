@@ -1,18 +1,18 @@
 //! A page freed and allocated again is a new incarnation: nothing the log or the damage records
 //! hold of the incarnation before judges it.
 
-use adtb::testing::Probe;
+use crate::testing::Probe;
 use std::collections::BTreeSet;
 
-use adtb::mvcc::{CommitLog, Transactions, Xid};
-use adtb::runtime::{IoError, OpKind, Runtime};
-use adtb::storage::{
+use crate::mvcc::{CommitLog, Transactions, Xid};
+use crate::runtime::{IoError, OpKind, Runtime};
+use crate::storage::{
     self, Damage, Finding, HEADER_LEN, Options, PageError, PageKind, Pager, Pid, Quarantine,
 };
+use crate::test_world as harness;
 use adtb_harness::common;
 use adtb_harness::damage::{DataFile, Files};
 use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
-use adtb_simkit::harness;
 use adtb_testkit::profile::{assert_reached, every_case};
 
 const PAGER: DataFile = DataFile::new(harness::NAME, harness::PAGE);

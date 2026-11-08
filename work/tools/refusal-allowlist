@@ -48,7 +48,7 @@
 1 crates/adtb-sim/tests/storage/faults.rs
 1 crates/adtb-sim/tests/storage/io_contract.rs
 2 crates/adtb-sim/tests/storage/lost_bitmap.rs
-1 crates/adtb-sim/tests/storage/real_file.rs
+1 crates/adtb/src/storage/real_file_tests.rs
 1 crates/adtb-sim/tests/storage/truncated_open.rs
 1 crates/adtb-sys/src/lock.rs
 1 crates/adtb-sys/src/os/mod.rs

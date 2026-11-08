@@ -1,6 +1,5 @@
 //! Open a database, or the pager of a component world, on the simulator from a test.
 
-use adtb::storage::{self, Pager};
 use adtb::{CreateOptions, Database, Log, OpenError, OpenOptions};
 use adtb_sim::SimRuntime;
 
@@ -35,12 +34,4 @@ pub fn opened(
     options: &OpenOptions,
 ) -> Database<SimRuntime> {
     open(rt, file, log, options).unwrap_or_else(|e| panic!("{file} opens: {e:?}"))
-}
-
-/// Open the pager of the file `options` name, recovering it from its log.
-pub fn reopen(
-    rt: &SimRuntime,
-    options: &storage::Options,
-) -> Result<Pager<SimRuntime>, storage::OpenError> {
-    Pager::open(rt.clone(), options).map(|(pager, _)| pager)
 }

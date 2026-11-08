@@ -3,6 +3,10 @@
 mod dead;
 mod pace;
 mod run;
+#[cfg(test)]
+mod vacuum_tests;
+#[cfg(test)]
+mod vacuum_threads_tests;
 mod verify;
 
 pub use dead::DeadSet;

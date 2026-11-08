@@ -4,11 +4,13 @@ use std::collections::BTreeSet;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
-use adtb::catalog::Catalog;
-use adtb::runtime::FatalIo;
-use adtb::storage::{OpenError, Options, PageKind, Pager, Pid};
-use adtb::testing::Knobs;
-use adtb::{CallOptions, CreateOptions, Database, Log, OpenOptions, verify};
+use adtb_testkit::scratch::Scratch;
+
+use crate::catalog::Catalog;
+use crate::runtime::FatalIo;
+use crate::storage::{OpenError, Options, PageKind, Pager, Pid};
+use crate::testing::Knobs;
+use crate::{CallOptions, CreateOptions, Database, Log, OpenOptions, verify};
 use adtb_harness::seeds::{assert_reached, sweep};
 use adtb_lang::schema::ValueDef;
 use adtb_lang::textual::print;
@@ -35,16 +37,8 @@ fn options() -> Options {
     }
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("real_file")
-        .join(name);
-    match std::fs::remove_dir_all(&dir) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("clear {dir:?}: {e}"),
-        _ => {}
-    }
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch(name: &str) -> Scratch {
+    Scratch::new("real_file", name)
 }
 
 fn runtime(dir: &Path) -> OsRuntime {
@@ -106,18 +100,19 @@ fn migrated_database_reopens(dir: &Path, runtime: fn(&Path) -> OsRuntime) {
 
 #[test]
 fn a_migrated_database_reopens_from_its_files() {
-    migrated_database_reopens(&scratch("reopen"), runtime);
+    migrated_database_reopens(scratch("reopen").path(), runtime);
 }
 
 #[test]
 fn a_migrated_database_reopens_from_its_files_beneath_the_fault_injector() {
-    migrated_database_reopens(&scratch("reopen-faulty"), no_faults);
+    migrated_database_reopens(scratch("reopen-faulty").path(), no_faults);
 }
 
 #[test]
 fn a_database_is_created_once() {
-    let dir = scratch("create-once");
-    let rt = runtime(&dir);
+    let held = scratch("create-once");
+    let dir = held.path();
+    let rt = runtime(dir);
     drop(Pager::create(rt.clone(), &options()).expect("create"));
     assert!(matches!(
         Pager::create(rt, &options()),
@@ -127,23 +122,25 @@ fn a_database_is_created_once() {
 
 #[test]
 fn a_missing_database_is_not_found() {
-    let dir = scratch("missing");
+    let held = scratch("missing");
+    let dir = held.path();
     assert!(matches!(
-        Pager::open(runtime(&dir), &options()),
+        Pager::open(runtime(dir), &options()),
         Err(OpenError::NotFound)
     ));
 }
 
 #[test]
 fn a_closed_pager_holds_no_file_open_and_reopens_with_nothing_to_replay() {
-    let dir = scratch("close");
-    let rt = runtime(&dir);
+    let held = scratch("close");
+    let dir = held.path();
+    let rt = runtime(dir);
     let pager = Pager::create(rt.clone(), &options()).expect("create");
     let pid = pager.allocate(1, PageKind::HeapSlotted, 7).expect("a page");
     pager.update(&[pid], |p| p[0][100] = 42).expect("an update");
-    assert!(!open_under(&dir).is_empty());
+    assert!(!open_under(dir).is_empty());
     pager.close();
-    assert_eq!(Vec::<PathBuf>::new(), open_under(&dir));
+    assert_eq!(Vec::<PathBuf>::new(), open_under(dir));
     drop(pager);
 
     let (pager, recovery) = Pager::open(rt, &options()).expect("reopen");
@@ -265,9 +262,10 @@ on_both_backends!(
 
 fn acknowledged_commits_survive_crashes_with_torn_and_lost_unforced_writes(backend: Backend) {
     for seed in 0..6 {
-        let dir = scratch(&format!("crash-{}-{seed}", label(backend)));
+        let held = scratch(&format!("crash-{}-{seed}", label(backend)));
+        let dir = held.path();
         let rt = OsRuntime::with_faults(
-            &dir,
+            dir,
             backend,
             Faults {
                 seed,
@@ -283,7 +281,7 @@ fn acknowledged_commits_survive_crashes_with_torn_and_lost_unforced_writes(backe
         pager.flush_pages(seed as usize);
         rt.crash();
         drop(pager);
-        check_counters(&dir, backend, &pids, &acked, doubt, seed);
+        check_counters(dir, backend, &pids, &acked, doubt, seed);
     }
 }
 
@@ -291,9 +289,10 @@ fn a_failed_write_or_force_crashes_the_engine_and_recovery_keeps_every_acknowled
     backend: Backend,
 ) {
     for seed in 0..6 {
-        let dir = scratch(&format!("fail-{}-{seed}", label(backend)));
+        let held = scratch(&format!("fail-{}-{seed}", label(backend)));
+        let dir = held.path();
         let rt = OsRuntime::with_faults(
-            &dir,
+            dir,
             backend,
             Faults {
                 seed,
@@ -315,7 +314,7 @@ fn a_failed_write_or_force_crashes_the_engine_and_recovery_keeps_every_acknowled
         assert!(run.is_err(), "seed {seed}: some write or force fails");
         rt.crash();
         drop(pager);
-        check_counters(&dir, backend, &pids, &acked, doubt, seed);
+        check_counters(dir, backend, &pids, &acked, doubt, seed);
     }
 }
 
@@ -323,9 +322,10 @@ fn a_failed_write_or_force_crashes_the_engine_and_recovery_keeps_every_acknowled
 fn rot_latent_errors_and_misdirected_and_lost_writes_are_refused_never_returned() {
     let (mut returned, mut refused) = (0, 0);
     for seed in 0..6 {
-        let dir = scratch(&format!("damage-{seed}"));
+        let held = scratch(&format!("damage-{seed}"));
+        let dir = held.path();
         let rt = faulty(
-            &dir,
+            dir,
             Faults {
                 seed,
                 ..Faults::none(4096)
@@ -375,20 +375,21 @@ fn rot_latent_errors_and_misdirected_and_lost_writes_are_refused_never_returned(
 
 #[test]
 fn a_failed_open_or_create_holds_no_file_open() {
-    let dir = scratch("failed-open");
-    let rt = runtime(&dir);
+    let held = scratch("failed-open");
+    let dir = held.path();
+    let rt = runtime(dir);
     std::fs::write(dir.join("shop.adt"), b"").expect("an empty file");
     assert!(matches!(
         Pager::open(rt.clone(), &options()),
         Err(OpenError::NoHeader)
     ));
-    assert_eq!(Vec::<PathBuf>::new(), open_under(&dir));
+    assert_eq!(Vec::<PathBuf>::new(), open_under(dir));
     std::fs::write(dir.join("shop.adt"), [1; 4096]).expect("a nonempty file");
     assert!(matches!(
         Pager::create(rt, &options()),
         Err(OpenError::Exists)
     ));
-    assert_eq!(Vec::<PathBuf>::new(), open_under(&dir));
+    assert_eq!(Vec::<PathBuf>::new(), open_under(dir));
 }
 
 const POOL_BYTES: u64 = 256 * 1024;
@@ -481,10 +482,11 @@ fn commit_under_faults(dir: &Path, backend: Backend, seed: u64) -> Commits {
 fn acknowledged_commits_survive_injected_failures_and_a_crash(backend: Backend) {
     let (mut acked, mut storage, mut loss) = (0, 0, Loss::default());
     for seed in sweep(0..4) {
-        let dir = scratch(&format!("db-faults-{}-{seed}", label(backend)));
-        let commits = commit_under_faults(&dir, backend, seed);
+        let held = scratch(&format!("db-faults-{}-{seed}", label(backend)));
+        let dir = held.path();
+        let commits = commit_under_faults(dir, backend, seed);
         let db = Database::open_in(
-            OsRuntime::new(&dir, backend),
+            OsRuntime::new(dir, backend),
             "shop.adt",
             &Log::new([CUSTOMERS]),
             &OpenOptions::default(),

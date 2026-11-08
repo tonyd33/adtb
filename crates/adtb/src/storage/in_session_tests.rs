@@ -1,21 +1,21 @@
 //! Recycling the log within one open: once the open's readers of the log have run, each cycle of
 //! the checkpointer that finds a whole segment below the floor recycles.
 
-use adtb::testing::Probe;
+use crate::testing::Probe;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use adtb::runtime::{Done, Op, OpKind, Runtime};
-use adtb::storage::{
+use crate::runtime::{Done, Op, OpKind, Runtime};
+use crate::storage::{
     self, Damage, Finding, HEADER_LEN, Lsn, Options, PageError, PageKind, Pager, Pid, Quarantine,
 };
+use crate::test_world as harness;
 use adtb_harness::common;
 use adtb_harness::damage::{DataFile, Files};
 use adtb_harness::search::each_crash_image;
 use adtb_sim::{Config, Match, Sim, SimRuntime};
-use adtb_simkit::harness;
 
 const PAGER: DataFile = DataFile::new(harness::NAME, harness::PAGE);
 

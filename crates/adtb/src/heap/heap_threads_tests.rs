@@ -1,13 +1,13 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use adtb::heap::{Fate, FieldType, Header, Heap, HeapNo, LargeStore, walk};
-use adtb::key::{Scalar, Tid, Value};
-use adtb::runtime::Threads;
-use adtb::storage::{Options, PageError, PageKind, Pager, Pid};
+use crate::heap::{Fate, FieldType, Header, Heap, HeapNo, LargeStore, walk};
+use crate::key::{Scalar, Tid, Value};
+use crate::runtime::Threads;
+use crate::storage::{Options, PageError, PageKind, Pager, Pid};
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use adtb_simkit::harness;
+use crate::test_world as harness;
 
 use harness::{PAGE, finished};
 

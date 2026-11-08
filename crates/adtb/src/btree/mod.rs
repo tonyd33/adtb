@@ -8,6 +8,10 @@ mod tree;
 mod verify;
 
 #[cfg(test)]
+mod btree_tests;
+#[cfg(test)]
+mod btree_threads_tests;
+#[cfg(test)]
 mod tests;
 
 pub use index::{Index, SumKey, tag_prefix, tag_type};
