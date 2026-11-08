@@ -6,23 +6,18 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use adtb::runtime::{AlignedBuf, Done, Io, IoError, Op, Runtime, Threads};
-use adtb_sim::{Config, Faults, Outcome, Sim, SimIo, SimRuntime};
+use adtb_sim::{Config, Outcome, Sim, SimIo, SimRuntime};
+use adtb_sys::runtime::Faults;
 use common::{
     SECTOR, allocate, complete, open, read, run, run_then_crash, sector, sync, sync_dir, write,
 };
-
-fn quiet() -> Faults {
-    Faults {
-        delay_completions: false,
-        ..Faults::default()
-    }
-}
 
 fn sim(seed: u64, faults: Faults) -> Sim {
     Sim::new(
         seed,
         Config {
             faults,
+            delay_completions: false,
             ..Config::default()
         },
     )
@@ -62,7 +57,7 @@ fn torn_write_lands_some_atomic_units() {
             seed,
             Faults {
                 torn_p: 1.0,
-                ..quiet()
+                ..Faults::none(512)
             },
         );
         setup(&mut sim, 8);
@@ -93,9 +88,10 @@ fn write_within_atomic_unit_never_tears() {
             Config {
                 faults: Faults {
                     torn_p: 1.0,
-                    ..quiet()
+                    atomic_unit: 4096,
+                    ..Faults::none(512)
                 },
-                atomic_unit: 4096,
+                delay_completions: false,
                 ..Config::default()
             },
         );
@@ -115,11 +111,11 @@ fn write_within_atomic_unit_never_tears() {
 
 #[test]
 fn bit_rot_flips_one_stored_bit() {
-    let mut sim = sim(1, quiet());
+    let mut sim = sim(1, Faults::none(512));
     setup(&mut sim, 1);
     sim.set_faults(Faults {
         corrupt_p: 1.0,
-        ..quiet()
+        ..Faults::none(512)
     });
     let rotted = read_all(&mut sim);
     let flipped: u32 = rotted
@@ -128,7 +124,7 @@ fn bit_rot_flips_one_stored_bit() {
         .map(|(a, b)| (a ^ b).count_ones())
         .sum();
     assert_eq!(1, flipped);
-    sim.set_faults(quiet());
+    sim.set_faults(Faults::none(512));
     assert_eq!(
         rotted,
         read_all(&mut sim),
@@ -138,17 +134,17 @@ fn bit_rot_flips_one_stored_bit() {
 
 #[test]
 fn misdirected_write_lands_elsewhere() {
-    let mut sim = sim(2, quiet());
+    let mut sim = sim(2, Faults::none(512));
     setup(&mut sim, 4);
     sim.set_faults(Faults {
         misdirect_p: 1.0,
-        ..quiet()
+        ..Faults::none(512)
     });
     run(&mut sim, |rt, io| {
         let (file, _) = open(rt, io, "f", false).unwrap();
         write(rt, io, file, SECTOR as u64, &sector(0xee)).unwrap();
     });
-    sim.set_faults(quiet());
+    sim.set_faults(Faults::none(512));
     let bytes = read_all(&mut sim);
     let sectors: Vec<&[u8]> = bytes.chunks(SECTOR).collect();
     assert_eq!(sector(2), sectors[1], "the target keeps its old contents");
@@ -157,11 +153,11 @@ fn misdirected_write_lands_elsewhere() {
 
 #[test]
 fn lost_write_is_acknowledged_and_absent() {
-    let mut sim = sim(3, quiet());
+    let mut sim = sim(3, Faults::none(512));
     setup(&mut sim, 1);
     sim.set_faults(Faults {
         lost_write_p: 1.0,
-        ..quiet()
+        ..Faults::none(512)
     });
     let seen = run(&mut sim, |rt, io| {
         let (file, _) = open(rt, io, "f", false).unwrap();
@@ -170,24 +166,24 @@ fn lost_write_is_acknowledged_and_absent() {
         read(rt, io, file, 0, SECTOR).unwrap()
     });
     assert_eq!(sector(1), seen);
-    sim.set_faults(quiet());
+    sim.set_faults(Faults::none(512));
     run_then_crash(&mut sim, |_, _| {});
     assert_eq!(sector(1), read_all(&mut sim));
 }
 
 #[test]
 fn latent_sector_error_persists_until_rewritten() {
-    let mut sim = sim(4, quiet());
+    let mut sim = sim(4, Faults::none(512));
     setup(&mut sim, 1);
     sim.set_faults(Faults {
         latent_p: 1.0,
-        ..quiet()
+        ..Faults::none(512)
     });
     run(&mut sim, |rt, io| {
         let (file, _) = open(rt, io, "f", false).unwrap();
         assert_eq!(Err(IoError::Failed), read(rt, io, file, 0, SECTOR));
     });
-    sim.set_faults(quiet());
+    sim.set_faults(Faults::none(512));
     run(&mut sim, |rt, io| {
         let (file, _) = open(rt, io, "f", false).unwrap();
         assert_eq!(Err(IoError::Failed), read(rt, io, file, 0, SECTOR));
@@ -198,11 +194,11 @@ fn latent_sector_error_persists_until_rewritten() {
 
 #[test]
 fn a_device_with_no_space_refuses_growth_and_keeps_overwrites() {
-    let mut sim = sim(9, quiet());
+    let mut sim = sim(9, Faults::none(512));
     setup(&mut sim, 1);
     sim.set_faults(Faults {
         no_space: true,
-        ..quiet()
+        ..Faults::none(512)
     });
     run(&mut sim, |rt, io| {
         let (file, _) = open(rt, io, "f", false).unwrap();
@@ -221,11 +217,11 @@ fn a_device_with_no_space_refuses_growth_and_keeps_overwrites() {
 
 #[test]
 fn write_and_force_fail() {
-    let mut sim = sim(5, quiet());
+    let mut sim = sim(5, Faults::none(512));
     setup(&mut sim, 1);
     sim.set_faults(Faults {
         fail_p: 1.0,
-        ..quiet()
+        ..Faults::none(512)
     });
     run(&mut sim, |rt, io| {
         let (file, _) = open(rt, io, "f", false).unwrap();
@@ -237,11 +233,11 @@ fn write_and_force_fail() {
 
 #[test]
 fn a_failed_allocate_changes_nothing() {
-    let mut sim = sim(5, quiet());
+    let mut sim = sim(5, Faults::none(512));
     setup(&mut sim, 1);
     sim.set_faults(Faults {
         fail_p: 1.0,
-        ..quiet()
+        ..Faults::none(512)
     });
     run(&mut sim, |rt, io| {
         let (file, _) = open(rt, io, "f", false).unwrap();
@@ -262,7 +258,7 @@ fn a_failed_allocate_changes_nothing() {
 fn crash_keeps_forced_writes_and_loses_some_unforced() {
     let (mut kept, mut lost) = (false, false);
     for seed in 0..32 {
-        let mut sim = sim(seed, quiet());
+        let mut sim = sim(seed, Faults::none(512));
         setup(&mut sim, 2);
         run_then_crash(&mut sim, |rt, io| {
             let (file, _) = open(rt, io, "f", false).unwrap();
@@ -296,7 +292,7 @@ fn without_lose_unsynced_completed_writes_survive_a_crash() {
             seed,
             Faults {
                 lose_unsynced: false,
-                ..quiet()
+                ..Faults::none(512)
             },
         );
         setup(&mut sim, 1);
@@ -317,7 +313,7 @@ fn write_in_flight_at_a_crash_may_land() {
             Config {
                 faults: Faults {
                     lose_unsynced: false,
-                    ..Faults::default()
+                    ..Faults::none(512)
                 },
                 latency: (Duration::from_secs(5), Duration::from_secs(5)),
                 ..Config::default()
@@ -352,7 +348,7 @@ fn write_in_flight_at_a_crash_may_land() {
 fn creation_without_directory_force_may_vanish() {
     let mut vanished = false;
     for seed in 0..32 {
-        let mut sim = sim(seed, quiet());
+        let mut sim = sim(seed, Faults::none(512));
         run_then_crash(&mut sim, |rt, io| {
             let (file, _) = open(rt, io, "f", true).unwrap();
             write(rt, io, file, 0, &sector(1)).unwrap();
@@ -362,7 +358,7 @@ fn creation_without_directory_force_may_vanish() {
     }
     assert!(vanished);
     for seed in 0..32 {
-        let mut sim = sim(seed, quiet());
+        let mut sim = sim(seed, Faults::none(512));
         run_then_crash(&mut sim, |rt, io| {
             let (file, _) = open(rt, io, "f", true).unwrap();
             write(rt, io, file, 0, &sector(1)).unwrap();
@@ -377,7 +373,7 @@ fn creation_without_directory_force_may_vanish() {
 fn directory_force_covers_only_its_directory() {
     let mut vanished = false;
     for seed in 0..32 {
-        let mut sim = sim(seed, quiet());
+        let mut sim = sim(seed, Faults::none(512));
         run_then_crash(&mut sim, |rt, io| {
             create_dir(rt, io, "log");
             open(rt, io, "log/0", true).unwrap();
@@ -394,7 +390,7 @@ fn directory_force_covers_only_its_directory() {
 fn unforced_directory_takes_its_files_at_a_crash() {
     let mut vanished = false;
     for seed in 0..32 {
-        let mut sim = sim(seed, quiet());
+        let mut sim = sim(seed, Faults::none(512));
         run_then_crash(&mut sim, |rt, io| {
             create_dir(rt, io, "log");
             open(rt, io, "log/0", true).unwrap();
@@ -417,7 +413,7 @@ fn unforced_directory_takes_its_files_at_a_crash() {
 #[test]
 fn directory_force_keeps_the_directory_and_its_files() {
     for seed in 0..16 {
-        let mut sim = sim(seed, quiet());
+        let mut sim = sim(seed, Faults::none(512));
         run_then_crash(&mut sim, |rt, io| {
             create_dir(rt, io, "log");
             sync_dir(rt, io, "").unwrap();
@@ -432,7 +428,7 @@ fn directory_force_keeps_the_directory_and_its_files() {
 fn removal_needs_a_directory_force() {
     let mut back = false;
     for seed in 0..32 {
-        let mut sim = sim(seed, quiet());
+        let mut sim = sim(seed, Faults::none(512));
         setup(&mut sim, 1);
         run_then_crash(&mut sim, |rt, io| {
             assert_eq!(
@@ -453,8 +449,14 @@ fn removal_needs_a_directory_force() {
 
 #[test]
 fn delayed_completions_come_out_of_order() {
-    let order = |seed, faults| {
-        let mut sim = sim(seed, faults);
+    let order = |seed, delay_completions| {
+        let mut sim = Sim::new(
+            seed,
+            Config {
+                delay_completions,
+                ..Config::default()
+            },
+        );
         setup(&mut sim, 8);
         run(&mut sim, |rt, io| {
             let (file, _) = open(rt, io, "f", false).unwrap();
@@ -478,16 +480,16 @@ fn delayed_completions_come_out_of_order() {
         })
     };
     let in_order: Vec<usize> = (0..8).collect();
-    assert!((0..8).any(|seed| order(seed, Faults::default()) != in_order));
+    assert!((0..8).any(|seed| order(seed, true) != in_order));
     for seed in 0..8 {
-        assert_eq!(in_order, order(seed, quiet()), "seed {seed}");
+        assert_eq!(in_order, order(seed, false), "seed {seed}");
     }
 }
 
 #[test]
 fn listing_order_varies() {
     let list = |seed| {
-        let mut sim = sim(seed, quiet());
+        let mut sim = sim(seed, Faults::none(512));
         run(&mut sim, |rt, io| {
             create_dir(rt, io, "d");
             for name in ["d/a", "d/b", "d/c", "d/d", "e"] {
@@ -509,7 +511,7 @@ fn listing_order_varies() {
 
 #[test]
 fn short_read_past_the_end() {
-    let mut sim = sim(6, quiet());
+    let mut sim = sim(6, Faults::none(512));
     setup(&mut sim, 1);
     run(&mut sim, |rt, io| {
         let (file, len) = open(rt, io, "f", false).unwrap();
@@ -521,7 +523,7 @@ fn short_read_past_the_end() {
 
 #[test]
 fn allocate_extends_with_zeros() {
-    let mut sim = sim(7, quiet());
+    let mut sim = sim(7, Faults::none(512));
     setup(&mut sim, 1);
     run(&mut sim, |rt, io| {
         let (file, _) = open(rt, io, "f", false).unwrap();
@@ -535,7 +537,7 @@ fn allocate_extends_with_zeros() {
 #[test]
 #[should_panic(expected = "not sector aligned")]
 fn unaligned_write_is_a_bug() {
-    let mut sim = sim(8, quiet());
+    let mut sim = sim(8, Faults::none(512));
     run(&mut sim, |rt, io| {
         let (file, _) = open(rt, io, "f", true).unwrap();
         write(rt, io, file, 100, &sector(1)).unwrap();
@@ -544,7 +546,7 @@ fn unaligned_write_is_a_bug() {
 
 #[test]
 fn open_missing_file_is_not_found() {
-    let mut sim = sim(9, quiet());
+    let mut sim = sim(9, Faults::none(512));
     run(&mut sim, |rt, io| {
         assert_eq!(
             Err(IoError::NotFound),

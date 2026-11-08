@@ -3,7 +3,16 @@
 use std::ops::Add;
 use std::time::{Duration, SystemTime};
 
+mod faults;
+
 pub use crate::buf::AlignedBuf;
+pub use faults::{
+    AllocateFate, Draw, Faults, ForceFate, Landing, ReadFate, WriteFate, decide_allocate,
+    decide_force, decide_read, decide_unforced, decide_write,
+};
+
+#[cfg(test)]
+mod tests;
 
 /// A point on a process's monotonic clock, in nanoseconds from an origin the runtime picks.
 ///

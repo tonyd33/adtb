@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use adtb::runtime::{Entropy, Runtime, Threads};
-use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_sys::runtime::Faults;
 use common::{SECTOR, open, read, record, sleep, sync, sync_dir, write};
 
 fn faults() -> Faults {
@@ -16,8 +17,7 @@ fn faults() -> Faults {
         latent_p: 0.02,
         fail_p: 0.02,
         lose_unsynced: true,
-        delay_completions: true,
-        no_space: false,
+        ..Faults::none(512)
     }
 }
 

@@ -22,7 +22,7 @@ impl Fixture {
         let rt = OsRuntime::with_faults(
             scratch.path(),
             Backend::Pool { threads: 1 },
-            Faults::default(),
+            Faults::none(4096),
         );
         let pager = Pager::create(rt.clone(), &Self::options()).expect("create pager");
         let pid = Sequences::create(&pager).expect("create sequences");
@@ -75,7 +75,7 @@ impl Fixture {
         let rt = OsRuntime::with_faults(
             scratch.path(),
             Backend::Pool { threads: 1 },
-            Faults::default(),
+            Faults::none(4096),
         );
         let (pager, recovery) = Pager::open(rt.clone(), &Self::options()).expect("recover pager");
         assert!(
@@ -212,13 +212,13 @@ fn damaged_counter_page_refuses_retries_without_advancing_cached_reservations() 
     }
     f.rt.set_faults(Faults {
         latent_p: 1.0,
-        ..Faults::default()
+        ..Faults::none(4096)
     });
     let Err(page) = f.pager.read(f.seqs.root()) else {
         panic!("the evicted counter page must suffer the injected read fault");
     };
     assert_eq!(Damage::Unreadable, page.damage);
-    f.rt.set_faults(Faults::default());
+    f.rt.set_faults(Faults::none(4096));
     for id in [0, 1] {
         for _ in 0..2 {
             let draw = f.seqs.draw(&f.pager, id, 100);

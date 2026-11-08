@@ -13,8 +13,8 @@ use adtb::verify::{self, Inventory, Problem, Report, Sum};
 use adtb::{CallOptions, Capability, Database, Log};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 
-use adtb_sim::Faults;
 use adtb_simkit::{api, crash, harness};
+use adtb_sys::runtime::Faults;
 
 use harness::{finished, options};
 
@@ -2001,7 +2001,7 @@ fn a_file_after_a_crash_of_writers_and_vacuums_holds_clean() {
         let config = Config {
             faults: Faults {
                 torn_p: 0.5,
-                ..Faults::default()
+                ..Faults::none(512)
             },
             ..Config::default()
         };

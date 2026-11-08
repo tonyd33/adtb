@@ -7,8 +7,9 @@ use adtb::mvcc::{CommitLog, Scope, Snapshot, SnapshotId, Status, Transactions, X
 use adtb::storage::{Edit, HEADER_LEN, PageKind, Pager, Pid};
 use adtb::verify::Inventory;
 use adtb_sim::{
-    Config, Fate, Faults, Finding, Ledger, Outcome, Recovered, Sim, SimRuntime, Violation, check,
+    Config, Fate, Finding, Ledger, Outcome, Recovered, Sim, SimRuntime, Violation, check,
 };
+use adtb_sys::runtime::Faults;
 use adtb_testkit::Rng;
 
 use adtb_simkit::crash;
@@ -411,13 +412,13 @@ fn crash_loop(seed: u64, faults: Faults, rounds: u64) -> (usize, usize) {
     let world = Arc::new(Mutex::new(World::default()));
     let mut crashes = 0;
     for round in 0..rounds {
-        sim.set_faults(faults.clone());
+        sim.set_faults(faults);
         sim.crash_at(sim.now() + crash_after(seed, round, 400, 40_000));
         let (l, w) = (ledger.clone(), world.clone());
         if run_process(&mut sim, |rt| workload(rt, root, &pages, &l, &w)) == Outcome::Crashed {
             crashes += 1;
         }
-        sim.set_faults(Faults::default());
+        sim.set_faults(Faults::none(512));
         let assigned = world.lock().unwrap().assigned.clone();
         let mut report = Report::default();
         let at = format!("seed {seed} round {round}");
@@ -465,7 +466,7 @@ fn crashes_keep_commits_and_abort_what_was_running() {
             seed,
             Faults {
                 torn_p: 0.5,
-                ..Faults::default()
+                ..Faults::none(512)
             },
             5,
         );
@@ -489,7 +490,7 @@ fn failed_writes_crash_and_recover_the_commit_log() {
             Faults {
                 torn_p: 0.5,
                 fail_p: 0.005,
-                ..Faults::default()
+                ..Faults::none(512)
             },
             4,
         )

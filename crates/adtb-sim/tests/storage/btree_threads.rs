@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 use adtb::btree::{BTree, Entries};
 use adtb::runtime::{Entropy, Threads};
 use adtb::storage::{PageKind, Pager, Pid, Walk, kind};
-use adtb_sim::{Config, Faults, Outcome, Recording, Sim, SimRuntime};
+use adtb_sim::{Config, Outcome, Recording, Sim, SimRuntime};
+use adtb_sys::runtime::Faults;
 
 use adtb_simkit::crash;
 use adtb_simkit::draw;
@@ -506,7 +507,7 @@ fn crash_config() -> Config {
     Config {
         faults: Faults {
             torn_p: 0.5,
-            ..Faults::default()
+            ..Faults::none(512)
         },
         switch_rate: CRASH_SWITCH_RATE,
         ..Config::default()

@@ -55,7 +55,7 @@ fn faulty(dir: &Path, faults: Faults) -> OsRuntime {
 }
 
 fn no_faults(dir: &Path) -> OsRuntime {
-    faulty(dir, Faults::default())
+    faulty(dir, Faults::none(4096))
 }
 
 /// Returns the files under `dir` this process holds open.
@@ -272,7 +272,7 @@ fn acknowledged_commits_survive_crashes_with_torn_and_lost_unforced_writes(backe
                 seed,
                 torn_p: 0.5,
                 atomic_unit: 4096,
-                ..Faults::default()
+                ..Faults::none(4096)
             },
         );
         let (pager, pids) = counters(rt.clone());
@@ -296,7 +296,7 @@ fn a_failed_write_or_force_crashes_the_engine_and_recovery_keeps_every_acknowled
             backend,
             Faults {
                 seed,
-                ..Faults::default()
+                ..Faults::none(4096)
             },
         );
         let (pager, pids) = counters(rt.clone());
@@ -304,7 +304,7 @@ fn a_failed_write_or_force_crashes_the_engine_and_recovery_keeps_every_acknowled
             seed,
             fail_p: 0.05,
             torn_p: 0.5,
-            ..Faults::default()
+            ..Faults::none(4096)
         });
         let mut acked = vec![0; PAGES];
         let mut doubt = None;
@@ -327,7 +327,7 @@ fn rot_latent_errors_and_misdirected_and_lost_writes_are_refused_never_returned(
             &dir,
             Faults {
                 seed,
-                ..Faults::default()
+                ..Faults::none(4096)
             },
         );
         let (pager, pids) = counters(rt.clone());
@@ -339,7 +339,7 @@ fn rot_latent_errors_and_misdirected_and_lost_writes_are_refused_never_returned(
             misdirect_p: 0.02,
             lost_write_p: 0.02,
             lose_unsynced: false,
-            ..Faults::default()
+            ..Faults::none(4096)
         });
         for step in 0..60u64 {
             let i = ((step * 7 + seed * 3) % PAGES as u64) as usize;
@@ -428,7 +428,7 @@ fn commit_under_faults(dir: &Path, backend: Backend, seed: u64) -> Commits {
         backend,
         Faults {
             seed,
-            ..Faults::default()
+            ..Faults::none(4096)
         },
     );
     let create = OpenOptions {
@@ -444,7 +444,7 @@ fn commit_under_faults(dir: &Path, backend: Backend, seed: u64) -> Commits {
         seed,
         fail_p: 0.05,
         torn_p: 0.5,
-        ..Faults::default()
+        ..Faults::none(4096)
     });
     let mut commits = Commits::default();
     for i in 0..40 {

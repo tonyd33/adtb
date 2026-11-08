@@ -560,7 +560,7 @@ fn on_faulty(name: &str, backend: Option<Backend>, body: fn(&OsRuntime)) {
         body(&OsRuntime::with_faults(
             scratch(name),
             backend,
-            Faults::default(),
+            Faults::none(4096),
         ));
     }
 }

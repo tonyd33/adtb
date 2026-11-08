@@ -12,7 +12,8 @@ use adtb::storage::{Pager, Pid};
 use adtb::vacuum::{self, Report, Sum};
 use adtb::verify;
 use adtb::verify::Inventory;
-use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_sys::runtime::Faults;
 
 use adtb_simkit::crash;
 use adtb_simkit::harness;
@@ -1314,7 +1315,7 @@ fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> (usize, usize) {
     }));
     let mut crashes = 0;
     for round in 0..rounds {
-        sim.set_faults(faults.clone());
+        sim.set_faults(faults);
         let at = sim.now() + crash_after(seed, round as u64, 2000, 80_000);
         sim.crash_at(at);
         let w = world.clone();
@@ -1324,7 +1325,7 @@ fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> (usize, usize) {
             w.crashed_vacuuming += usize::from(w.vacuuming);
             w.vacuuming = false;
         }
-        sim.set_faults(Faults::default());
+        sim.set_faults(Faults::none(512));
         let mut problems = Vec::new();
         let w = world.clone();
         finished(&mut sim, |rt| problems = inspect(rt, &w));
@@ -1347,7 +1348,7 @@ fn crashes_during_vacuum_recover_to_a_clean_database() {
                 seed,
                 Faults {
                     torn_p: 0.5,
-                    ..Faults::default()
+                    ..Faults::none(512)
                 },
                 4,
             )
@@ -1370,7 +1371,7 @@ fn failed_writes_during_vacuum_crash_and_recover_clean() {
                 Faults {
                     torn_p: 0.3,
                     fail_p: 0.003,
-                    ..Faults::default()
+                    ..Faults::none(512)
                 },
                 4,
             )

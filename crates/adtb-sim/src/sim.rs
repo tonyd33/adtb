@@ -9,24 +9,35 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 
 use adtb::runtime::{
-    AlignedBuf, Clock, Completion, Done, Entropy, FileId, Instant, Io, Op, Runtime, ThreadId,
-    Threads, Ticket,
+    AlignedBuf, Clock, Completion, Done, Entropy, Faults, FileId, Instant, Io, Op, Runtime,
+    ThreadId, Threads, Ticket,
 };
 use adtb_sys::pages;
 
-use crate::disk::{Ctx, Disk, Faults, Geometry, InFlight, Ino, Recording};
+use crate::disk::{Ctx, Disk, InFlight, Ino, Recording};
 use crate::rng::Rng;
+
+fn check_geometry(faults: &Faults) {
+    assert!(
+        faults.sector > 0 && (AlignedBuf::ALIGN as u64).is_multiple_of(faults.sector),
+        "sector size must divide the I/O buffer alignment"
+    );
+    assert!(
+        faults.atomic_unit.is_multiple_of(faults.sector),
+        "atomic unit must be whole sectors"
+    );
+}
 
 const WALL_ORIGIN: Duration = Duration::from_secs(1_767_225_600);
 
 #[derive(Clone, Debug)]
 pub struct Config {
+    /// The device's faults and geometry. Its `sector` is the device's logical block size, to
+    /// which every read and write is aligned, and it stays fixed for the simulation.
     pub faults: Faults,
-    /// The device's logical block size; every read and write is aligned to it.
-    pub sector: u64,
-    /// The largest write the device lands whole or not at all.
-    pub atomic_unit: u64,
-    /// The range of completion delays when `faults.delay_completions` is set.
+    /// Complete ops after random delays, and so out of submission order.
+    pub delay_completions: bool,
+    /// The range of completion delays when `delay_completions` is set.
     pub latency: (Duration, Duration),
     /// The most simulated time one scheduling step takes.
     pub jitter: Duration,
@@ -38,9 +49,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            faults: Faults::default(),
-            sector: 512,
-            atomic_unit: 512,
+            faults: Faults::none(512),
+            delay_completions: true,
             latency: (Duration::from_micros(1), Duration::from_micros(500)),
             jitter: Duration::from_micros(1),
             switch_rate: 0.0,
@@ -165,14 +175,7 @@ impl Sim {
     }
 
     pub fn new(seed: u64, config: Config) -> Self {
-        assert!(
-            config.sector > 0 && (AlignedBuf::ALIGN as u64).is_multiple_of(config.sector),
-            "sector size must divide the I/O buffer alignment"
-        );
-        assert!(
-            config.atomic_unit.is_multiple_of(config.sector),
-            "atomic unit must be whole sectors"
-        );
+        check_geometry(&config.faults);
         let mut root = Rng::new(seed);
         let state = State {
             config,
@@ -221,8 +224,11 @@ impl Sim {
         lock(&self.shared.state).disk.dirs()
     }
 
+    /// Change the faults the device injects from now on.
+    ///
+    /// Panic if `faults` changes the device's sector or atomic unit.
     pub fn set_faults(&mut self, faults: Faults) {
-        lock(&self.shared.state).config.faults = faults;
+        lock(&self.shared.state).set_faults(faults);
     }
 
     /// Crash the next run once the clock reaches `at`.
@@ -428,19 +434,27 @@ impl State {
     }
 
     fn ctx(&mut self) -> (&mut Disk, Ctx<'_>) {
-        let geometry = Geometry {
-            sector: self.config.sector,
-            atomic_unit: self.config.atomic_unit,
-        };
         (
             &mut self.disk,
             Ctx {
                 rng: &mut self.faults,
                 faults: &self.config.faults,
-                geometry,
                 trace: &mut self.trace,
             },
         )
+    }
+
+    fn set_faults(&mut self, faults: Faults) {
+        let now = &self.config.faults;
+        assert!(
+            (faults.sector, faults.atomic_unit) == (now.sector, now.atomic_unit),
+            "the device's geometry is fixed for a simulation: sector {} and atomic unit {}, not {} and {}",
+            now.sector,
+            now.atomic_unit,
+            faults.sector,
+            faults.atomic_unit
+        );
+        self.config.faults = faults;
     }
 
     fn ino(&self, file: FileId) -> Ino {
@@ -647,8 +661,10 @@ impl SimRuntime {
 
 impl SimRuntime {
     /// Change the faults the device injects from now on, from inside a run.
+    ///
+    /// Panic if `faults` changes the device's sector or atomic unit.
     pub fn set_faults(&self, faults: Faults) {
-        lock(&self.shared.state).config.faults = faults;
+        lock(&self.shared.state).set_faults(faults);
     }
 
     /// Returns the number of I/O queues opened since the simulation began.
@@ -820,7 +836,7 @@ impl Io for SimIo {
         let now = st.now;
         let due = match op {
             Op::Timer { at } => now.max(at.as_nanos()),
-            _ if st.config.faults.delay_completions => {
+            _ if st.config.delay_completions => {
                 let (lo, hi) = st.config.latency;
                 now + st.sched.between(nanos(lo), nanos(hi))
             }

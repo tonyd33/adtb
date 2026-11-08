@@ -9,8 +9,9 @@ use std::time::Duration;
 use adtb::mvcc::Limits;
 use adtb::runtime::{Entropy, Threads};
 use adtb_isolation::{self as iso, Op, Outcome as Ended};
-use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::harness::finished;
+use adtb_sys::runtime::Faults;
 use engine::{Engine, Kind, Roots};
 use seeds::{share, sweep};
 
@@ -117,8 +118,7 @@ fn clients(e: &Arc<Engine>, b: &Arc<Mutex<Book>>) {
 fn faults() -> Faults {
     Faults {
         lose_unsynced: true,
-        delay_completions: true,
-        ..Faults::default()
+        ..Faults::none(512)
     }
 }
 

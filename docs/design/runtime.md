@@ -137,15 +137,23 @@ a fault policy, with the same meaning under either backend:
 ```text
 OsRuntime::with_faults(root, backend, Faults {
   seed, torn_p, corrupt_p, misdirect_p, lost_write_p, latent_p, fail_p,
-  lose_unsynced: true, sector, atomic_unit,
+  lose_unsynced: true, no_space, sector: 4096, atomic_unit: 4096,
 }) -> OsRuntime
-rt.set_faults(faults)   // from now on; what earlier faults left stays
+rt.set_faults(faults)   // from now on; what earlier faults left stays; the sector and atomic unit stay
 rt.crash()
 ```
 
-Each `_p` is the chance of its fault per op that can suffer it, as in
-the simulated storage (§5), drawn from `seed` in the order the host
-runs the backend's threads, so a seed does not replay a run.
+`Faults` is the one fault policy of §3, shared with the simulator
+(§5). Each `_p` is the chance of its fault per op that can suffer it,
+decided as §3 states from a generator seeded by `seed`, in the order
+the host runs the backend's threads, so a seed does not replay a run.
+With `no_space`, a write past a file's end and an allocate that grows
+a file complete with `Full` and change nothing. Its `sector` is a
+multiple of `AlignedBuf::ALIGN`, or `with_faults` panics.
+
+Under either backend the device's geometry, `sector` and
+`atomic_unit`, is fixed for the runtime's life: `set_faults` panics
+when the faults it is given change either.
 
 Postconditions of a runtime with faults:
 
@@ -284,6 +292,43 @@ What each fault leaves behind:
 | Lost write | The write completes and never reaches the device, forced or not. |
 | Failed write or force | The op completes with `Failed`; a failed write may have changed any of its blocks. |
 
+A backend with faults decides the fate of each op from one
+`adtb_sys::runtime::Faults` and a source of draws, by the decision
+function of the op's kind, and applies the fate; it draws nothing for
+an op itself. A fault whose chance is zero draws nothing.
+
+```text
+decide_write(draw, &faults, offset, len, file_len) -> WriteFate { Full, Fail { landed }, Lost, At(target) }
+decide_read(draw, &faults, offset, n, unreadable) -> ReadFate { Latent { sector }, Unreadable, Corrupt { byte, bit }, Clean }
+decide_allocate(draw, &faults, len, file_len) -> AllocateFate { Fail, Full, Run }
+decide_force(draw, &faults) -> ForceFate { Fail, Run }   // Sync and SyncDir
+decide_unforced(draw, &faults, len, completed) -> Landing { Whole, Lost, Torn(units) }   // at a crash
+trait Draw { chance(p), below(n), coin() }
+```
+
+Postconditions, in the order of the draws:
+
+- A write: with `no_space`, a write past the file's end is `Full` and
+  draws nothing. Otherwise it draws fail, and for a failed write one
+  coin per sector of it, the sectors that land; then lost; then
+  misdirect, and for a misdirected write a uniform pick among the other
+  sector-aligned offsets where it fits within the file, or just past
+  the file's end when there is none. `At(offset)` is the write as asked.
+- A read that finds `n` bytes: none is `Clean` and draws nothing.
+  Otherwise it draws latent, and its sector uniformly among those of
+  the bytes; then, unless one of those sectors is unreadable already,
+  corrupt, its byte uniformly among the `n` and its bit uniformly among
+  eight.
+- An allocate draws fail; then with `no_space` one that grows the file
+  is `Full`.
+- A `Sync` or `SyncDir` draws fail.
+- At a crash, each write no force covers, in the backend's order: a
+  completed write without `lose_unsynced` is `Whole` and draws
+  nothing. Otherwise a write larger than the atomic unit draws torn,
+  and when it strikes one coin per atomic unit, the units that land;
+  a write that is not torn draws one coin, landing it whole or losing
+  it.
+
 ## 4. Errors
 
 A failed write or `fdatasync` is not retried by the engine; the
@@ -313,18 +358,22 @@ The simulated storage is an in-memory disk that injects every fault of
 
 ```text
 Sim::new(seed, Config {
-  faults: { torn_p, corrupt_p, misdirect_p, lost_write_p, latent_p, fail_p,
-            lose_unsynced: true, delay_completions: true },
-  sector, atomic_unit, latency, jitter,
+  faults: Faults { torn_p, corrupt_p, misdirect_p, lost_write_p, latent_p, fail_p,
+                   lose_unsynced: true, no_space, sector: 512, atomic_unit: 512 },
+  delay_completions: true, latency, jitter,
 })
+sim.set_faults(faults)   // from now on; the sector and atomic unit stay
 sim.crash_at(t); sim.run(|rt| ...) -> Finished | Crashed
 ```
 
 The storage outlives a run, so the run after a crash is a restart of
-the process over what the crash left. Each `_p` is the chance of the
-fault of §3 per op that can suffer it; `lose_unsynced` off models a
-device whose cache survives power loss, `delay_completions` off
-completes ops in submission order.
+the process over what the crash left. `Faults` is the policy of §3,
+its fates decided as §3 states from the simulator's seed; its own
+`seed` is unused. Its `sector` is the device's logical block, dividing
+`AlignedBuf::ALIGN`, and it and `atomic_unit` are fixed for the
+runtime's life, as under the real backend (§2). `lose_unsynced` off
+models a device whose cache survives power loss; `delay_completions`
+off completes ops in submission order.
 
 Postconditions of the simulator:
 

@@ -4,7 +4,8 @@ use adtb_simkit::seeds;
 use std::ops::Range;
 use std::time::Duration;
 
-use adtb_sim::{Config, Faults, FindingKind, Ledger, Outcome, Sim, Violation, check};
+use adtb_sim::{Config, FindingKind, Ledger, Outcome, Sim, Violation, check};
+use adtb_sys::runtime::Faults;
 use common::{Durability, commit_all, recover, run, sleep};
 use seeds::{share, sweep};
 
@@ -46,7 +47,7 @@ fn forced_commits_pass_after_any_crash() {
     const SEEDS: Range<u64> = 0..64;
     let mut partial = 0;
     for seed in sweep(SEEDS) {
-        let (violations, acked) = crash_and_check(seed, Durability::Forced, Faults::default());
+        let (violations, acked) = crash_and_check(seed, Durability::Forced, Faults::none(512));
         assert_eq!(Vec::<Violation>::new(), violations, "seed {seed}");
         partial += usize::from(acked > 0 && acked < 8);
     }
@@ -58,7 +59,7 @@ fn forced_commits_pass_after_any_crash() {
 
 #[test]
 fn clean_run_reports_exactly_the_acknowledged_commits() {
-    let mut sim = sim(1, Faults::default());
+    let mut sim = sim(1, Faults::none(512));
     let ledger = Ledger::new();
     let store = run(&mut sim, |rt, _| {
         commit_all(rt, &ledger, &[0, 1, 2, 3], Durability::Forced);
@@ -74,7 +75,7 @@ fn clean_run_reports_exactly_the_acknowledged_commits() {
 #[test]
 fn acknowledging_before_the_force_is_caught() {
     let caught = (0..64).any(|seed| {
-        crash_and_check(seed, Durability::Unforced, Faults::default())
+        crash_and_check(seed, Durability::Unforced, Faults::none(512))
             .0
             .iter()
             .any(|v| matches!(v, Violation::Lost(_)))
@@ -84,7 +85,7 @@ fn acknowledging_before_the_force_is_caught() {
 
 #[test]
 fn reporting_an_aborted_commit_is_caught() {
-    let mut sim = sim(2, Faults::default());
+    let mut sim = sim(2, Faults::none(512));
     let ledger = Ledger::new();
     let store = run(&mut sim, |rt, _| {
         commit_all(rt, &ledger, &[0, 1], Durability::AbortAfterWrite);
@@ -98,7 +99,7 @@ fn reporting_an_aborted_commit_is_caught() {
 
 #[test]
 fn reporting_a_never_submitted_commit_is_caught() {
-    let mut sim = sim(3, Faults::default());
+    let mut sim = sim(3, Faults::none(512));
     let ledger = Ledger::new();
     let store = run(&mut sim, |rt, _| {
         commit_all(rt, &Ledger::new(), &[5], Durability::Forced);
@@ -109,14 +110,14 @@ fn reporting_a_never_submitted_commit_is_caught() {
 
 #[test]
 fn rotted_record_is_a_structure_finding() {
-    let mut sim = sim(4, Faults::default());
+    let mut sim = sim(4, Faults::none(512));
     let ledger = Ledger::new();
     run(&mut sim, |rt, _| {
         commit_all(rt, &ledger, &[0, 1, 2], Durability::Forced);
     });
     sim.set_faults(Faults {
         corrupt_p: 1.0,
-        ..Faults::default()
+        ..Faults::none(512)
     });
     let store = run(&mut sim, |rt, _| recover(rt));
     let violations = check(&ledger, &store);
@@ -136,7 +137,7 @@ fn rotted_record_is_a_structure_finding() {
 fn in_doubt_commits_may_go_either_way() {
     let (mut present, mut absent) = (false, false);
     for seed in 0..64 {
-        let mut sim = sim(seed, Faults::default());
+        let mut sim = sim(seed, Faults::none(512));
         let ledger = Ledger::new();
         sim.crash_at(sim.now() + Duration::from_millis(5));
         let l = ledger.clone();

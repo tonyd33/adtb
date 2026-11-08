@@ -4,61 +4,17 @@ use std::io;
 use std::ops::Range;
 use std::os::unix::fs::FileExt;
 
-use super::files::{Files, Outcome};
-use crate::runtime::{AlignedBuf, Done, FileId, IoError, Op};
-
-/// The faults an [`OsRuntime`](super::OsRuntime) injects beneath the engine's files.
-///
-/// Each `_p` is the chance of its fault per op that can suffer it, drawn from a generator seeded
-/// by `seed`. The I/O threads draw in the order the host runs them, so a seed does not replay a
-/// run. Under io_uring other ops run between an op's admission and its completion.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Faults {
-    pub seed: u64,
-    /// Chance that a write lost at a crash, and larger than the atomic unit, is lost torn: any
-    /// subset of its atomic units reaches the device.
-    pub torn_p: f64,
-    /// Chance that a read flips one stored bit in its range first.
-    pub corrupt_p: f64,
-    /// Chance that a write lands at another offset of the same file.
-    pub misdirect_p: f64,
-    /// Chance that a write reports success and never reaches the device.
-    pub lost_write_p: f64,
-    /// Chance that a read makes one sector in its range unreadable until it is rewritten.
-    pub latent_p: f64,
-    /// Chance that a write, an allocation or a force fails.
-    pub fail_p: f64,
-    /// Lose any subset of unforced writes, and of a failed force's writes, and any suffix of the
-    /// unforced creations and removals, at a crash.
-    pub lose_unsynced: bool,
-    /// The bytes a latent error makes unreadable, a multiple of the device's logical block.
-    pub sector: u64,
-    /// The bytes the device writes atomically, a multiple of `sector`.
-    pub atomic_unit: u64,
-}
-
-impl Default for Faults {
-    fn default() -> Self {
-        Faults {
-            seed: 0,
-            torn_p: 0.0,
-            corrupt_p: 0.0,
-            misdirect_p: 0.0,
-            lost_write_p: 0.0,
-            latent_p: 0.0,
-            fail_p: 0.0,
-            lose_unsynced: true,
-            sector: 4096,
-            atomic_unit: 4096,
-        }
-    }
-}
+use super::files::{Files, Outcome, error};
+use crate::runtime::{
+    AlignedBuf, AllocateFate, Done, Draw, Faults, FileId, ForceFate, IoError, Landing, Op,
+    ReadFate, WriteFate, decide_allocate, decide_force, decide_read, decide_unforced, decide_write,
+};
 
 /// The state of the injected faults, behind one lock taken to admit and to complete each op.
 #[derive(Debug)]
 pub(crate) struct Injector {
     faults: Faults,
-    rng: u64,
+    rng: SplitMix,
     crashed: bool,
     /// The path of each file open in this process and not removed.
     paths: HashMap<FileId, String>,
@@ -182,9 +138,42 @@ fn buffer(op: Op) -> Option<AlignedBuf> {
 
 fn check(faults: &Faults) {
     assert!(
-        faults.sector > 0 && faults.atomic_unit.is_multiple_of(faults.sector),
+        faults.sector > 0 && faults.sector.is_multiple_of(AlignedBuf::ALIGN as u64),
+        "a sector is a whole number of I/O buffer alignments, so a sector-sized direct read or \
+         write is block aligned"
+    );
+    assert!(
+        faults.atomic_unit.is_multiple_of(faults.sector),
         "the atomic unit is a whole number of sectors"
     );
+}
+
+/// SplitMix64, seeded by the faults' `seed`.
+#[derive(Debug)]
+struct SplitMix(u64);
+
+impl SplitMix {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+}
+
+impl Draw for SplitMix {
+    fn chance(&mut self, p: f64) -> bool {
+        ((self.next() >> 11) as f64 / (1u64 << 53) as f64) < p
+    }
+
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+
+    fn coin(&mut self) -> bool {
+        self.next() & 1 == 1
+    }
 }
 
 impl Injector {
@@ -192,7 +181,7 @@ impl Injector {
         check(&faults);
         Injector {
             faults,
-            rng: faults.seed,
+            rng: SplitMix(faults.seed),
             crashed: false,
             paths: HashMap::new(),
             pending: BTreeMap::new(),
@@ -203,25 +192,17 @@ impl Injector {
 
     /// Inject `faults` from now on, keeping what earlier faults left and the generator's state.
     pub(crate) fn set(&mut self, faults: Faults) {
-        check(&faults);
+        let now = &self.faults;
+        assert!(
+            (faults.sector, faults.atomic_unit) == (now.sector, now.atomic_unit),
+            "the device's geometry is fixed for the runtime's life: sector {} and atomic unit {}, \
+             not {} and {}",
+            now.sector,
+            now.atomic_unit,
+            faults.sector,
+            faults.atomic_unit
+        );
         self.faults = faults;
-    }
-
-    fn next(&mut self) -> u64 {
-        self.rng = self.rng.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.rng;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
-
-    fn draw(&mut self, p: f64) -> bool {
-        let unit = (self.next() >> 11) as f64 / (1u64 << 53) as f64;
-        unit < p
-    }
-
-    fn below(&mut self, n: u64) -> u64 {
-        self.next() % n
     }
 
     /// Run `op` on `files` with the faults injected.
@@ -250,12 +231,33 @@ impl Injector {
                 path: path.clone(),
                 existed: false,
             },
-            Op::Read { file, offset, buf } => return self.admit_read(file, offset, buf),
+            Op::Read { file, offset, buf } => {
+                let hook = match self.paths.get(&file) {
+                    Some(path) => Hook::Read {
+                        path: path.clone(),
+                        file,
+                        offset,
+                    },
+                    None => Hook::Nothing,
+                };
+                return Ok((Op::Read { file, offset, buf }, After(hook)));
+            }
             Op::Write { file, offset, buf } => return self.admit_write(files, file, offset, buf),
-            Op::Allocate { .. } | Op::SyncDir { .. } if self.draw(self.faults.fail_p) => {
-                return Err((None, Err(IoError::Failed)));
+            Op::Allocate { file, len } => {
+                let file_len = match files.file(file).metadata() {
+                    Ok(m) => m.len(),
+                    Err(e) => return Err((None, Err(error(&e)))),
+                };
+                match decide_allocate(&mut self.rng, &self.faults, len, file_len) {
+                    AllocateFate::Fail => return Err((None, Err(IoError::Failed))),
+                    AllocateFate::Full => return Err((None, Err(IoError::Full))),
+                    AllocateFate::Run => Hook::Nothing,
+                }
             }
             Op::Sync { file } => return self.admit_sync(files, file),
+            Op::SyncDir { .. } if decide_force(&mut self.rng, &self.faults) == ForceFate::Fail => {
+                return Err((None, Err(IoError::Failed)));
+            }
             Op::SyncDir { ref dir } => Hook::SyncedDir { dir: dir.clone() },
             Op::Remove { ref path } => Hook::Removed {
                 path: path.clone(),
@@ -390,25 +392,6 @@ impl Injector {
         offset / s..(offset + len).div_ceil(s)
     }
 
-    fn admit_read(
-        &mut self,
-        file: FileId,
-        offset: u64,
-        buf: AlignedBuf,
-    ) -> Result<(Op, After), Outcome> {
-        let hook = match self.paths.get(&file).cloned() {
-            None => Hook::Nothing,
-            Some(path) => {
-                let mut range = self.sectors(offset, buf.len() as u64);
-                if range.any(|s| self.bad.contains(&(path.clone(), s))) {
-                    return Err((Some(buf), Err(IoError::Failed)));
-                }
-                Hook::Read { path, file, offset }
-            }
-        };
-        Ok((Op::Read { file, offset, buf }, After(hook)))
-    }
-
     fn read(
         &mut self,
         files: &Files,
@@ -422,29 +405,31 @@ impl Injector {
             out => return out,
         };
         let n = n as u64;
-        if n > 0 && self.draw(self.faults.latent_p) {
-            let sectors = self.sectors(offset, n);
-            let s = sectors.start + self.below(sectors.end - sectors.start);
-            self.bad.insert((path, s));
-            return (Some(buf), Err(IoError::Failed));
-        }
-        if n > 0 && self.draw(self.faults.corrupt_p) {
-            let at = self.below(n);
-            let bit = 1u8 << self.below(8);
-            buf[at as usize] ^= bit;
-            let stored = AlignedBuf::from_slice(&buf[..n as usize]);
-            if files.file(file).write_all_at(&stored, offset).is_err() {
+        let unreadable = self
+            .sectors(offset, n)
+            .any(|s| self.bad.contains(&(path.clone(), s)));
+        match decide_read(&mut self.rng, &self.faults, offset, n, unreadable) {
+            ReadFate::Latent { sector } => {
+                self.bad.insert((path, sector));
                 return (Some(buf), Err(IoError::Failed));
             }
-            let byte = offset + at;
-            let sector = self.faults.sector;
-            if let Some(base) = self
-                .pending
-                .get_mut(&path)
-                .and_then(|p| p.base.get_mut(&(byte / sector)))
-            {
-                base[(byte % sector) as usize] ^= bit;
+            ReadFate::Unreadable => return (Some(buf), Err(IoError::Failed)),
+            ReadFate::Corrupt { byte, bit } => {
+                buf[(byte - offset) as usize] ^= bit;
+                let stored = AlignedBuf::from_slice(&buf[..n as usize]);
+                let Ok(()) = files.file(file).write_all_at(&stored, offset) else {
+                    return (Some(buf), Err(IoError::Failed));
+                };
+                let sector = self.faults.sector;
+                if let Some(base) = self
+                    .pending
+                    .get_mut(&path)
+                    .and_then(|p| p.base.get_mut(&(byte / sector)))
+                {
+                    base[(byte % sector) as usize] ^= bit;
+                }
             }
+            ReadFate::Clean => {}
         }
         (Some(buf), Ok(Done::Read(n as usize)))
     }
@@ -459,34 +444,27 @@ impl Injector {
         let Some(path) = self.paths.get(&file).cloned() else {
             return Ok((Op::Write { file, offset, buf }, After(Hook::Nothing)));
         };
-        if self.draw(self.faults.lost_write_p) {
-            return Err((Some(buf), Ok(Done::Written)));
-        }
         let fd = files.file(file);
         let len = buf.len() as u64;
-        if self.draw(self.faults.fail_p) {
-            let mut at = 0;
-            while at < len {
-                let n = self.faults.sector.min(len - at);
-                if self.draw(0.5) {
-                    let part = AlignedBuf::from_slice(&buf[at as usize..(at + n) as usize]);
-                    if self.land(&fd, &path, offset + at, &part).is_err() {
+        let file_len = match fd.metadata() {
+            Ok(m) => m.len(),
+            Err(e) => return Err((Some(buf), Err(error(&e)))),
+        };
+        let target = match decide_write(&mut self.rng, &self.faults, offset, len, file_len) {
+            WriteFate::Full => return Err((Some(buf), Err(IoError::Full))),
+            WriteFate::Fail { landed } => {
+                for part in landed {
+                    let at = (part.start - offset) as usize..(part.end - offset) as usize;
+                    let part_buf = AlignedBuf::from_slice(&buf[at]);
+                    let Ok(()) = self.land(&fd, &path, part.start, &part_buf) else {
                         break;
-                    }
+                    };
                 }
-                at += n;
+                return Err((Some(buf), Err(IoError::Failed)));
             }
-            return Err((Some(buf), Err(IoError::Failed)));
-        }
-        let mut target = offset;
-        if self.draw(self.faults.misdirect_p) {
-            let end = fd.metadata().map_or(0, |m| m.len()).max(offset + len);
-            let slots = end / len;
-            if slots > 1 {
-                let slot = self.below(slots - 1);
-                target = if slot >= offset / len { slot + 1 } else { slot } * len;
-            }
-        }
+            WriteFate::Lost => return Err((Some(buf), Ok(Done::Written))),
+            WriteFate::At(target) => target,
+        };
         if self.record(&fd, &path, target, &buf).is_err() {
             return Err((Some(buf), Err(IoError::Failed)));
         }
@@ -531,7 +509,7 @@ impl Injector {
 
     fn admit_sync(&mut self, files: &Files, file: FileId) -> Result<(Op, After), Outcome> {
         let path = self.paths.get(&file).cloned();
-        if self.draw(self.faults.fail_p) {
+        if decide_force(&mut self.rng, &self.faults) == ForceFate::Fail {
             if let Some(path) = path
                 && let Some(pending) = self.pending.remove(&path)
             {
@@ -563,20 +541,21 @@ impl Injector {
         for (offset, bytes) in pending.writes {
             let len = bytes.len() as u64;
             let before = kept.len();
-            if len > unit && self.draw(self.faults.torn_p) {
-                let mut at = 0;
-                while at < len {
-                    let n = unit.min(len - at);
-                    if self.draw(0.5) {
-                        kept.push((offset + at, bytes[at as usize..(at + n) as usize].to_vec()));
+            match decide_unforced(&mut self.rng, &self.faults, len, true) {
+                Landing::Whole => kept.push((offset, bytes)),
+                Landing::Lost => {}
+                Landing::Torn(mask) => {
+                    for (k, &lands) in (0u64..).zip(&mask) {
+                        let at = k * unit;
+                        if lands {
+                            let end = (at + unit).min(len);
+                            kept.push((offset + at, bytes[at as usize..end as usize].to_vec()));
+                        }
                     }
-                    at += n;
+                    if kept.len() > before && kept.len() - before < mask.len() {
+                        loss.torn += 1;
+                    }
                 }
-                if kept.len() > before && kept.len() - before < len.div_ceil(unit) as usize {
-                    loss.torn += 1;
-                }
-            } else if self.draw(0.5) {
-                kept.push((offset, bytes));
             }
             if kept.len() == before {
                 loss.lost += 1;
@@ -622,7 +601,7 @@ impl Injector {
             loss.lost += file.lost;
             loss.torn += file.torn;
         }
-        let keep = self.below(self.entries.len() as u64 + 1) as usize;
+        let keep = self.rng.below(self.entries.len() as u64 + 1) as usize;
         for entry in self.entries.drain(keep..).rev() {
             let r = match entry.undo {
                 Undo::Create { path, dir: true } => fs::remove_dir_all(files.path(&path)),

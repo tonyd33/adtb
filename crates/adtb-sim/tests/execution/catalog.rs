@@ -7,7 +7,8 @@ use adtb::plan::{Element, IndexId};
 use adtb::storage::{Damage, Options, Pager, Pid};
 use adtb::verify::{self, Finding, Problem, Report};
 use adtb_lang::types::RelId;
-use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_sys::runtime::Faults;
 
 use adtb_simkit::harness;
 
@@ -28,7 +29,7 @@ fn crash_config() -> Config {
     Config {
         faults: Faults {
             torn_p: 0.5,
-            ..Faults::default()
+            ..Faults::none(512)
         },
         ..Config::default()
     }

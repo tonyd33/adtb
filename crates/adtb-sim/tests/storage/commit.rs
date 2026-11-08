@@ -5,9 +5,8 @@ use std::time::Duration;
 
 use adtb::runtime::{Clock, Entropy, Io, Op, Runtime, Threads};
 use adtb::storage::{Lsn, Options, Pager, Position};
-use adtb_sim::{
-    Config, Faults, Finding, FindingKind, Ledger, Outcome, Recovered, Sim, SimRuntime, check,
-};
+use adtb_sim::{Config, Finding, FindingKind, Ledger, Outcome, Recovered, Sim, SimRuntime, check};
+use adtb_sys::runtime::Faults;
 
 use adtb_simkit::harness;
 use adtb_simkit::{api, crash, search};
@@ -167,7 +166,7 @@ fn every_acknowledged_commit_survives_a_crash() {
             Config {
                 faults: Faults {
                     torn_p: 0.5,
-                    ..Faults::default()
+                    ..Faults::none(512)
                 },
                 ..Config::default()
             },

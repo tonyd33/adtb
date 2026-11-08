@@ -7,7 +7,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use adtb::runtime::{AlignedBuf, FileId, Io, Op, Runtime};
-use adtb_sim::{Config, Faults, Outcome, Sim, SimIo, SimRuntime};
+use adtb_sim::{Config, Outcome, Sim, SimIo, SimRuntime};
+use adtb_sys::runtime::Faults;
 use common::{FNV_OFFSET, SECTOR, allocate, fnv, open, read, run, sector, sync, sync_dir, write};
 
 const SEEDS: u64 = 4;
@@ -51,7 +52,7 @@ fn crash_digest(seed: u64, faults: &Faults, after: Duration) -> u64 {
     let mut sim = Sim::new(
         seed,
         Config {
-            faults: faults.clone(),
+            faults: *faults,
             ..Config::default()
         },
     );
@@ -100,7 +101,7 @@ fn crash_case(name: &str, faults: &Faults, expected: [u64; SEEDS as usize]) {
 fn a_crash_leaves_the_same_image_with_the_default_faults() {
     crash_case(
         "default",
-        &Faults::default(),
+        &Faults::none(512),
         [
             0x7043_b6f9_7a89_3cf1,
             0x0f51_1fc8_c76d_1821,
@@ -114,7 +115,7 @@ fn a_crash_leaves_the_same_image_with_the_default_faults() {
 fn a_crash_leaves_the_same_image_when_every_large_write_tears() {
     let faults = Faults {
         torn_p: 1.0,
-        ..Faults::default()
+        ..Faults::none(512)
     };
     crash_case(
         "torn",
@@ -132,7 +133,7 @@ fn a_crash_leaves_the_same_image_when_every_large_write_tears() {
 fn a_crash_leaves_the_same_image_when_every_completed_write_survives() {
     let faults = Faults {
         lose_unsynced: false,
-        ..Faults::default()
+        ..Faults::none(512)
     };
     crash_case(
         "kept",
@@ -151,7 +152,7 @@ fn a_crash_leaves_the_same_image_after_lost_and_misdirected_writes() {
     let faults = Faults {
         lost_write_p: 0.2,
         misdirect_p: 0.2,
-        ..Faults::default()
+        ..Faults::none(512)
     };
     crash_case(
         "misplaced",
@@ -169,7 +170,7 @@ fn a_crash_leaves_the_same_image_after_lost_and_misdirected_writes() {
 fn a_crash_leaves_the_same_image_after_failed_writes_and_forces() {
     let faults = Faults {
         fail_p: 0.3,
-        ..Faults::default()
+        ..Faults::none(512)
     };
     crash_case(
         "failing",
@@ -187,13 +188,13 @@ fn a_crash_leaves_the_same_image_after_failed_writes_and_forces() {
 fn the_failing_case_fails_an_allocate() {
     let faults = Faults {
         fail_p: 0.3,
-        ..Faults::default()
+        ..Faults::none(512)
     };
     let failed = (0..SEEDS).any(|seed| {
         let mut sim = Sim::new(
             seed,
             Config {
-                faults: faults.clone(),
+                faults,
                 ..Config::default()
             },
         );
@@ -209,7 +210,7 @@ fn a_crash_leaves_the_same_image_after_corruption_and_bad_sectors() {
         corrupt_p: 0.5,
         latent_p: 0.3,
         torn_p: 0.5,
-        ..Faults::default()
+        ..Faults::none(512)
     };
     crash_case(
         "rotting",
@@ -227,7 +228,7 @@ fn a_crash_leaves_the_same_image_after_corruption_and_bad_sectors() {
 fn a_crash_leaves_the_same_image_on_a_full_device() {
     let faults = Faults {
         no_space: true,
-        ..Faults::default()
+        ..Faults::none(512)
     };
     crash_case(
         "full",
@@ -245,8 +246,7 @@ fn a_crash_leaves_the_same_image_on_a_full_device() {
 fn a_crash_tearing_a_whole_log_segment_leaves_the_same_image() {
     let faults = Faults {
         torn_p: 1.0,
-        delay_completions: false,
-        ..Faults::default()
+        ..Faults::none(512)
     };
     check(
         "segment",
@@ -260,7 +260,8 @@ fn a_crash_tearing_a_whole_log_segment_leaves_the_same_image() {
             let mut sim = Sim::new(
                 seed,
                 Config {
-                    faults: faults.clone(),
+                    faults,
+                    delay_completions: false,
                     ..Config::default()
                 },
             );
@@ -301,14 +302,14 @@ const GROWN: usize = 3 * UNIT + SECTOR;
 fn torn() -> Faults {
     Faults {
         torn_p: 1.0,
-        ..Faults::default()
+        ..Faults::none(512)
     }
 }
 
 fn kept() -> Faults {
     Faults {
         lose_unsynced: false,
-        ..Faults::default()
+        ..Faults::none(512)
     }
 }
 
@@ -316,8 +317,10 @@ fn device(seed: u64, faults: Faults) -> Sim {
     Sim::new(
         seed,
         Config {
-            faults,
-            atomic_unit: UNIT as u64,
+            faults: Faults {
+                atomic_unit: UNIT as u64,
+                ..faults
+            },
             latency: (Duration::from_millis(1), Duration::from_millis(1)),
             jitter: Duration::from_nanos(1),
             ..Config::default()
@@ -386,9 +389,9 @@ fn a_forced_allocate_survives_a_crash_at_its_full_length_all_zeros() {
 #[test]
 fn an_unforced_allocate_leaves_the_old_length_or_more_and_only_zeros_past_it() {
     let (mut lost, mut partial, mut whole) = (false, false, false);
-    for (faults, name) in [(Faults::default(), "default"), (torn(), "torn")] {
+    for (faults, name) in [(Faults::none(512), "default"), (torn(), "torn")] {
         for seed in 0..SWEEP {
-            let image = after_completion(seed, faults.clone(), |rt, io, file| {
+            let image = after_completion(seed, faults, |rt, io, file| {
                 allocate(rt, io, file, GROWN as u64).expect("allocate");
             });
             let at = format!("{name} seed {seed}");

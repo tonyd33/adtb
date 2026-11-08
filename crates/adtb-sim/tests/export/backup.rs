@@ -16,9 +16,10 @@ use adtb::{
     HostFns, Log, OpenOptions, Position, Proof, RejectReason, RestorePoint, TxnCallOptions,
     TxnOptions, proof_in, prove_in, restore_in,
 };
-use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::search::{self, Action, Files, Hooked};
 use adtb_simkit::{api, common};
+use adtb_sys::runtime::Faults;
 use adtb_testkit::profile::{assert_reached, every_case, sweep};
 
 const FILE: &str = "backup.adt";
@@ -981,7 +982,7 @@ fn first_checkpoint_under_live_writers_keeps_every_acked_commit() {
             Config {
                 faults: Faults {
                     torn_p: 0.5,
-                    ..Faults::default()
+                    ..Faults::none(512)
                 },
                 ..Config::default()
             },
@@ -2022,10 +2023,10 @@ fn flushed(rt: &SimRuntime, atomic: bool, lost: bool) -> (Pager<SimRuntime>, Vec
     let lost_write_p = if lost { 1.0 } else { 0.0 };
     rt.set_faults(Faults {
         lost_write_p,
-        ..Faults::default()
+        ..Faults::none(512)
     });
     pager.flush_pages(usize::MAX);
-    rt.set_faults(Faults::default());
+    rt.set_faults(Faults::none(512));
     (pager, pages, found, expected)
 }
 

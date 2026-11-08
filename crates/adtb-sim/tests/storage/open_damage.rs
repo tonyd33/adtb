@@ -7,9 +7,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use adtb::runtime::IoError;
 use adtb::storage::{Damage, Options, PageError, Pager, Pid, Quarantine};
 use adtb::{CallOptions, Database, Error, FatalReason, Log, OpenError, OpenOptions, TxnOptions};
-use adtb_sim::{Config, Faults, Sim, SimRuntime};
+use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
 use adtb_simkit::harness::finished;
+use adtb_sys::runtime::Faults;
 
 const FILE: &str = "open_damage.adt";
 const PAGE: usize = 8192;
@@ -985,7 +986,7 @@ fn an_unreadable_page_fails_open_unmarked() {
         let mut sim = Sim::with_files(seed, Config::default(), files.clone());
         sim.set_faults(Faults {
             latent_p: 0.02,
-            ..Faults::default()
+            ..Faults::none(512)
         });
         finished(&mut sim, |rt| {
             let got = open(rt, &app());

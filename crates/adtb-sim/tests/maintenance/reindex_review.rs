@@ -16,9 +16,10 @@ use adtb::testing::{Knobs, Object, Plant};
 use adtb::{
     CallOptions, CancelToken, Database, Log, OpenOptions, TxnCallOptions, TxnOptions, Value,
 };
-use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::seeds::assert_reached;
 use adtb_simkit::{api, common, crash};
+use adtb_sys::runtime::Faults;
 
 const APP: &str = r"module app
 add module app
@@ -1430,13 +1431,13 @@ fn a_failed_force_at_the_swap_crashes_and_loses_no_row() {
                 w.testing().flush_log();
                 clock.set_faults(Faults {
                     fail_p: 1.0,
-                    ..Faults::default()
+                    ..Faults::none(512)
                 });
             }
         });
         api::results(&db, "reindex ts index (v)");
         wait_jobs(&rt, &db);
-        rt.set_faults(Faults::default());
+        rt.set_faults(Faults::none(512));
         db.close().unwrap();
     });
     assert_eq!(
@@ -1444,7 +1445,7 @@ fn a_failed_force_at_the_swap_crashes_and_loses_no_row() {
         outcome,
         "a failed force was caught as a failed rebuild"
     );
-    sim.set_faults(Faults::default());
+    sim.set_faults(Faults::none(512));
     api::run(&mut sim, |rt| {
         let db = hist_open(rt);
         assert_eq!(

@@ -60,7 +60,51 @@ cases!(
     a_crash_may_lose_an_unforced_rename_and_removed_directory_whole,
     a_crash_that_loses_a_directory_loses_its_files,
     a_rename_into_the_parent_is_forced_by_both_directories,
+    a_full_device_refuses_growth_and_keeps_overwrites,
 );
+
+/// Under `no_space`, a write past the end and an allocate that grows the file answer `Full` and
+/// leave the file as it was; an overwrite within the file lands.
+fn a_full_device_refuses_growth_and_keeps_overwrites(on: On) {
+    let quiet = Faults::none(4096);
+    let rt = &on.faulty(&on.scratch("faults-full"), quiet);
+    let mut io = rt.io();
+    let (file, _) = open(rt, &mut io, "f", true).unwrap();
+    write(rt, &mut io, file, 0, &block(1));
+    rt.set_faults(Faults {
+        no_space: true,
+        ..quiet
+    });
+    let grow = complete(
+        rt,
+        &mut io,
+        Op::Write {
+            file,
+            offset: BLOCK as u64,
+            buf: AlignedBuf::from_slice(&block(2)),
+        },
+    );
+    assert_eq!(Err(IoError::Full), grow.result, "a write past the end");
+    assert_eq!(
+        Err(IoError::Full),
+        done(
+            rt,
+            &mut io,
+            Op::Allocate {
+                file,
+                len: 4 * BLOCK as u64
+            }
+        ),
+        "an allocate that grows the file"
+    );
+    write(rt, &mut io, file, 0, &block(3));
+    rt.set_faults(quiet);
+    assert_eq!(
+        Ok(Done::Size(BLOCK as u64)),
+        done(rt, &mut io, Op::Size { file })
+    );
+    assert_eq!(block(3), read(rt, &mut io, file, 0, 2 * BLOCK));
+}
 
 fn plain(dir: &Path) -> OsRuntime {
     OsRuntime::new(dir, Backend::Pool { threads: 2 })
@@ -87,12 +131,12 @@ fn failing_write(rt: &OsRuntime, io: &mut OsIo, data: &[u8]) {
 }
 
 fn failed_writes_allocations_and_forces_complete_with_failed(on: On) {
-    let rt = on.faulty(&on.scratch("faults-fail"), Faults::default());
+    let rt = on.faulty(&on.scratch("faults-fail"), Faults::none(4096));
     let mut io = rt.io();
     let (file, _) = open(&rt, &mut io, "f", true).unwrap();
     rt.set_faults(Faults {
         fail_p: 1.0,
-        ..Faults::default()
+        ..Faults::none(4096)
     });
     failing_write(&rt, &mut io, &block(1));
     let fails = [
@@ -109,22 +153,22 @@ fn failed_writes_allocations_and_forces_complete_with_failed(on: On) {
 }
 
 fn a_lost_write_completes_and_never_lands(on: On) {
-    let rt = on.faulty(&on.scratch("faults-lost"), Faults::default());
+    let rt = on.faulty(&on.scratch("faults-lost"), Faults::none(4096));
     let mut io = rt.io();
     let (file, _) = open(&rt, &mut io, "f", true).unwrap();
     write(&rt, &mut io, file, 0, &block(1));
     rt.set_faults(Faults {
         lost_write_p: 1.0,
-        ..Faults::default()
+        ..Faults::none(4096)
     });
     write(&rt, &mut io, file, 0, &block(2));
     assert_eq!(Ok(Done::Synced), done(&rt, &mut io, Op::Sync { file }));
-    rt.set_faults(Faults::default());
+    rt.set_faults(Faults::none(4096));
     assert_eq!(block(1), read(&rt, &mut io, file, 0, BLOCK));
 }
 
 fn a_misdirected_write_lands_at_another_offset_of_the_file(on: On) {
-    let rt = on.faulty(&on.scratch("faults-misdirect"), Faults::default());
+    let rt = on.faulty(&on.scratch("faults-misdirect"), Faults::none(4096));
     let mut io = rt.io();
     let (file, _) = open(&rt, &mut io, "f", true).unwrap();
     for i in 0..4u8 {
@@ -138,10 +182,10 @@ fn a_misdirected_write_lands_at_another_offset_of_the_file(on: On) {
     }
     rt.set_faults(Faults {
         misdirect_p: 1.0,
-        ..Faults::default()
+        ..Faults::none(4096)
     });
     write(&rt, &mut io, file, BLOCK as u64, &block(9));
-    rt.set_faults(Faults::default());
+    rt.set_faults(Faults::none(4096));
     let bytes = read(&rt, &mut io, file, 0, 4 * BLOCK);
     let blocks: Vec<&[u8]> = bytes.chunks(BLOCK).collect();
     assert_eq!(block(2), blocks[1], "the target keeps its old contents");
@@ -153,14 +197,14 @@ fn a_misdirected_write_lands_at_another_offset_of_the_file(on: On) {
 }
 
 fn a_latent_sector_fails_reads_until_it_is_rewritten(on: On) {
-    let rt = on.faulty(&on.scratch("faults-latent"), Faults::default());
+    let rt = on.faulty(&on.scratch("faults-latent"), Faults::none(4096));
     let mut io = rt.io();
     let (file, _) = open(&rt, &mut io, "f", true).unwrap();
     write(&rt, &mut io, file, 0, &block(1));
     write(&rt, &mut io, file, BLOCK as u64, &block(2));
     rt.set_faults(Faults {
         latent_p: 1.0,
-        ..Faults::default()
+        ..Faults::none(4096)
     });
     let read_first = |io: &mut OsIo| {
         let buf = AlignedBuf::zeroed(BLOCK);
@@ -177,7 +221,7 @@ fn a_latent_sector_fails_reads_until_it_is_rewritten(on: On) {
         c.result
     };
     assert_eq!(Err(IoError::Failed), read_first(&mut io));
-    rt.set_faults(Faults::default());
+    rt.set_faults(Faults::none(4096));
     assert_eq!(Err(IoError::Failed), read_first(&mut io));
     assert_eq!(block(2), read(&rt, &mut io, file, BLOCK as u64, BLOCK));
     write(&rt, &mut io, file, 0, &block(3));
@@ -185,16 +229,16 @@ fn a_latent_sector_fails_reads_until_it_is_rewritten(on: On) {
 }
 
 fn a_rotted_bit_is_seen_by_every_later_read(on: On) {
-    let rt = on.faulty(&on.scratch("faults-rot"), Faults::default());
+    let rt = on.faulty(&on.scratch("faults-rot"), Faults::none(4096));
     let mut io = rt.io();
     let (file, _) = open(&rt, &mut io, "f", true).unwrap();
     write(&rt, &mut io, file, 0, &block(0x55));
     rt.set_faults(Faults {
         corrupt_p: 1.0,
-        ..Faults::default()
+        ..Faults::none(4096)
     });
     let rotted = read(&rt, &mut io, file, 0, BLOCK);
-    rt.set_faults(Faults::default());
+    rt.set_faults(Faults::none(4096));
     let flipped: u32 = rotted
         .iter()
         .zip(block(0x55))
@@ -227,20 +271,20 @@ fn read_back(dir: &Path, len: usize) -> Vec<u8> {
 fn a_failed_force_loses_writes_and_a_later_force_succeeds_without_them(on: On) {
     let mut seen = BTreeSet::new();
     for seed in 0..SEEDS {
-        let (rt, dir) = forced_file(on, "faults-fsyncgate", seed, Faults::default());
+        let (rt, dir) = forced_file(on, "faults-fsyncgate", seed, Faults::none(4096));
         let mut io = rt.io();
         let (file, _) = open(&rt, &mut io, "f", false).unwrap();
         write(&rt, &mut io, file, 0, &block(2));
         rt.set_faults(Faults {
             seed,
             fail_p: 1.0,
-            ..Faults::default()
+            ..Faults::none(4096)
         });
         let sync = |io: &mut OsIo| done(&rt, io, Op::Sync { file });
         assert_eq!(Err(IoError::Failed), sync(&mut io), "seed {seed}");
         rt.set_faults(Faults {
             seed,
-            ..Faults::default()
+            ..Faults::none(4096)
         });
         let after = read(&rt, &mut io, file, 0, BLOCK);
         assert!(
@@ -258,7 +302,7 @@ fn a_failed_force_loses_writes_and_a_later_force_succeeds_without_them(on: On) {
 fn a_crash_keeps_forced_writes_and_any_subset_of_the_rest(on: On) {
     let mut seen = BTreeSet::new();
     for seed in 0..SEEDS {
-        let (rt, dir) = forced_file(on, "faults-crash", seed, Faults::default());
+        let (rt, dir) = forced_file(on, "faults-crash", seed, Faults::none(4096));
         let mut io = rt.io();
         let (file, _) = open(&rt, &mut io, "f", false).unwrap();
         write(&rt, &mut io, file, BLOCK as u64, &block(2));
@@ -299,7 +343,7 @@ fn a_torn_write_lands_in_any_subset_of_its_atomic_units(on: On) {
     for seed in 0..SEEDS {
         let faults = Faults {
             torn_p: 1.0,
-            ..Faults::default()
+            ..Faults::none(4096)
         };
         let (rt, dir) = forced_file(on, "faults-torn", seed, faults);
         let mut io = rt.io();
@@ -331,7 +375,7 @@ fn a_crash_keeps_a_prefix_of_unforced_creations_and_removals(on: On) {
             &dir,
             Faults {
                 seed,
-                ..Faults::default()
+                ..Faults::none(4096)
             },
         );
         let mut io = rt.io();
@@ -377,7 +421,7 @@ fn a_crash_may_lose_an_unforced_rename_and_removed_directory_whole(on: On) {
             &dir,
             Faults {
                 seed,
-                ..Faults::default()
+                ..Faults::none(4096)
             },
         );
         let mut io = rt.io();
@@ -433,7 +477,7 @@ fn a_crash_that_loses_a_directory_loses_its_files(on: On) {
             &dir,
             Faults {
                 seed,
-                ..Faults::default()
+                ..Faults::none(4096)
             },
         );
         let mut io = rt.io();
@@ -472,7 +516,7 @@ fn a_rename_into_the_parent_is_forced_by_both_directories(on: On) {
                 &dir,
                 Faults {
                     seed,
-                    ..Faults::default()
+                    ..Faults::none(4096)
                 },
             );
             super::rename_into_the_parent(&rt, &mut rt.io(), synced);

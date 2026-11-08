@@ -11,9 +11,9 @@ use adtb::storage::{
     Options, PageError, PageKind, Pager, Pid,
 };
 use adtb_sim::{
-    Config, Fate, Faults, FindingKind, Ledger, Outcome, Recovered, Sim, SimRuntime, Violation,
-    check,
+    Config, Fate, FindingKind, Ledger, Outcome, Recovered, Sim, SimRuntime, Violation, check,
 };
+use adtb_sys::runtime::Faults;
 
 use adtb_simkit::crash;
 use adtb_simkit::search::Hooked;
@@ -592,11 +592,18 @@ fn crash_loop(
     rounds: usize,
 ) -> Tally {
     silence_fatal_panics();
+    let quiet = Faults {
+        atomic_unit: if layout.atomic { PAGE as u64 } else { 512 },
+        ..Faults::none(512)
+    };
+    let faults = Faults {
+        atomic_unit: quiet.atomic_unit,
+        ..faults
+    };
     let mut sim = Sim::new(
         seed,
         Config {
-            faults: Faults::default(),
-            atomic_unit: if layout.atomic { PAGE as u64 } else { 512 },
+            faults: quiet,
             ..Config::default()
         },
     );
@@ -604,7 +611,7 @@ fn crash_loop(
     setup(&mut sim, &client, layout);
     let mut tally = Tally::default();
     for round in 0..rounds {
-        sim.set_faults(faults.clone());
+        sim.set_faults(faults);
         let at = sim.now() + crash_after(seed, round as u64, 500, 60_000);
         sim.crash_at(at);
         let c = client.clone();
@@ -618,7 +625,7 @@ fn crash_loop(
         if run_process(&mut sim, body) == Outcome::Crashed {
             tally.crashes += 1;
         }
-        sim.set_faults(Faults::default());
+        sim.set_faults(quiet);
         let pages = client.world.lock().unwrap().pages.clone();
         let mut report = Report::default();
         let outcome = sim.run(|rt| report = inspect(rt, &pages, layout));
@@ -666,7 +673,7 @@ fn seeds(range: Range<u64>, faults: Faults, layout: Layout, damage_allowed: bool
     let mut total = Tally::default();
     for seed in sweep(range) {
         total.seeds += 1;
-        let t = crash_loop(seed, faults.clone(), layout, damage_allowed, 4);
+        let t = crash_loop(seed, faults, layout, damage_allowed, 4);
         total.crashes += t.crashes;
         total.acked += t.acked;
         total.findings += t.findings;
@@ -685,7 +692,7 @@ fn crashes_with_torn_writes_lose_nothing_and_find_nothing() {
         SEEDS,
         Faults {
             torn_p: 0.5,
-            ..Faults::default()
+            ..Faults::none(512)
         },
         PLAIN,
         false,
@@ -701,7 +708,7 @@ fn torn_log_blocks_lose_no_acknowledged_commit() {
         SEEDS,
         Faults {
             torn_p: 1.0,
-            ..Faults::default()
+            ..Faults::none(512)
         },
         Layout {
             atomic: false,
@@ -722,7 +729,7 @@ fn atomic_page_writes_need_no_images() {
         SEEDS,
         Faults {
             torn_p: 0.5,
-            ..Faults::default()
+            ..Faults::none(512)
         },
         Layout {
             atomic: true,
@@ -744,7 +751,7 @@ fn bit_rot_and_latent_errors_are_reported_never_returned() {
             torn_p: 0.3,
             corrupt_p: 0.004,
             latent_p: 0.002,
-            ..Faults::default()
+            ..Faults::none(512)
         },
         PLAIN,
         true,
@@ -763,7 +770,7 @@ fn misdirected_and_lost_writes_are_reported_never_returned() {
             torn_p: 0.3,
             misdirect_p: 0.004,
             lost_write_p: 0.004,
-            ..Faults::default()
+            ..Faults::none(512)
         },
         PLAIN,
         true,
@@ -787,7 +794,7 @@ fn failed_writes_and_forces_crash_and_recover() {
         Faults {
             torn_p: 0.3,
             fail_p: 0.004,
-            ..Faults::default()
+            ..Faults::none(512)
         },
         PLAIN,
         false,
@@ -805,7 +812,7 @@ fn a_failed_log_allocate_is_fatal_and_leaves_a_file_a_later_create_can_use() {
             Config {
                 faults: Faults {
                     fail_p: 0.2,
-                    ..Faults::default()
+                    ..Faults::none(512)
                 },
                 ..Config::default()
             },
@@ -818,7 +825,7 @@ fn a_failed_log_allocate_is_fatal_and_leaves_a_file_a_later_create_can_use() {
         if sim.trace().contains("fault fail allocate") {
             failed = true;
             assert_eq!(Outcome::Crashed, outcome, "seed {seed}");
-            sim.set_faults(Faults::default());
+            sim.set_faults(Faults::none(512));
             let outcome = sim.run(|rt| {
                 Pager::create(rt, &options(PLAIN)).expect("create over what the failure left");
             });
@@ -840,7 +847,7 @@ fn every_fault_at_once() {
             misdirect_p: 0.002,
             lost_write_p: 0.002,
             fail_p: 0.002,
-            ..Faults::default()
+            ..Faults::none(512)
         },
         PLAIN,
         true,
@@ -1214,21 +1221,21 @@ fn allocations_survive_crashes_and_never_repeat() {
                 faults: Faults {
                     torn_p: 0.5,
                     fail_p: 0.01,
-                    ..Faults::default()
+                    ..Faults::none(512)
                 },
                 ..Config::default()
             },
         );
         silence_fatal_panics();
         let client = Client::new();
-        sim.set_faults(Faults::default());
+        sim.set_faults(Faults::none(512));
         setup(&mut sim, &client, PLAIN);
         let durable: Arc<Mutex<BTreeSet<Pid>>> = Arc::default();
         for round in 0..4u64 {
             sim.set_faults(Faults {
                 torn_p: 0.5,
                 fail_p: 0.01,
-                ..Faults::default()
+                ..Faults::none(512)
             });
             sim.crash_at(sim.now() + Duration::from_micros(300 + (seed * 31 + round * 977) % 9000));
             let d = durable.clone();
@@ -1248,7 +1255,7 @@ fn allocations_survive_crashes_and_never_repeat() {
                 }
             });
         }
-        sim.set_faults(Faults::default());
+        sim.set_faults(Faults::none(512));
         let held = durable.lock().unwrap().clone();
         with_pager(&mut sim, |p| {
             let fresh = p.allocate(1, PageKind::HeapSlotted, 9).expect("allocate");
@@ -1266,10 +1273,6 @@ fn crash_replay_at_every_flush_boundary() {
     let mut sim = Sim::new(
         11,
         Config {
-            faults: Faults {
-                delay_completions: true,
-                ..Faults::default()
-            },
             ..Config::default()
         },
     );
@@ -1327,7 +1330,7 @@ fn threads_sharing_a_pager_lose_nothing_across_crashes() {
         SEEDS,
         Faults {
             torn_p: 0.5,
-            ..Faults::default()
+            ..Faults::none(512)
         },
         THREADED,
         false,
@@ -1348,7 +1351,7 @@ fn threads_sharing_a_pager_under_every_fault() {
             misdirect_p: 0.002,
             lost_write_p: 0.002,
             fail_p: 0.002,
-            ..Faults::default()
+            ..Faults::none(512)
         },
         THREADED,
         true,
@@ -1526,7 +1529,7 @@ fn a_crash_never_separates_an_allocation_from_its_link() {
         for round in 0..4u64 {
             sim.set_faults(Faults {
                 torn_p: 0.5,
-                ..Faults::default()
+                ..Faults::none(512)
             });
             sim.crash_at(sim.now() + crash_after(seed, round, 20_000, 80_000));
             run_process(&mut sim, |rt| {
@@ -1549,7 +1552,7 @@ fn a_crash_never_separates_an_allocation_from_its_link() {
                     leaks_possible_before += 1;
                 }
             });
-            sim.set_faults(Faults::default());
+            sim.set_faults(Faults::none(512));
             with_pager(&mut sim, |p| {
                 let fresh: BTreeSet<Pid> = allocated(p).difference(&before).copied().collect();
                 let links = linked(p, index);
@@ -1676,10 +1679,10 @@ fn a_lost_write_is_caught_when_the_page_is_read_back() {
         p.flush_log();
         rt.set_faults(Faults {
             lost_write_p: 1.0,
-            ..Faults::default()
+            ..Faults::none(512)
         });
         p.flush_pages(usize::MAX);
-        rt.set_faults(Faults::default());
+        rt.set_faults(Faults::none(512));
         for _ in 0..3 {
             for &pid in &pages[1..] {
                 drop(p.read(pid).unwrap());
@@ -1711,7 +1714,11 @@ fn flush_first_under(
     p.flush_log();
     rt.set_faults(faults);
     p.flush_pages(usize::MAX);
-    rt.set_faults(Faults::default());
+    rt.set_faults(Faults {
+        sector: faults.sector,
+        atomic_unit: faults.atomic_unit,
+        ..Faults::none(512)
+    });
     (changed, before)
 }
 
@@ -1736,8 +1743,7 @@ fn a_misdirected_page_write_is_refused_where_it_was_meant_and_where_it_landed() 
         let mut sim = Sim::new(
             seed,
             Config {
-                sector: PAGE as u64,
-                atomic_unit: PAGE as u64,
+                faults: Faults::none(PAGE as u64),
                 ..Config::default()
             },
         );
@@ -1749,7 +1755,7 @@ fn a_misdirected_page_write_is_refused_where_it_was_meant_and_where_it_landed() 
             let (p, _) = Pager::open(rt.clone(), &options(layout)).unwrap();
             let misdirect = Faults {
                 misdirect_p: 1.0,
-                ..Faults::default()
+                ..Faults::none(PAGE as u64)
             };
             let (expected, found) = flush_first_under(&rt, &p, &pages, misdirect);
             let mut refused = BTreeMap::new();
@@ -1792,7 +1798,7 @@ fn a_lost_page_write_is_reported_and_refused_on_reopen() {
         let (p, _) = Pager::open(rt.clone(), &options(PLAIN)).unwrap();
         let lost = Faults {
             lost_write_p: 1.0,
-            ..Faults::default()
+            ..Faults::none(512)
         };
         lsns = Some(flush_first_under(&rt, &p, &pages, lost));
         p.checkpoint();
@@ -1829,11 +1835,11 @@ fn a_lost_log_write_refuses_the_reopen_at_its_gap() {
         cut = Some(Probe::of(&p).durable());
         rt.set_faults(Faults {
             lost_write_p: 1.0,
-            ..Faults::default()
+            ..Faults::none(512)
         });
         change(pages[2]);
         p.flush_log();
-        rt.set_faults(Faults::default());
+        rt.set_faults(Faults::none(512));
         change(pages[3]);
         p.flush_log();
     });
@@ -1865,7 +1871,7 @@ fn a_crash_never_separates_freeing_from_unlinking() {
         for round in 0..4u64 {
             sim.set_faults(Faults {
                 torn_p: 0.5,
-                ..Faults::default()
+                ..Faults::none(512)
             });
             sim.crash_at(sim.now() + crash_after(seed, round, 20_000, 80_000));
             run_process(&mut sim, |rt| {
@@ -1898,7 +1904,7 @@ fn a_crash_never_separates_freeing_from_unlinking() {
                     }
                 }
             });
-            sim.set_faults(Faults::default());
+            sim.set_faults(Faults::none(512));
             with_pager(&mut sim, |p| {
                 let fresh: BTreeSet<Pid> = allocated(p).difference(&before).copied().collect();
                 assert_eq!(

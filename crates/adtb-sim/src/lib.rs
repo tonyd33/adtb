@@ -15,5 +15,5 @@ mod rng;
 mod sim;
 
 pub use check::{Fate, Finding, FindingKind, Ledger, Recovered, Violation, check};
-pub use disk::{Faults, Recording};
+pub use disk::Recording;
 pub use sim::{Config, Outcome, Sim, SimIo, SimRuntime};

@@ -10,9 +10,10 @@ use adtb::runtime::{Clock, Instant, Op, Runtime, Threads};
 use adtb::storage::{
     self, BackupRun, Crc32c, Damage, Envelope, HEADER_LEN, Lsn, Options, PageKind, Pager, Pid,
 };
-use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::search::{Action, Hooked, each_crash_image};
 use adtb_simkit::{common, harness};
+use adtb_sys::runtime::Faults;
 use adtb_testkit::profile::every_case;
 
 type Files = BTreeMap<String, Vec<u8>>;
@@ -467,7 +468,7 @@ fn torn() -> Config {
     Config {
         faults: Faults {
             torn_p: 1.0,
-            ..Faults::default()
+            ..Faults::none(512)
         },
         ..Config::default()
     }

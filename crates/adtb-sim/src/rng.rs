@@ -44,3 +44,17 @@ impl Rng {
         self.next_u64() & 1 == 1
     }
 }
+
+impl adtb::runtime::Draw for Rng {
+    fn chance(&mut self, p: f64) -> bool {
+        Rng::chance(self, p)
+    }
+
+    fn below(&mut self, n: u64) -> u64 {
+        Rng::below(self, n)
+    }
+
+    fn coin(&mut self) -> bool {
+        Rng::coin(self)
+    }
+}

@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use adtb::runtime::{IoError, Op as IoOp};
 use adtb::storage::{self, Pid};
-use adtb_sim::Faults;
 use adtb_simkit::search::{Action, Hooked};
+use adtb_sys::runtime::Faults;
 
 use super::consumers;
 use super::judge::{self, Hit, Verdicts};
@@ -189,7 +189,7 @@ fn injected(hook: &Hooked, injection: Injection, pid: Pid) -> Action {
             Action::Run(Box::new(move || {
                 rt.set_faults(Faults {
                     torn_p: 1.0,
-                    ..Faults::default()
+                    ..Faults::none(512)
                 });
                 armed.store(1, Ordering::SeqCst);
             }))

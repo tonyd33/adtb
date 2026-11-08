@@ -7,7 +7,8 @@ use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
-use super::faults::{After, Faults, Injector, Loss};
+use super::faults::{After, Injector, Loss};
+use crate::runtime::Faults;
 use crate::runtime::{AlignedBuf, Done, FileId, IoError, Op};
 
 /// The files one process has open, under its database directory.

@@ -13,7 +13,8 @@ use adtb::runtime::Threads;
 use adtb::storage::{Options, Pager, Pid, Position};
 use adtb::vacuum::{self, Report, Sum};
 use adtb::verify::{self, Inventory};
-use adtb_sim::{Config, Faults, Sim, SimRuntime};
+use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_sys::runtime::Faults;
 
 use adtb_simkit::harness;
 use adtb_simkit::recovery;
@@ -805,7 +806,7 @@ fn crash_config() -> Config {
     Config {
         faults: Faults {
             torn_p: 0.5,
-            ..Faults::default()
+            ..Faults::none(512)
         },
         ..Config::default()
     }

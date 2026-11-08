@@ -4,55 +4,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::ops::Range;
 
-use adtb::runtime::IoError;
+use adtb::runtime::{
+    AllocateFate, Faults, ForceFate, IoError, Landing, ReadFate, WriteFate, decide_allocate,
+    decide_force, decide_read, decide_unforced, decide_write,
+};
 
 use crate::rng::Rng;
-
-/// The probabilities and switches of the faults `SimStorage` injects.
-#[derive(Clone, Debug)]
-pub struct Faults {
-    /// Chance that a write left unsynced at a crash, and larger than the atomic unit, lands torn.
-    pub torn_p: f64,
-    /// Chance that a read flips one stored bit in its range first.
-    pub corrupt_p: f64,
-    /// Chance that a write lands at another offset of the same file.
-    pub misdirect_p: f64,
-    /// Chance that a write reports success and never reaches the device.
-    pub lost_write_p: f64,
-    /// Chance that a read makes one sector in its range unreadable until it is rewritten.
-    pub latent_p: f64,
-    /// Chance that a write, an allocate or a force fails. A failed allocate changes nothing.
-    pub fail_p: f64,
-    /// Lose any subset of unforced writes, creations and removals at a crash.
-    pub lose_unsynced: bool,
-    /// Complete ops after random delays, and so out of submission order.
-    pub delay_completions: bool,
-    /// The device has no free space: a write past a file's end, or an allocate that grows a
-    /// file, fails with `Full` and changes nothing.
-    pub no_space: bool,
-}
-
-impl Default for Faults {
-    fn default() -> Self {
-        Faults {
-            torn_p: 0.0,
-            corrupt_p: 0.0,
-            misdirect_p: 0.0,
-            lost_write_p: 0.0,
-            latent_p: 0.0,
-            fail_p: 0.0,
-            lose_unsynced: true,
-            delay_completions: true,
-            no_space: false,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Geometry {
-    pub(crate) sector: u64,
-    pub(crate) atomic_unit: u64,
-}
 
 pub(crate) type Ino = usize;
 
@@ -221,7 +178,6 @@ pub struct Recording {
 pub(crate) struct Ctx<'a> {
     pub(crate) rng: &'a mut Rng,
     pub(crate) faults: &'a Faults,
-    pub(crate) geometry: Geometry,
     pub(crate) trace: &'a mut String,
 }
 
@@ -509,7 +465,7 @@ impl Disk {
         buf: &mut [u8],
         cx: Ctx<'_>,
     ) -> Result<usize, IoError> {
-        let sector = cx.geometry.sector;
+        let sector = cx.faults.sector;
         assert!(
             offset.is_multiple_of(sector) && (buf.len() as u64).is_multiple_of(sector),
             "read at {offset} of {} bytes is not sector aligned",
@@ -522,33 +478,34 @@ impl Disk {
         if offset >= end {
             return Ok(0);
         }
-        if cx.rng.chance(cx.faults.latent_p) {
-            let first = offset / sector;
-            let last = (end - 1) / sector;
-            let s = cx.rng.between(first, last);
-            inode.bad.insert(s);
-            trace!(cx.trace, "fault latent ino {ino} {path:?} sector {s}");
-        }
-        if inode
+        let bad = inode
             .bad
             .range(offset / sector..=(end - 1) / sector)
             .next()
-            .is_some()
-        {
-            trace!(cx.trace, "read ino {ino} @{offset} hits a bad sector");
-            return Err(IoError::Failed);
-        }
-        if cx.rng.chance(cx.faults.corrupt_p) {
-            let at = cx.rng.between(offset, end - 1) as usize;
-            let bit = 1u8 << cx.rng.below(8);
-            inode.visible[at] ^= bit;
-            if let Some(b) = inode.durable.get_mut(at) {
-                *b ^= bit;
+            .is_some();
+        match decide_read(cx.rng, cx.faults, offset, end - offset, bad) {
+            ReadFate::Latent { sector: s } => {
+                inode.bad.insert(s);
+                trace!(cx.trace, "fault latent ino {ino} {path:?} sector {s}");
+                trace!(cx.trace, "read ino {ino} @{offset} hits a bad sector");
+                return Err(IoError::Failed);
             }
-            trace!(
-                cx.trace,
-                "fault corrupt ino {ino} {path:?} byte {at} bit {bit:#04x}"
-            );
+            ReadFate::Unreadable => {
+                trace!(cx.trace, "read ino {ino} @{offset} hits a bad sector");
+                return Err(IoError::Failed);
+            }
+            ReadFate::Corrupt { byte, bit } => {
+                let at = byte as usize;
+                inode.visible[at] ^= bit;
+                if let Some(b) = inode.durable.get_mut(at) {
+                    *b ^= bit;
+                }
+                trace!(
+                    cx.trace,
+                    "fault corrupt ino {ino} {path:?} byte {at} bit {bit:#04x}"
+                );
+            }
+            ReadFate::Clean => {}
         }
         let n = (end - offset) as usize;
         buf[..n].copy_from_slice(&inode.visible[offset as usize..end as usize]);
@@ -562,59 +519,47 @@ impl Disk {
         data: &[u8],
         cx: Ctx<'_>,
     ) -> Result<(), IoError> {
-        let sector = cx.geometry.sector;
+        let sector = cx.faults.sector;
         assert!(
             offset.is_multiple_of(sector) && (data.len() as u64).is_multiple_of(sector),
             "write at {offset} of {} bytes is not sector aligned",
             data.len()
         );
         let path = self.path_of(ino);
-        if cx.faults.no_space && offset + data.len() as u64 > self.inodes[ino].visible.len() as u64
-        {
-            trace!(cx.trace, "no space for write ino {ino} {path:?} @{offset}");
-            return Err(IoError::Full);
-        }
-        if cx.rng.chance(cx.faults.fail_p) {
-            let mut landed = Vec::new();
-            for (i, chunk) in data.chunks(sector as usize).enumerate() {
-                if cx.rng.coin() {
-                    let at = offset + i as u64 * sector;
-                    self.apply(ino, at, Payload::Bytes(chunk.to_vec()), sector);
-                    landed.push(i);
-                }
+        let file_len = self.inodes[ino].visible.len() as u64;
+        match decide_write(cx.rng, cx.faults, offset, data.len() as u64, file_len) {
+            WriteFate::Full => {
+                trace!(cx.trace, "no space for write ino {ino} {path:?} @{offset}");
+                Err(IoError::Full)
             }
-            trace!(
-                cx.trace,
-                "fault fail write ino {ino} {path:?} @{offset} landed sectors {landed:?}"
-            );
-            return Err(IoError::Failed);
+            WriteFate::Fail { landed } => {
+                let mut sectors = Vec::new();
+                for part in landed {
+                    let bytes = &data[(part.start - offset) as usize..(part.end - offset) as usize];
+                    sectors.push(((part.start - offset) / sector) as usize);
+                    self.apply(ino, part.start, Payload::Bytes(bytes.to_vec()), sector);
+                }
+                trace!(
+                    cx.trace,
+                    "fault fail write ino {ino} {path:?} @{offset} landed sectors {sectors:?}"
+                );
+                Err(IoError::Failed)
+            }
+            WriteFate::Lost => {
+                trace!(cx.trace, "fault lost write ino {ino} {path:?} @{offset}");
+                Ok(())
+            }
+            WriteFate::At(target) => {
+                if target != offset {
+                    trace!(
+                        cx.trace,
+                        "fault misdirect ino {ino} {path:?} @{offset} to @{target}"
+                    );
+                }
+                self.apply(ino, target, Payload::Bytes(data.to_vec()), sector);
+                Ok(())
+            }
         }
-        if cx.rng.chance(cx.faults.lost_write_p) {
-            trace!(cx.trace, "fault lost write ino {ino} {path:?} @{offset}");
-            return Ok(());
-        }
-        let mut target = offset;
-        if cx.rng.chance(cx.faults.misdirect_p) {
-            target = self.misdirect(ino, offset, data.len() as u64, sector, cx.rng);
-            trace!(
-                cx.trace,
-                "fault misdirect ino {ino} {path:?} @{offset} to @{target}"
-            );
-        }
-        self.apply(ino, target, Payload::Bytes(data.to_vec()), sector);
-        Ok(())
-    }
-
-    fn misdirect(&self, ino: Ino, offset: u64, len: u64, sector: u64, rng: &mut Rng) -> u64 {
-        let file_len = (self.inodes[ino].visible.len() as u64).max(offset + len);
-        let slots = (file_len - len) / sector + 1;
-        if slots <= 1 {
-            return offset + len;
-        }
-        let original = offset / sector;
-        let k = rng.below(slots - 1);
-        let k = if k >= original { k + 1 } else { k };
-        k * sector
     }
 
     fn apply(&mut self, ino: Ino, offset: u64, data: Payload, sector: u64) {
@@ -643,24 +588,28 @@ impl Disk {
     }
 
     pub(crate) fn allocate(&mut self, ino: Ino, len: u64, cx: Ctx<'_>) -> Result<(), IoError> {
-        if cx.rng.chance(cx.faults.fail_p) {
-            trace!(cx.trace, "fault fail allocate ino {ino} to {len}");
-            return Err(IoError::Failed);
-        }
         let have = self.inodes[ino].visible.len() as u64;
-        if len > have {
-            if cx.faults.no_space {
-                trace!(cx.trace, "no space to allocate ino {ino} to {len}");
-                return Err(IoError::Full);
+        match decide_allocate(cx.rng, cx.faults, len, have) {
+            AllocateFate::Fail => {
+                trace!(cx.trace, "fault fail allocate ino {ino} to {len}");
+                Err(IoError::Failed)
             }
-            let zeros = Payload::Zeros((len - have) as usize);
-            self.apply(ino, have, zeros, cx.geometry.sector);
+            AllocateFate::Full => {
+                trace!(cx.trace, "no space to allocate ino {ino} to {len}");
+                Err(IoError::Full)
+            }
+            AllocateFate::Run => {
+                if len > have {
+                    let zeros = Payload::Zeros((len - have) as usize);
+                    self.apply(ino, have, zeros, cx.faults.sector);
+                }
+                Ok(())
+            }
         }
-        Ok(())
     }
 
     pub(crate) fn sync(&mut self, ino: Ino, upto: u64, cx: Ctx<'_>) -> Result<(), IoError> {
-        if cx.rng.chance(cx.faults.fail_p) {
+        if decide_force(cx.rng, cx.faults) == ForceFate::Fail {
             let path = self.path_of(ino);
             trace!(cx.trace, "fault fail sync ino {ino} {path:?}");
             return Err(IoError::Failed);
@@ -676,7 +625,7 @@ impl Disk {
     }
 
     pub(crate) fn sync_dir(&mut self, dir: &str, upto: u64, cx: Ctx<'_>) -> Result<(), IoError> {
-        if cx.rng.chance(cx.faults.fail_p) {
+        if decide_force(cx.rng, cx.faults) == ForceFate::Fail {
             trace!(cx.trace, "fault fail sync dir {dir:?}");
             return Err(IoError::Failed);
         }
@@ -711,12 +660,7 @@ impl Disk {
 
     /// Reduce the disk to what a crash at this instant leaves on the device.
     pub(crate) fn crash(&mut self, in_flight: Vec<InFlight>, cx: Ctx<'_>) {
-        let Ctx {
-            rng,
-            faults,
-            geometry,
-            trace,
-        } = cx;
+        let Ctx { rng, faults, trace } = cx;
         let mut landings: Vec<(Ino, u64, Payload, bool)> = Vec::new();
         for (ino, inode) in self.inodes.iter_mut().enumerate() {
             for w in inode.unsynced.drain(..) {
@@ -730,27 +674,24 @@ impl Disk {
         );
         for (ino, offset, data, acked) in landings {
             let durable = &mut self.inodes[ino].durable;
-            if acked && !faults.lose_unsynced {
-                data.land(durable, offset);
-                continue;
-            }
-            let unit = geometry.atomic_unit as usize;
-            if data.len() > unit && rng.chance(faults.torn_p) {
-                let mut mask = Vec::new();
-                for start in (0..data.len()).step_by(unit) {
-                    let lands = rng.coin();
-                    if lands {
-                        let end = (start + unit).min(data.len());
-                        data.land_part(durable, offset, start..end);
-                    }
-                    mask.push(lands);
+            match decide_unforced(rng, faults, data.len() as u64, acked) {
+                Landing::Whole if acked && !faults.lose_unsynced => data.land(durable, offset),
+                Landing::Whole => {
+                    data.land(durable, offset);
+                    trace!(trace, "crash landed ino {ino} @{offset}");
                 }
-                trace!(trace, "crash torn ino {ino} @{offset} units {mask:?}");
-            } else if rng.coin() {
-                data.land(durable, offset);
-                trace!(trace, "crash landed ino {ino} @{offset}");
-            } else {
-                trace!(trace, "crash lost ino {ino} @{offset}");
+                Landing::Lost => trace!(trace, "crash lost ino {ino} @{offset}"),
+                Landing::Torn(mask) => {
+                    let unit = faults.atomic_unit as usize;
+                    for (k, &lands) in mask.iter().enumerate() {
+                        if lands {
+                            let start = k * unit;
+                            let end = (start + unit).min(data.len());
+                            data.land_part(durable, offset, start..end);
+                        }
+                    }
+                    trace!(trace, "crash torn ino {ino} @{offset} units {mask:?}");
+                }
             }
         }
         for inode in &mut self.inodes {

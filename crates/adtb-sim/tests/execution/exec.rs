@@ -20,8 +20,9 @@ use adtb_lang::kernel::Var;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::Ty;
 use adtb_reference::{Abort, R, Value};
-use adtb_sim::{Config, Faults, Sim, SimRuntime};
+use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_sys::lock::Lock;
+use adtb_sys::runtime::Faults;
 use adtb_testkit::uuid;
 
 use fixture::{Fixture, running, variants};
@@ -1467,7 +1468,7 @@ fn a_spill_past_its_spill_bound_is_rejected_for_the_bound_and_the_grant() {
         spill_bytes: 4096,
         ..XOptions::default()
     };
-    let got = spill_errors(&f, &cases, opts, Faults::default());
+    let got = spill_errors(&f, &cases, opts, Faults::none(512));
     for (c, e) in cases.iter().zip(got) {
         assert_eq!(
             Some(Error::StatementLimit(Exceeded::Spill {
@@ -1491,7 +1492,7 @@ fn a_spill_file_that_fails_its_writes_fails_the_call_with_the_io_error() {
     };
     let faults = Faults {
         fail_p: 1.0,
-        ..Faults::default()
+        ..Faults::none(512)
     };
     let got = spill_errors(&f, &cases, opts, faults);
     for (c, e) in cases.iter().zip(got) {
@@ -1509,7 +1510,7 @@ fn a_spill_onto_a_full_device_is_rejected_for_its_memory_grant() {
     };
     let faults = Faults {
         no_space: true,
-        ..Faults::default()
+        ..Faults::none(512)
     };
     let got = spill_errors(&f, &cases, opts, faults);
     for (c, e) in cases.iter().zip(got) {

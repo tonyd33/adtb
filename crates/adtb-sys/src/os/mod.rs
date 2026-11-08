@@ -20,13 +20,14 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockWriteGuard};
 use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration, SystemTime};
 
-pub use self::faults::{Faults, Loss};
+pub use self::faults::Loss;
 use self::files::Files;
 use self::pool::Pool;
 use self::queue::{Ring, Waiter};
 use self::timer::Timers;
 pub use self::uring::Unavailable;
 use self::uring::Uring;
+pub use crate::runtime::Faults;
 use crate::runtime::{
     Clock, Completion, Entropy, Instant, Io, Op, Runtime, ThreadId, Threads, Ticket,
 };
@@ -99,8 +100,9 @@ impl OsRuntime {
     /// Returns a runtime whose paths are relative to the directory `root`, injecting `faults`
     /// into every op on its files.
     ///
-    /// Panic if `backend` asks for no threads or no entries, if the host refuses io_uring, or if
-    /// the atomic unit is not a whole number of sectors.
+    /// Panic if `backend` asks for no threads or no entries, if the host refuses io_uring, if the
+    /// sector is not a multiple of [`AlignedBuf::ALIGN`](crate::runtime::AlignedBuf::ALIGN), or
+    /// if the atomic unit is not a whole number of sectors.
     pub fn with_faults(root: impl Into<PathBuf>, backend: Backend, faults: Faults) -> OsRuntime {
         OsRuntime::start(Files::new(root.into(), Some(faults)), backend)
             .unwrap_or_else(|e| panic!("{e}"))
@@ -141,8 +143,8 @@ impl OsRuntime {
 
     /// Inject `faults` from now on, keeping what earlier faults left.
     ///
-    /// Panics unless the runtime was made by [`OsRuntime::with_faults`], or if the atomic unit
-    /// is not a whole number of sectors.
+    /// Panic unless the runtime was made by [`OsRuntime::with_faults`], or if `faults` changes
+    /// the sector or the atomic unit.
     pub fn set_faults(&self, faults: Faults) {
         self.backend.files.set_faults(faults);
     }

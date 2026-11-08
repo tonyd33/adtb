@@ -34,6 +34,23 @@ Invariants:
 `os` holds the real runtime over the host
 ([runtime.md §2](runtime.md#2-io-interface)).
 
+`runtime` also owns, in `crates/adtb-sys/src/runtime/faults.rs`, the
+device fault decisions of
+[runtime.md §3](runtime.md#3-faults-a-backend-may-produce), which
+both backends apply:
+
+```text
+Faults { seed, torn_p, corrupt_p, misdirect_p, lost_write_p, latent_p, fail_p,
+         lose_unsynced, no_space, sector, atomic_unit }
+Faults::none(sector) -> Faults   // no faults; atomic_unit = sector
+trait Draw { chance(p) -> bool; below(n) -> u64; coin() -> bool }
+decide_write, decide_read, decide_allocate, decide_force, decide_unforced
+WriteFate, ReadFate, AllocateFate, ForceFate, Landing
+```
+
+`Faults` has no default: every policy states its geometry.
+`os::Faults` names the same type, beside `OsRuntime::with_faults`.
+
 Page memory is `pages::PageMemory`, with three guards in place of
 `Frame` and `PageRef`:
 
