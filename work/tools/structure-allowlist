@@ -297,7 +297,6 @@ sim_test_opens test 1 crates/adtb-sim/tests/server/server_binding.rs
 sim_test_opens test 2 crates/adtb-sim/tests/server/server_commands.rs
 sim_test_opens test 1 crates/adtb-sim/tests/server/server_files.rs
 sim_test_opens test 2 crates/adtb-sim/tests/storage/damage_search/consumers.rs
-sim_test_opens test 1 crates/adtb-sim/tests/storage/damage_search/judge.rs
 sim_test_opens test 1 crates/adtb-sim/tests/storage/damage_search/mod.rs
 sim_test_opens test 1 crates/adtb-sim/tests/storage/damage_search/world.rs
 sim_test_opens test 4 crates/adtb-sim/tests/storage/io_contract.rs

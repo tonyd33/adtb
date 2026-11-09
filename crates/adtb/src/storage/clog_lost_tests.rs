@@ -326,7 +326,7 @@ fn an_index_finding_beside_a_settled_status_page_marks_only_its_index() {
             page.0
         );
         assert_eq!(vec![("Orphan".to_owned(), at)], found);
-        let index = BTreeSet::from([t.mark_of(ix).unwrap()]);
+        let index = BTreeSet::from([t.own_mark(ix).unwrap()]);
         assert_eq!(index, db.testing().probe().marks());
         db.close().unwrap();
         index
@@ -656,11 +656,11 @@ fn kinds(db: &Database<SimRuntime>) -> BTreeMap<Pid, (&'static str, Quarantine)>
     }
     let heap = t.heap("app::users", "User").unwrap();
     for p in t.owned(heap).unwrap() {
-        kinds.insert(p, ("heap", t.mark_of(heap).unwrap()));
+        kinds.insert(p, ("heap", t.own_mark(heap).unwrap()));
     }
     let index = t.index("app::users", "key id").unwrap();
     for p in t.pages(index).unwrap() {
-        kinds.insert(p, ("index", t.mark_of(index).unwrap()));
+        kinds.insert(p, ("index", t.own_mark(index).unwrap()));
     }
     kinds
 }

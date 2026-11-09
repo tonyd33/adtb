@@ -46,7 +46,7 @@ Controls, all on `Testing`:
 
 | Group | Calls |
 | --- | --- |
-| Addressing | `heap`, `history`, `large`, `index`, `history_index` (an `Object` by qualified name), `mark_of`, `own_mark`, `owner`, `root`, `pages`, `owned`, `reachable`, `commit_log`, `ctors`, `key_schema` |
+| Addressing | `heap`, `history`, `large`, `index`, `history_index` (an `Object` by qualified name), `objects`, `holder`, `own_mark`, `owner`, `root`, `pages`, `owned`, `reachable`, `commit_log`, `ctors`, `key_schema` |
 | Reading an object | `entries`, `all_entries`, `versions`, `read`, `headers`, `status`, `is_free`, `allocated` |
 | Changing the engine | `plant(Plant)` |
 | Durability | `flush`, `flush_log`, `flush_pages`, `checkpoint`, `recycle_log` |
@@ -58,6 +58,7 @@ a test of the file reads, re-exported from the layers:
 
 ```text
 Damage, LogFinding, Lsn, PageError, PageKind, Pid, LogPosition, Quarantine
+Holder                                         // the structure a damaged page maps by, storage.md §8
 manifest_hash(&text) -> String                 // the hash a manifest's checksum line holds
 Flags, Limits, Snapshot, Xid, Charged
 Rewrites, with_rewrites                        // the planner's rewrite hook
@@ -146,7 +147,8 @@ An `Object` names a structure by the id the catalog gives it: a
 constructor's heap, its history heap or large-value store by `HeapId`,
 an index or the history key index of a relation by `IndexId`, or one of
 the engine's own structures (the commit log, the commit times tree, the
-catalog, the counters, the marks page, the damage list). A test finds
+catalog, the heap of the catalog's rows, the counters, the marks page,
+the damage list). A test finds
 one by qualified name and holds no reference into the engine.
 
 `plant(Plant)` is the one way a test changes the engine's state beneath
@@ -161,12 +163,17 @@ it, and say below which of them record damage or set marks.
   tree. An object the catalog no longer holds answers
   `Failed::Absent`; a structure with no listing of pages answers
   `Failed::Unlisted`.
-- `mark_of` answers the mark the engine sets for damage to a page of the
-  object, as the engine's own mapping of pages to marks gives it.
+- `objects` answers every heap, history heap, large-value store, index
+  and history key index of the database's relations.
+- `holder` answers the `Holder` of the object's pages, the structure
+  storage.md §8 maps a damaged page by: a relation's heap or index, with
+  whether its relation is of an engine module, the large-value store, or
+  the engine structure it is. An object `Holder` has no variant for
+  answers `Failed::Unheld`; today that is the commit times tree.
 - `own_mark` answers the mark that names a heap or an index alone, as a
   `Mark` plant sets it and admission of a call checks it; a history heap
   or index answers its relation's heap's or key index's. A large-value
-  store or an engine structure answers none.
+  store or an engine structure answers `Failed::Shared`.
 - `owner`, `root`, `pages`, `owned`, `reachable`, `ctors`, `key_schema`,
   `commit_log`, `entries`, `all_entries`, `versions`, `read`, `headers`,
   `status`, `is_free` and `allocated` answer what the structure holds

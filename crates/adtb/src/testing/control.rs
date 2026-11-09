@@ -48,6 +48,11 @@ impl<'a, R: Runtime> Testing<'a, R> {
         self.db.tested_pager().allocated()
     }
 
+    /// Returns the pages of trees a swap replaced that no sweep has freed.
+    pub fn retired(self) -> Vec<Pid> {
+        self.db.tested_pager().retired()
+    }
+
     /// Write the log.
     pub fn flush_log(self) {
         self.db.tested_pager().flush_log();

@@ -10,6 +10,7 @@ use adtb::Proof;
 
 use super::case::{Fault, Plan};
 use super::consumers::{Backup, Consumer, Copy, Dumped, Finding, Lookups, Observed, Read};
+use super::stated::{self, Class, Held, PHASES, Phase, Stated};
 use super::world::{self, Kind, Op, Ran, Rel, Rows, WriteOut};
 
 /// One way a case broke the contract, at the consumer that showed it. `what` names the shape
@@ -34,6 +35,8 @@ pub enum Ending {
 #[derive(Debug)]
 pub struct Verdicts {
     pub violations: Vec<Violation>,
+    /// The rows of the table the case asked.
+    pub rows: BTreeSet<Row>,
     /// The consumers whose judgement ran and could meet the first fault's page.
     pub reached: BTreeSet<Consumer>,
     pub ending: Ending,
@@ -69,9 +72,15 @@ struct Page {
     stale: bool,
     must_report: bool,
     must_not_name: bool,
-    /// The mark the page's detection sets, for a page that lost a write. A detection while the
-    /// page was stale leaves a record that only an image or a free of the page removes.
+    /// The mark the table states for the phase the page's mapping surely ran in.
     mark: Option<Quarantine>,
+    /// The marks the table states for every phase that may have mapped the page. A detection
+    /// while the page was stale leaves a record that only an image or a free of the page removes.
+    may: BTreeSet<Quarantine>,
+    /// Whether the page's damage quarantines the database for the first open alone.
+    open: bool,
+    /// The row of the stated table its mark comes from.
+    row: Option<Row>,
 }
 
 /// The facts of a case the rules read.
@@ -92,6 +101,9 @@ struct Facts<'a> {
     /// that open only.
     open_only: bool,
     baseline: BTreeSet<Quarantine>,
+    /// The pages the search could not classify, by their write-out.
+    unclassified: Vec<String>,
+    rows: BTreeSet<Row>,
 }
 
 impl Facts<'_> {
@@ -143,23 +155,71 @@ fn relational(kind: Kind) -> bool {
     )
 }
 
-/// Returns the mark the detection of damage on a page of `kind` of `rel` sets: the relation's
-/// heap or key index for its pages, nothing for a commit log status page the log `settled`, and
-/// the database for every other page.
-fn mark_of(ids: &world::Ids, kind: Kind, rel: Option<Rel>, settled: bool) -> Option<Quarantine> {
-    let marks = rel.and_then(|r| ids.marks.get(&r));
-    match kind {
-        Kind::Heap | Kind::Directory | Kind::VisibilityMap => marks.map(|m| m.0),
-        Kind::Index => marks.map(|m| m.1),
-        Kind::CommitLog if settled => None,
-        Kind::CommitLog
-        | Kind::Large
-        | Kind::Engine
-        | Kind::LsnMap
-        | Kind::DamageList
-        | Kind::Bitmap
-        | Kind::Marks => Some(Quarantine::Database),
+/// A row of the stated table.
+pub type Row = (Class, Held, Phase);
+
+/// What the stated table says of one damaged page.
+#[derive(Default)]
+struct Judged {
+    mark: Option<Quarantine>,
+    may: BTreeSet<Quarantine>,
+    /// Whether the page's damage quarantines the database for the first open alone.
+    open: bool,
+    /// The row of the phase the page's mapping surely ran in.
+    row: Option<Row>,
+}
+
+/// Returns what the stated table says of `fault` on the page of write-out `w`, by the phases its
+/// record may have been mapped in. The consumers read the marks in the session of the first open,
+/// which maps once each record it holds; a later record is mapped once, at a call end or a
+/// commit. An earlier session may have mapped the page in either phase only when the run held
+/// its record. Returns nothing stated for a tear. Fails with the write-out of a page the search
+/// cannot classify.
+///
+/// The search cannot see whether the first open's mapping of a record was complete: in a case
+/// with an unreadable page, a page recorded at the open may be mapped at a later call end
+/// instead, so its expected mark is the one both phases state alike.
+fn judged(case: &Case<'_>, w: &WriteOut, fault: Fault) -> Result<Judged, String> {
+    let o = case.observed;
+    let ids = &case.plan.observed.ids;
+    let holding = ids
+        .holding(w.kind, w.owner, w.pid)
+        .ok_or_else(|| format!("page {} of kind {} and owner {}", w.pid.0, w.kind, w.owner))?;
+    let met_in_open = o.met_in_open && !is_lost(fault);
+    let class = match fault {
+        Fault::Torn => return Ok(Judged::default()),
+        _ if o.settled.contains(&w.pid) => Class::Settled,
+        Fault::LostEarlier | Fault::LostCurrent | Fault::Recycled => Class::Damaged,
+        _ if met_in_open && holding.0 == Held::LsnMap => Class::Unarmed,
+        Fault::UnreadableOnce | Fault::UnreadableLasting => Class::Unread,
+    };
+    let earlier = case.ran.recorded.contains(&w.pid);
+    let incomplete = case
+        .hits
+        .iter()
+        .any(|h| !is_lost(h.fault) && h.fault != Fault::Torn);
+    let (surely, mut phases) = if met_in_open {
+        (Some(Phase::Opening), vec![Phase::Opening])
+    } else if o.recorded_at_open.contains(&w.pid) {
+        let surely = (!incomplete || !is_lost(fault)).then_some(Phase::Opening);
+        (surely, vec![Phase::Opening])
+    } else {
+        (Some(Phase::Running), vec![Phase::Running])
+    };
+    if earlier || surely.is_none() {
+        phases = PHASES.to_vec();
     }
+    let mark = |p| stated::durable(class, holding, p);
+    let agreed = PHASES
+        .iter()
+        .map(|p| mark(*p))
+        .reduce(|a, b| if a == b { a } else { None });
+    Ok(Judged {
+        mark: surely.map_or(agreed.flatten(), mark),
+        may: phases.iter().filter_map(|p| mark(*p)).collect(),
+        open: met_in_open && stated::stated(class, holding.0, Phase::Opening) == Stated::Open,
+        row: surely.map(|p| (class, holding.0, p)),
+    })
 }
 
 fn is_lost(fault: Fault) -> bool {
@@ -173,6 +233,8 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
     let plan = case.plan;
     let ids = &plan.observed.ids;
     let mut pages = Vec::new();
+    let mut unclassified = Vec::new();
+    let mut open_only = false;
     for hit in &case.hits {
         let mut batch = vec![hit.written];
         if is_lost(hit.fault) {
@@ -199,10 +261,11 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
                     Fault::LostEarlier => !stale,
                     _ => false,
                 };
-            let settled = case.observed.settled.contains(&w.pid);
-            let mark = is_lost(hit.fault)
-                .then(|| mark_of(ids, kind, rel, settled))
-                .flatten();
+            let judged = judged(case, &w, hit.fault).unwrap_or_else(|e| {
+                unclassified.push(e);
+                Judged::default()
+            });
+            open_only |= judged.open;
             pages.push(Page {
                 pid: w.pid,
                 kind,
@@ -211,7 +274,10 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
                 stale,
                 must_report,
                 must_not_name,
-                mark,
+                mark: judged.mark,
+                may: judged.may,
+                open: judged.open,
+                row: judged.row,
             });
         }
     }
@@ -240,7 +306,6 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
         .hits
         .iter()
         .any(|h| matches!(h.fault, Fault::UnreadableOnce | Fault::UnreadableLasting));
-    let open_only = unreadable_map_quarantines_the_open(case);
     let named: BTreeSet<Pid> = case
         .observed
         .verify
@@ -248,6 +313,19 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
         .flatten()
         .flatten()
         .flat_map(|(_, at)| pages.iter().map(|p| p.pid).filter(|pid| names(at, *pid)))
+        .collect();
+    let observed = case.observed.marks.is_some();
+    let rows = pages
+        .iter()
+        .filter(|p| {
+            let bites = p.must_report || p.open || named.contains(&p.pid);
+            if matches!(p.fault, Fault::UnreadableOnce | Fault::UnreadableLasting) {
+                bites || observed
+            } else {
+                p.stale && bites
+            }
+        })
+        .filter_map(|p| p.row)
         .collect();
     let mut allowed_marks = lost_page_keeps_its_mark(&pages, &named);
     allowed_marks.extend(unused_slot_marks_its_index(&pages, ids));
@@ -269,6 +347,8 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
         unreadable,
         open_only,
         baseline,
+        unclassified,
+        rows,
     }
 }
 
@@ -278,8 +358,13 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
 fn lost_page_keeps_its_mark(pages: &[Page], named: &BTreeSet<Pid>) -> BTreeSet<Quarantine> {
     pages
         .iter()
-        .filter(|p| p.mark != Some(Quarantine::Database) || p.must_report || named.contains(&p.pid))
-        .filter_map(|p| p.mark)
+        .flat_map(|p| {
+            let database = p.must_report || named.contains(&p.pid);
+            p.may
+                .iter()
+                .filter(move |m| **m != Quarantine::Database || database)
+        })
+        .copied()
         .collect()
 }
 
@@ -288,19 +373,10 @@ fn lost_page_keeps_its_mark(pages: &[Page], named: &BTreeSet<Pid>) -> BTreeSet<Q
 fn unused_slot_marks_its_index(pages: &[Page], ids: &world::Ids) -> Vec<Quarantine> {
     pages
         .iter()
-        .filter(|p| p.mark.is_some() && p.kind == Kind::Heap)
+        .filter(|p| !p.may.is_empty() && p.kind == Kind::Heap)
         .filter_map(|p| p.rel.and_then(|r| ids.marks.get(&r)))
         .map(|(_, index)| *index)
         .collect()
-}
-
-/// Returns whether the first open met an LSN map or damage list page the device cannot read,
-/// which quarantines the database for that open only.
-fn unreadable_map_quarantines_the_open(case: &Case<'_>) -> bool {
-    case.observed.met_in_open
-        && case.hits.iter().any(|h| {
-            h.fault == Fault::UnreadableLasting && matches!(h.kind, Kind::LsnMap | Kind::DamageList)
-        })
 }
 
 /// Returns whether `all` holds an allowed mark on the database, which quarantines every heap and
@@ -353,6 +429,13 @@ pub fn judge(case: &Case<'_>) -> Verdicts {
     };
     if let Some(p) = &o.panic {
         v(Consumer::Settle, "the engine panics".into(), p.clone());
+    }
+    for page in &f.unclassified {
+        v(
+            Consumer::Settle,
+            "a damaged page the search cannot classify".into(),
+            page.clone(),
+        );
     }
     if let Some(Err(e)) = &o.open
         && !f.lasting
@@ -414,6 +497,7 @@ pub fn judge(case: &Case<'_>) -> Verdicts {
     }
     Verdicts {
         violations: out,
+        rows: f.rows.clone(),
         reached: reached(&f),
         ending: ending(&f),
     }
@@ -587,8 +671,8 @@ fn judge_findings(f: &Facts<'_>, found: &Result<Vec<Finding>, String>) -> Vec<(S
     out
 }
 
-/// Returns the violations of the marks the file holds. Under unreadable pages alone: no mark,
-/// but the open's own quarantine of the database, which the next open with the page readable no
+/// Returns the violations of the marks the file holds. Under unreadable pages alone: no mark
+/// beyond those the stated table gives the pages, but the open's own quarantine of the database, which the next open with the page readable no
 /// longer holds while it serves every row. Else every mark the stale pages map to, unless the
 /// database's mark, which covers every object, is set and allowed, or an unreadable page leaves
 /// the mapping incomplete; and no mark beyond those the case may show.
@@ -622,6 +706,9 @@ fn judge_marks(f: &Facts<'_>) -> Vec<(String, String)> {
                 }
             }
         } else {
+            let stated: BTreeSet<Quarantine> =
+                f.pages.iter().flat_map(|p| &p.may).copied().collect();
+            let marks: BTreeSet<Quarantine> = marks.difference(&stated).copied().collect();
             if !marks.is_empty() {
                 let shape = if marks.contains(&Quarantine::Database) {
                     "an unreadable page marks the database"

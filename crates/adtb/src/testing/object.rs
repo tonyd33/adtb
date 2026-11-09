@@ -8,7 +8,7 @@ use crate::key::{CtorId, Entry, KeySchema, Tid, Value};
 use crate::mvcc::{Status, StatusError, Xid};
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
-use crate::storage::policy::{self, Holder, Phase};
+use crate::storage::policy::Holder;
 use crate::storage::{Pid, Quarantine};
 
 use super::{Failed, Testing};
@@ -29,6 +29,8 @@ pub enum Object {
     CommitTimes,
     CommitLog,
     Catalog,
+    /// The heap of the catalog's rows, which also holds the kept rows.
+    CatalogRows,
     Sequences,
     Marks,
     DamageList,
@@ -96,54 +98,67 @@ impl<'a, R: Runtime> Testing<'a, R> {
         w.history_index_of(key).map(|_| Object::HistoryIndex(key))
     }
 
-    /// Returns the mark the engine sets for damage to a page of `object`.
-    pub fn mark_of(self, object: Object) -> Result<Quarantine, Failed> {
+    /// Returns every heap, history heap, large-value store, index and history key index of the
+    /// database's relations.
+    pub fn objects(self) -> Vec<Object> {
+        let w = self.db.tested_db();
+        let mut out = Vec::new();
+        for id in w.heap_ids() {
+            out.extend([Object::Heap(id), Object::Large(id)]);
+            out.extend(w.history_heap_of(id).map(|_| Object::History(id)));
+        }
+        for id in w.index_ids() {
+            out.push(Object::Index(id));
+            out.extend(w.history_index_of(id).map(|_| Object::HistoryIndex(id)));
+        }
+        out
+    }
+
+    /// Returns the holder of the pages of `object`. Fails with [`Failed::Unheld`] for an object
+    /// [`Holder`] has no variant for, which today is the commit times tree.
+    pub fn holder(self, object: Object) -> Result<Holder, Failed> {
         let w = self.db.tested_db();
         let absent = Failed::Absent(object);
-        let running = |holder| {
-            let mark = policy::checksum_mark(holder, Phase::Running);
-            mark.durable()
-                .expect("damage to a page of an engine structure marks an object")
-        };
         match object {
-            Object::Heap(id) | Object::History(id) => w.heap_mark(id).ok_or(absent),
-            Object::Large(id) => w
-                .heap_of(id)
-                .map(|_| running(Holder::LargeStore))
-                .ok_or(absent),
-            Object::Index(id) | Object::HistoryIndex(id) => w.index_mark(id).ok_or(absent),
-            Object::CommitTimes
-            | Object::CommitLog
-            | Object::Catalog
-            | Object::Sequences
-            | Object::Marks
-            | Object::DamageList => Ok(running(Holder::Unreached)),
+            Object::Heap(id) | Object::History(id) => w.heap_holder(id).ok_or(absent),
+            Object::Large(id) => w.heap_of(id).map(|_| Holder::LargeStore).ok_or(absent),
+            Object::Index(id) | Object::HistoryIndex(id) => w.index_holder(id).ok_or(absent),
+            Object::CommitTimes => Err(Failed::Unheld(object)),
+            Object::CommitLog => Ok(Holder::CommitLog),
+            Object::Catalog => Ok(Holder::CatalogRoot),
+            Object::CatalogRows => Ok(Holder::CatalogRows),
+            Object::Sequences => Ok(Holder::Counters),
+            Object::Marks => Ok(Holder::MarksPage),
+            Object::DamageList => Ok(Holder::DamageList),
         }
     }
 
     /// Returns the mark that names the heap or index `object` alone, as
     /// [`Plant::Mark`](super::Plant::Mark) sets it and admission of a call checks it. A history
-    /// heap or index answers the mark of its relation's heap or key index. Returns `None` for a
-    /// large-value store or an engine structure, which no mark names apart from the database.
-    pub fn own_mark(self, object: Object) -> Result<Option<Quarantine>, Failed> {
+    /// heap or index answers the mark of its relation's heap or key index. Fails with
+    /// [`Failed::Shared`] for a large-value store or an engine structure, which no mark names
+    /// apart from the database.
+    pub fn own_mark(self, object: Object) -> Result<Quarantine, Failed> {
         let absent = Failed::Absent(object);
-        Ok(match object {
+        match object {
             Object::Heap(id) | Object::History(id) => {
                 let heap = self.db.tested_db().heap_of(id).ok_or(absent)?;
-                Some(Quarantine::Heap(heap.id().0))
+                Ok(Quarantine::Heap(heap.id().0))
             }
             Object::Index(id) | Object::HistoryIndex(id) => {
                 let index = self.db.tested_db().index_of(id).ok_or(absent)?;
-                Some(Quarantine::Index(index.tree().owner()))
+                Ok(Quarantine::Index(index.tree().owner()))
             }
-            _ => None,
-        })
+            _ => Err(Failed::Shared(object)),
+        }
     }
 
     /// Returns the owner the pages of `object` carry in their headers.
     pub fn owner(self, object: Object) -> Result<u32, Failed> {
         Ok(match object {
-            Object::Heap(_) | Object::History(_) => self.heap_object(object)?.id().0,
+            Object::Heap(_) | Object::History(_) | Object::CatalogRows => {
+                self.heap_object(object)?.id().0
+            }
             Object::Large(_) => self.heap_object(object)?.large().id(),
             _ => self.tree(object)?.owner(),
         })
@@ -154,7 +169,9 @@ impl<'a, R: Runtime> Testing<'a, R> {
     pub fn root(self, object: Object) -> Result<Pid, Failed> {
         let pager = self.db.tested_pager();
         Ok(match object {
-            Object::Heap(_) | Object::History(_) => self.heap_object(object)?.root(),
+            Object::Heap(_) | Object::History(_) | Object::CatalogRows => {
+                self.heap_object(object)?.root()
+            }
             Object::Large(_) => self.heap_object(object)?.large().root(),
             Object::Index(_) | Object::HistoryIndex(_) | Object::CommitTimes => {
                 self.tree(object)?.root()
@@ -172,7 +189,9 @@ impl<'a, R: Runtime> Testing<'a, R> {
     pub fn pages(self, object: Object) -> Result<Vec<Pid>, Failed> {
         let pager = self.db.tested_pager();
         Ok(match object {
-            Object::Heap(_) | Object::History(_) => self.heap_object(object)?.pages(pager)?,
+            Object::Heap(_) | Object::History(_) | Object::CatalogRows => {
+                self.heap_object(object)?.pages(pager)?
+            }
             Object::Large(_) => self.heap_object(object)?.large().pages(pager)?,
             Object::Index(_) | Object::HistoryIndex(_) | Object::CommitTimes => {
                 self.tree(object)?.pages(pager)?
@@ -186,7 +205,9 @@ impl<'a, R: Runtime> Testing<'a, R> {
     pub fn owned(self, object: Object) -> Result<Vec<Pid>, Failed> {
         let pager = self.db.tested_pager();
         Ok(match object {
-            Object::Heap(_) | Object::History(_) => self.heap_object(object)?.owned_pages(pager)?,
+            Object::Heap(_) | Object::History(_) | Object::CatalogRows => {
+                self.heap_object(object)?.owned_pages(pager)?
+            }
             Object::Large(_) => self.heap_object(object)?.large().owned_pages(pager)?,
             _ => return Err(Failed::Unlisted(object)),
         })
@@ -274,6 +295,7 @@ impl<'a, R: Runtime> Testing<'a, R> {
         match object {
             Object::Heap(id) | Object::Large(id) => w.heap_of(id),
             Object::History(id) => w.history_heap_of(id),
+            Object::CatalogRows => w.kept_store(),
             _ => None,
         }
         .ok_or(Failed::Absent(object))

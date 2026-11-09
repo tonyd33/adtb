@@ -851,7 +851,7 @@ fn audit_heap(ctor: &str) -> impl Fn(&Database<SimRuntime>) -> Quarantine {
         let heap = t
             .heap("catalog::audit", ctor)
             .expect("the audit declares it");
-        t.own_mark(heap).unwrap().expect("a heap has its own mark")
+        t.own_mark(heap).unwrap()
     }
 }
 
@@ -860,9 +860,7 @@ fn audit_key(db: &Database<SimRuntime>) -> Quarantine {
     let index = t
         .index("catalog::audit", "key seq")
         .expect("the audit has its key");
-    t.own_mark(index)
-        .unwrap()
-        .expect("an index has its own mark")
+    t.own_mark(index).unwrap()
 }
 
 fn each_audit_mark(mut body: impl FnMut(u64, &SimRuntime, &Database<SimRuntime>)) {

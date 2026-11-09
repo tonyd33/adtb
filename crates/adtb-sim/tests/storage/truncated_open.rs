@@ -306,7 +306,7 @@ fn selected_twice(files: Files, text: &'static str, what: &'static str) -> Vec<R
             finished(&mut sim, |rt| {
                 let db = open::open(&rt, FILE, &Log::new([APP]), &open::options(2)).unwrap();
                 let t = db.testing();
-                let users = t.mark_of(t.heap("app::users", "User").unwrap()).unwrap();
+                let users = t.own_mark(t.heap("app::users", "User").unwrap()).unwrap();
                 got.push((
                     select_answer(&db, text),
                     db.testing().probe().marks(),

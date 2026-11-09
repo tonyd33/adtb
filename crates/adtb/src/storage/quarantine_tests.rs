@@ -276,7 +276,7 @@ fn marks<R: Runtime>(db: &Database<R>) -> BTreeSet<Quarantine> {
 
 fn apple_mark(db: &Database<SimRuntime>) -> Quarantine {
     let t = db.testing();
-    t.mark_of(t.heap("app::identities", "Apple").unwrap())
+    t.own_mark(t.heap("app::identities", "Apple").unwrap())
         .unwrap()
 }
 
@@ -439,7 +439,7 @@ const BOUNDED: &str = "from i in identities where i.id == identities.key(11) sel
 fn key_index_marked(db: &Database<SimRuntime>) -> Object {
     let t = db.testing();
     let key = t.index("app::identities", "key id").unwrap();
-    t.plant(Plant::Mark(t.mark_of(key).unwrap())).unwrap();
+    t.plant(Plant::Mark(t.own_mark(key).unwrap())).unwrap();
     key
 }
 
@@ -746,7 +746,7 @@ fn mapping_a_damaged_heap_page_never_marks_an_index_that_is_changing() {
     for t in writers.into_iter().chain(mappers) {
         rt.join(t);
     }
-    let heap = t.mark_of(t.heap("app::us", "U").unwrap()).unwrap();
+    let heap = t.own_mark(t.heap("app::us", "U").unwrap()).unwrap();
     assert_eq!(BTreeSet::from([heap]), marks(&db));
 }
 
@@ -854,7 +854,7 @@ fn relation(object: Quarantine) -> Holder {
 
 fn mark_named(db: &Database<SimRuntime>, relation: &str, ctor: &str) -> Quarantine {
     let t = db.testing();
-    t.mark_of(t.heap(relation, ctor).unwrap()).unwrap()
+    t.own_mark(t.heap(relation, ctor).unwrap()).unwrap()
 }
 
 type Files = BTreeMap<String, Vec<u8>>;

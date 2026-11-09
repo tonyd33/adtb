@@ -180,11 +180,13 @@ fn a_quarantined_heap_fails_the_dump_and_a_quarantined_index_does_not() {
     let (mut sim, ()) = seeded_sim(4, |db| {
         let t = db.testing();
         let index = t
-            .mark_of(t.index("app::users", "index (name)").unwrap())
+            .own_mark(t.index("app::users", "index (name)").unwrap())
             .unwrap();
         t.plant(Plant::Mark(index)).unwrap();
         run(db, DUMP).unwrap();
-        let square = t.mark_of(t.heap("app::shapes", "Square").unwrap()).unwrap();
+        let square = t
+            .own_mark(t.heap("app::shapes", "Square").unwrap())
+            .unwrap();
         t.plant(Plant::Mark(square)).unwrap();
     });
     writes_nothing(&mut sim, |rt| {

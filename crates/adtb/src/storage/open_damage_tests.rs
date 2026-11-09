@@ -777,7 +777,7 @@ fn a_heap_mark_adds_no_row() {
     finished(&mut sim, |rt| {
         let db = open::open_in(&rt, FILE, &app(), &open::options(2)).unwrap();
         let t = db.testing();
-        let heap = t.mark_of(t.heap("app::users", "User").unwrap()).unwrap();
+        let heap = t.own_mark(t.heap("app::users", "User").unwrap()).unwrap();
         t.plant(Plant::Mark(heap)).unwrap();
         let rows = api::printed(db.verify(None).unwrap());
         assert!(!rows.iter().any(|r| r.contains(MARK_ROW)), "{rows:?}");

@@ -16,7 +16,7 @@ use crate::plan::HeapId;
 use crate::plan::IndexId;
 use crate::runtime::Runtime;
 #[cfg(any(test, feature = "testing"))]
-use crate::storage::policy::{self, Phase};
+use crate::storage::policy::Holder;
 use crate::storage::{self, Damage, PageError, Pid};
 use crate::verify::{Finding, Problem};
 
@@ -559,26 +559,41 @@ impl<R: Runtime> Database<R> {
         self.retained.as_ref()?.indexes.get(&key).cloned()
     }
 
-    /// Returns the mark damage to heap `id` or its history heap sets, as the holdings walk maps it.
-    pub(crate) fn heap_mark(&self, id: HeapId) -> Option<storage::Quarantine> {
+    /// Returns the holder of the pages of heap `id` and its history heap.
+    pub(crate) fn heap_holder(&self, id: HeapId) -> Option<Holder> {
         let r = self
             .rels
             .values()
             .find(|r| r.ctors.iter().any(|c| c.heap == id))?;
         let object = storage::Quarantine::Heap(self.heaps.get(&id)?.heap.id().0);
-        let holder = relation_holder(&self.schema, r.id, object);
-        policy::checksum_mark(holder, Phase::Running).durable()
+        Some(relation_holder(&self.schema, r.id, object))
     }
 
-    /// Returns the mark damage to index `id` or its history tree sets, as the holdings walk maps it.
-    pub(crate) fn index_mark(&self, id: IndexId) -> Option<storage::Quarantine> {
+    /// Returns the holder of the pages of index `id` and its history tree.
+    pub(crate) fn index_holder(&self, id: IndexId) -> Option<Holder> {
         let r = self
             .rels
             .values()
             .find(|r| r.indexes.iter().any(|(i, _)| *i == id))?;
         let object = storage::Quarantine::Index(self.indexes.get(&id)?.index.tree().owner());
-        let holder = relation_holder(&self.schema, r.id, object);
-        policy::checksum_mark(holder, Phase::Running).durable()
+        Some(relation_holder(&self.schema, r.id, object))
+    }
+
+    /// Returns the heap of every constructor of every relation.
+    pub(crate) fn heap_ids(&self) -> Vec<HeapId> {
+        let ctors = self.rels.values().flat_map(|r| &r.ctors);
+        ctors.map(|c| c.heap).collect()
+    }
+
+    /// Returns every index of every relation.
+    pub(crate) fn index_ids(&self) -> Vec<IndexId> {
+        let indexes = self.rels.values().flat_map(|r| &r.indexes);
+        indexes.map(|(id, _)| *id).collect()
+    }
+
+    /// Returns the heap of the catalog's rows.
+    pub(crate) fn kept_store(&self) -> Option<Arc<Heap>> {
+        self.kept_store.clone()
     }
 }
 

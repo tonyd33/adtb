@@ -352,7 +352,7 @@ fn a_zeroed_directory_root_refuses_a_first_insert_and_marks_the_heap() {
         let owned = t.owned(heap).unwrap();
         (
             owned.into_iter().find(|p| !data.contains(p)).unwrap(),
-            t.mark_of(heap).unwrap(),
+            t.own_mark(heap).unwrap(),
         )
     });
     let mut files = files;
@@ -391,7 +391,7 @@ fn index_page(root: bool) -> (Files, (Pid, Quarantine)) {
         } else {
             *pages.last().unwrap()
         };
-        (pick, t.mark_of(index).unwrap())
+        (pick, t.own_mark(index).unwrap())
     })
 }
 
@@ -429,7 +429,7 @@ fn zeroed_index_leaves_refuse_an_insert_that_latches_one() {
                 leaves.push(page);
             }
         }
-        mark = Some(t.mark_of(index).unwrap());
+        mark = Some(t.own_mark(index).unwrap());
         db.close().unwrap();
     });
     assert!(leaves.len() > 1, "the index has an inner page");
@@ -469,7 +469,7 @@ fn a_visibility_map_root_zeroed_refuses_vacuum_and_marks_the_heap() {
             .into_iter()
             .find(|&p| storage::kind(&t.probe().page(p).unwrap()) == PageKind::VisibilityMap as u16)
             .unwrap();
-        (vm, t.mark_of(heap).unwrap())
+        (vm, t.own_mark(heap).unwrap())
     });
     let mut files = files;
     DATA.zero(&mut files, page);

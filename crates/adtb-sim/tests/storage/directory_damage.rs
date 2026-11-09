@@ -328,7 +328,7 @@ fn an_entry_naming_a_foreign_page_quarantines_only_the_heap_of_its_directory() {
             point(db, root, t.pages(users).unwrap()[0], named);
             let got = text(db, &Op::Insert.text());
             assert_eq!("app::users.User", quarantined(got, &what));
-            let only = BTreeSet::from([t.mark_of(users).unwrap()]);
+            let only = BTreeSet::from([t.own_mark(users).unwrap()]);
             assert_eq!(only, t.probe().marks(), "{what}");
             assert_eq!(vec![r#""o""#], text(db, OTHERS).unwrap(), "{what}");
         });
@@ -361,7 +361,7 @@ fn a_read_over_an_entry_naming_a_large_value_or_map_page_blames_its_directory_pa
                 assert_eq!("app::users.User", quarantined(text(db, &read), w));
                 let met: BTreeSet<Pid> = t.probe().refusals().into_keys().collect();
                 assert_eq!(BTreeSet::from([root]), met, "{w}");
-                let only = BTreeSet::from([t.mark_of(users).unwrap()]);
+                let only = BTreeSet::from([t.own_mark(users).unwrap()]);
                 assert_eq!(only, t.probe().marks(), "{w}");
             });
             cases += 1;

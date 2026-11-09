@@ -230,7 +230,7 @@ fn a_heap_page_that_lost_a_write_is_refused_on_its_first_read_and_marks_its_heap
         };
         assert_eq!(want, refused);
         let t = db.testing();
-        let heap = t.mark_of(t.heap("app::users", "User").unwrap()).unwrap();
+        let heap = t.own_mark(t.heap("app::users", "User").unwrap()).unwrap();
         assert_eq!(
             BTreeMap::from([(page, stale)]),
             db.testing().probe().refusals()

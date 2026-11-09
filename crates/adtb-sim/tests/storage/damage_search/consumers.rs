@@ -99,6 +99,8 @@ pub struct Observed {
     pub open: Option<Result<(), String>>,
     /// Whether a read of the unreadable page failed while the first open ran.
     pub met_in_open: bool,
+    /// The pages the damage records named once the first open returned, which that open mapped.
+    pub recorded_at_open: BTreeSet<Pid>,
     /// The relations of module `app` the schema the open read holds.
     pub relations: Option<BTreeSet<String>>,
     pub reads: BTreeMap<Rel, Read>,
@@ -347,6 +349,14 @@ fn consume(
         }
     };
     seen.open = Some(Ok(()));
+    seen.recorded_at_open = db
+        .testing()
+        .probe()
+        .records()
+        .pages()
+        .keys()
+        .copied()
+        .collect();
     let s = db.schema();
     let app = s
         .relations

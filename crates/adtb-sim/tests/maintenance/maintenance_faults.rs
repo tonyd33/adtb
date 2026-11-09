@@ -1016,7 +1016,7 @@ fn scan_objects<R: Runtime>(db: &Database<R>) -> Vec<RotObject> {
             key,
         }];
         let of_rows = rel == "rows";
-        let (owner, mark) = (t.owner(heap).unwrap(), t.mark_of(heap).unwrap());
+        let (owner, mark) = (t.owner(heap).unwrap(), t.own_mark(heap).unwrap());
         #[rustfmt::skip]
         objects.push(RotObject { is_heap: true, owner, mark, name, of_rows, reads: reads.clone() });
         if ctor == "Big" {
@@ -1128,7 +1128,7 @@ fn index_objects<R: Runtime>(db: &Database<R>) -> Vec<RotObject> {
                 key,
             });
         }
-        let (owner, mark) = (t.owner(index).unwrap(), t.mark_of(index).unwrap());
+        let (owner, mark) = (t.owner(index).unwrap(), t.own_mark(index).unwrap());
         #[rustfmt::skip]
         objects.push(RotObject {
             is_heap: false, owner, mark, name: format!("app::{rel} {clause}"),

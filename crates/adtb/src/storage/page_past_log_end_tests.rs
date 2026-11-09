@@ -222,7 +222,7 @@ fn sweep(files: &Files, name: &str, page: Pid, reported: Reported) -> Vec<String
             defects.extend(wrong(entry, page, &enter(&db, &rt), reported));
             let t = db.testing();
             let heap = t
-                .mark_of(t.heap("app::identities", "Google").unwrap())
+                .own_mark(t.heap("app::identities", "Google").unwrap())
                 .unwrap();
             let marked = t.probe().marked(heap);
             if let Err(e) = db.close()
@@ -274,7 +274,7 @@ fn restored(damage: fn(&mut Files, Pid, Lsn)) -> (Files, Pid) {
         }
         let t = db.testing();
         let heap = t
-            .mark_of(t.heap("app::identities", "Google").unwrap())
+            .own_mark(t.heap("app::identities", "Google").unwrap())
             .unwrap();
         assert!(!t.probe().marked(heap));
         api::results(&db, "backup to \"bk0\"");

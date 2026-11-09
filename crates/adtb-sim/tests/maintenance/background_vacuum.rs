@@ -260,7 +260,7 @@ fn a_background_vacuum_writes_no_page_of_a_quarantined_heap() {
             "delete i in items where true\ndelete o in others where true",
         );
         let t = db.testing();
-        let a = t.mark_of(t.heap("app::items", "A").unwrap()).unwrap();
+        let a = t.own_mark(t.heap("app::items", "A").unwrap()).unwrap();
         t.plant(Plant::Mark(a)).unwrap();
         let (items, others) = (pages(&db, &ITEMS), pages(&db, &[("app::others", "O")]));
         let waits = db.testing().rebuild_waits();

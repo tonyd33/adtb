@@ -1072,6 +1072,8 @@ transactions layer names the database once the database is marked. A page maps a
   page still refuses every read, so no commit writes through it;
 - a page of a relation of an engine module and a page of the large-value
   store every heap shares mark the database;
+- a page of the commit times tree, which records when each transaction kept
+  in history committed, marks the database;
 - an allocated page a complete walk of every heap and index does not
   reach marks nothing at open and the database once the database runs;
 - a page of the heap of the catalog's rows, which also holds the kept

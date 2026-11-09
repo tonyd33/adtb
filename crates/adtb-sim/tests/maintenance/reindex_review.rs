@@ -1119,7 +1119,7 @@ fn a_history_page_damaged_during_the_build_is_not_released_unrepaired() {
                     .unwrap();
                 assert_eq!(vec!["1007"], api::query(&d, &r), "a read of the heaps");
                 let t = d.testing();
-                let key = t.mark_of(t.index("app::ts", "key id").unwrap()).unwrap();
+                let key = t.own_mark(t.index("app::ts", "key id").unwrap()).unwrap();
                 assert_eq!(
                     BTreeSet::from([key]),
                     marks(&d),
@@ -1183,9 +1183,9 @@ fn a_history_tree_that_cannot_be_rebuilt_keeps_the_mark() {
     });
 }
 
-fn heap_mark(db: &Database<SimRuntime>) -> Quarantine {
+fn ts_heap(db: &Database<SimRuntime>) -> Quarantine {
     let t = db.testing();
-    t.mark_of(t.heap("app::ts", "T").unwrap()).unwrap()
+    t.own_mark(t.heap("app::ts", "T").unwrap()).unwrap()
 }
 
 #[test]
@@ -1205,7 +1205,7 @@ fn a_heap_marked_while_the_rebuild_waits_stops_it() {
             rt.yield_now();
         }
         assert!(phases.lock().unwrap().is_empty());
-        db.testing().plant(Plant::Mark(heap_mark(&db))).unwrap();
+        db.testing().plant(Plant::Mark(ts_heap(&db))).unwrap();
         drop(held);
         wait_jobs(&rt, &db);
         assert!(
@@ -1226,7 +1226,7 @@ fn a_heap_marked_during_the_build_stops_the_swap() {
             api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
         }
         let d = db.clone();
-        let mark = heap_mark(&db);
+        let mark = ts_heap(&db);
         let reclaimed = Arc::new(AtomicBool::new(false));
         let r = reclaimed.clone();
         db.testing().on_reindex_phase(move |p| {

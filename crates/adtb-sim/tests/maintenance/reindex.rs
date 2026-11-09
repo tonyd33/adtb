@@ -92,7 +92,7 @@ fn marks(db: &Database<SimRuntime>) -> BTreeSet<Quarantine> {
 
 fn user_mark(db: &Database<SimRuntime>) -> Quarantine {
     let t = db.testing();
-    t.mark_of(t.index("app::identities", USER_INDEX).unwrap())
+    t.own_mark(t.index("app::identities", USER_INDEX).unwrap())
         .unwrap()
 }
 
@@ -567,7 +567,7 @@ fn a_unique_duplicate_fails_the_rebuild_keeping_the_old_index_mark_and_no_new_pa
         raw_duplicate(&db, "g1");
         let t = db.testing();
         let mark = t
-            .mark_of(t.index("app::identities", GID_INDEX).unwrap())
+            .own_mark(t.index("app::identities", GID_INDEX).unwrap())
             .unwrap();
         t.plant(Plant::Mark(mark)).unwrap();
         let before = entries(&db, GID_INDEX);
@@ -668,7 +668,7 @@ fn reindex_of_a_relation_rebuilds_its_key_index_too() {
         seed_rows(&db, 5);
         let t = db.testing();
         let mark = t
-            .mark_of(t.index("app::identities", "key id").unwrap())
+            .own_mark(t.index("app::identities", "key id").unwrap())
             .unwrap();
         t.plant(Plant::Mark(mark)).unwrap();
         api::results(&db, "reindex identities");
@@ -725,7 +725,7 @@ fn a_quarantined_heap_fails_reindex_and_a_database_mark_stays() {
         seed_rows(&db, 3);
         let t = db.testing();
         let mark = t
-            .mark_of(t.heap("app::identities", "Apple").unwrap())
+            .own_mark(t.heap("app::identities", "Apple").unwrap())
             .unwrap();
         t.plant(Plant::Mark(mark)).unwrap();
         let e = api::failure(&db, "reindex identities");

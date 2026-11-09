@@ -27,6 +27,7 @@ pub use crate::heap::Flags;
 pub use crate::mvcc::{Limits, Snapshot, Xid};
 pub use crate::plan::{Rewrites, with_rewrites};
 use crate::storage::Position;
+pub use crate::storage::policy::Holder;
 pub use crate::storage::{
     Damage, LogFinding, Lsn, PageError, PageKind, Pid, Position as LogPosition, Quarantine,
     manifest_hash,
@@ -111,6 +112,10 @@ pub enum Failed {
     Absent(Object),
     /// The object has no listing of the pages asked for.
     Unlisted(Object),
+    /// No mark names the object apart from the database's.
+    Shared(Object),
+    /// The mapping of damaged pages has no holder for the object.
+    Unheld(Object),
     /// The database has no relation of the name given.
     /// The object is no relation's key index.
     NotKey(Object),

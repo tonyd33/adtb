@@ -847,7 +847,7 @@ fn backup_of_quarantined_heap_lists_it() {
         let db = open::opened(&rt, FILE, &Log::new([APP]), &options());
         insert(&db, 0..2);
         let t = db.testing();
-        let heap = t.mark_of(t.heap("app::users", "User").unwrap()).unwrap();
+        let heap = t.own_mark(t.heap("app::users", "User").unwrap()).unwrap();
         t.plant(Plant::Mark(heap)).unwrap();
         let rows = db
             .query_text("backup to \"bk\"", &[], &CallOptions::default())

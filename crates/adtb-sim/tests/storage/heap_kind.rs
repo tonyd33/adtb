@@ -150,7 +150,7 @@ impl Fixture {
                 pid
             }]);
             assert_eq!(blamed, met, "{what}");
-            let only = BTreeSet::from([testing.mark_of(heap).unwrap()]);
+            let only = BTreeSet::from([testing.own_mark(heap).unwrap()]);
             assert_eq!(only, db.testing().probe().marks(), "{what}");
             db.close().unwrap();
         });

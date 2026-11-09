@@ -5,6 +5,7 @@ mod case;
 mod consumers;
 mod generate;
 mod judge;
+mod stated;
 mod world;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,7 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use adtb_testkit::profile::{self, assert_reached, every_case};
 use case::{FAULTS, Fault, Injection, Point};
 use consumers::{CONSUMERS, Consumer};
-use judge::Violation;
+use judge::{Row, Violation};
+use stated::{Class, Held, PHASES, Phase};
 use world::{KINDS, Kind};
 
 /// How much of the search a run covers.
@@ -70,6 +72,7 @@ const UNREAD_MARKS: &str = "unread-walk-marks-database";
 const UNDER_MARK: &str = "migrate-under-mark-silent";
 const BESIDE: &str = "walk-damage-marks-database";
 const APPLIED_UNDER_MARK: &str = "migrate-applies-under-mark";
+const COMMIT_TIMES: &str = "commit-times-unmapped-at-open";
 
 /// The failures main shows. When a change moves the write-outs of the generated cases, run
 /// [`nearest_pins`] for the nearest write-out that shows each entry whose pin no longer does.
@@ -82,7 +85,7 @@ const KNOWN: &[Known] = &[
         what: "an unreadable page marks the database",
         ticket: UNREAD_MARKS,
         seed: 5,
-        at: 622,
+        at: 626,
         then: None,
     },
     Known {
@@ -93,7 +96,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark for an unreadable page",
         ticket: UNREAD_MARKS,
         seed: 5,
-        at: 622,
+        at: 626,
         then: None,
     },
     Known {
@@ -104,7 +107,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark for an unreadable page",
         ticket: UNREAD_MARKS,
         seed: 5,
-        at: 622,
+        at: 626,
         then: None,
     },
     Known {
@@ -115,7 +118,7 @@ const KNOWN: &[Known] = &[
         what: "the open fails",
         ticket: BLANK_OPEN,
         seed: 6,
-        at: 685,
+        at: 690,
         then: None,
     },
     Known {
@@ -126,7 +129,7 @@ const KNOWN: &[Known] = &[
         what: "the open fails",
         ticket: BLANK_OPEN,
         seed: 3,
-        at: 642,
+        at: 648,
         then: None,
     },
     Known {
@@ -137,10 +140,10 @@ const KNOWN: &[Known] = &[
         what: "verify names an intact page",
         ticket: BLANK_OPEN,
         seed: 3,
-        at: 645,
+        at: 648,
         then: Some((
             Point {
-                at: 646,
+                at: 649,
                 injection: Injection::Torn,
             },
             Kind::Index,
@@ -154,10 +157,10 @@ const KNOWN: &[Known] = &[
         what: "a scrub names an intact page",
         ticket: BLANK_OPEN,
         seed: 3,
-        at: 645,
+        at: 648,
         then: Some((
             Point {
-                at: 646,
+                at: 649,
                 injection: Injection::Torn,
             },
             Kind::Index,
@@ -182,7 +185,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 3,
-        at: 630,
+        at: 634,
         then: None,
     },
     Known {
@@ -193,7 +196,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 27,
-        at: 638,
+        at: 645,
         then: None,
     },
     Known {
@@ -204,7 +207,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 615,
+        at: 618,
         then: None,
     },
     Known {
@@ -215,7 +218,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 615,
+        at: 618,
         then: None,
     },
     Known {
@@ -226,7 +229,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 615,
+        at: 618,
         then: None,
     },
     Known {
@@ -248,7 +251,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 618,
+        at: 621,
         then: None,
     },
     Known {
@@ -259,7 +262,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 618,
+        at: 621,
         then: None,
     },
     Known {
@@ -270,7 +273,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 618,
+        at: 621,
         then: None,
     },
     Known {
@@ -281,7 +284,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 3,
-        at: 618,
+        at: 622,
         then: None,
     },
     Known {
@@ -292,7 +295,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 3,
-        at: 628,
+        at: 632,
         then: None,
     },
     Known {
@@ -303,7 +306,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 26,
-        at: 636,
+        at: 640,
         then: None,
     },
     Known {
@@ -314,7 +317,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 16,
-        at: 687,
+        at: 707,
         then: None,
     },
     Known {
@@ -325,7 +328,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 16,
-        at: 687,
+        at: 707,
         then: None,
     },
     Known {
@@ -336,7 +339,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 16,
-        at: 687,
+        at: 707,
         then: None,
     },
     Known {
@@ -358,7 +361,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 26,
-        at: 608,
+        at: 609,
         then: None,
     },
     Known {
@@ -369,7 +372,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 26,
-        at: 628,
+        at: 632,
         then: None,
     },
     Known {
@@ -380,7 +383,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 26,
-        at: 614,
+        at: 617,
         then: None,
     },
     Known {
@@ -391,7 +394,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 26,
-        at: 614,
+        at: 617,
         then: None,
     },
     Known {
@@ -402,7 +405,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 26,
-        at: 614,
+        at: 617,
         then: None,
     },
     Known {
@@ -413,7 +416,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 26,
-        at: 614,
+        at: 617,
         then: None,
     },
     Known {
@@ -435,7 +438,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 26,
-        at: 617,
+        at: 620,
         then: None,
     },
     Known {
@@ -446,7 +449,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 26,
-        at: 617,
+        at: 620,
         then: None,
     },
     Known {
@@ -457,7 +460,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 26,
-        at: 617,
+        at: 620,
         then: None,
     },
     Known {
@@ -468,7 +471,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 26,
-        at: 617,
+        at: 620,
         then: None,
     },
     Known {
@@ -479,7 +482,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 26,
-        at: 622,
+        at: 626,
         then: None,
     },
     Known {
@@ -490,7 +493,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 29,
-        at: 636,
+        at: 640,
         then: None,
     },
     Known {
@@ -501,7 +504,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 13,
-        at: 631,
+        at: 635,
         then: None,
     },
     Known {
@@ -512,7 +515,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 13,
-        at: 631,
+        at: 635,
         then: None,
     },
     Known {
@@ -523,7 +526,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 13,
-        at: 631,
+        at: 635,
         then: None,
     },
     Known {
@@ -534,7 +537,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 26,
-        at: 628,
+        at: 632,
         then: None,
     },
     Known {
@@ -545,7 +548,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 3,
-        at: 628,
+        at: 632,
         then: None,
     },
     Known {
@@ -556,7 +559,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 3,
-        at: 628,
+        at: 632,
         then: None,
     },
     Known {
@@ -567,7 +570,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 2,
-        at: 637,
+        at: 641,
         then: None,
     },
     Known {
@@ -578,7 +581,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 2,
-        at: 637,
+        at: 641,
         then: None,
     },
     Known {
@@ -589,78 +592,12 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 2,
-        at: 637,
+        at: 641,
         then: None,
     },
     Known {
         fault: Fault::Recycled,
         kind: Kind::Directory,
-        owner: Some(world::Rel::Scraps),
-        consumer: Consumer::Read,
-        what: "by key: refused the database with a Database mark the faults map to their relation",
-        ticket: BESIDE,
-        seed: 2,
-        at: 616,
-        then: None,
-    },
-    Known {
-        fault: Fault::Recycled,
-        kind: Kind::Directory,
-        owner: Some(world::Rel::Scraps),
-        consumer: Consumer::Read,
-        what: "refused the database with a Database mark the faults map to their relation",
-        ticket: BESIDE,
-        seed: 2,
-        at: 616,
-        then: None,
-    },
-    Known {
-        fault: Fault::Recycled,
-        kind: Kind::Directory,
-        owner: Some(world::Rel::Scraps),
-        consumer: Consumer::Verify,
-        what: "the database is marked for pages that map to their relation",
-        ticket: BESIDE,
-        seed: 2,
-        at: 616,
-        then: None,
-    },
-    Known {
-        fault: Fault::Recycled,
-        kind: Kind::Index,
-        owner: Some(world::Rel::Users),
-        consumer: Consumer::Read,
-        what: "by key: refused the database with a Database mark the faults map to their relation",
-        ticket: BESIDE,
-        seed: 2,
-        at: 639,
-        then: None,
-    },
-    Known {
-        fault: Fault::Recycled,
-        kind: Kind::Index,
-        owner: Some(world::Rel::Users),
-        consumer: Consumer::Read,
-        what: "refused the database with a Database mark the faults map to their relation",
-        ticket: BESIDE,
-        seed: 2,
-        at: 639,
-        then: None,
-    },
-    Known {
-        fault: Fault::Recycled,
-        kind: Kind::Index,
-        owner: Some(world::Rel::Users),
-        consumer: Consumer::Verify,
-        what: "the database is marked for pages that map to their relation",
-        ticket: BESIDE,
-        seed: 2,
-        at: 639,
-        then: None,
-    },
-    Known {
-        fault: Fault::Recycled,
-        kind: Kind::Index,
         owner: Some(world::Rel::Scraps),
         consumer: Consumer::Read,
         what: "by key: refused the database with a Database mark the faults map to their relation",
@@ -671,7 +608,7 @@ const KNOWN: &[Known] = &[
     },
     Known {
         fault: Fault::Recycled,
-        kind: Kind::Index,
+        kind: Kind::Directory,
         owner: Some(world::Rel::Scraps),
         consumer: Consumer::Read,
         what: "refused the database with a Database mark the faults map to their relation",
@@ -682,13 +619,79 @@ const KNOWN: &[Known] = &[
     },
     Known {
         fault: Fault::Recycled,
-        kind: Kind::Index,
+        kind: Kind::Directory,
         owner: Some(world::Rel::Scraps),
         consumer: Consumer::Verify,
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 2,
         at: 619,
+        then: None,
+    },
+    Known {
+        fault: Fault::Recycled,
+        kind: Kind::Index,
+        owner: Some(world::Rel::Users),
+        consumer: Consumer::Read,
+        what: "by key: refused the database with a Database mark the faults map to their relation",
+        ticket: BESIDE,
+        seed: 2,
+        at: 643,
+        then: None,
+    },
+    Known {
+        fault: Fault::Recycled,
+        kind: Kind::Index,
+        owner: Some(world::Rel::Users),
+        consumer: Consumer::Read,
+        what: "refused the database with a Database mark the faults map to their relation",
+        ticket: BESIDE,
+        seed: 2,
+        at: 643,
+        then: None,
+    },
+    Known {
+        fault: Fault::Recycled,
+        kind: Kind::Index,
+        owner: Some(world::Rel::Users),
+        consumer: Consumer::Verify,
+        what: "the database is marked for pages that map to their relation",
+        ticket: BESIDE,
+        seed: 2,
+        at: 643,
+        then: None,
+    },
+    Known {
+        fault: Fault::Recycled,
+        kind: Kind::Index,
+        owner: Some(world::Rel::Scraps),
+        consumer: Consumer::Read,
+        what: "by key: refused the database with a Database mark the faults map to their relation",
+        ticket: BESIDE,
+        seed: 2,
+        at: 622,
+        then: None,
+    },
+    Known {
+        fault: Fault::Recycled,
+        kind: Kind::Index,
+        owner: Some(world::Rel::Scraps),
+        consumer: Consumer::Read,
+        what: "refused the database with a Database mark the faults map to their relation",
+        ticket: BESIDE,
+        seed: 2,
+        at: 622,
+        then: None,
+    },
+    Known {
+        fault: Fault::Recycled,
+        kind: Kind::Index,
+        owner: Some(world::Rel::Scraps),
+        consumer: Consumer::Verify,
+        what: "the database is marked for pages that map to their relation",
+        ticket: BESIDE,
+        seed: 2,
+        at: 622,
         then: None,
     },
     Known {
@@ -699,7 +702,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 29,
-        at: 648,
+        at: 652,
         then: None,
     },
     Known {
@@ -710,7 +713,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 638,
+        at: 642,
         then: None,
     },
     Known {
@@ -721,7 +724,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 638,
+        at: 642,
         then: None,
     },
     Known {
@@ -732,78 +735,12 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 638,
+        at: 642,
         then: None,
     },
     Known {
         fault: Fault::LostCurrent,
         kind: Kind::Directory,
-        owner: Some(world::Rel::Scraps),
-        consumer: Consumer::Read,
-        what: "by key: refused the database with a Database mark the faults map to their relation",
-        ticket: BESIDE,
-        seed: 5,
-        at: 616,
-        then: None,
-    },
-    Known {
-        fault: Fault::LostCurrent,
-        kind: Kind::Directory,
-        owner: Some(world::Rel::Scraps),
-        consumer: Consumer::Read,
-        what: "refused the database with a Database mark the faults map to their relation",
-        ticket: BESIDE,
-        seed: 5,
-        at: 616,
-        then: None,
-    },
-    Known {
-        fault: Fault::LostCurrent,
-        kind: Kind::Directory,
-        owner: Some(world::Rel::Scraps),
-        consumer: Consumer::Verify,
-        what: "the database is marked for pages that map to their relation",
-        ticket: BESIDE,
-        seed: 5,
-        at: 616,
-        then: None,
-    },
-    Known {
-        fault: Fault::LostCurrent,
-        kind: Kind::Index,
-        owner: Some(world::Rel::Users),
-        consumer: Consumer::Read,
-        what: "by key: refused the database with a Database mark the faults map to their relation",
-        ticket: BESIDE,
-        seed: 5,
-        at: 640,
-        then: None,
-    },
-    Known {
-        fault: Fault::LostCurrent,
-        kind: Kind::Index,
-        owner: Some(world::Rel::Users),
-        consumer: Consumer::Read,
-        what: "refused the database with a Database mark the faults map to their relation",
-        ticket: BESIDE,
-        seed: 5,
-        at: 640,
-        then: None,
-    },
-    Known {
-        fault: Fault::LostCurrent,
-        kind: Kind::Index,
-        owner: Some(world::Rel::Users),
-        consumer: Consumer::Verify,
-        what: "the database is marked for pages that map to their relation",
-        ticket: BESIDE,
-        seed: 5,
-        at: 640,
-        then: None,
-    },
-    Known {
-        fault: Fault::LostCurrent,
-        kind: Kind::Index,
         owner: Some(world::Rel::Scraps),
         consumer: Consumer::Read,
         what: "by key: refused the database with a Database mark the faults map to their relation",
@@ -814,7 +751,7 @@ const KNOWN: &[Known] = &[
     },
     Known {
         fault: Fault::LostCurrent,
-        kind: Kind::Index,
+        kind: Kind::Directory,
         owner: Some(world::Rel::Scraps),
         consumer: Consumer::Read,
         what: "refused the database with a Database mark the faults map to their relation",
@@ -825,13 +762,79 @@ const KNOWN: &[Known] = &[
     },
     Known {
         fault: Fault::LostCurrent,
-        kind: Kind::Index,
+        kind: Kind::Directory,
         owner: Some(world::Rel::Scraps),
         consumer: Consumer::Verify,
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 5,
         at: 619,
+        then: None,
+    },
+    Known {
+        fault: Fault::LostCurrent,
+        kind: Kind::Index,
+        owner: Some(world::Rel::Users),
+        consumer: Consumer::Read,
+        what: "by key: refused the database with a Database mark the faults map to their relation",
+        ticket: BESIDE,
+        seed: 5,
+        at: 644,
+        then: None,
+    },
+    Known {
+        fault: Fault::LostCurrent,
+        kind: Kind::Index,
+        owner: Some(world::Rel::Users),
+        consumer: Consumer::Read,
+        what: "refused the database with a Database mark the faults map to their relation",
+        ticket: BESIDE,
+        seed: 5,
+        at: 644,
+        then: None,
+    },
+    Known {
+        fault: Fault::LostCurrent,
+        kind: Kind::Index,
+        owner: Some(world::Rel::Users),
+        consumer: Consumer::Verify,
+        what: "the database is marked for pages that map to their relation",
+        ticket: BESIDE,
+        seed: 5,
+        at: 644,
+        then: None,
+    },
+    Known {
+        fault: Fault::LostCurrent,
+        kind: Kind::Index,
+        owner: Some(world::Rel::Scraps),
+        consumer: Consumer::Read,
+        what: "by key: refused the database with a Database mark the faults map to their relation",
+        ticket: BESIDE,
+        seed: 5,
+        at: 622,
+        then: None,
+    },
+    Known {
+        fault: Fault::LostCurrent,
+        kind: Kind::Index,
+        owner: Some(world::Rel::Scraps),
+        consumer: Consumer::Read,
+        what: "refused the database with a Database mark the faults map to their relation",
+        ticket: BESIDE,
+        seed: 5,
+        at: 622,
+        then: None,
+    },
+    Known {
+        fault: Fault::LostCurrent,
+        kind: Kind::Index,
+        owner: Some(world::Rel::Scraps),
+        consumer: Consumer::Verify,
+        what: "the database is marked for pages that map to their relation",
+        ticket: BESIDE,
+        seed: 5,
+        at: 622,
         then: None,
     },
     Known {
@@ -842,7 +845,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 16,
-        at: 709,
+        at: 739,
         then: None,
     },
     Known {
@@ -853,7 +856,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 16,
-        at: 709,
+        at: 739,
         then: None,
     },
     Known {
@@ -864,7 +867,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 16,
-        at: 709,
+        at: 739,
         then: None,
     },
     Known {
@@ -875,40 +878,40 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 26,
-        at: 629,
+        at: 633,
         then: None,
     },
     Known {
         fault: Fault::Recycled,
         kind: Kind::Directory,
-        owner: Some(world::Rel::Scraps),
-        consumer: Consumer::Catalog,
-        what: "a migration under a whole-database mark returns Ok",
-        ticket: UNDER_MARK,
-        seed: 26,
-        at: 615,
-        then: None,
-    },
-    Known {
-        fault: Fault::Recycled,
-        kind: Kind::Index,
-        owner: Some(world::Rel::Users),
-        consumer: Consumer::Catalog,
-        what: "a migration under a whole-database mark returns Ok",
-        ticket: UNDER_MARK,
-        seed: 26,
-        at: 631,
-        then: None,
-    },
-    Known {
-        fault: Fault::Recycled,
-        kind: Kind::Index,
         owner: Some(world::Rel::Scraps),
         consumer: Consumer::Catalog,
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 26,
         at: 618,
+        then: None,
+    },
+    Known {
+        fault: Fault::Recycled,
+        kind: Kind::Index,
+        owner: Some(world::Rel::Users),
+        consumer: Consumer::Catalog,
+        what: "a migration under a whole-database mark returns Ok",
+        ticket: UNDER_MARK,
+        seed: 26,
+        at: 635,
+        then: None,
+    },
+    Known {
+        fault: Fault::Recycled,
+        kind: Kind::Index,
+        owner: Some(world::Rel::Scraps),
+        consumer: Consumer::Catalog,
+        what: "a migration under a whole-database mark returns Ok",
+        ticket: UNDER_MARK,
+        seed: 26,
+        at: 621,
         then: None,
     },
     Known {
@@ -919,7 +922,7 @@ const KNOWN: &[Known] = &[
         what: "applies a migration under a whole-database mark",
         ticket: APPLIED_UNDER_MARK,
         seed: 3,
-        at: 654,
+        at: 659,
         then: None,
     },
     Known {
@@ -941,7 +944,7 @@ const KNOWN: &[Known] = &[
         what: "applies a migration under a whole-database mark",
         ticket: APPLIED_UNDER_MARK,
         seed: 3,
-        at: 618,
+        at: 622,
         then: None,
     },
     Known {
@@ -952,7 +955,51 @@ const KNOWN: &[Known] = &[
         what: "applies a migration under a whole-database mark",
         ticket: APPLIED_UNDER_MARK,
         seed: 51,
-        at: 648,
+        at: 651,
+        then: None,
+    },
+    Known {
+        fault: Fault::LostCurrent,
+        kind: Kind::Engine,
+        owner: None,
+        consumer: Consumer::Settle,
+        what: "the open fails",
+        ticket: COMMIT_TIMES,
+        seed: 4,
+        at: 607,
+        then: None,
+    },
+    Known {
+        fault: Fault::Recycled,
+        kind: Kind::Engine,
+        owner: None,
+        consumer: Consumer::Settle,
+        what: "the open fails",
+        ticket: COMMIT_TIMES,
+        seed: 10,
+        at: 607,
+        then: None,
+    },
+    Known {
+        fault: Fault::LostEarlier,
+        kind: Kind::Large,
+        owner: None,
+        consumer: Consumer::Catalog,
+        what: "a migration under a whole-database mark returns Ok",
+        ticket: UNDER_MARK,
+        seed: 58,
+        at: 623,
+        then: None,
+    },
+    Known {
+        fault: Fault::LostEarlier,
+        kind: Kind::Large,
+        owner: None,
+        consumer: Consumer::Catalog,
+        what: "applies a migration under a whole-database mark",
+        ticket: APPLIED_UNDER_MARK,
+        seed: 58,
+        at: 623,
         then: None,
     },
 ];
@@ -996,6 +1043,190 @@ const UNREACHED: &[(Fault, Kind, Option<Consumer>, &str)] = &[
          leaves no read of",
     ),
 ];
+
+/// Returns the classes of damage the table is asked of for a page `fault` hits: none for a tear,
+/// which lands whole or is a lost write.
+fn classes(fault: Fault) -> &'static [Class] {
+    match fault {
+        Fault::LostEarlier | Fault::LostCurrent | Fault::Recycled => {
+            &[Class::Damaged, Class::Settled]
+        }
+        Fault::UnreadableOnce | Fault::UnreadableLasting => &[Class::Unread, Class::Unarmed],
+        Fault::Torn => &[],
+    }
+}
+
+const AT_THE_OPEN: &str = "at the damage tier the consumers' open records every stale page of \
+                           the structure, so its mapping is surely the open's";
+
+/// Why no case of a fault asks a row of the stated table.
+#[derive(Clone, Copy, Debug)]
+enum Unasked {
+    /// No case can: the rule is in the reason.
+    Never(&'static str),
+    /// No case at the damage tier did: a deeper tier may.
+    AtTier(&'static str),
+}
+
+impl Unasked {
+    fn reason(self) -> &'static str {
+        match self {
+            Unasked::Never(why) | Unasked::AtTier(why) => why,
+        }
+    }
+}
+
+/// Returns why no case of `fault` asks `row`, `None` for a row its cases must ask.
+fn unasked(fault: Fault, row: Row) -> Option<Unasked> {
+    use Phase::{Opening, Running};
+    let (class, held, phase) = row;
+    match (class, held) {
+        (Class::Settled, h) if h != Held::CommitLog => {
+            return Some(Unasked::Never("only a commit log status page settles"));
+        }
+        (Class::Unarmed, h) if h != Held::LsnMap => {
+            return Some(Unasked::Never(
+                "only an LSN map page the open's recovery cannot read leaves it unarmed",
+            ));
+        }
+        (_, Held::Retired) => {
+            return Some(Unasked::Never("no operation of a sequence swaps a tree"));
+        }
+        (_, Held::Free) => {
+            return Some(Unasked::Never(
+                "the search judges a page by the holder its write-out named, never as free",
+            ));
+        }
+        (_, Held::Unreached) => {
+            return Some(Unasked::Never(
+                "the search classifies every page by a listed holder, and a page it cannot \
+                 classify fails the case",
+            ));
+        }
+        _ => {}
+    }
+    let lost = matches!(fault, Fault::LostCurrent | Fault::Recycled);
+    match (fault, class, held, phase) {
+        (Fault::LostEarlier, _, Held::CommitLog, _) => Some(Unasked::Never(
+            "truncation frees only a status page wholly below its bound, and one page holds the \
+             status of 32 thousand ids while a sequence assigns some thousands",
+        )),
+        (
+            Fault::LostEarlier,
+            _,
+            Held::EngineRelation
+            | Held::CatalogRoot
+            | Held::CatalogRows
+            | Held::Counters
+            | Held::CommitTimes,
+            _,
+        ) => Some(Unasked::Never(
+            "no sequence frees a page of the catalog or of an engine structure",
+        )),
+        (
+            Fault::LostEarlier,
+            _,
+            Held::Bitmap | Held::MarksPage | Held::DamageList | Held::LsnMap,
+            _,
+        ) => Some(Unasked::Never(
+            "a lost write of an earlier incarnation hits only a kind the engine's code frees",
+        )),
+        (Fault::LostEarlier, _, Held::Relation | Held::LargeStore, Running) => {
+            Some(Unasked::AtTier(
+                "at the damage tier only the consumers' open meets a stale page of an earlier \
+             incarnation",
+            ))
+        }
+        (
+            _,
+            Class::Damaged,
+            Held::CatalogRoot
+            | Held::CatalogRows
+            | Held::Counters
+            | Held::CommitLog
+            | Held::Bitmap
+            | Held::MarksPage
+            | Held::DamageList
+            | Held::LsnMap,
+            Running,
+        ) if lost => Some(Unasked::AtTier(AT_THE_OPEN)),
+        (_, Class::Damaged, Held::EngineRelation, Running) if lost => {
+            Some(Unasked::AtTier(AT_THE_OPEN))
+        }
+        (_, Class::Settled, Held::CommitLog, _) if lost => Some(Unasked::AtTier(
+            "at the damage tier no case settles a lost status page from the log",
+        )),
+        (Fault::UnreadableOnce, Class::Unarmed, Held::LsnMap, _) => Some(Unasked::Never(
+            "whether the open met the page is observed only for a failure that lasts",
+        )),
+        (Fault::UnreadableOnce, Class::Unread, _, Opening) => Some(Unasked::AtTier(
+            "at the damage tier a read failure that does not last leaves no record the open holds",
+        )),
+        (Fault::UnreadableLasting, Class::Unarmed, Held::LsnMap, Running) => Some(Unasked::Never(
+            "an LSN map page unreadable for good is met by the open's recovery",
+        )),
+        (Fault::UnreadableLasting, Class::Unread, Held::LsnMap, _) => Some(Unasked::Never(
+            "the open's recovery reads every LSN map page, so it meets one unreadable for good",
+        )),
+        (
+            Fault::UnreadableLasting,
+            Class::Unread,
+            Held::CatalogRoot
+            | Held::CatalogRows
+            | Held::Counters
+            | Held::CommitLog
+            | Held::CommitTimes
+            | Held::MarksPage,
+            _,
+        ) => Some(Unasked::AtTier(
+            "at the damage tier no case with this page unreadable for good observes marks after \
+             an open that read it",
+        )),
+        (Fault::UnreadableLasting, Class::Unread, Held::EngineRelation, Opening)
+        | (Fault::UnreadableLasting, Class::Unread, Held::Bitmap | Held::DamageList, Running) => {
+            Some(Unasked::AtTier(
+                "at the damage tier no case asks this phase of the page unreadable for good",
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Returns every row of the stated table for the classes of `fault`.
+fn rows_of(fault: Fault) -> impl Iterator<Item = Row> {
+    classes(fault)
+        .iter()
+        .flat_map(|c| Held::ALL.map(|h| (*c, h)))
+        .flat_map(|(c, h)| PHASES.map(|p| (c, h, p)))
+}
+
+/// Returns the rows the cases of `fault` must ask that `s` has not asked.
+fn rows_due(fault: Fault, s: &Searched) -> Vec<Row> {
+    rows_of(fault)
+        .filter(|r| unasked(fault, *r).is_none())
+        .filter(|r| !s.rows.contains(r))
+        .collect()
+}
+
+/// Fail unless the cases of `fault` asked every row of the stated table for its classes but
+/// those [`unasked`] lists, and none it lists as never asked.
+fn assert_rows_asked(fault: Fault, s: &Searched, text: &str) {
+    let missed = rows_due(fault, s);
+    assert_eq!(
+        Vec::<Row>::new(),
+        missed,
+        "{fault:?}: rows of the stated table no case asked\n{text}"
+    );
+    let came: Vec<Row> = rows_of(fault)
+        .filter(|r| matches!(unasked(fault, *r), Some(Unasked::Never(_))))
+        .filter(|r| s.rows.contains(r))
+        .collect();
+    assert_eq!(
+        Vec::<Row>::new(),
+        came,
+        "{fault:?}: rows no case can ask were asked; drop their entries\n{text}"
+    );
+}
 
 /// Returns why the cell of `fault`, `kind` and `consumer` is never reached, `None` for a cell
 /// the search reaches.
@@ -1119,6 +1350,13 @@ struct Searched {
     cases: BTreeMap<Kind, usize>,
     endings: BTreeMap<judge::Ending, usize>,
     reached: BTreeSet<(Kind, Consumer)>,
+    /// The rows of the stated table the cases asked.
+    rows: BTreeSet<Row>,
+    /// The cases of each kind run on a write-out picked for a row still to ask, apart from
+    /// `cases`.
+    steered: BTreeMap<Kind, usize>,
+    /// The write-outs picked for each holder of a row still to ask.
+    steer_tries: BTreeMap<Held, usize>,
     /// The cases of each kind whose consumers' open failed.
     failed_opens: BTreeMap<Kind, usize>,
     found: Vec<Found>,
@@ -1126,6 +1364,69 @@ struct Searched {
     overlapped: usize,
     /// The cases whose planned read failures struck again after a restart.
     failed_after_restart: usize,
+}
+
+impl Searched {
+    /// Record what the case of `kind` at write-out `at` of `plan`, of sequence `seed`, reached and
+    /// found, ending in `outcome`.
+    fn tally(
+        &mut self,
+        kind: Kind,
+        plan: &case::Plan,
+        seed: u64,
+        at: usize,
+        outcome: case::Outcome,
+    ) {
+        *self.endings.entry(outcome.verdicts.ending).or_default() += 1;
+        if !outcome.opened {
+            *self.failed_opens.entry(kind).or_default() += 1;
+        }
+        if outcome.overlaps > 0 {
+            self.overlapped += 1;
+        }
+        if outcome.failed_after_restart {
+            self.failed_after_restart += 1;
+        }
+        self.reached
+            .extend(outcome.verdicts.reached.iter().map(|c| (kind, *c)));
+        self.rows.extend(outcome.verdicts.rows.iter().copied());
+        for violation in outcome.verdicts.violations {
+            self.found.push(Found {
+                kind,
+                owner: plan.owner(at),
+                violation,
+                seed,
+                at,
+                ops: plan.ops.clone(),
+                failed: outcome.failed.clone(),
+            });
+        }
+    }
+}
+
+/// Returns, for each holder of the rows `s` has still to ask and has picked fewer than `most`
+/// write-outs for, the first write-out of `plan` a fault of `fault` hits on a page of that
+/// holder, with the holder and the page's kind.
+fn steer(fault: Fault, plan: &case::Plan, s: &Searched, most: usize) -> Vec<(Held, Kind, usize)> {
+    let due: BTreeSet<Held> = rows_due(fault, s)
+        .iter()
+        .map(|r| r.1)
+        .filter(|h| s.steer_tries.get(h).copied().unwrap_or(0) < most)
+        .collect();
+    let ids = &plan.observed.ids;
+    let mut out: BTreeMap<Held, (Kind, usize)> = BTreeMap::new();
+    for (at, w) in plan.clean.trace.writes.iter().enumerate() {
+        let Some(kind) = plan.kind(at).filter(|k| s.kinds.contains(k)) else {
+            continue;
+        };
+        let Some((held, _)) = ids.holding(w.kind, w.owner, w.pid) else {
+            continue;
+        };
+        if due.contains(&held) && plan.fault(at, fault.injection()) == fault {
+            out.entry(held).or_insert((kind, at));
+        }
+    }
+    out.into_iter().map(|(h, (k, at))| (h, k, at)).collect()
 }
 
 /// Returns the cases of `fault` the tier asks, with a vacuum beside each write when
@@ -1137,6 +1438,9 @@ fn search(fault: Fault, tier: &Tier, concurrent: bool) -> Searched {
         cases: BTreeMap::new(),
         endings: BTreeMap::new(),
         reached: BTreeSet::new(),
+        rows: BTreeSet::new(),
+        steered: BTreeMap::new(),
+        steer_tries: BTreeMap::new(),
         failed_opens: BTreeMap::new(),
         found: Vec::new(),
         overlapped: 0,
@@ -1155,7 +1459,8 @@ fn search(fault: Fault, tier: &Tier, concurrent: bool) -> Searched {
     };
     let steered = generate::STEERED..generate::STEERED + tier.sequences;
     for seed in (1..=tier.sequences).chain(steered) {
-        if kinds.iter().all(|k| done(*k, &s)) {
+        let late = seed > tier.sequences;
+        if kinds.iter().all(|k| done(*k, &s)) && (late || rows_due(fault, &s).is_empty()) {
             break;
         }
         let plan = case::plan(seed, generate::sequence(seed), concurrent);
@@ -1169,32 +1474,19 @@ fn search(fault: Fault, tier: &Tier, concurrent: bool) -> Searched {
                 if done(kind, &s) {
                     break;
                 }
-                let Some(outcome) = case::run(&plan, Point { at, injection }) else {
-                    continue;
-                };
-                *s.cases.entry(kind).or_default() += 1;
-                *s.endings.entry(outcome.verdicts.ending).or_default() += 1;
-                if !outcome.opened {
-                    *s.failed_opens.entry(kind).or_default() += 1;
+                if let Some(outcome) = case::run(&plan, Point { at, injection }) {
+                    *s.cases.entry(kind).or_default() += 1;
+                    s.tally(kind, &plan, seed, at, outcome);
                 }
-                if outcome.overlaps > 0 {
-                    s.overlapped += 1;
-                }
-                if outcome.failed_after_restart {
-                    s.failed_after_restart += 1;
-                }
-                s.reached
-                    .extend(outcome.verdicts.reached.iter().map(|c| (kind, *c)));
-                for violation in outcome.verdicts.violations {
-                    s.found.push(Found {
-                        kind,
-                        owner: plan.owner(at),
-                        violation,
-                        seed,
-                        at,
-                        ops: plan.ops.clone(),
-                        failed: outcome.failed.clone(),
-                    });
+            }
+        }
+        if !concurrent && !late {
+            for (held, kind, at) in steer(fault, &plan, &s, tier.per_kind) {
+                *s.steer_tries.entry(held).or_default() += 1;
+                let injection = fault.injection();
+                if let Some(outcome) = case::run(&plan, Point { at, injection }) {
+                    *s.steered.entry(kind).or_default() += 1;
+                    s.tally(kind, &plan, seed, at, outcome);
                 }
             }
         }
@@ -1224,9 +1516,21 @@ fn report(fault: Fault, s: &Searched, per_kind: usize) -> String {
         }
     }
     let mut text = format!(
-        "{fault:?}: cases {:?}, endings {:?}, failed opens {:?}\n",
-        s.cases, s.endings, s.failed_opens
+        "{fault:?}: cases {:?}, steered {:?}, endings {:?}, failed opens {:?}, stated rows asked {} \
+         of {}\n",
+        s.cases,
+        s.steered,
+        s.endings,
+        s.failed_opens,
+        s.rows.len(),
+        rows_of(fault).count()
     );
+    text += &format!("{fault:?} asked {:?}\n", s.rows);
+    for row in rows_of(fault) {
+        if let Some(u) = unasked(fault, row) {
+            text += &format!("{fault:?} unasked {row:?}: {}\n", u.reason());
+        }
+    }
     for ((kind, owner, consumer, what), (n, f)) in &shapes {
         let ticket = known(fault, *kind, *owner, *consumer, what).map_or("unknown", |k| k.ticket);
         text += &format!(
@@ -1272,7 +1576,7 @@ fn report(fault: Fault, s: &Searched, per_kind: usize) -> String {
         "{fault:?}: cells listed as never reached were reached; drop their entries\n{text}"
     );
     for k in s.kinds.iter().filter(|k| at_open(fault, **k).is_some()) {
-        let cases = s.cases.get(k).copied().unwrap_or(0);
+        let cases = s.cases.get(k).copied().unwrap_or(0) + s.steered.get(k).copied().unwrap_or(0);
         let past: Vec<_> = CONSUMERS
             .iter()
             .filter(|c| **c != Consumer::Settle && s.reached.contains(&(*k, **c)))
@@ -1284,6 +1588,7 @@ fn report(fault: Fault, s: &Searched, per_kind: usize) -> String {
             at_open(fault, *k).unwrap_or_default()
         );
     }
+    assert_rows_asked(fault, s, &text);
     let unknown: Vec<_> = shapes
         .keys()
         .filter(|(kind, owner, consumer, what)| {

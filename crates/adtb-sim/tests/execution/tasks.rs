@@ -1560,7 +1560,7 @@ fn a_task_carrying_a_cancelled_token_never_runs() {
 fn mark_items_key_index<R: Runtime>(db: &Database<R>) -> adtb::testing::Quarantine {
     let t = db.testing();
     let mark = t
-        .mark_of(t.index("shop::items", "key id").unwrap())
+        .own_mark(t.index("shop::items", "key id").unwrap())
         .unwrap();
     t.plant(Plant::Mark(mark)).unwrap();
     mark
@@ -1688,7 +1688,7 @@ add relation items : Item key id generate sequence
         );
         let t = db.testing();
         t.plant(Plant::Mark(
-            t.mark_of(t.heap("app::items", "B").unwrap()).unwrap(),
+            t.own_mark(t.heap("app::items", "B").unwrap()).unwrap(),
         ))
         .unwrap();
         let session = db.role_authority().session("owner").unwrap();

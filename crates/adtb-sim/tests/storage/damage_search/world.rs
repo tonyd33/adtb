@@ -14,6 +14,8 @@ use adtb_harness::search::Files;
 use adtb_harness::{common, crash};
 use adtb_sim::{Config, Match, OpLog, Outcome, Planned, Sim, SimRuntime, Submitted};
 
+use super::stated::{self, Class, Held, Holding, Phase};
+
 pub const FILE: &str = "search.adt";
 pub const PAGE: usize = 8192;
 pub const DATA: DataFile = DataFile::new(FILE, PAGE);
@@ -324,7 +326,7 @@ pub type Holdings = BTreeMap<Pid, Option<Rel>>;
 
 /// The owner each user relation's pages carry: its heap's and its history heap's, which their
 /// directory and visibility map pages carry too, its key index's and history index's, and its
-/// large-value store's; and the marks a page of each takes.
+/// large-value store's; the marks a page of each takes; and the holder of every page.
 #[derive(Clone, Debug, Default)]
 pub struct Ids {
     pub heaps: BTreeMap<u32, Rel>,
@@ -334,9 +336,65 @@ pub struct Ids {
     pub key_indexes: BTreeMap<Rel, u32>,
     /// The mark of each relation's heap and of its key index.
     pub marks: BTreeMap<Rel, (Quarantine, Quarantine)>,
+    /// The holder of the pages of each heap, large-value store and tree, by the family of its
+    /// pages and the owner they carry.
+    pub holders: BTreeMap<(Family, u32), Holding>,
+    pub catalog_root: Option<Pid>,
+    pub counters: Option<Pid>,
+    /// Every page a swap retired while the clean run was observed.
+    pub retired: BTreeSet<Pid>,
+}
+
+/// The pages a header's owner can name: a heap's or a large-value store's, or a tree's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Family {
+    Heap,
+    Tree,
+}
+
+impl Family {
+    fn of(kind: PageKind) -> Option<Family> {
+        match kind {
+            PageKind::HeapFixed
+            | PageKind::HeapSlotted
+            | PageKind::FreeSpaceMap
+            | PageKind::VisibilityMap => Some(Family::Heap),
+            PageKind::IndexLeaf | PageKind::IndexInner | PageKind::HashBucket => Some(Family::Tree),
+            _ => None,
+        }
+    }
+
+    fn of_object(object: Object) -> Option<Family> {
+        match object {
+            Object::Heap(_) | Object::History(_) | Object::Large(_) | Object::CatalogRows => {
+                Some(Family::Heap)
+            }
+            Object::Index(_) | Object::HistoryIndex(_) | Object::CommitTimes => Some(Family::Tree),
+            _ => None,
+        }
+    }
 }
 
 impl Ids {
+    /// Returns the holding of page `pid` whose header names `kind` and `owner`, `None` for a
+    /// page the search cannot classify.
+    pub fn holding(&self, kind: u16, owner: u32, pid: Pid) -> Option<Holding> {
+        let k = PageKind::from_u16(kind)?;
+        let held = match k {
+            _ if self.retired.contains(&pid) => Held::Retired,
+            PageKind::Catalog if self.catalog_root == Some(pid) => Held::CatalogRoot,
+            PageKind::Catalog if self.counters == Some(pid) => Held::Counters,
+            PageKind::Catalog => return None,
+            PageKind::CommitLog => Held::CommitLog,
+            PageKind::LsnMap => Held::LsnMap,
+            PageKind::DamageList => Held::DamageList,
+            PageKind::AllocationBitmap => Held::Bitmap,
+            PageKind::Quarantine => Held::MarksPage,
+            _ => return self.holders.get(&(Family::of(k)?, owner)).copied(),
+        };
+        Some((held, None))
+    }
+
     /// Returns the user relation a page of `kind` carrying `owner` belongs to, `None` for a page
     /// no user relation holds.
     pub fn owner(&self, kind: Kind, owner: u32) -> Option<Rel> {
@@ -438,14 +496,48 @@ fn ids<R: Runtime>(db: &Database<R>, version: u8, out: &mut Ids) {
         out.indexes.insert(t.owner(index).unwrap(), rel);
         out.large.insert(t.owner(large).unwrap());
         out.key_indexes.insert(rel, t.owner(index).unwrap());
-        out.marks
-            .insert(rel, (t.mark_of(heap).unwrap(), t.mark_of(index).unwrap()));
+        let own = |o| {
+            let holding = stated::holding(t.holder(o).unwrap());
+            assert_eq!(
+                Some(t.own_mark(o).unwrap()),
+                holding.1,
+                "{o:?} is held by its own heap or index"
+            );
+            stated::durable(Class::Damaged, holding, Phase::Running)
+                .expect("a page of a user relation marks it")
+        };
+        out.marks.insert(rel, (own(heap), own(index)));
         if let Some(h) = t.history(&q, rel.ctor()) {
             out.heaps.insert(t.owner(h).unwrap(), rel);
         }
         if let Some(ix) = t.history_index(&q) {
             out.indexes.insert(t.owner(ix).unwrap(), rel);
         }
+    }
+    out.catalog_root = Some(t.root(Object::Catalog).unwrap());
+    let listed = t
+        .objects()
+        .into_iter()
+        .map(|o| (o, t.owner(o).expect("a listed owner")));
+    out.counters = Some(t.root(Object::Sequences).unwrap());
+    out.retired.extend(t.retired());
+    let rows = t
+        .owner(Object::CatalogRows)
+        .expect("the heap of the catalog's rows");
+    let times = t.owner(Object::CommitTimes).ok();
+    let present = [
+        (Object::CatalogRows, Some(rows)),
+        (Object::CommitTimes, times),
+    ]
+    .into_iter()
+    .filter_map(|(o, owner)| Some((o, owner?)));
+    for (o, owner) in listed.chain(present) {
+        let family = Family::of_object(o).expect("a heap, store or tree");
+        let holding = match o {
+            Object::CommitTimes => (Held::CommitTimes, None),
+            _ => stated::holding(t.holder(o).expect("a listed object's holder")),
+        };
+        out.holders.insert((family, owner), holding);
     }
 }
 
@@ -476,6 +568,8 @@ pub struct Ran {
     pub applied_under_mark: BTreeSet<usize>,
     /// The marks the file held when the migration that drops a relation began.
     pub marked_before_drop: BTreeSet<Quarantine>,
+    /// The pages the damage records named after any open or operation of the run.
+    pub recorded: BTreeSet<Pid>,
     /// The reads of the data file a plan failed, by process.
     pub failed_reads: Vec<usize>,
     pub files: Files,
@@ -504,9 +598,15 @@ struct Runner<'a> {
     under_mark: BTreeSet<usize>,
     applied_under_mark: BTreeSet<usize>,
     marked_before_drop: BTreeSet<Quarantine>,
+    recorded: BTreeSet<Pid>,
 }
 
 impl Runner<'_> {
+    fn note_records<R: Runtime>(&mut self, db: &Database<R>) {
+        let records = db.testing().probe().records();
+        self.recorded.extend(records.pages().keys().copied());
+    }
+
     /// Open the file, and once more when the first open fails, as an operator would after a
     /// failure that may have cleared.
     fn open_with_retry<R: Runtime>(&mut self, rt: R, version: u8) -> Option<Database<R>> {
@@ -544,6 +644,12 @@ impl Runner<'_> {
         let Some(mut db) = self.open_with_retry(rt.clone(), self.acked.version) else {
             return false;
         };
+        if self.next == 0 && self.during.is_empty() {
+            let keep = "set setting RetentionWindow = { length: 1h }";
+            db.query_text(keep, &[], &adtb::CallOptions::default())
+                .expect("a new file keeps history");
+        }
+        self.note_records(&db);
         while self.next < self.ops.len() {
             let i = self.next;
             let op = &self.ops[i];
@@ -601,6 +707,7 @@ impl Runner<'_> {
                 }
                 Op::Crash => {}
             }
+            self.note_records(&db);
             if self.observe {
                 self.held.push(holdings(&db, self.acked.version));
                 ids(&db, self.acked.version, &mut self.ids);
@@ -722,6 +829,7 @@ pub fn run(seed: u64, ops: &[Op], arm: Arm<'_>, observe: bool, concurrent: bool)
         under_mark: BTreeSet::new(),
         applied_under_mark: BTreeSet::new(),
         marked_before_drop: BTreeSet::new(),
+        recorded: BTreeSet::new(),
     };
     let reads = sim.logged(on_data(Match::kind(OpKind::Read)));
     let mut starts = Vec::new();
@@ -789,6 +897,7 @@ pub fn run(seed: u64, ops: &[Op], arm: Arm<'_>, observe: bool, concurrent: bool)
         under_mark: runner.under_mark,
         applied_under_mark: runner.applied_under_mark,
         marked_before_drop: runner.marked_before_drop,
+        recorded: runner.recorded,
         failed_reads,
         files: sim.files(),
     }

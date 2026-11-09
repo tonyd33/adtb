@@ -153,13 +153,13 @@ fn marks<R: Runtime>(db: &Database<R>) -> BTreeSet<Quarantine> {
 
 fn apple_mark(db: &Database<SimRuntime>) -> Quarantine {
     let t = db.testing();
-    t.mark_of(t.heap("app::identities", "Apple").unwrap())
+    t.own_mark(t.heap("app::identities", "Apple").unwrap())
         .unwrap()
 }
 
 fn user_index_mark(db: &Database<SimRuntime>) -> Quarantine {
     let t = db.testing();
-    t.mark_of(t.index("app::identities", USER_INDEX).unwrap())
+    t.own_mark(t.index("app::identities", USER_INDEX).unwrap())
         .unwrap()
 }
 
@@ -745,7 +745,7 @@ fn the_mark_of_a_large_value_store_is_the_one_its_damage_sets() {
         })
         .unwrap();
         failed_on(&db, ROWS);
-        assert_eq!(BTreeSet::from([t.mark_of(large).unwrap()]), marks(&db));
+        assert_eq!(BTreeSet::from([Quarantine::Database]), marks(&db));
     });
 }
 
@@ -801,7 +801,7 @@ fn a_reference_mark_fails_a_write_that_names_only_the_referrer() {
         43,
         |db| {
             let t = db.testing();
-            t.mark_of(t.heap("app::users", "User").unwrap()).unwrap()
+            t.own_mark(t.heap("app::users", "User").unwrap()).unwrap()
         },
         |db| {
             assert_eq!(
@@ -1128,7 +1128,7 @@ fn a_delete_reads_no_target_of_its_row() {
         );
         let users = {
             let t = db.testing();
-            t.mark_of(t.heap("app::users", "User").unwrap()).unwrap()
+            t.own_mark(t.heap("app::users", "User").unwrap()).unwrap()
         };
         db.testing().plant(Plant::Mark(users)).unwrap();
         runs(&db, "from i in identities.Google select i.user");
@@ -1324,7 +1324,7 @@ fn a_damaged_history_index_page_marks_its_key_index() {
             .unwrap();
         db.verify(None).unwrap();
         let key = t.index("app::identities", "key id").unwrap();
-        assert_eq!(BTreeSet::from([t.mark_of(key).unwrap()]), marks(&db));
+        assert_eq!(BTreeSet::from([t.own_mark(key).unwrap()]), marks(&db));
     });
 }
 
@@ -1354,7 +1354,7 @@ fn an_io_failure_on_the_marks_page_fails_the_load_and_marks_nothing() {
 fn key_index_marked(db: &Database<SimRuntime>) -> Object {
     let t = db.testing();
     let key = t.index("app::identities", "key id").unwrap();
-    t.plant(Plant::Mark(t.mark_of(key).unwrap())).unwrap();
+    t.plant(Plant::Mark(t.own_mark(key).unwrap())).unwrap();
     key
 }
 
@@ -1391,7 +1391,7 @@ fn a_fallback_gives_the_same_rows_after_updates_retags_and_deletes() {
         for rel in ["app::users", "app::identities"] {
             let t = db.testing();
             let key = t.index(rel, "key id").unwrap();
-            t.plant(Plant::Mark(t.mark_of(key).unwrap())).unwrap();
+            t.plant(Plant::Mark(t.own_mark(key).unwrap())).unwrap();
         }
         let after: Vec<_> = texts
             .iter()
@@ -1658,7 +1658,7 @@ const GOOGLE_901_IDS: &str = "from i in identities.Google where i.gid == \"g901\
 
 fn mark_named(db: &Database<SimRuntime>, relation: &str, ctor: &str) -> Quarantine {
     let t = db.testing();
-    t.mark_of(t.heap(relation, ctor).unwrap()).unwrap()
+    t.own_mark(t.heap(relation, ctor).unwrap()).unwrap()
 }
 
 /// Commit a transaction that runs `write`, with `mark` set after the write. Returns what the
