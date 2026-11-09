@@ -270,7 +270,7 @@ impl<R: Runtime> Walk<'_, R> {
             if flags.contains(Flags::HOT_UPDATED) {
                 continue;
             }
-            if !h.writers.deleted() {
+            if !h.writers.may_name_successor() {
                 self.structure(
                     pid,
                     format!(

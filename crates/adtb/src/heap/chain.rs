@@ -10,7 +10,7 @@ use super::page::{HeapPage, Owned, Slot};
 use super::version::{Flags, Header};
 
 /// Returns the slot on `page`, page `pid` of its heap, holding the heap-only successor the version
-/// in `slot` links to, if any.
+/// in `slot` links to, if any: a heap-only version its deleter wrote.
 pub(super) fn link(page: HeapPage<'_>, pid: u64, slot: usize) -> Option<usize> {
     let Slot::Normal { flags, at } = page.get(slot) else {
         return None;
@@ -18,9 +18,13 @@ pub(super) fn link(page: HeapPage<'_>, pid: u64, slot: usize) -> Option<usize> {
     if !flags.contains(Flags::HOT_UPDATED) {
         return None;
     }
-    let next = Header::read(&page[at]).next.filter(|n| n.page() == pid)?;
+    let header = Header::read(&page[at]);
+    let next = header.next.filter(|n| n.page() == pid)?;
     let to = usize::from(next.slot());
-    matches!(page.get(to), Slot::Normal { flags, .. } if flags.contains(Flags::HEAP_ONLY))
+    let Slot::Normal { flags, at } = page.get(to) else {
+        return None;
+    };
+    (flags.contains(Flags::HEAP_ONLY) && header.writers.precedes(&Header::read(&page[at]).writers))
         .then_some(to)
 }
 
@@ -76,10 +80,6 @@ pub(super) fn roots(
 /// Returns what is wrong with the links of `page`, page `pid` of its heap: each hot-updated slot
 /// that links to no version its deleter wrote, and each version two slots link to.
 pub(super) fn link_faults(page: HeapPage<'_>, pid: u64) -> Vec<String> {
-    let header = |s| match page.get(s) {
-        Slot::Normal { at, .. } => Some(Header::read(&page[at])),
-        _ => None,
-    };
     let mut faults = Vec::new();
     let mut successors = BTreeSet::new();
     let mut shared = BTreeSet::new();
@@ -88,10 +88,7 @@ pub(super) fn link_faults(page: HeapPage<'_>, pid: u64) -> Vec<String> {
         {
             continue;
         }
-        let written = link(page, pid, slot).filter(
-            |&to| matches!((header(slot), header(to)), (Some(h), Some(s)) if h.writers.precedes(&s.writers)),
-        );
-        match written {
+        match link(page, pid, slot) {
             Some(to) if !successors.insert(to) => {
                 shared.insert(to);
             }
@@ -273,19 +270,10 @@ impl Heap {
             return Ok(Vec::new());
         };
         let members = from(page, usize::from(at.slot()), |s| link(page, pid.0, s));
-        let mut run: Vec<Link> = Vec::new();
-        for slot in members.into_iter().flatten() {
-            let Some((link, _)) = link_at(page, self.id(), tid(pid, slot)) else {
-                break;
-            };
-            if run
-                .last()
-                .is_some_and(|p| !p.header.writers.precedes(&link.header.writers))
-            {
-                break;
-            }
-            run.push(link);
-        }
-        Ok(run)
+        Ok(members
+            .into_iter()
+            .flatten()
+            .filter_map(|slot| link_at(page, self.id(), tid(pid, slot)).map(|(link, _)| link))
+            .collect())
     }
 }

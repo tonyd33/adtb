@@ -689,6 +689,33 @@ fn a_hot_link_from_a_version_with_no_deleter_names_no_successor_even_of_inserter
 }
 
 #[test]
+fn prune_leaves_a_heap_only_version_of_another_writer_out_of_a_chain_linking_to_it() {
+    let mut p = heap_page(Arrangement::Slotted, 0);
+    let (hot, only) = (Flags::HOT_UPDATED, Flags::HEAP_ONLY);
+    assert_eq!(Some(0), edit(&mut p).insert(&linked(1, 2, Some(1)), hot));
+    assert_eq!(Some(1), edit(&mut p).insert(&linked(5, 0, None), only));
+    assert_eq!(Some(2), edit(&mut p).insert(&linked(4, 5, Some(1)), hot));
+    assert_eq!(
+        vec!["slot 0 is hot-updated but names no heap-only successor".to_string()],
+        chain::link_faults(view(&p), PID)
+    );
+    let plan = plan_with(&p, dead_below(4), &[]);
+    assert_eq!(vec![(0, Slot::Dead)], plan.release);
+    assert_eq!((vec![0], false), (plan.dead.clone(), plan.all_visible));
+    prune::apply(&mut edit(&mut p), &plan);
+    assert_eq!(Slot::Dead, view(&p).get(0));
+    for (s, version, flags) in [
+        (1, linked(5, 0, None), only),
+        (2, linked(4, 5, Some(1)), hot),
+    ] {
+        let Slot::Normal { flags: kept, at } = view(&p).get(s) else {
+            panic!("slot {s} lost its version");
+        };
+        assert_eq!((flags, &version[..]), (kept, &p[at]), "slot {s}");
+    }
+}
+
+#[test]
 fn a_chain_root_is_a_version_not_heap_only_or_a_redirect_to_a_version() {
     let mut p = heap_page(Arrangement::Slotted, 0);
     let (hot, only) = (Flags::HOT_UPDATED, Flags::HEAP_ONLY);

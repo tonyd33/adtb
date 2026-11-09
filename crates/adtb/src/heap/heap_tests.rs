@@ -393,6 +393,59 @@ fn a_heap_only_update_stays_on_its_page_and_flags_both_versions() {
 }
 
 #[test]
+fn a_hot_link_to_a_heap_only_version_of_another_writer_ends_the_chain() {
+    let mut sim = Sim::new(2, Config::default());
+    finished(&mut sim, |rt| {
+        let (mut db, _) = Db::create(&rt, 4);
+        let pager = &mut db.pager;
+        let heap = &mut db.heaps[APPLE];
+        let row = vec![Value::I64(1), Value::I32(0)];
+        let t = heap.insert(pager, Xid(1), &row).unwrap();
+        let d = heap
+            .insert(pager, Xid(1), &[Value::I64(2), Value::I32(0)])
+            .unwrap();
+        let e = heap
+            .update(pager, d, Xid(2), &[Value::I64(2), Value::I32(1)], &[0])
+            .unwrap();
+        assert!(e.heap_only && e.tid.page() == t.page(), "{e:?}");
+        heap.delete(pager, t, Xid(3)).unwrap();
+        heap.plant_next(pager, t, e.tid).unwrap();
+        assert_eq!(
+            None,
+            walk(pager, heap.id(), &db.heaps, t, |l, _| {
+                Ok::<_, PageError>(l.tid == e.tid)
+            })
+            .unwrap()
+        );
+        let heap = &db.heaps[APPLE];
+        assert_eq!(Some(vec![row]), heap.chain_rows(pager, t).unwrap());
+        let hot: Vec<Tid> = heap
+            .hot_run(pager, t)
+            .unwrap()
+            .iter()
+            .map(|l| l.tid)
+            .collect();
+        assert_eq!(vec![t], hot);
+        let mut roots = BTreeMap::new();
+        heap.scan_rooted(pager, Pid(t.page()), |v, r| {
+            roots.insert(v.tid, r);
+        })
+        .unwrap();
+        assert_eq!(
+            BTreeMap::from([(t, vec![t]), (d, vec![d]), (e.tid, vec![d])]),
+            roots
+        );
+        assert_eq!(
+            vec![format!(
+                "slot {} is hot-updated but names no heap-only successor",
+                t.slot()
+            )],
+            heap.broken_links(pager, Pid(t.page())).unwrap()
+        );
+    });
+}
+
+#[test]
 fn an_aborted_successor_is_replaced_by_the_next_writer() {
     let mut sim = Sim::new(3, Config::default());
     finished(&mut sim, |rt| {

@@ -45,6 +45,11 @@ impl Writers {
         self.deleter == Some(next.inserter)
     }
 
+    /// Returns whether a version with these writers may name a successor: it has a deleter.
+    pub fn may_name_successor(&self) -> bool {
+        self.deleter.is_some()
+    }
+
     /// Returns the transaction a copy of a version with these writers writes its out-of-line
     /// values as: the inserter.
     ///

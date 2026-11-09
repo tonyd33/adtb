@@ -188,8 +188,7 @@ and is logged as one.
 The heap gives its callers a version's writers as the transactions
 layer's `Writers`, an inserter and an optional deleter, with its
 `next`, and decides no visibility; a deleter of 0 in the header is
-none. The successor rule (a successor's inserter is its predecessor's
-deleter), clearing the deleter and a version's identity are operations
+none. The successor rule (§5), clearing the deleter and a version's identity are operations
 of `Writers`. A writer that sets a version's `next` sets its
 moved and hot-updated flags for that successor, clearing any an
 aborted writer left; a delete sets the deleter and clears `next` and
@@ -391,6 +390,11 @@ the old one's `next` at it; index entries name the version they were
 inserted for (version TIDs). A reader wanting the newest version walks
 forward; an older snapshot stops at the first version it can see.
 
+A version's successor is the version its `next` names, on its own page
+or another, only when the named version's inserter is this version's
+deleter, as `Writers::precedes` decides it. A `next` naming any other
+version names no successor, and the chain ends at the version.
+
 An update is heap-only when it fits on the same page and changes no
 field that is a key field of an index whose constructor set contains
 this heap's constructor. Field values are compared bytewise, so a
@@ -426,7 +430,7 @@ fails ends the walk with its failure. A redirect line pointer
 it names; a redirect to a slot holding no version ends the chain. A
 slot holding no version ends the chain, as do a page that is not a heap
 page of the relation, a version the walk already visited, a
-version whose `xmin` is not the `xmax` of the version before it, and a
+version that is not the successor of the version before it, and a
 version on a page of the wrong owner: the first version must
 be on a page of the named heap, the successor of a moved version on a
 page of another heap of the relation and flagged retagged in, and any
@@ -890,8 +894,9 @@ without room for a new version prunes it before looking further, by
 
 A chain on a page starts at its root, the slot index entries name: a
 version that is not heap-only, or a redirect to a version. It runs
-through the heap-only successors each hot-updated version names on the
-page. A heap-only chain whose leading versions are dead keeps its root
+through the heap-only successor each hot-updated version names on the
+page, and ends at a version whose `next` names no successor on it. A
+heap-only chain whose leading versions are dead keeps its root
 as a redirect to its first live version and frees the others. A
 fixed-slot page holds no dead slot or redirect: it frees a chain only
 once every version of it is dead and its entries are gone, and keeps a
