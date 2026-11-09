@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-07
-status: open
+status: resolved
 kind: feature
 priority: 13
 summary: "visibility, deadness, chains and version identity are judged from raw xmin and xmax at about 60 sites outside mvcc, with two deadness tables and two read-before checks"
+closed: 2026-11-09
 ---
 
 # Feature: Row-version rules owned by mvcc
@@ -61,3 +62,9 @@ A header naming an id at or past the commit log's reservation is damage of the p
 ## 2026-11-09, step 9 landed
 
 `chain::link` requires `Writers::precedes`, so an on-page chain ends at a heap-only version its predecessor's deleter did not write; `link_faults` and `hot_run` dropped their own copies of the rule, and verify asks `Writers::may_name_successor` instead of reading `deleted()`. On main, prune's plan redirected a dead root to another writer's version, `scan_rooted` rooted that version under the stale root, and `chain_rows` accepted its row for the stale root's index entry; damage only (supersede writes `next` and the HOT flags together, prune frees chain members only behind dead ones, prune is logged as a page image). Class: class-copied-rules. mvcc.md §5 states the successor rule once; §3, the chain walk and §10.2 refer to it. Counts: `precedes` call sites outside mvcc 3 to 2 (`link`, `follows`); successor comparisons outside `precedes` 0. Two new tests, each failing on main. KNOWN 79 to 79. Getters left: exec/store.rs's `deleted()` decides the scan's deleted-version hold (a candidate for a named mvcc predicate); write/mod.rs, write/apply.rs (two) and catalog/history.rs only read values. Next: step 10.
+
+## 2026-11-09, step 10 landed; program done
+
+Every production heap entry that places a version takes a judge and prunes a full page on access (ruling Q2, mvcc.md §10.2 unchanged): `insert_pruning`, `update_pruning`, new `retag_pruning` and `copy_version_pruning` require `&mut Judge`; the judge-less `insert`, `update`, `retag` and `copy_version` are test-only (heap/handle/observe.rs). `Transactions::judge_now` builds the on-access judge; `Horizon::past` gives vacuum's history move a judge of the history heap at its own cutoff. Catalog inserts go through `catalog::insert_row` or `Migrating::insert`. Each prune runs after the placing write is dropped. On main a retag took a new page beside a full page of dead versions, the roots heap grew on kept-row churn, and a history move grew the history heap. Class: class-copied-rules (the rule was optional per caller). Counts: production calls to a placing entry without a judge 8 to 0 (retag, six catalog sites, `copy_version`); production `judge(.., horizon_now(..))` 3 to 0. Three new tests, each failing on main. KNOWN 79 to 79, 77 pins moved by the write-out shift to the nearest same-shape write-out (`known()` keys on fault, kind, owner, consumer and what, so the gate is unchanged), the seed 19 Recycled/Large/Catalog pin moved to seed 26 at 622; the ignored test `damage_search::nearest_pins` re-pins after a shift. Follow-ups filed: catalog-heaps-never-vacuumed, damage-rerun-fault-overflow. Left for structure-transactions: exec/store.rs's `deleted()` deciding the scan's deleted-version hold.
+
+The ten steps are done: `.xmin`/`.xmax` outside mvcc behind `Writers`, the `Reader` and `fate`; one page-owner view in heap; heap writes through one ranked `HeapWrite`; foreign and malformed pages, and unreserved ids, refused as damage of their page; one successor rule; every insert path prunes. Resolved.
