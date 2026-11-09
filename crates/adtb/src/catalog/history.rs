@@ -354,9 +354,10 @@ impl Catalog {
         let mut versions = Vec::new();
         let scanned = self.roots.scan(pager, |v| versions.push(v));
         let mut rows = Vec::new();
+        let reader = txns.reader(pager, snapshot, None);
         let seen = scanned.map_err(Error::from).and_then(|()| {
             for v in versions {
-                if txns.sees(pager, &snapshot, None, &v.header.writers)? {
+                if reader.sees(&v.header.writers)?.visible() {
                     rows.push((v.header.writers.inserter(), v.row));
                 }
             }

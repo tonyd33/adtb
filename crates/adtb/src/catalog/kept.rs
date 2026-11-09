@@ -175,9 +175,10 @@ impl Catalog {
         let mut versions = Vec::new();
         let scanned = self.roots.scan(pager, |v| versions.push(v));
         let mut gone = Vec::new();
+        let reader = txns.reader(pager, snapshot, None);
         let judged = scanned.and_then(|()| {
             for v in versions {
-                if !txns.sees(pager, &snapshot, None, &v.header.writers)? {
+                if !reader.sees(&v.header.writers)?.visible() {
                     continue;
                 }
                 if let [Value::Sum { ctor, fields }] = v.row.as_slice()

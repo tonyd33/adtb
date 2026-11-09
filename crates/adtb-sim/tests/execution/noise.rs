@@ -90,8 +90,13 @@ fn versions(
         .heap
         .scan(&later.pager, |v| {
             let seen = match (
-                later.reads.sees(&v.header).expect("a visibility check"),
-                mine.reads.sees(&v.header).expect("a visibility check"),
+                later
+                    .reads
+                    .saw(&v.header.writers)
+                    .expect("a visibility check"),
+                mine.reads
+                    .saw(&v.header.writers)
+                    .expect("a visibility check"),
             ) {
                 (true, true) => panic!("both snapshots see {:?}", v.row),
                 (true, false) => Seen::Later,

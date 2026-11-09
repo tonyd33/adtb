@@ -203,7 +203,7 @@ pub_fields prod 4 crates/adtb/src/exec/join.rs
 pub_fields prod 13 crates/adtb/src/exec/mod.rs
 pub_fields prod 10 crates/adtb/src/exec/run.rs
 pub_fields prod 8 crates/adtb/src/exec/sched.rs
-pub_fields prod 27 crates/adtb/src/exec/store.rs
+pub_fields prod 24 crates/adtb/src/exec/store.rs
 pub_fields prod 4 crates/adtb/src/heap/dir.rs
 pub_fields prod 15 crates/adtb/src/heap/handle/mod.rs
 pub_fields prod 6 crates/adtb/src/heap/large.rs

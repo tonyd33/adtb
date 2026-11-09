@@ -233,8 +233,10 @@ impl Db {
         for (h, v) in versions {
             let seen = self
                 .txns
-                .sees(&self.pager, snapshot, None, &v.header.writers)
-                .expect("sees");
+                .reader(&self.pager, snapshot.clone(), None)
+                .sees(&v.header.writers)
+                .expect("sees")
+                .visible();
             if seen {
                 out.add(key_of(&v.row), h, v.row, v.tid);
             }
@@ -285,7 +287,12 @@ impl Db {
         })
         .expect("walk");
         for (t, writers) in checks {
-            if txns.sees(pager, snapshot, None, &writers).expect("sees") {
+            if txns
+                .reader(pager, snapshot.clone(), None)
+                .sees(&writers)
+                .expect("sees")
+                .visible()
+            {
                 seen = Some(t);
                 break;
             }
@@ -316,8 +323,10 @@ impl Db {
                 for s in readers {
                     let sees = self
                         .txns
-                        .sees(&self.pager, s, None, &v.header.writers)
-                        .unwrap();
+                        .reader(&self.pager, s.clone(), None)
+                        .sees(&v.header.writers)
+                        .unwrap()
+                        .visible();
                     if !sees {
                         problems.push(format!(
                             "{pid:?} of heap {h} is all-visible, but {:?} does not see {:?}",

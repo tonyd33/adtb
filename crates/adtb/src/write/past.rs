@@ -10,13 +10,16 @@ use adtb_lang::types::RelId;
 
 use crate::btree::Index;
 use crate::exec::{self, Histories, PastReads, Reads, Store, StoredHeap, StoredIndex, Val};
-use crate::heap::{Header, HeapNo};
+use crate::heap::HeapNo;
 use crate::history::History;
 use crate::key::{CtorId, Tid, Value};
-use crate::mvcc::{Marker, Past, PastError, ScanId, SerializationFailure, Transactions, Xid};
+use crate::mvcc::{
+    Logged, Marker, Past, PastError, Reader, ScanId, SerializationFailure, Transactions, Writers,
+    Xid,
+};
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
-use crate::storage::{Lsn, PageError, Pager, Pid, Position};
+use crate::storage::{Lsn, Pager, Pid, Position};
 use crate::vacuum;
 
 use super::reindex::VacuumHold;
@@ -47,16 +50,14 @@ pub struct Retained {
 /// What a read of the past sees: the versions the snapshot of a held marker sees, taking no
 /// SIREAD locks. Dropping it releases the marker.
 struct AtMarker<R: Runtime> {
-    pager: Pager<R>,
+    reader: Reader<Logged<R>>,
     txns: Arc<Transactions<R>>,
     marker: Marker,
 }
 
 impl<R: Runtime> Reads for AtMarker<R> {
-    fn sees(&self, h: &Header) -> Result<bool, PageError> {
-        self.marker
-            .snapshot
-            .sees(None, &h.writers, |x| self.txns.status(&self.pager, x))
+    fn saw(&self, writers: &Writers) -> Result<bool, exec::Error> {
+        Ok(self.reader.sees(writers)?.visible())
     }
 
     fn scanning(&self, _: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
@@ -76,10 +77,6 @@ impl<R: Runtime> Reads for AtMarker<R> {
     }
 
     fn fetched(&self, _: HeapNo, _: Tid) -> Result<(), SerializationFailure> {
-        Ok(())
-    }
-
-    fn depends(&self, _: Xid) -> Result<(), exec::Error> {
         Ok(())
     }
 }
@@ -151,9 +148,8 @@ impl<R: Runtime> Pasts<R> {
 
     /// Returns whether the snapshot of `marker` sees the commit of `x`.
     fn sees_commit(&self, marker: &Marker, x: Xid) -> Result<bool, exec::Error> {
-        Ok(marker
-            .snapshot
-            .counts_committed(x, |x| self.txns.status(&self.pager, x))?)
+        let reader = self.txns.reader(&self.pager, marker.snapshot.clone(), None);
+        Ok(reader.counts_committed(x)?)
     }
 
     /// Returns the schema version at the state `marker` reads.
@@ -205,10 +201,11 @@ impl<R: Runtime> PastReads<R> for Pasts<R> {
                 retained.version
             )));
         }
+        let marker = self.pin(at, instant)?;
         let reads = AtMarker {
-            pager: self.pager.clone(),
+            reader: self.txns.reader(&self.pager, marker.snapshot.clone(), None),
             txns: self.txns.clone(),
-            marker: self.pin(at, instant)?,
+            marker,
         };
         let version = self.version_at(&reads.marker)?;
         let typed = pins.unwrap_or(version);

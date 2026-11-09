@@ -6,9 +6,8 @@ use std::ops::Bound;
 use super::clog::{Directory, Root, directory_capacity, locate, per_page, set_status, status_at};
 use super::txn::{Assign, assign, extend};
 use super::{
-    Access, Cause, Holds, Limits, Probe, RESERVATION, Safety, Scope, SerialId,
-    SerializationFailure, Serializer, Snapshot, Status, Write, Writers, Xid, check_write,
-    probe_unique, read_before,
+    Access, Cause, Holds, Limits, Probe, RESERVATION, Reader, Safety, Scope, SerialId,
+    SerializationFailure, Serializer, Snapshot, Status, Write, Writers, Xid,
 };
 use crate::key::{CtorId, Tid};
 use crate::storage::{HEADER_LEN, Pid};
@@ -113,13 +112,12 @@ fn ids_never_wrap() {
     let old = Xid(1);
     let s = Snapshot::new(top, Xid(u64::MAX), vec![top]);
     let committed = |_| Ok::<_, Infallible>(Status::Committed);
-    assert_eq!(Ok(true), s.counts_committed(old, committed));
-    assert_eq!(Ok(false), s.counts_committed(top, committed));
-    assert_eq!(Ok(true), s.sees(None, &writers(old.0, 0), committed));
-    assert_eq!(
-        Ok(false),
-        s.sees(None, &writers(old.0, u64::MAX - 2), committed)
-    );
+    let r = Reader::over(committed, s, None);
+    assert_eq!(Ok(true), r.counts_committed(old));
+    assert_eq!(Ok(false), r.counts_committed(top));
+    let visible = |xmax| r.sees(&writers(old.0, xmax)).map(|s| s.visible());
+    assert_eq!(Ok(true), visible(0));
+    assert_eq!(Ok(false), visible(u64::MAX - 2));
 }
 
 #[test]
@@ -130,17 +128,15 @@ fn the_in_progress_test_precedes_the_lookup() {
         vec![10, 14].into_iter().map(Xid).collect(),
     );
     let unreachable = |x: Xid| -> Result<Status, Infallible> { panic!("looked up {x:?}") };
+    let r = Reader::over(unreachable, s, Some(Xid(14)));
     for x in [10, 14, 20, 21, 1000] {
-        assert_eq!(Ok(false), s.counts_committed(Xid(x), unreachable));
+        assert_eq!(Ok(false), r.counts_committed(Xid(x)));
     }
-    assert_eq!(
-        Ok(true),
-        s.sees(Some(Xid(14)), &writers(14, 0), unreachable)
-    );
-    assert_eq!(
-        Ok(false),
-        s.sees(Some(Xid(14)), &writers(14, 14), unreachable)
-    );
+    let visible = |xmin, xmax| r.sees(&writers(xmin, xmax)).map(|s| s.visible());
+    assert_eq!(Ok(true), visible(14, 0));
+    assert_eq!(Ok(false), visible(14, 14));
+    assert_eq!(Ok(false), visible(10, 0));
+    assert_eq!(Ok(false), visible(20, 0));
 }
 
 #[test]
@@ -194,6 +190,7 @@ fn a_snapshot_rejects_an_unsorted_in_progress_set() {
 #[test]
 fn visibility_matches_a_model_of_random_histories() {
     let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+    let (mut on_inserter, mut on_deleter) = (0, 0);
     for round in 0..200 {
         let mut ends: BTreeMap<Xid, Option<(usize, Status)>> = BTreeMap::new();
         let mut running: BTreeSet<Xid> = BTreeSet::new();
@@ -242,25 +239,48 @@ fn visibility_matches_a_model_of_random_histories() {
         let status = |x: Xid| -> Result<Status, Infallible> {
             Ok(ends[&x].map_or(Status::InProgress, |(_, s)| s))
         };
-        for (taken, reader, s) in &snapshots {
+        for (taken, reader, s) in snapshots {
             let committed_then = |x: u64| {
-                Some(Xid(x)) == *reader
+                Some(Xid(x)) == reader
                     || ends
                         .get(&Xid(x))
                         .copied()
                         .flatten()
-                        .is_some_and(|(at, st)| at < *taken && st == Status::Committed)
+                        .is_some_and(|(at, st)| at < taken && st == Status::Committed)
             };
+            let concurrent = |x: u64| {
+                (!committed_then(x) && ends[&Xid(x)].is_none_or(|(_, st)| st != Status::Aborted))
+                    .then_some(Xid(x))
+            };
+            let r = Reader::over(status, s, reader);
             for &(xmin, xmax) in &versions {
-                let want = committed_then(xmin) && (xmax == 0 || !committed_then(xmax));
+                let visible = committed_then(xmin) && (xmax == 0 || !committed_then(xmax));
+                let before = match xmax {
+                    _ if !committed_then(xmin) => concurrent(xmin),
+                    0 => None,
+                    _ => concurrent(xmax),
+                };
+                if before.is_some() {
+                    if committed_then(xmin) {
+                        on_deleter += 1;
+                    } else {
+                        on_inserter += 1;
+                    }
+                }
+                let seen = r.sees(&writers(xmin, xmax)).unwrap();
                 assert_eq!(
-                    Ok(want),
-                    s.sees(*reader, &writers(xmin, xmax), status),
-                    "round {round}: version ({xmin}, {xmax}) at {s:?} for {reader:?}"
+                    (visible, before),
+                    (seen.visible(), r.before(seen).unwrap()),
+                    "round {round}: version ({xmin}, {xmax}) at {r:?}"
                 );
             }
         }
     }
+    assert!(
+        on_inserter > 0 && on_deleter > 0,
+        "the histories read {on_inserter} versions before their inserter and {on_deleter} before \
+         their deleter"
+    );
 }
 
 #[test]
@@ -331,7 +351,7 @@ fn a_scoped_reader_holds_back_only_its_heaps() {
     assert_eq!(Xid(50), holds.watermark(1, Xid(50)));
 }
 
-fn statuses(table: &[(u64, Status)]) -> impl FnMut(Xid) -> Result<Status, Infallible> + '_ {
+fn statuses(table: &[(u64, Status)]) -> impl Fn(Xid) -> Result<Status, Infallible> + '_ {
     |x| {
         Ok(table
             .iter()
@@ -351,7 +371,9 @@ fn probe(xmin: u64, xmax: u64) -> Probe {
         (8, Status::Aborted),
         (10, Status::InProgress),
     ];
-    probe_unique(Xid(10), &snapshot, &writers(xmin, xmax), statuses(&table)).unwrap()
+    Reader::over(statuses(&table), snapshot, Some(Xid(10)))
+        .probe_unique(Xid(10), &writers(xmin, xmax))
+        .unwrap()
 }
 
 #[test]
@@ -415,7 +437,9 @@ fn a_write_waits_for_a_running_deleter_and_fails_on_a_committed_one() {
         (7, Status::Committed),
         (8, Status::Aborted),
     ];
-    let check = |xmax| check_write(Xid(10), &writers(1, xmax), statuses(&table)).unwrap();
+    let snapshot = Snapshot::new(Xid(5), Xid(9), vec![Xid(5)]);
+    let r = Reader::over(statuses(&table), snapshot, Some(Xid(10)));
+    let check = |xmax| r.check_write(Xid(10), &writers(1, xmax)).unwrap();
     assert_eq!(Write::Proceed, check(0));
     assert_eq!(Write::Proceed, check(10));
     assert_eq!(Write::Proceed, check(8));
@@ -432,15 +456,8 @@ fn a_read_depends_on_concurrent_writers_only() {
         (7, Status::Committed),
         (8, Status::Aborted),
     ];
-    let before = |xmin, xmax| {
-        read_before(
-            Some(Xid(10)),
-            &snapshot,
-            &writers(xmin, xmax),
-            statuses(&table),
-        )
-        .unwrap()
-    };
+    let r = Reader::over(statuses(&table), snapshot, Some(Xid(10)));
+    let before = |xmin, xmax| r.before(r.sees(&writers(xmin, xmax)).unwrap()).unwrap();
     assert_eq!(Some(Xid(5)), before(5, 0));
     assert_eq!(Some(Xid(7)), before(7, 0));
     assert_eq!(Some(Xid(6)), before(2, 6));

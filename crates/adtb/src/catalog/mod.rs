@@ -498,9 +498,10 @@ fn visible<R: Runtime>(
 ) -> Result<Vec<Vec<Value>>, PageError> {
     let mut versions = Vec::new();
     heap.scan(pager, |v| versions.push(v))?;
+    let reader = txns.reader(pager, snapshot.clone(), None);
     let mut out = Vec::new();
     for v in versions {
-        if txns.sees(pager, snapshot, None, &v.header.writers)? {
+        if reader.sees(&v.header.writers)?.visible() {
             out.push(v.row);
         }
     }
@@ -1344,11 +1345,12 @@ fn delete_rows<R: Runtime>(
     let mut left: Vec<&Vec<Value>> = rows.iter().collect();
     let mut versions = Vec::new();
     heap.scan(pager, |v| versions.push(v))?;
+    let reader = m.txns.reader(pager, m.snapshot.clone(), None);
     for v in versions {
         let Some(at) = left.iter().position(|r| **r == v.row) else {
             continue;
         };
-        if m.txns.sees(pager, m.snapshot, None, &v.header.writers)? {
+        if reader.sees(&v.header.writers)?.visible() {
             heap.delete(pager, heap::WriteTarget::checked(v.tid, v.header), m.x)?;
             left.swap_remove(at);
         }

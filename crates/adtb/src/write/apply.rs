@@ -6,10 +6,9 @@ use adtb_lang::types::RelId;
 use crate::exec::{StoredHeap, Val, to_stored};
 use crate::heap::{self, Flags, Heap, Link, WriteTarget, walk};
 use crate::key::{Entry, Tid, Value};
-use crate::mvcc::{Probe, Status, Write, Xid, check_write, probe_unique};
+use crate::mvcc::{Logged, Probe, Reader, Write, Xid};
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
-use crate::storage::PageError;
 use crate::vacuum;
 
 use super::eval::{Stmt, Violations, pairs, violate, violate_key};
@@ -102,8 +101,10 @@ impl<R: Runtime> Stmt<'_, R> {
         &self.db.heaps[&id].heap
     }
 
-    fn status(&self, x: Xid) -> Result<Status, PageError> {
-        self.db.txns.status(&self.db.pager, x)
+    fn reader_as(&self, me: Xid) -> Reader<Logged<R>> {
+        self.db
+            .txns
+            .reader(&self.db.pager, self.tx.snapshot.clone(), Some(me))
     }
 
     /// Returns `row` as `heap` stores it.
@@ -120,6 +121,7 @@ impl<R: Runtime> Stmt<'_, R> {
     /// other running transaction writes it.
     fn writable(&self, rel: RelId, key: &Val) -> Result<(u32, WriteTarget), Error> {
         let xid = self.tx.writer()?;
+        let reader = self.reader_as(xid);
         loop {
             let (c, tid, _) = self
                 .by_key(rel, key)?
@@ -130,8 +132,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 .read(&self.db.pager, tid)?
                 .expect("a version the statement read is there")
                 .header;
-            let w = check_write(xid, &header.writers, |x| self.status(x))?;
-            match w {
+            match reader.check_write(xid, &header.writers)? {
                 Write::Proceed => {
                     let id = self.heap(heap).id().0;
                     self.db
@@ -371,6 +372,7 @@ impl<R: Runtime> Stmt<'_, R> {
     ) -> Result<(), Error> {
         let r = self.rel(w.rel);
         let xid = self.tx.writer()?;
+        let reader = self.reader_as(xid);
         let pager = &self.db.pager;
         for (id, ix) in &r.indexes {
             let types = self.store.key_types(*id);
@@ -408,10 +410,7 @@ impl<R: Runtime> Stmt<'_, R> {
                         })?;
                     }
                     for link in run {
-                        let p = probe_unique(xid, &self.tx.snapshot, &link.header.writers, |x| {
-                            self.status(x)
-                        })?;
-                        match p {
+                        match reader.probe_unique(xid, &link.header.writers)? {
                             Probe::Skip => {}
                             Probe::Conflict => conflicts.push((c, heap, link.tid)),
                             Probe::Wait(x) => wait = Some(x),

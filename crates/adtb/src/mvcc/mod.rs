@@ -3,6 +3,7 @@
 mod clog;
 mod conflict;
 mod past;
+mod reader;
 mod snapshot;
 mod ssi;
 mod txn;
@@ -17,10 +18,9 @@ mod tests;
 
 pub use clog::CommitLog;
 pub(crate) use clog::Settling;
-#[cfg(test)]
-pub use conflict::read_before;
-pub use conflict::{Probe, Write, check_write, probe_unique};
+pub use conflict::{Probe, Write};
 pub use past::{Marker, Past};
+pub use reader::{Logged, Reader};
 pub use snapshot::Snapshot;
 pub use ssi::{Access, Limits, Safety, ScanId, SerialId, Serializer};
 #[cfg(test)]

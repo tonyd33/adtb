@@ -11,12 +11,12 @@ use crate::exec::{
     self, Budget, Call, Error, Exceeded, Histories, Options as XOptions, Program, Reads, Rows,
     Scheduler, Store, StoredHeap, Val,
 };
-use crate::heap::{FieldType, Header, HeapNo};
+use crate::heap::{FieldType, HeapNo};
 use crate::key::{CtorId, Tid, Value as KValue};
-use crate::mvcc::{ScanId, SerializationFailure, Xid};
+use crate::mvcc::{ScanId, SerializationFailure, Writers};
 use crate::plan::{Error as PlanError, HeapId, Options as PlanOptions, Rewrites, plan};
 use crate::runtime::{IoError, OpKind};
-use crate::storage::{PageError, Pid};
+use crate::storage::Pid;
 use crate::testing::Knobs;
 use crate::{OpenOptions, TxnCallOptions, TxnOptions};
 use adtb_lang::kernel::Var;
@@ -537,9 +537,9 @@ impl Counted {
 }
 
 impl Reads for Counted {
-    fn sees(&self, h: &Header) -> Result<bool, PageError> {
+    fn saw(&self, writers: &Writers) -> Result<bool, Error> {
         self.seen.fetch_add(1, Ordering::Relaxed);
-        self.inner.sees(h)
+        self.inner.saw(writers)
     }
 
     fn scanning(&self, heap: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
@@ -562,10 +562,6 @@ impl Reads for Counted {
 
     fn fetched(&self, heap: HeapNo, tid: Tid) -> Result<(), SerializationFailure> {
         self.inner.fetched(heap, tid)
-    }
-
-    fn depends(&self, writer: Xid) -> Result<(), Error> {
-        self.inner.depends(writer)
     }
 }
 
@@ -745,8 +741,8 @@ struct Deleted {
 }
 
 impl Reads for Deleted {
-    fn sees(&self, h: &Header) -> Result<bool, PageError> {
-        Ok(h.writers.deleter().is_some() && !self.now.sees(h)?)
+    fn saw(&self, writers: &Writers) -> Result<bool, Error> {
+        Ok(writers.deleted() && !self.now.saw(writers)?)
     }
 
     fn scanning(&self, _: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
@@ -766,10 +762,6 @@ impl Reads for Deleted {
     }
 
     fn fetched(&self, _: HeapNo, _: Tid) -> Result<(), SerializationFailure> {
-        Ok(())
-    }
-
-    fn depends(&self, _: Xid) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -793,7 +785,7 @@ fn with_past(
         .expect("a scan of the heap");
     let mut deleted = Vec::new();
     for v in versions {
-        if reads.sees(&v.header).expect("a visibility check") {
+        if reads.saw(&v.header.writers).expect("a visibility check") {
             deleted.push(v);
         }
     }
@@ -883,9 +875,9 @@ struct Watched {
 }
 
 impl Reads for Watched {
-    fn sees(&self, h: &Header) -> Result<bool, PageError> {
+    fn saw(&self, writers: &Writers) -> Result<bool, Error> {
         self.most.fetch_max(self.grant.used(), Ordering::Relaxed);
-        self.inner.sees(h)
+        self.inner.saw(writers)
     }
 
     fn scanning(&self, heap: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
@@ -908,10 +900,6 @@ impl Reads for Watched {
 
     fn fetched(&self, heap: HeapNo, tid: Tid) -> Result<(), SerializationFailure> {
         self.inner.fetched(heap, tid)
-    }
-
-    fn depends(&self, writer: Xid) -> Result<(), Error> {
-        self.inner.depends(writer)
     }
 }
 

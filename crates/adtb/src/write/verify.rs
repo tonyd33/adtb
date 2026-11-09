@@ -188,10 +188,7 @@ impl<R: Runtime> Database<R> {
             pager: self.pager.clone(),
             reads: Arc::new(AtSnapshot {
                 rt: self.rt.clone(),
-                pager: self.pager.clone(),
-                txns: self.txns.clone(),
-                snapshot: tx.snapshot.clone(),
-                reader: None,
+                reader: self.txns.reader(&self.pager, tx.snapshot.clone(), None),
                 serial: None,
             }),
             heaps: self.heaps.clone(),
@@ -456,6 +453,7 @@ impl<R: Runtime> Database<R> {
     ) -> Result<(), Error> {
         let schema = stored.schema();
         let types: Vec<_> = schema.components().iter().map(|(t, _)| t.clone()).collect();
+        let reader = self.txns.reader(&self.pager, tx.snapshot.clone(), None);
         let pages = match heap.pages(&self.pager) {
             Ok(p) => p,
             Err(e) => {
@@ -471,10 +469,7 @@ impl<R: Runtime> Database<R> {
                 continue;
             }
             for (v, roots) in versions {
-                let seen = self
-                    .txns
-                    .sees(&self.pager, &tx.snapshot, None, &v.header.writers)?;
-                if !seen {
+                if !reader.sees(&v.header.writers)?.visible() {
                     continue;
                 }
                 let Some(key) = ix.keys.key(c, &v.row, &types)? else {

@@ -340,7 +340,19 @@ the snapshot was taken.
 Visibility rule: a version's writer `x` counts as committed for
 snapshot `s` when `x < s.xmax`, `x` is not in `s.in_progress`, and the
 commit log says committed. The in-progress test precedes the commit log
-lookup. Readers never write heap pages to cache a writer's status.
+lookup: a writer the snapshot excludes never counts, whatever the log
+says. Readers never write heap pages to cache a writer's status.
+
+A reader is the transaction `r`, or none, reading at snapshot `s`;
+mvcc's `Reader` is the one visibility operation. `Reader::sees` takes a
+version's writers and returns `Seen`: whether the version is visible
+(§5), and the writer its visibility turned on. `Reader::before`
+resolves that writer to the one the read is before (§8.2): the inserter
+of a version the reader misses, or the deleter of one it sees, when
+that writer neither counts as committed nor aborted; otherwise none.
+Only `before` consults the commit log for a writer the snapshot
+excludes. A writing transaction's uniqueness probe (§7) and write check
+(§6) are reader operations given its id.
 
 ### 4.4 Truncation
 
@@ -378,7 +390,7 @@ over a constructor set handles broken heap-only chains in those heaps
 only.
 
 A version whose header holds `xmin` and `xmax` is visible to a
-reader `r` at snapshot `s` when:
+reader `r` at snapshot `s`, as `Reader::sees` (§4.3) decides it, when:
 
 - `xmin` is `r`, or counts as committed for `s` (§4.3); and
 - `xmax` is 0, or is neither `r` nor counts as committed for `s`.

@@ -1286,10 +1286,7 @@ impl<R: Runtime> Database<R> {
     pub(crate) fn store(&self, tx: &Txn) -> Arc<exec::Store<R>> {
         let reads = exec::AtSnapshot {
             rt: self.rt.clone(),
-            pager: self.pager.clone(),
-            txns: self.txns.clone(),
-            snapshot: tx.snapshot.clone(),
-            reader: tx.xid,
+            reader: self.txns.reader(&self.pager, tx.snapshot.clone(), tx.xid),
             serial: Some((self.ser.clone(), tx.sid)),
         };
         let upto = self

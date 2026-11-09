@@ -1,4 +1,4 @@
-use super::{Status, Writers, Xid};
+use super::{Status, Xid};
 
 /// The transactions a reader counts as committed: those below `xmax`, not in `in_progress`, that
 /// the commit log says committed.
@@ -71,6 +71,12 @@ impl Snapshot {
         valid.then(|| Snapshot::new(xmin, xmax, in_progress))
     }
 
+    /// Returns whether the snapshot leaves `x` out without a commit log lookup: `x` is at or
+    /// past `xmax`, or was in progress when the snapshot was taken.
+    pub(super) fn excludes(&self, x: Xid) -> bool {
+        x >= self.xmax || (x >= self.xmin && self.in_progress.binary_search(&x).is_ok())
+    }
+
     /// Returns whether the writer `x` counts as committed, consulting `status` only for an id
     /// below `xmax` and not in progress.
     pub fn counts_committed<E>(
@@ -78,33 +84,9 @@ impl Snapshot {
         x: Xid,
         status: impl FnOnce(Xid) -> Result<Status, E>,
     ) -> Result<bool, E> {
-        if x >= self.xmax || (x >= self.xmin && self.in_progress.binary_search(&x).is_ok()) {
+        if self.excludes(x) {
             return Ok(false);
         }
         Ok(status(x)? == Status::Committed)
-    }
-
-    /// Returns whether the version `writers` wrote is visible to `reader` reading at this
-    /// snapshot. `reader` sees its own writes, whatever their command.
-    pub fn sees<E>(
-        &self,
-        reader: Option<Xid>,
-        writers: &Writers,
-        mut status: impl FnMut(Xid) -> Result<Status, E>,
-    ) -> Result<bool, E> {
-        let mut counts = |x: Xid| {
-            if Some(x) == reader {
-                Ok(true)
-            } else {
-                self.counts_committed(x, &mut status)
-            }
-        };
-        if !counts(writers.inserter())? {
-            return Ok(false);
-        }
-        Ok(match writers.deleter() {
-            None => true,
-            Some(x) => !counts(x)?,
-        })
     }
 }

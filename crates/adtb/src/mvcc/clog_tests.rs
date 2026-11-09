@@ -157,14 +157,28 @@ fn visibility_through_the_commit_log_matches_a_model() {
                         let (xmin, xmax) = versions[rng.below(versions.len() as u64) as usize];
                         let counts =
                             |x: u64| Some(Xid(x)) == h.reader || model.committed_before(x, h.taken);
-                        let want = counts(xmin) && (xmax == 0 || !counts(xmax));
-                        let got = txns
-                            .sees(pager, &h.snapshot, h.reader, &writers(xmin, xmax))
-                            .expect("sees");
+                        let concurrent = |x: u64| {
+                            let aborted = model
+                                .ended
+                                .get(&Xid(x))
+                                .is_some_and(|&(_, s)| s == Status::Aborted);
+                            (!counts(x) && !aborted).then_some(Xid(x))
+                        };
+                        let visible = counts(xmin) && (xmax == 0 || !counts(xmax));
+                        let before = match xmax {
+                            _ if !counts(xmin) => concurrent(xmin),
+                            0 => None,
+                            _ => concurrent(xmax),
+                        };
+                        let reader = txns.reader(pager, h.snapshot.clone(), h.reader);
+                        let seen = reader.sees(&writers(xmin, xmax)).expect("sees");
+                        let got = (seen.visible(), reader.before(seen).expect("before"));
                         assert_eq!(
-                            want, got,
+                            (visible, before),
+                            got,
                             "version ({xmin}, {xmax}) at {:?} for {:?}",
-                            h.snapshot, h.reader
+                            h.snapshot,
+                            h.reader
                         );
                         checks += 1;
                     }

@@ -39,10 +39,7 @@ impl Catalog {
             pager: pager.clone(),
             reads: Arc::new(AtSnapshot {
                 rt: pager.rt().clone(),
-                pager: pager.clone(),
-                txns: Arc::new(m.txns.clone()),
-                snapshot: m.snapshot.clone(),
-                reader: Some(x),
+                reader: m.txns.reader(pager, m.snapshot.clone(), Some(x)),
                 serial: None,
             }),
             heaps,

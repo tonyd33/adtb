@@ -9,15 +9,12 @@ use adtb_lang::types::Ty;
 use crate::batch::{Batch, BatchBuilder, Schema as BatchSchema};
 use crate::btree::{self, Index, prefix_end};
 use crate::catalog::IndexKeys;
-use crate::heap::{FieldType, Header, Heap, HeapNo, Version, refuse_named, walk};
+use crate::heap::{FieldType, Heap, HeapNo, Version, refuse_named, walk};
 use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
-use crate::mvcc::{
-    ScanId, SerialId, SerializationFailure, Serializer, Snapshot, Status, Transactions, Writers,
-    Xid,
-};
+use crate::mvcc::{Logged, Reader, ScanId, SerialId, SerializationFailure, Serializer, Writers};
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
-use crate::storage::{PageError, Pager, Pid, Quarantine};
+use crate::storage::{Pager, Pid, Quarantine};
 use adtb_sys::lock::Lock;
 
 use super::memory::{Arena, Grant};
@@ -37,8 +34,11 @@ pub struct Named {
 /// What a query's reads see and record: the visibility of versions at its snapshot, and the
 /// SIREAD locks its transaction takes.
 pub trait Reads: Send + Sync {
-    /// Returns whether the version with header `h` is visible at the reader's snapshot.
-    fn sees(&self, h: &Header) -> Result<bool, PageError>;
+    /// Returns whether the version `writers` wrote is visible at the reader's snapshot. Record
+    /// that what the reader saw depends on the writer the read is before: the inserter of a
+    /// version it missed or the deleter of one it saw, when its snapshot does not count that
+    /// writer as committed and it did not abort.
+    fn saw(&self, writers: &Writers) -> Result<bool, Error>;
 
     /// Record that a scan of heap `heap` began, covering every version of the heap until
     /// [`Reads::scanned`] ends it. Returns the scan, `None` when it records none.
@@ -63,47 +63,35 @@ pub trait Reads: Send + Sync {
 
     /// Record that the version at `tid` of heap `heap` was read.
     fn fetched(&self, heap: HeapNo, tid: Tid) -> Result<(), SerializationFailure>;
-
-    /// Record that what the reader saw depends on `writer`, the inserter of a version it missed
-    /// or the deleter of one it saw, when its snapshot does not count `writer` as committed and
-    /// `writer` did not abort.
-    fn depends(&self, writer: Xid) -> Result<(), Error>;
-}
-
-/// Returns the writer the visibility of the version with header `h` depends on, `seen` its
-/// visibility: its deleter when seen, its inserter when not; `None` when it has no deleter.
-fn writer_of(h: &Header, seen: bool) -> Option<Xid> {
-    if seen {
-        h.writers.deleter()
-    } else {
-        Some(h.writers.inserter()).filter(|&x| x != Xid::NONE)
-    }
 }
 
 /// Reads at a snapshot of the transactions layer, recording SIREAD locks with `serial` when it
 /// is given.
 pub struct AtSnapshot<R: Runtime> {
     pub rt: R,
-    pub pager: Pager<R>,
-    pub txns: Arc<Transactions<R>>,
-    pub snapshot: Snapshot,
-    pub reader: Option<Xid>,
+    pub reader: Reader<Logged<R>>,
     pub serial: Option<(Arc<Lock<Serializer>>, SerialId)>,
 }
 
 impl<R: Runtime> std::fmt::Debug for AtSnapshot<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AtSnapshot")
-            .field("snapshot", &self.snapshot)
             .field("reader", &self.reader)
             .finish_non_exhaustive()
     }
 }
 
 impl<R: Runtime> Reads for AtSnapshot<R> {
-    fn sees(&self, h: &Header) -> Result<bool, PageError> {
-        self.txns
-            .sees(&self.pager, &self.snapshot, self.reader, &h.writers)
+    fn saw(&self, writers: &Writers) -> Result<bool, Error> {
+        let seen = self.reader.sees(writers)?;
+        if let Some((s, id)) = &self.serial
+            && let Some(writer) = self.reader.before(seen)?
+        {
+            s.lock(&self.rt)
+                .read_from(*id, writer)
+                .map_err(Error::Serialization)?;
+        }
+        Ok(seen.visible())
     }
 
     fn scanning(&self, heap: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
@@ -139,27 +127,6 @@ impl<R: Runtime> Reads for AtSnapshot<R> {
             Some((s, id)) => s.lock(&self.rt).read_tuple(*id, heap.0, tid),
             None => Ok(()),
         }
-    }
-
-    fn depends(&self, writer: Xid) -> Result<(), Error> {
-        let Some((s, id)) = &self.serial else {
-            return Ok(());
-        };
-        if Some(writer) == self.reader {
-            return Ok(());
-        }
-        let status = |x| self.txns.status(&self.pager, x);
-        if self
-            .snapshot
-            .counts_committed(writer, status)
-            .map_err(Error::Page)?
-            || status(writer).map_err(Error::Page)? == Status::Aborted
-        {
-            return Ok(());
-        }
-        s.lock(&self.rt)
-            .read_from(*id, writer)
-            .map_err(Error::Serialization)
     }
 }
 
@@ -453,10 +420,10 @@ impl<R: Runtime> Store<R> {
                 let mut versions = Vec::new();
                 heap.scan_pages(&self.pager, &[pid], |v| versions.push(v))?;
                 for v in versions {
-                    if !self.reads.sees(&v.header)? {
+                    if !self.reads.saw(&v.header.writers)? {
                         continue;
                     }
-                    if v.header.writers.deleter().is_some() {
+                    if v.header.writers.deleted() {
                         if now {
                             deleted.hold(&v)?;
                         } else if deleted.holds(&v) {
@@ -519,7 +486,7 @@ impl<R: Runtime> Store<R> {
                 })?;
                 continue;
             };
-            if self.reads.sees(&v.header)? {
+            if self.reads.saw(&v.header.writers)? {
                 return Ok(Some((heap, v.row)));
             }
         }
@@ -555,7 +522,7 @@ impl<R: Runtime> Store<R> {
                         .keys
                         .key(c, &v.row, &types)?
                         .is_some_and(|k| schema.encode(&k) == wanted)
-                        && self.reads.sees(&v.header)?
+                        && self.reads.saw(&v.header.writers)?
                     {
                         return Ok(Some((heap, v.row)));
                     }
@@ -588,8 +555,8 @@ impl<R: Runtime> Store<R> {
     /// before it are passed, each batch held in `grant` from its first row until `each` returns.
     /// Stop when `each` breaks. Returns the number of pages read when `each` breaks.
     ///
-    /// Postconditions: the writers recorded with [`Reads::depends`] are those of the versions read
-    /// before the last batch passed, and of every version on `pages` when `each` never breaks.
+    /// Postconditions: the versions recorded with [`Reads::saw`] are those read before the last
+    /// batch passed, and every version on `pages` when `each` never breaks.
     pub fn scan_pages(
         &self,
         id: HeapId,
@@ -600,35 +567,26 @@ impl<R: Runtime> Store<R> {
     ) -> Result<ControlFlow<usize>, Error> {
         let h = self.heap(id);
         let mut b = Filling::new(&h.row, rows, grant);
-        let mut writers = BTreeSet::new();
         for (read, pid) in (1..).zip(pages) {
             let mut versions = Vec::new();
             h.heap
                 .scan_pages(&self.pager, std::slice::from_ref(pid), |v| versions.push(v))?;
             for v in versions {
-                let seen = self.reads.sees(&v.header)?;
-                writers.extend(writer_of(&v.header, seen));
-                if !seen {
+                if !self.reads.saw(&v.header.writers)? {
                     continue;
                 }
-                if let Some((full, _held)) = b.push(&v.row)? {
-                    self.depend_all(std::mem::take(&mut writers))?;
-                    if each(full)?.is_break() {
-                        return Ok(ControlFlow::Break(read));
-                    }
+                if let Some((full, _held)) = b.push(&v.row)?
+                    && each(full)?.is_break()
+                {
+                    return Ok(ControlFlow::Break(read));
                 }
             }
         }
-        self.depend_all(writers)?;
         let flow = match b.rest() {
             Some((last, _held)) => each(last)?,
             None => ControlFlow::Continue(()),
         };
         Ok(flow.map_break(|()| pages.len()))
-    }
-
-    fn depend_all(&self, writers: BTreeSet<Xid>) -> Result<(), Error> {
-        writers.into_iter().try_for_each(|w| self.reads.depends(w))
     }
 
     /// Returns the version of heap `id` visible from the chain starting at the TID `at` names,
@@ -637,23 +595,15 @@ impl<R: Runtime> Store<R> {
         let tid = at.tid;
         let StoredHeap { heap, sum, .. } = self.heap(id);
         let mut failed = None;
-        let mut writers = BTreeSet::new();
         let link = walk(&self.pager, heap.id(), sum, tid, |l| {
-            match self.reads.sees(&l.header) {
-                Ok(seen) => {
-                    writers.extend(writer_of(&l.header, seen));
-                    seen
-                }
-                Err(e) => {
-                    failed = Some(e);
-                    true
-                }
-            }
+            self.reads.saw(&l.header.writers).unwrap_or_else(|e| {
+                failed = Some(e);
+                true
+            })
         })?;
         if let Some(e) = failed {
-            return Err(Error::Page(e));
+            return Err(e);
         }
-        self.depend_all(writers)?;
         if link.is_none()
             && let Some((index, entry)) = &at.entry
         {
@@ -812,7 +762,6 @@ impl<R: Runtime> Store<R> {
         let mut held = bounds.grant.arena();
         for (&c, &heap) in rows.heaps.iter().filter(|(c, _)| routes.contains(c)) {
             let listing = self.pages(heap)?;
-            let mut writers = BTreeSet::new();
             for &pid in &listing.pages {
                 (bounds.check)()?;
                 let mut versions = Vec::new();
@@ -822,9 +771,9 @@ impl<R: Runtime> Store<R> {
                 let size: usize = versions.iter().map(|v| row_size(&v.row)).sum();
                 let _page = bounds.grant.take(size)?;
                 for v in versions {
-                    let seen = self.reads.sees(&v.header)?;
-                    writers.extend(writer_of(&v.header, seen));
-                    if seen && let Some(key) = rows.keys.key(c, &v.row, &types)? {
+                    if self.reads.saw(&v.header.writers)?
+                        && let Some(key) = rows.keys.key(c, &v.row, &types)?
+                    {
                         let bytes = schema.encode(&key);
                         let span = (
                             lo.as_ref().map(Vec::as_slice),
@@ -837,7 +786,6 @@ impl<R: Runtime> Store<R> {
                     }
                 }
             }
-            self.depend_all(writers)?;
         }
         found.sort();
         let named = |(_, ctor, tid)| Named {

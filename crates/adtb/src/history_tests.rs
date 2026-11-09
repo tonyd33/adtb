@@ -1260,10 +1260,7 @@ fn store_scan_sees_history_pages_created_during_its_current_walk() {
             pager: db.pager.clone(),
             reads: Arc::new(crate::exec::AtSnapshot {
                 rt,
-                pager: db.pager.clone(),
-                txns: Arc::new(db.txns),
-                snapshot,
-                reader: None,
+                reader: db.txns.reader(&db.pager, snapshot, None),
                 serial: None,
             }),
             heaps: BTreeMap::from([(id, stored(heap.clone()))]),
@@ -1330,9 +1327,8 @@ fn sees<R: Runtime>(
     marker: &Marker,
     h: &Header,
 ) -> Result<bool, PageError> {
-    marker
-        .snapshot
-        .sees(None, &h.writers, |x| txns.status(pager, x))
+    let reader = txns.reader(pager, marker.snapshot.clone(), None);
+    Ok(reader.sees(&h.writers)?.visible())
 }
 
 /// Returns the rows of a constructor as the safe snapshot of `marker` reads them, from `heaps`,

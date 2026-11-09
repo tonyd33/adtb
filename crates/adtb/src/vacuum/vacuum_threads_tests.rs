@@ -139,8 +139,10 @@ impl Db {
                 let k = key_of(&v.row);
                 if self
                     .txns
-                    .sees(&self.pager, snapshot, None, &v.header.writers)
+                    .reader(&self.pager, snapshot.clone(), None)
+                    .sees(&v.header.writers)
                     .expect("sees")
+                    .visible()
                     && out.insert(k, (h, v.row)).is_some()
                 {
                     twice.push(k);
@@ -174,8 +176,10 @@ impl Db {
             for (t, writers) in seen {
                 if self
                     .txns
-                    .sees(&self.pager, snapshot, None, &writers)
+                    .reader(&self.pager, snapshot.clone(), None)
+                    .sees(&writers)
                     .expect("sees")
+                    .visible()
                 {
                     if let Some(v) = self.heaps[h].read(&self.pager, t).expect("read") {
                         out.insert(key_of(&v.row), (h, v.row));
@@ -200,8 +204,10 @@ impl Db {
                 let marked = heap.all_visible(&self.pager, pid).unwrap();
                 let sees = self
                     .txns
-                    .sees(&self.pager, &fresh, None, &v.header.writers)
-                    .unwrap();
+                    .reader(&self.pager, fresh.clone(), None)
+                    .sees(&v.header.writers)
+                    .unwrap()
+                    .visible();
                 if marked && !sees {
                     problems.push(format!(
                         "heap {h} {pid:?} is all-visible, {:?} is not",
@@ -463,8 +469,10 @@ fn live_of(db: &Db) -> BTreeMap<u64, Live> {
         for v in versions {
             if db
                 .txns
-                .sees(&db.pager, &s, None, &v.header.writers)
+                .reader(&db.pager, s.clone(), None)
+                .sees(&v.header.writers)
                 .unwrap()
+                .visible()
             {
                 let k = key_of(&v.row);
                 out.entry(k as u64 % WRITERS)

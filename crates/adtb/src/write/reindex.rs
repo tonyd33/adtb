@@ -198,6 +198,7 @@ impl<R: Runtime> Scan<'_, R> {
         let stored = &db.indexes[&self.id];
         let schema = stored.index.schema();
         let types: Vec<_> = schema.components().iter().map(|(t, _)| t.clone()).collect();
+        let reader = tx.map(|tx| db.txns.reader(&db.pager, tx.snapshot.clone(), None));
         let mut out = Vec::new();
         for pid in heap.pages(&db.pager)? {
             db.rebuild_stopped()?;
@@ -212,10 +213,8 @@ impl<R: Runtime> Scan<'_, R> {
                 let Some(key) = self.ix.keys.key(c, &v.row, &types)? else {
                     continue;
                 };
-                let counted = match tx {
-                    Some(tx) => db
-                        .txns
-                        .sees(&db.pager, &tx.snapshot, None, &v.header.writers)?,
+                let counted = match &reader {
+                    Some(r) => r.sees(&v.header.writers)?.visible(),
                     None => false,
                 };
                 let key_len = schema.encode(&key).len();

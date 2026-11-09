@@ -53,6 +53,10 @@ impl Writers {
         self.deleter == Some(x)
     }
 
+    pub fn deleted(&self) -> bool {
+        self.deleter.is_some()
+    }
+
     pub fn inserter(&self) -> Xid {
         self.inserter
     }
