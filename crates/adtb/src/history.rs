@@ -83,7 +83,8 @@ pub(crate) fn keep<R: Runtime>(
     heap.scan_pages(pager, &[pid], |v| found.push(v))?;
     let mut copied = 0;
     for v in found {
-        if !txns.kept_by_window(pager, &v.header.writers, horizon)? {
+        let kept = txns.kept_by_window(pager, &v.header.writers, horizon);
+        if !kept.map_err(|e| v.refuse(pager, e))? {
             continue;
         }
         let key = (into.key)(ctor, &v.row);

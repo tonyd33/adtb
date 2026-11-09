@@ -11,7 +11,7 @@ use adtb_lang::types::RelId;
 use crate::btree::{BTree, Index};
 use crate::exec::StoredHeap;
 use crate::heap::{Heap, LargeStore};
-use crate::key::Value;
+use crate::key::{Tid, Value};
 use crate::mvcc::{Past, Scope, Transactions, Xid};
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
@@ -26,9 +26,9 @@ use super::{
     Catalog, Error, HEAP_ROOT, IndexKeys, IndexSpec, MIGRATION, ROOTS, int, row_type, uint,
 };
 
-/// The transaction of each migration by the version it made, and the version whose migration
-/// named each heap by heap id.
-type Migrations = (BTreeMap<u64, Xid>, BTreeMap<u32, u64>);
+/// The transaction of each migration and the roots version recording it, by the version it made,
+/// and the version whose migration named each heap by heap id.
+type Migrations = (BTreeMap<u64, (Xid, Tid)>, BTreeMap<u32, u64>);
 
 /// The constructor of a row of the roots heap naming a history heap.
 pub(super) const HISTORY_HEAP: u32 = 4;
@@ -357,8 +357,9 @@ impl Catalog {
         let reader = txns.reader(pager, snapshot, None);
         let seen = scanned.map_err(Error::from).and_then(|()| {
             for v in versions {
-                if reader.sees(&v.header.writers)?.visible() {
-                    rows.push((v.header.writers.inserter(), v.row));
+                let seen = reader.sees(&v.header.writers);
+                if seen.map_err(|e| v.refuse(pager, e))?.visible() {
+                    rows.push((v.header.writers.inserter(), v.tid, v.row));
                 }
             }
             Ok(())
@@ -367,19 +368,19 @@ impl Catalog {
         seen?;
         let mut migrations = BTreeMap::new();
         let mut named = Vec::new();
-        for (x, row) in rows {
+        for (x, tid, row) in rows {
             let [Value::Sum { ctor, fields }] = row.as_slice() else {
                 return Err(Rot::RootsRow(row).into());
             };
             match (*ctor, fields.as_slice()) {
                 (MIGRATION, [version, _]) => {
-                    migrations.insert(uint(version)?, x);
+                    migrations.insert(uint(version)?, (x, tid));
                 }
                 (HEAP_ROOT, [_, _, heap, _]) => named.push((heap_id(heap)?, x)),
                 _ => {}
             }
         }
-        let by_xid: BTreeMap<Xid, u64> = migrations.iter().map(|(v, x)| (*x, *v)).collect();
+        let by_xid: BTreeMap<Xid, u64> = migrations.iter().map(|(v, (x, _))| (*x, *v)).collect();
         let made = named
             .into_iter()
             .filter_map(|(heap, x)| Some((heap, *by_xid.get(&x)?)))

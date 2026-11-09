@@ -1,14 +1,14 @@
 use crate::runtime::Runtime;
-use crate::storage::{PageError, Pager};
+use crate::storage::Pager;
 
 use super::conflict::later;
-use super::{Probe, Snapshot, Status, Transactions, Write, Writers, Xid};
+use super::{Probe, Snapshot, Status, StatusError, Transactions, Write, Writers, Xid};
 
-/// The latest commit log status of a reserved id.
+/// The latest commit log status of an id.
 pub trait Statuses {
     type Error;
 
-    /// Returns the status of `x`, an id already reserved.
+    /// Returns the status of `x`.
     fn status(&self, x: Xid) -> Result<Status, Self::Error>;
 }
 
@@ -20,9 +20,9 @@ pub struct Logged<R: Runtime> {
 }
 
 impl<R: Runtime> Statuses for Logged<R> {
-    type Error = PageError;
+    type Error = StatusError;
 
-    fn status(&self, x: Xid) -> Result<Status, PageError> {
+    fn status(&self, x: Xid) -> Result<Status, StatusError> {
         self.txns.status(&self.pager, x)
     }
 }
@@ -94,6 +94,12 @@ impl<R: Runtime> Transactions<R> {
             snapshot,
             me,
         }
+    }
+}
+
+impl<R: Runtime> Reader<Logged<R>> {
+    pub fn pager(&self) -> &Pager<R> {
+        &self.statuses.pager
     }
 }
 

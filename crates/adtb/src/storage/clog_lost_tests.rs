@@ -460,7 +460,7 @@ fn reopened(seed: u64, files: &Files, root: Pid, ids: &[Xid]) -> [Vec<Status>; 2
             } else {
                 let txns = Transactions::open(rt, &pager, root).unwrap();
                 ids.iter()
-                    .map(|&x| txns.status(&pager, x).unwrap())
+                    .map(|&x| txns.recorded(&pager, x).unwrap())
                     .collect()
             });
         });

@@ -10,7 +10,7 @@ use adtb_lang::types::RelId;
 
 use crate::btree::Index;
 use crate::exec::{self, Histories, PastReads, Reads, Store, StoredHeap, StoredIndex, Val};
-use crate::heap::HeapNo;
+use crate::heap::{Heap, HeapNo};
 use crate::history::History;
 use crate::key::{CtorId, Tid, Value};
 use crate::mvcc::{
@@ -38,8 +38,9 @@ pub struct Retained {
     pub heaps: BTreeMap<HeapId, StoredHeap>,
     /// The history key index of each relation, by its key index.
     pub indexes: BTreeMap<IndexId, Index>,
-    /// The transaction that applied each migration, by the version it made.
-    pub migrations: BTreeMap<u64, Xid>,
+    /// The transaction that applied each migration and the TID of the roots version recording
+    /// it, by the version it made.
+    pub migrations: BTreeMap<u64, (Xid, Tid)>,
     /// The version whose migration made each heap; the heaps of the engine's own declarations
     /// are absent.
     pub born: BTreeMap<HeapId, u64>,
@@ -56,8 +57,10 @@ struct AtMarker<R: Runtime> {
 }
 
 impl<R: Runtime> Reads for AtMarker<R> {
-    fn saw(&self, writers: &Writers) -> Result<bool, exec::Error> {
-        Ok(self.reader.sees(writers)?.visible())
+    fn saw(&self, at: Pid, writers: &Writers) -> Result<bool, exec::Error> {
+        let seen = self.reader.sees(writers);
+        let refuse = |e| Heap::refuse_unreserved(self.reader.pager(), at, (), e);
+        Ok(seen.map_err(refuse)?.visible())
     }
 
     fn scanning(&self, _: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
@@ -146,16 +149,18 @@ impl<R: Runtime> Pasts<R> {
         })
     }
 
-    /// Returns whether the snapshot of `marker` sees the commit of `x`.
-    fn sees_commit(&self, marker: &Marker, x: Xid) -> Result<bool, exec::Error> {
+    /// Returns whether the snapshot of `marker` sees the commit of `x`, the writer of the roots
+    /// version at `at`.
+    fn sees_commit(&self, marker: &Marker, (x, at): (Xid, Tid)) -> Result<bool, exec::Error> {
         let reader = self.txns.reader(&self.pager, marker.snapshot.clone(), None);
-        Ok(reader.counts_committed(x)?)
+        let refuse = |e| Heap::refuse_unreserved(&self.pager, Pid(at.page()), (), e);
+        Ok(reader.counts_committed(x).map_err(refuse)?)
     }
 
     /// Returns the schema version at the state `marker` reads.
     fn version_at(&self, marker: &Marker) -> Result<u64, exec::Error> {
-        for (&v, &x) in self.retained.migrations.iter().rev() {
-            if self.sees_commit(marker, x)? {
+        for (&v, &made) in self.retained.migrations.iter().rev() {
+            if self.sees_commit(marker, made)? {
                 return Ok(v);
             }
         }
@@ -178,7 +183,7 @@ impl<R: Runtime> Pasts<R> {
             .filter(|m| m.time >= cutoff && m.at <= self.upto)
         {
             match made {
-                Some(x) if !self.sees_commit(m, x)? => break,
+                Some(made) if !self.sees_commit(m, made)? => break,
                 _ => oldest = m.at,
             }
         }
@@ -320,7 +325,7 @@ impl<R: Runtime> Database<R> {
                 panic!("a stored row of constructor {c} has the key it had at its insert")
             })
         };
-        let pasts: Vec<(CtorId, &crate::heap::Heap)> = sum
+        let pasts: Vec<(CtorId, &Heap)> = sum
             .heaps
             .iter()
             .map(|(id, h)| (*id, &*retained.heaps[&HeapId(u64::from(h.id().0))].heap))

@@ -11,7 +11,7 @@ use std::ops::Bound;
 use crate::btree::{self, BTree, Index};
 use crate::heap::{Flags, Heap, LargeStore, Link, successor};
 use crate::key::{CtorId, Tid};
-use crate::mvcc::{CommitLog, Status};
+use crate::mvcc::{CommitLog, Owes};
 use crate::runtime::Runtime;
 use crate::storage::{self, Damage, LogFinding, PageError, PageKind, Pager, Pid};
 
@@ -270,7 +270,7 @@ impl<R: Runtime> Walk<'_, R> {
             if flags.contains(Flags::HOT_UPDATED) {
                 continue;
             }
-            let Some(deleter) = h.writers.deleter() else {
+            if !h.writers.deleted() {
                 self.structure(
                     pid,
                     format!(
@@ -279,23 +279,19 @@ impl<R: Runtime> Walk<'_, R> {
                     ),
                 );
                 continue;
-            };
-            if deleter >= clog.reserved() {
-                self.structure(
-                    pid,
-                    format!(
-                        "{name}: slot {} names unreserved deleter {}",
-                        t.slot(),
-                        deleter.0
-                    ),
-                );
-                continue;
             }
-            match clog.status(self.pager, deleter) {
-                Ok(Status::InProgress) => {}
-                Ok(_) => continue,
+            let deleter = match clog.owes(self.pager, &h.writers) {
+                Ok(Owes::Successor(x)) => x,
+                Ok(Owes::Nothing) => continue,
+                Ok(Owes::Unreserved(x)) => {
+                    self.structure(
+                        pid,
+                        format!("{name}: slot {} names unreserved deleter {}", t.slot(), x.0),
+                    );
+                    continue;
+                }
                 Err(e) => return self.damaged(e),
-            }
+            };
             let of = Link {
                 tid: t,
                 heap: heap.id(),

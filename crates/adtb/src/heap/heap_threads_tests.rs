@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::heap::{FieldType, Heap, HeapNo, LargeStore, walk};
 use crate::key::{Scalar, Tid, Value};
-use crate::mvcc::{Fate, Writers, Xid};
+use crate::mvcc::{Fate, StatusError, Writers, Xid};
 use crate::runtime::{Clock, Threads};
 use crate::storage::{Options, PageError, PageKind, Pager, Pid};
 use adtb_sim::{Config, Sim, SimRuntime};
@@ -176,7 +176,7 @@ fn heap_only_updates_from_many_threads_leave_the_directory_root_unlatched() {
 const VM_SPAN: u64 = (PAGE as u64 - 32) * 8;
 const ROUNDS: usize = 40;
 
-fn all_visible(_: &Writers) -> Result<Fate, PageError> {
+fn all_visible(_: &Writers) -> Result<Fate, StatusError> {
     Ok(Fate::AllVisible)
 }
 
@@ -300,7 +300,7 @@ fn heap_marked(pager: &Pager<SimRuntime>, heap: &Heap) -> Vec<Pid> {
 
 const HOT_ROUNDS: u64 = 400;
 
-fn dead_once_deleted(w: &Writers) -> Result<Fate, PageError> {
+fn dead_once_deleted(w: &Writers) -> Result<Fate, StatusError> {
     Ok(if w.deleter().is_none() {
         Fate::Keep
     } else {

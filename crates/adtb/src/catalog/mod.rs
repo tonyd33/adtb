@@ -477,10 +477,8 @@ fn latest_rows<R: Runtime>(
     let logged = pager.logged_commits();
     let mut rows = Vec::new();
     for v in versions {
-        if txns
-            .latest_live(pager, &v.header.writers, &logged)
-            .ok_or(damage)?
-        {
+        let live = txns.latest_live(pager, &v.header.writers, &logged);
+        if live.map_err(|e| v.refuse(pager, e))?.ok_or(damage)? {
             rows.push(v.row);
         }
     }
@@ -499,7 +497,8 @@ fn visible<R: Runtime>(
     let reader = txns.reader(pager, snapshot.clone(), None);
     let mut out = Vec::new();
     for v in versions {
-        if reader.sees(&v.header.writers)?.visible() {
+        let seen = reader.sees(&v.header.writers);
+        if seen.map_err(|e| v.refuse(pager, e))?.visible() {
             out.push(v.row);
         }
     }
@@ -1348,7 +1347,8 @@ fn delete_rows<R: Runtime>(
         let Some(at) = left.iter().position(|r| **r == v.row) else {
             continue;
         };
-        if reader.sees(&v.header.writers)?.visible() {
+        let seen = reader.sees(&v.header.writers);
+        if seen.map_err(|e| v.refuse(pager, e))?.visible() {
             heap.delete(pager, heap::WriteTarget::checked(v.tid, v.header), m.x)?;
             left.swap_remove(at);
         }

@@ -469,7 +469,8 @@ impl<R: Runtime> Database<R> {
                 continue;
             }
             for (v, roots) in versions {
-                if !reader.sees(&v.header.writers)?.visible() {
+                let seen = reader.sees(&v.header.writers);
+                if !seen.map_err(|e| v.refuse(&self.pager, e))?.visible() {
                     continue;
                 }
                 let Some(key) = ix.keys.key(c, &v.row, &types)? else {

@@ -6,7 +6,7 @@ use crate::storage::{
     Resolutions, StaleCopy, flags, format, header_edit, kind, lsn,
 };
 
-use super::{Status, Xid};
+use super::{Status, StatusError, Writers, Xid};
 
 /// A status page holding ids in progress: its page, its first id, those ids, and the file's copy
 /// with its judgement when the page lost a write.
@@ -15,6 +15,16 @@ pub(crate) type Unresolved<'a, R> = (Pid, u64, Vec<u64>, Option<(Vec<u8>, StaleC
 /// The right to read a status page that lost a write and write it back settled, which only the
 /// commit log holds: no code outside this module can make one.
 pub(crate) struct Settling(());
+
+/// What [`CommitLog::owes`] finds a version naming a successor is owed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Owes {
+    Nothing,
+    /// A version written by its deleter, which is running.
+    Successor(Xid),
+    /// Its deleter is at or past the reservation.
+    Unreserved(Xid),
+}
 
 /// The format version of commit log pages.
 pub const PAGE_FORMAT: u16 = 2;
@@ -501,17 +511,34 @@ impl CommitLog {
 
     /// Returns the status of `x`.
     ///
-    /// Panics if `x` is not reserved.
-    pub fn status<R: Runtime>(&self, pager: &Pager<R>, x: Xid) -> Result<Status, PageError> {
-        assert!(
-            Xid::FIRST <= x && x < self.root.reserved,
-            "{x:?} is not a reserved id"
-        );
+    /// Fail with [`StatusError::Unreserved`] when `x` is not reserved, and with the damage of
+    /// its status page when that fails verification.
+    pub fn status<R: Runtime>(&self, pager: &Pager<R>, x: Xid) -> Result<Status, StatusError> {
+        if x < Xid::FIRST || x >= self.root.reserved {
+            return Err(StatusError::Unreserved(x));
+        }
         if x < self.root.bound {
             return Ok(Status::Committed);
         }
         let (n, i) = locate(x, self.per_page);
         Ok(status_at(&pager.read_formatted(self.page(n))?, i))
+    }
+
+    /// Returns what a version written as `w` that names a successor is owed: a version its
+    /// deleter wrote while that deleter runs, and nothing once it has resolved or when there is
+    /// no deleter.
+    ///
+    /// Fail with the damage of the deleter's status page.
+    pub fn owes<R: Runtime>(&self, pager: &Pager<R>, w: &Writers) -> Result<Owes, PageError> {
+        let Some(x) = w.deleter() else {
+            return Ok(Owes::Nothing);
+        };
+        Ok(match self.status(pager, x) {
+            Ok(Status::InProgress) => Owes::Successor(x),
+            Ok(Status::Committed | Status::Aborted) => Owes::Nothing,
+            Err(StatusError::Unreserved(x)) => Owes::Unreserved(x),
+            Err(StatusError::Page(e)) => return Err(e),
+        })
     }
 
     /// Record that `x` committed and log its commit record, in one batch.

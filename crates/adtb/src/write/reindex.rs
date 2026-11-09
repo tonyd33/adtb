@@ -214,7 +214,10 @@ impl<R: Runtime> Scan<'_, R> {
                     continue;
                 };
                 let counted = match &reader {
-                    Some(r) => r.sees(&v.header.writers)?.visible(),
+                    Some(r) => r
+                        .sees(&v.header.writers)
+                        .map_err(|e| v.refuse(&db.pager, e))?
+                        .visible(),
                     None => false,
                 };
                 let key_len = schema.encode(&key).len();

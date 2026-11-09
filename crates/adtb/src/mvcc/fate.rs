@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 
 use crate::runtime::Runtime;
-use crate::storage::{PageError, Pager};
+use crate::storage::Pager;
 
-use super::{Status, Transactions, Writers, Xid};
+use super::{Status, StatusError, Transactions, Writers, Xid};
 
 /// What a pruner decides of one version from its writers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,7 +72,7 @@ impl<R: Runtime> Transactions<R> {
         pager: &Pager<R>,
         w: &Writers,
         horizon: &Horizon,
-    ) -> Result<Fate, PageError> {
+    ) -> Result<Fate, StatusError> {
         let inserter = w.inserter();
         let deleter = w.deleter();
         let keeps = |x: Xid| self.retains(pager, x, horizon.cutoff);
@@ -110,7 +110,7 @@ impl<R: Runtime> Transactions<R> {
         pager: &Pager<R>,
         w: &Writers,
         horizon: &Horizon,
-    ) -> Result<bool, PageError> {
+    ) -> Result<bool, StatusError> {
         let Some(x) = w.deleter() else {
             return Ok(false);
         };
@@ -133,8 +133,8 @@ impl<R: Runtime> Transactions<R> {
         w: &Writers,
         x: Xid,
         horizon: &Horizon,
-        committed: impl FnOnce() -> Result<bool, PageError>,
-    ) -> Result<bool, PageError> {
+        committed: impl FnOnce() -> Result<bool, StatusError>,
+    ) -> Result<bool, StatusError> {
         Ok(!w.inserted_by(x) && committed()? && self.retains(pager, x, horizon.cutoff)?)
     }
 
@@ -143,28 +143,34 @@ impl<R: Runtime> Transactions<R> {
         &'a self,
         pager: &'a Pager<R>,
         horizon: Horizon,
-    ) -> impl FnMut(&Writers) -> Result<Fate, PageError> + 'a {
+    ) -> impl FnMut(&Writers) -> Result<Fate, StatusError> + 'a {
         move |w| self.fate(pager, w, &horizon)
     }
 
     /// Returns whether `x` has committed or aborted.
-    pub fn resolved(&self, pager: &Pager<R>, x: Xid) -> Result<bool, PageError> {
+    pub fn resolved(&self, pager: &Pager<R>, x: Xid) -> Result<bool, StatusError> {
         Ok(self.status(pager, x)? != Status::InProgress)
     }
 
     /// Returns whether the inserter of a version written as `w` committed and its deleter, if any,
     /// did not, each settled by its status or, when its status page is damaged, by `logged`, or
     /// `None` when a writer is settled by neither.
+    ///
+    /// Fail with [`StatusError::Unreserved`] when a writer is not reserved.
     pub fn latest_live(
         &self,
         pager: &Pager<R>,
         w: &Writers,
         logged: &BTreeSet<u64>,
-    ) -> Option<bool> {
+    ) -> Result<Option<bool>, StatusError> {
         let gone = match w.deleter() {
-            Some(x) => self.settled(pager, logged, x)?,
+            Some(x) => match self.settled(pager, logged, x)? {
+                Some(gone) => gone,
+                None => return Ok(None),
+            },
             None => false,
         };
-        Some(self.settled(pager, logged, w.inserter())? && !gone)
+        let live = self.settled(pager, logged, w.inserter())?;
+        Ok(live.map(|live| live && !gone))
     }
 }

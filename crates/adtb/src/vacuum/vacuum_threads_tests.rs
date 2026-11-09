@@ -535,7 +535,7 @@ fn inspect(db: &Db, world: &World) -> Reopen {
     let mut problems = Vec::new();
     let mut committed = BTreeSet::new();
     for &x in world.ops.keys() {
-        if db.txns.status(&db.pager, x).unwrap() == Status::Committed {
+        if db.txns.recorded(&db.pager, x).unwrap() == Status::Committed {
             committed.insert(x);
         }
     }

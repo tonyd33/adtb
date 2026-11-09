@@ -24,6 +24,8 @@ mod heap_tests;
 mod heap_threads_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod unreserved_tests;
 
 pub use chain::{successor, walk};
 #[cfg(test)]

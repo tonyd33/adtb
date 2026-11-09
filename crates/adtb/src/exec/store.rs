@@ -34,11 +34,12 @@ pub struct Named {
 /// What a query's reads see and record: the visibility of versions at its snapshot, and the
 /// SIREAD locks its transaction takes.
 pub trait Reads: Send + Sync {
-    /// Returns whether the version `writers` wrote is visible at the reader's snapshot. Record
-    /// that what the reader saw depends on the writer the read is before: the inserter of a
-    /// version it missed or the deleter of one it saw, when its snapshot does not count that
-    /// writer as committed and that writer did not abort.
-    fn saw(&self, writers: &Writers) -> Result<bool, Error>;
+    /// Returns whether the version on page `at` written by `writers` is visible at the reader's
+    /// snapshot. Record that what the reader saw depends on the writer the read is before: the
+    /// inserter of a version it missed or the deleter of one it saw, when its snapshot does not
+    /// count that writer as committed and that writer did not abort. Refuse page `at` when a
+    /// writer it looks up is not reserved.
+    fn saw(&self, at: Pid, writers: &Writers) -> Result<bool, Error>;
 
     /// Record that a scan of heap `heap` began, covering every version of the heap until
     /// [`Reads::scanned`] ends it. Returns the scan, `None` when it records none.
@@ -82,10 +83,11 @@ impl<R: Runtime> std::fmt::Debug for AtSnapshot<R> {
 }
 
 impl<R: Runtime> Reads for AtSnapshot<R> {
-    fn saw(&self, writers: &Writers) -> Result<bool, Error> {
-        let seen = self.reader.sees(writers)?;
+    fn saw(&self, at: Pid, writers: &Writers) -> Result<bool, Error> {
+        let refuse = |e| Heap::refuse_unreserved(self.reader.pager(), at, (), e);
+        let seen = self.reader.sees(writers).map_err(refuse)?;
         if let Some((s, id)) = &self.serial
-            && let Some(writer) = self.reader.before(seen)?
+            && let Some(writer) = self.reader.before(seen).map_err(refuse)?
         {
             s.lock(&self.rt)
                 .read_from(*id, writer)
@@ -420,7 +422,7 @@ impl<R: Runtime> Store<R> {
                 let mut versions = Vec::new();
                 heap.scan_pages(&self.pager, &[pid], |v| versions.push(v))?;
                 for v in versions {
-                    if !self.reads.saw(&v.header.writers)? {
+                    if !self.reads.saw(Pid(v.tid.page()), &v.header.writers)? {
                         continue;
                     }
                     if v.header.writers.deleted() {
@@ -486,7 +488,7 @@ impl<R: Runtime> Store<R> {
                 })?;
                 continue;
             };
-            if self.reads.saw(&v.header.writers)? {
+            if self.reads.saw(Pid(v.tid.page()), &v.header.writers)? {
                 return Ok(Some((heap, v.row)));
             }
         }
@@ -522,7 +524,7 @@ impl<R: Runtime> Store<R> {
                         .keys
                         .key(c, &v.row, &types)?
                         .is_some_and(|k| schema.encode(&k) == wanted)
-                        && self.reads.saw(&v.header.writers)?
+                        && self.reads.saw(Pid(v.tid.page()), &v.header.writers)?
                     {
                         return Ok(Some((heap, v.row)));
                     }
@@ -572,7 +574,7 @@ impl<R: Runtime> Store<R> {
             h.heap
                 .scan_pages(&self.pager, std::slice::from_ref(pid), |v| versions.push(v))?;
             for v in versions {
-                if !self.reads.saw(&v.header.writers)? {
+                if !self.reads.saw(Pid(v.tid.page()), &v.header.writers)? {
                     continue;
                 }
                 if let Some((full, _held)) = b.push(&v.row)?
@@ -595,7 +597,7 @@ impl<R: Runtime> Store<R> {
         let tid = at.tid;
         let StoredHeap { heap, sum, .. } = self.heap(id);
         let walked = walk(&self.pager, heap.id(), sum, tid, |l, _| {
-            self.reads.saw(&l.header.writers)
+            self.reads.saw(Pid(l.tid.page()), &l.header.writers)
         })?;
         if walked.is_none()
             && let Some((index, entry)) = &at.entry
@@ -761,7 +763,7 @@ impl<R: Runtime> Store<R> {
                 let size: usize = versions.iter().map(|v| row_size(&v.row)).sum();
                 let _page = bounds.grant.take(size)?;
                 for v in versions {
-                    if self.reads.saw(&v.header.writers)?
+                    if self.reads.saw(Pid(v.tid.page()), &v.header.writers)?
                         && let Some(key) = rows.keys.key(c, &v.row, &types)?
                     {
                         let bytes = schema.encode(&key);

@@ -698,7 +698,7 @@ fn vacuum_keeps_what_live_snapshots_see_and_cleans_the_rest() {
                 .unwrap();
             }
             for x in writers.into_iter().filter(|&x| x != 0) {
-                let aborted = db.txns.status(&db.pager, Xid(x)).unwrap() == Status::Aborted;
+                let aborted = db.txns.recorded(&db.pager, Xid(x)).unwrap() == Status::Aborted;
                 assert!(
                     !aborted || Xid(x) >= last.clean_below,
                     "a version names aborted {x}"
@@ -1388,7 +1388,7 @@ fn inspect(rt: SimRuntime, world: &Mutex<World>) -> Reopen {
     let w = world.lock().unwrap();
     let mut committed = BTreeSet::new();
     for x in w.ops.keys() {
-        if db.txns.status(&db.pager, *x).unwrap() == Status::Committed {
+        if db.txns.recorded(&db.pager, *x).unwrap() == Status::Committed {
             committed.insert(*x);
         }
     }

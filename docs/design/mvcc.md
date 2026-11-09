@@ -244,6 +244,12 @@ Invariants:
 - Readers never write commit log pages or heap pages to record a
   status.
 
+A status lookup of 0 or of an id at or past the reservation fails as
+unreserved. A version header naming such an id is damage of the page
+holding it: a reader or writer whose lookup fails so refuses that page
+and records it as damaged, as for a page of the wrong shape, and
+`verify` reports the version.
+
 A commit changes the commit log page to committed and then logs the
 commit record; an abort does the same with aborted and the abort
 record. A commit is durable once the log is durable past its commit

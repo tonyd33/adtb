@@ -12,13 +12,15 @@ mod wait;
 mod watermark;
 mod writers;
 
+use crate::storage::PageError;
+
 #[cfg(test)]
 mod clog_tests;
 #[cfg(test)]
 mod tests;
 
-pub use clog::CommitLog;
 pub(crate) use clog::Settling;
+pub use clog::{CommitLog, Owes};
 pub use conflict::{Probe, Write};
 pub use fate::{Fate, Horizon, Rule};
 pub use past::{Marker, Past};
@@ -63,11 +65,26 @@ impl Status {
     }
 }
 
+/// Why the commit log gives no status for an id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatusError {
+    /// A page the lookup reads is damaged.
+    Page(PageError),
+    /// The id is 0 or at or past the reservation.
+    Unreserved(Xid),
+}
+
+impl From<PageError> for StatusError {
+    fn from(e: PageError) -> StatusError {
+        StatusError::Page(e)
+    }
+}
+
 /// Why the transactions layer refuses a call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     /// A commit log page failed verification, the one named, and the database is quarantined.
-    Corrupt(crate::storage::PageError),
+    Corrupt(PageError),
     /// Every transaction id is spent; no read-write transaction can start.
     Exhausted,
     /// A page of the record of the retention window is damaged.

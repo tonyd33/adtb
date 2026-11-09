@@ -3,9 +3,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::btree::{BTree, Index};
-use crate::heap::{FieldType, Heap, LargeStore};
+use crate::heap::{FieldType, HEADER_LEN, Heap, LargeStore};
 use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
-use crate::mvcc::Transactions;
+use crate::mvcc::{Transactions, Writers};
 use crate::runtime::Threads;
 use crate::storage::{PageKind, Pager, Pid};
 use crate::verify::{self, Inventory, Problem, Report, Sum};
@@ -307,7 +307,7 @@ fn orphan_a_successor(db: &Db) -> (crate::mvcc::Xid, Tid) {
     let row = vec![Value::I64(1002), Value::Bytes(vec![2; 40])];
     let u = db.heaps[0].update(&db.pager, at, x, &row, &[0]).unwrap();
     assert!(!u.heap_only);
-    let gone = |w: &crate::mvcc::Writers| {
+    let gone = |w: &Writers| {
         Ok(if w.inserted_by(x) {
             crate::mvcc::Fate::Remove
         } else {
@@ -339,6 +339,39 @@ fn a_successor_freed_after_its_writer_resolved_may_dangle() {
         let (x, _) = orphan_a_successor(db);
         db.txns.abort(&db.pager, x).unwrap();
         assert!(db.verify().is_clean());
+    });
+}
+
+#[test]
+fn a_version_naming_an_unreserved_deleter_is_a_structure_fault() {
+    run(14, |db| {
+        let (_, at) = orphan_a_successor(db);
+        let was = db.heaps[0].read(&db.pager, at).unwrap().unwrap().header;
+        let reserved = db.txns.commit_log().reserved();
+        let mut forged = was;
+        forged.writers = Writers::inserted(was.writers.inserter()).superseded_by(reserved);
+        let (mut old, mut new) = ([0; HEADER_LEN], [0; HEADER_LEN]);
+        was.write(&mut old);
+        forged.write(&mut new);
+        db.pager
+            .update(&[Pid(at.page())], |p| {
+                let page = &mut p[0];
+                let starts: Vec<usize> = (0..=page.len() - HEADER_LEN)
+                    .filter(|&i| page[i..i + HEADER_LEN] == old)
+                    .collect();
+                assert_eq!(1, starts.len(), "the header of {at:?} is found once");
+                page[starts[0]..starts[0] + HEADER_LEN].copy_from_slice(&new);
+            })
+            .unwrap();
+        let what = format!(
+            "heap 10: slot {} names unreserved deleter {}",
+            at.slot(),
+            reserved.0
+        );
+        assert_eq!(
+            vec![(Pid(at.page()), Problem::Structure(what))],
+            problems(&db.verify())
+        );
     });
 }
 

@@ -9,6 +9,7 @@ use crate::key::{Entry, Tid, Value};
 use crate::mvcc::{Logged, Probe, Reader, Write, Xid};
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
+use crate::storage::Pid;
 
 use super::eval::{Stmt, Violations, pairs, violate, violate_key};
 use super::{Error, Rejection, Rows};
@@ -126,12 +127,13 @@ impl<R: Runtime> Stmt<'_, R> {
                 .by_key(rel, key)?
                 .expect("a row the statement deletes is in its snapshot");
             let heap = self.rel(rel).ctors[c as usize].heap;
-            let header = self
+            let version = self
                 .heap(heap)
                 .read(&self.db.pager, tid)?
-                .expect("a version the statement read is there")
-                .header;
-            match reader.check_write(xid, &header.writers)? {
+                .expect("a version the statement read is there");
+            let header = version.header;
+            let checked = reader.check_write(xid, &header.writers);
+            match checked.map_err(|e| version.refuse(&self.db.pager, e))? {
                 Write::Proceed => {
                     let id = self.heap(heap).id().0;
                     self.db
@@ -407,7 +409,14 @@ impl<R: Runtime> Stmt<'_, R> {
                         })?;
                     }
                     for link in run {
-                        match reader.probe_unique(xid, &link.header.writers)? {
+                        let probe = match reader.probe_unique(xid, &link.header.writers) {
+                            Ok(probe) => probe,
+                            Err(e) => {
+                                let at = Pid(link.tid.page());
+                                return Err(Heap::refuse_unreserved(pager, at, latch, e).into());
+                            }
+                        };
+                        match probe {
                             Probe::Skip => {}
                             Probe::Conflict => conflicts.push((c, heap, link.tid)),
                             Probe::Wait(x) => wait = Some(x),

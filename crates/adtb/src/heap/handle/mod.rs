@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::key::{Tid, Value};
-use crate::mvcc::{Fate, Writers, Xid};
+use crate::mvcc::{Fate, StatusError, Writers, Xid};
 use crate::runtime::Runtime;
 use crate::storage::{self, Damage, PageError, Pager, Pid, Stopped};
 
@@ -40,6 +40,14 @@ pub struct Version {
     pub header: Header,
     pub flags: Flags,
     pub row: Vec<Value>,
+}
+
+impl Version {
+    /// Returns the failure of a status lookup for a writer of this version, recording its page as
+    /// damaged when the writer is not reserved.
+    pub fn refuse<R: Runtime>(&self, pager: &Pager<R>, e: StatusError) -> PageError {
+        Heap::refuse_unreserved(pager, Pid(self.tid.page()), (), e)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,7 +91,7 @@ pub struct Pruned {
 }
 
 /// Returns the fate of a version from its writers, for pruning.
-pub type Judge<'a> = dyn FnMut(&Writers) -> Result<Fate, PageError> + 'a;
+pub type Judge<'a> = dyn FnMut(&Writers) -> Result<Fate, StatusError> + 'a;
 
 /// What converting a page to the newest format made of it.
 #[derive(Debug, Default)]
@@ -296,6 +304,24 @@ impl Heap {
     ) -> PageError {
         drop(held);
         pager.damage(pid, Damage::Checksum)
+    }
+
+    /// Release `held`, then return the failure of a status lookup for a writer of a version or
+    /// chunk on page `pid`: the damage of a status page as it is, and for a writer not reserved,
+    /// page `pid` recorded as damaged.
+    ///
+    /// Precondition: `held` is every latch or lock the caller holds.
+    pub fn refuse_unreserved<R: Runtime>(
+        pager: &Pager<R>,
+        pid: Pid,
+        held: impl Sized,
+        e: StatusError,
+    ) -> PageError {
+        drop(held);
+        match e {
+            StatusError::Page(e) => e,
+            StatusError::Unreserved(_) => pager.damage(pid, Damage::Checksum),
+        }
     }
 
     fn current(&self) -> &Format {
@@ -830,7 +856,7 @@ impl Heap {
         &self,
         pager: &Pager<R>,
         pid: Pid,
-        judge: impl FnMut(&Writers) -> Result<Fate, PageError>,
+        judge: impl FnMut(&Writers) -> Result<Fate, StatusError>,
     ) -> Result<Vec<u16>, PageError> {
         let copy = PageCopy::of(&pager.read_formatted(pid)?);
         if self.page(&copy).is_none() {
@@ -839,7 +865,8 @@ impl Heap {
         let Some(page) = self.listed(pager, pid, &copy, None)? else {
             return Ok(Vec::new());
         };
-        let fates = prune::judge(*page, judge)?;
+        let fates =
+            prune::judge(*page, judge).map_err(|e| Heap::refuse_unreserved(pager, pid, (), e))?;
         let plan = prune::plan(*page, pid.0, &fates, &|_| false);
         Ok(plan.dead.into_iter().map(|s| s as u16).collect())
     }
@@ -862,7 +889,7 @@ impl Heap {
         &self,
         pager: &Pager<R>,
         pid: Pid,
-        judge: impl FnMut(&Writers) -> Result<Fate, PageError>,
+        judge: impl FnMut(&Writers) -> Result<Fate, StatusError>,
         cleaned: &[u16],
         mark: bool,
     ) -> Result<Pruned, PageError> {
@@ -878,7 +905,10 @@ impl Heap {
         let Some(format) = self.format_of(*page) else {
             return Err(Heap::refuse_format(pager, pid, write));
         };
-        let fates = prune::judge(*page, judge)?;
+        let fates = match prune::judge(*page, judge) {
+            Ok(fates) => fates,
+            Err(e) => return Err(Heap::refuse_unreserved(pager, pid, write, e)),
+        };
         let plan = prune::plan(*page, pid.0, &fates, &|s| cleaned.contains(&(s as u16)));
         let mut out = page.to_copy();
         prune::apply(

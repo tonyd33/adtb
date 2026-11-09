@@ -4,7 +4,9 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 use crate::mvcc::Fate as Verdict;
-use crate::mvcc::{CommitLog, Rule, Scope, Snapshot, SnapshotId, Status, Transactions, Xid};
+use crate::mvcc::{
+    CommitLog, Rule, Scope, Snapshot, SnapshotId, Status, StatusError, Transactions, Xid,
+};
 
 use super::writers;
 use crate::storage::{Edit, HEADER_LEN, PageKind, Pager, Pid};
@@ -593,7 +595,7 @@ fn a_damaged_status_page_quarantines_the_database() {
         let refused = crate::mvcc::Error::Corrupt(damage);
         assert_eq!(Err(refused), txns.begin(&pager));
         assert_eq!(Some(refused), txns.take(Scope::Every).err());
-        assert_eq!(Err(damage), txns.status(&pager, Xid(1)));
+        assert_eq!(Err(StatusError::Page(damage)), txns.status(&pager, Xid(1)));
         assert_eq!(root, txns.commit_log().root());
         let clog = txns.commit_log();
         let inventory = Inventory {

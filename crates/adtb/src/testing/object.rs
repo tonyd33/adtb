@@ -6,10 +6,10 @@ use crate::btree::{BTree, Index};
 use crate::catalog::{LARGE_MARK, UNHELD_MARK};
 use crate::heap::{Flags, Header, Heap, Version};
 use crate::key::{CtorId, Entry, KeySchema, Tid, Value};
-use crate::mvcc::{Status, Xid};
+use crate::mvcc::{Status, StatusError, Xid};
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
-use crate::storage::{PageError, Pid, Quarantine};
+use crate::storage::{Pid, Quarantine};
 
 use super::{Failed, Testing};
 
@@ -201,9 +201,9 @@ impl<'a, R: Runtime> Testing<'a, R> {
     }
 
     /// Returns what the commit log holds of transaction `x`.
-    pub fn status(self, x: Xid) -> Result<Status, PageError> {
+    pub fn status(self, x: Xid) -> Result<Status, StatusError> {
         let w = self.db.tested_db();
-        w.txns().commit_log().status(self.db.tested_pager(), x)
+        w.txns().recorded(self.db.tested_pager(), x)
     }
 
     /// Returns the constructors index `object` holds entries of.

@@ -178,7 +178,8 @@ impl Catalog {
         let reader = txns.reader(pager, snapshot, None);
         let judged = scanned.and_then(|()| {
             for v in versions {
-                if !reader.sees(&v.header.writers)?.visible() {
+                let seen = reader.sees(&v.header.writers);
+                if !seen.map_err(|e| v.refuse(pager, e))?.visible() {
                     continue;
                 }
                 if let [Value::Sum { ctor, fields }] = v.row.as_slice()

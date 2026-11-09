@@ -537,9 +537,9 @@ impl Counted {
 }
 
 impl Reads for Counted {
-    fn saw(&self, writers: &Writers) -> Result<bool, Error> {
+    fn saw(&self, at: Pid, writers: &Writers) -> Result<bool, Error> {
         self.seen.fetch_add(1, Ordering::Relaxed);
-        self.inner.saw(writers)
+        self.inner.saw(at, writers)
     }
 
     fn scanning(&self, heap: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
@@ -741,8 +741,8 @@ struct Deleted {
 }
 
 impl Reads for Deleted {
-    fn saw(&self, writers: &Writers) -> Result<bool, Error> {
-        Ok(writers.deleted() && !self.now.saw(writers)?)
+    fn saw(&self, at: Pid, writers: &Writers) -> Result<bool, Error> {
+        Ok(writers.deleted() && !self.now.saw(at, writers)?)
     }
 
     fn scanning(&self, _: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
@@ -785,7 +785,10 @@ fn with_past(
         .expect("a scan of the heap");
     let mut deleted = Vec::new();
     for v in versions {
-        if reads.saw(&v.header.writers).expect("a visibility check") {
+        if reads
+            .saw(Pid(v.tid.page()), &v.header.writers)
+            .expect("a visibility check")
+        {
             deleted.push(v);
         }
     }
@@ -875,9 +878,9 @@ struct Watched {
 }
 
 impl Reads for Watched {
-    fn saw(&self, writers: &Writers) -> Result<bool, Error> {
+    fn saw(&self, at: Pid, writers: &Writers) -> Result<bool, Error> {
         self.most.fetch_max(self.grant.used(), Ordering::Relaxed);
-        self.inner.saw(writers)
+        self.inner.saw(at, writers)
     }
 
     fn scanning(&self, heap: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {

@@ -1,11 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::key::Tid;
-use crate::mvcc::Xid;
+use crate::mvcc::{StatusError, Xid};
 use crate::runtime::Runtime;
 use crate::storage::{Damage, LATCHES_PER_THREAD, PageError, Pager, Pid, Stopped, Walk};
 
-use super::Error;
 use super::dir::{Above, Fit, Space, max_fanout, need_category, page_category};
 use super::page::{Arrangement, HeapPage, HeapPageMut, Kinded, Owned, PageCopy, Slot};
 use super::row::Pointer;
@@ -13,6 +12,7 @@ use super::slotted;
 use super::stage::Stage;
 use super::version::{Flags, tid_bits, tid_from_bits};
 use super::write::{HeapWrite, Rank};
+use super::{Error, Heap};
 
 const NEXT: usize = 0;
 const WRITER: usize = 8;
@@ -387,7 +387,7 @@ impl LargeStore {
     pub fn sweep<R: Runtime>(
         &self,
         pager: &Pager<R>,
-        mut resolved: impl FnMut(Xid) -> Result<bool, PageError>,
+        mut resolved: impl FnMut(Xid) -> Result<bool, StatusError>,
         between: &mut dyn FnMut() -> bool,
     ) -> Result<Walk, PageError> {
         self.space.settle(pager)?;
@@ -405,7 +405,8 @@ impl LargeStore {
                 if !c.head || c.count > 0 {
                     continue;
                 }
-                if !resolved(c.writer)? {
+                let done = resolved(c.writer);
+                if !done.map_err(|e| Heap::refuse_unreserved(pager, pid, (), e))? {
                     pending = true;
                     continue;
                 }

@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use adtb::Value as Val;
 use adtb::key::Value as Stored;
-use adtb::testing::Knobs;
+use adtb::testing::{Knobs, Pid};
 use adtb::{Database, OpenOptions, TxnOptions};
 use adtb_lang::schema::ValueDef;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
@@ -92,10 +92,10 @@ fn versions(
             let seen = match (
                 later
                     .reads
-                    .saw(&v.header.writers)
+                    .saw(Pid(v.tid.page()), &v.header.writers)
                     .expect("a visibility check"),
                 mine.reads
-                    .saw(&v.header.writers)
+                    .saw(Pid(v.tid.page()), &v.header.writers)
                     .expect("a visibility check"),
             ) {
                 (true, true) => panic!("both snapshots see {:?}", v.row),

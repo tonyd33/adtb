@@ -9,7 +9,7 @@ use crate::runtime::Runtime;
 use crate::storage::{Damage, Lsn, PageError, Pager, Pid, Position, Quarantine};
 
 use super::past::{Commit, Marker, Past};
-use super::{CommitLog, Error, Holds, Scope, Snapshot, SnapshotId, Status, Xid};
+use super::{CommitLog, Error, Holds, Scope, Snapshot, SnapshotId, Status, StatusError, Xid};
 
 /// The number of ids one xid allocation record reserves.
 pub const RESERVATION: u64 = 1024;
@@ -181,10 +181,23 @@ impl<R: Runtime> Transactions<R> {
 
     /// Returns whether `x` committed, by its status or, when its status page is damaged, by
     /// `logged`, the commit records of the retained log. Returns `None` when neither settles it.
-    pub(super) fn settled(&self, pager: &Pager<R>, logged: &BTreeSet<u64>, x: Xid) -> Option<bool> {
-        match self.clog.read(&self.rt).status(pager, x) {
-            Ok(status) => Some(status == Status::Committed),
-            Err(_) => logged.contains(&x.0).then_some(true),
+    ///
+    /// A commit log that reserves nothing, as an unread one, has only `logged` settle `x`. Fail
+    /// with [`StatusError::Unreserved`] when `x` is not reserved by a log that reserves some id.
+    pub(super) fn settled(
+        &self,
+        pager: &Pager<R>,
+        logged: &BTreeSet<u64>,
+        x: Xid,
+    ) -> Result<Option<bool>, StatusError> {
+        let clog = self.clog.read(&self.rt);
+        match clog.status(pager, x) {
+            Ok(status) => Ok(Some(status == Status::Committed)),
+            Err(StatusError::Page(_)) => Ok(logged.contains(&x.0).then_some(true)),
+            Err(StatusError::Unreserved(_)) if clog.reserved() == Xid::FIRST => {
+                Ok(logged.contains(&x.0).then_some(true))
+            }
+            Err(e @ StatusError::Unreserved(_)) => Err(e),
         }
     }
 
@@ -304,15 +317,25 @@ impl<R: Runtime> Transactions<R> {
         Ok(lsn)
     }
 
-    /// Returns the commit log status of `x`, an id already reserved.
+    /// Returns the commit log status of `x`.
     ///
-    /// Fails with the first damage found once the database is quarantined.
-    pub fn status(&self, pager: &Pager<R>, x: Xid) -> Result<Status, PageError> {
+    /// Fail with the first damage found once the database is quarantined, quarantining it when
+    /// the status page of `x` fails verification, and with [`StatusError::Unreserved`] when `x`
+    /// is not reserved.
+    pub(super) fn status(&self, pager: &Pager<R>, x: Xid) -> Result<Status, StatusError> {
         if let Some(e) = self.quarantined() {
-            return Err(e);
+            return Err(StatusError::Page(e));
         }
-        let status = self.clog.read(&self.rt).status(pager, x);
-        status.map_err(|e| *self.quarantine.get_or_init(|| e))
+        match self.clog.read(&self.rt).status(pager, x) {
+            Err(StatusError::Page(e)) => Err(StatusError::Page(*self.quarantine.get_or_init(|| e))),
+            found => found,
+        }
+    }
+
+    /// Returns what the commit log records of `x`, whether or not the database is quarantined.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn recorded(&self, pager: &Pager<R>, x: Xid) -> Result<Status, StatusError> {
+        self.commit_log().status(pager, x)
     }
 
     /// Take a snapshot of the transactions now committed and hold back the heaps of `scope` for

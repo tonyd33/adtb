@@ -1338,10 +1338,13 @@ fn sees<R: Runtime>(
     txns: &Transactions<R>,
     pager: &Pager<R>,
     marker: &Marker,
-    h: &Header,
+    (at, h): (Tid, &Header),
 ) -> Result<bool, PageError> {
     let reader = txns.reader(pager, marker.snapshot.clone(), None);
-    Ok(reader.sees(&h.writers)?.visible())
+    let seen = reader.sees(&h.writers);
+    Ok(seen
+        .map_err(|e| Heap::refuse_unreserved(pager, Pid(at.page()), (), e))?
+        .visible())
 }
 
 /// Returns the rows of a constructor as the safe snapshot of `marker` reads them, from `heaps`,
@@ -1361,7 +1364,7 @@ fn rows<R: Runtime>(
     }
     let mut out = Vec::new();
     for v in versions {
-        if !sees(txns, pager, marker, &v.header)? {
+        if !sees(txns, pager, marker, (v.tid, &v.header))? {
             continue;
         }
         let same = seen.entry(v.header.writers).or_default();
@@ -1391,7 +1394,7 @@ fn probe<R: Runtime>(
 ) -> Result<Option<Vec<Value>>, Error> {
     for e in index.probe_ctor(pager, key, ctor)? {
         let walked = walk(pager, current.id(), sum, e.tid, |l, _| {
-            sees(txns, pager, marker, &l.header)
+            sees(txns, pager, marker, (l.tid, &l.header))
         })?;
         if let Some((l, row)) = walked
             && l.heap == current.id()
@@ -1405,7 +1408,7 @@ fn probe<R: Runtime>(
             continue;
         }
         if let Some(v) = past.read(pager, e.tid)?
-            && sees(txns, pager, marker, &v.header)?
+            && sees(txns, pager, marker, (v.tid, &v.header))?
         {
             return Ok(Some(v.row));
         }
@@ -1423,8 +1426,10 @@ struct VacuumOnFetch {
 }
 
 impl crate::exec::Reads for VacuumOnFetch {
-    fn saw(&self, writers: &Writers) -> Result<bool, crate::exec::Error> {
-        Ok(self.reader.sees(writers)?.visible())
+    fn saw(&self, at: Pid, writers: &Writers) -> Result<bool, crate::exec::Error> {
+        let seen = self.reader.sees(writers);
+        let refuse = |e| Heap::refuse_unreserved(&self.db.pager, at, (), e);
+        Ok(seen.map_err(refuse)?.visible())
     }
 
     fn scanning(

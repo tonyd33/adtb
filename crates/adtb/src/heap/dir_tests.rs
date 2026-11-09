@@ -564,6 +564,7 @@ fn damage_is_recorded_outside_storage_only_by_these_functions() {
         "api/verify.rs::damage_kept_store",
         "heap/dir.rs::refuse",
         "heap/handle/mod.rs::refuse_format",
+        "heap/handle/mod.rs::refuse_unreserved",
         "heap/large.rs::chunks",
         "heap/large.rs::read",
         "heap/large.rs::update",
