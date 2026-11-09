@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-09
-status: open
+status: resolved
 kind: bug
 priority: 330
 summary: "a stale commit-times page fails the open with Corrupt (Transactions(History(Stale))) instead of opening under the database mark, because neither holders walk reaches the commit-times tree"
+closed: 2026-11-09
 tags:
   - class-failure-flattened
 ---
@@ -25,3 +26,7 @@ The damage search pins it in `KNOWN`: LostCurrent, Engine, Settle, the open fail
 ## Direction
 
 structure-damage-policy step 3 replaces both holders walks with one `catalog::Structures`; the tree belongs in it.
+
+## 2026-11-09: fixed
+
+structure-damage-policy step 3: the commit-times tree is in `catalog::Structures` as `Holder::CommitTimes`, so a stale page opens under the database mark. Class: damage flattened into a failed open; the one inventory lists every structure, and `structure_listings` keeps a second listing out. Pinned by `a_stale_commit_times_page_opens_under_the_database_mark`; both `KNOWN` rows removed.
