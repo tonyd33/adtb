@@ -7,26 +7,29 @@ use adtb_sys::os::{Backend, OsRuntime};
 use adtb_testkit::scratch::Scratch;
 
 use crate::catalog::Catalog;
-use crate::storage::{Damage, Options, Pager, Quarantine};
+use crate::storage::{Damage, Opening, Options, Pager, Quarantine};
 
 use super::{
     CreateOptions, Database, Log, OpenError, OpenOptions, file, mark_failed_open_damage,
     open_damage,
 };
 
-fn unreadable_root(scratch: &Scratch) -> (OsRuntime, Pager<OsRuntime>) {
+fn unreadable_root(scratch: &Scratch) -> (OsRuntime, Pager<OsRuntime>, Opening) {
     let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
-    let pager = Pager::create(rt.clone(), &Options::new("unreadable.adt")).unwrap();
+    let options = Options::new("unreadable.adt");
+    let pager = Pager::create(rt.clone(), &options).unwrap();
     drop(Catalog::open(rt.clone(), &pager).unwrap());
+    pager.close();
+    let (pager, opening) = Pager::open(rt.clone(), &options).unwrap();
     pager.damage(pager.catalog_root(), Damage::Unreadable);
-    (rt, pager)
+    (rt, pager, opening)
 }
 
 #[test]
 fn an_unreadable_catalog_root_marks_nothing_and_opens_nothing() {
     let scratch = Scratch::new("open-damage", "unreadable-unmarked");
-    let (rt, pager) = unreadable_root(&scratch);
-    mark_failed_open_damage(rt, &pager);
+    let (rt, pager, opening) = unreadable_root(&scratch);
+    mark_failed_open_damage(rt, &pager, &opening);
     assert!(!pager.is_quarantined(Quarantine::Database));
     assert!(open_damage(&pager).is_none());
     pager.close();
@@ -35,8 +38,8 @@ fn an_unreadable_catalog_root_marks_nothing_and_opens_nothing() {
 #[test]
 fn an_unreadable_page_on_a_marked_file_opens_nothing() {
     let scratch = Scratch::new("open-damage", "unreadable-marked");
-    let (_rt, pager) = unreadable_root(&scratch);
-    pager.quarantine(Quarantine::Database).unwrap();
+    let (_rt, pager, _opening) = unreadable_root(&scratch);
+    pager.plant_mark(Quarantine::Database).unwrap();
     assert!(open_damage(&pager).is_none());
     pager.close();
 }

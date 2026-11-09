@@ -8,10 +8,11 @@ use adtb_lang::kernel::{Kind, Terms, Tm};
 use adtb_lang::schema::OnDelete;
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
+use crate::catalog::index_holder;
 use crate::plan::{Catalog, HeapId, IndexId};
 use crate::runtime::Runtime;
-use crate::storage::policy::Phase;
-use crate::storage::{Damage, PageError, Quarantine};
+use crate::storage::policy::{Fault, Holder, Phase};
+use crate::storage::{Damage, Ordered, Orders, PageError, Quarantine};
 
 use super::schema::Rel;
 use super::verify::Found;
@@ -60,15 +61,6 @@ impl<R: Runtime> Database<R> {
         "the database".to_owned()
     }
 
-    /// Mark `object`, ordered with every commit: a commit record written after the mark was
-    /// checked against it, and a commit whose check missed it has its record in the log already.
-    ///
-    /// Precondition: the calling thread holds no page latch and not the serialization lock.
-    fn set_mark(&self, object: Quarantine) -> Result<(), PageError> {
-        let _ordered = self.ser.lock(&self.rt);
-        self.pager.quarantine(object)
-    }
-
     /// Map the damage recorded and not yet mapped, setting each mark under the serialization
     /// lock. Returns each object whose mark holds only in memory, with why.
     ///
@@ -81,7 +73,7 @@ impl<R: Runtime> Database<R> {
                 self.structures
                     .holders(&self.pager, &self.txns, pid, Phase::Running, met)
             },
-            |o| self.set_mark(o),
+            self,
         )
     }
 
@@ -89,15 +81,51 @@ impl<R: Runtime> Database<R> {
     /// stops the commit. Leave out a record whose last mapping was incomplete, and map damage
     /// the walks detect to the database with no walk of its own.
     ///
-    /// Precondition: the calling thread holds the serialization lock and no page latch.
-    pub(super) fn map_committing(&self) {
+    /// Precondition: the calling thread holds no page latch, and the serialization lock that
+    /// `ordered` witnesses.
+    pub(super) fn map_committing(&self, ordered: Ordered<'_>) {
         self.pager.map_committing(
             |pid, met| {
                 self.structures
                     .holders(&self.pager, &self.txns, pid, Phase::Running, met)
             },
-            |o| self.pager.quarantine(o),
+            ordered,
         );
+    }
+
+    /// Returns the holder of the pages of index `id` and its history tree.
+    pub(crate) fn index_holder(&self, id: IndexId) -> Option<Holder> {
+        let r = self
+            .rels
+            .values()
+            .find(|r| r.indexes.iter().any(|(i, _)| *i == id))?;
+        let owner = self.indexes.get(&id)?.index.tree().owner();
+        Some(index_holder(&self.schema, r.id, owner))
+    }
+
+    /// Set what a finding on a page of `holder` marks, adding each mark that failed to `failed`.
+    /// Returns the objects marked, none when the finding would hold a mark for an open only.
+    ///
+    /// Precondition: the calling thread holds no page latch and not the serialization lock.
+    fn mark_finding(
+        &self,
+        holder: Holder,
+        failed: &mut BTreeMap<Quarantine, PageError>,
+    ) -> BTreeSet<Quarantine> {
+        let mut objects = BTreeSet::new();
+        let finding = self
+            .pager
+            .map_fault(Fault::Finding, holder, Phase::Running, self);
+        let Ok(marked) = finding else {
+            return objects;
+        };
+        for (object, marked) in marked {
+            objects.insert(object);
+            if let Err(e) = marked {
+                failed.insert(object, e);
+            }
+        }
+        objects
     }
 
     /// Returns the failure naming `objects`, each failed mark of `failed` named with why.
@@ -131,11 +159,17 @@ impl<R: Runtime> Database<R> {
                 _ => Error::Page(p),
             },
             Error::OrphanEntry(index) => {
-                let object = Quarantine::Index(index);
-                if let Err(e) = self.set_mark(object) {
-                    failed.insert(object, e);
+                let id = self
+                    .indexes
+                    .iter()
+                    .find(|(_, i)| i.index.tree().owner() == index);
+                match id.and_then(|(id, _)| self.index_holder(*id)) {
+                    Some(holder) => {
+                        let objects = self.mark_finding(holder, &mut failed);
+                        self.quarantined_as(&objects, &failed)
+                    }
+                    None => Error::OrphanEntry(index),
                 }
-                self.quarantined_as(&BTreeSet::from([object]), &failed)
             }
             Error::Transactions(_) if self.pager.is_quarantined(Quarantine::Database) => {
                 self.quarantined_as(&BTreeSet::from([Quarantine::Database]), &failed)
@@ -154,12 +188,9 @@ impl<R: Runtime> Database<R> {
             if let Found::Order { index, .. }
             | Found::Orphan { index, .. }
             | Found::Missing { index, .. } = f
-                && let Some(i) = self.indexes.get(&IndexId(*index))
+                && let Some(holder) = self.index_holder(IndexId(*index))
             {
-                let object = Quarantine::Index(i.index.tree().owner());
-                if let Err(e) = self.set_mark(object) {
-                    failed.insert(object, e);
-                }
+                self.mark_finding(holder, &mut failed);
             }
         }
         failed
@@ -481,5 +512,16 @@ impl<R: Runtime> Database<R> {
             });
         }
         Some(Cow::Owned(catalog))
+    }
+}
+
+impl<R: Runtime> Orders for Database<R> {
+    /// Run `f` under one hold of the serialization lock.
+    ///
+    /// Postconditions: a commit record written after a mark `f` sets was checked against it, and
+    /// a commit whose check missed the mark has its record in the log already.
+    fn ordered<T>(&self, f: impl FnOnce(Ordered<'_>) -> T) -> T {
+        let mut ser = self.ser.lock(&self.rt);
+        f(ser.ordered())
     }
 }

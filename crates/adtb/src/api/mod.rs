@@ -60,7 +60,7 @@ use crate::mvcc::Limits;
 use crate::mvcc::Transactions;
 use crate::runtime::{Runtime, ThreadId};
 use crate::storage::policy::{self, Holder, Phase};
-use crate::storage::{self, LATCHES_PER_THREAD, Pager};
+use crate::storage::{self, LATCHES_PER_THREAD, Opening, Pager};
 use crate::write::{self, Bindings, Bounds, Local, Setup, Txn};
 
 pub use arrow::{ArrowSchema, ArrowStream, Field, RecordBatch};
@@ -680,22 +680,28 @@ fn unsupported(what: &str) -> Error {
     Error::invalid(format!("{what} does not run in this engine yet"))
 }
 
-/// Map the damage recorded and not yet mapped through the catalog's structures and mark what
-/// holds it. A page of the catalog or commit log marks the database. A page nothing maps marks
-/// nothing. A failure to write a mark is left to the next open, which maps the same records.
-fn mark_open_damage<R: Runtime>(pager: &Pager<R>, catalog: &Catalog, txns: &Transactions<R>) {
+/// Map the damage recorded and not yet mapped during `opening` through the catalog's structures
+/// and mark what holds it. A page of the catalog or commit log marks the database. A page
+/// nothing maps marks nothing. A failure to write a mark is left to the next open, which maps
+/// the same records.
+fn mark_open_damage<R: Runtime>(
+    pager: &Pager<R>,
+    opening: &Opening,
+    catalog: &Catalog,
+    txns: &Transactions<R>,
+) {
     let structures = catalog.structures();
     pager.map_damage(
         Phase::Opening,
         |pid| structures.holders(pager, txns, pid, Phase::Opening, &mut BTreeSet::new()),
-        |object| pager.quarantine(object),
+        opening,
     );
 }
 
-/// Map the damage recorded after a failed open: by the catalog's structures, else by what
+/// Map the damage recorded after `opening` failed: by the catalog's structures, else by what
 /// [`Structures::unopened`] reads from the root page. Load the catalog before the mapping
 /// begins, and only while a record of a page is unmapped.
-fn mark_failed_open_damage<R: Runtime>(rt: R, pager: &Pager<R>) {
+fn mark_failed_open_damage<R: Runtime>(rt: R, pager: &Pager<R>, opening: &Opening) {
     let loaded = if pager.any_record_unmapped() {
         let loaded = Catalog::load(rt, pager).ok();
         loaded.map(|(catalog, txns)| (catalog.structures(), txns))
@@ -714,7 +720,7 @@ fn mark_failed_open_damage<R: Runtime>(rt: R, pager: &Pager<R>) {
                 Some(BTreeSet::from([unopened.holder(pid)]))
             }
         },
-        |object| pager.quarantine(object),
+        opening,
     );
 }
 
@@ -735,6 +741,15 @@ fn open_damage<R: Runtime>(pager: &Pager<R>) -> Option<storage::PageError> {
         .into_iter()
         .next()
         .map(|(pid, damage)| storage::PageError { pid, damage })
+}
+
+/// An engine's parts, opened and not yet put together.
+struct Opened<R: Runtime> {
+    rt: R,
+    parts: Parts,
+    pager: Pager<R>,
+    db: write::Database<R>,
+    catalog: Catalog,
 }
 
 /// What an engine holds besides its file and write path.
@@ -844,14 +859,14 @@ impl<R: Runtime> Engine<R> {
         hold: storage::Hold<'_>,
     ) -> Result<Engine<R>, OpenError> {
         let storage = options.storage(name);
-        let (pager, new) = match Pager::open(rt.clone(), &storage) {
-            Ok((p, _)) => (p, None),
+        let (pager, new, opening) = match Pager::open(rt.clone(), &storage) {
+            Ok((p, opening)) => (p, None, opening),
             Err(storage::OpenError::NotFound | storage::OpenError::NoHeader)
                 if options.create.is_some() =>
             {
                 match storage::create(rt.clone(), &storage, hold).map_err(failed_create)? {
-                    storage::Created::Finished(p) => (p, None),
-                    storage::Created::Built(p, new) => (p, Some(new)),
+                    storage::Created::Finished(p, opening) => (p, None, opening),
+                    storage::Created::Built(p, new, opening) => (p, Some(new), opening),
                 }
             }
             Err(storage::OpenError::NotFound) => return Err(OpenError::NotFound),
@@ -864,16 +879,16 @@ impl<R: Runtime> Engine<R> {
             }
             Err(e) => return Err(corrupt(e)),
         };
-        let opened = Engine::on(rt.clone(), pager.clone(), log, options).or_else(|e| {
-            mark_failed_open_damage(rt.clone(), &pager);
-            let opened = open_damage(&pager).map_or(Err(e), |damage| {
+        let opened = Engine::on(rt.clone(), pager.clone(), &opening, log, options).or_else(|e| {
+            mark_failed_open_damage(rt.clone(), &pager, &opening);
+            open_damage(&pager).map_or(Err(e), |damage| {
                 Engine::unread(rt.clone(), pager.clone(), options, damage)
-            });
-            if opened.is_err() {
-                pager.close();
-            }
-            opened
+            })
         });
+        let opened = opened.map(|opened| Engine::of(opened, opening, options));
+        if opened.is_err() {
+            pager.close();
+        }
         match new {
             Some(new) => finish_create(rt, &pager, &new, opened, hold),
             None => {
@@ -893,7 +908,7 @@ impl<R: Runtime> Engine<R> {
         pager: Pager<R>,
         options: &OpenOptions,
         damage: storage::PageError,
-    ) -> Result<Engine<R>, OpenError> {
+    ) -> Result<Opened<R>, OpenError> {
         let catalog = Catalog::unread(&pager).map_err(corrupt)?;
         let txns = Transactions::refusing(rt.clone(), &pager, damage);
         let (schema, program) = catalog.checking();
@@ -904,9 +919,9 @@ impl<R: Runtime> Engine<R> {
         let db = write::Database::new(rt.clone(), setup)
             .map_err(corrupt)?
             .with_volatile(volatile);
-        Ok(Engine::of(
+        Ok(Opened {
             rt,
-            Parts {
+            parts: Parts {
                 schema,
                 program,
                 registered: Vec::new(),
@@ -918,19 +933,18 @@ impl<R: Runtime> Engine<R> {
             pager,
             db,
             catalog,
-            options,
-        ))
+        })
     }
 
-    /// Returns the engine over the opened `db`.
-    fn of(
-        rt: R,
-        parts: Parts,
-        pager: Pager<R>,
-        db: write::Database<R>,
-        catalog: Catalog,
-        options: &OpenOptions,
-    ) -> Engine<R> {
+    /// Returns the engine over `opened`, ending the open.
+    fn of(opened: Opened<R>, _opening: Opening, options: &OpenOptions) -> Engine<R> {
+        let Opened {
+            rt,
+            parts,
+            pager,
+            db,
+            catalog,
+        } = opened;
         let role_mentions = server::mentioned(catalog.source());
         let db = Arc::new(db);
         let catalog = Arc::new(catalog);
@@ -1019,22 +1033,18 @@ impl<R: Runtime> Engine<R> {
     fn on(
         rt: R,
         pager: Pager<R>,
+        opening: &Opening,
         log: &Log,
         options: &OpenOptions,
-    ) -> Result<Engine<R>, OpenError> {
+    ) -> Result<Opened<R>, OpenError> {
         let (mut catalog, txns) = Catalog::open(rt.clone(), &pager).map_err(corrupt)?;
-        mark_open_damage(&pager, &catalog, &txns);
+        mark_open_damage(&pager, opening, &catalog, &txns);
         let clog_damaged = txns.quarantined().is_some();
         if let Some(e) = txns.quarantined()
             && matches!(e.damage, storage::Damage::LogUnproven { .. })
-            && let Some(object) = policy::mark(
-                policy::Fault::Page(e.damage),
-                Holder::CommitLog,
-                Phase::Opening,
-            )
-            .durable()
         {
-            pager.quarantine(object).ok();
+            let fault = policy::Fault::Page(e.damage);
+            pager.map_open_fault(fault, Holder::CommitLog, opening);
         }
         let writable = !pager.is_quarantined(storage::Quarantine::Database);
         catalog.set_query_memory(query_memory(options));
@@ -1138,9 +1148,9 @@ impl<R: Runtime> Engine<R> {
                 .map_err(corrupt)?,
             None => db,
         };
-        Ok(Engine::of(
+        Ok(Opened {
             rt,
-            Parts {
+            parts: Parts {
                 schema,
                 program,
                 registered,
@@ -1152,8 +1162,7 @@ impl<R: Runtime> Engine<R> {
             pager,
             db,
             catalog,
-            options,
-        ))
+        })
     }
 
     /// Returns the registered queries `explain B::q(args)` names.

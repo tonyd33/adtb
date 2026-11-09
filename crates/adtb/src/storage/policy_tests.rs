@@ -34,10 +34,20 @@ enum C {
     Settled,
     Full,
     Unarmed,
+    /// An `Order`, `Orphan` or `Missing` finding of verify, or an index entry naming an unused
+    /// slot.
+    Finding,
 }
 
 impl C {
-    const ALL: [C; 5] = [C::Damaged, C::Unread, C::Settled, C::Full, C::Unarmed];
+    const ALL: [C; 6] = [
+        C::Damaged,
+        C::Unread,
+        C::Settled,
+        C::Full,
+        C::Unarmed,
+        C::Finding,
+    ];
 
     fn faults(self) -> Vec<Fault> {
         let (expected, found) = (Lsn(9), Lsn(5));
@@ -51,6 +61,7 @@ impl C {
             C::Settled => vec![Fault::Page(Damage::Settled { expected, found })],
             C::Full => vec![Fault::Full],
             C::Unarmed => vec![Fault::Unarmed],
+            C::Finding => vec![Fault::Finding],
         }
     }
 }
@@ -78,7 +89,7 @@ const HOLDERS: [Holder; 19] = [
 ];
 
 /// The marks storage.md states, one row per fault kind, holder and phase.
-const STATED: [(C, Holder, Phase, Mark); 188] = [
+const STATED: [(C, Holder, Phase, Mark); 192] = [
     (C::Damaged, H0, OPEN, OH),
     (C::Damaged, H0, RUN, OH),
     (C::Damaged, H1, OPEN, DB),
@@ -267,6 +278,10 @@ const STATED: [(C, Holder, Phase, Mark); 188] = [
     (C::Unarmed, Holder::Unreached, RUN, HELD),
     (C::Unarmed, Holder::Met, OPEN, HELD),
     (C::Unarmed, Holder::Met, RUN, HELD),
+    (C::Finding, I0, OPEN, OI),
+    (C::Finding, I0, RUN, OI),
+    (C::Finding, I1, OPEN, OI),
+    (C::Finding, I1, RUN, OI),
 ];
 
 /// The rows whose mark today differs from the one stated, with today's mark. Rows may only be
@@ -294,9 +309,14 @@ const DIFFERS_TODAY: [(C, Holder, Phase, Mark); 20] = [
     (C::Unread, Holder::Unreached, RUN, DB),
 ];
 
-/// Returns false for an unreadable page as met, which no mapping meets.
+/// Returns false for an unreadable page as met, which no mapping meets, and for a finding on
+/// anything but an index, which no finding names.
 fn reachable(class: C, holder: Holder) -> bool {
-    (class, holder) != (C::Unread, Holder::Met)
+    match class {
+        C::Unread => holder != Holder::Met,
+        C::Finding => [I0, I1].contains(&holder),
+        _ => true,
+    }
 }
 
 /// Returns the index of the one row of `rows` for `class`, `holder` and `phase`.

@@ -10,6 +10,7 @@ use super::crc::crc32c;
 use super::driver::Driver;
 use super::error::OpenError;
 use super::log::parse_segment;
+use super::order::Opening;
 use super::page::valid_page_size;
 use super::pager::{LATCHES_PER_THREAD, Options, Pager, parent};
 
@@ -44,8 +45,8 @@ impl<R: Runtime> Pager<R> {
     #[cfg(any(test, feature = "testing"))]
     pub fn create(rt: R, options: &Options) -> Result<Pager<R>, OpenError> {
         let (pager, new) = match create(rt.clone(), options, &mut |_| Ok(()))? {
-            Created::Finished(pager) => return Ok(pager),
-            Created::Built(pager, new) => (pager, new),
+            Created::Finished(pager, _) => return Ok(pager),
+            Created::Built(pager, new, _) => (pager, new),
         };
         if let Err(e) = new.publish(&pager, &mut |_| Ok(())) {
             pager.close();
@@ -110,12 +111,12 @@ fn marked(len: u64, bytes: &[u8]) -> Marked {
     }
 }
 
-/// What [`create`] made.
+/// What [`create`] made, with the open of its pager.
 pub(crate) enum Created<R: Runtime> {
     /// An earlier create of the name, finished and opened.
-    Finished(Pager<R>),
+    Finished(Pager<R>, Opening),
     /// A new database in the reserved directory, and what publishes it.
-    Built(Pager<R>, Unpublished),
+    Built(Pager<R>, Unpublished, Opening),
 }
 
 /// A database built in the reserved directory and not yet at its own names.
@@ -164,7 +165,7 @@ pub(crate) fn create<R: Runtime>(
             replace,
         };
         published.publish_file(&mut drv)?;
-        return Pager::open(rt, options).map(|(pager, _)| Created::Finished(pager));
+        return Pager::open(rt, options).map(|(pager, opening)| Created::Finished(pager, opening));
     }
     let mut id = [0; 16];
     rt.fill(&mut id);
@@ -181,7 +182,10 @@ pub(crate) fn create<R: Runtime>(
     let (data, _) = drv.create_new(&aside.name).map_err(OpenError::Io)?;
     drv.sync_dir(&creating(name));
     match Pager::format_new(rt.clone(), &aside, data, id) {
-        Ok(pager) => Ok(Created::Built(pager, new)),
+        Ok(pager) => {
+            let opening = Opening::begin(&pager);
+            Ok(Created::Built(pager, new, opening))
+        }
         Err(e) => {
             new.discard(rt, hold)?;
             Err(e)

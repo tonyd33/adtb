@@ -569,16 +569,6 @@ impl<R: Runtime> Database<R> {
         Some(relation_holder(&self.schema, r.id, object))
     }
 
-    /// Returns the holder of the pages of index `id` and its history tree.
-    pub(crate) fn index_holder(&self, id: IndexId) -> Option<Holder> {
-        let r = self
-            .rels
-            .values()
-            .find(|r| r.indexes.iter().any(|(i, _)| *i == id))?;
-        let object = storage::Quarantine::Index(self.indexes.get(&id)?.index.tree().owner());
-        Some(relation_holder(&self.schema, r.id, object))
-    }
-
     /// Returns the heap of every constructor of every relation.
     pub(crate) fn heap_ids(&self) -> Vec<HeapId> {
         let ctors = self.rels.values().flat_map(|r| &r.ctors);

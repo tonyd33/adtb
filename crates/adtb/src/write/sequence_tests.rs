@@ -77,7 +77,8 @@ impl Fixture {
             Backend::Pool { threads: 1 },
             Faults::none(4096),
         );
-        let (pager, recovery) = Pager::open(rt.clone(), &Self::options()).expect("recover pager");
+        let (pager, opening) = Pager::open(rt.clone(), &Self::options()).expect("recover pager");
+        let recovery = opening.recovery().cloned().expect("the open recovered");
         assert!(
             recovery.applied > 0,
             "recovery replays the forced reservation log"

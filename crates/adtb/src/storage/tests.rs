@@ -849,7 +849,8 @@ fn a_chain_break_after_a_replayed_change_refuses_the_page() {
     });
     pager.flush_log();
     drop(pager);
-    let (pager, recovery) = Pager::open(rt(), &options).expect("open");
+    let (pager, opening) = Pager::open(rt(), &options).expect("open");
+    let recovery = opening.recovery().cloned().expect("the open recovered");
     let damage = Damage::Stale {
         expected: updated,
         found: Lsn(1),

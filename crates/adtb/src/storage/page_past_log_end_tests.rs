@@ -96,7 +96,8 @@ fn stamp(files: &mut Files, page: Pid, lsn: u64) {
 fn recovered_end(files: &Files) -> Lsn {
     let mut sim = Sim::with_files(SEED, Config::default(), files.clone());
     process::run(&mut sim, |rt| {
-        let (pager, recovery) = Pager::open(rt, &Options::new(FILE)).unwrap();
+        let (pager, opening) = Pager::open(rt, &Options::new(FILE)).unwrap();
+        let recovery = opening.recovery().cloned().expect("the open recovered");
         pager.close();
         recovery.end
     })

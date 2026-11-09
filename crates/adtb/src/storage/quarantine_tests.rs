@@ -10,7 +10,7 @@ use crate::btree::{self, BTree};
 use crate::exec::Val;
 use crate::key::Value;
 use crate::runtime::{Clock, Io, Op, Runtime, Threads};
-use crate::storage::policy::{self, Fault, Holder, Phase};
+use crate::storage::policy::{self, Fault, Holder, Mark, Phase};
 use crate::storage::{Damage, HEADER_LEN, Options, PageError, Pager, Pid, Quarantine, Stopped};
 use crate::{
     CallOptions, Called, Database, Error, FatalReason, Log, OpenOptions, Registration, TxnOptions,
@@ -842,7 +842,10 @@ fn a_walk_of_an_object_whose_damage_marks_nothing_stopped_by_damage_leaves_the_p
 
 /// Returns the marks a page fault on `held` sets once the database runs.
 fn marked(held: Option<BTreeSet<Holder>>) -> Option<BTreeSet<Quarantine>> {
-    held.map(|h| policy::marks(Fault::Page(Damage::Checksum), h, Phase::Running))
+    held.map(|h| {
+        let marks = policy::marks(Fault::Page(Damage::Checksum), h, Phase::Running);
+        marks.into_iter().filter_map(Mark::durable).collect()
+    })
 }
 
 fn relation(object: Quarantine) -> Holder {

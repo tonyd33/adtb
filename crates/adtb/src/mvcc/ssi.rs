@@ -160,7 +160,7 @@ pub struct Serializer {
 }
 
 impl Serializer {
-    pub fn new(limits: Limits) -> Serializer {
+    pub(crate) fn new(limits: Limits) -> Serializer {
         Serializer {
             limits,
             ..Serializer::default()

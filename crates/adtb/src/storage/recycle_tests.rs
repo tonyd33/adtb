@@ -685,7 +685,8 @@ fn a_change_dropped_unwritten_with_its_page_is_replayed_until_the_page_is_durabl
             Sim::with_files(4, Config::default(), recording.images(at, 1, 0).remove(0));
         let mut seen = None;
         harness::finished(&mut crashed, |rt| {
-            let (pager, recovery) = Pager::open(rt, &options()).unwrap();
+            let (pager, opening) = Pager::open(rt, &options()).unwrap();
+            let recovery = opening.recovery().cloned().expect("the open recovered");
             let read = (!pager.is_free(pid).unwrap()).then(|| {
                 pager
                     .read(pid)

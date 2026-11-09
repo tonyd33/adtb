@@ -468,7 +468,7 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Fail if the page holding the marks is damaged. The mark then holds in memory until the
     /// pager closes.
-    pub fn quarantine(&self, object: Quarantine) -> Result<(), PageError> {
+    pub(in crate::storage) fn quarantine(&self, object: Quarantine) -> Result<(), PageError> {
         self.change_marks(|set| {
             set.insert(object);
         })
@@ -479,9 +479,15 @@ impl<R: Runtime> Pager<R> {
         })
     }
 
+    /// Mark `object` quarantined as [`Pager::quarantine`] does, with no fault mapped.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn plant_mark(&self, object: Quarantine) -> Result<(), PageError> {
+        self.quarantine(object)
+    }
+
     /// Mark `object` quarantined for this open only. From then on no change of the marks is
     /// written.
-    pub(crate) fn hold_quarantine(&self, object: Quarantine) {
+    pub(super) fn hold_quarantine(&self, _opening: &super::Opening, object: Quarantine) {
         self.marks().hold(self.rt(), object);
     }
 

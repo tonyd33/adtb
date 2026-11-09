@@ -49,10 +49,13 @@ pub enum Fault {
     /// Recovery could not read the retained log or a page LSN map page whole, so the expected
     /// LSNs of the open are unknown.
     Unarmed,
+    /// An `Order`, `Orphan` or `Missing` finding of verify, or an index entry naming an unused
+    /// slot, on the index it names.
+    Finding,
 }
 
 /// What a fault marks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mark {
     Nothing,
     /// One heap or index.
@@ -71,6 +74,11 @@ impl Mark {
             Mark::Database => Some(Quarantine::Database),
             Mark::Nothing | Mark::Held => None,
         }
+    }
+
+    /// Returns whether this mark holds the database for an open only.
+    pub fn open_only(self) -> bool {
+        self == Mark::Held
     }
 
     /// Returns the object an open holds marked for itself.
@@ -95,6 +103,7 @@ pub fn mark(fault: Fault, holder: Holder, phase: Phase) -> Mark {
     let damage = match fault {
         Fault::Full => return Mark::Database,
         Fault::Unarmed => return Mark::Held,
+        Fault::Finding => return found(holder),
         Fault::Page(Damage::Settled { .. }) => return Mark::Nothing,
         Fault::Page(damage) => damage,
     };
@@ -135,26 +144,38 @@ pub fn mark(fault: Fault, holder: Holder, phase: Phase) -> Mark {
     }
 }
 
+/// Returns what a finding on `holder` marks.
+fn found(holder: Holder) -> Mark {
+    match holder {
+        Holder::Relation {
+            object: object @ Quarantine::Index(_),
+            ..
+        } => Mark::Object(object),
+        _ => Mark::Nothing,
+    }
+}
+
 /// Returns what a page of `holder` failing its checksum marks during `phase`.
 pub fn checksum_mark(holder: Holder, phase: Phase) -> Mark {
     mark(Fault::Page(Damage::Checksum), holder, phase)
 }
 
-/// Returns the objects to mark for `fault` on a page `holders` hold: the database alone once any
-/// holder marks it.
+/// Returns the marks of `fault` on a page `holders` hold: the database alone once any holder
+/// marks it durably.
 pub fn marks(
     fault: Fault,
     holders: impl IntoIterator<Item = Holder>,
     phase: Phase,
-) -> BTreeSet<Quarantine> {
-    let objects: BTreeSet<Quarantine> = holders
+) -> BTreeSet<Mark> {
+    let marks: BTreeSet<Mark> = holders
         .into_iter()
-        .filter_map(|h| mark(fault, h, phase).durable())
+        .map(|h| mark(fault, h, phase))
+        .filter(|m| *m != Mark::Nothing)
         .collect();
-    if objects.contains(&Quarantine::Database) {
-        BTreeSet::from([Quarantine::Database])
+    if marks.contains(&Mark::Database) {
+        BTreeSet::from([Mark::Database])
     } else {
-        objects
+        marks
     }
 }
 

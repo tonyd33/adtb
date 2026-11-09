@@ -375,7 +375,7 @@ impl Reopened for Report {
 }
 
 fn inspect(rt: SimRuntime, pages: &[Pid], layout: Layout) -> Report {
-    let (pager, recovery) = match Pager::open(rt, &options(layout)) {
+    let (pager, opening) = match Pager::open(rt, &options(layout)) {
         Ok(opened) => opened,
         Err(e) => {
             return Report {
@@ -386,6 +386,7 @@ fn inspect(rt: SimRuntime, pages: &[Pid], layout: Layout) -> Report {
     };
     let v = pager.verify();
     let mut findings = v.findings;
+    let recovery = opening.recovery().cloned().expect("the open recovered");
     findings.extend(recovery.log.into_iter().map(Finding::Log));
     findings.sort();
     findings.dedup();
@@ -981,7 +982,8 @@ fn planted(mut files: BTreeMap<String, Vec<u8>>, pid: Pid, lsn: Lsn) -> Sim {
 fn opened<T>(sim: &mut Sim, body: impl FnOnce(&Pager<SimRuntime>) -> T) -> (Lsn, T) {
     let mut out = None;
     let outcome = sim.run(|rt| {
-        let (p, recovery) = Pager::open(rt, &options(PLAIN)).expect("open");
+        let (p, opening) = Pager::open(rt, &options(PLAIN)).expect("open");
+        let recovery = opening.recovery().cloned().expect("the open recovered");
         out = Some((recovery.end, body(&p)));
     });
     assert_eq!(Outcome::Finished, outcome);
@@ -1020,7 +1022,8 @@ fn replay_refuses_a_page_past_the_log_end_whose_change_it_redoes() {
     let (mut sim, pid, _, past) = page_changed_past_log_end(atomic, true);
     let mut out = None;
     let outcome = sim.run(|rt| {
-        let (p, recovery) = Pager::open(rt, &options(atomic)).expect("open");
+        let (p, opening) = Pager::open(rt, &options(atomic)).expect("open");
+        let recovery = opening.recovery().cloned().expect("the open recovered");
         let read = p.read(pid).map(|_| ()).map_err(|e| e.damage);
         out = Some((recovery.end, recovery.damaged, read));
     });

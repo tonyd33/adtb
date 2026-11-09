@@ -2,15 +2,18 @@
 //! again, folded by checkpoints into the damage list.
 
 use crate::testing::Probe;
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::mvcc::Transactions;
 use crate::runtime::{IoError, OpKind, Runtime};
+use crate::storage::order::ordered_for_test;
 use crate::storage::policy::{Holder, Phase};
 use crate::storage::{
     self, Damage, FIRST_EDITABLE, Finding, HEADER_LEN, LogFinding, LogProblem, Lsn, Options,
     PageKind, Pager, Pid, Quarantine,
 };
+use crate::storage::{Ordered, Orders};
 use crate::test_world as harness;
 use adtb_harness::common;
 use adtb_harness::damage::{DataFile, Files};
@@ -483,7 +486,8 @@ fn stale_log_blocks_past_the_end_are_reported_after_a_crash_anywhere_in_the_open
     let mut sim = Sim::with_files(SEED, Config::default(), files.clone());
     let mut want = Vec::new();
     harness::finished(&mut sim, |rt| {
-        let (pager, recovery) = Pager::open(rt, &options(false)).unwrap();
+        let (pager, opening) = Pager::open(rt, &options(false)).unwrap();
+        let recovery = opening.recovery().cloned().expect("the open recovered");
         want = recovery.log;
         let reported: Vec<LogFinding> = pager
             .verify()
@@ -513,7 +517,8 @@ fn stale_log_blocks_past_the_end_are_reported_after_a_crash_anywhere_in_the_open
             let count = header_log_count(&image);
             let mut sim = Sim::with_files(SEED, Config::default(), image);
             harness::finished(&mut sim, |rt| {
-                let (pager, recovery) = Pager::open(rt, &options(false)).unwrap();
+                let (pager, opening) = Pager::open(rt, &options(false)).unwrap();
+                let recovery = opening.recovery().cloned().expect("the open recovered");
                 match (recovery.log.is_empty(), count) {
                     (false, _) => uncleared += 1,
                     (true, 0) => listed += 1,
@@ -718,7 +723,7 @@ fn a_status_page_settled_during_its_walk_marks_nothing() {
                 Transactions::open(rt.clone(), &pager, root).unwrap();
                 Some(BTreeSet::from([Holder::CommitLog]))
             },
-            |o| pager.quarantine(o),
+            &ordered_for_test(),
         );
         assert_eq!(BTreeMap::new(), failed);
         assert_reached("walks of the stale record", walks, 1);
@@ -749,7 +754,7 @@ fn a_record_superseded_during_its_walk_marks_nothing_and_its_successor_maps() {
                 pager.damage(pid, stale);
                 Some(BTreeSet::from([heap(1)]))
             },
-            |o| pager.quarantine(o),
+            &ordered_for_test(),
         );
         assert_eq!(BTreeMap::new(), failed);
         assert_eq!(
@@ -760,7 +765,7 @@ fn a_record_superseded_during_its_walk_marks_nothing_and_its_successor_maps() {
         let failed = pager.map_damage(
             Phase::Running,
             |_| Some(BTreeSet::from([heap(2)])),
-            |o| pager.quarantine(o),
+            &ordered_for_test(),
         );
         assert_eq!(BTreeMap::new(), failed);
         let successor = BTreeSet::from([Quarantine::Heap(2)]);
@@ -768,6 +773,43 @@ fn a_record_superseded_during_its_walk_marks_nothing_and_its_successor_maps() {
             (successor.clone(), Some(successor)),
             (Probe::of(pager).marks(), pager.mapped_to(p)),
             "the successor maps on its own"
+        );
+    });
+}
+
+/// A source of commit order that counts its holds.
+struct Counted(Cell<usize>);
+
+impl Orders for Counted {
+    fn ordered<T>(&self, f: impl FnOnce(Ordered<'_>) -> T) -> T {
+        self.0.set(self.0.get() + 1);
+        f(ordered_for_test())
+    }
+}
+
+#[test]
+fn a_mapping_sets_the_database_and_an_object_under_one_hold_of_commit_order() {
+    let (files, pages) = created(false);
+    closed(&files, false, |pager| {
+        pager.damage(pages[0], Damage::Checksum);
+        pager.damage(pages[1], Damage::Checksum);
+        let order = Counted(Cell::new(0));
+        let failed = pager.map_damage(
+            Phase::Running,
+            |pid| match pid == pages[0] {
+                true => Some(BTreeSet::from([Holder::CommitLog])),
+                false => Some(BTreeSet::from([heap(1)])),
+            },
+            &order,
+        );
+        assert_eq!(BTreeMap::new(), failed);
+        assert_eq!(
+            (
+                1,
+                BTreeSet::from([Quarantine::Database, Quarantine::Heap(1)])
+            ),
+            (order.0.get(), Probe::of(pager).marks()),
+            "holds taken, and the marks"
         );
     });
 }
@@ -815,7 +857,7 @@ fn one_damaged_page_past_the_lists_capacity_records_the_whole_file() {
             pager.map_damage(
                 Phase::Running,
                 |_| Some(BTreeSet::new()),
-                |o| pager.quarantine(o),
+                &ordered_for_test(),
             );
             let database = BTreeSet::from([Quarantine::Database]);
             let marks = if full { database } else { BTreeSet::new() };
@@ -834,7 +876,7 @@ fn mapped_whole(pager: &Pager<SimRuntime>) -> (BTreeSet<Quarantine>, usize) {
             walked += 1;
             Some(BTreeSet::from([Holder::CommitLog]))
         },
-        |o| pager.quarantine(o),
+        &ordered_for_test(),
     );
     assert_eq!(BTreeMap::new(), failed);
     (Probe::of(pager).marks(), walked)
@@ -924,7 +966,8 @@ fn one_stale_log_block_past_what_the_header_holds_records_the_whole_file() {
     let mut sim = Sim::with_files(SEED, Config::default(), files.clone());
     let mut want = Vec::new();
     harness::finished(&mut sim, |rt| {
-        let (pager, recovery) = Pager::open(rt, &sized(16384)).unwrap();
+        let (pager, opening) = Pager::open(rt, &sized(16384)).unwrap();
+        let recovery = opening.recovery().cloned().expect("the open recovered");
         assert_eq!(capacity + 1, recovery.log.len(), "{:?}", recovery.log);
         want = recovery.log[..capacity].to_vec();
         assert_eq!((want.clone(), true), stale_reported(&pager), "the open");

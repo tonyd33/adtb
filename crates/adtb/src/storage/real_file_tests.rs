@@ -143,7 +143,9 @@ fn a_closed_pager_holds_no_file_open_and_reopens_with_nothing_to_replay() {
     assert_eq!(Vec::<PathBuf>::new(), open_under(dir));
     drop(pager);
 
-    let (pager, recovery) = Pager::open(rt, &options()).expect("reopen");
+    let (pager, opening) = Pager::open(rt, &options()).expect("reopen");
+
+    let recovery = opening.recovery().cloned().expect("the open recovered");
     assert_eq!(0, recovery.applied, "{recovery:?}");
     assert_eq!(42, pager.read(pid).expect("the page")[100]);
 }

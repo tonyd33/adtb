@@ -603,7 +603,8 @@ fn segments_covering_redo_retained_through_backup() {
         );
         pager.close();
         storage::restore_file(&rt, TARGET, COPY, &format!("{COPY}-log")).unwrap();
-        let (copy, recovery) = Pager::open(rt, &pager_options(COPY, false, 1 << 14)).unwrap();
+        let (copy, opening) = Pager::open(rt, &pager_options(COPY, false, 1 << 14)).unwrap();
+        let recovery = opening.recovery().cloned().expect("the open recovered");
         assert_eq!(manifest.end.lsn, recovery.end);
         assert_eq!(Vec::<(Pid, Damage)>::new(), recovery.damaged);
         let found = copy.verify().findings;

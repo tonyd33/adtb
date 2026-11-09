@@ -1178,7 +1178,7 @@ impl<R: Runtime> Database<R> {
     pub fn commit(&self, tx: Txn) -> Result<Position, Error> {
         let done = {
             let mut ser = self.ser.lock(&self.rt);
-            self.map_committing();
+            self.map_committing(ser.ordered());
             let admitted = self.admit_commit(&tx);
             match admitted.and_then(|()| ser.precommit(tx.sid).map_err(Error::Serialization)) {
                 Err(e) => Err(e),

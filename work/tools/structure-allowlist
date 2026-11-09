@@ -27,6 +27,17 @@
 #                     and `Inventory {` literals, in production sources of crates/adtb/src outside
 #                     catalog/structures.rs: which structure holds a page, and every structure
 #                     verify walks, is listed by `catalog::Structures` alone.
+# mark_setters:       calls of `.quarantine(`, `marks().hold(` and `marks().change(` in production
+#                     sources of crates/: a mark is set by the mapper, which takes a witness of commit
+#                     order. The lines left are the mapper, the pager's setters and the two in-session
+#                     setters of storage.
+# index_marks:        `Quarantine::Index`, and an import of it (`Quarantine::*`, `Quarantine::{.. Index
+#                     ..}`), in production sources of crates/ outside storage/policy.rs and
+#                     storage/quarantine.rs (the marks page's codec): a finding marks its index by the
+#                     policy table. The line left is catalog/structures.rs, the one builder of an
+#                     index's holder. Not counted: reads of the marks (`is_quarantined(..)`, a comparison, `contains(&..)`,
+#                     the admission checks' `marked(..)` and `(id, _)|` mapping, `matches!(m, ..)`),
+#                     the mark a reindex releases, and the testing oracle's `Ok(..)`.
 # crash_loops:        definitions of a function whose name holds `crash_loop`: the harness's one
 #                     crash loop, which runs the ledger check after every round.
 # crash_allows:       definitions of `fn allows`: what a crash loop's reopened database tolerates.
@@ -248,6 +259,10 @@ pub_fields prod 33 crates/adtb/src/write/schema.rs
 pub_fields test 6 crates/adtb/src/test_world/grants.rs
 crash_allows test 1 crates/adtb/src/storage/pager_tests.rs
 crash_allows prod 2 crates/adtb-harness/src/crash.rs
+index_marks prod 1 crates/adtb/src/catalog/structures.rs
+mark_setters prod 3 crates/adtb/src/storage/damage_log.rs
+mark_setters prod 1 crates/adtb/src/storage/lsnmap.rs
+mark_setters prod 5 crates/adtb/src/storage/quarantine.rs
 crash_loops prod 1 crates/adtb-harness/src/crash.rs
 sim_test_offsets test 1 crates/adtb/src/exec/exec_tests.rs
 sim_test_offsets test 1 crates/adtb/src/storage/file_damage_tests.rs

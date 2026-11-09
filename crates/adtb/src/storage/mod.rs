@@ -18,6 +18,7 @@ mod header;
 mod holding;
 mod log;
 mod lsnmap;
+mod order;
 mod page;
 mod pager;
 mod pagetable;
@@ -98,6 +99,7 @@ pub use dump_crypt::Passphrase;
 pub use error::{Damage, OpenError};
 #[cfg(test)]
 pub use header::HISTORY_CAPACITY;
+pub use order::{Opening, Ordered, Orders};
 pub use page::{
     FIRST_EDITABLE, HEADER_LEN, PageKind, flags, format, header_edit, kind, lsn, owner,
 };

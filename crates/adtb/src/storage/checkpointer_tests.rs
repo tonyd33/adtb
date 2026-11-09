@@ -195,7 +195,8 @@ struct Reopened {
 }
 
 fn reopened(rt: SimRuntime, options: &Options, pages: &[Pid]) -> Reopened {
-    let (pager, recovery) = Pager::open(rt, options).unwrap();
+    let (pager, opening) = Pager::open(rt, options).unwrap();
+    let recovery = opening.recovery().cloned().expect("the open recovered");
     let findings = pager.verify().findings;
     let values = pages.iter().map(|&p| (p, value_of(&pager, p))).collect();
     pager.close();

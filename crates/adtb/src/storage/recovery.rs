@@ -9,9 +9,10 @@ use super::driver::Driver;
 use super::error::{Damage, OpenError};
 use super::evidence::Met;
 use super::header::{self, FileHeader, REGION};
+use super::order::Opening;
 use super::page;
 use super::pager::{Options, Pager};
-use super::policy::{self, Fault, Holder, Mark, Phase};
+use super::policy::{Fault, Holder};
 use super::record::{MapRoot, Record};
 use super::{Lsn, Pid};
 
@@ -59,8 +60,8 @@ fn damaged_at(lsn: Lsn, problem: LogProblem) -> OpenError {
 }
 
 impl<R: Runtime> Pager<R> {
-    /// Open an existing database and recover it from its log.
-    pub fn open(rt: R, options: &Options) -> Result<(Pager<R>, Recovery), OpenError> {
+    /// Open an existing database and recover it from its log. Returns the pager and its open.
+    pub fn open(rt: R, options: &Options) -> Result<(Pager<R>, Opening), OpenError> {
         check_options(options)?;
         let mut drv = Driver::new(rt.clone());
         let (data, _) = drv.open(&options.name, false).map_err(|e| match e {
@@ -92,10 +93,12 @@ impl<R: Runtime> Pager<R> {
         };
         header.atomic_page_writes = options.atomic_page_writes;
         let pager = Pager::assemble(rt, options, header, copy, data);
-        match pager.recover_and_mark() {
+        let mut opening = Opening::begin(&pager);
+        match pager.recover_and_mark(&opening) {
             Ok(recovery) => {
+                opening.recovered(recovery);
                 pager.start_checkpoints();
-                Ok((pager, recovery))
+                Ok((pager, opening))
             }
             Err(e) => {
                 pager.close_files();
@@ -104,7 +107,7 @@ impl<R: Runtime> Pager<R> {
         }
     }
 
-    pub(super) fn recover_and_mark(&self) -> Result<Recovery, OpenError> {
+    fn recover_and_mark(&self, opening: &Opening) -> Result<Recovery, OpenError> {
         let (recovery, pages, armed) = self.recover()?;
         self.refuse_cut_pages(pages);
         let marks = self.quarantine_page();
@@ -114,20 +117,16 @@ impl<R: Runtime> Pager<R> {
         } else {
             self.load_marks(marks)?;
         }
-        self.load_damage_list()?;
+        self.load_damage_list(opening)?;
         self.start_recording();
         self.checkpoint();
         self.check_map();
         if let Err(map) = armed {
             let holder = map.map_or(Holder::Log, |_| Holder::LsnMap);
-            let refused = map.map(|e| policy::mark(Fault::Page(e.damage), holder, Phase::Opening));
-            if let Some(object) = refused.and_then(Mark::durable) {
-                self.quarantine(object).ok();
+            if let Some(e) = map {
+                self.map_open_fault(Fault::Page(e.damage), holder, opening);
             }
-            let unarmed = policy::mark(Fault::Unarmed, holder, Phase::Opening);
-            if let Some(object) = unarmed.held() {
-                self.hold_quarantine(object);
-            }
+            self.map_open_fault(Fault::Unarmed, holder, opening);
         }
         Ok(recovery)
     }

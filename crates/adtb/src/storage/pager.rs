@@ -414,6 +414,8 @@ pub struct Shared<R: Runtime> {
     alloc: Allocation,
     marks: Marks,
     unmapped: Unmapped,
+    /// Set while an [`super::Opening`] of this pager lives.
+    opening: std::sync::Arc<std::sync::atomic::AtomicBool>,
     archive: Lock<Option<ArchiveHook>>,
     /// Held across a recycle of the log, taken before any other lock or latch.
     recycling: Lock<()>,
@@ -870,6 +872,7 @@ impl<R: Runtime> Pager<R> {
             alloc,
             marks,
             unmapped,
+            opening: std::sync::Arc::default(),
             archive: Lock::new(None),
             recycling: Lock::new(()),
             checkpointer: Lock::new(super::checkpoint::Worker::new(o.checkpoint_every)),
@@ -976,6 +979,10 @@ impl<R: Runtime> Pager<R> {
 
     pub(super) fn allocation(&self) -> &Allocation {
         &self.alloc
+    }
+
+    pub(super) fn opening_flag(&self) -> &std::sync::Arc<std::sync::atomic::AtomicBool> {
+        &self.opening
     }
 
     pub(super) fn marks(&self) -> &Marks {

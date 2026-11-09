@@ -21,7 +21,7 @@ use crate::write::Retained;
 use super::Rot;
 use super::ids::{CatCtorId, CatRelId, ctor_id, ctor_index, rel_id, relation};
 use super::root::Root;
-use super::structures::{Listed, relation_holder};
+use super::structures::{Listed, index_holder, relation_holder};
 use super::{
     Catalog, Error, HEAP_ROOT, IndexKeys, IndexSpec, MIGRATION, ROOTS, int, row_type, uint,
 };
@@ -249,7 +249,7 @@ impl Kept {
         }
         for (r, past) in &self.indexes {
             if let (Some(sum), Some(key)) = (sums.get_mut(r), keys.get(r)) {
-                let holder = relation_holder(schema, *r, Quarantine::Index(key.tree().owner()));
+                let holder = index_holder(schema, *r, key.tree().owner());
                 sum.index(holder, past.clone());
             }
         }

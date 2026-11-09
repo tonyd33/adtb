@@ -141,6 +141,33 @@ grep -qxF 'structure_listings prod 4 crates/adtb/src/write/q.rs' <<<"$counts" ||
 ! grep -q 'structure_listings .* crates/adtb/src/\(catalog\|storage\)/' <<<"$counts" || fail "counted structures.rs or the pager: $counts"
 rm -r "$adtb/catalog" "$adtb/write" "$adtb/storage/quarantine.rs"
 
+# A mark set or held, and an index named as a mark or imported bare, count in production
+# sources outside the policy table and the codec; a read of the marks and a test do not.
+mkdir -p "$adtb/write"
+printf 'use crate::storage::Quarantine::*;
+fn f() {
+    pager.quarantine(Quarantine::Index(3));
+    self.marks().hold(rt, Quarantine::Database);
+    self.marks()
+        .change(rt, f);
+    let object = storage::Quarantine::Index(4);
+    if pager.is_quarantined(Quarantine::Index(5)) {}
+    marks.contains(&Quarantine::Index(6));
+}
+' >"$adtb/write/q.rs"
+for f in quarantine.rs policy.rs; do
+  cp "$adtb/write/q.rs" "$adtb/storage/$f"
+done
+cp "$adtb/write/q.rs" "$adtb/write/q_tests.rs"
+counts=$("$checker" --counts "$scratch")
+for f in write/q.rs storage/quarantine.rs storage/policy.rs; do
+  grep -qxF "mark_setters prod 3 crates/adtb/src/$f" <<<"$counts" || fail "not counted: mark_setters in $f: $counts"
+done
+grep -qxF 'index_marks prod 3 crates/adtb/src/write/q.rs' <<<"$counts" || fail "not counted: index_marks: $counts"
+! grep -q 'index_marks .* crates/adtb/src/storage/\|\(mark_setters\|index_marks\) .*_tests.rs' <<<"$counts" ||
+  fail "counted the policy table, the codec or a test: $counts"
+rm -r "$adtb/write" "$adtb/storage/"{quarantine,policy}.rs
+
 # A malformed allowlist line fails.
 printf '%s\n' 'meta prod many crates/adtb/src/exec/a.rs' >work/tools/structure-allowlist
 if "$checker" "$scratch" >out.txt 2>&1; then

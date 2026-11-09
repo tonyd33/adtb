@@ -29,6 +29,11 @@ pub fn relation_holder(schema: &Schema, r: RelId, object: Quarantine) -> Holder 
     }
 }
 
+/// Returns the holder of the pages of the index tree with owner `owner` of relation `r`.
+pub fn index_holder(schema: &Schema, r: RelId, owner: u32) -> Holder {
+    relation_holder(schema, r, Quarantine::Index(owner))
+}
+
 /// The heaps and indexes of one sum, each with its holder.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Listed {
@@ -91,7 +96,7 @@ impl Catalog {
                 .filter(|(spec, _, _)| spec.relation == r)
                 .map(|(_, index, _)| {
                     let owner = index.tree().owner();
-                    let holder = relation_holder(schema, r, Quarantine::Index(owner));
+                    let holder = index_holder(schema, r, owner);
                     (holder, index.clone())
                 })
                 .collect();

@@ -415,7 +415,8 @@ fn recovery_and_verify_read_the_log_a_chunk_at_a_time() {
     let before = sim.trace().len();
     let b = big;
     finished(&mut sim, move |rt| {
-        let (pager, recovery) = Pager::open(rt, &b).unwrap();
+        let (pager, opening) = Pager::open(rt, &b).unwrap();
+        let recovery = opening.recovery().cloned().expect("the open recovered");
         assert!(
             recovery.applied > 2000,
             "recovery replayed {}",

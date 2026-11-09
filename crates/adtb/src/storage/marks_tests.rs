@@ -78,7 +78,8 @@ fn a_mark_whose_page_was_named_before_a_hold_is_on_the_page_after_a_crash() {
     let Destination::Page(page) = pager.marks().destination(pager.rt()) else {
         panic!("a new file's marks go to their page");
     };
-    pager.hold_quarantine(Quarantine::Database);
+    let opening = crate::storage::Opening::begin(&pager);
+    pager.hold_quarantine(&opening, Quarantine::Database);
     pager
         .change_marks_on(page, |s| {
             s.insert(Quarantine::Heap(1));
