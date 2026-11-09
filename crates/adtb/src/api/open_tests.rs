@@ -38,8 +38,8 @@ fn an_unreadable_catalog_root_marks_nothing_and_opens_nothing() {
 #[test]
 fn an_unreadable_page_on_a_marked_file_opens_nothing() {
     let scratch = Scratch::new("open-damage", "unreadable-marked");
-    let (_rt, pager, _opening) = unreadable_root(&scratch);
-    pager.plant_mark(Quarantine::Database).unwrap();
+    let (_rt, pager, opening) = unreadable_root(&scratch);
+    pager.plant_mark(Quarantine::Database, &opening).unwrap();
     assert!(open_damage(&pager).is_none());
     pager.close();
 }

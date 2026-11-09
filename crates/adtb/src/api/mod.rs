@@ -692,7 +692,6 @@ fn mark_open_damage<R: Runtime>(
 ) {
     let structures = catalog.structures();
     pager.map_damage(
-        Phase::Opening,
         |pid| structures.holders(pager, txns, pid, Phase::Opening, &mut BTreeSet::new()),
         opening,
     );
@@ -710,7 +709,6 @@ fn mark_failed_open_damage<R: Runtime>(rt: R, pager: &Pager<R>, opening: &Openin
     };
     let mut unopened = None;
     pager.map_damage(
-        Phase::Opening,
         |pid| match &loaded {
             Some((structures, txns)) => {
                 structures.holders(pager, txns, pid, Phase::Opening, &mut BTreeSet::new())
@@ -937,7 +935,8 @@ impl<R: Runtime> Engine<R> {
     }
 
     /// Returns the engine over `opened`, ending the open.
-    fn of(opened: Opened<R>, _opening: Opening, options: &OpenOptions) -> Engine<R> {
+    fn of(opened: Opened<R>, opening: Opening, options: &OpenOptions) -> Engine<R> {
+        drop(opening);
         let Opened {
             rt,
             parts,

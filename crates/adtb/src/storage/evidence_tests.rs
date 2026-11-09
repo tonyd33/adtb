@@ -133,7 +133,7 @@ fn damage_between_a_free_and_the_next_chain_start_is_held() {
         "after the chain start"
     );
     let mut replayed = recording(&mut log);
-    replayed.replay_met(&replaying_for_test(), P, Met::Freed, false);
+    replayed.replay_met(&replaying_for_test(), P, Met::Freed, Lsn(1));
     assert_eq!(None, refuse(&mut replayed, &mut log, P, Damage::Checksum));
     assert_eq!(None, folded(&mut replayed), "a replayed free");
 }
@@ -411,5 +411,28 @@ fn only_a_change_of_damage_or_incarnation_supersedes_a_record() {
         Vec::<Pid>::new(),
         current(&e, &begun),
         "replaced and found again"
+    );
+}
+
+#[test]
+fn a_fold_holds_the_redo_bound_until_its_change_of_the_list_is_logged() {
+    let mut log = log();
+    let mut e = recording(&mut log);
+    let list = Pid(2);
+    e.create_list(list);
+    let at = log.next_lsn();
+    refuse(&mut e, &mut log, P, Damage::Checksum);
+    assert_eq!(Some(at), e.redo_bound(), "the record");
+    assert_eq!(Some(Damage::Checksum), folded(&mut e));
+    assert_eq!(
+        (Some(at), Some(list)),
+        (e.redo_bound(), e.to_fold()),
+        "the fold taken, not logged"
+    );
+    e.fold_logged();
+    assert_eq!(
+        (None, None),
+        (e.redo_bound(), e.to_fold()),
+        "the fold logged"
     );
 }

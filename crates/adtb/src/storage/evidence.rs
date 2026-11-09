@@ -307,10 +307,18 @@ pub(super) struct Evidence {
     named: Pid,
     /// The list page, while a checkpoint may write it.
     list: Option<Pid>,
-    /// What replay met past the checkpoint it started from, in log order.
-    replayed: Vec<(Pid, Met)>,
+    /// What replay met from the redo LSN it started from, in log order, each at its LSN.
+    replayed: Vec<(Pid, Met, Lsn)>,
     /// Whether the records differ from what the list page holds.
     unfolded: bool,
+    /// The LSN of the first record logged since the last fold that changes the records, `None`
+    /// while none has.
+    unfolded_from: Option<Lsn>,
+    /// The LSN `unfolded_from` held when a fold took the records, until that fold's change of the
+    /// list page is logged.
+    folding: Option<Lsn>,
+    /// Whether the open found no list page to read.
+    list_unread: bool,
     /// Stale blocks recovery found past the end of the log.
     log: BTreeSet<LogFinding>,
     /// Whether the list ran out of room, so the whole file counts as damaged.
@@ -338,6 +346,9 @@ impl Evidence {
             list: None,
             replayed: Vec::new(),
             unfolded: false,
+            unfolded_from: None,
+            list_unread: false,
+            folding: None,
             log: BTreeSet::new(),
             full: false,
             full_mapped: false,
@@ -409,8 +420,9 @@ impl Evidence {
             self.update(pid, |p| p.held = Some(damage));
             return None;
         }
-        self.meet(pid, Met::Damaged(damage));
-        log.append(&Record::Damaged { pid, damage });
+        let changed = self.meet(pid, Met::Damaged(damage));
+        let at = log.append(&Record::Damaged { pid, damage });
+        self.unfold_at(changed, at);
         Some(log.next_lsn())
     }
 
@@ -513,7 +525,8 @@ impl Evidence {
             e.raise(pid, lsn);
         }
         if let Some(met) = met {
-            self.meet(pid, met);
+            let changed = self.meet(pid, met);
+            self.unfold_at(changed, lsn);
         }
     }
 
@@ -529,7 +542,7 @@ impl Evidence {
         pid: Pid,
         whole: bool,
     ) -> Option<Lsn> {
-        self.meet(pid, Met::Freed);
+        let changed = self.meet(pid, Met::Freed);
         self.update(pid, |p| match p.refusal {
             Some(Damage::Stale { .. }) => p.refusal = None,
             Some(Damage::Unreadable) | None => {}
@@ -538,7 +551,30 @@ impl Evidence {
                 p.mapped = Some((damage, BTreeSet::new()));
             }
         });
-        (self.logging && !whole).then(|| log.append(&Record::Freed { pid }))
+        let at = (self.logging && !whole).then(|| log.append(&Record::Freed { pid }));
+        if let Some(at) = at {
+            self.unfold_at(changed, at);
+        }
+        at
+    }
+
+    /// Note the record logged at `at` as unfolded when it `changed` the records, or may have
+    /// changed what the unread list page holds.
+    fn unfold_at(&mut self, changed: bool, at: Lsn) {
+        if (changed || self.list_unread) && self.unfolded_from.is_none() {
+            self.unfolded_from = Some(at);
+        }
+    }
+
+    /// Returns the least LSN a checkpoint's redo LSN may take: that of the first record logged
+    /// since the last logged fold that changes the records.
+    pub(super) fn redo_bound(&self) -> Option<Lsn> {
+        self.unfolded_from.into_iter().chain(self.folding).min()
+    }
+
+    /// Note that the change of the list page the last fold took is logged.
+    pub(super) fn fold_logged(&mut self) {
+        self.folding = None;
     }
 
     /// Drop the damage held of the page `wrote` wrote, but a settle, now the page is written out
@@ -590,13 +626,13 @@ impl Evidence {
         self.recovered = end;
     }
 
-    /// Note `met`, a record of `pid` replay met, to be applied to the list once it is read when
-    /// `past_checkpoint`.
-    pub(super) fn replay_met(&mut self, _: &Replaying, pid: Pid, met: Met, past_checkpoint: bool) {
+    /// Note `met`, a record of `pid` replay met at `at`, to be applied to the list once it is read.
+    ///
+    /// Precondition: replay starts at or below the first record logged since the list's last
+    /// logged fold that changed the records.
+    pub(super) fn replay_met(&mut self, _: &Replaying, pid: Pid, met: Met, at: Lsn) {
         self.bound(pid, met);
-        if past_checkpoint {
-            self.replayed.push((pid, met));
-        }
+        self.replayed.push((pid, met, at));
     }
 
     /// Arm the gate of a file created empty: no page has an expected LSN until a record gives one.
@@ -635,10 +671,13 @@ impl Evidence {
         header_full: bool,
     ) {
         let sound = base.is_some();
+        self.list_unread = !sound;
         let mut recorded = base.unwrap_or_default();
         let mut unfolded = !header_log.is_empty() || header_full;
-        for (pid, met) in std::mem::take(&mut self.replayed) {
-            unfolded |= recorded.meet(pid, met);
+        for (pid, met, at) in std::mem::take(&mut self.replayed) {
+            let changed = recorded.meet(pid, met);
+            self.unfold_at(changed, at);
+            unfolded |= changed;
         }
         let mut pids: BTreeSet<Pid> = self.pages.keys().copied().collect();
         pids.extend(recorded.pages.keys());
@@ -658,6 +697,7 @@ impl Evidence {
     /// Returns what a fold writes, counting the list full when it holds more than `capacity`.
     pub(super) fn snapshot(&mut self, capacity: usize) -> Recorded {
         self.unfolded = false;
+        self.folding = self.unfolded_from.take();
         let pages: BTreeMap<Pid, Damage> = self
             .pages
             .iter()
@@ -806,9 +846,10 @@ impl Evidence {
         self.walked
     }
 
-    /// Returns the list page while the records are to be folded into it.
+    /// Returns the list page while the records are to be folded into it, or a fold that took
+    /// them has not logged its change of the page.
     pub(super) fn to_fold(&self) -> Option<Pid> {
-        if !self.logging || !self.unfolded {
+        if !self.logging || (!self.unfolded && self.folding.is_none()) {
             return None;
         }
         self.list
@@ -833,10 +874,6 @@ impl Evidence {
             Gate::Armed(e) => e.logged.len(),
             Gate::Recovering | Gate::Off => 0,
         }
-    }
-
-    pub(super) fn recovering(&self) -> bool {
-        matches!(self.gate, Gate::Recovering)
     }
 
     pub(super) fn armed(&self) -> bool {

@@ -295,13 +295,23 @@ impl<R: Runtime> Append<'_, R> {
 
     /// Log a checkpoint of the dirty page table and the map root, pinning its redo LSN when `pin`,
     /// and take the damage records to fold when `fold`.
+    ///
+    /// Postconditions:
+    ///
+    /// - The redo LSN is at or below every record logged since the last logged fold that changed
+    ///   the damage records.
+    /// - The redo LSN is at or past the start of the batch holding the durable checkpoint's redo
+    ///   LSN.
     pub(super) fn checkpoint(&mut self, fold: bool, pin: bool) -> Checkpointed {
         let Appended { log, map } = &mut *self.log;
         let m = &mut *self.meta;
         let lsn = log.next_lsn();
         let dirty = m.table.snapshot();
-        let redo = dirty.iter().map(|(_, l)| *l).min().unwrap_or(lsn);
+        let bound = m.evidence.redo_bound();
         let folded = fold.then(|| m.evidence.snapshot(self.pager.damage_list_capacity()));
+        let bound = if fold { None } else { bound };
+        let redo = dirty.iter().map(|(_, l)| *l).chain(bound).min();
+        let redo = redo.unwrap_or(lsn);
         let at = log.append(&Record::Checkpoint {
             redo,
             dirty,

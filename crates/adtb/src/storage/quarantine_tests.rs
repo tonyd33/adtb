@@ -10,10 +10,12 @@ use crate::btree::{self, BTree};
 use crate::exec::Val;
 use crate::key::Value;
 use crate::runtime::{Clock, Io, Op, Runtime, Threads};
+use crate::storage::order::ordered_for_test;
 use crate::storage::policy::{self, Fault, Holder, Mark, Phase};
 use crate::storage::{Damage, HEADER_LEN, Options, PageError, Pager, Pid, Quarantine, Stopped};
 use crate::{
-    CallOptions, Called, Database, Error, FatalReason, Log, OpenOptions, Registration, TxnOptions,
+    CallOptions, Called, Database, Error, FatalReason, Log, OpenOptions, Registration,
+    TxnCallOptions, TxnOptions,
 };
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 
@@ -78,9 +80,12 @@ fn marks_survive_a_restart_until_released() {
     let mut sim = Sim::new(2, Config::default());
     create(&mut sim);
     with_pager(&mut sim, |p| {
-        p.quarantine(Quarantine::Heap(7)).unwrap();
-        p.quarantine(Quarantine::Index(3)).unwrap();
-        p.quarantine(Quarantine::Heap(7)).unwrap();
+        p.quarantine(Quarantine::Heap(7), &ordered_for_test())
+            .unwrap();
+        p.quarantine(Quarantine::Index(3), &ordered_for_test())
+            .unwrap();
+        p.quarantine(Quarantine::Heap(7), &ordered_for_test())
+            .unwrap();
         assert!(Probe::of(p).marked(Quarantine::Heap(7)));
         assert!(
             !Probe::of(p).marked(Quarantine::Heap(3)),
@@ -108,7 +113,8 @@ fn a_mark_is_durable_once_quarantine_returns() {
         sim.crash_at(sim.now() + Duration::from_secs(1));
         let outcome = sim.run(|rt| {
             let (p, _) = Pager::open(rt.clone(), &options()).unwrap();
-            p.quarantine(Quarantine::Heap(40 + seed as u32)).unwrap();
+            p.quarantine(Quarantine::Heap(40 + seed as u32), &ordered_for_test())
+                .unwrap();
             let mut io = rt.io();
             io.submit(Op::Timer {
                 at: rt.now() + Duration::from_secs(10),
@@ -131,7 +137,10 @@ fn a_mark_is_durable_once_quarantine_returns() {
 fn a_database_mark_covers_every_object() {
     let mut sim = Sim::new(3, Config::default());
     create(&mut sim);
-    with_pager(&mut sim, |p| p.quarantine(Quarantine::Database).unwrap());
+    with_pager(&mut sim, |p| {
+        p.quarantine(Quarantine::Database, &ordered_for_test())
+            .unwrap();
+    });
     with_pager(&mut sim, |p| {
         assert!(Probe::of(p).marked(Quarantine::Heap(9)));
         assert!(Probe::of(p).marked(Quarantine::Index(9)));
@@ -143,7 +152,8 @@ fn a_damaged_mark_page_quarantines_the_database() {
     let mut sim = Sim::new(4, Config::default());
     create(&mut sim);
     let page = with_pager(&mut sim, |p| {
-        p.quarantine(Quarantine::Index(5)).unwrap();
+        p.quarantine(Quarantine::Index(5), &ordered_for_test())
+            .unwrap();
         p.quarantine_page()
     });
     with_pager(&mut sim, |_| ());
@@ -157,7 +167,7 @@ fn a_damaged_mark_page_quarantines_the_database() {
                 pid: page,
                 damage: Damage::Checksum,
             }),
-            p.quarantine(Quarantine::Heap(1))
+            p.quarantine(Quarantine::Heap(1), &ordered_for_test())
         );
     });
 }
@@ -956,6 +966,100 @@ fn an_unreadable_commit_times_page_leaves_every_mapping_of_its_running_walk_inco
         assert_eq!(BTreeSet::new(), marks(&db));
         assert_eq!(None, t.probe().mapped_to(times), "the unreadable page");
         assert_eq!(None, t.probe().mapped_to(orphan), "the page no walk holds");
+        db.close().unwrap();
+    });
+}
+
+#[test]
+fn a_checkpoint_meeting_a_damaged_list_page_marks_nothing_until_the_next_commit_maps_it() {
+    let mut sim = Sim::new(100, Config::default());
+    process::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        let t = db.testing();
+        let list = t.root(Object::DamageList).unwrap();
+        let mut tx = db.begin(&TxnOptions::default()).unwrap();
+        let insert = r#"insert users { id: users.key(99), name: "x" }"#;
+        tx.query_text(insert, &[], &TxnCallOptions::default())
+            .unwrap();
+        let damage = Damage::Checksum;
+        t.plant(Plant::Refuse { page: list, damage }).unwrap();
+        t.checkpoint();
+        assert_eq!(None, db.tested_pager().to_fold(), "the fold is refused");
+        assert_eq!(BTreeSet::new(), marks(&db), "the checkpoint");
+        assert_eq!(
+            (Some(&damage), None),
+            (
+                t.probe().records().pages().get(&list),
+                t.probe().mapped_to(list)
+            ),
+            "the checkpoint"
+        );
+        let refused = tx.commit(None).expect_err("the commit maps the record");
+        assert_eq!("the database", quarantined(&refused));
+        assert_eq!(
+            Some(BTreeSet::from([Quarantine::Database])),
+            t.probe().mapped_to(list)
+        );
+        assert_eq!(BTreeSet::from([Quarantine::Database]), marks(&db));
+        db.close().unwrap();
+    });
+}
+
+#[test]
+fn the_damage_list_holds_its_page_in_every_phase() {
+    let mut sim = Sim::new(1, Config::default());
+    create(&mut sim);
+    with_pager(&mut sim, |p| {
+        let list = p.damage_list_page();
+        for phase in [Phase::Opening, Phase::Running] {
+            let held = p.holders_of(list, phase, |_| {});
+            assert_eq!(
+                Some(BTreeSet::from([Holder::DamageList])),
+                held,
+                "{phase:?}"
+            );
+        }
+    });
+}
+
+#[test]
+fn a_checkpoint_meeting_an_unreadable_list_page_leaves_the_database_writable_and_unmarked() {
+    let mut sim = Sim::new(101, Config::default());
+    process::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        let t = db.testing();
+        let list = t.root(Object::DamageList).unwrap();
+        let damage = Damage::Unreadable;
+        t.plant(Plant::Refuse { page: list, damage }).unwrap();
+        t.plant(Plant::RefuseKeptStore).unwrap();
+        assert_eq!(Some(list), db.tested_pager().to_fold(), "a record to fold");
+        t.checkpoint();
+        assert_eq!(None, db.tested_pager().to_fold(), "the fold is refused");
+        api::results(&db, r#"insert users { id: users.key(99), name: "x" }"#);
+        assert_eq!(BTreeSet::new(), marks(&db));
+        assert_eq!(None, t.probe().mapped_to(list));
+        db.close().unwrap();
+    });
+}
+
+#[test]
+fn a_page_no_walk_reaches_mapped_once_running_marks_the_database() {
+    let mut sim = Sim::new(102, Config::default());
+    process::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        let t = db.testing();
+        let kind = crate::storage::PageKind::HeapSlotted;
+        let orphan = t.plant(Plant::Orphan { kind, owner: 7 }).unwrap();
+        let page = orphan.page().unwrap();
+        let damage = Damage::Checksum;
+        t.plant(Plant::Refuse { page, damage }).unwrap();
+        db.verify(None).unwrap();
+        let database = BTreeSet::from([Quarantine::Database]);
+        assert_eq!(Some(database.clone()), t.probe().mapped_to(page));
+        assert_eq!(database, marks(&db));
         db.close().unwrap();
     });
 }

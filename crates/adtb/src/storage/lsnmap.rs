@@ -10,7 +10,6 @@ use super::block::{LogImage, LogSource, Mode, scan};
 use super::error::Damage;
 use super::page::{self, HEADER_LEN, PageKind};
 use super::pager::{PageError, Pager};
-use super::policy::{self, Fault, Holder};
 use super::record::{MapRoot, Record};
 use super::{Lsn, Pid};
 
@@ -46,42 +45,63 @@ impl<R: Runtime> Pager<R> {
             .saturating_mul(self.fanout().saturating_pow(level - 1))
     }
 
-    /// Returns the bytes of map page `pid`. Refuse it when it fails its checksum, is no map page,
-    /// its LSN is below `expected`, the LSN its parent gives it, or it cannot be read, and set
-    /// what its damage marks in the phase the pager is in.
+    /// Returns the bytes of map page `pid`. Refuse it, marking nothing, when it fails its
+    /// checksum, is no map page, its LSN is below `expected`, the LSN its parent gives it, or it
+    /// cannot be read.
     fn map_page(&self, pid: Pid, expected: Lsn) -> Result<Vec<u8>, PageError> {
         let read = self.read(pid).map(|p| p.to_vec());
-        let refused = match read {
-            Err(e) => e,
+        match read {
+            Err(e) => Err(e),
             Ok(page) if page::kind(&page) != PageKind::LsnMap as u16 => {
-                self.damage(pid, Damage::Checksum)
+                Err(self.damage(pid, Damage::Checksum))
             }
             Ok(page) if page::lsn(&page) < expected => {
                 let found = page::lsn(&page);
-                self.damage(pid, Damage::Stale { expected, found })
+                Err(self.damage(pid, Damage::Stale { expected, found }))
             }
-            Ok(page) => return Ok(page),
-        };
-        let mark = policy::mark(Fault::Page(refused.damage), Holder::LsnMap, self.phase());
-        if !self.evidence().recovering()
-            && let Some(object) = mark.durable()
-        {
-            self.quarantine(object).ok();
+            Ok(page) => Ok(page),
         }
-        Err(refused)
     }
 
-    /// Check the map's root against the LSN the checkpoint or the last fold gave it, quarantining
-    /// the database when it is refused.
-    pub(super) fn check_map(&self) {
-        let map = self.map_root();
-        if let Some(m) = map {
-            drop(self.map_page(m.root, m.lsn));
+    /// Check the map's root against the LSN the checkpoint or the last fold gave it.
+    ///
+    /// Fail with the root's refusal.
+    pub(super) fn check_map(&self) -> Result<(), PageError> {
+        match self.map_root() {
+            Some(m) => self.map_page(m.root, m.lsn).map(drop),
+            None => Ok(()),
         }
+    }
+
+    /// Returns whether `pid` is a page of the map: its root, or a child a readable page of the
+    /// map names. A page below a refused one is not found.
+    pub(super) fn holds_map_page(&self, pid: Pid) -> bool {
+        let Some(m) = self.map_root() else {
+            return false;
+        };
+        let mut below = vec![(m.root, m.lsn, m.height)];
+        while let Some((at, expected, level)) = below.pop() {
+            if at == pid {
+                return true;
+            }
+            if level == 1 {
+                continue;
+            }
+            let Ok(page) = self.map_page(at, expected) else {
+                continue;
+            };
+            for slot in 0..self.fanout() as usize {
+                let child = Pid(word(&page, 2 * slot));
+                if child != Pid(0) {
+                    below.push((child, Lsn(word(&page, 2 * slot + 1)), level - 1));
+                }
+            }
+        }
+        false
     }
 
     /// Returns the LSN the map holds for `pid`, refusing a map page whose LSN is below the one
-    /// its parent gives it and quarantining the database.
+    /// its parent gives it.
     pub(crate) fn mapped(&self, pid: Pid) -> Result<Option<Lsn>, PageError> {
         let Some(m) = self.map_root() else {
             return Ok(None);

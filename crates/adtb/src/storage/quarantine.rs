@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use crate::runtime::Runtime;
 
 use super::evidence::{Against, Judged, file_copy};
+use super::order::Ordered;
 use super::page::Verdict;
 use super::page::{FIRST_EDITABLE, HEADER_LEN, PageKind};
 use super::pager::{PageError, PageExclusive, Pager};
@@ -468,7 +469,11 @@ impl<R: Runtime> Pager<R> {
     ///
     /// Fail if the page holding the marks is damaged. The mark then holds in memory until the
     /// pager closes.
-    pub(in crate::storage) fn quarantine(&self, object: Quarantine) -> Result<(), PageError> {
+    pub(in crate::storage) fn quarantine(
+        &self,
+        object: Quarantine,
+        _: &Ordered<'_>,
+    ) -> Result<(), PageError> {
         self.change_marks(|set| {
             set.insert(object);
         })
@@ -479,10 +484,15 @@ impl<R: Runtime> Pager<R> {
         })
     }
 
-    /// Mark `object` quarantined as [`Pager::quarantine`] does, with no fault mapped.
+    /// Mark `object` quarantined as [`Pager::quarantine`] does, with no fault mapped, in the
+    /// commit order `order` gives.
     #[cfg(any(test, feature = "testing"))]
-    pub fn plant_mark(&self, object: Quarantine) -> Result<(), PageError> {
-        self.quarantine(object)
+    pub fn plant_mark(
+        &self,
+        object: Quarantine,
+        order: &impl super::Orders,
+    ) -> Result<(), PageError> {
+        order.ordered(|o| self.quarantine(object, &o))
     }
 
     /// Mark `object` quarantined for this open only. From then on no change of the marks is
@@ -674,7 +684,8 @@ impl<R: Runtime> Pager<R> {
     /// - A walk stopped by damage holds the page, or leaves the mapping incomplete when its
     ///   holder's damage marks nothing. One stopped by an I/O failure, or on a shape it could not
     ///   follow in all its tries, leaves the mapping incomplete.
-    /// - An allocation bitmap page is held as one, with no walk.
+    /// - An allocation bitmap page, the damage list's page and a page of the page LSN map are
+    ///   held as such, with no walk. A map page below a refused one is not found as one.
     /// - A page no walk holds is unreached, once every walk is complete.
     #[cfg(test)]
     pub(crate) fn holders_of(
@@ -697,6 +708,12 @@ impl<R: Runtime> Pager<R> {
     ) -> Option<BTreeSet<Holder>> {
         if self.is_bitmap_page(pid) {
             return Some(BTreeSet::from([Holder::Bitmap]));
+        }
+        if pid != Pid(0) && pid == self.damage_list_page() {
+            return Some(BTreeSet::from([Holder::DamageList]));
+        }
+        if self.holds_map_page(pid) {
+            return Some(BTreeSet::from([Holder::LsnMap]));
         }
         self.evidence().walked_one();
         let mut h = Holders {

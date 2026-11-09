@@ -122,7 +122,9 @@ pub enum Stated {
 pub fn stated(class: Class, held: Held, phase: Phase) -> Stated {
     match class {
         Class::Unarmed => return Stated::Open,
-        Class::Unread if held == Held::DamageList => return Stated::Open,
+        Class::Unread if held == Held::DamageList && phase == Phase::Opening => {
+            return Stated::Open;
+        }
         Class::Settled | Class::Unread => return Stated::Nothing,
         Class::Damaged => {}
     }

@@ -138,11 +138,11 @@ impl<R: Runtime> Pager<R> {
         self.evidence().all()
     }
 
-    /// Map each damage record not mapped this open to the objects it quarantines during `phase`,
-    /// and mark each object, each mark in the commit order `order` gives. `holders` returns what
-    /// holds a page, `None` when the mapping is incomplete, which leaves the record unmapped.
-    /// Every record of a full list maps with no walk. Returns each object whose mark failed, with
-    /// why.
+    /// Map each damage record not mapped this open to the objects it quarantines in the phase the
+    /// pager is in, and mark each object, each mark in the commit order `order` gives. `holders`
+    /// returns what holds a page, `None` when the mapping is incomplete, which leaves the record
+    /// unmapped. Every record of a full list maps with no walk. Returns each object whose mark
+    /// failed, with why.
     ///
     /// Precondition: the calling thread holds no page latch, and neither the log lock nor the
     /// meta lock.
@@ -155,7 +155,6 @@ impl<R: Runtime> Pager<R> {
     ///   mapped; the record that replaced it is unmapped, for the next mapping.
     pub fn map_damage(
         &self,
-        phase: Phase,
         holders: impl FnMut(Pid) -> Option<BTreeSet<Holder>>,
         order: &impl Orders,
     ) -> BTreeMap<Quarantine, PageError> {
@@ -163,7 +162,7 @@ impl<R: Runtime> Pager<R> {
             return BTreeMap::new();
         }
         let begun = self.evidence().begin_mapping(true);
-        self.map_records(begun, phase, holders, order)
+        self.map_records(begun, self.phase(), holders, order)
     }
 
     /// Returns whether a damage record of a page is not mapped this open, leaving out a full list.
@@ -207,18 +206,17 @@ impl<R: Runtime> Pager<R> {
         failed
     }
 
-    /// Set what `fault` on a page of `holder` marks during `phase`, in the commit order that
-    /// `order` gives. Returns each object marked durably, with whether its mark failed.
+    /// Set what `fault` on a page of `holder` marks in the phase the pager is in, in the commit
+    /// order that `order` gives. Returns each object marked durably, with whether its mark failed.
     ///
     /// Fail with [`Unheld`], setting nothing, if `fault` marks the database for an open only.
     pub fn map_fault(
         &self,
         fault: Fault,
         holder: Holder,
-        phase: Phase,
         order: &impl Orders,
     ) -> Result<BTreeMap<Quarantine, Result<(), PageError>>, Unheld> {
-        let marks = policy::marks(fault, [holder], phase);
+        let marks = policy::marks(fault, [holder], self.phase());
         if marks.iter().any(|m| m.open_only()) {
             return Err(Unheld);
         }
@@ -254,10 +252,10 @@ impl<R: Runtime> Pager<R> {
         if objects.is_empty() {
             return BTreeMap::new();
         }
-        order.ordered(|_| {
+        order.ordered(|ordered| {
             objects
                 .into_iter()
-                .map(|o| (o, self.quarantine(o)))
+                .map(|o| (o, self.quarantine(o, &ordered)))
                 .collect()
         })
     }
@@ -355,8 +353,8 @@ impl<R: Runtime> Pager<R> {
 
     /// Read the list page into memory, then what replay met past it and the log findings the
     /// header holds, during `opening`. Create the page when the file has none and is not
-    /// quarantined whole. A damaged list page quarantines the database, an unreadable one for this
-    /// open only.
+    /// quarantined whole. Map a refused list page as the open: a damaged one quarantines the
+    /// database, an unreadable one for this open only.
     ///
     /// Fail if the page cannot be created.
     pub(super) fn load_damage_list(&self, opening: &Opening) -> Result<(), PageError> {
@@ -364,19 +362,17 @@ impl<R: Runtime> Pager<R> {
             self.read_header(|h| (h.log_damage.clone(), h.log_damage_full));
         let mut list = self.damage_list_page();
         let base = if list != Pid(0) {
-            let pid = list;
-            let read = self.read(pid).map(|p| decode(&p));
-            match read {
-                Ok(Some(base)) => Some(base),
-                Ok(None) => {
-                    self.refuse_list(self.damage(pid, Damage::Checksum), Some(opening));
-                    None
-                }
-                Err(e) => {
-                    self.refuse_list(e, Some(opening));
-                    None
-                }
-            }
+            let read = self.read(list).map(|p| decode(&p));
+            let read = match read {
+                Ok(Some(base)) => Ok(base),
+                Ok(None) => Err(self.damage(list, Damage::Checksum)),
+                Err(e) => Err(e),
+            };
+            read.inspect_err(|e| {
+                self.refuse_list();
+                self.map_open_fault(Fault::Page(e.damage), Holder::DamageList, opening);
+            })
+            .ok()
         } else if self.is_quarantined(Quarantine::Database) {
             None
         } else {
@@ -388,20 +384,9 @@ impl<R: Runtime> Pager<R> {
         Ok(())
     }
 
-    /// Stop folding into the list page, which `e` refused during `opening`, or in session when
-    /// `opening` is `None`, and set what its damage marks.
-    fn refuse_list(&self, e: PageError, opening: Option<&Opening>) {
+    /// Stop folding into the list page, which a read refused, marking nothing.
+    fn refuse_list(&self) {
         self.evidence().drop_list();
-        let phase = opening.map_or(Phase::Running, |_| Phase::Opening);
-        let mark = policy::mark(Fault::Page(e.damage), Holder::DamageList, phase);
-        if let Some(object) = mark.durable() {
-            self.quarantine(object).ok();
-        }
-        match (mark.held(), opening) {
-            (Some(object), Some(opening)) => self.hold_quarantine(opening, object),
-            (Some(object), None) => self.marks().hold(self.rt(), object),
-            (None, _) => {}
-        }
     }
 
     /// Record every page recovery and the open refused, and log the records from now on, unless
@@ -411,7 +396,8 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns the list page when a checkpoint is to fold the records into it: once recovery has
-    /// ended, while the page serves and the records differ from it.
+    /// ended, while the page serves and the records differ from it or another checkpoint's fold of
+    /// them has not logged its change of the page.
     pub(super) fn to_fold(&self) -> Option<Pid> {
         self.evidence().to_fold()
     }
@@ -421,8 +407,8 @@ impl<R: Runtime> Pager<R> {
         let pid = self.to_fold()?;
         match self.exclusive(pid) {
             Ok(g) => Some(g),
-            Err(e) => {
-                self.refuse_list(e, None);
+            Err(_) => {
+                self.refuse_list();
                 None
             }
         }

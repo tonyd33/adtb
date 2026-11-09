@@ -67,7 +67,6 @@ impl<R: Runtime> Database<R> {
     /// Precondition: the calling thread holds no page latch and not the serialization lock.
     fn map_damage(&self) -> BTreeMap<Quarantine, PageError> {
         self.pager.map_damage(
-            Phase::Running,
             |pid| {
                 let met = &mut BTreeSet::new();
                 self.structures
@@ -113,9 +112,7 @@ impl<R: Runtime> Database<R> {
         failed: &mut BTreeMap<Quarantine, PageError>,
     ) -> BTreeSet<Quarantine> {
         let mut objects = BTreeSet::new();
-        let finding = self
-            .pager
-            .map_fault(Fault::Finding, holder, Phase::Running, self);
+        let finding = self.pager.map_fault(Fault::Finding, holder, self);
         let Ok(marked) = finding else {
             return objects;
         };

@@ -7,6 +7,7 @@ use adtb_testkit::scratch::Scratch;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::runtime::IoError;
+use crate::storage::order::ordered_for_test;
 use crate::storage::{Damage, HEADER_LEN, Options, PageError, Pager, Pid, Quarantine};
 use crate::test_world::api;
 use crate::test_world::load as open;
@@ -268,7 +269,8 @@ fn a_marked_open_resolves_no_id() {
     let (files, _) = seeded(21, status_page);
     let mut sim = Sim::with_files(21, Config::default(), files);
     let marks = with_pager(&mut sim, |p| {
-        p.quarantine(Quarantine::Database).unwrap();
+        p.quarantine(Quarantine::Database, &ordered_for_test())
+            .unwrap();
         p.quarantine_page()
     });
     let before = sim.files()[FILE].clone();
@@ -696,7 +698,8 @@ fn marked_by_hand(seed: u64) -> (Files, Pid) {
         db.close().unwrap();
     });
     let marks = with_pager(&mut sim, |p| {
-        p.quarantine(Quarantine::Database).unwrap();
+        p.quarantine(Quarantine::Database, &ordered_for_test())
+            .unwrap();
         p.quarantine_page()
     });
     (sim.files(), marks)

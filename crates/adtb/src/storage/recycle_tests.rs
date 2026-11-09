@@ -5,6 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::runtime::{IoError, OpKind};
+use crate::storage::order::ordered_for_test;
+use crate::storage::policy::{Holder, Phase};
 use crate::storage::{
     self, BackupRun, Damage, Envelope, Finding, HEADER_LEN, Lsn, Options, PageError, PageKind,
     Pager, Pid, Quarantine,
@@ -308,7 +310,7 @@ fn a_lost_write_of_a_map_page_quarantines_the_database() {
         let mut sim = Sim::with_files(3, Config::default(), lost);
         let marks = session(&mut sim, |pager, _| {
             pager.verify();
-            Probe::of(pager).marks()
+            marked_once_mapped(pager)
         });
         assert_eq!(BTreeSet::from([Quarantine::Database]), marks, "{page:?}");
         reached += 1;
@@ -358,6 +360,34 @@ fn an_unreadable_map_page_is_refused_unmarked_and_read_by_the_next_open() {
     assert_eq!((Ok(3), BTreeSet::new()), after);
 }
 
+/// Map every record of `pager` as running, by its storage's own holders and no walk. Returns the
+/// marks then.
+fn marked_once_mapped(pager: &Pager<SimRuntime>) -> BTreeSet<Quarantine> {
+    let holders = |pid| pager.holders_of(pid, Phase::Running, |_| {});
+    let failed = pager.map_damage(holders, &ordered_for_test());
+    assert_eq!(BTreeMap::new(), failed);
+    Probe::of(pager).marks()
+}
+
+#[test]
+fn a_damaged_map_page_met_in_session_is_recorded_unmarked_and_maps_to_the_database() {
+    let (mut sim, _, _, leaf) = mapped();
+    session(&mut sim, |pager, _| {
+        let damage = Damage::Checksum;
+        pager.damage(leaf, damage);
+        assert_eq!(Err(PageError { pid: leaf, damage }), pager.map_pages());
+        assert_eq!(BTreeSet::new(), Probe::of(pager).marks(), "the walk");
+        assert_eq!(Some(&damage), Probe::of(pager).records().pages().get(&leaf));
+        for phase in [Phase::Opening, Phase::Running] {
+            let held = pager.holders_of(leaf, phase, |_| {});
+            assert_eq!(Some(BTreeSet::from([Holder::LsnMap])), held, "{phase:?}");
+        }
+        let database = BTreeSet::from([Quarantine::Database]);
+        assert_eq!(database, marked_once_mapped(pager));
+        assert_eq!(Some(database), pager.mapped_to(leaf));
+    });
+}
+
 #[test]
 fn a_checksum_bad_map_page_quarantines_the_database_and_verify_reports_the_rest() {
     let (sim, pages, root, leaf) = mapped();
@@ -384,7 +414,7 @@ fn a_checksum_bad_map_page_quarantines_the_database_and_verify_reports_the_rest(
             let leaked: Vec<Pid> = leaked.map(|f| f.pid).collect();
             (
                 findings,
-                Probe::of(pager).marks(),
+                marked_once_mapped(pager),
                 pager.allocated(),
                 leaked,
             )
@@ -630,7 +660,9 @@ fn refused_then_freed(pid: Pid, pages: &[Pid], sim: &mut Sim) -> ([Lsn; 4], adtb
     let lsns = session(sim, |pager, _| {
         pager.release_session_log();
         let [first, lost] = changed_after_its_write(pager, pid, pages);
-        pager.quarantine(Quarantine::Database).unwrap();
+        pager
+            .quarantine(Quarantine::Database, &ordered_for_test())
+            .unwrap();
         pager.damage(pid, Damage::Checksum);
         pager.flush_pages(usize::MAX);
         let dirty = Probe::of(pager).dirty();
@@ -659,7 +691,9 @@ fn a_change_refused_unwritten_under_a_whole_quarantine_reads_back_after_the_clos
     let (mut sim, pages) = created(40);
     let pid = pages[0];
     session(&mut sim, |pager, _| {
-        pager.quarantine(Quarantine::Database).unwrap();
+        pager
+            .quarantine(Quarantine::Database, &ordered_for_test())
+            .unwrap();
         changed_after_its_write(pager, pid, &pages[1..]);
         pager.damage(pid, Damage::Checksum);
     });

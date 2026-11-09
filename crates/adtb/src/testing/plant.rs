@@ -112,7 +112,7 @@ impl<R: Runtime> Testing<'_, R> {
                 pager.damage(page, damage);
             }
             Plant::RefuseKeptStore => self.db.refuse_kept_store(),
-            Plant::Mark(q) => pager.plant_mark(q)?,
+            Plant::Mark(q) => pager.plant_mark(q, self.db.tested_db())?,
             Plant::Unmark(q) => pager.release(q)?,
             Plant::Panic { site, message } => self.db.panic_at(site, message),
             Plant::AddEntry { index, entry } => {

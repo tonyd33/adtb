@@ -112,7 +112,10 @@ pub fn mark(fault: Fault, holder: Holder, phase: Phase) -> Mark {
             object,
             engine_module: false,
         } => Mark::Object(object),
-        Holder::DamageList if damage == Damage::Unreadable => Mark::Held,
+        Holder::DamageList if damage == Damage::Unreadable => match phase {
+            Phase::Opening => Mark::Held,
+            Phase::Running => Mark::Nothing,
+        },
         Holder::LsnMap | Holder::MarksPage | Holder::CommitTimes
             if damage == Damage::Unreadable =>
         {

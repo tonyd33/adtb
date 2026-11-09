@@ -679,7 +679,9 @@ page writes its first change since the write, else its latest image at
 that change. Every later write of the frame then writes a state whose
 last image lies at or after its `rec_lsn` (§5.2). A checkpoint record
 holds the dirty page table and the redo LSN, the minimum `rec_lsn` over
-it; the file header is updated to point at the record.
+it and the LSN of the first record since the last fold that changed the
+damage records, when the checkpoint does not fold them (§6); the file
+header is updated to point at the record.
 
 Recovery, a create, a backup, a recycle and a close each take a
 checkpoint, and so does the checkpointer. From the end of an open's
@@ -687,8 +689,9 @@ recovery, or from the publication of a created file, the checkpointer
 runs each time the log forced since the last checkpoint reaches the
 threshold of `storage::Options::checkpoint_every`: it writes every
 changed page, forces the data file and takes a checkpoint. Writers
-never wait for it. The redo LSN of each checkpoint the checkpointer
-takes is at or past the checkpoint before it, so recovery from the one
+never wait for it. Unless a record the damage list has not folded holds it, the redo LSN
+of each checkpoint the checkpointer takes is at or past the checkpoint
+before it, so recovery from the one
 the file header names reads at most the log since the one before: the
 threshold, what the cycle that took the named one logged, and what
 followed it. A page refused while changed in memory is written before
@@ -706,7 +709,7 @@ quarantined whole.
 
 ```text
 checkpoint record
-  u64 redo_lsn = min(rec_lsn)
+  u64 redo_lsn = min(rec_lsn, first unfolded damage record)
   u32 n
   (u64 page_id, u64 rec_lsn) * n
 ```
@@ -807,7 +810,8 @@ log is recorded as settled before its rewrite is logged. A checkpoint
 folds every record into the damage list, one page of kind damage list the file header names
 (§1.2): it takes the records under the log lock with the checkpoint
 record, and logs the list page's change after that record, so recovery
-from the checkpoint finds in the log every record the list lacks. A
+from the checkpoint finds in the log every record the list lacks. No
+other checkpoint logs its record between the two. A
 checkpoint whose records have not changed since the last fold leaves
 the page alone. An entry is 24 bytes: the page id with the damage's kind in its top byte,
 then two LSNs. A full-page image of the page logged after its record
@@ -818,8 +822,12 @@ page repaired outside the engine, such as by copying its bytes back,
 stays reported until an image or a free. Past the page's capacity the
 list records the whole file as damaged and lists no more pages. A list
 page that fails its checksum or is no list page quarantines the
-database (§8). One the device cannot read quarantines it for the open
-only, and the open's records then live in memory only. On a file
+database (§8). One the device cannot read at the open quarantines it for
+that open only, and the open's records then live in memory only. A
+checkpoint that cannot latch the list page folds nothing into it from
+then on, and marks nothing. A record no fold has taken holds the redo LSN
+of every later checkpoint at or below it, so no recycle removes it and
+the next open replays it. The records live in memory, one per page. On a file
 quarantined whole a checkpoint folds only the records the log holds
 (§8).
 
@@ -915,8 +923,9 @@ those the file header holds, the 62 lowest, sets the header's overflow
 bit when there were more, and forces the header. The first checkpoint
 that folds the damage list folds them into it, an overflow as the list's
 whole-file damage, and clears the header's. Recovery reads the damage
-and freed records and the full-page images of the log past the
-checkpoint it starts from onto the list, in log order. The pages it refuses are recorded once
+and freed records and the full-page images of the log from the redo LSN
+it starts from onto the list, in log order; one the list holds already
+leaves it unchanged. The pages it refuses are recorded once
 the tail is zeroed, in the batch of its closing checkpoint; a crash
 before that batch is durable leaves the page and the retained log as
 they were, so the next open finds them again.
@@ -1050,6 +1059,10 @@ back. The mapper runs at three points and nowhere else:
   another call appends meanwhile, even on a page those walks then read,
   waits for that call's end, the next commit or the next open.
 
+Damage found between these points, such as by a checkpoint's fold or a
+read of the page LSN map, is recorded and refuses what met it, and sets
+no mark until the next of them maps its record.
+
 A settled status page, a stale log block and `Damage::Unreadable` map to
 nothing. A full damage list maps every record to the database. An `Order`,
 `Orphan` or `Missing` finding, and an index entry naming an unused slot,
@@ -1111,9 +1124,10 @@ transactions layer read the marks and rely on them as follows
   and leaves nothing visible. What the transaction only read plays no part,
   and a transaction that wrote nothing commits.
 
-Commits and marks set by the write path are ordered. A commit checks the
-marks and writes its commit record under one hold of the serialization lock,
-and the write path sets a mark under that lock. Postconditions:
+Commits and marks are ordered. A commit checks the marks and writes its
+commit record under one hold of the serialization lock. Every mark is set by
+the mapper with a witness of commit order: under that lock, or by the open
+before any commit can run. Postconditions:
 
 - a mark set before that hold refuses the commit;
 - a commit whose hold came first stands, ordered before the mark, with its

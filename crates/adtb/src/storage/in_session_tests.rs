@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::runtime::{Done, Op, OpKind, Runtime};
+use crate::runtime::{Done, IoError, Op, OpKind, Runtime};
+use crate::storage::order::ordered_for_test;
 use crate::storage::{
     self, Damage, Finding, HEADER_LEN, Lsn, Options, PageError, PageKind, Pager, Pid, Quarantine,
 };
@@ -15,7 +16,7 @@ use crate::test_world as harness;
 use adtb_harness::common;
 use adtb_harness::damage::{DataFile, Files};
 use adtb_harness::search::each_crash_image;
-use adtb_sim::{Config, Match, Sim, SimRuntime};
+use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
 
 const PAGER: DataFile = DataFile::new(harness::NAME, harness::PAGE);
 
@@ -358,7 +359,9 @@ fn a_database_quarantined_whole_recycles_nothing_within_the_session() {
     let (before, after, cycled) = session(&mut sim, false, |pager, rt| {
         storage::recycle_at_open(pager, None);
         let before = listed(rt, false);
-        pager.quarantine(Quarantine::Database).unwrap();
+        pager
+            .quarantine(Quarantine::Database, &ordered_for_test())
+            .unwrap();
         let first = Probe::of(pager).checkpoint();
         paced(pager, rt, &pages, 6 * EVERY);
         let cycled = Probe::of(pager).checkpoint().0 >= first.0 + 4 * EVERY;
@@ -488,4 +491,99 @@ fn a_crash_between_a_recycles_checkpoint_and_its_removals_or_during_them_loses_n
 #[test]
 fn under_atomic_page_writes_a_crash_through_a_recycle_within_a_session_loses_nothing() {
     crash_through_recycles_in_session(true);
+}
+
+#[test]
+fn a_damage_record_the_list_cannot_fold_keeps_its_segment_and_reaches_every_later_open() {
+    let (mut sim, pages) = created(16, false);
+    let (loaded, damaged) = pages.split_at(15);
+    let damaged = damaged[0];
+    let (before, after, at, list) = session(&mut sim, false, |pager, rt| {
+        storage::recycle_at_open(pager, None);
+        let before = listed(rt, false);
+        pager.damage(pager.damage_list_page(), Damage::Unreadable);
+        paced(pager, rt, loaded, 3 * SEGMENT);
+        let at = Probe::of(pager).appended().0;
+        pager.damage(damaged, Damage::Checksum);
+        let list = pager.damage_list_page();
+        assert_eq!(Some(list), pager.to_fold(), "the record is to fold");
+        pager.checkpoint();
+        assert_eq!(None, pager.to_fold(), "the fold is refused");
+        paced(pager, rt, loaded, 6 * EVERY);
+        (before, listed(rt, false), at, pager.damage_list_page())
+    });
+    assert!(
+        after[0] > before[0],
+        "the checkpointer recycled: {before:?} {after:?}"
+    );
+    assert_eq!(
+        segment_of(at),
+        after[0],
+        "the log starts at the record's segment: {after:?}, record at {at}"
+    );
+    let mut out = None;
+    harness::finished(&mut sim, |rt| {
+        let reads = Match::kind(OpKind::Read).offset(PAGER.range(list).start as u64);
+        rt.plan(Plan::new().rule(reads, Action::Fail(IoError::Failed)));
+        let (pager, _) = Pager::open(rt, &options(false)).unwrap();
+        let held = Probe::of(&pager).marks();
+        load(&pager, loaded, 3 * EVERY);
+        pager.checkpoint();
+        out = Some((
+            held,
+            Probe::of(&pager).records().pages().get(&damaged).copied(),
+        ));
+        pager.close();
+    });
+    let held = BTreeSet::from([Quarantine::Database]);
+    let recorded = Some(Damage::Checksum);
+    assert_eq!(
+        Some((held, recorded)),
+        out,
+        "the next open, which cannot read the list, holds the database and replays the record"
+    );
+    let recorded = session(&mut sim, false, |pager, _| {
+        Probe::of(pager).records().pages().get(&damaged).copied()
+    });
+    assert_eq!(
+        Some(Damage::Checksum),
+        recorded,
+        "the open after it: the open that could not read the list kept the bound"
+    );
+}
+
+#[test]
+fn a_free_the_list_cannot_fold_clears_its_page_for_every_later_open() {
+    let (mut sim, pages) = created(16, false);
+    let freed = pages[15];
+    let list = session(&mut sim, false, |pager, _| {
+        let list = pager.damage_list_page();
+        pager.damage(freed, Damage::Checksum);
+        pager.checkpoint();
+        pager.damage(list, Damage::Unreadable);
+        pager.free(freed).unwrap();
+        assert_eq!(Some(list), pager.to_fold(), "the free is to fold");
+        pager.checkpoint();
+        assert_eq!(None, pager.to_fold(), "the fold is refused");
+        list
+    });
+    harness::finished(&mut sim, |rt| {
+        let reads = Match::kind(OpKind::Read).offset(PAGER.range(list).start as u64);
+        rt.plan(Plan::new().rule(reads, Action::Fail(IoError::Failed)));
+        let (pager, _) = Pager::open(rt, &options(false)).unwrap();
+        let held = BTreeSet::from([Quarantine::Database]);
+        assert_eq!(
+            held,
+            Probe::of(&pager).marks(),
+            "the open cannot read the list"
+        );
+        let replayed = Probe::of(&pager).records().pages().get(&freed).copied();
+        assert_eq!(None, replayed, "the open replays the free");
+        pager.checkpoint();
+        pager.close();
+    });
+    let recorded = session(&mut sim, false, |pager, _| {
+        Probe::of(pager).records().pages().get(&freed).copied()
+    });
+    assert_eq!(None, recorded, "the open after");
 }

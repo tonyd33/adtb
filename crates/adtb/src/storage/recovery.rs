@@ -42,8 +42,6 @@ pub(super) fn replaying_for_test() -> Replaying {
 struct Replay {
     replaying: Replaying,
     redo: Lsn,
-    /// The checkpoint replay starts from.
-    ck: Lsn,
     /// The LSN of the last record seen for each page.
     last: BTreeMap<Pid, Lsn>,
     /// Pages that failed verification, waiting for a full-page image.
@@ -120,7 +118,9 @@ impl<R: Runtime> Pager<R> {
         self.load_damage_list(opening)?;
         self.start_recording();
         self.checkpoint();
-        self.check_map();
+        if let Err(e) = self.check_map() {
+            self.map_open_fault(Fault::Page(e.damage), Holder::LsnMap, opening);
+        }
         if let Err(map) = armed {
             let holder = map.map_or(Holder::Log, |_| Holder::LsnMap);
             if let Some(e) = map {
@@ -171,7 +171,6 @@ impl<R: Runtime> Pager<R> {
         let mut replay = Replay {
             replaying: Replaying(()),
             redo,
-            ck,
             last: BTreeMap::new(),
             unverified: BTreeMap::new(),
             applied: 0,
@@ -259,8 +258,7 @@ impl<R: Runtime> Pager<R> {
             _ => None,
         };
         if let Some((pid, m)) = met {
-            self.evidence()
-                .replay_met(&st.replaying, pid, m, lsn > st.ck);
+            self.evidence().replay_met(&st.replaying, pid, m, lsn);
         }
         let Some((pid, prev)) = record.page() else {
             return;

@@ -153,7 +153,7 @@ const STATED: [(C, Holder, Phase, Mark); 192] = [
     (C::Unread, Holder::MarksPage, OPEN, NO),
     (C::Unread, Holder::MarksPage, RUN, NO),
     (C::Unread, Holder::DamageList, OPEN, HELD),
-    (C::Unread, Holder::DamageList, RUN, HELD),
+    (C::Unread, Holder::DamageList, RUN, NO),
     (C::Unread, Holder::LsnMap, OPEN, NO),
     (C::Unread, Holder::LsnMap, RUN, NO),
     (C::Unread, Holder::Log, OPEN, NO),

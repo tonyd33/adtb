@@ -105,6 +105,7 @@ impl<R: Runtime> Pager<R> {
         // and recovery from it reads every record after.
         if let (Some(g), Some(folded)) = (&mut list, &folded) {
             Self::fold_records(g, folded);
+            self.evidence().fold_logged();
         }
         drop(list);
         self.flush_log();
