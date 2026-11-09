@@ -6,12 +6,13 @@ use crate::runtime::Runtime;
 use crate::storage::{self, Damage, LATCHES_PER_THREAD, PageError, Pager, Pid, Stopped, Walk};
 
 use super::Error;
-use super::dir::{Above, Space, category, max_fanout, need_category};
+use super::dir::{Above, Fit, Space, max_fanout, need_category, page_category};
 use super::page::{self, Arrangement, Slot};
 use super::row::Pointer;
 use super::slotted;
 use super::stage::Stage;
 use super::version::{Flags, tid_bits, tid_from_bits};
+use super::write::{HeapWrite, Rank};
 
 const NEXT: usize = 0;
 const WRITER: usize = 8;
@@ -22,6 +23,9 @@ const BYTES: usize = 24;
 /// The store pages one update of [`LargeStore::retain_apart`] latches, beside the two heap pages
 /// an update or a retag holds.
 const COUNTED_PAGES: usize = LATCHES_PER_THREAD - 2;
+
+/// The row format of every store page.
+const FORMAT: u16 = 1;
 
 const HEAD: u32 = 0;
 const TAIL: u32 = 1;
@@ -195,52 +199,47 @@ impl LargeStore {
         let size = pager.page_size();
         let need = need_category(Arrangement::Slotted.need(tuple.len()), size);
         loop {
-            let room = self.space.room(pager, need, Arrangement::Slotted, 1)?;
+            let room = self.space.room(pager, need, Arrangement::Slotted, FORMAT)?;
             let pid = room.ok_or(Error::NoDirectory)?;
             drop(pager.read_formatted(pid)?);
-            let mut stage = Stage::new();
+            let mut write = HeapWrite::new(pager);
+            let stage = write.stage();
             let mut pids = vec![pid];
             pids.extend(tail.map(|t| Pid(t.page())));
             pids.sort();
             pids.dedup();
             for &p in &pids {
-                stage.page(pager, p)?;
+                stage.page(pager, Rank::Store(p))?;
             }
-            let page = stage.page(pager, pid)?;
+            let floor = stage.top();
+            let page = stage.page(pager, Rank::Store(pid))?;
             // A page found by an unlatched search may have been freed since.
             if !page::is_heap(page)
                 || storage::owner(page) != self.id()
-                || !self.space.names(pager, page::position(page), pid)?
+                || !self.space.names(pager, page::position(page), pid, floor)?
             {
                 continue;
             }
             let Some(slot) = page::insert(page, tuple, Flags::NONE) else {
-                drop(stage);
-                let mut fix = Stage::new();
-                let page = fix.page(pager, pid)?;
-                let (position, cat) = (page::position(page), category(page::free(page), size));
+                drop(write);
+                let mut fix = HeapWrite::new(pager);
+                fix.stage().page(pager, Rank::Store(pid))?;
                 let above = self
                     .space
-                    .set_category(&mut fix, pager, pid, position, cat)?;
-                fix.commit(pager)?;
-                above.settle(pager)?;
+                    .reflect(fix.stage(), pager, pid, FORMAT, Fit::Refused)?;
+                fix.commit_store(pager.reserve(), above)?;
                 continue;
             };
-            let position = page::position(page);
-            let cat = category(page::free(page), size);
             if let Some(t) = tail {
-                let page = stage.page(pager, Pid(t.page()))?;
+                let page = stage.page(pager, Rank::Store(Pid(t.page())))?;
                 let written = update_chunk(page, self.id(), t, |c| {
                     c.head = false;
                     true
                 });
                 assert!(written, "the chunk this write wrote at {t:?} is there");
             }
-            let above =
-                self.space
-                    .set_entry(&mut stage, pager, pid, position, Some(cat), Some(true))?;
-            stage.commit(pager)?;
-            above.settle(pager)?;
+            let above = self.space.reflect(stage, pager, pid, FORMAT, Fit::Chunk)?;
+            write.commit_store(pager.reserve(), above)?;
             return Ok(tid(pid, slot));
         }
     }
@@ -328,7 +327,7 @@ impl LargeStore {
         f: impl FnOnce(&mut Chunk) -> bool,
     ) -> Result<(), PageError> {
         let pid = Pid(tid.page());
-        if update_chunk(stage.page(pager, pid)?, self.id(), tid, f) {
+        if update_chunk(stage.page(pager, Rank::Store(pid))?, self.id(), tid, f) {
             return Ok(());
         }
         stage.unstage(pid);
@@ -339,22 +338,22 @@ impl LargeStore {
     /// count 0 is freed by a later [`LargeStore::sweep`].
     pub fn release<R: Runtime>(&self, pager: &Pager<R>, pointer: Pointer) -> Result<(), PageError> {
         let pid = Pid(pointer.first.page());
-        let mut stage = Stage::new();
+        let mut write = HeapWrite::new(pager);
+        let stage = write.stage();
         let mut left = 0;
-        self.update(&mut stage, pager, pointer.first, |c| {
+        self.update(stage, pager, pointer.first, |c| {
             let pointed = c.head && c.count > 0;
             c.count = c.count.saturating_sub(1);
             left = c.count;
             pointed
         })?;
-        let page = stage.page(pager, pid)?;
+        let page = stage.page(pager, Rank::Store(pid))?;
         let mut above = Above::default();
         if left == 0 {
             let position = page::position(page);
-            above = self.space.touch(&mut stage, pager, pid, position, true)?;
+            above = self.space.touch(stage, pager, pid, position, true)?;
         }
-        stage.commit(pager)?;
-        above.settle(pager)
+        write.commit_store(pager.reserve(), above)
     }
 
     /// Settle the store's directory, then free every value whose head on a touched page has count
@@ -426,15 +425,16 @@ impl LargeStore {
             if let Some(n) = next {
                 self.touch_page(pager, Pid(n.page()))?;
             }
-            let mut stage = Stage::new();
+            let mut write = HeapWrite::new(pager);
+            let stage = write.stage();
             let mut pids = vec![here];
             pids.extend(next.map(|n| Pid(n.page())));
             pids.sort();
             pids.dedup();
             for &p in &pids {
-                stage.page(pager, p)?;
+                stage.page(pager, Rank::Store(p))?;
             }
-            let page = stage.page(pager, here)?;
+            let page = stage.page(pager, Rank::Store(here))?;
             if chunk_at(page, self.id(), usize::from(at.slot()))
                 .is_none_or(|c| !c.head || c.count > 0)
             {
@@ -444,9 +444,8 @@ impl LargeStore {
             page::compact(page);
             let position = page::position(page);
             let empty = page::is_empty(page);
-            let cat = category(page::free(page), pager.page_size());
             if let Some(n) = next {
-                self.update(&mut stage, pager, n, |c| {
+                self.update(stage, pager, n, |c| {
                     c.head = true;
                     c.count = 0;
                     true
@@ -455,13 +454,12 @@ impl LargeStore {
             let mut gone = pager.reserve();
             let above = if empty {
                 gone.free(here);
-                self.space.vacate(&mut stage, pager, here, position)?
+                self.space.vacate(stage, pager, here, position)?
             } else {
-                self.space
-                    .set_category(&mut stage, pager, here, position, cat)?
+                let fit = Fit::Pruned { roomier: true };
+                self.space.reflect(stage, pager, here, FORMAT, fit)?
             };
-            stage.commit_with(pager, gone)?;
-            above.settle(pager)?;
+            write.commit_store(gone, above)?;
             freed += 1;
             if !between() {
                 return Ok(Walk::Stopped(freed));
@@ -475,20 +473,22 @@ impl LargeStore {
 
     /// Mark store page `pid` touched, in an update of its own.
     fn touch_page<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), PageError> {
-        let mut stage = Stage::new();
-        let position = page::position(stage.page(pager, pid)?);
-        let above = self.space.touch(&mut stage, pager, pid, position, true)?;
-        stage.commit(pager)?;
-        above.settle(pager)
+        let mut write = HeapWrite::new(pager);
+        let stage = write.stage();
+        let position = page::position(stage.page(pager, Rank::Store(pid))?);
+        let above = self.space.touch(stage, pager, pid, position, true)?;
+        write.commit_store(pager.reserve(), above)
     }
 
     /// Count one more version pointing at each of `pointers`, in updates of their own, each
-    /// latching at most [`COUNTED_PAGES`] store pages in page id order.
+    /// latching at most [`COUNTED_PAGES`] store pages in page id order while latches up to
+    /// `floor` are held.
     ///
     /// Precondition: the versions pointing at `pointers` are written by a later update.
     pub(super) fn retain_apart<R: Runtime>(
         &self,
         pager: &Pager<R>,
+        floor: Option<Rank>,
         pointers: &[Pointer],
     ) -> Result<(), PageError> {
         let mut heads = pointers.to_vec();
@@ -497,11 +497,11 @@ impl LargeStore {
             .chunk_by(|a, b| a.first.page() == b.first.page())
             .collect();
         for pages in by_page.chunks(COUNTED_PAGES) {
-            let mut stage = Stage::new();
+            let mut write = HeapWrite::above(pager, floor);
             for &p in pages.iter().copied().flatten() {
-                self.retain(&mut stage, pager, p)?;
+                self.retain(write.stage(), pager, p)?;
             }
-            stage.commit(pager)?;
+            write.commit_store(pager.reserve(), Above::default())?;
         }
         Ok(())
     }
@@ -514,8 +514,9 @@ impl LargeStore {
         pid: Pid,
         position: u32,
     ) -> Result<(), PageError> {
-        let mut stage = Stage::new();
-        let page = stage.page(pager, pid)?;
+        let mut write = HeapWrite::new(pager);
+        let stage = write.stage();
+        let page = stage.page(pager, Rank::Store(pid))?;
         if !page::is_heap(page)
             || storage::owner(page) != self.id()
             || page::position(page) != position
@@ -526,9 +527,8 @@ impl LargeStore {
             .filter_map(|s| chunk_at(page, self.id(), s))
             .any(|c| c.head && c.count == 0);
         if !waiting {
-            let above = self.space.touch(&mut stage, pager, pid, position, false)?;
-            stage.commit(pager)?;
-            above.settle(pager)?;
+            let above = self.space.touch(stage, pager, pid, position, false)?;
+            write.commit_store(pager.reserve(), above)?;
         }
         Ok(())
     }
@@ -542,21 +542,21 @@ impl LargeStore {
         head: Tid,
         count: u32,
     ) -> Result<(), PageError> {
-        let mut stage = Stage::new();
-        self.update(&mut stage, pager, head, |c| {
+        let mut write = HeapWrite::new(pager);
+        let stage = write.stage();
+        self.update(stage, pager, head, |c| {
             c.count = count;
             c.head
         })?;
-        let page = stage.page(pager, Pid(head.page()))?;
+        let page = stage.page(pager, Rank::Store(Pid(head.page())))?;
         let mut above = Above::default();
         if count == 0 {
             let position = page::position(page);
             above = self
                 .space
-                .touch(&mut stage, pager, Pid(head.page()), position, true)?;
+                .touch(stage, pager, Pid(head.page()), position, true)?;
         }
-        stage.commit(pager)?;
-        above.settle(pager)
+        write.commit_store(pager.reserve(), above)
     }
 
     /// Returns what is wrong with the store's chunks, `versions` being the number of versions
@@ -699,7 +699,7 @@ impl LargeStore {
                 problems.extend(layout.into_iter().map(|what| (pid, what)));
                 continue;
             }
-            let actual = category(page::free(page), pager.page_size());
+            let actual = page_category(page, pager.page_size());
             if cat != actual {
                 problems.push((
                     pid,

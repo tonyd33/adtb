@@ -14,6 +14,7 @@ mod slotted;
 mod stage;
 mod version;
 mod vm;
+mod write;
 
 #[cfg(test)]
 mod claims_tests;

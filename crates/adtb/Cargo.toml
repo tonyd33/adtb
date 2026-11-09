@@ -23,6 +23,7 @@ unicode-normalization = { version = "0.1.26", default-features = false }
 zeroize = { version = "1.9.1", default-features = false, features = ["alloc"] }
 
 [features]
+latch-checks = ["adtb-sys/latch-checks"]
 testing = []
 
 [lints]

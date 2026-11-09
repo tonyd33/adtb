@@ -793,6 +793,165 @@ fn a_write_clears_the_all_visible_bit() {
     });
 }
 
+/// A heap write, applied to a version of heap [`EMAIL`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum HeapWrite {
+    Insert,
+    HeapOnlyUpdate,
+    Update,
+    Delete,
+    Retag,
+    Restore,
+    CopyVersion,
+}
+
+const HEAP_WRITES: [HeapWrite; 7] = [
+    HeapWrite::Insert,
+    HeapWrite::HeapOnlyUpdate,
+    HeapWrite::Update,
+    HeapWrite::Delete,
+    HeapWrite::Retag,
+    HeapWrite::Restore,
+    HeapWrite::CopyVersion,
+];
+
+/// The heap of the sum with [`EMAIL`]'s row type that retags and copies write into.
+const OTHER: usize = 1;
+
+/// Returns the all-visible flag and visibility map bit of every page of [`EMAIL`] and [`OTHER`].
+fn all_visible_marks(db: &Db) -> BTreeMap<(usize, Pid), (bool, bool)> {
+    let mut out = BTreeMap::new();
+    for h in [EMAIL, OTHER] {
+        let heap = &db.heaps[h];
+        for pid in heap.pages(&db.pager).unwrap() {
+            let flag = heap.flagged_all_visible(&db.pager, pid).unwrap();
+            let bit = heap.all_visible(&db.pager, pid).unwrap();
+            out.insert((h, pid), (flag, bit));
+        }
+    }
+    out
+}
+
+/// Apply `write` to the version at `tid` of [`EMAIL`] holding the row of `key` written with `r`.
+/// Returns the pages it wrote, and whether an update was heap-only.
+fn apply_heap_write(
+    db: &mut Db,
+    write: HeapWrite,
+    tid: Tid,
+    key: i64,
+    r: u64,
+) -> (Vec<(usize, Pid)>, bool) {
+    let x = db.txns.begin(&db.pager).unwrap();
+    let o = (EMAIL, Pid(tid.page()));
+    let page = |h: usize, t: Tid| (h, Pid(t.page()));
+    let heap = &db.heaps[EMAIL];
+    match write {
+        HeapWrite::Insert => {
+            let t = heap
+                .insert(&db.pager, x, &make_row(EMAIL, 5000, 1))
+                .unwrap();
+            (vec![page(EMAIL, t)], false)
+        }
+        HeapWrite::HeapOnlyUpdate | HeapWrite::Update => {
+            let new = if write == HeapWrite::Update {
+                make_row(EMAIL, key + 6000, r)
+            } else {
+                make_row(EMAIL, key, r + 4)
+            };
+            let u = heap
+                .update(&db.pager, tid, x, &new, indexed(EMAIL))
+                .unwrap();
+            (vec![o, page(EMAIL, u.tid)], u.heap_only)
+        }
+        HeapWrite::Delete => {
+            heap.delete(&db.pager, tid, x).unwrap();
+            (vec![o], false)
+        }
+        HeapWrite::Retag => {
+            let row = make_row(OTHER, key, r);
+            let t = heap
+                .retag(&db.pager, tid, x, &db.heaps[OTHER], &row)
+                .unwrap();
+            (vec![o, page(OTHER, t)], false)
+        }
+        HeapWrite::Restore => {
+            heap.delete(&db.pager, tid, x).unwrap();
+            heap.restore(&db.pager, tid).unwrap();
+            (vec![o], false)
+        }
+        HeapWrite::CopyVersion => {
+            heap.delete(&db.pager, tid, x).unwrap();
+            db.txns.commit(&db.pager, x).unwrap();
+            let v = heap
+                .read(&db.pager, tid)
+                .unwrap()
+                .expect("the deleted version");
+            let copy = db.heaps[OTHER].copy_version(&db.pager, heap, &v).unwrap();
+            (
+                vec![o, page(OTHER, copy.expect("the version is copied"))],
+                false,
+            )
+        }
+    }
+}
+
+#[test]
+fn every_heap_write_clears_the_all_visible_flag() {
+    const ROWS: i64 = 45;
+    let mut reached: BTreeMap<HeapWrite, usize> = BTreeMap::new();
+    let mut heap_only = 0;
+    for (i, write) in HEAP_WRITES.into_iter().enumerate() {
+        for target in [0, ROWS / 2, ROWS - 1] {
+            let seed = 60 + i as u64 * 3 + target as u64;
+            let mut sim = Sim::new(seed, Config::default());
+            let (wrote, hot, before, after) = adtb_harness::process::run(&mut sim, |rt| {
+                let (mut db, _) = Db::create(&rt, 4);
+                let x = db.txns.begin(&db.pager).unwrap();
+                let mut tids = Vec::new();
+                for h in [EMAIL, OTHER] {
+                    for key in 0..ROWS {
+                        let key = key + 1000 * h as i64;
+                        let row = make_row(h, key, key as u64 * 4 + 1);
+                        let tid = db.heaps[h].insert(&db.pager, x, &row).unwrap();
+                        db.index(h, &row, tid);
+                        tids.push(tid);
+                    }
+                }
+                db.txns.commit(&db.pager, x).unwrap();
+                db.vacuum(usize::MAX);
+                let before = all_visible_marks(&db);
+                let r = target as u64 * 4 + 1;
+                let (wrote, hot) =
+                    apply_heap_write(&mut db, write, tids[target as usize], target, r);
+                let after = all_visible_marks(&db);
+                for h in [EMAIL, OTHER] {
+                    let problems = db.heaps[h].verify(&db.pager).unwrap();
+                    assert_eq!(Vec::<String>::new(), problems, "{write:?} seed {seed}");
+                }
+                (wrote, hot, before, after)
+            });
+            for p in &wrote {
+                assert_eq!(
+                    Some(&(false, false)),
+                    after.get(p),
+                    "{write:?} {p:?} seed {seed}"
+                );
+            }
+            if wrote.iter().all(|p| before.get(p) == Some(&(true, true))) {
+                *reached.entry(write).or_default() += 1;
+            }
+            heap_only += usize::from(hot);
+        }
+    }
+    for write in HEAP_WRITES {
+        assert!(
+            reached.get(&write).is_some_and(|&n| n > 0),
+            "{write:?} never wrote a page vacuum left all-visible: {reached:?}"
+        );
+    }
+    assert!(heap_only > 0, "no update was heap-only");
+}
+
 #[test]
 fn empty_pages_leave_the_heap_and_their_positions_are_reused() {
     let mut sim = Sim::new(33, Config::default());

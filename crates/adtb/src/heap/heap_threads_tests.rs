@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use crate::heap::{FieldType, Heap, HeapNo, LargeStore, walk};
 use crate::key::{Scalar, Tid, Value};
 use crate::mvcc::{Fate, Writers, Xid};
-use crate::runtime::Threads;
+use crate::runtime::{Clock, Threads};
 use crate::storage::{Options, PageError, PageKind, Pager, Pid};
 use adtb_sim::{Config, Sim, SimRuntime};
 
@@ -456,4 +456,127 @@ fn large_values_written_beside_a_sweep_freeing_store_pages_stay_whole() {
             }
         });
     }
+}
+
+/// The seeds and page pairs of [`emptying_a_page_beside_a_settle_of_its_neighbours_entry_finishes`].
+const VACATE_SEEDS: u64 = 16;
+const VACATE_PAIRS: usize = 8;
+
+/// The simulated time a pair of prunes takes at most before the search calls it deadlocked.
+const VACATE_BOUND: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Returns a row of which a page holds four, inline.
+fn wide_row(key: i64) -> Vec<Value> {
+    vec![Value::I64(key), Value::Bytes(vec![key as u8; 900])]
+}
+
+/// Prune page `pid` of `db`'s heap by [`dead_once_deleted`], dead slots first.
+fn prune_deleted(db: &Db, pid: Pid) {
+    let dead = db
+        .heap
+        .dead_slots(&db.pager, pid, dead_once_deleted)
+        .unwrap();
+    db.heap
+        .prune(&db.pager, pid, dead_once_deleted, &dead, false)
+        .unwrap();
+}
+
+#[test]
+fn emptying_a_page_beside_a_settle_of_its_neighbours_entry_finishes() {
+    let mut raced = 0;
+    for seed in 0..VACATE_SEEDS {
+        let mut sim = Sim::new(
+            seed,
+            Config {
+                switch_rate: 0.5,
+                ..Config::default()
+            },
+        );
+        let rounds = adtb_harness::process::run(&mut sim, |rt| {
+            let pager = Pager::create(rt.clone(), &options(64)).expect("create");
+            let large = LargeStore::create(&pager, LARGE_ID).expect("large store");
+            let heap = Heap::create_with_fanout(&pager, HEAP_ID, row_type(), large, 2).unwrap();
+            let mut on: Vec<(Pid, Vec<Tid>)> = Vec::new();
+            for key in 0.. {
+                if on.len() > 2 * VACATE_PAIRS {
+                    break;
+                }
+                let tid = heap.insert(&pager, Xid(1), &wide_row(key)).unwrap();
+                let pid = Pid(tid.page());
+                match on.last_mut() {
+                    Some((p, tids)) if *p == pid => tids.push(tid),
+                    _ => on.push((pid, vec![tid])),
+                }
+            }
+            let db = Arc::new(Db { pager, heap });
+            let mut overlapped = 0;
+            for pair in on.chunks(2).take(VACATE_PAIRS) {
+                let [(emptied, gone), (roomier, thinned)] = pair else {
+                    unreachable!("chunks of two")
+                };
+                let leaf = |pid: Pid| {
+                    let position = super::page::position(&db.pager.read(pid).unwrap());
+                    db.heap.space.leaf_of(&db.pager, position).unwrap()
+                };
+                let shared = leaf(*emptied);
+                assert!(
+                    shared.is_some(),
+                    "seed {seed}: {emptied:?} has a level-0 page"
+                );
+                assert_eq!(
+                    shared,
+                    leaf(*roomier),
+                    "seed {seed}: {emptied:?} and {roomier:?} share a level-0 page"
+                );
+                for &t in gone.iter().chain(&thinned[..1]) {
+                    db.heap.delete(&db.pager, t, Xid(DELETER)).unwrap();
+                }
+                let started = Arc::new(AtomicUsize::new(0));
+                let finished = Arc::new(AtomicUsize::new(0));
+                let beside = Arc::new(AtomicBool::new(false));
+                let start = rt.now();
+                let spawn = |pid: Pid| {
+                    let (db, started, finished, beside) = (
+                        db.clone(),
+                        started.clone(),
+                        finished.clone(),
+                        beside.clone(),
+                    );
+                    rt.spawn("pruner", move || {
+                        started.fetch_add(1, Ordering::Relaxed);
+                        prune_deleted(&db, pid);
+                        if finished.fetch_add(1, Ordering::Relaxed) == 0
+                            && started.load(Ordering::Relaxed) == 2
+                        {
+                            beside.store(true, Ordering::Relaxed);
+                        }
+                    })
+                };
+                let a = spawn(*emptied);
+                let b = spawn(*roomier);
+                while finished.load(Ordering::Relaxed) < 2 {
+                    assert!(
+                        rt.now().saturating_since(start) < VACATE_BOUND,
+                        "seed {seed}: pruning pages {emptied:?} and {roomier:?} deadlocked"
+                    );
+                    rt.yield_now();
+                }
+                rt.join(a);
+                rt.join(b);
+                overlapped += usize::from(beside.load(Ordering::Relaxed));
+                assert!(
+                    !db.heap.pages(&db.pager).unwrap().contains(emptied),
+                    "seed {seed}: {emptied:?} left the heap"
+                );
+                assert_eq!(
+                    Vec::<String>::new(),
+                    db.heap.verify(&db.pager).unwrap(),
+                    "seed {seed}"
+                );
+            }
+            overlapped
+        });
+        raced += rounds;
+    }
+    assert!(raced > 0, "no pair of prunes ran at once");
 }

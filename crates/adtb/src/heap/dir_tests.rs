@@ -16,7 +16,8 @@ use crate::storage::{Damage, Options, PageError, PageKind, Pager, Pid, Quarantin
 use super::super::page::{self, Arrangement, CONTENTS};
 use super::super::stage::Stage;
 use super::super::vm::{self, Vm};
-use super::{CAPACITY, COUNT, LEVEL, Space, VM, entry, max_fanout, set_word};
+use super::super::write::Rank;
+use super::{CAPACITY, COUNT, Fit, LEVEL, Space, VM, entry, level, max_fanout, set_word};
 
 fn pager(scratch: &Scratch) -> Pager<OsRuntime> {
     let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
@@ -153,11 +154,27 @@ fn an_inner_entry_naming_a_staged_page_refuses_its_directory_page_and_keeps_the_
         .unwrap();
     let mut stage = Stage::new();
     let end = pager.page_size() - 1;
-    stage.page(&pager, last).unwrap()[end] = 9;
-    let got = s.set_category(&mut stage, &pager, last, 2, 0).map(drop);
+    stage.page(&pager, Rank::Heap(last)).unwrap()[end] = 9;
+    let got = s.reflect(&mut stage, &pager, last, 1, Fit::Took).map(drop);
     assert_eq!(refused(root), got);
-    assert_eq!(9, stage.read(&pager, last).unwrap()[end]);
+    assert_eq!(9, stage.read(&pager, Rank::Heap(last)).unwrap()[end]);
     drop(stage);
+    pager.close();
+}
+
+#[test]
+fn vacating_a_page_reads_no_directory_page_ranked_before_the_level_0_page_it_latched() {
+    let scratch = Scratch::new("heap-dir", "vacate");
+    let pager = pager(&scratch);
+    let s = space(&pager, 3);
+    let pages = s.pages(&pager).unwrap();
+    assert_eq!(1, level(&pager.read(s.root()).unwrap()), "two levels");
+    let mut stage = Stage::new();
+    stage.page(&pager, Rank::Heap(pages[1])).unwrap();
+    let above = s.vacate(&mut stage, &pager, pages[1], 1).unwrap();
+    stage.commit(&pager).unwrap();
+    above.settle(&pager).unwrap();
+    assert_eq!(vec![pages[0], pages[2]], s.pages(&pager).unwrap());
     pager.close();
 }
 
@@ -179,7 +196,7 @@ fn a_space_opened_at_page_zero_reads_nothing_and_takes_no_page() {
     assert_eq!(Err(Error::NoDirectory), insert.map(drop));
     let s = Space::open(9, Pid(0));
     assert_eq!(Ok(None), s.find(&pager, 1, Arrangement::Slotted, 1));
-    assert_eq!(Ok(false), s.names(&pager, 0, Pid(5)));
+    assert_eq!(Ok(false), s.names(&pager, 0, Pid(5), None));
     assert_eq!(Ok(Vec::new()), s.touched(&pager));
     assert_eq!(Ok(()), s.settle(&pager));
     assert!(pager.damaged().is_empty(), "{:?}", pager.damaged());

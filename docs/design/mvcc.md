@@ -71,9 +71,11 @@ Postconditions:
   ([storage.md §2.3](storage.md#23-page-access)) latches at most five
   pages, transient reads included: at most two heap pages, at most one
   level-0 directory page, and a visibility map page, a bitmap page or
-  further store pages within the bound. An insert, update, delete or
-  retag changes its heap pages and the level-0 entry of the page that
-  takes the version in one update. Before it, in updates of their own:
+  further store pages within the bound. An insert, update, delete,
+  retag, restore or copy to a history heap changes its heap pages and
+  the level-0 entry of the page that takes the version in one update,
+  the entry set from that page as written. Before it, in updates of
+  their own:
   the out-of-line values a page's conversion
   ([§12.4](#124-row-format-changes)) moves, written while no page is
   latched; the counts of every value the new version points at
@@ -100,7 +102,10 @@ Postconditions:
   then large-value store pages in page id order, then directory pages
   by level, the highest first, and in page id order within a level,
   then visibility map pages in page id order. No thread holds a latch
-  while it waits for one earlier in the order.
+  while it waits for one earlier in the order. Every write to the
+  heap's pages, its store's, its directory's and its map's takes its
+  latches in that order, shared reads made while it holds a latch
+  included.
 
 Rulings: storage/table-per-ctor, storage/sum-scan/merge-append, encoding/native-cost/union-index, engine/in-heap, layout/fill/fsm
 
@@ -1012,7 +1017,7 @@ Rulings: mvcc/background, mvcc/on-access, union-index/vacuum/batched, derived/ti
 ## 11. Index-only scans
 
 Each heap has a visibility map with one all-visible bit per page, set
-by vacuum and cleared by any write to the page. An index-only scan may
+by vacuum and cleared by any write that changes the page. An index-only scan may
 skip fetching a version when the all-visible bit of its page is set in
 the visibility map of the heap of the entry's constructor in the
 index's relation variable.
@@ -1247,10 +1252,12 @@ A value's first chunk is its head; every later chunk is a tail named
 by exactly one chunk's `next`. Chunks are written last first, each in
 its own pager update that also makes the chunk written before it a
 tail, before the version that points at them; each is written as a
-head of count 0 on a page its update marks touched. The update that
-writes a version counts it once more in the head of every value it
-points at, so a value shared by an update or a retag counts each
-version. A page's conversion counts the values it moves out of line in
+head of count 0 on a page its update marks touched. Before the update
+that writes a version, updates of their own count it once more in the
+head of every value it points at, so a value shared by an update or a
+retag counts each version; after it, updates of their own count one
+version fewer for each value the page's conversion left no version
+pointing at. A page's conversion counts the values it moves out of line in
 updates of their own before the update that writes the converted
 page. Pruning a version counts it off afterwards, in an update of
 its own; a head left at count 0 marks its page touched.

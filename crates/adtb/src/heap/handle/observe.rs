@@ -33,6 +33,15 @@ impl Heap {
         })
     }
 
+    /// Returns whether the header of page `pid` has the all-visible flag set.
+    pub fn flagged_all_visible<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        pid: Pid,
+    ) -> Result<bool, PageError> {
+        Ok(page::all_visible(&pager.read(pid)?))
+    }
+
     /// Write `row` as the successor `xid` makes of the version at `at`, and point that version at
     /// it.
     ///

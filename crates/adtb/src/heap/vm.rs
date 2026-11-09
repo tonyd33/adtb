@@ -3,6 +3,7 @@ use crate::storage::{self, Damage, PageError, PageKind, Pager, Pid};
 
 use super::page::{CONTENTS, u16_at, u64_at};
 use super::stage::Stage;
+use super::write::Rank;
 
 const LEVEL: usize = CONTENTS;
 const BODY: usize = CONTENTS + 8;
@@ -138,11 +139,7 @@ impl Vm {
         pid: Pid,
         parent: (Pid, u32),
     ) -> Result<Vec<u8>, PageError> {
-        let node = if stage.holds(pid) {
-            stage.read(pager, pid)?
-        } else {
-            pager.read(pid)?.to_vec()
-        };
+        let node = stage.read_any(pager, Rank::Vm(pid))?;
         if shaped(&node, self.owner, Some(parent.1)) {
             return Ok(node);
         }
@@ -157,7 +154,7 @@ impl Vm {
         pid: Pid,
     ) -> Result<Option<Pid>, PageError> {
         let size = pager.page_size();
-        let mut node = stage.read(pager, self.root)?;
+        let mut node = stage.read(pager, Rank::Vm(self.root))?;
         if pid.0 >= reach(size, level(&node)) {
             return Ok(None);
         }
@@ -183,7 +180,7 @@ impl Vm {
             return Ok(false);
         };
         let i = bit_index(pager.page_size(), pid);
-        Ok(bit(&stage.read(pager, leaf)?, i))
+        Ok(bit(&stage.read(pager, Rank::Vm(leaf))?, i))
     }
 
     /// Set or clear the bit of `pid` in `stage`, latching its leaf.
@@ -204,7 +201,7 @@ impl Vm {
                 return Ok(());
             };
             let fresh = !stage.holds(leaf);
-            let node = stage.page(pager, leaf)?;
+            let node = stage.page(pager, Rank::Vm(leaf))?;
             // The root may have grown above the leaf it was when looked up.
             if level(node) != 0 {
                 if fresh {
@@ -217,20 +214,13 @@ impl Vm {
         }
     }
 
-    /// Clear the bit of `pid`, in an update of its own.
-    pub fn clear<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), PageError> {
-        let mut stage = Stage::new();
-        self.put(&mut stage, pager, pid, false)?;
-        stage.commit(pager)
-    }
-
     /// Add the map pages the path to `pid` lacks, each under the latch of the page that links
     /// it and in an update of its own.
     pub fn extend<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), PageError> {
         let size = pager.page_size();
         loop {
             let mut stage = Stage::new();
-            let root = stage.page(pager, self.root)?;
+            let root = stage.page(pager, Rank::Vm(self.root))?;
             let l = level(root);
             if pid.0 < reach(size, l) {
                 break;
@@ -242,13 +232,13 @@ impl Vm {
             set_level(root, l + 1);
             set_child(root, 0, moved);
             stage.put_reserved(&new, moved, new.image(moved));
-            stage.page(pager, moved)?[CONTENTS..].copy_from_slice(&contents);
+            stage.page(pager, Rank::Vm(moved))?[CONTENTS..].copy_from_slice(&contents);
             stage.commit_with(pager, new)?;
         }
         let mut at = self.root;
         loop {
             let mut stage = Stage::new();
-            let node = stage.page(pager, at)?;
+            let node = stage.page(pager, Rank::Vm(at))?;
             let l = level(node);
             if l == 0 {
                 return Ok(());
@@ -264,7 +254,7 @@ impl Vm {
             let c = new.page(1, PageKind::VisibilityMap, self.owner)?;
             set_child(node, i, c);
             stage.put_reserved(&new, c, new.image(c));
-            set_level(stage.page(pager, c)?, l - 1);
+            set_level(stage.page(pager, Rank::Vm(c))?, l - 1);
             stage.commit_with(pager, new)?;
             at = c;
         }

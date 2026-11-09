@@ -45,6 +45,14 @@ impl Writers {
         self.deleter == Some(next.inserter)
     }
 
+    /// Returns the transaction a copy of a version with these writers writes its out-of-line
+    /// values as: the inserter.
+    ///
+    /// Precondition: the inserter committed.
+    pub fn copy_writer(&self) -> Xid {
+        self.inserter
+    }
+
     pub fn inserted_by(&self, x: Xid) -> bool {
         self.inserter == x
     }

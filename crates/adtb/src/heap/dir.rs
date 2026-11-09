@@ -6,6 +6,7 @@ use crate::storage::{self, Damage, PageError, PageKind, Pager, Pid, Stopped};
 use super::page::{self, Arrangement, CONTENTS, u16_at, u64_at};
 use super::stage::Stage;
 use super::vm;
+use super::write::{Level, Rank};
 
 const LEVEL: usize = CONTENTS;
 const COUNT: usize = CONTENTS + 2;
@@ -177,6 +178,27 @@ pub fn category(free: usize, page_size: usize) -> u8 {
     (free * 256 / page_size).min(255) as u8
 }
 
+/// Returns the free space category of `page`, a page of `page_size` bytes.
+pub fn page_category(page: &[u8], page_size: usize) -> u8 {
+    category(page::free(page), page_size)
+}
+
+/// What a write did to a page, which decides its level-0 directory entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fit {
+    /// The page took a version: its entry gets the page's category.
+    Took,
+    /// The page took a chunk of a large value: its entry gets the page's category and is marked
+    /// touched.
+    Chunk,
+    /// The page could not take a version: its entry gets the page's category in the newest
+    /// format and 0 in an older one.
+    Refused,
+    /// The page was pruned: its entry gets the page's category when the page is in the newest
+    /// format or has more room than before, and is left alone otherwise.
+    Pruned { roomier: bool },
+}
+
 /// Returns the least category of a page certain to have `need` bytes free.
 pub fn need_category(need: usize, page_size: usize) -> u16 {
     (need * 256).div_ceil(page_size).max(1) as u16
@@ -328,11 +350,8 @@ impl Space {
         pid: Pid,
         parent: Parent,
     ) -> Result<Vec<u8>, Fault> {
-        let node = if stage.holds(pid) {
-            stage.read(pager, pid)
-        } else {
-            pager.read(pid).map(|p| p.to_vec())
-        };
+        let level = parent.map_or(Level::Root, |(_, l, _)| Level::At(l.saturating_sub(1)));
+        let node = stage.read_any(pager, Rank::Dir { level, pid });
         let node = node.map_err(Fault::Page)?;
         if shaped(&node, self.owner, pager.page_size(), parent) {
             return Ok(node);
@@ -351,11 +370,7 @@ impl Space {
         pid: Pid,
         parent: Option<(Pid, u32)>,
     ) -> Result<Vec<u8>, Fault> {
-        let node = if stage.holds(pid) {
-            stage.read(pager, pid)
-        } else {
-            pager.read(pid).map(|p| p.to_vec())
-        };
+        let node = stage.read_any(pager, Rank::Vm(pid));
         let node = node.map_err(Fault::Page)?;
         if vm::shaped(&node, self.owner, parent.map(|(_, l)| l)) {
             return Ok(node);
@@ -388,16 +403,23 @@ impl Space {
         }
     }
 
-    /// Returns the staged copy of directory page `pid`, latching and staging it first if needed.
-    /// Unstage and record it as damaged as [`Space::node`] does.
+    /// Returns the staged copy of directory page `pid`, expected at `level`, latching and staging
+    /// it first if needed. Unstage and record it as damaged as [`Space::node`] does.
     fn node_mut<'s, 'p, R: Runtime>(
         &self,
         stage: &'s mut Stage<'p, R>,
         pager: &'p Pager<R>,
         pid: Pid,
+        level: u32,
     ) -> Result<&'s mut Vec<u8>, PageError> {
-        if shaped(stage.page(pager, pid)?, self.owner, pager.page_size(), None) {
-            return stage.page(pager, pid);
+        let rank = Rank::dir(level, pid);
+        if shaped(
+            stage.page(pager, rank)?,
+            self.owner,
+            pager.page_size(),
+            None,
+        ) {
+            return stage.page(pager, rank);
         }
         Err(self.refuse(stage, pager, pid))
     }
@@ -674,7 +696,7 @@ impl Space {
                 position += i as u64 * cap.pow(level(&node));
                 let child = entry(&node, i).0;
                 if level(&node) > 0 {
-                    above = Some((here, i));
+                    above = Some(((here, level(&node)), i));
                     node = self.node(stage, pager, child, parent_of(here, &node))?;
                     here = child;
                 } else if child == HOLE {
@@ -746,23 +768,24 @@ impl Space {
         })
     }
 
-    /// Set entry `i` of directory page `parent` to the greatest category and the touched mark of
-    /// `child`, in an update of its own, if the entry still names `child`. Returns whether it did.
+    /// Set entry `i` of directory page `parent`, at level `l`, to the greatest category and the
+    /// touched mark of `child`, in an update of its own, if the entry still names `child`.
+    /// Returns whether it did.
     fn repair<R: Runtime>(
         &self,
         pager: &Pager<R>,
-        parent: Pid,
+        (parent, l): (Pid, u32),
         i: usize,
         child: Pid,
     ) -> Result<bool, PageError> {
         let mut stage = Stage::new();
-        let node = self.node_mut(&mut stage, pager, parent)?.clone();
+        let node = self.node_mut(&mut stage, pager, parent, l)?.clone();
         if level(&node) == 0 || i >= count(&node) || entry(&node, i).0 != child {
             return Ok(false);
         }
         let below = self.node(&mut stage, pager, child, parent_of(parent, &node))?;
         let (top, any) = (max_category(&below), any_touched(&below));
-        let node = stage.page(pager, parent)?;
+        let node = stage.page(pager, Rank::dir(l, parent))?;
         if entry(node, i).1 != top || touched(node, i) != any {
             set_word(node, i, child, top, any);
             stage.commit(pager)?;
@@ -797,15 +820,28 @@ impl Space {
         Ok(Some((path, cap)))
     }
 
+    /// Returns the level-0 directory page holding the entry at `position`, if the path to it has
+    /// one.
+    #[cfg(test)]
+    pub fn leaf_of<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        position: u32,
+    ) -> Result<Option<Pid>, PageError> {
+        let path = self.path(&mut Stage::new(), pager, position)?;
+        Ok(path.map(|(path, _)| *path.last().unwrap()))
+    }
+
     /// Returns whether the entry at `position` names `pid`, read without holding a latch across
-    /// pages.
+    /// pages, while the caller holds latches up to `floor`.
     pub fn names<R: Runtime>(
         &self,
         pager: &Pager<R>,
         position: u32,
         pid: Pid,
+        floor: Option<Rank>,
     ) -> Result<bool, PageError> {
-        let stage = &mut Stage::new();
+        let stage = &mut Stage::above(floor);
         let Some((mut at, mut node)) = self.top(stage, pager)? else {
             return Ok(false);
         };
@@ -847,7 +883,7 @@ impl Space {
             mark: None,
         };
         let changed = self.change(&mut stage, pager, position, HOLE, fresh)?;
-        let Some(above) = changed else {
+        let Some((above, _)) = changed else {
             return Ok(None);
         };
         stage.commit_with(pager, new)?;
@@ -872,12 +908,10 @@ impl Space {
             category: Some(HOLE_CATEGORY),
             mark: Some(false),
         };
-        let Some(changed) = self.change(stage, pager, position, pid, hole)? else {
+        let Some((changed, leaf)) = self.change(stage, pager, position, pid, hole)? else {
             return Ok(Above::default());
         };
-        if let Some((path, _)) = self.path(stage, pager, position)? {
-            trim(stage.page(pager, *path.last().unwrap())?);
-        }
+        trim(stage.page(pager, Rank::dir(0, leaf))?);
         Ok(changed)
     }
 
@@ -902,19 +936,32 @@ impl Space {
         Ok(total + count(&node) as u64)
     }
 
-    /// Set the category of the entry at `position`, which names `page`, in `stage`. An entry that
-    /// names another page is left alone.
+    /// Set the level-0 entry of `pid`, at the position its staged copy records, in `stage`, as
+    /// `fit` says from the staged copy, `newest` being the newest row format of the space's
+    /// pages. An entry that names another page is left alone.
     ///
-    /// Precondition: `stage` holds `page` and no directory page.
-    pub fn set_category<'p, R: Runtime>(
+    /// Precondition: `stage` holds `pid` and no directory page.
+    pub fn reflect<'p, R: Runtime>(
         &self,
         stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
-        page: Pid,
-        position: u32,
-        category: u8,
+        pid: Pid,
+        newest: u16,
+        fit: Fit,
     ) -> Result<Above, PageError> {
-        self.set_entry(stage, pager, page, position, Some(category), None)
+        let page = stage.read(pager, Rank::Heap(pid))?;
+        let category = page_category(&page, pager.page_size());
+        let current = storage::format(&page) == newest;
+        let (category, mark) = match fit {
+            Fit::Took => (Some(category), None),
+            Fit::Chunk => (Some(category), Some(true)),
+            Fit::Refused => (Some(if current { category } else { 0 }), None),
+            Fit::Pruned { roomier } => ((roomier || current).then_some(category), None),
+        };
+        if category.is_none() {
+            return Ok(Above::default());
+        }
+        self.set_entry(stage, pager, pid, page::position(&page), category, mark)
     }
 
     /// Mark or unmark the entry at `position`, which names `page`, as touched in `stage`. An entry
@@ -936,7 +983,7 @@ impl Space {
     /// `stage`, each kept as it is when `None`. An entry that names another page is left alone.
     ///
     /// Precondition: `stage` holds `page` and no directory page.
-    pub fn set_entry<'p, R: Runtime>(
+    fn set_entry<'p, R: Runtime>(
         &self,
         stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
@@ -951,12 +998,15 @@ impl Space {
             mark,
         };
         let changed = self.change(stage, pager, position, page, to)?;
-        Ok(changed.unwrap_or_default())
+        Ok(changed.map(|(above, _)| above).unwrap_or_default())
     }
 
     /// Set the entry at `position`, which names `expect`, in `stage` as `to` says, latching only
     /// the level-0 directory page holding it. Returns the entries above it to settle once `stage`
-    /// is written, or `None`, staging nothing, if the entry does not name `expect`.
+    /// is written and the level-0 page it latched, or `None`, staging nothing, if the entry does
+    /// not name `expect`.
+    ///
+    /// Precondition: `stage` holds no directory page, checked in debug builds.
     fn change<'p, R: Runtime>(
         &self,
         stage: &mut Stage<'p, R>,
@@ -964,7 +1014,8 @@ impl Space {
         position: u32,
         expect: Pid,
         to: Change,
-    ) -> Result<Option<Above>, PageError> {
+    ) -> Result<Option<(Above, Pid)>, PageError> {
+        stage.holds_no_directory();
         let Change {
             page,
             category,
@@ -977,7 +1028,7 @@ impl Space {
             let leaf = *path.last().unwrap();
             let i = digit(u64::from(position), 0, cap);
             let fresh = !stage.holds(leaf);
-            let node = self.node_mut(stage, pager, leaf)?;
+            let node = self.node_mut(stage, pager, leaf, 0)?;
             if level(node) != 0 {
                 if fresh {
                     stage.unstage(leaf);
@@ -997,9 +1048,10 @@ impl Space {
             set_word(node, i, page.unwrap_or(expect), cat, on);
             let rise = cat > old || on && !was;
             let fall = !on && was;
-            return Ok(Some(Above {
+            let above = Above {
                 at: (rise || fall).then_some((*self, position)),
-            }));
+            };
+            return Ok(Some((above, leaf)));
         }
     }
 
@@ -1013,7 +1065,7 @@ impl Space {
             for k in (0..path.len() - 1).rev() {
                 let l = (path.len() - 1 - k) as u32;
                 let i = digit(u64::from(position), l, cap);
-                if !self.repair(pager, path[k], i, path[k + 1])? {
+                if !self.repair(pager, (path[k], l), i, path[k + 1])? {
                     continue 'walk;
                 }
             }
@@ -1041,7 +1093,7 @@ impl Space {
         for i in 0..count(&node) {
             let child = entry(&node, i).0;
             self.settle_node(pager, child, parent_of(pid, &node))?;
-            self.repair(pager, pid, i, child)?;
+            self.repair(pager, (pid, level(&node)), i, child)?;
         }
         Ok(())
     }
@@ -1139,7 +1191,7 @@ impl Space {
     /// level up, if the root is still at `height` and full, in an update of its own.
     fn grow<R: Runtime>(&self, pager: &Pager<R>, pid: Pid, height: u32) -> Result<(), PageError> {
         let mut stage = Stage::new();
-        let old = self.node_mut(&mut stage, pager, pid)?.clone();
+        let old = self.node_mut(&mut stage, pager, pid, height)?.clone();
         let cap = capacity(&old);
         if level(&old) != height || self.len(&mut stage, pager)? != cap.pow(height + 1) {
             return Ok(());
@@ -1147,10 +1199,10 @@ impl Space {
         let mut new = pager.reserve();
         let moved = new.page(1, PageKind::FreeSpaceMap, self.owner)?;
         stage.put_reserved(&new, moved, new.image(moved));
-        let copy = stage.page(pager, moved)?;
+        let copy = stage.page(pager, Rank::dir(height, moved))?;
         copy[CONTENTS..].copy_from_slice(&old[CONTENTS..]);
         copy[VM..VM + 8].fill(0);
-        let root = stage.page(pager, pid)?;
+        let root = stage.page(pager, Rank::dir(height, pid))?;
         init(root, height + 1, cap);
         push(root, moved, 0);
         set_word(root, 0, moved, max_category(&old), any_touched(&old));
@@ -1167,7 +1219,7 @@ impl Space {
         i: usize,
     ) -> Result<(), PageError> {
         let mut stage = Stage::new();
-        let node = self.node_mut(&mut stage, pager, parent)?;
+        let node = self.node_mut(&mut stage, pager, parent, l)?;
         if level(node) != l || count(node) != i {
             return Ok(());
         }
@@ -1175,8 +1227,9 @@ impl Space {
         let mut new = pager.reserve();
         let child = new.page(1, PageKind::FreeSpaceMap, self.owner)?;
         stage.put_reserved(&new, child, new.image(child));
-        init(stage.page(pager, child)?, l - 1, cap);
-        push(stage.page(pager, parent)?, child, 0);
+        let below = Rank::dir(l - 1, child);
+        init(stage.page(pager, below)?, l - 1, cap);
+        push(stage.page(pager, Rank::dir(l, parent))?, child, 0);
         stage.commit_with(pager, new)
     }
 
@@ -1198,7 +1251,7 @@ impl Space {
         let cat = category(page::free(&image), pager.page_size());
         let mut stage = Stage::new();
         stage.put_reserved(&new, page, image);
-        let node = self.node_mut(&mut stage, pager, leaf)?;
+        let node = self.node_mut(&mut stage, pager, leaf, 0)?;
         let i = digit(u64::from(position), 0, capacity(node));
         if level(node) != 0 || count(node) != i {
             return Ok(None);
