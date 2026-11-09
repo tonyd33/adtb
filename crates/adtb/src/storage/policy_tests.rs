@@ -55,7 +55,7 @@ impl C {
     }
 }
 
-const HOLDERS: [Holder; 18] = [
+const HOLDERS: [Holder; 19] = [
     H0,
     H1,
     I0,
@@ -65,6 +65,7 @@ const HOLDERS: [Holder; 18] = [
     Holder::CatalogRoot,
     Holder::CommitLog,
     Holder::Counters,
+    Holder::CommitTimes,
     Holder::Bitmap,
     Holder::MarksPage,
     Holder::DamageList,
@@ -77,7 +78,7 @@ const HOLDERS: [Holder; 18] = [
 ];
 
 /// The marks storage.md states, one row per fault kind, holder and phase.
-const STATED: [(C, Holder, Phase, Mark); 178] = [
+const STATED: [(C, Holder, Phase, Mark); 188] = [
     (C::Damaged, H0, OPEN, OH),
     (C::Damaged, H0, RUN, OH),
     (C::Damaged, H1, OPEN, DB),
@@ -96,6 +97,8 @@ const STATED: [(C, Holder, Phase, Mark); 178] = [
     (C::Damaged, Holder::CommitLog, RUN, DB),
     (C::Damaged, Holder::Counters, OPEN, DB),
     (C::Damaged, Holder::Counters, RUN, DB),
+    (C::Damaged, Holder::CommitTimes, OPEN, DB),
+    (C::Damaged, Holder::CommitTimes, RUN, DB),
     (C::Damaged, Holder::Bitmap, OPEN, DB),
     (C::Damaged, Holder::Bitmap, RUN, DB),
     (C::Damaged, Holder::MarksPage, OPEN, DB),
@@ -132,6 +135,8 @@ const STATED: [(C, Holder, Phase, Mark); 178] = [
     (C::Unread, Holder::CommitLog, RUN, NO),
     (C::Unread, Holder::Counters, OPEN, NO),
     (C::Unread, Holder::Counters, RUN, NO),
+    (C::Unread, Holder::CommitTimes, OPEN, NO),
+    (C::Unread, Holder::CommitTimes, RUN, NO),
     (C::Unread, Holder::Bitmap, OPEN, NO),
     (C::Unread, Holder::Bitmap, RUN, NO),
     (C::Unread, Holder::MarksPage, OPEN, NO),
@@ -166,6 +171,8 @@ const STATED: [(C, Holder, Phase, Mark); 178] = [
     (C::Settled, Holder::CommitLog, RUN, NO),
     (C::Settled, Holder::Counters, OPEN, NO),
     (C::Settled, Holder::Counters, RUN, NO),
+    (C::Settled, Holder::CommitTimes, OPEN, NO),
+    (C::Settled, Holder::CommitTimes, RUN, NO),
     (C::Settled, Holder::Bitmap, OPEN, NO),
     (C::Settled, Holder::Bitmap, RUN, NO),
     (C::Settled, Holder::MarksPage, OPEN, NO),
@@ -202,6 +209,8 @@ const STATED: [(C, Holder, Phase, Mark); 178] = [
     (C::Full, Holder::CommitLog, RUN, DB),
     (C::Full, Holder::Counters, OPEN, DB),
     (C::Full, Holder::Counters, RUN, DB),
+    (C::Full, Holder::CommitTimes, OPEN, DB),
+    (C::Full, Holder::CommitTimes, RUN, DB),
     (C::Full, Holder::Bitmap, OPEN, DB),
     (C::Full, Holder::Bitmap, RUN, DB),
     (C::Full, Holder::MarksPage, OPEN, DB),
@@ -238,6 +247,8 @@ const STATED: [(C, Holder, Phase, Mark); 178] = [
     (C::Unarmed, Holder::CommitLog, RUN, HELD),
     (C::Unarmed, Holder::Counters, OPEN, HELD),
     (C::Unarmed, Holder::Counters, RUN, HELD),
+    (C::Unarmed, Holder::CommitTimes, OPEN, HELD),
+    (C::Unarmed, Holder::CommitTimes, RUN, HELD),
     (C::Unarmed, Holder::Bitmap, OPEN, HELD),
     (C::Unarmed, Holder::Bitmap, RUN, HELD),
     (C::Unarmed, Holder::MarksPage, OPEN, HELD),

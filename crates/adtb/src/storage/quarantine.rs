@@ -670,7 +670,8 @@ impl<R: Runtime> Pager<R> {
     ///   follow in all its tries, leaves the mapping incomplete.
     /// - An allocation bitmap page is held as one, with no walk.
     /// - A page no walk holds is unreached, once every walk is complete.
-    pub fn holders_of(
+    #[cfg(test)]
+    pub(crate) fn holders_of(
         &self,
         pid: Pid,
         phase: Phase,

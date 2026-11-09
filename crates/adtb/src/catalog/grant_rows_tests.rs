@@ -425,7 +425,11 @@ fn reopened(seed: u64, files: BTreeMap<String, Vec<u8>>) -> Seen {
         let (pager, _) = Pager::open(rt.clone(), &pager_options(FRAMES)).expect("reopen");
         let (mut catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
         let clog = txns.commit_log();
-        let report = verify::verify_with(&pager, &catalog.inventory(&clog), Depth::STRUCTURE);
+        let report = verify::verify_with(
+            &pager,
+            &catalog.structures().inventory(&clog),
+            Depth::STRUCTURE,
+        );
         assert!(
             report.findings.is_empty(),
             "seed {seed}: {:?}",

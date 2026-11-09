@@ -82,6 +82,7 @@ pub fn holding(holder: Holder) -> Holding {
         Holder::CatalogRoot => (Held::CatalogRoot, None),
         Holder::CommitLog => (Held::CommitLog, None),
         Holder::Counters => (Held::Counters, None),
+        Holder::CommitTimes => (Held::CommitTimes, None),
         Holder::Bitmap => (Held::Bitmap, None),
         Holder::MarksPage => (Held::MarksPage, None),
         Holder::DamageList => (Held::DamageList, None),

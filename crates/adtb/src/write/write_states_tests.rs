@@ -148,7 +148,11 @@ fn assert_clean(
     at: usize,
 ) {
     let clog = txns.commit_log();
-    let report = verify::verify_with(pager, &catalog.inventory(&clog), Depth::STRUCTURE);
+    let report = verify::verify_with(
+        pager,
+        &catalog.structures().inventory(&clog),
+        Depth::STRUCTURE,
+    );
     assert!(report.complete, "event {at}: {:?}", report.findings);
     assert!(
         report.findings.is_empty(),

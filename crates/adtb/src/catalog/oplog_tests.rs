@@ -99,7 +99,11 @@ fn second_migration(seed: u64, roles: &[&str], second: &str) -> (Sim, usize) {
 
 fn assert_clean(pager: &Pager<SimRuntime>, catalog: &Catalog, txns: &Transactions<SimRuntime>) {
     let clog = txns.commit_log();
-    let report = verify::verify_with(pager, &catalog.inventory(&clog), Depth::STRUCTURE);
+    let report = verify::verify_with(
+        pager,
+        &catalog.structures().inventory(&clog),
+        Depth::STRUCTURE,
+    );
     assert!(report.complete, "{:?}", report.findings);
     assert!(report.findings.is_empty(), "{:?}", report.findings);
 }

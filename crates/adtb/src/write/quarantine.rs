@@ -8,12 +8,10 @@ use adtb_lang::kernel::{Kind, Terms, Tm};
 use adtb_lang::schema::OnDelete;
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
-use crate::btree::Index;
-use crate::catalog::Holdings;
 use crate::plan::{Catalog, HeapId, IndexId};
 use crate::runtime::Runtime;
-use crate::storage::policy::{Holder, Phase};
-use crate::storage::{Damage, PageError, Pid, Quarantine};
+use crate::storage::policy::Phase;
+use crate::storage::{Damage, PageError, Quarantine};
 
 use super::schema::Rel;
 use super::verify::Found;
@@ -45,37 +43,6 @@ fn element(ty: &Ty) -> Option<&Ty> {
 }
 
 impl<R: Runtime> Database<R> {
-    /// Returns what holds the damaged page `pid` once the database runs: a heap or index,
-    /// current or history, the large-value store, the roots heap or a retired page. Add to `met`
-    /// each page whose damage stopped a walk.
-    fn holders(&self, pid: Pid, met: &mut BTreeSet<Pid>) -> Option<BTreeSet<Holder>> {
-        let mut holdings = Holdings::new(&self.schema);
-        if let Some(kept) = &self.kept_store {
-            holdings.roots(kept);
-        }
-        holdings.retired(self.pager.retired());
-        let retained = self.retained.as_deref();
-        for r in self.rels.values() {
-            for c in &r.ctors {
-                let past = retained.and_then(|k| k.heaps.get(&c.heap));
-                let heap = &self.heaps[&c.heap].heap;
-                holdings.heaps(r.id, heap, past.map(|p| &*p.heap));
-                holdings.large(heap.large());
-                if let Some(p) = past {
-                    holdings.large(p.heap.large());
-                }
-            }
-            for (id, _) in &r.indexes {
-                let tree = self.indexes[id].index.tree();
-                let past = retained.and_then(|k| k.indexes.get(id)).map(Index::tree);
-                holdings.trees(r.id, tree.owner(), std::iter::once(tree).chain(past));
-            }
-        }
-        self.pager.holders_meeting(pid, Phase::Running, met, |h| {
-            holdings.walk(&self.pager, h);
-        })
-    }
-
     /// Returns the name a client sees of `object`.
     pub(crate) fn quarantined_name(&self, object: Quarantine) -> String {
         for r in self.rels.values() {
@@ -109,7 +76,11 @@ impl<R: Runtime> Database<R> {
     fn map_damage(&self) -> BTreeMap<Quarantine, PageError> {
         self.pager.map_damage(
             Phase::Running,
-            |pid| self.holders(pid, &mut BTreeSet::new()),
+            |pid| {
+                let met = &mut BTreeSet::new();
+                self.structures
+                    .holders(&self.pager, &self.txns, pid, Phase::Running, met)
+            },
             |o| self.set_mark(o),
         )
     }
@@ -121,7 +92,10 @@ impl<R: Runtime> Database<R> {
     /// Precondition: the calling thread holds the serialization lock and no page latch.
     pub(super) fn map_committing(&self) {
         self.pager.map_committing(
-            |pid, met| self.holders(pid, met),
+            |pid, met| {
+                self.structures
+                    .holders(&self.pager, &self.txns, pid, Phase::Running, met)
+            },
             |o| self.pager.quarantine(o),
         );
     }

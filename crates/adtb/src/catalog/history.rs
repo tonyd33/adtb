@@ -15,13 +15,13 @@ use crate::key::{Tid, Value};
 use crate::mvcc::{Past, Scope, Transactions, Xid};
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
-use crate::storage::{Pager, Pid};
-use crate::verify::Sum;
+use crate::storage::{Pager, Pid, Quarantine};
 use crate::write::Retained;
 
 use super::Rot;
 use super::ids::{CatCtorId, CatRelId, ctor_id, ctor_index, rel_id, relation};
 use super::root::Root;
+use super::structures::{Listed, relation_holder};
 use super::{
     Catalog, Error, HEAP_ROOT, IndexKeys, IndexSpec, MIGRATION, ROOTS, int, row_type, uint,
 };
@@ -96,16 +96,6 @@ pub(super) struct Rebuilding<'a, R: Runtime> {
 }
 
 impl Kept {
-    /// Returns the history heap of constructor `c` of `r`.
-    pub(super) fn heap(&self, r: RelId, c: u32) -> Option<&Arc<Heap>> {
-        self.heaps.get(&(r, c))
-    }
-
-    /// Returns the history key index of `r`.
-    pub(super) fn index(&self, r: RelId) -> Option<&Index> {
-        self.indexes.get(&r)
-    }
-
     /// Returns the history structures of a catalog that cannot be read: none, over no page.
     pub(super) fn unread() -> Kept {
         Kept {
@@ -241,21 +231,26 @@ impl Kept {
         self.heaps[&(r, c)].clone()
     }
 
-    /// Returns the sums of the history structures of `schema`'s relations for `verify`, and the
-    /// record's tree.
-    pub(super) fn inventory<'a>(&'a self, schema: &Schema) -> (Vec<Sum<'a>>, BTree) {
-        let mut sums: BTreeMap<RelId, Sum<'a>> = BTreeMap::new();
-        for (&(r, c), heap) in &self.heaps {
-            let sum = sums.entry(r).or_insert_with(|| Sum {
-                heaps: Vec::new(),
-                indexes: Vec::new(),
-            });
-            sum.heaps
-                .push((ctor_id(schema, r, c).stored(), heap.as_ref()));
+    /// Returns the history structures of `schema`'s relations, each history heap held as its
+    /// constructor's heap among `heaps` and each history key index as its key index among `keys`,
+    /// and the record's tree.
+    pub(super) fn structures(
+        &self,
+        schema: &Schema,
+        heaps: &BTreeMap<(RelId, u32), Arc<Heap>>,
+        keys: &BTreeMap<RelId, &Index>,
+    ) -> (Vec<Listed>, BTree) {
+        let mut sums: BTreeMap<RelId, Listed> = BTreeMap::new();
+        for (&(r, c), past) in &self.heaps {
+            let heap = Quarantine::Heap(heaps[&(r, c)].id().0);
+            let holder = relation_holder(schema, r, heap);
+            let sum = sums.entry(r).or_default();
+            sum.heap(ctor_id(schema, r, c).stored(), holder, past.clone());
         }
-        for (r, index) in &self.indexes {
-            if let Some(sum) = sums.get_mut(r) {
-                sum.indexes.push(index);
+        for (r, past) in &self.indexes {
+            if let (Some(sum), Some(key)) = (sums.get_mut(r), keys.get(r)) {
+                let holder = relation_holder(schema, *r, Quarantine::Index(key.tree().owner()));
+                sum.index(holder, past.clone());
             }
         }
         (sums.into_values().collect(), self.record)

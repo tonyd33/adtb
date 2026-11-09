@@ -50,7 +50,7 @@ fn verify_catalog(
     txns: &Transactions<SimRuntime>,
 ) -> Report {
     let clog = txns.commit_log();
-    verify::verify(pager, &catalog.inventory(&clog))
+    verify::verify(pager, &catalog.structures().inventory(&clog))
 }
 
 /// Returns the rows of every relation of `catalog` that every committed transaction wrote.

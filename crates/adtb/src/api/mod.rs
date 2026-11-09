@@ -54,7 +54,7 @@ use adtb_lang::schema::Schema;
 use adtb_lang::types::Ty;
 use adtb_sys::lock::{Lock, RwLock};
 
-use crate::catalog::{self, Catalog};
+use crate::catalog::{self, Catalog, Structures};
 use crate::exec::{self, Budget, Scheduler, Val};
 use crate::mvcc::Limits;
 use crate::mvcc::Transactions;
@@ -684,26 +684,35 @@ fn unsupported(what: &str) -> Error {
 /// holds it. A page of the catalog or commit log marks the database. A page nothing maps marks
 /// nothing. A failure to write a mark is left to the next open, which maps the same records.
 fn mark_open_damage<R: Runtime>(pager: &Pager<R>, catalog: &Catalog, txns: &Transactions<R>) {
+    let structures = catalog.structures();
     pager.map_damage(
         Phase::Opening,
-        |pid| catalog.holders(pager, txns, pid),
+        |pid| structures.holders(pager, txns, pid, Phase::Opening, &mut BTreeSet::new()),
         |object| pager.quarantine(object),
     );
 }
 
-/// Map the damage recorded after a failed open: by the catalog, else by `Catalog::opens_from`.
-/// Load the catalog before the mapping begins, and only while a record of a page is unmapped.
+/// Map the damage recorded after a failed open: by the catalog's structures, else by what
+/// [`Structures::unopened`] reads from the root page. Load the catalog before the mapping
+/// begins, and only while a record of a page is unmapped.
 fn mark_failed_open_damage<R: Runtime>(rt: R, pager: &Pager<R>) {
     let loaded = if pager.any_record_unmapped() {
-        Catalog::load(rt, pager).ok()
+        let loaded = Catalog::load(rt, pager).ok();
+        loaded.map(|(catalog, txns)| (catalog.structures(), txns))
     } else {
         None
     };
+    let mut unopened = None;
     pager.map_damage(
         Phase::Opening,
         |pid| match &loaded {
-            Some((catalog, txns)) => catalog.holders(pager, txns, pid),
-            None => Some(BTreeSet::from([Catalog::opens_from(pager, pid)])),
+            Some((structures, txns)) => {
+                structures.holders(pager, txns, pid, Phase::Opening, &mut BTreeSet::new())
+            }
+            None => {
+                let unopened = unopened.get_or_insert_with(|| Structures::unopened(pager));
+                Some(BTreeSet::from([unopened.holder(pid)]))
+            }
         },
         |object| pager.quarantine(object),
     );
@@ -774,7 +783,7 @@ fn setup_of<R: Runtime>(
             ..defaults
         },
         limits: options.limits(),
-        sequences: catalog.sequences().unwrap_or(storage::Pid(0)),
+        structures: catalog.structures(),
     }
 }
 
@@ -1122,8 +1131,7 @@ impl<R: Runtime> Engine<R> {
                     .exporting(options.export_roots.clone()),
             )
             .with_hosts(hosts)
-            .with_volatile(volatile)
-            .with_kept_store(catalog.kept_store());
+            .with_volatile(volatile);
         let db = match retained {
             Some(retained) => db
                 .with_history(retained, settings.window)

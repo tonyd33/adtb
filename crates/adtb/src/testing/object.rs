@@ -114,8 +114,7 @@ impl<'a, R: Runtime> Testing<'a, R> {
         out
     }
 
-    /// Returns the holder of the pages of `object`. Fails with [`Failed::Unheld`] for an object
-    /// [`Holder`] has no variant for, which today is the commit times tree.
+    /// Returns the holder of the pages of `object`.
     pub fn holder(self, object: Object) -> Result<Holder, Failed> {
         let w = self.db.tested_db();
         let absent = Failed::Absent(object);
@@ -123,7 +122,7 @@ impl<'a, R: Runtime> Testing<'a, R> {
             Object::Heap(id) | Object::History(id) => w.heap_holder(id).ok_or(absent),
             Object::Large(id) => w.heap_of(id).map(|_| Holder::LargeStore).ok_or(absent),
             Object::Index(id) | Object::HistoryIndex(id) => w.index_holder(id).ok_or(absent),
-            Object::CommitTimes => Err(Failed::Unheld(object)),
+            Object::CommitTimes => Ok(Holder::CommitTimes),
             Object::CommitLog => Ok(Holder::CommitLog),
             Object::Catalog => Ok(Holder::CatalogRoot),
             Object::CatalogRows => Ok(Holder::CatalogRows),

@@ -168,8 +168,7 @@ it, and say below which of them record damage or set marks.
 - `holder` answers the `Holder` of the object's pages, the structure
   storage.md §8 maps a damaged page by: a relation's heap or index, with
   whether its relation is of an engine module, the large-value store, or
-  the engine structure it is. An object `Holder` has no variant for
-  answers `Failed::Unheld`; today that is the commit times tree.
+  the engine structure it is.
 - `own_mark` answers the mark that names a heap or an index alone, as a
   `Mark` plant sets it and admission of a call checks it; a history heap
   or index answers its relation's heap's or key index's. A large-value

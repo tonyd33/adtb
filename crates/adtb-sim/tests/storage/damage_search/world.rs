@@ -533,10 +533,7 @@ fn ids<R: Runtime>(db: &Database<R>, version: u8, out: &mut Ids) {
     .filter_map(|(o, owner)| Some((o, owner?)));
     for (o, owner) in listed.chain(present) {
         let family = Family::of_object(o).expect("a heap, store or tree");
-        let holding = match o {
-            Object::CommitTimes => (Held::CommitTimes, None),
-            _ => stated::holding(t.holder(o).expect("a listed object's holder")),
-        };
+        let holding = stated::holding(t.holder(o).expect("a listed object's holder"));
         out.holders.insert((family, owner), holding);
     }
 }

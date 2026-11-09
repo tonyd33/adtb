@@ -72,7 +72,6 @@ const UNREAD_MARKS: &str = "unread-walk-marks-database";
 const UNDER_MARK: &str = "migrate-under-mark-silent";
 const BESIDE: &str = "walk-damage-marks-database";
 const APPLIED_UNDER_MARK: &str = "migrate-applies-under-mark";
-const COMMIT_TIMES: &str = "commit-times-unmapped-at-open";
 
 /// The failures main shows. When a change moves the write-outs of the generated cases, run
 /// [`nearest_pins`] for the nearest write-out that shows each entry whose pin no longer does.
@@ -959,28 +958,6 @@ const KNOWN: &[Known] = &[
         then: None,
     },
     Known {
-        fault: Fault::LostCurrent,
-        kind: Kind::Engine,
-        owner: None,
-        consumer: Consumer::Settle,
-        what: "the open fails",
-        ticket: COMMIT_TIMES,
-        seed: 4,
-        at: 607,
-        then: None,
-    },
-    Known {
-        fault: Fault::Recycled,
-        kind: Kind::Engine,
-        owner: None,
-        consumer: Consumer::Settle,
-        what: "the open fails",
-        ticket: COMMIT_TIMES,
-        seed: 10,
-        at: 607,
-        then: None,
-    },
-    Known {
         fault: Fault::LostEarlier,
         kind: Kind::Large,
         owner: None,
@@ -1144,6 +1121,7 @@ fn unasked(fault: Fault, row: Row) -> Option<Unasked> {
             | Held::CatalogRows
             | Held::Counters
             | Held::CommitLog
+            | Held::CommitTimes
             | Held::Bitmap
             | Held::MarksPage
             | Held::DamageList

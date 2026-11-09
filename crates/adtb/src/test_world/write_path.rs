@@ -124,7 +124,7 @@ impl<R: Runtime> WritePath<R> {
                 pool,
                 options: exec::Options::default(),
                 limits: Default::default(),
-                sequences: catalog.sequences().expect("the page of counters"),
+                structures: catalog.structures(),
             },
         )
         .expect("a write path over the catalog");

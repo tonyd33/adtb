@@ -22,6 +22,11 @@
 #                     (`is_quarantined(..)`, `any_of` of an object with the database,
 #                     `quarantined_name(..)`, the admission loop's `std::iter::once(..)`, and the
 #                     failure naming the database once it is marked).
+# structure_listings: definitions of `fn holders`, `fn opens_from` and `fn inventory`, calls of
+#                     `holders_of` and `holders_meeting` outside the pager's own, `.walk(Holder::`
+#                     and `Inventory {` literals, in production sources of crates/adtb/src outside
+#                     catalog/structures.rs: which structure holds a page, and every structure
+#                     verify walks, is listed by `catalog::Structures` alone.
 # crash_loops:        definitions of a function whose name holds `crash_loop`: the harness's one
 #                     crash loop, which runs the ledger check after every round.
 # crash_allows:       definitions of `fn allows`: what a crash loop's reopened database tolerates.

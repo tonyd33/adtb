@@ -122,6 +122,25 @@ done
 ! grep -q 'sim_test_\w* .* crates/adtb/src/heap/y.rs' <<<"$counts" || fail "counted adtb source outside its tests: $counts"
 rm -r "$adtb/heap" "$adtb/plan" "$adtb/test_world"
 
+# A structure listing counts in adtb's production sources outside catalog/structures.rs; the
+# pager's own definitions and calls do not.
+mkdir -p "$adtb/catalog" "$adtb/write"
+printf 'fn holders() {}
+fn f() {
+    pager.holders_meeting(p, |h| h.walk(Holder::Free, w));
+    let i = Inventory { sums };
+}
+' >"$adtb/write/q.rs"
+cp "$adtb/write/q.rs" "$adtb/catalog/structures.rs"
+printf 'pub fn holders_of() {
+    self.holders_meeting(p)
+}
+' >"$adtb/storage/quarantine.rs"
+counts=$("$checker" --counts "$scratch")
+grep -qxF 'structure_listings prod 4 crates/adtb/src/write/q.rs' <<<"$counts" || fail "not counted: structure_listings: $counts"
+! grep -q 'structure_listings .* crates/adtb/src/\(catalog\|storage\)/' <<<"$counts" || fail "counted structures.rs or the pager: $counts"
+rm -r "$adtb/catalog" "$adtb/write" "$adtb/storage/quarantine.rs"
+
 # A malformed allowlist line fails.
 printf '%s\n' 'meta prod many crates/adtb/src/exec/a.rs' >work/tools/structure-allowlist
 if "$checker" "$scratch" >out.txt 2>&1; then

@@ -655,8 +655,8 @@ impl<R: Runtime> Engine<R> {
         if holding {
             job.phase("the file", 0.9);
             let clog = self.db.txns().commit_log();
-            let report =
-                verify::verify_with(&self.pager, &self.catalog.inventory(&clog), Depth::FILE);
+            let inventory = self.db.structures().inventory(&clog);
+            let report = verify::verify_with(&self.pager, &inventory, Depth::FILE);
             found.extend(report.findings.iter().filter_map(Found::of_problem));
         }
         Ok(())

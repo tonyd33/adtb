@@ -47,8 +47,8 @@ use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 use adtb_sys::lock::Lock;
 
+use crate::catalog::Structures;
 use crate::exec::{self, Budget, Scheduler, StoredHeap, StoredIndex, Val};
-use crate::heap::Heap;
 use crate::key::CtorId;
 use crate::mvcc::{
     Access, Limits, Safety, Scope, SerialId, SerializationFailure, Serializer, Snapshot,
@@ -529,6 +529,8 @@ pub struct Database<R: Runtime> {
     indexes: BTreeMap<IndexId, StoredIndex>,
     latches: BTreeMap<IndexId, Lock<()>>,
     rels: Rels,
+    /// Every structure of the file, each with the holder of its pages.
+    structures: Structures,
     denials: Vec<check::Denial>,
     sequences: Lock<Sequences>,
     /// The snapshot of each running read-only transaction, for its safe snapshot marker.
@@ -554,9 +556,6 @@ pub struct Database<R: Runtime> {
     rebuilds_stopped: AtomicBool,
     /// The structures history is kept in, once [`Database::with_history`] gives them.
     retained: Option<Arc<Retained>>,
-    /// The heap of the catalog's kept rows, once [`Database::with_kept_store`] gives it. Its
-    /// damage is a finding and marks nothing.
-    kept_store: Option<Arc<Heap>>,
     hosts: Arc<exec::Hosts>,
     /// The rows the engine holds for each volatile relation.
     volatile: Lock<BTreeMap<RelId, BTreeSet<Val>>>,
@@ -586,8 +585,8 @@ pub struct Setup<R: Runtime> {
     pub pool: Option<Arc<Scheduler<R>>>,
     pub options: exec::Options,
     pub limits: Limits,
-    /// The page of the database's generated counters.
-    pub sequences: Pid,
+    /// Every structure of the file, the page of the database's generated counters among them.
+    pub structures: Structures,
 }
 
 impl<R: Runtime> Database<R> {
@@ -609,10 +608,9 @@ impl<R: Runtime> Database<R> {
             .collect();
         let denials = check::denials(&setup.schema, &setup.normal, &setup.catalog, &mut program)?;
         let rels = schema::rels(&setup.schema, &setup.normal, &setup.catalog)?;
-        let sequences = if setup.sequences == Pid(0) {
-            Sequences::none()
-        } else {
-            Sequences::open(&setup.pager, setup.sequences)?
+        let sequences = match setup.structures.counters() {
+            None => Sequences::none(),
+            Some(page) => Sequences::open(&setup.pager, page)?,
         };
         let latches = setup
             .bindings
@@ -636,6 +634,7 @@ impl<R: Runtime> Database<R> {
             indexes: setup.bindings.indexes,
             latches,
             rels,
+            structures: setup.structures,
             denials,
             sequences: Lock::new(sequences),
             readers: Lock::default(),
@@ -654,7 +653,6 @@ impl<R: Runtime> Database<R> {
             offline: Lock::default(),
             rebuilds_stopped: AtomicBool::new(false),
             retained: None,
-            kept_store: None,
             hosts: Arc::default(),
             volatile: Lock::default(),
             rt,
@@ -692,12 +690,6 @@ impl<R: Runtime> Database<R> {
         Ok(self)
     }
 
-    /// Returns the database reading its kept rows from `heap`.
-    pub fn with_kept_store(mut self, heap: Arc<Heap>) -> Self {
-        self.kept_store = Some(heap);
-        self
-    }
-
     /// Returns the database reading `rows` for each volatile relation of `rows`.
     pub fn with_volatile(mut self, rows: BTreeMap<RelId, BTreeSet<Val>>) -> Self {
         self.volatile = Lock::new(rows);
@@ -712,6 +704,10 @@ impl<R: Runtime> Database<R> {
     /// Returns the transactions layer.
     pub fn txns(&self) -> &Transactions<R> {
         &self.txns
+    }
+
+    pub(crate) fn structures(&self) -> &Structures {
+        &self.structures
     }
 
     /// Returns the history heap the database keeps the past versions of `heap` in, `None` when

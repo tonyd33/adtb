@@ -962,7 +962,12 @@ fn a_row_that_does_not_decode_on_a_good_page_fails_open_unmarked() {
             ctor: 0,
             fields: vec![crate::key::Value::I64(-1); 4],
         };
-        catalog.kept_store().insert(&pager, x, &[negative]).unwrap();
+        catalog
+            .structures()
+            .rows()
+            .unwrap()
+            .insert(&pager, x, &[negative])
+            .unwrap();
         txns.commit(&pager, x).unwrap();
         pager.close();
     });
@@ -1049,6 +1054,44 @@ fn the_roots_heap_marks_the_database_at_open_and_nothing_once_running() {
             BTreeSet::from([Quarantine::Database]),
             db.testing().probe().marks(),
             "at open"
+        );
+        db.close().unwrap();
+    });
+}
+
+#[test]
+fn a_stale_commit_times_page_opens_under_the_database_mark() {
+    let mut sim = Sim::new(43, Config::default());
+    let mut page = None;
+    finished(&mut sim, |rt| {
+        let db = open::open_in(&rt, FILE, &app(), &open::options(2)).unwrap();
+        api::results(&db, "set setting RetentionWindow = { length: 1h }");
+        api::results(&db, r#"insert users { id: users.key(1), name: "a" }"#);
+        page = Some(db.testing().root(Object::CommitTimes).unwrap());
+        db.close().unwrap();
+    });
+    let (first, page) = (sim.files(), page.unwrap());
+    finished(&mut sim, |rt| {
+        let db = open::open_in(&rt, FILE, &app(), &open::options(2)).unwrap();
+        api::results(&db, r#"insert users { id: users.key(2), name: "b" }"#);
+        db.close().unwrap();
+    });
+    let mut files = sim.files();
+    assert_ne!(DATA.page(&first, page), DATA.page(&files, page));
+    DATA.replace(&mut files, page, DATA.page(&first, page));
+    let mut sim = Sim::with_files(43, Config::default(), files);
+    finished(&mut sim, |rt| {
+        let db = open::open_in(&rt, FILE, &app(), &open::options(2)).unwrap();
+        assert!(
+            matches!(
+                db.testing().probe().records().pages().get(&page),
+                Some(Damage::Stale { .. })
+            ),
+            "the open records the lost write"
+        );
+        assert_eq!(
+            BTreeSet::from([Quarantine::Database]),
+            db.testing().probe().marks()
         );
         db.close().unwrap();
     });

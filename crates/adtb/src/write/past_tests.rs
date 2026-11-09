@@ -256,7 +256,7 @@ fn history_survives_a_crash_and_reopen() {
         };
         let (pager, _) = crate::storage::Pager::open(rt.clone(), &options).expect("the pager");
         let (catalog, txns) = crate::catalog::Catalog::open(rt, &pager).expect("the catalog");
-        crate::verify::verify(&pager, &catalog.inventory(&txns.commit_log()))
+        crate::verify::verify(&pager, &catalog.structures().inventory(&txns.commit_log()))
     });
     assert!(report.is_clean() && report.complete, "{report:#?}");
 }

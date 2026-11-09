@@ -22,6 +22,8 @@ pub enum Holder {
     CommitLog,
     /// A page of the catalog's counters.
     Counters,
+    /// A page of the tree recording when each transaction kept in history committed.
+    CommitTimes,
     Bitmap,
     MarksPage,
     DamageList,
@@ -102,7 +104,11 @@ pub fn mark(fault: Fault, holder: Holder, phase: Phase) -> Mark {
             engine_module: false,
         } => Mark::Object(object),
         Holder::DamageList if damage == Damage::Unreadable => Mark::Held,
-        Holder::LsnMap | Holder::MarksPage if damage == Damage::Unreadable => Mark::Nothing,
+        Holder::LsnMap | Holder::MarksPage | Holder::CommitTimes
+            if damage == Damage::Unreadable =>
+        {
+            Mark::Nothing
+        }
         Holder::Relation {
             engine_module: true,
             ..
@@ -111,6 +117,7 @@ pub fn mark(fault: Fault, holder: Holder, phase: Phase) -> Mark {
         | Holder::CatalogRoot
         | Holder::CommitLog
         | Holder::Counters
+        | Holder::CommitTimes
         | Holder::Bitmap
         | Holder::MarksPage
         | Holder::DamageList

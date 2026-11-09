@@ -922,3 +922,37 @@ fn a_lost_write_recovery_finds_is_marked_by_an_open_that_succeeds_and_refuses_th
         db.close().unwrap();
     });
 }
+
+#[test]
+fn an_unreadable_commit_times_page_leaves_every_mapping_of_its_running_walk_incomplete() {
+    let mut sim = Sim::new(99, Config::default());
+    process::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        api::results(&db, "set setting RetentionWindow = { length: 1h }");
+        api::results(&db, r#"insert users { id: users.key(9), name: "n9" }"#);
+        let t = db.testing();
+        let times = t.root(Object::CommitTimes).unwrap();
+        let orphan = t
+            .plant(Plant::Orphan {
+                kind: crate::storage::PageKind::HeapSlotted,
+                owner: 7,
+            })
+            .unwrap()
+            .page()
+            .unwrap();
+        for (page, damage) in [(times, Damage::Unreadable), (orphan, Damage::Checksum)] {
+            t.plant(Plant::Refuse { page, damage }).unwrap();
+        }
+        let walked = t.probe().walks();
+        api::results(&db, "from u in users select u.id");
+        assert!(
+            t.probe().walks() > walked,
+            "the call's end maps the records"
+        );
+        assert_eq!(BTreeSet::new(), marks(&db));
+        assert_eq!(None, t.probe().mapped_to(times), "the unreadable page");
+        assert_eq!(None, t.probe().mapped_to(orphan), "the page no walk holds");
+        db.close().unwrap();
+    });
+}

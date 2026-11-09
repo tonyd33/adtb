@@ -7,7 +7,6 @@ mod deploy;
 mod deployment;
 mod grants;
 mod history;
-mod holdings;
 mod hosts;
 mod ids;
 mod kept;
@@ -22,12 +21,13 @@ mod root;
 mod rot;
 mod rows;
 mod steps;
+mod structures;
 mod validate;
 pub mod values;
 
-pub use holdings::Holdings;
+pub use structures::Structures;
 #[cfg(any(test, feature = "testing"))]
-pub(crate) use holdings::relation_holder;
+pub(crate) use structures::relation_holder;
 
 #[cfg(test)]
 mod catalog_tests;
@@ -53,12 +53,11 @@ use crate::btree::{self, BTree, Index};
 use crate::exec::{self, IndexedRows, StoredHeap, StoredIndex};
 use crate::heap::{self, FieldType, Heap, LargeStore};
 use crate::key::{CtorId, Dir, Entry, KeySchema, OrderKey, Scalar, Tid, Value};
-use crate::mvcc::{self, CommitLog, Scope, Snapshot, Transactions, Xid};
+use crate::mvcc::{self, Scope, Snapshot, Transactions, Xid};
 use crate::plan::{self, HeapId, IndexDesc, IndexId, RelationDesc};
 use crate::runtime::Runtime;
-use crate::storage::policy::{Holder, Phase};
 use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid, Quarantine};
-use crate::verify::{self, Depth, Inventory, Problem, Report, Sum};
+use crate::verify::{self, Depth, Problem, Report};
 
 pub use broken::Broken;
 pub use deploy::Rewrite;
@@ -859,86 +858,6 @@ impl Catalog {
         self.heaps.is_empty()
     }
 
-    /// Returns what holds the damaged page `pid` while the database opens, before the write path
-    /// exists. Returns `None` when the mapping is incomplete.
-    pub fn holders<R: Runtime>(
-        &self,
-        pager: &Pager<R>,
-        txns: &Transactions<R>,
-        pid: Pid,
-    ) -> Option<BTreeSet<Holder>> {
-        let mut holdings = Holdings::new(&self.schema);
-        holdings.roots(&self.roots);
-        for (&(r, c), heap) in &self.heaps {
-            let past = self.kept.heap(r, c);
-            holdings.heaps(r, heap, past.map(|p| &**p));
-            holdings.large(heap.large());
-            if let Some(p) = past {
-                holdings.large(p.large());
-            }
-        }
-        for (spec, index, _) in self.indexes.values() {
-            let tree = index.tree();
-            holdings.trees(spec.relation, tree.owner(), [tree]);
-        }
-        for (r, key) in key_indexes(&self.schema, &self.indexes) {
-            if let Some(past) = self.kept.index(r) {
-                holdings.trees(r, key.tree().owner(), [past.tree()]);
-            }
-        }
-        pager.holders_of(pid, Phase::Opening, |h| {
-            let clog = txns.commit_log();
-            let mut pages = vec![clog.root()];
-            pages.extend(clog.status_pages().values());
-            pages.extend(clog.directory_pages());
-            h.walk(Holder::CatalogRoot, || Ok(vec![self.root]));
-            h.walk(Holder::CommitLog, || Ok(pages.clone()));
-            h.walk(Holder::Counters, || {
-                Ok(self.sequences().into_iter().collect())
-            });
-            holdings.walk(pager, h);
-        })
-    }
-
-    /// Returns what holds `pid` of the pages the catalog cannot open without: its root, its roots
-    /// heap or the commit log's, and unreached for any other page. For a catalog that does not
-    /// open, so nothing of it is in hand.
-    pub fn opens_from<R: Runtime>(pager: &Pager<R>, pid: Pid) -> Holder {
-        let at = pager.catalog_root();
-        if pid == at {
-            return Holder::CatalogRoot;
-        }
-        let Ok(root) = pager.read(at).map(|page| Root::read(&page)) else {
-            return Holder::Unreached;
-        };
-        let holds = |pages: Result<Vec<Pid>, PageError>| match pages {
-            Ok(pages) => pages.contains(&pid),
-            Err(e) => e.pid == pid,
-        };
-        let large = LargeStore::open(root.large.0, root.large.1);
-        let in_roots = Heap::open(pager, root.roots.0, root.roots.1, roots_row(), large)
-            .is_ok_and(|heap| holds(heap.owned_pages(pager)));
-        if in_roots {
-            return Holder::CatalogRows;
-        }
-        let in_clog = holds(CommitLog::load(pager, root.commit_log).map(|clog| {
-            let mut pages = vec![clog.root()];
-            pages.extend(clog.status_pages().values());
-            pages.extend(clog.directory_pages());
-            pages
-        }));
-        if in_clog {
-            Holder::CommitLog
-        } else {
-            Holder::Unreached
-        }
-    }
-
-    /// Returns the heap kept rows lie in.
-    pub fn kept_store(&self) -> Arc<Heap> {
-        self.roots.clone()
-    }
-
     /// Free every page the catalog's structures do not reach.
     ///
     /// Fails with the damage found, freeing nothing, if a damaged page keeps it from finding
@@ -950,7 +869,8 @@ impl Catalog {
     ) -> Result<(), Error> {
         let report = {
             let clog = txns.commit_log();
-            verify::verify_with(pager, &self.inventory(&clog), Depth::STRUCTURE)
+            let structures = self.structures();
+            verify::verify_with(pager, &structures.inventory(&clog), Depth::STRUCTURE)
         };
         if !report.complete {
             return Err(unfinished(&report));
@@ -1213,40 +1133,6 @@ impl Catalog {
             self.indexes.values().map(|(s, _, _)| s),
             &heaps,
         )
-    }
-
-    /// Returns every structure of the file for `verify`: the commit log `clog`, the catalog's
-    /// heaps and indexes, and its root page.
-    pub fn inventory<'a>(&'a self, clog: &'a CommitLog) -> Inventory<'a> {
-        let mut sums = vec![Sum {
-            heaps: vec![(CtorId(0), self.roots.as_ref())],
-            indexes: Vec::new(),
-        }];
-        for &r in self.schema.ids.relations.keys() {
-            let heaps = self
-                .heaps
-                .range((r, 0)..=(r, u32::MAX))
-                .map(|((_, c), h)| {
-                    let id = ctor_id(&self.schema, r, *c).stored();
-                    (id, h.as_ref())
-                })
-                .collect();
-            let indexes = self
-                .indexes
-                .values()
-                .filter(|(s, _, _)| s.relation == r)
-                .map(|(_, i, _)| i)
-                .collect();
-            sums.push(Sum { heaps, indexes });
-        }
-        let (past, record) = self.kept.inventory(&self.schema);
-        sums.extend(past);
-        Inventory {
-            commit_log: Some(clog),
-            sums,
-            trees: vec![record],
-            pages: std::iter::once(self.root).chain(self.sequences()).collect(),
-        }
     }
 
     /// Insert `row` of constructor `c` into relation `r` as `m.x`, with an entry in every index

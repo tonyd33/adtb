@@ -114,8 +114,6 @@ pub enum Failed {
     Unlisted(Object),
     /// No mark names the object apart from the database's.
     Shared(Object),
-    /// The mapping of damaged pages has no holder for the object.
-    Unheld(Object),
     /// The database has no relation of the name given.
     /// The object is no relation's key index.
     NotKey(Object),

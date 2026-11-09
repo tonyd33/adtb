@@ -593,7 +593,7 @@ impl<R: Runtime> Database<R> {
 
     /// Returns the heap of the catalog's rows.
     pub(crate) fn kept_store(&self) -> Option<Arc<Heap>> {
-        self.kept_store.clone()
+        self.structures.rows()
     }
 }
 

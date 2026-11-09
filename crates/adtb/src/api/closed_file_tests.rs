@@ -61,7 +61,7 @@ fn verified(rt: SimRuntime) -> (crate::verify::Report, bool) {
     };
     let (pager, _) = crate::storage::Pager::open(rt.clone(), &options).expect("the pager");
     let (catalog, txns) = crate::catalog::Catalog::open(rt, &pager).expect("the catalog");
-    let report = crate::verify::verify(&pager, &catalog.inventory(&txns.commit_log()));
+    let report = crate::verify::verify(&pager, &catalog.structures().inventory(&txns.commit_log()));
     (report, catalog.sequences().is_some())
 }
 
