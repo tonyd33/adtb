@@ -471,13 +471,9 @@ impl<R: Runtime> Database<R> {
                 continue;
             }
             for (v, roots) in versions {
-                let seen = self.txns.sees(
-                    &self.pager,
-                    &tx.snapshot,
-                    None,
-                    v.header.xmin,
-                    v.header.xmax,
-                )?;
+                let seen = self
+                    .txns
+                    .sees(&self.pager, &tx.snapshot, None, &v.header.writers)?;
                 if !seen {
                     continue;
                 }

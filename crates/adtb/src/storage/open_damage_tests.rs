@@ -959,10 +959,7 @@ fn a_row_that_does_not_decode_on_a_good_page_fails_open_unmarked() {
             ctor: 0,
             fields: vec![crate::key::Value::I64(-1); 4],
         };
-        catalog
-            .kept_store()
-            .insert(&pager, x.0, &[negative])
-            .unwrap();
+        catalog.kept_store().insert(&pager, x, &[negative]).unwrap();
         txns.commit(&pager, x).unwrap();
         pager.close();
     });

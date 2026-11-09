@@ -130,7 +130,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 .read(&self.db.pager, tid)?
                 .expect("a version the statement read is there")
                 .header;
-            let w = check_write(xid, header.xmax, |x| self.status(x))?;
+            let w = check_write(xid, &header.writers, |x| self.status(x))?;
             match w {
                 Write::Proceed => {
                     let id = self.heap(heap).id().0;
@@ -186,9 +186,9 @@ impl<R: Runtime> Stmt<'_, R> {
             .read(&self.db.pager, tid)?
             .expect("a version the statement changed remains present")
             .header;
-        assert_eq!(
-            header.xmax, xid.0,
-            "the statement owns the version it restores"
+        assert!(
+            header.writers.deleted_by(xid),
+            "the statement owns the version it restores: {header:?}"
         );
         Ok(WriteTarget::checked(tid, header))
     }
@@ -231,7 +231,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 (Some(_), None) => {
                     let (c, tid) = self.writable(*rel, key)?;
                     let heap = r.ctors[c as usize].heap;
-                    self.heap(heap).delete(pager, tid, xid.0)?;
+                    self.heap(heap).delete(pager, tid, xid)?;
                     self.undo
                         .borrow_mut()
                         .push(Undo::Restore(heap, self.restorable(heap, tid.tid, xid)?));
@@ -277,7 +277,7 @@ impl<R: Runtime> Stmt<'_, R> {
                     let from = r.ctors[c as usize].heap;
                     let at = self
                         .heap(from)
-                        .retag(pager, tid, xid.0, self.heap(to), &row)
+                        .retag(pager, tid, xid, self.heap(to), &row)
                         .map_err(too_large(*rel, *d))?;
                     self.undo.borrow_mut().extend([
                         Undo::Restore(from, self.restorable(from, tid.tid, xid)?),
@@ -348,12 +348,12 @@ impl<R: Runtime> Stmt<'_, R> {
                         .expect("a version the statement inserted remains present")
                         .header;
                     let xid = self.tx.writer()?;
-                    assert_eq!(
-                        header.xmin, xid.0,
-                        "the statement owns the version it removes"
+                    assert!(
+                        header.writers.inserted_by(xid),
+                        "the statement owns the version it removes: {header:?}"
                     );
                     self.heap(heap)
-                        .delete(pager, WriteTarget::checked(tid, header), xid.0)?;
+                        .delete(pager, WriteTarget::checked(tid, header), xid)?;
                 }
                 Undo::Restore(heap, tid) => self.heap(heap).restore(pager, tid)?,
             }
@@ -408,13 +408,9 @@ impl<R: Runtime> Stmt<'_, R> {
                         })?;
                     }
                     for link in run {
-                        let p = probe_unique(
-                            xid,
-                            &self.tx.snapshot,
-                            link.header.xmin,
-                            link.header.xmax,
-                            |x| self.status(x),
-                        )?;
+                        let p = probe_unique(xid, &self.tx.snapshot, &link.header.writers, |x| {
+                            self.status(x)
+                        })?;
                         match p {
                             Probe::Skip => {}
                             Probe::Conflict => conflicts.push((c, heap, link.tid)),

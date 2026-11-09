@@ -7,11 +7,20 @@ use super::clog::{Directory, Root, directory_capacity, locate, per_page, set_sta
 use super::txn::{Assign, assign, extend};
 use super::{
     Access, Cause, Holds, Limits, Probe, RESERVATION, Safety, Scope, SerialId,
-    SerializationFailure, Serializer, Snapshot, Status, Write, Xid, check_write, probe_unique,
-    read_before,
+    SerializationFailure, Serializer, Snapshot, Status, Write, Writers, Xid, check_write,
+    probe_unique, read_before,
 };
 use crate::key::{CtorId, Tid};
 use crate::storage::{HEADER_LEN, Pid};
+
+/// Returns the writers of a version `xmin` inserted and `xmax` deleted, none when `xmax` is 0.
+pub(crate) fn writers(xmin: u64, xmax: u64) -> Writers {
+    let inserted = Writers::inserted(Xid(xmin));
+    match xmax {
+        0 => inserted,
+        x => inserted.superseded_by(Xid(x)),
+    }
+}
 
 struct Rng(u64);
 
@@ -106,8 +115,11 @@ fn ids_never_wrap() {
     let committed = |_| Ok::<_, Infallible>(Status::Committed);
     assert_eq!(Ok(true), s.counts_committed(old, committed));
     assert_eq!(Ok(false), s.counts_committed(top, committed));
-    assert_eq!(Ok(true), s.sees(None, old.0, 0, committed));
-    assert_eq!(Ok(false), s.sees(None, old.0, u64::MAX - 2, committed));
+    assert_eq!(Ok(true), s.sees(None, &writers(old.0, 0), committed));
+    assert_eq!(
+        Ok(false),
+        s.sees(None, &writers(old.0, u64::MAX - 2), committed)
+    );
 }
 
 #[test]
@@ -121,8 +133,56 @@ fn the_in_progress_test_precedes_the_lookup() {
     for x in [10, 14, 20, 21, 1000] {
         assert_eq!(Ok(false), s.counts_committed(Xid(x), unreachable));
     }
-    assert_eq!(Ok(true), s.sees(Some(Xid(14)), 14, 0, unreachable));
-    assert_eq!(Ok(false), s.sees(Some(Xid(14)), 14, 14, unreachable));
+    assert_eq!(
+        Ok(true),
+        s.sees(Some(Xid(14)), &writers(14, 0), unreachable)
+    );
+    assert_eq!(
+        Ok(false),
+        s.sees(Some(Xid(14)), &writers(14, 14), unreachable)
+    );
+}
+
+#[test]
+fn a_version_precedes_only_a_successor_its_deleter_inserted() {
+    assert!(writers(3, 7).precedes(&writers(7, 0)));
+    assert!(writers(3, 7).precedes(&writers(7, 9)));
+    assert!(!writers(3, 7).precedes(&writers(8, 0)));
+    assert!(!writers(3, 7).precedes(&writers(3, 7)));
+    let unwritten = Writers::decode(&[0; Writers::LEN]);
+    assert!(!writers(3, 0).precedes(&unwritten));
+    assert!(!writers(3, 0).precedes(&writers(3, 0)));
+}
+
+#[test]
+fn clearing_the_deleter_keeps_the_inserter() {
+    assert_eq!(writers(3, 0), writers(3, 7).cleared());
+    assert_eq!(writers(3, 0), writers(3, 0).cleared());
+    assert!(!writers(3, 7).cleared().precedes(&writers(7, 0)));
+}
+
+#[test]
+fn writers_encode_as_two_little_endian_words_with_no_deleter_as_zero() {
+    let cases = [
+        (
+            writers(1, 0),
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ),
+        (
+            writers(0x0102, 0),
+            [2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ),
+        (
+            writers(1, 0x0304),
+            [1, 0, 0, 0, 0, 0, 0, 0, 4, 3, 0, 0, 0, 0, 0, 0],
+        ),
+        (writers(u64::MAX, u64::MAX), [0xff; Writers::LEN]),
+        (Writers::decode(&[0; Writers::LEN]), [0; Writers::LEN]),
+    ];
+    for (w, bytes) in cases {
+        assert_eq!(bytes, w.encode(), "{w:?}");
+        assert_eq!(w, Writers::decode(&bytes), "{bytes:?}");
+    }
 }
 
 #[test]
@@ -195,7 +255,7 @@ fn visibility_matches_a_model_of_random_histories() {
                 let want = committed_then(xmin) && (xmax == 0 || !committed_then(xmax));
                 assert_eq!(
                     Ok(want),
-                    s.sees(*reader, xmin, xmax, status),
+                    s.sees(*reader, &writers(xmin, xmax), status),
                     "round {round}: version ({xmin}, {xmax}) at {s:?} for {reader:?}"
                 );
             }
@@ -291,7 +351,7 @@ fn probe(xmin: u64, xmax: u64) -> Probe {
         (8, Status::Aborted),
         (10, Status::InProgress),
     ];
-    probe_unique(Xid(10), &snapshot, xmin, xmax, statuses(&table)).unwrap()
+    probe_unique(Xid(10), &snapshot, &writers(xmin, xmax), statuses(&table)).unwrap()
 }
 
 #[test]
@@ -355,7 +415,7 @@ fn a_write_waits_for_a_running_deleter_and_fails_on_a_committed_one() {
         (7, Status::Committed),
         (8, Status::Aborted),
     ];
-    let check = |xmax| check_write(Xid(10), xmax, statuses(&table)).unwrap();
+    let check = |xmax| check_write(Xid(10), &writers(1, xmax), statuses(&table)).unwrap();
     assert_eq!(Write::Proceed, check(0));
     assert_eq!(Write::Proceed, check(10));
     assert_eq!(Write::Proceed, check(8));
@@ -372,8 +432,15 @@ fn a_read_depends_on_concurrent_writers_only() {
         (7, Status::Committed),
         (8, Status::Aborted),
     ];
-    let before =
-        |xmin, xmax| read_before(Some(Xid(10)), &snapshot, xmin, xmax, statuses(&table)).unwrap();
+    let before = |xmin, xmax| {
+        read_before(
+            Some(Xid(10)),
+            &snapshot,
+            &writers(xmin, xmax),
+            statuses(&table),
+        )
+        .unwrap()
+    };
     assert_eq!(Some(Xid(5)), before(5, 0));
     assert_eq!(Some(Xid(7)), before(7, 0));
     assert_eq!(Some(Xid(6)), before(2, 6));

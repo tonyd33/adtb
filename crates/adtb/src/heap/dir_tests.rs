@@ -9,6 +9,7 @@ use adtb_testkit::scratch::Scratch;
 
 use crate::heap::{Error, Fate, FieldType, Heap, LargeStore};
 use crate::key::{Scalar, Value};
+use crate::mvcc::Xid;
 use crate::storage::{Damage, Options, PageError, PageKind, Pager, Pid, Quarantine, Stopped};
 
 use super::super::page::{self, Arrangement, CONTENTS};
@@ -173,7 +174,7 @@ fn a_space_opened_at_page_zero_reads_nothing_and_takes_no_page() {
     assert_eq!(Ok(Vec::new()), heap.verify(&pager));
     assert_eq!(Ok(Vec::new()), large.verify(&pager));
     assert_eq!(Ok(Vec::new()), heap.unsettled(&pager));
-    let insert = heap.insert(&pager, 1, &[Value::I64(1)]);
+    let insert = heap.insert(&pager, Xid(1), &[Value::I64(1)]);
     assert_eq!(Err(Error::NoDirectory), insert.map(drop));
     let s = Space::open(9, Pid(0));
     assert_eq!(Ok(None), s.find(&pager, 1, Arrangement::Slotted, 1));
@@ -351,7 +352,10 @@ fn a_map_pointer_naming_the_page_prune_holds_refuses_the_directory_root_within_a
     let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
     let pager = Arc::new(Pager::create(rt.clone(), &Options::new("dir.adt")).unwrap());
     let (heap, _) = heap_over_two_leaves(&pager, 7);
-    let page = Pid(heap.insert(&pager, 1, &[Value::I64(1)]).unwrap().page());
+    let page = Pid(heap
+        .insert(&pager, Xid(1), &[Value::I64(1)])
+        .unwrap()
+        .page());
     let root = heap.root();
     set_map(&pager, root, page);
     let p = pager;
@@ -368,8 +372,11 @@ fn verify_names_the_slot_table_fault_of_a_page_relabelled_to_the_other_heap_kind
     let pager = pager(&scratch);
     let large = LargeStore::create(&pager, 107).unwrap();
     let heap = Heap::create(&pager, 7, vec![FieldType::Scalar(Scalar::I64)], large).unwrap();
-    let data = Pid(heap.insert(&pager, 1, &[Value::I64(1)]).unwrap().page());
-    large.write(&pager, 1, &[1; 100]).unwrap();
+    let data = Pid(heap
+        .insert(&pager, Xid(1), &[Value::I64(1)])
+        .unwrap()
+        .page());
+    large.write(&pager, Xid(1), &[1; 100]).unwrap();
     let chunk = large.pages(&pager).unwrap()[0];
     put_u16(&pager, data, 14, PageKind::HeapSlotted as u16);
     put_u16(&pager, chunk, 14, PageKind::HeapFixed as u16);
@@ -438,7 +445,10 @@ fn a_scan_refuses_the_leaf_naming_its_page_at_a_second_position() {
     let pager = pager(&scratch);
     let large = LargeStore::create(&pager, 107).unwrap();
     let heap = Heap::create(&pager, 7, vec![FieldType::Scalar(Scalar::I64)], large).unwrap();
-    let data = Pid(heap.insert(&pager, 1, &[Value::I64(1)]).unwrap().page());
+    let data = Pid(heap
+        .insert(&pager, Xid(1), &[Value::I64(1)])
+        .unwrap()
+        .page());
     let root = heap.root();
     put_u16(&pager, root, COUNT, 2);
     pager

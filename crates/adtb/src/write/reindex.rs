@@ -213,10 +213,9 @@ impl<R: Runtime> Scan<'_, R> {
                     continue;
                 };
                 let counted = match tx {
-                    Some(tx) => {
-                        db.txns
-                            .sees(&db.pager, &tx.snapshot, None, v.header.xmin, v.header.xmax)?
-                    }
+                    Some(tx) => db
+                        .txns
+                        .sees(&db.pager, &tx.snapshot, None, &v.header.writers)?,
                     None => false,
                 };
                 let key_len = schema.encode(&key).len();

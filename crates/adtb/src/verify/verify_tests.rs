@@ -67,7 +67,7 @@ impl Db {
             } else {
                 vec![Value::I64(key), Value::I32(key as i32)]
             };
-            let tid = db.heaps[h].insert(&db.pager, x.0, &row).unwrap();
+            let tid = db.heaps[h].insert(&db.pager, x, &row).unwrap();
             let entry = Entry {
                 key: vec![Value::I64(key)],
                 ctor: CtorId(h as u32),
@@ -305,10 +305,10 @@ fn orphan_a_successor(db: &Db) -> (crate::mvcc::Xid, Tid) {
         .tid;
     let x = db.txns.begin(&db.pager).unwrap();
     let row = vec![Value::I64(1002), Value::Bytes(vec![2; 40])];
-    let u = db.heaps[0].update(&db.pager, at, x.0, &row, &[0]).unwrap();
+    let u = db.heaps[0].update(&db.pager, at, x, &row, &[0]).unwrap();
     assert!(!u.heap_only);
     let gone = |_: &Pager<SimRuntime>, h: &crate::heap::Header| {
-        Ok(if h.xmin == x.0 {
+        Ok(if h.writers.inserted_by(x) {
             crate::heap::Fate::Remove
         } else {
             crate::heap::Fate::Keep

@@ -6,7 +6,7 @@ use super::version::{self, Flags, Header};
 pub enum Fate {
     /// Dead to every snapshot.
     Remove,
-    /// Its deleter aborted: clear its `xmax`, `next` and successor flags, then judge it again.
+    /// Its deleter aborted: clear its deleter, `next` and successor flags, then judge it again.
     Clear,
     /// Visible to some snapshot but not to every one.
     Keep,
@@ -49,7 +49,7 @@ pub(super) fn judge<E>(
             out.push(Some((f, false)));
             continue;
         }
-        header.xmax = 0;
+        header.writers = header.writers.cleared();
         header.next = None;
         let again = judge(&header)?;
         assert_ne!(
@@ -172,7 +172,7 @@ pub(super) fn apply(page: &mut [u8], plan: &Plan) {
             unreachable!("a cleared slot holds a version")
         };
         let mut header = Header::read(&page[at.clone()]);
-        header.xmax = 0;
+        header.writers = header.writers.cleared();
         header.next = None;
         header.write(&mut page[at]);
         page::set_flags(

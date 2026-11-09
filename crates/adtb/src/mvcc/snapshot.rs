@@ -1,4 +1,4 @@
-use super::{Status, Xid};
+use super::{Status, Writers, Xid};
 
 /// The transactions a reader counts as committed: those below `xmax`, not in `in_progress`, that
 /// the commit log says committed.
@@ -84,13 +84,12 @@ impl Snapshot {
         Ok(status(x)? == Status::Committed)
     }
 
-    /// Returns whether the version whose header holds `xmin` and `xmax` is visible to `reader`
-    /// reading at this snapshot. `reader` sees its own writes, whatever their command.
+    /// Returns whether the version `writers` wrote is visible to `reader` reading at this
+    /// snapshot. `reader` sees its own writes, whatever their command.
     pub fn sees<E>(
         &self,
         reader: Option<Xid>,
-        xmin: u64,
-        xmax: u64,
+        writers: &Writers,
         mut status: impl FnMut(Xid) -> Result<Status, E>,
     ) -> Result<bool, E> {
         let mut counts = |x: Xid| {
@@ -100,9 +99,12 @@ impl Snapshot {
                 self.counts_committed(x, &mut status)
             }
         };
-        if !counts(Xid(xmin))? {
+        if !counts(writers.inserter())? {
             return Ok(false);
         }
-        Ok(Xid(xmax) == Xid::NONE || !counts(Xid(xmax))?)
+        Ok(match writers.deleter() {
+            None => true,
+            Some(x) => !counts(x)?,
+        })
     }
 }

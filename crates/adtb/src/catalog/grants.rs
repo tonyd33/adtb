@@ -463,7 +463,7 @@ impl Catalog {
                         ctor: DORMANT,
                         fields,
                     };
-                    self.roots.insert(m.pager, m.x.0, &[mark])?;
+                    self.roots.insert(m.pager, m.x, &[mark])?;
                 }
             }
         }

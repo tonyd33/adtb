@@ -177,7 +177,7 @@ impl Catalog {
         let mut gone = Vec::new();
         let judged = scanned.and_then(|()| {
             for v in versions {
-                if !txns.sees(pager, &snapshot, None, v.header.xmin, v.header.xmax)? {
+                if !txns.sees(pager, &snapshot, None, &v.header.writers)? {
                     continue;
                 }
                 if let [Value::Sum { ctor, fields }] = v.row.as_slice()
@@ -195,7 +195,7 @@ impl Catalog {
         judged?;
         for (tid, header) in gone {
             self.roots
-                .delete(pager, WriteTarget::checked(tid, header), x.0)?;
+                .delete(pager, WriteTarget::checked(tid, header), x)?;
         }
         for r in rows {
             let row = Value::Sum {
@@ -208,7 +208,7 @@ impl Catalog {
                     Value::Bytes(encode(&r.fields)),
                 ],
             };
-            self.roots.insert(pager, x.0, &[row])?;
+            self.roots.insert(pager, x, &[row])?;
         }
         Ok(())
     }

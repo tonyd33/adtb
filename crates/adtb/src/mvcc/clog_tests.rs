@@ -4,6 +4,8 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 use crate::mvcc::{CommitLog, Scope, Snapshot, SnapshotId, Status, Transactions, Xid};
+
+use super::writers;
 use crate::storage::{Edit, HEADER_LEN, PageKind, Pager, Pid};
 use crate::verify::Inventory;
 use adtb_sim::{Config, Fate, Finding, Ledger, Recovered, Sim, SimRuntime};
@@ -157,7 +159,7 @@ fn visibility_through_the_commit_log_matches_a_model() {
                             |x: u64| Some(Xid(x)) == h.reader || model.committed_before(x, h.taken);
                         let want = counts(xmin) && (xmax == 0 || !counts(xmax));
                         let got = txns
-                            .sees(pager, &h.snapshot, h.reader, xmin, xmax)
+                            .sees(pager, &h.snapshot, h.reader, &writers(xmin, xmax))
                             .expect("sees");
                         assert_eq!(
                             want, got,

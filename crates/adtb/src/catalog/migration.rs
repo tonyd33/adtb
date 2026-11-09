@@ -605,7 +605,7 @@ impl Catalog {
         delete_rows(m, &self.roots, &gone)?;
         for (ctor, fields) in named {
             self.roots
-                .insert(pager, m.x.0, &[Value::Sum { ctor, fields }])?;
+                .insert(pager, m.x, &[Value::Sum { ctor, fields }])?;
         }
         for (&rid, ctors) in b.data {
             let r = relation(&next.schema, rid).expect("data holds relations of the result");

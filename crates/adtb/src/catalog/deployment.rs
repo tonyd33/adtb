@@ -257,7 +257,7 @@ impl Deployment {
         facts: &[Fact],
     ) -> Result<(), Error> {
         for f in facts {
-            self.roots.insert(pager, x.0, &[value(f)])?;
+            self.roots.insert(pager, x, &[value(f)])?;
         }
         Ok(())
     }

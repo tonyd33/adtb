@@ -8,6 +8,7 @@ mod ssi;
 mod txn;
 mod wait;
 mod watermark;
+mod writers;
 
 #[cfg(test)]
 mod clog_tests;
@@ -23,17 +24,20 @@ pub use past::{Marker, Past};
 pub use snapshot::Snapshot;
 pub use ssi::{Access, Limits, Safety, ScanId, SerialId, Serializer};
 #[cfg(test)]
+pub(crate) use tests::writers;
+#[cfg(test)]
 pub use txn::RESERVATION;
 pub use txn::{PastError, Transactions};
 pub use wait::{Waits, Watch};
 pub use watermark::{Holds, Scope, SnapshotId};
+pub use writers::Writers;
 
 /// A transaction id. Ids are assigned in increasing order and never reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Xid(pub u64);
 
 impl Xid {
-    /// The id a version header holds in `xmax` when no transaction deleted the version.
+    /// The id the encoding of [`Writers`] holds for a version no transaction deleted.
     pub const NONE: Xid = Xid(0);
     pub const FIRST: Xid = Xid(1);
 }

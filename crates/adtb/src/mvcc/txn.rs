@@ -9,7 +9,7 @@ use crate::runtime::Runtime;
 use crate::storage::{Damage, Lsn, PageError, Pager, Pid, Position, Quarantine};
 
 use super::past::{Commit, Marker, Past};
-use super::{CommitLog, Error, Holds, Scope, Snapshot, SnapshotId, Status, Xid};
+use super::{CommitLog, Error, Holds, Scope, Snapshot, SnapshotId, Status, Writers, Xid};
 
 /// The number of ids one xid allocation record reserves.
 pub const RESERVATION: u64 = 1024;
@@ -428,17 +428,15 @@ impl<R: Runtime> Transactions<R> {
         *end = pager.appended();
     }
 
-    /// Returns whether the version whose header holds `xmin` and `xmax` is visible to `reader`
-    /// at `snapshot`.
+    /// Returns whether the version `writers` wrote is visible to `reader` at `snapshot`.
     pub fn sees(
         &self,
         pager: &Pager<R>,
         snapshot: &Snapshot,
         reader: Option<Xid>,
-        xmin: u64,
-        xmax: u64,
+        writers: &Writers,
     ) -> Result<bool, PageError> {
-        snapshot.sees(reader, xmin, xmax, |x| self.status(pager, x))
+        snapshot.sees(reader, writers, |x| self.status(pager, x))
     }
 
     /// Run `f` on the snapshots and replica reports that bound reclamation.

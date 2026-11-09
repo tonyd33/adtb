@@ -746,7 +746,7 @@ struct Deleted {
 
 impl Reads for Deleted {
     fn sees(&self, h: &Header) -> Result<bool, PageError> {
-        Ok(h.xmax != 0 && !self.now.sees(h)?)
+        Ok(h.writers.deleter().is_some() && !self.now.sees(h)?)
     }
 
     fn scanning(&self, _: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {

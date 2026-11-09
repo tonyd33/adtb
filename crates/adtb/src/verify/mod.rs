@@ -11,7 +11,7 @@ use std::ops::Bound;
 use crate::btree::{self, BTree, Index};
 use crate::heap::{Flags, Heap, LargeStore, header_at};
 use crate::key::{CtorId, Tid};
-use crate::mvcc::{CommitLog, Status, Xid};
+use crate::mvcc::{CommitLog, Status};
 use crate::runtime::Runtime;
 use crate::storage::{self, Damage, LogFinding, PageError, PageKind, Pager, Pid};
 
@@ -269,7 +269,7 @@ impl<R: Runtime> Walk<'_, R> {
             if flags.contains(Flags::HOT_UPDATED) {
                 continue;
             }
-            if h.xmax == 0 {
+            let Some(deleter) = h.writers.deleter() else {
                 self.structure(
                     pid,
                     format!(
@@ -278,25 +278,25 @@ impl<R: Runtime> Walk<'_, R> {
                     ),
                 );
                 continue;
-            }
-            if Xid(h.xmax) >= clog.reserved() {
+            };
+            if deleter >= clog.reserved() {
                 self.structure(
                     pid,
                     format!(
                         "{name}: slot {} names unreserved deleter {}",
                         t.slot(),
-                        h.xmax
+                        deleter.0
                     ),
                 );
                 continue;
             }
-            match clog.status(self.pager, Xid(h.xmax)) {
+            match clog.status(self.pager, deleter) {
                 Ok(Status::InProgress) => {}
                 Ok(_) => continue,
                 Err(e) => return self.damaged(e),
             }
             let found = match header_at(self.pager, next) {
-                Ok(successor) => successor.is_some_and(|s| s.xmin == h.xmax),
+                Ok(successor) => successor.is_some_and(|s| h.writers.precedes(&s.writers)),
                 Err(e) => return self.damaged(e),
             };
             if !found {
@@ -305,7 +305,7 @@ impl<R: Runtime> Walk<'_, R> {
                     format!(
                         "{name}: slot {} is superseded by running {} and names no version of it",
                         t.slot(),
-                        h.xmax
+                        deleter.0
                     ),
                 );
             }

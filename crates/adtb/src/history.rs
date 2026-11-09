@@ -49,8 +49,11 @@ pub(crate) fn movable<R: Runtime>(
     horizon: &Horizon,
     h: &Header,
 ) -> Result<bool, PageError> {
-    let (xmin, xmax) = (Xid(h.xmin), Xid(h.xmax));
-    if xmax == Xid::NONE || xmin == xmax || xmax >= horizon.watermark {
+    let xmin = h.writers.inserter();
+    let Some(xmax) = h.writers.deleter() else {
+        return Ok(false);
+    };
+    if xmin == xmax || xmax >= horizon.watermark {
         return Ok(false);
     }
     if txns.status(pager, xmin)? != Status::Committed
@@ -69,11 +72,17 @@ pub(crate) fn judge_past<R: Runtime>(
     horizon: &Horizon,
     h: &Header,
 ) -> Result<Fate, PageError> {
-    Ok(if txns.retains(pager, Xid(h.xmax), horizon.cutoff)? {
-        Fate::Keep
-    } else {
-        Fate::Remove
-    })
+    Ok(
+        if txns.retains(
+            pager,
+            h.writers.deleter().unwrap_or(Xid::NONE),
+            horizon.cutoff,
+        )? {
+            Fate::Keep
+        } else {
+            Fate::Remove
+        },
+    )
 }
 
 /// Copy every version on page `pid` of `heap`, constructor `ctor`'s, that the window bounded by
@@ -138,20 +147,20 @@ fn held<R: Runtime>(
     key: &[Value],
     header: &Header,
 ) -> Result<Held, Error> {
-    let writers = (header.xmin, header.xmax);
+    let writers = header.writers;
     for e in into.index.probe(pager, key)? {
         if e.ctor != ctor {
             continue;
         }
         if let Some(v) = past.read(pager, e.tid)?
-            && (v.header.xmin, v.header.xmax) == writers
+            && v.header.writers == writers
         {
             return Ok(Held::Indexed);
         }
     }
     let mut found = Held::Not;
     past.scan(pager, |v| {
-        if (v.header.xmin, v.header.xmax) == writers && (into.key)(ctor, &v.row) == key {
+        if v.header.writers == writers && (into.key)(ctor, &v.row) == key {
             found = Held::Unindexed(v.tid);
         }
     })?;

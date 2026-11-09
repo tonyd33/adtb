@@ -999,7 +999,10 @@ fn scan_objects<R: Runtime>(db: &Database<R>) -> Vec<RotObject> {
         let mut live = 0;
         for pid in t.pages(heap).expect("its pages") {
             let versions = t.versions(heap, Some(&[pid])).unwrap();
-            let on_page = versions.iter().filter(|v| v.header.xmax == 0).count();
+            let on_page = versions
+                .iter()
+                .filter(|v| v.header.writers.deleter().is_none())
+                .count();
             assert!(on_page > 0, "{name} {pid:?} holds no row a scan returns");
             live += on_page;
         }

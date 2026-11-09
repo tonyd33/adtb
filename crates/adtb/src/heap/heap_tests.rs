@@ -8,6 +8,7 @@ use crate::heap::{
     CtorType, Error, Fate, FieldType, Flags, Header, Heap, HeapNo, Link, Updated, max_fanout, walk,
 };
 use crate::key::{CtorId, Scalar, Tid, Value};
+use crate::mvcc::Xid;
 use crate::runtime::{Entropy, Threads};
 use crate::storage::{self, Options, PageKind, Pager, Pid};
 use crate::verify::{Inventory, Sum};
@@ -121,25 +122,25 @@ fn perform(db: &mut Db, live: &mut Live, op: &Op, xid: u64) -> Result<Option<Upd
     let pager = &mut db.pager;
     match op {
         Op::Insert { key, heap, row } => {
-            let tid = db.heaps[*heap].insert(pager, xid, row)?;
+            let tid = db.heaps[*heap].insert(pager, Xid(xid), row)?;
             live.insert(*key, (*heap, tid, row.clone()));
             Ok(None)
         }
         Op::Update { key, row } => {
             let (heap, tid, _) = live[key].clone();
-            let u = db.heaps[heap].update(pager, tid, xid, row, &[0])?;
+            let u = db.heaps[heap].update(pager, tid, Xid(xid), row, &[0])?;
             live.insert(*key, (heap, u.tid, row.clone()));
             Ok(Some(u))
         }
         Op::Delete { key } => {
             let (heap, tid, _) = live.remove(key).unwrap();
-            db.heaps[heap].delete(pager, tid, xid)?;
+            db.heaps[heap].delete(pager, tid, Xid(xid))?;
             Ok(None)
         }
         Op::Retag { key, to, row } => {
             let (heap, tid, _) = live[key].clone();
             let (from, into) = pair(&mut db.heaps, heap, *to);
-            let t = from.retag(pager, tid, xid, into, row)?;
+            let t = from.retag(pager, tid, Xid(xid), into, row)?;
             live.insert(*key, (*to, t, row.clone()));
             Ok(None)
         }
@@ -153,8 +154,8 @@ fn current(db: &mut Db, committed: impl Fn(u64) -> bool) -> (Live, Vec<String>) 
     let mut problems = Vec::new();
     for (h, heap) in db.heaps.iter().enumerate() {
         heap.scan(&db.pager, |v| {
-            let deleted = v.header.xmax != 0 && committed(v.header.xmax);
-            if committed(v.header.xmin) && !deleted {
+            let deleted = v.header.writers.deleter().is_some_and(|x| committed(x.0));
+            if committed(v.header.writers.inserter().0) && !deleted {
                 let key = key_of(&v.row);
                 if let Some(other) = out.insert(key, (h, v.tid, v.row)) {
                     problems.push(format!(
@@ -280,20 +281,20 @@ fn a_chain_runs_across_pages_and_through_a_retag_and_back() {
                 Value::Bytes(vec![7; n]),
             ]
         };
-        let first = db.heaps[EMAIL].insert(pager, 1, &row(1)).unwrap();
+        let first = db.heaps[EMAIL].insert(pager, Xid(1), &row(1)).unwrap();
         let mut at = first;
         let mut pages = BTreeSet::new();
         for i in 0..30 {
             at = db.heaps[EMAIL]
-                .update(pager, at, 2 + i, &row(10 + 15 * i as usize), &[0])
+                .update(pager, at, Xid(2 + i), &row(10 + 15 * i as usize), &[0])
                 .unwrap()
                 .tid;
             pages.insert(at.page());
         }
         assert!(pages.len() > 3, "{pages:?}");
         let (email, google) = pair(&mut db.heaps, EMAIL, GOOGLE);
-        let there = email.retag(pager, at, 50, google, &row(5)).unwrap();
-        let back = google.retag(pager, there, 50, email, &row(6)).unwrap();
+        let there = email.retag(pager, at, Xid(50), google, &row(5)).unwrap();
+        let back = google.retag(pager, there, Xid(50), email, &row(6)).unwrap();
         let mut links: Vec<Link> = Vec::new();
         assert_eq!(
             None,
@@ -308,7 +309,7 @@ fn a_chain_runs_across_pages_and_through_a_retag_and_back() {
         assert_eq!(at, tail[0].tid);
         assert_eq!(Some(there), tail[0].header.next);
         assert!(tail[0].flags.contains(Flags::MOVED));
-        assert_eq!(50, tail[0].header.xmax);
+        assert_eq!(Some(Xid(50)), tail[0].header.writers.deleter());
         assert_eq!((there, db.ids[GOOGLE]), (tail[1].tid, tail[1].heap));
         assert!(
             tail[1]
@@ -318,10 +319,7 @@ fn a_chain_runs_across_pages_and_through_a_retag_and_back() {
         assert_eq!(Some(back), tail[1].header.next);
         assert_eq!((back, db.ids[EMAIL]), (tail[2].tid, tail[2].heap));
         assert_eq!(Flags::RETAGGED_IN, tail[2].flags);
-        assert_eq!((50, 0, None), {
-            let h = tail[2].header;
-            (h.xmin, h.xmax, h.next)
-        });
+        assert_eq!(Header::new(Xid(50)), tail[2].header);
         let read = db.heaps[EMAIL].read(pager, back).unwrap().unwrap();
         assert_eq!(row(6), read.row);
         for w in links.windows(2) {
@@ -343,10 +341,10 @@ fn a_heap_only_update_stays_on_its_page_and_flags_both_versions() {
         let pager = &mut db.pager;
         let heap = &mut db.heaps[APPLE];
         let t = heap
-            .insert(pager, 1, &[Value::I64(1), Value::I32(0)])
+            .insert(pager, Xid(1), &[Value::I64(1), Value::I32(0)])
             .unwrap();
         let u = heap
-            .update(pager, t, 2, &[Value::I64(1), Value::I32(1)], &[0])
+            .update(pager, t, Xid(2), &[Value::I64(1), Value::I32(1)], &[0])
             .unwrap();
         assert!(u.heap_only);
         assert_eq!(t.page(), u.tid.page());
@@ -354,9 +352,12 @@ fn a_heap_only_update_stays_on_its_page_and_flags_both_versions() {
         let new = heap.read(pager, u.tid).unwrap().unwrap();
         assert_eq!(Flags::HOT_UPDATED, old.flags);
         assert_eq!(Flags::HEAP_ONLY, new.flags);
-        assert_eq!((2, Some(u.tid)), (old.header.xmax, old.header.next));
+        assert_eq!(
+            (Some(Xid(2)), Some(u.tid)),
+            (old.header.writers.deleter(), old.header.next)
+        );
         let keyed = heap
-            .update(pager, u.tid, 3, &[Value::I64(2), Value::I32(1)], &[0])
+            .update(pager, u.tid, Xid(3), &[Value::I64(2), Value::I32(1)], &[0])
             .unwrap();
         assert!(!keyed.heap_only);
         let new = heap.read(pager, u.tid).unwrap().unwrap();
@@ -366,12 +367,21 @@ fn a_heap_only_update_stays_on_its_page_and_flags_both_versions() {
             heap.read(pager, keyed.tid).unwrap().unwrap().flags
         );
         let unindexed = heap
-            .update(pager, keyed.tid, 4, &[Value::I64(2), Value::I32(5)], &[])
+            .update(
+                pager,
+                keyed.tid,
+                Xid(4),
+                &[Value::I64(2), Value::I32(5)],
+                &[],
+            )
             .unwrap();
         assert!(unindexed.heap_only);
-        heap.delete(pager, unindexed.tid, 5).unwrap();
+        heap.delete(pager, unindexed.tid, Xid(5)).unwrap();
         let gone = heap.read(pager, unindexed.tid).unwrap().unwrap();
-        assert_eq!((5, None), (gone.header.xmax, gone.header.next));
+        assert_eq!(
+            (Some(Xid(5)), None),
+            (gone.header.writers.deleter(), gone.header.next)
+        );
     });
 }
 
@@ -382,19 +392,22 @@ fn an_aborted_successor_is_replaced_by_the_next_writer() {
         let (mut db, _) = Db::create(&rt, 4);
         let pager = &mut db.pager;
         let row = vec![Value::I64(1), Value::Text("x".into()), Value::Bytes(vec![])];
-        let t = db.heaps[EMAIL].insert(pager, 1, &row).unwrap();
+        let t = db.heaps[EMAIL].insert(pager, Xid(1), &row).unwrap();
         let (email, google) = pair(&mut db.heaps, EMAIL, GOOGLE);
-        email.retag(pager, t, 2, google, &row).unwrap();
+        email.retag(pager, t, Xid(2), google, &row).unwrap();
         pager.abort(2, &[], |_| {}).unwrap();
-        let u = email.update(pager, t, 3, &row, &[0]).unwrap();
-        let old = email.read(pager, t).unwrap().unwrap();
-        assert_eq!((3, Some(u.tid)), (old.header.xmax, old.header.next));
-        assert!(!old.flags.contains(Flags::MOVED));
-        email.delete(pager, t, 4).unwrap();
+        let u = email.update(pager, t, Xid(3), &row, &[0]).unwrap();
         let old = email.read(pager, t).unwrap().unwrap();
         assert_eq!(
-            (4, None, Flags::NONE),
-            (old.header.xmax, old.header.next, old.flags)
+            (Some(Xid(3)), Some(u.tid)),
+            (old.header.writers.deleter(), old.header.next)
+        );
+        assert!(!old.flags.contains(Flags::MOVED));
+        email.delete(pager, t, Xid(4)).unwrap();
+        let old = email.read(pager, t).unwrap().unwrap();
+        assert_eq!(
+            (Some(Xid(4)), None, Flags::NONE),
+            (old.header.writers.deleter(), old.header.next, old.flags)
         );
     });
 }
@@ -414,7 +427,9 @@ fn large_values_go_out_of_line_and_a_retag_keeps_their_pointers() {
                 Value::Bytes(bytes.to_vec()),
             ]
         };
-        let t = db.heaps[EMAIL].insert(pager, 1, &row("a", &big)).unwrap();
+        let t = db.heaps[EMAIL]
+            .insert(pager, Xid(1), &row("a", &big))
+            .unwrap();
         let stored = large.pages(pager).unwrap().len();
         assert!(stored >= 50_000 / PAGE, "{stored} pages");
         assert_eq!(1, db.heaps[EMAIL].pages(pager).unwrap().len());
@@ -423,20 +438,22 @@ fn large_values_go_out_of_line_and_a_retag_keeps_their_pointers() {
             db.heaps[EMAIL].read(pager, t).unwrap().unwrap().row
         );
         let (email, google) = pair(&mut db.heaps, EMAIL, GOOGLE);
-        let moved = email.retag(pager, t, 2, google, &row("b", &big)).unwrap();
+        let moved = email
+            .retag(pager, t, Xid(2), google, &row("b", &big))
+            .unwrap();
         assert_eq!(stored, large.pages(pager).unwrap().len());
         assert_eq!(
             row("b", &big),
             google.read(pager, moved).unwrap().unwrap().row
         );
         let u = google
-            .update(pager, moved, 3, &row("c", &big), &[0])
+            .update(pager, moved, Xid(3), &row("c", &big), &[0])
             .unwrap();
         assert_eq!(stored, large.pages(pager).unwrap().len());
         let mut other = big.clone();
         other[49_999] ^= 1;
         let v = google
-            .update(pager, u.tid, 4, &row("c", &other), &[0])
+            .update(pager, u.tid, Xid(4), &row("c", &other), &[0])
             .unwrap();
         assert!(large.pages(pager).unwrap().len() > stored);
         assert_eq!(
@@ -445,7 +462,7 @@ fn large_values_go_out_of_line_and_a_retag_keeps_their_pointers() {
         );
         assert_eq!(row("a", &big), email.read(pager, t).unwrap().unwrap().row);
         let mid = vec![9u8; 900];
-        let w = google.insert(pager, 5, &row("mid", &mid)).unwrap();
+        let w = google.insert(pager, Xid(5), &row("mid", &mid)).unwrap();
         assert_eq!(
             row("mid", &mid),
             google.read(pager, w).unwrap().unwrap().row
@@ -474,7 +491,7 @@ fn rows_too_large_for_a_page_are_refused() {
         let many = vec![scalar(Scalar::Text); 400];
         let heap = Heap::create(pager, 21, many, large).unwrap();
         let row = vec![Value::Text("y".repeat(30)); 400];
-        over(heap.insert(pager, 1, &row).map(|_| ()));
+        over(heap.insert(pager, Xid(1), &row).map(|_| ()));
         assert!(heap.pages(pager).unwrap().is_empty());
         assert!(
             large.pages(pager).unwrap().is_empty(),
@@ -496,7 +513,10 @@ fn the_directory_splits_and_its_root_stays() {
                 Value::Text(String::new()),
                 Value::Bytes(vec![key as u8; 900]),
             ];
-            tids.push((db.heaps[EMAIL].insert(&db.pager, 1, &row).unwrap(), row));
+            tids.push((
+                db.heaps[EMAIL].insert(&db.pager, Xid(1), &row).unwrap(),
+                row,
+            ));
             assert_eq!(Vec::<String>::new(), verify(&mut db), "after key {key}");
         }
         assert_eq!(root, db.heaps[EMAIL].root());
@@ -529,7 +549,7 @@ fn an_insert_past_filled_pages_finds_room_under_another_directory_entry() {
         };
         let mut tids = Vec::new();
         for key in 0.. {
-            tids.push(heap.insert(&db.pager, 1, &wide(key)).unwrap());
+            tids.push(heap.insert(&db.pager, Xid(1), &wide(key)).unwrap());
             if heap.pages(&db.pager).unwrap().len() == 8 {
                 break;
             }
@@ -540,10 +560,10 @@ fn an_insert_past_filled_pages_finds_room_under_another_directory_entry() {
         gone.extend(on(pages[0]).take(2));
         gone.extend(on(pages[5]).take(2));
         for &t in &gone {
-            heap.delete(&db.pager, t, 2).unwrap();
+            heap.delete(&db.pager, t, Xid(2)).unwrap();
         }
         let judge = |_: &Pager<SimRuntime>, h: &Header| {
-            Ok(if h.xmax == 2 {
+            Ok(if h.writers.deleted_by(Xid(2)) {
                 Fate::Remove
             } else {
                 Fate::Keep
@@ -555,7 +575,7 @@ fn an_insert_past_filled_pages_finds_room_under_another_directory_entry() {
         }
         assert_eq!(&pages[..7], &heap.pages(&db.pager).unwrap()[..]);
         let landed: Vec<u64> = (100..104)
-            .map(|key| heap.insert(&db.pager, 3, &wide(key)).unwrap().page())
+            .map(|key| heap.insert(&db.pager, Xid(3), &wide(key)).unwrap().page())
             .collect();
         assert_eq!(vec![pages[0].0, pages[0].0, pages[5].0, pages[5].0], landed);
         assert_eq!(&pages[..7], &heap.pages(&db.pager).unwrap()[..]);
@@ -576,7 +596,7 @@ fn long_row(key: i64) -> Vec<Value> {
 /// all-visible.
 fn settle_all_visible(db: &Db, heap: usize, gone: u64) {
     let judge = |_: &Pager<SimRuntime>, h: &Header| {
-        Ok(if h.xmax == gone {
+        Ok(if h.writers.deleted_by(Xid(gone)) {
             Fate::Remove
         } else {
             Fate::AllVisible
@@ -596,11 +616,15 @@ fn writes_between_all_visible_pages_of_deep_directories_stay_within_the_latch_bo
         let mut rows = BTreeMap::new();
         for key in 0..80 {
             let h = if key % 2 == 0 { EMAIL } else { GOOGLE };
-            let t = db.heaps[h].insert(&db.pager, 1, &long_row(key)).unwrap();
+            let t = db.heaps[h]
+                .insert(&db.pager, Xid(1), &long_row(key))
+                .unwrap();
             rows.insert(key, (h, t));
         }
         for key in [1, 3, 5] {
-            db.heaps[GOOGLE].delete(&db.pager, rows[&key].1, 2).unwrap();
+            db.heaps[GOOGLE]
+                .delete(&db.pager, rows[&key].1, Xid(2))
+                .unwrap();
             rows.remove(&key);
         }
         settle_all_visible(&db, EMAIL, 2);
@@ -608,18 +632,20 @@ fn writes_between_all_visible_pages_of_deep_directories_stay_within_the_latch_bo
         assert!(db.heaps[EMAIL].pages(&db.pager).unwrap().len() > 4);
         let (_, at) = rows[&0];
         let moved = db.heaps[EMAIL]
-            .retag(&db.pager, at, 3, &db.heaps[GOOGLE], &long_row(0))
+            .retag(&db.pager, at, Xid(3), &db.heaps[GOOGLE], &long_row(0))
             .unwrap();
         rows.insert(0, (GOOGLE, moved));
         let (_, at) = rows[&2];
         let mut changed = long_row(2);
         changed[0] = Value::I64(102);
         let u = db.heaps[EMAIL]
-            .update(&db.pager, at, 3, &changed, &[0])
+            .update(&db.pager, at, Xid(3), &changed, &[0])
             .unwrap();
         assert!(!u.heap_only);
         rows.insert(2, (EMAIL, u.tid));
-        db.heaps[EMAIL].delete(&db.pager, rows[&4].1, 3).unwrap();
+        db.heaps[EMAIL]
+            .delete(&db.pager, rows[&4].1, Xid(3))
+            .unwrap();
         rows.remove(&4);
         for (key, (h, t)) in rows {
             let v = db.heaps[h].read(&db.pager, t).unwrap().unwrap();
@@ -653,7 +679,7 @@ fn a_reopened_heap_finds_room_through_its_directory() {
                 Value::Text(String::new()),
                 Value::Bytes(vec![1; 900]),
             ];
-            db.heaps[EMAIL].insert(&db.pager, 1, &row).unwrap();
+            db.heaps[EMAIL].insert(&db.pager, Xid(1), &row).unwrap();
         }
         let pages = db.heaps[EMAIL].pages(&db.pager).unwrap().len();
         let reopened = Heap::open(
@@ -669,7 +695,7 @@ fn a_reopened_heap_finds_room_through_its_directory() {
             Value::Text(String::new()),
             Value::Bytes(vec![2; 10]),
         ];
-        let t = reopened.insert(&db.pager, 2, &small).unwrap();
+        let t = reopened.insert(&db.pager, Xid(2), &small).unwrap();
         assert_eq!(pages, reopened.pages(&db.pager).unwrap().len());
         assert_eq!(small, reopened.read(&db.pager, t).unwrap().unwrap().row);
     });
@@ -725,7 +751,7 @@ fn a_heap_scan_builds_a_batch_that_reads_back_its_rows() {
             })
             .collect();
         for r in &rows {
-            heap.insert(&db.pager, 1, r).unwrap();
+            heap.insert(&db.pager, Xid(1), r).unwrap();
         }
         let mut b = BatchBuilder::new(Schema::of_heap(&row_type));
         heap.scan(&db.pager, |v| b.push_row(&v.row)).unwrap();
@@ -757,7 +783,7 @@ fn an_old_format_page_is_read_as_it_is_and_converted_on_insert() {
         let mut heap = Heap::create(pager, 30, counter_type(false), large).unwrap();
         let old: Vec<Tid> = (0..20)
             .map(|k| {
-                heap.insert(pager, 1, &[Value::I64(k), Value::I32(-1)])
+                heap.insert(pager, Xid(1), &[Value::I64(k), Value::I32(-1)])
                     .unwrap()
             })
             .collect();
@@ -776,10 +802,10 @@ fn an_old_format_page_is_read_as_it_is_and_converted_on_insert() {
         assert_eq!(Ok(2), v);
         let upgraded = |k: i64| vec![Value::I64(k), Value::I32(-1), Value::Text("n/a".into())];
         assert_eq!(upgraded(3), heap.read(pager, old[3]).unwrap().unwrap().row);
-        heap.delete(pager, old[4], 2).unwrap();
+        heap.delete(pager, old[4], Xid(2)).unwrap();
         assert_eq!(1, storage::format(&pager.read(page).unwrap()));
         let fresh = vec![Value::I64(100), Value::I32(5), Value::Text("new".into())];
-        let t = heap.insert(pager, 3, &fresh).unwrap();
+        let t = heap.insert(pager, Xid(3), &fresh).unwrap();
         assert_eq!(page.0, t.page());
         let p = &pager.read(page).unwrap().to_vec();
         assert_eq!(
@@ -789,7 +815,7 @@ fn an_old_format_page_is_read_as_it_is_and_converted_on_insert() {
         for (k, tid) in old.iter().enumerate() {
             let v = heap.read(pager, *tid).unwrap().unwrap();
             assert_eq!(upgraded(k as i64), v.row);
-            assert_eq!(if k == 4 { 2 } else { 0 }, v.header.xmax);
+            assert_eq!((k == 4).then_some(Xid(2)), v.header.writers.deleter());
         }
         assert_eq!(fresh, heap.read(pager, t).unwrap().unwrap().row);
         assert!(heap.verify(pager).unwrap().is_empty());
@@ -807,7 +833,7 @@ fn a_page_whose_rows_outgrow_it_keeps_its_format_and_takes_no_insert() {
         let mut old: Vec<Tid> = Vec::new();
         for k in 0.. {
             let t = heap
-                .insert(pager, 1, &[Value::I64(k), Value::I32(0)])
+                .insert(pager, Xid(1), &[Value::I64(k), Value::I32(0)])
                 .unwrap();
             if !old.is_empty() && t.page() != old[0].page() {
                 break;
@@ -827,7 +853,7 @@ fn a_page_whose_rows_outgrow_it_keeps_its_format_and_takes_no_insert() {
             let t = heap
                 .insert(
                     pager,
-                    2,
+                    Xid(2),
                     &[
                         Value::I64(1000 + k),
                         Value::I32(1),
@@ -844,7 +870,7 @@ fn a_page_whose_rows_outgrow_it_keeps_its_format_and_takes_no_insert() {
             .update(
                 pager,
                 old[7],
-                3,
+                Xid(3),
                 &[Value::I64(7), Value::I32(9), Value::Text(String::new())],
                 &[0],
             )
@@ -889,7 +915,7 @@ fn write_notes(rt: &SimRuntime) -> (Storage, Vec<Tid>) {
     let tids: Vec<Tid> = (0..NOTES)
         .map(|k| {
             let row = [Value::I64(k), Value::Bytes(vec![1; 8])];
-            heap.insert(&pager, 1, &row).unwrap()
+            heap.insert(&pager, Xid(1), &row).unwrap()
         })
         .collect();
     assert!(tids.iter().all(|t| t.page() == tids[0].page()));
@@ -921,7 +947,7 @@ fn a_conversion_moving_many_values_out_of_line_fits_a_pool_of_a_few_frames() {
         let (s, tids) = write_notes(&rt);
         let (pager, heap) = lengthening(s);
         let fresh = [Value::I64(NOTES), Value::Bytes(vec![2; 8])];
-        let t = heap.insert(&pager, 2, &fresh).unwrap();
+        let t = heap.insert(&pager, Xid(2), &fresh).unwrap();
         assert_eq!(tids[0].page(), t.page());
         for (k, tid) in tids.iter().enumerate() {
             let v = heap.read(&pager, *tid).unwrap().unwrap();
@@ -958,7 +984,7 @@ fn a_crash_while_a_conversion_counts_its_values_leaves_no_count_too_low() {
                 r.crash(|rt| {
                     let (pager, heap) = open(rt);
                     let fresh = [Value::I64(NOTES), Value::Bytes(vec![2; 8])];
-                    heap.insert(&pager, 2, &fresh).unwrap();
+                    heap.insert(&pager, Xid(2), &fresh).unwrap();
                     pager.flush_log();
                 });
             },
@@ -1022,9 +1048,11 @@ fn a_crash_while_pruning_raises_entries_leaves_what_repair_mends() {
                 ]
             };
             for key in 0..400 {
-                let t = db.heaps[EMAIL].insert(&db.pager, 1, &wide(key)).unwrap();
+                let t = db.heaps[EMAIL]
+                    .insert(&db.pager, Xid(1), &wide(key))
+                    .unwrap();
                 if key % 4 != 0 {
-                    db.heaps[EMAIL].delete(&db.pager, t, 2).unwrap();
+                    db.heaps[EMAIL].delete(&db.pager, t, Xid(2)).unwrap();
                 }
             }
             db.heaps[EMAIL].settle_directory(&db.pager).unwrap();
@@ -1043,7 +1071,7 @@ fn a_crash_while_pruning_raises_entries_leaves_what_repair_mends() {
                 }
             });
             let judge = |_: &Pager<SimRuntime>, h: &Header| {
-                Ok(if h.xmax == 2 {
+                Ok(if h.writers.deleted_by(Xid(2)) {
                     Fate::Remove
                 } else {
                     Fate::Keep
@@ -1279,7 +1307,10 @@ fn readers_with_a_stale_page_list_meet_a_freed_page_another_allocation_reserved_
         };
         let mut rows = BTreeMap::new();
         for key in 0.. {
-            rows.insert(heap.insert(&db.pager, 1, &wide(key)).unwrap(), wide(key));
+            rows.insert(
+                heap.insert(&db.pager, Xid(1), &wide(key)).unwrap(),
+                wide(key),
+            );
             if heap.pages(&db.pager).unwrap().len() == 2 * FRAMES {
                 break;
             }
@@ -1292,11 +1323,11 @@ fn readers_with_a_stale_page_list_meet_a_freed_page_another_allocation_reserved_
             .copied()
             .collect();
         for &t in &gone {
-            heap.delete(&db.pager, t, 2).unwrap();
+            heap.delete(&db.pager, t, Xid(2)).unwrap();
             rows.remove(&t);
         }
         let judge = |_: &Pager<SimRuntime>, h: &Header| {
-            Ok(if h.xmax == 2 {
+            Ok(if h.writers.deleted_by(Xid(2)) {
                 Fate::Remove
             } else {
                 Fate::Keep

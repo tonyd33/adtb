@@ -180,11 +180,15 @@ and is logged as one.
 | heap-only | No index entry names this version |
 | kept | A copy of this version is in its constructor's history heap (§10.3) |
 
-The heap gives `xmin`, `xmax` and `next` to its callers as the raw
-values stored, and decides no visibility. A writer that sets a
-version's `next` sets its moved and hot-updated flags for that
-successor, clearing any an aborted writer left; a delete sets `xmax`
-and clears `next` and both flags.
+The heap gives its callers a version's writers as the transactions
+layer's `Writers`, an inserter and an optional deleter, with its
+`next`, and decides no visibility; a deleter of 0 in the header is
+none. The successor rule (a successor's inserter is its predecessor's
+deleter), clearing the deleter and a version's identity are operations
+of `Writers`. A writer that sets a version's `next` sets its
+moved and hot-updated flags for that successor, clearing any an
+aborted writer left; a delete sets the deleter and clears `next` and
+both flags.
 
 There is no attribute count, header length or null bitmap: the heap's
 schema and the page's format version fix the body layout, and no field
@@ -905,11 +909,19 @@ or after the version the block is typed at, and not after both. The
 version at a marker is that of the latest migration whose transaction
 its snapshot sees committed.
 
+A version moved to a history heap is identified by its key and its
+writers: its copy has another TID, and a reader of the past or vacuum
+finds the copy, or the version it was copied from, by the key and
+writers they hold.
+
 Invariants:
 
 - Every version of a history heap had a committed inserter and a
   committed deleter, and every history key index entry names a version
   of its heap.
+- No two versions of one key that the window keeps have the same
+  writers: a kept version's inserter and deleter differ, and a key has
+  at most one live version at a time (§7).
 - No pruning, vacuum or expiry frees a version a held marker sees, or
   a version kept by the window, without first copying it to its
   history heap.

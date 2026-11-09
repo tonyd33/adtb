@@ -1,5 +1,5 @@
 use crate::testing::Probe;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -8,7 +8,7 @@ use crate::btree::{BTree, Index};
 use crate::heap::{FieldType, Header, Heap, HeapNo, LargeStore, Version, walk};
 use crate::history::History;
 use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
-use crate::mvcc::{Marker, Past, PastError, Scope, Transactions};
+use crate::mvcc::{Marker, Past, PastError, Scope, Transactions, Writers};
 use crate::runtime::{Runtime, Threads};
 use crate::storage::{Options, PageError, Pager, Pid, Position};
 use crate::vacuum::{self, Error, Report, Sum};
@@ -183,7 +183,7 @@ impl Db {
         let mut out = BTreeMap::new();
         if let Some(heap) = &self.heap {
             heap.scan(&self.pager, |v| {
-                if v.header.xmax == 0 {
+                if v.header.writers.deleter().is_none() {
                     out.insert(pair(&v.row).0, v.tid);
                 }
             })
@@ -198,7 +198,7 @@ impl Db {
         let x = self.txns.begin(&self.pager).expect("begin");
         for &(k, v) in ops {
             if let Some(tid) = self.live.remove(&k) {
-                self.heap().delete(&self.pager, tid, x.0).expect("delete");
+                self.heap().delete(&self.pager, tid, x).expect("delete");
             }
             if let Some(v) = v {
                 let row = vec![Value::I64(k), Value::I64(v)];
@@ -441,19 +441,19 @@ impl Db {
         self.past_heap
             .scan(&self.pager, |v| {
                 if !named.contains(&v.tid) {
-                    let id = (pair(&v.row).0, v.header.xmin, v.header.xmax);
+                    let id = (pair(&v.row).0, v.header.writers);
                     out.push(format!("history holds {id:?} at {:?} unindexed", v.tid));
                 }
             })
             .expect("history scan");
-        let mut seen = BTreeSet::new();
+        let mut seen = HashSet::new();
         for e in entries {
             let v = self
                 .past_heap
                 .read(&self.pager, e.tid)
                 .expect("read")
                 .unwrap_or_else(|| panic!("history entry {e:?} names no version"));
-            let id = (pair(&v.row).0, v.header.xmin, v.header.xmax);
+            let id = (pair(&v.row).0, v.header.writers);
             if !seen.insert(id) {
                 out.push(format!("history holds {id:?} twice"));
             }
@@ -566,11 +566,9 @@ fn vacuum_in_place_and_pruning_on_access_keep_what_the_window_keeps() {
     finished(&mut sim, |rt| {
         let (mut db, _) = Db::create(rt, LONG);
         let marks = history_of(&mut db, 3, 30, 6);
-        let headers = |db: &Db| -> BTreeSet<(Tid, u64, u64)> {
+        let headers = |db: &Db| -> HashSet<(Tid, Writers)> {
             let hs = db.heap().headers(&db.pager).expect("headers");
-            hs.into_iter()
-                .map(|(t, h, _)| (t, h.xmin, h.xmax))
-                .collect()
+            hs.into_iter().map(|(t, h, _)| (t, h.writers)).collect()
         };
         let before = headers(&db);
         let report = db.vacuum_in_place();
@@ -581,10 +579,10 @@ fn vacuum_in_place_and_pruning_on_access_keep_what_the_window_keeps() {
         assert_eq!(0, report.moved);
         assert_eq!(0, db.versions().1);
         assert_eq!(before.len() - report.freed, after.len(), "{report:?}");
-        for (tid, xmin, xmax) in before.difference(&after) {
-            assert_eq!(
-                xmin, xmax,
-                "{tid:?} is freed though another transaction deleted it"
+        for (tid, w) in before.difference(&after) {
+            assert!(
+                w.deleted_by(w.inserter()),
+                "{tid:?} is freed though another transaction deleted it: {w:?}"
             );
         }
         check_reads(&db, &marks, "after vacuum in place");
@@ -632,7 +630,12 @@ fn versions_past_the_window_are_freed_and_reads_there_are_unavailable() {
         let cutoff = db.txns.cutoff().expect("a cutoff");
         for (tid, h, _) in history {
             let t = record
-                .committed_at(&db.pager, crate::mvcc::Xid(h.xmax))
+                .committed_at(
+                    &db.pager,
+                    h.writers
+                        .deleter()
+                        .expect("a history version has a deleter"),
+                )
                 .expect("ledger");
             assert!(
                 t.is_some_and(|t| t >= cutoff),
@@ -896,7 +899,7 @@ fn a_vacuum_retry_indexes_a_copy_a_crash_left_without_its_entry() {
         let mut dead = Vec::new();
         db.heap()
             .scan(&db.pager, |v| {
-                if v.header.xmax != 0 {
+                if v.header.writers.deleter().is_some() {
                     dead.push(v);
                 }
             })
@@ -1030,7 +1033,7 @@ fn a_moved_version_keeps_its_out_of_line_values_until_the_window_passes() {
         let row = vec![Value::I64(1), Value::Bytes(blob)];
         let commit = |x| pager.wait_durable(txns.commit(&pager, x).expect("commit"));
         let x = txns.begin(&pager).expect("begin");
-        let tid = heap.insert(&pager, x.0, &row).expect("insert");
+        let tid = heap.insert(&pager, x, &row).expect("insert");
         let entry = Entry {
             key: vec![Value::I64(1)],
             ctor: CTOR,
@@ -1042,7 +1045,7 @@ fn a_moved_version_keeps_its_out_of_line_values_until_the_window_passes() {
         txns.log_safe_snapshot(&pager, id, &snapshot);
         txns.release(id);
         let x = txns.begin(&pager).expect("begin");
-        heap.delete(&pager, tid, x.0).expect("delete");
+        heap.delete(&pager, tid, x).expect("delete");
         commit(x);
         let sum = Sum {
             heaps: vec![(CTOR, &heap)],
@@ -1292,7 +1295,7 @@ fn store_scan_sees_history_pages_created_during_its_current_walk() {
                         &db.pager,
                         Pid(last.page()),
                         |_, h| {
-                            Ok(if h.xmax != 0 {
+                            Ok(if h.writers.deleter().is_some() {
                                 crate::heap::Fate::Remove
                             } else {
                                 crate::heap::Fate::Keep
@@ -1329,7 +1332,7 @@ fn sees<R: Runtime>(
 ) -> Result<bool, PageError> {
     marker
         .snapshot
-        .sees(None, h.xmin, h.xmax, |x| txns.status(pager, x))
+        .sees(None, &h.writers, |x| txns.status(pager, x))
 }
 
 /// Returns the rows of a constructor as the safe snapshot of `marker` reads them, from `heaps`,
@@ -1342,7 +1345,7 @@ fn rows<R: Runtime>(
     marker: &Marker,
     heaps: &[&Heap],
 ) -> Result<Vec<Vec<Value>>, PageError> {
-    let mut seen: BTreeMap<(u64, u64), Vec<Vec<Value>>> = BTreeMap::new();
+    let mut seen: HashMap<Writers, Vec<Vec<Value>>> = HashMap::new();
     let mut versions: Vec<Version> = Vec::new();
     for heap in heaps {
         heap.scan(pager, |v| versions.push(v))?;
@@ -1352,7 +1355,7 @@ fn rows<R: Runtime>(
         if !sees(txns, pager, marker, &v.header)? {
             continue;
         }
-        let same = seen.entry((v.header.xmin, v.header.xmax)).or_default();
+        let same = seen.entry(v.header.writers).or_default();
         if same.contains(&v.row) {
             continue;
         }

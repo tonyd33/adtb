@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::key::Tid;
+use crate::mvcc::Xid;
 use crate::runtime::Runtime;
 use crate::storage::{self, Damage, LATCHES_PER_THREAD, PageError, Pager, Pid, Stopped, Walk};
 
@@ -13,7 +14,7 @@ use super::stage::Stage;
 use super::version::{Flags, tid_bits, tid_from_bits};
 
 const NEXT: usize = 0;
-const XMIN: usize = 8;
+const WRITER: usize = 8;
 const COUNT: usize = 16;
 const ROLE: usize = 20;
 const BYTES: usize = 24;
@@ -30,7 +31,7 @@ const TAIL: u32 = 1;
 pub struct Chunk {
     pub next: Option<Tid>,
     /// The transaction that wrote the chunk.
-    pub xmin: u64,
+    pub writer: Xid,
     /// The first chunk of a value, the one a pointer names; every other chunk is named by the
     /// chunk before it.
     pub head: bool,
@@ -43,7 +44,7 @@ fn chunk(tuple: &[u8]) -> Chunk {
     let u32_at = |at: usize| u32::from_le_bytes(tuple[at..at + 4].try_into().unwrap());
     Chunk {
         next: tid_from_bits(u64_at(NEXT)),
-        xmin: u64_at(XMIN),
+        writer: Xid(u64_at(WRITER)),
         head: u32_at(ROLE) == HEAD,
         count: u32_at(COUNT),
     }
@@ -51,7 +52,7 @@ fn chunk(tuple: &[u8]) -> Chunk {
 
 fn set_chunk(tuple: &mut [u8], c: Chunk) {
     tuple[NEXT..NEXT + 8].copy_from_slice(&c.next.map_or(0, tid_bits).to_le_bytes());
-    tuple[XMIN..XMIN + 8].copy_from_slice(&c.xmin.to_le_bytes());
+    tuple[WRITER..WRITER + 8].copy_from_slice(&c.writer.0.to_le_bytes());
     tuple[COUNT..COUNT + 4].copy_from_slice(&c.count.to_le_bytes());
     let role = if c.head { HEAD } else { TAIL };
     tuple[ROLE..ROLE + 4].copy_from_slice(&role.to_le_bytes());
@@ -158,7 +159,7 @@ impl LargeStore {
     pub fn write<R: Runtime>(
         &self,
         pager: &Pager<R>,
-        xid: u64,
+        xid: Xid,
         bytes: &[u8],
     ) -> Result<Pointer, Error> {
         let room = slotted::max_version(pager.page_size()) - BYTES;
@@ -169,7 +170,7 @@ impl LargeStore {
                 &mut tuple,
                 Chunk {
                     next,
-                    xmin: xid,
+                    writer: xid,
                     head: true,
                     count: 0,
                 },
@@ -368,7 +369,7 @@ impl LargeStore {
     pub fn sweep<R: Runtime>(
         &self,
         pager: &Pager<R>,
-        mut resolved: impl FnMut(u64) -> Result<bool, PageError>,
+        mut resolved: impl FnMut(Xid) -> Result<bool, PageError>,
         between: &mut dyn FnMut() -> bool,
     ) -> Result<Walk, PageError> {
         self.space.settle(pager)?;
@@ -383,11 +384,11 @@ impl LargeStore {
                 if !c.head || c.count > 0 {
                     continue;
                 }
-                if !resolved(c.xmin)? {
+                if !resolved(c.writer)? {
                     pending = true;
                     continue;
                 }
-                match self.free_value(pager, tid(pid, slot), c.xmin, between)? {
+                match self.free_value(pager, tid(pid, slot), c.writer, between)? {
                     Walk::Done(n) => freed += n,
                     Walk::Stopped(n) => return Ok(Walk::Stopped(freed + n)),
                 }
@@ -402,14 +403,14 @@ impl LargeStore {
         Ok(Walk::Done(freed))
     }
 
-    /// Free the value whose head is at `at`, written by `xmin`, one chunk at a time, calling
+    /// Free the value whose head is at `at`, written by `writer`, one chunk at a time, calling
     /// `between` after each chunk and ending once it returns false. Returns the number of chunks
     /// freed, and whether it stopped early.
     fn free_value<R: Runtime>(
         &self,
         pager: &Pager<R>,
         mut at: Tid,
-        xmin: u64,
+        writer: Xid,
         between: &mut dyn FnMut() -> bool,
     ) -> Result<Walk, PageError> {
         let mut freed = 0;
@@ -418,7 +419,7 @@ impl LargeStore {
             let next = {
                 let page = pager.read_formatted(here)?;
                 match chunk_at(&page, self.id(), usize::from(at.slot())) {
-                    Some(c) if c.head && c.count == 0 && c.xmin == xmin => c.next,
+                    Some(c) if c.head && c.count == 0 && c.writer == writer => c.next,
                     _ => return Ok(Walk::Done(freed)),
                 }
             };

@@ -160,7 +160,7 @@ impl<R: Runtime> Testing<'_, R> {
         let (w, pager) = (self.db.tested_db(), self.db.tested_pager());
         let heap = self.heap_object(heap)?;
         let tx = w.begin().map_err(Failed::Write)?;
-        let xid = tx.xid().expect("a read-write transaction has an id").0;
+        let xid = tx.xid().expect("a read-write transaction has an id");
         let tids = rows.iter().map(|row| heap.insert(pager, xid, row));
         let tids = tids.collect::<Result<Vec<_>, _>>()?;
         w.commit(tx).map_err(Failed::Write)?;

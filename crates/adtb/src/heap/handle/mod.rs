@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::key::{Tid, Value};
+use crate::mvcc::{Writers, Xid};
 use crate::runtime::Runtime;
 use crate::storage::{self, PageError, Pager, Pid, Stopped};
 
@@ -459,7 +460,7 @@ impl Heap {
     fn body<R: Runtime>(
         &self,
         pager: &Pager<R>,
-        xid: u64,
+        xid: Xid,
         row: &[Value],
         reuse: &[Pointer],
     ) -> Result<(Vec<u8>, Vec<Pointer>), Error> {
@@ -534,7 +535,7 @@ impl Heap {
     fn convert<R: Runtime>(
         &self,
         pager: &Pager<R>,
-        xid: u64,
+        xid: Xid,
         page: &[u8],
     ) -> Result<Option<Converted>, Error> {
         let from = storage::format(page);
@@ -599,7 +600,7 @@ impl Heap {
         &self,
         pager: &Pager<R>,
         pid: Pid,
-        xid: u64,
+        xid: Xid,
     ) -> Result<Option<Preconverted>, Error> {
         let source = pager.read(pid)?.to_vec();
         if !page::is_heap(&source)
@@ -693,14 +694,14 @@ impl Heap {
         room.ok_or(Error::NoDirectory)
     }
 
-    /// Set `xmax` and `next` of the version at `at`, whose page `stage` holds, and replace its
-    /// successor flags by `successor`.
+    /// Replace the writers of the version at `at`, whose page `stage` holds, by `writers` applied
+    /// to them; set its `next` and replace its successor flags by `successor`.
     fn supersede<'p, R: Runtime>(
         &self,
         stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
         at: impl Into<WriteTarget>,
-        xid: u64,
+        writers: impl FnOnce(Writers) -> Writers,
         next: Option<Tid>,
         successor: Flags,
     ) -> Result<(), Error> {
@@ -714,7 +715,7 @@ impl Heap {
         };
         let mut header = Header::read(&page[range.clone()]);
         target.check(Some(header))?;
-        header.xmax = xid;
+        header.writers = writers(header.writers);
         header.next = next;
         header.write(&mut page[range]);
         let flags = flags
@@ -822,12 +823,13 @@ impl Heap {
     /// Versions `judge` removes are freed when no index entry names them and left as dead slots
     /// otherwise; the slots in `cleaned`, whose index entries are gone, are freed. A chain of
     /// heap-only versions whose leading versions are removed keeps its first slot as a redirect.
-    /// Versions whose deleter aborted have `xmax`, `next` and successor flags cleared. When `mark`
-    /// holds, the page's all-visible bit is set if every version left is judged all-visible and
-    /// no dead slot is left. The directory entry takes the page's free space when the page is in
-    /// the newest format or pruning freed space on it. A page left empty leaves the directory and
-    /// is freed in the same pager update. Each out-of-line value a freed version pointed at is
-    /// counted one version fewer afterwards. A page no longer of this heap is left alone.
+    /// Versions whose deleter aborted have their deleter, `next` and successor flags cleared.
+    /// When `mark` holds, the page's all-visible bit is set if every version left is judged
+    /// all-visible and no dead slot is left. The directory entry takes the page's free space when
+    /// the page is in the newest format or pruning freed space on it. A page left empty leaves the
+    /// directory and is freed in the same pager update. Each out-of-line value a freed version
+    /// pointed at is counted one version fewer afterwards. A page no longer of this heap is left
+    /// alone.
     ///
     /// Panics if a slot in `cleaned` still leads to a version `judge` keeps.
     pub fn prune<R: Runtime>(
@@ -925,7 +927,7 @@ impl Heap {
     pub fn insert<R: Runtime>(
         &self,
         pager: &Pager<R>,
-        xid: u64,
+        xid: Xid,
         row: &[Value],
     ) -> Result<Tid, Error> {
         self.insert_pruning(pager, xid, row, None)
@@ -936,11 +938,11 @@ impl Heap {
     pub fn insert_pruning<R: Runtime>(
         &self,
         pager: &Pager<R>,
-        xid: u64,
+        xid: Xid,
         row: &[Value],
         judge: Option<&mut Judge<'_, R>>,
     ) -> Result<Tid, Error> {
-        self.put_version(pager, Header::new(xid), row, judge)
+        self.put_version(pager, xid, row, judge)
     }
 
     /// Insert a copy of `v`, a version of `from` read at `v.tid`, with no successor, and flag the
@@ -955,16 +957,15 @@ impl Heap {
         v: &Version,
     ) -> Result<Option<Tid>, Error> {
         assert_ne!(self.id, from.id, "a version is copied to another heap");
-        let header = Header {
-            next: None,
-            ..v.header
-        };
-        let (body, held) = self.body(pager, header.xmin, &v.row, &[])?;
+        let mut header = v.header;
+        header.next = None;
+        let inserter = header.writers.inserter();
+        let (body, held) = self.body(pager, inserter, &v.row, &[])?;
         let version = version_bytes(header, &body);
         let o = Pid(v.tid.page());
         loop {
             let n = self.candidate(pager, version.len())?;
-            let pre = self.preconvert(pager, n, header.xmin)?;
+            let pre = self.preconvert(pager, n, inserter)?;
             let mut stage = Stage::new();
             for p in latch_order(o, n) {
                 stage.page(pager, p)?;
@@ -1008,7 +1009,7 @@ impl Heap {
             return Ok(false);
         };
         let h = Header::read(&page[at]);
-        if (h.xmin, h.xmax) != (v.header.xmin, v.header.xmax) {
+        if h.writers != v.header.writers {
             return Ok(false);
         }
         page::set_flags(page, slot, flags.with(Flags::KEPT));
@@ -1018,13 +1019,12 @@ impl Heap {
     fn put_version<R: Runtime>(
         &self,
         pager: &Pager<R>,
-        header: Header,
+        xid: Xid,
         row: &[Value],
         mut judge: Option<&mut Judge<'_, R>>,
     ) -> Result<Tid, Error> {
-        let xid = header.xmin;
         let (body, held) = self.body(pager, xid, row, &[])?;
-        let version = version_bytes(header, &body);
+        let version = version_bytes(Header::new(xid), &body);
         loop {
             let pid = self.candidate(pager, version.len())?;
             let pre = self.preconvert(pager, pid, xid)?;
@@ -1087,7 +1087,7 @@ impl Heap {
         &self,
         pager: &Pager<R>,
         at: impl Into<WriteTarget>,
-        xid: u64,
+        xid: Xid,
         row: &[Value],
         indexed: &[usize],
         mut judge: Option<&mut Judge<'_, R>>,
@@ -1110,7 +1110,14 @@ impl Heap {
             stage.page(pager, o)?;
             match self.try_put(&mut stage, pager, o, &version, Flags::HEAP_ONLY, pre)? {
                 Put::Done(t, c) => {
-                    self.supersede(&mut stage, pager, target, xid, Some(t), Flags::HOT_UPDATED)?;
+                    self.supersede(
+                        &mut stage,
+                        pager,
+                        target,
+                        |w| w.superseded_by(xid),
+                        Some(t),
+                        Flags::HOT_UPDATED,
+                    )?;
                     self.retain_all(pager, &held, &c.gained)?;
                     let above = finish(&mut stage, pager, Some((self, o)), &[(self, o)])?;
                     stage.commit(pager)?;
@@ -1138,7 +1145,14 @@ impl Heap {
             }
             match self.try_put(&mut stage, pager, n, &version, Flags::NONE, pre)? {
                 Put::Done(t, c) => {
-                    self.supersede(&mut stage, pager, target, xid, Some(t), Flags::NONE)?;
+                    self.supersede(
+                        &mut stage,
+                        pager,
+                        target,
+                        |w| w.superseded_by(xid),
+                        Some(t),
+                        Flags::NONE,
+                    )?;
                     self.retain_all(pager, &held, &c.gained)?;
                     let marks = [(self, o), (self, n)];
                     let above = finish(&mut stage, pager, Some((self, n)), &marks)?;
@@ -1167,19 +1181,26 @@ impl Heap {
         &self,
         pager: &Pager<R>,
         at: impl Into<WriteTarget>,
-        xid: u64,
+        xid: Xid,
     ) -> Result<(), Error> {
         let target = at.into();
         let o = Pid(target.tid.page());
         let mut stage = Stage::new();
-        self.supersede(&mut stage, pager, target, xid, None, Flags::NONE)?;
+        self.supersede(
+            &mut stage,
+            pager,
+            target,
+            |w| w.superseded_by(xid),
+            None,
+            Flags::NONE,
+        )?;
         let above = finish(&mut stage, pager, None, &[(self, o)])?;
         stage.commit(pager)?;
         above.settle(pager)?;
         Ok(())
     }
 
-    /// Clear the deleter of the version at `at`: its `xmax`, `next` and successor flags.
+    /// Clear the deleter of the version at `at`, its `next` and its successor flags.
     ///
     /// Preconditions: the version's deleter is the caller's running transaction, and the
     /// successor it wrote, if any, is deleted by that transaction too.
@@ -1189,7 +1210,7 @@ impl Heap {
         at: impl Into<WriteTarget>,
     ) -> Result<(), Error> {
         let mut stage = Stage::new();
-        self.supersede(&mut stage, pager, at, 0, None, Flags::NONE)?;
+        self.supersede(&mut stage, pager, at, Writers::cleared, None, Flags::NONE)?;
         stage.commit(pager)?;
         Ok(())
     }
@@ -1197,16 +1218,16 @@ impl Heap {
     /// Move the row whose version is at `at` into heap `to` as `row`, written by `xid`. Returns
     /// the new version's TID.
     ///
-    /// The new version has the retagged-in flag; the old one gets `xmax = xid`, the moved flag
-    /// and `next` naming the new one. Out-of-line values `row` shares with the old version keep
-    /// their pointers.
+    /// The new version has the retagged-in flag; the old one gets `xid` as its deleter, the moved
+    /// flag and `next` naming the new one. Out-of-line values `row` shares with the old version
+    /// keep their pointers.
     ///
     /// Panics if `to` is this heap or belongs to another sum.
     pub fn retag<R: Runtime>(
         &self,
         pager: &Pager<R>,
         at: impl Into<WriteTarget>,
-        xid: u64,
+        xid: Xid,
         to: &Heap,
         row: &[Value],
     ) -> Result<Tid, Error> {
@@ -1230,7 +1251,14 @@ impl Heap {
             }
             match to.try_put(&mut stage, pager, n, &version, Flags::RETAGGED_IN, pre)? {
                 Put::Done(t, c) => {
-                    self.supersede(&mut stage, pager, target, xid, Some(t), Flags::MOVED)?;
+                    self.supersede(
+                        &mut stage,
+                        pager,
+                        target,
+                        |w| w.superseded_by(xid),
+                        Some(t),
+                        Flags::MOVED,
+                    )?;
                     self.retain_all(pager, &held, &c.gained)?;
                     let marks = [(self, o), (to, n)];
                     let above = finish(&mut stage, pager, Some((to, n)), &marks)?;
@@ -1345,7 +1373,7 @@ impl Heap {
 /// Precondition: `sum` holds the heap of every constructor of `heap`'s relation.
 ///
 /// The chain ends at a slot holding no version, at a page that is not a heap page, at a version
-/// whose `xmin` is not the `xmax` of the version before it, and at a version on a page of the
+/// whose inserter is not the deleter of the version before it, and at a version on a page of the
 /// wrong heap: the first must be in `heap`, the successor of a moved version in another heap of
 /// `sum` and flagged retagged in, and any other successor in its predecessor's heap. The
 /// versions of one stretch of the chain on one page are read from one copy of that page.
@@ -1409,5 +1437,5 @@ fn follows(prior: Option<&Link>, heap: HeapNo, sum: &[HeapNo], link: &Link) -> b
     } else {
         link.heap == p.heap
     };
-    placed && link.header.xmin == p.header.xmax
+    placed && p.header.writers.precedes(&link.header.writers)
 }

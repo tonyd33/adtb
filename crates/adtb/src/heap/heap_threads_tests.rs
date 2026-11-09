@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::heap::{Fate, FieldType, Header, Heap, HeapNo, LargeStore, walk};
 use crate::key::{Scalar, Tid, Value};
+use crate::mvcc::Xid;
 use crate::runtime::Threads;
 use crate::storage::{Options, PageError, PageKind, Pager, Pid};
 use adtb_sim::{Config, Sim, SimRuntime};
@@ -49,15 +50,15 @@ fn build(rt: SimRuntime, pool_frames: usize) -> (Db, Vec<(i64, Tid)>) {
     let heap = Heap::create_with_fanout(&pager, HEAP_ID, row_type(), large, FANOUT).unwrap();
     let mut kept = Vec::new();
     for key in 0..ROWS {
-        let tid = heap.insert(&pager, 1, &row(key, 0)).expect("insert");
+        let tid = heap.insert(&pager, Xid(1), &row(key, 0)).expect("insert");
         if key % 2 == 0 {
             kept.push((key, tid));
         } else {
-            heap.delete(&pager, tid, DELETER).expect("delete");
+            heap.delete(&pager, tid, Xid(DELETER)).expect("delete");
         }
     }
     let judge = |_: &Pager<SimRuntime>, h: &Header| {
-        Ok(if h.xmax == DELETER {
+        Ok(if h.writers.deleted_by(Xid(DELETER)) {
             Fate::Remove
         } else {
             Fate::Keep
@@ -103,7 +104,7 @@ fn update_all(rt: &SimRuntime, db: &Arc<Db>, kept: &[(i64, Tid)], seed: u64) -> 
                     if in_flight.fetch_add(1, Ordering::Relaxed) > 0 {
                         overlapped.fetch_add(1, Ordering::Relaxed);
                     }
-                    let u = db.heap.update(&db.pager, tid, xid, &row(key, 1), &[]);
+                    let u = db.heap.update(&db.pager, tid, Xid(xid), &row(key, 1), &[]);
                     in_flight.fetch_sub(1, Ordering::Relaxed);
                     let u = u.unwrap_or_else(|e| panic!("seed {seed}: update of row {key}: {e:?}"));
                     assert!(u.heap_only, "seed {seed}: row {key} moved off its page");
@@ -209,7 +210,9 @@ fn heap_across_the_span(
     let heap = Heap::create(pager, id, row_type(), large).unwrap();
     let mut low = Vec::new();
     let high = loop {
-        let t = heap.insert(pager, 1, &row(low.len() as i64, 0)).unwrap();
+        let t = heap
+            .insert(pager, Xid(1), &row(low.len() as i64, 0))
+            .unwrap();
         if t.page() >= VM_SPAN {
             break Pid(t.page());
         }
@@ -262,7 +265,7 @@ fn clearing_bits_while_the_visibility_map_root_grows_keeps_the_map_whole() {
             let clearer = rt.spawn("clearer", move || {
                 for t in low {
                     let before = g.load(Ordering::Relaxed);
-                    h.delete(&p, t, 3).expect("delete");
+                    h.delete(&p, t, Xid(3)).expect("delete");
                     if before && g.load(Ordering::Relaxed) {
                         d.fetch_add(1, Ordering::Relaxed);
                     }
@@ -298,7 +301,7 @@ fn heap_marked(pager: &Pager<SimRuntime>, heap: &Heap) -> Vec<Pid> {
 const HOT_ROUNDS: u64 = 400;
 
 fn dead_once_deleted(_: &Pager<SimRuntime>, h: &Header) -> Result<Fate, PageError> {
-    Ok(if h.xmax == 0 {
+    Ok(if h.writers.deleter().is_none() {
         Fate::Keep
     } else {
         Fate::Remove
@@ -320,7 +323,7 @@ fn a_walk_beside_pruning_reaches_the_newest_version_of_its_row_and_no_other_row(
             let large = LargeStore::create(&pager, LARGE_ID).expect("large store");
             let heap =
                 Heap::create_with_fanout(&pager, HEAP_ID, row_type(), large, FANOUT).unwrap();
-            let head = heap.insert(&pager, 2, &row(0, 0)).expect("insert");
+            let head = heap.insert(&pager, Xid(2), &row(0, 0)).expect("insert");
             let db = Arc::new(Db { pager, heap });
             let stop = Arc::new(AtomicBool::new(false));
             let walks = Arc::new(AtomicUsize::new(0));
@@ -330,12 +333,12 @@ fn a_walk_beside_pruning_reaches_the_newest_version_of_its_row_and_no_other_row(
                     while !stop.load(Ordering::Relaxed) {
                         let newest = walk(&db.pager, HeapNo(HEAP_ID), &[HeapNo(HEAP_ID)], head, |l| {
                             assert!(
-                                l.header.xmin.is_multiple_of(2),
-                                "seed {seed}: the walk from {head:?} reached {:?}, written by filler {}",
+                                l.header.writers.inserter().0.is_multiple_of(2),
+                                "seed {seed}: the walk from {head:?} reached {:?}, written by filler {:?}",
                                 l.tid,
-                                l.header.xmin
+                                l.header.writers.inserter()
                             );
-                            l.header.xmax == 0
+                            l.header.writers.deleter().is_none()
                         })
                         .unwrap();
                         assert!(
@@ -351,7 +354,7 @@ fn a_walk_beside_pruning_reaches_the_newest_version_of_its_row_and_no_other_row(
             for r in 1..=HOT_ROUNDS {
                 let u = db
                     .heap
-                    .update(&db.pager, at, 2 * r + 2, &row(0, r as u8), &[0])
+                    .update(&db.pager, at, Xid(2 * r + 2), &row(0, r as u8), &[0])
                     .unwrap();
                 assert!(
                     u.heap_only,
@@ -361,8 +364,11 @@ fn a_walk_beside_pruning_reaches_the_newest_version_of_its_row_and_no_other_row(
                 db.heap
                     .prune(&db.pager, page, dead_once_deleted, &[], false)
                     .unwrap();
-                let filler = db.heap.insert(&db.pager, 2 * r + 3, &row(1, 0)).unwrap();
-                db.heap.delete(&db.pager, filler, 2 * r + 3).unwrap();
+                let filler = db
+                    .heap
+                    .insert(&db.pager, Xid(2 * r + 3), &row(1, 0))
+                    .unwrap();
+                db.heap.delete(&db.pager, filler, Xid(2 * r + 3)).unwrap();
                 rt.yield_now();
             }
             stop.store(true, Ordering::Relaxed);
@@ -407,13 +413,13 @@ fn large_values_written_beside_a_sweep_freeing_store_pages_stay_whole() {
                 rt.spawn("churner", move || {
                     let mut xid = 1;
                     while !stop.load(Ordering::Relaxed) {
-                        let tid = db.heap.insert(&db.pager, xid, &large_row(-1)).unwrap();
-                        db.heap.delete(&db.pager, tid, xid).unwrap();
+                        let tid = db.heap.insert(&db.pager, Xid(xid), &large_row(-1)).unwrap();
+                        db.heap.delete(&db.pager, tid, Xid(xid)).unwrap();
                         db.heap
                             .prune(&db.pager, Pid(tid.page()), dead_once_deleted, &[], false)
                             .unwrap();
                         let n = large
-                            .sweep(&db.pager, |x| Ok(!x.is_multiple_of(2)), &mut || true)
+                            .sweep(&db.pager, |x| Ok(!x.0.is_multiple_of(2)), &mut || true)
                             .unwrap()
                             .count();
                         freed.fetch_add(n, Ordering::Relaxed);
@@ -424,7 +430,7 @@ fn large_values_written_beside_a_sweep_freeing_store_pages_stay_whole() {
             let kept: Vec<(i64, Tid)> = (0..KEPT_LARGE as i64)
                 .map(|key| {
                     let swept = freed.load(Ordering::Relaxed);
-                    let tid = db.heap.insert(&db.pager, 2, &large_row(key)).unwrap();
+                    let tid = db.heap.insert(&db.pager, Xid(2), &large_row(key)).unwrap();
                     let waited = (0..WAIT_YIELDS)
                         .take_while(|_| freed.load(Ordering::Relaxed) == swept)
                         .inspect(|_| rt.yield_now())

@@ -12,7 +12,8 @@ use crate::catalog::IndexKeys;
 use crate::heap::{FieldType, Header, Heap, HeapNo, Version, refuse_named, walk};
 use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
 use crate::mvcc::{
-    ScanId, SerialId, SerializationFailure, Serializer, Snapshot, Status, Transactions, Xid,
+    ScanId, SerialId, SerializationFailure, Serializer, Snapshot, Status, Transactions, Writers,
+    Xid,
 };
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
@@ -72,8 +73,11 @@ pub trait Reads: Send + Sync {
 /// Returns the writer the visibility of the version with header `h` depends on, `seen` its
 /// visibility: its deleter when seen, its inserter when not; `None` when it has no deleter.
 fn writer_of(h: &Header, seen: bool) -> Option<Xid> {
-    let x = Xid(if seen { h.xmax } else { h.xmin });
-    (x != Xid::NONE).then_some(x)
+    if seen {
+        h.writers.deleter()
+    } else {
+        Some(h.writers.inserter()).filter(|&x| x != Xid::NONE)
+    }
 }
 
 /// Reads at a snapshot of the transactions layer, recording SIREAD locks with `serial` when it
@@ -99,7 +103,7 @@ impl<R: Runtime> std::fmt::Debug for AtSnapshot<R> {
 impl<R: Runtime> Reads for AtSnapshot<R> {
     fn sees(&self, h: &Header) -> Result<bool, PageError> {
         self.txns
-            .sees(&self.pager, &self.snapshot, self.reader, h.xmin, h.xmax)
+            .sees(&self.pager, &self.snapshot, self.reader, &h.writers)
     }
 
     fn scanning(&self, heap: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
@@ -336,7 +340,7 @@ impl Filling {
 /// The deleted versions a read of the past passed from a current heap, by inserter and deleter,
 /// held in an arena of the call's grant.
 struct Passed {
-    versions: HashMap<(u64, u64), HashSet<Vec<Value>>>,
+    versions: HashMap<Writers, HashSet<Vec<Value>>>,
     held: Arena,
 }
 
@@ -349,9 +353,9 @@ impl Passed {
     }
 
     fn hold(&mut self, v: &Version) -> Result<(), Error> {
-        self.held.grow(2 * size_of::<u64>() + row_size(&v.row))?;
+        self.held.grow(Writers::LEN + row_size(&v.row))?;
         self.versions
-            .entry((v.header.xmin, v.header.xmax))
+            .entry(v.header.writers)
             .or_default()
             .insert(v.row.clone());
         Ok(())
@@ -360,7 +364,7 @@ impl Passed {
     /// Returns whether a version with `v`'s inserter, deleter and row was passed.
     fn holds(&self, v: &Version) -> bool {
         self.versions
-            .get(&(v.header.xmin, v.header.xmax))
+            .get(&v.header.writers)
             .is_some_and(|rows| rows.contains(v.row.as_slice()))
     }
 }
@@ -452,7 +456,7 @@ impl<R: Runtime> Store<R> {
                     if !self.reads.sees(&v.header)? {
                         continue;
                     }
-                    if Xid(v.header.xmax) != Xid::NONE {
+                    if v.header.writers.deleter().is_some() {
                         if now {
                             deleted.hold(&v)?;
                         } else if deleted.holds(&v) {

@@ -42,7 +42,7 @@ impl Heap {
         &self,
         pager: &Pager<R>,
         at: impl Into<WriteTarget>,
-        xid: u64,
+        xid: Xid,
         row: &[Value],
         indexed: &[usize],
     ) -> Result<Updated, Error> {

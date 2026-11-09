@@ -11,9 +11,6 @@
 # pub_fields:         struct fields declared pub, of a struct of any visibility, in the same
 #                     sources: each such type states its contract. Fields that a macro generates
 #                     are not counted.
-# xmin_xmax:          `.xmin` and `.xmax` text outside crates/adtb/src/mvcc. Destructuring and struct
-#                     literals are not counted. The row ends when the fields become private
-#                     (ticket structure-version-owner).
 # disallowed_methods: mentions of clippy::disallowed_methods in an expect or allow attribute. The
 #                     lint rejects storage::page::owner, pages::Exclusive::write,
 #                     PageMemory::lock_exclusive, PageMemory::try_lock_exclusive and
@@ -214,7 +211,7 @@ pub_fields prod 1 crates/adtb/src/heap/mod.rs
 pub_fields prod 1 crates/adtb/src/heap/named.rs
 pub_fields prod 4 crates/adtb/src/heap/prune.rs
 pub_fields prod 4 crates/adtb/src/heap/row.rs
-pub_fields prod 4 crates/adtb/src/heap/version.rs
+pub_fields prod 3 crates/adtb/src/heap/version.rs
 pub_fields prod 3 crates/adtb/src/history.rs
 pub_fields prod 4 crates/adtb/src/key/entry.rs
 pub_fields prod 2 crates/adtb/src/key/value.rs
@@ -249,31 +246,6 @@ pub_fields prod 6 crates/adtb/src/write/past.rs
 pub_fields prod 6 crates/adtb/src/write/reindex.rs
 pub_fields prod 33 crates/adtb/src/write/schema.rs
 pub_fields test 6 crates/adtb/src/test_world/grants.rs
-xmin_xmax test 1 crates/adtb/src/exec/exec_tests.rs
-xmin_xmax test 14 crates/adtb/src/history_tests.rs
-xmin_xmax test 1 crates/adtb-sim/tests/maintenance/maintenance_faults.rs
-xmin_xmax test 9 crates/adtb/src/vacuum/vacuum_tests.rs
-xmin_xmax test 8 crates/adtb/src/vacuum/vacuum_threads_tests.rs
-xmin_xmax test 15 crates/adtb/src/heap/heap_tests.rs
-xmin_xmax test 5 crates/adtb/src/heap/heap_threads_tests.rs
-xmin_xmax prod 3 crates/adtb/src/catalog/history.rs
-xmin_xmax prod 2 crates/adtb/src/catalog/kept.rs
-xmin_xmax prod 7 crates/adtb/src/catalog/mod.rs
-xmin_xmax prod 9 crates/adtb/src/exec/store.rs
-xmin_xmax prod 10 crates/adtb/src/heap/handle/mod.rs
-xmin_xmax prod 4 crates/adtb/src/heap/large.rs
-xmin_xmax prod 2 crates/adtb/src/heap/prune.rs
-xmin_xmax test 6 crates/adtb/src/heap/tests.rs
-xmin_xmax prod 4 crates/adtb/src/heap/version.rs
-xmin_xmax prod 9 crates/adtb/src/history.rs
-xmin_xmax prod 5 crates/adtb/src/vacuum/run.rs
-xmin_xmax prod 7 crates/adtb/src/verify/mod.rs
-xmin_xmax prod 5 crates/adtb/src/write/apply.rs
-xmin_xmax prod 1 crates/adtb/src/write/mod.rs
-xmin_xmax prod 2 crates/adtb/src/write/past.rs
-xmin_xmax prod 2 crates/adtb/src/write/reindex.rs
-xmin_xmax prod 2 crates/adtb/src/write/verify.rs
-xmin_xmax test 1 crates/adtb/src/verify/verify_tests.rs
 crash_allows test 1 crates/adtb/src/storage/pager_tests.rs
 crash_allows prod 2 crates/adtb-harness/src/crash.rs
 crash_loops prod 1 crates/adtb-harness/src/crash.rs

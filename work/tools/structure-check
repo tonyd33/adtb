@@ -78,7 +78,6 @@ fields() {
 found_counts() {
   {
     fields
-    count xmin_xmax '\.(xmin|xmax)\b' 'crates/adtb/src/mvcc/**'
     count disallowed_methods 'clippy::disallowed_methods'
     count crash_loops '\bfn \w*crash_loop\w*\b'
     count crash_allows '\bfn allows\b'
@@ -128,7 +127,7 @@ found=$(found_counts)
 awk -v list="$allowlist" '
   function note(msg) { print "structure-check: " msg; bad = 1 }
   BEGIN {
-    split("crate_fields pub_fields xmin_xmax disallowed_methods crash_loops crash_allows sim_test_opens sim_test_damage sim_test_offsets", names, " ")
+    split("crate_fields pub_fields disallowed_methods crash_loops crash_allows sim_test_opens sim_test_damage sim_test_offsets", names, " ")
     for (i in names) row[names[i]] = 1
     while ((getline line < list) > 0) {
       if (line ~ /^[[:space:]]*(#|$)/) continue

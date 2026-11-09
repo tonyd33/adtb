@@ -140,21 +140,22 @@ pub fn judge<R: Runtime>(
     watermark: Xid,
     h: &Header,
 ) -> Result<Fate, PageError> {
-    match txns.status(pager, Xid(h.xmin))? {
+    let xmin = h.writers.inserter();
+    match txns.status(pager, xmin)? {
         Status::Aborted => return Ok(Fate::Remove),
         Status::InProgress => return Ok(Fate::Keep),
         Status::Committed => {}
     }
-    if Xid(h.xmax) == Xid::NONE {
-        return Ok(if Xid(h.xmin) < watermark {
+    let Some(xmax) = h.writers.deleter() else {
+        return Ok(if xmin < watermark {
             Fate::AllVisible
         } else {
             Fate::Keep
         });
-    }
-    Ok(match txns.status(pager, Xid(h.xmax))? {
+    };
+    Ok(match txns.status(pager, xmax)? {
         Status::Aborted => Fate::Clear,
-        Status::Committed if Xid(h.xmax) < watermark => Fate::Remove,
+        Status::Committed if xmax < watermark => Fate::Remove,
         Status::Committed | Status::InProgress => Fate::Keep,
     })
 }
@@ -183,7 +184,7 @@ pub fn insert<R: Runtime>(
 ) -> Result<Tid, heap::Error> {
     let w = Horizon::now(txns, heap);
     let mut j = |p: &Pager<R>, h: &Header| judge_within(txns, p, &w, h);
-    heap.insert_pruning(pager, xid.0, row, Some(&mut j))
+    heap.insert_pruning(pager, xid, row, Some(&mut j))
 }
 
 /// Update the version at `at` of `heap` as `xid` writes `row`, pruning a page found without room
@@ -199,7 +200,7 @@ pub fn update<R: Runtime>(
 ) -> Result<Updated, heap::Error> {
     let w = Horizon::now(txns, heap);
     let mut j = |p: &Pager<R>, h: &Header| judge_within(txns, p, &w, h);
-    heap.update_pruning(pager, at, xid.0, row, indexed, Some(&mut j))
+    heap.update_pruning(pager, at, xid, row, indexed, Some(&mut j))
 }
 
 /// What a running vacuum is doing to one heap.
@@ -455,7 +456,7 @@ fn run<R: Runtime>(
     clean(pager, txns, sum, &mut dead, &mut marks, &mut report, pass)?;
     report.chunks = finished(large.sweep(
         pager,
-        |x| Ok(txns.status(pager, Xid(x))? != Status::InProgress),
+        |x| Ok(txns.status(pager, x)? != Status::InProgress),
         pass.pace,
     )?)?;
     Ok(report)

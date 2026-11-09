@@ -475,11 +475,14 @@ fn latest<R: Runtime>(
     let mut versions = Vec::new();
     heap.scan(pager, |v| versions.push(v))?;
     let logged = pager.logged_commits();
-    let committed = |x: u64| txns.settled(pager, &logged, Xid(x)).ok_or(damage);
+    let committed = |x: Xid| txns.settled(pager, &logged, x).ok_or(damage);
     let mut rows = Vec::new();
     for v in versions {
-        let gone = Xid(v.header.xmax) != Xid::NONE && committed(v.header.xmax)?;
-        if committed(v.header.xmin)? && !gone {
+        let gone = match v.header.writers.deleter() {
+            Some(x) => committed(x)?,
+            None => false,
+        };
+        if committed(v.header.writers.inserter())? && !gone {
             rows.push(v.row);
         }
     }
@@ -497,7 +500,7 @@ fn visible<R: Runtime>(
     heap.scan(pager, |v| versions.push(v))?;
     let mut out = Vec::new();
     for v in versions {
-        if txns.sees(pager, snapshot, None, v.header.xmin, v.header.xmax)? {
+        if txns.sees(pager, snapshot, None, &v.header.writers)? {
             out.push(v.row);
         }
     }
@@ -1272,7 +1275,7 @@ impl Catalog {
             })?;
             entries.push((index, key));
         }
-        let tid = self.heap(r, c).insert(pager, x.0, row)?;
+        let tid = self.heap(r, c).insert(pager, x, row)?;
         for (index, key) in entries {
             let fresh = index.insert(pager, &Entry { key, ctor, tid })?;
             assert!(fresh, "a new row's entry is not in its index yet");
@@ -1345,10 +1348,8 @@ fn delete_rows<R: Runtime>(
         let Some(at) = left.iter().position(|r| **r == v.row) else {
             continue;
         };
-        if m.txns
-            .sees(pager, m.snapshot, None, v.header.xmin, v.header.xmax)?
-        {
-            heap.delete(pager, heap::WriteTarget::checked(v.tid, v.header), m.x.0)?;
+        if m.txns.sees(pager, m.snapshot, None, &v.header.writers)? {
+            heap.delete(pager, heap::WriteTarget::checked(v.tid, v.header), m.x)?;
             left.swap_remove(at);
         }
     }

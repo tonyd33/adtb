@@ -56,7 +56,7 @@ impl<R: Runtime> Reads for AtMarker<R> {
     fn sees(&self, h: &Header) -> Result<bool, PageError> {
         self.marker
             .snapshot
-            .sees(None, h.xmin, h.xmax, |x| self.txns.status(&self.pager, x))
+            .sees(None, &h.writers, |x| self.txns.status(&self.pager, x))
     }
 
     fn scanning(&self, _: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {

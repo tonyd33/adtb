@@ -221,8 +221,7 @@ impl From<crate::heap::Error> for Error {
                     crate::mvcc::Cause::ConcurrentWrite,
                     current
                         .into_iter()
-                        .map(|h| Xid(h.xmax))
-                        .filter(|x| *x != Xid::NONE)
+                        .filter_map(|h| h.writers.deleter())
                         .collect(),
                 ))
             }

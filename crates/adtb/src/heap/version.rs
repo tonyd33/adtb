@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::key::Tid;
+use crate::mvcc::{Writers, Xid};
 use crate::runtime::Runtime;
 use crate::storage::{PageError, Pager, Pid};
 
@@ -12,37 +13,33 @@ pub const HEADER_LEN: usize = 24;
 /// The header of a row version: its writers and its successor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header {
-    pub xmin: u64,
-    /// Zero when no transaction has deleted or superseded the version.
-    pub xmax: u64,
+    pub writers: Writers,
     pub next: Option<Tid>,
 }
 
 impl Header {
-    /// Returns a header for a version `xmin` inserts.
-    pub fn new(xmin: u64) -> Header {
+    /// Returns a header for a version `x` inserts.
+    pub fn new(x: Xid) -> Header {
         Header {
-            xmin,
-            xmax: 0,
+            writers: Writers::inserted(x),
             next: None,
         }
     }
 
     /// Returns the header at the start of `version`.
     pub fn read(version: &[u8]) -> Header {
-        let word = |i: usize| u64::from_le_bytes(version[i..i + 8].try_into().unwrap());
+        let (writers, next) = version[..HEADER_LEN].split_at(Writers::LEN);
         Header {
-            xmin: word(0),
-            xmax: word(8),
-            next: tid_from_bits(word(16)),
+            writers: Writers::decode(writers.try_into().expect("writers bytes")),
+            next: tid_from_bits(u64::from_le_bytes(next.try_into().expect("next bytes"))),
         }
     }
 
     /// Write the header over the first 24 bytes of `version`.
     pub fn write(&self, version: &mut [u8]) {
-        version[0..8].copy_from_slice(&self.xmin.to_le_bytes());
-        version[8..16].copy_from_slice(&self.xmax.to_le_bytes());
-        version[16..24].copy_from_slice(&self.next.map_or(0, tid_bits).to_le_bytes());
+        version[..Writers::LEN].copy_from_slice(&self.writers.encode());
+        version[Writers::LEN..HEADER_LEN]
+            .copy_from_slice(&self.next.map_or(0, tid_bits).to_le_bytes());
     }
 }
 
@@ -100,7 +97,7 @@ pub(super) fn link_faults(page: &[u8], pid: u64) -> Vec<String> {
             continue;
         }
         let written = link(page, pid, slot).filter(
-            |&to| matches!((header(slot), header(to)), (Some(h), Some(s)) if s.xmin == h.xmax),
+            |&to| matches!((header(slot), header(to)), (Some(h), Some(s)) if h.writers.precedes(&s.writers)),
         );
         match written {
             Some(to) if !successors.insert(to) => {

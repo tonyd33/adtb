@@ -356,8 +356,8 @@ impl Catalog {
         let mut rows = Vec::new();
         let seen = scanned.map_err(Error::from).and_then(|()| {
             for v in versions {
-                if txns.sees(pager, &snapshot, None, v.header.xmin, v.header.xmax)? {
-                    rows.push((Xid(v.header.xmin), v.row));
+                if txns.sees(pager, &snapshot, None, &v.header.writers)? {
+                    rows.push((v.header.writers.inserter(), v.row));
                 }
             }
             Ok(())

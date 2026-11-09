@@ -139,7 +139,7 @@ impl Db {
                 let k = key_of(&v.row);
                 if self
                     .txns
-                    .sees(&self.pager, snapshot, None, v.header.xmin, v.header.xmax)
+                    .sees(&self.pager, snapshot, None, &v.header.writers)
                     .expect("sees")
                     && out.insert(k, (h, v.row)).is_some()
                 {
@@ -167,14 +167,14 @@ impl Db {
                     return true;
                 }
                 first = false;
-                seen.push((l.tid, l.header.xmin, l.header.xmax));
+                seen.push((l.tid, l.header.writers));
                 false
             })
             .expect("walk");
-            for (t, xmin, xmax) in seen {
+            for (t, writers) in seen {
                 if self
                     .txns
-                    .sees(&self.pager, snapshot, None, xmin, xmax)
+                    .sees(&self.pager, snapshot, None, &writers)
                     .expect("sees")
                 {
                     if let Some(v) = self.heaps[h].read(&self.pager, t).expect("read") {
@@ -200,7 +200,7 @@ impl Db {
                 let marked = heap.all_visible(&self.pager, pid).unwrap();
                 let sees = self
                     .txns
-                    .sees(&self.pager, &fresh, None, v.header.xmin, v.header.xmax)
+                    .sees(&self.pager, &fresh, None, &v.header.writers)
                     .unwrap();
                 if marked && !sees {
                     problems.push(format!(
@@ -261,14 +261,12 @@ fn perform(db: &Db, live: &mut Live, op: &Op, xid: Xid) {
         }
         Op::Delete { key } => {
             let (heap, tid, _) = live.remove(key).unwrap();
-            db.heaps[heap]
-                .delete(&db.pager, tid, xid.0)
-                .expect("delete");
+            db.heaps[heap].delete(&db.pager, tid, xid).expect("delete");
         }
         Op::Retag { key, to, row } => {
             let (heap, tid, _) = live[key].clone();
             let t = db.heaps[heap]
-                .retag(&db.pager, tid, xid.0, &db.heaps[*to], row)
+                .retag(&db.pager, tid, xid, &db.heaps[*to], row)
                 .expect("retag");
             db.index(*to, *key, t);
             live.insert(*key, (*to, t, row.clone()));
@@ -465,7 +463,7 @@ fn live_of(db: &Db) -> BTreeMap<u64, Live> {
         for v in versions {
             if db
                 .txns
-                .sees(&db.pager, &s, None, v.header.xmin, v.header.xmax)
+                .sees(&db.pager, &s, None, &v.header.writers)
                 .unwrap()
             {
                 let k = key_of(&v.row);

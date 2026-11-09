@@ -1,7 +1,8 @@
 use adtb_sim::{Config, Outcome, Sim};
 
-use super::{Error, FieldType, Header, Heap, LargeStore, WriteTarget};
+use super::{Error, FieldType, Heap, LargeStore, WriteTarget};
 use crate::key::{Scalar, Value};
+use crate::mvcc::Xid;
 use crate::runtime::Threads;
 use crate::storage::{Options, Pager};
 
@@ -26,37 +27,30 @@ fn rejected_changes(cross_page: bool) {
             let large = LargeStore::create(&pager, 40).unwrap();
             let heap = Heap::create(&pager, 41, fields(), large).unwrap();
             let other = Heap::create(&pager, 42, fields(), large).unwrap();
-            let old = heap.insert(&pager, 1, &[Value::I64(1)]).unwrap();
+            let old = heap.insert(&pager, Xid(1), &[Value::I64(1)]).unwrap();
             if cross_page {
                 while heap.pages(&pager).unwrap().len() == 1 {
-                    heap.insert(&pager, 1, &[Value::I64(9)]).unwrap();
+                    heap.insert(&pager, Xid(1), &[Value::I64(9)]).unwrap();
                 }
             }
             let stale = WriteTarget::checked(old, heap.read(&pager, old).unwrap().unwrap().header);
             let next = heap
-                .update(&pager, stale, 2, &[Value::I64(2)], &[0])
+                .update(&pager, stale, Xid(2), &[Value::I64(2)], &[0])
                 .unwrap();
             assert_eq!(next.tid.page() != old.page(), cross_page);
             let header = heap.read(&pager, old).unwrap().unwrap().header;
-            assert_eq!(
-                header,
-                Header {
-                    xmin: 1,
-                    xmax: 2,
-                    next: Some(next.tid)
-                }
-            );
+            assert_eq!(header, super::tests::header(1, 2, Some(next.tid)));
             let unchanged = heap.headers(&pager).unwrap();
             let expected = Error::Changed {
                 current: Some(header),
             };
             assert_eq!(
-                heap.update(&pager, stale, 3, &[Value::I64(3)], &[]),
+                heap.update(&pager, stale, Xid(3), &[Value::I64(3)], &[]),
                 Err(expected)
             );
-            assert_eq!(heap.delete(&pager, stale, 3), Err(expected));
+            assert_eq!(heap.delete(&pager, stale, Xid(3)), Err(expected));
             assert_eq!(
-                heap.retag(&pager, stale, 3, &other, &[Value::I64(3)]),
+                heap.retag(&pager, stale, Xid(3), &other, &[Value::I64(3)]),
                 Err(expected)
             );
             assert_eq!(heap.restore(&pager, stale), Err(expected));
@@ -120,11 +114,13 @@ fn rollback_cannot_clear_another_writer_header() {
             let pager = Pager::create(rt, &options()).unwrap();
             let large = LargeStore::create(&pager, 40).unwrap();
             let heap = Heap::create(&pager, 41, fields(), large).unwrap();
-            let old = heap.insert(&pager, 1, &[Value::I64(1)]).unwrap();
-            heap.delete(&pager, old, 2).unwrap();
+            let old = heap.insert(&pager, Xid(1), &[Value::I64(1)]).unwrap();
+            heap.delete(&pager, old, Xid(2)).unwrap();
             let restore =
                 WriteTarget::checked(old, heap.read(&pager, old).unwrap().unwrap().header);
-            let new = heap.update(&pager, old, 3, &[Value::I64(3)], &[]).unwrap();
+            let new = heap
+                .update(&pager, old, Xid(3), &[Value::I64(3)], &[])
+                .unwrap();
             let header = heap.read(&pager, old).unwrap().unwrap().header;
             assert_eq!(
                 heap.restore(&pager, restore),

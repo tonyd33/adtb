@@ -1,11 +1,12 @@
 use crate::key::{CtorId, F32, F64, Scalar, Tid, Value};
+use crate::mvcc::{Xid, writers};
 use crate::storage::{self, PageKind, Pid};
 
 use super::dir::{category, need_category};
 use super::page::{self, Arrangement, Slot};
 use super::prune::{self, Fate};
 use super::row::{CtorType, FieldType, Layout, Pointer, Stored};
-use super::version::{Flags, Header, tid_bits, tid_from_bits};
+use super::version::{self, Flags, Header, tid_bits, tid_from_bits};
 use super::vm;
 use super::{fixed, slotted};
 
@@ -29,18 +30,22 @@ fn heap_page(arrangement: Arrangement, position: u32) -> Vec<u8> {
 
 fn version(xmin: u64, body: &[u8]) -> Vec<u8> {
     let mut v = vec![0; 24];
-    Header::new(xmin).write(&mut v);
+    Header::new(Xid(xmin)).write(&mut v);
     v.extend_from_slice(body);
     v
 }
 
+/// Returns the header of a version `xmin` inserted, `xmax` deleted, none when 0, naming `next`.
+pub(super) fn header(xmin: u64, xmax: u64, next: Option<Tid>) -> Header {
+    let mut h = Header::new(Xid(xmin));
+    h.writers = writers(xmin, xmax);
+    h.next = next;
+    h
+}
+
 #[test]
 fn header_round_trips_and_zero_next_is_none() {
-    let h = Header {
-        xmin: 5,
-        xmax: u64::MAX,
-        next: Tid::new((1 << 48) - 1, 65535),
-    };
+    let h = header(5, u64::MAX, Tid::new((1 << 48) - 1, 65535));
     let mut b = [0; 24];
     h.write(&mut b);
     assert_eq!(h, Header::read(&b));
@@ -79,7 +84,7 @@ fn fixed_page_fills_every_slot_then_refuses() {
     };
     assert_eq!(Flags(17), flags);
     assert_eq!(width, at.len());
-    assert_eq!(18, Header::read(&p[at.clone()]).xmin);
+    assert_eq!(writers(18, 0), Header::read(&p[at.clone()]).writers);
     assert_eq!([17; 8], p[at.start + 24..at.start + 32]);
     assert_eq!(Slot::Unused, page::get(&p, n));
 }
@@ -563,12 +568,7 @@ const PID: u64 = 40;
 
 fn linked(xmin: u64, xmax: u64, next: Option<u16>) -> Vec<u8> {
     let mut v = vec![0; 24];
-    Header {
-        xmin,
-        xmax,
-        next: next.map(|s| Tid::new(PID, s).unwrap()),
-    }
-    .write(&mut v);
+    header(xmin, xmax, next.map(|s| Tid::new(PID, s).unwrap())).write(&mut v);
     v.extend_from_slice(&[0; 16]);
     v
 }
@@ -594,10 +594,10 @@ fn plan_with(page: &[u8], fate: impl Fn(&Header) -> Fate, cleaned: &[usize]) -> 
 }
 
 fn dead_below(w: u64) -> impl Fn(&Header) -> Fate {
-    move |h| match h.xmax {
-        0 => Fate::AllVisible,
-        x if x < w => Fate::Remove,
-        _ => Fate::Keep,
+    move |h| match h.writers.deleter() {
+        None => Fate::AllVisible,
+        Some(x) if x < Xid(w) => Fate::Remove,
+        Some(_) => Fate::Keep,
     }
 }
 
@@ -620,7 +620,7 @@ fn a_chain_with_dead_leading_versions_redirects_to_its_first_live_one() {
 fn a_dead_chain_leaves_its_first_slot_dead_until_its_entries_go() {
     let mut p = chain(Arrangement::Slotted);
     let gone = |h: &Header| {
-        if h.xmax == 0 {
+        if h.writers.deleter().is_none() {
             Fate::Remove
         } else {
             dead_below(4)(h)
@@ -649,7 +649,7 @@ fn a_fixed_page_frees_a_chain_only_whole() {
     let plan = plan_with(&p, dead_below(4), &[]);
     assert!(plan.release.is_empty() && plan.dead.is_empty() && !plan.all_visible);
     let gone = |h: &Header| {
-        if h.xmax == 0 {
+        if h.writers.deleter().is_none() {
             Fate::Remove
         } else {
             dead_below(4)(h)
@@ -665,15 +665,30 @@ fn a_fixed_page_frees_a_chain_only_whole() {
 }
 
 #[test]
+fn a_hot_link_from_a_version_with_no_deleter_names_no_successor_even_of_inserter_zero() {
+    let mut p = heap_page(Arrangement::Slotted, 0);
+    page::insert(&mut p, &linked(1, 0, Some(1)), Flags::HOT_UPDATED).unwrap();
+    page::insert(&mut p, &linked(0, 0, None), Flags::HEAP_ONLY).unwrap();
+    assert_eq!(
+        vec!["slot 0 is hot-updated but names no heap-only successor".to_string()],
+        version::link_faults(&p, PID)
+    );
+}
+
+#[test]
 fn an_aborted_successor_is_freed_and_its_predecessor_cleared() {
     let mut p = heap_page(Arrangement::Slotted, 0);
     let old = linked(1, 2, Some(1));
     page::insert(&mut p, &old, Flags::HOT_UPDATED).unwrap();
     page::insert(&mut p, &linked(2, 0, None), Flags::HEAP_ONLY).unwrap();
-    let judge = |h: &Header| match (h.xmin, h.xmax) {
-        (2, _) => Fate::Remove,
-        (_, 2) => Fate::Clear,
-        _ => Fate::AllVisible,
+    let judge = |h: &Header| {
+        if h.writers.inserted_by(Xid(2)) {
+            Fate::Remove
+        } else if h.writers.deleted_by(Xid(2)) {
+            Fate::Clear
+        } else {
+            Fate::AllVisible
+        }
     };
     let plan = plan_with(&p, judge, &[]);
     assert_eq!(vec![0], plan.clear);
@@ -684,7 +699,7 @@ fn an_aborted_successor_is_freed_and_its_predecessor_cleared() {
         panic!("slot 0 lost its version");
     };
     assert_eq!(Flags::NONE, flags);
-    assert_eq!(Header::new(1), Header::read(&p[at]));
+    assert_eq!(Header::new(Xid(1)), Header::read(&p[at]));
     assert_eq!(1, page::slot_count(&p));
 }
 
