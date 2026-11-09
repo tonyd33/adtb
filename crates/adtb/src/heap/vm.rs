@@ -110,30 +110,76 @@ fn set_bit(leaf: &mut [u8], i: u64, on: bool) {
 pub struct Vm {
     root: Pid,
     owner: u32,
+    /// The directory root naming `root`.
+    named_by: Pid,
 }
 
 impl Vm {
-    pub fn create<R: Runtime>(pager: &Pager<R>, owner: u32) -> Result<Vm, PageError> {
-        let root = pager.allocate(1, PageKind::VisibilityMap, owner)?;
-        Ok(Vm { root, owner })
+    /// Returns the root of a new empty map of `owner`.
+    pub fn create<R: Runtime>(pager: &Pager<R>, owner: u32) -> Result<Pid, PageError> {
+        pager.allocate(1, PageKind::VisibilityMap, owner)
     }
 
-    pub fn open(root: Pid, owner: u32) -> Vm {
-        Vm { root, owner }
+    pub fn open(root: Pid, owner: u32, named_by: Pid) -> Vm {
+        Vm {
+            root,
+            owner,
+            named_by,
+        }
     }
 
-    pub fn root(&self) -> Pid {
-        self.root
+    /// Returns the map's root as `stage` holds it, or as the pager does, read without latching
+    /// it. Refuse the directory root naming it, as [`Vm::refuse`] does, when it is not a map page
+    /// of the heap.
+    fn top<'p, R: Runtime>(
+        &self,
+        stage: &mut Stage<'p, R>,
+        pager: &'p Pager<R>,
+    ) -> Result<PageCopy, PageError> {
+        let node = stage.read(pager, Rank::Vm(self.root))?;
+        if shaped(&node, self.owner, None) {
+            return Ok(node);
+        }
+        Err(self.refuse(stage, pager, self.named_by))
+    }
+
+    /// Returns map page `at`, latched and staged in `stage`. Refuse the page naming it, as
+    /// [`Vm::refuse`] does, when it is not a map page of the heap: the root at any level, any
+    /// other page one level below `parent`, the map page naming it and its level.
+    fn latched<'s, 'p, R: Runtime>(
+        &self,
+        stage: &'s mut Stage<'p, R>,
+        pager: &'p Pager<R>,
+        at: Pid,
+        parent: Option<(Pid, u32)>,
+    ) -> Result<&'s mut PageCopy, PageError> {
+        let node = stage.page(pager, Rank::Vm(at))?;
+        if !shaped(node, self.owner, parent.map(|(_, l)| l)) {
+            let blamed = parent.map_or(self.named_by, |(p, _)| p);
+            return Err(self.refuse(stage, pager, blamed));
+        }
+        stage.page(pager, Rank::Vm(at))
+    }
+
+    /// Abandon the change `stage` holds, then record `blamed` as damaged.
+    fn refuse<'p, R: Runtime>(
+        &self,
+        stage: &mut Stage<'p, R>,
+        pager: &'p Pager<R>,
+        blamed: Pid,
+    ) -> PageError {
+        stage.abandon();
+        pager.damage(blamed, Damage::Checksum)
     }
 
     /// Returns map page `pid` as `stage` holds it, or as the pager does, read without latching it.
-    /// Record `parent`, the map page naming it, as damaged when `pid` is not a map page of the
-    /// heap one level below it.
+    /// Refuse `parent`, the map page naming it, as [`Vm::refuse`] does when `pid` is not a map
+    /// page of the heap one level below it.
     ///
-    /// Precondition: the caller holds no latch on `parent`, and `stage` holds no copy of it.
+    /// Precondition: the caller holds no latch on `parent` outside `stage`.
     fn child<'p, R: Runtime>(
         &self,
-        stage: &Stage<'p, R>,
+        stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
         pid: Pid,
         parent: (Pid, u32),
@@ -142,18 +188,18 @@ impl Vm {
         if shaped(&node, self.owner, Some(parent.1)) {
             return Ok(node);
         }
-        Err(pager.damage(parent.0, Damage::Checksum))
+        Err(self.refuse(stage, pager, parent.0))
     }
 
     /// Returns the leaf covering `pid`, if one exists, as `stage` holds the map.
     fn leaf<'p, R: Runtime>(
         &self,
-        stage: &Stage<'p, R>,
+        stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
         pid: Pid,
     ) -> Result<Option<Pid>, PageError> {
         let size = pager.page_size();
-        let mut node = stage.read(pager, Rank::Vm(self.root))?;
+        let mut node = self.top(stage, pager)?;
         if pid.0 >= reach(size, level(&node)) {
             return Ok(None);
         }
@@ -171,7 +217,7 @@ impl Vm {
     /// Returns whether the bit of `pid` is set.
     pub fn get<'p, R: Runtime>(
         &self,
-        stage: &Stage<'p, R>,
+        stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
         pid: Pid,
     ) -> Result<bool, PageError> {
@@ -219,7 +265,7 @@ impl Vm {
         let size = pager.page_size();
         loop {
             let mut stage = Stage::new();
-            let root = stage.page(pager, Rank::Vm(self.root))?;
+            let root = self.latched(&mut stage, pager, self.root, None)?;
             let l = level(root);
             if pid.0 < reach(size, l) {
                 break;
@@ -234,18 +280,17 @@ impl Vm {
             stage.page(pager, Rank::Vm(moved))?[CONTENTS..].copy_from_slice(&contents);
             stage.commit_with(pager, new)?;
         }
-        let mut at = self.root;
+        let (mut at, mut parent) = (self.root, None);
         loop {
             let mut stage = Stage::new();
-            let node = stage.page(pager, Rank::Vm(at))?;
+            let node = self.latched(&mut stage, pager, at, parent)?;
             let l = level(node);
             if l == 0 {
                 return Ok(());
             }
             let i = child_index(size, l, pid);
+            parent = Some((at, l));
             if let Some(c) = child(node, i) {
-                drop(stage);
-                self.child(&Stage::new(), pager, c, (at, l))?;
                 at = c;
                 continue;
             }
@@ -266,8 +311,10 @@ impl Vm {
         let mut todo = vec![(self.root, 0, None)];
         while let Some((at, base, parent)) = todo.pop() {
             let node = match parent {
-                None => pager.read_formatted(at)?.to_vec(),
-                Some(parent) => self.child(&Stage::new(), pager, at, parent)?.into_bytes(),
+                None => self.top(&mut Stage::new(), pager)?.into_bytes(),
+                Some(parent) => self
+                    .child(&mut Stage::new(), pager, at, parent)?
+                    .into_bytes(),
             };
             let l = level(&node);
             if l == 0 {

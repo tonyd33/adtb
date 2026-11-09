@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::key::{Tid, Value};
 use crate::runtime::Runtime;
-use crate::storage::{self, PageError, Pager, Pid};
+use crate::storage::{PageError, Pager, Pid};
 
 use super::chain;
 use super::handle::{Heap, Version, tid};
@@ -32,13 +32,16 @@ impl Heap {
             let Some(page) = self.page(&guard) else {
                 return Ok(());
             };
+            let Some(format) = self.format_of(page) else {
+                return Err(Heap::refuse_format(pager, pid, guard));
+            };
             let mut roots: BTreeMap<usize, Vec<Tid>> = BTreeMap::new();
             for (root, members) in chain::roots(page, |s| chain::link(page, pid.0, s)) {
                 for member in members {
                     roots.entry(member).or_default().push(tid(pid, root));
                 }
             }
-            for v in self.versions_on(pager, pid, page)? {
+            for v in self.versions_on(pager, pid, page, format)? {
                 let rooted = roots.remove(&usize::from(v.tid.slot()));
                 let root = rooted.unwrap_or_else(|| vec![v.tid]);
                 found.push((v, root));
@@ -63,7 +66,9 @@ impl Heap {
         let Some(page) = self.page(&guard) else {
             return Ok(None);
         };
-        let format = storage::format(&page);
+        let Some(format) = self.format_of(page) else {
+            return Err(Heap::refuse_format(pager, pid, guard));
+        };
         let link = |s| chain::link(page, pid.0, s);
         let Some(members) = chain::from(page, usize::from(at.slot()), link) else {
             return Ok(None);

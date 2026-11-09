@@ -235,7 +235,7 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
         let copy = self.stage.read(pager, Rank::Heap(pid))?;
         let page = HeapPage::any(&copy).expect("a page pruned is a heap page");
         let vm = heap.vm(&mut self.stage, pager)?;
-        let bit = vm.get(&self.stage, pager, pid)?;
+        let bit = vm.get(&mut self.stage, pager, pid)?;
         let mut after = HeapPageMut::any(&mut pruned).expect("a pruned page is a heap page");
         let removed = after.view().is_empty();
         let visible = all_visible && !removed;

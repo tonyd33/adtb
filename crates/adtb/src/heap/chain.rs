@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 
 use crate::key::{Tid, Value};
 use crate::runtime::Runtime;
-use crate::storage::{self, PageError, Pager, Pid};
+use crate::storage::{PageError, Pager, Pid};
 
 use super::handle::{Heap, HeapNo, Link, tid};
 use super::page::{HeapPage, Owned, Slot};
@@ -204,7 +204,9 @@ fn stretch<R: Runtime>(
         return Ok((found, None));
     };
     let in_sum = |h| sum.iter().any(|s| s.borrow().id() == h);
-    let format = storage::format(&page);
+    let Some(format) = holder.format_of(page) else {
+        return Err(Heap::refuse_format(pager, Pid(pid), guard));
+    };
     loop {
         let Some((link, range)) = link_at(page, holder.id(), at) else {
             return Ok((found, None));

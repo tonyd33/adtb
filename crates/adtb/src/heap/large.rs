@@ -230,12 +230,7 @@ impl LargeStore {
             let mut page = HeapPageMut::any(copy).expect("a page of the store is a heap page");
             let Some(slot) = page.insert(tuple, Flags::NONE) else {
                 drop(write);
-                let mut fix = HeapWrite::new(pager);
-                fix.stage().page(pager, Rank::Store(pid))?;
-                let above = self
-                    .space
-                    .reflect(fix.stage(), pager, pid, FORMAT, Fit::Refused)?;
-                fix.commit_store(pager.reserve(), above)?;
+                self.refused(pager, pid)?;
                 continue;
             };
             if let Some(t) = tail {
@@ -250,6 +245,20 @@ impl LargeStore {
             write.commit_store(pager.reserve(), above)?;
             return Ok(tid(pid, slot));
         }
+    }
+
+    /// Set the directory entry of `pid`, a page that could not take a chunk, from the page. Leave
+    /// a page no longer of the store alone.
+    pub(super) fn refused<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), PageError> {
+        let mut fix = HeapWrite::new(pager);
+        let copy = fix.stage().page(pager, Rank::Store(pid))?;
+        if store_page(copy, self.id()).is_none() {
+            return Ok(());
+        }
+        let above = self
+            .space
+            .reflect(fix.stage(), pager, pid, FORMAT, Fit::Refused)?;
+        fix.commit_store(pager.reserve(), above)
     }
 
     /// Returns the pages a sweep reads: those touched since the sweep that last left them, in

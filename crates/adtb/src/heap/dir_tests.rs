@@ -11,7 +11,7 @@ use crate::heap::{Error, FieldType, Heap, LargeStore};
 use crate::key::{Scalar, Value};
 use crate::mvcc::Fate;
 use crate::mvcc::Xid;
-use crate::storage::{Damage, Options, PageError, PageKind, Pager, Pid, Quarantine, Stopped};
+use crate::storage::{self, Damage, Options, PageError, PageKind, Pager, Pid, Quarantine, Stopped};
 
 use super::super::page::{Arrangement, CONTENTS, HeapPage, Kinded};
 use super::super::stage::Stage;
@@ -51,7 +51,7 @@ fn heap_over_two_leaves(pager: &Pager<OsRuntime>, id: u32) -> (Heap, Vec<Pid>) {
     let heap = Heap::create_with_fanout(pager, id, row, large, 2).unwrap();
     let map = Space::open(id, heap.root()).vm(&mut Stage::new(), pager);
     let reach = vm::reach(pager.page_size(), 0);
-    Vm::open(map.unwrap().unwrap(), id)
+    Vm::open(map.unwrap().unwrap(), id, heap.root())
         .extend(pager, Pid(reach))
         .unwrap();
     let owned = heap.owned_pages(pager).unwrap();
@@ -284,7 +284,8 @@ fn a_map_root_naming_itself_in_child_slot_0_stops_each_walk_within_a_bound() {
     let visible = within(&rt, move || h.all_visible(&p, Pid(5)));
     assert_eq!(refused(heaps[2].1), visible);
     let (p, (id, root)) = (pager, (heaps[3].0.id().0, heaps[3].1));
-    let extended = within(&rt, move || Vm::open(root, id).extend(&p, Pid(5)));
+    let named_by = heaps[3].0.root();
+    let extended = within(&rt, move || Vm::open(root, id, named_by).extend(&p, Pid(5)));
     assert_eq!(refused(root), extended);
 }
 
@@ -562,10 +563,11 @@ fn damage_is_recorded_outside_storage_only_by_these_functions() {
         "api/error.rs::a_damaged_page_met_writing_catalog_rows_is_a_storage_failure",
         "api/verify.rs::damage_kept_store",
         "heap/dir.rs::refuse",
+        "heap/handle/mod.rs::refuse_format",
         "heap/large.rs::chunks",
         "heap/large.rs::read",
         "heap/large.rs::update",
-        "heap/vm.rs::child",
+        "heap/vm.rs::refuse",
         "mvcc/clog.rs::read_role",
         "mvcc/clog.rs::unresolved",
         "testing/plant.rs::plant",
@@ -573,4 +575,33 @@ fn damage_is_recorded_outside_storage_only_by_these_functions() {
         "write/verify.rs::every_other_problem_is_a_finding",
     ];
     assert_eq!(BTreeSet::from(expected.map(String::from)), found);
+}
+
+type MapRead = fn(&Vm, &Pager<OsRuntime>) -> Result<(), PageError>;
+
+#[test]
+fn a_map_root_another_heap_now_owns_is_refused_at_the_directory_root_naming_it() {
+    let reads: [(&str, MapRead); 3] = [
+        ("get", |m, p| m.get(&mut Stage::new(), p, Pid(5)).map(drop)),
+        ("marked", |m, p| m.marked(p).map(drop)),
+        ("extend", |m, p| {
+            m.extend(p, Pid(vm::reach(p.page_size(), 1)))
+        }),
+    ];
+    for (what, read) in reads {
+        let scratch = Scratch::new("heap-dir", &format!("map-root-foreign-{what}"));
+        let pager = pager(&scratch);
+        let (a, a_map) = heap_over_two_leaves(&pager, 7);
+        let (_, b_map) = heap_over_two_leaves(&pager, 8);
+        let map = Space::open(7, a.root()).vm(&mut Stage::new(), &pager);
+        let map = Vm::open(map.unwrap().unwrap(), 7, a.root());
+        let b_root = pager.read(b_map[1]).unwrap().to_vec();
+        pager
+            .update(&[a_map[1]], |p| {
+                p[0][storage::FIRST_EDITABLE..].copy_from_slice(&b_root[storage::FIRST_EDITABLE..]);
+            })
+            .unwrap();
+        assert_eq!(refused(a.root()), read(&map, &pager), "{what}");
+        pager.close();
+    }
 }

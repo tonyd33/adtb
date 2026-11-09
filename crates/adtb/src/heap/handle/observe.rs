@@ -22,14 +22,9 @@ impl Heap {
         pager: &Pager<R>,
         tid: Tid,
     ) -> Result<Option<Vec<Pointer>>, PageError> {
-        let guard = pager.read(Pid(tid.page()))?;
-        let Some(page) = self.page(&guard) else {
-            return Ok(None);
-        };
-        Ok(match page.get(usize::from(tid.slot())) {
-            Slot::Normal { at, .. } => Some(self.pointers(storage::format(&page), &page[at])),
-            _ => None,
-        })
+        Ok(self
+            .raw(pager, tid)?
+            .map(|(format, _, bytes)| self.pointers(format, &bytes)))
     }
 
     /// Returns whether the header of page `pid` has the all-visible flag set.

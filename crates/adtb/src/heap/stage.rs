@@ -126,6 +126,11 @@ impl<'p, R: Runtime> Stage<'p, R> {
         })
     }
 
+    /// Release every latch the stage holds and forget every staged copy, abandoning its change.
+    pub fn abandon(&mut self) {
+        self.pages.clear();
+    }
+
     /// Release the latch on `pid` and forget its staged copy.
     ///
     /// Precondition: the staged copy of `pid` is unchanged.

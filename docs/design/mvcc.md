@@ -442,10 +442,14 @@ The write layer passes a checked version target containing the TID and the
 header whose deleter it checked against the commit log. An update, delete,
 retag or restore using that target compares the complete header under the
 old page's exclusive latch before changing it. A mismatch returns a changed
-version error and commits neither the old-page change nor a successor. The
-write layer treats a mismatch as a serialization failure, so a registered
-call retries the whole transaction at a new snapshot. A restore names the
-exact header installed by the statement being undone.
+version error and commits neither the old-page change nor a successor. A
+target whose slot holds no version is a mismatch with no current version. A
+target whose page is not a heap page of its heap is damage: the heap answers
+a mismatch with no current version, and the retry's read of the version
+refuses the page and marks its holder. The write layer treats a mismatch as
+a serialization failure, so a registered call retries the whole transaction
+at a new snapshot. A restore names the exact header installed by the
+statement being undone.
 
 Every caller other than a heap test passes a checked target. A test passing
 only a TID excludes concurrent changes to that version for the duration of
