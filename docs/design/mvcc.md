@@ -297,8 +297,8 @@ the page's LSN, so the open reads the retained log from the oldest LSN
 of a status page holding such an id to the end of the log recovery
 kept. When that stretch of the log is not whole and readable (a segment
 it cannot list, open or read, a batch whose records do not decode, or a
-block missing), the open quarantines the whole database as a damaged
-status page does and settles no id.
+block missing), the open quarantines the whole database for that open
+only, writing no mark, and settles no id.
 
 A status page whose LSN is below the one the pager expects of it
 ([storage.md §3](storage.md#3-corruption-detection)) is refused stale to

@@ -223,6 +223,8 @@ struct PageEvidence {
     held: Option<Damage>,
     /// The damage mapped this open, with the objects it quarantines.
     mapped: Option<(Damage, BTreeSet<Quarantine>)>,
+    /// The damage whose last mapping set a mark only in memory, with the objects it marks.
+    unwritten: Option<(Damage, BTreeSet<Quarantine>)>,
     /// The damage whose last mapping was incomplete.
     incomplete: Option<Damage>,
     /// The thread whose read last detected the damage.
@@ -241,6 +243,7 @@ impl PageEvidence {
             recorded: None,
             held: None,
             mapped: None,
+            unwritten: None,
             incomplete: None,
             detected_by: None,
             retired: false,
@@ -254,6 +257,7 @@ impl PageEvidence {
             && self.recorded.is_none()
             && self.held.is_none()
             && self.mapped.is_none()
+            && self.unwritten.is_none()
             && self.incomplete.is_none()
             && self.detected_by.is_none()
             && !self.retired
@@ -317,7 +321,7 @@ pub(super) struct Evidence {
     /// The LSN `unfolded_from` held when a fold took the records, until that fold's change of the
     /// list page is logged.
     folding: Option<Lsn>,
-    /// Whether the open found no list page to read.
+    /// Whether the open found no list page to read, or read it with no check of its LSN.
     list_unread: bool,
     /// Stale blocks recovery found past the end of the log.
     log: BTreeSet<LogFinding>,
@@ -383,6 +387,7 @@ impl Evidence {
         }
         if p.damage().is_none() {
             p.mapped = None;
+            p.unwritten = None;
             p.incomplete = None;
             p.detected_by = None;
         }
@@ -444,6 +449,7 @@ impl Evidence {
                 Incarnation::Live(generation)
             };
             p.mapped = None;
+            p.unwritten = None;
             p.incomplete = None;
             p.detected_by = None;
         });
@@ -662,7 +668,8 @@ impl Evidence {
 
     /// Take `base`, the list page's records, `None` when the page does not serve, then what replay
     /// met past it and `header_log` and `header_full`, the log findings the file header holds, as
-    /// the records. Name `list` as the list page, and serve it when `base` is given.
+    /// the records. Name `list` as the list page, and serve it when `base` is given and the
+    /// read-in gate is armed.
     pub(super) fn load_list(
         &mut self,
         base: Option<Recorded>,
@@ -670,7 +677,7 @@ impl Evidence {
         header_log: Vec<LogFinding>,
         header_full: bool,
     ) {
-        let sound = base.is_some();
+        let sound = base.is_some() && matches!(self.gate, Gate::Armed(_));
         self.list_unread = !sound;
         let mut recorded = base.unwrap_or_default();
         let mut unfolded = !header_log.is_empty() || header_full;
@@ -737,12 +744,28 @@ impl Evidence {
             self.update(pid, |p| match objects {
                 Some(objects) => {
                     p.incomplete = None;
+                    p.unwritten = None;
                     p.mapped = Some((damage, objects));
                 }
                 None => p.incomplete = Some(damage),
             });
         }
         self.publish();
+    }
+
+    /// Enter each of `unwritten` still current since `begun` as marked only in memory, leaving it
+    /// unmapped.
+    pub(super) fn unwritten(&mut self, begun: Epoch, unwritten: Vec<Mapping>) {
+        for (pending, objects) in unwritten {
+            if !self.is_current(begun, &pending) {
+                continue;
+            }
+            let Pending { pid, damage, .. } = pending;
+            self.update(pid, |p| {
+                p.mapped = None;
+                p.unwritten = objects.map(|o| (damage, o));
+            });
+        }
     }
 
     /// Hold `pids`, pages of a tree a swap replaced, as retired until each one's own free.
@@ -818,6 +841,14 @@ impl Evidence {
     pub(super) fn mapped_to(&self, pid: Pid) -> Option<BTreeSet<Quarantine>> {
         let p = self.pages.get(&pid)?;
         let (damage, objects) = p.mapped.as_ref()?;
+        (p.damage() == Some(*damage)).then(|| objects.clone())
+    }
+
+    /// Returns what the damage of `pid` marks this open, durably or only in memory, `None` while
+    /// no mapping has set its marks.
+    pub(super) fn marked_to(&self, pid: Pid) -> Option<BTreeSet<Quarantine>> {
+        let p = self.pages.get(&pid)?;
+        let (damage, objects) = p.mapped.as_ref().or(p.unwritten.as_ref())?;
         (p.damage() == Some(*damage)).then(|| objects.clone())
     }
 

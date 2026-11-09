@@ -12,7 +12,9 @@ use crate::key::Value;
 use crate::runtime::{Clock, Io, Op, Runtime, Threads};
 use crate::storage::order::ordered_for_test;
 use crate::storage::policy::{self, Fault, Holder, Mark, Phase};
-use crate::storage::{Damage, HEADER_LEN, Options, PageError, Pager, Pid, Quarantine, Stopped};
+use crate::storage::{
+    Damage, HEADER_LEN, MarkFailure, Options, PageError, Pager, Pid, Quarantine, Stopped,
+};
 use crate::{
     CallOptions, Called, Database, Error, FatalReason, Log, OpenOptions, Registration,
     TxnCallOptions, TxnOptions,
@@ -147,6 +149,61 @@ fn a_database_mark_covers_every_object() {
     });
 }
 
+/// Returns a closed file of `sim` holding two heap pages, the second written with 9, whose marks
+/// page fails its checksum, and the pages.
+fn with_damaged_marks_page(sim: &mut Sim) -> (Sim, [Pid; 2]) {
+    create(sim);
+    let pages = with_pager(sim, |p| {
+        let kind = crate::storage::PageKind::HeapSlotted;
+        let pages = [
+            p.allocate(1, kind, 7).unwrap(),
+            p.allocate(1, kind, 7).unwrap(),
+        ];
+        p.update(&[pages[1]], |page| page[0][HEADER_LEN] = 9)
+            .unwrap();
+        p.close();
+        pages
+    });
+    let page = with_pager(sim, Pager::quarantine_page);
+    let mut files = sim.files();
+    DataFile::new(NAME, PAGE).flip(&mut files, page, 200 - HEADER_LEN);
+    (Sim::with_files(4, Config::default(), files), pages)
+}
+
+#[test]
+fn a_swap_naming_no_mark_needs_no_readable_marks_page() {
+    let (mut sim, [to, from]) = with_damaged_marks_page(&mut Sim::new(4, Config::default()));
+    let (value, freed) = with_pager(&mut sim, |p| {
+        p.replace_contents(to, from, None).unwrap();
+        (p.read(to).unwrap()[HEADER_LEN], p.is_free(from))
+    });
+    assert_eq!((9, Ok(true)), (value, freed));
+}
+
+#[test]
+fn a_mark_failing_on_a_damaged_marks_page_leaves_its_record_unmapped() {
+    let (mut sim, [pid, _]) = with_damaged_marks_page(&mut Sim::new(4, Config::default()));
+    with_pager(&mut sim, |p| {
+        let page = p.quarantine_page();
+        let heap = Holder::Relation {
+            object: Quarantine::Heap(7),
+            engine_module: false,
+        };
+        p.damage(pid, Damage::Checksum);
+        let failed = p.map_damage(|_| Some(BTreeSet::from([heap])), &ordered_for_test());
+        let refused = MarkFailure::Page(PageError {
+            pid: page,
+            damage: Damage::Checksum,
+        });
+        assert_eq!(BTreeMap::from([(Quarantine::Heap(7), refused)]), failed);
+        assert_eq!(None, p.mapped_to(pid));
+        assert_eq!(
+            Some(BTreeSet::from([Quarantine::Heap(7)])),
+            p.marked_to(pid)
+        );
+    });
+}
+
 #[test]
 fn a_damaged_mark_page_quarantines_the_database() {
     let mut sim = Sim::new(4, Config::default());
@@ -163,10 +220,10 @@ fn a_damaged_mark_page_quarantines_the_database() {
     with_pager(&mut sim, |p| {
         assert!(Probe::of(p).marked(Quarantine::Database));
         assert_eq!(
-            Err(PageError {
+            Err(MarkFailure::Page(PageError {
                 pid: page,
                 damage: Damage::Checksum,
-            }),
+            })),
             p.quarantine(Quarantine::Heap(1), &ordered_for_test())
         );
     });

@@ -109,7 +109,7 @@ pub use pager::{
     LATCHES_PER_THREAD, Options, PageError, PageExclusive, PageOptimistic, PageShared, Pager,
 };
 pub(crate) use quarantine::StaleCopy;
-pub use quarantine::{Quarantine, Stopped};
+pub use quarantine::{MarkFailure, Quarantine, Stopped};
 #[cfg(test)]
 pub use record::Edit;
 pub(crate) use record::{Malformed, Reader};

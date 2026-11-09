@@ -959,9 +959,13 @@ catalog or the allocator, quarantines the whole database as a commit log
 page does.
 
 A commit log page that fails verification quarantines the whole
-database, since the visibility of every relation reads the commit log,
-and so does a retained log the open cannot read whole when it settles
-the ids a crash left in progress:
+database, since the visibility of every relation reads the commit log.
+A status page the retained log cannot prove, when the open settles the
+ids a crash left in progress, holds the database for that open only and
+writes no mark, whatever stopped the proof: a gap or undecodable batch
+that left the read-in gate unarmed, a log that cannot load, or no batch
+starting at the status page's LSN. A mark held so stops every recycle,
+so the next open finds the same log and proves again. Under either,
 every transaction is refused with the corruption fault, and the
 database opens for `verify` and `dump` only
 ([mvcc.md §4.2](mvcc.md#42-the-commit-log)).
@@ -1032,7 +1036,15 @@ at open quarantines the database, and `quarantine` and `release` then
 fail with its damage.
 
 `quarantine` of an object already marked writes nothing, and every caller
-returns with the mark durable. When it fails, the mark still holds in
+returns with the mark durable, also while the open holds a mark for that
+open only. A mark held so is never written. A marks page the open read
+with no check of its LSN (§10.3) is never written either: every mark of
+that open then fails as unverified and lives in memory for that open
+only, and the mapper leaves the record it maps unmapped, so the next open
+that checks the page maps it again. These are the damage records under
+an open-only quarantine; the database is held for that open already. A `verify` finding met in
+such an open marks in memory only, and the next `verify` finds it again.
+When it fails, the mark still holds in
 memory until the pager closes. An I/O failure reading the marks' page at
 open fails the open and marks nothing.
 
@@ -1223,9 +1235,11 @@ replay: it reads the whole map, then scans the retained log to the end
 recovery kept, decoding only the page and LSN of each record. A segment
 it cannot list, open or read, a block missing or a batch whose records
 do not decode before that end quarantines the whole database for that
-open and writes nothing, no mark included; a map page the open cannot
+open and writes no mark for it; a map page the open cannot
 read does the same. While the database is held quarantined this way,
-no page read in is checked against an expected LSN. Damaging a page
+no page read in is checked against an expected LSN, and the marks page,
+read with no check, is never written: a mark set in that open, and a
+damage record it maps, live in memory for that open only (§8). Damaging a page
 outside recovery writes its memory first when it holds changes the file
 lacks, then drops it, so its entry leaves the dirty page table at the
 next force. On a file quarantined whole the memory is dropped unwritten

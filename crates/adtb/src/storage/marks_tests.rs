@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use adtb_sys::os::{Backend, Faults, OsRuntime};
 use adtb_testkit::scratch::Scratch;
 
-use super::{Destination, Marks, Quarantine};
+use super::{Marks, Quarantine, Unwritable};
 use crate::storage::Pid;
 use crate::storage::pager::{Options, Pager};
 
@@ -14,7 +14,7 @@ fn the_any_flag_follows_the_marks_after_every_change() {
     let scratch = Scratch::new("storage", "marks-any");
     let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
     let marks = Marks::new(PAGE);
-    marks.load(&rt, PAGE, Ok(BTreeSet::new()));
+    marks.load(&rt, PAGE, Ok(BTreeSet::new()), true);
     assert!(!marks.any());
     let heap = Quarantine::Heap(1);
     let index = Quarantine::Index(2);
@@ -37,7 +37,6 @@ fn the_any_flag_follows_the_marks_after_every_change() {
     assert!(!marks.any());
     marks.hold(&rt, Quarantine::Database);
     assert!(marks.any());
-    assert_eq!(Destination::Memory, marks.destination(&rt));
     marks.change(&rt, |s| {
         s.insert(heap);
     });
@@ -53,15 +52,15 @@ fn marks_set_for_a_page_that_does_not_decode_take_no_write() {
     let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
     let marks = Marks::new(PAGE);
     assert!(!marks.any());
-    marks.load(&rt, PAGE, Err(BTreeSet::from([Quarantine::Database])));
+    marks.load(&rt, PAGE, Err(BTreeSet::from([Quarantine::Database])), true);
     assert!(marks.any());
     assert_eq!(BTreeSet::from([Quarantine::Database]), marks.all(&rt));
-    assert_eq!(Destination::Unreadable(PAGE), marks.destination(&rt));
+    assert_eq!(Err(Unwritable::Unreadable(PAGE)), marks.writable_page(&rt));
 }
 
 #[test]
-fn a_mark_whose_page_was_named_before_a_hold_is_on_the_page_after_a_crash() {
-    let scratch = Scratch::new("storage", "marks-hold-race");
+fn a_mark_set_while_the_open_holds_the_database_survives_a_crash() {
+    let scratch = Scratch::new("storage", "marks-under-held");
     let rt = || {
         OsRuntime::with_faults(
             scratch.path(),
@@ -72,19 +71,15 @@ fn a_mark_whose_page_was_named_before_a_hold_is_on_the_page_after_a_crash() {
     let options = Options {
         pool_frames: 16,
         max_pages: 1024,
-        ..Options::new("marks-hold-race.adt")
+        ..Options::new("marks-under-held.adt")
     };
     let pager = Pager::create(rt(), &options).expect("create pager");
-    let Destination::Page(page) = pager.marks().destination(pager.rt()) else {
-        panic!("a new file's marks go to their page");
-    };
     let opening = crate::storage::Opening::begin(&pager);
     pager.hold_quarantine(&opening, Quarantine::Database);
     pager
-        .change_marks_on(page, |s| {
-            s.insert(Quarantine::Heap(1));
-        })
-        .expect("write the marks");
+        .plant_mark(Quarantine::Heap(1), &opening)
+        .expect("mark the heap");
+    drop(opening);
     drop(pager);
     let (pager, _) = Pager::open(rt(), &options).expect("reopen");
     assert_eq!(BTreeSet::from([Quarantine::Heap(1)]), pager.quarantined());

@@ -224,7 +224,16 @@ impl Holders {
     }
 }
 
-pub(super) use self::marks::{Destination, Marks};
+pub(super) use self::marks::{Marks, Unwritable};
+
+/// Why a mark holds only in memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkFailure {
+    /// The page holding the marks is refused.
+    Page(PageError),
+    /// The page holding the marks was loaded at this open with no check of its LSN.
+    Unverified { page: Pid },
+}
 
 mod marks {
     use std::collections::BTreeSet;
@@ -244,8 +253,8 @@ mod marks {
     ///
     /// - The flag is set exactly while a mark is set or held; it changes with the marks in one
     ///   hold of the lock.
-    /// - The set mirrors the marks page unless a mark is held for this open or the page could
-    ///   not be read at open.
+    /// - The set mirrors the marks page unless the page could not be read at open or was loaded
+    ///   unverified.
     #[derive(Debug)]
     pub(in crate::storage) struct Marks {
         state: Lock<State>,
@@ -259,17 +268,16 @@ mod marks {
         held: BTreeSet<Quarantine>,
         page: Pid,
         unreadable: bool,
+        unverified: bool,
     }
 
-    /// Where a change of the marks goes.
+    /// Why the marks page takes no write.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub(in crate::storage) enum Destination {
-        /// Memory only: a mark is held for this open.
-        Memory,
-        /// Nowhere: the page, named, could not be read at open.
+    pub(in crate::storage) enum Unwritable {
+        /// The page could not be read at open.
         Unreadable(Pid),
-        /// The page named.
-        Page(Pid),
+        /// The page was loaded with no check of its LSN against the one expected of it.
+        Unverified(Pid),
     }
 
     impl Marks {
@@ -293,15 +301,18 @@ mod marks {
         }
 
         /// Take `read`, the marks the page `page` holds, or `Err` with the marks its damage sets
-        /// when it does not decode, which stops every write of the marks.
+        /// when it does not decode, which stops every write of the marks. A page read with no
+        /// check of its LSN, `checked` false, stops them too.
         pub(in crate::storage) fn load<R: Runtime>(
             &self,
             rt: &R,
             page: Pid,
             read: Result<BTreeSet<Quarantine>, BTreeSet<Quarantine>>,
+            checked: bool,
         ) {
             let mut m = self.lock(rt);
             m.state.page = page;
+            m.state.unverified = !checked;
             match read {
                 Ok(set) => m.state.set = set,
                 Err(set) => {
@@ -321,24 +332,18 @@ mod marks {
             self.lock(rt).state.page
         }
 
-        /// Returns the page holding the marks, or `Err` with it when it could not be read at open.
-        pub(in crate::storage) fn readable_page<R: Runtime>(&self, rt: &R) -> Result<Pid, Pid> {
+        /// Returns the page holding the marks, or why it takes no write.
+        pub(in crate::storage) fn writable_page<R: Runtime>(
+            &self,
+            rt: &R,
+        ) -> Result<Pid, Unwritable> {
             let m = self.lock(rt);
-            match m.state.unreadable {
-                true => Err(m.state.page),
-                false => Ok(m.state.page),
-            }
-        }
-
-        /// Returns where a change of the marks goes now.
-        pub(in crate::storage) fn destination<R: Runtime>(&self, rt: &R) -> Destination {
-            let m = self.lock(rt);
-            if !m.state.held.is_empty() {
-                Destination::Memory
-            } else if m.state.unreadable {
-                Destination::Unreadable(m.state.page)
+            if m.state.unreadable {
+                Err(Unwritable::Unreadable(m.state.page))
+            } else if m.state.unverified {
+                Err(Unwritable::Unverified(m.state.page))
             } else {
-                Destination::Page(m.state.page)
+                Ok(m.state.page)
             }
         }
 
@@ -387,8 +392,8 @@ mod marks {
         /// Change the set through `f`. Returns the set, for the caller to write to the marks
         /// page.
         ///
-        /// Preconditions: the caller latches the marks page, which [`Marks::destination`] named
-        /// as the place of the change before the latch.
+        /// Preconditions: the caller latches the marks page, which [`Marks::writable_page`]
+        /// returned.
         pub(in crate::storage) fn change_on_page<R: Runtime>(
             &self,
             rt: &R,
@@ -440,7 +445,8 @@ impl<R: Runtime> Pager<R> {
             let mark = policy::mark(Fault::Page(damage), Holder::MarksPage, Phase::Opening);
             mark.durable().into_iter().collect()
         });
-        self.marks().load(self.rt(), page, read);
+        let checked = self.evidence().armed();
+        self.marks().load(self.rt(), page, read, checked);
         Ok(())
     }
 
@@ -462,18 +468,17 @@ impl<R: Runtime> Pager<R> {
 
     /// Mark `object` quarantined. The mark is durable on return, for every caller marking it,
     /// and lasts until [`Pager::release`] removes it. Marking an object already marked and
-    /// durable writes nothing. While a mark is held for this open, the mark lives in memory only,
-    /// until the pager closes.
+    /// durable writes nothing.
     ///
     /// Precondition: the calling thread holds no page latch.
     ///
-    /// Fail if the page holding the marks is damaged. The mark then holds in memory until the
-    /// pager closes.
+    /// Fail if the page holding the marks is damaged, or was loaded at this open with no check of
+    /// its LSN. The mark then holds in memory until the pager closes.
     pub(in crate::storage) fn quarantine(
         &self,
         object: Quarantine,
         _: &Ordered<'_>,
-    ) -> Result<(), PageError> {
+    ) -> Result<(), MarkFailure> {
         self.change_marks(|set| {
             set.insert(object);
         })
@@ -491,19 +496,18 @@ impl<R: Runtime> Pager<R> {
         &self,
         object: Quarantine,
         order: &impl super::Orders,
-    ) -> Result<(), PageError> {
+    ) -> Result<(), MarkFailure> {
         order.ordered(|o| self.quarantine(object, &o))
     }
 
-    /// Mark `object` quarantined for this open only. From then on no change of the marks is
-    /// written.
+    /// Mark `object` quarantined for this open only, never written.
     pub(super) fn hold_quarantine(&self, _opening: &super::Opening, object: Quarantine) {
         self.marks().hold(self.rt(), object);
     }
 
     /// Remove the mark on `object`, once it is repaired. Durable on return.
     #[cfg(any(test, feature = "testing"))]
-    pub fn release(&self, object: Quarantine) -> Result<(), PageError> {
+    pub fn release(&self, object: Quarantine) -> Result<(), MarkFailure> {
         self.change_marks(|set| {
             set.remove(&object);
         })
@@ -525,13 +529,14 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Give `pid` the contents of `from` and free `from`, removing the mark on `release` if one is
-    /// named and held, in one batch. A damaged `pid` is overwritten unread. Returns once that is
-    /// durable.
+    /// named and held, in one batch. A damaged `pid` is overwritten unread. Keep the mark on
+    /// `release` when the marks page was loaded at this open with no check of its LSN. Returns
+    /// once that is durable.
     ///
     /// Preconditions: nothing refers to `from` after the call.
     ///
-    /// Fail, changing nothing, if `from`, the marks' page or an allocation bitmap page cannot be
-    /// read.
+    /// Fail, changing nothing, if `from` or an allocation bitmap page cannot be read, or the
+    /// marks' page when `release` is named.
     pub fn replace_contents(
         &self,
         pid: Pid,
@@ -539,28 +544,40 @@ impl<R: Runtime> Pager<R> {
         release: Option<Quarantine>,
     ) -> Result<(), PageError> {
         let contents = self.read(from)?.to_vec();
-        let page = self
-            .marks()
-            .readable_page(self.rt())
-            .map_err(|pid| PageError {
-                pid,
-                damage: Damage::Checksum,
-            })?;
-        let mut marks_page = self.exclusive(page)?;
+        let page = match release.map(|_| self.marks().writable_page(self.rt())) {
+            Some(Ok(page)) => Some(page),
+            Some(Err(Unwritable::Unreadable(pid))) => {
+                return Err(PageError {
+                    pid,
+                    damage: Damage::Checksum,
+                });
+            }
+            Some(Err(Unwritable::Unverified(_))) | None => None,
+        };
+        let mut marks_page = page.map(|page| self.exclusive(page)).transpose()?;
         let (mut g, blank) = self.latch_overwriting(pid)?;
         let mut new = self.reserve();
         new.free(from);
-        let unmark = |set: &mut BTreeSet<Quarantine>| {
-            if let Some(release) = &release {
-                set.remove(release);
-            }
+        let copy = |p: &mut [u8]| {
+            p[FIRST_EDITABLE..].copy_from_slice(&contents[FIRST_EDITABLE..]);
         };
-        let set = self.marks().changed(self.rt(), unmark);
-        let lsn = self.update_all_with(new, &mut [&mut g, &mut marks_page], |p| {
-            p[0][FIRST_EDITABLE..].copy_from_slice(&contents[FIRST_EDITABLE..]);
-            encode(p[1], &set);
-        })?;
-        self.marks().change(self.rt(), unmark);
+        let lsn = match &mut marks_page {
+            Some(marks_page) => {
+                let unmark = |set: &mut BTreeSet<Quarantine>| {
+                    if let Some(release) = &release {
+                        set.remove(release);
+                    }
+                };
+                let set = self.marks().changed(self.rt(), unmark);
+                let lsn = self.update_all_with(new, &mut [&mut g, marks_page], |p| {
+                    copy(p[0]);
+                    encode(p[1], &set);
+                })?;
+                self.marks().change(self.rt(), unmark);
+                lsn
+            }
+            None => self.update_all_with(new, &mut [&mut g], |p| copy(p[0]))?,
+        };
         drop(marks_page);
         self.wait_durable(lsn);
         if blank {
@@ -638,25 +655,23 @@ impl<R: Runtime> Pager<R> {
         self.marks().page(self.rt())
     }
 
-    fn change_marks(&self, f: impl FnOnce(&mut BTreeSet<Quarantine>)) -> Result<(), PageError> {
-        let page = match self.marks().destination(self.rt()) {
-            Destination::Memory => {
-                self.marks().change(self.rt(), f);
-                return Ok(());
+    fn change_marks(&self, f: impl FnOnce(&mut BTreeSet<Quarantine>)) -> Result<(), MarkFailure> {
+        let page = match self.marks().writable_page(self.rt()) {
+            Ok(page) => page,
+            Err(Unwritable::Unreadable(page)) => {
+                return Err(MarkFailure::Page(self.read(page).err().unwrap_or(
+                    PageError {
+                        pid: page,
+                        damage: Damage::Checksum,
+                    },
+                )));
             }
-            Destination::Unreadable(page) => {
-                return Err(self.read(page).err().unwrap_or(PageError {
-                    pid: page,
-                    damage: Damage::Checksum,
-                }));
-            }
-            Destination::Page(page) => page,
+            Err(Unwritable::Unverified(page)) => return Err(MarkFailure::Unverified { page }),
         };
-        self.change_marks_on(page, f)
+        self.change_marks_on(page, f).map_err(MarkFailure::Page)
     }
 
-    /// Change the marks through `f` and write them to their page `page`, durable on return,
-    /// whether or not a mark was held for this open since `page` was named.
+    /// Change the marks through `f` and write them to their page `page`, durable on return.
     ///
     /// Fail, changing nothing, if the page is refused.
     fn change_marks_on(

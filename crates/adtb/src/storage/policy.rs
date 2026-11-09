@@ -62,7 +62,7 @@ pub enum Mark {
     Object(Quarantine),
     /// The database, durably.
     Database,
-    /// The database for this open only, writing no mark from then on.
+    /// The database, held for this open only and never written.
     Held,
 }
 
@@ -112,6 +112,10 @@ pub fn mark(fault: Fault, holder: Holder, phase: Phase) -> Mark {
             object,
             engine_module: false,
         } => Mark::Object(object),
+        Holder::CommitLog if matches!(damage, Damage::LogUnproven { .. }) => match phase {
+            Phase::Opening => Mark::Held,
+            Phase::Running => Mark::Database,
+        },
         Holder::DamageList if damage == Damage::Unreadable => match phase {
             Phase::Opening => Mark::Held,
             Phase::Running => Mark::Nothing,

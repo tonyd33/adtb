@@ -30,6 +30,8 @@ const OI: Mark = Mark::Object(INDEX);
 enum C {
     /// A page failing its checksum or its log position.
     Damaged,
+    /// A status page the retained log cannot prove at open.
+    Unproven,
     Unread,
     Settled,
     Full,
@@ -40,8 +42,9 @@ enum C {
 }
 
 impl C {
-    const ALL: [C; 6] = [
+    const ALL: [C; 7] = [
         C::Damaged,
+        C::Unproven,
         C::Unread,
         C::Settled,
         C::Full,
@@ -55,8 +58,8 @@ impl C {
             C::Damaged => vec![
                 Fault::Page(Damage::Checksum),
                 Fault::Page(Damage::Stale { expected, found }),
-                Fault::Page(Damage::LogUnproven { at: expected }),
             ],
+            C::Unproven => vec![Fault::Page(Damage::LogUnproven { at: expected })],
             C::Unread => vec![Fault::Page(Damage::Unreadable)],
             C::Settled => vec![Fault::Page(Damage::Settled { expected, found })],
             C::Full => vec![Fault::Full],
@@ -89,7 +92,7 @@ const HOLDERS: [Holder; 19] = [
 ];
 
 /// The marks storage.md states, one row per fault kind, holder and phase.
-const STATED: [(C, Holder, Phase, Mark); 192] = [
+const STATED: [(C, Holder, Phase, Mark); 193] = [
     (C::Damaged, H0, OPEN, OH),
     (C::Damaged, H0, RUN, OH),
     (C::Damaged, H1, OPEN, DB),
@@ -282,6 +285,7 @@ const STATED: [(C, Holder, Phase, Mark); 192] = [
     (C::Finding, I0, RUN, OI),
     (C::Finding, I1, OPEN, OI),
     (C::Finding, I1, RUN, OI),
+    (C::Unproven, Holder::CommitLog, OPEN, HELD),
 ];
 
 /// The rows whose mark today differs from the one stated, with today's mark. Rows may only be
@@ -309,12 +313,14 @@ const DIFFERS_TODAY: [(C, Holder, Phase, Mark); 20] = [
     (C::Unread, Holder::Unreached, RUN, DB),
 ];
 
-/// Returns false for an unreadable page as met, which no mapping meets, and for a finding on
-/// anything but an index, which no finding names.
-fn reachable(class: C, holder: Holder) -> bool {
+/// Returns false for an unreadable page as met, which no mapping meets, for a finding on
+/// anything but an index, which no finding names, and for an unproven status page anywhere but on
+/// the commit log at open.
+fn reachable(class: C, holder: Holder, phase: Phase) -> bool {
     match class {
         C::Unread => holder != Holder::Met,
         C::Finding => [I0, I1].contains(&holder),
+        C::Unproven => holder == Holder::CommitLog && phase == OPEN,
         _ => true,
     }
 }
@@ -346,8 +352,11 @@ fn every_fault_and_holder_marks_as_storage_md_states() {
     let mut differs_visits = [0; DIFFERS_TODAY.len()];
     let mut differ = Vec::new();
     for class in C::ALL {
-        for holder in HOLDERS.into_iter().filter(|h| reachable(class, *h)) {
-            for phase in [OPEN, RUN] {
+        for holder in HOLDERS {
+            for phase in [OPEN, RUN]
+                .into_iter()
+                .filter(|p| reachable(class, holder, *p))
+            {
                 let at = row_of(&STATED, class, holder, phase);
                 let at = at.unwrap_or_else(|| panic!("no row for {class:?} {holder:?} {phase:?}"));
                 visits[at] += 1;

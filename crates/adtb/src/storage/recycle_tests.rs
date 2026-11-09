@@ -8,8 +8,8 @@ use crate::runtime::{IoError, OpKind};
 use crate::storage::order::ordered_for_test;
 use crate::storage::policy::{Holder, Phase};
 use crate::storage::{
-    self, BackupRun, Damage, Envelope, Finding, HEADER_LEN, Lsn, Options, PageError, PageKind,
-    Pager, Pid, Quarantine,
+    self, BackupRun, Damage, Envelope, Finding, HEADER_LEN, Lsn, MarkFailure, Options, PageError,
+    PageKind, Pager, Pid, Quarantine,
 };
 use crate::test_world as harness;
 use crate::verify::{self, Inventory, Problem};
@@ -308,11 +308,11 @@ fn a_lost_write_of_a_map_page_quarantines_the_database() {
         }
         let lost = reverted(last.clone(), &first, page);
         let mut sim = Sim::with_files(3, Config::default(), lost);
-        let marks = session(&mut sim, |pager, _| {
+        let (marked, expected) = session(&mut sim, |pager, _| {
             pager.verify();
-            marked_once_mapped(pager)
+            (mapped_once(pager), held_unverified(pager))
         });
-        assert_eq!(BTreeSet::from([Quarantine::Database]), marks, "{page:?}");
+        assert_eq!(expected, marked, "{page:?}");
         reached += 1;
     }
     assert!(reached >= 2, "{reached} of {map:?}");
@@ -361,12 +361,25 @@ fn an_unreadable_map_page_is_refused_unmarked_and_read_by_the_next_open() {
 }
 
 /// Map every record of `pager` as running, by its storage's own holders and no walk. Returns the
-/// marks then.
-fn marked_once_mapped(pager: &Pager<SimRuntime>) -> BTreeSet<Quarantine> {
+/// marks that failed, and the marks then.
+fn mapped_once(
+    pager: &Pager<SimRuntime>,
+) -> (BTreeMap<Quarantine, MarkFailure>, BTreeSet<Quarantine>) {
     let holders = |pid| pager.holders_of(pid, Phase::Running, |_| {});
     let failed = pager.map_damage(holders, &ordered_for_test());
-    assert_eq!(BTreeMap::new(), failed);
-    Probe::of(pager).marks()
+    (failed, Probe::of(pager).marks())
+}
+
+/// Returns the failure of a database mark set in an open that read the marks page of `pager`
+/// unchecked, and the marks it leaves.
+fn held_unverified(
+    pager: &Pager<SimRuntime>,
+) -> (BTreeMap<Quarantine, MarkFailure>, BTreeSet<Quarantine>) {
+    let page = pager.quarantine_page();
+    (
+        BTreeMap::from([(Quarantine::Database, MarkFailure::Unverified { page })]),
+        BTreeSet::from([Quarantine::Database]),
+    )
 }
 
 #[test]
@@ -383,7 +396,7 @@ fn a_damaged_map_page_met_in_session_is_recorded_unmarked_and_maps_to_the_databa
             assert_eq!(Some(BTreeSet::from([Holder::LsnMap])), held, "{phase:?}");
         }
         let database = BTreeSet::from([Quarantine::Database]);
-        assert_eq!(database, marked_once_mapped(pager));
+        assert_eq!((BTreeMap::new(), database.clone()), mapped_once(pager));
         assert_eq!(Some(database), pager.mapped_to(leaf));
     });
 }
@@ -398,7 +411,7 @@ fn a_checksum_bad_map_page_quarantines_the_database_and_verify_reports_the_rest(
             PAGER.flip(&mut files, pid, 100 - HEADER_LEN);
         }
         let mut sim = Sim::with_files(3, Config::default(), files);
-        let (findings, marks, allocated, leaked) = session(&mut sim, |pager, _| {
+        let (findings, (marked, expected), allocated, leaked) = session(&mut sim, |pager, _| {
             let findings = pager.verify().findings;
             let inventory = Inventory {
                 commit_log: None,
@@ -414,12 +427,12 @@ fn a_checksum_bad_map_page_quarantines_the_database_and_verify_reports_the_rest(
             let leaked: Vec<Pid> = leaked.map(|f| f.pid).collect();
             (
                 findings,
-                marked_once_mapped(pager),
+                (mapped_once(pager), held_unverified(pager)),
                 pager.allocated(),
                 leaked,
             )
         });
-        assert_eq!(BTreeSet::from([Quarantine::Database]), marks, "{bad:?}");
+        assert_eq!(expected, marked, "{bad:?}");
         let refused = PageError {
             pid: bad,
             damage: Damage::Checksum,
@@ -576,6 +589,142 @@ fn a_gap_in_the_retained_log_quarantines_the_database_for_the_open_and_marks_not
         |pager, _| Probe::of(pager).marks(),
     );
     assert_eq!(BTreeSet::new(), marks);
+}
+
+#[test]
+fn a_marks_page_loaded_unchecked_is_never_written_and_the_next_checked_open_refuses_it() {
+    let (mut sim, pages) = created(8);
+    let before = sim.files();
+    let marks = session(&mut sim, |pager, _| {
+        pager
+            .quarantine(Quarantine::Index(3), &ordered_for_test())
+            .unwrap();
+        fill(pager, &pages[1..], 3 * SEGMENT);
+        pager.quarantine_page()
+    });
+    let files = sim.files();
+    let held = segments(&files);
+    assert!(held.len() >= 3, "{held:?}");
+    let gap = format!("{}/{:016x}", options().log_dir(), held[1]);
+    let mut gapped = reverted(files.clone(), &before, marks);
+    gapped.remove(&gap).unwrap();
+    let mut sim = Sim::with_files(3, Config::default(), gapped);
+    let heap = Holder::Relation {
+        object: Quarantine::Heap(7),
+        engine_module: false,
+    };
+    let (loaded, failed, after) = session(&mut sim, |pager, _| {
+        let loaded = Probe::of(pager).marks();
+        pager.damage(pages[0], Damage::Checksum);
+        let failed = pager.map_damage(|_| Some(BTreeSet::from([heap])), &ordered_for_test());
+        assert_eq!(None, pager.mapped_to(pages[0]), "the record stays unmapped");
+        let heap = Some(BTreeSet::from([Quarantine::Heap(7)]));
+        assert_eq!(heap, pager.marked_to(pages[0]));
+        (loaded, failed, Probe::of(pager).marks())
+    });
+    assert_eq!(BTreeSet::from([Quarantine::Database]), loaded);
+    assert_eq!(
+        BTreeMap::from([(Quarantine::Heap(7), MarkFailure::Unverified { page: marks })]),
+        failed
+    );
+    assert_eq!(
+        BTreeSet::from([Quarantine::Database, Quarantine::Heap(7)]),
+        after
+    );
+    assert_eq!(lsn_of(&before, marks), lsn_of(&sim.files(), marks));
+    let mut back = sim.files();
+    back.insert(gap.clone(), files[&gap].clone());
+    let marks = session(
+        &mut Sim::with_files(3, Config::default(), back),
+        |pager, _| Probe::of(pager).marks(),
+    );
+    assert_eq!(BTreeSet::from([Quarantine::Database]), marks);
+}
+
+#[test]
+fn a_damage_list_loaded_unchecked_is_never_folded_and_the_next_checked_open_refuses_it() {
+    let (mut sim, pages) = created(8);
+    let before = sim.files();
+    let mut list = Pid(0);
+    harness::finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt, &options()).unwrap();
+        let pager = &pager;
+        pager.damage(pages[0], Damage::Checksum);
+        pager.checkpoint();
+        pager.flush_pages(usize::MAX);
+        fill(pager, &pages[2..], 3 * SEGMENT);
+        pager.flush_pages(usize::MAX);
+        pager.checkpoint();
+        pager.damage(pages[1], Damage::Checksum);
+        pager.flush_log();
+        list = pager.damage_list_page();
+    });
+    let files = sim.files();
+    assert_ne!(
+        lsn_of(&before, list),
+        lsn_of(&files, list),
+        "the fold wrote the list"
+    );
+    let held = segments(&files);
+    assert!(held.len() >= 3, "{held:?}");
+    let gap = format!("{}/{:016x}", options().log_dir(), held[1]);
+    let mut gapped = reverted(files.clone(), &before, list);
+    gapped.remove(&gap).unwrap();
+    let mut sim = Sim::with_files(3, Config::default(), gapped);
+    let marks = session(&mut sim, |pager, _| {
+        pager.checkpoint();
+        Probe::of(pager).marks()
+    });
+    assert_eq!(BTreeSet::from([Quarantine::Database]), marks);
+    assert_eq!(lsn_of(&before, list), lsn_of(&sim.files(), list));
+    let mut back = sim.files();
+    back.insert(gap.clone(), files[&gap].clone());
+    let (marks, recorded) = session(
+        &mut Sim::with_files(3, Config::default(), back),
+        |pager, _| {
+            let recorded = Probe::of(pager).records().pages().get(&pages[0]).copied();
+            (Probe::of(pager).marks(), recorded)
+        },
+    );
+    assert_eq!(
+        (BTreeSet::from([Quarantine::Database]), None),
+        (marks, recorded)
+    );
+}
+
+#[test]
+fn a_swap_releasing_a_mark_on_an_unchecked_marks_page_keeps_the_mark() {
+    let (mut sim, pages) = created(8);
+    let [to, from] = [pages[0], pages[1]];
+    session(&mut sim, |pager, _| {
+        pager
+            .quarantine(Quarantine::Index(3), &ordered_for_test())
+            .unwrap();
+        put(pager, from, 9);
+        fill(pager, &pages[2..], 3 * SEGMENT);
+    });
+    let files = sim.files();
+    let held = segments(&files);
+    assert!(held.len() >= 3, "{held:?}");
+    let gap = format!("{}/{:016x}", options().log_dir(), held[1]);
+    let mut gapped = files.clone();
+    gapped.remove(&gap).unwrap();
+    let mut sim = Sim::with_files(3, Config::default(), gapped);
+    let (value, marks) = session(&mut sim, |pager, _| {
+        pager
+            .replace_contents(to, from, Some(Quarantine::Index(3)))
+            .unwrap();
+        (value_of(pager, to), Probe::of(pager).marks())
+    });
+    let all = BTreeSet::from([Quarantine::Database, Quarantine::Index(3)]);
+    assert_eq!((9, all), (value, marks));
+    let mut back = sim.files();
+    back.insert(gap.clone(), files[&gap].clone());
+    let (value, marks) = session(
+        &mut Sim::with_files(3, Config::default(), back),
+        |pager, _| (value_of(pager, to), Probe::of(pager).marks()),
+    );
+    assert_eq!((9, BTreeSet::from([Quarantine::Index(3)])), (value, marks));
 }
 
 #[test]

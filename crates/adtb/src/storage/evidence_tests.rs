@@ -159,6 +159,52 @@ fn the_mapping_goes_with_the_damage() {
     );
 }
 
+/// Enter the mapping of each record of `begun` as marking `object` only in memory.
+fn unwritten(e: &mut Evidence, (pending, _, at): Begun, object: Quarantine) {
+    let objects = Some(BTreeSet::from([object]));
+    e.unwritten(
+        at,
+        pending.into_iter().map(|p| (p, objects.clone())).collect(),
+    );
+}
+
+#[test]
+fn a_mapping_marked_only_in_memory_leaves_its_record_unmapped_until_it_maps() {
+    let mut log = log();
+    let mut e = recording(&mut log);
+    let heap = Quarantine::Heap(7);
+    refuse(&mut e, &mut log, P, Damage::Checksum);
+    let begun = e.begin_mapping(true);
+    unwritten(&mut e, begun, heap);
+    assert_eq!(
+        (None, Some(BTreeSet::from([heap]))),
+        (e.mapped_to(P), e.marked_to(P))
+    );
+    assert_eq!((vec![(P, Damage::Checksum)], false), unmapped(&e));
+    let begun = e.begin_mapping(true);
+    map(&mut e, begun);
+    assert_eq!((database(), database()), (e.mapped_to(P), e.marked_to(P)));
+    assert_eq!((Vec::new(), false), unmapped(&e));
+}
+
+#[test]
+fn a_mapping_marked_only_in_memory_replaces_the_mapping_of_earlier_damage() {
+    let mut log = log();
+    let mut e = recording(&mut log);
+    let heap = Quarantine::Heap(7);
+    refuse(&mut e, &mut log, P, Damage::Checksum);
+    let begun = e.begin_mapping(true);
+    map(&mut e, begun);
+    e.unrefuse(&refusal_for_test(P));
+    refuse(&mut e, &mut log, P, STALE);
+    let begun = e.begin_mapping(true);
+    unwritten(&mut e, begun, heap);
+    assert_eq!(
+        (None, Some(BTreeSet::from([heap]))),
+        (e.mapped_to(P), e.marked_to(P))
+    );
+}
+
 const INCOMPLETE: Option<BTreeSet<Quarantine>> = None;
 
 fn database() -> Option<BTreeSet<Quarantine>> {

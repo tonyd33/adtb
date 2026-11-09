@@ -12,7 +12,7 @@ use crate::catalog::index_holder;
 use crate::plan::{Catalog, HeapId, IndexId};
 use crate::runtime::Runtime;
 use crate::storage::policy::{Fault, Holder, Phase};
-use crate::storage::{Damage, Ordered, Orders, PageError, Quarantine};
+use crate::storage::{Damage, MarkFailure, Ordered, Orders, Quarantine};
 
 use super::schema::Rel;
 use super::verify::Found;
@@ -65,7 +65,7 @@ impl<R: Runtime> Database<R> {
     /// lock. Returns each object whose mark holds only in memory, with why.
     ///
     /// Precondition: the calling thread holds no page latch and not the serialization lock.
-    fn map_damage(&self) -> BTreeMap<Quarantine, PageError> {
+    fn map_damage(&self) -> BTreeMap<Quarantine, MarkFailure> {
         self.pager.map_damage(
             |pid| {
                 let met = &mut BTreeSet::new();
@@ -109,7 +109,7 @@ impl<R: Runtime> Database<R> {
     fn mark_finding(
         &self,
         holder: Holder,
-        failed: &mut BTreeMap<Quarantine, PageError>,
+        failed: &mut BTreeMap<Quarantine, MarkFailure>,
     ) -> BTreeSet<Quarantine> {
         let mut objects = BTreeSet::new();
         let finding = self.pager.map_fault(Fault::Finding, holder, self);
@@ -129,7 +129,7 @@ impl<R: Runtime> Database<R> {
     fn quarantined_as(
         &self,
         objects: &BTreeSet<Quarantine>,
-        failed: &BTreeMap<Quarantine, PageError>,
+        failed: &BTreeMap<Quarantine, MarkFailure>,
     ) -> Error {
         let mut names = Vec::new();
         for object in objects {
@@ -151,7 +151,7 @@ impl<R: Runtime> Database<R> {
     pub fn quarantining(&self, e: Error) -> Error {
         let mut failed = self.map_damage();
         match e {
-            Error::Page(p) if p.damage != Damage::Unreadable => match self.pager.mapped_to(p.pid) {
+            Error::Page(p) if p.damage != Damage::Unreadable => match self.pager.marked_to(p.pid) {
                 Some(objects) if !objects.is_empty() => self.quarantined_as(&objects, &failed),
                 _ => Error::Page(p),
             },

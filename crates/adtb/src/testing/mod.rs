@@ -120,6 +120,7 @@ pub enum Failed {
     /// The change found nothing to change.
     Unchanged,
     Page(PageError),
+    Mark(crate::storage::MarkFailure),
     Tree(btree::Error),
     Heap(crate::heap::Error),
     Orphan(crate::heap::OrphanEntry),
@@ -130,6 +131,12 @@ pub enum Failed {
 impl From<PageError> for Failed {
     fn from(e: PageError) -> Failed {
         Failed::Page(e)
+    }
+}
+
+impl From<crate::storage::MarkFailure> for Failed {
+    fn from(e: crate::storage::MarkFailure) -> Failed {
+        Failed::Mark(e)
     }
 }
 
