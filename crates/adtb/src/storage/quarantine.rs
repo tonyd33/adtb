@@ -6,6 +6,7 @@ use super::evidence::{Against, Judged, file_copy};
 use super::page::Verdict;
 use super::page::{FIRST_EDITABLE, HEADER_LEN, PageKind};
 use super::pager::{PageError, PageExclusive, Pager};
+use super::policy::{self, Fault, Holder, Mark, Phase};
 use super::{Damage, Lsn, Pid};
 use crate::mvcc::Settling;
 
@@ -191,29 +192,25 @@ fn settled(mut walk: impl FnMut() -> Result<Vec<Pid>, Stopped>) -> Result<Vec<Pi
 #[derive(Debug)]
 pub struct Holders {
     pid: Pid,
-    held: BTreeSet<Quarantine>,
+    phase: Phase,
+    held: BTreeSet<Holder>,
     incomplete: bool,
-    /// Whether an object whose damage marks nothing holds the page.
-    unmarked: bool,
     /// The pages whose damage stopped a walk.
     met: BTreeSet<Pid>,
 }
 
 impl Holders {
-    /// Take what `walk` finds of `object`, whose damage marks nothing when `None`. Leave the
-    /// mapping incomplete when the walk ends on anything but damage, or on damage of an object
-    /// whose damage marks nothing.
-    pub fn walk(
-        &mut self,
-        object: Option<Quarantine>,
-        walk: impl FnMut() -> Result<Vec<Pid>, Stopped>,
-    ) {
+    /// Take what `walk` finds of `holder`. Leave the mapping incomplete when the walk ends on
+    /// anything but damage, or on damage of a holder whose damage marks nothing.
+    pub fn walk(&mut self, holder: Holder, walk: impl FnMut() -> Result<Vec<Pid>, Stopped>) {
         let holds = match settled(walk) {
             Ok(pages) => pages.contains(&self.pid),
             Err(Stopped::Damage(at)) => {
                 self.met.insert(at);
-                self.incomplete |= object.is_none();
-                object.is_some()
+                let marks = policy::checksum_mark(holder, self.phase);
+                let unmarked = marks == Mark::Nothing;
+                self.incomplete |= unmarked;
+                !unmarked
             }
             Err(Stopped::Shape | Stopped::Io) => {
                 self.incomplete = true;
@@ -221,12 +218,7 @@ impl Holders {
             }
         };
         if holds {
-            match object {
-                Some(o) => {
-                    self.held.insert(o);
-                }
-                None => self.unmarked = true,
-            }
+            self.held.insert(holder);
         }
     }
 }
@@ -299,20 +291,20 @@ mod marks {
             }
         }
 
-        /// Take `read`, the marks the page `page` holds, `None` when it does not decode, which
-        /// marks the database and stops every write of the marks.
+        /// Take `read`, the marks the page `page` holds, or `Err` with the marks its damage sets
+        /// when it does not decode, which stops every write of the marks.
         pub(in crate::storage) fn load<R: Runtime>(
             &self,
             rt: &R,
             page: Pid,
-            read: Option<BTreeSet<Quarantine>>,
+            read: Result<BTreeSet<Quarantine>, BTreeSet<Quarantine>>,
         ) {
             let mut m = self.lock(rt);
             m.state.page = page;
             match read {
-                Some(set) => m.state.set = set,
-                None => {
-                    m.state.set = BTreeSet::from([Quarantine::Database]);
+                Ok(set) => m.state.set = set,
+                Err(set) => {
+                    m.state.set = set;
                     m.state.unreadable = true;
                 }
             }
@@ -439,10 +431,14 @@ impl<R: Runtime> Pager<R> {
     /// Fail, marking nothing, if the page cannot be read.
     pub(crate) fn load_marks(&self, page: Pid) -> Result<(), PageError> {
         let read = match self.read(page) {
-            Ok(p) => decode(&p),
+            Ok(p) => decode(&p).ok_or(Damage::Checksum),
             Err(e) if e.damage == Damage::Unreadable => return Err(e),
-            Err(_) => None,
+            Err(e) => Err(e.damage),
         };
+        let read = read.map_err(|damage| {
+            let mark = policy::mark(Fault::Page(damage), Holder::MarksPage, Phase::Opening);
+            mark.durable().into_iter().collect()
+        });
         self.marks().load(self.rt(), page, read);
         Ok(())
     }
@@ -661,27 +657,26 @@ impl<R: Runtime> Pager<R> {
         Ok(())
     }
 
-    /// Returns what the damage at `pid` quarantines, `None` when the mapping is incomplete and
-    /// found no holder. An object whose damage marks nothing that holds the page completes it.
-    /// `walk` reports the pages of every object to the [`Holders`]. A page in no
-    /// object quarantines `unheld`, once every walk is complete.
+    /// Returns what holds the damaged page `pid` during `phase`, `None` when the mapping is
+    /// incomplete and found no holder. `walk` reports the pages of every object to the
+    /// [`Holders`].
     ///
     /// Postconditions:
     ///
-    /// - A page the allocation bitmap calls free, before or after the walk, quarantines nothing
+    /// - A page the allocation bitmap calls free, before or after the walk, is held as free
     ///   unless a walk found it. A page whose bitmap page is refused counts as allocated.
-    /// - A walk stopped by damage quarantines its object, or leaves the mapping incomplete when
-    ///   the object's damage marks nothing. One stopped by an I/O failure, or on a shape it could
-    ///   not follow in all its tries, leaves the mapping incomplete: `unheld` then plays no part.
-    /// - An allocation bitmap page quarantines the database, with no walk.
-    /// - The database's mark stands alone, as it covers every object.
+    /// - A walk stopped by damage holds the page, or leaves the mapping incomplete when its
+    ///   holder's damage marks nothing. One stopped by an I/O failure, or on a shape it could not
+    ///   follow in all its tries, leaves the mapping incomplete.
+    /// - An allocation bitmap page is held as one, with no walk.
+    /// - A page no walk holds is unreached, once every walk is complete.
     pub fn holders_of(
         &self,
         pid: Pid,
-        unheld: Option<Quarantine>,
+        phase: Phase,
         walk: impl FnOnce(&mut Holders),
-    ) -> Option<BTreeSet<Quarantine>> {
-        self.holders_meeting(pid, unheld, &mut BTreeSet::new(), walk)
+    ) -> Option<BTreeSet<Holder>> {
+        self.holders_meeting(pid, phase, &mut BTreeSet::new(), walk)
     }
 
     /// Returns what [`Pager::holders_of`] does, adding to `met` each page whose damage stopped a
@@ -689,33 +684,33 @@ impl<R: Runtime> Pager<R> {
     pub fn holders_meeting(
         &self,
         pid: Pid,
-        unheld: Option<Quarantine>,
+        phase: Phase,
         met: &mut BTreeSet<Pid>,
         walk: impl FnOnce(&mut Holders),
-    ) -> Option<BTreeSet<Quarantine>> {
+    ) -> Option<BTreeSet<Holder>> {
         if self.is_bitmap_page(pid) {
-            return Some(BTreeSet::from([Quarantine::Database]));
+            return Some(BTreeSet::from([Holder::Bitmap]));
         }
         self.evidence().walked_one();
         let mut h = Holders {
             pid,
+            phase,
             held: BTreeSet::new(),
             incomplete: false,
-            unmarked: false,
             met: BTreeSet::new(),
         };
         walk(&mut h);
         met.append(&mut h.met);
-        if h.held.contains(&Quarantine::Database) {
-            return Some(BTreeSet::from([Quarantine::Database]));
-        }
-        if h.incomplete && h.held.is_empty() && !h.unmarked {
-            return None;
-        }
-        if !h.held.is_empty() || h.unmarked || self.bitmapped(pid) == Bitmapped::Free {
+        if !h.held.is_empty() {
             return Some(h.held);
         }
-        Some(unheld.into_iter().collect())
+        if h.incomplete {
+            return None;
+        }
+        if self.bitmapped(pid) == Bitmapped::Free {
+            return Some(BTreeSet::from([Holder::Free]));
+        }
+        Some(BTreeSet::from([Holder::Unreached]))
     }
 
     /// Hold `pids`, pages of a tree a swap replaced, as retired until each one's own free.
@@ -755,96 +750,5 @@ impl<R: Runtime> Pager<R> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::BTreeSet;
-
-    use adtb_sys::os::{Backend, Faults, OsRuntime};
-    use adtb_testkit::scratch::Scratch;
-
-    use super::{Destination, Marks, Quarantine};
-    use crate::storage::Pid;
-    use crate::storage::pager::{Options, Pager};
-
-    const PAGE: Pid = Pid(5);
-
-    #[test]
-    fn the_any_flag_follows_the_marks_after_every_change() {
-        let scratch = Scratch::new("storage", "marks-any");
-        let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
-        let marks = Marks::new(PAGE);
-        marks.load(&rt, PAGE, Some(BTreeSet::new()));
-        assert!(!marks.any());
-        let heap = Quarantine::Heap(1);
-        let index = Quarantine::Index(2);
-        let set = marks.change_on_page(&rt, |s| {
-            s.insert(heap);
-        });
-        assert_eq!(BTreeSet::from([heap]), set);
-        assert!(marks.any());
-        marks.change_on_page(&rt, |s| {
-            s.insert(index);
-        });
-        marks.change_on_page(&rt, |s| {
-            s.remove(&heap);
-        });
-        assert!(marks.any());
-        let set = marks.change_on_page(&rt, |s| {
-            s.remove(&index);
-        });
-        assert_eq!(BTreeSet::new(), set);
-        assert!(!marks.any());
-        marks.hold(&rt, Quarantine::Database);
-        assert!(marks.any());
-        assert_eq!(Destination::Memory, marks.destination(&rt));
-        marks.change(&rt, |s| {
-            s.insert(heap);
-        });
-        marks.change(&rt, |s| {
-            s.remove(&heap);
-        });
-        assert!(marks.any());
-    }
-
-    #[test]
-    fn marks_whose_page_does_not_decode_mark_the_database_and_take_no_write() {
-        let scratch = Scratch::new("storage", "marks-unreadable");
-        let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
-        let marks = Marks::new(PAGE);
-        assert!(!marks.any());
-        marks.load(&rt, PAGE, None);
-        assert!(marks.any());
-        assert_eq!(BTreeSet::from([Quarantine::Database]), marks.all(&rt));
-        assert_eq!(Destination::Unreadable(PAGE), marks.destination(&rt));
-    }
-
-    #[test]
-    fn a_mark_whose_page_was_named_before_a_hold_is_on_the_page_after_a_crash() {
-        let scratch = Scratch::new("storage", "marks-hold-race");
-        let rt = || {
-            OsRuntime::with_faults(
-                scratch.path(),
-                Backend::Pool { threads: 1 },
-                Faults::none(4096),
-            )
-        };
-        let options = Options {
-            pool_frames: 16,
-            max_pages: 1024,
-            ..Options::new("marks-hold-race.adt")
-        };
-        let pager = Pager::create(rt(), &options).expect("create pager");
-        let Destination::Page(page) = pager.marks().destination(pager.rt()) else {
-            panic!("a new file's marks go to their page");
-        };
-        pager.hold_quarantine(Quarantine::Database);
-        pager
-            .change_marks_on(page, |s| {
-                s.insert(Quarantine::Heap(1));
-            })
-            .expect("write the marks");
-        drop(pager);
-        let (pager, _) = Pager::open(rt(), &options).expect("reopen");
-        assert_eq!(BTreeSet::from([Quarantine::Heap(1)]), pager.quarantined());
-        pager.close();
-    }
-}
+#[path = "marks_tests.rs"]
+mod tests;

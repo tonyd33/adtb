@@ -149,6 +149,10 @@ impl Pending {
     pub(super) fn pid(&self) -> Pid {
         self.pid
     }
+
+    pub(super) fn damage(&self) -> Damage {
+        self.damage
+    }
 }
 
 /// A damage record and what it quarantines, `None` when its mapping is incomplete.

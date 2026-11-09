@@ -59,6 +59,7 @@ use crate::exec::{self, Budget, Scheduler, Val};
 use crate::mvcc::Limits;
 use crate::mvcc::Transactions;
 use crate::runtime::{Runtime, ThreadId};
+use crate::storage::policy::{self, Holder, Phase};
 use crate::storage::{self, LATCHES_PER_THREAD, Pager};
 use crate::write::{self, Bindings, Bounds, Local, Setup, Txn};
 
@@ -684,6 +685,7 @@ fn unsupported(what: &str) -> Error {
 /// nothing. A failure to write a mark is left to the next open, which maps the same records.
 fn mark_open_damage<R: Runtime>(pager: &Pager<R>, catalog: &Catalog, txns: &Transactions<R>) {
     pager.map_damage(
+        Phase::Opening,
         |pid| catalog.holders(pager, txns, pid),
         |object| pager.quarantine(object),
     );
@@ -698,14 +700,10 @@ fn mark_failed_open_damage<R: Runtime>(rt: R, pager: &Pager<R>) {
         None
     };
     pager.map_damage(
+        Phase::Opening,
         |pid| match &loaded {
             Some((catalog, txns)) => catalog.holders(pager, txns, pid),
-            None => Some(
-                Catalog::opens_from(pager, pid)
-                    .then_some(storage::Quarantine::Database)
-                    .into_iter()
-                    .collect(),
-            ),
+            None => Some(BTreeSet::from([Catalog::opens_from(pager, pid)])),
         },
         |object| pager.quarantine(object),
     );
@@ -1018,11 +1016,16 @@ impl<R: Runtime> Engine<R> {
         let (mut catalog, txns) = Catalog::open(rt.clone(), &pager).map_err(corrupt)?;
         mark_open_damage(&pager, &catalog, &txns);
         let clog_damaged = txns.quarantined().is_some();
-        if txns
-            .quarantined()
-            .is_some_and(|e| matches!(e.damage, storage::Damage::LogUnproven { .. }))
+        if let Some(e) = txns.quarantined()
+            && matches!(e.damage, storage::Damage::LogUnproven { .. })
+            && let Some(object) = policy::mark(
+                policy::Fault::Page(e.damage),
+                Holder::CommitLog,
+                Phase::Opening,
+            )
+            .durable()
         {
-            pager.quarantine(storage::Quarantine::Database).ok();
+            pager.quarantine(object).ok();
         }
         let writable = !pager.is_quarantined(storage::Quarantine::Database);
         catalog.set_query_memory(query_memory(options));

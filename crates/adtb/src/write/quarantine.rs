@@ -9,9 +9,10 @@ use adtb_lang::schema::OnDelete;
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
 use crate::btree::Index;
-use crate::catalog::{Holdings, UNHELD_MARK};
+use crate::catalog::Holdings;
 use crate::plan::{Catalog, HeapId, IndexId};
 use crate::runtime::Runtime;
+use crate::storage::policy::{Holder, Phase};
 use crate::storage::{Damage, PageError, Pid, Quarantine};
 
 use super::schema::Rel;
@@ -44,14 +45,13 @@ fn element(ty: &Ty) -> Option<&Ty> {
 }
 
 impl<R: Runtime> Database<R> {
-    /// Returns what the damage at `pid` quarantines: the constructor heap or index holding the
-    /// page, current or history, and otherwise the database. Every heap shares the one
-    /// large-value store, so its pages fall to the database. The roots heap's damage marks
-    /// nothing. Add to `met` each page whose damage stopped a walk.
-    fn holders(&self, pid: Pid, met: &mut BTreeSet<Pid>) -> Option<BTreeSet<Quarantine>> {
+    /// Returns what holds the damaged page `pid` once the database runs: a heap or index,
+    /// current or history, the large-value store, the roots heap or a retired page. Add to `met`
+    /// each page whose damage stopped a walk.
+    fn holders(&self, pid: Pid, met: &mut BTreeSet<Pid>) -> Option<BTreeSet<Holder>> {
         let mut holdings = Holdings::new(&self.schema);
         if let Some(kept) = &self.kept_store {
-            holdings.roots(kept, None);
+            holdings.roots(kept);
         }
         holdings.retired(self.pager.retired());
         let retained = self.retained.as_deref();
@@ -71,10 +71,9 @@ impl<R: Runtime> Database<R> {
                 holdings.trees(r.id, tree.owner(), std::iter::once(tree).chain(past));
             }
         }
-        self.pager
-            .holders_meeting(pid, Some(UNHELD_MARK), met, |h| {
-                holdings.walk(&self.pager, h);
-            })
+        self.pager.holders_meeting(pid, Phase::Running, met, |h| {
+            holdings.walk(&self.pager, h);
+        })
     }
 
     /// Returns the name a client sees of `object`.
@@ -109,6 +108,7 @@ impl<R: Runtime> Database<R> {
     /// Precondition: the calling thread holds no page latch and not the serialization lock.
     fn map_damage(&self) -> BTreeMap<Quarantine, PageError> {
         self.pager.map_damage(
+            Phase::Running,
             |pid| self.holders(pid, &mut BTreeSet::new()),
             |o| self.set_mark(o),
         )

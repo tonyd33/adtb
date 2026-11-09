@@ -16,6 +16,12 @@
 #                     PageMemory::lock_exclusive, PageMemory::try_lock_exclusive and
 #                     Optimistic::upgrade (clippy.toml); each allowed site carries an expect, or its
 #                     file one inner expect where the file owns the item.
+# database_marks:     `Quarantine::Database`, `Mark::Database` and `Mark::Held` in production sources
+#                     of crates/ outside storage/policy.rs: what a fault marks is decided by the
+#                     policy table. Not counted: the marks page's codec, and reads of the marks
+#                     (`is_quarantined(..)`, `any_of` of an object with the database,
+#                     `quarantined_name(..)`, the admission loop's `std::iter::once(..)`, and the
+#                     failure naming the database once it is marked).
 # crash_loops:        definitions of a function whose name holds `crash_loop`: the harness's one
 #                     crash loop, which runs the ledger check after every round.
 # crash_allows:       definitions of `fn allows`: what a crash loop's reopened database tolerates.

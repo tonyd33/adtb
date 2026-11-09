@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::key::Value;
 use crate::runtime::Threads;
+use crate::storage::policy::{Holder, Phase};
 use crate::storage::{
     self, Crc32c, Damage, HEADER_LEN, Lsn, Options, PageError, PageKind, Pager, Pid, Quarantine,
 };
@@ -668,8 +669,8 @@ fn assert_second_group_refused(files: Files, named: Pid, damage: Damage, what: &
             "{what}: allocate"
         );
         assert_eq!(
-            Some(BTreeSet::from([Quarantine::Database])),
-            pager.holders_of(Pid(SMALL_SPAN), None, |_| {}),
+            Some(BTreeSet::from([Holder::Bitmap])),
+            pager.holders_of(Pid(SMALL_SPAN), Phase::Opening, |_| {}),
             "{what}"
         );
         pager.close();

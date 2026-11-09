@@ -11,6 +11,7 @@ use crate::heap::{Error, FieldType, Heap, LargeStore};
 use crate::key::{Scalar, Value};
 use crate::mvcc::Fate;
 use crate::mvcc::Xid;
+use crate::storage::policy::{Holder, Phase};
 use crate::storage::{self, Damage, Options, PageError, PageKind, Pager, Pid, Quarantine, Stopped};
 
 use super::super::page::{Arrangement, CONTENTS, HeapPage, Kinded};
@@ -235,11 +236,15 @@ fn a_map_pointer_out_of_shape_stops_a_holder_walk_and_another_heaps_damage_marks
     }
     let e = pager.damage(b_map[3], Damage::Checksum);
     assert_eq!(b_map[3], e.pid);
-    let holders = pager.holders_of(b_map[3], None, |h| {
-        h.walk(Some(Quarantine::Heap(7)), || a.held_pages(&pager));
-        h.walk(Some(Quarantine::Heap(8)), || b.held_pages(&pager));
+    let heap = |id| Holder::Relation {
+        object: Quarantine::Heap(id),
+        engine_module: false,
+    };
+    let holders = pager.holders_of(b_map[3], Phase::Opening, |h| {
+        h.walk(heap(7), || a.held_pages(&pager));
+        h.walk(heap(8), || b.held_pages(&pager));
     });
-    assert_eq!(Some(BTreeSet::from([Quarantine::Heap(8)])), holders);
+    assert_eq!(Some(BTreeSet::from([heap(8)])), holders);
     assert_eq!(
         refused(a.root()),
         a.verify(&pager),

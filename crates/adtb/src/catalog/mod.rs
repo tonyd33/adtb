@@ -26,9 +26,8 @@ mod validate;
 pub mod values;
 
 pub use holdings::Holdings;
-pub(crate) use holdings::UNHELD_MARK;
 #[cfg(any(test, feature = "testing"))]
-pub(crate) use holdings::{LARGE_MARK, relation_mark};
+pub(crate) use holdings::relation_holder;
 
 #[cfg(test)]
 mod catalog_tests;
@@ -57,6 +56,7 @@ use crate::key::{CtorId, Dir, Entry, KeySchema, OrderKey, Scalar, Tid, Value};
 use crate::mvcc::{self, CommitLog, Scope, Snapshot, Transactions, Xid};
 use crate::plan::{self, HeapId, IndexDesc, IndexId, RelationDesc};
 use crate::runtime::Runtime;
+use crate::storage::policy::{Holder, Phase};
 use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid, Quarantine};
 use crate::verify::{self, Depth, Inventory, Problem, Report, Sum};
 
@@ -859,17 +859,16 @@ impl Catalog {
         self.heaps.is_empty()
     }
 
-    /// Returns what the damage at `pid` quarantines, found before the write path exists: the
-    /// holder of a page the catalog's structures reach, and nothing for any other page. The roots
-    /// heap's damage marks the database. Returns `None` when the mapping is incomplete.
+    /// Returns what holds the damaged page `pid` while the database opens, before the write path
+    /// exists. Returns `None` when the mapping is incomplete.
     pub fn holders<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
         pid: Pid,
-    ) -> Option<BTreeSet<Quarantine>> {
+    ) -> Option<BTreeSet<Holder>> {
         let mut holdings = Holdings::new(&self.schema);
-        holdings.roots(&self.roots, Some(Quarantine::Database));
+        holdings.roots(&self.roots);
         for (&(r, c), heap) in &self.heaps {
             let past = self.kept.heap(r, c);
             holdings.heaps(r, heap, past.map(|p| &**p));
@@ -887,26 +886,30 @@ impl Catalog {
                 holdings.trees(r, key.tree().owner(), [past.tree()]);
             }
         }
-        pager.holders_of(pid, None, |h| {
+        pager.holders_of(pid, Phase::Opening, |h| {
             let clog = txns.commit_log();
-            let mut pages = vec![self.root, clog.root()];
+            let mut pages = vec![clog.root()];
             pages.extend(clog.status_pages().values());
             pages.extend(clog.directory_pages());
-            pages.extend(self.sequences());
-            h.walk(Some(Quarantine::Database), || Ok(pages.clone()));
+            h.walk(Holder::CatalogRoot, || Ok(vec![self.root]));
+            h.walk(Holder::CommitLog, || Ok(pages.clone()));
+            h.walk(Holder::Counters, || {
+                Ok(self.sequences().into_iter().collect())
+            });
             holdings.walk(pager, h);
         })
     }
 
-    /// Returns whether `pid` is a page the catalog cannot open without: its root, its roots heap
-    /// or the commit log's. For a catalog that does not open, so nothing of it is in hand.
-    pub fn opens_from<R: Runtime>(pager: &Pager<R>, pid: Pid) -> bool {
+    /// Returns what holds `pid` of the pages the catalog cannot open without: its root, its roots
+    /// heap or the commit log's, and unreached for any other page. For a catalog that does not
+    /// open, so nothing of it is in hand.
+    pub fn opens_from<R: Runtime>(pager: &Pager<R>, pid: Pid) -> Holder {
         let at = pager.catalog_root();
         if pid == at {
-            return true;
+            return Holder::CatalogRoot;
         }
         let Ok(root) = pager.read(at).map(|page| Root::read(&page)) else {
-            return false;
+            return Holder::Unreached;
         };
         let holds = |pages: Result<Vec<Pid>, PageError>| match pages {
             Ok(pages) => pages.contains(&pid),
@@ -915,13 +918,20 @@ impl Catalog {
         let large = LargeStore::open(root.large.0, root.large.1);
         let in_roots = Heap::open(pager, root.roots.0, root.roots.1, roots_row(), large)
             .is_ok_and(|heap| holds(heap.owned_pages(pager)));
-        in_roots
-            || holds(CommitLog::load(pager, root.commit_log).map(|clog| {
-                let mut pages = vec![clog.root()];
-                pages.extend(clog.status_pages().values());
-                pages.extend(clog.directory_pages());
-                pages
-            }))
+        if in_roots {
+            return Holder::CatalogRows;
+        }
+        let in_clog = holds(CommitLog::load(pager, root.commit_log).map(|clog| {
+            let mut pages = vec![clog.root()];
+            pages.extend(clog.status_pages().values());
+            pages.extend(clog.directory_pages());
+            pages
+        }));
+        if in_clog {
+            Holder::CommitLog
+        } else {
+            Holder::Unreached
+        }
     }
 
     /// Returns the heap kept rows lie in.

@@ -10,6 +10,7 @@ use crate::btree::{self, BTree};
 use crate::exec::Val;
 use crate::key::Value;
 use crate::runtime::{Clock, Io, Op, Runtime, Threads};
+use crate::storage::policy::{self, Fault, Holder, Phase};
 use crate::storage::{Damage, HEADER_LEN, Options, PageError, Pager, Pid, Quarantine, Stopped};
 use crate::{
     CallOptions, Called, Database, Error, FatalReason, Log, OpenOptions, Registration, TxnOptions,
@@ -308,9 +309,9 @@ fn a_page_vacuum_frees_during_the_walk_marks_nothing() {
         let pid = p
             .allocate(1, crate::storage::PageKind::Quarantine, 0)
             .unwrap();
-        let held = p.holders_of(pid, Some(Quarantine::Database), |_| {
+        let held = marked(p.holders_of(pid, Phase::Running, |_| {
             p.free(pid).unwrap();
-        });
+        }));
         assert_eq!(Some(BTreeSet::new()), held);
     });
 }
@@ -551,10 +552,10 @@ fn mapping_a_page_of_one_tree_never_marks_a_tree_changing_beside_it() {
     let got = {
         let p = pager;
         mapped_under_churn(&rt, limit, mutate, move || {
-            p.holders_of(damaged, Some(Quarantine::Database), |h| {
-                h.walk(Some(Quarantine::Index(41)), || a.walk(&*p));
-                h.walk(Some(Quarantine::Index(43)), || c.walk(&*p));
-            })
+            marked(p.holders_of(damaged, Phase::Running, |h| {
+                h.walk(relation(Quarantine::Index(41)), || a.walk(&*p));
+                h.walk(relation(Quarantine::Index(43)), || c.walk(&*p));
+            }))
         })
     };
     assert_eq!(1, got.len(), "{got:?}");
@@ -636,9 +637,9 @@ fn mapping_a_page_of_a_changing_tree_finds_that_tree_or_nothing() {
     let got = {
         let p = pager;
         mapped_under_churn(&rt, Duration::from_millis(300), mutate, move || {
-            p.holders_of(damaged, Some(Quarantine::Database), |h| {
-                h.walk(Some(Quarantine::Index(41)), || a.walk(&*p));
-            })
+            marked(p.holders_of(damaged, Phase::Running, |h| {
+                h.walk(relation(Quarantine::Index(41)), || a.walk(&*p));
+            }))
         })
     };
     assert!(!got.contains_key("Some({Database})"), "{got:?}");
@@ -769,13 +770,13 @@ fn scripted(
     script: &[Result<Vec<Pid>, Stopped>],
 ) -> (Option<BTreeSet<Quarantine>>, usize) {
     let mut walks = 0;
-    let held = p.holders_of(pid, Some(Quarantine::Database), |h| {
-        h.walk(Some(Quarantine::Index(7)), || {
+    let held = p.holders_of(pid, Phase::Running, |h| {
+        h.walk(relation(Quarantine::Index(7)), || {
             walks += 1;
             script[(walks - 1).min(script.len() - 1)].clone()
         });
     });
-    (held, walks)
+    (marked(held), walks)
 }
 
 #[test]
@@ -832,11 +833,23 @@ fn a_walk_stopped_by_io_is_not_run_again_and_leaves_the_page_unmapped() {
 fn a_walk_of_an_object_whose_damage_marks_nothing_stopped_by_damage_leaves_the_page_unmapped() {
     with_unheld_page(66, |p, pid| {
         let other = Pid(pid.0 + 1);
-        let held = p.holders_of(pid, Some(Quarantine::Database), |h| {
-            h.walk(None, || Err(Stopped::Damage(other)));
+        let held = p.holders_of(pid, Phase::Running, |h| {
+            h.walk(Holder::Retired, || Err(Stopped::Damage(other)));
         });
         assert_eq!(None, held);
     });
+}
+
+/// Returns the marks a page fault on `held` sets once the database runs.
+fn marked(held: Option<BTreeSet<Holder>>) -> Option<BTreeSet<Quarantine>> {
+    held.map(|h| policy::marks(Fault::Page(Damage::Checksum), h, Phase::Running))
+}
+
+fn relation(object: Quarantine) -> Holder {
+    Holder::Relation {
+        object,
+        engine_module: false,
+    }
 }
 
 fn mark_named(db: &Database<SimRuntime>, relation: &str, ctor: &str) -> Quarantine {

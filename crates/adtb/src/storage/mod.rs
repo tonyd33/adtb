@@ -21,6 +21,7 @@ mod lsnmap;
 mod page;
 mod pager;
 mod pagetable;
+pub mod policy;
 mod quarantine;
 mod record;
 mod recovery;

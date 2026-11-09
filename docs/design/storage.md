@@ -1070,19 +1070,23 @@ transactions layer names the database once the database is marked. A page maps a
   as a storage failure naming the page; its record stays unmapped, and the
   next open or end of a call maps it again. A commit does not, and the
   page still refuses every read, so no commit writes through it;
-- a page of a relation of an engine module, a page of the large-value
-  store every heap shares, and an allocated page a complete walk of every
-  heap and index does not reach mark the database;
+- a page of a relation of an engine module and a page of the large-value
+  store every heap shares mark the database;
+- an allocated page a complete walk of every heap and index does not
+  reach marks nothing at open and the database once the database runs;
+- a page of the heap of the catalog's rows, which also holds the kept
+  rows, marks the database at open and nothing once the database runs.
+  Once it runs, a walk of that heap stopped by damage leaves the mapping
+  incomplete;
 - a page the allocation bitmap calls free, read before and after the walk,
-  marks nothing, and a page of the store of kept rows marks nothing. A
-  page whose bitmap page is refused counts as allocated. A walk
-  of that store stopped by damage leaves the mapping incomplete;
+  marks nothing. A page whose bitmap page is refused counts as allocated;
+- a page of a tree a swap replaced, retired until its free, marks nothing;
 - `Damage::Unreadable`, an I/O failure, marks nothing and stays a storage
   failure.
 
-An open maps with the catalog's structures, and marks nothing for a page
-they do not reach. When the catalog itself does not open, only a page of its
-root, its kept-rows heap or the commit log is mapped, to the database.
+An open maps with the catalog's structures. When the catalog itself does
+not open, only a page of its root, its kept-rows heap or the commit log is
+mapped, to the database.
 
 An `Order`, `Orphan` or `Missing` finding comes from a check that holds off
 vacuum across its index, and vacuum is the one writer that frees a page of a

@@ -11,7 +11,7 @@ use super::evidence::Met;
 use super::header::{self, FileHeader, REGION};
 use super::page;
 use super::pager::{Options, Pager};
-use super::quarantine::Quarantine;
+use super::policy::{self, Fault, Holder, Mark, Phase};
 use super::record::{MapRoot, Record};
 use super::{Lsn, Pid};
 
@@ -119,10 +119,15 @@ impl<R: Runtime> Pager<R> {
         self.checkpoint();
         self.check_map();
         if let Err(map) = armed {
-            if map.is_some_and(|e| e.damage != Damage::Unreadable) {
-                self.quarantine(Quarantine::Database).ok();
+            let holder = map.map_or(Holder::Log, |_| Holder::LsnMap);
+            let refused = map.map(|e| policy::mark(Fault::Page(e.damage), holder, Phase::Opening));
+            if let Some(object) = refused.and_then(Mark::durable) {
+                self.quarantine(object).ok();
             }
-            self.hold_quarantine(Quarantine::Database);
+            let unarmed = policy::mark(Fault::Unarmed, holder, Phase::Opening);
+            if let Some(object) = unarmed.held() {
+                self.hold_quarantine(object);
+            }
         }
         Ok(recovery)
     }

@@ -6,7 +6,7 @@ use adtb_lang::types::RelId;
 
 use crate::btree::{self, Index};
 #[cfg(any(test, feature = "testing"))]
-use crate::catalog::relation_mark;
+use crate::catalog::relation_holder;
 use crate::exec::{AtSnapshot, Histories, Store};
 use crate::heap::Heap;
 use crate::key::{CtorId, Tid};
@@ -15,6 +15,8 @@ use crate::mvcc::Safety;
 use crate::plan::HeapId;
 use crate::plan::IndexId;
 use crate::runtime::Runtime;
+#[cfg(any(test, feature = "testing"))]
+use crate::storage::policy::{self, Phase};
 use crate::storage::{self, Damage, PageError, Pid};
 use crate::verify::{Finding, Problem};
 
@@ -564,7 +566,8 @@ impl<R: Runtime> Database<R> {
             .values()
             .find(|r| r.ctors.iter().any(|c| c.heap == id))?;
         let object = storage::Quarantine::Heap(self.heaps.get(&id)?.heap.id().0);
-        Some(relation_mark(&self.schema, r.id, object))
+        let holder = relation_holder(&self.schema, r.id, object);
+        policy::checksum_mark(holder, Phase::Running).durable()
     }
 
     /// Returns the mark damage to index `id` or its history tree sets, as the holdings walk maps it.
@@ -574,7 +577,8 @@ impl<R: Runtime> Database<R> {
             .values()
             .find(|r| r.indexes.iter().any(|(i, _)| *i == id))?;
         let object = storage::Quarantine::Index(self.indexes.get(&id)?.index.tree().owner());
-        Some(relation_mark(&self.schema, r.id, object))
+        let holder = relation_holder(&self.schema, r.id, object);
+        policy::checksum_mark(holder, Phase::Running).durable()
     }
 }
 

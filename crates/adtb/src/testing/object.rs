@@ -3,12 +3,12 @@ use std::ops::Bound;
 use std::sync::Arc;
 
 use crate::btree::{BTree, Index};
-use crate::catalog::{LARGE_MARK, UNHELD_MARK};
 use crate::heap::{Flags, Header, Heap, Version};
 use crate::key::{CtorId, Entry, KeySchema, Tid, Value};
 use crate::mvcc::{Status, StatusError, Xid};
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
+use crate::storage::policy::{self, Holder, Phase};
 use crate::storage::{Pid, Quarantine};
 
 use super::{Failed, Testing};
@@ -100,16 +100,24 @@ impl<'a, R: Runtime> Testing<'a, R> {
     pub fn mark_of(self, object: Object) -> Result<Quarantine, Failed> {
         let w = self.db.tested_db();
         let absent = Failed::Absent(object);
+        let running = |holder| {
+            let mark = policy::checksum_mark(holder, Phase::Running);
+            mark.durable()
+                .expect("damage to a page of an engine structure marks an object")
+        };
         match object {
             Object::Heap(id) | Object::History(id) => w.heap_mark(id).ok_or(absent),
-            Object::Large(id) => w.heap_of(id).map(|_| LARGE_MARK).ok_or(absent),
+            Object::Large(id) => w
+                .heap_of(id)
+                .map(|_| running(Holder::LargeStore))
+                .ok_or(absent),
             Object::Index(id) | Object::HistoryIndex(id) => w.index_mark(id).ok_or(absent),
             Object::CommitTimes
             | Object::CommitLog
             | Object::Catalog
             | Object::Sequences
             | Object::Marks
-            | Object::DamageList => Ok(UNHELD_MARK),
+            | Object::DamageList => Ok(running(Holder::Unreached)),
         }
     }
 

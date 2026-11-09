@@ -10,7 +10,7 @@ use super::block::{LogImage, LogSource, Mode, scan};
 use super::error::Damage;
 use super::page::{self, HEADER_LEN, PageKind};
 use super::pager::{PageError, Pager};
-use super::quarantine::Quarantine;
+use super::policy::{self, Fault, Holder, Phase};
 use super::record::{MapRoot, Record};
 use super::{Lsn, Pid};
 
@@ -46,13 +46,12 @@ impl<R: Runtime> Pager<R> {
             .saturating_mul(self.fanout().saturating_pow(level - 1))
     }
 
-    /// Returns the bytes of map page `pid`. Refuse it when it cannot be read, and also quarantine
-    /// the database when it fails its checksum, is no map page, or its LSN is below `expected`, the
-    /// LSN its parent gives it.
-    fn map_page(&self, pid: Pid, expected: Lsn) -> Result<Vec<u8>, PageError> {
+    /// Returns the bytes of map page `pid`, read during `phase`. Refuse it when it fails its
+    /// checksum, is no map page, its LSN is below `expected`, the LSN its parent gives it, or it
+    /// cannot be read, and set what its damage marks.
+    fn map_page(&self, pid: Pid, expected: Lsn, phase: Phase) -> Result<Vec<u8>, PageError> {
         let read = self.read(pid).map(|p| p.to_vec());
         let refused = match read {
-            Err(e) if e.damage == Damage::Unreadable => return Err(e),
             Err(e) => e,
             Ok(page) if page::kind(&page) != PageKind::LsnMap as u16 => {
                 self.damage(pid, Damage::Checksum)
@@ -63,8 +62,11 @@ impl<R: Runtime> Pager<R> {
             }
             Ok(page) => return Ok(page),
         };
-        if !self.evidence().recovering() {
-            self.quarantine(Quarantine::Database).ok();
+        let mark = policy::mark(Fault::Page(refused.damage), Holder::LsnMap, phase);
+        if !self.evidence().recovering()
+            && let Some(object) = mark.durable()
+        {
+            self.quarantine(object).ok();
         }
         Err(refused)
     }
@@ -74,7 +76,7 @@ impl<R: Runtime> Pager<R> {
     pub(super) fn check_map(&self) {
         let map = self.map_root();
         if let Some(m) = map {
-            drop(self.map_page(m.root, m.lsn));
+            drop(self.map_page(m.root, m.lsn, Phase::Opening));
         }
     }
 
@@ -89,7 +91,7 @@ impl<R: Runtime> Pager<R> {
         }
         let (mut at, mut expected) = (m.root, m.lsn);
         for level in (2..=m.height).rev() {
-            let page = self.map_page(at, expected)?;
+            let page = self.map_page(at, expected, Phase::Running)?;
             let slot = (pid.0 / self.reach(level - 1) % self.fanout()) as usize;
             at = Pid(word(&page, 2 * slot));
             if at == Pid(0) {
@@ -98,7 +100,7 @@ impl<R: Runtime> Pager<R> {
             expected = Lsn(word(&page, 2 * slot + 1));
         }
         let lsn = word(
-            &self.map_page(at, expected)?,
+            &self.map_page(at, expected, Phase::Running)?,
             (pid.0 % self.per_leaf()) as usize,
         );
         Ok((lsn != 0).then_some(Lsn(lsn)))
@@ -144,7 +146,7 @@ impl<R: Runtime> Pager<R> {
         base: u64,
         visit: &mut Visit<'_>,
     ) -> Result<(), PageError> {
-        let page = self.map_page(pid, expected)?;
+        let page = self.map_page(pid, expected, Phase::Running)?;
         visit(pid, &page, level, base);
         if level == 1 {
             return Ok(());
@@ -222,7 +224,7 @@ impl<R: Runtime> Pager<R> {
         level: u32,
         entries: &[(u64, Lsn)],
     ) -> Result<Lsn, PageError> {
-        let page = self.map_page(pid, expected)?;
+        let page = self.map_page(pid, expected, Phase::Running)?;
         if level == 1 {
             let per = self.per_leaf();
             self.update(&[pid], |p| {

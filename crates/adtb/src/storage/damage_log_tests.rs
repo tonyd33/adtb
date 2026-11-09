@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::mvcc::Transactions;
 use crate::runtime::{IoError, OpKind, Runtime};
+use crate::storage::policy::{Holder, Phase};
 use crate::storage::{
     self, Damage, FIRST_EDITABLE, Finding, HEADER_LEN, LogFinding, LogProblem, Lsn, Options,
     PageKind, Pager, Pid, Quarantine,
@@ -711,10 +712,11 @@ fn a_status_page_settled_during_its_walk_marks_nothing() {
         };
         let mut walks = 0;
         let failed = pager.map_damage(
+            Phase::Running,
             |_| {
                 walks += 1;
                 Transactions::open(rt.clone(), &pager, root).unwrap();
-                Some(BTreeSet::from([Quarantine::Database]))
+                Some(BTreeSet::from([Holder::CommitLog]))
             },
             |o| pager.quarantine(o),
         );
@@ -742,9 +744,10 @@ fn a_record_superseded_during_its_walk_marks_nothing_and_its_successor_maps() {
     closed(&files, false, |pager| {
         pager.damage(p, Damage::Checksum);
         let failed = pager.map_damage(
+            Phase::Running,
             |pid| {
                 pager.damage(pid, stale);
-                Some(BTreeSet::from([Quarantine::Heap(1)]))
+                Some(BTreeSet::from([heap(1)]))
             },
             |o| pager.quarantine(o),
         );
@@ -755,7 +758,8 @@ fn a_record_superseded_during_its_walk_marks_nothing_and_its_successor_maps() {
             "the superseded record"
         );
         let failed = pager.map_damage(
-            |_| Some(BTreeSet::from([Quarantine::Heap(2)])),
+            Phase::Running,
+            |_| Some(BTreeSet::from([heap(2)])),
             |o| pager.quarantine(o),
         );
         assert_eq!(BTreeMap::new(), failed);
@@ -766,6 +770,13 @@ fn a_record_superseded_during_its_walk_marks_nothing_and_its_successor_maps() {
             "the successor maps on its own"
         );
     });
+}
+
+fn heap(id: u32) -> Holder {
+    Holder::Relation {
+        object: Quarantine::Heap(id),
+        engine_module: false,
+    }
 }
 
 /// Returns the files after damaging `n` distinct pages of a new file, a checkpoint and a close.
@@ -801,7 +812,11 @@ fn one_damaged_page_past_the_lists_capacity_records_the_whole_file() {
             );
             let unlisted = pager.verify().findings.contains(&Finding::Unlisted);
             assert_eq!(full, unlisted, "{n} pages");
-            pager.map_damage(|_| Some(BTreeSet::new()), |o| pager.quarantine(o));
+            pager.map_damage(
+                Phase::Running,
+                |_| Some(BTreeSet::new()),
+                |o| pager.quarantine(o),
+            );
             let database = BTreeSet::from([Quarantine::Database]);
             let marks = if full { database } else { BTreeSet::new() };
             assert_eq!(marks, Probe::of(&pager).marks(), "{n} pages");
@@ -814,9 +829,10 @@ fn one_damaged_page_past_the_lists_capacity_records_the_whole_file() {
 fn mapped_whole(pager: &Pager<SimRuntime>) -> (BTreeSet<Quarantine>, usize) {
     let mut walked = 0;
     let failed = pager.map_damage(
+        Phase::Running,
         |_| {
             walked += 1;
-            Some(BTreeSet::from([Quarantine::Database]))
+            Some(BTreeSet::from([Holder::CommitLog]))
         },
         |o| pager.quarantine(o),
     );
