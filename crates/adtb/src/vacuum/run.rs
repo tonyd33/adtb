@@ -2,10 +2,10 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use crate::btree::{self, Index};
-use crate::heap::{self, Fate, Header, Heap, LargeStore, Updated};
+use crate::heap::{self, Heap, LargeStore};
 use crate::history::{self, History};
-use crate::key::{CtorId, Tid, Value};
-use crate::mvcc::{Status, Transactions, Xid};
+use crate::key::CtorId;
+use crate::mvcc::{Horizon, Rule, Transactions, Xid};
 use crate::runtime::Runtime;
 use crate::storage::{PageError, Pager, Walk};
 
@@ -24,6 +24,16 @@ pub enum Error {
 impl From<heap::Error> for Error {
     fn from(e: heap::Error) -> Error {
         Error::Heap(e)
+    }
+}
+
+impl From<history::Error> for Error {
+    fn from(e: history::Error) -> Error {
+        match e {
+            history::Error::Page(e) => Error::Page(e),
+            history::Error::Index(e) => Error::Index(e),
+            history::Error::Heap(e) => Error::Heap(e),
+        }
     }
 }
 
@@ -91,75 +101,6 @@ pub struct Report {
     pub heaps: BTreeMap<u32, Freed>,
 }
 
-/// What versions of one heap are judged by.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Horizon {
-    pub watermark: Xid,
-    /// The least commit time the retention window keeps, if history is kept.
-    pub cutoff: Option<u64>,
-    /// Remove the versions the window keeps, which the caller first moves to history, instead of
-    /// keeping them.
-    pub moving: bool,
-}
-
-impl Horizon {
-    /// Returns the horizon on-access pruning of `heap` judges by now.
-    pub fn now<R: Runtime>(txns: &Transactions<R>, heap: &Heap) -> Horizon {
-        Horizon {
-            watermark: txns.watermark(heap.id().0),
-            cutoff: txns.cutoff(),
-            moving: false,
-        }
-    }
-}
-
-/// Returns the fate of the version whose header is `h` in a heap judged by `horizon`: as
-/// [`judge`] does, except that a version the retention window keeps is kept unless `horizon`
-/// is moving.
-pub fn judge_within<R: Runtime>(
-    txns: &Transactions<R>,
-    pager: &Pager<R>,
-    horizon: &Horizon,
-    h: &Header,
-) -> Result<Fate, PageError> {
-    let fate = judge(txns, pager, horizon.watermark, h)?;
-    if fate != Fate::Remove || horizon.moving || horizon.cutoff.is_none() {
-        return Ok(fate);
-    }
-    Ok(if history::movable(txns, pager, horizon, h)? {
-        Fate::Keep
-    } else {
-        Fate::Remove
-    })
-}
-
-/// Returns the fate of the version whose header is `h` in a heap whose watermark is `watermark`.
-pub fn judge<R: Runtime>(
-    txns: &Transactions<R>,
-    pager: &Pager<R>,
-    watermark: Xid,
-    h: &Header,
-) -> Result<Fate, PageError> {
-    let xmin = h.writers.inserter();
-    match txns.status(pager, xmin)? {
-        Status::Aborted => return Ok(Fate::Remove),
-        Status::InProgress => return Ok(Fate::Keep),
-        Status::Committed => {}
-    }
-    let Some(xmax) = h.writers.deleter() else {
-        return Ok(if xmin < watermark {
-            Fate::AllVisible
-        } else {
-            Fate::Keep
-        });
-    };
-    Ok(match txns.status(pager, xmax)? {
-        Status::Aborted => Fate::Clear,
-        Status::Committed if xmax < watermark => Fate::Remove,
-        Status::Committed | Status::InProgress => Fate::Keep,
-    })
-}
-
 /// Prune page `pid` of `heap` of the versions dead to every snapshot its watermark admits,
 /// leaving its all-visible bit as it is unless the page changes.
 #[cfg(test)]
@@ -169,38 +110,8 @@ pub fn prune<R: Runtime>(
     heap: &Heap,
     pid: crate::storage::Pid,
 ) -> Result<heap::Pruned, PageError> {
-    let w = Horizon::now(txns, heap);
-    heap.prune(pager, pid, |p, h| judge_within(txns, p, &w, h), &[], false)
-}
-
-/// Insert `row` into `heap` as `xid` writes it, pruning a page found without room first, as
-/// [`prune`] does.
-pub fn insert<R: Runtime>(
-    pager: &Pager<R>,
-    txns: &Transactions<R>,
-    heap: &Heap,
-    xid: Xid,
-    row: &[Value],
-) -> Result<Tid, heap::Error> {
-    let w = Horizon::now(txns, heap);
-    let mut j = |p: &Pager<R>, h: &Header| judge_within(txns, p, &w, h);
-    heap.insert_pruning(pager, xid, row, Some(&mut j))
-}
-
-/// Update the version at `at` of `heap` as `xid` writes `row`, pruning a page found without room
-/// first, as [`prune`] does.
-pub fn update<R: Runtime>(
-    pager: &Pager<R>,
-    txns: &Transactions<R>,
-    heap: &Heap,
-    at: impl Into<heap::WriteTarget>,
-    xid: Xid,
-    row: &[Value],
-    indexed: &[usize],
-) -> Result<Updated, heap::Error> {
-    let w = Horizon::now(txns, heap);
-    let mut j = |p: &Pager<R>, h: &Header| judge_within(txns, p, &w, h);
-    heap.update_pruning(pager, at, xid, row, indexed, Some(&mut j))
+    let judge = txns.judge(pager, txns.horizon_now(heap.id().0));
+    heap.prune(pager, pid, judge, &[], false)
 }
 
 /// What a running vacuum is doing to one heap.
@@ -310,7 +221,8 @@ pub fn vacuum<R: Runtime>(
         pace,
         last: false,
     };
-    run(pager, txns, sum, Rule::Current(None), budget, &mut pass)
+    let marks = Watermarks::new(Mode::Current(None), txns.cutoff());
+    run(pager, txns, sum, marks, budget, &mut pass)
 }
 
 /// Vacuum `sum` as [`vacuum`] does, moving each version the retention window keeps to the
@@ -332,8 +244,8 @@ pub fn vacuum_keeping<R: Runtime>(
         pace,
         last: false,
     };
-    let rule = Rule::Current(Some(into));
-    run(pager, txns, sum, rule, budget, &mut pass)
+    let marks = Watermarks::new(Mode::Current(Some(into)), txns.cutoff());
+    run(pager, txns, sum, marks, budget, &mut pass)
 }
 
 /// Vacuum `past`, the history heaps of a sum and the history key index over them, of every
@@ -353,21 +265,12 @@ pub fn expire<R: Runtime>(
         pace,
         last: false,
     };
-    let report = run(pager, txns, past, Rule::Past(cutoff), budget, &mut pass)?;
+    let marks = Watermarks::new(Mode::Past, cutoff);
+    let report = run(pager, txns, past, marks, budget, &mut pass)?;
     if let (Some(record), Some(cutoff)) = (txns.history(), cutoff) {
         finished(record.expire(pager, cutoff, pass.pace)?)?;
     }
     Ok(report)
-}
-
-/// Which versions a run of vacuum frees.
-#[derive(Clone, Copy)]
-enum Rule<'a> {
-    /// Of current heaps: those dead to every snapshot, except those the retention window keeps,
-    /// which move to the history heaps given or else stay.
-    Current(Option<&'a History<'a>>),
-    /// Of history heaps: those the retention window bounded by this cutoff no longer keeps.
-    Past(Option<u64>),
 }
 
 /// What one run reports its progress to, and what paces it.
@@ -401,7 +304,7 @@ fn run<R: Runtime>(
     pager: &Pager<R>,
     txns: &Transactions<R>,
     sum: &Sum,
-    rule: Rule,
+    mut marks: Watermarks,
     budget: usize,
     pass: &mut Pass,
 ) -> Result<Report, Error> {
@@ -423,7 +326,6 @@ fn run<R: Runtime>(
         heaps: BTreeMap::new(),
     };
     let mut dead = DeadSet::new();
-    let mut marks = Watermarks::new(txns, rule);
     for (_, heap) in &sum.heaps {
         progress.start(heap.id().0);
     }
@@ -442,7 +344,7 @@ fn run<R: Runtime>(
                 continue;
             }
             let w = marks.of(txns, id);
-            let slots = heap.dead_slots(pager, *pid, |p, hd| marks.judge(txns, p, &w, hd))?;
+            let slots = heap.dead_slots(pager, *pid, txns.judge(pager, w))?;
             report.dead += slots.len();
             progress.set(id, |s| s.dead_versions += slots.len());
             dead.add(id, *pid, &slots);
@@ -454,64 +356,56 @@ fn run<R: Runtime>(
     }
     pass.last = true;
     clean(pager, txns, sum, &mut dead, &mut marks, &mut report, pass)?;
-    report.chunks = finished(large.sweep(
-        pager,
-        |x| Ok(txns.status(pager, x)? != Status::InProgress),
-        pass.pace,
-    )?)?;
+    report.chunks = finished(large.sweep(pager, |x| txns.resolved(pager, x), pass.pace)?)?;
     Ok(report)
 }
 
-/// The horizon each heap is judged by for the whole of one vacuum: the least of its watermark
-/// and the oldest transaction running, taken when the vacuum first judges the heap, and the
-/// window's cutoff, taken when the vacuum starts.
-///
-/// Every transaction below the watermark had resolved when it was taken. A version it finds dead
-/// stays dead from the scan that collects it to the prune that frees it, however the heap's
-/// watermark and the window move.
+/// Which versions a run of vacuum frees.
+#[derive(Clone, Copy)]
+enum Mode<'a> {
+    /// Of current heaps: those dead to every snapshot, except those the retention window keeps,
+    /// which move to the history heaps given or else stay.
+    Current(Option<&'a History<'a>>),
+    /// Of history heaps: those the retention window no longer keeps.
+    Past,
+}
+
+/// The horizon each heap is judged by for the whole of one vacuum, fixed at its first judgement
+/// of the heap, with the window's cutoff taken when the vacuum starts.
 struct Watermarks<'a> {
-    rule: Rule<'a>,
+    mode: Mode<'a>,
     cutoff: Option<u64>,
     fixed: BTreeMap<u32, Horizon>,
 }
 
 impl<'a> Watermarks<'a> {
-    fn new<R: Runtime>(txns: &Transactions<R>, rule: Rule<'a>) -> Watermarks<'a> {
-        let cutoff = match rule {
-            Rule::Current(_) => txns.cutoff(),
-            Rule::Past(cutoff) => cutoff,
-        };
+    fn new(mode: Mode<'a>, cutoff: Option<u64>) -> Self {
         Watermarks {
-            rule,
+            mode,
             cutoff,
             fixed: BTreeMap::new(),
         }
     }
 
-    fn of<R: Runtime>(&mut self, txns: &Transactions<R>, heap: u32) -> Horizon {
-        let cutoff = self.cutoff;
-        let moving = matches!(self.rule, Rule::Current(Some(_)));
-        *self.fixed.entry(heap).or_insert_with(|| {
-            let w = txns.watermark(heap);
-            Horizon {
-                watermark: txns.running().first().map_or(w, |&r| w.min(r)),
-                cutoff,
-                moving,
-            }
-        })
+    /// Returns the history heaps the versions the window keeps move to, if they move.
+    fn moves_to(&self) -> Option<&'a History<'a>> {
+        match self.mode {
+            Mode::Current(into) => into,
+            Mode::Past => None,
+        }
     }
 
-    fn judge<R: Runtime>(
-        &self,
-        txns: &Transactions<R>,
-        pager: &Pager<R>,
-        horizon: &Horizon,
-        h: &Header,
-    ) -> Result<Fate, PageError> {
-        match self.rule {
-            Rule::Current(_) => judge_within(txns, pager, horizon, h),
-            Rule::Past(_) => history::judge_past(txns, pager, horizon, h),
-        }
+    fn of<R: Runtime>(&mut self, txns: &Transactions<R>, heap: u32) -> Horizon {
+        let rule = match self.mode {
+            Mode::Current(None) => Rule::Current,
+            Mode::Current(Some(_)) => Rule::Moving,
+            Mode::Past => Rule::Past,
+        };
+        let cutoff = self.cutoff;
+        *self
+            .fixed
+            .entry(heap)
+            .or_insert_with(|| txns.horizon_fixed(heap, cutoff, rule))
     }
 }
 
@@ -548,7 +442,7 @@ fn clean<R: Runtime>(
     for (_, heap) in &sum.heaps {
         progress.set(heap.id().0, |s| s.phase = Phase::Indexes);
     }
-    if let Rule::Current(Some(into)) = marks.rule {
+    if let Some(into) = marks.moves_to() {
         for &(ctor, heap) in &sum.heaps {
             let w = marks.of(txns, heap.id().0);
             for (pid, _) in dead.pages(heap.id().0) {
@@ -572,8 +466,7 @@ fn clean<R: Runtime>(
         let w = marks.of(txns, id);
         for (pid, slots) in dead.pages(id) {
             pass.step()?;
-            let judge = |p: &Pager<R>, h: &Header| marks.judge(txns, p, &w, h);
-            let done = heap.prune(pager, pid, judge, &slots, true)?;
+            let done = heap.prune(pager, pid, txns.judge(pager, w), &slots, true)?;
             report.freed += done.freed;
             report.cleared += done.cleared;
             report.all_visible += usize::from(done.all_visible);

@@ -235,7 +235,7 @@ pub_fields prod 5 crates/adtb/src/storage/record.rs
 pub_fields prod 5 crates/adtb/src/storage/recovery.rs
 pub_fields prod 3 crates/adtb/src/storage/verify.rs
 pub_fields prod 4 crates/adtb/src/vacuum/pace.rs
-pub_fields prod 24 crates/adtb/src/vacuum/run.rs
+pub_fields prod 21 crates/adtb/src/vacuum/run.rs
 pub_fields prod 14 crates/adtb/src/verify/mod.rs
 pub_fields prod 1 crates/adtb/src/write/broken.rs
 pub_fields prod 3 crates/adtb/src/write/check.rs

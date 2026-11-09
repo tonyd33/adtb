@@ -1,18 +1,7 @@
+use crate::mvcc::{Fate, Writers};
+
 use super::page::{self, Arrangement, Slot};
 use super::version::{self, Flags, Header};
-
-/// What a pruner decides of one version from its header.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Fate {
-    /// Dead to every snapshot.
-    Remove,
-    /// Its deleter aborted: clear its deleter, `next` and successor flags, then judge it again.
-    Clear,
-    /// Visible to some snapshot but not to every one.
-    Keep,
-    /// Visible to every snapshot, live or taken later, until the version is next written.
-    AllVisible,
-}
 
 /// What pruning makes of a page.
 #[derive(Debug, Default)]
@@ -35,7 +24,7 @@ pub(super) struct Plan {
 /// Panics if `judge` clears a version with no deleter.
 pub(super) fn judge<E>(
     page: &[u8],
-    mut judge: impl FnMut(&Header) -> Result<Fate, E>,
+    mut judge: impl FnMut(&Writers) -> Result<Fate, E>,
 ) -> Result<Vec<Option<(Fate, bool)>>, E> {
     let mut out = Vec::new();
     for s in 0..page::slot_count(page) {
@@ -44,14 +33,14 @@ pub(super) fn judge<E>(
             continue;
         };
         let mut header = Header::read(&page[at]);
-        let f = judge(&header)?;
+        let f = judge(&header.writers)?;
         if f != Fate::Clear {
             out.push(Some((f, false)));
             continue;
         }
         header.writers = header.writers.cleared();
         header.next = None;
-        let again = judge(&header)?;
+        let again = judge(&header.writers)?;
         assert_ne!(
             Fate::Clear,
             again,

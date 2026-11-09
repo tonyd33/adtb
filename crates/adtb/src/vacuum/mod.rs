@@ -13,11 +13,8 @@ mod verify;
 #[cfg(any(test, feature = "testing"))]
 pub use pace::Charged;
 pub use pace::Pacer;
-pub use run::{
-    Error, Freed, Horizon, Phase, Progress, Report, Step, Sum, expire, insert, update, vacuum,
-    vacuum_keeping,
-};
 #[cfg(test)]
-pub use run::{judge, prune};
+pub use run::prune;
+pub use run::{Error, Freed, Phase, Progress, Report, Step, Sum, expire, vacuum, vacuum_keeping};
 #[cfg(test)]
 pub use verify::verify;

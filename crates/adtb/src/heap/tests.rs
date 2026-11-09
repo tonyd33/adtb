@@ -1,10 +1,10 @@
 use crate::key::{CtorId, F32, F64, Scalar, Tid, Value};
-use crate::mvcc::{Xid, writers};
+use crate::mvcc::{Fate, Writers, Xid, writers};
 use crate::storage::{self, PageKind, Pid};
 
 use super::dir::{category, need_category};
 use super::page::{self, Arrangement, Slot};
-use super::prune::{self, Fate};
+use super::prune;
 use super::row::{CtorType, FieldType, Layout, Pointer, Stored};
 use super::version::{self, Flags, Header, tid_bits, tid_from_bits};
 use super::vm;
@@ -588,13 +588,13 @@ fn chain(arrangement: Arrangement) -> Vec<u8> {
     p
 }
 
-fn plan_with(page: &[u8], fate: impl Fn(&Header) -> Fate, cleaned: &[usize]) -> prune::Plan {
+fn plan_with(page: &[u8], fate: impl Fn(&Writers) -> Fate, cleaned: &[usize]) -> prune::Plan {
     let fates = prune::judge(page, |h| Ok::<_, ()>(fate(h))).unwrap();
     prune::plan(page, PID, &fates, &|s| cleaned.contains(&s))
 }
 
-fn dead_below(w: u64) -> impl Fn(&Header) -> Fate {
-    move |h| match h.writers.deleter() {
+fn dead_below(w: u64) -> impl Fn(&Writers) -> Fate {
+    move |h| match h.deleter() {
         None => Fate::AllVisible,
         Some(x) if x < Xid(w) => Fate::Remove,
         Some(_) => Fate::Keep,
@@ -619,8 +619,8 @@ fn a_chain_with_dead_leading_versions_redirects_to_its_first_live_one() {
 #[test]
 fn a_dead_chain_leaves_its_first_slot_dead_until_its_entries_go() {
     let mut p = chain(Arrangement::Slotted);
-    let gone = |h: &Header| {
-        if h.writers.deleter().is_none() {
+    let gone = |h: &Writers| {
+        if h.deleter().is_none() {
             Fate::Remove
         } else {
             dead_below(4)(h)
@@ -648,8 +648,8 @@ fn a_fixed_page_frees_a_chain_only_whole() {
     let p = chain(fixed);
     let plan = plan_with(&p, dead_below(4), &[]);
     assert!(plan.release.is_empty() && plan.dead.is_empty() && !plan.all_visible);
-    let gone = |h: &Header| {
-        if h.writers.deleter().is_none() {
+    let gone = |h: &Writers| {
+        if h.deleter().is_none() {
             Fate::Remove
         } else {
             dead_below(4)(h)
@@ -681,10 +681,10 @@ fn an_aborted_successor_is_freed_and_its_predecessor_cleared() {
     let old = linked(1, 2, Some(1));
     page::insert(&mut p, &old, Flags::HOT_UPDATED).unwrap();
     page::insert(&mut p, &linked(2, 0, None), Flags::HEAP_ONLY).unwrap();
-    let judge = |h: &Header| {
-        if h.writers.inserted_by(Xid(2)) {
+    let judge = |h: &Writers| {
+        if h.inserted_by(Xid(2)) {
             Fate::Remove
-        } else if h.writers.deleted_by(Xid(2)) {
+        } else if h.deleted_by(Xid(2)) {
             Fate::Clear
         } else {
             Fate::AllVisible

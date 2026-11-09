@@ -181,7 +181,7 @@ impl<R: Runtime> Transactions<R> {
 
     /// Returns whether `x` committed, by its status or, when its status page is damaged, by
     /// `logged`, the commit records of the retained log. Returns `None` when neither settles it.
-    pub fn settled(&self, pager: &Pager<R>, logged: &BTreeSet<u64>, x: Xid) -> Option<bool> {
+    pub(super) fn settled(&self, pager: &Pager<R>, logged: &BTreeSet<u64>, x: Xid) -> Option<bool> {
         match self.clog.read(&self.rt).status(pager, x) {
             Ok(status) => Some(status == Status::Committed),
             Err(_) => logged.contains(&x.0).then_some(true),

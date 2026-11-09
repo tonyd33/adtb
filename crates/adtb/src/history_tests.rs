@@ -202,8 +202,11 @@ impl Db {
             }
             if let Some(v) = v {
                 let row = vec![Value::I64(k), Value::I64(v)];
-                let tid =
-                    vacuum::insert(&self.pager, &self.txns, self.heap(), x, &row).expect("insert");
+                let (txns, heap) = (&self.txns, self.heap());
+                let mut judge = txns.judge(&self.pager, txns.horizon_now(heap.id().0));
+                let tid = heap
+                    .insert_pruning(&self.pager, x, &row, Some(&mut judge))
+                    .expect("insert");
                 let entry = Entry {
                     key: vec![Value::I64(k)],
                     ctor: CTOR,
@@ -997,14 +1000,19 @@ fn a_heap_emptied_from_its_end_leaves_no_hole_behind_its_last_page() {
         db.vacuum_keeping();
         assert!(db.heap().is_empty(&db.pager).expect("pages"));
         assert_eq!(0, db.heap().holes(&db.pager).expect("holes"));
-        let tid = vacuum::insert(
-            &db.pager,
-            &db.txns,
-            db.heap(),
-            db.txns.begin(&db.pager).expect("begin"),
-            &[Value::I64(1), Value::I64(1)],
-        )
-        .expect("insert");
+        let x = db.txns.begin(&db.pager).expect("begin");
+        let mut judge = db
+            .txns
+            .judge(&db.pager, db.txns.horizon_now(db.heap().id().0));
+        let tid = db
+            .heap()
+            .insert_pruning(
+                &db.pager,
+                x,
+                &[Value::I64(1), Value::I64(1)],
+                Some(&mut judge),
+            )
+            .expect("insert");
         let pages = db.heap().pages(&db.pager).expect("pages");
         assert_eq!(vec![Pid(tid.page())], pages);
     });
@@ -1291,11 +1299,11 @@ fn store_scan_sees_history_pages_created_during_its_current_walk() {
                     heap.prune(
                         &db.pager,
                         Pid(last.page()),
-                        |_, h| {
-                            Ok(if h.writers.deleter().is_some() {
-                                crate::heap::Fate::Remove
+                        |w: &Writers| {
+                            Ok(if w.deleted() {
+                                crate::mvcc::Fate::Remove
                             } else {
-                                crate::heap::Fate::Keep
+                                crate::mvcc::Fate::Keep
                             })
                         },
                         &[last.slot()],

@@ -251,14 +251,20 @@ fn pause(rt: &SimRuntime, n: u64) {
 fn perform(db: &Db, live: &mut Live, op: &Op, xid: Xid) {
     match op {
         Op::Insert { key, heap, row } => {
-            let tid =
-                vacuum::insert(&db.pager, &db.txns, &db.heaps[*heap], xid, row).expect("insert");
+            let h = &db.heaps[*heap];
+            let mut judge = db.txns.judge(&db.pager, db.txns.horizon_now(h.id().0));
+            let tid = h
+                .insert_pruning(&db.pager, xid, row, Some(&mut judge))
+                .expect("insert");
             db.index(*heap, *key, tid);
             live.insert(*key, (*heap, tid, row.clone()));
         }
         Op::Update { key, row } => {
             let (heap, tid, _) = live[key].clone();
-            let u = vacuum::update(&db.pager, &db.txns, &db.heaps[heap], tid, xid, row, &[0])
+            let h = &db.heaps[heap];
+            let mut judge = db.txns.judge(&db.pager, db.txns.horizon_now(h.id().0));
+            let u = h
+                .update_pruning(&db.pager, tid, xid, row, &[0], Some(&mut judge))
                 .expect("update");
             if !u.heap_only {
                 db.index(heap, *key, u.tid);

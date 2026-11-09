@@ -970,20 +970,14 @@ fn vacuum_reopens_a_page_conversion_left_full() {
             heap.delete(pager, *t, x).unwrap();
         }
         db.txns.commit(pager, x).unwrap();
-        let w = db.txns.watermark(31);
+        let w = db.txns.horizon_now(31);
         let mut freed = 0;
         for pid in heap.pages(pager).unwrap() {
             let slots = heap
-                .dead_slots(pager, pid, |p, h| vacuum::judge(&db.txns, p, w, h))
+                .dead_slots(pager, pid, db.txns.judge(pager, w))
                 .unwrap();
             freed += heap
-                .prune(
-                    pager,
-                    pid,
-                    |p, h| vacuum::judge(&db.txns, p, w, h),
-                    &slots,
-                    true,
-                )
+                .prune(pager, pid, db.txns.judge(pager, w), &slots, true)
                 .unwrap()
                 .freed;
         }

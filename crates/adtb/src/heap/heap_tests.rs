@@ -4,11 +4,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::batch::{Batch, BatchBuilder, Column, Schema};
+use crate::heap::handle::Updated;
 use crate::heap::{
-    CtorType, Error, Fate, FieldType, Flags, Header, Heap, HeapNo, Link, Updated, max_fanout, walk,
+    CtorType, Error, FieldType, Flags, Header, Heap, HeapNo, Link, max_fanout, walk,
 };
 use crate::key::{CtorId, Scalar, Tid, Value};
-use crate::mvcc::Xid;
+use crate::mvcc::{Fate, Writers, Xid};
 use crate::runtime::{Entropy, Threads};
 use crate::storage::{self, Options, PageKind, Pager, Pid};
 use crate::verify::{Inventory, Sum};
@@ -562,8 +563,8 @@ fn an_insert_past_filled_pages_finds_room_under_another_directory_entry() {
         for &t in &gone {
             heap.delete(&db.pager, t, Xid(2)).unwrap();
         }
-        let judge = |_: &Pager<SimRuntime>, h: &Header| {
-            Ok(if h.writers.deleted_by(Xid(2)) {
+        let judge = |w: &Writers| {
+            Ok(if w.deleted_by(Xid(2)) {
                 Fate::Remove
             } else {
                 Fate::Keep
@@ -595,8 +596,8 @@ fn long_row(key: i64) -> Vec<Value> {
 /// Prune every page of `heap`, removing the versions `gone` deleted and marking the pages
 /// all-visible.
 fn settle_all_visible(db: &Db, heap: usize, gone: u64) {
-    let judge = |_: &Pager<SimRuntime>, h: &Header| {
-        Ok(if h.writers.deleted_by(Xid(gone)) {
+    let judge = |w: &Writers| {
+        Ok(if w.deleted_by(Xid(gone)) {
             Fate::Remove
         } else {
             Fate::AllVisible
@@ -1070,8 +1071,8 @@ fn a_crash_while_pruning_raises_entries_leaves_what_repair_mends() {
                     r.yield_now();
                 }
             });
-            let judge = |_: &Pager<SimRuntime>, h: &Header| {
-                Ok(if h.writers.deleted_by(Xid(2)) {
+            let judge = |w: &Writers| {
+                Ok(if w.deleted_by(Xid(2)) {
                     Fate::Remove
                 } else {
                     Fate::Keep
@@ -1326,8 +1327,8 @@ fn readers_with_a_stale_page_list_meet_a_freed_page_another_allocation_reserved_
             heap.delete(&db.pager, t, Xid(2)).unwrap();
             rows.remove(&t);
         }
-        let judge = |_: &Pager<SimRuntime>, h: &Header| {
-            Ok(if h.writers.deleted_by(Xid(2)) {
+        let judge = |w: &Writers| {
+            Ok(if w.deleted_by(Xid(2)) {
                 Fate::Remove
             } else {
                 Fate::Keep

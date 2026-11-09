@@ -37,7 +37,7 @@ pub trait Reads: Send + Sync {
     /// Returns whether the version `writers` wrote is visible at the reader's snapshot. Record
     /// that what the reader saw depends on the writer the read is before: the inserter of a
     /// version it missed or the deleter of one it saw, when its snapshot does not count that
-    /// writer as committed and it did not abort.
+    /// writer as committed and that writer did not abort.
     fn saw(&self, writers: &Writers) -> Result<bool, Error>;
 
     /// Record that a scan of heap `heap` began, covering every version of the heap until

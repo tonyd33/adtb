@@ -448,7 +448,7 @@ fn named<R: Runtime>(
     roots: &Heap,
 ) -> Result<Named, Error> {
     let rows = if let Some(damage) = txns.quarantined() {
-        latest(pager, txns, roots, damage)?
+        latest_rows(pager, txns, roots, damage)?
     } else {
         let (id, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
         let rows = visible(pager, txns, &snapshot, roots);
@@ -466,7 +466,7 @@ fn named<R: Runtime>(
 ///
 /// Fail with `damage` when a version's writer or deleter has a damaged status page and no commit
 /// record in the retained log, so no uncommitted row reads as committed.
-fn latest<R: Runtime>(
+fn latest_rows<R: Runtime>(
     pager: &Pager<R>,
     txns: &Transactions<R>,
     heap: &Heap,
@@ -475,14 +475,12 @@ fn latest<R: Runtime>(
     let mut versions = Vec::new();
     heap.scan(pager, |v| versions.push(v))?;
     let logged = pager.logged_commits();
-    let committed = |x: Xid| txns.settled(pager, &logged, x).ok_or(damage);
     let mut rows = Vec::new();
     for v in versions {
-        let gone = match v.header.writers.deleter() {
-            Some(x) => committed(x)?,
-            None => false,
-        };
-        if committed(v.header.writers.inserter())? && !gone {
+        if txns
+            .latest_live(pager, &v.header.writers, &logged)
+            .ok_or(damage)?
+        {
             rows.push(v.row);
         }
     }

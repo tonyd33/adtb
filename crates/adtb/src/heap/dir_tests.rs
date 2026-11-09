@@ -7,8 +7,9 @@ use adtb_sys::os::{Backend, OsRuntime};
 use adtb_sys::runtime::Threads;
 use adtb_testkit::scratch::Scratch;
 
-use crate::heap::{Error, Fate, FieldType, Heap, LargeStore};
+use crate::heap::{Error, FieldType, Heap, LargeStore};
 use crate::key::{Scalar, Value};
+use crate::mvcc::Fate;
 use crate::mvcc::Xid;
 use crate::storage::{Damage, Options, PageError, PageKind, Pager, Pid, Quarantine, Stopped};
 
@@ -359,7 +360,7 @@ fn a_map_pointer_naming_the_page_prune_holds_refuses_the_directory_root_within_a
     let root = heap.root();
     set_map(&pager, root, page);
     let p = pager;
-    let keep = |_: &Pager<OsRuntime>, _: &_| Ok(Fate::Keep);
+    let keep = |_: &_| Ok(Fate::Keep);
     let pruned = within(&rt, move || {
         heap.prune(&p, page, keep, &[], false).map(drop)
     });

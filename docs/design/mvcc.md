@@ -778,10 +778,30 @@ id a replica last reported for `h`.
 Invariant: `w(h)` is never past the `xmin` of a live snapshot published
 to `h`, nor past a replica's report for `h`.
 
+Invariant: a snapshot never outlives its reader's transaction: the
+transaction's commit or abort releases the snapshot it holds in the
+same step.
+
 Postcondition: a version of `h` whose `xmax` names a transaction that
 committed, with `xmax < w(h)`, is dead to every snapshot published to
 `h`, live or taken later; a version whose `xmin` names a transaction
 that aborted is dead to every snapshot.
+
+`Transactions::fate(pager, writers, horizon)` is the one statement of
+a version's fate under a horizon of its heap: `Remove` (removable
+under the horizon's rule), `Clear` (its
+deleter aborted), `AllVisible` (visible to every snapshot, live or
+taken later, until it is next written) or `Keep`. A `Horizon` holds a
+watermark, the window's cutoff and a rule (`Current`, `Moving`,
+`Past`), and is built only by `Transactions::horizon_now(heap)`, the
+heap's watermark now, and `Transactions::horizon_fixed(heap, cutoff,
+rule)`, the least of the heap's watermark and the oldest running
+transaction. `Transactions::judge(pager, horizon)` is the closure over
+`Writers` that heap pruning takes; vacuum, history, on-access pruning
+and the catalog take mvcc's verdict as a value and decide no fate from
+a version's writers themselves. Whether a version is live in the latest
+state of a database whose commit log is damaged is
+`Transactions::latest_live`.
 
 Rulings: mvcc/watermark, mvcc/long-reader/ctor-scoped
 
@@ -811,7 +831,10 @@ its inserter aborted, or its deleter committed below `w(h)`. A version
 is visible to every snapshot, live or taken later, when its inserter
 committed below `w(h)` and it has no deleter; it stays so until it is
 next written, and every write to a heap page clears the page's
-all-visible bit in the same pager update.
+all-visible bit in the same pager update. Under the `Current` rule a
+version the window keeps (§10.3) is kept though dead to every
+snapshot; under `Moving` it is removed once vacuum has moved it to
+history.
 
 Postconditions of a vacuum of a sum begun when the oldest running
 transaction was `x`, or when none ran and `x` was the next id:
@@ -827,7 +850,8 @@ Each heap is judged for the whole of one vacuum by the least of its
 watermark and the oldest transaction running when the vacuum first
 judges it: every transaction below that bound had resolved, so a
 version found dead stays dead from the scan that collects it to the
-prune that frees it, whatever snapshots are taken meanwhile.
+prune that frees it, whatever snapshots are taken meanwhile. That
+bound is `Transactions::horizon_fixed`.
 
 Precondition: no other vacuum runs of the sum, or of a sum sharing its
 large-value store.
@@ -841,8 +865,8 @@ Between passes, any access holding a heap page exclusively prunes
 versions on it that are dead to every snapshot: heap-only versions are
 freed, and versions still named by index entries leave a dead slot for
 vacuum's index pass. Pruning is logged. A writer finding a page
-without room for a new version prunes it before looking further
-(`vacuum::insert`, `vacuum::update`).
+without room for a new version prunes it before looking further, by
+`Transactions::judge` over the heap's `horizon_now`.
 
 A heap-only chain whose leading versions are dead keeps the slot index
 entries name as a redirect to its first live version and frees the
@@ -880,7 +904,10 @@ position for new snapshots. Commit times have microsecond precision.
 A version is kept by the window when its inserter committed, another
 transaction deleted it, and the deleter committed at or after the
 window's cutoff: the window's length before now, or the time of the
-oldest marker a read of the past holds, whichever is earlier.
+oldest marker a read of the past holds, whichever is earlier
+(`Transactions::kept_by_window`). A version of a history heap is
+removed, under the `Past` rule, once the window no longer keeps its
+deleter.
 
 A read `at commit p` reads at the latest marker at or before `p`
 within the window, a function of `p` listed in `sys::safe_snapshots`

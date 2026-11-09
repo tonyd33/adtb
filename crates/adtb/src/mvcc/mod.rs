@@ -2,6 +2,7 @@
 
 mod clog;
 mod conflict;
+mod fate;
 mod past;
 mod reader;
 mod snapshot;
@@ -19,6 +20,7 @@ mod tests;
 pub use clog::CommitLog;
 pub(crate) use clog::Settling;
 pub use conflict::{Probe, Write};
+pub use fate::{Fate, Horizon, Rule};
 pub use past::{Marker, Past};
 pub use reader::{Logged, Reader};
 pub use snapshot::Snapshot;

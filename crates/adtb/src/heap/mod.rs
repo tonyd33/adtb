@@ -27,10 +27,9 @@ mod tests;
 pub use dir::max_fanout;
 #[cfg(test)]
 pub use handle::Pruned;
-pub use handle::{Heap, HeapNo, Link, Updated, Version, fits, walk};
+pub use handle::{Heap, HeapNo, Link, Version, fits, walk};
 pub use large::LargeStore;
 pub use named::{OrphanEntry, refuse_named};
-pub use prune::Fate;
 #[cfg(test)]
 pub use row::Pointer;
 pub(crate) use row::put_uvarint;

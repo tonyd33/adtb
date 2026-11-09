@@ -2,14 +2,14 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::key::{Tid, Value};
-use crate::mvcc::{Writers, Xid};
+use crate::mvcc::{Fate, Writers, Xid};
 use crate::runtime::Runtime;
 use crate::storage::{self, PageError, Pager, Pid, Stopped};
 
 use super::dir::{Above, Space, category, max_fanout, need_category};
 use super::large::LargeStore;
 use super::page::{self, Arrangement, Slot, align8};
-use super::prune::{self, Fate};
+use super::prune;
 use super::row::{FieldType, Layout, POINTER_LEN, Pointer, Stored};
 use super::stage::Stage;
 use super::version::{self, Flags, HEADER_LEN, Header};
@@ -77,8 +77,8 @@ pub struct Pruned {
     pub removed: bool,
 }
 
-/// Decides the fate of a version from its header, for pruning.
-pub type Judge<'a, R> = dyn FnMut(&Pager<R>, &Header) -> Result<Fate, PageError> + 'a;
+/// Returns the fate of a version from its writers, for pruning.
+pub type Judge<'a> = dyn FnMut(&Writers) -> Result<Fate, PageError> + 'a;
 
 /// What converting a page to the newest format made of it.
 #[derive(Debug, Default)]
@@ -804,7 +804,7 @@ impl Heap {
         &self,
         pager: &Pager<R>,
         pid: Pid,
-        mut judge: impl FnMut(&Pager<R>, &Header) -> Result<Fate, PageError>,
+        judge: impl FnMut(&Writers) -> Result<Fate, PageError>,
     ) -> Result<Vec<u16>, PageError> {
         let page = pager.read_formatted(pid)?.to_vec();
         if !self.holds_page(&page) {
@@ -813,7 +813,7 @@ impl Heap {
         if !self.ours(pager, pid, &page)? {
             return Ok(Vec::new());
         }
-        let fates = prune::judge(&page, |h| judge(pager, h))?;
+        let fates = prune::judge(&page, judge)?;
         let plan = prune::plan(&page, pid.0, &fates, &|_| false);
         Ok(plan.dead.into_iter().map(|s| s as u16).collect())
     }
@@ -836,7 +836,7 @@ impl Heap {
         &self,
         pager: &Pager<R>,
         pid: Pid,
-        mut judge: impl FnMut(&Pager<R>, &Header) -> Result<Fate, PageError>,
+        judge: impl FnMut(&Writers) -> Result<Fate, PageError>,
         cleaned: &[u16],
         mark: bool,
     ) -> Result<Pruned, PageError> {
@@ -848,7 +848,7 @@ impl Heap {
         if !self.ours(pager, pid, &page)? {
             return Ok(Pruned::default());
         }
-        let fates = prune::judge(&page, |h| judge(pager, h))?;
+        let fates = prune::judge(&page, judge)?;
         let plan = prune::plan(&page, pid.0, &fates, &|s| cleaned.contains(&(s as u16)));
         let mut out = page.clone();
         prune::apply(&mut out, &plan);
@@ -940,7 +940,7 @@ impl Heap {
         pager: &Pager<R>,
         xid: Xid,
         row: &[Value],
-        judge: Option<&mut Judge<'_, R>>,
+        judge: Option<&mut Judge<'_>>,
     ) -> Result<Tid, Error> {
         self.put_version(pager, xid, row, judge)
     }
@@ -1021,7 +1021,7 @@ impl Heap {
         pager: &Pager<R>,
         xid: Xid,
         row: &[Value],
-        mut judge: Option<&mut Judge<'_, R>>,
+        mut judge: Option<&mut Judge<'_>>,
     ) -> Result<Tid, Error> {
         let (body, held) = self.body(pager, xid, row, &[])?;
         let version = version_bytes(Header::new(xid), &body);
@@ -1057,7 +1057,7 @@ impl Heap {
         &self,
         pager: &Pager<R>,
         pid: Pid,
-        judge: Option<&mut Judge<'_, R>>,
+        judge: Option<&mut Judge<'_>>,
     ) -> Result<bool, PageError> {
         let Some(judge) = judge else {
             return Ok(false);
@@ -1066,7 +1066,7 @@ impl Heap {
         if !self.ours(pager, pid, &page)? || storage::format(&page) != self.newest() {
             return Ok(false);
         }
-        let done = self.prune(pager, pid, |p, h| judge(p, h), &[], false)?;
+        let done = self.prune(pager, pid, judge, &[], false)?;
         Ok(done.freed > 0 && !done.removed)
     }
 
@@ -1090,7 +1090,7 @@ impl Heap {
         xid: Xid,
         row: &[Value],
         indexed: &[usize],
-        mut judge: Option<&mut Judge<'_, R>>,
+        mut judge: Option<&mut Judge<'_>>,
     ) -> Result<Updated, Error> {
         let target = at.into();
         let at = target.tid;

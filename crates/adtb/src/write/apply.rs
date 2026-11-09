@@ -9,7 +9,6 @@ use crate::key::{Entry, Tid, Value};
 use crate::mvcc::{Logged, Probe, Reader, Write, Xid};
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
-use crate::vacuum;
 
 use super::eval::{Stmt, Violations, pairs, violate, violate_key};
 use super::{Error, Rejection, Rows};
@@ -246,16 +245,11 @@ impl<R: Runtime> Stmt<'_, R> {
                         .flat_map(|(_, ix)| ix.keys.reads(c))
                         .collect();
                     let row = self.stored(heap, n)?;
-                    let up = vacuum::update(
-                        pager,
-                        &self.db.txns,
-                        self.heap(heap),
-                        tid,
-                        xid,
-                        &row,
-                        &indexed,
-                    )
-                    .map_err(too_large(*rel, c))?;
+                    let (txns, h) = (&self.db.txns, self.heap(heap));
+                    let mut judge = txns.judge(pager, txns.horizon_now(h.id().0));
+                    let up = h
+                        .update_pruning(pager, tid, xid, &row, &indexed, Some(&mut judge))
+                        .map_err(too_large(*rel, c))?;
                     self.undo.borrow_mut().extend([
                         Undo::Restore(heap, self.restorable(heap, tid.tid, xid)?),
                         Undo::Kill(heap, up.tid),
@@ -296,7 +290,10 @@ impl<R: Runtime> Stmt<'_, R> {
                 (None, Some((d, n))) => {
                     let heap = r.ctors[*d as usize].heap;
                     let row = self.stored(heap, n)?;
-                    let tid = vacuum::insert(pager, &self.db.txns, self.heap(heap), xid, &row)
+                    let (txns, h) = (&self.db.txns, self.heap(heap));
+                    let mut judge = txns.judge(pager, txns.horizon_now(h.id().0));
+                    let tid = h
+                        .insert_pruning(pager, xid, &row, Some(&mut judge))
                         .map_err(too_large(*rel, *d))?;
                     self.undo.borrow_mut().push(Undo::Kill(heap, tid));
                     self.inserted_into(heap)?;

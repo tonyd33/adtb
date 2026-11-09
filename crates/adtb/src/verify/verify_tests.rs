@@ -307,11 +307,11 @@ fn orphan_a_successor(db: &Db) -> (crate::mvcc::Xid, Tid) {
     let row = vec![Value::I64(1002), Value::Bytes(vec![2; 40])];
     let u = db.heaps[0].update(&db.pager, at, x, &row, &[0]).unwrap();
     assert!(!u.heap_only);
-    let gone = |_: &Pager<SimRuntime>, h: &crate::heap::Header| {
-        Ok(if h.writers.inserted_by(x) {
-            crate::heap::Fate::Remove
+    let gone = |w: &crate::mvcc::Writers| {
+        Ok(if w.inserted_by(x) {
+            crate::mvcc::Fate::Remove
         } else {
-            crate::heap::Fate::Keep
+            crate::mvcc::Fate::Keep
         })
     };
     let done = db.heaps[0]

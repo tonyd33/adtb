@@ -11,7 +11,6 @@ use crate::btree::build::{BuildError, merge_runs};
 use crate::exec::Val;
 use crate::plan::IndexId;
 use crate::runtime::Runtime;
-use crate::vacuum;
 
 use super::apply::too_large;
 use super::eval::{Arena, Env, Stmt, Violations, pairs, refuse, violate, violate_key};
@@ -59,7 +58,9 @@ impl<R: Runtime> Restoring<'_, R> {
             let mut most = None;
             for row in rows {
                 let stored = stmt.stored(heap, row)?;
-                vacuum::insert(&db.pager, &db.txns, &db.heaps[&heap].heap, xid, &stored)
+                let h = &db.heaps[&heap].heap;
+                let mut judge = db.txns.judge(&db.pager, db.txns.horizon_now(h.id().0));
+                h.insert_pruning(&db.pager, xid, &stored, Some(&mut judge))
                     .map_err(too_large(*r, *c))?;
                 if let Val::Int(k) = stmt.key_of(*r, row)? {
                     most = most.max(Some(k));

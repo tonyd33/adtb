@@ -1,12 +1,37 @@
 //! Read and keep a relation's rows as of a past time.
 
-use crate::btree::Index;
-use crate::heap::{Fate, Flags, Header, Heap};
+use crate::btree::{self, Index};
+use crate::heap::{self, Flags, Header, Heap};
 use crate::key::{CtorId, Entry, Value};
-use crate::mvcc::{Status, Transactions, Xid};
+use crate::mvcc::{Horizon, Transactions};
 use crate::runtime::Runtime;
 use crate::storage::{PageError, Pager};
-use crate::vacuum::{Error, Horizon};
+
+/// Why versions could not be kept in history.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Error {
+    Page(PageError),
+    Index(btree::Error),
+    Heap(heap::Error),
+}
+
+impl From<PageError> for Error {
+    fn from(e: PageError) -> Error {
+        Error::Page(e)
+    }
+}
+
+impl From<btree::Error> for Error {
+    fn from(e: btree::Error) -> Error {
+        Error::Index(e)
+    }
+}
+
+impl From<heap::Error> for Error {
+    fn from(e: heap::Error) -> Error {
+        Error::Heap(e)
+    }
+}
 
 /// Returns the key of a row of a constructor.
 pub type Key<'a> = dyn Fn(CtorId, &[Value]) -> Vec<Value> + Sync + 'a;
@@ -40,51 +65,6 @@ impl History<'_> {
     }
 }
 
-/// Returns whether the version whose header is `h` is one the retention window bounded by
-/// `horizon` keeps once it is dead to every snapshot: its inserter committed, and another
-/// transaction deleted it and committed below the watermark within the window.
-pub(crate) fn movable<R: Runtime>(
-    txns: &Transactions<R>,
-    pager: &Pager<R>,
-    horizon: &Horizon,
-    h: &Header,
-) -> Result<bool, PageError> {
-    let xmin = h.writers.inserter();
-    let Some(xmax) = h.writers.deleter() else {
-        return Ok(false);
-    };
-    if xmin == xmax || xmax >= horizon.watermark {
-        return Ok(false);
-    }
-    if txns.status(pager, xmin)? != Status::Committed
-        || txns.status(pager, xmax)? != Status::Committed
-    {
-        return Ok(false);
-    }
-    txns.retains(pager, xmax, horizon.cutoff)
-}
-
-/// Returns the fate of a version of a history heap whose header is `h`: kept while the
-/// retention window bounded by `horizon` keeps it.
-pub(crate) fn judge_past<R: Runtime>(
-    txns: &Transactions<R>,
-    pager: &Pager<R>,
-    horizon: &Horizon,
-    h: &Header,
-) -> Result<Fate, PageError> {
-    Ok(
-        if txns.retains(
-            pager,
-            h.writers.deleter().unwrap_or(Xid::NONE),
-            horizon.cutoff,
-        )? {
-            Fate::Keep
-        } else {
-            Fate::Remove
-        },
-    )
-}
-
 /// Copy every version on page `pid` of `heap`, constructor `ctor`'s, that the window bounded by
 /// `horizon` keeps to `ctor`'s history heap in `into`, with its entry in the history key index.
 /// A version flagged kept whose copy is left is not copied again: the copy gets the index entry
@@ -103,7 +83,7 @@ pub(crate) fn keep<R: Runtime>(
     heap.scan_pages(pager, &[pid], |v| found.push(v))?;
     let mut copied = 0;
     for v in found {
-        if !movable(txns, pager, horizon, &v.header)? {
+        if !txns.kept_by_window(pager, &v.header.writers, horizon)? {
             continue;
         }
         let key = (into.key)(ctor, &v.row);

@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use crate::heap::{Fate, FieldType, Header, Heap, HeapNo, LargeStore, walk};
+use crate::heap::{FieldType, Heap, HeapNo, LargeStore, walk};
 use crate::key::{Scalar, Tid, Value};
-use crate::mvcc::Xid;
+use crate::mvcc::{Fate, Writers, Xid};
 use crate::runtime::Threads;
 use crate::storage::{Options, PageError, PageKind, Pager, Pid};
 use adtb_sim::{Config, Sim, SimRuntime};
@@ -57,8 +57,8 @@ fn build(rt: SimRuntime, pool_frames: usize) -> (Db, Vec<(i64, Tid)>) {
             heap.delete(&pager, tid, Xid(DELETER)).expect("delete");
         }
     }
-    let judge = |_: &Pager<SimRuntime>, h: &Header| {
-        Ok(if h.writers.deleted_by(Xid(DELETER)) {
+    let judge = |w: &Writers| {
+        Ok(if w.deleted_by(Xid(DELETER)) {
             Fate::Remove
         } else {
             Fate::Keep
@@ -176,7 +176,7 @@ fn heap_only_updates_from_many_threads_leave_the_directory_root_unlatched() {
 const VM_SPAN: u64 = (PAGE as u64 - 32) * 8;
 const ROUNDS: usize = 40;
 
-fn all_visible(_: &Pager<SimRuntime>, _: &Header) -> Result<Fate, PageError> {
+fn all_visible(_: &Writers) -> Result<Fate, PageError> {
     Ok(Fate::AllVisible)
 }
 
@@ -300,8 +300,8 @@ fn heap_marked(pager: &Pager<SimRuntime>, heap: &Heap) -> Vec<Pid> {
 
 const HOT_ROUNDS: u64 = 400;
 
-fn dead_once_deleted(_: &Pager<SimRuntime>, h: &Header) -> Result<Fate, PageError> {
-    Ok(if h.writers.deleter().is_none() {
+fn dead_once_deleted(w: &Writers) -> Result<Fate, PageError> {
+    Ok(if w.deleter().is_none() {
         Fate::Keep
     } else {
         Fate::Remove

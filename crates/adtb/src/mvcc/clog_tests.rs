@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
-use crate::mvcc::{CommitLog, Scope, Snapshot, SnapshotId, Status, Transactions, Xid};
+use crate::mvcc::Fate as Verdict;
+use crate::mvcc::{CommitLog, Rule, Scope, Snapshot, SnapshotId, Status, Transactions, Xid};
 
 use super::writers;
 use crate::storage::{Edit, HEADER_LEN, PageKind, Pager, Pid};
@@ -615,5 +616,275 @@ fn a_damaged_root_refuses_to_open_the_commit_log() {
         let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("open");
         let e = Transactions::open(rt, &pager, root).expect_err("the root is damaged");
         assert_eq!(root, e.pid);
+    });
+}
+
+/// What the fate model knows besides each transaction's end: the commit time the record of the
+/// window holds for each committed transaction, and the snapshots held.
+struct Histories<'a> {
+    model: &'a Model,
+    times: &'a BTreeMap<Xid, u64>,
+    held: &'a [Held],
+    versions: &'a [(u64, u64)],
+}
+
+/// The distinct versions met under each rule with each fate, and those the window kept that
+/// `Current` and `Moving` judged apart.
+#[derive(Default)]
+struct Met {
+    pairs: BTreeMap<(&'static str, &'static str), BTreeSet<usize>>,
+    kept: BTreeSet<usize>,
+}
+
+impl Histories<'_> {
+    fn ended(&self, x: u64) -> Option<Status> {
+        self.model.ended.get(&Xid(x)).map(|&(_, s)| s)
+    }
+
+    /// Returns whether the window bounded by `cutoff` keeps a version once it is dead: its
+    /// inserter committed, and another transaction deleted it and committed at or after `cutoff`.
+    fn window_keeps(&self, (xmin, xmax): (u64, u64), cutoff: Option<u64>) -> bool {
+        xmax != 0
+            && xmax != xmin
+            && self.ended(xmin) == Some(Status::Committed)
+            && self.deleted_within((xmin, xmax), cutoff)
+    }
+
+    /// Returns whether the version's deleter committed at or after `cutoff`.
+    fn deleted_within(&self, (_, xmax): (u64, u64), cutoff: Option<u64>) -> bool {
+        let time = self.times.get(&Xid(xmax));
+        cutoff.is_some_and(|c| time.is_some_and(|&t| t >= c))
+    }
+
+    fn live(&self, heap: u32) -> impl Iterator<Item = &Held> {
+        self.held.iter().filter(move |h| match &h.scope {
+            Scope::Every => true,
+            Scope::Heaps(hs) => hs.contains(&heap),
+        })
+    }
+
+    /// Check what `fate` claims of a version of heap `heap` against the snapshots that hold it
+    /// and the transactions' ends.
+    fn check_visibility(&self, fate: Verdict, (xmin, xmax): (u64, u64), heap: u32, at: &str) {
+        let sees = |h: &Held| {
+            let counts =
+                |x: u64| Some(Xid(x)) == h.reader || self.model.committed_before(x, h.taken);
+            counts(xmin) && (xmax == 0 || !counts(xmax))
+        };
+        match fate {
+            Verdict::Remove => {
+                assert!(
+                    self.live(heap).all(|h| !sees(h)),
+                    "{at} is removed, yet a live snapshot sees it"
+                );
+                assert!(
+                    self.ended(xmin) == Some(Status::Aborted)
+                        || (xmax != 0 && self.ended(xmax) == Some(Status::Committed)),
+                    "{at} is removed, yet a later snapshot may see it"
+                );
+            }
+            Verdict::AllVisible => {
+                assert!(
+                    self.live(heap).all(sees),
+                    "{at} is all-visible, yet a live snapshot misses it"
+                );
+                assert!(
+                    xmax == 0 && self.ended(xmin) == Some(Status::Committed),
+                    "{at} is all-visible, yet a later snapshot may miss it"
+                );
+            }
+            Verdict::Clear => assert!(
+                xmax != 0 && self.ended(xmax) == Some(Status::Aborted),
+                "{at} is cleared, yet its deleter did not abort"
+            ),
+            Verdict::Keep => {}
+        }
+    }
+
+    /// Judge every version of heap `heap` under `Current`, `Moving` and `Past` with `cutoff`, and
+    /// by the horizon on-access pruning takes now, and check each verdict against the model.
+    fn check(
+        &self,
+        pager: &Pager<SimRuntime>,
+        txns: &Transactions<SimRuntime>,
+        heap: u32,
+        cutoff: Option<u64>,
+        event: usize,
+        met: &mut Met,
+    ) {
+        let now = txns.horizon_now(heap);
+        let now_cutoff = txns.cutoff();
+        let current = txns.horizon_fixed(heap, cutoff, Rule::Current);
+        let moving = txns.horizon_fixed(heap, cutoff, Rule::Moving);
+        let past = txns.horizon_fixed(heap, cutoff, Rule::Past);
+        let oldest = txns.running().first().copied();
+        let watermark = self
+            .live(heap)
+            .map(|h| h.snapshot.xmin())
+            .chain(oldest)
+            .fold(TxnProbe::of(txns).next_xid(), Xid::min);
+        for (n, &v) in self.versions.iter().enumerate() {
+            let (xmin, xmax) = v;
+            let at = format!("event {event}: version ({xmin}, {xmax}) in heap {heap}");
+            let fate = |h| txns.fate(pager, &writers(xmin, xmax), h).expect("fate");
+            let (f_now, f_current, f_moving, f_past) =
+                (fate(&now), fate(&current), fate(&moving), fate(&past));
+            for f in [f_now, f_current, f_moving] {
+                self.check_visibility(f, v, heap, &at);
+            }
+            for (f, c) in [(f_now, now_cutoff), (f_current, cutoff)] {
+                assert!(
+                    f != Verdict::Remove || !self.window_keeps(v, c),
+                    "{at} is removed under Current, yet the window bounded by {c:?} keeps it"
+                );
+            }
+            let dead = self.ended(xmin) == Some(Status::Committed)
+                && xmax != 0
+                && self.ended(xmax) == Some(Status::Committed)
+                && Xid(xmax) < watermark;
+            let kept = dead && self.window_keeps(v, cutoff);
+            assert_eq!(
+                kept,
+                f_current != f_moving,
+                "{at}: Current judged {f_current:?} and Moving {f_moving:?} under {cutoff:?}"
+            );
+            if kept {
+                assert_eq!(
+                    (Verdict::Keep, Verdict::Remove),
+                    (f_current, f_moving),
+                    "{at}"
+                );
+                met.kept.insert(n);
+            }
+            assert_eq!(
+                self.deleted_within(v, cutoff),
+                f_past == Verdict::Keep,
+                "{at}: Past judged {f_past:?} under {cutoff:?}"
+            );
+            for (rule, f) in [
+                ("current", f_current),
+                ("moving", f_moving),
+                ("past", f_past),
+            ] {
+                met.pairs.entry((rule, name(f))).or_default().insert(n);
+            }
+        }
+    }
+}
+
+fn name(f: Verdict) -> &'static str {
+    match f {
+        Verdict::Remove => "remove",
+        Verdict::AllVisible => "all-visible",
+        Verdict::Clear => "clear",
+        Verdict::Keep => "keep",
+    }
+}
+
+#[test]
+fn fate_matches_a_model_of_random_histories() {
+    let mut sim = Sim::new(23, Config::default());
+    let (root, _) = setup(&mut sim, 0);
+    with_open(&mut sim, root, |pager, txns| {
+        let past = crate::mvcc::Past::create(pager, 9).expect("record of the window");
+        let window = std::time::Duration::from_millis(5);
+        txns.keep_history(pager, past, window)
+            .expect("keep history");
+        let mut rng = Rng::new(0x0f1e_2d3c_4b5a_6978);
+        let mut model = Model::default();
+        let mut times: BTreeMap<Xid, u64> = BTreeMap::new();
+        let mut versions: Vec<(u64, u64)> = Vec::new();
+        let mut held: Vec<Held> = Vec::new();
+        let mut met = Met::default();
+        for event in 1..6000 {
+            match rng.below(16) {
+                0..=3 => {
+                    txns.begin(pager).expect("begin");
+                }
+                4..=7 if !txns.running().is_empty() => {
+                    let x = pick(&mut rng, &txns.running());
+                    if rng.below(3) == 0 {
+                        txns.abort(pager, x).expect("abort");
+                        model.ended.insert(x, (event, Status::Aborted));
+                    } else {
+                        txns.commit(pager, x).expect("commit");
+                        model.ended.insert(x, (event, Status::Committed));
+                        let record = txns.history().expect("history is kept");
+                        let time = record.committed_at(pager, x).expect("commit time");
+                        times.insert(x, time.expect("a commit records its time"));
+                    }
+                    for h in held.extract_if(.., |h| h.reader == Some(x)) {
+                        txns.release(h.id);
+                    }
+                }
+                8 | 9 if !txns.running().is_empty() => {
+                    let writer = pick(&mut rng, &txns.running());
+                    if versions.is_empty() || rng.below(2) == 0 {
+                        versions.push((writer.0, 0));
+                    } else {
+                        let v = rng.below(versions.len() as u64) as usize;
+                        if versions[v].1 == 0 {
+                            versions[v].1 = writer.0;
+                        }
+                    }
+                }
+                10 | 11 => {
+                    let scope = if rng.below(3) == 0 {
+                        Scope::Every
+                    } else {
+                        Scope::Heaps(BTreeSet::from([rng.below(4) as u32]))
+                    };
+                    let reader = (!txns.running().is_empty() && rng.below(2) == 0)
+                        .then(|| pick(&mut rng, &txns.running()));
+                    let (id, snapshot) = txns.take(scope.clone()).unwrap();
+                    held.push(Held {
+                        id,
+                        taken: event,
+                        reader,
+                        snapshot,
+                        scope,
+                    });
+                }
+                12 | 13 if !held.is_empty() => {
+                    let h = held.swap_remove(rng.below(held.len() as u64) as usize);
+                    txns.release(h.id);
+                }
+                14 if !versions.is_empty() => {
+                    let cutoff = match rng.below(4) {
+                        0 => None,
+                        _ if times.is_empty() => txns.cutoff(),
+                        _ => {
+                            let pick = rng.below(times.len() as u64) as usize;
+                            times.values().nth(pick).copied()
+                        }
+                    };
+                    let histories = Histories {
+                        model: &model,
+                        times: &times,
+                        held: &held,
+                        versions: &versions,
+                    };
+                    let heap = rng.below(4) as u32;
+                    histories.check(pager, txns, heap, cutoff, event, &mut met);
+                }
+                _ => {}
+            }
+        }
+        let distinct: BTreeSet<u64> = times.values().copied().collect();
+        assert!(distinct.len() > 10, "commit times {distinct:?}");
+        let fates = ["remove", "clear", "keep", "all-visible"];
+        let pairs = fates
+            .iter()
+            .flat_map(|&f| [("current", f), ("moving", f)])
+            .chain([("past", "remove"), ("past", "keep")]);
+        for (rule, f) in pairs {
+            let n = met.pairs.get(&(rule, f)).map_or(0, BTreeSet::len);
+            assert!(n >= 5, "{n} distinct versions judged {f} under {rule}");
+        }
+        assert_eq!(10, met.pairs.len(), "{:?}", met.pairs.keys());
+        assert!(
+            !met.kept.is_empty(),
+            "no version met was kept by the window"
+        );
     });
 }
