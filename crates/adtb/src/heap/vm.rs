@@ -1,7 +1,7 @@
 use crate::runtime::Runtime;
 use crate::storage::{self, Damage, PageError, PageKind, Pager, Pid};
 
-use super::page::{CONTENTS, u16_at, u64_at};
+use super::page::{CONTENTS, Owned, PageCopy, u16_at, u64_at};
 use super::stage::Stage;
 use super::write::Rank;
 
@@ -23,10 +23,9 @@ fn level(node: &[u8]) -> u32 {
 }
 
 /// Returns whether `node` is a map page of `owner`, one level below `parent` when it has one.
-#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
-pub(super) fn shaped(node: &[u8], owner: u32, parent: Option<u32>) -> bool {
+pub(super) fn shaped(node: &impl Owned, owner: u32, parent: Option<u32>) -> bool {
     storage::kind(node) == PageKind::VisibilityMap as u16
-        && storage::owner(node) == owner
+        && node.owner() == owner
         && parent.is_none_or(|l| level(node) + 1 == l)
 }
 
@@ -138,7 +137,7 @@ impl Vm {
         pager: &'p Pager<R>,
         pid: Pid,
         parent: (Pid, u32),
-    ) -> Result<Vec<u8>, PageError> {
+    ) -> Result<PageCopy, PageError> {
         let node = stage.read_any(pager, Rank::Vm(pid))?;
         if shaped(&node, self.owner, Some(parent.1)) {
             return Ok(node);
@@ -268,7 +267,7 @@ impl Vm {
         while let Some((at, base, parent)) = todo.pop() {
             let node = match parent {
                 None => pager.read_formatted(at)?.to_vec(),
-                Some(parent) => self.child(&Stage::new(), pager, at, parent)?,
+                Some(parent) => self.child(&Stage::new(), pager, at, parent)?.into_bytes(),
             };
             let l = level(&node);
             if l == 0 {

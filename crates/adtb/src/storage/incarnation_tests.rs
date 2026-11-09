@@ -103,12 +103,11 @@ impl Ops {
 }
 
 /// Assert that the page `pid` reads as `ops` leave it and that nothing reports it.
-#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 fn intact(pager: &Pager<SimRuntime>, pid: Pid, ops: &Ops, when: &str) {
     let (kind, owner, value) = ops.current().expect("the page is allocated");
     let read = pager
         .read(pid)
-        .map(|p| (storage::kind(&p), storage::owner(&p), p[HEADER_LEN]));
+        .map(|p| (storage::kind(&p), p.owner(), p[HEADER_LEN]));
     assert_eq!(Ok((kind, owner, value)), read, "{when}: read");
     let of_page =
         |f: &Finding| matches!(f, Finding::Page { pid: p, .. } | Finding::Orphan(p) if *p == pid);

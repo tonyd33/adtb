@@ -3,7 +3,7 @@ use crate::mvcc::{Fate, Writers, Xid, writers};
 use crate::storage::{self, PageKind, Pid};
 
 use super::dir::{category, need_category};
-use super::page::{self, Arrangement, Slot};
+use super::page::{Arrangement, HeapPage, HeapPageMut, PageCopy, Slot};
 use super::row::{CtorType, FieldType, Layout, Pointer, Stored};
 use super::version::{Flags, Header, tid_bits, tid_from_bits};
 use super::vm;
@@ -16,7 +16,7 @@ fn scalar(s: Scalar) -> FieldType {
     FieldType::Scalar(s)
 }
 
-fn heap_page(arrangement: Arrangement, position: u32) -> Vec<u8> {
+fn heap_page(arrangement: Arrangement, position: u32) -> PageCopy {
     let mut p = vec![0; PAGE];
     p[storage::FIRST_EDITABLE..storage::HEADER_LEN].copy_from_slice(&storage::header_edit(
         1,
@@ -25,7 +25,15 @@ fn heap_page(arrangement: Arrangement, position: u32) -> Vec<u8> {
         0,
     ));
     arrangement.init(&mut p, position);
-    p
+    PageCopy::owned_by(7, p)
+}
+
+fn view(p: &PageCopy) -> HeapPage<'_> {
+    HeapPage::any(p).expect("a heap page in shape")
+}
+
+fn edit(p: &mut PageCopy) -> HeapPageMut<'_> {
+    HeapPageMut::any(p).expect("a heap page in shape")
 }
 
 fn version(xmin: u64, body: &[u8]) -> Vec<u8> {
@@ -69,24 +77,24 @@ fn fixed_page_fills_every_slot_then_refuses() {
     let width = 40;
     let mut p = heap_page(Arrangement::Fixed { width }, 3);
     let n = fixed::capacity(PAGE, width);
-    assert_eq!(n, page::slot_count(&p));
-    assert_eq!(3, page::position(&p));
-    assert_eq!(Arrangement::Fixed { width }, page::arrangement(&p));
+    assert_eq!(n, view(&p).slot_count());
+    assert_eq!(3, view(&p).position());
+    assert_eq!(Arrangement::Fixed { width }, view(&p).arrangement());
     for i in 0..n {
-        assert_eq!(n * width - i * width, page::free(&p));
+        assert_eq!(n * width - i * width, view(&p).free());
         let v = version(i as u64 + 1, &[i as u8; 8]);
-        assert_eq!(Some(i), page::insert(&mut p, &v, Flags(i as u16)));
+        assert_eq!(Some(i), edit(&mut p).insert(&v, Flags(i as u16)));
     }
-    assert_eq!(0, page::free(&p));
-    assert_eq!(None, page::insert(&mut p, &version(9, &[]), Flags::NONE));
-    let Slot::Normal { flags, at } = page::get(&p, 17) else {
+    assert_eq!(0, view(&p).free());
+    assert_eq!(None, edit(&mut p).insert(&version(9, &[]), Flags::NONE));
+    let Slot::Normal { flags, at } = view(&p).get(17) else {
         panic!("slot 17 is empty");
     };
     assert_eq!(Flags(17), flags);
     assert_eq!(width, at.len());
     assert_eq!(writers(18, 0), Header::read(&p[at.clone()]).writers);
     assert_eq!([17; 8], p[at.start + 24..at.start + 32]);
-    assert_eq!(Slot::Unused, page::get(&p, n));
+    assert_eq!(Slot::Unused, view(&p).get(n));
 }
 
 #[test]
@@ -109,8 +117,8 @@ fn slotted_page_takes_versions_until_full() {
     let mut i = 0u8;
     loop {
         let v = version(u64::from(i), &vec![i; 1 + usize::from(i) * 7 % 90]);
-        let before = page::free(&p);
-        match page::insert(&mut p, &v, Flags::HEAP_ONLY) {
+        let before = view(&p).free();
+        match edit(&mut p).insert(&v, Flags::HEAP_ONLY) {
             Some(slot) => {
                 assert_eq!(inserted.len(), slot);
                 inserted.push(v);
@@ -123,7 +131,7 @@ fn slotted_page_takes_versions_until_full() {
         i += 1;
     }
     for (slot, v) in inserted.iter().enumerate() {
-        let Slot::Normal { flags, at } = page::get(&p, slot) else {
+        let Slot::Normal { flags, at } = view(&p).get(slot) else {
             panic!("slot {slot} is empty");
         };
         assert_eq!(Flags::HEAP_ONLY, flags);
@@ -136,17 +144,17 @@ fn compaction_keeps_slots_and_bytes() {
     let mut p = heap_page(Arrangement::Slotted, 0);
     let versions: Vec<Vec<u8>> = (0..10).map(|i| version(i, &[i as u8; 50])).collect();
     for v in &versions {
-        page::insert(&mut p, v, Flags::NONE).unwrap();
+        edit(&mut p).insert(v, Flags::NONE).unwrap();
     }
     slotted::release(&mut p, 3, Some(slotted::Content::Dead));
     slotted::compact(&mut p);
     let mut lowest = p.len();
     for (s, v) in versions.iter().enumerate() {
         if s == 3 {
-            assert_eq!(Slot::Dead, page::get(&p, s));
+            assert_eq!(Slot::Dead, view(&p).get(s));
             continue;
         }
-        let Slot::Normal { at, .. } = page::get(&p, s) else {
+        let Slot::Normal { at, .. } = view(&p).get(s) else {
             panic!("slot {s} is empty");
         };
         lowest = lowest.min(at.start);
@@ -164,24 +172,24 @@ fn slotted_put_fills_gaps_and_keeps_dead_and_redirect_slots() {
         flags: Flags::MOVED,
         at: 0..0,
     };
-    assert!(page::put(&mut p, 4, &Slot::Dead, &[]));
-    assert!(page::put(&mut p, 2, &normal, &v));
-    assert!(page::put(&mut p, 0, &Slot::Redirect(2), &[]));
-    assert_eq!(5, page::slot_count(&p));
-    assert_eq!(Slot::Redirect(2), page::get(&p, 0));
-    assert_eq!(Slot::Unused, page::get(&p, 1));
-    assert_eq!(Slot::Dead, page::get(&p, 4));
-    assert!(!page::put(&mut p, 4, &Slot::Dead, &[]));
-    assert_eq!(Some(1), page::insert(&mut p, &v, Flags::NONE));
-    assert_eq!(Some(3), page::insert(&mut p, &v, Flags::NONE));
-    assert_eq!(Some(5), page::insert(&mut p, &v, Flags::NONE));
+    assert!(edit(&mut p).put(4, &Slot::Dead, &[]));
+    assert!(edit(&mut p).put(2, &normal, &v));
+    assert!(edit(&mut p).put(0, &Slot::Redirect(2), &[]));
+    assert_eq!(5, view(&p).slot_count());
+    assert_eq!(Slot::Redirect(2), view(&p).get(0));
+    assert_eq!(Slot::Unused, view(&p).get(1));
+    assert_eq!(Slot::Dead, view(&p).get(4));
+    assert!(!edit(&mut p).put(4, &Slot::Dead, &[]));
+    assert_eq!(Some(1), edit(&mut p).insert(&v, Flags::NONE));
+    assert_eq!(Some(3), edit(&mut p).insert(&v, Flags::NONE));
+    assert_eq!(Some(5), edit(&mut p).insert(&v, Flags::NONE));
 }
 
 #[test]
 fn a_fixed_page_holds_no_dead_or_redirect_slot() {
     let mut p = heap_page(Arrangement::Fixed { width: 32 }, 0);
-    assert!(!page::put(&mut p, 0, &Slot::Dead, &[]));
-    assert!(!page::put(&mut p, 0, &Slot::Redirect(1), &[]));
+    assert!(!edit(&mut p).put(0, &Slot::Dead, &[]));
+    assert!(!edit(&mut p).put(0, &Slot::Redirect(1), &[]));
 }
 
 #[test]
@@ -189,20 +197,20 @@ fn a_dead_slot_frees_its_tuple_space() {
     let mut p = heap_page(Arrangement::Slotted, 0);
     let big = version(1, &[7; 900]);
     let mut slots = Vec::new();
-    while let Some(s) = page::insert(&mut p, &big, Flags::NONE) {
+    while let Some(s) = edit(&mut p).insert(&big, Flags::NONE) {
         slots.push(s);
     }
     assert_eq!(4, slots.len());
     let mut rebuilt = heap_page(Arrangement::Slotted, 0);
     for &s in &slots {
-        let Slot::Normal { at, .. } = page::get(&p, s) else {
+        let Slot::Normal { at, .. } = view(&p).get(s) else {
             panic!("slot {s} is empty");
         };
-        let content = if s == 1 { Slot::Dead } else { page::get(&p, s) };
-        assert!(page::put(&mut rebuilt, s, &content, &p[at]));
+        let content = if s == 1 { Slot::Dead } else { view(&p).get(s) };
+        assert!(edit(&mut rebuilt).put(s, &content, &p[at]));
     }
-    assert_eq!(Some(4), page::insert(&mut rebuilt, &big, Flags::NONE));
-    assert_eq!(Slot::Dead, page::get(&rebuilt, 1));
+    assert_eq!(Some(4), edit(&mut rebuilt).insert(&big, Flags::NONE));
+    assert_eq!(Slot::Dead, view(&rebuilt).get(1));
 }
 
 #[test]
@@ -553,15 +561,16 @@ fn a_64_kib_page_holds_its_largest_version() {
         0,
     ));
     Arrangement::Slotted.init(&mut p, 0);
+    let mut p = PageCopy::owned_by(7, p);
     let v = vec![5; slotted::max_version(size)];
-    assert_eq!(v.len(), page::free(&p));
-    assert_eq!(Some(0), page::insert(&mut p, &v, Flags::NONE));
-    let Slot::Normal { at, .. } = page::get(&p, 0) else {
+    assert_eq!(v.len(), view(&p).free());
+    assert_eq!(Some(0), edit(&mut p).insert(&v, Flags::NONE));
+    let Slot::Normal { at, .. } = view(&p).get(0) else {
         panic!("slot 0 is empty");
     };
     assert_eq!(&v[..], &p[at]);
-    assert_eq!(0, page::free(&p));
-    assert_eq!(None, page::insert(&mut p, &[1; 8], Flags::NONE));
+    assert_eq!(0, view(&p).free());
+    assert_eq!(None, edit(&mut p).insert(&[1; 8], Flags::NONE));
 }
 
 const PID: u64 = 40;
@@ -575,22 +584,22 @@ fn linked(xmin: u64, xmax: u64, next: Option<u16>) -> Vec<u8> {
 
 /// Returns a page holding a chain of three versions written by 1, 2 and 3, the last two
 /// heap-only.
-fn chain(arrangement: Arrangement) -> Vec<u8> {
+fn chain(arrangement: Arrangement) -> PageCopy {
     let mut p = heap_page(arrangement, 0);
     let hot = Flags::HOT_UPDATED;
     let only = Flags::HEAP_ONLY;
-    assert_eq!(Some(0), page::insert(&mut p, &linked(1, 2, Some(1)), hot));
+    assert_eq!(Some(0), edit(&mut p).insert(&linked(1, 2, Some(1)), hot));
     assert_eq!(
         Some(1),
-        page::insert(&mut p, &linked(2, 3, Some(2)), only.with(hot))
+        edit(&mut p).insert(&linked(2, 3, Some(2)), only.with(hot))
     );
-    assert_eq!(Some(2), page::insert(&mut p, &linked(3, 0, None), only));
+    assert_eq!(Some(2), edit(&mut p).insert(&linked(3, 0, None), only));
     p
 }
 
-fn plan_with(page: &[u8], fate: impl Fn(&Writers) -> Fate, cleaned: &[usize]) -> prune::Plan {
-    let fates = prune::judge(page, |h| Ok::<_, ()>(fate(h))).unwrap();
-    prune::plan(page, PID, &fates, &|s| cleaned.contains(&s))
+fn plan_with(page: &PageCopy, fate: impl Fn(&Writers) -> Fate, cleaned: &[usize]) -> prune::Plan {
+    let fates = prune::judge(view(page), |h| Ok::<_, ()>(fate(h))).unwrap();
+    prune::plan(view(page), PID, &fates, &|s| cleaned.contains(&s))
 }
 
 fn dead_below(w: u64) -> impl Fn(&Writers) -> Fate {
@@ -610,10 +619,10 @@ fn a_chain_with_dead_leading_versions_redirects_to_its_first_live_one() {
         plan.release
     );
     assert!(plan.dead.is_empty() && plan.all_visible);
-    prune::apply(&mut p, &plan);
-    assert_eq!(Slot::Redirect(2), page::get(&p, 0));
-    assert_eq!(Slot::Unused, page::get(&p, 1));
-    assert!(matches!(page::get(&p, 2), Slot::Normal { .. }));
+    prune::apply(&mut edit(&mut p), &plan);
+    assert_eq!(Slot::Redirect(2), view(&p).get(0));
+    assert_eq!(Slot::Unused, view(&p).get(1));
+    assert!(matches!(view(&p).get(2), Slot::Normal { .. }));
 }
 
 #[test]
@@ -633,13 +642,13 @@ fn a_dead_chain_leaves_its_first_slot_dead_until_its_entries_go() {
         plan.release
     );
     assert!(!plan.all_visible);
-    prune::apply(&mut p, &plan);
-    assert_eq!(1, page::slot_count(&p));
+    prune::apply(&mut edit(&mut p), &plan);
+    assert_eq!(1, view(&p).slot_count());
     let plan = plan_with(&p, gone, &[0]);
     assert_eq!(vec![(0, Slot::Unused)], plan.release);
-    prune::apply(&mut p, &plan);
-    assert!(page::is_empty(&p));
-    assert_eq!(0, page::slot_count(&p));
+    prune::apply(&mut edit(&mut p), &plan);
+    assert!(view(&p).is_empty());
+    assert_eq!(0, view(&p).slot_count());
 }
 
 #[test]
@@ -660,18 +669,22 @@ fn a_fixed_page_frees_a_chain_only_whole() {
     let mut q = p.clone();
     let plan = plan_with(&p, gone, &[0]);
     assert_eq!(3, plan.release.len());
-    prune::apply(&mut q, &plan);
-    assert!(page::is_empty(&q));
+    prune::apply(&mut edit(&mut q), &plan);
+    assert!(view(&q).is_empty());
 }
 
 #[test]
 fn a_hot_link_from_a_version_with_no_deleter_names_no_successor_even_of_inserter_zero() {
     let mut p = heap_page(Arrangement::Slotted, 0);
-    page::insert(&mut p, &linked(1, 0, Some(1)), Flags::HOT_UPDATED).unwrap();
-    page::insert(&mut p, &linked(0, 0, None), Flags::HEAP_ONLY).unwrap();
+    edit(&mut p)
+        .insert(&linked(1, 0, Some(1)), Flags::HOT_UPDATED)
+        .unwrap();
+    edit(&mut p)
+        .insert(&linked(0, 0, None), Flags::HEAP_ONLY)
+        .unwrap();
     assert_eq!(
         vec!["slot 0 is hot-updated but names no heap-only successor".to_string()],
-        chain::link_faults(&p, PID)
+        chain::link_faults(view(&p), PID)
     );
 }
 
@@ -694,7 +707,7 @@ fn a_chain_root_is_a_version_not_heap_only_or_a_redirect_to_a_version() {
         (linked(4, 0, None), Flags::NONE),
     ];
     for (s, (v, flags)) in versions.iter().enumerate() {
-        assert_eq!(Some(s), page::insert(&mut p, v, *flags));
+        assert_eq!(Some(s), edit(&mut p).insert(v, *flags));
     }
     for (s, left) in [
         (3, Slot::Redirect(4)),
@@ -705,9 +718,9 @@ fn a_chain_root_is_a_version_not_heap_only_or_a_redirect_to_a_version() {
         (10, Slot::Redirect(3)),
         (11, Slot::Redirect(9)),
     ] {
-        page::release(&mut p, s, &left);
+        edit(&mut p).release(s, &left);
     }
-    let link = |s| chain::link(&p, PID, s);
+    let link = |s| chain::link(view(&p), PID, s);
     assert_eq!(
         vec![
             (0, vec![0, 1, 2]),
@@ -715,11 +728,11 @@ fn a_chain_root_is_a_version_not_heap_only_or_a_redirect_to_a_version() {
             (9, vec![9]),
             (11, vec![9])
         ],
-        chain::roots(&p, link)
+        chain::roots(view(&p), link)
     );
-    assert_eq!(Some(vec![1, 2]), chain::from(&p, 1, link));
+    assert_eq!(Some(vec![1, 2]), chain::from(view(&p), 1, link));
     for s in [5, 6, 7, 8, 10] {
-        assert_eq!(None, chain::from(&p, s, link), "slot {s}");
+        assert_eq!(None, chain::from(view(&p), s, link), "slot {s}");
     }
 }
 
@@ -727,8 +740,10 @@ fn a_chain_root_is_a_version_not_heap_only_or_a_redirect_to_a_version() {
 fn an_aborted_successor_is_freed_and_its_predecessor_cleared() {
     let mut p = heap_page(Arrangement::Slotted, 0);
     let old = linked(1, 2, Some(1));
-    page::insert(&mut p, &old, Flags::HOT_UPDATED).unwrap();
-    page::insert(&mut p, &linked(2, 0, None), Flags::HEAP_ONLY).unwrap();
+    edit(&mut p).insert(&old, Flags::HOT_UPDATED).unwrap();
+    edit(&mut p)
+        .insert(&linked(2, 0, None), Flags::HEAP_ONLY)
+        .unwrap();
     let judge = |h: &Writers| {
         if h.inserted_by(Xid(2)) {
             Fate::Remove
@@ -742,13 +757,13 @@ fn an_aborted_successor_is_freed_and_its_predecessor_cleared() {
     assert_eq!(vec![0], plan.clear);
     assert_eq!(vec![(1, Slot::Unused)], plan.release);
     assert!(plan.all_visible);
-    prune::apply(&mut p, &plan);
-    let Slot::Normal { flags, at } = page::get(&p, 0) else {
+    prune::apply(&mut edit(&mut p), &plan);
+    let Slot::Normal { flags, at } = view(&p).get(0) else {
         panic!("slot 0 lost its version");
     };
     assert_eq!(Flags::NONE, flags);
     assert_eq!(Header::new(Xid(1)), Header::read(&p[at]));
-    assert_eq!(1, page::slot_count(&p));
+    assert_eq!(1, view(&p).slot_count());
 }
 
 #[test]
@@ -833,20 +848,26 @@ fn the_set_bits_of_a_leaf_equal_the_bitwise_walk() {
 #[test]
 fn a_page_check_finds_overlapping_tuples_and_bad_states() {
     let mut p = heap_page(Arrangement::Slotted, 0);
-    page::insert(&mut p, &version(1, &[7; 16]), Flags::NONE).unwrap();
-    page::insert(&mut p, &version(2, &[8; 16]), Flags::NONE).unwrap();
-    assert!(page::check(&p).is_empty());
+    edit(&mut p)
+        .insert(&version(1, &[7; 16]), Flags::NONE)
+        .unwrap();
+    edit(&mut p)
+        .insert(&version(2, &[8; 16]), Flags::NONE)
+        .unwrap();
+    assert!(view(&p).check().is_empty());
     let first = u16::from_le_bytes([p[40], p[41]]);
     p[48..50].copy_from_slice(&first.to_le_bytes());
-    assert_eq!(vec!["slots 0 and 1 overlap".to_owned()], page::check(&p));
+    assert_eq!(vec!["slots 0 and 1 overlap".to_owned()], view(&p).check());
     p[44] = 9;
-    assert!(page::check(&p).contains(&"slot 0 has state 9".to_owned()));
+    assert!(view(&p).check().contains(&"slot 0 has state 9".to_owned()));
     let mut f = heap_page(Arrangement::Fixed { width: 40 }, 0);
-    page::insert(&mut f, &version(1, &[0; 16]), Flags::NONE).unwrap();
-    assert!(page::check(&f).is_empty());
-    page::release(&mut f, 0, &Slot::Unused);
-    page::set_flags(&mut f, 0, Flags::MOVED);
-    assert_eq!(vec!["unused slot 0 has flags".to_owned()], page::check(&f));
+    edit(&mut f)
+        .insert(&version(1, &[0; 16]), Flags::NONE)
+        .unwrap();
+    assert!(view(&f).check().is_empty());
+    edit(&mut f).release(0, &Slot::Unused);
+    edit(&mut f).set_flags(0, Flags::MOVED);
+    assert_eq!(vec!["unused slot 0 has flags".to_owned()], view(&f).check());
 }
 
 #[test]
@@ -854,10 +875,13 @@ fn a_fixed_page_is_framed_only_at_the_most_slots_of_its_width_that_fit() {
     for width in [24, 32, 104, 1000, 4048] {
         let mut p = heap_page(Arrangement::Fixed { width }, 0);
         let n = fixed::count(&p);
-        assert!(page::is_heap(&p), "{width}");
+        assert!(HeapPage::any(&p).is_some(), "{width}");
         for count in [0, n - 1, n + 1] {
             p[30..32].copy_from_slice(&(count as u16).to_le_bytes());
-            assert!(!page::is_heap(&p), "{width} with {count} of {n} slots");
+            assert!(
+                !HeapPage::any(&p).is_some(),
+                "{width} with {count} of {n} slots"
+            );
         }
     }
 }

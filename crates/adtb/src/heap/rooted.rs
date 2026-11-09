@@ -6,15 +6,20 @@ use crate::storage::{self, PageError, Pager, Pid};
 
 use super::chain;
 use super::handle::{Heap, Version, tid};
-use super::page::{self, Slot};
+#[cfg(any(test, feature = "testing"))]
+use super::page::HeapPageMut;
+use super::page::Slot;
+#[cfg(any(test, feature = "testing"))]
+use super::stage::Stage;
 #[cfg(any(test, feature = "testing"))]
 use super::version::{Flags, Header};
+#[cfg(any(test, feature = "testing"))]
+use super::write::Rank;
 
 impl Heap {
     /// Call `f` on every version on `pid` with each slot index entries may name for it: the roots
     /// of the chains of heap-only successors it lies on, as one latched read of the page shows. A
     /// sound page gives a version one root. A page no longer of the heap has none.
-    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     pub fn scan_rooted<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -23,17 +28,17 @@ impl Heap {
     ) -> Result<(), PageError> {
         let mut found = Vec::new();
         {
-            let page = pager.read_formatted(pid)?;
-            if !page::is_heap(&page) || storage::owner(&page) != self.id {
+            let guard = pager.read_formatted(pid)?;
+            let Some(page) = self.page(&guard) else {
                 return Ok(());
-            }
+            };
             let mut roots: BTreeMap<usize, Vec<Tid>> = BTreeMap::new();
-            for (root, members) in chain::roots(&page, |s| chain::link(&page, pid.0, s)) {
+            for (root, members) in chain::roots(page, |s| chain::link(page, pid.0, s)) {
                 for member in members {
                     roots.entry(member).or_default().push(tid(pid, root));
                 }
             }
-            for v in self.versions_on(pager, pid, &page)? {
+            for v in self.versions_on(pager, pid, page)? {
                 let rooted = roots.remove(&usize::from(v.tid.slot()));
                 let root = rooted.unwrap_or_else(|| vec![v.tid]);
                 found.push((v, root));
@@ -48,25 +53,24 @@ impl Heap {
     /// Returns the rows of the chain index entries naming `at` reach on its page, or `None` when
     /// the slot leads to no version: unused, dead, a redirect to no version, or on a page no longer
     /// of the heap.
-    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     pub fn chain_rows<R: Runtime>(
         &self,
         pager: &Pager<R>,
         at: Tid,
     ) -> Result<Option<Vec<Vec<Value>>>, PageError> {
         let pid = Pid(at.page());
-        let page = pager.read(pid)?;
-        if !page::is_heap(&page) || storage::owner(&page) != self.id {
+        let guard = pager.read(pid)?;
+        let Some(page) = self.page(&guard) else {
             return Ok(None);
-        }
+        };
         let format = storage::format(&page);
-        let link = |s| chain::link(&page, pid.0, s);
-        let Some(members) = chain::from(&page, usize::from(at.slot()), link) else {
+        let link = |s| chain::link(page, pid.0, s);
+        let Some(members) = chain::from(page, usize::from(at.slot()), link) else {
             return Ok(None);
         };
         let mut rows = Vec::new();
         for slot in members {
-            let Slot::Normal { at: bytes, .. } = page::get(&page, slot) else {
+            let Slot::Normal { at: bytes, .. } = page.get(slot) else {
                 break;
             };
             let (row, _) = self.decode(pager, format, &page[bytes])?;
@@ -77,17 +81,15 @@ impl Heap {
 
     /// Returns what is wrong with the links of `pid`, as one latched read of the page shows. A
     /// page no longer of the heap has nothing wrong.
-    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     pub fn broken_links<R: Runtime>(
         &self,
         pager: &Pager<R>,
         pid: Pid,
     ) -> Result<Vec<String>, PageError> {
-        let page = pager.read(pid)?;
-        if !page::is_heap(&page) || storage::owner(&page) != self.id {
-            return Ok(Vec::new());
-        }
-        Ok(chain::link_faults(&page, pid.0))
+        let guard = pager.read(pid)?;
+        Ok(self
+            .page(&guard)
+            .map_or_else(Vec::new, |page| chain::link_faults(page, pid.0)))
     }
 
     /// Mark the version at `at` hot-updated with successor `next`. Plants a fault for a test of
@@ -100,17 +102,17 @@ impl Heap {
         at: Tid,
         next: Tid,
     ) -> Result<(), PageError> {
-        pager.update(&[Pid(at.page())], |pages| {
-            let page = &mut *pages[0];
-            let slot = usize::from(at.slot());
-            let Slot::Normal { flags, at: bytes } = page::get(page, slot) else {
-                panic!("a planted link starts at a version");
-            };
-            let mut header = Header::read(&page[bytes.clone()]);
-            header.next = Some(next);
-            header.write(&mut page[bytes]);
-            page::set_flags(page, slot, flags.with(Flags::HOT_UPDATED));
-        })?;
-        Ok(())
+        let mut stage = Stage::new();
+        let copy = stage.page(pager, Rank::Heap(Pid(at.page())))?;
+        let mut page = HeapPageMut::any(copy).expect("a planted link starts on a heap page");
+        let slot = usize::from(at.slot());
+        let Slot::Normal { flags, at: bytes } = page.view().get(slot) else {
+            panic!("a planted link starts at a version");
+        };
+        let mut header = Header::read(&page.view()[bytes.clone()]);
+        header.next = Some(next);
+        header.write(page.version_mut(bytes));
+        page.set_flags(slot, flags.with(Flags::HOT_UPDATED));
+        stage.commit(pager)
     }
 }

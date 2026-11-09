@@ -94,6 +94,7 @@ impl WriteTarget {
     }
 }
 
+#[cfg(any(test, feature = "testing"))]
 impl From<Tid> for WriteTarget {
     fn from(tid: Tid) -> Self {
         Self {

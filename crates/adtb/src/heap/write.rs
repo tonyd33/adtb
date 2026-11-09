@@ -5,7 +5,7 @@ use crate::storage::{PageError, Pager, Pid, Reservation};
 
 use super::dir::{Above, Fit};
 use super::handle::Heap;
-use super::page;
+use super::page::{HeapPage, HeapPageMut, PageCopy};
 use super::row::Pointer;
 use super::stage::Stage;
 
@@ -185,11 +185,12 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
                 .iter()
                 .find_map(|&(heap, p)| (p == pid).then_some(heap))
                 .unwrap_or_else(|| panic!("heap page {pid:?} was written but not latched"));
-            let page = self.stage.page(pager, Rank::Heap(pid))?;
-            if !page::all_visible(page) {
+            let copy = self.stage.page(pager, Rank::Heap(pid))?;
+            let mut page = HeapPageMut::any(copy).expect("a written heap page is a heap page");
+            if !page.view().all_visible() {
                 continue;
             }
-            page::set_all_visible(page, false);
+            page.set_all_visible(false);
             self.clear_bit(heap, pid)?;
         }
         Ok(())
@@ -226,27 +227,30 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
         mut self,
         heap: &Heap,
         pid: Pid,
-        mut pruned: Vec<u8>,
+        mut pruned: PageCopy,
         all_visible: bool,
         released: &[Pointer],
     ) -> Result<bool, PageError> {
         let pager = self.pager;
-        let page = self.stage.read(pager, Rank::Heap(pid))?;
+        let copy = self.stage.read(pager, Rank::Heap(pid))?;
+        let page = HeapPage::any(&copy).expect("a page pruned is a heap page");
         let vm = heap.vm(&mut self.stage, pager)?;
         let bit = vm.get(&self.stage, pager, pid)?;
-        let removed = page::is_empty(&pruned);
+        let mut after = HeapPageMut::any(&mut pruned).expect("a pruned page is a heap page");
+        let removed = after.view().is_empty();
         let visible = all_visible && !removed;
-        page::set_all_visible(&mut pruned, visible);
+        after.set_all_visible(visible);
         if bit && !visible {
             self.clear_bit(heap, pid)?;
         }
-        let roomier = page::free(&pruned) > page::free(&page);
-        self.stage.put(pager, Rank::Heap(pid), pruned)?;
+        let roomier = after.view().free() > page.free();
+        self.stage
+            .put(pager, Rank::Heap(pid), pruned.into_bytes())?;
         let mut gone = pager.reserve();
         let above = if removed {
             gone.free(pid);
             heap.space
-                .vacate(&mut self.stage, pager, pid, page::position(&page))?
+                .vacate(&mut self.stage, pager, pid, page.position())?
         } else {
             let fit = Fit::Pruned { roomier };
             heap.space

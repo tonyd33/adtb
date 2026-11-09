@@ -17,17 +17,16 @@ impl Heap {
     }
 
     /// Returns the pointers the version at `tid` holds, if a version of this heap is there.
-    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     pub fn pointers_at<R: Runtime>(
         &self,
         pager: &Pager<R>,
         tid: Tid,
     ) -> Result<Option<Vec<Pointer>>, PageError> {
-        let page = pager.read(Pid(tid.page()))?;
-        if !page::is_heap(&page) || storage::owner(&page) != self.id {
+        let guard = pager.read(Pid(tid.page()))?;
+        let Some(page) = self.page(&guard) else {
             return Ok(None);
-        }
-        Ok(match page::get(&page, usize::from(tid.slot())) {
+        };
+        Ok(match page.get(usize::from(tid.slot())) {
             Slot::Normal { at, .. } => Some(self.pointers(storage::format(&page), &page[at])),
             _ => None,
         })
@@ -39,7 +38,7 @@ impl Heap {
         pager: &Pager<R>,
         pid: Pid,
     ) -> Result<bool, PageError> {
-        Ok(page::all_visible(&pager.read(pid)?))
+        Ok(HeapPage::any(&pager.read(pid)?).is_some_and(HeapPage::all_visible))
     }
 
     /// Write `row` as the successor `xid` makes of the version at `at`, and point that version at

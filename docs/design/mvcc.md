@@ -447,10 +447,9 @@ write layer treats a mismatch as a serialization failure, so a registered
 call retries the whole transaction at a new snapshot. A restore names the
 exact header installed by the statement being undone.
 
-A heap caller passing only a TID must exclude concurrent changes to that
-version for the duration of the operation. This form supports maintenance
-under exclusive ownership and direct heap tests; a transaction writing a
-snapshot-visible version must pass a checked target.
+Every caller other than a heap test passes a checked target. A test passing
+only a TID excludes concurrent changes to that version for the duration of
+the operation.
 
 An update names the key fields of every index whose constructor set
 contains the heap's constructor. The heap decides whether the update is

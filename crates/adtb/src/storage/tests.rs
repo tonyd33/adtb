@@ -1,4 +1,3 @@
-#![expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_sys::os::{Backend, Faults, OsRuntime};
@@ -286,7 +285,7 @@ fn header_edit_fills_the_fields_layouts_own() {
     p[page::FIRST_EDITABLE..page::HEADER_LEN].copy_from_slice(&e);
     assert_eq!(3, page::format(&p));
     assert_eq!(page::PageKind::IndexLeaf as u16, page::kind(&p));
-    assert_eq!(0xdead, page::owner(&p));
+    assert_eq!(0xdead, page::owner_of(&p));
     assert_eq!(2, page::flags(&p));
 }
 

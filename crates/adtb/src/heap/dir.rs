@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::runtime::Runtime;
 use crate::storage::{self, Damage, PageError, PageKind, Pager, Pid, Stopped};
 
-use super::page::{self, Arrangement, CONTENTS, u16_at, u64_at};
+use super::page::{Arrangement, CONTENTS, HeapPage, Kinded, Owned, PageCopy, u16_at, u64_at};
 use super::stage::Stage;
 use super::vm;
 use super::write::{Level, Rank};
@@ -112,11 +112,10 @@ fn parent_of(pid: Pid, node: &[u8]) -> Parent {
 
 /// Returns whether `node` is a directory page of `owner` whose entries fit its page, a child of
 /// `parent` when there is one, at a level `l` with `capacity^l` below [`POSITIONS`].
-#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
-fn shaped(node: &[u8], owner: u32, page_size: usize, parent: Parent) -> bool {
+fn shaped(node: &impl Owned, owner: u32, page_size: usize, parent: Parent) -> bool {
     let cap = capacity(node);
     storage::kind(node) == PageKind::FreeSpaceMap as u16
-        && storage::owner(node) == owner
+        && node.owner() == owner
         && (2..=u64::from(max_fanout(page_size))).contains(&cap)
         && count(node) as u64 <= cap
         && cap.checked_pow(level(node)).is_some_and(|s| s < POSITIONS)
@@ -179,8 +178,8 @@ pub fn category(free: usize, page_size: usize) -> u8 {
 }
 
 /// Returns the free space category of `page`, a page of `page_size` bytes.
-pub fn page_category(page: &[u8], page_size: usize) -> u8 {
-    category(page::free(page), page_size)
+pub fn page_category(page: HeapPage<'_>, page_size: usize) -> u8 {
+    category(page.free(), page_size)
 }
 
 /// What a write did to a page, which decides its level-0 directory entry.
@@ -354,7 +353,7 @@ impl Space {
         let node = stage.read_any(pager, Rank::Dir { level, pid });
         let node = node.map_err(Fault::Page)?;
         if shaped(&node, self.owner, pager.page_size(), parent) {
-            return Ok(node);
+            return Ok(node.into_bytes());
         }
         Err(Fault::Shape(parent.map_or(pid, |(p, _, _)| p)))
     }
@@ -373,7 +372,7 @@ impl Space {
         let node = stage.read_any(pager, Rank::Vm(pid));
         let node = node.map_err(Fault::Page)?;
         if vm::shaped(&node, self.owner, parent.map(|(_, l)| l)) {
-            return Ok(node);
+            return Ok(node.into_bytes());
         }
         Err(Fault::Shape(parent.map_or(self.root(), |(p, _)| p)))
     }
@@ -411,7 +410,7 @@ impl Space {
         pager: &'p Pager<R>,
         pid: Pid,
         level: u32,
-    ) -> Result<&'s mut Vec<u8>, PageError> {
+    ) -> Result<&'s mut PageCopy, PageError> {
         let rank = Rank::dir(level, pid);
         if shaped(
             stage.page(pager, rank)?,
@@ -599,7 +598,6 @@ impl Space {
         Ok(found)
     }
 
-    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     fn check_node<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -608,10 +606,8 @@ impl Space {
         found: &mut Check,
     ) -> Result<(u8, bool), PageError> {
         let problems = &mut found.problems;
-        let node = pager.read_formatted(pid)?.to_vec();
-        if storage::kind(&node) != PageKind::FreeSpaceMap as u16
-            || storage::owner(&node) != self.owner
-        {
+        let node = PageCopy::of(&pager.read_formatted(pid)?);
+        if storage::kind(&node) != PageKind::FreeSpaceMap as u16 || node.owner() != self.owner {
             problems.push((pid, format!("is not a directory page of {}", self.owner)));
             return Ok((0, false));
         }
@@ -727,16 +723,14 @@ impl Space {
         Ok(self.at(&pager.read(pid)?, position))
     }
 
-    fn at(&self, page: &[u8], position: u32) -> bool {
-        self.claims(page, position) && page::is_heap(page)
+    fn at(&self, page: &impl Owned, position: u32) -> bool {
+        self.claimed(page, position)
+            .is_some_and(|k| k.framed().is_some())
     }
 
-    /// Returns whether the header of `page` names a heap kind, the space's owner and `position`.
-    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
-    fn claims(&self, page: &[u8], position: u32) -> bool {
-        page::has_heap_kind(page)
-            && storage::owner(page) == self.owner
-            && page::position(page) == position
+    /// Returns `page` when its header names a heap kind, the space's owner and `position`.
+    fn claimed<'g>(&self, page: &'g impl Owned, position: u32) -> Option<Kinded<'g>> {
+        Kinded::of(page).filter(|k| k.owner() == self.owner && k.position() == position)
     }
 
     /// Returns what entry `i` of level-0 directory page `leaf`, naming `pid` at `position`, finds:
@@ -758,7 +752,10 @@ impl Space {
             return Ok(Named::Changed);
         }
         let page = pager.read(pid)?;
-        let (held, claimed) = (self.at(&page, position), self.claims(&page, position));
+        let (held, claimed) = (
+            self.at(&page, position),
+            self.claimed(&page, position).is_some(),
+        );
         drop(page);
         Ok(match (held, seen.validate(), claimed) {
             (true, _, _) => Named::Held,
@@ -872,11 +869,11 @@ impl Space {
     ) -> Result<Option<Pid>, PageError> {
         let mut new = pager.reserve();
         let page = new.page(format, arrangement.kind(), self.owner)?;
-        let mut image = new.image(page);
-        arrangement.init(&mut image, position);
-        let cat = category(page::free(&image), pager.page_size());
         let mut stage = Stage::new();
-        stage.put_reserved(&new, page, image);
+        let image = stage.put_reserved(&new, page, new.image(page));
+        arrangement.init(image, position);
+        let fresh = HeapPage::any(image).expect("a page formatted empty is a heap page");
+        let cat = page_category(fresh, pager.page_size());
         let fresh = Change {
             page: Some(page),
             category: Some(cat),
@@ -949,8 +946,9 @@ impl Space {
         newest: u16,
         fit: Fit,
     ) -> Result<Above, PageError> {
-        let page = stage.read(pager, Rank::Heap(pid))?;
-        let category = page_category(&page, pager.page_size());
+        let copy = stage.read(pager, Rank::Heap(pid))?;
+        let page = HeapPage::any(&copy).expect("a page a write reflects is a heap page");
+        let category = page_category(page, pager.page_size());
         let current = storage::format(&page) == newest;
         let (category, mark) = match fit {
             Fit::Took => (Some(category), None),
@@ -961,7 +959,7 @@ impl Space {
         if category.is_none() {
             return Ok(Above::default());
         }
-        self.set_entry(stage, pager, pid, page::position(&page), category, mark)
+        self.set_entry(stage, pager, pid, page.position(), category, mark)
     }
 
     /// Mark or unmark the entry at `position`, which names `page`, as touched in `stage`. An entry
@@ -1246,11 +1244,11 @@ impl Space {
     ) -> Result<Option<Pid>, PageError> {
         let mut new = pager.reserve();
         let page = new.page(format, arrangement.kind(), self.owner)?;
-        let mut image = new.image(page);
-        arrangement.init(&mut image, position);
-        let cat = category(page::free(&image), pager.page_size());
         let mut stage = Stage::new();
-        stage.put_reserved(&new, page, image);
+        let image = stage.put_reserved(&new, page, new.image(page));
+        arrangement.init(image, position);
+        let fresh = HeapPage::any(image).expect("a page formatted empty is a heap page");
+        let cat = page_category(fresh, pager.page_size());
         let node = self.node_mut(&mut stage, pager, leaf, 0)?;
         let i = digit(u64::from(position), 0, capacity(node));
         if level(node) != 0 || count(node) != i {

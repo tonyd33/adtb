@@ -260,7 +260,10 @@ pub fn write_outs() -> Match {
 
 /// Returns the pages of `writes`, the operation each ran during given by `during`: the index in
 /// `writes` from which each operation ran.
-#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "reads owners from file images, which have no guard"
+)]
 fn trace(writes: &OpLog, during: &[(usize, usize)]) -> Trace {
     let mut trace = Trace::default();
     let writes = writes.entries();

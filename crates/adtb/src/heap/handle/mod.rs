@@ -8,7 +8,7 @@ use crate::storage::{self, PageError, Pager, Pid, Stopped};
 
 use super::dir::{Space, max_fanout, need_category, page_category};
 use super::large::LargeStore;
-use super::page::{self, Arrangement, Slot, align8};
+use super::page::{Arrangement, HeapPage, HeapPageMut, Kinded, Owned, PageCopy, Slot, align8};
 use super::row::{FieldType, Layout, POINTER_LEN, Pointer, Stored};
 use super::stage::Stage;
 use super::version::{Flags, HEADER_LEN, Header};
@@ -93,8 +93,20 @@ struct Converted {
 
 /// A page's conversion to the newest format, made from `source`, a copy of the page.
 struct Preconverted {
-    source: Vec<u8>,
+    source: PageCopy,
     done: Converted,
+}
+
+/// A page of a heap that its directory names at the position the page records.
+#[derive(Clone, Copy, Debug)]
+struct Listed<'g>(HeapPage<'g>);
+
+impl<'g> std::ops::Deref for Listed<'g> {
+    type Target = HeapPage<'g>;
+
+    fn deref(&self) -> &HeapPage<'g> {
+        &self.0
+    }
 }
 
 /// What [`Heap::try_put`] made of a page.
@@ -267,20 +279,16 @@ impl Heap {
     }
 
     /// Returns the row format, flags and bytes of the version at `tid`, if a version is there.
-    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     fn raw<R: Runtime>(
         &self,
         pager: &Pager<R>,
         tid: Tid,
     ) -> Result<Option<(u16, Flags, Vec<u8>)>, PageError> {
-        let page = pager.read(Pid(tid.page()))?;
-        assert_eq!(
-            self.id,
-            storage::owner(&page),
-            "{tid:?} is not in heap {}",
-            self.id
-        );
-        Ok(match page::get(&page, usize::from(tid.slot())) {
+        let guard = pager.read(Pid(tid.page()))?;
+        assert_eq!(self.id, guard.owner(), "{tid:?} is not in heap {}", self.id);
+        let page = HeapPage::any(&guard)
+            .unwrap_or_else(|| panic!("{tid:?} is on a page of heap {} out of shape", self.id));
+        Ok(match page.get(usize::from(tid.slot())) {
             Slot::Normal { flags, at } => Some((storage::format(&page), flags, page[at].to_vec())),
             _ => None,
         })
@@ -335,11 +343,11 @@ impl Heap {
         pager: &Pager<R>,
         tid: Tid,
     ) -> Result<Option<Version>, PageError> {
-        let page = pager.read_formatted(Pid(tid.page()))?;
-        if !self.holds_page(&page) {
+        let guard = pager.read_formatted(Pid(tid.page()))?;
+        let Some(page) = self.page(&guard) else {
             return Ok(None);
-        }
-        let Slot::Normal { flags, at } = page::get(&page, usize::from(tid.slot())) else {
+        };
+        let Slot::Normal { flags, at } = page.get(usize::from(tid.slot())) else {
             return Ok(None);
         };
         let format = storage::format(&page);
@@ -376,22 +384,22 @@ impl Heap {
         for &pid in pages {
             let found;
             {
-                let page = pager.read_formatted(pid)?;
-                if !self.holds_page(&page) {
-                    drop(page);
+                let guard = pager.read_formatted(pid)?;
+                let Some(page) = self.page(&guard) else {
+                    drop(guard);
                     self.space.refuse_misnamed(pager, pid)?;
                     continue;
-                }
-                found = self.versions_on(pager, pid, &page)?;
+                };
+                found = self.versions_on(pager, pid, page)?;
             }
             found.into_iter().for_each(&mut f);
         }
         Ok(())
     }
 
-    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
-    pub(super) fn holds_page(&self, page: &[u8]) -> bool {
-        page::is_heap(page) && storage::owner(page) == self.id
+    /// Returns `page` as a heap page of this heap.
+    pub(super) fn page<'g>(&self, page: &'g impl Owned) -> Option<HeapPage<'g>> {
+        HeapPage::any(page).filter(|p| p.owner() == self.id)
     }
 
     /// Returns the versions on `page`, page `pid` of the heap, in slot order.
@@ -399,12 +407,12 @@ impl Heap {
         &self,
         pager: &Pager<R>,
         pid: Pid,
-        page: &[u8],
+        page: HeapPage<'_>,
     ) -> Result<Vec<Version>, PageError> {
-        let format = storage::format(page);
+        let format = storage::format(&page);
         let mut found = Vec::new();
-        for slot in 0..page::slot_count(page) {
-            let Slot::Normal { flags, at } = page::get(page, slot) else {
+        for slot in 0..page.slot_count() {
+            let Slot::Normal { flags, at } = page.get(slot) else {
                 continue;
             };
             let bytes = &page[at];
@@ -498,30 +506,22 @@ impl Heap {
     /// Returns `page` with every version on it in the newest format, at the same slots, with the
     /// pointers the versions gained and dropped, or `None` if they would not fit. Values that move
     /// out of line are written by `xid`.
-    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     fn convert<R: Runtime>(
         &self,
         pager: &Pager<R>,
         xid: Xid,
-        page: &[u8],
+        page: HeapPage<'_>,
     ) -> Result<Option<Converted>, Error> {
-        let from = storage::format(page);
-        let target = match page::arrangement(page) {
+        let from = storage::format(&page);
+        let target = match page.arrangement() {
             Arrangement::Slotted => Arrangement::Slotted,
             Arrangement::Fixed { .. } => self.current().arrangement,
         };
-        let mut out = page.to_vec();
-        let header = storage::header_edit(
-            self.newest(),
-            target.kind(),
-            storage::owner(page),
-            storage::flags(page),
-        );
-        out[storage::FIRST_EDITABLE..storage::HEADER_LEN].copy_from_slice(&header);
-        target.init(&mut out, page::position(page));
+        let mut copy = page.reformat(self.newest(), target);
+        let mut out = HeapPageMut::any(&mut copy).expect("a page formatted empty is a heap page");
         let mut done = Converted::default();
-        for slot in 0..page::slot_count(page) {
-            let content = page::get(page, slot);
+        for slot in 0..page.slot_count() {
+            let content = page.get(slot);
             let version = match &content {
                 Slot::Normal { at, .. } => {
                     let old = &page[at.clone()];
@@ -541,48 +541,47 @@ impl Heap {
                 }
                 _ => Vec::new(),
             };
-            if !page::put(&mut out, slot, &content, &version) {
+            if !out.put(slot, &content, &version) {
                 return Ok(None);
             }
         }
-        done.page = out;
+        done.page = copy.into_bytes();
         Ok(Some(done))
     }
 
-    /// Returns whether `page`, read under a latch as page `pid`, is a page of this heap that its
-    /// directory names, read while the caller holds latches up to `floor`.
-    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
-    fn ours<R: Runtime>(
+    /// Returns `page`, read under a latch as page `pid`, as a page of this heap that its directory
+    /// names, the directory read while the caller holds latches up to `floor`.
+    fn listed<'g, R: Runtime>(
         &self,
         pager: &Pager<R>,
         pid: Pid,
-        page: &[u8],
+        page: &'g impl Owned,
         floor: Option<Rank>,
-    ) -> Result<bool, PageError> {
-        if !page::is_heap(page) || storage::owner(page) != self.id {
-            return Ok(false);
-        }
-        self.space.names(pager, page::position(page), pid, floor)
+    ) -> Result<Option<Listed<'g>>, PageError> {
+        let Some(page) = self.page(page) else {
+            return Ok(None);
+        };
+        let named = self.space.names(pager, page.position(), pid, floor)?;
+        Ok(named.then_some(Listed(page)))
     }
 
     /// Returns page `pid` converted to the newest format, the values that move out of line written
     /// by `xid` while no page is latched, or `None` if the page is in the newest format, is not a
     /// page of this heap, or its versions would not fit.
-    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     fn preconvert<R: Runtime>(
         &self,
         pager: &Pager<R>,
         pid: Pid,
         xid: Xid,
     ) -> Result<Option<Preconverted>, Error> {
-        let source = pager.read(pid)?.to_vec();
-        if !page::is_heap(&source)
-            || storage::owner(&source) != self.id
-            || storage::format(&source) == self.newest()
-        {
+        let source = PageCopy::of(&pager.read(pid)?);
+        let Some(page) = self.page(&source) else {
+            return Ok(None);
+        };
+        if storage::format(&page) == self.newest() {
             return Ok(None);
         }
-        let done = self.convert(pager, xid, &source)?;
+        let done = self.convert(pager, xid, page)?;
         Ok(done.map(|done| Preconverted { source, done }))
     }
 
@@ -598,24 +597,25 @@ impl Heap {
         pre: Option<Preconverted>,
     ) -> Result<Put, Error> {
         let mut page = stage.read(pager, Rank::Heap(pid))?;
-        if !self.ours(pager, pid, &page, stage.top())? {
+        if self.listed(pager, pid, &page, stage.top())?.is_none() {
             return Ok(Put::Full);
         }
         let mut converted = Converted::default();
         if storage::format(&page) != self.newest() {
             match pre {
                 Some(p) if p.source == page => {
-                    page = p.done.page.clone();
+                    page.replace(p.done.page.clone());
                     converted = p.done;
                 }
                 Some(_) => return Ok(Put::Stale),
                 None => return Ok(Put::Full),
             }
         }
-        let Some(slot) = page::insert(&mut page, version, flags) else {
+        let mut heap_page = HeapPageMut::any(&mut page).expect("a listed page is a heap page");
+        let Some(slot) = heap_page.insert(version, flags) else {
             return Ok(Put::Full);
         };
-        stage.put(pager, Rank::Heap(pid), page)?;
+        stage.put(pager, Rank::Heap(pid), page.into_bytes())?;
         Ok(Put::Done(tid(pid, slot), converted))
     }
 
@@ -639,7 +639,10 @@ impl Heap {
         let mut write = HeapWrite::new(pager);
         write.latch(&[(self, pid)])?;
         let page = write.stage().read(pager, Rank::Heap(pid))?;
-        if !self.ours(pager, pid, &page, write.stage().top())? {
+        if self
+            .listed(pager, pid, &page, write.stage().top())?
+            .is_none()
+        {
             return Ok(());
         }
         write.commit_refused(self, pid)
@@ -672,22 +675,24 @@ impl Heap {
     ) -> Result<(), Error> {
         let target = at.into();
         let at = target.tid;
-        let page = stage.page(pager, Rank::Heap(Pid(at.page())))?;
+        let copy = stage.page(pager, Rank::Heap(Pid(at.page())))?;
+        let mut page = HeapPageMut::any(copy)
+            .unwrap_or_else(|| panic!("{at:?} is not on a heap page in shape"));
         let slot = usize::from(at.slot());
-        let Slot::Normal { flags, at: range } = page::get(page, slot) else {
+        let Slot::Normal { flags, at: range } = page.view().get(slot) else {
             target.check(None)?;
             panic!("{at:?} holds no version");
         };
-        let mut header = Header::read(&page[range.clone()]);
+        let mut header = Header::read(&page.view()[range.clone()]);
         target.check(Some(header))?;
         header.writers = writers(header.writers);
         header.next = next;
-        header.write(&mut page[range]);
+        header.write(page.version_mut(range));
         let flags = flags
             .without(Flags::MOVED)
             .without(Flags::HOT_UPDATED)
             .with(successor);
-        page::set_flags(page, slot, flags);
+        page.set_flags(slot, flags);
         Ok(())
     }
 
@@ -699,12 +704,12 @@ impl Heap {
     ) -> Result<Vec<(Tid, Header, Flags)>, PageError> {
         let mut out = Vec::new();
         for pid in self.space.pages(pager)? {
-            let page = pager.read(pid)?;
-            if !page::is_heap(&page) || !page::check(&page).is_empty() {
+            let guard = pager.read(pid)?;
+            let Some(page) = HeapPage::any(&guard).filter(|p| p.check().is_empty()) else {
                 continue;
-            }
-            for slot in 0..page::slot_count(&page) {
-                if let Slot::Normal { flags, at } = page::get(&page, slot) {
+            };
+            for slot in 0..page.slot_count() {
+                if let Slot::Normal { flags, at } = page.get(slot) {
                     out.push((tid(pid, slot), Header::read(&page[at]), flags));
                 }
             }
@@ -720,13 +725,13 @@ impl Heap {
     ) -> Result<Option<Vec<Pointer>>, PageError> {
         let mut out = Vec::new();
         for pid in self.space.pages(pager)? {
-            let page = pager.read(pid)?;
-            if !page::is_heap(&page) || !page::check(&page).is_empty() {
+            let guard = pager.read(pid)?;
+            let Some(page) = HeapPage::any(&guard).filter(|p| p.check().is_empty()) else {
                 return Ok(None);
-            }
+            };
             let format = storage::format(&page);
-            for slot in 0..page::slot_count(&page) {
-                if let Slot::Normal { at, .. } = page::get(&page, slot) {
+            for slot in 0..page.slot_count() {
+                if let Slot::Normal { at, .. } = page.get(slot) {
                     out.extend(self.pointers(format, &page[at]));
                 }
             }
@@ -754,12 +759,11 @@ impl Heap {
 
     /// Returns whether `tid` names a slot of this heap holding a version, a dead mark or a
     /// redirect.
-    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     pub fn holds<R: Runtime>(&self, pager: &Pager<R>, tid: Tid) -> Result<bool, PageError> {
-        let page = pager.read(Pid(tid.page()))?;
-        Ok(page::is_heap(&page)
-            && storage::owner(&page) == self.id
-            && page::get(&page, usize::from(tid.slot())) != Slot::Unused)
+        let guard = pager.read(Pid(tid.page()))?;
+        Ok(self
+            .page(&guard)
+            .is_some_and(|p| p.get(usize::from(tid.slot())) != Slot::Unused))
     }
 
     /// Returns the slots of page `pid` whose index entries must be deleted before pruning can free
@@ -771,15 +775,15 @@ impl Heap {
         pid: Pid,
         judge: impl FnMut(&Writers) -> Result<Fate, PageError>,
     ) -> Result<Vec<u16>, PageError> {
-        let page = pager.read_formatted(pid)?.to_vec();
-        if !self.holds_page(&page) {
+        let copy = PageCopy::of(&pager.read_formatted(pid)?);
+        if self.page(&copy).is_none() {
             self.space.refuse_misnamed(pager, pid)?;
         }
-        if !self.ours(pager, pid, &page, None)? {
+        let Some(page) = self.listed(pager, pid, &copy, None)? else {
             return Ok(Vec::new());
-        }
-        let fates = prune::judge(&page, judge)?;
-        let plan = prune::plan(&page, pid.0, &fates, &|_| false);
+        };
+        let fates = prune::judge(*page, judge)?;
+        let plan = prune::plan(*page, pid.0, &fates, &|_| false);
         Ok(plan.dead.into_iter().map(|s| s as u16).collect())
     }
 
@@ -810,25 +814,28 @@ impl Heap {
         }
         let mut write = HeapWrite::new(pager);
         write.latch(&[(self, pid)])?;
-        let page = write.stage().read(pager, Rank::Heap(pid))?;
-        if !self.ours(pager, pid, &page, write.stage().top())? {
+        let copy = write.stage().read(pager, Rank::Heap(pid))?;
+        let Some(page) = self.listed(pager, pid, &copy, write.stage().top())? else {
             return Ok(Pruned::default());
-        }
-        let fates = prune::judge(&page, judge)?;
-        let plan = prune::plan(&page, pid.0, &fates, &|s| cleaned.contains(&(s as u16)));
-        let mut out = page.clone();
-        prune::apply(&mut out, &plan);
+        };
+        let fates = prune::judge(*page, judge)?;
+        let plan = prune::plan(*page, pid.0, &fates, &|s| cleaned.contains(&(s as u16)));
+        let mut out = page.to_copy();
+        prune::apply(
+            &mut HeapPageMut::any(&mut out).expect("a copy of a heap page is a heap page"),
+            &plan,
+        );
         let format = storage::format(&page);
         let mut released = Vec::new();
         for (s, _) in &plan.release {
-            if let Slot::Normal { at, .. } = page::get(&page, *s) {
+            if let Slot::Normal { at, .. } = page.get(*s) {
                 released.extend(self.pointers(format, &page[at]));
             }
         }
         let visible = if mark {
             plan.all_visible
         } else {
-            page::all_visible(&page) && out == page
+            page.all_visible() && out == copy
         };
         let removed = write.commit_pruned(self, pid, out, visible, &released)?;
         Ok(Pruned {
@@ -909,26 +916,26 @@ impl Heap {
 
     /// Flag the version `v` names kept on its page in `stage`. Returns false, changing nothing,
     /// when the page no longer holds a version there written as `v.header` says.
-    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     fn mark_kept<'p, R: Runtime>(
         &self,
         stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
         v: &Version,
     ) -> Result<bool, PageError> {
-        let page = stage.page(pager, Rank::Heap(Pid(v.tid.page())))?;
-        if !page::is_heap(page) || storage::owner(page) != self.id {
+        let copy = stage.page(pager, Rank::Heap(Pid(v.tid.page())))?;
+        if self.page(copy).is_none() {
             return Ok(false);
         }
+        let mut page = HeapPageMut::any(copy).expect("a page of the heap is a heap page");
         let slot = usize::from(v.tid.slot());
-        let Slot::Normal { flags, at } = page::get(page, slot) else {
+        let Slot::Normal { flags, at } = page.view().get(slot) else {
             return Ok(false);
         };
-        let h = Header::read(&page[at]);
+        let h = Header::read(&page.view()[at]);
         if h.writers != v.header.writers {
             return Ok(false);
         }
-        page::set_flags(page, slot, flags.with(Flags::KEPT));
+        page.set_flags(slot, flags.with(Flags::KEPT));
         Ok(true)
     }
 
@@ -974,8 +981,9 @@ impl Heap {
         let Some(judge) = judge else {
             return Ok(false);
         };
-        let page = pager.read(pid)?.to_vec();
-        if !self.ours(pager, pid, &page, None)? || storage::format(&page) != self.newest() {
+        let copy = PageCopy::of(&pager.read(pid)?);
+        let listed = self.listed(pager, pid, &copy, None)?;
+        if listed.is_none_or(|page| storage::format(&page) != self.newest()) {
             return Ok(false);
         }
         let done = self.prune(pager, pid, judge, &[], false)?;
@@ -1175,7 +1183,6 @@ impl Heap {
 
     /// Returns each page of the heap, its directory or its visibility map found wrong, with what
     /// is wrong with it, leaving out [`Heap::unsettled`] directory entries.
-    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     pub fn check<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<(Pid, String)>, PageError> {
         let check = self.space.check(pager)?;
         let mut problems = check.problems;
@@ -1190,20 +1197,21 @@ impl Heap {
             let Some((pid, cat)) = leaf else {
                 continue;
             };
-            let page = pager.read(pid)?.to_vec();
-            if !page::has_heap_kind(&page) || storage::owner(&page) != self.id {
+            let copy = PageCopy::of(&pager.read(pid)?);
+            let Some(kinded) = Kinded::of(&copy).filter(|k| k.owner() == self.id) else {
                 problems.push((pid, format!("is not a page of heap {}", self.id)));
                 continue;
-            }
-            let layout = page::check(&page);
+            };
+            let layout = kinded.check();
             if !layout.is_empty() {
                 problems.extend(layout.into_iter().map(|what| (pid, what)));
                 continue;
             }
-            if page::position(&page) as usize != position {
-                problems.push((pid, format!("records position {}", page::position(&page))));
+            let page = kinded.framed().expect("a page whose slots check is framed");
+            if page.position() as usize != position {
+                problems.push((pid, format!("records position {}", page.position())));
             }
-            let actual = page_category(&page, self.page_size);
+            let actual = page_category(page, self.page_size);
             let current = storage::format(&page) == self.newest();
             if cat > actual || current && cat != actual {
                 problems.push((
@@ -1211,26 +1219,26 @@ impl Heap {
                     format!("has category {cat} in the directory, {actual} on the page"),
                 ));
             }
-            if marked.remove(&pid) && !page::all_visible(&page) {
+            if marked.remove(&pid) && !page.all_visible() {
                 problems.push((
                     pid,
                     "is all-visible in the visibility map but not on the page".into(),
                 ));
             }
-            for slot in 0..page::slot_count(&page) {
-                match page::get(&page, slot) {
+            for slot in 0..page.slot_count() {
+                match page.get(slot) {
                     Slot::Redirect(to)
-                        if !matches!(page::get(&page, usize::from(to)), Slot::Normal { .. }) =>
+                        if !matches!(page.get(usize::from(to)), Slot::Normal { .. }) =>
                     {
                         problems.push((pid, format!("slot {slot} redirects to an empty slot")));
                     }
-                    Slot::Dead if page::all_visible(&page) => {
+                    Slot::Dead if page.all_visible() => {
                         problems.push((pid, format!("is all-visible and has dead slot {slot}")));
                     }
                     _ => {}
                 }
             }
-            let links = chain::link_faults(&page, pid.0);
+            let links = chain::link_faults(page, pid.0);
             problems.extend(links.into_iter().map(|what| (pid, what)));
         }
         for pid in marked {

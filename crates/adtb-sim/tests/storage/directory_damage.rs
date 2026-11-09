@@ -166,7 +166,10 @@ impl Replacement {
     }
 
     /// Overwrite the page of `target` in `db` in place with this replacement.
-    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "reads owners from probe copies, which have no guard"
+    )]
     fn apply(self, db: &Database<SimRuntime>, target: Target) {
         let (pid, others) = target.pages(db);
         let t = db.testing();

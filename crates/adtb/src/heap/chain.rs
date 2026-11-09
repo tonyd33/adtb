@@ -6,13 +6,13 @@ use crate::runtime::Runtime;
 use crate::storage::{self, PageError, Pager, Pid};
 
 use super::handle::{Heap, HeapNo, Link, tid};
-use super::page::{self, Slot};
+use super::page::{HeapPage, Owned, Slot};
 use super::version::{Flags, Header};
 
 /// Returns the slot on `page`, page `pid` of its heap, holding the heap-only successor the version
 /// in `slot` links to, if any.
-pub(super) fn link(page: &[u8], pid: u64, slot: usize) -> Option<usize> {
-    let Slot::Normal { flags, at } = page::get(page, slot) else {
+pub(super) fn link(page: HeapPage<'_>, pid: u64, slot: usize) -> Option<usize> {
+    let Slot::Normal { flags, at } = page.get(slot) else {
         return None;
     };
     if !flags.contains(Flags::HOT_UPDATED) {
@@ -20,7 +20,7 @@ pub(super) fn link(page: &[u8], pid: u64, slot: usize) -> Option<usize> {
     }
     let next = Header::read(&page[at]).next.filter(|n| n.page() == pid)?;
     let to = usize::from(next.slot());
-    matches!(page::get(page, to), Slot::Normal { flags, .. } if flags.contains(Flags::HEAP_ONLY))
+    matches!(page.get(to), Slot::Normal { flags, .. } if flags.contains(Flags::HEAP_ONLY))
         .then_some(to)
 }
 
@@ -38,10 +38,10 @@ fn chain(start: usize, link: impl Fn(usize) -> Option<usize>) -> Vec<usize> {
 
 /// Returns the slot holding the first version of the chain at `slot` of `page`: `slot` when it
 /// holds a version, or the slot a redirect there names when that holds one.
-fn start(page: &[u8], slot: usize) -> Option<usize> {
-    match page::get(page, slot) {
+fn start(page: HeapPage<'_>, slot: usize) -> Option<usize> {
+    match page.get(slot) {
         Slot::Normal { .. } => Some(slot),
-        Slot::Redirect(to) if matches!(page::get(page, usize::from(to)), Slot::Normal { .. }) => {
+        Slot::Redirect(to) if matches!(page.get(usize::from(to)), Slot::Normal { .. }) => {
             Some(usize::from(to))
         }
         _ => None,
@@ -51,7 +51,7 @@ fn start(page: &[u8], slot: usize) -> Option<usize> {
 /// Returns the slots of the chain an index entry naming `slot` of `page` reaches, following
 /// `link` from the version [`start`] finds, or `None` when it finds none.
 pub(super) fn from(
-    page: &[u8],
+    page: HeapPage<'_>,
     slot: usize,
     link: impl Fn(usize) -> Option<usize>,
 ) -> Option<Vec<usize>> {
@@ -62,12 +62,12 @@ pub(super) fn from(
 /// [`from`] reaches from it. A root holds a version that is not heap-only, or redirects to a
 /// version.
 pub(super) fn roots(
-    page: &[u8],
+    page: HeapPage<'_>,
     link: impl Fn(usize) -> Option<usize>,
 ) -> Vec<(usize, Vec<usize>)> {
-    (0..page::slot_count(page))
+    (0..page.slot_count())
         .filter(|&s| {
-            !matches!(page::get(page, s), Slot::Normal { flags, .. } if flags.contains(Flags::HEAP_ONLY))
+            !matches!(page.get(s), Slot::Normal { flags, .. } if flags.contains(Flags::HEAP_ONLY))
         })
         .filter_map(|s| from(page, s, &link).map(|members| (s, members)))
         .collect()
@@ -75,16 +75,16 @@ pub(super) fn roots(
 
 /// Returns what is wrong with the links of `page`, page `pid` of its heap: each hot-updated slot
 /// that links to no version its deleter wrote, and each version two slots link to.
-pub(super) fn link_faults(page: &[u8], pid: u64) -> Vec<String> {
-    let header = |s| match page::get(page, s) {
+pub(super) fn link_faults(page: HeapPage<'_>, pid: u64) -> Vec<String> {
+    let header = |s| match page.get(s) {
         Slot::Normal { at, .. } => Some(Header::read(&page[at])),
         _ => None,
     };
     let mut faults = Vec::new();
     let mut successors = BTreeSet::new();
     let mut shared = BTreeSet::new();
-    for slot in 0..page::slot_count(page) {
-        if !matches!(page::get(page, slot), Slot::Normal { flags, .. } if flags.contains(Flags::HOT_UPDATED))
+    for slot in 0..page.slot_count() {
+        if !matches!(page.get(slot), Slot::Normal { flags, .. } if flags.contains(Flags::HOT_UPDATED))
         {
             continue;
         }
@@ -128,16 +128,24 @@ fn follows(
     placed && p.header.writers.precedes(&link.header.writers)
 }
 
-/// Returns the heap of `sum` holding `page`.
-fn holder<'s>(sum: &'s [impl Borrow<Heap>], page: &[u8]) -> Option<&'s Heap> {
-    sum.iter().map(Borrow::borrow).find(|h| h.holds_page(page))
+/// Returns the heap of `sum` holding `page`, with the page.
+fn holder<'s, 'g>(
+    sum: &'s [impl Borrow<Heap>],
+    page: &'g impl Owned,
+) -> Option<(&'s Heap, HeapPage<'g>)> {
+    let page = HeapPage::any(page)?;
+    let heap = sum
+        .iter()
+        .map(Borrow::borrow)
+        .find(|h| h.id().0 == page.owner())?;
+    Some((heap, page))
 }
 
 /// Returns the version at `at` on `page`, page `at.page()` held by `heap`, as a link, following a
 /// redirect to the version it names. Returns `None` when the slot leads to no version.
-fn link_at(page: &[u8], heap: HeapNo, at: Tid) -> Option<(Link, std::ops::Range<usize>)> {
+fn link_at(page: HeapPage<'_>, heap: HeapNo, at: Tid) -> Option<(Link, std::ops::Range<usize>)> {
     let slot = start(page, usize::from(at.slot()))?;
-    let Slot::Normal { flags, at: range } = page::get(page, slot) else {
+    let Slot::Normal { flags, at: range } = page.get(slot) else {
         unreachable!("a chain starts at a version")
     };
     let link = Link {
@@ -162,15 +170,15 @@ pub fn successor<R: Runtime>(
     let Some(next) = of.header.next else {
         return Ok(None);
     };
-    let page = pager.read(Pid(next.page()))?;
-    let Some(heap) = holder(sum, &page) else {
+    let guard = pager.read(Pid(next.page()))?;
+    let Some((heap, page)) = holder(sum, &guard) else {
         return Ok(None);
     };
-    if !page::check(&page).is_empty() {
+    if !page.check().is_empty() {
         return Ok(None);
     }
     let in_sum = |h| sum.iter().any(|s| s.borrow().id() == h);
-    Ok(link_at(&page, heap.id(), next)
+    Ok(link_at(page, heap.id(), next)
         .map(|(link, _)| link)
         .filter(|link| link.tid == next && follows(Some(of), of.heap, in_sum, link)))
 }
@@ -190,15 +198,15 @@ fn stretch<R: Runtime>(
     mut at: Tid,
 ) -> Result<Stretch, PageError> {
     let pid = at.page();
-    let page = pager.read_formatted(Pid(pid))?;
+    let guard = pager.read_formatted(Pid(pid))?;
     let mut found = Vec::new();
-    let Some(holder) = holder(sum, &page) else {
+    let Some((holder, page)) = holder(sum, &guard) else {
         return Ok((found, None));
     };
     let in_sum = |h| sum.iter().any(|s| s.borrow().id() == h);
     let format = storage::format(&page);
     loop {
-        let Some((link, range)) = link_at(&page, holder.id(), at) else {
+        let Some((link, range)) = link_at(page, holder.id(), at) else {
             return Ok((found, None));
         };
         if !seen.insert(link.tid) || !follows(prior.as_ref(), heap, in_sum, &link) {
@@ -258,14 +266,14 @@ impl Heap {
     /// written by the deleter of the one before it. A page no longer of the heap has none.
     pub fn hot_run<R: Runtime>(&self, pager: &Pager<R>, at: Tid) -> Result<Vec<Link>, PageError> {
         let pid = Pid(at.page());
-        let page = pager.read_formatted(pid)?;
-        if !self.holds_page(&page) {
+        let guard = pager.read_formatted(pid)?;
+        let Some(page) = self.page(&guard) else {
             return Ok(Vec::new());
-        }
-        let members = from(&page, usize::from(at.slot()), |s| link(&page, pid.0, s));
+        };
+        let members = from(page, usize::from(at.slot()), |s| link(page, pid.0, s));
         let mut run: Vec<Link> = Vec::new();
         for slot in members.into_iter().flatten() {
-            let Some((link, _)) = link_at(&page, self.id(), tid(pid, slot)) else {
+            let Some((link, _)) = link_at(page, self.id(), tid(pid, slot)) else {
                 break;
             };
             if run

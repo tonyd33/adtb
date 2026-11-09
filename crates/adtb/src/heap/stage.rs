@@ -1,12 +1,13 @@
 use crate::runtime::Runtime;
 use crate::storage::{FIRST_EDITABLE, PageError, PageExclusive, Pager, Pid, Reservation};
 
+use super::page::PageCopy;
 use super::write::Rank;
 
 /// One staged page: its latch, its staged copy, and its rank when it was latched by rank.
 struct Held<'p, R: Runtime> {
     guard: PageExclusive<'p, R>,
-    bytes: Vec<u8>,
+    copy: PageCopy,
     rank: Option<Rank>,
 }
 
@@ -68,24 +69,24 @@ impl<'p, R: Runtime> Stage<'p, R> {
     /// Returns a copy of the page `rank` names as staged, or as the pager holds it when it is not
     /// staged. A page not staged is read under a shared latch released before this returns, and
     /// refused when every byte of it is zero.
-    pub fn read(&self, pager: &'p Pager<R>, rank: Rank) -> Result<Vec<u8>, PageError> {
+    pub fn read(&self, pager: &'p Pager<R>, rank: Rank) -> Result<PageCopy, PageError> {
         match self.find(rank.pid()) {
-            Some(i) => Ok(self.pages[i].bytes.clone()),
+            Some(i) => Ok(self.pages[i].copy.clone()),
             None => {
                 self.ordered(rank);
-                Ok(pager.read_formatted(rank.pid())?.to_vec())
+                Ok(PageCopy::of(&pager.read_formatted(rank.pid())?))
             }
         }
     }
 
     /// Returns a copy of the page `rank` names as [`Stage::read`] does, a page not staged read as
     /// the pager holds it, whatever its bytes.
-    pub fn read_any(&self, pager: &'p Pager<R>, rank: Rank) -> Result<Vec<u8>, PageError> {
+    pub fn read_any(&self, pager: &'p Pager<R>, rank: Rank) -> Result<PageCopy, PageError> {
         match self.find(rank.pid()) {
-            Some(i) => Ok(self.pages[i].bytes.clone()),
+            Some(i) => Ok(self.pages[i].copy.clone()),
             None => {
                 self.ordered(rank);
-                Ok(pager.read(rank.pid())?.to_vec())
+                Ok(PageCopy::of(&pager.read(rank.pid())?))
             }
         }
     }
@@ -121,7 +122,7 @@ impl<'p, R: Runtime> Stage<'p, R> {
     pub fn changed(&self, pid: Pid) -> bool {
         self.find(pid).is_some_and(|i| {
             let h = &self.pages[i];
-            h.guard[FIRST_EDITABLE..] != h.bytes[FIRST_EDITABLE..]
+            h.guard[FIRST_EDITABLE..] != h.copy[FIRST_EDITABLE..]
         })
     }
 
@@ -135,26 +136,28 @@ impl<'p, R: Runtime> Stage<'p, R> {
     }
 
     /// Returns the staged copy of the page `rank` names, latching and staging it first if needed.
-    pub fn page(&mut self, pager: &'p Pager<R>, rank: Rank) -> Result<&mut Vec<u8>, PageError> {
+    pub fn page(&mut self, pager: &'p Pager<R>, rank: Rank) -> Result<&mut PageCopy, PageError> {
         let pid = rank.pid();
         let i = match self.find(pid) {
             Some(i) => i,
             None => {
                 self.ordered(rank);
                 let guard = pager.exclusive_formatted(pid)?;
-                let bytes = guard.to_vec();
+                let copy = PageCopy::of(&guard);
                 self.pages.push(Held {
                     guard,
-                    bytes,
+                    copy,
                     rank: Some(rank),
                 });
                 self.pages.len() - 1
             }
         };
-        Ok(&mut self.pages[i].bytes)
+        Ok(&mut self.pages[i].copy)
     }
 
     /// Stage `bytes` as the new contents of the page `rank` names, latching it first if needed.
+    ///
+    /// Precondition: `bytes` names the owner the page names.
     pub fn put(
         &mut self,
         pager: &'p Pager<R>,
@@ -162,13 +165,14 @@ impl<'p, R: Runtime> Stage<'p, R> {
         bytes: Vec<u8>,
     ) -> Result<(), PageError> {
         match self.find(rank.pid()) {
-            Some(i) => self.pages[i].bytes = bytes,
+            Some(i) => self.pages[i].copy.replace(bytes),
             None => {
                 self.ordered(rank);
                 let guard = pager.exclusive(rank.pid())?;
+                let copy = PageCopy::over(&guard, bytes);
                 self.pages.push(Held {
                     guard,
-                    bytes,
+                    copy,
                     rank: Some(rank),
                 });
             }
@@ -177,16 +181,30 @@ impl<'p, R: Runtime> Stage<'p, R> {
     }
 
     /// Stage `bytes` as the new contents of `pid`, which `new` reserves, latching it through `new`.
-    /// Its latch takes no rank.
-    pub fn put_reserved(&mut self, new: &Reservation<'p, R>, pid: Pid, bytes: Vec<u8>) {
-        match self.find(pid) {
-            Some(i) => self.pages[i].bytes = bytes,
-            None => self.pages.push(Held {
-                guard: new.latch(pid),
-                bytes,
-                rank: None,
-            }),
-        }
+    /// Its latch takes no rank. Returns the staged copy.
+    ///
+    /// Precondition: `bytes` names the owner `new` formats `pid` with.
+    pub fn put_reserved(
+        &mut self,
+        new: &Reservation<'p, R>,
+        pid: Pid,
+        bytes: Vec<u8>,
+    ) -> &mut PageCopy {
+        let i = match self.find(pid) {
+            Some(i) => {
+                self.pages[i].copy.replace(bytes);
+                i
+            }
+            None => {
+                self.pages.push(Held {
+                    guard: new.latch(pid),
+                    copy: PageCopy::reserved(new, pid, bytes),
+                    rank: None,
+                });
+                self.pages.len() - 1
+            }
+        };
+        &mut self.pages[i].copy
     }
 
     /// Write every staged page back in one pager update, so a crash keeps all of them or none.
@@ -204,7 +222,7 @@ impl<'p, R: Runtime> Stage<'p, R> {
         if self.pages.is_empty() {
             return Ok(());
         }
-        let copies: Vec<Vec<u8>> = self.pages.iter().map(|h| h.bytes.clone()).collect();
+        let copies: Vec<Vec<u8>> = self.pages.iter().map(|h| h.copy.to_vec()).collect();
         let mut guards: Vec<&mut PageExclusive<'p, R>> =
             self.pages.iter_mut().map(|h| &mut h.guard).collect();
         pager.update_all_with(new, &mut guards, |views| {

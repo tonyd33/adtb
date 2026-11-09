@@ -566,7 +566,6 @@ pub fn verify_with<R: Runtime>(pager: &Pager<R>, inventory: &Inventory, depth: D
 /// write since.
 ///
 /// Panics if `report` is not complete.
-#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 #[cfg(test)]
 pub fn repair<R: Runtime>(
     pager: &Pager<R>,
@@ -587,13 +586,13 @@ pub fn repair<R: Runtime>(
     for f in &report.findings {
         match f.problem {
             Problem::Unsettled(_) => {
-                unsettled.insert(storage::owner(&pager.read(f.pid)?));
+                unsettled.insert(pager.read(f.pid)?.owner());
             }
             Problem::Leaked => {
                 pager.free(f.pid)?;
             }
             Problem::Overcounted { slot, versions, .. } => {
-                let owner = storage::owner(&pager.read(f.pid)?);
+                let owner = pager.read(f.pid)?.owner();
                 let store = stores
                     .iter()
                     .find(|s| s.id() == owner)

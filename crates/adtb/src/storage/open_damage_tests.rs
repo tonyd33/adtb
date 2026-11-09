@@ -879,7 +879,10 @@ fn a_commit_record_gone_from_the_log_on_a_damaged_status_page_leaves_the_catalog
 }
 
 /// Returns the pages of `file`, each with its kind and owner.
-#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "reads owners from file images, which have no guard"
+)]
 fn page_kinds(file: &[u8]) -> BTreeMap<Pid, (u16, u32)> {
     file.chunks(PAGE)
         .enumerate()

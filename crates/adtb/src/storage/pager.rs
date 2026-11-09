@@ -453,6 +453,11 @@ pub struct PageShared<'a> {
 }
 
 impl PageShared<'_> {
+    /// Returns the id of the structure the page's header names as its owner.
+    pub fn owner(&self) -> u32 {
+        page::owner_of(self)
+    }
+
     #[cfg(any(test, feature = "testing"))]
     pub fn pid(&self) -> Pid {
         Pid(self.g.pid())
@@ -512,6 +517,11 @@ impl<'a, R: Runtime> PageExclusive<'a, R> {
 
     pub fn pid(&self) -> Pid {
         self.held().pid()
+    }
+
+    /// Returns the id of the structure the page's header names as its owner.
+    pub fn owner(&self) -> u32 {
+        page::owner_of(self)
     }
 
     /// Change the page through `f`, which sees a copy, and log the bytes it changed.

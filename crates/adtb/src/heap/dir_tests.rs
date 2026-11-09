@@ -13,7 +13,7 @@ use crate::mvcc::Fate;
 use crate::mvcc::Xid;
 use crate::storage::{Damage, Options, PageError, PageKind, Pager, Pid, Quarantine, Stopped};
 
-use super::super::page::{self, Arrangement, CONTENTS};
+use super::super::page::{Arrangement, CONTENTS, HeapPage, Kinded};
 use super::super::stage::Stage;
 use super::super::vm::{self, Vm};
 use super::super::write::Rank;
@@ -399,7 +399,9 @@ fn verify_names_the_slot_table_fault_of_a_page_relabelled_to_the_other_heap_kind
     put_u16(&pager, data, 14, PageKind::HeapSlotted as u16);
     put_u16(&pager, chunk, 14, PageKind::HeapFixed as u16);
     let frame = |pid| {
-        page::check(&pager.read(pid).unwrap())
+        Kinded::of(&pager.read(pid).unwrap())
+            .expect("a page of a heap kind")
+            .check()
             .into_iter()
             .map(move |w| (pid, w))
     };
@@ -453,7 +455,7 @@ fn a_refusal_takes_the_position_from_the_path_past_a_short_leaf() {
     assert_eq!(s.pages(&pager).unwrap()[2], named);
     put_u16(&pager, first, COUNT, 1);
     put_u16(&pager, named, 14, PageKind::HeapFixed as u16);
-    assert!(!page::is_heap(&pager.read(named).unwrap()));
+    assert!(HeapPage::any(&pager.read(named).unwrap()).is_none());
     assert_eq!(refused(named), s.refuse_misnamed(&pager, named));
 }
 

@@ -1192,7 +1192,6 @@ fn a_damaged_bitmap_fails_allocation() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 fn allocation_reuses_a_damaged_free_page_without_reading_it() {
     let mut sim = Sim::new(3, Config::default());
     let client = Client::new();
@@ -1211,7 +1210,7 @@ fn allocation_reuses_a_damaged_free_page_without_reading_it() {
         let pid = p.allocate(1, PageKind::HeapSlotted, 7);
         let read = p
             .read(next)
-            .map(|g| (crate::storage::kind(&g), crate::storage::owner(&g), g[77]));
+            .map(|g| (crate::storage::kind(&g), g.owner(), g[77]));
         let of_next = |f: &Finding| matches!(f, Finding::Page { pid, .. } if *pid == next);
         let found: Vec<Finding> = p.verify().findings.into_iter().filter(of_next).collect();
         (pid, read, found)
@@ -1558,7 +1557,6 @@ fn linked(p: &Pager<SimRuntime>, index: Pid) -> BTreeSet<Pid> {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 fn a_crash_never_separates_an_allocation_from_its_link() {
     const SEEDS: Range<u64> = 0..10;
     let mut leaks_possible_before = 0;
@@ -1610,7 +1608,7 @@ fn a_crash_never_separates_an_allocation_from_its_link() {
                 for &pid in &links {
                     let page = p.read(pid).unwrap();
                     let made = crate::storage::kind(&page) == PageKind::HeapSlotted as u16
-                        && crate::storage::owner(&page) == 9
+                        && page.owner() == 9
                         && page[HEADER_LEN] == 0xab
                         && page[HEADER_LEN + 1..].iter().all(|&b| b == 0);
                     if !made {

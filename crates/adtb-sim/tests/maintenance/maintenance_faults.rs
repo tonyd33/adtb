@@ -1139,7 +1139,10 @@ fn index_objects<R: Runtime>(db: &Database<R>) -> Vec<RotObject> {
 }
 
 /// Returns the files of the closed fixture, the owners of its pages and its application objects.
-#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "reads owners from file images, which have no guard"
+)]
 fn rot_fixture() -> (Files, Owners, Vec<RotObject>) {
     let files = seeded_files(REINDEX);
     let mut sim = Sim::with_files(SEED, Config::default(), files);
@@ -1186,7 +1189,10 @@ fn rot_fixture() -> (Files, Owners, Vec<RotObject>) {
 }
 
 /// Returns the class of `page`, number `at` of a file whose application heaps have `owners`.
-#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "reads owners from file images, which have no guard"
+)]
 fn page_class(at: usize, page: &[u8], owners: &Owners) -> String {
     if at < Pid::FIRST_DATA.0 as usize {
         return "file header".into();
@@ -1634,7 +1640,10 @@ fn reads_crossing(object: &RotObject, at: usize, page: &[u8]) -> Vec<Crossing> {
 }
 
 /// Returns the application heap pages and leaves of `file` owned by `object`.
-#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "reads owners from file images, which have no guard"
+)]
 fn pages_of(file: &[u8], object: &RotObject) -> Vec<usize> {
     let owned = |(_, page): &(usize, &[u8])| {
         let kind = PageKind::from_u16(page::kind(page));
@@ -1870,7 +1879,10 @@ fn first_page_reads(name: &str) -> Vec<(&'static str, Crossing)> {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "reads owners from file images, which have no guard"
+)]
 fn a_valid_page_of_another_owner_or_lacking_the_slot_refuses_naming_its_holder() {
     hook_rot_panics();
     let (pristine, _, objects) = rot_fixture();

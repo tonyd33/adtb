@@ -84,6 +84,10 @@ pub fn kind(page: &[u8]) -> u16 {
 }
 
 pub fn owner(page: &[u8]) -> u32 {
+    owner_of(page)
+}
+
+pub(super) fn owner_of(page: &[u8]) -> u32 {
     u32::from_le_bytes(page[OWNER..OWNER + 4].try_into().unwrap())
 }
 

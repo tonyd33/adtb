@@ -522,6 +522,13 @@ impl<'a, R: Runtime> Reservation<'a, R> {
         self.pager.latch_blank(pid, &header)
     }
 
+    /// Returns the owner allocation formats `pid` with.
+    ///
+    /// Panic if `pid` is not reserved here.
+    pub fn owner(&self, pid: Pid) -> u32 {
+        self.reserved(pid).owner
+    }
+
     /// Returns the pages this reservation allocates.
     pub(super) fn allocated(&self) -> impl Iterator<Item = Pid> + '_ {
         self.pages.iter().map(|r| r.pid)

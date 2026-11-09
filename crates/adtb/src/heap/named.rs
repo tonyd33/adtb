@@ -1,9 +1,9 @@
 use crate::key::Tid;
 use crate::runtime::Runtime;
-use crate::storage::{self, PageError, Pager, Pid};
+use crate::storage::{PageError, Pager, Pid};
 
 use super::handle::Heap;
-use super::page::{self, Slot};
+use super::page::Slot;
 
 /// An index entry naming an unused slot of a page its heap still holds, or a page its heap's
 /// directory does not name: damage to the index with owner `index`.
@@ -20,7 +20,6 @@ pub struct OrphanEntry {
 /// leaving the page readable.
 ///
 /// Preconditions: the caller holds no page latch.
-#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
 pub fn refuse_named<R: Runtime, E: From<PageError> + From<OrphanEntry>>(
     pager: &Pager<R>,
     (heap, tid): (&Heap, Tid),
@@ -29,11 +28,11 @@ pub fn refuse_named<R: Runtime, E: From<PageError> + From<OrphanEntry>>(
 ) -> Result<(), E> {
     let pid = Pid(tid.page());
     let gone = || -> Result<Option<bool>, PageError> {
-        let page = pager.read_formatted(pid)?;
-        if !page::is_heap(&page) || storage::owner(&page) != heap.id().0 {
+        let guard = pager.read_formatted(pid)?;
+        let Some(page) = heap.page(&guard) else {
             return Ok(Some(true));
-        }
-        Ok((page::get(&page, usize::from(tid.slot())) == Slot::Unused).then_some(false))
+        };
+        Ok((page.get(usize::from(tid.slot())) == Slot::Unused).then_some(false))
     };
     let Some(foreign) = gone()? else {
         return Ok(());

@@ -515,7 +515,8 @@ fn emptying_a_page_beside_a_settle_of_its_neighbours_entry_finishes() {
                     unreachable!("chunks of two")
                 };
                 let leaf = |pid: Pid| {
-                    let position = super::page::position(&db.pager.read(pid).unwrap());
+                    let page = db.pager.read(pid).unwrap();
+                    let position = super::page::HeapPage::any(&page).unwrap().position();
                     db.heap.space.leaf_of(&db.pager, position).unwrap()
                 };
                 let shared = leaf(*emptied);

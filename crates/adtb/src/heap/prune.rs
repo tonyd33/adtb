@@ -1,7 +1,7 @@
 use crate::mvcc::{Fate, Writers};
 
 use super::chain;
-use super::page::{self, Arrangement, Slot};
+use super::page::{Arrangement, HeapPage, HeapPageMut, Slot};
 use super::version::{Flags, Header};
 
 /// What pruning makes of a page.
@@ -24,12 +24,12 @@ pub(super) struct Plan {
 ///
 /// Panics if `judge` clears a version with no deleter.
 pub(super) fn judge<E>(
-    page: &[u8],
+    page: HeapPage<'_>,
     mut judge: impl FnMut(&Writers) -> Result<Fate, E>,
 ) -> Result<Vec<Option<(Fate, bool)>>, E> {
     let mut out = Vec::new();
-    for s in 0..page::slot_count(page) {
-        let Slot::Normal { at, .. } = page::get(page, s) else {
+    for s in 0..page.slot_count() {
+        let Slot::Normal { at, .. } = page.get(s) else {
             out.push(None);
             continue;
         };
@@ -62,19 +62,19 @@ pub(super) fn judge<E>(
 ///
 /// Panics if a slot `cleaned` accepts still leads to a live version.
 pub(super) fn plan(
-    page: &[u8],
+    page: HeapPage<'_>,
     pid: u64,
     fates: &[Option<(Fate, bool)>],
     cleaned: &dyn Fn(usize) -> bool,
 ) -> Plan {
-    let n = page::slot_count(page);
-    let slots: Vec<Slot> = (0..n).map(|s| page::get(page, s)).collect();
+    let n = page.slot_count();
+    let slots: Vec<Slot> = (0..n).map(|s| page.get(s)).collect();
     let fate: Vec<Option<Fate>> = fates.iter().map(|f| f.map(|(f, _)| f)).collect();
     let cleared: Vec<bool> = fates.iter().map(|f| f.is_some_and(|(_, c)| c)).collect();
     let links: Vec<Option<usize>> = (0..n)
         .map(|s| chain::link(page, pid, s).filter(|_| !cleared[s]))
         .collect();
-    let fixed = matches!(page::arrangement(page), Arrangement::Fixed { .. });
+    let fixed = matches!(page.arrangement(), Arrangement::Fixed { .. });
     let mut out: Vec<Option<Slot>> = vec![None; n];
     let mut chained = vec![false; n];
     let mut plan = Plan::default();
@@ -147,23 +147,19 @@ pub(super) fn plan(
     plan
 }
 
-pub(super) fn apply(page: &mut [u8], plan: &Plan) {
+pub(super) fn apply(page: &mut HeapPageMut<'_>, plan: &Plan) {
     for &s in &plan.clear {
-        let Slot::Normal { flags, at } = page::get(page, s) else {
+        let Slot::Normal { flags, at } = page.view().get(s) else {
             unreachable!("a cleared slot holds a version")
         };
-        let mut header = Header::read(&page[at.clone()]);
+        let mut header = Header::read(&page.view()[at.clone()]);
         header.writers = header.writers.cleared();
         header.next = None;
-        header.write(&mut page[at]);
-        page::set_flags(
-            page,
-            s,
-            flags.without(Flags::MOVED).without(Flags::HOT_UPDATED),
-        );
+        header.write(page.version_mut(at));
+        page.set_flags(s, flags.without(Flags::MOVED).without(Flags::HOT_UPDATED));
     }
     for (s, content) in &plan.release {
-        page::release(page, *s, content);
+        page.release(*s, content);
     }
-    page::compact(page);
+    page.compact();
 }

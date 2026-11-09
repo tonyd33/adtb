@@ -3,11 +3,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::key::Tid;
 use crate::mvcc::Xid;
 use crate::runtime::Runtime;
-use crate::storage::{self, Damage, LATCHES_PER_THREAD, PageError, Pager, Pid, Stopped, Walk};
+use crate::storage::{Damage, LATCHES_PER_THREAD, PageError, Pager, Pid, Stopped, Walk};
 
 use super::Error;
 use super::dir::{Above, Fit, Space, max_fanout, need_category, page_category};
-use super::page::{self, Arrangement, Slot};
+use super::page::{Arrangement, HeapPage, HeapPageMut, Kinded, Owned, PageCopy, Slot};
 use super::row::Pointer;
 use super::slotted;
 use super::stage::Stage;
@@ -72,38 +72,46 @@ pub struct ChunkCheck {
     pub overcounted: Vec<(Tid, u32, u32)>,
 }
 
+/// Returns `page` as a page of store `owner`.
+fn store_page(page: &impl Owned, owner: u32) -> Option<HeapPage<'_>> {
+    HeapPage::any(page).filter(|p| p.owner() == owner)
+}
+
 /// Returns the chunk header in slot `slot` of `page`, if it is a page of store `owner` with a
 /// chunk there.
-fn chunk_at(page: &[u8], owner: u32, slot: usize) -> Option<Chunk> {
+fn chunk_at(page: &impl Owned, owner: u32, slot: usize) -> Option<Chunk> {
     tuple_at(page, owner, slot).map(chunk)
 }
 
 /// Returns the chunk tuple in slot `slot` of `page`, if it is a page of store `owner` with a
 /// chunk there.
-#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
-fn tuple_at(page: &[u8], owner: u32, slot: usize) -> Option<&[u8]> {
-    if !page::is_heap(page) || storage::owner(page) != owner {
-        return None;
-    }
-    match page::get(page, slot) {
-        Slot::Normal { at, .. } if at.len() >= BYTES => Some(&page[at]),
+fn tuple_at(page: &impl Owned, owner: u32, slot: usize) -> Option<&[u8]> {
+    let page = store_page(page, owner)?;
+    match page.get(slot) {
+        Slot::Normal { at, .. } if at.len() >= BYTES => Some(&page.bytes()[at]),
         _ => None,
     }
 }
 
 /// Change the chunk at `tid` on `page`, a page of store `owner`, by `f`, unless `f` refuses it.
 /// Returns false when no chunk is there or `f` refuses it, leaving the page unchanged.
-fn update_chunk(page: &mut [u8], owner: u32, tid: Tid, f: impl FnOnce(&mut Chunk) -> bool) -> bool {
+fn update_chunk(
+    page: &mut PageCopy,
+    owner: u32,
+    tid: Tid,
+    f: impl FnOnce(&mut Chunk) -> bool,
+) -> bool {
     let Some(mut c) = chunk_at(page, owner, usize::from(tid.slot())) else {
         return false;
     };
     if !f(&mut c) {
         return false;
     }
-    let Slot::Normal { at, .. } = page::get(page, usize::from(tid.slot())) else {
+    let mut page = HeapPageMut::any(page).expect("tuple_at found a chunk");
+    let Slot::Normal { at, .. } = page.view().get(usize::from(tid.slot())) else {
         unreachable!("tuple_at found a chunk");
     };
-    set_chunk(&mut page[at], c);
+    set_chunk(page.version_mut(at), c);
     true
 }
 
@@ -189,7 +197,6 @@ impl LargeStore {
     }
 
     /// Insert `tuple` on some page, making the chunk at `tail` a tail in the same update.
-    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     fn insert<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -212,15 +219,16 @@ impl LargeStore {
                 stage.page(pager, Rank::Store(p))?;
             }
             let floor = stage.top();
-            let page = stage.page(pager, Rank::Store(pid))?;
+            let copy = stage.page(pager, Rank::Store(pid))?;
             // A page found by an unlatched search may have been freed since.
-            if !page::is_heap(page)
-                || storage::owner(page) != self.id()
-                || !self.space.names(pager, page::position(page), pid, floor)?
-            {
+            let Some(position) = store_page(copy, self.id()).map(HeapPage::position) else {
+                continue;
+            };
+            if !self.space.names(pager, position, pid, floor)? {
                 continue;
             }
-            let Some(slot) = page::insert(page, tuple, Flags::NONE) else {
+            let mut page = HeapPageMut::any(copy).expect("a page of the store is a heap page");
+            let Some(slot) = page.insert(tuple, Flags::NONE) else {
                 drop(write);
                 let mut fix = HeapWrite::new(pager);
                 fix.stage().page(pager, Rank::Store(pid))?;
@@ -350,7 +358,9 @@ impl LargeStore {
         let page = stage.page(pager, Rank::Store(pid))?;
         let mut above = Above::default();
         if left == 0 {
-            let position = page::position(page);
+            let position = HeapPage::any(page)
+                .expect("a page holding a chunk")
+                .position();
             above = self.space.touch(stage, pager, pid, position, true)?;
         }
         write.commit_store(pager.reserve(), above)
@@ -374,9 +384,12 @@ impl LargeStore {
         self.space.settle(pager)?;
         let mut freed = 0;
         for (position, pid) in self.space.touched(pager)? {
-            let page = pager.read_formatted(pid)?.to_vec();
+            let page = PageCopy::of(&pager.read_formatted(pid)?);
+            let kinded = Kinded::of(&page)
+                .unwrap_or_else(|| panic!("touched store page {pid:?} is not a heap page"));
+            let slots = kinded.framed().map_or(0, HeapPage::slot_count);
             let mut pending = false;
-            for slot in 0..page::slot_count(&page) {
+            for slot in 0..slots {
                 let Some(c) = chunk_at(&page, self.id(), slot) else {
                     continue;
                 };
@@ -434,16 +447,17 @@ impl LargeStore {
             for &p in &pids {
                 stage.page(pager, Rank::Store(p))?;
             }
-            let page = stage.page(pager, Rank::Store(here))?;
-            if chunk_at(page, self.id(), usize::from(at.slot()))
+            let copy = stage.page(pager, Rank::Store(here))?;
+            if chunk_at(copy, self.id(), usize::from(at.slot()))
                 .is_none_or(|c| !c.head || c.count > 0)
             {
                 return Ok(Walk::Done(freed));
             }
-            page::release(page, usize::from(at.slot()), &Slot::Unused);
-            page::compact(page);
-            let position = page::position(page);
-            let empty = page::is_empty(page);
+            let mut page = HeapPageMut::any(copy).expect("a page holding a chunk is a heap page");
+            page.release(usize::from(at.slot()), &Slot::Unused);
+            page.compact();
+            let position = page.view().position();
+            let empty = page.view().is_empty();
             if let Some(n) = next {
                 self.update(stage, pager, n, |c| {
                     c.head = true;
@@ -475,7 +489,10 @@ impl LargeStore {
     fn touch_page<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), PageError> {
         let mut write = HeapWrite::new(pager);
         let stage = write.stage();
-        let position = page::position(stage.page(pager, Rank::Store(pid))?);
+        let Some(position) = Kinded::of(stage.page(pager, Rank::Store(pid))?).map(Kinded::position)
+        else {
+            return Ok(());
+        };
         let above = self.space.touch(stage, pager, pid, position, true)?;
         write.commit_store(pager.reserve(), above)
     }
@@ -507,7 +524,6 @@ impl LargeStore {
     }
 
     /// Unmark touched page `pid` at `position` if it holds no head of count 0.
-    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     fn settle<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -516,15 +532,12 @@ impl LargeStore {
     ) -> Result<(), PageError> {
         let mut write = HeapWrite::new(pager);
         let stage = write.stage();
-        let page = stage.page(pager, Rank::Store(pid))?;
-        if !page::is_heap(page)
-            || storage::owner(page) != self.id()
-            || page::position(page) != position
-        {
+        let copy = stage.page(pager, Rank::Store(pid))?;
+        let Some(page) = store_page(copy, self.id()).filter(|p| p.position() == position) else {
             return Ok(());
-        }
-        let waiting = (0..page::slot_count(page))
-            .filter_map(|s| chunk_at(page, self.id(), s))
+        };
+        let waiting = (0..page.slot_count())
+            .filter_map(|s| chunk_at(copy, self.id(), s))
             .any(|c| c.head && c.count == 0);
         if !waiting {
             let above = self.space.touch(stage, pager, pid, position, false)?;
@@ -551,7 +564,9 @@ impl LargeStore {
         let page = stage.page(pager, Rank::Store(Pid(head.page())))?;
         let mut above = Above::default();
         if count == 0 {
-            let position = page::position(page);
+            let position = HeapPage::any(page)
+                .expect("a page holding a chunk")
+                .position();
             above = self
                 .space
                 .touch(stage, pager, Pid(head.page()), position, true)?;
@@ -572,12 +587,12 @@ impl LargeStore {
         let touched: BTreeSet<Pid> = self.space.check(pager)?.touched.into_iter().collect();
         let mut chunks = BTreeMap::new();
         for pid in self.space.pages(pager)? {
-            let page = pager.read_formatted(pid)?;
-            if !page::is_heap(&page) || !page::check(&page).is_empty() {
+            let guard = pager.read_formatted(pid)?;
+            let Some(page) = HeapPage::any(&guard).filter(|p| p.check().is_empty()) else {
                 continue;
-            }
-            for slot in 0..page::slot_count(&page) {
-                if let Some(c) = chunk_at(&page, self.id(), slot) {
+            };
+            for slot in 0..page.slot_count() {
+                if let Some(c) = chunk_at(&guard, self.id(), slot) {
                     chunks.insert(tid(pid, slot), c);
                 }
             }
@@ -677,7 +692,6 @@ impl LargeStore {
 
     /// Returns each page of the store found wrong, with what is wrong with it, leaving out
     /// [`LargeStore::unsettled`] directory entries.
-    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     pub fn check<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<(Pid, String)>, PageError> {
         let check = self.space.check(pager)?;
         let mut problems = check.problems;
@@ -685,20 +699,22 @@ impl LargeStore {
             let Some((pid, cat)) = leaf else {
                 continue;
             };
-            let page = &pager.read_formatted(pid)?.to_vec();
-            let ours = page::has_heap_kind(page) && storage::owner(page) == self.id();
-            if !ours || page::position(page) as usize != position {
+            let copy = PageCopy::of(&pager.read_formatted(pid)?);
+            let ours = Kinded::of(&copy)
+                .filter(|k| k.owner() == self.id() && k.position() as usize == position);
+            let Some(kinded) = ours else {
                 problems.push((
                     pid,
                     format!("is not page {position} of store {}", self.id()),
                 ));
                 continue;
-            }
-            let layout = page::check(page);
+            };
+            let layout = kinded.check();
             if !layout.is_empty() {
                 problems.extend(layout.into_iter().map(|what| (pid, what)));
                 continue;
             }
+            let page = kinded.framed().expect("a page whose slots check is framed");
             let actual = page_category(page, pager.page_size());
             if cat != actual {
                 problems.push((

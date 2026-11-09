@@ -162,7 +162,10 @@ fn removed_cells_are_reclaimed_by_compaction() {
 }
 
 #[test]
-#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "reads the owner of a page built in memory, which has no guard"
+)]
 fn build_writes_high_key_right_link_and_children() {
     let mut p = blank(PageKind::IndexLeaf);
     let items = [

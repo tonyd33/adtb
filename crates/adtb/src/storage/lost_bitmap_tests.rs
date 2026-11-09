@@ -138,7 +138,10 @@ struct Kept {
 }
 
 impl Kept {
-    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "reads owners from file images, which have no guard"
+    )]
     fn may_change(&self, page: Pid, bytes: &[u8]) -> bool {
         let kind = storage::kind(bytes);
         let owner = storage::owner(bytes);
@@ -152,7 +155,10 @@ impl Kept {
 
     /// Assert every byte of every page of `before` stands in `after`, leaving out the header copies,
     /// the marks page, the damage list and the pages `may_change` names.
-    #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "reads owners from file images, which have no guard"
+    )]
     fn check(&self, before: &Files, after: &Files, what: &str) {
         let (a, b) = (&before[FILE], &after[FILE]);
         assert!(b.len() >= a.len(), "{what}: the file shrank");
