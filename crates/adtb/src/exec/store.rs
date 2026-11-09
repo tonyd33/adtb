@@ -136,7 +136,7 @@ pub struct StoredHeap {
     pub heap: Arc<Heap>,
     pub row: Vec<FieldType>,
     /// The heap of every constructor of its relation, its own among them.
-    pub sum: Vec<HeapNo>,
+    pub sum: Vec<Arc<Heap>>,
 }
 
 /// An index a plan names, with the constructor position of each constructor id it holds.
@@ -594,17 +594,10 @@ impl<R: Runtime> Store<R> {
     pub fn fetch(&self, id: HeapId, at: &Named) -> Result<Option<(Tid, Vec<Value>)>, Error> {
         let tid = at.tid;
         let StoredHeap { heap, sum, .. } = self.heap(id);
-        let mut failed = None;
-        let link = walk(&self.pager, heap.id(), sum, tid, |l| {
-            self.reads.saw(&l.header.writers).unwrap_or_else(|e| {
-                failed = Some(e);
-                true
-            })
+        let walked = walk(&self.pager, heap.id(), sum, tid, |l, _| {
+            self.reads.saw(&l.header.writers)
         })?;
-        if let Some(e) = failed {
-            return Err(e);
-        }
-        if link.is_none()
+        if walked.is_none()
             && let Some((index, entry)) = &at.entry
         {
             let ix = &self.index(*index).index;
@@ -617,16 +610,13 @@ impl<R: Runtime> Store<R> {
                 )
             })?;
         }
-        let Some(link) = link.filter(|l| l.heap == heap.id()) else {
+        let Some((link, row)) = walked.filter(|(l, _)| l.heap == heap.id()) else {
             return Ok(None);
         };
         self.reads
             .fetched(link.heap, link.tid)
             .map_err(Error::Serialization)?;
-        let v = heap
-            .read(&self.pager, link.tid)?
-            .expect("a walked version is there");
-        Ok(Some((link.tid, v.row)))
+        Ok(Some((link.tid, row)))
     }
 
     /// Returns the entries of index `id` whose leading key fields are `prefix`, each with its

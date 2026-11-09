@@ -4,10 +4,10 @@ use crate::storage::{self, PageKind, Pid};
 
 use super::dir::{category, need_category};
 use super::page::{self, Arrangement, Slot};
-use super::prune;
 use super::row::{CtorType, FieldType, Layout, Pointer, Stored};
-use super::version::{self, Flags, Header, tid_bits, tid_from_bits};
+use super::version::{Flags, Header, tid_bits, tid_from_bits};
 use super::vm;
+use super::{chain, prune};
 use super::{fixed, slotted};
 
 const PAGE: usize = 4096;
@@ -671,8 +671,56 @@ fn a_hot_link_from_a_version_with_no_deleter_names_no_successor_even_of_inserter
     page::insert(&mut p, &linked(0, 0, None), Flags::HEAP_ONLY).unwrap();
     assert_eq!(
         vec!["slot 0 is hot-updated but names no heap-only successor".to_string()],
-        version::link_faults(&p, PID)
+        chain::link_faults(&p, PID)
     );
+}
+
+#[test]
+fn a_chain_root_is_a_version_not_heap_only_or_a_redirect_to_a_version() {
+    let mut p = heap_page(Arrangement::Slotted, 0);
+    let (hot, only) = (Flags::HOT_UPDATED, Flags::HEAP_ONLY);
+    let versions = [
+        (linked(1, 2, Some(1)), hot),
+        (linked(2, 3, Some(2)), only.with(hot)),
+        (linked(3, 0, None), only),
+        (linked(4, 0, None), Flags::NONE),
+        (linked(5, 0, None), only),
+        (linked(4, 0, None), Flags::NONE),
+        (linked(4, 0, None), Flags::NONE),
+        (linked(4, 0, None), Flags::NONE),
+        (linked(4, 0, None), Flags::NONE),
+        (linked(6, 0, None), Flags::NONE),
+        (linked(4, 0, None), Flags::NONE),
+        (linked(4, 0, None), Flags::NONE),
+    ];
+    for (s, (v, flags)) in versions.iter().enumerate() {
+        assert_eq!(Some(s), page::insert(&mut p, v, *flags));
+    }
+    for (s, left) in [
+        (3, Slot::Redirect(4)),
+        (5, Slot::Dead),
+        (6, Slot::Redirect(5)),
+        (7, Slot::Unused),
+        (8, Slot::Redirect(7)),
+        (10, Slot::Redirect(3)),
+        (11, Slot::Redirect(9)),
+    ] {
+        page::release(&mut p, s, &left);
+    }
+    let link = |s| chain::link(&p, PID, s);
+    assert_eq!(
+        vec![
+            (0, vec![0, 1, 2]),
+            (3, vec![4]),
+            (9, vec![9]),
+            (11, vec![9])
+        ],
+        chain::roots(&p, link)
+    );
+    assert_eq!(Some(vec![1, 2]), chain::from(&p, 1, link));
+    for s in [5, 6, 7, 8, 10] {
+        assert_eq!(None, chain::from(&p, s, link), "slot {s}");
+    }
 }
 
 #[test]

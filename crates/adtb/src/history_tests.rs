@@ -100,12 +100,17 @@ struct Db {
 
 impl Db {
     fn create(rt: SimRuntime, window: Duration) -> (Db, Roots) {
+        Db::create_of(rt, window, row_type())
+    }
+
+    /// Create the database as [`Db::create`] does, its heaps holding rows of `fields`.
+    fn create_of(rt: SimRuntime, window: Duration, fields: Vec<FieldType>) -> (Db, Roots) {
         let pager = Pager::create(rt.clone(), &opts()).expect("create");
         let txns = Transactions::create(rt, &pager).expect("commit log");
         let large = LargeStore::create(&pager, LARGE).expect("large store");
         let past_large = LargeStore::create(&pager, PAST_LARGE).expect("large store");
-        let heap = Heap::create(&pager, HEAP, row_type(), large).expect("heap");
-        let past_heap = Heap::create(&pager, PAST_HEAP, row_type(), past_large).expect("heap");
+        let heap = Heap::create(&pager, HEAP, fields.clone(), large).expect("heap");
+        let past_heap = Heap::create(&pager, PAST_HEAP, fields, past_large).expect("heap");
         let index = Index::create(&pager, INDEX, key_schema(), ctors()).expect("index");
         let past_index =
             Index::create(&pager, PAST_INDEX, key_schema(), ctors()).expect("history index");
@@ -358,7 +363,7 @@ impl Db {
             &self.txns,
             &marker,
             CTOR,
-            (self.heap(), &[self.heap().id()], &self.index),
+            (self.heap(), &[self.heap()], &self.index),
             &self.history(),
             &[Value::I64(k)],
         )
@@ -383,7 +388,7 @@ impl Db {
                 &self.txns,
                 &marker,
                 CTOR,
-                (self.heap(), &[self.heap().id()], &self.index),
+                (self.heap(), &[self.heap()], &self.index),
                 &history,
                 &[Value::I64(k)],
             )
@@ -1259,9 +1264,9 @@ fn store_scan_sees_history_pages_created_during_its_current_walk() {
         let heap = Arc::new(db.heap.take().expect("current heap"));
         let past = Arc::new(db.past_heap);
         let stored = |heap: Arc<Heap>| crate::exec::StoredHeap {
+            sum: vec![heap.clone()],
             heap,
             row: row_type(),
-            sum: vec![HeapNo(HEAP)],
         };
         let id = crate::plan::HeapId(u64::from(HEAP));
         let store = crate::exec::Store {
@@ -1380,26 +1385,18 @@ fn probe<R: Runtime>(
     txns: &Transactions<R>,
     marker: &Marker,
     ctor: CtorId,
-    (current, sum, index): (&Heap, &[HeapNo], &Index),
+    (current, sum, index): (&Heap, &[&Heap], &Index),
     into: &History,
     key: &[Value],
 ) -> Result<Option<Vec<Value>>, Error> {
     for e in index.probe_ctor(pager, key, ctor)? {
-        let mut failed = None;
-        let link = walk(pager, current.id(), sum, e.tid, |l| {
-            sees(txns, pager, marker, &l.header).unwrap_or_else(|err| {
-                failed = Some(err);
-                true
-            })
+        let walked = walk(pager, current.id(), sum, e.tid, |l, _| {
+            sees(txns, pager, marker, &l.header)
         })?;
-        if let Some(err) = failed {
-            return Err(Error::Page(err));
-        }
-        if let Some(l) = link
+        if let Some((l, row)) = walked
             && l.heap == current.id()
-            && let Some(v) = current.read(pager, l.tid)?
         {
-            return Ok(Some(v.row));
+            return Ok(Some(row));
         }
     }
     let past = into.heap(ctor);
@@ -1414,4 +1411,195 @@ fn probe<R: Runtime>(
         }
     }
     Ok(None)
+}
+
+/// Visibility at a held marker, with `vacuum_keeping` run over the current heap between each
+/// fetch's walk and its return.
+struct VacuumOnFetch {
+    reader: crate::mvcc::Reader<crate::mvcc::Logged<SimRuntime>>,
+    db: Arc<Db>,
+    heap: Arc<Heap>,
+    moved: AtomicUsize,
+}
+
+impl crate::exec::Reads for VacuumOnFetch {
+    fn saw(&self, writers: &Writers) -> Result<bool, crate::exec::Error> {
+        Ok(self.reader.sees(writers)?.visible())
+    }
+
+    fn scanning(
+        &self,
+        _: HeapNo,
+    ) -> Result<Option<crate::mvcc::ScanId>, crate::mvcc::SerializationFailure> {
+        Ok(None)
+    }
+
+    fn scanned(&self, _: HeapNo, _: crate::mvcc::ScanId, _: Option<&[Pid]>) {}
+
+    fn probed(
+        &self,
+        _: Pid,
+        _: std::ops::Bound<Vec<u8>>,
+        _: std::ops::Bound<Vec<u8>>,
+        _: BTreeSet<CtorId>,
+    ) -> Result<(), crate::mvcc::SerializationFailure> {
+        Ok(())
+    }
+
+    fn fetched(&self, _: HeapNo, _: Tid) -> Result<(), crate::mvcc::SerializationFailure> {
+        let sum = Sum {
+            heaps: vec![(CTOR, &*self.heap)],
+            indexes: vec![&self.db.index],
+        };
+        let report = vacuum::vacuum_keeping(
+            &self.db.pager,
+            &self.db.txns,
+            &sum,
+            &self.db.history(),
+            usize::MAX,
+            &vacuum::Progress::new(),
+            &mut || true,
+        )
+        .expect("vacuum");
+        self.moved.fetch_add(report.moved, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+/// Write `old` as the row of key 1, mark, and replace it with `new`, in heaps of `fields`; then
+/// fetch key 1 at the mark through a store whose reads run `vacuum_keeping` between each fetch's
+/// walk and its return. Returns the lengths of the out-of-line values the current heap held before
+/// the fetches, the versions vacuum moved and the rows the fetches returned.
+fn fetch_beside_vacuum(
+    rt: SimRuntime,
+    fields: Vec<FieldType>,
+    old: Vec<Value>,
+    new: Vec<Value>,
+) -> (Vec<u64>, usize, Vec<Vec<Value>>) {
+    let (mut db, _) = Db::create_of(rt, LONG, fields.clone());
+    let mut live = None;
+    let mut at = None;
+    for row in [old, new] {
+        let x = db.txns.begin(&db.pager).expect("begin");
+        if let Some(tid) = live {
+            db.heap().delete(&db.pager, tid, x).expect("delete");
+        }
+        let tid = db.heap().insert(&db.pager, x, &row).expect("insert");
+        let entry = Entry {
+            key: vec![Value::I64(1)],
+            ctor: CTOR,
+            tid,
+        };
+        assert!(db.index.insert(&db.pager, &entry).expect("index"));
+        live = Some(tid);
+        db.pager
+            .wait_durable(db.txns.commit(&db.pager, x).expect("commit"));
+        at = at.or_else(|| Some(db.mark()));
+    }
+    let at = at.expect("a mark after the first row");
+    let out_of_line = db
+        .heap()
+        .out_of_line(&db.pager)
+        .expect("out-of-line values")
+        .expect("heap pages in shape")
+        .iter()
+        .map(|p| p.len)
+        .collect();
+    let heap = Arc::new(db.heap.take().expect("current heap"));
+    let past = Arc::new(
+        Heap::open(
+            &db.pager,
+            PAST_HEAP,
+            db.past_heap.root(),
+            fields.clone(),
+            db.past_heap.large(),
+        )
+        .expect("history heap"),
+    );
+    let index = db.index.clone();
+    let db = Arc::new(db);
+    let marker = db.txns.pin(&db.pager, at, db.upto()).expect("pin");
+    let reads = Arc::new(VacuumOnFetch {
+        reader: db.txns.reader(&db.pager, marker.snapshot.clone(), None),
+        db: db.clone(),
+        heap: heap.clone(),
+        moved: AtomicUsize::new(0),
+    });
+    let stored = |heap: Arc<Heap>| crate::exec::StoredHeap {
+        sum: vec![heap.clone()],
+        heap,
+        row: fields.clone(),
+    };
+    let id = crate::plan::HeapId(u64::from(HEAP));
+    let ix = crate::plan::IndexId(u64::from(INDEX));
+    let store = crate::exec::Store {
+        pager: db.pager.clone(),
+        reads: reads.clone(),
+        heaps: BTreeMap::from([(id, stored(heap))]),
+        indexes: BTreeMap::from([(
+            ix,
+            crate::exec::StoredIndex {
+                index,
+                ctors: BTreeMap::from([(CTOR, 0)]),
+                rows: None,
+            },
+        )]),
+        history: crate::exec::Histories {
+            heaps: BTreeMap::from([(id, stored(past))]),
+            indexes: BTreeMap::new(),
+        },
+        past: None,
+    };
+    let grant = crate::exec::Budget::new(1 << 30)
+        .admit(64 << 20)
+        .expect("a grant fits");
+    let bounds = crate::exec::ProbeBounds {
+        grant: &grant,
+        check: &|| Ok(()),
+    };
+    let named = store
+        .probe(ix, &[Value::I64(1)], &BTreeSet::from([0]), bounds)
+        .expect("probe");
+    let mut found = Vec::new();
+    for n in &named {
+        if let Some((_, row)) = store.fetch(id, n).expect("fetch") {
+            found.push(row);
+        }
+    }
+    db.txns.unpin(&marker);
+    (out_of_line, reads.moved.load(Ordering::Relaxed), found)
+}
+
+#[test]
+fn a_fetch_of_the_past_returns_the_version_it_walked_to_when_vacuum_moves_it() {
+    let mut sim = Sim::new(23, Config::default());
+    finished(&mut sim, |rt| {
+        let old = vec![Value::I64(1), Value::I64(10)];
+        let new = vec![Value::I64(1), Value::I64(11)];
+        let (_, moved, found) = fetch_beside_vacuum(rt, row_type(), old.clone(), new);
+        assert_eq!(1, moved, "vacuum moved the version read");
+        assert_eq!(vec![old], found);
+    });
+}
+
+#[test]
+fn a_fetch_of_the_past_returns_the_out_of_line_values_of_the_version_vacuum_moves() {
+    let mut sim = Sim::new(24, Config::default());
+    finished(&mut sim, |rt| {
+        let fields = vec![
+            FieldType::Scalar(Scalar::I64),
+            FieldType::Scalar(Scalar::Bytes),
+        ];
+        let blob: Vec<u8> = (0..9000u32).map(|i| (i * 7) as u8).collect();
+        let old = vec![Value::I64(1), Value::Bytes(blob)];
+        let new = vec![Value::I64(1), Value::Bytes(vec![1])];
+        let (out_of_line, moved, found) = fetch_beside_vacuum(rt, fields, old.clone(), new);
+        assert_eq!(
+            vec![9000],
+            out_of_line,
+            "the moved version's blob is out of line"
+        );
+        assert_eq!(1, moved, "vacuum moved the version read");
+        assert_eq!(vec![old], found);
+    });
 }

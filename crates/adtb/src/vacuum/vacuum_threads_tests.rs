@@ -8,7 +8,7 @@ use crate::heap::{FieldType, Flags, Heap, HeapNo, walk};
 use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
 use crate::mvcc::{Scope, Snapshot, Status, Transactions, Xid};
 use crate::runtime::{Entropy, Threads};
-use crate::storage::{Pager, Pid};
+use crate::storage::{PageError, Pager, Pid};
 use crate::vacuum::{self, Phase, Progress, Sum};
 use adtb_sim::{Config, Ledger, Outcome, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
@@ -164,13 +164,13 @@ impl Db {
             let h = e.ctor.0 as usize;
             let mut first = true;
             let mut seen = Vec::new();
-            walk(&self.pager, self.ids[h], &self.ids, e.tid, |l| {
+            walk(&self.pager, self.ids[h], &self.heaps, e.tid, |l, _| {
                 if l.tid.page() != e.tid.page() || !first && !l.flags.contains(Flags::HEAP_ONLY) {
-                    return true;
+                    return Ok::<_, PageError>(true);
                 }
                 first = false;
                 seen.push((l.tid, l.header.writers));
-                false
+                Ok(false)
             })
             .expect("walk");
             for (t, writers) in seen {

@@ -405,12 +405,18 @@ visible until vacuum clears its `xmax`.
 The heap walks a chain from a TID in a named heap through each `next`,
 across the heaps of that heap's relation, which the caller names, and
 returns the first version a caller's predicate accepts, with its TID,
-the heap id of its page, its header and flags; or none, when the chain
-ends first. A redirect line pointer
-([§12.1](#121-page-arrangement)) is followed to the slot it names. A
+the heap id of its page, its header, its flags and its row; or none,
+when the chain ends first. The heap reads each version the walk visits,
+with its out-of-line values, under the shared latch of its page, and
+runs the predicate once the latch is released, so the row returned is
+the one read with the header the predicate accepted. A predicate that
+fails ends the walk with its failure. A redirect line pointer
+([§12.1](#121-page-arrangement)) is followed to the version in the slot
+it names; a redirect to a slot holding no version ends the chain. A
 slot holding no version ends the chain, as do a page that is not a heap
-page, a version whose `xmin` is not the `xmax` of the version before
-it, and a version on a page of the wrong owner: the first version must
+page of the relation, a version the walk already visited, a
+version whose `xmin` is not the `xmax` of the version before it, and a
+version on a page of the wrong owner: the first version must
 be on a page of the named heap, the successor of a moved version on a
 page of another heap of the relation and flagged retagged in, and any
 other successor on a page of its predecessor's heap. A version's `next` may name a
@@ -868,11 +874,14 @@ vacuum's index pass. Pruning is logged. A writer finding a page
 without room for a new version prunes it before looking further, by
 `Transactions::judge` over the heap's `horizon_now`.
 
-A heap-only chain whose leading versions are dead keeps the slot index
-entries name as a redirect to its first live version and frees the
-others. A fixed-slot page holds no dead slot or redirect: it frees a
-chain only once every version of it is dead and its entries are gone,
-and keeps a chain with a live version whole. Pruning never sets an
+A chain on a page starts at its root, the slot index entries name: a
+version that is not heap-only, or a redirect to a version. It runs
+through the heap-only successors each hot-updated version names on the
+page. A heap-only chain whose leading versions are dead keeps its root
+as a redirect to its first live version and frees the others. A
+fixed-slot page holds no dead slot or redirect: it frees a chain only
+once every version of it is dead and its entries are gone, and keeps a
+chain with a live version whole. Pruning never sets an
 all-visible bit; a page it changes loses its bit.
 
 ### 10.3 History heaps and reads of the past

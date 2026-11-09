@@ -9,12 +9,12 @@ use crate::storage::{self, PageError, Pager, Pid, Stopped};
 use super::dir::{Above, Space, category, max_fanout, need_category};
 use super::large::LargeStore;
 use super::page::{self, Arrangement, Slot, align8};
-use super::prune;
 use super::row::{FieldType, Layout, POINTER_LEN, Pointer, Stored};
 use super::stage::Stage;
-use super::version::{self, Flags, HEADER_LEN, Header};
+use super::version::{Flags, HEADER_LEN, Header};
 use super::vm::Vm;
 use super::{Error, WriteTarget, fixed, slotted};
+use super::{chain, prune};
 
 #[cfg(any(test, feature = "testing"))]
 mod observe;
@@ -54,7 +54,7 @@ impl std::fmt::Display for HeapNo {
     }
 }
 
-/// One version of a chain, as [`walk`] finds it.
+/// One version of a chain, as [`super::walk`] finds it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Link {
     pub tid: Tid,
@@ -423,7 +423,7 @@ impl Heap {
     }
 
     #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
-    fn holds_page(&self, page: &[u8]) -> bool {
+    pub(super) fn holds_page(&self, page: &[u8]) -> bool {
         page::is_heap(page) && storage::owner(page) == self.id
     }
 
@@ -1339,7 +1339,7 @@ impl Heap {
                     _ => {}
                 }
             }
-            let links = version::link_faults(&page, pid.0);
+            let links = chain::link_faults(&page, pid.0);
             problems.extend(links.into_iter().map(|what| (pid, what)));
         }
         for pid in marked {
@@ -1364,78 +1364,4 @@ impl Heap {
     pub fn held_pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, Stopped> {
         self.space.held(pager)
     }
-}
-
-/// Follow the chain from the version at `start`, in heap `heap`, through each `next`, across
-/// the heaps of `sum`, and return the first version `stop` accepts. Returns `None` when the
-/// chain ends first.
-///
-/// Precondition: `sum` holds the heap of every constructor of `heap`'s relation.
-///
-/// The chain ends at a slot holding no version, at a page that is not a heap page, at a version
-/// whose inserter is not the deleter of the version before it, and at a version on a page of the
-/// wrong heap: the first must be in `heap`, the successor of a moved version in another heap of
-/// `sum` and flagged retagged in, and any other successor in its predecessor's heap. The
-/// versions of one stretch of the chain on one page are read from one copy of that page.
-#[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
-pub fn walk<R: Runtime>(
-    pager: &Pager<R>,
-    heap: HeapNo,
-    sum: &[HeapNo],
-    start: Tid,
-    mut stop: impl FnMut(&Link) -> bool,
-) -> Result<Option<Link>, PageError> {
-    let mut at = start;
-    let mut prior: Option<Link> = None;
-    let mut copy: Option<(u64, Vec<u8>)> = None;
-    loop {
-        let page = match copy {
-            Some((pid, ref page)) if pid == at.page() => page,
-            _ => {
-                &copy
-                    .insert((at.page(), pager.read_formatted(Pid(at.page()))?.to_vec()))
-                    .1
-            }
-        };
-        if !page::is_heap(page) {
-            return Ok(None);
-        }
-        match page::get(page, usize::from(at.slot())) {
-            Slot::Normal { flags, at: range } => {
-                let link = Link {
-                    tid: at,
-                    heap: HeapNo(storage::owner(page)),
-                    header: Header::read(&page[range]),
-                    flags,
-                };
-                if !follows(prior.as_ref(), heap, sum, &link) {
-                    return Ok(None);
-                }
-                if stop(&link) {
-                    return Ok(Some(link));
-                }
-                match link.header.next {
-                    Some(next) => at = next,
-                    None => return Ok(None),
-                }
-                prior = Some(link);
-            }
-            Slot::Redirect(slot) => at = tid(Pid(at.page()), usize::from(slot)),
-            Slot::Unused | Slot::Dead => return Ok(None),
-        }
-    }
-}
-
-/// Returns whether `link` can be the version after `prior` in a chain starting in heap `heap`
-/// and running across the heaps of `sum`.
-fn follows(prior: Option<&Link>, heap: HeapNo, sum: &[HeapNo], link: &Link) -> bool {
-    let Some(p) = prior else {
-        return link.heap == heap;
-    };
-    let placed = if p.flags.contains(Flags::MOVED) {
-        link.heap != p.heap && sum.contains(&link.heap) && link.flags.contains(Flags::RETAGGED_IN)
-    } else {
-        link.heap == p.heap
-    };
-    placed && p.header.writers.precedes(&link.header.writers)
 }

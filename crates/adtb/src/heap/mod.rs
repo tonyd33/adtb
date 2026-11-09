@@ -1,5 +1,6 @@
 //! Hold one heap per constructor: pages, slots, versions, large values and the visibility map.
 
+mod chain;
 mod dir;
 mod fixed;
 mod handle;
@@ -23,11 +24,12 @@ mod heap_threads_tests;
 #[cfg(test)]
 mod tests;
 
+pub use chain::{successor, walk};
 #[cfg(test)]
 pub use dir::max_fanout;
 #[cfg(test)]
 pub use handle::Pruned;
-pub use handle::{Heap, HeapNo, Link, Version, fits, walk};
+pub use handle::{Heap, HeapNo, Link, Version, fits};
 pub use large::LargeStore;
 pub use named::{OrphanEntry, refuse_named};
 #[cfg(test)]
@@ -36,7 +38,7 @@ pub(crate) use row::put_uvarint;
 pub use row::{CtorType, FieldType};
 #[cfg(test)]
 pub use version::HEADER_LEN;
-pub use version::{Flags, Header, header_at};
+pub use version::{Flags, Header};
 
 use crate::key::Tid;
 use crate::storage::PageError;

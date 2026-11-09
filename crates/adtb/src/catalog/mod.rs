@@ -52,7 +52,7 @@ use adtb_lang::types::RelId;
 
 use crate::btree::{self, BTree, Index};
 use crate::exec::{self, IndexedRows, StoredHeap, StoredIndex};
-use crate::heap::{self, FieldType, Heap, HeapNo, LargeStore};
+use crate::heap::{self, FieldType, Heap, LargeStore};
 use crate::key::{CtorId, Dir, Entry, KeySchema, OrderKey, Scalar, Value};
 use crate::mvcc::{self, CommitLog, Scope, Snapshot, Transactions, Xid};
 use crate::plan::{self, HeapId, IndexDesc, IndexId, RelationDesc};
@@ -1312,11 +1312,11 @@ struct Migrating<'a, R: Runtime> {
     snapshot: &'a Snapshot,
 }
 
-/// Returns the id of the heap of every constructor of relation `r` among `heaps`.
-fn sum_of(heaps: &BTreeMap<(RelId, u32), Arc<Heap>>, r: RelId) -> Vec<HeapNo> {
+/// Returns the heap of every constructor of relation `r` among `heaps`.
+fn sum_of(heaps: &BTreeMap<(RelId, u32), Arc<Heap>>, r: RelId) -> Vec<Arc<Heap>> {
     heaps
         .range((r, 0)..=(r, u32::MAX))
-        .map(|(_, h)| h.id())
+        .map(|(_, h)| h.clone())
         .collect()
 }
 

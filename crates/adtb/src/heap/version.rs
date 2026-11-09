@@ -1,11 +1,5 @@
-use std::collections::BTreeSet;
-
 use crate::key::Tid;
 use crate::mvcc::{Writers, Xid};
-use crate::runtime::Runtime;
-use crate::storage::{PageError, Pager, Pid};
-
-use super::page::{self, Slot};
 
 /// The length of the header every version starts with.
 pub const HEADER_LEN: usize = 24;
@@ -54,69 +48,6 @@ pub fn tid_from_bits(bits: u64) -> Option<Tid> {
     (bits != 0).then(|| Tid::new(bits >> 16, bits as u16).expect("48-bit page id"))
 }
 
-/// Returns the slot on `page`, page `pid` of its heap, holding the heap-only successor the version
-/// in `slot` links to, if any.
-pub(super) fn link(page: &[u8], pid: u64, slot: usize) -> Option<usize> {
-    let Slot::Normal { flags, at } = page::get(page, slot) else {
-        return None;
-    };
-    if !flags.contains(Flags::HOT_UPDATED) {
-        return None;
-    }
-    let next = Header::read(&page[at]).next.filter(|n| n.page() == pid)?;
-    let to = usize::from(next.slot());
-    matches!(page::get(page, to), Slot::Normal { flags, .. } if flags.contains(Flags::HEAP_ONLY))
-        .then_some(to)
-}
-
-/// Returns the slots of the chain from `start`, following `link` until it ends or a slot repeats.
-pub(super) fn chain(start: usize, link: impl Fn(usize) -> Option<usize>) -> Vec<usize> {
-    let mut members = vec![start];
-    while let Some(to) = link(*members.last().unwrap()) {
-        if members.contains(&to) {
-            break;
-        }
-        members.push(to);
-    }
-    members
-}
-
-/// Returns what is wrong with the links of `page`, page `pid` of its heap: each hot-updated slot
-/// that links to no version its deleter wrote, and each version two slots link to.
-pub(super) fn link_faults(page: &[u8], pid: u64) -> Vec<String> {
-    let header = |s| match page::get(page, s) {
-        Slot::Normal { at, .. } => Some(Header::read(&page[at])),
-        _ => None,
-    };
-    let mut faults = Vec::new();
-    let mut successors = BTreeSet::new();
-    let mut shared = BTreeSet::new();
-    for slot in 0..page::slot_count(page) {
-        if !matches!(page::get(page, slot), Slot::Normal { flags, .. } if flags.contains(Flags::HOT_UPDATED))
-        {
-            continue;
-        }
-        let written = link(page, pid, slot).filter(
-            |&to| matches!((header(slot), header(to)), (Some(h), Some(s)) if h.writers.precedes(&s.writers)),
-        );
-        match written {
-            Some(to) if !successors.insert(to) => {
-                shared.insert(to);
-            }
-            Some(_) => {}
-            None => faults.push(format!(
-                "slot {slot} is hot-updated but names no heap-only successor"
-            )),
-        }
-    }
-    faults.extend(
-        shared
-            .into_iter()
-            .map(|to| format!("slot {to} is the heap-only successor of more than one slot")),
-    );
-    faults
-}
-
 /// The flags of a version, kept in its slot.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Flags(pub u16);
@@ -145,17 +76,4 @@ impl Flags {
     pub fn without(self, other: Flags) -> Flags {
         Flags(self.0 & !other.0)
     }
-}
-
-/// Returns the header of the version at `tid`, or `None` when its page is not a heap page or
-/// its slot holds no version.
-pub fn header_at<R: Runtime>(pager: &Pager<R>, tid: Tid) -> Result<Option<Header>, PageError> {
-    let page = pager.read(Pid(tid.page()))?;
-    if !page::is_heap(&page) || !page::check(&page).is_empty() {
-        return Ok(None);
-    }
-    Ok(match page::get(&page, usize::from(tid.slot())) {
-        Slot::Normal { at, .. } => Some(Header::read(&page[at])),
-        _ => None,
-    })
 }

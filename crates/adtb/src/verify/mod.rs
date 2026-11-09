@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
 use crate::btree::{self, BTree, Index};
-use crate::heap::{Flags, Heap, LargeStore, header_at};
+use crate::heap::{Flags, Heap, LargeStore, Link, successor};
 use crate::key::{CtorId, Tid};
 use crate::mvcc::{CommitLog, Status};
 use crate::runtime::Runtime;
@@ -254,8 +254,9 @@ impl<R: Runtime> Walk<'_, R> {
     }
 
     /// Check every version's `next` that is not hot-updated: a version with no deleter names no
-    /// successor, and one whose deleter is running names a version that deleter wrote.
-    fn chains(&mut self, heap: &Heap, clog: &CommitLog) {
+    /// successor, and one whose deleter is running names a version that deleter wrote, in the heap
+    /// of `sum` its chain places it in.
+    fn chains(&mut self, heap: &Heap, sum: &[&Heap], clog: &CommitLog) {
         let name = format!("heap {}", heap.id());
         let versions = match heap.headers(self.pager) {
             Ok(v) => v,
@@ -263,9 +264,9 @@ impl<R: Runtime> Walk<'_, R> {
         };
         for (t, h, flags) in versions {
             let pid = Pid(t.page());
-            let Some(next) = h.next else {
+            if h.next.is_none() {
                 continue;
-            };
+            }
             if flags.contains(Flags::HOT_UPDATED) {
                 continue;
             }
@@ -295,8 +296,14 @@ impl<R: Runtime> Walk<'_, R> {
                 Ok(_) => continue,
                 Err(e) => return self.damaged(e),
             }
-            let found = match header_at(self.pager, next) {
-                Ok(successor) => successor.is_some_and(|s| h.writers.precedes(&s.writers)),
+            let of = Link {
+                tid: t,
+                heap: heap.id(),
+                header: h,
+                flags,
+            };
+            let found = match successor(self.pager, sum, &of) {
+                Ok(found) => found.is_some(),
                 Err(e) => return self.damaged(e),
             };
             if !found {
@@ -521,9 +528,10 @@ pub fn verify_with<R: Runtime>(pager: &Pager<R>, inventory: &Inventory, depth: D
     let mut stores: Vec<(LargeStore, Vec<&Heap>)> = Vec::new();
     for sum in &inventory.sums {
         walk.sum(sum);
+        let heaps: Vec<&Heap> = sum.heaps.iter().map(|(_, h)| *h).collect();
         for (_, heap) in &sum.heaps {
             if let Some(clog) = inventory.commit_log {
-                walk.chains(heap, clog);
+                walk.chains(heap, &heaps, clog);
             }
             match stores.iter_mut().find(|(s, _)| *s == heap.large()) {
                 Some((_, hs)) => hs.push(heap),

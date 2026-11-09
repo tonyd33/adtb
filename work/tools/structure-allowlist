@@ -101,7 +101,7 @@ disallowed_methods test 1 crates/adtb-testkit/tests/front_fuzz.rs
 disallowed_methods prod 3 crates/adtb/src/btree/node.rs
 disallowed_methods test 1 crates/adtb/src/btree/tests.rs
 disallowed_methods prod 3 crates/adtb/src/heap/dir.rs
-disallowed_methods prod 9 crates/adtb/src/heap/handle/mod.rs
+disallowed_methods prod 8 crates/adtb/src/heap/handle/mod.rs
 disallowed_methods prod 1 crates/adtb/src/heap/handle/observe.rs
 disallowed_methods prod 4 crates/adtb/src/heap/large.rs
 disallowed_methods prod 1 crates/adtb/src/heap/named.rs

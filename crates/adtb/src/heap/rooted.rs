@@ -4,9 +4,11 @@ use crate::key::{Tid, Value};
 use crate::runtime::Runtime;
 use crate::storage::{self, PageError, Pager, Pid};
 
+use super::chain;
 use super::handle::{Heap, Version, tid};
 use super::page::{self, Slot};
-use super::version::{self, Flags};
+#[cfg(any(test, feature = "testing"))]
+use super::version::{Flags, Header};
 
 impl Heap {
     /// Call `f` on every version on `pid` with each slot index entries may name for it: the roots
@@ -26,14 +28,9 @@ impl Heap {
                 return Ok(());
             }
             let mut roots: BTreeMap<usize, Vec<Tid>> = BTreeMap::new();
-            for slot in 0..page::slot_count(&page) {
-                let start = match page::get(&page, slot) {
-                    Slot::Redirect(to) => usize::from(to),
-                    Slot::Normal { flags, .. } if !flags.contains(Flags::HEAP_ONLY) => slot,
-                    _ => continue,
-                };
-                for member in version::chain(start, |s| version::link(&page, pid.0, s)) {
-                    roots.entry(member).or_default().push(tid(pid, slot));
+            for (root, members) in chain::roots(&page, |s| chain::link(&page, pid.0, s)) {
+                for member in members {
+                    roots.entry(member).or_default().push(tid(pid, root));
                 }
             }
             for v in self.versions_on(pager, pid, &page)? {
@@ -49,7 +46,8 @@ impl Heap {
     }
 
     /// Returns the rows of the chain index entries naming `at` reach on its page, or `None` when
-    /// the slot holds no version: unused, dead, or a page no longer of the heap.
+    /// the slot leads to no version: unused, dead, a redirect to no version, or on a page no longer
+    /// of the heap.
     #[expect(clippy::disallowed_methods, reason = "until heap owns page checks")]
     pub fn chain_rows<R: Runtime>(
         &self,
@@ -62,13 +60,12 @@ impl Heap {
             return Ok(None);
         }
         let format = storage::format(&page);
-        let start = match page::get(&page, usize::from(at.slot())) {
-            Slot::Redirect(to) => usize::from(to),
-            Slot::Normal { .. } => usize::from(at.slot()),
-            _ => return Ok(None),
+        let link = |s| chain::link(&page, pid.0, s);
+        let Some(members) = chain::from(&page, usize::from(at.slot()), link) else {
+            return Ok(None);
         };
         let mut rows = Vec::new();
-        for slot in version::chain(start, |s| version::link(&page, pid.0, s)) {
+        for slot in members {
             let Slot::Normal { at: bytes, .. } = page::get(&page, slot) else {
                 break;
             };
@@ -90,7 +87,7 @@ impl Heap {
         if !page::is_heap(&page) || storage::owner(&page) != self.id {
             return Ok(Vec::new());
         }
-        Ok(version::link_faults(&page, pid.0))
+        Ok(chain::link_faults(&page, pid.0))
     }
 
     /// Mark the version at `at` hot-updated with successor `next`. Plants a fault for a test of
@@ -109,7 +106,7 @@ impl Heap {
             let Slot::Normal { flags, at: bytes } = page::get(page, slot) else {
                 panic!("a planted link starts at a version");
             };
-            let mut header = version::Header::read(&page[bytes.clone()]);
+            let mut header = Header::read(&page[bytes.clone()]);
             header.next = Some(next);
             header.write(&mut page[bytes]);
             page::set_flags(page, slot, flags.with(Flags::HOT_UPDATED));

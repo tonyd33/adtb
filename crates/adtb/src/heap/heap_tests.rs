@@ -11,7 +11,7 @@ use crate::heap::{
 use crate::key::{CtorId, Scalar, Tid, Value};
 use crate::mvcc::{Fate, Writers, Xid};
 use crate::runtime::{Entropy, Threads};
-use crate::storage::{self, Options, PageKind, Pager, Pid};
+use crate::storage::{self, Options, PageError, PageKind, Pager, Pid};
 use crate::verify::{Inventory, Sum};
 use adtb_sim::{Config, Fate as LedgerFate, Ledger, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
@@ -181,7 +181,13 @@ fn check_links(db: &mut Db) -> Vec<String> {
             let next = v.header.next.map(|n| {
                 db.heaps
                     .iter()
-                    .find_map(|h| walk(&db.pager, h.id(), &db.ids, n, |_| true).unwrap())
+                    .find_map(|h| {
+                        walk(&db.pager, h.id(), &db.heaps, n, |_, _| {
+                            Ok::<_, PageError>(true)
+                        })
+                        .unwrap()
+                    })
+                    .map(|(l, _)| l)
                     .expect("a successor in a heap of the sum")
             });
             let (moved, hot) = (
@@ -252,8 +258,8 @@ fn inserts_updates_deletes_and_retags_match_a_model() {
             }
             for (key, (heap, tid, _)) in &live {
                 let (h, t) = first[key];
-                let end = walk(&db.pager, HeapNo(h), &db.ids, t, |l| {
-                    l.header.next.is_none()
+                let (end, _) = walk(&db.pager, HeapNo(h), &db.heaps, t, |l, _| {
+                    Ok::<_, PageError>(l.header.next.is_none())
                 })
                 .unwrap()
                 .expect("chain ends");
@@ -299,9 +305,9 @@ fn a_chain_runs_across_pages_and_through_a_retag_and_back() {
         let mut links: Vec<Link> = Vec::new();
         assert_eq!(
             None,
-            walk(pager, db.ids[EMAIL], &db.ids, first, |l| {
+            walk(pager, db.ids[EMAIL], &db.heaps, first, |l, _| {
                 links.push(*l);
-                false
+                Ok::<_, PageError>(false)
             })
             .unwrap()
         );
@@ -326,11 +332,11 @@ fn a_chain_runs_across_pages_and_through_a_retag_and_back() {
         for w in links.windows(2) {
             assert_eq!(Some(w[1].tid), w[0].header.next);
         }
-        let newest = walk(pager, db.ids[EMAIL], &db.ids, first, |l| {
-            l.header.next.is_none()
+        let newest = walk(pager, db.ids[EMAIL], &db.heaps, first, |l, _| {
+            Ok::<_, PageError>(l.header.next.is_none())
         })
         .unwrap();
-        assert_eq!(Some(back), newest.map(|l| l.tid));
+        assert_eq!(Some((back, row(6))), newest.map(|(l, r)| (l.tid, r)));
     });
 }
 

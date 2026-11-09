@@ -1,7 +1,8 @@
 use crate::mvcc::{Fate, Writers};
 
+use super::chain;
 use super::page::{self, Arrangement, Slot};
-use super::version::{self, Flags, Header};
+use super::version::{Flags, Header};
 
 /// What pruning makes of a page.
 #[derive(Debug, Default)]
@@ -54,11 +55,10 @@ pub(super) fn judge<E>(
 /// Returns how to prune `page`, page `pid` of its heap, its versions' fates being `fates` as
 /// [`judge`] returns them. A slot `cleaned` accepts has lost its index entries and is freed.
 ///
-/// A chain of heap-only versions starts at a slot index entries name: a version that is not
-/// heap-only, or a redirect. On a slotted page, a chain whose leading versions are dead keeps its
-/// start as a redirect to its first live version and frees the others; a chain with no live
-/// version leaves its start dead. On a fixed-slot page a chain is freed only whole, once its
-/// entries are gone.
+/// A chain of heap-only versions starts at a root, as `chain::roots` finds it. On a slotted page,
+/// a chain whose leading versions are dead keeps its start as a redirect to its first live version
+/// and frees the others; a chain with no live version leaves its start dead. On a fixed-slot page
+/// a chain is freed only whole, once its entries are gone.
 ///
 /// Panics if a slot `cleaned` accepts still leads to a live version.
 pub(super) fn plan(
@@ -72,30 +72,21 @@ pub(super) fn plan(
     let fate: Vec<Option<Fate>> = fates.iter().map(|f| f.map(|(f, _)| f)).collect();
     let cleared: Vec<bool> = fates.iter().map(|f| f.is_some_and(|(_, c)| c)).collect();
     let links: Vec<Option<usize>> = (0..n)
-        .map(|s| version::link(page, pid, s).filter(|_| !cleared[s]))
+        .map(|s| chain::link(page, pid, s).filter(|_| !cleared[s]))
         .collect();
     let fixed = matches!(page::arrangement(page), Arrangement::Fixed { .. });
     let mut out: Vec<Option<Slot>> = vec![None; n];
     let mut chained = vec![false; n];
     let mut plan = Plan::default();
     for (e, slot) in slots.iter().enumerate() {
-        let start = match slot {
-            Slot::Normal { flags, .. } if !flags.contains(Flags::HEAP_ONLY) => e,
-            Slot::Redirect(r)
-                if matches!(slots.get(usize::from(*r)), Some(Slot::Normal { .. })) =>
-            {
-                usize::from(*r)
+        if *slot == Slot::Dead {
+            plan.dead.push(e);
+            if cleaned(e) {
+                out[e] = Some(Slot::Unused);
             }
-            Slot::Dead => {
-                plan.dead.push(e);
-                if cleaned(e) {
-                    out[e] = Some(Slot::Unused);
-                }
-                continue;
-            }
-            _ => continue,
-        };
-        let members = version::chain(start, |s| links[s]);
+        }
+    }
+    for (e, members) in chain::roots(page, |s| links[s]) {
         for &m in &members {
             chained[m] = true;
         }
@@ -124,6 +115,7 @@ pub(super) fn plan(
             }
         }
     }
+    plan.dead.sort_unstable();
     for (s, slot) in slots.iter().enumerate() {
         if let Slot::Normal { flags, .. } = slot
             && flags.contains(Flags::HEAP_ONLY)

@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use adtb_lang::schema::Generator;
 use adtb_lang::types::RelId;
 
-use crate::exec::{StoredHeap, Val, to_stored};
-use crate::heap::{self, Flags, Heap, Link, WriteTarget, walk};
+use crate::exec::{Val, to_stored};
+use crate::heap::{self, Heap, WriteTarget};
 use crate::key::{Entry, Tid, Value};
 use crate::mvcc::{Logged, Probe, Reader, Write, Xid};
 use crate::plan::{HeapId, IndexId};
@@ -398,7 +398,7 @@ impl<R: Runtime> Stmt<'_, R> {
                     }
                     let c = stored.ctors[&e.ctor];
                     let heap = r.ctors[c as usize].heap;
-                    let run = hot_run(pager, e.tid, &self.db.heaps[&heap])?;
+                    let run = self.db.heaps[&heap].heap.hot_run(pager, e.tid)?;
                     if run.is_empty() {
                         let at = (&*self.db.heaps[&heap].heap, e.tid);
                         heap::refuse_named(pager, at, stored.index.tree().owner(), || {
@@ -458,25 +458,4 @@ impl<R: Runtime> Stmt<'_, R> {
         }
         Ok(())
     }
-}
-
-/// Returns the version at `tid` and its heap-only successors in heap `stored`: the versions an
-/// index entry for `tid` stands for.
-fn hot_run<R: Runtime>(
-    pager: &crate::storage::Pager<R>,
-    tid: Tid,
-    stored: &StoredHeap,
-) -> Result<Vec<Link>, Error> {
-    let heap = stored.heap.id();
-    let mut links = Vec::new();
-    walk(pager, heap, &stored.sum, tid, |l| {
-        let first = links.is_empty();
-        if l.heap == heap && (first || l.flags.contains(Flags::HEAP_ONLY)) {
-            links.push(*l);
-            false
-        } else {
-            true
-        }
-    })?;
-    Ok(links)
 }
