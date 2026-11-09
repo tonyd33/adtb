@@ -78,9 +78,9 @@ impl Catalog {
                 }
                 w.inserted
                     .iter()
-                    .try_for_each(|(c, row)| self.insert(pager, x, w.relation, *c, row))
+                    .try_for_each(|(c, row)| self.insert(&m, w.relation, *c, row))
             })
-            .and_then(|()| self.write_facts(pager, x, facts));
+            .and_then(|()| self.write_facts(pager, txns, x, facts));
         txns.release(id);
         match done {
             Ok(()) => {

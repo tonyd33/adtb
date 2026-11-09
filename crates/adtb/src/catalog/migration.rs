@@ -604,15 +604,14 @@ impl Catalog {
             .collect();
         delete_rows(m, &self.roots, &gone)?;
         for (ctor, fields) in named {
-            self.roots
-                .insert(pager, m.x, &[Value::Sum { ctor, fields }])?;
+            m.insert(&self.roots, &[Value::Sum { ctor, fields }])?;
         }
         for (&rid, ctors) in b.data {
             let r = relation(&next.schema, rid).expect("data holds relations of the result");
             for (&cid, rows) in ctors {
                 let c = ctor_index(&next.schema, r, cid).expect("a constructor of the result");
                 for row in rows {
-                    next.insert(pager, m.x, r, c, row)?;
+                    next.insert(m, r, c, row)?;
                 }
             }
         }
@@ -674,7 +673,7 @@ impl Catalog {
             let (was, before) = old.get(&rid).copied().unwrap_or((r, &[]));
             for (c, row) in &rows {
                 if !before.contains(&(*c, row.clone())) {
-                    next.insert(pager, m.x, r, *c, row)?;
+                    next.insert(m, r, *c, row)?;
                 }
             }
             let mut gone: BTreeMap<u32, Vec<Vec<Value>>> = BTreeMap::new();
@@ -699,7 +698,7 @@ impl Catalog {
             micros(pager.wall()),
         ) {
             for (c, row) in rows {
-                next.insert(pager, m.x, r, c, &row)?;
+                next.insert(m, r, c, &row)?;
             }
         }
         Ok(())

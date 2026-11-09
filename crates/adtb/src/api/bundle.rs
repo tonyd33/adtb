@@ -1147,7 +1147,10 @@ impl<R: Runtime> Engine<R> {
         let x = tx
             .xid()
             .expect("a write transaction of the write path has an id");
-        if let Err(e) = self.deployment.insert(&self.pager, x, &facts) {
+        if let Err(e) = self
+            .deployment
+            .insert(&self.pager, self.db.txns(), x, &facts)
+        {
             self.db.abort(tx)?;
             return Err(write::Broken::Facts(e).into());
         }

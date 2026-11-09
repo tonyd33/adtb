@@ -279,7 +279,7 @@ pub(super) fn rewrite<R: Runtime>(
         .collect();
     delete_rows(m, roots, &gone)?;
     for row in after.iter().filter(|r| !before.contains(r)) {
-        roots.insert(m.pager, m.x, row)?;
+        m.insert(roots, row)?;
     }
     Ok(())
 }

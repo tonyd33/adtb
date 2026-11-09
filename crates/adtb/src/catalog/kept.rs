@@ -10,7 +10,7 @@ use crate::runtime::Runtime;
 use crate::storage::Pager;
 
 use super::Rot;
-use super::{Catalog, Error, ROOTS, int, uint, visible};
+use super::{Catalog, Error, ROOTS, insert_row, int, uint, visible};
 
 /// The constructor of a roots row holding a row of a volatile relation.
 const KEPT: u32 = 14;
@@ -210,7 +210,7 @@ impl Catalog {
                     Value::Bytes(encode(&r.fields)),
                 ],
             };
-            self.roots.insert(pager, x, &[row])?;
+            insert_row(pager, txns, &self.roots, x, &[row])?;
         }
         Ok(())
     }

@@ -247,10 +247,10 @@ impl<R: Runtime> Stmt<'_, R> {
                         .flat_map(|(_, ix)| ix.keys.reads(c))
                         .collect();
                     let row = self.stored(heap, n)?;
-                    let (txns, h) = (&self.db.txns, self.heap(heap));
-                    let mut judge = txns.judge(pager, txns.horizon_now(h.id().0));
+                    let h = self.heap(heap);
+                    let mut judge = self.db.txns.judge_now(pager, h.id().0);
                     let up = h
-                        .update_pruning(pager, tid, xid, &row, &indexed, Some(&mut judge))
+                        .update_pruning(pager, tid, xid, &row, &indexed, &mut judge)
                         .map_err(too_large(*rel, c))?;
                     self.undo.borrow_mut().extend([
                         Undo::Restore(heap, self.restorable(heap, tid.tid, xid)?),
@@ -272,9 +272,11 @@ impl<R: Runtime> Stmt<'_, R> {
                     let to = r.ctors[*d as usize].heap;
                     let row = self.stored(to, n)?;
                     let from = r.ctors[c as usize].heap;
+                    let into = self.heap(to);
+                    let mut judge = self.db.txns.judge_now(pager, into.id().0);
                     let at = self
                         .heap(from)
-                        .retag(pager, tid, xid, self.heap(to), &row)
+                        .retag_pruning(pager, tid, xid, into, &row, &mut judge)
                         .map_err(too_large(*rel, *d))?;
                     self.undo.borrow_mut().extend([
                         Undo::Restore(from, self.restorable(from, tid.tid, xid)?),
@@ -292,10 +294,10 @@ impl<R: Runtime> Stmt<'_, R> {
                 (None, Some((d, n))) => {
                     let heap = r.ctors[*d as usize].heap;
                     let row = self.stored(heap, n)?;
-                    let (txns, h) = (&self.db.txns, self.heap(heap));
-                    let mut judge = txns.judge(pager, txns.horizon_now(h.id().0));
+                    let h = self.heap(heap);
+                    let mut judge = self.db.txns.judge_now(pager, h.id().0);
                     let tid = h
-                        .insert_pruning(pager, xid, &row, Some(&mut judge))
+                        .insert_pruning(pager, xid, &row, &mut judge)
                         .map_err(too_large(*rel, *d))?;
                     self.undo.borrow_mut().push(Undo::Kill(heap, tid));
                     self.inserted_into(heap)?;

@@ -210,7 +210,7 @@ impl Db {
                 let (txns, heap) = (&self.txns, self.heap());
                 let mut judge = txns.judge(&self.pager, txns.horizon_now(heap.id().0));
                 let tid = heap
-                    .insert_pruning(&self.pager, x, &row, Some(&mut judge))
+                    .insert_pruning(&self.pager, x, &row, &mut judge)
                     .expect("insert");
                 let entry = Entry {
                     key: vec![Value::I64(k)],
@@ -1011,12 +1011,7 @@ fn a_heap_emptied_from_its_end_leaves_no_hole_behind_its_last_page() {
             .judge(&db.pager, db.txns.horizon_now(db.heap().id().0));
         let tid = db
             .heap()
-            .insert_pruning(
-                &db.pager,
-                x,
-                &[Value::I64(1), Value::I64(1)],
-                Some(&mut judge),
-            )
+            .insert_pruning(&db.pager, x, &[Value::I64(1), Value::I64(1)], &mut judge)
             .expect("insert");
         let pages = db.heap().pages(&db.pager).expect("pages");
         assert_eq!(vec![Pid(tid.page())], pages);
@@ -1606,5 +1601,72 @@ fn a_fetch_of_the_past_returns_the_out_of_line_values_of_the_version_vacuum_move
         );
         assert_eq!(1, moved, "vacuum moved the version read");
         assert_eq!(vec![old], found);
+    });
+}
+
+/// Commit, in one transaction each, an insert of a row keyed by each of `keys` with its index
+/// entry, then the delete of every one of them.
+fn insert_then_delete(db: &Db, keys: std::ops::Range<i64>) {
+    let row = |k| vec![Value::I64(k), Value::Bytes(vec![7; 200])];
+    let x = db.txns.begin(&db.pager).expect("begin");
+    let tids: Vec<Tid> = keys
+        .map(|k| {
+            let tid = db.heap().insert(&db.pager, x, &row(k)).expect("insert");
+            let entry = Entry {
+                key: vec![Value::I64(k)],
+                ctor: CTOR,
+                tid,
+            };
+            assert!(db.index.insert(&db.pager, &entry).expect("index"));
+            tid
+        })
+        .collect();
+    db.pager
+        .wait_durable(db.txns.commit(&db.pager, x).expect("commit"));
+    let x = db.txns.begin(&db.pager).expect("begin");
+    for tid in tids {
+        db.heap().delete(&db.pager, tid, x).expect("delete");
+    }
+    db.pager
+        .wait_durable(db.txns.commit(&db.pager, x).expect("commit"));
+}
+
+#[test]
+fn a_vacuum_move_into_a_history_page_full_of_versions_past_the_window_reuses_it() {
+    let mut sim = Sim::new(15, Config::default());
+    finished(&mut sim, |rt| {
+        let fields = vec![
+            FieldType::Scalar(Scalar::I64),
+            FieldType::Scalar(Scalar::Bytes),
+        ];
+        let window = Duration::from_millis(200);
+        let (mut db, _) = Db::create_of(rt, window, fields);
+        let x = db.txns.begin(&db.pager).expect("begin");
+        let mut fits = 0;
+        while db.heap().pages(&db.pager).expect("pages").len() < 2 {
+            let row = [Value::I64(-1), Value::Bytes(vec![7; 200])];
+            db.heap().insert(&db.pager, x, &row).expect("insert");
+            fits += 1;
+        }
+        fits -= 1;
+        db.txns.abort(&db.pager, x).expect("abort");
+        insert_then_delete(&db, 0..fits);
+        db.vacuum_keeping();
+        let pages = db.past_heap.pages(&db.pager).expect("pages");
+        assert_eq!(1, pages.len(), "{fits} copies fill one history page");
+        db.idle(2 * window);
+        insert_then_delete(&db, fits..fits + 1);
+        let allocated: BTreeSet<Pid> = db.pager.allocated().expect("bitmap").into_iter().collect();
+        let report = db.vacuum_keeping();
+        assert_eq!(1, report.moved);
+        assert_eq!(pages, db.past_heap.pages(&db.pager).expect("pages"));
+        let grown: Vec<Pid> = db
+            .pager
+            .allocated()
+            .expect("bitmap")
+            .into_iter()
+            .filter(|p| !allocated.contains(p))
+            .collect();
+        assert_eq!(Vec::<Pid>::new(), grown);
     });
 }

@@ -132,8 +132,8 @@ fn an_update_pruning_a_full_page_refuses_it_at_an_unreserved_deleter() {
         assert_eq!(page, Pid(target.page()), "both versions on the full page");
         heap.delete(&pager, dead, PAST).unwrap();
         let y = txns.begin(&pager).unwrap();
-        let mut judge = txns.judge(&pager, txns.horizon_now(heap.id().0));
-        let got = heap.update_pruning(&pager, target, y, &[Value::I64(3)], &[], Some(&mut judge));
+        let mut judge = txns.judge_now(&pager, heap.id().0);
+        let got = heap.update_pruning(&pager, target, y, &[Value::I64(3)], &[], &mut judge);
         assert_eq!(Err(HeapError::Page(refused_page(page))), got);
         assert_eq!(BTreeMap::from([(page, Damage::Checksum)]), pager.damaged());
         assert_eq!(Err(refused_page(page)), pager.read(page).map(drop));

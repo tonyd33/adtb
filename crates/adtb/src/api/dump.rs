@@ -732,7 +732,9 @@ impl<R: Runtime> Engine<R> {
             .statements(&tx, text, &mut Local::default(), Bounds::default())
             .map_err(|f| f.error)
             .and_then(|_| {
-                let facts = self.deployment.insert(&self.pager, x, facts);
+                let facts = self
+                    .deployment
+                    .insert(&self.pager, self.db.txns(), x, facts);
                 facts.map_err(|e| write::Broken::Facts(e).into())
             });
         match written {

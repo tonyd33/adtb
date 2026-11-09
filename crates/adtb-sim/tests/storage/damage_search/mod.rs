@@ -71,6 +71,8 @@ const UNDER_MARK: &str = "migrate-under-mark-silent";
 const BESIDE: &str = "walk-damage-marks-database";
 const APPLIED_UNDER_MARK: &str = "migrate-applies-under-mark";
 
+/// The failures main shows. When a change moves the write-outs of the generated cases, run
+/// [`nearest_pins`] for the nearest write-out that shows each entry whose pin no longer does.
 const KNOWN: &[Known] = &[
     Known {
         fault: Fault::UnreadableLasting,
@@ -80,7 +82,7 @@ const KNOWN: &[Known] = &[
         what: "an unreadable page marks the database",
         ticket: UNREAD_MARKS,
         seed: 5,
-        at: 620,
+        at: 622,
         then: None,
     },
     Known {
@@ -91,7 +93,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark for an unreadable page",
         ticket: UNREAD_MARKS,
         seed: 5,
-        at: 620,
+        at: 622,
         then: None,
     },
     Known {
@@ -102,7 +104,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark for an unreadable page",
         ticket: UNREAD_MARKS,
         seed: 5,
-        at: 620,
+        at: 622,
         then: None,
     },
     Known {
@@ -113,7 +115,7 @@ const KNOWN: &[Known] = &[
         what: "the open fails",
         ticket: BLANK_OPEN,
         seed: 6,
-        at: 684,
+        at: 685,
         then: None,
     },
     Known {
@@ -124,7 +126,7 @@ const KNOWN: &[Known] = &[
         what: "the open fails",
         ticket: BLANK_OPEN,
         seed: 3,
-        at: 641,
+        at: 642,
         then: None,
     },
     Known {
@@ -135,10 +137,10 @@ const KNOWN: &[Known] = &[
         what: "verify names an intact page",
         ticket: BLANK_OPEN,
         seed: 3,
-        at: 644,
+        at: 645,
         then: Some((
             Point {
-                at: 645,
+                at: 646,
                 injection: Injection::Torn,
             },
             Kind::Index,
@@ -152,10 +154,10 @@ const KNOWN: &[Known] = &[
         what: "a scrub names an intact page",
         ticket: BLANK_OPEN,
         seed: 3,
-        at: 644,
+        at: 645,
         then: Some((
             Point {
-                at: 645,
+                at: 646,
                 injection: Injection::Torn,
             },
             Kind::Index,
@@ -169,7 +171,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 3,
-        at: 603,
+        at: 604,
         then: None,
     },
     Known {
@@ -180,7 +182,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 3,
-        at: 629,
+        at: 630,
         then: None,
     },
     Known {
@@ -191,7 +193,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 27,
-        at: 637,
+        at: 638,
         then: None,
     },
     Known {
@@ -202,7 +204,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 613,
+        at: 615,
         then: None,
     },
     Known {
@@ -213,7 +215,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 613,
+        at: 615,
         then: None,
     },
     Known {
@@ -224,7 +226,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 613,
+        at: 615,
         then: None,
     },
     Known {
@@ -235,7 +237,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 3,
-        at: 604,
+        at: 605,
         then: None,
     },
     Known {
@@ -246,7 +248,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 616,
+        at: 618,
         then: None,
     },
     Known {
@@ -257,7 +259,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 616,
+        at: 618,
         then: None,
     },
     Known {
@@ -268,7 +270,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 616,
+        at: 618,
         then: None,
     },
     Known {
@@ -279,7 +281,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 3,
-        at: 617,
+        at: 618,
         then: None,
     },
     Known {
@@ -290,7 +292,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 3,
-        at: 627,
+        at: 628,
         then: None,
     },
     Known {
@@ -301,7 +303,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 26,
-        at: 635,
+        at: 636,
         then: None,
     },
     Known {
@@ -312,7 +314,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 16,
-        at: 685,
+        at: 687,
         then: None,
     },
     Known {
@@ -323,7 +325,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 16,
-        at: 685,
+        at: 687,
         then: None,
     },
     Known {
@@ -334,7 +336,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 16,
-        at: 685,
+        at: 687,
         then: None,
     },
     Known {
@@ -345,7 +347,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 26,
-        at: 604,
+        at: 605,
         then: None,
     },
     Known {
@@ -356,7 +358,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 26,
-        at: 607,
+        at: 608,
         then: None,
     },
     Known {
@@ -367,7 +369,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 26,
-        at: 627,
+        at: 628,
         then: None,
     },
     Known {
@@ -378,7 +380,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 26,
-        at: 613,
+        at: 614,
         then: None,
     },
     Known {
@@ -389,7 +391,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 26,
-        at: 613,
+        at: 614,
         then: None,
     },
     Known {
@@ -400,7 +402,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 26,
-        at: 613,
+        at: 614,
         then: None,
     },
     Known {
@@ -411,7 +413,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 26,
-        at: 613,
+        at: 614,
         then: None,
     },
     Known {
@@ -433,7 +435,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 26,
-        at: 616,
+        at: 617,
         then: None,
     },
     Known {
@@ -444,7 +446,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 26,
-        at: 616,
+        at: 617,
         then: None,
     },
     Known {
@@ -455,7 +457,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 26,
-        at: 616,
+        at: 617,
         then: None,
     },
     Known {
@@ -466,7 +468,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 26,
-        at: 616,
+        at: 617,
         then: None,
     },
     Known {
@@ -476,8 +478,8 @@ const KNOWN: &[Known] = &[
         consumer: Consumer::Catalog,
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
-        seed: 19,
-        at: 603,
+        seed: 26,
+        at: 622,
         then: None,
     },
     Known {
@@ -488,7 +490,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 29,
-        at: 635,
+        at: 636,
         then: None,
     },
     Known {
@@ -499,7 +501,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 13,
-        at: 630,
+        at: 631,
         then: None,
     },
     Known {
@@ -510,7 +512,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 13,
-        at: 630,
+        at: 631,
         then: None,
     },
     Known {
@@ -521,7 +523,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 13,
-        at: 630,
+        at: 631,
         then: None,
     },
     Known {
@@ -532,7 +534,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 26,
-        at: 627,
+        at: 628,
         then: None,
     },
     Known {
@@ -543,7 +545,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 3,
-        at: 627,
+        at: 628,
         then: None,
     },
     Known {
@@ -554,7 +556,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 3,
-        at: 627,
+        at: 628,
         then: None,
     },
     Known {
@@ -565,7 +567,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 2,
-        at: 636,
+        at: 637,
         then: None,
     },
     Known {
@@ -576,7 +578,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 2,
-        at: 636,
+        at: 637,
         then: None,
     },
     Known {
@@ -587,7 +589,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 2,
-        at: 636,
+        at: 637,
         then: None,
     },
     Known {
@@ -598,7 +600,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 2,
-        at: 614,
+        at: 616,
         then: None,
     },
     Known {
@@ -609,7 +611,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 2,
-        at: 614,
+        at: 616,
         then: None,
     },
     Known {
@@ -620,7 +622,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 2,
-        at: 614,
+        at: 616,
         then: None,
     },
     Known {
@@ -631,7 +633,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 2,
-        at: 638,
+        at: 639,
         then: None,
     },
     Known {
@@ -642,7 +644,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 2,
-        at: 638,
+        at: 639,
         then: None,
     },
     Known {
@@ -653,7 +655,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 2,
-        at: 638,
+        at: 639,
         then: None,
     },
     Known {
@@ -664,7 +666,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 2,
-        at: 617,
+        at: 619,
         then: None,
     },
     Known {
@@ -675,7 +677,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 2,
-        at: 617,
+        at: 619,
         then: None,
     },
     Known {
@@ -686,7 +688,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 2,
-        at: 617,
+        at: 619,
         then: None,
     },
     Known {
@@ -697,7 +699,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 29,
-        at: 647,
+        at: 648,
         then: None,
     },
     Known {
@@ -708,7 +710,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 637,
+        at: 638,
         then: None,
     },
     Known {
@@ -719,7 +721,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 637,
+        at: 638,
         then: None,
     },
     Known {
@@ -730,7 +732,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 637,
+        at: 638,
         then: None,
     },
     Known {
@@ -741,7 +743,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 614,
+        at: 616,
         then: None,
     },
     Known {
@@ -752,7 +754,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 614,
+        at: 616,
         then: None,
     },
     Known {
@@ -763,7 +765,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 614,
+        at: 616,
         then: None,
     },
     Known {
@@ -774,7 +776,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 639,
+        at: 640,
         then: None,
     },
     Known {
@@ -785,7 +787,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 639,
+        at: 640,
         then: None,
     },
     Known {
@@ -796,7 +798,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 639,
+        at: 640,
         then: None,
     },
     Known {
@@ -807,7 +809,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 617,
+        at: 619,
         then: None,
     },
     Known {
@@ -818,7 +820,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 617,
+        at: 619,
         then: None,
     },
     Known {
@@ -829,7 +831,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 5,
-        at: 617,
+        at: 619,
         then: None,
     },
     Known {
@@ -840,7 +842,7 @@ const KNOWN: &[Known] = &[
         what: "by key: refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 16,
-        at: 708,
+        at: 709,
         then: None,
     },
     Known {
@@ -851,7 +853,7 @@ const KNOWN: &[Known] = &[
         what: "refused the database with a Database mark the faults map to their relation",
         ticket: BESIDE,
         seed: 16,
-        at: 708,
+        at: 709,
         then: None,
     },
     Known {
@@ -862,7 +864,7 @@ const KNOWN: &[Known] = &[
         what: "the database is marked for pages that map to their relation",
         ticket: BESIDE,
         seed: 16,
-        at: 708,
+        at: 709,
         then: None,
     },
     Known {
@@ -873,7 +875,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 26,
-        at: 628,
+        at: 629,
         then: None,
     },
     Known {
@@ -884,7 +886,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 26,
-        at: 614,
+        at: 615,
         then: None,
     },
     Known {
@@ -895,7 +897,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 26,
-        at: 630,
+        at: 631,
         then: None,
     },
     Known {
@@ -906,7 +908,7 @@ const KNOWN: &[Known] = &[
         what: "a migration under a whole-database mark returns Ok",
         ticket: UNDER_MARK,
         seed: 26,
-        at: 617,
+        at: 618,
         then: None,
     },
     Known {
@@ -917,7 +919,7 @@ const KNOWN: &[Known] = &[
         what: "applies a migration under a whole-database mark",
         ticket: APPLIED_UNDER_MARK,
         seed: 3,
-        at: 653,
+        at: 654,
         then: None,
     },
     Known {
@@ -928,7 +930,7 @@ const KNOWN: &[Known] = &[
         what: "applies a migration under a whole-database mark",
         ticket: APPLIED_UNDER_MARK,
         seed: 3,
-        at: 605,
+        at: 606,
         then: None,
     },
     Known {
@@ -939,7 +941,7 @@ const KNOWN: &[Known] = &[
         what: "applies a migration under a whole-database mark",
         ticket: APPLIED_UNDER_MARK,
         seed: 3,
-        at: 617,
+        at: 618,
         then: None,
     },
     Known {
@@ -950,7 +952,7 @@ const KNOWN: &[Known] = &[
         what: "applies a migration under a whole-database mark",
         ticket: APPLIED_UNDER_MARK,
         seed: 51,
-        at: 647,
+        at: 648,
         then: None,
     },
 ];
@@ -1491,4 +1493,110 @@ fn two_faults_lose_no_acknowledged_row_and_hide_no_stale_page() {
         Vec::<(u64, usize, usize, Injection, Violation)>::new(),
         found
     );
+}
+
+/// Returns why the case `k` pins no longer shows `k`, or `None` when it does.
+fn unpinned(k: &Known) -> Option<String> {
+    let plan = case::plan(k.seed, generate::sequence(k.seed), false);
+    let writes = plan.clean.trace.writes.len();
+    let then = k.then.map(|(t, _)| t);
+    if k.at >= writes {
+        return Some("names a write-out past the last".into());
+    }
+    if plan.kind(k.at) != Some(k.kind) {
+        return Some(format!("writes another cell: kind {:?}", plan.kind(k.at)));
+    }
+    let cell = (plan.owner(k.at), plan.fault(k.at, k.fault.injection()));
+    if cell != (k.owner, k.fault) {
+        return Some(format!("writes another cell: {cell:?}"));
+    }
+    if let Some((t, kind)) = k.then
+        && (t.at >= writes || plan.kind(t.at) != Some(kind))
+    {
+        return Some("second fault hits another kind".into());
+    }
+    (!shows(k, &plan, k.at, then)).then(|| "no longer shows".into())
+}
+
+/// Returns whether the case of `plan` faulted at `at`, and at `then` for a pair, shows `k`'s
+/// cell and shape.
+fn shows(k: &Known, plan: &case::Plan, at: usize, then: Option<Point>) -> bool {
+    let injection = k.fault.injection();
+    if plan.kind(at) != Some(k.kind)
+        || (plan.owner(at), plan.fault(at, injection)) != (k.owner, k.fault)
+    {
+        return false;
+    }
+    let first = Point { at, injection };
+    let outcome = match then {
+        Some(t) => case::run_pair(plan, first, t),
+        None => case::run(plan, first),
+    };
+    outcome.is_some_and(|o| {
+        o.verdicts
+            .violations
+            .iter()
+            .any(|v| v.consumer == k.consumer && v.what == k.what)
+    })
+}
+
+/// Returns the nearest write-out to `k`'s pin, in its seed first, whose case shows `k`, with the
+/// second fault's write-out for a pair.
+fn nearest(k: &Known) -> Option<(u64, usize, Option<usize>)> {
+    let steered = generate::STEERED..generate::STEERED + 60;
+    for seed in std::iter::once(k.seed).chain(1..=60).chain(steered) {
+        let plan = case::plan(seed, generate::sequence(seed), false);
+        let writes = plan.clean.trace.writes.len();
+        let mut ats: Vec<usize> = (0..writes)
+            .filter(|&at| plan.kind(at) == Some(k.kind))
+            .collect();
+        ats.sort_by_key(|at| at.abs_diff(k.at));
+        for &at in ats.iter().take(12) {
+            let Some((t, kind)) = k.then else {
+                if shows(k, &plan, at, None) {
+                    return Some((seed, at, None));
+                }
+                continue;
+            };
+            let mut seconds: Vec<usize> = (0..writes)
+                .filter(|&x| plan.kind(x) == Some(kind))
+                .collect();
+            seconds.sort_by_key(|x| x.abs_diff(t.at));
+            for &second in seconds.iter().take(6) {
+                let then = Point {
+                    at: second,
+                    injection: t.injection,
+                };
+                if shows(k, &plan, at, Some(then)) {
+                    return Some((seed, at, Some(second)));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Print each known failure its pin no longer shows, why, and the nearest write-out that shows
+/// it. Run it by hand under the damage profile:
+/// `cargo nextest run -p adtb-sim --test storage --profile damage --run-ignored only --no-capture -E 'test(nearest_pins)'`.
+#[test]
+#[ignore = "a search for new pins, run by hand after a change moves the write-outs"]
+fn nearest_pins() {
+    for (i, k) in KNOWN.iter().enumerate() {
+        let Some(why) = unpinned(k) else {
+            continue;
+        };
+        eprintln!(
+            "nearest_pins: {i} {:?} {:?} {:?} {:?} {:?}: seed {} at {} then {:?}: {why}; nearest {:?}",
+            k.fault,
+            k.kind,
+            k.owner,
+            k.consumer,
+            k.what,
+            k.seed,
+            k.at,
+            k.then.map(|(t, _)| t.at),
+            nearest(k)
+        );
+    }
 }

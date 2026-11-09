@@ -39,6 +39,16 @@ pub struct Horizon {
     rule: Rule,
 }
 
+impl Horizon {
+    /// Returns the horizon of a history heap whose versions this horizon's window keeps.
+    pub fn past(self) -> Horizon {
+        Horizon {
+            rule: Rule::Past,
+            ..self
+        }
+    }
+}
+
 impl<R: Runtime> Transactions<R> {
     /// Returns the horizon on-access pruning of heap `heap` judges by now.
     pub fn horizon_now(&self, heap: u32) -> Horizon {
@@ -145,6 +155,15 @@ impl<R: Runtime> Transactions<R> {
         horizon: Horizon,
     ) -> impl FnMut(&Writers) -> Result<Fate, StatusError> + 'a {
         move |w| self.fate(pager, w, &horizon)
+    }
+
+    /// Returns the judge on-access pruning of heap `heap` judges by now.
+    pub fn judge_now<'a>(
+        &'a self,
+        pager: &'a Pager<R>,
+        heap: u32,
+    ) -> impl FnMut(&Writers) -> Result<Fate, StatusError> + 'a {
+        self.judge(pager, self.horizon_now(heap))
     }
 
     /// Returns whether `x` has committed or aborted.

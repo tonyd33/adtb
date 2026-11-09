@@ -27,6 +27,8 @@ mod constraints_tests;
 #[cfg(test)]
 mod past_tests;
 #[cfg(test)]
+mod prune_on_access_tests;
+#[cfg(test)]
 mod write_states_tests;
 #[cfg(test)]
 mod write_tests;

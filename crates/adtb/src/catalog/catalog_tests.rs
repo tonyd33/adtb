@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::catalog::{Catalog, Error, applied, declared, version_hash};
+use crate::catalog::{Catalog, Error, KeptField, KeptRow, applied, declared, version_hash};
 use crate::key::{CtorId, Value};
 use crate::mvcc::{Scope, Transactions};
 use crate::plan::{Element, IndexId};
@@ -977,5 +977,43 @@ fn a_snapshot_taken_before_a_migration_reads_the_catalog_rows_of_the_version_bef
         let (id, after) = txns.take(Scope::Every).expect("a snapshot");
         assert_eq!(1, names(&after), "a snapshot after sees identities");
         txns.release(id);
+    });
+}
+
+#[test]
+fn a_kept_row_written_into_a_full_roots_page_of_dead_versions_reuses_it() {
+    let mut sim = Sim::new(4, Config::default());
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
+        let (catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
+        let deployment = catalog.deployment();
+        let roots = deployment.roots();
+        let row = KeptRow {
+            relation: 339,
+            group: "database".into(),
+            ctor: 0,
+            fields: vec![KeptField::Text("k".repeat(400))],
+        };
+        let keep = || {
+            let x = txns.begin(&pager).expect("a transaction");
+            catalog
+                .replace_kept(
+                    &pager,
+                    &txns,
+                    x,
+                    (339, "database"),
+                    std::slice::from_ref(&row),
+                )
+                .expect("the kept row is written");
+            txns.commit(&pager, x).expect("the commit");
+        };
+        keep();
+        let pages = roots.pages(&pager).expect("the roots pages");
+        let allocated = pager.allocated().expect("the allocated pages");
+        for _ in 0..30 {
+            keep();
+        }
+        assert_eq!(pages, roots.pages(&pager).expect("the roots pages"));
+        assert_eq!(allocated, pager.allocated().expect("the allocated pages"));
     });
 }

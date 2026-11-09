@@ -79,6 +79,7 @@ pub(crate) fn keep<R: Runtime>(
     pid: crate::storage::Pid,
 ) -> Result<usize, Error> {
     let past = into.heap(ctor);
+    let mut judge = txns.judge(pager, horizon.past());
     let mut found = Vec::new();
     heap.scan_pages(pager, &[pid], |v| found.push(v))?;
     let mut copied = 0;
@@ -96,7 +97,7 @@ pub(crate) fn keep<R: Runtime>(
         let tid = match earlier {
             Held::Indexed => continue,
             Held::Unindexed(tid) => tid,
-            Held::Not => match past.copy_version(pager, heap, &v)? {
+            Held::Not => match past.copy_version_pruning(pager, heap, &v, &mut judge)? {
                 Some(tid) => {
                     copied += 1;
                     tid

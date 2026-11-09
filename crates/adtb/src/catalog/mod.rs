@@ -53,7 +53,7 @@ use adtb_lang::types::RelId;
 use crate::btree::{self, BTree, Index};
 use crate::exec::{self, IndexedRows, StoredHeap, StoredIndex};
 use crate::heap::{self, FieldType, Heap, LargeStore};
-use crate::key::{CtorId, Dir, Entry, KeySchema, OrderKey, Scalar, Value};
+use crate::key::{CtorId, Dir, Entry, KeySchema, OrderKey, Scalar, Tid, Value};
 use crate::mvcc::{self, CommitLog, Scope, Snapshot, Transactions, Xid};
 use crate::plan::{self, HeapId, IndexDesc, IndexId, RelationDesc};
 use crate::runtime::Runtime;
@@ -1239,16 +1239,16 @@ impl Catalog {
         }
     }
 
-    /// Insert `row` of constructor `c` into relation `r` as transaction `x`, with an entry in
-    /// every index over `c`.
+    /// Insert `row` of constructor `c` into relation `r` as `m.x`, with an entry in every index
+    /// over `c`.
     fn insert<R: Runtime>(
         &self,
-        pager: &Pager<R>,
-        x: Xid,
+        m: &Migrating<'_, R>,
         r: RelId,
         c: u32,
         row: &[Value],
     ) -> Result<(), Error> {
+        let pager = m.pager;
         let ctor = ctor_id(&self.schema, r, c).stored();
         let mut entries = Vec::new();
         for (spec, index, keys) in self.indexes.values() {
@@ -1273,7 +1273,7 @@ impl Catalog {
             })?;
             entries.push((index, key));
         }
-        let tid = self.heap(r, c).insert(pager, x, row)?;
+        let tid = m.insert(self.heap(r, c), row)?;
         for (index, key) in entries {
             let fresh = index.insert(pager, &Entry { key, ctor, tid })?;
             assert!(fresh, "a new row's entry is not in its index yet");
@@ -1309,6 +1309,26 @@ struct Migrating<'a, R: Runtime> {
     txns: &'a Transactions<R>,
     x: Xid,
     snapshot: &'a Snapshot,
+}
+
+impl<R: Runtime> Migrating<'_, R> {
+    /// Insert `row` into `heap` as `self.x`, as [`insert_row`] does.
+    fn insert(&self, heap: &Heap, row: &[Value]) -> Result<Tid, Error> {
+        insert_row(self.pager, self.txns, heap, self.x, row)
+    }
+}
+
+/// Insert `row` into `heap` as transaction `x`, pruning a page found without room before
+/// looking further. Returns its TID.
+fn insert_row<R: Runtime>(
+    pager: &Pager<R>,
+    txns: &Transactions<R>,
+    heap: &Heap,
+    x: Xid,
+    row: &[Value],
+) -> Result<Tid, Error> {
+    let mut judge = txns.judge_now(pager, heap.id().0);
+    Ok(heap.insert_pruning(pager, x, row, &mut judge)?)
 }
 
 /// Returns the heap of every constructor of relation `r` among `heaps`.

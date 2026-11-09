@@ -939,40 +939,42 @@ impl Heap {
         })
     }
 
-    /// Insert `row` as a version written by `xid`. Returns its TID.
+    /// Insert `row` as a version written by `xid`, pruning by `judge` a page found without room
+    /// before looking further. Returns its TID.
     ///
     /// Panics if `row` is not a row of the newest format.
-    pub fn insert<R: Runtime>(
-        &self,
-        pager: &Pager<R>,
-        xid: Xid,
-        row: &[Value],
-    ) -> Result<Tid, Error> {
-        self.insert_pruning(pager, xid, row, None)
-    }
-
-    /// Insert `row` as [`Heap::insert`] does, pruning by `judge` a page found without room
-    /// before looking further.
     pub fn insert_pruning<R: Runtime>(
         &self,
         pager: &Pager<R>,
         xid: Xid,
         row: &[Value],
-        judge: Option<&mut Judge<'_>>,
+        judge: &mut Judge<'_>,
     ) -> Result<Tid, Error> {
-        self.put_version(pager, xid, row, judge)
+        self.put_version(pager, xid, row, Some(judge))
     }
 
     /// Insert a copy of `v`, a version of `from` read at `v.tid`, with no successor, and flag the
-    /// original kept, both in one update. Returns the copy's TID, or `None`, copying nothing, when
-    /// `from` no longer holds that version.
+    /// original kept, both in one update, pruning by `judge` a page found without room before
+    /// looking further. Returns the copy's TID, or `None`, copying nothing, when `from` no longer
+    /// holds that version.
     ///
     /// Panic if `from` is this heap or `v.row` is not a row of the newest format.
-    pub fn copy_version<R: Runtime>(
+    pub fn copy_version_pruning<R: Runtime>(
         &self,
         pager: &Pager<R>,
         from: &Heap,
         v: &Version,
+        judge: &mut Judge<'_>,
+    ) -> Result<Option<Tid>, Error> {
+        self.put_copy(pager, from, v, Some(judge))
+    }
+
+    fn put_copy<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        from: &Heap,
+        v: &Version,
+        mut judge: Option<&mut Judge<'_>>,
     ) -> Result<Option<Tid>, Error> {
         assert_ne!(self.id, from.id, "a version is copied to another heap");
         let mut header = v.header;
@@ -999,6 +1001,9 @@ impl Heap {
                 Put::Full => {}
             }
             drop(write);
+            if self.prune_full(pager, n, judge.as_deref_mut())? {
+                continue;
+            }
             self.refused(pager, n)?;
         }
     }
@@ -1078,8 +1083,11 @@ impl Heap {
         Ok(done.freed > 0 && !done.removed)
     }
 
-    /// Update as [`Heap::update`] does, pruning by `judge` a page found without room before
-    /// looking further.
+    /// Write `row` as the successor `xid` makes of the version at `at`, and point that version at
+    /// it, pruning by `judge` a page found without room before looking further.
+    ///
+    /// The successor is heap-only when it fits on the old version's page and no field listed in
+    /// `indexed`, the key fields of every index over this heap's constructor, changes.
     pub fn update_pruning<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -1087,9 +1095,20 @@ impl Heap {
         xid: Xid,
         row: &[Value],
         indexed: &[usize],
+        judge: &mut Judge<'_>,
+    ) -> Result<Updated, Error> {
+        self.put_successor(pager, at.into(), xid, row, indexed, Some(judge))
+    }
+
+    fn put_successor<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        target: WriteTarget,
+        xid: Xid,
+        row: &[Value],
+        indexed: &[usize],
         mut judge: Option<&mut Judge<'_>>,
     ) -> Result<Updated, Error> {
-        let target = at.into();
         let at = target.tid;
         let raw = self.raw(pager, at)?;
         let Some((format, _, old)) = raw else {
@@ -1212,25 +1231,38 @@ impl Heap {
         Ok(())
     }
 
-    /// Move the row whose version is at `at` into heap `to` as `row`, written by `xid`. Returns
-    /// the new version's TID.
+    /// Move the row whose version is at `at` into heap `to` as `row`, written by `xid`, pruning a
+    /// page of `to` found without room by `judge`, a judge of `to`'s versions, before looking
+    /// further. Returns the new version's TID.
     ///
     /// The new version has the retagged-in flag; the old one gets `xid` as its deleter, the moved
     /// flag and `next` naming the new one. Out-of-line values `row` shares with the old version
     /// keep their pointers.
     ///
     /// Panics if `to` is this heap or belongs to another sum.
-    pub fn retag<R: Runtime>(
+    pub fn retag_pruning<R: Runtime>(
         &self,
         pager: &Pager<R>,
         at: impl Into<WriteTarget>,
         xid: Xid,
         to: &Heap,
         row: &[Value],
+        judge: &mut Judge<'_>,
+    ) -> Result<Tid, Error> {
+        self.put_moved(pager, at.into(), xid, to, row, Some(judge))
+    }
+
+    fn put_moved<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        target: WriteTarget,
+        xid: Xid,
+        to: &Heap,
+        row: &[Value],
+        mut judge: Option<&mut Judge<'_>>,
     ) -> Result<Tid, Error> {
         assert_ne!(self.id, to.id, "a retag moves a row to another heap");
         assert_eq!(self.large, to.large, "a retag stays within one sum");
-        let target = at.into();
         let at = target.tid;
         let raw = self.raw(pager, at)?;
         let Some((format, _, old)) = raw else {
@@ -1265,6 +1297,9 @@ impl Heap {
                 Put::Full => {}
             }
             drop(write);
+            if to.prune_full(pager, n, judge.as_deref_mut())? {
+                continue;
+            }
             to.refused(pager, n)?;
         }
     }

@@ -36,11 +36,7 @@ impl Heap {
         Ok(HeapPage::any(&pager.read(pid)?).is_some_and(HeapPage::all_visible))
     }
 
-    /// Write `row` as the successor `xid` makes of the version at `at`, and point that version at
-    /// it.
-    ///
-    /// The successor is heap-only when it fits on the old version's page and no field listed in
-    /// `indexed`, the key fields of every index over this heap's constructor, changes.
+    /// Update as [`Heap::update_pruning`] does, pruning nothing.
     pub fn update<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -49,7 +45,40 @@ impl Heap {
         row: &[Value],
         indexed: &[usize],
     ) -> Result<Updated, Error> {
-        self.update_pruning(pager, at, xid, row, indexed, None)
+        self.put_successor(pager, at.into(), xid, row, indexed, None)
+    }
+
+    /// Copy `v` as [`Heap::copy_version_pruning`] does, pruning nothing.
+    pub fn copy_version<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        from: &Heap,
+        v: &Version,
+    ) -> Result<Option<Tid>, Error> {
+        self.put_copy(pager, from, v, None)
+    }
+
+    /// Insert `row` as [`Heap::insert_pruning`] does, pruning nothing.
+    pub fn insert<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        xid: Xid,
+        row: &[Value],
+    ) -> Result<Tid, Error> {
+        self.put_version(pager, xid, row, None)
+    }
+
+    /// Move the row whose version is at `at` into heap `to` as [`Heap::retag_pruning`] does,
+    /// pruning nothing.
+    pub fn retag<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        at: impl Into<WriteTarget>,
+        xid: Xid,
+        to: &Heap,
+        row: &[Value],
+    ) -> Result<Tid, Error> {
+        self.put_moved(pager, at.into(), xid, to, row, None)
     }
 
     /// Returns what is wrong with the heap's pages, directory and visibility map, directory

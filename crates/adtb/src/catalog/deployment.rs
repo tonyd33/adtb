@@ -215,10 +215,11 @@ impl Catalog {
     pub(super) fn write_facts<R: Runtime>(
         &self,
         pager: &Pager<R>,
+        txns: &Transactions<R>,
         x: Xid,
         facts: &[Fact],
     ) -> Result<(), Error> {
-        self.deployment().insert(pager, x, facts)
+        self.deployment().insert(pager, txns, x, facts)
     }
 }
 
@@ -253,11 +254,12 @@ impl Deployment {
     pub fn insert<R: Runtime>(
         &self,
         pager: &Pager<R>,
+        txns: &Transactions<R>,
         x: Xid,
         facts: &[Fact],
     ) -> Result<(), Error> {
         for f in facts {
-            self.roots.insert(pager, x, &[value(f)])?;
+            super::insert_row(pager, txns, &self.roots, x, &[value(f)])?;
         }
         Ok(())
     }

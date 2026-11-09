@@ -463,7 +463,7 @@ impl Catalog {
                         ctor: DORMANT,
                         fields,
                     };
-                    self.roots.insert(m.pager, m.x, &[mark])?;
+                    m.insert(&self.roots, &[mark])?;
                 }
             }
         }
@@ -508,7 +508,7 @@ impl Catalog {
         }
         delete_rows(m, into.heap(shape.grants, shape.ctor), &deleted)?;
         for row in &inserted {
-            into.insert(m.pager, m.x, shape.grants, shape.ctor, row)?;
+            into.insert(m, shape.grants, shape.ctor, row)?;
         }
         dormant
             .into_iter()
