@@ -8,7 +8,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use adtb::runtime::{OpKind, Runtime, Threads};
-use adtb::{CreateOptions, Database, Error, Log, OpenOptions, TxnCallOptions, TxnOptions};
+use adtb::{
+    CreateOptions, Database, Error, FatalReason, Log, OpenError, OpenOptions, TxnCallOptions,
+    TxnOptions,
+};
 use adtb_harness::damage::DataFile;
 use adtb_harness::search::Files;
 use adtb_harness::{common, crash};
@@ -305,6 +308,46 @@ pub fn log(version: u8) -> Log {
     Log::new([APP, TAGS, UNTAG].into_iter().take(1 + version as usize))
 }
 
+/// Returns the version of the file's own log when `e` is the whole-database mark refusing the
+/// migration past it.
+pub fn refused_whole(e: &OpenError) -> Option<u8> {
+    match e {
+        OpenError::MigrationRefused {
+            version,
+            reason:
+                Error::Fatal {
+                    reason: FatalReason::Quarantined { what },
+                },
+        } if what == "the database" => u8::try_from(version.checked_sub(2)?).ok(),
+        _ => None,
+    }
+}
+
+/// Open `FILE` with the log to `version`, and when the whole-database mark refuses a migration
+/// past the file's, with the file's own log. Under `retry`, do so once more when that open fails,
+/// as an operator would after a failure that may have cleared. Returns the open and the version of
+/// its log.
+pub fn open_own<R: Runtime>(
+    rt: &R,
+    version: u8,
+    options: &OpenOptions,
+    retry: bool,
+) -> (Result<Database<R>, OpenError>, u8) {
+    let at = |v: u8| Database::open_in(rt.clone(), FILE, &log(v), options);
+    let own = |v: u8| {
+        let open = at(v);
+        match open.as_ref().err().and_then(refused_whole) {
+            Some(own) if own < v => (at(own), own),
+            _ => (open, v),
+        }
+    };
+    let (open, version) = own(version);
+    if retry && open.is_err() {
+        return own(version);
+    }
+    (open, version)
+}
+
 /// Returns the commit's result of the transaction running `op` on `db`, with `rows` the
 /// acknowledged rows before it.
 fn write<R: Runtime>(db: &Database<R>, op: &Op, rows: &Rows) -> Result<(), Error> {
@@ -425,6 +468,18 @@ fn applies<R: Runtime>(db: &Database<R>, version: u8) -> bool {
         .map(|r| r.name.as_ref())
         .collect();
     app.contains(Rel::Users.name()) && app.contains(Rel::Tags.name()) == present(Rel::Tags, version)
+}
+
+/// Returns whether `db` opened without reading its catalog: `verify` of a relation then fails
+/// with the whole-database quarantine.
+fn unread<R: Runtime>(db: &Database<R>) -> bool {
+    let users = Rel::Users.qualified();
+    match db.verify(Some(&users)).map(drop) {
+        Err(Error::Fatal {
+            reason: FatalReason::Quarantined { what },
+        }) => what == "the database",
+        _ => false,
+    }
 }
 
 /// Returns whether the page of marks `db` writes holds the whole database's mark.
@@ -563,6 +618,8 @@ pub struct Ran {
     /// The migrations, by their operation's index, applied by an open of a file whose
     /// whole-database mark was durable.
     pub applied_under_mark: BTreeSet<usize>,
+    /// The migrations, by their operation's index, whose open the whole-database mark refused.
+    pub refused_under_mark: BTreeSet<usize>,
     /// The marks the file held when the migration that drops a relation began.
     pub marked_before_drop: BTreeSet<Quarantine>,
     /// The pages the damage records named after any open or operation of the run.
@@ -594,6 +651,7 @@ struct Runner<'a> {
     damaged: Option<Pid>,
     under_mark: BTreeSet<usize>,
     applied_under_mark: BTreeSet<usize>,
+    refused_under_mark: BTreeSet<usize>,
     marked_before_drop: BTreeSet<Quarantine>,
     recorded: BTreeSet<Pid>,
 }
@@ -604,18 +662,27 @@ impl Runner<'_> {
         self.recorded.extend(records.pages().keys().copied());
     }
 
-    /// Open the file, and once more when the first open fails, as an operator would after a
-    /// failure that may have cleared.
-    fn open_with_retry<R: Runtime>(&mut self, rt: R, version: u8) -> Option<Database<R>> {
-        let first = Database::open_in(rt.clone(), FILE, &log(version), &options());
-        match first.or_else(|_| Database::open_in(rt, FILE, &log(version), &options())) {
-            Ok(db) => Some(db),
-            Err(e) => {
-                self.failed
-                    .insert(self.next.saturating_sub(1), format!("open: {e:?}"));
+    /// Returns the database `opened` opened and the version of its log, recording its failure
+    /// under operation `i`.
+    fn failing<R: Runtime>(
+        &mut self,
+        opened: (Result<Database<R>, OpenError>, u8),
+        i: usize,
+    ) -> Option<(Database<R>, u8)> {
+        match opened {
+            (Ok(db), version) => Some((db, version)),
+            (Err(e), _) => {
+                self.failed.insert(i, format!("open: {e:?}"));
                 None
             }
         }
+    }
+
+    /// Record that operation `i`'s open was refused naming `version` as the file's, which the
+    /// acknowledged operations do not leave it at.
+    fn refused_naming(&mut self, i: usize, version: u8) {
+        let refused = format!("refused naming version {version} as the file's");
+        self.failed.insert(i, refused);
     }
 
     fn commit<R: Runtime>(&mut self, db: &Database<R>, op: &Op, i: usize) -> bool {
@@ -638,9 +705,14 @@ impl Runner<'_> {
     /// Run the operations from `next` up to the next crash or the end on one process. Returns
     /// whether every one ran.
     fn process(&mut self, rt: &SimRuntime) -> bool {
-        let Some(mut db) = self.open_with_retry(rt.clone(), self.acked.version) else {
+        let opened = open_own(rt, self.acked.version, &options(), true);
+        let Some((mut db, at)) = self.failing(opened, self.next.saturating_sub(1)) else {
             return false;
         };
+        if at != self.acked.version {
+            self.refused_naming(self.next.saturating_sub(1), at);
+            return false;
+        }
         if self.next == 0 && self.during.is_empty() {
             let keep = "set setting RetentionWindow = { length: 1h }";
             db.query_text(keep, &[], &adtb::CallOptions::default())
@@ -684,13 +756,22 @@ impl Runner<'_> {
                     } else {
                         self.acked.version
                     };
-                    let Some(again) = self.open_with_retry(rt.clone(), version) else {
+                    let opened = open_own(rt, version, &options(), true);
+                    let Some((again, opened_at)) = self.failing(opened, i) else {
                         return false;
                     };
                     db = again;
+                    if opened_at != version && opened_at != self.acked.version {
+                        self.refused_naming(i, opened_at);
+                        return false;
+                    }
+                    if opened_at != version {
+                        self.refused_under_mark.insert(i);
+                    }
+                    let version = opened_at;
                     let marked = marked_whole(&db);
                     let migrated = version != self.acked.version && applies(&db, version);
-                    if version != self.acked.version && marked && !migrated {
+                    if version != self.acked.version && marked && !migrated && !unread(&db) {
                         self.under_mark.insert(i);
                     }
                     if durable && migrated {
@@ -825,6 +906,7 @@ pub fn run(seed: u64, ops: &[Op], arm: Arm<'_>, observe: bool, concurrent: bool)
         damaged: None,
         under_mark: BTreeSet::new(),
         applied_under_mark: BTreeSet::new(),
+        refused_under_mark: BTreeSet::new(),
         marked_before_drop: BTreeSet::new(),
         recorded: BTreeSet::new(),
     };
@@ -893,6 +975,7 @@ pub fn run(seed: u64, ops: &[Op], arm: Arm<'_>, observe: bool, concurrent: bool)
         damaged: runner.damaged,
         under_mark: runner.under_mark,
         applied_under_mark: runner.applied_under_mark,
+        refused_under_mark: runner.refused_under_mark,
         marked_before_drop: runner.marked_before_drop,
         recorded: runner.recorded,
         failed_reads,

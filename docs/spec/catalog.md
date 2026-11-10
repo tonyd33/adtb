@@ -2125,7 +2125,9 @@ read, quarantines what holds it: one constructor relation, or one
 index, which holds entries of every constructor of its set. A page no
 relation holds, such as one of the commit log or the catalog,
 quarantines the database: every call fails with `Fatal { reason:
-Quarantined {..} }`, and the file opens for `verify` and `dump` only. An
+Quarantined {..} }`, and the file opens for `verify` and `dump` only.
+An open given migrations beyond the file's log, when the file's log can
+be read, is refused as [embedding.md §2.1](embedding.md#21-open) states. An
 `Order`, `Orphan` or `Missing` finding (§11.1) quarantines the index it
 names. A file with neither copy of its header intact, or a log that
 recovery refuses, does not open.

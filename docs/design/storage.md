@@ -984,11 +984,15 @@ Opening a file under that mark, postconditions:
 - Nothing past the mark is written. A damage found from then on is recorded
   in memory only. A checkpoint still folds into the damage list every
   record the log holds, including those replay reads at the open of a file
-  already marked. The open resolves no id, frees no page,
-  allocates no counters page, applies no migration and compares no
-  migration of the given log with the file's. No transaction with an id
-  begins, so `verify` keeps no findings and a refused call records no `Denied`
-  audit row. Once the mark is durable, this holds of every later open. An open
+  already marked. The open resolves no id, frees no page, allocates no
+  counters page and applies no migration. When the catalog was read, it
+  compares the logs: a diverged log fails `Diverged`, and otherwise a given
+  log longer than the file's fails `MigrationRefused`, whose reason is the
+  write path's refusal of the database
+  ([embedding.md §2.1](../spec/embedding.md#21-open)). When the catalog was
+  not read, the open compares nothing and succeeds. No
+  transaction with an id begins, so `verify` keeps no findings and a refused
+  call records no `Denied` audit row. Once the mark is durable, this holds of every later open. An open
   that finds the damage only after opening an intact commit log has already
   resolved the ids left in progress.
 - Pages 0 and 1 and the log may change on open and close: recovery and the

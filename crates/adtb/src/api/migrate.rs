@@ -8,7 +8,7 @@ use crate::runtime::Runtime;
 use crate::storage::Pager;
 
 use super::cause::{Broken, corrupt, internal};
-use super::{Error, Log, OpenError, RejectReason, registered};
+use super::{Error, Log, OpenError, Opened, RejectReason, registered};
 
 /// Apply the migrations of `log` beyond the file's own, each as its own schema change, stopping
 /// at the first refused one or the first across which a bundle of `live` has no translation.
@@ -59,6 +59,25 @@ pub(super) fn migrate<R: Runtime>(
         })?;
     }
     Ok(())
+}
+
+/// Returns the version of the first migration of `log` past the file's, `None` when it has none.
+pub(super) fn unapplied(catalog: &Catalog, log: &Log) -> Option<u64> {
+    (log.migrations.len() > catalog.source().log.len()).then(|| catalog.source().version + 1)
+}
+
+impl<R: Runtime> Opened<R> {
+    /// Fail with `MigrationRefused` naming `unapplied`, the first migration the open left
+    /// unapplied under the whole-database mark, its reason the failure every call on the database
+    /// returns.
+    pub(super) fn refusing_unapplied(self, unapplied: Option<u64>) -> Result<Opened<R>, OpenError> {
+        let Some(version) = unapplied else {
+            return Ok(self);
+        };
+        let reason = Error::of_whole_mark(&self.db, &self.parts.schema)
+            .expect("the whole-database mark an open found holds until the engine closes");
+        Err(OpenError::MigrationRefused { version, reason })
+    }
 }
 
 fn refused(version: u64, reason: RejectReason) -> OpenError {

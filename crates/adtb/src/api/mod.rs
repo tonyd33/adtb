@@ -17,6 +17,8 @@ mod host;
 mod instances;
 mod load;
 mod maintenance;
+#[cfg(test)]
+mod marked_open_tests;
 mod migrate;
 #[cfg(test)]
 mod open_tests;
@@ -875,13 +877,27 @@ impl<R: Runtime> Engine<R> {
             }
             Err(e) => return Err(corrupt(e)),
         };
-        let opened = Engine::on(rt.clone(), pager.clone(), &opening, log, options).or_else(|e| {
+        let mut unapplied = None;
+        let opened = Engine::on(
+            rt.clone(),
+            pager.clone(),
+            &opening,
+            log,
+            options,
+            &mut unapplied,
+        );
+        let opened = opened.or_else(|e| {
             mark_failed_open_damage(rt.clone(), &pager, &opening);
+            if e.refuses_the_program() {
+                return Err(e);
+            }
             open_damage(&pager).map_or(Err(e), |damage| {
                 Engine::unread(rt.clone(), pager.clone(), options, damage)
             })
         });
-        let opened = opened.map(|opened| Engine::of(opened, opening, options));
+        let opened = opened
+            .and_then(|o| o.refusing_unapplied(unapplied))
+            .map(|opened| Engine::of(opened, opening, options));
         if opened.is_err() {
             pager.close();
         }
@@ -1025,16 +1041,18 @@ impl<R: Runtime> Engine<R> {
         )
     }
 
-    /// Open the catalog of the recovered `pager`, apply the migrations of `log` beyond the
-    /// file's own, and bind the write path to it.
+    /// Open the catalog of the recovered `pager`, apply the migrations of `log` past the file's,
+    /// and bind the write path. Once the catalog is read, leave the first unapplied in `unapplied`.
     fn on(
         rt: R,
         pager: Pager<R>,
         opening: &Opening,
         log: &Log,
         options: &OpenOptions,
+        unapplied: &mut Option<u64>,
     ) -> Result<Opened<R>, OpenError> {
         let (mut catalog, txns) = Catalog::open(rt.clone(), &pager).map_err(corrupt)?;
+        *unapplied = migrate::unapplied(&catalog, log);
         mark_open_damage(&pager, opening, &catalog, &txns);
         let clog_damaged = txns.quarantined().is_some();
         if let Some(e) = txns.quarantined()
@@ -1045,15 +1063,11 @@ impl<R: Runtime> Engine<R> {
         }
         let writable = !pager.is_quarantined(storage::Quarantine::Database);
         catalog.set_query_memory(query_memory(options));
-        if writable {
-            diverged(&catalog, log)?;
-        }
+        diverged(&catalog, log)?;
         let (mut stored, settings) = deployed_state(&catalog, &pager, &txns, clog_damaged)?;
         let opened = micros(pager.wall());
         let regs = &commanded(&options.registrations, &stored, opened, &settings)?;
-        if writable {
-            registered::downgrade(&catalog, regs)?;
-        }
+        registered::downgrade(&catalog, regs)?;
         let live = stored.readers(opened, &settings);
         let headers: Vec<&bundle::Header> = regs.iter().filter_map(Registration::header).collect();
         if writable {
@@ -1077,14 +1091,15 @@ impl<R: Runtime> Engine<R> {
             catalog.counters(&pager).map_err(corrupt)?;
             catalog.record_grants(&pager, &txns).map_err(corrupt)?;
             let replay = options.create.as_ref().and_then(|c| c.replay.as_ref());
-            migrate::migrate(&mut catalog, (&pager, &txns), log, &live, replay)?;
+            let migrated = migrate::migrate(&mut catalog, (&pager, &txns), log, &live, replay);
+            *unapplied = migrate::unapplied(&catalog, log);
+            migrated?;
         }
         let (schema, program) = catalog.checking();
         let (schema, program) = (schema.clone(), program.clone());
         let normal = norm::program(&schema, &program).map_err(corrupt)?;
-        if writable {
-            options.host_fns.bound(&schema, &normal)?;
-        }
+        let pending = host::pending(log, catalog.source().log.len());
+        options.host_fns.bound(&schema, &normal, &pending)?;
         let schema = Arc::new(schema);
         let now = micros(pager.wall());
         let over = registered::Over {
@@ -1092,10 +1107,9 @@ impl<R: Runtime> Engine<R> {
             schema: &schema,
             program: &program,
         };
-        let registered = if writable {
-            registered::register(&over, regs, &stored, now, &settings)?
-        } else {
-            registered::register_marked(&over, regs, &stored, now, &settings)
+        let registered = match unapplied {
+            None => registered::register(&over, regs, &stored, now, &settings)?,
+            Some(_) => Vec::new(),
         };
         let given = &options.registrations;
         let bundled: Vec<_> = registered

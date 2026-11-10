@@ -252,12 +252,17 @@ fn an_open_of_a_damaged_file_writes_only_the_mark() {
 }
 
 #[test]
-fn a_marked_open_applies_no_migration_and_refuses_no_log() {
+fn a_marked_open_refuses_a_diverged_log_and_opens_with_none() {
     let (mut files, page) = seeded(20, status_page);
     DATA.flip(&mut files, page, 300 - HEADER_LEN);
     let mut sim = Sim::with_files(20, Config::default(), files);
     finished(&mut sim, |rt| {
-        let db = open::open_in(&rt, FILE, &Log::new([CLEAN]), &open::options(2)).unwrap();
+        let got = open::open_in(&rt, FILE, &Log::new([CLEAN]), &open::options(2)).map(drop);
+        assert!(
+            matches!(got, Err(OpenError::Diverged { version: 1 })),
+            "{got:?}"
+        );
+        let db = open::open_in(&rt, FILE, &none(), &open::options(2)).unwrap();
         assert!(holds_users(&db), "the file's own committed migration reads");
         assert_only_verify_runs(&db, Some("Checksum"));
         db.close().unwrap();
@@ -395,8 +400,8 @@ fn differing(a: &[u8], b: &[u8]) -> usize {
         .count()
 }
 
-/// Flip the status page, open twice under a log whose first migration is another, and return
-/// whether the file's own migration read. Each open is for `verify` alone and writes only the
+/// Flip the status page, open twice under the empty log, and return whether the file's own
+/// migration read. Each open is for `verify` alone and writes only the
 /// mark past the file header.
 fn opens_damaged(c: &Crashes, mut files: Files) -> bool {
     DATA.flip(&mut files, c.status, 300 - HEADER_LEN);
@@ -405,7 +410,7 @@ fn opens_damaged(c: &Crashes, mut files: Files) -> bool {
     let mut read = false;
     for round in 0..2 {
         finished(&mut sim, |rt| {
-            let db = open::open_in(&rt, FILE, &Log::new([CLEAN]), &open::options(2))
+            let db = open::open_in(&rt, FILE, &none(), &open::options(2))
                 .unwrap_or_else(|e| panic!("round {round}: {e:?}"));
             read = holds_users(&db);
             assert_only_verify_runs(&db, Some("Checksum"));
@@ -655,9 +660,14 @@ fn a_real_file_with_a_damaged_catalog_page_opens_for_verify() {
 }
 
 #[test]
-fn a_real_file_with_a_damaged_status_page_opens_under_another_log() {
+fn a_real_file_with_a_damaged_status_page_refuses_a_diverged_log_and_opens_with_none() {
     let (_dir, path) = real_damaged("status", status_page);
-    assert_real_opens_for_verify(&path, &Log::new([CLEAN]), Some("Checksum"));
+    let got = Database::open(&path, &Log::new([CLEAN]), &real_options()).map(drop);
+    assert!(
+        matches!(got, Err(OpenError::Diverged { version: 1 })),
+        "{got:?}"
+    );
+    assert_real_opens_for_verify(&path, &none(), Some("Checksum"));
 }
 
 #[test]

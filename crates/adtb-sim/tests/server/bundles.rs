@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use adtb::runtime::{Clock, Done, Io, Op, Runtime, Threads};
+use adtb::testing::{Plant, Quarantine};
 use adtb::version_hash;
 use adtb::{
     CallOptions, Called, Database, Error, Log, OpenError, OpenOptions, Registration, RejectReason,
@@ -205,6 +206,90 @@ fn a_registration_and_a_retirement_survive_a_crash() {
             vec!["2"],
             query(&db, "count(r for r in catalog::registered)")
         );
+    });
+}
+
+#[test]
+fn an_open_under_a_whole_mark_records_no_bundle_and_supersedes_none() {
+    let mut sim = Sim::new(46, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[V1], vec![bundle("web-1.0", &[V1], "", NAMES)]);
+        db.testing()
+            .plant(Plant::Mark(Quarantine::Database))
+            .unwrap();
+        db.close().unwrap();
+    });
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[V1], vec![bundle("app-1.0", &[V1], "", NAMES)]);
+        db.testing()
+            .plant(Plant::Unmark(Quarantine::Database))
+            .unwrap();
+        assert_eq!(vec!["web-1.0 active"], states(&db));
+        db.close().unwrap();
+    });
+}
+
+const APPLE_ADD: &str = "module auth\nadd constructor Identity.Apple { sub: Text }\n";
+const APPLE_ENABLE: &str = "module auth\nenable identities.Apple\n";
+const IDENTITIES: &str =
+    "import auth\nquery ids () -> Set (Key users) = from i in identities select i.user\n";
+
+#[test]
+fn an_open_under_a_whole_mark_refuses_a_downgrade_as_on_any_file() {
+    let log = [V1, APPLE_ADD, APPLE_ENABLE];
+    let mut sim = Sim::new(47, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &log, Vec::new());
+        db.testing()
+            .plant(Plant::Mark(Quarantine::Database))
+            .unwrap();
+        db.close().unwrap();
+    });
+    run(&mut sim, |rt| {
+        let old = vec![bundle("web-1.0", &[V1], "", IDENTITIES)];
+        let got = open::open(&rt, open::FILE, &self::log(&log), &with(old)).map(drop);
+        let Err(OpenError::DowngradeRefused { cause }) = got else {
+            panic!("expected the downgrade refused, found {got:?}");
+        };
+        assert_eq!(
+            "bundle web-1.0, pinned at version 1, reads identities.Apple, enabled since",
+            cause
+        );
+    });
+}
+
+#[test]
+fn an_open_under_a_whole_mark_refuses_a_registration_as_on_any_file() {
+    let mut sim = Sim::new(48, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[V1], Vec::new());
+        db.testing()
+            .plant(Plant::Mark(Quarantine::Database))
+            .unwrap();
+        db.close().unwrap();
+    });
+    run(&mut sim, |rt| {
+        let ahead = vec![bundle("web-1.0", &[V1, APPLE_ADD], "", IDENTITIES)];
+        let got = open::open(&rt, open::FILE, &log(&[V1]), &with(ahead)).map(drop);
+        let Err(OpenError::RegistrationRefused { bundle, reason }) = got else {
+            panic!("expected the registration refused, found {got:?}");
+        };
+        let ahead = Error::Rejected {
+            reason: RejectReason::Invalid {
+                detail:
+                    "bundle web-1.0 pins version 2, which the log does not hold: it is at version 1"
+                        .into(),
+            },
+        };
+        assert_eq!(("web-1.0".to_owned(), ahead), (bundle, reason));
+    });
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[V1], Vec::new());
+        db.testing()
+            .plant(Plant::Unmark(Quarantine::Database))
+            .unwrap();
+        assert_eq!(Vec::<String>::new(), states(&db));
+        db.close().unwrap();
     });
 }
 

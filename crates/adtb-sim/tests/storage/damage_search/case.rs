@@ -329,12 +329,14 @@ fn sealed(pid: Pid, page: &[u8]) -> bool {
     copy == page
 }
 
-/// Returns the schema version the consumers open with: the last one the sequence started.
+/// Returns the schema version the consumers open with: the last one the sequence started that the
+/// whole-database mark did not refuse.
 fn version(plan: &Plan, ran: &Ran) -> u8 {
     let end = ran.cut.map_or(plan.ops.len(), |c| c + 1);
     let started = plan.ops[..end]
         .iter()
-        .filter(|o| **o == Op::Migrate)
+        .enumerate()
+        .filter(|(i, o)| **o == Op::Migrate && !ran.refused_under_mark.contains(i))
         .count();
     (started as u8).min(world::LAST)
 }

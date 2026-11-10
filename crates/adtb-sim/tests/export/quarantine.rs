@@ -10,8 +10,8 @@ use adtb::Value as Val;
 use adtb::key::{Entry, Tid, Value};
 use adtb::runtime::{Clock, Io, Op, Runtime, Threads};
 use adtb::{
-    CallOptions, Called, Database, Error, FatalReason, Log, OpenOptions, Registration,
-    TxnCallOptions, TxnOptions,
+    CallOptions, Called, Database, Error, FatalReason, Log, OpenError, OpenOptions, Registration,
+    RejectReason, TxnCallOptions, TxnOptions,
 };
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 
@@ -891,27 +891,6 @@ fn an_index_mark_fails_a_write_it_covers_with_no_page_damaged() {
     });
 }
 
-#[test]
-fn opening_a_marked_database_applies_no_migration() {
-    let mut sim = Sim::new(45, Config::default());
-    process::run(&mut sim, |rt| {
-        let db = open_app(rt);
-        db.testing()
-            .plant(Plant::Mark(Quarantine::Database))
-            .unwrap();
-        db.close().unwrap();
-    });
-    process::run(&mut sim, |rt| {
-        let later = "module app\nadd type Z = { id: Key zs }\nadd relation zs : Z key id generate sequence\n";
-        let options = OpenOptions {
-            registrations: vec![reads()],
-            ..open::options(2)
-        };
-        let db = Database::open_in(rt, FILE, &Log::new([APP, later]), &options).unwrap();
-        assert_eq!("the database", failed_on(&db, "from z in zs select z"));
-    });
-}
-
 fn hash_log() -> String {
     use adtb_lang::evolve::Source;
     use adtb_lang::parse::{Options as ParseOptions, parse_migration};
@@ -1241,7 +1220,7 @@ fn every_gate_path_refuses_a_call_over_a_marked_constructor() {
 }
 
 #[test]
-fn a_marked_database_opens_with_a_newer_log_and_a_bundle_needing_it() {
+fn a_marked_database_refuses_a_newer_log_and_a_registration_needing_more_and_opens_with_its_own() {
     let mut sim = Sim::new(72, Config::default());
     process::run(&mut sim, |rt| {
         let db = open_app(rt);
@@ -1260,11 +1239,30 @@ fn a_marked_database_opens_with_a_newer_log_and_a_bundle_needing_it() {
             registrations: vec![needs],
             ..open::options(2)
         };
-        let db = Database::open_in(rt, FILE, &Log::new([APP, later]), &opts)
+        let got = Database::open_in(rt.clone(), FILE, &Log::new([APP, later]), &opts);
+        let Err(OpenError::MigrationRefused { version, reason }) = got else {
+            panic!("expected migration 2 refused, found {:?}", got.map(drop));
+        };
+        let database = Error::Fatal {
+            reason: FatalReason::Quarantined {
+                what: "the database".into(),
+            },
+        };
+        assert_eq!((2, database), (version, reason));
+        let got = Database::open_in(rt.clone(), FILE, &Log::new([APP]), &opts).map(drop);
+        let Err(OpenError::RegistrationRefused { bundle, reason }) = got else {
+            panic!("expected zr refused, found {got:?}");
+        };
+        let unknown = Error::Rejected {
+            reason: RejectReason::Invalid {
+                detail: "query `q`: no `zs` in scope".into(),
+            },
+        };
+        assert_eq!(("zr".to_owned(), unknown), (bundle, reason));
+        let db = Database::open_in(rt, FILE, &Log::new([APP]), &open::options(2))
             .expect("a marked file opens");
         db.verify(None).unwrap();
-        let e = db.registered("zr").expect_err("no call runs");
-        assert_eq!("the database", quarantined(&e));
+        db.close().unwrap();
     });
 }
 

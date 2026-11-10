@@ -534,21 +534,6 @@ pub(super) fn register(
     Ok(out)
 }
 
-/// Returns those of `regs` that check, for a database quarantined whole, which no call runs on
-/// and whose log may be newer than its file.
-pub(super) fn register_marked(
-    over: &Over<'_>,
-    regs: &[Registration],
-    stored: &Stored,
-    now: i64,
-    s: &Settings,
-) -> Vec<Checked> {
-    let mut pins = Pins::default();
-    regs.iter()
-        .filter_map(|r| registration(over, r, stored, now, s, &mut pins).ok())
-        .collect()
-}
-
 /// Check and normalise registration `r` as [`register`] does.
 pub(super) fn registration(
     over: &Over<'_>,

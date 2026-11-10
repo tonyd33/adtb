@@ -416,7 +416,8 @@ fn a_failed_open_marks_the_heap_of_the_damage_it_met() {
 }
 
 #[test]
-fn a_failed_open_on_a_damaged_page_of_the_large_value_store_marks_the_database() {
+fn a_migration_failing_on_a_damaged_page_of_the_large_value_store_marks_the_database_and_is_refused()
+ {
     let later = "module app\nadd constraint nope =\n  from u in users\n  where u.name == \"zz\"\n  select u\n";
     let mut sim = Sim::new(58, Config::default());
     let page = process::run(&mut sim, |rt| {
@@ -436,7 +437,17 @@ fn a_failed_open_on_a_damaged_page_of_the_large_value_store_marks_the_database()
     DATA.flip(&mut files, page, 300 - HEADER_LEN);
     let mut sim = Sim::with_files(58, Config::default(), files);
     process::run(&mut sim, |rt| {
-        let got = Database::open_in(rt, FILE, &Log::new([APP, later]), &open::options(2));
+        let got = Database::open_in(rt.clone(), FILE, &Log::new([APP, later]), &open::options(2));
+        let Err(crate::OpenError::MigrationRefused { version, reason }) = got else {
+            panic!("expected migration 2 refused, found {:?}", got.map(drop));
+        };
+        let database = Error::Fatal {
+            reason: FatalReason::Quarantined {
+                what: "the database".into(),
+            },
+        };
+        assert_eq!((2, database), (version, reason));
+        let got = Database::open_in(rt, FILE, &Log::new([APP]), &open::options(2));
         let db = got.expect("a file quarantined whole opens for verify");
         assert_eq!(
             "the database",

@@ -234,6 +234,25 @@ pub enum OpenError {
     Io(std::io::Error),
 }
 
+impl OpenError {
+    /// Returns whether this refuses the program's log, host functions, bundles or a migration's
+    /// schema, whatever damage the file holds.
+    pub(super) fn refuses_the_program(&self) -> bool {
+        matches!(
+            self,
+            OpenError::Diverged { .. }
+                | OpenError::HostFnMissing { .. }
+                | OpenError::HostFnMismatch { .. }
+                | OpenError::DowngradeRefused { .. }
+                | OpenError::RegistrationRefused { .. }
+                | OpenError::MigrationRefused {
+                    reason: Error::Rejected { .. },
+                    ..
+                }
+        )
+    }
+}
+
 impl Error {
     pub(super) fn rejected(reason: RejectReason) -> Error {
         Error::Rejected { reason }
@@ -328,6 +347,16 @@ impl Error {
         e: write::Mapped,
     ) -> Error {
         Error::of_mapped(schema, txn, e, |objects| db.quarantined_names(objects))
+    }
+
+    /// Returns the failure of a call that `db`'s whole-database mark refuses, `None` when
+    /// unmarked. Map no damage.
+    pub(super) fn of_whole_mark<R: Runtime>(
+        db: &write::Database<R>,
+        schema: &Schema,
+    ) -> Option<Error> {
+        let refused = db.database_refusal()?;
+        Some(Error::of_write(db, schema, TxnId(0), refused))
     }
 
     /// Returns the client error of write-path failure `e`, met by transaction `txn` of a

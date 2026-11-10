@@ -124,7 +124,18 @@ performs these steps in order, and returns only when all succeed:
    at its final commit. A refused migration, one whose staged job
    fails, or one that fails a check at its final commit, fails
    open with `MigrationRefused`, leaving the file at the last migration
-   that committed and the log unchanged beyond it.
+   that committed and the log unchanged beyond it. On a database
+   quarantined whole ([catalog.md §11.2](catalog.md#112-quarantine))
+   open applies no migration, and it records no bundle and supersedes
+   none. When open reads the file's log, steps 4 and 7 hold as on any
+   file. Then, when the shipped log holds a migration beyond the file's
+   log, open fails with `MigrationRefused` naming the first, whose
+   `reason` is the `Fatal { reason: Quarantined {..} }` naming the
+   database that every call on it returns, and leaves the file and its
+   log unchanged; when it holds none, a registration that step 9 refuses
+   fails open with `RegistrationRefused` as on any file. When the file's
+   log cannot be read, open compares nothing, applies nothing and
+   succeeds, and every call but `verify` and `dump` returns that failure.
 9. Check and register every given bundle at its pin, renewing the lease
    of one already registered
    ([applications.md](applications.md#41-registration)), and plan its

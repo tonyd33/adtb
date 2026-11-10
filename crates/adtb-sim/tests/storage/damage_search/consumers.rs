@@ -263,7 +263,8 @@ fn reopen(seed: u64, files: Files, version: u8) -> Reopened {
         reads: BTreeMap::new(),
     };
     process::run(&mut sim, |rt| {
-        match Database::open_in(rt, FILE, &world::log(version), &no_create()) {
+        let (open, version) = world::open_own(&rt, version, &no_create(), false);
+        match open {
             Ok(db) => {
                 out.marks = db.testing().probe().marks();
                 out.reads = relations(version)
@@ -339,7 +340,7 @@ fn consume(
     opened: &mut dyn FnMut(),
     seen: &mut Observed,
 ) {
-    let open = Database::open_in(rt.clone(), FILE, &world::log(version), &no_create());
+    let (open, version) = world::open_own(rt, version, &no_create(), false);
     opened();
     let db = match open {
         Ok(db) => db,

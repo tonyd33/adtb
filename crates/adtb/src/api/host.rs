@@ -104,11 +104,17 @@ impl HostFns {
         Ok(())
     }
 
-    /// Refuse, once migrations have applied, what [`check`](HostFns::check) refuses with no
-    /// migration pending, and a declared host function with no body when `normal` reaches it
-    /// from an index, a constraint, a check, a stored view, a default or a computed field.
-    pub(super) fn bound(&self, schema: &Schema, normal: &NormalProgram) -> Result<(), OpenError> {
-        self.check(schema, &[])?;
+    /// Refuse, once migrations have applied, what [`check`](HostFns::check) refuses with the
+    /// migrations `pending` left unapplied, and a declared host function with no body when
+    /// `normal` reaches it from an index, a constraint, a check, a stored view, a default or a
+    /// computed field.
+    pub(super) fn bound(
+        &self,
+        schema: &Schema,
+        normal: &NormalProgram,
+        pending: &[&str],
+    ) -> Result<(), OpenError> {
+        self.check(schema, pending)?;
         let reached = reached(schema, normal);
         for (i, def) in schema.functions.iter().enumerate() {
             if let FnBody::Host { name, .. } = &def.body

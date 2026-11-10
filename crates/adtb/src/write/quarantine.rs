@@ -286,6 +286,13 @@ impl<R: Runtime> Database<R> {
             .collect()
     }
 
+    /// Returns the refusal [`admit_database`](Database::admit_database) gives, as
+    /// [`fail`](Database::fail) maps it, without mapping the damage recorded. `None` when the
+    /// database is not quarantined.
+    pub fn database_refusal(&self) -> Option<Mapped> {
+        self.admit_database().err().map(Mapped)
+    }
+
     /// Fail if the database is quarantined.
     pub fn admit_database(&self) -> Result<(), Error> {
         if self.pager.is_quarantined(Quarantine::Database) {

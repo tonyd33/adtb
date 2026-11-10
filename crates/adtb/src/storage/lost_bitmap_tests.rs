@@ -444,14 +444,24 @@ fn zeroed_index_leaves_refuse_an_insert_that_latches_one() {
 }
 
 #[test]
-fn a_migration_over_a_zeroed_bitmap_opens_for_verify_only() {
+fn a_migration_over_a_zeroed_bitmap_is_refused_and_the_files_own_log_opens_for_verify_only() {
     const MORE: &str = "module more\nadd module more\nadd type T = { id: Key ts }\nadd relation ts : T key id generate sequence\n";
     let (files, ()) = one_group("a", |_| ());
     let mut files = files;
     DATA.zero(&mut files, Pid::FIRST_DATA);
     let mut sim = Sim::with_files(1, Config::default(), files);
     finished(&mut sim, |rt| {
-        let db = Database::open_in(rt, FILE, &Log::new([APP, MORE]), &options(256)).unwrap();
+        let got = Database::open_in(rt.clone(), FILE, &Log::new([APP, MORE]), &options(256));
+        let Err(crate::OpenError::MigrationRefused { version, reason }) = got else {
+            panic!("expected migration 2 refused, found {:?}", got.map(drop));
+        };
+        let database = Error::Fatal {
+            reason: FatalReason::Quarantined {
+                what: "the database".into(),
+            },
+        };
+        assert_eq!((2, database), (version, reason));
+        let db = Database::open_in(rt, FILE, &Log::new([APP]), &options(256)).unwrap();
         assert!(db.testing().probe().marks().contains(&Quarantine::Database));
         assert_quarantined(&text(&db, SELECT), "select");
         assert!(!api::printed(db.verify(None).unwrap()).is_empty());
