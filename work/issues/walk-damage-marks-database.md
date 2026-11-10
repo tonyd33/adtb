@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-07
-status: open
+status: resolved
 kind: bug
 priority: 138
 summary: "one stale user-relation page met by another record's mapping walk marks the whole database beside its relation, so every read is refused"
+closed: 2026-11-10
 tags:
   - class-failure-flattened
 ---
@@ -22,3 +23,9 @@ Found by the damage class search, round 3 (gate `BESIDE`). One stale user-relati
 Every case seen has a deliberately damaged page whose record's mapping walk likely reads the stale page first. storage.md §8 maps damage a mapping walk finds on a page that had no record when the mapping began to the database. Ruling: that sends to the database only a page whose owner cannot be read; a page whose header names its relation maps to that relation, whichever walk finds it. If §8's text allows the wider reading, the spec change goes through the design space with this ruling.
 
 Defect class: Damage or failure gives a panic, hang or flattened error.
+
+## 2026-11-10: fixed
+
+structure-damage-policy step 9: a page a commit's walk meets with no record marks nothing of its own; the walk that stopped on it marks its own structure, and the page's record maps by the walks at the next call end, commit or open. Ruling Q2 amended from "the header's owner" because a freed and reused page's stale header names its former owner. All 45 rows pass at the damage and deep tiers.
+
+## 2026-11-10: resolved
