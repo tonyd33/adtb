@@ -21,3 +21,7 @@ Ruling: an open given a migration it does not apply under a whole-database mark 
 Direction: the search judges a Migrate under a whole-database mark that returns Ok as a violation, gated under this ticket.
 
 Defect class: Damage reported as nothing.
+
+## 2026-11-10
+
+structure-damage-policy step 9 removes 6 of this ticket's search rows (Recycled Directory seed 26 at 617, 618, 633; Recycled Index seed 26 at 620, 621, 635): their whole-database mark came from a met page, which now marks its relation. The defect is not fixed by that. Those seeds now migrate under a relation mark, which the judge does not check (it judges a migration only under the database mark); step 10 decides what a migration under a relation mark owes the caller. 18 rows remain.
