@@ -295,3 +295,8 @@ home: https://www.postgresql.org/docs/
 - The timeline id is part of a segment's name, so a new timeline after an archive recovery never overwrites earlier WAL; each new timeline writes a small `.history` file to the archive naming its branch point, read by recovery to pick segments. [V 2026-11-05] same page
 - The docs give no rule on fsync of the archived file; the sample `cp` does not fsync. [V 2026-11-05] same page
 - A segment ready to archive is marked by `pg_wal/archive_status/SEG.ready`, renamed to `SEG.done` once archived. [U]
+
+## Resource owners
+
+- A ResourceOwner tracks query resources (buffer pins, table locks, catcache references, files) so they are released at query end even when the query fails with an error; there is one per transaction, subtransaction and Portal, as a tree, and releasing a parent releases its children. A closed Portal's remaining locks pass to its transaction's owner. [V 2026-11-10] https://github.com/postgres/postgres/blob/master/src/backend/utils/resowner/README
+- Release runs in three phases (BEFORE_LOCKS, LOCKS, AFTER_LOCKS), each over the whole tree, children before parents. At commit the owner should hold nothing but locks, which pass to the parent; anything else left warns as a leak. At abort the owner does the real cleanup, and abort callbacks must do only low-level work that cannot fail, such as no memory allocation. [V 2026-11-10] same
