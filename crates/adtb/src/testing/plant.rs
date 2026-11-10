@@ -74,7 +74,7 @@ pub enum Planted {
     Done,
     Page(Pid),
     Tids(Vec<Tid>),
-    Refused(write::Error),
+    Refused(write::Mapped),
 }
 
 impl Planted {
@@ -95,7 +95,7 @@ impl Planted {
     }
 
     /// Returns the error a `FailOn` plant failed with.
-    pub fn refused(self) -> Option<write::Error> {
+    pub fn refused(self) -> Option<write::Mapped> {
         match self {
             Planted::Refused(e) => Some(e),
             _ => None,
@@ -150,7 +150,7 @@ impl<R: Runtime> Testing<'_, R> {
             Plant::LoadMarks(page) => pager.load_marks(page)?,
             Plant::FailOn(e) => {
                 let w = self.db.tested_db();
-                return Ok(Planted::Refused(w.quarantining(write::Error::Page(e))));
+                return Ok(Planted::Refused(w.fail(write::Error::Page(e))));
             }
         }
         Ok(Planted::Done)

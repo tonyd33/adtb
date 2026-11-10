@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
 
@@ -7,6 +8,8 @@ use adtb_lang::textual::{Form, PrintError, print};
 use adtb_lang::types::{Base, RelId, Ty};
 
 use crate::exec::{Exceeded, Val};
+use crate::runtime::Runtime;
+use crate::storage::{MarkFailure, Quarantine};
 use crate::write::{self, Rejection};
 use crate::{catalog, heap};
 
@@ -316,10 +319,26 @@ impl Error {
         }
     }
 
-    /// Returns the client error of write-path error `e`, met by transaction `txn` of a database
-    /// of `schema`.
-    pub(super) fn of_write(schema: &Schema, txn: TxnId, e: write::Error) -> Error {
-        match e {
+    /// Returns the client error of write-path failure `e` of database `db`, met by transaction
+    /// `txn` of a database of `schema`.
+    pub(super) fn of_write<R: Runtime>(
+        db: &write::Database<R>,
+        schema: &Schema,
+        txn: TxnId,
+        e: write::Mapped,
+    ) -> Error {
+        Error::of_mapped(schema, txn, e, |objects| db.quarantined_names(objects))
+    }
+
+    /// Returns the client error of write-path failure `e`, met by transaction `txn` of a
+    /// database of `schema`, each quarantined object named by `names`.
+    fn of_mapped(
+        schema: &Schema,
+        txn: TxnId,
+        e: write::Mapped,
+        names: impl FnOnce(&BTreeMap<Quarantine, Option<MarkFailure>>) -> String,
+    ) -> Error {
+        match e.into_error() {
             write::Error::Rejected(r) => Error::rejected(rejection(schema, r)),
             write::Error::Fault(fault) => Error::rejected(RejectReason::Faulted { fault }),
             write::Error::StatementLimit(x) => Error::rejected(RejectReason::StatementLimit {
@@ -348,8 +367,10 @@ impl Error {
                     on: String::new(),
                 },
             },
-            write::Error::Quarantined(what) => Error::Fatal {
-                reason: FatalReason::Quarantined { what },
+            write::Error::Quarantined { objects, .. } => Error::Fatal {
+                reason: FatalReason::Quarantined {
+                    what: names(&objects),
+                },
             },
             write::Error::Page(p) => Error::storage(format!("{p:?}")),
             write::Error::OrphanEntry(index) => {
@@ -961,7 +982,12 @@ mod tests {
     #[test]
     fn a_broken_checker_guarantee_is_rejected_as_internal() {
         let schema = catalog::engine_schema();
-        let got = Error::of_write(&schema, TxnId(7), write::Broken::NoValueOutcome.into());
+        let got = Error::of_mapped(
+            &schema,
+            TxnId(7),
+            write::Mapped::unmapped_for_test(write::Broken::NoValueOutcome.into()),
+            |_| String::new(),
+        );
         assert_eq!(
             Error::Rejected {
                 reason: RejectReason::Internal {
@@ -1012,7 +1038,12 @@ mod tests {
     fn a_serialization_failure_names_the_callers_transaction() {
         let schema = catalog::engine_schema();
         let f = crate::mvcc::SerializationFailure::new(crate::mvcc::Cause::LaterCommit, Vec::new());
-        let got = Error::of_write(&schema, TxnId(7), write::Error::Serialization(f));
+        let got = Error::of_mapped(
+            &schema,
+            TxnId(7),
+            write::Mapped::unmapped_for_test(write::Error::Serialization(f)),
+            |_| String::new(),
+        );
         assert!(
             matches!(
                 got,

@@ -112,9 +112,17 @@ impl From<Broken> for Error {
     }
 }
 
-/// Returns `e` as its `Debug` reads, with an internal or damage cause as the `Debug` of its text.
+/// Returns `e` as its `Debug` reads, with an internal or damage cause as the `Debug` of its text
+/// and a quarantined failure as the `Debug` of its objects' names, each object named by its own
+/// `Debug`.
 pub fn detail(e: &Error) -> String {
     match e {
+        Error::Quarantined { objects, .. } => {
+            format!(
+                "Quarantined({:?})",
+                super::quarantine::named(objects, |o| format!("{o:?}"))
+            )
+        }
         Error::Internal(b) => format!("Internal({:?})", b.to_string()),
         Error::Corrupt(r) => format!("Corrupt({:?})", r.to_string()),
         e => format!("{e:?}"),

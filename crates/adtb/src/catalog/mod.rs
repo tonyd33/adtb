@@ -26,7 +26,9 @@ mod validate;
 pub mod values;
 
 pub use structures::Structures;
-pub(crate) use structures::{index_holder, relation_holder};
+pub(crate) use structures::index_holder;
+#[cfg(any(test, feature = "testing"))]
+pub(crate) use structures::relation_holder;
 
 #[cfg(test)]
 mod catalog_tests;

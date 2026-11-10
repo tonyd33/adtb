@@ -57,7 +57,9 @@ use crate::mvcc::{
 use crate::plan::explain::Node;
 use crate::plan::{Catalog, HeapId, IndexId};
 use crate::runtime::{Instant, IoError, Runtime};
-use crate::storage::{PageError, Pager, Pid, Position};
+#[cfg(any(test, feature = "testing"))]
+use crate::storage::Pid;
+use crate::storage::{MarkFailure, PageError, Pager, Position, Quarantine};
 use crate::vacuum;
 
 pub use adtb_lang::schema::Stage;
@@ -67,6 +69,7 @@ pub use delta::{CheckPlan, Part};
 pub use input::Local;
 pub use past::Retained;
 pub(crate) use past::position;
+pub use quarantine::{By, Mapped};
 pub use reindex::{Failure, HoldWait, Rebuild, VacuumHold, panic_text};
 pub use rot::Rot;
 pub use stream::{Produced, Production};
@@ -140,8 +143,12 @@ pub enum Error {
     OrphanEntry(u32),
     /// The statement's spill file could not be made, written or read.
     Spill(IoError),
-    /// The call reads, or writes under, what this text names, which is quarantined.
-    Quarantined(String),
+    /// The call reads, or writes under, `objects`, which are quarantined, each with why its mark
+    /// holds only in memory if it does. `by` states what made the call fail.
+    Quarantined {
+        objects: BTreeMap<Quarantine, Option<MarkFailure>>,
+        by: By,
+    },
     /// The commit log is corrupt or its ids are spent.
     Transactions(String),
     Corrupt(Rot),
@@ -185,14 +192,17 @@ pub enum Error {
 impl Error {
     /// Returns whether the failure ends the transaction: the caller must abort it.
     pub fn ends_transaction(&self) -> bool {
-        matches!(
-            self,
-            Error::Serialization(_)
-                | Error::Page(_)
-                | Error::Transactions(_)
-                | Error::Corrupt(_)
-                | Error::FileChanged(_)
-        )
+        match self {
+            Error::Quarantined { by, .. } => by.ends_transaction(),
+            e => matches!(
+                e,
+                Error::Serialization(_)
+                    | Error::Page(_)
+                    | Error::Transactions(_)
+                    | Error::Corrupt(_)
+                    | Error::FileChanged(_)
+            ),
+        }
     }
 }
 

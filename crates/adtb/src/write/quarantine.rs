@@ -18,6 +18,75 @@ use super::schema::Rel;
 use super::verify::Found;
 use super::{Database, Error, Text, Txn};
 
+/// What made a call fail as quarantined.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum By {
+    /// The call met damage.
+    Met,
+    /// An index finding of the call refused it.
+    Found,
+    /// A mark refused the call.
+    Admitted,
+    /// The transactions layer failed once the database was marked.
+    Transactions,
+}
+
+impl By {
+    /// Returns whether the failure ends the transaction.
+    pub fn ends_transaction(self) -> bool {
+        match self {
+            By::Met | By::Transactions => true,
+            By::Found | By::Admitted => false,
+        }
+    }
+}
+
+/// A failure of the write path that [`Database::fail`] has mapped.
+#[derive(Debug)]
+pub struct Mapped(Error);
+
+impl Mapped {
+    pub fn error(&self) -> &Error {
+        &self.0
+    }
+
+    pub fn into_error(self) -> Error {
+        self.0
+    }
+
+    /// Returns `e` as if [`Database::fail`] had mapped it to itself.
+    #[cfg(test)]
+    pub(crate) fn unmapped_for_test(e: Error) -> Mapped {
+        Mapped(e)
+    }
+}
+
+impl Error {
+    /// Returns the failure of a call that a mark of `object` refuses.
+    pub(super) fn admitted(object: Quarantine) -> Error {
+        Error::Quarantined {
+            objects: BTreeMap::from([(object, None)]),
+            by: By::Admitted,
+        }
+    }
+}
+
+/// Returns `objects` named by `name`, each mark that holds only in memory named with why.
+pub(super) fn named(
+    objects: &BTreeMap<Quarantine, Option<MarkFailure>>,
+    name: impl Fn(Quarantine) -> String,
+) -> String {
+    let mut names = Vec::new();
+    for (object, failed) in objects {
+        let mut name = name(*object);
+        if let Some(e) = failed {
+            name.push_str(&format!(" (the mark holds only in memory: {e:?})"));
+        }
+        names.push(name);
+    }
+    names.join(", ")
+}
+
 /// What a call reads and writes, by constructor.
 #[derive(Debug, Default)]
 pub(super) struct Touched {
@@ -125,34 +194,47 @@ impl<R: Runtime> Database<R> {
         objects
     }
 
-    /// Returns the failure naming `objects`, each failed mark of `failed` named with why.
-    fn quarantined_as(
+    /// Returns the name a client sees of `objects`, each mark that holds only in memory named
+    /// with why.
+    pub(crate) fn quarantined_names(
         &self,
-        objects: &BTreeSet<Quarantine>,
-        failed: &BTreeMap<Quarantine, MarkFailure>,
-    ) -> Error {
-        let mut names = Vec::new();
-        for object in objects {
-            let mut name = self.quarantined_name(*object);
-            if let Some(e) = failed.get(object) {
-                name.push_str(&format!(" (the mark holds only in memory: {e:?})"));
+        objects: &BTreeMap<Quarantine, Option<MarkFailure>>,
+    ) -> String {
+        named(objects, |object| self.quarantined_name(object))
+    }
+
+    /// Returns `e` as [`detail`](super::detail) reads it, a quarantined failure naming its
+    /// objects as a client sees them.
+    pub fn detail(&self, e: &Error) -> String {
+        match e {
+            Error::Quarantined { objects, .. } => {
+                format!("Quarantined({:?})", self.quarantined_names(objects))
             }
-            names.push(name);
+            e => super::detail(e),
         }
-        Error::Quarantined(names.join(", "))
     }
 
     /// Returns `e` once the damage recorded is mapped, a failure on a damaged page turned into
     /// the failure naming what its damage quarantines, and a failure of the transactions layer
     /// into the failure naming the database once the database is marked. An orphan entry marks
-    /// its index. An I/O failure stays as it is.
+    /// its index. An I/O failure stays as it is. A `Blocked` maps nothing.
     ///
     /// Precondition: the calling thread holds no page latch and not the serialization lock.
-    pub fn quarantining(&self, e: Error) -> Error {
+    pub fn fail(&self, e: Error) -> Mapped {
+        if let Error::Blocked { .. } = e {
+            return Mapped(e);
+        }
         let mut failed = self.map_damage();
-        match e {
+        let quarantined_as = |objects: &BTreeSet<Quarantine>, failed: &BTreeMap<_, _>, by| {
+            let objects = objects.iter().map(|o| (*o, failed.get(o).copied()));
+            Error::Quarantined {
+                objects: objects.collect(),
+                by,
+            }
+        };
+        Mapped(match e {
             Error::Page(p) if p.damage != Damage::Unreadable => match self.pager.marked_to(p.pid) {
-                Some(objects) if !objects.is_empty() => self.quarantined_as(&objects, &failed),
+                Some(objects) if !objects.is_empty() => quarantined_as(&objects, &failed, By::Met),
                 _ => Error::Page(p),
             },
             Error::OrphanEntry(index) => {
@@ -163,16 +245,20 @@ impl<R: Runtime> Database<R> {
                 match id.and_then(|(id, _)| self.index_holder(*id)) {
                     Some(holder) => {
                         let objects = self.mark_finding(holder, &mut failed);
-                        self.quarantined_as(&objects, &failed)
+                        quarantined_as(&objects, &failed, By::Found)
                     }
                     None => Error::OrphanEntry(index),
                 }
             }
             Error::Transactions(_) if self.pager.is_quarantined(Quarantine::Database) => {
-                self.quarantined_as(&BTreeSet::from([Quarantine::Database]), &failed)
+                quarantined_as(
+                    &BTreeSet::from([Quarantine::Database]),
+                    &failed,
+                    By::Transactions,
+                )
             }
             e => e,
-        }
+        })
     }
 
     /// Mark the index of each `Order`, `Orphan` or `Missing` finding of `found`, and map the
@@ -204,9 +290,7 @@ impl<R: Runtime> Database<R> {
     /// Fail if the database is quarantined.
     pub fn admit_database(&self) -> Result<(), Error> {
         if self.pager.is_quarantined(Quarantine::Database) {
-            return Err(Error::Quarantined(
-                self.quarantined_name(Quarantine::Database),
-            ));
+            return Err(Error::admitted(Quarantine::Database));
         }
         Ok(())
     }
@@ -227,7 +311,7 @@ impl<R: Runtime> Database<R> {
             .chain(indexes)
         {
             if marks.contains(&object) {
-                return Err(Error::Quarantined(self.quarantined_name(object)));
+                return Err(Error::admitted(object));
             }
         }
         Ok(())
@@ -239,7 +323,7 @@ impl<R: Runtime> Database<R> {
         for c in &self.rels[&rel].ctors {
             let object = Quarantine::Heap(self.heaps[&c.heap].heap.id().0);
             if marks.contains(&object) {
-                return Err(Error::Quarantined(self.quarantined_name(object)));
+                return Err(Error::admitted(object));
             }
         }
         Ok(())
@@ -291,7 +375,7 @@ impl<R: Runtime> Database<R> {
         self.follow_writes(&mut touched);
         let marked = |object: Quarantine| {
             if marks.contains(&object) {
-                Err(Error::Quarantined(self.quarantined_name(object)))
+                Err(Error::admitted(object))
             } else {
                 Ok(())
             }

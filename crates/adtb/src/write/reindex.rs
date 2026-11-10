@@ -318,7 +318,7 @@ impl<R: Runtime> Database<R> {
         for c in &r.ctors {
             let object = Quarantine::Heap(self.heaps[&c.heap].heap.id().0);
             if marks.contains(&object) {
-                return Err(Error::Quarantined(self.quarantined_name(object)));
+                return Err(Error::admitted(object));
             }
         }
         Ok(())
@@ -494,7 +494,7 @@ impl<R: Runtime> Database<R> {
                 reclaimed &= pages.old.found && retire(&self.pager, &pages.old.pages).is_ok();
                 let cause = match e {
                     Error::Cancelled => None,
-                    e => Some(super::detail(&self.quarantining(e))),
+                    e => Some(self.detail(self.fail(e).error())),
                 };
                 Err(Failure { cause, reclaimed })
             }

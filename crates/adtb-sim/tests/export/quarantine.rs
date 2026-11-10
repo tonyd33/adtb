@@ -698,6 +698,73 @@ fn a_mark_fails_a_call_of_an_open_transaction_and_leaves_it_open() {
 }
 
 #[test]
+fn a_call_meeting_damage_ends_its_transaction_and_one_refused_by_its_mark_does_not() {
+    let mut sim = Sim::new(40, Config::default());
+    process::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        let apple_page = apple(&db);
+        let mut met = db.begin(&TxnOptions::default()).unwrap();
+        assert_eq!(18, api::in_txn(&mut met, ALL).len());
+        db.testing()
+            .plant(Plant::Refuse {
+                page: apple_page,
+                damage: Damage::Checksum,
+            })
+            .unwrap();
+        let got = met.query_text(ALL, &[], &TxnCallOptions::default());
+        assert_eq!("app::identities.Apple", quarantined(&got.unwrap_err()));
+        let got = met.query_text(SIDES, &[], &TxnCallOptions::default());
+        assert_eq!(
+            "app::identities.Apple",
+            quarantined(&got.unwrap_err()),
+            "a later call of the ended transaction"
+        );
+        let got = met.commit(None);
+        assert_eq!("app::identities.Apple", quarantined(&got.unwrap_err()));
+
+        let mut admitted = db.begin(&TxnOptions::default()).unwrap();
+        let got = admitted.query_text(ALL, &[], &TxnCallOptions::default());
+        assert_eq!("app::identities.Apple", quarantined(&got.unwrap_err()));
+        assert_eq!(12, api::in_txn(&mut admitted, SIDES).len());
+        admitted.commit(None).unwrap();
+    });
+}
+
+#[test]
+fn an_orphan_entry_fails_the_call_that_finds_it_and_leaves_its_transaction_open() {
+    let mut sim = Sim::new(43, Config::default());
+    process::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        let mut t = db.begin(&TxnOptions::default()).unwrap();
+        assert_eq!(1, api::in_txn(&mut t, BY_USER).len());
+        let p = db.testing();
+        let heap = p.heap("app::identities", "Google").unwrap();
+        let page = p.pages(heap).unwrap()[0];
+        let ix = p.index("app::identities", USER_INDEX).unwrap();
+        let ctor = *p.ctors(ix).unwrap().iter().next().unwrap();
+        p.plant(Plant::AddEntry {
+            index: ix,
+            entry: Entry {
+                key: vec![Value::I64(3)],
+                ctor,
+                tid: Tid::new(page.0, 400).unwrap(),
+            },
+        })
+        .unwrap();
+        let got = t.query_text(BY_USER, &[], &TxnCallOptions::default());
+        assert_eq!(
+            format!("app::identities {USER_INDEX}"),
+            quarantined(&got.unwrap_err())
+        );
+        assert_eq!(BTreeSet::from([user_index_mark(&db)]), marks(&db));
+        assert_eq!(12, api::in_txn(&mut t, SIDES).len());
+        t.commit(None).unwrap();
+    });
+}
+
+#[test]
 fn a_damaged_large_value_page_marks_the_database() {
     let mut sim = Sim::new(41, Config::default());
     process::run(&mut sim, |rt| {

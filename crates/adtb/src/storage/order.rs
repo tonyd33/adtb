@@ -66,6 +66,7 @@ impl Opening {
     }
 
     /// Returns what the open's recovery found and did, `None` for a file this open created.
+    #[cfg(any(test, feature = "testing"))]
     pub fn recovery(&self) -> Option<&Recovery> {
         self.recovery.as_ref()
     }

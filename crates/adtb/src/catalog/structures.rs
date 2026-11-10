@@ -147,6 +147,7 @@ impl Structures {
     }
 
     /// Returns the heap of the catalog's rows, which also holds the kept rows.
+    #[cfg(any(test, feature = "testing"))]
     pub fn rows(&self) -> Option<Arc<Heap>> {
         self.rows.clone()
     }

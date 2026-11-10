@@ -457,15 +457,15 @@ impl<R: Runtime> Verifier<R> {
         &self,
         write: impl FnOnce(Xid) -> Result<(), catalog::Error>,
     ) -> Result<(), String> {
-        let tx = self.db.begin().map_err(|e| write::detail(&e))?;
+        let tx = self.db.begin().map_err(|e| self.db.detail(&e))?;
         let x = tx
             .xid()
             .ok_or_else(|| "a read-write transaction has an id".to_owned())?;
         if let Err(e) = write(x) {
-            self.db.abort(tx).map_err(|e| write::detail(&e))?;
+            self.db.abort(tx).map_err(|e| self.db.detail(&e))?;
             return Err(catalog::detail(&e));
         }
-        self.db.commit(tx).map(drop).map_err(|e| write::detail(&e))
+        self.db.commit(tx).map(drop).map_err(|e| self.db.detail(&e))
     }
 }
 

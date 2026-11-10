@@ -1175,7 +1175,7 @@ impl<R: Runtime> Engine<R> {
     }
 
     fn write_error(&self, txn: TxnId, e: write::Error) -> Error {
-        Error::of_write(&self.schema, txn, self.db.quarantining(e))
+        Error::of_write(&self.db, &self.schema, txn, self.db.fail(e))
     }
 
     /// Returns the client error of `e`, met writing catalog rows.
@@ -1201,7 +1201,12 @@ impl<R: Runtime> Engine<R> {
         self.resumable(id, tx, p, local, bounds)
             .map_err(|f| match f {
                 Halted::Blocked { on, rerun } => Failure {
-                    error: Error::of_write(p.schema(), id, write::Error::Blocked { on, rerun }),
+                    error: Error::of_write(
+                        &self.db,
+                        p.schema(),
+                        id,
+                        self.db.fail(write::Error::Blocked { on, rerun }),
+                    ),
                     ends: false,
                     commanded: false,
                 },

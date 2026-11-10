@@ -838,6 +838,7 @@ impl Evidence {
     }
 
     /// Returns what the damage of `pid` was mapped to this open, `None` while it is not mapped.
+    #[cfg(any(test, feature = "testing"))]
     pub(super) fn mapped_to(&self, pid: Pid) -> Option<BTreeSet<Quarantine>> {
         let p = self.pages.get(&pid)?;
         let (damage, objects) = p.mapped.as_ref()?;

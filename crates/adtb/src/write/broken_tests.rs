@@ -107,3 +107,21 @@ fn detail_reads_an_internal_cause_as_the_debug_of_its_text() {
     assert_eq!(text, detail(&internal));
     assert_eq!("Cancelled", detail(&Error::Cancelled));
 }
+
+#[test]
+fn detail_reads_a_quarantined_failure_as_the_debug_of_its_objects() {
+    use crate::storage::{MarkFailure, Pid, Quarantine};
+    let e = Error::Quarantined {
+        objects: [
+            (Quarantine::Heap(3), None),
+            (
+                Quarantine::Database,
+                Some(MarkFailure::Unverified { page: Pid(7) }),
+            ),
+        ]
+        .into(),
+        by: super::super::By::Admitted,
+    };
+    let text = "Quarantined(\"Database (the mark holds only in memory: Unverified { page: Pid(7) }), Heap(3)\")";
+    assert_eq!(text, detail(&e));
+}

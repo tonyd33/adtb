@@ -774,6 +774,7 @@ fn mapping_a_damaged_heap_page_never_marks_an_index_that_is_changing() {
     .unwrap();
     let t = db.testing();
     let page = t.pages(t.heap("app::us", "U").unwrap()).unwrap()[0];
+    let heap = t.own_mark(t.heap("app::us", "U").unwrap()).unwrap();
     db.testing()
         .plant(Plant::Refuse {
             page,
@@ -800,9 +801,12 @@ fn mapping_a_damaged_heap_page_never_marks_an_index_that_is_changing() {
                     };
                     let planted = db.testing().plant(Plant::FailOn(met)).unwrap();
                     let e = planted.refused().expect("a page error is refused");
-                    assert!(
-                        matches!(&e, crate::write::Error::Quarantined(what) if what == "app::us.U"),
-                        "{e:?}"
+                    assert_eq!(
+                        &crate::write::Error::Quarantined {
+                            objects: BTreeMap::from([(heap, None)]),
+                            by: crate::write::By::Met,
+                        },
+                        e.error()
                     );
                 }
             })
@@ -813,7 +817,6 @@ fn mapping_a_damaged_heap_page_never_marks_an_index_that_is_changing() {
     for t in writers.into_iter().chain(mappers) {
         rt.join(t);
     }
-    let heap = t.own_mark(t.heap("app::us", "U").unwrap()).unwrap();
     assert_eq!(BTreeSet::from([heap]), marks(&db));
 }
 

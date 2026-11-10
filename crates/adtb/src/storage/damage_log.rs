@@ -329,6 +329,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns what the damage of `pid` was mapped to this open, `None` while it is not mapped.
+    #[cfg(any(test, feature = "testing"))]
     pub fn mapped_to(&self, pid: Pid) -> Option<BTreeSet<Quarantine>> {
         self.evidence().mapped_to(pid)
     }

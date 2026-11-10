@@ -100,6 +100,7 @@ crate_fields prod 5 crates/adtb/src/storage/log.rs
 crate_fields prod 6 crates/adtb/src/write/past.rs
 crate_fields prod 4 crates/adtb/src/write/reindex.rs
 crate_fields prod 2 crates/adtb/src/write/vacuums.rs
+database_marks prod 2 crates/adtb/src/write/quarantine.rs
 disallowed_methods test 1 apps/campaign/tests/engine.rs
 disallowed_methods prod 1 crates/adtb-bench/src/native/crash_tests/mod.rs
 disallowed_methods prod 1 crates/adtb-bench/src/native/reporting/mod.rs

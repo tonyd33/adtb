@@ -110,9 +110,9 @@ impl<R: Runtime> Engine<R> {
                 None,
             ) => Err(Halted::Blocked { on, rerun }),
             (Err(f), None) => {
-                let ends = f.error.ends_transaction();
-                let error = self.db.quarantining(f.error);
-                Err(failed(Error::of_write(schema, id, error), ends))
+                let mapped = self.db.fail(f.error);
+                let ends = mapped.error().ends_transaction();
+                Err(failed(Error::of_write(&self.db, schema, id, mapped), ends))
             }
         }
     }

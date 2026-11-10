@@ -1080,7 +1080,11 @@ nothing. A full damage list maps every record to the database. An `Order`,
 `Orphan` or `Missing` finding, and an index entry naming an unused slot,
 mark their index at the call that finds them. The failure a call returns
 names what its page's record was mapped to, and a failure of the
-transactions layer names the database once the database is marked. A page maps as follows:
+transactions layer names the database once the database is marked. A
+failure reaches the client once, after the write path maps it. It ends the
+transaction when the call failed on a page or the transactions layer
+failed; a call a mark or an index finding refused leaves the transaction
+open. A page maps as follows:
 
 - a page of a constructor's heap, current or history, marks that heap; a
   page of an index marks that index, and a page of a history key index
