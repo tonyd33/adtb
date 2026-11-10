@@ -61,7 +61,7 @@ use crate::exec::{self, Budget, Scheduler, Val};
 use crate::mvcc::Limits;
 use crate::mvcc::Transactions;
 use crate::runtime::{Runtime, ThreadId};
-use crate::storage::policy::{self, Holder, Phase};
+use crate::storage::policy::Phase;
 use crate::storage::{self, LATCHES_PER_THREAD, Opening, Pager};
 use crate::write::{self, Bindings, Bounds, Local, Setup, Txn};
 
@@ -683,9 +683,9 @@ fn unsupported(what: &str) -> Error {
 }
 
 /// Map the damage recorded and not yet mapped during `opening` through the catalog's structures
-/// and mark what holds it. A page of the catalog or commit log marks the database. A page
-/// nothing maps marks nothing. A failure to write a mark is left to the next open, which maps
-/// the same records.
+/// and mark what holds it, then mark what the commit log's damage refusing the database whole
+/// marks. A page of the catalog or commit log marks the database. A page nothing maps marks
+/// nothing. A failure to write a mark is left to the next open, which maps the same records.
 fn mark_open_damage<R: Runtime>(
     pager: &Pager<R>,
     opening: &Opening,
@@ -697,12 +697,15 @@ fn mark_open_damage<R: Runtime>(
         |pid| structures.holders(pager, txns, pid, Phase::Opening),
         opening,
     );
+    pager.map_open_cause(opening);
 }
 
 /// Map the damage recorded after `opening` failed: by the catalog's structures, else by what
 /// [`Structures::unopened`] reads from the root page. Load the catalog before the mapping
-/// begins, and only while a record of a page is unmapped.
+/// begins, and only while a record of a page is unmapped. The commit log's damage the failed
+/// attempt kept, and the reload's, refuse neither the reload nor what opens after.
 fn mark_failed_open_damage<R: Runtime>(rt: R, pager: &Pager<R>, opening: &Opening) {
+    pager.end_open_attempt(opening);
     let loaded = if pager.any_record_unmapped() {
         let loaded = Catalog::load(rt, pager).ok();
         loaded.map(|(catalog, txns)| (catalog.structures(), txns))
@@ -720,6 +723,7 @@ fn mark_failed_open_damage<R: Runtime>(rt: R, pager: &Pager<R>, opening: &Openin
         },
         opening,
     );
+    pager.end_open_attempt(opening);
 }
 
 /// Returns the damage an open that failed may still answer `verify` over: a page that failed
@@ -1054,14 +1058,8 @@ impl<R: Runtime> Engine<R> {
         let (mut catalog, txns) = Catalog::open(rt.clone(), &pager).map_err(corrupt)?;
         *unapplied = migrate::unapplied(&catalog, log);
         mark_open_damage(&pager, opening, &catalog, &txns);
-        let clog_damaged = txns.quarantined().is_some();
-        if let Some(e) = txns.quarantined()
-            && matches!(e.damage, storage::Damage::LogUnproven { .. })
-        {
-            let fault = policy::Fault::Page(e.damage);
-            pager.map_open_fault(fault, Holder::CommitLog, opening);
-        }
-        let writable = !pager.is_quarantined(storage::Quarantine::Database);
+        let clog_damaged = pager.whole_cause().is_some();
+        let writable = !pager.refused_whole();
         catalog.set_query_memory(query_memory(options));
         diverged(&catalog, log)?;
         let (mut stored, settings) = deployed_state(&catalog, &pager, &txns, clog_damaged)?;
@@ -1330,7 +1328,7 @@ impl<R: Runtime> Engine<R> {
         &self,
         p: &Prepared,
     ) -> Option<Result<DynRows, Error>> {
-        self.db.txns().quarantined()?;
+        self.pager.whole_cause()?;
         let ([], [c]) = (p.items(), p.commands()) else {
             return None;
         };

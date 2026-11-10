@@ -418,6 +418,6 @@ impl<'a, R: Runtime> TxnProbe<'a, R> {
 
     /// Returns the damage that quarantined the database through its commit log, if any.
     pub fn commit_log_damage(&self) -> Option<PageError> {
-        self.txns.quarantined()
+        self.txns.pager().whole_cause()
     }
 }

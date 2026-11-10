@@ -264,7 +264,7 @@ impl<R: Runtime> Verifier<R> {
 
     /// Returns whether a run may write to the file: a database quarantined whole keeps nothing.
     pub(super) fn keeps(&self) -> bool {
-        self.db.admit_database().is_ok() && self.db.txns().quarantined().is_none()
+        !self.pager.refused_whole()
     }
 
     /// Returns the row of `sys::jobs` of a new pass of the scrub, and its run number and start.
@@ -665,7 +665,7 @@ impl<R: Runtime> Engine<R> {
     /// Returns the damage that quarantined the commit log when `e` is that damage met by a read,
     /// or the refusal of a transaction it causes. Returns `None` for an unreadable page.
     fn commit_log_damage(&self, e: &write::Error) -> Option<PageError> {
-        let damage = self.db.txns().quarantined()?;
+        let damage = self.pager.whole_cause()?;
         if matches!(damage.damage, Damage::Unreadable) {
             return None;
         }

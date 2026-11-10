@@ -361,6 +361,51 @@ fn verify_meeting_an_unreadable_status_page_fails_and_marks_nothing() {
 }
 
 #[test]
+fn calls_after_an_unreadable_status_page_refuses_every_transaction_fail_as_storage() {
+    let mut sim = Sim::new(3, Config::default());
+    let (status, _) = insert(&mut sim, "ann");
+    process::run(&mut sim, |rt| {
+        let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &open::options(2));
+        db.testing()
+            .plant(Plant::Refuse {
+                page: status,
+                damage: Damage::Unreadable,
+            })
+            .unwrap();
+        let unreadable = PageError {
+            pid: status,
+            damage: Damage::Unreadable,
+        };
+        let storage = || {
+            Some(Error::Fatal {
+                reason: FatalReason::Storage {
+                    detail: format!("{unreadable:?}"),
+                },
+            })
+        };
+        assert_eq!(storage(), db.verify(None).err());
+        assert_eq!(Some(unreadable), db.testing().commit_log_damage());
+        let call = |text| {
+            db.query_text(text, &[], &crate::CallOptions::default())
+                .err()
+        };
+        let got = [
+            call("from u in users select u.name"),
+            call(r#"insert users { name: "bob" }"#),
+            db.verify(None).err(),
+        ];
+        let refused = Some(Error::Fatal {
+            reason: FatalReason::Storage {
+                detail: format!("{:?}", crate::mvcc::Error::Corrupt(unreadable)),
+            },
+        });
+        assert_eq!([refused.clone(), refused.clone(), refused], got);
+        assert_eq!(BTreeSet::new(), db.testing().probe().marks());
+        db.close().unwrap();
+    });
+}
+
+#[test]
 fn the_first_verify_through_a_server_of_a_settled_status_page_reports_it_once() {
     let (mut sim, bo, want) = lost_write();
     process::run(&mut sim, |rt| {
@@ -782,17 +827,35 @@ fn a_lost_write_of_each_page_an_allocating_insert_and_a_mark_change_is_refused_o
     );
 }
 
-#[test]
-fn an_open_whose_log_cannot_settle_a_status_page_writes_no_mark() {
-    let options = crate::OpenOptions {
+/// A file whose last status page lost its writes past a segment its log no longer holds.
+struct Unprovable {
+    /// The file with the status page reverted and the segment gone.
+    lost: Files,
+    /// The file before either change, and the segment gone from `lost`.
+    after: Files,
+    gap: String,
+    /// The status page, its LSN in the file and the base of the segment gone.
+    page: Pid,
+    old: Lsn,
+    base: u64,
+    /// The root page of the heap of the catalog's rows.
+    rows: Pid,
+}
+
+fn unprovable_options() -> crate::OpenOptions {
+    crate::OpenOptions {
         create: Some(crate::CreateOptions::default()),
         testing: Knobs::default().with_segment_size(64 << 10),
         ..open::options(2)
-    };
+    }
+}
+
+fn unprovable() -> Unprovable {
+    let options = unprovable_options();
     let open =
         |rt: SimRuntime| Database::open_in(rt, harness::NAME, &Log::new([APP]), &options).unwrap();
     let mut sim = Sim::new(6, Config::default());
-    let page = process::run(&mut sim, |rt| {
+    let (page, rows) = process::run(&mut sim, |rt| {
         let db = open(rt);
         api::results(&db, r#"insert users { name: "ann" }"#);
         let page = *db
@@ -802,8 +865,9 @@ fn an_open_whose_log_cannot_settle_a_status_page_writes_no_mark() {
             .values()
             .next_back()
             .unwrap();
+        let rows = db.testing().root(Object::CatalogRows).unwrap();
         db.close().unwrap();
-        page
+        (page, rows)
     });
     let before = sim.files();
     process::run(&mut sim, |rt| {
@@ -824,8 +888,35 @@ fn an_open_whose_log_cannot_settle_a_status_page_writes_no_mark() {
         .find(|(_, base)| *base > old.0)
         .copied()
         .expect("a segment after the status page's old write and before the last");
+    let gap = gap.clone();
     let mut lost = reverted(after.clone(), &before, page, DB);
-    lost.remove(gap).unwrap();
+    lost.remove(&gap).unwrap();
+    Unprovable {
+        lost,
+        after,
+        gap,
+        page,
+        old,
+        base,
+        rows,
+    }
+}
+
+#[test]
+fn an_open_whose_log_cannot_settle_a_status_page_writes_no_mark() {
+    let options = unprovable_options();
+    let open =
+        |rt: SimRuntime| Database::open_in(rt, harness::NAME, &Log::new([APP]), &options).unwrap();
+    let Unprovable {
+        lost,
+        after,
+        gap,
+        page,
+        old,
+        base,
+        ..
+    } = unprovable();
+    let gap = &gap;
     let mut sim = Sim::with_files(6, Config::default(), lost);
     process::run(&mut sim, |rt| {
         let db = open(rt);
@@ -994,6 +1085,43 @@ fn refused_unproven(resolve: Resolve, archived: bool) {
             db.close().unwrap();
         });
     }
+}
+
+#[test]
+fn an_open_that_fails_after_its_log_cannot_settle_a_status_page_keeps_the_lowest_damaged_page_as_its_commit_log_damage()
+ {
+    let Unprovable {
+        mut lost,
+        page,
+        rows,
+        ..
+    } = unprovable();
+    DB.flip(&mut lost, rows, 300 - HEADER_LEN);
+    let mut sim = Sim::with_files(6, Config::default(), lost);
+    process::run(&mut sim, |rt| {
+        let db =
+            Database::open_in(rt, harness::NAME, &Log::new([APP]), &unprovable_options()).unwrap();
+        let damaged = db.testing().probe().refusals();
+        let lowest = damaged
+            .iter()
+            .next()
+            .map(|(&pid, &damage)| PageError { pid, damage });
+        assert_eq!(
+            Some(PageError {
+                pid: rows,
+                damage: Damage::Checksum
+            }),
+            lowest,
+            "status page {page:?}: {damaged:?}"
+        );
+        assert_eq!(lowest, db.testing().commit_log_damage());
+        let users = db.schema().relations.iter().any(|r| r.name == "users");
+        assert!(
+            !users,
+            "the open fell back to the engine of an unread catalog"
+        );
+        db.close().unwrap();
+    });
 }
 
 #[test]

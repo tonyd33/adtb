@@ -37,6 +37,16 @@
 #                     index's holder. Not counted: reads of the marks (`is_quarantined(..)`, a comparison, `contains(&..)`,
 #                     the admission checks' `marked(..)` and `(id, _)|` mapping, `matches!(m, ..)`),
 #                     the mark a reindex releases, and the testing oracle's `Ok(..)`.
+# marked_readers:     in production sources of crates/ outside storage/ and mvcc/, calls of
+#                     `is_quarantined` whose argument is `Quarantine::Database`, spelled bare or as
+#                     `storage::` or `crate::storage::Quarantine::Database`, across lines too, and
+#                     calls of `admit_database(` (not its definition), and
+#                     `std::iter::once(Quarantine::Database)` in the same spellings, the
+#                     admission loop over the marks: reads of the database's mark
+#                     alone. Whether the database is refused whole is `Pager::refused_whole`. The
+#                     lines left ask whether the database is marked: the write path's admission and
+#                     its callers, its rewrite of a failure of the transactions layer, and the
+#                     damage a failed open answers `verify` over.
 # crash_loops:        definitions of a function whose name holds `crash_loop`: the harness's one
 #                     crash loop, which runs the ledger check after every round.
 # crash_allows:       definitions of `fn allows`: what a crash loop's reopened database tolerates.
@@ -262,6 +272,15 @@ crash_allows prod 2 crates/adtb-harness/src/crash.rs
 index_marks prod 1 crates/adtb/src/catalog/structures.rs
 mark_setters prod 1 crates/adtb/src/storage/damage_log.rs
 mark_setters prod 4 crates/adtb/src/storage/quarantine.rs
+marked_readers prod 2 crates/adtb/src/api/mod.rs
+marked_readers prod 1 crates/adtb/src/api/registered/mod.rs
+marked_readers prod 1 crates/adtb/src/api/server/session.rs
+marked_readers prod 1 crates/adtb/src/api/statements.rs
+marked_readers prod 1 crates/adtb/src/api/txn.rs
+marked_readers prod 1 crates/adtb/src/api/verify.rs
+marked_readers prod 1 crates/adtb/src/write/mod.rs
+marked_readers prod 5 crates/adtb/src/write/quarantine.rs
+marked_readers prod 1 crates/adtb/src/write/reindex.rs
 crash_loops prod 1 crates/adtb-harness/src/crash.rs
 sim_test_offsets test 1 crates/adtb/src/exec/exec_tests.rs
 sim_test_offsets test 1 crates/adtb/src/storage/file_damage_tests.rs

@@ -4,7 +4,7 @@ use crate::catalog::{Catalog, Error, KeptField, KeptRow, applied, declared, vers
 use crate::key::{CtorId, Value};
 use crate::mvcc::{Scope, Transactions};
 use crate::plan::{Element, IndexId};
-use crate::storage::{Damage, HEADER_LEN, Options, Pager, Pid};
+use crate::storage::{Damage, HEADER_LEN, Options, Pager, Pid, Quarantine};
 use crate::verify::{self, Finding, Problem, Report};
 use adtb_harness::process::finished;
 use adtb_lang::types::RelId;
@@ -1016,4 +1016,129 @@ fn a_kept_row_written_into_a_full_roots_page_of_dead_versions_reuses_it() {
         assert_eq!(pages, roots.pages(&pager).expect("the roots pages"));
         assert_eq!(allocated, pager.allocated().expect("the allocated pages"));
     });
+}
+
+/// What refuses the database whole when its catalog opens.
+#[derive(Clone, Copy, Debug)]
+enum Refused {
+    No,
+    /// The database's mark, planted with no damage.
+    Marked,
+    /// A status page failing its checksum, which refuses every transaction and is not yet mapped
+    /// to a mark.
+    StatusPage,
+}
+
+const REFUSALS: [Refused; 3] = [Refused::No, Refused::Marked, Refused::StatusPage];
+
+/// Returns a file holding a created catalog whose root `change` changed, and a status page of
+/// its commit log.
+fn with_root(seed: u64, change: fn(&mut super::root::Root)) -> (BTreeMap<String, Vec<u8>>, Pid) {
+    let mut sim = Sim::new(seed, Config::default());
+    let mut status = None;
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
+        let (catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
+        status = txns.commit_log().status_pages().values().next().copied();
+        super::update_root(&pager, catalog.root(), change).expect("the root changes");
+        pager.flush_log();
+    });
+    (sim.files(), status.expect("a status page"))
+}
+
+/// What an open of the catalog answered, with the root's change in progress and the marks after
+/// it, and the pages allocated before and after it.
+type RefusedCatalog = (
+    Result<(), Error>,
+    Option<super::root::Changing>,
+    BTreeSet<Quarantine>,
+    Vec<Pid>,
+    Vec<Pid>,
+);
+
+/// Returns what [`Catalog::open`] of `files` answers when `refused` refuses the database whole,
+/// with `status` a status page of its commit log.
+fn refused_catalog(
+    seed: u64,
+    files: BTreeMap<String, Vec<u8>>,
+    status: Pid,
+    refused: Refused,
+) -> RefusedCatalog {
+    let mut sim = Sim::with_files(seed, Config::default(), files);
+    let mut out = None;
+    finished(&mut sim, |rt| {
+        let (pager, opening) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
+        match refused {
+            Refused::No => {}
+            Refused::Marked => pager
+                .plant_mark(Quarantine::Database, &opening)
+                .expect("the mark"),
+            Refused::StatusPage => drop(pager.plant_damage(status, Damage::Checksum)),
+        }
+        let before = pager.allocated().expect("the bitmaps");
+        let opened = Catalog::open(rt, &pager).map(drop);
+        let root = pager.catalog_root();
+        let changing = (root != Pid(0))
+            .then(|| super::root::Root::read(&pager.read(root).expect("the root page")).changing);
+        out = Some((
+            opened,
+            changing,
+            pager.quarantined(),
+            before,
+            pager.allocated().expect("the bitmaps"),
+        ));
+    });
+    out.expect("the run finished")
+}
+
+#[test]
+fn an_open_refused_whole_by_a_mark_or_its_commit_log_leaves_a_change_in_progress() {
+    use super::root::Changing;
+    let (files, status) = with_root(31, |r| r.changing = Changing::Reindexing);
+    let got = REFUSALS.map(|refused| {
+        let (opened, changing, marks, _, _) = refused_catalog(31, files.clone(), status, refused);
+        (opened, changing, marks)
+    });
+    let database = || BTreeSet::from([Quarantine::Database]);
+    let want = [
+        (Ok(()), Some(Changing::None), BTreeSet::new()),
+        (Ok(()), Some(Changing::Reindexing), database()),
+        (Ok(()), Some(Changing::Reindexing), BTreeSet::new()),
+    ];
+    assert_eq!(want, got);
+}
+
+#[test]
+fn an_open_refused_whole_of_a_catalog_whose_create_did_not_commit_fails_and_frees_nothing() {
+    let (files, status) = with_root(32, |r| r.roots.1 = Pid(0));
+    let got = REFUSALS.map(|refused| {
+        let (opened, _, marks, before, after) = refused_catalog(32, files.clone(), status, refused);
+        match opened {
+            Ok(()) => Ok(()),
+            Err(e) => Err((e, marks, before == after)),
+        }
+    });
+    let refused = |marks| {
+        Err((
+            Error::Corrupt(super::rot::Rot::MarkedNoCatalog),
+            marks,
+            true,
+        ))
+    };
+    let database = BTreeSet::from([Quarantine::Database]);
+    assert_eq!([Ok(()), refused(database), refused(BTreeSet::new())], got);
+}
+
+#[test]
+fn a_marked_header_naming_no_catalog_fails_and_frees_nothing() {
+    let mut sim = Sim::new(33, Config::default());
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt, &options(FRAMES)).expect("create");
+        crate::heap::LargeStore::create(&pager, 1).expect("a stray page");
+        pager.flush_log();
+    });
+    let (opened, changing, _, before, after) =
+        refused_catalog(33, sim.files(), Pid(0), Refused::Marked);
+    let refused = Err(Error::Corrupt(super::rot::Rot::MarkedNoCatalog));
+    assert_eq!((refused, None, before), (opened, changing, after));
 }

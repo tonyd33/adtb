@@ -224,6 +224,14 @@ impl<R: Runtime> Pager<R> {
         out
     }
 
+    /// Set what the damage of the commit log that refuses the database whole marks during
+    /// `opening`.
+    pub fn map_open_cause(&self, opening: &Opening) {
+        if let Some(cause) = self.whole_cause() {
+            self.map_open_fault(Fault::Page(cause.damage), Holder::CommitLog, opening);
+        }
+    }
+
     /// Set the durable marks of `marks` in the order of [`Quarantine`], which puts the database
     /// first, under one hold of the order `order` gives. Returns each object marked, with whether its mark failed.
     fn set_marks(

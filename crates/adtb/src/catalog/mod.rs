@@ -57,7 +57,7 @@ use crate::key::{CtorId, Dir, Entry, KeySchema, OrderKey, Scalar, Tid, Value};
 use crate::mvcc::{self, Scope, Snapshot, Transactions, Xid};
 use crate::plan::{self, HeapId, IndexDesc, IndexId, RelationDesc};
 use crate::runtime::Runtime;
-use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid, Quarantine};
+use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid};
 use crate::verify::{self, Depth, Problem, Report};
 
 pub use broken::Broken;
@@ -447,7 +447,7 @@ fn named<R: Runtime>(
     txns: &Transactions<R>,
     roots: &Heap,
 ) -> Result<Named, Error> {
-    let rows = if let Some(damage) = txns.quarantined() {
+    let rows = if let Some(damage) = pager.whole_cause() {
         latest_rows(pager, txns, roots, damage)?
     } else {
         let (id, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
@@ -710,7 +710,7 @@ impl Catalog {
     /// root for the next open to free.
     pub fn open<R: Runtime>(rt: R, pager: &Pager<R>) -> Result<(Catalog, Transactions<R>), Error> {
         let (mut catalog, txns) = Catalog::load(rt, pager)?;
-        if txns.quarantined().is_some() || pager.is_quarantined(Quarantine::Database) {
+        if pager.refused_whole() {
             return Ok((catalog, txns));
         }
         let changing = Root::read(&pager.read(catalog.root)?).changing;
@@ -733,7 +733,7 @@ impl Catalog {
         let pid = pager.catalog_root();
         let refused = || Error::from(Rot::MarkedNoCatalog);
         if pid == Pid(0) {
-            if pager.is_quarantined(Quarantine::Database) {
+            if pager.refused_whole() {
                 return Err(refused());
             }
             for p in pager.allocated()? {
@@ -750,7 +750,7 @@ impl Catalog {
             Root::read(&page)
         };
         let txns = Transactions::open(rt, pager, root.commit_log)?;
-        let marked = txns.quarantined().is_some() || pager.is_quarantined(Quarantine::Database);
+        let marked = pager.refused_whole();
         if root.roots.1 == Pid(0) {
             if marked {
                 return Err(refused());

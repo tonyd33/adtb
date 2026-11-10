@@ -122,9 +122,9 @@ impl<R: Runtime> std::ops::Deref for Transactions<R> {
 #[derive(Debug)]
 pub struct Shared<R: Runtime> {
     rt: R,
+    pager: Pager<R>,
     clog: RwLock<CommitLog>,
     state: Lock<State>,
-    quarantine: OnceLock<PageError>,
     history: OnceLock<Past>,
     /// The first damage found keeping a marker; every read of the past fails with it after.
     lost: OnceLock<btree::Error>,
@@ -172,7 +172,7 @@ impl<R: Runtime> Transactions<R> {
     }
 
     /// Returns the transactions layer of a file whose commit log cannot be read, refusing every
-    /// transaction with damage `e`.
+    /// transaction with the first damage the pager keeps, `e` when it keeps none.
     pub fn refusing(rt: R, pager: &Pager<R>, e: PageError) -> Transactions<R> {
         let txns = Transactions::over(rt, pager, CommitLog::unread(pager));
         txns.damaged(e);
@@ -215,9 +215,9 @@ impl<R: Runtime> Transactions<R> {
         };
         Transactions(std::sync::Arc::new(Shared {
             rt,
+            pager: pager.clone(),
             clog: RwLock::new(clog),
             state: Lock::new(state),
-            quarantine: OnceLock::new(),
             history: OnceLock::new(),
             lost: OnceLock::new(),
             marked: Lock::new(Lsn(0)),
@@ -225,8 +225,13 @@ impl<R: Runtime> Transactions<R> {
     }
 
     /// Returns the damage that quarantined the database, if any.
-    pub(crate) fn quarantined(&self) -> Option<PageError> {
-        self.quarantine.get().copied()
+    fn quarantined(&self) -> Option<PageError> {
+        self.pager.whole_cause()
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub fn pager(&self) -> &Pager<R> {
+        &self.pager
     }
 
     fn admit(&self) -> Result<(), Error> {
@@ -236,7 +241,7 @@ impl<R: Runtime> Transactions<R> {
 
     /// Quarantine the database for `e`, keeping the first damage found. Returns the failure.
     fn damaged(&self, e: PageError) -> Error {
-        Error::Corrupt(*self.quarantine.get_or_init(|| e))
+        Error::Corrupt(self.pager.refuse_whole(e))
     }
 
     fn checked<T>(&self, r: Result<T, PageError>) -> Result<T, Error> {
@@ -327,7 +332,7 @@ impl<R: Runtime> Transactions<R> {
             return Err(StatusError::Page(e));
         }
         match self.clog.read(&self.rt).status(pager, x) {
-            Err(StatusError::Page(e)) => Err(StatusError::Page(*self.quarantine.get_or_init(|| e))),
+            Err(StatusError::Page(e)) => Err(StatusError::Page(self.pager.refuse_whole(e))),
             found => found,
         }
     }

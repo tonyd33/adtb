@@ -168,6 +168,31 @@ grep -qxF 'index_marks prod 3 crates/adtb/src/write/q.rs' <<<"$counts" || fail "
   fail "counted the policy table, the codec or a test: $counts"
 rm -r "$adtb/write" "$adtb/storage/"{quarantine,policy}.rs
 
+# A read of the database's mark counts in production sources outside storage and mvcc.
+mkdir -p "$adtb/write" "$adtb/mvcc" "$adtb/storage"
+printf 'fn f() {
+    if pager.is_quarantined(Quarantine::Database) {}
+    let whole = pager.is_quarantined(storage::Quarantine::Database);
+    let crated = pager.is_quarantined(crate::storage::Quarantine::Database);
+    let wrapped = pager.is_quarantined(
+        crate::storage::Quarantine::Database,
+    );
+    self.db
+        .admit_database()?;
+    for object in std::iter::once(crate::storage::Quarantine::Database) {}
+    pager.is_quarantined(Quarantine::Heap(1));
+}
+pub fn admit_database(&self) {}
+' >"$adtb/write/q.rs"
+for f in storage/q.rs mvcc/q.rs write/q_tests.rs; do
+  cp "$adtb/write/q.rs" "$adtb/$f"
+done
+counts=$("$checker" --counts "$scratch")
+grep -qxF 'marked_readers prod 6 crates/adtb/src/write/q.rs' <<<"$counts" || fail "not counted: marked_readers: $counts"
+! grep -q 'marked_readers .* crates/adtb/src/\(storage\|mvcc\)/\|marked_readers .*_tests.rs' <<<"$counts" ||
+  fail "counted storage, mvcc or a test: $counts"
+rm -r "$adtb/write" "$adtb/mvcc" "$adtb/storage/q.rs"
+
 # A malformed allowlist line fails.
 printf '%s\n' 'meta prod many crates/adtb/src/exec/a.rs' >work/tools/structure-allowlist
 if "$checker" "$scratch" >out.txt 2>&1; then

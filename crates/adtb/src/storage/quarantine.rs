@@ -241,7 +241,7 @@ mod marks {
 
     use super::Quarantine;
     use crate::runtime::Runtime;
-    use crate::storage::Pid;
+    use crate::storage::{PageError, Pid};
 
     /// The marks in memory, under the marks lock, a leaf, and whether any is set, read without
     /// it.
@@ -256,6 +256,10 @@ mod marks {
     pub(in crate::storage) struct Marks {
         state: Lock<State>,
         any: AtomicBool,
+        cause: Lock<Option<PageError>>,
+        /// Set after `cause` takes damage and cleared after it is emptied, both under its lock;
+        /// read without it.
+        caused: AtomicBool,
     }
 
     #[derive(Debug, Default)]
@@ -287,7 +291,38 @@ mod marks {
                     ..State::default()
                 }),
                 any: AtomicBool::new(false),
+                cause: Lock::new(None),
+                caused: AtomicBool::new(false),
             }
+        }
+
+        /// Keep `e` as the damage of the commit log that refuses the database whole, unless one
+        /// is kept already. Returns the one kept.
+        pub(in crate::storage) fn refuse_whole<R: Runtime>(
+            &self,
+            rt: &R,
+            e: PageError,
+        ) -> PageError {
+            let mut cause = self.cause.lock(rt);
+            let kept = *cause.get_or_insert(e);
+            self.caused.store(true, Ordering::Release);
+            kept
+        }
+
+        /// Returns the damage of the commit log that refuses the database whole, taking no lock
+        /// while there is none.
+        pub(in crate::storage) fn cause<R: Runtime>(&self, rt: &R) -> Option<PageError> {
+            if !self.caused.load(Ordering::Acquire) {
+                return None;
+            }
+            *self.cause.lock(rt)
+        }
+
+        /// Forget the damage of the commit log kept so far.
+        pub(in crate::storage) fn forget_cause<R: Runtime>(&self, rt: &R) {
+            let mut cause = self.cause.lock(rt);
+            *cause = None;
+            self.caused.store(false, Ordering::Release);
         }
 
         fn lock<R: Runtime>(&self, rt: &R) -> Guard<'_> {
@@ -455,6 +490,31 @@ impl<R: Runtime> Pager<R> {
     /// Returns whether any object is quarantined, without taking a lock.
     pub fn any_quarantined(&self) -> bool {
         self.marks().any()
+    }
+
+    /// Returns whether the database is refused whole: by its mark, set or held, or by damage of
+    /// the commit log that refuses every transaction.
+    pub fn refused_whole(&self) -> bool {
+        self.whole_cause().is_some() || self.is_quarantined(Quarantine::Database)
+    }
+
+    /// Returns the damage of the commit log that refuses the database whole, the first kept
+    /// this open attempt, taking no lock while there is none.
+    pub(crate) fn whole_cause(&self) -> Option<PageError> {
+        self.marks().cause(self.rt())
+    }
+
+    /// Refuse the database whole for `e`, damage of the commit log, keeping the first damage
+    /// given since the open attempt began. Returns the damage kept.
+    pub(crate) fn refuse_whole(&self, e: PageError) -> PageError {
+        self.marks().refuse_whole(self.rt(), e)
+    }
+
+    /// Forget the damage of the commit log kept so far.
+    ///
+    /// Precondition: no transactions layer over this pager serves calls.
+    pub(crate) fn end_open_attempt(&self, _opening: &super::Opening) {
+        self.marks().forget_cause(self.rt());
     }
 
     /// Returns whether `object` is quarantined, by its own mark or the database's.
