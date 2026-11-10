@@ -995,7 +995,8 @@ fn a_kept_row_written_into_a_full_roots_page_of_dead_versions_reuses_it() {
             fields: vec![KeptField::Text("k".repeat(400))],
         };
         let keep = || {
-            let x = txns.begin(&pager).expect("a transaction");
+            let begun = txns.begin(&pager).expect("a transaction");
+            let x = begun.xid();
             catalog
                 .replace_kept(
                     &pager,
@@ -1005,7 +1006,7 @@ fn a_kept_row_written_into_a_full_roots_page_of_dead_versions_reuses_it() {
                     std::slice::from_ref(&row),
                 )
                 .expect("the kept row is written");
-            txns.commit(&pager, x).expect("the commit");
+            txns.commit(&pager, begun).expect("the commit");
         };
         keep();
         let pages = roots.pages(&pager).expect("the roots pages");

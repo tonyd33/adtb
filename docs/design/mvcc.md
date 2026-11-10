@@ -226,6 +226,24 @@ Postconditions:
   is spent, starting a read-write transaction is refused; snapshots
   and reads go on. The id `2^64 - 1` is never assigned.
 
+`Transactions::begin` returns a `Begun` guard for the new id. The id
+is running until `Transactions::commit` or `Transactions::abort` takes
+the guard, or the guard drops; each of the three takes it out of the
+running transactions on every path.
+
+- A commit that fails aborts the id and returns the commit's failure.
+- A dropped guard aborts the id best effort: a failure to record the
+  abort is counted, not returned, and a guard dropped while its thread
+  panics, or after its pager closes, records nothing.
+- An abort whose record fails, which refuses the database whole, or
+  that records nothing leaves the commit log saying the id is in
+  progress. Readers treat it as not committed, and recovery settles it
+  as aborted. Until then it is unresolved: it bounds the resolved id
+  each reservation logs, as a running id does.
+- A panic inside `commit` or `abort` leaves the id running in memory
+  and in progress in the commit log; the process ends, and recovery
+  settles it.
+
 ### 4.2 The commit log
 
 The commit log holds 2 bits per xid (in progress, committed, aborted)
@@ -344,8 +362,10 @@ snapshot { xmin: u64, xmax: u64, in_progress: [u64] }
 
 `xmax` is the next id to be assigned when the snapshot is taken,
 `in_progress` the ids then running, in order, and `xmin` the oldest of
-them, or `xmax` when none runs. Every id below `xmin` had resolved when
-the snapshot was taken.
+them, or `xmax` when none runs. Every id below `xmin` had resolved, or
+was unresolved, when the snapshot was taken. An unresolved id is out of
+the running transactions with its abort not recorded (§4.1); the commit
+log says it is in progress, and it counts as not committed.
 
 Visibility rule: a version's writer `x` counts as committed for
 snapshot `s` when `x < s.xmax`, `x` is not in `s.in_progress`, and the
@@ -810,6 +830,12 @@ the log to be durable.
 Invariant: a read-write transaction's hold is released only after
 `log_safe` has run for its commit or abort.
 
+The `xmin` of a snapshot is the least id running when it is taken. An
+id leaves the running transactions at its commit, at its abort whether
+or not the commit log records the abort, and when its `Begun` guard
+drops ([§4.1](#41-transaction-ids)), so an id whose transaction ended
+on any path holds back no snapshot taken after.
+
 `Transactions::take(scope)` returns a snapshot with its `Hold`, which
 publishes the snapshot to the heaps of `scope` until it drops, on every
 path. Nothing else releases a snapshot.
@@ -868,8 +894,9 @@ version the window keeps (§10.3) is kept though dead to every
 snapshot; under `Moving` it is removed once vacuum has moved it to
 history.
 
-Postconditions of a vacuum of a sum begun when the oldest running
-transaction was `x`, or when none ran and `x` was the next id:
+Postconditions of a vacuum of a sum begun when the oldest running or
+unresolved transaction was `x`, or when there was none and `x` was the
+next id:
 
 - no index entry of the sum names a slot vacuum freed;
 - no version of the sum names an aborted transaction below `x`, in
@@ -880,8 +907,9 @@ transaction was `x`, or when none ran and `x` was the next id:
 Writers, readers and on-access pruning of the sum run beside a vacuum.
 Each heap is judged for the whole of one vacuum by the least of its
 watermark and the oldest transaction running when the vacuum first
-judges it: every transaction below that bound had resolved, so a
-version found dead stays dead from the scan that collects it to the
+judges it: every transaction below that bound had resolved or is
+unresolved, whose status stays in progress and counts as not committed
+in this process, so a version found dead stays dead from the scan that collects it to the
 prune that frees it, whatever snapshots are taken meanwhile. That
 bound is `Transactions::horizon_fixed`.
 

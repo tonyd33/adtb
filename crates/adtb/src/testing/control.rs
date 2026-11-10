@@ -92,8 +92,9 @@ impl<'a, R: Runtime> Testing<'a, R> {
     /// Begin a transaction and abort it, writing nothing. Returns the id it took.
     pub fn take_xid(self) -> Result<Xid, Failed> {
         let (pager, txns) = (self.db.tested_pager(), self.db.tested_db().txns());
-        let x = txns.begin(pager).map_err(Failed::Txn)?;
-        txns.abort(pager, x).map_err(Failed::Txn)?;
+        let begun = txns.begin(pager).map_err(Failed::Txn)?;
+        let x = begun.xid();
+        txns.abort(pager, begun).map_err(Failed::Txn)?;
         Ok(x)
     }
 

@@ -461,14 +461,17 @@ fn session(sim: &mut Sim, root: Option<Pid>, ops: &[Op], end: End) -> Session {
         };
         let mut ids = Vec::new();
         for op in ops {
-            let x = txns.begin(&pager).unwrap();
+            let begun = txns.begin(&pager).unwrap();
+            let x = begun.xid();
             let status = match op {
-                Op::Commit => txns.commit(&pager, x).map(|_| Status::Committed),
-                Op::Abort => txns.abort(&pager, x).map(|_| Status::Aborted),
+                Op::Commit => txns.commit(&pager, begun).map(|_| Status::Committed),
+                Op::Abort => txns.abort(&pager, begun).map(|_| Status::Aborted),
             };
             ids.push((x, status.unwrap()));
         }
-        ids.push((txns.begin(&pager).unwrap(), Status::Aborted));
+        let left = txns.begin(&pager).unwrap();
+        ids.push((left.xid(), Status::Aborted));
+        std::mem::forget(left);
         pager.flush_log();
         let clog = txns.commit_log();
         assert_eq!(1, clog.status_pages().len(), "one status page");
@@ -550,8 +553,8 @@ fn lost_past_the_first_segment(commits: usize) -> (Files, Pid, Pid, Vec<(Xid, St
         let pager = Pager::create(rt.clone(), &options).unwrap();
         let txns = Transactions::create(rt, &pager).unwrap();
         let scratch = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
-        let x = txns.begin(&pager).unwrap();
-        txns.commit(&pager, x).unwrap();
+        let begun = txns.begin(&pager).unwrap();
+        txns.commit(&pager, begun).unwrap();
         while Probe::of(&pager).appended().0 <= options.segment_size {
             pager.update(&[scratch], |p| p[0][HEADER_LEN] ^= 1).unwrap();
             pager.flush_log();
@@ -568,12 +571,15 @@ fn lost_past_the_first_segment(commits: usize) -> (Files, Pid, Pid, Vec<(Xid, St
         let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
         let txns = Transactions::open(rt, &pager, root).unwrap();
         for _ in 0..commits {
-            let x = txns.begin(&pager).unwrap();
-            txns.commit(&pager, x).unwrap();
+            let begun = txns.begin(&pager).unwrap();
+            let x = begun.xid();
+            txns.commit(&pager, begun).unwrap();
             pager.flush_log();
             ids.push((x, Status::Committed));
         }
-        ids.push((txns.begin(&pager).unwrap(), Status::Aborted));
+        let left = txns.begin(&pager).unwrap();
+        ids.push((left.xid(), Status::Aborted));
+        std::mem::forget(left);
         pager.close();
     });
     (reverted(sim.files(), &before, page, PAGER), root, page, ids)

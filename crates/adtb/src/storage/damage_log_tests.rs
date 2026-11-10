@@ -647,8 +647,8 @@ fn lost_status_page() -> (Files, Pid, Pid) {
     harness::finished(&mut sim, |rt| {
         let pager = Pager::create(rt.clone(), &options).unwrap();
         let txns = Transactions::create(rt, &pager).unwrap();
-        let x = txns.begin(&pager).unwrap();
-        txns.commit(&pager, x).unwrap();
+        let begun = txns.begin(&pager).unwrap();
+        txns.commit(&pager, begun).unwrap();
         let clog = txns.commit_log();
         out = Some((clog.root(), clog.status_pages()[&0]));
         drop(clog);
@@ -660,10 +660,10 @@ fn lost_status_page() -> (Files, Pid, Pid) {
         let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
         let txns = Transactions::open(rt, &pager, root).unwrap();
         for _ in 0..3 {
-            let x = txns.begin(&pager).unwrap();
-            txns.commit(&pager, x).unwrap();
+            let begun = txns.begin(&pager).unwrap();
+            txns.commit(&pager, begun).unwrap();
         }
-        txns.begin(&pager).unwrap();
+        std::mem::forget(txns.begin(&pager).unwrap());
         pager.close();
     });
     let files = with_page(sim.files(), status, PAGER.page(&before, status));

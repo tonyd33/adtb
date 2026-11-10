@@ -200,7 +200,8 @@ impl Db {
     /// Commit one transaction setting each key of `ops` to its value, or deleting it for `None`.
     /// Returns its commit position.
     fn write(&mut self, ops: &[(i64, Option<i64>)]) -> Position {
-        let x = self.txns.begin(&self.pager).expect("begin");
+        let begun = self.txns.begin(&self.pager).expect("begin");
+        let x = begun.xid();
         for &(k, v) in ops {
             if let Some(tid) = self.live.remove(&k) {
                 self.heap().delete(&self.pager, tid, x).expect("delete");
@@ -225,7 +226,7 @@ impl Db {
                 None => self.state.remove(&k),
             };
         }
-        let lsn = self.txns.commit(&self.pager, x).expect("commit");
+        let lsn = self.txns.commit(&self.pager, begun).expect("commit");
         self.pager.wait_durable(lsn)
     }
 
@@ -688,8 +689,8 @@ fn a_read_of_the_past_without_history_is_unavailable() {
     finished(&mut sim, |rt| {
         let pager = Pager::create(rt.clone(), &opts()).expect("create");
         let txns = Transactions::create(rt, &pager).expect("commit log");
-        let x = txns.begin(&pager).expect("begin");
-        let lsn = txns.commit(&pager, x).expect("commit");
+        let begun = txns.begin(&pager).expect("begin");
+        let lsn = txns.commit(&pager, begun).expect("commit");
         let at = pager.wait_durable(lsn);
         assert_eq!(
             Err(PastError::Unavailable { oldest: None }),
@@ -1006,7 +1007,8 @@ fn a_heap_emptied_from_its_end_leaves_no_hole_behind_its_last_page() {
         db.vacuum_keeping();
         assert!(db.heap().is_empty(&db.pager).expect("pages"));
         assert_eq!(0, db.heap().holes(&db.pager).expect("holes"));
-        let x = db.txns.begin(&db.pager).expect("begin");
+        let begun = db.txns.begin(&db.pager).expect("begin");
+        let x = begun.xid();
         let mut judge = db
             .txns
             .judge(&db.pager, db.txns.horizon_now(db.heap().id().0));
@@ -1040,8 +1042,9 @@ fn a_moved_version_keeps_its_out_of_line_values_until_the_window_passes() {
         let past_index = Index::create(&pager, PAST_INDEX, key_schema(), ctors()).expect("index");
         let blob: Vec<u8> = (0..9000u32).map(|i| (i * 7) as u8).collect();
         let row = vec![Value::I64(1), Value::Bytes(blob)];
-        let commit = |x| pager.wait_durable(txns.commit(&pager, x).expect("commit"));
-        let x = txns.begin(&pager).expect("begin");
+        let commit = |begun| pager.wait_durable(txns.commit(&pager, begun).expect("commit"));
+        let begun = txns.begin(&pager).expect("begin");
+        let x = begun.xid();
         let tid = heap.insert(&pager, x, &row).expect("insert");
         let entry = Entry {
             key: vec![Value::I64(1)],
@@ -1049,13 +1052,14 @@ fn a_moved_version_keeps_its_out_of_line_values_until_the_window_passes() {
             tid,
         };
         index.insert(&pager, &entry).expect("index");
-        let at = commit(x);
+        let at = commit(begun);
         let (hold, snapshot) = txns.take(Scope::Every).expect("snapshot");
         txns.log_safe_snapshot(&pager, hold.taken(), &snapshot);
         drop(hold);
-        let x = txns.begin(&pager).expect("begin");
+        let begun = txns.begin(&pager).expect("begin");
+        let x = begun.xid();
         heap.delete(&pager, tid, x).expect("delete");
-        commit(x);
+        commit(begun);
         let sum = Sum {
             heaps: vec![(CTOR, &heap)],
             indexes: vec![&index],
@@ -1489,7 +1493,8 @@ fn fetch_beside_vacuum(
     let mut live = None;
     let mut at = None;
     for row in [old, new] {
-        let x = db.txns.begin(&db.pager).expect("begin");
+        let begun = db.txns.begin(&db.pager).expect("begin");
+        let x = begun.xid();
         if let Some(tid) = live {
             db.heap().delete(&db.pager, tid, x).expect("delete");
         }
@@ -1502,7 +1507,7 @@ fn fetch_beside_vacuum(
         assert!(db.index.insert(&db.pager, &entry).expect("index"));
         live = Some(tid);
         db.pager
-            .wait_durable(db.txns.commit(&db.pager, x).expect("commit"));
+            .wait_durable(db.txns.commit(&db.pager, begun).expect("commit"));
         at = at.or_else(|| Some(db.mark()));
     }
     let at = at.expect("a mark after the first row");
@@ -1617,7 +1622,8 @@ fn a_fetch_of_the_past_returns_the_out_of_line_values_of_the_version_vacuum_move
 /// entry, then the delete of every one of them.
 fn insert_then_delete(db: &Db, keys: std::ops::Range<i64>) {
     let row = |k| vec![Value::I64(k), Value::Bytes(vec![7; 200])];
-    let x = db.txns.begin(&db.pager).expect("begin");
+    let begun = db.txns.begin(&db.pager).expect("begin");
+    let x = begun.xid();
     let tids: Vec<Tid> = keys
         .map(|k| {
             let tid = db.heap().insert(&db.pager, x, &row(k)).expect("insert");
@@ -1631,13 +1637,14 @@ fn insert_then_delete(db: &Db, keys: std::ops::Range<i64>) {
         })
         .collect();
     db.pager
-        .wait_durable(db.txns.commit(&db.pager, x).expect("commit"));
-    let x = db.txns.begin(&db.pager).expect("begin");
+        .wait_durable(db.txns.commit(&db.pager, begun).expect("commit"));
+    let begun = db.txns.begin(&db.pager).expect("begin");
+    let x = begun.xid();
     for tid in tids {
         db.heap().delete(&db.pager, tid, x).expect("delete");
     }
     db.pager
-        .wait_durable(db.txns.commit(&db.pager, x).expect("commit"));
+        .wait_durable(db.txns.commit(&db.pager, begun).expect("commit"));
 }
 
 #[test]
@@ -1650,7 +1657,8 @@ fn a_vacuum_move_into_a_history_page_full_of_versions_past_the_window_reuses_it(
         ];
         let window = Duration::from_millis(200);
         let (mut db, _) = Db::create_of(rt, window, fields);
-        let x = db.txns.begin(&db.pager).expect("begin");
+        let begun = db.txns.begin(&db.pager).expect("begin");
+        let x = begun.xid();
         let mut fits = 0;
         while db.heap().pages(&db.pager).expect("pages").len() < 2 {
             let row = [Value::I64(-1), Value::Bytes(vec![7; 200])];
@@ -1658,7 +1666,7 @@ fn a_vacuum_move_into_a_history_page_full_of_versions_past_the_window_reuses_it(
             fits += 1;
         }
         fits -= 1;
-        db.txns.abort(&db.pager, x).expect("abort");
+        db.txns.abort(&db.pager, begun).expect("abort");
         insert_then_delete(&db, 0..fits);
         db.vacuum_keeping();
         let pages = db.past_heap.pages(&db.pager).expect("pages");

@@ -4,10 +4,12 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 use crate::mvcc::Fate as Verdict;
-use crate::mvcc::{CommitLog, Hold, Rule, Scope, Snapshot, Status, StatusError, Transactions, Xid};
+use crate::mvcc::{
+    Begun, CommitLog, Hold, Rule, Scope, Snapshot, Status, StatusError, Transactions, Xid,
+};
 
 use super::writers;
-use crate::storage::{Edit, HEADER_LEN, PageKind, Pager, Pid};
+use crate::storage::{Damage, Edit, HEADER_LEN, PageKind, Pager, Pid};
 use crate::verify::Inventory;
 use adtb_sim::{Config, Fate, Finding, Ledger, Recovered, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
@@ -98,21 +100,24 @@ fn visibility_through_the_commit_log_matches_a_model() {
         let mut model = Model::default();
         let mut versions: Vec<(u64, u64)> = Vec::new();
         let mut held: Vec<Held> = Vec::new();
+        let mut guards: BTreeMap<Xid, Begun> = BTreeMap::new();
         let mut checks = 0;
         let mut event = 0;
         while TxnProbe::of(txns).next_xid().0 < 3 * txns.commit_log().ids_per_page() {
             event += 1;
             match rng.below(16) {
                 0..=3 => {
-                    txns.begin(pager).expect("begin");
+                    let begun = txns.begin(pager).expect("begin");
+                    guards.insert(begun.xid(), begun);
                 }
                 4..=7 if !txns.running().is_empty() => {
                     let x = pick(&mut rng, &txns.running());
+                    let begun = guards.remove(&x).expect("a running id has its guard");
                     if rng.below(3) == 0 {
-                        txns.abort(pager, x).expect("abort");
+                        txns.abort(pager, begun).expect("abort");
                         model.ended.insert(x, (event, Status::Aborted));
                     } else {
-                        txns.commit(pager, x).expect("commit");
+                        txns.commit(pager, begun).expect("commit");
                         model.ended.insert(x, (event, Status::Committed));
                     }
                 }
@@ -346,10 +351,12 @@ fn workload(rt: SimRuntime, root: Pid, pages: &[Pid], ledger: &Ledger, world: &M
     };
     let txns = Transactions::open(rt.clone(), &pager, root).expect("open the commit log");
     let mut unacked: Vec<Xid> = Vec::new();
+    let mut guards: BTreeMap<Xid, Begun> = BTreeMap::new();
     for _ in 0..4000 {
         match below(&rt, 12) {
             0..=3 => {
-                let x = txns.begin(&pager).expect("begin");
+                let begun = txns.begin(&pager).expect("begin");
+                let x = begun.xid();
                 let mut w = world.lock().unwrap();
                 assert!(
                     w.assigned.last().is_none_or(|&l| l < x),
@@ -357,6 +364,7 @@ fn workload(rt: SimRuntime, root: Pid, pages: &[Pid], ledger: &Ledger, world: &M
                     w.assigned.last()
                 );
                 w.assigned.push(x);
+                guards.insert(x, begun);
             }
             4 | 5 if !txns.running().is_empty() => {
                 let running: Vec<Xid> = txns.running().iter().copied().collect();
@@ -377,11 +385,12 @@ fn workload(rt: SimRuntime, root: Pid, pages: &[Pid], ledger: &Ledger, world: &M
                 let running: Vec<Xid> = txns.running().iter().copied().collect();
                 let x = running[below(&rt, running.len())];
                 ledger.submit(x.0);
+                let begun = guards.remove(&x).expect("a running id has its guard");
                 if below(&rt, 4) == 0 {
-                    txns.abort(&pager, x).expect("abort");
+                    txns.abort(&pager, begun).expect("abort");
                     ledger.abort(x.0);
                 } else {
-                    txns.commit(&pager, x).expect("commit");
+                    txns.commit(&pager, begun).expect("commit");
                     unacked.push(x);
                 }
             }
@@ -525,8 +534,8 @@ fn written(seed: u64) -> (BTreeMap<String, Vec<u8>>, Pid, Pid) {
         let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
         let txns = Transactions::create(rt, &pager).expect("commit log");
         for _ in 0..3 {
-            let x = txns.begin(&pager).expect("begin");
-            txns.commit(&pager, x).expect("commit");
+            let begun = txns.begin(&pager).expect("begin");
+            txns.commit(&pager, begun).expect("commit");
         }
         pager.flush_log();
         pager.flush_pages(usize::MAX);
@@ -557,8 +566,8 @@ fn a_damaged_status_page_no_unresolved_id_lies_on_quarantines_the_database() {
         let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
         let txns = Transactions::create(rt, &pager).expect("commit log");
         while TxnProbe::of(&txns).next_xid().0 < 2 * txns.commit_log().ids_per_page() {
-            let x = txns.begin(&pager).expect("begin");
-            txns.abort(&pager, x).expect("abort");
+            let begun = txns.begin(&pager).expect("begin");
+            txns.abort(&pager, begun).expect("abort");
         }
         pager.flush_log();
         pager.flush_pages(usize::MAX);
@@ -590,7 +599,7 @@ fn a_damaged_status_page_quarantines_the_database() {
             .expect("the database is quarantined");
         assert_eq!(status, damage.pid);
         let refused = crate::mvcc::Error::Corrupt(damage);
-        assert_eq!(Err(refused), txns.begin(&pager));
+        assert_eq!(Some(refused), txns.begin(&pager).err());
         assert_eq!(Some(refused), txns.take(Scope::Every).err());
         assert_eq!(Err(StatusError::Page(damage)), txns.status(&pager, Xid(1)));
         assert_eq!(root, txns.commit_log().root());
@@ -794,19 +803,22 @@ fn fate_matches_a_model_of_random_histories() {
         let mut times: BTreeMap<Xid, u64> = BTreeMap::new();
         let mut versions: Vec<(u64, u64)> = Vec::new();
         let mut held: Vec<Held> = Vec::new();
+        let mut guards: BTreeMap<Xid, Begun> = BTreeMap::new();
         let mut met = Met::default();
         for event in 1..6000 {
             match rng.below(16) {
                 0..=3 => {
-                    txns.begin(pager).expect("begin");
+                    let begun = txns.begin(pager).expect("begin");
+                    guards.insert(begun.xid(), begun);
                 }
                 4..=7 if !txns.running().is_empty() => {
                     let x = pick(&mut rng, &txns.running());
+                    let begun = guards.remove(&x).expect("a running id has its guard");
                     if rng.below(3) == 0 {
-                        txns.abort(pager, x).expect("abort");
+                        txns.abort(pager, begun).expect("abort");
                         model.ended.insert(x, (event, Status::Aborted));
                     } else {
-                        txns.commit(pager, x).expect("commit");
+                        txns.commit(pager, begun).expect("commit");
                         model.ended.insert(x, (event, Status::Committed));
                         let record = txns.history().expect("history is kept");
                         let time = record.committed_at(pager, x).expect("commit time");
@@ -890,14 +902,148 @@ fn a_dropped_hold_releases_its_heaps() {
     let mut sim = Sim::new(5, Config::default());
     let (root, _) = setup(&mut sim, 0);
     with_open(&mut sim, root, |pager, txns| {
-        let x = txns.begin(pager).expect("begin");
+        let begun = txns.begin(pager).expect("begin");
+        let x = begun.xid();
         let (hold, _) = txns
             .take(Scope::Heaps(BTreeSet::from([1])))
             .expect("a snapshot");
-        txns.commit(pager, x).expect("commit");
+        txns.commit(pager, begun).expect("commit");
         let next = TxnProbe::of(txns).next_xid();
         assert_eq!(x, txns.watermark(1));
         drop(hold);
         assert_eq!(next, txns.watermark(1));
+    });
+}
+
+#[test]
+fn a_dropped_guard_aborts_its_id_and_holds_back_no_later_snapshot() {
+    let mut sim = Sim::new(6, Config::default());
+    let (root, _) = setup(&mut sim, 0);
+    with_open(&mut sim, root, |pager, txns| {
+        let begun = txns.begin(pager).expect("begin");
+        let x = begun.xid();
+        drop(begun);
+        let (hold, _) = txns
+            .take(Scope::Heaps(BTreeSet::from([1])))
+            .expect("a snapshot");
+        let next = TxnProbe::of(txns).next_xid();
+        let got = (
+            txns.running(),
+            txns.watermark(1),
+            txns.recorded(pager, x),
+            txns.unrecorded_aborts(),
+        );
+        assert_eq!((BTreeSet::new(), next, Ok(Status::Aborted), 0), got);
+        drop(hold);
+    });
+}
+
+/// Returns the status page of the id `begun` holds and the id's index on it.
+fn status_slot(txns: &Transactions<SimRuntime>, begun: &Begun) -> (Pid, usize) {
+    let clog = txns.commit_log();
+    let (n, i) = super::clog::locate(begun.xid(), clog.ids_per_page());
+    (clog.status_pages()[&n], i)
+}
+
+#[test]
+fn a_guard_dropped_when_its_abort_record_fails_takes_its_id_out_of_running() {
+    let mut sim = Sim::new(7, Config::default());
+    let (root, _) = setup(&mut sim, 0);
+    let (status, i) = with_open(&mut sim, root, |pager, txns| {
+        let begun = txns.begin(pager).expect("begin");
+        let (status, i) = status_slot(txns, &begun);
+        pager.flush_log();
+        pager.flush_pages(usize::MAX);
+        let damage = pager.plant_damage(status, Damage::Checksum);
+        drop(begun);
+        let next = TxnProbe::of(txns).next_xid();
+        let got = (
+            txns.running(),
+            txns.watermark(1),
+            txns.unrecorded_aborts(),
+            pager.whole_cause(),
+        );
+        assert_eq!((BTreeSet::new(), next, 1, Some(damage)), got);
+        (status, i)
+    });
+    let files = sim.files();
+    let page = DataFile::new(&options(FRAMES).name, PAGE).page(&files, status);
+    assert_eq!(Status::InProgress, super::clog::status_at(page, i));
+}
+
+#[test]
+fn a_guard_dropped_in_a_panic_bounds_the_next_reservation_and_its_id_recovers_as_aborted() {
+    let mut sim = Sim::new(9, Config::default());
+    let (root, _) = setup(&mut sim, 0);
+    let (x, before) = with_open(&mut sim, root, |pager, txns| {
+        let begun = txns.begin(pager).expect("begin");
+        let x = begun.xid();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _held = begun;
+            panic!("the holder of the guard panics");
+        }));
+        let panicked = unwound.is_err();
+        let got = (
+            panicked,
+            txns.running(),
+            txns.recorded(pager, x),
+            txns.unrecorded_aborts(),
+        );
+        let reserved = txns.commit_log().reserved();
+        while TxnProbe::of(txns).next_xid() <= reserved {
+            let later = txns.begin(pager).expect("begin");
+            txns.commit(pager, later).expect("commit");
+        }
+        pager.flush_log();
+        let page = pager.read(root).expect("the root page");
+        (x, (got, super::clog::Root::read(&page).resolved))
+    });
+    let unresolved = (true, BTreeSet::new(), Ok(Status::InProgress), 1);
+    assert_eq!((unresolved, x), before);
+    let after = with_open(&mut sim, root, |pager, txns| txns.recorded(pager, x));
+    assert_eq!(Ok(Status::Aborted), after);
+}
+
+#[test]
+fn a_guard_dropped_after_its_pager_closes_releases_its_id_and_writes_nothing() {
+    let mut sim = Sim::new(10, Config::default());
+    let (root, scratch) = setup(&mut sim, 2 * FRAMES);
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("open");
+        let txns = Transactions::open(rt.clone(), &pager, root).expect("open the commit log");
+        let begun = txns.begin(&pager).expect("begin");
+        let (status, _) = status_slot(&txns, &begun);
+        pager.flush_pages(usize::MAX);
+        for &pid in &scratch {
+            drop(pager.read(pid).expect("a scratch page"));
+        }
+        assert!(
+            pager.try_optimistic(status).is_none(),
+            "the status page is evicted"
+        );
+        pager.close();
+        let closed = rt.files();
+        drop(begun);
+        let got = (
+            txns.running(),
+            txns.unrecorded_aborts(),
+            rt.files() == closed,
+        );
+        assert_eq!((BTreeSet::new(), 1, true), got);
+    });
+}
+
+#[test]
+fn a_failed_commit_takes_its_id_out_of_running_and_returns_the_commit_failure() {
+    let mut sim = Sim::new(8, Config::default());
+    let (root, _) = setup(&mut sim, 0);
+    with_open(&mut sim, root, |pager, txns| {
+        let begun = txns.begin(pager).expect("begin");
+        let (status, _) = status_slot(txns, &begun);
+        let damage = pager.plant_damage(status, Damage::Checksum);
+        let committed = txns.commit(pager, begun);
+        let got = (committed, txns.running(), txns.unrecorded_aborts());
+        let refused = crate::mvcc::Error::Corrupt(damage);
+        assert_eq!((Err(refused), BTreeSet::new(), 1), got);
     });
 }

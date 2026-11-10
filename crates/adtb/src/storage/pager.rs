@@ -429,6 +429,8 @@ pub struct Shared<R: Runtime> {
     /// Held across a recycle of the log, taken before any other lock or latch.
     recycling: Lock<()>,
     checkpointer: Lock<super::checkpoint::Worker>,
+    /// Set once [`Pager::close`] begins.
+    closed: std::sync::atomic::AtomicBool,
 }
 
 /// Returns the LSN below which the log's archive holds every segment, `None` while it holds none.
@@ -899,6 +901,7 @@ impl<R: Runtime> Pager<R> {
             archive: Lock::new(None),
             recycling: Lock::new(()),
             checkpointer: Lock::new(super::checkpoint::Worker::new(o.checkpoint_every)),
+            closed: std::sync::atomic::AtomicBool::new(false),
             rt,
         }))
     }
@@ -1457,13 +1460,20 @@ impl<R: Runtime> Pager<R> {
 
     /// Write every changed page, take a checkpoint, and close the data file and every log segment.
     ///
-    /// Preconditions: every other call on the pager has returned, and none follows.
+    /// Preconditions: every other call on the pager has returned, and none follows but
+    /// [`Pager::is_closed`].
     pub fn close(&self) {
+        self.closed.store(true, Ordering::Release);
         self.stop_checkpointer();
         self.flush_log();
         self.flush_pages(usize::MAX);
         self.checkpoint();
         self.close_files();
+    }
+
+    /// Returns whether [`Pager::close`] has begun.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
     }
 
     pub(super) fn close_files(&self) {

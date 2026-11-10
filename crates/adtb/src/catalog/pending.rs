@@ -376,7 +376,8 @@ impl Catalog {
             .filter(|id| !stored.contains_key(id))
             .copied()
             .collect();
-        let x = txns.begin(pager)?;
+        let begun = txns.begin(pager)?;
+        let x = begun.xid();
         if !freed.is_empty() {
             super::update_root(pager, self.root, |r| r.changing = Changing::Schema(x))?;
         }
@@ -401,13 +402,13 @@ impl Catalog {
             .and_then(|()| delete_rows(&m, &self.roots, &roots));
         drop(hold);
         if let Err(e) = wrote {
-            txns.abort(pager, x)?;
+            txns.abort(pager, begun)?;
             if !freed.is_empty() {
                 super::update_root(pager, self.root, |r| r.changing = Changing::None)?;
             }
             return Err(e);
         }
-        let lsn = txns.commit(pager, x)?;
+        let lsn = txns.commit(pager, begun)?;
         pager.wait_durable(lsn);
         self.readers.pending = pending;
         self.readers.enforced = enforced;

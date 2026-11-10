@@ -31,7 +31,7 @@ pub use ssi::{Access, Limits, Safety, ScanId, SerialId, Serializer};
 pub(crate) use tests::writers;
 #[cfg(test)]
 pub use txn::RESERVATION;
-pub use txn::{Hold, PastError, Taken, Transactions};
+pub use txn::{Begun, Hold, PastError, Taken, Transactions};
 pub use wait::{Waits, Watch};
 use watermark::SnapshotId;
 pub use watermark::{Holds, Scope};
@@ -90,6 +90,8 @@ pub enum Error {
     Exhausted,
     /// A page of the record of the retention window is damaged.
     History(crate::btree::Error),
+    /// The pager is closed.
+    Closed,
 }
 
 /// The transaction must abort, and may be retried at a new snapshot.

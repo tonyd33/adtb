@@ -51,8 +51,8 @@ use crate::catalog::Structures;
 use crate::exec::{self, Budget, Scheduler, StoredHeap, StoredIndex, Val};
 use crate::key::CtorId;
 use crate::mvcc::{
-    Access, Hold, Limits, Safety, Scope, SerialId, SerializationFailure, Serializer, Snapshot,
-    Taken, Transactions, Waits, Watch, Xid,
+    Access, Begun, Hold, Limits, Safety, Scope, SerialId, SerializationFailure, Serializer,
+    Snapshot, Taken, Transactions, Waits, Watch, Xid,
 };
 use crate::plan::explain::Node;
 use crate::plan::{Catalog, HeapId, IndexId};
@@ -364,6 +364,8 @@ pub enum Deferral {
 /// A transaction, read-write or read-only.
 #[derive(Debug)]
 pub struct Txn {
+    /// `None` for a read-only transaction, and once its commit or abort has begun.
+    begun: Option<Begun>,
     /// `None` for a read-only transaction.
     xid: Option<Xid>,
     sid: SerialId,
@@ -763,7 +765,8 @@ impl<R: Runtime> Database<R> {
     /// Begin a read-write transaction. Fail if the database is quarantined.
     pub fn begin(&self) -> Result<Txn, Error> {
         self.admit_database()?;
-        let xid = self.txns.begin(&self.pager)?;
+        let begun = self.txns.begin(&self.pager)?;
+        let xid = begun.xid();
         let (hold, snapshot, sid) = {
             let mut ser = self.ser.lock(&self.rt);
             let (hold, snapshot) = self.txns.take(Scope::Every)?;
@@ -771,6 +774,7 @@ impl<R: Runtime> Database<R> {
         };
         self.waits.started(xid);
         Ok(Txn {
+            begun: Some(begun),
             xid: Some(xid),
             sid,
             snapshot,
@@ -836,6 +840,7 @@ impl<R: Runtime> Database<R> {
             .insert(sid, (hold.taken(), snapshot.clone()));
         self.log_safe(&mut ser);
         Ok(Txn {
+            begun: None,
             xid: None,
             sid,
             snapshot,
@@ -1191,14 +1196,19 @@ impl<R: Runtime> Database<R> {
     ///
     /// Abort `tx` and fail with `Quarantined` if a mark set before its commit record stops what
     /// `tx` wrote, by the rule that stops a statement.
-    pub fn commit(&self, tx: Txn) -> Result<Position, Error> {
+    pub fn commit(&self, mut tx: Txn) -> Result<Position, Error> {
         let done = {
             let mut ser = self.ser.lock(&self.rt);
             self.map_committing(ser.ordered());
             let admitted = self.admit_commit(&tx);
             match admitted.and_then(|()| ser.precommit(tx.sid).map_err(Error::Serialization)) {
                 Err(e) => Err(e),
-                Ok(()) => match tx.xid.map(|x| self.txns.commit(&self.pager, x)).transpose() {
+                Ok(()) => match tx
+                    .begun
+                    .take()
+                    .map(|b| self.txns.commit(&self.pager, b))
+                    .transpose()
+                {
                     Err(e) => Err(e.into()),
                     Ok(own) => {
                         ser.committed(tx.sid);
@@ -1241,11 +1251,15 @@ impl<R: Runtime> Database<R> {
 
     /// Abort `tx` and release what it holds.
     ///
-    /// Fails if the database is quarantined, leaving `tx`'s id running in the commit log.
+    /// Fail if the database is quarantined, the commit log still saying `tx`'s id is in
+    /// progress.
     pub fn abort(&self, tx: Txn) -> Result<(), Error> {
         let aborted = {
             let mut ser = self.ser.lock(&self.rt);
-            let aborted = tx.xid.map(|x| self.txns.abort(&self.pager, x)).transpose();
+            let aborted = tx
+                .begun
+                .map(|b| self.txns.abort(&self.pager, b))
+                .transpose();
             ser.aborted(tx.sid);
             self.log_safe(&mut ser);
             self.readers.lock(&self.rt).remove(&tx.sid);

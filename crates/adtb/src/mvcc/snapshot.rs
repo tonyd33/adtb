@@ -4,7 +4,8 @@ use super::{Status, Xid};
 /// the commit log says committed.
 ///
 /// Invariants: `in_progress` is sorted, and every id in it lies in `[xmin, xmax)`; every id below
-/// `xmin` had resolved when the snapshot was taken.
+/// `xmin` had resolved when the snapshot was taken, or was unresolved: out of the running
+/// transactions with its abort unrecorded, in progress in the commit log and not committed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     xmin: Xid,

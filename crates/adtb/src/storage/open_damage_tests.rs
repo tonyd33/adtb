@@ -970,7 +970,8 @@ fn a_row_that_does_not_decode_on_a_good_page_fails_open_unmarked() {
         };
         let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
         let (catalog, txns) = crate::catalog::Catalog::open(rt, &pager).unwrap();
-        let x = txns.begin(&pager).unwrap();
+        let begun = txns.begin(&pager).unwrap();
+        let x = begun.xid();
         let negative = crate::key::Value::Sum {
             ctor: 0,
             fields: vec![crate::key::Value::I64(-1); 4],
@@ -981,7 +982,7 @@ fn a_row_that_does_not_decode_on_a_good_page_fails_open_unmarked() {
             .unwrap()
             .insert(&pager, x, &[negative])
             .unwrap();
-        txns.commit(&pager, x).unwrap();
+        txns.commit(&pager, begun).unwrap();
         pager.close();
     });
     let mut rounds = Sim::with_files(61, Config::default(), sim.files());

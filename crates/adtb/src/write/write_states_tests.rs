@@ -7,12 +7,14 @@ use adtb_harness::process::run;
 
 use crate::RejectReason;
 use crate::catalog::{Catalog, Error as CatalogError, PendingDrop, Read, Reader};
-use crate::mvcc::Transactions;
-use crate::storage::{self, Pager};
+use crate::mvcc::{Status, StatusError, Transactions, Xid};
+use crate::storage::{self, Damage, Pager, Quarantine};
+use crate::testing::TxnProbe;
 use crate::verify::{self, Depth};
 use crate::{CallOptions, Database, Error, Log};
 use adtb_lang::types::RelId;
 use adtb_sim::{Config, Sim, SimRuntime};
+use std::collections::BTreeSet;
 
 use crate::test_world::load::options;
 use api::query;
@@ -751,6 +753,61 @@ fn a_pending_unique_takes_effect_and_frees_its_index_when_its_last_holder_is_rel
 #[test]
 fn a_pending_old_key_takes_effect_and_frees_its_index_when_its_last_holder_is_released() {
     frees_its_index_when_its_last_holder_is_released(132, &OLD_KEY);
+}
+
+/// What a catalog call failing on an unreadable catalog root leaves: its error, whether the
+/// database is refused whole, the transactions left running and what the commit log records of
+/// the id the call began.
+type Unread = (
+    Result<(), CatalogError>,
+    bool,
+    BTreeSet<Xid>,
+    Result<Status, StatusError>,
+);
+
+/// Returns what `call` leaves when the catalog root of `catalog` reads as unreadable.
+fn with_unreadable_root(
+    catalog: &mut Catalog,
+    pager: &Pager<SimRuntime>,
+    txns: &Transactions<SimRuntime>,
+    call: impl FnOnce(&mut Catalog) -> Result<(), CatalogError>,
+) -> Unread {
+    pager.plant_damage(catalog.root(), Damage::Unreadable);
+    let x = TxnProbe::of(txns).next_xid();
+    let got = call(catalog);
+    let marked = pager.is_quarantined(Quarantine::Database);
+    (got, marked, txns.running(), txns.recorded(pager, x))
+}
+
+fn unreadable_root(catalog: &Catalog) -> Unread {
+    let damage = Damage::Unreadable;
+    let pid = catalog.root();
+    let e = CatalogError::Page(storage::PageError { pid, damage });
+    (Err(e), false, BTreeSet::new(), Ok(Status::Aborted))
+}
+
+#[test]
+fn a_migration_failing_on_an_unreadable_catalog_root_leaves_no_transaction_running() {
+    at_catalog(134, &[AUTH], |catalog, pager, txns| {
+        let got = with_unreadable_root(catalog, pager, txns, |c| {
+            c.migrate(pager, txns, UNIQUE_NAME).map(drop)
+        });
+        assert_eq!(unreadable_root(catalog), got);
+    });
+}
+
+#[test]
+fn a_release_failing_on_an_unreadable_catalog_root_leaves_no_transaction_running() {
+    at_catalog(135, &[AUTH, UNIQUE_NAME], |catalog, pager, txns| {
+        catalog
+            .register(reader("web-2", 2, vec![UNIQUE.whole()]))
+            .expect("the reader registers");
+        catalog
+            .migrate(pager, txns, DROP_UNIQUE_NAME)
+            .expect("the drop applies");
+        let got = with_unreadable_root(catalog, pager, txns, |c| c.release(pager, txns, "web-2"));
+        assert_eq!(unreadable_root(catalog), got);
+    });
 }
 
 #[test]

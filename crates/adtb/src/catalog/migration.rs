@@ -132,7 +132,8 @@ impl Catalog {
             .map_or((&next.schema, &next.program), |e| (&e.schema, &e.program));
         let rewritten = change::rewritten(self.checking().0, schema);
         self.admits(schema, program, &rewritten)?;
-        let x = txns.begin(pager)?;
+        let begun = txns.begin(pager)?;
+        let x = begun.xid();
         update_root(pager, self.root, |r| r.changing = Changing::Schema(x))?;
         let (hold, snapshot) = txns.take(Scope::Every)?;
         let m = Migrating {
@@ -154,12 +155,12 @@ impl Catalog {
         });
         match built {
             Ok((c, written)) => {
-                txns.commit(pager, x)?;
+                txns.commit(pager, begun)?;
                 *self = c;
                 dormant.extend(written);
             }
             Err(e) => {
-                txns.abort(pager, x)?;
+                txns.abort(pager, begun)?;
                 self.free_leaked(pager, txns)?;
                 let lsn = update_root(pager, self.root, |r| r.changing = Changing::None)?;
                 pager.wait_durable(lsn);

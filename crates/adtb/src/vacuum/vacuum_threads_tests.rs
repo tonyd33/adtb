@@ -359,7 +359,8 @@ fn writer(rt: &SimRuntime, db: &Db, world: &Mutex<World>, w: u64, mut live: Live
         .unwrap_or(w as i64);
     let mut unacked = Vec::new();
     for _ in 0..steps {
-        let xid = db.txns.begin(&db.pager).expect("begin");
+        let begun = db.txns.begin(&db.pager).expect("begin");
+        let xid = begun.xid();
         let mut mine = live.clone();
         let mut ops = Vec::new();
         for _ in 0..=(rt.next_u64() % 3) {
@@ -373,10 +374,10 @@ fn writer(rt: &SimRuntime, db: &Db, world: &Mutex<World>, w: u64, mut live: Live
             wd.next_keys.insert(w, next_key);
         }
         if rt.next_u64().is_multiple_of(6) {
-            db.txns.abort(&db.pager, xid).expect("abort");
+            db.txns.abort(&db.pager, begun).expect("abort");
         } else {
             world.lock().unwrap().ledger.submit(xid.0);
-            db.txns.commit(&db.pager, xid).expect("commit");
+            db.txns.commit(&db.pager, begun).expect("commit");
             live = mine;
             unacked.push(xid);
         }

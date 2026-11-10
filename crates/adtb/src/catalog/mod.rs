@@ -653,7 +653,8 @@ impl Catalog {
             kept,
             held: BTreeSet::new(),
         };
-        let x = txns.begin(pager)?;
+        let begun = txns.begin(pager)?;
+        let x = begun.xid();
         let every = empty
             .schema
             .ids
@@ -685,7 +686,7 @@ impl Catalog {
         );
         drop(hold);
         let catalog = built?;
-        txns.commit(pager, x)?;
+        txns.commit(pager, begun)?;
         let lsn = update_root(pager, pid, |r| {
             r.large = (large.id(), large.root());
             r.roots = named;

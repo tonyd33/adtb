@@ -58,7 +58,8 @@ impl Db {
             index,
             tree,
         };
-        let x = db.txns.begin(&db.pager).unwrap();
+        let begun = db.txns.begin(&db.pager).unwrap();
+        let x = begun.xid();
         for key in 0..300i64 {
             let h = (key % 2) as usize;
             let row = if h == 0 {
@@ -76,7 +77,7 @@ impl Db {
             assert!(db.index.insert(&db.pager, &entry).unwrap());
             db.tree.insert(&db.pager, &key.to_be_bytes()).unwrap();
         }
-        db.txns.commit(&db.pager, x).unwrap();
+        db.txns.commit(&db.pager, begun).unwrap();
         db.pager.flush_log();
         db
     }
@@ -296,14 +297,15 @@ fn a_head_counting_too_few_versions_is_a_fault() {
 
 /// Supersede key 2 by a running transaction, then free the successor as if it were dead.
 /// Returns the transaction and the TID of the old version.
-fn orphan_a_successor(db: &Db) -> (crate::mvcc::Xid, Tid) {
+fn orphan_a_successor(db: &Db) -> (crate::mvcc::Begun, Tid) {
     let at = db
         .index
         .probe(&db.pager, &[Value::I64(2)])
         .unwrap()
         .remove(0)
         .tid;
-    let x = db.txns.begin(&db.pager).unwrap();
+    let begun = db.txns.begin(&db.pager).unwrap();
+    let x = begun.xid();
     let row = vec![Value::I64(1002), Value::Bytes(vec![2; 40])];
     let u = db.heaps[0].update(&db.pager, at, x, &row, &[0]).unwrap();
     assert!(!u.heap_only);
@@ -318,13 +320,13 @@ fn orphan_a_successor(db: &Db) -> (crate::mvcc::Xid, Tid) {
         .prune(&db.pager, Pid(u.tid.page()), gone, &[u.tid.slot()], false)
         .unwrap();
     assert!(done.freed >= 1);
-    (x, at)
+    (begun, at)
 }
 
 #[test]
 fn a_version_superseded_by_a_running_transaction_names_a_version_it_wrote() {
     run(12, |db| {
-        let (_, at) = orphan_a_successor(db);
+        let (_running, at) = orphan_a_successor(db);
         let report = db.verify();
         let found = problems(&report);
         assert_eq!(1, found.len(), "{report:#?}");
@@ -336,8 +338,8 @@ fn a_version_superseded_by_a_running_transaction_names_a_version_it_wrote() {
 #[test]
 fn a_successor_freed_after_its_writer_resolved_may_dangle() {
     run(13, |db| {
-        let (x, _) = orphan_a_successor(db);
-        db.txns.abort(&db.pager, x).unwrap();
+        let (begun, _) = orphan_a_successor(db);
+        db.txns.abort(&db.pager, begun).unwrap();
         assert!(db.verify().is_clean());
     });
 }
@@ -345,7 +347,7 @@ fn a_successor_freed_after_its_writer_resolved_may_dangle() {
 #[test]
 fn a_version_naming_an_unreserved_deleter_is_a_structure_fault() {
     run(14, |db| {
-        let (_, at) = orphan_a_successor(db);
+        let (_running, at) = orphan_a_successor(db);
         let was = db.heaps[0].read(&db.pager, at).unwrap().unwrap().header;
         let reserved = db.txns.commit_log().reserved();
         let mut forged = was;

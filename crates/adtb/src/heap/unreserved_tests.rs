@@ -116,17 +116,19 @@ fn an_update_pruning_a_full_page_refuses_it_at_an_unreserved_deleter() {
         let txns = Transactions::create(rt, &pager).unwrap();
         let large = LargeStore::create(&pager, 40).unwrap();
         let heap = Heap::create(&pager, 41, vec![FieldType::Scalar(Scalar::I64)], large).unwrap();
-        let x = txns.begin(&pager).unwrap();
+        let begun = txns.begin(&pager).unwrap();
+        let x = begun.xid();
         let dead = heap.insert(&pager, x, &[Value::I64(0)]).unwrap();
         let target = heap.insert(&pager, x, &[Value::I64(1)]).unwrap();
         while heap.pages(&pager).unwrap().len() == 1 {
             heap.insert(&pager, x, &[Value::I64(2)]).unwrap();
         }
-        txns.commit(&pager, x).unwrap();
+        txns.commit(&pager, begun).unwrap();
         let page = Pid(dead.page());
         assert_eq!(page, Pid(target.page()), "both versions on the full page");
         heap.delete(&pager, dead, PAST).unwrap();
-        let y = txns.begin(&pager).unwrap();
+        let begun = txns.begin(&pager).unwrap();
+        let y = begun.xid();
         let mut judge = txns.judge_now(&pager, heap.id().0);
         let got = heap.update_pruning(&pager, target, y, &[Value::I64(3)], &[], &mut judge);
         assert_eq!(Err(HeapError::Page(refused_page(page))), got);

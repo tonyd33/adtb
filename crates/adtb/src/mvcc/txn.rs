@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{OnceLock, RwLockReadGuard};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock, RwLockReadGuard, Weak};
 use std::time::{Duration, SystemTime};
 
 use adtb_sys::lock::{Lock, RwLock};
@@ -39,10 +40,23 @@ pub(crate) fn assign(next: Xid, reserved: Xid) -> Assign {
     }
 }
 
+impl State {
+    fn resolved(&self) -> Xid {
+        let first = self
+            .running
+            .first()
+            .into_iter()
+            .chain(self.unresolved.first());
+        first.min().copied().unwrap_or(self.next)
+    }
+}
+
 #[derive(Debug)]
 struct State {
     next: Xid,
     running: BTreeSet<Xid>,
+    /// The ids out of `running` whose abort the commit log does not record.
+    unresolved: BTreeSet<Xid>,
     holds: Holds,
     /// The LSN of the latest commit record, including retained commits recovered at open.
     last_commit: Option<Lsn>,
@@ -100,7 +114,7 @@ fn recorded_damage<R: Runtime>(pager: &Pager<R>, clog: &CommitLog) -> Option<Pag
 ///
 /// Clones are handles on one set of transactions.
 #[derive(Debug)]
-pub struct Transactions<R: Runtime>(std::sync::Arc<Shared<R>>);
+pub struct Transactions<R: Runtime>(Arc<Shared<R>>);
 
 impl<R: Runtime> Clone for Transactions<R> {
     fn clone(&self) -> Self {
@@ -128,6 +142,8 @@ pub struct Shared<R: Runtime> {
     lost: OnceLock<btree::Error>,
     /// The end of the log once the latest marker was kept, held while one is being kept.
     marked: Lock<Lsn>,
+    /// The abort records that failed, or were skipped on a panicking thread, with no caller told.
+    unrecorded: AtomicUsize,
 }
 
 impl<R: Runtime> Transactions<R> {
@@ -203,6 +219,7 @@ impl<R: Runtime> Transactions<R> {
         let state = State {
             next: clog.reserved(),
             running: BTreeSet::new(),
+            unresolved: BTreeSet::new(),
             holds: Holds::default(),
             last_commit: None,
             last_time: 0,
@@ -210,7 +227,7 @@ impl<R: Runtime> Transactions<R> {
             pins: BTreeMap::new(),
             window: Duration::ZERO,
         };
-        Transactions(std::sync::Arc::new(Shared {
+        Transactions(Arc::new(Shared {
             rt,
             pager: pager.clone(),
             clog: RwLock::new(clog),
@@ -218,31 +235,13 @@ impl<R: Runtime> Transactions<R> {
             history: OnceLock::new(),
             lost: OnceLock::new(),
             marked: Lock::new(Lsn(0)),
+            unrecorded: AtomicUsize::new(0),
         }))
-    }
-
-    /// Returns the damage that quarantined the database, if any.
-    fn quarantined(&self) -> Option<PageError> {
-        self.pager.whole_cause()
     }
 
     #[cfg(any(test, feature = "testing"))]
     pub fn pager(&self) -> &Pager<R> {
         &self.pager
-    }
-
-    fn admit(&self) -> Result<(), Error> {
-        self.quarantined()
-            .map_or(Ok(()), |e| Err(Error::Corrupt(e)))
-    }
-
-    /// Quarantine the database for `e`, keeping the first damage found. Returns the failure.
-    fn damaged(&self, e: PageError) -> Error {
-        Error::Corrupt(self.pager.refuse_whole(e))
-    }
-
-    fn checked<T>(&self, r: Result<T, PageError>) -> Result<T, Error> {
-        r.map_err(|e| self.damaged(e))
     }
 
     /// Returns the commit log, held shared until the guard drops.
@@ -259,11 +258,18 @@ impl<R: Runtime> Transactions<R> {
         self.state.lock(&self.rt).running.clone()
     }
 
+    /// Returns the least id that is running or unresolved, else the next id: every id below it
+    /// has resolved.
+    pub fn resolved_below(&self) -> Xid {
+        self.state.lock(&self.rt).resolved()
+    }
+
     /// Start a transaction, first reserving more ids and forcing the log when the reservation is
-    /// spent.
+    /// spent. Returns the guard of its id, which is running until the guard is given to
+    /// [`Transactions::commit`] or [`Transactions::abort`], or dropped.
     ///
     /// Fails with [`Error::Exhausted`] once every 64-bit id is spent; snapshots and reads go on.
-    pub fn begin(&self, pager: &Pager<R>) -> Result<Xid, Error> {
+    pub fn begin(&self, pager: &Pager<R>) -> Result<Begun, Error> {
         self.admit()?;
         let mut st = self.state.lock(&self.rt);
         let reserved = self.clog.read(&self.rt).reserved();
@@ -271,27 +277,43 @@ impl<R: Runtime> Transactions<R> {
             Assign::Next => {}
             Assign::Exhausted => return Err(Error::Exhausted),
             Assign::Reserve(upto) => {
-                let resolved = st.running.first().copied().unwrap_or(st.next);
-                let reserved = self.clog.write(&self.rt).reserve(pager, upto, resolved);
+                let reserved = self
+                    .clog
+                    .write(&self.rt)
+                    .reserve(pager, upto, st.resolved());
                 self.checked(reserved)?;
             }
         }
         let x = st.next;
         st.next = Xid(x.0 + 1);
         st.running.insert(x);
-        Ok(x)
+        let txns: Weak<dyn Release> = Arc::<Shared<R>>::downgrade(&self.0);
+        Ok(Begun {
+            xid: x,
+            ended: false,
+            txns,
+        })
     }
 
-    /// Commit `x` and record its time when history is kept.
+    /// Commit the transaction of `begun` and record its time when history is kept.
     ///
-    /// Fail, leaving `x` running, if the database is quarantined or the record of the window is
-    /// damaged.
+    /// Fail if the database is quarantined or the record of the window is damaged. The
+    /// transaction is then aborted as a dropped guard aborts it, and the commit's failure
+    /// returned.
     ///
-    /// Panics if `x` is not running.
-    pub fn commit(&self, pager: &Pager<R>, x: Xid) -> Result<Lsn, Error> {
-        self.admit()?;
+    /// Panic if `begun` did not begin in these transactions.
+    pub fn commit(&self, pager: &Pager<R>, begun: Begun) -> Result<Lsn, Error> {
+        let x = self.end(begun);
+        let admitted = self.admit();
         let mut st = self.state.lock(&self.rt);
-        assert!(st.running.contains(&x), "{x:?} is not running");
+        let committed = admitted.and_then(|()| self.commit_running(&mut st, pager, x));
+        if committed.is_err() {
+            self.abandon_locked(&mut st, pager, x);
+        }
+        committed
+    }
+
+    fn commit_running(&self, st: &mut State, pager: &Pager<R>, x: Xid) -> Result<Lsn, Error> {
         let time = (nanos(self.rt.wall()) / 1000 * 1000).max(st.last_time);
         if let Some(past) = self.history.get() {
             past.record_commit(pager, x, time).map_err(Error::History)?;
@@ -304,19 +326,36 @@ impl<R: Runtime> Transactions<R> {
         Ok(lsn)
     }
 
-    /// Abort `x`: record it in the commit log, then log its abort record.
+    /// Abort the transaction of `begun`: take its id out of the running transactions, record it
+    /// in the commit log and log its abort record.
     ///
-    /// Fails, leaving `x` running, if the database is quarantined.
+    /// Fail if the database is quarantined, or the record fails and quarantines it. The id is
+    /// then no longer running and the commit log still says it is in progress.
     ///
-    /// Panics if `x` is not running.
-    pub fn abort(&self, pager: &Pager<R>, x: Xid) -> Result<Lsn, Error> {
-        self.admit()?;
+    /// Panic if `begun` did not begin in these transactions.
+    pub fn abort(&self, pager: &Pager<R>, begun: Begun) -> Result<Lsn, Error> {
+        let x = self.end(begun);
+        let admitted = self.admit();
         let mut st = self.state.lock(&self.rt);
-        assert!(st.running.contains(&x), "{x:?} is not running");
-        let aborted = self.clog.read(&self.rt).abort(pager, x);
-        let lsn = self.checked(aborted)?;
-        st.running.remove(&x);
-        Ok(lsn)
+        self.abort_locked(&mut st, pager, x, admitted)
+    }
+
+    /// Returns the id of `begun`, ended so that dropping it aborts nothing.
+    fn end(&self, mut begun: Begun) -> Xid {
+        assert!(
+            std::ptr::addr_eq(begun.txns.as_ptr(), Arc::as_ptr(&self.0)),
+            "{:?} began in these transactions",
+            begun.xid
+        );
+        begun.ended = true;
+        begun.xid
+    }
+
+    /// Returns how many abort records failed, or were skipped on a panicking thread, with no
+    /// caller told.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn unrecorded_aborts(&self) -> usize {
+        self.unrecorded.load(Ordering::Relaxed)
     }
 
     /// Returns the commit log status of `x`.
@@ -356,7 +395,7 @@ impl<R: Runtime> Transactions<R> {
             time: st.last_time,
         };
         drop(st);
-        let txns: std::sync::Weak<dyn Release> = std::sync::Arc::<Shared<R>>::downgrade(&self.0);
+        let txns: Weak<dyn Release> = Arc::<Shared<R>>::downgrade(&self.0);
         let hold = Hold { id, taken, txns };
         Ok((hold, snapshot))
     }
@@ -451,15 +490,17 @@ impl<R: Runtime> Transactions<R> {
     ///
     /// Preconditions: those of [`CommitLog::truncate`].
     ///
-    /// Panics if a transaction below `bound` is running, or if `bound` is not assigned yet.
+    /// Panic if a transaction below `bound` is running or unresolved, or if `bound` is not
+    /// assigned yet.
     #[cfg(any(test, feature = "testing"))]
     pub fn truncate(&self, pager: &Pager<R>, bound: Xid) -> Result<(), Error> {
         self.admit()?;
         let st = self.state.lock(&self.rt);
         assert!(bound <= st.next, "{bound:?} is not assigned yet");
         assert!(
-            st.running.first().is_none_or(|&r| r >= bound),
-            "a transaction below {bound:?} is running"
+            st.running.first().is_none_or(|&r| r >= bound)
+                && st.unresolved.first().is_none_or(|&r| r >= bound),
+            "a transaction below {bound:?} is running or unresolved"
         );
         let truncated = self.clog.write(&self.rt).truncate(pager, bound);
         self.checked(truncated)
@@ -641,13 +682,121 @@ impl Taken {
     }
 }
 
+impl<R: Runtime> Shared<R> {
+    /// Returns the damage that quarantined the database, if any.
+    fn quarantined(&self) -> Option<PageError> {
+        self.pager.whole_cause()
+    }
+
+    fn admit(&self) -> Result<(), Error> {
+        if self.pager.is_closed() {
+            return Err(Error::Closed);
+        }
+        self.quarantined()
+            .map_or(Ok(()), |e| Err(Error::Corrupt(e)))
+    }
+
+    /// Quarantine the database for `e`, keeping the first damage found. Returns the failure.
+    fn damaged(&self, e: PageError) -> Error {
+        Error::Corrupt(self.pager.refuse_whole(e))
+    }
+
+    fn checked<T>(&self, r: Result<T, PageError>) -> Result<T, Error> {
+        r.map_err(|e| self.damaged(e))
+    }
+
+    /// Take `x` out of the running transactions and, once `admitted`, record its abort in the
+    /// commit log. Keep `x` unresolved when nothing is recorded.
+    ///
+    /// Panic if `x` is not running.
+    fn abort_locked(
+        &self,
+        st: &mut State,
+        pager: &Pager<R>,
+        x: Xid,
+        admitted: Result<(), Error>,
+    ) -> Result<Lsn, Error> {
+        assert!(st.running.remove(&x), "{x:?} is not running");
+        let recorded = admitted.and_then(|()| {
+            let aborted = self.clog.read(&self.rt).abort(pager, x);
+            self.checked(aborted)
+        });
+        if recorded.is_err() {
+            st.unresolved.insert(x);
+        }
+        recorded
+    }
+
+    /// Abort `x` as [`Shared::abort_locked`] does, counting a failed record.
+    fn abandon_locked(&self, st: &mut State, pager: &Pager<R>, x: Xid) {
+        if self.abort_locked(st, pager, x, self.admit()).is_err() {
+            self.unrecorded.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
 trait Release: Send + Sync {
     fn release(&self, id: SnapshotId);
+
+    /// Abort `x` best effort: take it out of the running transactions and, unless the thread is
+    /// panicking, attempt its record.
+    fn abandon(&self, x: Xid);
 }
 
 impl<R: Runtime> Release for Shared<R> {
     fn release(&self, id: SnapshotId) {
         self.state.lock(&self.rt).holds.release(id);
+    }
+
+    fn abandon(&self, x: Xid) {
+        let mut st = self.state.lock(&self.rt);
+        if std::thread::panicking() {
+            st.running.remove(&x);
+            st.unresolved.insert(x);
+            self.unrecorded.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.abandon_locked(&mut st, &self.pager, x);
+        }
+    }
+}
+
+/// A running transaction's id, aborted best effort if it drops before
+/// [`Transactions::commit`] or [`Transactions::abort`] takes it: its id always leaves the
+/// running transactions, and the abort is recorded in the commit log unless the thread is
+/// panicking or the pager is closed. An abort left unrecorded is counted, not returned.
+///
+/// Dropping it takes the lock over running transactions, then the commit log shared, then the
+/// status page of its id as the pager logs the abort.
+#[must_use = "dropping it aborts the transaction"]
+pub struct Begun {
+    xid: Xid,
+    ended: bool,
+    /// Empty once the transactions are gone, when nothing is left to abort.
+    txns: Weak<dyn Release>,
+}
+
+impl Begun {
+    pub fn xid(&self) -> Xid {
+        self.xid
+    }
+}
+
+impl std::fmt::Debug for Begun {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Begun")
+            .field("xid", &self.xid)
+            .field("ended", &self.ended)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for Begun {
+    fn drop(&mut self) {
+        if !self.ended
+            && let Some(txns) = self.txns.upgrade()
+        {
+            txns.abandon(self.xid);
+        }
     }
 }
 
@@ -656,7 +805,7 @@ pub struct Hold {
     id: SnapshotId,
     taken: Taken,
     /// Empty once the transactions are gone, when nothing is left to release.
-    txns: std::sync::Weak<dyn Release>,
+    txns: Weak<dyn Release>,
 }
 
 impl Hold {

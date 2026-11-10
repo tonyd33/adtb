@@ -58,7 +58,8 @@ impl Catalog {
         writes: &[Rewrite],
         facts: &[Fact],
     ) -> Result<(), Error> {
-        let x = txns.begin(pager)?;
+        let begun = txns.begin(pager)?;
+        let x = begun.xid();
         let (hold, snapshot) = txns.take(Scope::Every)?;
         let m = Migrating {
             pager,
@@ -84,12 +85,12 @@ impl Catalog {
         drop(hold);
         match done {
             Ok(()) => {
-                let lsn = txns.commit(pager, x)?;
+                let lsn = txns.commit(pager, begun)?;
                 pager.wait_durable(lsn);
                 Ok(())
             }
             Err(e) => {
-                txns.abort(pager, x)?;
+                txns.abort(pager, begun)?;
                 Err(e)
             }
         }

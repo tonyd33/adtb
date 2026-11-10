@@ -328,7 +328,7 @@ fn run<R: Runtime>(
         chunks: 0,
         moved: 0,
         rounds: 0,
-        clean_below: txns.running().first().copied().unwrap_or(txns.next()),
+        clean_below: txns.resolved_below(),
         heaps: BTreeMap::new(),
     };
     let mut dead = DeadSet::new();
