@@ -692,7 +692,7 @@ fn mark_open_damage<R: Runtime>(
 ) {
     let structures = catalog.structures();
     pager.map_damage(
-        |pid| structures.holders(pager, txns, pid, Phase::Opening, &mut BTreeSet::new()),
+        |pid| structures.holders(pager, txns, pid, Phase::Opening),
         opening,
     );
 }
@@ -710,9 +710,7 @@ fn mark_failed_open_damage<R: Runtime>(rt: R, pager: &Pager<R>, opening: &Openin
     let mut unopened = None;
     pager.map_damage(
         |pid| match &loaded {
-            Some((structures, txns)) => {
-                structures.holders(pager, txns, pid, Phase::Opening, &mut BTreeSet::new())
-            }
+            Some((structures, txns)) => structures.holders(pager, txns, pid, Phase::Opening),
             None => {
                 let unopened = unopened.get_or_insert_with(|| Structures::unopened(pager));
                 unopened.holders(pager, pid)

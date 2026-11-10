@@ -35,8 +35,6 @@ pub enum Holder {
     Free,
     /// An allocated page no complete walk of the structures reaches.
     Unreached,
-    /// A page whose damage a commit's walks met, with no record when the mapping began.
-    Met,
 }
 
 /// What was detected.
@@ -130,8 +128,7 @@ pub fn mark(fault: Fault, holder: Holder, phase: Phase) -> Mark {
         | Holder::Bitmap
         | Holder::MarksPage
         | Holder::DamageList
-        | Holder::LsnMap
-        | Holder::Met => Mark::Database,
+        | Holder::LsnMap => Mark::Database,
         Holder::CatalogRows => match phase {
             Phase::Opening => Mark::Database,
             Phase::Running => Mark::Nothing,

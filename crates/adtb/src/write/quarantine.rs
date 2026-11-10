@@ -137,25 +137,24 @@ impl<R: Runtime> Database<R> {
     fn map_damage(&self) -> BTreeMap<Quarantine, MarkFailure> {
         self.pager.map_damage(
             |pid| {
-                let met = &mut BTreeSet::new();
                 self.structures
-                    .holders(&self.pager, &self.txns, pid, Phase::Running, met)
+                    .holders(&self.pager, &self.txns, pid, Phase::Running)
             },
             self,
         )
     }
 
     /// Map the damage recorded and not yet mapped for a commit, so that a mark its damage sets
-    /// stops the commit. Leave out a record whose last mapping was incomplete, and map damage
-    /// the walks detect to the database with no walk of its own.
+    /// stops the commit. Leave out a record whose last mapping was incomplete; damage the walks
+    /// detect marks nothing of its own until a later mapping maps its record.
     ///
     /// Precondition: the calling thread holds no page latch, and the serialization lock that
     /// `ordered` witnesses.
     pub(super) fn map_committing(&self, ordered: Ordered<'_>) {
         self.pager.map_committing(
-            |pid, met| {
+            |pid| {
                 self.structures
-                    .holders(&self.pager, &self.txns, pid, Phase::Running, met)
+                    .holders(&self.pager, &self.txns, pid, Phase::Running)
             },
             ordered,
         );

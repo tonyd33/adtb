@@ -66,7 +66,7 @@ pub type Holding = (Held, Option<Quarantine>);
 
 /// Returns the holding of an object whose holder the testing surface answers as `holder`.
 ///
-/// Precondition: `holder` is a structure's, not `Log` or `Met`, which name no object.
+/// Precondition: `holder` is a structure's, not `Log`, which names no object.
 pub fn holding(holder: Holder) -> Holding {
     match holder {
         Holder::Relation {
@@ -90,7 +90,7 @@ pub fn holding(holder: Holder) -> Holding {
         Holder::Retired => (Held::Retired, None),
         Holder::Free => (Held::Free, None),
         Holder::Unreached => (Held::Unreached, None),
-        Holder::Log | Holder::Met => panic!("an object's holder is a structure: {holder:?}"),
+        Holder::Log => panic!("an object's holder is a structure: {holder:?}"),
     }
 }
 

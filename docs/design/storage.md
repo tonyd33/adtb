@@ -1072,7 +1072,10 @@ back. The mapper runs at three points and nowhere else:
   mapping was incomplete. Each record it maps runs the walks of every heap,
   large-value store and index, each walk up to its bounded number of runs.
   Damage a read of those walks detects, on a page with no record when the
-  mapping began, maps to the database with no walk of its own. A record
+  mapping began, marks nothing of its own: the walk it stopped holds the
+  record being mapped, as any walk stopped by damage does. Its record stays
+  unmapped, and the next end of a call, commit or open maps it by the
+  walks. A record
   another call appends meanwhile, even on a page those walks then read,
   waits for that call's end, the next commit or the next open.
 

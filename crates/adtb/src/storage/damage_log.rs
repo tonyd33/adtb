@@ -172,39 +172,22 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Map as [`Pager::map_damage`] does for a commit, leaving out each record whose last mapping
-    /// was incomplete. `holders` adds to its set each page whose damage stopped a walk. Map as
-    /// met, with no walk, each such page with no record when the mapping began whose damage this
-    /// thread detected. `ordered` witnesses the commit's hold of the serialization lock.
+    /// was incomplete. A page whose damage a walk meets, with no record when the mapping began,
+    /// marks nothing of its own: the walk it stopped holds the record being mapped, and its own
+    /// record stays unmapped. `ordered` witnesses the commit's hold of the serialization lock.
     /// Returns each object whose mark failed, with why.
     ///
     /// Precondition: as for [`Pager::map_damage`].
     pub fn map_committing(
         &self,
-        mut holders: impl FnMut(Pid, &mut BTreeSet<Pid>) -> Option<BTreeSet<Holder>>,
+        holders: impl FnMut(Pid) -> Option<BTreeSet<Holder>>,
         ordered: Ordered<'_>,
     ) -> BTreeMap<Quarantine, MarkFailure> {
         if !self.any_unmapped() {
             return BTreeMap::new();
         }
-        let (begun, before) = {
-            let e = self.evidence();
-            (e.begin_mapping(false), e.all().pages)
-        };
-        let mut met = BTreeSet::new();
-        let running = Phase::Running;
-        let mut failed = self.map_records(begun, running, |pid| holders(pid, &mut met), &ordered);
-        let me = self.rt().current();
-        let e = self.evidence();
-        met.retain(|pid| !before.contains_key(pid) && e.detected_by(*pid) == Some(me));
-        drop(e);
-        if met.is_empty() {
-            return failed;
-        }
-        let (mut pages, _, epoch) = self.evidence().begin_mapping(true);
-        pages.retain(|p| met.contains(&p.pid()));
-        let met = |_| Some(BTreeSet::from([Holder::Met]));
-        failed.extend(self.map_records((pages, false, epoch), running, met, &ordered));
-        failed
+        let begun = self.evidence().begin_mapping(false);
+        self.map_records(begun, Phase::Running, holders, &ordered)
     }
 
     /// Set what `fault` on a page of `holder` marks in the phase the pager is in, in the commit

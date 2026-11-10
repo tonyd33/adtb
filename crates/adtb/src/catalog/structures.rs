@@ -144,19 +144,17 @@ impl Structures {
     }
 
     /// Returns what holds the damaged page `pid` during `phase`, `None` when the mapping is
-    /// incomplete and found no holder, as [`Pager::holders_meeting`] does. Add to `met` each page
-    /// whose damage stopped a walk.
+    /// incomplete and found no holder, as [`Pager::holders_meeting`] does.
     pub fn holders<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
         pid: Pid,
         phase: Phase,
-        met: &mut BTreeSet<Pid>,
     ) -> Option<BTreeSet<Holder>> {
         let retired = pager.retired();
         let large = self.large();
-        pager.holders_meeting(pid, phase, met, |h| {
+        pager.holders_meeting(pid, phase, |h| {
             let clog = commit_log_pages(&txns.commit_log());
             h.walk(Holder::CatalogRoot, || Ok(vec![self.root]));
             h.walk(Holder::CommitLog, || Ok(clog.clone()));
@@ -229,7 +227,7 @@ impl Unopened {
     /// catalog's root, its rows heap and the commit log.
     pub fn holders<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Option<BTreeSet<Holder>> {
         let named = self.named.as_ref().map_err(|e| Stopped::from(*e));
-        pager.holders_walked(pid, Phase::Opening, &mut BTreeSet::new(), |h| {
+        pager.holders_walked(pid, Phase::Opening, |h| {
             h.walk(Holder::CatalogRoot, || Ok(vec![self.root]));
             h.walk(Holder::CatalogRows, || {
                 let rows = named?.0.as_ref().ok_or(Stopped::Shape)?;

@@ -1123,3 +1123,127 @@ fn a_page_no_walk_reaches_mapped_once_running_marks_the_database() {
         db.close().unwrap();
     });
 }
+
+const TAGS_INDEX: &str = "index (owner)";
+
+/// Returns the leaf of tags' index once a seeded file holds a tag in it, after `damage` rewrote
+/// the file's copy from the copy it held before the next tag, given the leaf, with the page out
+/// of the cache.
+fn damaged_tags_leaf(
+    db: &Database<SimRuntime>,
+    rt: &SimRuntime,
+    damage: impl FnOnce(Pid, Vec<u8>) -> Vec<u8>,
+) -> Pid {
+    seed(db);
+    api::results(db, r#"insert users { id: users.key(7), name: "n7" }"#);
+    api::results(db, "insert tags { id: tags.key(1), owner: users.key(7) }");
+    let t = db.testing();
+    let leaf = *t
+        .pages(t.index("app::tags", TAGS_INDEX).unwrap())
+        .unwrap()
+        .last()
+        .unwrap();
+    t.flush();
+    let mut io = rt.io();
+    let (file, _) = adtb_harness::common::open(rt, &mut io, FILE, false).unwrap();
+    let at = DATA.range(leaf).start as u64;
+    let before = adtb_harness::common::read(rt, &mut io, file, at, API_PAGE).unwrap();
+    api::results(db, "insert tags { id: tags.key(2), owner: users.key(7) }");
+    t.flush();
+    let damaged = damage(leaf, before);
+    adtb_harness::common::write(rt, &mut io, file, at, &damaged).unwrap();
+    adtb_harness::common::sync(rt, &mut io, file).unwrap();
+    for p in 0..4096 {
+        t.probe()
+            .page(Pid(1 << 16 | p))
+            .expect("a page never written");
+    }
+    leaf
+}
+
+/// Record checksum damage on a page no structure holds, for the next commit to map.
+fn record_unheld_damage(db: &Database<SimRuntime>) {
+    let t = db.testing();
+    let kind = crate::storage::PageKind::HeapSlotted;
+    let page = t.plant(Plant::Orphan { kind, owner: 7 }).unwrap();
+    let page = page.page().unwrap();
+    let damage = Damage::Checksum;
+    t.plant(Plant::Refuse { page, damage }).unwrap();
+}
+
+#[test]
+fn a_stale_page_a_commits_walk_meets_marks_only_the_structure_whose_walk_met_it() {
+    let mut sim = Sim::new(103, Config::default());
+    process::run(&mut sim, |rt| {
+        let db = open_app(rt.clone());
+        let leaf = damaged_tags_leaf(&db, &rt, |_, before| before);
+        let t = db.testing();
+        let tags = t
+            .own_mark(t.index("app::tags", TAGS_INDEX).unwrap())
+            .unwrap();
+        record_unheld_damage(&db);
+        assert_eq!(
+            None,
+            t.probe().records().pages().get(&leaf),
+            "nothing read the leaf"
+        );
+        api::results(&db, r#"insert users { id: users.key(8), name: "n8" }"#);
+        assert!(
+            matches!(
+                t.probe().records().pages().get(&leaf),
+                Some(Damage::Stale { .. })
+            ),
+            "the commit's walk records the lost write"
+        );
+        assert_eq!(BTreeSet::from([tags]), marks(&db));
+        assert_eq!(None, t.probe().mapped_to(leaf), "the met page's record");
+        assert_eq!(8, api::query(&db, "from u in users select u.id").len());
+        assert_eq!(18, api::query(&db, ALL).len());
+        assert_eq!(
+            "app::tags index (owner)",
+            failed_on(&db, "insert tags { id: tags.key(3), owner: users.key(8) }")
+        );
+        assert_eq!(Some(BTreeSet::from([tags])), t.probe().mapped_to(leaf));
+        assert_eq!(BTreeSet::from([tags]), marks(&db));
+        db.close().unwrap();
+    });
+}
+
+#[test]
+fn a_stale_page_whose_header_names_another_structure_marks_only_the_structure_whose_walk_met_it() {
+    let mut sim = Sim::new(107, Config::default());
+    process::run(&mut sim, |rt| {
+        let db = open_app(rt.clone());
+        let t = db.testing();
+        let users_heap = t.heap("app::users", "User").unwrap();
+        let users_owner = t.owner(users_heap).unwrap();
+        let leaf = damaged_tags_leaf(&db, &rt, |leaf, mut before| {
+            let kind = crate::storage::PageKind::HeapSlotted;
+            let format = crate::storage::format(&before);
+            let flags = crate::storage::flags(&before);
+            let edit = crate::storage::header_edit(format, kind, users_owner, flags);
+            let at = crate::storage::FIRST_EDITABLE;
+            before[at..at + edit.len()].copy_from_slice(&edit);
+            crate::storage::seal(leaf, &mut before);
+            before
+        });
+        let tags = t
+            .own_mark(t.index("app::tags", TAGS_INDEX).unwrap())
+            .unwrap();
+        let users = t.own_mark(users_heap).unwrap();
+        record_unheld_damage(&db);
+        api::results(&db, r#"insert users { id: users.key(8), name: "n8" }"#);
+        assert!(
+            matches!(
+                t.probe().records().pages().get(&leaf),
+                Some(Damage::Stale { .. })
+            ),
+            "the commit's walk records the lost write"
+        );
+        let all = marks(&db);
+        assert!(!all.contains(&users), "{all:?}");
+        assert_eq!(BTreeSet::from([tags]), all);
+        assert_eq!(None, t.probe().mapped_to(leaf), "the met page's record");
+        db.close().unwrap();
+    });
+}

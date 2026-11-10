@@ -7,7 +7,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::runtime::{AlignedBuf, Runtime, ThreadId};
+use crate::runtime::{AlignedBuf, Runtime};
 
 use super::block::LogFinding;
 use super::damage_log::Recorded;
@@ -227,8 +227,6 @@ struct PageEvidence {
     unwritten: Option<(Damage, BTreeSet<Quarantine>)>,
     /// The damage whose last mapping was incomplete.
     incomplete: Option<Damage>,
-    /// The thread whose read last detected the damage.
-    detected_by: Option<ThreadId>,
     /// A page of a tree a swap replaced, until its own free.
     retired: bool,
     /// The epoch of the last change of the damage or the incarnation.
@@ -245,7 +243,6 @@ impl PageEvidence {
             mapped: None,
             unwritten: None,
             incomplete: None,
-            detected_by: None,
             retired: false,
             changed: Epoch(0),
         }
@@ -259,7 +256,6 @@ impl PageEvidence {
             && self.mapped.is_none()
             && self.unwritten.is_none()
             && self.incomplete.is_none()
-            && self.detected_by.is_none()
             && !self.retired
     }
 
@@ -389,7 +385,6 @@ impl Evidence {
             p.mapped = None;
             p.unwritten = None;
             p.incomplete = None;
-            p.detected_by = None;
         }
         let after = p.unmapped(true).is_some();
         if p.is_empty() {
@@ -451,7 +446,6 @@ impl Evidence {
             p.mapped = None;
             p.unwritten = None;
             p.incomplete = None;
-            p.detected_by = None;
         });
     }
 
@@ -479,8 +473,7 @@ impl Evidence {
     }
 
     /// Refuse the page `refusal` names as `damage` from now on and record it, unless it is refused
-    /// as `damage` already, noting `by` as the thread that detected it. Returns the
-    /// end of the damage record logged, `None` when none is.
+    /// as `damage` already. Returns the end of the damage record logged, `None` when none is.
     pub(super) fn refuse(
         &mut self,
         _: &Appending,
@@ -488,19 +481,14 @@ impl Evidence {
         refusal: &Refusal<'_>,
         damage: Damage,
         whole: bool,
-        by: ThreadId,
     ) -> Option<Lsn> {
         let pid = refusal.pid();
         let fresh = self.update(pid, |p| p.refusal.replace(damage) != Some(damage));
-        let logged = if fresh {
+        if fresh {
             self.detect(log, pid, damage, whole)
         } else {
             None
-        };
-        if self.damage(pid) == Some(damage) {
-            self.update(pid, |p| p.detected_by = Some(by));
         }
-        logged
     }
 
     /// Record `damage` of `pid` without refusing it, logging it unless recovery has not ended or
@@ -831,10 +819,6 @@ impl Evidence {
             Some(Pending { pid, damage, of })
         });
         (pages.collect(), self.full && !self.full_mapped, self.epoch)
-    }
-
-    pub(super) fn detected_by(&self, pid: Pid) -> Option<ThreadId> {
-        self.pages.get(&pid)?.detected_by
     }
 
     /// Returns what the damage of `pid` was mapped to this open, `None` while it is not mapped.

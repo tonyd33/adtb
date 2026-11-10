@@ -2,7 +2,6 @@ use std::collections::BTreeSet;
 
 use super::evidence::{Against, Begun, Evidence, Judged, Met, refusal_for_test};
 use super::page::Verdict;
-use crate::runtime::ThreadId;
 use crate::storage::error::Damage;
 use crate::storage::log::Log;
 use crate::storage::pager::{appending_for_test, wrote_for_test};
@@ -11,7 +10,6 @@ use crate::storage::recovery::replaying_for_test;
 use crate::storage::{Lsn, Pid};
 
 const P: Pid = Pid(9);
-const BY: ThreadId = ThreadId(3);
 const STALE: Damage = Damage::Stale {
     expected: Lsn(40),
     found: Lsn(20),
@@ -34,7 +32,7 @@ fn recording(log: &mut Log) -> Evidence {
 
 fn refuse(e: &mut Evidence, log: &mut Log, pid: Pid, damage: Damage) -> Option<Lsn> {
     let refusal = refusal_for_test(pid);
-    e.refuse(&appending_for_test(), log, &refusal, damage, false, BY)
+    e.refuse(&appending_for_test(), log, &refusal, damage, false)
 }
 
 fn logged(e: &mut Evidence, pid: Pid, met: Met) {
@@ -82,7 +80,6 @@ fn a_refusal_is_recorded_by_the_step_that_refuses() {
     let end = refuse(&mut e, &mut log, q, STALE);
     assert_eq!(Some(log.next_lsn()), end);
     assert_eq!((Some(STALE), Some(STALE)), (e.refusal(q), e.damage(q)));
-    assert_eq!(Some(BY), e.detected_by(q));
     assert_eq!(None, refuse(&mut e, &mut log, q, STALE), "refused already");
     assert_eq!(None, refuse(&mut e, &mut log, q, Damage::Unreadable));
     assert_eq!(
@@ -147,9 +144,8 @@ fn the_mapping_goes_with_the_damage() {
     let begun = e.begin_mapping(true);
     map(&mut e, begun);
     assert_eq!(Some(objects), e.mapped_to(P));
-    assert_eq!(Some(BY), e.detected_by(P));
     logged(&mut e, P, Met::Image);
-    assert_eq!((None, None), (e.mapped_to(P), e.detected_by(P)));
+    assert_eq!(None, e.mapped_to(P));
     e.unrefuse(&refusal_for_test(P));
     refuse(&mut e, &mut log, P, Damage::Checksum);
     assert_eq!(

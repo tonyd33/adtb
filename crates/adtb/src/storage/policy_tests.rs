@@ -76,7 +76,7 @@ impl C {
     }
 }
 
-const HOLDERS: [Holder; 19] = [
+const HOLDERS: [Holder; 18] = [
     H0,
     H1,
     I0,
@@ -95,11 +95,10 @@ const HOLDERS: [Holder; 19] = [
     Holder::Retired,
     Holder::Free,
     Holder::Unreached,
-    Holder::Met,
 ];
 
 /// The marks storage.md states, one row per fault kind, holder and phase.
-const STATED: [(C, Holder, Phase, Mark); 193] = [
+const STATED: [(C, Holder, Phase, Mark); 185] = [
     (C::Damaged, H0, OPEN, OH),
     (C::Damaged, H0, RUN, OH),
     (C::Damaged, H1, OPEN, DB),
@@ -136,8 +135,6 @@ const STATED: [(C, Holder, Phase, Mark); 193] = [
     (C::Damaged, Holder::Free, RUN, NO),
     (C::Damaged, Holder::Unreached, OPEN, NO),
     (C::Damaged, Holder::Unreached, RUN, DB),
-    (C::Damaged, Holder::Met, OPEN, DB),
-    (C::Damaged, Holder::Met, RUN, DB),
     (C::Unread, H0, OPEN, NO),
     (C::Unread, H0, RUN, NO),
     (C::Unread, H1, OPEN, NO),
@@ -210,8 +207,6 @@ const STATED: [(C, Holder, Phase, Mark); 193] = [
     (C::Settled, Holder::Free, RUN, NO),
     (C::Settled, Holder::Unreached, OPEN, NO),
     (C::Settled, Holder::Unreached, RUN, NO),
-    (C::Settled, Holder::Met, OPEN, NO),
-    (C::Settled, Holder::Met, RUN, NO),
     (C::Full, H0, OPEN, DB),
     (C::Full, H0, RUN, DB),
     (C::Full, H1, OPEN, DB),
@@ -248,8 +243,6 @@ const STATED: [(C, Holder, Phase, Mark); 193] = [
     (C::Full, Holder::Free, RUN, DB),
     (C::Full, Holder::Unreached, OPEN, DB),
     (C::Full, Holder::Unreached, RUN, DB),
-    (C::Full, Holder::Met, OPEN, DB),
-    (C::Full, Holder::Met, RUN, DB),
     (C::Unarmed, H0, OPEN, HELD),
     (C::Unarmed, H0, RUN, HELD),
     (C::Unarmed, H1, OPEN, HELD),
@@ -286,8 +279,6 @@ const STATED: [(C, Holder, Phase, Mark); 193] = [
     (C::Unarmed, Holder::Free, RUN, HELD),
     (C::Unarmed, Holder::Unreached, OPEN, HELD),
     (C::Unarmed, Holder::Unreached, RUN, HELD),
-    (C::Unarmed, Holder::Met, OPEN, HELD),
-    (C::Unarmed, Holder::Met, RUN, HELD),
     (C::Finding, I0, OPEN, OI),
     (C::Finding, I0, RUN, OI),
     (C::Finding, I1, OPEN, OI),
@@ -295,12 +286,10 @@ const STATED: [(C, Holder, Phase, Mark); 193] = [
     (C::Unproven, Holder::CommitLog, OPEN, HELD),
 ];
 
-/// Returns false for an unreadable page as met, which no mapping meets, for a finding on
-/// anything but an index, which no finding names, and for an unproven status page anywhere but on
-/// the commit log at open.
+/// Returns false for a finding on anything but an index, which no finding names, and for an
+/// unproven status page anywhere but on the commit log at open.
 fn reachable(class: C, holder: Holder, phase: Phase) -> bool {
     match class {
-        C::Unread => holder != Holder::Met,
         C::Finding => [I0, I1].contains(&holder),
         C::Unproven => holder == Holder::CommitLog && phase == OPEN,
         _ => true,

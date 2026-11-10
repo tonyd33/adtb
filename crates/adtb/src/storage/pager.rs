@@ -259,12 +259,11 @@ impl<R: Runtime> Append<'_, R> {
     pub(super) fn refuse(&mut self, latch: &Held<'_, R>, damage: Damage) -> Option<Lsn> {
         let refusal = Refusal::of(latch);
         let whole = self.pager.is_quarantined(Quarantine::Database);
-        let by = self.pager.rt.current();
         let m = &mut *self.meta;
         let log = &mut self.log.log;
         let logged = m
             .evidence
-            .refuse(&self.witness, log, &refusal, damage, whole, by);
+            .refuse(&self.witness, log, &refusal, damage, whole);
         m.table.refused(&refusal);
         logged
     }
