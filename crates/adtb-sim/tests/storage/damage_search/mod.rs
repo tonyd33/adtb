@@ -5,13 +5,14 @@ mod case;
 mod consumers;
 mod generate;
 mod judge;
+mod ledger;
 mod stated;
 mod world;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_testkit::profile::{self, assert_reached, every_case};
-use case::{FAULTS, Fault, Injection, Point};
+use case::{FAULTS, FOLDS, Fault, Fold, Injection, Point};
 use consumers::{CONSUMERS, Consumer};
 use judge::{Row, Violation};
 use stated::{Class, Held, PHASES, Phase};
@@ -63,12 +64,44 @@ struct Known {
     ticket: &'static str,
     seed: u64,
     at: usize,
-    /// The second fault of a pair and the kind of page it hits.
+    /// The second fault of a pair and the kind of page its write-out writes.
     then: Option<(Point, Kind)>,
 }
 
 const BLANK_OPEN: &str = "freed-lost-write-fails-open";
 const APPLIED_UNDER_MARK: &str = "migrate-applies-under-mark";
+const STALE_BEFORE_GAP: &str = "verify-misses-stale-page-before-log-gap";
+
+/// Returns the known failure of a lost write of a `kind` page in `seed` at `at`, then the log write
+/// `write` lost at write-out `then` of a `then_kind` page, shown by `consumer` as `what`.
+const fn before_gap(
+    kind: Kind,
+    consumer: Consumer,
+    what: &'static str,
+    (seed, at): (u64, usize),
+    (write, then, then_kind): (usize, usize, Kind),
+) -> Known {
+    Known {
+        fault: Fault::LostCurrent,
+        kind,
+        owner: None,
+        consumer,
+        what,
+        ticket: STALE_BEFORE_GAP,
+        seed,
+        at,
+        then: Some((
+            Point {
+                at: then,
+                injection: Injection::LogLost { write },
+            },
+            then_kind,
+        )),
+    }
+}
+
+const VERIFY_MISSES: &str = "verify misses a stale page";
+const SCRUB_MISSES: &str = "a scrub misses the stale page";
 
 /// The failures main shows. When a change moves the write-outs of the generated cases, run
 /// [`nearest_pins`] for the nearest write-out that shows each entry whose pin no longer does.
@@ -195,6 +228,69 @@ const KNOWN: &[Known] = &[
         at: 623,
         then: None,
     },
+    before_gap(
+        Kind::Marks,
+        Consumer::Verify,
+        VERIFY_MISSES,
+        (2, 645),
+        (83, 647, Kind::Large),
+    ),
+    before_gap(
+        Kind::Marks,
+        Consumer::Scrub,
+        SCRUB_MISSES,
+        (2, 645),
+        (83, 647, Kind::Large),
+    ),
+    before_gap(
+        Kind::Engine,
+        Consumer::Verify,
+        VERIFY_MISSES,
+        (1, 612),
+        (33, 633, Kind::Large),
+    ),
+    before_gap(
+        Kind::Engine,
+        Consumer::Scrub,
+        SCRUB_MISSES,
+        (1, 612),
+        (33, 633, Kind::Large),
+    ),
+    before_gap(
+        Kind::Engine,
+        Consumer::Verify,
+        VERIFY_MISSES,
+        (1, 612),
+        (40, 633, Kind::Large),
+    ),
+    before_gap(
+        Kind::Engine,
+        Consumer::Scrub,
+        SCRUB_MISSES,
+        (1, 612),
+        (40, 633, Kind::Large),
+    ),
+    before_gap(
+        Kind::Engine,
+        Consumer::Verify,
+        VERIFY_MISSES,
+        (1, 612),
+        (47, 633, Kind::Large),
+    ),
+    before_gap(
+        Kind::Engine,
+        Consumer::Scrub,
+        SCRUB_MISSES,
+        (1, 612),
+        (47, 633, Kind::Large),
+    ),
+    before_gap(
+        Kind::CommitLog,
+        Consumer::Scrub,
+        SCRUB_MISSES,
+        (3, 711),
+        (53, 712, Kind::LsnMap),
+    ),
 ];
 
 /// The cells whose every case ends at a failed open, which no consumer after it can reach, with
@@ -905,58 +1001,160 @@ fn a_vacuum_beside_each_write_loses_no_row_and_hides_no_damage() {
     );
 }
 
-#[test]
-fn two_faults_lose_no_acknowledged_row_and_hide_no_stale_page() {
+/// The second fault of a pair, as the pairs tier counts it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Second {
+    /// A lost write whose log no recycle passes.
+    Lost,
+    /// A lost write the sequence recycles the log past.
+    Recycled,
+    Torn,
+    UnreadableOnce,
+    UnreadableLasting,
+    /// A write to the log lost.
+    LogLost,
+    /// A block of the log unreadable at the first read after its write.
+    LogUnreadable,
+    /// The damage list's page unreadable for good.
+    ListUnreadable,
+    /// The marks page unreadable at the first read after its write-out.
+    MarksUnreadable,
+    /// A crash at a point of a checkpoint's fold.
+    Fold(Fold),
+}
+
+/// Returns the points of `second` a pair with a lost write at write-out `first` of `plan` takes:
+/// each at a later write-out of another write than `first`'s, and for an unreadable block of the
+/// log, one the run with no fault reads after its write.
+fn second_points(plan: &case::Plan, first: usize, second: Second) -> Vec<Point> {
+    let writes = &plan.clean.trace.writes;
+    let other = |at: usize| at > first && writes[at].op != writes[first].op;
+    let page = |at: usize| match second {
+        Second::Lost | Second::Recycled => {
+            let recycled = plan.fault(at, Injection::Lost) == Fault::Recycled;
+            (recycled == (second == Second::Recycled)).then_some(Injection::Lost)
+        }
+        Second::Torn => Some(Injection::Torn),
+        Second::UnreadableOnce => Some(Injection::Unreadable { lasting: false }),
+        Second::UnreadableLasting => Some(Injection::Unreadable { lasting: true }),
+        Second::ListUnreadable => (plan.kind(at) == Some(Kind::DamageList))
+            .then_some(Injection::Unreadable { lasting: true }),
+        Second::MarksUnreadable => {
+            (plan.kind(at) == Some(Kind::Marks)).then_some(Injection::Unreadable { lasting: false })
+        }
+        Second::LogLost | Second::LogUnreadable | Second::Fold(_) => None,
+    };
+    let log = |write: usize, folds: bool| match second {
+        Second::LogLost => Some(Injection::LogLost { write }),
+        Second::LogUnreadable => plan.clean.log[write]
+            .read_later
+            .then_some(Injection::LogUnreadable { write }),
+        Second::Fold(point) => folds.then_some(Injection::Crash { point, write }),
+        _ => None,
+    };
+    let pages = (0..writes.len())
+        .filter(|at| other(*at) && plan.kind(*at).is_some())
+        .filter_map(|at| {
+            Some(Point {
+                at,
+                injection: page(at)?,
+            })
+        });
+    let logged = plan.clean.log.iter().enumerate().filter_map(|(write, w)| {
+        let injection = log(write, w.folds)?;
+        let at = match injection {
+            Injection::Crash {
+                point: Fold::List, ..
+            } => (w.after..writes.len()).find(|at| Some(writes[*at].pid) == plan.list)?,
+            _ => w.after.checked_sub(1)?,
+        };
+        other(at).then_some(Point { at, injection })
+    });
+    pages.chain(logged).collect()
+}
+
+/// Returns the least number of cases of each second fault that reached it: one under the
+/// per-change tier, two under `deep`.
+fn pairs_floor() -> usize {
+    if every_case() { 2 } else { 1 }
+}
+
+/// The cases of one second fault: those judged, those whose consumers ran their open, those
+/// whose consumers' open succeeded, and those whose planned read failure fired.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Ran {
+    judged: usize,
+    consumed: usize,
+    opened: usize,
+    fired: usize,
+}
+
+/// Run the pairs of a lost write with each of `seconds` the tier asks, over up to four times the
+/// tier's sequences for a second fault still under its floor, judge each on the verdicts and on
+/// its file's evidence, and fail on a second fault with fewer cases that reached it than the
+/// floor, or a violation no known failure names. Returns what the pairs found.
+fn pairs(seconds: &[Second]) -> String {
     let (sequences, per) = wide();
-    let seconds = [
-        Injection::Lost,
-        Injection::Torn,
-        Injection::Unreadable { lasting: false },
-        Injection::Unreadable { lasting: true },
-    ];
-    let mut ran: BTreeMap<String, usize> = BTreeMap::new();
+    let mut ran: BTreeMap<Second, Ran> = seconds.iter().map(|s| (*s, Ran::default())).collect();
     let mut found = Vec::new();
-    for seed in 1..=sequences {
+    let (mut recorded, mut marked) = (0, 0);
+    let floor = pairs_floor();
+    let short =
+        |ran: &BTreeMap<Second, Ran>, second: Second| reached(second, &ran[&second]) < floor;
+    let mut past: BTreeMap<Second, Vec<u64>> = BTreeMap::new();
+    for seed in 1..=sequences * 4 {
+        let wanted: Vec<Second> = seconds
+            .iter()
+            .copied()
+            .filter(|s| seed <= sequences || short(&ran, *s))
+            .collect();
+        if wanted.is_empty() {
+            break;
+        }
         let plan = case::plan(seed, generate::sequence(seed), false);
         let writes = plan.clean.trace.writes.len();
         let counted = |at: &usize| plan.kind(*at).is_some();
-        let lost: Vec<usize> = (0..writes).filter(counted).collect();
-        for first in spread(&lost, per * 3) {
-            for second in seconds {
-                let later: Vec<usize> = (first + 1..writes)
-                    .filter(counted)
-                    .filter(|at| {
-                        plan.clean.trace.writes[*at].op != plan.clean.trace.writes[first].op
-                    })
-                    .collect();
-                for at in spread(&later, per * 2) {
+        for second in wanted {
+            let before = reached(second, &ran[&second]);
+            let lost: Vec<usize> = (0..writes)
+                .filter(counted)
+                .filter(|first| !second_points(&plan, *first, second).is_empty())
+                .collect();
+            for first in spread(&lost, per * 3) {
+                let points = second_points(&plan, first, second);
+                let ats: Vec<usize> = (0..points.len()).collect();
+                for two in spread(&ats, per * 2).into_iter().map(|i| points[i]) {
                     let one = Point {
                         at: first,
                         injection: Injection::Lost,
                     };
-                    let two = Point {
-                        at,
-                        injection: second,
-                    };
                     let Some(paired) = case::run_pair(&plan, one, two) else {
                         continue;
                     };
-                    if paired.opened {
-                        *ran.entry(format!("{second:?}")).or_default() += 1;
-                    }
-                    let cells = [one, two].map(|p| {
-                        (
-                            plan.fault(p.at, p.injection),
-                            plan.kind(p.at).expect("a counted write-out has a kind"),
-                            plan.owner(p.at),
-                        )
-                    });
+                    let counts = ran.entry(second).or_default();
+                    counts.judged += 1;
+                    counts.consumed += usize::from(paired.consumed);
+                    counts.opened += usize::from(paired.opened);
+                    counts.fired += usize::from(paired.read_failed);
+                    let (records, marks) = paired.verdicts.evidence;
+                    recorded += usize::from(records > 0);
+                    marked += usize::from(marks > 0);
+                    let cells: Vec<_> = [one, two]
+                        .into_iter()
+                        .filter(|p| p.injection.on_page())
+                        .map(|p| {
+                            (
+                                plan.fault(p.at, p.injection),
+                                plan.kind(p.at).expect("a counted write-out has a kind"),
+                                plan.owner(p.at),
+                            )
+                        })
+                        .collect();
                     for v in paired.verdicts.violations {
                         let pinned = KNOWN.iter().any(|k| {
                             k.seed == seed
                                 && k.at == first
-                                && k.then
-                                    .is_some_and(|(t, _)| t.at == at && t.injection == second)
+                                && k.then.is_some_and(|(t, _)| t == two)
                                 && k.consumer == v.consumer
                                 && k.what == v.what
                         });
@@ -965,33 +1163,109 @@ fn two_faults_lose_no_acknowledged_row_and_hide_no_stale_page() {
                                 .iter()
                                 .any(|(f, k, o)| known(*f, *k, *o, v.consumer, &v.what).is_some());
                         if !gated {
-                            found.push((seed, first, at, second, v));
+                            found.push((seed, first, two, v));
                         }
                     }
                 }
             }
+            if seed > sequences && reached(second, &ran[&second]) > before {
+                past.entry(second).or_default().push(seed);
+            }
         }
     }
-    eprintln!("pairs whose consumers ran: {ran:?}");
-    for (seed, first, at, second, v) in &found {
-        eprintln!(
-            "pair lost at {first} then {second:?} at {at}, seed {seed}: {:?} {}; {}",
+    let mut text = format!(
+        "pairs by second fault: {ran:?}; whose file held a damage record {recorded}, a durable \
+         mark {marked}; reached in sequences past the tier's {past:?}\n"
+    );
+    for (seed, first, two, v) in &found {
+        text += &format!(
+            "pair lost at {first} then {two:?}, seed {seed}: {:?} {}; {}\n",
             v.consumer, v.what, v.detail
         );
     }
-    for k in KNOWN.iter().filter(|k| k.then.is_some()) {
+    for k in KNOWN.iter().filter(|k| {
+        k.then
+            .is_some_and(|(t, _)| seconds.iter().any(|s| holds(*s, t)))
+    }) {
         rerun(k);
     }
-    for second in seconds {
-        assert!(
-            ran.contains_key(&format!("{second:?}")),
-            "no pair with {second:?} whose consumers ran"
-        );
-    }
+    assert_reached("pairs whose file held a damage record", recorded, 1);
+    assert_reached("pairs whose file held a durable mark", marked, 1);
+    let under: Vec<_> = ran
+        .iter()
+        .filter(|(second, _)| short(&ran, **second))
+        .collect();
     assert_eq!(
-        Vec::<(u64, usize, usize, Injection, Violation)>::new(),
-        found
+        Vec::<(&Second, &Ran)>::new(),
+        under,
+        "second faults with fewer than {floor} pairs that reached their fault\n{text}"
     );
+    assert_eq!(
+        Vec::<(u64, usize, Point, Violation)>::new(),
+        found,
+        "violations\n{text}"
+    );
+    text
+}
+
+/// Returns the cases of `second` that reached what it is for: those whose planned read failure
+/// fired for an unreadable block of the log, list page or marks page, those whose consumers'
+/// open succeeded for the rest.
+fn reached(second: Second, r: &Ran) -> usize {
+    match second {
+        Second::LogUnreadable | Second::ListUnreadable | Second::MarksUnreadable => r.fired,
+        _ => r.opened,
+    }
+}
+
+/// Returns whether the point `p` is a second fault of kind `second`, by its injection alone.
+fn holds(second: Second, p: Point) -> bool {
+    match (second, p.injection) {
+        (Second::Lost | Second::Recycled, Injection::Lost)
+        | (Second::Torn, Injection::Torn)
+        | (Second::LogLost, Injection::LogLost { .. })
+        | (Second::LogUnreadable, Injection::LogUnreadable { .. }) => true,
+        (Second::UnreadableOnce | Second::MarksUnreadable, Injection::Unreadable { lasting }) => {
+            !lasting
+        }
+        (Second::UnreadableLasting | Second::ListUnreadable, Injection::Unreadable { lasting }) => {
+            lasting
+        }
+        (Second::Fold(f), Injection::Crash { point, .. }) => f == point,
+        _ => false,
+    }
+}
+
+#[test]
+fn two_faults_lose_no_acknowledged_row_and_hide_no_stale_page() {
+    eprintln!(
+        "{}",
+        pairs(&[
+            Second::Lost,
+            Second::Recycled,
+            Second::Torn,
+            Second::UnreadableOnce,
+            Second::UnreadableLasting,
+        ])
+    );
+}
+
+#[test]
+fn a_lost_write_beside_an_unreadable_list_or_marks_page_keeps_every_record_and_mark() {
+    eprintln!(
+        "{}",
+        pairs(&[Second::ListUnreadable, Second::MarksUnreadable])
+    );
+}
+
+#[test]
+fn a_lost_write_beside_a_log_gap_keeps_every_record_and_mark() {
+    eprintln!("{}", pairs(&[Second::LogLost, Second::LogUnreadable]));
+}
+
+#[test]
+fn a_lost_write_beside_a_crash_in_a_fold_keeps_every_record_and_mark() {
+    eprintln!("{}", pairs(&FOLDS.map(Second::Fold)));
 }
 
 /// Returns why the case `k` pins no longer shows `k`, or `None` when it does.
@@ -1059,6 +1333,7 @@ fn nearest(k: &Known) -> Option<(u64, usize, Option<usize>)> {
             };
             let mut seconds: Vec<usize> = (0..writes)
                 .filter(|&x| plan.kind(x) == Some(kind))
+                .filter(|&x| t.injection.on_page() || x == t.at)
                 .collect();
             seconds.sort_by_key(|x| x.abs_diff(t.at));
             for &second in seconds.iter().take(6) {

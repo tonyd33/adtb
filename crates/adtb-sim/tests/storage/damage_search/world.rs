@@ -17,6 +17,7 @@ use adtb_harness::search::Files;
 use adtb_harness::{common, crash};
 use adtb_sim::{Config, Match, OpLog, Outcome, Planned, Sim, SimRuntime, Submitted};
 
+use super::ledger::{self, Evidence, LogWrite};
 use super::stated::{self, Class, Held, Holding, Phase};
 
 pub const FILE: &str = "search.adt";
@@ -150,6 +151,9 @@ pub type Rows = BTreeMap<Rel, BTreeMap<i64, u32>>;
 #[derive(Clone, Debug, Default)]
 pub struct Acked {
     pub states: Vec<Rows>,
+    /// The writes of the run's log of writes submitted before each state after the first was
+    /// acknowledged.
+    pub submitted: Vec<usize>,
     /// The migrations past the first an open applied and acknowledged.
     pub version: u8,
 }
@@ -157,6 +161,11 @@ pub struct Acked {
 impl Acked {
     pub fn last(&self) -> &Rows {
         self.states.last().expect("the empty state is the first")
+    }
+
+    fn push(&mut self, rows: Rows, submitted: usize) {
+        self.states.push(rows);
+        self.submitted.push(submitted);
     }
 }
 
@@ -598,6 +607,11 @@ fn ids<R: Runtime>(db: &Database<R>, version: u8, out: &mut Ids) {
 #[derive(Debug)]
 pub struct Ran {
     pub acked: Acked,
+    /// The writes of the run's log of writes and the write-outs submitted when each process
+    /// began.
+    pub processes: Vec<(usize, u64)>,
+    /// Whether a planned failure of a read of the data file or the log fired.
+    pub read_failed: bool,
     pub trace: Trace,
     pub held: Vec<Holdings>,
     pub ids: Ids,
@@ -626,6 +640,10 @@ pub struct Ran {
     pub recorded: BTreeSet<Pid>,
     /// The reads of the data file a plan failed, by process.
     pub failed_reads: Vec<usize>,
+    /// What the file held after each process, when the run watched it.
+    pub evidence: Vec<Evidence>,
+    /// Every write to the log, in order.
+    pub log: Vec<LogWrite>,
     pub files: Files,
 }
 
@@ -637,6 +655,9 @@ pub type Arm<'a> = &'a dyn Fn(&SimRuntime);
 struct Runner<'a> {
     ops: &'a [Op],
     writes: OpLog,
+    /// The writes to the log, the write-outs and the reads of the file and the log, in submission
+    /// order.
+    logged: OpLog,
     /// The length of `writes` when each operation began, with its index.
     during: Vec<(usize, usize)>,
     acked: Acked,
@@ -692,7 +713,7 @@ impl Runner<'_> {
         match done {
             Ok(()) => {
                 let rows = applied(self.acked.last().clone(), op);
-                self.acked.states.push(rows);
+                self.acked.push(rows, self.logged.len());
                 true
             }
             Err(e) => {
@@ -780,7 +801,7 @@ impl Runner<'_> {
                     if version != self.acked.version && (migrated || !marked) {
                         self.acked.version = version;
                         let rows = applied(self.acked.last().clone(), op);
-                        self.acked.states.push(rows);
+                        self.acked.push(rows, self.logged.len());
                     }
                 }
                 Op::Crash => {}
@@ -883,16 +904,34 @@ impl Runner<'_> {
 }
 
 /// Run `ops` from a new file on a simulation seeded `seed`, with `arm` planning the faults every
-/// process shares, observing the holdings after each operation when `observe`, and
-/// vacuuming a write's relation on a second thread during the write when `concurrent`.
-pub fn run(seed: u64, ops: &[Op], arm: Arm<'_>, observe: bool, concurrent: bool) -> Ran {
+/// process shares, observing the holdings after each operation when `observe`,
+/// vacuuming a write's relation on a second thread during the write when `concurrent`, and
+/// reading the file's evidence after each process when `watched`.
+pub fn run(
+    seed: u64,
+    ops: &[Op],
+    arm: Arm<'_>,
+    observe: bool,
+    concurrent: bool,
+    watched: bool,
+) -> Ran {
     let mut sim = Sim::new(seed, Config::default());
+    let log = format!("{FILE}-log/");
+    let logged = sim.logged(Match::any_of([
+        write_outs(),
+        Match::kind(OpKind::Write).prefixed(&log),
+        on_data(Match::kind(OpKind::Read)),
+        Match::kind(OpKind::Read).prefixed(&log),
+    ]));
+    let mut evidence = Vec::new();
     let mut runner = Runner {
         ops,
         writes: sim.logged(write_outs()),
+        logged: logged.clone(),
         during: Vec::new(),
         acked: Acked {
             states: vec![Rows::new()],
+            submitted: Vec::new(),
             version: 0,
         },
         held: Vec::new(),
@@ -912,6 +951,7 @@ pub fn run(seed: u64, ops: &[Op], arm: Arm<'_>, observe: bool, concurrent: bool)
     };
     let reads = sim.logged(on_data(Match::kind(OpKind::Read)));
     let mut starts = Vec::new();
+    let mut processes = Vec::new();
     let mut armed = false;
     let mut cut = None;
     crash::silence_fatal_panics();
@@ -922,6 +962,7 @@ pub fn run(seed: u64, ops: &[Op], arm: Arm<'_>, observe: bool, concurrent: bool)
         }
         let mut whole = false;
         starts.push(reads.len());
+        processes.push((logged.len(), runner.writes.len() as u64));
         let outcome = crash::run_process(&mut sim, |rt| {
             if !armed {
                 rt.arm(write_outs());
@@ -936,6 +977,9 @@ pub fn run(seed: u64, ops: &[Op], arm: Arm<'_>, observe: bool, concurrent: bool)
             }
         });
         let planned = whole && runner.next > 0 && ops[runner.next - 1] == Op::Crash;
+        if watched {
+            evidence.extend(ledger::evidence(&sim.files()));
+        }
         match outcome {
             Outcome::Finished if whole && !planned => {}
             Outcome::Crashed if planned => {}
@@ -954,17 +998,24 @@ pub fn run(seed: u64, ops: &[Op], arm: Arm<'_>, observe: bool, concurrent: bool)
         "the trace numbers the write-outs as the plan does"
     );
     let trace = trace(&runner.writes, &runner.during);
+    let files = sim.files();
+    let pages = |ops: usize| trace.writes.partition_point(|w| w.op < ops as u64);
+    let entries = logged.entries();
+    let log = ledger::log_writes(&files, &entries, pages);
     let reads = reads.entries();
+    let failed = |r: &&Submitted| matches!(r.planned(), Some(Planned::Fail(_)));
+    let read_failed = entries
+        .iter()
+        .any(|r| r.kind() == OpKind::Read && failed(&r));
     starts.push(reads.len());
     let failed_reads = starts
         .windows(2)
-        .map(|w| {
-            let failed = |r: &&Submitted| matches!(r.planned(), Some(Planned::Fail(_)));
-            reads[w[0]..w[1]].iter().filter(failed).count()
-        })
+        .map(|w| reads[w[0]..w[1]].iter().filter(failed).count())
         .collect();
     Ran {
         acked: runner.acked,
+        processes,
+        read_failed,
         trace,
         held: runner.held,
         ids: runner.ids,
@@ -979,7 +1030,9 @@ pub fn run(seed: u64, ops: &[Op], arm: Arm<'_>, observe: bool, concurrent: bool)
         marked_before_drop: runner.marked_before_drop,
         recorded: runner.recorded,
         failed_reads,
-        files: sim.files(),
+        evidence,
+        log,
+        files,
     }
 }
 

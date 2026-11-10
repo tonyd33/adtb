@@ -5,11 +5,13 @@
 
 use adtb::testing::{Pid, Quarantine, page};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 
 use adtb::Proof;
 
 use super::case::{Fault, Plan};
 use super::consumers::{Backup, Consumer, Copy, Dumped, Finding, Lookups, Observed, Read};
+use super::ledger::{self, Ended, Evidence, Record, SETTLED};
 use super::stated::{self, Class, Held, PHASES, Phase, Stated};
 use super::world::{self, Kind, Op, Ran, Rel, Rows, WriteOut};
 
@@ -40,6 +42,9 @@ pub struct Verdicts {
     /// The consumers whose judgement ran and could meet the first fault's page.
     pub reached: BTreeSet<Consumer>,
     pub ending: Ending,
+    /// The damage records and the durable marks the file's evidence held, for a case judged on
+    /// it.
+    pub evidence: (usize, usize),
 }
 
 /// One fault of a case: the write-out it hit, the class of its page and the fault.
@@ -60,6 +65,22 @@ pub struct Case<'a> {
     /// cut before its open returned.
     pub started: u8,
     pub observed: &'a Observed,
+    /// The write to the log the device lost.
+    pub lost_log: Option<LostLog>,
+    /// What the file held after each process of the run and after the consumers, in order, with
+    /// every free and image the run logged, for a case judged on its evidence.
+    pub evidence: Option<(&'a [Evidence], &'a BTreeSet<Ended>)>,
+}
+
+/// A write to the log the device lost: the LSN it starts at, whether it was the log's last
+/// batch, no later write of the run starting past it, whether the file header names a
+/// checkpoint at or past it, and the numbers of the write-outs its process submitted after it.
+#[derive(Clone, Debug)]
+pub struct LostLog {
+    pub lsn: u64,
+    pub tail: bool,
+    pub named: bool,
+    pub after: Range<u64>,
 }
 
 /// What the model says of one damaged page.
@@ -95,6 +116,9 @@ struct Facts<'a> {
     /// database's where a walk of the mapping can meet a second damaged page before its record,
     /// or where the open quarantines the database for itself alone.
     allowed_marks: BTreeSet<Quarantine>,
+    /// The marks a case may show for the consumers' open alone: the database's, under a list
+    /// page the device cannot read. No later open and no marks page holds them.
+    open_marks: BTreeSet<Quarantine>,
     lasting: bool,
     unreadable: bool,
     /// Whether the first open met an unreadable page whose loss quarantines the database for
@@ -271,8 +295,10 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
             let found = page::lsn(&world::page(&case.observed.files, w.pid)).0;
             let stale = is_lost(hit.fault) && found < w.lsn;
             let alive = !freed(kind) || plan.held_at_end(w.pid);
-            let must_report =
-                matches!(hit.fault, Fault::LostCurrent | Fault::Recycled) && stale && alive;
+            let must_report = matches!(hit.fault, Fault::LostCurrent | Fault::Recycled)
+                && stale
+                && alive
+                && !unlogged_before_gap(case, &w, found);
             let must_not_name = case.ran.damaged != Some(w.pid)
                 && match hit.fault {
                     Fault::Torn | Fault::UnreadableOnce => true,
@@ -316,10 +342,15 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
         .filter(|p| p.must_report)
         .filter_map(|p| p.mark)
         .collect();
-    let lasting = case
+    let list_unreadable = case
         .hits
         .iter()
-        .any(|h| h.fault == Fault::UnreadableLasting);
+        .any(|h| h.fault == Fault::UnreadableLasting && h.kind == Kind::DamageList);
+    let lasting = case.lost_log.as_ref().is_some_and(|l| !l.tail || l.named)
+        || case
+            .hits
+            .iter()
+            .any(|h| h.fault == Fault::UnreadableLasting && h.kind != Kind::DamageList);
     let unreadable = case
         .hits
         .iter()
@@ -350,6 +381,13 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
     if open_only {
         allowed_marks.insert(Quarantine::Database);
     }
+    let mut open_marks = BTreeSet::new();
+    if list_unreadable && !allowed_marks.contains(&Quarantine::Database) {
+        open_marks.insert(Quarantine::Database);
+    }
+    if let Some(lost) = &case.lost_log {
+        allowed_marks.extend(past_lost_log(case, lost));
+    }
     let mut baseline = BTreeSet::new();
     if plan.ops.contains(&Op::Damage)
         && let Some((h, _)) = ids.marks.get(&Rel::Scraps)
@@ -361,6 +399,7 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
         pages,
         expected,
         allowed_marks,
+        open_marks,
         lasting,
         unreadable,
         open_only,
@@ -395,6 +434,66 @@ fn unused_slot_marks_its_index(pages: &[Page], ids: &world::Ids) -> Vec<Quaranti
         .filter_map(|p| p.rel.and_then(|r| ids.marks.get(&r)))
         .map(|(_, index)| *index)
         .collect()
+}
+
+/// Returns the write-outs of the process that lost a write to the log, submitted after it, at or
+/// past its LSN.
+fn past_lost<'a>(case: &'a Case<'_>, lost: &'a LostLog) -> impl Iterator<Item = &'a WriteOut> {
+    case.ran
+        .trace
+        .writes
+        .iter()
+        .filter(|w| lost.after.contains(&w.op) && w.lsn >= lost.lsn)
+}
+
+/// Returns the marks a lost write to the log allows: the object holding each page its process
+/// wrote after it at or past its LSN, the database for a page no heap or index holds, and the
+/// database for a lost batch before the log's last.
+fn past_lost_log(case: &Case<'_>, lost: &LostLog) -> BTreeSet<Quarantine> {
+    let ids = &case.plan.observed.ids;
+    let mut out = BTreeSet::new();
+    if !lost.tail {
+        out.insert(Quarantine::Database);
+    }
+    for w in past_lost(case, lost) {
+        let object = ids
+            .holding(w.kind, w.owner, w.pid)
+            .and_then(|(_, object)| object);
+        out.insert(object.unwrap_or(Quarantine::Database));
+    }
+    out
+}
+
+/// Returns whether a lost write to the log waives the report of the stale page of write-out `w`,
+/// whose copy on file has LSN `found`: its record lies at or past the lost write, and the retained
+/// log holds no change or image of the page past `found`.
+fn unlogged_before_gap(case: &Case<'_>, w: &WriteOut, found: u64) -> bool {
+    let Some(lost) = &case.lost_log else {
+        return false;
+    };
+    w.lsn >= lost.lsn
+        && ledger::last_logged(&case.ran.files, w.pid).is_none_or(|last| last <= found)
+}
+
+/// Returns the pages a lost last batch of the log changed that reached the file and that verify
+/// reports neither as unlogged nor as stale.
+fn unlogged_unnamed(case: &Case<'_>, rows: &[Finding]) -> Vec<Pid> {
+    let Some(lost) = case.lost_log.as_ref().filter(|l| l.tail) else {
+        return Vec::new();
+    };
+    past_lost(case, lost)
+        .filter(|w| page::lsn(&world::page(&case.observed.files, w.pid)).0 == w.lsn)
+        .map(|w| w.pid)
+        .filter(|pid| !rows.iter().any(|row| unlogged(row, *pid)))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// Returns whether verify's `row` reports page `pid` as unlogged or stale.
+fn unlogged((kind, at): &Finding, pid: Pid) -> bool {
+    (kind == "StalePage" && names(at, pid))
+        || at.contains(&format!("Unlogged {{ pid: Pid({}),", pid.0))
 }
 
 /// Returns whether `all` holds an allowed mark on the database, which quarantines every heap and
@@ -475,6 +574,16 @@ pub fn judge(case: &Case<'_>) -> Verdicts {
         for (what, detail) in judge_findings(&f, found) {
             v(Consumer::Verify, what, detail);
         }
+        if let Ok(rows) = found {
+            let unnamed = unlogged_unnamed(case, rows);
+            if !unnamed.is_empty() {
+                v(
+                    Consumer::Verify,
+                    "verify misses a page past the log's end".into(),
+                    format!("pages {unnamed:?}: {rows:?}"),
+                );
+            }
+        }
     }
     if let Some(scrub) = &o.scrub {
         let named = !scrub.is_empty();
@@ -513,11 +622,28 @@ pub fn judge(case: &Case<'_>) -> Verdicts {
             v(Consumer::Dump, what, detail);
         }
     }
+    let mut held = (0, 0);
+    if let Some((snapshots, ended)) = case.evidence {
+        let records: BTreeSet<&Record> = snapshots.iter().flat_map(|s| &s.records).collect();
+        let marks: BTreeSet<&Quarantine> =
+            snapshots.iter().flat_map(|s| &s.marks).flatten().collect();
+        held = (records.len(), marks.len());
+        if let Some(detail) = record_lost(snapshots, ended) {
+            v(Consumer::Settle, RECORD_LOST.into(), detail);
+        }
+        if let Some(detail) = mark_lost(snapshots) {
+            v(Consumer::Settle, MARK_LOST.into(), detail);
+        }
+        for (what, detail) in durable_marks_unmet(&f, snapshots) {
+            v(Consumer::Read, what, detail);
+        }
+    }
     Verdicts {
         violations: out,
         rows: f.rows.clone(),
         reached: reached(&f),
         ending: ending(&f),
+        evidence: held,
     }
 }
 
@@ -766,7 +892,24 @@ fn judge_marks(f: &Facts<'_>) -> Vec<(String, String)> {
             format!("missing {missing:?}, marks {marks:?}"),
         ));
     }
-    let over: BTreeSet<_> = marks.difference(&f.allowed_marks).collect();
+    let allowed: BTreeSet<Quarantine> = f.allowed_marks.union(&f.open_marks).copied().collect();
+    let over: BTreeSet<_> = marks.difference(&allowed).collect();
+    let durable = ledger::evidence(&f.case.observed.files).and_then(|e| e.marks);
+    let reopened = f.case.observed.reopened.as_ref().map(|r| &r.marks);
+    let outlived: BTreeSet<_> = f
+        .open_marks
+        .iter()
+        .filter(|m| {
+            reopened.is_some_and(|r| r.contains(m))
+                || durable.as_ref().is_some_and(|d| d.contains(m))
+        })
+        .collect();
+    if !outlived.is_empty() {
+        out.push((
+            "an unreadable list page leaves a mark past its open".into(),
+            format!("{outlived:?}; reopened {reopened:?}; marks page {durable:?}"),
+        ));
+    }
     if !over.is_empty() {
         let shape = if !over.contains(&Quarantine::Database) {
             "a mark the faults do not map to"
@@ -899,4 +1042,140 @@ fn ending(f: &Facts<'_>) -> Ending {
     } else {
         Ending::Intact
     }
+}
+
+const RECORD_LOST: &str = "a damage record the log held reaches neither the damage list nor a \
+                               durable mark";
+const MARK_LOST: &str = "a durable mark is gone before its release";
+
+/// Returns where the first damage record an observation of `snapshots` held is, at that or a
+/// later one, in no damage list, not in the log past the redo LSN, ended by no free or image in the
+/// log then or in `ended`, and not covered by a durable mark of the database while the list page
+/// holds no list; `None` when every record is kept.
+fn record_lost(snapshots: &[Evidence], ended: &BTreeSet<Ended>) -> Option<String> {
+    let mut known: BTreeSet<Record> = BTreeSet::new();
+    for (at, s) in snapshots.iter().enumerate() {
+        known.extend(s.records.iter().copied());
+        let marks = s.marks.clone().unwrap_or_default();
+        for &(pid, lsn, kind) in &known {
+            let listed = s.full || s.list.as_ref().is_some_and(|l| l.contains(&pid));
+            let held = s.records.contains(&(pid, lsn, kind)) && s.redo.is_none_or(|r| lsn >= r);
+            let ends = |e: &&Ended| e.0 == pid && e.1 > lsn && (!e.2 || kind != SETTLED);
+            let gone = ended.iter().chain(&s.ended).any(|e| ends(&e));
+            let covered = s.list.is_none() && marks.contains(&Quarantine::Database);
+            if !(listed || held || gone || covered) {
+                return Some(format!(
+                    "observation {at}: page {} recorded at {lsn} as kind {kind}; list {:?}, redo \
+                     {:?}, marks {:?}",
+                    pid.0, s.list, s.redo, s.marks
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// Returns where the first mark the marks page of an observation of `snapshots` held is gone at a
+/// later one, `None` when every mark stays.
+fn mark_lost(snapshots: &[Evidence]) -> Option<String> {
+    let mut held: BTreeSet<Quarantine> = BTreeSet::new();
+    for (at, s) in snapshots.iter().enumerate() {
+        let now = s.marks.clone().unwrap_or_default();
+        let gone: BTreeSet<_> = held.difference(&now).collect();
+        if !gone.is_empty() {
+            return Some(format!(
+                "observation {at}: {gone:?} gone; the page holds {:?}",
+                s.marks
+            ));
+        }
+        held.extend(now);
+    }
+    None
+}
+
+/// Returns the reads of the consumers that a mark durable before them should have refused and
+/// did not: every read under the database's, and the read of a relation under its heap's.
+/// `snapshots` ends with the consumers' own.
+fn durable_marks_unmet(f: &Facts<'_>, snapshots: &[Evidence]) -> Vec<(String, String)> {
+    let before = &snapshots[..snapshots.len().saturating_sub(1)];
+    let durable: BTreeSet<Quarantine> = before
+        .iter()
+        .filter_map(|s| s.marks.clone())
+        .flatten()
+        .collect();
+    let ids = &f.case.plan.observed.ids;
+    let mut out = Vec::new();
+    for (rel, read) in &f.case.observed.reads {
+        let marked = |m: &Quarantine| {
+            *m == Quarantine::Database || ids.marks.get(rel).is_some_and(|(heap, _)| heap == m)
+        };
+        let Some(mark) = durable.iter().find(|m| marked(m)) else {
+            continue;
+        };
+        let refused = match read {
+            Read::Refused(what) => refused_marks(f, what)
+                .iter()
+                .any(|m| *m == *mark || *m == Quarantine::Database),
+            Read::Failed(_) => true,
+            Read::Rows(_) | Read::Garbage(_) => false,
+        };
+        if !refused {
+            out.push((
+                "a read serves past a durable mark".into(),
+                format!("{}: {read:?}; durable {durable:?}", rel.name()),
+            ));
+        }
+    }
+    out
+}
+
+#[test]
+fn a_record_recycled_with_its_log_before_any_fold_is_reported_lost() {
+    let record = (Pid(9), 500, 1);
+    let held = Evidence {
+        records: BTreeSet::from([record]),
+        redo: Some(400),
+        list: Some(BTreeSet::new()),
+        marks: Some(BTreeSet::new()),
+        ..Evidence::default()
+    };
+    let recycled = Evidence {
+        records: BTreeSet::new(),
+        redo: Some(900),
+        ..held.clone()
+    };
+    assert_eq!(
+        Some(
+            "observation 1: page 9 recorded at 500 as kind 1; list Some({}), redo Some(900), \
+             marks Some({})"
+                .to_owned()
+        ),
+        record_lost(&[held.clone(), recycled], &BTreeSet::new())
+    );
+    let bounded = Evidence {
+        redo: Some(500),
+        ..held.clone()
+    };
+    assert_eq!(None, record_lost(&[held, bounded], &BTreeSet::new()));
+}
+
+#[test]
+fn a_marks_page_written_back_over_a_lost_mark_is_reported() {
+    let marked = Evidence {
+        marks: Some(BTreeSet::from([Quarantine::Heap(7)])),
+        ..Evidence::default()
+    };
+    let written_back = Evidence {
+        marks: Some(BTreeSet::from([Quarantine::Index(3)])),
+        ..Evidence::default()
+    };
+    assert_eq!(
+        Some("observation 1: {Heap(7)} gone; the page holds Some({Index(3)})".to_owned()),
+        mark_lost(&[marked.clone(), written_back])
+    );
+    let kept = Evidence {
+        marks: Some(BTreeSet::from([Quarantine::Heap(7), Quarantine::Index(3)])),
+        ..Evidence::default()
+    };
+    assert_eq!(None, mark_lost(&[marked, kept]));
 }

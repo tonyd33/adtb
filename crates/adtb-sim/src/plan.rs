@@ -600,6 +600,15 @@ impl Planner {
         }
     }
 
+    /// Take every rule and numbered action out of the plan. Returns them, to drop once the
+    /// planner is unlocked.
+    pub(crate) fn forget(&mut self) -> Plan {
+        Plan {
+            rules: std::mem::take(&mut self.rules),
+            numbered: std::mem::take(&mut self.numbered),
+        }
+    }
+
     pub(crate) fn end_run(&mut self) {
         self.rules.retain(|rule| rule.lasting);
     }

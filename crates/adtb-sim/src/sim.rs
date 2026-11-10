@@ -164,6 +164,14 @@ pub struct Sim {
     shared: Arc<Shared>,
 }
 
+impl Drop for Sim {
+    /// Drop the plan's rules and actions.
+    fn drop(&mut self) {
+        let planned = lock(&self.shared.plan).forget();
+        drop(planned);
+    }
+}
+
 impl std::fmt::Debug for Sim {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Sim")
