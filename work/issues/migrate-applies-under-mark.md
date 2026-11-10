@@ -33,3 +33,5 @@ Defect: `Catalog::apply` returns `Err` after its commit is durable, so every cal
 ## 2026-11-10
 
 Structure-damage-policy step 10 made the search's judge tell an unread open from a read one, through `verify` of a relation failing with the quarantine. Recycled Bitmap seed 65 at write-out 678 now reaches no finding: the migration commits, a later step meets damage, and the open answers an unread `Ok`, which embedding.md §2.1 step 8 now contradicts (an open under a whole mark applies nothing). The case reaches no later open that would read the applied migration, so the search no longer sees it. A test for this ticket must open again after such an open and read the version.
+
+Scope, from the step 10 review: any failure in open after a migration commits, not only `Catalog::apply`. Damage met later in open after a successful `migrate` also rescues to an unread `Ok` with the migration applied.
