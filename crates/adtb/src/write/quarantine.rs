@@ -16,7 +16,7 @@ use crate::storage::{Damage, MarkFailure, Ordered, Orders, Quarantine};
 
 use super::schema::Rel;
 use super::verify::Found;
-use super::{Database, Error, Text, Txn};
+use super::{Database, Error, Text};
 
 /// What made a call fail as quarantined.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,7 +138,7 @@ impl<R: Runtime> Database<R> {
         self.pager.map_damage(
             |pid| {
                 self.structures
-                    .holders(&self.pager, &self.txns, pid, Phase::Running)
+                    .holders(&self.pager, &self.session.txns, pid, Phase::Running)
             },
             self,
         )
@@ -154,7 +154,7 @@ impl<R: Runtime> Database<R> {
         self.pager.map_committing(
             |pid| {
                 self.structures
-                    .holders(&self.pager, &self.txns, pid, Phase::Running)
+                    .holders(&self.pager, &self.session.txns, pid, Phase::Running)
             },
             ordered,
         );
@@ -356,13 +356,12 @@ impl<R: Runtime> Database<R> {
         self.admit_touched(&marks, touched)
     }
 
-    /// Fail if the write set of `tx` is one [`Database::admit_touched`] refuses. What `tx` only
-    /// read plays no part.
+    /// Fail if `written`, the write set of a committing transaction, is one
+    /// [`Database::admit_touched`] refuses. What the transaction only read plays no part.
     ///
     /// Precondition: the calling thread holds the serialization lock, and the commit record of
-    /// `tx` is written before it lets go.
-    pub(super) fn admit_commit(&self, tx: &Txn) -> Result<(), Error> {
-        let written = tx.written.take();
+    /// the transaction is written before it lets go.
+    pub(super) fn admit_commit(&self, written: Touched) -> Result<(), Error> {
         if written.writes.is_empty() || !self.pager.any_quarantined() {
             return Ok(());
         }
@@ -608,7 +607,7 @@ impl<R: Runtime> Orders for Database<R> {
     /// Postconditions: a commit record written after a mark `f` sets was checked against it, and
     /// a commit whose check missed the mark has its record in the log already.
     fn ordered<T>(&self, f: impl FnOnce(Ordered<'_>) -> T) -> T {
-        let mut ser = self.ser.lock(&self.rt);
+        let mut ser = self.session.ser.lock(&self.rt);
         f(ser.ordered())
     }
 }

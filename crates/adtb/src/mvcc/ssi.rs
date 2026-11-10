@@ -867,8 +867,11 @@ impl Serializer {
 
     /// Record that `id` aborted, or that a read-only transaction ended or retakes its snapshot.
     /// Returns the read-only transactions whose snapshots are no longer pending.
+    ///
+    /// Postcondition: `id` is not among the transactions [`Serializer::take_safe`] returns.
     pub fn aborted(&mut self, id: SerialId) -> Vec<SerialId> {
         self.drop_sxact(id);
+        self.found_safe.retain(|s| *s != id);
         let mut resolved = Vec::new();
         for (&ro, s) in &mut self.sxacts {
             if s.read_only && s.pending.remove(&id) && s.pending.is_empty() {

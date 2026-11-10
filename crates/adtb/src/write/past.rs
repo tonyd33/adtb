@@ -258,7 +258,8 @@ impl<R: Runtime> Database<R> {
                 .cloned()
                 .unwrap_or_default());
         }
-        let (Some(past), Some(cutoff)) = (self.txns.history(), self.txns.cutoff()) else {
+        let (Some(past), Some(cutoff)) = (self.session.txns.history(), self.session.txns.cutoff())
+        else {
             return Ok(BTreeSet::new());
         };
         if id == COMMIT_TIMES {
@@ -300,9 +301,16 @@ impl<R: Runtime> Database<R> {
         let kept = self
             .retained
             .as_ref()
-            .filter(|_| self.txns.history().is_some());
+            .filter(|_| self.session.txns.history().is_some());
         let Some(retained) = kept else {
-            let report = vacuum::vacuum(&self.pager, &self.txns, sum, self.grant, progress, pace)?;
+            let report = vacuum::vacuum(
+                &self.pager,
+                &self.session.txns,
+                sum,
+                self.grant,
+                progress,
+                pace,
+            )?;
             return Ok((report, false));
         };
         let key_index = rel.key_index;
@@ -340,7 +348,7 @@ impl<R: Runtime> Database<R> {
         };
         let report = vacuum::vacuum_keeping(
             &self.pager,
-            &self.txns,
+            &self.session.txns,
             sum,
             &into,
             self.grant,
@@ -351,7 +359,14 @@ impl<R: Runtime> Database<R> {
             heaps: pasts,
             indexes: vec![index],
         };
-        let left = vacuum::expire(&self.pager, &self.txns, &past, self.grant, progress, pace)?;
+        let left = vacuum::expire(
+            &self.pager,
+            &self.session.txns,
+            &past,
+            self.grant,
+            progress,
+            pace,
+        )?;
         Ok((report, left.scanned + left.skipped > left.removed))
     }
 
@@ -361,7 +376,7 @@ impl<R: Runtime> Database<R> {
         let retained = self.retained.clone()?;
         Some(Arc::new(Pasts {
             pager: self.pager.clone(),
-            txns: self.txns.clone(),
+            txns: self.session.txns.clone(),
             retained,
             heaps: self.heaps.clone(),
             indexes: self.indexes.clone(),
@@ -374,13 +389,15 @@ impl<R: Runtime> Database<R> {
     ///
     /// Fail if the record of the window is damaged.
     pub fn set_retention(&self, window: Duration, _held: &VacuumHold<'_, R>) -> Result<(), Error> {
-        if self.txns.history().is_some() {
-            self.txns.set_window(window);
+        if self.session.txns.history().is_some() {
+            self.session.txns.set_window(window);
             return Ok(());
         }
         match &self.retained {
             Some(r) if !window.is_zero() => {
-                self.txns.keep_history(&self.pager, r.record, window)?;
+                self.session
+                    .txns
+                    .keep_history(&self.pager, r.record, window)?;
                 Ok(())
             }
             _ => Ok(()),

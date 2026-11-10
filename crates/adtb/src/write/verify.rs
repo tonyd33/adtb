@@ -162,9 +162,9 @@ impl<R: Runtime> Database<R> {
     ///
     /// Precondition: the calling thread holds no transaction with an id.
     pub fn begin_verify(&self) -> Result<VerifySnapshot<'_, R>, Error> {
-        let mut tx = self.begin_reader(true)?;
+        let mut tx = self.session.begin_reader(true)?;
         loop {
-            let safety = self.ser.lock(&self.rt).safety(tx.sid);
+            let safety = self.session.ser.lock(&self.rt).safety(tx.sid);
             match safety {
                 Safety::Safe => {
                     return Ok(VerifySnapshot {
@@ -174,10 +174,10 @@ impl<R: Runtime> Database<R> {
                 }
                 Safety::Unsafe => {
                     self.abort(tx)?;
-                    tx = self.begin_reader(true)?;
+                    tx = self.session.begin_reader(true)?;
                 }
                 Safety::Pending(writers) => match writers.first() {
-                    Some(w) => self.waits.wait(None, *w)?,
+                    Some(w) => self.session.waits.wait(None, *w)?,
                     None => self.rt.yield_now(),
                 },
             }
@@ -190,7 +190,10 @@ impl<R: Runtime> Database<R> {
             pager: self.pager.clone(),
             reads: Arc::new(AtSnapshot {
                 rt: self.rt.clone(),
-                reader: self.txns.reader(&self.pager, tx.snapshot.clone(), None),
+                reader: self
+                    .session
+                    .txns
+                    .reader(&self.pager, tx.snapshot.clone(), None),
                 serial: None,
             }),
             heaps: self.heaps.clone(),
@@ -455,7 +458,10 @@ impl<R: Runtime> Database<R> {
     ) -> Result<(), Error> {
         let schema = stored.schema();
         let types: Vec<_> = schema.components().iter().map(|(t, _)| t.clone()).collect();
-        let reader = self.txns.reader(&self.pager, tx.snapshot.clone(), None);
+        let reader = self
+            .session
+            .txns
+            .reader(&self.pager, tx.snapshot.clone(), None);
         let pages = match heap.pages(&self.pager) {
             Ok(p) => p,
             Err(e) => {

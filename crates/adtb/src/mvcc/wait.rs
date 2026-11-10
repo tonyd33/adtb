@@ -60,6 +60,12 @@ impl<R: Runtime> Waits<R> {
         self.state.lock(&self.rt).running.insert(x);
     }
 
+    /// Returns the transactions started and not yet ended.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn running(&self) -> BTreeSet<Xid> {
+        self.state.lock(&self.rt).running.clone()
+    }
+
     /// Wake every waker registered on `x`, outside the state lock.
     pub fn ended(&self, x: Xid) {
         let watchers = {

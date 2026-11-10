@@ -52,7 +52,7 @@ pub struct Committed<T> {
 
 #[derive(Debug)]
 enum State {
-    Open(Txn),
+    Open(Box<Txn>),
     /// Aborted by the engine with this error.
     Ended(Error),
     Closed,
@@ -107,7 +107,7 @@ impl<R: Runtime> Database<R> {
             id,
             read_only: opts.read_only,
             caller,
-            state: State::Open(tx),
+            state: State::Open(Box::new(tx)),
             temps: None,
             local: Local::default(),
             deadline: opts.deadline,
@@ -237,7 +237,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
             State::Open(tx) => self
                 .engine
                 .db
-                .commit(tx)
+                .commit(*tx)
                 .map(Position::from)
                 .map_err(|e| self.engine.write_error(self.id, e)),
             State::Ended(err) => Err(err),
@@ -253,7 +253,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
             return Ok(());
         };
         match std::mem::replace(&mut self.state, State::Closed) {
-            State::Open(tx) => self.engine.abort(self.id, tx),
+            State::Open(tx) => self.engine.abort(self.id, *tx),
             State::Ended(_) | State::Closed => Ok(()),
         }
     }
@@ -284,7 +284,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
     /// Abort the transaction, leaving every later call and the commit to fail with `err`.
     fn end(&mut self, err: Error) -> Result<(), Error> {
         match std::mem::replace(&mut self.state, State::Ended(err)) {
-            State::Open(tx) => self.engine.abort(self.id, tx),
+            State::Open(tx) => self.engine.abort(self.id, *tx),
             State::Ended(_) | State::Closed => Ok(()),
         }
     }
@@ -304,7 +304,7 @@ impl<R: Runtime> Drop for AdHocTransaction<'_, R> {
     fn drop(&mut self) {
         if let State::Open(tx) = std::mem::replace(&mut self.state, State::Closed)
             && let Ok(_open) = self.engine.enter()
-            && let Err(e) = self.engine.abort(self.id, tx)
+            && let Err(e) = self.engine.abort(self.id, *tx)
             && !std::thread::panicking()
         {
             assert!(

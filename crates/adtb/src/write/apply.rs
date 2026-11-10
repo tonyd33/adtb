@@ -103,6 +103,7 @@ impl<R: Runtime> Stmt<'_, R> {
 
     fn reader_as(&self, me: Xid) -> Reader<Logged<R>> {
         self.db
+            .session
             .txns
             .reader(&self.db.pager, self.tx.snapshot.clone(), Some(me))
     }
@@ -137,6 +138,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 Write::Proceed => {
                     let id = self.heap(heap).id().0;
                     self.db
+                        .session
                         .ser
                         .lock(&self.db.rt)
                         .write_tuple(self.tx.sid, id, tid)?;
@@ -156,6 +158,7 @@ impl<R: Runtime> Stmt<'_, R> {
             return Err(Error::Blocked { on, rerun });
         }
         self.db
+            .session
             .waits
             .wait_pausing(xid, on, || -> Result<(), Error> {
                 self.db.rebuild_stopped().map_err(|_| Error::Closed)?;
@@ -197,7 +200,11 @@ impl<R: Runtime> Stmt<'_, R> {
 
     fn inserted_into(&self, heap: HeapId) -> Result<(), Error> {
         let id = self.heap(heap).id().0;
-        self.db.ser.lock(&self.db.rt).insert_heap(self.tx.sid, id)?;
+        self.db
+            .session
+            .ser
+            .lock(&self.db.rt)
+            .insert_heap(self.tx.sid, id)?;
         Ok(())
     }
 
@@ -248,7 +255,7 @@ impl<R: Runtime> Stmt<'_, R> {
                         .collect();
                     let row = self.stored(heap, n)?;
                     let h = self.heap(heap);
-                    let mut judge = self.db.txns.judge_now(pager, h.id().0);
+                    let mut judge = self.db.session.txns.judge_now(pager, h.id().0);
                     let up = h
                         .update_pruning(pager, tid, xid, &row, &indexed, &mut judge)
                         .map_err(too_large(*rel, c))?;
@@ -273,7 +280,7 @@ impl<R: Runtime> Stmt<'_, R> {
                     let row = self.stored(to, n)?;
                     let from = r.ctors[c as usize].heap;
                     let into = self.heap(to);
-                    let mut judge = self.db.txns.judge_now(pager, into.id().0);
+                    let mut judge = self.db.session.txns.judge_now(pager, into.id().0);
                     let at = self
                         .heap(from)
                         .retag_pruning(pager, tid, xid, into, &row, &mut judge)
@@ -295,7 +302,7 @@ impl<R: Runtime> Stmt<'_, R> {
                     let heap = r.ctors[*d as usize].heap;
                     let row = self.stored(heap, n)?;
                     let h = self.heap(heap);
-                    let mut judge = self.db.txns.judge_now(pager, h.id().0);
+                    let mut judge = self.db.session.txns.judge_now(pager, h.id().0);
                     let tid = h
                         .insert_pruning(pager, xid, &row, &mut judge)
                         .map_err(too_large(*rel, *d))?;
@@ -465,7 +472,7 @@ impl<R: Runtime> Stmt<'_, R> {
                     tid: w.tid,
                 },
             )?;
-            self.db.ser.lock(&self.db.rt).insert_entry(
+            self.db.session.ser.lock(&self.db.rt).insert_entry(
                 self.tx.sid,
                 stored.index.tree().root(),
                 &encoded,

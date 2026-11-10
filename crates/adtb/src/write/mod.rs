@@ -16,6 +16,7 @@ mod restore;
 mod rot;
 mod schema;
 mod sequence;
+mod session;
 mod stream;
 mod vacuums;
 mod verify;
@@ -28,6 +29,8 @@ mod constraints_tests;
 mod past_tests;
 #[cfg(test)]
 mod prune_on_access_tests;
+#[cfg(test)]
+mod session_tests;
 #[cfg(test)]
 mod write_states_tests;
 #[cfg(test)]
@@ -51,8 +54,8 @@ use crate::catalog::Structures;
 use crate::exec::{self, Budget, Scheduler, StoredHeap, StoredIndex, Val};
 use crate::key::CtorId;
 use crate::mvcc::{
-    Access, Begun, Hold, Limits, Safety, Scope, SerialId, SerializationFailure, Serializer,
-    Snapshot, Taken, Transactions, Waits, Watch, Xid,
+    Begun, Hold, Limits, Safety, SerialId, SerializationFailure, Serializer, Snapshot, Taken,
+    Transactions, Waits, Watch, Xid,
 };
 use crate::plan::explain::Node;
 use crate::plan::{Catalog, HeapId, IndexId};
@@ -361,19 +364,96 @@ pub enum Deferral {
     Wait { tx: Txn, on: Xid },
 }
 
-/// A transaction, read-write or read-only.
-#[derive(Debug)]
+/// A transaction, read-write or read-only. It ends once: by [`Database::commit`], by
+/// [`Database::abort`], or when dropped, which aborts it as `abort` does on every path. The abort
+/// of a drop is recorded best effort, and not at all while the thread panics or once the engine
+/// is closed.
+///
+/// Dropping it takes the serializer's lock and, inside it, the lock of the transactions, the
+/// commit log and the status page of its id as its `Begun` aborts, then the readers' lock, then
+/// the lock of the transactions again as its hold is released. Once the serializer's lock is
+/// released it takes the waits' lock, waking the waiters of its id outside it, then the lock of
+/// the dead counts.
 pub struct Txn {
-    /// `None` for a read-only transaction, and once its commit or abort has begun.
-    begun: Option<Begun>,
     /// `None` for a read-only transaction.
     xid: Option<Xid>,
     sid: SerialId,
     snapshot: Snapshot,
-    hold: Hold,
+    taken: Taken,
     /// What its statements that succeeded wrote into the file.
     written: RefCell<quarantine::Touched>,
     changed: RefCell<vacuums::Changed>,
+    /// `None` once the transaction has ended.
+    held: Option<Held>,
+    session: Arc<dyn session::Abandon>,
+}
+
+/// What a running transaction holds that its end releases.
+struct Held {
+    /// `None` for a read-only transaction.
+    begun: Option<Begun>,
+    hold: Hold,
+}
+
+/// A transaction whose end has begun, with what its end releases.
+///
+/// Dropping it releases what its end has not, as a dropped [`Txn`] does.
+struct Ended {
+    begun: Option<Begun>,
+    /// `None` once released.
+    hold: Option<Hold>,
+    xid: Option<Xid>,
+    sid: SerialId,
+    taken: Taken,
+    written: quarantine::Touched,
+    changed: vacuums::Changed,
+    left: Left,
+    session: Arc<dyn session::Abandon>,
+}
+
+/// What the end of a transaction has yet to release.
+#[derive(Clone, Copy, Debug)]
+struct Left {
+    /// Its entry in the serializer.
+    serial: bool,
+    /// Its id's registration with the waits.
+    waits: bool,
+    /// The count of the versions it made dead.
+    dead: bool,
+    committed: bool,
+}
+
+/// The transaction resources of one database: the transactions, the serializer, the snapshots
+/// of the read-only transactions, the waits on running ones and the versions they made dead.
+/// The database and every transaction it begins share it.
+///
+/// Lock order: the serializer, then the readers, then the waits, then the dead counts.
+/// `Transactions` locks itself and takes none of these.
+struct Session<R: Runtime> {
+    rt: R,
+    pager: Pager<R>,
+    txns: Arc<Transactions<R>>,
+    ser: Arc<Lock<Serializer>>,
+    /// The snapshot of each running read-only transaction, for its safe snapshot marker.
+    readers: Lock<BTreeMap<SerialId, (Taken, Snapshot)>>,
+    waits: Waits<R>,
+    dead: Lock<vacuums::Dead>,
+    /// How many transactions ended by being dropped.
+    #[cfg(any(test, feature = "testing"))]
+    dropped: std::sync::atomic::AtomicUsize,
+    /// The message the next safe snapshot logging panics with.
+    #[cfg(test)]
+    fail_log: Lock<Option<&'static str>>,
+}
+
+impl std::fmt::Debug for Txn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Txn")
+            .field("xid", &self.xid)
+            .field("sid", &self.sid)
+            .field("ended", &self.held.is_none())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Txn {
@@ -527,8 +607,8 @@ pub struct Bindings {
 /// The relation variables of a schema over their heaps and indexes, and the transactions that
 /// write them.
 ///
-/// Lock order: one index latch, then the serializer, then the readers, then the sequences.
-/// `Transactions`, the pager and the heaps lock themselves and take none of these.
+/// Lock order: one index latch, then the locks of the session, then the sequences. The
+/// session, the pager and the heaps lock themselves and take none of the others.
 pub struct Database<R: Runtime> {
     rt: R,
     schema: Arc<Schema>,
@@ -540,9 +620,7 @@ pub struct Database<R: Runtime> {
     retags: BTreeMap<RelId, (Var, Tm)>,
     catalog: Arc<Catalog>,
     pager: Pager<R>,
-    txns: Arc<Transactions<R>>,
-    ser: Arc<Lock<Serializer>>,
-    waits: Waits<R>,
+    session: Arc<Session<R>>,
     heaps: BTreeMap<HeapId, StoredHeap>,
     indexes: BTreeMap<IndexId, StoredIndex>,
     latches: BTreeMap<IndexId, Lock<()>>,
@@ -551,8 +629,6 @@ pub struct Database<R: Runtime> {
     structures: Structures,
     denials: Vec<check::Denial>,
     sequences: Lock<Sequences>,
-    /// The snapshot of each running read-only transaction, for its safe snapshot marker.
-    readers: Lock<BTreeMap<SerialId, (Taken, Snapshot)>>,
     uuids: AtomicU64,
     budget: Arc<Budget>,
     pool: Option<Arc<Scheduler<R>>>,
@@ -561,7 +637,6 @@ pub struct Database<R: Runtime> {
     files: Disk,
     /// Held while a vacuum runs or the retention window changes, so that one runs at a time.
     vacuuming: Lock<Option<reindex::Holder>>,
-    dead: Lock<vacuums::Dead>,
     vacuums: vacuums::Vacuums,
     pacer: Arc<vacuum::Pacer>,
     /// How many pauses calls have made at a rebuild's gate or for the vacuum lock.
@@ -577,6 +652,8 @@ pub struct Database<R: Runtime> {
     hosts: Arc<exec::Hosts>,
     /// The rows the engine holds for each volatile relation.
     volatile: Lock<BTreeMap<RelId, BTreeSet<Val>>>,
+    #[cfg(any(test, feature = "testing"))]
+    fail_scan: Lock<Option<String>>,
 }
 
 impl<R: Runtime> std::fmt::Debug for Database<R> {
@@ -637,6 +714,7 @@ impl<R: Runtime> Database<R> {
             .map(|i| (*i, Lock::new(())))
             .collect();
         let seed = rt.next_u64();
+        let session = Session::new(rt.clone(), setup.pager.clone(), setup.txns, setup.limits);
         Ok(Database {
             schema: setup.schema,
             normal: setup.normal,
@@ -645,9 +723,7 @@ impl<R: Runtime> Database<R> {
             retags,
             catalog: setup.catalog,
             pager: setup.pager,
-            txns: setup.txns,
-            ser: Arc::new(Lock::new(Serializer::new(setup.limits))),
-            waits: Waits::new(rt.clone()),
+            session,
             heaps: setup.bindings.heaps,
             indexes: setup.bindings.indexes,
             latches,
@@ -655,7 +731,6 @@ impl<R: Runtime> Database<R> {
             structures: setup.structures,
             denials,
             sequences: Lock::new(sequences),
-            readers: Lock::default(),
             uuids: AtomicU64::new(seed >> 2),
             budget: setup.budget,
             pool: setup.pool,
@@ -663,7 +738,6 @@ impl<R: Runtime> Database<R> {
             grant: setup.grant,
             files: Disk::default(),
             vacuuming: Lock::new(None),
-            dead: Lock::default(),
             vacuums: vacuums::Vacuums::default(),
             pacer: Arc::new(vacuum::Pacer::new(0.1)),
             rebuild_waits: AtomicU64::new(0),
@@ -673,6 +747,8 @@ impl<R: Runtime> Database<R> {
             retained: None,
             hosts: Arc::default(),
             volatile: Lock::default(),
+            #[cfg(any(test, feature = "testing"))]
+            fail_scan: Lock::default(),
             rt,
         })
     }
@@ -721,7 +797,7 @@ impl<R: Runtime> Database<R> {
 
     /// Returns the transactions layer.
     pub fn txns(&self) -> &Transactions<R> {
-        &self.txns
+        &self.session.txns
     }
 
     pub(crate) fn structures(&self) -> &Structures {
@@ -765,30 +841,14 @@ impl<R: Runtime> Database<R> {
     /// Begin a read-write transaction. Fail if the database is quarantined.
     pub fn begin(&self) -> Result<Txn, Error> {
         self.admit_database()?;
-        let begun = self.txns.begin(&self.pager)?;
-        let xid = begun.xid();
-        let (hold, snapshot, sid) = {
-            let mut ser = self.ser.lock(&self.rt);
-            let (hold, snapshot) = self.txns.take(Scope::Every)?;
-            (hold, snapshot, ser.begin(Access::ReadWrite(xid)))
-        };
-        self.waits.started(xid);
-        Ok(Txn {
-            begun: Some(begun),
-            xid: Some(xid),
-            sid,
-            snapshot,
-            hold,
-            written: RefCell::default(),
-            changed: RefCell::default(),
-        })
+        self.session.begin()
     }
 
     /// Begin a read-only transaction. A `deferrable` one waits until its snapshot is safe,
     /// taking a new snapshot each time one is found unsafe, and then never fails with a
     /// serialization failure.
     pub fn begin_read(&self, deferrable: bool) -> Result<Txn, Error> {
-        let mut tx = self.begin_reader(deferrable)?;
+        let mut tx = self.session.begin_reader(deferrable)?;
         if !deferrable {
             return Ok(tx);
         }
@@ -796,7 +856,7 @@ impl<R: Runtime> Database<R> {
             match self.defer(tx)? {
                 Deferral::Safe(t) => return Ok(t),
                 Deferral::Wait { tx: t, on } => {
-                    self.waits.wait(None, on)?;
+                    self.session.waits.wait(None, on)?;
                     tx = t;
                 }
             }
@@ -805,7 +865,7 @@ impl<R: Runtime> Database<R> {
 
     /// Begin a deferrable read-only transaction, its snapshot not yet known to be safe.
     pub fn begin_deferrable(&self) -> Result<Txn, Error> {
-        self.begin_reader(true)
+        self.session.begin_reader(true)
     }
 
     /// Decide the snapshot of deferrable transaction `tx`. Returns it once its snapshot is
@@ -813,7 +873,7 @@ impl<R: Runtime> Database<R> {
     /// and decides a new one in its place.
     pub fn defer(&self, mut tx: Txn) -> Result<Deferral, Error> {
         loop {
-            let safety = self.ser.lock(&self.rt).safety(tx.sid);
+            let safety = self.session.ser.lock(&self.rt).safety(tx.sid);
             match safety {
                 Safety::Safe => return Ok(Deferral::Safe(tx)),
                 Safety::Pending(writers) => {
@@ -821,33 +881,10 @@ impl<R: Runtime> Database<R> {
                 }
                 Safety::Unsafe => {
                     self.abort(tx)?;
-                    tx = self.begin_reader(true)?;
+                    tx = self.session.begin_reader(true)?;
                 }
             }
         }
-    }
-
-    fn begin_reader(&self, deferrable: bool) -> Result<Txn, Error> {
-        let mut ser = self.ser.lock(&self.rt);
-        let (hold, snapshot) = self.txns.take(Scope::Every)?;
-        let sid = ser.begin(if deferrable {
-            Access::Deferrable
-        } else {
-            Access::ReadOnly
-        });
-        self.readers
-            .lock(&self.rt)
-            .insert(sid, (hold.taken(), snapshot.clone()));
-        self.log_safe(&mut ser);
-        Ok(Txn {
-            begun: None,
-            xid: None,
-            sid,
-            snapshot,
-            hold,
-            written: RefCell::default(),
-            changed: RefCell::default(),
-        })
     }
 
     /// Register `waker` to be woken once transaction `on` has ended, as [`Waits::watch`] does.
@@ -858,21 +895,12 @@ impl<R: Runtime> Database<R> {
         on: Xid,
         waker: &Waker,
     ) -> Result<Watch, SerializationFailure> {
-        self.waits.watch(me, on, waker)
+        self.session.waits.watch(me, on, waker)
     }
 
     /// Withdraw the registration of `waker` on `on` made as `me`, if `on` has not ended.
     pub fn withdraw(&self, me: Option<Xid>, on: Xid, waker: &Waker) {
-        self.waits.withdraw(me, on, waker);
-    }
-
-    /// Log a safe snapshot marker for every read-only transaction `ser` has found safe.
-    fn log_safe(&self, ser: &mut Serializer) {
-        let readers = self.readers.lock(&self.rt);
-        for sid in ser.take_safe() {
-            let (taken, snapshot) = &readers[&sid];
-            self.txns.log_safe_snapshot(&self.pager, *taken, snapshot);
-        }
+        self.session.waits.withdraw(me, on, waker);
     }
 
     /// Run term `t` of `terms`, a `Transact`, a write or a query, as one statement of `tx`, each
@@ -1163,12 +1191,12 @@ impl<R: Runtime> Database<R> {
         tx: &Txn,
         d: &crate::catalog::Deployment,
     ) -> Result<crate::catalog::Deployed, crate::catalog::Error> {
-        d.at(&self.pager, &self.txns, &tx.snapshot)
+        d.at(&self.pager, &self.session.txns, &tx.snapshot)
     }
 
     /// Returns the position of the latest commit `tx` reads, else of the log's durable end.
     pub(crate) fn read_position(&self, tx: &Txn) -> Position {
-        let upto = tx.hold.taken().upto();
+        let upto = tx.taken.upto();
         self.pager
             .position(upto.unwrap_or_else(|| self.pager.durable()))
     }
@@ -1196,48 +1224,53 @@ impl<R: Runtime> Database<R> {
     ///
     /// Abort `tx` and fail with `Quarantined` if a mark set before its commit record stops what
     /// `tx` wrote, by the rule that stops a statement.
-    pub fn commit(&self, mut tx: Txn) -> Result<Position, Error> {
+    pub fn commit(&self, tx: Txn) -> Result<Position, Error> {
+        let mut tx = tx.end();
         let done = {
-            let mut ser = self.ser.lock(&self.rt);
+            let mut ser = self.session.ser.lock(&self.rt);
             self.map_committing(ser.ordered());
-            let admitted = self.admit_commit(&tx);
+            let admitted = self.admit_commit(std::mem::take(&mut tx.written));
             match admitted.and_then(|()| ser.precommit(tx.sid).map_err(Error::Serialization)) {
                 Err(e) => Err(e),
                 Ok(()) => match tx
                     .begun
                     .take()
-                    .map(|b| self.txns.commit(&self.pager, b))
+                    .map(|b| self.session.txns.commit(&self.pager, b))
                     .transpose()
                 {
                     Err(e) => Err(e.into()),
                     Ok(own) => {
                         ser.committed(tx.sid);
+                        tx.left.serial = false;
+                        tx.left.committed = true;
                         if let (Some(xid), Some(lsn)) = (tx.xid, own) {
-                            self.txns.publish_commit(&self.pager, xid, lsn);
+                            self.session.txns.publish_commit(&self.pager, xid, lsn);
                         }
-                        self.log_safe(&mut ser);
-                        self.readers.lock(&self.rt).remove(&tx.sid);
-                        Ok(own.max(tx.hold.taken().upto()))
+                        self.session.log_safe(&mut ser);
+                        self.session.readers.lock(&self.rt).remove(&tx.sid);
+                        Ok(own.max(tx.taken.upto()))
                     }
                 },
             }
         };
         match done {
             Ok(wait) => {
-                drop(tx.hold);
-                if tx.xid.is_some() && self.txns.history().is_some() {
+                drop(tx.hold.take());
+                if tx.xid.is_some() && self.session.txns.history().is_some() {
                     self.pager.flush_below(self.pager.appended());
                 }
                 let wait = wait.unwrap_or_else(|| self.pager.durable());
                 self.pager.wait_durable(wait);
                 if let Some(x) = tx.xid {
-                    self.waits.ended(x);
+                    self.session.waits.ended(x);
                 }
-                self.add_dead(&tx.changed.take(), true);
+                tx.left.waits = false;
+                tx.left.dead = false;
+                self.add_dead(&tx.changed, true);
                 Ok(self.pager.position(wait))
             }
             Err(e) => {
-                self.abort(tx)?;
+                self.abort_ended(tx)?;
                 Err(e)
             }
         }
@@ -1246,7 +1279,38 @@ impl<R: Runtime> Database<R> {
     /// Returns how many transactions the serializer tracks.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn tracked(&self) -> usize {
-        self.ser.lock(&self.rt).tracked()
+        self.session.ser.lock(&self.rt).tracked()
+    }
+
+    /// Returns how many read-only transactions keep a snapshot for their safe snapshot marker.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn readers_held(&self) -> usize {
+        self.session.readers.lock(&self.rt).len()
+    }
+
+    /// Returns the transactions a waiter may wait on, started and not yet ended.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn waits_running(&self) -> BTreeSet<Xid> {
+        self.session.waits.running()
+    }
+
+    /// Returns how many transactions have ended by being dropped since the count was last
+    /// taken, and starts the count again.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn take_ends_by_drop(&self) -> usize {
+        self.session.dropped.swap(0, Ordering::Relaxed)
+    }
+
+    /// Panic with `message` as the next end or reader logs its safe snapshot markers.
+    #[cfg(test)]
+    pub(crate) fn fail_next_log_safe(&self, message: &'static str) {
+        *self.session.fail_log.lock(&self.rt) = Some(message);
+    }
+
+    /// Panic with `message` at the first page the next scan of a rebuild reads.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn fail_next_scan(&self, message: String) {
+        *self.fail_scan.lock(&self.rt) = Some(message);
     }
 
     /// Abort `tx` and release what it holds.
@@ -1254,22 +1318,13 @@ impl<R: Runtime> Database<R> {
     /// Fail if the database is quarantined, the commit log still saying `tx`'s id is in
     /// progress.
     pub fn abort(&self, tx: Txn) -> Result<(), Error> {
-        let aborted = {
-            let mut ser = self.ser.lock(&self.rt);
-            let aborted = tx
-                .begun
-                .map(|b| self.txns.abort(&self.pager, b))
-                .transpose();
-            ser.aborted(tx.sid);
-            self.log_safe(&mut ser);
-            self.readers.lock(&self.rt).remove(&tx.sid);
-            drop(tx.hold);
-            aborted
-        };
-        if let Some(x) = tx.xid {
-            self.waits.ended(x);
-        }
-        self.add_dead(&tx.changed.take(), false);
+        self.abort_ended(tx.end())
+    }
+
+    fn abort_ended(&self, mut tx: Ended) -> Result<(), Error> {
+        let aborted = self.session.abort(&mut tx);
+        tx.left.dead = false;
+        self.add_dead(&tx.changed, false);
         aborted?;
         Ok(())
     }
@@ -1313,14 +1368,13 @@ impl<R: Runtime> Database<R> {
     pub(crate) fn store(&self, tx: &Txn) -> Arc<exec::Store<R>> {
         let reads = exec::AtSnapshot {
             rt: self.rt.clone(),
-            reader: self.txns.reader(&self.pager, tx.snapshot.clone(), tx.xid),
-            serial: Some((self.ser.clone(), tx.sid)),
+            reader: self
+                .session
+                .txns
+                .reader(&self.pager, tx.snapshot.clone(), tx.xid),
+            serial: Some((self.session.ser.clone(), tx.sid)),
         };
-        let upto = tx
-            .hold
-            .taken()
-            .upto()
-            .unwrap_or_else(|| self.pager.durable());
+        let upto = tx.taken.upto().unwrap_or_else(|| self.pager.durable());
         Arc::new(exec::Store {
             pager: self.pager.clone(),
             reads: Arc::new(reads),

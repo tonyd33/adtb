@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use adtb::key::{CtorId, Entry, Tid, Value};
 use adtb::runtime::Threads;
 use adtb::testing::{
-    Damage, Flags, Knobs, Object, PageKind, Pid, Plant, Quarantine, page::HEADER_LEN, page::lsn,
+    Damage, Failed, Flags, HeapError, Knobs, Object, PageError, PageKind, Pid, Plant, Quarantine,
+    page::HEADER_LEN, page::lsn,
 };
 use adtb::{CallOptions, Capability, Database, Log};
 use adtb_harness::process;
@@ -104,6 +105,34 @@ fn beneath(db: &Database<SimRuntime>, heap: Object, rows: Vec<Vec<Value>>) -> Ve
 fn users_page(db: &Database<SimRuntime>) -> Pid {
     let t = db.testing();
     t.pages(t.heap("app::users", "User").unwrap()).unwrap()[0]
+}
+
+#[test]
+fn a_planted_insert_that_fails_leaves_nothing_of_its_transaction() {
+    process::once(64, |rt| {
+        let db = open_app(rt);
+        seed_app(&db);
+        let t = db.testing();
+        let heap = t.heap("app::users", "User").unwrap();
+        let page = users_page(&db);
+        let damage = Damage::Checksum;
+        t.plant(Plant::Refuse { page, damage }).unwrap();
+        let before = t.waits_running();
+        let rows = vec![vec![Value::I64(99), Value::Text(String::new())]];
+        let got = t.plant(Plant::Insert { heap, rows });
+        let refused = Failed::Heap(HeapError::Page(PageError { pid: page, damage }));
+        assert_eq!(Err(refused), got.map(drop));
+        assert_eq!(
+            (0, before),
+            (t.tracked(), t.waits_running()),
+            "serializer, waits"
+        );
+        assert_eq!(
+            1,
+            t.take_ends_by_drop(),
+            "the insert's transaction ended by drop"
+        );
+    });
 }
 
 #[test]
@@ -294,7 +323,7 @@ fn a_directory_page_that_lost_the_write_freeing_a_page_is_refused_on_its_first_r
     process::run(&mut Sim::with_files(47, Config::default(), lost), |rt| {
         let db = open(rt);
         let read = db.testing().probe().page(leaf).map(drop);
-        assert_eq!(Err(adtb::testing::PageError { pid: leaf, damage }), read);
+        assert_eq!(Err(PageError { pid: leaf, damage }), read);
     });
 }
 

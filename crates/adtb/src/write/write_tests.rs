@@ -1207,6 +1207,12 @@ fn behind_a_damaged_commit_log(
         common::write(&rt, &mut io, file, at, &[0xa5; PAGE]).expect("a write");
         common::sync(&rt, &mut io, file).expect("a sync");
         let ended = db.statement(&first, &s.p.terms, s.p.item, &params, 0);
+        drop(first);
+        assert_eq!(
+            1,
+            db.take_ends_by_drop(),
+            "the failed transaction ends by drop"
+        );
         out = Some((status, ended.map(|_| ()).map_err(|e| format!("{e:?}"))));
     });
     assert_eq!(Outcome::Finished, result, "seed {seed}");

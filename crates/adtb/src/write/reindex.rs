@@ -65,7 +65,7 @@ const CATCH_UPS: usize = 2;
 pub(super) const OFFLINE_GATE: Xid = Xid(u64::MAX);
 
 /// The transaction a call waiting for the vacuum lock waits for: running while a holder has it.
-const VACUUM_HOLDER: Xid = Xid(u64::MAX - 1);
+pub(super) const VACUUM_HOLDER: Xid = Xid(u64::MAX - 1);
 
 /// How often a statement that cannot suspend looks at what it waits for and at what stops it.
 pub(super) const GATE_POLL: Duration = Duration::from_millis(5);
@@ -136,7 +136,7 @@ pub struct VacuumHold<'d, R: Runtime> {
 impl<R: Runtime> Drop for VacuumHold<'_, R> {
     fn drop(&mut self) {
         *self.db.vacuuming.lock(&self.db.rt) = None;
-        self.db.waits.ended(VACUUM_HOLDER);
+        self.db.session.waits.ended(VACUUM_HOLDER);
     }
 }
 
@@ -170,7 +170,7 @@ struct Offline<'d, R: Runtime> {
 impl<R: Runtime> Drop for Offline<'_, R> {
     fn drop(&mut self) {
         self.db.offline.lock(&self.db.rt).remove(&self.rel);
-        self.db.waits.ended(OFFLINE_GATE);
+        self.db.session.waits.ended(OFFLINE_GATE);
     }
 }
 
@@ -198,10 +198,16 @@ impl<R: Runtime> Scan<'_, R> {
         let stored = &db.indexes[&self.id];
         let schema = stored.index.schema();
         let types: Vec<_> = schema.components().iter().map(|(t, _)| t.clone()).collect();
-        let reader = tx.map(|tx| db.txns.reader(&db.pager, tx.snapshot.clone(), None));
+        let reader = tx.map(|tx| db.session.txns.reader(&db.pager, tx.snapshot.clone(), None));
         let mut out = Vec::new();
         for pid in heap.pages(&db.pager)? {
             db.rebuild_stopped()?;
+            #[cfg(any(test, feature = "testing"))]
+            if tx.is_some()
+                && let Some(text) = db.fail_scan.lock(&db.rt).take()
+            {
+                panic!("{text}");
+            }
             if let Some(since) = since
                 && storage::lsn(&db.pager.read(pid)?) < since
             {
@@ -364,7 +370,7 @@ impl<R: Runtime> Database<R> {
             }
             None => {
                 *held = Some(holder);
-                self.waits.started(VACUUM_HOLDER);
+                self.session.waits.started(VACUUM_HOLDER);
                 Some(VacuumHold { db: self })
             }
         }
@@ -536,7 +542,7 @@ impl<R: Runtime> Database<R> {
             ix,
         };
         let _offline = (!job.online).then(|| {
-            self.waits.started(OFFLINE_GATE);
+            self.session.waits.started(OFFLINE_GATE);
             self.offline.lock(&self.rt).insert(job.rel);
             Offline {
                 db: self,
@@ -545,7 +551,7 @@ impl<R: Runtime> Database<R> {
         });
         (job.phase)("scan", 0.1);
         let mut since = self.pager.appended();
-        let snapshot = self.begin_reader(false)?;
+        let snapshot = self.session.begin_reader(false)?;
         let runs = scan.runs(None, Some(&snapshot));
         self.abort(snapshot)?;
         let runs = runs?;

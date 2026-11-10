@@ -1,6 +1,8 @@
 mod adhoc;
 mod binding;
 mod call;
+#[cfg(test)]
+mod call_tests;
 mod grant;
 mod initialize;
 mod register;

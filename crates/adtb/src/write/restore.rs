@@ -59,7 +59,7 @@ impl<R: Runtime> Restoring<'_, R> {
             for row in rows {
                 let stored = stmt.stored(heap, row)?;
                 let h = &db.heaps[&heap].heap;
-                let mut judge = db.txns.judge_now(&db.pager, h.id().0);
+                let mut judge = db.session.txns.judge_now(&db.pager, h.id().0);
                 h.insert_pruning(&db.pager, xid, &stored, &mut judge)
                     .map_err(too_large(*r, *c))?;
                 if let Val::Int(k) = stmt.key_of(*r, row)? {

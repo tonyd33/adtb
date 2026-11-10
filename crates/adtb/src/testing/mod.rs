@@ -23,7 +23,7 @@ use crate::runtime::Runtime;
 use crate::storage::Pager;
 use crate::write;
 
-pub use crate::heap::Flags;
+pub use crate::heap::{Error as HeapError, Flags};
 pub use crate::mvcc::{Limits, Snapshot, Xid};
 pub use crate::plan::{Rewrites, with_rewrites};
 use crate::storage::Position;
@@ -106,7 +106,7 @@ impl Knobs {
 }
 
 /// Why a control of this module did nothing.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Failed {
     /// The database has no such structure.
     Absent(Object),
@@ -217,6 +217,22 @@ impl<'a, R: Runtime> Testing<'a, R> {
     /// one's conflicts.
     pub fn tracked(self) -> usize {
         self.db.tested_db().tracked()
+    }
+
+    /// Returns how many read-only transactions keep a snapshot for their safe snapshot marker.
+    pub fn readers(self) -> usize {
+        self.db.tested_db().readers_held()
+    }
+
+    /// Returns the transactions a waiter may wait on, started and not yet ended.
+    pub fn waits_running(self) -> BTreeSet<Xid> {
+        self.db.tested_db().waits_running()
+    }
+
+    /// Returns how many transactions have ended by being dropped since the count was last
+    /// taken, and starts the count again. A close asserts the count is zero.
+    pub fn take_ends_by_drop(self) -> usize {
+        self.db.tested_db().take_ends_by_drop()
     }
 
     /// Returns the snapshot `txn` reads, `None` once it has ended.

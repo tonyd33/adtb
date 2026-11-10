@@ -6,8 +6,8 @@ use crate::storage::{self, Pager, Pid};
 use crate::testing::Site;
 use crate::write;
 
-use super::Database;
 use super::reindex::PhaseHook;
+use super::{Database, Engine};
 
 impl<R: Runtime> Database<R> {
     /// Returns the surface tests observe this database through.
@@ -69,6 +69,7 @@ impl<R: Runtime> Database<R> {
             Site::KeptWrite => {
                 *self.engine.verifier.fail_kept.lock(&self.engine.rt) = Some(message);
             }
+            Site::ReindexScan => self.engine.db.fail_next_scan(message),
         }
     }
 
@@ -78,5 +79,21 @@ impl<R: Runtime> Database<R> {
 
     pub(crate) fn archive_state(&self) -> Option<storage::ArchiveStatus> {
         self.engine.archiver.as_ref().map(|a| a.status())
+    }
+}
+
+impl<R: Runtime> Engine<R> {
+    /// Panic, while the engine is still open, if a transaction ended by being dropped since a
+    /// test last took the count.
+    ///
+    /// Precondition: the calling thread is closing the engine and has not yet refused calls.
+    pub(super) fn assert_none_dropped(&self) {
+        if *self.open.read(&self.rt) {
+            assert_eq!(
+                0,
+                self.db.take_ends_by_drop(),
+                "every transaction ended before the close was committed or aborted, none dropped"
+            );
+        }
     }
 }

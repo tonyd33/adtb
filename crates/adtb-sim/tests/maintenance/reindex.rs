@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use adtb::key::{Entry, Value};
 use adtb::runtime::{Clock, Threads};
-use adtb::testing::{Damage, Pid, Plant, Quarantine, page::HEADER_LEN};
+use adtb::testing::{Damage, Pid, Plant, Quarantine, Site, page::HEADER_LEN};
 use adtb::{Database, Log, OpenOptions};
 use adtb_harness::damage::{DataFile, Files};
 use adtb_harness::{crash, seeds};
@@ -175,6 +175,36 @@ fn a_panic_in_the_job_removes_its_row_and_keeps_the_old_index_and_a_finding() {
         assert!(got[0].contains("Structure"), "{got:?}");
         assert!(got[0].contains("identities"), "{got:?}");
         assert_eq!(Vec::<String>::new(), verified(&db));
+        db.close().unwrap();
+    });
+}
+
+#[test]
+fn a_panic_in_the_scan_under_the_snapshot_leaves_no_reader_held() {
+    process::once(2, |rt| {
+        let db = open_app(rt.clone());
+        seed_rows(&db, 3);
+        let panic = Plant::Panic {
+            site: Site::ReindexScan,
+            message: "the injected scan failure".to_owned(),
+        };
+        db.testing().plant(panic).unwrap();
+        api::results(&db, USER_REINDEX);
+        wait_for_jobs(&rt, &db);
+        let got = api::query(
+            &db,
+            "from f in sys::verify_findings.Structure select f.where",
+        );
+        let found = "\"reindex of app::identities index (user) in (Google | Apple): \
+                     Internal(\\\"the injected scan failure\\\")\"";
+        assert_eq!(vec![found.to_owned()], got);
+        let t = db.testing();
+        assert_eq!((0, 0), (t.tracked(), t.readers()), "serializer, readers");
+        assert_eq!(
+            1,
+            t.take_ends_by_drop(),
+            "the scan's transaction ended by drop"
+        );
         db.close().unwrap();
     });
 }

@@ -25,9 +25,24 @@ use crate::write::{self, Bindings, Setup, Txn};
 
 /// A write path over the engine's catalog of a file of the simulator, outside a database.
 pub struct WritePath<R: Runtime> {
-    db: write::Database<R>,
+    /// `None` once [`WritePath::into_db`] has taken it.
+    db: Option<write::Database<R>>,
     schema: Arc<Schema>,
     program: Arc<Program>,
+}
+
+impl<R: Runtime> Drop for WritePath<R> {
+    fn drop(&mut self) {
+        if let Some(db) = &self.db
+            && !std::thread::panicking()
+        {
+            assert_eq!(
+                0,
+                db.take_ends_by_drop(),
+                "every transaction of the write path was committed or aborted, none dropped"
+            );
+        }
+    }
 }
 
 impl<R: Runtime> std::fmt::Debug for WritePath<R> {
@@ -50,7 +65,7 @@ fn create_loaded<R: Runtime>(rt: &R, f: &Fixture) {
     pager.close();
     let path = WritePath::start(rt, None, None).expect("the migrated file opens");
     load::load(&path, &f.schema, &f.db, Running::None);
-    let pager = path.db.pager().clone();
+    let pager = path.db().pager().clone();
     drop(path);
     pager.close();
 }
@@ -129,14 +144,16 @@ impl<R: Runtime> WritePath<R> {
         )
         .expect("a write path over the catalog");
         Some(WritePath {
-            db,
+            db: Some(db),
             schema,
             program,
         })
     }
 
     pub fn db(&self) -> &write::Database<R> {
-        &self.db
+        self.db
+            .as_ref()
+            .expect("a write path holds its database until it is taken")
     }
 
     pub fn schema(&self) -> &Arc<Schema> {
@@ -144,8 +161,10 @@ impl<R: Runtime> WritePath<R> {
     }
 
     /// Returns the write path's database, ending the write path.
-    pub fn into_db(self) -> write::Database<R> {
+    pub fn into_db(mut self) -> write::Database<R> {
         self.db
+            .take()
+            .expect("a write path holds its database until it is taken")
     }
 
     pub fn program(&self) -> &Arc<Program> {
@@ -204,11 +223,11 @@ impl<R: Runtime> Session for WritePath<R> {
     }
 
     fn begin(&self) -> Txn {
-        self.db.begin().expect("a transaction begins")
+        self.db().begin().expect("a transaction begins")
     }
 
     fn hold(&self) -> Txn {
-        self.db.begin_read(false).expect("a reader begins")
+        self.db().begin_read(false).expect("a reader begins")
     }
 
     fn run(&self, tx: &mut Txn, text: &str, params: &[(&str, Ty, Value)]) {
@@ -219,16 +238,16 @@ impl<R: Runtime> Session for WritePath<R> {
             .zip(params)
             .map(|((var, t), (_, _, v))| (*var, convert(&self.schema, t, v)))
             .collect();
-        self.db
+        self.db()
             .statement(tx, &terms, item, &values, 0)
             .unwrap_or_else(|e| panic!("`{text}` loads: {e:?}"));
     }
 
     fn commit(&self, tx: Txn) {
-        self.db.commit(tx).expect("a load commits");
+        self.db().commit(tx).expect("a load commits");
     }
 
     fn rollback(&self, tx: Txn) {
-        self.db.abort(tx).expect("a load rolls back");
+        self.db().abort(tx).expect("a load rolls back");
     }
 }

@@ -465,6 +465,8 @@ impl<R: Runtime> Engine<R> {
         if let Some(a) = &self.archiver {
             a.stop();
         }
+        #[cfg(any(test, feature = "testing"))]
+        self.assert_none_dropped();
         let was_open = std::mem::replace(&mut *self.open.write(&self.rt), false);
         let sched = self.sched.lock(&self.rt).clone();
         if let Some(s) = sched {

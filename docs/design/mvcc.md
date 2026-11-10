@@ -403,6 +403,41 @@ the prefix; the commit log pages that held only ids below it are freed.
 
 Rulings: mvcc/xid-clog, mvcc/xid-width/xid64, mvcc/status/clog-lookup
 
+### 4.5 Transactions of the write path
+
+`write::Database::begin`, `begin_read` and `begin_deferrable` return
+a `Txn`. It holds its id's `Begun` guard when it writes, its
+snapshot's `Hold`, its entry in the serializer, its snapshot in the
+readers when it only reads, and its id's registration with the waits.
+`Database::commit` and `Database::abort` take it; dropping it ends it
+as an abort does. It reaches the transactions, the serializer, the
+readers and the waits through one `write::Session` it shares with
+its database and keeps alive, so it needs neither the engine nor the
+database: a call holding the engine weakly keeps it across steps, and
+it may outlive both. It is `Send`.
+
+Postconditions:
+
+- A `Txn` ends once. `commit` and `abort` mark it ended before
+  anything else, so a failure inside them never reaches its drop. A
+  panic inside them releases on unwinding what they had not yet
+  released, as a drop does, without counting as one.
+- Dropping a `Txn` that has not ended releases its entry in the
+  serializer, its snapshot in the readers, its hold and its
+  registration with the waits on every path, wakes the waiters of its
+  id, and aborts its id as a dropped `Begun` does (§4.1).
+- A drop on a panicking thread or after the pager closes records
+  nothing: the safe snapshot markers it would log wait for the next
+  end, and its id's abort is unrecorded. A read-only transaction that
+  ends before its marker is logged gets none.
+- The versions a dropped `Txn` made dead are counted for vacuum and
+  wake no worker.
+
+Precondition: a holder drops a `Txn` holding none of the serializer's
+lock, the readers' lock, the waits' lock, the dead counts' lock, the
+lock of the transactions and the scheduler's lock over its calls,
+which a woken waiter takes.
+
 ## 5. Version chains
 
 Chains run oldest to newest: an update writes a new version and points
@@ -822,13 +857,17 @@ id a replica last reported for `h`.
 Invariant: `w(h)` is never past the `xmin` of a live snapshot published
 to `h`, nor past a replica's report for `h`.
 
-Invariant: a snapshot never outlives its reader's transaction: abort
-releases the snapshot it holds under the serializer's lock, and commit
-releases it once the serializer's lock is dropped, before it waits for
-the log to be durable.
+Invariant: a snapshot never outlives its reader's transaction: abort,
+and the drop of a transaction not ended (§4.5), release the snapshot
+it holds under the serializer's lock, and commit releases it once the
+serializer's lock is dropped, before it waits for the log to be
+durable.
 
-Invariant: a read-write transaction's hold is released only after
-`log_safe` has run for its commit or abort.
+Invariant: a read-write transaction's hold is released only after the
+serializer has settled the read-only transactions its end resolves.
+Their safe snapshot markers are logged then, or, when the end is a
+drop that records nothing (§4.5), by the next end that logs; each
+such reader keeps its own hold until it ends.
 
 The `xmin` of a snapshot is the least id running when it is taken. An
 id leaves the running transactions at its commit, at its abort whether

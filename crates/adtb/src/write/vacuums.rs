@@ -212,6 +212,17 @@ pub(super) struct Dead {
     idle: bool,
 }
 
+impl Dead {
+    /// Count the versions `changed` made dead: those it deleted on a commit, those it inserted
+    /// on an abort, and those taken back either way.
+    pub(super) fn add(&mut self, changed: &Changed, committed: bool) {
+        for (heap, c) in changed {
+            let dead = if committed { c.deleted } else { c.inserted };
+            *self.heaps.entry(*heap).or_default() += dead + c.undone;
+        }
+    }
+}
+
 /// A relation due a background vacuum, else when the next one is due by the clock.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Due {
@@ -242,11 +253,8 @@ impl<R: Runtime> Database<R> {
         if changed.is_empty() {
             return;
         }
-        let mut d = self.dead.lock(&self.rt);
-        for (heap, c) in changed {
-            let dead = if committed { c.deleted } else { c.inserted };
-            *d.heaps.entry(*heap).or_default() += dead + c.undone;
-        }
+        let mut d = self.session.dead.lock(&self.rt);
+        d.add(changed, committed);
         let due = (self.rels.values())
             .filter(|r| r.ctors.iter().any(|c| changed.contains_key(&c.heap)))
             .any(|r| self.dead_due(&d, r));
@@ -271,14 +279,14 @@ impl<R: Runtime> Database<R> {
     /// Returns the least watermark of the heaps of `rel`.
     pub(super) fn horizon(&self, rel: &super::schema::Rel) -> Xid {
         (rel.ctors.iter())
-            .map(|c| self.txns.watermark(self.heaps[&c.heap].heap.id().0))
+            .map(|c| self.session.txns.watermark(self.heaps[&c.heap].heap.id().0))
             .min()
-            .unwrap_or_else(|| self.txns.next())
+            .unwrap_or_else(|| self.session.txns.next())
     }
 
     /// Unpark `worker` when a commit or an abort makes a relation due while it is idle.
     pub fn watch_dead(&self, worker: ThreadId) {
-        self.dead.lock(&self.rt).worker = Some(worker);
+        self.session.dead.lock(&self.rt).worker = Some(worker);
     }
 
     /// Returns the first relation outside `skipped` after `last`, in turn, due a background
@@ -291,7 +299,7 @@ impl<R: Runtime> Database<R> {
         skipped: &BTreeSet<RelId>,
         last: Option<RelId>,
     ) -> Due {
-        let mut d = self.dead.lock(&self.rt);
+        let mut d = self.session.dead.lock(&self.rt);
         let now = self.rt.now();
         let mut next = None;
         let (after, before): (Vec<_>, Vec<_>) = (self.rels.values())
@@ -321,7 +329,7 @@ impl<R: Runtime> Database<R> {
         pages: u64,
         kept: bool,
     ) {
-        let mut d = self.dead.lock(&self.rt);
+        let mut d = self.session.dead.lock(&self.rt);
         for (heap, n) in freed {
             if let Some(count) = d.heaps.get_mut(heap) {
                 *count = count.saturating_sub(*n);
