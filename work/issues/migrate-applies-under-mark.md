@@ -3,12 +3,12 @@ created-at: 2026-11-07
 status: open
 kind: bug
 priority: 125
-summary: "an open after a close with a durable Database mark on the marks page applies its migration and still holds the mark, so the mark is lost before the open checks it"
+summary: "an open's migration commits and its post-commit free_leaked meets damage, so Catalog::apply returns Err after its commit is durable; the open fails to a verify-only engine and the next open, under the mark, is charged with the migration"
 tags:
-  - class-damage-unreported
+  - class-not-atomic
 ---
 
-# A migration applies under a durable whole-database mark
+# A migration commits and its open then fails on damage
 
 ## Report
 
@@ -23,3 +23,9 @@ Also: LostCurrent Engine (seed 3 at 605), LostCurrent Large (seed 3 at 617), Rec
 storage.md §8: an open under a whole-database mark applies no migration.
 
 Defect class: Damage reported as nothing.
+
+## 2026-11-09, re-scoped
+
+structure-damage-policy step 5 made every mark durable under a held mark; all 5 rows still fail, and durability was not their cause. In each, a writable open's `Catalog::apply` commits the migration, then `free_leaked` meets a stale page and returns `Corrupt`: LostCurrent Bitmap 3 at 659 (pid 2), LostCurrent Engine 3 at 606 (pid 8), LostCurrent Large 3 at 622 (pid 557), Recycled Bitmap 51 at 651 (pid 2), LostEarlier Large 58 at 623 (pid 558). `mark_failed_open_damage` marks the database and the open returns the verify-only engine, whose schema has no app relations; the next open loads the mark, migrates nothing, and finds the committed migration, so the search charges it. No open applies a migration under a durable mark.
+
+Defect: `Catalog::apply` returns `Err` after its commit is durable, so every caller is told a migration failed that every later open has. Damage the post-commit cleanup meets should be recorded and mapped at the next mapping point, not fail a committed migration. Class: multi-step change not atomic under failure. Fixing it removes the 5 rows. The search reading the stored version instead of inferring it is damage-search-reads-stored-version.
