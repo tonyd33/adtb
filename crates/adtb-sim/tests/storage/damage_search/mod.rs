@@ -68,7 +68,6 @@ struct Known {
 }
 
 const BLANK_OPEN: &str = "freed-lost-write-fails-open";
-const UNREAD_MARKS: &str = "unread-walk-marks-database";
 const UNDER_MARK: &str = "migrate-under-mark-silent";
 const BESIDE: &str = "walk-damage-marks-database";
 const APPLIED_UNDER_MARK: &str = "migrate-applies-under-mark";
@@ -76,39 +75,6 @@ const APPLIED_UNDER_MARK: &str = "migrate-applies-under-mark";
 /// The failures main shows. When a change moves the write-outs of the generated cases, run
 /// [`nearest_pins`] for the nearest write-out that shows each entry whose pin no longer does.
 const KNOWN: &[Known] = &[
-    Known {
-        fault: Fault::UnreadableLasting,
-        kind: Kind::Heap,
-        owner: Some(world::Rel::Users),
-        consumer: Consumer::Verify,
-        what: "an unreadable page marks the database",
-        ticket: UNREAD_MARKS,
-        seed: 5,
-        at: 626,
-        then: None,
-    },
-    Known {
-        fault: Fault::UnreadableLasting,
-        kind: Kind::Heap,
-        owner: Some(world::Rel::Users),
-        consumer: Consumer::Read,
-        what: "refused the database with a Database mark for an unreadable page",
-        ticket: UNREAD_MARKS,
-        seed: 5,
-        at: 626,
-        then: None,
-    },
-    Known {
-        fault: Fault::UnreadableLasting,
-        kind: Kind::Heap,
-        owner: Some(world::Rel::Users),
-        consumer: Consumer::Read,
-        what: "by key: refused the database with a Database mark for an unreadable page",
-        ticket: UNREAD_MARKS,
-        seed: 5,
-        at: 626,
-        then: None,
-    },
     Known {
         fault: Fault::LostEarlier,
         kind: Kind::Heap,
@@ -1603,8 +1569,8 @@ fn known(
 fn a_pinned_known_failure_still_shows() {
     let pinned = KNOWN
         .iter()
-        .find(|k| k.ticket == UNREAD_MARKS && k.consumer == Consumer::Verify)
-        .expect("the unread walk's entry is known");
+        .find(|k| k.ticket == BLANK_OPEN && k.consumer == Consumer::Settle)
+        .expect("the failed open's entry is known");
     rerun(pinned);
 }
 

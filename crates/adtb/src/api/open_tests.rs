@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::os::unix::fs::MetadataExt;
 use std::rc::Rc;
@@ -8,6 +9,7 @@ use adtb_testkit::scratch::Scratch;
 
 use crate::catalog::Catalog;
 use crate::storage::{Damage, Opening, Options, Pager, Quarantine};
+use crate::testing::Probe;
 
 use super::{
     CreateOptions, Database, Log, OpenError, OpenOptions, file, mark_failed_open_damage,
@@ -32,6 +34,27 @@ fn an_unreadable_catalog_root_marks_nothing_and_opens_nothing() {
     mark_failed_open_damage(rt, &pager, &opening);
     assert!(!pager.is_quarantined(Quarantine::Database));
     assert!(open_damage(&pager).is_none());
+    pager.close();
+}
+
+#[test]
+fn an_unreadable_catalog_root_leaves_a_damaged_page_unmapped() {
+    let scratch = Scratch::new("open-damage", "unreadable-unmapped");
+    let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
+    let options = Options::new("unreadable.adt");
+    let pager = Pager::create(rt.clone(), &options).unwrap();
+    let (_, txns) = Catalog::open(rt.clone(), &pager).unwrap();
+    let damaged = txns.commit_log().root();
+    drop(txns);
+    pager.close();
+    let (pager, opening) = Pager::open(rt.clone(), &options).unwrap();
+    pager.plant_damage(damaged, Damage::Checksum);
+    pager.plant_damage(pager.catalog_root(), Damage::Unreadable);
+    mark_failed_open_damage(rt, &pager, &opening);
+    assert_eq!(
+        (None, BTreeSet::new()),
+        (pager.mapped_to(damaged), Probe::of(&pager).marks())
+    );
     pager.close();
 }
 

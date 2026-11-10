@@ -295,31 +295,6 @@ const STATED: [(C, Holder, Phase, Mark); 193] = [
     (C::Unproven, Holder::CommitLog, OPEN, HELD),
 ];
 
-/// The rows whose mark today differs from the one stated, with today's mark. Rows may only be
-/// removed from it.
-const DIFFERS_TODAY: [(C, Holder, Phase, Mark); 20] = [
-    (C::Unread, H0, OPEN, OH),
-    (C::Unread, H0, RUN, OH),
-    (C::Unread, H1, OPEN, DB),
-    (C::Unread, H1, RUN, DB),
-    (C::Unread, I0, OPEN, OI),
-    (C::Unread, I0, RUN, OI),
-    (C::Unread, I1, OPEN, DB),
-    (C::Unread, I1, RUN, DB),
-    (C::Unread, Holder::LargeStore, OPEN, DB),
-    (C::Unread, Holder::LargeStore, RUN, DB),
-    (C::Unread, Holder::CatalogRows, OPEN, DB),
-    (C::Unread, Holder::CatalogRoot, OPEN, DB),
-    (C::Unread, Holder::CatalogRoot, RUN, DB),
-    (C::Unread, Holder::CommitLog, OPEN, DB),
-    (C::Unread, Holder::CommitLog, RUN, DB),
-    (C::Unread, Holder::Counters, OPEN, DB),
-    (C::Unread, Holder::Counters, RUN, DB),
-    (C::Unread, Holder::Bitmap, OPEN, DB),
-    (C::Unread, Holder::Bitmap, RUN, DB),
-    (C::Unread, Holder::Unreached, RUN, DB),
-];
-
 /// Returns false for an unreadable page as met, which no mapping meets, for a finding on
 /// anything but an index, which no finding names, and for an unproven status page anywhere but on
 /// the commit log at open.
@@ -356,7 +331,6 @@ fn row_of(
 #[test]
 fn every_fault_and_holder_marks_as_storage_md_states() {
     let mut visits = [0; STATED.len()];
-    let mut differs_visits = [0; DIFFERS_TODAY.len()];
     let mut differ = Vec::new();
     for class in C::ALL {
         for holder in HOLDERS {
@@ -367,17 +341,7 @@ fn every_fault_and_holder_marks_as_storage_md_states() {
                 let at = row_of(&STATED, class, holder, phase);
                 let at = at.unwrap_or_else(|| panic!("no row for {class:?} {holder:?} {phase:?}"));
                 visits[at] += 1;
-                let stated = STATED[at].3;
-                let today = row_of(&DIFFERS_TODAY, class, holder, phase);
-                if let Some(t) = today {
-                    differs_visits[t] += 1;
-                    let row = DIFFERS_TODAY[t];
-                    assert_ne!(
-                        stated, row.3,
-                        "{row:?} now matches what is stated: remove it"
-                    );
-                }
-                let want = today.map_or(stated, |t| DIFFERS_TODAY[t].3);
+                let want = STATED[at].3;
                 for fault in class.faults() {
                     let got = mark(fault, holder, phase);
                     if want != got {
@@ -390,10 +354,5 @@ fn every_fault_and_holder_marks_as_storage_md_states() {
         }
     }
     assert_eq!([1; STATED.len()], visits, "each stated row is visited once");
-    assert_eq!(
-        [1; DIFFERS_TODAY.len()],
-        differs_visits,
-        "each differing row is visited once"
-    );
     assert!(differ.is_empty(), "{}", differ.join("\n"));
 }

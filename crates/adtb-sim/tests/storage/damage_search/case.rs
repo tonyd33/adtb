@@ -126,14 +126,33 @@ impl Plan {
 
     /// Returns whether the incarnation `w` writes is freed later in the sequence.
     fn freed_after(&self, w: WriteOut) -> bool {
+        self.freed_by(w).is_some()
+    }
+
+    /// Returns the operation after which the incarnation `w` writes is first free, if the
+    /// sequence frees it.
+    fn freed_by(&self, w: WriteOut) -> Option<usize> {
         let held = &self.observed.held;
         if w.during >= held.len() {
-            return false;
+            return None;
         }
         let before = w.during.checked_sub(1).map(|i| &held[i]);
         let alive =
             before.is_some_and(|h| h.contains_key(&w.pid)) || held[w.during].contains_key(&w.pid);
-        alive && held[w.during..].iter().any(|h| !h.contains_key(&w.pid))
+        let freed = (w.during..held.len()).find(|&i| !held[i].contains_key(&w.pid));
+        freed.filter(|_| alive)
+    }
+
+    /// Returns the last write-out of the page `w` writes, when the sequence frees `w`'s
+    /// incarnation and writes the page again after; else `w`.
+    pub fn incarnation_at_end(&self, w: WriteOut) -> WriteOut {
+        let Some(freed) = self.freed_by(w) else {
+            return w;
+        };
+        let mut writes = self.clean.trace.writes.iter().rev().copied();
+        writes
+            .find(|x| x.pid == w.pid && x.during != CREATING && x.during > freed)
+            .unwrap_or(w)
     }
 
     /// Returns whether `pid` is allocated at the sequence's end, by the observing run.

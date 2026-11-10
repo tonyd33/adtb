@@ -12,7 +12,7 @@ use crate::key::CtorId;
 use crate::mvcc::{CommitLog, Transactions};
 use crate::runtime::Runtime;
 use crate::storage::policy::{Holder, Phase};
-use crate::storage::{PageError, Pager, Pid, Quarantine};
+use crate::storage::{PageError, Pager, Pid, Quarantine, Stopped};
 use crate::verify::{Inventory, Sum};
 
 use super::history::key_indexes;
@@ -119,26 +119,17 @@ fn commit_log_pages(clog: &CommitLog) -> Vec<Pid> {
 }
 
 impl Structures {
-    /// Returns the pages of the catalog's root, its rows heap and the commit log, as far as they
-    /// can be read from the root page alone, for a catalog that does not open.
+    /// Returns the catalog's root, its rows heap and the commit log, as far as the root page names
+    /// them, for a catalog that does not open.
     pub fn unopened<R: Runtime>(pager: &Pager<R>) -> Unopened {
         let root = pager.catalog_root();
-        let Ok(read) = pager.read(root).map(|page| Root::read(&page)) else {
-            return Unopened {
-                root,
-                rows: Ok(Vec::new()),
-                commit_log: Ok(Vec::new()),
-            };
-        };
-        let large = LargeStore::open(read.large.0, read.large.1);
-        let rows = Heap::open(pager, read.roots.0, read.roots.1, roots_row(), large)
-            .map_or(Ok(Vec::new()), |heap| heap.owned_pages(pager));
-        let commit_log = CommitLog::load(pager, read.commit_log).map(|c| commit_log_pages(&c));
-        Unopened {
-            root,
-            rows,
-            commit_log,
-        }
+        let named = pager.read(root).map(|page| {
+            let read = Root::read(&page);
+            let large = LargeStore::open(read.large.0, read.large.1);
+            let rows = Heap::open(pager, read.roots.0, read.roots.1, roots_row(), large).ok();
+            (rows, read.commit_log)
+        });
+        Unopened { root, named }
     }
 
     /// Returns the page of the database's generated counters.
@@ -223,30 +214,31 @@ impl Structures {
     }
 }
 
-/// The pages a catalog that does not open is read from, as far as its root page names them.
+/// The structures a catalog that does not open is read from, as far as its root page names them.
 #[derive(Debug)]
 pub struct Unopened {
     root: Pid,
-    rows: Result<Vec<Pid>, PageError>,
-    commit_log: Result<Vec<Pid>, PageError>,
+    /// The rows heap, `None` when its row does not fit the file's page size, and the commit log's
+    /// root, or the failure reading the root page.
+    named: Result<(Option<Heap>, Pid), PageError>,
 }
 
 impl Unopened {
-    /// Returns what holds `pid`: the catalog's root, its rows heap or the commit log, else
-    /// unreached. A listing stopped by a refusal of `pid` holds it.
-    pub fn holder(&self, pid: Pid) -> Holder {
-        let holds = |pages: &Result<Vec<Pid>, PageError>| match pages {
-            Ok(pages) => pages.contains(&pid),
-            Err(e) => e.pid == pid,
-        };
-        if pid == self.root {
-            Holder::CatalogRoot
-        } else if holds(&self.rows) {
-            Holder::CatalogRows
-        } else if holds(&self.commit_log) {
-            Holder::CommitLog
-        } else {
-            Holder::Unreached
-        }
+    /// Returns what holds the damaged page `pid` during an open, `None` when the mapping is
+    /// incomplete and found no holder, as [`Pager::holders_walked`] does from the walks of the
+    /// catalog's root, its rows heap and the commit log.
+    pub fn holders<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Option<BTreeSet<Holder>> {
+        let named = self.named.as_ref().map_err(|e| Stopped::from(*e));
+        pager.holders_walked(pid, Phase::Opening, &mut BTreeSet::new(), |h| {
+            h.walk(Holder::CatalogRoot, || Ok(vec![self.root]));
+            h.walk(Holder::CatalogRows, || {
+                let rows = named?.0.as_ref().ok_or(Stopped::Shape)?;
+                rows.held_pages(pager)
+            });
+            h.walk(Holder::CommitLog, || {
+                let clog = CommitLog::load(pager, named?.1)?;
+                Ok(commit_log_pages(&clog))
+            });
+        })
     }
 }

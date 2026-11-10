@@ -730,6 +730,20 @@ impl<R: Runtime> Pager<R> {
         if self.holds_map_page(pid) {
             return Some(BTreeSet::from([Holder::LsnMap]));
         }
+        self.holders_walked(pid, phase, met, walk)
+    }
+
+    /// Returns what holds the damaged page `pid` during `phase` from the walks `walk` reports
+    /// alone, `None` when the mapping is incomplete and found no holder, adding to `met` each page
+    /// whose damage stopped a walk. No allocation bitmap, damage list or page LSN map page is held
+    /// as such: a page no walk holds is free or unreached by the allocation bitmap.
+    pub fn holders_walked(
+        &self,
+        pid: Pid,
+        phase: Phase,
+        met: &mut BTreeSet<Pid>,
+        walk: impl FnOnce(&mut Holders),
+    ) -> Option<BTreeSet<Holder>> {
         self.evidence().walked_one();
         let mut h = Holders {
             pid,

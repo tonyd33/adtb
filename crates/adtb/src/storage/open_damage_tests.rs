@@ -6,14 +6,14 @@ use adtb_harness::process::finished;
 use adtb_testkit::scratch::Scratch;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::runtime::IoError;
+use crate::runtime::{IoError, OpKind};
 use crate::storage::order::ordered_for_test;
 use crate::storage::{Damage, HEADER_LEN, Options, PageError, Pager, Pid, Quarantine};
 use crate::test_world::api;
 use crate::test_world::load as open;
 use crate::{CallOptions, Database, Error, FatalReason, Log, OpenError, OpenOptions, TxnOptions};
 use adtb_harness::damage::{DataFile, Files};
-use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_sim::{Action, Config, Match, Plan, Sim, SimRuntime};
 use adtb_sys::runtime::Faults;
 
 const FILE: &str = "open_damage.adt";
@@ -1060,6 +1060,36 @@ fn the_roots_heap_marks_the_database_at_open_and_nothing_once_running() {
         );
         db.close().unwrap();
     });
+}
+
+#[test]
+fn an_open_whose_walk_of_the_roots_heap_cannot_read_its_damaged_page_marks_nothing() {
+    let (files, page) = seeded(44, |db| db.testing().root(Object::CatalogRows).unwrap());
+    let mut sim = Sim::with_files(44, Config::default(), files);
+    let marks = with_pager(&mut sim, Pager::quarantine_page);
+    finished(&mut sim, |rt| {
+        let db = open::open_in(&rt, FILE, &app(), &open::options(2)).unwrap();
+        let damage = Damage::Checksum;
+        db.testing().plant(Plant::Refuse { page, damage }).unwrap();
+        assert_eq!(BTreeSet::new(), db.testing().probe().marks());
+        db.close().unwrap();
+    });
+    finished(&mut sim, |rt| {
+        let reads = Match::kind(OpKind::Read).offset(DATA.range(page).start as u64);
+        rt.plan(Plan::new().rule(reads, Action::Fail(IoError::Failed)));
+        let Err(OpenError::Corrupt { detail }) =
+            open::open_in(&rt, FILE, &app(), &open::options(2))
+        else {
+            panic!("the open reads the page");
+        };
+        let refused = PageError {
+            pid: page,
+            damage: Damage::Unreadable,
+        };
+        assert_eq!(format!("Page({refused:?})"), detail);
+    });
+    let marked = crate::storage::quarantine::decode(DATA.page(&sim.files(), marks));
+    assert_eq!(Some(BTreeSet::new()), marked);
 }
 
 #[test]

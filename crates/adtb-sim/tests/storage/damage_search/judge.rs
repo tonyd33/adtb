@@ -229,6 +229,20 @@ fn is_lost(fault: Fault) -> bool {
     )
 }
 
+/// Returns the write-out of the incarnation of `w`'s page the consumers meet: the clean run's
+/// last, when the sequence frees `w`'s incarnation and the faulted run last wrote the page as the
+/// same kind; else `w`.
+fn incarnation_met(case: &Case<'_>, w: WriteOut) -> WriteOut {
+    let reused = case.plan.incarnation_at_end(w);
+    let writes = case.ran.trace.writes.iter().rev();
+    let faulted = writes.copied().find(|x| x.pid == w.pid);
+    if faulted.is_some_and(|x| x.kind == reused.kind) {
+        reused
+    } else {
+        w
+    }
+}
+
 fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
     let plan = case.plan;
     let ids = &plan.observed.ids;
@@ -236,7 +250,11 @@ fn facts<'a>(case: &'a Case<'a>) -> Facts<'a> {
     let mut unclassified = Vec::new();
     let mut open_only = false;
     for hit in &case.hits {
-        let mut batch = vec![hit.written];
+        let written = match hit.fault {
+            Fault::UnreadableLasting => incarnation_met(case, hit.written),
+            _ => hit.written,
+        };
+        let mut batch = vec![written];
         if is_lost(hit.fault) {
             let writes = &plan.clean.trace.writes;
             batch.extend(

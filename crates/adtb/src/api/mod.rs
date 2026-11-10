@@ -715,7 +715,7 @@ fn mark_failed_open_damage<R: Runtime>(rt: R, pager: &Pager<R>, opening: &Openin
             }
             None => {
                 let unopened = unopened.get_or_insert_with(|| Structures::unopened(pager));
-                Some(BTreeSet::from([unopened.holder(pid)]))
+                unopened.holders(pager, pid)
             }
         },
         opening,
