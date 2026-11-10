@@ -7,7 +7,7 @@ use crate::heap::{self, FieldType, WriteTarget};
 use crate::key::{CtorId, Scalar, Value};
 use crate::mvcc::{Scope, Transactions, Xid};
 use crate::runtime::Runtime;
-use crate::storage::Pager;
+use crate::storage::{PageError, Pager};
 
 use super::Rot;
 use super::{Catalog, Error, ROOTS, insert_row, int, uint, visible};
@@ -172,29 +172,34 @@ impl Catalog {
         rows: &[KeptRow],
     ) -> Result<(), Error> {
         let (id, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
-        let mut versions = Vec::new();
-        let scanned = self.roots.scan(pager, |v| versions.push(v));
-        let mut gone = Vec::new();
         let reader = txns.reader(pager, snapshot, None);
-        let judged = scanned.and_then(|()| {
-            for v in versions {
-                let seen = reader.sees(&v.header.writers);
-                if !seen.map_err(|e| v.refuse(pager, e))?.visible() {
-                    continue;
+        let judged = || -> Result<_, PageError> {
+            'scan: loop {
+                let mut versions = Vec::new();
+                self.roots.scan(pager, |v| versions.push(v))?;
+                let mut gone = Vec::new();
+                for v in versions {
+                    let Some(seen) = v.looked_up(pager, reader.sees(&v.header.writers))? else {
+                        continue 'scan;
+                    };
+                    if !seen.visible() {
+                        continue;
+                    }
+                    if let [Value::Sum { ctor, fields }] = v.row.as_slice()
+                        && holds(*ctor)
+                        && let [r, Value::Text(g), ..] = fields.as_slice()
+                        && uint(r).is_ok_and(|r| r == relation)
+                        && g == group
+                    {
+                        gone.push((v.tid, v.header));
+                    }
                 }
-                if let [Value::Sum { ctor, fields }] = v.row.as_slice()
-                    && holds(*ctor)
-                    && let [r, Value::Text(g), ..] = fields.as_slice()
-                    && uint(r).is_ok_and(|r| r == relation)
-                    && g == group
-                {
-                    gone.push((v.tid, v.header));
-                }
+                return Ok(gone);
             }
-            Ok(())
-        });
+        };
+        let gone = judged();
         txns.release(id);
-        judged?;
+        let gone = gone?;
         for (tid, header) in gone {
             self.roots
                 .delete(pager, WriteTarget::checked(tid, header), x)?;

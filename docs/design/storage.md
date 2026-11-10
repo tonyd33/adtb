@@ -216,7 +216,8 @@ pager.catalog_root() -> Pid
 pager.set_catalog_root(pid)
 pager.wall() -> SystemTime
 pager.close()
-PageError { pid, damage: Checksum | Unreadable | Stale { expected, found } }
+PageError { pid, damage: Checksum | Unreadable | Stale { expected, found } | Shape(Shape) }
+Shape: Blank | Kind | Owner | Frame | Format
 ```
 
 A page is latched, resident and unchanged by anyone else for the
@@ -425,6 +426,7 @@ operating error and never handed out as data.
 | Truncated file | After recovery, a bit of the allocation bitmap set past the end of the file refuses that page, and a bitmap page of a started group past the end of the file (§1.1) reads blank and is refused as below; at open, each bitmap page past the end of the file with an expected LSN is refused, whatever its group; a page a directory entry, index entry, version chain or out-of-line pointer names that reads all zero is refused on every read and write that reaches it through that name |
 | Lost or zeroed bitmap | A blank bitmap page of a started group (§1.1) is refused on every allocation, free and read of the bitmap, before anything is written, and marks the database (§8) |
 | Lost write | Page LSN older than the retained log says it must be, in recovery (§7) and in `verify` and scrub ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)); in `verify`, scrub and backup, a page whose last record is recycled, older than the page LSN map holds for it (§6); on every read of a page from the file, an LSN below its expected LSN, refused as stale: its last record in the retained log, or else its entry in the page LSN map, or the LSN of the last record logged for it since the open. A blank page with an expected LSN is stale with LSN 0. A copy below its expected LSN of a page the allocation bitmap calls free is not refused at read-in: the expected LSN is of the incarnation a free ended (§5.1), whose lost write `verify` reports as a chain break (§7). A page whose bitmap page is refused counts as allocated. The commit log alone reads a stale status page, settles it and writes it back ([mvcc.md §4.2](mvcc.md#42-the-commit-log)) |
+| Page out of shape | A page whose checksum and LSN pass but whose bytes are not what the page naming it, or the role it is read for, requires: blank, of another kind, of another owner, with a header or entries outside their bounds (frame), or of an unknown format. A shape fault is refused, and recorded as `Shape`, only by a caller holding the page's exclusive latch that finds it still out of shape there; a page that changed before that latch is recorded as nothing and read again, or, when the caller abandoned its write to take that latch in order, the write fails as changed. The page refused is the one whose bytes are wrong under that latch: for an entry naming a page of another shape, the page holding the entry. Its `verify` finding is `Checksum` |
 | Lost or misdirected log write | A page read from the file at or past the end of the log recovery kept, or past the log's next LSN once the open has written the page, refused as stale on every read, write, replay and backup that reads it, and in `verify` and scrub; a page LSN, on the page or as a record's previous LSN, that no retained record wrote: past the page's last record in a log with no gap, or at or past the end of the log recovery kept in a gapless log retained from at or before that end; in `verify` and scrub, as an `Unlogged` log finding (§7) |
 
 A page that fails verification on read quarantines the heap or index
@@ -814,7 +816,10 @@ from the checkpoint finds in the log every record the list lacks. No
 other checkpoint logs its record between the two. A
 checkpoint whose records have not changed since the last fold leaves
 the page alone. An entry is 24 bytes: the page id with the damage's kind in its top byte,
-then two LSNs. A full-page image of the page logged after its record
+then two LSNs. A `Shape` entry has its own kind, with the shape in the first LSN, and so
+does a damage record of a shape in the log. A binary that does not know that kind reads a list
+holding one as damaged, and fails at such a record in the retained log, a malformed record
+before the end of the log, for as long as the log retains it. A full-page image of the page logged after its record
 removes its entry, unless it is settled; the first record of an
 incarnation (§5.1) and a batch that frees the page remove it of any
 kind. Nothing else removes one: a
@@ -1089,9 +1094,11 @@ open. A page maps as follows:
 - a page of a constructor's heap, current or history, marks that heap; a
   page of an index marks that index, and a page of a history key index
   marks its key index;
-- a mark comes only from a page that fails its checksum or log position.
-  A walk takes no latch, so a shape it cannot follow proves nothing, the
-  object may be changing: the walk runs again, a bounded number of times;
+- a mark comes only from a page that fails its checksum or log position,
+  or that a caller holding its exclusive latch refused as out of shape,
+  which maps as a checksum failure does. A walk takes no latch, so a shape
+  it cannot follow proves nothing, the object may be changing: the walk
+  runs again, a bounded number of times;
 - a walk that stops on damage on two runs in a row marks that object;
 - a walk that stops on an I/O failure, or still stops on a shape when its
   runs are spent, leaves the mapping incomplete. An incomplete mapping that

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::runtime::Runtime;
 use crate::storage::{
     Damage, FIRST_EDITABLE, HEADER_LEN, Lsn, PageError, PageKind, PageShared, Pager, Pid,
-    Resolutions, StaleCopy, flags, format, header_edit, kind, lsn,
+    Resolutions, Shape, StaleCopy, flags, format, header_edit, kind, kind_fault, lsn,
 };
 
 use super::{Status, StatusError, Writers, Xid};
@@ -70,16 +70,31 @@ fn read_role<R: Runtime>(
     pid: Pid,
     role: u16,
 ) -> Result<PageShared<'_>, PageError> {
-    let page = pager.read(pid)?;
-    if has_role(&page, role) {
-        return Ok(page);
+    loop {
+        let page = pager.read(pid)?;
+        if has_role(&page, role) {
+            return Ok(page);
+        }
+        drop(page);
+        if let Some(e) = pager.refuse_if(pid, |p| role_fault(p, role)) {
+            return Err(e);
+        }
     }
-    drop(page);
-    Err(pager.damage(pid, Damage::Checksum))
+}
+
+/// Returns how `page` is out of shape as a commit log page of `role`.
+fn role_fault(page: &[u8], role: u16) -> Option<Shape> {
+    if kind(page) != PageKind::CommitLog as u16 || flags(page) != role {
+        Some(kind_fault(page))
+    } else if format(page) != PAGE_FORMAT {
+        Some(Shape::Format)
+    } else {
+        None
+    }
 }
 
 fn has_role(page: &[u8], role: u16) -> bool {
-    kind(page) == PageKind::CommitLog as u16 && format(page) == PAGE_FORMAT && flags(page) == role
+    role_fault(page, role).is_none()
 }
 
 /// Returns whether `page` is status page `n`.

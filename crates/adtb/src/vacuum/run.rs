@@ -27,6 +27,12 @@ impl From<heap::Error> for Error {
     }
 }
 
+impl From<heap::Refused> for Error {
+    fn from(e: heap::Refused) -> Error {
+        Error::Heap(e.into())
+    }
+}
+
 impl From<history::Error> for Error {
     fn from(e: history::Error) -> Error {
         match e {
@@ -109,7 +115,7 @@ pub fn prune<R: Runtime>(
     txns: &Transactions<R>,
     heap: &Heap,
     pid: crate::storage::Pid,
-) -> Result<heap::Pruned, PageError> {
+) -> Result<heap::Pruned, heap::Refused> {
     let judge = txns.judge(pager, txns.horizon_now(heap.id().0));
     heap.prune(pager, pid, judge, &[], false)
 }

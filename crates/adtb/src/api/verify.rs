@@ -681,7 +681,7 @@ impl<R: Runtime> Engine<R> {
     pub(super) fn damage_kept_store(&self) {
         if let Ok(pages) = self.catalog.kept_pages(&self.pager) {
             for pid in pages {
-                self.pager.damage(pid, Damage::Checksum);
+                self.pager.plant_damage(pid, Damage::Checksum);
             }
         }
     }

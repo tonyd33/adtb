@@ -6,11 +6,22 @@ use adtb_lang::types::RelId;
 use crate::btree::Index;
 use crate::key::Value;
 use crate::runtime::Runtime;
-use crate::storage::{self, Damage, HEADER_LEN, PageError, PageKind, Pager, Pid};
+use crate::storage::{self, HEADER_LEN, PageError, PageKind, Pager, Pid, Shape};
 
 use super::Error;
 
 const FORMAT: u16 = 0x5351;
+
+/// Returns how `page` is out of shape as a page of counters.
+fn counters_fault(page: &[u8]) -> Option<Shape> {
+    if storage::kind(page) != PageKind::Catalog as u16 {
+        Some(storage::kind_fault(page))
+    } else if storage::format(page) != FORMAT {
+        Some(Shape::Format)
+    } else {
+        None
+    }
+}
 
 /// The values each counter draws past its reservation before it reserves again.
 const BLOCK: i64 = 64;
@@ -59,11 +70,16 @@ impl Sequences {
     ///
     /// Refuse `pid`, from then on, if it is not a page of counters.
     pub fn open<R: Runtime>(pager: &Pager<R>, pid: Pid) -> Result<Sequences, PageError> {
-        let page = pager.read(pid)?;
-        if (storage::kind(&page), storage::format(&page)) != (PageKind::Catalog as u16, FORMAT) {
+        let page = loop {
+            let page = pager.read(pid)?;
+            if counters_fault(&page).is_none() {
+                break page;
+            }
             drop(page);
-            return Err(pager.damage(pid, Damage::Checksum));
-        }
+            if let Some(e) = pager.refuse_if(pid, |p| counters_fault(p)) {
+                return Err(e);
+            }
+        };
         let body = &page[HEADER_LEN..];
         let n = u32::from_le_bytes(body[..4].try_into().expect("4 bytes")) as usize;
         let mut counters = BTreeMap::new();

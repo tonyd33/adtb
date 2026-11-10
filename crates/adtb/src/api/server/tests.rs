@@ -492,7 +492,8 @@ fn a_damaged_page_met_writing_a_registrations_facts_is_a_storage_failure() {
     let (_scratch, db) = opened(&Log::new([schema]));
     let e = &db.engine;
     for pid in e.deployment.roots().pages(&e.pager).unwrap() {
-        e.pager.damage(pid, crate::storage::Damage::Unreadable);
+        e.pager
+            .plant_damage(pid, crate::storage::Damage::Unreadable);
     }
     let authority = db.role_authority();
     let owner = authority.session("owner").unwrap();

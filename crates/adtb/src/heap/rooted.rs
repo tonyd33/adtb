@@ -27,13 +27,14 @@ impl Heap {
         mut f: impl FnMut(Version, Vec<Tid>),
     ) -> Result<(), PageError> {
         let mut found = Vec::new();
-        {
+        loop {
             let guard = pager.read_formatted(pid)?;
             let Some(page) = self.page(&guard) else {
                 return Ok(());
             };
             let Some(format) = self.format_of(page) else {
-                return Err(Heap::refuse_format(pager, pid, guard));
+                self.refuse_format(pager, pid, guard)?;
+                continue;
             };
             let mut roots: BTreeMap<usize, Vec<Tid>> = BTreeMap::new();
             for (root, members) in chain::roots(page, |s| chain::link(page, pid.0, s)) {
@@ -46,6 +47,7 @@ impl Heap {
                 let root = rooted.unwrap_or_else(|| vec![v.tid]);
                 found.push((v, root));
             }
+            break;
         }
         for (v, roots) in found {
             f(v, roots);
@@ -62,26 +64,29 @@ impl Heap {
         at: Tid,
     ) -> Result<Option<Vec<Vec<Value>>>, PageError> {
         let pid = Pid(at.page());
-        let guard = pager.read(pid)?;
-        let Some(page) = self.page(&guard) else {
-            return Ok(None);
-        };
-        let Some(format) = self.format_of(page) else {
-            return Err(Heap::refuse_format(pager, pid, guard));
-        };
-        let link = |s| chain::link(page, pid.0, s);
-        let Some(members) = chain::from(page, usize::from(at.slot()), link) else {
-            return Ok(None);
-        };
-        let mut rows = Vec::new();
-        for slot in members {
-            let Slot::Normal { at: bytes, .. } = page.get(slot) else {
-                break;
+        loop {
+            let guard = pager.read(pid)?;
+            let Some(page) = self.page(&guard) else {
+                return Ok(None);
             };
-            let (row, _) = self.decode(pager, format, &page[bytes])?;
-            rows.push(self.upgrade(format, row));
+            let Some(format) = self.format_of(page) else {
+                self.refuse_format(pager, pid, guard)?;
+                continue;
+            };
+            let link = |s| chain::link(page, pid.0, s);
+            let Some(members) = chain::from(page, usize::from(at.slot()), link) else {
+                return Ok(None);
+            };
+            let mut rows = Vec::new();
+            for slot in members {
+                let Slot::Normal { at: bytes, .. } = page.get(slot) else {
+                    break;
+                };
+                let (row, _) = self.decode(pager, format, &page[bytes])?;
+                rows.push(self.upgrade(format, row));
+            }
+            return Ok(Some(rows));
         }
-        Ok(Some(rows))
     }
 
     /// Returns what is wrong with the links of `pid`, as one latched read of the page shows. A

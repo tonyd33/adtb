@@ -10,7 +10,7 @@ use adtb_lang::types::RelId;
 
 use crate::btree::Index;
 use crate::exec::{self, Histories, PastReads, Reads, Store, StoredHeap, StoredIndex, Val};
-use crate::heap::{Heap, HeapNo};
+use crate::heap::{Heap, HeapNo, Slots};
 use crate::history::History;
 use crate::key::{CtorId, Tid, Value};
 use crate::mvcc::{
@@ -57,8 +57,9 @@ struct AtMarker<R: Runtime> {
 }
 
 impl<R: Runtime> Reads for AtMarker<R> {
-    fn saw(&self, at: Pid, writers: &Writers) -> Result<bool, exec::Error> {
+    fn saw(&self, (at, heap): (Pid, HeapNo), writers: &Writers) -> Result<bool, exec::Error> {
         let seen = self.reader.sees(writers);
+        let at = (at, Slots::Versions(heap.0));
         let refuse = |e| Heap::refuse_unreserved(self.reader.pager(), at, (), e);
         Ok(seen.map_err(refuse)?.visible())
     }
@@ -153,7 +154,8 @@ impl<R: Runtime> Pasts<R> {
     /// version at `at`.
     fn sees_commit(&self, marker: &Marker, (x, at): (Xid, Tid)) -> Result<bool, exec::Error> {
         let reader = self.txns.reader(&self.pager, marker.snapshot.clone(), None);
-        let refuse = |e| Heap::refuse_unreserved(&self.pager, Pid(at.page()), (), e);
+        let at = (Pid(at.page()), Slots::Versions(crate::catalog::ROOTS));
+        let refuse = |e| Heap::refuse_unreserved(&self.pager, at, (), e);
         Ok(reader.counts_committed(x).map_err(refuse)?)
     }
 

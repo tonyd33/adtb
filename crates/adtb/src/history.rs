@@ -1,5 +1,7 @@
 //! Read and keep a relation's rows as of a past time.
 
+use std::collections::BTreeSet;
+
 use crate::btree::{self, Index};
 use crate::heap::{self, Flags, Header, Heap};
 use crate::key::{CtorId, Entry, Value};
@@ -80,34 +82,44 @@ pub(crate) fn keep<R: Runtime>(
 ) -> Result<usize, Error> {
     let past = into.heap(ctor);
     let mut judge = txns.judge(pager, horizon.past());
-    let mut found = Vec::new();
-    heap.scan_pages(pager, &[pid], |v| found.push(v))?;
     let mut copied = 0;
-    for v in found {
-        let kept = txns.kept_by_window(pager, &v.header.writers, horizon);
-        if !kept.map_err(|e| v.refuse(pager, e))? {
-            continue;
+    let mut done = BTreeSet::new();
+    'scan: loop {
+        let mut found = Vec::new();
+        heap.scan_pages(pager, &[pid], |v| found.push(v))?;
+        for v in found {
+            if !done.insert(v.tid) {
+                continue;
+            }
+            let kept = txns.kept_by_window(pager, &v.header.writers, horizon);
+            let Some(kept) = v.looked_up(pager, kept)? else {
+                done.remove(&v.tid);
+                continue 'scan;
+            };
+            if !kept {
+                continue;
+            }
+            let key = (into.key)(ctor, &v.row);
+            let earlier = if v.flags.contains(Flags::KEPT) {
+                held(pager, into, past, ctor, &key, &v.header)?
+            } else {
+                Held::Not
+            };
+            let tid = match earlier {
+                Held::Indexed => continue,
+                Held::Unindexed(tid) => tid,
+                Held::Not => match past.copy_version_pruning(pager, heap, &v, &mut judge)? {
+                    Some(tid) => {
+                        copied += 1;
+                        tid
+                    }
+                    None => continue,
+                },
+            };
+            into.index.insert(pager, &Entry { key, ctor, tid })?;
         }
-        let key = (into.key)(ctor, &v.row);
-        let earlier = if v.flags.contains(Flags::KEPT) {
-            held(pager, into, past, ctor, &key, &v.header)?
-        } else {
-            Held::Not
-        };
-        let tid = match earlier {
-            Held::Indexed => continue,
-            Held::Unindexed(tid) => tid,
-            Held::Not => match past.copy_version_pruning(pager, heap, &v, &mut judge)? {
-                Some(tid) => {
-                    copied += 1;
-                    tid
-                }
-                None => continue,
-            },
-        };
-        into.index.insert(pager, &Entry { key, ctor, tid })?;
+        return Ok(copied);
     }
-    Ok(copied)
 }
 
 /// Where `past` holds the copy of a version flagged kept.

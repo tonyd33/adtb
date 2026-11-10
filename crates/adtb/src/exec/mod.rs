@@ -173,6 +173,18 @@ impl From<PageError> for Error {
     }
 }
 
+impl From<crate::heap::Refused> for Error {
+    fn from(e: crate::heap::Refused) -> Error {
+        match e {
+            crate::heap::Refused::Page(e) => Error::Page(e),
+            crate::heap::Refused::Gone => Error::Serialization(SerializationFailure::new(
+                crate::mvcc::Cause::ConcurrentWrite,
+                Vec::new(),
+            )),
+        }
+    }
+}
+
 impl From<crate::heap::OrphanEntry> for Error {
     fn from(e: crate::heap::OrphanEntry) -> Error {
         Error::OrphanEntry(e.index)

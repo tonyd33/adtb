@@ -346,21 +346,26 @@ impl Catalog {
         txns: &Transactions<R>,
     ) -> Result<Migrations, Error> {
         let (id, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
-        let mut versions = Vec::new();
-        let scanned = self.roots.scan(pager, |v| versions.push(v));
-        let mut rows = Vec::new();
         let reader = txns.reader(pager, snapshot, None);
-        let seen = scanned.map_err(Error::from).and_then(|()| {
-            for v in versions {
-                let seen = reader.sees(&v.header.writers);
-                if seen.map_err(|e| v.refuse(pager, e))?.visible() {
-                    rows.push((v.header.writers.inserter(), v.tid, v.row));
+        let seen = || -> Result<_, Error> {
+            'scan: loop {
+                let mut versions = Vec::new();
+                self.roots.scan(pager, |v| versions.push(v))?;
+                let mut rows = Vec::new();
+                for v in versions {
+                    let Some(seen) = v.looked_up(pager, reader.sees(&v.header.writers))? else {
+                        continue 'scan;
+                    };
+                    if seen.visible() {
+                        rows.push((v.header.writers.inserter(), v.tid, v.row));
+                    }
                 }
+                return Ok(rows);
             }
-            Ok(())
-        });
+        };
+        let rows = seen();
         txns.release(id);
-        seen?;
+        let rows = rows?;
         let mut migrations = BTreeMap::new();
         let mut named = Vec::new();
         for (x, tid, row) in rows {

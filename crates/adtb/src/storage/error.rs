@@ -21,6 +21,24 @@ pub enum Damage {
     /// A commit log status page lost the write to `expected` and was settled from the log at
     /// `found`. The page serves again.
     Settled { expected: Lsn, found: Lsn },
+    /// The page passes its checksum but is not the page the structure naming it expects.
+    Shape(Shape),
+}
+
+/// How a page that passes its checksum is out of shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Shape {
+    /// Every byte of the page is zero.
+    Blank,
+    /// The page's kind, or its role within its kind, is not the one expected.
+    Kind,
+    /// The page names another structure as its owner.
+    Owner,
+    /// The page's contents contradict themselves or the page naming it: a count, level, entry or
+    /// slot out of range, or a version naming a writer no transaction was given.
+    Frame,
+    /// The page's format byte names no format of its structure.
+    Format,
 }
 
 impl Damage {

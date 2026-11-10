@@ -1,8 +1,10 @@
 use std::collections::BTreeSet;
 
 use crate::runtime::Runtime;
-use crate::storage::{self, Damage, PageError, PageKind, Pager, Pid, Stopped};
+use crate::storage::{self, PageError, PageKind, Pager, Pid, Shape, Stopped};
 
+use super::Refused;
+use super::blame::{Blame, Holds, unchanged};
 use super::page::{Arrangement, CONTENTS, HeapPage, Kinded, Owned, PageCopy, u16_at, u64_at};
 use super::stage::Stage;
 use super::vm;
@@ -90,7 +92,7 @@ fn init(node: &mut [u8], level: u32, capacity: u64) {
     node[VM..VM + 8].copy_from_slice(&vm.to_le_bytes());
 }
 
-fn vm_root(node: &[u8]) -> Option<Pid> {
+pub(super) fn vm_root(node: &[u8]) -> Option<Pid> {
     let pid = u64_at(node, VM);
     (pid != 0).then_some(Pid(pid))
 }
@@ -110,24 +112,57 @@ fn parent_of(pid: Pid, node: &[u8]) -> Parent {
     Some((pid, level(node), capacity(node)))
 }
 
-/// Returns whether `node` is a directory page of `owner` whose entries fit its page, a child of
-/// `parent` when there is one, at a level `l` with `capacity^l` below [`POSITIONS`].
-fn shaped(node: &impl Owned, owner: u32, page_size: usize, parent: Parent) -> bool {
+/// Returns how `node` is out of shape as a directory page of `owner` whose entries fit its page,
+/// a child of `parent` when there is one, at a level `l` with `capacity^l` below [`POSITIONS`].
+fn misshapen(node: &impl Owned, owner: u32, page_size: usize, parent: Parent) -> Option<Shape> {
+    if storage::kind(node) != PageKind::FreeSpaceMap as u16 {
+        return Some(storage::kind_fault(node));
+    }
+    if node.owner() != owner {
+        return Some(Shape::Owner);
+    }
     let cap = capacity(node);
-    storage::kind(node) == PageKind::FreeSpaceMap as u16
-        && node.owner() == owner
-        && (2..=u64::from(max_fanout(page_size))).contains(&cap)
+    let framed = (2..=u64::from(max_fanout(page_size))).contains(&cap)
         && count(node) as u64 <= cap
         && cap.checked_pow(level(node)).is_some_and(|s| s < POSITIONS)
-        && parent.is_none_or(|(_, l, c)| l == level(node) + 1 && c == cap)
+        && parent.is_none_or(|(_, l, c)| l == level(node) + 1 && c == cap);
+    (!framed).then_some(Shape::Frame)
+}
+
+/// Returns whether `node`, a directory or visibility map page, names `pid`.
+pub(super) fn names_page(node: &[u8], pid: Pid) -> bool {
+    match storage::kind(node) {
+        k if k == PageKind::FreeSpaceMap as u16 => {
+            let n = count(node).min(usize::from(max_fanout(node.len())));
+            vm_root(node) == Some(pid) || (0..n).any(|i| entry(node, i).0 == pid)
+        }
+        k if k == PageKind::VisibilityMap as u16 => vm::names(node, pid),
+        _ => false,
+    }
+}
+
+/// Returns whether `node` is a level-0 directory page whose entry `i` names `pid`.
+pub(super) fn names_at(node: &[u8], i: usize, pid: Pid) -> bool {
+    storage::kind(node) == PageKind::FreeSpaceMap as u16
+        && level(node) == 0
+        && i < count(node).min(usize::from(max_fanout(node.len())))
+        && entry(node, i).0 == pid
 }
 
 /// Why a directory or map page could not be read.
 enum Fault {
     Page(PageError),
-    /// The page is not a directory or map page where the entry naming it puts it. Names the page
-    /// holding that entry, or the directory's root.
-    Shape(Pid),
+    /// A page is not a directory or map page where the entry naming it puts it.
+    Shape(Blame),
+}
+
+/// Returns what a walk failing with `walked` found, or `None` when a page changed under it and the
+/// walk runs again.
+fn again<T>(walked: Result<T, Option<PageError>>) -> Result<Option<T>, PageError> {
+    match walked {
+        Ok(t) => Ok(Some(t)),
+        Err(e) => e.map_or(Ok(None), Err),
+    }
 }
 
 fn stopped(fault: Fault) -> Stopped {
@@ -168,8 +203,8 @@ enum Named {
     Held,
     /// The entry changed while it was checked.
     Changed,
-    /// The page to record as damaged.
-    Blamed(Pid),
+    /// The page to refuse.
+    Blamed(Blame),
 }
 
 /// Returns the free space category of a page with `free` bytes free.
@@ -303,38 +338,64 @@ impl Space {
         &self,
         stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
-    ) -> Result<Option<(Pid, Vec<u8>)>, PageError> {
-        self.root
-            .map(|root| Ok((root, self.node(stage, pager, root, None)?)))
-            .transpose()
+    ) -> Result<Option<(Pid, Vec<u8>)>, Refused> {
+        let Some(root) = self.root else {
+            return Ok(None);
+        };
+        loop {
+            if let Some(node) = self.node(stage, pager, root, None)? {
+                return Ok(Some((root, node)));
+            }
+        }
     }
 
-    /// Returns the root of the visibility map the directory's root names. Unstage and record the
-    /// directory's root as damaged when it names a page that is not a map page of the space.
+    /// Returns the root of the visibility map the directory's root names. Refuse the directory's
+    /// root as out of shape when it names a page that is not a map page of the space.
     pub fn vm<'p, R: Runtime>(
         &self,
         stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
-    ) -> Result<Option<Pid>, PageError> {
-        let Some(map) = self.top(stage, pager)?.and_then(|(_, root)| vm_root(&root)) else {
-            return Ok(None);
-        };
-        match self.map_page(stage, pager, map, None) {
-            Ok(_) => Ok(Some(map)),
-            Err(Fault::Page(e)) => Err(e),
-            Err(Fault::Shape(blamed)) => Err(self.refuse(stage, pager, blamed)),
+    ) -> Result<Option<Pid>, Refused> {
+        loop {
+            let Some(map) = self.top(stage, pager)?.and_then(|(_, root)| vm_root(&root)) else {
+                return Ok(None);
+            };
+            match self.map_page(stage, pager, map, None) {
+                Ok(_) => return Ok(Some(map)),
+                Err(Fault::Page(e)) => return Err(e.into()),
+                Err(Fault::Shape(blame)) => {
+                    if let Some(e) = blame.refuse(stage, pager) {
+                        return Err(e);
+                    }
+                }
+            }
         }
     }
 
-    /// Unstage and record the directory's root as damaged.
+    /// Refuse the directory's root, which names no visibility map, as out of frame, as
+    /// [`Blame::refuse`] does. Returns `None` when, under its exclusive latch, it names one: the
+    /// caller reads it again.
     ///
     /// Preconditions: the space has a directory, and `stage` holds no changed copy of its root.
     pub fn refuse_root<'p, R: Runtime>(
         &self,
         stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
-    ) -> PageError {
-        self.refuse(stage, pager, self.root())
+    ) -> Option<Refused> {
+        let blame = Blame::new(self.rank(self.root(), 0), Shape::Frame, Holds::NoMap);
+        blame.refuse(stage, pager)
+    }
+
+    /// Returns the rank of directory page `pid`, at `level` when it is not the root.
+    fn rank(&self, pid: Pid, level: u32) -> Rank {
+        if self.root == Some(pid) {
+            Rank::Dir {
+                level: Level::Root,
+                pid,
+            }
+        } else {
+            Rank::dir(level, pid)
+        }
     }
 
     /// Returns `pid` as `stage` holds it, or as the pager does when it is not staged, read without
@@ -352,10 +413,19 @@ impl Space {
         let level = parent.map_or(Level::Root, |(_, l, _)| Level::At(l.saturating_sub(1)));
         let node = stage.read_any(pager, Rank::Dir { level, pid });
         let node = node.map_err(Fault::Page)?;
-        if shaped(&node, self.owner, pager.page_size(), parent) {
-            return Ok(node.into_bytes());
+        match misshapen(&node, self.owner, pager.page_size(), parent) {
+            None => Ok(node.into_bytes()),
+            Some(shape) => {
+                let rank = self.rank(pid, parent.map_or(0, |(_, l, _)| l.saturating_sub(1)));
+                let named_by = parent.map(|(p, l, _)| self.rank(p, l));
+                Err(Fault::Shape(Blame::of(
+                    rank,
+                    named_by,
+                    shape,
+                    node.into_bytes(),
+                )))
+            }
         }
-        Err(Fault::Shape(parent.map_or(pid, |(p, _, _)| p)))
     }
 
     /// Returns visibility map page `pid` as `stage` holds it, or as the pager does, read without
@@ -371,39 +441,55 @@ impl Space {
     ) -> Result<Vec<u8>, Fault> {
         let node = stage.read_any(pager, Rank::Vm(pid));
         let node = node.map_err(Fault::Page)?;
-        if vm::shaped(&node, self.owner, parent.map(|(_, l)| l)) {
-            return Ok(node.into_bytes());
+        match vm::misshapen(&node, self.owner, parent.map(|(_, l)| l)) {
+            None => Ok(node.into_bytes()),
+            Some(shape) => Err(Fault::Shape(Blame::new(
+                parent.map_or(self.rank(self.root(), 0), |(p, _)| Rank::Vm(p)),
+                shape,
+                Holds::Names(pid),
+            ))),
         }
-        Err(Fault::Shape(parent.map_or(self.root(), |(p, _)| p)))
     }
 
-    /// Returns `fault` as the error of a read that records a page out of shape as damaged.
-    fn fail<R: Runtime>(&self, pager: &Pager<R>, fault: Fault) -> PageError {
+    /// Returns `fault` as the error of a read that refuses a page out of shape, `None` when the
+    /// page changed before its refusal and the read runs again.
+    fn fail<R: Runtime>(&self, pager: &Pager<R>, fault: Fault) -> Option<PageError> {
         match fault {
-            Fault::Page(e) => e,
-            Fault::Shape(blamed) => self.refuse(&mut Stage::new(), pager, blamed),
+            Fault::Page(e) => Some(e),
+            Fault::Shape(blame) => blame.refuse_unchanged(&mut Stage::new(), pager),
         }
     }
 
-    /// Returns `pid` as [`Space::read`] does. Unstage and record as damaged the directory page
-    /// whose entry names a page that is not a directory page where the entry puts it, or the root
-    /// when it is not one.
+    /// Returns `pid` as [`Space::read`] does. Refuse as out of shape the directory page whose
+    /// entry names a page that is not a directory page where the entry puts it, or the root when
+    /// it is not one. Returns `None` when the page naming `pid` changed before its refusal: the
+    /// caller reads again from the root.
     fn node<'p, R: Runtime>(
         &self,
         stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
         pid: Pid,
         parent: Parent,
-    ) -> Result<Vec<u8>, PageError> {
-        match self.read(stage, pager, pid, parent) {
-            Ok(node) => Ok(node),
-            Err(Fault::Page(e)) => Err(e),
-            Err(Fault::Shape(blamed)) => Err(self.refuse(stage, pager, blamed)),
+    ) -> Result<Option<Vec<u8>>, Refused> {
+        loop {
+            match self.read(stage, pager, pid, parent) {
+                Ok(node) => return Ok(Some(node)),
+                Err(Fault::Page(e)) => return Err(e.into()),
+                Err(Fault::Shape(blame)) => {
+                    let named = blame.pid() != pid;
+                    if let Some(e) = blame.refuse(stage, pager) {
+                        return Err(e);
+                    }
+                    if named {
+                        return Ok(None);
+                    }
+                }
+            }
         }
     }
 
     /// Returns the staged copy of directory page `pid`, expected at `level`, latching and staging
-    /// it first if needed. Unstage and record it as damaged as [`Space::node`] does.
+    /// it first if needed. Refuse it as out of shape under that latch as [`Space::node`] does.
     fn node_mut<'s, 'p, R: Runtime>(
         &self,
         stage: &'s mut Stage<'p, R>,
@@ -412,28 +498,11 @@ impl Space {
         level: u32,
     ) -> Result<&'s mut PageCopy, PageError> {
         let rank = Rank::dir(level, pid);
-        if shaped(
-            stage.page(pager, rank)?,
-            self.owner,
-            pager.page_size(),
-            None,
-        ) {
-            return stage.page(pager, rank);
+        let node = stage.page(pager, rank)?;
+        match misshapen(node, self.owner, pager.page_size(), None) {
+            None => stage.page(pager, rank),
+            Some(shape) => Err(stage.refuse(pid, shape)),
         }
-        Err(self.refuse(stage, pager, pid))
-    }
-
-    /// Unstage `pid` and record it as damaged.
-    ///
-    /// Precondition: `stage` holds no changed copy of `pid`.
-    fn refuse<'p, R: Runtime>(
-        &self,
-        stage: &mut Stage<'p, R>,
-        pager: &'p Pager<R>,
-        pid: Pid,
-    ) -> PageError {
-        stage.unstage(pid);
-        pager.damage(pid, Damage::Checksum)
     }
 
     /// Returns the directory pages, the root first, and the pages of the space in position order,
@@ -464,7 +533,9 @@ impl Space {
                 .checked_sub(1)
                 .is_some_and(|i| at(i) >= POSITIONS)
             {
-                return Err(fault(Fault::Shape(pid)));
+                let rank = self.rank(pid, level(&node));
+                let blame = Blame::of(rank, None, Shape::Frame, node.clone());
+                return Err(fault(Fault::Shape(blame)));
             }
             if level(&node) == 0 {
                 out.entries.extend(entries.map(|(i, page)| Entry {
@@ -491,7 +562,9 @@ impl Space {
     /// Preconditions: the caller holds no page latch.
     pub fn pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
         loop {
-            let walked = self.walk(pager, |f| self.fail(pager, f))?;
+            let Some(walked) = again(self.walk(pager, |f| self.fail(pager, f)))? else {
+                continue;
+            };
             let mut seen = BTreeSet::new();
             let Some(twice) = walked.pages().find(|&p| !seen.insert(p)) else {
                 return Ok(walked.pages().collect());
@@ -501,8 +574,18 @@ impl Space {
                 .is_some()
             {
                 let mut named = walked.entries.iter().filter(|e| e.page == twice);
-                let second = named.nth(1).expect("a page named twice has a second entry");
-                return Err(self.refuse(&mut Stage::new(), pager, second.leaf));
+                let first = named.next().expect("a page named twice has a first entry");
+                let second = named.next().expect("a page named twice has a second entry");
+                let holds = Holds::Twice {
+                    page: twice,
+                    at: second.i,
+                    first: first.leaf,
+                    first_at: first.i,
+                };
+                let blame = Blame::new(self.rank(second.leaf, 0), Shape::Frame, holds);
+                if let Some(e) = blame.refuse_unchanged(&mut Stage::new(), pager) {
+                    return Err(e);
+                }
             }
         }
     }
@@ -522,8 +605,10 @@ impl Space {
         pid: Pid,
     ) -> Result<bool, PageError> {
         loop {
-            let entries = self.walk(pager, |f| self.fail(pager, f))?.entries;
-            if let Some(named) = self.refuse_entries(pager, &entries, pid)? {
+            let Some(walked) = again(self.walk(pager, |f| self.fail(pager, f)))? else {
+                continue;
+            };
+            if let Some(named) = self.refuse_entries(pager, &walked.entries, pid)? {
                 return Ok(named);
             }
         }
@@ -543,7 +628,11 @@ impl Space {
             match self.misnamed(pager, e.leaf, e.i, pid, e.position)? {
                 Named::Held => {}
                 Named::Changed => return Ok(None),
-                Named::Blamed(bad) => return Err(self.refuse(&mut Stage::new(), pager, bad)),
+                Named::Blamed(blame) => {
+                    return blame
+                        .refuse_unchanged(&mut Stage::new(), pager)
+                        .map_or(Ok(None), Err);
+                }
             }
         }
         Ok(Some(named))
@@ -572,7 +661,11 @@ impl Space {
     /// Returns the pages of [`Space::all`]. Record as damaged the page naming a directory or map
     /// page out of shape.
     pub fn owned<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
-        self.all(pager, |f| self.fail(pager, f))
+        loop {
+            if let Some(pages) = again(self.all(pager, |f| self.fail(pager, f)))? {
+                return Ok(pages);
+            }
+        }
     }
 
     /// Returns the pages of [`Space::all`], for a walk mapping damage to its holder. Stop on a
@@ -674,7 +767,7 @@ impl Space {
     ) -> Result<Option<Pid>, PageError> {
         let stage = &mut Stage::new();
         'search: loop {
-            let Some((mut here, mut node)) = self.top(stage, pager)? else {
+            let Some((mut here, mut node)) = self.top(stage, pager).map_err(unchanged)? else {
                 return Ok(None);
             };
             let cap = capacity(&node);
@@ -693,7 +786,13 @@ impl Space {
                 let child = entry(&node, i).0;
                 if level(&node) > 0 {
                     above = Some(((here, level(&node)), i));
-                    node = self.node(stage, pager, child, parent_of(here, &node))?;
+                    let below = self
+                        .node(stage, pager, child, parent_of(here, &node))
+                        .map_err(unchanged)?;
+                    let Some(below) = below else {
+                        continue 'search;
+                    };
+                    node = below;
                     here = child;
                 } else if child == HOLE {
                     match self.fill(pager, position as u32, arrangement, format)? {
@@ -702,10 +801,13 @@ impl Space {
                     }
                 } else if self.holds(pager, child, position as u32)? {
                     return Ok(Some(child));
-                } else if let Named::Blamed(bad) =
+                } else if let Named::Blamed(blame) =
                     self.misnamed(pager, here, i, child, position as u32)?
                 {
-                    return Err(self.refuse(stage, pager, bad));
+                    if let Some(e) = blame.refuse_unchanged(stage, pager) {
+                        return Err(e);
+                    }
+                    continue 'search;
                 } else {
                     continue 'search;
                 }
@@ -756,13 +858,29 @@ impl Space {
             self.at(&page, position),
             self.claimed(&page, position).is_some(),
         );
+        let (misfit, bytes) = (self.misfit(&page), page.to_vec());
         drop(page);
         Ok(match (held, seen.validate(), claimed) {
             (true, _, _) => Named::Held,
             (false, false, _) => Named::Changed,
-            (false, true, true) => Named::Blamed(pid),
-            (false, true, false) => Named::Blamed(leaf),
+            (false, true, true) => {
+                Named::Blamed(Blame::of(Rank::Heap(pid), None, Shape::Frame, bytes))
+            }
+            (false, true, false) => {
+                let parent = Some(self.rank(leaf, 0));
+                Named::Blamed(Blame::of(Rank::Heap(pid), parent, misfit, bytes))
+            }
         })
+    }
+
+    /// Returns how `page`, which is not a page of the space where an entry names it, is out of
+    /// shape.
+    fn misfit(&self, page: &impl Owned) -> Shape {
+        match Kinded::of(page) {
+            None => storage::kind_fault(page),
+            Some(k) if k.owner() != self.owner => Shape::Owner,
+            Some(_) => Shape::Frame,
+        }
     }
 
     /// Set entry `i` of directory page `parent`, at level `l`, to the greatest category and the
@@ -780,7 +898,12 @@ impl Space {
         if level(&node) == 0 || i >= count(&node) || entry(&node, i).0 != child {
             return Ok(false);
         }
-        let below = self.node(&mut stage, pager, child, parent_of(parent, &node))?;
+        let Some(below) = self
+            .node(&mut stage, pager, child, parent_of(parent, &node))
+            .map_err(unchanged)?
+        else {
+            return Ok(false);
+        };
         let (top, any) = (max_category(&below), any_touched(&below));
         let node = stage.page(pager, Rank::dir(l, parent))?;
         if entry(node, i).1 != top || touched(node, i) != any {
@@ -798,23 +921,27 @@ impl Space {
         stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
         position: u32,
-    ) -> Result<Option<(Vec<Pid>, u64)>, PageError> {
-        let Some((mut pid, mut node)) = self.top(stage, pager)? else {
-            return Ok(None);
-        };
-        let cap = capacity(&node);
-        let mut path = vec![pid];
-        while level(&node) > 0 {
-            let i = digit(u64::from(position), level(&node), cap);
-            if i >= count(&node) {
+    ) -> Result<Option<(Vec<Pid>, u64)>, Refused> {
+        'path: loop {
+            let Some((mut pid, mut node)) = self.top(stage, pager)? else {
                 return Ok(None);
+            };
+            let cap = capacity(&node);
+            let mut path = vec![pid];
+            while level(&node) > 0 {
+                let i = digit(u64::from(position), level(&node), cap);
+                if i >= count(&node) {
+                    return Ok(None);
+                }
+                let child = entry(&node, i).0;
+                path.push(child);
+                let Some(below) = self.node(stage, pager, child, parent_of(pid, &node))? else {
+                    continue 'path;
+                };
+                (pid, node) = (child, below);
             }
-            let child = entry(&node, i).0;
-            path.push(child);
-            node = self.node(stage, pager, child, parent_of(pid, &node))?;
-            pid = child;
+            return Ok(Some((path, cap)));
         }
-        Ok(Some((path, cap)))
     }
 
     /// Returns the level-0 directory page holding the entry at `position`, if the path to it has
@@ -825,7 +952,9 @@ impl Space {
         pager: &Pager<R>,
         position: u32,
     ) -> Result<Option<Pid>, PageError> {
-        let path = self.path(&mut Stage::new(), pager, position)?;
+        let path = self
+            .path(&mut Stage::new(), pager, position)
+            .map_err(unchanged)?;
         Ok(path.map(|(path, _)| *path.last().unwrap()))
     }
 
@@ -839,23 +968,30 @@ impl Space {
         floor: Option<Rank>,
     ) -> Result<bool, PageError> {
         let stage = &mut Stage::above(floor);
-        let Some((mut at, mut node)) = self.top(stage, pager)? else {
-            return Ok(false);
-        };
-        let cap = capacity(&node);
-        for l in (0..=level(&node)).rev() {
-            let i = digit(u64::from(position), l, cap);
-            if level(&node) != l || i >= count(&node) {
+        'names: loop {
+            let Some((mut at, mut node)) = self.top(stage, pager).map_err(unchanged)? else {
                 return Ok(false);
+            };
+            let cap = capacity(&node);
+            for l in (0..=level(&node)).rev() {
+                let i = digit(u64::from(position), l, cap);
+                if level(&node) != l || i >= count(&node) {
+                    return Ok(false);
+                }
+                let child = entry(&node, i).0;
+                if l == 0 {
+                    return Ok(child == pid);
+                }
+                let Some(below) = self
+                    .node(stage, pager, child, parent_of(at, &node))
+                    .map_err(unchanged)?
+                else {
+                    continue 'names;
+                };
+                (at, node) = (child, below);
             }
-            let child = entry(&node, i).0;
-            if l == 0 {
-                return Ok(child == pid);
-            }
-            node = self.node(stage, pager, child, parent_of(at, &node))?;
-            at = child;
+            return Ok(false);
         }
-        Ok(false)
     }
 
     /// Give the hole at `position` a new empty page. Returns `None`, changing nothing, if another
@@ -879,7 +1015,9 @@ impl Space {
             category: Some(cat),
             mark: None,
         };
-        let changed = self.change(&mut stage, pager, position, HOLE, fresh)?;
+        let changed = self
+            .change(&mut stage, pager, position, HOLE, fresh)
+            .map_err(unchanged)?;
         let Some((above, _)) = changed else {
             return Ok(None);
         };
@@ -899,7 +1037,7 @@ impl Space {
         pager: &'p Pager<R>,
         pid: Pid,
         position: u32,
-    ) -> Result<Above, PageError> {
+    ) -> Result<Above, Refused> {
         let hole = Change {
             page: Some(HOLE),
             category: Some(HOLE_CATEGORY),
@@ -917,20 +1055,24 @@ impl Space {
         &self,
         stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
-    ) -> Result<u64, PageError> {
-        let Some((mut at, mut node)) = self.top(stage, pager)? else {
-            return Ok(0);
-        };
-        let cap = capacity(&node);
-        let mut total = 0;
-        while level(&node) > 0 && count(&node) > 0 {
-            let n = count(&node) as u64;
-            total += (n - 1) * cap.pow(level(&node));
-            let last = entry(&node, count(&node) - 1).0;
-            node = self.node(stage, pager, last, parent_of(at, &node))?;
-            at = last;
+    ) -> Result<u64, Refused> {
+        'len: loop {
+            let Some((mut at, mut node)) = self.top(stage, pager)? else {
+                return Ok(0);
+            };
+            let cap = capacity(&node);
+            let mut total = 0;
+            while level(&node) > 0 && count(&node) > 0 {
+                let n = count(&node) as u64;
+                total += (n - 1) * cap.pow(level(&node));
+                let last = entry(&node, count(&node) - 1).0;
+                let Some(below) = self.node(stage, pager, last, parent_of(at, &node))? else {
+                    continue 'len;
+                };
+                (at, node) = (last, below);
+            }
+            return Ok(total + count(&node) as u64);
         }
-        Ok(total + count(&node) as u64)
     }
 
     /// Set the level-0 entry of `pid`, at the position its staged copy records, in `stage`, as
@@ -945,7 +1087,7 @@ impl Space {
         pid: Pid,
         newest: u16,
         fit: Fit,
-    ) -> Result<Above, PageError> {
+    ) -> Result<Above, Refused> {
         let copy = stage.read(pager, Rank::Heap(pid))?;
         let page = HeapPage::any(&copy).expect("a page a write reflects is a heap page");
         let category = page_category(page, pager.page_size());
@@ -973,7 +1115,7 @@ impl Space {
         page: Pid,
         position: u32,
         on: bool,
-    ) -> Result<Above, PageError> {
+    ) -> Result<Above, Refused> {
         self.set_entry(stage, pager, page, position, None, Some(on))
     }
 
@@ -989,7 +1131,7 @@ impl Space {
         position: u32,
         category: Option<u8>,
         mark: Option<bool>,
-    ) -> Result<Above, PageError> {
+    ) -> Result<Above, Refused> {
         let to = Change {
             page: None,
             category,
@@ -1012,7 +1154,7 @@ impl Space {
         position: u32,
         expect: Pid,
         to: Change,
-    ) -> Result<Option<(Above, Pid)>, PageError> {
+    ) -> Result<Option<(Above, Pid)>, Refused> {
         stage.holds_no_directory();
         let Change {
             page,
@@ -1057,7 +1199,10 @@ impl Space {
     /// of its child, the lowest first, each in an update of its own.
     fn settle_above<R: Runtime>(&self, pager: &Pager<R>, position: u32) -> Result<(), PageError> {
         'walk: loop {
-            let Some((path, cap)) = self.path(&mut Stage::new(), pager, position)? else {
+            let Some((path, cap)) = self
+                .path(&mut Stage::new(), pager, position)
+                .map_err(unchanged)?
+            else {
                 return Ok(());
             };
             for k in (0..path.len() - 1).rev() {
@@ -1074,38 +1219,68 @@ impl Space {
     /// Set every inner entry to the greatest category and the touched mark of its child, the
     /// deepest first, each in an update of its own.
     pub fn settle<R: Runtime>(&self, pager: &Pager<R>) -> Result<(), PageError> {
-        self.root
-            .map_or(Ok(()), |root| self.settle_node(pager, root, None))
+        let Some(root) = self.root else {
+            return Ok(());
+        };
+        while !self.settle_node(pager, root, None)? {}
+        Ok(())
     }
 
+    /// Settle the entries below `pid`. Returns false when a page naming one changed under the
+    /// walk, which runs again from the root.
     fn settle_node<R: Runtime>(
         &self,
         pager: &Pager<R>,
         pid: Pid,
         parent: Parent,
-    ) -> Result<(), PageError> {
-        let node = self.node(&mut Stage::new(), pager, pid, parent)?;
+    ) -> Result<bool, PageError> {
+        let Some(node) = self
+            .node(&mut Stage::new(), pager, pid, parent)
+            .map_err(unchanged)?
+        else {
+            return Ok(false);
+        };
         if level(&node) == 0 {
-            return Ok(());
+            return Ok(true);
         }
         for i in 0..count(&node) {
             let child = entry(&node, i).0;
-            self.settle_node(pager, child, parent_of(pid, &node))?;
+            if !self.settle_node(pager, child, parent_of(pid, &node))? {
+                return Ok(false);
+            }
             self.repair(pager, (pid, level(&node)), i, child)?;
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Returns every page whose entry is touched, with its position, in position order.
     pub fn touched<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<(u32, Pid)>, PageError> {
+        loop {
+            if let Some(out) = self.touched_once(pager)? {
+                return Ok(out);
+            }
+        }
+    }
+
+    /// Returns what [`Space::touched`] returns, or `None` when a page naming another changed
+    /// under the walk.
+    fn touched_once<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+    ) -> Result<Option<Vec<(u32, Pid)>>, PageError> {
         let mut out = Vec::new();
-        let Some((pid, root)) = self.top(&mut Stage::new(), pager)? else {
-            return Ok(out);
+        let Some((pid, root)) = self.top(&mut Stage::new(), pager).map_err(unchanged)? else {
+            return Ok(Some(out));
         };
         let cap = capacity(&root);
         let mut todo = vec![(pid, 0u64, None)];
         while let Some((pid, base, parent)) = todo.pop() {
-            let node = self.node(&mut Stage::new(), pager, pid, parent)?;
+            let Some(node) = self
+                .node(&mut Stage::new(), pager, pid, parent)
+                .map_err(unchanged)?
+            else {
+                return Ok(None);
+            };
             let l = level(&node);
             for i in (0..count(&node)).rev() {
                 if !touched(&node, i) {
@@ -1121,7 +1296,7 @@ impl Space {
             }
         }
         out.sort();
-        Ok(out)
+        Ok(Some(out))
     }
 
     /// Returns a page whose entry has category `need` or more as [`Space::find`] does, or else a
@@ -1155,11 +1330,14 @@ impl Space {
         arrangement: Arrangement,
         format: u16,
     ) -> Result<Pid, PageError> {
-        loop {
+        'append: loop {
             let stage = &mut Stage::new();
-            let (mut at, mut node) = (root, self.node(stage, pager, root, None)?);
+            let Some(top) = self.node(stage, pager, root, None).map_err(unchanged)? else {
+                continue;
+            };
+            let (mut at, mut node) = (root, top);
             let (cap, height) = (capacity(&node), level(&node));
-            let position = self.len(stage, pager)?;
+            let position = self.len(stage, pager).map_err(unchanged)?;
             if position == cap.pow(height + 1) {
                 self.grow(pager, at, height)?;
                 continue;
@@ -1171,8 +1349,13 @@ impl Space {
                     break;
                 }
                 let child = entry(&node, i).0;
-                node = self.node(stage, pager, child, parent_of(at, &node))?;
-                at = child;
+                let Some(below) = self
+                    .node(stage, pager, child, parent_of(at, &node))
+                    .map_err(unchanged)?
+                else {
+                    continue 'append;
+                };
+                (at, node) = (child, below);
             }
             let l = level(&node);
             if l > 0 {
@@ -1191,7 +1374,9 @@ impl Space {
         let mut stage = Stage::new();
         let old = self.node_mut(&mut stage, pager, pid, height)?.clone();
         let cap = capacity(&old);
-        if level(&old) != height || self.len(&mut stage, pager)? != cap.pow(height + 1) {
+        if level(&old) != height
+            || self.len(&mut stage, pager).map_err(unchanged)? != cap.pow(height + 1)
+        {
             return Ok(());
         }
         let mut new = pager.reserve();

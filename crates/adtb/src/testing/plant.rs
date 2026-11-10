@@ -109,7 +109,7 @@ impl<R: Runtime> Testing<'_, R> {
         let pager = self.db.tested_pager();
         match plant {
             Plant::Refuse { page, damage } => {
-                pager.damage(page, damage);
+                pager.plant_damage(page, damage);
             }
             Plant::RefuseKeptStore => self.db.refuse_kept_store(),
             Plant::Mark(q) => pager.plant_mark(q, self.db.tested_db())?,

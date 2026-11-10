@@ -245,6 +245,12 @@ impl From<crate::heap::Error> for Error {
     }
 }
 
+impl From<crate::heap::Refused> for Error {
+    fn from(e: crate::heap::Refused) -> Error {
+        Error::from(crate::heap::Error::from(e))
+    }
+}
+
 impl From<vacuum::Error> for Error {
     fn from(e: vacuum::Error) -> Error {
         match e {

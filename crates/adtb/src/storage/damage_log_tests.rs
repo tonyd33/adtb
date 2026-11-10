@@ -11,7 +11,7 @@ use crate::storage::order::ordered_for_test;
 use crate::storage::policy::Holder;
 use crate::storage::{
     self, Damage, FIRST_EDITABLE, Finding, HEADER_LEN, LogFinding, LogProblem, Lsn, Options,
-    PageKind, Pager, Pid, Quarantine,
+    PageKind, Pager, Pid, Quarantine, Shape,
 };
 use crate::storage::{Ordered, Orders};
 use crate::test_world as harness;
@@ -407,6 +407,54 @@ fn a_record_forced_before_a_whole_file_mark_is_kept_by_every_later_open_and_afte
         opened(&mut sim, "the first open", false);
         opened(&mut sim, "the second open", true);
         opened(&mut sim, "the open after the release", false);
+    }
+}
+
+#[test]
+fn a_shape_record_is_kept_by_the_log_through_a_crash_and_by_the_list_through_a_close() {
+    let (files, pages) = created(false);
+    let shapes = [
+        Shape::Blank,
+        Shape::Kind,
+        Shape::Owner,
+        Shape::Frame,
+        Shape::Format,
+    ];
+    let refuse = |pager: &Pager<SimRuntime>| {
+        let fifth = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
+        let pids = pages.iter().copied().chain([fifth]);
+        let want: BTreeMap<Pid, Damage> = pids.zip(shapes.map(Damage::Shape)).collect();
+        for (&pid, &damage) in &want {
+            pager.damage(pid, damage);
+        }
+        want
+    };
+    let mut want = BTreeMap::new();
+    let mut crash = Sim::with_files(SEED, Config::default(), files.clone());
+    common::run_then_crash(&mut crash, |rt, _| {
+        let (pager, _) = Pager::open(rt.clone(), &options(false)).unwrap();
+        want = refuse(&pager);
+    });
+    let mut close = Sim::with_files(SEED, Config::default(), files);
+    common::run(&mut close, |rt, _| {
+        let (pager, _) = Pager::open(rt.clone(), &options(false)).unwrap();
+        assert_eq!(want, refuse(&pager), "both runs refuse the same pages");
+        pager.close();
+    });
+    assert_eq!(5, want.len(), "a page for each shape");
+    for (what, files) in [("a crash", crash.files()), ("a close", close.files())] {
+        let mut sim = Sim::with_files(SEED, Config::default(), files);
+        harness::finished(&mut sim, |rt| {
+            let (pager, _) = Pager::open(rt, &options(false)).unwrap();
+            let listed = Probe::of(&pager).records().pages().clone();
+            assert_eq!(want, listed, "{what}");
+            let found = pager.verify().findings;
+            for (&pid, &damage) in &want {
+                let page = Finding::Page { pid, damage };
+                assert!(found.contains(&page), "{what}: {page:?} in {found:?}");
+            }
+            pager.close();
+        });
     }
 }
 

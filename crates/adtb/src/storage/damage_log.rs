@@ -7,7 +7,7 @@ use crate::mvcc::Settling;
 use crate::runtime::Runtime;
 
 use super::block::{LogFinding, LogProblem};
-use super::error::Damage;
+use super::error::{Damage, Shape};
 use super::evidence::{Begun, Mapping, Met, meet_recorded};
 use super::order::{Opening, Ordered, Orders};
 use super::page::{self, HEADER_LEN, PageKind};
@@ -383,11 +383,17 @@ impl<R: Runtime> Pager<R> {
             self.read_header(|h| (h.log_damage.clone(), h.log_damage_full));
         let mut list = self.damage_list_page();
         let base = if list != Pid(0) {
-            let read = self.read(list).map(|p| decode(&p));
-            let read = match read {
-                Ok(Some(base)) => Ok(base),
-                Ok(None) => Err(self.damage(list, Damage::Checksum)),
-                Err(e) => Err(e),
+            let misfit = |p: &PageExclusive<'_, R>| decode(p).is_none().then_some(Shape::Frame);
+            let read = loop {
+                match self.read(list).map(|p| decode(&p)) {
+                    Ok(Some(base)) => break Ok(base),
+                    Ok(None) => {
+                        if let Some(e) = self.refuse_if(list, misfit) {
+                            break Err(e);
+                        }
+                    }
+                    Err(e) => break Err(e),
+                }
             };
             read.inspect_err(|e| {
                 self.refuse_list();

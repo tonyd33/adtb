@@ -1,5 +1,5 @@
 use crate::runtime::Runtime;
-use crate::storage::{FIRST_EDITABLE, PageError, PageExclusive, Pager, Pid, Reservation};
+use crate::storage::{FIRST_EDITABLE, PageError, PageExclusive, Pager, Pid, Reservation, Shape};
 
 use super::page::PageCopy;
 use super::write::Rank;
@@ -131,6 +131,21 @@ impl<'p, R: Runtime> Stage<'p, R> {
         self.pages.clear();
     }
 
+    /// Release the latches the stage holds by a rank at or above `rank`, forgetting their
+    /// staged copies, unless one of those copies is changed. Returns whether it released them.
+    pub fn release_from(&mut self, rank: Rank) -> bool {
+        let above = |h: &Held<'p, R>| h.rank.is_some_and(|r| r >= rank);
+        if self
+            .pages
+            .iter()
+            .any(|h| above(h) && h.guard[FIRST_EDITABLE..] != h.copy[FIRST_EDITABLE..])
+        {
+            return false;
+        }
+        self.pages.retain(|h| !above(h));
+        true
+    }
+
     /// Release the latch on `pid` and forget its staged copy.
     ///
     /// Precondition: the staged copy of `pid` is unchanged.
@@ -138,6 +153,18 @@ impl<'p, R: Runtime> Stage<'p, R> {
         if let Some(i) = self.find(pid) {
             self.pages.remove(i);
         }
+    }
+
+    /// Refuse `pid` as out of `shape` under the latch the stage holds on it, releasing that latch.
+    ///
+    /// Precondition: the staged copy of `pid` is unchanged and out of `shape`.
+    ///
+    /// Panic if the stage does not hold `pid`.
+    pub fn refuse(&mut self, pid: Pid, shape: Shape) -> PageError {
+        let i = self
+            .find(pid)
+            .expect("a shape refusal through a stage names a page it holds");
+        self.pages.remove(i).guard.refuse(shape)
     }
 
     /// Returns the staged copy of the page `rank` names, latching and staging it first if needed.

@@ -4,7 +4,7 @@ use adtb_lang::schema::Generator;
 use adtb_lang::types::RelId;
 
 use crate::exec::{Val, to_stored};
-use crate::heap::{self, Heap, WriteTarget};
+use crate::heap::{self, Heap, Slots, WriteTarget};
 use crate::key::{Entry, Tid, Value};
 use crate::mvcc::{Logged, Probe, Reader, Write, Xid};
 use crate::plan::{HeapId, IndexId};
@@ -415,7 +415,13 @@ impl<R: Runtime> Stmt<'_, R> {
                             Ok(probe) => probe,
                             Err(e) => {
                                 let at = Pid(link.tid.page());
-                                return Err(Heap::refuse_unreserved(pager, at, latch, e).into());
+                                return Err(Heap::refuse_unreserved(
+                                    pager,
+                                    (at, Slots::Versions(self.db.heaps[&heap].heap.id().0)),
+                                    latch,
+                                    e,
+                                )
+                                .into());
                             }
                         };
                         match probe {

@@ -91,7 +91,7 @@ pub use adtb_lang::evolve::OWNER_ROLE;
 /// The heap id of the large-value store every heap shares.
 const LARGE: u32 = 1;
 /// The heap id of the heap that names every other heap's and index's root.
-const ROOTS: u32 = 2;
+pub(crate) const ROOTS: u32 = 2;
 const FIRST_HEAP: u32 = 3;
 
 /// The constructor of a row of the roots heap naming a heap.
@@ -472,17 +472,22 @@ fn latest_rows<R: Runtime>(
     heap: &Heap,
     damage: PageError,
 ) -> Result<Vec<Vec<Value>>, PageError> {
-    let mut versions = Vec::new();
-    heap.scan(pager, |v| versions.push(v))?;
     let logged = pager.logged_commits();
-    let mut rows = Vec::new();
-    for v in versions {
-        let live = txns.latest_live(pager, &v.header.writers, &logged);
-        if live.map_err(|e| v.refuse(pager, e))?.ok_or(damage)? {
-            rows.push(v.row);
+    'scan: loop {
+        let mut versions = Vec::new();
+        heap.scan(pager, |v| versions.push(v))?;
+        let mut rows = Vec::new();
+        for v in versions {
+            let live = txns.latest_live(pager, &v.header.writers, &logged);
+            let Some(live) = v.looked_up(pager, live)? else {
+                continue 'scan;
+            };
+            if live.ok_or(damage)? {
+                rows.push(v.row);
+            }
         }
+        return Ok(rows);
     }
-    Ok(rows)
 }
 
 /// Returns the rows of the versions of `heap` visible at `snapshot`, in heap order.
@@ -492,17 +497,21 @@ fn visible<R: Runtime>(
     snapshot: &Snapshot,
     heap: &Heap,
 ) -> Result<Vec<Vec<Value>>, PageError> {
-    let mut versions = Vec::new();
-    heap.scan(pager, |v| versions.push(v))?;
     let reader = txns.reader(pager, snapshot.clone(), None);
-    let mut out = Vec::new();
-    for v in versions {
-        let seen = reader.sees(&v.header.writers);
-        if seen.map_err(|e| v.refuse(pager, e))?.visible() {
-            out.push(v.row);
+    'scan: loop {
+        let mut versions = Vec::new();
+        heap.scan(pager, |v| versions.push(v))?;
+        let mut out = Vec::new();
+        for v in versions {
+            let Some(seen) = v.looked_up(pager, reader.sees(&v.header.writers))? else {
+                continue 'scan;
+            };
+            if seen.visible() {
+                out.push(v.row);
+            }
         }
+        return Ok(out);
     }
-    Ok(out)
 }
 
 /// Returns the source the migrations `texts` fold to, in version order from the empty schema,
@@ -1257,19 +1266,23 @@ fn delete_rows<R: Runtime>(
         return Ok(());
     }
     let mut left: Vec<&Vec<Value>> = rows.iter().collect();
-    let mut versions = Vec::new();
-    heap.scan(pager, |v| versions.push(v))?;
     let reader = m.txns.reader(pager, m.snapshot.clone(), None);
-    for v in versions {
-        let Some(at) = left.iter().position(|r| **r == v.row) else {
-            continue;
-        };
-        let seen = reader.sees(&v.header.writers);
-        if seen.map_err(|e| v.refuse(pager, e))?.visible() {
-            heap.delete(pager, heap::WriteTarget::checked(v.tid, v.header), m.x)?;
-            left.swap_remove(at);
+    'scan: loop {
+        let mut versions = Vec::new();
+        heap.scan(pager, |v| versions.push(v))?;
+        for v in versions {
+            let Some(at) = left.iter().position(|r| **r == v.row) else {
+                continue;
+            };
+            let Some(seen) = v.looked_up(pager, reader.sees(&v.header.writers))? else {
+                continue 'scan;
+            };
+            if seen.visible() {
+                heap.delete(pager, heap::WriteTarget::checked(v.tid, v.header), m.x)?;
+                left.swap_remove(at);
+            }
         }
+        assert!(left.is_empty(), "every row deleted is visible: {left:?}");
+        return Ok(());
     }
-    assert!(left.is_empty(), "every row deleted is visible: {left:?}");
-    Ok(())
 }

@@ -86,16 +86,17 @@ fn versions(
         .store(running)
         .expect("the running transaction is open");
     let mut out = BTreeMap::new();
-    later.heaps[&heap]
-        .heap
+    let stored = &later.heaps[&heap].heap;
+    stored
         .scan(&later.pager, |v| {
+            let at = (Pid(v.tid.page()), stored.id());
             let seen = match (
                 later
                     .reads
-                    .saw(Pid(v.tid.page()), &v.header.writers)
+                    .saw(at, &v.header.writers)
                     .expect("a visibility check"),
                 mine.reads
-                    .saw(Pid(v.tid.page()), &v.header.writers)
+                    .saw(at, &v.header.writers)
                     .expect("a visibility check"),
             ) {
                 (true, true) => panic!("both snapshots see {:?}", v.row),

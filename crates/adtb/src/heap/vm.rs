@@ -1,9 +1,11 @@
 use crate::runtime::Runtime;
-use crate::storage::{self, Damage, PageError, PageKind, Pager, Pid};
+use crate::storage::{self, PageError, PageKind, Pager, Pid, Shape};
 
+use super::Refused;
+use super::blame::{Blame, Holds, unchanged};
 use super::page::{CONTENTS, Owned, PageCopy, u16_at, u64_at};
 use super::stage::Stage;
-use super::write::Rank;
+use super::write::{Level, Rank};
 
 const LEVEL: usize = CONTENTS;
 const BODY: usize = CONTENTS + 8;
@@ -22,11 +24,23 @@ fn level(node: &[u8]) -> u32 {
     u32::from(u16_at(node, LEVEL))
 }
 
-/// Returns whether `node` is a map page of `owner`, one level below `parent` when it has one.
-pub(super) fn shaped(node: &impl Owned, owner: u32, parent: Option<u32>) -> bool {
-    storage::kind(node) == PageKind::VisibilityMap as u16
-        && node.owner() == owner
-        && parent.is_none_or(|l| level(node) + 1 == l)
+/// Returns how `node` is out of shape as a map page of `owner`, one level below `parent` when it
+/// has one.
+pub(super) fn misshapen(node: &impl Owned, owner: u32, parent: Option<u32>) -> Option<Shape> {
+    if storage::kind(node) != PageKind::VisibilityMap as u16 {
+        Some(storage::kind_fault(node))
+    } else if node.owner() != owner {
+        Some(Shape::Owner)
+    } else {
+        parent
+            .is_some_and(|l| level(node) + 1 != l)
+            .then_some(Shape::Frame)
+    }
+}
+
+/// Returns whether map page `node` names `pid` as a child.
+pub(super) fn names(node: &[u8], pid: Pid) -> bool {
+    (0..fanout(node.len()) as usize).any(|i| child(node, i) == Some(pid))
 }
 
 /// Returns every page of the map rooted at `root`, the root first, each read by `read` with the
@@ -135,46 +149,66 @@ impl Vm {
         &self,
         stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
-    ) -> Result<PageCopy, PageError> {
-        let node = stage.read(pager, Rank::Vm(self.root))?;
-        if shaped(&node, self.owner, None) {
-            return Ok(node);
+    ) -> Result<PageCopy, Refused> {
+        loop {
+            let node = stage.read(pager, Rank::Vm(self.root))?;
+            let Some(shape) = misshapen(&node, self.owner, None) else {
+                return Ok(node);
+            };
+            if let Some(e) = self.refuse(stage, pager, self.named_by, shape, self.root) {
+                return Err(e);
+            }
         }
-        Err(self.refuse(stage, pager, self.named_by))
     }
 
     /// Returns map page `at`, latched and staged in `stage`. Refuse the page naming it, as
     /// [`Vm::refuse`] does, when it is not a map page of the heap: the root at any level, any
-    /// other page one level below `parent`, the map page naming it and its level.
+    /// other page one level below `parent`, the map page naming it and its level. Returns `None`
+    /// when the page naming it changed before its refusal.
     fn latched<'s, 'p, R: Runtime>(
         &self,
         stage: &'s mut Stage<'p, R>,
         pager: &'p Pager<R>,
         at: Pid,
         parent: Option<(Pid, u32)>,
-    ) -> Result<&'s mut PageCopy, PageError> {
+    ) -> Result<Option<&'s mut PageCopy>, Refused> {
         let node = stage.page(pager, Rank::Vm(at))?;
-        if !shaped(node, self.owner, parent.map(|(_, l)| l)) {
+        if let Some(shape) = misshapen(node, self.owner, parent.map(|(_, l)| l)) {
+            stage.unstage(at);
             let blamed = parent.map_or(self.named_by, |(p, _)| p);
-            return Err(self.refuse(stage, pager, blamed));
+            return match self.refuse(stage, pager, blamed, shape, at) {
+                Some(e) => Err(e),
+                None => Ok(None),
+            };
         }
-        stage.page(pager, Rank::Vm(at))
+        Ok(Some(stage.page(pager, Rank::Vm(at))?))
     }
 
-    /// Abandon the change `stage` holds, then record `blamed` as damaged.
+    /// Refuse `blamed`, the page naming map page `named`, which is out of `shape`, as
+    /// [`Blame::refuse`] does while `blamed` still names `named`. Returns `None` when it no longer
+    /// does: the caller reads again from the root.
     fn refuse<'p, R: Runtime>(
         &self,
         stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
         blamed: Pid,
-    ) -> PageError {
-        stage.abandon();
-        pager.damage(blamed, Damage::Checksum)
+        shape: Shape,
+        named: Pid,
+    ) -> Option<Refused> {
+        let rank = if blamed == self.named_by {
+            Rank::Dir {
+                level: Level::Root,
+                pid: blamed,
+            }
+        } else {
+            Rank::Vm(blamed)
+        };
+        Blame::new(rank, shape, Holds::Names(named)).refuse(stage, pager)
     }
 
     /// Returns map page `pid` as `stage` holds it, or as the pager does, read without latching it.
     /// Refuse `parent`, the map page naming it, as [`Vm::refuse`] does when `pid` is not a map
-    /// page of the heap one level below it.
+    /// page of the heap one level below it, returning `None` when `parent` changed before.
     ///
     /// Precondition: the caller holds no latch on `parent` outside `stage`.
     fn child<'p, R: Runtime>(
@@ -183,12 +217,15 @@ impl Vm {
         pager: &'p Pager<R>,
         pid: Pid,
         parent: (Pid, u32),
-    ) -> Result<PageCopy, PageError> {
+    ) -> Result<Option<PageCopy>, Refused> {
         let node = stage.read_any(pager, Rank::Vm(pid))?;
-        if shaped(&node, self.owner, Some(parent.1)) {
-            return Ok(node);
+        let Some(shape) = misshapen(&node, self.owner, Some(parent.1)) else {
+            return Ok(Some(node));
+        };
+        match self.refuse(stage, pager, parent.0, shape, pid) {
+            Some(e) => Err(e),
+            None => Ok(None),
         }
-        Err(self.refuse(stage, pager, parent.0))
     }
 
     /// Returns the leaf covering `pid`, if one exists, as `stage` holds the map.
@@ -197,21 +234,25 @@ impl Vm {
         stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
         pid: Pid,
-    ) -> Result<Option<Pid>, PageError> {
+    ) -> Result<Option<Pid>, Refused> {
         let size = pager.page_size();
-        let mut node = self.top(stage, pager)?;
-        if pid.0 >= reach(size, level(&node)) {
-            return Ok(None);
-        }
-        let mut at = self.root;
-        while level(&node) > 0 {
-            let Some(c) = child(&node, child_index(size, level(&node), pid)) else {
+        'leaf: loop {
+            let mut node = self.top(stage, pager)?;
+            if pid.0 >= reach(size, level(&node)) {
                 return Ok(None);
-            };
-            node = self.child(stage, pager, c, (at, level(&node)))?;
-            at = c;
+            }
+            let mut at = self.root;
+            while level(&node) > 0 {
+                let Some(c) = child(&node, child_index(size, level(&node), pid)) else {
+                    return Ok(None);
+                };
+                let Some(below) = self.child(stage, pager, c, (at, level(&node)))? else {
+                    continue 'leaf;
+                };
+                (at, node) = (c, below);
+            }
+            return Ok(Some(at));
         }
-        Ok(Some(at))
     }
 
     /// Returns whether the bit of `pid` is set.
@@ -220,7 +261,7 @@ impl Vm {
         stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
         pid: Pid,
-    ) -> Result<bool, PageError> {
+    ) -> Result<bool, Refused> {
         let Some(leaf) = self.leaf(stage, pager, pid)? else {
             return Ok(false);
         };
@@ -239,7 +280,7 @@ impl Vm {
         pager: &'p Pager<R>,
         pid: Pid,
         on: bool,
-    ) -> Result<(), PageError> {
+    ) -> Result<(), Refused> {
         loop {
             let Some(leaf) = self.leaf(stage, pager, pid)? else {
                 assert!(!on, "the visibility map has no leaf for {pid:?}");
@@ -265,7 +306,12 @@ impl Vm {
         let size = pager.page_size();
         loop {
             let mut stage = Stage::new();
-            let root = self.latched(&mut stage, pager, self.root, None)?;
+            let Some(root) = self
+                .latched(&mut stage, pager, self.root, None)
+                .map_err(unchanged)?
+            else {
+                continue;
+            };
             let l = level(root);
             if pid.0 < reach(size, l) {
                 break;
@@ -283,7 +329,13 @@ impl Vm {
         let (mut at, mut parent) = (self.root, None);
         loop {
             let mut stage = Stage::new();
-            let node = self.latched(&mut stage, pager, at, parent)?;
+            let Some(node) = self
+                .latched(&mut stage, pager, at, parent)
+                .map_err(unchanged)?
+            else {
+                (at, parent) = (self.root, None);
+                continue;
+            };
             let l = level(node);
             if l == 0 {
                 return Ok(());
@@ -306,15 +358,32 @@ impl Vm {
 
     /// Returns every page id whose bit is set, in order.
     pub fn marked<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
+        loop {
+            if let Some(out) = self.marked_once(pager)? {
+                return Ok(out);
+            }
+        }
+    }
+
+    /// Returns what [`Vm::marked`] returns, or `None` when a map page naming another changed under
+    /// the walk.
+    fn marked_once<R: Runtime>(&self, pager: &Pager<R>) -> Result<Option<Vec<Pid>>, PageError> {
         let size = pager.page_size();
         let mut out = Vec::new();
         let mut todo = vec![(self.root, 0, None)];
         while let Some((at, base, parent)) = todo.pop() {
             let node = match parent {
-                None => self.top(&mut Stage::new(), pager)?.into_bytes(),
-                Some(parent) => self
-                    .child(&mut Stage::new(), pager, at, parent)?
+                None => self
+                    .top(&mut Stage::new(), pager)
+                    .map_err(unchanged)?
                     .into_bytes(),
+                Some(parent) => match self
+                    .child(&mut Stage::new(), pager, at, parent)
+                    .map_err(unchanged)?
+                {
+                    Some(node) => node.into_bytes(),
+                    None => return Ok(None),
+                },
             };
             let l = level(&node);
             if l == 0 {
@@ -331,6 +400,6 @@ impl Vm {
                 .collect();
             todo.extend(children.into_iter().rev());
         }
-        Ok(out)
+        Ok(Some(out))
     }
 }

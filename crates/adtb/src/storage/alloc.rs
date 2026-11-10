@@ -1,7 +1,7 @@
 use crate::runtime::Runtime;
 
 pub(super) use self::owner::{Allocation, Hold};
-use super::error::Damage;
+use super::error::{Damage, Shape};
 use super::page::{self, FIRST_EDITABLE, HEADER_LEN, PageKind};
 use super::pager::{PageError, PageExclusive, PageShared, Pager};
 use super::record::{Edit, Record};
@@ -71,20 +71,31 @@ impl<R: Runtime> Pager<R> {
     /// Returns whether `page`, read under a latch as the bitmap page of group `g`, can serve as
     /// one: it is a bitmap page, or blank in a group no batch has started.
     fn map_is_sound(&self, page: &[u8], g: u64) -> bool {
-        page::kind(page) == PageKind::AllocationBitmap as u16
-            || g >= self.allocation().started() && page.iter().all(|&b| b == 0)
+        self.bitmap_fault(page, g).is_none()
+    }
+
+    /// Returns how `page` is out of shape as the bitmap page of group `g`: neither a bitmap page nor
+    /// blank in a group no batch has started.
+    fn bitmap_fault(&self, page: &[u8], g: u64) -> Option<Shape> {
+        let sound = page::kind(page) == PageKind::AllocationBitmap as u16
+            || g >= self.allocation().started() && page.iter().all(|&b| b == 0);
+        (!sound).then(|| page::kind_fault(page))
     }
 
     /// Returns the bitmap page of group `g` under a shared latch. Refuses it, from then on, when
-    /// the group was started and the page holds no bitmap.
+    /// the group was started and the page holds no bitmap under its exclusive latch.
     fn read_map(&self, g: u64) -> Result<PageShared<'_>, PageError> {
         let map = self.bitmap_page(g);
-        let page = self.read(map)?;
-        if self.map_is_sound(&page, g) {
-            return Ok(page);
+        loop {
+            let page = self.read(map)?;
+            if self.map_is_sound(&page, g) {
+                return Ok(page);
+            }
+            drop(page);
+            if let Some(e) = self.refuse_if(map, |p| self.bitmap_fault(p, g)) {
+                return Err(e);
+            }
         }
-        drop(page);
-        Err(self.damage(map, Damage::Checksum))
     }
 
     /// Count every group the file reaches into as started. Returns the pages the file holds.
@@ -337,9 +348,8 @@ impl<R: Runtime> Pager<R> {
         let mut maps = Vec::new();
         for &g in &groups {
             let map = self.exclusive(self.bitmap_page(g))?;
-            if !self.map_is_sound(&map, g) {
-                drop(map);
-                return Err(self.damage(self.bitmap_page(g), Damage::Checksum));
+            if let Some(shape) = self.bitmap_fault(&map, g) {
+                return Err(map.refuse(shape));
             }
             maps.push(map);
         }

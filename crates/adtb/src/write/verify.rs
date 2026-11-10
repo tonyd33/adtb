@@ -84,7 +84,7 @@ impl Found {
     fn of_damage(pid: Pid, damage: Damage) -> Found {
         let at = format!("page {}: {damage:?}", pid.0);
         match damage {
-            Damage::Checksum => Found::Checksum {
+            Damage::Checksum | Damage::Shape(_) => Found::Checksum {
                 at,
                 page: Some(pid),
             },

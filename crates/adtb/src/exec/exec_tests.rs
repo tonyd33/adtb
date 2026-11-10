@@ -537,7 +537,7 @@ impl Counted {
 }
 
 impl Reads for Counted {
-    fn saw(&self, at: Pid, writers: &Writers) -> Result<bool, Error> {
+    fn saw(&self, at: (Pid, HeapNo), writers: &Writers) -> Result<bool, Error> {
         self.seen.fetch_add(1, Ordering::Relaxed);
         self.inner.saw(at, writers)
     }
@@ -741,7 +741,7 @@ struct Deleted {
 }
 
 impl Reads for Deleted {
-    fn saw(&self, at: Pid, writers: &Writers) -> Result<bool, Error> {
+    fn saw(&self, at: (Pid, HeapNo), writers: &Writers) -> Result<bool, Error> {
         Ok(writers.deleted() && !self.now.saw(at, writers)?)
     }
 
@@ -786,7 +786,7 @@ fn with_past(
     let mut deleted = Vec::new();
     for v in versions {
         if reads
-            .saw(Pid(v.tid.page()), &v.header.writers)
+            .saw((Pid(v.tid.page()), current.heap.id()), &v.header.writers)
             .expect("a visibility check")
         {
             deleted.push(v);
@@ -878,7 +878,7 @@ struct Watched {
 }
 
 impl Reads for Watched {
-    fn saw(&self, at: Pid, writers: &Writers) -> Result<bool, Error> {
+    fn saw(&self, at: (Pid, HeapNo), writers: &Writers) -> Result<bool, Error> {
         self.most.fetch_max(self.grant.used(), Ordering::Relaxed);
         self.inner.saw(at, writers)
     }

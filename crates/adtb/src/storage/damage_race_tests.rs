@@ -1,12 +1,13 @@
 use crate::testing::Probe;
 
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::runtime::{Entropy, ThreadId, Threads};
 use crate::storage::{
-    Damage, Finding, HEADER_LEN, Lsn, Options, PageError, PageKind, Pager, Pid, Quarantine,
+    Damage, Finding, HEADER_LEN, Lsn, Options, PageError, PageKind, Pager, Pid, Quarantine, Shape,
 };
 use adtb_sim::{Config, Sim, SimRuntime};
 
@@ -234,6 +235,36 @@ fn race(
         });
     });
     out.unwrap()
+}
+
+#[test]
+fn a_shape_refusal_of_a_page_changed_before_its_exclusive_latch_refuses_and_records_nothing() {
+    let mut sim = Sim::new(5, Config::default());
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt, &options()).unwrap();
+        let pid = pager.allocate(1, PageKind::HeapSlotted, 7).unwrap();
+        let unset = |p: &[u8]| (p[HEADER_LEN] == 0).then_some(Shape::Frame);
+        let seen = unset(&pager.read(pid).unwrap());
+        assert_eq!(Some(Shape::Frame), seen, "judged under a shared latch");
+        pager
+            .update(&[pid], |p| p[0][HEADER_LEN] = CHANGED)
+            .unwrap();
+        assert_eq!(None, pager.refuse_if(pid, |p| unset(p)));
+        assert_eq!(BTreeMap::new(), Probe::of(&pager).refusals());
+        assert_eq!(&BTreeMap::new(), Probe::of(&pager).records().pages());
+        assert_eq!(CHANGED, pager.read(pid).unwrap()[HEADER_LEN]);
+        let changed = |p: &[u8]| (p[HEADER_LEN] == CHANGED).then_some(Shape::Frame);
+        let damage = Damage::Shape(Shape::Frame);
+        assert_eq!(
+            Some(PageError { pid, damage }),
+            pager.refuse_if(pid, |p| changed(p))
+        );
+        assert_eq!(
+            BTreeMap::from([(pid, damage)]),
+            Probe::of(&pager).refusals()
+        );
+        pager.close();
+    });
 }
 
 /// Change `pid` in memory to `CHANGED`, then refuse it as `Checksum` while a reader reads it, on

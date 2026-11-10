@@ -26,6 +26,7 @@ pub mod policy;
 mod quarantine;
 mod record;
 mod recovery;
+mod refusal;
 mod verify;
 
 #[cfg(test)]
@@ -96,12 +97,12 @@ pub use dump::{
     DumpManifest, discard_aside, is_dump, publish_database, read_dump, restore_aside, write_dump,
 };
 pub use dump_crypt::Passphrase;
-pub use error::{Damage, OpenError};
+pub use error::{Damage, OpenError, Shape};
 #[cfg(test)]
 pub use header::HISTORY_CAPACITY;
 pub use order::{Opening, Ordered, Orders};
 pub use page::{
-    FIRST_EDITABLE, HEADER_LEN, PageKind, flags, format, header_edit, kind, lsn, owner,
+    FIRST_EDITABLE, HEADER_LEN, PageKind, flags, format, header_edit, kind, kind_fault, lsn, owner,
 };
 #[cfg(any(test, feature = "testing"))]
 pub use page::{flip_owner, seal};

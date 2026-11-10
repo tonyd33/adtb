@@ -1,4 +1,4 @@
-use super::error::Damage;
+use super::error::{Damage, Shape};
 use super::{Lsn, Pid, Position};
 
 /// Bytes written at `offset` of a page.
@@ -84,6 +84,15 @@ const CHECKSUM: u8 = 1;
 const STALE: u8 = 2;
 const LOG_UNPROVEN: u8 = 3;
 const SETTLED: u8 = 4;
+const SHAPE: u8 = 5;
+
+const SHAPES: [Shape; 5] = [
+    Shape::Blank,
+    Shape::Kind,
+    Shape::Owner,
+    Shape::Frame,
+    Shape::Format,
+];
 
 /// Returns the kind of `damage` and its two LSNs, zero where it has none.
 ///
@@ -94,6 +103,13 @@ pub(crate) fn damage_words(damage: Damage) -> (u8, Lsn, Lsn) {
         Damage::Stale { expected, found } => (STALE, expected, found),
         Damage::LogUnproven { at } => (LOG_UNPROVEN, at, Lsn(0)),
         Damage::Settled { expected, found } => (SETTLED, expected, found),
+        Damage::Shape(shape) => {
+            let code = SHAPES
+                .iter()
+                .position(|&s| s == shape)
+                .expect("every shape is listed");
+            (SHAPE, Lsn(code as u64), Lsn(0))
+        }
         Damage::Unreadable => panic!("an unreadable page is never recorded as damaged"),
     }
 }
@@ -111,6 +127,7 @@ pub(crate) fn damage_of(kind: u8, a: Lsn, b: Lsn) -> Option<Damage> {
             expected: a,
             found: b,
         },
+        SHAPE => Damage::Shape(*SHAPES.get(usize::try_from(a.0).ok()?)?),
         _ => return None,
     })
 }

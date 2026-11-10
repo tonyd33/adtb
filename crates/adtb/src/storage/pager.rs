@@ -10,7 +10,7 @@ use crate::runtime::{AlignedBuf, FileId, Runtime, ThreadId};
 use super::alloc::{Allocation, Hold, Reservation, diff};
 use super::damage_log::Recorded;
 use super::driver::Driver;
-use super::error::{Damage, OpenError};
+use super::error::{Damage, OpenError, Shape};
 use super::evidence::{Against, Evidence, Judged, Met, Refusal, Unmapped, file_copy};
 use super::header::{FileHeader, Header};
 use super::holding::{Holding, NO_HOLDER};
@@ -552,6 +552,20 @@ impl<'a, R: Runtime> PageExclusive<'a, R> {
     pub fn change(&mut self, edits: Vec<Edit>) -> Lsn {
         let pager = self.held().pager;
         pager.apply(&mut [self], vec![edits], None)
+    }
+
+    /// Refuse the page as out of `shape`, under this latch, as [`Pager::damage`] does.
+    ///
+    /// Precondition: the caller judged the page out of `shape` under this latch.
+    ///
+    /// Panic on a reservation's blank frame.
+    pub fn refuse(mut self, shape: Shape) -> PageError {
+        assert!(
+            !matches!(self.kind, Kind::Blank { .. }),
+            "a reservation's blank frame is never judged out of shape"
+        );
+        let held = self.held.take().expect("held until the drop");
+        held.pager.refuse_latched(held, Damage::Shape(shape))
     }
 }
 
@@ -1153,37 +1167,17 @@ impl<R: Runtime> Pager<R> {
         }
     }
 
+    /// Start an optimistic read of page `pid` when it is resident, not refused and not under an
+    /// exclusive latch. Returns `None` otherwise, without waiting or reading it in.
+    pub fn try_optimistic(&self, pid: Pid) -> Option<PageOptimistic<'_, R>> {
+        self.refused(pid).ok()?;
+        let o = self.mem.optimistic(pid.0)?;
+        Some(PageOptimistic { pager: self, o })
+    }
+
     /// Returns the page `pid` under a shared latch; see [`Pager::shared`].
     pub fn read(&self, pid: Pid) -> Result<PageShared<'_>, PageError> {
         self.shared(pid)
-    }
-
-    /// Returns the page `pid` under a shared latch, as [`Pager::read`] does, refusing it when every
-    /// byte of it is zero.
-    ///
-    /// Preconditions: a structure in the database names `pid`, so the batch that named it formatted
-    /// it, and the caller holds no latch on `pid`.
-    pub fn read_formatted(&self, pid: Pid) -> Result<PageShared<'_>, PageError> {
-        let page = self.read(pid)?;
-        if page.iter().all(|&b| b == 0) {
-            drop(page);
-            return Err(self.damage(pid, Damage::Checksum));
-        }
-        Ok(page)
-    }
-
-    /// Returns the exclusive latch on `pid`, as [`Pager::exclusive`] does, refusing the page when
-    /// every byte of it is zero.
-    ///
-    /// Preconditions: a structure in the database names `pid`, so the batch that named it formatted
-    /// it, and the caller holds no latch on `pid`.
-    pub fn exclusive_formatted(&self, pid: Pid) -> Result<PageExclusive<'_, R>, PageError> {
-        let page = self.exclusive(pid)?;
-        if page.iter().all(|&b| b == 0) {
-            drop(page);
-            return Err(self.damage(pid, Damage::Checksum));
-        }
-        Ok(page)
     }
 
     /// Panic, in debug builds and when `latch-checks` is on, if the calling thread latches more
@@ -1221,19 +1215,6 @@ impl<R: Runtime> Pager<R> {
         let (buf, _) = read.unwrap();
         g.read_in(&buf);
         Ok(Some(g))
-    }
-
-    /// Refuse `pid` from now on, dropping its memory. Memory holding changes the file lacks is
-    /// written first, so the next force of the data file drops its dirty entry; during recovery
-    /// or on a file quarantined whole it is dropped unwritten and its dirty entry stays until a
-    /// free of the page is durable, so recovery replays them. Record the damage unless it is
-    /// [`Damage::Unreadable`], durable on return once recovery has ended and unless the file is
-    /// quarantined whole.
-    ///
-    /// Preconditions: the caller holds no latch on `pid`, and neither the log lock nor the meta
-    /// lock.
-    pub(crate) fn damage(&self, pid: Pid, damage: Damage) -> PageError {
-        self.refuse_latched(self.hold(pid), damage)
     }
 
     /// Refuse the page under `latch` as [`Pager::damage`] does, for a caller that judged it

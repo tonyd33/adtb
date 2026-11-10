@@ -195,29 +195,32 @@ fn stretch<R: Runtime>(
     mut at: Tid,
 ) -> Result<Stretch, PageError> {
     let pid = at.page();
-    let guard = pager.read_formatted(Pid(pid))?;
-    let mut found = Vec::new();
-    let Some((holder, page)) = holder(sum, &guard) else {
-        return Ok((found, None));
-    };
     let in_sum = |h| sum.iter().any(|s| s.borrow().id() == h);
-    let Some(format) = holder.format_of(page) else {
-        return Err(Heap::refuse_format(pager, Pid(pid), guard));
-    };
     loop {
-        let Some((link, range)) = link_at(page, holder.id(), at) else {
+        let guard = pager.read_formatted(Pid(pid))?;
+        let mut found = Vec::new();
+        let Some((holder, page)) = holder(sum, &guard) else {
             return Ok((found, None));
         };
-        if !seen.insert(link.tid) || !follows(prior.as_ref(), heap, in_sum, &link) {
-            return Ok((found, None));
+        let Some(format) = holder.format_of(page) else {
+            holder.refuse_format(pager, Pid(pid), guard)?;
+            continue;
+        };
+        loop {
+            let Some((link, range)) = link_at(page, holder.id(), at) else {
+                return Ok((found, None));
+            };
+            if !seen.insert(link.tid) || !follows(prior.as_ref(), heap, in_sum, &link) {
+                return Ok((found, None));
+            }
+            let (row, _) = holder.decode(pager, format, &page[range])?;
+            found.push((link, holder.upgrade(format, row)));
+            match link.header.next {
+                Some(next) if next.page() == pid => at = next,
+                next => return Ok((found, next)),
+            }
+            prior = Some(link);
         }
-        let (row, _) = holder.decode(pager, format, &page[range])?;
-        found.push((link, holder.upgrade(format, row)));
-        match link.header.next {
-            Some(next) if next.page() == pid => at = next,
-            next => return Ok((found, next)),
-        }
-        prior = Some(link);
     }
 }
 

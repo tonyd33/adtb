@@ -4,17 +4,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::key::{Tid, Value};
 use crate::mvcc::{Fate, StatusError, Writers, Xid};
 use crate::runtime::Runtime;
-use crate::storage::{self, Damage, PageError, Pager, Pid, Stopped};
+use crate::storage::{self, PageError, PageExclusive, Pager, Pid, Shape, Stopped};
 
+use super::blame::unchanged;
 use super::dir::{Space, max_fanout, need_category, page_category};
-use super::large::LargeStore;
+use super::large::{self, LargeStore};
 use super::page::{Arrangement, HeapPage, HeapPageMut, Kinded, Owned, PageCopy, Slot, align8};
 use super::row::{FieldType, Layout, POINTER_LEN, Pointer, Stored};
 use super::stage::Stage;
 use super::version::{Flags, HEADER_LEN, Header};
 use super::vm::Vm;
 use super::write::{HeapWrite, Rank, Took};
-use super::{Error, WriteTarget, fixed, slotted};
+use super::{Error, Refused, WriteTarget, fixed, slotted};
 use super::{chain, prune};
 
 #[cfg(any(test, feature = "testing"))]
@@ -43,11 +44,71 @@ pub struct Version {
 }
 
 impl Version {
-    /// Returns the failure of a status lookup for a writer of this version, recording its page as
-    /// damaged when the writer is not reserved.
-    pub fn refuse<R: Runtime>(&self, pager: &Pager<R>, e: StatusError) -> PageError {
-        Heap::refuse_unreserved(pager, Pid(self.tid.page()), (), e)
+    /// Returns the failure of a status lookup for a writer of this version, refusing its page as
+    /// out of frame when the writer is not reserved and, under the page's exclusive latch, the
+    /// version is still there. Returns [`Refused::Gone`] when it is not.
+    pub fn refuse<R: Runtime>(&self, pager: &Pager<R>, e: StatusError) -> Refused {
+        if let StatusError::Page(e) = e {
+            return Refused::Page(e);
+        }
+        let judge = |p: &PageExclusive<'_, R>| {
+            let page = HeapPage::any(p)?;
+            let Slot::Normal { at, .. } = page.get(usize::from(self.tid.slot())) else {
+                return None;
+            };
+            (Header::read(&page[at]) == self.header).then_some(Shape::Frame)
+        };
+        unreserved(pager.refuse_if(Pid(self.tid.page()), judge))
     }
+
+    /// Returns the outcome of a status lookup for a writer of this version, refusing its page as
+    /// [`Version::refuse`] does when the lookup failed. Returns `None` when the version is no
+    /// longer on its page: the caller reads its versions again.
+    pub fn looked_up<T, R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        found: Result<T, StatusError>,
+    ) -> Result<Option<T>, PageError> {
+        match found.map_err(|e| self.refuse(pager, e)) {
+            Ok(found) => Ok(Some(found)),
+            Err(Refused::Page(e)) => Err(e),
+            Err(Refused::Gone) => Ok(None),
+        }
+    }
+}
+
+fn unreserved(refused: Option<PageError>) -> Refused {
+    refused.map_or(Refused::Gone, Refused::Page)
+}
+
+/// The owner of a page and what its slots hold, as that owner stores them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Slots {
+    /// Versions of the heap of this id, each behind a version header.
+    Versions(u32),
+    /// Chunks of the large-value store of this id.
+    Chunks(u32),
+}
+
+/// Returns whether a slot of `page`, a page of the owner `slots` names, read as `slots`, names
+/// `xid` as a writer.
+fn names_writer(page: &impl Owned, slots: Slots, xid: Xid) -> bool {
+    let (Slots::Versions(owner) | Slots::Chunks(owner)) = slots;
+    let Some(page) = HeapPage::any(page).filter(|p| p.owner() == owner) else {
+        return false;
+    };
+    (0..page.slot_count()).any(|slot| {
+        let Slot::Normal { at, .. } = page.get(slot) else {
+            return false;
+        };
+        let bytes = &page[at];
+        match slots {
+            Slots::Versions(_) => (bytes.len() >= HEADER_LEN)
+                .then(|| Header::read(bytes).writers)
+                .is_some_and(|w| w.inserted_by(xid) || w.deleted_by(xid)),
+            Slots::Chunks(_) => large::chunk_writer(bytes) == Some(xid),
+        }
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -293,35 +354,44 @@ impl Heap {
         FormatNo(self.newest())
     }
 
-    /// Release `held`, then record page `pid`, a page of the heap whose format byte names no
-    /// format of it, as damaged.
+    /// Release `held`, then refuse page `pid` as out of format when, under its exclusive latch, it
+    /// is a page of the heap whose format byte names no format of it. Returns `Ok` when the page
+    /// changed since: the caller reads it again.
     ///
     /// Precondition: `held` is every latch the caller holds on `pid`.
     pub(super) fn refuse_format<R: Runtime>(
+        &self,
         pager: &Pager<R>,
         pid: Pid,
         held: impl Sized,
-    ) -> PageError {
+    ) -> Result<(), PageError> {
         drop(held);
-        pager.damage(pid, Damage::Checksum)
+        let judge = |p: &PageExclusive<'_, R>| {
+            let page = self.page(p)?;
+            self.format_of(page).is_none().then_some(Shape::Format)
+        };
+        pager.refuse_if(pid, judge).map_or(Ok(()), Err)
     }
 
     /// Release `held`, then return the failure of a status lookup for a writer of a version or
-    /// chunk on page `pid`: the damage of a status page as it is, and for a writer not reserved,
-    /// page `pid` recorded as damaged.
+    /// chunk on page `pid`, whose slots hold `slots`: the damage of a status page as it is, and
+    /// for a writer not reserved, page `pid` refused as out of frame while, under its exclusive
+    /// latch, a slot of it names that writer. Returns [`Refused::Gone`] when no slot does.
     ///
     /// Precondition: `held` is every latch or lock the caller holds.
     pub fn refuse_unreserved<R: Runtime>(
         pager: &Pager<R>,
-        pid: Pid,
+        (pid, slots): (Pid, Slots),
         held: impl Sized,
         e: StatusError,
-    ) -> PageError {
+    ) -> Refused {
         drop(held);
-        match e {
-            StatusError::Page(e) => e,
-            StatusError::Unreserved(_) => pager.damage(pid, Damage::Checksum),
-        }
+        let xid = match e {
+            StatusError::Page(e) => return Refused::Page(e),
+            StatusError::Unreserved(xid) => xid,
+        };
+        let judge = |p: &PageExclusive<'_, R>| names_writer(p, slots, xid).then_some(Shape::Frame);
+        unreserved(pager.refuse_if(pid, judge))
     }
 
     fn current(&self) -> &Format {
@@ -341,17 +411,20 @@ impl Heap {
         tid: Tid,
     ) -> Result<Option<(FormatNo, Flags, Vec<u8>)>, PageError> {
         let pid = Pid(tid.page());
-        let guard = pager.read(pid)?;
-        let Some(page) = self.page(&guard) else {
-            return Ok(None);
-        };
-        let Some(format) = self.format_of(page) else {
-            return Err(Heap::refuse_format(pager, pid, guard));
-        };
-        let Slot::Normal { flags, at } = page.get(usize::from(tid.slot())) else {
-            return Ok(None);
-        };
-        Ok(Some((format, flags, page[at].to_vec())))
+        loop {
+            let guard = pager.read(pid)?;
+            let Some(page) = self.page(&guard) else {
+                return Ok(None);
+            };
+            let Some(format) = self.format_of(page) else {
+                self.refuse_format(pager, pid, guard)?;
+                continue;
+            };
+            let Slot::Normal { flags, at } = page.get(usize::from(tid.slot())) else {
+                return Ok(None);
+            };
+            return Ok(Some((format, flags, page[at].to_vec())));
+        }
     }
 
     pub(super) fn upgrade(&self, from: FormatNo, mut row: Vec<Value>) -> Vec<Value> {
@@ -404,24 +477,27 @@ impl Heap {
         tid: Tid,
     ) -> Result<Option<Version>, PageError> {
         let pid = Pid(tid.page());
-        let guard = pager.read_formatted(pid)?;
-        let Some(page) = self.page(&guard) else {
-            return Ok(None);
-        };
-        let Some(format) = self.format_of(page) else {
-            return Err(Heap::refuse_format(pager, pid, guard));
-        };
-        let Slot::Normal { flags, at } = page.get(usize::from(tid.slot())) else {
-            return Ok(None);
-        };
-        let bytes = &page[at];
-        let (row, _) = self.decode(pager, format, bytes)?;
-        Ok(Some(Version {
-            tid,
-            header: Header::read(bytes),
-            flags,
-            row: self.upgrade(format, row),
-        }))
+        loop {
+            let guard = pager.read_formatted(pid)?;
+            let Some(page) = self.page(&guard) else {
+                return Ok(None);
+            };
+            let Some(format) = self.format_of(page) else {
+                self.refuse_format(pager, pid, guard)?;
+                continue;
+            };
+            let Slot::Normal { flags, at } = page.get(usize::from(tid.slot())) else {
+                return Ok(None);
+            };
+            let bytes = &page[at];
+            let (row, _) = self.decode(pager, format, bytes)?;
+            return Ok(Some(Version {
+                tid,
+                header: Header::read(bytes),
+                flags,
+                row: self.upgrade(format, row),
+            }));
+        }
     }
 
     /// Call `f` on every version of the heap, in directory order and then slot order. Each page's
@@ -445,19 +521,19 @@ impl Heap {
         mut f: impl FnMut(Version),
     ) -> Result<(), PageError> {
         for &pid in pages {
-            let found;
-            {
+            let found = loop {
                 let guard = pager.read_formatted(pid)?;
                 let Some(page) = self.page(&guard) else {
                     drop(guard);
                     self.space.refuse_misnamed(pager, pid)?;
-                    continue;
+                    break Vec::new();
                 };
                 let Some(format) = self.format_of(page) else {
-                    return Err(Heap::refuse_format(pager, pid, guard));
+                    self.refuse_format(pager, pid, guard)?;
+                    continue;
                 };
-                found = self.versions_on(pager, pid, page, format)?;
-            }
+                break self.versions_on(pager, pid, page, format)?;
+            };
             found.into_iter().for_each(&mut f);
         }
         Ok(())
@@ -646,18 +722,21 @@ impl Heap {
         pid: Pid,
         xid: Xid,
     ) -> Result<Option<Preconverted>, Error> {
-        let source = PageCopy::of(&pager.read(pid)?);
-        let Some(page) = self.page(&source) else {
-            return Ok(None);
-        };
-        let Some(from) = self.format_of(page) else {
-            return Err(Heap::refuse_format(pager, pid, ()).into());
-        };
-        if from == self.newest_format() {
-            return Ok(None);
+        loop {
+            let source = PageCopy::of(&pager.read(pid)?);
+            let Some(page) = self.page(&source) else {
+                return Ok(None);
+            };
+            let Some(from) = self.format_of(page) else {
+                self.refuse_format(pager, pid, ())?;
+                continue;
+            };
+            if from == self.newest_format() {
+                return Ok(None);
+            }
+            let done = self.convert(pager, xid, page, from)?;
+            return Ok(done.map(|done| Preconverted { source, done }));
         }
-        let done = self.convert(pager, xid, page, from)?;
-        Ok(done.map(|done| Preconverted { source, done }))
     }
 
     /// Insert `version` on page `pid`, which `stage` holds, taking `pre` as the page in the newest
@@ -708,7 +787,7 @@ impl Heap {
 
     /// Correct the directory entry of `pid`, which could not take a version: an old-format page
     /// gets category 0, any other page of the heap its actual category.
-    fn refused<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), PageError> {
+    fn refused<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), Refused> {
         self.forget_hint(pid);
         drop(pager.read_formatted(pid)?);
         let mut write = HeapWrite::new(pager);
@@ -806,17 +885,21 @@ impl Heap {
     ) -> Result<Option<Vec<Pointer>>, PageError> {
         let mut out = Vec::new();
         for pid in self.space.pages(pager)? {
-            let guard = pager.read(pid)?;
-            let Some(page) = self.page(&guard).filter(|p| p.check().is_empty()) else {
-                return Ok(None);
-            };
-            let Some(format) = self.format_of(page) else {
-                return Err(Heap::refuse_format(pager, pid, guard));
-            };
-            for slot in 0..page.slot_count() {
-                if let Slot::Normal { at, .. } = page.get(slot) {
-                    out.extend(self.pointers(format, &page[at]));
+            loop {
+                let guard = pager.read(pid)?;
+                let Some(page) = self.page(&guard).filter(|p| p.check().is_empty()) else {
+                    return Ok(None);
+                };
+                let Some(format) = self.format_of(page) else {
+                    self.refuse_format(pager, pid, guard)?;
+                    continue;
+                };
+                for slot in 0..page.slot_count() {
+                    if let Slot::Normal { at, .. } = page.get(slot) {
+                        out.extend(self.pointers(format, &page[at]));
+                    }
                 }
+                break;
             }
         }
         Ok(Some(out))
@@ -826,10 +909,16 @@ impl Heap {
         &self,
         stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
-    ) -> Result<Vm, PageError> {
-        match self.space.vm(stage, pager)? {
-            Some(root) => Ok(Vm::open(root, self.id, self.space.root())),
-            None => Err(self.space.refuse_root(stage, pager)),
+    ) -> Result<Vm, Refused> {
+        loop {
+            match self.space.vm(stage, pager)? {
+                Some(root) => return Ok(Vm::open(root, self.id, self.space.root())),
+                None => {
+                    if let Some(e) = self.space.refuse_root(stage, pager) {
+                        return Err(e);
+                    }
+                }
+            }
         }
     }
 
@@ -837,7 +926,8 @@ impl Heap {
     /// visible to every snapshot.
     pub fn all_visible<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<bool, PageError> {
         let mut stage = Stage::new();
-        self.vm(&mut stage, pager)?.get(&mut stage, pager, pid)
+        let vm = self.vm(&mut stage, pager).map_err(unchanged)?;
+        vm.get(&mut stage, pager, pid).map_err(unchanged)
     }
 
     /// Returns whether `tid` names a slot of this heap holding a version, a dead mark or a
@@ -856,19 +946,28 @@ impl Heap {
         &self,
         pager: &Pager<R>,
         pid: Pid,
-        judge: impl FnMut(&Writers) -> Result<Fate, StatusError>,
+        mut judge: impl FnMut(&Writers) -> Result<Fate, StatusError>,
     ) -> Result<Vec<u16>, PageError> {
-        let copy = PageCopy::of(&pager.read_formatted(pid)?);
-        if self.page(&copy).is_none() {
-            self.space.refuse_misnamed(pager, pid)?;
+        loop {
+            let copy = PageCopy::of(&pager.read_formatted(pid)?);
+            if self.page(&copy).is_none() {
+                self.space.refuse_misnamed(pager, pid)?;
+            }
+            let Some(page) = self.listed(pager, pid, &copy, None)? else {
+                return Ok(Vec::new());
+            };
+            let fates = match prune::judge(*page, &mut judge) {
+                Ok(fates) => fates,
+                Err(e) => {
+                    match Heap::refuse_unreserved(pager, (pid, Slots::Versions(self.id)), (), e) {
+                        Refused::Page(e) => return Err(e),
+                        Refused::Gone => continue,
+                    }
+                }
+            };
+            let plan = prune::plan(*page, pid.0, &fates, &|_| false);
+            return Ok(plan.dead.into_iter().map(|s| s as u16).collect());
         }
-        let Some(page) = self.listed(pager, pid, &copy, None)? else {
-            return Ok(Vec::new());
-        };
-        let fates =
-            prune::judge(*page, judge).map_err(|e| Heap::refuse_unreserved(pager, pid, (), e))?;
-        let plan = prune::plan(*page, pid.0, &fates, &|_| false);
-        Ok(plan.dead.into_iter().map(|s| s as u16).collect())
     }
 
     /// Prune page `pid` under its exclusive latch, judging each version by `judge`, in one update.
@@ -892,7 +991,7 @@ impl Heap {
         judge: impl FnMut(&Writers) -> Result<Fate, StatusError>,
         cleaned: &[u16],
         mark: bool,
-    ) -> Result<Pruned, PageError> {
+    ) -> Result<Pruned, Refused> {
         if mark {
             self.vm(&mut Stage::new(), pager)?.extend(pager, pid)?;
         }
@@ -903,11 +1002,14 @@ impl Heap {
             return Ok(Pruned::default());
         };
         let Some(format) = self.format_of(*page) else {
-            return Err(Heap::refuse_format(pager, pid, write));
+            return Err(write.stage().refuse(pid, Shape::Format).into());
         };
         let fates = match prune::judge(*page, judge) {
             Ok(fates) => fates,
-            Err(e) => return Err(Heap::refuse_unreserved(pager, pid, write, e)),
+            Err(StatusError::Page(e)) => return Err(e.into()),
+            Err(StatusError::Unreserved(_)) => {
+                return Err(write.stage().refuse(pid, Shape::Frame).into());
+            }
         };
         let plan = prune::plan(*page, pid.0, &fates, &|s| cleaned.contains(&(s as u16)));
         let mut out = page.to_copy();
@@ -1070,7 +1172,7 @@ impl Heap {
         pager: &Pager<R>,
         pid: Pid,
         judge: Option<&mut Judge<'_>>,
-    ) -> Result<bool, PageError> {
+    ) -> Result<bool, Refused> {
         let Some(judge) = judge else {
             return Ok(false);
         };
@@ -1315,7 +1417,7 @@ impl Heap {
     pub fn check<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<(Pid, String)>, PageError> {
         let check = self.space.check(pager)?;
         let mut problems = check.problems;
-        let Some(vm) = self.space.vm(&mut Stage::new(), pager)? else {
+        let Some(vm) = self.space.vm(&mut Stage::new(), pager).map_err(unchanged)? else {
             if !self.space.is_placeholder() {
                 problems.push((self.root(), "names no visibility map".into()));
             }

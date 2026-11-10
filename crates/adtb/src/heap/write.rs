@@ -3,6 +3,7 @@ use std::cmp::{Ordering, Reverse};
 use crate::runtime::Runtime;
 use crate::storage::{PageError, Pager, Pid, Reservation};
 
+use super::Refused;
 use super::dir::{Above, Fit};
 use super::handle::Heap;
 use super::page::{HeapPage, HeapPageMut, PageCopy};
@@ -140,7 +141,7 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
         took: Option<Took<'h>>,
         retain: &[Pointer],
         release: &[Pointer],
-    ) -> Result<(), PageError> {
+    ) -> Result<(), Refused> {
         let pager = self.pager;
         let store = took.map(|took| match took {
             Took::HeapOnly(heap, _) | Took::Found(heap, _) => heap.large(),
@@ -174,7 +175,7 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
 
     /// Clear the all-visible flag of each staged heap page whose staged copy changed and has it,
     /// and its map bit in an update of its own.
-    fn clear_written(&mut self) -> Result<(), PageError> {
+    fn clear_written(&mut self) -> Result<(), Refused> {
         let pager = self.pager;
         for pid in self.stage.heap_pages() {
             if !self.stage.changed(pid) {
@@ -197,23 +198,23 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
     }
 
     /// Clear the map bit of `pid`, a page of `heap`, in an update of its own.
-    fn clear_bit(&mut self, heap: &Heap, pid: Pid) -> Result<(), PageError> {
+    fn clear_bit(&mut self, heap: &Heap, pid: Pid) -> Result<(), Refused> {
         let vm = heap.vm(&mut self.stage, self.pager)?;
         let mut bit = Stage::above(self.stage.top());
         vm.put(&mut bit, self.pager, pid, false)?;
-        bit.commit(self.pager)
+        Ok(bit.commit(self.pager)?)
     }
 
     /// Set the level-0 directory entry of `pid`, a latched page of `heap` that could not take a
     /// version, from its staged copy, and write it.
-    pub fn commit_refused(mut self, heap: &Heap, pid: Pid) -> Result<(), PageError> {
+    pub fn commit_refused(mut self, heap: &Heap, pid: Pid) -> Result<(), Refused> {
         let pager = self.pager;
         let newest = heap.newest();
         let above = heap
             .space
             .reflect(&mut self.stage, pager, pid, newest, Fit::Refused)?;
         self.stage.commit(pager)?;
-        above.settle(pager)
+        Ok(above.settle(pager)?)
     }
 
     /// Write `pruned` as page `pid` of `heap`, latched, with its all-visible flag and map bit set
@@ -230,7 +231,7 @@ impl<'p, 'h, R: Runtime> HeapWrite<'p, 'h, R> {
         mut pruned: PageCopy,
         all_visible: bool,
         released: &[Pointer],
-    ) -> Result<bool, PageError> {
+    ) -> Result<bool, Refused> {
         let pager = self.pager;
         let copy = self.stage.read(pager, Rank::Heap(pid))?;
         let page = HeapPage::any(&copy).expect("a page pruned is a heap page");

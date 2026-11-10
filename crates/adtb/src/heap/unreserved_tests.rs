@@ -6,10 +6,10 @@ use std::collections::BTreeMap;
 use adtb_harness::process;
 use adtb_sim::SimRuntime;
 
-use super::{Error as HeapError, FieldType, Heap, LargeStore};
+use super::{Error as HeapError, FieldType, Heap, LargeStore, Refused};
 use crate::key::{Scalar, Value};
-use crate::mvcc::{Transactions, Writers, Xid};
-use crate::storage::{Damage, Options, PageError, Pager, Pid, Walk};
+use crate::mvcc::{StatusError, Transactions, Writers, Xid};
+use crate::storage::{Damage, Options, PageError, Pager, Pid, Shape, Walk};
 use crate::test_world::api;
 use crate::test_world::load as open;
 use crate::testing::Plant;
@@ -20,6 +20,8 @@ relation users : User key id generate sequence
 ";
 
 const PAST: Xid = Xid(1 << 40);
+
+const FRAME: Damage = Damage::Shape(Shape::Frame);
 
 /// Insert one user into a new database and make its version's deleter [`PAST`] in place.
 /// Returns the database and the page holding the version.
@@ -52,7 +54,7 @@ fn with_unreserved_deleter(rt: &SimRuntime) -> (Database<SimRuntime>, Pid) {
 }
 
 /// Run `text` over a version naming an unreserved deleter and check that it fails as the users
-/// relation quarantined, with the version's page recorded as failing its checksum.
+/// relation quarantined, with the version's page recorded as out of frame.
 fn refused(seed: u64, text: &str) {
     process::once(seed, |rt| {
         let (db, page) = with_unreserved_deleter(&rt);
@@ -67,11 +69,7 @@ fn refused(seed: u64, text: &str) {
             "{text}: {got:?}"
         );
         let refusals = db.testing().probe().refusals();
-        assert_eq!(
-            BTreeMap::from([(page, Damage::Checksum)]),
-            refusals,
-            "{text}"
-        );
+        assert_eq!(BTreeMap::from([(page, FRAME)]), refusals, "{text}");
         db.close().unwrap();
     });
 }
@@ -108,10 +106,7 @@ fn options() -> Options {
 }
 
 fn refused_page(pid: Pid) -> PageError {
-    PageError {
-        pid,
-        damage: Damage::Checksum,
-    }
+    PageError { pid, damage: FRAME }
 }
 
 #[test]
@@ -135,8 +130,35 @@ fn an_update_pruning_a_full_page_refuses_it_at_an_unreserved_deleter() {
         let mut judge = txns.judge_now(&pager, heap.id().0);
         let got = heap.update_pruning(&pager, target, y, &[Value::I64(3)], &[], &mut judge);
         assert_eq!(Err(HeapError::Page(refused_page(page))), got);
-        assert_eq!(BTreeMap::from([(page, Damage::Checksum)]), pager.damaged());
+        assert_eq!(BTreeMap::from([(page, FRAME)]), pager.damaged());
         assert_eq!(Err(refused_page(page)), pager.read(page).map(drop));
+        pager.close();
+    });
+}
+
+#[test]
+fn a_status_lookup_of_a_version_whose_header_changed_before_the_latch_reads_again() {
+    process::once(7, |rt| {
+        let pager = Pager::create(rt, &options()).unwrap();
+        let large = LargeStore::create(&pager, 40).unwrap();
+        let heap = Heap::create(&pager, 41, vec![FieldType::Scalar(Scalar::I64)], large).unwrap();
+        let tid = heap.insert(&pager, Xid(1), &[Value::I64(1)]).unwrap();
+        heap.insert(&pager, Xid(1), &[Value::I64(2)]).unwrap();
+        let mut versions = Vec::new();
+        heap.scan(&pager, |v| versions.push(v)).unwrap();
+        let [changed, kept] = versions.as_slice() else {
+            panic!("two versions: {versions:?}");
+        };
+        heap.delete(&pager, tid, PAST).unwrap();
+        let unreserved = || Err::<(), _>(StatusError::Unreserved(PAST));
+        assert_eq!(Ok(None), changed.looked_up(&pager, unreserved()));
+        assert_eq!(BTreeMap::new(), pager.damaged());
+        let page = Pid(tid.page());
+        assert_eq!(
+            Err(refused_page(page)),
+            kept.looked_up(&pager, unreserved())
+        );
+        assert_eq!(BTreeMap::from([(page, FRAME)]), pager.damaged());
         pager.close();
     });
 }
@@ -159,8 +181,8 @@ fn a_sweep_meeting_a_chunk_of_an_unreserved_writer_refuses_its_page() {
         let page = Pid(head.page());
         let resolved = |x| txns.resolved(&pager, x);
         let got = large.sweep(&pager, resolved, &mut || true);
-        assert_eq!(Err::<Walk, _>(refused_page(page)), got);
-        assert_eq!(BTreeMap::from([(page, Damage::Checksum)]), pager.damaged());
+        assert_eq!(Err::<Walk, _>(Refused::Page(refused_page(page))), got);
+        assert_eq!(BTreeMap::from([(page, FRAME)]), pager.damaged());
         pager.close();
     });
 }

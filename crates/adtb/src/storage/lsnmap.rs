@@ -49,17 +49,21 @@ impl<R: Runtime> Pager<R> {
     /// checksum, is no map page, its LSN is below `expected`, the LSN its parent gives it, or it
     /// cannot be read.
     fn map_page(&self, pid: Pid, expected: Lsn) -> Result<Vec<u8>, PageError> {
-        let read = self.read(pid).map(|p| p.to_vec());
-        match read {
-            Err(e) => Err(e),
-            Ok(page) if page::kind(&page) != PageKind::LsnMap as u16 => {
-                Err(self.damage(pid, Damage::Checksum))
+        let misfit =
+            |p: &[u8]| (page::kind(p) != PageKind::LsnMap as u16).then(|| page::kind_fault(p));
+        loop {
+            let page = self.read(pid)?.to_vec();
+            if misfit(&page).is_some() {
+                if let Some(e) = self.refuse_if(pid, |p| misfit(p)) {
+                    return Err(e);
+                }
+                continue;
             }
-            Ok(page) if page::lsn(&page) < expected => {
+            if page::lsn(&page) < expected {
                 let found = page::lsn(&page);
-                Err(self.damage(pid, Damage::Stale { expected, found }))
+                return Err(self.damage(pid, Damage::Stale { expected, found }));
             }
-            Ok(page) => Ok(page),
+            return Ok(page);
         }
     }
 

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use crate::btree::{BTree, Index};
-use crate::heap::{FieldType, Header, Heap, HeapNo, LargeStore, Version, walk};
+use crate::heap::{FieldType, Header, Heap, HeapNo, LargeStore, Refused, Slots, Version, walk};
 use crate::history::History;
 use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
 use crate::mvcc::{Marker, Past, PastError, Scope, Transactions, Writers};
@@ -1333,13 +1333,16 @@ fn sees<R: Runtime>(
     txns: &Transactions<R>,
     pager: &Pager<R>,
     marker: &Marker,
-    (at, h): (Tid, &Header),
+    (at, h, heap): (Tid, &Header, HeapNo),
 ) -> Result<bool, PageError> {
     let reader = txns.reader(pager, marker.snapshot.clone(), None);
     let seen = reader.sees(&h.writers);
-    Ok(seen
-        .map_err(|e| Heap::refuse_unreserved(pager, Pid(at.page()), (), e))?
-        .visible())
+    let at = (Pid(at.page()), Slots::Versions(heap.0));
+    let refused = |e| match Heap::refuse_unreserved(pager, at, (), e) {
+        Refused::Page(e) => e,
+        Refused::Gone => panic!("a version this test reads keeps its writer"),
+    };
+    Ok(seen.map_err(refused)?.visible())
 }
 
 /// Returns the rows of a constructor as the safe snapshot of `marker` reads them, from `heaps`,
@@ -1353,13 +1356,13 @@ fn rows<R: Runtime>(
     heaps: &[&Heap],
 ) -> Result<Vec<Vec<Value>>, PageError> {
     let mut seen: HashMap<Writers, Vec<Vec<Value>>> = HashMap::new();
-    let mut versions: Vec<Version> = Vec::new();
+    let mut versions: Vec<(Version, HeapNo)> = Vec::new();
     for heap in heaps {
-        heap.scan(pager, |v| versions.push(v))?;
+        heap.scan(pager, |v| versions.push((v, heap.id())))?;
     }
     let mut out = Vec::new();
-    for v in versions {
-        if !sees(txns, pager, marker, (v.tid, &v.header))? {
+    for (v, heap) in versions {
+        if !sees(txns, pager, marker, (v.tid, &v.header, heap))? {
             continue;
         }
         let same = seen.entry(v.header.writers).or_default();
@@ -1389,7 +1392,7 @@ fn probe<R: Runtime>(
 ) -> Result<Option<Vec<Value>>, Error> {
     for e in index.probe_ctor(pager, key, ctor)? {
         let walked = walk(pager, current.id(), sum, e.tid, |l, _| {
-            sees(txns, pager, marker, (l.tid, &l.header))
+            sees(txns, pager, marker, (l.tid, &l.header, current.id()))
         })?;
         if let Some((l, row)) = walked
             && l.heap == current.id()
@@ -1403,7 +1406,7 @@ fn probe<R: Runtime>(
             continue;
         }
         if let Some(v) = past.read(pager, e.tid)?
-            && sees(txns, pager, marker, (v.tid, &v.header))?
+            && sees(txns, pager, marker, (v.tid, &v.header, past.id()))?
         {
             return Ok(Some(v.row));
         }
@@ -1421,8 +1424,13 @@ struct VacuumOnFetch {
 }
 
 impl crate::exec::Reads for VacuumOnFetch {
-    fn saw(&self, at: Pid, writers: &Writers) -> Result<bool, crate::exec::Error> {
+    fn saw(
+        &self,
+        (at, heap): (Pid, HeapNo),
+        writers: &Writers,
+    ) -> Result<bool, crate::exec::Error> {
         let seen = self.reader.sees(writers);
+        let at = (at, Slots::Versions(heap.0));
         let refuse = |e| Heap::refuse_unreserved(&self.db.pager, at, (), e);
         Ok(seen.map_err(refuse)?.visible())
     }

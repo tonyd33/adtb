@@ -3,7 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::key::Tid;
 use crate::mvcc::{StatusError, Xid};
 use crate::runtime::Runtime;
-use crate::storage::{Damage, LATCHES_PER_THREAD, PageError, Pager, Pid, Stopped, Walk};
+use crate::storage::{
+    LATCHES_PER_THREAD, PageError, PageExclusive, Pager, Pid, Shape, Stopped, Walk, kind_fault,
+};
 
 use super::dir::{Above, Fit, Space, max_fanout, need_category, page_category};
 use super::page::{Arrangement, HeapPage, HeapPageMut, Kinded, Owned, PageCopy, Slot};
@@ -12,7 +14,7 @@ use super::slotted;
 use super::stage::Stage;
 use super::version::{Flags, tid_bits, tid_from_bits};
 use super::write::{HeapWrite, Rank};
-use super::{Error, Heap};
+use super::{Error, Heap, Refused, Slots};
 
 const NEXT: usize = 0;
 const WRITER: usize = 8;
@@ -54,6 +56,11 @@ fn chunk(tuple: &[u8]) -> Chunk {
     }
 }
 
+/// Returns the writer of `tuple` read as a chunk, `None` when it is too short to be one.
+pub(super) fn chunk_writer(tuple: &[u8]) -> Option<Xid> {
+    (tuple.len() >= BYTES).then(|| chunk(tuple).writer)
+}
+
 fn set_chunk(tuple: &mut [u8], c: Chunk) {
     tuple[NEXT..NEXT + 8].copy_from_slice(&c.next.map_or(0, tid_bits).to_le_bytes());
     tuple[WRITER..WRITER + 8].copy_from_slice(&c.writer.0.to_le_bytes());
@@ -91,6 +98,19 @@ fn tuple_at(page: &impl Owned, owner: u32, slot: usize) -> Option<&[u8]> {
         Slot::Normal { at, .. } if at.len() >= BYTES => Some(&page.bytes()[at]),
         _ => None,
     }
+}
+
+/// Returns how `page` is out of shape where slot `slot` holds a chunk of store `owner`.
+fn chunk_fault(page: &impl Owned, owner: u32, slot: usize) -> Option<Shape> {
+    let Some(kinded) = Kinded::of(page) else {
+        return Some(kind_fault(page));
+    };
+    if kinded.owner() != owner {
+        return Some(Shape::Owner);
+    }
+    tuple_at(page, owner, slot)
+        .is_none()
+        .then_some(Shape::Frame)
 }
 
 /// Change the chunk at `tid` on `page`, a page of store `owner`, by `f`, unless `f` refuses it.
@@ -249,7 +269,7 @@ impl LargeStore {
 
     /// Set the directory entry of `pid`, a page that could not take a chunk, from the page. Leave
     /// a page no longer of the store alone.
-    pub(super) fn refused<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), PageError> {
+    pub(super) fn refused<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), Refused> {
         let mut fix = HeapWrite::new(pager);
         let copy = fix.stage().page(pager, Rank::Store(pid))?;
         if store_page(copy, self.id()).is_none() {
@@ -258,7 +278,7 @@ impl LargeStore {
         let above = self
             .space
             .reflect(fix.stage(), pager, pid, FORMAT, Fit::Refused)?;
-        fix.commit_store(pager.reserve(), above)
+        Ok(fix.commit_store(pager.reserve(), above)?)
     }
 
     /// Returns the pages a sweep reads: those touched since the sweep that last left them, in
@@ -282,11 +302,12 @@ impl LargeStore {
         let mut out = Vec::with_capacity(pointer.len as usize);
         let mut at = Some(pointer.first);
         while let Some(tid) = at {
-            let pid = Pid(tid.page());
+            let (pid, slot) = (Pid(tid.page()), usize::from(tid.slot()));
             let page = pager.read_formatted(pid)?;
-            let Some(tuple) = tuple_at(&page, self.id(), usize::from(tid.slot())) else {
+            let Some(tuple) = tuple_at(&page, self.id(), slot) else {
                 drop(page);
-                return Err(pager.damage(pid, Damage::Checksum));
+                self.refuse_chunk(pager, pid, slot)?;
+                continue;
             };
             at = chunk(tuple).next;
             out.extend_from_slice(&tuple[BYTES..]);
@@ -309,11 +330,12 @@ impl LargeStore {
         let mut out = Vec::new();
         let mut at = Some(pointer.first);
         while let Some(t) = at {
-            let pid = Pid(t.page());
+            let (pid, slot) = (Pid(t.page()), usize::from(t.slot()));
             let page = pager.read_formatted(pid)?;
-            let Some(c) = chunk_at(&page, self.id(), usize::from(t.slot())) else {
+            let Some(c) = chunk_at(&page, self.id(), slot) else {
                 drop(page);
-                return Err(pager.damage(pid, Damage::Checksum));
+                self.refuse_chunk(pager, pid, slot)?;
+                continue;
             };
             out.push((t, c));
             at = c.next;
@@ -344,16 +366,29 @@ impl LargeStore {
         f: impl FnOnce(&mut Chunk) -> bool,
     ) -> Result<(), PageError> {
         let pid = Pid(tid.page());
-        if update_chunk(stage.page(pager, Rank::Store(pid))?, self.id(), tid, f) {
+        let copy = stage.page(pager, Rank::Store(pid))?;
+        let shape = chunk_fault(copy, self.id(), usize::from(tid.slot()));
+        if update_chunk(copy, self.id(), tid, f) {
             return Ok(());
         }
-        stage.unstage(pid);
-        Err(pager.damage(pid, Damage::Checksum))
+        Err(stage.refuse(pid, shape.unwrap_or(Shape::Frame)))
+    }
+
+    /// Refuse page `pid` as out of shape when, under its exclusive latch, slot `slot` holds no
+    /// chunk of the store. Returns `Ok` when it holds one: the caller reads it again.
+    fn refuse_chunk<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        pid: Pid,
+        slot: usize,
+    ) -> Result<(), PageError> {
+        let judge = |p: &PageExclusive<'_, R>| chunk_fault(p, self.id(), slot);
+        pager.refuse_if(pid, judge).map_or(Ok(()), Err)
     }
 
     /// Count one version fewer pointing at `pointer`, in an update of its own. A head left at
     /// count 0 is freed by a later [`LargeStore::sweep`].
-    pub fn release<R: Runtime>(&self, pager: &Pager<R>, pointer: Pointer) -> Result<(), PageError> {
+    pub fn release<R: Runtime>(&self, pager: &Pager<R>, pointer: Pointer) -> Result<(), Refused> {
         let pid = Pid(pointer.first.page());
         let mut write = HeapWrite::new(pager);
         let stage = write.stage();
@@ -372,7 +407,7 @@ impl LargeStore {
                 .position();
             above = self.space.touch(stage, pager, pid, position, true)?;
         }
-        write.commit_store(pager.reserve(), above)
+        Ok(write.commit_store(pager.reserve(), above)?)
     }
 
     /// Settle the store's directory, then free every value whose head on a touched page has count
@@ -389,7 +424,7 @@ impl LargeStore {
         pager: &Pager<R>,
         mut resolved: impl FnMut(Xid) -> Result<bool, StatusError>,
         between: &mut dyn FnMut() -> bool,
-    ) -> Result<Walk, PageError> {
+    ) -> Result<Walk, Refused> {
         self.space.settle(pager)?;
         let mut freed = 0;
         for (position, pid) in self.space.touched(pager)? {
@@ -405,8 +440,17 @@ impl LargeStore {
                 if !c.head || c.count > 0 {
                     continue;
                 }
-                let done = resolved(c.writer);
-                if !done.map_err(|e| Heap::refuse_unreserved(pager, pid, (), e))? {
+                let done = match resolved(c.writer) {
+                    Ok(done) => done,
+                    Err(e) => {
+                        match Heap::refuse_unreserved(pager, (pid, Slots::Chunks(self.id())), (), e)
+                        {
+                            Refused::Page(e) => return Err(e.into()),
+                            Refused::Gone => continue,
+                        }
+                    }
+                };
+                if !done {
                     pending = true;
                     continue;
                 }
@@ -434,7 +478,7 @@ impl LargeStore {
         mut at: Tid,
         writer: Xid,
         between: &mut dyn FnMut() -> bool,
-    ) -> Result<Walk, PageError> {
+    ) -> Result<Walk, Refused> {
         let mut freed = 0;
         loop {
             let here = Pid(at.page());
@@ -496,7 +540,7 @@ impl LargeStore {
     }
 
     /// Mark store page `pid` touched, in an update of its own.
-    fn touch_page<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), PageError> {
+    fn touch_page<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), Refused> {
         let mut write = HeapWrite::new(pager);
         let stage = write.stage();
         let Some(position) = Kinded::of(stage.page(pager, Rank::Store(pid))?).map(Kinded::position)
@@ -504,7 +548,7 @@ impl LargeStore {
             return Ok(());
         };
         let above = self.space.touch(stage, pager, pid, position, true)?;
-        write.commit_store(pager.reserve(), above)
+        Ok(write.commit_store(pager.reserve(), above)?)
     }
 
     /// Count one more version pointing at each of `pointers`, in updates of their own, each
@@ -534,12 +578,7 @@ impl LargeStore {
     }
 
     /// Unmark touched page `pid` at `position` if it holds no head of count 0.
-    fn settle<R: Runtime>(
-        &self,
-        pager: &Pager<R>,
-        pid: Pid,
-        position: u32,
-    ) -> Result<(), PageError> {
+    fn settle<R: Runtime>(&self, pager: &Pager<R>, pid: Pid, position: u32) -> Result<(), Refused> {
         let mut write = HeapWrite::new(pager);
         let stage = write.stage();
         let copy = stage.page(pager, Rank::Store(pid))?;
@@ -564,7 +603,7 @@ impl LargeStore {
         pager: &Pager<R>,
         head: Tid,
         count: u32,
-    ) -> Result<(), PageError> {
+    ) -> Result<(), Refused> {
         let mut write = HeapWrite::new(pager);
         let stage = write.stage();
         self.update(stage, pager, head, |c| {
@@ -581,7 +620,7 @@ impl LargeStore {
                 .space
                 .touch(stage, pager, Pid(head.page()), position, true)?;
         }
-        write.commit_store(pager.reserve(), above)
+        Ok(write.commit_store(pager.reserve(), above)?)
     }
 
     /// Returns what is wrong with the store's chunks, `versions` being the number of versions

@@ -1,5 +1,6 @@
 //! Hold one heap per constructor: pages, slots, versions, large values and the visibility map.
 
+mod blame;
 mod chain;
 mod dir;
 mod fixed;
@@ -32,7 +33,7 @@ pub use chain::{successor, walk};
 pub use dir::max_fanout;
 #[cfg(test)]
 pub use handle::Pruned;
-pub use handle::{Heap, HeapNo, Link, Version, fits};
+pub use handle::{Heap, HeapNo, Link, Slots, Version, fits};
 pub use large::LargeStore;
 pub use named::{OrphanEntry, refuse_named};
 #[cfg(test)]
@@ -65,6 +66,31 @@ pub enum Error {
 impl From<PageError> for Error {
     fn from(e: PageError) -> Error {
         Error::Page(e)
+    }
+}
+
+/// The failure of a refusal judged again under the page's exclusive latch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refused {
+    Page(PageError),
+    /// The page no longer holds what was judged of it, and the caller cannot read it again: a
+    /// status lookup's version or chunk naming the writer is gone, or a write's stage was
+    /// abandoned to latch the page.
+    Gone,
+}
+
+impl From<PageError> for Refused {
+    fn from(e: PageError) -> Refused {
+        Refused::Page(e)
+    }
+}
+
+impl From<Refused> for Error {
+    fn from(e: Refused) -> Error {
+        match e {
+            Refused::Page(e) => Error::Page(e),
+            Refused::Gone => Error::Changed { current: None },
+        }
     }
 }
 

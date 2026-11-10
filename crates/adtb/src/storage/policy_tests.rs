@@ -1,5 +1,5 @@
 use super::{Fault, Holder, Mark, Phase, mark};
-use crate::storage::{Damage, Lsn, Quarantine};
+use crate::storage::{Damage, Lsn, Quarantine, Shape};
 
 const HEAP: Quarantine = Quarantine::Heap(3);
 const INDEX: Quarantine = Quarantine::Index(4);
@@ -28,7 +28,7 @@ const OI: Mark = Mark::Object(INDEX);
 /// A kind of fault the storage design states one mark for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum C {
-    /// A page failing its checksum or its log position.
+    /// A page failing its checksum or its log position, or out of shape.
     Damaged,
     /// A status page the retained log cannot prove at open.
     Unproven,
@@ -55,10 +55,17 @@ impl C {
     fn faults(self) -> Vec<Fault> {
         let (expected, found) = (Lsn(9), Lsn(5));
         match self {
-            C::Damaged => vec![
-                Fault::Page(Damage::Checksum),
-                Fault::Page(Damage::Stale { expected, found }),
-            ],
+            C::Damaged => [
+                Damage::Checksum,
+                Damage::Stale { expected, found },
+                Damage::Shape(Shape::Blank),
+                Damage::Shape(Shape::Kind),
+                Damage::Shape(Shape::Owner),
+                Damage::Shape(Shape::Frame),
+                Damage::Shape(Shape::Format),
+            ]
+            .map(Fault::Page)
+            .to_vec(),
             C::Unproven => vec![Fault::Page(Damage::LogUnproven { at: expected })],
             C::Unread => vec![Fault::Page(Damage::Unreadable)],
             C::Settled => vec![Fault::Page(Damage::Settled { expected, found })],

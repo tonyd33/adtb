@@ -1,4 +1,5 @@
 use super::crc::crc32c_skipping;
+use super::error::Shape;
 use super::{Lsn, Pid};
 
 pub const MIN_PAGE_SIZE: u32 = 4096;
@@ -81,6 +82,16 @@ pub fn format(page: &[u8]) -> u16 {
 
 pub fn kind(page: &[u8]) -> u16 {
     u16_at(page, KIND)
+}
+
+/// Returns how `page`, of another kind than expected, is out of shape: blank when every byte of
+/// it is zero.
+pub fn kind_fault(page: &[u8]) -> Shape {
+    if page.iter().all(|&b| b == 0) {
+        Shape::Blank
+    } else {
+        Shape::Kind
+    }
 }
 
 pub fn owner(page: &[u8]) -> u32 {

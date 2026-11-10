@@ -594,7 +594,12 @@ pub fn repair<R: Runtime>(
                     .find(|s| s.id() == owner)
                     .expect("an overcounted head lies in a store of the inventory");
                 let head = Tid::new(f.pid.0, slot).expect("48-bit page id");
-                store.recount(pager, head, versions)?;
+                store.recount(pager, head, versions).map_err(|e| match e {
+                    crate::heap::Refused::Page(e) => e,
+                    crate::heap::Refused::Gone => panic!(
+                        "a recount changes only a store page, which ranks below every directory page"
+                    ),
+                })?;
             }
             _ => continue,
         }

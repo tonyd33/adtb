@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -7,17 +7,20 @@ use adtb_sys::os::{Backend, OsRuntime};
 use adtb_sys::runtime::Threads;
 use adtb_testkit::scratch::Scratch;
 
-use crate::heap::{Error, FieldType, Heap, LargeStore};
+use crate::heap::{Error, FieldType, Heap, LargeStore, Refused};
 use crate::key::{Scalar, Value};
 use crate::mvcc::Fate;
 use crate::mvcc::Xid;
 use crate::storage::policy::{Holder, Phase};
-use crate::storage::{self, Damage, Options, PageError, PageKind, Pager, Pid, Quarantine, Stopped};
+use crate::storage::{
+    self, Damage, Options, PageError, PageKind, Pager, Pid, Quarantine, Shape, Stopped,
+};
 
+use super::super::blame::{Blame, Holds};
 use super::super::page::{Arrangement, CONTENTS, HeapPage, Kinded};
 use super::super::stage::Stage;
 use super::super::vm::{self, Vm};
-use super::super::write::Rank;
+use super::super::write::{Level, Rank};
 use super::{CAPACITY, COUNT, Fit, LEVEL, Space, VM, entry, level, max_fanout, set_word};
 
 fn pager(scratch: &Scratch) -> Pager<OsRuntime> {
@@ -93,10 +96,189 @@ fn redirect(pager: &Pager<OsRuntime>, parent: Pid, child: Pid, unwritten: Pid) {
         .unwrap();
 }
 
-fn refused<T>(pid: Pid) -> Result<T, PageError> {
+#[test]
+fn a_blame_through_a_stage_changed_above_the_blamed_page_abandons_the_stage_and_judges_again() {
+    let scratch = Scratch::new("heap-dir", "blame-abandons");
+    let pager = pager(&scratch);
+    let root = space(&pager, 0).root();
+    let map = Vm::create(&pager, 7).unwrap();
+    let rank = Rank::Dir {
+        level: Level::Root,
+        pid: root,
+    };
+    let stored = pager.read(root).unwrap().to_vec();
+    let mut repaired = stored.clone();
+    repaired[CONTENTS] ^= 1;
+    let unchanged = pager.read(map).unwrap().to_vec();
+    let frame = PageError {
+        pid: root,
+        damage: Damage::Shape(Shape::Frame),
+    };
+    let cases = [
+        (
+            "the root changed before its latch",
+            repaired,
+            Refused::Gone,
+            None,
+        ),
+        (
+            "the root still out of shape",
+            stored,
+            Refused::Page(frame),
+            Some(frame.damage),
+        ),
+    ];
+    for (what, judged, expected, recorded) in cases {
+        let mut stage = Stage::new();
+        stage.page(&pager, Rank::Vm(map)).unwrap()[CONTENTS] ^= 1;
+        let blame = Blame::new(rank, Shape::Frame, Holds::Is(judged));
+        assert_eq!(Some(expected), blame.refuse(&mut stage, &pager), "{what}");
+        assert!(!stage.holds(map), "{what}: the stage was abandoned");
+        drop(stage);
+        assert_eq!(unchanged, pager.read(map).unwrap().to_vec(), "{what}");
+        assert_eq!(recorded, pager.damaged().get(&root).copied(), "{what}");
+    }
+    pager.close();
+}
+
+#[test]
+fn a_page_named_twice_whose_first_entry_changed_before_the_judgement_records_nothing() {
+    let scratch = Scratch::new("heap-dir", "twice-changed");
+    let pager = pager(&scratch);
+    let s = space(&pager, 3);
+    let owned = s.owned(&pager).unwrap();
+    let (first, second, pages) = (owned[1], owned[2], &owned[3..]);
+    let twice = pages[0];
+    pager
+        .update(&[second], |p| set_word(p[0], 0, twice, 0, false))
+        .unwrap();
+    let blame = || {
+        let holds = Holds::Twice {
+            page: twice,
+            at: 0,
+            first,
+            first_at: 0,
+        };
+        Blame::new(Rank::dir(0, second), Shape::Frame, holds)
+    };
+    pager
+        .update(&[first], |p| set_word(p[0], 0, pages[1], 0, false))
+        .unwrap();
+    assert_eq!(None, blame().refuse(&mut Stage::new(), &pager));
+    assert_eq!(BTreeMap::new(), pager.damaged());
+    assert!(!pager.is_quarantined(Quarantine::Database));
+    assert!(!pager.is_quarantined(Quarantine::Heap(7)));
+    pager
+        .update(&[first], |p| set_word(p[0], 0, twice, 0, false))
+        .unwrap();
+    let frame = PageError {
+        pid: second,
+        damage: Damage::Shape(Shape::Frame),
+    };
+    assert_eq!(
+        Some(Refused::Page(frame)),
+        blame().refuse(&mut Stage::new(), &pager)
+    );
+    assert_eq!(BTreeMap::from([(second, frame.damage)]), pager.damaged());
+    pager.close();
+}
+
+#[test]
+fn a_page_named_twice_by_one_leaf_is_judged_under_that_leafs_latch() {
+    let scratch = Scratch::new("heap-dir", "twice-one-leaf");
+    let pager = pager(&scratch);
+    let s = space(&pager, 2);
+    let owned = s.owned(&pager).unwrap();
+    let [leaf, twice, other] = owned[..] else {
+        panic!("a root leaf over two pages: {owned:?}");
+    };
+    let blame = || {
+        let holds = Holds::Twice {
+            page: twice,
+            at: 1,
+            first: leaf,
+            first_at: 0,
+        };
+        let rank = Rank::Dir {
+            level: Level::Root,
+            pid: leaf,
+        };
+        Blame::new(rank, Shape::Frame, holds)
+    };
+    pager
+        .update(&[leaf], |p| set_word(p[0], 1, twice, 0, false))
+        .unwrap();
+    pager
+        .update(&[leaf], |p| set_word(p[0], 0, other, 0, false))
+        .unwrap();
+    assert_eq!(None, blame().refuse(&mut Stage::new(), &pager));
+    assert_eq!(BTreeMap::new(), pager.damaged());
+    pager
+        .update(&[leaf], |p| set_word(p[0], 0, twice, 0, false))
+        .unwrap();
+    let frame = PageError {
+        pid: leaf,
+        damage: Damage::Shape(Shape::Frame),
+    };
+    assert_eq!(
+        Some(Refused::Page(frame)),
+        blame().refuse(&mut Stage::new(), &pager)
+    );
+    assert_eq!(BTreeMap::from([(leaf, frame.damage)]), pager.damaged());
+    pager.close();
+}
+
+#[test]
+fn a_blame_of_a_page_the_stage_holds_refuses_it_under_that_latch_only_while_unchanged() {
+    let scratch = Scratch::new("heap-dir", "blame-held");
+    let pager = pager(&scratch);
+    let held = space(&pager, 0).root();
+    let other = space(&pager, 0).root();
+    let rank = Rank::dir(0, held);
+    let stored = pager.read(held).unwrap().to_vec();
+    let mut changed = stored.clone();
+    changed[CONTENTS] ^= 1;
+    let blame = |judged: &[u8]| Blame::new(rank, Shape::Frame, Holds::Is(judged.to_vec()));
+    let mut stage = Stage::new();
+    stage.page(&pager, Rank::Store(other)).unwrap();
+    assert_eq!(None, blame(&changed).refuse(&mut stage, &pager), "not held");
+    assert!(
+        stage.holds(other),
+        "a whole stage keeps its latches below the blamed page"
+    );
+    assert_eq!(BTreeMap::new(), pager.damaged());
+    drop(stage);
+    let mut stage = Stage::new();
+    stage.page(&pager, rank).unwrap()[CONTENTS] ^= 1;
+    assert_eq!(
+        Some(Refused::Gone),
+        blame(&changed).refuse(&mut stage, &pager),
+        "held changed, back in shape under its latch"
+    );
+    assert!(!stage.holds(held));
+    drop(stage);
+    assert_eq!(stored, pager.read(held).unwrap().to_vec());
+    assert_eq!(BTreeMap::new(), pager.damaged());
+    let mut stage = Stage::new();
+    stage.page(&pager, rank).unwrap();
+    let frame = PageError {
+        pid: held,
+        damage: Damage::Shape(Shape::Frame),
+    };
+    assert_eq!(
+        Some(Refused::Page(frame)),
+        blame(&changed).refuse(&mut stage, &pager),
+        "held unchanged: refused under the stage's latch without judging again"
+    );
+    assert!(!stage.holds(held));
+    assert_eq!(BTreeMap::from([(held, frame.damage)]), pager.damaged());
+    pager.close();
+}
+
+fn refused<T>(pid: Pid, shape: Shape) -> Result<T, PageError> {
     Err(PageError {
         pid,
-        damage: Damage::Checksum,
+        damage: Damage::Shape(shape),
     })
 }
 
@@ -108,7 +290,7 @@ fn a_directory_page_out_of_shape_stops_a_holder_walk_and_refuses_the_page_naming
     put_u16(&pager, s.root(), LEVEL, 32);
     let got = s.append(&pager, s.root(), Arrangement::Slotted, 1);
     assert_eq!(
-        refused(s.root()),
+        refused(s.root(), Shape::Frame),
         got,
         "an empty root at level 32 of capacity 2"
     );
@@ -138,7 +320,7 @@ fn a_directory_page_out_of_shape_stops_a_holder_walk_and_refuses_the_page_naming
         assert!(matches!(s.held(&pager), Err(Stopped::Shape)), "{what}");
         assert_eq!(damaged, pager.damaged(), "{what}: the walk recorded damage");
         let got = s.append(&pager, s.root(), Arrangement::Slotted, 1);
-        assert_eq!(refused(nodes[blamed]), got, "{what}");
+        assert_eq!(refused(nodes[blamed], Shape::Frame), got, "{what}");
     }
     pager.close();
 }
@@ -157,7 +339,7 @@ fn an_inner_entry_naming_a_staged_page_refuses_its_directory_page_and_keeps_the_
     let end = pager.page_size() - 1;
     stage.page(&pager, Rank::Heap(last)).unwrap()[end] = 9;
     let got = s.reflect(&mut stage, &pager, last, 1, Fit::Took).map(drop);
-    assert_eq!(refused(root), got);
+    assert_eq!(refused(root, Shape::Kind).map_err(Refused::Page), got);
     assert_eq!(9, stage.read(&pager, Rank::Heap(last)).unwrap()[end]);
     drop(stage);
     pager.close();
@@ -212,7 +394,10 @@ fn a_heap_whose_root_names_no_map_fails_verify() {
     set_map(&pager, heap.root(), Pid(0));
     let want = vec![format!("{:?} names no visibility map", heap.root())];
     assert_eq!(Ok(want), heap.verify(&pager));
-    assert_eq!(refused(heap.root()), heap.all_visible(&pager, Pid(5)));
+    assert_eq!(
+        refused(heap.root(), Shape::Frame),
+        heap.all_visible(&pager, Pid(5))
+    );
     pager.close();
 }
 
@@ -234,7 +419,7 @@ fn a_map_pointer_out_of_shape_stops_a_holder_walk_and_another_heaps_damage_marks
         assert!(matches!(held, Err(Stopped::Shape)), "{what}: {held:?}");
         assert_eq!(damaged, pager.damaged(), "{what}: the walk recorded damage");
     }
-    let e = pager.damage(b_map[3], Damage::Checksum);
+    let e = pager.plant_damage(b_map[3], Damage::Checksum);
     assert_eq!(b_map[3], e.pid);
     let heap = |id| Holder::Relation {
         object: Quarantine::Heap(id),
@@ -246,7 +431,7 @@ fn a_map_pointer_out_of_shape_stops_a_holder_walk_and_another_heaps_damage_marks
     });
     assert_eq!(Some(BTreeSet::from([heap(8)])), holders);
     assert_eq!(
-        refused(a.root()),
+        refused(a.root(), Shape::Owner),
         a.verify(&pager),
         "a map root of another heap"
     );
@@ -282,16 +467,22 @@ fn a_map_root_naming_itself_in_child_slot_0_stops_each_walk_within_a_bound() {
     let held = within(&rt, move || h.held_pages(&p));
     assert!(matches!(held, Err(Stopped::Shape)), "{held:?}");
     let (p, h) = (pager.clone(), heaps[0].0.clone());
-    assert_eq!(refused(heaps[0].1), within(&rt, move || h.owned_pages(&p)));
+    assert_eq!(
+        refused(heaps[0].1, Shape::Frame),
+        within(&rt, move || h.owned_pages(&p))
+    );
     let (p, h) = (pager.clone(), heaps[1].0.clone());
-    assert_eq!(refused(heaps[1].1), within(&rt, move || h.verify(&p)));
+    assert_eq!(
+        refused(heaps[1].1, Shape::Frame),
+        within(&rt, move || h.verify(&p))
+    );
     let (p, h) = (pager.clone(), heaps[2].0.clone());
     let visible = within(&rt, move || h.all_visible(&p, Pid(5)));
-    assert_eq!(refused(heaps[2].1), visible);
+    assert_eq!(refused(heaps[2].1, Shape::Frame), visible);
     let (p, (id, root)) = (pager, (heaps[3].0.id().0, heaps[3].1));
     let named_by = heaps[3].0.root();
     let extended = within(&rt, move || Vm::open(root, id, named_by).extend(&p, Pid(5)));
-    assert_eq!(refused(root), extended);
+    assert_eq!(refused(root, Shape::Frame), extended);
 }
 
 #[test]
@@ -312,13 +503,13 @@ fn an_all_zero_page_an_entry_names_stops_a_holder_walk_and_refuses_the_page_nami
         "a directory leaf"
     );
     assert_eq!(damaged, pager.damaged(), "the walk recorded damage");
-    assert_eq!(refused(s.root()), s.pages(&pager));
+    assert_eq!(refused(s.root(), Shape::Blank), s.pages(&pager));
 
     let s = space(&pager, 1);
     let page = s.pages(&pager).unwrap()[0];
     redirect(&pager, s.root(), page, Pid((1 << 20) + 1));
     assert_eq!(
-        refused(s.root()),
+        refused(s.root(), Shape::Blank),
         s.find(&pager, 1, Arrangement::Slotted, 1)
     );
 
@@ -329,7 +520,11 @@ fn an_all_zero_page_an_entry_names_stops_a_holder_walk_and_refuses_the_page_nami
         let held = heap.held_pages(&pager);
         assert!(matches!(held, Err(Stopped::Shape)), "{what}: {held:?}");
         assert_eq!(damaged, pager.damaged(), "{what}: the walk recorded damage");
-        assert_eq!(refused(map[blamed]), heap.owned_pages(&pager), "{what}");
+        assert_eq!(
+            refused(map[blamed], Shape::Blank),
+            heap.owned_pages(&pager),
+            "{what}"
+        );
     }
     pager.close();
 }
@@ -367,7 +562,10 @@ fn a_search_meeting_an_entry_that_names_a_map_page_holds_no_latch_a_map_writer_w
     leaf_held.recv().unwrap();
     drop(held);
     let got = answer.recv_timeout(Duration::from_secs(3));
-    assert_eq!(Ok(refused(leaf)), got.map_err(|e| format!("{e:?}")));
+    assert_eq!(
+        Ok(refused(leaf, Shape::Kind)),
+        got.map_err(|e| format!("{e:?}"))
+    );
 }
 
 #[test]
@@ -387,7 +585,7 @@ fn a_map_pointer_naming_the_page_prune_holds_refuses_the_directory_root_within_a
     let pruned = within(&rt, move || {
         heap.prune(&p, page, keep, &[], false).map(drop)
     });
-    assert_eq!(refused(root), pruned);
+    assert_eq!(refused(root, Shape::Kind).map_err(Refused::Page), pruned);
 }
 
 #[test]
@@ -444,7 +642,11 @@ fn a_refusal_rechecks_an_entry_whose_leaf_changed_under_its_check() {
             .update(&[leaf], |p| set_word(p[0], 0, now, category, true))
             .unwrap();
         drop(held);
-        let want = if restored { Ok(false) } else { refused(leaf) };
+        let want = if restored {
+            Ok(false)
+        } else {
+            refused(leaf, Shape::Kind)
+        };
         let got = answer.recv_timeout(Duration::from_secs(3));
         assert_eq!(Ok(want), got.map_err(|e| format!("{e:?}")), "{restored}");
     }
@@ -462,7 +664,10 @@ fn a_refusal_takes_the_position_from_the_path_past_a_short_leaf() {
     put_u16(&pager, first, COUNT, 1);
     put_u16(&pager, named, 14, PageKind::HeapFixed as u16);
     assert!(HeapPage::any(&pager.read(named).unwrap()).is_none());
-    assert_eq!(refused(named), s.refuse_misnamed(&pager, named));
+    assert_eq!(
+        refused(named, Shape::Frame),
+        s.refuse_misnamed(&pager, named)
+    );
 }
 
 #[test]
@@ -480,7 +685,7 @@ fn a_scan_refuses_the_leaf_naming_its_page_at_a_second_position() {
     pager
         .update(&[root], |p| set_word(p[0], 1, data, 0, false))
         .unwrap();
-    assert_eq!(refused(root), heap.scan(&pager, |_| {}));
+    assert_eq!(refused(root, Shape::Frame), heap.scan(&pager, |_| {}));
 }
 
 #[test]
@@ -516,7 +721,10 @@ fn a_root_entry_past_the_last_position_refuses_the_root_within_a_bound() {
     (root[0], root[1024]) = (inner, inner);
     node(s.root(), 2, &root);
     let p = pager.clone();
-    assert_eq!(refused(s.root()), within(&rt, move || s.pages(&p)));
+    assert_eq!(
+        refused(s.root(), Shape::Frame),
+        within(&rt, move || s.pages(&p))
+    );
 }
 
 /// Push `path::function` for each function under `dir` that records damage or builds a
@@ -566,32 +774,21 @@ fn damage_is_recorded_outside_storage_only_by_these_functions() {
     damage_sites(&src, &src, &mut found);
     let expected = [
         "api/error.rs::a_damaged_page_met_writing_catalog_rows_is_a_storage_failure",
-        "api/verify.rs::damage_kept_store",
-        "heap/dir.rs::refuse",
-        "heap/handle/mod.rs::refuse_format",
-        "heap/handle/mod.rs::refuse_unreserved",
-        "heap/large.rs::chunks",
-        "heap/large.rs::read",
-        "heap/large.rs::update",
-        "heap/vm.rs::refuse",
-        "mvcc/clog.rs::read_role",
         "mvcc/clog.rs::unresolved",
-        "testing/plant.rs::plant",
-        "write/sequence.rs::open",
         "write/verify.rs::every_other_problem_is_a_finding",
     ];
     assert_eq!(BTreeSet::from(expected.map(String::from)), found);
 }
 
-type MapRead = fn(&Vm, &Pager<OsRuntime>) -> Result<(), PageError>;
+type MapRead = fn(&Vm, &Pager<OsRuntime>) -> Result<(), Refused>;
 
 #[test]
 fn a_map_root_another_heap_now_owns_is_refused_at_the_directory_root_naming_it() {
     let reads: [(&str, MapRead); 3] = [
         ("get", |m, p| m.get(&mut Stage::new(), p, Pid(5)).map(drop)),
-        ("marked", |m, p| m.marked(p).map(drop)),
+        ("marked", |m, p| Ok(m.marked(p).map(drop)?)),
         ("extend", |m, p| {
-            m.extend(p, Pid(vm::reach(p.page_size(), 1)))
+            Ok(m.extend(p, Pid(vm::reach(p.page_size(), 1)))?)
         }),
     ];
     for (what, read) in reads {
@@ -607,7 +804,11 @@ fn a_map_root_another_heap_now_owns_is_refused_at_the_directory_root_naming_it()
                 p[0][storage::FIRST_EDITABLE..].copy_from_slice(&b_root[storage::FIRST_EDITABLE..]);
             })
             .unwrap();
-        assert_eq!(refused(a.root()), read(&map, &pager), "{what}");
+        assert_eq!(
+            refused(a.root(), Shape::Owner).map_err(Refused::Page),
+            read(&map, &pager),
+            "{what}"
+        );
         pager.close();
     }
 }

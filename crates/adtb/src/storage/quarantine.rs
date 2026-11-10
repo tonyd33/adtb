@@ -8,7 +8,7 @@ use super::page::Verdict;
 use super::page::{FIRST_EDITABLE, HEADER_LEN, PageKind};
 use super::pager::{PageError, PageExclusive, Pager};
 use super::policy::{self, Fault, Holder, Mark, Phase};
-use super::{Damage, Lsn, Pid};
+use super::{Damage, Lsn, Pid, Shape};
 use crate::mvcc::Settling;
 
 /// A status page whose file's copy lost a write, as [`Pager::read_stale`] judged it. Dropped
@@ -437,7 +437,7 @@ impl<R: Runtime> Pager<R> {
     /// Fail, marking nothing, if the page cannot be read.
     pub(crate) fn load_marks(&self, page: Pid) -> Result<(), PageError> {
         let read = match self.read(page) {
-            Ok(p) => decode(&p).ok_or(Damage::Checksum),
+            Ok(p) => decode(&p).ok_or(Damage::Shape(Shape::Frame)),
             Err(e) if e.damage == Damage::Unreadable => return Err(e),
             Err(e) => Err(e.damage),
         };

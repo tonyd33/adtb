@@ -21,7 +21,7 @@ fn unreadable_root(scratch: &Scratch) -> (OsRuntime, Pager<OsRuntime>, Opening) 
     drop(Catalog::open(rt.clone(), &pager).unwrap());
     pager.close();
     let (pager, opening) = Pager::open(rt.clone(), &options).unwrap();
-    pager.damage(pager.catalog_root(), Damage::Unreadable);
+    pager.plant_damage(pager.catalog_root(), Damage::Unreadable);
     (rt, pager, opening)
 }
 

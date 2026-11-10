@@ -4,7 +4,7 @@ use super::{Error, FieldType, Heap, LargeStore, WriteTarget};
 use crate::key::{Scalar, Tid, Value};
 use crate::mvcc::Xid;
 use crate::runtime::Threads;
-use crate::storage::{Damage, FIRST_EDITABLE, Options, PageError, Pager, Pid};
+use crate::storage::{Damage, FIRST_EDITABLE, Options, PageError, Pager, Pid, Shape};
 
 fn options() -> Options {
     Options {
@@ -256,17 +256,15 @@ fn a_page_whose_format_byte_names_no_format_of_the_heap_is_refused_as_damage() {
                         p[0][FORMAT_AT..FORMAT_AT + 2].copy_from_slice(&byte.to_le_bytes());
                     })
                     .unwrap();
-                let refused = Error::Page(PageError {
-                    pid,
-                    damage: Damage::Checksum,
-                });
+                let damage = Damage::Shape(Shape::Format);
+                let refused = Error::Page(PageError { pid, damage });
                 assert_eq!(
                     Err(refused),
                     read(&heap, &pager, old),
                     "{what} of format {byte}"
                 );
                 assert_eq!(
-                    Some(&Damage::Checksum),
+                    Some(&damage),
                     pager.damaged().get(&pid),
                     "{what} of format {byte}"
                 );
