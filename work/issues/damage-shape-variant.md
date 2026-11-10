@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-09
-status: open
+status: resolved
 kind: feature
 priority: 400
 summary: "a page whose checksum passes but whose shape is wrong (a format byte past the newest, a foreign map root) is refused as Damage::Checksum, so damage reports cannot tell a torn write from a structural fault"
+closed: 2026-11-09
 tags:
   - engine
 ---
@@ -21,3 +22,9 @@ Add a damage variant for a page of the wrong shape (kind, owner, frame or format
 ## Open questions
 
 Whether the damage list's on-disk record gains a variant byte or a new record kind.
+
+## 2026-11-09: done
+
+structure-damage-policy step 7: `Damage::Shape(Shape)` with five shapes, refused only under the page's exclusive latch after a second judgement; the damage list and log record carry it as kind 5. Clients still see a `Checksum` finding.
+
+## 2026-11-09: resolved
