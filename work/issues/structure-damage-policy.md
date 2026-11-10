@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-07
-status: open
+status: resolved
 kind: feature
 priority: 14
 summary: "damage policy is split over four layers: two holders functions state opposite rules for the roots heap, 49 sites set or read marks, open bypasses the commit-ordered mark"
+closed: 2026-11-10
 ---
 
 # Feature: One owner for damage mapping and marks across storage, write, catalog and api
@@ -79,3 +80,9 @@ Landed fdef1827, full check exit 0 (3616 tests). `Pager::refused_whole()` is the
 Counts outside mvcc and storage: `txns.quarantined()` 9 occurrences to 0 (private to mvcc); reads of the database mark alone, counted by the new structure-check row `marked_readers` (the `is_quarantined` spellings of `Quarantine::Database`, `std::iter::once(Quarantine::Database)`, and `admit_database(` calls), 14 lines, only falling. They ask whether the database is marked, a different question: the call gate, the transactions-failure rewrite and `open_damage`. An unreadable status page in session stays a `Storage` failure that marks nothing, as §8 states. No refusal or error moved; `KNOWN` 10 before and after. Unmeasured: the first `end_open_attempt` (before the reload) has no test that would fail without it.
 
 Remaining before the program closes: damage-search-fault-pairs (in progress).
+
+## 2026-11-10, program closed
+
+damage-search-fault-pairs landed a741ceaa (full check exit 0, 3616 tests, damage profile 14). Steps 1 to 11 and the pairs tier are done. The pairs tier found verify-misses-stale-page-before-log-gap. Open tickets this program filed and left: migrate-applies-under-mark, migrate-under-relation-mark, verify-misses-stale-page-before-log-gap, verify-changing-indexes-log-gap, damage-search-torn-bitmap-floor, freed-lost-write-fails-open. `KNOWN` 19, each row with a ticket.
+
+## 2026-11-10: resolved
