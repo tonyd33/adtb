@@ -28,9 +28,9 @@ impl Catalog {
         txns: &Transactions<R>,
         r: RelId,
     ) -> Result<Vec<(u32, Vec<Value>)>, Error> {
-        let (id, snapshot) = txns.take(Scope::Every)?;
+        let (hold, snapshot) = txns.take(Scope::Every)?;
         let rows = self.rows(pager, txns, &snapshot, r);
-        txns.release(id);
+        drop(hold);
         Ok(rows?)
     }
 
@@ -59,7 +59,7 @@ impl Catalog {
         facts: &[Fact],
     ) -> Result<(), Error> {
         let x = txns.begin(pager)?;
-        let (id, snapshot) = txns.take(Scope::Every)?;
+        let (hold, snapshot) = txns.take(Scope::Every)?;
         let m = Migrating {
             pager,
             txns,
@@ -81,7 +81,7 @@ impl Catalog {
                     .try_for_each(|(c, row)| self.insert(&m, w.relation, *c, row))
             })
             .and_then(|()| self.write_facts(pager, txns, x, facts));
-        txns.release(id);
+        drop(hold);
         match done {
             Ok(()) => {
                 let lsn = txns.commit(pager, x)?;

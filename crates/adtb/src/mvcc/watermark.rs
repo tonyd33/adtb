@@ -41,7 +41,7 @@ impl Holds {
     }
 
     /// Panics if `id` is not held.
-    pub fn release(&mut self, id: SnapshotId) {
+    pub(super) fn release(&mut self, id: SnapshotId) {
         self.snapshots
             .remove(&id)
             .unwrap_or_else(|| panic!("{id:?} released twice"));

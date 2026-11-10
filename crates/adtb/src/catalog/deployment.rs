@@ -199,9 +199,9 @@ impl Catalog {
         pager: &Pager<R>,
         txns: &Transactions<R>,
     ) -> Result<Deployed, Error> {
-        let (id, snapshot) = txns.take(Scope::Heaps([ROOTS].into()))?;
+        let (hold, snapshot) = txns.take(Scope::Heaps([ROOTS].into()))?;
         let out = self.deployment().at(pager, txns, &snapshot);
-        txns.release(id);
+        drop(hold);
         out
     }
 

@@ -4,9 +4,7 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 use crate::mvcc::Fate as Verdict;
-use crate::mvcc::{
-    CommitLog, Rule, Scope, Snapshot, SnapshotId, Status, StatusError, Transactions, Xid,
-};
+use crate::mvcc::{CommitLog, Hold, Rule, Scope, Snapshot, Status, StatusError, Transactions, Xid};
 
 use super::writers;
 use crate::storage::{Edit, HEADER_LEN, PageKind, Pager, Pid};
@@ -78,7 +76,7 @@ impl Model {
 }
 
 struct Held {
-    id: SnapshotId,
+    _hold: Hold,
     taken: usize,
     reader: Option<Xid>,
     snapshot: Snapshot,
@@ -137,9 +135,9 @@ fn visibility_through_the_commit_log_matches_a_model() {
                     };
                     let reader = (!txns.running().is_empty() && rng.below(2) == 0)
                         .then(|| pick(&mut rng, &txns.running()));
-                    let (id, snapshot) = txns.take(scope.clone()).unwrap();
+                    let (hold, snapshot) = txns.take(scope.clone()).unwrap();
                     held.push(Held {
-                        id,
+                        _hold: hold,
                         taken: event,
                         reader,
                         snapshot,
@@ -147,8 +145,7 @@ fn visibility_through_the_commit_log_matches_a_model() {
                     });
                 }
                 10 | 13 if !held.is_empty() => {
-                    let h = held.swap_remove(rng.below(held.len() as u64) as usize);
-                    txns.release(h.id);
+                    held.swap_remove(rng.below(held.len() as u64) as usize);
                 }
                 11 if rng.below(16) == 0 => {
                     pager.flush_log();
@@ -815,9 +812,7 @@ fn fate_matches_a_model_of_random_histories() {
                         let time = record.committed_at(pager, x).expect("commit time");
                         times.insert(x, time.expect("a commit records its time"));
                     }
-                    for h in held.extract_if(.., |h| h.reader == Some(x)) {
-                        txns.release(h.id);
-                    }
+                    held.retain(|h| h.reader != Some(x));
                 }
                 8 | 9 if !txns.running().is_empty() => {
                     let writer = pick(&mut rng, &txns.running());
@@ -838,9 +833,9 @@ fn fate_matches_a_model_of_random_histories() {
                     };
                     let reader = (!txns.running().is_empty() && rng.below(2) == 0)
                         .then(|| pick(&mut rng, &txns.running()));
-                    let (id, snapshot) = txns.take(scope.clone()).unwrap();
+                    let (hold, snapshot) = txns.take(scope.clone()).unwrap();
                     held.push(Held {
-                        id,
+                        _hold: hold,
                         taken: event,
                         reader,
                         snapshot,
@@ -848,8 +843,7 @@ fn fate_matches_a_model_of_random_histories() {
                     });
                 }
                 12 | 13 if !held.is_empty() => {
-                    let h = held.swap_remove(rng.below(held.len() as u64) as usize);
-                    txns.release(h.id);
+                    held.swap_remove(rng.below(held.len() as u64) as usize);
                 }
                 14 if !versions.is_empty() => {
                     let cutoff = match rng.below(4) {
@@ -888,5 +882,22 @@ fn fate_matches_a_model_of_random_histories() {
             !met.kept.is_empty(),
             "no version met was kept by the window"
         );
+    });
+}
+
+#[test]
+fn a_dropped_hold_releases_its_heaps() {
+    let mut sim = Sim::new(5, Config::default());
+    let (root, _) = setup(&mut sim, 0);
+    with_open(&mut sim, root, |pager, txns| {
+        let x = txns.begin(pager).expect("begin");
+        let (hold, _) = txns
+            .take(Scope::Heaps(BTreeSet::from([1])))
+            .expect("a snapshot");
+        txns.commit(pager, x).expect("commit");
+        let next = TxnProbe::of(txns).next_xid();
+        assert_eq!(x, txns.watermark(1));
+        drop(hold);
+        assert_eq!(next, txns.watermark(1));
     });
 }

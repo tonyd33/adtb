@@ -31,9 +31,10 @@ pub use ssi::{Access, Limits, Safety, ScanId, SerialId, Serializer};
 pub(crate) use tests::writers;
 #[cfg(test)]
 pub use txn::RESERVATION;
-pub use txn::{PastError, Transactions};
+pub use txn::{Hold, PastError, Taken, Transactions};
 pub use wait::{Waits, Watch};
-pub use watermark::{Holds, Scope, SnapshotId};
+use watermark::SnapshotId;
+pub use watermark::{Holds, Scope};
 pub use writers::Writers;
 
 /// A transaction id. Ids are assigned in increasing order and never reused.

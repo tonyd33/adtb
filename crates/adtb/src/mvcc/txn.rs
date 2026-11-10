@@ -51,8 +51,6 @@ struct State {
     /// The log was durable below this LSN when the commit log was opened, every commit before
     /// the open among it.
     opened: Lsn,
-    /// The `last_commit` and `last_time` of each held snapshot when it was taken.
-    reads: BTreeMap<SnapshotId, (Option<Lsn>, u64)>,
     /// The time of each marker a read of the past reads at, with the number of reads at it.
     pins: BTreeMap<u64, usize>,
     /// The length of the retention window.
@@ -209,7 +207,6 @@ impl<R: Runtime> Transactions<R> {
             last_commit: None,
             last_time: 0,
             opened: pager.durable(),
-            reads: BTreeMap::new(),
             pins: BTreeMap::new(),
             window: Duration::ZERO,
         };
@@ -344,56 +341,37 @@ impl<R: Runtime> Transactions<R> {
     }
 
     /// Take a snapshot of the transactions now committed and hold back the heaps of `scope` for
-    /// it until it is released.
+    /// it until the returned [`Hold`] drops.
     ///
     /// Fails if the database is quarantined.
-    pub fn take(&self, scope: Scope) -> Result<(SnapshotId, Snapshot), Error> {
+    pub fn take(&self, scope: Scope) -> Result<(Hold, Snapshot), Error> {
         self.admit()?;
         let mut st = self.state.lock(&self.rt);
         let in_progress: Vec<Xid> = st.running.iter().copied().collect();
         let xmin = in_progress.first().copied().unwrap_or(st.next);
         let snapshot = Snapshot::new(xmin, st.next, in_progress);
         let id = st.holds.hold(xmin, scope);
-        let read = (st.last_commit, st.last_time);
-        st.reads.insert(id, read);
-        Ok((id, snapshot))
+        let taken = Taken {
+            upto: st.last_commit,
+            time: st.last_time,
+        };
+        drop(st);
+        let txns: std::sync::Weak<dyn Release> = std::sync::Arc::<Shared<R>>::downgrade(&self.0);
+        let hold = Hold { id, taken, txns };
+        Ok((hold, snapshot))
     }
 
-    pub fn release(&self, id: SnapshotId) {
-        let mut st = self.state.lock(&self.rt);
-        st.holds.release(id);
-        st.reads.remove(&id);
-    }
-
-    /// Returns the LSN of the commit record of the latest commit snapshot `id` may read, or
-    /// `None` when no commit position is known. A transaction reading at `id` is acknowledged
-    /// only once the log is durable past this LSN.
-    ///
-    /// Panics if `id` is not held.
-    pub fn read_upto(&self, id: SnapshotId) -> Option<Lsn> {
-        self.state
-            .lock(&self.rt)
-            .reads
-            .get(&id)
-            .unwrap_or_else(|| panic!("{id:?} is not held"))
-            .0
-    }
-
-    /// Log a safe snapshot marker for `snapshot`, held as `id`, covering every commit it reads.
-    /// Returns the marker's LSN.
+    /// Log a safe snapshot marker for `snapshot`, which `taken` describes, covering every commit
+    /// it reads. Returns the marker's LSN.
     ///
     /// Precondition: the serializer found the snapshot safe.
-    ///
-    /// Panics if `id` is not held.
-    pub fn log_safe_snapshot(&self, pager: &Pager<R>, id: SnapshotId, snapshot: &Snapshot) -> Lsn {
-        let st = self.state.lock(&self.rt);
-        let read = st
-            .reads
-            .get(&id)
-            .unwrap_or_else(|| panic!("{id:?} is not held"));
-        let at = pager.position(read.0.unwrap_or(st.opened));
-        let time = read.1;
-        drop(st);
+    pub fn log_safe_snapshot(&self, pager: &Pager<R>, taken: Taken, snapshot: &Snapshot) -> Lsn {
+        let at = pager.position(
+            taken
+                .upto
+                .unwrap_or_else(|| self.state.lock(&self.rt).opened),
+        );
+        let time = taken.time;
         let lsn = pager.log_safe_snapshot(at, &snapshot.encode());
         if self.history.get().is_some() {
             let marker = Marker {
@@ -643,6 +621,64 @@ impl<R: Runtime> Transactions<R> {
         *n -= 1;
         if *n == 0 {
             st.pins.remove(&marker.time);
+        }
+    }
+}
+
+/// The latest commit a snapshot reads, as it stood when the snapshot was taken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Taken {
+    upto: Option<Lsn>,
+    time: u64,
+}
+
+impl Taken {
+    /// Returns the LSN of the commit record of the latest commit the snapshot may read, or `None`
+    /// when no commit position is known. A transaction reading at the snapshot is acknowledged
+    /// only once the log is durable past this LSN.
+    pub fn upto(self) -> Option<Lsn> {
+        self.upto
+    }
+}
+
+trait Release: Send + Sync {
+    fn release(&self, id: SnapshotId);
+}
+
+impl<R: Runtime> Release for Shared<R> {
+    fn release(&self, id: SnapshotId) {
+        self.state.lock(&self.rt).holds.release(id);
+    }
+}
+
+/// A snapshot's hold on the heaps of its scope, released when it drops.
+pub struct Hold {
+    id: SnapshotId,
+    taken: Taken,
+    /// Empty once the transactions are gone, when nothing is left to release.
+    txns: std::sync::Weak<dyn Release>,
+}
+
+impl Hold {
+    /// Returns the latest commit the held snapshot reads.
+    pub fn taken(&self) -> Taken {
+        self.taken
+    }
+}
+
+impl std::fmt::Debug for Hold {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Hold")
+            .field("id", &self.id)
+            .field("taken", &self.taken)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        if let Some(txns) = self.txns.upgrade() {
+            txns.release(self.id);
         }
     }
 }

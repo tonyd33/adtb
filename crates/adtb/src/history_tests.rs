@@ -232,14 +232,15 @@ impl Db {
     /// Take a read-only snapshot, keep its safe snapshot marker and release it. Returns the
     /// position the marker covers.
     fn mark(&self) -> Position {
-        let (id, snapshot) = self.txns.take(Scope::Every).expect("snapshot");
-        let at = self
-            .txns
-            .read_upto(id)
+        let (hold, snapshot) = self.txns.take(Scope::Every).expect("snapshot");
+        let at = hold
+            .taken()
+            .upto()
             .map(|l| self.pager.position(l))
             .expect("a commit to cover");
-        self.txns.log_safe_snapshot(&self.pager, id, &snapshot);
-        self.txns.release(id);
+        self.txns
+            .log_safe_snapshot(&self.pager, hold.taken(), &snapshot);
+        drop(hold);
         at
     }
 
@@ -325,9 +326,9 @@ impl Db {
 
     /// Returns the latest position the database has committed.
     fn upto(&self) -> Position {
-        let (id, _) = self.txns.take(Scope::Every).expect("snapshot");
-        let at = self.txns.read_upto(id);
-        self.txns.release(id);
+        let (hold, _) = self.txns.take(Scope::Every).expect("snapshot");
+        let at = hold.taken().upto();
+        drop(hold);
         self.pager
             .position(at.unwrap_or_else(|| Probe::of(&self.pager).durable()))
     }
@@ -1049,9 +1050,9 @@ fn a_moved_version_keeps_its_out_of_line_values_until_the_window_passes() {
         };
         index.insert(&pager, &entry).expect("index");
         let at = commit(x);
-        let (id, snapshot) = txns.take(Scope::Every).expect("snapshot");
-        txns.log_safe_snapshot(&pager, id, &snapshot);
-        txns.release(id);
+        let (hold, snapshot) = txns.take(Scope::Every).expect("snapshot");
+        txns.log_safe_snapshot(&pager, hold.taken(), &snapshot);
+        drop(hold);
         let x = txns.begin(&pager).expect("begin");
         heap.delete(&pager, tid, x).expect("delete");
         commit(x);
@@ -1246,7 +1247,7 @@ fn store_scan_sees_history_pages_created_during_its_current_walk() {
         let ops: Vec<_> = (0..1000).map(|k| (k, Some(k))).collect();
         db.write(&ops);
         let (reader, snapshot) = db.txns.take(Scope::Every).expect("snapshot");
-        db.txns.release(reader);
+        drop(reader);
         let last = db.live[&999];
         let first = db.live[&0];
         db.write(&[(0, None), (999, None)]);

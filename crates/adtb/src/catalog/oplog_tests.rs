@@ -179,7 +179,7 @@ fn the_migrations_rows_hold_the_chained_version_hash_of_each_version() {
         }
         let distinct: BTreeSet<_> = hashes.iter().collect();
         assert_eq!(3, distinct.len());
-        let (id, snapshot) = txns.take(Scope::Every).expect("a snapshot");
+        let (hold, snapshot) = txns.take(Scope::Every).expect("a snapshot");
         let m = catalog
             .schema()
             .module_named("catalog")
@@ -190,7 +190,7 @@ fn the_migrations_rows_hold_the_chained_version_hash_of_each_version() {
             panic!("catalog::migrations")
         };
         let rows = catalog.rows(&pager, &txns, &snapshot, r).expect("the rows");
-        txns.release(id);
+        drop(hold);
         let stored: BTreeSet<Vec<u8>> = rows
             .iter()
             .filter_map(|(_, row)| {

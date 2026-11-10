@@ -145,9 +145,9 @@ impl Catalog {
         pager: &Pager<R>,
         txns: &Transactions<R>,
     ) -> Result<Vec<KeptRow>, Error> {
-        let (id, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
+        let (hold, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
         let rows = visible(pager, txns, &snapshot, &self.roots);
-        txns.release(id);
+        drop(hold);
         let mut out = Vec::new();
         for row in rows? {
             if let [Value::Sum { ctor, fields }] = row.as_slice()
@@ -171,7 +171,7 @@ impl Catalog {
         (relation, group): (u64, &str),
         rows: &[KeptRow],
     ) -> Result<(), Error> {
-        let (id, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
+        let (hold, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
         let reader = txns.reader(pager, snapshot, None);
         let judged = || -> Result<_, PageError> {
             'scan: loop {
@@ -198,7 +198,7 @@ impl Catalog {
             }
         };
         let gone = judged();
-        txns.release(id);
+        drop(hold);
         let gone = gone?;
         for (tid, header) in gone {
             self.roots

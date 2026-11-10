@@ -380,7 +380,7 @@ impl Catalog {
         if !freed.is_empty() {
             super::update_root(pager, self.root, |r| r.changing = Changing::Schema(x))?;
         }
-        let (id, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
+        let (hold, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
         let m = Migrating {
             pager,
             txns,
@@ -399,7 +399,7 @@ impl Catalog {
             .collect();
         let wrote = rewrite(&m, &self.roots, &self.readers.pending, &pending)
             .and_then(|()| delete_rows(&m, &self.roots, &roots));
-        txns.release(id);
+        drop(hold);
         if let Err(e) = wrote {
             txns.abort(pager, x)?;
             if !freed.is_empty() {

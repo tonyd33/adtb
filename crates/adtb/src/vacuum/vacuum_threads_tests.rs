@@ -194,7 +194,7 @@ impl Db {
     /// Returns what is wrong with the all-visible bits of a quiet database: a marked page with
     /// a version a fresh snapshot does not see.
     fn check_visibility_map(&self) -> Vec<String> {
-        let (id, fresh) = self.txns.take(Scope::Every).unwrap();
+        let (hold, fresh) = self.txns.take(Scope::Every).unwrap();
         let mut problems = Vec::new();
         for (h, heap) in self.heaps.iter().enumerate() {
             let mut versions = Vec::new();
@@ -216,15 +216,15 @@ impl Db {
                 }
             }
         }
-        self.txns.release(id);
+        drop(hold);
         problems
     }
 
     fn fresh(&self) -> (Rows, Vec<i64>, Rows) {
-        let (id, s) = self.txns.take(Scope::Every).unwrap();
+        let (hold, s) = self.txns.take(Scope::Every).unwrap();
         let (scan, twice) = self.scan_visible(&s);
         let index = self.index_visible(&s);
-        self.txns.release(id);
+        drop(hold);
         (scan, twice, index)
     }
 
@@ -405,7 +405,7 @@ fn reader(rt: &SimRuntime, db: &Db, world: &Mutex<World>, stop: &AtomicBool) {
             Scope::Heaps(BTreeSet::from([db.ids[(rt.next_u64() % 3) as usize].0]))
         };
         let every = scope == Scope::Every;
-        let (id, snapshot) = db.txns.take(scope).unwrap();
+        let (hold, snapshot) = db.txns.take(scope).unwrap();
         let (first, twice) = db.scan_visible(&snapshot);
         assert!(twice.is_empty(), "{snapshot:?} sees keys twice: {twice:?}");
         for _ in 0..3 {
@@ -417,7 +417,7 @@ fn reader(rt: &SimRuntime, db: &Db, world: &Mutex<World>, stop: &AtomicBool) {
                 assert_eq!(first, index, "{snapshot:?} reads other rows by index");
             }
         }
-        db.txns.release(id);
+        drop(hold);
         world.lock().unwrap().reads += 1;
     }
 }
@@ -467,7 +467,7 @@ fn watcher(
 
 /// Returns each writer's committed newest versions, read from a fresh snapshot.
 fn live_of(db: &Db) -> BTreeMap<u64, Live> {
-    let (id, s) = db.txns.take(Scope::Every).unwrap();
+    let (hold, s) = db.txns.take(Scope::Every).unwrap();
     let mut out: BTreeMap<u64, Live> = BTreeMap::new();
     for (h, heap) in db.heaps.iter().enumerate() {
         let mut versions = Vec::new();
@@ -487,7 +487,7 @@ fn live_of(db: &Db) -> BTreeMap<u64, Live> {
             }
         }
     }
-    db.txns.release(id);
+    drop(hold);
     out
 }
 

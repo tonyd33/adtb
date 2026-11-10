@@ -802,9 +802,17 @@ id a replica last reported for `h`.
 Invariant: `w(h)` is never past the `xmin` of a live snapshot published
 to `h`, nor past a replica's report for `h`.
 
-Invariant: a snapshot never outlives its reader's transaction: the
-transaction's commit or abort releases the snapshot it holds in the
-same step.
+Invariant: a snapshot never outlives its reader's transaction: abort
+releases the snapshot it holds under the serializer's lock, and commit
+releases it once the serializer's lock is dropped, before it waits for
+the log to be durable.
+
+Invariant: a read-write transaction's hold is released only after
+`log_safe` has run for its commit or abort.
+
+`Transactions::take(scope)` returns a snapshot with its `Hold`, which
+publishes the snapshot to the heaps of `scope` until it drops, on every
+path. Nothing else releases a snapshot.
 
 Postcondition: a version of `h` whose `xmax` names a transaction that
 committed, with `xmax < w(h)`, is dead to every snapshot published to

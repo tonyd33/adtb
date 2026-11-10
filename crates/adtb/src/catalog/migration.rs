@@ -134,7 +134,7 @@ impl Catalog {
         self.admits(schema, program, &rewritten)?;
         let x = txns.begin(pager)?;
         update_root(pager, self.root, |r| r.changing = Changing::Schema(x))?;
-        let (id, snapshot) = txns.take(Scope::Every)?;
+        let (hold, snapshot) = txns.take(Scope::Every)?;
         let m = Migrating {
             pager,
             txns,
@@ -147,7 +147,7 @@ impl Catalog {
             grantees,
         };
         let built = self.mapped(&m, &file, text, prepared, &rewritten, readers);
-        txns.release(id);
+        drop(hold);
         let built = built.and_then(|(c, written)| {
             update_root(pager, self.root, |r| r.next_heap = c.next_heap)?;
             Ok((c, written))

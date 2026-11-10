@@ -51,8 +51,8 @@ use crate::catalog::Structures;
 use crate::exec::{self, Budget, Scheduler, StoredHeap, StoredIndex, Val};
 use crate::key::CtorId;
 use crate::mvcc::{
-    Access, Limits, Safety, Scope, SerialId, SerializationFailure, Serializer, Snapshot,
-    SnapshotId, Transactions, Waits, Watch, Xid,
+    Access, Hold, Limits, Safety, Scope, SerialId, SerializationFailure, Serializer, Snapshot,
+    Taken, Transactions, Waits, Watch, Xid,
 };
 use crate::plan::explain::Node;
 use crate::plan::{Catalog, HeapId, IndexId};
@@ -368,7 +368,7 @@ pub struct Txn {
     xid: Option<Xid>,
     sid: SerialId,
     snapshot: Snapshot,
-    hold: SnapshotId,
+    hold: Hold,
     /// What its statements that succeeded wrote into the file.
     written: RefCell<quarantine::Touched>,
     changed: RefCell<vacuums::Changed>,
@@ -550,7 +550,7 @@ pub struct Database<R: Runtime> {
     denials: Vec<check::Denial>,
     sequences: Lock<Sequences>,
     /// The snapshot of each running read-only transaction, for its safe snapshot marker.
-    readers: Lock<BTreeMap<SerialId, (SnapshotId, Snapshot)>>,
+    readers: Lock<BTreeMap<SerialId, (Taken, Snapshot)>>,
     uuids: AtomicU64,
     budget: Arc<Budget>,
     pool: Option<Arc<Scheduler<R>>>,
@@ -833,7 +833,7 @@ impl<R: Runtime> Database<R> {
         });
         self.readers
             .lock(&self.rt)
-            .insert(sid, (hold, snapshot.clone()));
+            .insert(sid, (hold.taken(), snapshot.clone()));
         self.log_safe(&mut ser);
         Ok(Txn {
             xid: None,
@@ -865,8 +865,8 @@ impl<R: Runtime> Database<R> {
     fn log_safe(&self, ser: &mut Serializer) {
         let readers = self.readers.lock(&self.rt);
         for sid in ser.take_safe() {
-            let (hold, snapshot) = &readers[&sid];
-            self.txns.log_safe_snapshot(&self.pager, *hold, snapshot);
+            let (taken, snapshot) = &readers[&sid];
+            self.txns.log_safe_snapshot(&self.pager, *taken, snapshot);
         }
     }
 
@@ -1163,7 +1163,7 @@ impl<R: Runtime> Database<R> {
 
     /// Returns the position of the latest commit `tx` reads, else of the log's durable end.
     pub(crate) fn read_position(&self, tx: &Txn) -> Position {
-        let upto = self.txns.read_upto(tx.hold);
+        let upto = tx.hold.taken().upto();
         self.pager
             .position(upto.unwrap_or_else(|| self.pager.durable()))
     }
@@ -1207,15 +1207,14 @@ impl<R: Runtime> Database<R> {
                         }
                         self.log_safe(&mut ser);
                         self.readers.lock(&self.rt).remove(&tx.sid);
-                        let read = self.txns.read_upto(tx.hold);
-                        self.txns.release(tx.hold);
-                        Ok(own.max(read))
+                        Ok(own.max(tx.hold.taken().upto()))
                     }
                 },
             }
         };
         match done {
             Ok(wait) => {
+                drop(tx.hold);
                 if tx.xid.is_some() && self.txns.history().is_some() {
                     self.pager.flush_below(self.pager.appended());
                 }
@@ -1250,7 +1249,7 @@ impl<R: Runtime> Database<R> {
             ser.aborted(tx.sid);
             self.log_safe(&mut ser);
             self.readers.lock(&self.rt).remove(&tx.sid);
-            self.txns.release(tx.hold);
+            drop(tx.hold);
             aborted
         };
         if let Some(x) = tx.xid {
@@ -1303,9 +1302,10 @@ impl<R: Runtime> Database<R> {
             reader: self.txns.reader(&self.pager, tx.snapshot.clone(), tx.xid),
             serial: Some((self.ser.clone(), tx.sid)),
         };
-        let upto = self
-            .txns
-            .read_upto(tx.hold)
+        let upto = tx
+            .hold
+            .taken()
+            .upto()
             .unwrap_or_else(|| self.pager.durable());
         Arc::new(exec::Store {
             pager: self.pager.clone(),

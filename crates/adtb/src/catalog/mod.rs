@@ -450,9 +450,9 @@ fn named<R: Runtime>(
     let rows = if let Some(damage) = pager.whole_cause() {
         latest_rows(pager, txns, roots, damage)?
     } else {
-        let (id, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
+        let (hold, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
         let rows = visible(pager, txns, &snapshot, roots);
-        txns.release(id);
+        drop(hold);
         rows?
     };
     let mut out = Named::default();
@@ -661,7 +661,7 @@ impl Catalog {
             .values()
             .map(|&id| CatRelId(id))
             .collect();
-        let (id, snapshot) = txns.take(Scope::Every)?;
+        let (hold, snapshot) = txns.take(Scope::Every)?;
         let m = Migrating {
             pager,
             txns,
@@ -683,7 +683,7 @@ impl Catalog {
                 operators: &[],
             },
         );
-        txns.release(id);
+        drop(hold);
         let catalog = built?;
         txns.commit(pager, x)?;
         let lsn = update_root(pager, pid, |r| {

@@ -345,7 +345,7 @@ impl Catalog {
         pager: &Pager<R>,
         txns: &Transactions<R>,
     ) -> Result<Migrations, Error> {
-        let (id, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
+        let (hold, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
         let reader = txns.reader(pager, snapshot, None);
         let seen = || -> Result<_, Error> {
             'scan: loop {
@@ -364,7 +364,7 @@ impl Catalog {
             }
         };
         let rows = seen();
-        txns.release(id);
+        drop(hold);
         let rows = rows?;
         let mut migrations = BTreeMap::new();
         let mut named = Vec::new();

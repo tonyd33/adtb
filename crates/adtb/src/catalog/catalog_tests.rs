@@ -59,7 +59,7 @@ fn committed(
     catalog: &Catalog,
     txns: &Transactions<SimRuntime>,
 ) -> BTreeMap<RelId, Vec<String>> {
-    let (id, snapshot) = txns.take(Scope::Every).expect("a snapshot");
+    let (hold, snapshot) = txns.take(Scope::Every).expect("a snapshot");
     let out = catalog
         .schema()
         .ids
@@ -72,7 +72,7 @@ fn committed(
             (r, sorted(&rows))
         })
         .collect();
-    txns.release(id);
+    drop(hold);
     out
 }
 
@@ -82,7 +82,7 @@ fn migration_rows(
     catalog: &Catalog,
     txns: &Transactions<SimRuntime>,
 ) -> Vec<(u32, Vec<Value>)> {
-    let (id, snapshot) = txns.take(Scope::Every).expect("a snapshot");
+    let (hold, snapshot) = txns.take(Scope::Every).expect("a snapshot");
     let rows = catalog
         .rows(
             pager,
@@ -91,7 +91,7 @@ fn migration_rows(
             rel(catalog, "catalog", "migrations"),
         )
         .expect("the rows read");
-    txns.release(id);
+    drop(hold);
     rows
 }
 
@@ -959,7 +959,7 @@ fn a_snapshot_taken_before_a_migration_reads_the_catalog_rows_of_the_version_bef
         let pager = Pager::create(rt.clone(), &small_pool()).expect("create");
         let (mut catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
         let relations = rel(&catalog, "catalog", "relations");
-        let (id, before) = txns.take(Scope::Every).expect("a snapshot");
+        let (hold, before) = txns.take(Scope::Every).expect("a snapshot");
         catalog
             .migrate(&pager, &txns, RUNNING)
             .expect("the migration applies");
@@ -973,10 +973,10 @@ fn a_snapshot_taken_before_a_migration_reads_the_catalog_rows_of_the_version_bef
                 .count()
         };
         assert_eq!(0, names(&before), "the snapshot before sees no identities");
-        txns.release(id);
-        let (id, after) = txns.take(Scope::Every).expect("a snapshot");
+        drop(hold);
+        let (hold, after) = txns.take(Scope::Every).expect("a snapshot");
         assert_eq!(1, names(&after), "a snapshot after sees identities");
-        txns.release(id);
+        drop(hold);
     });
 }
 

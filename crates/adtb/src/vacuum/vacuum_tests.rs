@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use crate::btree::Index;
 use crate::heap::{FieldType, Flags, HEADER_LEN, Heap, HeapNo, Link, walk};
 use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
-use crate::mvcc::{Scope, Snapshot, SnapshotId, Status, Transactions, Xid};
+use crate::mvcc::{Hold, Scope, Snapshot, Status, Transactions, Xid};
 use crate::runtime::Entropy;
 use crate::storage::{PageError, Pager, Pid};
 use crate::vacuum::{self, Report, Sum};
@@ -303,7 +303,7 @@ impl Db {
     /// Returns what is wrong with the all-visible bits: a page marked all-visible holding a
     /// version some snapshot of `held`, or a fresh one, does not see.
     fn check_visibility_map(&mut self, held: &[Held]) -> Vec<String> {
-        let (fresh_id, fresh) = self.txns.take(Scope::Every).unwrap();
+        let (fresh_hold, fresh) = self.txns.take(Scope::Every).unwrap();
         let mut problems = Vec::new();
         for h in 0..3 {
             let mut versions = Vec::new();
@@ -336,15 +336,15 @@ impl Db {
                 }
             }
         }
-        self.txns.release(fresh_id);
+        drop(fresh_hold);
         problems
     }
 
     fn fresh_visible(&mut self) -> (Visible, Visible) {
-        let (id, s) = self.txns.take(Scope::Every).unwrap();
+        let (hold, s) = self.txns.take(Scope::Every).unwrap();
         let scan = self.scan_visible(&s, &[0, 1, 2]);
         let index = self.index_visible(&s, &[0, 1, 2]);
-        self.txns.release(id);
+        drop(hold);
         (scan, index)
     }
 }
@@ -371,7 +371,7 @@ impl Visible {
 }
 
 struct Held {
-    id: SnapshotId,
+    _hold: Hold,
     snapshot: Snapshot,
     heaps: Vec<usize>,
     expected: Rows,
@@ -588,10 +588,10 @@ fn take(db: &mut Db, next: &mut impl FnMut() -> u64) -> Held {
     } else {
         Scope::Heaps(heaps.iter().map(|&h| db.ids[h].0).collect())
     };
-    let (id, snapshot) = db.txns.take(scope).unwrap();
+    let (hold, snapshot) = db.txns.take(scope).unwrap();
     let expected = db.scan_visible(&snapshot, &heaps).rows;
     Held {
-        id,
+        _hold: hold,
         snapshot,
         heaps,
         expected,
@@ -648,7 +648,7 @@ fn vacuum_keeps_what_live_snapshots_see_and_cleans_the_rest() {
                     14 if held.len() < 4 => held.push(take(&mut db, &mut next)),
                     15 if !held.is_empty() => {
                         let h = held.swap_remove((next() % held.len() as u64) as usize);
-                        db.txns.release(h.id);
+                        drop(h);
                     }
                     16 => {
                         let budget = 64 + (next() % 2048) as usize;
@@ -680,7 +680,7 @@ fn vacuum_keeps_what_live_snapshots_see_and_cleans_the_rest() {
                 }
             }
             for h in held.drain(..) {
-                db.txns.release(h.id);
+                drop(h);
             }
             if let Some(run) = client.long.take() {
                 client.finish(&mut db, run, true);
@@ -1205,7 +1205,7 @@ fn a_chain_ends_where_vacuum_freed_the_successor() {
         let t = db.heaps[APPLE].insert(&db.pager, x, &row).unwrap();
         db.index(APPLE, &row, t);
         db.txns.commit(&db.pager, x).unwrap();
-        let (old_id, _) = db
+        let (old, _) = db
             .txns
             .take(Scope::Heaps(BTreeSet::from([db.ids[APPLE].0])))
             .unwrap();
@@ -1235,7 +1235,7 @@ fn a_chain_ends_where_vacuum_freed_the_successor() {
             })
             .unwrap()
         );
-        db.txns.release(old_id);
+        drop(old);
         assert_eq!(Vec::<String>::new(), db.verify());
     });
 }
@@ -1348,7 +1348,7 @@ fn workload(rt: SimRuntime, world: &Mutex<World>, ledger: &Ledger, steps: usize)
             15 if held.len() < 3 => held.push(take(&mut db, &mut next)),
             16 if !held.is_empty() => {
                 let h = held.swap_remove((next() % held.len() as u64) as usize);
-                db.txns.release(h.id);
+                drop(h);
             }
             17..=19 => {
                 {

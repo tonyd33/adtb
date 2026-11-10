@@ -288,9 +288,9 @@ impl Catalog {
         pager: &Pager<R>,
         txns: &Transactions<R>,
     ) -> Result<BTreeMap<i64, String>, Error> {
-        let (id, snapshot) = txns.take(Scope::Every)?;
+        let (hold, snapshot) = txns.take(Scope::Every)?;
         let roles = self.roles(pager, txns, &snapshot);
-        txns.release(id);
+        drop(hold);
         roles
     }
 
@@ -300,9 +300,9 @@ impl Catalog {
         pager: &Pager<R>,
         txns: &Transactions<R>,
     ) -> Result<Vec<DeployedGrant>, Error> {
-        let (id, snapshot) = txns.take(Scope::Every)?;
+        let (hold, snapshot) = txns.take(Scope::Every)?;
         let stored = self.stored_grants(pager, txns, &snapshot);
-        txns.release(id);
+        drop(hold);
         let shape = Shape::of(&self.schema);
         let yes = boolean(&self.schema, true);
         stored?
@@ -329,9 +329,9 @@ impl Catalog {
         pager: &Pager<R>,
         txns: &Transactions<R>,
     ) -> Result<(), Error> {
-        let (id, snapshot) = txns.take(Scope::Every)?;
+        let (hold, snapshot) = txns.take(Scope::Every)?;
         let stored = self.stored_grants(pager, txns, &snapshot);
-        txns.release(id);
+        drop(hold);
         let shape = Shape::of(&self.schema);
         for s in stored?.into_iter().filter(|s| s.log) {
             let at = self.source.grants.iter().position(|g| {
@@ -363,7 +363,7 @@ impl Catalog {
         }
         self.counters(pager)?;
         let x = txns.begin(pager)?;
-        let (id, snapshot) = txns.take(Scope::Every)?;
+        let (hold, snapshot) = txns.take(Scope::Every)?;
         let m = Migrating {
             pager,
             txns,
@@ -372,7 +372,7 @@ impl Catalog {
         };
         let mut grants = self.source.grants.clone();
         let done = self.write_grants(&m, self, &mut grants, &BTreeSet::new(), Grantees::Dormant);
-        txns.release(id);
+        drop(hold);
         match done {
             Ok(dormant) => {
                 let lsn = txns.commit(pager, x)?;
