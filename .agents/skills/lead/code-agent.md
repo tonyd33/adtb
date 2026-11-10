@@ -211,6 +211,9 @@ or link, incomplete checks and next action. End the assigned turn with the
 report. The lead may resume the same author for corrections or a related
 cohort; a replacement reads the handoff before taking ownership.
 
+A change that removes or narrows a mechanism (a write it skipped, a check, a hold, an order, a
+lock) lists in its receipt what else that mechanism prevented and what prevents it now.
+
 ## Tickets
 
 Work is tracked as tix tickets in the main checkout's
