@@ -37,3 +37,7 @@ home: https://docs.datomic.com
 
 - Filters: `as-of` ignores transactions after a point (tx id, basis t or instant); `since` keeps only datoms added after a point; `history` includes all past assertions and retractions and may see several values of one fact. Unfiltered db is fastest; for time-only questions use the Log API, since as-of/since filter scans. [V 2026-10-25] https://docs.datomic.com/reference/filters.html
 - Excision removes datoms matching a predicate from index and log, irrevocably, for privacy or retention; asynchronous at indexing; large excisions cost time proportional to the whole database; not for error correction. [V 2026-10-25] https://docs.datomic.com/operation/excision.html
+
+## Renaming
+
+- An attribute is renamed by asserting a new `:db/ident` on its entity id; the entity id stays. "Both the new ident and the old ident will refer to the entity": `entid` returns the same id for both, while `ident` returns the new name. [V 2026-11-11] https://docs.datomic.com/schema/schema-change.html
