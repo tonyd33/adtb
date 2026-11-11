@@ -154,8 +154,8 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
     /// bound by `params`. Returns the rows of each item that yields a result, in item order.
     ///
     /// A call that fails applies none of its items and leaves the transaction open, except on a
-    /// serialization failure, which aborts the transaction; every later call and the commit fail
-    /// with it.
+    /// failure that ends the transaction, such as a serialization failure, which aborts it; every
+    /// later call and the commit fail with that failure.
     pub fn query_text(
         &mut self,
         text: &str,

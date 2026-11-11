@@ -27,11 +27,21 @@ pub(super) fn too_large(rel: RelId, ctor: u32) -> impl Fn(heap::Error) -> Error 
     }
 }
 
+/// Returns the write error of heap error `e`, met taking back a version's change.
+fn undo_failure(e: heap::Error) -> Error {
+    match e {
+        heap::Error::TooLarge { .. } => {
+            unreachable!("an undo rewrites a version's header in place: {e:?}")
+        }
+        e => e.into(),
+    }
+}
+
 /// A heap change a failed statement takes back.
 #[derive(Clone, Copy, Debug)]
 pub enum Undo {
-    /// Delete the version the statement inserted.
-    Kill(HeapId, Tid),
+    /// Delete the version the statement inserted, written under the transaction id it holds.
+    Kill(HeapId, Tid, Xid),
     /// Clear the deleter the statement gave the version.
     Restore(HeapId, WriteTarget),
 }
@@ -261,7 +271,7 @@ impl<R: Runtime> Stmt<'_, R> {
                         .map_err(too_large(*rel, c))?;
                     self.undo.borrow_mut().extend([
                         Undo::Restore(heap, self.restorable(heap, tid.tid, xid)?),
-                        Undo::Kill(heap, up.tid),
+                        Undo::Kill(heap, up.tid, xid),
                     ]);
                     self.inserted_into(heap)?;
                     if !up.heap_only {
@@ -287,7 +297,7 @@ impl<R: Runtime> Stmt<'_, R> {
                         .map_err(too_large(*rel, *d))?;
                     self.undo.borrow_mut().extend([
                         Undo::Restore(from, self.restorable(from, tid.tid, xid)?),
-                        Undo::Kill(to, at),
+                        Undo::Kill(to, at, xid),
                     ]);
                     self.inserted_into(to)?;
                     written.push(Written {
@@ -306,7 +316,7 @@ impl<R: Runtime> Stmt<'_, R> {
                     let tid = h
                         .insert_pruning(pager, xid, &row, &mut judge)
                         .map_err(too_large(*rel, *d))?;
-                    self.undo.borrow_mut().push(Undo::Kill(heap, tid));
+                    self.undo.borrow_mut().push(Undo::Kill(heap, tid, xid));
                     self.inserted_into(heap)?;
                     written.push(Written {
                         rel: *rel,
@@ -350,21 +360,23 @@ impl<R: Runtime> Stmt<'_, R> {
         let pager = &self.db.pager;
         for u in self.undo.borrow_mut().drain(..).rev() {
             match u {
-                Undo::Kill(heap, tid) => {
+                Undo::Kill(heap, tid, xid) => {
                     let header = self
                         .heap(heap)
                         .read(pager, tid)?
                         .expect("a version the statement inserted remains present")
                         .header;
-                    let xid = self.tx.writer()?;
                     assert!(
                         header.writers.inserted_by(xid),
                         "the statement owns the version it removes: {header:?}"
                     );
                     self.heap(heap)
-                        .delete(pager, WriteTarget::checked(tid, header), xid)?;
+                        .delete(pager, WriteTarget::checked(tid, header), xid)
+                        .map_err(undo_failure)?;
                 }
-                Undo::Restore(heap, tid) => self.heap(heap).restore(pager, tid)?,
+                Undo::Restore(heap, tid) => {
+                    self.heap(heap).restore(pager, tid).map_err(undo_failure)?;
+                }
             }
         }
         Ok(())

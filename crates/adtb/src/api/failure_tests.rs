@@ -2,11 +2,12 @@
 //! recorded, and the abort record's failure when it is not.
 
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use adtb_harness::process::run;
 use adtb_sim::{Config, Sim};
 
-use crate::runtime::Runtime as _;
+use crate::runtime::{Runtime as _, Threads as _};
 use crate::storage::{Damage, PageError, Quarantine};
 use crate::test_world as harness;
 use crate::test_world::load::{self as open, options};
@@ -149,7 +150,7 @@ fn damage_met_writing_a_lapsed_lease_fails_as_storage_and_marks_nothing() {
         db.role_authority()
             .register(&owner, &leased("s-1.0"))
             .expect("registered");
-        adtb_harness::common::sleep(&rt, &mut rt.io(), std::time::Duration::from_secs(7200));
+        adtb_harness::common::sleep(&rt, &mut rt.io(), Duration::from_secs(7200));
         let rows = crate::testing::Object::CatalogRows;
         let pages = db.testing().pages(rows).expect("the rows heap's pages");
         for &page in &pages {
@@ -272,4 +273,152 @@ fn a_closed_pager_is_rejected_as_closed_once_the_database_is_marked() {
         );
         db.close().expect("the database closes");
     });
+}
+
+const HELD: &str = r"module app
+add module app
+add type User = { id: Key users, name: Text }
+add relation users : User key id generate sequence
+add type Count = { id: Key counts, n: I64 }
+add relation counts : Count key id generate sequence
+";
+
+const BUMP: &str = "update c in counts set { c with n: c.n + 1 }";
+
+/// What a call that met damage on the users heap left: its reply, a later call's in the same
+/// transaction, the commit's, and whether the users heap is marked.
+#[derive(Debug, PartialEq)]
+struct Undone {
+    reply: Result<(), Error>,
+    later: Result<(), Error>,
+    commit: Result<(), Error>,
+    marked: bool,
+}
+
+/// Run one call of an interactive transaction: an insert into `users`, then `BUMP`, which waits
+/// on another transaction, then `last`. While `BUMP` waits, every page of the users heap is
+/// refused as failing its checksum and the other transaction rolls back, so `last` fails and
+/// the take back of the insert meets the damage.
+fn undo_meets_damage(seed: u64, last: &str) -> Undone {
+    let mut sim = Sim::new(seed, Config::default());
+    run(&mut sim, |rt| {
+        let db = open::opened(&rt, harness::NAME, &Log::new([HELD]), &options(2));
+        let opts = TxnCallOptions::default();
+        db.query_text("insert counts { n: 0 }", &[], &CallOptions::default())
+            .expect("a count");
+        let holder = {
+            let (rt, db) = (rt.clone(), db.clone());
+            rt.clone().spawn("holder", move || {
+                let mut holder = db.begin(&TxnOptions::default()).expect("a transaction");
+                holder
+                    .query_text(BUMP, &[], &TxnCallOptions::default())
+                    .expect("the holder's bump");
+                adtb_harness::common::sleep(&rt, &mut rt.io(), Duration::from_secs(2));
+                let users = db.testing().heap("app::users", "User").expect("the heap");
+                let held: Vec<_> = db
+                    .testing()
+                    .versions(users, None)
+                    .expect("its versions")
+                    .into_iter()
+                    .map(|v| (v.row.last().cloned(), v.header.writers.deleter()))
+                    .collect();
+                assert_eq!(
+                    vec![(Some(crate::key::Value::Text("x".to_owned())), None)],
+                    held,
+                    "the call's insert is in place, not yet taken back"
+                );
+                for page in db.testing().pages(users).expect("its pages") {
+                    let refused = Plant::Refuse {
+                        page,
+                        damage: Damage::Checksum,
+                    };
+                    db.testing().plant(refused).expect("planted");
+                }
+                holder.rollback().expect("the holder rolls back");
+            })
+        };
+        adtb_harness::common::sleep(&rt, &mut rt.io(), Duration::from_secs(1));
+        let mut txn = db.begin(&TxnOptions::default()).expect("a transaction");
+        let call = format!("insert users {{ name: \"x\" }}\n{BUMP}\n{last}");
+        let reply = txn.query_text(&call, &[], &opts).map(drop);
+        rt.join(holder);
+        let later = txn.query_text("1", &[], &opts).map(drop);
+        let commit = txn.commit(None).map(drop);
+        let users = db.testing().heap("app::users", "User").expect("the heap");
+        let mark = db.testing().own_mark(users).expect("its mark");
+        let marked = db.testing().probe().marked(mark);
+        db.close().expect("the database closes");
+        Undone {
+            reply,
+            later,
+            commit,
+            marked,
+        }
+    })
+}
+
+/// Returns what a call ended by damage on the users heap leaves, met by its take back or by a
+/// command's own reads.
+fn ended_by_damage() -> Undone {
+    let quarantined = Err(Error::Fatal {
+        reason: FatalReason::Quarantined {
+            what: "app::users.User".into(),
+        },
+    });
+    Undone {
+        reply: quarantined.clone(),
+        later: quarantined.clone(),
+        commit: quarantined,
+        marked: true,
+    }
+}
+
+#[test]
+fn a_statement_whose_take_back_meets_damage_ends_its_transaction() {
+    assert_eq!(ended_by_damage(), undo_meets_damage(21, r#"fail "no""#));
+}
+
+#[test]
+fn a_refused_command_whose_take_back_meets_damage_ends_its_transaction() {
+    assert_eq!(
+        ended_by_damage(),
+        undo_meets_damage(22, "retire bundle nosuch-1.0")
+    );
+}
+
+#[test]
+fn a_dump_that_meets_damage_ends_its_transaction() {
+    let mut sim = Sim::new(23, Config::default());
+    let got = run(&mut sim, |rt| {
+        let db = open::opened(&rt, harness::NAME, &Log::new([HELD]), &options(2));
+        let opts = TxnCallOptions::default();
+        db.query_text(
+            r#"insert users { name: "a" }"#,
+            &[],
+            &CallOptions::default(),
+        )
+        .expect("a user");
+        let users = db.testing().heap("app::users", "User").expect("the heap");
+        for page in db.testing().pages(users).expect("its pages") {
+            let refused = Plant::Refuse {
+                page,
+                damage: Damage::Checksum,
+            };
+            db.testing().plant(refused).expect("planted");
+        }
+        let mut txn = db.begin(&TxnOptions::default()).expect("a transaction");
+        let reply = txn.query_text("dump to \"d\"", &[], &opts).map(drop);
+        let later = txn.query_text("1", &[], &opts).map(drop);
+        let commit = txn.commit(None).map(drop);
+        let mark = db.testing().own_mark(users).expect("its mark");
+        let marked = db.testing().probe().marked(mark);
+        db.close().expect("the database closes");
+        Undone {
+            reply,
+            later,
+            commit,
+            marked,
+        }
+    });
+    assert_eq!(ended_by_damage(), got);
 }

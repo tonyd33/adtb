@@ -317,6 +317,17 @@ impl Failed {
         Failed { item, error, ends }
     }
 
+    /// Returns the failure, ending the transaction, of taking back the statements of a call:
+    /// `item` is the item that failed, or the number of items when every one succeeded and a
+    /// trial takes them back.
+    fn undone(item: usize, error: Error) -> Failed {
+        Failed {
+            item,
+            error,
+            ends: true,
+        }
+    }
+
     /// Returns whether the failure ends the transaction: the caller must abort it.
     pub fn ends(&self) -> bool {
         self.ends
@@ -978,7 +989,7 @@ impl<R: Runtime> Database<R> {
 
     /// Run the items of `text` as [`statements`](Database::statements) does, then undo every
     /// one, leaving `tx` and the temp relations of `local` as they were and every file an item
-    /// read pinned. Returns each one's outcome.
+    /// read pinned. Returns each one's outcome. A failure to undo them ends the transaction.
     pub fn trial(
         &self,
         tx: &Txn,
@@ -1016,7 +1027,7 @@ impl<R: Runtime> Database<R> {
         local.restore_temps(before);
         let item = text.items.len();
         self.take_back(tx, &ran, false)
-            .map_err(|error| Failed::new(item, error))?;
+            .map_err(|error| Failed::undone(item, error))?;
         Ok(out)
     }
 
@@ -1149,7 +1160,7 @@ impl<R: Runtime> Database<R> {
     fn taken_back(&self, tx: &Txn, ran: &[eval::Stmt<'_, R>], failed: Failed) -> Failed {
         match self.take_back(tx, ran, failed.ends) {
             Ok(()) => failed,
-            Err(error) => Failed::new(failed.item, error),
+            Err(error) => Failed::undone(failed.item, error),
         }
     }
 
@@ -1159,7 +1170,7 @@ impl<R: Runtime> Database<R> {
         let mut changed = tx.changed.borrow_mut();
         for s in ran {
             for u in s.undo.borrow().iter() {
-                if let apply::Undo::Kill(heap, _) = u {
+                if let apply::Undo::Kill(heap, ..) = u {
                     changed.entry(*heap).or_default().undone += 1;
                 }
             }

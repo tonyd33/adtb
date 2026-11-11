@@ -18,6 +18,7 @@ use crate::write::{self, Bounds, Local, Text, Txn};
 use super::backup::{CATALOG_VERSION, RestorePoint, refused};
 use super::bundle::EDITION;
 use super::error::{FatalReason, RejectReason};
+use super::statements::Refusal;
 use super::{
     CallOptions, CreateOptions, Database, Engine, Error, Log, OWNER_ID, OpenError, OpenOptions,
     Position,
@@ -170,11 +171,11 @@ fn sections_text(e: &Envelope, schema: &Schema, rows: &Rows) -> String {
 /// The rows of each of several relations.
 type Rows = BTreeMap<RelId, BTreeSet<Val>>;
 
-fn rows_of(
+fn rows_of<E>(
     schema: &Schema,
     names: &[&str],
-    mut rows: impl FnMut(RelId) -> Result<Vec<Val>, Error>,
-) -> Result<Rows, Error> {
+    mut rows: impl FnMut(RelId) -> Result<Vec<Val>, E>,
+) -> Result<Rows, E> {
     catalog_relations(schema, names)
         .into_iter()
         .map(|r| Ok((r, rows(r)?.into_iter().collect())))
@@ -480,15 +481,16 @@ impl<R: Runtime> Engine<R> {
     /// when `secured`, encrypted under `phrase` when given. Returns its manifest.
     pub(super) fn dump_to(
         &self,
+        id: super::TxnId,
         tx: &Txn,
         path: &str,
         secured: bool,
         phrase: Option<&Passphrase>,
-    ) -> Result<DumpManifest, Error> {
-        let target = self.target(path)?;
-        self.admit_dump()?;
+    ) -> Result<DumpManifest, Refusal> {
+        let target = self.target(path).map_err(Refusal::own)?;
+        self.admit_dump().map_err(Refusal::own)?;
         let envelope = self.envelope();
-        let failed = |e| self.write_error(super::TxnId(0), e);
+        let failed = |e| self.met(id, e);
         let rows = |r| self.db.relation_rows(tx, r).map_err(failed);
         let schema = &*self.schema;
         let grants = values::relation(schema, "grants");
@@ -519,7 +521,7 @@ impl<R: Runtime> Engine<R> {
         }
         entries.push((GENERATORS.to_owned(), generators));
         let deployed = self.db.deployed(tx, &self.deployment);
-        let deployed = deployed.map_err(|e| self.catalog_error(e))?;
+        let deployed = deployed.map_err(|e| self.met(id, e.into()))?;
         let bundled = rows_of(schema, &BUNDLED, rows)?;
         entries.extend(bundle_entries(&envelope, schema, &bundled, &deployed));
         let mut streams = Vec::new();
@@ -547,7 +549,7 @@ impl<R: Runtime> Engine<R> {
         }
         let snapshot = self.db.read_position(tx);
         storage::write_dump(&self.rt, &target, envelope, snapshot, &entries, phrase)
-            .map_err(refused)
+            .map_err(|e| Refusal::own(refused(e)))
     }
 }
 

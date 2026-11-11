@@ -1,3 +1,4 @@
+use crate::exec;
 use crate::mvcc::Xid;
 use crate::runtime::Runtime;
 use crate::write::{self, Bounds, Local, Text, Txn};
@@ -27,7 +28,34 @@ pub(super) struct Failure {
     pub(super) commanded: bool,
 }
 
+/// The failure of a command a call of text runs: the client error, and whether it ends the
+/// transaction.
+pub(super) struct Refusal {
+    error: Error,
+    ends: bool,
+}
+
+impl Refusal {
+    /// Returns the command's own refusal `error`, which leaves the transaction open as a
+    /// rejection does.
+    pub(super) fn own(error: Error) -> Refusal {
+        Refusal {
+            error,
+            ends: exec::Class::Reject.ends(),
+        }
+    }
+}
+
 impl<R: Runtime> Engine<R> {
+    /// Returns the refusal of `e`, met in the call's transaction `id`, ending it as the class of
+    /// `e` says.
+    pub(super) fn met(&self, id: TxnId, e: write::Error) -> Refusal {
+        Refusal {
+            ends: e.class().ends(),
+            error: self.write_error(id, e),
+        }
+    }
+
     /// Abandon `tx`, the transaction `id`, after its call failed, as
     /// [`crate::write::Database::abandon`] does: `Ok` with `cause()` once the abort is recorded,
     /// else `Err` with the record's failure.
@@ -65,13 +93,14 @@ impl<R: Runtime> Engine<R> {
             ..bounds.clone()
         };
         let mut ran: Vec<(usize, DynRows)> = Vec::new();
-        let mut refused: Option<Error> = None;
+        let mut refused: Option<Refusal> = None;
         let mut between = |at: usize, local: &mut Local| -> Result<(), write::Error> {
             let commands = p.commands().iter().enumerate();
             for (nth, c) in commands.filter(|(_, c)| c.at == at) {
                 let run = self
                     .deployment_command(&c.command, p)
-                    .or_else(|| self.file_command(tx, &c.command, p, local, &bounds));
+                    .map(|done| done.map_err(Refusal::own))
+                    .or_else(|| self.file_command(id, tx, &c.command, p, local, &bounds));
                 match run {
                     Some(Ok(rows)) => ran.push((at, rows)),
                     Some(Err(e)) => {
@@ -110,7 +139,7 @@ impl<R: Runtime> Engine<R> {
             })
         };
         match (done, refused) {
-            (Err(_), Some(e)) => Err(failed(e, false)),
+            (Err(f), Some(r)) if !f.ends() => Err(failed(r.error, r.ends)),
             (Ok(outcomes), _) => p
                 .results(schema, outcomes, ran)
                 .map_err(|e| failed(e, true)),
@@ -121,7 +150,7 @@ impl<R: Runtime> Engine<R> {
                 }),
                 None,
             ) => Err(Halted::Blocked { on, rerun }),
-            (Err(f), None) => {
+            (Err(f), _) => {
                 let ends = f.ends();
                 let mapped = self.db.fail(f.error);
                 Err(failed(Error::of_write(&self.db, schema, id, mapped), ends))

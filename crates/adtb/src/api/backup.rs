@@ -12,6 +12,7 @@ use crate::storage::{self, BackupError, BackupRun, Envelope, Manifest, Passphras
 use crate::write::{self, Bounds, Local, Stop, Txn};
 
 use super::error::{FatalReason, RejectReason};
+use super::statements::Refusal;
 use super::text::{DynRows, Prepared, rows};
 use super::{Database, Engine, Error, Log, OpenError, OpenOptions, Position, TxnId};
 
@@ -372,17 +373,20 @@ impl<R: Runtime> Engine<R> {
     /// rows, `None` for any other command.
     pub(super) fn file_command(
         &self,
+        id: TxnId,
         tx: &Txn,
         c: &Command,
         p: &Prepared,
         local: &mut Local,
         bounds: &Bounds,
-    ) -> Option<Result<DynRows, Error>> {
+    ) -> Option<Result<DynRows, Refusal>> {
         match c {
-            Command::Backup { path, .. } => Some(self.backup_to(path, p, bounds)),
-            Command::Dump { .. } if tx.wrote() => Some(Err(Error::invalid(
+            Command::Backup { path, .. } => {
+                Some(self.backup_to(path, p, bounds).map_err(Refusal::own))
+            }
+            Command::Dump { .. } if tx.wrote() => Some(Err(Refusal::own(Error::invalid(
                 "`dump` does not run in a transaction that has written",
-            ))),
+            )))),
             Command::Dump { path, encrypt } => {
                 let secured = p
                     .issuer
@@ -390,8 +394,9 @@ impl<R: Runtime> Engine<R> {
                     .is_none_or(|i| i.holds.as_ref().is_some_and(|h| h.schema_capability));
                 Some(
                     self.confine(path, p, bounds)
-                        .and_then(|()| self.passphrase(tx, encrypt.as_ref(), p, local, bounds))
-                        .and_then(|phrase| self.dump_to(tx, path, secured, phrase.as_ref()))
+                        .map_err(Refusal::own)
+                        .and_then(|()| self.passphrase(id, tx, encrypt.as_ref(), p, local, bounds))
+                        .and_then(|phrase| self.dump_to(id, tx, path, secured, phrase.as_ref()))
                         .map(|manifest| manifest_row(p.schema(), &manifest.text())),
                 )
             }
@@ -402,14 +407,13 @@ impl<R: Runtime> Engine<R> {
                 decrypt,
             } => {
                 let at = point.as_ref().map_or(Ok(RestorePoint::Latest), |point| {
-                    self.point_of(tx, point, p, local, bounds)
+                    self.point_of(id, tx, point, p, local, bounds)
                 });
-                let phrase = self.passphrase(tx, decrypt.as_ref(), p, local, bounds);
-                Some(
-                    at.and_then(|at| {
-                        self.restore_from(from, to, at, phrase?.as_ref(), (p, bounds))
-                    }),
-                )
+                let phrase = self.passphrase(id, tx, decrypt.as_ref(), p, local, bounds);
+                Some(at.and_then(|at| {
+                    self.restore_from(from, to, at, phrase?.as_ref(), (p, bounds))
+                        .map_err(Refusal::own)
+                }))
             }
             _ => None,
         }
@@ -418,12 +422,13 @@ impl<R: Runtime> Engine<R> {
     /// Returns the point a `restore` names. An instant answers a version no backup reaches.
     fn point_of(
         &self,
+        id: TxnId,
         tx: &Txn,
         point: &adtb_lang::check::RestorePoint,
         p: &Prepared,
         local: &mut Local,
         bounds: &Bounds,
-    ) -> Result<RestorePoint, Error> {
+    ) -> Result<RestorePoint, Refusal> {
         use adtb_lang::check::RestorePoint as Named;
         let term = match point {
             Named::BeforeVersion(version) => return Ok(RestorePoint::Version(*version)),
@@ -431,7 +436,7 @@ impl<R: Runtime> Engine<R> {
             Named::AtPosition(term) => term,
         };
         let text = self.text_of(p, std::slice::from_ref(term));
-        let failed = |e| self.write_error(TxnId(0), e);
+        let failed = |e| self.met(id, e);
         let mut got = self
             .db
             .statements(tx, text, local, bounds.clone())
@@ -449,19 +454,22 @@ impl<R: Runtime> Engine<R> {
     /// Returns the passphrase `term` evaluates to, if any.
     fn passphrase(
         &self,
+        id: TxnId,
         tx: &Txn,
         term: Option<&adtb_lang::kernel::Tm>,
         p: &Prepared,
         local: &mut Local,
         bounds: &Bounds,
-    ) -> Result<Option<Passphrase>, Error> {
+    ) -> Result<Option<Passphrase>, Refusal> {
         let Some(term) = term else {
             return Ok(None);
         };
         let value = self.value_of(tx, p, *term, local, bounds.clone());
-        match value.map_err(|e| self.write_error(TxnId(0), e))? {
+        match value.map_err(|e| self.met(id, e))? {
             Val::Text(text) => Ok(Some(Passphrase::new(text.to_string()))),
-            _ => Err(Error::invalid("a passphrase is a `Text`".to_owned())),
+            _ => Err(Refusal::own(Error::invalid(
+                "a passphrase is a `Text`".to_owned(),
+            ))),
         }
     }
 
