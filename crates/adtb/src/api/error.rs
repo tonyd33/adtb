@@ -11,7 +11,6 @@ use crate::exec::{Exceeded, Val};
 use crate::runtime::Runtime;
 use crate::storage::{MarkFailure, Quarantine};
 use crate::write::{self, Rejection};
-use crate::{catalog, heap};
 
 pub use crate::exec::Fault;
 
@@ -327,17 +326,6 @@ impl Error {
         ))
     }
 
-    /// Returns the client error of `e`, met writing catalog rows in a transaction of the write
-    /// path.
-    pub(super) fn of_catalog_write(e: catalog::Error) -> Error {
-        match e {
-            catalog::Error::Page(p) | catalog::Error::Heap(heap::Error::Page(p)) => {
-                Error::storage(format!("{p:?}"))
-            }
-            other => Error::internal(Broken::CatalogError(other)),
-        }
-    }
-
     /// Returns the client error of write-path failure `e` of database `db`, met by transaction
     /// `txn` of a database of `schema`.
     pub(super) fn of_write<R: Runtime>(
@@ -406,7 +394,7 @@ impl Error {
                 Error::storage(format!("an entry of index {index} names no version"))
             }
             write::Error::Spill(io) => Error::storage(format!("the spill file failed: {io:?}")),
-            write::Error::Transactions(detail) => Error::storage(detail),
+            write::Error::Transactions(e) => Error::storage(format!("{e:?}")),
             write::Error::Corrupt(r) => Error::storage(r.to_string()),
             write::Error::Unsupported(what) => {
                 Error::invalid(format!("{what} does not run in this engine yet"))
@@ -1007,6 +995,7 @@ fn print_key(schema: &Schema, rel: RelId, key: &Val) -> Result<String, PrintErro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{catalog, heap};
 
     #[test]
     fn a_broken_checker_guarantee_is_rejected_as_internal() {
@@ -1029,37 +1018,67 @@ mod tests {
 
     #[test]
     fn a_damaged_page_met_writing_catalog_rows_is_a_storage_failure() {
+        let schema = catalog::engine_schema();
         let damaged = crate::storage::PageError {
             pid: crate::storage::Pid(3),
             damage: crate::storage::Damage::Unreadable,
         };
+        let client = |e: catalog::Error| {
+            let mapped = write::Mapped::unmapped_for_test(e.into());
+            Error::of_mapped(&schema, TxnId(7), mapped, |_| String::new())
+        };
         for e in [
             catalog::Error::Page(damaged),
             catalog::Error::Heap(heap::Error::Page(damaged)),
+            catalog::Error::Index(crate::btree::Error::Page(damaged)),
         ] {
-            let got = Error::of_catalog_write(e);
-            assert!(
-                matches!(
-                    got,
-                    Error::Fatal {
-                        reason: FatalReason::Storage { .. }
-                    }
-                ),
-                "{got:?}"
+            assert_eq!(
+                Error::storage(format!("{damaged:?}")),
+                client(e.clone()),
+                "{e:?}"
             );
         }
-        let got = Error::of_catalog_write(catalog::Error::Heap(heap::Error::TooLarge {
+        let too_large = heap::Error::TooLarge {
             len: 9000,
             limit: 8000,
-        }));
-        assert!(
-            matches!(
-                got,
-                Error::Rejected {
-                    reason: RejectReason::Internal { .. }
-                }
-            ),
-            "{got:?}"
+        };
+        assert_eq!(
+            Error::rejected(RejectReason::Internal {
+                what: "Heap(TooLarge { len: 9000, limit: 8000 })".into()
+            }),
+            client(catalog::Error::Heap(too_large))
+        );
+    }
+
+    #[test]
+    fn damage_decoded_in_a_catalog_error_is_a_storage_failure_and_a_long_entry_is_internal() {
+        use crate::btree;
+        let schema = catalog::engine_schema();
+        let client = |e: catalog::Error| {
+            let mapped = write::Mapped::unmapped_for_test(e.into());
+            Error::of_mapped(&schema, TxnId(7), mapped, |_| String::new())
+        };
+        let malformed = btree::Error::Malformed(crate::storage::Pid(3));
+        assert_eq!(
+            Error::storage("Malformed(Pid(3))"),
+            client(catalog::Error::Index(malformed))
+        );
+        assert_eq!(
+            Error::storage("registration origin 7"),
+            client(catalog::Error::Corrupt(catalog::Rot::Origin(7)))
+        );
+        assert_eq!(
+            Error::storage("the stored catalog has no root for index 7"),
+            client(catalog::Error::Missing("index 7".into()))
+        );
+        assert_eq!(
+            Error::rejected(RejectReason::Internal {
+                what: "Index(TooLong { len: 9000, max: 4000 })".into()
+            }),
+            client(catalog::Error::Index(btree::Error::TooLong {
+                len: 9000,
+                max: 4000
+            }))
         );
     }
 

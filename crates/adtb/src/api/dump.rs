@@ -735,7 +735,7 @@ impl<R: Runtime> Engine<R> {
                 let facts = self
                     .deployment
                     .insert(&self.pager, self.db.txns(), x, facts);
-                facts.map_err(|e| write::Broken::Facts(e).into())
+                facts.map_err(write::Error::from)
             });
         match written {
             Ok(()) => self.db.commit(tx).map(drop).map_err(failed),

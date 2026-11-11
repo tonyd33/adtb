@@ -85,10 +85,10 @@ pub enum Broken {
     NoViolation,
     SettingNotRecord,
     SettingField(String),
-    /// Reading the denials of a verify fails.
-    Denials(catalog::Error),
-    /// Writing deployment facts fails.
-    Facts(catalog::Error),
+    /// A catalog call fails with a catalog error other than a damaged page, an index entry or
+    /// node that does not decode, a stored row that does not decode, a missing root or a
+    /// failure of the transactions layer.
+    CatalogError(catalog::Error),
     DeploymentRefused,
 }
 
@@ -211,7 +211,7 @@ impl fmt::Display for Broken {
             Broken::NoViolation => f.write_str("`Finding` declares `Violation`"),
             Broken::SettingNotRecord => f.write_str("a setting's value is a record"),
             Broken::SettingField(name) => write!(f, "a setting's value has field `{name}`"),
-            Broken::Denials(e) | Broken::Facts(e) => f.write_str(&catalog::detail(e)),
+            Broken::CatalogError(e) => f.write_str(&catalog::detail(e)),
             Broken::DeploymentRefused => f.write_str("a deployment command was refused"),
         }
     }

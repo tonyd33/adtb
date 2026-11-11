@@ -1,5 +1,5 @@
 use crate::storage::Pid;
-use crate::{btree, exec};
+use crate::{btree, catalog, exec};
 
 use super::super::{Error, detail};
 use super::{Rot, Rot as R};
@@ -12,7 +12,9 @@ fn after(r: Option<&Rot>) -> Option<(Rot, &'static str)> {
         None => (R::Index(btree::Error::Malformed(Pid(4))), "Malformed(Pid(4))"),
         Some(R::Index(_)) => (R::NoKeyIndex("us".into()), "relation us has no key index"),
         Some(R::NoKeyIndex(_)) => (R::Exec(exec::Rot::SpillCut), "a spilled record is cut short"),
-        Some(R::Exec(_)) => return None,
+        Some(R::Exec(_)) => (R::Catalog(catalog::Rot::Origin(7)), "registration origin 7"),
+        Some(R::Catalog(_)) => (R::NoRoot("index 7".into()), "the stored catalog has no root for index 7"),
+        Some(R::NoRoot(_)) => return None,
     })
 }
 

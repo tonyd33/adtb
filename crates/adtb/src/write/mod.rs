@@ -152,8 +152,8 @@ pub enum Error {
         objects: BTreeMap<Quarantine, Option<MarkFailure>>,
         by: By,
     },
-    /// The commit log is corrupt or its ids are spent.
-    Transactions(String),
+    /// The transactions layer refuses the call.
+    Transactions(crate::mvcc::Error),
     Corrupt(Rot),
     /// The statement needs a form the engine does not run yet.
     Unsupported(String),
@@ -282,7 +282,25 @@ impl From<crate::btree::Error> for Error {
 
 impl From<crate::mvcc::Error> for Error {
     fn from(e: crate::mvcc::Error) -> Error {
-        Error::Transactions(format!("{e:?}"))
+        Error::Transactions(e)
+    }
+}
+
+impl From<crate::catalog::Error> for Error {
+    fn from(e: crate::catalog::Error) -> Error {
+        use crate::catalog::Error as C;
+        match e {
+            C::Page(p)
+            | C::Heap(crate::heap::Error::Page(p))
+            | C::Index(crate::btree::Error::Page(p)) => Error::Page(p),
+            C::Index(e @ (crate::btree::Error::Malformed(_) | crate::btree::Error::Entry(_))) => {
+                Rot::Index(e).into()
+            }
+            C::Corrupt(r) => Rot::Catalog(r).into(),
+            C::Missing(what) => Rot::NoRoot(what).into(),
+            C::Txn(e) => Error::Transactions(e),
+            other => Broken::CatalogError(other).into(),
+        }
     }
 }
 

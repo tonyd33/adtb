@@ -17,7 +17,7 @@ fn after(b: Option<&Broken>) -> Option<(Broken, &'static str)> {
     let int = || Ty::Base(Base::I64);
     let k = || TermKind(Kind::EmptySet);
     let r = || "us".to_string();
-    let rot = || catalog::Error::from(catalog::Rot::GrantNoId);
+    let catalog_refused = || catalog::Error::Refused(vec!["r".into()]);
     let denial = || {
         Box::new(api::Error::Rejected {
             reason: RejectReason::Internal { what: "w".into() },
@@ -75,9 +75,8 @@ fn after(b: Option<&Broken>) -> Option<(Broken, &'static str)> {
         Some(B::ExportNotSet) => (B::NoViolation, "`Finding` declares `Violation`"),
         Some(B::NoViolation) => (B::SettingNotRecord, "a setting's value is a record"),
         Some(B::SettingNotRecord) => (B::SettingField("f".into()), "a setting's value has field `f`"),
-        Some(B::SettingField(_)) => (B::Denials(rot()), "Corrupt(\"a grant row has no I64 id\")"),
-        Some(B::Denials(_)) => (B::Facts(rot()), "Corrupt(\"a grant row has no I64 id\")"),
-        Some(B::Facts(_)) => (B::DeploymentRefused, "a deployment command was refused"),
+        Some(B::SettingField(_)) => (B::CatalogError(catalog_refused()), "Refused([\"r\"])"),
+        Some(B::CatalogError(_)) => (B::DeploymentRefused, "a deployment command was refused"),
         Some(B::DeploymentRefused) => return None,
     })
 }

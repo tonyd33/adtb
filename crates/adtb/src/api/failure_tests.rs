@@ -1,9 +1,12 @@
 //! A call that fails returns its own failure once the abort that ends its transaction is
 //! recorded, and the abort record's failure when it is not.
 
+use std::collections::BTreeSet;
+
 use adtb_harness::process::run;
 use adtb_sim::{Config, Sim};
 
+use crate::runtime::Runtime as _;
 use crate::storage::{Damage, PageError};
 use crate::test_world as harness;
 use crate::test_world::load::{self as open, options};
@@ -112,6 +115,106 @@ fn a_transaction_ended_by_a_failure_its_abort_cannot_record_answers_later_calls_
         let later = txn.query_text("1", &[], &opts).map(drop);
         assert_eq!(Err(cause.clone()), later, "a later call");
         assert_eq!(Err(cause), txn.commit(None).map(drop), "the commit");
+        db.close().expect("the database closes");
+    });
+}
+
+/// Returns bundle `name` pinned at [`APP`], leased for an hour.
+fn leased(name: &str) -> crate::Registration {
+    let file = adtb_lang::parse::parse_migration(APP, adtb_lang::parse::Options::default())
+        .value
+        .expect("the migration parses");
+    let source = adtb_lang::evolve::Source::default()
+        .migrate(&file, APP)
+        .expect("the migration applies");
+    let schema = source.schema().expect("the schema checks");
+    let hash = crate::catalog::version_hash(&schema, &source);
+    let hash: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+    crate::Registration::bundle(format!(
+        "bundle {name} pins 1 ({hash}) edition \"2026-10\" lease 1h\nquery hello () -> Text = \"hi\"\n"
+    ))
+    .expect("the bundle parses")
+}
+
+#[test]
+fn damage_met_writing_a_lapsed_lease_fails_as_storage_and_marks_nothing() {
+    let mut sim = Sim::new(17, Config::default());
+    run(&mut sim, |rt| {
+        let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &options(2));
+        let opts = CallOptions::default();
+        db.query_text("set setting LeaseGrace = { grace: 60s }", &[], &opts)
+            .expect("the grace is set");
+        let owner = db.role_authority().session("owner").expect("the owner");
+        db.role_authority()
+            .register(&owner, &leased("s-1.0"))
+            .expect("registered");
+        adtb_harness::common::sleep(&rt, &mut rt.io(), std::time::Duration::from_secs(7200));
+        let rows = crate::testing::Object::CatalogRows;
+        let pages = db.testing().pages(rows).expect("the rows heap's pages");
+        for &page in &pages {
+            let refused = Plant::Refuse {
+                page,
+                damage: Damage::Checksum,
+            };
+            db.testing().plant(refused).expect("planted");
+        }
+        let unrecorded = db.engine.db.txns().unrecorded_aborts();
+        let got = db
+            .query_text("set setting LeaseGrace = { grace: 100h }", &[], &opts)
+            .map(drop);
+        let storage = |pid| {
+            Err(Error::Fatal {
+                reason: FatalReason::Storage {
+                    detail: format!(
+                        "{:?}",
+                        PageError {
+                            pid,
+                            damage: Damage::Checksum
+                        }
+                    ),
+                },
+            })
+        };
+        assert!(
+            pages.iter().any(|&p| storage(p) == got),
+            "{got:?} names no page of {pages:?}"
+        );
+        assert_eq!(BTreeSet::new(), db.testing().probe().marks());
+        assert_eq!(0, db.engine.db.txns().unrecorded_aborts() - unrecorded);
+        db.close().expect("the database closes");
+    });
+}
+
+#[test]
+fn a_deployment_row_that_does_not_decode_fails_a_dump_as_storage() {
+    let mut sim = Sim::new(18, Config::default());
+    run(&mut sim, |rt| {
+        let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &options(2));
+        let bad = crate::key::Value::Sum {
+            ctor: 13,
+            fields: vec![
+                crate::key::Value::I64(1),
+                crate::key::Value::I64(1),
+                crate::key::Value::I64(7),
+                crate::key::Value::Text("t".to_owned()),
+            ],
+        };
+        db.testing()
+            .plant(Plant::Insert {
+                heap: crate::testing::Object::CatalogRows,
+                rows: vec![vec![bad]],
+            })
+            .expect("planted");
+        let got = db
+            .query_text("dump to \"d\"", &[], &CallOptions::default())
+            .map(drop);
+        let storage = Error::Fatal {
+            reason: FatalReason::Storage {
+                detail: "registration origin 7".to_owned(),
+            },
+        };
+        assert_eq!(Err(storage), got);
+        assert_eq!(BTreeSet::new(), db.testing().probe().marks());
         db.close().expect("the database closes");
     });
 }

@@ -108,6 +108,8 @@ impl Catalog {
                     .map(|witness| Denial::Violated { id, witness }),
                 Ok(Err(Denied::Fault(witness))) => Some(Denial::Violated { id, witness }),
                 Ok(Err(Denied::Memory(why))) => Some(Denial::Unrun { id, why }),
+                Ok(Err(Denied::Rotten(rot))) => Some(Denial::Rotten { id, rot }),
+                Ok(Err(Denied::Orphaned(index))) => Some(Denial::Orphaned { id, index }),
             };
             out.extend(denial);
         }
@@ -122,6 +124,12 @@ pub enum Denial {
     Violated { id: u64, witness: String },
     /// The query read a damaged page.
     Damaged(PageError),
+    /// The query of the constraint of catalog id `id` read a stored structure that does not
+    /// decode.
+    Rotten { id: u64, rot: exec::Rot },
+    /// The query of the constraint of catalog id `id` met an entry of the index `index` owns
+    /// that names no version.
+    Orphaned { id: u64, index: u32 },
     /// The query needs more than the query memory.
     Unrun { id: u64, why: String },
 }
@@ -132,6 +140,10 @@ enum Denied {
     Fault(String),
     /// The query needs more than the query memory.
     Memory(String),
+    /// The query read a stored structure that does not decode.
+    Rotten(exec::Rot),
+    /// The query met an entry of the index this owner number owns that names no version.
+    Orphaned(u32),
 }
 
 /// The qualified name of every constraint, then every check, of `schema`, in declaration order.
@@ -192,6 +204,8 @@ fn violating<R: Runtime>(
         match run_denial(schema, catalog, normal, t, store, budget, hosts)? {
             Ok(rows) => rows,
             Err(Denied::Fault(why) | Denied::Memory(why)) => vec![why],
+            Err(Denied::Rotten(rot)) => return Err(failed(exec::Error::Corrupt(rot))),
+            Err(Denied::Orphaned(index)) => return Err(failed(exec::Error::OrphanEntry(index))),
         },
     )
 }
@@ -209,7 +223,10 @@ fn run_denial<R: Runtime>(
     let terms = &normal.terms;
     let p = plan::plan(schema, normal, catalog, terms, t, plan::Options::default())
         .map_err(|e| Error::from(Broken::Plan(e)))?;
-    let mut program = exec::compile(schema, catalog, &p, None).map_err(failed)?;
+    let mut program = match exec::compile(schema, catalog, &p, None) {
+        Ok(program) => program,
+        Err(e) => return damaged(e).map(Err),
+    };
     program.shared.hosts = hosts.clone();
     let program = Arc::new(program);
     let grant = budget
@@ -240,7 +257,7 @@ fn run_denial<R: Runtime>(
                 "its validation needs more than the query memory of {limit} bytes"
             ))));
         }
-        Err(e) => return Err(failed(e)),
+        Err(e) => return damaged(e).map(Err),
     };
     let Val::Set(rows) = &v else {
         return Err(Error::from(Broken::NotASet(v)));
@@ -251,10 +268,24 @@ fn run_denial<R: Runtime>(
             return Err(Error::from(Broken::NotSetTyped(other.clone())));
         }
     };
-    rows.iter()
-        .map(|r| exec::print(schema, &elem, r).map_err(failed))
-        .collect::<Result<Vec<_>, _>>()
-        .map(Ok)
+    let mut printed = Vec::new();
+    for r in rows.iter() {
+        match exec::print(schema, &elem, r) {
+            Ok(row) => printed.push(row),
+            Err(e) => return damaged(e).map(Err),
+        }
+    }
+    Ok(Ok(printed))
+}
+
+/// Returns the damage a denial run met as why it could not run, any other failure as the
+/// catalog's error.
+fn damaged(e: exec::Error) -> Result<Denied, Error> {
+    match e {
+        exec::Error::Corrupt(rot) => Ok(Denied::Rotten(rot)),
+        exec::Error::OrphanEntry(index) => Ok(Denied::Orphaned(index)),
+        other => Err(failed(other)),
+    }
 }
 
 fn failed(e: exec::Error) -> Error {

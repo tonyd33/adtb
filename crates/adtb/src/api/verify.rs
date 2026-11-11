@@ -640,16 +640,19 @@ impl<R: Runtime> Engine<R> {
             VerifyScope::Database => true,
             VerifyScope::Relation(rel) => r.contains(&rel),
         };
-        let denied = self
-            .catalog
-            .denied(&snapshot.store(), reads)
-            .map_err(write::Broken::Denials)?;
+        let denied = self.catalog.denied(&snapshot.store(), reads)?;
         found.extend(denied.into_iter().map(|d| match d {
             Denial::Violated { id, witness } => Found::Violation {
                 constraint: id,
                 witness,
             },
             Denial::Damaged(e) => Found::of_page(e),
+            Denial::Rotten { id, rot } => Found::Structure {
+                at: format!("constraint {id}: {rot}"),
+            },
+            Denial::Orphaned { id, index } => Found::Structure {
+                at: format!("constraint {id}: an entry of index {index} names no version"),
+            },
             Denial::Unrun { id, why } => Found::Structure {
                 at: format!("constraint {id}: {why}"),
             },

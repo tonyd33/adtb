@@ -414,6 +414,35 @@ fn an_entry_of_a_constructor_outside_its_set_is_an_orphan_finding() {
     });
 }
 
+#[test]
+fn a_constraint_meeting_an_orphan_entry_is_a_structure_finding() {
+    let probed = "module app\nadd constraint probed =\n  from u in users\n  where u.id == users.key(1000)\n  select u\n";
+    process::once(50, |rt| {
+        let db = Database::open_in(rt, NAME, &Log::new([APP, probed]), &open::options(2))
+            .expect("the database opens");
+        seed_app(&db);
+        plant_orphan(&db, "app::users", "User");
+        let got = verified(&db, None);
+        assert_eq!(2, got.len(), "{got:?}");
+        let t = db.testing();
+        let key_index = index(&db, "app::users", "key id");
+        let Object::Index(id) = key_index else {
+            panic!("{key_index:?} is an index");
+        };
+        let orphan = format!(
+            r#"Orphan {{ id: verify_findings.key(1), run: RunId(1), at: 2026-01-01T00:00:00.046559Z, index: indexes.key({}), ctor: constructors.key(1025), where: "page 557 slot 400: holds no version of the entry's key" }}"#,
+            id.0
+        );
+        assert_eq!(orphan, got[0]);
+        let met = r#"Structure { id: verify_findings.key(2), run: RunId(1), at: 2026-01-01T00:00:00.046559Z, where: "constraint 1025: an entry of index 1024 names no version" }"#;
+        assert_eq!(met, got[1]);
+        assert_eq!(
+            BTreeSet::from([t.own_mark(key_index).unwrap()]),
+            t.probe().marks()
+        );
+    });
+}
+
 /// Returns the TIDs of the versions of keys `a` and `b` of `users`, on one page, the first in the
 /// later slot.
 fn stray_ends(db: &Database<SimRuntime>, a: i64, b: i64) -> (Entry, Tid) {

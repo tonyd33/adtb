@@ -1300,8 +1300,8 @@ fn a_failed_commit_whose_abort_record_fails_returns_the_records_failure_and_coun
             pid: status.expect("a status page"),
             damage: Damage::Checksum,
         };
-        let failed = format!("{:?}", crate::mvcc::Error::Corrupt(damage));
-        assert_eq!((Err(write::Error::Transactions(failed)), 1), got);
+        let failed = write::Error::Transactions(crate::mvcc::Error::Corrupt(damage));
+        assert_eq!((Err(failed), 1), got);
     });
 }
 

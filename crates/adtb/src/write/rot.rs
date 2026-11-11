@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{btree, exec};
+use crate::{btree, catalog, exec};
 
 use super::Error;
 
@@ -10,6 +10,9 @@ pub enum Rot {
     Index(btree::Error),
     NoKeyIndex(String),
     Exec(exec::Rot),
+    Catalog(catalog::Rot),
+    /// The stored catalog has no root for the structure named.
+    NoRoot(String),
 }
 
 impl From<Rot> for Error {
@@ -24,6 +27,8 @@ impl fmt::Display for Rot {
             Rot::Index(e) => write!(f, "{e:?}"),
             Rot::NoKeyIndex(relation) => write!(f, "relation {relation} has no key index"),
             Rot::Exec(r) => write!(f, "{r}"),
+            Rot::Catalog(r) => write!(f, "{r}"),
+            Rot::NoRoot(what) => write!(f, "the stored catalog has no root for {what}"),
         }
     }
 }

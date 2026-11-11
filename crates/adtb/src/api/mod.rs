@@ -1194,12 +1194,7 @@ impl<R: Runtime> Engine<R> {
 
     /// Returns the client error of `e`, met writing catalog rows.
     fn catalog_error(&self, e: catalog::Error) -> Error {
-        match e {
-            catalog::Error::Page(p) | catalog::Error::Heap(crate::heap::Error::Page(p)) => {
-                self.write_error(TxnId(0), write::Error::Page(p))
-            }
-            other => Error::of_catalog_write(other),
-        }
+        self.write_error(TxnId(0), e.into())
     }
 
     /// Run the items of `p` as statements of `tx`, the transaction `id`, over `local`. Returns
