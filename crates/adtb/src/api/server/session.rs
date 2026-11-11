@@ -8,7 +8,7 @@ use crate::exec::Val;
 use crate::runtime::Runtime;
 use crate::write::Txn;
 
-use super::super::bundle::bundle_name;
+use super::super::bundle::{BundleWriter, bundle_name};
 use super::super::command::{Need, free_params, need};
 use super::super::text::Issuer;
 use super::super::{Engine, Error, OWNER_ROLE, RejectReason, TxnId};
@@ -152,7 +152,7 @@ impl<R: Runtime> RoleAuthority<R> {
                 }
                 Need::BundleOwner(bundle) => {
                     let name = bundle_name(bundle);
-                    let deployed = e.deployed.lock(&e.rt);
+                    let deployed = e.deployed.read(&e.rt);
                     let owner = deployed.bundles.get(&name).map(|r| deployed.owner_of(r));
                     drop(deployed);
                     if owner != Some(session.id.0) {
@@ -351,6 +351,7 @@ impl<R: Runtime> Engine<R> {
     /// a transaction of its own.
     pub(in super::super) fn retire_row(
         &self,
+        _writer: &BundleWriter<'_>,
         bundles: RelId,
         (old, new): (Val, Val),
         who: (&str, &Val),

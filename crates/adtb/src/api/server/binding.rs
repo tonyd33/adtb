@@ -138,7 +138,7 @@ impl<R: Runtime> RoleAuthority<R> {
         let caller = service(&e.schema, &session.name);
         let held = self.record_refusal(session, &caller, &origin, held)?;
         let _open = e.enter()?;
-        let row = e.deployed.lock(&e.rt).bundles.get(bundle).cloned();
+        let row = e.deployed.read(&e.rt).bundles.get(bundle).cloned();
         let header = row
             .as_ref()
             .map(|r| &r.header)
@@ -187,7 +187,7 @@ impl<R: Runtime> RoleAuthority<R> {
         self.access(false, |e, tx, id, _| {
             let t = Tables::new(&e.schema, id);
             self.checked(session, &t, e, tx)?;
-            let stored = e.deployed.lock(&e.rt).clone();
+            let stored = e.deployed.read(&e.rt);
             let row = stored.bundles.get(bundle);
             let callees = || registered.into_iter().flat_map(Registered::callees);
             if owns(&stored, row, session.id.0) {
@@ -234,7 +234,7 @@ impl<R: Runtime> RoleAuthority<R> {
         let observed = self.access(false, |e, tx, id, _| {
             let t = Tables::new(&e.schema, id);
             let principal = self.derive(session, &t, e, tx, assertion)?;
-            let stored = e.deployed.lock(&e.rt).clone();
+            let stored = e.deployed.read(&e.rt);
             if owns(&stored, stored.bundles.get(bundle), session.id.0) {
                 return Ok((principal, true));
             }
@@ -295,7 +295,7 @@ fn binding<R: Runtime>(e: &Engine<R>, registered: &Registered<R>, held: &[u32]) 
         catalog: header.and_then(|h| h.catalog),
         lease_until: e
             .deployed
-            .lock(&e.rt)
+            .read(&e.rt)
             .bundles
             .get(name)
             .map(|r| r.lease_until(&s)),

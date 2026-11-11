@@ -454,11 +454,9 @@ impl<R: Runtime> Database<R> {
         )
     }
 
-    /// Rebuild one index and swap it in, clearing its mark in the same atomic step. Returns
-    /// whether every old page was freed.
-    ///
-    /// Precondition: the caller holds [`Database::holding_off_vacuum`].
-    pub fn rebuild(&self, job: &Rebuild<'_>) -> Result<bool, Failure> {
+    /// Rebuild one index under `_held`, the vacuum lock the caller holds, and swap it in,
+    /// clearing its mark in the same atomic step. Returns whether every old page was freed.
+    pub fn rebuild(&self, job: &Rebuild<'_>, _held: &VacuumHold<'_, R>) -> Result<bool, Failure> {
         let mut pages = Pages {
             built: Vec::new(),
             built_past: Vec::new(),

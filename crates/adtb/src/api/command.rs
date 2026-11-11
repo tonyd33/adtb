@@ -15,6 +15,7 @@ use crate::plan::explain::{Actual, Node, json_text, object};
 use crate::runtime::Runtime;
 use crate::write::{self, Bounds, HoldWait, Local, Outcome, Rejection, Text, Txn, VacuumHold};
 
+use super::bundle::BundleWriter;
 use super::server::CallOrigin;
 use super::text::{DynRows, Issuer, Prepared, rows};
 use super::{Capability, Engine, Error, unsupported};
@@ -429,9 +430,9 @@ impl<R: Runtime> Engine<R> {
                 self.reindex_job(schema, *relation, at.as_deref(), *online)
             }
             Command::SetSetting { setting, value } => {
-                let _writer = self.bundle_writer.lock(&self.rt);
+                let writer = self.deployed.write(&self.rt);
                 let held = self.db.hold_vacuum(HoldWait::of(&bounds, at))?;
-                self.set_setting(tx, p, (*setting, *value), local, bounds, &held)
+                self.set_setting(tx, p, (*setting, *value), local, bounds, (&writer, &held))
             }
             Command::CancelCall(key) => self.cancel_call(tx, p, *key, local, bounds),
             Command::PrintSchema => {
@@ -759,8 +760,6 @@ impl<R: Runtime> Engine<R> {
     /// fields of `value`, a term of `p`, in a transaction of its own. Returns the new row.
     ///
     /// A lease setting first latches every bundle expired under the old values.
-    ///
-    /// Precondition: the caller holds `bundle_writer`.
     fn set_setting(
         &self,
         tx: &Txn,
@@ -768,7 +767,7 @@ impl<R: Runtime> Engine<R> {
         (setting, value): (u32, Tm),
         local: &mut Local,
         bounds: Bounds,
-        held: &VacuumHold<'_, R>,
+        (writer, held): (&BundleWriter<'_>, &VacuumHold<'_, R>),
     ) -> Result<DynRows, write::Error> {
         let schema = p.schema();
         let settings = engine_relation(schema, "catalog", "settings")?;
@@ -801,7 +800,7 @@ impl<R: Runtime> Engine<R> {
         }
         let row = Val::ctor(setting, fields);
         if matches!(ctor.name.as_str(), "DefaultLease" | "LeaseGrace") {
-            self.latch_expired()?;
+            self.latch_expired(writer)?;
         }
         self.swap_row(schema, settings, Old::Ctor(setting), row.clone())?;
         let window = {

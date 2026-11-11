@@ -37,7 +37,7 @@ impl<'e, R: Runtime> Calls<'e, R> {
     pub(super) fn new(e: &'e Engine<R>) -> Self {
         Calls {
             e,
-            stored: e.deployed.lock(&e.rt).clone(),
+            stored: e.deployed.read(&e.rt),
             served: e.registered.lock(&e.rt).clone(),
             reread: RefCell::new(BTreeMap::new()),
             families: RefCell::new(BTreeMap::new()),
@@ -520,7 +520,7 @@ impl<R: Runtime> RoleAuthority<R> {
         let grantee = role_name(&statement.to.text)?;
         let e = self.engine.upgrade().ok_or_else(Error::closed)?;
         let _open = e.enter()?;
-        let _writer = e.bundle_writer.lock(&e.rt);
+        let _writer = e.deployed.write(&e.rt);
         store::run(&e, true, &mut |e, tx, id, changes| {
             self.grant_in(e, tx, id, changes, (session, &statement, &grantee, text))
         })

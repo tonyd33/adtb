@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::catalog::Origin;
 use crate::runtime::Runtime;
 
-use super::super::bundle::{self, Claim, Registrant, Stored};
+use super::super::bundle::{self, BundleWriter, Claim, Registrant, Stored};
 use super::super::registered::{self, Checked, Over, Registration};
 use super::super::text::DynRows;
 use super::super::{Engine, Error, OWNER_ID};
@@ -33,8 +33,8 @@ impl<R: Runtime> RoleAuthority<R> {
     ) -> Result<DynRows, Error> {
         let e = self.engine.upgrade().ok_or_else(Error::closed)?;
         let _open = e.enter()?;
-        let _writer = e.bundle_writer.lock(&e.rt);
-        let stored = e.deployed.lock(&e.rt).clone();
+        let writer = e.deployed.write(&e.rt);
+        let stored = e.deployed.read(&e.rt);
         let (checked, claim) = decide(&e, session, bundle, &stored)?;
         let family = &claim.row.header.family;
         let family_owner = stored.deployed.families.get(family).copied();
@@ -67,7 +67,7 @@ impl<R: Runtime> RoleAuthority<R> {
                     return Err(denied(lacks.join("\n")));
                 }
             }
-            claim.rows(&e.schema, &mut |relation, insert, row| {
+            claim.rows(&writer, &e.schema, &mut |relation, insert, row| {
                 if insert {
                     changes.insert(relation, row);
                 } else {
@@ -81,7 +81,7 @@ impl<R: Runtime> RoleAuthority<R> {
                 .insert(&e.pager, e.db.txns(), x, &claim.facts)
                 .map_err(|err| e.catalog_error(err))
         })?;
-        serve(&e, checked, &claim);
+        serve(&e, &writer, checked, &claim);
         Ok(e.bundle_rows(&claim.row))
     }
 }
@@ -124,7 +124,7 @@ impl<R: Runtime> Engine<R> {
     /// Returns why the role of id `id` owns deployment state: a family, or a bundle that is not
     /// retired.
     pub(super) fn ownership(&self, id: i64) -> Option<String> {
-        let deployed = self.deployed.lock(&self.rt);
+        let deployed = self.deployed.read(&self.rt);
         let families = &deployed.deployed.families;
         if let Some((family, _)) = families.iter().find(|(_, o)| **o == id) {
             return Some(format!("the role owns family {family}"));
@@ -143,8 +143,8 @@ impl<R: Runtime> Engine<R> {
 }
 
 /// Serve `checked`, whose claim has committed.
-fn serve<R: Runtime>(e: &Engine<R>, checked: Checked, claim: &Claim) {
-    claim.record(Arc::make_mut(&mut e.deployed.lock(&e.rt)));
+fn serve<R: Runtime>(e: &Engine<R>, writer: &BundleWriter<'_>, checked: Checked, claim: &Claim) {
+    writer.change(&e.rt, |s| claim.record(s));
     let mut explained = (*e.explained()).clone();
     checked.explained(&mut explained);
     *e.bundles.lock(&e.rt) = Arc::new(explained);

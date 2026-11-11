@@ -142,7 +142,7 @@ impl<R: Runtime> RoleAuthority<R> {
     pub fn drop_role(&self, name: &str) -> Result<(), Error> {
         let name = role_name(name)?;
         let engine = self.engine.upgrade().ok_or_else(Error::closed)?;
-        let _writer = engine.bundle_writer.lock(&engine.rt);
+        let _writer = engine.deployed.write(&engine.rt);
         self.access(true, |e, tx, id, changes| {
             let t = Tables::new(&e.schema, id);
             let role = t.role(e, tx, &name)?;
@@ -289,7 +289,7 @@ impl<R: Runtime> RoleAuthority<R> {
         let statement = revoke_statement(text)?;
         let engine = self.engine.upgrade().ok_or_else(Error::closed)?;
         let _open = engine.enter()?;
-        let _writer = engine.bundle_writer.lock(&engine.rt);
+        let _writer = engine.deployed.write(&engine.rt);
         store::run(&engine, true, &mut |e, tx, id, changes| {
             let t = Tables::new(&e.schema, id);
             allowed(e, tx, &t)?;

@@ -128,7 +128,7 @@ impl<R: Runtime> Engine<R> {
     }
 
     fn rebuild_all(&self, schema: &Schema, work: &Work, job: &Job<'_, R>) {
-        let _no_vacuum = self.db.holding_off_vacuum();
+        let no_vacuum = self.db.holding_off_vacuum();
         let hook = self.reindexing.hook.lock(&self.rt).clone();
         let phase = |name: &str, done: f64| {
             job.phase(name, done);
@@ -154,7 +154,7 @@ impl<R: Runtime> Engine<R> {
                 online: work.online,
                 phase: &phase,
             };
-            match self.db.rebuild(&rebuild) {
+            match self.db.rebuild(&rebuild, &no_vacuum) {
                 Ok(all_freed) => {
                     reclaimed &= all_freed;
                     self.keep_outcome(schema, index, work.run, None);

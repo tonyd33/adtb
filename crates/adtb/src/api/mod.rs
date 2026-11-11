@@ -353,11 +353,8 @@ struct Engine<R: Runtime> {
     registered: Lock<Vec<Arc<registered::Checked>>>,
     /// The rows of `catalog::bundles` and `catalog::registered`, the family owners and the
     /// successful registrations, as the latest commit holds them.
-    deployed: Lock<Arc<bundle::Stored>>,
+    deployed: bundle::StoredLock,
     deployment: catalog::Deployment,
-    /// Held across every write of a row of `catalog::bundles`, so that the row a writer reads
-    /// from `deployed` is the one its write replaces.
-    bundle_writer: Lock<()>,
     /// The number the next role session takes.
     sessions: AtomicU64,
     /// The calls of role sessions, by the key of their row of `sys::calls`.
@@ -988,9 +985,8 @@ impl<R: Runtime> Engine<R> {
             source: catalog.source().clone(),
             bundles: Lock::new(Arc::new(parts.bundles)),
             registered: Lock::new(parts.registered.into_iter().map(Arc::new).collect()),
-            deployed: Lock::new(Arc::new(parts.deployed)),
+            deployed: bundle::StoredLock::new(parts.deployed),
             deployment: catalog.deployment(),
-            bundle_writer: Lock::new(()),
             sessions: AtomicU64::new(1),
             calls: Lock::new(server::Running::default()),
             settings: Lock::new(parts.settings),

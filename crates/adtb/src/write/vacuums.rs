@@ -15,7 +15,7 @@ use crate::plan::HeapId;
 use crate::runtime::{Instant, Io, Op, Runtime, ThreadId};
 use crate::vacuum::{Pacer, Phase, Progress, Step};
 
-use super::{Database, Error, Stop};
+use super::{Database, Error, Stop, VacuumHold};
 
 pub(super) const VACUUMS: u64 = 334;
 
@@ -36,7 +36,7 @@ struct Running {
     ctors: Vec<Shown>,
 }
 
-/// The vacuum a database runs, one at a time under its vacuum lock.
+/// The vacuum a database runs.
 #[derive(Default)]
 pub(super) struct Vacuums {
     pub(super) progress: Progress,
@@ -132,8 +132,13 @@ impl<R: Runtime> Database<R> {
     }
 
     /// Show a vacuum of the constructor relations `ctors`, each its id with its heap, of the
-    /// relation whose catalog key is `relation`, until the guard returned drops.
-    pub(super) fn show_vacuum(&self, relation: u64, ctors: &[(CtorId, u32)]) -> ShownVacuum<'_, R> {
+    /// relation whose catalog key is `relation`, under `_held`, until the guard returned drops.
+    pub(super) fn show_vacuum(
+        &self,
+        relation: u64,
+        ctors: &[(CtorId, u32)],
+        _held: &VacuumHold<'_, R>,
+    ) -> ShownVacuum<'_, R> {
         let started = self
             .pager
             .wall()

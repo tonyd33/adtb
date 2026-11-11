@@ -800,13 +800,10 @@ fn family_grant_over_forged_mark(forge: impl Fn(&mut Stored, i64)) -> Error {
         .unwrap();
     let e = authority.engine.upgrade().unwrap();
     e.registered.lock(&e.rt).clear();
-    {
-        let mut deployed = e.deployed.lock(&e.rt);
-        let mut stored = (**deployed).clone();
+    e.deployed.write(&e.rt).change(&e.rt, |stored| {
         let id = stored.bundles["web-1.0"].id;
-        forge(&mut stored, id);
-        *deployed = std::sync::Arc::new(stored);
-    }
+        forge(stored, id);
+    });
     authority
         .grant(&owner, "grant call web::q to bob")
         .expect_err("the signature cannot be read")
@@ -862,11 +859,10 @@ fn bundle_of_ann() -> (Scratch, Database) {
 
 fn forge(db: &Database, change: impl Fn(&mut Stored, i64)) {
     let e = &db.engine;
-    let mut deployed = e.deployed.lock(&e.rt);
-    let mut stored = (**deployed).clone();
-    let id = stored.bundles["cat-1.0"].id;
-    change(&mut stored, id);
-    *deployed = std::sync::Arc::new(stored);
+    e.deployed.write(&e.rt).change(&e.rt, |stored| {
+        let id = stored.bundles["cat-1.0"].id;
+        change(stored, id);
+    });
 }
 
 #[test]
@@ -874,7 +870,7 @@ fn only_a_revoke_of_what_a_bundle_counts_looks_at_a_lacking_owner() {
     let (_scratch, db) = bundle_of_ann();
     let authority = db.role_authority();
     let owner = authority.session("owner").unwrap();
-    let renewed = db.engine.deployed.lock(&db.engine.rt).bundles["cat-1.0"].renewed;
+    let renewed = db.engine.deployed.read(&db.engine.rt).bundles["cat-1.0"].renewed;
     forge(&db, |s, _| {
         s.bundles.get_mut("cat-1.0").unwrap().renewed = i64::MIN / 2;
     });

@@ -367,9 +367,13 @@ impl<R: Runtime> Database<R> {
     /// Fail if `written`, the write set of a committing transaction, is one
     /// [`Database::admit_touched`] refuses. What the transaction only read plays no part.
     ///
-    /// Precondition: the calling thread holds the serialization lock, and the commit record of
-    /// the transaction is written before it lets go.
-    pub(super) fn admit_commit(&self, written: Touched) -> Result<(), Error> {
+    /// Precondition: the commit record of the transaction is written before the calling thread
+    /// lets go of the serialization lock that `_ordered` witnesses.
+    pub(super) fn admit_commit(
+        &self,
+        _ordered: &Ordered<'_>,
+        written: Touched,
+    ) -> Result<(), Error> {
         if written.writes.is_empty() || !self.pager.any_quarantined() {
             return Ok(());
         }

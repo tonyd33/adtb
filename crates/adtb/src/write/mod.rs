@@ -1065,7 +1065,7 @@ impl<R: Runtime> Database<R> {
         &self,
         rel: RelId,
         stop: &Stop,
-        _one: &VacuumHold<'_, R>,
+        one: &VacuumHold<'_, R>,
     ) -> Result<Vacuumed, Error> {
         let r = (self.rels.get(&rel))
             .unwrap_or_else(|| panic!("a relation a vacuum names has heaps: {rel:?} has none"));
@@ -1086,7 +1086,7 @@ impl<R: Runtime> Database<R> {
                 .collect(),
         };
         let shown: Vec<(CtorId, u32)> = sum.heaps.iter().map(|(id, h)| (*id, h.id().0)).collect();
-        let _shown = self.show_vacuum(self.schema.ids.relations[&rel], &shown);
+        let _shown = self.show_vacuum(self.schema.ids.relations[&rel], &shown, one);
         let mut began = self.rt.now();
         let mut io = None;
         let halted = Cell::new(None);
@@ -1245,7 +1245,7 @@ impl<R: Runtime> Database<R> {
         let done = {
             let mut ser = self.session.ser.lock(&self.rt);
             self.map_committing(ser.ordered());
-            let admitted = self.admit_commit(std::mem::take(&mut tx.written));
+            let admitted = self.admit_commit(&ser.ordered(), std::mem::take(&mut tx.written));
             match admitted.and_then(|()| ser.precommit(tx.sid).map_err(Error::from)) {
                 Err(e) => Err(e),
                 Ok(()) => match tx
