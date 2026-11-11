@@ -1,6 +1,6 @@
 use std::fmt;
 
-use adtb_lang::kernel::Kind;
+use adtb_lang::kernel::{Const, Kind};
 use adtb_lang::textual::PrintError;
 use adtb_lang::types::Ty;
 
@@ -72,13 +72,18 @@ pub enum Broken {
     DeploymentRefused,
 }
 
-/// A term's kind, equal to another when their `Debug` texts are equal.
+/// A term's kind, equal to another when the kinds are equal, a float constant by its bits.
 #[derive(Clone, Debug)]
 pub struct TermKind(pub Kind);
 
 impl PartialEq for TermKind {
     fn eq(&self, other: &TermKind) -> bool {
-        format!("{:?}", self.0) == format!("{:?}", other.0)
+        match (&self.0, &other.0) {
+            (Kind::Const(Const::Float(a)), Kind::Const(Const::Float(b))) => {
+                a.to_bits() == b.to_bits()
+            }
+            (a, b) => a == b,
+        }
     }
 }
 

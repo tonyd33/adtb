@@ -18,7 +18,7 @@ fn directory() -> Scratch {
     Scratch::new("authority-fixtures", "roles")
 }
 
-fn opened(log: &Log) -> (Scratch, Database) {
+pub(super) fn opened(log: &Log) -> (Scratch, Database) {
     let scratch = directory();
     let db = opened_in(scratch.path(), log);
     (scratch, db)

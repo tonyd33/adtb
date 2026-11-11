@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use adtb_lang::evolve::{DeployedGrant, GrantRow};
 use adtb_lang::schema::{Schema, TypeDef, ValueDef};
-use adtb_lang::textual::{Form, parse, print};
+use adtb_lang::textual::{Form, print};
 use adtb_lang::types::{RelId, Ty};
 
 use crate::catalog::layout;
@@ -12,6 +12,7 @@ use crate::runtime::Runtime;
 use crate::write::Txn;
 
 use super::super::cause::Broken;
+use super::super::error_value::NoValue;
 use super::super::{Engine, Error, FatalReason, TxnId};
 use super::store::Changes;
 use super::{Capability, denied};
@@ -531,29 +532,19 @@ impl<'s> Tables<'s> {
         };
         Ok(match failed {
             None => Val::ctor(ctor("Succeeded")?, Vec::new()),
-            Some(error) => Val::ctor(ctor("Failed")?, vec![self.error_value(error)?]),
+            Some(error) => Val::ctor(ctor("Failed")?, vec![self.error_value(error)]),
         })
     }
 
-    /// Returns `error` as a value of the prelude sum, or as `Internal` naming it when its text
-    /// does not read back.
-    fn error_value(&self, error: &Error) -> Result<Val, Error> {
-        let prelude = self
-            .schema
-            .module_named("prelude")
-            .ok_or_else(|| malformed("the schema has module prelude"))?;
-        let ty = Ty::Data {
-            def: self.schema.module(prelude).types["Error"],
-            args: Vec::new(),
-            ctors: None,
-        };
-        let form = Form::of(self.schema, &ty);
-        let text = error.value().to_string();
-        parse::<Val>(&text, &form).or_else(|_| {
-            let internal = Error::internal(Broken::NoValue(error.clone()));
-            parse::<Val>(&internal.value().to_string(), &form)
-                .map_err(|_| malformed(format!("the error `{text}` reads as a value")))
-        })
+    /// Returns `error` as a value of the prelude sum, or as `Internal` naming it when it holds a
+    /// report.
+    fn error_value(&self, error: &Error) -> Val {
+        match error.prelude_value(self.schema) {
+            Ok(value) => value,
+            Err(NoValue::Report) => Error::internal(Broken::NoValue(error.clone()))
+                .prelude_value(self.schema)
+                .unwrap_or_else(|e| unreachable!("an `Internal` error holds no report: {e:?}")),
+        }
     }
 
     fn prelude_type(&self, name: &str) -> Result<&'s TypeDef, Error> {
@@ -654,3 +645,7 @@ fn malformed(detail: impl Into<String>) -> Error {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "outcome_tests.rs"]
+mod outcome_tests;

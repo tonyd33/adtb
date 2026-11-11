@@ -1,0 +1,9 @@
+use paid-shop
+
+as owner failed Violated { constraint: "shop::paid", report: 1 rows, redacted: 0 }
+  insert customers { name: "ann" }
+
+query
+  from a in catalog::audit.Call where a.role == "owner" select match a.outcome | Succeeded -> "Succeeded" | Failed f -> "Failed"
+----
+"Failed"

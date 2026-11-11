@@ -9,6 +9,7 @@ mod closed_file_tests;
 mod command;
 mod dump;
 mod error;
+mod error_value;
 mod failed_open;
 #[cfg(test)]
 mod failure_tests;
