@@ -19,3 +19,5 @@ In api/server/call.rs the commit arm passes a failed `e.db.commit(tx)` to `retry
 Direction: let `commit`'s failure say whether its abort record failed (the gate's `Result<E, E>` shape), and have the call return the record arm before `retry`; a test like call_tests' stop-while-the-record-fails case for the commit path.
 
 Defect class: Damage or failure gives a panic, hang or flattened error.
+
+Also in reach of the same fix: `audited` in call.rs writes the role call's audit row after choosing the reply, and a failure of that write is settled in place of a failed record's reply; on a database whose status page is unreadable the audit's own transaction likely fails too. And the `api_aborts` structure-check row counts api only; write/'s after-failure sites (restore, reindex, commit) have no counted row.
