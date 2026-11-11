@@ -69,7 +69,6 @@ impl<R: Runtime> Database<R> {
             Site::KeptWrite => {
                 *self.engine.verifier.fail_kept.lock(&self.engine.rt) = Some(message);
             }
-            Site::ReindexScan => self.engine.db.fail_next_scan(message),
         }
     }
 

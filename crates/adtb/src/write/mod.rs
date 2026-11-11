@@ -655,8 +655,6 @@ pub struct Database<R: Runtime> {
     hosts: Arc<exec::Hosts>,
     /// The rows the engine holds for each volatile relation.
     volatile: Lock<BTreeMap<RelId, BTreeSet<Val>>>,
-    #[cfg(any(test, feature = "testing"))]
-    fail_scan: Lock<Option<String>>,
 }
 
 impl<R: Runtime> std::fmt::Debug for Database<R> {
@@ -750,8 +748,6 @@ impl<R: Runtime> Database<R> {
             retained: None,
             hosts: Arc::default(),
             volatile: Lock::default(),
-            #[cfg(any(test, feature = "testing"))]
-            fail_scan: Lock::default(),
             rt,
         })
     }
@@ -1336,12 +1332,6 @@ impl<R: Runtime> Database<R> {
     #[cfg(test)]
     pub(crate) fn fail_next_log_safe(&self, message: &'static str) {
         *self.session.fail_log.lock(&self.rt) = Some(message);
-    }
-
-    /// Panic with `message` at the first page the next scan of a rebuild reads.
-    #[cfg(any(test, feature = "testing"))]
-    pub(crate) fn fail_next_scan(&self, message: String) {
-        *self.fail_scan.lock(&self.rt) = Some(message);
     }
 
     /// Abort `tx` and release what it holds.

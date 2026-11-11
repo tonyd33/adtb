@@ -1,16 +1,18 @@
 //! `reindex`: its job row, rebuilds under writers and across crashes, and the release of a
 //! quarantined index.
 
+use crate::catalog_root::changing_words;
 use adtb_harness::process;
 use adtb_testkit::refused_with;
 use std::collections::BTreeSet;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use adtb::key::{Entry, Value};
 use adtb::runtime::{Clock, Threads};
-use adtb::testing::{Damage, Pid, Plant, Quarantine, Site, page::HEADER_LEN};
+use adtb::testing::{Damage, Pid, Plant, Quarantine, page::HEADER_LEN, panic_text};
 use adtb::{Database, Log, OpenOptions};
 use adtb_harness::damage::{DataFile, Files};
 use adtb_harness::{crash, seeds};
@@ -159,54 +161,42 @@ fn the_result_names_the_job_and_the_row_shows_its_phase_while_it_runs() {
 }
 
 #[test]
-fn a_panic_in_the_job_removes_its_row_and_keeps_the_old_index_and_a_finding() {
-    process::once(2, |rt| {
-        let db = open_app(rt.clone());
-        seed_rows(&db, 3);
-        let before = entries(&db, USER_INDEX);
-        db.testing().on_reindex_phase(|phase| {
-            assert_ne!("catch up", phase, "the injected failure");
-        });
-        api::results(&db, USER_REINDEX);
-        wait_for_jobs(&rt, &db);
-        assert_eq!(before, entries(&db, USER_INDEX));
-        let got = findings(&db);
-        assert_eq!(1, got.len(), "{got:?}");
-        assert!(got[0].contains("Structure"), "{got:?}");
-        assert!(got[0].contains("identities"), "{got:?}");
-        assert_eq!(Vec::<String>::new(), verified(&db));
-        db.close().unwrap();
-    });
-}
-
-#[test]
-fn a_panic_in_the_scan_under_the_snapshot_leaves_no_reader_held() {
-    process::once(2, |rt| {
-        let db = open_app(rt.clone());
-        seed_rows(&db, 3);
-        let panic = Plant::Panic {
-            site: Site::ReindexScan,
-            message: "the injected scan failure".to_owned(),
-        };
-        db.testing().plant(panic).unwrap();
-        api::results(&db, USER_REINDEX);
-        wait_for_jobs(&rt, &db);
-        let got = api::query(
-            &db,
-            "from f in sys::verify_findings.Structure select f.where",
-        );
-        let found = "\"reindex of app::identities index (user) in (Google | Apple): \
-                     Internal(\\\"the injected scan failure\\\")\"";
-        assert_eq!(vec![found.to_owned()], got);
-        let t = db.testing();
-        assert_eq!((0, 0), (t.tracked(), t.readers()), "serializer, readers");
+fn a_panic_in_each_phase_of_the_job_ends_the_run_and_the_next_open_keeps_every_row() {
+    for phase in PHASES[1..].iter().copied() {
+        let mut sim = Sim::new(2, Config::default());
+        let after = AtomicBool::new(false);
+        let run = catch_unwind(AssertUnwindSafe(|| {
+            sim.run(|rt| {
+                let db = open_app(rt.clone());
+                seed_rows(&db, 3);
+                db.testing().on_reindex_phase(move |p| {
+                    if p == phase {
+                        panic!("the injected failure at {phase}");
+                    }
+                });
+                api::results(&db, USER_REINDEX);
+                wait_for_jobs(&rt, &db);
+                after.store(true, Ordering::Relaxed);
+            })
+        }));
+        let payload = run.expect_err("the panic ends the run");
         assert_eq!(
-            1,
-            t.take_ends_by_drop(),
-            "the scan's transaction ended by drop"
+            Some(format!("the injected failure at {phase}")),
+            panic_text(&*payload)
         );
-        db.close().unwrap();
-    });
+        assert!(
+            !after.load(Ordering::Relaxed),
+            "{phase}: a call ran past the panic"
+        );
+        process::run(&mut sim, |rt| {
+            let db = open_app(rt);
+            assert_every_row_found(&db, 1..=3, phase);
+            assert_eq!(Vec::<String>::new(), verified(&db), "{phase}");
+            assert_eq!(Vec::<String>::new(), findings(&db), "{phase}");
+            assert_eq!(0, changing_words(&db), "{phase}");
+            db.close().unwrap();
+        });
+    }
 }
 
 #[test]

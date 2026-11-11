@@ -11,7 +11,6 @@
 
 use std::any::Any;
 use std::collections::BTreeSet;
-use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -49,8 +48,7 @@ pub struct Failure {
     pub reclaimed: bool,
 }
 
-/// Returns the text of a panic's payload, or `None` for an unwinding that is not a failure of the
-/// job: a runtime stopping its threads, or a fatal I/O error.
+/// Returns the text of a `String` or `&str` panic payload.
 pub fn panic_text(payload: &(dyn Any + Send)) -> Option<String> {
     payload
         .downcast_ref::<String>()
@@ -202,12 +200,6 @@ impl<R: Runtime> Scan<'_, R> {
         let mut out = Vec::new();
         for pid in heap.pages(&db.pager)? {
             db.rebuild_stopped()?;
-            #[cfg(any(test, feature = "testing"))]
-            if tx.is_some()
-                && let Some(text) = db.fail_scan.lock(&db.rt).take()
-            {
-                panic!("{text}");
-            }
             if let Some(since) = since
                 && storage::lsn(&db.pager.read(pid)?) < since
             {
@@ -480,12 +472,7 @@ impl<R: Runtime> Database<R> {
                 found: true,
             },
         };
-        let ran = catch_unwind(AssertUnwindSafe(|| self.rebuild_and_swap(job, &mut pages)));
-        let ran = ran.unwrap_or_else(|payload| match panic_text(&*payload) {
-            Some(text) => Err(Broken::Panicked(text).into()),
-            None => resume_unwind(payload),
-        });
-        match ran {
+        match self.rebuild_and_swap(job, &mut pages) {
             Ok(()) => {
                 (job.phase)("reclaim", 0.9);
                 let freed = retire(&self.pager, &pages.old.pages);
@@ -626,9 +613,6 @@ impl<R: Runtime> Database<R> {
 
     /// Replace the contents of `tree` with those of `built`, recording the old pages in `old`.
     /// Empties `made`, the pages of `built`, which from the swap on belong to `tree`.
-    ///
-    /// An unwinding out of the swap leaves `made` empty and `old` not found: whether the swap took
-    /// is unknown, so neither tree's pages may be freed. The next open frees the unreached ones.
     fn swap_in(
         &self,
         tree: BTree,
@@ -640,25 +624,20 @@ impl<R: Runtime> Database<R> {
     ) -> Result<(), Error> {
         let (reached_pages, reached) = tree.reachable(&self.pager);
         self.pager.retire(reached_pages.iter().copied());
-        let kept = std::mem::take(made);
-        let found_before = std::mem::replace(&mut old.found, false);
         if let Err(e) = tree.take_over(&self.pager, built, release) {
             self.pager.unretire(&reached_pages);
-            *made = kept;
-            old.found = found_before;
             return Err(e.into());
         }
-        old.found = found_before;
+        made.clear();
         old.pages.extend(reached_pages);
         if reached {
             return Ok(());
         }
-        let found = std::mem::replace(&mut old.found, false);
         (job.phase)("sweep", 0.85);
         let (strays, judged) = tree.strays(&self.pager).unwrap_or((Vec::new(), false));
         self.pager.retire(strays.iter().copied());
         append_strays(&mut old.pages, strays);
-        old.found = found && judged;
+        old.found &= judged;
         Ok(())
     }
 }

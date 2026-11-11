@@ -23,8 +23,6 @@ pub enum Broken {
         position: usize,
         relation: String,
     },
-    /// A rebuild of indexes panicked with this text.
-    Panicked(String),
     NotAnIndex {
         index: IndexId,
         relation: String,
@@ -140,7 +138,6 @@ impl fmt::Display for Broken {
             Broken::UnstoredIndex { position, relation } => {
                 write!(f, "index {position} of {relation} is stored")
             }
-            Broken::Panicked(text) => f.write_str(text),
             Broken::NotAnIndex { index, relation } => {
                 write!(f, "{index:?} is an index of {relation}")
             }

@@ -1,4 +1,5 @@
 mod background_vacuum;
+mod catalog_root;
 mod maintenance_faults;
 mod reindex;
 mod reindex_review;

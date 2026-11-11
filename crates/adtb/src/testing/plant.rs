@@ -13,8 +13,6 @@ pub enum Site {
     BackgroundRead,
     /// The next write of kept findings, after its first replacement.
     KeptWrite,
-    /// The first page the next scan of a rebuild reads under its snapshot.
-    ReindexScan,
 }
 
 /// A fault a test plants in a running engine, by the path a real fault of its kind takes where

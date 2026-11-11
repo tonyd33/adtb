@@ -1,8 +1,6 @@
 //! The `reindex` command: a job with its row of `sys::jobs`, on a thread of its own, that rebuilds
 //! each named index in turn.
 
-use std::collections::BTreeSet;
-use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{Arc, Weak};
 
 use adtb_lang::schema::Schema;
@@ -13,7 +11,7 @@ use crate::catalog;
 use crate::exec::Val;
 use crate::plan::IndexId;
 use crate::runtime::{Runtime, ThreadId};
-use crate::write::{self, Failure, Found, Rebuild, panic_text};
+use crate::write::{self, Failure, Found, Rebuild};
 
 use super::Engine;
 use super::command::engine_relation;
@@ -126,20 +124,7 @@ impl<R: Runtime> Engine<R> {
         let schema = self.schema.clone();
         let schema = schema.as_ref();
         let job = self.reindex_row_of(work.table, started);
-        let ran = catch_unwind(AssertUnwindSafe(|| self.rebuild_all(schema, work, &job)));
-        drop(job);
-        if let Err(payload) = ran {
-            let Some(text) = panic_text(&*payload) else {
-                resume_unwind(payload);
-            };
-            let at = format!("reindex of {}: {text}", work.target);
-            for &id in &work.indexes {
-                let found = BTreeSet::from([Found::Structure { at: at.clone() }]);
-                if let Err(e) = self.keep_reindex_findings(schema, id.0, work.run, found) {
-                    panic!("the engine declares `sys::verify_findings`: {e:?}");
-                }
-            }
-        }
+        self.rebuild_all(schema, work, &job);
     }
 
     fn rebuild_all(&self, schema: &Schema, work: &Work, job: &Job<'_, R>) {

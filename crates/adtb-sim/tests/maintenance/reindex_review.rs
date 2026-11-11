@@ -3,16 +3,18 @@
     reason = "drives real threads and clocks against a real file; removing it needs these races on the simulator"
 )]
 
+use crate::catalog_root::changing_words;
 use adtb_harness::process;
 use adtb_testkit::refused_with;
 use std::collections::{BTreeMap, BTreeSet};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use adtb::runtime::{Clock, Runtime, Threads};
-use adtb::testing::{Damage, Knobs, Object, PageKind, Plant, Quarantine, page::HEADER_LEN};
+use adtb::testing::{Damage, Knobs, PageKind, Plant, Quarantine, page::HEADER_LEN, panic_text};
 use adtb::{
     CallOptions, CancelToken, Database, Log, OpenOptions, TxnCallOptions, TxnOptions, Value,
 };
@@ -1240,36 +1242,61 @@ fn a_heap_marked_during_the_build_stops_the_swap() {
         api::results(&db, "reindex ts index (v)");
         wait_jobs(&rt, &db);
         assert!(!reclaimed.load(Ordering::Acquire), "the swap ran");
+        assert_eq!(
+            Vec::<String>::new(),
+            api::printed(db.testing().verify_holding().unwrap())
+        );
+        let found = api::query(
+            &db,
+            "from f in sys::verify_findings.Structure select f.where",
+        );
+        let named = r#""reindex of app::ts index (v): Quarantined(\"app::ts.T\")""#;
+        assert_eq!(vec![named.to_owned()], found);
         db.close().unwrap();
     });
 }
 
 #[test]
-fn a_panic_after_the_swap_frees_no_page_of_the_new_index() {
-    process::once(3, |rt| {
+fn a_panic_after_the_swap_ends_the_run_and_the_next_open_frees_no_page_of_the_new_index() {
+    let mut sim = Sim::new(3, Config::default());
+    let run = catch_unwind(AssertUnwindSafe(|| {
+        sim.run(|rt| {
+            let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
+            for i in 1..=400 {
+                api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
+            }
+            let t = db.testing();
+            let pages = t.pages(t.index("app::ts", "index (v)").unwrap()).unwrap();
+            assert!(pages.len() > 1, "a tree of one page has no page to lose");
+            db.testing()
+                .plant(Plant::Refuse {
+                    page: *pages.last().unwrap(),
+                    damage: Damage::Checksum,
+                })
+                .unwrap();
+            db.testing().on_reindex_phase(|p| {
+                if p == "sweep" {
+                    panic!("the injected failure");
+                }
+            });
+            api::results(&db, "reindex ts index (v)");
+            wait_jobs(&rt, &db);
+        })
+    }));
+    let payload = run.expect_err("the panic ends the run");
+    assert_eq!(
+        Some("the injected failure".to_owned()),
+        panic_text(&*payload)
+    );
+    process::run(&mut sim, |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
-        for i in 1..=400 {
-            api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
-        }
-        let t = db.testing();
-        let pages = t.pages(t.index("app::ts", "index (v)").unwrap()).unwrap();
-        assert!(pages.len() > 1, "a tree of one page has no page to lose");
-        db.testing()
-            .plant(Plant::Refuse {
-                page: *pages.last().unwrap(),
-                damage: Damage::Checksum,
-            })
-            .unwrap();
-        db.testing()
-            .on_reindex_phase(|p| assert_ne!("sweep", p, "the injected failure"));
-        api::results(&db, "reindex ts index (v)");
-        wait_jobs(&rt, &db);
         for i in [1, 77, 400] {
             let got = api::query(&db, &format!("from t in ts where t.v == {i} select t.v"));
             assert_eq!(vec![i.to_string()], got);
         }
         assert!(insert_ok(&db, 900), "the index takes a write");
-        assert!(db.testing().probe().marks().is_empty());
+        let t = db.testing();
+        assert!(t.probe().marks().is_empty());
         let rebuilt = t.pages(t.index("app::ts", "index (v)").unwrap()).unwrap();
         for p in rebuilt {
             assert!(!t.is_free(p).unwrap(), "{p:?} was freed");
@@ -1761,58 +1788,50 @@ fn a_command_after_one_that_took_effect_never_reruns_it() {
     assert!(polled > 0, "no seed had the vacuum wait out the job");
 }
 
-fn changing_words(db: &Database<SimRuntime>) -> u64 {
-    let t = db.testing();
-    let page = t.probe().page(t.root(Object::Catalog).unwrap()).unwrap();
-    let mut found = 0;
-    for at in (0..page.len() - 8).step_by(8) {
-        let v = u64::from_le_bytes(page[at..at + 8].try_into().unwrap());
-        if v == u64::MAX - 1 {
-            found += 1;
-        }
-    }
-    found
-}
-
 #[test]
-fn a_panic_inside_the_swap_frees_neither_tree_until_the_next_open() {
+fn a_panic_inside_the_swap_ends_the_run_and_the_next_open_leaves_a_clean_file() {
     let mut sim = Sim::new(5, Config::default());
-    process::run(&mut sim, |rt| {
-        let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
-        for i in 1..=3 {
-            api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
-        }
-        let w = db.clone();
-        let before = Arc::new(Mutex::new(Vec::new()));
-        db.testing().on_reindex_phase(move |p| {
-            let t = w.testing();
-            if p == "build" {
-                *before.lock().unwrap() = t.allocated().unwrap();
+    let freed = Arc::new(Mutex::new(None));
+    let run = catch_unwind(AssertUnwindSafe(|| {
+        sim.run(|rt| {
+            let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
+            for i in 1..=3 {
+                api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
             }
-            if p == "swap" {
-                let was = before.lock().unwrap().clone();
-                let new: Vec<_> = t
-                    .allocated()
-                    .unwrap()
-                    .into_iter()
-                    .filter(|p| !was.contains(p))
-                    .collect();
-                assert_eq!(1, new.len());
-                t.plant(Plant::Free(new[0])).unwrap();
-            }
-        });
-        api::results(&db, "reindex ts index (v)");
-        wait_jobs(&rt, &db);
-        let found = api::printed(api::result(&db, "from f in sys::verify_findings select f"));
-        assert!(
-            found
-                .iter()
-                .any(|f| f.contains("is not allocated") && f.contains("index (v)")),
-            "{found:?}"
-        );
-        assert_eq!(1, changing_words(&db), "changing stays set");
-        db.close().unwrap();
-    });
+            let w = db.clone();
+            let before = Arc::new(Mutex::new(Vec::new()));
+            let planted = freed.clone();
+            db.testing().on_reindex_phase(move |p| {
+                let t = w.testing();
+                if p == "build" {
+                    *before.lock().unwrap() = t.allocated().unwrap();
+                }
+                if p == "swap" {
+                    let was = before.lock().unwrap().clone();
+                    let new: Vec<_> = t
+                        .allocated()
+                        .unwrap()
+                        .into_iter()
+                        .filter(|p| !was.contains(p))
+                        .collect();
+                    assert_eq!(1, new.len());
+                    t.plant(Plant::Free(new[0])).unwrap();
+                    *planted.lock().unwrap() = Some(new[0]);
+                }
+            });
+            api::results(&db, "reindex ts index (v)");
+            wait_jobs(&rt, &db);
+        })
+    }));
+    let payload = run.expect_err("the panic ends the run");
+    let freed = freed
+        .lock()
+        .unwrap()
+        .expect("the swap freed a page of the new tree");
+    assert_eq!(
+        Some(format!("{freed:?} is not allocated")),
+        panic_text(&*payload)
+    );
     process::run(&mut sim, |rt| {
         let db = open::opened(&rt, HIST_FILE, &Log::new([HIST]), &open::options(2));
         assert_eq!(
