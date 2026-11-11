@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-31
-status: open
+status: resolved
 kind: bug
 priority: 575
 summary: "set setting holds bundle_writer while it waits for the vacuum lock, so grants, registrations and retires stall for a whole rebuild"
+closed: 2026-11-11
 tags:
   - quality
   - engine
@@ -25,3 +26,5 @@ Found by reading; not run. Repro: start `reindex ts` with a gate held, run `expl
 Actual: the grant waits for the rebuild and ignores the cancel. Expected: the grant is unaffected by the wait.
 
 Direction: take the vacuum lock first and `bundle_writer` only for the write. No holder of `bundle_writer` takes the vacuum lock, so the order is free. Only `set_setting` needs the writer, for `latch_expired` and the settings change.
+
+## 2026-11-11: resolved

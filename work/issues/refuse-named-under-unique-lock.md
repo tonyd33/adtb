@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-09
-status: open
+status: resolved
 kind: bug
 priority: 320
 summary: "probe_unique calls heap::refuse_named while holding the index's unique-check lock, so it records damage under a lock every other refusal site releases first"
+closed: 2026-11-11
 tags:
   - engine
   - class-not-atomic
@@ -22,3 +23,5 @@ The probe releases the unique-check lock before any damage is recorded, and rest
 ## Reproduction
 
 Plant a version the index names whose page no longer names it (through the testing surface), and run an insert that probes that key. Found by the step 8 review of structure-version-owner; no deadlock is shown.
+
+## 2026-11-11: resolved
