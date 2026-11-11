@@ -1,13 +1,12 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
 use adtb_lang::kernel::{Kind, Terms, Tm};
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, Ty};
 
-use crate::exec::{self, AtSnapshot, Budget, Call, Histories, Store, Val};
+use crate::exec::{self, Budget, Call, Store, Val};
 use crate::plan;
 use crate::runtime::Runtime;
 use crate::storage::PageError;
@@ -34,19 +33,11 @@ impl Catalog {
             norm::program(schema, program).map_err(|e| Error::from(Broken::NotNormal(e)))?;
         let existed: BTreeSet<String> = qualified(old).into_iter().collect();
         let catalog = self.plan();
-        let (heaps, indexes) = self.bindings();
-        let store = Arc::new(Store {
-            pager: pager.clone(),
-            reads: Arc::new(AtSnapshot {
-                rt: pager.rt().clone(),
-                reader: m.txns.reader(pager, m.hold, Some(x)),
-                serial: None,
-            }),
-            heaps,
-            indexes,
-            history: Histories::default(),
-            past: None,
-        });
+        let bindings = self.bindings();
+        let store = Arc::new(Store::migrating(
+            m.txns.reader(pager, m.hold, Some(x)),
+            bindings,
+        ));
         let budget = Budget::new(self.query_memory);
         let terms = &normal.terms;
         let named = qualified(schema)
@@ -224,15 +215,14 @@ fn run_denial<R: Runtime>(
     let grant = budget
         .admit(budget.limit())
         .expect("one validation runs at a time");
-    let call = Call {
-        store: store.clone(),
+    let call = Call::new(
+        store.clone(),
         grant,
-        pool: None,
-        options: exec::Options::default(),
-        cancel: Arc::new(AtomicBool::new(false)),
-        deadline: None,
-    };
-    let v = match exec::execute(store.pager.rt().clone(), program, call, &[]) {
+        exec::Options::default(),
+        Arc::default(),
+        None,
+    );
+    let v = match exec::execute(store.pager().rt().clone(), program, call, &[]) {
         Ok(v) => v,
         Err(exec::Error::Fault(f)) => {
             return Ok(Err(Denied::Fault(format!(

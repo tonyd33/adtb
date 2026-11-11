@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::batch;
 use crate::exec::{
-    self, AtSnapshot, Broken, Budget, Call, Error, Exceeded, Histories, Options as XOptions,
-    ProbeBounds, Program, Reads, Routes, Rows, Scheduler, Store, StoredHeap, Val,
+    self, Broken, Budget, Call, Error, Exceeded, Histories, Options as XOptions, ProbeBounds,
+    Program, Reads, Routes, Rows, Scheduler, Store, StoredHeap, Val,
 };
 use crate::heap::{FieldType, HeapNo};
 use crate::key::{CtorId, Tid, Value as KValue};
@@ -572,18 +572,23 @@ impl Reads for Counted {
 /// Returns `store` with its reads counted.
 fn counted(store: &Store<SimRuntime>) -> (Arc<Store<SimRuntime>>, Arc<Counted>) {
     let reads = Arc::new(Counted {
-        inner: store.reads.clone(),
+        inner: store.reads().clone(),
         seen: AtomicUsize::new(0),
     });
-    let store = Store {
-        pager: store.pager.clone(),
-        reads: reads.clone(),
-        heaps: store.heaps.clone(),
-        indexes: store.indexes.clone(),
-        history: store.history.clone(),
-        past: None,
-    };
-    (Arc::new(store), reads)
+    (Arc::new(rereading(store, reads.clone())), reads)
+}
+
+/// Returns `store` reading through `reads`.
+fn rereading(store: &Store<SimRuntime>, reads: Arc<dyn Reads>) -> Store<SimRuntime> {
+    let history = store.history().clone();
+    Store::over(
+        store.pager().clone(),
+        reads,
+        store.bindings().clone(),
+        store.listed(),
+        history,
+    )
+    .expect("the store's bindings bind what it lists")
 }
 
 /// Returns how many versions a scan of `heap` reads.
@@ -625,25 +630,16 @@ fn a_scan_passes_its_first_batch_before_it_reads_the_heap_s_last_page() {
 /// Returns a store over the heaps and indexes of `store` whose reader holds back only `heaps`.
 fn scoped(
     db: &crate::Database<SimRuntime>,
-    rt: &SimRuntime,
     store: &Store<SimRuntime>,
     heaps: &[HeapId],
 ) -> Store<SimRuntime> {
     let txns = db.tested_db().txns();
-    let scope = heaps.iter().map(|h| store.heaps[h].heap.id().0).collect();
+    let scope = heaps.iter().map(|h| store.stored(*h).heap.id().0).collect();
     let hold = txns.take(Scope::Heaps(scope)).expect("a snapshot");
-    Store {
-        pager: store.pager.clone(),
-        reads: Arc::new(AtSnapshot {
-            rt: rt.clone(),
-            reader: txns.reader(&store.pager, &hold, None),
-            serial: None,
-        }),
-        heaps: store.heaps.clone(),
-        indexes: store.indexes.clone(),
-        history: Histories::default(),
-        past: None,
-    }
+    Store::safe(
+        txns.reader(store.pager(), &hold, None),
+        store.bindings().clone(),
+    )
 }
 
 fn outside_scope(heap: HeapNo) -> Error {
@@ -671,8 +667,8 @@ fn a_store_reads_the_heaps_of_its_reader_s_scope_and_refuses_another() {
         f.catalog.heap(f.rel("notes"), 0),
     );
     let (inside, outside, unscoped) =
-        with_database(0, &f, 0, Running::None, |db, (rt, store, _)| {
-            let scoped = scoped(db, rt, store, &[stock]);
+        with_database(0, &f, 0, Running::None, |db, (_, store, _)| {
+            let scoped = scoped(db, store, &[stock]);
             let rows = |heap: HeapId| {
                 let mut n = 0;
                 scoped
@@ -682,7 +678,7 @@ fn a_store_reads_the_heaps_of_its_reader_s_scope_and_refuses_another() {
                     })
                     .map(|()| n)
             };
-            (rows(stock), rows(notes), store.heaps[&notes].heap.id())
+            (rows(stock), rows(notes), store.stored(notes).heap.id())
         });
     assert_eq!(Ok(300), inside);
     assert_eq!(Err(outside_scope(unscoped)), outside);
@@ -696,8 +692,8 @@ fn a_store_probes_an_index_only_when_its_reader_covers_every_route_heap() {
         f.catalog.relation(f.rel("notes")),
     );
     let (inside, outside, unscoped) =
-        with_database(0, &f, 0, Running::None, |db, (rt, store, _)| {
-            let scoped = scoped(db, rt, store, &[stock.heaps[&0]]);
+        with_database(0, &f, 0, Running::None, |db, (_, store, _)| {
+            let scoped = scoped(db, store, &[stock.heaps[&0]]);
             let visible = |rel: &crate::plan::RelationDesc| -> Result<usize, Error> {
                 let mut found = BTreeSet::new();
                 for named in probed(&scoped, rel.key_index, &rel.heaps)? {
@@ -710,7 +706,7 @@ fn a_store_probes_an_index_only_when_its_reader_covers_every_route_heap() {
             (
                 visible(stock),
                 visible(notes),
-                store.heaps[&notes.heaps[&0]].heap.id(),
+                store.stored(notes.heaps[&0]).heap.id(),
             )
         });
     assert_eq!(Ok(300), inside);
@@ -722,25 +718,115 @@ fn a_store_fetches_only_when_its_reader_covers_every_heap_of_the_relation() {
     let f = running();
     let rel = f.catalog.relation(f.rel("identities"));
     let (email, google, apple) = (rel.heaps[&0], rel.heaps[&1], rel.heaps[&2]);
-    let (whole, part, unscoped) = with_database(0, &f, 0, Running::None, |db, (rt, store, _)| {
+    let (whole, part, unscoped) = with_database(0, &f, 0, Running::None, |db, (_, store, _)| {
         let found = probed(store, rel.key_index, &Routes::from([(0, email)])).expect("a probe");
         let named = found
             .iter()
             .find(|n| store.fetch(email, n).is_ok_and(|row| row.is_some()))
             .expect("an email identity");
         let fetched = |heaps: &[HeapId]| {
-            scoped(db, rt, store, heaps)
+            scoped(db, store, heaps)
                 .fetch(email, named)
                 .map(|row| row.is_some())
         };
         (
             fetched(&[email, google, apple]),
             fetched(&[email, apple]),
-            store.heaps[&google].heap.id(),
+            store.stored(google).heap.id(),
         )
     });
     assert_eq!(Ok(true), whole);
     assert_eq!(Err(outside_scope(unscoped)), part);
+}
+
+fn unlisted_heap(heap: HeapId) -> Error {
+    Error::Internal(Box::new(Broken::UnlistedHeap(heap)))
+}
+
+#[test]
+fn a_store_narrowed_to_a_plan_s_reads_refuses_a_heap_or_index_they_do_not_list() {
+    let f = stock();
+    let (stock, notes) = (
+        f.catalog.relation(f.rel("stock")),
+        f.catalog.relation(f.rel("notes")),
+    );
+    let listed = Arc::new(crate::plan::Reads {
+        heaps: [stock.heaps[&0]].into(),
+        indexes: [stock.key_index].into(),
+    });
+    let unbound = Arc::new(crate::plan::Reads {
+        heaps: [HeapId(u64::MAX)].into(),
+        indexes: BTreeSet::new(),
+    });
+    let (inside, heap, index, widened, missing) =
+        with_database(0, &f, 0, Running::None, |_, (_, store, _)| {
+            let narrowed = store
+                .narrowed(&listed)
+                .expect("the store lists every bound read");
+            let rows = |heap: HeapId| {
+                let mut n = 0;
+                narrowed
+                    .scan(heap, 1000, &roomy(), |b| {
+                        n += b.len();
+                        Ok(ControlFlow::Continue(()))
+                    })
+                    .map(|()| n)
+            };
+            let everything = Arc::new(crate::plan::Reads {
+                heaps: [stock.heaps[&0], notes.heaps[&0]].into(),
+                indexes: BTreeSet::new(),
+            });
+            (
+                rows(stock.heaps[&0]),
+                rows(notes.heaps[&0]),
+                probed(&narrowed, notes.key_index, &Routes::new()).map(|n| n.len()),
+                narrowed.narrowed(&everything).map(drop),
+                store.narrowed(&unbound).map(drop),
+            )
+        });
+    assert_eq!(Ok(300), inside);
+    assert_eq!(Err(unlisted_heap(notes.heaps[&0])), heap);
+    assert_eq!(
+        Err(Error::Internal(Box::new(Broken::UnlistedIndex(
+            notes.key_index
+        )))),
+        index
+    );
+    assert_eq!(Err(unlisted_heap(notes.heaps[&0])), widened);
+    assert_eq!(
+        Err(Error::Internal(Box::new(Broken::UnboundHeap(HeapId(
+            u64::MAX
+        ))))),
+        missing
+    );
+}
+
+#[test]
+fn an_execution_over_a_store_that_does_not_list_its_program_s_reads_is_refused() {
+    let f = stock();
+    let (stock, notes) = (
+        f.catalog.heap(f.rel("stock"), 0),
+        f.catalog.heap(f.rel("notes"), 0),
+    );
+    let cases = cases_of(&f, "count(n for n in notes)", &[]);
+    assert!(!cases.is_empty(), "the text has cases");
+    let listed = Arc::new(crate::plan::Reads {
+        heaps: [stock].into(),
+        indexes: BTreeSet::new(),
+    });
+    let got = with_database(0, &f, 0, Running::None, |_, (rt, store, _)| {
+        let narrowed = Arc::new(store.narrowed(&listed).expect("the store lists stock"));
+        cases
+            .iter()
+            .map(|c| {
+                let call = call(&narrowed, roomy(), None, XOptions::default());
+                exec::execute(rt.clone(), c.program.clone(), call, &c.params)
+            })
+            .collect::<Vec<_>>()
+    });
+    for (c, got) in cases.iter().zip(got) {
+        assert_eq!(Err(unlisted_heap(notes)), got, "{}", c.name);
+    }
 }
 
 #[test]
@@ -903,14 +989,14 @@ fn with_past(
     heap: HeapId,
     history: &StoredHeap,
 ) -> (Arc<Store<SimRuntime>>, usize) {
-    let current = &store.heaps[&heap];
+    let current = store.stored(heap);
     let reads = Deleted {
-        now: store.reads.clone(),
+        now: store.reads().clone(),
     };
     let mut versions = Vec::new();
     current
         .heap
-        .scan(&store.pager, |v| versions.push(v))
+        .scan(store.pager(), |v| versions.push(v))
         .expect("a scan of the heap");
     let mut deleted = Vec::new();
     for v in versions {
@@ -924,22 +1010,21 @@ fn with_past(
     for v in deleted.iter().step_by(2) {
         let copied = history
             .heap
-            .copy_version(&store.pager, &current.heap, v)
+            .copy_version(store.pager(), &current.heap, v)
             .expect("a copy");
         assert!(copied.is_some(), "the version at {:?} is copied", v.tid);
     }
     let distinct: BTreeSet<String> = deleted.iter().map(|v| format!("{:?}", v.row)).collect();
-    let store = Store {
-        pager: store.pager.clone(),
-        reads: Arc::new(reads),
-        heaps: store.heaps.clone(),
-        indexes: store.indexes.clone(),
-        history: Histories {
-            heaps: [(heap, history.clone())].into(),
-            indexes: Default::default(),
-        },
-        past: None,
-    };
+    let listed = store.listed();
+    let history = Histories::of(&[(heap, history.clone())].into(), &BTreeMap::new(), listed);
+    let store = Store::over(
+        store.pager().clone(),
+        Arc::new(reads),
+        store.bindings().clone(),
+        listed,
+        history,
+    )
+    .expect("the store's bindings bind what it lists");
     (Arc::new(store), distinct.len())
 }
 
@@ -1054,18 +1139,11 @@ fn the_batch_a_scan_fills_is_held_within_the_grant() {
             .map(|c| {
                 let grant = budget.admit(64 << 20).expect("a grant fits");
                 let reads = Arc::new(Watched {
-                    inner: store.reads.clone(),
+                    inner: store.reads().clone(),
                     grant: grant.clone(),
                     most: AtomicUsize::new(0),
                 });
-                let watched = Arc::new(Store {
-                    pager: store.pager.clone(),
-                    reads: reads.clone(),
-                    heaps: store.heaps.clone(),
-                    indexes: store.indexes.clone(),
-                    history: store.history.clone(),
-                    past: None,
-                });
+                let watched = Arc::new(rereading(store, reads.clone()));
                 let v = exec::execute(
                     rt.clone(),
                     c.program.clone(),

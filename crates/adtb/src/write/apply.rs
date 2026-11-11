@@ -62,11 +62,11 @@ impl<R: Runtime> Stmt<'_, R> {
             for row in rows {
                 let row = self.stored(heap, row)?;
                 for (id, ix) in &rel.indexes {
-                    let types = self.store.key_types(*id);
+                    let types = self.store.key_types(*id)?;
                     let Some(key) = ix.keys.key(*c, &row, &types)? else {
                         continue;
                     };
-                    let stored = &self.db.indexes[id];
+                    let stored = &self.db.bindings.indexes()[id];
                     let ctor = *stored
                         .ctors
                         .iter()
@@ -98,7 +98,7 @@ impl<R: Runtime> Stmt<'_, R> {
     }
 
     fn heap(&self, id: HeapId) -> &Heap {
-        &self.db.heaps[&id].heap
+        &self.db.bindings.heaps()[&id].heap
     }
 
     fn reader_as(&self, me: Xid) -> Reader<Logged<R>> {
@@ -110,7 +110,7 @@ impl<R: Runtime> Stmt<'_, R> {
 
     /// Returns `row` as `heap` stores it.
     pub(super) fn stored(&self, heap: HeapId, row: &Val) -> Result<Vec<Value>, Error> {
-        Ok(self.db.heaps[&heap]
+        Ok(self.db.bindings.heaps()[&heap]
             .row
             .iter()
             .zip(row.fields()?)
@@ -383,11 +383,11 @@ impl<R: Runtime> Stmt<'_, R> {
         let reader = self.reader_as(xid);
         let pager = &self.db.pager;
         for (id, ix) in &r.indexes {
-            let types = self.store.key_types(*id);
+            let types = self.store.key_types(*id)?;
             let Some(key) = ix.keys.key(w.ctor, &w.stored, &types)? else {
                 continue;
             };
-            let stored = &self.db.indexes[id];
+            let stored = &self.db.bindings.indexes()[id];
             let ctor_id = *stored
                 .ctors
                 .iter()
@@ -409,9 +409,9 @@ impl<R: Runtime> Stmt<'_, R> {
                     }
                     let c = stored.ctors[&e.ctor];
                     let heap = r.ctors[c as usize].heap;
-                    let run = self.db.heaps[&heap].heap.hot_run(pager, e.tid)?;
+                    let run = self.db.bindings.heaps()[&heap].heap.hot_run(pager, e.tid)?;
                     if run.is_empty() {
-                        let at = (&*self.db.heaps[&heap].heap, e.tid);
+                        let at = (&*self.db.bindings.heaps()[&heap].heap, e.tid);
                         heap::refuse_named(pager, at, stored.index.tree().owner(), || {
                             let found = stored.index.probe(pager, &key)?;
                             Ok::<_, Error>(found.iter().any(|f| (f.ctor, f.tid) == (e.ctor, e.tid)))
@@ -424,7 +424,12 @@ impl<R: Runtime> Stmt<'_, R> {
                                 let at = Pid(link.tid.page());
                                 return Err(Heap::refuse_unreserved(
                                     pager,
-                                    (at, Slots::Versions(self.db.heaps[&heap].heap.id().0)),
+                                    (
+                                        at,
+                                        Slots::Versions(
+                                            self.db.bindings.heaps()[&heap].heap.id().0,
+                                        ),
+                                    ),
                                     latch,
                                     e,
                                 )

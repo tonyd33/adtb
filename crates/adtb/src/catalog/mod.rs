@@ -1056,7 +1056,7 @@ impl Catalog {
 
     /// Returns the heap of every constructor relation and every index, as the executor and the
     /// write path bind them.
-    pub fn bindings(&self) -> (BTreeMap<HeapId, StoredHeap>, BTreeMap<IndexId, StoredIndex>) {
+    pub fn bindings(&self) -> exec::Bindings {
         let schema = &self.schema;
         let heaps = self
             .heaps
@@ -1100,7 +1100,7 @@ impl Catalog {
                 )
             })
             .collect();
-        (heaps, indexes)
+        exec::Bindings::new(Arc::new(heaps), Arc::new(indexes))
     }
 
     /// Returns the order key of each constructor of every declared sum.

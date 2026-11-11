@@ -117,12 +117,12 @@ impl<R: Runtime> Database<R> {
     pub(crate) fn quarantined_name(&self, object: Quarantine) -> String {
         for r in self.rels.values() {
             for c in &r.ctors {
-                if object == Quarantine::Heap(self.heaps[&c.heap].heap.id().0) {
+                if object == Quarantine::Heap(self.bindings.heaps()[&c.heap].heap.id().0) {
                     return format!("{}.{}", r.qualified, c.name);
                 }
             }
             for (id, ix) in &r.indexes {
-                if object == Quarantine::Index(self.indexes[id].index.tree().owner()) {
+                if object == Quarantine::Index(self.bindings.indexes()[id].index.tree().owner()) {
                     return format!("{} {}", r.qualified, ix.clause);
                 }
             }
@@ -166,7 +166,7 @@ impl<R: Runtime> Database<R> {
             .rels
             .values()
             .find(|r| r.indexes.iter().any(|(i, _)| *i == id))?;
-        let owner = self.indexes.get(&id)?.index.tree().owner();
+        let owner = self.bindings.indexes().get(&id)?.index.tree().owner();
         Some(index_holder(&self.schema, r.id, owner))
     }
 
@@ -237,10 +237,8 @@ impl<R: Runtime> Database<R> {
                 _ => Error::Page(p),
             },
             Error::OrphanEntry(index) => {
-                let id = self
-                    .indexes
-                    .iter()
-                    .find(|(_, i)| i.index.tree().owner() == index);
+                let id =
+                    (self.bindings.indexes().iter()).find(|(_, i)| i.index.tree().owner() == index);
                 match id.and_then(|(id, _)| self.index_holder(*id)) {
                     Some(holder) => {
                         let objects = self.mark_finding(holder, &mut failed);
@@ -307,11 +305,11 @@ impl<R: Runtime> Database<R> {
         let heaps = rel
             .ctors
             .iter()
-            .map(|c| Quarantine::Heap(self.heaps[&c.heap].heap.id().0));
+            .map(|c| Quarantine::Heap(self.bindings.heaps()[&c.heap].heap.id().0));
         let indexes = rel
             .indexes
             .iter()
-            .map(|(id, _)| Quarantine::Index(self.indexes[id].index.tree().owner()));
+            .map(|(id, _)| Quarantine::Index(self.bindings.indexes()[id].index.tree().owner()));
         for object in std::iter::once(Quarantine::Database)
             .chain(heaps)
             .chain(indexes)
@@ -327,7 +325,7 @@ impl<R: Runtime> Database<R> {
     pub(crate) fn admit_heaps(&self, rel: RelId) -> Result<(), Error> {
         let marks = self.pager.quarantined();
         for c in &self.rels[&rel].ctors {
-            let object = Quarantine::Heap(self.heaps[&c.heap].heap.id().0);
+            let object = Quarantine::Heap(self.bindings.heaps()[&c.heap].heap.id().0);
             if marks.contains(&object) {
                 return Err(Error::admitted(object));
             }
@@ -390,7 +388,9 @@ impl<R: Runtime> Database<R> {
         }
         for (r, c) in &touched.reads {
             if let Some(ctor) = self.rels.get(r).and_then(|rel| rel.ctors.get(*c as usize)) {
-                marked(Quarantine::Heap(self.heaps[&ctor.heap].heap.id().0))?;
+                marked(Quarantine::Heap(
+                    self.bindings.heaps()[&ctor.heap].heap.id().0,
+                ))?;
             }
         }
         for (r, c) in &touched.writes {
@@ -399,7 +399,9 @@ impl<R: Runtime> Database<R> {
             };
             for (id, ix) in &rel.indexes {
                 if ix.desc.ctors.contains(c) {
-                    marked(Quarantine::Index(self.indexes[id].index.tree().owner()))?;
+                    marked(Quarantine::Index(
+                        self.bindings.indexes()[id].index.tree().owner(),
+                    ))?;
                 }
             }
         }
@@ -592,7 +594,7 @@ impl<R: Runtime> Database<R> {
         let mut catalog = (*self.catalog).clone();
         for desc in catalog.relations.values_mut() {
             desc.indexes.retain(|i| {
-                !self.indexes.get(&i.id).is_some_and(|stored| {
+                !self.bindings.indexes().get(&i.id).is_some_and(|stored| {
                     marks.contains(&Quarantine::Index(stored.index.tree().owner()))
                 })
             });

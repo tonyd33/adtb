@@ -1278,7 +1278,7 @@ fn a_history_heap_write_that_fails_on_a_page_is_a_page_error() {
 fn store_scan_sees_history_pages_created_during_its_current_walk() {
     let mut sim = Sim::new(19, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt.clone(), LONG);
+        let (mut db, _) = Db::create(rt, LONG);
         let ops: Vec<_> = (0..1000).map(|k| (k, Some(k))).collect();
         db.write(&ops);
         let hold = db.txns.take(Scope::Every).expect("snapshot");
@@ -1299,21 +1299,25 @@ fn store_scan_sees_history_pages_created_during_its_current_walk() {
             row: row_type(),
         };
         let id = crate::plan::HeapId(u64::from(HEAP));
-        let store = crate::exec::Store {
-            pager: db.pager.clone(),
-            reads: Arc::new(crate::exec::AtSnapshot {
-                rt,
-                reader: db.txns.reader(&db.pager, &hold, None),
-                serial: None,
-            }),
-            heaps: BTreeMap::from([(id, stored(heap.clone()))]),
-            indexes: BTreeMap::new(),
-            history: crate::exec::Histories {
-                heaps: BTreeMap::from([(id, stored(past.clone()))]),
-                indexes: BTreeMap::new(),
-            },
-            past: None,
-        };
+        let bindings = crate::exec::Bindings::new(
+            Arc::new(BTreeMap::from([(id, stored(heap.clone()))])),
+            Arc::default(),
+        );
+        let now = crate::exec::Store::safe(db.txns.reader(&db.pager, &hold, None), bindings);
+        let listed = now.listed();
+        let history = crate::exec::Histories::of(
+            &BTreeMap::from([(id, stored(past.clone()))]),
+            &BTreeMap::new(),
+            listed,
+        );
+        let store = crate::exec::Store::over(
+            db.pager.clone(),
+            now.reads().clone(),
+            now.bindings().clone(),
+            listed,
+            history,
+        )
+        .expect("the store's bindings bind what it lists");
         let grant = crate::exec::Budget::new(1 << 30)
             .admit(64 << 20)
             .expect("a grant fits");
@@ -1576,24 +1580,29 @@ fn fetch_beside_vacuum(
     };
     let id = crate::plan::HeapId(u64::from(HEAP));
     let ix = crate::plan::IndexId(u64::from(INDEX));
-    let store = crate::exec::Store {
-        pager: db.pager.clone(),
-        reads: reads.clone(),
-        heaps: BTreeMap::from([(id, stored(heap))]),
-        indexes: BTreeMap::from([(
+    let bindings = crate::exec::Bindings::new(
+        Arc::new(BTreeMap::from([(id, stored(heap))])),
+        Arc::new(BTreeMap::from([(
             ix,
             crate::exec::StoredIndex {
                 index,
                 ctors: BTreeMap::from([(CTOR, 0)]),
                 rows: None,
             },
-        )]),
-        history: crate::exec::Histories {
-            heaps: BTreeMap::from([(id, stored(past))]),
-            indexes: BTreeMap::new(),
-        },
-        past: None,
-    };
+        )])),
+    );
+    let listed = Arc::new(crate::plan::Reads {
+        heaps: [id].into(),
+        indexes: [ix].into(),
+    });
+    let history = crate::exec::Histories::of(
+        &BTreeMap::from([(id, stored(past))]),
+        &BTreeMap::new(),
+        &listed,
+    );
+    let store =
+        crate::exec::Store::over(db.pager.clone(), reads.clone(), bindings, &listed, history)
+            .expect("the store's bindings bind what it lists");
     let grant = crate::exec::Budget::new(1 << 30)
         .admit(64 << 20)
         .expect("a grant fits");

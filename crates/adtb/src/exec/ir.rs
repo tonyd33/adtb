@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use adtb_lang::kernel::{Agg, Tm};
@@ -39,8 +39,8 @@ pub struct At {
     /// The version `body` is typed at, or `None` for the version of the state `point` names.
     pub pins: Option<u64>,
     pub body: Eval,
-    /// The heaps `body` reads.
-    pub heaps: BTreeSet<HeapId>,
+    /// The heaps and indexes `body` reads.
+    pub reads: Arc<plan::Reads>,
 }
 
 #[derive(Debug)]
@@ -250,6 +250,14 @@ pub struct Program {
     pub vars: usize,
     pub heaps: BTreeMap<HeapId, HeapInfo>,
     pub shared: Shared,
+    reads: Arc<plan::Reads>,
+}
+
+impl Program {
+    /// Returns the heaps and indexes the program reads.
+    pub fn reads(&self) -> &Arc<plan::Reads> {
+        &self.reads
+    }
 }
 
 /// The fault constructors of the prelude's `Fault`, by the executor's fault order.
@@ -319,6 +327,7 @@ pub fn compile(
             fault_ctors: fault_ctors(schema),
             hosts: Arc::default(),
         },
+        reads: Arc::new(plan.reads.clone()),
     })
 }
 
@@ -393,7 +402,7 @@ impl Lower<'_> {
                 point: self.expr(a.point)?,
                 pins: a.pins,
                 body: self.eval(&a.body)?,
-                heaps: a.heaps.clone(),
+                reads: Arc::new(a.reads.clone()),
             })),
             plan::Eval::Fix(f) => Eval::Fix(Box::new(Fix {
                 binds: f

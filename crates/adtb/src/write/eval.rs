@@ -862,12 +862,12 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                     .find(|(id, _)| *id == u.index)
                     .ok_or(Broken::UniqueIndexMissing)?;
                 let c = n.ctor_of()?;
-                let types = self.store.key_types(u.index);
+                let types = self.store.key_types(u.index)?;
                 let row = self.stored(r.ctors[c as usize].heap, n)?;
                 let Some(key) = ix.keys.key(c, &row, &types)? else {
                     return Ok(Vec::new());
                 };
-                let schema = self.db.indexes[&u.index].index.schema();
+                let schema = self.db.bindings.indexes()[&u.index].index.schema();
                 let want = schema.encode(&key);
                 let scope = r.routes(u.scope.iter().copied());
                 let mut out = BTreeMap::new();
@@ -916,7 +916,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 .map(|n| fs[names.iter().position(|m| m == n).expect("a key field")].clone())
                 .collect()
         };
-        let types = self.store.key_types(r.key_index);
+        let types = self.store.key_types(r.key_index)?;
         let prefix: Vec<crate::key::Value> = types
             .iter()
             .zip(&parts)
@@ -1081,7 +1081,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 } else {
                     r.routes([c as u32])
                 };
-                let types = self.store.key_types(index);
+                let types = self.store.key_types(index)?;
                 for k in targets {
                     let value = if f.optional {
                         Val::some(k.clone())

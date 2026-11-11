@@ -642,7 +642,7 @@ impl<R: Runtime> Engine<R> {
         };
         let denied = self
             .catalog
-            .denied(&self.db.store_at(tx), reads)
+            .denied(&snapshot.store(), reads)
             .map_err(write::Broken::Denials)?;
         found.extend(denied.into_iter().map(|d| match d {
             Denial::Violated { id, witness } => Found::Violation {

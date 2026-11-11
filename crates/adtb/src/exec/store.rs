@@ -12,7 +12,7 @@ use crate::catalog::IndexKeys;
 use crate::heap::{FieldType, Heap, HeapNo, Slots, Version, refuse_named, walk};
 use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
 use crate::mvcc::{Logged, Reader, ScanId, SerialId, SerializationFailure, Serializer, Writers};
-use crate::plan::{HeapId, IndexId};
+use crate::plan::{self, HeapId, IndexId};
 use crate::runtime::Runtime;
 use crate::storage::{Pager, Pid, Quarantine};
 use adtb_sys::lock::Lock;
@@ -71,10 +71,10 @@ pub trait Reads: Send + Sync {
 
 /// Reads at a snapshot of the transactions layer, recording SIREAD locks with `serial` when it
 /// is given.
-pub struct AtSnapshot<R: Runtime> {
-    pub rt: R,
-    pub reader: Reader<Logged<R>>,
-    pub serial: Option<(Arc<Lock<Serializer>>, SerialId)>,
+struct AtSnapshot<R: Runtime> {
+    rt: R,
+    reader: Reader<Logged<R>>,
+    serial: Option<(Arc<Lock<Serializer>>, SerialId)>,
 }
 
 impl<R: Runtime> std::fmt::Debug for AtSnapshot<R> {
@@ -140,6 +140,45 @@ impl<R: Runtime> Reads for AtSnapshot<R> {
     }
 }
 
+/// What a read of the past sees: the versions the snapshot of a pinned marker sees, taking no
+/// SIREAD locks.
+struct AtMarker<R: Runtime> {
+    reader: Reader<Logged<R>>,
+}
+
+impl<R: Runtime> Reads for AtMarker<R> {
+    fn saw(&self, (at, heap): (Pid, HeapNo), writers: &Writers) -> Result<bool, Error> {
+        let seen = self.reader.sees(writers);
+        let at = (at, Slots::Versions(heap.0));
+        let refuse = |e| Heap::refuse_unreserved(self.reader.pager(), at, (), e);
+        Ok(seen.map_err(refuse)?.visible())
+    }
+
+    fn scanning(&self, _: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
+        Ok(None)
+    }
+
+    fn scanned(&self, _: HeapNo, _: ScanId, _: Option<&[Pid]>) {}
+
+    fn probed(
+        &self,
+        _: Pid,
+        _: Bound<Vec<u8>>,
+        _: Bound<Vec<u8>>,
+        _: BTreeSet<CtorId>,
+    ) -> Result<(), SerializationFailure> {
+        Ok(())
+    }
+
+    fn fetched(&self, _: HeapNo, _: Tid) -> Result<(), SerializationFailure> {
+        Ok(())
+    }
+
+    fn covers(&self, heap: HeapNo) -> bool {
+        self.reader.covers(heap.0)
+    }
+}
+
 /// The heap of each constructor position an index probe reads, by position.
 pub type Routes = BTreeMap<u32, HeapId>;
 
@@ -191,8 +230,61 @@ impl std::fmt::Debug for ProbeBounds<'_> {
 /// the past reads besides them.
 #[derive(Clone, Debug, Default)]
 pub struct Histories {
-    pub heaps: BTreeMap<HeapId, StoredHeap>,
-    pub indexes: BTreeMap<IndexId, Index>,
+    heaps: BTreeMap<HeapId, StoredHeap>,
+    indexes: BTreeMap<IndexId, Index>,
+}
+
+impl Histories {
+    /// Returns the history heaps of `heaps` and history key indexes of `indexes` of the heaps and
+    /// indexes `listed` lists.
+    pub fn of(
+        heaps: &BTreeMap<HeapId, StoredHeap>,
+        indexes: &BTreeMap<IndexId, Index>,
+        listed: &plan::Reads,
+    ) -> Histories {
+        Histories {
+            heaps: (listed.heaps.iter())
+                .filter_map(|h| Some((*h, heaps.get(h)?.clone())))
+                .collect(),
+            indexes: (listed.indexes.iter())
+                .filter_map(|i| Some((*i, indexes.get(i)?.clone())))
+                .collect(),
+        }
+    }
+}
+
+/// The heaps and indexes of a database's relation variables, shared by the stores that read
+/// them.
+#[derive(Clone, Debug, Default)]
+pub struct Bindings {
+    heaps: Arc<BTreeMap<HeapId, StoredHeap>>,
+    indexes: Arc<BTreeMap<IndexId, StoredIndex>>,
+    every: Arc<plan::Reads>,
+}
+
+impl Bindings {
+    pub fn new(
+        heaps: Arc<BTreeMap<HeapId, StoredHeap>>,
+        indexes: Arc<BTreeMap<IndexId, StoredIndex>>,
+    ) -> Bindings {
+        let every = Arc::new(plan::Reads {
+            heaps: heaps.keys().copied().collect(),
+            indexes: indexes.keys().copied().collect(),
+        });
+        Bindings {
+            heaps,
+            indexes,
+            every,
+        }
+    }
+
+    pub fn heaps(&self) -> &BTreeMap<HeapId, StoredHeap> {
+        &self.heaps
+    }
+
+    pub fn indexes(&self) -> &BTreeMap<IndexId, StoredIndex> {
+        &self.indexes
+    }
 }
 
 /// Reads of the past a statement makes.
@@ -202,38 +294,176 @@ pub trait PastReads<R: Runtime>: Send + Sync {
     /// that state for `None`. The state stays readable while the store lives.
     ///
     /// Fail with [`Error::HistoryUnavailable`] when the state is outside the retention window,
-    /// after the reader's snapshot, or before history of a heap read begins, and with
-    /// [`Error::WrongVersion`] when a heap read is stored otherwise at that state than at `pins`.
+    /// after the reader's snapshot, or before history of a heap read begins, with
+    /// [`Error::WrongVersion`] when a heap read is stored otherwise at that state than at `pins`,
+    /// and with `Internal` when a heap or index of `reads` is not bound.
     fn store(
         &self,
         at: &Val,
         instant: bool,
         pins: Option<u64>,
-        heaps: &BTreeSet<HeapId>,
+        reads: &Arc<plan::Reads>,
     ) -> Result<Arc<Store<R>>, Error>;
 }
 
 /// The heaps and indexes a plan's reads go to, and what those reads see.
 ///
-/// Invariants: `heaps` and `indexes` hold every heap and index of the plan's `Reads`. When
-/// `history` holds a heap, the store reads the past: a scan of that heap reads its history heap
-/// too, a key lookup falls back to its history key index, and no plan probes another index.
+/// Invariants: `bindings` binds every heap and index `listed` lists, and the store reads no
+/// other. When `history` holds a heap, the store reads the past: a scan of that heap reads its
+/// history heap too, a key lookup falls back to its history key index, and no plan probes
+/// another index.
 pub struct Store<R: Runtime> {
-    pub pager: Pager<R>,
-    pub reads: Arc<dyn Reads>,
-    pub heaps: BTreeMap<HeapId, StoredHeap>,
-    pub indexes: BTreeMap<IndexId, StoredIndex>,
-    pub history: Histories,
+    pager: Pager<R>,
+    reads: Arc<dyn Reads>,
+    bindings: Bindings,
+    listed: Arc<plan::Reads>,
+    history: Histories,
     /// The reads of the past the store's statement may make; `None` once it reads the past.
-    pub past: Option<Arc<dyn PastReads<R>>>,
+    past: Option<Arc<dyn PastReads<R>>>,
 }
 
 impl<R: Runtime> std::fmt::Debug for Store<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Store")
-            .field("heaps", &self.heaps.keys().collect::<Vec<_>>())
-            .field("indexes", &self.indexes.keys().collect::<Vec<_>>())
+            .field("heaps", &self.listed.heaps)
+            .field("indexes", &self.listed.indexes)
             .finish_non_exhaustive()
+    }
+}
+
+impl<R: Runtime> Store<R> {
+    /// Returns the store of a serializable transaction's statements: it reads every heap and
+    /// index of `bindings` at `reader`'s snapshot, records SIREAD locks as `serial` in its
+    /// serializer, and reads the past through `past`.
+    pub fn serializable(
+        reader: Reader<Logged<R>>,
+        serial: (Arc<Lock<Serializer>>, SerialId),
+        bindings: Bindings,
+        past: Option<Arc<dyn PastReads<R>>>,
+    ) -> Store<R> {
+        let mut store = Store::at_snapshot(reader, Some(serial), bindings);
+        store.past = past;
+        store
+    }
+
+    /// Returns the store of a read at the safe snapshot of `reader`: it reads every heap and
+    /// index of `bindings` and records no SIREAD lock.
+    pub fn safe(reader: Reader<Logged<R>>, bindings: Bindings) -> Store<R> {
+        Store::at_snapshot(reader, None, bindings)
+    }
+
+    /// Returns the store of a migration's validation at `reader`'s snapshot: it reads every
+    /// heap and index of `bindings` and records no SIREAD lock.
+    pub fn migrating(reader: Reader<Logged<R>>, bindings: Bindings) -> Store<R> {
+        Store::at_snapshot(reader, None, bindings)
+    }
+
+    /// Returns the store of a read of the past through `reader`, built at a pinned marker,
+    /// recording nothing: it reads the heaps and indexes `listed` lists of `bindings`, and the
+    /// history heaps and indexes of `history` besides.
+    ///
+    /// Fail with `Internal` naming a heap or index `listed` lists that `bindings` does not bind.
+    pub fn past(
+        reader: Reader<Logged<R>>,
+        bindings: Bindings,
+        listed: &Arc<plan::Reads>,
+        history: Histories,
+    ) -> Result<Store<R>, Error> {
+        let pager = reader.pager().clone();
+        Store::listing(
+            pager,
+            Arc::new(AtMarker { reader }),
+            bindings,
+            listed,
+            history,
+        )
+    }
+
+    /// Returns the store reading what `listed` lists of `bindings` through `reads`, and the
+    /// history heaps and indexes of `history` besides.
+    ///
+    /// Fail with `Internal` naming a heap or index `listed` lists that `bindings` does not bind.
+    fn listing(
+        pager: Pager<R>,
+        reads: Arc<dyn Reads>,
+        bindings: Bindings,
+        listed: &Arc<plan::Reads>,
+        history: Histories,
+    ) -> Result<Store<R>, Error> {
+        if let Some(&h) = (listed.heaps.iter()).find(|h| !bindings.heaps.contains_key(h)) {
+            return Err(Broken::UnboundHeap(h).into());
+        }
+        if let Some(&i) = (listed.indexes.iter()).find(|i| !bindings.indexes.contains_key(i)) {
+            return Err(Broken::UnboundIndex(i).into());
+        }
+        Ok(Store {
+            pager,
+            reads,
+            bindings,
+            listed: listed.clone(),
+            history,
+            past: None,
+        })
+    }
+
+    fn at_snapshot(
+        reader: Reader<Logged<R>>,
+        serial: Option<(Arc<Lock<Serializer>>, SerialId)>,
+        bindings: Bindings,
+    ) -> Store<R> {
+        let pager = reader.pager().clone();
+        let reads = AtSnapshot {
+            rt: pager.rt().clone(),
+            reader,
+            serial,
+        };
+        Store {
+            pager,
+            reads: Arc::new(reads),
+            listed: bindings.every.clone(),
+            bindings,
+            history: Histories::default(),
+            past: None,
+        }
+    }
+
+    /// Returns this store reading only what `listed` lists.
+    ///
+    /// Fail with `Internal` naming a heap or index `listed` lists that this store's bindings do
+    /// not bind, or that this store does not list.
+    pub fn narrowed(&self, listed: &Arc<plan::Reads>) -> Result<Store<R>, Error> {
+        if let Some(&h) = listed.heaps.difference(&self.listed.heaps).next() {
+            return Err(if self.bindings.heaps.contains_key(&h) {
+                Broken::UnlistedHeap(h).into()
+            } else {
+                Broken::UnboundHeap(h).into()
+            });
+        }
+        if let Some(&i) = listed.indexes.difference(&self.listed.indexes).next() {
+            return Err(if self.bindings.indexes.contains_key(&i) {
+                Broken::UnlistedIndex(i).into()
+            } else {
+                Broken::UnboundIndex(i).into()
+            });
+        }
+        Ok(Store {
+            pager: self.pager.clone(),
+            reads: self.reads.clone(),
+            bindings: self.bindings.clone(),
+            listed: listed.clone(),
+            history: Histories::of(&self.history.heaps, &self.history.indexes, listed),
+            past: self.past.clone(),
+        })
+    }
+
+    /// Returns the reads of the past the store's statement may make; `None` once it reads the
+    /// past.
+    pub fn past_reads(&self) -> Option<&Arc<dyn PastReads<R>>> {
+        self.past.as_ref()
+    }
+
+    pub fn pager(&self) -> &Pager<R> {
+        &self.pager
     }
 }
 
@@ -372,19 +602,22 @@ fn index_error(e: btree::Error) -> Error {
 }
 
 impl<R: Runtime> Store<R> {
-    /// Returns heap `id`, refused unless the store's reads cover it.
+    /// Returns heap `id`, refused unless the store lists it and its reads cover it.
     fn heap(&self, id: HeapId) -> Result<&StoredHeap, Error> {
-        let stored = self
-            .heaps
-            .get(&id)
-            .unwrap_or_else(|| panic!("the store holds heap {id:?}"));
+        if !self.listed.heaps.contains(&id) {
+            return Err(Broken::UnlistedHeap(id).into());
+        }
+        let stored = (self.bindings.heaps.get(&id)).ok_or(Broken::UnboundHeap(id))?;
         self.covered(&stored.heap)?;
         Ok(stored)
     }
 
     /// Returns the history heap of heap `id`, `None` when the store does not read its past,
-    /// refused unless the store's reads cover it.
+    /// refused unless the store lists the heap and its reads cover the history heap.
     fn past_heap(&self, id: HeapId) -> Result<Option<&StoredHeap>, Error> {
+        if !self.listed.heaps.contains(&id) {
+            return Err(Broken::UnlistedHeap(id).into());
+        }
         let Some(stored) = self.history.heaps.get(&id) else {
             return Ok(None);
         };
@@ -400,10 +633,12 @@ impl<R: Runtime> Store<R> {
         }
     }
 
-    fn index(&self, id: IndexId) -> &StoredIndex {
-        self.indexes
-            .get(&id)
-            .unwrap_or_else(|| panic!("the store holds index {id:?}"))
+    /// Returns index `id`, refused unless the store lists it.
+    fn index(&self, id: IndexId) -> Result<&StoredIndex, Error> {
+        if !self.listed.indexes.contains(&id) {
+            return Err(Broken::UnlistedIndex(id).into());
+        }
+        Ok((self.bindings.indexes.get(&id)).ok_or(Broken::UnboundIndex(id))?)
     }
 
     /// Pass the visible rows of heap `id` to `each` as batches of at most `rows` rows each, as
@@ -486,7 +721,8 @@ impl<R: Runtime> Store<R> {
     /// the store's snapshot sees, from the history heap of the heap its route in `routes`, by
     /// constructor, names; `None` when there is none or the store does not read the past.
     /// While the key index is quarantined, scan those history heaps within `bounds`. Refuse the
-    /// read unless the store's reads cover every route's heap and its history heap.
+    /// read unless the store lists `index` and every route's heap, and its reads cover each such
+    /// heap and its history heap.
     pub fn fetch_past(
         &self,
         index: IndexId,
@@ -494,6 +730,7 @@ impl<R: Runtime> Store<R> {
         routes: &[(u32, HeapId)],
         bounds: ProbeBounds<'_>,
     ) -> Result<Option<(HeapId, Vec<Value>)>, Error> {
+        let ix = self.index(index)?;
         let Some(past) = self.history.indexes.get(&index) else {
             return Ok(None);
         };
@@ -501,7 +738,6 @@ impl<R: Runtime> Store<R> {
             self.heap(heap)?;
             self.past_heap(heap)?;
         }
-        let ix = self.index(index);
         if let Some(rows) = &ix.rows
             && self.pager.any_quarantined()
             && self
@@ -548,9 +784,9 @@ impl<R: Runtime> Store<R> {
         routes: &[(u32, HeapId)],
         bounds: ProbeBounds<'_>,
     ) -> Result<Option<(HeapId, Vec<Value>)>, Error> {
-        let schema = self.index(index).index.schema();
+        let schema = self.index(index)?.index.schema();
         let wanted = schema.encode(key);
-        let types = self.key_types(index);
+        let types = self.key_types(index)?;
         for &(c, heap) in routes {
             let Some(stored) = self.past_heap(heap)? else {
                 continue;
@@ -655,7 +891,7 @@ impl<R: Runtime> Store<R> {
         if walked.is_none()
             && let Some((index, entry)) = &at.entry
         {
-            let ix = &self.index(*index).index;
+            let ix = &self.index(*index)?.index;
             refuse_named(&self.pager, (heap, tid), ix.tree().owner(), || {
                 let found = ix.probe(&self.pager, &entry.key).map_err(index_error)?;
                 Ok::<_, Error>(
@@ -684,7 +920,7 @@ impl<R: Runtime> Store<R> {
         routes: &Routes,
         bounds: ProbeBounds<'_>,
     ) -> Result<Vec<Named>, Error> {
-        let bytes = self.encode_prefix(id, prefix);
+        let bytes = self.encode_prefix(id, prefix)?;
         let end = prefix_end(&bytes);
         self.entries(id, Bound::Included(bytes), end, routes, bounds)
     }
@@ -703,8 +939,8 @@ impl<R: Runtime> Store<R> {
         routes: &Routes,
         bounds: ProbeBounds<'_>,
     ) -> Result<Vec<Named>, Error> {
-        let base = self.encode_prefix(id, prefix);
-        let next = self.index(id).index.schema().components()[prefix.len()].clone();
+        let base = self.encode_prefix(id, prefix)?;
+        let next = self.index(id)?.index.schema().components()[prefix.len()].clone();
         let dir = next.1;
         let field = KeySchema::new(vec![next]);
         let at = |v: &Value| {
@@ -732,9 +968,9 @@ impl<R: Runtime> Store<R> {
         self.entries(id, start, end, routes, bounds)
     }
 
-    fn encode_prefix(&self, id: IndexId, prefix: &[Value]) -> Vec<u8> {
-        let components = self.index(id).index.schema().components();
-        KeySchema::new(components[..prefix.len()].to_vec()).encode(prefix)
+    fn encode_prefix(&self, id: IndexId, prefix: &[Value]) -> Result<Vec<u8>, Error> {
+        let components = self.index(id)?.index.schema().components();
+        Ok(KeySchema::new(components[..prefix.len()].to_vec()).encode(prefix))
     }
 
     /// Returns the entries of index `id` whose encodings lie between `lo` and `hi`, each with
@@ -750,7 +986,7 @@ impl<R: Runtime> Store<R> {
         for &heap in routes.values() {
             self.heap(heap)?;
         }
-        let ix = self.index(id);
+        let ix = self.index(id)?;
         if let Some(rows) = &ix.rows
             && self.pager.any_quarantined()
             && self
@@ -804,8 +1040,8 @@ impl<R: Runtime> Store<R> {
         routes: &Routes,
         bounds: ProbeBounds<'_>,
     ) -> Result<Vec<Named>, Error> {
-        let schema = self.index(id).index.schema();
-        let types = self.key_types(id);
+        let schema = self.index(id)?.index.schema();
+        let types = self.key_types(id)?;
         let (lo, hi) = range;
         let mut found = Vec::new();
         let mut held = bounds.grant.arena();
@@ -848,14 +1084,54 @@ impl<R: Runtime> Store<R> {
     }
 
     /// Returns the key types of index `id`'s fields.
-    pub fn key_types(&self, id: IndexId) -> Vec<KeyType> {
-        self.index(id)
+    pub fn key_types(&self, id: IndexId) -> Result<Vec<KeyType>, Error> {
+        Ok(self
+            .index(id)?
             .index
             .schema()
             .components()
             .iter()
             .map(|(t, _)| t.clone())
-            .collect()
+            .collect())
+    }
+}
+
+#[cfg(test)]
+impl<R: Runtime> Store<R> {
+    /// Returns the store reading what `listed` lists of `bindings` through `reads`, and the
+    /// history heaps and indexes of `history` besides, as [`Store::past`] does.
+    pub(crate) fn over(
+        pager: Pager<R>,
+        reads: Arc<dyn Reads>,
+        bindings: Bindings,
+        listed: &Arc<plan::Reads>,
+        history: Histories,
+    ) -> Result<Store<R>, Error> {
+        Store::listing(pager, reads, bindings, listed, history)
+    }
+
+    pub(crate) fn bindings(&self) -> &Bindings {
+        &self.bindings
+    }
+
+    pub(crate) fn listed(&self) -> &Arc<plan::Reads> {
+        &self.listed
+    }
+
+    pub(crate) fn history(&self) -> &Histories {
+        &self.history
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl<R: Runtime> Store<R> {
+    pub fn reads(&self) -> &Arc<dyn Reads> {
+        &self.reads
+    }
+
+    /// Returns the binding of heap `id`, listed or not.
+    pub fn stored(&self, id: HeapId) -> &StoredHeap {
+        &self.bindings.heaps[&id]
     }
 }
 

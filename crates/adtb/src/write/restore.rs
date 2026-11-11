@@ -55,7 +55,7 @@ impl<R: Runtime> Restoring<'_, R> {
             let mut most = None;
             for row in rows {
                 let stored = stmt.stored(heap, row)?;
-                let h = &db.heaps[&heap].heap;
+                let h = &db.bindings.heaps()[&heap].heap;
                 let mut judge = db.session.txns.judge_now(&db.pager, h.id().0);
                 h.insert_pruning(&db.pager, xid, &stored, &mut judge)
                     .map_err(too_large(*r, *c))?;
@@ -124,7 +124,7 @@ impl<R: Runtime> Restoring<'_, R> {
             Err(BuildError::Duplicate(_)) => (merge_runs(runs()?, false, &stop)?, true),
             Err(e) => return Err(e.into()),
         };
-        let tree = db.indexes[&id].index.tree();
+        let tree = db.bindings.indexes()[&id].index.tree();
         let built = BTree::bulk(&db.pager, tree.owner(), entries, &mut Vec::new(), &stop)?;
         tree.take_over(&db.pager, built, None)?;
         Ok(duplicated)
@@ -198,9 +198,9 @@ fn duplicates<R: Runtime>(
     viol: &mut Violations,
 ) -> Result<(), Error> {
     let r = stmt.rel(rel);
-    let stored = &stmt.db.indexes[&id];
+    let stored = &stmt.db.bindings.indexes()[&id];
     let of: Vec<u32> = stored.ctors.values().copied().collect();
-    let types = stmt.store.key_types(id);
+    let types = stmt.store.key_types(id)?;
     let mut groups: BTreeMap<Vec<u8>, BTreeMap<Val, Val>> = BTreeMap::new();
     for (c, row) in stmt.rows(rel, Some(&of))? {
         let at = stmt.stored(r.ctors[c as usize].heap, &row)?;

@@ -772,7 +772,7 @@ impl Planner<'_> {
             point,
             pins,
             body,
-            heaps: reads.heaps,
+            reads,
         };
         Ok(wrap_eval(lets, Eval::At(Box::new(at))))
     }

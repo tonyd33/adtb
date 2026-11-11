@@ -38,9 +38,11 @@ pub use rot::{Rot, detail};
 #[cfg(test)]
 pub use sched::{Admission, Task};
 pub use sched::{Admitted, Entry, Priority, Refusal, Refused, Resumable, Scheduler, Step, Stopped};
+#[cfg(test)]
+pub use store::Reads;
 pub use store::{
-    AtSnapshot, Histories, IndexedRows, Named, PastReads, ProbeBounds, Reads, Routes, Store,
-    StoredHeap, StoredIndex,
+    Bindings, Histories, IndexedRows, Named, PastReads, ProbeBounds, Routes, Store, StoredHeap,
+    StoredIndex,
 };
 pub(crate) use store::{Conv, conv, from_stored, to_key, to_stored};
 pub use stream::{Produced, Production, produce};
@@ -273,15 +275,42 @@ impl Default for Options {
 
 /// What one execution of a program runs against.
 pub struct Call<R: Runtime> {
-    pub store: Arc<Store<R>>,
-    pub grant: Arc<Grant>,
+    store: Arc<Store<R>>,
+    grant: Arc<Grant>,
     /// The scheduler whose workers run the morsels of top-level queries; without one every
     /// pipeline runs on the calling thread.
-    pub pool: Option<Arc<Scheduler<R>>>,
-    pub options: Options,
+    pool: Option<Arc<Scheduler<R>>>,
+    options: Options,
     /// Set to stop the execution at its next morsel boundary.
-    pub cancel: Arc<AtomicBool>,
-    pub deadline: Option<Deadline>,
+    cancel: Arc<AtomicBool>,
+    deadline: Option<Deadline>,
+}
+
+impl<R: Runtime> Call<R> {
+    /// Returns the call that runs over `store` within `grant` under `options`, every pipeline on
+    /// the calling thread, stopped at its next morsel boundary once `cancel` is set or
+    /// `deadline` passes.
+    pub fn new(
+        store: Arc<Store<R>>,
+        grant: Arc<Grant>,
+        options: Options,
+        cancel: Arc<AtomicBool>,
+        deadline: Option<Deadline>,
+    ) -> Call<R> {
+        Call {
+            store,
+            grant,
+            pool: None,
+            options,
+            cancel,
+            deadline,
+        }
+    }
+
+    /// Returns this call running the morsels of top-level queries on the workers of `pool`.
+    pub fn on(self, pool: Option<Arc<Scheduler<R>>>) -> Call<R> {
+        Call { pool, ..self }
+    }
 }
 
 /// An instant of the runtime's clock at which an execution stops at its next morsel boundary,
@@ -309,18 +338,19 @@ pub fn execute<R: Runtime>(
     call: Call<R>,
     params: &[(Var, Val)],
 ) -> Result<Val, Error> {
-    let (cx, env) = start(rt, program, call, params);
+    let (cx, env) = start(rt, program, call, params)?;
     cx.root(&env)
 }
 
-/// Returns the context that runs `program` for `call`, and the frame binding its parameters by
-/// `params`.
+/// Returns the context that runs `program` for `call` over its store narrowed to the program's
+/// reads, and the frame binding its parameters by `params`.
 fn start<R: Runtime>(
     rt: R,
     program: Arc<Program>,
     call: Call<R>,
     params: &[(Var, Val)],
-) -> (Arc<run::Ctx<R>>, frame::Frame) {
+) -> Result<(Arc<run::Ctx<R>>, frame::Frame), Error> {
+    let store = Arc::new(call.store.narrowed(program.reads())?);
     let mut env = frame::Frame::unit(program.vars);
     for (v, x) in params {
         env.bind_one(v.0, x.clone());
@@ -334,14 +364,14 @@ fn start<R: Runtime>(
         rt,
         shared,
         program,
-        store: call.store,
+        store,
         grant: call.grant,
         options: call.options,
         pool: call.pool,
         cancel: call.cancel,
         deadline: call.deadline,
     });
-    (cx, env)
+    Ok((cx, env))
 }
 
 /// How the elements of a result fill the columns of its batches.

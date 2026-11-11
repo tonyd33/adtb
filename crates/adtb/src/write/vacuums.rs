@@ -279,7 +279,11 @@ impl<R: Runtime> Database<R> {
     /// Returns the least watermark of the heaps of `rel`.
     pub(super) fn horizon(&self, rel: &super::schema::Rel) -> Xid {
         (rel.ctors.iter())
-            .map(|c| self.session.txns.watermark(self.heaps[&c.heap].heap.id().0))
+            .map(|c| {
+                self.session
+                    .txns
+                    .watermark(self.bindings.heaps()[&c.heap].heap.id().0)
+            })
             .min()
             .unwrap_or_else(|| self.session.txns.next())
     }

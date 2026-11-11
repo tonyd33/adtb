@@ -65,7 +65,7 @@ use crate::mvcc::Transactions;
 use crate::runtime::{Runtime, ThreadId};
 use crate::storage::policy::Phase;
 use crate::storage::{self, LATCHES_PER_THREAD, Opening, Pager};
-use crate::write::{self, Bindings, Bounds, Local, Setup, Txn};
+use crate::write::{self, Bounds, Local, Setup, Txn};
 
 pub use arrow::{ArrowSchema, ArrowStream, Field, RecordBatch};
 pub use backup::{
@@ -787,7 +787,7 @@ fn setup_of<R: Runtime>(
     options: &OpenOptions,
 ) -> Setup<R> {
     let memory = query_memory(options);
-    let (heaps, indexes) = catalog.bindings();
+    let bindings = catalog.bindings();
     let defaults = exec::Options::default();
     Setup {
         schema,
@@ -795,7 +795,7 @@ fn setup_of<R: Runtime>(
         catalog: Arc::new(catalog.plan()),
         pager: pager.clone(),
         txns: Arc::new(txns),
-        bindings: Bindings { heaps, indexes },
+        bindings,
         budget: Budget::new(memory),
         grant: STATEMENT_GRANT.min(memory),
         pool: None,

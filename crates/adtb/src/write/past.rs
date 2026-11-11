@@ -2,22 +2,18 @@
 //! read at a safe snapshot marker, and the vacuum that moves versions into history.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Bound;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use adtb_lang::types::RelId;
 
 use crate::btree::Index;
-use crate::exec::{self, Histories, PastReads, Reads, Store, StoredHeap, StoredIndex, Val};
-use crate::heap::{Heap, HeapNo, Slots};
+use crate::exec::{self, Histories, PastReads, Store, StoredHeap, Val};
+use crate::heap::{Heap, Slots};
 use crate::history::History;
 use crate::key::{CtorId, Tid, Value};
-use crate::mvcc::{
-    Logged, Marker, Past, PastError, Pinned, Reader, ScanId, SerializationFailure, Transactions,
-    Writers, Xid,
-};
-use crate::plan::{HeapId, IndexId};
+use crate::mvcc::{Marker, Past, PastError, Pinned, Transactions, Xid};
+use crate::plan::{self, HeapId, IndexId};
 use crate::runtime::Runtime;
 use crate::storage::{Lsn, Pager, Pid, Position};
 use crate::vacuum;
@@ -48,53 +44,12 @@ pub struct Retained {
     pub version: u64,
 }
 
-/// What a read of the past sees: the versions the snapshot of a pinned marker sees, taking no
-/// SIREAD locks.
-struct AtMarker<R: Runtime> {
-    reader: Reader<Logged<R>>,
-    pinned: Pinned,
-}
-
-impl<R: Runtime> Reads for AtMarker<R> {
-    fn saw(&self, (at, heap): (Pid, HeapNo), writers: &Writers) -> Result<bool, exec::Error> {
-        let seen = self.reader.sees(writers);
-        let at = (at, Slots::Versions(heap.0));
-        let refuse = |e| Heap::refuse_unreserved(self.reader.pager(), at, (), e);
-        Ok(seen.map_err(refuse)?.visible())
-    }
-
-    fn scanning(&self, _: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
-        Ok(None)
-    }
-
-    fn scanned(&self, _: HeapNo, _: ScanId, _: Option<&[Pid]>) {}
-
-    fn probed(
-        &self,
-        _: Pid,
-        _: Bound<Vec<u8>>,
-        _: Bound<Vec<u8>>,
-        _: BTreeSet<CtorId>,
-    ) -> Result<(), SerializationFailure> {
-        Ok(())
-    }
-
-    fn fetched(&self, _: HeapNo, _: Tid) -> Result<(), SerializationFailure> {
-        Ok(())
-    }
-
-    fn covers(&self, heap: HeapNo) -> bool {
-        self.reader.covers(heap.0)
-    }
-}
-
 /// The reads of the past of one statement, whose transaction reads commits up to `upto`.
 pub(super) struct Pasts<R: Runtime> {
     pub(super) pager: Pager<R>,
     pub(super) txns: Arc<Transactions<R>>,
     pub(super) retained: Arc<Retained>,
-    pub(super) heaps: BTreeMap<HeapId, StoredHeap>,
-    pub(super) indexes: BTreeMap<IndexId, StoredIndex>,
+    pub(super) bindings: exec::Bindings,
     pub(super) upto: Position,
 }
 
@@ -196,7 +151,7 @@ impl<R: Runtime> PastReads<R> for Pasts<R> {
         at: &Val,
         instant: bool,
         pins: Option<u64>,
-        heaps: &BTreeSet<HeapId>,
+        reads: &Arc<plan::Reads>,
     ) -> Result<Arc<Store<R>>, exec::Error> {
         let retained = &self.retained;
         if let Some(v) = pins.filter(|v| *v > retained.version) {
@@ -206,14 +161,9 @@ impl<R: Runtime> PastReads<R> for Pasts<R> {
             )));
         }
         let pinned = self.pin(at, instant)?;
-        let reads = AtMarker {
-            reader: self.txns.reader_at(&self.pager, &pinned),
-            pinned,
-        };
-        let version = self.version_at(reads.pinned.marker())?;
+        let version = self.version_at(pinned.marker())?;
         let typed = pins.unwrap_or(version);
-        let made = heaps
-            .iter()
+        let made = (reads.heaps.iter())
             .filter_map(|h| retained.born.get(h))
             .max()
             .copied()
@@ -226,17 +176,10 @@ impl<R: Runtime> PastReads<R> for Pasts<R> {
         if made > version.min(typed) {
             return Err(exec::Error::WrongVersion { version });
         }
-        Ok(Arc::new(Store {
-            pager: self.pager.clone(),
-            reads: Arc::new(reads),
-            heaps: self.heaps.clone(),
-            indexes: self.indexes.clone(),
-            history: Histories {
-                heaps: retained.heaps.clone(),
-                indexes: retained.indexes.clone(),
-            },
-            past: None,
-        }))
+        let reader = self.txns.reader_at(&self.pager, &pinned);
+        let history = Histories::of(&retained.heaps, &retained.indexes, reads);
+        let store = Store::past(reader, self.bindings.clone(), reads, history)?;
+        Ok(Arc::new(store))
     }
 }
 
@@ -310,7 +253,7 @@ impl<R: Runtime> Database<R> {
             return Ok((report, false));
         };
         let key_index = rel.key_index;
-        let ctors = &self.indexes[&key_index].ctors;
+        let ctors = &self.bindings.indexes()[&key_index].ctors;
         let keyed = &rel
             .indexes
             .iter()
@@ -318,7 +261,7 @@ impl<R: Runtime> Database<R> {
             .expect("a relation's key index is among its indexes")
             .1
             .keys;
-        let types: Vec<_> = self.indexes[&key_index]
+        let types: Vec<_> = self.bindings.indexes()[&key_index]
             .index
             .schema()
             .components()
@@ -374,8 +317,7 @@ impl<R: Runtime> Database<R> {
             pager: self.pager.clone(),
             txns: self.session.txns.clone(),
             retained,
-            heaps: self.heaps.clone(),
-            indexes: self.indexes.clone(),
+            bindings: self.bindings.clone(),
             upto,
         }))
     }

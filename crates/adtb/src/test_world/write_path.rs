@@ -21,7 +21,7 @@ use crate::catalog::Catalog;
 use crate::exec::{self, Budget, Scheduler};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
-use crate::write::{self, Bindings, Setup, Txn};
+use crate::write::{self, Setup, Txn};
 
 /// A write path over the engine's catalog of a file of the simulator, outside a database.
 pub struct WritePath<R: Runtime> {
@@ -123,7 +123,7 @@ impl<R: Runtime> WritePath<R> {
         }
         let program = catalog.program().clone();
         let normal = norm::program(&schema, &program).expect("the schema normalises");
-        let (heaps, indexes) = catalog.bindings();
+        let bindings = catalog.bindings();
         let schema = Arc::new(schema);
         let db = write::Database::new(
             rt.clone(),
@@ -133,7 +133,7 @@ impl<R: Runtime> WritePath<R> {
                 catalog: Arc::new(catalog.plan()),
                 pager,
                 txns: Arc::new(txns),
-                bindings: Bindings { heaps, indexes },
+                bindings,
                 budget: Budget::new(1 << 30),
                 grant: 64 << 20,
                 pool,

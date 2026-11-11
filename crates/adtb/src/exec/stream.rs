@@ -62,7 +62,7 @@ pub fn produce<R: Runtime>(
     call: Call<R>,
     params: &[(Var, Val)],
 ) -> Result<Produced<R>, Error> {
-    let (cx, env) = super::start(rt, program, Call { pool: None, ..call }, params);
+    let (cx, env) = super::start(rt, program, Call { pool: None, ..call }, params)?;
     let q = match &cx.program.root {
         Eval::Query(q) if matches!(q.sink, Sink::Set) => q.clone(),
         _ => return Ok(Produced::Whole(cx.root(&env)?)),

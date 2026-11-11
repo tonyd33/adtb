@@ -236,11 +236,18 @@ Invariants of every plan:
   every index an `Index` or `Range` end or `Lookup` names, including
   those of builds and nested queries.
 - An `At`'s body names no `Index` or `Range` end and no other `At`,
-  and its `heaps` holds every heap its body names. A query holding an
-  `At` holds no build or `Spine::Let` computed from its body.
+  and its `reads` holds every heap and index its body names. A query
+  holding an `At` holds no build or `Spine::Let` computed from its
+  body.
 
 Evaluation of a plan:
 
+- The executor reads only the heaps and indexes `Plan.reads` lists,
+  and in an `At`'s body only those its `reads` lists, with their
+  history heaps and history key indexes. A read of another fails with
+  an `Internal` failure naming the heap or index. A fetch of a route's
+  row also reads the heaps of the other constructors of the route's
+  relation, which a retag chain from the route's heap passes through.
 - The executor evaluates every row of every selected pipeline and every
   step of every chain a row reaches, with two exceptions for a query
   whose `total` is set: an `Exists` or `IsEmpty` sink may stop its

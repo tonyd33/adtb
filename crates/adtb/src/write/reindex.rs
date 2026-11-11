@@ -193,7 +193,7 @@ impl<R: Runtime> Scan<'_, R> {
         tx: Option<&Txn>,
     ) -> Result<Vec<RunEntry>, Error> {
         let db = self.db;
-        let stored = &db.indexes[&self.id];
+        let stored = &db.bindings.indexes()[&self.id];
         let schema = stored.index.schema();
         let types: Vec<_> = schema.components().iter().map(|(t, _)| t.clone()).collect();
         let reader = tx.map(|tx| db.session.txns.reader(&db.pager, tx.hold(), None));
@@ -242,11 +242,11 @@ impl<R: Runtime> Scan<'_, R> {
         since: Option<Lsn>,
         tx: Option<&Txn>,
     ) -> Result<Vec<Vec<RunEntry>>, Error> {
-        self.db.indexes[&self.id]
+        self.db.bindings.indexes()[&self.id]
             .ctors
             .iter()
             .map(|(&ctor, &c)| {
-                let heap = &self.db.heaps[&self.rel.ctors[c as usize].heap].heap;
+                let heap = &self.db.bindings.heaps()[&self.rel.ctors[c as usize].heap].heap;
                 self.run(heap, (ctor, c), since, tx)
             })
             .collect()
@@ -254,7 +254,7 @@ impl<R: Runtime> Scan<'_, R> {
 
     /// Returns a sorted run of the entries of every version in each history heap of `retained`.
     fn past_runs(&self, retained: &Retained) -> Result<Vec<Vec<RunEntry>>, Error> {
-        self.db.indexes[&self.id]
+        self.db.bindings.indexes()[&self.id]
             .ctors
             .iter()
             .map(|(&ctor, &c)| {
@@ -314,7 +314,7 @@ impl<R: Runtime> Database<R> {
         };
         let marks = self.pager.quarantined();
         for c in &r.ctors {
-            let object = Quarantine::Heap(self.heaps[&c.heap].heap.id().0);
+            let object = Quarantine::Heap(self.bindings.heaps()[&c.heap].heap.id().0);
             if marks.contains(&object) {
                 return Err(Error::admitted(object));
             }
@@ -479,8 +479,10 @@ impl<R: Runtime> Database<R> {
                 Ok(pages.old.found && freed.is_ok())
             }
             Err(e) => {
-                let mut reclaimed =
-                    self.free_built(self.indexes[&job.index].index.tree().owner(), &pages.built);
+                let mut reclaimed = self.free_built(
+                    self.bindings.indexes()[&job.index].index.tree().owner(),
+                    &pages.built,
+                );
                 if let Some(past) = self.history_tree(job.index) {
                     reclaimed &= self.free_built(past.owner(), &pages.built_past);
                 }
@@ -521,7 +523,7 @@ impl<R: Runtime> Database<R> {
                 index: job.index,
                 relation: r.name.clone(),
             })?;
-        let tree = self.indexes[&job.index].index.tree();
+        let tree = self.bindings.indexes()[&job.index].index.tree();
         let scan = Scan {
             db: self,
             rel: r,

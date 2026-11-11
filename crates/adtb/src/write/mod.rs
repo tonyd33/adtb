@@ -51,7 +51,7 @@ use adtb_lang::types::RelId;
 use adtb_sys::lock::Lock;
 
 use crate::catalog::Structures;
-use crate::exec::{self, Budget, Scheduler, StoredHeap, StoredIndex, Val};
+use crate::exec::{self, Budget, Scheduler, Val};
 use crate::key::CtorId;
 use crate::mvcc::{
     Begun, Hold, Limits, Safety, SerialId, SerializationFailure, Serializer, Snapshot, Taken,
@@ -599,13 +599,6 @@ impl Stop {
     }
 }
 
-/// The heaps and indexes of the relation variables a catalog describes.
-#[derive(Debug)]
-pub struct Bindings {
-    pub heaps: BTreeMap<HeapId, StoredHeap>,
-    pub indexes: BTreeMap<IndexId, StoredIndex>,
-}
-
 /// The relation variables of a schema over their heaps and indexes, and the transactions that
 /// write them.
 ///
@@ -623,8 +616,7 @@ pub struct Database<R: Runtime> {
     catalog: Arc<Catalog>,
     pager: Pager<R>,
     session: Arc<Session<R>>,
-    heaps: BTreeMap<HeapId, StoredHeap>,
-    indexes: BTreeMap<IndexId, StoredIndex>,
+    bindings: exec::Bindings,
     latches: BTreeMap<IndexId, Lock<()>>,
     rels: Rels,
     /// Every structure of the file, each with the holder of its pages.
@@ -659,8 +651,11 @@ pub struct Database<R: Runtime> {
 impl<R: Runtime> std::fmt::Debug for Database<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Database")
-            .field("heaps", &self.heaps.keys().collect::<Vec<_>>())
-            .field("indexes", &self.indexes.keys().collect::<Vec<_>>())
+            .field("heaps", &self.bindings.heaps().keys().collect::<Vec<_>>())
+            .field(
+                "indexes",
+                &self.bindings.indexes().keys().collect::<Vec<_>>(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -673,7 +668,7 @@ pub struct Setup<R: Runtime> {
     pub catalog: Arc<Catalog>,
     pub pager: Pager<R>,
     pub txns: Arc<Transactions<R>>,
-    pub bindings: Bindings,
+    pub bindings: exec::Bindings,
     pub budget: Arc<Budget>,
     /// The memory each statement's queries are granted.
     pub grant: usize,
@@ -709,7 +704,7 @@ impl<R: Runtime> Database<R> {
         };
         let latches = setup
             .bindings
-            .indexes
+            .indexes()
             .keys()
             .map(|i| (*i, Lock::new(())))
             .collect();
@@ -724,8 +719,7 @@ impl<R: Runtime> Database<R> {
             catalog: setup.catalog,
             pager: setup.pager,
             session,
-            heaps: setup.bindings.heaps,
-            indexes: setup.bindings.indexes,
+            bindings: setup.bindings,
             latches,
             rels,
             structures: setup.structures,
@@ -805,7 +799,7 @@ impl<R: Runtime> Database<R> {
     /// Returns the history heap the database keeps the past versions of `heap` in, `None` when
     /// it keeps none.
     #[cfg(test)]
-    pub(crate) fn history_heap(&self, heap: HeapId) -> Option<&StoredHeap> {
+    pub(crate) fn history_heap(&self, heap: HeapId) -> Option<&exec::StoredHeap> {
         self.retained.as_ref()?.heaps.get(&heap)
     }
 
@@ -1094,17 +1088,17 @@ impl<R: Runtime> Database<R> {
         self.admit_vacuum(r)?;
         let horizon = self.horizon(r);
         let started = self.rt.now();
-        let ids: BTreeMap<u32, CtorId> = self.indexes[&r.key_index]
+        let ids: BTreeMap<u32, CtorId> = self.bindings.indexes()[&r.key_index]
             .ctors
             .iter()
             .map(|(id, c)| (*c, *id))
             .collect();
         let sum = vacuum::Sum {
             heaps: (r.ctors.iter().enumerate())
-                .map(|(c, ctor)| (ids[&(c as u32)], &*self.heaps[&ctor.heap].heap))
+                .map(|(c, ctor)| (ids[&(c as u32)], &*self.bindings.heaps()[&ctor.heap].heap))
                 .collect(),
             indexes: (r.indexes.iter())
-                .map(|(i, _)| &self.indexes[i].index)
+                .map(|(i, _)| &self.bindings.indexes()[i].index)
                 .collect(),
         };
         let shown: Vec<(CtorId, u32)> = sum.heaps.iter().map(|(id, h)| (*id, h.id().0)).collect();
@@ -1123,7 +1117,7 @@ impl<R: Runtime> Database<R> {
         })?;
         let freed: BTreeMap<HeapId, u64> = (r.ctors.iter())
             .map(|c| {
-                let heap = self.heaps[&c.heap].heap.id().0;
+                let heap = self.bindings.heaps()[&c.heap].heap.id().0;
                 let freed = report.heaps.get(&heap).map_or(0, |f| f.freed);
                 (c.heap, freed as u64)
             })
@@ -1428,20 +1422,13 @@ impl<R: Runtime> Database<R> {
 
     /// Returns the store the statements of `tx` read.
     pub(crate) fn store(&self, tx: &Txn) -> Arc<exec::Store<R>> {
-        let reads = exec::AtSnapshot {
-            rt: self.rt.clone(),
-            reader: self.session.txns.reader(&self.pager, tx.hold(), tx.xid),
-            serial: Some((self.session.ser.clone(), tx.sid)),
-        };
         let upto = tx.taken.upto().unwrap_or_else(|| self.pager.durable());
-        Arc::new(exec::Store {
-            pager: self.pager.clone(),
-            reads: Arc::new(reads),
-            heaps: self.heaps.clone(),
-            indexes: self.indexes.clone(),
-            history: exec::Histories::default(),
-            past: self.pasts(self.pager.position(upto)),
-        })
+        Arc::new(exec::Store::serializable(
+            self.session.txns.reader(&self.pager, tx.hold(), tx.xid),
+            (self.session.ser.clone(), tx.sid),
+            self.bindings.clone(),
+            self.pasts(self.pager.position(upto)),
+        ))
     }
 
     fn call(
@@ -1454,14 +1441,14 @@ impl<R: Runtime> Database<R> {
             Some(g) => g.clone(),
             None => self.admit_grant()?,
         };
-        Ok(exec::Call {
-            store: store.clone(),
+        let call = exec::Call::new(
+            store.clone(),
             grant,
-            pool: self.pool.clone(),
             options,
-            cancel: stop.cancel.clone(),
-            deadline: stop.deadline.clone(),
-        })
+            stop.cancel.clone(),
+            stop.deadline.clone(),
+        );
+        Ok(call.on(self.pool.clone()))
     }
 }
 

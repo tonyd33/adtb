@@ -7,7 +7,7 @@ use adtb_lang::types::RelId;
 use crate::btree::{self, Index};
 #[cfg(any(test, feature = "testing"))]
 use crate::catalog::relation_holder;
-use crate::exec::{AtSnapshot, Histories, Store};
+use crate::exec::Store;
 use crate::heap::Heap;
 use crate::key::{CtorId, Tid};
 use crate::mvcc::Safety;
@@ -144,6 +144,13 @@ impl<R: Runtime> VerifySnapshot<'_, R> {
             .as_ref()
             .expect("a snapshot holds its transaction until dropped")
     }
+
+    /// Returns the store reading the whole database at the safe snapshot.
+    pub fn store(&self) -> Arc<Store<R>> {
+        let db = self.db;
+        let reader = (db.session.txns).reader(&db.pager, self.txn().hold(), None);
+        Arc::new(Store::safe(reader, db.bindings.clone()))
+    }
 }
 
 impl<R: Runtime> Drop for VerifySnapshot<'_, R> {
@@ -182,22 +189,6 @@ impl<R: Runtime> Database<R> {
                 },
             }
         }
-    }
-
-    /// Returns the store reading the whole database at the snapshot of `tx`.
-    pub fn store_at(&self, tx: &Txn) -> Arc<Store<R>> {
-        Arc::new(Store {
-            pager: self.pager.clone(),
-            reads: Arc::new(AtSnapshot {
-                rt: self.rt.clone(),
-                reader: self.session.txns.reader(&self.pager, tx.hold(), None),
-                serial: None,
-            }),
-            heaps: self.heaps.clone(),
-            indexes: self.indexes.clone(),
-            history: Histories::default(),
-            past: None,
-        })
     }
 
     /// Check the pages of `scope` and, of the whole database, the retained log, while writers run.
@@ -247,7 +238,7 @@ impl<R: Runtime> Database<R> {
             return Ok(pages);
         };
         for c in &r.ctors {
-            let heap = &self.heaps[&c.heap].heap;
+            let heap = &self.bindings.heaps()[&c.heap].heap;
             for owned in [
                 heap.owned_pages(&self.pager),
                 heap.large().owned_pages(&self.pager),
@@ -259,7 +250,7 @@ impl<R: Runtime> Database<R> {
             }
         }
         for (id, _) in &r.indexes {
-            match self.indexes[id].index.tree().pages(&self.pager) {
+            match self.bindings.indexes()[id].index.tree().pages(&self.pager) {
                 Ok(p) => pages.extend(p),
                 Err(btree::Error::Page(e)) => out.push(Found::of_page(e)),
                 Err(_) => {}
@@ -319,7 +310,7 @@ impl<R: Runtime> Database<R> {
         for r in self.rels.values() {
             if scope.covers(r.id) {
                 for c in &r.ctors {
-                    self.links_of(&self.heaps[&c.heap].heap, &mut out);
+                    self.links_of(&self.bindings.heaps()[&c.heap].heap, &mut out);
                 }
             }
         }
@@ -349,7 +340,7 @@ impl<R: Runtime> Database<R> {
         ix: &Indexed,
         out: &mut Vec<Found>,
     ) -> Result<(), Error> {
-        let stored = &self.indexes[&id];
+        let stored = &self.bindings.indexes()[&id];
         let index = id.0;
         let tree = stored.index.tree();
         let tree_fault = |e: btree::Error, out: &mut Vec<Found>| match e {
@@ -394,7 +385,7 @@ impl<R: Runtime> Database<R> {
                 });
                 continue;
             };
-            let heap = &self.heaps[&r.ctors[c as usize].heap].heap;
+            let heap = &self.bindings.heaps()[&r.ctors[c as usize].heap].heap;
             let ok = (|| -> Result<bool, Error> {
                 if !heap.holds(&self.pager, e.tid)? {
                     return Ok(false);
@@ -423,7 +414,9 @@ impl<R: Runtime> Database<R> {
             held.insert((encoded, e.ctor, e.tid));
         }
         for (&ctor, &c) in &stored.ctors {
-            let heap = self.heaps[&r.ctors[c as usize].heap].heap.clone();
+            let heap = self.bindings.heaps()[&r.ctors[c as usize].heap]
+                .heap
+                .clone();
             self.check_rows(
                 tx,
                 r,
@@ -542,7 +535,7 @@ impl<R: Runtime> Database<R> {
     }
 
     pub(crate) fn heap_of(&self, id: HeapId) -> Option<Arc<Heap>> {
-        Some(self.heaps.get(&id)?.heap.clone())
+        Some(self.bindings.heaps().get(&id)?.heap.clone())
     }
 
     /// Returns the history heap of heap `id`.
@@ -551,7 +544,7 @@ impl<R: Runtime> Database<R> {
     }
 
     pub(crate) fn index_of(&self, id: IndexId) -> Option<Index> {
-        Some(self.indexes.get(&id)?.index.clone())
+        Some(self.bindings.indexes().get(&id)?.index.clone())
     }
 
     /// Returns the history key index of the relation whose key index is `key`.
@@ -565,7 +558,7 @@ impl<R: Runtime> Database<R> {
             .rels
             .values()
             .find(|r| r.ctors.iter().any(|c| c.heap == id))?;
-        let object = storage::Quarantine::Heap(self.heaps.get(&id)?.heap.id().0);
+        let object = storage::Quarantine::Heap(self.bindings.heaps().get(&id)?.heap.id().0);
         Some(relation_holder(&self.schema, r.id, object))
     }
 

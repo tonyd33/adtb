@@ -184,7 +184,7 @@ impl<'a, R: Runtime> Testing<'a, R> {
         };
         let routes = w.key_routes(id).ok_or(Failed::NotKey(index))?;
         let snapshot = w.begin_verify().map_err(Failed::Write)?;
-        let store = w.store_at(snapshot.txn());
+        let store = snapshot.store();
         let grant = exec::Budget::new(grant)
             .admit(grant)
             .expect("a budget admits its whole limit");

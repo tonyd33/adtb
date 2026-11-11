@@ -79,8 +79,8 @@ pub struct AtRead {
     pub pins: Option<u64>,
     /// Read every relation by a scan of its heaps or by a key lookup, never by another index.
     pub body: Eval,
-    /// The heaps `body` reads.
-    pub heaps: BTreeSet<HeapId>,
+    /// The heaps and indexes `body` reads.
+    pub reads: Reads,
 }
 
 /// The row whose key index entry has the key values, fetched from the heap of its constructor.

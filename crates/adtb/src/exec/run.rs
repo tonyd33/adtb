@@ -316,10 +316,10 @@ impl<R: Runtime> Ctx<R> {
     /// Returns the value of `a`'s body in `env` at the state `point` names, read on the calling
     /// thread.
     fn at(self: &Arc<Self>, a: &At, point: &Val, env: &Frame) -> Result<Val, Error> {
-        let Some(past) = &self.store.past else {
+        let Some(past) = self.store.past_reads() else {
             return Err(Broken::NestedPast.into());
         };
-        let store = past.store(point, a.instant, a.pins, &a.heaps)?;
+        let store = past.store(point, a.instant, a.pins, &a.reads)?;
         let cx = Arc::new(Ctx {
             rt: self.rt.clone(),
             program: self.program.clone(),
@@ -341,7 +341,7 @@ impl<R: Runtime> Ctx<R> {
 
     /// Returns the row whose key index entry has key `key`, from the heap of its constructor.
     fn lookup(&self, l: &Lookup, key: &[Val]) -> Result<Val, Error> {
-        let types = self.store.key_types(l.index);
+        let types = self.store.key_types(l.index)?;
         let k: Vec<Value> = types
             .iter()
             .zip(key)
@@ -822,7 +822,7 @@ impl<R: Runtime> Ctx<R> {
                 routes,
             } => {
                 let keys = self.eval_keys(key, &mut f, &mut sel, off)?;
-                let types = self.store.key_types(*index);
+                let types = self.store.key_types(*index)?;
                 let next = &types[key.len()];
                 let mut bound =
                     |b: &Option<(Expr, bool)>| -> Result<HashMap<u32, (Value, bool)>, Error> {
@@ -868,7 +868,7 @@ impl<R: Runtime> Ctx<R> {
         mut found: impl FnMut(u32, &[Value]) -> Result<Vec<Named>, Error>,
         out: &mut Distinct,
     ) -> Result<(), Error> {
-        let types = self.store.key_types(at.index);
+        let types = self.store.key_types(at.index)?;
         let mut hits: Vec<Expand<'_>> = at
             .routes
             .iter()

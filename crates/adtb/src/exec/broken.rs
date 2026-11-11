@@ -8,6 +8,7 @@ use crate::batch;
 use crate::catalog::Step;
 use crate::heap::{FieldType, HeapNo};
 use crate::key::{KeyType, Scalar};
+use crate::plan::{HeapId, IndexId};
 
 use super::{Error, Val};
 
@@ -68,6 +69,10 @@ pub enum Broken {
     ParseNotOption,
     NestedPast,
     OutsideScope(HeapNo),
+    UnlistedHeap(HeapId),
+    UnlistedIndex(IndexId),
+    UnboundHeap(HeapId),
+    UnboundIndex(IndexId),
     NotPosition(Val),
     NotInstant(Val),
     CtorLacksField(u32),
@@ -164,6 +169,28 @@ impl fmt::Display for Broken {
                 f,
                 "a store reads only the heaps its reader's snapshot holds back, not heap {}",
                 heap.0
+            ),
+            Broken::UnlistedHeap(heap) => write!(
+                f,
+                "a store reads only the heaps its reads list, not heap {}",
+                heap.0
+            ),
+            Broken::UnlistedIndex(index) => write!(
+                f,
+                "a store reads only the indexes its reads list, not index {}",
+                index.0
+            ),
+            Broken::UnboundHeap(heap) => {
+                write!(
+                    f,
+                    "every heap a store's reads list is bound, not heap {}",
+                    heap.0
+                )
+            }
+            Broken::UnboundIndex(index) => write!(
+                f,
+                "every index a store's reads list is bound, not index {}",
+                index.0
             ),
             Broken::NotPosition(v) => {
                 write!(f, "a position is an epoch and an LSN, found {v:?}")
