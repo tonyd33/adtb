@@ -4,6 +4,8 @@ status: open
 kind: bug
 priority: 470
 summary: "A Violated call's audit row records Internal, not the error returned"
+tags:
+  - class-identity-by-spelling
 ---
 
 # Audit row of a Violated call holds Internal
@@ -19,3 +21,5 @@ Found while moving the server tests onto engine scripts (2026-11-04).
 ## Proposal
 
 Pass the error value itself to the audit writer instead of its text. Any error whose text does not read back has the same fault; a test should write each refusal kind through a call and compare the audit row with the returned value.
+
+Defect class: Identity by spelling: a string or position stands in for the identity the type system could hold.
