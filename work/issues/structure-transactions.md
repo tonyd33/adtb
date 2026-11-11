@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-07
-status: open
+status: resolved
 kind: feature
 priority: 15
 summary: "write::Database is the whole engine under one name, Txn has no Drop so begin is paired by hand at 10 sites, lock preconditions are comments, and errors cross four layers by hand and as text"
+closed: 2026-11-11
 ---
 
 # Feature: Transactions and errors with owners in the write path
@@ -119,3 +120,13 @@ Landed 9f92c6cf, full check exit 0 (3672 tests). Step 12 is split: 12a gives eac
 Landed ad325a21, full check exit 0 (3692 tests). Lock ranks: adtb-sys `Ranked<T>` checks on every wait that the lock ranks above all the thread holds (a second lock of the same rank too), panicking with both names; `try_lock` records without checking. One order table, crates/adtb/src/ranks.rs: vacuum lock < bundle writer < index latch < serializer < readers < waits < dead counts < sequences < task queue < calls < idle workers. Negative preconditions are entry assertions: not under the serializer (`SERIALIZER.held_here()`), no page latch (`Pager::latched_here()`), no transaction with an id on the thread (a count scoped to `run_items`; write/writing.rs). All of it is on under `debug_assertions` or `latch-checks` and zero-sized otherwise (a release build compiles with no rank field, no held list, no counter). Lock orders stated only in comments 3 to 0 in scope; the seven `Precondition:` lines each have their assertion. No assertion fired in the suite or the 1055 sim tests outside the regression tests.
 
 Fixed: refuse-named-under-unique-lock (the probe drops the index latch before `refuse_named` and restarts on its `Ok`, which every exit reaches only after a concurrent change; tested through a hook that replaces the orphan entry with a real row, giving the exact key violation); set-setting-writer-across-vacuum-wait (`SetSetting` takes the vacuum lock first and the bundle writer only for the write; the test fails on main by a real stall). Client-visible: grants, registrations, retires and lease renewals no longer wait behind a set setting waiting for a rebuild. Filed: storage-lock-orders-unranked, parked-writer-verify-unchecked.
+
+## 2026-11-11, step 13 landed; program complete
+
+Landed a492ea32, full check exit 0 (3693 tests). A call's audit row `Failed { error }` is built from the `api::Error` itself (`Error::prelude_value`, api/error_value.rs, from the schema's type definitions), not printed and parsed back: `error_value`'s text parse 1 to 0. A shape the compiled-in prelude does not declare is an engine invariant and panics. `Violated` is the one reason left recording `Internal`, through an explicit `NoValue::Report` arm: its `report` bytes have no encoder (audit-violated-call-outcome, narrowed; the test of the required row is `#[ignore]`d, and a running script checks the `Violated` reply and its `Failed` row). `TermKind` compares `Kind` structurally, floats by bits: `Debug`-text equality in production 1 to 0. An exhaustive test over 61 reasons asserts each Call row exactly against literals parsed from the prelude text, one case per slot.
+
+Client-visible: `catalog::audit.Call` rows of `Serialization`, `TooOld`, `HistoryUnavailable`, `PositionNotOnHistory` and `RestorePointUnavailable` hold the error value returned, where main held `Internal`. Filed: catalog-expr-text-debug-fallback, error-two-value-encoders.
+
+All thirteen steps and Q2 have landed (step 12 as 12a and 12b). The tickets filed during the program and by the quality review of 2026-11-11 hold what remains.
+
+## 2026-11-11: resolved
