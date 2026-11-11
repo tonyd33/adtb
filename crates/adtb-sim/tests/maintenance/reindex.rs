@@ -2,16 +2,17 @@
 //! quarantined index.
 
 use crate::catalog_root::changing_words;
-use adtb_harness::process;
+use adtb_harness::{common, process};
 use adtb_testkit::refused_with;
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use adtb::key::{Entry, Value};
-use adtb::runtime::{Clock, Threads};
+use adtb::runtime::{Clock, Runtime, Threads};
 use adtb::testing::{Damage, Pid, Plant, Quarantine, page::HEADER_LEN, panic_text};
 use adtb::{Database, Log, OpenOptions};
 use adtb_harness::damage::{DataFile, Files};
@@ -869,4 +870,71 @@ fn a_real_file_restores_a_damaged_index_and_keeps_it_across_a_reopen() {
     assert!(db.testing().probe().marks().is_empty());
     run(&db, probe);
     db.close().unwrap();
+}
+
+#[test]
+fn a_grant_runs_while_a_set_setting_waits_for_a_rebuild_holding_the_vacuum_lock() {
+    process::once(18, |rt| {
+        let db = open_app(rt.clone());
+        seed_rows(&db, 3);
+        db.role_authority().create_role("ann").unwrap();
+        let (open, building) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let (gate, reached, clock) = (open.clone(), building.clone(), rt.clone());
+        db.testing().on_reindex_phase(move |phase| {
+            if phase == "build" {
+                reached.store(true, Ordering::Release);
+                while !gate.load(Ordering::Acquire) {
+                    common::sleep(&clock, &mut clock.io(), Duration::from_millis(1));
+                }
+            }
+        });
+        api::results(&db, USER_REINDEX);
+        while !building.load(Ordering::Acquire) {
+            common::sleep(&rt, &mut rt.io(), Duration::from_millis(1));
+        }
+        let paused = db.testing().rebuild_waits();
+        let setter = db.clone();
+        let set = rt.spawn("set setting", move || {
+            api::results(
+                &setter,
+                "explain from u in users select u\nset setting RetentionWindow = { length: 2h }",
+            );
+        });
+        while db.testing().rebuild_waits() == paused {
+            common::sleep(&rt, &mut rt.io(), Duration::from_millis(1));
+        }
+        let granted = Arc::new(AtomicBool::new(false));
+        let (granter, done) = (db.clone(), granted.clone());
+        let grant = rt.spawn("grant", move || {
+            let authority = granter.role_authority();
+            let owner = authority.session("owner").unwrap();
+            authority
+                .grant(&owner, "grant read catalog::settings to ann")
+                .unwrap();
+            done.store(true, Ordering::Release);
+        });
+        for _ in 0..5000 {
+            if granted.load(Ordering::Acquire) {
+                break;
+            }
+            common::sleep(&rt, &mut rt.io(), Duration::from_millis(1));
+        }
+        let ran = granted.load(Ordering::Acquire);
+        open.store(true, Ordering::Release);
+        rt.join(grant);
+        rt.join(set);
+        wait_for_jobs(&rt, &db);
+        assert!(ran, "the grant waited for the rebuild");
+        assert_eq!(
+            vec!["2h".to_owned()],
+            api::query(
+                &db,
+                "from s in catalog::settings.RetentionWindow select s.length"
+            )
+        );
+        db.close().unwrap();
+    });
 }

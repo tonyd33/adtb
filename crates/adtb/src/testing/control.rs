@@ -103,6 +103,12 @@ impl<'a, R: Runtime> Testing<'a, R> {
         self.db.set_phase_hook(Arc::new(hook));
     }
 
+    /// Run `hook` once on the calling thread, at its next refusal of a read through an index
+    /// entry, before that looks at the slot the entry names.
+    pub fn before_next_refusal(self, hook: impl FnOnce() + 'static) {
+        crate::heap::before_next_refusal(hook);
+    }
+
     /// Returns the log archive's status as its last pass left it, `None` with no archive set.
     pub fn archive_status(self) -> Option<ArchiveStatus> {
         self.db.archive_state()

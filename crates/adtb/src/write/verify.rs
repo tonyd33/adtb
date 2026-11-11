@@ -169,6 +169,7 @@ impl<R: Runtime> Database<R> {
     ///
     /// Precondition: the calling thread holds no transaction with an id.
     pub fn begin_verify(&self) -> Result<VerifySnapshot<'_, R>, Error> {
+        super::outside_writer();
         let mut tx = self.session.begin_reader(true)?;
         loop {
             let safety = self.session.ser.lock(&self.rt).safety(tx.sid);

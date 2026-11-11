@@ -21,6 +21,7 @@ mod session;
 mod stream;
 mod vacuums;
 mod verify;
+mod writing;
 
 #[cfg(test)]
 mod calls_tests;
@@ -49,7 +50,7 @@ use adtb_lang::kernel::{Terms, Tm, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
-use adtb_sys::lock::Lock;
+use adtb_sys::lock::{Lock, Ranked};
 
 use crate::catalog::Structures;
 use crate::exec::{self, Budget, Scheduler, Val};
@@ -60,6 +61,7 @@ use crate::mvcc::{
 };
 use crate::plan::explain::Node;
 use crate::plan::{Catalog, HeapId, IndexId};
+use crate::ranks;
 use crate::runtime::{Instant, Runtime};
 #[cfg(any(test, feature = "testing"))]
 use crate::storage::Pid;
@@ -79,6 +81,8 @@ pub use rot::Rot;
 pub use stream::{Produced, Production};
 pub use vacuums::Due;
 pub use verify::{Found, VerifyScope};
+use writing::Writing;
+pub(crate) use writing::outside_writer;
 
 use schema::Rels;
 pub(crate) use sequence::Sequences;
@@ -408,17 +412,16 @@ struct Left {
 /// of the read-only transactions, the waits on running ones and the versions they made dead.
 /// The database and every transaction it begins share it.
 ///
-/// Lock order: the serializer, then the readers, then the waits, then the dead counts.
-/// `Transactions` locks itself and takes none of these.
+/// `Transactions` locks itself and takes no lock of the session.
 struct Session<R: Runtime> {
     rt: R,
     pager: Pager<R>,
     txns: Arc<Transactions<R>>,
-    ser: Arc<Lock<Serializer>>,
+    ser: Arc<Ranked<Serializer>>,
     /// The snapshot of each running read-only transaction, for its safe snapshot marker.
-    readers: Lock<BTreeMap<SerialId, (Taken, Snapshot)>>,
+    readers: Ranked<BTreeMap<SerialId, (Taken, Snapshot)>>,
     waits: Waits<R>,
-    dead: Lock<vacuums::Dead>,
+    dead: Ranked<vacuums::Dead>,
     /// How many transactions ended by being dropped.
     #[cfg(any(test, feature = "testing"))]
     dropped: std::sync::atomic::AtomicUsize,
@@ -591,8 +594,7 @@ impl Stop {
 /// The relation variables of a schema over their heaps and indexes, and the transactions that
 /// write them.
 ///
-/// Lock order: one index latch, then the locks of the session, then the sequences. The
-/// session, the pager and the heaps lock themselves and take none of the others.
+/// The session, the pager and the heaps lock themselves and take no lock of the database.
 pub struct Database<R: Runtime> {
     rt: R,
     schema: Arc<Schema>,
@@ -606,12 +608,12 @@ pub struct Database<R: Runtime> {
     pager: Pager<R>,
     session: Arc<Session<R>>,
     bindings: exec::Bindings,
-    latches: BTreeMap<IndexId, Lock<()>>,
+    latches: BTreeMap<IndexId, Ranked<()>>,
     rels: Rels,
     /// Every structure of the file, each with the holder of its pages.
     structures: Structures,
     denials: Vec<check::Denial>,
-    sequences: Lock<Sequences>,
+    sequences: Ranked<Sequences>,
     uuids: AtomicU64,
     budget: Arc<Budget>,
     pool: Option<Arc<Scheduler<R>>>,
@@ -695,7 +697,7 @@ impl<R: Runtime> Database<R> {
             .bindings
             .indexes()
             .keys()
-            .map(|i| (*i, Lock::new(())))
+            .map(|i| (*i, Ranked::new(ranks::INDEX_LATCH, ())))
             .collect();
         let seed = rt.next_u64();
         let session = Session::new(rt.clone(), setup.pager.clone(), setup.txns, setup.limits);
@@ -713,7 +715,7 @@ impl<R: Runtime> Database<R> {
             rels,
             structures: setup.structures,
             denials,
-            sequences: Lock::new(sequences),
+            sequences: Ranked::new(ranks::SEQUENCES, sequences),
             uuids: AtomicU64::new(seed >> 2),
             budget: setup.budget,
             pool: setup.pool,
@@ -960,6 +962,7 @@ impl<R: Runtime> Database<R> {
         bounds: Bounds,
         between: &mut Between<'_>,
     ) -> Result<Vec<Outcome>, Failed> {
+        let _writing = tx.xid.map(|_| Writing::enter());
         self.admit(&text).map_err(|error| Failed::new(0, error))?;
         let mut ran = Vec::with_capacity(text.items.len());
         let mut out = Vec::with_capacity(text.items.len());

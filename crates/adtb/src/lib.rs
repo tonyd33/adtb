@@ -13,6 +13,7 @@ mod history_tests;
 pub mod key;
 mod mvcc;
 mod plan;
+mod ranks;
 mod storage;
 #[cfg(test)]
 mod test_world;

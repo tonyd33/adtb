@@ -524,6 +524,7 @@ impl<R: Runtime> Engine<R> {
         rel: Option<RelId>,
         waiting: HoldWait<'_>,
     ) -> Result<DynRows, write::Error> {
+        write::outside_writer();
         let scope = rel.map_or(VerifyScope::Database, VerifyScope::Relation);
         self.verify_run(schema, scope, false, waiting)
     }

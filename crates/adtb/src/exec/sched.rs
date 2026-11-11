@@ -4,8 +4,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::task::{Wake, Waker};
 
-use adtb_sys::lock::Lock;
+use adtb_sys::lock::{Lock, Ranked};
 
+use crate::ranks;
 use crate::runtime::{Instant, Io, Op, Runtime, ThreadId, Ticket};
 
 /// Work a worker runs to completion.
@@ -231,10 +232,10 @@ fn stopping(call: Box<dyn Resumable>, why: Stopped) -> Task {
 }
 
 struct Inner {
-    queue: Lock<VecDeque<Task>>,
-    calls: Lock<Calls>,
+    queue: Ranked<VecDeque<Task>>,
+    calls: Ranked<Calls>,
     /// Workers parked, or about to park, on an empty queue.
-    idle: Lock<Vec<ThreadId>>,
+    idle: Ranked<Vec<ThreadId>>,
     stop: AtomicBool,
     ran: AtomicUsize,
     admission: Admission,
@@ -243,8 +244,6 @@ struct Inner {
 
 /// Worker threads that take tasks from one queue, morsels of every running query, and steps of
 /// admitted calls.
-///
-/// Lock order: the task queue, then the calls, then the idle workers.
 pub struct Scheduler<R: Runtime> {
     rt: R,
     inner: Arc<Inner>,
@@ -324,9 +323,9 @@ impl<R: Runtime> Scheduler<R> {
     /// admission bounded by `admission`.
     pub fn start_with(rt: R, workers: usize, admission: Admission) -> Arc<Scheduler<R>> {
         let inner = Arc::new(Inner {
-            queue: Lock::new(VecDeque::new()),
-            calls: Lock::default(),
-            idle: Lock::new(Vec::new()),
+            queue: Ranked::new(ranks::TASK_QUEUE, VecDeque::new()),
+            calls: Ranked::new(ranks::CALLS, Calls::default()),
+            idle: Ranked::new(ranks::IDLE, Vec::new()),
             stop: AtomicBool::new(false),
             ran: AtomicUsize::new(0),
             admission,
@@ -665,5 +664,57 @@ fn keep_deadlines<R: Runtime>(rt: &R, inner: &Inner) {
             inner.unpark_idle(rt);
         }
         rt.park();
+    }
+}
+
+#[cfg(test)]
+mod rank_tests {
+    use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+
+    use super::Scheduler;
+    use crate::ranks::{broken, order_broken};
+
+    /// Run `body` over a scheduler of one worker in a simulator of `seed`.
+    fn at(seed: u64, body: impl Fn(&Scheduler<SimRuntime>, &SimRuntime)) {
+        let mut sim = Sim::new(seed, Config::default());
+        let outcome = sim.run(|rt| {
+            let s = Scheduler::start(rt.clone(), 1);
+            body(&s, &rt);
+            s.shutdown();
+        });
+        assert_eq!(Outcome::Finished, outcome, "seed {seed}");
+    }
+
+    #[test]
+    fn the_task_queue_waited_for_under_the_calls_panics() {
+        at(1, |s, rt| {
+            let _calls = s.inner.calls.lock(rt);
+            assert_eq!(
+                broken("the task queue lock", "the calls lock"),
+                order_broken(|| drop(s.inner.queue.lock(rt)))
+            );
+        });
+    }
+
+    #[test]
+    fn the_calls_waited_for_under_the_idle_workers_panics() {
+        at(2, |s, rt| {
+            let _idle = s.inner.idle.lock(rt);
+            assert_eq!(
+                broken("the calls lock", "the idle workers lock"),
+                order_broken(|| drop(s.inner.calls.lock(rt)))
+            );
+        });
+    }
+
+    #[test]
+    fn the_idle_workers_waited_for_under_themselves_panics() {
+        at(3, |s, rt| {
+            let _idle = s.inner.idle.lock(rt);
+            assert_eq!(
+                broken("the idle workers lock", "the idle workers lock"),
+                order_broken(|| drop(s.inner.idle.lock(rt)))
+            );
+        });
     }
 }

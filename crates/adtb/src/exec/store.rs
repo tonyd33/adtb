@@ -15,7 +15,7 @@ use crate::mvcc::{Logged, Reader, ScanId, SerialId, SerializationFailure, Serial
 use crate::plan::{self, HeapId, IndexId};
 use crate::runtime::Runtime;
 use crate::storage::{Pager, Pid, Quarantine};
-use adtb_sys::lock::Lock;
+use adtb_sys::lock::Ranked;
 
 use super::memory::{Arena, Grant};
 use super::types::{ctors, repr};
@@ -74,7 +74,7 @@ pub trait Reads: Send + Sync {
 struct AtSnapshot<R: Runtime> {
     rt: R,
     reader: Reader<Logged<R>>,
-    serial: Option<(Arc<Lock<Serializer>>, SerialId)>,
+    serial: Option<(Arc<Ranked<Serializer>>, SerialId)>,
 }
 
 impl<R: Runtime> std::fmt::Debug for AtSnapshot<R> {
@@ -337,7 +337,7 @@ impl<R: Runtime> Store<R> {
     /// serializer, and reads the past through `past`.
     pub fn serializable(
         reader: Reader<Logged<R>>,
-        serial: (Arc<Lock<Serializer>>, SerialId),
+        serial: (Arc<Ranked<Serializer>>, SerialId),
         bindings: Bindings,
         past: Option<Arc<dyn PastReads<R>>>,
     ) -> Store<R> {
@@ -408,7 +408,7 @@ impl<R: Runtime> Store<R> {
 
     fn at_snapshot(
         reader: Reader<Logged<R>>,
-        serial: Option<(Arc<Lock<Serializer>>, SerialId)>,
+        serial: Option<(Arc<Ranked<Serializer>>, SerialId)>,
         bindings: Bindings,
     ) -> Store<R> {
         let pager = reader.pager().clone();

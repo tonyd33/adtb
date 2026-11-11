@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use adtb_lang::types::RelId;
+use adtb_sys::lock::HeldRank;
 
 use crate::btree::build::{BuildError, RunEntry, merge_runs, retire};
 use crate::btree::{self, BTree};
@@ -24,6 +25,7 @@ use crate::heap::Heap;
 use crate::key::{CtorId, Entry};
 use crate::mvcc::Xid;
 use crate::plan::IndexId;
+use crate::ranks;
 use crate::runtime::{Instant, Io, Op, Runtime, ThreadId};
 use crate::storage::{self, Damage, Lsn, Pid, Quarantine};
 
@@ -130,6 +132,7 @@ pub(super) enum Holder {
 /// every other rebuild, and every other holder.
 pub struct VacuumHold<'d, R: Runtime> {
     db: &'d Database<R>,
+    _rank: HeldRank,
 }
 
 impl<R: Runtime> Drop for VacuumHold<'_, R> {
@@ -319,6 +322,7 @@ impl<R: Runtime> Database<R> {
 
     /// Returns the vacuum lock for a rebuild job, waiting as long as another holds it.
     pub fn holding_off_vacuum(&self) -> VacuumHold<'_, R> {
+        ranks::VACUUM.check();
         loop {
             if let Some(hold) = self.try_hold_vacuum() {
                 return hold;
@@ -358,7 +362,10 @@ impl<R: Runtime> Database<R> {
             None => {
                 *held = Some(holder);
                 self.session.waits.started(VACUUM_HOLDER);
-                Some(VacuumHold { db: self })
+                Some(VacuumHold {
+                    db: self,
+                    _rank: ranks::VACUUM.hold(),
+                })
             }
         }
     }
@@ -374,6 +381,7 @@ impl<R: Runtime> Database<R> {
 
     /// Returns the vacuum lock as [`Database::hold_vacuum`] does, stopping as `stop` says.
     pub(super) fn hold_vacuum_until(&self, stop: &Stop) -> Result<VacuumHold<'_, R>, Error> {
+        ranks::VACUUM.check();
         loop {
             if let Some(hold) = self.try_hold_vacuum() {
                 return Ok(hold);

@@ -1,14 +1,16 @@
 //! Begin transactions and end them once, by commit, abort or drop.
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 #[cfg(any(test, feature = "testing"))]
 use std::sync::atomic::Ordering;
 
-use adtb_sys::lock::Lock;
+use adtb_sys::lock::Ranked;
 
 use crate::mvcc::{self, Access, Begun, Hold, Limits, Scope, SerialId, Serializer};
 use crate::mvcc::{Transactions, Waits, Xid};
+use crate::ranks;
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
@@ -34,13 +36,13 @@ impl<R: Runtime> Session<R> {
             rt,
             pager,
             txns,
-            ser: Arc::new(Lock::new(Serializer::new(limits))),
-            readers: Lock::default(),
-            dead: Lock::default(),
+            ser: Arc::new(Ranked::new(ranks::SERIALIZER, Serializer::new(limits))),
+            readers: Ranked::new(ranks::READERS, BTreeMap::new()),
+            dead: Ranked::new(ranks::DEAD, vacuums::Dead::default()),
             #[cfg(any(test, feature = "testing"))]
             dropped: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
-            fail_log: Lock::default(),
+            fail_log: adtb_sys::lock::Lock::default(),
         })
     }
 

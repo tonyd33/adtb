@@ -2,9 +2,11 @@ use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use adtb_sim::{Config, Outcome, SimRuntime};
+use adtb_sys::lock::Ranked;
 use adtb_testkit::fixture::Fixture;
 
 use crate::mvcc::{Status, Xid};
+use crate::ranks::{self, broken, order_broken};
 use crate::test_world::write_path::{self, WritePath};
 
 use super::Database;
@@ -171,5 +173,116 @@ fn an_abort_panicking_after_its_serializer_abort_releases_the_rest_on_unwinding(
         let tx = db.begin().expect("a writer begins");
         db.commit(tx).expect("the writer commits");
         assert_eq!(nothing(), holding(db));
+    });
+}
+
+#[test]
+fn the_vacuum_lock_waited_for_under_the_bundle_writer_panics() {
+    at(9, |db| {
+        let _writer = ranks::BUNDLE_WRITER.hold();
+        assert_eq!(
+            broken("the vacuum lock", "the bundle writer lock"),
+            order_broken(|| drop(db.holding_off_vacuum()))
+        );
+    });
+}
+
+#[test]
+fn an_index_latch_waited_for_under_another_or_the_serializer_panics() {
+    at(10, |db| {
+        let latch = db
+            .latches
+            .values()
+            .next()
+            .expect("the items have a key index");
+        let ser = db.session.ser.lock(&db.rt);
+        assert_eq!(
+            broken("an index latch", "the serializer lock"),
+            order_broken(|| drop(latch.lock(&db.rt)))
+        );
+        drop(ser);
+        let _held = latch.lock(&db.rt);
+        let other = Ranked::new(ranks::INDEX_LATCH, ());
+        assert_eq!(
+            broken("an index latch", "an index latch"),
+            order_broken(|| drop(other.lock(&db.rt)))
+        );
+    });
+}
+
+#[test]
+fn the_serializer_waited_for_under_the_readers_panics() {
+    at(11, |db| {
+        let _readers = db.session.readers.lock(&db.rt);
+        assert_eq!(
+            broken("the serializer lock", "the readers lock"),
+            order_broken(|| drop(db.session.ser.lock(&db.rt)))
+        );
+    });
+}
+
+#[test]
+fn the_readers_waited_for_under_the_waits_panics() {
+    at(12, |db| {
+        let _waits = ranks::WAITS.hold();
+        assert_eq!(
+            broken("the readers lock", "the waits lock"),
+            order_broken(|| drop(db.session.readers.lock(&db.rt)))
+        );
+    });
+}
+
+#[test]
+fn the_waits_waited_for_under_the_dead_counts_panics() {
+    at(13, |db| {
+        let _dead = db.session.dead.lock(&db.rt);
+        assert_eq!(
+            broken("the waits lock", "the dead counts lock"),
+            order_broken(|| drop(db.session.waits.running()))
+        );
+    });
+}
+
+#[test]
+fn the_dead_counts_waited_for_under_the_sequences_panics() {
+    at(14, |db| {
+        let _sequences = db.sequences.lock(&db.rt);
+        assert_eq!(
+            broken("the dead counts lock", "the sequences lock"),
+            order_broken(|| drop(db.session.dead.lock(&db.rt)))
+        );
+    });
+}
+
+#[test]
+fn the_sequences_waited_for_under_the_task_queue_panics() {
+    at(15, |db| {
+        let _queue = ranks::TASK_QUEUE.hold();
+        assert_eq!(
+            broken("the sequences lock", "the task queue lock"),
+            order_broken(|| drop(db.sequences.lock(&db.rt)))
+        );
+    });
+}
+
+#[test]
+fn damage_mapped_under_the_serializer_panics() {
+    at(16, |db| {
+        let _ser = db.session.ser.lock(&db.rt);
+        assert_eq!(
+            "damage is mapped under the serialization lock",
+            order_broken(|| drop(db.fail(super::Broken::ReadOnly.into())))
+        );
+    });
+}
+
+#[test]
+fn a_verify_begun_while_the_thread_runs_a_writer_panics() {
+    at(17, |db| {
+        let _writing = super::Writing::enter();
+        assert_eq!(
+            "this thread waits on writers while it runs a transaction with an id",
+            order_broken(|| drop(db.begin_verify()))
+        );
     });
 }

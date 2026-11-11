@@ -35,7 +35,9 @@ pub use dir::max_fanout;
 pub use handle::Pruned;
 pub use handle::{Heap, HeapNo, Link, Slots, Version, fits};
 pub use large::LargeStore;
-pub use named::{OrphanEntry, refuse_named};
+#[cfg(any(test, feature = "testing"))]
+pub(crate) use named::before_next_refusal;
+pub use named::{OrphanEntry, refuse_named, vacant};
 #[cfg(test)]
 pub use row::Pointer;
 pub(crate) use row::put_uvarint;

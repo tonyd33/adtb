@@ -5,7 +5,7 @@ use std::task::{Wake, Waker};
 use crate::runtime::{Runtime, ThreadId};
 
 use super::{Cause, SerializationFailure, Xid};
-use adtb_sys::lock::Lock;
+use adtb_sys::lock::Ranked;
 
 #[derive(Debug, Default)]
 struct State {
@@ -34,7 +34,7 @@ pub enum Watch {
 #[derive(Debug)]
 pub struct Waits<R: Runtime> {
     rt: R,
-    state: Lock<State>,
+    state: Ranked<State>,
 }
 
 struct Unpark<R: Runtime> {
@@ -52,7 +52,7 @@ impl<R: Runtime> Waits<R> {
     pub fn new(rt: R) -> Waits<R> {
         Waits {
             rt,
-            state: Lock::default(),
+            state: Ranked::new(crate::ranks::WAITS, State::default()),
         }
     }
 

@@ -407,7 +407,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 .expect("an index over a constructor holds its id")
                 .0;
             let encoded = stored.index.schema().encode(&key);
-            let latch = loop {
+            let latch = 'probe: loop {
                 let latch = self.db.latches[id].lock(&self.db.rt);
                 if !ix.desc.unique {
                     break latch;
@@ -422,12 +422,14 @@ impl<R: Runtime> Stmt<'_, R> {
                     let c = stored.ctors[&e.ctor];
                     let heap = r.ctors[c as usize].heap;
                     let run = self.db.bindings.heaps()[&heap].heap.hot_run(pager, e.tid)?;
-                    if run.is_empty() {
-                        let at = (&*self.db.bindings.heaps()[&heap].heap, e.tid);
+                    let at = (&*self.db.bindings.heaps()[&heap].heap, e.tid);
+                    if run.is_empty() && heap::vacant(pager, at)?.is_some() {
+                        drop(latch);
                         heap::refuse_named(pager, at, stored.index.tree().owner(), || {
                             let found = stored.index.probe(pager, &key)?;
                             Ok::<_, Error>(found.iter().any(|f| (f.ctor, f.tid) == (e.ctor, e.tid)))
                         })?;
+                        continue 'probe;
                     }
                     for link in run {
                         let probe = match reader.probe_unique(xid, &link.header.writers) {

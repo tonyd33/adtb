@@ -2398,3 +2398,95 @@ fn a_mark_a_crash_loses_before_it_is_written_is_set_again_by_the_next_open() {
         db.close().unwrap();
     });
 }
+
+#[test]
+fn an_insert_of_a_key_an_orphan_entry_names_marks_the_key_index() {
+    let mut sim = Sim::new(101, Config::default());
+    process::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        let t = db.testing();
+        let key = t.index("app::identities", "key id").unwrap();
+        let google = t.entries(key, &[Value::I64(11)]).unwrap().remove(0);
+        t.plant(Plant::AddEntry {
+            index: key,
+            entry: Entry {
+                key: vec![Value::I64(800)],
+                ctor: google.ctor,
+                tid: Tid::new(google.tid.page(), 400).unwrap(),
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            "app::identities key id",
+            failed_on(
+                &db,
+                r#"insert identities.Google { id: identities.key(800), user: users.key(1), gid: "x" }"#
+            )
+        );
+        assert_eq!(BTreeSet::from([t.own_mark(key).unwrap()]), marks(&db));
+        assert_eq!(18, api::query(&db, ALL).len());
+    });
+}
+
+#[test]
+fn an_insert_probes_again_when_its_orphan_entry_gives_way_to_a_row_of_its_key() {
+    let mut sim = Sim::new(102, Config::default());
+    process::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        let t = db.testing();
+        let key = t.index("app::identities", "key id").unwrap();
+        let google = t.entries(key, &[Value::I64(11)]).unwrap().remove(0);
+        let orphan = Entry {
+            key: vec![Value::I64(800)],
+            ctor: google.ctor,
+            tid: Tid::new(google.tid.page(), 400).unwrap(),
+        };
+        t.plant(Plant::AddEntry {
+            index: key,
+            entry: orphan.clone(),
+        })
+        .unwrap();
+        let replaced = Arc::new(AtomicBool::new(false));
+        let (other, done) = (db.clone(), replaced.clone());
+        t.before_next_refusal(move || {
+            other
+                .testing()
+                .plant(Plant::DropEntry {
+                    index: key,
+                    entry: orphan,
+                })
+                .unwrap();
+            api::results(
+                &other,
+                r#"insert identities.Google { id: identities.key(800), user: users.key(2), gid: "y" }"#,
+            );
+            done.store(true, Ordering::Release);
+        });
+        let got = db.query_text(
+            r#"insert identities.Google { id: identities.key(800), user: users.key(1), gid: "x" }"#,
+            &[],
+            &CallOptions::default(),
+        );
+        adtb_testkit::refused_as(
+            got,
+            &Error::Rejected {
+                reason: RejectReason::KeyViolation {
+                    relation: "app::identities".to_owned(),
+                    key: "identities.key(800)".to_owned(),
+                },
+            },
+            "`app::identities` already holds a row with key `identities.key(800)`",
+        );
+        assert!(replaced.load(Ordering::Acquire), "the refusal ran");
+        assert_eq!(
+            vec![r#""y""#.to_owned()],
+            api::query(
+                &db,
+                "from i in identities.Google where i.id == identities.key(800) select i.gid"
+            )
+        );
+        assert_eq!(BTreeSet::new(), marks(&db));
+    });
+}

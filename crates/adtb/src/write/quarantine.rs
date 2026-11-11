@@ -11,6 +11,7 @@ use adtb_lang::types::{CtorSet, RelId, Ty};
 use crate::catalog::index_holder;
 use crate::exec::Class;
 use crate::plan::{Catalog, IndexId};
+use crate::ranks;
 use crate::runtime::Runtime;
 use crate::storage::policy::{Fault, Holder, Phase};
 use crate::storage::{Damage, MarkFailure, Ordered, Orders, Quarantine};
@@ -126,6 +127,7 @@ impl<R: Runtime> Database<R> {
     ///
     /// Precondition: the calling thread holds no page latch and not the serialization lock.
     fn map_damage(&self) -> BTreeMap<Quarantine, MarkFailure> {
+        self.unlocked();
         self.pager.map_damage(
             |pid| {
                 self.structures
@@ -142,12 +144,33 @@ impl<R: Runtime> Database<R> {
     /// Precondition: the calling thread holds no page latch, and the serialization lock that
     /// `ordered` witnesses.
     pub(super) fn map_committing(&self, ordered: Ordered<'_>) {
+        self.unlatched();
         self.pager.map_committing(
             |pid| {
                 self.structures
                     .holders(&self.pager, &self.session.txns, pid, Phase::Running)
             },
             ordered,
+        );
+    }
+
+    /// Panic, in debug builds and when `latch-checks` is on, if the calling thread holds a page
+    /// latch.
+    fn unlatched(&self) {
+        let latched = self.pager.latched_here();
+        assert!(
+            latched == 0,
+            "damage is mapped while this thread latches {latched} pages"
+        );
+    }
+
+    /// Panic, in debug builds and when `latch-checks` is on, if the calling thread holds a page
+    /// latch or the serialization lock.
+    fn unlocked(&self) {
+        self.unlatched();
+        assert!(
+            !ranks::SERIALIZER.held_here(),
+            "damage is mapped under the serialization lock"
         );
     }
 
@@ -170,6 +193,7 @@ impl<R: Runtime> Database<R> {
         holder: Holder,
         failed: &mut BTreeMap<Quarantine, MarkFailure>,
     ) -> BTreeSet<Quarantine> {
+        self.unlocked();
         let mut objects = BTreeSet::new();
         let finding = self.pager.map_fault(Fault::Finding, holder, self);
         let Ok(marked) = finding else {
@@ -212,6 +236,7 @@ impl<R: Runtime> Database<R> {
     ///
     /// Precondition: the calling thread holds no page latch and not the serialization lock.
     pub fn fail(&self, e: Error) -> Mapped {
+        self.unlocked();
         if let Error::Blocked { .. } = e {
             return Mapped(e);
         }
@@ -273,6 +298,7 @@ impl<R: Runtime> Database<R> {
     ///
     /// Precondition: the calling thread holds no page latch and not the serialization lock.
     pub fn quarantine_findings(&self, found: &BTreeSet<Found>) -> Vec<Found> {
+        self.unlocked();
         let mut failed = self.map_damage();
         for f in found {
             if let Found::Order { index, .. }

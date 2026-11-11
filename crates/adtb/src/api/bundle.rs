@@ -3,14 +3,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::sync::{Arc, MutexGuard};
+use std::sync::Arc;
 
 use adtb_lang::ast::{self, BundleHeader, BundleName, ExprKind, HeaderClause, Lit};
 use adtb_lang::check::Command;
 use adtb_lang::parse::reads_as_bundle_name;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, Ty};
-use adtb_sys::lock::Lock;
+use adtb_sys::lock::{Lock, Ranked, RankedGuard};
 
 use crate::catalog::{Catalog, Deployed, Fact, Mark, Origin, Rewrite, layout, values};
 use crate::exec::{self, Val};
@@ -1208,20 +1208,20 @@ pub(super) struct StoredLock {
     stored: Lock<Arc<Stored>>,
     /// Held across every write of a row of `catalog::bundles`, so that the row a writer reads
     /// from `stored` is the one its write replaces.
-    writer: Lock<()>,
+    writer: Ranked<()>,
 }
 
 /// A holder of the writer lock of a [`StoredLock`], the one way to change what it stores.
 pub(super) struct BundleWriter<'a> {
     stored: &'a Lock<Arc<Stored>>,
-    _held: MutexGuard<'a, ()>,
+    _held: RankedGuard<'a, ()>,
 }
 
 impl StoredLock {
     pub(super) fn new(stored: Stored) -> StoredLock {
         StoredLock {
             stored: Lock::new(Arc::new(stored)),
-            writer: Lock::new(()),
+            writer: Ranked::new(crate::ranks::BUNDLE_WRITER, ()),
         }
     }
 

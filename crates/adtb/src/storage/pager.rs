@@ -1182,6 +1182,12 @@ impl<R: Runtime> Pager<R> {
         self.shared(pid)
     }
 
+    /// Returns the number of page latches the calling thread holds, in debug builds and when
+    /// `latch-checks` is on; 0 otherwise.
+    pub fn latched_here(&self) -> usize {
+        self.mem.latched_here()
+    }
+
     /// Panic, in debug builds and when `latch-checks` is on, if the calling thread latches more
     /// than [`LATCHES_PER_THREAD`] pages.
     pub(super) fn check_bound(&self) {

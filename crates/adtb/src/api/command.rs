@@ -15,7 +15,6 @@ use crate::plan::explain::{Actual, Node, json_text, object};
 use crate::runtime::Runtime;
 use crate::write::{self, Bounds, HoldWait, Local, Outcome, Rejection, Text, Txn, VacuumHold};
 
-use super::bundle::BundleWriter;
 use super::server::CallOrigin;
 use super::text::{DynRows, Issuer, Prepared, rows};
 use super::{Capability, Engine, Error, unsupported};
@@ -430,9 +429,8 @@ impl<R: Runtime> Engine<R> {
                 self.reindex_job(schema, *relation, at.as_deref(), *online)
             }
             Command::SetSetting { setting, value } => {
-                let writer = self.deployed.write(&self.rt);
                 let held = self.db.hold_vacuum(HoldWait::of(&bounds, at))?;
-                self.set_setting(tx, p, (*setting, *value), local, bounds, (&writer, &held))
+                self.set_setting(tx, p, (*setting, *value), local, bounds, &held)
             }
             Command::CancelCall(key) => self.cancel_call(tx, p, *key, local, bounds),
             Command::PrintSchema => {
@@ -767,7 +765,7 @@ impl<R: Runtime> Engine<R> {
         (setting, value): (u32, Tm),
         local: &mut Local,
         bounds: Bounds,
-        (writer, held): (&BundleWriter<'_>, &VacuumHold<'_, R>),
+        held: &VacuumHold<'_, R>,
     ) -> Result<DynRows, write::Error> {
         let schema = p.schema();
         let settings = engine_relation(schema, "catalog", "settings")?;
@@ -799,8 +797,9 @@ impl<R: Runtime> Engine<R> {
             fields.push((*v).clone());
         }
         let row = Val::ctor(setting, fields);
+        let writer = self.deployed.write(&self.rt);
         if matches!(ctor.name.as_str(), "DefaultLease" | "LeaseGrace") {
-            self.latch_expired(writer)?;
+            self.latch_expired(&writer)?;
         }
         self.swap_row(schema, settings, Old::Ctor(setting), row.clone())?;
         let window = {
