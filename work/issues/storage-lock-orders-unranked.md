@@ -19,3 +19,10 @@ structure-transactions step 12b made the write path's and the scheduler's lock o
 Direction: give these locks ranks in the same table (or a storage table below it) and assert no page latch at `Waits::wait`'s entry; the sim suite runs with the checks on.
 
 Defect class: Admission per path: a rule held by each caller's care instead of one gate.
+
+## 2026-11-11: quality review of the transactions restructure
+
+Two more of the same kind, found reviewing `reviewed..main`:
+
+- The transactions' own locks, `mvcc::Shared`'s `state`, `clog` and `marked` (crates/adtb/src/mvcc/txn.rs:138-144), are unranked; their order, state before commit log, is stated only in the `Transactions` and `Begun` doc comments (txn.rs:91-94, :813-814). `write::Database.vacuuming` (crates/adtb/src/write/mod.rs:624) is unranked and is held across `session.waits.started` (rank WAITS) in reindex.rs `try_hold` (about line 351), so a cycle through it is not caught.
+- Dropping a `Reader`, `Hold` or `Pinned` with no page latch held (mvcc.md §9) is unchecked: `Holding::drop` and `Pinning::drop` (txn.rs:854, :899) take the transactions' state lock, which is held while commit-log and history pages are written. Direction: assert `latched_here() == 0` in `Release::release` and the unpin path, as `refuse_named` does.
