@@ -6,8 +6,8 @@ use std::task::{Wake, Waker};
 use std::time::Duration;
 
 use crate::exec::{
-    Admission, Entry, Exceeded, Priority, Refusal, Refused, Resumable, Scheduler, Step, Stopped,
-    Task, Val,
+    self, Admission, Entry, Exceeded, Priority, Refusal, Refused, Resumable, Scheduler, Step,
+    Stopped, Task, Val,
 };
 use crate::mvcc::{Cause, Waits, Watch, Xid};
 use crate::runtime::{Instant, Io, Op, Runtime, ThreadId, Threads};
@@ -1078,7 +1078,7 @@ fn a_queued_commit_runs_while_every_write_waits<R: Holds>(rt: &R) {
         assert!(
             log.events()
                 .iter()
-                .any(|e| matches!(e, Event::Failed(m, write::Error::Serialization(_)) if *m == n)),
+                .any(|e| matches!(e, Event::Failed(m, write::Error::Exec(exec::Error::Serialization(_))) if *m == n)),
             "{n}: {:?}",
             log.events()
         );
@@ -1250,7 +1250,7 @@ fn a_rerun_keeps_the_statement_limit_of_its_first_run() {
         assert_eq!(
             Some(&Event::Failed(
                 "limited",
-                write::Error::StatementLimit(Exceeded::Time { after })
+                write::Error::from(exec::Error::StatementLimit(Exceeded::Time { after }))
             )),
             log.events().last()
         );
@@ -1277,6 +1277,7 @@ fn a_rerun_limits_only_the_statement_that_suspended() {
         let Err(Failed {
             item: 1,
             error: write::Error::Blocked { rerun, .. },
+            ..
         }) = items.run(&tx, INSERT_THEN_BUMP, bounds.clone())
         else {
             panic!("the second statement suspends")
@@ -1288,10 +1289,10 @@ fn a_rerun_limits_only_the_statement_that_suspended() {
             ..bounds
         };
         assert_eq!(
-            Err(Failed {
-                item: 1,
-                error: write::Error::StatementLimit(Exceeded::Time { after }),
-            }),
+            Err(Failed::new(
+                1,
+                exec::Error::StatementLimit(Exceeded::Time { after }).into()
+            )),
             items.run(&tx, INSERT_THEN_BUMP, rerun)
         );
         items.db.abort(tx).unwrap();
@@ -1490,7 +1491,7 @@ fn a_deadlock_fails_the_second_waiter<R: Holds>(rt: &R, suspend: bool, settle: D
         matches!(
             &ends[..],
             [
-                Event::Failed("second", write::Error::Serialization(f)),
+                Event::Failed("second", write::Error::Exec(exec::Error::Serialization(f))),
                 Event::Done("first"),
             ] if f.cause == Cause::Deadlock
         ),

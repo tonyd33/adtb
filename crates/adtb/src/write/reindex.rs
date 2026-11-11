@@ -19,6 +19,7 @@ use adtb_lang::types::RelId;
 
 use crate::btree::build::{BuildError, RunEntry, merge_runs, retire};
 use crate::btree::{self, BTree};
+use crate::exec;
 use crate::heap::Heap;
 use crate::key::{CtorId, Entry};
 use crate::mvcc::Xid;
@@ -421,7 +422,7 @@ impl<R: Runtime> Database<R> {
     /// Fail with `Cancelled` once [`Database::stop_rebuilds`] has run.
     pub(super) fn rebuild_stopped(&self) -> Result<(), Error> {
         if self.rebuilds_stopped.load(Ordering::Acquire) {
-            Err(Error::Cancelled)
+            Err(Error::Exec(exec::Error::Cancelled))
         } else {
             Ok(())
         }
@@ -488,7 +489,7 @@ impl<R: Runtime> Database<R> {
                 }
                 reclaimed &= pages.old.found && retire(&self.pager, &pages.old.pages).is_ok();
                 let cause = match e {
-                    Error::Cancelled => None,
+                    Error::Exec(exec::Error::Cancelled) => None,
                     e => Some(self.detail(self.fail(e).error())),
                 };
                 Err(Failure { cause, reclaimed })
@@ -647,7 +648,7 @@ impl<R: Runtime> Database<R> {
 impl From<BuildError> for Error {
     fn from(e: BuildError) -> Error {
         match e {
-            BuildError::Stopped => Error::Cancelled,
+            BuildError::Stopped => Error::Exec(exec::Error::Cancelled),
             BuildError::Page(e) => e.into(),
             BuildError::Duplicate(key) => Broken::DuplicateKey(key).into(),
         }

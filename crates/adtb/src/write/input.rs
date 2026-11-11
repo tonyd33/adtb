@@ -229,7 +229,9 @@ impl Local {
         }
         adtb_file::records_in(schema, format, found, row).map_err(|e| match e {
             adtb_file::Error::Unreadable { source, detail } => unreadable(source, detail),
-            adtb_file::Error::NotYet(what) => Error::Unsupported(what.to_string()),
+            adtb_file::Error::NotYet(what) => {
+                Error::Exec(crate::exec::Error::Unsupported(what.to_string()))
+            }
         })
     }
 }

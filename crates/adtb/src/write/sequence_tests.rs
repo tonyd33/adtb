@@ -103,7 +103,7 @@ impl Fixture {
 
 fn refused<T: Debug>(result: Result<T, Error>, detail: &str) {
     assert!(
-        matches!(&result, Err(Error::Unsupported(got)) if got == detail),
+        matches!(&result, Err(Error::Exec(crate::exec::Error::Unsupported(got))) if got == detail),
         "expected {detail:?}, got {result:?}"
     );
 }
@@ -223,11 +223,14 @@ fn damaged_counter_page_refuses_retries_without_advancing_cached_reservations() 
     for id in [0, 1] {
         for _ in 0..2 {
             let draw = f.seqs.draw(&f.pager, id, 100);
-            assert!(matches!(draw, Err(Error::Page(p)) if p == page), "{draw:?}");
+            assert!(
+                matches!(draw, Err(Error::Exec(crate::exec::Error::Page(p))) if p == page),
+                "{draw:?}"
+            );
             assert_eq!(before, f.seqs.counters);
             let advance = f.seqs.advance(&f.pager, id, 100);
             assert!(
-                matches!(advance, Err(Error::Page(p)) if p == page),
+                matches!(advance, Err(Error::Exec(crate::exec::Error::Page(p))) if p == page),
                 "{advance:?}"
             );
             assert_eq!(before, f.seqs.counters);

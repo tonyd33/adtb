@@ -3,6 +3,7 @@
 mod apply;
 mod broken;
 mod check;
+mod class;
 mod delta;
 mod eval;
 mod explain;
@@ -59,7 +60,7 @@ use crate::mvcc::{
 };
 use crate::plan::explain::Node;
 use crate::plan::{Catalog, HeapId, IndexId};
-use crate::runtime::{Instant, IoError, Runtime};
+use crate::runtime::{Instant, Runtime};
 #[cfg(any(test, feature = "testing"))]
 use crate::storage::Pid;
 use crate::storage::{MarkFailure, PageError, Pager, Position, Quarantine};
@@ -138,14 +139,6 @@ pub enum Rejection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Rejected(Rejection),
-    Fault(exec::Fault),
-    StatementLimit(exec::Exceeded),
-    Serialization(SerializationFailure),
-    Page(PageError),
-    /// An entry of the index with this owner names an unused slot of a page its heap holds.
-    OrphanEntry(u32),
-    /// The statement's spill file could not be made, written or read.
-    Spill(IoError),
     /// The call reads, or writes under, `objects`, which are quarantined, each with why its mark
     /// holds only in memory if it does. `by` states what made the call fail.
     Quarantined {
@@ -155,93 +148,58 @@ pub enum Error {
     /// The transactions layer refuses the call.
     Transactions(crate::mvcc::Error),
     Corrupt(Rot),
-    /// The statement needs a form the engine does not run yet.
-    Unsupported(String),
     /// The role the statement runs for lacks a privilege, as this text states.
     Denied(String),
     SequenceExhausted,
     Internal(Box<Broken>),
-    /// The executor breaks an invariant the checker guarantees.
-    Exec(Box<exec::Broken>),
+    Exec(exec::Error),
     /// The schema has a constraint without an index-bounded incremental check; each constraint
     /// refused, with why.
     Refused(Vec<(String, String)>),
     /// The files a path names differ from those an earlier scan of it in the transaction read.
     FileChanged(String),
-    Cancelled,
     /// The engine closed while the statement waited for a transaction.
     Closed,
-    DeadlineExceeded,
     /// A statement run with [`Bounds::suspend`] must wait for transaction `on` to end. A rerun
     /// of the statements passes `rerun` as [`Bounds::rerun`].
     Blocked {
         on: Xid,
         rerun: Rerun,
     },
-    /// A statement reached a host function, by its name, with no body bound.
-    MissingFunction(String),
-    /// A read of the past names a state the engine keeps no history of; `oldest` is the oldest
-    /// position a read may name.
-    HistoryUnavailable {
-        oldest: Position,
-    },
-    /// A read of the past names a state at schema version `version`, which defines what it reads
-    /// otherwise than the version it is typed at.
-    WrongVersion {
-        version: u64,
-    },
-}
-
-impl Error {
-    /// Returns whether the failure ends the transaction: the caller must abort it.
-    pub fn ends_transaction(&self) -> bool {
-        match self {
-            Error::Quarantined { by, .. } => by.ends_transaction(),
-            e => matches!(
-                e,
-                Error::Serialization(_)
-                    | Error::Page(_)
-                    | Error::Transactions(_)
-                    | Error::Corrupt(_)
-                    | Error::FileChanged(_)
-            ),
-        }
-    }
 }
 
 impl From<PageError> for Error {
     fn from(e: PageError) -> Error {
-        Error::Page(e)
+        Error::Exec(exec::Error::Page(e))
     }
 }
 
 impl From<crate::heap::OrphanEntry> for Error {
     fn from(e: crate::heap::OrphanEntry) -> Error {
-        Error::OrphanEntry(e.index)
+        Error::Exec(e.into())
     }
 }
 
 impl From<SerializationFailure> for Error {
     fn from(f: SerializationFailure) -> Error {
-        Error::Serialization(f)
+        Error::Exec(exec::Error::Serialization(f))
     }
 }
 
 impl From<crate::heap::Error> for Error {
     fn from(e: crate::heap::Error) -> Error {
         match e {
-            crate::heap::Error::Page(p) => Error::Page(p),
-            crate::heap::Error::Changed { current } => {
-                Error::Serialization(SerializationFailure::new(
-                    crate::mvcc::Cause::ConcurrentWrite,
-                    current
-                        .into_iter()
-                        .filter_map(|h| h.writers.deleter())
-                        .collect(),
-                ))
-            }
-            crate::heap::Error::TooLarge { len, limit } => Error::Unsupported(format!(
-                "a row version of {len} bytes, over the limit of {limit}"
+            crate::heap::Error::Page(p) => p.into(),
+            crate::heap::Error::Changed { current } => SerializationFailure::new(
+                crate::mvcc::Cause::ConcurrentWrite,
+                current
+                    .into_iter()
+                    .filter_map(|h| h.writers.deleter())
+                    .collect(),
+            )
+            .into(),
+            crate::heap::Error::TooLarge { len, limit } => Error::Exec(exec::Error::Unsupported(
+                format!("a row version of {len} bytes, over the limit of {limit}"),
             )),
             crate::heap::Error::NoDirectory => Broken::HeapNoDirectory.into(),
         }
@@ -257,16 +215,14 @@ impl From<crate::heap::Refused> for Error {
 impl From<vacuum::Error> for Error {
     fn from(e: vacuum::Error) -> Error {
         match e {
-            vacuum::Error::Page(p) | vacuum::Error::Heap(crate::heap::Error::Page(p)) => {
-                Error::Page(p)
-            }
+            vacuum::Error::Page(p) | vacuum::Error::Heap(crate::heap::Error::Page(p)) => p.into(),
             vacuum::Error::Index(i) => Error::from(i),
             vacuum::Error::Heap(e @ crate::heap::Error::Changed { .. }) => Error::from(e),
             vacuum::Error::Heap(crate::heap::Error::NoDirectory) => Broken::HeapNoDirectory.into(),
             vacuum::Error::Heap(crate::heap::Error::TooLarge { len, limit }) => {
                 Broken::VacuumTooLarge { len, limit }.into()
             }
-            vacuum::Error::Stopped => Error::Cancelled,
+            vacuum::Error::Stopped => Error::Exec(exec::Error::Cancelled),
         }
     }
 }
@@ -274,7 +230,7 @@ impl From<vacuum::Error> for Error {
 impl From<crate::btree::Error> for Error {
     fn from(e: crate::btree::Error) -> Error {
         match e {
-            crate::btree::Error::Page(p) => Error::Page(p),
+            crate::btree::Error::Page(p) => p.into(),
             other => Rot::Index(other).into(),
         }
     }
@@ -292,7 +248,7 @@ impl From<crate::catalog::Error> for Error {
         match e {
             C::Page(p)
             | C::Heap(crate::heap::Error::Page(p))
-            | C::Index(crate::btree::Error::Page(p)) => Error::Page(p),
+            | C::Index(crate::btree::Error::Page(p)) => p.into(),
             C::Index(e @ (crate::btree::Error::Malformed(_) | crate::btree::Error::Entry(_))) => {
                 Rot::Index(e).into()
             }
@@ -306,31 +262,7 @@ impl From<crate::catalog::Error> for Error {
 
 impl From<exec::Error> for Error {
     fn from(e: exec::Error) -> Error {
-        match e {
-            exec::Error::Fault(f) => Error::Fault(f),
-            exec::Error::StatementLimit(x) => Error::StatementLimit(x),
-            exec::Error::Serialization(f) => Error::Serialization(f),
-            exec::Error::Page(p) => Error::Page(p),
-            exec::Error::OrphanEntry(i) => Error::OrphanEntry(i),
-            exec::Error::Spill(io) => Error::Spill(io),
-            exec::Error::Corrupt(r) => Rot::Exec(r).into(),
-            exec::Error::Unsupported(u) => Error::Unsupported(u),
-            exec::Error::Rejected(detail) => Error::Rejected(Rejection::BadInput {
-                source: String::new(),
-                line: 0,
-                detail,
-            }),
-            exec::Error::NoCaller => Error::Unsupported("`caller` in a statement".into()),
-            exec::Error::Cancelled => Error::Cancelled,
-            exec::Error::DeadlineExceeded => Error::DeadlineExceeded,
-            exec::Error::MissingFunction(name) => Error::MissingFunction(name),
-            exec::Error::OtherVersion(name) => {
-                Error::Exec(Box::new(exec::Broken::OtherVersion(name)))
-            }
-            exec::Error::Internal(b) => Error::Exec(b),
-            exec::Error::HistoryUnavailable { oldest } => Error::HistoryUnavailable { oldest },
-            exec::Error::WrongVersion { version } => Error::WrongVersion { version },
-        }
+        Error::Exec(e)
     }
 }
 
@@ -371,6 +303,19 @@ pub struct Outcome {
 pub struct Failed {
     pub item: usize,
     pub error: Error,
+    ends: bool,
+}
+
+impl Failed {
+    fn new(item: usize, error: Error) -> Failed {
+        let ends = error.class().ends();
+        Failed { item, error, ends }
+    }
+
+    /// Returns whether the failure ends the transaction: the caller must abort it.
+    pub fn ends(&self) -> bool {
+        self.ends
+    }
 }
 
 /// What a deferrable read-only transaction waits for before it reads.
@@ -549,6 +494,16 @@ pub struct Bounds {
 pub struct Rerun {
     through: usize,
     since: Instant,
+}
+
+#[cfg(test)]
+impl Rerun {
+    pub(crate) fn at_start() -> Rerun {
+        Rerun {
+            through: 0,
+            since: Instant::from_nanos(0),
+        }
+    }
 }
 
 impl Rerun {
@@ -917,7 +872,7 @@ impl<R: Runtime> Database<R> {
     /// variable of `params` bound to its value. `clock` is the instant, in microseconds, every
     /// `generate clock` of the statement takes.
     ///
-    /// On an `Err` that [ends the transaction](Error::ends_transaction), abort `tx`. On any other
+    /// On an `Err` that [ends the transaction](Failed::ends), abort `tx`. On any other
     /// `Err` the statement has no effect and `tx` goes on.
     #[cfg(test)]
     pub fn statement(
@@ -946,7 +901,7 @@ impl<R: Runtime> Database<R> {
     /// the ones before it and bounded by `bounds`, as [`statement`](Database::statement) runs
     /// one, over `local`, what `tx` holds outside the file. Returns each one's outcome.
     ///
-    /// On an `Err` that [ends the transaction](Error::ends_transaction), abort `tx`. On any other
+    /// On an `Err` that [ends the transaction](Failed::ends), abort `tx`. On any other
     /// `Err` none of the items has an effect on the file or on the temp relations of `local`, and
     /// `tx` goes on. Every file an item read stays pinned in `local` either way.
     pub fn statements(
@@ -989,8 +944,7 @@ impl<R: Runtime> Database<R> {
         bounds: Bounds,
         between: &mut Between<'_>,
     ) -> Result<Vec<Outcome>, Failed> {
-        self.admit(&text)
-            .map_err(|error| Failed { item: 0, error })?;
+        self.admit(&text).map_err(|error| Failed::new(0, error))?;
         let mut ran = Vec::with_capacity(text.items.len());
         let mut out = Vec::with_capacity(text.items.len());
         let before = local.clone();
@@ -1007,9 +961,7 @@ impl<R: Runtime> Database<R> {
             });
             if let Err(error) = done {
                 local.restore_temps(before);
-                self.take_back(tx, &ran, error.ends_transaction())
-                    .map_err(|error| Failed { item, error })?;
-                return Err(Failed { item, error });
+                return Err(self.taken_back(tx, &ran, Failed::new(item, error)));
             }
         }
         for o in &out {
@@ -1039,8 +991,7 @@ impl<R: Runtime> Database<R> {
         local: &mut Local,
         bounds: Bounds,
     ) -> Result<Vec<Outcome>, Failed> {
-        self.admit(&text)
-            .map_err(|error| Failed { item: 0, error })?;
+        self.admit(&text).map_err(|error| Failed::new(0, error))?;
         let before = local.clone();
         let mut ran = Vec::with_capacity(text.items.len());
         let mut out = Vec::with_capacity(text.items.len());
@@ -1053,16 +1004,14 @@ impl<R: Runtime> Database<R> {
                 Ok(o) => out.push(o),
                 Err(error) => {
                     local.restore_temps(before);
-                    self.take_back(tx, &ran, error.ends_transaction())
-                        .map_err(|error| Failed { item, error })?;
-                    return Err(Failed { item, error });
+                    return Err(self.taken_back(tx, &ran, Failed::new(item, error)));
                 }
             }
         }
         local.restore_temps(before);
         let item = text.items.len();
         self.take_back(tx, &ran, false)
-            .map_err(|error| Failed { item, error })?;
+            .map_err(|error| Failed::new(item, error))?;
         Ok(out)
     }
 
@@ -1130,7 +1079,7 @@ impl<R: Runtime> Database<R> {
         });
         self.pacer.charge(&self.rt, began);
         let (report, kept) = ran.map_err(|e| match e {
-            vacuum::Error::Stopped => halted.take().unwrap_or(Error::Cancelled),
+            vacuum::Error::Stopped => halted.take().unwrap_or(Error::Exec(exec::Error::Cancelled)),
             e => e.into(),
         })?;
         let freed: BTreeMap<HeapId, u64> = (r.ctors.iter())
@@ -1187,6 +1136,15 @@ impl<R: Runtime> Database<R> {
             (bounds.suspend && bounds.polls_from.is_none_or(|from| item < from)).then_some(rerun),
         );
         eval::Stmt::new(self, tx, text, t, options, stop)
+    }
+
+    /// Take back the statements of `ran` unless `failed` ends the transaction. Returns `failed`,
+    /// or the failure of taking them back.
+    fn taken_back(&self, tx: &Txn, ran: &[eval::Stmt<'_, R>], failed: Failed) -> Failed {
+        match self.take_back(tx, ran, failed.ends) {
+            Ok(()) => failed,
+            Err(error) => Failed::new(failed.item, error),
+        }
     }
 
     /// Count each version `ran` inserted as dead in `tx`, and undo the effects of `ran` on the
@@ -1271,7 +1229,7 @@ impl<R: Runtime> Database<R> {
             let mut ser = self.session.ser.lock(&self.rt);
             self.map_committing(ser.ordered());
             let admitted = self.admit_commit(std::mem::take(&mut tx.written));
-            match admitted.and_then(|()| ser.precommit(tx.sid).map_err(Error::Serialization)) {
+            match admitted.and_then(|()| ser.precommit(tx.sid).map_err(Error::from)) {
                 Err(e) => Err(e),
                 Ok(()) => match tx
                     .begun
@@ -1407,9 +1365,11 @@ impl<R: Runtime> Database<R> {
     pub fn admit_grant(&self) -> Result<Arc<exec::Grant>, Error> {
         self.budget
             .admit(self.grant)
-            .ok_or(Error::StatementLimit(exec::Exceeded::Memory {
-                limit: self.budget.limit(),
-            }))
+            .ok_or(Error::Exec(exec::Error::StatementLimit(
+                exec::Exceeded::Memory {
+                    limit: self.budget.limit(),
+                },
+            )))
     }
 
     /// Returns the page of the database's generated counters, for [`Setup::sequences`] when

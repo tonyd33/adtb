@@ -6,7 +6,7 @@ use adtb_lang::textual::print;
 use adtb_lang::types::{Base, Ty};
 
 use crate::catalog::{self, Dormant};
-use crate::exec::Val;
+use crate::exec::{self, Val};
 use crate::runtime::Runtime;
 use crate::storage::{self, BackupError, BackupRun, Envelope, Manifest, Passphrase, Proved};
 use crate::write::{self, Bounds, Local, Stop, Txn};
@@ -530,7 +530,7 @@ impl<R: Runtime> Engine<R> {
         match self.pager.backup(&mut run) {
             Ok(manifest) => Ok(manifest_row(p.schema(), &manifest.text())),
             Err(BackupError::Stopped) => {
-                let e = stopped.map_or(write::Error::Cancelled, write::Error::from);
+                let e = write::Error::from(stopped.unwrap_or(exec::Error::Cancelled));
                 Err(self.write_error(TxnId(0), e))
             }
             Err(BackupError::Quarantined) => Err(self

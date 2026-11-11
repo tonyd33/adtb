@@ -675,9 +675,8 @@ impl<R: Runtime> Engine<R> {
             return None;
         }
         match e {
-            write::Error::Page(p) if *p == damage => Some(damage),
             write::Error::Transactions(_) => Some(damage),
-            _ => None,
+            e => (e.page() == Some(damage)).then_some(damage),
         }
     }
 

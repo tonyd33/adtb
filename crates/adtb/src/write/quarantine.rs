@@ -9,6 +9,7 @@ use adtb_lang::schema::OnDelete;
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
 use crate::catalog::index_holder;
+use crate::exec::Class;
 use crate::plan::{Catalog, IndexId};
 use crate::runtime::Runtime;
 use crate::storage::policy::{Fault, Holder, Phase};
@@ -29,16 +30,6 @@ pub enum By {
     Admitted,
     /// The transactions layer failed once the database was marked.
     Transactions,
-}
-
-impl By {
-    /// Returns whether the failure ends the transaction.
-    pub fn ends_transaction(self) -> bool {
-        match self {
-            By::Met | By::Transactions => true,
-            By::Found | By::Admitted => false,
-        }
-    }
 }
 
 /// A failure of the write path that [`Database::fail`] has mapped.
@@ -215,7 +206,8 @@ impl<R: Runtime> Database<R> {
 
     /// Returns `e` once the damage recorded is mapped, a failure on a damaged page turned into
     /// the failure naming what its damage quarantines, and a failure of the transactions layer
-    /// into the failure naming the database once the database is marked. An orphan entry marks
+    /// other than a closed pager into the failure naming the database once the database is
+    /// marked. An orphan entry marks
     /// its index. An I/O failure stays as it is. A `Blocked` maps nothing.
     ///
     /// Precondition: the calling thread holds no page latch and not the serialization lock.
@@ -231,30 +223,48 @@ impl<R: Runtime> Database<R> {
                 by,
             }
         };
-        Mapped(match e {
-            Error::Page(p) if p.damage != Damage::Unreadable => match self.pager.marked_to(p.pid) {
-                Some(objects) if !objects.is_empty() => quarantined_as(&objects, &failed, By::Met),
-                _ => Error::Page(p),
+        Mapped(match e.class() {
+            Class::Damage => match e.page() {
+                Some(p) if p.damage != Damage::Unreadable => match self.pager.marked_to(p.pid) {
+                    Some(objects) if !objects.is_empty() => {
+                        quarantined_as(&objects, &failed, By::Met)
+                    }
+                    _ => e,
+                },
+                _ => e,
             },
-            Error::OrphanEntry(index) => {
-                let id =
-                    (self.bindings.indexes().iter()).find(|(_, i)| i.index.tree().owner() == index);
-                match id.and_then(|(id, _)| self.index_holder(*id)) {
+            Class::Found => {
+                let holder = e.orphan().and_then(|index| {
+                    let indexes = self.bindings.indexes();
+                    let (id, _) = indexes
+                        .iter()
+                        .find(|(_, i)| i.index.tree().owner() == index)?;
+                    self.index_holder(*id)
+                });
+                match holder {
                     Some(holder) => {
                         let objects = self.mark_finding(holder, &mut failed);
                         quarantined_as(&objects, &failed, By::Found)
                     }
-                    None => Error::OrphanEntry(index),
+                    None => e,
                 }
             }
-            Error::Transactions(_) if self.pager.is_quarantined(Quarantine::Database) => {
+            Class::Transactions
+                if matches!(e, Error::Transactions(t) if t != crate::mvcc::Error::Closed)
+                    && self.pager.is_quarantined(Quarantine::Database) =>
+            {
                 quarantined_as(
                     &BTreeSet::from([Quarantine::Database]),
                     &failed,
                     By::Transactions,
                 )
             }
-            e => e,
+            Class::Retry
+            | Class::Reject
+            | Class::Transactions
+            | Class::Refused
+            | Class::Checker
+            | Class::Engine => e,
         })
     }
 

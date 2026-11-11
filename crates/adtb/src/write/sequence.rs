@@ -173,9 +173,9 @@ impl Sequences {
     fn persist<R: Runtime>(&self, pager: &Pager<R>) -> Result<(), Error> {
         let room = (pager.page_size() - HEADER_LEN - 4) / 12;
         if self.counters.len() > room {
-            return Err(Error::Unsupported(format!(
+            return Err(Error::Exec(crate::exec::Error::Unsupported(format!(
                 "more than {room} generated counters"
-            )));
+            ))));
         }
         let mut body = Vec::with_capacity(4 + 12 * self.counters.len());
         body.extend_from_slice(&(self.counters.len() as u32).to_le_bytes());

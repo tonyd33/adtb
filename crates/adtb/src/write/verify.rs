@@ -408,7 +408,7 @@ impl<R: Runtime> Database<R> {
                     ctor: self.ctor_id(r, c),
                     at: format!("{at}: holds no version of the entry's key"),
                 }),
-                Err(Error::Page(e)) => out.push(Found::of_page(e)),
+                Err(Error::Exec(crate::exec::Error::Page(e))) => out.push(Found::of_page(e)),
                 Err(e) => return Err(e),
             }
             held.insert((encoded, e.ctor, e.tid));

@@ -7,11 +7,12 @@ use adtb_harness::process::run;
 use adtb_sim::{Config, Sim};
 
 use crate::runtime::Runtime as _;
-use crate::storage::{Damage, PageError};
+use crate::storage::{Damage, PageError, Quarantine};
 use crate::test_world as harness;
 use crate::test_world::load::{self as open, options};
 use crate::testing::Plant;
 use crate::{CallOptions, Error, FatalReason, Log, RejectReason, TxnCallOptions, TxnOptions};
+use crate::{mvcc, write};
 
 const APP: &str = r"module app
 add module app
@@ -73,7 +74,7 @@ fn a_failing_write_whose_abort_record_fails_returns_the_records_failure_and_coun
     };
     let failed = Error::Fatal {
         reason: FatalReason::Storage {
-            detail: format!("{:?}", crate::mvcc::Error::Corrupt(unreadable)),
+            detail: format!("{:?}", mvcc::Error::Corrupt(unreadable)),
         },
     };
     assert_eq!((Err(failed), 1), got);
@@ -106,7 +107,7 @@ fn a_transaction_ended_by_a_failure_its_abort_cannot_record_answers_later_calls_
         let storage = |detail| Error::Fatal {
             reason: FatalReason::Storage { detail },
         };
-        let record = storage(format!("{:?}", crate::mvcc::Error::Corrupt(unreadable)));
+        let record = storage(format!("{:?}", mvcc::Error::Corrupt(unreadable)));
         let cause = storage(format!("{unreadable:?}"));
         let unrecorded = db.engine.db.txns().unrecorded_aborts();
         let failing = txn.query_text(RENAME, &[], &opts).map(drop);
@@ -215,6 +216,60 @@ fn a_deployment_row_that_does_not_decode_fails_a_dump_as_storage() {
         };
         assert_eq!(Err(storage), got);
         assert_eq!(BTreeSet::new(), db.testing().probe().marks());
+        db.close().expect("the database closes");
+    });
+}
+
+#[test]
+fn a_call_meeting_a_closed_pager_is_rejected_as_closed() {
+    let mut sim = Sim::new(19, Config::default());
+    run(&mut sim, |rt| {
+        let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &options(2));
+        db.engine.pager.close();
+        let got = db
+            .query_text(
+                r#"insert users { name: "a" }"#,
+                &[],
+                &CallOptions::default(),
+            )
+            .map(drop);
+        assert_eq!(
+            Err(Error::Rejected {
+                reason: RejectReason::Closed
+            }),
+            got
+        );
+        *db.engine.open.write(&rt) = false;
+    });
+}
+
+#[test]
+fn a_closed_pager_is_rejected_as_closed_once_the_database_is_marked() {
+    let mut sim = Sim::new(20, Config::default());
+    run(&mut sim, |rt| {
+        let db = open::opened(&rt, harness::NAME, &Log::new([APP]), &options(2));
+        db.testing()
+            .plant(Plant::Mark(Quarantine::Database))
+            .expect("the database is marked");
+        let schema = crate::catalog::engine_schema();
+        let reply = |e| {
+            let mapped = db.engine.db.fail(write::Error::Transactions(e));
+            Error::of_write(&db.engine.db, &schema, super::TxnId(7), mapped)
+        };
+        assert_eq!(
+            Error::Rejected {
+                reason: RejectReason::Closed
+            },
+            reply(mvcc::Error::Closed)
+        );
+        assert_eq!(
+            Error::Fatal {
+                reason: FatalReason::Quarantined {
+                    what: "the database".into()
+                }
+            },
+            reply(mvcc::Error::Exhausted)
+        );
         db.close().expect("the database closes");
     });
 }

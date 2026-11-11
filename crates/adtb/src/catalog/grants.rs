@@ -154,7 +154,7 @@ fn log_grant_row<'a>(g: &'a LogGrant, target: &'a str) -> GrantRow<'a> {
 /// Returns the catalog error of a failed draw from the page of id counters.
 fn drawn(e: write::Error) -> Error {
     match e {
-        write::Error::Page(e) => Error::Page(e),
+        write::Error::Exec(crate::exec::Error::Page(e)) => Error::Page(e),
         write::Error::SequenceExhausted => {
             Error::Refused(vec!["the ids of catalog::grants are spent".to_owned()])
         }

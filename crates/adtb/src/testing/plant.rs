@@ -150,7 +150,9 @@ impl<R: Runtime> Testing<'_, R> {
             Plant::LoadMarks(page) => pager.load_marks(page)?,
             Plant::FailOn(e) => {
                 let w = self.db.tested_db();
-                return Ok(Planted::Refused(w.fail(write::Error::Page(e))));
+                return Ok(Planted::Refused(
+                    w.fail(write::Error::Exec(crate::exec::Error::Page(e))),
+                ));
             }
         }
         Ok(Planted::Done)

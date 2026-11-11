@@ -123,6 +123,7 @@ pub fn detail(e: &Error) -> String {
         }
         Error::Internal(b) => format!("Internal({:?})", b.to_string()),
         Error::Corrupt(r) => format!("Corrupt({:?})", r.to_string()),
+        Error::Exec(e) => crate::exec::detail(e),
         e => format!("{e:?}"),
     }
 }

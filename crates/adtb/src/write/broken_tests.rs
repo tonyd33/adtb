@@ -103,7 +103,10 @@ fn detail_reads_an_internal_cause_as_the_debug_of_its_text() {
     let internal = Error::from(Broken::ReadOnly);
     let text = "Internal(\"a read-only transaction runs no write\")";
     assert_eq!(text, detail(&internal));
-    assert_eq!("Cancelled", detail(&Error::Cancelled));
+    assert_eq!(
+        "Cancelled",
+        detail(&Error::Exec(crate::exec::Error::Cancelled))
+    );
 }
 
 #[test]

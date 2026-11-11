@@ -315,9 +315,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 }
                 Input::File { format, path, row } => {
                     if !facts.free(&self.terms, *path).is_subset(&bound) {
-                        return Err(Error::Unsupported(
+                        return Err(Error::Exec(exec::Error::Unsupported(
                             "a file scan whose path depends on a row".into(),
-                        ));
+                        )));
                     }
                     let Val::Text(at) = self.eval(Arena::Statement, *path, env)? else {
                         return Err(Broken::ScanPathNotText.into());
@@ -621,7 +621,10 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             return self.set(rows, env);
         };
         match self.set(rows, env) {
-            Err(Error::Rejected(Rejection::BadInput { .. }) | Error::Fault(_)) => {}
+            Err(
+                Error::Rejected(Rejection::BadInput { .. })
+                | Error::Exec(exec::Error::Rejected(_) | exec::Error::Fault(_)),
+            ) => {}
             other => return other,
         }
         let mut keyed = Vec::new();
@@ -636,7 +639,10 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             let line = i as i64 + 1;
             match self.set(body, &bind(env, x, p.clone())) {
                 Ok(vs) => out.extend(vs),
-                Err(Error::Rejected(Rejection::BadInput { detail, .. })) => match &mut rejected {
+                Err(
+                    Error::Rejected(Rejection::BadInput { detail, .. })
+                    | Error::Exec(exec::Error::Rejected(detail)),
+                ) => match &mut rejected {
                     Some(js) => {
                         let ty = self.terms.var_info(x).ty.clone();
                         js.push(Rejected {
@@ -684,7 +690,10 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                         out.extend(vs);
                         continue;
                     }
-                    Err(Error::Rejected(Rejection::BadInput { detail, .. })) => detail,
+                    Err(
+                        Error::Rejected(Rejection::BadInput { detail, .. })
+                        | Error::Exec(exec::Error::Rejected(detail)),
+                    ) => detail,
                     Err(e) => return Err(e),
                 },
                 Err(reason) => reason,
@@ -1433,7 +1442,7 @@ impl<R: Runtime> Database<R> {
         )
         .map_err(|e| match e {
             e @ crate::plan::Error::Internal(_) => Broken::StatementPlan(e).into(),
-            e => Error::Unsupported(e.to_string()),
+            e => Error::Exec(exec::Error::Unsupported(e.to_string())),
         })
     }
 

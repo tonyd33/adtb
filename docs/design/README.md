@@ -132,6 +132,25 @@ breaks the counterpart's stated invariants: such a state crashes the
 process, or for a checker guarantee fails the statement, before it is
 returned.
 
+Every failure the write path returns has one class, decided by what
+failed. The class decides whether the failure ends the transaction;
+the reply a client receives follows from the failure and agrees with
+the class as below.
+
+| Class | Failures | Ends the transaction | Reply |
+| --- | --- | --- | --- |
+| Retry | a serialization failure; a file read twice in the transaction changed | yes | `Retry` with `Serialization` or `FileChanged` |
+| Reject | a rejection of the statement (a violation, a fault, a user `fail`, a statement limit, a cancel or deadline, a denied privilege, a form the engine does not run, a refused constraint, a read of the past outside history or at another version, a closed engine); a missing host function; a spill file that fails | no | `Rejected` with its reason; `Fatal` `MissingFunction` for a missing host function, `Fatal` `Storage` for a spill file |
+| Damage | a page that fails verification, a stored structure that does not decode, and the quarantine a page's damage sets | yes | `Fatal` `Storage`, or `Fatal` `Quarantined` once mapped to a mark |
+| Transactions | a failure of the transactions layer: a damaged commit log or retention record, spent transaction ids, a closed pager | yes | `Rejected` `Closed` for a closed pager; else `Fatal` `Storage`, or `Fatal` `Quarantined` once the database is marked |
+| Found | an index entry naming an unused slot, and the mark it sets on its index | no | `Fatal` `Quarantined` once its index is marked, else `Fatal` `Storage` |
+| Refused | a quarantine mark refused the call | no | `Fatal` `Quarantined` |
+| Checker | a broken checker guarantee | no | `Rejected` `Internal` |
+| Engine | a broken invariant over engine state returned as an error | no | `Rejected` `Internal` |
+
+Mapping a failure to the marks its damage sets keeps its class's
+answer to whether it ends the transaction.
+
 Rulings: project/arch/errors/fatal-split,
 project/arch/errors/checker-guarantee/fail-statement,
 buffer/fsync-fail/panic-replay

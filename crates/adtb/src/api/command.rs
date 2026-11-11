@@ -167,7 +167,9 @@ fn export_csv<'v>(
     sums_text: bool,
 ) -> Result<Vec<u8>, write::Error> {
     let columns = columns(schema, elem).ok_or_else(|| {
-        write::Error::Unsupported("`export` of rows that are not flat records".into())
+        write::Error::Exec(crate::exec::Error::Unsupported(
+            "`export` of rows that are not flat records".into(),
+        ))
     })?;
     for (name, ty) in &columns {
         let plain = match ty {
@@ -176,8 +178,8 @@ fn export_csv<'v>(
             _ => false,
         };
         if !plain {
-            return Err(write::Error::Unsupported(format!(
-                "`export` of column `{name}` to CSV"
+            return Err(write::Error::Exec(crate::exec::Error::Unsupported(
+                format!("`export` of column `{name}` to CSV"),
             )));
         }
     }
@@ -442,7 +444,9 @@ impl<R: Runtime> Engine<R> {
                 path,
                 sums_text,
             } => self.export(tx, p, (*source, path, *sums_text), local, bounds),
-            other => Err(write::Error::Unsupported(format!("`{}`", word(other)))),
+            other => Err(write::Error::Exec(crate::exec::Error::Unsupported(
+                format!("`{}`", word(other)),
+            ))),
         }
     }
 
@@ -545,8 +549,8 @@ impl<R: Runtime> Engine<R> {
         let schema = p.schema();
         let confined = bounds.confined;
         if !path.ends_with(".csv") {
-            return Err(write::Error::Unsupported(format!(
-                "`export` to `{path}`; only CSV is written"
+            return Err(write::Error::Exec(crate::exec::Error::Unsupported(
+                format!("`export` to `{path}`; only CSV is written"),
             )));
         }
         let Ty::Set(elem) = p.terms().ty(source) else {

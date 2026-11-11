@@ -224,7 +224,9 @@ impl<R: Runtime> Background<R> {
                         last = Some(rel);
                         continue;
                     }
-                    Ok(None) | Err(write::Error::Cancelled) => self.rt.now() + VACUUM_YIELD,
+                    Ok(None) | Err(write::Error::Exec(exec::Error::Cancelled)) => {
+                        self.rt.now() + VACUUM_YIELD
+                    }
                     Err(_) => {
                         skipped.insert(rel);
                         continue;

@@ -143,8 +143,11 @@ fn reference_error(a: &Abort) -> Failed {
 
 fn engine_error(schema: &Schema, e: &write::Error) -> Failed {
     match e {
-        write::Error::Fault(f) => plain(format!("Fault {}", f.name())),
-        write::Error::StatementLimit(_) => plain("Limit".into()),
+        write::Error::Exec(exec::Error::Fault(f)) => plain(format!("Fault {}", f.name())),
+        write::Error::Exec(exec::Error::StatementLimit(_)) => plain("Limit".into()),
+        write::Error::Exec(exec::Error::Rejected(detail)) => plain(format!(
+            "BadInput {{ source: \"\", line: 0, detail: {detail:?} }}"
+        )),
         write::Error::Rejected(r) => match r {
             WRejection::KeyViolation { relation, key } => {
                 let ty = Ty::Key {
@@ -309,7 +312,7 @@ fn run_engine(
             Err(e) => Err(engine_error(schema, e)),
         });
         match got {
-            Err(e) if e.ends_transaction() => db.abort(tx).expect("an abort"),
+            Err(e) if e.class().ends() => db.abort(tx).expect("an abort"),
             _ if mode.one => open = Some(tx),
             Ok(_) => {
                 db.commit(tx).expect("a commit");
@@ -899,7 +902,7 @@ fn run_txn_with(
     if let Some(f) = failing {
         match db.statement(&tx, &f.p.terms, f.p.item, &[], 0) {
             Ok(_) => panic!("a failing statement succeeded"),
-            Err(e) if e.ends_transaction() => return fail(tx, &e),
+            Err(e) if e.class().ends() => return fail(tx, &e),
             Err(e) => {
                 let e = engine_error(schema, &e);
                 assert_eq!(
@@ -1178,7 +1181,7 @@ fn behind_a_damaged_commit_log(
     seed: u64,
     text: &str,
     over_t: bool,
-) -> (crate::storage::Pid, Result<(), String>) {
+) -> (crate::storage::Pid, Result<(), write::Error>) {
     use crate::runtime::Runtime;
     use crate::storage::Pid;
     let f = shop();
@@ -1213,7 +1216,7 @@ fn behind_a_damaged_commit_log(
             db.take_ends_by_drop(),
             "a transaction dropped after its statement failed counts no end by drop"
         );
-        out = Some((status, ended.map(|_| ()).map_err(|e| format!("{e:?}"))));
+        out = Some((status, ended.map(|_| ())));
     });
     assert_eq!(Outcome::Finished, result, "seed {seed}");
     out.expect("the run finished")
@@ -1224,10 +1227,10 @@ fn a_write_meeting_a_damaged_commit_log_fails_the_statement() {
     for seed in 0..2 {
         let (status, ended) = behind_a_damaged_commit_log(seed, INC, false);
         let e = ended.expect_err("the status does not read");
-        let want = format!("Page(PageError {{ pid: {status:?}");
-        assert!(
-            e.starts_with(&want),
-            "seed {seed}: the update failed by {e}"
+        assert_eq!(
+            Some(status),
+            e.page().map(|p| p.pid),
+            "seed {seed}: the update failed by {e:?}"
         );
     }
 }
@@ -1237,10 +1240,10 @@ fn a_unique_probe_meeting_a_damaged_commit_log_fails_the_statement() {
     for seed in 0..2 {
         let (status, ended) = behind_a_damaged_commit_log(seed, "insert tags { name: t }", true);
         let e = ended.expect_err("the status does not read");
-        let want = format!("Page(PageError {{ pid: {status:?}");
-        assert!(
-            e.starts_with(&want),
-            "seed {seed}: the insert failed by {e}"
+        assert_eq!(
+            Some(status),
+            e.page().map(|p| p.pid),
+            "seed {seed}: the insert failed by {e:?}"
         );
     }
 }

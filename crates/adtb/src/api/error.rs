@@ -7,7 +7,7 @@ use adtb_lang::span::{Diag, DiagKind};
 use adtb_lang::textual::{Form, PrintError, print};
 use adtb_lang::types::{Base, RelId, Ty};
 
-use crate::exec::{Exceeded, Val};
+use crate::exec::{self, Exceeded, Val};
 use crate::runtime::Runtime;
 use crate::storage::{MarkFailure, Quarantine};
 use crate::write::{self, Rejection};
@@ -357,62 +357,23 @@ impl Error {
     ) -> Error {
         match e.into_error() {
             write::Error::Rejected(r) => Error::rejected(rejection(schema, r)),
-            write::Error::Fault(fault) => Error::rejected(RejectReason::Faulted { fault }),
-            write::Error::StatementLimit(x) => Error::rejected(RejectReason::StatementLimit {
-                limit: match x {
-                    Exceeded::Memory { limit } | Exceeded::Spill { grant: limit, .. } => {
-                        Limit::Memory {
-                            bytes: i64::try_from(limit).unwrap_or(i64::MAX),
-                        }
-                    }
-                    Exceeded::Rounds { limit } => Limit::Rounds {
-                        rounds: i64::try_from(limit).unwrap_or(i64::MAX),
-                    },
-                    Exceeded::Time { after } => Limit::Time { after },
-                },
-            }),
             write::Error::Denied(detail) => Error::rejected(RejectReason::Denied { detail }),
-            write::Error::Cancelled => Error::rejected(RejectReason::Cancelled),
-            write::Error::Closed => Error::closed(),
-            write::Error::DeadlineExceeded => Error::rejected(RejectReason::DeadlineExceeded),
-            write::Error::MissingFunction(function) => Error::Fatal {
-                reason: FatalReason::MissingFunction { function },
-            },
-            write::Error::Serialization(_) => Error::Retry {
-                reason: RetryReason::Serialization {
-                    txn,
-                    on: String::new(),
-                },
-            },
             write::Error::Quarantined { objects, .. } => Error::Fatal {
                 reason: FatalReason::Quarantined {
                     what: names(&objects),
                 },
             },
-            write::Error::Page(p) => Error::storage(format!("{p:?}")),
-            write::Error::OrphanEntry(index) => {
-                Error::storage(format!("an entry of index {index} names no version"))
+            write::Error::Closed | write::Error::Transactions(crate::mvcc::Error::Closed) => {
+                Error::closed()
             }
-            write::Error::Spill(io) => Error::storage(format!("the spill file failed: {io:?}")),
             write::Error::Transactions(e) => Error::storage(format!("{e:?}")),
             write::Error::Corrupt(r) => Error::storage(r.to_string()),
-            write::Error::Unsupported(what) => {
-                Error::invalid(format!("{what} does not run in this engine yet"))
-            }
             write::Error::SequenceExhausted => {
                 Error::invalid("the generated counter exhausted its integer range")
             }
             write::Error::Internal(b) => Error::internal(Broken::Write(*b)),
-            write::Error::Exec(b) => Error::internal(Broken::Exec(*b)),
+            write::Error::Exec(e) => Error::of_exec(txn, e),
             write::Error::Blocked { on, .. } => Error::internal(Broken::Suspended(on)),
-            write::Error::HistoryUnavailable { oldest } => {
-                Error::rejected(RejectReason::HistoryUnavailable {
-                    oldest: oldest.into(),
-                })
-            }
-            write::Error::WrongVersion { version } => Error::rejected(RejectReason::WrongVersion {
-                version: i64::try_from(version).unwrap_or(i64::MAX),
-            }),
             write::Error::FileChanged(path) => Error::Retry {
                 reason: RetryReason::FileChanged { path },
             },
@@ -425,6 +386,66 @@ impl Error {
                     .join("\n"),
             }),
         }
+    }
+
+    /// Returns the client error of executor failure `e`, met by transaction `txn`.
+    fn of_exec(txn: TxnId, e: exec::Error) -> Error {
+        match e {
+            exec::Error::Fault(fault) => Error::rejected(RejectReason::Faulted { fault }),
+            exec::Error::StatementLimit(x) => Error::rejected(RejectReason::StatementLimit {
+                limit: match x {
+                    Exceeded::Memory { limit } | Exceeded::Spill { grant: limit, .. } => {
+                        Limit::Memory {
+                            bytes: i64::try_from(limit).unwrap_or(i64::MAX),
+                        }
+                    }
+                    Exceeded::Rounds { limit } => Limit::Rounds {
+                        rounds: i64::try_from(limit).unwrap_or(i64::MAX),
+                    },
+                    Exceeded::Time { after } => Limit::Time { after },
+                },
+            }),
+            exec::Error::Serialization(_) => Error::Retry {
+                reason: RetryReason::Serialization {
+                    txn,
+                    on: String::new(),
+                },
+            },
+            exec::Error::Page(p) => Error::storage(format!("{p:?}")),
+            exec::Error::OrphanEntry(index) => {
+                Error::storage(format!("an entry of index {index} names no version"))
+            }
+            exec::Error::Spill(io) => Error::storage(format!("the spill file failed: {io:?}")),
+            exec::Error::Corrupt(r) => Error::storage(r.to_string()),
+            exec::Error::Unsupported(what) => Error::unsupported(&what),
+            exec::Error::NoCaller => Error::unsupported("`caller` in a statement"),
+            exec::Error::Rejected(detail) => Error::rejected(RejectReason::BadInput {
+                source: String::new(),
+                line: 0,
+                detail,
+            }),
+            exec::Error::Cancelled => Error::rejected(RejectReason::Cancelled),
+            exec::Error::DeadlineExceeded => Error::rejected(RejectReason::DeadlineExceeded),
+            exec::Error::MissingFunction(function) => Error::Fatal {
+                reason: FatalReason::MissingFunction { function },
+            },
+            exec::Error::OtherVersion(name) => {
+                Error::internal(Broken::Exec(exec::Broken::OtherVersion(name)))
+            }
+            exec::Error::Internal(b) => Error::internal(Broken::Exec(*b)),
+            exec::Error::HistoryUnavailable { oldest } => {
+                Error::rejected(RejectReason::HistoryUnavailable {
+                    oldest: oldest.into(),
+                })
+            }
+            exec::Error::WrongVersion { version } => Error::rejected(RejectReason::WrongVersion {
+                version: i64::try_from(version).unwrap_or(i64::MAX),
+            }),
+        }
+    }
+
+    fn unsupported(what: &str) -> Error {
+        Error::invalid(format!("{what} does not run in this engine yet"))
     }
 }
 
@@ -993,6 +1014,10 @@ fn print_key(schema: &Schema, rel: RelId, key: &Val) -> Result<String, PrintErro
 }
 
 #[cfg(test)]
+#[path = "error_class_tests.rs"]
+mod class_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{catalog, heap};
@@ -1089,7 +1114,7 @@ mod tests {
         let got = Error::of_mapped(
             &schema,
             TxnId(7),
-            write::Mapped::unmapped_for_test(write::Error::Serialization(f)),
+            write::Mapped::unmapped_for_test(f.into()),
             |_| String::new(),
         );
         assert!(

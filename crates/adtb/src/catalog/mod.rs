@@ -1046,7 +1046,7 @@ impl Catalog {
             keys.get(&r).map(|k| &self.indexes[k].1)
         })
         .map_err(|e| match e {
-            crate::write::Error::Page(e) => Error::Page(e),
+            crate::write::Error::Exec(exec::Error::Page(e)) => Error::Page(e),
             other => Error::from(Broken::KeyCounter(other)),
         })?;
         Catalog::name_sequences(pager, self.root, pid)?;

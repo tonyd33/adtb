@@ -630,13 +630,6 @@ fn an_ordered_result_prints_its_elements_in_its_order() {
     );
 }
 
-#[test]
-fn an_internal_error_fails_the_statement_and_keeps_the_transaction() {
-    let e = crate::write::Error::from(Error::from(Broken::Unreachable));
-    assert_eq!(crate::write::Error::Exec(Box::new(Broken::Unreachable)), e);
-    assert!(!e.ends_transaction());
-}
-
 fn empty_schema() -> Schema {
     let file = parse_schema("module app\n", Options::default())
         .ok()

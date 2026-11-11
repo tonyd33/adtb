@@ -1,6 +1,7 @@
 //! Compile physical plans and run them on morsels of batches.
 
 mod broken;
+mod class;
 mod code;
 mod frame;
 mod host;
@@ -29,6 +30,7 @@ mod tests;
 mod textual_tests;
 
 pub use broken::Broken;
+pub use class::Class;
 pub(crate) use host::canonical;
 pub use host::{HostBody, HostError, Hosts};
 pub use ir::{Program, compile};

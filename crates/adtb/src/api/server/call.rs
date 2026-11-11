@@ -9,7 +9,7 @@ use std::task::Waker;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::Ty;
 
-use crate::exec::{Arena, Exceeded, Grant, Resumable, Step, Stopped, Val};
+use crate::exec::{self, Arena, Exceeded, Grant, Resumable, Step, Stopped, Val};
 use crate::mvcc::{Watch, Xid};
 use crate::runtime::Runtime;
 use crate::write::{
@@ -492,7 +492,10 @@ impl<R: Runtime> Call<R> {
                     if let Some((after, at)) = until
                         && at <= e.rt.now()
                     {
-                        let limit = write::Error::StatementLimit(Exceeded::Time { after });
+                        let limit =
+                            write::Error::from(exec::Error::StatementLimit(Exceeded::Time {
+                                after,
+                            }));
                         return Err(either(self.abandon(e, id, tx, || e.write_error(id, limit))));
                     }
                     match e.db.watch(tx.xid(), on, waker) {
@@ -568,7 +571,8 @@ impl<R: Runtime> Call<R> {
             if let Some((after, at)) = until
                 && at <= e.rt.now()
             {
-                let limit = write::Error::StatementLimit(Exceeded::Time { after });
+                let limit =
+                    write::Error::from(exec::Error::StatementLimit(Exceeded::Time { after }));
                 return Err(e.write_error(id, limit));
             }
             match e.db.watch(None, on, waker) {
