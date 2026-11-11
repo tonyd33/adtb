@@ -409,19 +409,34 @@ Rulings: mvcc/xid-clog, mvcc/xid-width/xid64, mvcc/status/clog-lookup
 a `Txn`. It holds its id's `Begun` guard when it writes, its
 snapshot's `Hold`, its entry in the serializer, its snapshot in the
 readers when it only reads, and its id's registration with the waits.
-`Database::commit` and `Database::abort` take it; dropping it ends it
-as an abort does. It reaches the transactions, the serializer, the
-readers and the waits through one `write::Session` it shares with
-its database and keeps alive, so it needs neither the engine nor the
-database: a call holding the engine weakly keeps it across steps, and
-it may outlive both. It is `Send`.
+`Database::commit`, `Database::abort` and `Database::abandon` take
+it; dropping it aborts it, with no reply. It reaches the
+transactions, the serializer, the readers and the waits through one
+`write::Session` it shares with its database and keeps alive, so it
+needs neither the engine nor the database: a call holding the engine
+weakly keeps it across steps, and it may outlive both. It is `Send`.
 
 Postconditions:
 
-- A `Txn` ends once. `commit` and `abort` mark it ended before
-  anything else, so a failure inside them never reaches its drop. A
-  panic inside them releases on unwinding what they had not yet
-  released, as a drop does, without counting as one.
+- A `Txn` ends once. `commit`, `abort` and `abandon` mark it ended
+  before anything else, so a failure inside them never reaches its
+  drop. A panic inside them releases on unwinding what they had not
+  yet released, as a drop does, without counting as one.
+- `abandon` ends a `Txn` whose call has failed, or a call releases
+  with its `Txn` open, and returns which reply the call owes. It
+  releases what the `Txn` holds as `abort` does and records its id's
+  abort before it forms the call's own failure. Once the record is
+  written the reply is that failure; when the record fails it is the
+  record's failure, mapped as any write-path failure is, and the
+  record is counted as unrecorded. A record fails only on a fact about
+  the database: damage this call found, an I/O failure, the database
+  already refused whole, or the engine closed. The call settles with the
+  record's failure, not its statement's failure, and not the reply to a
+  stop its owner requested before or while it failed.
+- Every caller ending a `Txn` after a failure abandons or drops it; none
+  returns an abort's error of its own choosing.
+- A `commit` that fails abandons the `Txn`: it returns the commit's
+  own failure, or the abort record's when that fails.
 - Dropping a `Txn` that has not ended releases its entry in the
   serializer, its snapshot in the readers, its hold and its
   registration with the waits on every path, wakes the waiters of its
@@ -432,6 +447,14 @@ Postconditions:
   ends before its marker is logged gets none.
 - The versions a dropped `Txn` made dead are counted for vacuum and
   wake no worker.
+- Under `testing`, a drop counts as an end by drop unless one of the
+  `Txn`'s own operations has returned an error other than a suspension
+  on a transaction wait, which marks it failed. The count is asserted
+  zero by an engine close that closes the engine and by every drop of
+  the write-path test world, except on a panicking thread. Drops after
+  the close's assertion, those the scheduler's shutdown and a stopped
+  reindex cause, and a simulated process that ends without a close are
+  not asserted.
 
 Precondition: a holder drops a `Txn` holding none of the serializer's
 lock, the readers' lock, the waits' lock, the dead counts' lock, the

@@ -28,6 +28,18 @@ pub(super) struct Failure {
 }
 
 impl<R: Runtime> Engine<R> {
+    /// Abandon `tx`, the transaction `id`, after its call failed, as
+    /// [`crate::write::Database::abandon`] does: `Ok` with `cause()` once the abort is recorded,
+    /// else `Err` with the record's failure.
+    pub(super) fn abandon(
+        &self,
+        id: TxnId,
+        tx: Txn,
+        cause: impl FnOnce() -> Error,
+    ) -> Result<Error, Error> {
+        self.db.abandon(tx, cause, |e| self.write_error(id, e))
+    }
+
     /// Run the items of `p` as [`statements`](Engine::statements) does, except that a
     /// statement suspending on a transaction wait halts with `Blocked`. A command after the first,
     /// and an item after a command, polls with its stops instead.

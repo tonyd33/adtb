@@ -739,10 +739,7 @@ impl<R: Runtime> Engine<R> {
             });
         match written {
             Ok(()) => self.db.commit(tx).map(drop).map_err(failed),
-            Err(e) => {
-                self.db.abort(tx).map_err(failed)?;
-                Err(failed(e))
-            }
+            Err(e) => Err(write::either(self.db.abandon(tx, || failed(e), failed))),
         }
     }
 }

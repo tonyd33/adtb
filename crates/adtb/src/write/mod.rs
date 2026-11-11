@@ -36,7 +36,7 @@ mod write_states_tests;
 #[cfg(test)]
 mod write_tests;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -365,9 +365,9 @@ pub enum Deferral {
 }
 
 /// A transaction, read-write or read-only. It ends once: by [`Database::commit`], by
-/// [`Database::abort`], or when dropped, which aborts it as `abort` does on every path. The abort
-/// of a drop is recorded best effort, and not at all while the thread panics or once the engine
-/// is closed.
+/// [`Database::abort`] or [`Database::abandon`], or when dropped, which aborts it on every path.
+/// The abort of a drop is recorded best effort, and not at all while the thread panics or once
+/// the engine is closed.
 ///
 /// Dropping it takes the serializer's lock and, inside it, the lock of the transactions, the
 /// commit log and the status page of its id as its `Begun` aborts, then the readers' lock, then
@@ -383,6 +383,9 @@ pub struct Txn {
     /// What its statements that succeeded wrote into the file.
     written: RefCell<quarantine::Touched>,
     changed: RefCell<vacuums::Changed>,
+    /// Set once one of its operations has failed other than by suspending on a wait; dropping it
+    /// then counts no end by drop.
+    failed: Cell<bool>,
     /// `None` once the transaction has ended.
     held: Option<Held>,
     session: Arc<dyn session::Abandon>,
@@ -960,6 +963,25 @@ impl<R: Runtime> Database<R> {
         bounds: Bounds,
         between: &mut Between<'_>,
     ) -> Result<Vec<Outcome>, Failed> {
+        match self.run_items(tx, text, local, bounds, between) {
+            Err(
+                f @ Failed {
+                    error: Error::Blocked { .. },
+                    ..
+                },
+            ) => Err(f),
+            ran => tx.noted(ran),
+        }
+    }
+
+    fn run_items(
+        &self,
+        tx: &Txn,
+        text: Text<'_>,
+        local: &mut Local,
+        bounds: Bounds,
+        between: &mut Between<'_>,
+    ) -> Result<Vec<Outcome>, Failed> {
         self.admit(&text)
             .map_err(|error| Failed { item: 0, error })?;
         let mut ran = Vec::with_capacity(text.items.len());
@@ -1000,6 +1022,16 @@ impl<R: Runtime> Database<R> {
         local: &mut Local,
         bounds: Bounds,
     ) -> Result<Vec<Outcome>, Failed> {
+        tx.noted(self.try_items(tx, text, local, bounds))
+    }
+
+    fn try_items(
+        &self,
+        tx: &Txn,
+        text: Text<'_>,
+        local: &mut Local,
+        bounds: Bounds,
+    ) -> Result<Vec<Outcome>, Failed> {
         self.admit(&text)
             .map_err(|error| Failed { item: 0, error })?;
         let before = local.clone();
@@ -1029,8 +1061,10 @@ impl<R: Runtime> Database<R> {
 
     /// Returns the operators of term `t` of `text` as a statement of `tx` would run it.
     pub fn explain(&self, tx: &Txn, text: Text<'_>, t: Tm) -> Result<Node, Error> {
-        self.stmt(tx, text, t, 0, &Bounds::default(), self.rt.now())
-            .explain()
+        let explained = self
+            .stmt(tx, text, t, 0, &Bounds::default(), self.rt.now())
+            .explain();
+        tx.noted(explained)
     }
 
     /// Vacuum the constructor relations of `rel` together, within the budget of
@@ -1082,7 +1116,7 @@ impl<R: Runtime> Database<R> {
         let _shown = self.show_vacuum(self.schema.ids.relations[&rel], &shown);
         let mut began = self.rt.now();
         let mut io = None;
-        let halted = std::cell::Cell::new(None);
+        let halted = Cell::new(None);
         let ran = self.vacuum_sum(r, &sum, &mut || {
             let paced = self.pace(stop, &mut began, &mut io);
             paced.map_err(|e| halted.set(Some(e))).is_ok()
@@ -1180,9 +1214,8 @@ impl<R: Runtime> Database<R> {
 
     /// Returns the rows of `rel` visible to `tx`.
     pub(crate) fn relation_rows(&self, tx: &Txn, rel: RelId) -> Result<Vec<Val>, Error> {
-        eval::Stmt::reader(self, tx)
-            .rows(rel, None)
-            .map(|rows| rows.into_iter().map(|(_, row)| row).collect())
+        let rows = eval::Stmt::reader(self, tx).rows(rel, None);
+        tx.noted(rows.map(|rows| rows.into_iter().map(|(_, row)| row).collect()))
     }
 
     /// Returns the deployment facts of `d` that `tx` reads.
@@ -1191,7 +1224,7 @@ impl<R: Runtime> Database<R> {
         tx: &Txn,
         d: &crate::catalog::Deployment,
     ) -> Result<crate::catalog::Deployed, crate::catalog::Error> {
-        d.at(&self.pager, &self.session.txns, &tx.snapshot)
+        tx.noted(d.at(&self.pager, &self.session.txns, &tx.snapshot))
     }
 
     /// Returns the position of the latest commit `tx` reads, else of the log's durable end.
@@ -1222,8 +1255,9 @@ impl<R: Runtime> Database<R> {
     /// every commit it read; for a read-only transaction, the position of the latest commit it
     /// read, else of the log's durable end.
     ///
-    /// Abort `tx` and fail with `Quarantined` if a mark set before its commit record stops what
-    /// `tx` wrote, by the rule that stops a statement.
+    /// Fail with `Quarantined` if a mark set before its commit record stops what `tx` wrote, by
+    /// the rule that stops a statement. On any failure, abandon `tx` as [`Database::abandon`]
+    /// does: fail with the commit's failure, or with the abort record's when it fails.
     pub fn commit(&self, tx: Txn) -> Result<Position, Error> {
         let mut tx = tx.end();
         let done = {
@@ -1269,10 +1303,7 @@ impl<R: Runtime> Database<R> {
                 self.add_dead(&tx.changed, true);
                 Ok(self.pager.position(wait))
             }
-            Err(e) => {
-                self.abort_ended(tx)?;
-                Err(e)
-            }
+            Err(e) => Err(either(self.abandon_ended(tx, || e, |r| r))),
         }
     }
 
@@ -1294,8 +1325,8 @@ impl<R: Runtime> Database<R> {
         self.session.waits.running()
     }
 
-    /// Returns how many transactions have ended by being dropped since the count was last
-    /// taken, and starts the count again.
+    /// Returns how many transactions have ended by being dropped, none of their operations
+    /// having failed, since the count was last taken, and starts the count again.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn take_ends_by_drop(&self) -> usize {
         self.session.dropped.swap(0, Ordering::Relaxed)
@@ -1327,6 +1358,48 @@ impl<R: Runtime> Database<R> {
         self.add_dead(&tx.changed, false);
         aborted?;
         Ok(())
+    }
+
+    /// Abort `tx` after its call failed, or as the call releases it open, releasing what it
+    /// holds, and count its abort record if it fails. Returns the call's reply: `Ok` with
+    /// `cause()` once the record is written, else `Err` with the record's failure as `reply`
+    /// makes it.
+    pub fn abandon<E>(
+        &self,
+        tx: Txn,
+        cause: impl FnOnce() -> E,
+        reply: impl FnOnce(Error) -> E,
+    ) -> Result<E, E> {
+        self.abandon_ended(tx.end(), cause, reply)
+    }
+
+    fn abandon_ended<E>(
+        &self,
+        tx: Ended,
+        cause: impl FnOnce() -> E,
+        reply: impl FnOnce(Error) -> E,
+    ) -> Result<E, E> {
+        match self.abort_ended(tx) {
+            Ok(()) => Ok(cause()),
+            Err(e) => {
+                self.session.txns.count_unrecorded();
+                Err(reply(e))
+            }
+        }
+    }
+
+    /// Abandon `tx` after its call failed with `cause`, as [`Database::abandon`] does. Returns
+    /// the call's reply, `cause` or the abort record's failure.
+    pub fn abandoned(&self, tx: Txn, cause: Error) -> Error {
+        either(self.abandon(tx, || cause, |r| r))
+    }
+
+    /// Abort `tx` and return `done`, abandoning `tx` when `done` is a failure.
+    pub(crate) fn abort_returning<T>(&self, tx: Txn, done: Result<T, Error>) -> Result<T, Error> {
+        match done {
+            Ok(v) => self.abort(tx).map(|()| v),
+            Err(e) => Err(self.abandoned(tx, e)),
+        }
     }
 
     /// Returns a grant of the database's per-call memory from its budget.
@@ -1404,4 +1477,9 @@ impl<R: Runtime> Database<R> {
             deadline: stop.deadline.clone(),
         })
     }
+}
+
+/// Returns the value either arm of `r` holds.
+pub fn either<E>(r: Result<E, E>) -> E {
+    r.unwrap_or_else(|e| e)
 }

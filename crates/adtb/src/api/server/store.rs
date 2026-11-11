@@ -3,7 +3,7 @@ use adtb_lang::types::{RelId, Ty};
 
 use crate::exec::Val;
 use crate::runtime::Runtime;
-use crate::write::{Bounds, Local, Text, Txn};
+use crate::write::{Bounds, Local, Text, Txn, either};
 
 use super::super::{Engine, Error, TxnId};
 
@@ -90,10 +90,7 @@ pub(super) fn run<R: Runtime, T>(
                     .map(|_| value)
                     .map_err(|error| e.write_error(id, error))
             }
-            Err(error) => {
-                e.abort(id, tx)?;
-                Err(error)
-            }
+            Err(error) => Err(either(e.abandon(id, tx, || error))),
         };
         match result {
             Err(error) if error.is_serialization() && attempt < retries => attempt += 1,

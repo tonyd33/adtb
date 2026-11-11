@@ -47,6 +47,10 @@
 #                     lines left ask whether the database is marked: the write path's admission and
 #                     its callers, its rewrite of a failure of the transactions layer, and the
 #                     damage a failed open answers `verify` over.
+# api_aborts:         calls of `.abort(` in production sources of crates/adtb/src/api: an abort whose
+#                     failure the caller returns. A transaction ended after a failure goes through
+#                     `abandon`, which decides the call's reply. The lines left end a transaction
+#                     with no failure: a rollback, a drop, and a write rerun after a wait.
 # crash_loops:        definitions of a function whose name holds `crash_loop`: the harness's one
 #                     crash loop, which runs the ledger check after every round.
 # crash_allows:       definitions of `fn allows`: what a crash loop's reopened database tolerates.
@@ -67,6 +71,9 @@
 #                     adtb_harness::damage::DataFile. The lines left count sizes, not offsets.
 # crash_loops, crash_allows, sim_test_opens and sim_test_damage count names: a helper under
 #                     another name escapes them. sim_test_offsets counts spellings of arithmetic.
+api_aborts prod 1 crates/adtb/src/api/mod.rs
+api_aborts prod 1 crates/adtb/src/api/server/call.rs
+api_aborts prod 2 crates/adtb/src/api/txn.rs
 crate_fields prod 1 crates/adtb-codegen/src/emit.rs
 crate_fields prod 6 crates/adtb-lang/src/check/pat.rs
 crate_fields prod 1 crates/adtb-lang/src/check/query.rs

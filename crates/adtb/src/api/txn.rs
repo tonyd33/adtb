@@ -223,7 +223,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
             Err(failed) => failed,
         };
         if failed.ends {
-            self.end(failed.error.clone())?;
+            return Err(self.end(failed.error));
         }
         Err(failed.error)
     }
@@ -281,11 +281,13 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         matches!(&self.state, State::Ended(e) if e.is_serialization())
     }
 
-    /// Abort the transaction, leaving every later call and the commit to fail with `err`.
-    fn end(&mut self, err: Error) -> Result<(), Error> {
-        match std::mem::replace(&mut self.state, State::Ended(err)) {
-            State::Open(tx) => self.engine.abort(self.id, *tx),
-            State::Ended(_) | State::Closed => Ok(()),
+    /// Abandon the transaction after a call failed with `cause`, as
+    /// [`crate::write::Database::abandon`] does, leaving every later call and the commit to fail
+    /// with `cause`. Returns the failing call's reply.
+    fn end(&mut self, cause: Error) -> Error {
+        match std::mem::replace(&mut self.state, State::Ended(cause.clone())) {
+            State::Open(tx) => crate::write::either(self.engine.abandon(self.id, *tx, || cause)),
+            State::Ended(_) | State::Closed => cause,
         }
     }
 }

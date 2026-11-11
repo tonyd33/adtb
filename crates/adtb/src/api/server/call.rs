@@ -1,6 +1,7 @@
 //! The call a task runs: a self-contained transaction of its own, run in steps on the engine's
 //! workers, its output formed into batches as the task's capacity allows.
 
+use std::cell::Cell;
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, Weak};
 use std::task::Waker;
@@ -11,7 +12,9 @@ use adtb_lang::types::Ty;
 use crate::exec::{Arena, Exceeded, Grant, Resumable, Step, Stopped, Val};
 use crate::mvcc::{Watch, Xid};
 use crate::runtime::Runtime;
-use crate::write::{self, Deferral, Local, Outcome, Produced, Production, Rerun, Text, Txn};
+use crate::write::{
+    self, Deferral, Local, Outcome, Produced, Production, Rerun, Text, Txn, either,
+};
 
 use super::super::arrow::BATCH_ROWS;
 use super::super::command::{changes_data, holds_off_vacuum};
@@ -126,6 +129,9 @@ pub(super) struct Call<R: Runtime> {
     opts: TaskOptions,
     grant: Option<Arc<Grant>>,
     phase: Phase<R>,
+    /// Set once an abort record of the call's transaction failed: that failure is then the
+    /// call's reply, and no request of its owner replaces it.
+    unrecorded: Cell<bool>,
 }
 
 /// How a phase of a step ended.
@@ -162,6 +168,7 @@ impl<R: Runtime> Call<R> {
             opts,
             grant: None,
             phase: Phase::Start,
+            unrecorded: Cell::new(false),
         }
     }
 
@@ -205,8 +212,8 @@ impl<R: Runtime> Call<R> {
     /// settle with: a refusal has its `Denied` row and writes no `Call` row.
     fn audited(&mut self, e: &Engine<R>, err: Error) -> Error {
         let shown = match self.shared.state.lock(&self.shared.rt).request {
-            Some(r) => r.error(),
-            None => err,
+            Some(r) if !self.unrecorded.get() => r.error(),
+            _ => err,
         };
         let shown = match self
             .work
@@ -337,8 +344,8 @@ impl<R: Runtime> Call<R> {
                         return Ok(Then::Step(Step::Wait));
                     }
                     Err(f) => {
-                        e.abort(id, waiting)?;
-                        return Err(e.write_error(id, f.into()));
+                        let cause = || e.write_error(id, f.into());
+                        return Err(either(self.abandon(e, id, waiting, cause)));
                     }
                 },
             }
@@ -403,10 +410,7 @@ impl<R: Runtime> Call<R> {
                 announced: false,
                 tx: Some((id, tx)),
             }),
-            Err(err) => {
-                e.abort(id, tx)?;
-                Err(err)
-            }
+            Err(err) => Err(either(self.abandon(e, id, tx, || err))),
         }
     }
 
@@ -488,9 +492,8 @@ impl<R: Runtime> Call<R> {
                     if let Some((after, at)) = until
                         && at <= e.rt.now()
                     {
-                        e.abort(id, tx)?;
                         let limit = write::Error::StatementLimit(Exceeded::Time { after });
-                        return Err(e.write_error(id, limit));
+                        return Err(either(self.abandon(e, id, tx, || e.write_error(id, limit))));
                     }
                     match e.db.watch(tx.xid(), on, waker) {
                         Ok(Watch::Ended) => w.tx = Some((id, tx)),
@@ -505,14 +508,14 @@ impl<R: Runtime> Call<R> {
                             return Ok(Then::Step(step));
                         }
                         Err(f) => {
-                            e.abort(id, tx)?;
-                            self.retry(e, &mut w, e.write_error(id, f.into()), false)?;
+                            let err = self.abandon(e, id, tx, || e.write_error(id, f.into()))?;
+                            self.retry(e, &mut w, err, false)?;
                         }
                     }
                 }
                 Err(Halted::Failed(f)) => {
-                    e.abort(id, tx)?;
-                    self.retry(e, &mut w, f.error, f.commanded)?;
+                    let err = self.abandon(e, id, tx, || f.error)?;
+                    self.retry(e, &mut w, err, f.commanded)?;
                 }
             }
         }
@@ -549,15 +552,11 @@ impl<R: Runtime> Call<R> {
                             });
                             Ok(Then::Next)
                         }
-                        Err(err) => {
-                            e.abort(id, tx)?;
-                            Err(err)
-                        }
+                        Err(err) => Err(either(self.abandon(e, id, tx, || err))),
                     };
                 }
                 Err(Halted::Failed(f)) => {
-                    e.abort(id, tx)?;
-                    return Err(f.error);
+                    return Err(either(self.abandon(e, id, tx, || f.error)));
                 }
                 Err(Halted::Blocked { on, rerun }) => {
                     e.abort(id, tx)?;
@@ -627,23 +626,19 @@ impl<R: Runtime> Call<R> {
             .and_then(|()| self.whole(e, rows))
         {
             Ok(r) => r,
-            Err(err) => {
-                e.abort(id, tx)?;
-                return Err(err);
-            }
+            Err(err) => return Err(either(self.abandon(e, id, tx, || err))),
         };
         let commanded = !self.work.prepared().commands().is_empty();
         let marked = self.role_call.as_ref().and_then(|_| e.audit_unwritable());
         let row = match (&self.role_call, marked) {
             (Some(_), Some(marked)) if tx.wrote() => {
-                e.abort(id, tx)?;
-                return Err(marked);
+                return Err(either(self.abandon(e, id, tx, || marked)));
             }
             (Some(text), None) => e.audit_call_in(&tx, id, &self.call_row(text, None)),
             _ => Ok(()),
         };
         if let Err(err) = row {
-            e.abort(id, tx)?;
+            let err = self.abandon(e, id, tx, || err)?;
             self.retry(e, &mut w, err, commanded)?;
             self.phase = Phase::Writing(w);
             return Ok(Then::Next);
@@ -653,8 +648,7 @@ impl<R: Runtime> Call<R> {
             (s.request, [None, None])
         });
         if let Some(r) = requested {
-            e.abort(id, tx)?;
-            return Err(r.error());
+            return Err(either(self.abandon(e, id, tx, || r.error())));
         }
         let done = e.db.commit(tx);
         if done.is_ok() {
@@ -709,12 +703,10 @@ impl<R: Runtime> Call<R> {
                 };
                 Ok(Then::Next)
             }
-            Err(err) => {
-                if let Some((id, tx)) = o.tx.take() {
-                    e.abort(id, tx)?;
-                }
-                Err(err)
-            }
+            Err(err) => Err(match o.tx.take() {
+                Some((id, tx)) => either(self.abandon(e, id, tx, || err)),
+                None => err,
+            }),
         }
     }
 
@@ -838,6 +830,23 @@ impl<R: Runtime> Call<R> {
         Ok(Then::Step(Step::Done))
     }
 
+    /// Abandon `tx`, the transaction `id`, as [`Engine::abandon`] does. Returns `cause()` once
+    /// the abort is recorded; else fail with the record's failure, which no request of the
+    /// call's owner replaces.
+    fn abandon(
+        &self,
+        e: &Engine<R>,
+        id: TxnId,
+        tx: Txn,
+        cause: impl FnOnce() -> Error,
+    ) -> Result<Error, Error> {
+        let reply = e.abandon(id, tx, cause);
+        if reply.is_err() {
+            self.unrecorded.set(true);
+        }
+        reply
+    }
+
     fn settle(&self, c: Completion) {
         self.shared.defer(|s| {
             s.settle(c);
@@ -853,7 +862,10 @@ impl<R: Runtime> Call<R> {
             if s.committed {
                 s.abandon();
             } else {
-                let err = s.request.map_or(err, Request::error);
+                let err = match s.request {
+                    Some(r) if !self.unrecorded.get() => r.error(),
+                    _ => err,
+                };
                 s.settle(Completion::Failed(err));
             }
             ((), s.wakers())
@@ -889,9 +901,11 @@ impl<R: Runtime> Call<R> {
             Phase::Drain(tx) => tx,
             Phase::Start | Phase::Over => None,
         };
-        if let Some((id, tx)) = tx
-            && let Err(err) = e.abort(id, tx)
-        {
+        let failed = tx.and_then(|(id, tx)| {
+            let record = |r| Some(e.write_error(id, r));
+            e.db.abandon(tx, || None, record).err().flatten()
+        });
+        if let Some(err) = failed {
             self.shared.with(|s| {
                 s.settle(Completion::Failed(err));
                 ((), [None, None])

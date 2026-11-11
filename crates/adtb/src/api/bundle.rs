@@ -1151,8 +1151,7 @@ impl<R: Runtime> Engine<R> {
             .deployment
             .insert(&self.pager, self.db.txns(), x, &facts)
         {
-            self.db.abort(tx)?;
-            return Err(write::Broken::Facts(e).into());
+            return Err(self.db.abandoned(tx, write::Broken::Facts(e).into()));
         }
         self.db.commit(tx)?;
         Arc::make_mut(&mut self.deployed.lock(&self.rt))

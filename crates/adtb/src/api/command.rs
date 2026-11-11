@@ -858,10 +858,7 @@ impl<R: Runtime> Engine<R> {
             .statements(&tx, text, &mut Local::default(), Bounds::default());
         match ran {
             Ok(_) => self.db.commit(tx).map(drop),
-            Err(f) => {
-                self.db.abort(tx)?;
-                Err(f.error)
-            }
+            Err(f) => Err(self.db.abandoned(tx, f.error)),
         }
     }
 }

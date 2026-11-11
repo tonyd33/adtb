@@ -51,6 +51,15 @@ impl<R: Runtime> Database<R> {
         text: Text<'_>,
         bounds: &Bounds,
     ) -> Result<Option<Produced<R>>, Error> {
+        tx.noted(self.produced(tx, text, bounds))
+    }
+
+    fn produced(
+        &self,
+        tx: &Txn,
+        text: Text<'_>,
+        bounds: &Bounds,
+    ) -> Result<Option<Produced<R>>, Error> {
         self.admit(&text)?;
         let started = self.rt.now();
         let [root] = text.items else {

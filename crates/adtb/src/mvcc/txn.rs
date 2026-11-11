@@ -142,7 +142,9 @@ pub struct Shared<R: Runtime> {
     lost: OnceLock<btree::Error>,
     /// The end of the log once the latest marker was kept, held while one is being kept.
     marked: Lock<Lsn>,
-    /// The abort records that failed, or were skipped on a panicking thread, with no caller told.
+    /// The abort records that failed or were skipped on a panicking thread, of transactions
+    /// dropped, of failed commits, and of transactions a call abandons when it fails or releases
+    /// them open.
     unrecorded: AtomicUsize,
 }
 
@@ -340,6 +342,12 @@ impl<R: Runtime> Transactions<R> {
         self.abort_locked(&mut st, pager, x, admitted)
     }
 
+    /// Count a failed abort record of a transaction a call abandons when it fails or releases it
+    /// open.
+    pub fn count_unrecorded(&self) {
+        self.0.count_unrecorded();
+    }
+
     /// Returns the id of `begun`, ended so that dropping it aborts nothing.
     fn end(&self, mut begun: Begun) -> Xid {
         assert!(
@@ -351,8 +359,9 @@ impl<R: Runtime> Transactions<R> {
         begun.xid
     }
 
-    /// Returns how many abort records failed, or were skipped on a panicking thread, with no
-    /// caller told.
+    /// Returns how many abort records failed or were skipped on a panicking thread, of
+    /// transactions dropped, of failed commits, and of transactions a call abandons when it fails
+    /// or releases them open.
     #[cfg(any(test, feature = "testing"))]
     pub fn unrecorded_aborts(&self) -> usize {
         self.unrecorded.load(Ordering::Relaxed)
@@ -730,8 +739,12 @@ impl<R: Runtime> Shared<R> {
     /// Abort `x` as [`Shared::abort_locked`] does, counting a failed record.
     fn abandon_locked(&self, st: &mut State, pager: &Pager<R>, x: Xid) {
         if self.abort_locked(st, pager, x, self.admit()).is_err() {
-            self.unrecorded.fetch_add(1, Ordering::Relaxed);
+            self.count_unrecorded();
         }
+    }
+
+    fn count_unrecorded(&self) {
+        self.unrecorded.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -753,7 +766,7 @@ impl<R: Runtime> Release for Shared<R> {
         if std::thread::panicking() {
             st.running.remove(&x);
             st.unresolved.insert(x);
-            self.unrecorded.fetch_add(1, Ordering::Relaxed);
+            self.count_unrecorded();
         } else {
             self.abandon_locked(&mut st, &self.pager, x);
         }

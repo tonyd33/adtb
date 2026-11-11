@@ -10,6 +10,8 @@ mod command;
 mod dump;
 mod error;
 mod failed_open;
+#[cfg(test)]
+mod failure_tests;
 #[cfg(target_os = "linux")]
 mod file;
 mod host;
@@ -1393,18 +1395,13 @@ impl<R: Runtime> Engine<R> {
                     Ok(rows)
                 }
             });
+        let failed = |e| past_commands(self.write_error(id, e));
         match rows {
             Ok(rows) => {
-                let at = self
-                    .db
-                    .commit(tx)
-                    .map_err(|e| past_commands(self.write_error(id, e)))?;
+                let at = self.db.commit(tx).map_err(failed)?;
                 Ok((rows, Position::from(at)))
             }
-            Err(f) => {
-                self.abort(id, tx).map_err(past_commands)?;
-                Err(f)
-            }
+            Err(f) => Err(write::either(self.db.abandon(tx, || f, failed))),
         }
     }
 

@@ -41,10 +41,7 @@ impl<R: Runtime> Restoring<'_, R> {
         let tx = self.db.begin()?;
         match self.insert(&tx, rows) {
             Ok(()) => self.db.commit(tx).map(drop),
-            Err(e) => {
-                self.db.abort(tx)?;
-                Err(e)
-            }
+            Err(e) => Err(self.db.abandoned(tx, e)),
         }
     }
 
@@ -100,8 +97,7 @@ impl<R: Runtime> Restoring<'_, R> {
             .try_for_each(|&(r, id, ix)| duplicates(&stmt, r, id, ix, &mut viol))
             .and_then(|()| self.check(&stmt, rels, &mut viol));
         drop(stmt);
-        db.abort(tx)?;
-        checked?;
+        db.abort_returning(tx, checked)?;
         refuse(viol)
     }
 
@@ -120,8 +116,7 @@ impl<R: Runtime> Restoring<'_, R> {
         let runs = || {
             let tx = db.begin_read(false)?;
             let runs = scan.runs(None, Some(&tx));
-            db.abort(tx)?;
-            runs
+            db.abort_returning(tx, runs)
         };
         let stop = || false;
         let (entries, duplicated) = match merge_runs(runs()?, ix.desc.unique, &stop) {

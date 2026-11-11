@@ -1,6 +1,6 @@
 //! Begin transactions and end them once, by commit, abort or drop.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 #[cfg(any(test, feature = "testing"))]
 use std::sync::atomic::Ordering;
@@ -91,6 +91,7 @@ impl<R: Runtime> Session<R> {
             taken: hold.taken(),
             written: RefCell::default(),
             changed: RefCell::default(),
+            failed: Cell::new(false),
             held: Some(Held { begun, hold }),
             session: self.clone(),
         }
@@ -179,6 +180,14 @@ impl<R: Runtime> Abandon for Session<R> {
 }
 
 impl Txn {
+    /// Returns `done`, marking the transaction failed when it is an `Err`.
+    pub(super) fn noted<T, E>(&self, done: Result<T, E>) -> Result<T, E> {
+        if done.is_err() {
+            self.failed.set(true);
+        }
+        done
+    }
+
     /// Returns the transaction ended, with what its end releases.
     pub(super) fn end(mut self) -> Ended {
         let held = self
@@ -211,7 +220,9 @@ impl Txn {
 impl Drop for Txn {
     fn drop(&mut self) {
         if let Some(held) = self.held.take() {
-            self.session.count_drop();
+            if !self.failed.get() {
+                self.session.count_drop();
+            }
             drop(self.parts(held));
         }
     }

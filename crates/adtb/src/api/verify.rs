@@ -462,8 +462,10 @@ impl<R: Runtime> Verifier<R> {
             .xid()
             .ok_or_else(|| "a read-write transaction has an id".to_owned())?;
         if let Err(e) = write(x) {
-            self.db.abort(tx).map_err(|e| self.db.detail(&e))?;
-            return Err(catalog::detail(&e));
+            let reply = self
+                .db
+                .abandon(tx, || catalog::detail(&e), |r| self.db.detail(&r));
+            return Err(write::either(reply));
         }
         self.db.commit(tx).map(drop).map_err(|e| self.db.detail(&e))
     }

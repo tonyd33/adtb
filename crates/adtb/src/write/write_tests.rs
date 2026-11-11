@@ -1209,9 +1209,9 @@ fn behind_a_damaged_commit_log(
         let ended = db.statement(&first, &s.p.terms, s.p.item, &params, 0);
         drop(first);
         assert_eq!(
-            1,
+            0,
             db.take_ends_by_drop(),
-            "the failed transaction ends by drop"
+            "a transaction dropped after its statement failed counts no end by drop"
         );
         out = Some((status, ended.map(|_| ()).map_err(|e| format!("{e:?}"))));
     });
@@ -1243,6 +1243,66 @@ fn a_unique_probe_meeting_a_damaged_commit_log_fails_the_statement() {
             "seed {seed}: the insert failed by {e}"
         );
     }
+}
+
+/// Commit a transaction of `db` that updated a counter, after `before` runs. Returns how the
+/// commit ended and how many more abort records went unrecorded.
+fn commit_updated(
+    w: &WritePath<SimRuntime>,
+    before: impl FnOnce(&Database<SimRuntime>),
+) -> (Result<crate::storage::Position, write::Error>, usize) {
+    let s = prep(w, INC, false);
+    let db = w.db();
+    let tx = db.begin().expect("a transaction");
+    db.statement(&tx, &s.p.terms, s.p.item, &[], 0)
+        .expect("the update");
+    before(db);
+    let unrecorded = db.txns().unrecorded_aborts();
+    let committed = db.commit(tx);
+    (committed, db.txns().unrecorded_aborts() - unrecorded)
+}
+
+#[test]
+fn a_commit_refused_by_a_mark_returns_its_refusal_once_its_abort_is_recorded() {
+    use crate::storage::Quarantine;
+    let f = shop();
+    let mut sim = write_path::sim(0, Config::default(), &f);
+    finished(&mut sim, |rt| {
+        let w = WritePath::loaded(&rt, &f, None);
+        let got = commit_updated(&w, |db| {
+            db.pager()
+                .plant_mark(Quarantine::Database, db)
+                .expect("the mark");
+        });
+        let refused = write::Error::Quarantined {
+            objects: BTreeMap::from([(Quarantine::Database, None)]),
+            by: write::By::Admitted,
+        };
+        assert_eq!((Err(refused), 0), got);
+    });
+}
+
+#[test]
+fn a_failed_commit_whose_abort_record_fails_returns_the_records_failure_and_counts_it() {
+    use crate::storage::{Damage, PageError};
+    let f = shop();
+    let mut sim = write_path::sim(0, Config::default(), &f);
+    finished(&mut sim, |rt| {
+        let w = WritePath::loaded(&rt, &f, None);
+        let mut status = None;
+        let got = commit_updated(&w, |db| {
+            let pages = db.txns().commit_log().status_pages().clone();
+            let pid = *pages.values().next_back().expect("a status page");
+            db.pager().plant_damage(pid, Damage::Checksum);
+            status = Some(pid);
+        });
+        let damage = PageError {
+            pid: status.expect("a status page"),
+            damage: Damage::Checksum,
+        };
+        let failed = format!("{:?}", crate::mvcc::Error::Corrupt(damage));
+        assert_eq!((Err(write::Error::Transactions(failed)), 1), got);
+    });
 }
 
 #[test]

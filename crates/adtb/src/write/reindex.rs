@@ -553,8 +553,7 @@ impl<R: Runtime> Database<R> {
         let mut since = self.pager.appended();
         let snapshot = self.session.begin_reader(false)?;
         let runs = scan.runs(None, Some(&snapshot));
-        self.abort(snapshot)?;
-        let runs = runs?;
+        let runs = self.abort_returning(snapshot, runs)?;
         self.rebuild_stopped()?;
         (job.phase)("build", 0.4);
         let stop = self.build_stop();

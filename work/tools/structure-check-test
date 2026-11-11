@@ -193,6 +193,16 @@ grep -qxF 'marked_readers prod 6 crates/adtb/src/write/q.rs' <<<"$counts" || fai
   fail "counted storage, mvcc or a test: $counts"
 rm -r "$adtb/write" "$adtb/mvcc" "$adtb/storage/q.rs"
 
+# api_aborts counts `.abort(` in production sources of the api, not tests or other modules.
+mkdir -p "$adtb/api" "$adtb/write"
+printf '%s\n' 'fn f() { e.abort(id, tx)?; self.db.abort(tx).ok(); e.abandon(id, tx, || err); }' >"$adtb/api/a.rs"
+cp "$adtb/api/a.rs" "$adtb/api/a_tests.rs"
+cp "$adtb/api/a.rs" "$adtb/write/a.rs"
+counts=$("$checker" --counts "$scratch")
+grep -qxF 'api_aborts prod 2 crates/adtb/src/api/a.rs' <<<"$counts" || fail "not counted: api_aborts: $counts"
+! grep -q 'api_aborts .*a_tests.rs\|api_aborts .*write/' <<<"$counts" || fail "counted a test or write: $counts"
+rm -r "$adtb/api" "$adtb/write"
+
 # A malformed allowlist line fails.
 printf '%s\n' 'meta prod many crates/adtb/src/exec/a.rs' >work/tools/structure-allowlist
 if "$checker" "$scratch" >out.txt 2>&1; then
