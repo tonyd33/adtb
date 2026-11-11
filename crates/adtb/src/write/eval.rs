@@ -869,7 +869,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                     .indexes
                     .iter()
                     .find(|(id, _)| *id == u.index)
-                    .ok_or(Broken::UniqueIndexMissing)?;
+                    .unwrap_or_else(|| panic!("a unique's index is one of its relation's"));
                 let c = n.ctor_of()?;
                 let types = self.store.key_types(u.index)?;
                 let row = self.stored(r.ctors[c as usize].heap, n)?;

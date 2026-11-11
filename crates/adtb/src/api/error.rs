@@ -373,7 +373,7 @@ impl Error {
             }
             write::Error::Internal(b) => Error::internal(Broken::Write(*b)),
             write::Error::Exec(e) => Error::of_exec(txn, e),
-            write::Error::Blocked { on, .. } => Error::internal(Broken::Suspended(on)),
+            write::Error::Blocked { .. } => unreachable!("no caller maps a suspension"),
             write::Error::FileChanged(path) => Error::Retry {
                 reason: RetryReason::FileChanged { path },
             },

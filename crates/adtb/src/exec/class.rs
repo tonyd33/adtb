@@ -18,8 +18,8 @@ pub enum Class {
     Refused,
     /// A guarantee the checker makes about a program does not hold.
     Checker,
-    /// An invariant over engine state does not hold.
-    Engine,
+    /// A statement of a call that suspends must wait for another transaction.
+    Suspended,
 }
 
 impl Class {
@@ -27,7 +27,9 @@ impl Class {
     pub fn ends(self) -> bool {
         match self {
             Class::Retry | Class::Damage | Class::Transactions => true,
-            Class::Reject | Class::Found | Class::Refused | Class::Checker | Class::Engine => false,
+            Class::Reject | Class::Found | Class::Refused | Class::Checker | Class::Suspended => {
+                false
+            }
         }
     }
 }

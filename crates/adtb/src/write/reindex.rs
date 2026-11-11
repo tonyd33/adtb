@@ -286,21 +286,15 @@ impl<R: Runtime> Database<R> {
         rel: RelId,
         positions: Option<&[usize]>,
     ) -> Result<Vec<IndexId>, Error> {
-        let r = self.rels.get(&rel).ok_or(Broken::ReindexNoHeaps(rel))?;
+        let r = (self.rels.get(&rel))
+            .unwrap_or_else(|| panic!("a relation a reindex names has heaps: {rel:?} has none"));
         let Some(positions) = positions else {
             return Ok(r.indexes.iter().map(|(id, _)| *id).collect());
         };
         let mut ids = BTreeSet::new();
         for &i in positions {
-            let id =
-                self.schema
-                    .ids
-                    .indexes
-                    .get(&(rel, i))
-                    .ok_or_else(|| Broken::UnstoredIndex {
-                        position: i,
-                        relation: r.name.clone(),
-                    })?;
+            let id = (self.schema.ids.indexes.get(&(rel, i)))
+                .unwrap_or_else(|| panic!("index {i} of {} is stored", r.name));
             ids.insert(IndexId(*id));
         }
         Ok(ids.into_iter().collect())
@@ -520,10 +514,7 @@ impl<R: Runtime> Database<R> {
             .indexes
             .iter()
             .find(|(i, _)| *i == job.index)
-            .ok_or_else(|| Broken::NotAnIndex {
-                index: job.index,
-                relation: r.name.clone(),
-            })?;
+            .unwrap_or_else(|| panic!("{:?} is an index of {}", job.index, r.name));
         let tree = self.bindings.indexes()[&job.index].index.tree();
         let scan = Scan {
             db: self,

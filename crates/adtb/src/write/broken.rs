@@ -2,10 +2,10 @@ use std::fmt;
 
 use adtb_lang::kernel::Kind;
 use adtb_lang::textual::PrintError;
-use adtb_lang::types::{RelId, Ty};
+use adtb_lang::types::Ty;
 
 use crate::exec::Val;
-use crate::plan::{self, IndexId};
+use crate::plan;
 use crate::{api, catalog};
 
 use super::Error;
@@ -17,32 +17,13 @@ pub enum Broken {
     BoundedPlan(plan::Error),
     /// Planning a statement's read breaks a guarantee of the checker or the normaliser.
     StatementPlan(plan::Error),
-    ReindexNoHeaps(RelId),
-    VacuumNoHeaps(RelId),
-    UnstoredIndex {
-        position: usize,
-        relation: String,
-    },
-    NotAnIndex {
-        index: IndexId,
-        relation: String,
-    },
     DuplicateKey(Vec<u8>),
     DenialNotSet(Val),
     UniqueUnindexed {
         position: usize,
         relation: String,
     },
-    UndeclaredIndex {
-        index: IndexId,
-        relation: String,
-    },
     KeyNotFields(String),
-    VacuumTooLarge {
-        len: usize,
-        limit: usize,
-    },
-    HeapNoDirectory,
     ReadOnly,
     ScanPathNotText,
     RowsNotSet(Val),
@@ -56,7 +37,6 @@ pub enum Broken {
     ScanUnread,
     RejectedRowNotRecord,
     NoUnique(u32),
-    UniqueIndexMissing,
     ReferenceUnindexed {
         relation: String,
         field: String,
@@ -134,31 +114,12 @@ impl fmt::Display for Broken {
             Broken::BoundedPlan(plan::Error::Internal(b))
             | Broken::StatementPlan(plan::Error::Internal(b)) => write!(f, "{b}"),
             Broken::BoundedPlan(e) | Broken::StatementPlan(e) => write!(f, "{e}"),
-            Broken::ReindexNoHeaps(rel) => write!(f, "reindex of {rel:?}, which has no heaps"),
-            Broken::VacuumNoHeaps(rel) => write!(f, "vacuum of {rel:?}, which has no heaps"),
-            Broken::UnstoredIndex { position, relation } => {
-                write!(f, "index {position} of {relation} is stored")
-            }
-            Broken::NotAnIndex { index, relation } => {
-                write!(f, "{index:?} is an index of {relation}")
-            }
             Broken::DuplicateKey(key) => write!(f, "a duplicate of key {key:?} in a unique index"),
             Broken::DenialNotSet(v) => write!(f, "a denial query returns a set, found {v:?}"),
             Broken::UniqueUnindexed { position, relation } => {
                 write!(f, "unique {position} of relation {relation} has an index")
             }
-            Broken::UndeclaredIndex { index, relation } => write!(
-                f,
-                "index {} of relation {relation} is neither declared nor an old key",
-                index.0
-            ),
             Broken::KeyNotFields(relation) => write!(f, "the key of {relation} is fields"),
-            Broken::VacuumTooLarge { len, limit } => write!(
-                f,
-                "a version vacuum moves fits its history heap, as it fit its current heap: \
-                 {len} bytes over the limit of {limit}"
-            ),
-            Broken::HeapNoDirectory => f.write_str("a heap the write path writes has a directory"),
             Broken::ReadOnly => f.write_str("a read-only transaction runs no write"),
             Broken::ScanPathNotText => f.write_str("a file scan's path is a Text"),
             Broken::RowsNotSet(v) => write!(f, "a write's rows are a set, found {v:?}"),
@@ -182,7 +143,6 @@ impl fmt::Display for Broken {
             }
             Broken::RejectedRowNotRecord => f.write_str("`RejectedRow` is a declared record"),
             Broken::NoUnique(i) => write!(f, "an upsert names unique {i} of its relation"),
-            Broken::UniqueIndexMissing => f.write_str("a unique's index is one of its relation's"),
             Broken::ReferenceUnindexed { relation, field } => write!(
                 f,
                 "a reference field has an index: {relation}.{field} has none"

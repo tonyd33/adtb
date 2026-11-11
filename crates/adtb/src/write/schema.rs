@@ -204,13 +204,10 @@ pub fn rels(schema: &Schema, normal: &NormalProgram, catalog: &Catalog) -> Resul
                     name = Some(format!("{}.{clause}", qualified(schema, *rel)));
                     clause
                 }
-                (None, _) => {
-                    return Err(Broken::UndeclaredIndex {
-                        index: d.id,
-                        relation: r.name.clone(),
-                    }
-                    .into());
-                }
+                (None, _) => panic!(
+                    "index {} of relation {} is neither declared nor an old key",
+                    d.id.0, r.name
+                ),
             };
             let indexed = Indexed {
                 desc: d.clone(),

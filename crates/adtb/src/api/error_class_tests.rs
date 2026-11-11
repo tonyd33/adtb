@@ -1,7 +1,5 @@
 use std::collections::BTreeMap;
 
-use adtb_lang::types::RelId;
-
 use super::*;
 use crate::btree;
 use crate::catalog;
@@ -78,7 +76,8 @@ struct Row {
     error: write::Error,
     class: Class,
     ends: bool,
-    reply: Error,
+    /// `None` for a failure no caller maps to a reply.
+    reply: Option<Error>,
 }
 
 fn row(error: write::Error, class: Class, ends: bool, reply: Error) -> Row {
@@ -86,7 +85,7 @@ fn row(error: write::Error, class: Class, ends: bool, reply: Error) -> Row {
         error,
         class,
         ends,
-        reply,
+        reply: Some(reply),
     }
 }
 
@@ -190,15 +189,15 @@ fn write_rows() -> Vec<Row> {
             },
         ),
         row(write::Error::Closed, Class::Reject, false, closed()),
-        row(
-            write::Error::Blocked {
+        Row {
+            error: write::Error::Blocked {
                 on: Xid(5),
                 rerun: Rerun::at_start(),
             },
-            Class::Engine,
-            false,
-            internal("a statement suspended on Xid(5) outside a resumable call"),
-        ),
+            class: Class::Suspended,
+            ends: false,
+            reply: None,
+        },
     ]
 }
 
@@ -346,37 +345,10 @@ fn broken_rows() -> Vec<Row> {
 fn store_broken_rows() -> Vec<Row> {
     use write::Broken as B;
     let plan = || crate::plan::Error::Internal(crate::plan::Broken::GroupFieldMissing);
-    let index = crate::plan::IndexId(5);
-    let (e, c) = (Class::Engine, Class::Checker);
+    let c = Class::Checker;
     vec![
         broken_row(B::BoundedPlan(plan()), c, "a group has a key and rows"),
         broken_row(B::StatementPlan(plan()), c, "a group has a key and rows"),
-        broken_row(
-            B::ReindexNoHeaps(RelId(4)),
-            e,
-            "reindex of RelId(4), which has no heaps",
-        ),
-        broken_row(
-            B::VacuumNoHeaps(RelId(4)),
-            e,
-            "vacuum of RelId(4), which has no heaps",
-        ),
-        broken_row(
-            B::UnstoredIndex {
-                position: 1,
-                relation: "r".into(),
-            },
-            e,
-            "index 1 of r is stored",
-        ),
-        broken_row(
-            B::NotAnIndex {
-                index,
-                relation: "r".into(),
-            },
-            e,
-            "IndexId(5) is an index of r",
-        ),
         broken_row(
             B::DuplicateKey(vec![1]),
             c,
@@ -395,25 +367,7 @@ fn store_broken_rows() -> Vec<Row> {
             c,
             "unique 1 of relation r has an index",
         ),
-        broken_row(
-            B::UndeclaredIndex {
-                index,
-                relation: "r".into(),
-            },
-            e,
-            "index 5 of relation r is neither declared nor an old key",
-        ),
         broken_row(B::KeyNotFields("r".into()), c, "the key of r is fields"),
-        broken_row(
-            B::VacuumTooLarge { len: 9, limit: 8 },
-            e,
-            "a version vacuum moves fits its history heap, as it fit its current heap: 9 bytes over the limit of 8",
-        ),
-        broken_row(
-            B::HeapNoDirectory,
-            e,
-            "a heap the write path writes has a directory",
-        ),
     ]
 }
 
@@ -424,7 +378,7 @@ fn term_broken_rows() -> Vec<Row> {
     use write::{Broken as B, TermKind};
     let kind = || TermKind(Kind::Record(Vec::new()));
     let int = || Ty::Base(Base::I64);
-    let (e, c) = (Class::Engine, Class::Checker);
+    let c = Class::Checker;
     vec![
         broken_row(B::ReadOnly, c, "a read-only transaction runs no write"),
         broken_row(B::ScanPathNotText, c, "a file scan's path is a Text"),
@@ -468,13 +422,8 @@ fn term_broken_rows() -> Vec<Row> {
         ),
         broken_row(
             B::NoUnique(2),
-            e,
+            c,
             "an upsert names unique 2 of its relation",
-        ),
-        broken_row(
-            B::UniqueIndexMissing,
-            e,
-            "a unique's index is one of its relation's",
         ),
         broken_row(
             B::ReferenceUnindexed {
@@ -578,7 +527,7 @@ fn call_broken_rows() -> Vec<Row> {
 }
 
 /// The number of slots [`slot`] gives.
-const SLOTS: usize = 82;
+const SLOTS: usize = 74;
 
 /// Returns the slot of `e`'s variant, of the variant it holds where its class depends on it.
 /// Every arm has its own slot, numbered from 0 with none skipped.
@@ -627,53 +576,45 @@ fn slot(e: &write::Error) -> usize {
         write::Error::Internal(b) => match b.as_ref() {
             B::BoundedPlan(_) => 33,
             B::StatementPlan(_) => 34,
-            B::ReindexNoHeaps(_) => 35,
-            B::VacuumNoHeaps(_) => 36,
-            B::UnstoredIndex { .. } => 37,
-            B::NotAnIndex { .. } => 38,
-            B::DuplicateKey(_) => 39,
-            B::DenialNotSet(_) => 40,
-            B::UniqueUnindexed { .. } => 41,
-            B::UndeclaredIndex { .. } => 42,
-            B::KeyNotFields(_) => 43,
-            B::VacuumTooLarge { .. } => 44,
-            B::HeapNoDirectory => 45,
-            B::ReadOnly => 46,
-            B::ScanPathNotText => 47,
-            B::RowsNotSet(_) => 48,
-            B::FailNotText => 49,
-            B::NoArm(_) => 50,
-            B::Unreachable => 51,
-            B::NotAWrite(_) => 52,
-            B::ReplaceNotLam => 53,
-            B::RejectsWraps(_) => 54,
-            B::NotABoundWrite(_) => 55,
-            B::ScanUnread => 56,
-            B::RejectedRowNotRecord => 57,
-            B::NoUnique(_) => 58,
-            B::UniqueIndexMissing => 59,
-            B::ReferenceUnindexed { .. } => 60,
-            B::TopNotFor => 61,
-            B::RowsNotSetTyped(_) => 62,
-            B::InputNotSet(_) => 63,
-            B::TopBinder(_) => 64,
-            B::PriorNotSet(_) => 65,
-            B::Unprintable(_) => 66,
-            B::Undeclared { .. } => 67,
-            B::NoValueOutcome => 68,
-            B::NoSettingOutcome => 69,
-            B::NoPointOutcome => 70,
-            B::NoTrialOutcome => 71,
-            B::RefusalUnrecorded(_) => 72,
-            B::WitnessDenialUnrecorded(_) => 73,
-            B::CallKeyNotInt => 74,
-            B::ExportNotSetTyped => 75,
-            B::ExportNotSet => 76,
-            B::NoViolation => 77,
-            B::SettingNotRecord => 78,
-            B::SettingField(_) => 79,
-            B::CatalogError(_) => 80,
-            B::DeploymentRefused => 81,
+            B::DuplicateKey(_) => 35,
+            B::DenialNotSet(_) => 36,
+            B::UniqueUnindexed { .. } => 37,
+            B::KeyNotFields(_) => 38,
+            B::ReadOnly => 39,
+            B::ScanPathNotText => 40,
+            B::RowsNotSet(_) => 41,
+            B::FailNotText => 42,
+            B::NoArm(_) => 43,
+            B::Unreachable => 44,
+            B::NotAWrite(_) => 45,
+            B::ReplaceNotLam => 46,
+            B::RejectsWraps(_) => 47,
+            B::NotABoundWrite(_) => 48,
+            B::ScanUnread => 49,
+            B::RejectedRowNotRecord => 50,
+            B::NoUnique(_) => 51,
+            B::ReferenceUnindexed { .. } => 52,
+            B::TopNotFor => 53,
+            B::RowsNotSetTyped(_) => 54,
+            B::InputNotSet(_) => 55,
+            B::TopBinder(_) => 56,
+            B::PriorNotSet(_) => 57,
+            B::Unprintable(_) => 58,
+            B::Undeclared { .. } => 59,
+            B::NoValueOutcome => 60,
+            B::NoSettingOutcome => 61,
+            B::NoPointOutcome => 62,
+            B::NoTrialOutcome => 63,
+            B::RefusalUnrecorded(_) => 64,
+            B::WitnessDenialUnrecorded(_) => 65,
+            B::CallKeyNotInt => 66,
+            B::ExportNotSetTyped => 67,
+            B::ExportNotSet => 68,
+            B::NoViolation => 69,
+            B::SettingNotRecord => 70,
+            B::SettingField(_) => 71,
+            B::CatalogError(_) => 72,
+            B::DeploymentRefused => 73,
         },
     }
 }
@@ -699,12 +640,14 @@ fn each_failure_is_of_its_class_and_ends_and_replies_as_its_row_states() {
         let got_class = error.class();
         let got_ends = got_class.ends();
         let shown = format!("{error:?}");
-        let got = Error::of_mapped(
-            &schema,
-            TxnId(7),
-            write::Mapped::unmapped_for_test(error),
-            |_| NAMES.into(),
-        );
+        let got = reply.is_some().then(|| {
+            Error::of_mapped(
+                &schema,
+                TxnId(7),
+                write::Mapped::unmapped_for_test(error),
+                |_| NAMES.into(),
+            )
+        });
         if got_class != class || got_ends != ends || got != reply {
             wrong.push(format!(
                 "{shown}: {got_class:?}, want {class:?}; ends {got_ends}, want {ends}; \

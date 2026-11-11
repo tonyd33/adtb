@@ -1,11 +1,11 @@
 use adtb_lang::kernel::{Const, Kind};
 use adtb_lang::textual::PrintError;
-use adtb_lang::types::{Base, RelId, Ty};
+use adtb_lang::types::{Base, Ty};
 
 use crate::api::{self, RejectReason};
 use crate::catalog;
 use crate::exec::Val;
-use crate::plan::{self, IndexId};
+use crate::plan;
 
 use super::super::Error;
 use super::{Broken, Broken as B, TermKind, detail};
@@ -30,18 +30,11 @@ fn after(b: Option<&Broken>) -> Option<(Broken, &'static str)> {
         Some(B::BoundedPlan(plan::Error::Internal(_))) => (B::BoundedPlan(refused()), "a plan computes a query, not a write"),
         Some(B::BoundedPlan(_)) => (B::StatementPlan(internal()), "a group has a key and rows"),
         Some(B::StatementPlan(plan::Error::Internal(_))) => (B::StatementPlan(refused()), "a plan computes a query, not a write"),
-        Some(B::StatementPlan(_)) => (B::ReindexNoHeaps(RelId(3)), "reindex of RelId(3), which has no heaps"),
-        Some(B::ReindexNoHeaps(_)) => (B::VacuumNoHeaps(RelId(3)), "vacuum of RelId(3), which has no heaps"),
-        Some(B::VacuumNoHeaps(_)) => (B::UnstoredIndex { position: 2, relation: r() }, "index 2 of us is stored"),
-        Some(B::UnstoredIndex { .. }) => (B::NotAnIndex { index: IndexId(5), relation: r() }, "IndexId(5) is an index of us"),
-        Some(B::NotAnIndex { .. }) => (B::DuplicateKey(vec![1, 2]), "a duplicate of key [1, 2] in a unique index"),
+        Some(B::StatementPlan(_)) => (B::DuplicateKey(vec![1, 2]), "a duplicate of key [1, 2] in a unique index"),
         Some(B::DuplicateKey(_)) => (B::DenialNotSet(Val::Int(1)), "a denial query returns a set, found Int(1)"),
         Some(B::DenialNotSet(_)) => (B::UniqueUnindexed { position: 1, relation: r() }, "unique 1 of relation us has an index"),
-        Some(B::UniqueUnindexed { .. }) => (B::UndeclaredIndex { index: IndexId(7), relation: r() }, "index 7 of relation us is neither declared nor an old key"),
-        Some(B::UndeclaredIndex { .. }) => (B::KeyNotFields(r()), "the key of us is fields"),
-        Some(B::KeyNotFields(_)) => (B::VacuumTooLarge { len: 9000, limit: 4000 }, "a version vacuum moves fits its history heap, as it fit its current heap: 9000 bytes over the limit of 4000"),
-        Some(B::VacuumTooLarge { .. }) => (B::HeapNoDirectory, "a heap the write path writes has a directory"),
-        Some(B::HeapNoDirectory) => (B::ReadOnly, "a read-only transaction runs no write"),
+        Some(B::UniqueUnindexed { .. }) => (B::KeyNotFields(r()), "the key of us is fields"),
+        Some(B::KeyNotFields(_)) => (B::ReadOnly, "a read-only transaction runs no write"),
         Some(B::ReadOnly) => (B::ScanPathNotText, "a file scan's path is a Text"),
         Some(B::ScanPathNotText) => (B::RowsNotSet(Val::Int(1)), "a write's rows are a set, found Int(1)"),
         Some(B::RowsNotSet(_)) => (B::FailNotText, "`fail` takes a Text"),
@@ -54,8 +47,7 @@ fn after(b: Option<&Broken>) -> Option<(Broken, &'static str)> {
         Some(B::NotABoundWrite(_)) => (B::ScanUnread, "every file scan of a statement is read before it runs"),
         Some(B::ScanUnread) => (B::RejectedRowNotRecord, "`RejectedRow` is a declared record"),
         Some(B::RejectedRowNotRecord) => (B::NoUnique(2), "an upsert names unique 2 of its relation"),
-        Some(B::NoUnique(_)) => (B::UniqueIndexMissing, "a unique's index is one of its relation's"),
-        Some(B::UniqueIndexMissing) => (B::ReferenceUnindexed { relation: "app::us".into(), field: "f".into() }, "a reference field has an index: app::us.f has none"),
+        Some(B::NoUnique(_)) => (B::ReferenceUnindexed { relation: "app::us".into(), field: "f".into() }, "a reference field has an index: app::us.f has none"),
         Some(B::ReferenceUnindexed { .. }) => (B::TopNotFor, "a top level read is the source of a `For`"),
         Some(B::TopNotFor) => (B::RowsNotSetTyped(int()), "a read of rows is a set, not Base(I64)"),
         Some(B::RowsNotSetTyped(_)) => (B::InputNotSet(int()), "a change set input is a set, not Base(I64)"),

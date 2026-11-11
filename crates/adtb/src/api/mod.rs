@@ -1207,18 +1207,15 @@ impl<R: Runtime> Engine<R> {
         local: &mut Local,
         bounds: Bounds,
     ) -> Result<Vec<DynRows>, Failure> {
+        let bounds = Bounds {
+            suspend: false,
+            ..bounds
+        };
         self.resumable(id, tx, p, local, bounds)
             .map_err(|f| match f {
-                Halted::Blocked { on, rerun } => Failure {
-                    error: Error::of_write(
-                        &self.db,
-                        p.schema(),
-                        id,
-                        self.db.fail(write::Error::Blocked { on, rerun }),
-                    ),
-                    ends: false,
-                    commanded: false,
-                },
+                Halted::Blocked { .. } => {
+                    unreachable!("a run with `suspend: false` never suspends")
+                }
                 Halted::Failed(failure) => failure,
             })
     }

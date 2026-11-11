@@ -146,7 +146,7 @@ the class as below.
 | Found | an index entry naming an unused slot, and the mark it sets on its index | no | `Fatal` `Quarantined` once its index is marked, else `Fatal` `Storage` |
 | Refused | a quarantine mark refused the call | no | `Fatal` `Quarantined` |
 | Checker | a broken checker guarantee | no | `Rejected` `Internal` |
-| Engine | a broken invariant over engine state returned as an error | no | `Rejected` `Internal` |
+| Suspended | a statement of a call that suspends must wait for another transaction | no | none: the call suspends and reruns; a write keeps its transaction, a read with commands begins a new one |
 
 Mapping a failure to the marks its damage sets keeps its class's
 answer to whether it ends the transaction.

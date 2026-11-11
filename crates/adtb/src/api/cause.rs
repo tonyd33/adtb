@@ -8,7 +8,6 @@ use adtb_lang::types::Ty;
 
 use crate::catalog::{self, KeptRow};
 use crate::exec::{self, Val};
-use crate::mvcc::Xid;
 use crate::{storage, write};
 
 use super::bundle::BadRow;
@@ -25,7 +24,6 @@ pub(super) enum Broken {
         built: String,
         messages: Vec<String>,
     },
-    Suspended(Xid),
     UnprintableKey(PrintError),
     NoRows,
     NoIdentity(permission::Error),
@@ -59,12 +57,6 @@ impl fmt::Display for Broken {
             Broken::CatalogError(e) => f.write_str(&catalog::detail(e)),
             Broken::Unchecked { built, messages } => {
                 write!(f, "{built} does not check: {}", messages.join("; "))
-            }
-            Broken::Suspended(on) => {
-                write!(
-                    f,
-                    "a statement suspended on {on:?} outside a resumable call"
-                )
             }
             Broken::UnprintableKey(e) => f.write_str(&e.message),
             Broken::NoRows => f.write_str("a command returns its rows"),

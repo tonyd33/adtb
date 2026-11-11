@@ -201,7 +201,9 @@ impl From<crate::heap::Error> for Error {
             crate::heap::Error::TooLarge { len, limit } => Error::Exec(exec::Error::Unsupported(
                 format!("a row version of {len} bytes, over the limit of {limit}"),
             )),
-            crate::heap::Error::NoDirectory => Broken::HeapNoDirectory.into(),
+            crate::heap::Error::NoDirectory => {
+                panic!("a heap the write path writes has a directory")
+            }
         }
     }
 }
@@ -218,10 +220,13 @@ impl From<vacuum::Error> for Error {
             vacuum::Error::Page(p) | vacuum::Error::Heap(crate::heap::Error::Page(p)) => p.into(),
             vacuum::Error::Index(i) => Error::from(i),
             vacuum::Error::Heap(e @ crate::heap::Error::Changed { .. }) => Error::from(e),
-            vacuum::Error::Heap(crate::heap::Error::NoDirectory) => Broken::HeapNoDirectory.into(),
-            vacuum::Error::Heap(crate::heap::Error::TooLarge { len, limit }) => {
-                Broken::VacuumTooLarge { len, limit }.into()
+            vacuum::Error::Heap(crate::heap::Error::NoDirectory) => {
+                panic!("a heap the write path writes has a directory")
             }
+            vacuum::Error::Heap(crate::heap::Error::TooLarge { len, limit }) => panic!(
+                "a version vacuum moves fits its history heap, as it fit its current heap: \
+                 {len} bytes over the limit of {limit}"
+            ),
             vacuum::Error::Stopped => Error::Exec(exec::Error::Cancelled),
         }
     }
@@ -1051,7 +1056,8 @@ impl<R: Runtime> Database<R> {
         stop: &Stop,
         _one: &VacuumHold<'_, R>,
     ) -> Result<Vacuumed, Error> {
-        let r = self.rels.get(&rel).ok_or(Broken::VacuumNoHeaps(rel))?;
+        let r = (self.rels.get(&rel))
+            .unwrap_or_else(|| panic!("a relation a vacuum names has heaps: {rel:?} has none"));
         self.admit_vacuum(r)?;
         let horizon = self.horizon(r);
         let started = self.rt.now();

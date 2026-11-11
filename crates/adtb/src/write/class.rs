@@ -16,7 +16,7 @@ impl Error {
             Error::Transactions(_) => Class::Transactions,
             Error::Quarantined { by, .. } => by.class(),
             Error::Internal(b) => b.class(),
-            Error::Blocked { .. } => Class::Engine,
+            Error::Blocked { .. } => Class::Suspended,
             Error::Exec(e) => e.class(),
         }
     }
@@ -53,15 +53,6 @@ impl By {
 impl Broken {
     fn class(&self) -> Class {
         match self {
-            Broken::ReindexNoHeaps(_)
-            | Broken::VacuumNoHeaps(_)
-            | Broken::UnstoredIndex { .. }
-            | Broken::NotAnIndex { .. }
-            | Broken::UndeclaredIndex { .. }
-            | Broken::HeapNoDirectory
-            | Broken::VacuumTooLarge { .. }
-            | Broken::UniqueIndexMissing
-            | Broken::NoUnique(_) => Class::Engine,
             Broken::BoundedPlan(_)
             | Broken::StatementPlan(_)
             | Broken::DuplicateKey(_)
@@ -80,6 +71,7 @@ impl Broken {
             | Broken::NotABoundWrite(_)
             | Broken::ScanUnread
             | Broken::RejectedRowNotRecord
+            | Broken::NoUnique(_)
             | Broken::ReferenceUnindexed { .. }
             | Broken::TopNotFor
             | Broken::RowsNotSetTyped(_)

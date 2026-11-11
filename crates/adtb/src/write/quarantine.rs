@@ -264,7 +264,7 @@ impl<R: Runtime> Database<R> {
             | Class::Transactions
             | Class::Refused
             | Class::Checker
-            | Class::Engine => e,
+            | Class::Suspended => e,
         })
     }
 

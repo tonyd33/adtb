@@ -1261,17 +1261,6 @@ fn a_history_heap_write_that_fails_on_a_page_is_a_page_error() {
         matches!(e, crate::write::Error::Exec(crate::exec::Error::Page(p)) if p == damaged),
         "{e:?}"
     );
-    let e = crate::write::Error::from(Error::Heap(crate::heap::Error::TooLarge {
-        len: 9000,
-        limit: 4000,
-    }));
-    assert_eq!(
-        crate::write::Error::from(crate::write::Broken::VacuumTooLarge {
-            len: 9000,
-            limit: 4000
-        }),
-        e
-    );
 }
 
 #[test]
