@@ -378,7 +378,6 @@ pub struct Txn {
     /// `None` for a read-only transaction.
     xid: Option<Xid>,
     sid: SerialId,
-    snapshot: Snapshot,
     taken: Taken,
     /// What its statements that succeeded wrote into the file.
     written: RefCell<quarantine::Touched>,
@@ -472,7 +471,7 @@ impl Txn {
 
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn snapshot(&self) -> &Snapshot {
-        &self.snapshot
+        self.hold().snapshot()
     }
 
     fn writer(&self) -> Result<Xid, Error> {
@@ -1220,7 +1219,7 @@ impl<R: Runtime> Database<R> {
         tx: &Txn,
         d: &crate::catalog::Deployment,
     ) -> Result<crate::catalog::Deployed, crate::catalog::Error> {
-        tx.noted(d.at(&self.pager, &self.session.txns, &tx.snapshot))
+        tx.noted(d.at(&self.pager, &self.session.txns, tx.hold()))
     }
 
     /// Returns the position of the latest commit `tx` reads, else of the log's durable end.
@@ -1431,10 +1430,7 @@ impl<R: Runtime> Database<R> {
     pub(crate) fn store(&self, tx: &Txn) -> Arc<exec::Store<R>> {
         let reads = exec::AtSnapshot {
             rt: self.rt.clone(),
-            reader: self
-                .session
-                .txns
-                .reader(&self.pager, tx.snapshot.clone(), tx.xid),
+            reader: self.session.txns.reader(&self.pager, tx.hold(), tx.xid),
             serial: Some((self.session.ser.clone(), tx.sid)),
         };
         let upto = tx.taken.upto().unwrap_or_else(|| self.pager.durable());

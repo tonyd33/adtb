@@ -39,8 +39,8 @@ pub use rot::{Rot, detail};
 pub use sched::{Admission, Task};
 pub use sched::{Admitted, Entry, Priority, Refusal, Refused, Resumable, Scheduler, Step, Stopped};
 pub use store::{
-    AtSnapshot, Histories, IndexedRows, Named, PastReads, ProbeBounds, Reads, Store, StoredHeap,
-    StoredIndex,
+    AtSnapshot, Histories, IndexedRows, Named, PastReads, ProbeBounds, Reads, Routes, Store,
+    StoredHeap, StoredIndex,
 };
 pub(crate) use store::{Conv, conv, from_stored, to_key, to_stored};
 pub use stream::{Produced, Production, produce};

@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 
 use adtb_sys::lock::Lock;
 
-use crate::mvcc::{self, Access, Begun, Hold, Limits, Scope, SerialId, Serializer, Snapshot};
+use crate::mvcc::{self, Access, Begun, Hold, Limits, Scope, SerialId, Serializer};
 use crate::mvcc::{Transactions, Waits, Xid};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
@@ -50,9 +50,9 @@ impl<R: Runtime> Session<R> {
         let xid = begun.xid();
         let tx = {
             let mut ser = self.ser.lock(&self.rt);
-            let (hold, snapshot) = self.txns.take(Scope::Every)?;
+            let hold = self.txns.take(Scope::Every)?;
             let sid = ser.begin(Access::ReadWrite(xid));
-            self.txn(Some(begun), sid, hold, snapshot)
+            self.txn(Some(begun), sid, hold)
         };
         self.waits.started(xid);
         Ok(tx)
@@ -60,9 +60,9 @@ impl<R: Runtime> Session<R> {
 
     /// Begin a read-only transaction, `deferrable` or not.
     pub(super) fn begin_reader(self: &Arc<Self>, deferrable: bool) -> Result<Txn, Error> {
-        let (sid, hold, snapshot) = {
+        let (sid, hold) = {
             let mut ser = self.ser.lock(&self.rt);
-            let (hold, snapshot) = self.txns.take(Scope::Every)?;
+            let hold = self.txns.take(Scope::Every)?;
             let sid = ser.begin(if deferrable {
                 Access::Deferrable
             } else {
@@ -70,24 +70,17 @@ impl<R: Runtime> Session<R> {
             });
             self.readers
                 .lock(&self.rt)
-                .insert(sid, (hold.taken(), snapshot.clone()));
+                .insert(sid, (hold.taken(), hold.snapshot().clone()));
             self.log_safe(&mut ser);
-            (sid, hold, snapshot)
+            (sid, hold)
         };
-        Ok(self.txn(None, sid, hold, snapshot))
+        Ok(self.txn(None, sid, hold))
     }
 
-    fn txn(
-        self: &Arc<Self>,
-        begun: Option<Begun>,
-        sid: SerialId,
-        hold: Hold,
-        snapshot: Snapshot,
-    ) -> Txn {
+    fn txn(self: &Arc<Self>, begun: Option<Begun>, sid: SerialId, hold: Hold) -> Txn {
         Txn {
             xid: begun.as_ref().map(Begun::xid),
             sid,
-            snapshot,
             taken: hold.taken(),
             written: RefCell::default(),
             changed: RefCell::default(),
@@ -180,6 +173,15 @@ impl<R: Runtime> Abandon for Session<R> {
 }
 
 impl Txn {
+    /// Returns the hold on the transaction's snapshot.
+    pub(super) fn hold(&self) -> &Hold {
+        &self
+            .held
+            .as_ref()
+            .expect("a transaction not ended holds its snapshot")
+            .hold
+    }
+
     /// Returns `done`, marking the transaction failed when it is an `Err`.
     pub(super) fn noted<T, E>(&self, done: Result<T, E>) -> Result<T, E> {
         if done.is_err() {

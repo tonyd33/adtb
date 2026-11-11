@@ -28,8 +28,8 @@ impl Catalog {
         txns: &Transactions<R>,
         r: RelId,
     ) -> Result<Vec<(u32, Vec<Value>)>, Error> {
-        let (hold, snapshot) = txns.take(Scope::Every)?;
-        let rows = self.rows(pager, txns, &snapshot, r);
+        let hold = txns.take(Scope::Every)?;
+        let rows = self.rows(pager, txns, &hold, r);
         drop(hold);
         Ok(rows?)
     }
@@ -60,12 +60,12 @@ impl Catalog {
     ) -> Result<(), Error> {
         let begun = txns.begin(pager)?;
         let x = begun.xid();
-        let (hold, snapshot) = txns.take(Scope::Every)?;
+        let hold = txns.take(Scope::Every)?;
         let m = Migrating {
             pager,
             txns,
             x,
-            snapshot: &snapshot,
+            hold: &hold,
         };
         let done = writes
             .iter()

@@ -880,11 +880,18 @@ id a replica last reported for `h`.
 Invariant: `w(h)` is never past the `xmin` of a live snapshot published
 to `h`, nor past a replica's report for `h`.
 
-Invariant: a snapshot never outlives its reader's transaction: abort,
-and the drop of a transaction not ended (§4.5), release the snapshot
-it holds under the serializer's lock, and commit releases it once the
-serializer's lock is dropped, before it waits for the log to be
-durable.
+Invariant: a transaction's hold on its snapshot never outlives the
+transaction: abort, and the drop of a transaction not ended (§4.5),
+release it under the serializer's lock, and commit releases it once
+the serializer's lock is dropped, before it waits for the log to be
+durable. The snapshot is released then unless a reader built from the
+hold still lives; it is released when the last such reader drops.
+Nothing in the types stops a reader that records no SIREAD locks from
+reading after its transaction ends. A reader recording SIREAD locks
+panics, naming its serializer entry as not running, once the
+serializer has dropped that entry: at once after an abort or a drop,
+and after a commit once no running transaction needs it, before which
+its reads still record locks.
 
 Invariant: a read-write transaction's hold is released only after the
 serializer has settled the read-only transactions its end resolves.
@@ -898,9 +905,28 @@ or not the commit log records the abort, and when its `Begun` guard
 drops ([§4.1](#41-transaction-ids)), so an id whose transaction ended
 on any path holds back no snapshot taken after.
 
-`Transactions::take(scope)` returns a snapshot with its `Hold`, which
-publishes the snapshot to the heaps of `scope` until it drops, on every
-path. Nothing else releases a snapshot.
+`Transactions::take(scope)` returns a `Hold` of a new snapshot, which
+publishes the snapshot to the heaps of `scope` until it and every
+reader built from it drop, on every path. Nothing else releases a
+snapshot.
+
+A `Reader` of versions is built only from a `Hold`
+(`Transactions::reader`) or from the `Pinned` marker of a read of the
+past (`Transactions::reader_at`, §10.3), and keeps what it is built
+from until it drops. `Reader::covers(heap)` holds when the reader's
+snapshot is published to `heap`, or for every heap when the reader
+reads at a pinned marker.
+
+Precondition: a holder of a `Reader` reads versions of a heap only
+when the reader covers it. It drops the reader holding no page latch
+and not the lock of the transactions' state: the last reader of a
+snapshot takes that lock to release it, and the lock is held while
+pages are written. Holding the serializer's lock is allowed.
+
+The executor's store refuses a heap its reader does not cover with an
+`Internal` failure naming the heap, instead of reading it, and refuses
+an index probe unless the reader covers the heap of every constructor
+the probe routes to.
 
 Postcondition: a version of `h` whose `xmax` names a transaction that
 committed, with `xmax < w(h)`, is dead to every snapshot published to
@@ -1039,7 +1065,9 @@ A read `at commit p` reads at the latest marker at or before `p`
 within the window, a function of `p` listed in `sys::safe_snapshots`
 ([../spec/catalog.md §1.5](../spec/catalog.md#15-commit-times-and-safe-snapshots));
 `at instant t` reads at the latest marker whose time is at or before
-`t`. A read holds its marker while it runs and takes no SIREAD locks.
+`t`. A read holds its marker while it runs and takes no SIREAD locks:
+`Transactions::pin` and `pin_time` return the marker `Pinned`, held
+until it and every reader built from it drop.
 It reads the current heap of each constructor it reads and then its
 history heap, probing the history key index by key where the current
 read would probe the key index, and judges each version by the

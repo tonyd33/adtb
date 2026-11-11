@@ -135,12 +135,12 @@ impl Catalog {
         let begun = txns.begin(pager)?;
         let x = begun.xid();
         update_root(pager, self.root, |r| r.changing = Changing::Schema(x))?;
-        let (hold, snapshot) = txns.take(Scope::Every)?;
+        let hold = txns.take(Scope::Every)?;
         let m = Migrating {
             pager,
             txns,
             x,
-            snapshot: &snapshot,
+            hold: &hold,
         };
         let prepared = Prepared {
             next,
@@ -208,8 +208,8 @@ impl Catalog {
 
     /// Returns the catalog of `next`, the source after migration `file`, as `m.x` writes it: the
     /// rows of every relation `rewritten` names mapped through each of the migration's operators
-    /// in turn from the rows `m.snapshot` sees, and the `Log` rows of its grants. Returns too
-    /// each dormant grant row written.
+    /// in turn from the rows the snapshot of `m.hold` sees, and the `Log` rows of its grants;
+    /// and returns too each dormant grant row written.
     fn mapped<R: Runtime>(
         &self,
         m: &Migrating<'_, R>,
@@ -232,7 +232,7 @@ impl Catalog {
             let mut ctors: BTreeMap<CatCtorId, Vec<Vec<Value>>> = (0..ctor_count(&self.schema, r))
                 .map(|c| (ctor_id(&self.schema, r, c), Vec::new()))
                 .collect();
-            for (c, row) in self.rows(m.pager, m.txns, m.snapshot, r)? {
+            for (c, row) in self.rows(m.pager, m.txns, m.hold, r)? {
                 ctors
                     .get_mut(&ctor_id(&self.schema, r, c))
                     .expect("a constructor of the relation")
@@ -436,7 +436,7 @@ impl Catalog {
                     })
                     .collect(),
                 None => match relation(&self.schema, rid) {
-                    Some(old) => self.rows(m.pager, m.txns, m.snapshot, old)?,
+                    Some(old) => self.rows(m.pager, m.txns, m.hold, old)?,
                     None => continue,
                 },
             };
@@ -458,8 +458,8 @@ impl Catalog {
         Ok(why)
     }
 
-    /// Returns whether the heap of constructor `cid` of relation `rid` holds a row `m.snapshot`
-    /// sees.
+    /// Returns whether the heap of constructor `cid` of relation `rid` holds a row the snapshot
+    /// of `m.hold` sees.
     fn holds<R: Runtime>(
         &self,
         m: &Migrating<'_, R>,
@@ -470,7 +470,7 @@ impl Catalog {
             return Ok(false);
         };
         let c = ctor_index(&self.schema, r, cid).expect("a constructor of the relation");
-        Ok(!visible(m.pager, m.txns, m.snapshot, self.heap(r, c))?.is_empty())
+        Ok(!visible(m.pager, m.txns, m.hold, self.heap(r, c))?.is_empty())
     }
 
     /// Returns the catalog of `b.next` as transaction `m.x` writes it over this one: a heap for
@@ -716,7 +716,7 @@ impl Catalog {
         let schema::ValueDef::Relation(r) = self.schema.module(module).values["migrations"] else {
             panic!("the catalog declares migrations as a relation");
         };
-        for (_, row) in self.rows(m.pager, m.txns, m.snapshot, r)? {
+        for (_, row) in self.rows(m.pager, m.txns, m.hold, r)? {
             let [Value::I64(version), Value::Bytes(hash), ..] = row.as_slice() else {
                 return Err(Rot::MigrationRow.into());
             };

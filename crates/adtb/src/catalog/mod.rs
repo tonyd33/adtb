@@ -54,7 +54,7 @@ use crate::btree::{self, BTree, Index};
 use crate::exec::{self, IndexedRows, StoredHeap, StoredIndex};
 use crate::heap::{self, FieldType, Heap, LargeStore};
 use crate::key::{CtorId, Dir, Entry, KeySchema, OrderKey, Scalar, Tid, Value};
-use crate::mvcc::{self, Scope, Snapshot, Transactions, Xid};
+use crate::mvcc::{self, Hold, Scope, Transactions, Xid};
 use crate::plan::{self, HeapId, IndexDesc, IndexId, RelationDesc};
 use crate::runtime::Runtime;
 use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid};
@@ -450,8 +450,8 @@ fn named<R: Runtime>(
     let rows = if let Some(damage) = pager.whole_cause() {
         latest_rows(pager, txns, roots, damage)?
     } else {
-        let (hold, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
-        let rows = visible(pager, txns, &snapshot, roots);
+        let hold = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
+        let rows = visible(pager, txns, &hold, roots);
         drop(hold);
         rows?
     };
@@ -490,14 +490,14 @@ fn latest_rows<R: Runtime>(
     }
 }
 
-/// Returns the rows of the versions of `heap` visible at `snapshot`, in heap order.
+/// Returns the rows of the versions of `heap` visible at the snapshot of `hold`, in heap order.
 fn visible<R: Runtime>(
     pager: &Pager<R>,
     txns: &Transactions<R>,
-    snapshot: &Snapshot,
+    hold: &Hold,
     heap: &Heap,
 ) -> Result<Vec<Vec<Value>>, PageError> {
-    let reader = txns.reader(pager, snapshot.clone(), None);
+    let reader = txns.reader(pager, hold, None);
     'scan: loop {
         let mut versions = Vec::new();
         heap.scan(pager, |v| versions.push(v))?;
@@ -662,12 +662,12 @@ impl Catalog {
             .values()
             .map(|&id| CatRelId(id))
             .collect();
-        let (hold, snapshot) = txns.take(Scope::Every)?;
+        let hold = txns.take(Scope::Every)?;
         let m = Migrating {
             pager,
             txns,
             x,
-            snapshot: &snapshot,
+            hold: &hold,
         };
         let built = empty.build(
             &m,
@@ -1109,19 +1109,19 @@ impl Catalog {
         &self.keys
     }
 
-    /// Returns the rows of relation `r` visible at `snapshot`, each with its constructor index,
-    /// by constructor and then in heap order.
+    /// Returns the rows of relation `r` visible at the snapshot of `hold`, each with its
+    /// constructor index, by constructor and then in heap order.
     pub fn rows<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
-        snapshot: &Snapshot,
+        hold: &Hold,
         r: RelId,
     ) -> Result<Vec<(u32, Vec<Value>)>, PageError> {
         let mut out = Vec::new();
         for ((_, c), heap) in self.heaps.range((r, 0)..=(r, u32::MAX)) {
             out.extend(
-                visible(pager, txns, snapshot, heap)?
+                visible(pager, txns, hold, heap)?
                     .into_iter()
                     .map(|row| (*c, row)),
             );
@@ -1215,7 +1215,7 @@ struct Migrating<'a, R: Runtime> {
     pager: &'a Pager<R>,
     txns: &'a Transactions<R>,
     x: Xid,
-    snapshot: &'a Snapshot,
+    hold: &'a Hold,
 }
 
 impl<R: Runtime> Migrating<'_, R> {
@@ -1256,7 +1256,7 @@ fn heap_root(rid: CatRelId, cid: CatCtorId, heap: &Heap) -> Vec<Value> {
     ]
 }
 
-/// Delete, as `m.x`, one version `m.snapshot` sees of each row of `rows` from `heap`.
+/// Delete, as `m.x`, one version the snapshot of `m.hold` sees of each row of `rows` from `heap`.
 fn delete_rows<R: Runtime>(
     m: &Migrating<'_, R>,
     heap: &Heap,
@@ -1267,7 +1267,7 @@ fn delete_rows<R: Runtime>(
         return Ok(());
     }
     let mut left: Vec<&Vec<Value>> = rows.iter().collect();
-    let reader = m.txns.reader(pager, m.snapshot.clone(), None);
+    let reader = m.txns.reader(pager, m.hold, None);
     'scan: loop {
         let mut versions = Vec::new();
         heap.scan(pager, |v| versions.push(v))?;

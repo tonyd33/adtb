@@ -31,7 +31,7 @@ pub use ssi::{Access, Limits, Safety, ScanId, SerialId, Serializer};
 pub(crate) use tests::writers;
 #[cfg(test)]
 pub use txn::RESERVATION;
-pub use txn::{Begun, Hold, PastError, Taken, Transactions};
+pub use txn::{Begun, Hold, PastError, Pinned, Taken, Transactions};
 pub use wait::{Waits, Watch};
 use watermark::SnapshotId;
 pub use watermark::{Holds, Scope};

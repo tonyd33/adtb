@@ -64,6 +64,9 @@ pub trait Reads: Send + Sync {
 
     /// Record that the version at `tid` of heap `heap` was read.
     fn fetched(&self, heap: HeapNo, tid: Tid) -> Result<(), SerializationFailure>;
+
+    /// Returns whether a read of heap `heap` sees what the reader's snapshot sees.
+    fn covers(&self, heap: HeapNo) -> bool;
 }
 
 /// Reads at a snapshot of the transactions layer, recording SIREAD locks with `serial` when it
@@ -131,7 +134,14 @@ impl<R: Runtime> Reads for AtSnapshot<R> {
             None => Ok(()),
         }
     }
+
+    fn covers(&self, heap: HeapNo) -> bool {
+        self.reader.covers(heap.0)
+    }
 }
+
+/// The heap of each constructor position an index probe reads, by position.
+pub type Routes = BTreeMap<u32, HeapId>;
 
 /// A heap a plan names, with the field types of its rows.
 #[derive(Clone, Debug)]
@@ -362,10 +372,32 @@ fn index_error(e: btree::Error) -> Error {
 }
 
 impl<R: Runtime> Store<R> {
-    fn heap(&self, id: HeapId) -> &StoredHeap {
-        self.heaps
+    /// Returns heap `id`, refused unless the store's reads cover it.
+    fn heap(&self, id: HeapId) -> Result<&StoredHeap, Error> {
+        let stored = self
+            .heaps
             .get(&id)
-            .unwrap_or_else(|| panic!("the store holds heap {id:?}"))
+            .unwrap_or_else(|| panic!("the store holds heap {id:?}"));
+        self.covered(&stored.heap)?;
+        Ok(stored)
+    }
+
+    /// Returns the history heap of heap `id`, `None` when the store does not read its past,
+    /// refused unless the store's reads cover it.
+    fn past_heap(&self, id: HeapId) -> Result<Option<&StoredHeap>, Error> {
+        let Some(stored) = self.history.heaps.get(&id) else {
+            return Ok(None);
+        };
+        self.covered(&stored.heap)?;
+        Ok(Some(stored))
+    }
+
+    fn covered(&self, heap: &Heap) -> Result<(), Error> {
+        if self.reads.covers(heap.id()) {
+            Ok(())
+        } else {
+            Err(Broken::OutsideScope(heap.id()).into())
+        }
     }
 
     fn index(&self, id: IndexId) -> &StoredIndex {
@@ -385,7 +417,7 @@ impl<R: Runtime> Store<R> {
         each: impl FnMut(Batch) -> Result<ControlFlow<()>, Error>,
     ) -> Result<(), Error> {
         let listing = self.pages(id)?;
-        if let Some(past) = self.history.heaps.get(&id) {
+        if let Some(past) = self.past_heap(id)? {
             return self.scan_past(id, &listing.pages, past, rows, grant, each);
         }
         if let ControlFlow::Break(n) = self.scan_pages(id, &listing.pages, rows, grant, each)? {
@@ -408,7 +440,7 @@ impl<R: Runtime> Store<R> {
         grant: &Arc<Grant>,
         mut each: impl FnMut(Batch) -> Result<ControlFlow<()>, Error>,
     ) -> Result<(), Error> {
-        let h = self.heap(id);
+        let h = self.heap(id)?;
         let mut b = Filling::new(&h.row, rows, grant);
         let mut deleted = Passed::new(grant);
         for now in [true, false] {
@@ -453,7 +485,8 @@ impl<R: Runtime> Store<R> {
     /// Returns the version the history key index of key index `index` names for `key` and
     /// the store's snapshot sees, from the history heap of the heap its route in `routes`, by
     /// constructor, names; `None` when there is none or the store does not read the past.
-    /// While the key index is quarantined, scan those history heaps within `bounds`.
+    /// While the key index is quarantined, scan those history heaps within `bounds`. Refuse the
+    /// read unless the store's reads cover every route's heap and its history heap.
     pub fn fetch_past(
         &self,
         index: IndexId,
@@ -464,6 +497,10 @@ impl<R: Runtime> Store<R> {
         let Some(past) = self.history.indexes.get(&index) else {
             return Ok(None);
         };
+        for &(_, heap) in routes {
+            self.heap(heap)?;
+            self.past_heap(heap)?;
+        }
         let ix = self.index(index);
         if let Some(rows) = &ix.rows
             && self.pager.any_quarantined()
@@ -481,7 +518,7 @@ impl<R: Runtime> Store<R> {
             let Some(&(_, heap)) = routes.iter().find(|(r, _)| r == c) else {
                 continue;
             };
-            let Some(stored) = self.history.heaps.get(&heap) else {
+            let Some(stored) = self.past_heap(heap)? else {
                 continue;
             };
             let Some(v) = stored.heap.read(&self.pager, e.tid)? else {
@@ -515,7 +552,7 @@ impl<R: Runtime> Store<R> {
         let wanted = schema.encode(key);
         let types = self.key_types(index);
         for &(c, heap) in routes {
-            let Some(stored) = self.history.heaps.get(&heap) else {
+            let Some(stored) = self.past_heap(heap)? else {
                 continue;
             };
             for pid in stored.heap.pages(&self.pager)? {
@@ -546,7 +583,7 @@ impl<R: Runtime> Store<R> {
     /// Returns the pages of heap `id` in directory order, recording that a scan of the heap
     /// began.
     pub fn pages(&self, id: HeapId) -> Result<Listing, Error> {
-        let heap = &self.heap(id).heap;
+        let heap = &self.heap(id)?.heap;
         let scan = self
             .reads
             .scanning(heap.id())
@@ -576,7 +613,7 @@ impl<R: Runtime> Store<R> {
         grant: &Arc<Grant>,
         mut each: impl FnMut(Batch) -> Result<ControlFlow<()>, Error>,
     ) -> Result<ControlFlow<usize>, Error> {
-        let h = self.heap(id);
+        let h = self.heap(id)?;
         let mut b = Filling::new(&h.row, rows, grant);
         for (read, pid) in (1..).zip(pages) {
             let mut versions = Vec::new();
@@ -607,7 +644,10 @@ impl<R: Runtime> Store<R> {
     /// with its TID.
     pub fn fetch(&self, id: HeapId, at: &Named) -> Result<Option<(Tid, Vec<Value>)>, Error> {
         let tid = at.tid;
-        let StoredHeap { heap, sum, .. } = self.heap(id);
+        let StoredHeap { heap, sum, .. } = self.heap(id)?;
+        for h in sum {
+            self.covered(h)?;
+        }
         let walked = walk(&self.pager, heap.id(), sum, tid, |l, _| {
             self.reads
                 .saw((Pid(l.tid.page()), heap.id()), &l.header.writers)
@@ -635,12 +675,13 @@ impl<R: Runtime> Store<R> {
     }
 
     /// Returns the entries of index `id` whose leading key fields are `prefix`, each with its
-    /// constructor position, for the constructors of `routes`.
+    /// constructor position, for the constructors of `routes`. Refuse the probe unless the
+    /// store's reads cover the heap of every route.
     pub fn probe(
         &self,
         id: IndexId,
         prefix: &[Value],
-        routes: &BTreeSet<u32>,
+        routes: &Routes,
         bounds: ProbeBounds<'_>,
     ) -> Result<Vec<Named>, Error> {
         let bytes = self.encode_prefix(id, prefix);
@@ -659,7 +700,7 @@ impl<R: Runtime> Store<R> {
         prefix: &[Value],
         lo: Option<(Value, bool)>,
         hi: Option<(Value, bool)>,
-        routes: &BTreeSet<u32>,
+        routes: &Routes,
         bounds: ProbeBounds<'_>,
     ) -> Result<Vec<Named>, Error> {
         let base = self.encode_prefix(id, prefix);
@@ -703,9 +744,12 @@ impl<R: Runtime> Store<R> {
         id: IndexId,
         lo: Bound<Vec<u8>>,
         hi: Bound<Vec<u8>>,
-        routes: &BTreeSet<u32>,
+        routes: &Routes,
         bounds: ProbeBounds<'_>,
     ) -> Result<Vec<Named>, Error> {
+        for &heap in routes.values() {
+            self.heap(heap)?;
+        }
         let ix = self.index(id);
         if let Some(rows) = &ix.rows
             && self.pager.any_quarantined()
@@ -718,7 +762,7 @@ impl<R: Runtime> Store<R> {
         let ctors: BTreeSet<CtorId> = ix
             .ctors
             .iter()
-            .filter(|(_, c)| routes.contains(c))
+            .filter(|(_, c)| routes.contains_key(c))
             .map(|(id, _)| *id)
             .collect();
         self.reads
@@ -739,7 +783,7 @@ impl<R: Runtime> Store<R> {
                     .ctors
                     .get(&e.ctor)
                     .unwrap_or_else(|| panic!("index {id:?} maps constructor {:?}", e.ctor));
-                routes.contains(&c).then_some(Named {
+                routes.contains_key(&c).then_some(Named {
                     ctor: c,
                     tid: e.tid,
                     entry: Some((id, e)),
@@ -757,7 +801,7 @@ impl<R: Runtime> Store<R> {
         id: IndexId,
         rows: &IndexedRows,
         range: (&Bound<Vec<u8>>, &Bound<Vec<u8>>),
-        routes: &BTreeSet<u32>,
+        routes: &Routes,
         bounds: ProbeBounds<'_>,
     ) -> Result<Vec<Named>, Error> {
         let schema = self.index(id).index.schema();
@@ -765,19 +809,19 @@ impl<R: Runtime> Store<R> {
         let (lo, hi) = range;
         let mut found = Vec::new();
         let mut held = bounds.grant.arena();
-        for (&c, &heap) in rows.heaps.iter().filter(|(c, _)| routes.contains(c)) {
+        for (&c, &heap) in rows.heaps.iter().filter(|(c, _)| routes.contains_key(c)) {
             let listing = self.pages(heap)?;
             for &pid in &listing.pages {
                 (bounds.check)()?;
                 let mut versions = Vec::new();
-                self.heap(heap)
+                self.heap(heap)?
                     .heap
                     .scan_pages(&self.pager, &[pid], |v| versions.push(v))?;
                 let size: usize = versions.iter().map(|v| row_size(&v.row)).sum();
                 let _page = bounds.grant.take(size)?;
                 for v in versions {
                     if self.reads.saw(
-                        (Pid(v.tid.page()), self.heap(heap).heap.id()),
+                        (Pid(v.tid.page()), self.heap(heap)?.heap.id()),
                         &v.header.writers,
                     )? && let Some(key) = rows.keys.key(c, &v.row, &types)?
                     {

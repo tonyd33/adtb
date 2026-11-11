@@ -105,7 +105,7 @@ impl<R: Runtime> Stmt<'_, R> {
         self.db
             .session
             .txns
-            .reader(&self.db.pager, self.tx.snapshot.clone(), Some(me))
+            .reader(&self.db.pager, self.tx.hold(), Some(me))
     }
 
     /// Returns `row` as `heap` stores it.

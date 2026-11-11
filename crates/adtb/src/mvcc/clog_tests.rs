@@ -4,9 +4,7 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 use crate::mvcc::Fate as Verdict;
-use crate::mvcc::{
-    Begun, CommitLog, Hold, Rule, Scope, Snapshot, Status, StatusError, Transactions, Xid,
-};
+use crate::mvcc::{Begun, CommitLog, Hold, Rule, Scope, Status, StatusError, Transactions, Xid};
 
 use super::writers;
 use crate::storage::{Damage, Edit, HEADER_LEN, PageKind, Pager, Pid};
@@ -78,10 +76,9 @@ impl Model {
 }
 
 struct Held {
-    _hold: Hold,
+    hold: Hold,
     taken: usize,
     reader: Option<Xid>,
-    snapshot: Snapshot,
     scope: Scope,
 }
 
@@ -140,12 +137,11 @@ fn visibility_through_the_commit_log_matches_a_model() {
                     };
                     let reader = (!txns.running().is_empty() && rng.below(2) == 0)
                         .then(|| pick(&mut rng, &txns.running()));
-                    let (hold, snapshot) = txns.take(scope.clone()).unwrap();
+                    let hold = txns.take(scope.clone()).unwrap();
                     held.push(Held {
-                        _hold: hold,
+                        hold,
                         taken: event,
                         reader,
-                        snapshot,
                         scope,
                     });
                 }
@@ -175,14 +171,14 @@ fn visibility_through_the_commit_log_matches_a_model() {
                             0 => None,
                             _ => concurrent(xmax),
                         };
-                        let reader = txns.reader(pager, h.snapshot.clone(), h.reader);
+                        let reader = txns.reader(pager, &h.hold, h.reader);
                         let seen = reader.sees(&writers(xmin, xmax)).expect("sees");
                         let got = (seen.visible(), reader.before(seen).expect("before"));
                         assert_eq!(
                             (visible, before),
                             got,
                             "version ({xmin}, {xmax}) at {:?} for {:?}",
-                            h.snapshot,
+                            h.hold.snapshot(),
                             h.reader
                         );
                         checks += 1;
@@ -201,9 +197,9 @@ fn visibility_through_the_commit_log_matches_a_model() {
                         Scope::Heaps(hs) => hs.contains(&heap),
                     } {
                         assert!(
-                            w <= h.snapshot.xmin(),
+                            w <= h.hold.snapshot().xmin(),
                             "heap {heap}'s watermark {w:?} passes {:?}",
-                            h.snapshot
+                            h.hold.snapshot()
                         );
                     }
                 }
@@ -728,7 +724,7 @@ impl Histories<'_> {
         let oldest = txns.running().first().copied();
         let watermark = self
             .live(heap)
-            .map(|h| h.snapshot.xmin())
+            .map(|h| h.hold.snapshot().xmin())
             .chain(oldest)
             .fold(TxnProbe::of(txns).next_xid(), Xid::min);
         for (n, &v) in self.versions.iter().enumerate() {
@@ -845,12 +841,11 @@ fn fate_matches_a_model_of_random_histories() {
                     };
                     let reader = (!txns.running().is_empty() && rng.below(2) == 0)
                         .then(|| pick(&mut rng, &txns.running()));
-                    let (hold, snapshot) = txns.take(scope.clone()).unwrap();
+                    let hold = txns.take(scope.clone()).unwrap();
                     held.push(Held {
-                        _hold: hold,
+                        hold,
                         taken: event,
                         reader,
-                        snapshot,
                         scope,
                     });
                 }
@@ -904,7 +899,7 @@ fn a_dropped_hold_releases_its_heaps() {
     with_open(&mut sim, root, |pager, txns| {
         let begun = txns.begin(pager).expect("begin");
         let x = begun.xid();
-        let (hold, _) = txns
+        let hold = txns
             .take(Scope::Heaps(BTreeSet::from([1])))
             .expect("a snapshot");
         txns.commit(pager, begun).expect("commit");
@@ -916,6 +911,26 @@ fn a_dropped_hold_releases_its_heaps() {
 }
 
 #[test]
+fn a_reader_keeps_the_hold_it_was_built_from_until_it_drops() {
+    let mut sim = Sim::new(5, Config::default());
+    let (root, _) = setup(&mut sim, 0);
+    with_open(&mut sim, root, |pager, txns| {
+        let begun = txns.begin(pager).expect("begin");
+        let x = begun.xid();
+        let hold = txns
+            .take(Scope::Heaps(BTreeSet::from([1])))
+            .expect("a snapshot");
+        let reader = txns.reader(pager, &hold, None);
+        txns.commit(pager, begun).expect("commit");
+        let next = TxnProbe::of(txns).next_xid();
+        drop(hold);
+        let kept = txns.watermark(1);
+        drop(reader);
+        assert_eq!((x, next), (kept, txns.watermark(1)));
+    });
+}
+
+#[test]
 fn a_dropped_guard_aborts_its_id_and_holds_back_no_later_snapshot() {
     let mut sim = Sim::new(6, Config::default());
     let (root, _) = setup(&mut sim, 0);
@@ -923,7 +938,7 @@ fn a_dropped_guard_aborts_its_id_and_holds_back_no_later_snapshot() {
         let begun = txns.begin(pager).expect("begin");
         let x = begun.xid();
         drop(begun);
-        let (hold, _) = txns
+        let hold = txns
             .take(Scope::Heaps(BTreeSet::from([1])))
             .expect("a snapshot");
         let next = TxnProbe::of(txns).next_xid();

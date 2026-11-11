@@ -7,7 +7,7 @@ use adtb_lang::types::{CtorSet, RelId, Ty};
 
 use crate::catalog::{IndexKeys, IndexSpec};
 use crate::exec::types::ctors;
-use crate::exec::{Conv, conv};
+use crate::exec::{Conv, Routes, conv};
 use crate::plan::{Catalog, HeapId, IndexDesc, IndexId, declared_elements};
 
 use super::{Broken, Error, Rot};
@@ -86,6 +86,14 @@ pub type Rels = BTreeMap<RelId, Rel>;
 impl Rel {
     pub fn all_ctors(&self) -> Vec<u32> {
         (0..self.ctors.len() as u32).collect()
+    }
+
+    /// Returns the heap of each constructor position of `ctors`, by position.
+    pub fn routes(&self, ctors: impl IntoIterator<Item = u32>) -> Routes {
+        ctors
+            .into_iter()
+            .map(|c| (c, self.ctors[c as usize].heap))
+            .collect()
     }
 }
 

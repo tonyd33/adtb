@@ -389,24 +389,40 @@ impl<R: Runtime> Transactions<R> {
     }
 
     /// Take a snapshot of the transactions now committed and hold back the heaps of `scope` for
-    /// it until the returned [`Hold`] drops.
+    /// it until the returned [`Hold`] and every reader built from it drop.
     ///
     /// Fails if the database is quarantined.
-    pub fn take(&self, scope: Scope) -> Result<(Hold, Snapshot), Error> {
+    pub fn take(&self, scope: Scope) -> Result<Hold, Error> {
         self.admit()?;
         let mut st = self.state.lock(&self.rt);
         let in_progress: Vec<Xid> = st.running.iter().copied().collect();
         let xmin = in_progress.first().copied().unwrap_or(st.next);
         let snapshot = Snapshot::new(xmin, st.next, in_progress);
-        let id = st.holds.hold(xmin, scope);
+        let id = st.holds.hold(xmin, scope.clone());
         let taken = Taken {
             upto: st.last_commit,
             time: st.last_time,
         };
         drop(st);
         let txns: Weak<dyn Release> = Arc::<Shared<R>>::downgrade(&self.0);
-        let hold = Hold { id, taken, txns };
-        Ok((hold, snapshot))
+        Ok(Hold(Arc::new(Holding {
+            id,
+            scope,
+            snapshot,
+            taken,
+            txns,
+        })))
+    }
+
+    /// Returns whether the snapshot counts the writer `x` as committed, consulting the commit
+    /// log only for an id below its `xmax` and not in progress.
+    pub fn counts_committed(
+        &self,
+        pager: &Pager<R>,
+        snapshot: &Snapshot,
+        x: Xid,
+    ) -> Result<bool, StatusError> {
+        snapshot.counts_committed(x, |x| self.status(pager, x))
     }
 
     /// Log a safe snapshot marker for `snapshot`, which `taken` describes, covering every commit
@@ -589,13 +605,13 @@ impl<R: Runtime> Transactions<R> {
         }
     }
 
-    /// Returns the marker a read of the past at `at` reads, held so that what it sees stays until
-    /// [`Transactions::unpin`]: the latest marker at or before `at`, durable before it returns.
+    /// Returns the marker a read of the past at `at` reads, pinned so that what it sees stays
+    /// until the pin drops: the latest marker at or before `at`, durable before it returns.
     ///
     /// Fail with [`PastError::Unavailable`] when `at` is after `upto` or no marker within the
     /// window is at or before it, and with [`PastError::Damaged`] when the record is damaged or
     /// a marker could not be kept.
-    pub fn pin(&self, pager: &Pager<R>, at: Position, upto: Position) -> Result<Marker, PastError> {
+    pub fn pin(&self, pager: &Pager<R>, at: Position, upto: Position) -> Result<Pinned, PastError> {
         let found = self.pin_with(pager, |past| {
             if at > upto {
                 return Ok(None);
@@ -605,14 +621,14 @@ impl<R: Runtime> Transactions<R> {
         found?.map_or_else(|| Err(self.unavailable(pager)), Ok)
     }
 
-    /// Returns the marker a read of the past at `time` reads, held as [`Transactions::pin`] holds
-    /// one: the latest marker whose time is at or before `time`.
+    /// Returns the marker a read of the past at `time` reads, pinned as [`Transactions::pin`]
+    /// pins one: the latest marker whose time is at or before `time`.
     pub fn pin_time(
         &self,
         pager: &Pager<R>,
         time: SystemTime,
         upto: Position,
-    ) -> Result<Marker, PastError> {
+    ) -> Result<Pinned, PastError> {
         let found = self.pin_with(pager, |past| {
             let m = past.marker_by_time(pager, nanos(time))?;
             Ok(m.filter(|m| m.at <= upto))
@@ -624,7 +640,7 @@ impl<R: Runtime> Transactions<R> {
         &self,
         pager: &Pager<R>,
         find: impl FnOnce(&Past) -> Result<Option<Marker>, btree::Error>,
-    ) -> Result<Option<Marker>, PastError> {
+    ) -> Result<Option<Pinned>, PastError> {
         let Some(past) = self.history.get() else {
             return Ok(None);
         };
@@ -641,7 +657,9 @@ impl<R: Runtime> Transactions<R> {
             return Ok(None);
         };
         *st.pins.entry(m.time).or_default() += 1;
-        Ok(Some(m))
+        drop(st);
+        let txns: Weak<dyn Release> = Arc::<Shared<R>>::downgrade(&self.0);
+        Ok(Some(Pinned(Arc::new(Pinning { marker: m, txns }))))
     }
 
     fn unavailable(&self, pager: &Pager<R>) -> PastError {
@@ -656,21 +674,6 @@ impl<R: Runtime> Transactions<R> {
                 oldest: ms.iter().rev().find(|m| m.time >= cutoff).map(|m| m.at),
             },
             Err(e) => PastError::Damaged(e),
-        }
-    }
-
-    /// Release the hold [`Transactions::pin`] took on `marker`.
-    ///
-    /// Panic if `marker` is not held.
-    pub fn unpin(&self, marker: &Marker) {
-        let mut st = self.state.lock(&self.rt);
-        let n = st
-            .pins
-            .get_mut(&marker.time)
-            .unwrap_or_else(|| panic!("no read of the past holds the marker at {:?}", marker.at));
-        *n -= 1;
-        if *n == 0 {
-            st.pins.remove(&marker.time);
         }
     }
 }
@@ -751,6 +754,11 @@ impl<R: Runtime> Shared<R> {
 trait Release: Send + Sync {
     fn release(&self, id: SnapshotId);
 
+    /// Release a pin [`Transactions::pin`] took on `marker`.
+    ///
+    /// Panic if `marker` is not pinned.
+    fn unpin(&self, marker: &Marker);
+
     /// Abort `x` best effort: take it out of the running transactions and, unless the thread is
     /// panicking, attempt its record.
     fn abandon(&self, x: Xid);
@@ -759,6 +767,18 @@ trait Release: Send + Sync {
 impl<R: Runtime> Release for Shared<R> {
     fn release(&self, id: SnapshotId) {
         self.state.lock(&self.rt).holds.release(id);
+    }
+
+    fn unpin(&self, marker: &Marker) {
+        let mut st = self.state.lock(&self.rt);
+        let n = st
+            .pins
+            .get_mut(&marker.time)
+            .unwrap_or_else(|| panic!("no read of the past holds the marker at {:?}", marker.at));
+        *n -= 1;
+        if *n == 0 {
+            st.pins.remove(&marker.time);
+        }
     }
 
     fn abandon(&self, x: Xid) {
@@ -813,9 +833,14 @@ impl Drop for Begun {
     }
 }
 
-/// A snapshot's hold on the heaps of its scope, released when it drops.
-pub struct Hold {
+/// A snapshot's hold on the heaps of its scope, shared with every reader built from it and
+/// released when the last of them drops.
+pub struct Hold(Arc<Holding>);
+
+struct Holding {
     id: SnapshotId,
+    scope: Scope,
+    snapshot: Snapshot,
     taken: Taken,
     /// Empty once the transactions are gone, when nothing is left to release.
     txns: Weak<dyn Release>,
@@ -824,23 +849,79 @@ pub struct Hold {
 impl Hold {
     /// Returns the latest commit the held snapshot reads.
     pub fn taken(&self) -> Taken {
-        self.taken
+        self.0.taken
+    }
+
+    pub fn snapshot(&self) -> &Snapshot {
+        &self.0.snapshot
+    }
+
+    /// Returns whether the snapshot holds back heap `heap`.
+    pub fn covers(&self, heap: u32) -> bool {
+        self.0.scope.covers(heap)
+    }
+
+    pub(super) fn share(&self) -> Hold {
+        Hold(self.0.clone())
     }
 }
 
 impl std::fmt::Debug for Hold {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Hold")
-            .field("id", &self.id)
-            .field("taken", &self.taken)
+            .field("id", &self.0.id)
+            .field("scope", &self.0.scope)
+            .field("taken", &self.0.taken)
             .finish_non_exhaustive()
     }
 }
 
-impl Drop for Hold {
+impl Drop for Holding {
     fn drop(&mut self) {
         if let Some(txns) = self.txns.upgrade() {
             txns.release(self.id);
+        }
+    }
+}
+
+/// A read of the past's hold on a safe snapshot marker, shared with every reader built from it:
+/// what the marker's snapshot sees stays until the last of them drops.
+pub struct Pinned(Arc<Pinning>);
+
+struct Pinning {
+    marker: Marker,
+    /// Empty once the transactions are gone, when nothing is left to release.
+    txns: Weak<dyn Release>,
+}
+
+impl Pinned {
+    pub fn marker(&self) -> &Marker {
+        &self.0.marker
+    }
+
+    /// Returns whether the pin keeps what the marker's snapshot sees of heap `heap`. It keeps it
+    /// of every heap.
+    pub fn covers(&self, _heap: u32) -> bool {
+        true
+    }
+
+    pub(super) fn share(&self) -> Pinned {
+        Pinned(self.0.clone())
+    }
+}
+
+impl std::fmt::Debug for Pinned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pinned")
+            .field("marker", &self.0.marker)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for Pinning {
+    fn drop(&mut self) {
+        if let Some(txns) = self.txns.upgrade() {
+            txns.unpin(&self.marker);
         }
     }
 }

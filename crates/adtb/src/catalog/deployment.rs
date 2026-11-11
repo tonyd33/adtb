@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::heap::{self, FieldType, Heap};
 use crate::key::{CtorId, Scalar, Value};
-use crate::mvcc::{Scope, Snapshot, Transactions, Xid};
+use crate::mvcc::{Hold, Scope, Transactions, Xid};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
@@ -199,8 +199,8 @@ impl Catalog {
         pager: &Pager<R>,
         txns: &Transactions<R>,
     ) -> Result<Deployed, Error> {
-        let (hold, snapshot) = txns.take(Scope::Heaps([ROOTS].into()))?;
-        let out = self.deployment().at(pager, txns, &snapshot);
+        let hold = txns.take(Scope::Heaps([ROOTS].into()))?;
+        let out = self.deployment().at(pager, txns, &hold);
         drop(hold);
         out
     }
@@ -224,15 +224,15 @@ impl Catalog {
 }
 
 impl Deployment {
-    /// Returns the deployment facts `snapshot` sees.
+    /// Returns the deployment facts the snapshot of `hold` sees.
     pub fn at<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
-        snapshot: &Snapshot,
+        hold: &Hold,
     ) -> Result<Deployed, Error> {
         let mut out = Deployed::default();
-        for row in visible(pager, txns, snapshot, &self.roots)? {
+        for row in visible(pager, txns, hold, &self.roots)? {
             if let [Value::Sum { ctor, fields }] = row.as_slice()
                 && holds(*ctor)
             {

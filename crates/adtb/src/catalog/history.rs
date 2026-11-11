@@ -345,9 +345,9 @@ impl Catalog {
         pager: &Pager<R>,
         txns: &Transactions<R>,
     ) -> Result<Migrations, Error> {
-        let (hold, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
-        let reader = txns.reader(pager, snapshot, None);
+        let hold = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
         let seen = || -> Result<_, Error> {
+            let reader = txns.reader(pager, &hold, None);
             'scan: loop {
                 let mut versions = Vec::new();
                 self.roots.scan(pager, |v| versions.push(v))?;

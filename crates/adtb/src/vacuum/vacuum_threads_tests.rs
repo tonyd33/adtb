@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use crate::btree::Index;
 use crate::heap::{FieldType, Flags, Heap, HeapNo, walk};
 use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
-use crate::mvcc::{Scope, Snapshot, Status, Transactions, Xid};
+use crate::mvcc::{Hold, Scope, Status, Transactions, Xid};
 use crate::runtime::{Entropy, Threads};
 use crate::storage::{PageError, Pager, Pid};
 use crate::vacuum::{self, Phase, Progress, Sum};
@@ -128,8 +128,9 @@ impl Db {
         assert!(self.index.insert(&self.pager, &entry).expect("index"));
     }
 
-    /// Returns the rows `snapshot` sees, by key, from a scan of every heap; and keys seen twice.
-    fn scan_visible(&self, snapshot: &Snapshot) -> (Rows, Vec<i64>) {
+    /// Returns the rows the snapshot of `hold` sees, by key, from a scan of every heap; and keys
+    /// seen twice.
+    fn scan_visible(&self, hold: &Hold) -> (Rows, Vec<i64>) {
         let mut out = Rows::new();
         let mut twice = Vec::new();
         for (h, heap) in self.heaps.iter().enumerate() {
@@ -139,7 +140,7 @@ impl Db {
                 let k = key_of(&v.row);
                 if self
                     .txns
-                    .reader(&self.pager, snapshot.clone(), None)
+                    .reader(&self.pager, hold, None)
                     .sees(&v.header.writers)
                     .expect("sees")
                     .visible()
@@ -152,9 +153,9 @@ impl Db {
         (out, twice)
     }
 
-    /// Returns the rows `snapshot` sees through the index: each entry's version or a heap-only
-    /// successor of it on its page.
-    fn index_visible(&self, snapshot: &Snapshot) -> Rows {
+    /// Returns the rows the snapshot of `hold` sees through the index: each entry's version or a
+    /// heap-only successor of it on its page.
+    fn index_visible(&self, hold: &Hold) -> Rows {
         let entries = self
             .index
             .range(&self.pager, Bound::Unbounded, Bound::Unbounded)
@@ -176,7 +177,7 @@ impl Db {
             for (t, writers) in seen {
                 if self
                     .txns
-                    .reader(&self.pager, snapshot.clone(), None)
+                    .reader(&self.pager, hold, None)
                     .sees(&writers)
                     .expect("sees")
                     .visible()
@@ -194,7 +195,7 @@ impl Db {
     /// Returns what is wrong with the all-visible bits of a quiet database: a marked page with
     /// a version a fresh snapshot does not see.
     fn check_visibility_map(&self) -> Vec<String> {
-        let (hold, fresh) = self.txns.take(Scope::Every).unwrap();
+        let fresh = self.txns.take(Scope::Every).unwrap();
         let mut problems = Vec::new();
         for (h, heap) in self.heaps.iter().enumerate() {
             let mut versions = Vec::new();
@@ -204,7 +205,7 @@ impl Db {
                 let marked = heap.all_visible(&self.pager, pid).unwrap();
                 let sees = self
                     .txns
-                    .reader(&self.pager, fresh.clone(), None)
+                    .reader(&self.pager, &fresh, None)
                     .sees(&v.header.writers)
                     .unwrap()
                     .visible();
@@ -216,14 +217,14 @@ impl Db {
                 }
             }
         }
-        drop(hold);
+        drop(fresh);
         problems
     }
 
     fn fresh(&self) -> (Rows, Vec<i64>, Rows) {
-        let (hold, s) = self.txns.take(Scope::Every).unwrap();
-        let (scan, twice) = self.scan_visible(&s);
-        let index = self.index_visible(&s);
+        let hold = self.txns.take(Scope::Every).unwrap();
+        let (scan, twice) = self.scan_visible(&hold);
+        let index = self.index_visible(&hold);
         drop(hold);
         (scan, twice, index)
     }
@@ -406,15 +407,16 @@ fn reader(rt: &SimRuntime, db: &Db, world: &Mutex<World>, stop: &AtomicBool) {
             Scope::Heaps(BTreeSet::from([db.ids[(rt.next_u64() % 3) as usize].0]))
         };
         let every = scope == Scope::Every;
-        let (hold, snapshot) = db.txns.take(scope).unwrap();
-        let (first, twice) = db.scan_visible(&snapshot);
+        let hold = db.txns.take(scope).unwrap();
+        let snapshot = hold.snapshot();
+        let (first, twice) = db.scan_visible(&hold);
         assert!(twice.is_empty(), "{snapshot:?} sees keys twice: {twice:?}");
         for _ in 0..3 {
             pause(rt, 200 + rt.next_u64() % 2000);
             if every {
-                let (again, _) = db.scan_visible(&snapshot);
+                let (again, _) = db.scan_visible(&hold);
                 assert_eq!(first, again, "{snapshot:?} reads other rows by scan");
-                let index = db.index_visible(&snapshot);
+                let index = db.index_visible(&hold);
                 assert_eq!(first, index, "{snapshot:?} reads other rows by index");
             }
         }
@@ -468,7 +470,7 @@ fn watcher(
 
 /// Returns each writer's committed newest versions, read from a fresh snapshot.
 fn live_of(db: &Db) -> BTreeMap<u64, Live> {
-    let (hold, s) = db.txns.take(Scope::Every).unwrap();
+    let hold = db.txns.take(Scope::Every).unwrap();
     let mut out: BTreeMap<u64, Live> = BTreeMap::new();
     for (h, heap) in db.heaps.iter().enumerate() {
         let mut versions = Vec::new();
@@ -476,7 +478,7 @@ fn live_of(db: &Db) -> BTreeMap<u64, Live> {
         for v in versions {
             if db
                 .txns
-                .reader(&db.pager, s.clone(), None)
+                .reader(&db.pager, &hold, None)
                 .sees(&v.header.writers)
                 .unwrap()
                 .visible()

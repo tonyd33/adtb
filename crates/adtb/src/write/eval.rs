@@ -869,7 +869,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 };
                 let schema = self.db.indexes[&u.index].index.schema();
                 let want = schema.encode(&key);
-                let scope: BTreeSet<u32> = u.scope.iter().copied().collect();
+                let scope = r.routes(u.scope.iter().copied());
                 let mut out = BTreeMap::new();
                 for n in self.probe(u.index, &key, &scope)? {
                     let d = n.ctor;
@@ -922,7 +922,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             .zip(&parts)
             .map(|(t, v)| to_key(t, v))
             .collect::<Result<_, _>>()?;
-        let all: BTreeSet<u32> = r.all_ctors().into_iter().collect();
+        let all = r.routes(r.all_ctors());
         for n in self.probe(r.key_index, &prefix, &all)? {
             let c = n.ctor;
             let Some((at, stored)) = self.store.fetch(r.ctors[c as usize].heap, &n)? else {
@@ -969,7 +969,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         &self,
         id: IndexId,
         prefix: &[crate::key::Value],
-        routes: &BTreeSet<u32>,
+        routes: &exec::Routes,
     ) -> Result<Vec<exec::Named>, exec::Error> {
         let grant = self.grant();
         let bounds = exec::ProbeBounds {
@@ -1076,10 +1076,10 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                     relation: r.qualified.clone(),
                     field: f.name.clone(),
                 })?;
-                let routes: BTreeSet<u32> = if f.header {
-                    r.all_ctors().into_iter().collect()
+                let routes = if f.header {
+                    r.routes(r.all_ctors())
                 } else {
-                    [c as u32].into()
+                    r.routes([c as u32])
                 };
                 let types = self.store.key_types(index);
                 for k in targets {

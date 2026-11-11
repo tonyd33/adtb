@@ -145,8 +145,8 @@ impl Catalog {
         pager: &Pager<R>,
         txns: &Transactions<R>,
     ) -> Result<Vec<KeptRow>, Error> {
-        let (hold, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
-        let rows = visible(pager, txns, &snapshot, &self.roots);
+        let hold = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
+        let rows = visible(pager, txns, &hold, &self.roots);
         drop(hold);
         let mut out = Vec::new();
         for row in rows? {
@@ -171,9 +171,9 @@ impl Catalog {
         (relation, group): (u64, &str),
         rows: &[KeptRow],
     ) -> Result<(), Error> {
-        let (hold, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
-        let reader = txns.reader(pager, snapshot, None);
+        let hold = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
         let judged = || -> Result<_, PageError> {
+            let reader = txns.reader(pager, &hold, None);
             'scan: loop {
                 let mut versions = Vec::new();
                 self.roots.scan(pager, |v| versions.push(v))?;

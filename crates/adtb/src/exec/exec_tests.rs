@@ -8,13 +8,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::batch;
 use crate::exec::{
-    self, Budget, Call, Error, Exceeded, Histories, Options as XOptions, Program, Reads, Rows,
-    Scheduler, Store, StoredHeap, Val,
+    self, AtSnapshot, Broken, Budget, Call, Error, Exceeded, Histories, Options as XOptions,
+    ProbeBounds, Program, Reads, Routes, Rows, Scheduler, Store, StoredHeap, Val,
 };
 use crate::heap::{FieldType, HeapNo};
 use crate::key::{CtorId, Tid, Value as KValue};
-use crate::mvcc::{ScanId, SerializationFailure, Writers};
-use crate::plan::{Error as PlanError, HeapId, Options as PlanOptions, Rewrites, plan};
+use crate::mvcc::{ScanId, Scope, SerializationFailure, Writers};
+use crate::plan::{Error as PlanError, HeapId, IndexId, Options as PlanOptions, Rewrites, plan};
 use crate::runtime::{IoError, OpKind};
 use crate::storage::Pid;
 use crate::testing::Knobs;
@@ -563,6 +563,10 @@ impl Reads for Counted {
     fn fetched(&self, heap: HeapNo, tid: Tid) -> Result<(), SerializationFailure> {
         self.inner.fetched(heap, tid)
     }
+
+    fn covers(&self, heap: HeapNo) -> bool {
+        self.inner.covers(heap)
+    }
 }
 
 /// Returns `store` with its reads counted.
@@ -616,6 +620,127 @@ fn a_scan_passes_its_first_batch_before_it_reads_the_heap_s_last_page() {
         "{first} of {total} versions read before the first batch"
     );
     assert_eq!(first, stopped, "a scan stopped at its first batch");
+}
+
+/// Returns a store over the heaps and indexes of `store` whose reader holds back only `heaps`.
+fn scoped(
+    db: &crate::Database<SimRuntime>,
+    rt: &SimRuntime,
+    store: &Store<SimRuntime>,
+    heaps: &[HeapId],
+) -> Store<SimRuntime> {
+    let txns = db.tested_db().txns();
+    let scope = heaps.iter().map(|h| store.heaps[h].heap.id().0).collect();
+    let hold = txns.take(Scope::Heaps(scope)).expect("a snapshot");
+    Store {
+        pager: store.pager.clone(),
+        reads: Arc::new(AtSnapshot {
+            rt: rt.clone(),
+            reader: txns.reader(&store.pager, &hold, None),
+            serial: None,
+        }),
+        heaps: store.heaps.clone(),
+        indexes: store.indexes.clone(),
+        history: Histories::default(),
+        past: None,
+    }
+}
+
+fn outside_scope(heap: HeapNo) -> Error {
+    Error::Internal(Box::new(Broken::OutsideScope(heap)))
+}
+
+fn probed(
+    store: &Store<SimRuntime>,
+    index: IndexId,
+    routes: &Routes,
+) -> Result<Vec<exec::Named>, Error> {
+    let grant = roomy();
+    let bounds = ProbeBounds {
+        grant: &grant,
+        check: &|| Ok(()),
+    };
+    store.probe(index, &[], routes, bounds)
+}
+
+#[test]
+fn a_store_reads_the_heaps_of_its_reader_s_scope_and_refuses_another() {
+    let f = stock();
+    let (stock, notes) = (
+        f.catalog.heap(f.rel("stock"), 0),
+        f.catalog.heap(f.rel("notes"), 0),
+    );
+    let (inside, outside, unscoped) =
+        with_database(0, &f, 0, Running::None, |db, (rt, store, _)| {
+            let scoped = scoped(db, rt, store, &[stock]);
+            let rows = |heap: HeapId| {
+                let mut n = 0;
+                scoped
+                    .scan(heap, 1000, &roomy(), |b| {
+                        n += b.len();
+                        Ok(ControlFlow::Continue(()))
+                    })
+                    .map(|()| n)
+            };
+            (rows(stock), rows(notes), store.heaps[&notes].heap.id())
+        });
+    assert_eq!(Ok(300), inside);
+    assert_eq!(Err(outside_scope(unscoped)), outside);
+}
+
+#[test]
+fn a_store_probes_an_index_only_when_its_reader_covers_every_route_heap() {
+    let f = stock();
+    let (stock, notes) = (
+        f.catalog.relation(f.rel("stock")),
+        f.catalog.relation(f.rel("notes")),
+    );
+    let (inside, outside, unscoped) =
+        with_database(0, &f, 0, Running::None, |db, (rt, store, _)| {
+            let scoped = scoped(db, rt, store, &[stock.heaps[&0]]);
+            let visible = |rel: &crate::plan::RelationDesc| -> Result<usize, Error> {
+                let mut found = BTreeSet::new();
+                for named in probed(&scoped, rel.key_index, &rel.heaps)? {
+                    if let Some((tid, _)) = scoped.fetch(rel.heaps[&named.ctor], &named)? {
+                        found.insert(tid);
+                    }
+                }
+                Ok(found.len())
+            };
+            (
+                visible(stock),
+                visible(notes),
+                store.heaps[&notes.heaps[&0]].heap.id(),
+            )
+        });
+    assert_eq!(Ok(300), inside);
+    assert_eq!(Err(outside_scope(unscoped)), outside);
+}
+
+#[test]
+fn a_store_fetches_only_when_its_reader_covers_every_heap_of_the_relation() {
+    let f = running();
+    let rel = f.catalog.relation(f.rel("identities"));
+    let (email, google, apple) = (rel.heaps[&0], rel.heaps[&1], rel.heaps[&2]);
+    let (whole, part, unscoped) = with_database(0, &f, 0, Running::None, |db, (rt, store, _)| {
+        let found = probed(store, rel.key_index, &Routes::from([(0, email)])).expect("a probe");
+        let named = found
+            .iter()
+            .find(|n| store.fetch(email, n).is_ok_and(|row| row.is_some()))
+            .expect("an email identity");
+        let fetched = |heaps: &[HeapId]| {
+            scoped(db, rt, store, heaps)
+                .fetch(email, named)
+                .map(|row| row.is_some())
+        };
+        (
+            fetched(&[email, google, apple]),
+            fetched(&[email, apple]),
+            store.heaps[&google].heap.id(),
+        )
+    });
+    assert_eq!(Ok(true), whole);
+    assert_eq!(Err(outside_scope(unscoped)), part);
 }
 
 #[test]
@@ -764,6 +889,10 @@ impl Reads for Deleted {
     fn fetched(&self, _: HeapNo, _: Tid) -> Result<(), SerializationFailure> {
         Ok(())
     }
+
+    fn covers(&self, heap: HeapNo) -> bool {
+        self.now.covers(heap)
+    }
 }
 
 /// Returns `store` reading the past through [`Deleted`], with every other deleted version of
@@ -903,6 +1032,10 @@ impl Reads for Watched {
 
     fn fetched(&self, heap: HeapNo, tid: Tid) -> Result<(), SerializationFailure> {
         self.inner.fetched(heap, tid)
+    }
+
+    fn covers(&self, heap: HeapNo) -> bool {
+        self.inner.covers(heap)
     }
 }
 

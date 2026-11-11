@@ -19,7 +19,7 @@ use super::{Broken, Catalog, Error, Migrating};
 impl Catalog {
     /// Returns, for each constraint and check of this catalog that `old` lacks or that reads a
     /// relation whose catalog id is in `rewritten`, why the rows transaction `m.x` sees at
-    /// `m.snapshot` violate it.
+    /// the snapshot of `m.hold` violate it.
     ///
     /// A constraint that reads a transition is not validated.
     pub(super) fn violations<R: Runtime>(
@@ -39,7 +39,7 @@ impl Catalog {
             pager: pager.clone(),
             reads: Arc::new(AtSnapshot {
                 rt: pager.rt().clone(),
-                reader: m.txns.reader(pager, m.snapshot.clone(), Some(x)),
+                reader: m.txns.reader(pager, m.hold, Some(x)),
                 serial: None,
             }),
             heaps,

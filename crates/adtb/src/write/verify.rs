@@ -190,10 +190,7 @@ impl<R: Runtime> Database<R> {
             pager: self.pager.clone(),
             reads: Arc::new(AtSnapshot {
                 rt: self.rt.clone(),
-                reader: self
-                    .session
-                    .txns
-                    .reader(&self.pager, tx.snapshot.clone(), None),
+                reader: self.session.txns.reader(&self.pager, tx.hold(), None),
                 serial: None,
             }),
             heaps: self.heaps.clone(),
@@ -458,10 +455,7 @@ impl<R: Runtime> Database<R> {
     ) -> Result<(), Error> {
         let schema = stored.schema();
         let types: Vec<_> = schema.components().iter().map(|(t, _)| t.clone()).collect();
-        let reader = self
-            .session
-            .txns
-            .reader(&self.pager, tx.snapshot.clone(), None);
+        let reader = self.session.txns.reader(&self.pager, tx.hold(), None);
         let pages = match heap.pages(&self.pager) {
             Ok(p) => p,
             Err(e) => {
@@ -542,9 +536,9 @@ impl<R: Runtime> Database<R> {
 
     /// Returns the constructors key index `id` routes, `None` when `id` is no relation's key
     /// index.
-    pub(crate) fn key_routes(&self, id: IndexId) -> Option<BTreeSet<u32>> {
+    pub(crate) fn key_routes(&self, id: IndexId) -> Option<crate::exec::Routes> {
         let r = self.rels.values().find(|r| r.key_index == id)?;
-        Some(r.all_ctors().into_iter().collect())
+        Some(r.routes(r.all_ctors()))
     }
 
     pub(crate) fn heap_of(&self, id: HeapId) -> Option<Arc<Heap>> {

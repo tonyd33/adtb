@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::{Catalog, Error, KeptField, KeptRow, applied, declared, version_hash};
 use crate::key::{CtorId, Value};
-use crate::mvcc::{Scope, Transactions};
+use crate::mvcc::{Hold, Scope, Transactions};
 use crate::plan::{Element, IndexId};
 use crate::storage::{Damage, HEADER_LEN, Options, Pager, Pid, Quarantine};
 use crate::verify::{self, Finding, Problem, Report};
@@ -59,16 +59,14 @@ fn committed(
     catalog: &Catalog,
     txns: &Transactions<SimRuntime>,
 ) -> BTreeMap<RelId, Vec<String>> {
-    let (hold, snapshot) = txns.take(Scope::Every).expect("a snapshot");
+    let hold = txns.take(Scope::Every).expect("a snapshot");
     let out = catalog
         .schema()
         .ids
         .relations
         .keys()
         .map(|&r| {
-            let rows = catalog
-                .rows(pager, txns, &snapshot, r)
-                .expect("the rows read");
+            let rows = catalog.rows(pager, txns, &hold, r).expect("the rows read");
             (r, sorted(&rows))
         })
         .collect();
@@ -82,14 +80,9 @@ fn migration_rows(
     catalog: &Catalog,
     txns: &Transactions<SimRuntime>,
 ) -> Vec<(u32, Vec<Value>)> {
-    let (hold, snapshot) = txns.take(Scope::Every).expect("a snapshot");
+    let hold = txns.take(Scope::Every).expect("a snapshot");
     let rows = catalog
-        .rows(
-            pager,
-            txns,
-            &snapshot,
-            rel(catalog, "catalog", "migrations"),
-        )
+        .rows(pager, txns, &hold, rel(catalog, "catalog", "migrations"))
         .expect("the rows read");
     drop(hold);
     rows
@@ -959,13 +952,13 @@ fn a_snapshot_taken_before_a_migration_reads_the_catalog_rows_of_the_version_bef
         let pager = Pager::create(rt.clone(), &small_pool()).expect("create");
         let (mut catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
         let relations = rel(&catalog, "catalog", "relations");
-        let (hold, before) = txns.take(Scope::Every).expect("a snapshot");
+        let before = txns.take(Scope::Every).expect("a snapshot");
         catalog
             .migrate(&pager, &txns, RUNNING)
             .expect("the migration applies");
-        let names = |snapshot| {
+        let names = |hold: &Hold| {
             let rows = catalog
-                .rows(&pager, &txns, snapshot, relations)
+                .rows(&pager, &txns, hold, relations)
                 .expect("the rows read");
             sorted(&rows)
                 .into_iter()
@@ -973,10 +966,9 @@ fn a_snapshot_taken_before_a_migration_reads_the_catalog_rows_of_the_version_bef
                 .count()
         };
         assert_eq!(0, names(&before), "the snapshot before sees no identities");
-        drop(hold);
-        let (hold, after) = txns.take(Scope::Every).expect("a snapshot");
+        drop(before);
+        let after = txns.take(Scope::Every).expect("a snapshot");
         assert_eq!(1, names(&after), "a snapshot after sees identities");
-        drop(hold);
     });
 }
 

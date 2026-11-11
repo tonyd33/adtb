@@ -21,7 +21,7 @@ use super::join::{Deferred, Probed, Table};
 use super::memory::Grant;
 use super::sched::Scheduler;
 use super::spill::{Distinct, Spill};
-use super::store::{Named, ProbeBounds, Store, from_stored, to_key};
+use super::store::{Named, ProbeBounds, Routes, Store, from_stored, to_key};
 use super::value::Val;
 use super::{Broken, Error, Exceeded, Fault, Options};
 
@@ -347,7 +347,7 @@ impl<R: Runtime> Ctx<R> {
             .zip(key)
             .map(|(t, v)| to_key(t, v))
             .collect::<Result<_, _>>()?;
-        let routes: BTreeSet<u32> = l.routes.iter().map(|r| r.ctor).collect();
+        let routes: Routes = l.routes.iter().map(|r| (r.ctor, r.heap)).collect();
         let check = || self.check_cancel();
         let bounds = ProbeBounds {
             grant: &self.grant,
@@ -797,7 +797,7 @@ impl<R: Runtime> Ctx<R> {
                 routes,
             } => {
                 let keys = self.eval_keys(key, &mut f, &mut sel, off)?;
-                let ctors: BTreeSet<u32> = routes.iter().map(|(r, _)| r.ctor).collect();
+                let ctors: Routes = routes.iter().map(|(r, _)| (r.ctor, r.heap)).collect();
                 let check = || self.check_cancel();
                 let bounds = ProbeBounds {
                     grant: &self.grant,
@@ -836,7 +836,7 @@ impl<R: Runtime> Ctx<R> {
                         Ok(out)
                     };
                 let (los, his) = (bound(lo)?, bound(hi)?);
-                let ctors: BTreeSet<u32> = routes.iter().map(|(r, _)| r.ctor).collect();
+                let ctors: Routes = routes.iter().map(|(r, _)| (r.ctor, r.heap)).collect();
                 let check = || self.check_cancel();
                 let bounds = ProbeBounds {
                     grant: &self.grant,

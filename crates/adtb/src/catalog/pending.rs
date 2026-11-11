@@ -381,12 +381,12 @@ impl Catalog {
         if !freed.is_empty() {
             super::update_root(pager, self.root, |r| r.changing = Changing::Schema(x))?;
         }
-        let (hold, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
+        let hold = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
         let m = Migrating {
             pager,
             txns,
             x,
-            snapshot: &snapshot,
+            hold: &hold,
         };
         let roots: Vec<Vec<Value>> = freed
             .iter()

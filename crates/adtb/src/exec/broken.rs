@@ -6,7 +6,7 @@ use adtb_lang::types::Ty;
 
 use crate::batch;
 use crate::catalog::Step;
-use crate::heap::FieldType;
+use crate::heap::{FieldType, HeapNo};
 use crate::key::{KeyType, Scalar};
 
 use super::{Error, Val};
@@ -67,6 +67,7 @@ pub enum Broken {
     ConversionNotOption,
     ParseNotOption,
     NestedPast,
+    OutsideScope(HeapNo),
     NotPosition(Val),
     NotInstant(Val),
     CtorLacksField(u32),
@@ -159,6 +160,11 @@ impl fmt::Display for Broken {
             Broken::ConversionNotOption => f.write_str("a checked conversion returns an Option"),
             Broken::ParseNotOption => f.write_str("`parse` returns an Option"),
             Broken::NestedPast => f.write_str("a read of the past holds no other read of the past"),
+            Broken::OutsideScope(heap) => write!(
+                f,
+                "a store reads only the heaps its reader's snapshot holds back, not heap {}",
+                heap.0
+            ),
             Broken::NotPosition(v) => {
                 write!(f, "a position is an epoch and an LSN, found {v:?}")
             }

@@ -14,8 +14,8 @@ use crate::heap::{Heap, HeapNo, Slots};
 use crate::history::History;
 use crate::key::{CtorId, Tid, Value};
 use crate::mvcc::{
-    Logged, Marker, Past, PastError, Reader, ScanId, SerializationFailure, Transactions, Writers,
-    Xid,
+    Logged, Marker, Past, PastError, Pinned, Reader, ScanId, SerializationFailure, Transactions,
+    Writers, Xid,
 };
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
@@ -48,12 +48,11 @@ pub struct Retained {
     pub version: u64,
 }
 
-/// What a read of the past sees: the versions the snapshot of a held marker sees, taking no
-/// SIREAD locks. Dropping it releases the marker.
+/// What a read of the past sees: the versions the snapshot of a pinned marker sees, taking no
+/// SIREAD locks.
 struct AtMarker<R: Runtime> {
     reader: Reader<Logged<R>>,
-    txns: Arc<Transactions<R>>,
-    marker: Marker,
+    pinned: Pinned,
 }
 
 impl<R: Runtime> Reads for AtMarker<R> {
@@ -83,11 +82,9 @@ impl<R: Runtime> Reads for AtMarker<R> {
     fn fetched(&self, _: HeapNo, _: Tid) -> Result<(), SerializationFailure> {
         Ok(())
     }
-}
 
-impl<R: Runtime> Drop for AtMarker<R> {
-    fn drop(&mut self) {
-        self.txns.unpin(&self.marker);
+    fn covers(&self, heap: HeapNo) -> bool {
+        self.reader.covers(heap.0)
     }
 }
 
@@ -129,8 +126,8 @@ fn wall(micros: i64) -> SystemTime {
 }
 
 impl<R: Runtime> Pasts<R> {
-    /// Returns the marker `at` names, held.
-    fn pin(&self, at: &Val, instant: bool) -> Result<Marker, exec::Error> {
+    /// Returns the marker `at` names, pinned.
+    fn pin(&self, at: &Val, instant: bool) -> Result<Pinned, exec::Error> {
         let pinned = match (instant, at) {
             (true, Val::Instant(t)) => self.txns.pin_time(&self.pager, wall(*t), self.upto),
             (true, other) => {
@@ -153,10 +150,10 @@ impl<R: Runtime> Pasts<R> {
     /// Returns whether the snapshot of `marker` sees the commit of `x`, the writer of the roots
     /// version at `at`.
     fn sees_commit(&self, marker: &Marker, (x, at): (Xid, Tid)) -> Result<bool, exec::Error> {
-        let reader = self.txns.reader(&self.pager, marker.snapshot.clone(), None);
         let at = (Pid(at.page()), Slots::Versions(crate::catalog::ROOTS));
         let refuse = |e| Heap::refuse_unreserved(&self.pager, at, (), e);
-        Ok(reader.counts_committed(x).map_err(refuse)?)
+        let counted = self.txns.counts_committed(&self.pager, &marker.snapshot, x);
+        Ok(counted.map_err(refuse)?)
     }
 
     /// Returns the schema version at the state `marker` reads.
@@ -208,13 +205,12 @@ impl<R: Runtime> PastReads<R> for Pasts<R> {
                 retained.version
             )));
         }
-        let marker = self.pin(at, instant)?;
+        let pinned = self.pin(at, instant)?;
         let reads = AtMarker {
-            reader: self.txns.reader(&self.pager, marker.snapshot.clone(), None),
-            txns: self.txns.clone(),
-            marker,
+            reader: self.txns.reader_at(&self.pager, &pinned),
+            pinned,
         };
-        let version = self.version_at(&reads.marker)?;
+        let version = self.version_at(reads.pinned.marker())?;
         let typed = pins.unwrap_or(version);
         let made = heaps
             .iter()

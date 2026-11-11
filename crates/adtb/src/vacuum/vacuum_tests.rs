@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use crate::btree::Index;
 use crate::heap::{FieldType, Flags, HEADER_LEN, Heap, HeapNo, Link, walk};
 use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
-use crate::mvcc::{Begun, Hold, Scope, Snapshot, Status, Transactions, Xid};
+use crate::mvcc::{Begun, Hold, Scope, Status, Transactions, Xid};
 use crate::runtime::Entropy;
 use crate::storage::{PageError, Pager, Pid};
 use crate::vacuum::{self, Report, Sum};
@@ -221,8 +221,9 @@ impl Db {
         }
     }
 
-    /// Returns the rows `snapshot` sees in each heap of `heaps` by scanning them, by key.
-    fn scan_visible(&mut self, snapshot: &Snapshot, heaps: &[usize]) -> Visible {
+    /// Returns the rows the snapshot of `hold` sees in each heap of `heaps` by scanning them, by
+    /// key.
+    fn scan_visible(&mut self, hold: &Hold, heaps: &[usize]) -> Visible {
         let mut versions = Vec::new();
         for &h in heaps {
             self.heaps[h]
@@ -233,7 +234,7 @@ impl Db {
         for (h, v) in versions {
             let seen = self
                 .txns
-                .reader(&self.pager, snapshot.clone(), None)
+                .reader(&self.pager, hold, None)
                 .sees(&v.header.writers)
                 .expect("sees")
                 .visible();
@@ -244,9 +245,9 @@ impl Db {
         out
     }
 
-    /// Returns the rows `snapshot` sees in each heap of `heaps` through the key index: each entry's
-    /// version or the heap-only versions after it on its page.
-    fn index_visible(&mut self, snapshot: &Snapshot, heaps: &[usize]) -> Visible {
+    /// Returns the rows the snapshot of `hold` sees in each heap of `heaps` through the key index:
+    /// each entry's version or the heap-only versions after it on its page.
+    fn index_visible(&mut self, hold: &Hold, heaps: &[usize]) -> Visible {
         let all = self.indexes[0]
             .range(&self.pager, Bound::Unbounded, Bound::Unbounded)
             .expect("index scan");
@@ -256,7 +257,7 @@ impl Db {
             if !heaps.contains(&h) {
                 continue;
             }
-            let found = self.chain_visible(snapshot, self.ids[h].0, e.tid);
+            let found = self.chain_visible(hold, self.ids[h].0, e.tid);
             if let Some(tid) = found {
                 let v = self.heaps[h]
                     .read(&self.pager, tid)
@@ -268,9 +269,9 @@ impl Db {
         out
     }
 
-    /// Returns the version `snapshot` sees among the one at `tid` and its heap-only successors on
-    /// its page.
-    fn chain_visible(&mut self, snapshot: &Snapshot, heap: u32, tid: Tid) -> Option<Tid> {
+    /// Returns the version the snapshot of `hold` sees among the one at `tid` and its heap-only
+    /// successors on its page.
+    fn chain_visible(&mut self, hold: &Hold, heap: u32, tid: Tid) -> Option<Tid> {
         let Db {
             pager, txns, heaps, ..
         } = self;
@@ -288,7 +289,7 @@ impl Db {
         .expect("walk");
         for (t, writers) in checks {
             if txns
-                .reader(pager, snapshot.clone(), None)
+                .reader(pager, hold, None)
                 .sees(&writers)
                 .expect("sees")
                 .visible()
@@ -303,7 +304,7 @@ impl Db {
     /// Returns what is wrong with the all-visible bits: a page marked all-visible holding a
     /// version some snapshot of `held`, or a fresh one, does not see.
     fn check_visibility_map(&mut self, held: &[Held]) -> Vec<String> {
-        let (fresh_hold, fresh) = self.txns.take(Scope::Every).unwrap();
+        let fresh = self.txns.take(Scope::Every).unwrap();
         let mut problems = Vec::new();
         for h in 0..3 {
             let mut versions = Vec::new();
@@ -318,32 +319,33 @@ impl Db {
                 let readers = held
                     .iter()
                     .filter(|s| s.heaps.contains(&h))
-                    .map(|s| &s.snapshot)
+                    .map(|s| &s.hold)
                     .chain([&fresh]);
                 for s in readers {
                     let sees = self
                         .txns
-                        .reader(&self.pager, s.clone(), None)
+                        .reader(&self.pager, s, None)
                         .sees(&v.header.writers)
                         .unwrap()
                         .visible();
                     if !sees {
                         problems.push(format!(
                             "{pid:?} of heap {h} is all-visible, but {:?} does not see {:?}",
-                            s, v.tid
+                            s.snapshot(),
+                            v.tid
                         ));
                     }
                 }
             }
         }
-        drop(fresh_hold);
+        drop(fresh);
         problems
     }
 
     fn fresh_visible(&mut self) -> (Visible, Visible) {
-        let (hold, s) = self.txns.take(Scope::Every).unwrap();
-        let scan = self.scan_visible(&s, &[0, 1, 2]);
-        let index = self.index_visible(&s, &[0, 1, 2]);
+        let hold = self.txns.take(Scope::Every).unwrap();
+        let scan = self.scan_visible(&hold, &[0, 1, 2]);
+        let index = self.index_visible(&hold, &[0, 1, 2]);
         drop(hold);
         (scan, index)
     }
@@ -371,8 +373,7 @@ impl Visible {
 }
 
 struct Held {
-    _hold: Hold,
-    snapshot: Snapshot,
+    hold: Hold,
     heaps: Vec<usize>,
     expected: Rows,
 }
@@ -591,11 +592,10 @@ fn take(db: &mut Db, next: &mut impl FnMut() -> u64) -> Held {
     } else {
         Scope::Heaps(heaps.iter().map(|&h| db.ids[h].0).collect())
     };
-    let (hold, snapshot) = db.txns.take(scope).unwrap();
-    let expected = db.scan_visible(&snapshot, &heaps).rows;
+    let hold = db.txns.take(scope).unwrap();
+    let expected = db.scan_visible(&hold, &heaps).rows;
     Held {
-        _hold: hold,
-        snapshot,
+        hold,
         heaps,
         expected,
     }
@@ -606,18 +606,20 @@ fn take(db: &mut Db, next: &mut impl FnMut() -> u64) -> Held {
 fn check(db: &mut Db, held: &[Held], client: &Client) -> Vec<String> {
     let mut problems = db.verify();
     for h in held {
-        let scan = db.scan_visible(&h.snapshot, &h.heaps);
-        let index = db.index_visible(&h.snapshot, &h.heaps);
+        let scan = db.scan_visible(&h.hold, &h.heaps);
+        let index = db.index_visible(&h.hold, &h.heaps);
         if scan.rows() != &h.expected {
             problems.push(format!(
                 "{:?} over {:?} lost rows by scan",
-                h.snapshot, h.heaps
+                h.hold.snapshot(),
+                h.heaps
             ));
         }
         if index.rows() != &h.expected {
             problems.push(format!(
                 "{:?} over {:?} sees other rows by index",
-                h.snapshot, h.heaps
+                h.hold.snapshot(),
+                h.heaps
             ));
         }
     }
@@ -1228,7 +1230,7 @@ fn a_chain_ends_where_vacuum_freed_the_successor() {
         let t = db.heaps[APPLE].insert(&db.pager, x, &row).unwrap();
         db.index(APPLE, &row, t);
         db.txns.commit(&db.pager, begun).unwrap();
-        let (old, _) = db
+        let old = db
             .txns
             .take(Scope::Heaps(BTreeSet::from([db.ids[APPLE].0])))
             .unwrap();

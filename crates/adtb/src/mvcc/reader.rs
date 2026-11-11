@@ -2,7 +2,9 @@ use crate::runtime::Runtime;
 use crate::storage::Pager;
 
 use super::conflict::later;
-use super::{Probe, Snapshot, Status, StatusError, Transactions, Write, Writers, Xid};
+use super::{
+    Hold, Pinned, Probe, Snapshot, Status, StatusError, Transactions, Write, Writers, Xid,
+};
 
 /// The latest commit log status of an id.
 pub trait Statuses {
@@ -12,11 +14,20 @@ pub trait Statuses {
     fn status(&self, x: Xid) -> Result<Status, Self::Error>;
 }
 
-/// The statuses the commit log of a set of transactions records.
+/// The statuses the commit log of a set of transactions records, with what keeps the reader's
+/// snapshot readable.
 #[derive(Debug)]
 pub struct Logged<R: Runtime> {
     txns: Transactions<R>,
     pager: Pager<R>,
+    kept: Kept,
+}
+
+/// What keeps a reader's snapshot readable.
+#[derive(Debug)]
+enum Kept {
+    Hold(Hold),
+    Pin(Pinned),
 }
 
 impl<R: Runtime> Statuses for Logged<R> {
@@ -79,10 +90,24 @@ impl<S> std::fmt::Debug for Reader<S> {
 }
 
 impl<R: Runtime> Transactions<R> {
-    /// Returns the reader of versions at `snapshot` as `me`, through this commit log.
-    pub fn reader(
+    /// Returns the reader of versions at the snapshot of `hold` as `me`, through this commit log.
+    /// The snapshot stays held while the reader lives.
+    pub fn reader(&self, pager: &Pager<R>, hold: &Hold, me: Option<Xid>) -> Reader<Logged<R>> {
+        let snapshot = hold.snapshot().clone();
+        self.logged(pager, Kept::Hold(hold.share()), snapshot, me)
+    }
+
+    /// Returns the reader of versions at the snapshot of the marker `pinned` holds, through this
+    /// commit log. The marker stays pinned while the reader lives.
+    pub fn reader_at(&self, pager: &Pager<R>, pinned: &Pinned) -> Reader<Logged<R>> {
+        let snapshot = pinned.marker().snapshot.clone();
+        self.logged(pager, Kept::Pin(pinned.share()), snapshot, None)
+    }
+
+    fn logged(
         &self,
         pager: &Pager<R>,
+        kept: Kept,
         snapshot: Snapshot,
         me: Option<Xid>,
     ) -> Reader<Logged<R>> {
@@ -90,6 +115,7 @@ impl<R: Runtime> Transactions<R> {
             statuses: Logged {
                 txns: self.clone(),
                 pager: pager.clone(),
+                kept,
             },
             snapshot,
             me,
@@ -100,6 +126,14 @@ impl<R: Runtime> Transactions<R> {
 impl<R: Runtime> Reader<Logged<R>> {
     pub fn pager(&self) -> &Pager<R> {
         &self.statuses.pager
+    }
+
+    /// Returns whether a read of heap `heap` sees what the reader's snapshot sees.
+    pub fn covers(&self, heap: u32) -> bool {
+        match &self.statuses.kept {
+            Kept::Hold(h) => h.covers(heap),
+            Kept::Pin(p) => p.covers(heap),
+        }
     }
 }
 

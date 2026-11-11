@@ -196,7 +196,7 @@ impl<R: Runtime> Scan<'_, R> {
         let stored = &db.indexes[&self.id];
         let schema = stored.index.schema();
         let types: Vec<_> = schema.components().iter().map(|(t, _)| t.clone()).collect();
-        let reader = tx.map(|tx| db.session.txns.reader(&db.pager, tx.snapshot.clone(), None));
+        let reader = tx.map(|tx| db.session.txns.reader(&db.pager, tx.hold(), None));
         let mut out = Vec::new();
         for pid in heap.pages(&db.pager)? {
             db.rebuild_stopped()?;

@@ -12,7 +12,7 @@ pub enum Scope {
 }
 
 impl Scope {
-    fn covers(&self, heap: u32) -> bool {
+    pub(super) fn covers(&self, heap: u32) -> bool {
         match self {
             Scope::Every => true,
             Scope::Heaps(hs) => hs.contains(&heap),

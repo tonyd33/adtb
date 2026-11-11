@@ -8,7 +8,7 @@ use crate::btree::{BTree, Index};
 use crate::heap::{FieldType, Header, Heap, HeapNo, LargeStore, Refused, Slots, Version, walk};
 use crate::history::History;
 use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
-use crate::mvcc::{Marker, Past, PastError, Scope, Transactions, Writers};
+use crate::mvcc::{Past, PastError, Pinned, Scope, Transactions, Writers};
 use crate::runtime::{Runtime, Threads};
 use crate::storage::{Options, PageError, Pager, Pid, Position};
 use crate::vacuum::{self, Error, Report, Sum};
@@ -233,14 +233,14 @@ impl Db {
     /// Take a read-only snapshot, keep its safe snapshot marker and release it. Returns the
     /// position the marker covers.
     fn mark(&self) -> Position {
-        let (hold, snapshot) = self.txns.take(Scope::Every).expect("snapshot");
+        let hold = self.txns.take(Scope::Every).expect("snapshot");
         let at = hold
             .taken()
             .upto()
             .map(|l| self.pager.position(l))
             .expect("a commit to cover");
         self.txns
-            .log_safe_snapshot(&self.pager, hold.taken(), &snapshot);
+            .log_safe_snapshot(&self.pager, hold.taken(), hold.snapshot());
         drop(hold);
         at
     }
@@ -327,7 +327,7 @@ impl Db {
 
     /// Returns the latest position the database has committed.
     fn upto(&self) -> Position {
-        let (hold, _) = self.txns.take(Scope::Every).expect("snapshot");
+        let hold = self.txns.take(Scope::Every).expect("snapshot");
         let at = hold.taken().upto();
         drop(hold);
         self.pager
@@ -336,22 +336,21 @@ impl Db {
 
     /// Returns the rows a read of the past at `at` sees, scanning.
     fn read_at(&self, at: Position) -> Result<State, PastError> {
-        let marker = self.txns.pin(&self.pager, at, self.upto())?;
-        let out = self.scan_at(&marker);
-        self.txns.unpin(&marker);
-        Ok(out)
+        let pinned = self.txns.pin(&self.pager, at, self.upto())?;
+        Ok(self.scan_at(&pinned))
     }
 
-    fn scan_at(&self, marker: &Marker) -> State {
+    fn scan_at(&self, pinned: &Pinned) -> State {
         let mut heaps = vec![&self.past_heap];
         heaps.extend(&self.heap);
-        let rows = rows(&self.pager, &self.txns, marker, &heaps).expect("rows");
+        let rows = rows(&self.pager, &self.txns, pinned, &heaps).expect("rows");
         let mut out = State::new();
         for row in rows {
             let (k, v) = pair(&row);
             assert!(
                 out.insert(k, v).is_none(),
-                "key {k} is read twice at {marker:?}"
+                "key {k} is read twice at {:?}",
+                pinned.marker()
             );
         }
         out
@@ -359,18 +358,17 @@ impl Db {
 
     /// Returns the value a read of the past at `at` finds for `k`, probing by key.
     fn probe_at(&self, at: Position, k: i64) -> Option<i64> {
-        let marker = self.txns.pin(&self.pager, at, self.upto()).expect("pin");
+        let pinned = self.txns.pin(&self.pager, at, self.upto()).expect("pin");
         let found = probe(
             &self.pager,
             &self.txns,
-            &marker,
+            &pinned,
             CTOR,
             (self.heap(), &[self.heap()], &self.index),
             &self.history(),
             &[Value::I64(k)],
         )
         .expect("probe");
-        self.txns.unpin(&marker);
         found.map(|row| pair(&row).1)
     }
 
@@ -381,14 +379,14 @@ impl Db {
         at: Position,
         keys: impl IntoIterator<Item = i64>,
     ) -> Result<State, PastError> {
-        let marker = self.txns.pin(&self.pager, at, self.upto())?;
+        let pinned = self.txns.pin(&self.pager, at, self.upto())?;
         let history = self.history();
         let mut out = State::new();
         for k in keys {
             let found = probe(
                 &self.pager,
                 &self.txns,
-                &marker,
+                &pinned,
                 CTOR,
                 (self.heap(), &[self.heap()], &self.index),
                 &history,
@@ -399,7 +397,6 @@ impl Db {
                 out.insert(k, pair(&row).1);
             }
         }
-        self.txns.unpin(&marker);
         Ok(out)
     }
 
@@ -674,12 +671,50 @@ fn a_held_marker_keeps_what_it_reads_past_the_window() {
             db.scan_at(&held),
             "a held marker reads what it covered"
         );
-        db.txns.unpin(&held);
+        drop(held);
         db.idle(window * 2);
         db.vacuum_keeping();
         db.expire();
         assert!(matches!(db.read_at(at), Err(PastError::Unavailable { .. })));
         assert_eq!(0, db.versions().1, "history keeps nothing past the window");
+    });
+}
+
+#[test]
+fn a_reader_at_a_marker_keeps_it_pinned_after_the_pin_drops() {
+    let mut sim = Sim::new(5, Config::default());
+    finished(&mut sim, |rt| {
+        let window = Duration::from_millis(200);
+        let (mut db, _) = Db::create(rt, window);
+        let marks = history_of(&mut db, 6, 12, 4);
+        let (at, want) = marks[3].clone();
+        let pinned = db.txns.pin(&db.pager, at, db.upto()).expect("pin");
+        let time = pinned.marker().time;
+        let reader = db.txns.reader_at(&db.pager, &pinned);
+        drop(pinned);
+        db.idle(window * 2);
+        db.write(&[(0, None), (1, None), (2, None), (3, None)]);
+        db.vacuum_keeping();
+        db.expire();
+        let (at_cutoff, read) = (db.txns.cutoff(), db.read_at(at));
+        drop(reader);
+        db.idle(window);
+        let recent = history_of(&mut db, 7, 10, 4);
+        db.vacuum_keeping();
+        db.expire();
+        assert_eq!(
+            Some(time),
+            at_cutoff,
+            "the reader holds the window's cutoff"
+        );
+        assert_eq!(Ok(want), read, "the reader keeps its marker readable");
+        assert_eq!(
+            Err(PastError::Unavailable {
+                oldest: Some(recent[0].0)
+            }),
+            db.read_at(at),
+            "the marker leaves the window once the reader drops"
+        );
     });
 }
 
@@ -693,8 +728,8 @@ fn a_read_of_the_past_without_history_is_unavailable() {
         let lsn = txns.commit(&pager, begun).expect("commit");
         let at = pager.wait_durable(lsn);
         assert_eq!(
-            Err(PastError::Unavailable { oldest: None }),
-            txns.pin(&pager, at, at)
+            Some(PastError::Unavailable { oldest: None }),
+            txns.pin(&pager, at, at).err()
         );
         assert_eq!(None, txns.cutoff());
     });
@@ -714,9 +749,7 @@ fn a_read_by_time_reads_the_latest_marker_committed_by_then() {
         db.vacuum_keeping();
         let read = |t: SystemTime| {
             let m = db.txns.pin_time(&db.pager, t, db.upto()).expect("pin");
-            let out = db.scan_at(&m);
-            db.txns.unpin(&m);
-            out
+            db.scan_at(&m)
         };
         assert_eq!(State::from([(1, 1)]), read(between));
         assert_eq!(State::from([(1, 2)]), read(db.pager.wall()));
@@ -767,9 +800,7 @@ fn a_clock_that_steps_back_across_a_reopen_keeps_the_order_of_commit_times() {
         );
         let read = |t: SystemTime| {
             let m = db.txns.pin_time(&db.pager, t, db.upto()).expect("pin");
-            let out = db.scan_at(&m);
-            db.txns.unpin(&m);
-            out
+            db.scan_at(&m)
         };
         assert_eq!(State::from([(1, 1)]), read(between));
         assert_eq!(
@@ -1053,8 +1084,8 @@ fn a_moved_version_keeps_its_out_of_line_values_until_the_window_passes() {
         };
         index.insert(&pager, &entry).expect("index");
         let at = commit(begun);
-        let (hold, snapshot) = txns.take(Scope::Every).expect("snapshot");
-        txns.log_safe_snapshot(&pager, hold.taken(), &snapshot);
+        let hold = txns.take(Scope::Every).expect("snapshot");
+        txns.log_safe_snapshot(&pager, hold.taken(), hold.snapshot());
         drop(hold);
         let begun = txns.begin(&pager).expect("begin");
         let x = begun.xid();
@@ -1085,9 +1116,9 @@ fn a_moved_version_keeps_its_out_of_line_values_until_the_window_passes() {
             report.chunks > 0,
             "the current heap's copy is swept: {report:?}"
         );
-        let marker = txns.pin(&pager, at, at).expect("pin");
-        let rows = rows(&pager, &txns, &marker, &[&heap, &past_heap]).expect("rows");
-        txns.unpin(&marker);
+        let pinned = txns.pin(&pager, at, at).expect("pin");
+        let rows = rows(&pager, &txns, &pinned, &[&heap, &past_heap]).expect("rows");
+        drop(pinned);
         assert_eq!(vec![row], rows);
         let until = pager.wall() + window * 2;
         while pager.wall() <= until {
@@ -1250,8 +1281,7 @@ fn store_scan_sees_history_pages_created_during_its_current_walk() {
         let (mut db, _) = Db::create(rt.clone(), LONG);
         let ops: Vec<_> = (0..1000).map(|k| (k, Some(k))).collect();
         db.write(&ops);
-        let (reader, snapshot) = db.txns.take(Scope::Every).expect("snapshot");
-        drop(reader);
+        let hold = db.txns.take(Scope::Every).expect("snapshot");
         let last = db.live[&999];
         let first = db.live[&0];
         db.write(&[(0, None), (999, None)]);
@@ -1273,7 +1303,7 @@ fn store_scan_sees_history_pages_created_during_its_current_walk() {
             pager: db.pager.clone(),
             reads: Arc::new(crate::exec::AtSnapshot {
                 rt,
-                reader: db.txns.reader(&db.pager, snapshot, None),
+                reader: db.txns.reader(&db.pager, &hold, None),
                 serial: None,
             }),
             heaps: BTreeMap::from([(id, stored(heap.clone()))]),
@@ -1337,10 +1367,10 @@ fn store_scan_sees_history_pages_created_during_its_current_walk() {
 fn sees<R: Runtime>(
     txns: &Transactions<R>,
     pager: &Pager<R>,
-    marker: &Marker,
+    pinned: &Pinned,
     (at, h, heap): (Tid, &Header, HeapNo),
 ) -> Result<bool, PageError> {
-    let reader = txns.reader(pager, marker.snapshot.clone(), None);
+    let reader = txns.reader_at(pager, pinned);
     let seen = reader.sees(&h.writers);
     let at = (Pid(at.page()), Slots::Versions(heap.0));
     let refused = |e| match Heap::refuse_unreserved(pager, at, (), e) {
@@ -1350,14 +1380,12 @@ fn sees<R: Runtime>(
     Ok(seen.map_err(refused)?.visible())
 }
 
-/// Returns the rows of a constructor as the safe snapshot of `marker` reads them, from `heaps`,
-/// its current heap, while it has one, and its history heap, each row once.
-///
-/// Precondition: `marker` is held by [`Transactions::pin`].
+/// Returns the rows of a constructor as the safe snapshot of the marker `pinned` holds reads
+/// them, from `heaps`, its current heap, while it has one, and its history heap, each row once.
 fn rows<R: Runtime>(
     pager: &Pager<R>,
     txns: &Transactions<R>,
-    marker: &Marker,
+    pinned: &Pinned,
     heaps: &[&Heap],
 ) -> Result<Vec<Vec<Value>>, PageError> {
     let mut seen: HashMap<Writers, Vec<Vec<Value>>> = HashMap::new();
@@ -1367,7 +1395,7 @@ fn rows<R: Runtime>(
     }
     let mut out = Vec::new();
     for (v, heap) in versions {
-        if !sees(txns, pager, marker, (v.tid, &v.header, heap))? {
+        if !sees(txns, pager, pinned, (v.tid, &v.header, heap))? {
             continue;
         }
         let same = seen.entry(v.header.writers).or_default();
@@ -1380,16 +1408,14 @@ fn rows<R: Runtime>(
     Ok(out)
 }
 
-/// Returns the row of constructor `ctor` keyed `key` as the safe snapshot of `marker` reads it:
-/// the version reached from an entry of `index`, the current key index, through `current` and
-/// the other heaps of `sum`, the heaps of its relation, or else the version an entry of `into`'s
-/// history key index names.
-///
-/// Precondition: `marker` is held by [`Transactions::pin`].
+/// Returns the row of constructor `ctor` keyed `key` as the safe snapshot of the marker `pinned`
+/// holds reads it: the version reached from an entry of `index`, the current key index, through
+/// `current` and the other heaps of `sum`, the heaps of its relation, or else the version an
+/// entry of `into`'s history key index names.
 fn probe<R: Runtime>(
     pager: &Pager<R>,
     txns: &Transactions<R>,
-    marker: &Marker,
+    pinned: &Pinned,
     ctor: CtorId,
     (current, sum, index): (&Heap, &[&Heap], &Index),
     into: &History,
@@ -1397,7 +1423,7 @@ fn probe<R: Runtime>(
 ) -> Result<Option<Vec<Value>>, Error> {
     for e in index.probe_ctor(pager, key, ctor)? {
         let walked = walk(pager, current.id(), sum, e.tid, |l, _| {
-            sees(txns, pager, marker, (l.tid, &l.header, current.id()))
+            sees(txns, pager, pinned, (l.tid, &l.header, current.id()))
         })?;
         if let Some((l, row)) = walked
             && l.heap == current.id()
@@ -1411,7 +1437,7 @@ fn probe<R: Runtime>(
             continue;
         }
         if let Some(v) = past.read(pager, e.tid)?
-            && sees(txns, pager, marker, (v.tid, &v.header, past.id()))?
+            && sees(txns, pager, pinned, (v.tid, &v.header, past.id()))?
         {
             return Ok(Some(v.row));
         }
@@ -1477,6 +1503,10 @@ impl crate::exec::Reads for VacuumOnFetch {
         self.moved.fetch_add(report.moved, Ordering::Relaxed);
         Ok(())
     }
+
+    fn covers(&self, heap: HeapNo) -> bool {
+        self.reader.covers(heap.0)
+    }
 }
 
 /// Write `old` as the row of key 1, mark, and replace it with `new`, in heaps of `fields`; then
@@ -1532,9 +1562,9 @@ fn fetch_beside_vacuum(
     );
     let index = db.index.clone();
     let db = Arc::new(db);
-    let marker = db.txns.pin(&db.pager, at, db.upto()).expect("pin");
+    let pinned = db.txns.pin(&db.pager, at, db.upto()).expect("pin");
     let reads = Arc::new(VacuumOnFetch {
-        reader: db.txns.reader(&db.pager, marker.snapshot.clone(), None),
+        reader: db.txns.reader_at(&db.pager, &pinned),
         db: db.clone(),
         heap: heap.clone(),
         moved: AtomicUsize::new(0),
@@ -1572,7 +1602,7 @@ fn fetch_beside_vacuum(
         check: &|| Ok(()),
     };
     let named = store
-        .probe(ix, &[Value::I64(1)], &BTreeSet::from([0]), bounds)
+        .probe(ix, &[Value::I64(1)], &BTreeMap::from([(0, id)]), bounds)
         .expect("probe");
     let mut found = Vec::new();
     for n in &named {
@@ -1580,7 +1610,7 @@ fn fetch_beside_vacuum(
             found.push(row);
         }
     }
-    db.txns.unpin(&marker);
+    drop(pinned);
     (out_of_line, reads.moved.load(Ordering::Relaxed), found)
 }
 
