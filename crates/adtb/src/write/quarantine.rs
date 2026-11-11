@@ -9,7 +9,7 @@ use adtb_lang::schema::OnDelete;
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
 use crate::catalog::index_holder;
-use crate::plan::{Catalog, HeapId, IndexId};
+use crate::plan::{Catalog, IndexId};
 use crate::runtime::Runtime;
 use crate::storage::policy::{Fault, Holder, Phase};
 use crate::storage::{Damage, MarkFailure, Ordered, Orders, Quarantine};
@@ -376,6 +376,7 @@ impl<R: Runtime> Database<R> {
     ) -> Result<(), Error> {
         self.admit_database()?;
         self.follow_writes(&mut touched);
+        self.follow_checks(&mut touched);
         let marked = |object: Quarantine| {
             if marks.contains(&object) {
                 Err(Error::admitted(object))
@@ -383,9 +384,6 @@ impl<R: Runtime> Database<R> {
                 Ok(())
             }
         };
-        for heap in self.denial_heaps(&touched) {
-            marked(Quarantine::Heap(heap.0 as u32))?;
-        }
         for (r, c) in &touched.reads {
             if let Some(ctor) = self.rels.get(r).and_then(|rel| rel.ctors.get(*c as usize)) {
                 marked(Quarantine::Heap(
@@ -559,10 +557,10 @@ impl<R: Runtime> Database<R> {
         }
     }
 
-    /// Returns the heaps the constraint checks the writes in `touched` trigger read.
-    fn denial_heaps(&self, touched: &Touched) -> BTreeSet<HeapId> {
-        let relations: BTreeSet<RelId> = touched.writes.iter().map(|(r, _)| *r).collect();
-        let mut heaps = BTreeSet::new();
+    /// Add what the constraint checks the writes in `out` trigger read.
+    fn follow_checks(&self, out: &mut Touched) {
+        let relations: BTreeSet<RelId> = out.writes.iter().map(|(r, _)| *r).collect();
+        let mut reads = Touched::default();
         for d in self
             .denials
             .iter()
@@ -570,17 +568,16 @@ impl<R: Runtime> Database<R> {
         {
             for (delta, _) in &d.deltas {
                 let triggered = delta.trigger.is_none()
-                    || delta.inputs.iter().any(|i| {
-                        i.ctors
-                            .iter()
-                            .any(|c| touched.writes.contains(&(i.rel, *c)))
-                    });
+                    || delta
+                        .inputs
+                        .iter()
+                        .any(|i| i.ctors.iter().any(|c| out.writes.contains(&(i.rel, *c))));
                 if triggered {
-                    heaps.extend(delta.plan.reads.heaps.iter().copied());
+                    self.walk(&self.program, delta.term(), &mut reads);
                 }
             }
         }
-        heaps
+        out.reads.append(&mut reads.reads);
     }
 
     /// Returns the catalog a plan chooses its probes from now, with no quarantined index, or
@@ -592,13 +589,11 @@ impl<R: Runtime> Database<R> {
             return None;
         }
         let mut catalog = (*self.catalog).clone();
-        for desc in catalog.relations.values_mut() {
-            desc.indexes.retain(|i| {
-                !self.bindings.indexes().get(&i.id).is_some_and(|stored| {
-                    marks.contains(&Quarantine::Index(stored.index.tree().owner()))
-                })
-            });
-        }
+        catalog.retain_indexes(|i| {
+            !self.bindings.indexes().get(&i.id).is_some_and(|stored| {
+                marks.contains(&Quarantine::Index(stored.index.tree().owner()))
+            })
+        });
         Some(Cow::Owned(catalog))
     }
 }

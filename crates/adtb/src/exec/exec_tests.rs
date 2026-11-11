@@ -802,6 +802,31 @@ fn a_store_narrowed_to_a_plan_s_reads_refuses_a_heap_or_index_they_do_not_list()
 }
 
 #[test]
+fn a_store_fetches_only_when_it_lists_every_heap_of_the_relation() {
+    let f = running();
+    let rel = f.catalog.relation(f.rel("identities"));
+    let (email, google, apple) = (rel.heaps[&0], rel.heaps[&1], rel.heaps[&2]);
+    let (whole, part) = with_database(0, &f, 0, Running::None, |_, (_, store, _)| {
+        let found = probed(store, rel.key_index, &Routes::from([(0, email)])).expect("a probe");
+        let named = found
+            .iter()
+            .find(|n| store.fetch(email, n).is_ok_and(|row| row.is_some()))
+            .expect("an email identity");
+        let fetched = |heaps: &[HeapId]| {
+            let listed = Arc::new(crate::plan::Reads {
+                heaps: heaps.iter().copied().collect(),
+                indexes: [rel.key_index].into(),
+            });
+            let narrowed = store.narrowed(&listed).expect("the store lists every read");
+            narrowed.fetch(email, named).map(|row| row.is_some())
+        };
+        (fetched(&[email, google, apple]), fetched(&[email, apple]))
+    });
+    assert_eq!(Ok(true), whole);
+    assert_eq!(Err(unlisted_heap(google)), part);
+}
+
+#[test]
 fn an_execution_over_a_store_that_does_not_list_its_program_s_reads_is_refused() {
     let f = stock();
     let (stock, notes) = (
@@ -1283,6 +1308,38 @@ fn a_stopped_scan_over_ranges_conflicts_with_a_writer_of_its_deciding_row() {
             .all(|(_, failed)| *failed),
         "{got:?}"
     );
+}
+
+#[test]
+fn a_program_run_without_a_value_for_its_parameter_is_refused_naming_it() {
+    let f = running();
+    let text = "from u in users where key u == me select u";
+    let cases = cases_of(&f, text, &[("me", "Key users", key(1))]);
+    let got = with_store(0, &f, 0, |(rt, store, pool)| {
+        let budget = Budget::new(1 << 30);
+        cases
+            .iter()
+            .map(|c| {
+                let g = budget.admit(1 << 20).unwrap();
+                exec::execute(
+                    rt.clone(),
+                    c.program.clone(),
+                    call(store, g, pool, XOptions::default()),
+                    &[],
+                )
+            })
+            .collect::<Vec<_>>()
+    });
+    for (c, g) in cases.iter().zip(got) {
+        assert_eq!(
+            Err(Error::Internal(Box::new(Broken::UnboundParam(
+                "me".to_owned()
+            )))),
+            g,
+            "{}",
+            c.name
+        );
+    }
 }
 
 #[test]

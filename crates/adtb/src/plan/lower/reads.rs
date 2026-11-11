@@ -1,4 +1,12 @@
-use crate::plan::{Catalog, Chain, End, Eval, Pipeline, Reads, Sink, Source, Spine, Step};
+use crate::plan::{Catalog, Chain, End, Eval, HeapId, Pipeline, Reads, Sink, Source, Spine, Step};
+
+/// Add `heap` and the heap of every other constructor of its relation to `out`.
+fn fetched(c: &Catalog, heap: HeapId, out: &mut Reads) {
+    out.heaps.insert(heap);
+    if let Some((r, _)) = c.heap_of(heap) {
+        out.heaps.extend(c.relation(r).heaps.values());
+    }
+}
 
 pub(super) fn collect_eval(c: &Catalog, e: &Eval, out: &mut Reads) {
     match e {
@@ -12,7 +20,7 @@ pub(super) fn collect_eval(c: &Catalog, e: &Eval, out: &mut Reads) {
         Eval::At(a) => collect_eval(c, &a.body, out),
         Eval::Lookup(l) => {
             out.indexes.insert(l.index);
-            out.heaps.extend(l.routes.iter().map(|(_, h)| *h));
+            l.routes.iter().for_each(|(_, h)| fetched(c, *h, out));
         }
         Eval::Query(q) => {
             for b in &q.builds {
@@ -96,7 +104,7 @@ fn collect_chain(c: &Catalog, ch: &Chain, out: &mut Reads) {
         End::Index { index, routes, .. } | End::Range { index, routes, .. } => {
             out.indexes.insert(*index);
             for r in routes {
-                out.heaps.insert(r.heap);
+                fetched(c, r.heap, out);
                 collect_chain(c, &r.chain, out);
             }
         }

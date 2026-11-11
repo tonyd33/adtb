@@ -350,6 +350,13 @@ fn start<R: Runtime>(
     call: Call<R>,
     params: &[(Var, Val)],
 ) -> Result<(Arc<run::Ctx<R>>, frame::Frame), Error> {
+    if let Some((_, name)) = program
+        .params()
+        .iter()
+        .find(|(v, _)| !params.iter().any(|(p, _)| p == v))
+    {
+        return Err(Broken::UnboundParam(name.clone()).into());
+    }
     let store = Arc::new(call.store.narrowed(program.reads())?);
     let mut env = frame::Frame::unit(program.vars);
     for (v, x) in params {

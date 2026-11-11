@@ -44,7 +44,7 @@ impl Frame {
         match &self.cols[var as usize] {
             Col::One(v) => v,
             Col::Many(vs) => &vs[row as usize],
-            Col::Unset => panic!("variable {var} is read where it is not bound"),
+            Col::Unset => unreachable!("variable {var} is bound where it is read"),
         }
     }
 

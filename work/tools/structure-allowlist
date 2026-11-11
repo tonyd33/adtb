@@ -246,7 +246,7 @@ pub_fields prod 2 crates/adtb/src/key/value.rs
 pub_fields prod 3 crates/adtb/src/mvcc/mod.rs
 pub_fields prod 6 crates/adtb/src/mvcc/past.rs
 pub_fields prod 4 crates/adtb/src/mvcc/ssi.rs
-pub_fields prod 11 crates/adtb/src/plan/catalog.rs
+pub_fields prod 10 crates/adtb/src/plan/catalog.rs
 pub_fields prod 16 crates/adtb/src/plan/explain.rs
 pub_fields prod 5 crates/adtb/src/plan/fixture.rs
 pub_fields prod 66 crates/adtb/src/plan/mod.rs

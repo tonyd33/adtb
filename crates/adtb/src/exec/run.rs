@@ -354,7 +354,9 @@ impl<R: Runtime> Ctx<R> {
             check: &check,
         };
         for n in self.store.probe(l.index, &k, &routes, bounds)? {
-            let route = l.routes.iter().find(|r| r.ctor == n.ctor).expect("a route");
+            let Some(route) = l.routes.iter().find(|r| r.ctor == n.ctor) else {
+                unreachable!("the store returns only entries of routed constructors");
+            };
             if let Some((_, v)) = self.fetch(route, &n, key)? {
                 return Ok(v);
             }
@@ -406,7 +408,8 @@ impl<R: Runtime> Ctx<R> {
         };
         let mut cur: Vec<Val> = vec![Val::empty_set(); n];
         let mut rounds = 0;
-        if fx.binds.iter().all(|b| b.step.is_some()) {
+        let steps: Option<Vec<&Eval>> = fx.binds.iter().map(|b| b.step.as_ref()).collect();
+        if let Some(steps) = steps {
             let inner = with(&cur, &cur);
             let mut deltas = fx
                 .binds
@@ -423,8 +426,7 @@ impl<R: Runtime> Ctx<R> {
                 self.check_cancel()?;
                 let inner = with(&cur, &deltas);
                 let mut found = Vec::with_capacity(n);
-                for b in &fx.binds {
-                    let step = b.step.as_ref().expect("a semi-naive step");
+                for step in &steps {
                     found.push(self.eval_env(step, &inner, par)?);
                 }
                 for (i, s) in found.into_iter().enumerate() {
@@ -883,11 +885,9 @@ impl<R: Runtime> Ctx<R> {
                 .collect::<Result<_, _>>()?;
             let mut seen = BTreeSet::new();
             for n in found(r, &prefix)? {
-                let i = at
-                    .routes
-                    .iter()
-                    .position(|(rt, _)| rt.ctor == n.ctor)
-                    .expect("a route of the entry's constructor");
+                let Some(i) = at.routes.iter().position(|(rt, _)| rt.ctor == n.ctor) else {
+                    unreachable!("the store returns only entries of routed constructors");
+                };
                 let Some((t, v)) = self.fetch(&at.routes[i].0, &n, k)? else {
                     continue;
                 };

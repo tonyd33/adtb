@@ -1,4 +1,5 @@
 mod interp;
+mod valid;
 
 use std::collections::BTreeSet;
 
@@ -282,7 +283,7 @@ fn a_key_probe_routes_each_entry_to_its_arm() {
 }
 
 #[test]
-fn a_probe_of_an_index_over_one_constructor_reads_only_it() {
+fn a_probe_of_an_index_over_one_constructor_reads_it_and_the_heaps_its_fetch_walks() {
     let f = running();
     let text = r#"from i in identities.Google where i.gid == "root" select key i"#;
     agrees(&f, text, &[]);
@@ -294,7 +295,8 @@ fn a_probe_of_an_index_over_one_constructor_reads_only_it() {
         .expect("the gid index")
         .id;
     assert_eq!(BTreeSet::from([gid]), p.reads.indexes);
-    assert_eq!(BTreeSet::from([heap(&f, "identities", 1)]), p.reads.heaps);
+    let sum: BTreeSet<HeapId> = (0..3).map(|c| heap(&f, "identities", c)).collect();
+    assert_eq!(sum, p.reads.heaps);
 }
 
 #[test]
@@ -1068,15 +1070,11 @@ fn a_range_probe_joins_on_a_bound_from_the_outer_row() {
 fn an_index_that_is_not_ordered_is_not_probed_for_a_range() {
     let mut f = running();
     let orders = f.rel("orders");
-    for i in &mut f
-        .catalog
-        .relations
-        .get_mut(&orders)
-        .expect("orders")
-        .indexes
-    {
+    let mut relations = f.catalog.relations().clone();
+    for i in &mut relations.get_mut(&orders).expect("orders").indexes {
         i.ordered = false;
     }
+    f.catalog = Catalog::new(relations);
     let text = "from o in orders where o.id > orders.key(2) select o.total";
     agrees(&f, text, &[]);
     let p = adhoc_plan(&f, text, &[], Rewrites::ALL);

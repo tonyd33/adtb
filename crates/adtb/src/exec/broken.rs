@@ -73,6 +73,7 @@ pub enum Broken {
     UnlistedIndex(IndexId),
     UnboundHeap(HeapId),
     UnboundIndex(IndexId),
+    UnboundParam(String),
     NotPosition(Val),
     NotInstant(Val),
     CtorLacksField(u32),
@@ -192,6 +193,12 @@ impl fmt::Display for Broken {
                 "every index a store's reads list is bound, not index {}",
                 index.0
             ),
+            Broken::UnboundParam(name) => {
+                write!(
+                    f,
+                    "a caller binds every parameter of its program, not `{name}`"
+                )
+            }
             Broken::NotPosition(v) => {
                 write!(f, "a position is an epoch and an LSN, found {v:?}")
             }

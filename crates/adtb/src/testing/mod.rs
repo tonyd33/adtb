@@ -25,7 +25,9 @@ use crate::write;
 
 pub use crate::heap::{Error as HeapError, Flags};
 pub use crate::mvcc::{Limits, Snapshot, Xid};
-pub use crate::plan::{Rewrites, with_rewrites};
+pub use crate::plan::{
+    Check as PlanCheck, Checked as PlansChecked, Rewrites, checked as plans_checked, with_rewrites,
+};
 use crate::storage::Position;
 pub use crate::storage::policy::Holder;
 pub use crate::storage::{

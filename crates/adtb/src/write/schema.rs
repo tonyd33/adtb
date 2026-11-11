@@ -135,7 +135,7 @@ fn qualified(schema: &Schema, rel: RelId) -> String {
 pub fn rels(schema: &Schema, normal: &NormalProgram, catalog: &Catalog) -> Result<Rels, Error> {
     let mut out = Rels::new();
     let specs = crate::catalog::indexes(schema);
-    for (rel, desc) in &catalog.relations {
+    for (rel, desc) in catalog.relations() {
         let r = schema.relation(*rel);
         let cs = ctors(schema, &r.elem).expect("a relation's element type is a sum");
         let def = schema.ty(r.elem_def);

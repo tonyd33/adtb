@@ -1786,6 +1786,50 @@ fn a_commit_after_a_mark_its_write_checks_read_fails() {
 }
 
 #[test]
+fn a_mark_on_a_constructor_a_constraint_does_not_read_leaves_its_check_to_judge_the_write() {
+    for ctor in ["Google", "EmailPass"] {
+        let mut sim = Sim::new(94, Config::default());
+        process::run(&mut sim, |rt| {
+            let db = open_app(rt);
+            seed(&db);
+            api::results(&db, r#"insert users { id: users.key(99), name: "n" }"#);
+            let mark = mark_named(&db, "app::identities", ctor);
+            db.testing().plant(Plant::Mark(mark)).unwrap();
+            let violated = Error::Rejected {
+                reason: RejectReason::Violated {
+                    constraint: "app::no_apple_tags".to_owned(),
+                    report: vec![Val::ctor(0, vec![Val::Int(901), Val::Int(1)])],
+                    redacted: 0,
+                },
+            };
+            assert_eq!(
+                violated,
+                api::failure(
+                    &db,
+                    "insert tags { id: tags.key(901), owner: users.key(1) }"
+                ),
+                "{ctor}"
+            );
+            api::results(
+                &db,
+                "insert tags { id: tags.key(902), owner: users.key(99) }",
+            );
+            let mut t = db.begin(&TxnOptions::default()).unwrap();
+            api::in_txn_results(
+                &mut t,
+                "insert tags { id: tags.key(903), owner: users.key(99) }",
+            );
+            t.commit(None).unwrap();
+            assert_eq!(
+                vec!["tags.key(902)", "tags.key(903)"],
+                api::query(&db, "from t in tags select key t"),
+                "{ctor}"
+            );
+        });
+    }
+}
+
+#[test]
 fn a_commit_writing_nothing_a_mark_stops_runs() {
     let mut sim = Sim::new(93, Config::default());
     process::run(&mut sim, |rt| {

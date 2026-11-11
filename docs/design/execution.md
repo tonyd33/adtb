@@ -40,7 +40,8 @@ Preconditions:
   - `heaps` maps every constructor of the relation's sum to its heap id;
   - `key_index` is the id of the key index;
   - `indexes` lists the indexes the planner may use, the key index
-    included. Each `IndexDesc` has its id, its constructor set, sorted,
+    included. A quarantined key index may be absent from `indexes` while
+    `key_index` still names it. Each `IndexDesc` has its id, its constructor set, sorted,
     its fields in key order, each a field every constructor of the set
     has, whether it is `unique`, and whether it is `ordered`: a B-link
     tree, which a probe may fix a proper prefix of. A hash index is not
@@ -232,22 +233,33 @@ Invariants of every plan:
   database holds; aborts for the statement's limits and cancellation
   excepted. A `Spine::Let` the planner adds binds a value that
   evaluation computes without aborting.
-- `Plan.reads` holds every heap a `Scan`, route or `Lookup` names and
-  every index an `Index` or `Range` end or `Lookup` names, including
-  those of builds and nested queries.
+- `Plan.reads` holds every heap a `Scan`, route or `Lookup` names, the
+  heap of every constructor of the relation of each route and
+  `Lookup`, which a fetch following a retag chain reads, and every
+  index an `Index` or `Range` end or `Lookup` names, including those of
+  builds and nested queries.
 - An `At`'s body names no `Index` or `Range` end and no other `At`,
   and its `reads` holds every heap and index its body names. A query
   holding an `At` holds no build or `Spine::Let` computed from its
   body.
+
+The planner refuses a plan that breaks one of these invariants with
+an `Internal` failure naming the invariant. It does not check that
+conditions are `Bool`, that a `Range` end's bounds are of its field's
+type, the invariant of `Probe` and builds, `total`, or that a query
+holding an `At` holds nothing computed from its body.
+
+Precondition of executing a plan's program: the caller binds every
+variable of `Plan::params`. The executor refuses a call that leaves one
+unbound with an `Internal` failure naming the variable, before it reads
+anything.
 
 Evaluation of a plan:
 
 - The executor reads only the heaps and indexes `Plan.reads` lists,
   and in an `At`'s body only those its `reads` lists, with their
   history heaps and history key indexes. A read of another fails with
-  an `Internal` failure naming the heap or index. A fetch of a route's
-  row also reads the heaps of the other constructors of the route's
-  relation, which a retag chain from the route's heap passes through.
+  an `Internal` failure naming the heap or index.
 - The executor evaluates every row of every selected pipeline and every
   step of every chain a row reaches, with two exceptions for a query
   whose `total` is set: an `Exists` or `IsEmpty` sink may stop its

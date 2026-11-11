@@ -10,6 +10,7 @@ use adtb_lang::types::{CtorSet, RelId, Ty};
 
 use super::catalog::{Catalog, IndexDesc};
 use super::terms::Facts;
+use super::validate::validate;
 use super::*;
 use reads::collect_eval;
 
@@ -110,13 +111,17 @@ fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Result<Plan, E
     let root = p.eval(root)?;
     let mut reads = Reads::default();
     collect_eval(catalog, &root, &mut reads);
-    Ok(Plan {
+    let params = (*p.facts.free(&p.t, input.root)).clone();
+    let plan = Plan {
         terms: p.t,
+        params,
         root,
         #[cfg(test)]
         ty: terms.ty(input.root).clone(),
         reads,
-    })
+    };
+    validate(schema, catalog, &mut p.facts, &plan)?;
+    Ok(plan)
 }
 
 /// Refuse a term reaching a call of a function other than a host function: a Wasm function or

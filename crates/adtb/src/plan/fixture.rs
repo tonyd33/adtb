@@ -149,7 +149,7 @@ impl Fixture {
 
 /// Returns a catalog with a heap per constructor, the key index, every index of the schema, and every implied index.
 pub fn catalog(schema: &Schema) -> Catalog {
-    let mut out = Catalog::default();
+    let mut out = BTreeMap::new();
     for (i, r) in schema.relations.iter().enumerate() {
         let rel = RelId(i as u32);
         let base = 100 * i as u64;
@@ -189,7 +189,7 @@ pub fn catalog(schema: &Schema) -> Catalog {
                 ordered: true,
             });
         }
-        out.relations.insert(
+        out.insert(
             rel,
             RelationDesc {
                 heaps: all
@@ -201,7 +201,7 @@ pub fn catalog(schema: &Schema) -> Catalog {
             },
         );
     }
-    out
+    Catalog::new(out)
 }
 
 const SCHEMA: &str = r"

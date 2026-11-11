@@ -197,6 +197,8 @@ struct Folding<'a> {
 impl<R: Runtime> Ctx<R> {
     /// Returns the value `sink` forms from the elements of `set`, reading them a morsel at a
     /// time.
+    ///
+    /// Preconditions: `count` holds the value of `sink`'s count when `sink` is a `Top`.
     pub(super) fn sink(
         self: &Arc<Self>,
         sink: &Sink,
@@ -229,7 +231,10 @@ impl<R: Runtime> Ctx<R> {
                 order,
             } => self.group(set, *var, by, aggs, order, env)?,
             Sink::Top { keys, var, .. } => {
-                let n = count.expect("a top's count").int()?;
+                let Some(count) = count else {
+                    unreachable!("a query evaluates its top sink's count before forming the sink")
+                };
+                let n = count.int()?;
                 let bound = usize::try_from(n).unwrap_or(0);
                 let top = self.ranked(set, keys, *var, env, bound, |_| true)?;
                 if n < 0 {

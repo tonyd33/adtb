@@ -877,11 +877,16 @@ impl<R: Runtime> Store<R> {
     }
 
     /// Returns the version of heap `id` visible from the chain starting at the TID `at` names,
-    /// with its TID.
+    /// with its TID. Fail unless the store lists, and its reads cover, the heap of every
+    /// constructor of `id`'s relation.
     pub fn fetch(&self, id: HeapId, at: &Named) -> Result<Option<(Tid, Vec<Value>)>, Error> {
         let tid = at.tid;
         let StoredHeap { heap, sum, .. } = self.heap(id)?;
         for h in sum {
+            let listed = HeapId(u64::from(h.id().0));
+            if !self.listed.heaps.contains(&listed) {
+                return Err(Broken::UnlistedHeap(listed).into());
+            }
             self.covered(h)?;
         }
         let walked = walk(&self.pager, heap.id(), sum, tid, |l, _| {

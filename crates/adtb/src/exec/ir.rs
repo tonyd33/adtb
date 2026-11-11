@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use adtb_lang::kernel::{Agg, Tm};
+use adtb_lang::kernel::{Agg, Tm, Var};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{Base, RelId, Ty};
 
@@ -251,9 +251,15 @@ pub struct Program {
     pub heaps: BTreeMap<HeapId, HeapInfo>,
     pub shared: Shared,
     reads: Arc<plan::Reads>,
+    params: Vec<(Var, String)>,
 }
 
 impl Program {
+    /// Returns the variables the caller binds, each with its name.
+    pub fn params(&self) -> &[(Var, String)] {
+        &self.params
+    }
+
     /// Returns the heaps and indexes the program reads.
     pub fn reads(&self) -> &Arc<plan::Reads> {
         &self.reads
@@ -290,7 +296,7 @@ pub fn compile(
 ) -> Result<Program, Error> {
     let mut heaps = BTreeMap::new();
     let mut indexes = BTreeMap::new();
-    for (r, d) in &catalog.relations {
+    for (r, d) in catalog.relations() {
         for (c, h) in &d.heaps {
             heaps.insert(*h, (*r, *c));
         }
@@ -328,6 +334,11 @@ pub fn compile(
             hosts: Arc::default(),
         },
         reads: Arc::new(plan.reads.clone()),
+        params: plan
+            .params()
+            .iter()
+            .map(|v| (*v, plan.terms.var_info(*v).name.clone()))
+            .collect(),
     })
 }
 
@@ -358,7 +369,7 @@ impl Lower<'_> {
     fn arms<P, Q>(
         &mut self,
         scrut: Tm,
-        arms: &[(u32, adtb_lang::kernel::Var, P)],
+        arms: &[(u32, Var, P)],
         mut each: impl FnMut(&mut Self, &P) -> Result<Q, Error>,
     ) -> Result<Vec<Option<(u32, Q)>>, Error> {
         let n = ctors(self.schema(), self.c.terms().ty(scrut)).map_or(0, |c| c.len());

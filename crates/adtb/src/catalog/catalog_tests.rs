@@ -326,10 +326,10 @@ fn the_planner_catalog_describes_every_engine_relation() {
     with_reopened(4, |_, catalog, _| {
         let plan = catalog.plan();
         let schema = catalog.schema();
-        assert_eq!(schema.ids.relations.len(), plan.relations.len());
+        assert_eq!(schema.ids.relations.len(), plan.relations().len());
         let mut heaps = BTreeSet::new();
         let mut indexes = BTreeSet::new();
-        for (r, d) in &plan.relations {
+        for (r, d) in plan.relations() {
             let n = schema.ty(schema.relation(*r).elem_def).ctors().len();
             assert_eq!(n, d.heaps.len());
             assert!(d.indexes.iter().any(|i| i.id == d.key_index && i.unique));
@@ -337,7 +337,7 @@ fn the_planner_catalog_describes_every_engine_relation() {
             indexes.extend(d.indexes.iter().map(|i| i.id));
         }
         assert_eq!(
-            plan.relations
+            plan.relations()
                 .values()
                 .map(|d| d.heaps.len())
                 .sum::<usize>(),
@@ -345,7 +345,7 @@ fn the_planner_catalog_describes_every_engine_relation() {
             "heap ids are distinct"
         );
         assert_eq!((0..61).map(IndexId).collect::<BTreeSet<_>>(), indexes);
-        let roles = &plan.relations[&rel(catalog, "catalog", "roles")];
+        let roles = &plan.relations()[&rel(catalog, "catalog", "roles")];
         let name = roles
             .indexes
             .iter()
@@ -353,7 +353,7 @@ fn the_planner_catalog_describes_every_engine_relation() {
             .expect("the unique of roles");
         assert!(name.unique);
         assert_eq!(vec![0], name.ctors);
-        let settings = &plan.relations[&rel(catalog, "catalog", "settings")];
+        let settings = &plan.relations()[&rel(catalog, "catalog", "settings")];
         assert_eq!(20, settings.heaps.len());
     });
 }
@@ -362,7 +362,7 @@ fn the_planner_catalog_describes_every_engine_relation() {
 fn the_key_index_of_constructors_finds_each_constructor() {
     with_reopened(5, |pager, catalog, _| {
         let constructors = rel(catalog, "catalog", "constructors");
-        let key = catalog.plan().relations[&constructors].key_index;
+        let key = catalog.plan().relations()[&constructors].key_index;
         let index = catalog.index_of(key.0);
         let entries = index
             .probe(pager, &[Value::I64(121)])
@@ -491,11 +491,11 @@ fn a_migrated_catalog_reopens_with_the_running_schema() {
         assert_eq!(1, catalog.source().version);
         check_whole(pager, catalog, txns);
         let plan = catalog.plan();
-        assert_eq!(catalog.schema().ids.relations.len(), plan.relations.len());
-        let users = &plan.relations[&rel(catalog, "auth", "users")];
+        assert_eq!(catalog.schema().ids.relations.len(), plan.relations().len());
+        let users = &plan.relations()[&rel(catalog, "auth", "users")];
         assert_eq!(1, users.heaps.len());
         assert_eq!(1, users.indexes.len());
-        let identities = &plan.relations[&rel(catalog, "auth", "identities")];
+        let identities = &plan.relations()[&rel(catalog, "auth", "identities")];
         assert_eq!(
             vec![0, 1, 2],
             identities.heaps.keys().copied().collect::<Vec<_>>()
@@ -526,10 +526,10 @@ fn a_migrated_catalog_reopens_with_the_running_schema() {
             (key.elements.clone(), key.ctors.clone(), key.unique)
         );
         let mut heaps = BTreeSet::new();
-        for d in plan.relations.values() {
+        for d in plan.relations().values() {
             heaps.extend(d.heaps.values().copied());
         }
-        let count: usize = plan.relations.values().map(|d| d.heaps.len()).sum();
+        let count: usize = plan.relations().values().map(|d| d.heaps.len()).sum();
         assert_eq!(count, heaps.len(), "heap ids are distinct");
     });
 }
@@ -769,7 +769,7 @@ fn frees_a_migration(seed: u64, files: BTreeMap<String, Vec<u8>>) -> (bool, Pid)
         let (catalog, _) = Catalog::open(rt, &pager).expect("the catalog opens");
         let after = pager.allocated().expect("the bitmaps").len();
         let constructors = rel(&catalog, "catalog", "constructors");
-        let key = catalog.plan().relations[&constructors].key_index;
+        let key = catalog.plan().relations()[&constructors].key_index;
         let frees = catalog.source().version == 0 && after < before;
         out = Some((frees, catalog.index_of(key.0).tree().root()));
     });
@@ -846,7 +846,7 @@ fn a_reference_field_with_no_declared_index_has_an_implied_one_listed_in_the_cat
     assert!(implied[0].contains(IMPLIED), "{implied:?}");
     with_migrated(32, |_, catalog, _| {
         let plan = catalog.plan();
-        let identities = &plan.relations[&rel(catalog, "auth", "identities")];
+        let identities = &plan.relations()[&rel(catalog, "auth", "identities")];
         assert!(
             identities
                 .indexes
@@ -915,7 +915,7 @@ fn a_migration_after_a_reopen_gives_its_new_heaps_ids_no_heap_had() {
         let (mut catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
         let heaps = |c: &Catalog| -> Vec<u64> {
             let plan = c.plan();
-            plan.relations
+            plan.relations()
                 .values()
                 .flat_map(|d| d.heaps.values().map(|h| h.0))
                 .collect()
@@ -929,7 +929,8 @@ fn a_migration_after_a_reopen_gives_its_new_heaps_ids_no_heap_had() {
                  add relation tags : Label key id generate sequence\n",
             )
             .expect("the migration applies");
-        let tags = &catalog.plan().relations[&rel(&catalog, "auth", "tags")];
+        let plan = catalog.plan();
+        let tags = &plan.relations()[&rel(&catalog, "auth", "tags")];
         let new: Vec<u64> = tags.heaps.values().map(|h| h.0).collect();
         assert!(
             new.iter().all(|h| !before.contains(h)),

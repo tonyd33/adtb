@@ -40,6 +40,7 @@ pub struct Delta {
     /// The input every violation the term returns involves a row of, so the term returns nothing
     /// when it is empty; `None` when the term is the whole query.
     pub trigger: Option<Var>,
+    term: Tm,
     pub plan: Plan,
 }
 
@@ -65,6 +66,11 @@ pub struct CheckPlan {
 }
 
 impl Delta {
+    /// Returns the query `plan` computes, in the arena the checks are compiled into.
+    pub fn term(&self) -> Tm {
+        self.term
+    }
+
     /// Returns the check as `explain` shows it over `schema` and `catalog`.
     pub fn explain(&self, schema: &Schema, catalog: &Catalog) -> CheckPlan {
         let trigger = self.trigger.map(|t| {
@@ -476,6 +482,7 @@ impl Compiler<'_> {
                 Ok(plan) => deltas.push(Delta {
                     inputs,
                     trigger,
+                    term: t,
                     plan,
                 }),
                 Err(e) => {

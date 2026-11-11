@@ -239,7 +239,7 @@ impl<'a> Describe<'a> {
     pub fn new(schema: &'a Schema, catalog: &'a Catalog) -> Describe<'a> {
         let mut heaps = BTreeMap::new();
         let mut indexes = BTreeMap::new();
-        for (r, d) in &catalog.relations {
+        for (r, d) in catalog.relations() {
             for (c, h) in &d.heaps {
                 heaps.insert(*h, (*r, *c));
             }

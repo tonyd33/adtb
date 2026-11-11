@@ -666,7 +666,7 @@ fn unique_indexes(catalog: &Catalog, name: &str) -> usize {
         .position(|r| r.name == name && schema.module(r.module).name == "auth")
         .unwrap_or_else(|| panic!("auth declares {name}"));
     let r = RelId(u32::try_from(at).expect("a relation id fits 32 bits"));
-    catalog.plan().relations[&r]
+    catalog.plan().relations()[&r]
         .indexes
         .iter()
         .filter(|i| i.unique)

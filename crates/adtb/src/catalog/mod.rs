@@ -338,7 +338,7 @@ fn planned<'s>(
     specs: impl Iterator<Item = &'s IndexSpec> + Clone,
     heaps: &BTreeMap<(RelId, u32), HeapId>,
 ) -> plan::Catalog {
-    let mut out = plan::Catalog::default();
+    let mut out = BTreeMap::new();
     for &r in schema.ids.relations.keys() {
         let indexes = specs
             .clone()
@@ -359,9 +359,9 @@ fn planned<'s>(
             key_index: IndexId(schema.ids.keys[&r]),
             indexes,
         };
-        out.relations.insert(r, desc);
+        out.insert(r, desc);
     }
-    out
+    plan::Catalog::new(out)
 }
 
 /// Update the root page `pid` with `f`.

@@ -10,6 +10,7 @@ pub mod explain;
 pub mod fixture;
 mod lower;
 mod terms;
+mod validate;
 
 #[cfg(test)]
 mod tests;
@@ -18,6 +19,8 @@ pub use broken::Broken;
 pub use catalog::{Catalog, Element, HeapId, IndexDesc, IndexId, RelationDesc, declared_elements};
 pub use lower::{plan, plan_bounded};
 pub(crate) use terms::Facts;
+#[cfg(any(test, feature = "testing"))]
+pub use validate::counts::{Check, Checked, checked};
 
 use std::cell::Cell;
 use std::collections::BTreeSet;
@@ -30,11 +33,19 @@ use adtb_lang::types::{CtorSet, RelId, Ty};
 pub struct Plan {
     /// The arena of every scalar expression of the plan.
     pub terms: Terms,
+    params: BTreeSet<Var>,
     pub root: Eval,
     /// The type of `root`'s value.
     #[cfg(test)]
     pub ty: Ty,
     pub reads: Reads,
+}
+
+impl Plan {
+    /// Returns the variables `root` reads that the caller binds.
+    pub fn params(&self) -> &BTreeSet<Var> {
+        &self.params
+    }
 }
 
 /// The heaps and indexes a plan may read.
@@ -135,12 +146,7 @@ pub enum Source {
     /// One row that binds nothing.
     Unit,
     /// One row per row of the heap, binding `var` to it.
-    Scan {
-        heap: HeapId,
-        #[cfg(test)]
-        ctor: u32,
-        var: Var,
-    },
+    Scan { heap: HeapId, ctor: u32, var: Var },
 }
 
 /// Steps applied to each row in turn, then the end that consumes it.

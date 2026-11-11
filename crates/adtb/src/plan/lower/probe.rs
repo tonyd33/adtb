@@ -500,7 +500,6 @@ impl Planner<'_> {
             out.push(Spine::Pipeline(Pipeline {
                 source: Source::Scan {
                     heap: self.catalog.heap(r, c),
-                    #[cfg(test)]
                     ctor: c,
                     var: x,
                 },
@@ -797,7 +796,6 @@ impl Planner<'_> {
             pipelines.push(Pipeline {
                 source: Source::Scan {
                     heap: self.catalog.heap(r, c),
-                    #[cfg(test)]
                     ctor: c,
                     var: y,
                 },

@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use adtb::testing::{Rewrites, with_rewrites};
+use adtb::testing::{PlanCheck, Rewrites, plans_checked, with_rewrites};
 use adtb::{
     CallOptions, Called, CreateOptions, Database, Error, Log, OpenError, OpenOptions, Registration,
     RejectReason,
@@ -578,6 +578,47 @@ fn generated_queries_cover_forms() {
         seeds(),
         short.join("; ")
     );
+}
+
+/// The checks of the planner's validator no generated query reaches: the generator writes no
+/// `at` block.
+const UNREACHED: [PlanCheck; 1] = [PlanCheck::Past];
+
+#[test]
+fn every_plan_of_the_generated_queries_keeps_the_plan_invariants() {
+    let before = plans_checked();
+    let mut texts_run = 0;
+    for seed in seeds() {
+        let c = case(seed, QUERIES);
+        on_engine(seed, &c, |db| {
+            for t in c.queries.iter().flat_map(texts) {
+                for rw in [Rewrites::ALL, Rewrites::NONE] {
+                    let at = plans_checked();
+                    with_rewrites(rw, || engine_eval(db, &t));
+                    let now = plans_checked();
+                    let ran = |c: PlanCheck| now.get(c) - at.get(c);
+                    assert!(
+                        ran(PlanCheck::Plans) > 0,
+                        "seed {seed}, {rw:?}: `{t}` made no plan"
+                    );
+                    assert_eq!(0, ran(PlanCheck::Refused), "seed {seed}, {rw:?}: `{t}`");
+                    texts_run += 1;
+                }
+            }
+        });
+    }
+    assert!(texts_run > 0, "seeds {:?}: no query text ran", seeds());
+    let after = plans_checked();
+    let ran = |c: PlanCheck| after.get(c) - before.get(c);
+    for c in PlanCheck::CHECKS {
+        assert_eq!(
+            UNREACHED.contains(&c),
+            ran(c) == 0,
+            "seeds {:?}: the {c:?} check ran on {} plans",
+            seeds(),
+            ran(c)
+        );
+    }
 }
 
 fn differential(env: &Env, q: &Query) -> Option<String> {

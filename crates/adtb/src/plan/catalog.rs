@@ -13,7 +13,11 @@ pub struct IndexId(pub u64);
 /// The heaps and indexes of every relation variable a planned term may read.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Catalog {
-    pub relations: BTreeMap<RelId, RelationDesc>,
+    relations: BTreeMap<RelId, RelationDesc>,
+    /// The relation and constructor of each heap of `relations`.
+    heaps: BTreeMap<HeapId, (RelId, u32)>,
+    /// The relation whose index or key index each index is.
+    indexes: BTreeMap<IndexId, RelId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,6 +65,44 @@ impl IndexDesc {
 }
 
 impl Catalog {
+    pub fn new(relations: BTreeMap<RelId, RelationDesc>) -> Catalog {
+        let mut heaps = BTreeMap::new();
+        let mut indexes = BTreeMap::new();
+        for (r, d) in &relations {
+            heaps.extend(d.heaps.iter().map(|(c, h)| (*h, (*r, *c))));
+            indexes.insert(d.key_index, *r);
+            indexes.extend(d.indexes.iter().map(|i| (i.id, *r)));
+        }
+        Catalog {
+            relations,
+            heaps,
+            indexes,
+        }
+    }
+
+    pub fn relations(&self) -> &BTreeMap<RelId, RelationDesc> {
+        &self.relations
+    }
+
+    /// Returns the relation and constructor whose heap `h` is.
+    pub fn heap_of(&self, h: HeapId) -> Option<(RelId, u32)> {
+        self.heaps.get(&h).copied()
+    }
+
+    /// Returns the relation whose index or key index `i` is, with its description, also for an
+    /// index [`Catalog::retain_indexes`] dropped.
+    pub fn index_of(&self, i: IndexId) -> Option<(RelId, &RelationDesc)> {
+        let r = *self.indexes.get(&i)?;
+        Some((r, &self.relations[&r]))
+    }
+
+    /// Keep only the indexes `keep` admits; each relation's `key_index` still names its index.
+    pub fn retain_indexes(&mut self, mut keep: impl FnMut(&IndexDesc) -> bool) {
+        for d in self.relations.values_mut() {
+            d.indexes.retain(&mut keep);
+        }
+    }
+
     pub fn relation(&self, r: RelId) -> &RelationDesc {
         self.relations
             .get(&r)
