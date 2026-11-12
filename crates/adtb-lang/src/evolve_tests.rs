@@ -2235,9 +2235,16 @@ fn log_grants_are_stored_in_the_source_by_catalog_id() {
     );
     let schema = ids_of(&s);
     let identity = ty(&schema, "Identity");
-    let identities = schema.ids.relations[&rel(&schema, "identities")];
-    let ctor = |n: &str| schema.ids.ctors[&(identity, schema.ty(identity).ctor_index(n).unwrap())];
-    let user = schema.ids.fields[&(identity, None, "user".to_string())];
+    let identities = schema
+        .ids
+        .relation_id(rel(&schema, "identities"))
+        .unwrap()
+        .raw();
+    let ctor = |n: &str| {
+        let c = schema.ty(identity).ctor_index(n).unwrap();
+        schema.ids.ctor_id(identity, c).unwrap().raw()
+    };
+    let user = schema.ids.field_id(identity, None, "user").unwrap().raw();
     let read = LogGrant {
         role: "support".into(),
         privilege: Granted::Read(
@@ -2278,7 +2285,7 @@ fn log_grants_are_stored_in_the_source_by_catalog_id() {
     assert_eq!(
         Some(&LogGrant {
             role: "web".into(),
-            privilege: Granted::CallFn(schema.ids.functions[&f]),
+            privilege: Granted::CallFn(schema.ids.function_id(f).unwrap().raw()),
             grant_option: false,
             row: None,
             dormant: false,
@@ -2796,11 +2803,10 @@ fn an_added_constructor_takes_the_next_shared_id() {
     let base = ids_of(&running());
     let next = base
         .ids
-        .relations
-        .values()
-        .chain(base.ids.types.values())
-        .chain(base.ids.ctors.values())
-        .copied()
+        .relation_ids()
+        .map(|(_, id)| id.raw())
+        .chain(base.ids.type_ids().map(|(_, id)| id.raw()))
+        .chain(base.ids.ctor_ids().map(|(_, id)| id.raw()))
         .max()
         .unwrap()
         + 1;
@@ -2814,11 +2820,14 @@ add constructor Identity.Corp { domain: Text }
     let schema = ids_of(&s);
     let identity = ty(&schema, "Identity");
     let corp = schema.ty(identity).ctor_index("Corp").unwrap();
-    assert_eq!(Some(&next), schema.ids.ctors.get(&(identity, corp)));
+    assert_eq!(
+        Some(next),
+        schema.ids.ctor_id(identity, corp).map(u64::from)
+    );
     let apple = schema.ty(identity).ctor_index("Apple").unwrap();
     assert_eq!(
-        base.ids.ctors.get(&(identity, apple)),
-        schema.ids.ctors.get(&(identity, apple))
+        base.ids.ctor_id(identity, apple),
+        schema.ids.ctor_id(identity, apple)
     );
 }
 
@@ -2836,28 +2845,19 @@ rename field Login.Gmail.gid to subject",
     );
     let schema = ids_of(&s);
     let (old_t, new_t) = (ty(&base, "Identity"), ty(&schema, "Login"));
-    assert_eq!(base.ids.types.get(&old_t), schema.ids.types.get(&new_t));
+    assert_eq!(base.ids.type_id(old_t), schema.ids.type_id(new_t));
     let g = base.ty(old_t).ctor_index("Google").unwrap();
     let gm = schema.ty(new_t).ctor_index("Gmail").unwrap();
+    assert_eq!(base.ids.ctor_id(old_t, g), schema.ids.ctor_id(new_t, gm));
     assert_eq!(
-        base.ids.ctors.get(&(old_t, g)),
-        schema.ids.ctors.get(&(new_t, gm))
-    );
-    assert_eq!(
-        base.ids.fields.get(&(old_t, Some(g), "gid".to_string())),
-        schema
-            .ids
-            .fields
-            .get(&(new_t, Some(gm), "subject".to_string()))
+        base.ids.field_id(old_t, Some(g), "gid"),
+        schema.ids.field_id(new_t, Some(gm), "subject")
     );
     let (old_r, new_r) = (rel(&base, "identities"), rel(&schema, "logins"));
+    assert_eq!(base.ids.relation_id(old_r), schema.ids.relation_id(new_r));
     assert_eq!(
-        base.ids.relations.get(&old_r),
-        schema.ids.relations.get(&new_r)
-    );
-    assert_eq!(
-        base.ids.sets.get(&(old_r, "OAuth".to_string())),
-        schema.ids.sets.get(&(new_r, "Federated".to_string()))
+        base.ids.set_id(old_r, "OAuth"),
+        schema.ids.set_id(new_r, "Federated")
     );
     let gid_unique = |s: &Schema, r: RelId| {
         (0..s.relation(r).indexes.len()).find(|&i| s.relation(r).indexes[i].scope == Some(vec![1]))
@@ -2866,10 +2866,7 @@ rename field Login.Gmail.gid to subject",
         gid_unique(&base, old_r).unwrap(),
         gid_unique(&schema, new_r).unwrap(),
     );
-    assert_eq!(
-        base.ids.indexes.get(&(old_r, i)),
-        schema.ids.indexes.get(&(new_r, j))
-    );
+    assert_eq!(base.ids.index_id(old_r, i), schema.ids.index_id(new_r, j));
 }
 
 #[test]
@@ -2877,17 +2874,25 @@ fn ids_are_never_reused() {
     let s = applies(&running(), "module auth\nadd index (user) in identities");
     let first = ids_of(&s);
     let r = rel(&first, "identities");
-    let added = first.ids.indexes[&(r, first.relation(r).indexes.len() - 1)];
-    assert!(first.ids.implied.keys().all(|(i, _, _)| *i != r));
+    let added = first
+        .ids
+        .index_id(r, first.relation(r).indexes.len() - 1)
+        .unwrap()
+        .raw();
+    assert!(first.ids.implied_ids().all(|(i, _, _, _)| i != r));
     let s = applies(&s, "module auth\ndrop index (user) in identities");
     let dropped = ids_of(&s);
     let r = rel(&dropped, "identities");
-    let implied = dropped.ids.implied[&(r, None, "user".to_string())];
+    let implied = dropped.ids.implied_id(r, None, "user").unwrap().raw();
     assert_eq!(added + 1, implied);
     let s = applies(&s, "module auth\nadd index (user) in identities");
     let again = ids_of(&s);
     let r = rel(&again, "identities");
-    let readded = again.ids.indexes[&(r, again.relation(r).indexes.len() - 1)];
+    let readded = again
+        .ids
+        .index_id(r, again.relation(r).indexes.len() - 1)
+        .unwrap()
+        .raw();
     assert_eq!(implied + 1, readded);
 }
 
@@ -2895,15 +2900,15 @@ fn ids_are_never_reused() {
 fn a_dropped_unique_leaves_the_others_their_ids() {
     let base = ids_of(&running());
     let r = rel(&base, "identities");
-    let sub = base.ids.indexes[&(r, 2)];
+    let sub = base.ids.index_id(r, 2).unwrap();
     let s = applies(
         &running(),
         "module auth\ndrop unique (email) in identities.EmailPass",
     );
     let schema = ids_of(&s);
     assert_eq!(
-        Some(&sub),
-        schema.ids.indexes.get(&(rel(&schema, "identities"), 1))
+        Some(sub),
+        schema.ids.index_id(rel(&schema, "identities"), 1)
     );
 }
 
@@ -2923,10 +2928,7 @@ redefine fn display_name (i: Identity) -> Text = match i
     let schema = ids_of(&s);
     let t = ty(&schema, "Identity");
     let apple = schema.ty(t).ctor_index("Apple").unwrap();
-    assert_ne!(
-        base.ids.ctors.get(&(t, apple)),
-        schema.ids.ctors.get(&(t, apple))
-    );
+    assert_ne!(base.ids.ctor_id(t, apple), schema.ids.ctor_id(t, apple));
 }
 
 #[test]
@@ -2960,7 +2962,7 @@ enable post_badges.Emoji",
 fn field_id(s: &Schema, t: &str, c: Option<&str>, f: &str) -> Option<u64> {
     let def = ty(s, t);
     let c = c.map(|c| s.ty(def).ctor_index(c).expect("a constructor"));
-    s.ids.fields.get(&(def, c, f.to_string())).copied()
+    s.ids.field_id(def, c, f).map(u64::from)
 }
 
 #[test]
@@ -2979,7 +2981,7 @@ move field Identity.EmailPass.verified to Identity fill match
     );
     let up = ids_of(&s);
     assert_eq!(Some(added), field_id(&up, "Identity", None, "verified"));
-    let next = up.ids.fields.values().max().copied().unwrap() + 1;
+    let next = up.ids.field_ids().map(|(_, id)| id.raw()).max().unwrap() + 1;
     let s = applies(
         &s,
         "module auth\nmove field Identity.verified to Identity.(Apple | Google | EmailPass)",
@@ -3061,18 +3063,18 @@ fn a_rescoped_index_is_a_new_index() {
     let r = rel(&base, "identities");
     let next = base
         .ids
-        .indexes
-        .values()
-        .chain(base.ids.keys.values())
-        .chain(base.ids.implied.values())
+        .index_ids()
+        .map(|(_, id)| id)
+        .chain(base.ids.key_ids().map(|(_, id)| id))
+        .chain(base.ids.implied_ids().map(|(_, _, _, id)| id))
         .max()
-        .copied()
         .unwrap()
+        .raw()
         + 1;
     let gid = |s: &Schema| {
         let r = rel(s, "identities");
         (0..s.relation(r).indexes.len())
-            .map(|i| s.ids.indexes[&(r, i)])
+            .map(|i| s.ids.index_id(r, i).unwrap().raw())
             .collect::<Vec<_>>()
     };
     let before = gid(&base);
@@ -3091,12 +3093,12 @@ merge constructor Identity.(Google | Apple) into Social
     let after = ids_of(&s);
     let ids = gid(&after);
     assert!(
-        ids.contains(&base.ids.indexes[&(r, 0)]),
+        ids.contains(&base.ids.index_id(r, 0).unwrap().raw()),
         "{before:?} {ids:?}"
     );
     assert!(ids.contains(&next), "{before:?} {ids:?}");
     assert!(
-        !ids.contains(&base.ids.indexes[&(r, 1)]),
+        !ids.contains(&base.ids.index_id(r, 1).unwrap().raw()),
         "{before:?} {ids:?}"
     );
 }
@@ -3119,13 +3121,13 @@ store per_user
     else {
         panic!("no view");
     };
-    let view = schema.ids.views[&f];
-    assert_eq!(Some(&(view + 1)), schema.ids.view_types.get(&f));
-    assert_eq!(Some(&(view + 2)), schema.ids.view_ctors.get(&f));
-    let user = schema.ids.view_fields[&(f, "user".to_string())];
+    let view = schema.ids.view_id(f).unwrap().raw();
+    assert_eq!(Some(view + 1), schema.ids.view_type_id(f).map(u64::from));
+    assert_eq!(Some(view + 2), schema.ids.view_ctor_id(f).map(u64::from));
+    let user = schema.ids.view_field_id(f, "user").unwrap().raw();
     assert_eq!(
-        Some(&(user + 1)),
-        schema.ids.view_fields.get(&(f, "logins".to_string()))
+        Some(user + 1),
+        schema.ids.view_field_id(f, "logins").map(u64::from)
     );
 }
 
@@ -3175,9 +3177,9 @@ store named
     else {
         panic!("no view");
     };
-    assert!(schema.ids.views.contains_key(&f));
-    assert_eq!(None, schema.ids.view_types.get(&f));
-    assert_eq!(None, schema.ids.view_ctors.get(&f));
+    assert!(schema.ids.view_id(f).is_some());
+    assert_eq!(None, schema.ids.view_type_id(f));
+    assert_eq!(None, schema.ids.view_ctor_id(f));
 }
 
 #[test]
@@ -3205,11 +3207,19 @@ store v"
         else {
             panic!("no view of {result}");
         };
-        let view = schema.ids.views[&f];
-        assert_eq!(Some(&(view + 1)), schema.ids.view_types.get(&f), "{result}");
-        assert_eq!(Some(&(view + 2)), schema.ids.view_ctors.get(&f), "{result}");
+        let view = schema.ids.view_id(f).unwrap().raw();
+        assert_eq!(
+            Some(view + 1),
+            schema.ids.view_type_id(f).map(u64::from),
+            "{result}"
+        );
+        assert_eq!(
+            Some(view + 2),
+            schema.ids.view_ctor_id(f).map(u64::from),
+            "{result}"
+        );
         assert!(
-            !schema.ids.view_fields.keys().any(|(g, _)| *g == f),
+            !schema.ids.view_field_ids().any(|(g, _, _)| g == f),
             "{result}"
         );
     }

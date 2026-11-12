@@ -8,7 +8,7 @@ use crate::batch;
 use crate::heap::{self, FieldType};
 use crate::key::{self, AnonRecordType, AnonSumType, CtorId, KeyType, OrderKey, Scalar, SumType};
 
-use super::ids::CatCtorId;
+use super::ids::stored;
 
 /// Returns `ty` with every newtype replaced by its representation, down to a base, a sum or
 /// another type that is no newtype.
@@ -57,9 +57,9 @@ pub fn new_order_keys(schema: &Schema, keys: &OrderKeys) -> OrderKeys {
 /// order.
 pub fn declared_sums(schema: &Schema) -> Vec<Vec<u64>> {
     let mut sums: BTreeMap<TypeId, Vec<(u32, u64)>> = BTreeMap::new();
-    for (&(def, k), &id) in &schema.ids.ctors {
+    for ((def, k), id) in schema.ids.ctor_ids() {
         if matches!(schema.ty(def).kind, TypeDefKind::Sum { record: false, .. }) {
-            sums.entry(def).or_default().push((k, id));
+            sums.entry(def).or_default().push((k, id.raw()));
         }
     }
     sums.into_values()
@@ -92,12 +92,11 @@ pub fn ctors(schema: &Schema, ty: &Ty) -> Vec<(u32, Vec<(String, Ty)>)> {
                 .map(|(k, c)| {
                     let id = schema
                         .ids
-                        .ctors
-                        .get(&(def, k as u32))
+                        .ctor_id(def, k as u32)
                         .unwrap_or_else(|| panic!("constructor {} has a catalog id", c.name));
                     let mut fs = header.clone();
                     fs.extend(c.fields.iter().map(|f| (f.name.clone(), f.ty.subst(&args))));
-                    (CatCtorId(*id).stored().0, fs)
+                    (stored(id).0, fs)
                 })
                 .collect()
         }

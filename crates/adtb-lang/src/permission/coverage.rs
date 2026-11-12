@@ -10,18 +10,18 @@ pub enum Mode {
 pub enum Right {
     Read {
         target: Target,
-        fields: BTreeSet<FieldId>,
+        fields: BTreeSet<CatFieldId>,
     },
     Insert(Target),
     Update {
         target: Target,
-        fields: BTreeSet<FieldId>,
+        fields: BTreeSet<CatFieldId>,
     },
     Delete(Target),
     Retag {
-        relation: RelationId,
-        from: ConstructorId,
-        to: ConstructorId,
+        relation: CatRelId,
+        from: CatCtorId,
+        to: CatCtorId,
     },
 }
 
@@ -52,7 +52,7 @@ impl Requirement {
     }
 
     /// Returns the relation the requirement names, by its catalog id.
-    pub fn relation(&self) -> Option<RelationId> {
+    pub fn relation(&self) -> Option<CatRelId> {
         match self {
             Requirement::ReadConstructor(t)
             | Requirement::ReadField(t, _)

@@ -19,7 +19,7 @@ use crate::storage::{Pager, Pid, Quarantine};
 use crate::write::Retained;
 
 use super::Rot;
-use super::ids::{CatCtorId, CatRelId, ctor_id, ctor_index, rel_id, relation};
+use super::ids::{CatCtorId, CatRelId, ctor_id, ctor_index, held_id, rel_id, relation, stored};
 use super::root::Root;
 use super::structures::{Listed, index_holder, relation_holder};
 use super::{
@@ -66,12 +66,17 @@ impl Names {
         match (ctor, fields) {
             (HISTORY_HEAP, [rel, c, id, at]) => {
                 let at = (heap_id(id)?, Pid(uint(at)?));
-                self.heaps
-                    .insert((CatRelId(uint(rel)?), CatCtorId(uint(c)?)), at);
+                self.heaps.insert(
+                    (
+                        CatRelId::from_raw(uint(rel)?),
+                        CatCtorId::from_raw(uint(c)?),
+                    ),
+                    at,
+                );
             }
             (HISTORY_INDEX, [rel, owner, at]) => {
                 let at = (heap_id(owner)?, Pid(uint(at)?));
-                self.indexes.insert(CatRelId(uint(rel)?), at);
+                self.indexes.insert(CatRelId::from_raw(uint(rel)?), at);
             }
             (ctor, fields) => {
                 return Err(Rot::RootsCtor {
@@ -245,7 +250,7 @@ impl Kept {
             let heap = Quarantine::Heap(heaps[&(r, c)].id().0);
             let holder = relation_holder(schema, r, heap);
             let sum = sums.entry(r).or_default();
-            sum.heap(ctor_id(schema, r, c).stored(), holder, past.clone());
+            sum.heap(stored(ctor_id(schema, r, c)), holder, past.clone());
         }
         for (r, past) in &self.indexes {
             if let (Some(sum), Some(key)) = (sums.get_mut(r), keys.get(r)) {
@@ -264,9 +269,8 @@ pub(super) fn key_indexes<'a>(
 ) -> BTreeMap<RelId, &'a Index> {
     schema
         .ids
-        .keys
-        .iter()
-        .filter_map(|(&r, id)| Some((r, &indexes.get(id)?.1)))
+        .key_ids()
+        .filter_map(|(r, id)| Some((r, &indexes.get(&id.raw())?.1)))
         .collect()
 }
 
@@ -277,15 +281,19 @@ fn history_index(tree: BTree, key: &Index) -> Index {
 
 fn heap_row(rid: CatRelId, cid: CatCtorId, heap: &Heap) -> Vec<Value> {
     vec![
-        int(rid.0),
-        int(cid.0),
+        int(rid.raw()),
+        int(cid.raw()),
         int(u64::from(heap.id().0)),
         int(heap.root().0),
     ]
 }
 
 fn index_row(rid: CatRelId, tree: BTree) -> Vec<Value> {
-    vec![int(rid.0), int(u64::from(tree.owner())), int(tree.root().0)]
+    vec![
+        int(rid.raw()),
+        int(u64::from(tree.owner())),
+        int(tree.root().0),
+    ]
 }
 
 impl Catalog {
@@ -316,7 +324,7 @@ impl Catalog {
             .kept
             .indexes
             .iter()
-            .map(|(r, index)| (IndexId(schema.ids.keys[r]), index.clone()))
+            .map(|(&r, index)| (IndexId(held_id(schema.ids.key_id(r)).raw()), index.clone()))
             .collect();
         let (migrations, made) = self.migrations(pager, txns)?;
         let born = self

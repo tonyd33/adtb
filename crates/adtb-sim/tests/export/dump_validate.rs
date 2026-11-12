@@ -375,7 +375,10 @@ fn a_violating_restore_with_any_op_failed_publishes_nothing() {
 fn a_restore_resumes_a_generator_past_every_restored_key() {
     let mut sim = Sim::with_files(7, Config::default(), dumped());
     let users = schema().relations.iter().position(|r| r.name == "users");
-    let id = schema().ids.relations[&RelId(u32::try_from(users.unwrap()).unwrap())];
+    let id = schema()
+        .ids
+        .relation_id(RelId(u32::try_from(users.unwrap()).unwrap()))
+        .unwrap();
     let dee = process::run(&mut sim, |rt| {
         let (manifest, mut entries) = dump::read_dump(&rt, DUMP, None).unwrap();
         let text = std::str::from_utf8(&entries["generators"]).unwrap();

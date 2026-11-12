@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::ops::Bound;
 use std::sync::Arc;
 
+use adtb_lang::ids::held_id;
 use adtb_lang::types::RelId;
 
 use crate::btree::{self, Index};
@@ -478,7 +479,7 @@ impl<R: Runtime> Database<R> {
                     .any(|root| held.contains(&(encoded.clone(), ctor, root)))
                 {
                     out.push(Found::Missing {
-                        relation: self.schema.ids.relations[&r.id],
+                        relation: held_id(self.schema.ids.relation_id(r.id)).raw(),
                         ctor: self.ctor_id(r, c),
                         index,
                         at: format!("page {} slot {}", v.tid.page(), v.tid.slot()),
@@ -490,7 +491,12 @@ impl<R: Runtime> Database<R> {
     }
 
     fn ctor_id(&self, r: &Rel, c: u32) -> u64 {
-        self.schema.ids.ctors[&(self.schema.relation(r.id).elem_def, c)]
+        held_id(
+            self.schema
+                .ids
+                .ctor_id(self.schema.relation(r.id).elem_def, c),
+        )
+        .raw()
     }
 }
 

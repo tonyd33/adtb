@@ -16,7 +16,7 @@ use crate::storage::{PageError, Pager, Pid, Quarantine, Stopped};
 use crate::verify::{Inventory, Sum};
 
 use super::history::key_indexes;
-use super::ids::ctor_id;
+use super::ids::{ctor_id, stored};
 use super::root::Root;
 use super::{Catalog, roots_row};
 
@@ -81,13 +81,13 @@ impl Catalog {
         }
         out.rows = Some(self.roots.clone());
         let schema = &self.schema;
-        for &r in schema.ids.relations.keys() {
+        for (r, _) in schema.ids.relation_ids() {
             let heaps = self
                 .heaps
                 .range((r, 0)..=(r, u32::MAX))
                 .map(|(&(_, c), h)| {
                     let holder = relation_holder(schema, r, Quarantine::Heap(h.id().0));
-                    (ctor_id(schema, r, c).stored(), holder, h.clone())
+                    (stored(ctor_id(schema, r, c)), holder, h.clone())
                 })
                 .collect();
             let indexes = self

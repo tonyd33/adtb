@@ -1,5 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
+use crate::ids::{CatCtorId, CatFieldId, CatRelId, CatTypeId};
 use crate::schema::{Schema, TypeDefKind};
 use crate::textual::{key_field_ty, key_names};
 use crate::types::*;
@@ -10,10 +11,6 @@ use crate::types::*;
 pub struct Map<'a> {
     pub from: &'a Schema,
     pub to: &'a Schema,
-    types: BTreeMap<u64, TypeId>,
-    ctors: BTreeMap<u64, (TypeId, u32)>,
-    relations: BTreeMap<u64, RelId>,
-    fields: BTreeMap<u64, (TypeId, Option<u32>, String)>,
 }
 
 /// Why a type cannot be carried between the versions as a whole value.
@@ -57,21 +54,13 @@ pub enum Part {
 
 impl<'a> Map<'a> {
     pub fn new(from: &'a Schema, to: &'a Schema) -> Map<'a> {
-        let ids = &to.ids;
-        Map {
-            from,
-            to,
-            types: ids.types.iter().map(|(&t, &id)| (id, t)).collect(),
-            ctors: ids.ctors.iter().map(|(&c, &id)| (id, c)).collect(),
-            relations: ids.relations.iter().map(|(&r, &id)| (id, r)).collect(),
-            fields: ids.fields.iter().map(|(f, &id)| (id, f.clone())).collect(),
-        }
+        Map { from, to }
     }
 
     /// Returns the type `def` is at the later version.
     pub fn def(&self, def: TypeId) -> Option<TypeId> {
-        match self.from.ids.types.get(&def) {
-            Some(id) => self.types.get(id).copied(),
+        match self.from.ids.type_id(def) {
+            Some(id) => self.to.ids.type_of(id).next_back(),
             None => {
                 let t = self.from.ty(def);
                 let module = &self.from.module(t.module).name;
@@ -85,8 +74,8 @@ impl<'a> Map<'a> {
     }
 
     pub fn relation(&self, rel: RelId) -> Option<RelId> {
-        match self.from.ids.relations.get(&rel) {
-            Some(id) => self.relations.get(id).copied(),
+        match self.from.ids.relation_id(rel) {
+            Some(id) => self.to.ids.relation_of(id).next_back(),
             None => {
                 let r = self.from.relation(rel);
                 let module = &self.from.module(r.module).name;
@@ -102,12 +91,14 @@ impl<'a> Map<'a> {
     /// Returns the index constructor `c` of `def` has at the later version.
     pub fn ctor(&self, def: TypeId, c: u32) -> Option<u32> {
         let to = self.def(def)?;
-        match self.from.ids.ctors.get(&(def, c)) {
+        match self.from.ids.ctor_id(def, c) {
             Some(id) => self
-                .ctors
-                .get(id)
+                .to
+                .ids
+                .ctor_of(id)
+                .next_back()
                 .filter(|(t, _)| *t == to)
-                .map(|&(_, k)| k),
+                .map(|(_, k)| k),
             None => {
                 let name = &self.from.ty(def).ctors().get(c as usize)?.name;
                 self.to.ty(to).ctor_index(name)
@@ -130,15 +121,17 @@ impl<'a> Map<'a> {
         } else {
             c
         };
-        match self.from.ids.fields.get(&(def, slot, name.to_string())) {
+        match self.from.ids.field_id(def, slot, name) {
             Some(id) => self
-                .fields
-                .get(id)
+                .to
+                .ids
+                .field_of(id)
+                .next_back()
                 .filter(|(t, k, _)| {
                     *t == to && (k.is_none() || *k == c.and_then(|c| self.ctor(def, c)))
                 })
                 .map(|(_, _, n)| n.clone()),
-            None if self.from.ids.types.contains_key(&def) => None,
+            None if self.from.ids.type_id(def).is_some() => None,
             None => {
                 let k = c.and_then(|c| self.ctor(def, c)).unwrap_or(0);
                 self.to.ty(to).field(k, name).map(|f| f.name.clone())
@@ -275,12 +268,12 @@ impl<'a> Map<'a> {
             return Err(renamed(
                 Part::Relation,
                 &r.name,
-                self.from.ids.relations.get(&rel),
+                self.from.ids.relation_id(rel).map(CatRelId::raw),
             ));
         }
         for f in &r.key {
             if r.key.len() > 1 && self.field(r.elem_def, Some(0), f).as_ref() != Some(f) {
-                let id = self.from.ids.fields.get(&slot(self.from, r.elem_def, 0, f));
+                let id = field_id(self.from, r.elem_def, 0, f);
                 return Err(renamed(Part::Field, f, id));
             }
             let ty = key_field_ty(self.from, rel, f);
@@ -305,12 +298,7 @@ impl<'a> Map<'a> {
                 .ok_or_else(|| Loss::Field {
                     ty: self.from.ty(r.elem_def).name.clone(),
                     field: f.clone(),
-                    id: self
-                        .from
-                        .ids
-                        .fields
-                        .get(&slot(self.from, r.elem_def, 0, f))
-                        .copied(),
+                    id: field_id(self.from, r.elem_def, 0, f),
                     added: false,
                 })
         };
@@ -321,12 +309,7 @@ impl<'a> Map<'a> {
                 Some(p) => Ok((p, n)),
                 None => Err(Loss::Field {
                     ty: self.to.ty(self.to.relation(later).elem_def).name.clone(),
-                    id: self
-                        .to
-                        .ids
-                        .fields
-                        .get(&slot(self.to, self.to.relation(later).elem_def, 0, &n))
-                        .copied(),
+                    id: field_id(self.to, self.to.relation(later).elem_def, 0, &n),
                     field: n,
                     added: true,
                 }),
@@ -408,7 +391,11 @@ impl<'a> Map<'a> {
             TypeDefKind::Newtype { .. } | TypeDefKind::Sum { record: true, .. }
         );
         if named && named_by_type && self.from.ty(def).name != self.to.ty(to).name {
-            return Err(renamed(Part::Type, &name(), self.from.ids.types.get(&def)));
+            return Err(renamed(
+                Part::Type,
+                &name(),
+                self.from.ids.type_id(def).map(CatTypeId::raw),
+            ));
         }
         let mut last = None;
         for c in set {
@@ -427,7 +414,7 @@ impl<'a> Map<'a> {
                 return Err(renamed(
                     Part::Ctor,
                     ctor,
-                    self.from.ids.ctors.get(&(def, c)),
+                    self.from.ids.ctor_id(def, c).map(CatCtorId::raw),
                 ));
             }
             let fs = Self::fields(self.from, def, args, c);
@@ -436,16 +423,11 @@ impl<'a> Map<'a> {
                 let image = self.field(def, Some(c), f).ok_or_else(|| Loss::Field {
                     ty: name(),
                     field: f.clone(),
-                    id: self
-                        .from
-                        .ids
-                        .fields
-                        .get(&slot(self.from, def, c, f))
-                        .copied(),
+                    id: field_id(self.from, def, c, f),
                     added: false,
                 })?;
                 if named && image != *f {
-                    let id = self.from.ids.fields.get(&slot(self.from, def, c, f));
+                    let id = field_id(self.from, def, c, f);
                     return Err(renamed(Part::Field, f, id));
                 }
                 images.push(image);
@@ -459,12 +441,7 @@ impl<'a> Map<'a> {
                 return Err(Loss::Field {
                     ty: name(),
                     field: added.clone(),
-                    id: self
-                        .to
-                        .ids
-                        .fields
-                        .get(&slot(self.to, to, k, added))
-                        .copied(),
+                    id: field_id(self.to, to, k, added),
                     added: true,
                 });
             }
@@ -476,16 +453,20 @@ impl<'a> Map<'a> {
     }
 }
 
-fn renamed(part: Part, name: &str, id: Option<&u64>) -> Loss {
+fn renamed(part: Part, name: &str, id: Option<u64>) -> Loss {
     Loss::Renamed {
         part,
         name: name.to_string(),
-        id: id.copied(),
+        id,
     }
 }
 
-/// Returns where field `name` of constructor `c` of `def` has its catalog id.
-pub fn slot(schema: &Schema, def: TypeId, c: u32, name: &str) -> (TypeId, Option<u32>, String) {
+/// Returns the catalog id of field `name` of constructor `c` of `def`, a header field's when the
+/// header has one by that name.
+pub fn field_id(schema: &Schema, def: TypeId, c: u32, name: &str) -> Option<u64> {
     let header = schema.ty(def).header().iter().any(|f| f.name == name);
-    (def, (!header).then_some(c), name.to_string())
+    schema
+        .ids
+        .field_id(def, (!header).then_some(c), name)
+        .map(CatFieldId::raw)
 }

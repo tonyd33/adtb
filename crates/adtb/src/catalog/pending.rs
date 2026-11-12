@@ -67,11 +67,11 @@ pub(super) fn held_key_index(pending: &[Pending]) -> CatIndexId {
     let last = pending
         .iter()
         .filter_map(|p| match &p.kind {
-            Kind::Key { index, .. } => Some(index.0),
+            Kind::Key { index, .. } => Some(index.raw()),
             _ => None,
         })
         .max();
-    CatIndexId(last.map_or(HELD_KEY_INDEXES, |id| id + 1))
+    CatIndexId::from_raw(last.map_or(HELD_KEY_INDEXES, |id| id + 1))
 }
 
 /// Returns the catalog ids of the fields `names` of relation `r` of `schema`, `None` when one of
@@ -89,10 +89,9 @@ fn field_names(schema: &Schema, r: RelId, ids: &[CatFieldId]) -> Option<Vec<Stri
         .map(|id| {
             schema
                 .ids
-                .fields
-                .iter()
-                .find(|&(&(d, _, _), &x)| d == def && x == id.0)
-                .map(|((_, _, name), _)| name.clone())
+                .field_of(*id)
+                .find(|(d, _, _)| *d == def)
+                .map(|(_, _, name)| name.clone())
         })
         .collect()
 }
@@ -150,13 +149,13 @@ pub(super) fn kept_indexes(
                 index: *index,
             })
         })?;
-        out.insert(index.0, IndexSpec::key(schema, r, index.0, fields));
+        out.insert(index.raw(), IndexSpec::key(schema, r, index.raw(), fields));
     }
     Ok(out)
 }
 
 fn field_bytes(ids: &[CatFieldId]) -> Vec<u8> {
-    ids.iter().flat_map(|id| id.0.to_le_bytes()).collect()
+    ids.iter().flat_map(|id| id.raw().to_le_bytes()).collect()
 }
 
 fn bytes_fields(bytes: &[u8]) -> Option<Vec<CatFieldId>> {
@@ -164,7 +163,7 @@ fn bytes_fields(bytes: &[u8]) -> Option<Vec<CatFieldId>> {
     rest.is_empty().then(|| {
         chunks
             .iter()
-            .map(|c| CatFieldId(u64::from_le_bytes(*c)))
+            .map(|c| CatFieldId::from_raw(u64::from_le_bytes(*c)))
             .collect()
     })
 }
@@ -193,10 +192,10 @@ pub(super) fn add(pending: &mut Vec<Pending>, ctor: u32, fields: &[Value]) -> Re
     let kind = match (ctor, index) {
         (HELD_CONSTRAINT, []) => Kind::Constraint,
         (HELD_CHECK, []) => Kind::Check,
-        (HELD_UNIQUE, [id]) => Kind::Unique(CatIndexId(uint(id)?)),
+        (HELD_UNIQUE, [id]) => Kind::Unique(CatIndexId::from_raw(uint(id)?)),
         (HELD_KEY, [index, rel, Value::Bytes(fields)]) => Kind::Key {
-            index: CatIndexId(uint(index)?),
-            relation: CatRelId(uint(rel)?),
+            index: CatIndexId::from_raw(uint(index)?),
+            relation: CatRelId::from_raw(uint(rel)?),
             fields: bytes_fields(fields).ok_or_else(corrupt)?,
         },
         _ => return Err(corrupt()),
@@ -245,14 +244,14 @@ fn stored(pending: &[Pending]) -> Vec<Vec<Value>> {
                 Value::Text(holder.clone()),
             ];
             match &p.kind {
-                Kind::Unique(id) => fields.push(int(id.0)),
+                Kind::Unique(id) => fields.push(int(id.raw())),
                 Kind::Key {
                     index,
                     relation,
                     fields: key,
                 } => fields.extend([
-                    int(index.0),
-                    int(relation.0),
+                    int(index.raw()),
+                    int(relation.raw()),
                     Value::Bytes(field_bytes(key)),
                 ]),
                 Kind::Constraint | Kind::Check => {}

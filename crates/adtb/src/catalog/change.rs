@@ -9,7 +9,7 @@ use crate::key::Value;
 
 use super::ids::{
     CatCtorId, CatFieldId, CatRelId, CatTypeId, ctor_id, ctor_index, field_id, rel_id, relation,
-    type_id,
+    stored, type_id,
 };
 use super::{Broken, Error, ctor_relations, layout, row_type, rows};
 
@@ -222,12 +222,11 @@ pub fn step(a: &Schema, b: &Schema, data: &mut Data, mut moved: Moved) -> Result
         }
         out.insert(rid, next);
     }
-    for r in b.ids.relations.keys() {
-        let rid = rel_id(b, *r);
+    for (r, rid) in b.ids.relation_ids() {
         if relation(a, rid).is_none() {
-            let ctors = (0..b.ty(b.relation(*r).elem_def).ctors().len() as u32)
+            let ctors = (0..b.ty(b.relation(r).elem_def).ctors().len() as u32)
                 .map(|c| {
-                    let cid = ctor_id(b, *r, c);
+                    let cid = ctor_id(b, r, c);
                     (cid, moved.routed.remove(&(rid, cid)).unwrap_or_default())
                 })
                 .collect();
@@ -459,7 +458,7 @@ fn held<'m>(types: &Types<'m>, ra: &Ty, rb: &Ty) -> Result<Option<Plan<'m>>, Fai
         .into_iter()
         .enumerate()
         .map(|(ca, (cid, fields_a))| {
-            let id = CatCtorId(u64::from(cid));
+            let id = CatCtorId::from_raw(u64::from(cid));
             let Some(cb) = ctors_b.iter().position(|(c, _)| *c == cid) else {
                 return Ok(match types.routes.get(&(tid, id)) {
                     Some(route) => match route(a, b, aa, ab) {
@@ -516,8 +515,8 @@ fn tagged<'m>(types: &Types<'m>, ta: &Ty, tb: &Ty) -> Option<Plan<'m>> {
             }
             let d = a.ty(da);
             let name = format!("{}.{}", d.name, d.ctors()[k].name);
-            match types.tags.get(&(tid, CatCtorId(u64::from(cid)))) {
-                Some(Some(to)) => at(to.stored().0).ok_or_else(|| {
+            match types.tags.get(&(tid, CatCtorId::from_raw(u64::from(cid)))) {
+                Some(Some(to)) => at(stored(*to).0).ok_or_else(|| {
                     format!("a stored tag names `{name}`, which the operator replaces by no one constructor")
                 }),
                 Some(None) => Err(format!(

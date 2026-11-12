@@ -81,7 +81,7 @@ pub use validate::Denial;
 
 use change::Data;
 use history::{HISTORY_HEAP, HISTORY_INDEX, Kept, key_indexes};
-use ids::{CatCtorId, CatRelId, ctor_id, ctor_index, rel_id, relation};
+use ids::{CatCtorId, CatRelId, ctor_id, ctor_index, held_id, rel_id, relation, stored};
 use readers::{Pending, Readers};
 use root::Root;
 
@@ -308,7 +308,7 @@ fn index_program<'s>(
 fn index_ctors(schema: &Schema, spec: &IndexSpec) -> BTreeSet<CtorId> {
     spec.ctors
         .iter()
-        .map(|&c| ctor_id(schema, spec.relation, c).stored())
+        .map(|&c| stored(ctor_id(schema, spec.relation, c)))
         .collect()
 }
 
@@ -325,9 +325,8 @@ fn ctor_count(schema: &Schema, r: RelId) -> u32 {
 fn ctor_relations(schema: &Schema) -> Vec<(RelId, u32)> {
     schema
         .ids
-        .relations
-        .keys()
-        .flat_map(|&r| (0..ctor_count(schema, r)).map(move |c| (r, c)))
+        .relation_ids()
+        .flat_map(|(r, _)| (0..ctor_count(schema, r)).map(move |c| (r, c)))
         .collect()
 }
 
@@ -339,7 +338,7 @@ fn planned<'s>(
     heaps: &BTreeMap<(RelId, u32), HeapId>,
 ) -> plan::Catalog {
     let mut out = BTreeMap::new();
-    for &r in schema.ids.relations.keys() {
+    for (r, _) in schema.ids.relation_ids() {
         let indexes = specs
             .clone()
             .filter(|s| s.relation == r)
@@ -356,7 +355,7 @@ fn planned<'s>(
                 .range((r, 0)..=(r, u32::MAX))
                 .map(|((_, c), h)| (*c, *h))
                 .collect(),
-            key_index: IndexId(schema.ids.keys[&r]),
+            key_index: IndexId(held_id(schema.ids.key_id(r)).raw()),
             indexes,
         };
         out.insert(r, desc);
@@ -404,7 +403,10 @@ impl Named {
                 let id = uint(id)?;
                 let id = u32::try_from(id).map_err(|_| Rot::HeapIdWide(id))?;
                 self.heaps.insert(
-                    (CatRelId(uint(rel)?), CatCtorId(uint(c)?)),
+                    (
+                        CatRelId::from_raw(uint(rel)?),
+                        CatCtorId::from_raw(uint(c)?),
+                    ),
                     (id, Pid(uint(at)?)),
                 );
             }
@@ -655,13 +657,7 @@ impl Catalog {
         };
         let begun = txns.begin(pager)?;
         let x = begun.xid();
-        let every = empty
-            .schema
-            .ids
-            .relations
-            .values()
-            .map(|&id| CatRelId(id))
-            .collect();
+        let every = empty.schema.ids.relation_ids().map(|(_, id)| id).collect();
         let hold = txns.take(Scope::Every)?;
         let m = Migrating {
             pager,
@@ -1041,9 +1037,9 @@ impl Catalog {
             return Ok(pid);
         }
         Catalog::naming_sequences(pager, self.root)?;
-        let keys = &self.schema.ids.keys;
+        let ids = &self.schema.ids;
         let pid = crate::write::counter_page(pager, &self.schema, |r| {
-            keys.get(&r).map(|k| &self.indexes[k].1)
+            ids.key_id(r).map(|k| &self.indexes[&k.raw()].1)
         })
         .map_err(|e| match e {
             crate::write::Error::Exec(exec::Error::Page(e)) => Error::Page(e),
@@ -1077,7 +1073,7 @@ impl Catalog {
                 let ctors = spec
                     .ctors
                     .iter()
-                    .map(|&c| (ctor_id(schema, spec.relation, c).stored(), c))
+                    .map(|&c| (stored(ctor_id(schema, spec.relation, c)), c))
                     .collect();
                 let heaps = spec
                     .ctors
@@ -1156,7 +1152,7 @@ impl Catalog {
         row: &[Value],
     ) -> Result<(), Error> {
         let pager = m.pager;
-        let ctor = ctor_id(&self.schema, r, c).stored();
+        let ctor = stored(ctor_id(&self.schema, r, c));
         let mut entries = Vec::new();
         for (spec, index, keys) in self.indexes.values() {
             if spec.relation != r {
@@ -1249,8 +1245,8 @@ fn sum_of(heaps: &BTreeMap<(RelId, u32), Arc<Heap>>, r: RelId) -> Vec<Arc<Heap>>
 /// Returns the fields of the roots row naming `heap`, constructor `cid` of relation `rid`.
 fn heap_root(rid: CatRelId, cid: CatCtorId, heap: &Heap) -> Vec<Value> {
     vec![
-        int(rid.0),
-        int(cid.0),
+        int(rid.raw()),
+        int(cid.raw()),
         int(u64::from(heap.id().0)),
         int(heap.root().0),
     ]

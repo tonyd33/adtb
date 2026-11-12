@@ -92,39 +92,26 @@ impl Analyzer<'_> {
             return Ok(TEMP_TARGET);
         }
         let def = self.schema.relation(rel).elem_def;
+        let ids = &self.schema.ids;
         Ok(Target {
-            relation: RelationId(
-                *self
-                    .schema
-                    .ids
-                    .relations
-                    .get(&rel)
-                    .ok_or(Error::MissingIdentity(Slot::Relation(rel)))?,
-            ),
-            constructor: ConstructorId(
-                *self
-                    .schema
-                    .ids
-                    .ctors
-                    .get(&(def, ctor))
-                    .ok_or(Error::MissingIdentity(Slot::Ctor(def, ctor)))?,
-            ),
+            relation: ids
+                .relation_id(rel)
+                .ok_or(Error::MissingIdentity(Slot::Relation(rel)))?,
+            constructor: ids
+                .ctor_id(def, ctor)
+                .ok_or(Error::MissingIdentity(Slot::Ctor(def, ctor)))?,
         })
     }
 
-    pub(super) fn field_id(&self, rel: RelId, ctor: u32, name: &str) -> Result<FieldId, Error> {
+    pub(super) fn field_id(&self, rel: RelId, ctor: u32, name: &str) -> Result<CatFieldId, Error> {
         if is_temp(self.schema, rel) {
-            return Ok(FieldId(u64::MAX));
+            return Ok(CatFieldId::from_raw(u64::MAX));
         }
         let def = self.schema.relation(rel).elem_def;
         let own = (!self.schema.ty(def).header().iter().any(|f| f.name == name)).then_some(ctor);
-        let key = (def, own, name.to_string());
         self.schema
             .ids
-            .fields
-            .get(&key)
-            .copied()
-            .map(FieldId)
+            .field_id(def, own, name)
             .ok_or_else(|| Error::MissingIdentity(Slot::Field(def, own, name.to_string())))
     }
 

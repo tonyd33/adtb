@@ -63,9 +63,8 @@ fn committed(
     let out = catalog
         .schema()
         .ids
-        .relations
-        .keys()
-        .map(|&r| {
+        .relation_ids()
+        .map(|(r, _)| {
             let rows = catalog.rows(pager, txns, &hold, r).expect("the rows read");
             (r, sorted(&rows))
         })
@@ -326,7 +325,7 @@ fn the_planner_catalog_describes_every_engine_relation() {
     with_reopened(4, |_, catalog, _| {
         let plan = catalog.plan();
         let schema = catalog.schema();
-        assert_eq!(schema.ids.relations.len(), plan.relations().len());
+        assert_eq!(schema.ids.relation_ids().count(), plan.relations().len());
         let mut heaps = BTreeSet::new();
         let mut indexes = BTreeSet::new();
         for (r, d) in plan.relations() {
@@ -382,7 +381,7 @@ fn the_key_index_of_constructors_finds_each_constructor() {
                 std::ops::Bound::Unbounded,
             )
             .expect("the scan");
-        assert_eq!(catalog.schema().ids.ctors.len(), all.len());
+        assert_eq!(catalog.schema().ids.ctor_ids().count(), all.len());
     });
 }
 
@@ -491,7 +490,10 @@ fn a_migrated_catalog_reopens_with_the_running_schema() {
         assert_eq!(1, catalog.source().version);
         check_whole(pager, catalog, txns);
         let plan = catalog.plan();
-        assert_eq!(catalog.schema().ids.relations.len(), plan.relations().len());
+        assert_eq!(
+            catalog.schema().ids.relation_ids().count(),
+            plan.relations().len()
+        );
         let users = &plan.relations()[&rel(catalog, "auth", "users")];
         assert_eq!(1, users.heaps.len());
         assert_eq!(1, users.indexes.len());
@@ -824,7 +826,11 @@ fn identity_indexes(seed: u64, migration: &str) -> Vec<String> {
             .migrate(&pager, &txns, migration)
             .expect("the migration applies");
         let rows = committed(&pager, &catalog, &txns);
-        let identities = catalog.schema().ids.relations[&rel(&catalog, "auth", "identities")];
+        let identities = catalog
+            .schema()
+            .ids
+            .relation_id(rel(&catalog, "auth", "identities"))
+            .unwrap();
         let relation = format!("I64({identities}), ");
         out = rows[&rel(&catalog, "catalog", "indexes")]
             .iter()

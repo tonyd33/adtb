@@ -1,4 +1,5 @@
 use super::*;
+use crate::ids::{CatConstraintId, CatFunctionId, CatIndexId, CatRelId, CatSetId, CatTypeId};
 use crate::parse::parse_schema;
 
 const RUNNING: &str = r"
@@ -677,64 +678,147 @@ fn declarations_take_ids_in_declaration_order_from_1024() {
     let identity = type_id(&s, "Identity");
     let users = rel_id(&s, "auth", "users");
     let identities = rel_id(&s, "auth", "identities");
-    assert_eq!(Some(&1024), s.ids.types.get(&user));
-    assert_eq!(Some(&1025), s.ids.ctors.get(&(user, 0)));
-    assert_eq!(Some(&1026), s.ids.types.get(&identity));
-    assert_eq!(Some(&1027), s.ids.ctors.get(&(identity, 0)));
-    assert_eq!(Some(&1028), s.ids.ctors.get(&(identity, 1)));
-    assert_eq!(Some(&1029), s.ids.relations.get(&users));
-    assert_eq!(Some(&1030), s.ids.relations.get(&identities));
-    let field = |t, c, f: &str| s.ids.fields.get(&(t, c, f.to_string())).copied();
+    assert_eq!(Some(1024), s.ids.type_id(user).map(u64::from));
+    assert_eq!(Some(1025), s.ids.ctor_id(user, 0).map(u64::from));
+    assert_eq!(Some(1026), s.ids.type_id(identity).map(u64::from));
+    assert_eq!(Some(1027), s.ids.ctor_id(identity, 0).map(u64::from));
+    assert_eq!(Some(1028), s.ids.ctor_id(identity, 1).map(u64::from));
+    assert_eq!(Some(1029), s.ids.relation_id(users).map(u64::from));
+    assert_eq!(Some(1030), s.ids.relation_id(identities).map(u64::from));
+    let field = |t, c, f: &str| s.ids.field_id(t, c, f).map(u64::from);
     assert_eq!(Some(1024), field(user, Some(0), "id"));
     assert_eq!(Some(1025), field(user, Some(0), "name"));
     assert_eq!(Some(1026), field(identity, None, "id"));
     assert_eq!(Some(1027), field(identity, None, "user"));
     assert_eq!(Some(1028), field(identity, Some(0), "email"));
     assert_eq!(Some(1030), field(identity, Some(1), "gid"));
-    assert_eq!(Some(&1024), s.ids.keys.get(&users));
-    assert_eq!(Some(&1025), s.ids.keys.get(&identities));
-    assert_eq!(Some(&1026), s.ids.indexes.get(&(identities, 0)));
-    assert_eq!(Some(&1027), s.ids.indexes.get(&(identities, 1)));
-    assert_eq!(Some(&1024), s.ids.generated.get(&users));
-    assert_eq!(Some(&1025), s.ids.generated.get(&identities));
-    assert_eq!(
-        Some(&1024),
-        s.ids.sets.get(&(identities, "OAuth".to_string()))
+    assert_eq!(Some(1024), s.ids.key_id(users).map(u64::from));
+    assert_eq!(Some(1025), s.ids.key_id(identities).map(u64::from));
+    assert_eq!(Some(1026), s.ids.index_id(identities, 0).map(u64::from));
+    assert_eq!(Some(1027), s.ids.index_id(identities, 1).map(u64::from));
+    assert_eq!(Some(1024), s.ids.generated_id(users).map(u64::from));
+    assert_eq!(Some(1025), s.ids.generated_id(identities).map(u64::from));
+    assert_eq!(Some(1024), s.ids.set_id(identities, "OAuth").map(u64::from));
+    assert_eq!(Some(1024), s.ids.function_id(FnId(0)).map(u64::from));
+}
+
+/// Assert that the reverse lookup `of` finds exactly its object for each pair of `pairs`.
+///
+/// Returns how many pairs it checked.
+fn finds_each<K: PartialEq + std::fmt::Debug, I: Copy + std::fmt::Display>(
+    kind: &str,
+    pairs: impl Iterator<Item = (K, I)>,
+    of: impl Fn(I) -> Vec<K>,
+) -> usize {
+    let mut seen = 0;
+    for (k, id) in pairs {
+        assert_eq!(vec![k], of(id), "{kind} {id}");
+        seen += 1;
+    }
+    seen
+}
+
+#[test]
+fn every_id_of_a_built_schema_finds_its_object() {
+    let src = format!(
+        "{RUNNING}aggregate longest (x: Text) -> Text =
+  state {{ best: Text }}
+  init {{ best: \"\" }}
+  step (s, x) -> if scalar_len(x) > scalar_len(s.best) then {{ best: x }} else s
+  merge (a, b) -> if scalar_len(b.best) > scalar_len(a.best) then b else a
+  finish s -> s.best
+constraint nameless = from u in users where u.name == \"\" select u
+"
     );
-    assert_eq!(Some(&1024), s.ids.functions.get(&FnId(0)));
+    let s = build_src(&[&src]).unwrap();
+    let ids = &s.ids;
+    let seen = finds_each("type", ids.type_ids(), |id| ids.type_of(id).collect())
+        + finds_each("constructor", ids.ctor_ids(), |id| {
+            ids.ctor_of(id).collect()
+        })
+        + finds_each("relation", ids.relation_ids(), |id| {
+            ids.relation_of(id).collect()
+        })
+        + finds_each("field", ids.field_ids(), |id| ids.field_of(id).collect())
+        + finds_each(
+            "set",
+            ids.set_ids().map(|(r, name, id)| ((r, name), id)),
+            |id| ids.set_of(id).collect(),
+        )
+        + finds_each("index", ids.index_ids(), |id| ids.index_of(id).collect())
+        + finds_each("function", ids.function_ids(), |id| {
+            ids.function_of(id).collect()
+        })
+        + finds_each("aggregate", ids.aggregate_ids(), |id| {
+            ids.aggregate_of(id).collect()
+        })
+        + finds_each("constraint", ids.constraint_ids(), |id| {
+            ids.constraint_of(id).collect()
+        });
+    let user = type_id(&s, "User");
+    let users = rel_id(&s, "auth", "users");
+    let identities = rel_id(&s, "auth", "identities");
+    assert_eq!(Some(user), ids.type_of(CatTypeId::from_raw(1024)).next());
+    assert_eq!(
+        Some(users),
+        ids.relation_of(CatRelId::from_raw(1029)).next()
+    );
+    let oauth = ids.set_of(CatSetId::from_raw(1024)).next();
+    assert_eq!(Some((identities, "OAuth")), oauth);
+    let unique = ids.index_of(CatIndexId::from_raw(1026)).next();
+    assert_eq!(Some((identities, 0)), unique);
+    assert_eq!(
+        Some(FnId(0)),
+        ids.function_of(CatFunctionId::from_raw(1024)).next()
+    );
+    assert_eq!(
+        Some(0),
+        ids.aggregate_of(CatFunctionId::from_raw(1025)).next()
+    );
+    assert_eq!(
+        Some(0),
+        ids.constraint_of(CatConstraintId::from_raw(1024)).next()
+    );
+    assert!(seen > 1000, "{seen} ids");
 }
 
 #[test]
 fn engine_types_constructors_and_relations_take_their_fixed_ids() {
     let s = build_src(&[]).unwrap();
     let bool_ = s.prelude_type("Bool");
-    assert_eq!(Some(&0), s.ids.types.get(&bool_));
-    assert_eq!(Some(&2), s.ids.ctors.get(&(bool_, 1)));
+    assert_eq!(Some(0), s.ids.type_id(bool_).map(u64::from));
+    assert_eq!(Some(2), s.ids.ctor_id(bool_, 1).map(u64::from));
     let fault = s.prelude_type("RejectReason");
     let mig = s.ty(fault).ctor_index("MigrationInProgress").unwrap();
-    assert_eq!(Some(&372), s.ids.ctors.get(&(fault, mig)));
+    assert_eq!(Some(372), s.ids.ctor_id(fault, mig).map(u64::from));
     assert_eq!(
-        Some(&219),
-        s.ids.relations.get(&rel_id(&s, "catalog", "types"))
+        Some(219),
+        s.ids
+            .relation_id(rel_id(&s, "catalog", "types"))
+            .map(u64::from)
     );
     assert_eq!(
-        Some(&340),
-        s.ids.relations.get(&rel_id(&s, "sys", "format"))
+        Some(340),
+        s.ids
+            .relation_id(rel_id(&s, "sys", "format"))
+            .map(u64::from)
     );
     assert_eq!(
-        Some(&241),
-        s.ids.relations.get(&rel_id(&s, "catalog", "audit"))
+        Some(241),
+        s.ids
+            .relation_id(rel_id(&s, "catalog", "audit"))
+            .map(u64::from)
     );
     for (i, t) in s.types.iter().enumerate() {
         if s.module(t.module).engine {
             assert!(
-                s.ids.types.contains_key(&TypeId(i as u32)),
+                s.ids.type_id(TypeId(i as u32)).is_some(),
                 "no id for `{}`",
                 t.name
             );
             for c in 0..t.ctors().len() as u32 {
                 assert!(
-                    s.ids.ctors.contains_key(&(TypeId(i as u32), c)),
+                    s.ids.ctor_id(TypeId(i as u32), c).is_some(),
                     "no id for a constructor of `{}`",
                     t.name
                 );
@@ -743,7 +827,7 @@ fn engine_types_constructors_and_relations_take_their_fixed_ids() {
     }
     for (i, r) in s.relations.iter().enumerate() {
         assert!(
-            s.ids.relations.contains_key(&RelId(i as u32)),
+            s.ids.relation_id(RelId(i as u32)).is_some(),
             "no id for `{}`",
             r.name
         );
@@ -761,7 +845,7 @@ fn every_constructor_is_enabled_in_a_schema_built_from_declarations() {
 #[test]
 fn row_too_large_takes_the_field_ids_after_internal() {
     let s = build_src(&[]).unwrap();
-    let field = |t, c, f: &str| s.ids.fields.get(&(t, c, f.to_string())).copied();
+    let field = |t, c, f: &str| s.ids.field_id(t, c, f).map(u64::from);
     let reject = s.prelude_type("RejectReason");
     let too_large = s.ty(reject).ctor_index("RowTooLarge").unwrap();
     assert_eq!(Some(70), field(reject, Some(too_large), "relation"));
@@ -773,37 +857,42 @@ fn key_too_large_appends_fields_without_renumbering_engine_fields() {
     let s = build_src(&[]).unwrap();
     let reject = s.prelude_type("RejectReason");
     let ctor = s.ty(reject).ctor_index("KeyTooLarge").unwrap();
-    assert_eq!(Some(&471), s.ids.ctors.get(&(reject, ctor)));
+    assert_eq!(Some(471), s.ids.ctor_id(reject, ctor).map(u64::from));
     for (offset, name) in ["relation", "ctor", "index", "size", "limit"]
         .iter()
         .enumerate()
     {
         assert_eq!(
-            Some(&(564 + offset as u64)),
-            s.ids.fields.get(&(reject, Some(ctor), name.to_string()))
+            Some(564 + offset as u64),
+            s.ids.field_id(reject, Some(ctor), name).map(u64::from)
         );
     }
     let limit = s.prelude_type("Limit");
     let rounds = s.ty(limit).ctor_index("Rounds").unwrap();
     assert_eq!(
-        Some(&563),
-        s.ids.fields.get(&(limit, Some(rounds), "rounds".into()))
+        Some(563),
+        s.ids.field_id(limit, Some(rounds), "rounds").map(u64::from)
     );
 }
 
 #[test]
 fn engine_fields_and_keys_take_their_fixed_ids() {
     let s = build_src(&[]).unwrap();
-    let field = |t, c, f: &str| s.ids.fields.get(&(t, c, f.to_string())).copied();
+    let field = |t, c, f: &str| s.ids.field_id(t, c, f).map(u64::from);
     let option = s.prelude_type("Option");
     assert_eq!(Some(0), field(option, Some(1), "value"));
     let result = s.prelude_type("Result");
     assert_eq!(Some(1), field(result, Some(0), "value"));
     assert_eq!(Some(2), field(result, Some(1), "error"));
-    assert_eq!(Some(&0), s.ids.keys.get(&rel_id(&s, "catalog", "types")));
     assert_eq!(
-        Some(&1),
-        s.ids.keys.get(&rel_id(&s, "catalog", "constructors"))
+        Some(0),
+        s.ids.key_id(rel_id(&s, "catalog", "types")).map(u64::from)
+    );
+    assert_eq!(
+        Some(1),
+        s.ids
+            .key_id(rel_id(&s, "catalog", "constructors"))
+            .map(u64::from)
     );
     for (i, t) in s.types.iter().enumerate() {
         if !s.module(t.module).engine {
@@ -826,17 +915,17 @@ fn engine_fields_and_keys_take_their_fixed_ids() {
         }
     }
     let credentials = rel_id(&s, "catalog", "credentials");
-    let key = s.ids.keys[&credentials];
-    assert_eq!(Some(&(key + 1)), s.ids.indexes.get(&(credentials, 0)));
+    let key = s.ids.key_id(credentials).map(u64::from).unwrap();
+    assert_eq!(Some(key + 1), s.ids.index_id(credentials, 0).map(u64::from));
     assert_eq!(
-        Some(&(key + 2)),
-        s.ids.keys.get(&rel_id(&s, "sys", "collations"))
+        Some(key + 2),
+        s.ids.key_id(rel_id(&s, "sys", "collations")).map(u64::from)
     );
     for (i, r) in s.relations.iter().enumerate() {
         let rel = RelId(i as u32);
-        assert!(s.ids.keys[&rel] < 1024);
+        assert!(s.ids.key_id(rel).unwrap().raw() < 1024);
         for k in 0..r.indexes.len() {
-            assert!(s.ids.indexes[&(rel, k)] < 1024);
+            assert!(s.ids.index_id(rel, k).unwrap().raw() < 1024);
         }
     }
     let reject = s.prelude_type("RejectReason");
@@ -847,15 +936,14 @@ fn engine_fields_and_keys_take_their_fixed_ids() {
     let limit = s.prelude_type("Limit");
     let rounds = s.ty(limit).ctor_index("Rounds").unwrap();
     assert_eq!(Some(563), field(limit, Some(rounds), "rounds"));
-    assert_eq!(Some(574), s.ids.fields.values().max().copied());
+    assert_eq!(Some(574), s.ids.field_ids().map(|(_, id)| id.raw()).max());
     assert_eq!(
         Some(60),
         s.ids
-            .indexes
-            .values()
-            .chain(s.ids.keys.values())
+            .index_ids()
+            .map(|(_, id)| id.raw())
+            .chain(s.ids.key_ids().map(|(_, id)| id.raw()))
             .max()
-            .copied()
     );
 }
 
@@ -864,10 +952,9 @@ fn the_engine_fields_of_catalog_and_sys_start_after_the_prelude() {
     let s = build_src(&[]).unwrap();
     let catalog_min = s
         .ids
-        .fields
-        .iter()
+        .field_ids()
         .filter(|((t, _, _), _)| s.module(s.ty(*t).module).name != "prelude")
-        .map(|(_, id)| *id)
+        .map(|(_, id)| id.raw())
         .min();
     assert_eq!(Some(92), catalog_min);
 }
@@ -978,10 +1065,12 @@ fn a_privilege_clause_takes_its_fixed_ids() {
     let catalog = s.module_named("catalog").unwrap();
     let clause = s.module(catalog).types["ClauseBody"];
     let privilege = s.ty(clause).ctor_index("Privilege").unwrap();
-    assert_eq!(Some(&472), s.ids.ctors.get(&(clause, privilege)));
+    assert_eq!(Some(472), s.ids.ctor_id(clause, privilege).map(u64::from));
     for (name, id) in [("privilege", 569), ("target", 570)] {
-        let key = (clause, Some(privilege), name.to_string());
-        assert_eq!(Some(&id), s.ids.fields.get(&key));
+        assert_eq!(
+            Some(id),
+            s.ids.field_id(clause, Some(privilege), name).map(u64::from)
+        );
     }
 }
 

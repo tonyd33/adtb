@@ -35,7 +35,7 @@ impl Nameable {
                 | Right::Delete(target) => target.relation,
                 Right::Retag { relation, .. } => *relation,
             };
-            if let Some(rel) = schema.ids.relation(relation.0)
+            if let Some(rel) = schema.ids.relation_of(relation).next()
                 && out.relations.insert(rel)
             {
                 out.reach(schema, schema.relation(rel).elem_def);

@@ -1,6 +1,26 @@
 use super::*;
 use crate::ids::{FIRST_LOG_ID, Object, objects};
 
+/// An object and its path, made distinct among the schema's.
+type Pathed = (String, Object);
+
+/// Pairs each object with its path, made distinct by `#n` for the nth repeat of a path.
+fn distinct(objs: Vec<Object>) -> Vec<Pathed> {
+    let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+    objs.into_iter()
+        .map(|o| {
+            let n = seen.entry(o.path().to_string()).or_default();
+            let path = if *n > 0 {
+                format!("{}#{n}", o.path())
+            } else {
+                o.path().to_string()
+            };
+            *n += 1;
+            (path, o)
+        })
+        .collect()
+}
+
 impl Source {
     /// The text of a span of file `file`, its tokens joined by single spaces.
     fn span_text(&self, file: FileId, span: Span) -> String {
@@ -14,19 +34,11 @@ impl Source {
             .join(" ")
     }
 
-    /// The built schema and every object of its user modules, each path made distinct.
-    fn objects(&self) -> Option<(Arc<Schema>, Vec<Object>)> {
+    /// The built schema and every object of its user modules, each with its path made distinct.
+    fn objects(&self) -> Option<(Arc<Schema>, Vec<Pathed>)> {
         let schema = self.built().ok()?;
         let files = self.files().ok()?;
-        let mut seen: BTreeMap<String, usize> = BTreeMap::new();
-        let mut out = objects(&schema, &files, &|f, s| self.span_text(f, s));
-        for o in &mut out {
-            let n = seen.entry(o.path.clone()).or_default();
-            if *n > 0 {
-                o.path = format!("{}#{n}", o.path);
-            }
-            *n += 1;
-        }
+        let out = distinct(objects(&schema, &files, &|f, s| self.span_text(f, s)));
         Some((schema, out))
     }
 
@@ -37,16 +49,16 @@ impl Source {
             return;
         };
         let mut ids = BTreeMap::new();
-        for o in objs {
-            let id = match self.ids.get(&o.path) {
+        for (path, o) in objs {
+            let id = match self.ids.get(&path) {
                 Some(&id) => id,
                 None => {
-                    let n = self.next.entry(o.space).or_insert(FIRST_LOG_ID);
+                    let n = self.next.entry(o.space()).or_insert(FIRST_LOG_ID);
                     *n += 1;
                     *n - 1
                 }
             };
-            ids.insert(o.path, id);
+            ids.insert(path, id);
         }
         self.ids = ids;
     }
@@ -54,18 +66,10 @@ impl Source {
     /// Writes the source's catalog ids and write states into a schema it built.
     pub(super) fn annotate(&self, schema: &mut Schema) {
         if let Ok(files) = self.files() {
-            let objs = objects(schema, &files, &|f, s| self.span_text(f, s));
-            let mut seen: BTreeMap<String, usize> = BTreeMap::new();
-            for o in objs {
-                let n = seen.entry(o.path.clone()).or_default();
-                let path = if *n > 0 {
-                    format!("{}#{n}", o.path)
-                } else {
-                    o.path.clone()
-                };
-                *n += 1;
+            let objs = distinct(objects(schema, &files, &|f, s| self.span_text(f, s)));
+            for (path, o) in objs {
                 if let Some(&id) = self.ids.get(&path) {
-                    schema.ids.set(&o.slot, id);
+                    schema.ids.set(o.slot(), id);
                 }
             }
         }

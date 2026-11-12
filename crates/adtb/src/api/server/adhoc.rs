@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 
 use adtb_lang::check::Command;
 use adtb_lang::evolve::{DeployedGrant, Granted};
+use adtb_lang::ids::CatFunctionId;
 use adtb_lang::permission::{self, EffectiveGrants, Mode, Nameable, Requirement, Requirements};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{FnId, RelId};
@@ -125,7 +126,7 @@ impl Holds {
                 needs
                     .iter()
                     .filter(
-                        |r| matches!(r, Requirement::ReadField(_, f) if revealing.contains(&f.0)),
+                        |r| matches!(r, Requirement::ReadField(_, f) if revealing.contains(&f.raw())),
                     )
                     .cloned(),
             );
@@ -198,13 +199,14 @@ impl Holds {
 
 /// Returns the functions `name` holds a grant to call directly.
 fn granted_calls<R: Runtime>(e: &Engine<R>, name: &str, grants: &[Grant]) -> BTreeSet<FnId> {
-    let ids = &e.schema.ids.functions;
     grants
         .iter()
         .filter(|g| g.grantee == name && g.privilege == "call" && !g.dormant && g.kind == "Log")
         .filter_map(
             |g| match Granted::read_target(&e.schema, "call", g.target.as_deref()?) {
-                Some(Granted::CallFn(id)) => ids.iter().find(|(_, i)| **i == id).map(|(f, _)| *f),
+                Some(Granted::CallFn(id)) => {
+                    e.schema.ids.function_of(CatFunctionId::from_raw(id)).next()
+                }
                 _ => None,
             },
         )
@@ -236,7 +238,10 @@ pub(in super::super) fn monitored(schema: &Schema, r: &Requirement) -> bool {
     ) {
         return false;
     }
-    let Some(rel) = r.relation().and_then(|id| schema.ids.relation(id.0)) else {
+    let Some(rel) = r
+        .relation()
+        .and_then(|id| schema.ids.relation_of(id).next())
+    else {
         return false;
     };
     let plans = engine_relation(schema, "catalog", "plans").ok();
@@ -254,10 +259,9 @@ fn revealing(schema: &Schema) -> BTreeSet<u64> {
         out.extend(
             schema
                 .ids
-                .fields
-                .iter()
-                .filter(|((d, _, name), _)| *d == def && name == field)
-                .map(|(_, id)| *id),
+                .type_field_ids(def)
+                .filter(|((_, _, name), _)| name == field)
+                .map(|(_, id)| id.raw()),
         );
     }
     out

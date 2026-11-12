@@ -21,13 +21,11 @@ fn engine_rows(schema: &Schema) -> Rows {
 
 /// Returns the rows of the catalog relation whose id is `id`.
 fn rows_of(schema: &Schema, rows: &Rows, id: u64) -> Vec<Vec<Value>> {
-    let r = *schema
+    let r = schema
         .ids
-        .relations
-        .iter()
-        .find(|(_, i)| **i == id)
-        .unwrap()
-        .0;
+        .relation_of(CatRelId::from_raw(id))
+        .next()
+        .unwrap();
     rows[&r].iter().map(|(_, row)| row.clone()).collect()
 }
 
@@ -63,19 +61,17 @@ fn every_engine_object_with_an_id_has_a_row() {
     let schema = engine_schema();
     let rows = engine_rows(&schema);
     let count = |rel: u64| {
-        let r = *schema
+        let r = schema
             .ids
-            .relations
-            .iter()
-            .find(|(_, i)| **i == rel)
-            .unwrap()
-            .0;
+            .relation_of(CatRelId::from_raw(rel))
+            .next()
+            .unwrap();
         rows[&r].len()
     };
-    assert_eq!(schema.ids.types.len(), count(219));
-    assert_eq!(schema.ids.ctors.len(), count(220));
-    assert_eq!(schema.ids.fields.len(), count(222));
-    assert_eq!(schema.ids.relations.len(), count(223));
+    assert_eq!(schema.ids.type_ids().count(), count(219));
+    assert_eq!(schema.ids.ctor_ids().count(), count(220));
+    assert_eq!(schema.ids.field_ids().count(), count(222));
+    assert_eq!(schema.ids.relation_ids().count(), count(223));
     assert_eq!(indexes(&schema).len(), count(226));
     assert_eq!(0, count(224));
     assert_eq!(0, count(232));
@@ -85,13 +81,11 @@ fn every_engine_object_with_an_id_has_a_row() {
 fn the_constructors_relation_names_its_own_row() {
     let schema = engine_schema();
     let rows = engine_rows(&schema);
-    let r = *schema
+    let r = schema
         .ids
-        .relations
-        .iter()
-        .find(|(_, i)| **i == 220)
-        .unwrap()
-        .0;
+        .relation_of(CatRelId::from_raw(220))
+        .next()
+        .unwrap();
     let own = rows[&r]
         .iter()
         .find(|(_, row)| row[0] == Value::I64(121))
@@ -551,7 +545,9 @@ fn a_roots_row_names_its_structure() {
     named.add(&row).expect("the row reads");
     assert_eq!(
         Some(&(3, Pid(7))),
-        named.heaps.get(&(CatRelId(1), CatCtorId(0)))
+        named
+            .heaps
+            .get(&(CatRelId::from_raw(1), CatCtorId::from_raw(0)))
     );
 }
 
@@ -611,11 +607,10 @@ fn gaining_a_field() -> (Schema, Schema, adtb_lang::types::RelId, super::change:
         a.schema().expect("it builds"),
         b.schema().expect("it builds"),
     );
-    let r = *sa
+    let (r, _) = sa
         .ids
-        .relations
-        .keys()
-        .find(|&&r| sa.relation(r).name == "ts")
+        .relation_ids()
+        .find(|&(r, _)| sa.relation(r).name == "ts")
         .expect("ts");
     let rid = super::ids::rel_id(&sa, r);
     let cid = super::ctor_id(&sa, r, 0);

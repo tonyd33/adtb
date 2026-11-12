@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use adtb_lang::ids::held_id;
 use adtb_lang::types::RelId;
 
 use crate::btree::Index;
@@ -185,7 +186,7 @@ impl<R: Runtime> PastReads<R> for Pasts<R> {
 
 impl<R: Runtime> Database<R> {
     pub(super) fn volatile_rows(&self, rel: RelId) -> Result<BTreeSet<Val>, Error> {
-        let id = self.schema.ids.relations[&rel];
+        let id = held_id(self.schema.ids.relation_id(rel)).raw();
         if id == super::vacuums::VACUUMS {
             return Ok(self.vacuum_rows());
         }

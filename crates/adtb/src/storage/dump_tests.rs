@@ -606,7 +606,12 @@ fn owner_only(files: &Files) -> Files {
 /// key of `catalog::roles` or `catalog::grants`.
 fn unsecured(files: &Files) -> Files {
     let schema = crate::catalog::engine_schema();
-    let id = |n| schema.ids.relations[&crate::catalog::values::relation(&schema, n)];
+    let id = |n| {
+        schema
+            .ids
+            .relation_id(crate::catalog::values::relation(&schema, n))
+            .unwrap()
+    };
     let drawn = ["roles", "grants"].map(|n| format!("generator {} ", id(n)));
     let kept = |n: &str, t: &str| match n {
         "generators" => t

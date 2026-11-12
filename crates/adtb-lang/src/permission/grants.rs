@@ -43,7 +43,8 @@ fn rights(schema: &Schema, privilege: &Granted, grant_option: bool, out: &mut Ve
     };
     match privilege {
         Granted::Read(t, fs) | Granted::Update(t, fs) => {
-            let fields: BTreeSet<FieldId> = fs.ids.iter().copied().map(FieldId).collect();
+            let fields: BTreeSet<CatFieldId> =
+                fs.ids.iter().copied().map(CatFieldId::from_raw).collect();
             let read = matches!(privilege, Granted::Read(..));
             for target in targets(schema, t) {
                 let fields = fields.clone();
@@ -64,7 +65,7 @@ fn rights(schema: &Schema, privilege: &Granted, grant_option: bool, out: &mut Ve
             let to = targets(schema, to);
             for f in targets(schema, from) {
                 for t in &to {
-                    let pair = (f.constructor.0, t.constructor.0);
+                    let pair = (f.constructor.raw(), t.constructor.raw());
                     if f.constructor != t.constructor && !except.contains(&pair) {
                         push(Right::Retag {
                             relation: f.relation,
@@ -84,8 +85,8 @@ fn targets(schema: &Schema, t: &GrantTarget) -> Vec<Target> {
     t.ctors(schema)
         .into_iter()
         .map(|id| Target {
-            relation: RelationId(t.relation),
-            constructor: ConstructorId(id),
+            relation: CatRelId::from_raw(t.relation),
+            constructor: CatCtorId::from_raw(id),
         })
         .collect()
 }
@@ -95,24 +96,22 @@ impl Requirement {
     /// privilege it needs, as `read`.
     pub fn text(&self, schema: &Schema) -> (String, &'static str) {
         let at = |t: &Target| {
-            let rel = schema.ids.relation(t.relation.0);
+            let rel = schema.ids.relation_of(t.relation).next();
             let r = rel.map_or("?", |r| schema.relation(r).name.as_str());
             let c = schema
                 .ids
-                .ctors
-                .iter()
-                .find(|(_, id)| **id == t.constructor.0)
-                .and_then(|(&(def, c), _)| schema.ty(def).ctors().get(c as usize))
+                .ctor_of(t.constructor)
+                .next()
+                .and_then(|(def, c)| schema.ty(def).ctors().get(c as usize))
                 .map_or("?", |c| c.name.as_str());
             format!("{r}.{c}")
         };
-        let field = |f: &FieldId| {
+        let field = |f: &CatFieldId| {
             schema
                 .ids
-                .fields
-                .iter()
-                .find(|(_, id)| **id == f.0)
-                .map_or("?", |((_, _, name), _)| name.as_str())
+                .field_of(*f)
+                .next()
+                .map_or("?", |(_, _, name)| name.as_str())
         };
         match self {
             Requirement::ReadConstructor(t) => (format!("reads {}", at(t)), "read"),

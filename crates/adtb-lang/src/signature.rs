@@ -135,18 +135,17 @@ struct IdWalk<'s> {
 
 impl IdWalk<'_> {
     fn type_id(&self, def: TypeId) -> Id {
-        self.schema.ids.types.get(&def).map_or_else(
+        self.schema.ids.type_id(def).map_or_else(
             || Id::Name(self.schema.ty(def).name.clone()),
-            |&id| Id::Catalog(id),
+            |id| Id::Catalog(id.raw()),
         )
     }
 
     fn ctor_id(&self, def: TypeId, ctor: u32, name: &str) -> Id {
         self.schema
             .ids
-            .ctors
-            .get(&(def, ctor))
-            .map_or_else(|| Id::Name(name.to_owned()), |&id| Id::Catalog(id))
+            .ctor_id(def, ctor)
+            .map_or_else(|| Id::Name(name.to_owned()), |id| Id::Catalog(id.raw()))
     }
 
     fn ctor_ids(&self, def: TypeId, set: &CtorSet) -> BTreeSet<Id> {
@@ -168,9 +167,8 @@ impl IdWalk<'_> {
                 let id = self
                     .schema
                     .ids
-                    .fields
-                    .get(&(def, ctor, f.name.clone()))
-                    .map_or_else(|| Id::Name(f.name.clone()), |&id| Id::Catalog(id));
+                    .field_id(def, ctor, &f.name)
+                    .map_or_else(|| Id::Name(f.name.clone()), |id| Id::Catalog(id.raw()));
                 (id, self.shape(&f.ty))
             })
             .collect()
@@ -207,9 +205,9 @@ impl IdWalk<'_> {
     }
 
     fn relation_id(&self, rel: RelId) -> Id {
-        self.schema.ids.relations.get(&rel).map_or_else(
+        self.schema.ids.relation_id(rel).map_or_else(
             || Id::Name(self.schema.relation(rel).name.clone()),
-            |&id| Id::Catalog(id),
+            |id| Id::Catalog(id.raw()),
         )
     }
 

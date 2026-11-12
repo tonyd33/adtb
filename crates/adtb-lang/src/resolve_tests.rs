@@ -235,7 +235,10 @@ fn root_principal_resolves_from_empty_imports_and_the_prelude() {
             );
         } else {
             assert_eq!(schema.principal, schema.prelude_type("Principal"));
-            assert_eq!(37, schema.ids.types[&schema.principal]);
+            assert_eq!(
+                Some(37),
+                schema.ids.type_id(schema.principal).map(u64::from)
+            );
         }
     }
 }

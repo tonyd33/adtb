@@ -11,6 +11,10 @@ use crate::ast::{
 };
 use crate::canon::Names;
 use crate::check::{self, Program, Ref, RowBody};
+use crate::ids::{
+    CatConstraintId, CatCtorId, CatFieldId, CatFunctionId, CatIndexId, CatRelId, CatSetId,
+    CatTypeId, held_id,
+};
 use crate::lex::{Tok, lex};
 use crate::parse::{Options, parse_schema};
 use crate::schema::{self, ENGINE_MODULES, Schema, TypeDefKind, ValueDef};

@@ -34,7 +34,7 @@ impl Resolver<'_> {
                 };
                 Resolved::AddDefault {
                     default,
-                    relation: after.ids.relations[&rel],
+                    relation: held_id(after.ids.relation_id(rel)).raw(),
                     field: field_id,
                     value: term(after_eq(text, field.span.end, end)),
                 }
@@ -59,13 +59,13 @@ impl Resolver<'_> {
             OperatorKind::Store(s) => {
                 let f = self.view_fn(after, &s.view)?;
                 Resolved::Store {
-                    view: *after.ids.views.get(&f)?,
-                    function: *after.ids.functions.get(&f)?,
+                    view: after.ids.view_id(f)?.raw(),
+                    function: after.ids.function_id(f)?.raw(),
                     decl: term(s.span),
                 }
             }
             OperatorKind::Unstore(q) => Resolved::Unstore {
-                view: *before.ids.views.get(&self.view_fn(before, q)?)?,
+                view: before.ids.view_id(self.view_fn(before, q)?)?.raw(),
             },
             OperatorKind::AddComputed {
                 relation,
@@ -76,7 +76,7 @@ impl Resolver<'_> {
                 let (rel, computed) = self.computed_in(after, relation, &field.text)?;
                 Resolved::AddComputed {
                     computed,
-                    relation: after.ids.relations[&rel],
+                    relation: held_id(after.ids.relation_id(rel)).raw(),
                     name: field.text.clone(),
                     decl: term(field.span.to(expr.span)),
                 }
@@ -174,12 +174,11 @@ impl Resolver<'_> {
             .position(|d| d.ctor == c && d.field == field)?;
         schema
             .ids
-            .defaults
-            .range((rel, at, None)..=(rel, at, Some(u32::MAX)))
-            .filter_map(|(&(_, _, filled), _)| filled)
+            .clause_default_ids(rel, at)
+            .filter_map(|(filled, _)| filled)
             .map(|c| {
                 Some(Clause::Member {
-                    ctor: *schema.ids.ctors.get(&(def, c))?,
+                    ctor: schema.ids.ctor_id(def, c)?.raw(),
                 })
             })
             .collect()
@@ -205,13 +204,9 @@ impl Resolver<'_> {
             .defaults
             .iter()
             .position(|d| d.ctor == c && d.field == field)?;
-        let (&(_, _, filled), &id) = schema
-            .ids
-            .defaults
-            .range((rel, at, None)..=(rel, at, Some(u32::MAX)))
-            .next()?;
-        let field = *schema.ids.fields.get(&(def, filled, field.to_string()))?;
-        Some((rel, id, field))
+        let (filled, id) = schema.ids.clause_default_ids(rel, at).next()?;
+        let field = schema.ids.field_id(def, filled, field)?;
+        Some((rel, id.raw(), field.raw()))
     }
 
     fn computed_in(&self, schema: &Schema, relation: &QName, name: &str) -> Option<(RelId, u64)> {
@@ -221,7 +216,7 @@ impl Resolver<'_> {
             .computed
             .iter()
             .position(|c| c.name == name)?;
-        Some((rel, *schema.ids.computed.get(&(rel, at))?))
+        Some((rel, schema.ids.computed_id(rel, at)?.raw()))
     }
 
     fn view_fn(&self, schema: &Schema, q: &QName) -> Option<FnId> {

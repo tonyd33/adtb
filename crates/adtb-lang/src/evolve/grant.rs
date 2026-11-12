@@ -41,24 +41,26 @@ impl GrantTarget {
     /// Returns the ids of the constructors of the target relation that this target covers in
     /// `schema`. A constructor id `schema` lacks, or one of another type, covers nothing.
     pub fn ctors(&self, schema: &Schema) -> BTreeSet<u64> {
-        let Some(rel) = schema.ids.relation(self.relation) else {
+        let Some(rel) = schema
+            .ids
+            .relation_of(CatRelId::from_raw(self.relation))
+            .next()
+        else {
             return BTreeSet::new();
         };
         let r = schema.relation(rel);
         schema
             .ids
-            .ctors
-            .iter()
-            .filter(|((def, _), _)| *def == r.elem_def)
-            .filter(|((_, c), id)| match &self.sel {
+            .type_ctor_ids(r.elem_def)
+            .filter(|(c, id)| match &self.sel {
                 GrantSel::Whole => true,
-                GrantSel::Ctors(ids) => ids.contains(id),
+                GrantSel::Ctors(ids) => ids.contains(&id.raw()),
                 GrantSel::Set(s) => r.sets.iter().any(|set| {
-                    schema.ids.sets.get(&(rel, set.name.clone())) == Some(s)
+                    schema.ids.set_id(rel, &set.name) == Some(CatSetId::from_raw(*s))
                         && set.ctors.contains(c)
                 }),
             })
-            .map(|(_, &id)| id)
+            .map(|(_, id)| id.raw())
             .collect()
     }
 }
@@ -432,13 +434,13 @@ impl Resolving<'_> {
                 }
                 match sel {
                     CtorSel::One(x) if schema.ty(def).ctor_index(&x.text).is_none() => (
-                        GrantSel::Set(*ids.sets.get(&(rel, x.text.clone())).expect(USER_IDS)),
+                        GrantSel::Set(ids.set_id(rel, &x.text).expect(USER_IDS).raw()),
                         ctors,
                     ),
                     _ => {
                         let mut out: Vec<u64> = ctors
                             .iter()
-                            .map(|&c| *ids.ctors.get(&(def, c)).expect(USER_IDS))
+                            .map(|&c| ids.ctor_id(def, c).expect(USER_IDS).raw())
                             .collect();
                         out.sort_unstable();
                         (GrantSel::Ctors(out), ctors)
@@ -446,7 +448,7 @@ impl Resolving<'_> {
                 }
             }
         };
-        let relation = *ids.relations.get(&rel).expect(USER_IDS);
+        let relation = ids.relation_id(rel).expect(USER_IDS).raw();
         Ok((rel, GrantTarget { relation, sel }, ctors))
     }
 
@@ -463,10 +465,9 @@ impl Resolving<'_> {
         let ids = &schema.ids;
         let Some(list) = list else {
             let mut out: Vec<u64> = ids
-                .fields
-                .iter()
-                .filter(|((d, c, _), _)| *d == def && c.is_none_or(|c| ctors.contains(&c)))
-                .map(|(_, &id)| id)
+                .type_field_ids(def)
+                .filter(|((_, c, _), _)| c.is_none_or(|c| ctors.contains(&c)))
+                .map(|(_, id)| id.raw())
                 .collect();
             out.sort_unstable();
             return Ok(GrantFields {
@@ -489,19 +490,19 @@ impl Resolving<'_> {
                         c.text
                     ));
                 }
-                let Some(&id) = ids.fields.get(&(def, Some(k), name.clone())) else {
+                let Some(id) = ids.field_id(def, Some(k), name) else {
                     return refuse(format!(
                         "`{}.{}` is no field of `{}`",
                         c.text, name, rd.name
                     ));
                 };
-                out.push(id);
-            } else if let Some(&id) = ids.fields.get(&(def, None, name.clone())) {
-                out.push(id);
+                out.push(id.raw());
+            } else if let Some(id) = ids.field_id(def, None, name) {
+                out.push(id.raw());
             } else {
                 let found: Vec<u64> = ctors
                     .iter()
-                    .filter_map(|&c| ids.fields.get(&(def, Some(c), name.clone())).copied())
+                    .filter_map(|&c| ids.field_id(def, Some(c), name).map(CatFieldId::raw))
                     .collect();
                 if found.is_empty() {
                     return refuse(format!("`{}` has no field `{name}`", rd.name));
@@ -529,7 +530,8 @@ impl Resolving<'_> {
             schema
                 .ty(def)
                 .ctor_index(&c.text)
-                .and_then(|k| schema.ids.ctors.get(&(def, k)).copied())
+                .and_then(|k| schema.ids.ctor_id(def, k))
+                .map(CatCtorId::raw)
                 .ok_or_else(|| {
                     let name = &schema.relation(rel).name;
                     vec![Diag::new(
@@ -555,7 +557,7 @@ impl Resolving<'_> {
             out.extend(
                 ctors
                     .iter()
-                    .map(|&c| *ids.ctors.get(&(def, c)).expect(USER_IDS)),
+                    .map(|&c| ids.ctor_id(def, c).expect(USER_IDS).raw()),
             );
         };
         let mut covered = BTreeSet::new();
@@ -590,7 +592,7 @@ impl Resolving<'_> {
             }
             ast::Privilege::CallFn(f) => match crate::resolve::lookup_value(schema, self.vis, f) {
                 Ok(ValueDef::Function(g)) => {
-                    let Some(&id) = ids.functions.get(&g) else {
+                    let Some(id) = ids.function_id(g).map(CatFunctionId::raw) else {
                         return Err(vec![Diag::new(
                             f.span(),
                             format!("`{}` is not a schema function", f.name.text),

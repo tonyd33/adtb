@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::check::{Adhoc, Program, Query, Txn};
+use crate::ids::{CatCtorId, CatFieldId, CatRelId};
 use crate::kernel::{Terms, Tm, Var};
 use crate::norm::NormalProgram;
 use crate::schema::Schema;
@@ -23,31 +24,22 @@ pub use names::Nameable;
 use value::{Env, Value};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RelationId(pub u64);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ConstructorId(pub u64);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct FieldId(pub u64);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Target {
-    pub relation: RelationId,
-    pub constructor: ConstructorId,
+    pub relation: CatRelId,
+    pub constructor: CatCtorId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Requirement {
     ReadConstructor(Target),
-    ReadField(Target, FieldId),
+    ReadField(Target, CatFieldId),
     Insert(Target),
     Delete(Target),
-    UpdateField(Target, FieldId),
+    UpdateField(Target, CatFieldId),
     Retag {
-        relation: RelationId,
-        from: ConstructorId,
-        to: ConstructorId,
+        relation: CatRelId,
+        from: CatCtorId,
+        to: CatCtorId,
     },
     ReadFiles,
 }
@@ -55,14 +47,14 @@ pub enum Requirement {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Requirements {
     required: BTreeSet<Requirement>,
-    keys: BTreeSet<(Target, FieldId)>,
+    keys: BTreeSet<(Target, CatFieldId)>,
 }
 
 /// The target every row of a temp relation stands for. A temp relation has no identity in the
 /// schema, and its text alone reads and writes it.
 const TEMP_TARGET: Target = Target {
-    relation: RelationId(u64::MAX),
-    constructor: ConstructorId(u64::MAX),
+    relation: CatRelId::from_raw(u64::MAX),
+    constructor: CatCtorId::from_raw(u64::MAX),
 };
 
 fn is_temp(schema: &Schema, rel: RelId) -> bool {
@@ -83,13 +75,10 @@ impl Requirements {
         let mut out = Requirements::default();
         for rel in relations {
             let def = schema.relation(rel).elem_def;
-            let relation = RelationId(
-                *schema
-                    .ids
-                    .relations
-                    .get(&rel)
-                    .ok_or(Error::MissingIdentity(Slot::Relation(rel)))?,
-            );
+            let relation = schema
+                .ids
+                .relation_id(rel)
+                .ok_or(Error::MissingIdentity(Slot::Relation(rel)))?;
             let header: Vec<&str> = schema
                 .ty(def)
                 .header()
@@ -100,27 +89,19 @@ impl Requirements {
                 let at = at as u32;
                 let target = Target {
                     relation,
-                    constructor: ConstructorId(
-                        *schema
-                            .ids
-                            .ctors
-                            .get(&(def, at))
-                            .ok_or(Error::MissingIdentity(Slot::Ctor(def, at)))?,
-                    ),
+                    constructor: schema
+                        .ids
+                        .ctor_id(def, at)
+                        .ok_or(Error::MissingIdentity(Slot::Ctor(def, at)))?,
                 };
                 out.required.insert(Requirement::ReadConstructor(target));
                 let own = ctor.fields.iter().map(|f| f.name.as_str());
                 for name in header.iter().copied().chain(own) {
                     let scope = (!header.contains(&name)).then_some(at);
-                    let id = schema
-                        .ids
-                        .fields
-                        .get(&(def, scope, name.to_string()))
-                        .ok_or_else(|| {
-                            Error::MissingIdentity(Slot::Field(def, scope, name.to_string()))
-                        })?;
-                    out.required
-                        .insert(Requirement::ReadField(target, FieldId(*id)));
+                    let id = schema.ids.field_id(def, scope, name).ok_or_else(|| {
+                        Error::MissingIdentity(Slot::Field(def, scope, name.to_string()))
+                    })?;
+                    out.required.insert(Requirement::ReadField(target, id));
                 }
             }
         }

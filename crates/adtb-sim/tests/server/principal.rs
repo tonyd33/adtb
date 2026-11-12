@@ -47,14 +47,18 @@ fn a_custom_root_principal_registers_without_a_module_import() {
         )
         .expect("the root principal resolves without an import");
         let schema = db.schema();
-        assert_eq!(1024, schema.ids.types[&schema.principal]);
+        assert_eq!(1024, schema.ids.type_id(schema.principal).unwrap().raw());
         for (ctor, id) in [("EndUser", 1025), ("Service", 1026), ("Anonymous", 1027)] {
             assert_eq!(
                 id,
-                schema.ids.ctors[&(
-                    schema.principal,
-                    schema.ty(schema.principal).ctor_index(ctor).unwrap()
-                )]
+                schema
+                    .ids
+                    .ctor_id(
+                        schema.principal,
+                        schema.ty(schema.principal).ctor_index(ctor).unwrap()
+                    )
+                    .unwrap()
+                    .raw()
             );
         }
         accepted_by_every_entry(&db, Value::Int(127));
@@ -146,14 +150,18 @@ fn the_default_root_principal_keeps_its_fixed_ids_without_imports() {
         )
         .unwrap();
         let schema = db.schema();
-        assert_eq!(37, schema.ids.types[&schema.principal]);
+        assert_eq!(37, schema.ids.type_id(schema.principal).unwrap().raw());
         for (ctor, id) in [("EndUser", 38), ("Service", 39), ("Anonymous", 40)] {
             assert_eq!(
                 id,
-                schema.ids.ctors[&(
-                    schema.principal,
-                    schema.ty(schema.principal).ctor_index(ctor).unwrap()
-                )]
+                schema
+                    .ids
+                    .ctor_id(
+                        schema.principal,
+                        schema.ty(schema.principal).ctor_index(ctor).unwrap()
+                    )
+                    .unwrap()
+                    .raw()
             );
         }
         accepted_by_every_entry(&db, Value::text("user"));

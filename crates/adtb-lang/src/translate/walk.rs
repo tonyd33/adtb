@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::evolve::Resolved;
+use crate::ids::{CatFunctionId, CatIndexId, CatRelId};
 use crate::kernel::{Agg, Conflict, Kind, Prim, Terms, Tm, Var};
 use crate::schema::DefaultValue;
 use crate::types::*;
@@ -547,8 +548,9 @@ impl<'p, 'a> Walk<'p, 'a> {
             } => Kind::Call {
                 func: self.p.function(func).ok_or_else(|| {
                     refused(
-                        self.p
-                            .blame_function(self.map.from.ids.functions.get(&func).copied()),
+                        self.p.blame_function(
+                            self.map.from.ids.function_id(func).map(CatFunctionId::raw),
+                        ),
                         format!(
                             "it calls `{}`, whose code changed since the pin",
                             self.map.from.function(func).name
@@ -570,7 +572,11 @@ impl<'p, 'a> Walk<'p, 'a> {
                 op: Agg::User(self.p.aggregate(a).ok_or_else(|| {
                     refused(
                         self.p.blame_function(
-                            self.map.from.ids.aggregates.get(&(a as usize)).copied(),
+                            self.map
+                                .from
+                                .ids
+                                .aggregate_id(a as usize)
+                                .map(CatFunctionId::raw),
                         ),
                         "it folds by an aggregate whose code changed since the pin",
                     )
@@ -642,10 +648,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             let r = schema.relation(r);
             r.key
                 .iter()
-                .map(|f| {
-                    let slot = super::map::slot(schema, r.elem_def, 0, f);
-                    schema.ids.fields.get(&slot).copied()
-                })
+                .map(|f| super::map::field_id(schema, r.elem_def, 0, f))
                 .collect::<Option<BTreeSet<_>>>()
         };
         if let (Some(a), Some(b)) = (fields(self.map.from, rel), fields(self.map.to, to))
@@ -653,7 +656,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         {
             return Ok(());
         }
-        let id = self.map.from.ids.relations.get(&rel).copied();
+        let id = self.map.from.ids.relation_id(rel).map(CatRelId::raw);
         Err(refused(
             self.p.blame(
                 |o| matches!(o.op, Resolved::Rekey { relation, .. } if Some(relation) == id),
@@ -668,20 +671,13 @@ impl<'p, 'a> Walk<'p, 'a> {
     /// Returns the position at the later version of the unique at position `i` of `rel`.
     fn unique(&self, rel: RelId, i: u32) -> R<u32> {
         let to = self.relation(rel)?;
-        let from = self.map.from.ids.indexes.get(&(rel, i as usize)).copied();
-        from.and_then(|id| {
-            self.map
-                .to
-                .ids
-                .indexes
-                .iter()
-                .find(|((r, _), j)| *r == to && **j == id)
-        })
-        .map(|((_, j), _)| *j as u32)
+        let from = self.map.from.ids.index_id(rel, i as usize);
+        from.and_then(|id| self.map.to.ids.index_of(id).find(|&(r, _)| r == to))
+            .map(|(_, j)| j as u32)
         .ok_or_else(|| {
             refused(
                 self.p.blame(
-                    |o| matches!(o.op, Resolved::DropUnique { index } if Some(index) == from),
+                    |o| matches!(o.op, Resolved::DropUnique { index } if Some(index) == from.map(CatIndexId::raw)),
                 ),
                 "its conflict target is dropped",
             )
@@ -937,13 +933,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                 continue;
             }
             let Some(image) = self.map.field(*def, Some(c), name) else {
-                let id = self
-                    .map
-                    .from
-                    .ids
-                    .fields
-                    .get(&super::map::slot(self.map.from, *def, c, name))
-                    .copied();
+                let id = super::map::field_id(self.map.from, *def, c, name);
                 return Err(refused(
                     self.p.blame_field(id, false),
                     format!(
@@ -1059,13 +1049,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                     self.missing(out, s, &lacked, &given)?
                 }
                 None => {
-                    let id = self
-                        .map
-                        .to
-                        .ids
-                        .fields
-                        .get(&super::map::slot(self.map.to, *to, k, &n))
-                        .copied();
+                    let id = super::map::field_id(self.map.to, *to, k, &n);
                     return Err(refused(
                         self.p.blame_field(id, true),
                         format!(
@@ -1183,13 +1167,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                 }
             };
         }
-        let id = self
-            .map
-            .to
-            .ids
-            .fields
-            .get(&super::map::slot(self.map.to, def, k, name))
-            .copied();
+        let id = super::map::field_id(self.map.to, def, k, name);
         let Some((fill, op, written)) = self.p.fill(def, k, name)? else {
             return Err(refused(
                 self.p.blame_field(id, true),

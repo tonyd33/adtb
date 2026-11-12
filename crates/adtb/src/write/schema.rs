@@ -106,9 +106,9 @@ fn refs(schema: &Schema, rel: RelId, c: u32, indexes: &[IndexDesc]) -> Vec<RefFi
         .filter(|f| f.ctor.is_none_or(|own| own == c))
         .map(|f| {
             let index = match f.index {
-                ReferenceIndex::Key => ids.keys.get(&rel),
-                ReferenceIndex::Declared(i) => ids.indexes.get(&(rel, i)),
-                ReferenceIndex::Implied => ids.implied.get(&(rel, f.ctor, f.field.clone())),
+                ReferenceIndex::Key => ids.key_id(rel),
+                ReferenceIndex::Declared(i) => ids.index_id(rel, i),
+                ReferenceIndex::Implied => ids.implied_id(rel, f.ctor, &f.field),
             };
             RefField {
                 at: f.at,
@@ -118,7 +118,7 @@ fn refs(schema: &Schema, rel: RelId, c: u32, indexes: &[IndexDesc]) -> Vec<RefFi
                 optional: f.optional,
                 action: f.on_delete,
                 index: index
-                    .map(|id| IndexId(*id))
+                    .map(|id| IndexId(id.raw()))
                     .filter(|id| indexes.iter().any(|d| d.id == *id)),
                 name: f.field,
             }

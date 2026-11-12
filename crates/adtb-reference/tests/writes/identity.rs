@@ -72,16 +72,11 @@ impl Step {
                     panic!("expected a catalog-linked unique violation")
                 };
                 let relation = fixture.rel(&relation);
-                let matched = fixture
-                    .schema
-                    .ids
-                    .indexes
-                    .iter()
-                    .any(|(&(at, offset), id)| {
-                        at == relation
-                            && constraint == format!("{prefix}#{id}")
-                            && *id != u64::try_from(offset).expect("index offset fits u64")
-                    });
+                let matched = fixture.schema.ids.index_ids().any(|((at, offset), id)| {
+                    at == relation
+                        && constraint == format!("{prefix}#{id}")
+                        && id.raw() != u64::try_from(offset).expect("index offset fits u64")
+                });
                 assert!(
                     matched,
                     "{constraint} names a relation-linked catalog ID distinct from its local offset"

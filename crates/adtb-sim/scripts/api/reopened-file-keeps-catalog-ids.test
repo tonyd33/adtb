@@ -1,0 +1,89 @@
+seed 1
+
+migrate
+  module shop
+  add module shop
+  add type Customer = { id: Key customers, name: Text }
+  add relation customers : Customer key id generate sequence
+  add type Payment { id: Key payments, customer: Key customers }
+    = Card { last4: Text }
+    | Invoice { due: Text, payer: Key customers }
+  add relation payments : Payment
+    key id generate sequence
+    index (customer)
+  add set Billed of payments = Invoice
+  add constraint nameless = from c in customers where c.name == "" select c
+  define fn shout (c: Customer) -> Text = c.name ++ "!"
+  add computed customers.loud: Text = self.name ++ "!"
+
+migrate
+  module shop
+  rename field Customer.name to full_name
+  rename constructor Payment.Card to Debit
+  rename relation customers to clients
+
+reopen
+
+query rowsort
+  from t in catalog::types where t.module == "shop" select { name: t.name, id: t.id }
+----
+{ name: "Customer", id: catalog::types.key(1024) }
+{ name: "Payment", id: catalog::types.key(1027) }
+
+query rowsort
+  from c in catalog::constructors where c.id >= catalog::constructors.key(1024) select { name: c.name, id: c.id }
+----
+{ name: "Customer", id: catalog::constructors.key(1025) }
+{ name: "Debit", id: catalog::constructors.key(1028) }
+{ name: "Invoice", id: catalog::constructors.key(1029) }
+
+query rowsort
+  from r in catalog::relations where r.module == "shop" select { name: r.name, id: r.id }
+----
+{ name: "clients", id: catalog::relations.key(1026) }
+{ name: "payments", id: catalog::relations.key(1030) }
+
+query rowsort
+  from f in catalog::fields where f.id >= catalog::fields.key(1024) select { name: f.name, id: f.id }
+----
+{ name: "id", id: catalog::fields.key(1024) }
+{ name: "full_name", id: catalog::fields.key(1025) }
+{ name: "id", id: catalog::fields.key(1026) }
+{ name: "customer", id: catalog::fields.key(1027) }
+{ name: "last4", id: catalog::fields.key(1028) }
+{ name: "due", id: catalog::fields.key(1029) }
+{ name: "payer", id: catalog::fields.key(1030) }
+
+query rowsort
+  from i in catalog::indexes where i.id >= catalog::indexes.key(1024) select { kind: i.kind, id: i.id }
+----
+{ kind: PrimaryKey, id: catalog::indexes.key(1024) }
+{ kind: PrimaryKey, id: catalog::indexes.key(1025) }
+{ kind: Plain, id: catalog::indexes.key(1026) }
+{ kind: Implied, id: catalog::indexes.key(1027) }
+
+query rowsort
+  from d in catalog::defaults where d.id >= catalog::defaults.key(1024) select d.id
+----
+catalog::defaults.key(1024)
+catalog::defaults.key(1025)
+
+query rowsort
+  from s in catalog::named_sets where s.id >= catalog::named_sets.key(1024) select { name: s.name, id: s.id }
+----
+{ name: "Billed", id: catalog::named_sets.key(1024) }
+
+query rowsort
+  from c in catalog::constraints where c.id >= catalog::constraints.key(1024) select { name: c.name, id: c.id }
+----
+{ name: "nameless", id: catalog::constraints.key(1024) }
+
+query rowsort
+  from f in catalog::functions where f.id >= catalog::functions.key(1024) select { name: f.name, id: f.id }
+----
+{ name: "shout", id: catalog::functions.key(1024) }
+
+query rowsort
+  from c in catalog::computed where c.id >= catalog::computed.key(1024) select { name: c.name, id: c.id }
+----
+{ name: "loud", id: catalog::computed.key(1024) }

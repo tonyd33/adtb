@@ -90,10 +90,9 @@ struct Mapping<'s> {
 /// of `b`.
 fn relations_of(a: &Schema, b: &Schema, def: TypeId) -> Vec<(RelId, CatRelId, RelId)> {
     a.ids
-        .relations
-        .keys()
-        .filter(|&&r| a.relation(r).elem_def == def)
-        .filter_map(|&r| {
+        .relation_ids()
+        .filter(|&(r, _)| a.relation(r).elem_def == def)
+        .filter_map(|(r, _)| {
             let rid = rel_id(a, r);
             relation(b, rid).map(|rb| (r, rid, rb))
         })
@@ -502,7 +501,7 @@ impl Mapping<'_> {
             });
             self.out
                 .values
-                .insert((tid, CatCtorId(u64::from(*cid)), id), fill);
+                .insert((tid, CatCtorId::from_raw(u64::from(*cid)), id), fill);
         }
         Ok(())
     }

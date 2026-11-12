@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use adtb_lang::ids::{CatRelId, held_id};
 use adtb_lang::kernel::{Kind, Terms};
 use adtb_lang::schema::{Generator, Schema};
 use adtb_lang::textual::{Form, Header, print, read_document};
@@ -516,7 +517,7 @@ impl<R: Runtime> Engine<R> {
         let mut generators = header_line(&envelope);
         for r in generated(schema, secured) {
             let next = self.db.sequence_next(r);
-            let id = schema.ids.relations[&r];
+            let id = held_id(schema.ids.relation_id(r));
             generators.push_str(&format!("generator {id} {next}\n"));
         }
         entries.push((GENERATORS.to_owned(), generators));
@@ -799,7 +800,9 @@ fn fill<R: Runtime>(
     deployed.insert(grants, kept);
     let resumed: BTreeMap<RelId, i64> = generators
         .iter()
-        .filter_map(|&(id, next)| Some((schema.ids.relation(id)?, next)))
+        .filter_map(|&(id, next)| {
+            Some((schema.ids.relation_of(CatRelId::from_raw(id)).next()?, next))
+        })
         .collect();
     if resumed.len() != generators.len()
         || !resumed

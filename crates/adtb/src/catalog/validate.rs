@@ -52,9 +52,8 @@ impl Catalog {
             let touched = reads.iter().any(|r| {
                 schema
                     .ids
-                    .relations
-                    .get(r)
-                    .is_some_and(|&id| rewritten.contains(&CatRelId(id)))
+                    .relation_id(*r)
+                    .is_some_and(|id| rewritten.contains(&id))
             });
             if existed.contains(&name) && !touched {
                 continue;
@@ -84,13 +83,12 @@ impl Catalog {
             norm::program(schema, program).map_err(|e| Error::from(Broken::NotNormal(e)))?;
         let catalog = self.plan();
         let budget = Budget::new(self.query_memory);
-        let ids = schema.ids.constraints.values().copied().chain(
+        let ids = schema.ids.constraint_ids().map(|(_, id)| id.raw()).chain(
             schema
                 .ids
-                .checks
-                .iter()
-                .filter(|&(&i, _)| schema.checks[i].relation.0 != u32::MAX)
-                .map(|(_, &id)| id),
+                .check_ids()
+                .filter(|&(i, _)| schema.checks[i].relation.0 != u32::MAX)
+                .map(|(_, id)| id.raw()),
         );
         let mut out = Vec::new();
         for (id, &t) in ids.zip(normal.constraints.iter().chain(&normal.checks)) {

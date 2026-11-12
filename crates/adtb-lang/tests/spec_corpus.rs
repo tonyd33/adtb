@@ -228,10 +228,10 @@ fn engine_ids_are_the_fixed_ids_of_the_spec() {
         let mid = schema.module_named(m).expect("an engine module");
         if !types {
             let got = match schema.module(mid).values.get(name) {
-                Some(&adtb_lang::schema::ValueDef::Relation(r)) => schema.ids.relations.get(&r),
+                Some(&adtb_lang::schema::ValueDef::Relation(r)) => schema.ids.relation_id(r),
                 _ => None,
             };
-            if got != Some(&id) {
+            if got.map(u64::from) != Some(id) {
                 failures.push(format!("relation {m}::{name}: {got:?}, not {id}"));
             }
             continue;
@@ -242,10 +242,10 @@ fn engine_ids_are_the_fixed_ids_of_the_spec() {
             }
             continue;
         };
-        if schema.ids.types.get(&t) != Some(&id) {
+        if schema.ids.type_id(t).map(u64::from) != Some(id) {
             failures.push(format!(
                 "type {m}::{name}: {:?}, not {id}",
-                schema.ids.types.get(&t)
+                schema.ids.type_id(t)
             ));
         }
         let td = schema.ty(t);
@@ -267,8 +267,8 @@ fn engine_ids_are_the_fixed_ids_of_the_spec() {
         for (c, cid) in ctors {
             let newtype = matches!(td.kind, adtb_lang::schema::TypeDefKind::Newtype { .. });
             let index = if newtype { Some(0) } else { td.ctor_index(&c) };
-            let got = index.and_then(|k| schema.ids.ctors.get(&(t, k)));
-            if got != Some(&cid) {
+            let got = index.and_then(|k| schema.ids.ctor_id(t, k));
+            if got.map(u64::from) != Some(cid) {
                 failures.push(format!("constructor {m}::{name}.{c}: {got:?}, not {cid}"));
             }
         }

@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 use crate::check::Program;
 use crate::evolve::{Clause, Code, Logged, Resolved, ResolvedOp, RowFn, RowMap, Source};
+use crate::ids::{CatCtorId, CatFieldId, CatRelId, CatTypeId};
 use crate::kernel::{Kind, Terms, Tm};
 use crate::norm::{self, NormalProgram, NormalQuery};
 use crate::schema::{Schema, Stage};
@@ -194,7 +195,7 @@ impl<'a> Pinned<'a> {
         let from = self.map.from;
         match l {
             Loss::Type(def) => {
-                let id = from.ids.types.get(def).copied();
+                let id = from.ids.type_id(*def).map(CatTypeId::raw);
                 refused(
                     self.blame(|o| matches!(o.op, Resolved::DropType { sum } if Some(sum) == id)),
                     format!(
@@ -229,13 +230,12 @@ impl<'a> Pinned<'a> {
             ),
             Loss::KeyOrder(rel) => {
                 let r = from.relation(*rel);
-                let slot = |f| map::slot(from, r.elem_def, 0, f);
-                let key: Vec<_> = r
+                let key: Vec<u64> = r
                     .key
                     .iter()
-                    .filter_map(|f| from.ids.fields.get(&slot(f)))
+                    .filter_map(|f| map::field_id(from, r.elem_def, 0, f))
                     .collect();
-                let renames = |o: &Op| matches!(&o.op, Resolved::RenameField { field, .. } if key.contains(&field));
+                let renames = |o: &Op| matches!(&o.op, Resolved::RenameField { field, .. } if key.contains(field));
                 refused(
                     self.blame(renames),
                     format!("it {what} `Key {}` ordered, and its order differs", r.name),
@@ -249,7 +249,7 @@ impl<'a> Pinned<'a> {
     }
 
     fn gone_relation(&self, rel: RelId) -> Untranslatable {
-        let id = self.map.from.ids.relations.get(&rel).copied();
+        let id = self.map.from.ids.relation_id(rel).map(CatRelId::raw);
         refused(
             self.blame(
                 |o| matches!(o.op, Resolved::DropRelation { relation } if Some(relation) == id),
@@ -278,20 +278,17 @@ impl<'a> Pinned<'a> {
     /// drops or moves a field of `def`.
     fn blame_order(&self, def: TypeId) -> Option<String> {
         let from = self.map.from;
-        let id = from.ids.types.get(&def).copied();
+        let id = from.ids.type_id(def).map(CatTypeId::raw);
         let to = self.map.def(def);
         let of = |field: u64| {
-            from.ids
-                .fields
-                .iter()
-                .any(|((d, _, _), &i)| *d == def && i == field)
+            let field = CatFieldId::from_raw(field);
+            from.ids.field_of(field).any(|(d, _, _)| *d == def)
                 || self
                     .map
                     .to
                     .ids
-                    .fields
-                    .iter()
-                    .any(|((d, _, _), &i)| Some(*d) == to && i == field)
+                    .field_of(field)
+                    .any(|(d, _, _)| Some(*d) == to)
         };
         self.blame(|o| match &o.op {
             Resolved::AddConstructor { sum, .. } => Some(*sum) == id,
@@ -328,7 +325,7 @@ impl<'a> Pinned<'a> {
     /// Returns the text of the first operator that removes, splits, unnests, merges or nests
     /// constructor `c` of `def`.
     fn blame_ctor(&self, def: TypeId, c: u32) -> Option<String> {
-        let id = self.map.from.ids.ctors.get(&(def, c)).copied();
+        let id = self.map.from.ids.ctor_id(def, c).map(CatCtorId::raw);
         self.blame(|o| match &o.op {
             Resolved::RemoveConstructor { ctor }
             | Resolved::Split { ctor, .. }
@@ -372,8 +369,12 @@ impl<'a> Pinned<'a> {
         }
         defs.extend(rels.iter().map(|&r| from.relation(r).elem_def));
         let ids = &self.map.from.ids;
-        let ctor_def = |id: u64| ids.ctors.iter().find(|(_, i)| **i == id).map(|(k, _)| k.0);
-        let field_def = |id: u64| ids.fields.iter().find(|(_, i)| **i == id).map(|(k, _)| k.0);
+        let ctor_def = |id: u64| ids.ctor_of(CatCtorId::from_raw(id)).next().map(|(d, _)| d);
+        let field_def = |id: u64| {
+            ids.field_of(CatFieldId::from_raw(id))
+                .next()
+                .map(|(d, _, _)| *d)
+        };
         for o in self.ops.iter() {
             let members = o.clauses.iter().filter_map(|c| match c {
                 Clause::Member { ctor } => ctor_def(*ctor),
@@ -394,9 +395,8 @@ impl<'a> Pinned<'a> {
                     field_def(*field).is_some_and(|d| defs.contains(&d))
                 }
                 Resolved::Rekey { relation, .. } => ids
-                    .relations
-                    .iter()
-                    .any(|(r, i)| i == relation && rels.contains(r)),
+                    .relation_of(CatRelId::from_raw(*relation))
+                    .any(|r| rels.contains(&r)),
                 Resolved::AddModule { .. }
                 | Resolved::AddType { .. }
                 | Resolved::AddRelation { .. }
@@ -473,7 +473,7 @@ impl<'a> Pinned<'a> {
         let was = self.map.from.stages.get(&(rel, c)).copied();
         let now = self.map.to.stages.get(&(to_rel, k)).copied();
         if was.is_none() && now.is_some() {
-            let id = self.map.from.ids.ctors.get(&(def, c)).copied();
+            let id = self.map.from.ids.ctor_id(def, c).map(CatCtorId::raw);
             let op = self.blame(|o| match &o.op {
                 Resolved::Disable { target } | Resolved::Deprecate { target } => {
                     matches!(target, crate::evolve::Target::InRelation { ctor, .. } if Some(*ctor) == id)
@@ -514,13 +514,7 @@ impl<'a> Pinned<'a> {
     /// the later version, as a function of the row before it, with the operator's text and the
     /// source the fill was written at.
     fn fill(&self, def: TypeId, c: u32, name: &str) -> R<Option<(Rc<RowFn>, String, Source)>> {
-        let Some(&id) = self
-            .map
-            .to
-            .ids
-            .fields
-            .get(&map::slot(self.map.to, def, c, name))
-        else {
+        let Some(id) = map::field_id(self.map.to, def, c, name) else {
             return Ok(None);
         };
         let Some(o) = self
@@ -549,29 +543,15 @@ impl<'a> Pinned<'a> {
     /// Returns whether function `f` of the pin has the same code at the later version, and its
     /// id there.
     fn function(&self, f: FnId) -> Option<FnId> {
-        let id = *self.map.from.ids.functions.get(&f)?;
-        let to = self
-            .map
-            .to
-            .ids
-            .functions
-            .iter()
-            .find(|(_, i)| **i == id)
-            .map(|(k, _)| *k)?;
-        self.same_code(id).then_some(to)
+        let id = self.map.from.ids.function_id(f)?;
+        let to = self.map.to.ids.function_of(id).next()?;
+        self.same_code(id.raw()).then_some(to)
     }
 
     fn aggregate(&self, a: u32) -> Option<u32> {
-        let id = *self.map.from.ids.aggregates.get(&(a as usize))?;
-        let to = self
-            .map
-            .to
-            .ids
-            .aggregates
-            .iter()
-            .find(|(_, i)| **i == id)
-            .map(|(k, _)| *k as u32)?;
-        self.same_code(id).then_some(to)
+        let id = self.map.from.ids.aggregate_id(a as usize)?;
+        let to = self.map.to.ids.aggregate_of(id).next()? as u32;
+        self.same_code(id.raw()).then_some(to)
     }
 
     /// Returns whether function or aggregate `id` has its current code at the pin and, in a

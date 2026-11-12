@@ -12,7 +12,7 @@ impl Schema {
         let ix = &r.indexes[index];
         let paths: Option<Vec<_>> = ix.fields.iter().map(field_path).collect();
         let Some(paths) = paths else {
-            let id = self.ids.indexes[&(rel, index)];
+            let id = crate::ids::held_id(self.ids.index_id(rel, index));
             return format!("{name}.unique#{id}");
         };
         let name = format!("{name}.unique({})", paths.join(", "));

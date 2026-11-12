@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use adtb_lang::ast::{self, BundleName, ExprKind, KeyArgs, RecordExpr};
 use adtb_lang::check::{Command, Explained, Program};
+use adtb_lang::ids::{CatConstraintId, held_id};
 use adtb_lang::kernel::{Kind, Terms, Tm, alpha_equal};
 use adtb_lang::resolve::Visible;
 use adtb_lang::schema::{Schema, ValueDef};
@@ -686,7 +687,6 @@ impl<R: Runtime> Engine<R> {
             .ok_or(write::Broken::NoViolation)?;
         let finding = schema.ty(schema.relation(findings).elem_def);
         let constraint_at = finding.header().len();
-        let constraints = &schema.ids.constraints;
         let holds = issuer.holds.as_ref();
         let unreadable = |row: &Val| {
             let Val::Ctor(c, fields) = row else {
@@ -695,15 +695,15 @@ impl<R: Runtime> Engine<R> {
             if *c != violation {
                 return false;
             }
-            let at = constraints
-                .iter()
-                .find(|(_, id)| {
-                    matches!(
-                        fields.get(constraint_at),
-                        Some(Val::Int(i)) if u64::try_from(*i) == Ok(**id)
-                    )
-                })
-                .map(|(at, _)| *at);
+            let at = match fields.get(constraint_at) {
+                Some(Val::Int(i)) => u64::try_from(*i).ok().and_then(|id| {
+                    schema
+                        .ids
+                        .constraint_of(CatConstraintId::from_raw(id))
+                        .next()
+                }),
+                _ => None,
+            };
             !at.zip(holds)
                 .is_some_and(|(at, h)| h.reads_constraint(self, at))
         };
@@ -788,7 +788,7 @@ impl<R: Runtime> Engine<R> {
             .zip(record.fields()?)
             .collect();
         let ctor = &schema.ty(def).ctors()[setting as usize];
-        let id = schema.ids.ctors[&(def, setting)];
+        let id = held_id(schema.ids.ctor_id(def, setting)).raw();
         let mut fields = vec![Val::Int(i64::try_from(id).unwrap_or(i64::MAX))];
         for f in &ctor.fields {
             let v = given

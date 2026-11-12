@@ -66,12 +66,12 @@ fn target(s: &Schema, name: &str, ctor: &str) -> Target {
     let d = s.relation(r).elem_def;
     let c = s.ty(d).ctor_index(ctor).expect("constructor");
     Target {
-        relation: RelationId(s.ids.relations[&r]),
-        constructor: ConstructorId(s.ids.ctors[&(d, c)]),
+        relation: s.ids.relation_id(r).unwrap(),
+        constructor: s.ids.ctor_id(d, c).unwrap(),
     }
 }
 
-fn field(s: &Schema, relation: &str, ctor: &str, name: &str) -> FieldId {
+fn field(s: &Schema, relation: &str, ctor: &str, name: &str) -> CatFieldId {
     let r = s
         .relations
         .iter()
@@ -80,7 +80,7 @@ fn field(s: &Schema, relation: &str, ctor: &str, name: &str) -> FieldId {
     let d = r.elem_def;
     let c = s.ty(d).ctor_index(ctor).expect("constructor");
     let own = (!s.ty(d).header().iter().any(|f| f.name == name)).then_some(c);
-    FieldId(s.ids.fields[&(d, own, name.to_string())])
+    s.ids.field_id(d, own, name).unwrap()
 }
 
 fn reads(s: &Schema, relation: &str, ctor: &str, names: &[&str]) -> BTreeSet<Requirement> {
@@ -520,7 +520,7 @@ fn a_reachable_missing_catalog_identity_is_an_explicit_error() {
             .position(|r| r.name == "left")
             .expect("left") as u32,
     );
-    s.ids.relations.remove(&rel);
+    s.ids.forget(&crate::ids::Slot::Relation(rel));
     let program = check_schema(&s).expect("schema checks");
     let items = parse_adhoc("count(x for x in left)", Options::default())
         .ok()

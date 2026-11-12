@@ -225,31 +225,31 @@ impl Cx<'_> {
         let ids = &schema.ids;
         let ctor = |name: &str| {
             td.ctor_index(name)
-                .and_then(|c| ids.ctors.get(&(def, c)).copied())
+                .and_then(|c| ids.ctor_id(def, c))
+                .map(CatCtorId::raw)
         };
         let field = |s: &str, f: &str| {
             let c = td.ctor_index(s);
-            ids.fields
-                .get(&(def, c, f.to_string()))
-                .or_else(|| ids.fields.get(&(def, None, f.to_string())))
-                .copied()
+            ids.field_id(def, c, f)
+                .or_else(|| ids.field_id(def, None, f))
+                .map(CatFieldId::raw)
         };
         let mut relations = Vec::new();
         let mut sets = BTreeMap::new();
         for (rel, _, name) in Self::relations_of(schema, def) {
-            let Some(&id) = ids.relations.get(&rel) else {
+            let Some(id) = ids.relation_id(rel) else {
                 continue;
             };
-            relations.push((id, name));
+            relations.push((id.raw(), name));
             for set in &schema.relation(rel).sets {
-                if let Some(&sid) = ids.sets.get(&(rel, set.name.clone())) {
+                if let Some(sid) = ids.set_id(rel, &set.name) {
                     let held = set
                         .ctors
                         .iter()
                         .filter(|&&c| sources.contains(&td.ctors()[c as usize].name))
-                        .filter_map(|&c| ids.ctors.get(&(def, c)).copied())
+                        .filter_map(|&c| ids.ctor_id(def, c).map(CatCtorId::raw))
                         .collect();
-                    sets.insert(sid, held);
+                    sets.insert(sid.raw(), held);
                 }
             }
         }
@@ -682,24 +682,22 @@ impl Source {
         };
         let rels: BTreeSet<u64> = schema
             .ids
-            .relations
-            .iter()
-            .filter(|(r, _)| schema.relation(**r).elem_def == def)
-            .map(|(_, &id)| id)
+            .relation_ids()
+            .filter(|(r, _)| schema.relation(*r).elem_def == def)
+            .map(|(_, id)| id.raw())
             .collect();
         let joined: BTreeSet<u64> = schema
             .ids
-            .sets
-            .iter()
-            .filter(|((r, name), _)| {
-                schema.relation(*r).elem_def == def
+            .set_ids()
+            .filter(|&(r, name, _)| {
+                schema.relation(r).elem_def == def
                     && schema
-                        .relation(*r)
+                        .relation(r)
                         .sets
                         .iter()
-                        .any(|x| x.name == *name && x.ctors.contains(&ci))
+                        .any(|x| x.name == name && x.ctors.contains(&ci))
             })
-            .map(|(_, &id)| id)
+            .map(|(_, _, id)| id.raw())
             .collect();
         let prefix = format!("field {m}::{t}.{c}.");
         let fields: Vec<(&str, u64)> = self

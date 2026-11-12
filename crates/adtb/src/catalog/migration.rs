@@ -22,6 +22,7 @@ use crate::storage::Pager;
 use super::Rot;
 use super::grants::{Dormant, Grantees};
 use super::history::{Rebuilding, key_indexes};
+use super::ids::{held_id, stored};
 use super::{
     Broken, Built, CatCtorId, CatRelId, Catalog, Changing, Checked, Data, Error, HEAP_ROOT, Hash,
     INDEX_ROOT, IndexKeys, IndexSpec, MIGRATION, Migrating, ORDER_KEY, OrderKeys, Readers, change,
@@ -352,8 +353,7 @@ impl Catalog {
         data: &Data,
     ) -> Result<Vec<String>, Error> {
         let mut why = Vec::new();
-        for &r in a.ids.relations.keys() {
-            let rid = rel_id(a, r);
+        for (r, rid) in a.ids.relation_ids() {
             let Some(rb) = relation(b, rid) else {
                 continue;
             };
@@ -379,11 +379,9 @@ impl Catalog {
                 }
             }
         }
-        let now: BTreeMap<u64, (TypeId, u32)> =
-            b.ids.ctors.iter().map(|(&at, &id)| (id, at)).collect();
-        for (&(def, c), &id) in &a.ids.ctors {
-            let verb = match now.get(&id) {
-                Some(&(d, k))
+        for ((def, c), id) in a.ids.ctor_ids() {
+            let verb = match b.ids.ctor_of(id).next_back() {
+                Some((d, k))
                     if a.value_stage(def, c) != Stage::Declared
                         && b.value_stage(d, k) == Stage::Declared =>
                 {
@@ -408,9 +406,9 @@ impl Catalog {
         c: u32,
         verb: &str,
     ) -> Result<Vec<String>, Error> {
-        let id = CatCtorId(schema.ids.ctors[&(def, c)]).stored();
+        let id = stored(held_id(schema.ids.ctor_id(def, c)));
         let mut why = Vec::new();
-        for (&r, &rid) in &schema.ids.relations {
+        for (r, rid) in schema.ids.relation_ids() {
             let fields: Vec<Vec<(String, Ty)>> = (0..ctor_count(schema, r))
                 .map(|k| layout::row(schema, r, k))
                 .collect();
@@ -426,7 +424,6 @@ impl Catalog {
                         .collect()
                 })
                 .collect();
-            let rid = CatRelId(rid);
             let rows: Vec<(u32, Vec<Value>)> = match data.get(&rid) {
                 Some(ctors) => ctors
                     .iter()

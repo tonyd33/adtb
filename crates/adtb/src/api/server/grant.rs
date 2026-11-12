@@ -7,6 +7,7 @@ use adtb_lang::evolve::{
     CallSignatures, DeploymentGrant, GrantRow, Stated, closes_option_cycle, deployment_grant,
     family_query,
 };
+use adtb_lang::ids::held_id;
 use adtb_lang::parse::{Options, parse_adhoc};
 use adtb_lang::signature::{self, Ids};
 
@@ -313,7 +314,7 @@ impl<R: Runtime> Giving<'_, R> {
     /// Fail with `Denied` for a grant on `catalog::credentials` by any role but the schema owner,
     /// and with `Invalid` for any privilege but `read`.
     fn relation(&self, rows: &mut Vec<Grant>, stated: &Stated) -> Result<(), Error> {
-        let credentials = self.e.schema.ids.relations[&self.t.credentials];
+        let credentials = held_id(self.e.schema.ids.relation_id(self.t.credentials)).raw();
         if stated.names(credentials) && self.session.id.0 != OWNER_ID {
             return Err(denied(format!(
                 "only the schema owner grants on `catalog::credentials`, not role `{}`",

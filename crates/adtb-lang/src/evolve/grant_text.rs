@@ -51,7 +51,10 @@ impl Granted {
                 out
             }
             Granted::CallFn(id) => {
-                let (&f, _) = schema.ids.functions.iter().find(|(_, x)| **x == *id)?;
+                let f = schema
+                    .ids
+                    .function_of(CatFunctionId::from_raw(*id))
+                    .next()?;
                 let fd = schema.function(f);
                 format!("{}::{}", schema.module(fd.module).name, fd.name)
             }
@@ -104,11 +107,11 @@ impl Granted {
             "call" => {
                 let word = r.word()?;
                 let (module, name) = qualified(&word)?;
-                let (_, &id) = schema.ids.functions.iter().find(|(f, _)| {
-                    let fd = schema.function(**f);
+                let (_, id) = schema.ids.function_ids().find(|&(f, _)| {
+                    let fd = schema.function(f);
                     fd.name == name && schema.module(fd.module).name == module
                 })?;
-                Granted::CallFn(id)
+                Granted::CallFn(id.raw())
             }
             _ => return None,
         };
@@ -117,13 +120,16 @@ impl Granted {
 }
 
 fn target(schema: &Schema, t: &GrantTarget) -> Option<String> {
-    let rel = schema.ids.relation(t.relation)?;
+    let rel = schema
+        .ids
+        .relation_of(CatRelId::from_raw(t.relation))
+        .next()?;
     let rd = schema.relation(rel);
     let name = format!("{}::{}", schema.module(rd.module).name, rd.name);
     Some(match &t.sel {
         GrantSel::Whole => name,
         GrantSel::Set(s) => {
-            let ((_, set), _) = schema.ids.sets.iter().find(|(_, x)| **x == *s)?;
+            let (_, set) = schema.ids.set_of(CatSetId::from_raw(*s)).next()?;
             format!("{name}.{set}")
         }
         GrantSel::Ctors(cs) => {
@@ -140,12 +146,12 @@ fn target(schema: &Schema, t: &GrantTarget) -> Option<String> {
 }
 
 fn ctor_name(schema: &Schema, id: u64) -> Option<String> {
-    let (&(def, c), _) = schema.ids.ctors.iter().find(|(_, x)| **x == id)?;
+    let (def, c) = schema.ids.ctor_of(CatCtorId::from_raw(id)).next()?;
     Some(schema.ty(def).ctors()[c as usize].name.clone())
 }
 
 fn field_name(schema: &Schema, id: u64) -> Option<String> {
-    let ((def, c, name), _) = schema.ids.fields.iter().find(|(_, x)| **x == id)?;
+    let (def, c, name) = schema.ids.field_of(CatFieldId::from_raw(id)).next()?;
     let ctors = schema.ty(*def).ctors();
     Some(match c {
         Some(c) if ctors.len() > 1 => format!("{}.{name}", ctors[*c as usize].name),
@@ -156,7 +162,7 @@ fn field_name(schema: &Schema, id: u64) -> Option<String> {
 fn ctor_id(schema: &Schema, rel: RelId, name: &str) -> Option<u64> {
     let def = schema.relation(rel).elem_def;
     let c = schema.ty(def).ctor_index(name)?;
-    schema.ids.ctors.get(&(def, c)).copied()
+    schema.ids.ctor_id(def, c).map(CatCtorId::raw)
 }
 
 fn qualified(word: &str) -> Option<(&str, &str)> {
@@ -221,10 +227,11 @@ impl Reader {
     fn target(&mut self, schema: &Schema) -> Option<(RelId, GrantTarget)> {
         let word = self.word()?;
         let (module, name) = qualified(&word)?;
-        let (&rel, &relation) = schema.ids.relations.iter().find(|(r, _)| {
-            let rd = schema.relation(**r);
+        let (rel, relation) = schema.ids.relation_ids().find(|&(r, _)| {
+            let rd = schema.relation(r);
             rd.name == name && schema.module(rd.module).name == module
         })?;
+        let relation = relation.raw();
         if !self.eat(".") {
             let sel = GrantSel::Whole;
             return Some((rel, GrantTarget { relation, sel }));
@@ -244,7 +251,7 @@ impl Reader {
             let word = self.word()?;
             match ctor_id(schema, rel, &word) {
                 Some(c) => GrantSel::Ctors(vec![c]),
-                None => GrantSel::Set(*schema.ids.sets.get(&(rel, word))?),
+                None => GrantSel::Set(schema.ids.set_id(rel, &word)?.raw()),
             }
         };
         Some((rel, GrantTarget { relation, sel }))
@@ -261,17 +268,16 @@ impl Reader {
             let first = self.word()?;
             let id = if self.eat(".") {
                 let c = schema.ty(def).ctor_index(&first)?;
-                schema.ids.fields.get(&(def, Some(c), self.word()?))
+                schema.ids.field_id(def, Some(c), &self.word()?)
             } else if schema.ty(def).ctors().len() == 1 {
                 schema
                     .ids
-                    .fields
-                    .get(&(def, Some(0), first.clone()))
-                    .or_else(|| schema.ids.fields.get(&(def, None, first)))
+                    .field_id(def, Some(0), &first)
+                    .or_else(|| schema.ids.field_id(def, None, &first))
             } else {
-                schema.ids.fields.get(&(def, None, first))
+                schema.ids.field_id(def, None, &first)
             };
-            ids.push(*id?);
+            ids.push(id?.raw());
             if !self.eat(",") {
                 break;
             }

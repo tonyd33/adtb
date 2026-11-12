@@ -160,13 +160,12 @@ pub_fields prod 3 crates/adtb-lang/src/evolve/keep.rs
 pub_fields prod 26 crates/adtb-lang/src/evolve/mod.rs
 pub_fields prod 8 crates/adtb-lang/src/evolve/resolved.rs
 pub_fields prod 5 crates/adtb-lang/src/evolve/rowmap.rs
-pub_fields prod 24 crates/adtb-lang/src/ids.rs
 pub_fields prod 14 crates/adtb-lang/src/kernel.rs
 pub_fields prod 3 crates/adtb-lang/src/lex.rs
 pub_fields prod 23 crates/adtb-lang/src/norm/mod.rs
 pub_fields prod 3 crates/adtb-lang/src/parse/mod.rs
 pub_fields prod 4 crates/adtb-lang/src/permission/coverage.rs
-pub_fields prod 5 crates/adtb-lang/src/permission/mod.rs
+pub_fields prod 2 crates/adtb-lang/src/permission/mod.rs
 pub_fields prod 17 crates/adtb-lang/src/permission/value.rs
 pub_fields prod 1 crates/adtb-lang/src/resolve.rs
 pub_fields prod 101 crates/adtb-lang/src/schema/mod.rs

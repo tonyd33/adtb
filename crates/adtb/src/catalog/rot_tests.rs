@@ -34,7 +34,7 @@ fn after(r: Option<&Rot>) -> Option<(Rot, &'static str)> {
         Some(R::KeptRow(_)) => (R::KeptFormat(9), "a kept row has format 9; this engine reads format 1"),
         Some(R::KeptFormat(_)) => (R::DroppedTwice { module: "app".into(), name: "t".into(), first: 2, second: 3 }, "app::t is held as dropped at versions 2 and 3"),
         Some(R::DroppedTwice { .. }) => (R::DropVersion(9), "a pending drop names version 9, which the log does not hold"),
-        Some(R::DropVersion(_)) => (R::UniqueNotDropped { index: CatIndexId(5), version: 9 }, "unique 5 is held as dropped at version 9, which does not drop it"),
+        Some(R::DropVersion(_)) => (R::UniqueNotDropped { index: CatIndexId::from_raw(5), version: 9 }, "unique 5 is held as dropped at version 9, which does not drop it"),
         Some(R::UniqueNotDropped { .. }) => (R::Origin(9), "registration origin 9"),
         Some(R::Origin(_)) => (R::DeploymentRow { ctor: 9, fields: row() }, "a deployment row of constructor 9 holds [I64(1)]"),
         Some(R::DeploymentRow { .. }) => (R::MigrationRow, "malformed migration row"),
