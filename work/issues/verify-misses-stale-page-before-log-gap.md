@@ -25,3 +25,7 @@ storage.md §7 states that `verify` checks the chain over the whole retained log
 Direction: find where verify's and scrub's per-page LSN check stops at a gap; check each page against the last record read for it before the gap. The three cases are pinned in the search's `KNOWN` under this stem.
 
 Defect class: Damage reported as nothing.
+
+## 2026-11-11
+
+A catalog row layout change during structure-lang-identity step 2 (writing `catalog::fields` rows in position order) moved the log by one 1024-byte write and turned this defect into a damage-profile failure of `damage_search::a_lost_write_beside_a_log_gap_keeps_every_record_and_mark` at seed 2: lost write at write-out 645, `LogLost { write: 82 }` at 647, findings `page 572: Checksum` and `log at 6533120: Gap`, page 3 given no `StalePage` and missed by scrub. The `KNOWN` entries pin exact injection points, so an unrelated layout change surfaces this defect as a new failure or hides it. The step kept main's row order.
