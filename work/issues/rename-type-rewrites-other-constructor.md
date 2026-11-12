@@ -17,3 +17,7 @@ tags:
 Direction: the rename rewrites references resolved to the type by id, not by spelling. Test: the scenario keeps U's constructor named `X` with its ids.
 
 Defect class: Catalog rows and identity by position or spelling.
+
+## Also through a revert
+
+`type Q = Q1 | Q2`, `rename type Q to Q2`, then `revert 0001`: the type's own constructor is renamed too, giving `type Q = Q1 | Q`. The inverse names the type by id (structure-lang-identity step 5b); the `rename type` operator it runs rewrites every word spelled `Q2`.
