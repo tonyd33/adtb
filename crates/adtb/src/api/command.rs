@@ -693,12 +693,9 @@ impl<R: Runtime> Engine<R> {
                 return false;
             }
             let at = match fields.get(constraint_at) {
-                Some(Val::Int(i)) => u64::try_from(*i).ok().and_then(|id| {
-                    schema
-                        .ids
-                        .constraint_of(CatConstraintId::from_raw(id))
-                        .next()
-                }),
+                Some(Val::Int(i)) => u64::try_from(*i)
+                    .ok()
+                    .and_then(|id| schema.ids.constraint_of(CatConstraintId::from_raw(id))),
                 _ => None,
             };
             !at.zip(holds)

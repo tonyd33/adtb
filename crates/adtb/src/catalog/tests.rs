@@ -21,11 +21,7 @@ fn engine_rows(schema: &Schema) -> Rows {
 
 /// Returns the rows of the catalog relation whose id is `id`.
 fn rows_of(schema: &Schema, rows: &Rows, id: u64) -> Vec<Vec<Value>> {
-    let r = schema
-        .ids
-        .relation_of(CatRelId::from_raw(id))
-        .next()
-        .unwrap();
+    let r = schema.ids.relation_of(CatRelId::from_raw(id)).unwrap();
     rows[&r].iter().map(|(_, row)| row.clone()).collect()
 }
 
@@ -61,11 +57,7 @@ fn every_engine_object_with_an_id_has_a_row() {
     let schema = engine_schema();
     let rows = engine_rows(&schema);
     let count = |rel: u64| {
-        let r = schema
-            .ids
-            .relation_of(CatRelId::from_raw(rel))
-            .next()
-            .unwrap();
+        let r = schema.ids.relation_of(CatRelId::from_raw(rel)).unwrap();
         rows[&r].len()
     };
     assert_eq!(schema.ids.type_ids().count(), count(219));
@@ -81,11 +73,7 @@ fn every_engine_object_with_an_id_has_a_row() {
 fn the_constructors_relation_names_its_own_row() {
     let schema = engine_schema();
     let rows = engine_rows(&schema);
-    let r = schema
-        .ids
-        .relation_of(CatRelId::from_raw(220))
-        .next()
-        .unwrap();
+    let r = schema.ids.relation_of(CatRelId::from_raw(220)).unwrap();
     let own = rows[&r]
         .iter()
         .find(|(_, row)| row[0] == Value::I64(121))
@@ -262,7 +250,7 @@ fn a_member_clause_is_encoded_after_its_operator() {
     let ops = oplog::operators(&schema, &src, 1);
     let set = &ops[3];
     assert_eq!(1, set.1.len(), "{set:?}");
-    let p = src.ids["ctor app::S.P"];
+    let p = ctor_id_named(&src, "S", "P");
     let mut tail = vec![0x01];
     tail.extend([0xba, 0x03]);
     tail.extend(p.to_le_bytes());
@@ -318,7 +306,7 @@ fn every_operator_has_a_migration_ops_row_by_ordinal_from_one() {
 fn every_member_clause_has_a_migration_clauses_row() {
     let src = migrated(&Source::default(), FIRST);
     let rows = catalog_rows(&src, "migration_clauses");
-    let circle = Value::I64(i64::try_from(src.ids["ctor app::Shape.Circle"]).expect("an id"));
+    let circle = Value::I64(i64::try_from(ctor_id_named(&src, "Shape", "Circle")).expect("an id"));
     let keys: Vec<(Value, Value, Value)> = rows
         .iter()
         .map(|(_, row)| (row[0].clone(), row[1].clone(), row[2].clone()))
@@ -358,7 +346,7 @@ fn a_language_function_is_hashed_over_its_body_in_canonical_form() {
     let canonical = "match x | app::Circle c -> 3 * c . r * c . r | app::Square q -> q . s * q . s";
     assert_eq!(
         vec![
-            Value::I64(i64::try_from(src.ids["fn app::area"]).expect("an id")),
+            Value::I64(i64::try_from(function_id_named(&src, "area")).expect("an id")),
             Value::Text("app".into()),
             Value::Text("area".into()),
             Value::Text("(x: Shape) -> I64".into()),
@@ -821,45 +809,6 @@ fn only_key_names_sorts_the_fields_of_a_key() {
 }
 
 #[test]
-fn an_old_key_over_a_field_id_two_fields_share_names_the_least_by_name() {
-    use adtb_lang::ids::Slot;
-
-    use super::ids::{CatFieldId, CatIndexId};
-    use super::pending::kept_indexes;
-    use super::readers::{Kind, Pending};
-
-    let source = migrated(
-        &Source::default(),
-        "module app\nadd module app\nadd type P = { k: I64, z: I64, a: I64 }\nadd relation ps : P key k\n",
-    );
-    let mut schema = source.schema().expect("the schema builds");
-    let (r, rel) = schema
-        .ids
-        .relation_ids()
-        .find(|(r, _)| schema.relation(*r).name == "ps")
-        .expect("relation ps");
-    let td = schema.ty(schema.relation(r).elem_def);
-    let field = |name| td.field(td.ctor_at(0), name).expect("a field of P");
-    let (z, a) = (field("z"), field("a"));
-    let id: CatFieldId = schema.ids.field_id(z).expect("an id of z");
-    schema.ids.set(&Slot::Field(a), id.raw());
-    let index = CatIndexId::from_raw(1 << 31);
-    let pending = Pending {
-        module: "app".to_string(),
-        name: "ps key".to_string(),
-        kind: Kind::Key {
-            index,
-            relation: rel,
-            fields: vec![id],
-        },
-        dropped: 1,
-        blocking: BTreeSet::from(["b-1".to_string()]),
-    };
-    let kept = kept_indexes(&schema, &[pending]).expect("the old key has an image");
-    assert_eq!(vec!["a".to_string()], kept[&index.raw()].fields);
-}
-
-#[test]
 fn the_fields_of_one_constructor_are_written_in_name_order() {
     let source = migrated(
         &Source::default(),
@@ -895,4 +844,23 @@ fn the_fields_of_one_constructor_are_written_in_name_order() {
         ],
         names
     );
+}
+
+/// Returns the catalog id of constructor `c` of type `t` of module `app` of `src`.
+fn ctor_id_named(src: &Source, t: &str, c: &str) -> u64 {
+    let schema = src.schema().expect("the schema builds");
+    let m = schema.module(schema.module_named("app").expect("module app"));
+    let def = m.types[t];
+    let c = schema.ty(def).ctor_named(c).expect("the constructor");
+    schema.ids.ctor_id(c).expect("an id").raw()
+}
+
+/// Returns the catalog id of function `f` of module `app` of `src`.
+fn function_id_named(src: &Source, f: &str) -> u64 {
+    let schema = src.schema().expect("the schema builds");
+    let m = schema.module(schema.module_named("app").expect("module app"));
+    let Some(&adtb_lang::schema::ValueDef::Function(f)) = m.values.get(f) else {
+        panic!("no function `{f}`");
+    };
+    schema.ids.function_id(f).expect("an id").raw()
 }

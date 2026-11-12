@@ -100,7 +100,7 @@ within an operator in this order:
 | `add constructor` | the constructor, then its fields in declared order |
 | `split`, `merge`, `nest`, `unnest` | the new constructors in listed order (for `unnest`, in the order of the field's sum), each followed by its fields in declared order; then, for each relation variable of the type in id order, an index for each unique and index the operator re-scopes or a split's `unique` and `index` clauses add, in the order of the relation variable's clauses after the operator |
 | `add field` | the field |
-| `move field` | for a move down, a field for each listed constructor but the first, in declaration order |
+| `move field` | for a move down, a field for each listed constructor but the first, in declaration order; for a reference field, then the implied index of each of those fields, in the same order |
 | `add unique`, `add index`, `add interval index` | the index |
 | `rekey` | an index for the new key |
 | `add default` | the default, one for each field it fills, as for a `default` clause |

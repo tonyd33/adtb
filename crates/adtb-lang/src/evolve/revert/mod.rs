@@ -1,4 +1,5 @@
 use super::*;
+use crate::ids::KeyKind;
 
 mod inverse;
 
@@ -49,7 +50,7 @@ pub(super) enum Inverse {
     /// `ids` gives their paths.
     Grants {
         back: Vec<HeldGrant>,
-        ids: BTreeMap<String, u64>,
+        ids: BTreeMap<ObjectKey, u64>,
     },
     /// Sets the declaration of a kind and name to a text, `None` removing it.
     Decl {
@@ -509,7 +510,8 @@ impl Cx<'_> {
         Ok((text, fields))
     }
 
-    /// The unique and index clauses `before` declares over `ctors` alone, as `in` clauses of an operator.
+    /// Returns the unique and index clauses of `before` whose scope lies within `ctors` and lists
+    /// one of them by name, as `in` clauses of an operator.
     pub(super) fn before_clauses(
         &self,
         before: &Source,
@@ -539,6 +541,9 @@ impl Cx<'_> {
         };
         for cl in clauses {
             let Some(scope) = &cl.scope else { continue };
+            if cl.rescoped(&ix, &|_| Vec::new()).is_none() {
+                continue;
+            }
             if scope.iter().all(|c| ix.contains(c)) {
                 let names: Vec<String> = scope
                     .iter()
@@ -924,15 +929,23 @@ impl Cx<'_> {
     fn unsum(&mut self, ty: &QName, text: String) -> R<()> {
         let (i, _) = self.type_decl(ty)?;
         self.src.rewrite(i, text);
-        let header = format!("field {}::{}.", self.module_of(ty), ty.name.text);
-        let ids = std::mem::take(&mut self.src.ids);
-        self.src.ids = ids
-            .into_iter()
-            .map(|(k, id)| match k.strip_prefix(&header) {
-                Some(f) if !f.contains('.') => (format!("{header}{}.{f}", ty.name.text), id),
-                _ => (k, id),
-            })
-            .collect();
+        let (m, t) = (self.module_of(ty), &ty.name.text);
+        if let (Some(header), Some(ctor)) = (
+            self.src.field_owner(&m, t, None),
+            self.src.field_owner(&m, t, Some(t)),
+        ) {
+            let fields: Vec<ObjectKey> = self
+                .src
+                .ids
+                .keys()
+                .filter(|k| k.kind() == KeyKind::Field && *k.owner() == header)
+                .cloned()
+                .collect();
+            for f in fields {
+                let to = f.owned_by(ctor.clone());
+                self.src.rekey(&f, to);
+            }
+        }
         Ok(())
     }
 

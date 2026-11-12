@@ -48,17 +48,41 @@ const NEST: &str =
 /// privilege, the relation, the constructors (`*` for the whole relation), and for `read` and
 /// `update` the fields, `listed` or `frozen`.
 fn held(src: &Source) -> Vec<String> {
+    let schema = src.schema().expect("the schema builds");
+    let ids = &schema.ids;
     let name = |kind: &str, id: u64| {
-        let path = src
-            .ids
-            .iter()
-            .find(|(p, x)| **x == id && p.starts_with(kind))
-            .map_or_else(|| format!("#{id}"), |(p, _)| p.clone());
-        let local = path.split_once("::").map_or(path.as_str(), |(_, l)| l);
-        match kind {
-            "relation " | "fn " => local.to_string(),
-            _ => local.split_once('.').map_or(local, |(_, l)| l).to_string(),
-        }
+        let ctor = |c: CtorRef| schema.ty(c.def()).ctor_def(c).name.clone();
+        let found = match kind {
+            "relation " => ids
+                .relation_of(CatRelId::from_raw(id))
+                .map(|r| schema.relation(r).name.clone())
+                .or_else(|| {
+                    ids.view_ids()
+                        .find(|&(_, v)| v.raw() == id)
+                        .map(|(f, _)| schema.function(f).name.clone())
+                }),
+            "set " => ids
+                .set_of(CatSetId::from_raw(id))
+                .map(|(_, n)| n.to_string()),
+            "ctor " => ids.ctor_of(CatCtorId::from_raw(id)).map(ctor),
+            "field " => ids.field_of(CatFieldId::from_raw(id)).map(|f| {
+                let td = schema.ty(f.def());
+                let n = &td.field_def(f).name;
+                match f.ctor().and_then(|c| td.ctor_at(c)) {
+                    Some(c) => format!("{}.{n}", ctor(c)),
+                    None => n.clone(),
+                }
+            }),
+            "fn " => ids
+                .function_of(CatFunctionId::from_raw(id))
+                .map(|f| schema.function(f).name.clone())
+                .or_else(|| {
+                    ids.aggregate_of(CatFunctionId::from_raw(id))
+                        .map(|a| schema.aggregates[a].name.clone())
+                }),
+            _ => None,
+        };
+        found.unwrap_or_else(|| format!("#{id}"))
     };
     let target = |t: &GrantTarget| {
         let sel = match &t.sel {
@@ -1499,7 +1523,7 @@ fn writes_and_retags_name_their_constructors_and_privileges() {
 #[test]
 fn a_grant_target_covers_only_its_relations_constructors_in_the_schema_it_is_read_against() {
     let before = grants();
-    let id = |p: &str| before.ids[p];
+    let id = |p: &str| path_id(&before, p);
     let (identities, users) = (id("relation auth::identities"), id("relation auth::users"));
     let (email, google, apple) = (
         id("ctor auth::Identity.EmailPass"),
@@ -1540,7 +1564,7 @@ fn a_grant_target_covers_only_its_relations_constructors_in_the_schema_it_is_rea
     }
     let after = applies(&before, MERGE);
     let schema = after.schema().expect("the schema");
-    let social = after.ids["ctor auth::Identity.Social"];
+    let social = path_id(&after, "ctor auth::Identity.Social");
     let merged = [
         (target(identities, GrantSel::Whole), vec![email, social]),
         (

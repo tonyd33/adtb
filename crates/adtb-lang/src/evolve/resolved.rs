@@ -704,7 +704,7 @@ impl Resolver<'_> {
             Some(&n) => n,
             None => {
                 let id = held_id(self.schema.ids.relation_id(rel));
-                let r = self.before.ids.relation_of(id).next()?;
+                let r = self.before.ids.relation_of(id)?;
                 self.before.relation(r).indexes.len()
             }
         };

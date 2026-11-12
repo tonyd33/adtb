@@ -672,7 +672,7 @@ impl<'p, 'a> Walk<'p, 'a> {
     fn unique(&self, rel: RelId, i: u32) -> R<u32> {
         let to = self.relation(rel)?;
         let from = self.map.from.ids.index_id(rel, i as usize);
-        from.and_then(|id| self.map.to.ids.index_of(id).find(|&(r, _)| r == to))
+        from.and_then(|id| self.map.to.ids.index_of(id).filter(|&(r, _)| r == to))
             .map(|(_, j)| j as u32)
         .ok_or_else(|| {
             refused(

@@ -282,12 +282,13 @@ impl<'a> Pinned<'a> {
         let to = self.map.def(def);
         let of = |field: u64| {
             let field = CatFieldId::from_raw(field);
-            from.field_holders(field).any(|f| f.def() == def)
+            from.ids.field_of(field).is_some_and(|f| f.def() == def)
                 || self
                     .map
                     .to
-                    .field_holders(field)
-                    .any(|f| Some(f.def()) == to)
+                    .ids
+                    .field_of(field)
+                    .is_some_and(|f| Some(f.def()) == to)
         };
         self.blame(|o| match &o.op {
             Resolved::AddConstructor { sum, .. } => Some(*sum) == id,
@@ -375,14 +376,10 @@ impl<'a> Pinned<'a> {
         }
         defs.extend(rels.iter().map(|&r| from.relation(r).elem_def));
         let ids = &self.map.from.ids;
-        let ctor_def = |id: u64| {
-            ids.ctor_of(CatCtorId::from_raw(id))
-                .next()
-                .map(CtorRef::def)
-        };
+        let ctor_def = |id: u64| ids.ctor_of(CatCtorId::from_raw(id)).map(CtorRef::def);
         let field_def = |id: u64| {
-            from.field_holders(CatFieldId::from_raw(id))
-                .next()
+            from.ids
+                .field_of(CatFieldId::from_raw(id))
                 .map(FieldRef::def)
         };
         for o in self.ops.iter() {
@@ -406,7 +403,7 @@ impl<'a> Pinned<'a> {
                 }
                 Resolved::Rekey { relation, .. } => ids
                     .relation_of(CatRelId::from_raw(*relation))
-                    .any(|r| rels.contains(&r)),
+                    .is_some_and(|r| rels.contains(&r)),
                 Resolved::AddModule { .. }
                 | Resolved::AddType { .. }
                 | Resolved::AddRelation { .. }
@@ -554,13 +551,13 @@ impl<'a> Pinned<'a> {
     /// id there.
     fn function(&self, f: FnId) -> Option<FnId> {
         let id = self.map.from.ids.function_id(f)?;
-        let to = self.map.to.ids.function_of(id).next()?;
+        let to = self.map.to.ids.function_of(id)?;
         self.same_code(id.raw()).then_some(to)
     }
 
     fn aggregate(&self, a: u32) -> Option<u32> {
         let id = self.map.from.ids.aggregate_id(a as usize)?;
-        let to = self.map.to.ids.aggregate_of(id).next()? as u32;
+        let to = self.map.to.ids.aggregate_of(id)? as u32;
         self.same_code(id.raw()).then_some(to)
     }
 

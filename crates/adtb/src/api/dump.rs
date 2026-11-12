@@ -796,9 +796,7 @@ fn fill<R: Runtime>(
     deployed.insert(grants, kept);
     let resumed: BTreeMap<RelId, i64> = generators
         .iter()
-        .filter_map(|&(id, next)| {
-            Some((schema.ids.relation_of(CatRelId::from_raw(id)).next()?, next))
-        })
+        .filter_map(|&(id, next)| Some((schema.ids.relation_of(CatRelId::from_raw(id))?, next)))
         .collect();
     if resumed.len() != generators.len()
         || !resumed

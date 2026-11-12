@@ -817,11 +817,11 @@ fn the_engine_constructors_name_their_declarations_and_the_schemas_own_principal
 fn finds_each<K: PartialEq + std::fmt::Debug, I: Copy + std::fmt::Display>(
     kind: &str,
     pairs: impl Iterator<Item = (K, I)>,
-    of: impl Fn(I) -> Vec<K>,
+    of: impl Fn(I) -> Option<K>,
 ) -> usize {
     let mut seen = 0;
     for (k, id) in pairs {
-        assert_eq!(vec![k], of(id), "{kind} {id}");
+        assert_eq!(Some(k), of(id), "{kind} {id}");
         seen += 1;
     }
     seen
@@ -841,53 +841,36 @@ constraint nameless = from u in users where u.name == \"\" select u
     );
     let s = build_src(&[&src]).unwrap();
     let ids = &s.ids;
-    let seen = finds_each("type", ids.type_ids(), |id| ids.type_of(id).collect())
-        + finds_each("constructor", ids.ctor_ids(), |id| {
-            ids.ctor_of(id).collect()
-        })
-        + finds_each("relation", ids.relation_ids(), |id| {
-            ids.relation_of(id).collect()
-        })
-        + finds_each("field", ids.field_ids(), |id| ids.field_of(id).collect())
+    let seen = finds_each("type", ids.type_ids(), |id| ids.type_of(id))
+        + finds_each("constructor", ids.ctor_ids(), |id| ids.ctor_of(id))
+        + finds_each("relation", ids.relation_ids(), |id| ids.relation_of(id))
+        + finds_each("field", ids.field_ids(), |id| ids.field_of(id))
         + finds_each(
             "set",
             ids.set_ids().map(|(r, name, id)| ((r, name), id)),
-            |id| ids.set_of(id).collect(),
+            |id| ids.set_of(id),
         )
-        + finds_each("index", ids.index_ids(), |id| ids.index_of(id).collect())
-        + finds_each("function", ids.function_ids(), |id| {
-            ids.function_of(id).collect()
-        })
-        + finds_each("aggregate", ids.aggregate_ids(), |id| {
-            ids.aggregate_of(id).collect()
-        })
+        + finds_each("index", ids.index_ids(), |id| ids.index_of(id))
+        + finds_each("function", ids.function_ids(), |id| ids.function_of(id))
+        + finds_each("aggregate", ids.aggregate_ids(), |id| ids.aggregate_of(id))
         + finds_each("constraint", ids.constraint_ids(), |id| {
-            ids.constraint_of(id).collect()
+            ids.constraint_of(id)
         });
     let user = type_id(&s, "User");
     let users = rel_id(&s, "auth", "users");
     let identities = rel_id(&s, "auth", "identities");
-    assert_eq!(Some(user), ids.type_of(CatTypeId::from_raw(1024)).next());
-    assert_eq!(
-        Some(users),
-        ids.relation_of(CatRelId::from_raw(1029)).next()
-    );
-    let oauth = ids.set_of(CatSetId::from_raw(1024)).next();
+    assert_eq!(Some(user), ids.type_of(CatTypeId::from_raw(1024)));
+    assert_eq!(Some(users), ids.relation_of(CatRelId::from_raw(1029)));
+    let oauth = ids.set_of(CatSetId::from_raw(1024));
     assert_eq!(Some((identities, "OAuth")), oauth);
-    let unique = ids.index_of(CatIndexId::from_raw(1026)).next();
+    let unique = ids.index_of(CatIndexId::from_raw(1026));
     assert_eq!(Some((identities, 0)), unique);
     assert_eq!(
         Some(FnId(0)),
-        ids.function_of(CatFunctionId::from_raw(1024)).next()
+        ids.function_of(CatFunctionId::from_raw(1024))
     );
-    assert_eq!(
-        Some(0),
-        ids.aggregate_of(CatFunctionId::from_raw(1025)).next()
-    );
-    assert_eq!(
-        Some(0),
-        ids.constraint_of(CatConstraintId::from_raw(1024)).next()
-    );
+    assert_eq!(Some(0), ids.aggregate_of(CatFunctionId::from_raw(1025)));
+    assert_eq!(Some(0), ids.constraint_of(CatConstraintId::from_raw(1024)));
     assert!(seen > 1000, "{seen} ids");
 }
 
@@ -1234,54 +1217,6 @@ fn field_ref(s: &Schema, def: TypeId, c: Option<u32>, name: &str) -> Option<Fiel
     let td = s.ty(def);
     td.field(c.and_then(|c| td.ctor_at(c)), name)
         .filter(|f| f.ctor() == c)
-}
-
-#[test]
-fn two_fields_of_one_constructor_sharing_an_id_resolve_by_name() {
-    use crate::evolve::{GrantFields, GrantSel, GrantTarget, Granted};
-    use crate::ids::{CatCtorId, CatFieldId, Slot};
-    use crate::permission::{Requirement, Target};
-    use crate::translate::Map;
-
-    let mut s = build_src(&[&module(
-        "type P = { k: I64, z: I64, a: I64 }\nrelation ps : P key k",
-    )])
-    .unwrap();
-    let def = type_id(&s, "P");
-    let held = |s: &Schema, name| {
-        let f = field_ref(s, def, Some(0), name).expect("a field of P");
-        s.ids.field_id(f).expect("a field id")
-    };
-    let id = held(&s, "z");
-    let a = field_ref(&s, def, Some(0), "a").unwrap();
-    s.ids.set(&Slot::Field(a), u64::from(id));
-    assert_eq!(id, held(&s, "a"));
-    let rel = s.ids.relation_id(rel_id(&s, "m", "ps")).unwrap();
-    let ctor: CatCtorId = s.ids.ctor_id(ctor_ref(&s, def, 0)).unwrap();
-
-    let granted = Granted::Read(
-        GrantTarget {
-            relation: u64::from(rel),
-            sel: GrantSel::Whole,
-        },
-        GrantFields {
-            ids: vec![u64::from(id)],
-            listed: true,
-        },
-    );
-    assert_eq!(Some("m::ps (a)".to_string()), granted.target_text(&s));
-    let read = Requirement::ReadField(
-        Target {
-            relation: rel,
-            constructor: ctor,
-        },
-        CatFieldId::from_raw(u64::from(id)),
-    );
-    assert_eq!(("reads ps.P (a)".to_string(), "read"), read.text(&s));
-    assert_eq!(
-        Some("z".to_string()),
-        Map::new(&s, &s).field(def, Some(0), "a")
-    );
 }
 
 #[test]

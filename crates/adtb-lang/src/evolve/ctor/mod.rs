@@ -730,6 +730,42 @@ pub(super) struct ScopedClause {
     pub(super) fields: Vec<String>,
     /// The constructors it ranges over, every one when `None`.
     pub(super) scope: Option<CtorSet>,
+    /// Each name of the scope as written, with the position of the constructor it names, `None`
+    /// for a named set.
+    written: Vec<(String, Option<u32>)>,
+}
+
+impl ScopedClause {
+    /// Returns the scope's names as written with each listed constructor of `replaced` written
+    /// as `image` gives it and each named set kept, `None` when it lists none of `replaced`.
+    pub(super) fn rescoped(
+        &self,
+        replaced: &[u32],
+        image: &dyn Fn(u32) -> Vec<String>,
+    ) -> Option<Vec<String>> {
+        let listed = |c: &Option<u32>| c.is_some_and(|c| replaced.contains(&c));
+        if !self.written.iter().any(|(_, c)| listed(c)) {
+            return None;
+        }
+        let mut out: Vec<String> = Vec::new();
+        for (n, c) in &self.written {
+            let names = match c {
+                Some(c) if replaced.contains(c) => image(*c),
+                _ => vec![n.clone()],
+            };
+            for n in names {
+                if !out.contains(&n) {
+                    out.push(n);
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// Returns the scope's names as written.
+    pub(super) fn scope_names(&self) -> Vec<String> {
+        self.written.iter().map(|(n, _)| n.clone()).collect()
+    }
 }
 
 /// What a fill or a routing checks against.
@@ -795,6 +831,18 @@ impl Cx<'_> {
                         })
                         .collect(),
                     scope,
+                    written: s.as_ref().map_or_else(Vec::new, |s| {
+                        scope_idents(s)
+                            .into_iter()
+                            .map(|n| {
+                                let set =
+                                    schema.relation(rel).sets.iter().any(|x| x.name == n.text);
+                                let ctor =
+                                    (!set).then(|| schema.ty(def).ctor_index(&n.text)).flatten();
+                                (n.text.clone(), ctor)
+                            })
+                            .collect()
+                    }),
                 });
             }
         }

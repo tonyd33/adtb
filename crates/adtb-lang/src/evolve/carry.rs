@@ -1,5 +1,7 @@
 use super::grant::IdKind;
 use super::*;
+use crate::ids::KeyKind;
+use crate::schema::FieldRef;
 
 /// How a structural operator carries the grants on the constructors it replaces to the
 /// constructors it makes.
@@ -7,8 +9,7 @@ use super::*;
 pub(super) struct Carry {
     what: Structural,
     span: Span,
-    /// The type's path, `m::T`.
-    ty: String,
+    ty: (String, String),
     /// The relation variables over the type, by id, with their names.
     relations: Vec<(u64, String)>,
     /// The sources each named set of a relation over the type holds, by set id.
@@ -255,7 +256,7 @@ impl Cx<'_> {
         self.src.carry = Some(Carry {
             what,
             span: self.span,
-            ty: format!("{}::{}", self.module_of(ty), td.name),
+            ty: (self.module_of(ty), td.name.clone()),
             relations,
             sets,
             sources: sources
@@ -584,12 +585,13 @@ impl Source {
 
     fn carry_plan(&mut self, plan: &Carry) {
         let ids = &self.ids;
+        let (m, t) = &plan.ty;
         let products: Vec<(String, u64)> = plan
             .products
             .iter()
-            .filter_map(|p| Some((p.clone(), *ids.get(&format!("ctor {}.{p}", plan.ty))?)))
+            .filter_map(|p| Some((p.clone(), ids::ctor_key_id(ids, m, t, p)?)))
             .collect();
-        let field_id = |p: &str, g: &str| ids.get(&format!("field {}.{p}.{g}", plan.ty)).copied();
+        let field_id = |p: &str, g: &str| ids::field_key_id(ids, m, t, Some(p), g);
         let mut unstated: Vec<Unstated> = Vec::new();
         let held = self.grants.clone();
         let mut grants = std::mem::take(&mut self.grants);
@@ -698,17 +700,24 @@ impl Source {
             })
             .map(|(_, _, id)| id.raw())
             .collect();
-        let prefix = format!("field {m}::{t}.{c}.");
-        let fields: Vec<(&str, u64)> = self
-            .ids
-            .iter()
-            .filter_map(|(p, &id)| Some((p.strip_prefix(&prefix)?, id)))
+        let field_name = |f: FieldRef| schema.ty(f.def()).field_def(f).name.as_str();
+        let fields: Vec<(&str, u64)> = schema
+            .ty(def)
+            .ctor_at(ci)
+            .into_iter()
+            .flat_map(|c| {
+                schema
+                    .ty(def)
+                    .field_refs()
+                    .filter(move |(f, _)| f.ctor() == Some(c.index()))
+            })
+            .filter_map(|(f, _)| Some((field_name(f), schema.ids.field_id(f)?.raw())))
             .collect();
         let name = |id: u64| {
-            self.ids
-                .iter()
-                .find(|(p, x)| **x == id && p.starts_with(IdKind::Field.prefix()))
-                .and_then(|(p, _)| p.rsplit('.').next())
+            schema
+                .ids
+                .field_of(CatFieldId::from_raw(id))
+                .map(field_name)
         };
         let mut gained: Vec<(usize, Vec<u64>)> = Vec::new();
         for (k, g) in self.grants.iter().enumerate() {
@@ -747,7 +756,7 @@ impl Source {
     fn spread(&mut self, before: &Source, m: &str, path: &ast::FieldPath, sel: &CtorSel) {
         let t = &path.ty.name.text;
         let f = &path.field.text;
-        let Some(&old) = before.ids.get(&format!("field {m}::{t}.{f}")) else {
+        let Some(old) = before.field_key_id(m, t, None, f) else {
             return;
         };
         let Ok(schema) = self.schema() else {
@@ -757,8 +766,8 @@ impl Source {
             .iter()
             .filter_map(|c| {
                 Some((
-                    *self.ids.get(&format!("ctor {m}::{t}.{}", c.text))?,
-                    *self.ids.get(&format!("field {m}::{t}.{}.{f}", c.text))?,
+                    self.ctor_key_id(m, t, &c.text)?,
+                    self.field_key_id(m, t, Some(&c.text), f)?,
                 ))
             })
             .collect();
@@ -788,7 +797,7 @@ impl Source {
         let Some(c) = &path.ctor else {
             return;
         };
-        let Some(&moved) = self.ids.get(&format!("field {m}::{t}.{}", path.field.text)) else {
+        let Some(moved) = self.field_key_id(m, t, None, &path.field.text) else {
             return;
         };
         let Ok(schema) = self.schema() else {
@@ -799,13 +808,12 @@ impl Source {
             Fill::Expr(_) => vec![(None, None)],
         };
         let ctor_name = |id: u64| {
-            self.ids
-                .iter()
-                .find(|(p, x)| **x == id && p.starts_with(IdKind::Ctor.prefix()))
-                .and_then(|(p, _)| p.rsplit('.').next())
-                .map(str::to_string)
+            schema
+                .ids
+                .ctor_of(CatCtorId::from_raw(id))
+                .map(|c| schema.ty(c.def()).ctor_def(c).name.clone())
         };
-        let field_id = |d: &str, g: &str| self.ids.get(&format!("field {m}::{t}.{d}.{g}")).copied();
+        let field_id = |d: &str, g: &str| self.field_key_id(m, t, Some(d), g);
         let mut lost = Vec::new();
         for (k, g) in self.grants.iter().enumerate() {
             let (Granted::Read(target, fs) | Granted::Update(target, fs)) = &g.privilege else {
@@ -855,21 +863,21 @@ impl Source {
             IdKind::Field,
             IdKind::Function,
         ];
-        let live: BTreeSet<(&str, u64)> = self
+        let live: BTreeSet<(KeyKind, u64)> = self
             .ids
             .iter()
             .flat_map(|(p, &id)| {
                 kinds
                     .iter()
-                    .filter(move |k| p.starts_with(k.prefix()))
-                    .map(move |k| (k.prefix(), id))
+                    .filter(move |k| p.kind() == k.key_kind())
+                    .map(move |k| (k.key_kind(), id))
             })
             .collect();
         let mut kept: Vec<LogGrant> = Vec::new();
         for g in &self.grants {
             let Some(privilege) = g
                 .privilege
-                .mapped(&mut |k, x| live.contains(&(k.prefix(), x)).then_some(x))
+                .mapped(&mut |k, x| live.contains(&(k.key_kind(), x)).then_some(x))
             else {
                 continue;
             };

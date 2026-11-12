@@ -77,11 +77,36 @@ pub fn declared_sums(schema: &Schema) -> Vec<Vec<u64>> {
 /// fields first. An anonymous sum's constructors have their positions for ids. The constructors
 /// of `Tag T` are those of `T` without fields.
 pub fn ctors(schema: &Schema, ty: &Ty) -> Vec<(u32, Vec<(String, Ty)>)> {
+    let fields = ctor_fields(schema, ty);
     match repr(schema, ty) {
         Ty::Tag(t) => ctors(schema, &t)
             .into_iter()
             .map(|(id, _)| (id, Vec::new()))
             .collect(),
+        Ty::Data { def, .. } => {
+            let d = schema.ty(def);
+            d.ctors()
+                .iter()
+                .zip(d.ctor_refs())
+                .zip(fields)
+                .map(|((c, k), fs)| {
+                    let id = schema
+                        .ids
+                        .ctor_id(k)
+                        .unwrap_or_else(|| panic!("constructor {} has a catalog id", c.name));
+                    (stored(id).0, fs)
+                })
+                .collect()
+        }
+        _ => fields.into_iter().zip(0..).map(|(fs, i)| (i, fs)).collect(),
+    }
+}
+
+/// Returns the fields of each constructor of the sum `ty`, in declaration order, the header
+/// fields first. The constructors of `Tag T` are those of `T` without fields.
+pub fn ctor_fields(schema: &Schema, ty: &Ty) -> Vec<Vec<(String, Ty)>> {
+    match repr(schema, ty) {
+        Ty::Tag(t) => ctor_fields(schema, &t).iter().map(|_| Vec::new()).collect(),
         Ty::Data { def, args, .. } => {
             let d = schema.ty(def);
             let header: Vec<(String, Ty)> = d
@@ -91,23 +116,14 @@ pub fn ctors(schema: &Schema, ty: &Ty) -> Vec<(u32, Vec<(String, Ty)>)> {
                 .collect();
             d.ctors()
                 .iter()
-                .zip(d.ctor_refs())
-                .map(|(c, k)| {
-                    let id = schema
-                        .ids
-                        .ctor_id(k)
-                        .unwrap_or_else(|| panic!("constructor {} has a catalog id", c.name));
+                .map(|c| {
                     let mut fs = header.clone();
                     fs.extend(c.fields.iter().map(|f| (f.name.clone(), f.ty.subst(&args))));
-                    (stored(id).0, fs)
+                    fs
                 })
                 .collect()
         }
-        Ty::Sum { ctors, .. } => ctors
-            .into_iter()
-            .enumerate()
-            .map(|(i, (_, fs))| (i as u32, fs))
-            .collect(),
+        Ty::Sum { ctors, .. } => ctors.into_iter().map(|(_, fs)| fs).collect(),
         t => panic!("{t:?} is not a sum"),
     }
 }
@@ -276,7 +292,5 @@ pub fn key_type(schema: &Schema, keys: &OrderKeys, ty: &Ty) -> KeyType {
 
 /// Returns the fields of a row of constructor `ctor` of relation `rel`, the header's first.
 pub fn row(schema: &Schema, rel: RelId, ctor: u32) -> Vec<(String, Ty)> {
-    ctors(schema, &schema.relation(rel).elem)
-        .swap_remove(ctor as usize)
-        .1
+    ctor_fields(schema, &schema.relation(rel).elem).swap_remove(ctor as usize)
 }

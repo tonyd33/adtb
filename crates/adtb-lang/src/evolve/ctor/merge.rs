@@ -143,21 +143,12 @@ impl Cx<'_> {
             }
             let shown = format!("{} ({})", cl.kind, cl.fields.join(", "));
             let text = self.src.decls[cl.decl].text.clone();
+            let merged = |_| vec![image.ctor.to_string()];
+            let rescoped = cl.rescoped(image.src_ix, &merged);
             if inside != scope.len() {
+                let Some(names) = rescoped else { continue };
                 if inside != image.src_ix.len() {
                     return self.err(format!("`{shown}` ranges over some but not all of the merged constructors and has no image under the merge"));
-                }
-                let td = schema.ty(image.def);
-                let mut names: Vec<String> = Vec::new();
-                for &c in scope {
-                    let n = if image.src_ix.contains(&c) {
-                        image.ctor.to_string()
-                    } else {
-                        td.ctors()[c as usize].name.clone()
-                    };
-                    if !names.contains(&n) {
-                        names.push(n);
-                    }
                 }
                 let new = format!("{shown} in {}", sel_text(&names));
                 clause_edits
@@ -167,11 +158,21 @@ impl Cx<'_> {
                 continue;
             }
             let out_fields = self.merged_fields(schema, image, &cl, &shown)?;
+            let names = match rescoped {
+                None if out_fields == cl.fields => continue,
+                None => vec![image.ctor.to_string()],
+                Some(names) => names,
+            };
             clause_edits.entry(cl.decl).or_default().push((
                 clause_removal(&text, std::slice::from_ref(&cl.range), 0),
                 String::new().into(),
             ));
-            let new = format!("{} ({}) in {}", cl.kind, out_fields.join(", "), image.ctor);
+            let new = format!(
+                "{} ({}) in {}",
+                cl.kind,
+                out_fields.join(", "),
+                sel_text(&names)
+            );
             let list = added.entry(cl.decl).or_default();
             if !list.iter().any(|x| x.text == new) {
                 list.push(new.into());

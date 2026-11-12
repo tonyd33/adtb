@@ -60,7 +60,7 @@ impl<'a> Map<'a> {
     /// Returns the type `def` is at the later version.
     pub fn def(&self, def: TypeId) -> Option<TypeId> {
         match self.from.ids.type_id(def) {
-            Some(id) => self.to.ids.type_of(id).next_back(),
+            Some(id) => self.to.ids.type_of(id),
             None => {
                 let t = self.from.ty(def);
                 let module = &self.from.module(t.module).name;
@@ -75,7 +75,7 @@ impl<'a> Map<'a> {
 
     pub fn relation(&self, rel: RelId) -> Option<RelId> {
         match self.from.ids.relation_id(rel) {
-            Some(id) => self.to.ids.relation_of(id).next_back(),
+            Some(id) => self.to.ids.relation_of(id),
             None => {
                 let r = self.from.relation(rel);
                 let module = &self.from.module(r.module).name;
@@ -97,7 +97,6 @@ impl<'a> Map<'a> {
                 .to
                 .ids
                 .ctor_of(id)
-                .next_back()
                 .filter(|k| k.def() == to)
                 .map(CtorRef::index),
             None => {
@@ -123,8 +122,8 @@ impl<'a> Map<'a> {
         match found {
             Some(id) => self
                 .to
-                .field_holders(id)
-                .next_back()
+                .ids
+                .field_of(id)
                 .filter(|f| {
                     f.def() == to
                         && (f.ctor().is_none() || f.ctor() == c.and_then(|c| self.ctor(def, c)))

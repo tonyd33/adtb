@@ -1,17 +1,21 @@
 //! Assign and hold the catalog ids of a schema's objects.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use crate::ast::{self, Decl, RelationClause};
-use crate::schema::{CtorRef, FieldRef, Schema, TypeDefKind, ValueDef};
-use crate::span::{FileId, Span};
+use crate::ast;
+use crate::schema::{CtorRef, FieldRef, Schema, TypeDefKind};
+use crate::span::FileId;
 use crate::types::*;
 
 #[cfg(test)]
 mod tests;
 
 mod fixed;
+mod key;
+mod objects;
 pub use fixed::{FixedType, RELATIONS, TYPES};
+pub use key::{KeyKind, ObjectKey, Owner};
+pub use objects::{Object, assign, objects};
 
 macro_rules! catalog_id {
     ($($(#[$doc:meta])* $name:ident),* $(,)?) => {$(
@@ -110,15 +114,8 @@ pub struct CatalogIds {
     view_ctors: BTreeMap<FnId, CatCtorId>,
     /// The fields of a stored view's row constructor, by view and name.
     view_fields: BTreeMap<(FnId, String), CatFieldId>,
-    type_of: Reverse<CatTypeId, TypeId>,
-    ctor_of: Reverse<CatCtorId, CtorRef>,
-    relation_of: Reverse<CatRelId, RelId>,
-    field_of: Reverse<CatFieldId, FieldRef>,
-    set_of: Reverse<CatSetId, (RelId, String)>,
-    function_of: Reverse<CatFunctionId, FnId>,
-    aggregate_of: Reverse<CatFunctionId, usize>,
-    index_of: Reverse<CatIndexId, (RelId, usize)>,
-    constraint_of: Reverse<CatConstraintId, usize>,
+    /// The object holding each id of each space.
+    held: BTreeMap<(Space, u64), Slot>,
 }
 
 /// An id space of catalog objects.
@@ -136,7 +133,7 @@ pub enum Space {
 }
 
 /// Where an object's id goes in [`CatalogIds`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Slot {
     Type(TypeId),
     Ctor(CtorRef),
@@ -161,26 +158,27 @@ pub enum Slot {
     ViewField(FnId, String),
 }
 
-/// One object of a user module, in the order a migration declaring the module files in order creates it.
-#[derive(Clone, Debug)]
-pub struct Object {
-    space: Space,
-    slot: Slot,
-    /// The object's name, stable while no operator renames or rewrites it.
-    path: String,
-}
-
-impl Object {
+impl Slot {
     pub fn space(&self) -> Space {
-        self.space
-    }
-
-    pub fn slot(&self) -> &Slot {
-        &self.slot
-    }
-
-    pub fn path(&self) -> &str {
-        &self.path
+        match self {
+            Slot::Type(_)
+            | Slot::Ctor(_)
+            | Slot::Relation(_)
+            | Slot::View(_)
+            | Slot::ViewType(_)
+            | Slot::ViewCtor(_) => Space::Shared,
+            Slot::Field(_) | Slot::ViewField(..) => Space::Field,
+            Slot::Set(..) => Space::Set,
+            Slot::Key(_)
+            | Slot::Index(..)
+            | Slot::Implied(..)
+            | Slot::ViewKey(_)
+            | Slot::ViewIndex(..) => Space::Index,
+            Slot::Generated(_) | Slot::Default(..) => Space::Default,
+            Slot::Computed(..) => Space::Computed,
+            Slot::Function(_) | Slot::Aggregate(_) => Space::Function,
+            Slot::Constraint(_) | Slot::Check(_) => Space::Constraint,
+        }
     }
 }
 
@@ -191,42 +189,6 @@ impl Object {
 #[track_caller]
 pub fn held_id<T>(id: Option<T>) -> T {
     id.expect("every object of a built schema outside the temp module has a catalog id")
-}
-
-/// The objects that hold each id of one map of [`CatalogIds`].
-type Reverse<I, K> = BTreeMap<I, BTreeSet<K>>;
-
-/// Insert `id` at `key` of `forward` and keep `reverse` its inverse, forgetting the id `key` had.
-fn put<K: Ord + Clone, I: Ord + Copy>(
-    forward: &mut BTreeMap<K, I>,
-    reverse: &mut Reverse<I, K>,
-    key: K,
-    id: I,
-) {
-    take(forward, reverse, &key);
-    forward.insert(key.clone(), id);
-    reverse.entry(id).or_default().insert(key);
-}
-
-/// Remove `key` from `forward` and from the holders of its id in `reverse`.
-fn take<K: Ord, I: Ord>(forward: &mut BTreeMap<K, I>, reverse: &mut Reverse<I, K>, key: &K) {
-    let Some(old) = forward.remove(key) else {
-        return;
-    };
-    if let Some(keys) = reverse.get_mut(&old) {
-        keys.remove(key);
-        if keys.is_empty() {
-            reverse.remove(&old);
-        }
-    }
-}
-
-/// Returns the objects holding `id`, least first.
-///
-/// Several objects hold one id only in a schema built while the log has no id for some object,
-/// whose id then comes from declaration order.
-fn holders<I: Ord, K: Ord>(reverse: &Reverse<I, K>, id: I) -> impl DoubleEndedIterator<Item = &K> {
-    reverse.get(&id).into_iter().flatten()
 }
 
 impl CatalogIds {
@@ -329,55 +291,82 @@ impl CatalogIds {
         self.view_fields.get(&(f, name.to_string())).copied()
     }
 
-    /// Returns the types whose id is `id`, least first.
-    pub fn type_of(&self, id: CatTypeId) -> impl DoubleEndedIterator<Item = TypeId> + '_ {
-        holders(&self.type_of, id).copied()
+    /// Returns the object of `space` whose id is `id`.
+    fn holder(&self, space: Space, id: u64) -> Option<&Slot> {
+        self.held.get(&(space, id))
     }
 
-    /// Returns the constructors whose id is `id`, least first.
-    pub fn ctor_of(&self, id: CatCtorId) -> impl DoubleEndedIterator<Item = CtorRef> + '_ {
-        holders(&self.ctor_of, id).copied()
+    /// Returns the type whose id is `id`.
+    pub fn type_of(&self, id: CatTypeId) -> Option<TypeId> {
+        match self.holder(Space::Shared, id.0)? {
+            Slot::Type(t) => Some(*t),
+            _ => None,
+        }
     }
 
-    /// Returns the relation variables whose id is `id`, least first.
-    pub fn relation_of(&self, id: CatRelId) -> impl DoubleEndedIterator<Item = RelId> + '_ {
-        holders(&self.relation_of, id).copied()
+    /// Returns the constructor whose id is `id`.
+    pub fn ctor_of(&self, id: CatCtorId) -> Option<CtorRef> {
+        match self.holder(Space::Shared, id.0)? {
+            Slot::Ctor(c) => Some(*c),
+            _ => None,
+        }
     }
 
-    /// Returns the fields whose id is `id`, least first.
-    pub(crate) fn field_of(
-        &self,
-        id: CatFieldId,
-    ) -> impl DoubleEndedIterator<Item = FieldRef> + '_ {
-        holders(&self.field_of, id).copied()
+    /// Returns the relation variable whose id is `id`.
+    pub fn relation_of(&self, id: CatRelId) -> Option<RelId> {
+        match self.holder(Space::Shared, id.0)? {
+            Slot::Relation(r) => Some(*r),
+            _ => None,
+        }
     }
 
-    /// Returns the named sets, as relation and name, whose id is `id`, least first.
-    pub fn set_of(&self, id: CatSetId) -> impl DoubleEndedIterator<Item = (RelId, &str)> + '_ {
-        holders(&self.set_of, id).map(|(r, n)| (*r, n.as_str()))
+    /// Returns the field whose id is `id`.
+    pub fn field_of(&self, id: CatFieldId) -> Option<FieldRef> {
+        match self.holder(Space::Field, id.0)? {
+            Slot::Field(f) => Some(*f),
+            _ => None,
+        }
     }
 
-    /// Returns the functions whose id is `id`, least first.
-    pub fn function_of(&self, id: CatFunctionId) -> impl DoubleEndedIterator<Item = FnId> + '_ {
-        holders(&self.function_of, id).copied()
+    /// Returns the named set, as relation and name, whose id is `id`.
+    pub fn set_of(&self, id: CatSetId) -> Option<(RelId, &str)> {
+        match self.holder(Space::Set, id.0)? {
+            Slot::Set(r, n) => Some((*r, n.as_str())),
+            _ => None,
+        }
     }
 
-    /// Returns the uniques and indexes, as relation and position among `RelationDef::indexes`, whose id is `id`, least first.
-    pub fn index_of(&self, id: CatIndexId) -> impl DoubleEndedIterator<Item = (RelId, usize)> + '_ {
-        holders(&self.index_of, id).copied()
+    /// Returns the function whose id is `id`.
+    pub fn function_of(&self, id: CatFunctionId) -> Option<FnId> {
+        match self.holder(Space::Function, id.0)? {
+            Slot::Function(f) => Some(*f),
+            _ => None,
+        }
     }
 
-    /// Returns the constraints, as position among `Schema::constraints`, whose id is `id`, least first.
-    pub fn constraint_of(
-        &self,
-        id: CatConstraintId,
-    ) -> impl DoubleEndedIterator<Item = usize> + '_ {
-        holders(&self.constraint_of, id).copied()
+    /// Returns the unique or index, as relation and position among `RelationDef::indexes`, whose
+    /// id is `id`.
+    pub fn index_of(&self, id: CatIndexId) -> Option<(RelId, usize)> {
+        match self.holder(Space::Index, id.0)? {
+            Slot::Index(r, at) => Some((*r, *at)),
+            _ => None,
+        }
     }
 
-    /// Returns the aggregates, as position among `Schema::aggregates`, whose id is `id`, least first.
-    pub fn aggregate_of(&self, id: CatFunctionId) -> impl DoubleEndedIterator<Item = usize> + '_ {
-        holders(&self.aggregate_of, id).copied()
+    /// Returns the constraint, as position among `Schema::constraints`, whose id is `id`.
+    pub fn constraint_of(&self, id: CatConstraintId) -> Option<usize> {
+        match self.holder(Space::Constraint, id.0)? {
+            Slot::Constraint(at) => Some(*at),
+            _ => None,
+        }
+    }
+
+    /// Returns the aggregate, as position among `Schema::aggregates`, whose id is `id`.
+    pub fn aggregate_of(&self, id: CatFunctionId) -> Option<usize> {
+        match self.holder(Space::Function, id.0)? {
+            Slot::Aggregate(at) => Some(*at),
+            _ => None,
+        }
     }
 
     pub fn type_ids(&self) -> impl Iterator<Item = (TypeId, CatTypeId)> + '_ {
@@ -481,106 +470,67 @@ impl CatalogIds {
     }
 
     /// Give the object at `slot` the id whose stored form is `id`.
+    ///
+    /// Preconditions: no other object of `slot`'s space holds `id`.
     pub fn set(&mut self, slot: &Slot, id: u64) {
+        self.forget(slot);
+        if let Some(other) = self.held.insert((slot.space(), id), slot.clone()) {
+            panic!(
+                "no two objects of a schema share a catalog id: {other:?} and {slot:?} hold {id}"
+            );
+        }
         match slot.clone() {
-            Slot::Type(t) => put(&mut self.types, &mut self.type_of, t, CatTypeId(id)),
-            Slot::Ctor(c) => put(&mut self.ctors, &mut self.ctor_of, c, CatCtorId(id)),
-            Slot::Relation(r) => put(&mut self.relations, &mut self.relation_of, r, CatRelId(id)),
-            Slot::Field(f) => put(&mut self.fields, &mut self.field_of, f, CatFieldId(id)),
-            Slot::Set(r, s) => put(&mut self.sets, &mut self.set_of, (r, s), CatSetId(id)),
-            Slot::Function(f) => {
-                put(
-                    &mut self.functions,
-                    &mut self.function_of,
-                    f,
-                    CatFunctionId(id),
-                );
-            }
-            Slot::Key(r) => {
-                self.keys.insert(r, CatIndexId(id));
-            }
-            Slot::Index(r, i) => put(
-                &mut self.indexes,
-                &mut self.index_of,
-                (r, i),
-                CatIndexId(id),
-            ),
-            Slot::Implied(r, f) => {
-                self.implied.insert((r, f), CatIndexId(id));
-            }
-            Slot::Generated(r) => {
-                self.generated.insert(r, CatDefaultId(id));
-            }
-            Slot::Default(r, i, f) => {
-                self.defaults.insert((r, i, f), CatDefaultId(id));
-            }
-            Slot::Computed(r, i) => {
-                self.computed.insert((r, i), CatComputedId(id));
-            }
-            Slot::Aggregate(i) => {
-                put(
-                    &mut self.aggregates,
-                    &mut self.aggregate_of,
-                    i,
-                    CatFunctionId(id),
-                );
-            }
-            Slot::Constraint(i) => {
-                put(
-                    &mut self.constraints,
-                    &mut self.constraint_of,
-                    i,
-                    CatConstraintId(id),
-                );
-            }
-            Slot::Check(i) => {
-                self.checks.insert(i, CatConstraintId(id));
-            }
-            Slot::View(f) => {
-                self.views.insert(f, CatRelId(id));
-            }
-            Slot::ViewKey(f) => {
-                self.view_keys.insert(f, CatIndexId(id));
-            }
-            Slot::ViewIndex(f, i) => {
-                self.view_indexes.insert((f, i), CatIndexId(id));
-            }
-            Slot::ViewType(f) => {
-                self.view_types.insert(f, CatTypeId(id));
-            }
-            Slot::ViewCtor(f) => {
-                self.view_ctors.insert(f, CatCtorId(id));
-            }
-            Slot::ViewField(f, n) => {
-                self.view_fields.insert((f, n), CatFieldId(id));
-            }
+            Slot::Type(t) => drop(self.types.insert(t, CatTypeId(id))),
+            Slot::Ctor(c) => drop(self.ctors.insert(c, CatCtorId(id))),
+            Slot::Relation(r) => drop(self.relations.insert(r, CatRelId(id))),
+            Slot::Field(f) => drop(self.fields.insert(f, CatFieldId(id))),
+            Slot::Set(r, s) => drop(self.sets.insert((r, s), CatSetId(id))),
+            Slot::Function(f) => drop(self.functions.insert(f, CatFunctionId(id))),
+            Slot::Key(r) => drop(self.keys.insert(r, CatIndexId(id))),
+            Slot::Index(r, i) => drop(self.indexes.insert((r, i), CatIndexId(id))),
+            Slot::Implied(r, f) => drop(self.implied.insert((r, f), CatIndexId(id))),
+            Slot::Generated(r) => drop(self.generated.insert(r, CatDefaultId(id))),
+            Slot::Default(r, i, f) => drop(self.defaults.insert((r, i, f), CatDefaultId(id))),
+            Slot::Computed(r, i) => drop(self.computed.insert((r, i), CatComputedId(id))),
+            Slot::Aggregate(i) => drop(self.aggregates.insert(i, CatFunctionId(id))),
+            Slot::Constraint(i) => drop(self.constraints.insert(i, CatConstraintId(id))),
+            Slot::Check(i) => drop(self.checks.insert(i, CatConstraintId(id))),
+            Slot::View(f) => drop(self.views.insert(f, CatRelId(id))),
+            Slot::ViewKey(f) => drop(self.view_keys.insert(f, CatIndexId(id))),
+            Slot::ViewIndex(f, i) => drop(self.view_indexes.insert((f, i), CatIndexId(id))),
+            Slot::ViewType(f) => drop(self.view_types.insert(f, CatTypeId(id))),
+            Slot::ViewCtor(f) => drop(self.view_ctors.insert(f, CatCtorId(id))),
+            Slot::ViewField(f, n) => drop(self.view_fields.insert((f, n), CatFieldId(id))),
         }
     }
 
     /// Remove the id of the object at `slot`.
     pub fn forget(&mut self, slot: &Slot) {
-        match slot.clone() {
-            Slot::Type(t) => take(&mut self.types, &mut self.type_of, &t),
-            Slot::Ctor(c) => take(&mut self.ctors, &mut self.ctor_of, &c),
-            Slot::Relation(r) => take(&mut self.relations, &mut self.relation_of, &r),
-            Slot::Field(f) => take(&mut self.fields, &mut self.field_of, &f),
-            Slot::Set(r, s) => take(&mut self.sets, &mut self.set_of, &(r, s)),
-            Slot::Function(f) => take(&mut self.functions, &mut self.function_of, &f),
-            Slot::Key(r) => drop(self.keys.remove(&r)),
-            Slot::Index(r, i) => take(&mut self.indexes, &mut self.index_of, &(r, i)),
-            Slot::Implied(r, f) => drop(self.implied.remove(&(r, f))),
-            Slot::Generated(r) => drop(self.generated.remove(&r)),
-            Slot::Default(r, i, f) => drop(self.defaults.remove(&(r, i, f))),
-            Slot::Computed(r, i) => drop(self.computed.remove(&(r, i))),
-            Slot::Aggregate(i) => take(&mut self.aggregates, &mut self.aggregate_of, &i),
-            Slot::Constraint(i) => take(&mut self.constraints, &mut self.constraint_of, &i),
-            Slot::Check(i) => drop(self.checks.remove(&i)),
-            Slot::View(f) => drop(self.views.remove(&f)),
-            Slot::ViewKey(f) => drop(self.view_keys.remove(&f)),
-            Slot::ViewIndex(f, i) => drop(self.view_indexes.remove(&(f, i))),
-            Slot::ViewType(f) => drop(self.view_types.remove(&f)),
-            Slot::ViewCtor(f) => drop(self.view_ctors.remove(&f)),
-            Slot::ViewField(f, n) => drop(self.view_fields.remove(&(f, n))),
+        let old = match slot.clone() {
+            Slot::Type(t) => self.types.remove(&t).map(u64::from),
+            Slot::Ctor(c) => self.ctors.remove(&c).map(u64::from),
+            Slot::Relation(r) => self.relations.remove(&r).map(u64::from),
+            Slot::Field(f) => self.fields.remove(&f).map(u64::from),
+            Slot::Set(r, s) => self.sets.remove(&(r, s)).map(u64::from),
+            Slot::Function(f) => self.functions.remove(&f).map(u64::from),
+            Slot::Key(r) => self.keys.remove(&r).map(u64::from),
+            Slot::Index(r, i) => self.indexes.remove(&(r, i)).map(u64::from),
+            Slot::Implied(r, f) => self.implied.remove(&(r, f)).map(u64::from),
+            Slot::Generated(r) => self.generated.remove(&r).map(u64::from),
+            Slot::Default(r, i, f) => self.defaults.remove(&(r, i, f)).map(u64::from),
+            Slot::Computed(r, i) => self.computed.remove(&(r, i)).map(u64::from),
+            Slot::Aggregate(i) => self.aggregates.remove(&i).map(u64::from),
+            Slot::Constraint(i) => self.constraints.remove(&i).map(u64::from),
+            Slot::Check(i) => self.checks.remove(&i).map(u64::from),
+            Slot::View(f) => self.views.remove(&f).map(u64::from),
+            Slot::ViewKey(f) => self.view_keys.remove(&f).map(u64::from),
+            Slot::ViewIndex(f, i) => self.view_indexes.remove(&(f, i)).map(u64::from),
+            Slot::ViewType(f) => self.view_types.remove(&f).map(u64::from),
+            Slot::ViewCtor(f) => self.view_ctors.remove(&f).map(u64::from),
+            Slot::ViewField(f, n) => self.view_fields.remove(&(f, n)).map(u64::from),
+        };
+        if let Some(old) = old {
+            self.held.remove(&(slot.space(), old));
         }
     }
 }
@@ -672,332 +622,4 @@ fn engine(schema: &Schema) -> CatalogIds {
         }
     }
     ids
-}
-
-/// Every object the user modules of `files` declare, in creation order, `text` giving the source
-/// text of a span of a file for the paths of uniques and indexes.
-pub fn objects(
-    schema: &Schema,
-    files: &[(FileId, ast::SchemaFile)],
-    text: &dyn Fn(FileId, Span) -> String,
-) -> Vec<Object> {
-    let mut out = Vec::new();
-    let mut push = |space: Space, slot: Slot, path: String| out.push(Object { space, slot, path });
-    for (file, sf) in files {
-        if file.is_engine() {
-            continue;
-        }
-        let Some(mid) = schema.module_named(&sf.module.text) else {
-            continue;
-        };
-        let m = &sf.module.text;
-        let values = &schema.module(mid).values;
-        for d in &sf.decls {
-            match d {
-                Decl::Type(t) => type_objects(&mut push, schema, mid, m, t),
-                Decl::Relation(r) => {
-                    if let Some(&ValueDef::Relation(rel)) = values.get(&r.name.name.text) {
-                        relation_objects(&mut push, schema, *file, text, m, rel, r);
-                    }
-                }
-                Decl::Set(s) => {
-                    if let Some(&ValueDef::Relation(rel)) = values.get(&s.relation.text) {
-                        push(
-                            Space::Set,
-                            Slot::Set(rel, s.name.text.clone()),
-                            format!("set {m}::{}.{}", s.relation.text, s.name.text),
-                        );
-                    }
-                }
-                Decl::Fn(f) => {
-                    if let Some(&ValueDef::Function(id)) = values.get(&f.name.text) {
-                        push(
-                            Space::Function,
-                            Slot::Function(id),
-                            format!("fn {m}::{}", f.name.text),
-                        );
-                    }
-                }
-                Decl::Aggregate(a) => {
-                    if let Some(&ValueDef::Aggregate(i)) = values.get(&a.name.text) {
-                        push(
-                            Space::Function,
-                            Slot::Aggregate(i as usize),
-                            format!("fn {m}::{}", a.name.text),
-                        );
-                    }
-                }
-                Decl::Constraint(c) => {
-                    if let Some(&ValueDef::Constraint(i)) = values.get(&c.name.text) {
-                        push(
-                            Space::Constraint,
-                            Slot::Constraint(i as usize),
-                            format!("constraint {m}::{}", c.name.text),
-                        );
-                    }
-                }
-                Decl::Check(c) => {
-                    if let Some(&ValueDef::Check(i)) = values.get(&c.name.text) {
-                        push(
-                            Space::Constraint,
-                            Slot::Check(i as usize),
-                            format!("constraint {m}::{}", c.name.text),
-                        );
-                    }
-                }
-                Decl::Store(s) => {
-                    let Some(&ValueDef::Function(f)) = values.get(&s.view.name.text) else {
-                        continue;
-                    };
-                    let vn = &s.view.name.text;
-                    push(Space::Shared, Slot::View(f), format!("relation {m}::{vn}"));
-                    if matches!(
-                        &schema.functions[f.0 as usize].result,
-                        Ty::Set(elem) if !matches!(**elem, Ty::Data { .. })
-                    ) {
-                        let fields = anonymous_row(files, m, vn);
-                        push(Space::Shared, Slot::ViewType(f), format!("type {m}::{vn}"));
-                        push(
-                            Space::Shared,
-                            Slot::ViewCtor(f),
-                            format!("ctor {m}::{vn}.{vn}"),
-                        );
-                        for name in fields {
-                            push(
-                                Space::Field,
-                                Slot::ViewField(f, name.clone()),
-                                format!("field {m}::{vn}.{vn}.{name}"),
-                            );
-                        }
-                    }
-                    let name = format!("{m}::{vn}");
-                    clause_objects(
-                        &mut push,
-                        schema,
-                        *file,
-                        text,
-                        &s.clauses,
-                        &name,
-                        Owner::View(f),
-                    );
-                }
-            }
-        }
-    }
-    out
-}
-
-fn type_objects(
-    push: &mut dyn FnMut(Space, Slot, String),
-    schema: &Schema,
-    mid: ModuleId,
-    m: &str,
-    t: &ast::TypeDecl,
-) {
-    let def = if t.name.text == "Principal" {
-        Some(schema.principal)
-    } else {
-        schema.module(mid).types.get(&t.name.text).copied()
-    };
-    let Some(def) = def else { return };
-    let td = schema.ty(def);
-    let tn = &td.name;
-    push(Space::Shared, Slot::Type(def), format!("type {m}::{tn}"));
-    let newtype = matches!(td.kind, TypeDefKind::Newtype { .. });
-    for c in td.ctor_refs() {
-        let cn = if newtype { tn } else { &td.ctor_def(c).name };
-        push(Space::Shared, Slot::Ctor(c), format!("ctor {m}::{tn}.{cn}"));
-    }
-    for (f, d) in td.field_refs() {
-        let at = f.ctor().map_or(String::new(), |c| {
-            format!("{}.", td.ctors()[c as usize].name)
-        });
-        push(
-            Space::Field,
-            Slot::Field(f),
-            format!("field {m}::{tn}.{at}{}", d.name),
-        );
-    }
-}
-
-fn relation_objects(
-    push: &mut dyn FnMut(Space, Slot, String),
-    schema: &Schema,
-    file: FileId,
-    text: &dyn Fn(FileId, Span) -> String,
-    m: &str,
-    rel: RelId,
-    r: &ast::RelationDecl,
-) {
-    let rn = &r.name.name.text;
-    push(
-        Space::Shared,
-        Slot::Relation(rel),
-        format!("relation {m}::{rn}"),
-    );
-    let name = format!("{m}::{rn}");
-    clause_objects(
-        push,
-        schema,
-        file,
-        text,
-        &r.clauses,
-        &name,
-        Owner::Relation(rel),
-    );
-    let def = schema.ty(schema.relation(rel).elem_def);
-    for i in schema.implied_indexes(rel) {
-        let at = i.ctor.map_or(String::new(), |c| {
-            format!("{}.", def.ctors()[c as usize].name)
-        });
-        push(
-            Space::Index,
-            Slot::Implied(rel, i.field_ref()),
-            format!("index {name} implied by {at}{}", i.field),
-        );
-    }
-}
-
-/// Returns the fields of the rows of view `view` of module `module`, as its result type writes
-/// them: none unless its element type is an anonymous record.
-fn anonymous_row(files: &[(FileId, ast::SchemaFile)], module: &str, view: &str) -> Vec<String> {
-    let result = files
-        .iter()
-        .filter(|(_, sf)| sf.module.text == module)
-        .flat_map(|(_, sf)| &sf.decls)
-        .find_map(|d| match d {
-            Decl::Fn(f) if f.name.text == view => Some(&f.result),
-            _ => None,
-        });
-    let Some(ast::Type {
-        kind: ast::TypeKind::Named { args, .. },
-        ..
-    }) = result
-    else {
-        return Vec::new();
-    };
-    let [ast::TypeArg::Type(elem)] = args.as_slice() else {
-        return Vec::new();
-    };
-    match &elem.kind {
-        ast::TypeKind::Record(fs) => fs.iter().map(|f| f.name.text.clone()).collect(),
-        _ => Vec::new(),
-    }
-}
-
-/// Returns the fields of relation `r` a default of `field`, of constructor `ctor` when one is
-/// named, fills: the header's field, else the field of each constructor with it in declaration
-/// order.
-fn default_fields(
-    schema: &Schema,
-    r: RelId,
-    ctor: Option<&ast::Ident>,
-    field: &str,
-) -> Vec<FieldRef> {
-    let def = schema.relation(r).elem_def;
-    if def.0 == u32::MAX {
-        return Vec::new();
-    }
-    let td = schema.ty(def);
-    if let Some(f) = td.field(None, field) {
-        return vec![f];
-    }
-    td.ctor_refs()
-        .filter(|&c| ctor.is_none_or(|n| n.text == td.ctor_def(c).name))
-        .filter_map(|c| td.field(Some(c), field))
-        .collect()
-}
-
-/// What declares a run of clauses.
-#[derive(Clone, Copy)]
-enum Owner {
-    Relation(RelId),
-    View(FnId),
-}
-
-/// The objects a relation's or a stored view's clauses create, in written order.
-fn clause_objects(
-    push: &mut dyn FnMut(Space, Slot, String),
-    schema: &Schema,
-    file: FileId,
-    text: &dyn Fn(FileId, Span) -> String,
-    clauses: &[RelationClause],
-    name: &str,
-    owner: Owner,
-) {
-    let (mut ix, mut dx, mut cx) = (0, 0, 0);
-    for c in clauses {
-        match (c, owner) {
-            (RelationClause::Key(_, generate), _) => {
-                let key = match owner {
-                    Owner::Relation(r) => Slot::Key(r),
-                    Owner::View(f) => Slot::ViewKey(f),
-                };
-                push(Space::Index, key, format!("index {name} key"));
-                if let (Some(_), Owner::Relation(r)) = (generate, owner) {
-                    push(
-                        Space::Default,
-                        Slot::Generated(r),
-                        format!("default {name} key"),
-                    );
-                }
-            }
-            (
-                RelationClause::Unique(fs, scope)
-                | RelationClause::Index {
-                    fields: fs, scope, ..
-                },
-                _,
-            ) => {
-                let kind = match c {
-                    RelationClause::Unique(..) => "unique",
-                    RelationClause::Index { interval: true, .. } => "interval index",
-                    _ => "index",
-                };
-                let fields: Vec<String> = fs.iter().map(|e| text(file, e.span)).collect();
-                let scope = match scope {
-                    None => "*".to_string(),
-                    Some(ast::CtorScope::One(c)) => c.text.clone(),
-                    Some(ast::CtorScope::Many(cs)) => cs
-                        .iter()
-                        .map(|c| c.text.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" | "),
-                };
-                let slot = match owner {
-                    Owner::Relation(r) => Slot::Index(r, ix),
-                    Owner::View(f) => Slot::ViewIndex(f, ix),
-                };
-                push(
-                    Space::Index,
-                    slot,
-                    format!("index {name} {kind} ({}) in {scope}", fields.join(", ")),
-                );
-                ix += 1;
-            }
-            (RelationClause::Default { ctor, field, .. }, Owner::Relation(r)) => {
-                for f in default_fields(schema, r, ctor.as_ref(), &field.text) {
-                    let at = f.ctor().map_or(String::new(), |k| {
-                        let td = schema.ty(schema.relation(r).elem_def);
-                        format!("{}.", td.ctors()[k as usize].name)
-                    });
-                    push(
-                        Space::Default,
-                        Slot::Default(r, dx, f),
-                        format!("default {name} {at}{}", field.text),
-                    );
-                }
-                dx += 1;
-            }
-            (RelationClause::Computed(n, _, _), Owner::Relation(r)) => {
-                push(
-                    Space::Computed,
-                    Slot::Computed(r, cx),
-                    format!("computed {name}.{}", n.text),
-                );
-                cx += 1;
-            }
-            _ => {}
-        }
-    }
 }

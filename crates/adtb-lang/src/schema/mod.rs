@@ -485,17 +485,6 @@ impl Schema {
         &self.functions[id.0 as usize]
     }
 
-    /// Returns the fields whose id is `id`, by type, then constructor (the header first), then
-    /// name.
-    pub fn field_holders(
-        &self,
-        id: crate::ids::CatFieldId,
-    ) -> impl DoubleEndedIterator<Item = FieldRef> + use<> {
-        let mut held: Vec<FieldRef> = self.ids.field_of(id).collect();
-        held.sort_by_key(|f| self.field_order(*f));
-        held.into_iter()
-    }
-
     /// Returns the key that orders fields by type, then constructor (the header first), then name.
     pub fn field_order(&self, f: FieldRef) -> (TypeId, Option<u32>, &str) {
         (f.def(), f.ctor(), &self.ty(f.def()).field_def(f).name)

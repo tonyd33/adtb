@@ -476,7 +476,7 @@ impl Mapping<'_> {
             return Ok(());
         }
         let after = layout::ctors(b, &data(db, &[]));
-        let before = layout::ctors(&fill.schema, &data(def, &[]));
+        let before = layout::ctor_fields(&fill.schema, &data(def, &[]));
         for &c in ctors {
             let Some(cb) = type_ctor_index(b, db, type_ctor_id(a, def, c)) else {
                 continue;
@@ -490,7 +490,6 @@ impl Mapping<'_> {
             };
             let ty = layout::field_type(b, ty);
             let convs: Vec<Conv> = before[c as usize]
-                .1
                 .iter()
                 .map(|(_, t)| conv(&fill.schema, t))
                 .collect();

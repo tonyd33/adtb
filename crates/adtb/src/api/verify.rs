@@ -114,13 +114,7 @@ fn removed(group: &str, schema: &Schema) -> bool {
     group
         .strip_prefix("relation ")
         .and_then(|id| id.parse::<u64>().ok())
-        .is_some_and(|id| {
-            schema
-                .ids
-                .relation_of(CatRelId::from_raw(id))
-                .next()
-                .is_none()
-        })
+        .is_some_and(|id| schema.ids.relation_of(CatRelId::from_raw(id)).is_none())
 }
 
 impl Findings {

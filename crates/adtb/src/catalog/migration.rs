@@ -381,7 +381,7 @@ impl Catalog {
         }
         for (ac, id) in a.ids.ctor_ids() {
             let (def, c) = (ac.def(), ac.index());
-            let verb = match b.ids.ctor_of(id).next_back() {
+            let verb = match b.ids.ctor_of(id) {
                 Some(bc)
                     if a.value_stage(def, c) != Stage::Declared
                         && b.value_stage(bc.def(), bc.index()) == Stage::Declared =>

@@ -1,4 +1,5 @@
 use super::*;
+use crate::ids::{KeyKind, Owner};
 use crate::signature::Ids;
 
 const USER_IDS: &str = "every object of a user module has a catalog id";
@@ -41,11 +42,7 @@ impl GrantTarget {
     /// Returns the ids of the constructors of the target relation that this target covers in
     /// `schema`. A constructor id `schema` lacks, or one of another type, covers nothing.
     pub fn ctors(&self, schema: &Schema) -> BTreeSet<u64> {
-        let Some(rel) = schema
-            .ids
-            .relation_of(CatRelId::from_raw(self.relation))
-            .next()
-        else {
+        let Some(rel) = schema.ids.relation_of(CatRelId::from_raw(self.relation)) else {
             return BTreeSet::new();
         };
         let r = schema.relation(rel);
@@ -94,14 +91,14 @@ pub(super) enum IdKind {
 }
 
 impl IdKind {
-    /// Returns the prefix of the paths of objects of this kind in [`Source::ids`].
-    pub(super) fn prefix(self) -> &'static str {
+    /// Returns the kind of the keys of objects of this kind in [`Source::ids`].
+    pub(super) fn key_kind(self) -> KeyKind {
         match self {
-            IdKind::Relation => "relation ",
-            IdKind::Ctor => "ctor ",
-            IdKind::Set => "set ",
-            IdKind::Field => "field ",
-            IdKind::Function => "fn ",
+            IdKind::Relation => KeyKind::Relation,
+            IdKind::Ctor => KeyKind::Ctor,
+            IdKind::Set => KeyKind::Set,
+            IdKind::Field => KeyKind::Field,
+            IdKind::Function => KeyKind::Function,
         }
     }
 }
@@ -168,30 +165,51 @@ impl Granted {
     }
 }
 
-/// Returns `privilege` with each id that `now` does not hold mapped through its path in `then`
-/// to the id `now` gives that path.
+/// Returns `privilege` with each id that `now` does not hold mapped through its key in `then`
+/// to the id `now` gives that key, the key's owner mapped the same way when `now` does not hold
+/// it.
 pub(super) fn translated(
     privilege: &Granted,
-    then: &BTreeMap<String, u64>,
-    now: &BTreeMap<String, u64>,
+    then: &BTreeMap<ObjectKey, u64>,
+    now: &BTreeMap<ObjectKey, u64>,
 ) -> Granted {
-    let live = |kind: IdKind, x: u64| {
-        now.iter()
-            .any(|(p, &id)| id == x && p.starts_with(kind.prefix()))
+    let live = |kind: KeyKind, x: u64| now.iter().any(|(k, &id)| id == x && k.kind() == kind);
+    let now_id = |kind: KeyKind, x: u64| {
+        let (key, _) = then.iter().find(|(k, id)| **id == x && k.kind() == kind)?;
+        now.get(&carried(key, then, now)).copied()
     };
     privilege
         .mapped(&mut |kind, x| {
-            if live(kind, x) {
+            if live(kind.key_kind(), x) {
                 return Some(x);
             }
-            Some(
-                then.iter()
-                    .find(|(p, id)| **id == x && p.starts_with(kind.prefix()))
-                    .and_then(|(p, _)| now.get(p).copied())
-                    .unwrap_or(x),
-            )
+            Some(now_id(kind.key_kind(), x).unwrap_or(x))
         })
         .expect("a translation maps every id")
+}
+
+/// Returns `key` of `then` as `now` keys it: with its owner, when `now` holds no object of the
+/// owner's id, the object `now` keys as `then` keys the owner.
+fn carried(
+    key: &ObjectKey,
+    then: &BTreeMap<ObjectKey, u64>,
+    now: &BTreeMap<ObjectKey, u64>,
+) -> ObjectKey {
+    const OWNERS: [KeyKind; 3] = [KeyKind::Type, KeyKind::Ctor, KeyKind::Relation];
+    let &Owner::Object(o) = key.owner() else {
+        return key.clone();
+    };
+    let held = |ids: &BTreeMap<ObjectKey, u64>| {
+        ids.iter()
+            .find(|(k, id)| **id == o && OWNERS.contains(&k.kind()))
+            .map(|(k, _)| k.clone())
+    };
+    if held(now).is_some() {
+        return key.clone();
+    }
+    held(then)
+        .and_then(|owner| now.get(&carried(&owner, then, now)))
+        .map_or_else(|| key.clone(), |&id| key.owned_by(Owner::Object(id)))
 }
 
 /// What a role holds of a privilege: its place among the grants, its grant option and its
@@ -206,11 +224,11 @@ pub(super) struct HeldGrant {
 impl Source {
     /// Set what each role of `back` holds of its privilege to what it states, putting a grant
     /// it lacks back at its place. Each privilege names objects by the ids `then` gives their
-    /// paths; an object this source holds again under a new id is named by that id.
+    /// keys; an object this source holds again under a new id is named by that id.
     ///
     /// Preconditions:
     /// - The privileges of `back` with a place are in ascending order of it.
-    pub(super) fn hold(&mut self, back: Vec<HeldGrant>, then: &BTreeMap<String, u64>) {
+    pub(super) fn hold(&mut self, back: Vec<HeldGrant>, then: &BTreeMap<ObjectKey, u64>) {
         let (gone, kept): (Vec<HeldGrant>, Vec<HeldGrant>) =
             back.into_iter().partition(|h| h.held.is_none());
         for h in gone.into_iter().chain(kept) {

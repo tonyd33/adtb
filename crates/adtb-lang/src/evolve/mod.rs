@@ -13,7 +13,7 @@ use crate::canon::Names;
 use crate::check::{self, Program, Ref, RowBody};
 use crate::ids::{
     CatConstraintId, CatCtorId, CatFieldId, CatFunctionId, CatIndexId, CatRelId, CatSetId,
-    CatTypeId, held_id,
+    CatTypeId, ObjectKey, held_id,
 };
 use crate::lex::{Tok, lex};
 use crate::parse::{Options, parse_schema};
@@ -109,8 +109,8 @@ pub struct Source {
     pub value_states: BTreeMap<StateKey, State>,
     pub version: u64,
     pub log: Vec<Logged>,
-    /// The catalog id of each object of the user modules, by its path (`ids::Object::path`).
-    pub ids: BTreeMap<String, u64>,
+    /// The catalog id of each object of the user modules, by its key.
+    pub ids: BTreeMap<ObjectKey, u64>,
     /// The next id of each space.
     pub next: BTreeMap<crate::ids::Space, u64>,
     /// Where operators copied the text of the migration [`Logged::names`] replays; `None` otherwise.

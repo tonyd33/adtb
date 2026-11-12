@@ -8,6 +8,8 @@ struct SplitImage<'a> {
     source: &'a str,
     products: &'a [String],
     carries: &'a Carries,
+    /// Each product with the names of its fields.
+    shapes: &'a [(String, Vec<String>)],
 }
 
 /// Returns `cl` restated over each product that keeps every one of its fields.
@@ -100,12 +102,14 @@ impl Cx<'_> {
                 false,
             ),
         );
+        let shapes: Vec<_> = into.iter().map(carry::ctor_fields).collect();
         let image = SplitImage {
             def,
             ctor: c,
             source: &source,
             products: &products,
             carries: &carries,
+            shapes: &shapes,
         };
         let clause_edits = self.split_clauses(&schema, &image, &replacements)?;
         edits = Self::merged(edits, clause_edits);
@@ -130,7 +134,6 @@ impl Cx<'_> {
             false,
         )?;
         let images: Vec<_> = arms.iter().map(arm_image).collect();
-        let shapes: Vec<_> = into.iter().map(carry::ctor_fields).collect();
         let td = schema.ty(def);
         let readable: Vec<String> = td
             .header()
@@ -170,22 +173,6 @@ impl Cx<'_> {
             }
             let shown = format!("{} ({})", cl.kind, cl.fields.join(", "));
             let text = self.src.decls[cl.decl].text.clone();
-            if scope.len() > 1 {
-                let td = schema.ty(def);
-                let mut names = Vec::new();
-                for &x in scope {
-                    if x == c {
-                        names.extend(image.products.iter().cloned());
-                    } else {
-                        names.push(td.ctors()[x as usize].name.clone());
-                    }
-                }
-                clause_edits.entry(cl.decl).or_default().push((
-                    cl.range.clone(),
-                    format!("{shown} in {}", sel_text(&names)).into(),
-                ));
-                continue;
-            }
             let td = schema.ty(def);
             let source = image.source;
             let lost = cl.fields.iter().rev().find(|f| {
@@ -195,12 +182,60 @@ impl Cx<'_> {
                         .iter()
                         .any(|(x, y, _, _)| x == source && y == *f)
             });
+            if scope.len() > 1 {
+                let unkept = cl.fields.iter().find_map(|f| {
+                    if td.field(None, f).is_some() {
+                        return None;
+                    }
+                    let keeps = |(p, fs): &&(String, Vec<String>)| {
+                        fs.contains(f)
+                            && !image
+                                .carries
+                                .iter()
+                                .any(|(x, y, q, z)| x == source && y == f && q == p && z != f)
+                    };
+                    image.shapes.iter().find(|s| !keeps(s)).map(|(p, _)| (f, p))
+                });
+                if let Some((f, p)) = unkept {
+                    if replacements.is_empty() {
+                        return self.err(format!(
+                            "`{shown} in {}` names `{f}`, which `{p}` does not keep under that name",
+                            sel_text(&cl.scope_names())
+                        ));
+                    }
+                    clause_edits.entry(cl.decl).or_default().push((
+                        clause_removal(&text, std::slice::from_ref(&cl.range), 0),
+                        String::new().into(),
+                    ));
+                    continue;
+                }
+                let products = &image.products;
+                if let Some(names) = cl.rescoped(&[c], &|_| products.to_vec()) {
+                    clause_edits.entry(cl.decl).or_default().push((
+                        cl.range.clone(),
+                        format!("{shown} in {}", sel_text(&names)).into(),
+                    ));
+                }
+                continue;
+            }
             if let Some(f) = lost
                 && replacements.is_empty()
             {
                 return self.err(format!(
                     "`{shown} in {source}` names `{f}`, which no new constructor keeps; state its replacements after the routing"
                 ));
+            }
+            let kept = |f: &String| {
+                td.field(None, f).is_some()
+                    || image.products.iter().all(|p| {
+                        image
+                            .carries
+                            .iter()
+                            .any(|(x, y, q, z)| x == source && y == f && q == p && z == f)
+                    })
+            };
+            if cl.rescoped(&[c], &|_| Vec::new()).is_none() && cl.fields.iter().all(kept) {
+                continue;
             }
             clause_edits.entry(cl.decl).or_default().push((
                 clause_removal(&text, std::slice::from_ref(&cl.range), 0),
@@ -321,17 +356,7 @@ impl Cx<'_> {
                 continue;
             }
             let shown = format!("{} ({})", cl.kind, cl.fields.join(", "));
-            let mut names: Vec<String> = Vec::new();
-            for &x in scope {
-                let nm = if src_ix.contains(&x) {
-                    n.clone()
-                } else {
-                    td.ctors()[x as usize].name.clone()
-                };
-                if !names.contains(&nm) {
-                    names.push(nm);
-                }
-            }
+            let rescoped = cl.rescoped(&src_ix, &|_| vec![n.clone()]);
             let mut fs = Vec::new();
             for g in &cl.fields {
                 if td.field(None, g).is_some() {
@@ -347,9 +372,16 @@ impl Cx<'_> {
                     return self.err(format!("`{shown}` has no image under the nest"));
                 }
             }
-            if scope.len() != inside.len() && inside.len() != src_ix.len() {
-                return self.err(format!("`{shown}` ranges over some but not all of the nested constructors and has no image under the nest"));
-            }
+            let names = match rescoped {
+                None if fs == cl.fields => continue,
+                None => cl.scope_names(),
+                Some(names) => {
+                    if scope.len() != inside.len() && inside.len() != src_ix.len() {
+                        return self.err(format!("`{shown}` ranges over some but not all of the nested constructors and has no image under the nest"));
+                    }
+                    names
+                }
+            };
             clause_edits.entry(cl.decl).or_default().push((
                 cl.range.clone(),
                 format!("{} ({}) in {}", cl.kind, fs.join(", "), sel_text(&names)).into(),
@@ -474,21 +506,14 @@ impl Cx<'_> {
                     _ => return self.err(format!("`{shown}` has no image under the unnest")),
                 }
             }
-            let td_names = |x: u32| td.ctors()[x as usize].name.clone();
             let names: Vec<String> = match &target {
                 Some(p) if scope.len() == 1 || cl.scope.is_none() => vec![p.clone()],
                 Some(_) => return self.err(format!("`{shown}` has no image under the unnest")),
                 None if cl.scope.is_none() => continue,
-                None => scope
-                    .iter()
-                    .flat_map(|&x| {
-                        if x == c {
-                            products.clone()
-                        } else {
-                            vec![td_names(x)]
-                        }
-                    })
-                    .collect(),
+                None => match cl.rescoped(&[c], &|_| products.clone()) {
+                    None => continue,
+                    Some(names) => names,
+                },
             };
             clause_edits.entry(cl.decl).or_default().push((
                 cl.range.clone(),

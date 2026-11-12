@@ -221,7 +221,7 @@ impl Changes {
             }
         }
         for (bc, id) in b.ids.ctor_ids() {
-            if let Some(ac) = a.ids.ctor_of(id).next_back()
+            if let Some(ac) = a.ids.ctor_of(id)
                 && a.value_stage(ac.def(), ac.index()) != Stage::Enabled
                 && b.value_stage(bc.def(), bc.index()) == Stage::Enabled
             {
@@ -856,14 +856,14 @@ fn ctor_of(schema: &Schema, rid: CatRelId, cid: CatCtorId) -> Option<(RelId, u32
 
 /// Returns the type and constructor index of constructor `cid` of `schema`.
 fn value_ctor(schema: &Schema, cid: CatCtorId) -> Option<(TypeId, u32)> {
-    schema.ids.ctor_of(cid).next().map(|c| (c.def(), c.index()))
+    schema.ids.ctor_of(cid).map(|c| (c.def(), c.index()))
 }
 
 /// Returns the type, in `schema`, of each field `p` reads.
 fn read_fields<'s>(schema: &'s Schema, p: &'s Pinned) -> impl Iterator<Item = &'s Ty> {
     p.fields
         .iter()
-        .flat_map(|&id| schema.field_holders(id))
+        .flat_map(|&id| schema.ids.field_of(id))
         .map(|f| &schema.ty(f.def()).field_def(f).ty)
 }
 

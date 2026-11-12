@@ -47,12 +47,12 @@ pub fn field_id(schema: &Schema, def: TypeId, c: u32, name: &str) -> Option<CatF
 
 /// Returns the relation of `schema` whose catalog id is `id`.
 pub fn relation(schema: &Schema, id: CatRelId) -> Option<RelId> {
-    schema.ids.relation_of(id).next()
+    schema.ids.relation_of(id)
 }
 
 /// Returns the type of `schema` whose catalog id is `id`.
 pub fn type_def(schema: &Schema, id: CatTypeId) -> Option<TypeId> {
-    schema.ids.type_of(id).next()
+    schema.ids.type_of(id)
 }
 
 /// Returns the position of the constructor with catalog id `id` of relation `r`.
@@ -65,6 +65,6 @@ pub fn type_ctor_index(schema: &Schema, def: TypeId, id: CatCtorId) -> Option<u3
     schema
         .ids
         .ctor_of(id)
-        .find(|c| c.def() == def)
+        .filter(|c| c.def() == def)
         .map(CtorRef::index)
 }

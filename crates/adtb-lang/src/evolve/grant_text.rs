@@ -51,10 +51,7 @@ impl Granted {
                 out
             }
             Granted::CallFn(id) => {
-                let f = schema
-                    .ids
-                    .function_of(CatFunctionId::from_raw(*id))
-                    .next()?;
+                let f = schema.ids.function_of(CatFunctionId::from_raw(*id))?;
                 let fd = schema.function(f);
                 format!("{}::{}", schema.module(fd.module).name, fd.name)
             }
@@ -120,16 +117,13 @@ impl Granted {
 }
 
 fn target(schema: &Schema, t: &GrantTarget) -> Option<String> {
-    let rel = schema
-        .ids
-        .relation_of(CatRelId::from_raw(t.relation))
-        .next()?;
+    let rel = schema.ids.relation_of(CatRelId::from_raw(t.relation))?;
     let rd = schema.relation(rel);
     let name = format!("{}::{}", schema.module(rd.module).name, rd.name);
     Some(match &t.sel {
         GrantSel::Whole => name,
         GrantSel::Set(s) => {
-            let (_, set) = schema.ids.set_of(CatSetId::from_raw(*s)).next()?;
+            let (_, set) = schema.ids.set_of(CatSetId::from_raw(*s))?;
             format!("{name}.{set}")
         }
         GrantSel::Ctors(cs) => {
@@ -146,12 +140,12 @@ fn target(schema: &Schema, t: &GrantTarget) -> Option<String> {
 }
 
 fn ctor_name(schema: &Schema, id: u64) -> Option<String> {
-    let c = schema.ids.ctor_of(CatCtorId::from_raw(id)).next()?;
+    let c = schema.ids.ctor_of(CatCtorId::from_raw(id))?;
     Some(schema.ty(c.def()).ctor_def(c).name.clone())
 }
 
 fn field_name(schema: &Schema, id: u64) -> Option<String> {
-    let f = schema.field_holders(CatFieldId::from_raw(id)).next()?;
+    let f = schema.ids.field_of(CatFieldId::from_raw(id))?;
     let td = schema.ty(f.def());
     let name = &td.field_def(f).name;
     Some(match f.ctor() {

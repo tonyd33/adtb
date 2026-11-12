@@ -5,6 +5,9 @@ use crate::schema::{CtorRef, FieldRef};
 #[path = "evolve_grant_tests.rs"]
 mod grants;
 
+#[path = "evolve_ids_tests.rs"]
+mod ids;
+
 const RUNNING: &str = r"
 module auth
 type User = { id: Key users, name: Text }
@@ -3541,4 +3544,175 @@ fn field_ref(s: &Schema, def: TypeId, c: Option<u32>, name: &str) -> Option<Fiel
     let td = s.ty(def);
     td.field(c.and_then(|c| td.ctor_at(c)), name)
         .filter(|f| f.ctor() == c)
+}
+
+const TWO_X: &str = r#"
+module auth
+type T { id: Key ts } = A { x: Text } | B { x: Text }
+relation ts : T
+  key id generate sequence
+  unique (x) in A
+  default A.x = "a"
+"#;
+
+#[test]
+fn renaming_a_field_keeps_the_id_of_a_unique_over_another_constructors_field_of_its_name() {
+    let s = source(TWO_X);
+    let after = applies(&s, "module auth\nrename field T.B.x to y");
+    let (before, after) = (ids_of(&s), ids_of(&after));
+    let unique = |s: &Schema| s.ids.index_id(rel(s, "ts"), 0).map(u64::from);
+    assert_eq!(Some(1025), unique(&before));
+    assert_eq!(Some(1025), unique(&after));
+}
+
+#[test]
+fn renaming_a_field_keeps_the_id_of_a_default_of_another_constructors_field_of_its_name() {
+    let s = source(TWO_X);
+    let after = applies(&s, "module auth\nrename field T.B.x to y");
+    let (before, after) = (ids_of(&s), ids_of(&after));
+    let default = |s: &Schema| {
+        s.ids
+            .clause_default_ids(rel(s, "ts"), 0)
+            .map(|(_, id)| id.raw())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(vec![1025], default(&before));
+    assert_eq!(vec![1025], default(&after));
+}
+
+#[test]
+fn renaming_a_header_reference_field_keeps_the_id_of_its_implied_index() {
+    let s = running();
+    let after = applies(&s, "module auth\nrename field Identity.user to owner");
+    let (before, after) = (ids_of(&s), ids_of(&after));
+    let implied = |s: &Schema, name: &str| {
+        let def = ty(s, "Identity");
+        s.ids
+            .implied_id(rel(s, "identities"), field_ref(s, def, None, name)?)
+            .map(u64::from)
+    };
+    assert_eq!(Some(1029), implied(&before, "user"));
+    assert_eq!(Some(1029), implied(&after, "owner"));
+}
+
+const CTOR_REF: &str = r"
+module auth
+type U = { id: Key us }
+relation us : U key id generate sequence
+type T { id: Key ts } = A { o: Key us } | B
+relation ts : T key id generate sequence
+";
+
+#[test]
+fn renaming_a_constructor_keeps_the_id_of_the_implied_index_of_its_reference_field() {
+    let s = source(CTOR_REF);
+    let after = applies(&s, "module auth\nrename constructor T.A to C");
+    let (before, after) = (ids_of(&s), ids_of(&after));
+    let implied = |s: &Schema| {
+        let def = ty(s, "T");
+        s.ids
+            .implied_id(rel(s, "ts"), field_ref(s, def, Some(0), "o")?)
+            .map(u64::from)
+    };
+    assert_eq!(Some(1026), implied(&before));
+    assert_eq!(Some(1026), implied(&after));
+}
+
+/// Returns the catalog id of the object of `src` that `path` names: `type m::T`, `ctor m::T.C`,
+/// `field m::T.f` (a header field), `field m::T.C.f`, `relation m::r` (a stored view's
+/// included), `set m::r.S`, `fn m::f` (an aggregate's included), `constraint m::c` (a check's
+/// included), `default m::r C.f` or `default m::r f`, or `computed m::r.n`.
+pub(crate) fn path_id(src: &Source, path: &str) -> u64 {
+    let schema = src.schema().unwrap_or_else(|e| panic!("builds: {e:?}"));
+    let found = path_of(&schema, path);
+    found.unwrap_or_else(|| panic!("no object `{path}`"))
+}
+
+fn path_of(s: &Schema, path: &str) -> Option<u64> {
+    let (kind, rest) = path.split_once(' ')?;
+    let (m, local) = rest.split_once("::")?;
+    let module = s.module(s.module_named(m)?);
+    let value = |name: &str| module.values.get(name).copied();
+    let rel = |name: &str| match value(name)? {
+        ValueDef::Relation(r) => Some(r),
+        _ => None,
+    };
+    let def = |name: &str| module.types.get(name).copied();
+    let field = |t: &str, rest: &str| {
+        let td = s.ty(def(t)?);
+        match rest.split_once('.') {
+            Some((c, f)) => td.field(Some(td.ctor_named(c)?), f),
+            None => td.field(None, rest),
+        }
+    };
+    let ids = &s.ids;
+    match kind {
+        "type" => ids.type_id(def(local)?).map(u64::from),
+        "ctor" => {
+            let (t, c) = local.split_once('.')?;
+            ids.ctor_id(s.ty(def(t)?).ctor_named(c)?).map(u64::from)
+        }
+        "field" => {
+            let (t, rest) = local.split_once('.')?;
+            ids.field_id(field(t, rest)?).map(u64::from)
+        }
+        "relation" => match value(local)? {
+            ValueDef::Relation(r) => ids.relation_id(r).map(u64::from),
+            ValueDef::Function(f) => ids.view_id(f).map(u64::from),
+            _ => None,
+        },
+        "set" => {
+            let (r, n) = local.split_once('.')?;
+            ids.set_id(rel(r)?, n).map(u64::from)
+        }
+        "fn" => match value(local)? {
+            ValueDef::Function(f) => ids.function_id(f).map(u64::from),
+            ValueDef::Aggregate(a) => ids.aggregate_id(a as usize).map(u64::from),
+            _ => None,
+        },
+        "constraint" => match value(local)? {
+            ValueDef::Constraint(c) => ids.constraint_id(c as usize).map(u64::from),
+            ValueDef::Check(c) => ids.check_id(c as usize).map(u64::from),
+            _ => None,
+        },
+        "default" => {
+            let (r, f) = local.split_once(' ')?;
+            let r = rel(r)?;
+            let t = &s.ty(s.relation(r).elem_def).name;
+            let f = field(t, f)?;
+            ids.default_ids()
+                .find(|&((x, _, g), _)| x == r && g == f)
+                .map(|(_, id)| id.raw())
+        }
+        "computed" => {
+            let (r, n) = local.split_once('.')?;
+            let r = rel(r)?;
+            let at = s.relation(r).computed.iter().position(|c| c.name == n)?;
+            ids.computed_id(r, at).map(u64::from)
+        }
+        _ => None,
+    }
+}
+
+#[test]
+fn a_rekey_gives_the_new_key_index_the_next_index_id_and_its_revert_another() {
+    let s = source(
+        "module auth
+type U = { id: I64, name: Text }
+relation us : U key id unique (name)",
+    );
+    let rekeyed = applies(&s, "module auth\nrekey relation us key name");
+    let last = rekeyed.log.last().expect("the rekey is logged").number;
+    let reverted = applies(&rekeyed, &format!("module auth\nrevert {last:04}"));
+    let key = |s: &Source| {
+        let schema = ids_of(s);
+        let us = rel(&schema, "us");
+        (
+            schema.ids.key_id(us).map(u64::from),
+            schema.ids.index_id(us, 0).map(u64::from),
+        )
+    };
+    assert_eq!((Some(1024), Some(1025)), key(&s));
+    assert_eq!((Some(1026), Some(1025)), key(&rekeyed));
+    assert_eq!((Some(1027), Some(1025)), key(&reverted));
 }

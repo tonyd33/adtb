@@ -49,9 +49,7 @@ fn ops(src: &Source, number: u64) -> Vec<ResolvedOp> {
 }
 
 fn id(src: &Source, path: &str) -> u64 {
-    *src.ids
-        .get(path)
-        .unwrap_or_else(|| panic!("an id for `{path}` among {:?}", src.ids.keys()))
+    crate::evolve::tests::path_id(src, path)
 }
 
 #[test]
