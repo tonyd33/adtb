@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use adtb_lang::kernel::{Kind, PathStep, Prim, Tm, Var};
+use adtb_lang::schema::CtorRef;
 use adtb_lang::types::{CtorSet, Ty};
 
 use super::{Fixed, Fixes, Planner};
@@ -187,20 +188,16 @@ impl Planner<'_> {
     }
 
     fn falsity(&mut self) -> Tm {
-        self.boolean("False")
+        self.boolean(self.schema.engine_ctors().bool_false())
     }
 
     fn truth(&mut self) -> Tm {
-        self.boolean("True")
+        self.boolean(self.schema.engine_ctors().bool_true())
     }
 
-    fn boolean(&mut self, name: &str) -> Tm {
+    fn boolean(&mut self, value: CtorRef) -> Tm {
         let ty = self.bool_ty();
-        let ctor = self
-            .schema
-            .ty(self.schema.prelude_type("Bool"))
-            .ctor_index(name)
-            .expect("the prelude's Bool has True and False");
+        let ctor = value.index();
         self.add(
             Kind::Ctor {
                 ctor,

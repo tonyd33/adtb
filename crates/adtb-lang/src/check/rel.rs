@@ -37,7 +37,7 @@ impl Checker<'_> {
             if r.elem_def != def || r.key.len() != 1 {
                 return None;
             }
-            let f = self.schema.ty(def).field(0, &r.key[0])?;
+            let f = self.schema.ty(def).field_named(0, &r.key[0])?;
             matches!(f.ty, Ty::Key { rel: own, .. } if own == rel).then(|| (rel, r.key[0].clone()))
         })
     }
@@ -48,7 +48,7 @@ impl Checker<'_> {
         let def = self.schema.ty(r.elem_def);
         let field_ty = |name: &str| -> Result<Ty, String> {
             let f = def
-                .field(0, name)
+                .field_named(0, name)
                 .ok_or_else(|| format!("`{}` has no key field `{name}`", r.name))?;
             match &f.ty {
                 Ty::Key { rel: own, .. } if *own == rel => match r.generate {

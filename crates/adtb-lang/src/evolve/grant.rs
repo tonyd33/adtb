@@ -57,7 +57,7 @@ impl GrantTarget {
                 GrantSel::Ctors(ids) => ids.contains(&id.raw()),
                 GrantSel::Set(s) => r.sets.iter().any(|set| {
                     schema.ids.set_id(rel, &set.name) == Some(CatSetId::from_raw(*s))
-                        && set.ctors.contains(c)
+                        && set.ctors.contains(&c.index())
                 }),
             })
             .map(|(_, id)| id.raw())
@@ -440,7 +440,10 @@ impl Resolving<'_> {
                     _ => {
                         let mut out: Vec<u64> = ctors
                             .iter()
-                            .map(|&c| ids.ctor_id(def, c).expect(USER_IDS).raw())
+                            .map(|&c| {
+                                let c = schema.ty(def).ctor_at(c).expect(USER_IDS);
+                                ids.ctor_id(c).expect(USER_IDS).raw()
+                            })
                             .collect();
                         out.sort_unstable();
                         (GrantSel::Ctors(out), ctors)
@@ -466,7 +469,7 @@ impl Resolving<'_> {
         let Some(list) = list else {
             let mut out: Vec<u64> = ids
                 .type_field_ids(def)
-                .filter(|((_, c, _), _)| c.is_none_or(|c| ctors.contains(&c)))
+                .filter(|(f, _)| f.ctor().is_none_or(|c| ctors.contains(&c)))
                 .map(|(_, id)| id.raw())
                 .collect();
             out.sort_unstable();
@@ -476,6 +479,12 @@ impl Resolving<'_> {
             });
         };
         let rd = schema.relation(rel);
+        let td = schema.ty(def);
+        let own = |c: u32, name: &str| {
+            td.field(td.ctor_at(c), name)
+                .filter(|f| f.ctor() == Some(c))
+                .and_then(|f| ids.field_id(f))
+        };
         let mut out = Vec::new();
         for f in &list.fields {
             let refuse = |msg: String| Err(vec![Diag::new(f.name.span, msg)]);
@@ -490,19 +499,19 @@ impl Resolving<'_> {
                         c.text
                     ));
                 }
-                let Some(id) = ids.field_id(def, Some(k), name) else {
+                let Some(id) = own(k, name) else {
                     return refuse(format!(
                         "`{}.{}` is no field of `{}`",
                         c.text, name, rd.name
                     ));
                 };
                 out.push(id.raw());
-            } else if let Some(id) = ids.field_id(def, None, name) {
+            } else if let Some(id) = td.field(None, name).and_then(|f| ids.field_id(f)) {
                 out.push(id.raw());
             } else {
                 let found: Vec<u64> = ctors
                     .iter()
-                    .filter_map(|&c| ids.field_id(def, Some(c), name).map(CatFieldId::raw))
+                    .filter_map(|&c| own(c, name).map(CatFieldId::raw))
                     .collect();
                 if found.is_empty() {
                     return refuse(format!("`{}` has no field `{name}`", rd.name));
@@ -529,8 +538,8 @@ impl Resolving<'_> {
             let def = schema.relation(rel).elem_def;
             schema
                 .ty(def)
-                .ctor_index(&c.text)
-                .and_then(|k| schema.ids.ctor_id(def, k))
+                .ctor_named(&c.text)
+                .and_then(|k| schema.ids.ctor_id(k))
                 .map(CatCtorId::raw)
                 .ok_or_else(|| {
                     let name = &schema.relation(rel).name;
@@ -554,11 +563,10 @@ impl Resolving<'_> {
         let ids = &schema.ids;
         let covering = |rel: RelId, ctors: &CtorSet, out: &mut BTreeSet<u64>| {
             let def = schema.relation(rel).elem_def;
-            out.extend(
-                ctors
-                    .iter()
-                    .map(|&c| ids.ctor_id(def, c).expect(USER_IDS).raw()),
-            );
+            out.extend(ctors.iter().map(|&c| {
+                let c = schema.ty(def).ctor_at(c).expect(USER_IDS);
+                ids.ctor_id(c).expect(USER_IDS).raw()
+            }));
         };
         let mut covered = BTreeSet::new();
         let mut unlisted = false;

@@ -53,10 +53,7 @@ fn a_custom_root_principal_registers_without_a_module_import() {
                 id,
                 schema
                     .ids
-                    .ctor_id(
-                        schema.principal,
-                        schema.ty(schema.principal).ctor_index(ctor).unwrap()
-                    )
+                    .ctor_id(schema.ty(schema.principal).ctor_named(ctor).unwrap())
                     .unwrap()
                     .raw()
             );
@@ -156,10 +153,7 @@ fn the_default_root_principal_keeps_its_fixed_ids_without_imports() {
                 id,
                 schema
                     .ids
-                    .ctor_id(
-                        schema.principal,
-                        schema.ty(schema.principal).ctor_index(ctor).unwrap()
-                    )
+                    .ctor_id(schema.ty(schema.principal).ctor_named(ctor).unwrap())
                     .unwrap()
                     .raw()
             );

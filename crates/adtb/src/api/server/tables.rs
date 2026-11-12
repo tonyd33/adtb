@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use adtb_lang::evolve::{DeployedGrant, GrantRow};
-use adtb_lang::schema::{Schema, TypeDef, ValueDef};
+use adtb_lang::schema::{CtorRef, Schema, TypeDef, ValueDef};
 use adtb_lang::textual::{Form, print};
 use adtb_lang::types::{RelId, Ty};
 
@@ -240,11 +240,8 @@ impl<'s> Tables<'s> {
             .map_err(|_| malformed(format!("catalog field `{field}` is Bool")))
     }
 
-    fn row(&self, relation: RelId, ctor: &str, fields: Vec<(&str, Val)>) -> Val {
-        let def = self.schema.ty(self.schema.relation(relation).elem_def);
-        let index = def
-            .ctor_index(ctor)
-            .unwrap_or_else(|| panic!("the catalog relation declares {ctor}"));
+    fn row(&self, relation: RelId, ctor: CtorRef, fields: Vec<(&str, Val)>) -> Val {
+        let index = ctor.index();
         let mut values: BTreeMap<_, _> = fields.into_iter().collect();
         let fields = layout::row(self.schema, relation, index)
             .iter()
@@ -321,7 +318,7 @@ impl<'s> Tables<'s> {
     pub(super) fn role_value(&self, role: &Role) -> Val {
         self.row(
             self.roles,
-            "Role",
+            self.schema.engine_ctors().role(),
             vec![
                 ("id", Val::Int(role.id.0)),
                 ("name", Val::text(&role.name)),
@@ -388,18 +385,10 @@ impl<'s> Tables<'s> {
         grantor: &str,
         grant_option: bool,
     ) -> Val {
-        let module = self
-            .schema
-            .module_named("catalog")
-            .expect("the catalog exists");
-        let kind = self
-            .schema
-            .ty(self.schema.module(module).types["GrantKind"])
-            .ctor_index("Deployment")
-            .expect("GrantKind declares Deployment");
+        let kind = self.schema.engine_ctors().deployment().index();
         self.row(
             self.grants,
-            "RoleGrant",
+            self.schema.engine_ctors().role_grant(),
             vec![
                 ("id", Val::Int(id)),
                 ("kind", Val::ctor(kind, Vec::new())),
@@ -597,6 +586,10 @@ impl<'s> Tables<'s> {
             ("principal", Val::text(&principal)),
         ];
         fields.extend(event);
+        let def = self.schema.ty(self.schema.relation(self.audit).elem_def);
+        let ctor = def
+            .ctor_named(ctor)
+            .unwrap_or_else(|| panic!("the catalog relation declares {ctor}"));
         Ok(self.row(self.audit, ctor, fields))
     }
 
@@ -627,11 +620,10 @@ pub(super) struct CallRow<'c> {
 
 /// Returns the `Service` principal of role `name`.
 pub(super) fn service(schema: &Schema, name: &str) -> Val {
-    let index = schema
-        .ty(schema.principal)
-        .ctor_index("Service")
-        .expect("the Principal type declares Service");
-    Val::ctor(index, vec![Val::text(name)])
+    Val::ctor(
+        schema.engine_ctors().service().index(),
+        vec![Val::text(name)],
+    )
 }
 
 fn malformed(detail: impl Into<String>) -> Error {

@@ -382,7 +382,7 @@ impl<'a> Checker<'a> {
             return;
         }
         let t = self.schema.ty(def);
-        if t.header().iter().any(|f| f.name == name) {
+        if t.field(None, name).is_some() {
             return self.note(
                 span,
                 Ref::Field {
@@ -1229,8 +1229,8 @@ impl Checker<'_> {
         let r = self.schema.relation(rel);
         let def = self.schema.ty(r.elem_def);
         let fty = match ctor {
-            Some(c) => def.field(c, field),
-            None => (0..def.ctors().len() as u32).find_map(|c| def.field(c, field)),
+            Some(c) => def.field_named(c, field),
+            None => (0..def.ctors().len() as u32).find_map(|c| def.field_named(c, field)),
         }
         .map(|f| f.ty.subst(r.elem_args()))
         .ok_or_else(|| diag(e.span, format!("`{}` has no field `{field}`", def.name)))?;

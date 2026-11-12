@@ -1400,9 +1400,7 @@ impl<R: Runtime> Engine<R> {
     /// `Denied` and a value of another type as invalid.
     fn principal(&self, assert: Option<&Val>) -> Result<Val, Error> {
         let def = &self.schema.types[self.schema.principal.0 as usize];
-        let service = def
-            .ctor_index("Service")
-            .expect("the schema's `Principal` has a `Service` constructor");
+        let service = self.schema.engine_ctors().service().index();
         let Some(v) = assert else {
             return Ok(Val::ctor(service, vec![Val::text(OWNER_ROLE)]));
         };

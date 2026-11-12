@@ -224,14 +224,13 @@ impl Cx<'_> {
         let td = schema.ty(def);
         let ids = &schema.ids;
         let ctor = |name: &str| {
-            td.ctor_index(name)
-                .and_then(|c| ids.ctor_id(def, c))
+            td.ctor_named(name)
+                .and_then(|c| ids.ctor_id(c))
                 .map(CatCtorId::raw)
         };
         let field = |s: &str, f: &str| {
-            let c = td.ctor_index(s);
-            ids.field_id(def, c, f)
-                .or_else(|| ids.field_id(def, None, f))
+            td.field(td.ctor_named(s), f)
+                .and_then(|f| ids.field_id(f))
                 .map(CatFieldId::raw)
         };
         let mut relations = Vec::new();
@@ -247,7 +246,7 @@ impl Cx<'_> {
                         .ctors
                         .iter()
                         .filter(|&&c| sources.contains(&td.ctors()[c as usize].name))
-                        .filter_map(|&c| ids.ctor_id(def, c).map(CatCtorId::raw))
+                        .filter_map(|&c| ids.ctor_id(td.ctor_at(c)?).map(CatCtorId::raw))
                         .collect();
                     sets.insert(sid.raw(), held);
                 }

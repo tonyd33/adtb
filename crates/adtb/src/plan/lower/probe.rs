@@ -53,7 +53,7 @@ impl Planner<'_> {
             _ => Vec::new(),
         };
         let field_ty = |f: &str| {
-            def.field(0, f)
+            def.field_named(0, f)
                 .unwrap_or_else(|| panic!("key field `{f}` is a field of the relation's rows"))
                 .ty
                 .subst(&args)

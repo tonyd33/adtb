@@ -136,12 +136,8 @@ fn field<'v>(schema: &Schema, r: RelId, row: &'v Val, name: &str) -> Option<&'v 
 
 /// Returns whether `row` of `catalog::grants` is a `Deployment` row.
 fn deployment(schema: &Schema, grants: RelId, row: &Val) -> bool {
-    let fields = layout::row(schema, grants, 0);
-    let Some((_, Ty::Data { def, .. })) = fields.iter().find(|(n, _)| n == "kind") else {
-        panic!("catalog RoleGrant declares its GrantKind as `kind`");
-    };
-    let kind = schema.ty(*def).ctor_index("Deployment");
-    matches!(field(schema, grants, row, "kind"), Some(Val::Ctor(c, _)) if Some(*c) == kind)
+    let kind = schema.engine_ctors().deployment().index();
+    matches!(field(schema, grants, row, "kind"), Some(Val::Ctor(c, _)) if *c == kind)
 }
 
 /// Returns the rows of `r` as a document: `head`, a `data` line naming `r` with its module, then

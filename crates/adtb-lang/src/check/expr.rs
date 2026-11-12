@@ -1122,7 +1122,7 @@ impl Checker<'_> {
         let with_field: CtorSet = set
             .iter()
             .copied()
-            .filter(|&c| def.field(c, &f.text).is_some())
+            .filter(|&c| def.field_named(c, &f.text).is_some())
             .collect();
         let Some(&first) = with_field.first() else {
             return Err(diag(
@@ -1132,12 +1132,12 @@ impl Checker<'_> {
         };
         self.note_field(f.span, r.elem_def, Some(&with_field), &f.text, false);
         let fty = def
-            .field(first, &f.text)
+            .field_named(first, &f.text)
             .expect("filtered")
             .ty
             .subst(r.elem_args());
         if with_field.iter().any(|&c| {
-            def.field(c, &f.text)
+            def.field_named(c, &f.text)
                 .expect("filtered")
                 .ty
                 .subst(r.elem_args())

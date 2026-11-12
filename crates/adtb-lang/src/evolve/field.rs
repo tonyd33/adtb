@@ -146,7 +146,7 @@ impl Cx<'_> {
                 let k = td.ctor_index(c).expect("the constructor");
                 (
                     Some(vec![k]),
-                    td.field(k, &path.field.text).map(|f| f.ty.clone()),
+                    td.field_named(k, &path.field.text).map(|f| f.ty.clone()),
                 )
             }
         };

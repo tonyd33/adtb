@@ -79,28 +79,24 @@ impl Requirements {
                 .ids
                 .relation_id(rel)
                 .ok_or(Error::MissingIdentity(Slot::Relation(rel)))?;
-            let header: Vec<&str> = schema
-                .ty(def)
-                .header()
-                .iter()
-                .map(|f| f.name.as_str())
-                .collect();
-            for (at, ctor) in schema.ty(def).ctors().iter().enumerate() {
-                let at = at as u32;
+            let td = schema.ty(def);
+            for ctor in (0..td.ctors().len() as u32).filter_map(|at| td.ctor_at(at)) {
                 let target = Target {
                     relation,
                     constructor: schema
                         .ids
-                        .ctor_id(def, at)
-                        .ok_or(Error::MissingIdentity(Slot::Ctor(def, at)))?,
+                        .ctor_id(ctor)
+                        .ok_or(Error::MissingIdentity(Slot::Ctor(ctor)))?,
                 };
                 out.required.insert(Requirement::ReadConstructor(target));
-                let own = ctor.fields.iter().map(|f| f.name.as_str());
-                for name in header.iter().copied().chain(own) {
-                    let scope = (!header.contains(&name)).then_some(at);
-                    let id = schema.ids.field_id(def, scope, name).ok_or_else(|| {
-                        Error::MissingIdentity(Slot::Field(def, scope, name.to_string()))
-                    })?;
+                let fields = td
+                    .field_refs()
+                    .filter(|(f, _)| f.ctor().is_none_or(|c| c == ctor.index()));
+                for (f, _) in fields {
+                    let id = schema
+                        .ids
+                        .field_id(f)
+                        .ok_or(Error::MissingIdentity(Slot::Field(f)))?;
                     out.required.insert(Requirement::ReadField(target, id));
                 }
             }

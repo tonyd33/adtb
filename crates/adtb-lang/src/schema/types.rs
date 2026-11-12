@@ -4,6 +4,7 @@ impl Builder<'_> {
     /// The constructor and header names of a type, with field types left for later.
     pub(super) fn type_skeleton(
         &mut self,
+        id: TypeId,
         module: ModuleId,
         file: FileId,
         t: &ast::TypeDecl,
@@ -111,6 +112,7 @@ impl Builder<'_> {
             }
         }
         TypeDef {
+            id,
             name: t.name.text.clone(),
             module,
             params,

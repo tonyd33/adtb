@@ -262,7 +262,7 @@ impl Cx<'_> {
                     Some(vec![k]),
                     after
                         .ty(ad)
-                        .field(ak, &path.field.text)
+                        .field_named(ak, &path.field.text)
                         .map(|f| f.ty.clone()),
                 )
             }
@@ -328,7 +328,7 @@ impl Cx<'_> {
         let ks = ctor_indexes(&schema, def, from);
         let Some(field_ty) = ks
             .first()
-            .and_then(|&k| td.field(k, &field))
+            .and_then(|&k| td.field_named(k, &field))
             .map(|f| f.ty.clone())
         else {
             return self.err(format!("`{}` has no field `{field}`", from.join(" | ")));

@@ -91,15 +91,19 @@ impl Analyzer<'_> {
         if is_temp(self.schema, rel) {
             return Ok(TEMP_TARGET);
         }
-        let def = self.schema.relation(rel).elem_def;
+        let ctor = self
+            .schema
+            .ty(self.schema.relation(rel).elem_def)
+            .ctor_at(ctor)
+            .ok_or(Error::InvalidKernel("a constructor of the relation's type"))?;
         let ids = &self.schema.ids;
         Ok(Target {
             relation: ids
                 .relation_id(rel)
                 .ok_or(Error::MissingIdentity(Slot::Relation(rel)))?,
             constructor: ids
-                .ctor_id(def, ctor)
-                .ok_or(Error::MissingIdentity(Slot::Ctor(def, ctor)))?,
+                .ctor_id(ctor)
+                .ok_or(Error::MissingIdentity(Slot::Ctor(ctor)))?,
         })
     }
 
@@ -107,12 +111,14 @@ impl Analyzer<'_> {
         if is_temp(self.schema, rel) {
             return Ok(CatFieldId::from_raw(u64::MAX));
         }
-        let def = self.schema.relation(rel).elem_def;
-        let own = (!self.schema.ty(def).header().iter().any(|f| f.name == name)).then_some(ctor);
+        let td = self.schema.ty(self.schema.relation(rel).elem_def);
+        let f = td
+            .field(td.ctor_at(ctor), name)
+            .ok_or(Error::InvalidKernel("a field of the relation's type"))?;
         self.schema
             .ids
-            .field_id(def, own, name)
-            .ok_or_else(|| Error::MissingIdentity(Slot::Field(def, own, name.to_string())))
+            .field_id(f)
+            .ok_or(Error::MissingIdentity(Slot::Field(f)))
     }
 
     pub(super) fn relation(

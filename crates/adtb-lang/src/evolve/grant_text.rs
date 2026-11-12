@@ -146,23 +146,24 @@ fn target(schema: &Schema, t: &GrantTarget) -> Option<String> {
 }
 
 fn ctor_name(schema: &Schema, id: u64) -> Option<String> {
-    let (def, c) = schema.ids.ctor_of(CatCtorId::from_raw(id)).next()?;
-    Some(schema.ty(def).ctors()[c as usize].name.clone())
+    let c = schema.ids.ctor_of(CatCtorId::from_raw(id)).next()?;
+    Some(schema.ty(c.def()).ctor_def(c).name.clone())
 }
 
 fn field_name(schema: &Schema, id: u64) -> Option<String> {
-    let (def, c, name) = schema.ids.field_of(CatFieldId::from_raw(id)).next()?;
-    let ctors = schema.ty(*def).ctors();
-    Some(match c {
-        Some(c) if ctors.len() > 1 => format!("{}.{name}", ctors[*c as usize].name),
+    let f = schema.field_holders(CatFieldId::from_raw(id)).next()?;
+    let td = schema.ty(f.def());
+    let name = &td.field_def(f).name;
+    Some(match f.ctor() {
+        Some(c) if td.ctors().len() > 1 => format!("{}.{name}", td.ctors()[c as usize].name),
         _ => name.clone(),
     })
 }
 
 fn ctor_id(schema: &Schema, rel: RelId, name: &str) -> Option<u64> {
     let def = schema.relation(rel).elem_def;
-    let c = schema.ty(def).ctor_index(name)?;
-    schema.ids.ctor_id(def, c).map(CatCtorId::raw)
+    let c = schema.ty(def).ctor_named(name)?;
+    schema.ids.ctor_id(c).map(CatCtorId::raw)
 }
 
 fn qualified(word: &str) -> Option<(&str, &str)> {
@@ -258,7 +259,7 @@ impl Reader {
     }
 
     fn fields(&mut self, schema: &Schema, rel: RelId) -> Option<Vec<u64>> {
-        let def = schema.relation(rel).elem_def;
+        let td = schema.ty(schema.relation(rel).elem_def);
         self.expect("(")?;
         let mut ids = Vec::new();
         if self.eat(")") {
@@ -266,18 +267,16 @@ impl Reader {
         }
         loop {
             let first = self.word()?;
-            let id = if self.eat(".") {
-                let c = schema.ty(def).ctor_index(&first)?;
-                schema.ids.field_id(def, Some(c), &self.word()?)
-            } else if schema.ty(def).ctors().len() == 1 {
-                schema
-                    .ids
-                    .field_id(def, Some(0), &first)
-                    .or_else(|| schema.ids.field_id(def, None, &first))
+            let f = if self.eat(".") {
+                let c = td.ctor_named(&first)?;
+                td.field(Some(c), &self.word()?)
+                    .filter(|f| f.ctor() == Some(c.index()))
+            } else if td.ctors().len() == 1 {
+                td.field(td.ctor_at(0), &first)
             } else {
-                schema.ids.field_id(def, None, &first)
+                td.field(None, &first)
             };
-            ids.push(id?.raw());
+            ids.push(schema.ids.field_id(f?)?.raw());
             if !self.eat(",") {
                 break;
             }

@@ -73,7 +73,7 @@ pub fn key_field_ty(schema: &Schema, rel: RelId, f: &str) -> Ty {
     }
     schema
         .ty(r.elem_def)
-        .field(0, f)
+        .field_named(0, f)
         .unwrap_or_else(|| panic!("`{}` has key field `{f}`", r.name))
         .ty
         .subst(r.elem_args())

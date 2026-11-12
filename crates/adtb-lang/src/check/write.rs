@@ -1313,7 +1313,7 @@ pub(super) fn delete_actions(
                 ok = false;
                 continue;
             }
-            if t.field(*c, &f.name).is_some() {
+            if t.field_named(*c, &f.name).is_some() {
                 err(
                     f.span,
                     format!(

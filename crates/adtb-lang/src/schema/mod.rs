@@ -25,8 +25,13 @@ mod names;
 pub use names::field_path;
 
 mod build;
+mod engine;
+mod refs;
 mod relation;
 mod types;
+
+pub use engine::EngineCtors;
+pub use refs::{CtorRef, FieldPart, FieldRef};
 
 pub use types::resolve_type;
 
@@ -89,6 +94,8 @@ pub enum TypeDefKind {
 
 #[derive(Clone, Debug)]
 pub struct TypeDef {
+    /// The type's position among `SchemaDefs::types`.
+    id: TypeId,
     pub name: String,
     pub module: ModuleId,
     pub params: Vec<String>,
@@ -113,6 +120,10 @@ impl TypeDef {
         }
     }
 
+    pub fn id(&self) -> TypeId {
+        self.id
+    }
+
     pub fn ctor_index(&self, name: &str) -> Option<u32> {
         self.ctors()
             .iter()
@@ -120,15 +131,85 @@ impl TypeDef {
             .map(|i| i as u32)
     }
 
-    /// Returns the field `name` of constructor `ctor`, header fields included.
-    pub fn field(&self, ctor: u32, name: &str) -> Option<&FieldDef> {
-        self.header().iter().find(|f| f.name == name).or_else(|| {
-            self.ctors()
-                .get(ctor as usize)?
-                .fields
-                .iter()
-                .find(|f| f.name == name)
-        })
+    pub fn ctor_named(&self, name: &str) -> Option<CtorRef> {
+        self.ctor_index(name).map(|c| CtorRef::new(self.id, c))
+    }
+
+    /// Returns the constructor at position `at`; a newtype's one constructor is position 0.
+    pub fn ctor_at(&self, at: u32) -> Option<CtorRef> {
+        let held = match self.kind {
+            TypeDefKind::Sum { .. } => (at as usize) < self.ctors().len(),
+            TypeDefKind::Newtype { .. } => at == 0,
+        };
+        held.then(|| CtorRef::new(self.id, at))
+    }
+
+    /// Returns each constructor in declaration order; a newtype's one constructor included.
+    pub fn ctor_refs(&self) -> impl Iterator<Item = CtorRef> + '_ {
+        let n = match self.kind {
+            TypeDefKind::Sum { .. } => self.ctors().len() as u32,
+            TypeDefKind::Newtype { .. } => 1,
+        };
+        (0..n).map(|c| CtorRef::new(self.id, c))
+    }
+
+    /// Preconditions: `c` is a constructor of this type, not a newtype's.
+    pub fn ctor_def(&self, c: CtorRef) -> &CtorDef {
+        assert_eq!(c.def(), self.id, "a constructor of this type");
+        &self.ctors()[c.index() as usize]
+    }
+
+    /// Returns the field `name` of constructor `ctor`, `None` naming the header alone; a header
+    /// field is found whichever constructor is named.
+    pub fn field(&self, ctor: Option<CtorRef>, name: &str) -> Option<FieldRef> {
+        if let Some(at) = self.header().iter().position(|f| f.name == name) {
+            return Some(FieldRef::new(self.id, FieldPart::Header, at as u32));
+        }
+        let c = ctor?;
+        assert_eq!(c.def(), self.id, "a constructor of this type");
+        let at = self
+            .ctors()
+            .get(c.index() as usize)?
+            .fields
+            .iter()
+            .position(|f| f.name == name)?;
+        Some(FieldRef::new(
+            self.id,
+            FieldPart::Ctor(c.index()),
+            at as u32,
+        ))
+    }
+
+    /// Returns the definition of field `name` of the constructor at position `ctor`, header
+    /// fields included.
+    pub fn field_named(&self, ctor: u32, name: &str) -> Option<&FieldDef> {
+        self.field(self.ctor_at(ctor), name)
+            .map(|f| self.field_def(f))
+    }
+
+    /// Preconditions: `f` is a field of this type.
+    pub fn field_def(&self, f: FieldRef) -> &FieldDef {
+        assert_eq!(f.def(), self.id, "a field of this type");
+        match f.part() {
+            FieldPart::Header => &self.header()[f.pos() as usize],
+            FieldPart::Ctor(c) => &self.ctors()[c as usize].fields[f.pos() as usize],
+        }
+    }
+
+    /// Returns each field, the header's first, then each constructor's own in declaration order.
+    pub fn field_refs(&self) -> impl Iterator<Item = (FieldRef, &FieldDef)> + '_ {
+        let header = self
+            .header()
+            .iter()
+            .enumerate()
+            .map(|(at, f)| (FieldRef::new(self.id, FieldPart::Header, at as u32), f));
+        let own = self.ctors().iter().enumerate().flat_map(move |(c, d)| {
+            d.fields.iter().enumerate().map(move |(at, f)| {
+                let part = FieldPart::Ctor(c as u32);
+                (FieldRef::new(self.id, part, at as u32), f)
+            })
+        });
+        header.chain(own)
     }
 }
 
@@ -288,6 +369,41 @@ pub struct SchemaDefs {
     /// The relation variables, by module and name, that the migration being applied adds with
     /// their type: a reference type's selection of their constructors resolves when it ends.
     pub late_sels: Vec<(ModuleId, String)>,
+    /// `None` until the schema builds.
+    engine_ctors: Option<EngineCtors>,
+}
+
+impl SchemaDefs {
+    /// Append a record type `name` of `module`, its one constructor named after it, declared at
+    /// `ctor_span` within `span`; returns its id.
+    pub(crate) fn push_record(
+        &mut self,
+        name: &str,
+        module: ModuleId,
+        fields: Vec<FieldDef>,
+        (ctor_span, span): (Span, Span),
+    ) -> TypeId {
+        let id = TypeId(self.types.len() as u32);
+        self.types.push(TypeDef {
+            id,
+            name: name.to_string(),
+            module,
+            params: Vec::new(),
+            ordered: false,
+            kind: TypeDefKind::Sum {
+                header: Vec::new(),
+                ctors: vec![CtorDef {
+                    name: name.to_string(),
+                    fields,
+                    span: ctor_span,
+                }],
+                record: true,
+            },
+            file: FileId(0),
+            span,
+        });
+        id
+    }
 }
 
 /// The write state of a constructor in a relation variable, or of a value-level constructor.
@@ -367,6 +483,27 @@ impl Schema {
 
     pub fn function(&self, id: FnId) -> &FunctionDef {
         &self.functions[id.0 as usize]
+    }
+
+    /// Returns the fields whose id is `id`, by type, then constructor (the header first), then
+    /// name.
+    pub fn field_holders(
+        &self,
+        id: crate::ids::CatFieldId,
+    ) -> impl DoubleEndedIterator<Item = FieldRef> + use<> {
+        let mut held: Vec<FieldRef> = self.ids.field_of(id).collect();
+        held.sort_by_key(|f| self.field_order(*f));
+        held.into_iter()
+    }
+
+    /// Returns the key that orders fields by type, then constructor (the header first), then name.
+    pub fn field_order(&self, f: FieldRef) -> (TypeId, Option<u32>, &str) {
+        (f.def(), f.ctor(), &self.ty(f.def()).field_def(f).name)
+    }
+
+    pub fn engine_ctors(&self) -> EngineCtors {
+        self.engine_ctors
+            .expect("a built schema holds the engine's constructors")
     }
 
     pub fn prelude_type(&self, name: &str) -> TypeId {
@@ -574,7 +711,7 @@ impl Schema {
                 for name in &r.key {
                     let f = self
                         .ty(r.elem_def)
-                        .field(0, name)
+                        .field_named(0, name)
                         .expect("a relation's key fields are fields of its row type");
                     self.reached(&f.ty.subst(args), defs, rels);
                 }
@@ -814,7 +951,7 @@ impl Order<'_> {
             .key
             .iter()
             .try_fold(OrderParams::new(), |mut required, name| {
-                let field = definition.field(0, name)?;
+                let field = definition.field_named(0, name)?;
                 if !matches!(&field.ty, Ty::Key { rel: own, .. } if *own == rel) {
                     required.extend(self.parameters(&field.ty.subst(relation.elem_args()))?);
                 }
@@ -844,8 +981,15 @@ pub struct ImpliedIndex {
     /// The constructor whose own field it is; `None` for a header field.
     pub ctor: Option<u32>,
     pub field: String,
+    field_ref: FieldRef,
     /// The constructors that hold the field.
     pub ctors: CtorSet,
+}
+
+impl ImpliedIndex {
+    pub fn field_ref(&self) -> FieldRef {
+        self.field_ref
+    }
 }
 
 /// A field of a relation variable's sum holding a reference: a key of another relation
@@ -855,6 +999,7 @@ pub struct ReferenceField {
     /// The constructor whose own field it is; `None` for a header field.
     pub ctor: Option<u32>,
     pub field: String,
+    field_ref: FieldRef,
     /// Its position in a row of each constructor that holds it.
     pub at: usize,
     /// The constructors that hold the field.
@@ -879,6 +1024,12 @@ pub enum ReferenceIndex {
     Implied,
 }
 
+impl ReferenceField {
+    pub fn field_ref(&self) -> FieldRef {
+        self.field_ref
+    }
+}
+
 impl Schema {
     /// Returns each reference field of `rel`, header fields first, then each constructor's own
     /// in declaration order.
@@ -886,22 +1037,20 @@ impl Schema {
         let r = self.relation(rel);
         let def = self.ty(r.elem_def);
         let all: CtorSet = (0..def.ctors().len() as u32).collect();
-        let header = def.header().iter().enumerate().map(|(at, f)| (None, at, f));
-        let own = def.ctors().iter().enumerate().flat_map(|(c, d)| {
-            d.fields
-                .iter()
-                .enumerate()
-                .map(move |(at, f)| (Some(c as u32), def.header().len() + at, f))
-        });
-        header
-            .chain(own)
-            .filter_map(|(ctor, at, f)| {
+        def.field_refs()
+            .filter_map(|(field_ref, f)| {
                 let (target, target_ctors, optional) = self.reference(rel, f)?;
+                let ctor = field_ref.ctor();
+                let at = match ctor {
+                    None => field_ref.pos() as usize,
+                    Some(_) => def.header().len() + field_ref.pos() as usize,
+                };
                 let ctors = ctor.map_or_else(|| all.clone(), |c| vec![c]);
                 let index = self.leading(rel, &f.name, &ctors);
                 Some(ReferenceField {
                     ctor,
                     field: f.name.clone(),
+                    field_ref,
                     at,
                     ctors,
                     target,
@@ -924,6 +1073,7 @@ impl Schema {
             .map(|f| ImpliedIndex {
                 ctor: f.ctor,
                 field: f.field,
+                field_ref: f.field_ref,
                 ctors: f.ctors,
             })
             .collect()
@@ -933,7 +1083,7 @@ impl Schema {
     pub fn self_key(&self, rel: RelId, f: &str) -> bool {
         let r = self.relation(rel);
         matches!(
-            self.ty(r.elem_def).field(0, f).map(|d| &d.ty),
+            self.ty(r.elem_def).field_named(0, f).map(|d| &d.ty),
             Some(Ty::Key { rel: own, .. }) if *own == rel
         )
     }
@@ -1046,6 +1196,7 @@ pub fn build_ahead(
                 principal: TypeId(0),
                 ahead: Vec::new(),
                 late_sels: Vec::new(),
+                engine_ctors: None,
             }),
             ids: crate::ids::CatalogIds::default(),
             stages: BTreeMap::new(),
@@ -1062,7 +1213,9 @@ pub fn build_ahead(
     }
     let names = crate::resolve::check_schema(&b.schema);
     if names.is_empty() {
-        b.schema.types.push(tag_former());
+        let id = TypeId(b.schema.types.len() as u32);
+        b.schema.types.push(tag_former(id));
+        b.schema.engine_ctors = Some(EngineCtors::of(&b.schema));
         b.schema.ids = crate::ids::declared(&b.schema, files);
         Ok(b.schema)
     } else {
@@ -1088,8 +1241,9 @@ fn no_type(text: &str) -> String {
 
 /// Returns the prelude's declaration of the type former `Tag`, with no constructors of its own.
 /// No module scope holds it: the name `Tag` resolves to the former, never to this declaration.
-fn tag_former() -> TypeDef {
+fn tag_former(id: TypeId) -> TypeDef {
     TypeDef {
+        id,
         name: "Tag".to_string(),
         module: PRELUDE,
         params: vec!["a".to_string()],

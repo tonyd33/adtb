@@ -510,7 +510,6 @@ fn call_broken_rows() -> Vec<Row> {
         broken_row(B::CallKeyNotInt, c, "a key of `sys::calls` is an I64"),
         broken_row(B::ExportNotSetTyped, c, "an export's source is a set"),
         broken_row(B::ExportNotSet, c, "an export's source is a set"),
-        broken_row(B::NoViolation, c, "`Finding` declares `Violation`"),
         broken_row(B::SettingNotRecord, c, "a setting's value is a record"),
         broken_row(
             B::SettingField("f".into()),
@@ -527,7 +526,7 @@ fn call_broken_rows() -> Vec<Row> {
 }
 
 /// The number of slots [`slot`] gives.
-const SLOTS: usize = 74;
+const SLOTS: usize = 73;
 
 /// Returns the slot of `e`'s variant, of the variant it holds where its class depends on it.
 /// Every arm has its own slot, numbered from 0 with none skipped.
@@ -610,11 +609,10 @@ fn slot(e: &write::Error) -> usize {
             B::CallKeyNotInt => 66,
             B::ExportNotSetTyped => 67,
             B::ExportNotSet => 68,
-            B::NoViolation => 69,
-            B::SettingNotRecord => 70,
-            B::SettingField(_) => 71,
-            B::CatalogError(_) => 72,
-            B::DeploymentRefused => 73,
+            B::SettingNotRecord => 69,
+            B::SettingField(_) => 70,
+            B::CatalogError(_) => 71,
+            B::DeploymentRefused => 72,
         },
     }
 }

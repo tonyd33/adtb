@@ -1,4 +1,5 @@
 use super::*;
+use crate::schema::TypeDef;
 
 /// A split's image of the split constructor `ctor`, named `source`, into `products`.
 struct SplitImage<'a> {
@@ -10,12 +11,12 @@ struct SplitImage<'a> {
 }
 
 /// Returns `cl` restated over each product that keeps every one of its fields.
-fn split_images(image: &SplitImage, cl: &ScopedClause, header: &BTreeSet<&str>) -> Vec<String> {
+fn split_images(image: &SplitImage, cl: &ScopedClause, td: &TypeDef) -> Vec<String> {
     let mut images = Vec::new();
     for p in image.products {
         let mut fs = Vec::new();
         for f in &cl.fields {
-            if header.contains(f.as_str()) {
+            if td.field(None, f).is_some() {
                 fs.push(f.clone());
             } else if let Some((_, _, _, g)) = image
                 .carries
@@ -185,15 +186,10 @@ impl Cx<'_> {
                 ));
                 continue;
             }
-            let header: BTreeSet<&str> = schema
-                .ty(def)
-                .header()
-                .iter()
-                .map(|f| f.name.as_str())
-                .collect();
+            let td = schema.ty(def);
             let source = image.source;
             let lost = cl.fields.iter().rev().find(|f| {
-                !header.contains(f.as_str())
+                td.field(None, f).is_none()
                     && !image
                         .carries
                         .iter()
@@ -211,7 +207,7 @@ impl Cx<'_> {
                 String::new().into(),
             ));
             let list = added.entry(cl.decl).or_default();
-            for img in split_images(image, &cl, &header) {
+            for img in split_images(image, &cl, td) {
                 if !list.iter().any(|x| x.text == img) {
                     list.push(img.into());
                 }
@@ -313,7 +309,6 @@ impl Cx<'_> {
             },
         )?;
         let mut clause_edits: Edits = BTreeMap::new();
-        let header: BTreeSet<&str> = td.header().iter().map(|f| f.name.as_str()).collect();
         let f = field.name.text.clone();
         for cl in self.scoped_clauses(&schema, def)? {
             let Some(scope) = &cl.scope else { continue };
@@ -339,7 +334,7 @@ impl Cx<'_> {
             }
             let mut fs = Vec::new();
             for g in &cl.fields {
-                if header.contains(g.as_str()) {
+                if td.field(None, g).is_some() {
                     fs.push(g.clone());
                 } else if let [one] = inside.as_slice() {
                     let src = &td.ctors()[*one as usize];
@@ -453,7 +448,6 @@ impl Cx<'_> {
             },
         )?;
         let mut clause_edits: Edits = BTreeMap::new();
-        let header: BTreeSet<&str> = td.header().iter().map(|f| f.name.as_str()).collect();
         let every: Vec<u32> = (0..td.ctors().len() as u32).collect();
         for cl in self.scoped_clauses(&schema, def)? {
             let scope = cl.scope.as_ref().unwrap_or(&every);
@@ -464,7 +458,7 @@ impl Cx<'_> {
             let mut target: Option<String> = None;
             let mut fs = Vec::new();
             for g in &cl.fields {
-                if header.contains(g.as_str()) {
+                if td.field(None, g).is_some() {
                     fs.push(g.clone());
                     continue;
                 }

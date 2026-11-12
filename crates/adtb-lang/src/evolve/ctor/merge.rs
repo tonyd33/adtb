@@ -201,7 +201,7 @@ impl Cx<'_> {
             let s = &schema.ty(image.def).ctors()[c as usize].name;
             let mut fs = Vec::new();
             for f in &cl.fields {
-                let header = schema.ty(image.def).header().iter().any(|x| x.name == *f);
+                let header = schema.ty(image.def).field(None, f).is_some();
                 let mapped = if header {
                     Some(f.clone())
                 } else {
@@ -513,7 +513,7 @@ impl Cx<'_> {
             else {
                 continue;
             };
-            if *file != chk.file || td.header().iter().any(|h| h.name == *name) {
+            if *file != chk.file || td.field(None, name).is_some() {
                 continue;
             }
             let at = self.src.local(j, *span);

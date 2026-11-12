@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{self, Decl, RelationClause};
-use crate::schema::{Schema, TypeDefKind, ValueDef};
+use crate::schema::{CtorRef, FieldRef, Schema, TypeDefKind, ValueDef};
 use crate::span::{FileId, Span};
 use crate::types::*;
 
@@ -68,32 +68,27 @@ catalog_id!(
     CatConstraintId,
 );
 
-/// A field's place: its type, its constructor (`None` for the header) and its name.
-pub type FieldSlot = (TypeId, Option<u32>, String);
-
 /// The catalog ids of a schema's objects, by the handle of each in the schema.
 ///
 /// Every object of a user module has an id, and every object of an engine module its fixed id.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CatalogIds {
     types: BTreeMap<TypeId, CatTypeId>,
-    /// Constructors by type and index; a newtype's one constructor is index 0.
-    ctors: BTreeMap<(TypeId, u32), CatCtorId>,
+    ctors: BTreeMap<CtorRef, CatCtorId>,
     relations: BTreeMap<RelId, CatRelId>,
-    fields: BTreeMap<FieldSlot, CatFieldId>,
+    fields: BTreeMap<FieldRef, CatFieldId>,
     sets: BTreeMap<(RelId, String), CatSetId>,
     /// The index of each relation's key.
     keys: BTreeMap<RelId, CatIndexId>,
     /// Uniques and indexes, by relation and position among `RelationDef::indexes`.
     indexes: BTreeMap<(RelId, usize), CatIndexId>,
-    /// The index each reference field implies, by relation, constructor (`None` for the
-    /// header) and field.
-    implied: BTreeMap<(RelId, Option<u32>, String), CatIndexId>,
+    /// The index each reference field implies, by relation and field.
+    implied: BTreeMap<(RelId, FieldRef), CatIndexId>,
     /// The default a key's `generate` gives.
     generated: BTreeMap<RelId, CatDefaultId>,
     /// Defaults, one for each field a default clause fills, by relation, position among
-    /// `RelationDef::defaults`, and the field's constructor (`None` for the header).
-    defaults: BTreeMap<(RelId, usize, Option<u32>), CatDefaultId>,
+    /// `RelationDef::defaults`, and the field.
+    defaults: BTreeMap<(RelId, usize, FieldRef), CatDefaultId>,
     /// Computed fields, by relation and position among `RelationDef::computed`.
     computed: BTreeMap<(RelId, usize), CatComputedId>,
     functions: BTreeMap<FnId, CatFunctionId>,
@@ -116,9 +111,9 @@ pub struct CatalogIds {
     /// The fields of a stored view's row constructor, by view and name.
     view_fields: BTreeMap<(FnId, String), CatFieldId>,
     type_of: Reverse<CatTypeId, TypeId>,
-    ctor_of: Reverse<CatCtorId, (TypeId, u32)>,
+    ctor_of: Reverse<CatCtorId, CtorRef>,
     relation_of: Reverse<CatRelId, RelId>,
-    field_of: Reverse<CatFieldId, FieldSlot>,
+    field_of: Reverse<CatFieldId, FieldRef>,
     set_of: Reverse<CatSetId, (RelId, String)>,
     function_of: Reverse<CatFunctionId, FnId>,
     aggregate_of: Reverse<CatFunctionId, usize>,
@@ -144,15 +139,15 @@ pub enum Space {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Slot {
     Type(TypeId),
-    Ctor(TypeId, u32),
+    Ctor(CtorRef),
     Relation(RelId),
-    Field(TypeId, Option<u32>, String),
+    Field(FieldRef),
     Set(RelId, String),
     Key(RelId),
     Index(RelId, usize),
-    Implied(RelId, Option<u32>, String),
+    Implied(RelId, FieldRef),
     Generated(RelId),
-    Default(RelId, usize, Option<u32>),
+    Default(RelId, usize, FieldRef),
     Computed(RelId, usize),
     Function(FnId),
     Aggregate(usize),
@@ -239,17 +234,16 @@ impl CatalogIds {
         self.types.get(&def).copied()
     }
 
-    pub fn ctor_id(&self, def: TypeId, ctor: u32) -> Option<CatCtorId> {
-        self.ctors.get(&(def, ctor)).copied()
+    pub fn ctor_id(&self, c: CtorRef) -> Option<CatCtorId> {
+        self.ctors.get(&c).copied()
     }
 
     pub fn relation_id(&self, rel: RelId) -> Option<CatRelId> {
         self.relations.get(&rel).copied()
     }
 
-    /// Returns the id of field `name` of `def` in constructor `ctor`, `None` naming the header.
-    pub fn field_id(&self, def: TypeId, ctor: Option<u32>, name: &str) -> Option<CatFieldId> {
-        self.fields.get(&(def, ctor, name.to_string())).copied()
+    pub fn field_id(&self, f: FieldRef) -> Option<CatFieldId> {
+        self.fields.get(&f).copied()
     }
 
     pub fn set_id(&self, rel: RelId, name: &str) -> Option<CatSetId> {
@@ -265,10 +259,9 @@ impl CatalogIds {
         self.indexes.get(&(rel, at)).copied()
     }
 
-    /// Returns the id of the index field `field` of constructor `ctor` implies, `None` naming the
-    /// header.
-    pub fn implied_id(&self, rel: RelId, ctor: Option<u32>, field: &str) -> Option<CatIndexId> {
-        self.implied.get(&(rel, ctor, field.to_string())).copied()
+    /// Returns the id of the index reference field `f` of `rel` implies.
+    pub fn implied_id(&self, rel: RelId, f: FieldRef) -> Option<CatIndexId> {
+        self.implied.get(&(rel, f)).copied()
     }
 
     pub fn generated_id(&self, rel: RelId) -> Option<CatDefaultId> {
@@ -276,15 +269,16 @@ impl CatalogIds {
     }
 
     /// Returns the defaults the default clause at position `at` of `RelationDef::defaults` gives,
-    /// by the constructor of the field each fills, `None` for the header's.
+    /// by the field each fills.
     pub fn clause_default_ids(
         &self,
         rel: RelId,
         at: usize,
-    ) -> impl Iterator<Item = (Option<u32>, CatDefaultId)> + '_ {
+    ) -> impl Iterator<Item = (FieldRef, CatDefaultId)> + '_ {
         self.defaults
-            .range((rel, at, None)..=(rel, at, Some(u32::MAX)))
-            .map(|(&(_, _, c), &id)| (c, id))
+            .iter()
+            .filter(move |((r, a, _), _)| (*r, *a) == (rel, at))
+            .map(|(&(_, _, f), &id)| (f, id))
     }
 
     pub fn computed_id(&self, rel: RelId, at: usize) -> Option<CatComputedId> {
@@ -340,8 +334,8 @@ impl CatalogIds {
         holders(&self.type_of, id).copied()
     }
 
-    /// Returns the constructors, as type and index, whose id is `id`, least first.
-    pub fn ctor_of(&self, id: CatCtorId) -> impl DoubleEndedIterator<Item = (TypeId, u32)> + '_ {
+    /// Returns the constructors whose id is `id`, least first.
+    pub fn ctor_of(&self, id: CatCtorId) -> impl DoubleEndedIterator<Item = CtorRef> + '_ {
         holders(&self.ctor_of, id).copied()
     }
 
@@ -350,9 +344,12 @@ impl CatalogIds {
         holders(&self.relation_of, id).copied()
     }
 
-    /// Returns the field places whose id is `id`, least first.
-    pub fn field_of(&self, id: CatFieldId) -> impl DoubleEndedIterator<Item = &FieldSlot> + '_ {
-        holders(&self.field_of, id)
+    /// Returns the fields whose id is `id`, least first.
+    pub(crate) fn field_of(
+        &self,
+        id: CatFieldId,
+    ) -> impl DoubleEndedIterator<Item = FieldRef> + '_ {
+        holders(&self.field_of, id).copied()
     }
 
     /// Returns the named sets, as relation and name, whose id is `id`, least first.
@@ -387,34 +384,34 @@ impl CatalogIds {
         self.types.iter().map(|(&t, &id)| (t, id))
     }
 
-    pub fn ctor_ids(&self) -> impl Iterator<Item = ((TypeId, u32), CatCtorId)> + '_ {
+    pub fn ctor_ids(&self) -> impl Iterator<Item = (CtorRef, CatCtorId)> + '_ {
         self.ctors.iter().map(|(&c, &id)| (c, id))
     }
 
     /// Returns each constructor of `def` by index.
-    pub fn type_ctor_ids(&self, def: TypeId) -> impl Iterator<Item = (u32, CatCtorId)> + '_ {
+    pub fn type_ctor_ids(&self, def: TypeId) -> impl Iterator<Item = (CtorRef, CatCtorId)> + '_ {
         self.ctors
-            .range((def, 0)..=(def, u32::MAX))
-            .map(|(&(_, c), &id)| (c, id))
+            .iter()
+            .skip_while(move |(c, _)| c.def() < def)
+            .take_while(move |(c, _)| c.def() == def)
+            .map(|(&c, &id)| (c, id))
     }
 
-    /// Returns each field of `def`, the header's first.
-    pub fn type_field_ids(
-        &self,
-        def: TypeId,
-    ) -> impl Iterator<Item = (&FieldSlot, CatFieldId)> + '_ {
+    /// Returns each field of `def`, the header's first, then each constructor's own by position.
+    pub fn type_field_ids(&self, def: TypeId) -> impl Iterator<Item = (FieldRef, CatFieldId)> + '_ {
         self.fields
-            .range((def, None, String::new())..)
-            .take_while(move |((d, _, _), _)| *d == def)
-            .map(|(f, &id)| (f, id))
+            .iter()
+            .skip_while(move |(f, _)| f.def() < def)
+            .take_while(move |(f, _)| f.def() == def)
+            .map(|(&f, &id)| (f, id))
     }
 
     pub fn relation_ids(&self) -> impl Iterator<Item = (RelId, CatRelId)> + '_ {
         self.relations.iter().map(|(&r, &id)| (r, id))
     }
 
-    pub fn field_ids(&self) -> impl Iterator<Item = (&FieldSlot, CatFieldId)> + '_ {
-        self.fields.iter().map(|(f, &id)| (f, id))
+    pub fn field_ids(&self) -> impl Iterator<Item = (FieldRef, CatFieldId)> + '_ {
+        self.fields.iter().map(|(&f, &id)| (f, id))
     }
 
     pub fn set_ids(&self) -> impl Iterator<Item = (RelId, &str, CatSetId)> + '_ {
@@ -437,21 +434,19 @@ impl CatalogIds {
             .map(|(&(_, at), &id)| (at, id))
     }
 
-    pub fn implied_ids(&self) -> impl Iterator<Item = (RelId, Option<u32>, &str, CatIndexId)> + '_ {
-        self.implied
-            .iter()
-            .map(|((r, c, f), &id)| (*r, *c, f.as_str(), id))
+    pub fn implied_ids(&self) -> impl Iterator<Item = (RelId, FieldRef, CatIndexId)> + '_ {
+        self.implied.iter().map(|(&(r, f), &id)| (r, f, id))
     }
 
     pub fn generated_ids(&self) -> impl Iterator<Item = (RelId, CatDefaultId)> + '_ {
         self.generated.iter().map(|(&r, &id)| (r, id))
     }
 
-    /// Returns each default by relation, position among `RelationDef::defaults` and the
-    /// constructor of the field it fills.
+    /// Returns each default by relation, position among `RelationDef::defaults` and the field it
+    /// fills.
     pub fn default_ids(
         &self,
-    ) -> impl Iterator<Item = ((RelId, usize, Option<u32>), CatDefaultId)> + '_ {
+    ) -> impl Iterator<Item = ((RelId, usize, FieldRef), CatDefaultId)> + '_ {
         self.defaults.iter().map(|(&d, &id)| (d, id))
     }
 
@@ -489,16 +484,9 @@ impl CatalogIds {
     pub fn set(&mut self, slot: &Slot, id: u64) {
         match slot.clone() {
             Slot::Type(t) => put(&mut self.types, &mut self.type_of, t, CatTypeId(id)),
-            Slot::Ctor(t, c) => put(&mut self.ctors, &mut self.ctor_of, (t, c), CatCtorId(id)),
+            Slot::Ctor(c) => put(&mut self.ctors, &mut self.ctor_of, c, CatCtorId(id)),
             Slot::Relation(r) => put(&mut self.relations, &mut self.relation_of, r, CatRelId(id)),
-            Slot::Field(t, c, f) => {
-                put(
-                    &mut self.fields,
-                    &mut self.field_of,
-                    (t, c, f),
-                    CatFieldId(id),
-                );
-            }
+            Slot::Field(f) => put(&mut self.fields, &mut self.field_of, f, CatFieldId(id)),
             Slot::Set(r, s) => put(&mut self.sets, &mut self.set_of, (r, s), CatSetId(id)),
             Slot::Function(f) => {
                 put(
@@ -517,14 +505,14 @@ impl CatalogIds {
                 (r, i),
                 CatIndexId(id),
             ),
-            Slot::Implied(r, c, f) => {
-                self.implied.insert((r, c, f), CatIndexId(id));
+            Slot::Implied(r, f) => {
+                self.implied.insert((r, f), CatIndexId(id));
             }
             Slot::Generated(r) => {
                 self.generated.insert(r, CatDefaultId(id));
             }
-            Slot::Default(r, i, c) => {
-                self.defaults.insert((r, i, c), CatDefaultId(id));
+            Slot::Default(r, i, f) => {
+                self.defaults.insert((r, i, f), CatDefaultId(id));
             }
             Slot::Computed(r, i) => {
                 self.computed.insert((r, i), CatComputedId(id));
@@ -573,16 +561,16 @@ impl CatalogIds {
     pub fn forget(&mut self, slot: &Slot) {
         match slot.clone() {
             Slot::Type(t) => take(&mut self.types, &mut self.type_of, &t),
-            Slot::Ctor(t, c) => take(&mut self.ctors, &mut self.ctor_of, &(t, c)),
+            Slot::Ctor(c) => take(&mut self.ctors, &mut self.ctor_of, &c),
             Slot::Relation(r) => take(&mut self.relations, &mut self.relation_of, &r),
-            Slot::Field(t, c, f) => take(&mut self.fields, &mut self.field_of, &(t, c, f)),
+            Slot::Field(f) => take(&mut self.fields, &mut self.field_of, &f),
             Slot::Set(r, s) => take(&mut self.sets, &mut self.set_of, &(r, s)),
             Slot::Function(f) => take(&mut self.functions, &mut self.function_of, &f),
             Slot::Key(r) => drop(self.keys.remove(&r)),
             Slot::Index(r, i) => take(&mut self.indexes, &mut self.index_of, &(r, i)),
-            Slot::Implied(r, c, f) => drop(self.implied.remove(&(r, c, f))),
+            Slot::Implied(r, f) => drop(self.implied.remove(&(r, f))),
             Slot::Generated(r) => drop(self.generated.remove(&r)),
-            Slot::Default(r, i, c) => drop(self.defaults.remove(&(r, i, c))),
+            Slot::Default(r, i, f) => drop(self.defaults.remove(&(r, i, f))),
             Slot::Computed(r, i) => drop(self.computed.remove(&(r, i))),
             Slot::Aggregate(i) => take(&mut self.aggregates, &mut self.aggregate_of, &i),
             Slot::Constraint(i) => take(&mut self.constraints, &mut self.constraint_of, &i),
@@ -628,10 +616,13 @@ fn engine(schema: &Schema) -> CatalogIds {
         ids.set(&Slot::Type(def), *id);
         let newtype = matches!(t.kind, TypeDefKind::Newtype { .. });
         for (c, cid) in *ctors {
-            match t.ctor_index(c) {
-                Some(k) => ids.set(&Slot::Ctor(def, k), *cid),
-                None if newtype => ids.set(&Slot::Ctor(def, 0), *cid),
-                None => {}
+            let at = if newtype {
+                t.ctor_at(0)
+            } else {
+                t.ctor_named(c)
+            };
+            if let Some(at) = at {
+                ids.set(&Slot::Ctor(at), *cid);
             }
         }
     }
@@ -650,23 +641,17 @@ fn engine(schema: &Schema) -> CatalogIds {
     let mut added = Vec::new();
     for (_, def) in types {
         let td = schema.ty(def);
-        let parts = td.header().iter().map(|f| (None, f)).chain(
-            td.ctors()
-                .iter()
-                .enumerate()
-                .flat_map(|(k, c)| c.fields.iter().map(move |f| (Some(k as u32), f))),
-        );
-        for (c, f) in parts {
-            let ctor = c.map(|c| {
-                ids.ctor_id(def, c)
+        for (f, _) in td.field_refs() {
+            let ctor = f.ctor().and_then(|c| td.ctor_at(c)).map(|c| {
+                ids.ctor_id(c)
                     .expect("every constructor of a fixed engine type has a fixed id")
             });
             // Constructors from 471 extend the original engine field-id allocation.
             if let Some(ctor) = ctor.filter(|ctor| ctor.raw() >= 471) {
-                added.push((ctor, Slot::Field(def, c, f.name.clone())));
+                added.push((ctor, Slot::Field(f)));
                 continue;
             }
-            ids.set(&Slot::Field(def, c, f.name.clone()), field);
+            ids.set(&Slot::Field(f), field);
             field += 1;
         }
     }
@@ -818,35 +803,20 @@ fn type_objects(
     let td = schema.ty(def);
     let tn = &td.name;
     push(Space::Shared, Slot::Type(def), format!("type {m}::{tn}"));
-    if matches!(td.kind, TypeDefKind::Newtype { .. }) {
-        push(
-            Space::Shared,
-            Slot::Ctor(def, 0),
-            format!("ctor {m}::{tn}.{tn}"),
-        );
+    let newtype = matches!(td.kind, TypeDefKind::Newtype { .. });
+    for c in td.ctor_refs() {
+        let cn = if newtype { tn } else { &td.ctor_def(c).name };
+        push(Space::Shared, Slot::Ctor(c), format!("ctor {m}::{tn}.{cn}"));
     }
-    for (k, c) in td.ctors().iter().enumerate() {
-        push(
-            Space::Shared,
-            Slot::Ctor(def, k as u32),
-            format!("ctor {m}::{tn}.{}", c.name),
-        );
-    }
-    for f in td.header() {
+    for (f, d) in td.field_refs() {
+        let at = f.ctor().map_or(String::new(), |c| {
+            format!("{}.", td.ctors()[c as usize].name)
+        });
         push(
             Space::Field,
-            Slot::Field(def, None, f.name.clone()),
-            format!("field {m}::{tn}.{}", f.name),
+            Slot::Field(f),
+            format!("field {m}::{tn}.{at}{}", d.name),
         );
-    }
-    for (k, c) in td.ctors().iter().enumerate() {
-        for f in &c.fields {
-            push(
-                Space::Field,
-                Slot::Field(def, Some(k as u32), f.name.clone()),
-                format!("field {m}::{tn}.{}.{}", c.name, f.name),
-            );
-        }
     }
 }
 
@@ -882,7 +852,7 @@ fn relation_objects(
         });
         push(
             Space::Index,
-            Slot::Implied(rel, i.ctor, i.field.clone()),
+            Slot::Implied(rel, i.field_ref()),
             format!("index {name} implied by {at}{}", i.field),
         );
     }
@@ -916,28 +886,25 @@ fn anonymous_row(files: &[(FileId, ast::SchemaFile)], module: &str, view: &str) 
 }
 
 /// Returns the fields of relation `r` a default of `field`, of constructor `ctor` when one is
-/// named, fills, each by its constructor: `None` for the header's field, else each constructor
-/// with the field in declaration order.
+/// named, fills: the header's field, else the field of each constructor with it in declaration
+/// order.
 fn default_fields(
     schema: &Schema,
     r: RelId,
     ctor: Option<&ast::Ident>,
     field: &str,
-) -> Vec<Option<u32>> {
+) -> Vec<FieldRef> {
     let def = schema.relation(r).elem_def;
     if def.0 == u32::MAX {
         return Vec::new();
     }
     let td = schema.ty(def);
-    if td.header().iter().any(|f| f.name == field) {
-        return vec![None];
+    if let Some(f) = td.field(None, field) {
+        return vec![f];
     }
-    td.ctors()
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| ctor.is_none_or(|n| n.text == c.name))
-        .filter(|(_, c)| c.fields.iter().any(|f| f.name == field))
-        .map(|(k, _)| Some(k as u32))
+    td.ctor_refs()
+        .filter(|&c| ctor.is_none_or(|n| n.text == td.ctor_def(c).name))
+        .filter_map(|c| td.field(Some(c), field))
         .collect()
 }
 
@@ -1009,14 +976,14 @@ fn clause_objects(
                 ix += 1;
             }
             (RelationClause::Default { ctor, field, .. }, Owner::Relation(r)) => {
-                for c in default_fields(schema, r, ctor.as_ref(), &field.text) {
-                    let at = c.map_or(String::new(), |k| {
+                for f in default_fields(schema, r, ctor.as_ref(), &field.text) {
+                    let at = f.ctor().map_or(String::new(), |k| {
                         let td = schema.ty(schema.relation(r).elem_def);
                         format!("{}.", td.ctors()[k as usize].name)
                     });
                     push(
                         Space::Default,
-                        Slot::Default(r, dx, c),
+                        Slot::Default(r, dx, f),
                         format!("default {name} {at}{}", field.text),
                     );
                 }

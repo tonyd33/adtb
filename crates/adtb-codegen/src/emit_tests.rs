@@ -30,7 +30,7 @@ fn a_type_with_no_id_is_refused() {
 
 #[test]
 fn a_constructor_with_no_id_is_refused() {
-    let e = refusal(|ids| ids.ctor_ids().map(|((t, c), _)| Slot::Ctor(t, c)).collect());
+    let e = refusal(|ids| ids.ctor_ids().map(|(c, _)| Slot::Ctor(c)).collect());
     assert!(e.contains("has no catalog id"), "{e}");
 }
 

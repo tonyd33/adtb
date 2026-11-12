@@ -491,12 +491,9 @@ impl<R: Runtime> Database<R> {
     }
 
     fn ctor_id(&self, r: &Rel, c: u32) -> u64 {
-        held_id(
-            self.schema
-                .ids
-                .ctor_id(self.schema.relation(r.id).elem_def, c),
-        )
-        .raw()
+        let def = self.schema.relation(r.id).elem_def;
+        let ctor = self.schema.ty(def).ctor_at(c);
+        held_id(ctor.and_then(|c| self.schema.ids.ctor_id(c))).raw()
     }
 }
 

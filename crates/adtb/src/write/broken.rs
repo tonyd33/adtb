@@ -62,7 +62,6 @@ pub enum Broken {
     CallKeyNotInt,
     ExportNotSetTyped,
     ExportNotSet,
-    NoViolation,
     SettingNotRecord,
     SettingField(String),
     /// A catalog call fails with a catalog error other than a damaged page, an index entry or
@@ -174,7 +173,6 @@ impl fmt::Display for Broken {
             Broken::ExportNotSetTyped | Broken::ExportNotSet => {
                 f.write_str("an export's source is a set")
             }
-            Broken::NoViolation => f.write_str("`Finding` declares `Violation`"),
             Broken::SettingNotRecord => f.write_str("a setting's value is a record"),
             Broken::SettingField(name) => write!(f, "a setting's value has field `{name}`"),
             Broken::CatalogError(e) => f.write_str(&catalog::detail(e)),

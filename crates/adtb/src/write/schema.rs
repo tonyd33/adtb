@@ -108,7 +108,7 @@ fn refs(schema: &Schema, rel: RelId, c: u32, indexes: &[IndexDesc]) -> Vec<RefFi
             let index = match f.index {
                 ReferenceIndex::Key => ids.key_id(rel),
                 ReferenceIndex::Declared(i) => ids.index_id(rel, i),
-                ReferenceIndex::Implied => ids.implied_id(rel, f.ctor, &f.field),
+                ReferenceIndex::Implied => ids.implied_id(rel, f.field_ref()),
             };
             RefField {
                 at: f.at,

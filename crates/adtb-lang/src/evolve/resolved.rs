@@ -694,8 +694,8 @@ impl Resolver<'_> {
 
     fn ctor(&self, rel: RelId, name: &str) -> Option<u64> {
         let def = self.schema.relation(rel).elem_def;
-        let c = self.schema.ty(def).ctor_index(name)?;
-        self.schema.ids.ctor_id(def, c).map(CatCtorId::raw)
+        let c = self.schema.ty(def).ctor_named(name)?;
+        self.schema.ids.ctor_id(c).map(CatCtorId::raw)
     }
 
     /// Returns the id of the unique or index an operator appends to `rel`.
@@ -1169,8 +1169,8 @@ impl Resolver<'_> {
 
     fn type_ctor(&self, schema: &Schema, ty: &QName, ctor: &str) -> Option<u64> {
         let def = self.type_def(schema, ty)?;
-        let c = schema.ty(def).ctor_index(ctor)?;
-        schema.ids.ctor_id(def, c).map(CatCtorId::raw)
+        let c = schema.ty(def).ctor_named(ctor)?;
+        schema.ids.ctor_id(c).map(CatCtorId::raw)
     }
 
     /// Returns the name the field at `path` has after the renames of the operators after this one.
@@ -1190,17 +1190,16 @@ impl Resolver<'_> {
     }
 
     fn field_in(&self, schema: &Schema, path: &ast::FieldPath, name: &str) -> Option<u64> {
-        let def = self.type_def(schema, &path.ty)?;
-        let ctor = match &path.ctor {
-            Some(c) => Some(schema.ty(def).ctor_index(&c.text)?),
-            None => None,
+        let td = schema.ty(self.type_def(schema, &path.ty)?);
+        let f = match &path.ctor {
+            Some(c) => {
+                let c = td.ctor_named(&c.text)?;
+                td.field(Some(c), name)
+                    .filter(|f| f.ctor() == Some(c.index()))
+            }
+            None => td.field(td.ctor_at(0), name),
         };
-        let id = schema.ids.field_id(def, ctor, name);
-        id.or_else(|| match ctor {
-            None => schema.ids.field_id(def, Some(0), name),
-            Some(_) => None,
-        })
-        .map(CatFieldId::raw)
+        schema.ids.field_id(f?).map(CatFieldId::raw)
     }
 
     fn target(&self, t: &CtorTarget) -> Option<Target> {
@@ -1210,10 +1209,10 @@ impl Resolver<'_> {
                 let found = [self.schema, self.before].into_iter().find_map(|s| {
                     let rel = self.relation_in(s, &on.relation)?;
                     let def = s.relation(rel).elem_def;
-                    let k = s.ty(def).ctor_index(&c.text)?;
+                    let k = s.ty(def).ctor_named(&c.text)?;
                     Some((
                         held_id(s.ids.relation_id(rel)).raw(),
-                        s.ids.ctor_id(def, k)?.raw(),
+                        s.ids.ctor_id(k)?.raw(),
                     ))
                 })?;
                 Target::InRelation {

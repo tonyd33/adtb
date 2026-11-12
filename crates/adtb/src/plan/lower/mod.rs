@@ -416,8 +416,7 @@ impl Planner<'_> {
             Kind::Ctor { ctor, fields }
                 if fields.is_empty() && erase(self.t.ty(t)) == self.bool_ty() =>
             {
-                let def = self.schema.ty(self.schema.prelude_type("Bool"));
-                Some(Some(*ctor) == def.ctor_index("True"))
+                Some(*ctor == self.schema.engine_ctors().bool_true().index())
             }
             _ => None,
         }

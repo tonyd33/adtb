@@ -19,10 +19,7 @@ pub(in crate::api) fn initialize<R: Runtime>(
     let Some(ValueDef::Relation(roles)) = schema.module(module).values.get("roles") else {
         panic!("the catalog declares roles");
     };
-    let ctor = schema
-        .ty(schema.relation(*roles).elem_def)
-        .ctor_index("Role")
-        .expect("catalog roles declares Role");
+    let ctor = schema.engine_ctors().role().index();
     let fields = layout::row(schema, *roles, ctor);
     let name = fields
         .iter()

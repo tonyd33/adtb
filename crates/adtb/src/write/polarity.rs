@@ -151,14 +151,14 @@ impl Walk<'_> {
 
     /// Returns the truth `t` always has when it is a constant: `false` for the empty set.
     fn truth(&self, t: Tm) -> Option<bool> {
-        let bool_def = self.schema.prelude_type("Bool");
+        let true_ = self.schema.engine_ctors().bool_true();
         match self.terms.kind(t) {
             Kind::EmptySet => Some(false),
             Kind::Ctor { ctor, fields }
                 if fields.is_empty()
-                    && matches!(self.terms.ty(t), Ty::Data { def, .. } if *def == bool_def) =>
+                    && matches!(self.terms.ty(t), Ty::Data { def, .. } if *def == true_.def()) =>
             {
-                Some(Some(*ctor) == self.schema.ty(bool_def).ctor_index("True"))
+                Some(*ctor == true_.index())
             }
             _ => None,
         }

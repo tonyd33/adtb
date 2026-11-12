@@ -11,7 +11,7 @@ use crate::evolve::{Clause, Code, Logged, Resolved, ResolvedOp, RowFn, RowMap, S
 use crate::ids::{CatCtorId, CatFieldId, CatRelId, CatTypeId};
 use crate::kernel::{Kind, Terms, Tm};
 use crate::norm::{self, NormalProgram, NormalQuery};
-use crate::schema::{Schema, Stage};
+use crate::schema::{CtorRef, FieldRef, Schema, Stage};
 use crate::span::FileDiag;
 use crate::types::*;
 
@@ -282,13 +282,12 @@ impl<'a> Pinned<'a> {
         let to = self.map.def(def);
         let of = |field: u64| {
             let field = CatFieldId::from_raw(field);
-            from.ids.field_of(field).any(|(d, _, _)| *d == def)
+            from.field_holders(field).any(|f| f.def() == def)
                 || self
                     .map
                     .to
-                    .ids
-                    .field_of(field)
-                    .any(|(d, _, _)| Some(*d) == to)
+                    .field_holders(field)
+                    .any(|f| Some(f.def()) == to)
         };
         self.blame(|o| match &o.op {
             Resolved::AddConstructor { sum, .. } => Some(*sum) == id,
@@ -322,10 +321,17 @@ impl<'a> Pinned<'a> {
         })
     }
 
+    /// Returns the catalog id constructor `c` of `def` has at the earlier version.
+    fn ctor_id(&self, def: TypeId, c: u32) -> Option<u64> {
+        let from = self.map.from;
+        let c = from.ty(def).ctor_at(c)?;
+        from.ids.ctor_id(c).map(CatCtorId::raw)
+    }
+
     /// Returns the text of the first operator that removes, splits, unnests, merges or nests
     /// constructor `c` of `def`.
     fn blame_ctor(&self, def: TypeId, c: u32) -> Option<String> {
-        let id = self.map.from.ids.ctor_id(def, c).map(CatCtorId::raw);
+        let id = self.ctor_id(def, c);
         self.blame(|o| match &o.op {
             Resolved::RemoveConstructor { ctor }
             | Resolved::Split { ctor, .. }
@@ -369,11 +375,15 @@ impl<'a> Pinned<'a> {
         }
         defs.extend(rels.iter().map(|&r| from.relation(r).elem_def));
         let ids = &self.map.from.ids;
-        let ctor_def = |id: u64| ids.ctor_of(CatCtorId::from_raw(id)).next().map(|(d, _)| d);
-        let field_def = |id: u64| {
-            ids.field_of(CatFieldId::from_raw(id))
+        let ctor_def = |id: u64| {
+            ids.ctor_of(CatCtorId::from_raw(id))
                 .next()
-                .map(|(d, _, _)| *d)
+                .map(CtorRef::def)
+        };
+        let field_def = |id: u64| {
+            from.field_holders(CatFieldId::from_raw(id))
+                .next()
+                .map(FieldRef::def)
         };
         for o in self.ops.iter() {
             let members = o.clauses.iter().filter_map(|c| match c {
@@ -473,7 +483,7 @@ impl<'a> Pinned<'a> {
         let was = self.map.from.stages.get(&(rel, c)).copied();
         let now = self.map.to.stages.get(&(to_rel, k)).copied();
         if was.is_none() && now.is_some() {
-            let id = self.map.from.ids.ctor_id(def, c).map(CatCtorId::raw);
+            let id = self.ctor_id(def, c);
             let op = self.blame(|o| match &o.op {
                 Resolved::Disable { target } | Resolved::Deprecate { target } => {
                     matches!(target, crate::evolve::Target::InRelation { ctor, .. } if Some(*ctor) == id)

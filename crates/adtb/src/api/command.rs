@@ -681,10 +681,7 @@ impl<R: Runtime> Engine<R> {
         found: &DynRows,
     ) -> Result<(), write::Error> {
         let findings = engine_relation(schema, "sys", "verify_findings")?;
-        let violation = schema
-            .ty(schema.relation(findings).elem_def)
-            .ctor_index("Violation")
-            .ok_or(write::Broken::NoViolation)?;
+        let violation = schema.engine_ctors().violation().index();
         let finding = schema.ty(schema.relation(findings).elem_def);
         let constraint_at = finding.header().len();
         let holds = issuer.holds.as_ref();
@@ -788,7 +785,8 @@ impl<R: Runtime> Engine<R> {
             .zip(record.fields()?)
             .collect();
         let ctor = &schema.ty(def).ctors()[setting as usize];
-        let id = held_id(schema.ids.ctor_id(def, setting)).raw();
+        let id = schema.ty(def).ctor_at(setting);
+        let id = held_id(id.and_then(|c| schema.ids.ctor_id(c))).raw();
         let mut fields = vec![Val::Int(i64::try_from(id).unwrap_or(i64::MAX))];
         for f in &ctor.fields {
             let v = given

@@ -209,7 +209,7 @@ fn field_type(schema: &Schema, name: &str, ctor: &str, field: &str) -> String {
         .ctor_index(ctor)
         .unwrap_or_else(|| panic!("no constructor {name}.{ctor}"));
     let f = def
-        .field(c, field)
+        .field_named(c, field)
         .unwrap_or_else(|| panic!("no field {name}.{ctor}.{field}"));
     schema.show_ty(&f.ty)
 }

@@ -209,7 +209,9 @@ impl Builder<'_> {
                         mode: TypeMode::Field,
                     };
                     let ty = self.resolve_type(file, &scope, ty).unwrap_or(Ty::Unit);
-                    if (0..def.ctors().len() as u32).any(|i| def.field(i, &name.text).is_some()) {
+                    if (0..def.ctors().len() as u32)
+                        .any(|i| def.field_named(i, &name.text).is_some())
+                    {
                         self.err(
                             file,
                             name.span,
@@ -343,9 +345,9 @@ impl Builder<'_> {
             },
         };
         let field_ty = match ctor_idx {
-            Some(i) => def.field(i, &field.text).map(|f| f.ty.clone()),
+            Some(i) => def.field_named(i, &field.text).map(|f| f.ty.clone()),
             None => (0..def.ctors().len() as u32)
-                .find_map(|i| def.field(i, &field.text))
+                .find_map(|i| def.field_named(i, &field.text))
                 .map(|f| f.ty.clone()),
         };
         let Some(field_ty) = field_ty else {

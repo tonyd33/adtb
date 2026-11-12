@@ -419,7 +419,7 @@ impl Builder<'_> {
                 continue;
             }
             let def = self.schema.ty(r.elem_def);
-            if let Some(f) = def.field(0, &r.key[0])
+            if let Some(f) = def.field_named(0, &r.key[0])
                 && matches!(f.ty, Ty::Key { rel, .. } if rel == id)
             {
                 owner.insert(r.elem_def, id);
@@ -604,7 +604,7 @@ impl<'a> Builder<'a> {
                 format!("type `{}` is declared twice", t.name.text),
             );
         }
-        let skeleton = self.type_skeleton(module, file, t);
+        let skeleton = self.type_skeleton(id, module, file, t);
         self.schema.types.push(skeleton);
         d.types.push((file, module, id, t));
     }

@@ -8,7 +8,9 @@ use crate::check::{Program, Query, Txn, check_query_in, check_txn_in};
 use crate::evolve::Source;
 use crate::parse::{Options, parse_adhoc, parse_bundle, parse_migration};
 use crate::resolve::{Visible, lookup_value};
-use crate::schema::{PRELUDE, Schema, TypeDefKind, TypeMode, TypeScope, ValueDef, resolve_type};
+use crate::schema::{
+    FieldPart, PRELUDE, Schema, TypeDefKind, TypeMode, TypeScope, ValueDef, resolve_type,
+};
 use crate::span::{Diag, FileId, Span};
 use crate::types::{Base, CtorSet, FnId, RelId, Ty, TypeId};
 
@@ -143,8 +145,9 @@ impl IdWalk<'_> {
 
     fn ctor_id(&self, def: TypeId, ctor: u32, name: &str) -> Id {
         self.schema
-            .ids
-            .ctor_id(def, ctor)
+            .ty(def)
+            .ctor_at(ctor)
+            .and_then(|c| self.schema.ids.ctor_id(c))
             .map_or_else(|| Id::Name(name.to_owned()), |id| Id::Catalog(id.raw()))
     }
 
@@ -155,21 +158,18 @@ impl IdWalk<'_> {
             .collect()
     }
 
-    fn fields(
-        &mut self,
-        def: TypeId,
-        ctor: Option<u32>,
-        fields: &[crate::schema::FieldDef],
-    ) -> BTreeMap<Id, Shape> {
-        fields
-            .iter()
-            .map(|f| {
-                let id = self
-                    .schema
+    fn fields(&mut self, def: TypeId, part: FieldPart) -> BTreeMap<Id, Shape> {
+        let schema = self.schema;
+        schema
+            .ty(def)
+            .field_refs()
+            .filter(|(f, _)| f.part() == part)
+            .map(|(f, d)| {
+                let id = schema
                     .ids
-                    .field_id(def, ctor, &f.name)
-                    .map_or_else(|| Id::Name(f.name.clone()), |id| Id::Catalog(id.raw()));
-                (id, self.shape(&f.ty))
+                    .field_id(f)
+                    .map_or_else(|| Id::Name(d.name.clone()), |id| Id::Catalog(id.raw()));
+                (id, self.shape(&d.ty))
             })
             .collect()
     }
@@ -181,15 +181,15 @@ impl IdWalk<'_> {
         }
         self.named.insert(id.clone(), Named::default());
         let named = match &self.schema.ty(def).kind {
-            TypeDefKind::Sum { header, ctors, .. } => Named {
-                header: self.fields(def, None, header),
+            TypeDefKind::Sum { ctors, .. } => Named {
+                header: self.fields(def, FieldPart::Header),
                 ctors: ctors
                     .iter()
                     .zip(0u32..)
                     .map(|(c, i)| {
                         (
                             self.ctor_id(def, i, &c.name),
-                            self.fields(def, Some(i), &c.fields),
+                            self.fields(def, FieldPart::Ctor(i)),
                         )
                     })
                     .collect(),

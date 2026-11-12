@@ -255,12 +255,12 @@ fn revealing(schema: &Schema) -> BTreeSet<u64> {
         let Ok(rel) = engine_relation(schema, module, relation) else {
             continue;
         };
-        let def = schema.relation(rel).elem_def;
+        let td = schema.ty(schema.relation(rel).elem_def);
         out.extend(
             schema
                 .ids
-                .type_field_ids(def)
-                .filter(|((_, _, name), _)| name == field)
+                .type_field_ids(td.id())
+                .filter(|(f, _)| td.field_def(*f).name == *field)
                 .map(|(_, id)| id.raw()),
         );
     }

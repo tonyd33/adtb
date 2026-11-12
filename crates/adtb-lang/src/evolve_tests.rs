@@ -1,5 +1,6 @@
 use super::*;
 use crate::parse::parse_migration;
+use crate::schema::{CtorRef, FieldRef};
 
 #[path = "evolve_grant_tests.rs"]
 mod grants;
@@ -2242,9 +2243,16 @@ fn log_grants_are_stored_in_the_source_by_catalog_id() {
         .raw();
     let ctor = |n: &str| {
         let c = schema.ty(identity).ctor_index(n).unwrap();
-        schema.ids.ctor_id(identity, c).unwrap().raw()
+        schema
+            .ids
+            .ctor_id(ctor_ref(&schema, identity, c))
+            .unwrap()
+            .raw()
     };
-    let user = schema.ids.field_id(identity, None, "user").unwrap().raw();
+    let user = field_ref(&schema, identity, None, "user")
+        .and_then(|f| schema.ids.field_id(f))
+        .unwrap()
+        .raw();
     let read = LogGrant {
         role: "support".into(),
         privilege: Granted::Read(
@@ -2822,12 +2830,15 @@ add constructor Identity.Corp { domain: Text }
     let corp = schema.ty(identity).ctor_index("Corp").unwrap();
     assert_eq!(
         Some(next),
-        schema.ids.ctor_id(identity, corp).map(u64::from)
+        schema
+            .ids
+            .ctor_id(ctor_ref(&schema, identity, corp))
+            .map(u64::from)
     );
     let apple = schema.ty(identity).ctor_index("Apple").unwrap();
     assert_eq!(
-        base.ids.ctor_id(identity, apple),
-        schema.ids.ctor_id(identity, apple)
+        base.ids.ctor_id(ctor_ref(&base, identity, apple)),
+        schema.ids.ctor_id(ctor_ref(&schema, identity, apple))
     );
 }
 
@@ -2848,10 +2859,13 @@ rename field Login.Gmail.gid to subject",
     assert_eq!(base.ids.type_id(old_t), schema.ids.type_id(new_t));
     let g = base.ty(old_t).ctor_index("Google").unwrap();
     let gm = schema.ty(new_t).ctor_index("Gmail").unwrap();
-    assert_eq!(base.ids.ctor_id(old_t, g), schema.ids.ctor_id(new_t, gm));
     assert_eq!(
-        base.ids.field_id(old_t, Some(g), "gid"),
-        schema.ids.field_id(new_t, Some(gm), "subject")
+        base.ids.ctor_id(ctor_ref(&base, old_t, g)),
+        schema.ids.ctor_id(ctor_ref(&schema, new_t, gm))
+    );
+    assert_eq!(
+        field_ref(&base, old_t, Some(g), "gid").and_then(|f| base.ids.field_id(f)),
+        field_ref(&schema, new_t, Some(gm), "subject").and_then(|f| schema.ids.field_id(f))
     );
     let (old_r, new_r) = (rel(&base, "identities"), rel(&schema, "logins"));
     assert_eq!(base.ids.relation_id(old_r), schema.ids.relation_id(new_r));
@@ -2879,11 +2893,12 @@ fn ids_are_never_reused() {
         .index_id(r, first.relation(r).indexes.len() - 1)
         .unwrap()
         .raw();
-    assert!(first.ids.implied_ids().all(|(i, _, _, _)| i != r));
+    assert!(first.ids.implied_ids().all(|(i, _, _)| i != r));
     let s = applies(&s, "module auth\ndrop index (user) in identities");
     let dropped = ids_of(&s);
     let r = rel(&dropped, "identities");
-    let implied = dropped.ids.implied_id(r, None, "user").unwrap().raw();
+    let user = field_ref(&dropped, dropped.relation(r).elem_def, None, "user").unwrap();
+    let implied = dropped.ids.implied_id(r, user).unwrap().raw();
     assert_eq!(added + 1, implied);
     let s = applies(&s, "module auth\nadd index (user) in identities");
     let again = ids_of(&s);
@@ -2928,7 +2943,10 @@ redefine fn display_name (i: Identity) -> Text = match i
     let schema = ids_of(&s);
     let t = ty(&schema, "Identity");
     let apple = schema.ty(t).ctor_index("Apple").unwrap();
-    assert_ne!(base.ids.ctor_id(t, apple), schema.ids.ctor_id(t, apple));
+    assert_ne!(
+        base.ids.ctor_id(ctor_ref(&base, t, apple)),
+        schema.ids.ctor_id(ctor_ref(&schema, t, apple))
+    );
 }
 
 #[test]
@@ -2962,7 +2980,9 @@ enable post_badges.Emoji",
 fn field_id(s: &Schema, t: &str, c: Option<&str>, f: &str) -> Option<u64> {
     let def = ty(s, t);
     let c = c.map(|c| s.ty(def).ctor_index(c).expect("a constructor"));
-    s.ids.field_id(def, c, f).map(u64::from)
+    field_ref(s, def, c, f)
+        .and_then(|f| s.ids.field_id(f))
+        .map(u64::from)
 }
 
 #[test]
@@ -3066,7 +3086,7 @@ fn a_rescoped_index_is_a_new_index() {
         .index_ids()
         .map(|(_, id)| id)
         .chain(base.ids.key_ids().map(|(_, id)| id))
-        .chain(base.ids.implied_ids().map(|(_, _, _, id)| id))
+        .chain(base.ids.implied_ids().map(|(_, _, id)| id))
         .max()
         .unwrap()
         .raw()
@@ -3474,7 +3494,7 @@ add relation teams : Team key id generate sequence";
         .iter()
         .find(|t| t.name == "Team")
         .expect("Team is declared");
-    let id = team.field(0, "id").expect("Team has field id");
+    let id = team.field_named(0, "id").expect("Team has field id");
     assert_eq!("Key teams", schema.show_ty(&id.ty));
 }
 
@@ -3510,4 +3530,15 @@ add constructor Identity.Corp { domain: Text }
     let r = running().migrate(&m, text).unwrap_err();
     assert!(!r.recheck.is_empty());
     assert_eq!(vec![None; r.recheck.len()], r.recheck_from);
+}
+
+fn ctor_ref(s: &Schema, def: TypeId, c: u32) -> CtorRef {
+    s.ty(def).ctor_at(c).expect("a constructor")
+}
+
+/// Returns field `name` of constructor `c` of `def` of `s`, of the header for `None`.
+fn field_ref(s: &Schema, def: TypeId, c: Option<u32>, name: &str) -> Option<FieldRef> {
+    let td = s.ty(def);
+    td.field(c.and_then(|c| td.ctor_at(c)), name)
+        .filter(|f| f.ctor() == c)
 }

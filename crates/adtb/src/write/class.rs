@@ -89,7 +89,6 @@ impl Broken {
             | Broken::CallKeyNotInt
             | Broken::ExportNotSetTyped
             | Broken::ExportNotSet
-            | Broken::NoViolation
             | Broken::SettingNotRecord
             | Broken::SettingField(_)
             | Broken::CatalogError(_)

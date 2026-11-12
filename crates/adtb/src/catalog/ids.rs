@@ -2,7 +2,7 @@ pub use adtb_lang::ids::held_id;
 pub use adtb_lang::ids::{
     CatConstraintId, CatCtorId, CatFieldId, CatIndexId, CatRelId, CatSetId, CatTypeId,
 };
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::{CtorRef, Schema};
 use adtb_lang::types::{RelId, TypeId};
 
 use crate::key::CtorId;
@@ -26,7 +26,12 @@ pub fn ctor_id(schema: &Schema, r: RelId, c: u32) -> CatCtorId {
 
 /// Returns the catalog id of constructor `c` of type `def` of `schema`.
 pub fn type_ctor_id(schema: &Schema, def: TypeId, c: u32) -> CatCtorId {
-    held_id(schema.ids.ctor_id(def, c))
+    held_id(
+        schema
+            .ty(def)
+            .ctor_at(c)
+            .and_then(|c| schema.ids.ctor_id(c)),
+    )
 }
 
 pub fn type_id(schema: &Schema, def: TypeId) -> Option<CatTypeId> {
@@ -36,9 +41,8 @@ pub fn type_id(schema: &Schema, def: TypeId) -> Option<CatTypeId> {
 /// Returns the catalog id of field `name` of constructor `c` of type `def`, a header field's
 /// when the header has one by that name.
 pub fn field_id(schema: &Schema, def: TypeId, c: u32, name: &str) -> Option<CatFieldId> {
-    let ids = &schema.ids;
-    ids.field_id(def, None, name)
-        .or_else(|| ids.field_id(def, Some(c), name))
+    let td = schema.ty(def);
+    schema.ids.field_id(td.field(td.ctor_at(c), name)?)
 }
 
 /// Returns the relation of `schema` whose catalog id is `id`.
@@ -61,6 +65,6 @@ pub fn type_ctor_index(schema: &Schema, def: TypeId, id: CatCtorId) -> Option<u3
     schema
         .ids
         .ctor_of(id)
-        .find(|&(d, _)| d == def)
-        .map(|(_, k)| k)
+        .find(|c| c.def() == def)
+        .map(CtorRef::index)
 }

@@ -819,3 +819,80 @@ fn only_key_names_sorts_the_fields_of_a_key() {
     let rule = "crates/adtb-lang/src/textual/form.rs: names.sort();";
     assert_eq!(vec![membership[0], membership[1], rule], found);
 }
+
+#[test]
+fn an_old_key_over_a_field_id_two_fields_share_names_the_least_by_name() {
+    use adtb_lang::ids::Slot;
+
+    use super::ids::{CatFieldId, CatIndexId};
+    use super::pending::kept_indexes;
+    use super::readers::{Kind, Pending};
+
+    let source = migrated(
+        &Source::default(),
+        "module app\nadd module app\nadd type P = { k: I64, z: I64, a: I64 }\nadd relation ps : P key k\n",
+    );
+    let mut schema = source.schema().expect("the schema builds");
+    let (r, rel) = schema
+        .ids
+        .relation_ids()
+        .find(|(r, _)| schema.relation(*r).name == "ps")
+        .expect("relation ps");
+    let td = schema.ty(schema.relation(r).elem_def);
+    let field = |name| td.field(td.ctor_at(0), name).expect("a field of P");
+    let (z, a) = (field("z"), field("a"));
+    let id: CatFieldId = schema.ids.field_id(z).expect("an id of z");
+    schema.ids.set(&Slot::Field(a), id.raw());
+    let index = CatIndexId::from_raw(1 << 31);
+    let pending = Pending {
+        module: "app".to_string(),
+        name: "ps key".to_string(),
+        kind: Kind::Key {
+            index,
+            relation: rel,
+            fields: vec![id],
+        },
+        dropped: 1,
+        blocking: BTreeSet::from(["b-1".to_string()]),
+    };
+    let kept = kept_indexes(&schema, &[pending]).expect("the old key has an image");
+    assert_eq!(vec!["a".to_string()], kept[&index.raw()].fields);
+}
+
+#[test]
+fn the_fields_of_one_constructor_are_written_in_name_order() {
+    let source = migrated(
+        &Source::default(),
+        "module app\nadd module app\nadd type P = { k: I64, z: I64, a: I64 }\nadd relation ps : P key k\n",
+    );
+    let schema = source.schema().expect("it builds");
+    let catalog = schema.module_named("catalog").expect("the catalog module");
+    let Some(&adtb_lang::schema::ValueDef::Relation(fields)) =
+        schema.module(catalog).values.get("fields")
+    else {
+        panic!("the catalog declares `fields`")
+    };
+    let app = schema.module_named("app").expect("the app module");
+    let p = schema.ty(schema.module(app).types["P"]);
+    let ctor = schema.ids.ctor_id(p.ctor_at(0).unwrap()).unwrap();
+    let payload = schema
+        .ty(schema.relation(fields).elem_def)
+        .ctor_named("Payload")
+        .unwrap()
+        .index();
+    let declared_fields = layout::row(&schema, fields, payload);
+    let at = |name: &str| declared_fields.iter().position(|(n, _)| n == name).unwrap();
+    let names: Vec<Value> = declared(&schema, &source)[&fields]
+        .iter()
+        .filter(|(c, row)| *c == payload && row[at("ctor")] == Value::I64(ctor.raw() as i64))
+        .map(|(_, row)| row[at("name")].clone())
+        .collect();
+    assert_eq!(
+        vec![
+            Value::Text("a".to_string()),
+            Value::Text("k".to_string()),
+            Value::Text("z".to_string()),
+        ],
+        names
+    );
+}

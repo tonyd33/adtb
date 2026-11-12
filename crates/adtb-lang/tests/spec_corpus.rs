@@ -266,8 +266,12 @@ fn engine_ids_are_the_fixed_ids_of_the_spec() {
         };
         for (c, cid) in ctors {
             let newtype = matches!(td.kind, adtb_lang::schema::TypeDefKind::Newtype { .. });
-            let index = if newtype { Some(0) } else { td.ctor_index(&c) };
-            let got = index.and_then(|k| schema.ids.ctor_id(t, k));
+            let at = if newtype {
+                td.ctor_at(0)
+            } else {
+                td.ctor_named(&c)
+            };
+            let got = at.and_then(|k| schema.ids.ctor_id(k));
             if got.map(u64::from) != Some(cid) {
                 failures.push(format!("constructor {m}::{name}.{c}: {got:?}, not {cid}"));
             }

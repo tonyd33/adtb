@@ -50,10 +50,7 @@ struct Shape {
 impl Shape {
     fn of(schema: &Schema) -> Shape {
         let grants = relation(schema, "grants");
-        let ctor = schema
-            .ty(schema.relation(grants).elem_def)
-            .ctor_index("RoleGrant")
-            .expect("catalog grants declares RoleGrant");
+        let ctor = schema.engine_ctors().role_grant().index();
         let names = layout::row(schema, grants, ctor)
             .into_iter()
             .map(|(n, _)| n)

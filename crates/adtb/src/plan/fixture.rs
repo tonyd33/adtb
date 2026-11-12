@@ -174,7 +174,7 @@ pub fn catalog(schema: &Schema) -> Catalog {
             });
         }
         for implied in schema.implied_indexes(rel) {
-            let Some(id) = ids.implied_id(rel, implied.ctor, &implied.field) else {
+            let Some(id) = ids.implied_id(rel, implied.field_ref()) else {
                 assert!(
                     schema.module(r.module).engine,
                     "every implied index of a user relation has an id"

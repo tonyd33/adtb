@@ -220,10 +220,10 @@ impl Changes {
                 }
             }
         }
-        for ((def, c), id) in b.ids.ctor_ids() {
-            if let Some((d, k)) = a.ids.ctor_of(id).next_back()
-                && a.value_stage(d, k) != Stage::Enabled
-                && b.value_stage(def, c) == Stage::Enabled
+        for (bc, id) in b.ids.ctor_ids() {
+            if let Some(ac) = a.ids.ctor_of(id).next_back()
+                && a.value_stage(ac.def(), ac.index()) != Stage::Enabled
+                && b.value_stage(bc.def(), bc.index()) == Stage::Enabled
             {
                 self.value_enabled.insert(id);
             }
@@ -734,10 +734,11 @@ pub fn stale(source: &Source, now: &Schema, reader: &Reader) -> Result<Option<St
             }
         }
     }
-    for ((def, c), _) in now.ids.ctor_ids() {
-        if now.value_stage(def, c) != Stage::Declared && p.blocks_value(now, def, c).is_some() {
+    for (c, _) in now.ids.ctor_ids() {
+        let (def, k) = (c.def(), c.index());
+        if now.value_stage(def, k) != Stage::Declared && p.blocks_value(now, def, k).is_some() {
             let t = now.ty(def);
-            return Ok(Some(format!("{}.{}", t.name, t.ctors()[c as usize].name)));
+            return Ok(Some(format!("{}.{}", t.name, t.ctors()[k as usize].name)));
         }
     }
     Ok(None)
@@ -800,13 +801,13 @@ fn pinned(schema: &Schema, reader: &Reader) -> Result<Pinned, String> {
             }
             Read::Field { relation, field } => {
                 let r = relation_named(schema, relation)?;
-                let def = schema.relation(r).elem_def;
+                let td = schema.ty(schema.relation(r).elem_def);
                 let before = p.fields.len();
                 p.fields.extend(
                     schema
                         .ids
-                        .type_field_ids(def)
-                        .filter(|((_, _, n), _)| n == field)
+                        .type_field_ids(td.id())
+                        .filter(|(f, _)| td.field_def(*f).name == *field)
                         .map(|(_, id)| id),
                 );
                 if p.fields.len() == before {
@@ -855,25 +856,15 @@ fn ctor_of(schema: &Schema, rid: CatRelId, cid: CatCtorId) -> Option<(RelId, u32
 
 /// Returns the type and constructor index of constructor `cid` of `schema`.
 fn value_ctor(schema: &Schema, cid: CatCtorId) -> Option<(TypeId, u32)> {
-    schema.ids.ctor_of(cid).next()
+    schema.ids.ctor_of(cid).next().map(|c| (c.def(), c.index()))
 }
 
 /// Returns the type, in `schema`, of each field `p` reads.
 fn read_fields<'s>(schema: &'s Schema, p: &'s Pinned) -> impl Iterator<Item = &'s Ty> {
     p.fields
         .iter()
-        .flat_map(|&id| schema.ids.field_of(id))
-        .filter_map(|(def, c, name)| field_type(schema, *def, *c, name))
-}
-
-/// Returns the type of field `name` of constructor `c` of type `def`, of its header for `None`.
-fn field_type<'s>(schema: &'s Schema, def: TypeId, c: Option<u32>, name: &str) -> Option<&'s Ty> {
-    let t = schema.ty(def);
-    let fields = match c {
-        None => t.header(),
-        Some(c) => &t.ctors().get(c as usize)?.fields,
-    };
-    fields.iter().find(|f| f.name == name).map(|f| &f.ty)
+        .flat_map(|&id| schema.field_holders(id))
+        .map(|f| &schema.ty(f.def()).field_def(f).ty)
 }
 
 /// Returns the catalog id of each declared unique of `schema`, with its relation and its clause.

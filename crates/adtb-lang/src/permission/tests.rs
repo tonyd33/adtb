@@ -64,10 +64,10 @@ fn target(s: &Schema, name: &str, ctor: &str) -> Target {
             .expect("relation") as u32,
     );
     let d = s.relation(r).elem_def;
-    let c = s.ty(d).ctor_index(ctor).expect("constructor");
+    let c = s.ty(d).ctor_named(ctor).expect("constructor");
     Target {
         relation: s.ids.relation_id(r).unwrap(),
-        constructor: s.ids.ctor_id(d, c).unwrap(),
+        constructor: s.ids.ctor_id(c).unwrap(),
     }
 }
 
@@ -77,10 +77,9 @@ fn field(s: &Schema, relation: &str, ctor: &str, name: &str) -> CatFieldId {
         .iter()
         .find(|r| r.name == relation)
         .expect("relation");
-    let d = r.elem_def;
-    let c = s.ty(d).ctor_index(ctor).expect("constructor");
-    let own = (!s.ty(d).header().iter().any(|f| f.name == name)).then_some(c);
-    s.ids.field_id(d, own, name).unwrap()
+    let td = s.ty(r.elem_def);
+    let f = td.field(td.ctor_named(ctor), name).expect("field");
+    s.ids.field_id(f).unwrap()
 }
 
 fn reads(s: &Schema, relation: &str, ctor: &str, names: &[&str]) -> BTreeSet<Requirement> {

@@ -362,9 +362,9 @@ impl Compiler<'_> {
     fn is_false(&self, t: Tm) -> bool {
         match self.terms.kind(t) {
             Kind::Ctor { ctor, fields } if fields.is_empty() => {
-                let def = self.schema.ty(self.schema.prelude_type("Bool"));
-                matches!(self.terms.ty(t), Ty::Data { def: d, .. } if *d == self.schema.prelude_type("Bool"))
-                    && Some(*ctor) == def.ctor_index("False")
+                let false_ = self.schema.engine_ctors().bool_false();
+                matches!(self.terms.ty(t), Ty::Data { def: d, .. } if *d == false_.def())
+                    && *ctor == false_.index()
             }
             _ => false,
         }
@@ -896,11 +896,7 @@ impl Compiler<'_> {
     }
 
     fn falsity(&mut self) -> Tm {
-        let ctor = self
-            .schema
-            .ty(self.schema.prelude_type("Bool"))
-            .ctor_index("False")
-            .expect("the prelude's Bool has False");
+        let ctor = self.schema.engine_ctors().bool_false().index();
         self.add(
             Kind::Ctor {
                 ctor,

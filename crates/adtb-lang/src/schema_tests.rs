@@ -72,7 +72,10 @@ fn running_schema_builds() {
     assert_eq!(r.generate, Some(Generator::Uuidv7));
     assert_eq!(r.sets[0].ctors, vec![1]);
     let def = s.ty(r.elem_def);
-    assert!(matches!(def.field(0, "user").unwrap().ty, Ty::Key { .. }));
+    assert!(matches!(
+        def.field_named(0, "user").unwrap().ty,
+        Ty::Key { .. }
+    ));
     assert_eq!(s.show_ty(&r.elem), "Identity");
 }
 
@@ -199,10 +202,10 @@ fn reference_selections_name_constructors_or_sets() {
     let auth = s.module_named("auth").unwrap();
     let t = s.ty(s.module(auth).types["R"]);
     assert!(
-        matches!(&t.field(0, "g").unwrap().ty, Ty::Key { ctors: Some(c), .. } if *c == vec![1])
+        matches!(&t.field_named(0, "g").unwrap().ty, Ty::Key { ctors: Some(c), .. } if *c == vec![1])
     );
     assert!(matches!(
-        &t.field(0, "e").unwrap().ty,
+        &t.field_named(0, "e").unwrap().ty,
         Ty::Key { ctors: None, .. }
     ));
     let bad = format!(
@@ -679,13 +682,26 @@ fn declarations_take_ids_in_declaration_order_from_1024() {
     let users = rel_id(&s, "auth", "users");
     let identities = rel_id(&s, "auth", "identities");
     assert_eq!(Some(1024), s.ids.type_id(user).map(u64::from));
-    assert_eq!(Some(1025), s.ids.ctor_id(user, 0).map(u64::from));
+    assert_eq!(
+        Some(1025),
+        s.ids.ctor_id(ctor_ref(&s, user, 0)).map(u64::from)
+    );
     assert_eq!(Some(1026), s.ids.type_id(identity).map(u64::from));
-    assert_eq!(Some(1027), s.ids.ctor_id(identity, 0).map(u64::from));
-    assert_eq!(Some(1028), s.ids.ctor_id(identity, 1).map(u64::from));
+    assert_eq!(
+        Some(1027),
+        s.ids.ctor_id(ctor_ref(&s, identity, 0)).map(u64::from)
+    );
+    assert_eq!(
+        Some(1028),
+        s.ids.ctor_id(ctor_ref(&s, identity, 1)).map(u64::from)
+    );
     assert_eq!(Some(1029), s.ids.relation_id(users).map(u64::from));
     assert_eq!(Some(1030), s.ids.relation_id(identities).map(u64::from));
-    let field = |t, c, f: &str| s.ids.field_id(t, c, f).map(u64::from);
+    let field = |t, c, f: &str| {
+        field_ref(&s, t, c, f)
+            .and_then(|f| s.ids.field_id(f))
+            .map(u64::from)
+    };
     assert_eq!(Some(1024), field(user, Some(0), "id"));
     assert_eq!(Some(1025), field(user, Some(0), "name"));
     assert_eq!(Some(1026), field(identity, None, "id"));
@@ -700,6 +716,99 @@ fn declarations_take_ids_in_declaration_order_from_1024() {
     assert_eq!(Some(1025), s.ids.generated_id(identities).map(u64::from));
     assert_eq!(Some(1024), s.ids.set_id(identities, "OAuth").map(u64::from));
     assert_eq!(Some(1024), s.ids.function_id(FnId(0)).map(u64::from));
+}
+
+#[test]
+fn a_constructor_ref_is_minted_only_for_a_constructor_the_type_has() {
+    let s = build_src(&[RUNNING, "module mail\ntype Email = new Text"]).unwrap();
+    let identity = s.ty(type_id(&s, "Identity"));
+    let google = identity
+        .ctor_named("Google")
+        .expect("Identity declares Google");
+    assert_eq!((type_id(&s, "Identity"), 1), (google.def(), google.index()));
+    assert_eq!(Some(google), identity.ctor_at(1));
+    assert_eq!(None, identity.ctor_named("Missing"));
+    assert_eq!(None, identity.ctor_at(2));
+    assert_eq!(
+        vec![identity.ctor_named("EmailPass"), Some(google)],
+        identity.ctor_refs().map(Some).collect::<Vec<_>>()
+    );
+    let email = s.ty(type_id(&s, "Email"));
+    assert_eq!(None, email.ctor_named("Email"));
+    let only = email.ctor_at(0).expect("a newtype's one constructor");
+    assert_eq!((type_id(&s, "Email"), 0), (only.def(), only.index()));
+    assert_eq!(None, email.ctor_at(1));
+    assert_eq!(vec![only], email.ctor_refs().collect::<Vec<_>>());
+}
+
+#[test]
+fn a_field_ref_places_a_header_field_in_the_header_whichever_constructor_names_it() {
+    let s = build_src(&[RUNNING]).unwrap();
+    let identity = s.ty(type_id(&s, "Identity"));
+    let (email_pass, google) = (
+        identity.ctor_named("EmailPass"),
+        identity.ctor_named("Google"),
+    );
+    let place = |c, name: &str| identity.field(c, name).map(|f| (f.part(), f.pos()));
+    assert_eq!(Some((FieldPart::Header, 1)), place(None, "user"));
+    assert_eq!(Some((FieldPart::Header, 1)), place(google, "user"));
+    assert_eq!(Some((FieldPart::Ctor(0), 1)), place(email_pass, "hash"));
+    assert_eq!(Some((FieldPart::Ctor(1), 0)), place(google, "gid"));
+    assert_eq!(None, place(google, "hash"));
+    assert_eq!(None, place(None, "hash"));
+    assert_eq!(None, place(email_pass, "missing"));
+    let hash = identity.field(email_pass, "hash").unwrap();
+    assert_eq!("hash", identity.field_def(hash).name);
+    let names: Vec<_> = identity
+        .field_refs()
+        .map(|(f, d)| (f.ctor(), d.name.as_str()))
+        .collect();
+    let expected = [
+        (None, "id"),
+        (None, "user"),
+        (Some(0), "email"),
+        (Some(0), "hash"),
+        (Some(1), "gid"),
+    ];
+    assert_eq!(expected.to_vec(), names);
+}
+
+#[test]
+fn the_engine_constructors_name_their_declarations_and_the_schemas_own_principal() {
+    let named = |s: &Schema, c: CtorRef| {
+        let t = s.ty(c.def());
+        (
+            s.module(t.module).name.clone(),
+            t.name.clone(),
+            t.ctor_def(c).name.clone(),
+        )
+    };
+    let own = |m: &str, t: &str, c: &str| (m.to_string(), t.to_string(), c.to_string());
+    let s = build_src(&[]).unwrap();
+    let e = s.engine_ctors();
+    assert_eq!(own("prelude", "Bool", "False"), named(&s, e.bool_false()));
+    assert_eq!(own("prelude", "Bool", "True"), named(&s, e.bool_true()));
+    assert_eq!(
+        own("prelude", "Principal", "Service"),
+        named(&s, e.service())
+    );
+    assert_eq!(own("catalog", "Role", "Role"), named(&s, e.role()));
+    assert_eq!(
+        own("catalog", "RoleGrant", "RoleGrant"),
+        named(&s, e.role_grant())
+    );
+    assert_eq!(
+        own("catalog", "GrantKind", "Deployment"),
+        named(&s, e.deployment())
+    );
+    assert_eq!(own("sys", "Finding", "Violation"), named(&s, e.violation()));
+    let s = build_src(&[&module(
+        "type Principal = Service { name: Text } | EndUser { u: Text } | Anonymous",
+    )])
+    .unwrap();
+    let service = s.engine_ctors().service();
+    assert_eq!(own("m", "Principal", "Service"), named(&s, service));
+    assert_eq!(0, service.index());
 }
 
 /// Assert that the reverse lookup `of` finds exactly its object for each pair of `pairs`.
@@ -787,10 +896,16 @@ fn engine_types_constructors_and_relations_take_their_fixed_ids() {
     let s = build_src(&[]).unwrap();
     let bool_ = s.prelude_type("Bool");
     assert_eq!(Some(0), s.ids.type_id(bool_).map(u64::from));
-    assert_eq!(Some(2), s.ids.ctor_id(bool_, 1).map(u64::from));
+    assert_eq!(
+        Some(2),
+        s.ids.ctor_id(ctor_ref(&s, bool_, 1)).map(u64::from)
+    );
     let fault = s.prelude_type("RejectReason");
     let mig = s.ty(fault).ctor_index("MigrationInProgress").unwrap();
-    assert_eq!(Some(372), s.ids.ctor_id(fault, mig).map(u64::from));
+    assert_eq!(
+        Some(372),
+        s.ids.ctor_id(ctor_ref(&s, fault, mig)).map(u64::from)
+    );
     assert_eq!(
         Some(219),
         s.ids
@@ -816,9 +931,9 @@ fn engine_types_constructors_and_relations_take_their_fixed_ids() {
                 "no id for `{}`",
                 t.name
             );
-            for c in 0..t.ctors().len() as u32 {
+            for c in t.ctor_refs() {
                 assert!(
-                    s.ids.ctor_id(TypeId(i as u32), c).is_some(),
+                    s.ids.ctor_id(c).is_some(),
                     "no id for a constructor of `{}`",
                     t.name
                 );
@@ -845,7 +960,11 @@ fn every_constructor_is_enabled_in_a_schema_built_from_declarations() {
 #[test]
 fn row_too_large_takes_the_field_ids_after_internal() {
     let s = build_src(&[]).unwrap();
-    let field = |t, c, f: &str| s.ids.field_id(t, c, f).map(u64::from);
+    let field = |t, c, f: &str| {
+        field_ref(&s, t, c, f)
+            .and_then(|f| s.ids.field_id(f))
+            .map(u64::from)
+    };
     let reject = s.prelude_type("RejectReason");
     let too_large = s.ty(reject).ctor_index("RowTooLarge").unwrap();
     assert_eq!(Some(70), field(reject, Some(too_large), "relation"));
@@ -857,28 +976,39 @@ fn key_too_large_appends_fields_without_renumbering_engine_fields() {
     let s = build_src(&[]).unwrap();
     let reject = s.prelude_type("RejectReason");
     let ctor = s.ty(reject).ctor_index("KeyTooLarge").unwrap();
-    assert_eq!(Some(471), s.ids.ctor_id(reject, ctor).map(u64::from));
+    assert_eq!(
+        Some(471),
+        s.ids.ctor_id(ctor_ref(&s, reject, ctor)).map(u64::from)
+    );
     for (offset, name) in ["relation", "ctor", "index", "size", "limit"]
         .iter()
         .enumerate()
     {
         assert_eq!(
             Some(564 + offset as u64),
-            s.ids.field_id(reject, Some(ctor), name).map(u64::from)
+            field_ref(&s, reject, Some(ctor), name)
+                .and_then(|f| s.ids.field_id(f))
+                .map(u64::from)
         );
     }
     let limit = s.prelude_type("Limit");
     let rounds = s.ty(limit).ctor_index("Rounds").unwrap();
     assert_eq!(
         Some(563),
-        s.ids.field_id(limit, Some(rounds), "rounds").map(u64::from)
+        field_ref(&s, limit, Some(rounds), "rounds")
+            .and_then(|f| s.ids.field_id(f))
+            .map(u64::from)
     );
 }
 
 #[test]
 fn engine_fields_and_keys_take_their_fixed_ids() {
     let s = build_src(&[]).unwrap();
-    let field = |t, c, f: &str| s.ids.field_id(t, c, f).map(u64::from);
+    let field = |t, c, f: &str| {
+        field_ref(&s, t, c, f)
+            .and_then(|f| s.ids.field_id(f))
+            .map(u64::from)
+    };
     let option = s.prelude_type("Option");
     assert_eq!(Some(0), field(option, Some(1), "value"));
     let result = s.prelude_type("Result");
@@ -953,7 +1083,7 @@ fn the_engine_fields_of_catalog_and_sys_start_after_the_prelude() {
     let catalog_min = s
         .ids
         .field_ids()
-        .filter(|((t, _, _), _)| s.module(s.ty(*t).module).name != "prelude")
+        .filter(|(f, _)| s.module(s.ty(f.def()).module).name != "prelude")
         .map(|(_, id)| id.raw())
         .min();
     assert_eq!(Some(92), catalog_min);
@@ -1065,11 +1195,18 @@ fn a_privilege_clause_takes_its_fixed_ids() {
     let catalog = s.module_named("catalog").unwrap();
     let clause = s.module(catalog).types["ClauseBody"];
     let privilege = s.ty(clause).ctor_index("Privilege").unwrap();
-    assert_eq!(Some(472), s.ids.ctor_id(clause, privilege).map(u64::from));
+    assert_eq!(
+        Some(472),
+        s.ids
+            .ctor_id(ctor_ref(&s, clause, privilege))
+            .map(u64::from)
+    );
     for (name, id) in [("privilege", 569), ("target", 570)] {
         assert_eq!(
             Some(id),
-            s.ids.field_id(clause, Some(privilege), name).map(u64::from)
+            field_ref(&s, clause, Some(privilege), name)
+                .and_then(|f| s.ids.field_id(f))
+                .map(u64::from)
         );
     }
 }
@@ -1086,4 +1223,79 @@ fn a_key_reaches_the_types_of_its_relations_key_fields_at_their_arguments() {
     };
     assert!(s.reaches(&key, type_id(&s, "Tier")));
     assert!(!s.reaches(&key, type_id(&s, "Mark")));
+}
+
+fn ctor_ref(s: &Schema, def: TypeId, c: u32) -> CtorRef {
+    s.ty(def).ctor_at(c).expect("a constructor")
+}
+
+/// Returns field `name` of constructor `c` of `def` of `s`, of the header for `None`.
+fn field_ref(s: &Schema, def: TypeId, c: Option<u32>, name: &str) -> Option<FieldRef> {
+    let td = s.ty(def);
+    td.field(c.and_then(|c| td.ctor_at(c)), name)
+        .filter(|f| f.ctor() == c)
+}
+
+#[test]
+fn two_fields_of_one_constructor_sharing_an_id_resolve_by_name() {
+    use crate::evolve::{GrantFields, GrantSel, GrantTarget, Granted};
+    use crate::ids::{CatCtorId, CatFieldId, Slot};
+    use crate::permission::{Requirement, Target};
+    use crate::translate::Map;
+
+    let mut s = build_src(&[&module(
+        "type P = { k: I64, z: I64, a: I64 }\nrelation ps : P key k",
+    )])
+    .unwrap();
+    let def = type_id(&s, "P");
+    let held = |s: &Schema, name| {
+        let f = field_ref(s, def, Some(0), name).expect("a field of P");
+        s.ids.field_id(f).expect("a field id")
+    };
+    let id = held(&s, "z");
+    let a = field_ref(&s, def, Some(0), "a").unwrap();
+    s.ids.set(&Slot::Field(a), u64::from(id));
+    assert_eq!(id, held(&s, "a"));
+    let rel = s.ids.relation_id(rel_id(&s, "m", "ps")).unwrap();
+    let ctor: CatCtorId = s.ids.ctor_id(ctor_ref(&s, def, 0)).unwrap();
+
+    let granted = Granted::Read(
+        GrantTarget {
+            relation: u64::from(rel),
+            sel: GrantSel::Whole,
+        },
+        GrantFields {
+            ids: vec![u64::from(id)],
+            listed: true,
+        },
+    );
+    assert_eq!(Some("m::ps (a)".to_string()), granted.target_text(&s));
+    let read = Requirement::ReadField(
+        Target {
+            relation: rel,
+            constructor: ctor,
+        },
+        CatFieldId::from_raw(u64::from(id)),
+    );
+    assert_eq!(("reads ps.P (a)".to_string(), "read"), read.text(&s));
+    assert_eq!(
+        Some("z".to_string()),
+        Map::new(&s, &s).field(def, Some(0), "a")
+    );
+}
+
+#[test]
+fn the_field_ids_of_a_type_run_header_first_then_each_constructor_by_position() {
+    let s = build_src(&[&module(
+        "type T { z: I64 } = A { y: I64, b: I64 } | B { a: I64 }\nrelation ts : T key z",
+    )])
+    .unwrap();
+    let def = type_id(&s, "T");
+    let td = s.ty(def);
+    let names: Vec<&str> = s
+        .ids
+        .type_field_ids(def)
+        .map(|(f, _)| td.field_def(f).name.as_str())
+        .collect();
+    assert_eq!(vec!["z", "y", "b", "a"], names);
 }

@@ -102,16 +102,15 @@ impl Requirement {
                 .ids
                 .ctor_of(t.constructor)
                 .next()
-                .and_then(|(def, c)| schema.ty(def).ctors().get(c as usize))
+                .and_then(|c| schema.ty(c.def()).ctors().get(c.index() as usize))
                 .map_or("?", |c| c.name.as_str());
             format!("{r}.{c}")
         };
         let field = |f: &CatFieldId| {
             schema
-                .ids
-                .field_of(*f)
+                .field_holders(*f)
                 .next()
-                .map_or("?", |(_, _, name)| name.as_str())
+                .map_or("?", |f| schema.ty(f.def()).field_def(f).name.as_str())
         };
         match self {
             Requirement::ReadConstructor(t) => (format!("reads {}", at(t)), "read"),

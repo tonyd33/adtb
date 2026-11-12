@@ -306,7 +306,7 @@ impl<'s> Module<'s> {
             .ok_or_else(|| no_id(format!("type `{name}`")))?;
         let ctor_ids = (0..d.ctors().len().max(1))
             .map(|c| {
-                let id = schema.ids.ctor_id(t, c as u32);
+                let id = d.ctor_at(c as u32).and_then(|c| schema.ids.ctor_id(c));
                 id.map(|id| id.to_string()).ok_or_else(|| {
                     let ctor = d.ctors().get(c).map_or(name.as_str(), |c| &c.name);
                     no_id(format!("constructor `{name}.{ctor}`"))

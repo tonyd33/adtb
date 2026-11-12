@@ -175,10 +175,10 @@ impl Resolver<'_> {
         schema
             .ids
             .clause_default_ids(rel, at)
-            .filter_map(|(filled, _)| filled)
+            .filter_map(|(filled, _)| filled.ctor())
             .map(|c| {
                 Some(Clause::Member {
-                    ctor: schema.ids.ctor_id(def, c)?.raw(),
+                    ctor: schema.ids.ctor_id(schema.ty(def).ctor_at(c)?)?.raw(),
                 })
             })
             .collect()
@@ -205,7 +205,7 @@ impl Resolver<'_> {
             .iter()
             .position(|d| d.ctor == c && d.field == field)?;
         let (filled, id) = schema.ids.clause_default_ids(rel, at).next()?;
-        let field = schema.ids.field_id(def, filled, field)?;
+        let field = schema.ids.field_id(filled)?;
         Some((rel, id.raw(), field.raw()))
     }
 

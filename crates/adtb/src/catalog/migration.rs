@@ -22,7 +22,7 @@ use crate::storage::Pager;
 use super::Rot;
 use super::grants::{Dormant, Grantees};
 use super::history::{Rebuilding, key_indexes};
-use super::ids::{held_id, stored};
+use super::ids::{stored, type_ctor_id};
 use super::{
     Broken, Built, CatCtorId, CatRelId, Catalog, Changing, Checked, Data, Error, HEAP_ROOT, Hash,
     INDEX_ROOT, IndexKeys, IndexSpec, MIGRATION, Migrating, ORDER_KEY, OrderKeys, Readers, change,
@@ -379,11 +379,12 @@ impl Catalog {
                 }
             }
         }
-        for ((def, c), id) in a.ids.ctor_ids() {
+        for (ac, id) in a.ids.ctor_ids() {
+            let (def, c) = (ac.def(), ac.index());
             let verb = match b.ids.ctor_of(id).next_back() {
-                Some((d, k))
+                Some(bc)
                     if a.value_stage(def, c) != Stage::Declared
-                        && b.value_stage(d, k) == Stage::Declared =>
+                        && b.value_stage(bc.def(), bc.index()) == Stage::Declared =>
                 {
                     "disabled"
                 }
@@ -406,7 +407,7 @@ impl Catalog {
         c: u32,
         verb: &str,
     ) -> Result<Vec<String>, Error> {
-        let id = stored(held_id(schema.ids.ctor_id(def, c)));
+        let id = stored(type_ctor_id(schema, def, c));
         let mut why = Vec::new();
         for (r, rid) in schema.ids.relation_ids() {
             let fields: Vec<Vec<(String, Ty)>> = (0..ctor_count(schema, r))

@@ -1,6 +1,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 
+use adtb_lang::schema::{CtorRef, Schema};
+use adtb_lang::types::RelId;
 use adtb_sys::os::{Backend, OsRuntime};
 use adtb_testkit::scratch::Scratch;
 
@@ -85,10 +87,19 @@ fn replace_grant(authority: &RoleAuthority, field: &str, value: Val) {
             let entry = fields.iter_mut().find(|(name, _)| *name == field).unwrap();
             entry.1 = value.clone();
             changes.delete(t.grants, row.clone());
-            changes.insert(t.grants, t.row(t.grants, "RoleGrant", fields));
+            changes.insert(
+                t.grants,
+                t.row(t.grants, e.schema.engine_ctors().role_grant(), fields),
+            );
             Ok(())
         })
         .expect("replace trusted grant fixture");
+}
+
+fn ctor_of(schema: &Schema, r: RelId, name: &str) -> CtorRef {
+    let td = schema.ty(schema.relation(r).elem_def);
+    td.ctor_named(name)
+        .expect("the catalog relation declares the constructor")
 }
 
 fn seed_mappings(authority: &RoleAuthority) {
@@ -99,7 +110,7 @@ fn seed_mappings(authority: &RoleAuthority) {
             for (ordinal, role) in [(1, "web"), (3, "other"), (7, "web")] {
                 let row = t.row(
                     relation,
-                    "PeerMapping",
+                    ctor_of(&e.schema, relation, "PeerMapping"),
                     vec![
                         ("listener", Val::text("local")),
                         ("ordinal", Val::Int(ordinal)),
@@ -122,7 +133,7 @@ fn seed_credentials(authority: &RoleAuthority) {
                 let role = t.role(e, tx, name)?;
                 let row = t.row(
                     t.credentials,
-                    "Credential",
+                    ctor_of(&e.schema, t.credentials, "Credential"),
                     vec![
                         ("id", Val::Int(role.id.0)),
                         ("role", Val::Int(role.id.0)),
@@ -658,7 +669,10 @@ fn dormant_owner_grant(authority: &RoleAuthority) {
                     let entry = fields.iter_mut().find(|(name, _)| *name == "dormant");
                     entry.expect("a grant row is dormant or not").1 = Val::bool(true);
                     changes.delete(t.grants, row.clone());
-                    changes.insert(t.grants, t.row(t.grants, "RoleGrant", fields));
+                    changes.insert(
+                        t.grants,
+                        t.row(t.grants, e.schema.engine_ctors().role_grant(), fields),
+                    );
                 }
             }
             Ok(())

@@ -920,7 +920,6 @@ pub(super) fn temp_relations(
         };
         let (elem, elem_def) = match ty {
             Ty::Record(fs) => {
-                let def = TypeId(out.types.len() as u32);
                 let fields = fs
                     .into_iter()
                     .map(|(name, ty)| crate::schema::FieldDef {
@@ -930,23 +929,7 @@ pub(super) fn temp_relations(
                         span: t.ty.span,
                     })
                     .collect();
-                out.types.push(crate::schema::TypeDef {
-                    name: t.name.text.clone(),
-                    module,
-                    params: Vec::new(),
-                    ordered: false,
-                    kind: TypeDefKind::Sum {
-                        header: Vec::new(),
-                        ctors: vec![crate::schema::CtorDef {
-                            name: t.name.text.clone(),
-                            fields,
-                            span: t.ty.span,
-                        }],
-                        record: true,
-                    },
-                    file: FileId(0),
-                    span: t.span,
-                });
+                let def = out.push_record(&t.name.text, module, fields, (t.ty.span, t.span));
                 let elem = Ty::Data {
                     def,
                     args: Vec::new(),

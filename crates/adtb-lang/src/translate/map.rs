@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::ids::{CatCtorId, CatFieldId, CatRelId, CatTypeId};
-use crate::schema::{Schema, TypeDefKind};
+use crate::schema::{CtorRef, Schema, TypeDefKind};
 use crate::textual::{key_field_ty, key_names};
 use crate::types::*;
 
@@ -91,14 +91,15 @@ impl<'a> Map<'a> {
     /// Returns the index constructor `c` of `def` has at the later version.
     pub fn ctor(&self, def: TypeId, c: u32) -> Option<u32> {
         let to = self.def(def)?;
-        match self.from.ids.ctor_id(def, c) {
+        let from = self.from.ty(def).ctor_at(c)?;
+        match self.from.ids.ctor_id(from) {
             Some(id) => self
                 .to
                 .ids
                 .ctor_of(id)
                 .next_back()
-                .filter(|(t, _)| *t == to)
-                .map(|(_, k)| k),
+                .filter(|k| k.def() == to)
+                .map(CtorRef::index),
             None => {
                 let name = &self.from.ty(def).ctors().get(c as usize)?.name;
                 self.to.ty(to).ctor_index(name)
@@ -116,25 +117,23 @@ impl<'a> Map<'a> {
     pub fn field(&self, def: TypeId, c: Option<u32>, name: &str) -> Option<String> {
         let to = self.def(def)?;
         let t = self.from.ty(def);
-        let slot = if t.header().iter().any(|f| f.name == name) {
-            None
-        } else {
-            c
-        };
-        match self.from.ids.field_id(def, slot, name) {
+        let found = t
+            .field(c.and_then(|c| t.ctor_at(c)), name)
+            .and_then(|f| self.from.ids.field_id(f));
+        match found {
             Some(id) => self
                 .to
-                .ids
-                .field_of(id)
+                .field_holders(id)
                 .next_back()
-                .filter(|(t, k, _)| {
-                    *t == to && (k.is_none() || *k == c.and_then(|c| self.ctor(def, c)))
+                .filter(|f| {
+                    f.def() == to
+                        && (f.ctor().is_none() || f.ctor() == c.and_then(|c| self.ctor(def, c)))
                 })
-                .map(|(_, _, n)| n.clone()),
+                .map(|f| self.to.ty(to).field_def(f).name.clone()),
             None if self.from.ids.type_id(def).is_some() => None,
             None => {
                 let k = c.and_then(|c| self.ctor(def, c)).unwrap_or(0);
-                self.to.ty(to).field(k, name).map(|f| f.name.clone())
+                self.to.ty(to).field_named(k, name).map(|f| f.name.clone())
             }
         }
     }
@@ -414,7 +413,11 @@ impl<'a> Map<'a> {
                 return Err(renamed(
                     Part::Ctor,
                     ctor,
-                    self.from.ids.ctor_id(def, c).map(CatCtorId::raw),
+                    self.from
+                        .ty(def)
+                        .ctor_at(c)
+                        .and_then(|c| self.from.ids.ctor_id(c))
+                        .map(CatCtorId::raw),
                 ));
             }
             let fs = Self::fields(self.from, def, args, c);
@@ -464,9 +467,7 @@ fn renamed(part: Part, name: &str, id: Option<u64>) -> Loss {
 /// Returns the catalog id of field `name` of constructor `c` of `def`, a header field's when the
 /// header has one by that name.
 pub fn field_id(schema: &Schema, def: TypeId, c: u32, name: &str) -> Option<u64> {
-    let header = schema.ty(def).header().iter().any(|f| f.name == name);
-    schema
-        .ids
-        .field_id(def, (!header).then_some(c), name)
-        .map(CatFieldId::raw)
+    let td = schema.ty(def);
+    let f = td.field(td.ctor_at(c), name)?;
+    schema.ids.field_id(f).map(CatFieldId::raw)
 }
