@@ -18,14 +18,15 @@ fn split_images(image: &SplitImage, cl: &ScopedClause, td: &TypeDef) -> Vec<Stri
     for p in image.products {
         let mut fs = Vec::new();
         for f in &cl.fields {
-            if td.field(None, f).is_some() {
+            let (head, rest) = element_head(f);
+            if td.field(None, head).is_some() {
                 fs.push(f.clone());
             } else if let Some((_, _, _, g)) = image
                 .carries
                 .iter()
-                .find(|(x, y, z, _)| x == image.source && y == f && z == p)
+                .find(|(x, y, z, _)| x == image.source && y == head && z == p)
             {
-                fs.push(g.clone());
+                fs.push(format!("{g}{rest}"));
             } else {
                 break;
             }
@@ -60,6 +61,7 @@ impl Cx<'_> {
             &texts,
             arms,
         )?;
+        self.replacing_carried(&path.ty, &carries);
         let refs = check::schema_refs(&schema);
         let mut replacements = Vec::new();
         let mut arm_clauses = Vec::new();
@@ -176,23 +178,25 @@ impl Cx<'_> {
             let td = schema.ty(def);
             let source = image.source;
             let lost = cl.fields.iter().rev().find(|f| {
-                td.field(None, f).is_none()
+                let head = element_head(f).0;
+                td.field(None, head).is_none()
                     && !image
                         .carries
                         .iter()
-                        .any(|(x, y, _, _)| x == source && y == *f)
+                        .any(|(x, y, _, _)| x == source && y == head)
             });
             if scope.len() > 1 {
                 let unkept = cl.fields.iter().find_map(|f| {
-                    if td.field(None, f).is_some() {
+                    let head = element_head(f).0;
+                    if td.field(None, head).is_some() {
                         return None;
                     }
                     let keeps = |(p, fs): &&(String, Vec<String>)| {
-                        fs.contains(f)
+                        fs.iter().any(|g| g == head)
                             && !image
                                 .carries
                                 .iter()
-                                .any(|(x, y, q, z)| x == source && y == f && q == p && z != f)
+                                .any(|(x, y, q, z)| x == source && y == head && q == p && z != head)
                     };
                     image.shapes.iter().find(|s| !keeps(s)).map(|(p, _)| (f, p))
                 });
@@ -226,12 +230,13 @@ impl Cx<'_> {
                 ));
             }
             let kept = |f: &String| {
-                td.field(None, f).is_some()
+                let head = element_head(f).0;
+                td.field(None, head).is_some()
                     || image.products.iter().all(|p| {
                         image
                             .carries
                             .iter()
-                            .any(|(x, y, q, z)| x == source && y == f && q == p && z == f)
+                            .any(|(x, y, q, z)| x == source && y == head && q == p && z == head)
                     })
             };
             if cl.rescoped(&[c], &|_| Vec::new()).is_none() && cl.fields.iter().all(kept) {
@@ -330,6 +335,11 @@ impl Cx<'_> {
         let src_ix: Vec<u32> = sources.iter().filter_map(|s| td.ctor_index(s)).collect();
         let refs = check::schema_refs(&schema);
         let tm = self.module_of(ty);
+        if let Ty::Data { def: s, .. } = &inner {
+            let st = after.ty(*s);
+            let into = (tm.as_str(), td, n.as_str(), field.name.text.as_str());
+            self.replacing_nested(into, &after.module(st.module).name, &st.name, &sources);
+        }
         self.restate(&schema, def, &tm, &sources, std::slice::from_ref(&n), true)?;
         let mut edits = self.reselect(
             &schema,
@@ -359,11 +369,12 @@ impl Cx<'_> {
             let rescoped = cl.rescoped(&src_ix, &|_| vec![n.clone()]);
             let mut fs = Vec::new();
             for g in &cl.fields {
-                if td.field(None, g).is_some() {
+                let head = element_head(g).0;
+                if td.field(None, head).is_some() {
                     fs.push(g.clone());
                 } else if let [one] = inside.as_slice() {
                     let src = &td.ctors()[*one as usize];
-                    if src.fields.iter().any(|x| x.name == *g) && scope.len() == 1 {
+                    if src.fields.iter().any(|x| x.name == head) && scope.len() == 1 {
                         fs.push(format!("{f}.{}.{g}", src.name));
                     } else {
                         return self.err(format!("`{shown}` has no image under the nest"));
@@ -454,6 +465,8 @@ impl Cx<'_> {
             }
         }
         let sm = schema.module(st.module).name.clone();
+        let tm = self.module_of(&path.ty);
+        self.replacing_unnested((tm.as_str(), td, n.as_str(), field.name.as_str()), &sm, st);
         let Some(si) = self.src.find("type", &sm, &st.name) else {
             return self.err(format!("`{}` is not a type of the schema", st.name));
         };
@@ -490,18 +503,22 @@ impl Cx<'_> {
             let mut target: Option<String> = None;
             let mut fs = Vec::new();
             for g in &cl.fields {
-                if td.field(None, g).is_some() {
+                if td.field(None, element_head(g).0).is_some() {
                     fs.push(g.clone());
                     continue;
                 }
                 let parts: Vec<&str> = g.split('.').map(str::trim).collect();
                 match parts.as_slice() {
-                    [f, ctor, leaf] if *f == field.name && products.iter().any(|p| p == ctor) => {
+                    [f, ctor, leaf @ ..]
+                        if *f == field.name
+                            && !leaf.is_empty()
+                            && products.iter().any(|p| p == ctor) =>
+                    {
                         if target.as_ref().is_some_and(|t| t != ctor) {
                             return self.err(format!("`{shown}` has no image under the unnest"));
                         }
                         target = Some(ctor.to_string());
-                        fs.push(leaf.to_string());
+                        fs.push(leaf.join("."));
                     }
                     _ => return self.err(format!("`{shown}` has no image under the unnest")),
                 }
@@ -532,7 +549,6 @@ impl Cx<'_> {
         );
         let arm_edits = self.arm_replacements(&schema, &refs, def, &[c], clauses)?;
         edits = Self::merged(edits, arm_edits);
-        let tm = self.module_of(&path.ty);
         self.restate(
             &schema,
             def,

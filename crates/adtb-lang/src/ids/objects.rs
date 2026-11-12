@@ -1,12 +1,13 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{self, Decl, RelationClause};
 use crate::lex::{Tok, lex};
-use crate::schema::{FieldRef, Schema, TypeDefKind, ValueDef};
+use crate::schema::{CtorRef, FieldRef, Schema, TypeDefKind, ValueDef};
 use crate::span::{FileId, Span};
 use crate::types::*;
 
-use super::key::{KeyKind, ObjectKey, Owner, Part};
+use super::key::{KeyKind, ObjectKey, Owner, Part, PathStep};
+use super::reach::{Correspondence, Replacement};
 use super::{FIRST_LOG_ID, Slot, Space};
 
 /// What holds an object, before the ids of the objects are known.
@@ -25,6 +26,7 @@ enum Named {
     Field(Slot),
     Ctor(Slot),
     Set(Slot),
+    Reach(Vec<Vec<Slot>>),
 }
 
 /// One object of a user module, with what its key names.
@@ -46,7 +48,7 @@ impl Object {
     }
 
     /// Returns the round of [`assign`] that gives the object its id: after every object its key
-    /// names.
+    /// names. No key names an object of the last round.
     fn round(&self) -> u8 {
         match self.space() {
             Space::Shared | Space::Field | Space::Function | Space::Constraint => 0,
@@ -71,27 +73,51 @@ impl Object {
                 Named::Field(s) => Part::Field(id(s)),
                 Named::Ctor(s) => Part::Ctor(id(s)),
                 Named::Set(s) => Part::Set(id(s)),
+                Named::Reach(paths) => Part::Reach(
+                    paths
+                        .iter()
+                        .map(|p| {
+                            p.iter()
+                                .map(|s| match s {
+                                    Slot::Ctor(_) | Slot::ViewCtor(_) => PathStep::Ctor(id(s)),
+                                    _ => PathStep::Field(id(s)),
+                                })
+                                .collect()
+                        })
+                        .collect(),
+                ),
             })
             .collect();
         ObjectKey::new(self.kind, owner, parts)
     }
 }
 
-/// Returns the key and the id of each of `objs`: the id `known` holds for its key, else the next
-/// id `next` gives its space.
+/// Returns the key and the id of each of `objs`: the id `known` holds for its key, else for a key
+/// of a unique or index whose elements correspond to it through `replaced`, else the next id
+/// `next` gives its space.
 ///
-/// Preconditions: `objs` are in creation order; no two keys of `known` hold one id.
+/// Preconditions: `objs` are in creation order; no two keys of `known` hold one id; `replaced`
+/// holds what the operator taking the schema of `known` to that of `objs` replaced.
 /// Postconditions: the keys are distinct, objects agreeing on kind, owner and parts told apart by
-/// how many of them come before; each space's new ids follow the order of `objs`.
+/// how many of them come before; no two objects of a space take one id; each space's new ids
+/// follow the order of `objs`.
 pub fn assign(
     objs: &[Object],
     known: &BTreeMap<ObjectKey, u64>,
     next: &mut BTreeMap<Space, u64>,
+    replaced: &[Replacement],
 ) -> Vec<(ObjectKey, u64)> {
     let mut ids: BTreeMap<Slot, u64> = BTreeMap::new();
     let mut seen: BTreeMap<ObjectKey, usize> = BTreeMap::new();
     let mut out: Vec<Option<(ObjectKey, u64)>> = vec![None; objs.len()];
+    let mut taken: BTreeSet<(Space, u64)> = BTreeSet::new();
+    let mut fresh = |space: Space| {
+        let n = next.entry(space).or_insert(FIRST_LOG_ID);
+        *n += 1;
+        *n - 1
+    };
     for round in 0..3 {
+        let mut pending = Vec::new();
         for (at, o) in objs.iter().enumerate().filter(|(_, o)| o.round() == round) {
             let key = o.key(&|s| {
                 *ids.get(s)
@@ -100,11 +126,34 @@ pub fn assign(
             let n = seen.entry(key.clone()).or_default();
             let key = key.nth(*n);
             *n += 1;
-            let id = known.get(&key).copied().unwrap_or_else(|| {
-                let n = next.entry(o.space()).or_insert(FIRST_LOG_ID);
-                *n += 1;
-                *n - 1
+            let id = match known.get(&key) {
+                Some(&id) if taken.insert((o.space(), id)) => id,
+                _ if round == 2 => {
+                    pending.push((at, key));
+                    continue;
+                }
+                _ => fresh(o.space()),
+            };
+            ids.insert(o.slot.clone(), id);
+            out[at] = Some((key, id));
+        }
+        if pending.is_empty() {
+            continue;
+        }
+        let matched = Correspondence::new(known, &ids, replaced);
+        for (at, key) in pending {
+            let o = &objs[at];
+            let reached = key.parts().iter().any(|p| matches!(p, Part::Reach(_)));
+            let found = known.iter().find(|(k, id)| {
+                reached && !taken.contains(&(o.space(), **id)) && matched.same(k, &key)
             });
+            let id = match found {
+                Some((_, &id)) => {
+                    taken.insert((o.space(), id));
+                    id
+                }
+                None => fresh(o.space()),
+            };
             ids.insert(o.slot.clone(), id);
             out[at] = Some((key, id));
         }
@@ -340,9 +389,11 @@ impl Objects<'_> {
                         Clauses::Relation(r) => Slot::Key(r),
                         Clauses::View(f) => Slot::ViewKey(f),
                     };
+                    let row = self.row(of);
+                    let every = row.ctors(self.schema, &[]);
                     let parts = names
                         .iter()
-                        .map(|n| self.element(self.row_field(of, Range::Key, &n.text), &n.text))
+                        .flat_map(|n| self.element_parts(&row, &every, &[n.text.as_str()]))
                         .collect();
                     self.push(key, KeyKind::Key, owner(), parts);
                     if let (Some(_), Clauses::Relation(r)) = (generate, of) {
@@ -365,7 +416,7 @@ impl Objects<'_> {
                         Clauses::Relation(r) => Slot::Index(r, ix),
                         Clauses::View(f) => Slot::ViewIndex(f, ix),
                     };
-                    let parts = self.index_parts(file, fs, scope.as_ref(), of, ix);
+                    let parts = self.index_parts(file, fs, scope.as_ref(), of);
                     self.push(slot, kind, owner(), parts);
                     ix += 1;
                 }
@@ -389,16 +440,15 @@ impl Objects<'_> {
         }
     }
 
-    /// Returns the parts of the key of the unique or index at position `ix` of `of`'s clauses:
-    /// its elements, each a field of the row it ranges over or a token, then each constructor or
-    /// set of its scope.
+    /// Returns the parts of the key of a unique or index of `of`'s clauses: its elements, each a
+    /// run of names reaching fields of the rows its scope reaches, or a token, then each
+    /// constructor or set of its scope.
     fn index_parts(
         &self,
         file: FileId,
         fields: &[ast::Expr],
         scope: Option<&ast::CtorScope>,
         of: Clauses,
-        ix: usize,
     ) -> Vec<Named> {
         let names: Vec<&ast::Ident> = match scope {
             None => Vec::new(),
@@ -406,26 +456,35 @@ impl Objects<'_> {
             Some(ast::CtorScope::Many(cs)) => cs.iter().collect(),
         };
         let scope: Vec<Named> = names.iter().map(|n| self.scope_part(of, &n.text)).collect();
-        let listed = !scope.is_empty() && scope.iter().all(|p| matches!(p, Named::Ctor(_)));
-        let range = if listed {
-            Range::Listed(ix)
-        } else {
-            Range::Unlisted
-        };
+        let row = self.row(of);
+        let ctors = row.ctors(self.schema, &scope);
         let mut out = Vec::new();
         for e in fields {
             let text = (self.text)(file, e.span);
-            let mut after_dot = false;
-            for t in lex(&text).0 {
-                let word = &text[t.span.range()];
-                let field = matches!(t.tok, Tok::Lower | Tok::Upper | Tok::Kw(_))
-                    .then_some(())
-                    .filter(|()| !after_dot)
-                    .and_then(|()| self.row_field(of, range, word));
-                if t.tok != Tok::Eof {
-                    out.push(self.element(field, word));
+            let toks: Vec<(Tok, &str)> = lex(&text)
+                .0
+                .into_iter()
+                .filter(|t| t.tok != Tok::Eof)
+                .map(|t| (t.tok, &text[t.span.range()]))
+                .collect();
+            let mut at = 0;
+            while at < toks.len() {
+                let name = |t: Tok| matches!(t, Tok::Lower | Tok::Upper | Tok::Kw(_));
+                let after_dot = at > 0 && toks[at - 1].0 == Tok::Dot;
+                if !name(toks[at].0) || after_dot {
+                    out.push(Named::Token(toks[at].1.to_string()));
+                    at += 1;
+                    continue;
                 }
-                after_dot = t.tok == Tok::Dot;
+                let mut run = vec![toks[at].1];
+                while at + 2 * run.len() < toks.len()
+                    && toks[at + 2 * run.len() - 1].0 == Tok::Dot
+                    && name(toks[at + 2 * run.len()].0)
+                {
+                    run.push(toks[at + 2 * run.len()].1);
+                }
+                out.extend(self.element_parts(&row, &ctors, &run));
+                at += 2 * run.len() - 1;
             }
             out.push(Named::Next);
         }
@@ -433,42 +492,96 @@ impl Objects<'_> {
         out
     }
 
-    /// Returns the field named `name` of the row of `of` that `range` ranges over: a header field,
-    /// else the field of the first constructor in the range that has one. An unlisted range of a
-    /// sum of several constructors has only the header.
-    fn row_field(&self, of: Clauses, range: Range, name: &str) -> Option<Slot> {
+    /// Returns the parts of a dotted run of names `run` of an element over the rows of `ctors`:
+    /// the paths its longest resolving prefix reaches, then a token for each dot and name after
+    /// it; a token for each when no prefix resolves.
+    fn element_parts(&self, row: &Row, ctors: &[CtorRef], run: &[&str]) -> Vec<Named> {
+        let (paths, resolved) = match row {
+            Row::Data(def) => self.reach(*def, ctors, run),
+            Row::Anonymous(f) => (vec![vec![Slot::ViewField(*f, run[0].to_string())]], 1),
+            Row::None => (Vec::new(), 0),
+        };
+        let mut out = Vec::new();
+        if resolved > 0 {
+            out.push(Named::Reach(paths));
+        } else {
+            out.push(Named::Token(run[0].to_string()));
+        }
+        for w in &run[resolved.max(1)..] {
+            out.push(Named::Token(".".to_string()));
+            out.push(Named::Token((*w).to_string()));
+        }
+        out
+    }
+
+    /// Returns the paths of fields and constructors of user modules that the longest prefix of
+    /// `run` reaches from the rows of `ctors` of type `def`, with the length of that prefix: a
+    /// name is a field of the header or of a constructor reached, else, after a field, a
+    /// constructor of its type.
+    fn reach(&self, def: TypeId, ctors: &[CtorRef], run: &[&str]) -> (Vec<Vec<Slot>>, usize) {
         let schema = self.schema;
-        let (def, listed) = match of {
-            Clauses::Relation(r) => {
-                let rd = schema.relation(r);
-                let scope = match range {
-                    Range::Listed(ix) => rd.indexes.get(ix).and_then(|i| i.scope.clone()),
-                    Range::Key | Range::Unlisted => None,
+        let user = |d: &TypeId| d.0 != u32::MAX && !schema.module(schema.ty(*d).module).engine;
+        let mut level: Vec<(Vec<Slot>, Option<TypeId>, Vec<CtorRef>)> =
+            vec![(Vec::new(), Some(def), ctors.to_vec())];
+        let mut resolved = 0;
+        for w in run {
+            let mut next = Vec::new();
+            let typed = level
+                .iter()
+                .filter_map(|(p, d, c)| d.filter(user).map(|d| (p, d, c)));
+            for (path, def, ctors) in typed {
+                let td = schema.ty(def);
+                let fields: BTreeSet<FieldRef> = match td.field(None, w) {
+                    Some(f) => BTreeSet::from([f]),
+                    None => ctors.iter().filter_map(|&c| td.field(Some(c), w)).collect(),
                 };
-                (rd.elem_def, scope)
+                for f in fields {
+                    let inner = match &td.field_def(f).ty {
+                        Ty::Data { def, .. } => Some(*def),
+                        _ => None,
+                    };
+                    let every = inner
+                        .filter(user)
+                        .map(|d| schema.ty(d).ctor_refs().collect())
+                        .unwrap_or_default();
+                    next.push((extended(path, Slot::Field(f)), inner, every));
+                }
+                let after_field = matches!(path.last(), Some(Slot::Field(_)));
+                if let Some(c) = td
+                    .ctor_named(w)
+                    .filter(|c| after_field && ctors.contains(c))
+                {
+                    next.push((extended(path, Slot::Ctor(c)), Some(def), vec![c]));
+                }
             }
+            if next.is_empty() {
+                break;
+            }
+            level = next;
+            resolved += 1;
+        }
+        let paths = level.into_iter().map(|(p, _, _)| p).collect();
+        (if resolved == 0 { Vec::new() } else { paths }, resolved)
+    }
+
+    /// Returns the row of the rows `of`'s clauses range over.
+    fn row(&self, of: Clauses) -> Row {
+        let schema = self.schema;
+        let def = match of {
+            Clauses::Relation(r) => schema.relation(r).elem_def,
             Clauses::View(f) => match &schema.functions[f.0 as usize].result {
                 Ty::Set(elem) => match &**elem {
-                    Ty::Data { def, .. } => (*def, None),
-                    _ => return Some(Slot::ViewField(f, name.to_string())),
+                    Ty::Data { def, .. } => *def,
+                    _ => return Row::Anonymous(f),
                 },
-                _ => return None,
+                _ => return Row::None,
             },
         };
         if def.0 == u32::MAX {
-            return None;
+            Row::None
+        } else {
+            Row::Data(def)
         }
-        let td = schema.ty(def);
-        if let Some(f) = td.field(None, name) {
-            return Some(Slot::Field(f));
-        }
-        if matches!(range, Range::Unlisted) && td.ctors().len() > 1 {
-            return None;
-        }
-        td.ctor_refs()
-            .filter(|c| listed.as_ref().is_none_or(|r| r.contains(&c.index())))
-            .find_map(|c| td.field(Some(c), name))
-            .map(Slot::Field)
     }
 
     /// Returns the key part of an element `name` that names `field`: the field when a user module
@@ -559,15 +672,51 @@ fn default_fields(
         .collect()
 }
 
-/// The constructors an element of a key, unique or index ranges over.
-#[derive(Clone, Copy)]
-enum Range {
-    /// Every constructor of the row, for a key.
-    Key,
-    /// The constructors the scope of the unique or index at this position of the clauses lists.
-    Listed(usize),
-    /// Every constructor, or those of a named set: the clause lists none.
-    Unlisted,
+/// The rows a run of clauses ranges over.
+enum Row {
+    /// Rows of a declared type.
+    Data(TypeId),
+    /// The anonymous rows of a stored view.
+    Anonymous(FnId),
+    None,
+}
+
+impl Row {
+    /// Returns the constructors of the row that scope `scope` reaches: those it lists and the
+    /// members of the sets it names, every constructor for no scope.
+    fn ctors(&self, schema: &Schema, scope: &[Named]) -> Vec<CtorRef> {
+        let Row::Data(def) = *self else {
+            return Vec::new();
+        };
+        let td = schema.ty(def);
+        if scope.is_empty() {
+            return td.ctor_refs().collect();
+        }
+        let mut out = BTreeSet::new();
+        for part in scope {
+            match part {
+                Named::Ctor(Slot::Ctor(c)) => {
+                    out.insert(*c);
+                }
+                Named::Set(Slot::Set(r, name)) => {
+                    let set = schema.relation(*r).sets.iter().find(|s| s.name == *name);
+                    out.extend(
+                        set.into_iter()
+                            .flat_map(|s| s.ctors.iter())
+                            .filter_map(|&c| td.ctor_at(c)),
+                    );
+                }
+                _ => {}
+            }
+        }
+        out.into_iter().collect()
+    }
+}
+
+fn extended(path: &[Slot], step: Slot) -> Vec<Slot> {
+    let mut out = path.to_vec();
+    out.push(step);
+    out
 }
 
 /// What declares a run of clauses.

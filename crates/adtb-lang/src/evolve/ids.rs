@@ -1,5 +1,7 @@
 use super::*;
-use crate::ids::{KeyKind, Object, ObjectKey, Owner, assign, objects};
+use crate::ids::{
+    KeyKind, Object, ObjectKey, Owner, Path, PathStep, Replacement, Slot, assign, objects,
+};
 
 impl Source {
     /// The text of a span of file `file`, its tokens joined by single spaces.
@@ -25,12 +27,27 @@ impl Source {
     /// Gives every object without an id the next id of its space, in creation order, and forgets the
     /// ids of objects that are gone; ids are never reused.
     pub(super) fn reconcile_ids(&mut self) {
-        let Some((_, objs)) = self.objects() else {
+        let replaced = std::mem::take(&mut self.replaced);
+        let Some((schema, objs)) = self.objects() else {
             return;
         };
-        self.ids = assign(&objs, &self.ids, &mut self.next)
+        let replaced = resolved(&schema, &replaced);
+        self.ids = assign(&objs, &self.ids, &mut self.next, &replaced)
             .into_iter()
             .collect();
+    }
+
+    /// Record that the operator being applied replaces `replaced`, read when its objects take
+    /// ids.
+    pub(super) fn replacing(&mut self, replaced: Vec<Replaced>) {
+        self.replaced = replaced;
+    }
+
+    /// Returns the path of field `f` of type `t` of module `m`, of constructor `ctor` or the
+    /// header.
+    pub(super) fn field_path(&self, m: &str, t: &str, ctor: Option<&str>, f: &str) -> Option<Path> {
+        self.field_key_id(m, t, ctor, f)
+            .map(|id| vec![PathStep::Field(id)])
     }
 
     /// Write the source's catalog ids and write states into a schema it built. An object the log
@@ -38,7 +55,8 @@ impl Source {
     pub(super) fn annotate(&self, schema: &mut Schema) {
         if let Ok(files) = self.files() {
             let objs = objects(schema, &files, &|f, s| self.span_text(f, s));
-            let ids = assign(&objs, &self.ids, &mut self.next.clone());
+            let replaced = resolved(schema, &self.replaced);
+            let ids = assign(&objs, &self.ids, &mut self.next.clone(), &replaced);
             for o in &objs {
                 schema.ids.forget(o.slot());
             }
@@ -294,6 +312,53 @@ pub(super) fn ctor_key_id(
 ) -> Option<u64> {
     let ty = field_owner(ids, m, t, None)?;
     ids.get(&ObjectKey::named(KeyKind::Ctor, ty, c)).copied()
+}
+
+/// A field or a constructor of the schema an operator gives, by module, type, constructor and
+/// name.
+#[derive(Clone, Debug)]
+pub(super) enum Held {
+    Field(String, String, Option<String>, String),
+    Ctor(String, String, String),
+}
+
+/// A path of ids an operator replaces, and what holds its values in the schema it gives.
+#[derive(Clone, Debug)]
+pub(super) struct Replaced {
+    from: Path,
+    to: Vec<Held>,
+}
+
+impl Replaced {
+    pub(super) fn new(from: Path, to: Vec<Held>) -> Replaced {
+        Replaced { from, to }
+    }
+}
+
+/// Returns each of `replaced` whose every step after the operator `schema` names.
+fn resolved(schema: &Schema, replaced: &[Replaced]) -> Vec<Replacement> {
+    let def = |m: &str, t: &str| {
+        let mid = schema.module_named(m)?;
+        schema.module(mid).types.get(t).copied()
+    };
+    let slot = |h: &Held| match h {
+        Held::Field(m, t, c, f) => {
+            let td = schema.ty(def(m, t)?);
+            let ctor = match c {
+                Some(c) => Some(td.ctor_named(c)?),
+                None => None,
+            };
+            td.field(ctor, f).map(Slot::Field)
+        }
+        Held::Ctor(m, t, c) => schema.ty(def(m, t)?).ctor_named(c).map(Slot::Ctor),
+    };
+    replaced
+        .iter()
+        .filter_map(|r| {
+            let to = r.to.iter().map(slot).collect::<Option<Vec<Slot>>>()?;
+            Some(Replacement::new(r.from.clone(), to))
+        })
+        .collect()
 }
 
 /// A key and the key it takes.

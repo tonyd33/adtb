@@ -1,7 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
-use crate::ids::Space;
+use crate::ids::{KeyKind, Space};
 use crate::parse::parse_migration;
 
 /// A schema object described by the names a schema gives it and its position among clauses.
@@ -588,7 +588,6 @@ fn index_ids(s: &Source, r: &str) -> Vec<u64> {
 }
 
 #[test]
-#[ignore = "a clause element keyed by one resolved copy of its field loses the unique's id when a move down gives the listed constructor a new copy"]
 fn a_move_down_keeps_the_id_of_a_unique_over_the_moved_field_in_a_constructor_it_lists() {
     let base = source(
         "module auth
@@ -603,7 +602,6 @@ relation ts : T
 }
 
 #[test]
-#[ignore = "a clause element keyed by its field's name under a set scope loses the index's id when the field is renamed"]
 fn renaming_the_field_of_a_one_constructor_set_keeps_the_id_of_an_index_over_the_set() {
     let base = source(
         "module auth
@@ -764,32 +762,886 @@ split constructor T.A into A1 { z: Text } | A2 { w: Text }
 }
 
 #[test]
-fn an_operator_on_a_constructor_of_a_scope_listing_every_constructor_is_refused_because_the_scope_is_read_as_unscoped()
- {
+fn an_operator_on_a_constructor_of_a_scope_listing_every_constructor_re_scopes_the_clause() {
     let base = source(
         "module auth
 type K = A | B
 type Inner = A { z: Text } | B { z: Text }
-type T { id: Key ts } = A { z: Text } | B { z: Text }
+type T { id: Key ts, n: Text } = A { z: Text } | B { z: Text }
 relation ts : T
   key id generate sequence
-  index (z) in (A | B)",
+  index (z) in (A | B)
+  index (n) in (A | B)",
     );
+    assert_eq!(vec![1025, 1026], index_ids(&base, "ts"));
     let operators = [
-        "split constructor T.A into A1 { z: Text } | A2 { z: Text }
+        (
+            "split constructor T.A into A1 { z: Text } | A2 { z: Text }
   by match
     | A a -> A1 { z: a.z }",
-        "merge constructor T.(A | B) into M { k: K, z: Text }
+            "relation ts : T key id generate sequence index (z) in (A1 | A2 | B) index (n) in (A1 | A2 | B)",
+        ),
+        (
+            "merge constructor T.(A | B) into M { k: K, z: Text }
   by match
     | A a -> M { k: A, z: a.z }
     | B b -> M { k: B, z: b.z }",
-        "nest constructor T.(A | B) into N { inner: Inner }",
+            "relation ts : T key id generate sequence index (z) in M index (n) in M",
+        ),
     ];
-    for op in operators {
+    for (op, text) in operators {
+        let after = applies(&base, &format!("module auth\n{op}"));
         assert_eq!(
-            Some(vec!["`A` is not a constructor of `T`".to_string()]),
-            migrate(&base, &format!("module auth\n{op}")).err(),
+            (text, vec![1027, 1028]),
+            (
+                flat(&decl(&after, "relation", "ts")).as_str(),
+                index_ids(&after, "ts")
+            ),
             "{op}"
         );
     }
+    assert_eq!(
+        Some(vec!["`index (z)` has no image under the nest".to_string()]),
+        migrate(
+            &base,
+            "module auth\nnest constructor T.(A | B) into N { inner: Inner }"
+        )
+        .err()
+    );
+    let unique = source(
+        "module auth
+type K = A | B
+type T { id: Key ts } = A { z: Text } | B { z: Text }
+relation ts : T
+  key id generate sequence
+  unique (z) in (A | B)",
+    );
+    assert_eq!(vec![1025], index_ids(&unique, "ts"));
+    let split = applies(
+        &unique,
+        "module auth
+split constructor T.A into A1 { z: Text } | A2 { z: Text }
+  by match
+    | A a -> A1 { z: a.z }",
+    );
+    assert_eq!(
+        (
+            "relation ts : T key id generate sequence unique (z) in (A1 | A2 | B)",
+            vec![1026]
+        ),
+        (
+            flat(&decl(&split, "relation", "ts")).as_str(),
+            index_ids(&split, "ts")
+        )
+    );
+    assert_eq!(
+        Some(vec![
+            "`unique (z) in (A | B)` holds across the merged constructors; the merge would weaken it"
+                .to_string()
+        ]),
+        migrate(&unique, &format!("module auth\n{MERGE_A_B}")).err()
+    );
+}
+
+const MERGE_A_B: &str = "merge constructor T.(A | B) into M { k: K, z: Text }
+  by match
+    | A a -> M { k: A, z: a.z }
+    | B b -> M { k: B, z: b.z }";
+
+/// Returns `ts` of module `auth` over `T = A | B | C` with `clause` and `set S of ts = A | B`.
+fn three_ctors(clause: &str) -> Source {
+    source(&format!(
+        "module auth
+type K = A | B
+type T {{ id: Key ts }} = A {{ z: Text }} | B {{ z: Text }} | C {{ z: Text }}
+relation ts : T
+  key id generate sequence
+  {clause}
+set S of ts = A | B"
+    ))
+}
+
+#[test]
+fn a_merge_is_refused_while_a_unique_holds_across_exactly_the_merged_constructors() {
+    for clause in ["unique (z) in (A | B)", "unique (z) in S"] {
+        assert_eq!(
+            Some(vec![format!(
+                "`{clause}` holds across the merged constructors; the merge would weaken it"
+            )]),
+            migrate(&three_ctors(clause), &format!("module auth\n{MERGE_A_B}")).err(),
+            "{clause}"
+        );
+    }
+}
+
+#[test]
+fn a_merge_re_scopes_a_unique_over_the_merged_constructors_and_another_without_weakening_it() {
+    let merged = applies(
+        &three_ctors("unique (z) in (A | B | C)"),
+        &format!("module auth\n{MERGE_A_B}"),
+    );
+    assert_eq!(
+        "relation ts : T key id generate sequence unique (z) in (M | C)",
+        flat(&decl(&merged, "relation", "ts"))
+    );
+}
+
+/// A schema shape for the structural operators: what the clauses of `ts` range over.
+#[derive(Clone, Copy, Debug)]
+struct Scoped {
+    /// The second constructor of `T` is named `T`, after its type, rather than `B`.
+    named_after: bool,
+    /// Set `S` holds `A` alone rather than `A | B | C`.
+    set_one: bool,
+    /// Clauses reach `z` through several constructors.
+    wide: bool,
+    /// A clause lists every constructor of `T`.
+    full: bool,
+    /// Clauses hold dotted elements.
+    dotted: bool,
+}
+
+impl Scoped {
+    fn of(bits: u64) -> Scoped {
+        Scoped {
+            named_after: bits & 1 != 0,
+            set_one: bits & 2 != 0,
+            wide: bits & 4 != 0,
+            full: bits & 8 != 0,
+            dotted: bits & 16 != 0,
+        }
+    }
+
+    fn b(self) -> &'static str {
+        if self.named_after { "T" } else { "B" }
+    }
+
+    fn text(self) -> String {
+        let b = self.b();
+        let set = if self.set_one {
+            "A".to_string()
+        } else {
+            format!("A | {b} | C")
+        };
+        let mut clauses = vec!["unique (z) in A".to_string(), format!("unique (n) in {b}")];
+        clauses.push("index (n) in S".to_string());
+        if !self.wide {
+            clauses.push("index (n)".to_string());
+        }
+        if self.set_one || self.wide {
+            clauses.push("index (z) in S".to_string());
+        }
+        if self.wide {
+            clauses.push(format!("index (z) in (A | {b})"));
+        }
+        if self.full {
+            clauses.push(format!("index (n, id) in (A | {b} | C)"));
+        }
+        if self.dotted {
+            clauses.push("index (p.a) in S".to_string());
+            clauses.push("unique (s.X.g) in A".to_string());
+        }
+        let clauses: String = clauses.iter().map(|c| format!("\n  {c}")).collect();
+        let fields = "z: Text, s: Sm, q: Q";
+        format!(
+            "module auth
+type K = A | {b}
+type Q = Q1 | Q2
+type Sm = X {{ g: Text }} | Y
+type P = {{ a: Text }}
+type T {{ id: Key ts, n: Text, p: P }} = A {{ {fields} }} | {b} {{ {fields} }} | C {{ z: Text }}
+type Inner = A {{ {fields} }} | {b} {{ {fields} }}
+type InnerA = A {{ {fields} }}
+relation ts : T
+  key id generate sequence{clauses}
+set S of ts = {set}"
+        )
+    }
+
+    /// Every structural operator that applies to the shape, after the migration it needs first
+    /// if any, with the constructors it replaces, how it changes the names of the objects it
+    /// does not create and where it takes the rows a clause covers.
+    fn ops(self) -> Vec<ScopedOp> {
+        let b = self.b();
+        let op = |first: Option<&str>, text: String, replaced: &[&str], rename, rows| ScopedOp {
+            first: first.map(str::to_string),
+            text,
+            replaced: replaced.iter().map(ToString::to_string).collect(),
+            rename,
+            rows,
+        };
+        let kept: fn(&Desc) -> Desc = Desc::clone;
+        let both = || vec!["A".to_string(), b.to_string()];
+        let mut out = vec![
+            op(
+                None,
+                "split constructor T.A into A1 { z: Text, s: Sm } | A2 { z: Text, s: Sm }
+  by match
+    | A { q: Q1, z, s } -> A1 { z: z, s: s }
+    | A { q: Q2, z, s } -> A2 { z: z, s: s }"
+                    .to_string(),
+                &["A"],
+                kept,
+                Rows::Split,
+            ),
+            op(
+                None,
+                "add constructor T.D { z: Text }".to_string(),
+                &[],
+                kept,
+                Rows::Add("D"),
+            ),
+        ];
+        if !self.set_one {
+            out.push(op(
+                None,
+                format!(
+                    "merge constructor T.(A | {b}) into M {{ k: K, z: Text, s: Sm, q: Q }}
+  by match
+    | A a -> M {{ k: A, z: a.z, s: a.s, q: a.q }}
+    | {b} x -> M {{ k: {b}, z: x.z, s: x.s, q: x.q }}"
+                ),
+                &["A", b],
+                kept,
+                Rows::Merge(both()),
+            ));
+        }
+        if self.wide {
+            out.push(op(
+                None,
+                format!("move field T.n to T.(A | {b} | C)"),
+                &[],
+                |d| moved(d, "n", None, Some("A")),
+                Rows::Same,
+            ));
+        }
+        if !self.named_after {
+            out.push(op(
+                None,
+                "rename type T to T2".to_string(),
+                &[],
+                |d| {
+                    names(d, &|n| match n {
+                        Name::Type("auth::T") => "auth::T2",
+                        n => n.text(),
+                    })
+                },
+                Rows::Same,
+            ));
+        }
+        if !self.set_one && !self.wide && !self.dotted {
+            out.push(op(
+                None,
+                format!("nest constructor T.(A | {b}) into N {{ inner: Inner }}"),
+                &["A", b],
+                kept,
+                Rows::Nest(both()),
+            ));
+            let nested = format!(
+                "nest constructor T.(A | {b}) into N {{ inner: Inner }}
+add set S2 of ts = N
+add index (inner.A.z) in ts.S2
+add index (n) in ts.S2"
+            );
+            out.push(op(
+                Some(nested.as_str()),
+                "unnest constructor T.N".to_string(),
+                &["N", "A", b],
+                kept,
+                Rows::Unnest,
+            ));
+        }
+        if self.set_one && !self.wide {
+            out.push(op(
+                None,
+                "nest constructor T.A into N { inner: InnerA }".to_string(),
+                &["A"],
+                kept,
+                Rows::Nest(vec!["A".to_string()]),
+            ));
+        }
+        if !self.full {
+            out.push(op(
+                Some("deprecate ts.C"),
+                "remove constructor T.C".to_string(),
+                &["C"],
+                kept,
+                Rows::Remove("C"),
+            ));
+        }
+        if self.set_one && !self.wide {
+            out.push(op(
+                None,
+                "rename field T.A.z to z2".to_string(),
+                &[],
+                |d| {
+                    names(d, &|n| match n {
+                        Name::Field("auth::T", Some("A"), "z") => "z2",
+                        n => n.text(),
+                    })
+                },
+                Rows::Rename(Some("A"), "z", "z2"),
+            ));
+        }
+        if self.dotted {
+            out.push(op(
+                None,
+                "rename field P.a to a2".to_string(),
+                &[],
+                |d| {
+                    names(d, &|n| match n {
+                        Name::Field("auth::P", Some("P"), "a") => "a2",
+                        n => n.text(),
+                    })
+                },
+                Rows::Rename(None, "p.a", "p.a2"),
+            ));
+            out.push(op(
+                None,
+                "rename field Sm.X.g to g2".to_string(),
+                &[],
+                |d| {
+                    names(d, &|n| match n {
+                        Name::Field("auth::Sm", Some("X"), "g") => "g2",
+                        n => n.text(),
+                    })
+                },
+                Rows::Rename(None, "s.X.g", "s.X.g2"),
+            ));
+        }
+        out
+    }
+}
+
+/// A structural operator of the search over [`Scoped`] shapes.
+struct ScopedOp {
+    /// A migration the operator needs applied before it.
+    first: Option<String>,
+    text: String,
+    /// The constructors it replaces: of `T`, or named in an element path.
+    replaced: Vec<String>,
+    /// How it changes the names of the objects it does not create.
+    rename: fn(&Desc) -> Desc,
+    rows: Rows,
+}
+
+/// A row a clause covers: a constructor of `T`, the constructor its row held before a merge or
+/// a nest folded it into this one, and an element path over it.
+type Row = (String, String, String);
+
+/// Where a structural operator takes the rows a clause covers.
+enum Rows {
+    Same,
+    /// `A` splits into `A1` and `A2`.
+    Split,
+    /// The operator adds the constructor, whose rows no clause covered before.
+    Add(&'static str),
+    /// The constructors merge into `M`.
+    Merge(Vec<String>),
+    /// The constructors nest into `N` under field `inner`.
+    Nest(Vec<String>),
+    /// `N` unnests into the constructors folded into it.
+    Unnest,
+    Remove(&'static str),
+    /// The element path renames, over the constructor if one is given.
+    Rename(Option<&'static str>, &'static str, &'static str),
+}
+
+const HEADER: [&str; 3] = ["id", "n", "p"];
+
+fn on_header(e: &str) -> bool {
+    HEADER.contains(&e.split('.').next().unwrap_or_default())
+}
+
+impl Rows {
+    /// Returns the rows that hold row `r` after the operator.
+    fn map(&self, r: &Row) -> Vec<Row> {
+        let (c, part, e) = r.clone();
+        let row = |c: &str, part: &str, e: &str| (c.to_string(), part.to_string(), e.to_string());
+        match self {
+            Rows::Split if c == "A" => vec![row("A1", &part, &e), row("A2", &part, &e)],
+            Rows::Merge(cs) if cs.contains(&c) => vec![row("M", &c, &e)],
+            Rows::Nest(cs) if cs.contains(&c) && on_header(&e) => vec![row("N", &c, &e)],
+            Rows::Nest(cs) if cs.contains(&c) => vec![row("N", &c, &format!("inner.{c}.{e}"))],
+            Rows::Unnest if c == "N" && on_header(&e) => vec![row(&part, "", &e)],
+            Rows::Unnest if c == "N" => {
+                let leaf = e.strip_prefix("inner.").and_then(|x| x.split_once('.'));
+                leaf.map(|(_, leaf)| row(&part, "", leaf))
+                    .into_iter()
+                    .collect()
+            }
+            Rows::Remove(gone) if c == *gone => Vec::new(),
+            Rows::Rename(at, from, to) if e == *from && at.is_none_or(|a| a == c) => {
+                vec![row(&c, &part, to)]
+            }
+            _ => vec![(c, part, e)],
+        }
+    }
+
+    /// Returns rows `rs` before the operator mapped through it.
+    fn mapped(&self, rs: &BTreeSet<Row>) -> BTreeSet<Row> {
+        rs.iter().flat_map(|r| self.map(r)).collect()
+    }
+
+    /// Returns rows `rs` after the operator, leaving out those of a constructor it adds without
+    /// replacing anything.
+    fn counted(&self, rs: BTreeSet<Row>) -> BTreeSet<Row> {
+        rs.into_iter()
+            .filter(|(c, _, _)| !matches!(self, Rows::Add(d) if c == d))
+            .collect()
+    }
+}
+
+/// Returns the rows clause `clause` of relation `ts` of `s` covers: each constructor its scope
+/// reaches, every constructor of `T` for no scope, with each of its element paths. The rows of `N`
+/// or `M` are those of each constructor folded into it, but a clause with an element path
+/// through `inner.X` covers those of `X` alone.
+fn covered(s: &Source, clause: &str) -> BTreeSet<Row> {
+    let schema = ids_of(s);
+    let rd = schema.relation(rel(&schema, "ts"));
+    let td = schema.ty(rd.elem_def);
+    let ctors: Vec<String> = td.ctors().iter().map(|c| c.name.clone()).collect();
+    let parts = |c: &str| -> Vec<String> {
+        let folded = td.ctors().iter().find(|k| k.name == c).and_then(|k| {
+            k.fields.iter().find_map(|f| match &f.ty {
+                Ty::Data { def, .. } if ["inner", "k"].contains(&f.name.as_str()) => Some(*def),
+                _ => None,
+            })
+        });
+        match folded {
+            Some(def) => schema
+                .ty(def)
+                .ctors()
+                .iter()
+                .map(|k| k.name.clone())
+                .collect(),
+            None => vec![String::new()],
+        }
+    };
+    let (elements, scope) = clause
+        .split_once('(')
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .unwrap_or_default();
+    let scoped: Vec<String> = match scope.split_once(" in ") {
+        None => ctors,
+        Some((_, names)) => names
+            .trim()
+            .trim_matches(|c| c == '(' || c == ')')
+            .split('|')
+            .map(str::trim)
+            .flat_map(|n| match rd.sets.iter().find(|set| set.name == n) {
+                Some(set) => set
+                    .ctors
+                    .iter()
+                    .map(|&c| ctors[c as usize].clone())
+                    .collect(),
+                None => vec![n.to_string()],
+            })
+            .collect(),
+    };
+    let elements: Vec<String> = elements
+        .split(',')
+        .map(|e| e.split('.').map(str::trim).collect::<Vec<_>>().join("."))
+        .collect();
+    let mut out = BTreeSet::new();
+    for c in &scoped {
+        for part in parts(c) {
+            let reaches = |e: &String| {
+                let through = e.strip_prefix("inner.").and_then(|x| x.split_once('.'));
+                through.is_none_or(|(x, _)| x == part)
+            };
+            if elements.iter().all(reaches) {
+                out.extend(
+                    elements
+                        .iter()
+                        .map(|e| (c.clone(), part.clone(), e.clone())),
+                );
+            }
+        }
+    }
+    out
+}
+
+/// Returns the constructors of the element type of relation `ts` of `s`.
+fn ctors_of(s: &Source) -> BTreeSet<String> {
+    let schema = ids_of(s);
+    let rd = schema.relation(rel(&schema, "ts"));
+    schema
+        .ty(rd.elem_def)
+        .ctors()
+        .iter()
+        .map(|c| c.name.clone())
+        .collect()
+}
+
+/// Returns, for operator `what` taking `before` to `after` and its rows by `rows`, each clause
+/// whose covered rows it does not take to those of the clause after: the clause of its id, or
+/// for a clause it re-scopes, some clause it creates.
+fn uncovered(what: &str, before: &Source, after: &Source, rows: &Rows) -> Vec<String> {
+    let was = clause_ids(before);
+    let now = clause_ids(after);
+    let old: BTreeSet<u64> = was.iter().map(|(_, id)| *id).collect();
+    let made: Vec<BTreeSet<Row>> = now
+        .iter()
+        .filter(|(_, id)| !old.contains(id))
+        .map(|(t, _)| rows.counted(covered(after, t)))
+        .collect();
+    let mut out = Vec::new();
+    for (text, id) in &was {
+        let want = rows.mapped(&covered(before, text));
+        match now.iter().find(|(_, i)| i == id) {
+            Some((t, _)) => {
+                let got = rows.counted(covered(after, t));
+                if got != want {
+                    out.push(format!(
+                        "{what}: `{text}` covers {got:?} as `{t}`, not {want:?}"
+                    ));
+                }
+            }
+            None if !want.is_empty() && !made.contains(&want) => {
+                out.push(format!("{what}: no clause re-scopes `{text}` to {want:?}"));
+            }
+            None => {}
+        }
+    }
+    out
+}
+
+/// Returns each unique and index clause of relation `ts` of `s`, by its text, with its id.
+fn clause_ids(s: &Source) -> Vec<(String, u64)> {
+    let text = flat(&decl(s, "relation", "ts"));
+    let words: Vec<&str> = text.split(' ').collect();
+    let mut texts: Vec<String> = Vec::new();
+    let mut at = 0;
+    while at < words.len() {
+        let starts = |w: &[&str]| matches!(w, ["unique" | "index", ..] | ["interval", "index", ..]);
+        if !starts(&words[at..]) {
+            at += 1;
+            continue;
+        }
+        let mut end = at + 1 + usize::from(words[at] == "interval");
+        while end < words.len()
+            && !starts(&words[end..])
+            && !matches!(words[end], "default" | "computed" | "key")
+        {
+            end += 1;
+        }
+        texts.push(words[at..end].join(" "));
+        at = end;
+    }
+    let ids = index_ids(s, "ts");
+    assert_eq!(texts.len(), ids.len(), "{text}");
+    texts.into_iter().zip(ids).collect()
+}
+
+/// Returns the names a clause's scope lists and each name of its element paths.
+fn named_in(clause: &str) -> Vec<String> {
+    let (elements, scope) = clause
+        .split_once('(')
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .unwrap_or_default();
+    let scope = scope
+        .split_once(" in ")
+        .map(|(_, s)| s.trim().trim_matches(|c| c == '(' || c == ')'))
+        .unwrap_or_default();
+    elements
+        .split([',', '.'])
+        .chain(scope.split('|'))
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .collect()
+}
+
+/// Returns whether description `d` names a constructor of `auth::T` among `replaced` or a field
+/// of one.
+fn of_replaced(d: &Desc, replaced: &[String]) -> bool {
+    let ctor = |t: &str, c: &str| t == "auth::T" && replaced.iter().any(|r| r == c);
+    match d {
+        Desc::Ctor(t, c) | Desc::Field(t, Some(c), _) => ctor(t, c),
+        Desc::Implied(_, f) | Desc::Default(_, _, f) => of_replaced(f, replaced),
+        _ => false,
+    }
+}
+
+/// Returns, for operator `what` taking `before` to `after` and replacing the constructors
+/// `replaced`, each object that does not keep its id though the operator neither creates nor
+/// re-scopes it, `rename` giving its description after. For a revert, `seen` holds the source
+/// it applied to and the constructors it replaces, by which it re-scopes a clause as it saw it.
+fn unkept(
+    what: &str,
+    (before, after): (&Source, &Source),
+    replaced: &[String],
+    rename: &dyn Fn(&Desc) -> Desc,
+    seen: Option<(&Source, &[String])>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let was = by_desc(&ids_of(before), what);
+    let now = by_desc(&ids_of(after), what);
+    for (d, &id) in &was {
+        if matches!(d, Desc::Index(..)) || of_replaced(d, replaced) {
+            continue;
+        }
+        let to = rename(d);
+        if now.get(&to) != Some(&id) {
+            out.push(format!("{what}: {d:?} {id}, {to:?} {:?}", now.get(&to)));
+        }
+    }
+    let now_clauses = clause_ids(after);
+    let held: BTreeMap<u64, &str> = now_clauses
+        .iter()
+        .map(|(t, id)| (*id, t.as_str()))
+        .collect();
+    let names = |t: &str, of: &[String]| named_in(t).iter().any(|n| of.contains(n));
+    let seen = seen.map(|(s, of)| (clause_ids(s), of));
+    for (text, id) in clause_ids(before) {
+        let rescoped = names(&text, replaced)
+            || seen
+                .as_ref()
+                .is_some_and(|(cls, of)| cls.iter().any(|(t, i)| *i == id && names(t, of)));
+        let same = now_clauses
+            .iter()
+            .find(|(t, _)| *t == text)
+            .map(|(_, i)| *i);
+        match (rescoped, held.get(&id)) {
+            (true, Some(t)) => out.push(format!("{what}: re-scoped `{text}` kept {id} as `{t}`")),
+            (false, None) => out.push(format!("{what}: `{text}` lost {id}")),
+            (false, Some(_)) if same.is_some_and(|s| s != id) => {
+                out.push(format!("{what}: `{text}` {id} is now {same:?}"));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The order [`Scoped`] shapes are tried in: the first eight set each bit both ways and reach
+/// every operator, then the rest.
+const SCOPED: [u64; 32] = [
+    31, 0, 18, 13, 9, 22, 3, 20, 30, 29, 28, 27, 26, 25, 24, 23, 21, 19, 17, 16, 15, 14, 12, 11,
+    10, 8, 7, 6, 5, 4, 2, 1,
+];
+
+/// One step of the search over [`Scoped`] shapes: an operator, or the revert of one, taking
+/// `before` to `after`.
+struct Stepped {
+    what: String,
+    before: Source,
+    after: Source,
+    /// The constructors it replaces: of `T`, or named in an element path.
+    replaced: Vec<String>,
+    /// How it changes the names of the objects it does not create.
+    rename: fn(&Desc) -> Desc,
+    /// For a revert, the source it applied to and the constructors it replaces.
+    seen: Option<(Source, Vec<String>)>,
+    rows: Rows,
+}
+
+/// The steps of the search over the first `count` of the [`Scoped`] shapes.
+struct Search {
+    steps: Vec<Stepped>,
+    /// Each step refused, with its refusal.
+    refused: Vec<String>,
+    ran: usize,
+    /// The operators applied, by their first three words.
+    reached: BTreeSet<String>,
+}
+
+impl Search {
+    fn of(count: usize) -> Search {
+        let mut search = Search {
+            steps: Vec::new(),
+            refused: Vec::new(),
+            ran: 0,
+            reached: BTreeSet::new(),
+        };
+        for bits in SCOPED.into_iter().take(count) {
+            let shape = Scoped::of(bits);
+            let start = source(&shape.text());
+            for op in shape.ops() {
+                search.ran += 1;
+                let what = format!("{bits:05b} {}", op.text.lines().next().unwrap_or_default());
+                search.operator(&start, op, &what);
+            }
+        }
+        search
+    }
+
+    fn operator(&mut self, start: &Source, op: ScopedOp, what: &str) {
+        let base = match &op.first {
+            None => start.clone(),
+            Some(first) => match self.step(start, first, what) {
+                Some(s) => s,
+                None => return,
+            },
+        };
+        let Some(after) = self.step(&base, &op.text, what) else {
+            return;
+        };
+        let words: Vec<&str> = op.text.split(' ').take(3).collect();
+        self.reached.insert(words.join(" "));
+        let replaced = op.replaced.clone();
+        let inverse: Vec<String> = replaced
+            .iter()
+            .cloned()
+            .chain(ctors_of(&after).difference(&ctors_of(&base)).cloned())
+            .collect();
+        let nest = op.text.starts_with("nest");
+        self.reverted(what, &base, &after, &replaced, inverse);
+        self.steps.push(Stepped {
+            what: what.to_string(),
+            before: base,
+            after: after.clone(),
+            replaced: replaced.clone(),
+            rename: op.rename,
+            seen: None,
+            rows: op.rows,
+        });
+        if !nest {
+            return;
+        }
+        let n: Vec<String> = ["N".to_string()]
+            .into_iter()
+            .chain(replaced.iter().cloned())
+            .collect();
+        let Some(unnested) = self.step(&after, "unnest constructor T.N", what) else {
+            return;
+        };
+        let what = format!("{what}, unnested");
+        self.reverted(&what, &after, &unnested, &n, n.clone());
+        self.steps.push(Stepped {
+            what,
+            before: after,
+            after: unnested,
+            replaced: n,
+            rename: Desc::clone,
+            seen: None,
+            rows: Rows::Unnest,
+        });
+    }
+
+    /// Revert the operator that took `before` to `after`, replacing `replaced`, its inverse
+    /// replacing `inverse`.
+    fn reverted(
+        &mut self,
+        what: &str,
+        before: &Source,
+        after: &Source,
+        replaced: &[String],
+        inverse: Vec<String>,
+    ) {
+        let last = after.log.last().expect("the operator is logged").number;
+        let Some(reverted) = self.step(after, &format!("revert {last:04}"), what) else {
+            return;
+        };
+        self.steps.push(Stepped {
+            what: format!("{what}, reverted"),
+            before: before.clone(),
+            after: reverted,
+            replaced: replaced.to_vec(),
+            rename: Desc::clone,
+            seen: Some((after.clone(), inverse)),
+            rows: Rows::Same,
+        });
+    }
+
+    fn step(&mut self, from: &Source, text: &str, what: &str) -> Option<Source> {
+        match migrate(from, &format!("module auth\n{text}")) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                let text = text.lines().next().unwrap_or_default();
+                self.refused
+                    .push(format!("{what}: `{text}` refused: {e:?}"));
+                None
+            }
+        }
+    }
+}
+
+#[test]
+fn a_structural_operator_or_its_revert_keeps_the_id_of_every_object_it_does_not_create_or_rescope()
+{
+    let count = adtb_testkit::profile::count(8).min(32) as usize;
+    let search = Search::of(count);
+    let mut found = search.refused;
+    for s in &search.steps {
+        let seen = s.seen.as_ref().map(|(src, of)| (src, of.as_slice()));
+        let pair = (&s.before, &s.after);
+        found.extend(unkept(&s.what, pair, &s.replaced, &s.rename, seen));
+    }
+    assert!(found.is_empty(), "{}", found.join("\n"));
+    assert!(search.ran >= count * 3, "ran {} operators", search.ran);
+    if count >= 8 {
+        assert_eq!(12, search.reached.len(), "{:?}", search.reached);
+    }
+}
+
+#[test]
+#[ignore = "split, merge and nest re-scope a unique over one constructor beyond or short of its rows, and reverting a remove leaves the constructor out of the sets that held it"]
+fn a_structural_operator_or_its_revert_takes_the_rows_a_clause_covers_to_those_of_the_clause_after()
+{
+    let count = adtb_testkit::profile::count(8).min(32) as usize;
+    let search = Search::of(count);
+    let mut found = search.refused;
+    for s in &search.steps {
+        found.extend(uncovered(&s.what, &s.before, &s.after, &s.rows));
+    }
+    assert!(found.is_empty(), "{}", found.join("\n"));
+    assert!(
+        search.steps.len() >= search.ran * 2,
+        "ran {} steps",
+        search.steps.len()
+    );
+}
+
+#[test]
+fn an_unnest_of_several_products_re_scopes_a_clause_through_one_to_its_rows_and_keeps_one_over_the_header()
+ {
+    let nested = applies(
+        &source(&Scoped::of(0).text()),
+        "module auth
+nest constructor T.(A | B) into N { inner: Inner }
+add set S2 of ts = N
+add index (inner.A.z) in ts.S2
+add index (n) in ts.S2",
+    );
+    let unnested = applies(&nested, "module auth\nunnest constructor T.N");
+    let id = |s: &Source, text: &str| {
+        let ids = clause_ids(s);
+        ids.iter().find(|(t, _)| t == text).map(|(_, id)| *id)
+    };
+    let header = id(&nested, "index (n) in S2");
+    assert!(header.is_some(), "{}", decl(&nested, "relation", "ts"));
+    assert_eq!(header, id(&unnested, "index (n) in S2"));
+    assert!(id(&nested, "index (inner.A.z) in S2").is_some());
+    let rescoped = id(&unnested, "index (z) in A").expect("the unnest re-scopes the clause");
+    assert!(clause_ids(&nested).iter().all(|(_, id)| *id != rescoped));
+    assert_eq!(
+        "set S2 of ts = A | B",
+        flat(&decl(&unnested, "set", "ts.S2"))
+    );
+    let last = unnested.log.last().expect("the unnest is logged").number;
+    applies(&unnested, &format!("module auth\nrevert {last:04}"));
+}
+
+#[test]
+fn no_element_of_a_unique_or_index_keys_a_name_that_resolves_to_a_field_as_a_token() {
+    let mut tokens = Vec::new();
+    let mut keys = 0;
+    for bits in SCOPED {
+        let s = source(&Scoped::of(bits).text());
+        for k in s.ids.keys() {
+            if !matches!(k.kind(), KeyKind::Unique | KeyKind::Index) {
+                continue;
+            }
+            keys += 1;
+            let shown = format!("{k:?}");
+            for name in ["z", "n", "id", "p", "a", "s", "X", "g"] {
+                if shown.contains(&format!("Token(\"{name}\")")) {
+                    tokens.push(format!("{bits:05b} {name}: {shown}"));
+                }
+            }
+        }
+    }
+    assert!(tokens.is_empty(), "{}", tokens.join("\n"));
+    assert!(keys >= 32 * 5, "{keys} keys");
 }

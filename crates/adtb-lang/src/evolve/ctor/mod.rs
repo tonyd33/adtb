@@ -768,6 +768,15 @@ impl ScopedClause {
     }
 }
 
+/// Returns the field an index element `e` names first, and the rest of it from the dot after
+/// that field.
+pub(super) fn element_head(e: &str) -> (&str, &str) {
+    match e.find('.') {
+        Some(at) => (e[..at].trim(), &e[at..]),
+        None => (e.trim(), ""),
+    }
+}
+
 /// What a fill or a routing checks against.
 pub(super) struct RowTypes {
     pub(super) schema: Schema,
@@ -781,6 +790,82 @@ pub(super) struct RowTypes {
 pub(super) type Carries = Vec<(String, String, String, String)>;
 
 impl Cx<'_> {
+    /// Record that each field `carries` carries whole from a constructor of `ty` is replaced by
+    /// the field it goes to.
+    pub(super) fn replacing_carried(&mut self, ty: &QName, carries: &Carries) {
+        let (m, t) = (self.module_of(ty), &ty.name.text);
+        let replaced = carries
+            .iter()
+            .filter_map(|(c, f, p, g)| {
+                let from = self.src.field_path(&m, t, Some(c), f)?;
+                let to = Held::Field(m.clone(), t.clone(), Some(p.clone()), g.clone());
+                Some(Replaced::new(from, vec![to]))
+            })
+            .collect();
+        self.src.replacing(replaced);
+    }
+
+    /// Record that each field of each constructor of `sources` of type `td` of module `tm` is
+    /// replaced by its namesake in the constructor of that name of type `inner` of module `im`,
+    /// under field `field` of nesting constructor `n`.
+    pub(super) fn replacing_nested(
+        &mut self,
+        (tm, td, n, field): (&str, &schema::TypeDef, &str, &str),
+        im: &str,
+        inner: &str,
+        sources: &[String],
+    ) {
+        let mut replaced = Vec::new();
+        for src in sources {
+            let Some(k) = td.ctor_index(src) else {
+                continue;
+            };
+            for g in &td.ctors()[k as usize].fields {
+                let held = vec![
+                    Held::Field(tm.into(), td.name.clone(), Some(n.into()), field.into()),
+                    Held::Ctor(im.into(), inner.into(), src.clone()),
+                    Held::Field(im.into(), inner.into(), Some(src.clone()), g.name.clone()),
+                ];
+                if let Some(from) = self.src.field_path(tm, &td.name, Some(src), &g.name) {
+                    replaced.push(Replaced::new(from, held));
+                }
+            }
+        }
+        self.src.replacing(replaced);
+    }
+
+    /// Record that each field of each constructor of sum `st` of module `sm`, under field `field`
+    /// of constructor `n` of type `td` of module `tm`, is replaced by its namesake in the
+    /// constructor of that name that an unnest gives `td`.
+    pub(super) fn replacing_unnested(
+        &mut self,
+        (tm, td, n, field): (&str, &schema::TypeDef, &str, &str),
+        sm: &str,
+        st: &schema::TypeDef,
+    ) {
+        let mut replaced = Vec::new();
+        for x in st.ctors() {
+            for g in &x.fields {
+                let from = (
+                    self.src.field_key_id(tm, &td.name, Some(n), field),
+                    self.src.ctor_key_id(sm, &st.name, &x.name),
+                    self.src.field_key_id(sm, &st.name, Some(&x.name), &g.name),
+                );
+                if let (Some(f), Some(c), Some(h)) = from {
+                    let to = Held::Field(
+                        tm.into(),
+                        td.name.clone(),
+                        Some(x.name.clone()),
+                        g.name.clone(),
+                    );
+                    let from = vec![PathStep::Field(f), PathStep::Ctor(c), PathStep::Field(h)];
+                    replaced.push(Replaced::new(from, vec![to]));
+                }
+            }
+        }
+        self.src.replacing(replaced);
+    }
+
     pub(super) fn ctor_def_text(&self, d: &ast::CtorDef) -> Written {
         self.copy_range(ctor_extent(self.text, &d.name, d.record.is_some()))
     }
@@ -815,10 +900,7 @@ impl Cx<'_> {
                 };
                 let scope = match s {
                     None => None,
-                    Some(s) => schema
-                        .relation_sel(rel, &scope_sel(s))
-                        .ok()
-                        .and_then(|cs| schema.normalize_ctors(def, cs)),
+                    Some(s) => schema.relation_sel(rel, &scope_sel(s)).ok(),
                 };
                 out.push(ScopedClause {
                     decl: i,

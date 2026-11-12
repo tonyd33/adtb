@@ -13,9 +13,11 @@ mod tests;
 mod fixed;
 mod key;
 mod objects;
+mod reach;
 pub use fixed::{FixedType, RELATIONS, TYPES};
-pub use key::{KeyKind, ObjectKey, Owner};
+pub use key::{KeyKind, ObjectKey, Owner, Path, PathStep};
 pub use objects::{Object, assign, objects};
+pub use reach::Replacement;
 
 macro_rules! catalog_id {
     ($($(#[$doc:meta])* $name:ident),* $(,)?) => {$(

@@ -363,6 +363,21 @@ impl Cx<'_> {
                 let removal = self
                     .field_removal(i, &t, &part, &path.field.text)
                     .expect("the field");
+                let (m, tn, f) = (self.module_of(&path.ty), &t.name.text, &path.field.text);
+                let replaced = self
+                    .src
+                    .field_path(&m, tn, None, f)
+                    .map(|from| {
+                        let to = |c: &String| {
+                            Held::Field(m.clone(), tn.clone(), Some(c.clone()), f.clone())
+                        };
+                        targets
+                            .iter()
+                            .map(|c| Replaced::new(from.clone(), vec![to(c)]))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.src.replacing(replaced);
                 let mut edits = vec![(removal.0, Written::from(removal.1))];
                 for c in &targets {
                     edits.push(
@@ -403,6 +418,18 @@ impl Cx<'_> {
         let field = &path.field.text;
         let h = header(&self.src.decls[i].module).len();
         let text = self.src.decls[i].text.clone();
+        let (m, tn) = (self.module_of(&path.ty), &t.name.text);
+        let replaced = from
+            .iter()
+            .filter_map(|c| self.src.field_path(&m, tn, Some(c), field))
+            .map(|p| {
+                Replaced::new(
+                    p,
+                    vec![Held::Field(m.clone(), tn.clone(), None, field.clone())],
+                )
+            })
+            .collect();
+        self.src.replacing(replaced);
         let mut edits = Vec::new();
         let mut item = None;
         for c in from {

@@ -77,6 +77,7 @@ impl Cx<'_> {
             }
             _ => self.carried_by_name(schema.ty(def), &sources, &m, &mfields, &disc)?,
         };
+        self.replacing_carried(ty, &carries);
         let tm = self.module_of(ty);
         self.restate(&schema, def, &tm, &sources, std::slice::from_ref(&m), true)?;
         let mut edits = self.reselect(
@@ -157,6 +158,10 @@ impl Cx<'_> {
                     .push((cl.range.clone(), new.into()));
                 continue;
             }
+            if cl.kind == "unique" && inside > 1 {
+                let scoped = sel_text(&cl.scope_names());
+                return self.err(format!("`{shown} in {scoped}` holds across the merged constructors; the merge would weaken it"));
+            }
             let out_fields = self.merged_fields(schema, image, &cl, &shown)?;
             let names = match rescoped {
                 None if out_fields == cl.fields => continue,
@@ -202,15 +207,16 @@ impl Cx<'_> {
             let s = &schema.ty(image.def).ctors()[c as usize].name;
             let mut fs = Vec::new();
             for f in &cl.fields {
-                let header = schema.ty(image.def).field(None, f).is_some();
+                let (head, rest) = element_head(f);
+                let header = schema.ty(image.def).field(None, head).is_some();
                 let mapped = if header {
                     Some(f.clone())
                 } else {
                     image
                         .carries
                         .iter()
-                        .find(|(x, y, _, _)| x == s && y == f)
-                        .map(|(_, _, _, g)| g.clone())
+                        .find(|(x, y, _, _)| x == s && y == head)
+                        .map(|(_, _, _, g)| format!("{g}{rest}"))
                 };
                 match mapped {
                     Some(g) => fs.push(g),

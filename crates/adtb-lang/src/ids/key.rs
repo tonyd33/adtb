@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 /// The kind of object an [`ObjectKey`] names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum KeyKind {
@@ -36,11 +38,23 @@ pub enum Part {
     Field(u64),
     Ctor(u64),
     Set(u64),
+    /// A run of an index element naming a field, as every path of field and constructor ids it
+    /// reaches over the constructors the index ranges over.
+    Reach(BTreeSet<Path>),
     /// A token of an index element that names no field of the row.
     Token(String),
     /// The end of an index element.
     Next,
 }
+
+/// A step of a [`Part::Reach`] path: a field, or a constructor of the type of the field before.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PathStep {
+    Field(u64),
+    Ctor(u64),
+}
+
+pub type Path = Vec<PathStep>;
 
 /// The identity of an object of a user module from one operator to the next: its kind, its
 /// owner and its parts, with `nth` counting the objects before it that agree on all three.
@@ -71,12 +85,20 @@ impl ObjectKey {
         ObjectKey { nth, ..self }
     }
 
+    pub(super) fn ordinal(&self) -> usize {
+        self.nth
+    }
+
     pub fn kind(&self) -> KeyKind {
         self.kind
     }
 
     pub fn owner(&self) -> &Owner {
         &self.owner
+    }
+
+    pub(super) fn parts(&self) -> &[Part] {
+        &self.parts
     }
 
     /// Returns the key with its one name `name`.

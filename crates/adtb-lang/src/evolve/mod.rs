@@ -13,7 +13,7 @@ use crate::canon::Names;
 use crate::check::{self, Program, Ref, RowBody};
 use crate::ids::{
     CatConstraintId, CatCtorId, CatFieldId, CatFunctionId, CatIndexId, CatRelId, CatSetId,
-    CatTypeId, ObjectKey, held_id,
+    CatTypeId, ObjectKey, PathStep, held_id,
 };
 use crate::lex::{Tok, lex};
 use crate::parse::{Options, parse_schema};
@@ -38,6 +38,7 @@ mod source;
 mod text;
 
 use field::{Part, path_text};
+use ids::{Held, Replaced};
 use text::*;
 
 #[cfg(test)]
@@ -120,6 +121,8 @@ pub struct Source {
     pub ahead: Vec<schema::Ahead>,
     /// How the operator being applied carries grants, once the constructors it makes have ids.
     carry: Option<carry::Carry>,
+    /// The paths of field ids the operator being applied replaces, until its objects take ids.
+    replaced: Vec<Replaced>,
     /// The grants the structural operators of the migration being applied could not carry and
     /// no later grant operator of it has stated.
     unstated: Vec<carry::Unstated>,
