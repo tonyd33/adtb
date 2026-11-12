@@ -1,10 +1,11 @@
 //! Print terms in their canonical form, with names qualified.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use crate::ast::{self, CtorScope, CtorSel, Decl, RelationClause, TypeBody};
 use crate::check::Ref;
+use crate::ids::Space;
 use crate::lex::{Tok, decode_text, lex};
 use crate::schema::{PRELUDE, Schema, TypeName, ValueDef};
 use crate::span::Span;
@@ -19,6 +20,9 @@ mod tests;
 pub struct Names {
     /// `None` for a name written unqualified: of the prelude, or of an anonymous constructor.
     modules: BTreeMap<(u32, u32), Option<String>>,
+    /// The catalog ids of the objects each name of a user module resolves to, fields included: a
+    /// field name of a grant resolves to the field of each constructor it covers.
+    ids: BTreeMap<(u32, u32), BTreeSet<(Space, u64)>>,
 }
 
 impl Names {
@@ -28,8 +32,15 @@ impl Names {
         self.modules.insert((span.start, span.end), name);
     }
 
-    /// Records the object a checked body names at `span`; a field or a `match` is no name of an object.
+    /// Record the object a checked body names at `span`: its catalog id, and its module unless it
+    /// is a field or a `match`.
     pub fn note(&mut self, schema: &Schema, span: Span, r: &Ref) {
+        if let Some(id) = catalog_id(schema, r) {
+            self.ids
+                .entry((span.start, span.end))
+                .or_default()
+                .insert(id);
+        }
         let module = match r {
             Ref::Type(d) | Ref::Ctor(d, _) => schema.ty(*d).module,
             Ref::Relation(r) | Ref::Set(r, _) => schema.relation(*r).module,
@@ -48,20 +59,60 @@ impl Names {
             .map(|m| m.as_deref())
     }
 
+    /// Returns the catalog id of each object the names resolve to.
+    pub fn ids(&self) -> impl Iterator<Item = (Space, u64)> + '_ {
+        self.ids.values().flatten().copied()
+    }
+
     /// Copies the names of `from` inside `range`, moved so that `range.start` lands at `to`.
     pub fn copy(&mut self, from: &Names, range: Range<usize>, to: usize) {
         let (lo, hi) = (range.start as u32, range.end as u32);
+        let at = |x: u32| (x - lo) + to as u32;
         for (&(s, e), m) in from.modules.range((lo, lo)..(hi, hi)) {
             if e <= hi {
-                let at = |x: u32| (x - lo) + to as u32;
                 self.modules.insert((at(s), at(e)), m.clone());
+            }
+        }
+        for (&(s, e), ids) in from.ids.range((lo, lo)..(hi, hi)) {
+            if e <= hi {
+                self.ids
+                    .entry((at(s), at(e)))
+                    .or_default()
+                    .extend(ids.iter().copied());
             }
         }
     }
 
     pub fn extend(&mut self, other: Names) {
         self.modules.extend(other.modules);
+        for (span, ids) in other.ids {
+            self.ids.entry(span).or_default().extend(ids);
+        }
     }
+}
+
+/// Returns the catalog id of the object `r` names, `None` for one with no id.
+fn catalog_id(schema: &Schema, r: &Ref) -> Option<(Space, u64)> {
+    let ids = &schema.ids;
+    Some(match r {
+        Ref::Type(d) => (Space::Shared, ids.type_id(*d)?.raw()),
+        Ref::Ctor(d, c) => (
+            Space::Shared,
+            ids.ctor_id(schema.ty(*d).ctor_at(*c)?)?.raw(),
+        ),
+        Ref::Relation(rel) => (Space::Shared, ids.relation_id(*rel)?.raw()),
+        Ref::Set(rel, name) => (Space::Set, ids.set_id(*rel, name)?.raw()),
+        Ref::Function(f) => (Space::Function, ids.function_id(*f)?.raw()),
+        Ref::Aggregate(a) => (Space::Function, ids.aggregate_id(*a as usize)?.raw()),
+        Ref::Field {
+            def, ctor, name, ..
+        } => {
+            let td = schema.ty(*def);
+            let f = td.field(ctor.and_then(|c| td.ctor_at(c)), name)?;
+            (Space::Field, ids.field_id(f)?.raw())
+        }
+        Ref::BuiltinType | Ref::Anonymous | Ref::Match(_) => return None,
+    })
 }
 
 /// Returns the canonical token form of the term at `span` of `text`, its names spelled as `names` resolves them.

@@ -8,6 +8,9 @@ mod grants;
 #[path = "evolve_ids_tests.rs"]
 mod ids;
 
+#[path = "evolve_revert_tests.rs"]
+mod revert;
+
 const RUNNING: &str = r"
 module auth
 type User = { id: Key users, name: Text }
@@ -2446,10 +2449,12 @@ add constructor Identity.Corp { domain: Text }
   arm login_present: Corp c -> scalar_len(c.domain) == 0",
     );
     let s = applies(&s, "module auth\nenable identities.Corp");
-    refuses(
-        &s,
-        "module auth\nrevert 0001",
-        "migration 0002 depends on it",
+    assert_eq!(
+        Err(vec![
+            "`revert 0001` is refused while migration 0002 depends on it: it names constructor `auth::Identity.Corp`"
+                .to_string()
+        ]),
+        migrate(&s, "module auth\nrevert 0001").map(|_| ()),
     );
 }
 
@@ -2546,16 +2551,18 @@ fn revert_of_a_split_by_a_discriminator_named_otherwise_merges_back() {
 }
 
 #[test]
-fn revert_of_a_split_matches_a_check_on_one_product_by_the_field_its_routing_fixes() {
+fn revert_of_a_split_is_refused_while_a_later_check_names_a_product() {
     let s = applies(&source(SCALES), SCALED);
     let s = applies(
         &s,
         "module auth\nadd check long on places.Region (scalar_len(name) > 3)",
     );
-    let s = applies(&s, "module auth\nrevert 0001");
     assert_eq!(
-        "check long on places.Location (match scale | Realm -> scalar_len(name) > 3 | Town -> true)",
-        flat(&decl(&s, "check", "long"))
+        Err(vec![
+            "`revert 0001` is refused while migration 0002 depends on it: it names constructor `auth::Place.Region`"
+                .to_string()
+        ]),
+        migrate(&s, "module auth\nrevert 0001").map(|_| ()),
     );
 }
 

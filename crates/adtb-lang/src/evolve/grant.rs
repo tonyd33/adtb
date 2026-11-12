@@ -196,20 +196,23 @@ fn carried(
     now: &BTreeMap<ObjectKey, u64>,
 ) -> ObjectKey {
     const OWNERS: [KeyKind; 3] = [KeyKind::Type, KeyKind::Ctor, KeyKind::Relation];
-    let &Owner::Object(o) = key.owner() else {
+    let &Owner::Object(space, o) = key.owner() else {
         return key.clone();
     };
     let held = |ids: &BTreeMap<ObjectKey, u64>| {
         ids.iter()
-            .find(|(k, id)| **id == o && OWNERS.contains(&k.kind()))
+            .find(|(k, id)| **id == o && k.kind().space() == space && OWNERS.contains(&k.kind()))
             .map(|(k, _)| k.clone())
     };
     if held(now).is_some() {
         return key.clone();
     }
     held(then)
-        .and_then(|owner| now.get(&carried(&owner, then, now)))
-        .map_or_else(|| key.clone(), |&id| key.owned_by(Owner::Object(id)))
+        .and_then(|owner| {
+            let id = now.get(&carried(&owner, then, now))?;
+            Some(Owner::Object(owner.kind().space(), *id))
+        })
+        .map_or_else(|| key.clone(), |owner| key.owned_by(owner))
 }
 
 /// What a role holds of a privilege: its place among the grants, its grant option and its
@@ -418,6 +421,15 @@ struct Resolving<'a> {
     refs: Vec<(Span, Ref)>,
 }
 
+fn field_ref(def: TypeId, ctor: Option<u32>, name: &str) -> Ref {
+    Ref::Field {
+        def,
+        ctor,
+        name: name.to_string(),
+        pun: false,
+    }
+}
+
 impl Resolving<'_> {
     fn target(&mut self, r: &ast::RelationRef) -> R<(RelId, GrantTarget, CtorSet)> {
         let schema = self.schema;
@@ -476,7 +488,7 @@ impl Resolving<'_> {
     /// Returns the fields of a `read` or `update`: without a list, those its constructors have
     /// now; a `frozen` list states those fields itself.
     fn fields(
-        &self,
+        &mut self,
         rel: RelId,
         ctors: &CtorSet,
         list: Option<&ast::GrantFieldList>,
@@ -523,14 +535,20 @@ impl Resolving<'_> {
                         c.text, name, rd.name
                     ));
                 };
+                self.refs.push((c.span, Ref::Ctor(def, k)));
+                self.refs.push((f.name.span, field_ref(def, Some(k), name)));
                 out.push(id.raw());
             } else if let Some(id) = td.field(None, name).and_then(|f| ids.field_id(f)) {
+                self.refs.push((f.name.span, field_ref(def, None, name)));
                 out.push(id.raw());
             } else {
-                let found: Vec<u64> = ctors
-                    .iter()
-                    .filter_map(|&c| own(c, name).map(CatFieldId::raw))
-                    .collect();
+                let mut found = Vec::new();
+                for &c in ctors {
+                    if let Some(id) = own(c, name) {
+                        found.push(id.raw());
+                        self.refs.push((f.name.span, field_ref(def, Some(c), name)));
+                    }
+                }
                 if found.is_empty() {
                     return refuse(format!("`{}` has no field `{name}`", rd.name));
                 }

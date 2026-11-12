@@ -57,6 +57,7 @@ pub use grant::{
     deployment_grant, deployment_revoke, family_query, target_covers,
 };
 pub use keep::Kept;
+use resolved::Reached;
 pub use resolved::{
     ArmTarget, Clause, Code, Function, IndexKind, Place, Resolved, ResolvedOp, Target,
 };
@@ -127,6 +128,9 @@ pub struct Source {
     /// no later grant operator of it has stated.
     unstated: Vec<carry::Unstated>,
     memo: memo::BuiltMemo,
+    /// Whether the operators being applied replay a logged migration as an inverse; a `revert`
+    /// among them applies without its dependency gate.
+    replaying: bool,
 }
 
 /// Text of the migration being replayed that an operator copied into a declaration.

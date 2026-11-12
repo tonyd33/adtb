@@ -1,5 +1,5 @@
 use super::*;
-use crate::ids::KeyKind;
+use crate::ids::{KeyKind, Owner, Space};
 
 mod inverse;
 
@@ -122,224 +122,153 @@ fn grants_back(before: &Source, after: &Source) -> (Option<Inverse>, Option<Inve
     )
 }
 
-/// The objects an operator creates, by kind and name, the module first.
-pub(super) fn created(op: &OperatorKind, module: &str) -> Vec<String> {
-    let q = |n: &QName| {
-        n.module
-            .as_ref()
-            .map_or(module.to_string(), |m| m.text.clone())
-    };
-    match op {
-        OperatorKind::AddModule(m) | OperatorKind::Install { name: m, .. } => {
-            vec![format!("module {}", m.text)]
+impl Source {
+    /// Returns the number of each migration after the one at `pos` of the log that names an object
+    /// the one at `pos` created, by operand, through an object an operand names inside, in a text
+    /// it copies into the schema, or by its module, with the least such object as the source
+    /// before it names it.
+    ///
+    /// Fail with the diagnostics of a later migration that does not resolve.
+    pub(super) fn dependants(&self, pos: usize) -> Result<Vec<(u64, String)>, Vec<Diag>> {
+        let made = self.created(pos);
+        if made.is_empty() {
+            return Ok(Vec::new());
         }
-        OperatorKind::AddType(t) => {
-            let mut out = vec![format!("type {module}::{}", t.name.text)];
-            if let ast::TypeBody::Ctors(cs) = &t.body {
-                out.extend(
-                    cs.iter()
-                        .map(|c| format!("ctor {module}::{}.{}", t.name.text, c.name.text)),
-                );
+        let every: Vec<&Source> = self.log.iter().map(|l| &*l.before).chain([self]).collect();
+        let all = Keys::of(&every);
+        let mut out = Vec::new();
+        for (i, later) in self.log.iter().enumerate().skip(pos + 1) {
+            let keys = Spelling {
+                near: Keys::of(&[&later.before, self.after(i), self.after(pos)]),
+                all: &all,
+            };
+            let named = keys.with_owners(self.named_by(later.number)?);
+            if let Some(o) = named.intersection(&made).next() {
+                out.push((later.number, keys.shown(o)));
             }
-            out
         }
-        OperatorKind::AddRelation(r) => vec![format!("relation {module}::{}", r.name.name.text)],
-        OperatorKind::AddSet(s) => {
-            vec![format!("set {module}::{}.{}", s.relation.text, s.name.text)]
-        }
-        OperatorKind::AddConstructor { path, .. } => {
-            vec![format!(
-                "ctor {}::{}.{}",
-                q(&path.ty),
-                path.ty.name.text,
-                path.ctor.text
-            )]
-        }
-        OperatorKind::SplitConstructor { path, into, .. } => into
-            .iter()
-            .map(|d| {
-                format!(
-                    "ctor {}::{}.{}",
-                    q(&path.ty),
-                    path.ty.name.text,
-                    d.name.text
-                )
-            })
-            .collect(),
-        OperatorKind::MergeConstructor { ty, into, .. }
-        | OperatorKind::NestConstructor { ty, into, .. } => {
-            vec![format!(
-                "ctor {}::{}.{}",
-                q(ty),
-                ty.name.text,
-                into.name.text
-            )]
-        }
-        OperatorKind::AddField { path, .. } => vec![format!(
-            "field {}::{}.{}.{}",
-            q(&path.ty),
-            path.ty.name.text,
-            path.ctor.as_ref().map_or("", |c| c.text.as_str()),
-            path.field.text
-        )],
-        OperatorKind::DefineFn(f) => vec![format!("fn {module}::{}", f.name.text)],
-        OperatorKind::DefineAggregate(a) => vec![format!("fn {module}::{}", a.name.text)],
-        OperatorKind::AddConstraint(c) => vec![format!("constraint {module}::{}", c.name.text)],
-        OperatorKind::AddCheck(c) => vec![format!("constraint {module}::{}", c.name.text)],
-        OperatorKind::Store(s) => vec![format!("view {module}::{}", s.view.name.text)],
-        OperatorKind::AddComputed {
-            relation, field, ..
-        } => {
-            vec![format!(
-                "computed {}::{}.{}",
-                q(relation),
-                relation.name.text,
-                field.text
-            )]
-        }
-        _ => Vec::new(),
+        Ok(out)
+    }
+
+    /// Returns the catalog objects and modules the source after the migration at `pos` of the log
+    /// holds and the source before it does not.
+    pub(super) fn created(&self, pos: usize) -> BTreeSet<Reached> {
+        let held = |s: &Source| -> BTreeSet<Reached> {
+            s.ids
+                .iter()
+                .map(|(k, &id)| Reached::Object(k.kind().space(), id))
+                .chain(s.modules.iter().cloned().map(Reached::Module))
+                .collect()
+        };
+        let before = held(&self.log[pos].before);
+        held(self.after(pos)).difference(&before).cloned().collect()
+    }
+
+    /// Returns the source after the migration at `pos` of the log.
+    fn after(&self, pos: usize) -> &Source {
+        self.log.get(pos + 1).map_or(self, |l| &*l.before)
     }
 }
 
-/// The objects an operator names, by kind and name as [`created`] gives them, read against `schema`.
-pub(super) fn named(op: &OperatorKind, module: &str, schema: &Schema) -> Vec<String> {
-    let q = |n: &QName| {
-        n.module
-            .as_ref()
-            .map_or(module.to_string(), |m| m.text.clone())
-    };
-    let ty_of = |r: &QName| -> Option<String> {
-        let mid = schema.module_named(&q(r))?;
-        match schema.module(mid).values.get(&r.name.text)? {
-            ValueDef::Relation(rel) => Some(schema.ty(schema.relation(*rel).elem_def).name.clone()),
-            _ => None,
+/// The keys of the objects of several sources, by the space of the id and the id, the first
+/// source holding an id giving its key.
+struct Keys<'a>(BTreeMap<(Space, u64), &'a ObjectKey>);
+
+impl<'a> Keys<'a> {
+    fn of(sources: &[&'a Source]) -> Keys<'a> {
+        let mut out = BTreeMap::new();
+        for s in sources {
+            for (k, &id) in &s.ids {
+                out.entry((k.kind().space(), id)).or_insert(k);
+            }
         }
-    };
-    let ctors_of = |r: &ast::RelationRef| -> Vec<String> {
-        let Some(t) = ty_of(&r.relation) else {
-            return Vec::new();
-        };
-        let mut out = vec![format!(
-            "relation {}::{}",
-            q(&r.relation),
-            r.relation.name.text
-        )];
-        if let Some(sel) = &r.sel {
-            for x in sel_idents(sel) {
-                out.push(format!("ctor {}::{t}.{}", q(&r.relation), x.text));
-                out.push(format!(
-                    "set {}::{}.{}",
-                    q(&r.relation),
-                    r.relation.name.text,
-                    x.text
-                ));
+        Keys(out)
+    }
+}
+
+/// The keys of the sources around a later migration, else of any source of the log.
+struct Spelling<'a> {
+    near: Keys<'a>,
+    all: &'a Keys<'a>,
+}
+
+impl<'a> Spelling<'a> {
+    /// Returns the key of an object, `None` when no source of the log holds it.
+    fn get(&self, space: Space, id: u64) -> Option<&'a ObjectKey> {
+        let at = (space, id);
+        self.near
+            .0
+            .get(&at)
+            .or_else(|| self.all.0.get(&at))
+            .copied()
+    }
+
+    fn key(&self, space: Space, id: u64) -> &'a ObjectKey {
+        self.get(space, id).unwrap_or_else(|| {
+            panic!("an object a migration created, and each object owning it, is held by some source of the log: {space:?} {id}")
+        })
+    }
+
+    /// Returns `named` with what owns each object of it, objects and modules, transitively.
+    fn with_owners(&self, named: BTreeSet<Reached>) -> BTreeSet<Reached> {
+        let mut out = named.clone();
+        let mut todo: Vec<Reached> = named.into_iter().collect();
+        while let Some(r) = todo.pop() {
+            let Reached::Object(space, id) = r else {
+                continue;
+            };
+            let owner = match self.get(space, id).map(ObjectKey::owner) {
+                Some(Owner::Module(m)) => Reached::Module(m.clone()),
+                Some(Owner::Object(space, o)) => Reached::Object(*space, *o),
+                None => continue,
+            };
+            if out.insert(owner.clone()) {
+                todo.push(owner);
             }
         }
         out
-    };
-    let ctor = |t: &QName, c: &ast::Ident| format!("ctor {}::{}.{}", q(t), t.name.text, c.text);
-    let field = |p: &ast::FieldPath| {
-        format!(
-            "field {}::{}.{}.{}",
-            q(&p.ty),
-            p.ty.name.text,
-            p.ctor.as_ref().map_or("", |c| c.text.as_str()),
-            p.field.text
-        )
-    };
-    let mut out = Vec::new();
-    match op {
-        OperatorKind::Enable(t) | OperatorKind::Disable(t) | OperatorKind::Deprecate(t) => {
-            match t {
-                CtorTarget::Relation(r) => out.extend(ctors_of(r)),
-                CtorTarget::Type(p) => out.push(ctor(&p.ty, &p.ctor)),
-            }
-        }
-        OperatorKind::RemoveConstructor(p)
-        | OperatorKind::RenameConstructor(p, _)
-        | OperatorKind::UnnestConstructor(p, _) => {
-            out.push(ctor(&p.ty, &p.ctor));
-        }
-        OperatorKind::SplitConstructor { path, .. } => out.push(ctor(&path.ty, &path.ctor)),
-        OperatorKind::MergeConstructor { ty, sel, .. }
-        | OperatorKind::NestConstructor { ty, sel, .. } => {
-            out.extend(sel_idents(sel).into_iter().map(|c| ctor(ty, c)));
-        }
-        OperatorKind::AddConstructor {
-            path, joins, arms, ..
-        } => {
-            out.push(format!("type {}::{}", q(&path.ty), path.ty.name.text));
-            for j in joins {
-                out.extend(ctors_of(j));
-            }
-            for a in arms {
-                out.push(format!("fn {}::{}", q(&a.target), a.target.name.text));
-                out.push(format!(
-                    "constraint {}::{}",
-                    q(&a.target),
-                    a.target.name.text
-                ));
-            }
-        }
-        OperatorKind::DropType(t) | OperatorKind::RenameType(t, _) => {
-            out.push(format!("type {}::{}", q(t), t.name.text));
-        }
-        OperatorKind::DropRelation(r) | OperatorKind::RenameRelation(r, _) => {
-            out.push(format!("relation {}::{}", q(r), r.name.text));
-        }
-        OperatorKind::DropSet(s, r) | OperatorKind::RenameSet(s, r, _) => {
-            out.push(format!("set {}::{}.{}", q(r), r.name.text, s.text));
-        }
-        OperatorKind::AddField { path, .. } => {
-            out.push(format!("type {}::{}", q(&path.ty), path.ty.name.text));
-            if let Some(c) = &path.ctor {
-                out.push(ctor(&path.ty, c));
-            }
-        }
-        OperatorKind::DropField(p)
-        | OperatorKind::AlterField { path: p, .. }
-        | OperatorKind::RenameField(p, _)
-        | OperatorKind::MoveField { path: p, .. } => {
-            out.push(field(p));
-        }
-        OperatorKind::AddUnique(_, on)
-        | OperatorKind::DropUnique(_, on)
-        | OperatorKind::AddIndex { on, .. }
-        | OperatorKind::DropIndex { on, .. } => out.extend(ctors_of(on)),
-        OperatorKind::Rekey {
-            relation, carry, ..
-        } => {
-            out.push(format!("relation {}::{}", q(relation), relation.name.text));
-            out.extend(carry.iter().map(field));
-        }
-        OperatorKind::AddDefault { relation, .. } | OperatorKind::DropDefault { relation, .. } => {
-            out.push(format!("relation {}::{}", q(relation), relation.name.text));
-        }
-        OperatorKind::RedefineFn(f) => out.push(format!("fn {module}::{}", f.name.text)),
-        OperatorKind::DropFn(f) | OperatorKind::DropAggregate(f) => {
-            out.push(format!("fn {}::{}", q(f), f.name.text));
-        }
-        OperatorKind::DropConstraint(c) | OperatorKind::DropCheck(c) => {
-            out.push(format!("constraint {}::{}", q(c), c.name.text));
-        }
-        OperatorKind::Unstore(v) => out.push(format!("view {}::{}", q(v), v.name.text)),
-        OperatorKind::RedefineComputed {
-            relation, field, ..
-        }
-        | OperatorKind::DropComputed(relation, field) => {
-            out.push(format!(
-                "computed {}::{}.{}",
-                q(relation),
-                relation.name.text,
-                field.text
-            ));
-        }
-        OperatorKind::DropModule(m) | OperatorKind::Uninstall(m) => {
-            out.push(format!("module {}", m.text));
-        }
-        _ => {}
     }
-    out
+
+    /// Returns `r` as a refusal names it: its kind and its name qualified by its owners.
+    fn shown(&self, r: &Reached) -> String {
+        match r {
+            Reached::Module(m) => format!("module `{m}`"),
+            Reached::Object(space, id) => {
+                let key = self.key(*space, *id);
+                let word = match key.kind() {
+                    KeyKind::Type => "type",
+                    KeyKind::Ctor => "constructor",
+                    KeyKind::Relation => "relation",
+                    KeyKind::Field => "field",
+                    KeyKind::Set => "set",
+                    KeyKind::Function => "function",
+                    KeyKind::Constraint => "constraint",
+                    KeyKind::Computed => "computed field",
+                    KeyKind::Key => "the key index of",
+                    KeyKind::Unique => "a unique of",
+                    KeyKind::Index | KeyKind::IntervalIndex => "an index of",
+                    KeyKind::Implied => "an implied index of",
+                    KeyKind::Generated => "the generated default of",
+                    KeyKind::Default => "a default of",
+                };
+                format!("{word} `{}`", self.qualified(key))
+            }
+        }
+    }
+
+    /// Returns the name of the object of `key` qualified by its owners, the owner's alone for an
+    /// object with no name.
+    fn qualified(&self, key: &ObjectKey) -> String {
+        let owner = match key.owner() {
+            Owner::Module(m) => m.clone(),
+            Owner::Object(space, o) => self.qualified(self.key(*space, *o)),
+        };
+        match (key.name(), key.owner()) {
+            (None, _) => owner,
+            (Some(n), Owner::Module(_)) => format!("{owner}::{n}"),
+            (Some(n), Owner::Object(..)) => format!("{owner}.{n}"),
+        }
+    }
 }
 
 impl Cx<'_> {
@@ -358,26 +287,25 @@ impl Cx<'_> {
                 "the inverse of migration {migration} is undefined: it holds a `script`"
             ));
         }
-        let made: BTreeSet<String> = logged
-            .operators
-            .iter()
-            .flat_map(|o| created(&o.kind, &logged.module))
-            .collect();
-        for later in &self.src.log[pos + 1..] {
-            let Ok(schema) = later.before.schema() else {
-                continue;
-            };
-            let depends = later.operators.iter().any(|o| {
-                named(&o.kind, &later.module, &schema)
-                    .iter()
-                    .any(|n| made.contains(n))
-            });
-            if depends {
-                return self.err(format!(
-                    "`revert {migration}` is refused while migration {:04} depends on it",
-                    later.number
-                ));
-            }
+        let unresolved = |ds: Vec<Diag>| -> Vec<Diag> {
+            ds.into_iter()
+                .map(|d| {
+                    Diag::new(
+                        self.span,
+                        format!("the log does not resolve: {}", d.message),
+                    )
+                })
+                .collect()
+        };
+        let dependants = if self.src.replaying {
+            Vec::new()
+        } else {
+            self.src.dependants(pos).map_err(unresolved)?
+        };
+        if let Some((later, object)) = dependants.first() {
+            return self.err(format!(
+                "`revert {migration}` is refused while migration {later:04} depends on it: it names {object}"
+            ));
         }
         let mut state = (*logged.before).clone();
         state.version = logged.number;
@@ -1108,19 +1036,27 @@ impl Cx<'_> {
             }
             Inverse::Replay(l) => {
                 self.src.expecting(&l.module, &l.operators);
-                for op in &l.operators {
-                    match self.steps {
-                        Some(steps) => {
-                            let mut more = self.src.steps(&l.module, op, &l.text)?;
-                            steps.borrow_mut().append(&mut more);
-                        }
-                        None => self.src.apply(&l.module, op, &l.text)?,
-                    }
-                }
+                let replaying = std::mem::replace(&mut self.src.replaying, true);
+                let replayed = self.replay(&l);
+                self.src.replaying = replaying;
+                replayed?;
                 self.src.settled();
                 Ok(())
             }
         }
+    }
+
+    fn replay(&mut self, l: &Logged) -> R<()> {
+        for op in &l.operators {
+            match self.steps {
+                Some(steps) => {
+                    let mut more = self.src.steps(&l.module, op, &l.text)?;
+                    steps.borrow_mut().append(&mut more);
+                }
+                None => self.src.apply(&l.module, op, &l.text)?,
+            }
+        }
+        Ok(())
     }
 
     fn readd(

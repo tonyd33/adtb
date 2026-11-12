@@ -1,5 +1,6 @@
 use super::*;
 use crate::canon::canonical_term;
+use crate::ids::Space;
 
 #[path = "derived.rs"]
 mod derived;
@@ -293,6 +294,133 @@ pub struct ResolvedOp {
     pub clauses: Vec<Clause>,
 }
 
+/// An object an operator names: a catalog object, by the space of its id and the id, or a module.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Reached {
+    Object(Space, u64),
+    Module(String),
+}
+
+impl ResolvedOp {
+    /// Returns every object the operator names as an operand or in a clause.
+    fn operands(&self) -> Vec<Reached> {
+        use Reached::{Module, Object};
+        let shared = |id: &u64| Object(Space::Shared, *id);
+        let mut out = match &self.op {
+            Resolved::AddModule { module }
+            | Resolved::DropModule { module }
+            | Resolved::Install { module, .. }
+            | Resolved::Uninstall { module } => vec![Module(module.clone())],
+            Resolved::AddType { sum: id, .. }
+            | Resolved::DropType { sum: id }
+            | Resolved::RenameType { sum: id, .. }
+            | Resolved::AddRelation { relation: id, .. }
+            | Resolved::DropRelation { relation: id }
+            | Resolved::RenameRelation { relation: id, .. }
+            | Resolved::RemoveConstructor { ctor: id }
+            | Resolved::RenameConstructor { ctor: id, .. }
+            | Resolved::Split { ctor: id, .. }
+            | Resolved::Merge { ctor: id, .. }
+            | Resolved::Nest { ctor: id, .. }
+            | Resolved::Unnest { ctor: id }
+            | Resolved::Unstore { view: id } => vec![shared(id)],
+            Resolved::AddSet { set, relation, .. } => {
+                vec![Object(Space::Set, *set), shared(relation)]
+            }
+            Resolved::DropSet { set } | Resolved::RenameSet { set, .. } => {
+                vec![Object(Space::Set, *set)]
+            }
+            Resolved::AddUnique {
+                index, relation, ..
+            }
+            | Resolved::AddIndex {
+                index, relation, ..
+            }
+            | Resolved::Rekey {
+                relation,
+                key: index,
+                ..
+            } => vec![Object(Space::Index, *index), shared(relation)],
+            Resolved::DropUnique { index } | Resolved::DropIndex { index } => {
+                vec![Object(Space::Index, *index)]
+            }
+            Resolved::DefineFn { function, .. }
+            | Resolved::DefineAggregate { function, .. }
+            | Resolved::RedefineFn { function, .. }
+            | Resolved::DropFn { function }
+            | Resolved::DropAggregate { function } => vec![Object(Space::Function, *function)],
+            Resolved::AddConstraint { constraint, .. }
+            | Resolved::AddCheck { constraint, .. }
+            | Resolved::DropConstraint { constraint }
+            | Resolved::DropCheck { constraint } => vec![Object(Space::Constraint, *constraint)],
+            Resolved::AddConstructor {
+                ctor, sum, place, ..
+            } => {
+                let mut out = vec![shared(ctor), shared(sum)];
+                if let Place::Before { ctor } | Place::After { ctor } = place {
+                    out.push(shared(ctor));
+                }
+                out
+            }
+            Resolved::Enable { target }
+            | Resolved::Disable { target }
+            | Resolved::Deprecate { target } => match target {
+                Target::InRelation { relation, ctor } => vec![shared(relation), shared(ctor)],
+                Target::OfType { ctor } => vec![shared(ctor)],
+            },
+            Resolved::AddField { field, .. }
+            | Resolved::DropField { field }
+            | Resolved::AlterField { field, .. }
+            | Resolved::RenameField { field, .. }
+            | Resolved::MoveField { field, .. } => vec![Object(Space::Field, *field)],
+            Resolved::AddDefault {
+                default,
+                relation,
+                field,
+                ..
+            } => vec![
+                Object(Space::Default, *default),
+                shared(relation),
+                Object(Space::Field, *field),
+            ],
+            Resolved::DropDefault { default } => vec![Object(Space::Default, *default)],
+            Resolved::Store { view, function, .. } => {
+                vec![shared(view), Object(Space::Function, *function)]
+            }
+            Resolved::AddComputed {
+                computed, relation, ..
+            } => vec![Object(Space::Computed, *computed), shared(relation)],
+            Resolved::RedefineComputed { computed, .. } | Resolved::DropComputed { computed } => {
+                vec![Object(Space::Computed, *computed)]
+            }
+            Resolved::Revert { .. }
+            | Resolved::Grant { .. }
+            | Resolved::Revoke { .. }
+            | Resolved::AdoptTzdb { .. }
+            | Resolved::Script { .. } => Vec::new(),
+        };
+        for c in &self.clauses {
+            match c {
+                Clause::Member { ctor } => out.push(shared(ctor)),
+                Clause::Joins { set } => out.push(Object(Space::Set, *set)),
+                Clause::Arm { target, .. } => out.push(match target {
+                    ArmTarget::OfFn { function } => Object(Space::Function, *function),
+                    ArmTarget::OfConstraint { constraint } => {
+                        Object(Space::Constraint, *constraint)
+                    }
+                    ArmTarget::OfComputed { computed } => Object(Space::Computed, *computed),
+                }),
+                Clause::Replacement { index, .. } => out.push(Object(Space::Index, *index)),
+                Clause::Carry { field } | Clause::Fill { field, .. } => {
+                    out.push(Object(Space::Field, *field));
+                }
+                Clause::Privilege { .. } => {}
+            }
+        }
+        out
+    }
+}
+
 /// A function or aggregate of a source, as the catalog records it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Function {
@@ -336,11 +464,40 @@ impl Source {
     /// Fail with the operators whose data the source lacks, at their spans, or with the operands
     /// whose names do not resolve. Panics if the log holds no migration `number`.
     pub fn resolved(&self, number: u64) -> Result<Vec<ResolvedOp>, Vec<Diag>> {
-        let i = self
-            .log
+        self.resolving(number).map(|(ops, _)| ops)
+    }
+
+    /// Returns every object the operators of migration `number` name: as an operand, in a clause,
+    /// or in a text they copy into the schema. A `revert k` names what migration `k` named and
+    /// created.
+    ///
+    /// Fail as [`Source::resolved`] does.
+    pub(super) fn named_by(&self, number: u64) -> Result<BTreeSet<Reached>, Vec<Diag>> {
+        let (ops, names) = self.resolving(number)?;
+        let mut out: BTreeSet<Reached> = ops
+            .iter()
+            .flat_map(ResolvedOp::operands)
+            .chain(names.ids().map(|(space, id)| Reached::Object(space, id)))
+            .collect();
+        for op in &ops {
+            if let Resolved::Revert { migration } = op.op {
+                out.extend(self.named_by(migration)?);
+                out.extend(self.created(self.at(migration)));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Returns the position of migration `number` in the log.
+    fn at(&self, number: u64) -> usize {
+        self.log
             .iter()
             .position(|l| l.number == number)
-            .unwrap_or_else(|| panic!("the log holds migration {number}"));
+            .unwrap_or_else(|| panic!("the log holds migration {number}"))
+    }
+
+    fn resolving(&self, number: u64) -> Result<(Vec<ResolvedOp>, Names), Vec<Diag>> {
+        let i = self.at(number);
         let logged = &self.log[i];
         let after = self.log.get(i + 1).map_or(self, |l| &*l.before);
         let unavailable: Vec<Diag> = logged
@@ -369,12 +526,13 @@ impl Source {
             indexes: BTreeMap::new(),
             at: 0,
         };
-        (0..logged.operators.len())
+        let ops = (0..logged.operators.len())
             .map(|k| {
                 r.at = k;
                 r.operator(&logged.operators[k])
             })
-            .collect()
+            .collect::<Result<_, _>>()?;
+        Ok((ops, names))
     }
 
     /// Returns every function and aggregate of the user modules, in declaration order.

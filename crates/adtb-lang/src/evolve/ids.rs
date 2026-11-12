@@ -1,6 +1,6 @@
 use super::*;
 use crate::ids::{
-    KeyKind, Object, ObjectKey, Owner, Path, PathStep, Replacement, Slot, assign, objects,
+    KeyKind, Object, ObjectKey, Owner, Path, PathStep, Replacement, Slot, Space, assign, objects,
 };
 
 impl Source {
@@ -160,7 +160,9 @@ impl Source {
 
     /// Returns the object at key `key` as an owner.
     fn object_owner(&self, key: &ObjectKey) -> Option<Owner> {
-        self.ids.get(key).map(|&id| Owner::Object(id))
+        self.ids
+            .get(key)
+            .map(|&id| Owner::Object(key.kind().space(), id))
     }
 
     /// Returns type `t` of module `m` as an owner.
@@ -280,11 +282,11 @@ pub(super) fn field_owner(
         Owner::Module(m.to_string()),
         t,
     ))?;
-    let ty = Owner::Object(*ty);
+    let ty = Owner::Object(Space::Shared, *ty);
     match ctor {
         Some(c) => ids
             .get(&ObjectKey::named(KeyKind::Ctor, ty, c))
-            .map(|&id| Owner::Object(id)),
+            .map(|&id| Owner::Object(Space::Shared, id)),
         None => Some(ty),
     }
 }

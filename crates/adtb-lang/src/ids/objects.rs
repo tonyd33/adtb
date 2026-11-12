@@ -61,7 +61,7 @@ impl Object {
     fn key(&self, id: &dyn Fn(&Slot) -> u64) -> ObjectKey {
         let owner = match &self.owner {
             Holder::Module(m) => Owner::Module(m.clone()),
-            Holder::Object(s) => Owner::Object(id(s)),
+            Holder::Object(s) => Owner::Object(s.space(), id(s)),
         };
         let parts = self
             .parts
