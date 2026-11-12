@@ -541,7 +541,6 @@ fn a_header_module_alone_makes_no_dependant() {
 }
 
 #[test]
-#[ignore = "reverting `drop type` restores the type's declaration without the write states of its value-level constructors"]
 fn reverting_drop_type_restores_the_value_states_of_its_constructors() {
     let mut s = running();
     for t in [

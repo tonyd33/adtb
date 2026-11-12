@@ -1,5 +1,5 @@
 use super::*;
-use crate::ids::{Owner, Space};
+use crate::ids::{KeyKind, Owner, Space};
 
 /// A named object, by its catalog id.
 #[derive(Clone, Copy, Debug)]
@@ -66,91 +66,178 @@ impl NamedId {
 }
 
 /// The id each object an inverse created again takes, by the space and id it had.
-pub(super) type Renewed = BTreeMap<(Space, u64), u64>;
+pub(in crate::evolve) type Recreated = BTreeMap<(Space, u64), u64>;
 
-/// Record in `renewed`, after a step restoring declarations, the id each named object of `now`
-/// that `held` lacks takes, when a source of `was` held an object of the same kind and name, with
-/// the same owner or one created again as it, under an id `now` does not hold.
-pub(super) fn renew(
-    renewed: &mut Renewed,
-    was: &[Source],
-    held: &BTreeMap<ObjectKey, u64>,
+fn again_id(again: &Recreated, space: Space, id: u64) -> u64 {
+    again.get(&(space, id)).copied().unwrap_or(id)
+}
+
+/// Returns the space and id of each object of `ids`.
+pub(super) fn holding(ids: &BTreeMap<ObjectKey, u64>) -> BTreeSet<(Space, u64)> {
+    ids.iter().map(|(k, &id)| (k.kind().space(), id)).collect()
+}
+
+/// Returns each object `before` holds and `after` does not, by its key in `before`, with its id.
+pub(super) fn removed(before: &Source, after: &Source) -> Vec<(ObjectKey, u64)> {
+    let kept = holding(&after.ids);
+    before
+        .ids
+        .iter()
+        .filter(|(k, id)| !kept.contains(&(k.kind().space(), **id)))
+        .map(|(k, &id)| (k.clone(), id))
+        .collect()
+}
+
+/// Record in `again`, for each object of `removed` that `now` holds again under an id `held`
+/// lacks and `again` gives no other object, the id it takes: the id `now` gives its key with every
+/// id of the key that `again` maps replaced.
+pub(super) fn recreate(
+    again: &mut Recreated,
+    removed: &[(ObjectKey, u64)],
+    held: &BTreeSet<(Space, u64)>,
     now: &BTreeMap<ObjectKey, u64>,
 ) {
-    let holding: BTreeSet<(Space, u64)> =
-        now.iter().map(|(k, &id)| (k.kind().space(), id)).collect();
-    let mut fresh: Vec<(&ObjectKey, u64)> = now
-        .iter()
-        .filter(|(k, _)| !held.contains_key(k))
-        .map(|(k, &id)| (k, id))
-        .collect();
-    fresh.sort_by_key(|(k, id)| (k.kind().space(), *id));
-    for (k, id) in fresh {
-        let Some(name) = k.name() else {
-            continue;
-        };
-        let space = k.kind().space();
-        let old = was.iter().flat_map(|s| &s.ids).find(|(o, oid)| {
-            o.kind() == k.kind()
-                && o.name() == Some(name)
-                && !holding.contains(&(space, **oid))
-                && renewed_owner(o.owner(), renewed) == *k.owner()
-        });
-        if let Some((_, &oid)) = old {
-            renewed.insert((space, oid), id);
+    loop {
+        let mut more = false;
+        for (key, old) in removed {
+            let space = key.kind().space();
+            if again.contains_key(&(space, *old)) {
+                continue;
+            }
+            let k = key.mapped(|s, id| again_id(again, s, id));
+            if let Some(&id) = now.get(&k)
+                && !held.contains(&(space, id))
+                && !again.iter().any(|(&(s, _), &x)| s == space && x == id)
+            {
+                again.insert((space, *old), id);
+                more = true;
+            }
+        }
+        if !more {
+            return;
         }
     }
 }
 
-fn renewed_owner(o: &Owner, renewed: &Renewed) -> Owner {
-    match o {
-        Owner::Object(space, id) => Owner::Object(*space, renewed_id(renewed, *space, *id)),
-        Owner::Module(m) => Owner::Module(m.clone()),
+/// The write state an inverse sets back: of a constructor relation, by the relation's and the
+/// constructor's ids, or of a value-level constructor, by its id.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::evolve) enum StateOf {
+    Relation(CatRelId, CatCtorId),
+    Value(CatCtorId),
+}
+
+impl StateOf {
+    /// Returns the ids of the constructor relation, when `relation`, or of the value-level
+    /// constructor whose write state `src` keeps at `key`.
+    pub(super) fn of(src: &Source, relation: bool, key: &StateKey) -> Option<StateOf> {
+        let (m, owner, c) = key;
+        if !relation {
+            return Some(StateOf::Value(CatCtorId::from_raw(
+                src.ctor_key_id(m, owner, c)?,
+            )));
+        }
+        let at = ObjectKey::named(KeyKind::Relation, Owner::Module(m.clone()), owner);
+        let rel = *src.ids.get(&at)?;
+        let (tm, t) = src.relation_type(m, owner)?;
+        Some(StateOf::Relation(
+            CatRelId::from_raw(rel),
+            CatCtorId::from_raw(src.ctor_key_id(&tm, &t, c)?),
+        ))
+    }
+
+    /// Returns whether the state is a constructor relation's and its key in `src`, else the kind
+    /// of the object `src` lacks.
+    pub(super) fn key(self, src: &Source) -> Result<(bool, StateKey), &'static str> {
+        let held = |kind: KeyKind, id: u64| {
+            src.ids
+                .iter()
+                .find(|(k, x)| **x == id && k.kind() == kind)
+                .map(|(k, _)| k)
+        };
+        let named = |k: &ObjectKey| -> Result<(String, String), &'static str> {
+            let name = k.name().ok_or("constructor")?.to_string();
+            match k.owner() {
+                Owner::Module(m) => Ok((m.clone(), name)),
+                Owner::Object(..) => Err("constructor"),
+            }
+        };
+        let ctor = |c: CatCtorId| -> Result<(String, String, String), &'static str> {
+            let k = held(KeyKind::Ctor, c.raw()).ok_or("constructor")?;
+            let &Owner::Object(_, t) = k.owner() else {
+                return Err("constructor");
+            };
+            let (m, ty) = named(held(KeyKind::Type, t).ok_or("type")?)?;
+            Ok((m, ty, k.name().ok_or("constructor")?.to_string()))
+        };
+        match self {
+            StateOf::Relation(r, c) => {
+                let (m, rel) = named(held(KeyKind::Relation, r.raw()).ok_or("relation")?)?;
+                Ok((true, (m, rel, ctor(c)?.2)))
+            }
+            StateOf::Value(c) => Ok((false, ctor(c)?)),
+        }
+    }
+
+    fn mapped(self, again: &Recreated) -> StateOf {
+        let ctor = |c: CatCtorId| CatCtorId::from_raw(again_id(again, Space::Shared, c.raw()));
+        match self {
+            StateOf::Relation(r, c) => StateOf::Relation(
+                CatRelId::from_raw(again_id(again, Space::Shared, r.raw())),
+                ctor(c),
+            ),
+            StateOf::Value(c) => StateOf::Value(ctor(c)),
+        }
     }
 }
 
-fn renewed_id(renewed: &Renewed, space: Space, id: u64) -> u64 {
-    renewed.get(&(space, id)).copied().unwrap_or(id)
+impl Source {
+    /// Returns the module and name of the type relation `r` of module `m` is declared over, a
+    /// type written unqualified being of module `m`.
+    pub(super) fn relation_type(&self, m: &str, r: &str) -> Option<(String, String)> {
+        let Some(Decl::Relation(rd)) = self.parsed(self.find("relation", m, r)?) else {
+            return None;
+        };
+        let ast::TypeKind::Named { name, .. } = rd.ty.kind else {
+            return None;
+        };
+        let module = name.module.map_or_else(|| m.to_string(), |x| x.text);
+        Some((module, name.name.text))
+    }
 }
 
 impl Inverse {
     /// Returns the step with each id an earlier step of the revert created again replaced by
-    /// the id `renewed` maps it to.
-    pub(super) fn renewed(self, renewed: &Renewed) -> Inverse {
-        let shared = |id: u64| renewed_id(renewed, Space::Shared, id);
-        let rel = |r: CatRelId| CatRelId::from_raw(shared(r.raw()));
+    /// the id `again` maps it to.
+    pub(super) fn mapped(self, again: &Recreated) -> Inverse {
+        let shared = |id: u64| again_id(again, Space::Shared, id);
         match self {
             Inverse::Rename { object, to, of } => Inverse::Rename {
                 object: match object {
                     NamedId::Type(t) => NamedId::Type(CatTypeId::from_raw(shared(t.raw()))),
                     NamedId::Ctor(c) => NamedId::Ctor(CatCtorId::from_raw(shared(c.raw()))),
-                    NamedId::Relation(r) => NamedId::Relation(rel(r)),
+                    NamedId::Relation(r) => NamedId::Relation(CatRelId::from_raw(shared(r.raw()))),
                     NamedId::Set(x) => {
-                        NamedId::Set(CatSetId::from_raw(renewed_id(renewed, Space::Set, x.raw())))
+                        NamedId::Set(CatSetId::from_raw(again_id(again, Space::Set, x.raw())))
                     }
-                    NamedId::Field(f) => NamedId::Field(CatFieldId::from_raw(renewed_id(
-                        renewed,
-                        Space::Field,
-                        f.raw(),
-                    ))),
+                    NamedId::Field(f) => {
+                        NamedId::Field(CatFieldId::from_raw(again_id(again, Space::Field, f.raw())))
+                    }
                 },
                 to,
                 of,
             },
-            Inverse::DropSet { relation, name, of } => Inverse::DropSet {
-                relation: rel(relation),
-                name,
+            Inverse::DropSet { set, of } => Inverse::DropSet {
+                set: CatSetId::from_raw(again_id(again, Space::Set, set.raw())),
                 of,
             },
             Inverse::AddSet {
-                set,
                 relation,
                 name,
                 members,
                 of,
             } => Inverse::AddSet {
-                set,
-                relation: rel(relation),
+                relation: CatRelId::from_raw(shared(relation.raw())),
                 name,
                 members: members
                     .into_iter()
@@ -158,6 +245,35 @@ impl Inverse {
                     .collect(),
                 of,
             },
+            Inverse::States { states, of } => Inverse::States {
+                states: states
+                    .into_iter()
+                    .map(|(s, state)| (s.mapped(again), state))
+                    .collect(),
+                of,
+            },
+            Inverse::Grants { back } => Inverse::Grants {
+                back: back
+                    .into_iter()
+                    .map(|h| HeldGrant {
+                        privilege: h
+                            .privilege
+                            .mapped(&mut |kind, x| {
+                                Some(again_id(again, kind.key_kind().space(), x))
+                            })
+                            .expect("a map of ids drops no id"),
+                        ..h
+                    })
+                    .collect(),
+            },
+            Inverse::Replay { logged, again: own } => {
+                let mut all = again.clone();
+                for (k, v) in own {
+                    let space = k.0;
+                    all.insert(k, again_id(again, space, v));
+                }
+                Inverse::Replay { logged, again: all }
+            }
             other => other,
         }
     }

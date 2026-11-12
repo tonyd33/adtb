@@ -146,4 +146,34 @@ impl ObjectKey {
             ..self.clone()
         }
     }
+
+    /// Returns the key with each id it holds, of its owner and of its parts, replaced by the id
+    /// `f` gives for its space and id.
+    pub fn mapped(&self, f: impl Fn(Space, u64) -> u64) -> ObjectKey {
+        let step = |s: &PathStep| match *s {
+            PathStep::Field(x) => PathStep::Field(f(Space::Field, x)),
+            PathStep::Ctor(x) => PathStep::Ctor(f(Space::Shared, x)),
+        };
+        let part = |p: &Part| match p {
+            Part::Field(x) => Part::Field(f(Space::Field, *x)),
+            Part::Ctor(x) => Part::Ctor(f(Space::Shared, *x)),
+            Part::Set(x) => Part::Set(f(Space::Set, *x)),
+            Part::Reach(paths) => Part::Reach(
+                paths
+                    .iter()
+                    .map(|path| path.iter().map(step).collect())
+                    .collect(),
+            ),
+            Part::Name(_) | Part::Token(_) | Part::Next => p.clone(),
+        };
+        ObjectKey {
+            kind: self.kind,
+            owner: match &self.owner {
+                Owner::Object(space, x) => Owner::Object(*space, f(*space, *x)),
+                Owner::Module(m) => Owner::Module(m.clone()),
+            },
+            parts: self.parts.iter().map(part).collect(),
+            nth: self.nth,
+        }
+    }
 }

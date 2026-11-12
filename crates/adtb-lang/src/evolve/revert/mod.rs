@@ -4,7 +4,12 @@ use crate::ids::{KeyKind, Owner, Space};
 mod by_id;
 mod inverse;
 
-use by_id::{NamedId, dropped, renew};
+pub(super) use by_id::Recreated;
+use by_id::{NamedId, StateOf, dropped, holding, recreate, removed};
+
+/// The steps of the inverse of a run of operators, each run ending at a source that builds, with
+/// each object the run removed, by its key before the run, and its id.
+type Undoing = (Vec<Inverse>, Vec<(ObjectKey, u64)>);
 
 /// How an inverse applies an operator of its text.
 #[derive(Clone, Copy)]
@@ -26,16 +31,12 @@ pub(super) enum Inverse {
         to: String,
         of: String,
     },
-    /// Drop named set `name` of a relation, by id; `of` is the text of the operator inverted.
-    DropSet {
-        relation: CatRelId,
-        name: String,
-        of: String,
-    },
-    /// Add named set `name` of a relation over constructors, each by id, again as the dropped set
-    /// `set`; `of` is the text of the operator inverted.
+    /// Drop the named set of an id, whatever its current name and relation; `of` is the text of
+    /// the operator inverted.
+    DropSet { set: CatSetId, of: String },
+    /// Add named set `name` of a relation over constructors, each by id; `of` is the text of the
+    /// operator inverted.
     AddSet {
-        set: CatSetId,
         relation: CatRelId,
         name: String,
         members: Vec<CatCtorId>,
@@ -68,21 +69,20 @@ pub(super) enum Inverse {
         after: Option<String>,
         arms: Vec<(String, Vec<String>)>,
     },
-    /// Sets write states back, `None` removing the state.
-    States(Vec<(bool, StateKey, Option<State>)>),
-    /// Set what each role holds of a privilege back, each privilege naming objects by the ids
-    /// `ids` gives their paths.
-    Grants {
-        back: Vec<HeldGrant>,
-        ids: BTreeMap<ObjectKey, u64>,
+    /// Set write states back, `None` removing the state; `of` is the text of the operator
+    /// inverted.
+    States {
+        states: Vec<(StateOf, Option<State>)>,
+        of: String,
     },
+    /// Set what each role holds of a privilege back.
+    Grants { back: Vec<HeldGrant> },
     /// Sets the declaration of a kind and name to a text, `None` removing it.
     Decl {
         module: String,
         kind: &'static str,
         name: String,
         text: Option<String>,
-        states: Vec<(StateKey, State)>,
     },
     /// Add module `name` with the declaration texts `decls`, or with `present` false remove it.
     Module {
@@ -91,8 +91,12 @@ pub(super) enum Inverse {
         installed: bool,
         decls: Vec<String>,
     },
-    /// Applies a logged migration's operators again.
-    Replay(Box<Logged>),
+    /// Apply a logged migration's operators again, a `revert` among them naming each object
+    /// the migration removed and the operator inverted created again by the id `again` maps it to.
+    Replay {
+        logged: Box<Logged>,
+        again: Recreated,
+    },
     /// Sets a relation's key clause to its text, generator included.
     KeyClause { relation: QName, text: String },
     /// Puts the fields of a constructor, or of the header when `ctor` is `None`, in `order`.
@@ -135,14 +139,8 @@ fn grants_back(before: &Source, after: &Source) -> (Option<Inverse>, Option<Inve
     let (gone, kept): (Vec<HeldGrant>, Vec<HeldGrant>) =
         back.into_iter().partition(|h| h.held.is_none());
     (
-        (!gone.is_empty()).then(|| Inverse::Grants {
-            back: gone,
-            ids: after.ids.clone(),
-        }),
-        (!kept.is_empty()).then(|| Inverse::Grants {
-            back: kept,
-            ids: before.ids.clone(),
-        }),
+        (!gone.is_empty()).then_some(Inverse::Grants { back: gone }),
+        (!kept.is_empty()).then_some(Inverse::Grants { back: kept }),
     )
 }
 
@@ -188,10 +186,53 @@ impl Source {
         held(self.after(pos)).difference(&before).cloned().collect()
     }
 
+    /// Returns the id each object the migration at `pos` of the log removed takes in `after`,
+    /// for each one `after` holds again under an id `before` lacks.
+    pub(super) fn recreated_by(&self, pos: usize, before: &Source, after: &Source) -> Recreated {
+        let mut again = Recreated::new();
+        let gone = removed(&self.log[pos].before, self.after(pos));
+        recreate(&mut again, &gone, &holding(&before.ids), &after.ids);
+        again
+    }
+
     /// Returns the source after the migration at `pos` of the log.
     fn after(&self, pos: usize) -> &Source {
         self.log.get(pos + 1).map_or(self, |l| &*l.before)
     }
+}
+
+/// Returns the relation variables the inverse of `logged` adds back, each typed when the
+/// migration also drops the type the source before it declares the relation over.
+fn inverse_ahead(logged: &Logged) -> Vec<schema::Ahead> {
+    let module_of = |q: &QName| {
+        q.module
+            .as_ref()
+            .map_or(logged.module.clone(), |m| m.text.clone())
+    };
+    let dropped: BTreeSet<(String, String)> = logged
+        .operators
+        .iter()
+        .filter_map(|op| match &op.kind {
+            OperatorKind::DropType(t) => Some((module_of(t), t.name.text.clone())),
+            _ => None,
+        })
+        .collect();
+    logged
+        .operators
+        .iter()
+        .filter_map(|op| match &op.kind {
+            OperatorKind::DropRelation(r) => {
+                let m = module_of(r);
+                let ty = logged.before.relation_type(&m, &r.name.text);
+                Some(schema::Ahead {
+                    module: m,
+                    relation: r.name.text.clone(),
+                    typed: ty.is_some_and(|t| dropped.contains(&t)),
+                })
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// The keys of the objects of several sources, by the space of the id and the id, the first
@@ -321,7 +362,7 @@ impl Cx<'_> {
                 })
                 .collect()
         };
-        let dependants = if self.src.replaying {
+        let dependants = if self.src.replaying.is_some() {
             Vec::new()
         } else {
             self.src.dependants(pos).map_err(unresolved)?
@@ -335,9 +376,9 @@ impl Cx<'_> {
         state.version = logged.number;
         state.expecting(&logged.module, &logged.operators);
         let mut steps = Vec::new();
-        let mut was = Vec::new();
-        for op in &logged.operators {
-            let mut step = self.inverse(&state, &logged, op, fills)?;
+        let mut start = state.clone();
+        let mut group: Vec<Vec<Inverse>> = Vec::new();
+        for (i, op) in logged.operators.iter().enumerate() {
             let before = state.clone();
             if let Err(ds) = state.apply(&logged.module, op, &logged.text) {
                 return Err(ds
@@ -347,16 +388,31 @@ impl Cx<'_> {
                     })
                     .collect());
             }
-            let (gone, kept) = grants_back(&before, &state);
+            group.push(self.inverse(&before, &state, &logged, op, fills)?);
+            if state.built().is_err() && i + 1 < logged.operators.len() {
+                continue;
+            }
+            let mut step: Vec<Inverse> = group.drain(..).rev().flatten().collect();
+            let (gone, kept) = grants_back(&start, &state);
             if let Some(gone) = gone {
                 step.insert(0, gone);
             }
             step.extend(kept);
-            steps.push(step);
-            was.push(before);
+            steps.push((step, removed(&start, &state)));
+            start = state.clone();
         }
-        let mut renewed = BTreeMap::new();
-        for step in steps.into_iter().rev() {
+        let ahead = self.src.ahead.clone();
+        self.src.ahead.extend(inverse_ahead(&logged));
+        let undone = self.undo_all(steps);
+        self.src.ahead = ahead;
+        undone
+    }
+
+    /// Apply the steps of the inverse of each run of operators of a migration, last run first.
+    fn undo_all(&mut self, steps: Vec<Undoing>) -> R<()> {
+        let mut again = self.src.replaying.clone().unwrap_or_default();
+        let held = holding(&self.src.ids);
+        for (step, gone) in steps.into_iter().rev() {
             for inv in step {
                 let recorded = matches!(
                     inv,
@@ -367,37 +423,11 @@ impl Cx<'_> {
                         | Inverse::Derived(_)
                         | Inverse::Unmerge { .. }
                         | Inverse::MoveUp { .. }
-                        | Inverse::Replay(_)
+                        | Inverse::Replay { .. }
                 );
-                let inv = inv.renewed(&renewed);
-                let by_id = matches!(
-                    inv,
-                    Inverse::Rename { .. } | Inverse::DropSet { .. } | Inverse::AddSet { .. }
-                );
-                let again = match &inv {
-                    Inverse::AddSet {
-                        set,
-                        relation,
-                        name,
-                        ..
-                    } => Some((*set, *relation, name.clone())),
-                    _ => None,
-                };
-                let held = self.src.ids.clone();
-                self.undo(inv)?;
+                self.undo(inv.mapped(&again))?;
                 self.src.reconcile_ids();
-                if let Some((set, relation, name)) = again {
-                    let schema = self.schema()?;
-                    if let Some(now) = schema
-                        .ids
-                        .relation_of(relation)
-                        .and_then(|r| schema.ids.set_id(r, &name))
-                    {
-                        renewed.insert((Space::Set, set.raw()), now.raw());
-                    }
-                } else if !by_id {
-                    renew(&mut renewed, &was, &held, &self.src.ids);
-                }
+                recreate(&mut again, &gone, &held, &self.src.ids);
                 if let (Some(steps), false) = (self.steps, recorded) {
                     steps.borrow_mut().push(Step {
                         after: self.src.clone(),
@@ -1033,19 +1063,18 @@ impl Cx<'_> {
                 };
                 self.undo_in(module, format!("rename {} {name} to {to}", object.word()))
             }
-            Inverse::DropSet { relation, name, of } => {
+            Inverse::DropSet { set, of } => {
                 let schema = self.schema()?;
-                let Some((module, r)) = NamedId::Relation(relation).spelled(&schema) else {
-                    return self.err(dropped(&of, "relation"));
+                let Some((module, set)) = NamedId::Set(set).spelled(&schema) else {
+                    return self.err(dropped(&of, "set"));
                 };
-                self.undo_in(module, format!("drop set {name} of {r}"))
+                self.undo_in(module, format!("drop set {set}"))
             }
             Inverse::AddSet {
                 relation,
                 name,
                 members,
                 of,
-                ..
             } => {
                 let schema = self.schema()?;
                 let Some(r) = schema.ids.relation_of(relation) else {
@@ -1079,8 +1108,15 @@ impl Cx<'_> {
                 after,
                 arms,
             } => self.readd(&ty, &text, after.as_deref(), arms),
-            Inverse::States(states) => {
-                for (relation, key, state) in states {
+            Inverse::States { states, of } => {
+                let mut keyed = Vec::new();
+                for (s, state) in states {
+                    match s.key(self.src) {
+                        Ok((relation, key)) => keyed.push((relation, key, state)),
+                        Err(word) => return self.err(dropped(&of, word)),
+                    }
+                }
+                for (relation, key, state) in keyed {
                     let map = if relation {
                         &mut self.src.states
                     } else {
@@ -1097,8 +1133,8 @@ impl Cx<'_> {
                 }
                 Ok(())
             }
-            Inverse::Grants { back, ids } => {
-                self.src.hold(back, &ids);
+            Inverse::Grants { back } => {
+                self.src.hold(back);
                 Ok(())
             }
             Inverse::Decl {
@@ -1106,8 +1142,7 @@ impl Cx<'_> {
                 kind,
                 name,
                 text,
-                states,
-            } => self.restore_decl(&module, kind, &name, text, states),
+            } => self.restore_decl(&module, kind, &name, text),
             Inverse::Module {
                 name,
                 present,
@@ -1128,14 +1163,14 @@ impl Cx<'_> {
                 }
                 Ok(())
             }
-            Inverse::Replay(l) => {
+            Inverse::Replay { logged: l, again } => {
+                let ahead = self.src.ahead.clone();
                 self.src.expecting(&l.module, &l.operators);
-                let replaying = std::mem::replace(&mut self.src.replaying, true);
+                let replaying = self.src.replaying.replace(again);
                 let replayed = self.replay(&l);
                 self.src.replaying = replaying;
-                replayed?;
-                self.src.settled();
-                Ok(())
+                self.src.ahead = ahead;
+                replayed
             }
         }
     }
@@ -1229,7 +1264,6 @@ impl Cx<'_> {
         kind: &str,
         name: &str,
         text: Option<String>,
-        states: Vec<(StateKey, State)>,
     ) -> R<()> {
         let found = self.src.find(kind, module, name);
         match (found, text) {
@@ -1251,9 +1285,6 @@ impl Cx<'_> {
                 self.src.push(module, t);
             }
             (None, None) => {}
-        }
-        for (k, v) in states {
-            self.src.states.insert(k, v);
         }
         Ok(())
     }

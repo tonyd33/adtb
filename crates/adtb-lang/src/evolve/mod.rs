@@ -128,9 +128,10 @@ pub struct Source {
     /// no later grant operator of it has stated.
     unstated: Vec<carry::Unstated>,
     memo: memo::BuiltMemo,
-    /// Whether the operators being applied replay a logged migration as an inverse; a `revert`
-    /// among them applies without its dependency gate.
-    replaying: bool,
+    /// While the operators being applied replay a logged migration as an inverse, the id each
+    /// object the inverse created again takes, by the id it had; a `revert` among them applies
+    /// without its dependency gate and names those objects by the ids this maps them to.
+    replaying: Option<revert::Recreated>,
 }
 
 /// Text of the migration being replayed that an operator copied into a declaration.

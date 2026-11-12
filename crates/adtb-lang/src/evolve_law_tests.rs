@@ -174,14 +174,6 @@ add relation ws : W
             Case::new("add constructor T.E { w: Text }\n  arm f: E e -> e.w"),
             Case::new("add constructor P.F"),
             Case::new("remove constructor P.B").after("deprecate P.B"),
-            Case::new(&format!(
-                "remove constructor T.C
-redefine fn f (t: T) -> Text = match t
-  | A a -> a.x
-  | B b -> b.x{}",
-                d("\n  | D d -> d.w")
-            ))
-            .after("deprecate ts.C"),
             Case::new("rename constructor T.A to A2"),
             Case::new("rename constructor P.A to A3"),
             Case::new(SPLIT).after("drop default ts.A.x"),
@@ -269,6 +261,7 @@ redefine fn f (t: T) -> Text = match t
             Case::new("revoke read us from support").after("grant read us to support"),
             Case::new("grant read us to support with grant option"),
         ];
+        out.extend(self.removing());
         out.extend(between());
         if self.declared {
             out.push(Case::new("enable ts.D"));
@@ -282,6 +275,29 @@ redefine fn f (t: T) -> Text = match t
             out.push(Case::new("revoke update ts.(A | B) (A.x, n) from support"));
         }
         out
+    }
+
+    /// The cases removing constructor `C` of `T`.
+    fn removing(self) -> Vec<Case> {
+        let remove = format!(
+            "remove constructor T.C
+redefine fn f (t: T) -> Text = match t
+  | A a -> a.x
+  | B b -> b.x{}",
+            self.d_arm("\n  | D d -> d.w")
+        );
+        vec![
+            Case::new(&remove).after("deprecate ts.C"),
+            Case::new(&remove)
+                .after(
+                    "drop set R of ts
+add type Z { id: Key zs } = C | Z2
+add relation zs : Z key id generate sequence
+deprecate ts.C",
+                )
+                .then("deprecate zs.C", Some("deprecate zs.C"))
+                .labelled(OTHER_TYPE),
+        ]
     }
 }
 
@@ -390,6 +406,29 @@ rename set S6 of ts to R
 drop set R of ts",
         )
         .labelled(RECREATED),
+        Case::new(
+            "drop type P
+add type P = A | B
+rename constructor P.A to A5
+drop type P",
+        )
+        .labelled(RECREATED),
+        Case::new("drop relation m::ms\ndrop type m::M")
+            .after(
+                "module m
+add type M { id: Key ms } = M1 | M2
+add relation ms : M key id generate sequence
+deprecate ms.M2",
+            )
+            .labelled(OTHER_MODULE),
+        Case::new("deprecate P.A")
+            .then("drop type P", None)
+            .refused("the inverse of `deprecate P.A` names a constructor a later migration dropped")
+            .labelled(DROPPED),
+        Case::new("deprecate vs.V")
+            .then("drop relation vs\ndrop type V", None)
+            .refused("the inverse of `deprecate vs.V` names a relation a later migration dropped")
+            .labelled(DROPPED),
     ]
 }
 
@@ -409,8 +448,15 @@ const PARENT: &str = "owner renamed";
 /// The label of a case whose revert follows a new object taking the name it restores.
 const REUSED: &str = "name taken";
 
-/// The label of a case dropping a set whose name a set it adds then takes.
+/// The label of a case dropping an object whose name an object it adds then takes.
 const RECREATED: &str = "name re-created";
+
+/// The label of a case whose revert follows a change of the state of a constructor of the same
+/// name in another type.
+const OTHER_TYPE: &str = "same name in another type";
+
+/// The label of a case whose migration drops objects of another module.
+const OTHER_MODULE: &str = "objects of another module";
 
 /// The label of a case whose revert follows a drop of its object.
 const DROPPED: &str = "object dropped";
@@ -992,36 +1038,6 @@ const REFUSED_ON_REPLACED: &str = "structural-operators-refuse-clauses-on-replac
 /// The disagreements main shows.
 const KNOWN: &[Known] = &[
     Known {
-        kind: "DropType",
-        case: "drop relation vs",
-        differences: &["ValueStates: (\"auth\", \"V\", \"V\") Some(Enabled) -> None"],
-        tickets: &["structure-lang-identity"],
-    },
-    Known {
-        kind: "DropRelation",
-        case: "drop set YS of ys",
-        differences: &[
-            "Grants: -(\"support\", Read(Whole(Some(Named(Relation(\"auth::ys\")))), {Some(Named(Field(\"auth::Y\", None, \"id\"))), Some(Named(Field(\"auth::Y\", Some(\"Y1\"), \"a\"))), Some(Named(Field(\"auth::Y\", Some(\"Y2\"), \"b\")))}, false), false, false)",
-            "ValueStates: (\"auth\", \"Y\", \"Y1\") Some(Enabled) -> None",
-            "ValueStates: (\"auth\", \"Y\", \"Y2\") Some(Enabled) -> None",
-            "ValueStates: (\"auth\", \"Y\", \"Y3\") Some(Declared) -> None",
-        ],
-        tickets: &[
-            "revert-drop-relation-loses-grant",
-            "structure-lang-identity",
-        ],
-    },
-    Known {
-        kind: "DropType",
-        case: "drop type P",
-        differences: &[
-            "ValueStates: (\"auth\", \"P\", \"A\") Some(Enabled) -> None",
-            "ValueStates: (\"auth\", \"P\", \"B\") Some(Enabled) -> None",
-            "ValueStates: (\"auth\", \"P\", \"E\") Some(Declared) -> None",
-        ],
-        tickets: &["structure-lang-identity"],
-    },
-    Known {
         kind: "Merge",
         case: "merge constructor T.(A | B) into M { k: K, x: Text, z: Text, q: Q }",
         differences: &[
@@ -1312,10 +1328,10 @@ fn unknown(name: &str, o: &Outcome, every_shape: bool) -> Option<String> {
 }
 
 /// The cases each shape runs with no bit set, and those the `declared` and `granted` bits add.
-const CASES: (usize, usize, usize) = (92, 2, 5);
+const CASES: (usize, usize, usize) = (97, 2, 5);
 
 /// The cases of each shape whose revert is refused for a reason the spec states.
-const REFUSED: usize = 5;
+const REFUSED: usize = 7;
 
 #[test]
 fn every_invertible_operator_and_its_revert_restore_the_source_before_it() {

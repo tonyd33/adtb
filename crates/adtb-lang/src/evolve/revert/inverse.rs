@@ -1,10 +1,12 @@
 use super::*;
 use crate::schema::FieldRef;
 
-/// An operator of migration `logged` being inverted against `before`, the source before it.
+/// An operator of migration `logged` being inverted against `before`, the source before it, and
+/// `after`, the source it gives.
 #[derive(Clone, Copy)]
 struct Inverting<'a> {
     before: &'a Source,
+    after: &'a Source,
     logged: &'a Logged,
     op: &'a Operator,
     fills: &'a [(ast::FieldPath, Fill)],
@@ -55,10 +57,28 @@ impl Inverting<'_> {
             .map(|c| schema.ids.ctor_id(td.ctor_named(&c.text)?))
             .collect::<Option<Vec<CatCtorId>>>()?;
         Some(Inverse::AddSet {
-            set: schema.ids.set_id(rel, &name.text)?,
             relation: schema.ids.relation_id(rel)?,
             name: name.text.clone(),
             members,
+            of: self.text(self.op.span),
+        })
+    }
+
+    /// Returns the step setting back the write state of each constructor `before` holds whose
+    /// key `pick` takes, of a constructor relation when `relation`.
+    fn states_back(&self, relation: bool, pick: impl Fn(&StateKey) -> bool) -> Option<Inverse> {
+        let held = if relation {
+            &self.before.states
+        } else {
+            &self.before.value_states
+        };
+        let states = held
+            .iter()
+            .filter(|(k, _)| pick(k))
+            .map(|(k, v)| Some((StateOf::of(self.before, relation, k)?, Some(*v))))
+            .collect::<Option<Vec<_>>>()?;
+        Some(Inverse::States {
+            states,
             of: self.text(self.op.span),
         })
     }
@@ -76,7 +96,6 @@ fn decl(kind: &'static str, m: String, name: String, text: Option<String>) -> In
         kind,
         name,
         text,
-        states: Vec::new(),
     }
 }
 
@@ -125,12 +144,14 @@ impl Cx<'_> {
     pub(super) fn inverse(
         &self,
         before: &Source,
+        after: &Source,
         logged: &Logged,
         op: &Operator,
         fills: &[(ast::FieldPath, Fill)],
     ) -> R<Vec<Inverse>> {
         let at = Inverting {
             before,
+            after,
             logged,
             op,
             fills,
@@ -191,8 +212,11 @@ impl Cx<'_> {
             OperatorKind::Script(_) => self.err("a `script` has no inverse"),
             OperatorKind::Revert { migration, .. } => {
                 let n: u64 = migration.parse().unwrap_or(u64::MAX);
-                match self.src.log.iter().find(|l| l.number == n) {
-                    Some(l) => Ok(vec![Inverse::Replay(Box::new(l.clone()))]),
+                match self.src.log.iter().position(|l| l.number == n) {
+                    Some(k) => Ok(vec![Inverse::Replay {
+                        logged: Box::new(self.src.log[k].clone()),
+                        again: self.src.recreated_by(k, before, after),
+                    }]),
                     None => self.err(format!("migration {migration} is not in the log")),
                 }
             }
@@ -238,12 +262,18 @@ impl Cx<'_> {
                 t.name.text.clone(),
                 None,
             )]),
-            OperatorKind::DropType(t) => Ok(vec![decl(
-                "type",
-                at.module_of(t),
-                t.name.text.clone(),
-                at.decl_text("type", &at.module_of(t), &t.name.text),
-            )]),
+            OperatorKind::DropType(t) => {
+                let m = at.module_of(t);
+                let states = at.states_back(false, |(sm, st, _)| *sm == m && *st == t.name.text);
+                let mut out = vec![decl(
+                    "type",
+                    m.clone(),
+                    t.name.text.clone(),
+                    at.decl_text("type", &m, &t.name.text),
+                )];
+                out.extend(self.by_id(states)?);
+                Ok(out)
+            }
             OperatorKind::RenameType(t, _) => self.by_id(at.renamed(
                 |s| {
                     let def = type_named(s, &at.module_of(t), &t.name.text)?;
@@ -268,20 +298,13 @@ impl Cx<'_> {
             )]),
             OperatorKind::DropRelation(r) => {
                 let m = at.module_of(r);
-                let mut out = Vec::new();
-                let states: Vec<(StateKey, State)> = before
-                    .states
-                    .iter()
-                    .filter(|((sm, sr, _), _)| *sm == m && *sr == r.name.text)
-                    .map(|(k, v)| (k.clone(), *v))
-                    .collect();
-                out.push(Inverse::Decl {
-                    module: m.clone(),
-                    kind: "relation",
-                    name: r.name.text.clone(),
-                    text: at.decl_text("relation", &m, &r.name.text),
-                    states,
-                });
+                let states = at.states_back(true, |(sm, sr, _)| *sm == m && *sr == r.name.text);
+                let mut out = vec![decl(
+                    "relation",
+                    m.clone(),
+                    r.name.text.clone(),
+                    at.decl_text("relation", &m, &r.name.text),
+                )];
                 for (i, d) in before.decls.iter().enumerate() {
                     if d.module == m
                         && let Some(Decl::Set(s)) = before.parsed(i)
@@ -295,6 +318,7 @@ impl Cx<'_> {
                         ));
                     }
                 }
+                out.extend(self.by_id(states)?);
                 Ok(out)
             }
             OperatorKind::RenameRelation(r, _) => self.by_id(at.renamed(
@@ -305,13 +329,12 @@ impl Cx<'_> {
                 &r.name,
             )),
             OperatorKind::AddSet(d) => {
-                let relation = before.schema().ok().and_then(|s| {
+                let set = at.after.schema().ok().and_then(|s| {
                     let rel = relation_named(&s, &logged.module, &d.relation.text)?;
-                    s.ids.relation_id(rel)
+                    s.ids.set_id(rel, &d.name.text)
                 });
-                self.by_id(relation.map(|relation| Inverse::DropSet {
-                    relation,
-                    name: d.name.text.clone(),
+                self.by_id(set.map(|set| Inverse::DropSet {
+                    set,
                     of: at.text(op.span),
                 }))
             }
@@ -411,7 +434,11 @@ impl Cx<'_> {
                 } else {
                     before.value_states.get(&key)
                 };
-                Ok(vec![Inverse::States(vec![(relation, key, prior.copied())])])
+                let state = StateOf::of(before, relation, &key);
+                self.by_id(state.map(|s| Inverse::States {
+                    states: vec![(s, prior.copied())],
+                    of: at.text(op.span),
+                }))
             }
             OperatorKind::NestConstructor {
                 ty,
@@ -848,22 +875,21 @@ impl Cx<'_> {
             after,
             arms,
         }];
-        let mut states = Vec::new();
-        for (k2, v) in before
-            .states
+        let def = type_named(&schema, &m, &path.ty.name.text);
+        let of_type: BTreeSet<(String, String)> = schema
+            .relations
             .iter()
-            .filter(|(k2, _)| k2.2 == path.ctor.text)
-        {
-            states.push((true, k2.clone(), Some(*v)));
-        }
-        for (k2, v) in before
-            .value_states
-            .iter()
-            .filter(|(k2, _)| k2.1 == path.ty.name.text && k2.2 == path.ctor.text)
-        {
-            states.push((false, k2.clone(), Some(*v)));
-        }
-        out.push(Inverse::States(states));
+            .filter(|r| Some(r.elem_def) == def)
+            .map(|r| (schema.module(r.module).name.clone(), r.name.clone()))
+            .collect();
+        let held = at.states_back(true, |k| {
+            k.2 == path.ctor.text && of_type.contains(&(k.0.clone(), k.1.clone()))
+        });
+        out.extend(self.by_id(held)?);
+        let held = at.states_back(false, |k| {
+            k.0 == m && k.1 == path.ty.name.text && k.2 == path.ctor.text
+        });
+        out.extend(self.by_id(held)?);
         Ok(out)
     }
 
