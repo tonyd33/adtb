@@ -1059,8 +1059,9 @@ revert 0015
 ```
 
 A revert is refused when the inverse of migration `n` is undefined,
-when an inverse that needs a fill has none, or while a dependant of
-`n` is applied. A later migration depends on `n` when one of its
+when an inverse that needs a fill has none, when an inverse names an
+object a later migration dropped, or while a dependant of `n` is
+applied. A later migration depends on `n` when one of its
 operators names an object id that `n` created: reverting `0011` at
 version 19 of §4.3 is refused, since `0012` and `0019` enable and
 deprecate the `Apple` it added.

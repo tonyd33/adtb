@@ -1,7 +1,10 @@
 use super::*;
 use crate::ids::{KeyKind, Owner, Space};
 
+mod by_id;
 mod inverse;
+
+use by_id::{NamedId, dropped, renew};
 
 /// How an inverse applies an operator of its text.
 #[derive(Clone, Copy)]
@@ -17,6 +20,27 @@ pub(super) enum How<'a> {
 /// One step of the inverse of an operator.
 #[derive(Clone, Debug)]
 pub(super) enum Inverse {
+    /// Rename the object of an id to `to`; `of` is the text of the operator inverted.
+    Rename {
+        object: NamedId,
+        to: String,
+        of: String,
+    },
+    /// Drop named set `name` of a relation, by id; `of` is the text of the operator inverted.
+    DropSet {
+        relation: CatRelId,
+        name: String,
+        of: String,
+    },
+    /// Add named set `name` of a relation over constructors, each by id, again as the dropped set
+    /// `set`; `of` is the text of the operator inverted.
+    AddSet {
+        set: CatSetId,
+        relation: CatRelId,
+        name: String,
+        members: Vec<CatCtorId>,
+        of: String,
+    },
     /// Operators, as source text, applied in the migration's module.
     Ops(Written),
     /// A merge, as source text, putting back a split: its arms' fixed values tell its
@@ -311,6 +335,7 @@ impl Cx<'_> {
         state.version = logged.number;
         state.expecting(&logged.module, &logged.operators);
         let mut steps = Vec::new();
+        let mut was = Vec::new();
         for op in &logged.operators {
             let mut step = self.inverse(&state, &logged, op, fills)?;
             let before = state.clone();
@@ -328,19 +353,51 @@ impl Cx<'_> {
             }
             step.extend(kept);
             steps.push(step);
+            was.push(before);
         }
+        let mut renewed = BTreeMap::new();
         for step in steps.into_iter().rev() {
             for inv in step {
                 let recorded = matches!(
                     inv,
                     Inverse::Ops(_)
+                        | Inverse::Rename { .. }
+                        | Inverse::DropSet { .. }
+                        | Inverse::AddSet { .. }
                         | Inverse::Derived(_)
                         | Inverse::Unmerge { .. }
                         | Inverse::MoveUp { .. }
                         | Inverse::Replay(_)
                 );
+                let inv = inv.renewed(&renewed);
+                let by_id = matches!(
+                    inv,
+                    Inverse::Rename { .. } | Inverse::DropSet { .. } | Inverse::AddSet { .. }
+                );
+                let again = match &inv {
+                    Inverse::AddSet {
+                        set,
+                        relation,
+                        name,
+                        ..
+                    } => Some((*set, *relation, name.clone())),
+                    _ => None,
+                };
+                let held = self.src.ids.clone();
                 self.undo(inv)?;
                 self.src.reconcile_ids();
+                if let Some((set, relation, name)) = again {
+                    let schema = self.schema()?;
+                    if let Some(now) = schema
+                        .ids
+                        .relation_of(relation)
+                        .and_then(|r| schema.ids.set_id(r, &name))
+                    {
+                        renewed.insert((Space::Set, set.raw()), now.raw());
+                    }
+                } else if !by_id {
+                    renew(&mut renewed, &was, &held, &self.src.ids);
+                }
                 if let (Some(steps), false) = (self.steps, recorded) {
                     steps.borrow_mut().push(Step {
                         after: self.src.clone(),
@@ -969,6 +1026,43 @@ impl Cx<'_> {
     pub(super) fn undo(&mut self, inv: Inverse) -> R<()> {
         match inv {
             Inverse::Ops(text) => self.undo_ops(&text, How::Written, &[]),
+            Inverse::Rename { object, to, of } => {
+                let schema = self.schema()?;
+                let Some((module, name)) = object.spelled(&schema) else {
+                    return self.err(dropped(&of, object.word()));
+                };
+                self.undo_in(module, format!("rename {} {name} to {to}", object.word()))
+            }
+            Inverse::DropSet { relation, name, of } => {
+                let schema = self.schema()?;
+                let Some((module, r)) = NamedId::Relation(relation).spelled(&schema) else {
+                    return self.err(dropped(&of, "relation"));
+                };
+                self.undo_in(module, format!("drop set {name} of {r}"))
+            }
+            Inverse::AddSet {
+                relation,
+                name,
+                members,
+                of,
+                ..
+            } => {
+                let schema = self.schema()?;
+                let Some(r) = schema.ids.relation_of(relation) else {
+                    return self.err(dropped(&of, "relation"));
+                };
+                let rd = schema.relation(r);
+                let mut ctors = Vec::new();
+                for c in members {
+                    let Some(c) = schema.ids.ctor_of(c) else {
+                        return self.err(dropped(&of, "constructor"));
+                    };
+                    ctors.push(schema.ty(c.def()).ctor_def(c).name.clone());
+                }
+                let module = schema.module(rd.module).name.clone();
+                let text = format!("add set {name} of {} = {}", rd.name, ctors.join(" | "));
+                self.undo_in(module, text)
+            }
             Inverse::Derived(text) => self.undo_ops(&text, How::Derived, &[]),
             Inverse::Unmerge { split, checks } => self.undo_ops(&split, How::Written, &checks),
             Inverse::MoveUp { text, from } => self.undo_ops(&text, How::UpFrom(&from), &[]),
@@ -1044,6 +1138,14 @@ impl Cx<'_> {
                 Ok(())
             }
         }
+    }
+
+    /// Apply operator text `text` as an inverse in module `module`.
+    fn undo_in(&mut self, module: String, text: String) -> R<()> {
+        let reverting = std::mem::replace(&mut self.module, module);
+        let done = self.undo_ops(&text.into(), How::Written, &[]);
+        self.module = reverting;
+        done
     }
 
     fn replay(&mut self, l: &Logged) -> R<()> {

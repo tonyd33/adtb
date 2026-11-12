@@ -269,6 +269,7 @@ redefine fn f (t: T) -> Text = match t
             Case::new("revoke read us from support").after("grant read us to support"),
             Case::new("grant read us to support with grant option"),
         ];
+        out.extend(between());
         if self.declared {
             out.push(Case::new("enable ts.D"));
             out.push(Case::new("enable P.E"));
@@ -298,6 +299,122 @@ deprecate ys.Y2
 grant read ys to support
 grant insert ys.YS to support";
 
+/// The cases of renames and set operators whose revert follows a later migration that renames
+/// the object or what holds it, reuses a name, or drops the object.
+fn between() -> Vec<Case> {
+    vec![
+        Case::new("rename type P to P2")
+            .then(
+                "rename type P2 to P3\nadd type P2 = Z1 | Z2",
+                Some("add type P2 = Z1 | Z2"),
+            )
+            .labelled(AGAIN),
+        Case::new("rename relation us to us2")
+            .then(
+                &format!("rename relation us2 to us3\n{US2}"),
+                Some(US2),
+            )
+            .labelled(AGAIN),
+        Case::new("rename set S of ts to S3")
+            .then(
+                "rename relation ts to ts2
+rename set S3 of ts2 to S4
+add set S3 of ts2 = C",
+                Some("rename relation ts to ts2\nadd set S3 of ts2 = C"),
+            )
+            .labelled(AGAIN),
+        Case::new("rename set S of ts to S3")
+            .then("add set S of ts = C", None)
+            .refused(
+                "the inverse `rename set S3 of auth::ts to S` does not apply: `ts` already has a constructor or named set `S`",
+            )
+            .labelled(REUSED),
+        Case::new("rename set S of ts to S3")
+            .then("drop index (z) in ts.S3\ndrop set S3 of ts", None)
+            .refused(
+                "the inverse of `rename set S of ts to S3` names a set a later migration dropped",
+            )
+            .labelled(DROPPED),
+        Case::new("rename constructor P.A to A3")
+            .then(
+                "rename type P to P2
+rename constructor P2.A3 to A4
+add constructor P2.A3",
+                Some("rename type P to P2\nadd constructor P2.A3"),
+            )
+            .labelled(AGAIN),
+        Case::new("rename field T.A.x to x2")
+            .then(
+                "rename constructor T.A to A9
+rename field T.A9.x2 to x3
+add field T.A9.x2: Text fill \"v\"",
+                Some("rename constructor T.A to A9\nadd field T.A9.x2: Text fill \"v\""),
+            )
+            .labelled(AGAIN),
+        Case::new("rename field T.n to n2")
+            .then("rename type T to T9", Some("rename type T to T9"))
+            .labelled(PARENT),
+        Case::new("rename field U.label to name")
+            .then(
+                "rename type U to U9
+rename field U9.name to title
+add field U9.name: Text fill \"v\"",
+                Some("rename type U to U9\nadd field U9.name: Text fill \"v\""),
+            )
+            .labelled(AGAIN),
+        Case::new("add set S2 of ts = B | C")
+            .then("rename relation ts to ts2", Some("rename relation ts to ts2"))
+            .labelled(PARENT),
+        Case::new("add set S2 of ts = B | C")
+            .then("rename set S2 of ts to S5", None)
+            .refused(
+                "`revert {case}` is refused while migration {then} depends on it: it names set `auth::ts.S2`",
+            )
+            .labelled(RENAMED),
+        Case::new("drop set R of ts")
+            .then(
+                "rename relation ts to ts2\nrename constructor T.C to C2",
+                Some("rename relation ts to ts2\nrename constructor T.C to C2"),
+            )
+            .labelled(PARENT),
+        Case::new("drop set R of ts")
+            .then("add set R of ts = A", None)
+            .refused(
+                "the inverse `add set R of ts = A | B | C` does not apply: module `auth` already declares set `ts.R`",
+            )
+            .labelled(REUSED),
+        Case::new(
+            "drop set R of ts
+add set S6 of ts = A
+rename set S6 of ts to R
+drop set R of ts",
+        )
+        .labelled(RECREATED),
+    ]
+}
+
+/// A relation `us2` of a type of its own.
+const US2: &str = "add type U2 = { id: Key us2 }
+add relation us2 : U2 key id generate sequence";
+
+/// The label of a case whose revert follows a rename of its object, a later name of it reused.
+const AGAIN: &str = "renamed again, name reused";
+
+/// The label of a case whose revert follows a rename of its object.
+const RENAMED: &str = "object renamed";
+
+/// The label of a case whose revert follows a rename of what holds its object.
+const PARENT: &str = "owner renamed";
+
+/// The label of a case whose revert follows a new object taking the name it restores.
+const REUSED: &str = "name taken";
+
+/// The label of a case dropping a set whose name a set it adds then takes.
+const RECREATED: &str = "name re-created";
+
+/// The label of a case whose revert follows a drop of its object.
+const DROPPED: &str = "object dropped";
+
 const SPLIT: &str = "split constructor T.A into A1 { x: Text, z: Text } | A2 { x: Text, z: Text }
   by match
     | A { q: Q1, x, z } -> A1 { x: x, z: z }
@@ -314,9 +431,15 @@ const NEST: &str = "nest constructor T.(A | B) into N { inner: Inner }
 struct Case {
     first: Option<String>,
     text: String,
+    /// A migration applied after the case's and before its revert.
+    then: Option<String>,
+    /// The migration that takes the source before the case to the one its revert restores, when
+    /// `then` changes what the revert restores.
+    expect: Option<String>,
     /// The `fill` clauses its revert states.
     fills: Vec<String>,
-    /// The reason the spec states for refusing its revert, when it is refused.
+    /// The reason the spec states for refusing its revert, when it is refused, `{case}` standing
+    /// for the number of the case's migration and `{then}` for the one after it.
     refused: Option<&'static str>,
     /// What tells the case apart from another of the same operators.
     label: Option<&'static str>,
@@ -327,6 +450,8 @@ impl Case {
         Case {
             first: None,
             text: headed(text),
+            then: None,
+            expect: None,
             fills: Vec::new(),
             refused: None,
             label: None,
@@ -335,6 +460,14 @@ impl Case {
 
     fn after(mut self, first: &str) -> Case {
         self.first = Some(headed(first));
+        self
+    }
+
+    /// Returns the case with `then` applied before its revert, which then restores the source
+    /// before the case with `expect` applied.
+    fn then(mut self, then: &str, expect: Option<&str>) -> Case {
+        self.then = Some(headed(then));
+        self.expect = expect.map(headed);
         self
     }
 
@@ -714,8 +847,8 @@ fn grants(s: &Source, objects: &BTreeMap<Object, u64>) -> Vec<Held> {
 
 /// Returns how the ids of `now`, after a revert of the operator that took `was` to `mid`,
 /// differ from those of `was`: an object `mid` holds the id of keeps it, and the objects `mid`
-/// lacks are created again by the inverse with the next ids of their spaces after `mid`, a type
-/// before its constructors and constructors in listed order.
+/// lacks are created again by the inverse with ids its space gave out after `mid`, a type before
+/// its constructors and constructors in listed order.
 fn id_changes(was: &Source, mid: &Source, now: &Source) -> Vec<(Aspect, String)> {
     let (ow, om, on) = (
         objects(was, "before"),
@@ -755,7 +888,8 @@ fn id_changes(was: &Source, mid: &Source, now: &Source) -> Vec<(Aspect, String)>
     for (space, mut ids) in fresh {
         ids.sort_unstable();
         let first = mid.next.get(&space).copied().unwrap_or(1024);
-        if ids.iter().zip(first..).any(|(&id, want)| id != want) {
+        let end = now.next.get(&space).copied().unwrap_or(1024);
+        if ids.iter().any(|id| !(first..end).contains(id)) {
             out.push(format!(
                 "{space:?}: the ids created again are not the next ones"
             ));
@@ -999,6 +1133,16 @@ const KNOWN: &[Known] = &[
     },
 ];
 
+/// The messages of a refused migration.
+#[derive(Debug, PartialEq)]
+struct Refused(Vec<String>);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0.join("\n"))
+    }
+}
+
 /// What the search found of one case over every shape.
 #[derive(Default)]
 struct Outcome {
@@ -1064,17 +1208,44 @@ impl Found {
             }
         };
         self.reached.extend(kinds.iter().copied());
-        let last = mid.log.last().expect("the case is logged").number;
+        let number = mid.log.last().expect("the case is logged").number;
+        let (mid, target) = match (&case.then, &case.expect) {
+            (None, _) => (mid, was),
+            (Some(then), expect) => {
+                let applied = migrate(&mid, then).and_then(|m| {
+                    let target = match expect {
+                        Some(e) => migrate(&was, e)?,
+                        None => was,
+                    };
+                    Ok((m, target))
+                });
+                match applied {
+                    Ok(both) => both,
+                    Err(e) => {
+                        self.unapplied.push(format!(
+                            "{what}: `{then}` or its expectation refused: {e:?}"
+                        ));
+                        return;
+                    }
+                }
+            }
+        };
         let fills: String = case.fills.iter().map(|f| format!("\n  fill {f}")).collect();
-        let revert = format!("module auth\nrevert {last:04}{fills}");
-        let diffs = match (migrate(&mid, &revert), case.refused) {
-            (Ok(now), None) => differences(&was, &mid, &now),
-            (Ok(_), Some(reason)) => vec![(Aspect::Refused, format!("applies: {reason}"))],
-            (Err(e), Some(reason)) if e == [reason] => {
+        let revert = format!("module auth\nrevert {number:04}{fills}");
+        let reason = case.refused.map(|r| {
+            r.replace("{case}", &format!("{number:04}"))
+                .replace("{then}", &format!("{:04}", number + 1))
+        });
+        let got = migrate(&mid, &revert);
+        let diffs = match (got, reason) {
+            (got, Some(reason)) => {
+                let want = Refused(vec![reason.clone()]);
+                adtb_testkit::refused_as(got.map_err(Refused), &want, &reason);
                 self.stated.push(format!("{what}: {reason}"));
                 Vec::new()
             }
-            (Err(e), _) => e.into_iter().map(|e| (Aspect::Refused, e)).collect(),
+            (Ok(now), None) => differences(&target, &mid, &now),
+            (Err(e), None) => e.into_iter().map(|e| (Aspect::Refused, e)).collect(),
         };
         self.record(case, bits, kinds, diffs);
     }
@@ -1141,7 +1312,10 @@ fn unknown(name: &str, o: &Outcome, every_shape: bool) -> Option<String> {
 }
 
 /// The cases each shape runs with no bit set, and those the `declared` and `granted` bits add.
-const CASES: (usize, usize, usize) = (78, 2, 5);
+const CASES: (usize, usize, usize) = (92, 2, 5);
+
+/// The cases of each shape whose revert is refused for a reason the spec states.
+const REFUSED: usize = 5;
 
 #[test]
 fn every_invertible_operator_and_its_revert_restore_the_source_before_it() {
@@ -1164,7 +1338,7 @@ fn every_invertible_operator_and_its_revert_restore_the_source_before_it() {
         .map(|s| CASES.0 + usize::from(s.declared) * CASES.1 + usize::from(s.granted) * CASES.2)
         .sum();
     assert_eq!(ran, found.ran);
-    assert_eq!(count, found.stated.len(), "{:?}", found.stated);
+    assert_eq!(count * REFUSED, found.stated.len(), "{:?}", found.stated);
     assert_eq!(
         invertible(),
         found.reached,

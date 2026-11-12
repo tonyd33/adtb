@@ -1,4 +1,5 @@
 use super::*;
+use crate::schema::FieldRef;
 
 /// An operator of migration `logged` being inverted against `before`, the source before it.
 #[derive(Clone, Copy)]
@@ -19,6 +20,47 @@ impl Inverting<'_> {
 
     fn text(&self, s: Span) -> String {
         self.logged.text[s.range()].to_string()
+    }
+
+    /// Returns the inverse renaming back to `to` the object `find` gives in the schema before the
+    /// operator.
+    fn renamed(
+        &self,
+        find: impl FnOnce(&Schema) -> Option<NamedId>,
+        to: &ast::Ident,
+    ) -> Option<Inverse> {
+        let schema = self.before.schema().ok()?;
+        Some(Inverse::Rename {
+            object: find(&schema)?,
+            to: to.text.clone(),
+            of: self.text(self.op.span),
+        })
+    }
+
+    /// Returns the inverse adding back set `name` of relation `r` that the operator drops.
+    fn dropped_set(&self, name: &ast::Ident, r: &QName) -> Option<Inverse> {
+        let m = self.module_of(r);
+        let schema = self.before.schema().ok()?;
+        let rel = relation_named(&schema, &m, &r.name.text)?;
+        let i = self
+            .before
+            .find("set", &m, &format!("{}.{}", r.name.text, name.text))?;
+        let Some(Decl::Set(d)) = self.before.parsed(i) else {
+            return None;
+        };
+        let td = schema.ty(schema.relation(rel).elem_def);
+        let members = d
+            .members
+            .iter()
+            .map(|c| schema.ids.ctor_id(td.ctor_named(&c.text)?))
+            .collect::<Option<Vec<CatCtorId>>>()?;
+        Some(Inverse::AddSet {
+            set: schema.ids.set_id(rel, &name.text)?,
+            relation: schema.ids.relation_id(rel)?,
+            name: name.text.clone(),
+            members,
+            of: self.text(self.op.span),
+        })
     }
 
     fn decl_text(&self, kind: &str, m: &str, name: &str) -> Option<String> {
@@ -42,7 +84,43 @@ fn ops(s: String) -> R<Vec<Inverse>> {
     Ok(vec![Inverse::Ops(s.into())])
 }
 
+/// Returns type `t` of module `m` of `schema`.
+fn type_named(schema: &Schema, m: &str, t: &str) -> Option<TypeId> {
+    let mid = schema.module_named(m)?;
+    schema.module(mid).types.get(t).copied()
+}
+
+/// Returns relation `r` of module `m` of `schema`.
+fn relation_named(schema: &Schema, m: &str, r: &str) -> Option<RelId> {
+    let mid = schema.module_named(m)?;
+    match schema.module(mid).values.get(r) {
+        Some(ValueDef::Relation(r)) => Some(*r),
+        _ => None,
+    }
+}
+
+/// Returns the field path `p` names in type `def` of `schema`.
+fn field_named(schema: &Schema, def: TypeId, p: &ast::FieldPath) -> Option<FieldRef> {
+    let td = schema.ty(def);
+    let ctor = match &p.ctor {
+        Some(c) => Some(td.ctor_named(&c.text)?),
+        None if matches!(td.kind, TypeDefKind::Sum { record: true, .. }) => td.ctor_at(0),
+        None => None,
+    };
+    td.field(ctor, &p.field.text)
+}
+
 impl Cx<'_> {
+    /// Returns the one step `inv`, refusing when the log does not hold what the operator names.
+    fn by_id(&self, inv: Option<Inverse>) -> R<Vec<Inverse>> {
+        inv.map(|i| vec![i]).ok_or_else(|| {
+            vec![Diag::new(
+                self.span,
+                "the log does not hold the object the operator names",
+            )]
+        })
+    }
+
     /// The inverse of `op` of migration `logged`, computed against `before`, the schema before it.
     pub(super) fn inverse(
         &self,
@@ -166,11 +244,12 @@ impl Cx<'_> {
                 t.name.text.clone(),
                 at.decl_text("type", &at.module_of(t), &t.name.text),
             )]),
-            OperatorKind::RenameType(t, to) => ops(format!(
-                "rename type {}::{} to {}",
-                at.module_of(t),
-                to.text,
-                t.name.text
+            OperatorKind::RenameType(t, _) => self.by_id(at.renamed(
+                |s| {
+                    let def = type_named(s, &at.module_of(t), &t.name.text)?;
+                    s.ids.type_id(def).map(NamedId::Type)
+                },
+                &t.name,
             )),
             _ => unreachable!("type_inverse is given a type operator"),
         }
@@ -218,33 +297,31 @@ impl Cx<'_> {
                 }
                 Ok(out)
             }
-            OperatorKind::RenameRelation(r, to) => ops(format!(
-                "rename relation {}::{} to {}",
-                at.module_of(r),
-                to.text,
-                r.name.text
+            OperatorKind::RenameRelation(r, _) => self.by_id(at.renamed(
+                |s| {
+                    let rel = relation_named(s, &at.module_of(r), &r.name.text)?;
+                    s.ids.relation_id(rel).map(NamedId::Relation)
+                },
+                &r.name,
             )),
-            OperatorKind::AddSet(s) => Ok(vec![decl(
-                "set",
-                logged.module.clone(),
-                format!("{}.{}", s.relation.text, s.name.text),
-                None,
-            )]),
-            OperatorKind::DropSet(s, r) => {
-                let name = format!("{}.{}", r.name.text, s.text);
-                Ok(vec![decl(
-                    "set",
-                    at.module_of(r),
-                    name.clone(),
-                    at.decl_text("set", &at.module_of(r), &name),
-                )])
+            OperatorKind::AddSet(d) => {
+                let relation = before.schema().ok().and_then(|s| {
+                    let rel = relation_named(&s, &logged.module, &d.relation.text)?;
+                    s.ids.relation_id(rel)
+                });
+                self.by_id(relation.map(|relation| Inverse::DropSet {
+                    relation,
+                    name: d.name.text.clone(),
+                    of: at.text(op.span),
+                }))
             }
-            OperatorKind::RenameSet(s, r, to) => ops(format!(
-                "rename set {} of {}::{} to {}",
-                to.text,
-                at.module_of(r),
-                r.name.text,
-                s.text
+            OperatorKind::DropSet(name, r) => self.by_id(at.dropped_set(name, r)),
+            OperatorKind::RenameSet(set, r, _) => self.by_id(at.renamed(
+                |s| {
+                    let rel = relation_named(s, &at.module_of(r), &r.name.text)?;
+                    s.ids.set_id(rel, &set.text).map(NamedId::Set)
+                },
+                set,
             )),
             OperatorKind::AddUnique(..) | OperatorKind::AddIndex { .. } => ops(format!(
                 "drop {}",
@@ -310,12 +387,13 @@ impl Cx<'_> {
                 }])
             }
             OperatorKind::RemoveConstructor(path) => self.removed_ctor_inverse(at, path),
-            OperatorKind::RenameConstructor(path, to) => ops(format!(
-                "rename constructor {}::{}.{} to {}",
-                at.module_of(&path.ty),
-                path.ty.name.text,
-                to.text,
-                path.ctor.text
+            OperatorKind::RenameConstructor(path, _) => self.by_id(at.renamed(
+                |s| {
+                    let def = type_named(s, &at.module_of(&path.ty), &path.ty.name.text)?;
+                    let c = s.ty(def).ctor_named(&path.ctor.text)?;
+                    s.ids.ctor_id(c).map(NamedId::Ctor)
+                },
+                &path.ctor,
             )),
             OperatorKind::Enable(t) | OperatorKind::Disable(t) | OperatorKind::Deprecate(t) => {
                 let cx = Cx {
@@ -422,17 +500,15 @@ impl Cx<'_> {
                     self.reorder(before, path, path.ctor.as_ref().map(|c| c.text.clone())),
                 ])
             }
-            OperatorKind::RenameField(path, to) => {
-                let renamed = ast::FieldPath {
-                    field: to.clone(),
-                    ..path.clone()
-                };
-                ops(format!(
-                    "rename field {} to {}",
-                    qualified_path(&renamed, &at.module_of(&path.ty)),
-                    path.field.text
-                ))
-            }
+            OperatorKind::RenameField(path, _) => self.by_id(at.renamed(
+                |s| {
+                    let def = type_named(s, &at.module_of(&path.ty), &path.ty.name.text)?;
+                    s.ids
+                        .field_id(field_named(s, def, path)?)
+                        .map(NamedId::Field)
+                },
+                &path.field,
+            )),
             OperatorKind::MoveField { path, to, sel, .. } => {
                 let m = at.module_of(&path.ty);
                 match (&path.ctor, sel) {

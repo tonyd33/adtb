@@ -580,7 +580,6 @@ fn identity_sets(s: &Source) -> BTreeMap<String, u64> {
 }
 
 #[test]
-#[ignore = "a revert renames by name: after two renames and a reused name, reverting the first renames the set that took the reused name"]
 fn reverting_a_rename_renames_the_object_it_renamed_after_its_name_is_reused() {
     let start = running();
     let oauth = identity_sets(&start)["OAuth"];
