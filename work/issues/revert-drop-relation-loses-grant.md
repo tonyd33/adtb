@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-12
-status: open
+status: resolved
 kind: bug
 priority: 360
-summary: "reverting a drop of a relation restores grants on its sets but loses a grant on the whole relation"
+summary: reverting a drop of a relation restores grants on its sets but loses a grant on the whole relation
+closed: 2026-11-12
 tags:
   - class-copied-rules
 ---
@@ -17,3 +18,5 @@ Setup: `add type Y { id: Key ys } = Y1 { a: Text } | Y2 { b: Text }`, `add relat
 Direction: the inverse by id restores every grant naming the dropped object (structure-lang-identity step 5). The law search's `KNOWN` row for this case goes.
 
 Defect class: Wildcards and copied rules.
+
+## 2026-11-12: resolved
