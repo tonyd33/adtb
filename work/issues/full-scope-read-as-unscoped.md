@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-12
-status: open
+status: resolved
 kind: bug
 priority: 340
 summary: "a unique or index scoped to every constructor of its type is read as unscoped, so split, merge and nest leave the replaced name and the migration is refused"
+closed: 2026-11-12
 tags:
   - class-identity-by-spelling
 ---
@@ -17,3 +18,5 @@ tags:
 Direction: keep the written scope as written (the clause names constructors) and re-scope it by the one rule; flip the pin test to the spec's outcome. Fits structure-lang-identity step 3b.
 
 Defect class: Catalog rows and identity by position or spelling.
+
+## 2026-11-12: resolved

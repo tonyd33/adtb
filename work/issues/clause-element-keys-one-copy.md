@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-12
-status: open
+status: resolved
 kind: bug
 priority: 360
 summary: "a unique or index element is keyed by one resolved copy of its field, so a move down or a rename under a set scope gives the clause a new id"
+closed: 2026-11-12
 tags:
   - class-identity-by-spelling
 ---
@@ -22,3 +23,5 @@ catalog.md §1.2 keeps the id of every object an operator does not create or re-
 Direction (lead ruling, structure-lang-identity step 3b): an element keys by the field ids it reaches across its whole scope (a set scope through its current members). Every operator that replaces field ids (move down and up, split, merge, nest, unnest, and each revert) yields a map from old field ids to new ones; `ids::assign` translates the keys of the clauses the re-scope rule keeps through that map, between the field round and the index round. Dotted elements (`index (p.a)`, `unique (s.C.g)`, which lose their id on a rename on main too) resolve through the field's type the same way. Add to the searching test a one-constructor set, a move down with a clause scoped to a non-first constructor, a sum with a constructor named after its type, dotted elements, and reverts of split, merge and nest over set scopes; un-ignore the two tests.
 
 Defect class: Catalog rows and identity by position or spelling.
+
+## 2026-11-12: resolved
