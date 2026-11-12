@@ -3,9 +3,12 @@ use crate::ids::{KeyKind, Owner, Space};
 
 mod by_id;
 mod inverse;
+mod spelled;
 
 pub(super) use by_id::Recreated;
-use by_id::{NamedId, StateOf, dropped, holding, recreate, removed};
+use by_id::{DeclOf, NamedId, StateOf, dropped, holding, recreate, removed};
+use inverse::Run;
+use spelled::{Late, Spelled, late};
 
 /// The steps of the inverse of a run of operators, each run ending at a source that builds, with
 /// each object the run removed, by its key before the run, and its id.
@@ -42,8 +45,12 @@ pub(super) enum Inverse {
         members: Vec<CatCtorId>,
         of: String,
     },
-    /// Operators, as source text, applied in the migration's module.
+    /// Operators of a structural operator's inverse, as source text, applied in the migration's
+    /// module.
     Ops(Written),
+    /// Apply operators, as a text whose names are held by id, in the migration's module; `of` is
+    /// the text of the operator inverted.
+    Apply { text: Spelled, of: String },
     /// A merge, as source text, putting back a split: its arms' fixed values tell its
     /// constructors apart.
     Derived(Written),
@@ -77,33 +84,53 @@ pub(super) enum Inverse {
     },
     /// Set what each role holds of a privilege back.
     Grants { back: Vec<HeldGrant> },
-    /// Sets the declaration of a kind and name to a text, `None` removing it.
-    Decl {
+    /// Add declaration `text`, of kind `kind` and name `name`, to module `module`; `of` is the
+    /// text of the operator inverted.
+    Restore {
         module: String,
         kind: &'static str,
         name: String,
-        text: Option<String>,
+        text: Spelled,
+        of: String,
+    },
+    /// Set the declaration of an object to `text`, `None` removing it; `of` is the text of the
+    /// operator inverted.
+    Redeclare {
+        decl: DeclOf,
+        text: Option<Spelled>,
+        of: String,
     },
     /// Add module `name` with the declaration texts `decls`, or with `present` false remove it.
     Module {
         name: String,
         present: bool,
         installed: bool,
-        decls: Vec<String>,
+        decls: Vec<Spelled>,
+        of: String,
     },
-    /// Apply a logged migration's operators again, a `revert` among them naming each object
-    /// the migration removed and the operator inverted created again by the id `again` maps it to.
+    /// Apply a logged migration's operators again, as `text`, a `revert` among them naming each
+    /// object the migration removed and the operator inverted created again by its id in
+    /// `again`; `of` is the text of the operator inverted.
     Replay {
         logged: Box<Logged>,
+        text: Spelled,
         again: Recreated,
+        of: String,
     },
-    /// Sets a relation's key clause to its text, generator included.
-    KeyClause { relation: QName, text: String },
-    /// Puts the fields of a constructor, or of the header when `ctor` is `None`, in `order`.
+    /// Set a relation's key clause to its text, generator included; `of` is the text of the
+    /// operator inverted.
+    KeyClause {
+        relation: CatRelId,
+        text: Spelled,
+        of: String,
+    },
+    /// Put the fields of a constructor, or of the header when `ctor` is `None`, in `order`; `of`
+    /// is the text of the operator inverted.
     Reorder {
-        ty: QName,
-        ctor: Option<String>,
-        order: Vec<String>,
+        ty: CatTypeId,
+        ctor: Option<CatCtorId>,
+        order: Vec<CatFieldId>,
+        of: String,
     },
 }
 
@@ -378,6 +405,7 @@ impl Cx<'_> {
         let mut steps = Vec::new();
         let mut start = state.clone();
         let mut group: Vec<Vec<Inverse>> = Vec::new();
+        let spelling = std::cell::OnceCell::new();
         for (i, op) in logged.operators.iter().enumerate() {
             let before = state.clone();
             if let Err(ds) = state.apply(&logged.module, op, &logged.text) {
@@ -388,7 +416,8 @@ impl Cx<'_> {
                     })
                     .collect());
             }
-            group.push(self.inverse(&before, &state, &logged, op, fills)?);
+            let run = Run::new(&start, &logged, &spelling, fills);
+            group.push(self.inverse(&run.at(&before, &state, op))?);
             if state.built().is_err() && i + 1 < logged.operators.len() {
                 continue;
             }
@@ -403,13 +432,14 @@ impl Cx<'_> {
         }
         let ahead = self.src.ahead.clone();
         self.src.ahead.extend(inverse_ahead(&logged));
-        let undone = self.undo_all(steps);
+        let late = late(self.src.after(pos));
+        let undone = self.undo_all(steps, &late);
         self.src.ahead = ahead;
         undone
     }
 
     /// Apply the steps of the inverse of each run of operators of a migration, last run first.
-    fn undo_all(&mut self, steps: Vec<Undoing>) -> R<()> {
+    fn undo_all(&mut self, steps: Vec<Undoing>, late: &Late) -> R<()> {
         let mut again = self.src.replaying.clone().unwrap_or_default();
         let held = holding(&self.src.ids);
         for (step, gone) in steps.into_iter().rev() {
@@ -417,6 +447,7 @@ impl Cx<'_> {
                 let recorded = matches!(
                     inv,
                     Inverse::Ops(_)
+                        | Inverse::Apply { .. }
                         | Inverse::Rename { .. }
                         | Inverse::DropSet { .. }
                         | Inverse::AddSet { .. }
@@ -425,7 +456,7 @@ impl Cx<'_> {
                         | Inverse::MoveUp { .. }
                         | Inverse::Replay { .. }
                 );
-                self.undo(inv.mapped(&again))?;
+                self.undo(inv.mapped(&again), late)?;
                 self.src.reconcile_ids();
                 recreate(&mut again, &gone, &held, &self.src.ids);
                 if let (Some(steps), false) = (self.steps, recorded) {
@@ -455,44 +486,61 @@ impl Cx<'_> {
             })
     }
 
-    /// The step that puts the fields of a part of `path`'s type back in the order `before` declares them.
+    /// The step that puts the fields of a part of `path`'s type back in the order `before` declares
+    /// them, the operator inverted being `of`.
     pub(super) fn reorder(
         &self,
         before: &Source,
         path: &ast::FieldPath,
         ctor: Option<String>,
-    ) -> Inverse {
+        of: String,
+    ) -> R<Inverse> {
         let m = self.module_of(&path.ty);
-        let order = before
-            .find("type", &m, &path.ty.name.text)
-            .and_then(|i| match before.parsed(i) {
-                Some(Decl::Type(t)) => {
-                    let part = match &t.body {
-                        ast::TypeBody::Record(_) => Some(t.name.text.clone()),
-                        _ => ctor.clone(),
-                    };
-                    Some(
-                        decl_fields(&t)
-                            .into_iter()
-                            .filter(|(c, _)| c.map(str::to_string) == part)
-                            .map(|(_, f)| f.name.text.clone())
-                            .collect(),
-                    )
-                }
-                _ => None,
+        let t = &path.ty.name.text;
+        let missing = || {
+            vec![Diag::new(
+                self.span,
+                "the log does not hold the reordered type",
+            )]
+        };
+        let ty = before
+            .ids
+            .get(&ObjectKey::named(
+                KeyKind::Type,
+                Owner::Module(m.clone()),
+                t,
+            ))
+            .copied()
+            .ok_or_else(missing)?;
+        let i = before.find("type", &m, t).ok_or_else(missing)?;
+        let Some(Decl::Type(td)) = before.parsed(i) else {
+            return Err(missing());
+        };
+        let record = matches!(td.body, ast::TypeBody::Record(_));
+        let part = if record { Some(t.clone()) } else { ctor };
+        let owner = before
+            .field_owner(&m, t, part.as_deref())
+            .ok_or_else(missing)?;
+        let order = decl_fields(&td)
+            .into_iter()
+            .filter(|(c, _)| c.map(str::to_string) == part)
+            .filter_map(|(_, f)| {
+                let key = ObjectKey::named(KeyKind::Field, owner.clone(), &f.name.text);
+                before.ids.get(&key).map(|&id| CatFieldId::from_raw(id))
             })
-            .unwrap_or_default();
-        Inverse::Reorder {
-            ty: QName {
-                module: Some(ast::Ident {
-                    text: m,
-                    span: self.span,
-                }),
-                name: path.ty.name.clone(),
-            },
+            .collect();
+        let ctor = match part {
+            Some(c) if !record => Some(CatCtorId::from_raw(
+                before.ctor_key_id(&m, t, &c).ok_or_else(missing)?,
+            )),
+            _ => None,
+        };
+        Ok(Inverse::Reorder {
+            ty: CatTypeId::from_raw(ty),
             ctor,
             order,
-        }
+            of,
+        })
     }
 
     /// The text of constructor `c` of type `ty` as `before` declares it, with its field names.
@@ -1052,10 +1100,15 @@ impl Cx<'_> {
         Ok(())
     }
 
-    /// Apply one step of an inverse to the source.
-    pub(super) fn undo(&mut self, inv: Inverse) -> R<()> {
+    /// Apply one step of an inverse to the source, `late` holding the objects of the source after
+    /// the reverted migration.
+    pub(super) fn undo(&mut self, inv: Inverse, late: &Late) -> R<()> {
         match inv {
             Inverse::Ops(text) => self.undo_ops(&text, How::Written, &[]),
+            Inverse::Apply { text, of } => {
+                let text = self.spell(&text, &of, late)?;
+                self.undo_ops(&text, How::Written, &[])
+            }
             Inverse::Rename { object, to, of } => {
                 let schema = self.schema()?;
                 let Some((module, name)) = object.spelled(&schema) else {
@@ -1137,23 +1190,51 @@ impl Cx<'_> {
                 self.src.hold(back);
                 Ok(())
             }
-            Inverse::Decl {
+            Inverse::Restore {
                 module,
                 kind,
                 name,
                 text,
-            } => self.restore_decl(&module, kind, &name, text),
+                of,
+            } => self.restore_spelled(&module, kind, &name, &text, &of, late),
+            Inverse::Redeclare { decl, text, of } => {
+                let Some((i, kind, module, name)) = decl.find(self.src) else {
+                    return self.err(dropped(&of, decl.word()));
+                };
+                match text {
+                    Some(text) => {
+                        let text = self.spell(&text, &of, late)?;
+                        self.src.rewrite(i, text);
+                    }
+                    None => self.remove_decl(i, kind, &module, &name),
+                }
+                Ok(())
+            }
             Inverse::Module {
                 name,
                 present,
                 installed,
                 decls,
-            } => self.restore_module(name, present, installed, decls),
-            Inverse::Reorder { ty, ctor, order } => {
-                self.reorder_fields(&ty, ctor.as_deref(), &order)
+                of,
+            } => {
+                let decls = decls
+                    .iter()
+                    .map(|d| self.spell(d, &of, late))
+                    .collect::<R<Vec<Written>>>()?;
+                self.restore_module(name, present, installed, decls)
             }
-            Inverse::KeyClause { relation, text } => {
-                let (i, rd, ranges) = self.clauses(&relation)?;
+            Inverse::Reorder {
+                ty,
+                ctor,
+                order,
+                of,
+            } => self.reorder_by_id(ty, ctor, order, &of, late),
+            Inverse::KeyClause { relation, text, of } => {
+                let Some(q) = NamedId::Relation(relation).qualified(self.src) else {
+                    return self.err(dropped(&of, "relation"));
+                };
+                let text = self.spell(&text, &of, late)?;
+                let (i, rd, ranges) = self.clauses(&q)?;
                 if let Some(k) = rd
                     .clauses
                     .iter()
@@ -1163,15 +1244,12 @@ impl Cx<'_> {
                 }
                 Ok(())
             }
-            Inverse::Replay { logged: l, again } => {
-                let ahead = self.src.ahead.clone();
-                self.src.expecting(&l.module, &l.operators);
-                let replaying = self.src.replaying.replace(again);
-                let replayed = self.replay(&l);
-                self.src.replaying = replaying;
-                self.src.ahead = ahead;
-                replayed
-            }
+            Inverse::Replay {
+                logged,
+                text,
+                again,
+                of,
+            } => self.replay_spelled(*logged, &text, again, &of, late),
         }
     }
 
@@ -1183,7 +1261,7 @@ impl Cx<'_> {
         done
     }
 
-    fn replay(&mut self, l: &Logged) -> R<()> {
+    pub(super) fn replay(&mut self, l: &Logged) -> R<()> {
         for op in &l.operators {
             match self.steps {
                 Some(steps) => {
@@ -1258,35 +1336,20 @@ impl Cx<'_> {
         Ok(())
     }
 
-    fn restore_decl(
-        &mut self,
-        module: &str,
-        kind: &str,
-        name: &str,
-        text: Option<String>,
-    ) -> R<()> {
-        let found = self.src.find(kind, module, name);
-        match (found, text) {
-            (Some(i), Some(t)) => self.src.rewrite(i, t),
-            (Some(i), None) => {
-                self.src.remove_decl(i);
-                if kind == "relation" {
-                    self.src
-                        .states
-                        .retain(|(m, r, _), _| !(*m == module && *r == name));
-                }
-                if kind == "type" {
-                    self.src
-                        .value_states
-                        .retain(|(m, t, _), _| !(*m == module && *t == name));
-                }
-            }
-            (None, Some(t)) => {
-                self.src.push(module, t);
-            }
-            (None, None) => {}
+    /// Remove declaration `i`, of kind `kind` and name `name` in module `module`, with the
+    /// write states of a relation or a type it declares.
+    fn remove_decl(&mut self, i: usize, kind: &str, module: &str, name: &str) {
+        self.src.remove_decl(i);
+        if kind == "relation" {
+            self.src
+                .states
+                .retain(|(m, r, _), _| !(*m == module && *r == name));
         }
-        Ok(())
+        if kind == "type" {
+            self.src
+                .value_states
+                .retain(|(m, t, _), _| !(*m == module && *t == name));
+        }
     }
 
     fn restore_module(
@@ -1294,7 +1357,7 @@ impl Cx<'_> {
         name: String,
         present: bool,
         installed: bool,
-        decls: Vec<String>,
+        decls: Vec<Written>,
     ) -> R<()> {
         if present {
             self.src.modules.insert(name.clone());
@@ -1321,7 +1384,12 @@ impl Cx<'_> {
         Ok(())
     }
 
-    fn reorder_fields(&mut self, ty: &QName, ctor: Option<&str>, order: &[String]) -> R<()> {
+    pub(super) fn reorder_fields(
+        &mut self,
+        ty: &QName,
+        ctor: Option<&str>,
+        order: &[String],
+    ) -> R<()> {
         let (i, t) = self.type_decl(ty)?;
         let h = header(&self.src.decls[i].module).len();
         let text = self.src.decls[i].text.clone();
@@ -1355,50 +1423,4 @@ impl Cx<'_> {
             .edit(i, vec![(braces, format!("{{ {} }}", inner.join(", ")))]);
         Ok(())
     }
-}
-
-/// A field path with its type qualified by `module`.
-pub(super) fn qualified_path(p: &ast::FieldPath, module: &str) -> String {
-    match &p.ctor {
-        Some(c) => format!("{module}::{}.{}.{}", p.ty.name.text, c.text, p.field.text),
-        None => format!("{module}::{}.{}", p.ty.name.text, p.field.text),
-    }
-}
-
-/// The type text of the field a path names in the schema `src`, its delete action included.
-pub(super) fn field_type_text(src: &Source, module: &str, p: &ast::FieldPath) -> Option<String> {
-    let (ty, action) = field_texts(src, module, p)?;
-    Some(match action {
-        Some(a) => format!("{ty} on delete {a}"),
-        None => ty,
-    })
-}
-
-/// The type text and the delete action text of the field a path names in the schema `src`.
-pub(super) fn field_texts(
-    src: &Source,
-    module: &str,
-    p: &ast::FieldPath,
-) -> Option<(String, Option<String>)> {
-    let i = src.find("type", module, &p.ty.name.text)?;
-    let Some(Decl::Type(t)) = src.parsed(i) else {
-        return None;
-    };
-    let h = header(module).len();
-    decl_fields(&t).into_iter().find_map(|(c, f)| {
-        let here = match (&p.ctor, c) {
-            (None, None) => true,
-            (None, Some(c)) => matches!(t.body, ast::TypeBody::Record(_)) && c == t.name.text,
-            (Some(x), Some(c)) => x.text == c,
-            (Some(_), None) => false,
-        };
-        (here && f.name.text == p.field.text).then(|| {
-            let text = &src.decls[i].text;
-            let local = |s: Span| text[s.start as usize - h..s.end as usize - h].to_string();
-            (
-                local(f.ty.span),
-                f.on_delete.as_ref().map(|a| local(a.span)),
-            )
-        })
-    })
 }

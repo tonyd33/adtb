@@ -23,6 +23,8 @@ pub struct Names {
     /// The catalog ids of the objects each name of a user module resolves to, fields included: a
     /// field name of a grant resolves to the field of each constructor it covers.
     ids: BTreeMap<(u32, u32), BTreeSet<(Space, u64)>>,
+    /// The field names written as a pun, standing for the field and a variable of its name.
+    puns: BTreeSet<(u32, u32)>,
 }
 
 impl Names {
@@ -40,6 +42,9 @@ impl Names {
                 .entry((span.start, span.end))
                 .or_default()
                 .insert(id);
+        }
+        if let Ref::Field { pun: true, .. } = r {
+            self.puns.insert((span.start, span.end));
         }
         let module = match r {
             Ref::Type(d) | Ref::Ctor(d, _) => schema.ty(*d).module,
@@ -64,6 +69,27 @@ impl Names {
         self.ids.values().flatten().copied()
     }
 
+    /// Record that the identifier at `span` names the object of catalog id `id`.
+    pub fn tie(&mut self, span: Span, id: (Space, u64)) {
+        self.ids
+            .entry((span.start, span.end))
+            .or_default()
+            .insert(id);
+    }
+
+    /// Returns each name inside `range` that resolves to a catalog object, by its range, with the
+    /// ids it resolves to and whether it is a pun, in text order.
+    pub fn ids_within(
+        &self,
+        range: Range<usize>,
+    ) -> impl Iterator<Item = (Range<usize>, &BTreeSet<(Space, u64)>, bool)> + '_ {
+        let (lo, hi) = (range.start as u32, range.end as u32);
+        self.ids
+            .range((lo, lo)..(hi, hi))
+            .filter(move |((_, e), _)| *e <= hi)
+            .map(|(&(s, e), ids)| (s as usize..e as usize, ids, self.puns.contains(&(s, e))))
+    }
+
     /// Copies the names of `from` inside `range`, moved so that `range.start` lands at `to`.
     pub fn copy(&mut self, from: &Names, range: Range<usize>, to: usize) {
         let (lo, hi) = (range.start as u32, range.end as u32);
@@ -81,6 +107,11 @@ impl Names {
                     .extend(ids.iter().copied());
             }
         }
+        for &(s, e) in from.puns.range((lo, lo)..(hi, hi)) {
+            if e <= hi {
+                self.puns.insert((at(s), at(e)));
+            }
+        }
     }
 
     pub fn extend(&mut self, other: Names) {
@@ -88,6 +119,7 @@ impl Names {
         for (span, ids) in other.ids {
             self.ids.entry(span).or_default().extend(ids);
         }
+        self.puns.extend(other.puns);
     }
 }
 
@@ -314,6 +346,32 @@ fn rel_sel_refs(schema: &Schema, rel: RelId, names: &[ast::Ident], out: &mut Vec
     }
 }
 
+/// Returns the reference of field `f` of constructor `ctor` of type `def`, else of its header,
+/// else of its only constructor when the type is a record.
+fn field_ref(
+    schema: &Schema,
+    def: TypeId,
+    ctor: Option<u32>,
+    f: &ast::Ident,
+) -> Option<(Span, Ref)> {
+    let td = schema.ty(def);
+    let ctor = match ctor {
+        Some(c) => Some(c),
+        None if td.field(None, &f.text).is_some() => None,
+        None => (td.ctors().len() == 1).then_some(0),
+    };
+    td.field(ctor.and_then(|c| td.ctor_at(c)), &f.text)?;
+    Some((
+        f.span,
+        Ref::Field {
+            def,
+            ctor,
+            name: f.text.clone(),
+            pun: false,
+        },
+    ))
+}
+
 fn relation_ref_refs(
     schema: &Schema,
     module: ModuleId,
@@ -451,9 +509,21 @@ fn clause_refs(
         if let Some(scope) = clause_scope(c) {
             rel_sel_refs(schema, rel, scope_idents(scope), out);
         }
+        let def = schema.relation(rel).elem_def;
         match c {
-            RelationClause::Default { ctor: Some(c), .. } => {
-                rel_sel_refs(schema, rel, std::slice::from_ref(c), out);
+            RelationClause::Key(fields, _) => {
+                for f in fields {
+                    out.extend(field_ref(schema, def, None, f));
+                }
+            }
+            RelationClause::Default { ctor, field, .. } => {
+                if let Some(c) = ctor {
+                    rel_sel_refs(schema, rel, std::slice::from_ref(c), out);
+                }
+                let at = ctor
+                    .as_ref()
+                    .and_then(|c| schema.ty(def).ctor_index(&c.text));
+                out.extend(field_ref(schema, def, at, field));
             }
             RelationClause::Computed(_, t, _) => type_refs(schema, module, t, out),
             _ => {}

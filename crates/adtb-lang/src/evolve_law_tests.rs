@@ -263,6 +263,7 @@ add relation ws : W
         ];
         out.extend(self.removing());
         out.extend(between());
+        out.extend(restoring());
         if self.declared {
             out.push(Case::new("enable ts.D"));
             out.push(Case::new("enable P.E"));
@@ -432,6 +433,203 @@ deprecate ms.M2",
     ]
 }
 
+/// The cases whose revert restores a text naming an object a later migration renames, takes the
+/// name of, or drops.
+fn restoring() -> Vec<Case> {
+    let renamed = |text: &str, then: &str| Case::new(text).then(then, Some(then)).labelled(NAMED);
+    vec![
+        renamed("drop type Inner", "rename type Q to Q9"),
+        renamed(
+            "drop relation badges",
+            "rename type Badge to Badge9\nrename field Badge9.name to title",
+        ),
+        renamed("drop fn kk", "rename constructor K.A to A7").after(KK),
+        renamed(
+            "drop constraint unlabelled",
+            "rename relation us to us9\nrename field U.label to title",
+        ),
+        renamed(
+            "drop check o_set",
+            "rename relation ts to ts9\nrename field T.o to o9",
+        ),
+        renamed(
+            "redefine fn names () -> Set ({ label: Text }) = from u in us select { label: \"x\" }",
+            "rename relation us to us9\nrename field U.label to title",
+        ),
+        renamed(
+            "drop unique (x) in ts.A",
+            "rename relation ts to ts9\nrename constructor T.A to A9\nrename field T.A9.x to x9",
+        ),
+        renamed("drop index (z) in ts.S", "rename set S of ts to S9"),
+        renamed("add unique (z) in ts.C", "rename constructor T.C to C9"),
+        renamed("add index (z) in ts.B", "rename relation ts to ts9"),
+        renamed(
+            "add interval index (label) in us",
+            "rename field U.label to title",
+        ),
+        renamed(
+            "drop default ts.A.x",
+            "rename constructor T.A to A9\nrename field T.A9.x to x9",
+        ),
+        renamed(
+            "add default ts.B.x = \"b\"",
+            "rename relation ts to ts9\nrename field T.B.x to x9",
+        ),
+        renamed("drop computed ts.width", "rename relation ts to ts9")
+            .after("add computed ts.width: I64 = scalar_len(self.n)"),
+        renamed(
+            "redefine computed ts.tag: Text = \"u\"",
+            "rename relation ts to ts9",
+        ),
+        renamed(
+            "rekey relation badges key name",
+            "rename field Badge.id to ident",
+        ),
+        renamed(
+            "add field T.C.w: Text fill \"w\"",
+            "rename constructor T.C to C9",
+        ),
+        renamed(
+            "alter field T.h on delete cascade",
+            "rename field T.h to h9",
+        ),
+        renamed("drop field T.C.y", "rename field T.C.z to z9").fill("T.C.y = \"y\""),
+        renamed("drop field T.A.q", "rename type Q to Q9").fill("T.A.q = Q1"),
+        renamed("revert {first}", "rename constructor T.C to C9").after("add unique (z) in ts.C"),
+        renamed("revert {first}", "rename field T.B.x to x9").after("add default ts.B.x = \"b\""),
+        Case::new("drop fn kk")
+            .after(KK)
+            .then(KK_AGAIN, Some(KK_AGAIN))
+            .labelled(NAME_REUSED),
+        Case::new("drop unique (x) in ts.A")
+            .then(X_AGAIN, Some(X_AGAIN))
+            .labelled(NAME_REUSED),
+        Case::new("revert {first}")
+            .after("add unique (z) in ts.C")
+            .then(C_AGAIN, Some(C_AGAIN))
+            .labelled(NAME_REUSED),
+        Case::new("unstore labels")
+            .then(LABELS_AGAIN, None)
+            .refused("the inverse of `unstore labels` names a function a later migration dropped")
+            .labelled(DROPPED),
+        Case::new("drop unique (k) in ts.A")
+            .after("add field T.A.k: Text fill \"k\"\nadd unique (k) in ts.A")
+            .then("drop field T.A.k", None)
+            .refused(
+                "the inverse of `drop unique (k) in ts.A` names a field a later migration dropped",
+            )
+            .labelled(DROPPED),
+        Case::new("drop index (z) in ts.S")
+            .then("rename field T.A.z to z9", None)
+            .refused(
+                "in the inverse of `drop index (z) in ts.S`, the name `z` stood for objects a later migration renamed apart",
+            )
+            .labelled(APART),
+        Case::new("drop index (z) in ts.S")
+            .then("drop field T.B.z", None)
+            .refused(
+                "the inverse of `drop index (z) in ts.S` names a field a later migration dropped",
+            )
+            .labelled(DROPPED),
+        Case::new("drop index (z) in ts.S")
+            .then("drop field T.B.z\nadd field T.B.z: Text fill \"q\"", None)
+            .refused(
+                "the inverse of `drop index (z) in ts.S` names a field a later migration dropped",
+            )
+            .labelled(DROPPED),
+        Case::new("drop fn g")
+            .after(G_SHADOWING)
+            .then("rename field Inner.A.x to x9", Some("rename field Inner.A.x to x9"))
+            .labelled(PUN_SHADOWING),
+        Case::new("drop fn g")
+            .after(G)
+            .then("rename field Inner.A.x to x9", Some("rename field Inner.A.x to x9"))
+            .labelled(PUN),
+        Case::new("drop relation vs\ndrop type V")
+            .then(VS_AGAIN, None)
+            .refused("module `auth` already declares relation `vs`")
+            .labelled(NAME_REUSED),
+        Case::new("revert {first}")
+            .after(ZYS)
+            .after("add constructor Zy.Z3 { w: Text }\n  arm zys.zzk: Z3 p -> p.w")
+            .then(ZZK_AGAIN, None)
+            .refused(
+                "the inverse of `revert {first}` names a computed field a later migration dropped",
+            )
+            .labelled(DROPPED),
+        Case::new("drop type Wrap")
+            .after("add type Wrap = { l: Label }")
+            .then("drop type Label", None)
+            .refused("the inverse of `drop type Wrap` names a type a later migration dropped")
+            .labelled(DROPPED),
+    ]
+}
+
+/// A function over `K` matching each of its constructors.
+const KK: &str = "define fn kk (k: K) -> I64 = match k
+  | A a -> 1
+  | B b -> 2";
+
+/// A relation with a computed field matching on its row.
+const ZYS: &str = "add type Zy { id: Key zys } = Z1 { a: Text } | Z2 { b: Text }
+add relation zys : Zy key id generate sequence
+add computed zys.zzk: Text = match self
+  | Z1 p -> p.a
+  | Z2 p -> p.b";
+
+/// A new computed field taking the name of `zys.zzk`.
+const ZZK_AGAIN: &str = "drop computed zys.zzk
+add computed zys.zzk: Text = match self
+  | Z1 p -> p.a
+  | Z2 p -> p.b";
+
+/// A new relation taking the name of `vs`, over a new type.
+const VS_AGAIN: &str = "add type V3 = { id: Key vs }
+add relation vs : V3 key id generate sequence";
+
+/// The label of a case whose revert restores a pun of a field a later migration renames.
+const PUN: &str = "punned field renamed";
+
+/// The label of a case whose revert restores a pun shadowing a parameter, of a field a later
+/// migration renames.
+const PUN_SHADOWING: &str = "punned field shadowing a parameter renamed";
+
+/// A function over `Inner` binding field `x` of `A` by a pun that shadows a parameter.
+const G_SHADOWING: &str = "define fn g (i: Inner, x: Text) -> Text = match i
+  | A { x } -> x
+  | B b -> b.x";
+
+/// A function over `Inner` binding field `x` of `A` by a pun.
+const G: &str = "define fn g (i: Inner) -> Text = match i
+  | A { x } -> x
+  | B b -> b.x";
+
+/// A rename of `K` and a new type taking its name and its constructors' names.
+const KK_AGAIN: &str = "rename type K to K9\nadd type K = A | B";
+
+/// A rename of `T.A.x` and a new field taking its name.
+const X_AGAIN: &str = "rename field T.A.x to x9\nadd field T.A.x: Text fill \"v\"";
+
+/// A rename of `T.C` and a new constructor of `T` taking its name.
+const C_AGAIN: &str = "rename constructor T.C to C9
+add constructor T.C { z: Text }
+  arm f: C c -> c.z";
+
+/// A new function taking the name of `labels`.
+const LABELS_AGAIN: &str = "drop fn labels
+define fn labels () -> Set ({ label: Text }) = from u in us select { label: u.label }";
+
+/// The label of a case whose revert restores a text naming by one name two objects a later
+/// migration gives different names.
+const APART: &str = "named objects renamed apart";
+
+/// The label of a case whose revert restores a text naming an object a later migration renames.
+const NAMED: &str = "named object renamed";
+
+/// The label of a case whose revert restores a text naming an object a later migration renames,
+/// a new object taking its name.
+const NAME_REUSED: &str = "named object's name reused";
+
 /// A relation `us2` of a type of its own.
 const US2: &str = "add type U2 = { id: Key us2 }
 add relation us2 : U2 key id generate sequence";
@@ -475,7 +673,8 @@ const NEST: &str = "nest constructor T.(A | B) into N { inner: Inner }
 
 /// One operator migration of the search, after the migration it needs first if any.
 struct Case {
-    first: Option<String>,
+    /// The migrations applied before the case's, in order.
+    first: Vec<String>,
     text: String,
     /// A migration applied after the case's and before its revert.
     then: Option<String>,
@@ -485,7 +684,8 @@ struct Case {
     /// The `fill` clauses its revert states.
     fills: Vec<String>,
     /// The reason the spec states for refusing its revert, when it is refused, `{case}` standing
-    /// for the number of the case's migration and `{then}` for the one after it.
+    /// for the number of the case's migration, `{then}` for the one after it and `{first}` for the
+    /// one before it.
     refused: Option<&'static str>,
     /// What tells the case apart from another of the same operators.
     label: Option<&'static str>,
@@ -494,7 +694,7 @@ struct Case {
 impl Case {
     fn new(text: &str) -> Case {
         Case {
-            first: None,
+            first: Vec::new(),
             text: headed(text),
             then: None,
             expect: None,
@@ -505,7 +705,7 @@ impl Case {
     }
 
     fn after(mut self, first: &str) -> Case {
-        self.first = Some(headed(first));
+        self.first.push(headed(first));
         self
     }
 
@@ -532,12 +732,19 @@ impl Case {
         self
     }
 
-    /// Returns the case's name: the first line of its operators, then its label.
+    /// Returns the case's name: the first line of its operators, with the first line of the last
+    /// migration it needs first for a `{first}` in it, then its label.
     fn name(&self) -> String {
-        let first = self.text.lines().nth(1).unwrap_or_default();
+        let line = |t: &str| t.lines().nth(1).unwrap_or_default().to_string();
+        let mut first = line(&self.text);
+        if let Some(before) = self.first.last()
+            && first.contains("{first}")
+        {
+            first = first.replace("{first}", &format!("`{}`", line(before)));
+        }
         match self.label {
             Some(l) => format!("{first} [{l}]"),
-            None => first.to_string(),
+            None => first,
         }
     }
 }
@@ -1199,23 +1406,25 @@ fn search(count: usize) -> Found {
 impl Found {
     fn case(&mut self, bits: u64, start: &Source, case: &Case) {
         let what = format!("{bits:03b} `{}`", case.name());
-        let was = match &case.first {
-            None => start.clone(),
-            Some(first) => match migrate(start, first) {
-                Ok(s) => s,
+        let mut was = start.clone();
+        for first in &case.first {
+            match migrate(&was, first) {
+                Ok(s) => was = s,
                 Err(e) => {
                     self.unapplied
                         .push(format!("{what}: `{first}` refused: {e:?}"));
                     return;
                 }
-            },
-        };
-        let m = parse_migration(&case.text, Options::default())
+            }
+        }
+        let before = format!("{:04}", was.log.last().map_or(0, |l| l.number));
+        let text = case.text.replace("{first}", &before);
+        let m = parse_migration(&text, Options::default())
             .ok()
             .expect("the case parses");
         let kinds: BTreeSet<&'static str> =
             m.operators.iter().map(|o| kind_name(&o.kind)).collect();
-        let mid = match migrate(&was, &case.text) {
+        let mid = match migrate(&was, &text) {
             Ok(s) => s,
             Err(e) => {
                 let diffs = e.into_iter().map(|e| (Aspect::Unapplied, e)).collect();
@@ -1223,7 +1432,8 @@ impl Found {
                 return;
             }
         };
-        self.reached.extend(kinds.iter().copied());
+        self.reached
+            .extend(kinds.iter().copied().filter(|k| !UNINVERTED.contains(k)));
         let number = mid.log.last().expect("the case is logged").number;
         let (mid, target) = match (&case.then, &case.expect) {
             (None, _) => (mid, was),
@@ -1250,6 +1460,7 @@ impl Found {
         let revert = format!("module auth\nrevert {number:04}{fills}");
         let reason = case.refused.map(|r| {
             r.replace("{case}", &format!("{number:04}"))
+                .replace("{first}", &before)
                 .replace("{then}", &format!("{:04}", number + 1))
         });
         let got = migrate(&mid, &revert);
@@ -1328,10 +1539,10 @@ fn unknown(name: &str, o: &Outcome, every_shape: bool) -> Option<String> {
 }
 
 /// The cases each shape runs with no bit set, and those the `declared` and `granted` bits add.
-const CASES: (usize, usize, usize) = (97, 2, 5);
+const CASES: (usize, usize, usize) = (132, 2, 5);
 
 /// The cases of each shape whose revert is refused for a reason the spec states.
-const REFUSED: usize = 7;
+const REFUSED: usize = 15;
 
 #[test]
 fn every_invertible_operator_and_its_revert_restore_the_source_before_it() {

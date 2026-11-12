@@ -1,18 +1,228 @@
+use std::cell::OnceCell;
+
 use super::*;
 use crate::schema::FieldRef;
 
-/// An operator of migration `logged` being inverted against `before`, the source before it, and
-/// `after`, the source it gives.
+/// The names of a migration's text, each operand naming an object tied to its id, computed once.
+pub(super) type Spelling = OnceCell<Result<Names, Vec<Diag>>>;
+
+/// An operator of migration `logged` being inverted against `before`, the source before it,
+/// `after`, the source it gives, and `start`, the source before the run of operators it ends or
+/// belongs to.
 #[derive(Clone, Copy)]
-struct Inverting<'a> {
+pub(super) struct Inverting<'a> {
     before: &'a Source,
     after: &'a Source,
+    start: &'a Source,
     logged: &'a Logged,
+    spelling: &'a Spelling,
     op: &'a Operator,
     fills: &'a [(ast::FieldPath, Fill)],
 }
 
+/// The parts of [`Inverting`] one logged migration's operators share.
+#[derive(Clone, Copy)]
+pub(super) struct Run<'a> {
+    start: &'a Source,
+    logged: &'a Logged,
+    spelling: &'a Spelling,
+    fills: &'a [(ast::FieldPath, Fill)],
+}
+
+impl<'a> Run<'a> {
+    pub(super) fn new(
+        start: &'a Source,
+        logged: &'a Logged,
+        spelling: &'a Spelling,
+        fills: &'a [(ast::FieldPath, Fill)],
+    ) -> Self {
+        Run {
+            start,
+            logged,
+            spelling,
+            fills,
+        }
+    }
+
+    pub(super) fn at(
+        self,
+        before: &'a Source,
+        after: &'a Source,
+        op: &'a Operator,
+    ) -> Inverting<'a> {
+        Inverting {
+            before,
+            after,
+            start: self.start,
+            logged: self.logged,
+            spelling: self.spelling,
+            op,
+            fills: self.fills,
+        }
+    }
+}
+
+/// Returns the refusal of a revert whose log does not resolve, at `span`.
+fn unresolved(span: Span, ds: &[Diag]) -> Vec<Diag> {
+    ds.iter()
+        .map(|d| Diag::new(span, format!("the log does not resolve: {}", d.message)))
+        .collect()
+}
+
 impl Inverting<'_> {
+    fn of(&self) -> String {
+        self.text(self.op.span)
+    }
+
+    /// Returns `range` of the migration's text, each name of an object in it held by its id.
+    fn op_text(&self, range: Range<usize>) -> R<Spelled> {
+        let names = self
+            .spelling
+            .get_or_init(|| self.logged.spelling())
+            .as_ref()
+            .map_err(|ds| unresolved(self.op.span, ds))?;
+        let mut out = Spelled::default();
+        out.copy(&self.logged.text, range, names, 0);
+        Ok(out)
+    }
+
+    /// Returns the migration's text from `q` to `end`, `q` qualified by its module.
+    fn qualified(&self, q: &QName, end: usize) -> R<Spelled> {
+        let mut out = match &q.module {
+            Some(_) => Spelled::default(),
+            None => Spelled::from(format!("{}::", self.logged.module)),
+        };
+        let start = q
+            .module
+            .as_ref()
+            .map_or(q.name.span.start, |m| m.span.start);
+        out.append(self.op_text(start as usize..end)?);
+        Ok(out)
+    }
+
+    /// Returns field path `p` qualified by its module.
+    fn path(&self, p: &ast::FieldPath) -> R<Spelled> {
+        self.qualified(&p.ty, p.field.span.end as usize)
+    }
+
+    /// Returns `range` of the text of declaration `i` of `before`, each name of an object in it
+    /// held by its id, as `before` resolves it, else as the source at the start of the run does
+    /// when it holds the same text and `before` does not build.
+    fn decl_range(&self, i: usize, range: Range<usize>) -> R<Spelled> {
+        let d = &self.before.decls[i];
+        let names = match self.before.names() {
+            Ok(mut all) => all.swap_remove(i),
+            Err(_) => {
+                let j = self
+                    .start
+                    .decls
+                    .iter()
+                    .position(|s| s.module == d.module && s.text == d.text);
+                match (j, self.start.names()) {
+                    (Some(j), Ok(mut all)) => all.swap_remove(j),
+                    _ => {
+                        return Err(vec![Diag::new(
+                            self.op.span,
+                            "the log does not resolve the names of the declaration the operator changes",
+                        )]);
+                    }
+                }
+            }
+        };
+        let mut out = Spelled::default();
+        out.copy(&d.text, range, &names, header(&d.module).len());
+        Ok(out)
+    }
+
+    /// Returns the operator's text after its first word, `verb` in its place and the relation of
+    /// `on` qualified by its module.
+    fn clause(&self, verb: &str, on: &ast::RelationRef) -> R<Spelled> {
+        let span = self.op.span.range();
+        let text = &self.logged.text[span.clone()];
+        let word = text.find(char::is_whitespace).unwrap_or(text.len());
+        let rest = span.start + text.len() - text[word..].trim_start().len();
+        let q = &on.relation;
+        let rel = q
+            .module
+            .as_ref()
+            .map_or(q.name.span.start, |m| m.span.start) as usize;
+        let mut out = Spelled::from(format!("{verb} "));
+        out.append(self.op_text(rest..rel)?);
+        out.append(self.qualified(q, span.end)?);
+        Ok(out)
+    }
+
+    /// Returns the declaration of `before` declaring the type of field path `p`, and the field.
+    fn field_decl(&self, p: &ast::FieldPath) -> R<(usize, ast::FieldType)> {
+        let m = self.module_of(&p.ty);
+        let missing = || vec![Diag::new(self.op.span, "the log does not hold the field")];
+        let i = self
+            .before
+            .find("type", &m, &p.ty.name.text)
+            .ok_or_else(missing)?;
+        let Some(Decl::Type(t)) = self.before.parsed(i) else {
+            return Err(missing());
+        };
+        let record = matches!(t.body, ast::TypeBody::Record(_));
+        decl_fields(&t)
+            .into_iter()
+            .find(|(c, f)| {
+                let here = match (&p.ctor, c) {
+                    (None, None) => true,
+                    (None, Some(c)) => record && *c == t.name.text,
+                    (Some(x), Some(c)) => x.text == *c,
+                    (Some(_), None) => false,
+                };
+                here && f.name.text == p.field.text
+            })
+            .map(|(_, f)| (i, f.clone()))
+            .ok_or_else(missing)
+    }
+
+    /// Returns the whole text of declaration `i` of `before` as [`Inverting::decl_range`] does.
+    fn decl(&self, i: usize) -> R<Spelled> {
+        self.decl_range(i, 0..self.before.decls[i].text.len())
+    }
+
+    /// Returns the step adding back the declaration of kind `kind` and name `name` of module `m`
+    /// that the operator removes.
+    fn restore(&self, kind: &'static str, m: &str, name: &str) -> R<Inverse> {
+        let i = self.before.find(kind, m, name).ok_or_else(|| {
+            vec![Diag::new(
+                self.op.span,
+                "the log does not hold the declaration the operator removes",
+            )]
+        })?;
+        Ok(Inverse::Restore {
+            module: m.to_string(),
+            kind,
+            name: name.to_string(),
+            text: self.decl(i)?,
+            of: self.of(),
+        })
+    }
+
+    /// Returns the step removing the object of kind `kind` and name `name` of module `m` that
+    /// the operator adds, by its id in `after`.
+    fn unadd(&self, kind: KeyKind, m: &str, name: &ast::Ident) -> R<Inverse> {
+        let key = ObjectKey::named(kind, Owner::Module(m.to_string()), &name.text);
+        let id = self.after.ids.get(&key).copied().ok_or_else(|| {
+            vec![Diag::new(
+                self.op.span,
+                "the log does not hold the object the operator adds",
+            )]
+        })?;
+        let decl = match self.op.kind {
+            OperatorKind::Store(_) => DeclOf::Store(id),
+            _ => DeclOf::Object(kind, id),
+        };
+        Ok(Inverse::Redeclare {
+            decl,
+            text: None,
+            of: self.of(),
+        })
+    }
+
     /// Returns the module `n` names, else the migration's.
     fn module_of(&self, n: &QName) -> String {
         n.module
@@ -82,25 +292,15 @@ impl Inverting<'_> {
             of: self.text(self.op.span),
         })
     }
-
-    fn decl_text(&self, kind: &str, m: &str, name: &str) -> Option<String> {
-        self.before
-            .find(kind, m, name)
-            .map(|i| self.before.decls[i].text.clone())
-    }
-}
-
-fn decl(kind: &'static str, m: String, name: String, text: Option<String>) -> Inverse {
-    Inverse::Decl {
-        module: m,
-        kind,
-        name,
-        text,
-    }
 }
 
 fn ops(s: String) -> R<Vec<Inverse>> {
     Ok(vec![Inverse::Ops(s.into())])
+}
+
+/// Returns the one step applying `text` as the inverse of operator text `of`.
+fn apply(text: Spelled, of: String) -> R<Vec<Inverse>> {
+    Ok(vec![Inverse::Apply { text, of }])
 }
 
 /// Returns type `t` of module `m` of `schema`.
@@ -140,22 +340,12 @@ impl Cx<'_> {
         })
     }
 
-    /// The inverse of `op` of migration `logged`, computed against `before`, the schema before it.
-    pub(super) fn inverse(
-        &self,
-        before: &Source,
-        after: &Source,
-        logged: &Logged,
-        op: &Operator,
-        fills: &[(ast::FieldPath, Fill)],
-    ) -> R<Vec<Inverse>> {
-        let at = Inverting {
-            before,
-            after,
-            logged,
-            op,
-            fills,
-        };
+    /// The inverse of the operator `at` inverts.
+    pub(super) fn inverse(&self, at: &Inverting) -> R<Vec<Inverse>> {
+        let at = *at;
+        let Inverting {
+            before, after, op, ..
+        } = at;
         match &op.kind {
             OperatorKind::AddModule(..)
             | OperatorKind::Install { .. }
@@ -212,13 +402,19 @@ impl Cx<'_> {
             OperatorKind::Script(_) => self.err("a `script` has no inverse"),
             OperatorKind::Revert { migration, .. } => {
                 let n: u64 = migration.parse().unwrap_or(u64::MAX);
-                match self.src.log.iter().position(|l| l.number == n) {
-                    Some(k) => Ok(vec![Inverse::Replay {
-                        logged: Box::new(self.src.log[k].clone()),
-                        again: self.src.recreated_by(k, before, after),
-                    }]),
-                    None => self.err(format!("migration {migration} is not in the log")),
-                }
+                let Some(k) = self.src.log.iter().position(|l| l.number == n) else {
+                    return self.err(format!("migration {migration} is not in the log"));
+                };
+                let logged = &self.src.log[k];
+                let names = logged.spelling().map_err(|ds| unresolved(op.span, &ds))?;
+                let mut text = Spelled::default();
+                text.copy(&logged.text, 0..logged.text.len(), &names, 0);
+                Ok(vec![Inverse::Replay {
+                    logged: Box::new(logged.clone()),
+                    text,
+                    again: self.src.recreated_by(k, before, after),
+                    of: at.of(),
+                }])
             }
         }
     }
@@ -231,46 +427,39 @@ impl Cx<'_> {
                 present: false,
                 installed: false,
                 decls: Vec::new(),
+                of: at.of(),
             }]),
             OperatorKind::Install { name, .. } => Ok(vec![Inverse::Module {
                 name: name.text.clone(),
                 present: false,
                 installed: true,
                 decls: Vec::new(),
+                of: at.of(),
             }]),
             OperatorKind::DropModule(m) | OperatorKind::Uninstall(m) => Ok(vec![Inverse::Module {
                 name: m.text.clone(),
                 present: true,
                 installed: before.installed.contains(&m.text),
-                decls: before
-                    .decls
-                    .iter()
-                    .filter(|d| d.module == m.text)
-                    .map(|d| d.text.clone())
-                    .collect(),
+                decls: (0..before.decls.len())
+                    .filter(|&i| before.decls[i].module == m.text)
+                    .map(|i| at.decl(i))
+                    .collect::<R<Vec<Spelled>>>()?,
+                of: at.of(),
             }]),
             _ => unreachable!("module_inverse is given a module operator"),
         }
     }
 
     fn type_inverse(&self, at: &Inverting) -> R<Vec<Inverse>> {
-        let Inverting { logged, op, .. } = *at;
+        let Inverting { op, .. } = *at;
         match &op.kind {
-            OperatorKind::AddType(t) => Ok(vec![decl(
-                "type",
-                logged.module.clone(),
-                t.name.text.clone(),
-                None,
-            )]),
+            OperatorKind::AddType(t) => {
+                Ok(vec![at.unadd(KeyKind::Type, &at.logged.module, &t.name)?])
+            }
             OperatorKind::DropType(t) => {
                 let m = at.module_of(t);
                 let states = at.states_back(false, |(sm, st, _)| *sm == m && *st == t.name.text);
-                let mut out = vec![decl(
-                    "type",
-                    m.clone(),
-                    t.name.text.clone(),
-                    at.decl_text("type", &m, &t.name.text),
-                )];
+                let mut out = vec![at.restore("type", &m, &t.name.text)?];
                 out.extend(self.by_id(states)?);
                 Ok(out)
             }
@@ -290,32 +479,29 @@ impl Cx<'_> {
             before, logged, op, ..
         } = *at;
         match &op.kind {
-            OperatorKind::AddRelation(r) => Ok(vec![decl(
-                "relation",
-                logged.module.clone(),
-                r.name.name.text.clone(),
-                None,
-            )]),
+            OperatorKind::AddRelation(r) => Ok(vec![at.unadd(
+                KeyKind::Relation,
+                &logged.module,
+                &r.name.name,
+            )?]),
             OperatorKind::DropRelation(r) => {
                 let m = at.module_of(r);
                 let states = at.states_back(true, |(sm, sr, _)| *sm == m && *sr == r.name.text);
-                let mut out = vec![decl(
-                    "relation",
-                    m.clone(),
-                    r.name.text.clone(),
-                    at.decl_text("relation", &m, &r.name.text),
-                )];
+                let mut out = vec![at.restore("relation", &m, &r.name.text)?];
                 for (i, d) in before.decls.iter().enumerate() {
                     if d.module == m
-                        && let Some(Decl::Set(s)) = before.parsed(i)
+                        && let Some(d) = before.parsed(i)
+                        && let Decl::Set(s) = &d
                         && s.relation.text == r.name.text
                     {
-                        out.push(decl(
-                            "set",
-                            m.clone(),
-                            format!("{}.{}", s.relation.text, s.name.text),
-                            Some(d.text.clone()),
-                        ));
+                        let (kind, name) = key_of(&d);
+                        out.push(Inverse::Restore {
+                            module: m.clone(),
+                            kind,
+                            name,
+                            text: at.decl(i)?,
+                            of: at.of(),
+                        });
                     }
                 }
                 out.extend(self.by_id(states)?);
@@ -346,14 +532,12 @@ impl Cx<'_> {
                 },
                 set,
             )),
-            OperatorKind::AddUnique(..) | OperatorKind::AddIndex { .. } => ops(format!(
-                "drop {}",
-                at.text(op.span).trim_start_matches("add").trim_start()
-            )),
-            OperatorKind::DropUnique(..) | OperatorKind::DropIndex { .. } => ops(format!(
-                "add {}",
-                at.text(op.span).trim_start_matches("drop").trim_start()
-            )),
+            OperatorKind::AddUnique(_, on) | OperatorKind::AddIndex { on, .. } => {
+                apply(at.clause("drop", on)?, at.of())
+            }
+            OperatorKind::DropUnique(_, on) | OperatorKind::DropIndex { on, .. } => {
+                apply(at.clause("add", on)?, at.of())
+            }
             OperatorKind::Rekey {
                 relation, carry, ..
             } => self.rekey_inverse(at, relation, carry),
@@ -370,12 +554,11 @@ impl Cx<'_> {
             } => self.default_inverse(at, relation, ctor.as_ref(), field),
             OperatorKind::AddComputed {
                 relation, field, ..
-            } => ops(format!(
-                "drop computed {}::{}.{}",
-                at.module_of(relation),
-                relation.name.text,
-                field.text
-            )),
+            } => {
+                let mut text = Spelled::from("drop computed ");
+                text.append(at.qualified(relation, field.span.end as usize)?);
+                apply(text, at.of())
+            }
             OperatorKind::RedefineComputed {
                 relation, field, ..
             }
@@ -489,23 +672,23 @@ impl Cx<'_> {
             before, op, fills, ..
         } = *at;
         match &op.kind {
-            OperatorKind::AddField { path, .. } => ops(format!(
-                "drop field {}",
-                qualified_path(path, &at.module_of(&path.ty))
-            )),
+            OperatorKind::AddField { path, .. } => {
+                let mut text = Spelled::from("drop field ");
+                text.append(at.path(path)?);
+                apply(text, at.of())
+            }
             OperatorKind::AlterField { path, .. } => {
-                let m = at.module_of(&path.ty);
-                let Some((_, action)) = field_texts(before, &m, path) else {
-                    return self.err("the log does not hold the altered field");
-                };
-                ops(format!(
-                    "alter field {} on delete {}",
-                    qualified_path(path, &m),
-                    action.as_deref().unwrap_or("restrict")
-                ))
+                let (i, f) = at.field_decl(path)?;
+                let mut text = Spelled::from("alter field ");
+                text.append(at.path(path)?);
+                text.push(" on delete ");
+                match &f.on_delete {
+                    Some(a) => text.append(at.decl_range(i, before.local(i, a.span))?),
+                    None => text.push("restrict"),
+                }
+                apply(text, at.of())
             }
             OperatorKind::DropField(path) => {
-                let m = at.module_of(&path.ty);
                 let Some(fill) = self.fill_for(fills, &path_text(path)) else {
                     return self.err(format!(
                         "the inverse of `drop field {}` needs a fill: `fill {} = e`",
@@ -513,18 +696,25 @@ impl Cx<'_> {
                         path_text(path)
                     ));
                 };
-                let ty = field_type_text(before, &m, path).ok_or_else(|| {
-                    vec![Diag::new(
-                        self.span,
-                        "the log does not hold the dropped field",
-                    )]
-                })?;
+                let (i, f) = at.field_decl(path)?;
+                let mut text = Spelled::from("add field ");
+                text.append(at.path(path)?);
+                text.push(": ");
+                text.append(at.decl_range(i, before.local(i, f.ty.span))?);
+                if let Some(a) = &f.on_delete {
+                    text.push(" on delete ");
+                    text.append(at.decl_range(i, before.local(i, a.span))?);
+                }
+                text.push(" fill ");
+                text.push(fill);
                 Ok(vec![
-                    Inverse::Ops(Written::concat([
-                        format!("add field {}: {ty} fill ", qualified_path(path, &m)).into(),
-                        fill,
-                    ])),
-                    self.reorder(before, path, path.ctor.as_ref().map(|c| c.text.clone())),
+                    Inverse::Apply { text, of: at.of() },
+                    self.reorder(
+                        before,
+                        path,
+                        path.ctor.as_ref().map(|c| c.text.clone()),
+                        at.of(),
+                    )?,
                 ])
             }
             OperatorKind::RenameField(path, _) => self.by_id(at.renamed(
@@ -547,7 +737,7 @@ impl Cx<'_> {
                             )
                             .into(),
                         ),
-                        self.reorder(before, path, Some(c.text.clone())),
+                        self.reorder(before, path, Some(c.text.clone()), at.of())?,
                     ]),
                     (None, Some(sel)) => {
                         let names: Vec<String> =
@@ -585,78 +775,49 @@ impl Cx<'_> {
     }
 
     fn body_inverse(&self, at: &Inverting) -> R<Vec<Inverse>> {
-        let Inverting { logged, op, .. } = *at;
-        match &op.kind {
-            OperatorKind::DefineFn(f) => Ok(vec![decl(
-                "fn",
-                logged.module.clone(),
-                f.name.text.clone(),
-                None,
-            )]),
-            OperatorKind::RedefineFn(f) => Ok(vec![decl(
-                "fn",
-                logged.module.clone(),
-                f.name.text.clone(),
-                at.decl_text("fn", &logged.module, &f.name.text),
-            )]),
-            OperatorKind::DropFn(f) => Ok(vec![decl(
-                "fn",
-                at.module_of(f),
-                f.name.text.clone(),
-                at.decl_text("fn", &at.module_of(f), &f.name.text),
-            )]),
-            OperatorKind::DefineAggregate(a) => Ok(vec![decl(
-                "aggregate",
-                logged.module.clone(),
-                a.name.text.clone(),
-                None,
-            )]),
-            OperatorKind::DropAggregate(a) => Ok(vec![decl(
-                "aggregate",
-                at.module_of(a),
-                a.name.text.clone(),
-                at.decl_text("aggregate", &at.module_of(a), &a.name.text),
-            )]),
-            OperatorKind::AddConstraint(c) => Ok(vec![decl(
-                "constraint",
-                logged.module.clone(),
-                c.name.text.clone(),
-                None,
-            )]),
-            OperatorKind::DropConstraint(c) => Ok(vec![decl(
-                "constraint",
-                at.module_of(c),
-                c.name.text.clone(),
-                at.decl_text("constraint", &at.module_of(c), &c.name.text),
-            )]),
-            OperatorKind::AddCheck(c) => Ok(vec![decl(
-                "check",
-                logged.module.clone(),
-                c.name.text.clone(),
-                None,
-            )]),
-            OperatorKind::DropCheck(c) => Ok(vec![decl(
-                "check",
-                at.module_of(c),
-                c.name.text.clone(),
-                at.decl_text("check", &at.module_of(c), &c.name.text),
-            )]),
-            OperatorKind::Store(s) => Ok(vec![decl(
-                "store",
-                logged.module.clone(),
-                s.view.name.text.clone(),
-                None,
-            )]),
-            OperatorKind::Unstore(v) => Ok(vec![decl(
-                "store",
-                at.module_of(v),
-                v.name.text.clone(),
-                at.decl_text("store", &at.module_of(v), &v.name.text),
-            )]),
+        let Inverting {
+            before, logged, op, ..
+        } = *at;
+        let lm = &logged.module;
+        let step = match &op.kind {
+            OperatorKind::DefineFn(f) => at.unadd(KeyKind::Function, lm, &f.name)?,
+            OperatorKind::RedefineFn(f) => {
+                let missing = || {
+                    vec![Diag::new(
+                        self.span,
+                        "the log does not hold the redefined function",
+                    )]
+                };
+                let i = before.find("fn", lm, &f.name.text).ok_or_else(missing)?;
+                let key =
+                    ObjectKey::named(KeyKind::Function, Owner::Module(lm.clone()), &f.name.text);
+                let id = before.ids.get(&key).copied().ok_or_else(missing)?;
+                Inverse::Redeclare {
+                    decl: DeclOf::Object(KeyKind::Function, id),
+                    text: Some(at.decl(i)?),
+                    of: at.of(),
+                }
+            }
+            OperatorKind::DropFn(f) => at.restore("fn", &at.module_of(f), &f.name.text)?,
+            OperatorKind::DefineAggregate(a) => at.unadd(KeyKind::Function, lm, &a.name)?,
+            OperatorKind::DropAggregate(a) => {
+                at.restore("aggregate", &at.module_of(a), &a.name.text)?
+            }
+            OperatorKind::AddConstraint(c) => at.unadd(KeyKind::Constraint, lm, &c.name)?,
+            OperatorKind::DropConstraint(c) => {
+                at.restore("constraint", &at.module_of(c), &c.name.text)?
+            }
+            OperatorKind::AddCheck(c) => at.unadd(KeyKind::Constraint, lm, &c.name)?,
+            OperatorKind::DropCheck(c) => at.restore("check", &at.module_of(c), &c.name.text)?,
+            OperatorKind::Store(s) => {
+                at.unadd(KeyKind::Function, &at.module_of(&s.view), &s.view.name)?
+            }
+            OperatorKind::Unstore(v) => at.restore("store", &at.module_of(v), &v.name.text)?,
             _ => unreachable!(
                 "body_inverse is given a function, aggregate, constraint, check or store operator"
             ),
-        }
+        };
+        Ok(vec![step])
     }
 
     fn rekey_inverse(
@@ -665,59 +826,47 @@ impl Cx<'_> {
         relation: &QName,
         carry: &[ast::FieldPath],
     ) -> R<Vec<Inverse>> {
-        let Inverting { before, op, .. } = *at;
+        let Inverting { before, .. } = *at;
         let m = at.module_of(relation);
-        let schema = before
-            .schema()
-            .map_err(|_| vec![Diag::new(self.span, "the log does not replay")])?;
-        let key = schema
-            .module_named(&m)
-            .and_then(
-                |mid| match schema.module(mid).values.get(&relation.name.text) {
-                    Some(ValueDef::Relation(r)) => Some(schema.relation(*r).key.clone()),
-                    _ => None,
-                },
-            )
-            .unwrap_or_default();
-        let mut s = format!(
-            "rekey relation {m}::{} key ({})",
-            relation.name.text,
-            key.join(", ")
-        );
-        if !carry.is_empty() {
-            let paths: Vec<String> = carry
-                .iter()
-                .map(|p| qualified_path(p, &at.module_of(&p.ty)))
-                .collect();
-            s.push_str(&format!(" carry {}", paths.join(", ")));
-        }
-        let clause = before
+        let missing = || vec![Diag::new(self.span, "the log does not hold the key")];
+        let i = before
             .find("relation", &m, &relation.name.text)
-            .and_then(|i| {
-                let Some(Decl::Relation(rd)) = before.parsed(i) else {
-                    return None;
-                };
-                let ranges = clause_ranges(&before.decls[i].text, header(&m).len(), &rd)?;
-                let k = rd
-                    .clauses
-                    .iter()
-                    .position(|c| matches!(c, RelationClause::Key(..)))?;
-                Some(before.decls[i].text[ranges[k].clone()].to_string())
-            });
-        let mut out = vec![Inverse::Ops(s.into())];
-        if let Some(text) = clause {
-            out.push(Inverse::KeyClause {
-                relation: QName {
-                    module: Some(ast::Ident {
-                        text: m,
-                        span: op.span,
-                    }),
-                    name: relation.name.clone(),
-                },
-                text,
-            });
+            .ok_or_else(missing)?;
+        let Some(Decl::Relation(rd)) = before.parsed(i) else {
+            return Err(missing());
+        };
+        let ranges =
+            clause_ranges(&before.decls[i].text, header(&m).len(), &rd).ok_or_else(missing)?;
+        let Some((k, fields)) = rd.clauses.iter().enumerate().find_map(|(k, c)| match c {
+            RelationClause::Key(fields, _) => Some((k, fields)),
+            _ => None,
+        }) else {
+            return Err(missing());
+        };
+        let key = ObjectKey::named(KeyKind::Relation, Owner::Module(m), &relation.name.text);
+        let rel = before.ids.get(&key).copied().ok_or_else(missing)?;
+        let mut text = Spelled::from("rekey relation ");
+        text.append(at.qualified(relation, relation.name.span.end as usize)?);
+        text.push(" key (");
+        for (n, f) in fields.iter().enumerate() {
+            if n > 0 {
+                text.push(", ");
+            }
+            text.append(at.decl_range(i, before.local(i, f.span))?);
         }
-        Ok(out)
+        text.push(")");
+        for (n, p) in carry.iter().enumerate() {
+            text.push(if n == 0 { " carry " } else { ", " });
+            text.append(at.path(p)?);
+        }
+        Ok(vec![
+            Inverse::Apply { text, of: at.of() },
+            Inverse::KeyClause {
+                relation: CatRelId::from_raw(rel),
+                text: at.decl_range(i, ranges[k].clone())?,
+                of: at.of(),
+            },
+        ])
     }
 
     fn default_inverse(
@@ -728,23 +877,11 @@ impl Cx<'_> {
         field: &ast::Ident,
     ) -> R<Vec<Inverse>> {
         let Inverting { before, op, .. } = *at;
-        let path = match ctor {
-            Some(c) => format!(
-                "{}::{}.{}.{}",
-                at.module_of(relation),
-                relation.name.text,
-                c.text,
-                field.text
-            ),
-            None => format!(
-                "{}::{}.{}",
-                at.module_of(relation),
-                relation.name.text,
-                field.text
-            ),
-        };
+        let path = at.qualified(relation, field.span.end as usize)?;
         if matches!(op.kind, OperatorKind::AddDefault { .. }) {
-            return ops(format!("drop default {path}"));
+            let mut text = Spelled::from("drop default ");
+            text.append(path);
+            return apply(text, at.of());
         }
         let m = at.module_of(relation);
         let i = before
@@ -753,8 +890,7 @@ impl Cx<'_> {
         let Some(Decl::Relation(rd)) = before.parsed(i) else {
             return self.err("the log does not hold the default");
         };
-        let h = header(&m).len();
-        let value = rd.clauses.iter().find_map(|c| match c {
+        let Some(value) = rd.clauses.iter().find_map(|c| match c {
             RelationClause::Default {
                 ctor: dc,
                 field: f,
@@ -762,19 +898,20 @@ impl Cx<'_> {
             } if f.text == field.text
                 && dc.as_ref().map(|x| &x.text) == ctor.as_ref().map(|x| &x.text) =>
             {
-                Some(match value {
-                    ast::DefaultValue::Generate(g) => format!("generate {}", g.text),
-                    ast::DefaultValue::Expr(e) => before.decls[i].text
-                        [e.span.start as usize - h..e.span.end as usize - h]
-                        .to_string(),
-                })
+                Some(value)
             }
             _ => None,
-        });
-        let Some(value) = value else {
+        }) else {
             return self.err("the log does not hold the default");
         };
-        ops(format!("add default {path} = {value}"))
+        let mut text = Spelled::from("add default ");
+        text.append(path);
+        text.push(" = ");
+        match value {
+            ast::DefaultValue::Generate(g) => text.push(format!("generate {}", g.text)),
+            ast::DefaultValue::Expr(e) => text.append(at.decl_range(i, before.local(i, e.span))?),
+        }
+        apply(text, at.of())
     }
 
     fn computed_inverse(
@@ -785,39 +922,36 @@ impl Cx<'_> {
     ) -> R<Vec<Inverse>> {
         let Inverting { before, op, .. } = *at;
         let m = at.module_of(relation);
+        let missing = || {
+            vec![Diag::new(
+                self.span,
+                "the log does not hold the computed field",
+            )]
+        };
         let i = before
             .find("relation", &m, &relation.name.text)
-            .ok_or_else(|| {
-                vec![Diag::new(
-                    self.span,
-                    "the log does not hold the computed field",
-                )]
-            })?;
+            .ok_or_else(missing)?;
         let Some(Decl::Relation(rd)) = before.parsed(i) else {
-            return self.err("the log does not hold the computed field");
+            return Err(missing());
         };
-        let h = header(&m).len();
-        let found = rd.clauses.iter().find_map(|c| match c {
-            RelationClause::Computed(n, t, e) if n.text == field.text => Some((
-                before.decls[i].text[t.span.start as usize - h..t.span.end as usize - h]
-                    .to_string(),
-                before.decls[i].text[e.span.start as usize - h..e.span.end as usize - h]
-                    .to_string(),
-            )),
+        let Some((t, e)) = rd.clauses.iter().find_map(|c| match c {
+            RelationClause::Computed(n, t, e) if n.text == field.text => Some((t.span, e.span)),
             _ => None,
-        });
-        let Some((t, e)) = found else {
-            return self.err("the log does not hold the computed field");
+        }) else {
+            return Err(missing());
         };
         let verb = if matches!(op.kind, OperatorKind::DropComputed(..)) {
             "add"
         } else {
             "redefine"
         };
-        ops(format!(
-            "{verb} computed {m}::{}.{}: {t} = {e}",
-            relation.name.text, field.text
-        ))
+        let mut text = Spelled::from(format!("{verb} computed "));
+        text.append(at.qualified(relation, field.span.end as usize)?);
+        text.push(": ");
+        text.append(at.decl_range(i, before.local(i, t))?);
+        text.push(" = ");
+        text.append(at.decl_range(i, before.local(i, e))?);
+        apply(text, at.of())
     }
 
     fn removed_ctor_inverse(&self, at: &Inverting, path: &ast::CtorPath) -> R<Vec<Inverse>> {

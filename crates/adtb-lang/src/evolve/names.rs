@@ -44,6 +44,16 @@ impl Logged {
     /// a dropped unique or index resolve in the clause they match before the operator. A fill or a
     /// routing resolves as the operator checks it.
     pub fn names(&self) -> Result<Names, Vec<Diag>> {
+        self.names_with(false)
+    }
+
+    /// Returns the names of this migration's text as [`Logged::names`] does, with each operand
+    /// that names an object tied to its catalog id as [`operands::tie_operands`] resolves it.
+    pub(super) fn spelling(&self) -> Result<Names, Vec<Diag>> {
+        self.names_with(true)
+    }
+
+    fn names_with(&self, operands: bool) -> Result<Names, Vec<Diag>> {
         let mut src = (*self.before).clone();
         src.version += 1;
         src.expecting(&self.module, &self.operators);
@@ -55,6 +65,9 @@ impl Logged {
             let noted = RefCell::new(Names::default());
             src.apply_noting(&self.module, op, &self.text, Some(&noted))?;
             names.extend(noted.into_inner());
+            if operands {
+                operands::tie_operands(&prior, &src, &self.module, op, &mut names);
+            }
             let marks = src.marks.as_mut().expect("a replay records its copies");
             let read = std::mem::take(&mut marks.read);
             let written: Vec<Mark> = marks

@@ -31,6 +31,7 @@ mod ids;
 mod keep;
 mod memo;
 mod names;
+mod operands;
 mod resolved;
 mod revert;
 mod rowmap;

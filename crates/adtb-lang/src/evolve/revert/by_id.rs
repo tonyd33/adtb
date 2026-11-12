@@ -65,6 +65,100 @@ impl NamedId {
     }
 }
 
+impl NamedId {
+    /// Returns the name of the type or relation of the id in `src`, qualified by its module,
+    /// `None` when `src` holds no type or relation of the id.
+    pub(super) fn qualified(self, src: &Source) -> Option<QName> {
+        let (kind, id) = match self {
+            NamedId::Type(t) => (KeyKind::Type, t.raw()),
+            NamedId::Relation(r) => (KeyKind::Relation, r.raw()),
+            _ => return None,
+        };
+        let key = src
+            .ids
+            .iter()
+            .find(|(k, x)| **x == id && k.kind() == kind)?
+            .0;
+        let Owner::Module(m) = key.owner() else {
+            return None;
+        };
+        let ident = |text: &str| ast::Ident {
+            text: text.to_string(),
+            span: Span::new(0, 0),
+        };
+        Some(QName {
+            module: Some(ident(m)),
+            name: ident(key.name()?),
+        })
+    }
+}
+
+/// A declaration, by the id of the object it declares, a stored view's by the id of its
+/// function.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::evolve) enum DeclOf {
+    Object(KeyKind, u64),
+    Store(u64),
+}
+
+impl DeclOf {
+    pub(super) fn word(self) -> &'static str {
+        match self {
+            DeclOf::Object(kind, _) => spelled::word(kind),
+            DeclOf::Store(_) => "function",
+        }
+    }
+
+    /// Returns the declaration in `src` with its kind, module and name, `None` when `src` holds
+    /// no object of the id.
+    pub(super) fn find(self, src: &Source) -> Option<(usize, &'static str, String, String)> {
+        let (kind, id) = match self {
+            DeclOf::Object(kind, id) => (kind, id),
+            DeclOf::Store(f) => (KeyKind::Function, f),
+        };
+        let key = src
+            .ids
+            .iter()
+            .find(|(k, x)| **x == id && k.kind() == kind)?
+            .0;
+        let name = key.name()?.to_string();
+        let (module, name) = match key.owner() {
+            Owner::Module(m) => (m.clone(), name),
+            Owner::Object(space, rel) => {
+                let owner = src
+                    .ids
+                    .iter()
+                    .find(|(k, x)| **x == *rel && k.kind().space() == *space)?
+                    .0;
+                let Owner::Module(m) = owner.owner() else {
+                    return None;
+                };
+                (m.clone(), format!("{}.{name}", owner.name()?))
+            }
+        };
+        let kinds: &[&'static str] = match (self, kind) {
+            (DeclOf::Store(_), _) => &["store"],
+            (_, KeyKind::Type) => &["type"],
+            (_, KeyKind::Relation) => &["relation"],
+            (_, KeyKind::Set) => &["set"],
+            (_, KeyKind::Function) => &["fn", "aggregate"],
+            (_, KeyKind::Constraint) => &["constraint", "check"],
+            _ => &[],
+        };
+        kinds.iter().find_map(|&k| {
+            let i = src.find(k, &module, &name)?;
+            Some((i, k, module.clone(), name.clone()))
+        })
+    }
+
+    fn mapped(self, again: &Recreated) -> DeclOf {
+        match self {
+            DeclOf::Object(kind, id) => DeclOf::Object(kind, again_id(again, kind.space(), id)),
+            DeclOf::Store(f) => DeclOf::Store(again_id(again, Space::Function, f)),
+        }
+    }
+}
+
 /// The id each object an inverse created again takes, by the space and id it had.
 pub(in crate::evolve) type Recreated = BTreeMap<(Space, u64), u64>;
 
@@ -194,7 +288,7 @@ impl StateOf {
 impl Source {
     /// Returns the module and name of the type relation `r` of module `m` is declared over, a
     /// type written unqualified being of module `m`.
-    pub(super) fn relation_type(&self, m: &str, r: &str) -> Option<(String, String)> {
+    pub(in crate::evolve) fn relation_type(&self, m: &str, r: &str) -> Option<(String, String)> {
         let Some(Decl::Relation(rd)) = self.parsed(self.find("relation", m, r)?) else {
             return None;
         };
@@ -266,14 +360,78 @@ impl Inverse {
                     })
                     .collect(),
             },
-            Inverse::Replay { logged, again: own } => {
+            Inverse::Replay {
+                logged,
+                text,
+                again: own,
+                of,
+            } => {
                 let mut all = again.clone();
                 for (k, v) in own {
                     let space = k.0;
                     all.insert(k, again_id(again, space, v));
                 }
-                Inverse::Replay { logged, again: all }
+                Inverse::Replay {
+                    logged,
+                    text: text.mapped(&all),
+                    again: all,
+                    of,
+                }
             }
+            Inverse::Apply { text, of } => Inverse::Apply {
+                text: text.mapped(again),
+                of,
+            },
+            Inverse::Restore {
+                module,
+                kind,
+                name,
+                text,
+                of,
+            } => Inverse::Restore {
+                kind,
+                name,
+                module,
+                text: text.mapped(again),
+                of,
+            },
+            Inverse::Redeclare { decl, text, of } => Inverse::Redeclare {
+                decl: decl.mapped(again),
+                text: text.map(|t| t.mapped(again)),
+                of,
+            },
+            Inverse::Module {
+                name,
+                present,
+                installed,
+                decls,
+                of,
+            } => Inverse::Module {
+                name,
+                present,
+                installed,
+                decls: decls.into_iter().map(|d| d.mapped(again)).collect(),
+                of,
+            },
+            Inverse::KeyClause { relation, text, of } => Inverse::KeyClause {
+                relation: CatRelId::from_raw(shared(relation.raw())),
+                text: text.mapped(again),
+                of,
+            },
+            Inverse::Reorder {
+                ty,
+                ctor,
+                order,
+                of,
+            } => Inverse::Reorder {
+                ty: CatTypeId::from_raw(shared(ty.raw())),
+                ctor: ctor.map(|c| CatCtorId::from_raw(shared(c.raw()))),
+                order: order
+                    .into_iter()
+                    .map(|f| CatFieldId::from_raw(again_id(again, Space::Field, f.raw())))
+                    .collect(),
+                of,
+            },
             other => other,
         }
     }
