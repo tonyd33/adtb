@@ -24,3 +24,7 @@ A rewritten unique that covers more rows can refuse a migration's own data or la
 Direction: a design ruling first. Either the rewrite keeps exact coverage (a split keeps one unique over the products, `in (A1 | A2)`; a merge's per-constructor unique needs a form scoped to one discriminator value, or the merge is refused while it holds one), or the spec states each change of coverage and the migration validates it against the data. Then un-ignore the search. Folds split-revert-adds-discriminator, nest-revert-widens-unique and merge-weakens-joint-unique if the ruling covers them.
 
 Defect class: Wildcards and copied rules.
+
+## 2026-11-12
+
+Since structure-lang-identity step 3b a merge refuses while a unique's scope (listed, full or a set) is two or more of exactly the merged constructors: "`unique (z) in (A | B)` holds across the merged constructors; the merge would weaken it". A unique that also reaches a constructor outside the merge is re-scoped without the discriminator (`(A | B | C)` to `(M | C)`, same fields). A split's revert, a derived merge, is refused the same way when the split held such a unique (`S = A`, `unique (z) in S`, split A into A1 | A2, revert). docs/spec/schema-change.md's merge row ("a unique over sources becomes a unique over `M` on the discriminator") now states more than the code does; reconcile it in the ruling.
