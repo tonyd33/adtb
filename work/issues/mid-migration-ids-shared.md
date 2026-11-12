@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-11
-status: open
+status: resolved
 kind: bug
 priority: 350
 summary: "a schema built mid-migration gives an object with no log id its declaration-order id, which can equal another object's log id, and sites break the tie differently"
+closed: 2026-11-12
 tags:
   - class-identity-by-spelling
 ---
@@ -19,3 +20,5 @@ tags:
 Direction: structure-lang-identity step 3 (objects keyed by resolved ids) removes declaration-order ids; route mid-step rows by the resolved key, not a numeric id; then make reverse lookups single-valued and assert it. A test: a split migration whose new constructor's declaration-order id equals an existing object's log id, reading every site that resolves it.
 
 Defect class: Identity by spelling: a string or position stands in for the identity the type system could hold.
+
+## 2026-11-12: resolved
