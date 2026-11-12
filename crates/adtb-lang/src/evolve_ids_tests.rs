@@ -6,7 +6,7 @@ use crate::parse::parse_migration;
 
 /// A schema object described by the names a schema gives it and its position among clauses.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Desc {
+pub(super) enum Desc {
     Type(String),
     Ctor(String, String),
     Relation(String),
@@ -30,7 +30,7 @@ enum Desc {
 }
 
 impl Desc {
-    fn space(&self) -> Space {
+    pub(super) fn space(&self) -> Space {
         match self {
             Desc::Type(_)
             | Desc::Ctor(..)
@@ -49,7 +49,7 @@ impl Desc {
     }
 }
 
-fn type_name(s: &Schema, def: TypeId) -> String {
+pub(super) fn type_name(s: &Schema, def: TypeId) -> String {
     let t = s.ty(def);
     format!("{}::{}", s.module(t.module).name, t.name)
 }
@@ -156,7 +156,7 @@ fn described(s: &Schema) -> Vec<(Desc, u64)> {
 
 /// Returns the objects of `s` by description, asserting that no two share a description and no
 /// two of one id space share an id.
-fn by_desc(s: &Schema, what: &str) -> BTreeMap<Desc, u64> {
+pub(super) fn by_desc(s: &Schema, what: &str) -> BTreeMap<Desc, u64> {
     let mut out = BTreeMap::new();
     let mut held: BTreeMap<(Space, u64), Desc> = BTreeMap::new();
     for (d, id) in described(s) {

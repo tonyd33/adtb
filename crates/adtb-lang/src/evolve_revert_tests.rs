@@ -298,7 +298,7 @@ fn history(c: &Case, between: Between, later: Later) -> Option<History> {
 }
 
 /// Returns `text` with the header of module `auth` unless it starts with a header of its own.
-fn headed(text: &str) -> String {
+pub(super) fn headed(text: &str) -> String {
     if text.starts_with("module ") {
         text.to_string()
     } else {
@@ -538,4 +538,75 @@ fn a_header_module_alone_makes_no_dependant() {
         s = applies(&s, t);
     }
     assert_eq!(Ok(Vec::new()), s.dependants(0));
+}
+
+#[test]
+#[ignore = "reverting `drop type` restores the type's declaration without the write states of its value-level constructors"]
+fn reverting_drop_type_restores_the_value_states_of_its_constructors() {
+    let mut s = running();
+    for t in [
+        "add type P = A | B",
+        "add constructor P.C",
+        "drop type P",
+        "revert 0003",
+    ] {
+        s = applies(&s, &headed(t));
+    }
+    let stage = |c: &str| {
+        s.value_states
+            .get(&("auth".to_string(), "P".to_string(), c.to_string()))
+            .map(|st| st.stage)
+    };
+    assert_eq!(
+        [
+            Some(Stage::Enabled),
+            Some(Stage::Enabled),
+            Some(Stage::Declared)
+        ],
+        [stage("A"), stage("B"), stage("C")]
+    );
+}
+
+/// Returns each named set of relation `identities` by name, with its id.
+fn identity_sets(s: &Source) -> BTreeMap<String, u64> {
+    let schema = ids_of(s);
+    let r = rel(&schema, "identities");
+    schema
+        .ids
+        .set_ids()
+        .filter(|(of, ..)| *of == r)
+        .map(|(_, name, id)| (name.to_string(), id.raw()))
+        .collect()
+}
+
+#[test]
+#[ignore = "a revert renames by name: after two renames and a reused name, reverting the first renames the set that took the reused name"]
+fn reverting_a_rename_renames_the_object_it_renamed_after_its_name_is_reused() {
+    let start = running();
+    let oauth = identity_sets(&start)["OAuth"];
+    let mut s = start;
+    for t in [
+        "rename set OAuth of identities to Federated",
+        "rename set Federated of identities to Social",
+        "add set Federated of identities = Google",
+    ] {
+        s = applies(&s, &headed(t));
+    }
+    let federated = identity_sets(&s)["Federated"];
+    let s = applies(&s, "module auth\nrevert 0001");
+    assert_eq!(
+        BTreeMap::from([
+            ("Federated".to_string(), federated),
+            ("OAuth".to_string(), oauth)
+        ]),
+        identity_sets(&s)
+    );
+    assert_eq!(
+        "set OAuth of identities = Google | Apple",
+        decl(&s, "set", "identities.OAuth")
+    );
+    assert_eq!(
+        "set Federated of identities = Google",
+        decl(&s, "set", "identities.Federated")
+    );
 }

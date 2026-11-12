@@ -11,6 +11,9 @@ mod ids;
 #[path = "evolve_revert_tests.rs"]
 mod revert;
 
+#[path = "evolve_law_tests.rs"]
+mod laws;
+
 const RUNNING: &str = r"
 module auth
 type User = { id: Key users, name: Text }
