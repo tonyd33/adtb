@@ -1,6 +1,7 @@
 use super::*;
 use crate::ids::{
-    KeyKind, Object, ObjectKey, Owner, Path, PathStep, Replacement, Slot, Space, assign, objects,
+    KeyKind, Object, ObjectKey, Owner, Path, PathStep, Replacement, Slot, Space, assign, forget,
+    objects,
 };
 
 impl Source {
@@ -35,6 +36,19 @@ impl Source {
         self.ids = assign(&objs, &self.ids, &mut self.next, &replaced)
             .into_iter()
             .collect();
+    }
+
+    /// Forget the object of id `id` of `space`, each later object of its kind, owner and parts
+    /// taking the place before it.
+    pub(super) fn forget_id(&mut self, space: Space, id: u64) {
+        let gone = self
+            .ids
+            .iter()
+            .find(|(k, x)| **x == id && k.kind().space() == space)
+            .map(|(k, _)| k.clone());
+        if let Some(gone) = gone {
+            forget(&mut self.ids, &gone);
+        }
     }
 
     /// Record that the operator being applied replaces `replaced`, read when its objects take

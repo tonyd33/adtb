@@ -70,6 +70,31 @@ impl Spelled {
         self.pieces.push(Piece::Text(text.into()));
     }
 
+    pub(super) fn is_empty(&self) -> bool {
+        self.pieces.is_empty()
+    }
+
+    /// Append name `written`, held by the id `id` of `space` when it is `Some`.
+    pub(super) fn name(&mut self, written: &str, space: Space, id: Option<u64>) {
+        self.pieces.push(Piece::Name {
+            written: written.to_string(),
+            ids: id.map(|id| (space, id)).into_iter().collect(),
+            pun: false,
+        });
+    }
+
+    /// Returns the text with each name held by id `id` of `space` also held by id `also` of it.
+    pub(super) fn aliased(mut self, space: Space, id: u64, also: u64) -> Spelled {
+        for p in &mut self.pieces {
+            if let Piece::Name { ids, .. } = p
+                && ids.contains(&(space, id))
+            {
+                ids.insert((space, also));
+            }
+        }
+        self
+    }
+
     pub(super) fn append(&mut self, other: Spelled) {
         self.pieces.extend(other.pieces);
     }

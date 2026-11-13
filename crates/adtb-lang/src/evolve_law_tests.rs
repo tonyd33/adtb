@@ -136,18 +136,7 @@ add constructor P.E"
     /// Every case of every invertible operator kind over the shape.
     fn cases(self) -> Vec<Case> {
         let d = |arm: &'static str| self.d_arm(arm);
-        let merge = format!(
-            "merge constructor T.(A | B) into M {{ k: K, x: Text, z: Text, q: Q }}
-  by match
-    | A a -> M {{ k: A, x: a.x, z: a.z, q: a.q }}
-    | B b -> M {{ k: B, x: b.x, z: b.z, q: b.q }}
-  arm f: M m -> m.x{}",
-            self.granted_line("\ngrant update ts.M to support")
-        );
-        let nest = format!(
-            "{NEST}{}",
-            self.granted_line("\ngrant update ts.N to support")
-        );
+        let (merge, nest) = (self.merge(), self.nest());
         let mut out = vec![
             Case::new("module m2\nadd module m2"),
             Case::new("module m\ndrop module m"),
@@ -262,6 +251,8 @@ add relation ws : W
             Case::new("grant read us to support with grant option"),
         ];
         out.extend(self.removing());
+        out.extend(self.structural());
+        out.extend(self.products());
         out.extend(between());
         out.extend(restoring());
         if self.declared {
@@ -278,15 +269,190 @@ add relation ws : W
         out
     }
 
-    /// The cases removing constructor `C` of `T`.
-    fn removing(self) -> Vec<Case> {
-        let remove = format!(
+    /// Returns the merge of `T.A` and `T.B` into `M`.
+    fn merge(self) -> String {
+        format!(
+            "merge constructor T.(A | B) into M {{ k: K, x: Text, z: Text, q: Q }}
+  by match
+    | A a -> M {{ k: A, x: a.x, z: a.z, q: a.q }}
+    | B b -> M {{ k: B, x: b.x, z: b.z, q: b.q }}
+  arm f: M m -> m.x{}",
+            self.granted_line("\ngrant update ts.M to support")
+        )
+    }
+
+    /// Returns the nest of `T.A` and `T.B` into `N`.
+    fn nest(self) -> String {
+        format!(
+            "{NEST}{}",
+            self.granted_line("\ngrant update ts.N to support")
+        )
+    }
+
+    /// The cases whose revert inverts a structural operator after a later migration renames an
+    /// object its inverse names, or reuses the name of one.
+    fn structural(self) -> Vec<Case> {
+        let renamed = |text: &str, then: &str, expect: &str| {
+            Case::new(text).then(then, Some(expect)).labelled(NAMED)
+        };
+        let reused = |text: &str, then: &str, expect: &str| {
+            Case::new(text)
+                .then(then, Some(expect))
+                .labelled(NAME_REUSED)
+        };
+        let (merge, nest) = (self.merge(), self.nest());
+        let unnest = "unnest constructor T.N\n  arm f: A a -> a.x\n  arm f: B b -> b.x";
+        let nested = format!("drop index (z) in ts.S\ndrop default ts.A.x\n{nest}");
+        let up = format!(
+            "move field T.C.y to T fill match\n  | A a -> \"\"\n  | B b -> \"\"{}",
+            self.d_arm("\n  | D d -> \"\"")
+        );
+        let down_fill = format!(
+            "T.A.n = match\n    | C c -> \"\"{}",
+            self.d_arm("\n    | D d -> \"\"")
+        );
+        let split_renames = "rename type T to T9
+rename relation ts to ts9
+rename set S of ts9 to S9
+rename field T9.n to n9
+rename constructor Q.Q1 to Q9";
+        let merge_renames = "rename type T to T9
+rename relation ts to ts9
+rename set S of ts9 to S9
+rename field T9.n to n9
+rename constructor K.A to A7
+rename type Q to Q9";
+        let nest_renames = "rename type T to T9
+rename relation ts to ts9
+rename field T9.n to n9
+rename type Inner to Inner9";
+        vec![
+            renamed(SPLIT, split_renames, split_renames).after("drop default ts.A.x"),
+            reused(SPLIT, Q1_AGAIN, Q1_AGAIN).after("drop default ts.A.x"),
+            reused(SPLIT, T_AGAIN, T_AGAIN)
+                .labelled(TYPE_REUSED)
+                .after("drop default ts.A.x"),
+            renamed(&merge, merge_renames, merge_renames).after("drop default ts.A.x"),
+            reused(&merge, KK_AGAIN, KK_AGAIN).after("drop default ts.A.x"),
+            reused(&merge, T_AGAIN, T_AGAIN)
+                .labelled(TYPE_REUSED)
+                .after("drop default ts.A.x"),
+            renamed(&nest, nest_renames, nest_renames)
+                .after("drop index (z) in ts.S\ndrop default ts.A.x"),
+            reused(&nest, INNER_AGAIN, INNER_AGAIN)
+                .after("drop index (z) in ts.S\ndrop default ts.A.x"),
+            renamed(unnest, nest_renames, nest_renames).after(&nested),
+            reused(unnest, INNER_AGAIN, INNER_AGAIN).after(&nested),
+            renamed(
+                &up,
+                "rename constructor T.C to C9\nrename field T.y to y9",
+                "rename constructor T.C to C9\nrename field T.C9.y to y9",
+            ),
+            reused(
+                &up,
+                "rename field T.y to y9\nadd field T.y: Text fill \"v\"",
+                "rename field T.C.y to y9\nadd field T.y: Text fill \"v\"",
+            ),
+            renamed(
+                "move field T.n to T.(A | B)",
+                "rename type T to T9\nrename constructor T9.A to A9",
+                "rename type T to T9\nrename constructor T9.A to A9",
+            )
+            .fill(&down_fill.replacen("T.A.n", "T9.A9.n", 1)),
+            reused("move field T.n to T.(A | B)", T_AGAIN, T_AGAIN)
+                .labelled(TYPE_REUSED)
+                .fill(&down_fill.replacen("T.A.n", "T9.A.n", 1)),
+            renamed(
+                "add constructor T.E { w: Text }\n  arm f: E e -> e.w",
+                "rename type T to T9",
+                "rename type T to T9",
+            ),
+            reused(
+                "add constructor T.E { w: Text }\n  arm f: E e -> e.w",
+                T_AGAIN,
+                T_AGAIN,
+            )
+            .labelled(TYPE_REUSED),
+            renamed(
+                "add constructor V.V2 { w2: Text }",
+                "rename relation vs to vs9",
+                "rename relation vs to vs9",
+            ),
+            renamed(
+                "remove constructor P.B",
+                "rename constructor P.A to A9",
+                "rename constructor P.A to A9",
+            )
+            .after("deprecate P.B"),
+            reused(
+                "remove constructor P.B",
+                "rename constructor P.A to A9\nadd constructor P.A",
+                "rename constructor P.A to A9\nadd constructor P.A",
+            )
+            .after("deprecate P.B"),
+            renamed(
+                &self.remove_c(),
+                "rename type T to T9\nrename constructor T9.B to B9\nrename set R of ts to R9",
+                "rename type T to T9\nrename constructor T9.B to B9\nrename set R of ts to R9",
+            )
+            .after("deprecate ts.C"),
+            reused(
+                &self.remove_c(),
+                "rename set R of ts to R9\nadd set R of ts = A",
+                "rename set R of ts to R9\nadd set R of ts = A",
+            )
+            .after("deprecate ts.C"),
+            Case::new("add constructor V.V2 { w2: Text }")
+                .then(
+                    "add field V.V.e: Text fill \"e\"\nadd field V.V.g: Text fill \"g\"",
+                    Some("add field V.e: Text fill \"e\"\nadd field V.g: Text fill \"g\""),
+                )
+                .labelled(CTOR_FIELD_ADDED),
+            Case::new("add constructor V.V2 { w2: Text }")
+                .then(
+                    "add field V.e: Text fill \"e\"",
+                    Some("add field V.e: Text fill \"e\""),
+                )
+                .labelled(HEADER_FIELD_ADDED),
+        ]
+    }
+
+    /// The cases whose revert inverts a nest after a later migration renames constructors of the
+    /// nested type.
+    fn products(self) -> Vec<Case> {
+        let nest = self.nest();
+        let swap = "rename constructor Inner.A to Z
+rename constructor Inner.B to A
+rename constructor Inner.Z to B";
+        vec![
+            Case::new(&nest)
+                .after("drop index (z) in ts.S\ndrop default ts.A.x")
+                .then(
+                    "rename constructor Inner.A to A9",
+                    Some("rename constructor Inner.A to A9"),
+                )
+                .labelled(PRODUCT_RENAMED),
+            Case::new(&nest)
+                .after("drop index (z) in ts.S\ndrop default ts.A.x")
+                .then(swap, Some(swap))
+                .labelled(PRODUCTS_SWAPPED),
+        ]
+    }
+
+    /// Returns the removal of `T.C` with `f` redefined without its arm.
+    fn remove_c(self) -> String {
+        format!(
             "remove constructor T.C
 redefine fn f (t: T) -> Text = match t
   | A a -> a.x
   | B b -> b.x{}",
             self.d_arm("\n  | D d -> d.w")
-        );
+        )
+    }
+
+    /// The cases removing constructor `C` of `T`.
+    fn removing(self) -> Vec<Case> {
+        let remove = self.remove_c();
         vec![
             Case::new(&remove).after("deprecate ts.C"),
             Case::new(&remove)
@@ -298,6 +464,34 @@ deprecate ts.C",
                 )
                 .then("deprecate zs.C", Some("deprecate zs.C"))
                 .labelled(OTHER_TYPE),
+            Case::new(&remove)
+                .after("add index (n) in ts.(B | C)\ndeprecate ts.C")
+                .then(
+                    "add index (n) in ts.B\nadd index (n) in ts.B",
+                    Some("add index (n) in ts.B\nadd index (n) in ts.B"),
+                )
+                .labelled(CLAUSE_TWIN),
+            Case::new(&remove)
+                .after(&format!(
+                    "add constraint cz = from t in ts where match t
+  | A a -> a.x == \"\"
+  | B b -> false
+  | C c -> c.z == \"\"{}
+  select t
+deprecate ts.C",
+                    self.d_arm("\n  | D d -> false")
+                ))
+                .labelled(CONSTRAINT_ARM),
+            Case::new(&remove)
+                .after(&format!(
+                    "add constraint cz = from t in ts
+  where (match t | A a -> a.x == \"\" | B b -> false | C c -> c.z == \"\"{d})
+    and (match t | A a -> false | B b -> b.x == \"\" | C c -> c.y == \"\"{d})
+  select t
+deprecate ts.C",
+                    d = self.d_arm(" | D d -> false")
+                ))
+                .labelled(TWO_MATCHES),
         ]
     }
 }
@@ -604,6 +798,15 @@ const G: &str = "define fn g (i: Inner) -> Text = match i
   | A { x } -> x
   | B b -> b.x";
 
+/// A rename of `T` and a new type taking its name.
+const T_AGAIN: &str = "rename type T to T9\nadd type T = Z1 | Z2";
+
+/// A rename of `Inner` and a new type taking its name.
+const INNER_AGAIN: &str = "rename type Inner to Inner9\nadd type Inner = Z1 | Z2";
+
+/// A rename of `Q.Q1` and a new constructor of `Q` taking its name.
+const Q1_AGAIN: &str = "rename constructor Q.Q1 to Q9\nadd constructor Q.Q1";
+
 /// A rename of `K` and a new type taking its name and its constructors' names.
 const KK_AGAIN: &str = "rename type K to K9\nadd type K = A | B";
 
@@ -633,6 +836,32 @@ const NAME_REUSED: &str = "named object's name reused";
 /// A relation `us2` of a type of its own.
 const US2: &str = "add type U2 = { id: Key us2 }
 add relation us2 : U2 key id generate sequence";
+
+/// The label of a case whose revert inverts a structural operator over `T` after a later
+/// migration renames `T`, a new type taking its name.
+const TYPE_REUSED: &str = "type's name reused";
+
+/// The label of a case whose revert drops a clause a later migration then adds twins of.
+const CLAUSE_TWIN: &str = "clause twin added";
+
+/// The label of a case whose revert puts back an arm of a constraint.
+const CONSTRAINT_ARM: &str = "constraint arm";
+
+/// The label of a case whose revert puts back an arm in each of two matches of a constraint.
+const TWO_MATCHES: &str = "constraint arms in two matches";
+
+/// The label of a case whose revert follows a field added to the record's constructor.
+const CTOR_FIELD_ADDED: &str = "constructor field added";
+
+/// The label of a case whose revert follows a field added to the header.
+const HEADER_FIELD_ADDED: &str = "header field added";
+
+/// The label of a case whose revert follows a rename of a constructor of the nested type.
+const PRODUCT_RENAMED: &str = "product renamed";
+
+/// The label of a case whose revert follows a swap of the names of the nested type's
+/// constructors.
+const PRODUCTS_SWAPPED: &str = "products swapped";
 
 /// The label of a case whose revert follows a rename of its object, a later name of it reused.
 const AGAIN: &str = "renamed again, name reused";
@@ -1001,7 +1230,8 @@ fn clauses(s: &Source, relation: &str) -> Option<Clauses> {
     Some(out)
 }
 
-/// Returns every object of `s` that has a catalog id, with its id.
+/// Returns every object of `s` that has a catalog id, with its id, a clause after the first of
+/// the same text numbered in written order.
 fn objects(s: &Source, what: &str) -> BTreeMap<Object, u64> {
     let schema = s
         .schema()
@@ -1027,12 +1257,68 @@ fn objects(s: &Source, what: &str) -> BTreeMap<Object, u64> {
                 .map(|t| Object::Clause(Space::Computed, r.clone(), t, None)),
             _ => None,
         };
-        let o = user.unwrap_or_else(|| Object::Named(d.clone()));
+        let mut o = user.unwrap_or_else(|| Object::Named(d.clone()));
+        if let Object::Clause(_, _, text, _) = &mut o {
+            let written = text.clone();
+            let mut n = 1;
+            while out.contains_key(&o) {
+                n += 1;
+                if let Object::Clause(_, _, text, _) = &mut o {
+                    *text = format!("{written} #{n}");
+                }
+            }
+        }
         if let Some(other) = out.insert(o.clone(), id) {
             panic!("{what}: {o:?} holds {other} and {id}");
         }
     }
     out
+}
+
+/// Returns object `o` with the number a twin clause takes cut.
+fn unnumbered(o: &Object) -> Object {
+    match o {
+        Object::Clause(space, r, text, d) => {
+            let text = match text.rsplit_once(" #") {
+                Some((t, n)) if n.parse::<usize>().is_ok() => t,
+                _ => text,
+            };
+            Object::Clause(*space, r.clone(), text.to_string(), d.clone())
+        }
+        o => o.clone(),
+    }
+}
+
+/// Returns the ids of the objects of `m` that `d` describes with the number a twin takes cut,
+/// in written order.
+fn twins(m: &BTreeMap<Object, u64>, d: &Object) -> Vec<u64> {
+    let mut found: Vec<(usize, u64)> = m
+        .iter()
+        .filter(|(o, _)| unnumbered(o) == *d)
+        .map(|(o, &id)| {
+            let n = match o {
+                Object::Clause(_, _, text, _) => text
+                    .rsplit_once(" #")
+                    .and_then(|(_, n)| n.parse().ok())
+                    .unwrap_or(1),
+                _ => 1,
+            };
+            (n, id)
+        })
+        .collect();
+    found.sort_unstable();
+    found.into_iter().map(|(_, id)| id).collect()
+}
+
+/// Returns object `o` with the constructor of a field cut, so a header field and a field of a
+/// constructor of one type and name compare equal.
+fn unowned(o: &Object) -> Object {
+    match o {
+        Object::Named(Desc::Field(t, _, f)) => {
+            Object::Named(Desc::Field(t.clone(), None, f.clone()))
+        }
+        o => o.clone(),
+    }
 }
 
 /// The objects a privilege names, with ids replaced by the objects that hold them, and lists
@@ -1099,23 +1385,78 @@ fn grants(s: &Source, objects: &BTreeMap<Object, u64>) -> Vec<Held> {
 }
 
 /// Returns how the ids of `now`, after a revert of the operator that took `was` to `mid`,
-/// differ from those of `was`: an object `mid` holds the id of keeps it, and the objects `mid`
+/// differ from those of `was`: an object `mid` holds the id of keeps it, the objects `mid`
 /// lacks are created again by the inverse with ids its space gave out after `mid`, a type before
-/// its constructors and constructors in listed order.
-fn id_changes(was: &Source, mid: &Source, now: &Source) -> Vec<(Aspect, String)> {
+/// its constructors and constructors in listed order, and an object a later migration created,
+/// whose id in `was` `base` does not hold, keeps the id `mid` gives it. A field `mid` describes
+/// under another part of its type (a header field the revert makes a record field) is matched
+/// by type and name among the objects whose ids a later migration gave: ids `mid` holds and
+/// `cased`, the source after the case, and `base` do not. Twins, clauses of one text, are
+/// compared as a sequence in written order: those of `now` that `base` lacks against those of
+/// `mid` a later migration gave.
+fn id_changes(
+    was: &Source,
+    mid: &Source,
+    now: &Source,
+    [base, cased]: [&Source; 2],
+) -> Vec<(Aspect, String)> {
     let (ow, om, on) = (
         objects(was, "before"),
         objects(mid, "after the operator"),
         objects(now, "after the revert"),
     );
+    let held_base: BTreeSet<(Space, u64)> = objects(base, "before the case")
+        .iter()
+        .map(|(o, id)| (o.space(), *id))
+        .collect();
     let held = |m: &BTreeMap<Object, u64>| -> BTreeSet<(Space, u64)> {
         m.iter().map(|(o, id)| (o.space(), *id)).collect()
     };
     let (held_was, held_mid) = (held(&ow), held(&om));
+    let held_cased = held(&objects(cased, "after the case"));
+    let later = |o: &Object, id: u64| {
+        !held_cased.contains(&(o.space(), id)) && !held_base.contains(&(o.space(), id))
+    };
     let mut out = Vec::new();
+    let mut twinned = BTreeSet::new();
     for (o, &id) in &ow {
         let got = on.get(o).copied();
-        if held_mid.contains(&(o.space(), id)) {
+        if !held_base.contains(&(o.space(), id)) {
+            let d = unnumbered(o);
+            if [&ow, &om, &on].iter().any(|m| twins(m, &d).len() > 1) {
+                if twinned.insert(d.clone()) {
+                    let want: Vec<u64> = twins(&om, &d)
+                        .into_iter()
+                        .filter(|&i| later(&d, i))
+                        .collect();
+                    let now: Vec<u64> = twins(&on, &d)
+                        .into_iter()
+                        .filter(|&i| !held_base.contains(&(d.space(), i)))
+                        .collect();
+                    if now != want {
+                        out.push(format!(
+                            "{d:?}, twins created by a later migration, hold {now:?} in written order, not {want:?}"
+                        ));
+                    }
+                }
+                continue;
+            }
+            let want = match om.get(o) {
+                Some(&m) => Some(m),
+                None => {
+                    let mut moved = om
+                        .iter()
+                        .filter(|(m, i)| unowned(m) == unowned(o) && later(m, **i));
+                    match (moved.next(), moved.next()) {
+                        (Some((_, &i)), None) => Some(i),
+                        _ => None,
+                    }
+                }
+            };
+            if want.is_none() || got != want {
+                out.push(format!("{o:?}, created by a later migration, keeps no id"));
+            }
+        } else if held_mid.contains(&(o.space(), id)) {
             if got != Some(id) {
                 out.push(format!("{o:?} keeps no id"));
             }
@@ -1186,8 +1527,14 @@ fn ctor_order(
 }
 
 /// Returns each difference of `now`, the revert of the operator that took `was` to `mid`, from
-/// `was`.
-fn differences(was: &Source, mid: &Source, now: &Source) -> Vec<(Aspect, String)> {
+/// `was`, the objects whose ids `was` holds and `base` does not being those a later migration
+/// created.
+fn differences(
+    was: &Source,
+    mid: &Source,
+    now: &Source,
+    sources: [&Source; 2],
+) -> Vec<(Aspect, String)> {
     let mut out = Vec::new();
     let (dw, dn) = (decls(was), decls(now));
     for (m, t) in dw.iter().filter(|d| !dn.contains(d)) {
@@ -1227,7 +1574,7 @@ fn differences(was: &Source, mid: &Source, now: &Source) -> Vec<(Aspect, String)
     for g in gn.iter().filter(|g| !gw.contains(g)) {
         out.push((Aspect::Grants, format!("+{g:?}")));
     }
-    out.extend(id_changes(was, mid, now));
+    out.extend(id_changes(was, mid, now, sources));
     out
 }
 
@@ -1246,57 +1593,9 @@ const REFUSED_ON_REPLACED: &str = "structural-operators-refuse-clauses-on-replac
 const KNOWN: &[Known] = &[
     Known {
         kind: "Merge",
-        case: "merge constructor T.(A | B) into M { k: K, x: Text, z: Text, q: Q }",
-        differences: &[
-            "Decls: +[auth] relation ts : T computed tag: Text = \"t\" index (n) in (A | B) index (n) in A index (n) in B index (z) in S key id generate sequence unique (n) in B unique (x) in A unique (z) in A",
-            "Decls: -[auth] relation ts : T computed tag: Text = \"t\" index (n) in (A | B) index (z) in S key id generate sequence unique (n) in B unique (x) in A unique (z) in A",
-            "Ids: Clause(Index, \"auth::ts\", \"index (n) in A\", None) is new",
-            "Ids: Clause(Index, \"auth::ts\", \"index (n) in B\", None) is new",
-        ],
-        tickets: &["merge-revert-restates-listed-scope"],
-    },
-    Known {
-        kind: "Merge",
-        case: "merge constructor T.(A | B) into M { k: K, x: Text, z: Text, q: Q } [check on ts.A]",
-        differences: &[
-            "Decls: +[auth] relation ts : T computed tag: Text = \"t\" index (n) in (A | B) index (n) in A index (n) in B index (z) in S key id generate sequence unique (n) in B unique (x) in A unique (z) in A",
-            "Decls: -[auth] relation ts : T computed tag: Text = \"t\" index (n) in (A | B) index (z) in S key id generate sequence unique (n) in B unique (x) in A unique (z) in A",
-            "Ids: Clause(Index, \"auth::ts\", \"index (n) in A\", None) is new",
-            "Ids: Clause(Index, \"auth::ts\", \"index (n) in B\", None) is new",
-            "Ids: Clause(Index, \"auth::ts\", \"index (z) in S\", None) keeps no id",
-        ],
-        tickets: &[
-            "merge-revert-restates-listed-scope",
-            "merge-revert-with-check-renews-kept-index",
-        ],
-    },
-    Known {
-        kind: "Merge",
         case: "merge constructor T.(A | B) into M { k: K, x: Text, z: Text, q: Q } [default A.x kept]",
         differences: &["Unapplied: `A` is not a constructor of `T`"],
         tickets: &[REFUSED_ON_REPLACED],
-    },
-    Known {
-        kind: "MoveField",
-        case: "move field T.n to T.(A | B)",
-        differences: &[
-            "Decls: +[auth] type T { id: Key ts, o: Text, h: Key us, n: Text } = A { x: Text, z: Text, q: Q } | B { x: Text, z: Text, q: Q } | C { z: Text, y: Text }",
-            "Decls: +[auth] type T { id: Key ts, o: Text, h: Key us, n: Text } = A { x: Text, z: Text, q: Q } | B { x: Text, z: Text, q: Q } | C { z: Text, y: Text } | D { w: Text }",
-            "Decls: -[auth] type T { id: Key ts, n: Text, o: Text, h: Key us } = A { x: Text, z: Text, q: Q } | B { x: Text, z: Text, q: Q } | C { z: Text, y: Text }",
-            "Decls: -[auth] type T { id: Key ts, n: Text, o: Text, h: Key us } = A { x: Text, z: Text, q: Q } | B { x: Text, z: Text, q: Q } | C { z: Text, y: Text } | D { w: Text }",
-        ],
-        tickets: &["move-down-revert-moves-header-field-last"],
-    },
-    Known {
-        kind: "Nest",
-        case: "nest constructor T.(A | B) into N { inner: Inner }",
-        differences: &[
-            "Decls: +[auth] relation ts : T computed tag: Text = \"t\" index (n) in (A | B) key id generate sequence unique (n) in (A | B) unique (x) in A unique (z) in A",
-            "Decls: -[auth] relation ts : T computed tag: Text = \"t\" index (n) in (A | B) key id generate sequence unique (n) in B unique (x) in A unique (z) in A",
-            "Ids: Clause(Index, \"auth::ts\", \"unique (n) in (A | B)\", None) is new",
-            "Ids: Clause(Index, \"auth::ts\", \"unique (n) in B\", None) is gone",
-        ],
-        tickets: &["nest-revert-widens-unique"],
     },
     Known {
         kind: "Nest",
@@ -1312,41 +1611,6 @@ const KNOWN: &[Known] = &[
         case: "nest constructor T.(A | B) into N { inner: Inner } [default A.x kept]",
         differences: &["Unapplied: `A` is not a constructor of `T`"],
         tickets: &[REFUSED_ON_REPLACED],
-    },
-    Known {
-        kind: "RemoveConstructor",
-        case: "remove constructor T.C",
-        differences: &[
-            "Decls: +[auth] set R of ts = A | B",
-            "Decls: -[auth] set R of ts = A | B | C",
-        ],
-        tickets: &["operators-change-clause-coverage"],
-    },
-    Known {
-        kind: "Split",
-        case: "split constructor T.A into A1 { x: Text, z: Text } | A2 { x: Text, z: Text }",
-        differences: &[
-            "Decls: +[auth] relation ts : T computed tag: Text = \"t\" index (n) in (A | B) index (z) in S key id generate sequence unique (n) in B unique (q, x) in A unique (q, z) in A",
-            "Decls: -[auth] relation ts : T computed tag: Text = \"t\" index (n) in (A | B) index (z) in S key id generate sequence unique (n) in B unique (x) in A unique (z) in A",
-            "Ids: Clause(Index, \"auth::ts\", \"unique (q, x) in A\", None) is new",
-            "Ids: Clause(Index, \"auth::ts\", \"unique (q, z) in A\", None) is new",
-            "Ids: Clause(Index, \"auth::ts\", \"unique (x) in A\", None) is gone",
-            "Ids: Clause(Index, \"auth::ts\", \"unique (z) in A\", None) is gone",
-        ],
-        tickets: &["split-revert-adds-discriminator"],
-    },
-    Known {
-        kind: "Split",
-        case: "split constructor T.A into A1 { x: Text, z: Text } | A2 { x: Text, z: Text } [check on ts.A]",
-        differences: &[
-            "Decls: +[auth] relation ts : T computed tag: Text = \"t\" index (n) in (A | B) index (z) in S key id generate sequence unique (n) in B unique (q, x) in A unique (q, z) in A",
-            "Decls: -[auth] relation ts : T computed tag: Text = \"t\" index (n) in (A | B) index (z) in S key id generate sequence unique (n) in B unique (x) in A unique (z) in A",
-            "Ids: Clause(Index, \"auth::ts\", \"unique (q, x) in A\", None) is new",
-            "Ids: Clause(Index, \"auth::ts\", \"unique (q, z) in A\", None) is new",
-            "Ids: Clause(Index, \"auth::ts\", \"unique (x) in A\", None) is gone",
-            "Ids: Clause(Index, \"auth::ts\", \"unique (z) in A\", None) is gone",
-        ],
-        tickets: &["split-revert-adds-discriminator"],
     },
     Known {
         kind: "Split",
@@ -1435,6 +1699,8 @@ impl Found {
         self.reached
             .extend(kinds.iter().copied().filter(|k| !UNINVERTED.contains(k)));
         let number = mid.log.last().expect("the case is logged").number;
+        let base = was.clone();
+        let cased = mid.clone();
         let (mid, target) = match (&case.then, &case.expect) {
             (None, _) => (mid, was),
             (Some(then), expect) => {
@@ -1471,7 +1737,7 @@ impl Found {
                 self.stated.push(format!("{what}: {reason}"));
                 Vec::new()
             }
-            (Ok(now), None) => differences(&target, &mid, &now),
+            (Ok(now), None) => differences(&target, &mid, &now, [&base, &cased]),
             (Err(e), None) => e.into_iter().map(|e| (Aspect::Refused, e)).collect(),
         };
         self.record(case, bits, kinds, diffs);
@@ -1539,7 +1805,7 @@ fn unknown(name: &str, o: &Outcome, every_shape: bool) -> Option<String> {
 }
 
 /// The cases each shape runs with no bit set, and those the `declared` and `granted` bits add.
-const CASES: (usize, usize, usize) = (132, 2, 5);
+const CASES: (usize, usize, usize) = (160, 2, 5);
 
 /// The cases of each shape whose revert is refused for a reason the spec states.
 const REFUSED: usize = 15;

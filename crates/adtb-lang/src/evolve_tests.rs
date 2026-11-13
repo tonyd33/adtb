@@ -2537,6 +2537,25 @@ split constructor Place.Location into Region { name: Text } | Settlement { name:
     | Location { name, scale: Town } -> Settlement { name: name }";
 
 #[test]
+fn revert_of_a_constructor_removal_puts_its_arms_back_where_they_were() {
+    let s = source(
+        "module auth
+type P { id: Key ps } = A { x: Text } | B { x: Text } | C { x: Text }
+relation ps : P key id generate sequence
+constraint pc = from p in ps where match p
+  | A a -> a.x == \"\"
+  | C c -> c.x == \"\"
+  | B b -> false
+  select p",
+    );
+    let was = flat(&decl(&s, "constraint", "pc"));
+    let s = applies(&s, "module auth\ndeprecate ps.C");
+    let s = applies(&s, "module auth\nremove constructor P.C");
+    let s = applies(&s, "module auth\nrevert 0002");
+    assert_eq!(was, flat(&decl(&s, "constraint", "pc")));
+}
+
+#[test]
 fn revert_of_a_split_by_a_discriminator_named_otherwise_merges_back() {
     let s = applies(&source(SCALES), SCALED);
     let s = applies(&s, "module auth\nrevert 0001");
@@ -2546,7 +2565,10 @@ fn revert_of_a_split_by_a_discriminator_named_otherwise_merges_back() {
         "{t}"
     );
     let r = flat(&decl(&s, "relation", "places"));
-    assert!(r.contains("unique (scale, name) in Location"), "{r}");
+    assert_eq!(
+        "relation places : Place key id generate sequence unique (name) in Location",
+        r
+    );
     assert_eq!(
         "check named on places.Location (scalar_len(name) > 0)",
         flat(&decl(&s, "check", "named"))

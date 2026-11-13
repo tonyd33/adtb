@@ -162,7 +162,7 @@ impl DeclOf {
 /// The id each object an inverse created again takes, by the space and id it had.
 pub(in crate::evolve) type Recreated = BTreeMap<(Space, u64), u64>;
 
-fn again_id(again: &Recreated, space: Space, id: u64) -> u64 {
+pub(super) fn again_id(again: &Recreated, space: Space, id: u64) -> u64 {
     again.get(&(space, id)).copied().unwrap_or(id)
 }
 
@@ -378,6 +378,9 @@ impl Inverse {
                     of,
                 }
             }
+            inv @ (Inverse::Restructure { .. } | Inverse::Unadd { .. } | Inverse::Readd { .. }) => {
+                inv.mapped_structural(again)
+            }
             Inverse::Apply { text, of } => Inverse::Apply {
                 text: text.mapped(again),
                 of,
@@ -432,7 +435,6 @@ impl Inverse {
                     .collect(),
                 of,
             },
-            other => other,
         }
     }
 }

@@ -69,13 +69,31 @@ fn unresolved(span: Span, ds: &[Diag]) -> Vec<Diag> {
         .collect()
 }
 
+impl<'a> Inverting<'a> {
+    pub(super) fn before(&self) -> &'a Source {
+        self.before
+    }
+
+    pub(super) fn after(&self) -> &'a Source {
+        self.after
+    }
+
+    pub(super) fn op(&self) -> &'a Operator {
+        self.op
+    }
+
+    pub(super) fn fills(&self) -> &'a [(ast::FieldPath, Fill)] {
+        self.fills
+    }
+}
+
 impl Inverting<'_> {
-    fn of(&self) -> String {
+    pub(super) fn of(&self) -> String {
         self.text(self.op.span)
     }
 
     /// Returns `range` of the migration's text, each name of an object in it held by its id.
-    fn op_text(&self, range: Range<usize>) -> R<Spelled> {
+    pub(super) fn op_text(&self, range: Range<usize>) -> R<Spelled> {
         let names = self
             .spelling
             .get_or_init(|| self.logged.spelling())
@@ -87,7 +105,7 @@ impl Inverting<'_> {
     }
 
     /// Returns the migration's text from `q` to `end`, `q` qualified by its module.
-    fn qualified(&self, q: &QName, end: usize) -> R<Spelled> {
+    pub(super) fn qualified(&self, q: &QName, end: usize) -> R<Spelled> {
         let mut out = match &q.module {
             Some(_) => Spelled::default(),
             None => Spelled::from(format!("{}::", self.logged.module)),
@@ -108,7 +126,7 @@ impl Inverting<'_> {
     /// Returns `range` of the text of declaration `i` of `before`, each name of an object in it
     /// held by its id, as `before` resolves it, else as the source at the start of the run does
     /// when it holds the same text and `before` does not build.
-    fn decl_range(&self, i: usize, range: Range<usize>) -> R<Spelled> {
+    pub(super) fn decl_range(&self, i: usize, range: Range<usize>) -> R<Spelled> {
         let d = &self.before.decls[i];
         let names = match self.before.names() {
             Ok(mut all) => all.swap_remove(i),
@@ -180,7 +198,7 @@ impl Inverting<'_> {
     }
 
     /// Returns the whole text of declaration `i` of `before` as [`Inverting::decl_range`] does.
-    fn decl(&self, i: usize) -> R<Spelled> {
+    pub(super) fn decl(&self, i: usize) -> R<Spelled> {
         self.decl_range(i, 0..self.before.decls[i].text.len())
     }
 
@@ -224,7 +242,7 @@ impl Inverting<'_> {
     }
 
     /// Returns the module `n` names, else the migration's.
-    fn module_of(&self, n: &QName) -> String {
+    pub(super) fn module_of(&self, n: &QName) -> String {
         n.module
             .as_ref()
             .map_or(self.logged.module.clone(), |m| m.text.clone())
@@ -276,7 +294,11 @@ impl Inverting<'_> {
 
     /// Returns the step setting back the write state of each constructor `before` holds whose
     /// key `pick` takes, of a constructor relation when `relation`.
-    fn states_back(&self, relation: bool, pick: impl Fn(&StateKey) -> bool) -> Option<Inverse> {
+    pub(super) fn states_back(
+        &self,
+        relation: bool,
+        pick: impl Fn(&StateKey) -> bool,
+    ) -> Option<Inverse> {
         let held = if relation {
             &self.before.states
         } else {
@@ -292,10 +314,6 @@ impl Inverting<'_> {
             of: self.text(self.op.span),
         })
     }
-}
-
-fn ops(s: String) -> R<Vec<Inverse>> {
-    Ok(vec![Inverse::Ops(s.into())])
 }
 
 /// Returns the one step applying `text` as the inverse of operator text `of`.
@@ -331,7 +349,7 @@ fn field_named(schema: &Schema, def: TypeId, p: &ast::FieldPath) -> Option<Field
 
 impl Cx<'_> {
     /// Returns the one step `inv`, refusing when the log does not hold what the operator names.
-    fn by_id(&self, inv: Option<Inverse>) -> R<Vec<Inverse>> {
+    pub(super) fn by_id(&self, inv: Option<Inverse>) -> R<Vec<Inverse>> {
         inv.map(|i| vec![i]).ok_or_else(|| {
             vec![Diag::new(
                 self.span,
@@ -574,24 +592,7 @@ impl Cx<'_> {
             before, logged, op, ..
         } = *at;
         match &op.kind {
-            OperatorKind::AddConstructor { path, .. } => {
-                let record = before
-                    .find("type", &at.module_of(&path.ty), &path.ty.name.text)
-                    .filter(|&i| {
-                        matches!(
-                            before.parsed(i),
-                            Some(Decl::Type(ast::TypeDecl {
-                                body: ast::TypeBody::Record(_),
-                                ..
-                            }))
-                        )
-                    })
-                    .map(|i| before.decls[i].text.clone());
-                Ok(vec![Inverse::Unadd {
-                    path: path.clone(),
-                    record,
-                }])
-            }
+            OperatorKind::AddConstructor { path, .. } => self.added_ctor_inverse(at, path),
             OperatorKind::RemoveConstructor(path) => self.removed_ctor_inverse(at, path),
             OperatorKind::RenameConstructor(path, _) => self.by_id(at.renamed(
                 |s| {
@@ -628,16 +629,7 @@ impl Cx<'_> {
                 sel,
                 into,
                 clauses,
-            } => {
-                let m = at.module_of(ty);
-                let mut s = format!(
-                    "unnest constructor {m}::{}.{}",
-                    ty.name.text, into.name.text
-                );
-                let names: Vec<String> = sel_idents(sel).iter().map(|x| x.text.clone()).collect();
-                s.push_str(&self.restored_arms(before, clauses, &names));
-                ops(s)
-            }
+            } => self.nest_inverse(at, ty, sel, into, clauses),
             OperatorKind::UnnestConstructor(path, clauses) => {
                 self.unnest_inverse(at, path, clauses)
             }
@@ -654,7 +646,7 @@ impl Cx<'_> {
                         _ => None,
                     })
                     .collect();
-                self.split_inverse(before, logged, path, into, arms, &arms_of)
+                self.split_inverse(at, path, into, arms, &arms_of)
             }
             OperatorKind::MergeConstructor {
                 ty,
@@ -662,7 +654,7 @@ impl Cx<'_> {
                 into,
                 arms,
                 clauses,
-            } => self.merge_inverse(before, ty, sel, into, arms.as_deref(), clauses),
+            } => self.merge_inverse(at, ty, sel, into, arms.as_deref(), clauses),
             _ => unreachable!("ctor_inverse is given a constructor operator"),
         }
     }
@@ -689,11 +681,17 @@ impl Cx<'_> {
                 apply(text, at.of())
             }
             OperatorKind::DropField(path) => {
-                let Some(fill) = self.fill_for(fills, &path_text(path)) else {
+                let key = self.named_now(
+                    before,
+                    &at.module_of(&path.ty),
+                    &path.ty.name.text,
+                    path.ctor.as_ref().map(|c| c.text.as_str()),
+                    &path.field.text,
+                );
+                let Some(fill) = self.fill_for(fills, &key) else {
                     return self.err(format!(
-                        "the inverse of `drop field {}` needs a fill: `fill {} = e`",
+                        "the inverse of `drop field {}` needs a fill: `fill {key} = e`",
                         path_text(path),
-                        path_text(path)
                     ));
                 };
                 let (i, f) = at.field_decl(path)?;
@@ -726,50 +724,7 @@ impl Cx<'_> {
                 },
                 &path.field,
             )),
-            OperatorKind::MoveField { path, to, sel, .. } => {
-                let m = at.module_of(&path.ty);
-                match (&path.ctor, sel) {
-                    (Some(c), None) => Ok(vec![
-                        Inverse::Ops(
-                            format!(
-                                "move field {m}::{}.{} to {m}::{}.{}",
-                                to.name.text, path.field.text, to.name.text, c.text
-                            )
-                            .into(),
-                        ),
-                        self.reorder(before, path, Some(c.text.clone()), at.of())?,
-                    ]),
-                    (None, Some(sel)) => {
-                        let names: Vec<String> =
-                            sel_idents(sel).iter().map(|x| x.text.clone()).collect();
-                        let first = &names[0];
-                        let key = format!("{}.{first}.{}", path.ty.name.text, path.field.text);
-                        let schema = before
-                            .schema()
-                            .map_err(|_| vec![Diag::new(self.span, "the log does not replay")])?;
-                        let def = self.type_id(&schema, &path.ty)?;
-                        let mut s = Written::from(format!(
-                            "move field {m}::{}.{first}.{} to {m}::{}",
-                            path.ty.name.text, path.field.text, path.ty.name.text
-                        ));
-                        if schema.ty(def).ctors().len() > names.len() {
-                            let Some(fill) = self.fill_for(fills, &key) else {
-                                return self.err(format!(
-                                    "the inverse of moving `{}` down needs a fill: `fill {key} = e`",
-                                    path_text(path)
-                                ));
-                            };
-                            s.push(" fill ");
-                            s.append(fill);
-                        }
-                        Ok(vec![Inverse::MoveUp {
-                            text: s,
-                            from: names,
-                        }])
-                    }
-                    _ => Ok(Vec::new()),
-                }
-            }
+            OperatorKind::MoveField { path, sel, .. } => self.move_inverse(at, path, sel.as_ref()),
             _ => unreachable!("field_inverse is given a field operator"),
         }
     }
@@ -952,130 +907,5 @@ impl Cx<'_> {
         text.push(" = ");
         text.append(at.decl_range(i, before.local(i, e))?);
         apply(text, at.of())
-    }
-
-    fn removed_ctor_inverse(&self, at: &Inverting, path: &ast::CtorPath) -> R<Vec<Inverse>> {
-        let Inverting { before, .. } = *at;
-        let m = at.module_of(&path.ty);
-        let Some(i) = before.find("type", &m, &path.ty.name.text) else {
-            return self.err("the log does not hold the removed constructor");
-        };
-        let Some(Decl::Type(t)) = before.parsed(i) else {
-            return self.err("the log does not hold the removed constructor");
-        };
-        let h = header(&m).len();
-        let ctors = ctor_extents(&before.decls[i].text, h, &t);
-        let Some(k) = ctors.iter().position(|c| c.0 == path.ctor.text) else {
-            return self.err("the log does not hold the removed constructor");
-        };
-        let ctext = before.decls[i].text[ctors[k].1.start..ctors[k].2].to_string();
-        let after = (k > 0).then(|| ctors[k - 1].0.clone());
-        let schema = before
-            .schema()
-            .map_err(|_| vec![Diag::new(self.span, "the log does not replay")])?;
-        let refs = check::schema_refs(&schema);
-        let mut arms = Vec::new();
-        for j in 0..before.decls.len() {
-            let Some(d @ Decl::Constraint(_)) = before.parsed(j) else {
-                continue;
-            };
-            let jh = header(&before.decls[j].module).len();
-            let mut texts = Vec::new();
-            for (f, span, r) in &refs {
-                if f.0 as usize != j || !matches!(r, Ref::Match(_)) {
-                    continue;
-                }
-                for a in match_arms(&d, *span).unwrap_or_default() {
-                    if let Some(ast::Pattern {
-                        kind: ast::PatternKind::Ctor { path: p, ctor, .. },
-                        ..
-                    }) = a.patterns.first()
-                        && ctor.as_ref().unwrap_or(&p.name).text == path.ctor.text
-                    {
-                        let start = a.patterns[0].span.start as usize - jh;
-                        let end = a.body.span.end as usize - jh;
-                        texts.push(before.decls[j].text[start..end].to_string());
-                    }
-                }
-            }
-            if !texts.is_empty() {
-                let (_, name) = key_of(&d);
-                arms.push((name, texts));
-            }
-        }
-        let mut out = vec![Inverse::Readd {
-            ty: path.ty.clone(),
-            text: ctext,
-            after,
-            arms,
-        }];
-        let def = type_named(&schema, &m, &path.ty.name.text);
-        let of_type: BTreeSet<(String, String)> = schema
-            .relations
-            .iter()
-            .filter(|r| Some(r.elem_def) == def)
-            .map(|r| (schema.module(r.module).name.clone(), r.name.clone()))
-            .collect();
-        let held = at.states_back(true, |k| {
-            k.2 == path.ctor.text && of_type.contains(&(k.0.clone(), k.1.clone()))
-        });
-        out.extend(self.by_id(held)?);
-        let held = at.states_back(false, |k| {
-            k.0 == m && k.1 == path.ty.name.text && k.2 == path.ctor.text
-        });
-        out.extend(self.by_id(held)?);
-        Ok(out)
-    }
-
-    fn unnest_inverse(
-        &self,
-        at: &Inverting,
-        path: &ast::CtorPath,
-        clauses: &[ast::ArmClause],
-    ) -> R<Vec<Inverse>> {
-        let Inverting { before, .. } = *at;
-        let m = at.module_of(&path.ty);
-        let Some(i) = before.find("type", &m, &path.ty.name.text) else {
-            return self.err("the log does not hold the unnested constructor");
-        };
-        let Some(Decl::Type(t)) = before.parsed(i) else {
-            return self.err("the log does not hold the unnested constructor");
-        };
-        let h = header(&m).len();
-        let ctors = ctor_extents(&before.decls[i].text, h, &t);
-        let Some(k) = ctors.iter().position(|c| c.0 == path.ctor.text) else {
-            return self.err("the log does not hold the unnested constructor");
-        };
-        let ctext = before.decls[i].text[ctors[k].1.start..ctors[k].2].to_string();
-        let schema = before
-            .schema()
-            .map_err(|_| vec![Diag::new(self.span, "the log does not replay")])?;
-        let def = schema
-            .module_named(&m)
-            .and_then(|mid| schema.module(mid).types.get(&path.ty.name.text).copied());
-        let products: Vec<String> = def
-            .and_then(|d| {
-                let td = schema.ty(d);
-                let c = td.ctor_index(&path.ctor.text)?;
-                match &td.ctors()[c as usize].fields.first()?.ty {
-                    Ty::Data { def: sd, .. } => Some(
-                        schema
-                            .ty(*sd)
-                            .ctors()
-                            .iter()
-                            .map(|x| x.name.clone())
-                            .collect(),
-                    ),
-                    _ => None,
-                }
-            })
-            .unwrap_or_default();
-        let mut s = format!(
-            "nest constructor {m}::{}.({}) into {ctext}",
-            path.ty.name.text,
-            products.join(" | ")
-        );
-        s.push_str(&self.restored_arms(before, clauses, std::slice::from_ref(&path.ctor.text)));
-        ops(s)
     }
 }

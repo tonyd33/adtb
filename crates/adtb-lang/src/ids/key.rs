@@ -1,5 +1,5 @@
 use super::Space;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The kind of object an [`ObjectKey`] names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -175,5 +175,24 @@ impl ObjectKey {
             parts: self.parts.iter().map(part).collect(),
             nth: self.nth,
         }
+    }
+}
+
+/// Remove key `gone` from `ids`, each later key of its kind, owner and parts taking the ordinal
+/// before it.
+pub fn forget(ids: &mut BTreeMap<ObjectKey, u64>, gone: &ObjectKey) {
+    if ids.remove(gone).is_none() {
+        return;
+    }
+    let first = gone.clone().nth(0);
+    let later: Vec<ObjectKey> = ids
+        .keys()
+        .filter(|k| k.nth > gone.nth && (*k).clone().nth(0) == first)
+        .cloned()
+        .collect();
+    for k in later {
+        let held = ids.remove(&k).expect("a key of the map");
+        let n = k.nth - 1;
+        ids.insert(k.nth(n), held);
     }
 }

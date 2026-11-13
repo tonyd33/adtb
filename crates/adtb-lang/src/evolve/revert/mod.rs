@@ -4,11 +4,13 @@ use crate::ids::{KeyKind, Owner, Space};
 mod by_id;
 mod inverse;
 mod spelled;
+mod structural;
 
 pub(super) use by_id::Recreated;
-use by_id::{DeclOf, NamedId, StateOf, dropped, holding, recreate, removed};
+use by_id::{DeclOf, NamedId, StateOf, again_id, dropped, holding, recreate, removed};
 use inverse::Run;
-use spelled::{Late, Spelled, late};
+use spelled::{Late, Spelled, late, spellings};
+use structural::Undo;
 
 /// The steps of the inverse of a run of operators, each run ending at a source that builds, with
 /// each object the run removed, by its key before the run, and its id.
@@ -45,36 +47,43 @@ pub(super) enum Inverse {
         members: Vec<CatCtorId>,
         of: String,
     },
-    /// Operators of a structural operator's inverse, as source text, applied in the migration's
-    /// module.
-    Ops(Written),
+    /// Drop each unique and index of `drops`, then apply operator `op` as `how` says, setting
+    /// each check of `checks` to its text in the same step, then the operators of `adds`, each a
+    /// text whose names are held by id applied in the migration's module; `of` is the text of the
+    /// operator inverted.
+    Restructure {
+        drops: Vec<CatIndexId>,
+        op: Spelled,
+        adds: Spelled,
+        how: Undo,
+        checks: Vec<(CatConstraintId, Spelled)>,
+        of: String,
+    },
     /// Apply operators, as a text whose names are held by id, in the migration's module; `of` is
     /// the text of the operator inverted.
     Apply { text: Spelled, of: String },
-    /// A merge, as source text, putting back a split: its arms' fixed values tell its
-    /// constructors apart.
-    Derived(Written),
-    /// A split, as source text, putting back a merge, and the texts of the checks it carried, by
-    /// module and name, set in the same step.
-    Unmerge {
-        split: Written,
-        checks: Vec<(String, String, String)>,
-    },
-    /// A move to the header, as source text naming the first of `from`, of the field of every
-    /// constructor of `from`.
-    MoveUp { text: Written, from: Vec<String> },
-    /// Remove the constructor an `add constructor` added, with its arms, then set the type back
-    /// to `record`, the text of the record it was.
+    /// Remove the constructor of an id, with its arms; with `record`, then set its type, when a
+    /// sum of one constructor named after it, to a record of its fields, those of `record` in
+    /// that order first; `of` is the text of the operator inverted.
     Unadd {
-        path: ast::CtorPath,
-        record: Option<String>,
+        ctor: CatCtorId,
+        record: Option<Vec<CatFieldId>>,
+        of: String,
     },
-    /// Puts back a removed constructor, as written, after the constructor named, else first.
+    /// Put back constructor `name` of a type as `text`, after the constructor of `after`, else
+    /// first, as a member of each set of `joins`, with its arms in each constraint of `arms`, in
+    /// the match over the type at the position among those of the constraint, after the arm over
+    /// the constructor beside them, else last, or first without one; `ctor` is the id it held,
+    /// which the arms name it by; `of` is the text of the operator inverted.
     Readd {
-        ty: QName,
-        text: String,
-        after: Option<String>,
-        arms: Vec<(String, Vec<String>)>,
+        ty: CatTypeId,
+        ctor: CatCtorId,
+        name: String,
+        text: Spelled,
+        after: Option<CatCtorId>,
+        joins: Vec<CatSetId>,
+        arms: Vec<structural::PlacedArms>,
+        of: String,
     },
     /// Set write states back, `None` removing the state; `of` is the text of the operator
     /// inverted.
@@ -446,14 +455,11 @@ impl Cx<'_> {
             for inv in step {
                 let recorded = matches!(
                     inv,
-                    Inverse::Ops(_)
+                    Inverse::Restructure { .. }
                         | Inverse::Apply { .. }
                         | Inverse::Rename { .. }
                         | Inverse::DropSet { .. }
                         | Inverse::AddSet { .. }
-                        | Inverse::Derived(_)
-                        | Inverse::Unmerge { .. }
-                        | Inverse::MoveUp { .. }
                         | Inverse::Replay { .. }
                 );
                 self.undo(inv.mapped(&again), late)?;
@@ -484,6 +490,33 @@ impl Cx<'_> {
                     Written::concat(["match\n  | ".into(), self.copy_range(start..end)])
                 }
             })
+    }
+
+    /// Returns path `t.c.f` of module `m`, or `t.f` without `c`, each part that `src` holds an id
+    /// for spelled as the source names that object now, the others as written.
+    pub(super) fn named_now(
+        &self,
+        src: &Source,
+        m: &str,
+        t: &str,
+        c: Option<&str>,
+        f: &str,
+    ) -> String {
+        let now = spellings(self.src);
+        let named = |space: Space, id: Option<u64>, written: &str| {
+            id.and_then(|id| now.get(&(space, id)))
+                .map_or(written, |n| n)
+                .to_string()
+        };
+        let key = ObjectKey::named(KeyKind::Type, Owner::Module(m.to_string()), t);
+        let mut out = named(KeyKind::Type.space(), src.ids.get(&key).copied(), t);
+        if let Some(c) = c {
+            out.push('.');
+            out.push_str(&named(Space::Shared, src.ctor_key_id(m, t, c), c));
+        }
+        out.push('.');
+        out.push_str(&named(Space::Field, src.field_key_id(m, t, c, f), f));
+        out
     }
 
     /// The step that puts the fields of a part of `path`'s type back in the order `before` declares
@@ -543,453 +576,9 @@ impl Cx<'_> {
         })
     }
 
-    /// The text of constructor `c` of type `ty` as `before` declares it, with its field names.
-    pub(super) fn before_ctor(
-        &self,
-        before: &Source,
-        ty: &QName,
-        c: &str,
-    ) -> R<(String, Vec<String>)> {
-        let m = self.module_of(ty);
-        let missing = || {
-            vec![Diag::new(
-                self.span,
-                "the log does not hold the constructor",
-            )]
-        };
-        let i = before.find("type", &m, &ty.name.text).ok_or_else(missing)?;
-        let Some(Decl::Type(t)) = before.parsed(i) else {
-            return Err(missing());
-        };
-        let h = header(&m).len();
-        let ctors = ctor_extents(&before.decls[i].text, h, &t);
-        let k = ctors.iter().position(|x| x.0 == c).ok_or_else(missing)?;
-        let text = before.decls[i].text[ctors[k].1.start..ctors[k].2].to_string();
-        let fields = decl_fields(&t)
-            .into_iter()
-            .filter(|(x, _)| *x == Some(c))
-            .map(|(_, f)| f.name.text.clone())
-            .collect();
-        Ok((text, fields))
-    }
-
-    /// Returns the unique and index clauses of `before` whose scope lies within `ctors` and lists
-    /// one of them by name, as `in` clauses of an operator.
-    pub(super) fn before_clauses(
-        &self,
-        before: &Source,
-        ty: &QName,
-        ctors: &[String],
-    ) -> Vec<String> {
-        let Ok(schema) = before.schema() else {
-            return Vec::new();
-        };
-        let Ok(def) = self.type_id(&schema, ty) else {
-            return Vec::new();
-        };
-        let td = schema.ty(def);
-        let ix: Vec<u32> = ctors.iter().filter_map(|c| td.ctor_index(c)).collect();
-        let mut out = Vec::new();
-        let cx = Cx {
-            src: &mut before.clone(),
-            module: self.module.clone(),
-            text: self.text,
-            span: self.span,
-            noted: None,
-            copying: false,
-            steps: None,
-        };
-        let Ok(clauses) = cx.scoped_clauses(&schema, def) else {
-            return Vec::new();
-        };
-        for cl in clauses {
-            let Some(scope) = &cl.scope else { continue };
-            if cl.rescoped(&ix, &|_| Vec::new()).is_none() {
-                continue;
-            }
-            if scope.iter().all(|c| ix.contains(c)) {
-                let names: Vec<String> = scope
-                    .iter()
-                    .map(|&c| td.ctors()[c as usize].name.clone())
-                    .collect();
-                out.push(format!(
-                    "\n  {} ({}) in {}",
-                    cl.kind,
-                    cl.fields.join(", "),
-                    sel_text(&names)
-                ));
-            }
-        }
-        out
-    }
-
-    pub(super) fn split_inverse(
-        &self,
-        before: &Source,
-        logged: &Logged,
-        path: &ast::CtorPath,
-        into: &[ast::CtorDef],
-        arms: &[ast::Arm],
-        clauses: &[ast::ArmClause],
-    ) -> R<Vec<Inverse>> {
-        let lossy = || {
-            vec![Diag::new(
-                self.span,
-                format!(
-                    "the split of `{}` routes rows by a routing that is not invertible, so it has no inverse",
-                    path.ctor.text
-                ),
-            )]
-        };
-        let reached: BTreeSet<&str> = arms
-            .iter()
-            .filter_map(|a| match &a.body.kind {
-                ast::ExprKind::Ctor { path, ctor, .. } => {
-                    Some(ctor.as_ref().unwrap_or(&path.name).text.as_str())
-                }
-                _ => None,
-            })
-            .collect();
-        if let Some(d) = into
-            .iter()
-            .find(|d| !reached.contains(d.name.text.as_str()))
-        {
-            return self.err(format!(
-                "the split of `{}` routes no row to `{}`, so it is lossy and has no inverse",
-                path.ctor.text, d.name.text
-            ));
-        }
-        let (c_text, c_fields) = self.before_ctor(before, &path.ty, &path.ctor.text)?;
-        let text = |s: Span| logged.text[s.range()].to_string();
-        let mut inverse_arms = Vec::new();
-        for a in arms {
-            let Some(ast::Pattern {
-                kind: ast::PatternKind::Ctor { payload, .. },
-                ..
-            }) = a.patterns.first()
-            else {
-                return Err(lossy());
-            };
-            let ast::ExprKind::Ctor {
-                path: bp,
-                ctor: bc,
-                record,
-            } = &a.body.kind
-            else {
-                return Err(lossy());
-            };
-            let product = bc.as_ref().unwrap_or(&bp.name).text.clone();
-            let given: Vec<(String, &Expr)> = match record {
-                Some(ast::RecordExpr::Fields(fs, _)) => {
-                    fs.iter().map(|(g, e)| (g.text.clone(), e)).collect()
-                }
-                None => Vec::new(),
-                _ => return Err(lossy()),
-            };
-            let mut vars: BTreeMap<String, String> = BTreeMap::new();
-            let mut fixed: BTreeMap<String, String> = BTreeMap::new();
-            let mut binder = None;
-            match payload {
-                Some(ast::Payload::Record(fs)) => {
-                    for f in fs {
-                        match &f.pattern {
-                            None => {
-                                vars.insert(f.field.text.clone(), f.field.text.clone());
-                            }
-                            Some(ast::Pattern {
-                                kind: ast::PatternKind::Bind(x),
-                                ..
-                            }) => {
-                                vars.insert(f.field.text.clone(), x.text.clone());
-                            }
-                            Some(p) => {
-                                fixed.insert(f.field.text.clone(), text(p.span));
-                            }
-                        }
-                    }
-                }
-                Some(ast::Payload::Bind(x)) => binder = Some(x.text.clone()),
-                _ => {}
-            }
-            let mut out = Vec::new();
-            for f in &c_fields {
-                if let Some(v) = fixed.get(f) {
-                    out.push(format!("{f}: {v}"));
-                    continue;
-                }
-                let target = given.iter().find_map(|(g, e)| match &e.kind {
-                    ast::ExprKind::Name(q) if vars.get(f) == Some(&q.name.text) => Some(g.clone()),
-                    ast::ExprKind::Field(x, ff) if ff.text == *f => match &x.kind {
-                        ast::ExprKind::Name(q) if Some(&q.name.text) == binder.as_ref() => {
-                            Some(g.clone())
-                        }
-                        _ => None,
-                    },
-                    _ => None,
-                });
-                match target {
-                    Some(g) => out.push(format!("{f}: r.{g}")),
-                    None => return Err(lossy()),
-                }
-            }
-            inverse_arms.push(format!(
-                "\n    | {product} r -> {} {{ {} }}",
-                path.ctor.text,
-                out.join(", ")
-            ));
-        }
-        let m = self.module_of(&path.ty);
-        let products: Vec<String> = into.iter().map(|d| d.name.text.clone()).collect();
-        let mut s = format!(
-            "merge constructor {m}::{}.({}) into {c_text}\n  by match{}",
-            path.ty.name.text,
-            products.join(" | "),
-            inverse_arms.concat()
-        );
-        s.push_str(&self.restored_arms(before, clauses, std::slice::from_ref(&path.ctor.text)));
-        Ok(vec![Inverse::Derived(s.into())])
-    }
-
-    pub(super) fn merge_inverse(
-        &self,
-        before: &Source,
-        ty: &QName,
-        sel: &CtorSel,
-        into: &ast::CtorDef,
-        arms: Option<&[ast::Arm]>,
-        clauses: &[ast::ArmClause],
-    ) -> R<Vec<Inverse>> {
-        let lossy = || {
-            vec![Diag::new(
-                self.span,
-                format!(
-                    "the merge into `{}` computes or drops fields, so it has no inverse",
-                    into.name.text
-                ),
-            )]
-        };
-        let sources: Vec<String> = sel_idents(sel).iter().map(|x| x.text.clone()).collect();
-        let schema = before
-            .schema()
-            .map_err(|_| vec![Diag::new(self.span, "the log does not replay")])?;
-        let module = schema
-            .module_named(&self.module_of(ty))
-            .unwrap_or(schema::PRELUDE);
-        let wanted: BTreeSet<&str> = sources.iter().map(String::as_str).collect();
-        let fields = into.record.as_deref().unwrap_or_default();
-        let disc = fields
-            .iter()
-            .find(|f| match &f.ty.kind {
-                ast::TypeKind::Named {
-                    name,
-                    sel: None,
-                    args,
-                } if args.is_empty() => match schema.lookup_type(module, name) {
-                    Ok(schema::TypeName::Decl(d)) => {
-                        let st = schema.ty(d);
-                        st.ctors().iter().all(|c| c.fields.is_empty())
-                            && st
-                                .ctors()
-                                .iter()
-                                .map(|c| c.name.as_str())
-                                .collect::<BTreeSet<_>>()
-                                == wanted
-                    }
-                    _ => false,
-                },
-                _ => false,
-            })
-            .map(|f| f.name.text.clone())
-            .ok_or_else(lossy)?;
-        let m_fields: Vec<String> = fields
-            .iter()
-            .map(|f| f.name.text.clone())
-            .filter(|f| *f != disc)
-            .collect();
-        let mut out_arms = Vec::new();
-        let mut products = Vec::new();
-        for src in &sources {
-            let (text, src_fields) = self.before_ctor(before, ty, src)?;
-            products.push(text);
-            let mut given = Vec::new();
-            for f in &src_fields {
-                let g = match arms {
-                    None => m_fields.contains(f).then(|| f.clone()),
-                    Some(arms) => arms.iter().find_map(|a| {
-                        let Some(ast::Pattern {
-                            kind:
-                                ast::PatternKind::Ctor {
-                                    path,
-                                    ctor,
-                                    payload,
-                                },
-                            ..
-                        }) = a.patterns.first()
-                        else {
-                            return None;
-                        };
-                        if ctor.as_ref().unwrap_or(&path.name).text != *src {
-                            return None;
-                        }
-                        let binder = match payload {
-                            Some(ast::Payload::Bind(x)) => Some(x.text.clone()),
-                            _ => None,
-                        };
-                        let bound: BTreeMap<String, String> = match payload {
-                            Some(ast::Payload::Record(fs)) => fs
-                                .iter()
-                                .filter_map(|p| match &p.pattern {
-                                    None => Some((p.field.text.clone(), p.field.text.clone())),
-                                    Some(ast::Pattern {
-                                        kind: ast::PatternKind::Bind(x),
-                                        ..
-                                    }) => Some((x.text.clone(), p.field.text.clone())),
-                                    _ => None,
-                                })
-                                .collect(),
-                            _ => BTreeMap::new(),
-                        };
-                        let ast::ExprKind::Ctor {
-                            record: Some(ast::RecordExpr::Fields(fs, _)),
-                            ..
-                        } = &a.body.kind
-                        else {
-                            return None;
-                        };
-                        fs.iter().find_map(|(g, e)| match &e.kind {
-                            ast::ExprKind::Field(x, ff) if ff.text == *f => match &x.kind {
-                                ast::ExprKind::Name(q) if Some(&q.name.text) == binder.as_ref() => {
-                                    Some(g.text.clone())
-                                }
-                                _ => None,
-                            },
-                            ast::ExprKind::Name(q) if bound.get(&q.name.text) == Some(f) => {
-                                Some(g.text.clone())
-                            }
-                            _ => None,
-                        })
-                    }),
-                };
-                match g {
-                    Some(g) => given.push(format!("{f}: r.{g}")),
-                    None => return Err(lossy()),
-                }
-            }
-            let bound: Vec<String> = std::iter::once(format!("{disc}: {src}"))
-                .chain(m_fields.iter().cloned())
-                .collect();
-            out_arms.push(format!(
-                "\n    | {} {{ {} }} -> {src} {{ {} }}",
-                into.name.text,
-                bound.join(", "),
-                given
-                    .iter()
-                    .map(|g| g.replace("r.", ""))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-        let m = self.module_of(ty);
-        let mut s = format!(
-            "split constructor {m}::{}.{} into {}\n  by match{}",
-            ty.name.text,
-            into.name.text,
-            products.join(" | "),
-            out_arms.concat()
-        );
-        for c in self.before_clauses(before, ty, &sources) {
-            s.push_str(&c);
-        }
-        s.push_str(&self.restored_arms(before, clauses, &sources));
-        Ok(vec![Inverse::Unmerge {
-            split: s.into(),
-            checks: self.carried_checks_back(before, &schema, ty, &sources)?,
-        }])
-    }
-
-    /// Returns each check over some of `sources` of type `ty`, by module and name, with its text in
-    /// `before`, whose schema is `schema`.
-    fn carried_checks_back(
-        &self,
-        before: &Source,
-        schema: &Schema,
-        ty: &QName,
-        sources: &[String],
-    ) -> R<Vec<(String, String, String)>> {
-        let def = self.type_id(schema, ty)?;
-        let td = schema.ty(def);
-        let src_ix: Vec<u32> = sources.iter().filter_map(|s| td.ctor_index(s)).collect();
-        let rels: Vec<RelId> = Self::relations_of(schema, def)
-            .into_iter()
-            .map(|(r, _, _)| r)
-            .collect();
-        Ok(schema
-            .checks
-            .iter()
-            .filter(|chk| {
-                rels.contains(&chk.relation)
-                    && chk
-                        .ctors
-                        .as_ref()
-                        .is_some_and(|cs| cs.iter().any(|c| src_ix.contains(c)))
-            })
-            .map(|chk| {
-                let d = &before.decls[chk.file.0 as usize];
-                (d.module.clone(), chk.name.clone(), d.text.clone())
-            })
-            .collect())
-    }
-
-    /// The `arm` clauses that put back, for each dependent `clauses` name, its arms over `ctors` in `before`.
-    pub(super) fn restored_arms(
-        &self,
-        before: &Source,
-        clauses: &[ast::ArmClause],
-        ctors: &[String],
-    ) -> String {
-        let mut out = String::new();
-        let mut seen = BTreeSet::new();
-        for a in clauses {
-            let target = a.target.name.text.clone();
-            if !seen.insert(target.clone()) {
-                continue;
-            }
-            for kind in ["fn", "constraint"] {
-                let m = self.module_of(&a.target);
-                let Some(i) = before.find(kind, &m, &target) else {
-                    continue;
-                };
-                let Some(d) = before.parsed(i) else { continue };
-                let h = header(&m).len();
-                for e in decl_exprs(&d) {
-                    crate::visit::each_expr(e, &mut |x| {
-                        if let ast::ExprKind::Match(_, arms) = &x.kind {
-                            for arm in arms {
-                                if let Some(ast::Pattern {
-                                    kind: ast::PatternKind::Ctor { path, ctor, .. },
-                                    ..
-                                }) = arm.patterns.first()
-                                    && ctors.contains(&ctor.as_ref().unwrap_or(&path.name).text)
-                                {
-                                    let start = arm.patterns[0].span.start as usize - h;
-                                    let end = arm.body.span.end as usize - h;
-                                    out.push_str(&format!(
-                                        "\n  arm {target}: {}",
-                                        &before.decls[i].text[start..end]
-                                    ));
-                                }
-                            }
-                        }
-                    });
-                }
-            }
-        }
-        out
-    }
-
     /// Set type `ty`, a sum of one constructor named after it, to record text `text`, its header
     /// fields keeping their ids as fields of that constructor.
-    fn unsum(&mut self, ty: &QName, text: String) -> R<()> {
+    pub(super) fn unsum(&mut self, ty: &QName, text: Written) -> R<()> {
         let (i, _) = self.type_decl(ty)?;
         self.src.rewrite(i, text);
         let (m, t) = (self.module_of(ty), &ty.name.text);
@@ -1013,8 +602,8 @@ impl Cx<'_> {
     }
 
     /// Apply operators given as source text in the migration's module as `how` says, then set
-    /// each check of `checks`, by module and name, to its text within the last operator's step.
-    fn undo_ops(&mut self, text: &Written, how: How, checks: &[(String, String, String)]) -> R<()> {
+    /// the declaration of each of `checks` to its text within the last operator's step.
+    fn undo_ops(&mut self, text: &Written, how: How, checks: &[(DeclOf, Written)]) -> R<()> {
         let span = self.span;
         let wrap = |ds: Vec<Diag>, what: &str| -> Vec<Diag> {
             ds.into_iter()
@@ -1032,7 +621,7 @@ impl Cx<'_> {
             .ok()
             .map_err(|ds| wrap(ds, &text.text))?;
         let noted = RefCell::new(Names::default());
-        for op in &m.operators {
+        for (k, op) in m.operators.iter().enumerate() {
             let before = self.src.clone();
             let mut sub = Cx {
                 src: &mut *self.src,
@@ -1062,6 +651,13 @@ impl Cx<'_> {
             .map_err(|ds| wrap(ds, &full[op.span.range()]))?;
             self.src.carry = None;
             self.src.rename_ids(&before, &self.module, &op.kind);
+            if k + 1 == m.operators.len() {
+                for (decl, check) in checks {
+                    if let Some((i, ..)) = decl.find(self.src) {
+                        self.src.rewrite(i, check.clone());
+                    }
+                }
+            }
             self.src.reconcile_ids();
             if let Some(steps) = self.steps {
                 let maps = before
@@ -1078,17 +674,6 @@ impl Cx<'_> {
                 });
             }
         }
-        for (module, name, check) in checks {
-            if let Some(i) = self.src.find("check", module, name) {
-                self.src.rewrite(i, check.clone());
-            }
-        }
-        self.src.reconcile_ids();
-        if let (Some(steps), false) = (self.steps, checks.is_empty())
-            && let Some(last) = steps.borrow_mut().last_mut()
-        {
-            last.after = self.src.clone();
-        }
         if let Some(out) = self.noted {
             let noted = noted.into_inner();
             for (o, from) in &text.copies {
@@ -1104,7 +689,14 @@ impl Cx<'_> {
     /// the reverted migration.
     pub(super) fn undo(&mut self, inv: Inverse, late: &Late) -> R<()> {
         match inv {
-            Inverse::Ops(text) => self.undo_ops(&text, How::Written, &[]),
+            Inverse::Restructure {
+                drops,
+                op,
+                adds,
+                how,
+                checks,
+                of,
+            } => self.restructure(drops, [op, adds], how, checks, &of, late),
             Inverse::Apply { text, of } => {
                 let text = self.spell(&text, &of, late)?;
                 self.undo_ops(&text, How::Written, &[])
@@ -1145,22 +737,17 @@ impl Cx<'_> {
                 let text = format!("add set {name} of {} = {}", rd.name, ctors.join(" | "));
                 self.undo_in(module, text)
             }
-            Inverse::Derived(text) => self.undo_ops(&text, How::Derived, &[]),
-            Inverse::Unmerge { split, checks } => self.undo_ops(&split, How::Written, &checks),
-            Inverse::MoveUp { text, from } => self.undo_ops(&text, How::UpFrom(&from), &[]),
-            Inverse::Unadd { path, record } => {
-                self.remove_ctor(&path, true)?;
-                if let Some(text) = record {
-                    self.unsum(&path.ty, text)?;
-                }
-                Ok(())
-            }
+            Inverse::Unadd { ctor, record, of } => self.unadd(ctor, record, &of),
             Inverse::Readd {
                 ty,
+                ctor,
+                name,
                 text,
                 after,
+                joins,
                 arms,
-            } => self.readd(&ty, &text, after.as_deref(), arms),
+                of,
+            } => self.readd((ty, ctor, &name), &text, (after, joins, arms), &of, late),
             Inverse::States { states, of } => {
                 let mut keyed = Vec::new();
                 for (s, state) in states {
@@ -1270,68 +857,6 @@ impl Cx<'_> {
                 }
                 None => self.src.apply(&l.module, op, &l.text)?,
             }
-        }
-        Ok(())
-    }
-
-    fn readd(
-        &mut self,
-        ty: &QName,
-        text: &str,
-        after: Option<&str>,
-        arms: Vec<(String, Vec<String>)>,
-    ) -> R<()> {
-        let (i, t) = self.type_decl(ty)?;
-        let h = header(&self.src.decls[i].module).len();
-        let dtext = self.src.decls[i].text.clone();
-        let ctors = ctor_extents(&dtext, h, &t);
-        let edit = match after
-            .as_ref()
-            .and_then(|a| ctors.iter().find(|c| c.0 == *a))
-        {
-            Some(c) => (
-                c.2..c.2,
-                format!(
-                    "
-  | {text}"
-                ),
-            ),
-            None => match ctors.first() {
-                Some(c) => (
-                    c.1.start..c.1.start,
-                    format!(
-                        "{text}
-  | "
-                    ),
-                ),
-                None => return self.err("the type has no constructors to place it beside"),
-            },
-        };
-        self.src.edit(i, vec![edit]);
-        for (name, texts) in arms {
-            let m = self.module.clone();
-            let Some(k) = self.src.find("constraint", &m, &name) else {
-                continue;
-            };
-            let schema = self.schema()?;
-            let def = self.type_id(&schema, ty)?;
-            let refs = check::schema_refs(&schema);
-            let Some((_, at, _)) = refs.iter().find(|(f, _, r)| {
-                f.0 as usize == k && matches!(r, Ref::Match(x) if holds(&schema, x, def, 0))
-            }) else {
-                continue;
-            };
-            let end = at.end as usize - header(&m).len();
-            let s: String = texts
-                .iter()
-                .map(|a| {
-                    format!(
-                        "
-  | {a}"
-                    )
-                })
-                .collect();
-            self.src.edit(k, vec![(end..end, s)]);
         }
         Ok(())
     }
