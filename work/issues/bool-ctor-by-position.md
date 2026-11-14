@@ -22,3 +22,7 @@ Fix: resolve the constructor index through the schema once, behind one shared he
 ## 2026-10-27: typed values
 
 `crates/adtb/src/api/typed.rs` (about lines 253 to 291) builds `bool` and `Option` by constructor position too.
+
+## Also by spelling
+
+crates/adtb/src/api/error_value.rs:319 and catalog/values.rs:35 build a Bool from the spellings "True"/"False" (quality review of 2026-11-13).
