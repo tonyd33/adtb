@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-13
-status: open
+status: resolved
+closed: 2026-11-14
 kind: bug
 priority: 330
 summary: "a migration fill that prints a value holding a key to a relation a later operator adds panics the engine in Form::of"
@@ -47,3 +48,7 @@ Expected: the migration is refused with "`later` is added by a later operator of
 Fix direction: refuse a type-driven primitive (`print`, `to_text`) whose argument type reaches an `Ahead` key in the checker, or give `Form::of` an `Ahead` form as `layout::key_value_ty` does. Then make the mid-migration schema a distinct type, or make `declared` unreachable on one.
 
 Defect class: class-failure-flattened
+
+## Resolved
+
+Landed as kksvmnwo 53ec1606 (4 rounds, full check 0, 3747 tests). `Form::of` gives a key of a relation a later operator adds the empty record form, as `layout::key_value_ty` does, so the migration applies with `s = "None"`. `T.parse` where `T` can hold such a key (schema/ahead.rs `holds_no_ahead_key`: direct, Option, nested record, sum field, type argument, relation key field; not tags) is refused with "`later` is added by a later operator of this migration", also in a `define fn` before the relation is added (main accepted that). `Schema::declared` keeps main's per-key panic; a whole-schema check was tried and withdrawn (it refused registrations main served). Scripts: oplog/fill-prints-key-of-later-relation.test, oplog/fill-parses-key-of-later-relation.test, three under bundles/. Left: four translate sites (map.rs:208, 344, 346; walk.rs:894) reach `declared` through a reverted fill's schema if its terms hold such a key in a form the checker admits (a match over `Option (Key zs)`, `print`); not reproduced; filed translate-reverted-fill-ahead-key; the type enforcer is committed-schema-type.
