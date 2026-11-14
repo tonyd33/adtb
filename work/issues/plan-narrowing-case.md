@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-14
-status: open
+status: resolved
+closed: 2026-11-14
 kind: feature
 priority: 380
 summary: "plan lowering narrows a variable with a Let the kernel cannot type"
@@ -26,3 +27,7 @@ restored: `exec::exec_tests::every_program_records_the_type_of_its_root`,
 `Identity.Google` bound to, or read as, a term of `Identity`).
 
 Blocks structure-lang-identity step 8b-2.
+
+## Resolved
+
+Landed as xsrlnowt d71a539e with kernel-fresh-placeholder-kind. `specialise` keeps the `Case` with the live arm specialised and every other arm `Unreachable`; `split_join`'s `Restrict` and rename are typed at the variable's type (a third cause the repro hit). A `Case` with one arm that is not `Unreachable` compiles to `Ins::Narrow`: a per-row tag test failing with `Broken::Unreachable` on another constructor, then the bind (exec::tests `a_case_with_one_reachable_arm_takes_it_and_fails_on_another_constructor`). kernel.md §3 states that its rows bind terms a consumer builds, lowered plans included. No plan changed (explain over 11 queries and the plan scripts). The plan-exit hook waits on translate-output-ill-typed.
