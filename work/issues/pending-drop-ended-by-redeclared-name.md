@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-13
-status: open
+status: resolved
+closed: 2026-11-14
 kind: bug
 priority: 500
 summary: "a pending constraint or check drop is keyed by module and name, so adding a new constraint of that name ends the pending drop that a pinned bundle still holds"
@@ -27,3 +28,7 @@ Ruling (lead, 2026-11-14, amending the ruling of 2026-11-13 that both be enforce
 Fix direction: key pending drops of constraints and checks by `CatConstraintId` in memory and in the held rows, and decide `declares` by id.
 
 Defect class: class-identity-by-spelling
+
+## Resolved
+
+Landed as tumnlvro ef08e67e (3 rounds, full check 0, 3745 tests). `violations` decides a constraint or check existed by `CatConstraintId` (a missing id is `Broken::ConstraintId`), so a dropped and re-added one is validated. Pending constraint and check drops are keyed by id in memory and in the held rows (`Rot::PendingRow` on a row whose id names another object; older files read as corrupt). Adding a constraint or check under the name of one whose drop is pending, either kind, from this migration or an earlier one, is refused naming the drop and its holders ("adding check auth::no_blank is refused: pending-dropped constraint auth::no_blank, held by web-1.0, keeps its name until its drop takes effect"); evolution.md §6.4 states it. The kept schema must hold each pending drop's id (`Broken::KeptConstraint`). Scripts: oplog/readded-constraint-validated.test and four under bundles/. Filed beside: redefine-fn-skips-constraint-revalidation, write-violations-keyed-by-name, bundle-pinned-past-taken-drop-unenforced.
