@@ -571,7 +571,7 @@ fn identity_sets(s: &Source) -> BTreeMap<String, u64> {
     let schema = ids_of(s);
     let r = rel(&schema, "identities");
     schema
-        .ids
+        .ids()
         .set_ids()
         .filter(|(of, ..)| *of == r)
         .map(|(_, name, id)| (name.to_string(), id.raw()))

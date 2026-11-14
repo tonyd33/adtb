@@ -67,7 +67,7 @@ fn field_desc(s: &Schema, f: FieldRef) -> Desc {
 
 /// Returns every object of `s` that has a catalog id, described by its names, with its id.
 fn described(s: &Schema) -> Vec<(Desc, u64)> {
-    let ids = &s.ids;
+    let ids = &s.ids();
     let mut out: Vec<(Desc, u64)> = Vec::new();
     out.extend(
         ids.type_ids()
@@ -532,7 +532,7 @@ set S of ts = A | B",
     );
     let index = |s: &Source| {
         let schema = ids_of(s);
-        schema.ids.index_id(rel(&schema, "ts"), 0).map(u64::from)
+        schema.ids().index_id(rel(&schema, "ts"), 0).map(u64::from)
     };
     assert_eq!(Some(1025), index(&base));
     let replacing = [
@@ -567,7 +567,7 @@ set S of ts = A | B",
     );
     let index = |s: &Source| {
         let schema = ids_of(s);
-        schema.ids.index_id(rel(&schema, "ts"), 0).map(u64::from)
+        schema.ids().index_id(rel(&schema, "ts"), 0).map(u64::from)
     };
     assert_eq!(Some(1025), index(&base));
     assert_eq!(Some(1025), index(&nested));
@@ -583,7 +583,7 @@ fn index_ids(s: &Source, r: &str) -> Vec<u64> {
     let schema = ids_of(s);
     let r = rel(&schema, r);
     (0..schema.relation(r).indexes.len())
-        .filter_map(|at| schema.ids.index_id(r, at).map(u64::from))
+        .filter_map(|at| schema.ids().index_id(r, at).map(u64::from))
         .collect()
 }
 
@@ -634,8 +634,8 @@ relation ws : W key id generate sequence",
             .or_else(|| td.field(Some(ctor), "a"))
             .expect("field a");
         (
-            schema.ids.ctor_id(ctor).map(u64::from),
-            schema.ids.field_id(a).map(u64::from),
+            schema.ids().ctor_id(ctor).map(u64::from),
+            schema.ids().field_id(a).map(u64::from),
         )
     };
     assert_eq!((Some(1025), Some(1025)), ids(&widened, "W"));

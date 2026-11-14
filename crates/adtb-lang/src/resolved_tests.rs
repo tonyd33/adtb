@@ -147,16 +147,16 @@ fn an_added_unique_or_index_takes_the_id_of_the_clause_it_appends() {
     let ops = ops(&src, 1);
     assert_eq!(
         Resolved::AddUnique {
-            index: schema.ids.index_id(identities, 1).unwrap().raw(),
-            relation: schema.ids.relation_id(identities).unwrap().raw(),
+            index: schema.ids().index_id(identities, 1).unwrap().raw(),
+            relation: schema.ids().relation_id(identities).unwrap().raw(),
             fields: "gid".into(),
         },
         ops[6].op
     );
     assert_eq!(
         Resolved::AddIndex {
-            index: schema.ids.index_id(identities, 2).unwrap().raw(),
-            relation: schema.ids.relation_id(identities).unwrap().raw(),
+            index: schema.ids().index_id(identities, 2).unwrap().raw(),
+            relation: schema.ids().relation_id(identities).unwrap().raw(),
             interval: false,
             fields: "user".into(),
         },
@@ -164,8 +164,8 @@ fn an_added_unique_or_index_takes_the_id_of_the_clause_it_appends() {
     );
     assert_eq!(
         Resolved::AddIndex {
-            index: schema.ids.index_id(users, 0).unwrap().raw(),
-            relation: schema.ids.relation_id(users).unwrap().raw(),
+            index: schema.ids().index_id(users, 0).unwrap().raw(),
+            relation: schema.ids().relation_id(users).unwrap().raw(),
             interval: true,
             fields: "name".into(),
         },
@@ -890,7 +890,7 @@ fn a_principal_declared_by_the_first_migration_resolves_to_its_type() {
          add type Principal = EndUser { user: Key users } | Service { name: Text } | Anonymous\n",
     );
     let schema = src.schema().expect("the schema builds");
-    let principal = schema.ids.type_id(schema.principal).unwrap().raw();
+    let principal = schema.ids().type_id(schema.principal).unwrap().raw();
     assert!(
         ops(&src, 1)
             .iter()

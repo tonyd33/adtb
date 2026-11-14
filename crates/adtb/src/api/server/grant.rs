@@ -314,7 +314,7 @@ impl<R: Runtime> Giving<'_, R> {
     /// Fail with `Denied` for a grant on `catalog::credentials` by any role but the schema owner,
     /// and with `Invalid` for any privilege but `read`.
     fn relation(&self, rows: &mut Vec<Grant>, stated: &Stated) -> Result<(), Error> {
-        let credentials = held_id(self.e.schema.ids.relation_id(self.t.credentials)).raw();
+        let credentials = held_id(self.e.schema.ids().relation_id(self.t.credentials)).raw();
         if stated.names(credentials) && self.session.id.0 != OWNER_ID {
             return Err(denied(format!(
                 "only the schema owner grants on `catalog::credentials`, not role `{}`",

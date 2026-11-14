@@ -651,7 +651,8 @@ impl Checker<'_> {
     /// Checks a relation's default expression where it was declared.
     fn default_expr(&mut self, rel: RelId, e: &Expr, fty: &Ty) -> R<Tm> {
         let module = self.schema.relation(rel).module;
-        let vis = std::mem::replace(&mut self.vis, Visible::module(module));
+        let home = Visible::module(module).scoped(self.vis.scope().cloned());
+        let vis = std::mem::replace(&mut self.vis, home);
         let scope = std::mem::take(&mut self.scope);
         let ctx = std::mem::replace(&mut self.ctx, Context::Schema);
         let tparams = std::mem::take(&mut self.tparams);

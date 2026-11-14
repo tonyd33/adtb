@@ -13,10 +13,9 @@ impl Builder<'_> {
             return m;
         }
         let engine = self.schema.modules.is_empty() || ENGINE_MODULES.contains(&name);
-        self.schema.modules.push(ModuleDef {
+        self.schema.defs_mut().modules.push(ModuleDef {
             name: name.to_string(),
             engine,
-            hidden: false,
             types: BTreeMap::new(),
             values: BTreeMap::new(),
         });
@@ -26,7 +25,7 @@ impl Builder<'_> {
     pub(super) fn run(&mut self) {
         let d = self.collect();
         self.declare_ahead();
-        self.schema.principal = match d.principal {
+        self.schema.defs_mut().principal = match d.principal {
             Some((id, _, _)) => id,
             None => self.schema.prelude_type("Principal"),
         };
@@ -67,12 +66,18 @@ impl Builder<'_> {
                 continue;
             };
             if a.typed {
-                self.schema.late_sels.push((module, a.relation.clone()));
+                self.schema
+                    .defs_mut()
+                    .late_sels
+                    .push((module, a.relation.clone()));
             }
             if self.schema.module(module).values.contains_key(&a.relation) {
                 continue;
             }
-            self.schema.ahead.push((module, a.relation.clone()));
+            self.schema
+                .defs_mut()
+                .ahead
+                .push((module, a.relation.clone()));
         }
     }
 
@@ -132,7 +137,7 @@ impl Builder<'_> {
     }
 
     fn declare_value(&mut self, file: FileId, module: ModuleId, name: &ast::Ident, v: ValueDef) {
-        let m = &mut self.schema.modules[module.0 as usize];
+        let m = &mut self.schema.defs_mut().modules[module.0 as usize];
         if m.values.insert(name.text.clone(), v).is_some() {
             let msg = format!("`{}` is declared twice in module `{}`", name.text, m.name);
             self.err(file, name.span, msg);
@@ -148,6 +153,7 @@ impl Builder<'_> {
             module,
             params: &[],
             mode: TypeMode::Signature,
+            names: None,
         };
         let mut params: Vec<(String, Ty)> = Vec::new();
         for p in &a.params {
@@ -177,7 +183,7 @@ impl Builder<'_> {
             fields.push((f.name.text.clone(), ty));
         }
         fields.sort_by(|x, y| x.0.cmp(&y.0));
-        let def = &mut self.schema.aggregates[i];
+        let def = &mut self.schema.defs_mut().aggregates[i];
         def.params = params;
         def.result = result;
         def.state = Ty::Record(fields);
@@ -215,6 +221,7 @@ impl Builder<'_> {
             module,
             params: &names,
             mode: TypeMode::Signature,
+            names: None,
         };
         let mut params = Vec::new();
         for p in &f.params {
@@ -231,7 +238,7 @@ impl Builder<'_> {
         let result = self
             .resolve_type(file, &scope, &f.result)
             .unwrap_or(Ty::Unit);
-        let def = &mut self.schema.functions[id.0 as usize];
+        let def = &mut self.schema.defs_mut().functions[id.0 as usize];
         def.type_params = tparams;
         def.params = params;
         def.result = result;
@@ -261,7 +268,7 @@ impl Builder<'_> {
                 if def.stored.is_some() {
                     return self.err(file, s.view.span(), "this view is stored twice");
                 }
-                self.schema.functions[f.0 as usize].stored = Some(s.clone());
+                self.schema.defs_mut().functions[f.0 as usize].stored = Some(s.clone());
             }
             Ok(_) => self.err(
                 file,
@@ -295,8 +302,8 @@ impl Builder<'_> {
                     });
                 match resolved {
                     Ok((rel, ctors)) => {
-                        self.schema.checks[i].relation = rel;
-                        self.schema.checks[i].ctors = ctors;
+                        self.schema.defs_mut().checks[i].relation = rel;
+                        self.schema.defs_mut().checks[i].ctors = ctors;
                     }
                     Err(e) => self.err(*file, c.on.span, e),
                 }
@@ -526,7 +533,7 @@ impl<'a> Builder<'a> {
                 let id = FnId(self.schema.functions.len() as u32);
                 self.check_fn_name(file, &f.name);
                 self.declare_value(file, module, &f.name, ValueDef::Function(id));
-                self.schema.functions.push(FunctionDef {
+                self.schema.defs_mut().functions.push(FunctionDef {
                     name: f.name.text.clone(),
                     module,
                     type_params: Vec::new(),
@@ -542,7 +549,7 @@ impl<'a> Builder<'a> {
             ast::Decl::Constraint(c) => {
                 let id = self.schema.constraints.len() as u32;
                 self.declare_value(file, module, &c.name, ValueDef::Constraint(id));
-                self.schema.constraints.push(ConstraintDef {
+                self.schema.defs_mut().constraints.push(ConstraintDef {
                     name: c.name.text.clone(),
                     module,
                     query: c.query.clone(),
@@ -552,7 +559,7 @@ impl<'a> Builder<'a> {
             ast::Decl::Check(c) => {
                 let id = self.schema.checks.len() as u32;
                 self.declare_value(file, module, &c.name, ValueDef::Check(id));
-                self.schema.checks.push(CheckDef {
+                self.schema.defs_mut().checks.push(CheckDef {
                     name: c.name.text.clone(),
                     module,
                     relation: RelId(u32::MAX),
@@ -565,7 +572,7 @@ impl<'a> Builder<'a> {
                 let id = self.schema.aggregates.len() as u32;
                 self.check_fn_name(file, &a.name);
                 self.declare_value(file, module, &a.name, ValueDef::Aggregate(id));
-                self.schema.aggregates.push(AggregateDef {
+                self.schema.defs_mut().aggregates.push(AggregateDef {
                     name: a.name.text.clone(),
                     module,
                     decl: (**a).clone(),
@@ -593,7 +600,7 @@ impl<'a> Builder<'a> {
         }
         if !prelude && t.name.text == "Principal" {
             d.principal = Some((id, file, t.name.span));
-        } else if self.schema.modules[module.0 as usize]
+        } else if self.schema.defs_mut().modules[module.0 as usize]
             .types
             .insert(t.name.text.clone(), id)
             .is_some()
@@ -605,7 +612,7 @@ impl<'a> Builder<'a> {
             );
         }
         let skeleton = self.type_skeleton(id, module, file, t);
-        self.schema.types.push(skeleton);
+        self.schema.defs_mut().types.push(skeleton);
         d.types.push((file, module, id, t));
     }
 
@@ -631,7 +638,7 @@ impl<'a> Builder<'a> {
             None => module,
         };
         self.declare_value(file, home, &r.name.name, ValueDef::Relation(id));
-        self.schema.relations.push(RelationDef {
+        self.schema.defs_mut().relations.push(RelationDef {
             name: r.name.name.text.clone(),
             module: home,
             elem: Ty::Unit,

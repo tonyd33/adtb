@@ -99,7 +99,7 @@ impl Rel {
 
 /// Returns the field path an index field is written as, if it is one.
 fn refs(schema: &Schema, rel: RelId, c: u32, indexes: &[IndexDesc]) -> Vec<RefField> {
-    let ids = &schema.ids;
+    let ids = &schema.ids();
     schema
         .reference_fields(rel)
         .into_iter()

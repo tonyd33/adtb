@@ -145,6 +145,7 @@ impl Builder<'_> {
             module,
             params,
             mode: TypeMode::Field,
+            names: None,
         };
         let mut out = Vec::new();
         for f in fields {
@@ -225,6 +226,7 @@ impl Builder<'_> {
                     module,
                     params: &params,
                     mode: TypeMode::Field,
+                    names: None,
                 };
                 let ty = self.resolve_type(file, &scope, base).unwrap_or(Ty::Unit);
                 if !matches!(ty, Ty::Base(_)) && ty != Ty::Unit {
@@ -272,7 +274,7 @@ impl Builder<'_> {
                 }
             }
         };
-        self.schema.types[id.0 as usize].kind = kind;
+        self.schema.defs_mut().types[id.0 as usize].kind = kind;
     }
 }
 
@@ -402,7 +404,7 @@ impl Resolver<'_> {
         let schema = self.schema;
         let module = self.scope.module;
         let rel = schema
-            .lookup_relation(module, &r.relation)
+            .lookup_relation_in(module, &r.relation, self.scope.names)
             .or_else(|e| schema.relation_ahead(module, &r.relation).ok_or(e))
             .map_err(|e| (r.span, e))?;
         let late = schema.selects_late(rel);
@@ -437,7 +439,7 @@ impl Resolver<'_> {
     ) -> Resolved<Ty> {
         let schema = self.schema;
         let found = schema
-            .lookup_type(self.scope.module, name)
+            .lookup_type_in(self.scope.module, name, self.scope.names)
             .map_err(|e| (name.span(), e))?;
         let arity = |n: usize| -> Resolved<()> {
             if args.len() == n {

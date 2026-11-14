@@ -1,0 +1,31 @@
+use paid-shop
+
+begin t
+
+in t run
+  temp relation first : { k: I64, b: I64 } key k
+  insert first { k: 1, b: 2 }
+
+in t query
+  from f in first select f
+----
+first { k: 1, b: 2 }
+
+in t error Invalid { detail: "temp relation `first` is declared twice" }
+  temp relation first : { k: I64 } key k
+  from f in first select f.k
+
+in t run
+  temp relation st : { k: I64 } key k
+  insert st { k: 3 }
+
+in t query
+  from s in st select s.k
+----
+3
+
+in t error Invalid { detail: "temp relation `st` is declared twice" }
+  temp relation st : { k: I64 } key k
+  from s in st select s.k
+
+commit t

@@ -195,7 +195,7 @@ impl<'a> Pinned<'a> {
         let from = self.map.from;
         match l {
             Loss::Type(def) => {
-                let id = from.ids.type_id(*def).map(CatTypeId::raw);
+                let id = from.ids().type_id(*def).map(CatTypeId::raw);
                 refused(
                     self.blame(|o| matches!(o.op, Resolved::DropType { sum } if Some(sum) == id)),
                     format!(
@@ -249,7 +249,7 @@ impl<'a> Pinned<'a> {
     }
 
     fn gone_relation(&self, rel: RelId) -> Untranslatable {
-        let id = self.map.from.ids.relation_id(rel).map(CatRelId::raw);
+        let id = self.map.from.ids().relation_id(rel).map(CatRelId::raw);
         refused(
             self.blame(
                 |o| matches!(o.op, Resolved::DropRelation { relation } if Some(relation) == id),
@@ -278,15 +278,15 @@ impl<'a> Pinned<'a> {
     /// drops or moves a field of `def`.
     fn blame_order(&self, def: TypeId) -> Option<String> {
         let from = self.map.from;
-        let id = from.ids.type_id(def).map(CatTypeId::raw);
+        let id = from.ids().type_id(def).map(CatTypeId::raw);
         let to = self.map.def(def);
         let of = |field: u64| {
             let field = CatFieldId::from_raw(field);
-            from.ids.field_of(field).is_some_and(|f| f.def() == def)
+            from.ids().field_of(field).is_some_and(|f| f.def() == def)
                 || self
                     .map
                     .to
-                    .ids
+                    .ids()
                     .field_of(field)
                     .is_some_and(|f| Some(f.def()) == to)
         };
@@ -326,7 +326,7 @@ impl<'a> Pinned<'a> {
     fn ctor_id(&self, def: TypeId, c: u32) -> Option<u64> {
         let from = self.map.from;
         let c = from.ty(def).ctor_at(c)?;
-        from.ids.ctor_id(c).map(CatCtorId::raw)
+        from.ids().ctor_id(c).map(CatCtorId::raw)
     }
 
     /// Returns the text of the first operator that removes, splits, unnests, merges or nests
@@ -375,10 +375,10 @@ impl<'a> Pinned<'a> {
             from.reached(t, &mut defs, &mut rels);
         }
         defs.extend(rels.iter().map(|&r| from.relation(r).elem_def));
-        let ids = &self.map.from.ids;
+        let ids = &self.map.from.ids();
         let ctor_def = |id: u64| ids.ctor_of(CatCtorId::from_raw(id)).map(CtorRef::def);
         let field_def = |id: u64| {
-            from.ids
+            from.ids()
                 .field_of(CatFieldId::from_raw(id))
                 .map(FieldRef::def)
         };
@@ -477,9 +477,9 @@ impl<'a> Pinned<'a> {
                 ),
             ));
         };
-        let was = self.map.from.stages.get(&(rel, c)).copied();
-        let now = self.map.to.stages.get(&(to_rel, k)).copied();
-        if was.is_none() && now.is_some() {
+        let was = self.map.from.stage(rel, c);
+        let now = self.map.to.stage(to_rel, k);
+        if was == Stage::Enabled && now != Stage::Enabled {
             let id = self.ctor_id(def, c);
             let op = self.blame(|o| match &o.op {
                 Resolved::Disable { target } | Resolved::Deprecate { target } => {
@@ -487,7 +487,7 @@ impl<'a> Pinned<'a> {
                 }
                 _ => false,
             });
-            let state = now.map_or("", Stage::name);
+            let state = now.name();
             return Err(refused(
                 op,
                 format!(
@@ -550,14 +550,14 @@ impl<'a> Pinned<'a> {
     /// Returns whether function `f` of the pin has the same code at the later version, and its
     /// id there.
     fn function(&self, f: FnId) -> Option<FnId> {
-        let id = self.map.from.ids.function_id(f)?;
-        let to = self.map.to.ids.function_of(id)?;
+        let id = self.map.from.ids().function_id(f)?;
+        let to = self.map.to.ids().function_of(id)?;
         self.same_code(id.raw()).then_some(to)
     }
 
     fn aggregate(&self, a: u32) -> Option<u32> {
-        let id = self.map.from.ids.aggregate_id(a as usize)?;
-        let to = self.map.to.ids.aggregate_of(id)? as u32;
+        let id = self.map.from.ids().aggregate_id(a as usize)?;
+        let to = self.map.to.ids().aggregate_of(id)? as u32;
         self.same_code(id.raw()).then_some(to)
     }
 

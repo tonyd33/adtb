@@ -2,13 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use adtb_lang::ast::AdhocItem;
-use adtb_lang::check::{
-    AdhocCommand, Bundles, Command, Explained, Program, Ref, check_adhoc_recording,
-};
+use adtb_lang::check::{AdhocCommand, Bundles, Command, Explained, Program, Ref, check_adhoc_in};
 use adtb_lang::kernel::{Const, Kind, Terms, Tm, Var};
 use adtb_lang::norm;
 use adtb_lang::parse::{Options, parse_adhoc};
-use adtb_lang::schema::Schema;
+use adtb_lang::schema::{Schema, Scope};
 use adtb_lang::textual::Form;
 use adtb_lang::types::{FnId, Ty};
 
@@ -126,16 +124,16 @@ impl Prepared {
         params: &[(&str, Ty, Val)],
         caller: Val,
     ) -> Result<Prepared, Error> {
-        Self::naming(schema, schema, program, bundles, items, params, caller).map_err(|e| match e {
+        Self::naming(schema, None, program, bundles, items, params, caller).map_err(|e| match e {
             TextError::Checker(e) | TextError::Other(e) => e,
         })
     }
 
-    /// Returns `items` checked as [`Prepared::of_items`] does, resolving names in `names`, a copy of
-    /// `schema` with the same ids.
+    /// Returns `items` checked as [`Prepared::of_items`] does, its names finding only what `scope`
+    /// holds when given.
     pub(super) fn naming(
         schema: &Arc<Schema>,
-        names: &Schema,
+        scope: Option<&Scope>,
         program: &Program,
         bundles: &Bundles,
         items: &[AdhocItem],
@@ -162,10 +160,16 @@ impl Prepared {
             .map(|(n, ty, _)| ((*n).to_owned(), ty.clone()))
             .collect();
         let mut named = Vec::new();
-        let mut adhoc =
-            check_adhoc_recording(names, program, items, &types, bundles, Some(&mut named))
-                .map_err(|d| TextError::Checker(Error::diagnostics(d)))?;
-        adhoc.temps = adhoc.temps.map(|t| t.with_names_of(schema));
+        let adhoc = check_adhoc_in(
+            schema,
+            scope,
+            program,
+            items,
+            &types,
+            bundles,
+            Some(&mut named),
+        )
+        .map_err(|d| TextError::Checker(Error::diagnostics(d)))?;
         let functions = named
             .into_iter()
             .filter_map(|(_, r)| match r {

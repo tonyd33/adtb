@@ -42,18 +42,18 @@ impl GrantTarget {
     /// Returns the ids of the constructors of the target relation that this target covers in
     /// `schema`. A constructor id `schema` lacks, or one of another type, covers nothing.
     pub fn ctors(&self, schema: &Schema) -> BTreeSet<u64> {
-        let Some(rel) = schema.ids.relation_of(CatRelId::from_raw(self.relation)) else {
+        let Some(rel) = schema.ids().relation_of(CatRelId::from_raw(self.relation)) else {
             return BTreeSet::new();
         };
         let r = schema.relation(rel);
         schema
-            .ids
+            .ids()
             .type_ctor_ids(r.elem_def)
             .filter(|(c, id)| match &self.sel {
                 GrantSel::Whole => true,
                 GrantSel::Ctors(ids) => ids.contains(&id.raw()),
                 GrantSel::Set(s) => r.sets.iter().any(|set| {
-                    schema.ids.set_id(rel, &set.name) == Some(CatSetId::from_raw(*s))
+                    schema.ids().set_id(rel, &set.name) == Some(CatSetId::from_raw(*s))
                         && set.ctors.contains(&c.index())
                 }),
             })
@@ -394,7 +394,7 @@ impl Resolving<'_> {
             return Err(vec![Diag::new(r.span, why)]);
         }
         let def = rd.elem_def;
-        let ids = &schema.ids;
+        let ids = &schema.ids();
         self.refs.push((r.relation.name.span, Ref::Relation(rel)));
         let (sel, ctors) = match &r.sel {
             None => (
@@ -444,7 +444,7 @@ impl Resolving<'_> {
     ) -> R<GrantFields> {
         let schema = self.schema;
         let def = schema.relation(rel).elem_def;
-        let ids = &schema.ids;
+        let ids = &schema.ids();
         let Some(list) = list else {
             let mut out: Vec<u64> = ids
                 .type_field_ids(def)
@@ -524,7 +524,7 @@ impl Resolving<'_> {
             schema
                 .ty(def)
                 .ctor_named(&c.text)
-                .and_then(|k| schema.ids.ctor_id(k))
+                .and_then(|k| schema.ids().ctor_id(k))
                 .map(CatCtorId::raw)
                 .ok_or_else(|| {
                     let name = &schema.relation(rel).name;
@@ -545,7 +545,7 @@ impl Resolving<'_> {
 
     fn privilege(&mut self, p: &ast::Privilege) -> R<Stated> {
         let schema = self.schema;
-        let ids = &schema.ids;
+        let ids = &schema.ids();
         let covering = |rel: RelId, ctors: &CtorSet, out: &mut BTreeSet<u64>| {
             let def = schema.relation(rel).elem_def;
             out.extend(ctors.iter().map(|&c| {

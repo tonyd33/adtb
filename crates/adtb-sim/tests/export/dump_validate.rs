@@ -376,7 +376,7 @@ fn a_restore_resumes_a_generator_past_every_restored_key() {
     let mut sim = Sim::with_files(7, Config::default(), dumped());
     let users = schema().relations.iter().position(|r| r.name == "users");
     let id = schema()
-        .ids
+        .ids()
         .relation_id(RelId(u32::try_from(users.unwrap()).unwrap()))
         .unwrap();
     let dee = process::run(&mut sim, |rt| {

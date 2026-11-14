@@ -500,18 +500,14 @@ fn deprecated_apple() -> Fixture {
     let mut f = fixture();
     let (_, apple) = f.ctor("Identity", "Apple");
     let identities = f.rel("identities");
-    f.schema
-        .stages
-        .insert((identities, apple), adtb_lang::schema::Stage::Deprecated);
+    f.stage_relation((identities, apple), adtb_lang::schema::Stage::Deprecated);
     f
 }
 
 fn declared_intl() -> Fixture {
     let mut f = fixture();
     let (address, intl) = f.ctor("Address", "Intl");
-    f.schema
-        .value_stages
-        .insert((address, intl), adtb_lang::schema::Stage::Declared);
+    f.stage_value((address, intl), adtb_lang::schema::Stage::Declared);
     f
 }
 

@@ -959,10 +959,9 @@ impl Checker<'_> {
                 .find(|c| c.name == f.text)
                 .cloned()
         {
-            let saved = std::mem::replace(
-                &mut self.vis,
-                Visible::module(self.schema.relation(rel).module),
-            );
+            let home =
+                Visible::module(self.schema.relation(rel).module).scoped(self.vis.scope().cloned());
+            let saved = std::mem::replace(&mut self.vis, home);
             self.scope.push();
             let v = self.bind("self", o.ty.clone(), Some(rel));
             let body = self.check(&c.expr, &c.ty);

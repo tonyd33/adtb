@@ -81,7 +81,7 @@ impl Catalog {
         }
         out.rows = Some(self.roots.clone());
         let schema = &self.schema;
-        for (r, _) in schema.ids.relation_ids() {
+        for (r, _) in schema.ids().relation_ids() {
             let heaps = self
                 .heaps
                 .range((r, 0)..=(r, u32::MAX))

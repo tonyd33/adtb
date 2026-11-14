@@ -268,7 +268,7 @@ pub(super) fn key_indexes<'a>(
     indexes: &'a BTreeMap<u64, (IndexSpec, Index, Arc<IndexKeys>)>,
 ) -> BTreeMap<RelId, &'a Index> {
     schema
-        .ids
+        .ids()
         .key_ids()
         .filter_map(|(r, id)| Some((r, &indexes.get(&id.raw())?.1)))
         .collect()
@@ -324,7 +324,12 @@ impl Catalog {
             .kept
             .indexes
             .iter()
-            .map(|(&r, index)| (IndexId(held_id(schema.ids.key_id(r)).raw()), index.clone()))
+            .map(|(&r, index)| {
+                (
+                    IndexId(held_id(schema.ids().key_id(r)).raw()),
+                    index.clone(),
+                )
+            })
             .collect();
         let (migrations, made) = self.migrations(pager, txns)?;
         let born = self

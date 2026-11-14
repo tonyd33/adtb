@@ -1,5 +1,4 @@
 use super::*;
-use crate::ids::Slot;
 use crate::parse::parse_migration;
 
 const BASE: &str = "type User = { id: Key users, name: Text }
@@ -89,27 +88,6 @@ fn a_memoised_build_equals_an_uncached_one_across_a_migration_walk() {
             "after step {i}"
         );
     }
-}
-
-#[test]
-fn a_change_to_a_callers_copy_does_not_reach_the_memo() {
-    let src = base();
-    let built = builds_uncached(&src);
-    let annotated = printed(&src.schema().unwrap());
-
-    let mut copy = src.schema().unwrap();
-    copy.types.clear();
-    copy.modules[0].name.push_str("changed");
-    let types: Vec<_> = copy.ids.type_ids().map(|(t, _)| Slot::Type(t)).collect();
-    for t in &types {
-        copy.ids.forget(t);
-    }
-    copy.stages.insert((RelId(0), 0), Stage::Deprecated);
-    assert_ne!(annotated, printed(&copy));
-
-    assert_eq!(built, printed(&src.built().unwrap()));
-    assert_eq!(built, printed(&src.built_uncached().unwrap()));
-    assert_eq!(annotated, printed(&src.schema().unwrap()));
 }
 
 #[test]

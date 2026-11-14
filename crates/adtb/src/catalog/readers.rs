@@ -197,7 +197,7 @@ struct Changes {
 impl Changes {
     /// Record what the step from `a` to `b` changes.
     fn add(&mut self, a: &Schema, b: &Schema) {
-        for (r, rid) in b.ids.relation_ids() {
+        for (r, rid) in b.ids().relation_ids() {
             let Some(was) = relation(a, rid) else {
                 continue;
             };
@@ -220,8 +220,8 @@ impl Changes {
                 }
             }
         }
-        for (bc, id) in b.ids.ctor_ids() {
-            if let Some(ac) = a.ids.ctor_of(id)
+        for (bc, id) in b.ids().ctor_ids() {
+            if let Some(ac) = a.ids().ctor_of(id)
                 && a.value_stage(ac.def(), ac.index()) != Stage::Enabled
                 && b.value_stage(bc.def(), bc.index()) == Stage::Enabled
             {
@@ -229,9 +229,9 @@ impl Changes {
             }
         }
         let kept: BTreeSet<CatConstraintId> = b
-            .ids
+            .ids()
             .constraint_ids()
-            .chain(b.ids.check_ids())
+            .chain(b.ids().check_ids())
             .map(|(_, id)| id)
             .collect();
         let named = |m, name: &str, id, check| Dropped {
@@ -240,13 +240,13 @@ impl Changes {
             name: name.to_string(),
             check,
         };
-        for (i, id) in a.ids.constraint_ids() {
+        for (i, id) in a.ids().constraint_ids() {
             if !kept.contains(&id) {
                 let c = &a.constraints[i];
                 self.dropped.push(named(c.module, &c.name, id, false));
             }
         }
-        for (i, id) in a.ids.check_ids() {
+        for (i, id) in a.ids().check_ids() {
             if !kept.contains(&id) {
                 let c = &a.checks[i];
                 self.dropped.push(named(c.module, &c.name, id, true));
@@ -518,9 +518,9 @@ impl Catalog {
             .map_err(|ds| Error::Refused(ds.iter().map(|d| no_image(&d.message)).collect()))?;
         if !enforced
             .schema
-            .ids
+            .ids()
             .relation_ids()
-            .eq(now.ids.relation_ids())
+            .eq(now.ids().relation_ids())
         {
             return Err(Error::from(Broken::PendingRelations));
         }
@@ -661,7 +661,7 @@ impl Catalog {
     /// `next` that a live reader holds, its index allocated beside those of `pending`.
     fn relaxed_keys(&self, next: &Schema, pending: &[Pending]) -> Vec<Pending> {
         let mut out: Vec<Pending> = Vec::new();
-        for (r, id) in self.schema.ids.relation_ids() {
+        for (r, id) in self.schema.ids().relation_ids() {
             let Some(after) = relation(next, id) else {
                 continue;
             };
@@ -725,7 +725,7 @@ pub fn stale(source: &Source, now: &Schema, reader: &Reader) -> Result<Option<St
         ))
     })?;
     let p = pinned(&schema, reader).map_err(refused)?;
-    for (r, _) in now.ids.relation_ids() {
+    for (r, _) in now.ids().relation_ids() {
         let rel = now.relation(r);
         for (c, ctor) in now.ty(rel.elem_def).ctors().iter().enumerate() {
             let c = u32::try_from(c).expect("a sum has fewer than 2^32 constructors");
@@ -734,7 +734,7 @@ pub fn stale(source: &Source, now: &Schema, reader: &Reader) -> Result<Option<St
             }
         }
     }
-    for (c, _) in now.ids.ctor_ids() {
+    for (c, _) in now.ids().ctor_ids() {
         let (def, k) = (c.def(), c.index());
         if now.value_stage(def, k) != Stage::Declared && p.blocks_value(now, def, k).is_some() {
             let t = now.ty(def);
@@ -770,15 +770,15 @@ fn pinned(schema: &Schema, reader: &Reader) -> Result<Pinned, String> {
         references: Vec::new(),
         fields: BTreeSet::new(),
         writes: BTreeSet::new(),
-        ctors: schema.ids.ctor_ids().map(|(_, id)| id).collect(),
+        ctors: schema.ids().ctor_ids().map(|(_, id)| id).collect(),
         constraints: schema
-            .ids
+            .ids()
             .constraint_ids()
-            .chain(schema.ids.check_ids())
+            .chain(schema.ids().check_ids())
             .map(|(_, id)| id)
             .collect(),
         uniques: uniques(schema).into_keys().collect(),
-        relations: schema.ids.relation_ids().map(|(_, id)| id).collect(),
+        relations: schema.ids().relation_ids().map(|(_, id)| id).collect(),
     };
     for read in &reader.reads {
         match read {
@@ -791,7 +791,7 @@ fn pinned(schema: &Schema, reader: &Reader) -> Result<Pinned, String> {
                 let set = match set {
                     Some(s) => Some(
                         schema
-                            .ids
+                            .ids()
                             .set_id(r, s)
                             .ok_or_else(|| format!("{relation} has no set {s}"))?,
                     ),
@@ -805,7 +805,7 @@ fn pinned(schema: &Schema, reader: &Reader) -> Result<Pinned, String> {
                 let before = p.fields.len();
                 p.fields.extend(
                     schema
-                        .ids
+                        .ids()
                         .type_field_ids(td.id())
                         .filter(|(f, _)| td.field_def(*f).name == *field)
                         .map(|(_, id)| id),
@@ -845,7 +845,7 @@ fn in_set(schema: &Schema, r: RelId, set: CatSetId, c: u32) -> bool {
         .relation(r)
         .sets
         .iter()
-        .any(|s| schema.ids.set_id(r, &s.name) == Some(set) && s.ctors.contains(&c))
+        .any(|s| schema.ids().set_id(r, &s.name) == Some(set) && s.ctors.contains(&c))
 }
 
 /// Returns the relation and constructor index of constructor relation `(rid, cid)` of `schema`.
@@ -856,20 +856,20 @@ fn ctor_of(schema: &Schema, rid: CatRelId, cid: CatCtorId) -> Option<(RelId, u32
 
 /// Returns the type and constructor index of constructor `cid` of `schema`.
 fn value_ctor(schema: &Schema, cid: CatCtorId) -> Option<(TypeId, u32)> {
-    schema.ids.ctor_of(cid).map(|c| (c.def(), c.index()))
+    schema.ids().ctor_of(cid).map(|c| (c.def(), c.index()))
 }
 
 /// Returns the type, in `schema`, of each field `p` reads.
 fn read_fields<'s>(schema: &'s Schema, p: &'s Pinned) -> impl Iterator<Item = &'s Ty> {
     p.fields
         .iter()
-        .flat_map(|&id| schema.ids.field_of(id))
+        .flat_map(|&id| schema.ids().field_of(id))
         .map(|f| &schema.ty(f.def()).field_def(f).ty)
 }
 
 /// Returns the catalog id of each declared unique of `schema`, with its relation and its clause.
 fn uniques(schema: &Schema) -> BTreeMap<CatIndexId, (RelId, String)> {
-    let declared: BTreeSet<u64> = schema.ids.index_ids().map(|(_, id)| id.raw()).collect();
+    let declared: BTreeSet<u64> = schema.ids().index_ids().map(|(_, id)| id.raw()).collect();
     super::indexes(schema)
         .into_values()
         .filter(|s| s.unique && declared.contains(&s.id))

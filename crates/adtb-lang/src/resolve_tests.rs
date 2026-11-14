@@ -203,9 +203,7 @@ fn root_principal_resolves_from_empty_imports_and_the_prelude() {
         let expected = Ok(TypeName::Decl(schema.principal));
         assert_eq!(expected, schema.lookup_type(crate::schema::PRELUDE, &name));
         for vis in [
-            Visible {
-                modules: Vec::new(),
-            },
+            Visible::of(Vec::new()),
             Visible::all(&schema),
             Visible::module(crate::schema::PRELUDE),
         ] {
@@ -225,19 +223,13 @@ fn root_principal_resolves_from_empty_imports_and_the_prelude() {
             };
             assert_eq!(
                 Err("module `identity` declares no type `Principal`".into()),
-                lookup_type(
-                    &schema,
-                    &Visible {
-                        modules: Vec::new()
-                    },
-                    &qualified
-                )
+                lookup_type(&schema, &Visible::of(Vec::new()), &qualified)
             );
         } else {
             assert_eq!(schema.principal, schema.prelude_type("Principal"));
             assert_eq!(
                 Some(37),
-                schema.ids.type_id(schema.principal).map(u64::from)
+                schema.ids().type_id(schema.principal).map(u64::from)
             );
         }
     }

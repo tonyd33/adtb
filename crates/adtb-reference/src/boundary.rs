@@ -300,7 +300,7 @@ impl Interpreter<'_> {
     /// does not hold at the same path.
     fn check_open(&self, plus: &Database) -> R<()> {
         let schema = self.schema;
-        if self.closed.is_empty() && schema.stages.is_empty() && schema.value_stages.is_empty() {
+        if self.closed.is_empty() && schema.all_enabled() {
             return Ok(());
         }
         let closed = |t: TypeId, c: u32, at: Option<RelId>| -> Option<Stage> {

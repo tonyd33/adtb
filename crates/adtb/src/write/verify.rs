@@ -479,7 +479,7 @@ impl<R: Runtime> Database<R> {
                     .any(|root| held.contains(&(encoded.clone(), ctor, root)))
                 {
                     out.push(Found::Missing {
-                        relation: held_id(self.schema.ids.relation_id(r.id)).raw(),
+                        relation: held_id(self.schema.ids().relation_id(r.id)).raw(),
                         ctor: self.ctor_id(r, c),
                         index,
                         at: format!("page {} slot {}", v.tid.page(), v.tid.slot()),
@@ -493,7 +493,7 @@ impl<R: Runtime> Database<R> {
     fn ctor_id(&self, r: &Rel, c: u32) -> u64 {
         let def = self.schema.relation(r.id).elem_def;
         let ctor = self.schema.ty(def).ctor_at(c);
-        held_id(ctor.and_then(|c| self.schema.ids.ctor_id(c))).raw()
+        held_id(ctor.and_then(|c| self.schema.ids().ctor_id(c))).raw()
     }
 }
 

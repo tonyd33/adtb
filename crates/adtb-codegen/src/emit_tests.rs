@@ -1,4 +1,5 @@
 use adtb_lang::ids::{CatalogIds, Slot};
+use adtb_lang::schema::{Schema, States, build_with};
 use adtb_lang::signature::replay;
 
 use super::Module;
@@ -10,12 +11,18 @@ add type Customer = { id: Key customers, tier: Tier }
 add relation customers : Customer key id generate sequence
 ";
 
-fn refusal(stripped: impl FnOnce(&CatalogIds) -> Vec<Slot>) -> String {
+fn refusal(stripped: impl Fn(&CatalogIds) -> Vec<Slot>) -> String {
     let source = replay([LOG]).expect("the log replays");
-    let mut schema = source.schema().expect("the log builds");
-    for slot in stripped(&schema.ids) {
-        schema.ids.forget(&slot);
-    }
+    let full = source.schema().expect("the log builds");
+    let files = source.files().expect("the log's declarations parse");
+    let without = |_: &Schema| {
+        let mut ids = full.ids().clone();
+        for slot in stripped(full.ids()) {
+            ids.forget(&slot);
+        }
+        ids
+    };
+    let schema = build_with(&files, &[], &without, &States::default()).expect("the log builds");
     match Module::new(&schema).user_items() {
         Ok(()) => panic!("a schema missing an id generates"),
         Err(e) => e.to_string(),

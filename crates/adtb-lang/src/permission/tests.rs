@@ -66,8 +66,8 @@ fn target(s: &Schema, name: &str, ctor: &str) -> Target {
     let d = s.relation(r).elem_def;
     let c = s.ty(d).ctor_named(ctor).expect("constructor");
     Target {
-        relation: s.ids.relation_id(r).unwrap(),
-        constructor: s.ids.ctor_id(c).unwrap(),
+        relation: s.ids().relation_id(r).unwrap(),
+        constructor: s.ids().ctor_id(c).unwrap(),
     }
 }
 
@@ -79,7 +79,7 @@ fn field(s: &Schema, relation: &str, ctor: &str, name: &str) -> CatFieldId {
         .expect("relation");
     let td = s.ty(r.elem_def);
     let f = td.field(td.ctor_named(ctor), name).expect("field");
-    s.ids.field_id(f).unwrap()
+    s.ids().field_id(f).unwrap()
 }
 
 fn reads(s: &Schema, relation: &str, ctor: &str, names: &[&str]) -> BTreeSet<Requirement> {
@@ -512,14 +512,29 @@ fn renames_preserve_stable_requirement_identities() {
 
 #[test]
 fn a_reachable_missing_catalog_identity_is_an_explicit_error() {
-    let mut s = schema("");
+    let text = format!("{SCHEMA}\n");
+    let file = parse_schema(&text, Options::default())
+        .ok()
+        .expect("schema parses");
+    let full = schema("");
     let rel = RelId(
-        s.relations
+        full.relations
             .iter()
             .position(|r| r.name == "left")
             .expect("left") as u32,
     );
-    s.ids.forget(&crate::ids::Slot::Relation(rel));
+    let without = |built: &Schema| {
+        let mut ids = built.ids().clone();
+        ids.forget(&crate::ids::Slot::Relation(rel));
+        ids
+    };
+    let s = crate::schema::build_with(
+        &[(FileId(0), file)],
+        &[],
+        &without,
+        &crate::schema::States::default(),
+    )
+    .expect("schema builds");
     let program = check_schema(&s).expect("schema checks");
     let items = parse_adhoc("count(x for x in left)", Options::default())
         .ok()

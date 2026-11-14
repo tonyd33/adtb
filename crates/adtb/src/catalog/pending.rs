@@ -88,7 +88,7 @@ fn field_names(schema: &Schema, r: RelId, ids: &[CatFieldId]) -> Option<Vec<Stri
     ids.iter()
         .map(|id| {
             schema
-                .ids
+                .ids()
                 .field_of(*id)
                 .filter(|f| f.def() == def)
                 .map(|f| schema.ty(def).field_def(f).name.clone())

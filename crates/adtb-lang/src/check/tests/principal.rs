@@ -13,9 +13,7 @@ fn root_principal_checks_in_unrelated_schema_functions_and_bundle_scopes() {
     let schema = build(&files).unwrap();
     let program = check_schema(&schema).unwrap();
     let scopes = [
-        Visible {
-            modules: Vec::new(),
-        },
+        Visible::of(Vec::new()),
         Visible::module(schema.module_named("consumer").unwrap()),
         Visible::module(schema.module_named("identity").unwrap()),
         Visible::all(&schema),

@@ -40,7 +40,7 @@ pub(super) fn objects(schema: &Schema, source: &Source) -> Rows {
         schema,
         source,
         rows: schema
-            .ids
+            .ids()
             .relation_ids()
             .map(|(r, _)| (r, Vec::new()))
             .collect(),
@@ -149,14 +149,14 @@ impl IndexSpec {
 /// indexes, the declared uniques and indexes, and the implied indexes.
 pub fn indexes(schema: &Schema) -> BTreeMap<u64, IndexSpec> {
     let mut out = BTreeMap::new();
-    for (r, id) in schema.ids.key_ids() {
+    for (r, id) in schema.ids().key_ids() {
         let id = id.raw();
         out.insert(
             id,
             IndexSpec::key(schema, r, id, schema.relation(r).key.clone()),
         );
     }
-    for ((r, i), id) in schema.ids.index_ids() {
+    for ((r, i), id) in schema.ids().index_ids() {
         let id = id.raw();
         let def = &schema.relation(r).indexes[i];
         let fields: Vec<String> = def
@@ -181,7 +181,7 @@ pub fn indexes(schema: &Schema) -> BTreeMap<u64, IndexSpec> {
         };
         out.insert(id, spec);
     }
-    for (r, f, id) in schema.ids.implied_ids() {
+    for (r, f, id) in schema.ids().implied_ids() {
         let (ctor, field) = (f.ctor(), &schema.ty(f.def()).field_def(f).name);
         let id = id.raw();
         let ctors = ctor.map_or_else(|| all_ctors(schema, r), |c| vec![c]);
@@ -454,7 +454,7 @@ impl Builder<'_> {
     }
 
     fn types(&mut self) {
-        for (def, id) in self.schema.ids.type_ids() {
+        for (def, id) in self.schema.ids().type_ids() {
             let td = self.schema.ty(def);
             let mut fields = vec![
                 ("id", key(id.raw())),
@@ -479,7 +479,7 @@ impl Builder<'_> {
     }
 
     fn ctors(&mut self) {
-        for (c, id) in self.schema.ids.ctor_ids() {
+        for (c, id) in self.schema.ids().ctor_ids() {
             let (def, k) = (c.def(), c.index());
             let td = self.schema.ty(def);
             let name = match &td.kind {
@@ -488,7 +488,7 @@ impl Builder<'_> {
             };
             let fields = vec![
                 ("id", key(id.raw())),
-                ("sum", key(held_id(self.schema.ids.type_id(def)).raw())),
+                ("sum", key(held_id(self.schema.ids().type_id(def)).raw())),
                 ("name", Value::Text(name)),
                 ("position", Value::I32(k as i32 + 1)),
                 ("dropped", self.none()),
@@ -498,7 +498,7 @@ impl Builder<'_> {
     }
 
     fn fields(&mut self) {
-        let mut held: Vec<_> = self.schema.ids.field_ids().collect();
+        let mut held: Vec<_> = self.schema.ids().field_ids().collect();
         held.sort_by_key(|(f, _)| self.schema.field_order(*f));
         for (f, id) in held {
             let td = self.schema.ty(f.def());
@@ -513,7 +513,10 @@ impl Builder<'_> {
             ];
             let ctor = match f.ctor() {
                 None => {
-                    fields.push(("sum", key(held_id(self.schema.ids.type_id(f.def())).raw())));
+                    fields.push((
+                        "sum",
+                        key(held_id(self.schema.ids().type_id(f.def())).raw()),
+                    ));
                     "Header"
                 }
                 Some(c) => {
@@ -527,7 +530,7 @@ impl Builder<'_> {
 
     fn relations(&mut self) {
         let mut rows = Vec::new();
-        for (r, id) in self.schema.ids.relation_ids() {
+        for (r, id) in self.schema.ids().relation_ids() {
             let rel = self.schema.relation(r);
             let module = &self.schema.module(rel.module).name;
             let kind = match (rel.volatile, module.as_str()) {
@@ -535,15 +538,15 @@ impl Builder<'_> {
                 (false, "catalog") => "Catalog",
                 (false, _) => "Base",
             };
-            let sum = held_id(self.schema.ids.type_id(rel.elem_def));
+            let sum = held_id(self.schema.ids().type_id(rel.elem_def));
             rows.push((id, module.clone(), rel.name.clone(), sum, kind));
         }
-        for (f, id) in self.schema.ids.view_ids() {
+        for (f, id) in self.schema.ids().view_ids() {
             let view = &self.schema.functions[f.0 as usize];
             let sum = match &view.result {
                 Ty::Set(elem) => match &**elem {
-                    Ty::Data { def, .. } => self.schema.ids.type_id(*def),
-                    _ => self.schema.ids.view_type_id(f),
+                    Ty::Data { def, .. } => self.schema.ids().type_id(*def),
+                    _ => self.schema.ids().view_type_id(f),
                 },
                 _ => None,
             }
@@ -566,7 +569,7 @@ impl Builder<'_> {
 
     fn computed(&mut self) {
         let mut rows = Vec::new();
-        for ((r, i), id) in self.schema.ids.computed_ids() {
+        for ((r, i), id) in self.schema.ids().computed_ids() {
             let (decl, text) = self.relation_decl(r);
             let (name, ty, expr) = decl
                 .clauses
@@ -590,7 +593,7 @@ impl Builder<'_> {
                 ("id", key(id.raw())),
                 (
                     "relation",
-                    key(held_id(self.schema.ids.relation_id(r)).raw()),
+                    key(held_id(self.schema.ids().relation_id(r)).raw()),
                 ),
                 ("name", Value::Text(name)),
                 ("field_type", Value::Text(field_type)),
@@ -602,9 +605,9 @@ impl Builder<'_> {
     }
 
     fn sets(&mut self) {
-        for (r, name, id) in self.schema.ids.set_ids() {
+        for (r, name, id) in self.schema.ids().set_ids() {
             let id = id.raw();
-            let rel = key(held_id(self.schema.ids.relation_id(r)).raw());
+            let rel = key(held_id(self.schema.ids().relation_id(r)).raw());
             let fields = vec![
                 ("id", key(id)),
                 ("relation", rel),
@@ -647,7 +650,7 @@ impl Builder<'_> {
 
     fn defaults(&mut self) {
         let mut rows = Vec::new();
-        for (r, id) in self.schema.ids.generated_ids() {
+        for (r, id) in self.schema.ids().generated_ids() {
             let (decl, text) = self.relation_decl(r);
             let (field, generator) = decl
                 .clauses
@@ -660,10 +663,10 @@ impl Builder<'_> {
             let written = generate_text(&text, generator);
             let td = self.schema.ty(self.schema.relation(r).elem_def);
             let filled = td.field(td.ctor_at(0), &field);
-            let filled = held_id(filled.and_then(|f| self.schema.ids.field_id(f)));
+            let filled = held_id(filled.and_then(|f| self.schema.ids().field_id(f)));
             rows.push((id, r, filled.raw(), written));
         }
-        for ((r, i, f), id) in self.schema.ids.default_ids() {
+        for ((r, i, f), id) in self.schema.ids().default_ids() {
             let (decl, text) = self.relation_decl(r);
             let value = decl
                 .clauses
@@ -678,7 +681,7 @@ impl Builder<'_> {
                 ast::DefaultValue::Generate(g) => generate_text(&text, g.span),
                 ast::DefaultValue::Expr(e) => text[e.span.range()].to_string(),
             };
-            let filled = held_id(self.schema.ids.field_id(f)).raw();
+            let filled = held_id(self.schema.ids().field_id(f)).raw();
             rows.push((id, r, filled, written));
         }
         for (id, r, field, text) in rows {
@@ -686,7 +689,7 @@ impl Builder<'_> {
                 ("id", key(id.raw())),
                 (
                     "relation",
-                    key(held_id(self.schema.ids.relation_id(r)).raw()),
+                    key(held_id(self.schema.ids().relation_id(r)).raw()),
                 ),
                 ("field", key(field)),
                 ("text", Value::Text(text)),
@@ -697,11 +700,11 @@ impl Builder<'_> {
     }
 
     fn constraints(&mut self) {
-        let declared = self.schema.ids.constraint_ids().map(|(i, id)| {
+        let declared = self.schema.ids().constraint_ids().map(|(i, id)| {
             let c = &self.schema.constraints[i];
             (id, c.module, c.name.clone(), c.file)
         });
-        let checks = self.schema.ids.check_ids().map(|(i, id)| {
+        let checks = self.schema.ids().check_ids().map(|(i, id)| {
             let c = &self.schema.checks[i];
             (id, c.module, c.name.clone(), c.file)
         });
@@ -730,7 +733,7 @@ impl Builder<'_> {
                 ("id", key(id)),
                 (
                     "relation",
-                    key(held_id(self.schema.ids.relation_id(spec.relation)).raw()),
+                    key(held_id(self.schema.ids().relation_id(spec.relation)).raw()),
                 ),
                 (
                     "kind",
@@ -753,7 +756,7 @@ impl Builder<'_> {
     }
 
     fn ctor_states(&mut self) {
-        for (r, id) in self.schema.ids.relation_ids() {
+        for (r, id) in self.schema.ids().relation_ids() {
             let def = self.schema.relation(r).elem_def;
             for c in all_ctors(self.schema, r) {
                 let fields = vec![
@@ -854,7 +857,7 @@ impl Builder<'_> {
 
     fn value_states(&mut self) {
         let mut sums = BTreeSet::new();
-        for (def, _) in self.schema.ids.type_ids() {
+        for (def, _) in self.schema.ids().type_ids() {
             let td = self.schema.ty(def);
             let declared = td
                 .header()
@@ -867,7 +870,7 @@ impl Builder<'_> {
         for def in sums {
             for c in 0..self.schema.ty(def).ctors().len() as u32 {
                 let found = self.schema.ty(def).ctor_at(c);
-                let Some(id) = found.and_then(|c| self.schema.ids.ctor_id(c)) else {
+                let Some(id) = found.and_then(|c| self.schema.ids().ctor_id(c)) else {
                     continue;
                 };
                 let fields = vec![

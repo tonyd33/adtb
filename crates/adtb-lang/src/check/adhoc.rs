@@ -4,6 +4,7 @@ use crate::ast::{
     RelationRef, Revoke, RoleStmt, TempDecl,
 };
 use crate::kernel::alpha_equal;
+use crate::schema::{Temp, TempRow};
 
 /// The registered queries of the live bundles, by bundle and query name.
 #[derive(Clone, Debug, Default)]
@@ -290,7 +291,7 @@ impl Checker<'_> {
     /// Returns the stored relation `q` names for the command `command`, refusing a temp relation.
     fn stored_relation_named(&self, q: &ast::QName, command: &str) -> R<RelId> {
         let rel = self.relation_named(q)?;
-        if self.schema.module_named(TEMP_MODULE) == Some(self.schema.relation(rel).module) {
+        if self.schema.temp_id(rel).is_some() {
             return Err(diag(
                 q.span(),
                 format!(
@@ -336,19 +337,18 @@ impl Checker<'_> {
     /// type or constructor.
     fn declaring_module(&self, name: &str) -> Option<ModuleId> {
         self.vis.modules.iter().copied().find(|&m| {
-            let def = self.schema.module(m);
-            def.values.contains_key(name)
-                || def.types.contains_key(name)
-                || def
-                    .types
-                    .values()
-                    .any(|&t| self.schema.ty(t).ctor_index(name).is_some())
+            self.vis.value_in(self.schema, m, name).is_some()
+                || self.vis.type_in(self.schema, m, name).is_some()
+                || self
+                    .vis
+                    .types_of(self.schema, m)
+                    .any(|(_, t)| self.schema.ty(t).ctor_index(name).is_some())
         })
     }
 
-    /// Returns the row type and key fields of a temp relation, `taken` holding the names of the
-    /// temp relations declared before it.
-    fn temp_decl(&self, t: &TempDecl, taken: &[String]) -> R<(Ty, Vec<String>)> {
+    /// Returns the row and key fields of a temp relation, `taken` holding the names of the temp
+    /// relations declared before it.
+    fn temp_decl(&self, t: &TempDecl, taken: &[String]) -> R<(TempRow, Vec<String>)> {
         if taken.contains(&t.name.text) {
             return Err(diag(
                 t.name.span,
@@ -366,9 +366,17 @@ impl Checker<'_> {
             ));
         }
         let ty = self.resolve_type(&t.ty)?;
-        let candidates: Vec<String> = match &ty {
-            Ty::Record(fs) => fs.iter().map(|(n, _)| n.clone()).collect(),
-            Ty::Data { def, .. }
+        let (row, candidates): (TempRow, Vec<String>) = match &ty {
+            Ty::Record(fs) => {
+                let mut fields = fs.clone();
+                if let ast::TypeKind::Record(written) = &t.ty.kind {
+                    fields
+                        .sort_by_key(|(name, _)| written.iter().position(|f| f.name.text == *name));
+                }
+                let names = fs.iter().map(|(n, _)| n.clone()).collect();
+                (TempRow::Record(fields), names)
+            }
+            Ty::Data { def, args, .. }
                 if matches!(self.schema.ty(*def).kind, TypeDefKind::Sum { .. }) =>
             {
                 let d = self.schema.ty(*def);
@@ -376,11 +384,17 @@ impl Checker<'_> {
                     [only] => only.fields.as_slice(),
                     _ => &[],
                 };
-                d.header()
+                let names = d
+                    .header()
                     .iter()
                     .chain(own)
                     .map(|f| f.name.clone())
-                    .collect()
+                    .collect();
+                let row = TempRow::Declared {
+                    def: *def,
+                    args: args.clone(),
+                };
+                (row, names)
             }
             _ => {
                 return Err(diag(
@@ -401,7 +415,7 @@ impl Checker<'_> {
                     "a temp relation of a sum of several constructors declares its key",
                 ));
             }
-            return Ok((ty, candidates));
+            return Ok((row, candidates));
         };
         let mut seen: Vec<&str> = Vec::new();
         for f in fields {
@@ -438,7 +452,7 @@ impl Checker<'_> {
                 "a generated key is one field of type `Key` of its own relation, and no type names a temp relation",
             ));
         }
-        Ok((ty, fields.iter().map(|f| f.text.clone()).collect()))
+        Ok((row, fields.iter().map(|f| f.text.clone()).collect()))
     }
 
     /// Returns the type of a key of the engine's relation `module::name`.
@@ -879,6 +893,7 @@ impl Checker<'_> {
 /// refused adds its diagnostic to `diags` and declares nothing.
 pub(super) fn temp_relations(
     schema: &Schema,
+    vis: &Visible,
     items: &[AdhocItem],
     diags: &mut Vec<Diag>,
 ) -> Option<(Schema, Vec<Option<RelId>>)> {
@@ -892,82 +907,34 @@ pub(super) fn temp_relations(
     if decls.is_empty() {
         return None;
     }
-    let mut out = schema.clone();
-    let module = match out.module_named(TEMP_MODULE) {
-        Some(m) => m,
-        None => {
-            out.modules.push(crate::schema::ModuleDef {
-                name: TEMP_MODULE.to_string(),
-                engine: false,
-                hidden: false,
-                types: BTreeMap::new(),
-                values: BTreeMap::new(),
-            });
-            ModuleId(out.modules.len() as u32 - 1)
-        }
-    };
-    let mut taken: Vec<String> = out.module(module).values.keys().cloned().collect();
-    let mut declared = Vec::new();
+    let mut taken: Vec<String> = schema
+        .relations
+        .iter()
+        .enumerate()
+        .filter(|&(r, _)| schema.temp_id(RelId(r as u32)).is_some())
+        .map(|(_, d)| d.name.clone())
+        .collect();
+    let mut temps = Vec::new();
+    let mut checked = Vec::new();
     for t in decls {
-        let c = Checker::new(schema, Visible::all(schema), Context::Adhoc);
-        let (ty, key) = match c.temp_decl(t, &taken) {
+        let c = Checker::new(schema, vis.clone(), Context::Adhoc);
+        let (row, key) = match c.temp_decl(t, &taken) {
             Ok(x) => x,
             Err(d) => {
                 diags.push(d);
-                declared.push(None);
+                checked.push(false);
                 continue;
             }
         };
-        let (elem, elem_def) = match ty {
-            Ty::Record(fs) => {
-                let fields = fs
-                    .into_iter()
-                    .map(|(name, ty)| crate::schema::FieldDef {
-                        name,
-                        ty,
-                        on_delete: crate::schema::OnDelete::Restrict,
-                        span: t.ty.span,
-                    })
-                    .collect();
-                let def = out.push_record(&t.name.text, module, fields, (t.ty.span, t.span));
-                let elem = Ty::Data {
-                    def,
-                    args: Vec::new(),
-                    ctors: None,
-                };
-                (elem, def)
-            }
-            Ty::Data { def, args, .. } => (
-                Ty::Data {
-                    def,
-                    args,
-                    ctors: None,
-                },
-                def,
-            ),
-            _ => unreachable!("a temp relation holds a declared sum or a record"),
-        };
-        let rel = RelId(out.relations.len() as u32);
-        out.relations.push(crate::schema::RelationDef {
-            name: t.name.text.clone(),
-            module,
-            elem,
-            elem_def,
-            key,
-            generate: None,
-            indexes: Vec::new(),
-            defaults: Vec::new(),
-            computed: Vec::new(),
-            sets: Vec::new(),
-            volatile: false,
-            file: FileId(0),
-            span: t.span,
-        });
-        out.modules[module.0 as usize]
-            .values
-            .insert(t.name.text.clone(), ValueDef::Relation(rel));
+        temps.push(Temp::new(t, row, key));
         taken.push(t.name.text.clone());
-        declared.push(Some(rel));
+        checked.push(true);
     }
+    let (out, rels) = schema.with_temps(&temps);
+    let mut rels = rels.into_iter();
+    let declared = checked
+        .into_iter()
+        .map(|ok| if ok { rels.next() } else { None })
+        .collect();
     Some((out, declared))
 }

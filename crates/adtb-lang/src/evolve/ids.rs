@@ -1,8 +1,9 @@
 use super::*;
 use crate::ids::{
-    KeyKind, Object, ObjectKey, Owner, Path, PathStep, Replacement, Slot, Space, assign, forget,
-    objects,
+    CatalogIds, KeyKind, Object, ObjectKey, Owner, Path, PathStep, Replacement, Slot, Space,
+    assign, forget, objects,
 };
+use crate::schema::States;
 
 impl Source {
     /// The text of a span of file `file`, its tokens joined by single spaces.
@@ -64,54 +65,59 @@ impl Source {
             .map(|id| vec![PathStep::Field(id)])
     }
 
-    /// Write the source's catalog ids and write states into a schema it built. An object the log
-    /// has no id for takes the id [`Source::reconcile_ids`] gives it once the operator is recorded.
-    pub(super) fn annotate(&self, schema: &mut Schema) {
+    /// Returns the catalog ids of `schema`, which the source built with ids in declaration
+    /// order: the source's ids for every object of its user modules. An object the log has no id
+    /// for takes the id [`Source::reconcile_ids`] gives it once the operator is recorded.
+    pub(super) fn assigned_ids(&self, schema: &Schema) -> CatalogIds {
+        let mut out = schema.ids().clone();
         if let Ok(files) = self.files() {
             let objs = objects(schema, &files, &|f, s| self.span_text(f, s));
             let replaced = resolved(schema, &self.replaced);
             let ids = assign(&objs, &self.ids, &mut self.next.clone(), &replaced);
             for o in &objs {
-                schema.ids.forget(o.slot());
+                out.forget(o.slot());
             }
             for (o, (_, id)) in objs.iter().zip(ids) {
-                schema.ids.set(o.slot(), id);
+                out.set(o.slot(), id);
             }
         }
-        let mut stages = Vec::new();
-        for (i, r) in schema.relations.iter().enumerate() {
-            if schema.module(r.module).engine {
+        out
+    }
+
+    /// Returns the write states the source keeps by name, by the catalog ids `ids` gives the
+    /// objects of `schema`.
+    pub(super) fn catalog_states(&self, schema: &Schema, ids: &CatalogIds) -> States {
+        let mut out = States::default();
+        for (r, rel) in ids.relation_ids() {
+            let def = schema.relation(r);
+            let module = schema.module(def.module);
+            if module.engine {
                 continue;
             }
-            let m = schema.module(r.module).name.clone();
-            for (c, ctor) in schema.ty(r.elem_def).ctors().iter().enumerate() {
-                if let Some(s) = self
-                    .states
-                    .get(&(m.clone(), r.name.clone(), ctor.name.clone()))
-                    && s.stage != Stage::Enabled
-                {
-                    stages.push(((RelId(i as u32), c as u32), s.stage));
+            for c in schema.ty(def.elem_def).ctor_refs() {
+                let ctor = schema.ty(c.def()).ctor_def(c);
+                let key = (module.name.clone(), def.name.clone(), ctor.name.clone());
+                if let (Some(s), Some(cid)) = (self.states.get(&key), ids.ctor_id(c)) {
+                    out.set_relation(rel, cid, s.stage);
                 }
             }
         }
-        let mut value_stages = Vec::new();
-        for (i, t) in schema.types.iter().enumerate() {
-            if schema.module(t.module).engine {
+        for (c, cid) in ids.ctor_ids() {
+            let t = schema.ty(c.def());
+            let module = schema.module(t.module);
+            if module.engine || matches!(t.kind, TypeDefKind::Newtype { .. }) {
                 continue;
             }
-            let m = schema.module(t.module).name.clone();
-            for (c, ctor) in t.ctors().iter().enumerate() {
-                if let Some(s) =
-                    self.value_states
-                        .get(&(m.clone(), t.name.clone(), ctor.name.clone()))
-                    && s.stage != Stage::Enabled
-                {
-                    value_stages.push(((TypeId(i as u32), c as u32), s.stage));
-                }
+            let key = (
+                module.name.clone(),
+                t.name.clone(),
+                t.ctor_def(c).name.clone(),
+            );
+            if let Some(s) = self.value_states.get(&key) {
+                out.set_value(cid, s.stage);
             }
         }
-        schema.stages.extend(stages);
-        schema.value_stages.extend(value_stages);
+        out
     }
 
     /// Move the id of each object a rename or move operator renames or moves to its key after

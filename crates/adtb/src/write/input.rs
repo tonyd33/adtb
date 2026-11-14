@@ -4,7 +4,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use adtb_file::{Disk, Files, Record, Refused};
-use adtb_lang::check::TEMP_MODULE;
 use adtb_lang::kernel::{FileFormat, Kind, Prim, Terms, Tm, Var};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{CtorSet, RelId, Ty};
@@ -43,7 +42,7 @@ pub enum Input {
 
 /// Returns whether `rel` is a temp relation of `schema`.
 pub fn is_temp(schema: &Schema, rel: RelId) -> bool {
-    schema.module(schema.relation(rel).module).name == TEMP_MODULE
+    schema.temp_id(rel).is_some()
 }
 
 /// Replace each read of a temp or volatile relation and each file scan reachable from `root` by

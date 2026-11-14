@@ -695,7 +695,7 @@ impl<R: Runtime> Engine<R> {
             let at = match fields.get(constraint_at) {
                 Some(Val::Int(i)) => u64::try_from(*i)
                     .ok()
-                    .and_then(|id| schema.ids.constraint_of(CatConstraintId::from_raw(id))),
+                    .and_then(|id| schema.ids().constraint_of(CatConstraintId::from_raw(id))),
                 _ => None,
             };
             !at.zip(holds)
@@ -783,7 +783,7 @@ impl<R: Runtime> Engine<R> {
             .collect();
         let ctor = &schema.ty(def).ctors()[setting as usize];
         let id = schema.ty(def).ctor_at(setting);
-        let id = held_id(id.and_then(|c| schema.ids.ctor_id(c))).raw();
+        let id = held_id(id.and_then(|c| schema.ids().ctor_id(c))).raw();
         let mut fields = vec![Val::Int(i64::try_from(id).unwrap_or(i64::MAX))];
         for f in &ctor.fields {
             let v = given

@@ -296,7 +296,7 @@ impl<R: Runtime> Database<R> {
         };
         let mut ids = BTreeSet::new();
         for &i in positions {
-            let id = (self.schema.ids.index_id(rel, i))
+            let id = (self.schema.ids().index_id(rel, i))
                 .unwrap_or_else(|| panic!("index {i} of {} is stored", r.name));
             ids.insert(IndexId(id.raw()));
         }

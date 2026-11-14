@@ -423,20 +423,20 @@ fn ordered_fields_do_not_reuse_another_instantiation_or_schema_state() {
         )],
         "unordered type",
     );
-    let mut schema = build_src(&[&module("type Stage ordered = A | B")]).unwrap();
-    let m = schema.module_named("m").unwrap();
-    let stage = schema.module(m).types["Stage"];
-    let ty = Ty::Data {
-        def: stage,
-        args: Vec::new(),
-        ctors: None,
+    let stage = |ordered: &str| {
+        let schema = build_src(&[&module(&format!("type Stage{ordered} = A | B"))]).unwrap();
+        let m = schema.module_named("m").unwrap();
+        let ty = Ty::Data {
+            def: schema.module(m).types["Stage"],
+            args: Vec::new(),
+            ctors: None,
+        };
+        let tag = Ty::Tag(Box::new(ty.clone()));
+        (schema.is_ordered(&ty), schema.is_ordered(&tag))
     };
-    let tag = Ty::Tag(Box::new(ty.clone()));
-    assert!(schema.is_ordered(&ty));
-    assert!(schema.is_ordered(&tag));
-    schema.types[stage.0 as usize].ordered = false;
-    assert!(!schema.is_ordered(&ty));
-    assert!(!schema.is_ordered(&tag));
+    assert_eq!((true, true), stage(" ordered"));
+    assert_eq!((false, false), stage(""));
+    let schema = build_src(&[&module("type Stage ordered = A | B")]).unwrap();
     assert!(!schema.is_ordered(&Ty::Record(vec![])));
     assert!(!schema.is_ordered(&Ty::Unit));
 }

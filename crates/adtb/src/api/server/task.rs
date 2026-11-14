@@ -442,19 +442,19 @@ impl<R: Runtime> RoleSession<R> {
             .as_ref()
             .is_ok_and(|items| items.iter().all(is_capability_command));
         let hides = unseen.is_some() && parsed.is_ok() && !capability_only;
-        let view = unseen.map(|h| {
+        let scope = unseen.map(|h| {
             let commanded = match &parsed {
                 Ok(items) if capability_only => commanded(&e.schema, items),
                 _ => Vec::new(),
             };
-            h.names.naming(commanded).view(&e.schema)
+            h.names.naming(commanded).scope(&e.schema)
         });
         let checked = parsed
             .map_err(|err| TextError::Other(e.refusal().unwrap_or(err)))
             .and_then(|items| {
                 let p = Prepared::naming(
                     &e.schema,
-                    view.as_ref().unwrap_or(&e.schema),
+                    scope.as_ref(),
                     &e.program,
                     &e.explained(),
                     &items,

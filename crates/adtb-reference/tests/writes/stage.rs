@@ -63,10 +63,10 @@ impl Step {
                 fixture.closed.insert(key, stage);
             }
             Self::Relation { key, stage } => {
-                fixture.schema.stages.insert(key, schema_stage(stage));
+                fixture.stage_relation(key, schema_stage(stage));
             }
             Self::Value { key, stage } => {
-                fixture.schema.value_stages.insert(key, schema_stage(stage));
+                fixture.stage_value(key, schema_stage(stage));
             }
             Self::Refuse { source, expected } => {
                 assert_eq!(expected, fixture.rejected(&source), "exact NotOpen refusal");

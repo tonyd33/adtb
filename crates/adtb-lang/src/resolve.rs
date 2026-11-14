@@ -3,9 +3,9 @@
 use std::collections::BTreeSet;
 
 use crate::ast::*;
-use crate::schema::{Schema, TypeDefKind, TypeName, ValueDef};
+use crate::schema::{Schema, Scope as RoleScope, TypeDefKind, TypeName, ValueDef};
 use crate::span::{Diag, FileDiag, FileId, Span};
-use crate::types::{FnId, ModuleId, PRELUDE_FUNCTIONS, RelId};
+use crate::types::{FnId, ModuleId, PRELUDE_FUNCTIONS, RelId, TypeId};
 
 #[cfg(test)]
 #[path = "resolve_tests.rs"]
@@ -51,15 +51,29 @@ impl<T> Scope<T> {
     }
 }
 
-/// The modules a body reads unqualified names from, searched before the prelude.
+/// The modules a body reads unqualified names from, searched before the prelude, and the
+/// declarations of every module a name may find.
 #[derive(Clone, Debug)]
 pub struct Visible {
     pub modules: Vec<ModuleId>,
+    /// `None` lets a name find every declaration.
+    scope: Option<RoleScope>,
 }
 
 impl Visible {
+    pub(crate) fn of(modules: Vec<ModuleId>) -> Visible {
+        Visible {
+            modules,
+            scope: None,
+        }
+    }
+
     pub fn module(m: ModuleId) -> Visible {
-        Visible { modules: vec![m] }
+        Visible::of(vec![m])
+    }
+
+    pub(crate) fn scope(&self) -> Option<&RoleScope> {
+        self.scope.as_ref()
     }
 
     /// Every user module, as ad hoc text sees them.
@@ -69,7 +83,37 @@ impl Visible {
                 .map(ModuleId)
                 .filter(|&m| !schema.module(m).engine)
                 .collect(),
+            scope: None,
         }
+    }
+
+    /// Returns the visible modules naming only what `scope` holds.
+    #[must_use]
+    pub(crate) fn scoped(self, scope: Option<RoleScope>) -> Visible {
+        Visible { scope, ..self }
+    }
+
+    /// Returns the value `name` of module `m` a name may find.
+    pub(crate) fn value_in(&self, schema: &Schema, m: ModuleId, name: &str) -> Option<ValueDef> {
+        schema.value_in(m, name, self.scope.as_ref())
+    }
+
+    /// Returns the type `name` of module `m` a name may find.
+    pub(crate) fn type_in(&self, schema: &Schema, m: ModuleId, name: &str) -> Option<TypeId> {
+        schema.type_in(m, name, self.scope.as_ref())
+    }
+
+    /// Returns each type of module `m` a name may find, by name.
+    pub(crate) fn types_of<'a>(
+        &'a self,
+        schema: &'a Schema,
+        m: ModuleId,
+    ) -> impl Iterator<Item = (&'a str, TypeId)> + 'a {
+        schema
+            .module(m)
+            .types
+            .keys()
+            .filter_map(move |n| Some((n.as_str(), self.type_in(schema, m, n)?)))
     }
 
     pub fn first(&self) -> ModuleId {
@@ -82,18 +126,12 @@ impl Visible {
 
 pub fn lookup_value(schema: &Schema, vis: &Visible, name: &QName) -> Result<ValueDef, String> {
     if name.module.is_some() {
-        return schema.lookup_value(vis.first(), name);
+        return schema.lookup_value_in(vis.first(), name, vis.scope.as_ref());
     }
     let found: Vec<(ModuleId, ValueDef)> = vis
         .modules
         .iter()
-        .filter_map(|&m| {
-            schema
-                .module(m)
-                .values
-                .get(&name.name.text)
-                .map(|&v| (m, v))
-        })
+        .filter_map(|&m| vis.value_in(schema, m, &name.name.text).map(|v| (m, v)))
         .collect();
     match found.as_slice() {
         [(_, v)] => Ok(*v),
@@ -120,18 +158,19 @@ pub fn lookup_relation(schema: &Schema, vis: &Visible, name: &QName) -> Result<R
 }
 
 pub fn lookup_type(schema: &Schema, vis: &Visible, name: &QName) -> Result<TypeName, String> {
+    let scope = vis.scope.as_ref();
     if name.module.is_some() {
-        return schema.lookup_type(vis.first(), name);
+        return schema.lookup_type_in(vis.first(), name, scope);
     }
     let found: Vec<ModuleId> = vis
         .modules
         .iter()
         .copied()
-        .filter(|&m| schema.module(m).types.contains_key(&name.name.text))
+        .filter(|&m| vis.type_in(schema, m, &name.name.text).is_some())
         .collect();
     match found.as_slice() {
-        [m] => schema.lookup_type(*m, name),
-        [] => schema.lookup_type(crate::schema::PRELUDE, name),
+        [m] => schema.lookup_type_in(*m, name, scope),
+        [] => schema.lookup_type_in(crate::schema::PRELUDE, name, scope),
         _ => Err(format!(
             "type `{}` is declared in several modules; qualify it",
             name.name.text

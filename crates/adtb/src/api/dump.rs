@@ -513,7 +513,7 @@ impl<R: Runtime> Engine<R> {
         let mut generators = header_line(&envelope);
         for r in generated(schema, secured) {
             let next = self.db.sequence_next(r);
-            let id = held_id(schema.ids.relation_id(r));
+            let id = held_id(schema.ids().relation_id(r));
             generators.push_str(&format!("generator {id} {next}\n"));
         }
         entries.push((GENERATORS.to_owned(), generators));
@@ -796,7 +796,7 @@ fn fill<R: Runtime>(
     deployed.insert(grants, kept);
     let resumed: BTreeMap<RelId, i64> = generators
         .iter()
-        .filter_map(|&(id, next)| Some((schema.ids.relation_of(CatRelId::from_raw(id))?, next)))
+        .filter_map(|&(id, next)| Some((schema.ids().relation_of(CatRelId::from_raw(id))?, next)))
         .collect();
     if resumed.len() != generators.len()
         || !resumed

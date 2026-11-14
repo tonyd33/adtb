@@ -62,7 +62,7 @@ fn committed(
     let hold = txns.take(Scope::Every).expect("a snapshot");
     let out = catalog
         .schema()
-        .ids
+        .ids()
         .relation_ids()
         .map(|(r, _)| {
             let rows = catalog.rows(pager, txns, &hold, r).expect("the rows read");
@@ -325,7 +325,7 @@ fn the_planner_catalog_describes_every_engine_relation() {
     with_reopened(4, |_, catalog, _| {
         let plan = catalog.plan();
         let schema = catalog.schema();
-        assert_eq!(schema.ids.relation_ids().count(), plan.relations().len());
+        assert_eq!(schema.ids().relation_ids().count(), plan.relations().len());
         let mut heaps = BTreeSet::new();
         let mut indexes = BTreeSet::new();
         for (r, d) in plan.relations() {
@@ -381,7 +381,7 @@ fn the_key_index_of_constructors_finds_each_constructor() {
                 std::ops::Bound::Unbounded,
             )
             .expect("the scan");
-        assert_eq!(catalog.schema().ids.ctor_ids().count(), all.len());
+        assert_eq!(catalog.schema().ids().ctor_ids().count(), all.len());
     });
 }
 
@@ -491,7 +491,7 @@ fn a_migrated_catalog_reopens_with_the_running_schema() {
         check_whole(pager, catalog, txns);
         let plan = catalog.plan();
         assert_eq!(
-            catalog.schema().ids.relation_ids().count(),
+            catalog.schema().ids().relation_ids().count(),
             plan.relations().len()
         );
         let users = &plan.relations()[&rel(catalog, "auth", "users")];
@@ -828,7 +828,7 @@ fn identity_indexes(seed: u64, migration: &str) -> Vec<String> {
         let rows = committed(&pager, &catalog, &txns);
         let identities = catalog
             .schema()
-            .ids
+            .ids()
             .relation_id(rel(&catalog, "auth", "identities"))
             .unwrap();
         let relation = format!("I64({identities}), ");

@@ -49,7 +49,7 @@ const NEST: &str =
 /// `update` the fields, `listed` or `frozen`.
 fn held(src: &Source) -> Vec<String> {
     let schema = src.schema().expect("the schema builds");
-    let ids = &schema.ids;
+    let ids = &schema.ids();
     let name = |kind: &str, id: u64| {
         let ctor = |c: CtorRef| schema.ty(c.def()).ctor_def(c).name.clone();
         let found = match kind {

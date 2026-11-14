@@ -21,7 +21,7 @@ fn engine_rows(schema: &Schema) -> Rows {
 
 /// Returns the rows of the catalog relation whose id is `id`.
 fn rows_of(schema: &Schema, rows: &Rows, id: u64) -> Vec<Vec<Value>> {
-    let r = schema.ids.relation_of(CatRelId::from_raw(id)).unwrap();
+    let r = schema.ids().relation_of(CatRelId::from_raw(id)).unwrap();
     rows[&r].iter().map(|(_, row)| row.clone()).collect()
 }
 
@@ -57,13 +57,13 @@ fn every_engine_object_with_an_id_has_a_row() {
     let schema = engine_schema();
     let rows = engine_rows(&schema);
     let count = |rel: u64| {
-        let r = schema.ids.relation_of(CatRelId::from_raw(rel)).unwrap();
+        let r = schema.ids().relation_of(CatRelId::from_raw(rel)).unwrap();
         rows[&r].len()
     };
-    assert_eq!(schema.ids.type_ids().count(), count(219));
-    assert_eq!(schema.ids.ctor_ids().count(), count(220));
-    assert_eq!(schema.ids.field_ids().count(), count(222));
-    assert_eq!(schema.ids.relation_ids().count(), count(223));
+    assert_eq!(schema.ids().type_ids().count(), count(219));
+    assert_eq!(schema.ids().ctor_ids().count(), count(220));
+    assert_eq!(schema.ids().field_ids().count(), count(222));
+    assert_eq!(schema.ids().relation_ids().count(), count(223));
     assert_eq!(indexes(&schema).len(), count(226));
     assert_eq!(0, count(224));
     assert_eq!(0, count(232));
@@ -73,7 +73,7 @@ fn every_engine_object_with_an_id_has_a_row() {
 fn the_constructors_relation_names_its_own_row() {
     let schema = engine_schema();
     let rows = engine_rows(&schema);
-    let r = schema.ids.relation_of(CatRelId::from_raw(220)).unwrap();
+    let r = schema.ids().relation_of(CatRelId::from_raw(220)).unwrap();
     let own = rows[&r]
         .iter()
         .find(|(_, row)| row[0] == Value::I64(121))
@@ -596,7 +596,7 @@ fn gaining_a_field() -> (Schema, Schema, adtb_lang::types::RelId, super::change:
         b.schema().expect("it builds"),
     );
     let (r, _) = sa
-        .ids
+        .ids()
         .relation_ids()
         .find(|&(r, _)| sa.relation(r).name == "ts")
         .expect("ts");
@@ -823,7 +823,7 @@ fn the_fields_of_one_constructor_are_written_in_name_order() {
     };
     let app = schema.module_named("app").expect("the app module");
     let p = schema.ty(schema.module(app).types["P"]);
-    let ctor = schema.ids.ctor_id(p.ctor_at(0).unwrap()).unwrap();
+    let ctor = schema.ids().ctor_id(p.ctor_at(0).unwrap()).unwrap();
     let payload = schema
         .ty(schema.relation(fields).elem_def)
         .ctor_named("Payload")
@@ -852,7 +852,7 @@ fn ctor_id_named(src: &Source, t: &str, c: &str) -> u64 {
     let m = schema.module(schema.module_named("app").expect("module app"));
     let def = m.types[t];
     let c = schema.ty(def).ctor_named(c).expect("the constructor");
-    schema.ids.ctor_id(c).expect("an id").raw()
+    schema.ids().ctor_id(c).expect("an id").raw()
 }
 
 /// Returns the catalog id of function `f` of module `app` of `src`.
@@ -862,5 +862,5 @@ fn function_id_named(src: &Source, f: &str) -> u64 {
     let Some(&adtb_lang::schema::ValueDef::Function(f)) = m.values.get(f) else {
         panic!("no function `{f}`");
     };
-    schema.ids.function_id(f).expect("an id").raw()
+    schema.ids().function_id(f).expect("an id").raw()
 }

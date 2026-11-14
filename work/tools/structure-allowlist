@@ -168,7 +168,7 @@ pub_fields prod 4 crates/adtb-lang/src/permission/coverage.rs
 pub_fields prod 2 crates/adtb-lang/src/permission/mod.rs
 pub_fields prod 17 crates/adtb-lang/src/permission/value.rs
 pub_fields prod 1 crates/adtb-lang/src/resolve.rs
-pub_fields prod 101 crates/adtb-lang/src/schema/mod.rs
+pub_fields prod 97 crates/adtb-lang/src/schema/mod.rs
 pub_fields prod 12 crates/adtb-lang/src/signature.rs
 pub_fields prod 8 crates/adtb-lang/src/span.rs
 pub_fields prod 6 crates/adtb-lang/src/textual/document.rs

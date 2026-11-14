@@ -96,10 +96,10 @@ impl Requirement {
     /// privilege it needs, as `read`.
     pub fn text(&self, schema: &Schema) -> (String, &'static str) {
         let at = |t: &Target| {
-            let rel = schema.ids.relation_of(t.relation);
+            let rel = schema.ids().relation_of(t.relation);
             let r = rel.map_or("?", |r| schema.relation(r).name.as_str());
             let c = schema
-                .ids
+                .ids()
                 .ctor_of(t.constructor)
                 .and_then(|c| schema.ty(c.def()).ctors().get(c.index() as usize))
                 .map_or("?", |c| c.name.as_str());
@@ -107,7 +107,7 @@ impl Requirement {
         };
         let field = |f: &CatFieldId| {
             schema
-                .ids
+                .ids()
                 .field_of(*f)
                 .map_or("?", |f| schema.ty(f.def()).field_def(f).name.as_str())
         };

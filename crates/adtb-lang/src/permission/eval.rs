@@ -256,10 +256,11 @@ impl Analyzer<'_> {
             .ctors()
             .len();
         for c in 0..count as u32 {
-            let target = self.target(into, c)?;
-            self.requirements
-                .required
-                .insert(Requirement::Insert(target));
+            if let Some(target) = self.target(into, c)? {
+                self.requirements
+                    .required
+                    .insert(Requirement::Insert(target));
+            }
         }
         Ok(value)
     }
@@ -306,8 +307,9 @@ impl Analyzer<'_> {
     fn observe(&mut self, value: &Value, ctors: &[u32]) -> Result<(), Error> {
         for &rel in &value.stored {
             for &c in ctors {
-                let target = self.target(rel, c)?;
-                self.range(target);
+                if let Some(target) = self.target(rel, c)? {
+                    self.range(target);
+                }
             }
         }
         Ok(())

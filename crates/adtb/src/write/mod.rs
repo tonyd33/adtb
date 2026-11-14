@@ -1090,7 +1090,11 @@ impl<R: Runtime> Database<R> {
                 .collect(),
         };
         let shown: Vec<(CtorId, u32)> = sum.heaps.iter().map(|(id, h)| (*id, h.id().0)).collect();
-        let _shown = self.show_vacuum(held_id(self.schema.ids.relation_id(rel)).raw(), &shown, one);
+        let _shown = self.show_vacuum(
+            held_id(self.schema.ids().relation_id(rel)).raw(),
+            &shown,
+            one,
+        );
         let mut began = self.rt.now();
         let mut io = None;
         let halted = Cell::new(None);

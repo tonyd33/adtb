@@ -47,12 +47,12 @@ fn a_custom_root_principal_registers_without_a_module_import() {
         )
         .expect("the root principal resolves without an import");
         let schema = db.schema();
-        assert_eq!(1024, schema.ids.type_id(schema.principal).unwrap().raw());
+        assert_eq!(1024, schema.ids().type_id(schema.principal).unwrap().raw());
         for (ctor, id) in [("EndUser", 1025), ("Service", 1026), ("Anonymous", 1027)] {
             assert_eq!(
                 id,
                 schema
-                    .ids
+                    .ids()
                     .ctor_id(schema.ty(schema.principal).ctor_named(ctor).unwrap())
                     .unwrap()
                     .raw()
@@ -147,12 +147,12 @@ fn the_default_root_principal_keeps_its_fixed_ids_without_imports() {
         )
         .unwrap();
         let schema = db.schema();
-        assert_eq!(37, schema.ids.type_id(schema.principal).unwrap().raw());
+        assert_eq!(37, schema.ids().type_id(schema.principal).unwrap().raw());
         for (ctor, id) in [("EndUser", 38), ("Service", 39), ("Anonymous", 40)] {
             assert_eq!(
                 id,
                 schema
-                    .ids
+                    .ids()
                     .ctor_id(schema.ty(schema.principal).ctor_named(ctor).unwrap())
                     .unwrap()
                     .raw()

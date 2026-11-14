@@ -5,9 +5,10 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::thread::LocalKey;
 
-use adtb_lang::schema::{Schema, ValueDef};
+use adtb_lang::evolve::{Source, State};
+use adtb_lang::schema::{Schema, Stage, ValueDef};
 use adtb_lang::textual::{self, Form, Textual};
-use adtb_lang::types::{RelId, Ty};
+use adtb_lang::types::{RelId, Ty, TypeId};
 use adtb_reference::Value;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 
@@ -237,27 +238,42 @@ pub fn relation_of(to: &Schema, from: &Schema, rel: RelId) -> RelId {
         .unwrap_or_else(|| panic!("the database has no relation {}", qualified(from, rel)))
 }
 
-/// Set in `to` the stage of each constructor of a module that is not the engine's that `from`
-/// stages, by the names of its relation or type and constructor.
-pub fn staged(to: &mut Schema, from: &Schema) {
-    for (&(r, c), &stage) in &from.stages {
-        if !from.module(from.relation(r).module).engine {
-            to.stages.insert((relation_of(to, from, r), c), stage);
+/// Returns `source` with each constructor of a module that is not the engine's that `from` stages
+/// staged the same, found by the names of its relation or type and constructor.
+pub fn staged_source(source: &Source, from: &Schema) -> Source {
+    let mut out = source.clone();
+    let state = |stage| State {
+        stage,
+        since: source.version,
+    };
+    for (r, def) in from.relations.iter().enumerate() {
+        let module = from.module(def.module);
+        if module.engine {
+            continue;
+        }
+        for c in from.ty(def.elem_def).ctor_refs() {
+            let stage = from.stage(RelId(r as u32), c.index());
+            if stage != Stage::Enabled {
+                let ctor = from.ty(c.def()).ctor_def(c).name.clone();
+                let key = (module.name.clone(), def.name.clone(), ctor);
+                out.states.insert(key, state(stage));
+            }
         }
     }
-    for (&(t, c), &stage) in &from.value_stages {
-        let def = from.ty(t);
-        let module = &from.module(def.module);
-        if !module.engine {
-            let there = to
-                .module_named(&module.name)
-                .and_then(|m| to.module(m).types.get(&def.name).copied())
-                .unwrap_or_else(|| {
-                    panic!("the database has no type {}::{}", module.name, def.name)
-                });
-            to.value_stages.insert((there, c), stage);
+    for (t, def) in from.types.iter().enumerate() {
+        let module = from.module(def.module);
+        if module.engine {
+            continue;
+        }
+        for (c, ctor) in def.ctors().iter().enumerate() {
+            let stage = from.value_stage(TypeId(t as u32), c as u32);
+            if stage != Stage::Enabled {
+                let key = (module.name.clone(), def.name.clone(), ctor.name.clone());
+                out.value_states.insert(key, state(stage));
+            }
         }
     }
+    out
 }
 
 /// Returns the one statement of `writes`.

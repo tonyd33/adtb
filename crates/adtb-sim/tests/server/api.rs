@@ -916,3 +916,28 @@ fn an_exists_that_read_every_row_conflicts_with_an_insert_beside_it() {
         assert!(ends.iter().any(Result::is_ok), "seed {seed}: {ends:?}");
     }
 }
+
+#[test]
+fn a_temp_record_row_prints_its_fields_in_declaration_order() {
+    once(0, |rt| {
+        let db = open::opened(&rt, open::FILE, &log(), &options(4));
+        let mut t = db.begin(&TxnOptions::default()).expect("begin");
+        api::in_txn_results(
+            &mut t,
+            "temp relation st : { k: I64, b: I64 } key k\ninsert st { k: 1, b: 2 }",
+        );
+        assert_eq!(
+            vec!["st { k: 1, b: 2 }"],
+            in_txn(&mut t, "from s in st select s")
+        );
+        let mut one = api::in_txn_results(
+            &mut t,
+            "temp relation u : { k: I64, b: I64 } key k\ninsert u { k: 1, b: 2 }\nfrom s in u select s",
+        );
+        assert_eq!(
+            vec!["u { k: 1, b: 2 }"],
+            printed(one.pop().expect("a result"))
+        );
+        t.commit(None).expect("commit");
+    });
+}

@@ -16,7 +16,7 @@ impl Builder<'_> {
         };
         match head {
             Ok(TypeName::Decl(t)) if matches!(self.schema.ty(t).kind, TypeDefKind::Sum { .. }) => {
-                self.schema.relations[id.0 as usize].elem_def = t;
+                self.schema.defs_mut().relations[id.0 as usize].elem_def = t;
             }
             Ok(_) => self.err(
                 file,
@@ -67,7 +67,7 @@ impl Builder<'_> {
                 format!("`{}` is already a constructor name", s.name.text),
             );
         }
-        let r = &mut self.schema.relations[rel.0 as usize];
+        let r = &mut self.schema.defs_mut().relations[rel.0 as usize];
         if r.sets.iter().any(|x| x.name == s.name.text) {
             let msg = format!("`{}` declares set `{}` twice", r.name, s.name.text);
             return self.err(file, s.name.span, msg);
@@ -120,9 +120,10 @@ impl Builder<'_> {
             module,
             params: &[],
             mode: TypeMode::Field,
+            names: None,
         };
         if let Some(elem) = self.resolve_type(file, &scope, &r.ty) {
-            self.schema.relations[id.0 as usize].elem = elem;
+            self.schema.defs_mut().relations[id.0 as usize].elem = elem;
         }
         let def = self.schema.ty(elem_def).clone();
         let mut key: Option<Vec<String>> = None;
@@ -207,6 +208,7 @@ impl Builder<'_> {
                         module,
                         params: &[],
                         mode: TypeMode::Field,
+                        names: None,
                     };
                     let ty = self.resolve_type(file, &scope, ty).unwrap_or(Ty::Unit);
                     if (0..def.ctors().len() as u32)
@@ -229,7 +231,7 @@ impl Builder<'_> {
         if key.is_none() {
             self.err(file, r.name.span(), "a relation declares exactly one key");
         }
-        let rel = &mut self.schema.relations[id.0 as usize];
+        let rel = &mut self.schema.defs_mut().relations[id.0 as usize];
         rel.key = key.unwrap_or_default();
         rel.generate = generate;
         rel.indexes = indexes;

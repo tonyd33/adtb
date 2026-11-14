@@ -847,7 +847,7 @@ fn held_rows<R: Runtime>(
     };
     let table = command::engine_relation(schema, "sys", "verify_findings")
         .map_err(|b| corrupt(write::Error::from(b)))?;
-    let findings = verify::Findings::of(kept, held_id(schema.ids.relation_id(table)).raw())?;
+    let findings = verify::Findings::of(kept, held_id(schema.ids().relation_id(table)).raw())?;
     let mut volatile = settings::process_options(schema, &options.shown());
     volatile.insert(table, findings.vals());
     Ok((findings, volatile))

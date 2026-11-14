@@ -77,9 +77,10 @@ impl Source {
 
     /// Builds the schema, with the catalog ids and write states the source holds.
     pub fn schema(&self) -> Result<Schema, Vec<FileDiag>> {
-        let mut schema = Schema::clone(&*self.built()?);
-        self.annotate(&mut schema);
-        Ok(schema)
+        let built = self.built()?;
+        let ids = self.assigned_ids(&built);
+        let states = self.catalog_states(&built, &ids);
+        Ok(built.relabelled(&|_| ids.clone(), &states))
     }
 
     /// Builds the schema the declarations state, its ids those of declaration order.

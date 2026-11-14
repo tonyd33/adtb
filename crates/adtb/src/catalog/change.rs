@@ -222,7 +222,7 @@ pub fn step(a: &Schema, b: &Schema, data: &mut Data, mut moved: Moved) -> Result
         }
         out.insert(rid, next);
     }
-    for (r, rid) in b.ids.relation_ids() {
+    for (r, rid) in b.ids().relation_ids() {
         if relation(a, rid).is_none() {
             let ctors = (0..b.ty(b.relation(r).elem_def).ctors().len() as u32)
                 .map(|c| {

@@ -57,7 +57,7 @@ pub fn new_order_keys(schema: &Schema, keys: &OrderKeys) -> OrderKeys {
 /// order.
 pub fn declared_sums(schema: &Schema) -> Vec<Vec<u64>> {
     let mut sums: BTreeMap<TypeId, Vec<(u32, u64)>> = BTreeMap::new();
-    for (c, id) in schema.ids.ctor_ids() {
+    for (c, id) in schema.ids().ctor_ids() {
         if matches!(
             schema.ty(c.def()).kind,
             TypeDefKind::Sum { record: false, .. }
@@ -91,7 +91,7 @@ pub fn ctors(schema: &Schema, ty: &Ty) -> Vec<(u32, Vec<(String, Ty)>)> {
                 .zip(fields)
                 .map(|((c, k), fs)| {
                     let id = schema
-                        .ids
+                        .ids()
                         .ctor_id(k)
                         .unwrap_or_else(|| panic!("constructor {} has a catalog id", c.name));
                     (stored(id).0, fs)

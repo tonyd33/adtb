@@ -608,7 +608,7 @@ fn unsecured(files: &Files) -> Files {
     let schema = crate::catalog::engine_schema();
     let id = |n| {
         schema
-            .ids
+            .ids()
             .relation_id(crate::catalog::values::relation(&schema, n))
             .unwrap()
     };

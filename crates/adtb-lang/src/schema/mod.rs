@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, LazyLock};
 
 use crate::ast;
+use crate::ids::{CatCtorId, CatRelId, CatalogIds, TempRelId};
 use crate::parse::{self, Options};
 use crate::span::{Diag, FileDiag, FileId, Span};
 use crate::types::*;
@@ -26,12 +27,18 @@ pub use names::field_path;
 
 mod build;
 mod engine;
+mod inputs;
 mod refs;
 mod relation;
+mod scope;
+mod temps;
 mod types;
 
 pub use engine::EngineCtors;
+pub use inputs::{States, build_with};
 pub use refs::{CtorRef, FieldPart, FieldRef};
+pub use scope::Scope;
+pub(crate) use temps::{Temp, TempRow};
 
 pub use types::resolve_type;
 
@@ -40,8 +47,6 @@ pub struct ModuleDef {
     pub name: String,
     /// Whether the engine declares the module: the prelude, `catalog` or `sys`.
     pub engine: bool,
-    /// Whether no name finds the module, in a view of the schema for a role naming nothing in it.
-    pub hidden: bool,
     pub types: BTreeMap<String, TypeId>,
     pub values: BTreeMap<String, ValueDef>,
 }
@@ -330,11 +335,13 @@ pub enum TypeName {
 #[derive(Clone, Debug)]
 pub struct Schema {
     defs: Arc<SchemaDefs>,
-    pub ids: crate::ids::CatalogIds,
+    ids: CatalogIds,
     /// The write state of each constructor relation that is not enabled.
-    pub stages: BTreeMap<(RelId, u32), Stage>,
+    stages: BTreeMap<(RelId, u32), Stage>,
     /// The write state of each value-level constructor that is not enabled.
-    pub value_stages: BTreeMap<(TypeId, u32), Stage>,
+    value_stages: BTreeMap<(TypeId, u32), Stage>,
+    /// The id of each temp relation of ad hoc text.
+    temps: BTreeMap<RelId, TempRelId>,
 }
 
 impl std::ops::Deref for Schema {
@@ -342,12 +349,6 @@ impl std::ops::Deref for Schema {
 
     fn deref(&self) -> &SchemaDefs {
         &self.defs
-    }
-}
-
-impl std::ops::DerefMut for Schema {
-    fn deref_mut(&mut self) -> &mut SchemaDefs {
-        Arc::make_mut(&mut self.defs)
     }
 }
 
@@ -376,7 +377,7 @@ pub struct SchemaDefs {
 impl SchemaDefs {
     /// Append a record type `name` of `module`, its one constructor named after it, declared at
     /// `ctor_span` within `span`; returns its id.
-    pub(crate) fn push_record(
+    fn push_record(
         &mut self,
         name: &str,
         module: ModuleId,
@@ -427,6 +428,24 @@ impl Stage {
 pub const PRELUDE: ModuleId = ModuleId(0);
 
 impl Schema {
+    fn defs_mut(&mut self) -> &mut SchemaDefs {
+        Arc::make_mut(&mut self.defs)
+    }
+
+    pub fn ids(&self) -> &CatalogIds {
+        &self.ids
+    }
+
+    /// Returns the id of `rel` when it is a temp relation of ad hoc text.
+    pub fn temp_id(&self, rel: RelId) -> Option<TempRelId> {
+        self.temps.get(&rel).copied()
+    }
+
+    /// Returns whether every constructor, in every relation variable and as a value, is enabled.
+    pub fn all_enabled(&self) -> bool {
+        self.stages.is_empty() && self.value_stages.is_empty()
+    }
+
     pub fn module(&self, id: ModuleId) -> &ModuleDef {
         &self.modules[id.0 as usize]
     }
@@ -445,10 +464,7 @@ impl Schema {
     }
 
     pub fn module_named(&self, name: &str) -> Option<ModuleId> {
-        self.modules
-            .iter()
-            .position(|m| !m.hidden && m.name == name)
-            .map(|i| ModuleId(i as u32))
+        self.module_named_in(name, None)
     }
 
     pub fn ty(&self, id: TypeId) -> &TypeDef {
@@ -499,33 +515,33 @@ impl Schema {
         self.module(PRELUDE).types[name]
     }
 
-    /// Returns the schema with each module of `other` named as `other` names it.
-    #[must_use]
-    pub fn with_names_of(mut self, other: &Schema) -> Schema {
-        for (at, module) in other.modules.iter().enumerate() {
-            self.modules[at].clone_from(module);
-        }
-        self
-    }
-
     /// Resolve unqualified `Principal` from the root, and other type names from the module, prelude or built-ins.
     pub fn lookup_type(&self, module: ModuleId, name: &ast::QName) -> Result<TypeName, String> {
+        self.lookup_type_in(module, name, None)
+    }
+
+    /// Returns the type `name` names as [`Schema::lookup_type`] does, finding only what `scope`
+    /// lets it.
+    pub(crate) fn lookup_type_in(
+        &self,
+        module: ModuleId,
+        name: &ast::QName,
+        scope: Option<&Scope>,
+    ) -> Result<TypeName, String> {
         let text = name.name.text.as_str();
         if let Some(m) = &name.module {
             let mid = self
-                .module_named(&m.text)
+                .module_named_in(&m.text, scope)
                 .ok_or_else(|| format!("no module `{}`", m.text))?;
             return self
-                .module(mid)
-                .types
-                .get(text)
-                .map(|&t| TypeName::Decl(t))
+                .type_in(mid, text, scope)
+                .map(TypeName::Decl)
                 .ok_or_else(|| format!("module `{}` declares no type `{text}`", m.text));
         }
         if text == "Principal" {
             return Ok(TypeName::Decl(self.principal));
         }
-        if let Some(&t) = self.module(module).types.get(text) {
+        if let Some(t) = self.type_in(module, text, scope) {
             return Ok(TypeName::Decl(t));
         }
         if let Some(&t) = self.module(PRELUDE).types.get(text) {
@@ -545,17 +561,25 @@ impl Schema {
 
     /// Resolves a lowercase schema name seen from `module`.
     pub fn lookup_value(&self, module: ModuleId, name: &ast::QName) -> Result<ValueDef, String> {
+        self.lookup_value_in(module, name, None)
+    }
+
+    /// Returns the value `name` names as [`Schema::lookup_value`] does, finding only what `scope`
+    /// lets it.
+    pub(crate) fn lookup_value_in(
+        &self,
+        module: ModuleId,
+        name: &ast::QName,
+        scope: Option<&Scope>,
+    ) -> Result<ValueDef, String> {
         let text = name.name.text.as_str();
         let mid = match &name.module {
             Some(m) => self
-                .module_named(&m.text)
+                .module_named_in(&m.text, scope)
                 .ok_or_else(|| format!("no module `{}`", m.text))?,
             None => module,
         };
-        self.module(mid)
-            .values
-            .get(text)
-            .copied()
+        self.value_in(mid, text, scope)
             .ok_or_else(|| match &name.module {
                 Some(m) => format!("module `{}` declares no `{text}`", m.text),
                 None => format!("no `{text}` in scope"),
@@ -575,7 +599,18 @@ impl Schema {
     }
 
     pub fn lookup_relation(&self, module: ModuleId, name: &ast::QName) -> Result<RelId, String> {
-        match self.lookup_value(module, name)? {
+        self.lookup_relation_in(module, name, None)
+    }
+
+    /// Returns the relation `name` names as [`Schema::lookup_relation`] does, finding only what
+    /// `scope` lets it.
+    fn lookup_relation_in(
+        &self,
+        module: ModuleId,
+        name: &ast::QName,
+        scope: Option<&Scope>,
+    ) -> Result<RelId, String> {
+        match self.lookup_value_in(module, name, scope)? {
             ValueDef::Relation(r) => Ok(r),
             _ => Err(format!("`{}` is not a relation", name.name.text)),
         }
@@ -1135,6 +1170,25 @@ pub struct TypeScope<'a> {
     pub module: ModuleId,
     pub params: &'a [String],
     pub mode: TypeMode,
+    /// `None` lets a name find every declaration.
+    names: Option<&'a Scope>,
+}
+
+impl<'a> TypeScope<'a> {
+    pub(crate) fn new(module: ModuleId, params: &'a [String], mode: TypeMode) -> TypeScope<'a> {
+        TypeScope {
+            module,
+            params,
+            mode,
+            names: None,
+        }
+    }
+
+    /// Returns the scope with names finding only what `names` holds when given.
+    #[must_use]
+    pub(crate) fn naming(self, names: Option<&'a Scope>) -> TypeScope<'a> {
+        TypeScope { names, ..self }
+    }
 }
 
 struct Builder<'a> {
@@ -1187,9 +1241,10 @@ pub fn build_ahead(
                 late_sels: Vec::new(),
                 engine_ctors: None,
             }),
-            ids: crate::ids::CatalogIds::default(),
+            ids: CatalogIds::default(),
             stages: BTreeMap::new(),
             value_stages: BTreeMap::new(),
+            temps: BTreeMap::new(),
         },
         diags: Vec::new(),
         files: &all,
@@ -1203,8 +1258,8 @@ pub fn build_ahead(
     let names = crate::resolve::check_schema(&b.schema);
     if names.is_empty() {
         let id = TypeId(b.schema.types.len() as u32);
-        b.schema.types.push(tag_former(id));
-        b.schema.engine_ctors = Some(EngineCtors::of(&b.schema));
+        b.schema.defs_mut().types.push(tag_former(id));
+        b.schema.defs_mut().engine_ctors = Some(EngineCtors::of(&b.schema));
         b.schema.ids = crate::ids::declared(&b.schema, files);
         Ok(b.schema)
     } else {

@@ -186,7 +186,7 @@ impl<R: Runtime> PastReads<R> for Pasts<R> {
 
 impl<R: Runtime> Database<R> {
     pub(super) fn volatile_rows(&self, rel: RelId) -> Result<BTreeSet<Val>, Error> {
-        let id = held_id(self.schema.ids.relation_id(rel)).raw();
+        let id = held_id(self.schema.ids().relation_id(rel)).raw();
         if id == super::vacuums::VACUUMS {
             return Ok(self.vacuum_rows());
         }

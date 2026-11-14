@@ -59,8 +59,8 @@ impl<'a> Map<'a> {
 
     /// Returns the type `def` is at the later version.
     pub fn def(&self, def: TypeId) -> Option<TypeId> {
-        match self.from.ids.type_id(def) {
-            Some(id) => self.to.ids.type_of(id),
+        match self.from.ids().type_id(def) {
+            Some(id) => self.to.ids().type_of(id),
             None => {
                 let t = self.from.ty(def);
                 let module = &self.from.module(t.module).name;
@@ -74,8 +74,8 @@ impl<'a> Map<'a> {
     }
 
     pub fn relation(&self, rel: RelId) -> Option<RelId> {
-        match self.from.ids.relation_id(rel) {
-            Some(id) => self.to.ids.relation_of(id),
+        match self.from.ids().relation_id(rel) {
+            Some(id) => self.to.ids().relation_of(id),
             None => {
                 let r = self.from.relation(rel);
                 let module = &self.from.module(r.module).name;
@@ -92,10 +92,10 @@ impl<'a> Map<'a> {
     pub fn ctor(&self, def: TypeId, c: u32) -> Option<u32> {
         let to = self.def(def)?;
         let from = self.from.ty(def).ctor_at(c)?;
-        match self.from.ids.ctor_id(from) {
+        match self.from.ids().ctor_id(from) {
             Some(id) => self
                 .to
-                .ids
+                .ids()
                 .ctor_of(id)
                 .filter(|k| k.def() == to)
                 .map(CtorRef::index),
@@ -118,18 +118,18 @@ impl<'a> Map<'a> {
         let t = self.from.ty(def);
         let found = t
             .field(c.and_then(|c| t.ctor_at(c)), name)
-            .and_then(|f| self.from.ids.field_id(f));
+            .and_then(|f| self.from.ids().field_id(f));
         match found {
             Some(id) => self
                 .to
-                .ids
+                .ids()
                 .field_of(id)
                 .filter(|f| {
                     f.def() == to
                         && (f.ctor().is_none() || f.ctor() == c.and_then(|c| self.ctor(def, c)))
                 })
                 .map(|f| self.to.ty(to).field_def(f).name.clone()),
-            None if self.from.ids.type_id(def).is_some() => None,
+            None if self.from.ids().type_id(def).is_some() => None,
             None => {
                 let k = c.and_then(|c| self.ctor(def, c)).unwrap_or(0);
                 self.to.ty(to).field_named(k, name).map(|f| f.name.clone())
@@ -266,7 +266,7 @@ impl<'a> Map<'a> {
             return Err(renamed(
                 Part::Relation,
                 &r.name,
-                self.from.ids.relation_id(rel).map(CatRelId::raw),
+                self.from.ids().relation_id(rel).map(CatRelId::raw),
             ));
         }
         for f in &r.key {
@@ -392,7 +392,7 @@ impl<'a> Map<'a> {
             return Err(renamed(
                 Part::Type,
                 &name(),
-                self.from.ids.type_id(def).map(CatTypeId::raw),
+                self.from.ids().type_id(def).map(CatTypeId::raw),
             ));
         }
         let mut last = None;
@@ -415,7 +415,7 @@ impl<'a> Map<'a> {
                     self.from
                         .ty(def)
                         .ctor_at(c)
-                        .and_then(|c| self.from.ids.ctor_id(c))
+                        .and_then(|c| self.from.ids().ctor_id(c))
                         .map(CatCtorId::raw),
                 ));
             }
@@ -468,5 +468,5 @@ fn renamed(part: Part, name: &str, id: Option<u64>) -> Loss {
 pub fn field_id(schema: &Schema, def: TypeId, c: u32, name: &str) -> Option<u64> {
     let td = schema.ty(def);
     let f = td.field(td.ctor_at(c), name)?;
-    schema.ids.field_id(f).map(CatFieldId::raw)
+    schema.ids().field_id(f).map(CatFieldId::raw)
 }

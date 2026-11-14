@@ -155,7 +155,7 @@ pub fn catalog(schema: &Schema) -> Catalog {
         let base = 100 * i as u64;
         let n = schema.ty(r.elem_def).ctors().len() as u32;
         let all: Vec<u32> = (0..n).collect();
-        let ids = &schema.ids;
+        let ids = &schema.ids();
         let key_index = IndexId(ids.key_id(rel).unwrap().raw());
         let mut indexes = vec![IndexDesc {
             id: key_index,

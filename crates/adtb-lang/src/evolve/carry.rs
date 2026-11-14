@@ -223,7 +223,7 @@ impl Cx<'_> {
         (reaches, given, discriminators, matched): (&Reaches, &Given, &[String], &[String]),
     ) {
         let td = schema.ty(def);
-        let ids = &schema.ids;
+        let ids = &schema.ids();
         let ctor = |name: &str| {
             td.ctor_named(name)
                 .and_then(|c| ids.ctor_id(c))
@@ -682,13 +682,13 @@ impl Source {
             return;
         };
         let rels: BTreeSet<u64> = schema
-            .ids
+            .ids()
             .relation_ids()
             .filter(|(r, _)| schema.relation(*r).elem_def == def)
             .map(|(_, id)| id.raw())
             .collect();
         let joined: BTreeSet<u64> = schema
-            .ids
+            .ids()
             .set_ids()
             .filter(|&(r, name, _)| {
                 schema.relation(r).elem_def == def
@@ -711,11 +711,11 @@ impl Source {
                     .field_refs()
                     .filter(move |(f, _)| f.ctor() == Some(c.index()))
             })
-            .filter_map(|(f, _)| Some((field_name(f), schema.ids.field_id(f)?.raw())))
+            .filter_map(|(f, _)| Some((field_name(f), schema.ids().field_id(f)?.raw())))
             .collect();
         let name = |id: u64| {
             schema
-                .ids
+                .ids()
                 .field_of(CatFieldId::from_raw(id))
                 .map(field_name)
         };
@@ -809,7 +809,7 @@ impl Source {
         };
         let ctor_name = |id: u64| {
             schema
-                .ids
+                .ids()
                 .ctor_of(CatCtorId::from_raw(id))
                 .map(|c| schema.ty(c.def()).ctor_def(c).name.clone())
         };

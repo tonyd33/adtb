@@ -304,11 +304,8 @@ impl<'a> Checker<'a> {
 
     pub fn resolve_type(&self, t: &ast::Type) -> R<Ty> {
         let names: Vec<String> = self.tparams.iter().map(|(n, _)| n.clone()).collect();
-        let scope = TypeScope {
-            module: self.module(),
-            params: &names,
-            mode: TypeMode::Signature,
-        };
+        let scope =
+            TypeScope::new(self.module(), &names, TypeMode::Signature).naming(self.vis.scope());
         let mut ordered = Vec::new();
         let ty = crate::schema::resolve_type(self.schema, &scope, t, &mut ordered, FileId(0))
             .map_err(|(span, msg)| diag(span, msg))?;
@@ -331,7 +328,7 @@ impl<'a> Checker<'a> {
     fn ambiguous(&self, name: &str) -> bool {
         let declaring = self.vis.modules.iter();
         declaring
-            .filter(|&&m| self.schema.module(m).values.contains_key(name))
+            .filter(|&&m| self.vis.value_in(self.schema, m, name).is_some())
             .count()
             > 1
     }
@@ -428,7 +425,7 @@ impl<'a> Checker<'a> {
             }
         };
         for m in modules {
-            for (tname, &t) in &self.schema.module(m).types {
+            for (tname, t) in self.vis.types_of(self.schema, m) {
                 if m == PRELUDE && tname == "Principal" {
                     continue;
                 }
@@ -894,10 +891,26 @@ pub fn check_adhoc_recording(
     bundles: &Bundles,
     record: Option<&mut Vec<(Span, Ref)>>,
 ) -> Result<Adhoc, Vec<Diag>> {
+    check_adhoc_in(schema, None, program, items, params, bundles, record)
+}
+
+/// Type checks ad hoc text as [`check_adhoc_recording`] does, its names finding only what `scope`
+/// holds when given.
+pub fn check_adhoc_in(
+    schema: &Schema,
+    scope: Option<&crate::schema::Scope>,
+    program: &Program,
+    items: &[ast::AdhocItem],
+    params: &BTreeMap<String, Ty>,
+    bundles: &Bundles,
+    record: Option<&mut Vec<(Span, Ref)>>,
+) -> Result<Adhoc, Vec<Diag>> {
     let mut diags = Vec::new();
-    let temps = adhoc::temp_relations(schema, items, &mut diags);
+    let vis = Visible::all(schema).scoped(scope.cloned());
+    let temps = adhoc::temp_relations(schema, &vis, items, &mut diags);
     let checked = temps.as_ref().map_or(schema, |(s, _)| s);
-    let mut c = Checker::new(checked, Visible::all(checked), Context::Adhoc);
+    let vis = Visible::all(checked).scoped(scope.cloned());
+    let mut c = Checker::new(checked, vis, Context::Adhoc);
     c.program = Some(program);
     c.bundles = bundles;
     if record.is_some() {

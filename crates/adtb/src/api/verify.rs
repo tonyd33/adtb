@@ -105,7 +105,7 @@ fn fields(f: Found) -> (u32, Vec<KeptField>) {
 fn group(scope: VerifyScope, schema: &Schema) -> String {
     match scope {
         VerifyScope::Database => "database".into(),
-        VerifyScope::Relation(r) => format!("relation {}", held_id(schema.ids.relation_id(r))),
+        VerifyScope::Relation(r) => format!("relation {}", held_id(schema.ids().relation_id(r))),
     }
 }
 
@@ -114,7 +114,7 @@ fn removed(group: &str, schema: &Schema) -> bool {
     group
         .strip_prefix("relation ")
         .and_then(|id| id.parse::<u64>().ok())
-        .is_some_and(|id| schema.ids.relation_of(CatRelId::from_raw(id)).is_none())
+        .is_some_and(|id| schema.ids().relation_of(CatRelId::from_raw(id)).is_none())
 }
 
 impl Findings {
@@ -297,7 +297,7 @@ impl<R: Runtime> Verifier<R> {
     pub(super) fn save_cursor(&self, schema: &Schema, table: RelId, cursor: Cursor) -> bool {
         let next = cursor.next.map_or(0, |p| i64::try_from(p.0).unwrap_or(0));
         let row = KeptRow {
-            relation: held_id(schema.ids.relation_id(table)).raw(),
+            relation: held_id(schema.ids().relation_id(table)).raw(),
             group: CURSOR.into(),
             ctor: 0,
             fields: vec![KeptField::Int(next), KeptField::Int(cursor.started)],
@@ -367,7 +367,7 @@ impl<R: Runtime> Verifier<R> {
         found: Replacement,
         keep: bool,
     ) -> Vec<Val> {
-        let id = held_id(schema.ids.relation_id(table)).raw();
+        let id = held_id(schema.ids().relation_id(table)).raw();
         let mut held = self.findings.lock(&self.rt);
         let row = |held: &mut Findings, f: Found| {
             let (ctor, rest) = fields(f);

@@ -324,7 +324,7 @@ fn ctor_count(schema: &Schema, r: RelId) -> u32 {
 /// constructor index.
 fn ctor_relations(schema: &Schema) -> Vec<(RelId, u32)> {
     schema
-        .ids
+        .ids()
         .relation_ids()
         .flat_map(|(r, _)| (0..ctor_count(schema, r)).map(move |c| (r, c)))
         .collect()
@@ -338,7 +338,7 @@ fn planned<'s>(
     heaps: &BTreeMap<(RelId, u32), HeapId>,
 ) -> plan::Catalog {
     let mut out = BTreeMap::new();
-    for (r, _) in schema.ids.relation_ids() {
+    for (r, _) in schema.ids().relation_ids() {
         let indexes = specs
             .clone()
             .filter(|s| s.relation == r)
@@ -355,7 +355,7 @@ fn planned<'s>(
                 .range((r, 0)..=(r, u32::MAX))
                 .map(|((_, c), h)| (*c, *h))
                 .collect(),
-            key_index: IndexId(held_id(schema.ids.key_id(r)).raw()),
+            key_index: IndexId(held_id(schema.ids().key_id(r)).raw()),
             indexes,
         };
         out.insert(r, desc);
@@ -657,7 +657,12 @@ impl Catalog {
         };
         let begun = txns.begin(pager)?;
         let x = begun.xid();
-        let every = empty.schema.ids.relation_ids().map(|(_, id)| id).collect();
+        let every = empty
+            .schema
+            .ids()
+            .relation_ids()
+            .map(|(_, id)| id)
+            .collect();
         let hold = txns.take(Scope::Every)?;
         let m = Migrating {
             pager,
@@ -1037,7 +1042,7 @@ impl Catalog {
             return Ok(pid);
         }
         Catalog::naming_sequences(pager, self.root)?;
-        let ids = &self.schema.ids;
+        let ids = &self.schema.ids();
         let pid = crate::write::counter_page(pager, &self.schema, |r| {
             ids.key_id(r).map(|k| &self.indexes[&k.raw()].1)
         })

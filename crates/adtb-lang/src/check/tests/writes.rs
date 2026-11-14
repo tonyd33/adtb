@@ -1570,9 +1570,7 @@ fn a_feed_resolves_over_the_modules_its_bundle_sees() {
         panic!("not a feed");
     };
     let module = |n: &str| s.module_named(n).expect("a module");
-    let vis = Visible {
-        modules: vec![module("auth"), module("billing")],
-    };
+    let vis = Visible::of(vec![module("auth"), module("billing")]);
     let (rel, _) = check_feed_in(&s, vis, &f).unwrap_or_else(|d| panic!("refused: {d:?}"));
     assert_eq!("payouts", s.relation(rel).name);
     assert!(check_feed(&s, module("auth"), &f).is_err());

@@ -549,7 +549,11 @@ impl<'p, 'a> Walk<'p, 'a> {
                 func: self.p.function(func).ok_or_else(|| {
                     refused(
                         self.p.blame_function(
-                            self.map.from.ids.function_id(func).map(CatFunctionId::raw),
+                            self.map
+                                .from
+                                .ids()
+                                .function_id(func)
+                                .map(CatFunctionId::raw),
                         ),
                         format!(
                             "it calls `{}`, whose code changed since the pin",
@@ -574,7 +578,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                         self.p.blame_function(
                             self.map
                                 .from
-                                .ids
+                                .ids()
                                 .aggregate_id(a as usize)
                                 .map(CatFunctionId::raw),
                         ),
@@ -656,7 +660,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         {
             return Ok(());
         }
-        let id = self.map.from.ids.relation_id(rel).map(CatRelId::raw);
+        let id = self.map.from.ids().relation_id(rel).map(CatRelId::raw);
         Err(refused(
             self.p.blame(
                 |o| matches!(o.op, Resolved::Rekey { relation, .. } if Some(relation) == id),
@@ -671,8 +675,8 @@ impl<'p, 'a> Walk<'p, 'a> {
     /// Returns the position at the later version of the unique at position `i` of `rel`.
     fn unique(&self, rel: RelId, i: u32) -> R<u32> {
         let to = self.relation(rel)?;
-        let from = self.map.from.ids.index_id(rel, i as usize);
-        from.and_then(|id| self.map.to.ids.index_of(id).filter(|&(r, _)| r == to))
+        let from = self.map.from.ids().index_id(rel, i as usize);
+        from.and_then(|id| self.map.to.ids().index_of(id).filter(|&(r, _)| r == to))
             .map(|(_, j)| j as u32)
         .ok_or_else(|| {
             refused(

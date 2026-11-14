@@ -235,7 +235,7 @@ fn imported(schema: &Schema, program: &Program, f: &QName, id: FnId) -> Result<E
     let mut e = entry(&f.name.text, Callable::Fn, normal.terms, body, binding)?;
     e.row.signature = format!("({}) -> {}", shown.join(", "), schema.show_ty(&def.result));
     e.row.text = format!("import fn {written}");
-    e.function = schema.ids.function_id(id).map(CatFunctionId::raw);
+    e.function = schema.ids().function_id(id).map(CatFunctionId::raw);
     e.function_name = Some(qualified);
     Ok(e)
 }

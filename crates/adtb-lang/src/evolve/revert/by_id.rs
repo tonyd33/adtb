@@ -32,25 +32,25 @@ impl NamedId {
             (m, q)
         };
         match self {
-            NamedId::Type(id) => Some(ty(schema.ids.type_of(id)?)),
+            NamedId::Type(id) => Some(ty(schema.ids().type_of(id)?)),
             NamedId::Ctor(id) => {
-                let c = schema.ids.ctor_of(id)?;
+                let c = schema.ids().ctor_of(id)?;
                 let (m, t) = ty(c.def());
                 Some((m, format!("{t}.{}", schema.ty(c.def()).ctor_def(c).name)))
             }
             NamedId::Relation(id) => {
-                let rd = schema.relation(schema.ids.relation_of(id)?);
+                let rd = schema.relation(schema.ids().relation_of(id)?);
                 let m = schema.module(rd.module).name.clone();
                 Some((m.clone(), format!("{m}::{}", rd.name)))
             }
             NamedId::Set(id) => {
-                let (r, name) = schema.ids.set_of(id)?;
+                let (r, name) = schema.ids().set_of(id)?;
                 let rd = schema.relation(r);
                 let m = schema.module(rd.module).name.clone();
                 Some((m.clone(), format!("{name} of {m}::{}", rd.name)))
             }
             NamedId::Field(id) => {
-                let f = schema.ids.field_of(id)?;
+                let f = schema.ids().field_of(id)?;
                 let td = schema.ty(f.def());
                 let (m, t) = ty(f.def());
                 let name = &td.field_def(f).name;

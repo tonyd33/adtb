@@ -52,7 +52,7 @@ fn index_clauses(src: &Source, schema: &Schema, rel: RelId) -> Vec<IndexClause> 
         ) {
             continue;
         }
-        if let Some(id) = schema.ids.index_id(rel, at) {
+        if let Some(id) = schema.ids().index_id(rel, at) {
             out.push((id.raw(), i, k, ranges[k].clone()));
         }
         at += 1;
@@ -64,7 +64,7 @@ fn index_clauses(src: &Source, schema: &Schema, rel: RelId) -> Vec<IndexClause> 
 fn relation_spelled(schema: &Schema, rel: RelId) -> Spelled {
     let rd = schema.relation(rel);
     let mut out = Spelled::from(format!("{}::", schema.module(rd.module).name));
-    let id = schema.ids.relation_id(rel).map(CatRelId::raw);
+    let id = schema.ids().relation_id(rel).map(CatRelId::raw);
     out.name(&rd.name, Space::Shared, id);
     out
 }
@@ -101,9 +101,9 @@ impl Inverting<'_> {
         for (rel, ..) in Cx::relations_of(&bs, def) {
             let was = index_clauses(before, &bs, rel);
             let Some(ar) = bs
-                .ids
+                .ids()
                 .relation_id(rel)
-                .and_then(|id| r#as.ids.relation_of(id))
+                .and_then(|id| r#as.ids().relation_of(id))
             else {
                 continue;
             };
@@ -475,7 +475,7 @@ impl Cx<'_> {
             let value = schema
                 .ty(disc_def)
                 .ctor_named(src)
-                .and_then(|c| schema.ids.ctor_id(c))
+                .and_then(|c| schema.ids().ctor_id(c))
                 .map(CatCtorId::raw);
             out_arms.push(format!("\n    | {} {{ {disc}: ", into.name.text));
             out_arms.name(src, Space::Shared, value);
@@ -522,7 +522,7 @@ impl Cx<'_> {
             if !over {
                 continue;
             }
-            let Some(id) = schema.ids.check_id(k) else {
+            let Some(id) = schema.ids().check_id(k) else {
                 return self.err("the log does not hold the check the operator rewrites");
             };
             out.push((id, at.decl(chk.file.0 as usize)?));
@@ -565,7 +565,7 @@ impl Cx<'_> {
             let product = schema
                 .ty(*inner)
                 .ctor_named(c)
-                .and_then(|p| schema.ids.ctor_id(p))
+                .and_then(|p| schema.ids().ctor_id(p))
                 .ok_or_else(missing)?;
             let was = before.ctor_key_id(&m, t, c).ok_or_else(missing)?;
             arms = arms.aliased(Space::Shared, was, product.raw());
@@ -788,7 +788,7 @@ impl Cx<'_> {
         for (rel, ..) in Self::relations_of(&schema, def) {
             for s in &schema.relation(rel).sets {
                 if s.ctors.contains(&c) {
-                    joins.extend(schema.ids.set_id(rel, &s.name));
+                    joins.extend(schema.ids().set_id(rel, &s.name));
                 }
             }
         }
@@ -856,7 +856,7 @@ impl Cx<'_> {
         let refs = check::schema_refs(schema);
         let id_of = |k: u32| {
             let r = schema.ty(def).ctor_refs().nth(k as usize)?;
-            schema.ids.ctor_id(r)
+            schema.ids().ctor_id(r)
         };
         let mut out = Vec::new();
         for (k, chk) in schema.constraints.iter().enumerate() {
@@ -888,7 +888,7 @@ impl Cx<'_> {
                 if texts.is_empty() {
                     continue;
                 }
-                let Some(id) = schema.ids.constraint_id(k) else {
+                let Some(id) = schema.ids().constraint_id(k) else {
                     return self.err("the log does not hold the constraint the operator rewrites");
                 };
                 out.push((id, n, beside, texts));
@@ -1131,7 +1131,7 @@ impl Cx<'_> {
     /// dropped it.
     fn drop_index_id(&mut self, id: CatIndexId, of: &str) -> R<()> {
         let schema = self.schema()?;
-        let held = schema.ids.index_of(id).and_then(|(rel, _)| {
+        let held = schema.ids().index_of(id).and_then(|(rel, _)| {
             let (i, _, ranges) = relation_clauses(self.src, &schema, rel)?;
             let (.., k, _) = index_clauses(self.src, &schema, rel)
                 .into_iter()
@@ -1225,7 +1225,7 @@ impl Cx<'_> {
                 return self.err(dropped(of, "constraint"));
             };
             let beside = match beside {
-                Some(b) => match schema.ids.ctor_of(b) {
+                Some(b) => match schema.ids().ctor_of(b) {
                     Some(r) if r.def() == def => Some(r.index()),
                     _ => return self.err(dropped(of, "constructor")),
                 },

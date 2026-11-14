@@ -137,7 +137,7 @@ struct IdWalk<'s> {
 
 impl IdWalk<'_> {
     fn type_id(&self, def: TypeId) -> Id {
-        self.schema.ids.type_id(def).map_or_else(
+        self.schema.ids().type_id(def).map_or_else(
             || Id::Name(self.schema.ty(def).name.clone()),
             |id| Id::Catalog(id.raw()),
         )
@@ -147,7 +147,7 @@ impl IdWalk<'_> {
         self.schema
             .ty(def)
             .ctor_at(ctor)
-            .and_then(|c| self.schema.ids.ctor_id(c))
+            .and_then(|c| self.schema.ids().ctor_id(c))
             .map_or_else(|| Id::Name(name.to_owned()), |id| Id::Catalog(id.raw()))
     }
 
@@ -166,7 +166,7 @@ impl IdWalk<'_> {
             .filter(|(f, _)| f.part() == part)
             .map(|(f, d)| {
                 let id = schema
-                    .ids
+                    .ids()
                     .field_id(f)
                     .map_or_else(|| Id::Name(d.name.clone()), |id| Id::Catalog(id.raw()));
                 (id, self.shape(&d.ty))
@@ -205,7 +205,7 @@ impl IdWalk<'_> {
     }
 
     fn relation_id(&self, rel: RelId) -> Id {
-        self.schema.ids.relation_id(rel).map_or_else(
+        self.schema.ids().relation_id(rel).map_or_else(
             || Id::Name(self.schema.relation(rel).name.clone()),
             |id| Id::Catalog(id.raw()),
         )
@@ -293,11 +293,7 @@ pub fn family_signature(target: &str) -> Option<ast::CallSignature> {
 ///
 /// Fail when a type does not resolve in `schema`; a schema type is written `module::name`.
 pub fn signature_ids(schema: &Schema, signature: &ast::CallSignature) -> Result<Ids, String> {
-    let scope = TypeScope {
-        module: PRELUDE,
-        params: &[],
-        mode: TypeMode::Signature,
-    };
+    let scope = TypeScope::new(PRELUDE, &[], TypeMode::Signature);
     let read = |t: &ast::Type| {
         resolve_type(schema, &scope, t, &mut Vec::new(), FileId(0)).map_err(|(_, m)| m)
     };
@@ -450,9 +446,7 @@ pub fn calls<'a>(
 
 /// Returns the user modules `imports` names, in import order.
 pub fn visible(schema: &Schema, imports: &[Import]) -> Result<Visible, String> {
-    let mut vis = Visible {
-        modules: Vec::new(),
-    };
+    let mut vis = Visible::of(Vec::new());
     for i in imports {
         if let Import::Module(m) = i {
             let id = schema

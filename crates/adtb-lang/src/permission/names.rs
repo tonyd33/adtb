@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::schema::{Schema, TypeDefKind, ValueDef};
+use crate::schema::{Schema, Scope, TypeDefKind};
 use crate::types::{CtorSet, FnId, RelId, Ty, TypeId};
 
 use super::{EffectiveGrants, Right};
@@ -35,7 +35,7 @@ impl Nameable {
                 | Right::Delete(target) => target.relation,
                 Right::Retag { relation, .. } => *relation,
             };
-            if let Some(rel) = schema.ids.relation_of(relation)
+            if let Some(rel) = schema.ids().relation_of(relation)
                 && out.relations.insert(rel)
             {
                 out.reach(schema, schema.relation(rel).elem_def);
@@ -105,22 +105,14 @@ impl Nameable {
         }
     }
 
-    /// Returns `schema` with every other user declaration out of its names, its ids unchanged.
-    pub fn view(&self, schema: &Schema) -> Schema {
-        let mut out = schema.clone();
-        for module in &mut out.modules {
-            if module.engine {
-                continue;
-            }
-            module.types.retain(|_, t| self.types.contains(t));
-            module.values.retain(|_, v| match v {
-                ValueDef::Relation(r) => self.relations.contains(r),
-                ValueDef::Function(f) => self.functions.contains(f),
-                ValueDef::Constraint(_) | ValueDef::Check(_) | ValueDef::Aggregate(_) => false,
-            });
-            module.hidden = module.types.is_empty() && module.values.is_empty();
-        }
-        out
+    /// Returns the scope that finds, of the user modules of `schema`, only these names.
+    pub fn scope(&self, schema: &Schema) -> Scope {
+        Scope::of_user_modules(
+            schema,
+            self.types.clone(),
+            self.relations.clone(),
+            self.functions.clone(),
+        )
     }
 
     /// Returns whether a parameter of a role may have type `ty`, which `schema` declares.

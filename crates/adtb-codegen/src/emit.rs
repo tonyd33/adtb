@@ -301,12 +301,12 @@ impl<'s> Module<'s> {
         let name = &d.name;
         let no_id = |what: String| Error::new(format!("{what} has no catalog id"));
         let id = schema
-            .ids
+            .ids()
             .type_id(t)
             .ok_or_else(|| no_id(format!("type `{name}`")))?;
         let ctor_ids = (0..d.ctors().len().max(1))
             .map(|c| {
-                let id = d.ctor_at(c as u32).and_then(|c| schema.ids.ctor_id(c));
+                let id = d.ctor_at(c as u32).and_then(|c| schema.ids().ctor_id(c));
                 id.map(|id| id.to_string()).ok_or_else(|| {
                     let ctor = d.ctors().get(c).map_or(name.as_str(), |c| &c.name);
                     no_id(format!("constructor `{name}.{ctor}`"))
@@ -402,7 +402,7 @@ impl<'s> Module<'s> {
             }
         };
         let id = schema
-            .ids
+            .ids()
             .relation_id(rel)
             .ok_or_else(|| Error::new(format!("relation `{}` has no catalog id", r.name)))?;
         let out = &mut self.out;

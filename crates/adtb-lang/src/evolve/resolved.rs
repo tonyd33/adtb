@@ -575,7 +575,7 @@ impl Source {
                             },
                         };
                         (
-                            schema.ids.function_id(fid),
+                            schema.ids().function_id(fid),
                             &fd.name,
                             fd.result.span,
                             deterministic[fid.0 as usize],
@@ -588,7 +588,7 @@ impl Source {
                         };
                         let (body, canonical) =
                             term(after_eq(&text, a.result.span.end, a.span.end));
-                        let id = schema.ids.aggregate_id(i as usize);
+                        let id = schema.ids().aggregate_id(i as usize);
                         (
                             id,
                             &a.name,
@@ -745,7 +745,7 @@ impl Resolver<'_> {
                     .count();
                 self.indexes.insert(rel, inline);
                 Resolved::AddRelation {
-                    relation: held_id(self.schema.ids.relation_id(rel)).raw(),
+                    relation: held_id(self.schema.ids().relation_id(rel)).raw(),
                     decl: term(r.span),
                 }
             }
@@ -753,7 +753,7 @@ impl Resolver<'_> {
                 let rel = self.relation(&own(&s.relation)).ok_or_else(gone)?;
                 let set = self
                     .schema
-                    .ids
+                    .ids()
                     .set_id(rel, &s.name.text)
                     .ok_or_else(gone)?
                     .raw();
@@ -764,7 +764,7 @@ impl Resolver<'_> {
                 }
                 Resolved::AddSet {
                     set,
-                    relation: held_id(self.schema.ids.relation_id(rel)).raw(),
+                    relation: held_id(self.schema.ids().relation_id(rel)).raw(),
                     name: s.name.text.clone(),
                 }
             }
@@ -776,7 +776,7 @@ impl Resolver<'_> {
                         ctor: self.ctor(rel, &c.text).ok_or_else(gone)?,
                     });
                 }
-                let relation = held_id(self.schema.ids.relation_id(rel)).raw();
+                let relation = held_id(self.schema.ids().relation_id(rel)).raw();
                 let fields = match (fields.first(), fields.last()) {
                     (Some(a), Some(b)) => term(a.span.to(b.span)),
                     _ => String::new(),
@@ -840,7 +840,7 @@ impl Resolver<'_> {
             }
             None => return None,
         };
-        self.schema.ids.type_id(def).map(CatTypeId::raw)
+        self.schema.ids().type_id(def).map(CatTypeId::raw)
     }
 
     fn relation(&self, q: &QName) -> Option<RelId> {
@@ -853,7 +853,7 @@ impl Resolver<'_> {
     fn ctor(&self, rel: RelId, name: &str) -> Option<u64> {
         let def = self.schema.relation(rel).elem_def;
         let c = self.schema.ty(def).ctor_named(name)?;
-        self.schema.ids.ctor_id(c).map(CatCtorId::raw)
+        self.schema.ids().ctor_id(c).map(CatCtorId::raw)
     }
 
     /// Returns the id of the unique or index an operator appends to `rel`.
@@ -861,13 +861,13 @@ impl Resolver<'_> {
         let at = match self.indexes.get(&rel) {
             Some(&n) => n,
             None => {
-                let id = held_id(self.schema.ids.relation_id(rel));
-                let r = self.before.ids.relation_of(id)?;
+                let id = held_id(self.schema.ids().relation_id(rel));
+                let r = self.before.ids().relation_of(id)?;
                 self.before.relation(r).indexes.len()
             }
         };
         self.indexes.insert(rel, at + 1);
-        self.schema.ids.index_id(rel, at).map(CatIndexId::raw)
+        self.schema.ids().index_id(rel, at).map(CatIndexId::raw)
     }
 
     fn function(&self, name: &ast::Ident) -> Option<u64> {
@@ -876,10 +876,10 @@ impl Resolver<'_> {
             name: name.clone(),
         };
         match self.value(self.schema, &q)? {
-            ValueDef::Function(f) => self.schema.ids.function_id(f).map(CatFunctionId::raw),
+            ValueDef::Function(f) => self.schema.ids().function_id(f).map(CatFunctionId::raw),
             ValueDef::Aggregate(i) => self
                 .schema
-                .ids
+                .ids()
                 .aggregate_id(i as usize)
                 .map(CatFunctionId::raw),
             _ => None,
@@ -894,12 +894,12 @@ impl Resolver<'_> {
         match self.value(self.schema, &q)? {
             ValueDef::Constraint(i) => self
                 .schema
-                .ids
+                .ids()
                 .constraint_id(i as usize)
                 .map(CatConstraintId::raw),
             ValueDef::Check(i) => self
                 .schema
-                .ids
+                .ids()
                 .check_id(i as usize)
                 .map(CatConstraintId::raw),
             _ => None,
@@ -931,14 +931,14 @@ impl Resolver<'_> {
                 name: to.text.clone(),
             },
             OperatorKind::DropRelation(r) => Resolved::DropRelation {
-                relation: held_id(before.ids.relation_id(self.relation_in(before, r)?)).raw(),
+                relation: held_id(before.ids().relation_id(self.relation_in(before, r)?)).raw(),
             },
             OperatorKind::RenameRelation(r, to) => Resolved::RenameRelation {
                 relation: match self.relation_in(before, r) {
-                    Some(rel) => held_id(before.ids.relation_id(rel)).raw(),
+                    Some(rel) => held_id(before.ids().relation_id(rel)).raw(),
                     None => held_id(
                         after
-                            .ids
+                            .ids()
                             .relation_id(self.relation_in(after, &renamed(r, to))?),
                     )
                     .raw(),
@@ -974,8 +974,8 @@ impl Resolver<'_> {
                 }
                 let rel = self.relation_in(after, relation)?;
                 Resolved::Rekey {
-                    relation: held_id(after.ids.relation_id(rel)).raw(),
-                    key: after.ids.key_id(rel)?.raw(),
+                    relation: held_id(after.ids().relation_id(rel)).raw(),
+                    key: after.ids().key_id(rel)?.raw(),
                     fields: term(key.first()?.span.to(key.last()?.span)),
                 }
             }
@@ -1215,7 +1215,7 @@ impl Resolver<'_> {
                     .iter()
                     .position(|c| c.name == f.text)?;
                 ArmTarget::OfComputed {
-                    computed: after.ids.computed_id(rel, at)?.raw(),
+                    computed: after.ids().computed_id(rel, at)?.raw(),
                 }
             }
             None => match self.function_in(after, &a.target) {
@@ -1256,15 +1256,16 @@ impl Resolver<'_> {
         let mut fresh = Vec::new();
         if added > 0 {
             let def = self.type_def(self.schema, ty)?;
-            let old: BTreeSet<CatIndexId> = self.before.ids.index_ids().map(|(_, id)| id).collect();
+            let old: BTreeSet<CatIndexId> =
+                self.before.ids().index_ids().map(|(_, id)| id).collect();
             let (rel, _) = self
                 .schema
-                .ids
+                .ids()
                 .relation_ids()
                 .find(|&(r, _)| self.schema.relation(r).elem_def == def)?;
             fresh = self
                 .schema
-                .ids
+                .ids()
                 .relation_index_ids(rel)
                 .map(|(_, id)| id)
                 .filter(|id| !old.contains(id))
@@ -1304,7 +1305,7 @@ impl Resolver<'_> {
     fn type_in(&self, schema: &Schema, q: &QName) -> Option<u64> {
         let m = schema.module_named(&self.module_of(q))?;
         let def = schema.module(m).types.get(&q.name.text)?;
-        schema.ids.type_id(*def).map(CatTypeId::raw)
+        schema.ids().type_id(*def).map(CatTypeId::raw)
     }
 
     fn relation_in(&self, schema: &Schema, q: &QName) -> Option<RelId> {
@@ -1317,7 +1318,7 @@ impl Resolver<'_> {
 
     fn set_in(&self, schema: &Schema, r: &QName, set: &str) -> Option<u64> {
         let rel = self.relation_in(schema, r)?;
-        schema.ids.set_id(rel, set).map(CatSetId::raw)
+        schema.ids().set_id(rel, set).map(CatSetId::raw)
     }
 
     fn type_def(&self, schema: &Schema, q: &QName) -> Option<TypeId> {
@@ -1328,7 +1329,7 @@ impl Resolver<'_> {
     fn type_ctor(&self, schema: &Schema, ty: &QName, ctor: &str) -> Option<u64> {
         let def = self.type_def(schema, ty)?;
         let c = schema.ty(def).ctor_named(ctor)?;
-        schema.ids.ctor_id(c).map(CatCtorId::raw)
+        schema.ids().ctor_id(c).map(CatCtorId::raw)
     }
 
     /// Returns the name the field at `path` has after the renames of the operators after this one.
@@ -1357,7 +1358,7 @@ impl Resolver<'_> {
             }
             None => td.field(td.ctor_at(0), name),
         };
-        schema.ids.field_id(f?).map(CatFieldId::raw)
+        schema.ids().field_id(f?).map(CatFieldId::raw)
     }
 
     fn target(&self, t: &CtorTarget) -> Option<Target> {
@@ -1369,8 +1370,8 @@ impl Resolver<'_> {
                     let def = s.relation(rel).elem_def;
                     let k = s.ty(def).ctor_named(&c.text)?;
                     Some((
-                        held_id(s.ids.relation_id(rel)).raw(),
-                        s.ids.ctor_id(k)?.raw(),
+                        held_id(s.ids().relation_id(rel)).raw(),
+                        s.ids().ctor_id(k)?.raw(),
                     ))
                 })?;
                 Target::InRelation {
@@ -1418,14 +1419,17 @@ impl Resolver<'_> {
                 && names(&d.fields).as_ref() == Some(&wanted)
                 && d.scope.as_ref().map(|s| s.to_vec()) == scope
         })?;
-        schema.ids.index_id(rel, at).map(CatIndexId::raw)
+        schema.ids().index_id(rel, at).map(CatIndexId::raw)
     }
 
     fn function_in(&self, schema: &Schema, q: &QName) -> Option<u64> {
         let m = schema.module_named(&self.module_of(q))?;
         match schema.module(m).values.get(&q.name.text)? {
-            ValueDef::Function(f) => schema.ids.function_id(*f).map(CatFunctionId::raw),
-            ValueDef::Aggregate(i) => schema.ids.aggregate_id(*i as usize).map(CatFunctionId::raw),
+            ValueDef::Function(f) => schema.ids().function_id(*f).map(CatFunctionId::raw),
+            ValueDef::Aggregate(i) => schema
+                .ids()
+                .aggregate_id(*i as usize)
+                .map(CatFunctionId::raw),
             _ => None,
         }
     }
@@ -1434,10 +1438,10 @@ impl Resolver<'_> {
         let m = schema.module_named(&self.module_of(q))?;
         match schema.module(m).values.get(&q.name.text)? {
             ValueDef::Constraint(i) => schema
-                .ids
+                .ids()
                 .constraint_id(*i as usize)
                 .map(CatConstraintId::raw),
-            ValueDef::Check(i) => schema.ids.check_id(*i as usize).map(CatConstraintId::raw),
+            ValueDef::Check(i) => schema.ids().check_id(*i as usize).map(CatConstraintId::raw),
             _ => None,
         }
     }

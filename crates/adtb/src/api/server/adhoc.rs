@@ -204,7 +204,9 @@ fn granted_calls<R: Runtime>(e: &Engine<R>, name: &str, grants: &[Grant]) -> BTr
         .filter(|g| g.grantee == name && g.privilege == "call" && !g.dormant && g.kind == "Log")
         .filter_map(
             |g| match Granted::read_target(&e.schema, "call", g.target.as_deref()?) {
-                Some(Granted::CallFn(id)) => e.schema.ids.function_of(CatFunctionId::from_raw(id)),
+                Some(Granted::CallFn(id)) => {
+                    e.schema.ids().function_of(CatFunctionId::from_raw(id))
+                }
                 _ => None,
             },
         )
@@ -236,7 +238,7 @@ pub(in super::super) fn monitored(schema: &Schema, r: &Requirement) -> bool {
     ) {
         return false;
     }
-    let Some(rel) = r.relation().and_then(|id| schema.ids.relation_of(id)) else {
+    let Some(rel) = r.relation().and_then(|id| schema.ids().relation_of(id)) else {
         return false;
     };
     let plans = engine_relation(schema, "catalog", "plans").ok();
@@ -253,7 +255,7 @@ fn revealing(schema: &Schema) -> BTreeSet<u64> {
         let td = schema.ty(schema.relation(rel).elem_def);
         out.extend(
             schema
-                .ids
+                .ids()
                 .type_field_ids(td.id())
                 .filter(|(f, _)| td.field_def(*f).name == *field)
                 .map(|(_, id)| id.raw()),

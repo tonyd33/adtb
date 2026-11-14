@@ -72,7 +72,7 @@ impl Step {
                     panic!("expected a catalog-linked unique violation")
                 };
                 let relation = fixture.rel(&relation);
-                let matched = fixture.schema.ids.index_ids().any(|((at, offset), id)| {
+                let matched = fixture.schema.ids().index_ids().any(|((at, offset), id)| {
                     at == relation
                         && constraint == format!("{prefix}#{id}")
                         && id.raw() != u64::try_from(offset).expect("index offset fits u64")

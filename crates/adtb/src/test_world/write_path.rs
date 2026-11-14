@@ -117,10 +117,12 @@ impl<R: Runtime> WritePath<R> {
     ) -> Option<WritePath<R>> {
         let (pager, _) = Pager::open(rt.clone(), &super::options(256)).ok()?;
         let (catalog, txns) = Catalog::open(rt.clone(), &pager).expect("the catalog opens");
-        let mut schema = catalog.schema().clone();
-        if let Some(f) = staged_by {
-            load::staged(&mut schema, &f.schema);
-        }
+        let schema = match staged_by {
+            Some(f) => load::staged_source(catalog.source(), &f.schema)
+                .schema()
+                .expect("the staged source builds"),
+            None => catalog.schema().clone(),
+        };
         let program = catalog.program().clone();
         let normal = norm::program(&schema, &program).expect("the schema normalises");
         let bindings = catalog.bindings();

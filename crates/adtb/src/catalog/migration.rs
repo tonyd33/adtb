@@ -353,7 +353,7 @@ impl Catalog {
         data: &Data,
     ) -> Result<Vec<String>, Error> {
         let mut why = Vec::new();
-        for (r, rid) in a.ids.relation_ids() {
+        for (r, rid) in a.ids().relation_ids() {
             let Some(rb) = relation(b, rid) else {
                 continue;
             };
@@ -379,9 +379,9 @@ impl Catalog {
                 }
             }
         }
-        for (ac, id) in a.ids.ctor_ids() {
+        for (ac, id) in a.ids().ctor_ids() {
             let (def, c) = (ac.def(), ac.index());
-            let verb = match b.ids.ctor_of(id) {
+            let verb = match b.ids().ctor_of(id) {
                 Some(bc)
                     if a.value_stage(def, c) != Stage::Declared
                         && b.value_stage(bc.def(), bc.index()) == Stage::Declared =>
@@ -409,7 +409,7 @@ impl Catalog {
     ) -> Result<Vec<String>, Error> {
         let id = stored(type_ctor_id(schema, def, c));
         let mut why = Vec::new();
-        for (r, rid) in schema.ids.relation_ids() {
+        for (r, rid) in schema.ids().relation_ids() {
             let fields: Vec<Vec<(String, Ty)>> = (0..ctor_count(schema, r))
                 .map(|k| layout::row(schema, r, k))
                 .collect();

@@ -87,36 +87,34 @@ impl Analyzer<'_> {
             .collect()
     }
 
-    pub(super) fn target(&self, rel: RelId, ctor: u32) -> Result<Target, Error> {
-        if is_temp(self.schema, rel) {
-            return Ok(TEMP_TARGET);
+    /// Returns the target of constructor `ctor` of `rel`; `None` for a temp relation.
+    pub(super) fn target(&self, rel: RelId, ctor: u32) -> Result<Option<Target>, Error> {
+        if self.schema.temp_id(rel).is_some() {
+            return Ok(None);
         }
         let ctor = self
             .schema
             .ty(self.schema.relation(rel).elem_def)
             .ctor_at(ctor)
             .ok_or(Error::InvalidKernel("a constructor of the relation's type"))?;
-        let ids = &self.schema.ids;
-        Ok(Target {
+        let ids = &self.schema.ids();
+        Ok(Some(Target {
             relation: ids
                 .relation_id(rel)
                 .ok_or(Error::MissingIdentity(Slot::Relation(rel)))?,
             constructor: ids
                 .ctor_id(ctor)
                 .ok_or(Error::MissingIdentity(Slot::Ctor(ctor)))?,
-        })
+        }))
     }
 
     pub(super) fn field_id(&self, rel: RelId, ctor: u32, name: &str) -> Result<CatFieldId, Error> {
-        if is_temp(self.schema, rel) {
-            return Ok(CatFieldId::from_raw(u64::MAX));
-        }
         let td = self.schema.ty(self.schema.relation(rel).elem_def);
         let f = td
             .field(td.ctor_at(ctor), name)
             .ok_or(Error::InvalidKernel("a field of the relation's type"))?;
         self.schema
-            .ids
+            .ids()
             .field_id(f)
             .ok_or(Error::MissingIdentity(Slot::Field(f)))
     }
@@ -138,18 +136,22 @@ impl Analyzer<'_> {
         let mut out = Value::default();
         for c in self.constructors(def, selected) {
             let target = self.target(rel, c)?;
-            for key in &keys {
-                let field = self.field_id(rel, c, key)?;
-                self.requirements.keys.insert((target, field));
-            }
-            if range {
-                self.range(target);
+            if let Some(target) = target {
+                for key in &keys {
+                    let field = self.field_id(rel, c, key)?;
+                    self.requirements.keys.insert((target, field));
+                }
+                if range {
+                    self.range(target);
+                }
             }
             let mut fields = BTreeMap::new();
             for (name, ty, _) in self.fields(def, &args, c) {
-                let field = self.field_id(rel, c, &name)?;
                 let mut value = self.unknown(&ty);
-                value.reads.insert(Requirement::ReadField(target, field));
+                if let Some(target) = target {
+                    let field = self.field_id(rel, c, &name)?;
+                    value.reads.insert(Requirement::ReadField(target, field));
+                }
                 value.copy = Some(CopyToken(self.fresh()));
                 fields.insert(name, value);
             }

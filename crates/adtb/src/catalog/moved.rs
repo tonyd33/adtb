@@ -89,7 +89,7 @@ struct Mapping<'s> {
 /// Each relation of `a` whose element type is `def`, with its catalog id and the same relation
 /// of `b`.
 fn relations_of(a: &Schema, b: &Schema, def: TypeId) -> Vec<(RelId, CatRelId, RelId)> {
-    a.ids
+    a.ids()
         .relation_ids()
         .filter(|&(r, _)| a.relation(r).elem_def == def)
         .filter_map(|(r, _)| {

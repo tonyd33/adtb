@@ -39,18 +39,6 @@ pub struct EffectiveGrants {
 }
 
 impl Requirement {
-    fn on_temp(&self) -> bool {
-        match self {
-            Requirement::ReadConstructor(t)
-            | Requirement::ReadField(t, _)
-            | Requirement::Insert(t)
-            | Requirement::Delete(t)
-            | Requirement::UpdateField(t, _) => *t == TEMP_TARGET,
-            Requirement::Retag { relation, .. } => *relation == TEMP_TARGET.relation,
-            Requirement::ReadFiles => false,
-        }
-    }
-
     /// Returns the relation the requirement names, by its catalog id.
     pub fn relation(&self) -> Option<CatRelId> {
         match self {
@@ -73,9 +61,6 @@ impl Requirements {
             .filter(|r| {
                 if matches!(r, Requirement::ReadFiles) {
                     return !grants.read_files;
-                }
-                if r.on_temp() {
-                    return false;
                 }
                 !grants.relations.iter().any(|g| {
                     (mode == Mode::Ordinary || g.grant_option) && self.covered(r, &g.right)

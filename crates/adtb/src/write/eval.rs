@@ -1306,7 +1306,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     /// does not hold at the same path.
     fn check_open(&self, plus: &Rows) -> Result<(), Error> {
         let schema = &self.db.schema;
-        if schema.stages.is_empty() && schema.value_stages.is_empty() {
+        if schema.all_enabled() {
             return Ok(());
         }
         let closed = |s: Stage| match s {

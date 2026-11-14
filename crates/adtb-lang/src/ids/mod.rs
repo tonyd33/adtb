@@ -74,6 +74,18 @@ catalog_id!(
     CatConstraintId,
 );
 
+/// The id of a temp relation of ad hoc text, from a space of its own: never stored, and never
+/// a catalog id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TempRelId(u32);
+
+impl TempRelId {
+    /// Returns the id after `last`, the first when `None`.
+    pub(crate) fn after(last: Option<TempRelId>) -> TempRelId {
+        TempRelId(last.map_or(0, |t| t.0 + 1))
+    }
+}
+
 /// The catalog ids of a schema's objects, by the handle of each in the schema.
 ///
 /// Every object of a user module has an id, and every object of an engine module its fixed id.

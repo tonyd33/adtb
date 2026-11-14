@@ -282,10 +282,10 @@ impl Inverting<'_> {
         let members = d
             .members
             .iter()
-            .map(|c| schema.ids.ctor_id(td.ctor_named(&c.text)?))
+            .map(|c| schema.ids().ctor_id(td.ctor_named(&c.text)?))
             .collect::<Option<Vec<CatCtorId>>>()?;
         Some(Inverse::AddSet {
-            relation: schema.ids.relation_id(rel)?,
+            relation: schema.ids().relation_id(rel)?,
             name: name.text.clone(),
             members,
             of: self.text(self.op.span),
@@ -484,7 +484,7 @@ impl Cx<'_> {
             OperatorKind::RenameType(t, _) => self.by_id(at.renamed(
                 |s| {
                     let def = type_named(s, &at.module_of(t), &t.name.text)?;
-                    s.ids.type_id(def).map(NamedId::Type)
+                    s.ids().type_id(def).map(NamedId::Type)
                 },
                 &t.name,
             )),
@@ -528,14 +528,14 @@ impl Cx<'_> {
             OperatorKind::RenameRelation(r, _) => self.by_id(at.renamed(
                 |s| {
                     let rel = relation_named(s, &at.module_of(r), &r.name.text)?;
-                    s.ids.relation_id(rel).map(NamedId::Relation)
+                    s.ids().relation_id(rel).map(NamedId::Relation)
                 },
                 &r.name,
             )),
             OperatorKind::AddSet(d) => {
                 let set = at.after.schema().ok().and_then(|s| {
                     let rel = relation_named(&s, &logged.module, &d.relation.text)?;
-                    s.ids.set_id(rel, &d.name.text)
+                    s.ids().set_id(rel, &d.name.text)
                 });
                 self.by_id(set.map(|set| Inverse::DropSet {
                     set,
@@ -546,7 +546,7 @@ impl Cx<'_> {
             OperatorKind::RenameSet(set, r, _) => self.by_id(at.renamed(
                 |s| {
                     let rel = relation_named(s, &at.module_of(r), &r.name.text)?;
-                    s.ids.set_id(rel, &set.text).map(NamedId::Set)
+                    s.ids().set_id(rel, &set.text).map(NamedId::Set)
                 },
                 set,
             )),
@@ -598,7 +598,7 @@ impl Cx<'_> {
                 |s| {
                     let def = type_named(s, &at.module_of(&path.ty), &path.ty.name.text)?;
                     let c = s.ty(def).ctor_named(&path.ctor.text)?;
-                    s.ids.ctor_id(c).map(NamedId::Ctor)
+                    s.ids().ctor_id(c).map(NamedId::Ctor)
                 },
                 &path.ctor,
             )),
@@ -718,7 +718,7 @@ impl Cx<'_> {
             OperatorKind::RenameField(path, _) => self.by_id(at.renamed(
                 |s| {
                     let def = type_named(s, &at.module_of(&path.ty), &path.ty.name.text)?;
-                    s.ids
+                    s.ids()
                         .field_id(field_named(s, def, path)?)
                         .map(NamedId::Field)
                 },

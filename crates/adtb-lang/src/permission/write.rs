@@ -21,10 +21,11 @@ impl Analyzer<'_> {
         let mut changes = Vec::new();
         for row in rows.elements().alternatives() {
             let ctor = constructor(&row)?;
-            let target = self.target(rel, ctor)?;
-            self.requirements
-                .required
-                .insert(Requirement::Insert(target));
+            if let Some(target) = self.target(rel, ctor)? {
+                self.requirements
+                    .required
+                    .insert(Requirement::Insert(target));
+            }
             changes.push(Change {
                 rel,
                 old: None,
@@ -46,10 +47,11 @@ impl Analyzer<'_> {
         let rows = self.eval(arena, rows, env)?;
         let mut changes = Vec::new();
         for row in rows.elements().alternatives() {
-            let target = self.target(rel, constructor(&row)?)?;
-            self.requirements
-                .required
-                .insert(Requirement::Delete(target));
+            if let Some(target) = self.target(rel, constructor(&row)?)? {
+                self.requirements
+                    .required
+                    .insert(Requirement::Delete(target));
+            }
             changes.push(Change {
                 rel,
                 old: Some(row),
@@ -118,8 +120,9 @@ impl Analyzer<'_> {
         let from = constructor(old)?;
         let to = constructor(new)?;
         let target = self.target(rel, from)?;
-        if from != to {
-            let destination = self.target(rel, to)?;
+        if from != to
+            && let (Some(target), Some(destination)) = (target, self.target(rel, to)?)
+        {
             self.requirements.required.insert(Requirement::Retag {
                 relation: target.relation,
                 from: target.constructor,
@@ -134,7 +137,10 @@ impl Analyzer<'_> {
             let same = value.copy.is_some() && value.copy == previous.copy;
             if !same {
                 self.consume(value);
-                if from == to && !self.schema.relation(rel).key.contains(name) {
+                if from == to
+                    && !self.schema.relation(rel).key.contains(name)
+                    && let Some(target) = target
+                {
                     let field = self.field_id(rel, from, name)?;
                     self.requirements
                         .required

@@ -8,7 +8,7 @@ use adtb_lang::check::{
 };
 use adtb_lang::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type};
 use adtb_lang::resolve::Visible;
-use adtb_lang::schema::{Schema, ValueDef, build};
+use adtb_lang::schema::{Schema, States, ValueDef, build, build_with};
 use adtb_lang::span::FileId;
 use adtb_lang::types::{RelId, Ty, TypeId};
 use adtb_reference::{
@@ -67,6 +67,60 @@ impl Fixture {
     /// by [`Fixture::of_schema`].
     pub fn decls(&self) -> Option<&str> {
         self.decls.as_deref()
+    }
+
+    /// Rebuild the schema with constructor `c` of relation `rel` in write state `stage`, its ids
+    /// unchanged.
+    ///
+    /// Preconditions: the fixture was made by [`Fixture::new`].
+    pub fn stage_relation(&mut self, (rel, c): (RelId, u32), stage: adtb_lang::schema::Stage) {
+        let ids = self.schema.ids();
+        let def = self.schema.relation(rel).elem_def;
+        let key = (
+            ids.relation_id(rel).expect("the relation has an id"),
+            self.ctor_id(def, c),
+        );
+        self.restage(|states| {
+            states.set_relation(key.0, key.1, stage);
+        });
+    }
+
+    /// Rebuild the schema with constructor `c` of type `t` in write state `stage` as a value, its
+    /// ids unchanged.
+    ///
+    /// Preconditions: the fixture was made by [`Fixture::new`].
+    pub fn stage_value(&mut self, (t, c): (TypeId, u32), stage: adtb_lang::schema::Stage) {
+        let key = self.ctor_id(t, c);
+        self.restage(|states| {
+            states.set_value(key, stage);
+        });
+    }
+
+    fn ctor_id(&self, t: TypeId, c: u32) -> adtb_lang::ids::CatCtorId {
+        let c = self
+            .schema
+            .ty(t)
+            .ctor_at(c)
+            .expect("a constructor of the type");
+        self.schema
+            .ids()
+            .ctor_id(c)
+            .expect("the constructor has an id")
+    }
+
+    fn restage(&mut self, change: impl FnOnce(&mut States)) {
+        let decls = self
+            .decls
+            .as_deref()
+            .expect("a fixture made from declarations");
+        let file = parse_schema(&format!("module app\n{decls}"), Options::default())
+            .ok()
+            .expect("the fixture's schema parses");
+        let mut states = self.schema.states();
+        change(&mut states);
+        let ids = self.schema.ids().clone();
+        self.schema = build_with(&[(FileId(0), file)], &[], &|_| ids.clone(), &states)
+            .unwrap_or_else(|ds| panic!("the fixture's schema does not build: {ds:?}"));
     }
 
     /// Returns the declared type `name` of the module and the index of its constructor `ctor`.

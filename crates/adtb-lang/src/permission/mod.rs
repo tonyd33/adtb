@@ -50,17 +50,6 @@ pub struct Requirements {
     keys: BTreeSet<(Target, CatFieldId)>,
 }
 
-/// The target every row of a temp relation stands for. A temp relation has no identity in the
-/// schema, and its text alone reads and writes it.
-const TEMP_TARGET: Target = Target {
-    relation: CatRelId::from_raw(u64::MAX),
-    constructor: CatCtorId::from_raw(u64::MAX),
-};
-
-fn is_temp(schema: &Schema, rel: RelId) -> bool {
-    schema.module_named(crate::check::TEMP_MODULE) == Some(schema.relation(rel).module)
-}
-
 impl Requirements {
     pub fn iter(&self) -> impl Iterator<Item = &Requirement> {
         self.required.iter()
@@ -76,7 +65,7 @@ impl Requirements {
         for rel in relations {
             let def = schema.relation(rel).elem_def;
             let relation = schema
-                .ids
+                .ids()
                 .relation_id(rel)
                 .ok_or(Error::MissingIdentity(Slot::Relation(rel)))?;
             let td = schema.ty(def);
@@ -84,7 +73,7 @@ impl Requirements {
                 let target = Target {
                     relation,
                     constructor: schema
-                        .ids
+                        .ids()
                         .ctor_id(ctor)
                         .ok_or(Error::MissingIdentity(Slot::Ctor(ctor)))?,
                 };
@@ -94,7 +83,7 @@ impl Requirements {
                     .filter(|(f, _)| f.ctor().is_none_or(|c| c == ctor.index()));
                 for (f, _) in fields {
                     let id = schema
-                        .ids
+                        .ids()
                         .field_id(f)
                         .ok_or(Error::MissingIdentity(Slot::Field(f)))?;
                     out.required.insert(Requirement::ReadField(target, id));

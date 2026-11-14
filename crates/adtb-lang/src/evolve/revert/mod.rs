@@ -722,13 +722,13 @@ impl Cx<'_> {
                 of,
             } => {
                 let schema = self.schema()?;
-                let Some(r) = schema.ids.relation_of(relation) else {
+                let Some(r) = schema.ids().relation_of(relation) else {
                     return self.err(dropped(&of, "relation"));
                 };
                 let rd = schema.relation(r);
                 let mut ctors = Vec::new();
                 for c in members {
-                    let Some(c) = schema.ids.ctor_of(c) else {
+                    let Some(c) = schema.ids().ctor_of(c) else {
                         return self.err(dropped(&of, "constructor"));
                     };
                     ctors.push(schema.ty(c.def()).ctor_def(c).name.clone());

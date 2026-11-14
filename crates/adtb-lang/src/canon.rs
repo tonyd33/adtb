@@ -125,7 +125,7 @@ impl Names {
 
 /// Returns the catalog id of the object `r` names, `None` for one with no id.
 fn catalog_id(schema: &Schema, r: &Ref) -> Option<(Space, u64)> {
-    let ids = &schema.ids;
+    let ids = &schema.ids();
     Some(match r {
         Ref::Type(d) => (Space::Shared, ids.type_id(*d)?.raw()),
         Ref::Ctor(d, c) => (

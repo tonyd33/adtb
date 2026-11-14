@@ -1,0 +1,32 @@
+seed 644
+migrate
+  module shop
+  add module shop
+  add type Doc = { id: Key docs, n: I64 }
+  add relation docs : Doc key id generate sequence
+  module vault
+  add module vault
+  add type Hold = { id: Key holds, n: I64 }
+  add relation holds : Hold key id generate sequence
+role reader
+grant
+  grant adhoc to reader
+migrate
+  module shop
+  grant read docs to reader
+
+as reader error Denied { detail: "role `reader` may not run this text" }
+  temp relation stage : vault::Hold key id
+  from s in stage select s.n
+as reader error Denied { detail: "role `reader` may not run this text" }
+  temp relation stage : Hold key id
+  from s in stage select s.n
+as reader query
+  temp relation holds : { k: I64 } key k
+  insert holds { k: 1 }
+  from h in holds select h.k
+----
+1
+as owner error Invalid { detail: "module `vault` declares `holds`; a temp relation takes a name no module the text reads declares" }
+  temp relation holds : { k: I64 } key k
+  from d in docs select d.n
