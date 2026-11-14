@@ -138,7 +138,7 @@ impl Checker<'_> {
                 let t = self
                     .join(&x.ty, &y.ty)
                     .ok_or_else(|| self.wrong(name, &[&x.ty, &y.ty], span))?;
-                if !self.ordered(&t) {
+                if !self.ordered(&t, span)? {
                     return Err(diag(
                         span,
                         format!("`Span a` needs an ordered `a`, found {}", self.show(&t)),
@@ -538,7 +538,11 @@ impl Checker<'_> {
                 let Ty::Key { rel, .. } = x.ty else {
                     return Err(self.wrong(name, &[&x.ty], span));
                 };
-                let ty = self.key_value_ty(rel).map_err(|e| diag(span, e))?;
+                let ty = self
+                    .schema
+                    .relation_of(rel)
+                    .and_then(|rel| self.key_value_ty(rel))
+                    .map_err(|e| diag(span, e))?;
                 Ok(self.prim(Prim::KeyValue, vec![x.tm], ty))
             }
             _ => return Ok(None),

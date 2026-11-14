@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use adtb_lang::schema::{OnDelete, Stage as SchemaStage, TypeDefKind};
-use adtb_lang::types::{CtorSet, RelId, Ty, TypeId};
+use adtb_lang::types::{CtorSet, RelId, RelRef, Ty, TypeId};
 
 use crate::eval::{
     Abort, Arena, Change, Database, Env, Interpreter, Measure, R, Run, bool_of, into_set,
@@ -129,7 +129,7 @@ impl Interpreter<'_> {
             .filter(|f| f.ctor.is_none_or(|own| own == c))
             .map(|f| RefField {
                 header: f.ctor.is_none(),
-                target: f.target,
+                target: self.schema.declared(f.target),
                 ctors: f.target_ctors,
                 optional: f.optional,
                 action: f.on_delete,
@@ -468,7 +468,7 @@ impl Run<'_, '_> {
                         it.schema,
                         &key,
                         &Ty::Key {
-                            rel: r,
+                            rel: RelRef::Declared(r),
                             ctors: None,
                         },
                     )?,

@@ -223,12 +223,15 @@ impl IdWalk<'_> {
                     ctors: ctors.as_ref().map(|c| self.ctor_ids(*def, c)),
                 }
             }
-            Ty::Key { rel, ctors } => Shape::Key {
-                rel: self.relation_id(*rel),
-                ctors: ctors
-                    .as_ref()
-                    .map(|c| self.ctor_ids(self.schema.relation(*rel).elem_def, c)),
-            },
+            Ty::Key { rel, ctors } => {
+                let rel = self.schema.declared(*rel);
+                Shape::Key {
+                    rel: self.relation_id(rel),
+                    ctors: ctors
+                        .as_ref()
+                        .map(|c| self.ctor_ids(self.schema.relation(rel).elem_def, c)),
+                }
+            }
             Ty::Set(t) | Ty::NonEmpty(t) => Shape::Set(Box::new(self.shape(t))),
             Ty::Group(k, t) => Shape::Group(Box::new(self.shape(k)), Box::new(self.shape(t))),
             Ty::Tag(t) => Shape::Tag(Box::new(self.shape(t))),

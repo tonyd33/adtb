@@ -380,8 +380,7 @@ pub struct SchemaDefs {
     /// The `Principal` every module resolves: the schema's own, else the prelude's.
     pub principal: TypeId,
     /// The relation variables a later operator of the migration being applied adds, by module and
-    /// name. Entry `i` is `RelId(u32::MAX - i)`, which only a `Key r` type holds and no
-    /// `relations` entry has.
+    /// name; `AheadId::at(i)` names entry `i`.
     pub ahead: Vec<(ModuleId, String)>,
     /// The relation variables, by module and name, that the migration being applied adds with
     /// their type: a reference type's selection of their constructors resolves when it ends.
@@ -488,17 +487,20 @@ impl Schema {
     }
 
     pub fn relation(&self, id: RelId) -> &RelationDef {
-        self.relations.get(id.0 as usize).unwrap_or_else(|| {
-            panic!("{id:?} is a declared relation: one a later operator adds has no definition")
-        })
+        self.relations
+            .get(id.0 as usize)
+            .unwrap_or_else(|| panic!("{id:?} is not a relation of this schema"))
     }
 
     /// Returns whether a reference type's selection of the constructors of `id` resolves when the
     /// migration being applied ends.
-    pub fn selects_late(&self, id: RelId) -> bool {
-        let named = match self.ahead_relation(id) {
-            Some((m, name)) => (*m, name.as_str()),
-            None => {
+    pub fn selects_late(&self, id: RelRef) -> bool {
+        let named = match id {
+            RelRef::Ahead(a) => {
+                let (m, name) = self.ahead_relation(a);
+                (*m, name.as_str())
+            }
+            RelRef::Declared(id) => {
                 let r = self.relation(id);
                 (r.module, r.name.as_str())
             }
@@ -508,9 +510,31 @@ impl Schema {
             .any(|(m, n)| (*m, n.as_str()) == named)
     }
 
-    /// Returns the module and name of `id` when a later operator of the migration adds it.
-    pub fn ahead_relation(&self, id: RelId) -> Option<&(ModuleId, String)> {
-        self.ahead.get((u32::MAX - id.0) as usize)
+    /// Returns the module and name of the relation variable a later operator of the migration adds.
+    pub fn ahead_relation(&self, id: AheadId) -> &(ModuleId, String) {
+        &self.ahead[id.index()]
+    }
+
+    /// Returns the declared relation `rel` names.
+    ///
+    /// Preconditions: the schema is not one of a migration being applied.
+    pub fn declared(&self, rel: RelRef) -> RelId {
+        self.relation_of(rel)
+            .unwrap_or_else(|e| panic!("a committed schema's key names a declared relation: {e}"))
+    }
+
+    /// Returns the declared relation `rel` names, else the refusal of a read through a key of a
+    /// relation a later operator of the migration adds.
+    pub fn relation_of(&self, rel: RelRef) -> Result<RelId, String> {
+        match rel {
+            RelRef::Declared(id) => Ok(id),
+            RelRef::Ahead(a) => {
+                let (_, name) = self.ahead_relation(a);
+                Err(format!(
+                    "`{name}` is added by a later operator of this migration"
+                ))
+            }
+        }
     }
 
     pub fn function(&self, id: FnId) -> &FunctionDef {
@@ -594,7 +618,7 @@ impl Schema {
     }
 
     /// Returns the relation variable `name` names among those a later operator adds.
-    fn relation_ahead(&self, module: ModuleId, name: &ast::QName) -> Option<RelId> {
+    fn relation_ahead(&self, module: ModuleId, name: &ast::QName) -> Option<AheadId> {
         let m = match &name.module {
             Some(m) => self.module_named(&m.text)?,
             None => module,
@@ -602,7 +626,7 @@ impl Schema {
         self.ahead
             .iter()
             .position(|(am, n)| *am == m && *n == name.name.text)
-            .map(|i| RelId(u32::MAX - i as u32))
+            .map(AheadId::at)
     }
 
     pub fn lookup_relation(&self, module: ModuleId, name: &ast::QName) -> Result<RelId, String> {
@@ -713,7 +737,8 @@ impl Schema {
 
     /// Add to `defs` each declared type a value of `ty` can hold, through its type arguments, its
     /// structure, the fields of the types it names or the key fields of the relations its keys
-    /// name, and to `rels` each relation a key it holds names.
+    /// name, and to `rels` each relation a key it holds names. A key of a relation a later
+    /// operator of the migration adds reaches nothing: that relation holds no rows yet.
     pub fn reached(&self, ty: &Ty, defs: &mut BTreeSet<TypeId>, rels: &mut BTreeSet<RelId>) {
         match ty {
             Ty::Data { def, args, .. } => {
@@ -731,7 +756,10 @@ impl Schema {
                     TypeDefKind::Newtype { base, .. } => self.reached(base, defs, rels),
                 }
             }
-            Ty::Key { rel, .. } => {
+            Ty::Key {
+                rel: RelRef::Declared(rel),
+                ..
+            } => {
                 if !rels.insert(*rel) {
                     return;
                 }
@@ -757,26 +785,39 @@ impl Schema {
                 self.reached(a, defs, rels);
                 self.reached(b, defs, rels);
             }
-            Ty::Base(_) | Ty::Param(_) | Ty::Unit | Ty::Change => {}
+            Ty::Key {
+                rel: RelRef::Ahead(_),
+                ..
+            }
+            | Ty::Base(_)
+            | Ty::Param(_)
+            | Ty::Unit
+            | Ty::Change => {}
         }
     }
 
-    /// Returns whether `ty` is ordered, taking every type parameter as ordered.
-    pub fn is_ordered(&self, ty: &Ty) -> bool {
+    /// Returns whether `ty` is ordered, taking every type parameter as ordered, else the refusal
+    /// when the answer needs a relation a later operator of the migration adds.
+    pub fn is_ordered(&self, ty: &Ty) -> Result<bool, String> {
         self.is_ordered_with(ty, &|_| true)
     }
 
-    /// Returns whether `ty` is ordered, where `param` says whether type parameter `i` is.
-    pub fn is_ordered_with(&self, ty: &Ty, param: &dyn Fn(u32) -> bool) -> bool {
-        Order {
+    /// Returns whether `ty` is ordered, where `param` says whether type parameter `i` is, else
+    /// the refusal when the answer needs a relation a later operator of the migration adds.
+    pub fn is_ordered_with(&self, ty: &Ty, param: &dyn Fn(u32) -> bool) -> Result<bool, String> {
+        let mut order = Order {
             schema: self,
             definitions: BTreeMap::new(),
             keys: BTreeMap::new(),
             active_definitions: BTreeSet::new(),
             active_keys: BTreeSet::new(),
+            later: None,
+        };
+        let required = order.parameters(ty);
+        match order.later {
+            Some(e) => Err(e),
+            None => Ok(required.is_some_and(|required| required.into_iter().all(param))),
         }
-        .parameters(ty)
-        .is_some_and(|required| required.into_iter().all(param))
     }
 
     pub fn show_ty(&self, ty: &Ty) -> String {
@@ -846,10 +887,13 @@ impl Schema {
                 .get(*i as usize)
                 .cloned()
                 .unwrap_or_else(|| format!("t{i}")),
-            Ty::Key { rel, ctors } => match self.ahead_relation(*rel) {
-                Some((m, name)) => format!("Key {}{name}", qualifier(*m)),
-                None => {
-                    let r = self.relation(*rel);
+            Ty::Key { rel, ctors } => match *rel {
+                RelRef::Ahead(a) => {
+                    let (m, name) = self.ahead_relation(a);
+                    format!("Key {}{name}", qualifier(*m))
+                }
+                RelRef::Declared(rel) => {
+                    let r = self.relation(rel);
                     format!(
                         "Key {}{}{}",
                         qualifier(r.module),
@@ -912,6 +956,8 @@ struct Order<'s> {
     keys: BTreeMap<RelId, Option<OrderParams>>,
     active_definitions: BTreeSet<TypeId>,
     active_keys: BTreeSet<RelId>,
+    /// The refusal for the first key met of a relation a later operator adds.
+    later: Option<String>,
 }
 
 impl Order<'_> {
@@ -926,7 +972,13 @@ impl Order<'_> {
                     Some(required)
                 },
             ),
-            Ty::Key { rel, .. } => self.key(*rel),
+            Ty::Key { rel, .. } => match self.schema.relation_of(*rel) {
+                Ok(rel) => self.key(rel),
+                Err(e) => {
+                    self.later.get_or_insert(e);
+                    None
+                }
+            },
             Ty::Tag(ty) => match ty.as_ref() {
                 Ty::Data { def, .. } => self.schema.ty(*def).ordered.then(OrderParams::new),
                 _ => None,
@@ -983,7 +1035,7 @@ impl Order<'_> {
             .iter()
             .try_fold(OrderParams::new(), |mut required, name| {
                 let field = definition.field_named(0, name)?;
-                if !matches!(&field.ty, Ty::Key { rel: own, .. } if *own == rel) {
+                if !matches!(&field.ty, Ty::Key { rel: own, .. } if *own == RelRef::Declared(rel)) {
                     required.extend(self.parameters(&field.ty.subst(relation.elem_args()))?);
                 }
                 Some(required)
@@ -1035,7 +1087,7 @@ pub struct ReferenceField {
     pub at: usize,
     /// The constructors that hold the field.
     pub ctors: CtorSet,
-    pub target: RelId,
+    pub target: RelRef,
     /// The constructors of `target` it may name; `None` for every one.
     pub target_ctors: Option<CtorSet>,
     /// The field is an `Option` of the key.
@@ -1115,13 +1167,13 @@ impl Schema {
         let r = self.relation(rel);
         matches!(
             self.ty(r.elem_def).field_named(0, f).map(|d| &d.ty),
-            Some(Ty::Key { rel: own, .. }) if *own == rel
+            Some(Ty::Key { rel: own, .. }) if *own == RelRef::Declared(rel)
         )
     }
 
     /// Returns the target, its constructor selection and whether the field is optional, if
     /// field `f` of `rel`'s sum holds a reference.
-    fn reference(&self, rel: RelId, f: &FieldDef) -> Option<(RelId, Option<CtorSet>, bool)> {
+    fn reference(&self, rel: RelId, f: &FieldDef) -> Option<(RelRef, Option<CtorSet>, bool)> {
         let r = self.relation(rel);
         let option = self.prelude_type("Option");
         let (key, optional) = match f.ty.subst(r.elem_args()) {
@@ -1132,7 +1184,9 @@ impl Schema {
             _ => return None,
         };
         match key {
-            Ty::Key { rel: target, ctors } if !(target == rel && r.key.contains(&f.name)) => {
+            Ty::Key { rel: target, ctors }
+                if !(target == RelRef::Declared(rel) && r.key.contains(&f.name)) =>
+            {
                 Some((target, ctors, optional))
             }
             _ => None,

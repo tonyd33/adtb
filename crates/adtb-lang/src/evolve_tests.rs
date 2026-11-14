@@ -400,6 +400,74 @@ add relation seats : Seat key n",
 }
 
 #[test]
+fn reading_through_a_key_of_a_relation_a_later_operator_adds_is_refused_and_holding_one_is_not() {
+    let users = "add type User = { id: Key users, name: Text }
+add relation users : User key id generate sequence";
+    let docs = "add type Doc = { id: Key docs, owner: Key users }
+add relation docs : Doc key id generate sequence";
+    let later = "`users` is added by a later operator of this migration";
+    let first = |body: &str| format!("module m\nadd module m\n{body}\n{users}");
+    let direct = "a reference is a direct field of type `Key r.S` or `Option (Key r.S)`";
+    for (body, refused) in [
+        (
+            format!("{docs}\ndefine fn owner_name (d: Doc) -> Text = d.owner.name"),
+            vec![later],
+        ),
+        (
+            "define fn v (k: Key users) -> I64 = value(k)".to_string(),
+            vec![later],
+        ),
+        (
+            "define fn v (k: Key users) -> I64 = match k | User _ -> 1".to_string(),
+            vec![later],
+        ),
+        (
+            format!(
+                "{docs}\nadd constraint named = from d in docs where d.owner.name == \"\" select d"
+            ),
+            vec![later],
+        ),
+        (
+            "add type Doc ordered = Doc { owner: Key users }".to_string(),
+            vec![later],
+        ),
+        (
+            "define fn f (s: Span (Key users)) -> I64 = 1".to_string(),
+            vec![later],
+        ),
+        (
+            "add type Doc = { at: Span (Key users) }".to_string(),
+            vec![direct, later],
+        ),
+    ] {
+        let text = first(&body);
+        let refused = refused.into_iter().map(String::from).collect();
+        assert_eq!(
+            Err(refused),
+            migrate(&Source::default(), &text).map(drop),
+            "{text}"
+        );
+    }
+    let s = applies(
+        &Source::default(),
+        "module m\nadd module m\nadd type T { id: Key ts } = A | B\nadd relation ts : T key id generate sequence",
+    );
+    let s = applies(&s, "module m\ndeprecate ts.A");
+    applies(
+        &s,
+        &format!("module m\n{docs}\nremove constructor T.A\n{users}"),
+    );
+    let s = applies(
+        &Source::default(),
+        "module m\nadd module m\nadd type Price = { sku: Text, n: I64 }\nadd relation prices : Price key sku",
+    );
+    applies(
+        &s,
+        &format!("module m\n{docs}\nrekey relation prices key (sku, n)\n{users}"),
+    );
+}
+
+#[test]
 fn a_late_selection_that_never_resolves_is_refused_when_the_migration_ends() {
     refuses(
         &Source::default(),

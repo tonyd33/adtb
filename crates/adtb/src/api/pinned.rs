@@ -88,6 +88,7 @@ fn recode(map: &Map<'_>, ty: &Ty, v: &Val, forward: bool) -> Val {
             Val::tag(c.expect("a carried tag's constructor has a counterpart at both versions"))
         }
         (Ty::Key { rel, .. }, _) => {
+            let rel = &map.from.declared(*rel);
             let tys: Vec<Ty> = key_names(map.from, *rel)
                 .iter()
                 .map(|f| key_field_ty(map.from, *rel, f))

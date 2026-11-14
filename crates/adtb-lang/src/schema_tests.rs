@@ -277,6 +277,49 @@ fn relation_element_types() {
 }
 
 #[test]
+fn a_relation_of_no_element_type_is_refused_for_that_alone() {
+    let uses = [
+        "type T = { k: Key ts, r: Key rs.A }\nrelation ts : T key k",
+        "set S of rs = A",
+        "check c on rs.A (true)",
+        "fn f (r: Key rs.A) -> Bool = true",
+    ];
+    for used in uses {
+        assert_eq!(
+            errors(&[&module(&format!("relation rs : Nope key k\n{used}"))]),
+            ["no type `Nope`"],
+            "{used}"
+        );
+    }
+}
+
+#[test]
+fn a_check_on_no_relation_is_refused_and_each_check_is_found_by_its_name() {
+    assert_eq!(
+        errors(&[&module("check c on nosuch (true)")]),
+        ["no `nosuch` in scope"]
+    );
+    let s = build_src(&[&format!(
+        "{RUNNING}check a on identities.Google (scalar_len(gid) > 0)\ncheck b on users (scalar_len(name) > 0)\n"
+    )])
+    .unwrap();
+    let auth = s.module_named("auth").unwrap();
+    for (name, rel, ctors) in [
+        ("a", rel_id(&s, "auth", "identities"), Some(vec![1])),
+        ("b", rel_id(&s, "auth", "users"), None),
+    ] {
+        let Some(&ValueDef::Check(i)) = s.module(auth).values.get(name) else {
+            panic!("`{name}` is a check");
+        };
+        let c = &s.checks[i as usize];
+        assert_eq!(
+            (name, rel, ctors),
+            (c.name.as_str(), c.relation, c.ctors.clone())
+        );
+    }
+}
+
+#[test]
 fn defaults_name_fields_and_generators() {
     let t = "type L { id: Key ls } = Active | Revoked { at: Instant }\n";
     build_src(&[&module(&format!(
@@ -341,11 +384,14 @@ fn ordered_nested_instantiations_are_finite() {
     )])
     .expect("nested finite ordered instantiations build");
     let m = schema.module_named("m").unwrap();
-    assert!(schema.is_ordered(&Ty::Data {
-        def: schema.module(m).types["Holder"],
-        args: Vec::new(),
-        ctors: None,
-    }));
+    assert!(is_ordered(
+        &schema,
+        &Ty::Data {
+            def: schema.module(m).types["Holder"],
+            args: Vec::new(),
+            ctors: None,
+        }
+    ));
 }
 
 #[test]
@@ -361,11 +407,14 @@ fn ordered_shared_graph_does_not_expand_every_path() {
     let schema = build(&[(FileId(0), parsed)]).expect("the ordered type graph builds");
     crate::check::check_schema(&schema).expect("the ordered graph typechecks");
     let m = schema.module_named("m").unwrap();
-    assert!(schema.is_ordered(&Ty::Data {
-        def: schema.module(m).types["T30"],
-        args: Vec::new(),
-        ctors: None,
-    }));
+    assert!(is_ordered(
+        &schema,
+        &Ty::Data {
+            def: schema.module(m).types["T30"],
+            args: Vec::new(),
+            ctors: None,
+        }
+    ));
 }
 
 #[test]
@@ -381,26 +430,32 @@ fn ordered_requirements_use_the_instantiation_and_current_parameter_context() {
         args: vec![Ty::Base(Base::Period), Ty::Param(0)],
         ctors: None,
     };
-    assert!(schema.is_ordered_with(&at_zero, &|index| index == 0));
-    assert!(!schema.is_ordered_with(&at_zero, &|_| false));
-    assert!(schema.is_ordered_with(&at_zero, &|_| true));
+    assert!(is_ordered_with(&schema, &at_zero, &|index| index == 0));
+    assert!(!is_ordered_with(&schema, &at_zero, &|_| false));
+    assert!(is_ordered_with(&schema, &at_zero, &|_| true));
     let at_one = Ty::Data {
         def: last,
         args: vec![Ty::Param(0), Ty::Param(1)],
         ctors: None,
     };
-    assert!(schema.is_ordered_with(&at_one, &|index| index == 1));
-    assert!(!schema.is_ordered_with(&at_one, &|index| index == 0));
-    assert!(!schema.is_ordered(&Ty::Data {
-        def: last,
-        args: vec![Ty::Base(Base::I8), Ty::Base(Base::Period)],
-        ctors: None,
-    }));
-    assert!(schema.is_ordered(&Ty::Data {
-        def: schema.module(m).types["Phantom"],
-        args: vec![Ty::Base(Base::Period)],
-        ctors: None,
-    }));
+    assert!(is_ordered_with(&schema, &at_one, &|index| index == 1));
+    assert!(!is_ordered_with(&schema, &at_one, &|index| index == 0));
+    assert!(!is_ordered(
+        &schema,
+        &Ty::Data {
+            def: last,
+            args: vec![Ty::Base(Base::I8), Ty::Base(Base::Period)],
+            ctors: None,
+        }
+    ));
+    assert!(is_ordered(
+        &schema,
+        &Ty::Data {
+            def: schema.module(m).types["Phantom"],
+            args: vec![Ty::Base(Base::Period)],
+            ctors: None,
+        }
+    ));
     assert_error(&[&module("type Invalid a = new a")], "over a base type");
 }
 
@@ -432,13 +487,13 @@ fn ordered_fields_do_not_reuse_another_instantiation_or_schema_state() {
             ctors: None,
         };
         let tag = Ty::Tag(Box::new(ty.clone()));
-        (schema.is_ordered(&ty), schema.is_ordered(&tag))
+        (is_ordered(&schema, &ty), is_ordered(&schema, &tag))
     };
     assert_eq!((true, true), stage(" ordered"));
     assert_eq!((false, false), stage(""));
     let schema = build_src(&[&module("type Stage ordered = A | B")]).unwrap();
-    assert!(!schema.is_ordered(&Ty::Record(vec![])));
-    assert!(!schema.is_ordered(&Ty::Unit));
+    assert!(!is_ordered(&schema, &Ty::Record(vec![])));
+    assert!(!is_ordered(&schema, &Ty::Unit));
 }
 
 #[test]
@@ -452,10 +507,13 @@ fn ordered_composite_key_graphs_share_requirements() {
     }
     let schema = build_src(&[&source]).expect("the shared key graph builds");
     crate::check::check_schema(&schema).expect("the shared key graph typechecks");
-    assert!(schema.is_ordered(&Ty::Key {
-        rel: relation(&schema, "k30"),
-        ctors: None,
-    }));
+    assert!(is_ordered(
+        &schema,
+        &Ty::Key {
+            rel: RelRef::Declared(relation(&schema, "k30")),
+            ctors: None,
+        }
+    ));
 }
 
 #[test]
@@ -467,10 +525,13 @@ fn ordered_keys_require_a_finite_ordered_representation() {
     for (name, ordered) in [("roots", true), ("calendars", false), ("alphas", false)] {
         assert_eq!(
             ordered,
-            schema.is_ordered(&Ty::Key {
-                rel: relation(&schema, name),
-                ctors: None,
-            }),
+            is_ordered(
+                &schema,
+                &Ty::Key {
+                    rel: RelRef::Declared(relation(&schema, name)),
+                    ctors: None,
+                }
+            ),
             "{name}"
         );
     }
@@ -1104,7 +1165,7 @@ relation ms : M key u",
                 f.field,
                 f.at,
                 f.ctors,
-                f.target,
+                s.declared(f.target),
                 f.target_ctors,
                 f.optional,
                 f.index,
@@ -1201,7 +1262,7 @@ fn a_key_reaches_the_types_of_its_relations_key_fields_at_their_arguments() {
     )])
     .unwrap();
     let key = Ty::Key {
-        rel: rel_id(&s, "m", "ps"),
+        rel: RelRef::Declared(rel_id(&s, "m", "ps")),
         ctors: None,
     };
     assert!(s.reaches(&key, type_id(&s, "Tier")));
@@ -1233,4 +1294,14 @@ fn the_field_ids_of_a_type_run_header_first_then_each_constructor_by_position() 
         .map(|(f, _)| td.field_def(f).name.as_str())
         .collect();
     assert_eq!(vec!["z", "y", "b", "a"], names);
+}
+
+fn is_ordered(s: &Schema, ty: &Ty) -> bool {
+    s.is_ordered(ty)
+        .expect("no key of the type names a later relation")
+}
+
+fn is_ordered_with(s: &Schema, ty: &Ty, param: &dyn Fn(u32) -> bool) -> bool {
+    s.is_ordered_with(ty, param)
+        .expect("no key of the type names a later relation")
 }

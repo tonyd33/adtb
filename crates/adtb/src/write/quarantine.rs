@@ -479,7 +479,7 @@ impl<R: Runtime> Database<R> {
             }
             Kind::Deref { key, .. } => {
                 if let Ty::Key { rel, ctors } = terms.ty(*key) {
-                    self.add_reads(*rel, ctors.as_ref(), out);
+                    self.add_reads(self.schema.declared(*rel), ctors.as_ref(), out);
                 }
             }
             Kind::Insert(r, rows) | Kind::Upsert { rel: r, rows, .. } => {

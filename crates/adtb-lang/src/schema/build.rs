@@ -29,8 +29,8 @@ impl Builder<'_> {
             Some((id, _, _)) => id,
             None => self.schema.prelude_type("Principal"),
         };
-        for &(file, module, id, r) in &d.relations {
-            self.relation_head(file, module, id, r);
+        if !self.relation_heads(&d) {
+            return;
         }
         for &(file, module, s) in &d.sets {
             self.named_set(file, module, s);
@@ -42,7 +42,7 @@ impl Builder<'_> {
         if let Some((_, file, span)) = d.principal {
             self.check_principal(file, span);
         }
-        for &(file, module, id, r) in &d.relations {
+        for &(file, module, _, id, r) in &d.relations {
             self.relation_body(file, module, id, r);
         }
         for &(file, module, id, f) in &d.fns {
@@ -54,7 +54,7 @@ impl Builder<'_> {
         for (file, module, s) in d.stores {
             self.store(file, module, s);
         }
-        self.checks();
+        self.checks(&d.checks);
         self.check_recursion();
         self.check_references();
         self.check_ordered();
@@ -279,35 +279,63 @@ impl Builder<'_> {
         }
     }
 
-    fn checks(&mut self) {
-        let files = self.files;
-        let mut i = 0;
-        for (file, sf) in files {
-            let module = self.schema.module_named(&sf.module.text).unwrap_or(PRELUDE);
-            for decl in &sf.decls {
-                let ast::Decl::Check(c) = decl else { continue };
-                let resolved = self
-                    .schema
-                    .lookup_relation(module, &c.on.relation)
-                    .and_then(|rel| {
-                        let ctors = match &c.on.sel {
-                            None => None,
-                            Some(sel) => {
-                                let set = self.schema.relation_sel(rel, sel)?;
-                                self.schema
-                                    .normalize_ctors(self.schema.relation(rel).elem_def, set)
-                            }
-                        };
-                        Ok((rel, ctors))
-                    });
-                match resolved {
-                    Ok((rel, ctors)) => {
-                        self.schema.defs_mut().checks[i].relation = rel;
-                        self.schema.defs_mut().checks[i].ctors = ctors;
-                    }
-                    Err(e) => self.err(*file, c.on.span, e),
-                }
-                i += 1;
+    /// Push the definition of each relation, in declaration order, once every relation's element
+    /// type resolves; returns whether every one did.
+    fn relation_heads(&mut self, d: &Declared<'_>) -> bool {
+        let heads: Vec<Option<TypeId>> = d
+            .relations
+            .iter()
+            .map(|&(file, module, _, _, r)| self.relation_head(file, module, r))
+            .collect();
+        let Some(heads) = heads.into_iter().collect::<Option<Vec<_>>>() else {
+            return false;
+        };
+        for (&(file, _, home, _, r), elem_def) in d.relations.iter().zip(heads) {
+            self.schema.defs_mut().relations.push(RelationDef {
+                name: r.name.name.text.clone(),
+                module: home,
+                elem: Ty::Unit,
+                elem_def,
+                key: Vec::new(),
+                generate: None,
+                indexes: Vec::new(),
+                defaults: Vec::new(),
+                computed: Vec::new(),
+                sets: Vec::new(),
+                volatile: false,
+                file,
+                span: r.span,
+            });
+        }
+        true
+    }
+
+    fn checks(&mut self, checks: &[(FileId, ModuleId, &ast::CheckDecl)]) {
+        for &(file, module, c) in checks {
+            let resolved = self
+                .schema
+                .lookup_relation(module, &c.on.relation)
+                .and_then(|rel| {
+                    let ctors = match &c.on.sel {
+                        None => None,
+                        Some(sel) => {
+                            let set = self.schema.relation_sel(rel, sel)?;
+                            self.schema
+                                .normalize_ctors(self.schema.relation(rel).elem_def, set)
+                        }
+                    };
+                    Ok((rel, ctors))
+                });
+            match resolved {
+                Ok((relation, ctors)) => self.schema.defs_mut().checks.push(CheckDef {
+                    name: c.name.text.clone(),
+                    module,
+                    relation,
+                    ctors,
+                    predicate: c.predicate.clone(),
+                    file,
+                }),
+                Err(e) => self.err(file, c.on.span, e),
             }
         }
     }
@@ -422,12 +450,12 @@ impl Builder<'_> {
         let mut owner: HashMap<TypeId, RelId> = HashMap::new();
         for (i, r) in self.schema.relations.iter().enumerate() {
             let id = RelId(i as u32);
-            if r.elem_def.0 == u32::MAX || r.key.len() != 1 {
+            if r.key.len() != 1 {
                 continue;
             }
             let def = self.schema.ty(r.elem_def);
             if let Some(f) = def.field_named(0, &r.key[0])
-                && matches!(f.ty, Ty::Key { rel, .. } if rel == id)
+                && matches!(f.ty, Ty::Key { rel, .. } if rel == RelRef::Declared(id))
             {
                 owner.insert(r.elem_def, id);
             }
@@ -464,21 +492,25 @@ impl Builder<'_> {
                 .iter()
                 .chain(t.ctors().iter().flat_map(|c| c.fields.iter()))
             {
-                if !self.schema.is_ordered(&f.ty) {
-                    errs.push((
+                match self.schema.is_ordered(&f.ty) {
+                    Ok(true) => {}
+                    Ok(false) => errs.push((
                         t.file,
                         f.span,
                         format!(
                             "`{}` is declared ordered but field `{}` has an unordered type",
                             t.name, f.name
                         ),
-                    ));
+                    )),
+                    Err(e) => errs.push((t.file, f.span, e)),
                 }
             }
         }
         for (ty, file, span) in std::mem::take(&mut self.ordered_args) {
-            if !self.schema.is_ordered(&ty) {
-                errs.push((file, span, "`Span a` needs an ordered `a`".to_string()));
+            match self.schema.is_ordered(&ty) {
+                Ok(true) => {}
+                Ok(false) => errs.push((file, span, "`Span a` needs an ordered `a`".to_string())),
+                Err(e) => errs.push((file, span, e)),
             }
         }
         for (f, s, m) in errs {
@@ -491,7 +523,9 @@ impl Builder<'_> {
 #[derive(Default)]
 struct Declared<'a> {
     types: Vec<(FileId, ModuleId, TypeId, &'a ast::TypeDecl)>,
-    relations: Vec<(FileId, ModuleId, RelId, &'a ast::RelationDecl)>,
+    /// Each relation with the module of its file and the module it is declared in.
+    relations: Vec<(FileId, ModuleId, ModuleId, RelId, &'a ast::RelationDecl)>,
+    checks: Vec<(FileId, ModuleId, &'a ast::CheckDecl)>,
     sets: Vec<(FileId, ModuleId, &'a ast::SetDecl)>,
     fns: Vec<(FileId, ModuleId, FnId, &'a ast::FnDecl)>,
     stores: Vec<(FileId, ModuleId, &'a ast::StoreDecl)>,
@@ -557,16 +591,9 @@ impl<'a> Builder<'a> {
                 });
             }
             ast::Decl::Check(c) => {
-                let id = self.schema.checks.len() as u32;
+                let id = d.checks.len() as u32;
                 self.declare_value(file, module, &c.name, ValueDef::Check(id));
-                self.schema.defs_mut().checks.push(CheckDef {
-                    name: c.name.text.clone(),
-                    module,
-                    relation: RelId(u32::MAX),
-                    ctors: None,
-                    predicate: c.predicate.clone(),
-                    file,
-                });
+                d.checks.push((file, module, c));
             }
             ast::Decl::Aggregate(a) => {
                 let id = self.schema.aggregates.len() as u32;
@@ -624,7 +651,7 @@ impl<'a> Builder<'a> {
         d: &mut Declared<'a>,
     ) {
         let engine = file.is_engine();
-        let id = RelId(self.schema.relations.len() as u32);
+        let id = RelId(d.relations.len() as u32);
         let home = match &r.name.module {
             Some(m) if engine => self.module_id(&m.text),
             Some(_) => {
@@ -638,21 +665,6 @@ impl<'a> Builder<'a> {
             None => module,
         };
         self.declare_value(file, home, &r.name.name, ValueDef::Relation(id));
-        self.schema.defs_mut().relations.push(RelationDef {
-            name: r.name.name.text.clone(),
-            module: home,
-            elem: Ty::Unit,
-            elem_def: TypeId(u32::MAX),
-            key: Vec::new(),
-            generate: None,
-            indexes: Vec::new(),
-            defaults: Vec::new(),
-            computed: Vec::new(),
-            sets: Vec::new(),
-            volatile: false,
-            file,
-            span: r.span,
-        });
-        d.relations.push((file, module, id, r));
+        d.relations.push((file, module, home, id, r));
     }
 }

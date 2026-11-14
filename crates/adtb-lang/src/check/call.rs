@@ -325,7 +325,7 @@ impl Checker<'_> {
             }
             for b in bounds {
                 let ok = match b {
-                    Bound::Ord => self.ordered(&t),
+                    Bound::Ord => self.ordered(&t, span)?,
                     Bound::Num => self.is_num(&t),
                     Bound::Eq | Bound::Hash => true,
                 };

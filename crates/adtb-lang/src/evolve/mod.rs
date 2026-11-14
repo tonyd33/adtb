@@ -441,7 +441,7 @@ fn mentions_def(t: &Ty, def: TypeId) -> bool {
 
 fn mentions_rel(t: &Ty, rel: RelId) -> bool {
     match t {
-        Ty::Key { rel: r, .. } => *r == rel,
+        Ty::Key { rel: r, .. } => *r == RelRef::Declared(rel),
         Ty::Data { args, .. } => args.iter().any(|a| mentions_rel(a, rel)),
         Ty::Set(x) | Ty::NonEmpty(x) | Ty::Tag(x) => mentions_rel(x, rel),
         Ty::Group(a, b) | Ty::Fn(a, b) => mentions_rel(a, rel) || mentions_rel(b, rel),

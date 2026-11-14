@@ -289,7 +289,10 @@ pub(super) fn holds(schema: &Schema, ty: &Ty, def: TypeId, c: u32) -> bool {
         Ty::Data { def: d, ctors, .. } => {
             *d == def && ctors.as_ref().is_none_or(|cs| cs.contains(&c))
         }
-        Ty::Key { rel, ctors } => {
+        Ty::Key {
+            rel: RelRef::Declared(rel),
+            ctors,
+        } => {
             schema.relation(*rel).elem_def == def && ctors.as_ref().is_none_or(|cs| cs.contains(&c))
         }
         _ => false,

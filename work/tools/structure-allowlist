@@ -54,6 +54,9 @@
 # crash_loops:        definitions of a function whose name holds `crash_loop`: the harness's one
 #                     crash loop, which runs the ledger check after every round.
 # crash_allows:       definitions of `fn allows`: what a crash loop's reopened database tolerates.
+# id_sentinels:       `RelId`, `TypeId`, `FnId` or `ModuleId` of `u32::MAX`, and `.0 == u32::MAX` or
+#                     `.0 != u32::MAX`: an absent or not yet known object is a typed absence, never
+#                     an id. No line allows one.
 # sim_test_opens:     in crates/adtb-sim/tests and adtb's unit-test files (`tests.rs`,
 #                     `*_tests.rs`, `tests/`, `test_world/`), by name: a function taking
 #                     parameters whose name begins with `open`, `opened`, `opens`, `opening` or a

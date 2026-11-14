@@ -113,7 +113,7 @@ fn refs(schema: &Schema, rel: RelId, c: u32, indexes: &[IndexDesc]) -> Vec<RefFi
             RefField {
                 at: f.at,
                 header: f.ctor.is_none(),
-                target: f.target,
+                target: schema.declared(f.target),
                 ctors: f.target_ctors,
                 optional: f.optional,
                 action: f.on_delete,

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use adtb_lang::kernel::{Const, Kind, Terms, Tm, Var};
 use adtb_lang::schema::{Generator, Schema};
 use adtb_lang::textual::key_names;
-use adtb_lang::types::{Base, RelId, Ty};
+use adtb_lang::types::{Base, RelId, RelRef, Ty};
 
 use crate::exec::Val;
 use crate::exec::types::{ctors, repr};
@@ -116,6 +116,7 @@ pub fn fill<E>(
     Ok(match (&t, v) {
         (Ty::Base(_), v @ Val::Record(_)) => draw(&v)?,
         (Ty::Key { rel, .. }, v) => {
+            let rel = &schema.declared(*rel);
             let r = schema.relation(*rel);
             let row = &ctors(schema, &r.elem).expect("a relation's element is a sum")[0];
             let field_ty = |n: &str| {
@@ -127,7 +128,7 @@ pub fn fill<E>(
             };
             match r.key.as_slice() {
                 [k] => match field_ty(k) {
-                    Ty::Key { rel: own, .. } if own == *rel => match v {
+                    Ty::Key { rel: own, .. } if own == RelRef::Declared(*rel) => match v {
                         v @ Val::Record(_) => draw(&v)?,
                         v => v,
                     },

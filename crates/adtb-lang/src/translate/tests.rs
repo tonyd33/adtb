@@ -224,7 +224,7 @@ fn hide_new_narrows_references_and_rows_to_the_pinned_constructors() {
     );
     let identity = named(&from, "Identity");
     let key = Ty::Key {
-        rel: identities,
+        rel: RelRef::Declared(identities),
         ctors: None,
     };
     let row = Ty::Data {
@@ -236,7 +236,7 @@ fn hide_new_narrows_references_and_rows_to_the_pinned_constructors() {
     let pinned = Some(vec![0, 1]);
     assert_eq!(
         Ok(Ty::Key {
-            rel: identities,
+            rel: RelRef::Declared(identities),
             ctors: pinned.clone()
         }),
         map.ty(&key, true)

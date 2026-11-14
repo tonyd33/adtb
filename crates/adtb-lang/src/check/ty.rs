@@ -171,10 +171,19 @@ pub fn join(schema: &Schema, a: &Ty, b: &Ty) -> Option<Ty> {
                 ctors: union(schema, *d1, c1, c2),
             })
         }
-        (Ty::Key { rel: r1, ctors: c1 }, Ty::Key { rel: r2, ctors: c2 }) if r1 == r2 => {
+        (
+            Ty::Key {
+                rel: RelRef::Declared(r1),
+                ctors: c1,
+            },
+            Ty::Key {
+                rel: RelRef::Declared(r2),
+                ctors: c2,
+            },
+        ) if r1 == r2 => {
             let def = schema.relation(*r1).elem_def;
             Some(Ty::Key {
-                rel: *r1,
+                rel: RelRef::Declared(*r1),
                 ctors: union(schema, def, c1, c2),
             })
         }

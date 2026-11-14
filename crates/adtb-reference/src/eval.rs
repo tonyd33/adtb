@@ -9,7 +9,7 @@ use adtb_lang::check::Program;
 use adtb_lang::kernel::{Agg, Const, FileFormat, Kind, Terms, Tm, Transition, Var};
 use adtb_lang::schema::{Schema, TypeDefKind};
 use adtb_lang::textual::PrintError;
-use adtb_lang::types::{Base, CtorSet, FnId, RelId, Ty, TypeId};
+use adtb_lang::types::{Base, CtorSet, FnId, RelId, RelRef, Ty, TypeId};
 
 use crate::big::Big;
 use crate::num::{digits38, in_range};
@@ -633,7 +633,11 @@ impl Run<'_, '_> {
             },
             Kind::Key(x) => {
                 let row = self.eval(h, *x, env)?;
-                let Ty::Key { rel, .. } = self.ty(h, t) else {
+                let Ty::Key {
+                    rel: RelRef::Declared(rel),
+                    ..
+                } = self.ty(h, t)
+                else {
                     return internal("`key` has a key type");
                 };
                 Ok(it.key_of(rel, &row))
@@ -641,7 +645,11 @@ impl Run<'_, '_> {
             Kind::KeyOf(_, x) => Ok(Value::key(self.eval(h, *x, env)?)),
             Kind::Deref { key, .. } => {
                 let k = self.eval(h, *key, env)?;
-                let Ty::Key { rel, ctors } = self.ty(h, *key) else {
+                let Ty::Key {
+                    rel: RelRef::Declared(rel),
+                    ctors,
+                } = self.ty(h, *key)
+                else {
                     return internal("`deref` follows a key");
                 };
                 let ctors = match self.ty(h, t) {

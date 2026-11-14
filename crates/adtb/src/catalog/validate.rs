@@ -4,7 +4,7 @@ use std::sync::Arc;
 use adtb_lang::kernel::{Kind, Terms, Tm};
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::schema::Schema;
-use adtb_lang::types::{RelId, Ty};
+use adtb_lang::types::{RelId, RelRef, Ty};
 
 use crate::exec::{self, Budget, Call, Store, Val};
 use crate::plan;
@@ -83,13 +83,11 @@ impl Catalog {
             norm::program(schema, program).map_err(|e| Error::from(Broken::NotNormal(e)))?;
         let catalog = self.plan();
         let budget = Budget::new(self.query_memory);
-        let ids = schema.ids().constraint_ids().map(|(_, id)| id.raw()).chain(
-            schema
-                .ids()
-                .check_ids()
-                .filter(|&(i, _)| schema.checks[i].relation.0 != u32::MAX)
-                .map(|(_, id)| id.raw()),
-        );
+        let ids = schema
+            .ids()
+            .constraint_ids()
+            .map(|(_, id)| id.raw())
+            .chain(schema.ids().check_ids().map(|(_, id)| id.raw()));
         let mut out = Vec::new();
         for (id, &t) in ids.zip(normal.constraints.iter().chain(&normal.checks)) {
             let mut reads = BTreeSet::new();
@@ -151,13 +149,7 @@ fn qualified(schema: &Schema) -> Vec<String> {
         .constraints
         .iter()
         .map(|c| name(c.module, &c.name))
-        .chain(
-            schema
-                .checks
-                .iter()
-                .filter(|c| c.relation.0 != u32::MAX)
-                .map(|c| name(c.module, &c.name)),
-        )
+        .chain(schema.checks.iter().map(|c| name(c.module, &c.name)))
         .collect()
 }
 
@@ -176,7 +168,11 @@ fn transitions(terms: &Terms, t: Tm, reads: &mut BTreeSet<RelId>) -> bool {
                 reads.insert(*r);
             }
             Kind::Deref { key, .. } => {
-                if let Ty::Key { rel, .. } = terms.ty(*key) {
+                if let Ty::Key {
+                    rel: RelRef::Declared(rel),
+                    ..
+                } = terms.ty(*key)
+                {
                     reads.insert(*rel);
                 }
             }

@@ -1,0 +1,20 @@
+seed 72
+
+migrate
+  module m
+  add module m
+  add type Color = Red | Green
+  add type Thing = { id: Key things, color: Color }
+  add relation things : Thing key id generate sequence
+
+migrate
+  module m
+  add type Doc = { id: Key docs, owner: Key users }
+  add relation docs : Doc key id generate sequence
+  disable Color.Green
+  add type User = { id: Key users, name: Text }
+  add relation users : User key id generate sequence
+
+query
+  from t in things select t.color
+----

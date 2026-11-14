@@ -284,9 +284,6 @@ pub fn check_schema(schema: &Schema) -> Vec<FileDiag> {
         );
     }
     for c in &schema.checks {
-        if c.relation.0 == u32::MAX {
-            continue;
-        }
         let mut names = row_fields(schema, c.relation, c.ctors.as_deref());
         names.push("self".into());
         run(

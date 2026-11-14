@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::schema::{Schema, Scope, TypeDefKind};
-use crate::types::{CtorSet, FnId, RelId, Ty, TypeId};
+use crate::types::{CtorSet, FnId, RelId, RelRef, Ty, TypeId};
 
 use super::{EffectiveGrants, Right};
 
@@ -80,7 +80,10 @@ impl Nameable {
                     self.reach_ty(schema, a);
                 }
             }
-            Ty::Key { rel, ctors } => {
+            Ty::Key {
+                rel: RelRef::Declared(rel),
+                ctors,
+            } => {
                 let selections = self.referenced.entry(*rel).or_default();
                 selections.extend(ctors.clone());
             }
@@ -101,7 +104,14 @@ impl Nameable {
                     }
                 }
             }
-            Ty::Base(_) | Ty::Param(_) | Ty::Unit | Ty::Change => {}
+            Ty::Key {
+                rel: RelRef::Ahead(_),
+                ..
+            }
+            | Ty::Base(_)
+            | Ty::Param(_)
+            | Ty::Unit
+            | Ty::Change => {}
         }
     }
 
@@ -124,9 +134,10 @@ impl Nameable {
                     && args.iter().all(|t| self.may_type(schema, t))
             }
             Ty::Key { rel, ctors } => {
-                self.relations.contains(rel)
-                    || open(schema.relation(*rel).module)
-                    || self.referenced.get(rel).is_some_and(|selections| {
+                let rel = schema.declared(*rel);
+                self.relations.contains(&rel)
+                    || open(schema.relation(rel).module)
+                    || self.referenced.get(&rel).is_some_and(|selections| {
                         ctors.as_ref().is_none_or(|c| selections.contains(c))
                     })
             }

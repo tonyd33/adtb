@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use adtb_lang::kernel::{Kind, PathStep, Prim, Tm, Var};
 use adtb_lang::textual::key_names;
-use adtb_lang::types::{CtorSet, RelId, Ty};
+use adtb_lang::types::{CtorSet, RelId, RelRef, Ty};
 
 use super::{
     Access, BuildKey, Fixed, Fixes, HEAP_ROWS, IndexProbe, Limit, PROBE_COST, PROBE_ROWS, Planner,
@@ -22,7 +22,11 @@ struct Then<'a> {
 
 impl Planner<'_> {
     pub(super) fn lookup(&mut self, key: Tm, row_ty: &Ty) -> Result<Lookup, Error> {
-        let Ty::Key { rel, ctors } = self.ty(key) else {
+        let Ty::Key {
+            rel: RelRef::Declared(rel),
+            ctors,
+        } = self.ty(key)
+        else {
             return Err(Broken::DerefNotKey.into());
         };
         let ctors = match row_ty {
@@ -59,7 +63,8 @@ impl Planner<'_> {
                 .subst(&args)
         };
         match r.key.as_slice() {
-            [f] if matches!(field_ty(f), Ty::Key { rel: own, .. } if own == rel) => {
+            [f] if matches!(field_ty(f), Ty::Key { rel: own, .. } if own == RelRef::Declared(rel)) =>
+            {
                 vec![(f.clone(), k)]
             }
             [f] => {

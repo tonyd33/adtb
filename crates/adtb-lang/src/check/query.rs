@@ -303,7 +303,7 @@ impl Checker<'_> {
         let mut out = Vec::new();
         for k in keys {
             let o = self.synth(&k.expr)?;
-            if !self.ordered(&o.ty) {
+            if !self.ordered(&o.ty, k.expr.span)? {
                 return Err(diag(
                     k.expr.span,
                     format!(
@@ -911,7 +911,7 @@ impl Checker<'_> {
                 v.ty.clone()
             }
             Agg::Min | Agg::Max => {
-                if !self.ordered(&v.ty) {
+                if !self.ordered(&v.ty, value.span)? {
                     return Err(diag(
                         value.span,
                         format!("`{name}` needs an ordered type, found {}", self.show(&v.ty)),

@@ -9,7 +9,7 @@ use adtb_lang::kernel::{Kind, Terms, Tm, alpha_equal};
 use adtb_lang::resolve::Visible;
 use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::textual::{Form, print};
-use adtb_lang::types::{Base, CtorSet, RelId, Ty};
+use adtb_lang::types::{Base, CtorSet, RelId, RelRef, Ty};
 
 use crate::exec::Val;
 use crate::plan::explain::{Actual, Node, json_text, object};
@@ -528,7 +528,7 @@ impl<R: Runtime> Engine<R> {
         let ty = Ty::Record(vec![(
             "call".into(),
             Ty::Key {
-                rel: engine_relation(schema, "sys", "calls")?,
+                rel: RelRef::Declared(engine_relation(schema, "sys", "calls")?),
                 ctors: None,
             },
         )]);
@@ -724,7 +724,7 @@ impl<R: Runtime> Engine<R> {
             (
                 "ctor".into(),
                 Ty::Key {
-                    rel: ctors,
+                    rel: RelRef::Declared(ctors),
                     ctors: None,
                 },
             ),

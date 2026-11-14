@@ -5,7 +5,7 @@ use std::sync::Arc;
 use adtb_lang::ast::FnBody;
 use adtb_lang::kernel::{Const, Kind, Terms, Tm};
 use adtb_lang::schema::Schema;
-use adtb_lang::types::{Base, FnId, Ty};
+use adtb_lang::types::{Base, FnId, RelRef, Ty};
 
 use crate::catalog::layout::batch_type;
 
@@ -724,7 +724,11 @@ impl<'a> Compiler<'a> {
                 Opd::Reg(dst)
             }
             Kind::Key(x) => {
-                let Ty::Key { rel, .. } = ty else {
+                let Ty::Key {
+                    rel: RelRef::Declared(rel),
+                    ..
+                } = ty
+                else {
                     return Err(Broken::KeyNotKeyTyped(ty.clone()).into());
                 };
                 let (at, single) = key_fields(self.schema, *rel, self.terms.ty(*x))?;

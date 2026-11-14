@@ -499,7 +499,9 @@ impl Source {
             .flat_map(|c| c.fields.iter().map(move |f| (Some(&c.name), f)))
             .chain(t.header().iter().map(|f| (None, f)))
         {
-            if matches!(f.ty, Ty::Key { rel: own, .. } if own == rel) && !r.key.contains(&f.name) {
+            if matches!(f.ty, Ty::Key { rel: own, .. } if own == RelRef::Declared(rel))
+                && !r.key.contains(&f.name)
+            {
                 let path = match c {
                     Some(c) if t.ctors().len() > 1 => format!("{}.{c}.{}", t.name, f.name),
                     _ => format!("{}.{}", t.name, f.name),

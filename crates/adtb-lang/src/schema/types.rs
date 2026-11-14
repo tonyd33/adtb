@@ -405,13 +405,19 @@ impl Resolver<'_> {
         let module = self.scope.module;
         let rel = schema
             .lookup_relation_in(module, &r.relation, self.scope.names)
-            .or_else(|e| schema.relation_ahead(module, &r.relation).ok_or(e))
+            .map(RelRef::Declared)
+            .or_else(|e| {
+                schema
+                    .relation_ahead(module, &r.relation)
+                    .map(RelRef::Ahead)
+                    .ok_or(e)
+            })
             .map_err(|e| (r.span, e))?;
         let late = schema.selects_late(rel);
-        let ctors = match &r.sel {
-            None => None,
-            Some(_) if late && schema.ahead_relation(rel).is_some() => None,
-            Some(_) if schema.ahead_relation(rel).is_some() => {
+        let ctors = match (&r.sel, rel) {
+            (None, _) => None,
+            (Some(_), RelRef::Ahead(_)) if late => None,
+            (Some(_), RelRef::Ahead(_)) => {
                 return Err((
                     r.span,
                     format!(
@@ -420,7 +426,7 @@ impl Resolver<'_> {
                     ),
                 ));
             }
-            Some(sel) => match schema.relation_sel(rel, sel) {
+            (Some(sel), RelRef::Declared(rel)) => match schema.relation_sel(rel, sel) {
                 Ok(set) => schema.normalize_ctors(schema.relation(rel).elem_def, set),
                 Err(_) if late => None,
                 Err(e) => return Err((r.span, e)),

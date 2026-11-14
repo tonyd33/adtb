@@ -5,7 +5,7 @@ use std::fmt;
 use adtb_lang::check::Program;
 use adtb_lang::schema::{Schema, TypeDefKind};
 use adtb_lang::textual::{Textual, key_field_ty, key_names};
-use adtb_lang::types::{Base, CtorSet, RelId, Ty};
+use adtb_lang::types::{Base, CtorSet, RelId, RelRef, Ty};
 use adtb_reference::{Database, Interpreter, Value};
 use unicode_normalization::is_nfc;
 
@@ -175,7 +175,13 @@ impl<'a> Judge<'a> {
                     (true, false) => fail("its constructor is not one of the sum's"),
                 }
             }
-            (Ty::Key { rel, ctors }, Value::Key(k)) => self.key(path, value, ty, *rel, ctors, k),
+            (
+                Ty::Key {
+                    rel: RelRef::Declared(rel),
+                    ctors,
+                },
+                Value::Key(k),
+            ) => self.key(path, value, ty, *rel, ctors, k),
             (Ty::Set(elem) | Ty::NonEmpty(elem), Value::Set(xs)) => {
                 if matches!(ty, Ty::NonEmpty(_)) && xs.is_empty() {
                     return fail("it is empty");

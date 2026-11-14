@@ -1,13 +1,13 @@
 use super::*;
 
 impl Builder<'_> {
+    /// Returns the declared sum `r` ranges over, else reports why it names none.
     pub(super) fn relation_head(
         &mut self,
         file: FileId,
         module: ModuleId,
-        id: RelId,
         r: &ast::RelationDecl,
-    ) {
+    ) -> Option<TypeId> {
         let head = match &r.ty.kind {
             ast::TypeKind::Named {
                 name, sel: None, ..
@@ -16,7 +16,7 @@ impl Builder<'_> {
         };
         match head {
             Ok(TypeName::Decl(t)) if matches!(self.schema.ty(t).kind, TypeDefKind::Sum { .. }) => {
-                self.schema.defs_mut().relations[id.0 as usize].elem_def = t;
+                return Some(t);
             }
             Ok(_) => self.err(
                 file,
@@ -25,6 +25,7 @@ impl Builder<'_> {
             ),
             Err(e) => self.err(file, r.ty.span, e),
         }
+        None
     }
 
     pub(super) fn named_set(&mut self, file: FileId, module: ModuleId, s: &ast::SetDecl) {
@@ -36,11 +37,7 @@ impl Builder<'_> {
             Ok(r) => r,
             Err(e) => return self.err(file, s.relation.span, e),
         };
-        let elem_def = self.schema.relation(rel).elem_def;
-        if elem_def.0 == u32::MAX {
-            return;
-        }
-        let def = self.schema.ty(elem_def);
+        let def = self.schema.ty(self.schema.relation(rel).elem_def);
         let mut ctors = BTreeSet::new();
         let mut bad = Vec::new();
         for m in &s.members {
@@ -113,9 +110,6 @@ impl Builder<'_> {
         r: &ast::RelationDecl,
     ) {
         let elem_def = self.schema.relation(id).elem_def;
-        if elem_def.0 == u32::MAX {
-            return;
-        }
         let scope = TypeScope {
             module,
             params: &[],
@@ -304,10 +298,10 @@ impl Builder<'_> {
                     ),
                 ),
                 Some(k) => {
-                    let self_key = names.len() == 1
-                        && key_candidates.iter().any(|c| {
-                            c.name == names[0] && matches!(c.ty, Ty::Key { rel, .. } if rel == id)
-                        });
+                    let self_key = names.len() == 1 && key_candidates.iter().any(|c| {
+                        c.name == names[0]
+                            && matches!(c.ty, Ty::Key { rel, .. } if rel == RelRef::Declared(id))
+                    });
                     if !self_key {
                         self.err(
                             file,

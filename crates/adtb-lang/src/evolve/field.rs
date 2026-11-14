@@ -854,7 +854,7 @@ pub(super) fn refers(schema: &Schema, t: &Ty, rel: RelId) -> bool {
 /// Returns whether `t` is `Key rel` or a declared type with it among its arguments.
 fn keys(t: &Ty, rel: RelId) -> bool {
     match t {
-        Ty::Key { rel: r, .. } => *r == rel,
+        Ty::Key { rel: r, .. } => *r == RelRef::Declared(rel),
         Ty::Data { args, .. } => args.iter().any(|a| keys(a, rel)),
         _ => false,
     }

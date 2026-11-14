@@ -149,6 +149,7 @@ impl Form {
             Ty::Record(fs) => Form::Record(fields_of(schema, fs)),
             Ty::Unit => Form::Unit,
             Ty::Key { rel, .. } => {
+                let rel = &schema.declared(*rel);
                 let r = schema.relation(*rel);
                 let value = match r.key.as_slice() {
                     [f] => KeyForm::One(Box::new(Form::of(schema, &key_field_ty(schema, *rel, f)))),

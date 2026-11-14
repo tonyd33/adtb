@@ -94,6 +94,7 @@ impl Reads {
             }
             Kind::Deref { key, .. } => {
                 if let Ty::Key { rel, ctors } = terms.ty(*key) {
+                    let rel = &schema.declared(*rel);
                     self.reached.insert(*rel);
                     let ctors = ctors.clone().filter(|s| !covers(schema, *rel, s));
                     self.references.insert((*rel, ctors));

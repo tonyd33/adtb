@@ -4,7 +4,7 @@ use adtb_lang::analysis::Totality;
 use adtb_lang::kernel::{Agg, Kind, Prim, Terms, Tm, Transition, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
-use adtb_lang::types::{CtorSet, RelId, Ty};
+use adtb_lang::types::{CtorSet, RelId, RelRef, Ty};
 
 use crate::catalog::indexed_fields;
 use crate::plan::explain::{Describe, Node};
@@ -233,7 +233,11 @@ fn scan(
             reads.insert(r);
         }
         Kind::Deref { key, .. } => {
-            if let Ty::Key { rel, .. } = terms.ty(key) {
+            if let Ty::Key {
+                rel: RelRef::Declared(rel),
+                ..
+            } = terms.ty(key)
+            {
                 reads.insert(*rel);
             }
             scan(terms, key, seen, out, reads);
@@ -646,6 +650,7 @@ impl Compiler<'_> {
             }
             Kind::Deref { key, .. } => {
                 if let Ty::Key { rel, ctors } = self.ty(key) {
+                    let rel = self.schema.declared(rel);
                     out.push(Occurrence {
                         rel,
                         ctors: self.ctors_or_all(rel, &ctors),
@@ -832,7 +837,10 @@ impl Compiler<'_> {
     /// of its key with the key it replaces to `conds`.
     fn unfold(&mut self, t: Tm, via: &mut Vec<(Var, Tm)>, conds: &mut Vec<Tm>) -> Tm {
         if let Kind::Deref { key, .. } = self.kind(t)
-            && let Ty::Key { rel, ctors } = self.ty(key)
+            && let Ty::Key {
+                rel: RelRef::Declared(rel),
+                ctors,
+            } = self.ty(key)
         {
             let key = self.unfold(key, via, conds);
             let row_ty = self.ty(t);
@@ -1140,7 +1148,10 @@ impl Compiler<'_> {
         let set_ty = Ty::Set(Box::new(elem.clone()));
         let plus = self.input(rel, ctors, Part::Inserted, &elem);
         let minus = self.input(rel, ctors, Part::Deleted, &elem);
-        let key_ty = Ty::Key { rel, ctors: None };
+        let key_ty = Ty::Key {
+            rel: RelRef::Declared(rel),
+            ctors: None,
+        };
         let z = self.terms.var("%inserted", elem.clone());
         let zv = self.add(Kind::Var(z), elem.clone());
         let yv = self.add(Kind::Var(y), elem.clone());

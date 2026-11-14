@@ -906,7 +906,10 @@ fn arm_ctor(refs: &[(FileId, Span, Ref)], j: usize, def: TypeId, a: &ast::Arm) -
 fn over(schema: &Schema, ty: &Ty, def: TypeId) -> bool {
     match ty {
         Ty::Data { def: d, .. } => *d == def,
-        Ty::Key { rel, .. } => schema.relation(*rel).elem_def == def,
+        Ty::Key {
+            rel: RelRef::Declared(rel),
+            ..
+        } => schema.relation(*rel).elem_def == def,
         _ => false,
     }
 }

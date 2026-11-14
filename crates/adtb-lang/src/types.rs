@@ -6,6 +6,28 @@ pub struct TypeId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RelId(pub u32);
 
+/// A relation variable a later operator of the migration being applied adds, by its position in
+/// the schema's list of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct AheadId(u32);
+
+impl AheadId {
+    pub(crate) fn at(i: usize) -> AheadId {
+        AheadId(i as u32)
+    }
+
+    pub(crate) fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// The relation variable a key type names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum RelRef {
+    Declared(RelId),
+    Ahead(AheadId),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FnId(pub u32);
 
@@ -204,7 +226,7 @@ pub enum Ty {
     /// The type parameter at this position of the enclosing declaration or function.
     Param(u32),
     Key {
-        rel: RelId,
+        rel: RelRef,
         ctors: Option<CtorSet>,
     },
     Set(Box<Ty>),

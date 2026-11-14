@@ -1,0 +1,25 @@
+seed 74
+
+migrate
+  module m
+  add module m
+  add type Thing { id: Key things } = A { x: I64 } | B { y: I64 } | C
+  add relation things : Thing key id generate sequence
+
+run
+  insert things.A { x: 1 }
+  insert things.C {}
+
+migrate
+  module m
+  add field Thing.u: Option (Key later) fill None
+  add type Inner = A { x: I64 } | B { y: I64 }
+  nest constructor Thing.(A | B) into N { inner: Inner }
+  add type L = { id: Key later }
+  add relation later : L key id generate sequence
+
+query rowsort
+  from t in things select t
+----
+C { id: things.key(2), u: None }
+N { id: things.key(1), inner: A { x: 1 }, u: None }

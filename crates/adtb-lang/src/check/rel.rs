@@ -38,7 +38,8 @@ impl Checker<'_> {
                 return None;
             }
             let f = self.schema.ty(def).field_named(0, &r.key[0])?;
-            matches!(f.ty, Ty::Key { rel: own, .. } if own == rel).then(|| (rel, r.key[0].clone()))
+            matches!(f.ty, Ty::Key { rel: own, .. } if own == RelRef::Declared(rel))
+                .then(|| (rel, r.key[0].clone()))
         })
     }
 
@@ -51,7 +52,7 @@ impl Checker<'_> {
                 .field_named(0, name)
                 .ok_or_else(|| format!("`{}` has no key field `{name}`", r.name))?;
             match &f.ty {
-                Ty::Key { rel: own, .. } if *own == rel => match r.generate {
+                Ty::Key { rel: own, .. } if *own == RelRef::Declared(rel) => match r.generate {
                     Some(crate::schema::Generator::Sequence) => Ok(Ty::Base(Base::I64)),
                     None if self.schema.module(r.module).engine => Ok(Ty::Base(Base::I64)),
                     Some(crate::schema::Generator::Uuidv7) => Ok(Ty::Data {

@@ -587,11 +587,13 @@ impl Checker<'_> {
         if let Some(rel) = o.rows
             && matches!(o.ty, Ty::Data { .. })
         {
+            let rel = RelRef::Declared(rel);
             return Ok(self.out(Kind::Key(o.tm), Ty::Key { rel, ctors }));
         }
         if let Ty::Data { def, .. } = &o.ty
             && let Some((rel, field)) = self.self_key(*def)
         {
+            let rel = RelRef::Declared(rel);
             return Ok(self.out(Kind::Field(o.tm, field), Ty::Key { rel, ctors }));
         }
         Err(diag(
@@ -726,7 +728,7 @@ impl Checker<'_> {
                 }
                 let (x, y) = (self.widen(x, &j), self.widen(y, &j));
                 let ordering = !matches!(op, BinOp::Eq | BinOp::Ne);
-                if ordering && !self.ordered(&j) {
+                if ordering && !self.ordered(&j, span)? {
                     return Err(diag(span, format!("{} has no order", self.show(&j))));
                 }
                 let prim = match op {
@@ -937,7 +939,10 @@ impl Checker<'_> {
     /// `o.f`, following a reference.
     pub(super) fn field_of(&mut self, o: Out, f: &ast::Ident) -> R<Out> {
         let o = match &o.ty {
-            Ty::Key { rel, ctors } => self.deref(o.clone(), *rel, ctors.clone()),
+            Ty::Key { rel, ctors } => {
+                let rel = self.schema.relation_of(*rel).map_err(|e| diag(f.span, e))?;
+                self.deref(o.clone(), rel, ctors.clone())
+            }
             _ => o,
         };
         if let Some((_, fty)) = self
@@ -1170,15 +1175,21 @@ impl Checker<'_> {
                 ));
             }
         };
+        let target = self
+            .schema
+            .relation_of(target)
+            .map_err(|e| diag(f.span, e))?;
         let xo = self.synth(x)?;
         let kappa = match &xo.ty {
-            Ty::Key { rel: k, .. } if *k == target => xo,
+            Ty::Key { rel: k, .. } if *k == RelRef::Declared(target) => xo,
             Ty::Key { rel: k, .. } => {
                 return Err(diag(
                     x.span,
                     format!(
                         "a key of `{}` never matches `{}`, a reference into `{}`",
-                        self.schema.relation(*k).name,
+                        self.schema
+                            .relation(self.schema.relation_of(*k).map_err(|e| diag(x.span, e))?)
+                            .name,
                         f.text,
                         self.schema.relation(target).name
                     ),
@@ -1187,7 +1198,7 @@ impl Checker<'_> {
             _ => {
                 let k = self.key_of(xo, x.span)?;
                 match &k.ty {
-                    Ty::Key { rel: kr, .. } if *kr == target => k,
+                    Ty::Key { rel: kr, .. } if *kr == RelRef::Declared(target) => k,
                     _ => {
                         return Err(diag(
                             x.span,
@@ -1283,7 +1294,10 @@ impl Checker<'_> {
                 }
             },
         };
-        let ty = Ty::Key { rel, ctors: None };
+        let ty = Ty::Key {
+            rel: RelRef::Declared(rel),
+            ctors: None,
+        };
         Ok(self.out(Kind::KeyOf(rel, value.tm), ty))
     }
 

@@ -1,6 +1,6 @@
 use super::*;
 use crate::signature::Ids;
-use crate::types::Base;
+use crate::types::{Base, RelRef};
 
 const GRANTS: &str = r"
 module auth
@@ -2118,7 +2118,7 @@ fn a_printed_family_target_reads_back_as_the_same_ids() {
         .position(|r| r.name == "items")
         .unwrap();
     let key = Ty::Key {
-        rel: RelId(rel as u32),
+        rel: RelRef::Declared(RelId(rel as u32)),
         ctors: None,
     };
     let result = Ty::Set(Box::new(Ty::Record(vec![

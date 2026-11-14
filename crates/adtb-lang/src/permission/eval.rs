@@ -61,7 +61,7 @@ impl Analyzer<'_> {
                 let Ty::Key { rel, .. } = node.ty else {
                     return Err(Error::InvalidKernel("key has a key type"));
                 };
-                for key in self.schema.relation(rel).key.clone() {
+                for key in self.schema.relation(self.schema.declared(rel)).key.clone() {
                     self.consume(&value.field(&key));
                 }
                 Ok(Value::scalar())
@@ -212,7 +212,11 @@ impl Analyzer<'_> {
     fn dereference(&mut self, arena: Arena, key: Tm, env: &Env) -> Result<Value, Error> {
         let value = self.eval(arena, key, env)?;
         self.consume(&value);
-        let Ty::Key { rel, ctors } = self.terms(arena).ty(key).clone() else {
+        let Ty::Key {
+            rel: RelRef::Declared(rel),
+            ctors,
+        } = self.terms(arena).ty(key).clone()
+        else {
             return Err(Error::InvalidKernel("dereference has a key operand"));
         };
         Ok(self.relation(rel, ctors.as_deref(), None, true)?.elements())

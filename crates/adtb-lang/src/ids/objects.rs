@@ -523,7 +523,7 @@ impl Objects<'_> {
     /// constructor of its type.
     fn reach(&self, def: TypeId, ctors: &[CtorRef], run: &[&str]) -> (Vec<Vec<Slot>>, usize) {
         let schema = self.schema;
-        let user = |d: &TypeId| d.0 != u32::MAX && !schema.module(schema.ty(*d).module).engine;
+        let user = |d: &TypeId| !schema.module(schema.ty(*d).module).engine;
         let mut level: Vec<(Vec<Slot>, Option<TypeId>, Vec<CtorRef>)> =
             vec![(Vec::new(), Some(def), ctors.to_vec())];
         let mut resolved = 0;
@@ -580,11 +580,7 @@ impl Objects<'_> {
                 _ => return Row::None,
             },
         };
-        if def.0 == u32::MAX {
-            Row::None
-        } else {
-            Row::Data(def)
-        }
+        Row::Data(def)
     }
 
     /// Returns the key part of an element `name` that names `field`: the field when a user module
@@ -611,8 +607,7 @@ impl Objects<'_> {
                 },
                 _ => None,
             },
-        }
-        .filter(|d| d.0 != u32::MAX);
+        };
         if let Some(c) = def.and_then(|d| schema.ty(d).ctor_named(name)) {
             return Named::Ctor(Slot::Ctor(c));
         }
@@ -649,9 +644,6 @@ fn default_fields(
     field: &str,
 ) -> Vec<FieldRef> {
     let def = schema.relation(r).elem_def;
-    if def.0 == u32::MAX {
-        return Vec::new();
-    }
     let td = schema.ty(def);
     if let Some(f) = td.field(None, field) {
         return vec![f];

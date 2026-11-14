@@ -55,12 +55,7 @@ fn root_site(schema: &Schema, root: Root) -> (FileId, Span) {
             (c.file, c.query.span)
         }
         Root::Check(i) => {
-            let c = schema
-                .checks
-                .iter()
-                .filter(|c| c.relation.0 != u32::MAX)
-                .nth(i)
-                .expect("one check per checked clause");
+            let c = &schema.checks[i];
             (c.file, c.predicate.span)
         }
         Root::Domain(t) => {

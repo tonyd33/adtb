@@ -12,8 +12,10 @@ use adtb::{
     Capability, Completion, Database, Error, Log, Observation, OpenOptions, RejectReason,
     RoleSession, Task, TaskOptions, Value,
 };
-use adtb_lang::schema::ValueDef;
-use adtb_lang::types::{Base, RelId, Ty, TypeId};
+use adtb_lang::parse::{Options, parse_schema};
+use adtb_lang::schema::{ValueDef, build};
+use adtb_lang::span::FileId;
+use adtb_lang::types::{Base, RelId, RelRef, Ty, TypeId};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api::query;
 use adtb_simkit::open::options;
@@ -326,7 +328,7 @@ fn a_parameter_cannot_widen_what_is_read() {
     scenario(611, |rt, db| {
         let reader = session(&db, "reader");
         let key = Ty::Key {
-            rel: secrets_id(&db),
+            rel: RelRef::Declared(secrets_id(&db)),
             ctors: None,
         };
         let params = [("k", key, Value::Int(1))];
@@ -352,7 +354,7 @@ fn a_parameter_cannot_widen_what_is_read() {
 fn a_parameter_of_a_type_the_schema_does_not_hold_is_refused_with_a_row() {
     scenario(629, |_, db| {
         let bogus = Ty::Key {
-            rel: RelId(u32::MAX),
+            rel: RelRef::Declared(foreign(&db).0),
             ctors: None,
         };
         let got = session(&db, "reader")
@@ -605,6 +607,22 @@ fn docs_id(db: &Database<SimRuntime>) -> RelId {
     }
 }
 
+/// Returns a relation and its element type of a schema that declares more relations and types
+/// than the database's.
+fn foreign(db: &Database<SimRuntime>) -> (RelId, TypeId) {
+    let schema = db.schema();
+    let n = schema.relations.len().max(schema.types.len());
+    let decls: String = (0..=n)
+        .map(|i| format!("type T{i} = {{ id: Key r{i} }}\nrelation r{i} : T{i} key id\n"))
+        .collect();
+    let file = parse_schema(&format!("module other\n{decls}"), Options::default())
+        .ok()
+        .expect("the schema parses");
+    let other = build(&[(FileId(0), file)]).expect("the schema builds");
+    let rel = RelId(other.relations.len() as u32 - 1);
+    (rel, other.relation(rel).elem_def)
+}
+
 fn typed(db: &Database<SimRuntime>, role: &str, text: &str, ty: Ty) -> String {
     let got = session(db, role)
         .submit_text(text, &[("k", ty, Value::Int(1))], TaskOptions::default())
@@ -617,7 +635,7 @@ fn a_parameter_type_naming_what_the_role_holds_no_grant_on_answers_as_an_absent_
     scenario(640, |_, db| {
         let secret = secret_type(&db);
         let key = Ty::Key {
-            rel: secrets_id(&db),
+            rel: RelRef::Declared(secrets_id(&db)),
             ctors: None,
         };
         let data = Ty::Data {
@@ -625,12 +643,13 @@ fn a_parameter_type_naming_what_the_role_holds_no_grant_on_answers_as_an_absent_
             args: Vec::new(),
             ctors: None,
         };
+        let (absent_rel, absent_def) = foreign(&db);
         let absent_key = Ty::Key {
-            rel: RelId(u32::MAX),
+            rel: RelRef::Declared(absent_rel),
             ctors: None,
         };
         let absent_data = Ty::Data {
-            def: TypeId(u32::MAX),
+            def: absent_def,
             args: Vec::new(),
             ctors: None,
         };
@@ -652,7 +671,7 @@ fn a_parameter_type_naming_what_the_role_holds_no_grant_on_answers_as_an_absent_
 fn a_key_parameter_may_name_what_a_field_of_a_held_type_references() {
     scenario(642, |_, db| {
         let docs = Ty::Key {
-            rel: docs_id(&db),
+            rel: RelRef::Declared(docs_id(&db)),
             ctors: None,
         };
         let got = typed(&db, "reader", "k", docs);
@@ -709,7 +728,7 @@ fn a_role_reading_the_schema_is_told_what_it_names_wrong() {
             "cataloged",
             "k",
             Ty::Key {
-                rel: RelId(u32::MAX),
+                rel: RelRef::Declared(foreign(&db).0),
                 ctors: None,
             },
         );
@@ -725,8 +744,9 @@ fn a_role_reading_the_schema_is_told_what_it_names_wrong() {
 #[test]
 fn an_out_of_range_constructor_in_a_parameter_type_panics_nothing() {
     scenario(646, |_, db| {
-        let docs = docs_id(&db);
-        let def = db.schema().relation(docs).elem_def;
+        let docs_rel = docs_id(&db);
+        let def = db.schema().relation(docs_rel).elem_def;
+        let docs = RelRef::Declared(docs_rel);
         let bad = [
             Ty::Key {
                 rel: docs,
@@ -1427,7 +1447,10 @@ fn a_long_chain_of_operators_answers_and_does_not_take_the_stack() {
 #[test]
 fn a_key_parameter_of_a_referenced_relation_shows_only_the_selection_a_field_states() {
     scenario(674, |_, db| {
-        let key = |rel, ctors| Ty::Key { rel, ctors };
+        let key = |rel, ctors| Ty::Key {
+            rel: RelRef::Declared(rel),
+            ctors,
+        };
         let absent = typed(&db, "noter", "k", Ty::Base(Base::I64));
         assert!(!absent.contains("may not run this text"), "{absent}");
         let (secrets, docs) = (secrets_id(&db), docs_id(&db));

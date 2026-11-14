@@ -167,8 +167,9 @@ impl<'s> Module<'s> {
                 .cloned()
                 .ok_or_else(|| Error::new(format!("type parameter {i} is not in scope")))?,
             Ty::Key { rel, .. } => {
-                self.want(Wanted::Relation(*rel));
-                format!("::adtb::Key<{}>", self.marker(*rel))
+                let rel = self.schema.declared(*rel);
+                self.want(Wanted::Relation(rel));
+                format!("::adtb::Key<{}>", self.marker(rel))
             }
             Ty::Set(t) | Ty::NonEmpty(t) => format!("Vec<{}>", self.host_ty(t, anon, params)?),
             Ty::Record(fs) if fs.is_empty() => "()".into(),

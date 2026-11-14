@@ -461,7 +461,10 @@ impl Checker<'_> {
         let Some(&ValueDef::Relation(rel)) = self.schema.module(m).values.get(name) else {
             panic!("the engine declares `{module}::{name}`");
         };
-        Ty::Key { rel, ctors: None }
+        Ty::Key {
+            rel: RelRef::Declared(rel),
+            ctors: None,
+        }
     }
 
     fn set_setting(&mut self, name: &ast::Ident, value: &ast::Expr) -> R<Command> {

@@ -6,7 +6,7 @@ use adtb_lang::kernel::{Kind, Terms, Tm, Var};
 use adtb_lang::norm::NormalQuery;
 use adtb_lang::schema::Schema;
 use adtb_lang::textual::key_names;
-use adtb_lang::types::{RelId, Ty, TypeId};
+use adtb_lang::types::{RelId, RelRef, Ty, TypeId};
 
 use crate::exec::{self, Conv, Scalar, Val, conv, from_stored, to_stored};
 use crate::heap::FieldType;
@@ -360,9 +360,9 @@ impl Refs {
     }
 
     /// Returns `of`, where `seen` holds the relations whose keys the path to `ty` passes through.
-    fn within(schema: &Schema, ty: &Ty, rel: RelId, seen: &mut BTreeSet<RelId>) -> Option<Refs> {
+    fn within(schema: &Schema, ty: &Ty, rel: RelId, seen: &mut BTreeSet<RelRef>) -> Option<Refs> {
         let ctors: Vec<Vec<Ty>> = match layout::repr(schema, ty) {
-            Ty::Key { rel: r, .. } if r == rel => return Some(Refs::Key),
+            Ty::Key { rel: r, .. } if r == RelRef::Declared(rel) => return Some(Refs::Key),
             Ty::Key { rel: s, .. } => {
                 if !seen.insert(s) {
                     return None;
@@ -948,7 +948,7 @@ impl Mapping<'_> {
         let (a, b) = (self.a, self.b);
         let rid = rel_id(a, ra);
         let rb = relation(b, rid).ok_or_else(|| Failed::from(Broken::RekeyedGone(rid)))?;
-        let old_ty = layout::field_type(a, &layout::key_value_ty(a, ra));
+        let old_ty = layout::field_type(a, &layout::key_value_ty(a, RelRef::Declared(ra)));
         let mut keys: BTreeMap<Vec<u8>, Value> = BTreeMap::new();
         for (&cid, rows) in self.data.get(&rid).into_iter().flatten() {
             let c = ctor_index(a, ra, cid).ok_or_else(|| Failed::from(Broken::ForeignCtor(cid)))?;

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use adtb_lang::schema::{Schema, TypeDefKind};
 use adtb_lang::textual::{key_field_ty, key_names};
-use adtb_lang::types::{Base, RelId, Ty, TypeId};
+use adtb_lang::types::{Base, RelId, RelRef, Ty, TypeId};
 
 use crate::batch;
 use crate::heap::{self, FieldType};
@@ -142,10 +142,11 @@ pub fn is_record(schema: &Schema, ty: &Ty) -> bool {
 ///
 /// A relation a later operator of the migration adds has no key yet and no row refers to it, so
 /// its values are the empty record.
-pub fn key_value_ty(schema: &Schema, rel: RelId) -> Ty {
-    if schema.ahead_relation(rel).is_some() {
-        return Ty::Record(Vec::new());
-    }
+pub fn key_value_ty(schema: &Schema, rel: RelRef) -> Ty {
+    let rel = match rel {
+        RelRef::Declared(rel) => rel,
+        RelRef::Ahead(_) => return Ty::Record(Vec::new()),
+    };
     match schema.relation(rel).key.as_slice() {
         [k] => key_field_ty(schema, rel, k),
         _ => Ty::Record(

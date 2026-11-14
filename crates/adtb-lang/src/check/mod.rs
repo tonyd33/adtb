@@ -313,7 +313,7 @@ impl<'a> Checker<'a> {
             crate::canon::type_refs(self.schema, self.module(), t, &mut refs.borrow_mut());
         }
         for (arg, _, span) in ordered {
-            if !self.ordered(&arg) {
+            if !self.ordered(&arg, span)? {
                 return Err(diag(span, "`Span a` needs an ordered `a`"));
             }
         }
@@ -450,9 +450,12 @@ impl<'a> Checker<'a> {
             .is_some_and(|(_, bs)| bs.contains(&b))
     }
 
-    pub fn ordered(&self, ty: &Ty) -> bool {
+    /// Returns whether `ty` is ordered, refused at `span` when the answer needs a relation a later
+    /// operator of the migration adds.
+    pub fn ordered(&self, ty: &Ty, span: Span) -> R<bool> {
         self.schema
             .is_ordered_with(ty, &|i| self.param_has(i, Bound::Ord))
+            .map_err(|e| diag(span, e))
     }
 }
 
@@ -646,9 +649,6 @@ impl Bodies<'_, '_> {
     fn checks(&mut self) {
         let schema = self.schema;
         for chk in &schema.checks {
-            if chk.relation.0 == u32::MAX {
-                continue;
-            }
             if let Some(tm) = self.run(chk.module, Context::Schema, chk.file, &mut |c| {
                 c.check_clause(chk.relation, chk.ctors.clone(), &chk.predicate)
             }) {

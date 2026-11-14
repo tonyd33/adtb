@@ -912,7 +912,7 @@ impl Checker<'_> {
                     .chain(t.ctors().iter().flat_map(|c| c.fields.iter()))
                     .any(|f| {
                         f.on_delete == OnDelete::Cascade
-                            && matches!(f.ty, Ty::Key { rel, .. } if out.contains(&rel))
+                            && matches!(f.ty, Ty::Key { rel: RelRef::Declared(rel), .. } if out.contains(&rel))
                     });
                 if cascades {
                     out.insert(RelId(i as u32));

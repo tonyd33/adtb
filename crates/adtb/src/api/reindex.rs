@@ -4,7 +4,7 @@
 use std::sync::{Arc, Weak};
 
 use adtb_lang::schema::Schema;
-use adtb_lang::types::{RelId, Ty};
+use adtb_lang::types::{RelId, RelRef, Ty};
 use adtb_sys::lock::Lock;
 
 use crate::catalog;
@@ -87,7 +87,7 @@ impl<R: Runtime> Engine<R> {
         let ty = Ty::Record(vec![(
             "job".into(),
             Ty::Key {
-                rel: table,
+                rel: RelRef::Declared(table),
                 ctors: None,
             },
         )]);

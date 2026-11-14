@@ -155,6 +155,9 @@ fn removal_blocked(
             let mut keys = Vec::new();
             key_types(&f.ty, &mut keys);
             for (rel, ctors) in keys {
+                let RelRef::Declared(rel) = rel else {
+                    continue;
+                };
                 if schema.relation(rel).elem_def == def
                     && let Some(cs) = ctors
                     && cs.contains(&c)

@@ -205,9 +205,10 @@ impl<'a> Map<'a> {
                 ctors: self.set(*def, ctors, pinned),
             },
             Ty::Key { rel, ctors } => {
-                let def = self.from.relation(*rel).elem_def;
+                let rel = self.from.declared(*rel);
+                let def = self.from.relation(rel).elem_def;
                 Ty::Key {
-                    rel: self.relation(*rel).ok_or(Loss::Relation(*rel))?,
+                    rel: RelRef::Declared(self.relation(rel).ok_or(Loss::Relation(rel))?),
                     ctors: self.set(def, ctors, hide_new),
                 }
             }
@@ -340,8 +341,9 @@ impl<'a> Map<'a> {
     ) -> Result<(), Loss> {
         let mut inner = |t: &Ty| self.whole_in(t, exact, ordered, named, seen);
         match ty {
-            Ty::Key { rel, .. } if named => self.key_shown(*rel, seen),
+            Ty::Key { rel, .. } if named => self.key_shown(self.from.declared(*rel), seen),
             Ty::Key { rel, .. } => {
+                let rel = &self.from.declared(*rel);
                 if self.key_order(*rel)?.is_some() && ordered {
                     return Err(Loss::KeyOrder(*rel));
                 }

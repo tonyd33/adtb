@@ -233,10 +233,14 @@ impl Checker<'_> {
         span: Span,
     ) -> R<Matched> {
         let s = self.synth(scrutinee)?;
-        self.note(span, Ref::Match(s.ty.clone()));
+        let matched = s.ty.clone();
         let (s, by_key) = match &s.ty {
             Ty::Key { rel, ctors } => {
-                let (rel, ctors) = (*rel, ctors.clone());
+                let rel = self
+                    .schema
+                    .relation_of(*rel)
+                    .map_err(|e| diag(scrutinee.span, e))?;
+                let ctors = ctors.clone();
                 (self.deref(s, rel, ctors), true)
             }
             Ty::Set(_) | Ty::NonEmpty(_) | Ty::Group(..) => {
@@ -256,6 +260,7 @@ impl Checker<'_> {
             }
             _ => (s, false),
         };
+        self.note(span, Ref::Match(matched));
         let sty = s.ty.clone();
         let is_sum = self.signature(&sty).is_some();
         let mut irs = Vec::new();

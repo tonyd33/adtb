@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::schema::Schema;
 use adtb_lang::textual::{key_field_ty, key_names};
-use adtb_lang::types::{RelId, Ty, TypeId};
+use adtb_lang::types::{RelId, RelRef, Ty, TypeId};
 
 use crate::heap::FieldType;
 use crate::key::Value;
@@ -67,7 +67,10 @@ fn reached_keys(schema: &Schema, ty: &Ty, seen: &mut Vec<Ty>, keys: &mut KeyIds)
     }
     seen.push(t.clone());
     match &t {
-        Ty::Key { rel, .. } if schema.ahead_relation(*rel).is_none() => {
+        Ty::Key {
+            rel: RelRef::Declared(rel),
+            ..
+        } => {
             keys.insert(rel_id(schema, *rel), key_ids(schema, *rel));
             for n in key_names(schema, *rel) {
                 reached_keys(schema, &key_field_ty(schema, *rel, &n), seen, keys);
@@ -384,10 +387,12 @@ fn plan<'m>(types: &Types<'m>, ta: &Ty, tb: &Ty) -> Result<Plan<'m>, Failed> {
 /// each key field matched by catalog id, refused when it holds no key field of `rb`. Returns
 /// `None` when `ra` and `rb` are not one relation or one has a single key field and the other
 /// several.
-fn keyed<'m>(types: &Types<'m>, ra: RelId, rb: RelId) -> Result<Option<Plan<'m>>, Failed> {
+fn keyed<'m>(types: &Types<'m>, ra: RelRef, rb: RelRef) -> Result<Option<Plan<'m>>, Failed> {
     let (a, b) = (types.a, types.b);
-    let id = |s: &Schema, r: RelId| s.ahead_relation(r).is_none().then(|| rel_id(s, r));
-    if id(a, ra).is_none() || id(a, ra) != id(b, rb) {
+    let (RelRef::Declared(ra), RelRef::Declared(rb)) = (ra, rb) else {
+        return Ok(None);
+    };
+    if rel_id(a, ra) != rel_id(b, rb) {
         return Ok(None);
     }
     let key = |s: &Schema, r: RelId| -> Option<Vec<(CatFieldId, Ty)>> {

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use adtb_lang::schema::Schema;
 use adtb_lang::textual::key_names;
-use adtb_lang::types::Ty;
+use adtb_lang::types::{RelRef, Ty};
 
 use crate::batch::{Batch, BatchBuilder, Schema as BatchSchema};
 use crate::btree::{self, Index, prefix_end};
@@ -1155,7 +1155,14 @@ pub fn conv(schema: &Schema, ty: &Ty) -> Conv {
     match &t {
         Ty::Base(_) => Conv::Scalar,
         Ty::Record(fs) => Conv::AnonRecord(fs.iter().map(|(_, f)| conv(schema, f)).collect()),
-        Ty::Key { rel, .. } => {
+        Ty::Key {
+            rel: RelRef::Ahead(_),
+            ..
+        } => Conv::AnonRecord(Vec::new()),
+        Ty::Key {
+            rel: RelRef::Declared(rel),
+            ..
+        } => {
             let r = schema.relation(*rel);
             let row = ctors(schema, &r.elem).expect("a relation's element type is a sum");
             let field_ty = |n: &str| {
@@ -1168,7 +1175,7 @@ pub fn conv(schema: &Schema, ty: &Ty) -> Conv {
             };
             match r.key.as_slice() {
                 [k] => match field_ty(k) {
-                    Ty::Key { rel: own, .. } if own == *rel => Conv::Scalar,
+                    Ty::Key { rel: own, .. } if own == RelRef::Declared(*rel) => Conv::Scalar,
                     f => conv(schema, &f),
                 },
                 _ => Conv::AnonRecord(
