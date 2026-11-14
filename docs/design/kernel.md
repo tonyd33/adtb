@@ -247,6 +247,11 @@ type the node was checked against: that type or a supertype of it. A
 `Var`, `Rel` or `Transition` has exactly the type its row gives; a
 `Group` widens only its `key` field.
 
+The rows bind the terms a consumer builds from the terms it receives,
+a lowered plan's included. Such a term narrows a variable known to hold
+one constructor with a `Case` whose other arms are `Unreachable`, never
+with a `Let` binding a variable of a narrower type than its value.
+
 | Kind | Invariant |
 | --- | --- |
 | `Var(x)` | `τ` is `x`'s type |
@@ -282,8 +287,9 @@ type the node was checked against: that type or a supertype of it. A
 | `Top { count, keys, var, source }` | `ty(count) = I64`; each key is over `var`, ordered, `true` for `desc`; `τ = ty(source)` |
 | `Present { var, source, keys, take, after }` | the final result of an ad hoc statement or a registered query body, nested nowhere else; `take : I64`; `after : Option K` for one key of type `K`, or an `Option` of a record with one field per key, whose fields in name order match the keys in order; `τ = ty(source)`, delivered as a sequence |
 | `Fix(binds, b)` | each body has its binder's type; `τ = ty(b)` |
+| `Placeholder { occurrence, generator, rel, scope }` | `τ` is `Instant` for `Clock` and a `Key` of `rel` for `Sequence` and `Uuidv7`; each term of `scope` is a `Var`; built by a consumer in place of an occurrence of a `Fresh`; `adtb-lang` never builds one, and passes one it receives through: translation maps its `rel`, normalisation and permission evaluation are congruent over it |
 | `At { instant, point, body }` | `ty(point)` is `Instant`, or `Position` when `instant` is false; `τ = ty(body)` |
-| `Unreachable` | a position the checker proves no evaluation reaches, by exhaustiveness or by a test that dominates it, at any type; reaching it is a broken invariant |
+| `Unreachable` | a position the checker, or the consumer that built it, proves no evaluation reaches, by exhaustiveness or by a test that dominates it, at any type; reaching it is a broken invariant |
 | writes and blocks | as §4 states |
 
 A `Record` or `Ctor` evaluates its fields in the order the node lists

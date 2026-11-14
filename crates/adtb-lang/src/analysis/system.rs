@@ -99,6 +99,7 @@ fn written(kind: &Kind) -> Option<RelId> {
         | Kind::Top { .. }
         | Kind::Fix(..)
         | Kind::Fresh(..)
+        | Kind::Placeholder { .. }
         | Kind::Only(_)
         | Kind::At { .. }
         | Kind::Present { .. }

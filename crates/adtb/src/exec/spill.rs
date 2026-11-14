@@ -315,6 +315,10 @@ pub(super) fn put(v: &Val, out: &mut Vec<u8>) {
             out.push(17);
             put_seq(out, xs.iter());
         }
+        Val::Placeholder { occurrence, scope } => {
+            tagged(out, 18, &occurrence.to_le_bytes());
+            put_seq(out, scope.iter());
+        }
     }
 }
 
@@ -373,6 +377,10 @@ fn get(r: &mut Reader<'_>) -> Result<Val, Malformed> {
         15 => Val::record(get_seq(r)?),
         16 => Val::set(get_seq(r)?.into_iter().collect()),
         17 => Val::List(Arc::from(get_seq(r)?)),
+        18 => Val::Placeholder {
+            occurrence: r.u32()?,
+            scope: Arc::from(get_seq(r)?),
+        },
         _ => return Err(Malformed),
     })
 }

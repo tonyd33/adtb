@@ -533,7 +533,7 @@ impl Planner<'_> {
         (conds, rest)
     }
 
-    /// Returns scalar `t` with each case over a variable of fixed constructor replaced by its arm, when static routing is on.
+    /// Returns scalar `t` with every arm but the fixed constructor's unreachable in each case over a variable of fixed constructor, when static routing is on.
     fn here(&mut self, t: Tm, sc: &Scope) -> Result<Tm, Error> {
         if !self.rw.static_route || sc.known.is_empty() {
             return Ok(t);
@@ -555,14 +555,21 @@ impl Planner<'_> {
                 if let Kind::Var(v) = self.kind(scrutinee)
                     && let Some(c) = known.get(&v) =>
             {
+                let ty = self.ty(t);
                 let (_, x, arm) = arms
-                    .into_iter()
+                    .iter()
                     .find(|(d, _, _)| d == c)
+                    .copied()
                     .ok_or(Broken::KnownArmMissing)?;
                 let mut inner = known.clone();
                 inner.insert(x, *c);
-                let arm = self.specialise(arm, &inner, &mut HashMap::new())?;
-                self.add(Kind::Let(x, scrutinee, arm), self.ty(t))
+                let live = self.specialise(arm, &inner, &mut HashMap::new())?;
+                let dead = self.add(Kind::Unreachable, ty.clone());
+                let arms = arms
+                    .into_iter()
+                    .map(|(d, v, _)| (d, v, if d == *c { live } else { dead }))
+                    .collect();
+                self.add(Kind::Case { scrutinee, arms }, ty)
             }
             kind => {
                 let cs = self.t.children(t);

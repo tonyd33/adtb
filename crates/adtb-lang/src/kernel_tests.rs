@@ -524,6 +524,40 @@ fn kind_refusals() -> Vec<(&'static str, Build)> {
             let t = terms.add(fresh, key(fx.us, None));
             (t, Vec::new(), t)
         }),
+        ("a clock value is `I64`, not `Instant`", |fx, terms| {
+            let placeholder = Kind::Placeholder {
+                occurrence: 0,
+                generator: Generator::Clock,
+                rel: fx.ts,
+                scope: Vec::new(),
+            };
+            let t = terms.add(placeholder, int());
+            (t, Vec::new(), t)
+        }),
+        ("a generated key is `Key us`", |fx, terms| {
+            let placeholder = Kind::Placeholder {
+                occurrence: 0,
+                generator: Generator::Sequence,
+                rel: fx.ts,
+                scope: Vec::new(),
+            };
+            let t = terms.add(placeholder, key(fx.us, None));
+            (t, Vec::new(), t)
+        }),
+        (
+            "a placeholder's scope holds a term that is not a variable",
+            |fx, terms| {
+                let c = one(terms);
+                let placeholder = Kind::Placeholder {
+                    occurrence: 0,
+                    generator: Generator::Sequence,
+                    rel: fx.ts,
+                    scope: vec![c],
+                };
+                let t = terms.add(placeholder, key(fx.ts, None));
+                (t, Vec::new(), t)
+            },
+        ),
         ("an `Only` is never produced", |_, terms| {
             let e = terms.add(Kind::EmptySet, set(int()));
             let t = terms.add(Kind::Only(e), int());
@@ -907,7 +941,7 @@ fn validate_refuses_each_broken_invariant_at_the_node_that_breaks_it() {
         }
     }
     assert_eq!(Vec::<String>::new(), differ);
-    assert_eq!(73, cases.len());
+    assert_eq!(76, cases.len());
 }
 
 #[test]

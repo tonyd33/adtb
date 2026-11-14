@@ -141,6 +141,12 @@ pub enum Val {
     Set(Arc<BTreeSet<Val>>),
     /// A final result in its presented order.
     List(Arc<[Val]>),
+    /// A fresh value not yet drawn, at the type of the `Fresh` it stands for: its occurrence's
+    /// number and the values of the variables bound around it.
+    Placeholder {
+        occurrence: u32,
+        scope: Arc<[Val]>,
+    },
 }
 
 static NO_FIELDS: LazyLock<Arc<[Val]>> = LazyLock::new(|| Arc::from(Vec::new()));
@@ -243,7 +249,10 @@ impl Val {
         WORD + match self {
             Val::Text(t) | Val::Zoned { zone: t, .. } => t.len(),
             Val::Bytes(b) | Val::SortKey(b) => b.len(),
-            Val::Ctor(_, fs) | Val::Record(fs) | Val::List(fs) => fs.iter().map(Val::size).sum(),
+            Val::Ctor(_, fs)
+            | Val::Record(fs)
+            | Val::List(fs)
+            | Val::Placeholder { scope: fs, .. } => fs.iter().map(Val::size).sum(),
             Val::Set(s) => s.iter().map(|v| v.size() + 2 * WORD).sum(),
             _ => 0,
         }

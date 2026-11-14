@@ -827,6 +827,9 @@ impl Run<'_, '_> {
             Kind::Unreachable => internal(
                 "evaluation reached a position that exhaustiveness or a dominating test excludes",
             ),
+            Kind::Placeholder { .. } => {
+                internal("a placeholder occurs only in a statement the engine rewrote")
+            }
             Kind::Fresh(g, r) => {
                 let stmt = self
                     .stmt

@@ -380,6 +380,20 @@ impl Validator<'_> {
                 self.within("the key", &key, ty)
             }
             Kind::Fresh(g, r) => self.fresh(*g, *r, ty),
+            Kind::Placeholder {
+                generator,
+                rel,
+                scope,
+                ..
+            } => {
+                expect(
+                    scope
+                        .iter()
+                        .all(|t| matches!(self.terms.kind(*t), Kind::Var(_))),
+                    || "a placeholder's scope holds a term that is not a variable".into(),
+                )?;
+                self.fresh(*generator, *rel, ty)
+            }
             Kind::Only(_) => Err("an `Only` is never produced".into()),
             Kind::Unreachable => Ok(()),
             Kind::Key(e) => self.key(*e, ty),

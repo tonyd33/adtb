@@ -389,8 +389,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         let call = self.db.call(&self.store, self.options, &self.stop)?;
         let bound: Vec<(Var, Val)> = env.iter().map(|(v, x)| (*v, x.clone())).collect();
         let v = exec::execute(self.db.rt.clone(), program, call, &bound)?;
-        let ty = self.arena(a).ty(t).clone();
-        self.fill(a, &ty, v)
+        self.fill(a, v)
     }
 
     /// Returns the plan of term `t` of the statement.
@@ -410,24 +409,23 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         self.root
     }
 
-    /// Returns the variables standing for reads of temp relations and file scans.
-    fn fill(&self, a: Arena, ty: &Ty, v: Val) -> Result<Val, Error> {
+    /// Returns `v`, a value of arena `a`, with every placeholder replaced by its drawn value.
+    fn fill(&self, a: Arena, v: Val) -> Result<Val, Error> {
         let occurrences = match a {
             Arena::Statement => &self.fresh,
             Arena::Program => &self.db.program_fresh,
         };
-        let mut draw = |p: &Val| {
+        let mut draw = |occ: u32, p: &Val| {
             let key = (a, p.clone());
             if let Some(v) = self.drawn.borrow().get(&key) {
                 return Ok(v.clone());
             }
-            let occ = p.fields()?[0].int()?;
             let (g, r) = occurrences[&occ];
             let v = self.draw(g, r)?;
             self.drawn.borrow_mut().insert(key, v.clone());
             Ok(v)
         };
-        fresh::fill(self.schema, ty, v, &mut draw)
+        fresh::fill(v, &mut draw)
     }
 
     fn draw(&self, g: Generator, r: RelId) -> Result<Val, Error> {

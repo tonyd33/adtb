@@ -203,6 +203,14 @@ pub enum Kind {
     },
     Fix(Vec<(Var, Tm)>, Tm),
     Fresh(Generator, RelId),
+    /// The value `Fresh(generator, rel)` draws at its occurrence numbered `occurrence`, one per
+    /// value of the variables `scope` reads.
+    Placeholder {
+        occurrence: u32,
+        generator: Generator,
+        rel: RelId,
+        scope: Vec<Tm>,
+    },
     Only(Tm),
     /// `body` read at the state `point` names; `pins` is the version `body` is typed at, or
     /// `None` for the version of that state.
@@ -644,7 +652,7 @@ impl Kind {
             | Kind::Fresh(..)
             | Kind::Unreachable
             | Kind::Skip => Vec::new(),
-            Kind::Prim(_, xs) | Kind::Par(xs) => xs.clone(),
+            Kind::Prim(_, xs) | Kind::Par(xs) | Kind::Placeholder { scope: xs, .. } => xs.clone(),
             Kind::Record(fs) | Kind::Ctor { fields: fs, .. } => {
                 fs.iter().map(|(_, t)| *t).collect()
             }
@@ -766,6 +774,7 @@ impl Kind {
             | Kind::IsEmpty(_)
             | Kind::Exists(_)
             | Kind::Fresh(..)
+            | Kind::Placeholder { .. }
             | Kind::Only(_)
             | Kind::At { .. }
             | Kind::Reject(_)
@@ -799,6 +808,17 @@ impl Kind {
             | Kind::Skip => self.clone(),
             Kind::Prim(p, xs) => Kind::Prim(*p, xs.iter().map(|_| next()).collect()),
             Kind::Par(xs) => Kind::Par(xs.iter().map(|_| next()).collect()),
+            Kind::Placeholder {
+                occurrence,
+                generator,
+                rel,
+                scope,
+            } => Kind::Placeholder {
+                occurrence: *occurrence,
+                generator: *generator,
+                rel: *rel,
+                scope: scope.iter().map(|_| next()).collect(),
+            },
             Kind::Record(fs) => Kind::Record(fs.iter().map(|(n, _)| (n.clone(), next())).collect()),
             Kind::Ctor { ctor, fields } => Kind::Ctor {
                 ctor: *ctor,
@@ -952,6 +972,7 @@ impl Kind {
             | Kind::IsEmpty(_)
             | Kind::Exists(_)
             | Kind::Fresh(..)
+            | Kind::Placeholder { .. }
             | Kind::Only(_)
             | Kind::At { .. }
             | Kind::Reject(_)

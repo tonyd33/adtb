@@ -1,18 +1,16 @@
 use std::collections::{BTreeMap, HashMap};
 
-use adtb_lang::kernel::{Const, Kind, Terms, Tm, Var};
-use adtb_lang::schema::{Generator, Schema};
-use adtb_lang::textual::key_names;
-use adtb_lang::types::{Base, RelId, RelRef, Ty};
+use adtb_lang::kernel::{Kind, Terms, Tm, Var};
+use adtb_lang::schema::Generator;
+use adtb_lang::types::RelId;
 
 use crate::exec::Val;
-use crate::exec::types::{ctors, repr};
 
 /// The generator and relation of each `Fresh` occurrence, by its placeholder's number.
-pub type Occurrences = BTreeMap<i64, (Generator, RelId)>;
+pub type Occurrences = BTreeMap<u32, (Generator, RelId)>;
 
-/// Returns `t` with each path to a `Fresh` given its own placeholder: a record of its number
-/// and the variables bound around it, so that its value is one per evaluation. Adds the
+/// Returns `t` with each path to a `Fresh` given its own placeholder, numbered, over the
+/// variables bound around it, so that its value is one per evaluation. Adds the
 /// placeholders' numbers to `out`. `outer` holds the variables bound around `t`.
 pub fn rewrite(terms: &mut Terms, t: Tm, outer: &[Var], out: &mut Occurrences) -> Tm {
     let mut fresh = HashMap::new();
@@ -58,24 +56,27 @@ fn walk(
         return t;
     }
     if let Kind::Fresh(g, r) = terms.kind(t) {
-        let (g, r, ty) = (*g, *r, terms.ty(t).clone());
-        let occ = i64::try_from(terms.nodes.len()).expect("an arena of fewer than 2^63 nodes");
-        let mut fields = vec![(
-            "0000".to_string(),
-            terms.add_unchecked(
-                Kind::Const(Const::Int(i128::from(occ))),
-                Ty::Base(Base::I64),
-            ),
-        )];
-        for (i, v) in scope.clone().into_iter().enumerate() {
-            let vty = terms.var_info(v).ty.clone();
-            fields.push((
-                format!("{:04}", i + 1),
-                terms.add_unchecked(Kind::Var(v), vty),
-            ));
-        }
-        let p = terms.add_unchecked(Kind::Record(fields), ty);
-        out.insert(occ, (g, r));
+        let (generator, rel, ty) = (*g, *r, terms.ty(t).clone());
+        let occurrence =
+            u32::try_from(terms.nodes.len()).expect("an arena of fewer than 2^32 nodes");
+        let scope = scope
+            .clone()
+            .into_iter()
+            .map(|v| {
+                let vty = terms.var_info(v).ty.clone();
+                terms.add_unchecked(Kind::Var(v), vty)
+            })
+            .collect();
+        let p = terms.add_unchecked(
+            Kind::Placeholder {
+                occurrence,
+                generator,
+                rel,
+                scope,
+            },
+            ty,
+        );
+        out.insert(occurrence, (generator, rel));
         return p;
     }
     if let Kind::Block(..) = terms.kind(t) {
@@ -104,79 +105,24 @@ fn walk(
     terms.add_unchecked(kind.with_children(&new), ty)
 }
 
-/// Returns `v`, of type `ty`, with every placeholder replaced by the value `draw` gives it.
-///
-/// A placeholder is a record where `ty` holds no record: a base value, or the key of a relation
-/// whose key is one field.
-pub fn fill<E>(
-    schema: &Schema,
-    ty: &Ty,
-    v: Val,
-    draw: &mut dyn FnMut(&Val) -> Result<Val, E>,
-) -> Result<Val, E> {
-    let t = repr(schema, ty);
-    Ok(match (&t, v) {
-        (Ty::Base(_), v @ Val::Record(_)) => draw(&v)?,
-        (Ty::Key { rel, .. }, v) => {
-            let rel = &schema.declared(*rel);
-            let r = schema.relation(*rel);
-            let row = &ctors(schema, &r.elem).expect("a relation's element is a sum")[0];
-            let field_ty = |n: &str| {
-                row.iter()
-                    .find(|(f, _)| f == n)
-                    .expect("a key field")
-                    .1
-                    .clone()
-            };
-            match r.key.as_slice() {
-                [k] => match field_ty(k) {
-                    Ty::Key { rel: own, .. } if own == RelRef::Declared(*rel) => match v {
-                        v @ Val::Record(_) => draw(&v)?,
-                        v => v,
-                    },
-                    f => fill(schema, &f, v, draw)?,
-                },
-                _ => {
-                    let Val::Record(fs) = v else {
-                        panic!("a composite key is a record")
-                    };
-                    let tys: Vec<Ty> = key_names(schema, *rel)
-                        .iter()
-                        .map(|n| field_ty(n))
-                        .collect();
-                    Val::record(fill_all(schema, tys.iter().zip(fs.iter()), draw)?)
-                }
-            }
-        }
-        (Ty::Set(e) | Ty::NonEmpty(e), Val::Set(s)) => Val::set(
-            fill_all(schema, s.iter().map(|x| (e.as_ref(), x)), draw)?
-                .into_iter()
-                .collect(),
-        ),
-        (Ty::Record(fts), Val::Record(fs)) => Val::record(fill_all(
-            schema,
-            fts.iter().map(|(_, t)| t).zip(fs.iter()),
-            draw,
-        )?),
-        (_, Val::Ctor(c, fs)) => match ctors(schema, &t) {
-            Some(cs) => Val::ctor(
-                c,
-                fill_all(
-                    schema,
-                    cs[c as usize].iter().map(|(_, t)| t).zip(fs.iter()),
-                    draw,
-                )?,
-            ),
-            None => Val::Ctor(c, fs),
-        },
-        (_, v) => v,
+/// Returns `v` with every placeholder replaced by the value `draw` gives it.
+pub fn fill<E>(v: Val, draw: &mut Draw<'_, E>) -> Result<Val, E> {
+    Ok(match v {
+        p @ Val::Placeholder { occurrence, .. } => draw(occurrence, &p)?,
+        Val::Set(s) => Val::set(fill_all(s.iter(), draw)?.into_iter().collect()),
+        Val::Record(fs) => Val::record(fill_all(fs.iter(), draw)?),
+        Val::Ctor(c, fs) => Val::ctor(c, fill_all(fs.iter(), draw)?),
+        Val::List(xs) => Val::List(fill_all(xs.iter(), draw)?.into()),
+        v => v,
     })
 }
 
+/// A source of placeholder values, taking a placeholder's occurrence number and the placeholder.
+pub type Draw<'d, E> = dyn FnMut(u32, &Val) -> Result<Val, E> + 'd;
+
 fn fill_all<'v, E>(
-    schema: &Schema,
-    vs: impl Iterator<Item = (&'v Ty, &'v Val)>,
-    draw: &mut dyn FnMut(&Val) -> Result<Val, E>,
+    vs: impl Iterator<Item = &'v Val>,
+    draw: &mut Draw<'_, E>,
 ) -> Result<Vec<Val>, E> {
-    vs.map(|(t, x)| fill(schema, t, x.clone(), draw)).collect()
+    vs.map(|x| fill(x.clone(), draw)).collect()
 }

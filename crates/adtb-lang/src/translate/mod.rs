@@ -748,6 +748,7 @@ fn carries(kind: &Kind) -> Vec<bool> {
         | Kind::Group { .. }
         | Kind::Top { .. }
         | Kind::Fresh(..)
+        | Kind::Placeholder { .. }
         | Kind::Only(..)
         | Kind::At { .. }
         | Kind::Present { .. }

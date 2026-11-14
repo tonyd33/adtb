@@ -101,6 +101,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                 | Kind::Top { .. }
                 | Kind::Fix(..)
                 | Kind::Fresh(..)
+                | Kind::Placeholder { .. }
                 | Kind::Only(..)
                 | Kind::At { .. }
                 | Kind::Present { .. }
@@ -154,6 +155,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                 | Kind::Top { .. }
                 | Kind::Fix(..)
                 | Kind::Fresh(..)
+                | Kind::Placeholder { .. }
                 | Kind::Only(..)
                 | Kind::At { .. }
                 | Kind::Present { .. }
@@ -341,6 +343,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             | Kind::Top { .. }
             | Kind::Fix(..)
             | Kind::Fresh(..)
+            | Kind::Placeholder { .. }
             | Kind::Only(..)
             | Kind::At { .. }
             | Kind::Present { .. }
@@ -458,6 +461,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             | Kind::Top { .. }
             | Kind::Fix(..)
             | Kind::Fresh(..)
+            | Kind::Placeholder { .. }
             | Kind::Only(..)
             | Kind::Present { .. }
             | Kind::Reject(..)
@@ -536,6 +540,12 @@ impl<'p, 'a> Walk<'p, 'a> {
             }
             Kind::KeyOf(r, x) => Kind::KeyOf(self.relation(r)?, x),
             Kind::Fresh(g, r) => Kind::Fresh(g, self.relation(r)?),
+            mut p @ Kind::Placeholder { .. } => {
+                if let Kind::Placeholder { rel, .. } = &mut p {
+                    *rel = self.relation(*rel)?;
+                }
+                p
+            }
             Kind::Delete(r, x) => Kind::Delete(self.relation(r)?, x),
             Kind::Rejects { into, insert } => Kind::Rejects {
                 into: self.relation(into)?,
@@ -818,6 +828,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             | Kind::Exists(..)
             | Kind::Fix(..)
             | Kind::Fresh(..)
+            | Kind::Placeholder { .. }
             | Kind::At { .. }
             | Kind::Reject(..)
             | Kind::Unreachable

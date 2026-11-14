@@ -109,13 +109,21 @@ impl<'a> Build<'a> {
                 func, type_args, ..
             } => Some(self.schema.function(*func).result.subst(type_args)),
             Kind::Caller => Some(self.data(self.schema.principal, Vec::new())),
-            Kind::KeyOf(r, _) | Kind::Fresh(Generator::Sequence | Generator::Uuidv7, r) => {
-                Some(Ty::Key {
-                    rel: RelRef::Declared(*r),
-                    ctors: None,
-                })
-            }
-            Kind::Fresh(Generator::Clock, _) => Some(Ty::Base(Base::Instant)),
+            Kind::KeyOf(r, _)
+            | Kind::Fresh(Generator::Sequence | Generator::Uuidv7, r)
+            | Kind::Placeholder {
+                generator: Generator::Sequence | Generator::Uuidv7,
+                rel: r,
+                ..
+            } => Some(Ty::Key {
+                rel: RelRef::Declared(*r),
+                ctors: None,
+            }),
+            Kind::Fresh(Generator::Clock, _)
+            | Kind::Placeholder {
+                generator: Generator::Clock,
+                ..
+            } => Some(Ty::Base(Base::Instant)),
             Kind::Deref { key, .. } => match ty(key) {
                 Ty::Key {
                     rel: RelRef::Declared(r),

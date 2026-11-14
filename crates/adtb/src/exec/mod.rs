@@ -201,6 +201,13 @@ impl From<PrintError> for Error {
     }
 }
 
+/// Returns whether the compiled scalar term `t` of `terms` routes rows among several arms by
+/// their constructor.
+#[cfg(test)]
+pub(crate) fn routes_by_tag(schema: &Schema, terms: &Terms, t: Tm) -> Result<bool, Error> {
+    Ok(code::Compiler::new(schema, terms).code(t)?.routes_by_tag())
+}
+
 /// A scalar expression of one variable, compiled.
 #[derive(Clone, Debug)]
 pub struct Scalar {

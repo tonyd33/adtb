@@ -17,10 +17,7 @@ impl Analyzer<'_> {
     fn eval_step(&mut self, arena: Arena, tm: Tm, env: &Env) -> Result<Value, Error> {
         let node = self.terms(arena).node(tm).clone();
         match node.kind {
-            Kind::Var(v) => env
-                .get(&v)
-                .cloned()
-                .ok_or(Error::InvalidKernel("every free variable has provenance")),
+            Kind::Var(v) => provenance(env, v),
             Kind::Const(_) | Kind::Caller | Kind::Fresh(..) | Kind::Skip => {
                 Ok(self.unknown(&node.ty))
             }
@@ -55,7 +52,9 @@ impl Analyzer<'_> {
             Kind::Lam(..) | Kind::App(..) => Err(Error::InvalidKernel(
                 "normal expression contains no function value",
             )),
-            Kind::Call { args, .. } => self.opaque(arena, None, &args, &node.ty, env),
+            Kind::Call { args, .. } | Kind::Placeholder { scope: args, .. } => {
+                self.opaque(arena, None, &args, &node.ty, env)
+            }
             Kind::Key(row) => {
                 let value = self.eval(arena, row, env)?;
                 let Ty::Key { rel, .. } = node.ty else {
@@ -337,4 +336,10 @@ impl Analyzer<'_> {
         out.unkey_after(floor);
         Ok(out)
     }
+}
+
+fn provenance(env: &Env, v: Var) -> Result<Value, Error> {
+    env.get(&v)
+        .cloned()
+        .ok_or(Error::InvalidKernel("every free variable has provenance"))
 }

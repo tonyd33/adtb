@@ -139,6 +139,8 @@ pub fn compile(
         let mut reads = BTreeSet::new();
         let mut own = Vec::new();
         scan(terms, t, &mut BTreeSet::new(), &mut own, &mut reads);
+        let free = own.iter().map(|(v, ..)| *v).collect();
+        adtb_lang::kernel::assert_valid(schema, terms, &[(t, free)]);
         found.push((qualified, t, reads));
         transitions.extend(own);
     }

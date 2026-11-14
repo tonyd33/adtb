@@ -3,12 +3,12 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use adtb_lang::check::check_schema;
-use adtb_lang::kernel::{Const, Kind, Prim, Terms, Tm};
+use adtb_lang::kernel::{Build, Const, Kind, Prim, Terms, Tm};
 use adtb_lang::parse::{Options, parse_schema};
 use adtb_lang::schema::{Schema, build};
 use adtb_lang::span::FileId;
 use adtb_lang::textual::Form;
-use adtb_lang::types::{Base, Ty};
+use adtb_lang::types::{Base, CtorSet, Ty};
 
 use super::code::{Compiler, Shared};
 use super::frame::Frame;
@@ -273,6 +273,10 @@ fn a_spilled_value_reads_back_equal() {
         Val::record(vec![Val::bool(true), Val::none()]),
         Val::set([Val::Int(2), Val::Int(1)].into_iter().collect()),
         Val::List(Arc::from(vec![Val::Int(2), Val::Int(1)])),
+        Val::Placeholder {
+            occurrence: 7,
+            scope: Arc::from(vec![Val::Int(3), Val::text("x")]),
+        },
     ];
     let mut bytes = Vec::new();
     for v in &vals {
@@ -670,6 +674,38 @@ fn evaluating_unreachable_is_an_internal_error() {
     let mut terms = Terms::default();
     let t = terms.add_unchecked(Kind::Unreachable, Ty::Base(Base::I64));
     assert_eq!(Broken::Unreachable, broken(eval_term(&schema, &terms, t)));
+}
+
+/// Returns `match s | False _ -> unreachable | True _ -> 1` over the `Bool` constructor `scrutinee`.
+fn true_only_case(schema: &Schema, terms: &mut Terms, scrutinee: u32) -> Tm {
+    let at = |ctors| Ty::Data {
+        def: schema.prelude_type("Bool"),
+        args: Vec::new(),
+        ctors,
+    };
+    let engine = schema.engine_ctors();
+    let (no, yes) = (engine.bool_false().index(), engine.bool_true().index());
+    let x = terms.var("x", at(Some(CtorSet::from([no]))));
+    let y = terms.var("y", at(Some(CtorSet::from([yes]))));
+    let mut b = Build::new(schema, terms);
+    let s = b.ctor(scrutinee, Vec::new(), at(None));
+    let dead = b.unreachable(Ty::Base(Base::I64));
+    let one = b.constant(Const::Int(1), Ty::Base(Base::I64));
+    b.case(s, vec![(no, x, dead), (yes, y, one)], Ty::Base(Base::I64))
+}
+
+#[test]
+fn a_case_with_one_reachable_arm_takes_it_and_fails_on_another_constructor() {
+    let schema = empty_schema();
+    let ctors = schema.engine_ctors();
+    let mut terms = Terms::default();
+    let taken = true_only_case(&schema, &mut terms, ctors.bool_true().index());
+    assert_eq!(Ok(Val::Int(1)), eval_term(&schema, &terms, taken));
+    let missed = true_only_case(&schema, &mut terms, ctors.bool_false().index());
+    assert_eq!(
+        Broken::Unreachable,
+        broken(eval_term(&schema, &terms, missed))
+    );
 }
 
 #[test]

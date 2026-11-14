@@ -161,9 +161,8 @@ fn emits(c: &Chain) -> Vec<Tm> {
         .collect()
 }
 
-fn has_case(terms: &Terms, t: Tm) -> bool {
-    matches!(terms.kind(t), Kind::Case { .. })
-        || terms.children(t).into_iter().any(|c| has_case(terms, c))
+fn routes_by_tag(f: &Fixture, terms: &Terms, t: Tm) -> bool {
+    crate::exec::routes_by_tag(&f.schema, terms, t).expect("an emitted term compiles")
 }
 
 #[test]
@@ -175,7 +174,11 @@ fn a_match_over_a_relation_runs_one_pipeline_per_arm() {
     assert_eq!(3, ps.len());
     for (c, x) in ps.iter().enumerate() {
         assert!(matches!(x.source, Source::Scan { ctor, .. } if ctor == c as u32));
-        assert!(emits(&x.chain).iter().all(|t| !has_case(&p.terms, *t)));
+        assert!(
+            emits(&x.chain)
+                .iter()
+                .all(|t| !routes_by_tag(&f, &p.terms, *t))
+        );
     }
 }
 
@@ -194,7 +197,11 @@ fn without_static_routing_each_row_is_routed_by_its_tag() {
     let ps = pipelines(&query_of(&p.root).spine);
     assert_eq!(3, ps.len());
     for x in ps {
-        assert!(emits(&x.chain).iter().all(|t| has_case(&p.terms, *t)));
+        assert!(
+            emits(&x.chain)
+                .iter()
+                .all(|t| routes_by_tag(&f, &p.terms, *t))
+        );
     }
     let p = adhoc_plan(
         &f,
@@ -208,7 +215,11 @@ fn without_static_routing_each_row_is_routed_by_its_tag() {
     let ps = pipelines(&query_of(&p.root).spine);
     assert!(!ps.is_empty(), "the join plans no pipeline");
     for x in ps {
-        assert!(emits(&x.chain).iter().all(|t| has_case(&p.terms, *t)));
+        assert!(
+            emits(&x.chain)
+                .iter()
+                .all(|t| routes_by_tag(&f, &p.terms, *t))
+        );
     }
 }
 

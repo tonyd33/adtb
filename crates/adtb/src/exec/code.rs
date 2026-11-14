@@ -37,6 +37,12 @@ pub enum Ins {
         fields: Vec<Opd>,
         dst: u32,
     },
+    /// Build the placeholder of fresh value occurrence `occurrence` from the values of `scope`.
+    Placeholder {
+        occurrence: u32,
+        scope: Vec<Opd>,
+        dst: u32,
+    },
     /// Build constructor `ctor` from `fields`, already in the order a `Val::Ctor` holds them.
     Ctor {
         ctor: u32,
@@ -77,6 +83,13 @@ pub enum Ins {
     Bind {
         var: u32,
         src: Opd,
+    },
+    /// Bind `var` to `src`, failing with `Broken::Unreachable` at a row whose constructor is not
+    /// `ctor`.
+    Narrow {
+        src: Opd,
+        ctor: u32,
+        var: u32,
     },
     If {
         cond: Opd,
@@ -242,6 +255,24 @@ impl Code {
         self.lits.len()
     }
 
+    /// Returns whether an instruction of the code routes rows among several arms by their
+    /// constructor.
+    #[cfg(test)]
+    pub(super) fn routes_by_tag(&self) -> bool {
+        fn routes(b: &Block) -> bool {
+            b.ins.iter().any(|i| match i {
+                Ins::Case { arms, .. } => {
+                    arms.iter().flatten().count() > 1
+                        || arms.iter().flatten().any(|(_, b)| routes(b))
+                }
+                Ins::If { then, els, .. } => routes(then) || routes(els),
+                Ins::Try { body, .. } => routes(body),
+                _ => false,
+            })
+        }
+        routes(&self.block)
+    }
+
     pub fn eval_one(&self, f: &mut Frame, sh: &Shared) -> Result<Val, Error> {
         let mut sel = vec![0];
         let mut v = self.eval(f, &mut sel, &mut Catch::off(), sh)?;
@@ -332,6 +363,19 @@ impl Code {
                     })?;
                     Code::put(regs, len, *dst, out);
                 }
+                Ins::Placeholder {
+                    occurrence,
+                    scope,
+                    dst,
+                } => {
+                    let out = self.map(f, regs, sel, catch, |get| {
+                        Ok(Ok(Val::Placeholder {
+                            occurrence: *occurrence,
+                            scope: scope.iter().map(|o| get(*o).clone()).collect(),
+                        }))
+                    })?;
+                    Code::put(regs, len, *dst, out);
+                }
                 Ins::Ctor { ctor, fields, dst } => {
                     let out = self.map(f, regs, sel, catch, |get| {
                         Ok(Ok(Val::ctor(
@@ -416,6 +460,17 @@ impl Code {
                         .iter()
                         .map(|&r| (r, self.get(*src, f, regs, r).clone()))
                         .collect();
+                    f.bind(*var, vals);
+                }
+                Ins::Narrow { src, ctor, var } => {
+                    let mut vals = Vec::with_capacity(sel.len());
+                    for &r in sel.iter() {
+                        let v = self.get(*src, f, regs, r);
+                        if v.ctor_of()? != *ctor {
+                            return Err(Broken::Unreachable.into());
+                        }
+                        vals.push((r, v.clone()));
+                    }
                     f.bind(*var, vals);
                 }
                 Ins::If {
@@ -684,6 +739,21 @@ impl<'a> Compiler<'a> {
                 ins.push(Ins::Record { fields, dst });
                 Opd::Reg(dst)
             }
+            Kind::Placeholder {
+                occurrence, scope, ..
+            } => {
+                let scope = scope
+                    .iter()
+                    .map(|x| self.expr(e, ins, *x))
+                    .collect::<Result<_, _>>()?;
+                let dst = e.reg();
+                ins.push(Ins::Placeholder {
+                    occurrence: *occurrence,
+                    scope,
+                    dst,
+                });
+                Opd::Reg(dst)
+            }
             Kind::Ctor { ctor, fields } => {
                 let given: Vec<(String, Opd)> = fields
                     .iter()
@@ -793,6 +863,20 @@ impl<'a> Compiler<'a> {
                     dst,
                 });
                 Opd::Reg(dst)
+            }
+            Kind::Case { scrutinee, arms }
+                if let [(ctor, v, body)] = arms
+                    .iter()
+                    .filter(|(_, _, a)| !matches!(self.terms.kind(*a), Kind::Unreachable))
+                    .collect::<Vec<_>>()[..] =>
+            {
+                let src = self.expr(e, ins, *scrutinee)?;
+                ins.push(Ins::Narrow {
+                    src,
+                    ctor: *ctor,
+                    var: v.0,
+                });
+                self.expr(e, ins, *body)?
             }
             Kind::Case { scrutinee, arms } => {
                 let sty = self.terms.ty(*scrutinee);

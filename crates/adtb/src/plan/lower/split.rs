@@ -34,7 +34,8 @@ impl Planner<'_> {
                 cs[i] = arm;
                 let inner = self.guarded(&cs, rest, &ty);
                 let inner = self.rename(inner, y, v, &mut HashMap::new());
-                let narrowed = self.add(Kind::Restrict(src, CtorSet::from([k])), self.ty(src));
+                let rows = Ty::Set(Box::new(self.t.var_info(v).ty.clone()));
+                let narrowed = self.add(Kind::Restrict(src, CtorSet::from([k])), rows);
                 return Some(self.add(Kind::For(v, narrowed, inner), ty));
             }
             if self.mentions(scrutinee, &[y])
@@ -207,13 +208,16 @@ impl Planner<'_> {
         )
     }
 
-    /// Returns `t` with each read of variable `from` reading `to`, at the type it had.
+    /// Returns `t` with each read of variable `from` reading `to`, at `to`'s type.
     fn rename(&mut self, t: Tm, from: Var, to: Var, memo: &mut HashMap<Tm, Tm>) -> Tm {
         if let Some(n) = memo.get(&t) {
             return *n;
         }
         let out = match self.kind(t) {
-            Kind::Var(v) if v == from => self.add(Kind::Var(to), self.ty(t)),
+            Kind::Var(v) if v == from => {
+                let ty = self.t.var_info(to).ty.clone();
+                self.add(Kind::Var(to), ty)
+            }
             kind => {
                 let cs = self.t.children(t);
                 let new: Vec<Tm> = cs.iter().map(|c| self.rename(*c, from, to, memo)).collect();

@@ -166,7 +166,7 @@ kernel_door test 4 crates/adtb/src/plan/tests/mod.rs
 kernel_door test 2 crates/adtb/src/plan/tests/valid.rs
 kernel_door prod 1 crates/adtb/src/write/delta/mod.rs
 kernel_door test 10 crates/adtb/src/write/delta/tests.rs
-kernel_door prod 5 crates/adtb/src/write/fresh.rs
+kernel_door prod 4 crates/adtb/src/write/fresh.rs
 pub_fields prod 1 crates/adtb-bench/src/native/control_fixture.rs
 pub_fields prod 3 crates/adtb-bench/src/native/counter.rs
 pub_fields prod 2 crates/adtb-bench/src/native/engine.rs

@@ -44,6 +44,7 @@ pub(super) fn reads_probed(terms: &Terms, probed: &HashSet<Var>, t: Tm) -> bool 
         | Kind::Top { .. }
         | Kind::Fix(..)
         | Kind::Fresh(..)
+        | Kind::Placeholder { .. }
         | Kind::Only(..)
         | Kind::At { .. }
         | Kind::Present { .. }
@@ -101,6 +102,7 @@ pub(super) fn probed_rows(terms: &Terms, probed: &HashSet<Var>, t: Tm) -> Option
             | Kind::Top { .. }
             | Kind::Fix(..)
             | Kind::Fresh(..)
+            | Kind::Placeholder { .. }
             | Kind::Only(..)
             | Kind::At { .. }
             | Kind::Present { .. }
@@ -149,6 +151,7 @@ pub(super) fn probed_rows(terms: &Terms, probed: &HashSet<Var>, t: Tm) -> Option
         | Kind::Top { .. }
         | Kind::Fix(..)
         | Kind::Fresh(..)
+        | Kind::Placeholder { .. }
         | Kind::Only(..)
         | Kind::At { .. }
         | Kind::Present { .. }
@@ -203,6 +206,7 @@ pub(super) fn rows_of(terms: &Terms, set: Tm) -> bool {
         | Kind::Top { .. }
         | Kind::Fix(..)
         | Kind::Fresh(..)
+        | Kind::Placeholder { .. }
         | Kind::Only(..)
         | Kind::At { .. }
         | Kind::Present { .. }
@@ -259,6 +263,7 @@ pub(super) fn yields(terms: &Terms, set: Tm, v: Var) -> bool {
         | Kind::Top { .. }
         | Kind::Fix(..)
         | Kind::Fresh(..)
+        | Kind::Placeholder { .. }
         | Kind::Only(..)
         | Kind::At { .. }
         | Kind::Present { .. }

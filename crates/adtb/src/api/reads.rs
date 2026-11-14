@@ -154,6 +154,7 @@ impl Reads {
             | Kind::Top { .. }
             | Kind::Fix(..)
             | Kind::Fresh(..)
+            | Kind::Placeholder { .. }
             | Kind::Only(..)
             | Kind::At { .. }
             | Kind::Present { .. }
@@ -218,6 +219,7 @@ impl Reads {
             | Kind::Top { .. }
             | Kind::Fix(..)
             | Kind::Fresh(..)
+            | Kind::Placeholder { .. }
             | Kind::Only(..)
             | Kind::At { .. }
             | Kind::Present { .. }
@@ -359,6 +361,7 @@ fn keeping_upsert(terms: &Terms, t: Tm) -> Option<RelId> {
         | Kind::Top { .. }
         | Kind::Fix(..)
         | Kind::Fresh(..)
+        | Kind::Placeholder { .. }
         | Kind::Only(..)
         | Kind::At { .. }
         | Kind::Present { .. }
@@ -464,6 +467,7 @@ fn children(terms: &Terms, t: Tm) -> Vec<(Tm, bool)> {
         | Kind::Transition(..)
         | Kind::EmptySet
         | Kind::Fresh(..)
+        | Kind::Placeholder { .. }
         | Kind::Reject(..)
         | Kind::Unreachable
         | Kind::Skip

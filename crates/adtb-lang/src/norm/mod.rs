@@ -774,7 +774,8 @@ impl<'a> Normaliser<'a> {
             | Kind::Rejects { .. }
             | Kind::Par(_)
             | Kind::Fail(_)
-            | Kind::Transact(..) => self.congruent(&node.kind, ty, cx),
+            | Kind::Transact(..)
+            | Kind::Placeholder { .. } => self.congruent(&node.kind, ty, cx),
         }
     }
 
