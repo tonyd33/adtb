@@ -272,14 +272,12 @@ impl CatalogIds {
         self.aggregates.get(&at).copied()
     }
 
-    /// Returns the id of the constraint at position `at` of `Schema::constraints`.
-    pub fn constraint_id(&self, at: usize) -> Option<CatConstraintId> {
-        self.constraints.get(&at).copied()
+    pub fn constraint_id(&self, c: ConstraintIdx) -> Option<CatConstraintId> {
+        self.constraints.get(&c.index()).copied()
     }
 
-    /// Returns the id of the check at position `at` of `Schema::checks`.
-    pub fn check_id(&self, at: usize) -> Option<CatConstraintId> {
-        self.checks.get(&at).copied()
+    pub fn check_id(&self, c: CheckIdx) -> Option<CatConstraintId> {
+        self.checks.get(&c.index()).copied()
     }
 
     /// Returns the id of the relation variable stored view `f` holds.
@@ -369,10 +367,10 @@ impl CatalogIds {
         }
     }
 
-    /// Returns the constraint, as position among `Schema::constraints`, whose id is `id`.
-    pub fn constraint_of(&self, id: CatConstraintId) -> Option<usize> {
+    /// Returns the constraint whose id is `id`.
+    pub fn constraint_of(&self, id: CatConstraintId) -> Option<ConstraintIdx> {
         match self.holder(Space::Constraint, id.0)? {
-            Slot::Constraint(at) => Some(*at),
+            Slot::Constraint(at) => Some(ConstraintIdx::at(*at)),
             _ => None,
         }
     }
@@ -467,12 +465,14 @@ impl CatalogIds {
         self.aggregates.iter().map(|(&i, &id)| (i, id))
     }
 
-    pub fn constraint_ids(&self) -> impl Iterator<Item = (usize, CatConstraintId)> + '_ {
-        self.constraints.iter().map(|(&i, &id)| (i, id))
+    pub fn constraint_ids(&self) -> impl Iterator<Item = (ConstraintIdx, CatConstraintId)> + '_ {
+        self.constraints
+            .iter()
+            .map(|(&i, &id)| (ConstraintIdx::at(i), id))
     }
 
-    pub fn check_ids(&self) -> impl Iterator<Item = (usize, CatConstraintId)> + '_ {
-        self.checks.iter().map(|(&i, &id)| (i, id))
+    pub fn check_ids(&self) -> impl Iterator<Item = (CheckIdx, CatConstraintId)> + '_ {
+        self.checks.iter().map(|(&i, &id)| (CheckIdx::at(i), id))
     }
 
     pub fn view_field_ids(&self) -> impl Iterator<Item = (FnId, &str, CatFieldId)> + '_ {

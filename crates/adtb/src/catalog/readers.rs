@@ -231,8 +231,8 @@ impl Changes {
         let kept: BTreeSet<CatConstraintId> = b
             .ids()
             .constraint_ids()
-            .chain(b.ids().check_ids())
             .map(|(_, id)| id)
+            .chain(b.ids().check_ids().map(|(_, id)| id))
             .collect();
         let named = |m, name: &str, id, check| Dropped {
             id,
@@ -242,13 +242,13 @@ impl Changes {
         };
         for (i, id) in a.ids().constraint_ids() {
             if !kept.contains(&id) {
-                let c = &a.constraints[i];
+                let c = a.constraint(i);
                 self.dropped.push(named(c.module, &c.name, id, false));
             }
         }
         for (i, id) in a.ids().check_ids() {
             if !kept.contains(&id) {
-                let c = &a.checks[i];
+                let c = a.check(i);
                 self.dropped.push(named(c.module, &c.name, id, true));
             }
         }
@@ -791,8 +791,8 @@ fn pinned(schema: &Schema, reader: &Reader) -> Result<Pinned, String> {
         constraints: schema
             .ids()
             .constraint_ids()
-            .chain(schema.ids().check_ids())
             .map(|(_, id)| id)
+            .chain(schema.ids().check_ids().map(|(_, id)| id))
             .collect(),
         uniques: uniques(schema).into_keys().collect(),
         relations: schema.ids().relation_ids().map(|(_, id)| id).collect(),

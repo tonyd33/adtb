@@ -3827,8 +3827,10 @@ fn path_of(s: &Schema, path: &str) -> Option<u64> {
             _ => None,
         },
         "constraint" => match value(local)? {
-            ValueDef::Constraint(c) => ids.constraint_id(c as usize).map(u64::from),
-            ValueDef::Check(c) => ids.check_id(c as usize).map(u64::from),
+            ValueDef::Constraint(c) => ids
+                .constraint_id(ConstraintIdx::at(c as usize))
+                .map(u64::from),
+            ValueDef::Check(c) => ids.check_id(CheckIdx::at(c as usize)).map(u64::from),
             _ => None,
         },
         "default" => {

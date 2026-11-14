@@ -57,6 +57,13 @@
 # id_sentinels:       `RelId`, `TypeId`, `FnId` or `ModuleId` of `u32::MAX`, and `.0 == u32::MAX` or
 #                     `.0 != u32::MAX`: an absent or not yet known object is a typed absence, never
 #                     an id. No line allows one.
+# denial_zips:        `.zip(` whose argument names `checks` or `constraints` before its first `)` or
+#                     `;`, or whose receiver chain names one with no `;`, `{` or `}` between, across
+#                     lines: a constraint or check is paired with its term, name or id by its index,
+#                     never by position. Not counted: a pairing through a variable bound in an
+#                     earlier statement, an argument naming one after a `)`, a closure with a block
+#                     in the receiver chain, and pairing without `zip` (index arithmetic,
+#                     `enumerate` into another vector). No line allows one.
 # sim_test_opens:     in crates/adtb-sim/tests and adtb's unit-test files (`tests.rs`,
 #                     `*_tests.rs`, `tests/`, `test_world/`), by name: a function taking
 #                     parameters whose name begins with `open`, `opened`, `opens`, `opening` or a
@@ -155,7 +162,7 @@ pub_fields prod 2 crates/adtb-isolation/src/harness.rs
 pub_fields prod 8 crates/adtb-isolation/src/history.rs
 pub_fields prod 164 crates/adtb-lang/src/ast.rs
 pub_fields prod 3 crates/adtb-lang/src/check/adhoc.rs
-pub_fields prod 27 crates/adtb-lang/src/check/mod.rs
+pub_fields prod 25 crates/adtb-lang/src/check/mod.rs
 pub_fields prod 2 crates/adtb-lang/src/check/txn.rs
 pub_fields prod 7 crates/adtb-lang/src/collation.rs
 pub_fields prod 20 crates/adtb-lang/src/evolve/grant.rs
@@ -165,7 +172,7 @@ pub_fields prod 8 crates/adtb-lang/src/evolve/resolved.rs
 pub_fields prod 5 crates/adtb-lang/src/evolve/rowmap.rs
 pub_fields prod 14 crates/adtb-lang/src/kernel.rs
 pub_fields prod 3 crates/adtb-lang/src/lex.rs
-pub_fields prod 23 crates/adtb-lang/src/norm/mod.rs
+pub_fields prod 21 crates/adtb-lang/src/norm/mod.rs
 pub_fields prod 3 crates/adtb-lang/src/parse/mod.rs
 pub_fields prod 4 crates/adtb-lang/src/permission/coverage.rs
 pub_fields prod 2 crates/adtb-lang/src/permission/mod.rs

@@ -70,14 +70,14 @@ pub(crate) fn program_roots(p: &Program) -> Vec<Tm> {
     p.functions
         .iter()
         .flatten()
-        .chain(&p.constraints)
-        .chain(&p.checks)
         .chain(p.domains.values().map(|(_, t)| t))
         .chain(p.retags.values())
         .chain(p.defaults.values())
         .chain(p.computed.values().map(|(_, t)| t))
         .chain(p.index_fields.values().map(|f| &f.value))
         .copied()
+        .chain(p.constraints().map(|(_, t)| t))
+        .chain(p.checks().map(|(_, t)| t))
         .chain(
             p.aggregates
                 .iter()
@@ -95,14 +95,14 @@ fn one_binding_site(s: &Schema, p: &Program) {
         .iter()
         .flatten()
         .map(|(_, t)| t)
-        .chain(&n.constraints)
-        .chain(&n.checks)
         .chain(n.domains.values().map(|(_, t)| t))
         .chain(n.retags.values().map(|(_, t)| t))
         .chain(n.defaults.values())
         .chain(n.computed.values().map(|(_, t)| t))
         .chain(n.index_fields.values().map(|(_, f)| &f.value))
         .copied()
+        .chain(n.constraints().map(|(_, t)| t))
+        .chain(n.checks().map(|(_, t)| t))
         .chain(
             n.aggregates
                 .iter()

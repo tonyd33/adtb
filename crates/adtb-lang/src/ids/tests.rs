@@ -15,7 +15,9 @@ fn found(ids: &CatalogIds, slot: &Slot, id: u64) -> Option<Option<Slot>> {
         Slot::Index(..) => ids.index_of(CatIndexId(id)).map(|(r, i)| Slot::Index(r, i)),
         Slot::Function(_) => ids.function_of(CatFunctionId(id)).map(Slot::Function),
         Slot::Aggregate(_) => ids.aggregate_of(CatFunctionId(id)).map(Slot::Aggregate),
-        Slot::Constraint(_) => ids.constraint_of(CatConstraintId(id)).map(Slot::Constraint),
+        Slot::Constraint(_) => ids
+            .constraint_of(CatConstraintId(id))
+            .map(|c| Slot::Constraint(c.index())),
         _ => return None,
     })
 }

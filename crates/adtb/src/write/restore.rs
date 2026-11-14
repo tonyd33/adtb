@@ -156,18 +156,7 @@ impl<R: Runtime> Restoring<'_, R> {
             }
         }
         let schema = &*db.schema;
-        let named = schema
-            .constraints
-            .iter()
-            .map(|c| (c.module, &c.name))
-            .zip(&db.normal.constraints)
-            .chain(
-                schema
-                    .checks
-                    .iter()
-                    .map(|c| (c.module, &c.name))
-                    .zip(&db.normal.checks),
-            );
+        let named = super::delta::denials(schema, &db.normal)?;
         let text = Text {
             schema,
             terms: &terms,
@@ -177,8 +166,7 @@ impl<R: Runtime> Restoring<'_, R> {
             caller: None,
         };
         let empty = Stmt::new(db, stmt.tx, text, Tm(0), db.options, Stop::default());
-        for ((module, name), &t) in named {
-            let name = format!("{}::{name}", schema.module(module).name);
+        for (name, t) in named {
             match empty.eval(Arena::Statement, t, &Env::new())? {
                 Val::Set(report) => violate(viol, &name, report.iter().cloned()),
                 other => return Err(Broken::DenialNotSet(other).into()),

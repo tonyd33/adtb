@@ -931,7 +931,12 @@ constraint nameless = from u in users where u.name == \"\" select u
         ids.function_of(CatFunctionId::from_raw(1024))
     );
     assert_eq!(Some(0), ids.aggregate_of(CatFunctionId::from_raw(1025)));
-    assert_eq!(Some(0), ids.constraint_of(CatConstraintId::from_raw(1024)));
+    assert_eq!(
+        s.constraint_defs()
+            .find(|(_, c)| c.name == "nameless")
+            .map(|(c, _)| c),
+        ids.constraint_of(CatConstraintId::from_raw(1024))
+    );
     assert!(seen > 1000, "{seen} ids");
 }
 

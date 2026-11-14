@@ -7,9 +7,10 @@ use adtb_lang::evolve::{DeployedGrant, Granted};
 use adtb_lang::ids::CatFunctionId;
 use adtb_lang::permission::{self, EffectiveGrants, Mode, Nameable, Requirement, Requirements};
 use adtb_lang::schema::Schema;
-use adtb_lang::types::{FnId, RelId};
+use adtb_lang::types::{ConstraintIdx, FnId, RelId};
 
 use crate::runtime::Runtime;
+use crate::write;
 
 use super::super::cause::Broken;
 use super::super::command::engine_relation;
@@ -134,13 +135,25 @@ impl Holds {
         out
     }
 
-    /// Returns whether the role may read what the constraint at position `at` of `schema` reads.
-    pub(in super::super) fn reads_constraint<R: Runtime>(&self, e: &Engine<R>, at: usize) -> bool {
+    /// Returns whether the role may read what constraint `c` reads.
+    ///
+    /// Fail with [`write::Broken::NoDenial`] when the engine's normal form holds no term of `c`.
+    pub(in super::super) fn reads_constraint<R: Runtime>(
+        &self,
+        e: &Engine<R>,
+        c: ConstraintIdx,
+    ) -> Result<bool, write::Broken> {
         let normal = e.db.normal();
-        normal.constraints.get(at).is_some_and(|t| {
-            permission::normal(&e.schema, normal, &normal.terms, *t, &[])
-                .is_ok_and(|needs| self.lacking(&e.schema, &needs).is_empty())
-        })
+        let Some(t) = normal.constraint(c) else {
+            let def = e.schema.constraint(c);
+            return Err(write::Broken::NoDenial(format!(
+                "{}::{}",
+                e.schema.module(def.module).name,
+                def.name
+            )));
+        };
+        Ok(permission::normal(&e.schema, normal, &normal.terms, t, &[])
+            .is_ok_and(|needs| self.lacking(&e.schema, &needs).is_empty()))
     }
 
     /// Returns `err` with what the role may not read taken out of a violation's report.
@@ -154,17 +167,17 @@ impl Holds {
                 report,
                 redacted,
             } => {
-                let visible = e
-                    .schema
-                    .constraints
-                    .iter()
-                    .position(|c| {
-                        constraint
-                            .strip_prefix(e.schema.module(c.module).name.as_str())
-                            .and_then(|n| n.strip_prefix("::"))
-                            == Some(c.name.as_str())
-                    })
-                    .is_some_and(|at| self.reads_constraint(e, at));
+                let named = e.schema.constraint_defs().find(|(_, c)| {
+                    constraint
+                        .strip_prefix(e.schema.module(c.module).name.as_str())
+                        .and_then(|n| n.strip_prefix("::"))
+                        == Some(c.name.as_str())
+                });
+                let visible = match named.map(|(c, _)| self.reads_constraint(e, c)) {
+                    Some(Ok(visible)) => visible,
+                    Some(Err(b)) => return Error::internal(Broken::Write(b)),
+                    None => false,
+                };
                 if visible {
                     RejectReason::Violated {
                         constraint,

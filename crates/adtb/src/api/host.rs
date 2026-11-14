@@ -185,8 +185,8 @@ fn redefined(pending: &[&str], name: &str, version: &str) -> bool {
 /// domains, retags, defaults, computed fields, index fields and stored views.
 fn reached(schema: &Schema, normal: &NormalProgram) -> BTreeSet<FnId> {
     let mut roots: Vec<Tm> = Vec::new();
-    roots.extend(&normal.constraints);
-    roots.extend(&normal.checks);
+    roots.extend(normal.constraints().map(|(_, t)| t));
+    roots.extend(normal.checks().map(|(_, t)| t));
     roots.extend(normal.domains.values().map(|(_, t)| *t));
     roots.extend(normal.retags.values().map(|(_, t)| *t));
     roots.extend(normal.defaults.values());

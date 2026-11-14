@@ -22,7 +22,8 @@ impl Catalog {
     ///
     /// A constraint that reads a transition is not validated.
     ///
-    /// Fail with [`Broken::ConstraintId`] when a constraint or check has no catalog id.
+    /// Fail with [`Broken::ConstraintId`] when a constraint or check has no catalog id, and with
+    /// [`Broken::ConstraintTerm`] when it has no normal form.
     pub(super) fn violations<R: Runtime>(
         &self,
         m: &Migrating<'_, R>,
@@ -33,7 +34,12 @@ impl Catalog {
         let (schema, program) = self.checking();
         let normal =
             norm::program(schema, program).map_err(|e| Error::from(Broken::NotNormal(e)))?;
-        let existed: BTreeSet<CatConstraintId> = constraint_ids(old).flatten().collect();
+        let existed: BTreeSet<CatConstraintId> = old
+            .ids()
+            .constraint_ids()
+            .map(|(_, id)| id)
+            .chain(old.ids().check_ids().map(|(_, id)| id))
+            .collect();
         let catalog = self.plan();
         let bindings = self.bindings();
         let store = Arc::new(Store::migrating(
@@ -42,15 +48,8 @@ impl Catalog {
         ));
         let budget = Budget::new(self.query_memory);
         let terms = &normal.terms;
-        let named = qualified(schema)
-            .into_iter()
-            .zip(constraint_ids(schema))
-            .zip(normal.constraints.iter().chain(&normal.checks));
         let mut why = Vec::new();
-        for ((name, id), &t) in named {
-            let Some(id) = id else {
-                return Err(Error::from(Broken::ConstraintId(name)));
-            };
+        for Held { name, id, t } in held(schema, &normal)? {
             let mut reads = BTreeSet::new();
             if transitions(terms, t, &mut reads) {
                 continue;
@@ -89,12 +88,9 @@ impl Catalog {
             norm::program(schema, program).map_err(|e| Error::from(Broken::NotNormal(e)))?;
         let catalog = self.plan();
         let budget = Budget::new(self.query_memory);
-        let ids = qualified(schema).into_iter().zip(constraint_ids(schema));
         let mut out = Vec::new();
-        for ((name, id), &t) in ids.zip(normal.constraints.iter().chain(&normal.checks)) {
-            let id = id
-                .ok_or_else(|| Error::from(Broken::ConstraintId(name)))?
-                .raw();
+        for Held { id, t, .. } in held(schema, &normal)? {
+            let id = id.raw();
             let mut reads = BTreeSet::new();
             if transitions(&normal.terms, t, &mut reads) || !keep(&reads) {
                 continue;
@@ -147,24 +143,36 @@ enum Denied {
     Orphaned(u32),
 }
 
-/// The qualified name of every constraint, then every check, of `schema`, in declaration order.
-fn qualified(schema: &Schema) -> Vec<String> {
-    let name = |m, n: &str| format!("{}::{n}", schema.module(m).name);
-    schema
-        .constraints
-        .iter()
-        .map(|c| name(c.module, &c.name))
-        .chain(schema.checks.iter().map(|c| name(c.module, &c.name)))
-        .collect()
+/// A constraint or check of a schema: its qualified name, its catalog id and its normal form.
+struct Held {
+    name: String,
+    id: CatConstraintId,
+    t: Tm,
 }
 
-/// Returns the catalog id of every constraint, then every check, of `schema`, in declaration
-/// order.
-fn constraint_ids(schema: &Schema) -> impl Iterator<Item = Option<CatConstraintId>> + '_ {
+/// Returns every constraint, then every check, of `schema`, in declaration order.
+///
+/// Fail with [`Broken::ConstraintId`] when one has no catalog id, and with
+/// [`Broken::ConstraintTerm`] when `normal` holds no normal form of it.
+fn held(schema: &Schema, normal: &NormalProgram) -> Result<Vec<Held>, Error> {
     let ids = schema.ids();
-    (0..schema.constraints.len())
-        .map(|i| ids.constraint_id(i))
-        .chain((0..schema.checks.len()).map(|i| ids.check_id(i)))
+    let name = |m, n: &str| format!("{}::{n}", schema.module(m).name);
+    let constraints = schema.constraint_defs().map(|(c, def)| {
+        let name = name(def.module, &def.name);
+        (ids.constraint_id(c), normal.constraint(c), name)
+    });
+    let checks = schema.check_defs().map(|(c, def)| {
+        let name = name(def.module, &def.name);
+        (ids.check_id(c), normal.check(c), name)
+    });
+    constraints
+        .chain(checks)
+        .map(|(id, t, name)| match (id, t) {
+            (None, _) => Err(Error::from(Broken::ConstraintId(name))),
+            (_, None) => Err(Error::from(Broken::ConstraintTerm(name))),
+            (Some(id), Some(t)) => Ok(Held { name, id, t }),
+        })
+        .collect()
 }
 
 /// Adds the relations `t` reads to `reads`; returns whether it reads a transition.

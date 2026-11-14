@@ -1,5 +1,6 @@
 //! Kernel forms, primitives and faults, driven through the front end.
 
+use adtb_lang::kernel::Tm;
 use adtb_reference::{Abort, Change, Database, Fault, Limit, Value, days_from_civil};
 use adtb_testkit::fixture::*;
 
@@ -590,16 +591,34 @@ fn an_unbounded_fix_reaches_the_statement_limit() {
     assert_eq!(Err(Abort::Limit(Limit::Rounds { rounds: 50 })), got);
 }
 
+fn constraint(f: &Fixture, name: &str) -> Tm {
+    let (c, _) = f
+        .schema
+        .constraint_defs()
+        .find(|(_, d)| d.name == name)
+        .expect("the constraint is declared");
+    f.program.constraint(c).expect("the constraint checks")
+}
+
+fn check(f: &Fixture, name: &str) -> Tm {
+    let (c, _) = f
+        .schema
+        .check_defs()
+        .find(|(_, d)| d.name == name)
+        .expect("the check is declared");
+    f.program.check(c).expect("the check checks")
+}
+
 #[test]
 fn a_constraint_returns_its_violations() {
     let f = fixture();
-    let c = f.program.constraints[0];
+    let c = constraint(&f, "no_empty_names");
     let got = f.interp().eval(&f.program.terms, c, &[]).unwrap();
     assert_eq!(
         set([f.one(r#"from u in users where u.name == "" select u"#)]),
         got
     );
-    let check = f.program.checks[0];
+    let check = check(&f, "positive");
     let got = f.interp().eval(&f.program.terms, check, &[]).unwrap();
     assert_eq!(
         2,
@@ -611,7 +630,7 @@ fn a_constraint_returns_its_violations() {
 #[test]
 fn a_transition_constraint_reads_the_change() {
     let f = fixture();
-    let c = f.program.constraints[1];
+    let c = constraint(&f, "new_users");
     assert_eq!(
         Ok(set([])),
         f.interp().eval(&f.program.terms, c, &[]),

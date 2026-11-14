@@ -51,11 +51,11 @@ fn root_site(schema: &Schema, root: Root) -> (FileId, Span) {
             (d.file, d.span)
         }
         Root::Constraint(i) => {
-            let c = &schema.constraints[i];
+            let c = schema.constraint(i);
             (c.file, c.query.span)
         }
         Root::Check(i) => {
-            let c = &schema.checks[i];
+            let c = schema.check(i);
             (c.file, c.predicate.span)
         }
         Root::Domain(t) => {
@@ -110,18 +110,8 @@ pub(crate) fn schema_diags(schema: &Schema, p: &Program) -> Vec<FileDiag> {
             roots.push((Root::Function(crate::types::FnId(i as u32)), *body));
         }
     }
-    roots.extend(
-        n.constraints
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (Root::Constraint(i), *t)),
-    );
-    roots.extend(
-        n.checks
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (Root::Check(i), *t)),
-    );
+    roots.extend(n.constraints().map(|(c, t)| (Root::Constraint(c), t)));
+    roots.extend(n.checks().map(|(c, t)| (Root::Check(c), t)));
     roots.extend(n.domains.iter().map(|(id, (_, t))| (Root::Domain(*id), *t)));
     roots.extend(n.retags.iter().map(|(r, (_, t))| (Root::Retag(*r), *t)));
     roots.extend(

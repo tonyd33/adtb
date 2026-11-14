@@ -69,6 +69,9 @@ pub enum Broken {
     /// failure of the transactions layer.
     CatalogError(catalog::Error),
     DeploymentRefused,
+    /// The normal form of a checked schema holds no term of the constraint or check of this
+    /// qualified name.
+    NoDenial(String),
 }
 
 /// A term's kind, equal to another when the kinds are equal, a float constant by its bits.
@@ -177,6 +180,7 @@ impl fmt::Display for Broken {
             Broken::SettingField(name) => write!(f, "a setting's value has field `{name}`"),
             Broken::CatalogError(e) => f.write_str(&catalog::detail(e)),
             Broken::DeploymentRefused => f.write_str("a deployment command was refused"),
+            Broken::NoDenial(name) => write!(f, "constraint or check {name} has a normal form"),
         }
     }
 }

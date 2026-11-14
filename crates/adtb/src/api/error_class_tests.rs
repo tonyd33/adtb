@@ -522,11 +522,16 @@ fn call_broken_rows() -> Vec<Row> {
             "Refused([\"r\"])",
         ),
         broken_row(B::DeploymentRefused, c, "a deployment command was refused"),
+        broken_row(
+            B::NoDenial("app::c".into()),
+            c,
+            "constraint or check app::c has a normal form",
+        ),
     ]
 }
 
 /// The number of slots [`slot`] gives.
-const SLOTS: usize = 73;
+const SLOTS: usize = 74;
 
 /// Returns the slot of `e`'s variant, of the variant it holds where its class depends on it.
 /// Every arm has its own slot, numbered from 0 with none skipped.
@@ -613,6 +618,7 @@ fn slot(e: &write::Error) -> usize {
             B::SettingField(_) => 70,
             B::CatalogError(_) => 71,
             B::DeploymentRefused => 72,
+            B::NoDenial(_) => 73,
         },
     }
 }

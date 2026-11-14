@@ -92,7 +92,8 @@ impl Broken {
             | Broken::SettingNotRecord
             | Broken::SettingField(_)
             | Broken::CatalogError(_)
-            | Broken::DeploymentRefused => Class::Checker,
+            | Broken::DeploymentRefused
+            | Broken::NoDenial(_) => Class::Checker,
         }
     }
 }

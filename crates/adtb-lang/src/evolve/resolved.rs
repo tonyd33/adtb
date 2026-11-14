@@ -912,12 +912,12 @@ impl Resolver<'_> {
             ValueDef::Constraint(i) => self
                 .schema
                 .ids()
-                .constraint_id(i as usize)
+                .constraint_id(ConstraintIdx::at(i as usize))
                 .map(CatConstraintId::raw),
             ValueDef::Check(i) => self
                 .schema
                 .ids()
-                .check_id(i as usize)
+                .check_id(CheckIdx::at(i as usize))
                 .map(CatConstraintId::raw),
             _ => None,
         }
@@ -1445,9 +1445,12 @@ impl Resolver<'_> {
         match schema.module(m).values.get(&q.name.text)? {
             ValueDef::Constraint(i) => schema
                 .ids()
-                .constraint_id(*i as usize)
+                .constraint_id(ConstraintIdx::at(*i as usize))
                 .map(CatConstraintId::raw),
-            ValueDef::Check(i) => schema.ids().check_id(*i as usize).map(CatConstraintId::raw),
+            ValueDef::Check(i) => schema
+                .ids()
+                .check_id(CheckIdx::at(*i as usize))
+                .map(CatConstraintId::raw),
             _ => None,
         }
     }

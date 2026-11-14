@@ -52,6 +52,8 @@ pub enum Broken {
     KeptConstraint(String, CatConstraintId),
     /// A checked schema gives this constraint or check no catalog id.
     ConstraintId(String),
+    /// A checked schema's normal form holds no term of this constraint or check.
+    ConstraintTerm(String),
     /// The old key a pending drop holds has no image in the schema.
     NoImage {
         module: String,
@@ -141,6 +143,9 @@ impl fmt::Display for Broken {
             ),
             Broken::ConstraintId(name) => {
                 write!(f, "constraint or check {name} has no catalog id")
+            }
+            Broken::ConstraintTerm(name) => {
+                write!(f, "constraint or check {name} has no normal form")
             }
             Broken::NoImage { module, name, .. } => {
                 write!(f, "pending-dropped {module}::{name} has no image")

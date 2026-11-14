@@ -129,11 +129,11 @@ fn described(s: &Schema) -> Vec<(Desc, u64)> {
     );
     out.extend(
         ids.constraint_ids()
-            .map(|(at, id)| (Desc::Constraint(s.constraints[at].name.clone()), id.raw())),
+            .map(|(at, id)| (Desc::Constraint(s.constraint(at).name.clone()), id.raw())),
     );
     out.extend(
         ids.check_ids()
-            .map(|(at, id)| (Desc::Check(s.checks[at].name.clone()), id.raw())),
+            .map(|(at, id)| (Desc::Check(s.check(at).name.clone()), id.raw())),
     );
     for (f, id) in ids.view_ids() {
         out.push((Desc::View(fn_name(f)), id.raw()));

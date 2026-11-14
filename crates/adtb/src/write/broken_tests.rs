@@ -68,7 +68,8 @@ fn after(b: Option<&Broken>) -> Option<(Broken, &'static str)> {
         Some(B::SettingNotRecord) => (B::SettingField("f".into()), "a setting's value has field `f`"),
         Some(B::SettingField(_)) => (B::CatalogError(catalog_refused()), "Refused([\"r\"])"),
         Some(B::CatalogError(_)) => (B::DeploymentRefused, "a deployment command was refused"),
-        Some(B::DeploymentRefused) => return None,
+        Some(B::DeploymentRefused) => (B::NoDenial("app::c".into()), "constraint or check app::c has a normal form"),
+        Some(B::NoDenial(_)) => return None,
     })
 }
 

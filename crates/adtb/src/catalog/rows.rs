@@ -701,11 +701,11 @@ impl Builder<'_> {
 
     fn constraints(&mut self) {
         let declared = self.schema.ids().constraint_ids().map(|(i, id)| {
-            let c = &self.schema.constraints[i];
+            let c = self.schema.constraint(i);
             (id, c.module, c.name.clone(), c.file)
         });
         let checks = self.schema.ids().check_ids().map(|(i, id)| {
-            let c = &self.schema.checks[i];
+            let c = self.schema.check(i);
             (id, c.module, c.name.clone(), c.file)
         });
         let all: Vec<_> = declared.chain(checks).collect();

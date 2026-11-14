@@ -34,6 +34,34 @@ pub struct FnId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ModuleId(pub u32);
 
+/// A constraint of a schema, by its position among the schema's constraints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ConstraintIdx(u32);
+
+impl ConstraintIdx {
+    pub(crate) fn at(i: usize) -> ConstraintIdx {
+        ConstraintIdx(i as u32)
+    }
+
+    pub(crate) fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// A row check of a schema, by its position among the schema's checks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CheckIdx(u32);
+
+impl CheckIdx {
+    pub(crate) fn at(i: usize) -> CheckIdx {
+        CheckIdx(i as u32)
+    }
+
+    pub(crate) fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 /// Constructor indices into a type's declaration order, sorted and distinct.
 pub type CtorSet = Vec<u32>;
 

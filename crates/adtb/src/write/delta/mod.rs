@@ -123,24 +123,12 @@ pub fn compile(
     terms: &mut Terms,
     catalog: &Catalog,
 ) -> Result<Vec<Checks>, Unadmitted> {
-    let named = schema
-        .constraints
-        .iter()
-        .map(|c| (c.module, &c.name))
-        .zip(&normal.constraints)
-        .chain(
-            schema
-                .checks
-                .iter()
-                .map(|c| (c.module, &c.name))
-                .zip(&normal.checks),
-        );
+    let named = denials(schema, normal).map_err(Unadmitted::Internal)?;
     let mut transitions = Vec::new();
     let mut found = Vec::new();
     let mut refused = Vec::new();
-    for ((module, name), t) in named {
-        let qualified = format!("{}::{name}", schema.module(module).name);
-        let outside = super::polarity::non_monotone(schema, terms, *t);
+    for (qualified, t) in named {
+        let outside = super::polarity::non_monotone(schema, terms, t);
         if !outside.is_empty() {
             refused.extend(outside.into_iter().map(|detail| Refusal {
                 constraint: qualified.clone(),
@@ -150,8 +138,8 @@ pub fn compile(
         }
         let mut reads = BTreeSet::new();
         let mut own = Vec::new();
-        scan(terms, *t, &mut BTreeSet::new(), &mut own, &mut reads);
-        found.push((qualified, *t, reads));
+        scan(terms, t, &mut BTreeSet::new(), &mut own, &mut reads);
+        found.push((qualified, t, reads));
         transitions.extend(own);
     }
     let mut cx = Compiler {
@@ -188,6 +176,30 @@ pub fn compile(
     } else {
         Err(Unadmitted::Refused(refused))
     }
+}
+
+/// Returns the qualified name and normal form of every constraint, then every check, of `schema`,
+/// in declaration order.
+///
+/// Fail with [`Broken::NoDenial`] naming one that `normal` holds no normal form of.
+pub(super) fn denials(
+    schema: &Schema,
+    normal: &NormalProgram,
+) -> Result<Vec<(String, Tm)>, Broken> {
+    let name = |m, n: &str| format!("{}::{n}", schema.module(m).name);
+    let constraints = schema
+        .constraint_defs()
+        .map(|(c, def)| (name(def.module, &def.name), normal.constraint(c)));
+    let checks = schema
+        .check_defs()
+        .map(|(c, def)| (name(def.module, &def.name), normal.check(c)));
+    constraints
+        .chain(checks)
+        .map(|(name, t)| match t {
+            Some(t) => Ok((name, t)),
+            None => Err(Broken::NoDenial(name)),
+        })
+        .collect()
 }
 
 /// Returns the qualified name of `r`, with the constructor set `ctors` when it is not every

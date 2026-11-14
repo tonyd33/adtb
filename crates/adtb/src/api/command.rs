@@ -1,6 +1,7 @@
 //! The commands of ad hoc text run in process, from their checked terms.
 
-use std::collections::BTreeMap;
+use std::cell::OnceCell;
+use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::ast::{self, BundleName, ExprKind, KeyArgs, RecordExpr};
 use adtb_lang::check::{Command, Explained, Program};
@@ -684,7 +685,20 @@ impl<R: Runtime> Engine<R> {
         let violation = schema.engine_ctors().violation().index();
         let finding = schema.ty(schema.relation(findings).elem_def);
         let constraint_at = finding.header().len();
-        let holds = issuer.holds.as_ref();
+        let readable = OnceCell::new();
+        let readable_set = || {
+            readable.get_or_init(|| {
+                let mut set = BTreeSet::new();
+                if let Some(h) = issuer.holds.as_ref() {
+                    for (c, _) in schema.constraint_defs() {
+                        if h.reads_constraint(self, c)? {
+                            set.insert(c);
+                        }
+                    }
+                }
+                Ok::<_, write::Broken>(set)
+            })
+        };
         let unreadable = |row: &Val| {
             let Val::Ctor(c, fields) = row else {
                 return false;
@@ -698,10 +712,16 @@ impl<R: Runtime> Engine<R> {
                     .and_then(|id| schema.ids().constraint_of(CatConstraintId::from_raw(id))),
                 _ => None,
             };
-            !at.zip(holds)
-                .is_some_and(|(at, h)| h.reads_constraint(self, at))
+            match readable_set() {
+                Ok(set) => !at.is_some_and(|c| set.contains(&c)),
+                Err(_) => true,
+            }
         };
-        if !found.any_left(unreadable) {
+        let refused = found.any_left(unreadable);
+        if let Some(Err(b)) = readable.get() {
+            return Err(b.clone().into());
+        }
+        if !refused {
             return Ok(());
         }
         self.audit_denied(&issuer.role, caller, &CallOrigin::AdHoc(issuer.text))

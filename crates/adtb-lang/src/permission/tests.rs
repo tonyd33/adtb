@@ -1232,7 +1232,8 @@ fn key_of_charges_only_what_follows_it() {
 fn constraint(s: &Schema) -> Requirements {
     let program = check_schema(s).expect("schema checks");
     let normal = crate::norm::program(s, &program).expect("program normalizes");
-    analyze(s, &normal, &normal.terms, normal.constraints[0], &[]).expect("requirements analyze")
+    let (_, t) = normal.constraints().next().expect("a constraint");
+    analyze(s, &normal, &normal.terms, t, &[]).expect("requirements analyze")
 }
 
 #[test]

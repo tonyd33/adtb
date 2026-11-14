@@ -20,8 +20,8 @@ pub struct NormalProgram {
     pub terms: Terms,
     /// Each function's parameters and normalised body; `None` for Wasm and host functions and for a function that takes or returns a function.
     pub functions: Vec<Option<(Vec<Var>, Tm)>>,
-    pub constraints: Vec<Tm>,
-    pub checks: Vec<Tm>,
+    constraints: BTreeMap<ConstraintIdx, Tm>,
+    checks: BTreeMap<CheckIdx, Tm>,
     pub domains: BTreeMap<TypeId, (Var, Tm)>,
     /// Each `on delete retag` new value over the referrer's row.
     pub retags: BTreeMap<RelId, (Var, Tm)>,
@@ -31,6 +31,26 @@ pub struct NormalProgram {
     pub index_fields: BTreeMap<(RelId, usize, usize), (Var, IndexField)>,
     /// Each user-defined aggregate's parts; `None` for one that did not check or whose parts are not first-order.
     pub aggregates: Vec<Option<NormalAggregate>>,
+}
+
+impl NormalProgram {
+    /// Returns the normal form of constraint `c`; `None` when it has none.
+    pub fn constraint(&self, c: ConstraintIdx) -> Option<Tm> {
+        self.constraints.get(&c).copied()
+    }
+
+    /// Returns the normal form of row check `c`; `None` when it has none.
+    pub fn check(&self, c: CheckIdx) -> Option<Tm> {
+        self.checks.get(&c).copied()
+    }
+
+    pub fn constraints(&self) -> impl Iterator<Item = (ConstraintIdx, Tm)> + '_ {
+        self.constraints.iter().map(|(&c, &t)| (c, t))
+    }
+
+    pub fn checks(&self) -> impl Iterator<Item = (CheckIdx, Tm)> + '_ {
+        self.checks.iter().map(|(&c, &t)| (c, t))
+    }
 }
 
 /// The normal forms of a user-defined aggregate's parts, each over its variables.
@@ -64,8 +84,8 @@ pub struct NormalQuery {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Root {
     Function(FnId),
-    Constraint(usize),
-    Check(usize),
+    Constraint(ConstraintIdx),
+    Check(CheckIdx),
     Domain(TypeId),
     Retag(RelId),
     Default(RelId, usize),
@@ -108,13 +128,13 @@ pub fn program(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
             None => None,
         });
     }
-    let mut constraints = Vec::with_capacity(p.constraints.len());
-    for (i, t) in p.constraints.iter().enumerate() {
-        constraints.push(at(Root::Constraint(i), n.root(*t))?);
+    let mut constraints = BTreeMap::new();
+    for (c, t) in p.constraints() {
+        constraints.insert(c, at(Root::Constraint(c), n.root(t))?);
     }
-    let mut checks = Vec::with_capacity(p.checks.len());
-    for (i, t) in p.checks.iter().enumerate() {
-        checks.push(at(Root::Check(i), n.root(*t))?);
+    let mut checks = BTreeMap::new();
+    for (c, t) in p.checks() {
+        checks.insert(c, at(Root::Check(c), n.root(t))?);
     }
     let mut domains = BTreeMap::new();
     for (id, (v, t)) in &p.domains {

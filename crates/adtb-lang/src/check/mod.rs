@@ -52,8 +52,8 @@ pub struct Program {
     pub terms: Terms,
     /// Each function's term, a `Lam` over its parameters; `None` for Wasm and host functions.
     pub functions: Vec<Option<Tm>>,
-    pub constraints: Vec<Tm>,
-    pub checks: Vec<Tm>,
+    constraints: BTreeMap<ConstraintIdx, Tm>,
+    checks: BTreeMap<CheckIdx, Tm>,
     /// Each newtype's domain predicate over its `self` variable.
     pub domains: BTreeMap<TypeId, (Var, Tm)>,
     /// Each relation's `on delete retag` new value, a `Lam` over the referrer's row.
@@ -68,6 +68,26 @@ pub struct Program {
     pub aggregates: Vec<Option<AggregateTerms>>,
     /// The relation whose rows each function returns, for `key` over a view's rows.
     pub fn_rows: Vec<Option<RelId>>,
+}
+
+impl Program {
+    /// Returns the term of constraint `c`, a denial query; `None` when it did not check.
+    pub fn constraint(&self, c: ConstraintIdx) -> Option<Tm> {
+        self.constraints.get(&c).copied()
+    }
+
+    /// Returns the term of row check `c`, a denial query; `None` when it did not check.
+    pub fn check(&self, c: CheckIdx) -> Option<Tm> {
+        self.checks.get(&c).copied()
+    }
+
+    pub fn constraints(&self) -> impl Iterator<Item = (ConstraintIdx, Tm)> + '_ {
+        self.constraints.iter().map(|(&c, &t)| (c, t))
+    }
+
+    pub fn checks(&self) -> impl Iterator<Item = (CheckIdx, Tm)> + '_ {
+        self.checks.iter().map(|(&c, &t)| (c, t))
+    }
 }
 
 /// The parts of a user-defined aggregate: `init` a state, `step` a `Lam` over the state and an
@@ -541,8 +561,8 @@ fn bodies(
         program: Program {
             terms: Terms::default(),
             functions: vec![None; schema.functions.len()],
-            constraints: Vec::new(),
-            checks: Vec::new(),
+            constraints: BTreeMap::new(),
+            checks: BTreeMap::new(),
             domains: BTreeMap::new(),
             retags: BTreeMap::new(),
             defaults: BTreeMap::new(),
@@ -637,22 +657,22 @@ impl Bodies<'_, '_> {
 
     fn constraints(&mut self) {
         let schema = self.schema;
-        for con in &schema.constraints {
+        for (i, con) in schema.constraint_defs() {
             if let Some(tm) = self.run(con.module, Context::Constraint, con.file, &mut |c| {
                 c.constraint(&con.query)
             }) {
-                self.program.constraints.push(tm);
+                self.program.constraints.insert(i, tm);
             }
         }
     }
 
     fn checks(&mut self) {
         let schema = self.schema;
-        for chk in &schema.checks {
+        for (i, chk) in schema.check_defs() {
             if let Some(tm) = self.run(chk.module, Context::Schema, chk.file, &mut |c| {
                 c.check_clause(chk.relation, chk.ctors.clone(), &chk.predicate)
             }) {
-                self.program.checks.push(tm);
+                self.program.checks.insert(i, tm);
             }
         }
     }

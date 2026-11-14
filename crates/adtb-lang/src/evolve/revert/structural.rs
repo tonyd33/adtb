@@ -513,7 +513,7 @@ impl Cx<'_> {
             .map(|(r, _, _)| r)
             .collect();
         let mut out = Vec::new();
-        for (k, chk) in schema.checks.iter().enumerate() {
+        for (k, chk) in schema.check_defs() {
             let over = rels.contains(&chk.relation)
                 && chk
                     .ctors
@@ -874,7 +874,7 @@ impl Cx<'_> {
             schema.ids().ctor_id(r)
         };
         let mut out = Vec::new();
-        for (k, chk) in schema.constraints.iter().enumerate() {
+        for (k, chk) in schema.constraint_defs() {
             let j = chk.file.0 as usize;
             let Some(d @ Decl::Constraint(_)) = before.parsed(j) else {
                 continue;

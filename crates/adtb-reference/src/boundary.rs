@@ -7,7 +7,7 @@ use adtb_lang::schema::{OnDelete, Stage as SchemaStage, TypeDefKind};
 use adtb_lang::types::{CtorSet, RelId, RelRef, Ty, TypeId};
 
 use crate::eval::{
-    Abort, Arena, Change, Database, Env, Interpreter, Measure, R, Run, bool_of, into_set,
+    Abort, Arena, Change, Database, Env, Interpreter, Measure, R, Run, bool_of, internal, into_set,
 };
 use crate::stmt::{Eff, Effects, Outcome, Rejection, Stage};
 use crate::textual::print;
@@ -612,21 +612,19 @@ impl Interpreter<'_> {
             );
         }
         let h = run.here(Arena::Program);
-        let named = schema
-            .constraints
-            .iter()
-            .map(|c| (c.module, &c.name))
-            .zip(&self.program.constraints)
-            .chain(
-                schema
-                    .checks
-                    .iter()
-                    .map(|c| (c.module, &c.name))
-                    .zip(&self.program.checks),
-            );
-        for ((module, name), tm) in named {
-            let report = into_set(run.eval(&h, *tm, &Env::default())?)?;
-            found(self.qualified(module, name), Constraint::Other, report);
+        let constraints = schema
+            .constraint_defs()
+            .map(|(c, def)| (def.module, &def.name, self.program.constraint(c)));
+        let checks = schema
+            .check_defs()
+            .map(|(c, def)| (def.module, &def.name, self.program.check(c)));
+        for (module, name, tm) in constraints.chain(checks) {
+            let name = self.qualified(module, name);
+            let Some(tm) = tm else {
+                return internal(format!("constraint or check {name} has a term"));
+            };
+            let report = into_set(run.eval(&h, tm, &Env::default())?)?;
+            found(name, Constraint::Other, report);
         }
         Ok(out)
     }

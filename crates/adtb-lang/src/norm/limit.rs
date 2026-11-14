@@ -148,11 +148,11 @@ pub(super) fn planned_within_bound(p: &NormalProgram) -> Result<(), Error> {
             })
         }
     };
-    for (i, t) in p.constraints.iter().enumerate() {
-        holds(Root::Constraint(i), *t)?;
+    for (c, t) in p.constraints() {
+        holds(Root::Constraint(c), t)?;
     }
-    for (i, t) in p.checks.iter().enumerate() {
-        holds(Root::Check(i), *t)?;
+    for (c, t) in p.checks() {
+        holds(Root::Check(c), t)?;
     }
     for (id, (_, t)) in &p.domains {
         holds(Root::Domain(*id), *t)?;

@@ -543,6 +543,30 @@ impl Schema {
         &self.functions[id.0 as usize]
     }
 
+    pub fn constraint(&self, c: ConstraintIdx) -> &ConstraintDef {
+        &self.constraints[c.index()]
+    }
+
+    pub fn check(&self, c: CheckIdx) -> &CheckDef {
+        &self.checks[c.index()]
+    }
+
+    /// Returns every constraint with its index, in declaration order.
+    pub fn constraint_defs(&self) -> impl Iterator<Item = (ConstraintIdx, &ConstraintDef)> {
+        self.constraints
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (ConstraintIdx::at(i), c))
+    }
+
+    /// Returns every row check with its index, in declaration order.
+    pub fn check_defs(&self) -> impl Iterator<Item = (CheckIdx, &CheckDef)> {
+        self.checks
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (CheckIdx::at(i), c))
+    }
+
     /// Returns the key that orders fields by type, then constructor (the header first), then name.
     pub fn field_order(&self, f: FieldRef) -> (TypeId, Option<u32>, &str) {
         (f.def(), f.ctor(), &self.ty(f.def()).field_def(f).name)

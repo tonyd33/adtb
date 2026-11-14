@@ -268,8 +268,8 @@ fn normal_forms_have_no_lambda_application_or_schema_call() {
     ] {
         assert_normal(&s, &n.terms, body(&s, &n, f));
     }
-    for c in &n.constraints {
-        assert_normal(&s, &n.terms, *c);
+    for (_, c) in n.constraints() {
+        assert_normal(&s, &n.terms, c);
     }
 }
 
