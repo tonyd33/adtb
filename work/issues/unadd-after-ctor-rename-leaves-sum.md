@@ -17,3 +17,7 @@ tags:
 Direction: needs a ruling: refuse with a §5.4 reason (the record form names the constructor a later migration renamed), or treat the rename as a dependant. Test: the history above.
 
 Defect class: none yet.
+
+## Later objects naming the constructor
+
+Reverting the widening also leaves later objects that name the record's constructor as written: `default V.w`, `grant update vs.V`, `set SV of vs = V` stay, and the law search reports the default as a new id by description. Whether they are dependants of the widening (they name constructor `V`, which predates it) belongs to the same ruling. Found in the delta review of structure-lang-identity step 5c-3.
