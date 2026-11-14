@@ -181,47 +181,57 @@ impl<'a> Map<'a> {
         self.to.normalize_ctors(to, out)
     }
 
-    /// Returns `ty` at the later version, a row or value naming the constructors it holds at the
-    /// earlier version, and a key narrowed to them when `hide_new`.
-    pub fn ty(&self, ty: &Ty, hide_new: bool) -> Result<Ty, Loss> {
-        self.ty_at(ty, hide_new, true)
+    /// Returns `ty` at the later version, a row naming the constructors it holds at the earlier
+    /// version.
+    pub fn ty(&self, ty: &Ty) -> Result<Ty, Loss> {
+        self.ty_at(ty, Narrow::Rows)
     }
 
     /// Returns `ty` at the later version with its constructor sets not narrowed, for a value read
     /// from where a constructor new since the earlier version can lie.
     pub fn ty_unnarrowed(&self, ty: &Ty) -> Result<Ty, Loss> {
-        self.ty_at(ty, false, false)
+        self.ty_at(ty, Narrow::None)
     }
 
-    fn ty_at(&self, ty: &Ty, hide_new: bool, pinned: bool) -> Result<Ty, Loss> {
+    /// Returns `ty` at the later version, every declared sum in it naming the constructors it
+    /// holds at the earlier version, for a value a parse builds.
+    pub fn ty_parsed(&self, ty: &Ty) -> Result<Ty, Loss> {
+        self.ty_at(ty, Narrow::All)
+    }
+
+    fn ty_at(&self, ty: &Ty, pinned: Narrow) -> Result<Ty, Loss> {
         Ok(match ty {
             Ty::Base(_) | Ty::Param(_) | Ty::Unit | Ty::Change => ty.clone(),
             Ty::Data { def, args, ctors } => Ty::Data {
                 def: self.def(*def).ok_or(Loss::Type(*def))?,
                 args: args
                     .iter()
-                    .map(|a| self.ty_at(a, hide_new, pinned))
+                    .map(|a| self.ty_at(a, pinned))
                     .collect::<Result<_, _>>()?,
-                ctors: self.set(*def, ctors, pinned),
+                ctors: self.set(
+                    *def,
+                    ctors,
+                    pinned == Narrow::All || pinned == Narrow::Rows && self.is_row(*def),
+                ),
             },
             Ty::Key { rel, ctors } => {
                 let rel = self.from.declared(*rel);
                 let def = self.from.relation(rel).elem_def;
                 Ty::Key {
                     rel: RelRef::Declared(self.relation(rel).ok_or(Loss::Relation(rel))?),
-                    ctors: self.set(def, ctors, hide_new),
+                    ctors: self.set(def, ctors, false),
                 }
             }
-            Ty::Set(t) => Ty::Set(Box::new(self.ty_at(t, hide_new, pinned)?)),
-            Ty::NonEmpty(t) => Ty::NonEmpty(Box::new(self.ty_at(t, hide_new, pinned)?)),
+            Ty::Set(t) => Ty::Set(Box::new(self.ty_at(t, pinned)?)),
+            Ty::NonEmpty(t) => Ty::NonEmpty(Box::new(self.ty_at(t, pinned)?)),
             Ty::Group(k, t) => Ty::Group(
-                Box::new(self.ty_at(k, hide_new, pinned)?),
-                Box::new(self.ty_at(t, hide_new, pinned)?),
+                Box::new(self.ty_at(k, pinned)?),
+                Box::new(self.ty_at(t, pinned)?),
             ),
-            Ty::Tag(t) => Ty::Tag(Box::new(self.ty_at(t, hide_new, pinned)?)),
+            Ty::Tag(t) => Ty::Tag(Box::new(self.ty_at(t, pinned)?)),
             Ty::Record(fs) => Ty::Record(
                 fs.iter()
-                    .map(|(n, t)| Ok((n.clone(), self.ty_at(t, hide_new, pinned)?)))
+                    .map(|(n, t)| Ok((n.clone(), self.ty_at(t, pinned)?)))
                     .collect::<Result<_, Loss>>()?,
             ),
             Ty::Sum { ctors, sel } => Ty::Sum {
@@ -230,7 +240,7 @@ impl<'a> Map<'a> {
                     .map(|(n, fs)| {
                         let fs = fs
                             .iter()
-                            .map(|(f, t)| Ok((f.clone(), self.ty_at(t, hide_new, pinned)?)))
+                            .map(|(f, t)| Ok((f.clone(), self.ty_at(t, pinned)?)))
                             .collect::<Result<_, Loss>>()?;
                         Ok((n.clone(), fs))
                     })
@@ -238,10 +248,15 @@ impl<'a> Map<'a> {
                 sel: sel.clone(),
             },
             Ty::Fn(a, b) => Ty::Fn(
-                Box::new(self.ty_at(a, hide_new, pinned)?),
-                Box::new(self.ty_at(b, hide_new, pinned)?),
+                Box::new(self.ty_at(a, pinned)?),
+                Box::new(self.ty_at(b, pinned)?),
             ),
         })
+    }
+
+    /// Returns whether `def`, a type of the earlier version, is the row type of a relation.
+    fn is_row(&self, def: TypeId) -> bool {
+        self.from.relations.iter().any(|r| r.elem_def == def)
     }
 
     /// Refuse a type a value of which does not carry whole to the later version: one reaching a
@@ -287,35 +302,50 @@ impl<'a> Map<'a> {
     ///
     /// Fail when a field of the key at either version has no counterpart at the other.
     pub fn key_order(&self, rel: RelId) -> Result<Option<Vec<(usize, String)>>, Loss> {
+        let order = self.key_layout(rel)?;
+        Ok(order.filter(|o| o.iter().enumerate().any(|(i, &(p, _))| i != p)))
+    }
+
+    /// Returns, for each field of the composite key of `rel` in its layout at the later version,
+    /// the position of the field of the same catalog id in the layout at the earlier version and
+    /// its name at the later one; `None` when `rel` has no counterpart.
+    ///
+    /// Fail when a field of the key at either version has no counterpart at the other.
+    pub fn key_layout(&self, rel: RelId) -> Result<Option<Vec<(usize, String)>>, Loss> {
         let Some(later) = self.relation(rel) else {
             return Ok(None);
         };
-        let r = self.from.relation(rel);
-        let pinned = key_names(self.from, rel);
-        let image = |f: &String| {
-            self.field(r.elem_def, Some(0), f)
-                .ok_or_else(|| Loss::Field {
-                    ty: self.from.ty(r.elem_def).name.clone(),
-                    field: f.clone(),
-                    id: field_id(self.from, r.elem_def, 0, f),
-                    added: false,
-                })
-        };
-        let images = pinned.iter().map(image).collect::<Result<Vec<_>, _>>()?;
-        let order = key_names(self.to, later)
-            .into_iter()
-            .map(|n| match images.iter().position(|i| *i == n) {
-                Some(p) => Ok((p, n)),
-                None => Err(Loss::Field {
-                    ty: self.to.ty(self.to.relation(later).elem_def).name.clone(),
-                    id: field_id(self.to, self.to.relation(later).elem_def, 0, &n),
+        let def = self.from.relation(rel).elem_def;
+        let later_def = self.to.relation(later).elem_def;
+        let pinned: Vec<Option<u64>> = key_names(self.from, rel)
+            .iter()
+            .map(|f| field_id(self.from, def, 0, f))
+            .collect();
+        let mut kept = vec![false; pinned.len()];
+        let mut order = Vec::with_capacity(pinned.len());
+        for n in key_names(self.to, later) {
+            let id = field_id(self.to, later_def, 0, &n);
+            let Some(p) = pinned.iter().position(|i| i.is_some() && *i == id) else {
+                return Err(Loss::Field {
+                    ty: self.to.ty(later_def).name.clone(),
+                    id,
                     field: n,
                     added: true,
-                }),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let moved = order.iter().enumerate().any(|(i, &(p, _))| i != p);
-        Ok(moved.then_some(order))
+                });
+            };
+            kept[p] = true;
+            order.push((p, n));
+        }
+        if let Some(p) = kept.iter().position(|k| !k) {
+            let f = key_names(self.from, rel).swap_remove(p);
+            return Err(Loss::Field {
+                ty: self.from.ty(def).name.clone(),
+                id: pinned[p],
+                field: f,
+                added: false,
+            });
+        }
+        Ok(Some(order))
     }
 
     /// Returns the constructors `def` narrowed to `ctors` may hold, at the earlier version.
@@ -455,6 +485,14 @@ impl<'a> Map<'a> {
         }
         Ok(())
     }
+}
+
+/// Which declared sums a mapped type names at the constructors of the earlier version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Narrow {
+    None,
+    Rows,
+    All,
 }
 
 fn renamed(part: Part, name: &str, id: Option<u64>) -> Loss {

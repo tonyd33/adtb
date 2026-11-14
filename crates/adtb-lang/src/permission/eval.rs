@@ -73,7 +73,7 @@ impl Analyzer<'_> {
                 });
                 Ok(out)
             }
-            Kind::Deref { key, .. } => self.dereference(arena, key, env),
+            Kind::Deref { key, admits, .. } => self.dereference(arena, key, admits.as_deref(), env),
             Kind::Tag(row) => self.tag(arena, row, &node.ty, env),
             Kind::Try(body) => self.try_value(arena, body, &node.ty, env),
             Kind::Rel(rel, ctors) => self.relation(rel, ctors.as_deref(), None, true),
@@ -208,17 +208,23 @@ impl Analyzer<'_> {
         Ok(out)
     }
 
-    fn dereference(&mut self, arena: Arena, key: Tm, env: &Env) -> Result<Value, Error> {
+    fn dereference(
+        &mut self,
+        arena: Arena,
+        key: Tm,
+        admits: Option<&[u32]>,
+        env: &Env,
+    ) -> Result<Value, Error> {
         let value = self.eval(arena, key, env)?;
         self.consume(&value);
         let Ty::Key {
             rel: RelRef::Declared(rel),
-            ctors,
-        } = self.terms(arena).ty(key).clone()
+            ..
+        } = self.terms(arena).ty(key)
         else {
             return Err(Error::InvalidKernel("dereference has a key operand"));
         };
-        Ok(self.relation(rel, ctors.as_deref(), None, true)?.elements())
+        Ok(self.relation(*rel, admits, None, true)?.elements())
     }
 
     fn tag(&mut self, arena: Arena, row: Tm, ty: &Ty, env: &Env) -> Result<Value, Error> {

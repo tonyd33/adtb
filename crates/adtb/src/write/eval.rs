@@ -181,6 +181,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         let mut fresh = Occurrences::new();
         let root = fresh::rewrite(schema, &mut terms, root, &[], &mut fresh);
         let inputs = input::rewrite(schema, &mut terms, root);
+        adtb_lang::kernel::assert_typed(schema, &terms, &[root]);
         Stmt {
             db,
             tx,

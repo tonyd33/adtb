@@ -100,7 +100,15 @@ impl<'s> Totality<'s> {
                 !matches!(terms.kind(*count), Kind::Const(Const::Int(n)) if *n >= 0)
             }
             Kind::Fix(..) => !fix::bounded(terms, t),
-            Kind::Deref { reference, .. } => self.hiding || !reference,
+            Kind::Deref {
+                key,
+                reference,
+                admits,
+            } => {
+                let narrowed = admits.is_some()
+                    && !matches!(terms.ty(*key), Ty::Key { ctors, .. } if ctors == admits);
+                self.hiding || !reference || narrowed
+            }
             Kind::Call { .. }
             | Kind::App(..)
             | Kind::At { .. }

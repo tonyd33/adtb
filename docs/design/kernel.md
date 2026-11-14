@@ -264,7 +264,7 @@ with a `Let` binding a variable of a narrower type than its value.
 | `Record(fs)` | `τ` is a `Record` with the same labels; fields sorted by name |
 | `Field(e, l)` | `ty(e)` is a record, or a row type every constructor of which has `l`; `τ` is `l`'s type, except that for a key field `l` of `r` with `Schema::self_key(r, l)` and `ty(e)` `r`'s row type at `S`, it is `Key r.S` |
 | `Ctor { ctor, fields }` | `τ` is a declared sum whose constructor set holds `ctor` (`ctors` names it, or is `None`), an anonymous `Sum`, or `Tag T`; `ctor` indexes the declaration order, the name order, or `T`'s constructors; every field of the constructor, header fields included, is given once, sorted by name; a `Tag` constructor has none |
-| `Case { scrutinee, arms }` | `ty(scrutinee)` is a sum or row type with constructor set `S`; one arm per constructor of `S`, ascending; each arm's body is a subtype of `τ` |
+| `Case { scrutinee, arms }` | `ty(scrutinee)` is a sum or row type with constructor set `S`; one arm per constructor of `S`, ascending, so none when `S` is empty; each arm's body is a subtype of `τ` |
 | `If(c, a, b)` | `ty(c)` is `Bool`; `a` and `b` are subtypes of `τ` |
 | `Let(x, e, b)` | `τ = ty(b)` |
 | `Lam(x, b)` | `τ = Fn(ty(x), ty(b))`; one parameter |
@@ -273,7 +273,7 @@ with a `Let` binding a variable of a narrower type than its value.
 | `Caller` | `τ` is the type `Principal` names |
 | `Key(e)` | `ty(e)` is a row type of a declared sum whose relation `r` is statically known; `τ = Key r.S`, `S` the row type's set |
 | `KeyOf(r, e)` | `ty(e)` is `r`'s key value type (§6); `τ = Key r` |
-| `Deref { key, reference }` | `ty(key) = Key r.S`; `τ` is `r`'s row type at `S`; `reference` holds when `key` is a reference field of a row, so a valid state has the row |
+| `Deref { key, reference, admits }` | `ty(key) = Key r.S`; `admits` is a set `S'` within `S` (`None` for every constructor of `r`); `τ` is `r`'s row type at `S'`; a key naming no row of `S'` faults `NoSuchRow`, as a key naming no row does; the checker and normaliser build `S'` equal to `S`, and translation for a bundle hiding new constructors builds the constructors of the pin; `reference` holds when `key` is a reference field of a row, so a valid state has a row of `S` |
 | `Tag(e)` | `ty(e)` is a declared sum or a row type of one; `τ = Tag N` |
 | `Try(e)` | `τ = Result ty(e) Fault` |
 | `Rel(r, S)` | `τ = Set` of `r`'s row type at `S` |
@@ -617,7 +617,7 @@ Partial, besides the primitive faults of
 [../spec/prelude.md](../spec/prelude.md): integer and decimal `sum`, a
 user-defined aggregate, `top` whose count is not a nonnegative literal,
 an unbounded `fix`, a `Deref` of a key that is not a reference field's
-value, a Wasm or host `Call`, `At`, `Fail`, `Reject` and `Replace`.
+value or admitting fewer constructors than its key's type names, a Wasm or host `Call`, `At`, `Fail`, `Reject` and `Replace`.
 `Try` is total whatever its operand. A `fix` is bounded when no
 constructing operation over a value of its own stratum can produce an
 element of one of its relations; an operation whose result is used only

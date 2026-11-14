@@ -16,7 +16,7 @@ mod valid;
 
 pub use build::Build;
 
-pub use valid::{Invalid, assert_normal, assert_valid, validate, validate_normal};
+pub use valid::{Invalid, assert_normal, assert_typed, assert_valid, validate, validate_normal};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Tm(pub u32);
@@ -168,10 +168,13 @@ pub enum Kind {
     Caller,
     Key(Tm),
     KeyOf(RelId, Tm),
-    /// The row a key names; `reference` when the key is a reference field's value, so the row exists.
+    /// The row a key names, of a constructor of `admits` (`None` for every constructor of the
+    /// key's relation); a key naming no row of `admits` faults `NoSuchRow`. `reference` when the
+    /// key is a reference field's value, so a row of the key's constructor set exists.
     Deref {
         key: Tm,
         reference: bool,
+        admits: Option<CtorSet>,
     },
     Tag(Tm),
     Try(Tm),
@@ -420,14 +423,6 @@ impl Terms {
     fn add(&mut self, kind: Kind, ty: Ty) -> Tm {
         self.nodes.push(Node { kind, ty });
         Tm(self.nodes.len() as u32 - 1)
-    }
-
-    /// Returns a new node of `kind` at `ty`, typed and checked by nothing.
-    ///
-    /// Preconditions:
-    /// - The node satisfies its kind's typing rule.
-    pub fn add_unchecked(&mut self, kind: Kind, ty: Ty) -> Tm {
-        self.add(kind, ty)
     }
 
     /// Returns a new node of `kind` at `ty`, which may break its kind's typing rule.
@@ -845,9 +840,12 @@ impl Kind {
             Kind::Field(_, l) => Kind::Field(next(), l.clone()),
             Kind::Key(_) => Kind::Key(next()),
             Kind::KeyOf(r, _) => Kind::KeyOf(*r, next()),
-            Kind::Deref { reference, .. } => Kind::Deref {
+            Kind::Deref {
+                reference, admits, ..
+            } => Kind::Deref {
                 key: next(),
                 reference: *reference,
+                admits: admits.clone(),
             },
             Kind::Tag(_) => Kind::Tag(next()),
             Kind::Try(_) => Kind::Try(next()),

@@ -35,8 +35,10 @@ pub(super) fn validate(
         reads: &plan.reads,
         past: None,
         seen: Seen::default(),
+        exprs: Vec::new(),
     };
     let out = w.eval(&plan.root);
+    adtb_lang::kernel::assert_typed(schema, &plan.terms, &w.exprs);
     #[cfg(any(test, feature = "testing"))]
     counts::add(&w.seen, out.is_err());
     out
@@ -65,6 +67,7 @@ struct Walk<'a> {
     /// The reads of the read of the past being walked.
     past: Option<&'a Reads>,
     seen: Seen,
+    exprs: Vec<Tm>,
 }
 
 type R = Result<(), Broken>;
@@ -88,6 +91,7 @@ impl<'a> Walk<'a> {
 
     fn expr(&mut self, t: Tm) -> R {
         self.seen.bound = true;
+        self.exprs.push(t);
         let free = self.facts.free(self.terms, t);
         match free.iter().find(|v| self.bound[v.0 as usize] == 0) {
             Some(v) => Err(Broken::Unbound(*v)),

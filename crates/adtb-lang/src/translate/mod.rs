@@ -183,6 +183,7 @@ impl<'a> Pinned<'a> {
             .whole(q.terms.ty(q.body), false, false)
             .map_err(|l| self.lost(&l, "returns"))?;
         let body = w.tm(&mut out, q.body, None)?;
+        crate::kernel::assert_valid(self.map.to, &out, &[(body, params.clone())]);
         Ok(NormalQuery {
             terms: out,
             params,

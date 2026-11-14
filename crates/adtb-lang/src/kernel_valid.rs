@@ -104,6 +104,14 @@ pub fn assert_normal(schema: &Schema, terms: &Terms, roots: &[(Tm, Vec<Var>)]) {
     }
 }
 
+/// Panic naming the first term reachable from `roots` that breaks the typing invariants of its
+/// kind, when built with debug assertions or the `testing` feature.
+pub fn assert_typed(schema: &Schema, terms: &Terms, roots: &[Tm]) {
+    if cfg!(any(debug_assertions, feature = "testing")) {
+        refused(schema, terms, typed(schema, terms, roots.iter().copied()));
+    }
+}
+
 fn refused(schema: &Schema, terms: &Terms, r: Result<(), Invalid>) {
     if let Err(e) = r {
         panic!(
@@ -397,11 +405,20 @@ impl Validator<'_> {
             Kind::Only(_) => Err("an `Only` is never produced".into()),
             Kind::Unreachable => Ok(()),
             Kind::Key(e) => self.key(*e, ty),
-            Kind::Deref { key, .. } => match self.ty(*key) {
+            Kind::Deref { key, admits, .. } => match self.ty(*key) {
                 Ty::Key {
                     rel: RelRef::Declared(r),
                     ctors,
-                } => self.within("the dereferenced row", &self.row(*r, ctors), ty),
+                } => {
+                    let row = |s: &Option<CtorSet>| self.row(*r, s);
+                    expect(self.sub(&row(admits), &row(ctors)), || {
+                        format!(
+                            "the admitted constructors are not within those of `{}`",
+                            self.schema.show_ty(self.ty(*key))
+                        )
+                    })?;
+                    self.within("the dereferenced row", &row(admits), ty)
+                }
                 Ty::Key { .. } => Ok(()),
                 _ => Err("a dereference of a term that is not a key".into()),
             },

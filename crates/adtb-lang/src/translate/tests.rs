@@ -210,7 +210,7 @@ fn a_removed_constructor_has_no_image_and_an_added_one_no_preimage() {
 }
 
 #[test]
-fn hide_new_narrows_references_and_rows_to_the_pinned_constructors() {
+fn every_pin_narrows_rows_to_its_constructors_and_keeps_keys_whole() {
     const ADD_APPLE: &str = "module auth\nadd constructor Identity.Apple { sub: Text }\n";
     let (_, from, _) = checked(&[V1]);
     let (_, to, _) = checked(&[V1, ADD_APPLE]);
@@ -231,23 +231,213 @@ fn hide_new_narrows_references_and_rows_to_the_pinned_constructors() {
         args: Vec::new(),
         ctors: None,
     };
-    assert_eq!(Ok(key.clone()), map.ty(&key, false));
-    let pinned = Some(vec![0, 1]);
-    assert_eq!(
-        Ok(Ty::Key {
-            rel: RelRef::Declared(identities),
-            ctors: pinned.clone()
-        }),
-        map.ty(&key, true)
-    );
+    let tier = Ty::Data {
+        def: named(&from, "Tier"),
+        args: Vec::new(),
+        ctors: None,
+    };
+    assert_eq!(Ok(key.clone()), map.ty(&key));
+    assert_eq!(Ok(tier.clone()), map.ty(&tier));
     assert_eq!(
         Ok(Ty::Data {
             def: identity,
             args: Vec::new(),
-            ctors: pinned
+            ctors: Some(vec![0, 1])
         }),
-        map.ty(&row, true)
+        map.ty(&row)
     );
+}
+
+const SESSIONS: &str = "module auth\nadd type Session = { id: Key sessions, who: Key identities }\n\
+                        add relation sessions : Session key id generate sequence\n";
+const ADD_APPLE_ENABLED: &str =
+    "module auth\nadd constructor Identity.Apple { sub: Text }\nenable identities.Apple\n";
+
+/// Returns each node of `q` whose kind `pick` keeps, with its type.
+fn nodes<T>(q: &NormalQuery, mut pick: impl FnMut(&Kind) -> Option<T>) -> Vec<(T, Ty)> {
+    q.terms
+        .iter()
+        .filter_map(|n| pick(&n.kind).map(|x| (x, n.ty.clone())))
+        .collect()
+}
+
+#[test]
+fn a_hiding_pin_dereferences_a_whole_key_admitting_the_pinned_constructors_only() {
+    let body = "query q () -> Set (Key users) = from s in sessions select s.who.user\n";
+    let log = [V1, SESSIONS, ADD_APPLE_ENABLED];
+    let (_, to, _) = checked(&log);
+    let identities = RelId(
+        to.relations
+            .iter()
+            .position(|r| r.name == "identities")
+            .expect("identities") as u32,
+    );
+    let identity = to.relation(identities).elem_def;
+    let whole_key = Ty::Key {
+        rel: RelRef::Declared(identities),
+        ctors: None,
+    };
+    for (hide_new, admits) in [(true, Some(vec![0, 1])), (false, None)] {
+        let q = translated_with_hiding(&log, 2, body, hide_new)
+            .unwrap_or_else(|e| panic!("hide_new {hide_new}: it translates: {e:?}"));
+        let derefs = nodes(&q, |k| match k {
+            Kind::Deref { key, admits, .. } => Some((*key, admits.clone())),
+            _ => None,
+        });
+        let [((key, got), ty)] = derefs.as_slice() else {
+            panic!("hide_new {hide_new}: one dereference, not {derefs:?}");
+        };
+        let row = Ty::Data {
+            def: identity,
+            args: Vec::new(),
+            ctors: admits.clone(),
+        };
+        assert_eq!(
+            (&whole_key, &admits, &row),
+            (q.terms.ty(*key), got, ty),
+            "hide_new {hide_new}"
+        );
+        let t = q
+            .terms
+            .iter()
+            .position(|n| matches!(n.kind, Kind::Deref { .. }))
+            .expect("the dereference");
+        let total = crate::analysis::Totality::new(&to, false).total(&q.terms, Tm(t as u32));
+        assert_eq!(!hide_new, total, "hide_new {hide_new}");
+    }
+}
+
+#[test]
+fn a_hiding_pin_dereference_requires_reading_the_pinned_constructors_only() {
+    use crate::permission::{Requirement, Target};
+    let body = "query q () -> Set (Key users) = from s in sessions select s.who.user\n";
+    let log = [V1, SESSIONS, ADD_APPLE_ENABLED];
+    let (_, to, to_program) = checked(&log);
+    let q = translated_with_hiding(&log, 2, body, true).expect("it translates");
+    let program = norm::program(&to, &to_program).expect("the program normalises");
+    let got: BTreeSet<Requirement> =
+        crate::permission::normal(&to, &program, &q.terms, q.body, &q.params)
+            .expect("requirements analyze")
+            .iter()
+            .cloned()
+            .collect();
+    let reads = |relation: &str, ctor: &str, fields: &[&str]| {
+        let r = RelId(
+            to.relations
+                .iter()
+                .position(|r| {
+                    r.name == relation && to.module(to.ty(r.elem_def).module).name == "auth"
+                })
+                .expect("relation") as u32,
+        );
+        let td = to.ty(to.relation(r).elem_def);
+        let c = td.ctor_named(ctor).expect("constructor");
+        let t = Target {
+            relation: to.ids().relation_id(r).expect("catalogued"),
+            constructor: to.ids().ctor_id(c).expect("catalogued"),
+        };
+        std::iter::once(Requirement::ReadConstructor(t))
+            .chain(fields.iter().map(|f| {
+                let f = td.field(Some(c), f).expect("field");
+                Requirement::ReadField(t, to.ids().field_id(f).expect("catalogued"))
+            }))
+            .collect::<Vec<_>>()
+    };
+    let want: BTreeSet<Requirement> = [
+        reads("sessions", "Session", &["id", "who"]),
+        reads("identities", "EmailPass", &["id", "user"]),
+        reads("identities", "Google", &["id", "user"]),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    assert_eq!(want, got);
+}
+
+#[test]
+fn a_field_of_a_sum_that_gained_a_constructor_keeps_its_declared_type_and_matches_it_unreachable() {
+    let body =
+        "query q () -> Set I64 = from u in users select match u.tier | Free -> 0 | Paid -> 1\n";
+    let (_, to, _) = checked(&[V1, ADD_GOLD]);
+    let q = translated(&[V1, ADD_GOLD], 1, body).expect("it translates");
+    let tier = Ty::Data {
+        def: named(&to, "Tier"),
+        args: Vec::new(),
+        ctors: None,
+    };
+    let fields = nodes(&q, |k| match k {
+        Kind::Field(_, l) if l == "tier" => Some(()),
+        _ => None,
+    });
+    assert_eq!(vec![((), tier)], fields);
+    let arms = nodes(&q, |k| match k {
+        Kind::Case { arms, .. } => Some(
+            arms.iter()
+                .map(|(c, _, b)| (*c, matches!(q.terms.kind(*b), Kind::Unreachable)))
+                .collect::<Vec<_>>(),
+        ),
+        _ => None,
+    });
+    let arms: Vec<_> = arms.into_iter().map(|(a, _)| a).collect();
+    assert_eq!(vec![vec![(0, false), (1, false), (2, true)]], arms);
+}
+
+#[test]
+fn a_field_of_a_removed_constructor_is_a_match_with_no_arm() {
+    let log = [
+        V1,
+        DEPRECATE_GOOGLE,
+        "module auth\nremove constructor Identity.Google\n",
+    ];
+    let body = "query q () -> Set Text = from g in identities.Google select g.gid\n";
+    let q = translated(&log, 1, body).expect("it translates");
+    let gid = nodes(&q, |k| match k {
+        Kind::Field(_, l) if l == "gid" => Some(()),
+        _ => None,
+    });
+    assert_eq!(Vec::<((), Ty)>::new(), gid);
+    let text = Ty::Base(Base::Text);
+    let cases = nodes(&q, |k| match k {
+        Kind::Case { arms, .. } => Some(arms.len()),
+        _ => None,
+    });
+    assert_eq!(vec![(0, text)], cases);
+}
+
+#[test]
+fn an_arm_over_a_conflicting_row_binds_its_constructor_only() {
+    let notes = "module auth\nadd type Note { id: Key notes } = Plain { body: Text }\n\
+                 add relation notes : Note key id generate sequence\n";
+    let link = "module auth\nadd constructor Note.Link { url: Text }\nenable notes.Link\n";
+    let body = r#"txn put () -> I64 =
+  transact
+    insert notes.Plain { id: notes.key(1), body: "x" }
+      unless conflict on key else update old set Plain { old with body: match old
+        | Plain p -> p.body }
+    return 0
+"#;
+    let log = [V1, notes, link];
+    let (_, to, _) = checked(&log);
+    let q = translated(&log, 2, body).expect("it translates");
+    let note = named(&to, "Note");
+    let bound: Vec<Ty> = q
+        .terms
+        .iter()
+        .filter_map(|n| match &n.kind {
+            Kind::Case { arms, .. } => Some(arms.clone()),
+            _ => None,
+        })
+        .flatten()
+        .filter(|(_, _, b)| !matches!(q.terms.kind(*b), Kind::Unreachable))
+        .map(|(_, y, _)| q.terms.var_info(y).ty.clone())
+        .collect();
+    let plain = Ty::Data {
+        def: note,
+        args: Vec::new(),
+        ctors: Some(vec![0]),
+    };
+    assert!(!bound.is_empty(), "a matched arm");
+    assert_eq!(vec![plain; bound.len()], bound);
 }
 
 #[test]

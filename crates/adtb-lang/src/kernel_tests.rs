@@ -435,6 +435,7 @@ fn value_refusals() -> Vec<(&'static str, Build)> {
             let deref = Kind::Deref {
                 key: c,
                 reference: false,
+                admits: None,
             };
             let t = terms.add(deref, fx.row(None));
             (t, Vec::new(), t)
@@ -470,6 +471,40 @@ fn value_refusals() -> Vec<(&'static str, Build)> {
             let t = terms.add(Kind::Fail(c), Ty::Change);
             (t, Vec::new(), t)
         }),
+    ]
+}
+
+/// Returns the refusals of dereferences admitting other constructors than their key's.
+fn deref_refusals() -> Vec<(&'static str, Build)> {
+    vec![
+        (
+            "the admitted constructors are not within those of `Key ts.A`",
+            |fx, terms| {
+                let k = terms.var("k", key(fx.ts, Some(vec![0])));
+                let read = terms.add(Kind::Var(k), key(fx.ts, Some(vec![0])));
+                let deref = Kind::Deref {
+                    key: read,
+                    reference: false,
+                    admits: Some(vec![0, 1]),
+                };
+                let t = terms.add(deref, fx.row(Some(vec![0, 1])));
+                (t, vec![k], t)
+            },
+        ),
+        (
+            "the dereferenced row is `T.(A | B)`, not a subtype of `T.A`",
+            |fx, terms| {
+                let k = terms.var("k", key(fx.ts, None));
+                let read = terms.add(Kind::Var(k), key(fx.ts, None));
+                let deref = Kind::Deref {
+                    key: read,
+                    reference: false,
+                    admits: Some(vec![0, 1]),
+                };
+                let t = terms.add(deref, fx.row(Some(vec![0])));
+                (t, vec![k], t)
+            },
+        ),
     ]
 }
 
@@ -917,12 +952,50 @@ fn validate_accepts_a_self_key_field_at_the_key_of_the_rows_constructor_set() {
 }
 
 #[test]
+fn a_dereference_admitting_fewer_constructors_than_its_key_is_typed_at_their_rows() {
+    let fx = Fixture::new();
+    let mut terms = Terms::default();
+    let k = terms.var("k", key(fx.ts, None));
+    let mut b = super::Build::new(&fx.schema, &mut terms);
+    let read = b.var(k);
+    let whole = b.deref(read, false);
+    let narrowed = b.deref_within(read, false, Some(vec![0, 1]));
+    assert_eq!(
+        (
+            &Kind::Deref {
+                key: read,
+                reference: false,
+                admits: None
+            },
+            &fx.row(None)
+        ),
+        (terms.kind(whole), terms.ty(whole))
+    );
+    assert_eq!(
+        (
+            &Kind::Deref {
+                key: read,
+                reference: false,
+                admits: Some(vec![0, 1])
+            },
+            &fx.row(Some(vec![0, 1]))
+        ),
+        (terms.kind(narrowed), terms.ty(narrowed))
+    );
+    assert_eq!(
+        Ok(()),
+        validate(&fx.schema, &terms, &[(narrowed, vec![k])]).map_err(|e| e.reason().to_string())
+    );
+}
+
+#[test]
 fn validate_refuses_each_broken_invariant_at_the_node_that_breaks_it() {
     let fx = Fixture::new();
     let cases = [
         binding_refusals(),
         data_refusals(),
         value_refusals(),
+        deref_refusals(),
         kind_refusals(),
         group_refusals(),
         shape_refusals(),
@@ -941,7 +1014,7 @@ fn validate_refuses_each_broken_invariant_at_the_node_that_breaks_it() {
         }
     }
     assert_eq!(Vec::<String>::new(), differ);
-    assert_eq!(76, cases.len());
+    assert_eq!(78, cases.len());
 }
 
 #[test]

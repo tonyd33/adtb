@@ -21,18 +21,15 @@ struct Then<'a> {
 }
 
 impl Planner<'_> {
-    pub(super) fn lookup(&mut self, key: Tm, row_ty: &Ty) -> Result<Lookup, Error> {
+    pub(super) fn lookup(&mut self, key: Tm, admits: &Option<CtorSet>) -> Result<Lookup, Error> {
         let Ty::Key {
             rel: RelRef::Declared(rel),
-            ctors,
+            ..
         } = self.ty(key)
         else {
             return Err(Broken::DerefNotKey.into());
         };
-        let ctors = match row_ty {
-            Ty::Data { ctors: Some(s), .. } => s.clone(),
-            _ => self.ctors_of(rel, &ctors),
-        };
+        let ctors = self.ctors_of(rel, admits);
         let desc = self.catalog.relation(rel);
         Ok(Lookup {
             index: desc.key_index,

@@ -351,10 +351,10 @@ impl Checker<'_> {
                     .map(|a| self.over_selected(a, select, x))
                     .collect(),
             ),
-            Kind::Deref { key, reference } => Kind::Deref {
-                key: self.over_selected(key, select, x),
-                reference,
-            },
+            Kind::Deref { key, reference, .. } => {
+                let key = self.over_selected(key, select, x);
+                return self.b().deref(key, reference);
+            }
             Kind::Tag(inner) => Kind::Tag(self.over_selected(inner, select, x)),
             _ => return t,
         };

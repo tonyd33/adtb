@@ -59,8 +59,7 @@
 #                     an id. No line allows one.
 # kernel_door:        calls of `Terms::add_unchecked`, which adds a kernel node at a type
 #                     nothing computes or checks. Terms are built through `kernel::Build`, which
-#                     types each node from its children. The lines left are the translation of
-#                     registered calls.
+#                     types each node from its children. No line allows one.
 # kernel_overwrite:   calls of `Terms::overwrite_kind`, which replaces a node's kind in place,
 #                     unchecked, under every parent that shares it. The lines left are the
 #                     engine's rewrites of transition reads and input scans into variables.
@@ -157,7 +156,6 @@ disallowed_methods test 1 crates/adtb/src/btree/tests.rs
 disallowed_methods prod 9 crates/adtb/src/storage/pager.rs
 disallowed_methods test 1 crates/adtb/src/storage/open_damage_tests.rs
 disallowed_methods test 2 crates/adtb/src/storage/lost_bitmap_tests.rs
-kernel_door prod 36 crates/adtb-lang/src/translate/walk.rs
 kernel_overwrite prod 1 crates/adtb/src/write/delta/mod.rs
 kernel_overwrite prod 1 crates/adtb/src/write/input.rs
 kernel_overwrite prod 1 crates/adtb/src/write/restore.rs

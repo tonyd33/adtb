@@ -81,7 +81,8 @@ impl<'a> Build<'a> {
     }
 
     /// Returns `kind` at `checked`, except that a `Var`, `Rel` or `Transition` takes the type its
-    /// children give, and a `Case` drops the arms of constructors its scrutinee's type excludes.
+    /// children give, a `Case` drops the arms of constructors its scrutinee's type excludes, and a
+    /// `Deref` admits only constructors its key's type names.
     ///
     /// Preconditions:
     /// - `checked` is the type of the node `kind` rebuilds.
@@ -89,6 +90,21 @@ impl<'a> Build<'a> {
         match kind {
             Kind::Var(_) | Kind::Rel(..) | Kind::Transition(..) => self.typed(kind),
             Kind::Case { scrutinee, arms } => self.kept_case(scrutinee, arms, checked.clone()),
+            Kind::Deref {
+                key,
+                reference,
+                admits,
+            } => {
+                let admits = self.within_key(key, admits);
+                self.put(
+                    Kind::Deref {
+                        key,
+                        reference,
+                        admits,
+                    },
+                    checked.clone(),
+                )
+            }
             _ => self.put(kind, checked.clone()),
         }
     }
@@ -172,11 +188,11 @@ impl<'a> Build<'a> {
                 generator: Generator::Clock,
                 ..
             } => Some(Ty::Base(Base::Instant)),
-            Kind::Deref { key, .. } => match ty(key) {
+            Kind::Deref { key, admits, .. } => match ty(key) {
                 Ty::Key {
                     rel: RelRef::Declared(r),
-                    ctors,
-                } => Some(self.row(*r, ctors.clone())),
+                    ..
+                } => Some(self.row(*r, admits.clone())),
                 other => return Err(format!("a dereference of `{}`", show(other))),
             },
             Kind::Tag(e) => match ty(e) {
@@ -398,8 +414,53 @@ impl<'a> Build<'a> {
         self.typed(Kind::KeyOf(r, e))
     }
 
+    /// Returns the row `key` names, admitting every constructor its type names.
     pub fn deref(&mut self, key: Tm, reference: bool) -> Tm {
-        self.typed(Kind::Deref { key, reference })
+        let admits = match self.terms.ty(key) {
+            Ty::Key { ctors, .. } => ctors.clone(),
+            _ => None,
+        };
+        self.deref_within(key, reference, admits)
+    }
+
+    /// Returns the row `key` names, admitting the constructors of `admits`, typed at the row type
+    /// of the key's relation at `admits`.
+    ///
+    /// Preconditions:
+    /// - `admits` is within the constructor set of the type of `key`.
+    pub fn deref_within(&mut self, key: Tm, reference: bool, admits: Option<CtorSet>) -> Tm {
+        let admits = match self.terms.ty(key) {
+            Ty::Key {
+                rel: RelRef::Declared(r),
+                ..
+            } => self.selection(*r, admits),
+            _ => admits,
+        };
+        self.typed(Kind::Deref {
+            key,
+            reference,
+            admits,
+        })
+    }
+
+    /// Returns `admits` less the constructors the type of `key` excludes.
+    fn within_key(&self, key: Tm, admits: Option<CtorSet>) -> Option<CtorSet> {
+        let Ty::Key {
+            rel: RelRef::Declared(r),
+            ctors: Some(named),
+        } = self.terms.ty(key)
+        else {
+            return admits;
+        };
+        let kept = match admits {
+            Some(mut s) => {
+                s.retain(|c| named.contains(c));
+                s
+            }
+            None => named.clone(),
+        };
+        let def = self.schema.relation(*r).elem_def;
+        self.schema.normalize_ctors(def, kept)
     }
 
     pub fn tag(&mut self, e: Tm) -> Tm {

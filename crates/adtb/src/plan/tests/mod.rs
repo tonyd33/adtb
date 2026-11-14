@@ -721,6 +721,7 @@ fn a_dereference_of_a_value_that_is_not_a_key_is_an_internal_error() {
         Kind::Deref {
             key,
             reference: false,
+            admits: None,
         },
         f.ty("User"),
     );

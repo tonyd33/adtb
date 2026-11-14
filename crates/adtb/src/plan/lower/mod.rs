@@ -656,9 +656,9 @@ impl Planner<'_> {
                 pins,
                 body,
             } => self.at(instant, point, pins, body),
-            Kind::Deref { key, .. } => {
+            Kind::Deref { key, admits, .. } => {
                 let (lets, k) = self.lift_eval(key)?;
-                let lookup = self.lookup(k, &ty)?;
+                let lookup = self.lookup(k, &admits)?;
                 Ok(wrap_eval(lets, Eval::Lookup(lookup)))
             }
             Kind::Agg {
