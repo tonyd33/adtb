@@ -18,7 +18,7 @@ impl Cx<'_> {
         let why = if inverse {
             None
         } else {
-            self.not_deprecated(path, &t, &rels)
+            self.not_deprecated(&schema, def, c, &rels)
         };
         if let Some(why) = why.or_else(|| removal_blocked(&schema, &t, &name, def, c, &rels)) {
             let shown = format!("{}.{name}", t.name.text);
@@ -50,33 +50,33 @@ impl Cx<'_> {
             .or_default()
             .push((ctor_removal(&ctors, k), String::new().into()));
         self.apply_edits(edits);
-        self.forget_states(path, &t, &rels);
         Ok(())
     }
 
-    /// Returns why constructor `path` may not be removed yet: it is not deprecated, by an earlier
-    /// migration, in its type or in a relation over it.
-    fn not_deprecated(
-        &self,
-        path: &ast::CtorPath,
-        t: &ast::TypeDecl,
-        rels: &Rels,
-    ) -> Option<String> {
-        let name = &path.ctor.text;
+    /// Returns why constructor `c` of type `def` may not be removed yet: it is not deprecated, by
+    /// an earlier migration, in its type or in a relation over it.
+    fn not_deprecated(&self, schema: &Schema, def: TypeId, c: u32, rels: &Rels) -> Option<String> {
+        let td = schema.ty(def);
+        let name = &td.ctors()[c as usize].name;
+        let ctor = held_id(td.ctor_at(c).and_then(|c| schema.ids().ctor_id(c)));
         let version = self.src.version;
-        let earlier = |s: Option<&State>| {
-            s.is_some_and(|s| s.stage == Stage::Deprecated && s.since < version)
+        let earlier = |s: StateOf| {
+            self.src
+                .state(s)
+                .is_some_and(|s| s.stage == Stage::Deprecated && s.since < version)
         };
-        if rels.is_empty() {
-            let key = (self.module_of(&path.ty), t.name.text.clone(), name.clone());
-            if !earlier(self.src.value_states.get(&key)) {
-                return Some(format!(
-                    "`{name}` is not deprecated in its type by an earlier migration"
-                ));
-            }
+        if rels.is_empty() && !earlier(StateOf::Value(ctor)) {
+            return Some(format!(
+                "`{name}` is not deprecated in its type by an earlier migration"
+            ));
         }
         rels.iter()
-            .find(|(_, m, r)| !earlier(self.src.states.get(&(m.clone(), r.clone(), name.clone()))))
+            .find(|(rel, ..)| {
+                !earlier(StateOf::Relation(
+                    held_id(schema.ids().relation_id(*rel)),
+                    ctor,
+                ))
+            })
             .map(|(_, _, r)| format!("`{name}` is not deprecated in `{r}` by an earlier migration"))
     }
 
@@ -134,22 +134,6 @@ impl Cx<'_> {
                 edits.entry(j).or_default().extend(es);
             }
         }
-    }
-
-    /// Forget the write states of constructor `path` in its type and in every relation over it.
-    fn forget_states(&mut self, path: &ast::CtorPath, t: &ast::TypeDecl, rels: &Rels) {
-        let name = &path.ctor.text;
-        let rel_keys: BTreeSet<(String, String)> = rels
-            .iter()
-            .map(|(_, m, r)| (m.clone(), r.clone()))
-            .collect();
-        self.src
-            .states
-            .retain(|(m, r, x), _| !(rel_keys.contains(&(m.clone(), r.clone())) && x == name));
-        let tm = self.module_of(&path.ty);
-        self.src
-            .value_states
-            .retain(|(m, ty, x), _| !(*m == tm && *ty == t.name.text && x == name));
     }
 }
 

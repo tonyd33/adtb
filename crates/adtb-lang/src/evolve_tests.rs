@@ -1,4 +1,5 @@
 use super::*;
+use crate::ids as ids_key;
 use crate::parse::parse_migration;
 use crate::schema::{CtorRef, FieldRef};
 
@@ -40,6 +41,51 @@ constraint login_present =
     | Apple a     -> scalar_len(a.sub) == 0
   select i
 ";
+
+/// The names of a write state's objects: the module, the relation variable or type, and the
+/// constructor.
+type StateNames = (String, String, String);
+
+/// Returns the write states of `src` by the names of their objects: of constructor relations,
+/// then of value-level constructors.
+fn named_states(src: &Source) -> (BTreeMap<StateNames, State>, BTreeMap<StateNames, State>) {
+    let key = |id: u64, kind: ids_key::KeyKind| {
+        src.ids
+            .iter()
+            .find(|(k, x)| **x == id && k.kind() == kind)
+            .map(|(k, _)| k.clone())
+            .expect("a write state names objects the source holds")
+    };
+    let named = |k: &ObjectKey| k.name().expect("a named object").to_string();
+    let module = |k: &ObjectKey| match k.owner() {
+        ids_key::Owner::Module(m) => m.clone(),
+        ids_key::Owner::Object(..) => panic!("a module's object"),
+    };
+    let ctor = |c: CatCtorId| {
+        let k = key(c.raw(), ids_key::KeyKind::Ctor);
+        let &ids_key::Owner::Object(_, t) = k.owner() else {
+            panic!("a constructor is a type's");
+        };
+        (key(t, ids_key::KeyKind::Type), named(&k))
+    };
+    let relations = src
+        .states
+        .iter()
+        .map(|(&(r, c), &v)| {
+            let r = key(r.raw(), ids_key::KeyKind::Relation);
+            ((module(&r), named(&r), ctor(c).1), v)
+        })
+        .collect();
+    let values = src
+        .value_states
+        .iter()
+        .map(|(&c, &v)| {
+            let (t, c) = ctor(c);
+            ((module(&t), named(&t), c), v)
+        })
+        .collect();
+    (relations, values)
+}
 
 /// The source of a schema text: one module header, then declarations.
 fn source(text: &str) -> Source {
@@ -161,7 +207,7 @@ fn flat(text: &str) -> String {
 }
 
 fn stage(src: &Source, relation: &str, ctor: &str) -> Stage {
-    src.states[&("auth".to_string(), relation.to_string(), ctor.to_string())].stage
+    named_states(src).0[&("auth".to_string(), relation.to_string(), ctor.to_string())].stage
 }
 
 const BADGES: &str = r"
@@ -546,10 +592,11 @@ fn drop_relation_is_refused_while_a_reference_or_definition_names_it() {
     let s = applies(&s, "module auth\ndrop relation post_badges");
     assert!(s.find("relation", "auth", "post_badges").is_none());
     assert!(s.find("set", "auth", "post_badges.Simple").is_none());
-    assert!(
-        !s.states
-            .contains_key(&("auth".into(), "post_badges".into(), "Plain".into()))
-    );
+    assert!(!named_states(&s).0.contains_key(&(
+        "auth".into(),
+        "post_badges".into(),
+        "Plain".into()
+    )));
 }
 
 #[test]
@@ -918,16 +965,16 @@ fn value_level_constructors_have_states_per_type() {
         "Provider".to_string(),
         "Okta".to_string(),
     );
-    assert_eq!(Stage::Enabled, s.value_states[&key].stage);
+    assert_eq!(Stage::Enabled, named_states(&s).1[&key].stage);
     let s = applies(&s, "module auth\nadd constructor Provider.Saml");
     let saml = (
         "auth".to_string(),
         "Provider".to_string(),
         "Saml".to_string(),
     );
-    assert_eq!(Stage::Declared, s.value_states[&saml].stage);
+    assert_eq!(Stage::Declared, named_states(&s).1[&saml].stage);
     let s = applies(&s, "module auth\nenable Provider.Saml");
-    assert_eq!(Stage::Enabled, s.value_states[&saml].stage);
+    assert_eq!(Stage::Enabled, named_states(&s).1[&saml].stage);
     refuses(
         &s,
         "module auth\nenable Provider.Nope",
@@ -967,10 +1014,11 @@ redefine fn display_name (i: Identity) -> Text = match i
     let r = decl(&s, "relation", "identities");
     assert!(!r.contains("Apple"), "{r}");
     assert!(!decl(&s, "constraint", "login_present").contains("Apple"));
-    assert!(
-        !s.states
-            .contains_key(&("auth".into(), "identities".into(), "Apple".into()))
-    );
+    assert!(!named_states(&s).0.contains_key(&(
+        "auth".into(),
+        "identities".into(),
+        "Apple".into()
+    )));
 }
 
 #[test]
@@ -1378,10 +1426,11 @@ merge constructor Identity.(Google | Apple) into Social
         "{f}"
     );
     assert_eq!(Stage::Enabled, stage(&s, "identities", "Social"));
-    assert!(
-        !s.states
-            .contains_key(&("auth".into(), "identities".into(), "Google".into()))
-    );
+    assert!(!named_states(&s).0.contains_key(&(
+        "auth".into(),
+        "identities".into(),
+        "Google".into()
+    )));
 }
 
 #[test]
@@ -2406,7 +2455,8 @@ add constructor Identity.Corp { domain: Text }
     let s = applies(&s, "module auth\nrevert 0001");
     assert_eq!(running().decls, s.decls);
     assert!(
-        !s.states
+        !named_states(&s)
+            .0
             .contains_key(&("auth".into(), "identities".into(), "Corp".into()))
     );
 }

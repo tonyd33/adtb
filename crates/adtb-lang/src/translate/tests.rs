@@ -123,10 +123,7 @@ fn a_hiding_upsert_keeps_its_visible_scope_distinct_from_its_unique_probe() {
     return 0
 "#;
     let mut ran = 0;
-    for (name, tail, probe) in [
-        ("new constructor", vec![grow, enable], vec![0, 2]),
-        ("known constructor joins", vec![members], vec![0, 1]),
-    ] {
+    for (name, tail, probe) in [("new constructor", vec![grow, enable], vec![0, 2])] {
         let mut log = vec![V1, add];
         log.extend(tail);
         let (_, current, _) = checked(&log);
@@ -163,7 +160,14 @@ fn a_hiding_upsert_keeps_its_visible_scope_distinct_from_its_unique_probe() {
             ran += 1;
         }
     }
-    assert_eq!(4, ran);
+    assert_eq!(2, ran);
+    assert_eq!(
+        Err(Untranslatable {
+            operator: None,
+            reason: "its conflict target is dropped".into(),
+        }),
+        translated_with_hiding(&[V1, add, members], 2, body, false).map(|_| ())
+    );
 }
 
 #[test]

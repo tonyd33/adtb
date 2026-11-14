@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::Slot;
 use super::key::{KeyKind, ObjectKey, Part, Path, PathStep};
+use super::{Slot, Space};
 
 /// A path of field and constructor ids an operator replaces, and the path of the schema after it
 /// that holds its values.
@@ -24,13 +24,17 @@ pub(super) struct Correspondence {
     before: BTreeSet<PathStep>,
     after: BTreeSet<PathStep>,
     produced: BTreeSet<PathStep>,
+    /// The fields the operators retired and added again under their names.
+    readded: BTreeSet<PathStep>,
 }
 
 impl Correspondence {
     /// Returns the correspondence of a schema whose objects took `ids`, after the schema whose
-    /// keys `known` holds, an operator replacing `replaced`.
+    /// keys `known` holds but for the objects of `created`, an operator replacing `replaced` and
+    /// retiring the fields of `readded`, which it added again under their names.
     pub(super) fn new(
         known: &BTreeMap<ObjectKey, u64>,
+        (created, readded): (&BTreeSet<(Space, u64)>, &BTreeSet<u64>),
         ids: &BTreeMap<Slot, u64>,
         replaced: &[Replacement],
     ) -> Correspondence {
@@ -41,6 +45,7 @@ impl Correspondence {
         };
         let before = known
             .iter()
+            .filter(|(k, id)| !created.contains(&(k.kind().space(), **id)))
             .filter_map(|(k, &id)| match k.kind() {
                 KeyKind::Ctor => Some(PathStep::Ctor(id)),
                 KeyKind::Field => Some(PathStep::Field(id)),
@@ -59,11 +64,13 @@ impl Correspondence {
             })
             .collect();
         let produced = maps.iter().flat_map(|(_, to)| to.iter().copied()).collect();
+        let readded = readded.iter().map(|&id| PathStep::Field(id)).collect();
         Correspondence {
             maps,
             before,
             after,
             produced,
+            readded,
         }
     }
 
@@ -84,11 +91,15 @@ impl Correspondence {
                 })
     }
 
-    /// Returns whether element paths `old` and `new` correspond: leaving out each old path the
-    /// operator drops and each new path through an id it creates without replacing anything,
+    /// Returns whether element paths `old` and `new` correspond: no old path reaches a field
+    /// retired and added again under its name and, leaving out each old path the operator drops
+    /// and each new path through an id it creates without replacing anything,
     /// some remain on both sides, each old path has an image among the new and each new path is
     /// the image of an old one.
     fn corresponds(&self, old: &BTreeSet<Path>, new: &BTreeSet<Path>) -> bool {
+        if old.iter().flatten().any(|s| self.readded.contains(s)) {
+            return false;
+        }
         let images: Vec<BTreeSet<Path>> = old
             .iter()
             .map(|p| self.images(p))

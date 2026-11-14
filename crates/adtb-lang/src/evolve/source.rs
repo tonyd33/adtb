@@ -8,48 +8,71 @@ impl Source {
             decls,
             ..Source::default()
         };
-        let schema = src.built()?;
-        src.states = Source::all_states(&schema, Stage::Enabled);
-        src.reconcile_ids();
+        src.settle_ids();
+        let schema = src.schema()?;
+        let enabled = State {
+            stage: Stage::Enabled,
+            since: 0,
+        };
+        for (r, rel) in schema.ids().relation_ids() {
+            if schema.module(schema.relation(r).module).engine {
+                continue;
+            }
+            for c in stated_ctors(schema.ty(schema.relation(r).elem_def)) {
+                if let Some(ctor) = schema.ids().ctor_id(c) {
+                    src.states.insert((rel, ctor), enabled);
+                }
+            }
+        }
         for t in &schema.types {
             if schema.module(t.module).engine {
                 continue;
             }
-            for c in t.ctors() {
-                src.value_states.insert(
-                    (
-                        schema.module(t.module).name.clone(),
-                        t.name.clone(),
-                        c.name.clone(),
-                    ),
-                    State {
-                        stage: Stage::Enabled,
-                        since: 0,
-                    },
-                );
+            for c in stated_ctors(t) {
+                if let Some(ctor) = schema.ids().ctor_id(c) {
+                    src.value_states.insert(ctor, enabled);
+                }
             }
         }
         Ok(src)
     }
 
-    fn all_states(schema: &Schema, stage: Stage) -> BTreeMap<StateKey, State> {
-        let mut out = BTreeMap::new();
-        for r in &schema.relations {
-            if schema.module(r.module).engine {
-                continue;
+    pub(super) fn state(&self, s: StateOf) -> Option<State> {
+        match s {
+            StateOf::Relation(r, c) => self.states.get(&(r, c)),
+            StateOf::Value(c) => self.value_states.get(&c),
+        }
+        .copied()
+    }
+
+    /// Set the write state of `s` to `state`, or remove it for `None`.
+    pub(super) fn set_state(&mut self, s: StateOf, state: Option<State>) {
+        match (s, state) {
+            (StateOf::Relation(r, c), Some(v)) => {
+                self.states.insert((r, c), v);
             }
-            for c in schema.ty(r.elem_def).ctors() {
-                out.insert(
-                    (
-                        schema.module(r.module).name.clone(),
-                        r.name.clone(),
-                        c.name.clone(),
-                    ),
-                    State { stage, since: 0 },
-                );
+            (StateOf::Relation(r, c), None) => {
+                self.states.remove(&(r, c));
+            }
+            (StateOf::Value(c), Some(v)) => {
+                self.value_states.insert(c, v);
+            }
+            (StateOf::Value(c), None) => {
+                self.value_states.remove(&c);
             }
         }
-        out
+    }
+
+    pub(super) fn every_state(&self) -> impl Iterator<Item = (StateOf, State)> + '_ {
+        let relations = self
+            .states
+            .iter()
+            .map(|(&(r, c), &v)| (StateOf::Relation(r, c), v));
+        let values = self
+            .value_states
+            .iter()
+            .map(|(&c, &v)| (StateOf::Value(c), v));
+        relations.chain(values)
     }
 
     /// Returns the module files of the declarations, file `i` holding declaration `i`.
@@ -79,7 +102,13 @@ impl Source {
     pub fn schema(&self) -> Result<Schema, Vec<FileDiag>> {
         let built = self.built()?;
         let ids = self.assigned_ids(&built);
-        let states = self.catalog_states(&built, &ids);
+        let mut states = schema::States::default();
+        for (&(r, c), s) in &self.states {
+            states.set_relation(r, c, s.stage);
+        }
+        for (&c, s) in &self.value_states {
+            states.set_value(c, s.stage);
+        }
         Ok(built.relabelled(&|_| ids.clone(), &states))
     }
 
@@ -437,7 +466,7 @@ impl Source {
         match r {
             Ok(()) => {
                 self.rename_ids(&before, module, &op.kind);
-                self.reconcile_ids();
+                self.settle_ids();
                 self.carry_grants(&before, module, &op.kind);
             }
             Err(_) => *self = before,
@@ -485,5 +514,13 @@ impl Source {
             }
         }
         Ok(())
+    }
+}
+
+/// Returns the constructors of `t` that hold write states: none of a newtype.
+pub(super) fn stated_ctors(t: &schema::TypeDef) -> Vec<schema::CtorRef> {
+    match t.kind {
+        TypeDefKind::Newtype { .. } => Vec::new(),
+        TypeDefKind::Sum { .. } => t.ctor_refs().collect(),
     }
 }

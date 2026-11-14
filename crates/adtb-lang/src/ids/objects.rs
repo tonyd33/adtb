@@ -7,6 +7,7 @@ use crate::span::{FileId, Span};
 use crate::types::*;
 
 use super::key::{KeyKind, ObjectKey, Owner, Part, PathStep};
+use super::named::anonymous_row;
 use super::reach::{Correspondence, Replacement};
 use super::{FIRST_LOG_ID, Slot, Space};
 
@@ -92,12 +93,15 @@ impl Object {
     }
 }
 
-/// Returns the key and the id of each of `objs`: the id `known` holds for its key, else for a key
-/// of a unique or index whose elements correspond to it through `replaced`, else the next id
-/// `next` gives its space.
+/// Returns the key and the id of each of `objs`: a named object takes the id `known` holds for
+/// its key; a unique, index or default takes the id `known` holds for its key, else for a key
+/// whose elements correspond to it through `replaced`, else the next id `next` gives its space.
 ///
-/// Preconditions: `objs` are in creation order; no two keys of `known` hold one id; `replaced`
-/// holds what the operator taking the schema of `known` to that of `objs` replaced.
+/// Preconditions: `objs` are in creation order; `known` holds the key of every named object of
+/// `objs`; no two keys of `known` hold one id; `replaced`
+/// holds what the operators taking the schema of `known` to that of `objs` replaced; `created`
+/// holds the objects of `known` those operators created, and `readded` the fields they retired
+/// and added again under their names.
 /// Postconditions: the keys are distinct, objects agreeing on kind, owner and parts told apart by
 /// how many of them come before; no two objects of a space take one id; each space's new ids
 /// follow the order of `objs`.
@@ -106,6 +110,7 @@ pub fn assign(
     known: &BTreeMap<ObjectKey, u64>,
     next: &mut BTreeMap<Space, u64>,
     replaced: &[Replacement],
+    (created, readded): (&BTreeSet<(Space, u64)>, &BTreeSet<u64>),
 ) -> Vec<(ObjectKey, u64)> {
     let mut ids: BTreeMap<Slot, u64> = BTreeMap::new();
     let mut seen: BTreeMap<ObjectKey, usize> = BTreeMap::new();
@@ -127,12 +132,13 @@ pub fn assign(
             let key = key.nth(*n);
             *n += 1;
             let id = match known.get(&key) {
+                Some(&id) if round < 2 => id,
+                None if round < 2 => panic!("no id for named object {key:?}"),
                 Some(&id) if taken.insert((o.space(), id)) => id,
-                _ if round == 2 => {
+                _ => {
                     pending.push((at, key));
                     continue;
                 }
-                _ => fresh(o.space()),
             };
             ids.insert(o.slot.clone(), id);
             out[at] = Some((key, id));
@@ -140,7 +146,7 @@ pub fn assign(
         if pending.is_empty() {
             continue;
         }
-        let matched = Correspondence::new(known, &ids, replaced);
+        let matched = Correspondence::new(known, (created, readded), &ids, replaced);
         for (at, key) in pending {
             let o = &objs[at];
             let reached = key.parts().iter().any(|p| matches!(p, Part::Reach(_)));
@@ -350,10 +356,7 @@ impl Objects<'_> {
             Holder::Module(m.to_string()),
             vn,
         );
-        if matches!(
-            &self.schema.functions[f.0 as usize].result,
-            Ty::Set(elem) if !matches!(**elem, Ty::Data { .. })
-        ) {
+        if let Some(row) = view_row(files, m, vn) {
             self.named(
                 Slot::ViewType(f),
                 KeyKind::Type,
@@ -366,7 +369,7 @@ impl Objects<'_> {
                 Holder::Object(Slot::ViewType(f)),
                 vn,
             );
-            for name in anonymous_row(files, m, vn) {
+            for name in row {
                 self.named(
                     Slot::ViewField(f, name.clone()),
                     KeyKind::Field,
@@ -622,31 +625,18 @@ impl Objects<'_> {
     }
 }
 
-/// Returns the fields of the rows of view `view` of module `module`, as its result type writes
-/// them: none unless its element type is an anonymous record.
-fn anonymous_row(files: &[(FileId, ast::SchemaFile)], module: &str, view: &str) -> Vec<String> {
-    let result = files
+/// Returns the fields of the rows of view `view` of module `module` when they are of no declared
+/// type, as its result type writes them.
+fn view_row(files: &[(FileId, ast::SchemaFile)], module: &str, view: &str) -> Option<Vec<String>> {
+    files
         .iter()
         .filter(|(_, sf)| sf.module.text == module)
         .flat_map(|(_, sf)| &sf.decls)
         .find_map(|d| match d {
             Decl::Fn(f) if f.name.text == view => Some(&f.result),
             _ => None,
-        });
-    let Some(ast::Type {
-        kind: ast::TypeKind::Named { args, .. },
-        ..
-    }) = result
-    else {
-        return Vec::new();
-    };
-    let [ast::TypeArg::Type(elem)] = args.as_slice() else {
-        return Vec::new();
-    };
-    match &elem.kind {
-        ast::TypeKind::Record(fs) => fs.iter().map(|f| f.name.text.clone()).collect(),
-        _ => Vec::new(),
-    }
+        })
+        .and_then(anonymous_row)
 }
 
 /// Returns the fields of relation `r` a default of `field`, of constructor `ctor` when one is

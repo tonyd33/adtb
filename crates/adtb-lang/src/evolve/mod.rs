@@ -40,6 +40,7 @@ mod text;
 
 use field::{Part, path_text};
 use ids::{Held, Replaced};
+use source::stated_ctors;
 use text::*;
 
 #[cfg(test)]
@@ -106,10 +107,11 @@ pub struct Source {
     /// The privileges the log's `grant` and `revoke` operators leave each role holding, in the
     /// order they were first granted.
     pub grants: Vec<LogGrant>,
-    /// The write state of each constructor relation, keyed by the relation's module, the relation and the constructor.
-    pub states: BTreeMap<StateKey, State>,
-    /// The write state of each value-level constructor, keyed by the type's module, the type and the constructor.
-    pub value_states: BTreeMap<StateKey, State>,
+    /// The write state of each constructor relation, by the ids of the relation variable and the
+    /// constructor.
+    pub states: BTreeMap<(CatRelId, CatCtorId), State>,
+    /// The write state of each value-level constructor, by its id.
+    pub value_states: BTreeMap<CatCtorId, State>,
     pub version: u64,
     pub log: Vec<Logged>,
     /// The catalog id of each object of the user modules, by its key.
@@ -125,6 +127,12 @@ pub struct Source {
     carry: Option<carry::Carry>,
     /// The paths of field ids the operator being applied replaces, until its objects take ids.
     replaced: Vec<Replaced>,
+    /// The named objects that took new ids since the uniques, indexes and defaults last took
+    /// theirs.
+    created: BTreeSet<(crate::ids::Space, u64)>,
+    /// The key and the id of each field retired since the uniques, indexes and defaults last
+    /// took ids.
+    dropped: BTreeSet<(ObjectKey, u64)>,
     /// The grants the structural operators of the migration being applied could not carry and
     /// no later grant operator of it has stated.
     unstated: Vec<carry::Unstated>,
@@ -400,8 +408,13 @@ type R<T> = Result<T, Vec<Diag>>;
 /// Edits of declaration texts, by declaration.
 type Edits = BTreeMap<usize, Vec<(Range<usize>, Written)>>;
 
-/// A write state's key: the module, the relation variable or type, and the constructor.
-type StateKey = (String, String, String);
+/// The write state of a constructor relation, by the ids of the relation variable and the
+/// constructor, or of a value-level constructor, by its id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(in crate::evolve) enum StateOf {
+    Relation(CatRelId, CatCtorId),
+    Value(CatCtorId),
+}
 
 /// Returns the name of a field of type `def` whose delete action retags into constructor `c`.
 fn retag_into(schema: &Schema, def: TypeId, c: u32) -> Option<String> {

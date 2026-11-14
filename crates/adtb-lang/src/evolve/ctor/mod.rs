@@ -188,6 +188,8 @@ impl Cx<'_> {
         let (i, mut t) = self.type_decl(&path.ty)?;
         let name = &path.ctor.text;
         let tname = &t.name.text.clone();
+        let m = self.module_of(&path.ty);
+        let widened = self.src.record_widened(self.src, &m, tname);
         match &t.body {
             ast::TypeBody::Ctors(_) => {}
             ast::TypeBody::Record(_) if name == tname => {
@@ -198,6 +200,9 @@ impl Cx<'_> {
             }
             ast::TypeBody::Record(fields) => {
                 self.record_to_sum(i, &t, path, fields)?;
+                for (from, to) in widened.into_iter().flatten() {
+                    self.src.rekey(&from, to);
+                }
                 t = self.type_decl(&path.ty)?.1;
             }
             ast::TypeBody::New(..) => {
@@ -272,23 +277,17 @@ impl Cx<'_> {
             let at = sd.span.end as usize - header(&self.src.decls[k].module).len();
             self.src.edit(k, vec![(at..at, format!(" | {name}"))]);
         }
-        let since = self.src.version;
-        for (_, m, r) in &rels {
-            self.src.states.insert(
-                (m.clone(), r.clone(), name.clone()),
-                State {
-                    stage: Stage::Declared,
-                    since,
-                },
-            );
+        self.src.name_ids();
+        let declared = State {
+            stage: Stage::Declared,
+            since: self.src.version,
+        };
+        let ctor = CatCtorId::from_raw(held_id(self.src.ctor_key_id(&m, tname, name)));
+        for (rel, ..) in &rels {
+            let rel = held_id(before.ids().relation_id(*rel));
+            self.src.states.insert((rel, ctor), declared);
         }
-        self.src.value_states.insert(
-            (self.module_of(&path.ty), tname.clone(), name.clone()),
-            State {
-                stage: Stage::Declared,
-                since,
-            },
-        );
+        self.src.value_states.insert(ctor, declared);
         if arms.is_empty() {
             return Ok(());
         }
@@ -678,29 +677,17 @@ impl Cx<'_> {
             }
         }
         self.apply_edits(edits);
-        let rel_keys: BTreeSet<(String, String)> = rels
-            .iter()
-            .map(|(_, m, r)| (m.clone(), r.clone()))
-            .collect();
-        let old: Vec<_> = self.src.states.keys().cloned().collect();
-        for k in old {
-            if rel_keys.contains(&(k.0.clone(), k.1.clone())) && k.2 == from {
-                let v = self.src.states.remove(&k).expect("a key");
-                self.src.states.insert((k.0, k.1, to.text.clone()), v);
-            }
-        }
-        let tm = self.module_of(&path.ty);
-        if let Some(v) = self
-            .src
-            .value_states
-            .remove(&(tm.clone(), t.name.text.clone(), from))
-        {
-            self.src
-                .value_states
-                .insert((tm, t.name.text, to.text.clone()), v);
-        }
         Ok(())
     }
+}
+
+/// The write states the products of a structural operator take, per relation variable of their
+/// type and, for `None`, for the type.
+pub(super) struct Restated {
+    module: String,
+    ty: String,
+    products: Vec<String>,
+    stages: Vec<(Option<CatRelId>, Stage)>,
 }
 
 /// Collects the relation and constructor set of every `Key` type in `t`.
@@ -1131,19 +1118,20 @@ impl Cx<'_> {
         Ok(edits)
     }
 
-    /// Move the write states of `sources` to `products`. With `merge` a product is deprecated when
-    /// every source is, declared when a source is, else enabled, and a deprecated source among
-    /// others refuses; otherwise it takes the first source's state.
-    pub(super) fn restate(
-        &mut self,
+    /// Returns the write states `products` of type `def` of module `type_module` take from
+    /// `sources`, per relation variable of `def` and for the type. With `merge` a product is
+    /// deprecated when every source is, declared when a source is, else enabled, and a deprecated
+    /// source among others refuses; otherwise it takes the first source's state.
+    pub(super) fn restated(
+        &self,
         schema: &Schema,
         def: TypeId,
         type_module: &str,
         sources: &[String],
         products: &[String],
         merge: bool,
-    ) -> R<()> {
-        let tname = schema.ty(def).name.clone();
+    ) -> R<Restated> {
+        let td = schema.ty(def);
         let combine = |states: Vec<Stage>| -> Result<Stage, Stage> {
             if !merge {
                 return Ok(states.first().copied().unwrap_or(Stage::Enabled));
@@ -1161,49 +1149,63 @@ impl Cx<'_> {
                 Stage::Enabled
             })
         };
-        let since = self.src.version;
-        let mut keys: Vec<(String, String, bool)> = Self::relations_of(schema, def)
-            .into_iter()
-            .map(|(_, m, r)| (m, r, true))
+        let ctors: Vec<(&String, CatCtorId)> = sources
+            .iter()
+            .filter_map(|c| Some((c, schema.ids().ctor_id(td.ctor_named(c)?)?)))
             .collect();
-        keys.push((type_module.to_string(), tname, false));
-        for (m, r, relation) in keys {
-            let map = if relation {
-                &mut self.src.states
-            } else {
-                &mut self.src.value_states
+        let mut owners: Vec<(Option<CatRelId>, String)> = Self::relations_of(schema, def)
+            .into_iter()
+            .map(|(rel, _, r)| (Some(held_id(schema.ids().relation_id(rel))), r))
+            .collect();
+        owners.push((None, td.name.clone()));
+        let mut stages = Vec::new();
+        for (rel, shown) in owners {
+            let state = |c: CatCtorId| match rel {
+                Some(r) => self.src.state(StateOf::Relation(r, c)),
+                None => self.src.state(StateOf::Value(c)),
             };
-            let stages: Vec<Stage> = sources
+            let of: Vec<Stage> = ctors
                 .iter()
-                .map(|c| {
-                    map.get(&(m.clone(), r.clone(), c.clone()))
-                        .map_or(Stage::Enabled, |s| s.stage)
-                })
+                .map(|(_, c)| state(*c).map_or(Stage::Enabled, |s| s.stage))
                 .collect();
-            let Ok(stage) = combine(stages) else {
-                let which = sources
+            let Ok(stage) = combine(of) else {
+                let which = ctors
                     .iter()
-                    .find(|c| {
-                        map.get(&(m.clone(), r.clone(), (*c).clone()))
-                            .is_some_and(|s| s.stage == Stage::Deprecated)
-                    })
-                    .cloned()
+                    .find(|(_, c)| state(*c).is_some_and(|s| s.stage == Stage::Deprecated))
+                    .map(|(n, _)| n.as_str())
                     .unwrap_or_default();
                 return Err(vec![Diag::new(
                     self.span,
                     format!(
-                        "merging or nesting a deprecated constructor with one in another state is refused: `{r}.{which}` is deprecated"
+                        "merging or nesting a deprecated constructor with one in another state is refused: `{shown}.{which}` is deprecated"
                     ),
                 )]);
             };
-            for c in sources {
-                map.remove(&(m.clone(), r.clone(), c.clone()));
-            }
-            for p in products {
-                map.insert((m.clone(), r.clone(), p.clone()), State { stage, since });
+            stages.push((rel, stage));
+        }
+        Ok(Restated {
+            module: type_module.to_string(),
+            ty: td.name.clone(),
+            products: products.to_vec(),
+            stages,
+        })
+    }
+
+    /// Give the products of `r` the write states it holds, once the declarations hold them.
+    pub(super) fn restate(&mut self, r: Restated) {
+        self.src.name_ids();
+        let since = self.src.version;
+        for p in &r.products {
+            let id = self.src.ctor_key_id(&r.module, &r.ty, p);
+            let c = CatCtorId::from_raw(held_id(id));
+            for &(rel, stage) in &r.stages {
+                let key = match rel {
+                    Some(rel) => StateOf::Relation(rel, c),
+                    None => StateOf::Value(c),
+                };
+                self.src.set_state(key, Some(State { stage, since }));
             }
         }
-        Ok(())
     }
 
     /// The sources a constructor selection of type `def` names, in declaration order.

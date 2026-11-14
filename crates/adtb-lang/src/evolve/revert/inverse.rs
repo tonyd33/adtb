@@ -292,27 +292,18 @@ impl Inverting<'_> {
         })
     }
 
-    /// Returns the step setting back the write state of each constructor `before` holds whose
-    /// key `pick` takes, of a constructor relation when `relation`.
-    pub(super) fn states_back(
-        &self,
-        relation: bool,
-        pick: impl Fn(&StateKey) -> bool,
-    ) -> Option<Inverse> {
-        let held = if relation {
-            &self.before.states
-        } else {
-            &self.before.value_states
-        };
-        let states = held
-            .iter()
-            .filter(|(k, _)| pick(k))
-            .map(|(k, v)| Some((StateOf::of(self.before, relation, k)?, Some(*v))))
-            .collect::<Option<Vec<_>>>()?;
-        Some(Inverse::States {
+    /// Returns the step setting back each write state `before` holds that `pick` takes.
+    pub(super) fn states_back(&self, pick: impl Fn(StateOf) -> bool) -> Inverse {
+        let states = self
+            .before
+            .every_state()
+            .filter(|(s, _)| pick(*s))
+            .map(|(s, v)| (s, Some(v)))
+            .collect();
+        Inverse::States {
             states,
             of: self.text(self.op.span),
-        })
+        }
     }
 }
 
@@ -476,10 +467,10 @@ impl Cx<'_> {
             }
             OperatorKind::DropType(t) => {
                 let m = at.module_of(t);
-                let states = at.states_back(false, |(sm, st, _)| *sm == m && *st == t.name.text);
-                let mut out = vec![at.restore("type", &m, &t.name.text)?];
-                out.extend(self.by_id(states)?);
-                Ok(out)
+                let ctors = at.before.ctors_of(&m, &t.name.text);
+                let states =
+                    at.states_back(|s| matches!(s, StateOf::Value(c) if ctors.contains(&c)));
+                Ok(vec![at.restore("type", &m, &t.name.text)?, states])
             }
             OperatorKind::RenameType(t, _) => self.by_id(at.renamed(
                 |s| {
@@ -504,7 +495,9 @@ impl Cx<'_> {
             )?]),
             OperatorKind::DropRelation(r) => {
                 let m = at.module_of(r);
-                let states = at.states_back(true, |(sm, sr, _)| *sm == m && *sr == r.name.text);
+                let rel = before.relation_key_id(&m, &r.name.text);
+                let states =
+                    at.states_back(|s| matches!(s, StateOf::Relation(x, _) if Some(x) == rel));
                 let mut out = vec![at.restore("relation", &m, &r.name.text)?];
                 for (i, d) in before.decls.iter().enumerate() {
                     if d.module == m
@@ -522,7 +515,7 @@ impl Cx<'_> {
                         });
                     }
                 }
-                out.extend(self.by_id(states)?);
+                out.push(states);
                 Ok(out)
             }
             OperatorKind::RenameRelation(r, _) => self.by_id(at.renamed(
@@ -612,17 +605,11 @@ impl Cx<'_> {
                     copying: false,
                     steps: None,
                 };
-                let (relation, key, _) = cx.stage_key(t)?;
-                let prior = if relation {
-                    before.states.get(&key)
-                } else {
-                    before.value_states.get(&key)
-                };
-                let state = StateOf::of(before, relation, &key);
-                self.by_id(state.map(|s| Inverse::States {
-                    states: vec![(s, prior.copied())],
+                let (state, _) = cx.stage_key(t)?;
+                Ok(vec![Inverse::States {
+                    states: vec![(state, before.state(state))],
                     of: at.text(op.span),
-                }))
+                }])
             }
             OperatorKind::NestConstructor {
                 ty,

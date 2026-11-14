@@ -449,13 +449,16 @@ impl Cx<'_> {
     fn add_type(&mut self, t: &ast::TypeDecl) -> R<()> {
         self.add_decl("type", &t.name.text, t.span)?;
         let names: Vec<String> = match &t.body {
-            ast::TypeBody::Record(_) | ast::TypeBody::New(..) => vec![t.name.text.clone()],
+            ast::TypeBody::New(..) => Vec::new(),
+            ast::TypeBody::Record(_) => vec![t.name.text.clone()],
             ast::TypeBody::Ctors(cs) => cs.iter().map(|c| c.name.text.clone()).collect(),
         };
+        self.src.name_ids();
         let since = self.src.version;
         for c in names {
+            let id = self.src.ctor_key_id(&self.module, &t.name.text, &c);
             self.src.value_states.insert(
-                (self.module.clone(), t.name.text.clone(), c),
+                CatCtorId::from_raw(held_id(id)),
                 State {
                     stage: Stage::Enabled,
                     since,
@@ -466,7 +469,7 @@ impl Cx<'_> {
     }
 
     fn drop_type(&mut self, q: &QName) -> R<()> {
-        let (i, decl) = self.type_decl(q)?;
+        let (i, _) = self.type_decl(q)?;
         let schema = match self.schema() {
             Ok(s) => s,
             Err(ds) => {
@@ -475,7 +478,7 @@ impl Cx<'_> {
                 if without.schema().is_err() {
                     return Err(ds);
                 }
-                self.remove_type(i, &decl);
+                self.src.remove_decl(i);
                 return Ok(());
             }
         };
@@ -517,17 +520,8 @@ impl Cx<'_> {
                 return refused(self.object_name(file));
             }
         }
-        self.remove_type(i, &decl);
-        Ok(())
-    }
-
-    /// Removes type declaration `i`, `decl`, and its value-level states.
-    fn remove_type(&mut self, i: usize, decl: &ast::TypeDecl) {
-        let module = self.src.decls[i].module.clone();
         self.src.remove_decl(i);
-        self.src
-            .value_states
-            .retain(|(m, t, _), _| !(*m == module && *t == decl.name.text));
+        Ok(())
     }
 
     fn rename_type(&mut self, q: &QName, to: &ast::Ident) -> R<()> {
@@ -575,40 +569,6 @@ impl Cx<'_> {
             }
             self.src.edit(i, edits);
         }
-        let rename = |map: &mut BTreeMap<StateKey, State>, ty_key: bool| {
-            let old: Vec<_> = map.keys().cloned().collect();
-            for k in old {
-                let (m, t, c) = k.clone();
-                let new_t = if ty_key && m == module && t == *from {
-                    to.text.clone()
-                } else {
-                    t.clone()
-                };
-                let new_c = if record && c == *from {
-                    to.text.clone()
-                } else {
-                    c.clone()
-                };
-                if (new_t.clone(), new_c.clone()) != (t, c) {
-                    let v = map.remove(&k).expect("a key of the map");
-                    map.insert((m, new_t, new_c), v);
-                }
-            }
-        };
-        rename(&mut self.src.value_states, true);
-        if record {
-            let rels: BTreeSet<(String, String)> = Self::relations_of(&schema, def)
-                .into_iter()
-                .map(|(_, m, r)| (m, r))
-                .collect();
-            let old: Vec<_> = self.src.states.keys().cloned().collect();
-            for k in old {
-                if rels.contains(&(k.0.clone(), k.1.clone())) && k.2 == *from {
-                    let v = self.src.states.remove(&k).expect("a key");
-                    self.src.states.insert((k.0, k.1, to.text.clone()), v);
-                }
-            }
-        }
         Ok(())
     }
 
@@ -620,25 +580,20 @@ impl Cx<'_> {
             );
         }
         self.add_decl("relation", &r.name.name.text, r.span)?;
+        self.src.name_ids();
         let schema = self.schema()?;
         let rel = self.rel_id(&schema, &r.name)?;
+        let id = held_id(schema.ids().relation_id(rel));
         let t = schema.ty(schema.relation(rel).elem_def);
-        let tm = schema.module(t.module).name.clone();
         let since = self.src.version;
-        for c in t.ctors() {
+        for c in stated_ctors(t) {
+            let ctor = held_id(schema.ids().ctor_id(c));
             let stage = self
                 .src
                 .value_states
-                .get(&(tm.clone(), t.name.clone(), c.name.clone()))
+                .get(&ctor)
                 .map_or(Stage::Enabled, |s| s.stage);
-            self.src.states.insert(
-                (
-                    self.module.clone(),
-                    r.name.name.text.clone(),
-                    c.name.clone(),
-                ),
-                State { stage, since },
-            );
+            self.src.states.insert((id, ctor), State { stage, since });
         }
         Ok(())
     }
@@ -685,9 +640,6 @@ impl Cx<'_> {
         drop.push(i);
         drop.sort_unstable();
         self.src.remove_decls(|j, _| drop.contains(&j));
-        self.src
-            .states
-            .retain(|(m, r, _), _| !(*m == module && r == name));
         Ok(())
     }
 
@@ -756,13 +708,6 @@ impl Cx<'_> {
         }
         for (j, es) in edits {
             self.src.edit(j, es);
-        }
-        let old: Vec<_> = self.src.states.keys().cloned().collect();
-        for k in old {
-            if k.0 == module && k.1 == from {
-                let v = self.src.states.remove(&k).expect("a key");
-                self.src.states.insert((k.0, to.text.clone(), k.2), v);
-            }
         }
         Ok(())
     }
@@ -906,40 +851,40 @@ impl Cx<'_> {
     }
 
     /// The state a lifecycle operator names, and how a refusal names it.
-    pub(super) fn stage_key(&self, t: &CtorTarget) -> R<(bool, StateKey, String)> {
+    pub(super) fn stage_key(&self, t: &CtorTarget) -> R<(StateOf, String)> {
         let schema = self.schema()?;
         match t {
             CtorTarget::Relation(rr) => {
                 let rel = self.rel_id(&schema, &rr.relation)?;
                 let r = schema.relation(rel);
                 let def = schema.ty(r.elem_def);
-                let c = match &rr.sel {
-                    Some(CtorSel::One(c)) if def.ctor_index(&c.text).is_some() => c,
-                    _ => {
-                        return self.err_at(
-                            rr.span,
-                            "a lifecycle operator names one constructor: `r.C` or `T.C`",
-                        );
-                    }
+                let named = match &rr.sel {
+                    Some(CtorSel::One(c)) => def.ctor_named(&c.text).map(|ctor| (c, ctor)),
+                    _ => None,
                 };
+                let Some((c, ctor)) = named else {
+                    return self.err_at(
+                        rr.span,
+                        "a lifecycle operator names one constructor: `r.C` or `T.C`",
+                    );
+                };
+                let ids = schema.ids();
                 Ok((
-                    true,
-                    (self.module_of(&rr.relation), r.name.clone(), c.text.clone()),
+                    StateOf::Relation(held_id(ids.relation_id(rel)), held_id(ids.ctor_id(ctor))),
                     format!("{}.{}", r.name, c.text),
                 ))
             }
             CtorTarget::Type(p) => {
                 let def = self.type_id(&schema, &p.ty)?;
                 let t = schema.ty(def);
-                if t.ctor_index(&p.ctor.text).is_none() {
+                let Some(ctor) = t.ctor_named(&p.ctor.text) else {
                     return self.err_at(
                         p.ctor.span,
                         format!("`{}` is not a constructor of `{}`", p.ctor.text, t.name),
                     );
-                }
+                };
                 Ok((
-                    false,
-                    (self.module_of(&p.ty), t.name.clone(), p.ctor.text.clone()),
+                    StateOf::Value(held_id(schema.ids().ctor_id(ctor))),
                     format!("{}.{}", t.name, p.ctor.text),
                 ))
             }
@@ -947,13 +892,8 @@ impl Cx<'_> {
     }
 
     fn stage(&mut self, t: &CtorTarget, verb: &str) -> R<()> {
-        let (relation, key, shown) = self.stage_key(t)?;
-        let map = if relation {
-            &mut self.src.states
-        } else {
-            &mut self.src.value_states
-        };
-        let current = map.get(&key).map_or(Stage::Enabled, |s| s.stage);
+        let (key, shown) = self.stage_key(t)?;
+        let current = self.src.state(key).map_or(Stage::Enabled, |s| s.stage);
         let next = match (verb, current) {
             ("enable", Stage::Enabled) => {
                 return self.err(format!("`{shown}` is already enabled"));
@@ -974,9 +914,9 @@ impl Cx<'_> {
                 ));
             }
         };
-        if relation
-            && next != Stage::Enabled
+        if next != Stage::Enabled
             && let CtorTarget::Relation(rr) = t
+            && let Some(CtorSel::One(c)) = &rr.sel
         {
             let schema = self.schema()?;
             let def = schema
@@ -984,7 +924,7 @@ impl Cx<'_> {
                 .elem_def;
             let c = schema
                 .ty(def)
-                .ctor_index(&key.2)
+                .ctor_index(&c.text)
                 .expect("a lifecycle target names a constructor of its relation");
             if let Some(f) = retag_into(&schema, def, c) {
                 return self.err(format!(
@@ -993,12 +933,7 @@ impl Cx<'_> {
             }
         }
         let since = self.src.version;
-        let map = if relation {
-            &mut self.src.states
-        } else {
-            &mut self.src.value_states
-        };
-        map.insert(key, State { stage: next, since });
+        self.src.set_state(key, Some(State { stage: next, since }));
         Ok(())
     }
 }

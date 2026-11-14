@@ -79,7 +79,8 @@ impl Cx<'_> {
         };
         self.replacing_carried(ty, &carries);
         let tm = self.module_of(ty);
-        self.restate(&schema, def, &tm, &sources, std::slice::from_ref(&m), true)?;
+        let restated =
+            self.restated(&schema, def, &tm, &sources, std::slice::from_ref(&m), true)?;
         let mut edits = self.reselect(
             &schema,
             def,
@@ -129,7 +130,9 @@ impl Cx<'_> {
             (&reaches, &given, &disc.fields, &[]),
         );
         self.apply_edits(edits);
-        self.retype_products(&schema, def, &sources, std::slice::from_ref(&m))
+        self.retype_products(&schema, def, &sources, std::slice::from_ref(&m))?;
+        self.restate(restated);
+        Ok(())
     }
 
     /// Returns the edits that rescope each clause over the merged constructors to the merged one.

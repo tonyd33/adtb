@@ -239,24 +239,44 @@ pub fn relation_of(to: &Schema, from: &Schema, rel: RelId) -> RelId {
 }
 
 /// Returns `source` with each constructor of a module that is not the engine's that `from` stages
-/// staged the same, found by the names of its relation or type and constructor.
+/// staged the same, found by the names of its relation or type and constructor and keyed by the
+/// ids `source` gives them.
+///
+/// Preconditions: `source` builds.
 pub fn staged_source(source: &Source, from: &Schema) -> Source {
     let mut out = source.clone();
+    let to = source.schema().expect("the staged source builds");
     let state = |stage| State {
         stage,
         since: source.version,
+    };
+    let type_in = |module: &str, name: &str| {
+        let m = to.module_named(module)?;
+        to.module(m).types.get(name).copied()
     };
     for (r, def) in from.relations.iter().enumerate() {
         let module = from.module(def.module);
         if module.engine {
             continue;
         }
+        let rel =
+            to.module_named(&module.name)
+                .and_then(|m| match to.module(m).values.get(&def.name) {
+                    Some(&ValueDef::Relation(t)) => Some(t),
+                    _ => None,
+                });
+        let Some(rel) = rel else { continue };
         for c in from.ty(def.elem_def).ctor_refs() {
             let stage = from.stage(RelId(r as u32), c.index());
-            if stage != Stage::Enabled {
-                let ctor = from.ty(c.def()).ctor_def(c).name.clone();
-                let key = (module.name.clone(), def.name.clone(), ctor);
-                out.states.insert(key, state(stage));
+            let name = &from.ty(c.def()).ctor_def(c).name;
+            let ctor = to.ty(to.relation(rel).elem_def).ctor_named(name);
+            if stage != Stage::Enabled
+                && let (Some(rel), Some(ctor)) = (
+                    to.ids().relation_id(rel),
+                    ctor.and_then(|c| to.ids().ctor_id(c)),
+                )
+            {
+                out.states.insert((rel, ctor), state(stage));
             }
         }
     }
@@ -265,11 +285,19 @@ pub fn staged_source(source: &Source, from: &Schema) -> Source {
         if module.engine {
             continue;
         }
+        let Some(to_def) = type_in(&module.name, &def.name) else {
+            continue;
+        };
         for (c, ctor) in def.ctors().iter().enumerate() {
             let stage = from.value_stage(TypeId(t as u32), c as u32);
-            if stage != Stage::Enabled {
-                let key = (module.name.clone(), def.name.clone(), ctor.name.clone());
-                out.value_states.insert(key, state(stage));
+            let id = to
+                .ty(to_def)
+                .ctor_named(&ctor.name)
+                .and_then(|c| to.ids().ctor_id(c));
+            if stage != Stage::Enabled
+                && let Some(id) = id
+            {
+                out.value_states.insert(id, state(stage));
             }
         }
     }

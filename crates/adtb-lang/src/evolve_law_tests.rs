@@ -731,6 +731,20 @@ fn restoring() -> Vec<Case> {
                 "the inverse of `drop index (z) in ts.S` names a field a later migration dropped",
             )
             .labelled(DROPPED),
+        Case::new("drop index (z) in ts.R")
+            .after("add index (z) in ts.R")
+            .then("drop field T.B.z\nadd field T.B.z: Text fill \"q\"", None)
+            .refused(
+                "the inverse of `drop index (z) in ts.R` names a field a later migration dropped",
+            )
+            .labelled(READDED_UNBUILT),
+        Case::new("drop index (z) in ts.R")
+            .after("add index (z) in ts.R")
+            .then("drop field T.C.z\nadd field T.C.z: Text fill \"q\"", None)
+            .refused(
+                "the inverse of `drop index (z) in ts.R` names a field a later migration dropped",
+            )
+            .labelled(READDED_BUILT),
         Case::new("drop fn g")
             .after(G_SHADOWING)
             .then("rename field Inner.A.x to x9", Some("rename field Inner.A.x to x9"))
@@ -887,6 +901,14 @@ const OTHER_MODULE: &str = "objects of another module";
 
 /// The label of a case whose revert follows a drop of its object.
 const DROPPED: &str = "object dropped";
+
+/// The label of a case whose revert follows a drop and re-add of a field it names, the source
+/// between them not building.
+const READDED_UNBUILT: &str = "field re-added through a source that does not build";
+
+/// The label of a case whose revert follows a drop and re-add of a field it names, the source
+/// between them building.
+const READDED_BUILT: &str = "field re-added through a source that builds";
 
 const SPLIT: &str = "split constructor T.A into A1 { x: Text, z: Text } | A2 { x: Text, z: Text }
   by match
@@ -1552,11 +1574,12 @@ fn differences(
             ),
         ));
     }
+    let (sw, sn) = (named_states(was), named_states(now));
     for (aspect, a, b) in [
-        (Aspect::States, &was.states, &now.states),
-        (Aspect::ValueStates, &was.value_states, &now.value_states),
+        (Aspect::States, &sw.0, &sn.0),
+        (Aspect::ValueStates, &sw.1, &sn.1),
     ] {
-        let keys: BTreeSet<&StateKey> = a.keys().chain(b.keys()).collect();
+        let keys: BTreeSet<&StateNames> = a.keys().chain(b.keys()).collect();
         for k in keys {
             let (x, y) = (a.get(k).map(|s| s.stage), b.get(k).map(|s| s.stage));
             if x != y {
@@ -1594,7 +1617,10 @@ const KNOWN: &[Known] = &[
     Known {
         kind: "Merge",
         case: "merge constructor T.(A | B) into M { k: K, x: Text, z: Text, q: Q } [default A.x kept]",
-        differences: &["Unapplied: `A` is not a constructor of `T`"],
+        differences: &[
+            "Unapplied: `A` is not a constructor of `T`",
+            "Unapplied: the merge of `A`, `B` into `M` cannot carry the `update` grant of `support` on `ts`, which does not cover each of them alike; grant `update` on `ts.M` to `support` in the same migration",
+        ],
         tickets: &[REFUSED_ON_REPLACED],
     },
     Known {
@@ -1609,7 +1635,10 @@ const KNOWN: &[Known] = &[
     Known {
         kind: "Nest",
         case: "nest constructor T.(A | B) into N { inner: Inner } [default A.x kept]",
-        differences: &["Unapplied: `A` is not a constructor of `T`"],
+        differences: &[
+            "Unapplied: `A` is not a constructor of `T`",
+            "Unapplied: the nest of `A`, `B` into `N` cannot carry the `update` grant of `support` on `ts`, which does not cover each of them alike; grant `update` on `ts.N` to `support` in the same migration",
+        ],
         tickets: &[REFUSED_ON_REPLACED],
     },
     Known {
@@ -1805,10 +1834,10 @@ fn unknown(name: &str, o: &Outcome, every_shape: bool) -> Option<String> {
 }
 
 /// The cases each shape runs with no bit set, and those the `declared` and `granted` bits add.
-const CASES: (usize, usize, usize) = (160, 2, 5);
+const CASES: (usize, usize, usize) = (162, 2, 5);
 
 /// The cases of each shape whose revert is refused for a reason the spec states.
-const REFUSED: usize = 15;
+const REFUSED: usize = 17;
 
 #[test]
 fn every_invertible_operator_and_its_revert_restore_the_source_before_it() {

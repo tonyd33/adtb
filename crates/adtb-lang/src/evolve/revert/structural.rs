@@ -826,18 +826,9 @@ impl Cx<'_> {
                 of: at.of(),
             });
         }
-        let of_type: BTreeSet<(String, String)> = schema
-            .relations
-            .iter()
-            .filter(|r| r.elem_def == def)
-            .map(|r| (schema.module(r.module).name.clone(), r.name.clone()))
-            .collect();
-        let held = at.states_back(true, |k| {
-            k.2 == path.ctor.text && of_type.contains(&(k.0.clone(), k.1.clone()))
-        });
-        out.extend(self.by_id(held)?);
-        let held = at.states_back(false, |k| k.0 == m && *k.1 == *t && k.2 == path.ctor.text);
-        out.extend(self.by_id(held)?);
+        out.push(at.states_back(|s| match s {
+            StateOf::Relation(_, c) | StateOf::Value(c) => c.raw() == id,
+        }));
         Ok(out)
     }
 
@@ -1104,7 +1095,7 @@ impl Cx<'_> {
                     self.src.rewrite(i, check);
                 }
             }
-            self.src.reconcile_ids();
+            self.src.settle_ids();
             self.unmapped_step();
         }
         if let Some((module, text)) = renames {
@@ -1143,7 +1134,7 @@ impl Cx<'_> {
         };
         self.src.forget_id(KeyKind::Index.space(), id.raw());
         self.drop_clause(i, &ranges, k);
-        self.src.reconcile_ids();
+        self.src.settle_ids();
         Ok(())
     }
 
@@ -1277,7 +1268,7 @@ impl Cx<'_> {
             let at = sd.span.end as usize - header(&self.src.decls[k].module).len();
             self.src.edit(k, vec![(at..at, format!(" | {name}"))]);
         }
-        self.src.reconcile_ids();
+        self.src.settle_ids();
         let (m, tn) = (self.module_of(&q), q.name.text.clone());
         let again: Recreated = self
             .src

@@ -331,6 +331,22 @@ pub enum TypeName {
     Tag,
 }
 
+impl TypeName {
+    /// Returns the scalar or built-in type former `name` names.
+    pub fn built_in(name: &str) -> Option<TypeName> {
+        if let Some(b) = Base::from_name(name) {
+            return Some(TypeName::Base(b));
+        }
+        Some(match name {
+            "Decimal" => TypeName::Decimal,
+            "Set" => TypeName::Set,
+            "Group" => TypeName::Group,
+            "Tag" => TypeName::Tag,
+            _ => return None,
+        })
+    }
+}
+
 /// A schema's declarations, shared between its copies until one of them changes.
 #[derive(Clone, Debug)]
 pub struct Schema {
@@ -547,16 +563,7 @@ impl Schema {
         if let Some(&t) = self.module(PRELUDE).types.get(text) {
             return Ok(TypeName::Decl(t));
         }
-        if let Some(b) = Base::from_name(text) {
-            return Ok(TypeName::Base(b));
-        }
-        Ok(match text {
-            "Decimal" => TypeName::Decimal,
-            "Set" => TypeName::Set,
-            "Group" => TypeName::Group,
-            "Tag" => TypeName::Tag,
-            _ => return Err(no_type(text)),
-        })
+        TypeName::built_in(text).ok_or_else(|| no_type(text))
     }
 
     /// Resolves a lowercase schema name seen from `module`.

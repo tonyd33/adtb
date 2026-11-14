@@ -7,7 +7,7 @@ mod spelled;
 mod structural;
 
 pub(super) use by_id::Recreated;
-use by_id::{DeclOf, NamedId, StateOf, again_id, dropped, holding, recreate, removed};
+use by_id::{DeclOf, NamedId, again_id, dropped, holding, recreate, removed};
 use inverse::Run;
 use spelled::{Late, Spelled, late, spellings};
 use structural::Undo;
@@ -463,7 +463,7 @@ impl Cx<'_> {
                         | Inverse::Replay { .. }
                 );
                 self.undo(inv.mapped(&again), late)?;
-                self.src.reconcile_ids();
+                self.src.settle_ids();
                 recreate(&mut again, &gone, &held, &self.src.ids);
                 if let (Some(steps), false) = (self.steps, recorded) {
                     steps.borrow_mut().push(Step {
@@ -658,7 +658,7 @@ impl Cx<'_> {
                     }
                 }
             }
-            self.src.reconcile_ids();
+            self.src.settle_ids();
             if let Some(steps) = self.steps {
                 let maps = before
                     .row_maps(&self.module, op, &full, self.src, how)
@@ -749,27 +749,15 @@ impl Cx<'_> {
                 of,
             } => self.readd((ty, ctor, &name), &text, (after, joins, arms), &of, late),
             Inverse::States { states, of } => {
-                let mut keyed = Vec::new();
+                let mut held = Vec::new();
                 for (s, state) in states {
-                    match s.key(self.src) {
-                        Ok((relation, key)) => keyed.push((relation, key, state)),
+                    match s.held(self.src) {
+                        Ok(s) => held.push((s, state)),
                         Err(word) => return self.err(dropped(&of, word)),
                     }
                 }
-                for (relation, key, state) in keyed {
-                    let map = if relation {
-                        &mut self.src.states
-                    } else {
-                        &mut self.src.value_states
-                    };
-                    match state {
-                        Some(s) => {
-                            map.insert(key, s);
-                        }
-                        None => {
-                            map.remove(&key);
-                        }
-                    }
+                for (s, state) in held {
+                    self.src.set_state(s, state);
                 }
                 Ok(())
             }
@@ -785,7 +773,7 @@ impl Cx<'_> {
                 of,
             } => self.restore_spelled(&module, kind, &name, &text, &of, late),
             Inverse::Redeclare { decl, text, of } => {
-                let Some((i, kind, module, name)) = decl.find(self.src) else {
+                let Some((i, ..)) = decl.find(self.src) else {
                     return self.err(dropped(&of, decl.word()));
                 };
                 match text {
@@ -793,7 +781,7 @@ impl Cx<'_> {
                         let text = self.spell(&text, &of, late)?;
                         self.src.rewrite(i, text);
                     }
-                    None => self.remove_decl(i, kind, &module, &name),
+                    None => self.src.remove_decl(i),
                 }
                 Ok(())
             }
@@ -859,22 +847,6 @@ impl Cx<'_> {
             }
         }
         Ok(())
-    }
-
-    /// Remove declaration `i`, of kind `kind` and name `name` in module `module`, with the
-    /// write states of a relation or a type it declares.
-    fn remove_decl(&mut self, i: usize, kind: &str, module: &str, name: &str) {
-        self.src.remove_decl(i);
-        if kind == "relation" {
-            self.src
-                .states
-                .retain(|(m, r, _), _| !(*m == module && *r == name));
-        }
-        if kind == "type" {
-            self.src
-                .value_states
-                .retain(|(m, t, _), _| !(*m == module && *t == name));
-        }
     }
 
     fn restore_module(

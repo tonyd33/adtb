@@ -32,7 +32,7 @@ impl Source {
             for (path, &id) in &prior.ids {
                 self.ids.entry(path.clone()).or_insert(id);
             }
-            self.reconcile_ids();
+            self.settle_ids();
         }
     }
 }

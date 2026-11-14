@@ -127,7 +127,7 @@ impl Cx<'_> {
         let arm_edits = self.arm_replacements(&schema, &refs, def, &[c], &arm_clauses)?;
         edits = Self::merged(edits, arm_edits);
         let tm = self.module_of(&path.ty);
-        self.restate(
+        let restated = self.restated(
             &schema,
             def,
             &tm,
@@ -152,7 +152,9 @@ impl Cx<'_> {
             (&routed.0, &routed.1, &[], &matched_fields(arms, &readable)),
         );
         self.apply_edits(edits);
-        self.retype_products(&schema, def, std::slice::from_ref(&source), &products)
+        self.retype_products(&schema, def, std::slice::from_ref(&source), &products)?;
+        self.restate(restated);
+        Ok(())
     }
 
     /// Returns the edits that rescope each clause over the split constructor to its products,
@@ -340,7 +342,8 @@ impl Cx<'_> {
             let into = (tm.as_str(), td, n.as_str(), field.name.text.as_str());
             self.replacing_nested(into, &after.module(st.module).name, &st.name, &sources);
         }
-        self.restate(&schema, def, &tm, &sources, std::slice::from_ref(&n), true)?;
+        let restated =
+            self.restated(&schema, def, &tm, &sources, std::slice::from_ref(&n), true)?;
         let mut edits = self.reselect(
             &schema,
             def,
@@ -423,6 +426,7 @@ impl Cx<'_> {
             (&reaches, &given, &[], &[]),
         );
         self.apply_edits(edits);
+        self.restate(restated);
         Ok(())
     }
 
@@ -549,7 +553,7 @@ impl Cx<'_> {
         );
         let arm_edits = self.arm_replacements(&schema, &refs, def, &[c], clauses)?;
         edits = Self::merged(edits, arm_edits);
-        self.restate(
+        let restated = self.restated(
             &schema,
             def,
             &tm,
@@ -575,6 +579,7 @@ impl Cx<'_> {
             (&reaches, &given, &[], std::slice::from_ref(&field.name)),
         );
         self.apply_edits(edits);
+        self.restate(restated);
         Ok(())
     }
 }

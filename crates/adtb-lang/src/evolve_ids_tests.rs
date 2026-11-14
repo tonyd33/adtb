@@ -617,6 +617,82 @@ set S of ts = A",
 }
 
 #[test]
+fn a_field_dropped_and_added_again_while_the_source_between_does_not_build_takes_a_new_id_and_so_do_the_indexes_over_it()
+ {
+    let base = source(
+        "module auth
+type T { id: Key ts } = A { z: Text } | B { z: Text }
+relation ts : T
+  key id generate sequence
+  index (z) in B
+  index (z) in S
+set S of ts = A | B",
+    );
+    assert_eq!(
+        (1025, 1026, vec![1025, 1026]),
+        (
+            path_id(&base, "field auth::T.A.z"),
+            path_id(&base, "field auth::T.B.z"),
+            index_ids(&base, "ts")
+        )
+    );
+    let readded = applies(
+        &base,
+        "module auth\ndrop field T.B.z\nadd field T.B.z: Text fill \"q\"",
+    );
+    assert_eq!(
+        (1025, 1027, vec![1027, 1028]),
+        (
+            path_id(&readded, "field auth::T.A.z"),
+            path_id(&readded, "field auth::T.B.z"),
+            index_ids(&readded, "ts")
+        )
+    );
+}
+
+#[test]
+fn a_view_stored_while_the_source_does_not_build_takes_the_ids_of_its_row_type_in_declaration_order()
+ {
+    let base = source(
+        "module auth
+type T { id: Key ts } = A { w: Text } | B { v: Text }
+relation ts : T
+  key id generate sequence
+  index (w) in A
+fn labels () -> Set ({ label: Text }) = from t in ts select { label: \"x\" }",
+    );
+    let after = applies(
+        &base,
+        "module auth
+drop field T.A.w
+store labels
+  key label
+add type X = P | Q
+add field T.A.w: Text fill \"q\"",
+    );
+    let schema = after.schema().unwrap_or_else(|e| panic!("builds: {e:?}"));
+    let m = schema.module(schema.module_named("auth").expect("module auth"));
+    let Some(&ValueDef::Function(f)) = m.values.get("labels") else {
+        panic!("no view `labels`");
+    };
+    let ids = schema.ids();
+    let view = path_id(&after, "relation auth::labels");
+    assert_eq!(
+        (view..view + 6).collect::<Vec<_>>(),
+        vec![
+            view,
+            ids.view_type_id(f).map(u64::from).expect("a row type"),
+            ids.view_ctor_id(f)
+                .map(u64::from)
+                .expect("a row constructor"),
+            path_id(&after, "type auth::X"),
+            path_id(&after, "ctor auth::X.P"),
+            path_id(&after, "ctor auth::X.Q"),
+        ]
+    );
+}
+
+#[test]
 fn renaming_a_widened_record_keeps_the_ids_of_its_constructor_and_fields() {
     let base = source(
         "module auth

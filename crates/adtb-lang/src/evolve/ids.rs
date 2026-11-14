@@ -1,9 +1,8 @@
 use super::*;
 use crate::ids::{
-    CatalogIds, KeyKind, Object, ObjectKey, Owner, Path, PathStep, Replacement, Slot, Space,
-    assign, forget, objects,
+    CatalogIds, FIRST_LOG_ID, KeyKind, Object, ObjectKey, Owner, Path, PathStep, Replacement, Slot,
+    Space, assign, forget, is_named, named_ids, objects,
 };
-use crate::schema::States;
 
 impl Source {
     /// The text of a span of file `file`, its tokens joined by single spaces.
@@ -26,17 +25,70 @@ impl Source {
         Some((schema, out))
     }
 
-    /// Gives every object without an id the next id of its space, in creation order, and forgets the
-    /// ids of objects that are gone; ids are never reused.
-    pub(super) fn reconcile_ids(&mut self) {
+    /// Give each object its id: a named object the id the source holds for its key, else the next
+    /// of its space; then, when the source builds, each unique, index and default likewise.
+    /// Retire the ids and write states of objects that are gone; ids are never reused.
+    pub(super) fn settle_ids(&mut self) {
+        self.name_ids();
+        self.reconcile_clause_ids();
+        let held = holding_shared(&self.ids);
+        self.states.retain(|(r, c), _| {
+            held.contains(&r.raw()) && (held.contains(&c.raw()) || c.raw() < FIRST_LOG_ID)
+        });
+        self.value_states.retain(|c, _| held.contains(&c.raw()));
+    }
+
+    /// Give each named object of the parsed declarations, whether or not they build, the id the
+    /// source holds for its key, else the next of its space; forget the ids of named objects
+    /// that are gone.
+    pub(super) fn name_ids(&mut self) {
+        let Ok(files) = self.files() else {
+            return;
+        };
+        let given = named_ids(&files, &self.ids, &mut self.next, &mut self.created);
+        let held: BTreeSet<u64> = given
+            .iter()
+            .filter(|(k, _)| k.kind() == KeyKind::Field)
+            .map(|(_, id)| *id)
+            .collect();
+        self.dropped.extend(
+            self.ids
+                .iter()
+                .filter(|(k, id)| k.kind() == KeyKind::Field && !held.contains(id))
+                .map(|(k, &id)| (k.clone(), id)),
+        );
+        self.ids.retain(|k, _| !is_named(k.kind()));
+        self.ids.extend(given);
+    }
+
+    /// Give each unique, index and default of the built source the id the source holds for its
+    /// key, else for a key its elements correspond to through what the operator replaced, else
+    /// the next of its space; forget the ids of those that are gone. Leave them as they are
+    /// while the source does not build.
+    fn reconcile_clause_ids(&mut self) {
         let replaced = std::mem::take(&mut self.replaced);
         let Some((schema, objs)) = self.objects() else {
             return;
         };
         let replaced = resolved(&schema, &replaced);
-        self.ids = assign(&objs, &self.ids, &mut self.next, &replaced)
-            .into_iter()
-            .collect();
+        let mut next = self.next.clone();
+        let given = assign(
+            &objs,
+            &self.ids,
+            &mut next,
+            &replaced,
+            (&self.created, &self.readded()),
+        );
+        self.created.clear();
+        self.dropped.clear();
+        self.ids.retain(|k, _| is_named(k.kind()));
+        self.ids
+            .extend(given.into_iter().filter(|(k, _)| !is_named(k.kind())));
+        for space in [Space::Index, Space::Default] {
+            if let Some(&n) = next.get(&space) {
+                self.next.insert(space, n);
+            }
+        }
     }
 
     /// Forget the object of id `id` of `space`, each later object of its kind, owner and parts
@@ -65,15 +117,35 @@ impl Source {
             .map(|id| vec![PathStep::Field(id)])
     }
 
+    /// Returns the old ids of the fields retired since the uniques, indexes and defaults last
+    /// took ids whose key a field holds again.
+    fn readded(&self) -> BTreeSet<u64> {
+        self.dropped
+            .iter()
+            .filter(|(k, _)| self.ids.contains_key(k))
+            .map(|&(_, id)| id)
+            .collect()
+    }
+
     /// Returns the catalog ids of `schema`, which the source built with ids in declaration
-    /// order: the source's ids for every object of its user modules. An object the log has no id
-    /// for takes the id [`Source::reconcile_ids`] gives it once the operator is recorded.
+    /// order: for each object of its user modules, the id [`Source::settle_ids`] gives it.
     pub(super) fn assigned_ids(&self, schema: &Schema) -> CatalogIds {
         let mut out = schema.ids().clone();
         if let Ok(files) = self.files() {
             let objs = objects(schema, &files, &|f, s| self.span_text(f, s));
             let replaced = resolved(schema, &self.replaced);
-            let ids = assign(&objs, &self.ids, &mut self.next.clone(), &replaced);
+            let mut next = self.next.clone();
+            let mut known = self.ids.clone();
+            let named = named_ids(&files, &self.ids, &mut next, &mut self.created.clone());
+            known.retain(|k, _| !is_named(k.kind()));
+            known.extend(named);
+            let ids = assign(
+                &objs,
+                &known,
+                &mut next,
+                &replaced,
+                (&self.created, &self.readded()),
+            );
             for o in &objs {
                 out.forget(o.slot());
             }
@@ -84,40 +156,29 @@ impl Source {
         out
     }
 
-    /// Returns the write states the source keeps by name, by the catalog ids `ids` gives the
-    /// objects of `schema`.
-    pub(super) fn catalog_states(&self, schema: &Schema, ids: &CatalogIds) -> States {
-        let mut out = States::default();
-        for (r, rel) in ids.relation_ids() {
-            let def = schema.relation(r);
-            let module = schema.module(def.module);
-            if module.engine {
-                continue;
-            }
-            for c in schema.ty(def.elem_def).ctor_refs() {
-                let ctor = schema.ty(c.def()).ctor_def(c);
-                let key = (module.name.clone(), def.name.clone(), ctor.name.clone());
-                if let (Some(s), Some(cid)) = (self.states.get(&key), ids.ctor_id(c)) {
-                    out.set_relation(rel, cid, s.stage);
-                }
-            }
-        }
-        for (c, cid) in ids.ctor_ids() {
-            let t = schema.ty(c.def());
-            let module = schema.module(t.module);
-            if module.engine || matches!(t.kind, TypeDefKind::Newtype { .. }) {
-                continue;
-            }
-            let key = (
-                module.name.clone(),
-                t.name.clone(),
-                t.ctor_def(c).name.clone(),
-            );
-            if let Some(s) = self.value_states.get(&key) {
-                out.set_value(cid, s.stage);
-            }
-        }
-        out
+    /// Returns the ids of the constructors of type `t` of module `m`.
+    pub(super) fn ctors_of(&self, m: &str, t: &str) -> BTreeSet<CatCtorId> {
+        let Some(Owner::Object(_, ty)) = self.type_owner(m, t) else {
+            return BTreeSet::new();
+        };
+        self.ids
+            .iter()
+            .filter(|(k, _)| {
+                k.kind() == KeyKind::Ctor && *k.owner() == Owner::Object(Space::Shared, ty)
+            })
+            .map(|(_, &id)| CatCtorId::from_raw(id))
+            .collect()
+    }
+
+    /// Returns the id of relation variable `r` of module `m`.
+    pub(super) fn relation_key_id(&self, m: &str, r: &str) -> Option<CatRelId> {
+        self.ids
+            .get(&ObjectKey::named(
+                KeyKind::Relation,
+                Owner::Module(m.to_string()),
+                r,
+            ))
+            .map(|&id| CatRelId::from_raw(id))
     }
 
     /// Move the id of each object a rename or move operator renames or moves to its key after
@@ -160,9 +221,6 @@ impl Source {
             }
             OperatorKind::MoveField { path, sel, .. } => {
                 self.field_moved(before, &q(&path.ty), path, sel.as_ref())
-            }
-            OperatorKind::AddConstructor { path, .. } => {
-                self.record_widened(before, &q(&path.ty), &path.ty.name.text)
             }
             _ => Vec::new(),
         };
@@ -264,7 +322,7 @@ impl Source {
 
     /// Returns the moves of the key fields of record type `t` of module `m`, which an added
     /// constructor makes a sum, from its constructor to its header.
-    fn record_widened(&self, before: &Source, m: &str, t: &str) -> Vec<Option<Moved>> {
+    pub(super) fn record_widened(&self, before: &Source, m: &str, t: &str) -> Vec<Option<Moved>> {
         let Ok(schema) = before.built() else {
             return Vec::new();
         };
@@ -384,7 +442,7 @@ fn resolved(schema: &Schema, replaced: &[Replaced]) -> Vec<Replacement> {
 }
 
 /// A key and the key it takes.
-type Moved = (ObjectKey, ObjectKey);
+pub(super) type Moved = (ObjectKey, ObjectKey);
 
 /// Returns the move of the object of kind `kind` named `from` that `owner` holds to name `to`.
 fn named(kind: KeyKind, owner: Option<Owner>, from: &str, to: &str) -> Option<Moved> {
@@ -413,4 +471,12 @@ fn is_record(before: &Source, m: &str, t: &str) -> bool {
                 })
             )
         })
+}
+
+/// Returns the ids of the types, constructors and relation variables of `ids`.
+fn holding_shared(ids: &BTreeMap<ObjectKey, u64>) -> BTreeSet<u64> {
+    ids.iter()
+        .filter(|(k, _)| k.kind().space() == Space::Shared)
+        .map(|(_, &id)| id)
+        .collect()
 }

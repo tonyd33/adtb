@@ -131,6 +131,14 @@ constructor and takes a new id. A unique or index that a split, merge,
 nest or unnest re-scopes, one whose clause names a constructor the
 operator replaces, is a new index with a new id, and the old index is
 dropped. An index with no `in` is not re-scoped and keeps its id. A
+field dropped and added again under its name is a new field with a new
+id, and a unique, index or default whose elements reach the dropped
+field takes a new id. A unique or index whose `in` names a set dropped
+and added again takes a new id. Where the schema between the drop and
+the add does not build, such a unique, index or default takes its id
+at the first later operator after which the schema builds, in
+declaration order with the uniques, indexes and defaults that operator
+creates. A
 stored view of a declared type `T` is a relation of `T`, and `store f`
 creates no type for it. A field that `move field` moves keeps its id: moved up, the
 header field has the id of the constructor's field; moved down, the

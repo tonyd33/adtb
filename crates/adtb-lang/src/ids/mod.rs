@@ -12,10 +12,12 @@ mod tests;
 
 mod fixed;
 mod key;
+mod named;
 mod objects;
 mod reach;
 pub use fixed::{FixedType, RELATIONS, TYPES};
 pub use key::{KeyKind, ObjectKey, Owner, Path, PathStep, forget};
+pub use named::{is_named, named_ids};
 pub use objects::{Object, assign, objects};
 pub use reach::Replacement;
 

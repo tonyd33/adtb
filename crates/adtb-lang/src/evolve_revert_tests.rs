@@ -457,10 +457,11 @@ fn a_revert_is_refused_while_a_later_migration_does_not_resolve() {
 /// Returns the declarations of `s` and the stage of each write state: what a revert restores. A
 /// constructor a revert adds back is a new one, declared at the revert's version.
 fn restored(s: &Source) -> impl PartialEq + std::fmt::Debug {
-    let stages = |m: &BTreeMap<StateKey, State>| -> Vec<(StateKey, Stage)> {
+    let stages = |m: &BTreeMap<StateNames, State>| -> Vec<(StateNames, Stage)> {
         m.iter().map(|(k, v)| (k.clone(), v.stage)).collect()
     };
-    (s.decls.clone(), stages(&s.states), stages(&s.value_states))
+    let (relations, values) = named_states(s);
+    (s.decls.clone(), stages(&relations), stages(&values))
 }
 
 #[test]
@@ -552,7 +553,8 @@ fn reverting_drop_type_restores_the_value_states_of_its_constructors() {
         s = applies(&s, &headed(t));
     }
     let stage = |c: &str| {
-        s.value_states
+        named_states(&s)
+            .1
             .get(&("auth".to_string(), "P".to_string(), c.to_string()))
             .map(|st| st.stage)
     };

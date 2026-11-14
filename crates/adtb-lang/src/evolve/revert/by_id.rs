@@ -213,64 +213,23 @@ pub(super) fn recreate(
     }
 }
 
-/// The write state an inverse sets back: of a constructor relation, by the relation's and the
-/// constructor's ids, or of a value-level constructor, by its id.
-#[derive(Clone, Copy, Debug)]
-pub(in crate::evolve) enum StateOf {
-    Relation(CatRelId, CatCtorId),
-    Value(CatCtorId),
-}
-
 impl StateOf {
-    /// Returns the ids of the constructor relation, when `relation`, or of the value-level
-    /// constructor whose write state `src` keeps at `key`.
-    pub(super) fn of(src: &Source, relation: bool, key: &StateKey) -> Option<StateOf> {
-        let (m, owner, c) = key;
-        if !relation {
-            return Some(StateOf::Value(CatCtorId::from_raw(
-                src.ctor_key_id(m, owner, c)?,
-            )));
+    /// Returns the state when `src` holds its relation variable and constructor, else the kind of
+    /// the object it lacks.
+    pub(super) fn held(self, src: &Source) -> Result<StateOf, &'static str> {
+        let held =
+            |kind: KeyKind, id: u64| src.ids.iter().any(|(k, x)| *x == id && k.kind() == kind);
+        let (rel, ctor) = match self {
+            StateOf::Relation(r, c) => (Some(r), c),
+            StateOf::Value(c) => (None, c),
+        };
+        if rel.is_some_and(|r| !held(KeyKind::Relation, r.raw())) {
+            return Err("relation");
         }
-        let at = ObjectKey::named(KeyKind::Relation, Owner::Module(m.clone()), owner);
-        let rel = *src.ids.get(&at)?;
-        let (tm, t) = src.relation_type(m, owner)?;
-        Some(StateOf::Relation(
-            CatRelId::from_raw(rel),
-            CatCtorId::from_raw(src.ctor_key_id(&tm, &t, c)?),
-        ))
-    }
-
-    /// Returns whether the state is a constructor relation's and its key in `src`, else the kind
-    /// of the object `src` lacks.
-    pub(super) fn key(self, src: &Source) -> Result<(bool, StateKey), &'static str> {
-        let held = |kind: KeyKind, id: u64| {
-            src.ids
-                .iter()
-                .find(|(k, x)| **x == id && k.kind() == kind)
-                .map(|(k, _)| k)
-        };
-        let named = |k: &ObjectKey| -> Result<(String, String), &'static str> {
-            let name = k.name().ok_or("constructor")?.to_string();
-            match k.owner() {
-                Owner::Module(m) => Ok((m.clone(), name)),
-                Owner::Object(..) => Err("constructor"),
-            }
-        };
-        let ctor = |c: CatCtorId| -> Result<(String, String, String), &'static str> {
-            let k = held(KeyKind::Ctor, c.raw()).ok_or("constructor")?;
-            let &Owner::Object(_, t) = k.owner() else {
-                return Err("constructor");
-            };
-            let (m, ty) = named(held(KeyKind::Type, t).ok_or("type")?)?;
-            Ok((m, ty, k.name().ok_or("constructor")?.to_string()))
-        };
-        match self {
-            StateOf::Relation(r, c) => {
-                let (m, rel) = named(held(KeyKind::Relation, r.raw()).ok_or("relation")?)?;
-                Ok((true, (m, rel, ctor(c)?.2)))
-            }
-            StateOf::Value(c) => Ok((false, ctor(c)?)),
+        if !held(KeyKind::Ctor, ctor.raw()) {
+            return Err("constructor");
         }
+        Ok(self)
     }
 
     fn mapped(self, again: &Recreated) -> StateOf {
