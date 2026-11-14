@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-12
-status: open
+status: resolved
+closed: 2026-11-13
 kind: bug
 priority: 340
 summary: "a field dropped and re-added in one migration keeps its id when the source between does not build"
