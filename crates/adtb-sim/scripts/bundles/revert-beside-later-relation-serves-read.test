@@ -1,0 +1,34 @@
+seed 97
+
+migrate
+  module m
+  add module m
+  add type O = { id: Key os, n: I64, x: Text }
+  add relation os : O key id generate sequence
+  add type Z = { id: Key zs }
+  add relation zs : Z key id generate sequence
+
+run
+  insert os { n: 1, x: "a" }
+
+migrate
+  module m
+  drop relation zs
+  drop field O.x
+  drop type Z
+
+migrate
+  module m
+  revert 0002
+    fill O.x = match
+      | O o -> print(o.id)
+
+bundle web-1.0 pins 2 edition "2026-10"
+  import m
+  query ns () -> Set I64 =
+    from o in os select o.n
+reopen
+
+call web-1.0 1
+----
+1

@@ -1,0 +1,26 @@
+seed 73
+
+migrate
+  module m
+  add module m
+  add type O = { id: Key os, n: I64 }
+  add relation os : O key id generate sequence
+
+run
+  insert os { n: 1 }
+
+migrate refused MigrationRefused { version: 2, reason: Rejected { reason: SchemaRefused { operator: "", detail: "`later` is added by a later operator of this migration" } } }
+  module m
+  add type W = { k: Option (Key later) }
+  add field O.u: Option (Key later) fill match W.parse("W { k: Some { value: {} } }")
+    | None -> None
+    | Some { value: w } -> w.k
+  add type L = { id: Key later }
+  add relation later : L key id generate sequence
+
+reopen
+
+query
+  from o in os select { n: o.n }
+----
+{ n: 1 }

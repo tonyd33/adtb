@@ -25,6 +25,7 @@ mod tests;
 mod names;
 pub use names::field_path;
 
+mod ahead;
 mod build;
 mod engine;
 mod inputs;
@@ -528,13 +529,14 @@ impl Schema {
     pub fn relation_of(&self, rel: RelRef) -> Result<RelId, String> {
         match rel {
             RelRef::Declared(id) => Ok(id),
-            RelRef::Ahead(a) => {
-                let (_, name) = self.ahead_relation(a);
-                Err(format!(
-                    "`{name}` is added by a later operator of this migration"
-                ))
-            }
+            RelRef::Ahead(a) => Err(self.added_later(a)),
         }
+    }
+
+    /// Returns the refusal of a read through a key of relation `a`.
+    fn added_later(&self, a: AheadId) -> String {
+        let (_, name) = self.ahead_relation(a);
+        format!("`{name}` is added by a later operator of this migration")
     }
 
     pub fn function(&self, id: FnId) -> &FunctionDef {

@@ -1,5 +1,5 @@
 use crate::schema::{Generator, Schema, TypeDefKind};
-use crate::types::{Base, CtorSet, RelId, Ty};
+use crate::types::{Base, CtorSet, RelId, RelRef, Ty};
 
 /// The shape of the values of a type, as their textual syntax needs it.
 #[derive(Clone, Debug, PartialEq)]
@@ -148,8 +148,14 @@ impl Form {
             },
             Ty::Record(fs) => Form::Record(fields_of(schema, fs)),
             Ty::Unit => Form::Unit,
-            Ty::Key { rel, .. } => {
-                let rel = &schema.declared(*rel);
+            Ty::Key {
+                rel: RelRef::Ahead(_),
+                ..
+            } => Form::Record(Vec::new()),
+            Ty::Key {
+                rel: RelRef::Declared(rel),
+                ..
+            } => {
                 let r = schema.relation(*rel);
                 let value = match r.key.as_slice() {
                     [f] => KeyForm::One(Box::new(Form::of(schema, &key_field_ty(schema, *rel, f)))),

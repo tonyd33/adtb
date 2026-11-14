@@ -1,0 +1,25 @@
+seed 73
+
+migrate
+  module m
+  add module m
+  add type O = { id: Key os, n: I64 }
+  add relation os : O key id generate sequence
+
+run
+  insert os { n: 1 }
+
+migrate
+  module m
+  add field O.u: Option (Key later) fill None
+  add field O.s: Text fill match
+    | O o -> print(o.u)
+  add field O.r: Text fill match
+    | O o -> print({ n: o.n, u: o.u })
+  add type L = { id: Key later }
+  add relation later : L key id generate sequence
+
+query
+  from o in os select { n: o.n, s: o.s, r: o.r }
+----
+{ n: 1, s: "None", r: "{ n: 1, u: None }" }

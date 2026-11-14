@@ -875,6 +875,9 @@ impl Checker<'_> {
                     unreachable!()
                 };
                 let x = self.base_arg(a, Base::Text)?;
+                self.schema
+                    .holds_no_ahead_key(&ty)
+                    .map_err(|e| diag(span, e))?;
                 let ty = self.option_ty(ty);
                 Ok(self.prim(Prim::Parse, vec![x], ty))
             }

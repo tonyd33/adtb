@@ -1305,3 +1305,103 @@ fn is_ordered_with(s: &Schema, ty: &Ty, param: &dyn Fn(u32) -> bool) -> bool {
     s.is_ordered_with(ty, param)
         .expect("no key of the type names a later relation")
 }
+
+#[test]
+fn a_key_of_a_relation_a_later_operator_adds_has_the_form_of_the_empty_record() {
+    let file = parse_schema(
+        "module m\ntype O = { id: Key os, u: Key later }\nrelation os : O key id generate sequence",
+        Options::default(),
+    )
+    .ok()
+    .unwrap();
+    let ahead = Ahead {
+        module: "m".to_string(),
+        relation: "later".to_string(),
+        typed: false,
+    };
+    let s = build_ahead(&[(FileId(0), file)], &[ahead]).unwrap();
+    let o = s.ty(s.relation(relation(&s, "os")).elem_def);
+    let u = &o.field_named(0, "u").unwrap().ty;
+    assert_eq!(
+        crate::textual::Form::Record(Vec::new()),
+        crate::textual::Form::of(&s, u)
+    );
+}
+
+#[test]
+fn a_value_holds_a_key_of_a_relation_a_later_operator_adds_through_each_type_former() {
+    let file = parse_schema(
+        "module m
+type O = { id: Key os, n: I64 }
+relation os : O key id generate sequence
+type R = { b: Key later, o: Option (Key later) }
+type S = A { k: Key later } | B { n: I64 }
+type P a = { k: Text, v: a }
+type E = new Text
+type K = { l: Key later, m: I64 }
+relation ks : K key l
+type N { id: Key nodes } = Lit { l: Key later } | Add { a: Key nodes }
+relation nodes : N key id generate sequence
+type H { id: Key hs } = H { l: Key later }
+relation hs : H key id generate sequence
+type Q a = { k: a }
+relation qs : Q (Key later) key k",
+        Options::default(),
+    )
+    .ok()
+    .unwrap();
+    let ahead = Ahead {
+        module: "m".to_string(),
+        relation: "later".to_string(),
+        typed: false,
+    };
+    let s = build_ahead(&[(FileId(0), file)], &[ahead]).unwrap();
+    let m = s.module_named("m").unwrap();
+    let data = |name: &str, args: Vec<Ty>| Ty::Data {
+        def: s.module(m).types[name],
+        args,
+        ctors: None,
+    };
+    let key = |name: &str| Ty::Key {
+        rel: RelRef::Declared(relation(&s, name)),
+        ctors: None,
+    };
+    let r = s.ty(s.module(m).types["R"]);
+    let later = r.field_named(0, "b").unwrap().ty.clone();
+    let refused = Err("`later` is added by a later operator of this migration".to_string());
+    for (case, ty, want) in [
+        ("direct", later.clone(), refused.clone()),
+        (
+            "option",
+            r.field_named(0, "o").unwrap().ty.clone(),
+            refused.clone(),
+        ),
+        (
+            "nested record",
+            Ty::Record(vec![(
+                "a".to_string(),
+                Ty::Record(vec![("b".to_string(), later.clone())]),
+            )]),
+            refused.clone(),
+        ),
+        (
+            "sum constructor field",
+            data("S", Vec::new()),
+            refused.clone(),
+        ),
+        ("type argument", data("P", vec![later]), refused.clone()),
+        ("newtype base", data("E", Vec::new()), Ok(())),
+        ("relation key field", key("ks"), refused.clone()),
+        (
+            "relation key field of a type argument",
+            key("qs"),
+            refused.clone(),
+        ),
+        ("recursive type", data("N", Vec::new()), refused),
+        ("key of a row holding one", key("hs"), Ok(())),
+        ("tag", Ty::Tag(Box::new(data("S", Vec::new()))), Ok(())),
+        ("none", data("O", Vec::new()), Ok(())),
+    ] {
+        assert_eq!(want, s.holds_no_ahead_key(&ty), "{case}");
+    }
+}
