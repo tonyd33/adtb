@@ -248,6 +248,7 @@ pub fn check_txn_in(
         term,
     };
     crate::analysis::txn_diag(schema, program, &txn, t.span)?;
+    crate::kernel::assert_valid(schema, &txn.terms, &[(txn.term, Vec::new())]);
     Ok(txn)
 }
 

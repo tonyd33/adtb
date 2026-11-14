@@ -1,5 +1,6 @@
 use std::fmt;
 
+use adtb_lang::kernel::Invalid;
 use adtb_lang::norm;
 use adtb_lang::permission;
 use adtb_lang::span::FileDiag;
@@ -32,6 +33,8 @@ pub(super) enum Broken {
     CallNotNormal(norm::Error),
     CallNotOneItem,
     RegistrationNotNormal(norm::Error),
+    /// A term of a checked registered call breaks the kernel's invariants.
+    CallIllTyped(Invalid),
     NotASet(Val),
     UnresolvedGrant {
         privilege: String,
@@ -77,6 +80,12 @@ impl fmt::Display for Broken {
                     "a checked registration's program does not normalise: {e:?}"
                 )
             }
+            Broken::CallIllTyped(e) => write!(
+                f,
+                "a checked registered call's kernel term {:?} keeps the kernel's invariants: {}",
+                e.at(),
+                e.reason()
+            ),
             Broken::NotASet(v) => write!(f, "a set-valued item evaluates to a set, not {v:?}"),
             Broken::UnresolvedGrant { privilege } => {
                 write!(f, "a resolved `{privilege}` names an object of the schema")

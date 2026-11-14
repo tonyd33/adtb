@@ -396,13 +396,13 @@ rename type Inner to Inner9";
                 "rename type T to T9\nrename constructor T9.B to B9\nrename set R of ts to R9",
                 "rename type T to T9\nrename constructor T9.B to B9\nrename set R of ts to R9",
             )
-            .after("deprecate ts.C"),
+            .after(&self.keeping_s("deprecate ts.C")),
             reused(
                 &self.remove_c(),
                 "rename set R of ts to R9\nadd set R of ts = A",
                 "rename set R of ts to R9\nadd set R of ts = A",
             )
-            .after("deprecate ts.C"),
+            .after(&self.keeping_s("deprecate ts.C")),
             Case::new("add constructor V.V2 { w2: Text }")
                 .then(
                     "add field V.V.e: Text fill \"e\"\nadd field V.V.g: Text fill \"g\"",
@@ -446,52 +446,59 @@ rename constructor Inner.Z to B";
             "remove constructor T.C
 redefine fn f (t: T) -> Text = match t
   | A a -> a.x
-  | B b -> b.x{}",
+  | B b -> b.x
+  | G g -> \"\"{}",
             self.d_arm("\n  | D d -> d.w")
         )
+    }
+
+    /// Returns `after` preceded by adding constructor `G` of `T`.
+    fn keeping_s(self, after: &str) -> String {
+        format!("add constructor T.G\n  arm f: G g -> \"\"\n{after}")
     }
 
     /// The cases removing constructor `C` of `T`.
     fn removing(self) -> Vec<Case> {
         let remove = self.remove_c();
         vec![
-            Case::new(&remove).after("deprecate ts.C"),
+            Case::new(&remove).after(&self.keeping_s("deprecate ts.C")),
             Case::new(&remove)
-                .after(
+                .after(&self.keeping_s(
                     "drop set R of ts
 add type Z { id: Key zs } = C | Z2
 add relation zs : Z key id generate sequence
 deprecate ts.C",
-                )
+                ))
                 .then("deprecate zs.C", Some("deprecate zs.C"))
                 .labelled(OTHER_TYPE),
             Case::new(&remove)
-                .after("add index (n) in ts.(B | C)\ndeprecate ts.C")
+                .after(&self.keeping_s("add index (n) in ts.(B | C)\ndeprecate ts.C"))
                 .then(
                     "add index (n) in ts.B\nadd index (n) in ts.B",
                     Some("add index (n) in ts.B\nadd index (n) in ts.B"),
                 )
                 .labelled(CLAUSE_TWIN),
             Case::new(&remove)
-                .after(&format!(
+                .after(&self.keeping_s(&format!(
                     "add constraint cz = from t in ts where match t
   | A a -> a.x == \"\"
   | B b -> false
-  | C c -> c.z == \"\"{}
+  | C c -> c.z == \"\"
+  | G g -> false{}
   select t
 deprecate ts.C",
                     self.d_arm("\n  | D d -> false")
-                ))
+                )))
                 .labelled(CONSTRAINT_ARM),
             Case::new(&remove)
-                .after(&format!(
+                .after(&self.keeping_s(&format!(
                     "add constraint cz = from t in ts
-  where (match t | A a -> a.x == \"\" | B b -> false | C c -> c.z == \"\"{d})
-    and (match t | A a -> false | B b -> b.x == \"\" | C c -> c.y == \"\"{d})
+  where (match t | A a -> a.x == \"\" | B b -> false | C c -> c.z == \"\" | G g -> false{d})
+    and (match t | A a -> false | B b -> b.x == \"\" | C c -> c.y == \"\" | G g -> false{d})
   select t
 deprecate ts.C",
                     d = self.d_arm(" | D d -> false")
-                ))
+                )))
                 .labelled(TWO_MATCHES),
         ]
     }
@@ -752,18 +759,18 @@ fn restoring() -> Vec<Case> {
                 "the inverse of `drop index (z) in ts.S` names a field a later migration dropped",
             )
             .labelled(DROPPED),
-        Case::new("drop index (z) in ts.R")
-            .after("add index (z) in ts.R")
+        Case::new("drop index (z) in ts.R2")
+            .after("add set R2 of ts = B | C\nadd index (z) in ts.R2")
             .then("drop field T.B.z\nadd field T.B.z: Text fill \"q\"", None)
             .refused(
-                "the inverse of `drop index (z) in ts.R` names a field a later migration dropped",
+                "the inverse of `drop index (z) in ts.R2` names a field a later migration dropped",
             )
             .labelled(READDED_UNBUILT),
-        Case::new("drop index (z) in ts.R")
-            .after("add index (z) in ts.R")
+        Case::new("drop index (z) in ts.R2")
+            .after("add set R2 of ts = B | C\nadd index (z) in ts.R2")
             .then("drop field T.C.z\nadd field T.C.z: Text fill \"q\"", None)
             .refused(
-                "the inverse of `drop index (z) in ts.R` names a field a later migration dropped",
+                "the inverse of `drop index (z) in ts.R2` names a field a later migration dropped",
             )
             .labelled(READDED_BUILT),
         Case::new("drop fn g")
@@ -1638,8 +1645,8 @@ const REFUSED_ON_REPLACED: &str = "structural-operators-refuse-clauses-on-replac
 const SET_SCOPE: &str = "log-resolver-set-scope-as-ctor";
 
 /// The operators scoping an index by a named set do not resolve.
-const ADD_R: &str = "Unresolved: an object `add index (z) in ts.R` creates or names is in neither the source before it nor the one after it";
-const DROP_R: &str = "Unresolved: an object `drop index (z) in ts.R` creates or names is in neither the source before it nor the one after it";
+const ADD_R: &str = "Unresolved: an object `add index (z) in ts.R2` creates or names is in neither the source before it nor the one after it";
+const DROP_R: &str = "Unresolved: an object `drop index (z) in ts.R2` creates or names is in neither the source before it nor the one after it";
 const DROP_S: &str = "Unresolved: an object `drop index (z) in ts.S` creates or names is in neither the source before it nor the one after it";
 const DROP_S3: &str = "Unresolved: an object `drop index (z) in ts.S3` creates or names is in neither the source before it nor the one after it";
 
@@ -1662,12 +1669,12 @@ const fn set_scoped(
 const KNOWN: &[Known] = &[
     set_scoped(
         "DropIndex",
-        "drop index (z) in ts.R [field re-added through a source that builds]",
+        "drop index (z) in ts.R2 [field re-added through a source that builds]",
         &[ADD_R, DROP_R],
     ),
     set_scoped(
         "DropIndex",
-        "drop index (z) in ts.R [field re-added through a source that does not build]",
+        "drop index (z) in ts.R2 [field re-added through a source that does not build]",
         &[ADD_R, DROP_R],
     ),
     set_scoped("DropIndex", "drop index (z) in ts.S", &[DROP_S]),

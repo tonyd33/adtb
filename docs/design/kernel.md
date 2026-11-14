@@ -242,6 +242,10 @@ for the `i`-th type argument of the `Call` being evaluated; a consumer
 substitutes the call's `type_args`, themselves substituted by the
 caller's, before reading a type that may hold one.
 
+Where a row gives `τ` from the types of the node's children, `τ` is the
+type the node was checked against: that type or a supertype of it. A
+`Var`, `Rel` or `Transition` has exactly the type its row gives.
+
 | Kind | Invariant |
 | --- | --- |
 | `Var(x)` | `τ` is `x`'s type |
@@ -252,8 +256,8 @@ caller's, before reading a type that may hold one.
 | `Const(Duration(d))` | `τ` is `Duration`; `d` is microseconds |
 | `Prim(p, args)` | as §5 states for `p` |
 | `Record(fs)` | `τ` is a `Record` with the same labels; fields sorted by name |
-| `Field(e, l)` | `ty(e)` is a record, or a row type every constructor of which has `l`; `τ` is `l`'s type |
-| `Ctor { ctor, fields }` | `τ` is a declared sum (`ctors` is `Some([ctor])`, or `None` when the sum has one constructor), an anonymous `Sum`, or `Tag T`; `ctor` indexes the declaration order, the name order, or `T`'s constructors; every field of the constructor, header fields included, is given once, sorted by name; a `Tag` constructor has none |
+| `Field(e, l)` | `ty(e)` is a record, or a row type every constructor of which has `l`; `τ` is `l`'s type, except that for a key field `l` of `r` with `Schema::self_key(r, l)` and `ty(e)` `r`'s row type at `S`, it is `Key r.S` |
+| `Ctor { ctor, fields }` | `τ` is a declared sum whose constructor set holds `ctor` (`ctors` names it, or is `None`), an anonymous `Sum`, or `Tag T`; `ctor` indexes the declaration order, the name order, or `T`'s constructors; every field of the constructor, header fields included, is given once, sorted by name; a `Tag` constructor has none |
 | `Case { scrutinee, arms }` | `ty(scrutinee)` is a sum or row type with constructor set `S`; one arm per constructor of `S`, ascending; each arm's body is a subtype of `τ` |
 | `If(c, a, b)` | `ty(c)` is `Bool`; `a` and `b` are subtypes of `τ` |
 | `Let(x, e, b)` | `τ = ty(b)` |

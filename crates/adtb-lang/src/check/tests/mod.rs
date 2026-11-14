@@ -914,6 +914,43 @@ fn index_path(s: &Schema, p: &Program, name: &str, i: usize) -> Vec<PathStep> {
 }
 
 #[test]
+fn an_index_scope_naming_every_constructor_reads_rows_of_the_whole_sum() {
+    let (s, p) = program(
+        "type Note { id: Key notes, body: Text } = Plain | Other
+relation notes : Note
+  key id generate sequence
+  index (body) in (Plain | Other)",
+    )
+    .expect("the schema checks");
+    let value = p.index_fields[&(rel_id(&s, "notes"), 0, 0)].value;
+    let Kind::Lam(row, _) = p.terms.kind(value) else {
+        panic!(
+            "an index field is a `Lam` over the row: {:?}",
+            p.terms.kind(value)
+        );
+    };
+    let Ty::Data { ctors, .. } = &p.terms.var_info(*row).ty else {
+        panic!("a row is of a declared sum");
+    };
+    assert_eq!(&None, ctors);
+}
+
+#[test]
+fn an_index_scope_naming_every_constructor_reaches_the_fields_of_one_with_no_scope() {
+    let declared = |scope: &str| {
+        program(&format!(
+            "type Note {{ id: Key notes }} = Plain {{ body: Text }} | Other {{ body: Text }}
+relation notes : Note
+  key id generate sequence
+  index (body){scope}"
+        ))
+        .map(drop)
+    };
+    assert_eq!(Err(vec!["no `body` in scope".to_string()]), declared(""));
+    assert_eq!(declared(""), declared(" in (Plain | Other)"));
+}
+
+#[test]
 fn an_index_field_through_a_value_level_constructor_names_its_path() {
     runtime::probes(
         "an_index_field_through_a_value_level_constructor_names_its_path",

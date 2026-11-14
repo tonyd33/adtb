@@ -9,6 +9,8 @@ publish.workspace = true
 [features]
 # Cap the heap of a test binary this crate links into.
 test-heap-cap = ["dep:adtb-heap-cap"]
+# Validate kernel terms at the exits of check and of `norm::program`, as a debug build does.
+testing = []
 
 [dependencies]
 adtb-heap-cap = { workspace = true, optional = true }

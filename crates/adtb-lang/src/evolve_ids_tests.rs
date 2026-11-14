@@ -621,7 +621,7 @@ fn a_field_dropped_and_added_again_while_the_source_between_does_not_build_takes
  {
     let base = source(
         "module auth
-type T { id: Key ts } = A { z: Text } | B { z: Text }
+type T { id: Key ts } = A { z: Text } | B { z: Text } | C
 relation ts : T
   key id generate sequence
   index (z) in B
@@ -842,33 +842,31 @@ fn an_operator_on_a_constructor_of_a_scope_listing_every_constructor_re_scopes_t
     let base = source(
         "module auth
 type K = A | B
-type Inner = A { z: Text } | B { z: Text }
 type T { id: Key ts, n: Text } = A { z: Text } | B { z: Text }
 relation ts : T
   key id generate sequence
-  index (z) in (A | B)
   index (n) in (A | B)",
     );
-    assert_eq!(vec![1025, 1026], index_ids(&base, "ts"));
+    assert_eq!(vec![1025], index_ids(&base, "ts"));
     let operators = [
         (
             "split constructor T.A into A1 { z: Text } | A2 { z: Text }
   by match
     | A a -> A1 { z: a.z }",
-            "relation ts : T key id generate sequence index (z) in (A1 | A2 | B) index (n) in (A1 | A2 | B)",
+            "relation ts : T key id generate sequence index (n) in (A1 | A2 | B)",
         ),
         (
             "merge constructor T.(A | B) into M { k: K, z: Text }
   by match
     | A a -> M { k: A, z: a.z }
     | B b -> M { k: B, z: b.z }",
-            "relation ts : T key id generate sequence index (z) in M index (n) in M",
+            "relation ts : T key id generate sequence index (n) in M",
         ),
     ];
     for (op, text) in operators {
         let after = applies(&base, &format!("module auth\n{op}"));
         assert_eq!(
-            (text, vec![1027, 1028]),
+            (text, vec![1026]),
             (
                 flat(&decl(&after, "relation", "ts")).as_str(),
                 index_ids(&after, "ts")
@@ -876,21 +874,12 @@ relation ts : T
             "{op}"
         );
     }
-    assert_eq!(
-        Some(vec!["`index (z)` has no image under the nest".to_string()]),
-        migrate(
-            &base,
-            "module auth\nnest constructor T.(A | B) into N { inner: Inner }"
-        )
-        .err()
-    );
     let unique = source(
         "module auth
-type K = A | B
-type T { id: Key ts } = A { z: Text } | B { z: Text }
+type T { id: Key ts, n: Text } = A { z: Text } | B { z: Text }
 relation ts : T
   key id generate sequence
-  unique (z) in (A | B)",
+  unique (n) in (A | B)",
     );
     assert_eq!(vec![1025], index_ids(&unique, "ts"));
     let split = applies(
@@ -902,7 +891,7 @@ split constructor T.A into A1 { z: Text } | A2 { z: Text }
     );
     assert_eq!(
         (
-            "relation ts : T key id generate sequence unique (z) in (A1 | A2 | B)",
+            "relation ts : T key id generate sequence unique (n) in (A1 | A2 | B)",
             vec![1026]
         ),
         (
@@ -910,12 +899,25 @@ split constructor T.A into A1 { z: Text } | A2 { z: Text }
             index_ids(&split, "ts")
         )
     );
+}
+
+#[test]
+fn a_nest_is_refused_while_an_index_reaches_a_field_through_several_nested_constructors() {
+    let base = source(
+        "module auth
+type Inner = A { z: Text } | B { z: Text }
+type T { id: Key ts } = A { z: Text } | B { z: Text } | C
+relation ts : T
+  key id generate sequence
+  index (z) in (A | B)",
+    );
     assert_eq!(
-        Some(vec![
-            "`unique (z) in (A | B)` holds across the merged constructors; the merge would weaken it"
-                .to_string()
-        ]),
-        migrate(&unique, &format!("module auth\n{MERGE_A_B}")).err()
+        Some(vec!["`index (z)` has no image under the nest".to_string()]),
+        migrate(
+            &base,
+            "module auth\nnest constructor T.(A | B) into N { inner: Inner }"
+        )
+        .err()
     );
 }
 
@@ -952,10 +954,15 @@ fn a_merge_is_refused_while_a_unique_holds_across_exactly_the_merged_constructor
 
 #[test]
 fn a_merge_re_scopes_a_unique_over_the_merged_constructors_and_another_without_weakening_it() {
-    let merged = applies(
-        &three_ctors("unique (z) in (A | B | C)"),
-        &format!("module auth\n{MERGE_A_B}"),
+    let four = source(
+        "module auth
+type K = A | B
+type T { id: Key ts } = A { z: Text } | B { z: Text } | C { z: Text } | D
+relation ts : T
+  key id generate sequence
+  unique (z) in (A | B | C)",
     );
+    let merged = applies(&four, &format!("module auth\n{MERGE_A_B}"));
     assert_eq!(
         "relation ts : T key id generate sequence unique (z) in (M | C)",
         flat(&decl(&merged, "relation", "ts"))
@@ -1011,7 +1018,7 @@ impl Scoped {
             clauses.push(format!("index (z) in (A | {b})"));
         }
         if self.full {
-            clauses.push(format!("index (n, id) in (A | {b} | C)"));
+            clauses.push(format!("index (n, id) in (A | {b} | C | E)"));
         }
         if self.dotted {
             clauses.push("index (p.a) in S".to_string());
@@ -1025,7 +1032,7 @@ type K = A | {b}
 type Q = Q1 | Q2
 type Sm = X {{ g: Text }} | Y
 type P = {{ a: Text }}
-type T {{ id: Key ts, n: Text, p: P }} = A {{ {fields} }} | {b} {{ {fields} }} | C {{ z: Text }}
+type T {{ id: Key ts, n: Text, p: P }} = A {{ {fields} }} | {b} {{ {fields} }} | C {{ z: Text }} | E
 type Inner = A {{ {fields} }} | {b} {{ {fields} }}
 type InnerA = A {{ {fields} }}
 relation ts : T
@@ -1082,10 +1089,10 @@ set S of ts = {set}"
                 Rows::Merge(both()),
             ));
         }
-        if self.wide {
+        if self.wide && !self.full {
             out.push(op(
                 None,
-                format!("move field T.n to T.(A | {b} | C)"),
+                format!("move field T.n to T.(A | {b} | C | E)"),
                 &[],
                 |d| moved(d, "n", None, Some("A")),
                 Rows::Same,
@@ -1520,6 +1527,8 @@ struct Search {
     ran: usize,
     /// The operators applied, by their first three words.
     reached: BTreeSet<String>,
+    /// The shapes on which moving `T.n` to every constructor was refused.
+    full_moves: usize,
 }
 
 impl Search {
@@ -1529,10 +1538,25 @@ impl Search {
             refused: Vec::new(),
             ran: 0,
             reached: BTreeSet::new(),
+            full_moves: 0,
         };
         for bits in SCOPED.into_iter().take(count) {
             let shape = Scoped::of(bits);
             let start = source(&shape.text());
+            if shape.wide && shape.full {
+                let b = shape.b();
+                let moved = migrate(
+                    &start,
+                    &format!("module auth\nmove field T.n to T.(A | {b} | C | E)"),
+                );
+                match moved {
+                    Err(e) if e == ["no `n` in scope"] => search.full_moves += 1,
+                    other => search.refused.push(format!(
+                        "{bits:05b} the move of `T.n` under a clause listing every constructor gives {:?}",
+                        other.err()
+                    )),
+                }
+            }
             for op in shape.ops() {
                 search.ran += 1;
                 let what = format!("{bits:05b} {}", op.text.lines().next().unwrap_or_default());
@@ -1646,6 +1670,7 @@ fn a_structural_operator_or_its_revert_keeps_the_id_of_every_object_it_does_not_
     }
     assert!(found.is_empty(), "{}", found.join("\n"));
     assert!(search.ran >= count * 3, "ran {} operators", search.ran);
+    assert!(search.full_moves >= 1, "no shape lists every constructor");
     if count >= 8 {
         assert_eq!(12, search.reached.len(), "{:?}", search.reached);
     }

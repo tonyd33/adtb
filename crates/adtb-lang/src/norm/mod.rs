@@ -51,6 +51,31 @@ impl NormalProgram {
     pub fn checks(&self) -> impl Iterator<Item = (CheckIdx, Tm)> + '_ {
         self.checks.iter().map(|(&c, &t)| (c, t))
     }
+
+    /// Returns every body of the program with the variables free in it.
+    pub fn roots(&self) -> Vec<(Tm, Vec<Var>)> {
+        let mut out: Vec<(Tm, Vec<Var>)> = Vec::new();
+        out.extend(
+            self.functions
+                .iter()
+                .flatten()
+                .map(|(ps, t)| (*t, ps.clone())),
+        );
+        out.extend(self.constraints.values().map(|t| (*t, vec![])));
+        out.extend(self.checks.values().map(|t| (*t, vec![])));
+        out.extend(self.domains.values().map(|(v, t)| (*t, vec![*v])));
+        out.extend(self.retags.values().map(|(v, t)| (*t, vec![*v])));
+        out.extend(self.defaults.values().map(|t| (*t, vec![])));
+        out.extend(self.computed.values().map(|(v, t)| (*t, vec![*v])));
+        out.extend(self.index_fields.values().map(|(v, f)| (f.value, vec![*v])));
+        for a in self.aggregates.iter().flatten() {
+            out.push((a.init, vec![]));
+            for (vs, t) in [&a.step, &a.merge, &a.finish] {
+                out.push((*t, vs.clone()));
+            }
+        }
+        out
+    }
 }
 
 /// The normal forms of a user-defined aggregate's parts, each over its variables.
@@ -194,6 +219,7 @@ pub fn program(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
         aggregates,
     };
     planned_within_bound(&program)?;
+    crate::kernel::assert_normal(schema, &program.terms, &program.roots());
     Ok(program)
 }
 

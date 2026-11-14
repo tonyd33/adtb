@@ -4,7 +4,7 @@ use std::sync::Arc;
 use adtb_lang::ast::{BundleItem, FnDecl, QName};
 use adtb_lang::check::{Program, check_adhoc};
 use adtb_lang::ids::CatFunctionId;
-use adtb_lang::kernel::{Kind, Terms, Tm, Var};
+use adtb_lang::kernel::{self, Kind, Terms, Tm, Var};
 use adtb_lang::norm::{self, NormalQuery};
 use adtb_lang::parse::{Options, parse_adhoc};
 use adtb_lang::schema::Schema;
@@ -62,6 +62,7 @@ pub(super) fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Erro
             }
             Item::Query(q, checked) => {
                 source_reads.add_source(schema, program, &checked.terms, checked.term);
+                registered_valid(schema, &checked.terms, checked.term)?;
                 let normal = norm::query(schema, program, &checked).map_err(not_normal)?;
                 let (signature, text) = decl(q.span, &q.name, &q.result);
                 let mut e = declared(&q.name.text, Callable::Query, &c.signature, normal)?;
@@ -71,6 +72,7 @@ pub(super) fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Erro
             }
             Item::Txn(t, checked) => {
                 source_reads.add_source(schema, program, &checked.terms, checked.term);
+                registered_valid(schema, &checked.terms, checked.term)?;
                 let normal = norm::txn(schema, program, &checked).map_err(not_normal)?;
                 let (signature, text) = decl(t.span, &t.name, &t.result);
                 let mut e = declared(&t.name.text, Callable::Txn, &c.signature, normal)?;
@@ -238,6 +240,13 @@ fn imported(schema: &Schema, program: &Program, f: &QName, id: FnId) -> Result<E
     e.function = schema.ids().function_id(id).map(CatFunctionId::raw);
     e.function_name = Some(qualified);
     Ok(e)
+}
+
+/// Refuse a registered query or transaction whose checked term `term` of `terms` breaks the
+/// kernel's invariants, as a broken checker guarantee.
+fn registered_valid(schema: &Schema, terms: &Terms, term: Tm) -> Result<(), Error> {
+    kernel::validate(schema, terms, &[(term, Vec::new())])
+        .map_err(|e| Error::internal(Broken::CallIllTyped(e)))
 }
 
 /// Returns what a normaliser's refusal of a registered body answers.

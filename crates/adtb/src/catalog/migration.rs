@@ -5,6 +5,7 @@ use std::time::SystemTime;
 use adtb_lang::ast::{MigrationFile, OperatorKind};
 use adtb_lang::check::Program;
 use adtb_lang::evolve::{Code, Resolved, RowMap, Source};
+use adtb_lang::kernel;
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{self, Schema, Stage};
@@ -192,6 +193,10 @@ impl Catalog {
     ) -> Result<(), Error> {
         let normal = norm::program(schema, program)
             .map_err(|e| Error::Refused(vec![format!("the schema does not normalise: {e:?}")]))?;
+        kernel::validate(schema, &program.terms, &program.roots())
+            .and_then(|()| kernel::validate(schema, &normal.terms, &normal.roots()))
+            .and_then(|()| kernel::validate_normal(schema, &normal.terms, &normal.roots()))
+            .map_err(|e| Error::from(Broken::IllTyped(e)))?;
         let (ids, _) = self.heap_ids(schema, rewritten)?;
         let heaps: BTreeMap<(RelId, u32), HeapId> = ids
             .into_iter()

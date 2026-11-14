@@ -1,6 +1,7 @@
 use std::fmt;
 
 use adtb_lang::evolve::LogGrant;
+use adtb_lang::kernel::Invalid;
 use adtb_lang::norm;
 use adtb_lang::span::FileDiag;
 use adtb_lang::types::Ty;
@@ -22,6 +23,8 @@ pub enum Broken {
     Declarations(Vec<FileDiag>),
     /// A checked schema has no normal form.
     NotNormal(norm::Error),
+    /// A term of a checked schema or of its normal form breaks the kernel's invariants.
+    IllTyped(Invalid),
     /// A stored schema with a derived index element has no normal form.
     StoredNotNormal(norm::Error),
     /// The planner refuses a constraint of a checked schema.
@@ -118,6 +121,12 @@ impl fmt::Display for Broken {
             Broken::Declarations(ds) => write!(f, "the engine's declarations check: {ds:?}"),
             Broken::NotNormal(e) => write!(f, "a checked schema normalises: {e:?}"),
             Broken::StoredNotNormal(e) => write!(f, "the schema normalises: {e:?}"),
+            Broken::IllTyped(e) => write!(
+                f,
+                "a checked schema's kernel term {:?} keeps the kernel's invariants: {}",
+                e.at(),
+                e.reason()
+            ),
             Broken::Plan(e) => write!(f, "{e}"),
             Broken::IndexKey(exec::Error::Internal(why)) => write!(f, "{why}"),
             Broken::IndexKey(e) => write!(f, "an index key evaluates: {}", exec::detail(e)),

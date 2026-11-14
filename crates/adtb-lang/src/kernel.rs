@@ -9,6 +9,10 @@ use crate::types::*;
 #[cfg(test)]
 #[path = "kernel_tests.rs"]
 mod tests;
+#[path = "kernel_valid.rs"]
+mod valid;
+
+pub use valid::{Invalid, assert_normal, assert_valid, validate, validate_normal};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Tm(pub u32);

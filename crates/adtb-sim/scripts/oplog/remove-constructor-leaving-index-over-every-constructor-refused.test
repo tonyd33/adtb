@@ -1,0 +1,13 @@
+migrate
+  module m
+  add module m
+  add type T { id: Key ts } = A { z: Text } | B { z: Text } | C
+  add relation ts : T
+    key id generate sequence
+    index (z) in (A | B)
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "no `z` in scope" } } }
+  module m
+  deprecate ts.C
+  module m
+  remove constructor T.C

@@ -24,7 +24,7 @@ zeroize = { version = "1.9.1", default-features = false, features = ["alloc"] }
 
 [features]
 latch-checks = ["adtb-sys/latch-checks"]
-testing = []
+testing = ["adtb-lang/testing"]
 
 [lints]
 workspace = true

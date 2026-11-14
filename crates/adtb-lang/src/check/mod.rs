@@ -20,10 +20,10 @@ mod pat;
 mod prelude;
 mod query;
 mod record;
-mod rel;
+pub(crate) mod rel;
 mod rows;
 mod txn;
-mod ty;
+pub(crate) mod ty;
 mod write;
 
 #[cfg(test)]
@@ -87,6 +87,23 @@ impl Program {
 
     pub fn checks(&self) -> impl Iterator<Item = (CheckIdx, Tm)> + '_ {
         self.checks.iter().map(|(&c, &t)| (c, t))
+    }
+
+    /// Returns every body of the program with the variables free in it.
+    pub fn roots(&self) -> Vec<(Tm, Vec<Var>)> {
+        let mut out: Vec<(Tm, Vec<Var>)> = Vec::new();
+        out.extend(self.functions.iter().flatten().map(|t| (*t, vec![])));
+        out.extend(self.constraints.values().map(|t| (*t, vec![])));
+        out.extend(self.checks.values().map(|t| (*t, vec![])));
+        out.extend(self.domains.values().map(|(v, t)| (*t, vec![*v])));
+        out.extend(self.retags.values().map(|t| (*t, vec![])));
+        out.extend(self.defaults.values().map(|t| (*t, vec![])));
+        out.extend(self.computed.values().map(|(v, t)| (*t, vec![*v])));
+        out.extend(self.index_fields.values().map(|f| (f.value, vec![])));
+        for a in self.aggregates.iter().flatten() {
+            out.extend([a.init, a.step, a.merge, a.finish].map(|t| (t, vec![])));
+        }
+        out
     }
 }
 
@@ -532,6 +549,7 @@ pub fn check_schema(schema: &Schema) -> Result<Program, Vec<FileDiag>> {
         diags = crate::analysis::schema_diags(schema, &program);
     }
     if diags.is_empty() {
+        crate::kernel::assert_valid(schema, &program.terms, &program.roots());
         Ok(program)
     } else {
         Err(diags)
@@ -880,6 +898,17 @@ pub struct Adhoc {
 }
 
 impl Adhoc {
+    /// Returns each item and each term of a command, its parameters free in it.
+    pub fn roots(&self) -> Vec<(Tm, Vec<Var>)> {
+        let free: Vec<Var> = self.params.values().copied().collect();
+        self.items
+            .iter()
+            .copied()
+            .chain(self.commands.iter().flat_map(|c| c.command.terms()))
+            .map(|t| (t, free.clone()))
+            .collect()
+    }
+
     /// Returns the schema the terms name declarations of, `given` being the one the text was checked against.
     pub fn schema<'a>(&'a self, given: &'a Schema) -> &'a Schema {
         self.temps.as_ref().unwrap_or(given)
@@ -991,6 +1020,7 @@ pub fn check_adhoc_in(
     if !diags.is_empty() {
         return Err(diags);
     }
+    crate::kernel::assert_valid(schema, &adhoc.terms, &adhoc.roots());
     Ok(adhoc)
 }
 
@@ -1025,6 +1055,7 @@ pub fn check_query_in(
         term,
     };
     crate::analysis::query_diag(schema, program, &query, q.span)?;
+    crate::kernel::assert_valid(schema, &query.terms, &[(query.term, Vec::new())]);
     Ok(query)
 }
 

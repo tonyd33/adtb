@@ -840,17 +840,23 @@ impl<R: Runtime> Engine<R> {
         old: Old,
         row: Val,
     ) -> Result<(), write::Error> {
-        let elem = Ty::Data {
-            def: schema.relation(rel).elem_def,
-            args: Vec::new(),
-            ctors: None,
+        let def = schema.relation(rel).elem_def;
+        let at = |ctors| {
+            Ty::Set(Box::new(Ty::Data {
+                def,
+                args: Vec::new(),
+                ctors,
+            }))
         };
-        let set = Ty::Set(Box::new(elem));
+        let set = at(None);
         let mut terms = Terms::default();
         let x = terms.var("row·", set.clone());
         let mut params = vec![(x, Val::set([row].into()))];
         let gone = match old {
-            Old::Ctor(c) => terms.add(Kind::Rel(rel, Some(vec![c])), set.clone()),
+            Old::Ctor(c) => {
+                let ctors = schema.normalize_ctors(def, vec![c]);
+                terms.add(Kind::Rel(rel, ctors.clone()), at(ctors))
+            }
             Old::Row(v) => {
                 let y = terms.var("old·", set.clone());
                 params.push((y, Val::set([v].into())));

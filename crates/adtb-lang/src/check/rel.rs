@@ -6,6 +6,7 @@ impl Checker<'_> {
     /// `r.S` as a set of rows.
     pub(super) fn rel_out(&mut self, rel: RelId, ctors: Option<CtorSet>) -> Out {
         let r = self.schema.relation(rel);
+        let ctors = ctors.and_then(|s| self.schema.normalize_ctors(r.elem_def, s));
         let elem = match &r.elem {
             Ty::Data { def, args, .. } => Ty::Data {
                 def: *def,
@@ -45,40 +46,7 @@ impl Checker<'_> {
 
     /// The type of the value `r.key(v)` takes and `value(k)` returns.
     pub(super) fn key_value_ty(&self, rel: RelId) -> Result<Ty, String> {
-        let r = self.schema.relation(rel);
-        let def = self.schema.ty(r.elem_def);
-        let field_ty = |name: &str| -> Result<Ty, String> {
-            let f = def
-                .field_named(0, name)
-                .ok_or_else(|| format!("`{}` has no key field `{name}`", r.name))?;
-            match &f.ty {
-                Ty::Key { rel: own, .. } if *own == RelRef::Declared(rel) => match r.generate {
-                    Some(crate::schema::Generator::Sequence) => Ok(Ty::Base(Base::I64)),
-                    None if self.schema.module(r.module).engine => Ok(Ty::Base(Base::I64)),
-                    Some(crate::schema::Generator::Uuidv7) => Ok(Ty::Data {
-                        def: self.schema.prelude_type("Uuid"),
-                        args: Vec::new(),
-                        ctors: None,
-                    }),
-                    _ => Err(format!(
-                        "`{}` identifies its rows by `Key {}` with no generator, so its key has no value",
-                        r.name, r.name
-                    )),
-                },
-                t => Ok(t.subst(r.elem_args())),
-            }
-        };
-        match r.key.as_slice() {
-            [one] => field_ty(one),
-            _ => {
-                let mut fs = Vec::new();
-                for k in key_names(self.schema, rel) {
-                    let ty = field_ty(&k)?;
-                    fs.push((k, ty));
-                }
-                Ok(Ty::Record(fs))
-            }
-        }
+        key_value_ty(self.schema, rel)
     }
 
     /// The constructor set of a row or key type, `None` for every constructor.
@@ -128,5 +96,43 @@ impl Checker<'_> {
                     _ => false,
                 })
         })
+    }
+}
+
+/// Returns the type of the value `r.key(v)` takes and `value(k)` returns.
+pub(crate) fn key_value_ty(schema: &Schema, rel: RelId) -> Result<Ty, String> {
+    let r = schema.relation(rel);
+    let def = schema.ty(r.elem_def);
+    let field_ty = |name: &str| -> Result<Ty, String> {
+        let f = def
+            .field_named(0, name)
+            .ok_or_else(|| format!("`{}` has no key field `{name}`", r.name))?;
+        match &f.ty {
+            Ty::Key { rel: own, .. } if *own == RelRef::Declared(rel) => match r.generate {
+                Some(crate::schema::Generator::Sequence) => Ok(Ty::Base(Base::I64)),
+                None if schema.module(r.module).engine => Ok(Ty::Base(Base::I64)),
+                Some(crate::schema::Generator::Uuidv7) => Ok(Ty::Data {
+                    def: schema.prelude_type("Uuid"),
+                    args: Vec::new(),
+                    ctors: None,
+                }),
+                _ => Err(format!(
+                    "`{}` identifies its rows by `Key {}` with no generator, so its key has no value",
+                    r.name, r.name
+                )),
+            },
+            t => Ok(t.subst(r.elem_args())),
+        }
+    };
+    match r.key.as_slice() {
+        [one] => field_ty(one),
+        _ => {
+            let mut fs = Vec::new();
+            for k in key_names(schema, rel) {
+                let ty = field_ty(&k)?;
+                fs.push((k, ty));
+            }
+            Ok(Ty::Record(fs))
+        }
     }
 }
