@@ -1142,3 +1142,28 @@ fn a_marked_header_naming_no_catalog_fails_and_frees_nothing() {
     let refused = Err(Error::Corrupt(super::rot::Rot::MarkedNoCatalog));
     assert_eq!((refused, None, before), (opened, changing, after));
 }
+
+#[test]
+fn a_replayed_log_folds_a_revert_with_a_fill_no_inverse_takes() {
+    let mut sim = Sim::new(43, Config::default());
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
+        let (mut catalog, txns) = Catalog::create(rt, &pager).expect("catalog");
+        let revert = "module app\nrevert 0002\n  fill T.A.x = \"q\"\n  fill T.A.x = \"r\"\n  fill T.B.y = \"s\"\n";
+        for text in [
+            "module app\nadd module app\nadd type T { id: Key ts } = A { x: Text } | B { y: Text }\nadd relation ts : T key id generate sequence\n",
+            "module app\ndrop field T.A.x\n",
+        ] {
+            catalog.migrate(&pager, &txns, text).expect("apply");
+        }
+        assert_eq!(
+            Err(Error::Refused(vec![
+                "the revert fills `T.A.x` more than once".to_string()
+            ])),
+            catalog.migrate(&pager, &txns, revert)
+        );
+        assert_eq!(Ok(Vec::new()), catalog.replay(&pager, &txns, revert));
+        check_whole(&pager, &catalog, &txns);
+        assert_eq!(3, catalog.source().log.len());
+    });
+}

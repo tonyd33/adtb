@@ -383,7 +383,7 @@ pub fn prepare(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<Prepared,
         }
     };
     for m in &migrations {
-        match src.migrate(m, &b.text) {
+        match src.accept(m, &b.text) {
             Ok(next) => src = next,
             Err(refusal) => {
                 errs.extend(refusal.operators.iter().map(|d| at(b, d.span, &d.message)));

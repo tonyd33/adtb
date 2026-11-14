@@ -255,6 +255,7 @@ add relation ws : W
         out.extend(self.products());
         out.extend(between());
         out.extend(restoring());
+        out.extend(added_and_renamed());
         if self.declared {
             out.push(Case::new("enable ts.D"));
             out.push(Case::new("enable P.E"));
@@ -509,6 +510,26 @@ add constructor Y.Y3
 deprecate ys.Y2
 grant read ys to support
 grant insert ys.YS to support";
+
+/// The cases of migrations that add an object and rename it, and of fills.
+fn added_and_renamed() -> Vec<Case> {
+    vec![
+        Case::new("add type X = X1 | X2\nrename type X to Y"),
+        Case::new(
+            "add type W = { id: Key ws, a: Text }
+add relation ws : W key id generate sequence
+rename relation ws to ws2
+rename type W to W2",
+        ),
+        Case::new("add constructor P.F\nrename constructor P.F to G"),
+        Case::new("add type X = X1 | X2\nrename type X to Y\nadd type X = Z1 | Z2"),
+        Case::new("drop field T.C.y\nrename constructor T.C to C2").fill("T.C2.y = \"y\""),
+        Case::new("drop field T.C.y")
+            .fill("T.C.y = \"y\"")
+            .fill("T.C.typo = \"y\"")
+            .refused("no inverse of migration {case} needs `fill T.C.typo`"),
+    ]
+}
 
 /// The cases of renames and set operators whose revert follows a later migration that renames
 /// the object or what holds it, reuses a name, or drops the object.
@@ -1096,6 +1117,8 @@ enum Aspect {
     Grants,
     /// The catalog id of each object.
     Ids,
+    /// A migration that applied does not resolve.
+    Unresolved,
 }
 
 /// Returns the declarations of `s` by module and text, in order of both, each text with its
@@ -1612,8 +1635,99 @@ struct Known {
 
 const REFUSED_ON_REPLACED: &str = "structural-operators-refuse-clauses-on-replaced-constructor";
 
+const SET_SCOPE: &str = "log-resolver-set-scope-as-ctor";
+
+/// The operators scoping an index by a named set do not resolve.
+const ADD_R: &str = "Unresolved: an object `add index (z) in ts.R` creates or names is in neither the source before it nor the one after it";
+const DROP_R: &str = "Unresolved: an object `drop index (z) in ts.R` creates or names is in neither the source before it nor the one after it";
+const DROP_S: &str = "Unresolved: an object `drop index (z) in ts.S` creates or names is in neither the source before it nor the one after it";
+const DROP_S3: &str = "Unresolved: an object `drop index (z) in ts.S3` creates or names is in neither the source before it nor the one after it";
+
+/// The row of case `case`, of kind `kind`, whose only differences are operators scoping an index
+/// by a named set.
+const fn set_scoped(
+    kind: &'static str,
+    case: &'static str,
+    differences: &'static [&'static str],
+) -> Known {
+    Known {
+        kind,
+        case,
+        differences,
+        tickets: &[SET_SCOPE],
+    }
+}
+
 /// The disagreements main shows.
 const KNOWN: &[Known] = &[
+    set_scoped(
+        "DropIndex",
+        "drop index (z) in ts.R [field re-added through a source that builds]",
+        &[ADD_R, DROP_R],
+    ),
+    set_scoped(
+        "DropIndex",
+        "drop index (z) in ts.R [field re-added through a source that does not build]",
+        &[ADD_R, DROP_R],
+    ),
+    set_scoped("DropIndex", "drop index (z) in ts.S", &[DROP_S]),
+    set_scoped(
+        "DropIndex",
+        "drop index (z) in ts.S [named object renamed]",
+        &[DROP_S],
+    ),
+    set_scoped(
+        "DropIndex",
+        "drop index (z) in ts.S [named objects renamed apart]",
+        &[DROP_S],
+    ),
+    set_scoped(
+        "DropIndex",
+        "drop index (z) in ts.S [object dropped]",
+        &[DROP_S],
+    ),
+    set_scoped("DropSet", "drop set S of ts", &[DROP_S]),
+    set_scoped(
+        "Nest",
+        "nest constructor T.(A | B) into N { inner: Inner }",
+        &[DROP_S],
+    ),
+    set_scoped(
+        "Nest",
+        "nest constructor T.(A | B) into N { inner: Inner } [named object renamed]",
+        &[DROP_S],
+    ),
+    set_scoped(
+        "Nest",
+        "nest constructor T.(A | B) into N { inner: Inner } [named object's name reused]",
+        &[DROP_S],
+    ),
+    set_scoped(
+        "Nest",
+        "nest constructor T.(A | B) into N { inner: Inner } [product renamed]",
+        &[DROP_S],
+    ),
+    set_scoped(
+        "Nest",
+        "nest constructor T.(A | B) into N { inner: Inner } [products swapped]",
+        &[DROP_S],
+    ),
+    set_scoped(
+        "RenameSet",
+        "rename set S of ts to S3 [object dropped]",
+        &[DROP_S3],
+    ),
+    set_scoped("Unnest", "unnest constructor T.N", &[DROP_S]),
+    set_scoped(
+        "Unnest",
+        "unnest constructor T.N [named object renamed]",
+        &[DROP_S],
+    ),
+    set_scoped(
+        "Unnest",
+        "unnest constructor T.N [named object's name reused]",
+        &[DROP_S],
+    ),
     Known {
         kind: "Merge",
         case: "merge constructor T.(A | B) into M { k: K, x: Text, z: Text, q: Q } [default A.x kept]",
@@ -1629,8 +1743,9 @@ const KNOWN: &[Known] = &[
         differences: &[
             "Unapplied: `N` is neither a constructor of `T` nor a named set of `ts`",
             "Unapplied: the nest is refused: `ts.A` names some but not all of its constructors",
+            DROP_S,
         ],
-        tickets: &[REFUSED_ON_REPLACED],
+        tickets: &[REFUSED_ON_REPLACED, SET_SCOPE],
     },
     Known {
         kind: "Nest",
@@ -1638,8 +1753,9 @@ const KNOWN: &[Known] = &[
         differences: &[
             "Unapplied: `A` is not a constructor of `T`",
             "Unapplied: the nest of `A`, `B` into `N` cannot carry the `update` grant of `support` on `ts`, which does not cover each of them alike; grant `update` on `ts.N` to `support` in the same migration",
+            DROP_S,
         ],
-        tickets: &[REFUSED_ON_REPLACED],
+        tickets: &[REFUSED_ON_REPLACED, SET_SCOPE],
     },
     Known {
         kind: "Split",
@@ -1648,6 +1764,41 @@ const KNOWN: &[Known] = &[
         tickets: &[REFUSED_ON_REPLACED],
     },
 ];
+
+/// Returns each object an operator of `logged` resolves to, `ops` in order, that neither the
+/// source before the operator nor the next source after it that builds holds, `next` being the
+/// source after the migration.
+fn outside(logged: &Logged, next: &Source, ops: &[ResolvedOp]) -> Vec<String> {
+    let (_, mut sources) = logged.replayed().expect("a logged migration replays");
+    sources.push(next.clone());
+    let held = |s: &Source| -> BTreeSet<Reached> {
+        s.ids
+            .iter()
+            .map(|(k, &id)| Reached::Object(k.kind().space(), id))
+            .chain(s.modules.iter().cloned().map(Reached::Module))
+            .collect()
+    };
+    let mut out = Vec::new();
+    for (k, op) in ops.iter().enumerate() {
+        let after = sources[k + 1..]
+            .iter()
+            .find(|s| s.schema().is_ok())
+            .expect("the source after the migration builds");
+        let around: BTreeSet<Reached> = held(&sources[k]).union(&held(after)).cloned().collect();
+        for o in op.operands() {
+            if !around.contains(&o) {
+                let shown = logged.text[logged.operators[k].span.range()]
+                    .lines()
+                    .next()
+                    .unwrap_or_default();
+                out.push(format!(
+                    "`{shown}` resolves to {o:?}, held by no source around it"
+                ));
+            }
+        }
+    }
+    out
+}
 
 /// The messages of a refused migration.
 #[derive(Debug, PartialEq)]
@@ -1679,6 +1830,8 @@ struct Found {
     unapplied: Vec<String>,
     /// A case whose revert is refused for the reason the spec states, with the reason.
     stated: Vec<String>,
+    /// Why each migration the case being run applied does not resolve.
+    unresolved: Vec<(Aspect, String)>,
     /// The cases run, over every shape.
     ran: usize,
 }
@@ -1699,9 +1852,10 @@ fn search(count: usize) -> Found {
 impl Found {
     fn case(&mut self, bits: u64, start: &Source, case: &Case) {
         let what = format!("{bits:03b} `{}`", case.name());
+        self.unresolved.clear();
         let mut was = start.clone();
         for first in &case.first {
-            match migrate(&was, first) {
+            match self.migrate(&was, first) {
                 Ok(s) => was = s,
                 Err(e) => {
                     self.unapplied
@@ -1717,7 +1871,7 @@ impl Found {
             .expect("the case parses");
         let kinds: BTreeSet<&'static str> =
             m.operators.iter().map(|o| kind_name(&o.kind)).collect();
-        let mid = match migrate(&was, &text) {
+        let mid = match self.migrate(&was, &text) {
             Ok(s) => s,
             Err(e) => {
                 let diffs = e.into_iter().map(|e| (Aspect::Unapplied, e)).collect();
@@ -1733,7 +1887,7 @@ impl Found {
         let (mid, target) = match (&case.then, &case.expect) {
             (None, _) => (mid, was),
             (Some(then), expect) => {
-                let applied = migrate(&mid, then).and_then(|m| {
+                let applied = self.migrate(&mid, then).and_then(|m| {
                     let target = match expect {
                         Some(e) => migrate(&was, e)?,
                         None => was,
@@ -1758,7 +1912,7 @@ impl Found {
                 .replace("{first}", &before)
                 .replace("{then}", &format!("{:04}", number + 1))
         });
-        let got = migrate(&mid, &revert);
+        let got = self.migrate(&mid, &revert);
         let diffs = match (got, reason) {
             (got, Some(reason)) => {
                 let want = Refused(vec![reason.clone()]);
@@ -1772,6 +1926,25 @@ impl Found {
         self.record(case, bits, kinds, diffs);
     }
 
+    /// Apply migration `text` to `src`, recording in `unresolved` why it does not resolve when
+    /// it applies, or each object an operator resolves to that neither the source before it nor
+    /// the next that builds after it holds.
+    fn migrate(&mut self, src: &Source, text: &str) -> Result<Source, Vec<String>> {
+        let next = migrate(src, text)?;
+        let logged = next.log.last().expect("a migration is logged");
+        match next.resolved(logged.number) {
+            Err(ds) => self
+                .unresolved
+                .extend(ds.into_iter().map(|d| (Aspect::Unresolved, d.message))),
+            Ok(ops) => self.unresolved.extend(
+                outside(logged, &next, &ops)
+                    .into_iter()
+                    .map(|o| (Aspect::Unresolved, o)),
+            ),
+        }
+        Ok(next)
+    }
+
     fn record(
         &mut self,
         case: &Case,
@@ -1781,7 +1954,7 @@ impl Found {
     ) {
         let entry = self.cases.entry(case.name()).or_default();
         entry.kinds.extend(kinds);
-        for (aspect, text) in diffs {
+        for (aspect, text) in diffs.into_iter().chain(self.unresolved.drain(..)) {
             entry
                 .differences
                 .entry(format!("{aspect:?}: {text}"))
@@ -1834,10 +2007,10 @@ fn unknown(name: &str, o: &Outcome, every_shape: bool) -> Option<String> {
 }
 
 /// The cases each shape runs with no bit set, and those the `declared` and `granted` bits add.
-const CASES: (usize, usize, usize) = (162, 2, 5);
+const CASES: (usize, usize, usize) = (168, 2, 5);
 
 /// The cases of each shape whose revert is refused for a reason the spec states.
-const REFUSED: usize = 17;
+const REFUSED: usize = 18;
 
 #[test]
 fn every_invertible_operator_and_its_revert_restore_the_source_before_it() {

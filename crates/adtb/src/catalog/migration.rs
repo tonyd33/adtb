@@ -63,7 +63,8 @@ impl Catalog {
         txns: &Transactions<R>,
         text: &str,
     ) -> Result<(), Error> {
-        self.apply(pager, txns, text, Grantees::Refuse).map(|_| ())
+        self.apply(pager, txns, text, Grantees::Refuse, true)
+            .map(|_| ())
     }
 
     /// Apply `text` as [`Catalog::migrate`] does, except that a grant to a role
@@ -77,7 +78,7 @@ impl Catalog {
         txns: &Transactions<R>,
         text: &str,
     ) -> Result<Vec<Dormant>, Error> {
-        self.apply(pager, txns, text, Grantees::Dormant)
+        self.apply(pager, txns, text, Grantees::Dormant, false)
     }
 
     /// Replay `text` as [`Catalog::replay`] does, a grant of `held`, by grantee, privilege and
@@ -100,6 +101,7 @@ impl Catalog {
         txns: &Transactions<R>,
         text: &str,
         grantees: Grantees,
+        new: bool,
     ) -> Result<Vec<Dormant>, Error> {
         let mut dormant = self.record_grants(pager, txns)?;
         let refused = |why: Vec<String>| Err(Error::Refused(why));
@@ -107,7 +109,12 @@ impl Catalog {
             Ok(f) => f,
             Err(ds) => return refused(ds.into_iter().map(|d| d.message).collect()),
         };
-        let next = match self.source.migrate(&file, text) {
+        let next = if new {
+            self.source.accept(&file, text)
+        } else {
+            self.source.migrate(&file, text)
+        };
+        let next = match next {
             Ok(s) => s,
             Err(r) => return refused(reasons(r)),
         };

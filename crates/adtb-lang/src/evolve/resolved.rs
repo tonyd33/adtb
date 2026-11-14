@@ -303,7 +303,7 @@ pub(super) enum Reached {
 
 impl ResolvedOp {
     /// Returns every object the operator names as an operand or in a clause.
-    fn operands(&self) -> Vec<Reached> {
+    pub(super) fn operands(&self) -> Vec<Reached> {
         use Reached::{Module, Object};
         let shared = |id: &u64| Object(Space::Shared, *id);
         let mut out = match &self.op {
@@ -458,8 +458,9 @@ pub enum Code {
 }
 
 impl Source {
-    /// Returns the operators of migration `number` of the log in ordinal order, resolved against the
-    /// source after it.
+    /// Returns the operators of migration `number` of the log in ordinal order, each resolved
+    /// against the sources just before and just after it, or, while those do not build, the
+    /// nearest before and after it that do.
     ///
     /// Fail with the operators whose data the source lacks, at their spans, or with the operands
     /// whose names do not resolve. Panics if the log holds no migration `number`.
@@ -516,22 +517,31 @@ impl Source {
         if !unavailable.is_empty() {
             return Err(unavailable);
         }
-        let names = logged.names()?;
+        let (names, sources) = logged.replayed()?;
         let unbuilt = |ds: Vec<FileDiag>| ds.into_iter().map(|d| d.diag).collect::<Vec<_>>();
-        let mut r = Resolver {
-            logged,
-            schema: &after.schema().map_err(unbuilt)?,
-            before: &logged.before.schema().map_err(unbuilt)?,
-            names: Some(&names),
-            indexes: BTreeMap::new(),
-            at: 0,
-        };
-        let ops = (0..logged.operators.len())
-            .map(|k| {
-                r.at = k;
-                r.operator(&logged.operators[k])
-            })
-            .collect::<Result<_, _>>()?;
+        let mut schemas = vec![Some(logged.before.schema().map_err(unbuilt)?)];
+        schemas.extend(sources.iter().skip(1).map(|s| s.schema().ok()));
+        schemas.push(Some(after.schema().map_err(unbuilt)?));
+        let mut ops = Vec::new();
+        let mut start = 0;
+        for end in 1..schemas.len() {
+            let (Some(before), Some(schema)) = (&schemas[start], &schemas[end]) else {
+                continue;
+            };
+            let mut r = Resolver {
+                logged,
+                schema,
+                before,
+                sources: (&sources[start], after),
+                names: Some(&names),
+                indexes: BTreeMap::new(),
+            };
+            for k in start..end {
+                r.sources = (&sources[k], sources.get(k + 1).unwrap_or(after));
+                ops.push(r.operator(&logged.operators[k])?);
+            }
+            start = end;
+        }
         Ok((ops, names))
     }
 
@@ -667,16 +677,16 @@ fn after_eq(text: &str, from: u32, end: u32) -> Span {
 
 struct Resolver<'a> {
     logged: &'a Logged,
-    /// The schema after the migration.
+    /// The schema after the operators being resolved.
     schema: &'a Schema,
-    /// The schema before the migration.
+    /// The schema before the operators being resolved.
     before: &'a Schema,
+    /// The sources just before and just after the operator being resolved.
+    sources: (&'a Source, &'a Source),
     /// `None` when resolving by id only.
     names: Option<&'a Names>,
     /// The position among the relation's uniques and indexes the next one added takes.
     indexes: BTreeMap<RelId, usize>,
-    /// The ordinal of the operator being resolved.
-    at: usize,
 }
 
 impl Applied {
@@ -699,9 +709,9 @@ impl Applied {
             logged: &logged,
             schema: &after.schema().map_err(unbuilt)?,
             before: &before.schema().map_err(unbuilt)?,
+            sources: (before, after),
             names: None,
             indexes: BTreeMap::new(),
-            at: 0,
         }
         .operator(&self.op)
     }
@@ -714,9 +724,16 @@ impl Resolver<'_> {
 
     fn operator(&mut self, op: &Operator) -> Result<ResolvedOp, Vec<Diag>> {
         let gone = || {
+            let shown = self.logged.text[op.span.range()]
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .trim();
             vec![Diag::new(
                 op.span,
-                "an object this operator creates or names is gone by the migration's end",
+                format!(
+                    "an object `{shown}` creates or names is in neither the source before it nor the one after it"
+                ),
             )]
         };
         let (text, names) = (&self.logged.text, self.names);
@@ -996,11 +1013,16 @@ impl Resolver<'_> {
                 constraint: self.constraint_in(before, c)?,
             },
             OperatorKind::Revert { migration, fills } => {
-                for (p, f) in fills {
+                let (src_before, src_after) = self.sources;
+                for ((_, f), key) in fills.iter().zip(&src_after.filled) {
+                    let Some(key) = key else { continue };
+                    let field = src_after
+                        .ids
+                        .get(key)
+                        .or_else(|| src_before.ids.get(key))
+                        .copied()?;
                     clauses.push(Clause::Fill {
-                        field: self
-                            .field_in(after, p, &p.field.text)
-                            .or_else(|| self.field_in(before, p, &p.field.text))?,
+                        field,
                         fill: self.term(fill_span(f)?),
                     });
                 }
@@ -1076,7 +1098,7 @@ impl Resolver<'_> {
             OperatorKind::AddField {
                 path, decl, fill, ..
             } => Resolved::AddField {
-                field: self.field_in(after, path, &self.renamed_later(path))?,
+                field: self.field_in(after, path, &path.field.text)?,
                 decl: term(*decl),
                 fill: term(fill_span(fill)?),
             },
@@ -1330,22 +1352,6 @@ impl Resolver<'_> {
         let def = self.type_def(schema, ty)?;
         let c = schema.ty(def).ctor_named(ctor)?;
         schema.ids().ctor_id(c).map(CatCtorId::raw)
-    }
-
-    /// Returns the name the field at `path` has after the renames of the operators after this one.
-    fn renamed_later(&self, path: &ast::FieldPath) -> String {
-        let mut name = path.field.text.clone();
-        for op in &self.logged.operators[self.at + 1..] {
-            if let OperatorKind::RenameField(p, to) = &op.kind
-                && self.module_of(&p.ty) == self.module_of(&path.ty)
-                && p.ty.name.text == path.ty.name.text
-                && p.ctor.as_ref().map(|c| &c.text) == path.ctor.as_ref().map(|c| &c.text)
-                && p.field.text == name
-            {
-                name.clone_from(&to.text);
-            }
-        }
-        name
     }
 
     fn field_in(&self, schema: &Schema, path: &ast::FieldPath, name: &str) -> Option<u64> {

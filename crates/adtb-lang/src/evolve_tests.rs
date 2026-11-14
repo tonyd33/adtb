@@ -128,7 +128,7 @@ fn migrate(src: &Source, text: &str) -> Result<Source, Vec<String>> {
     let m = parse_migration(text, Options::default())
         .ok()
         .unwrap_or_else(|e| panic!("{text}\ndoes not parse: {e:?}"));
-    src.migrate(&m, text).map_err(|r| {
+    src.accept(&m, text).map_err(|r| {
         let mut out: Vec<String> = r.operators.into_iter().map(|d| d.message).collect();
         out.extend(r.recheck.into_iter().map(|d| d.diag.message));
         out
@@ -3226,7 +3226,7 @@ move field Identity.EmailPass.verified to Identity fill match
     refuses(
         &s,
         "module auth\nrevert 0003",
-        "needs a fill: `fill Identity.EmailPass.verified = e`",
+        "needs a fill: `fill Identity.EmailPass.verified = match | Apple a -> e`",
     );
     let s = applies(
         &s,

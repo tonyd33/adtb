@@ -1,0 +1,34 @@
+seed 41
+migrate
+  module a
+  add module a
+  add type T = { id: Key ts, f: I64 }
+  add relation ts : T key id generate sequence
+  module b
+  add module b
+  add type T = { id: Key ts, f: I64 }
+  add relation ts : T key id generate sequence
+
+run
+  transact
+    insert a::ts { f: 0 }
+    insert b::ts { f: 0 }
+
+migrate
+  module a
+  drop field T.f
+  drop field b::T.f
+  module a
+  revert 0003
+    fill b::T.f = 2
+    fill T.f = 1
+
+query
+  from t in a::ts select t.f
+----
+1
+
+query
+  from t in b::ts select t.f
+----
+2

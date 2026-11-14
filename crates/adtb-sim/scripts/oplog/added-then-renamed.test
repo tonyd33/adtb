@@ -1,0 +1,21 @@
+seed 43
+use shop
+use customers
+
+migrate
+  module shop
+  add type Stamp = { id: Key stamps, label: Text }
+  add relation stamps : Stamp key id generate sequence
+  rename relation stamps to labels
+  rename type Stamp to Label
+  add constructor Payment.Cash { note: Text }
+  rename constructor Payment.Cash to Coins
+
+run
+  transact
+    insert labels { label: "x" }
+
+query rowsort
+  from l in labels select l.label
+----
+"x"

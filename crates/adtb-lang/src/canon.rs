@@ -114,6 +114,20 @@ impl Names {
         }
     }
 
+    /// Copy the names of `from` inside `range` as `copy` does, except at each place that already
+    /// names an object.
+    pub fn copy_unnamed(&mut self, from: &Names, range: Range<usize>, to: usize) {
+        let mut fresh = Names::default();
+        fresh.copy(from, range, to);
+        fresh.modules.retain(|span, _| !self.names_at(*span));
+        fresh.ids.retain(|span, _| !self.names_at(*span));
+        self.extend(fresh);
+    }
+
+    fn names_at(&self, span: (u32, u32)) -> bool {
+        self.modules.contains_key(&span) || self.ids.contains_key(&span)
+    }
+
     pub fn extend(&mut self, other: Names) {
         self.modules.extend(other.modules);
         for (span, ids) in other.ids {

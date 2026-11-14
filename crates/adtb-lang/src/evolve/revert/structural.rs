@@ -683,10 +683,34 @@ impl Cx<'_> {
                 let def = self.type_id(&schema, &path.ty)?;
                 if schema.ty(def).ctors().len() > names.len() {
                     let key = self.named_now(after, &m, t, Some(first), f);
-                    let Some(fill) = self.fill_for(at.fills(), &key) else {
+                    let id = after.field_key_id(&m, t, Some(first), f);
+                    let Some(fill) = self.fill_for(at.fills(), after, id) else {
+                        let moved: Vec<Option<u64>> =
+                            names.iter().map(|c| after.ctor_key_id(&m, t, c)).collect();
+                        let ty = before.field_owner(&m, t, None);
+                        let mut others: Vec<(u64, &str)> = self
+                            .src
+                            .ids
+                            .iter()
+                            .filter(|(k, id)| {
+                                k.kind() == KeyKind::Ctor
+                                    && Some(k.owner()) == ty.as_ref()
+                                    && !moved.contains(&Some(**id))
+                            })
+                            .filter_map(|(k, id)| Some((*id, k.name()?)))
+                            .collect();
+                        others.sort_unstable();
+                        let arms: Vec<String> = others
+                            .iter()
+                            .map(|(_, name)| {
+                                let bound = name.to_lowercase().chars().next().unwrap_or('x');
+                                format!("{name} {bound} -> e")
+                            })
+                            .collect();
                         return self.err(format!(
-                            "the inverse of moving `{}` down needs a fill: `fill {key} = e`",
-                            path_text(path)
+                            "the inverse of moving `{}` down needs a fill: `fill {key} = match | {}`",
+                            path_text(path),
+                            arms.join(" | ")
                         ));
                     };
                     op.push(" fill ");

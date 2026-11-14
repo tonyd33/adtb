@@ -141,6 +141,11 @@ pub struct Source {
     /// object the inverse created again takes, by the id it had; a `revert` among them applies
     /// without its dependency gate and names those objects by the ids this maps them to.
     replaying: Option<revert::Recreated>,
+    /// Set while applying text the log does not yet hold; a `revert` then refuses a fill no
+    /// inverse takes.
+    accepting: bool,
+    /// For each fill of the last `revert` applied, the key of the field an inverse took it for.
+    filled: Vec<Option<ObjectKey>>,
 }
 
 /// Text of the migration being replayed that an operator copied into a declaration.

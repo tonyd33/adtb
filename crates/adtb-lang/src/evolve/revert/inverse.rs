@@ -17,7 +17,7 @@ pub(super) struct Inverting<'a> {
     logged: &'a Logged,
     spelling: &'a Spelling,
     op: &'a Operator,
-    fills: &'a [(ast::FieldPath, Fill)],
+    fills: &'a Fills<'a>,
 }
 
 /// The parts of [`Inverting`] one logged migration's operators share.
@@ -26,7 +26,7 @@ pub(super) struct Run<'a> {
     start: &'a Source,
     logged: &'a Logged,
     spelling: &'a Spelling,
-    fills: &'a [(ast::FieldPath, Fill)],
+    fills: &'a Fills<'a>,
 }
 
 impl<'a> Run<'a> {
@@ -34,7 +34,7 @@ impl<'a> Run<'a> {
         start: &'a Source,
         logged: &'a Logged,
         spelling: &'a Spelling,
-        fills: &'a [(ast::FieldPath, Fill)],
+        fills: &'a Fills<'a>,
     ) -> Self {
         Run {
             start,
@@ -82,7 +82,7 @@ impl<'a> Inverting<'a> {
         self.op
     }
 
-    pub(super) fn fills(&self) -> &'a [(ast::FieldPath, Fill)] {
+    pub(super) fn fills(&self) -> &'a Fills<'a> {
         self.fills
     }
 }
@@ -668,14 +668,14 @@ impl Cx<'_> {
                 apply(text, at.of())
             }
             OperatorKind::DropField(path) => {
-                let key = self.named_now(
-                    before,
-                    &at.module_of(&path.ty),
-                    &path.ty.name.text,
-                    path.ctor.as_ref().map(|c| c.text.as_str()),
-                    &path.field.text,
-                );
-                let Some(fill) = self.fill_for(fills, &key) else {
+                let (m, t) = (at.module_of(&path.ty), &path.ty.name.text);
+                let c = path.ctor.as_ref().map(|c| c.text.as_str());
+                let f = &path.field.text;
+                let key = self.named_now(before, &m, t, c, f);
+                let id = before
+                    .field_key_id(&m, t, c, f)
+                    .or_else(|| before.field_key_id(&m, t, c.or(Some(t)), f));
+                let Some(fill) = self.fill_for(fills, before, id) else {
                     return self.err(format!(
                         "the inverse of `drop field {}` needs a fill: `fill {key} = e`",
                         path_text(path),

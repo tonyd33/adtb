@@ -318,6 +318,12 @@ impl Source {
         self.migrate_keeping(m, text, &[])
     }
 
+    /// Apply migration text the log does not hold yet as [`Source::migrate`] does, and refuse
+    /// what only new text may not state: a `revert` fill no inverse takes.
+    pub fn accept(&self, m: &MigrationFile, text: &str) -> Result<Source, Refusal> {
+        self.migrating(m, text, &[], true)
+    }
+
     /// Apply a migration as [`Source::migrate`] does, putting back after each operator every
     /// declaration of `kept` it removes, as it was before that operator and with its catalog id.
     pub fn migrate_keeping(
@@ -326,7 +332,18 @@ impl Source {
         text: &str,
         kept: &[Kept],
     ) -> Result<Source, Refusal> {
+        self.migrating(m, text, kept, false)
+    }
+
+    fn migrating(
+        &self,
+        m: &MigrationFile,
+        text: &str,
+        kept: &[Kept],
+        accepting: bool,
+    ) -> Result<Source, Refusal> {
         let mut next = self.clone();
+        next.accepting = accepting;
         next.version += 1;
         next.expecting(&m.module.text, &m.operators);
         next.unstated.clear();
@@ -347,6 +364,7 @@ impl Source {
                 next.keep(&prior, kept);
             }
         }
+        next.accepting = false;
         refusal.operators.extend(
             std::mem::take(&mut next.unstated)
                 .into_iter()

@@ -610,3 +610,209 @@ fn reverting_a_rename_renames_the_object_it_renamed_after_its_name_is_reused() {
         decl(&s, "set", "identities.Federated")
     );
 }
+
+#[test]
+fn a_revert_applies_past_a_migration_that_adds_an_object_and_renames_it() {
+    let mut ran = 0;
+    for added in [
+        "add type X = X1 | X2\nrename type X to Y",
+        "add type V = { id: Key vs }
+add relation vs : V key id generate sequence
+rename relation vs to ws
+rename type V to V2
+add constructor T.D { w: Text }
+rename constructor T.D to E",
+        "add constructor T.D { w: Text }\nrename constructor T.D to E",
+        "add field T.A.w: Text fill \"w\"\nrename field T.A.w to v",
+    ] {
+        let first = applies(&source(BASE), &headed("add constructor T.C { z: Text }"));
+        let s = applies(&first, &headed(added));
+        assert_eq!(
+            Ok(added.lines().filter(|l| !l.starts_with(' ')).count()),
+            s.resolved(2).map(|ops| ops.len()).map_err(|_| ()),
+            "{added}"
+        );
+        let reverted = applies(&s, "module auth\nrevert 0001");
+        let expected = applies(&source(BASE), &headed(added));
+        assert_eq!(restored(&expected), restored(&reverted), "{added}");
+        ran += 1;
+    }
+    assert_eq!(4, ran);
+}
+
+#[test]
+fn a_revert_with_a_fill_no_inverse_needs_is_refused() {
+    let mut s = source(BASE);
+    for t in ["add constructor T.C { z: Text }", "drop field T.A.x"] {
+        s = applies(&s, &headed(t));
+    }
+    for (fills, why) in [
+        (
+            "fill T.A.x = \"q\"\n  fill T.B.typo = \"q\"",
+            "no inverse of migration 0002 needs `fill T.B.typo`",
+        ),
+        (
+            "fill T.A.x = \"q\"\n  fill m::T.A.x = \"r\"",
+            "no inverse of migration 0002 needs `fill m::T.A.x`",
+        ),
+        (
+            "fill T.A.x = \"q\"\n  fill T.A.x = \"r\"",
+            "the revert fills `T.A.x` more than once",
+        ),
+        (
+            "fill T.A.x = \"q\"\n  fill auth::T.A.x = \"r\"",
+            "the revert fills `auth::T.A.x` more than once",
+        ),
+    ] {
+        assert_eq!(
+            vec![why.to_string()],
+            refused(&s, &format!("module auth\nrevert 0002\n  {fills}")),
+            "{fills}"
+        );
+    }
+    let s = applies(&s, "module auth\nrevert 0002\n  fill auth::T.A.x = \"q\"");
+    let s = applies(&s, "module auth\nrevert 0001");
+    assert_eq!(restored(&source(BASE)), restored(&s));
+}
+
+#[test]
+fn a_revert_gives_each_dropped_field_the_fill_that_names_it_by_module() {
+    let mut s = source(BASE);
+    for t in [
+        "module b\nadd module b\nadd type T = { id: Key ts, f: I64 }\nadd relation ts : T key id generate sequence",
+        "add field T.f: I64 fill 0",
+        "drop field T.f\ndrop field b::T.f",
+    ] {
+        s = applies(&s, &headed(t));
+    }
+    let text = "module auth\nrevert 0003\n  fill b::T.f = 2\n  fill T.f = 1";
+    let m = parse_migration(text, Options::default())
+        .ok()
+        .expect("the revert parses");
+    let steps = s
+        .clone()
+        .steps("auth", &m.operators[0], text)
+        .unwrap_or_else(|e| panic!("the revert applies: {e:?}"));
+    let filled: Vec<(String, String)> = steps
+        .iter()
+        .filter_map(|step| {
+            let a = step.applied.as_ref()?;
+            let OperatorKind::AddField { path, fill, .. } = &a.op.kind else {
+                return None;
+            };
+            let module = path.ty.module.as_ref().map_or("auth", |m| m.text.as_str());
+            let Fill::Expr(e) = fill else { return None };
+            Some((module.to_string(), a.text[e.span.range()].to_string()))
+        })
+        .collect();
+    assert_eq!(
+        vec![
+            ("b".to_string(), "2".to_string()),
+            ("auth".to_string(), "1".to_string()),
+        ],
+        filled
+    );
+    let s = applies(&s, text);
+    let field = |m: &str, t: &str, c: Option<&str>| {
+        s.field_key_id(m, t, c, "f").expect("the field is restored")
+    };
+    let (a, b) = (field("auth", "T", None), field("b", "T", Some("T")));
+    assert_eq!(
+        Ok(vec![
+            Clause::Fill {
+                field: b,
+                fill: "2".into()
+            },
+            Clause::Fill {
+                field: a,
+                fill: "1".into()
+            },
+        ]),
+        s.resolved(4)
+            .map(|ops| ops.into_iter().flat_map(|o| o.clauses).collect::<Vec<_>>())
+    );
+}
+
+#[test]
+fn a_logged_revert_with_a_fill_no_inverse_takes_folds_and_resolves() {
+    let mut s = source(BASE);
+    for t in ["add constructor T.C { z: Text }", "drop field T.A.x"] {
+        s = applies(&s, &headed(t));
+    }
+    let text = "module auth\nrevert 0002\n  fill T.A.x = \"q\"\n  fill T.B.typo = \"q\"\n  fill T.A.x = \"r\"\n  fill T.B.y = \"s\"";
+    let m = parse_migration(text, Options::default())
+        .ok()
+        .expect("the revert parses");
+    let s = s
+        .migrate(&m, text)
+        .unwrap_or_else(|r| panic!("a logged revert folds: {:?}", r.operators));
+    let x = s
+        .field_key_id("auth", "T", Some("A"), "x")
+        .expect("the field is restored");
+    assert_eq!(
+        Ok(vec![Clause::Fill {
+            field: x,
+            fill: "\"q\"".into()
+        }]),
+        s.resolved(3)
+            .map(|ops| ops.into_iter().flat_map(|o| o.clauses).collect::<Vec<_>>())
+    );
+    let s = applies(&s, "module auth\nrevert 0001");
+    assert_eq!(restored(&source(BASE)), restored(&s));
+}
+
+#[test]
+fn a_fill_names_the_field_by_the_names_it_has_when_the_revert_applies() {
+    let mut s = source(BASE);
+    for t in [
+        "add constructor T.C { z: Text }",
+        "drop field T.A.x\nrename constructor T.A to A2",
+        "revert 0002\n  fill T.A2.x = \"q\"",
+    ] {
+        s = applies(&s, &headed(t));
+    }
+    let x = s
+        .field_key_id("auth", "T", Some("A"), "x")
+        .expect("the field is restored");
+    assert_eq!(
+        Ok(vec![Clause::Fill {
+            field: x,
+            fill: "\"q\"".into()
+        }]),
+        s.resolved(3)
+            .map(|ops| ops.into_iter().flat_map(|o| o.clauses).collect::<Vec<_>>())
+    );
+    let s = applies(&s, "module auth\nrevert 0001");
+    assert_eq!(restored(&source(BASE)), restored(&s));
+}
+
+#[test]
+fn the_fill_a_revert_of_a_move_down_asks_for_applies_as_written() {
+    let mut s = source(BASE);
+    for t in [
+        "add field T.A.w: Text fill \"a\"",
+        "move field T.A.w to T fill match | B b -> \"b\"",
+        "move field T.w to T.(A)",
+        "add constructor T.C { z: Text }",
+    ] {
+        s = applies(&s, &headed(t));
+    }
+    let why =
+        "the inverse of moving `T.w` down needs a fill: `fill T.A.w = match | B b -> e | C c -> e`";
+    assert_eq!(
+        vec![why.to_string()],
+        refused(&s, "module auth\nrevert 0003")
+    );
+    let fill = why
+        .split("`fill ")
+        .nth(1)
+        .and_then(|f| f.strip_suffix('`'))
+        .expect("the hint holds a fill");
+    applies(
+        &s,
+        &format!(
+            "module auth\nrevert 0003\n  fill {}",
+            fill.replace("-> e", "-> \"z\"")
+        ),
+    );
+}

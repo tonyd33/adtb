@@ -12,6 +12,21 @@ use inverse::Run;
 use spelled::{Late, Spelled, late, spellings};
 use structural::Undo;
 
+/// The `fill` clauses of a revert, each with the key of the field an inverse took it for.
+pub(super) struct Fills<'a> {
+    given: &'a [(ast::FieldPath, Fill)],
+    taken: RefCell<Vec<Option<ObjectKey>>>,
+}
+
+impl<'a> Fills<'a> {
+    fn new(given: &'a [(ast::FieldPath, Fill)]) -> Self {
+        Fills {
+            given,
+            taken: RefCell::new(vec![None; given.len()]),
+        }
+    }
+}
+
 /// The steps of the inverse of a run of operators, each run ending at a source that builds, with
 /// each object the run removed, by its key before the run, and its id.
 type Undoing = (Vec<Inverse>, Vec<(ObjectKey, u64)>);
@@ -415,6 +430,7 @@ impl Cx<'_> {
         let mut start = state.clone();
         let mut group: Vec<Vec<Inverse>> = Vec::new();
         let spelling = std::cell::OnceCell::new();
+        let fills = Fills::new(fills);
         for (i, op) in logged.operators.iter().enumerate() {
             let before = state.clone();
             if let Err(ds) = state.apply(&logged.module, op, &logged.text) {
@@ -425,7 +441,7 @@ impl Cx<'_> {
                     })
                     .collect());
             }
-            let run = Run::new(&start, &logged, &spelling, fills);
+            let run = Run::new(&start, &logged, &spelling, &fills);
             group.push(self.inverse(&run.at(&before, &state, op))?);
             if state.built().is_err() && i + 1 < logged.operators.len() {
                 continue;
@@ -439,6 +455,10 @@ impl Cx<'_> {
             steps.push((step, removed(&start, &state)));
             start = state.clone();
         }
+        if self.src.accepting && self.src.replaying.is_none() {
+            self.untaken(migration, &fills)?;
+        }
+        self.src.filled = fills.taken.borrow().clone();
         let ahead = self.src.ahead.clone();
         self.src.ahead.extend(inverse_ahead(&logged));
         let late = late(self.src.after(pos));
@@ -477,19 +497,52 @@ impl Cx<'_> {
         Ok(())
     }
 
-    /// The text of the fill a revert gives for field path `path`.
-    pub(super) fn fill_for(&self, fills: &[(ast::FieldPath, Fill)], path: &str) -> Option<Written> {
-        fills
-            .iter()
-            .find(|(p, _)| path_text(p) == path)
-            .map(|(_, f)| match f {
-                Fill::Expr(e) => self.copy(e.span),
-                Fill::Match(arms) => {
-                    let start = arms[0].patterns[0].span.start as usize;
-                    let end = arms.last().expect("an arm").body.span.end as usize;
-                    Written::concat(["match\n  | ".into(), self.copy_range(start..end)])
-                }
-            })
+    /// Refuse the first fill of a revert of migration `migration` that no inverse took.
+    fn untaken(&self, migration: &str, fills: &Fills) -> R<()> {
+        let taken = fills.taken.borrow();
+        let Some(i) = taken.iter().position(Option::is_none) else {
+            return Ok(());
+        };
+        let p = &fills.given[i].0;
+        let from = p.ty.module.as_ref().map_or(p.ty.name.span, |m| m.span);
+        let shown = self.slice(from.to(p.field.span));
+        let keys = fill_keys(&self.src.ids, &self.module_of(&p.ty), p);
+        if taken.iter().flatten().any(|k| keys.contains(k)) {
+            return self.err(format!("the revert fills `{shown}` more than once"));
+        }
+        self.err(format!(
+            "no inverse of migration {migration} needs `fill {shown}`"
+        ))
+    }
+
+    /// Returns the text of the first fill not yet taken whose path names field `id` of `src`,
+    /// taking it.
+    ///
+    /// A path names the field by its key in the source the revert applies to: the field's own
+    /// key there while it holds `id`, else its key in `src`.
+    pub(super) fn fill_for(&self, fills: &Fills, src: &Source, id: Option<u64>) -> Option<Written> {
+        let key_in = |s: &Source| {
+            s.ids
+                .iter()
+                .find(|(k, x)| k.kind() == KeyKind::Field && Some(**x) == id)
+                .map(|(k, _)| k.clone())
+        };
+        let field = key_in(self.src).or_else(|| key_in(src))?;
+        let mut taken = fills.taken.borrow_mut();
+        let i = (0..fills.given.len()).find(|&i| {
+            let p = &fills.given[i].0;
+            taken[i].is_none()
+                && fill_keys(&self.src.ids, &self.module_of(&p.ty), p).contains(&field)
+        })?;
+        taken[i] = Some(field);
+        Some(match &fills.given[i].1 {
+            Fill::Expr(e) => self.copy(e.span),
+            Fill::Match(arms) => {
+                let start = arms[0].patterns[0].span.start as usize;
+                let end = arms.last().expect("an arm").body.span.end as usize;
+                Written::concat(["match\n  | ".into(), self.copy_range(start..end)])
+            }
+        })
     }
 
     /// Returns path `t.c.f` of module `m`, or `t.f` without `c`, each part that `src` holds an id
@@ -920,4 +973,27 @@ impl Cx<'_> {
             .edit(i, vec![(braces, format!("{{ {} }}", inner.join(", ")))]);
         Ok(())
     }
+}
+
+/// Returns the keys field path `p` of a fill, of module `m`, can name among `ids`: the owner's
+/// catalog id and the field's name, the owner the constructor `p` names, else the header or the
+/// constructor a record type names after itself.
+pub(super) fn fill_keys(
+    ids: &BTreeMap<ObjectKey, u64>,
+    m: &str,
+    p: &ast::FieldPath,
+) -> Vec<ObjectKey> {
+    let t = p.ty.name.text.as_str();
+    let owners = match &p.ctor {
+        Some(c) => vec![ids::field_owner(ids, m, t, Some(&c.text))],
+        None => vec![
+            ids::field_owner(ids, m, t, None),
+            ids::field_owner(ids, m, t, Some(t)),
+        ],
+    };
+    owners
+        .into_iter()
+        .flatten()
+        .map(|o| ObjectKey::named(KeyKind::Field, o, &p.field.text))
+        .collect()
 }
