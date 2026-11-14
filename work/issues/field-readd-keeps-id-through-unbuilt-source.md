@@ -19,3 +19,7 @@ Ruling (lead): a dropped object is gone; a re-added one is a new object with a f
 Direction: assign and retire ids per operator from the operator's own effect, not from a build of the whole source. Test: both histories above give the same refusal.
 
 Defect class: Catalog rows and identity by position or spelling.
+
+## Reach
+
+The engine refuses this history before the id question arises: an `add field ... fill` after a drop that leaves the source unbuilt fails with "the operator checks against the schema the operators before it produce, which does not check" (`fill_map` calls `checked()`). Only the lang `Source::migrate` API reaches it. Fixed there by structure-lang-identity step 6a-2.

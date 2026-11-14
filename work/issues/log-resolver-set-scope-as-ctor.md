@@ -17,3 +17,7 @@ tags:
 Direction: the resolver resolves a scope name to a set or a constructor by what the source declares, keeping its catalog id. Test: a later `add index (n) in ts.R` (R a set) does not stop an unrelated revert.
 
 Defect class: Catalog rows and identity by position or spelling.
+
+## Also alone in a migration
+
+The engine refuses `add index (z) in ts.S` and `add unique ... in r.SET` naming a named set even alone in a migration, with "an object this operator creates or names is gone by the migration's end": crates/adtb-lang resolved.rs:774 resolves each selector ident as a constructor. Reproduced on main and in structure-lang-identity step 6a-2's review.
