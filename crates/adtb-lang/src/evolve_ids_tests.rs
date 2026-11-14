@@ -1721,3 +1721,126 @@ fn no_element_of_a_unique_or_index_keys_a_name_that_resolves_to_a_field_as_a_tok
     assert!(tokens.is_empty(), "{}", tokens.join("\n"));
     assert!(keys >= 32 * 5, "{keys} keys");
 }
+
+const KEYED_XS: &str = "module auth
+type X = { id: Key xs }
+relation xs : X key id generate sequence
+";
+
+/// Returns the catalog id of each index of relation `r` of `s`: its key, then its declared
+/// indexes in clause order, then its implied indexes by field name in field order.
+fn index_ids_of(s: &Source, r: &str) -> Vec<(String, Option<u64>)> {
+    let schema = ids_of(s);
+    let r = rel(&schema, r);
+    let ids = schema.ids();
+    let mut out = vec![("key".to_string(), ids.key_id(r).map(u64::from))];
+    for at in 0..schema.relation(r).indexes.len() {
+        out.push((format!("index {at}"), ids.index_id(r, at).map(u64::from)));
+    }
+    for i in schema.implied_indexes(r) {
+        let id = ids.implied_id(r, i.field_ref()).map(u64::from);
+        out.push((format!("implied {}", i.field), id));
+    }
+    out
+}
+
+/// Returns the index ids of relation `ps` declared as `decl` beside `KEYED_XS`, or the messages
+/// of the refusal of the declarations.
+fn relation_ps(decl: &str) -> Result<Vec<(String, Option<u64>)>, Vec<String>> {
+    let decls = [
+        "type X = { id: Key xs }",
+        "relation xs : X key id generate sequence",
+        &format!("relation ps : {decl}"),
+    ]
+    .map(|text| SourceDecl {
+        module: "auth".to_string(),
+        text: text.to_string(),
+    });
+    match Source::new(decls.to_vec()) {
+        Ok(built) => Ok(index_ids_of(&built, "ps")),
+        Err(e) => Err(e.into_iter().map(|d| d.diag.message).collect()),
+    }
+}
+
+fn ids(of: &[(&str, u64)]) -> Vec<(String, Option<u64>)> {
+    of.iter()
+        .map(|&(n, id)| (n.to_string(), Some(id)))
+        .collect()
+}
+
+#[test]
+fn a_relation_over_span_at_a_key_type_gives_its_end_an_implied_index_as_a_declared_record_does() {
+    let twin = format!("{KEYED_XS}type P a = {{ start: a, end: a }}\n");
+    let expected = ids(&[("key", 1025), ("implied end", 1026)]);
+    for (base, elem) in [(KEYED_XS.to_string(), "Span"), (twin, "P")] {
+        let decl = format!("relation ps : {elem} (Key xs) key start");
+        let added = applies(&source(&base), &format!("module auth\nadd {decl}"));
+        assert_eq!(expected, index_ids_of(&added, "ps"), "{elem}, migrated");
+        let built = source(&format!("{base}{decl}\n"));
+        assert_eq!(expected, index_ids_of(&built, "ps"), "{elem}, built");
+    }
+}
+
+#[test]
+fn a_relation_over_a_parametric_prelude_type_at_a_key_type_takes_an_id_for_each_index_or_is_refused()
+ {
+    let probe = ids_of(&source(KEYED_XS));
+    let mut found = BTreeMap::new();
+    for td in &probe.types {
+        if probe.module(td.module).name != "prelude" || td.params.is_empty() {
+            continue;
+        }
+        let args = vec!["(Key xs)"; td.params.len()].join(" ");
+        let first = td
+            .header()
+            .first()
+            .or(td.ctors().first().and_then(|c| c.fields.first()));
+        let key = first
+            .map(|f| format!(" key {}", f.name))
+            .unwrap_or_default();
+        let decl = format!("{} {args}{key}", td.name);
+        found.insert(decl.clone(), relation_ps(&decl));
+    }
+    for decl in [
+        "Span (Option (Key xs)) key start",
+        "Span (Key xs) key (start, end)",
+        "Span (Key xs) key start index (end) in Span",
+    ] {
+        found.insert(decl.to_string(), relation_ps(decl));
+    }
+    let refused = |m: &str| Err(vec![m.to_string()]);
+    let expected = BTreeMap::from([
+        (
+            "Option (Key xs)".to_string(),
+            refused("a relation declares exactly one key"),
+        ),
+        (
+            "Result (Key xs) (Key xs) key value".to_string(),
+            refused(
+                "key field `value` is not a header field or a field of the only constructor of \
+                 `Result`",
+            ),
+        ),
+        (
+            "Tag (Key xs)".to_string(),
+            refused("a relation's element type is a declared sum or record"),
+        ),
+        (
+            "Span (Key xs) key start".to_string(),
+            Ok(ids(&[("key", 1025), ("implied end", 1026)])),
+        ),
+        (
+            "Span (Option (Key xs)) key start".to_string(),
+            Ok(ids(&[("key", 1025), ("implied end", 1026)])),
+        ),
+        (
+            "Span (Key xs) key (start, end)".to_string(),
+            Ok(ids(&[("key", 1025), ("implied end", 1026)])),
+        ),
+        (
+            "Span (Key xs) key start index (end) in Span".to_string(),
+            Ok(ids(&[("key", 1025), ("index 0", 1026)])),
+        ),
+    ]);
+    assert_eq!(expected, found);
+}

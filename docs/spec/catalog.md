@@ -95,7 +95,7 @@ within an operator in this order:
 | Operator | Objects created, in order |
 | --- | --- |
 | `add type` | the type, then its constructors in listed order (a record or newtype has one); the header fields in declared order, then each constructor's fields, constructors in listed order and fields in declared order |
-| `add relation` | the relation variable; then, for its clauses in written order, an index for the key and for each `unique` and `index`, a default for the key's `generate` and, for each `default`, one for each field it fills (the header's field, or each constructor's field in declared order), and a computed field for each `computed` |
+| `add relation` | the relation variable; then, for its clauses in written order, an index for the key and for each `unique` and `index`, a default for the key's `generate` and, for each `default`, one for each field it fills (the header's field, or each constructor's field in declared order), and a computed field for each `computed`; then the implied index of each of its reference fields that has one, the header fields first, then each constructor's fields, constructors in listed order and fields in declared order |
 | `add set` | the named set |
 | `add constructor` | the constructor, then its fields in declared order |
 | `split`, `merge`, `nest`, `unnest` | the new constructors in listed order (for `unnest`, in the order of the field's sum), each followed by its fields in declared order; then, for each relation variable of the type in id order, an index for each unique and index the operator re-scopes or a split's `unique` and `index` clauses add, in the order of the relation variable's clauses after the operator |
@@ -373,7 +373,9 @@ An index of kind `Implied` is the implied index of a reference field
 its `clause` is written as the declaration of an index on the field
 would be, `index (owner)` for a header field and `index (user) in
 Google` for a field of constructor `Google`, and its `index_ctors` are
-the constructors holding the field. It is the index of the reference
+the constructors holding the field. A record's fields are its one
+constructor's, so the implied index of a field `end` of a `Span` names
+that constructor: `index (end) in Span`. It is the index of the reference
 held in the one field its clause names. The relation variables of
 `catalog` and `sys` have no implied indexes.
 

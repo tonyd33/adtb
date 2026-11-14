@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{self, Decl, RelationClause};
@@ -9,7 +10,7 @@ use crate::types::*;
 use super::key::{KeyKind, ObjectKey, Owner, Part, PathStep};
 use super::named::anonymous_row;
 use super::reach::{Correspondence, Replacement};
-use super::{FIRST_LOG_ID, Slot, Space};
+use super::{CatalogIds, FIRST_LOG_ID, Slot, Space};
 
 /// What holds an object, before the ids of the objects are known.
 #[derive(Clone, Debug)]
@@ -27,7 +28,18 @@ enum Named {
     Field(Slot),
     Ctor(Slot),
     Set(Slot),
-    Reach(Vec<Vec<Slot>>),
+    /// A field of an engine type, by its fixed id.
+    FixedField(u64),
+    /// A constructor of an engine type, by its fixed id.
+    FixedCtor(CtorRef, u64),
+    Reach(Vec<Vec<Step>>),
+}
+
+/// A step of a path an index element reaches.
+#[derive(Clone, Debug)]
+enum Step {
+    Of(Slot),
+    Fixed(PathStep),
 }
 
 /// One object of a user module, with what its key names.
@@ -74,14 +86,19 @@ impl Object {
                 Named::Field(s) => Part::Field(id(s)),
                 Named::Ctor(s) => Part::Ctor(id(s)),
                 Named::Set(s) => Part::Set(id(s)),
+                Named::FixedField(f) => Part::Field(*f),
+                Named::FixedCtor(_, c) => Part::Ctor(*c),
                 Named::Reach(paths) => Part::Reach(
                     paths
                         .iter()
                         .map(|p| {
                             p.iter()
                                 .map(|s| match s {
-                                    Slot::Ctor(_) | Slot::ViewCtor(_) => PathStep::Ctor(id(s)),
-                                    _ => PathStep::Field(id(s)),
+                                    Step::Of(s @ (Slot::Ctor(_) | Slot::ViewCtor(_))) => {
+                                        PathStep::Ctor(id(s))
+                                    }
+                                    Step::Of(s) => PathStep::Field(id(s)),
+                                    Step::Fixed(p) => *p,
                                 })
                                 .collect()
                         })
@@ -173,6 +190,7 @@ pub fn assign(
 struct Objects<'a> {
     schema: &'a Schema,
     text: &'a dyn Fn(FileId, Span) -> String,
+    engine: OnceCell<CatalogIds>,
     out: Vec<Object>,
 }
 
@@ -201,6 +219,7 @@ pub fn objects(
     let mut o = Objects {
         schema,
         text,
+        engine: OnceCell::new(),
         out: Vec::new(),
     };
     for (file, sf) in files {
@@ -332,11 +351,12 @@ impl Objects<'_> {
         );
         self.clause_objects(file, &r.clauses, Clauses::Relation(rel));
         for i in self.schema.implied_indexes(rel) {
+            let field = self.element(Some(Slot::Field(i.field_ref())), &i.field);
             self.push(
                 Slot::Implied(rel, i.field_ref()),
                 KeyKind::Implied,
                 Holder::Object(Slot::Relation(rel)),
-                vec![Named::Field(Slot::Field(i.field_ref()))],
+                vec![field],
             );
         }
     }
@@ -501,7 +521,10 @@ impl Objects<'_> {
     fn element_parts(&self, row: &Row, ctors: &[CtorRef], run: &[&str]) -> Vec<Named> {
         let (paths, resolved) = match row {
             Row::Data(def) => self.reach(*def, ctors, run),
-            Row::Anonymous(f) => (vec![vec![Slot::ViewField(*f, run[0].to_string())]], 1),
+            Row::Anonymous(f) => (
+                vec![vec![Step::Of(Slot::ViewField(*f, run[0].to_string()))]],
+                1,
+            ),
             Row::None => (Vec::new(), 0),
         };
         let mut out = Vec::new();
@@ -517,21 +540,17 @@ impl Objects<'_> {
         out
     }
 
-    /// Returns the paths of fields and constructors of user modules that the longest prefix of
-    /// `run` reaches from the rows of `ctors` of type `def`, with the length of that prefix: a
+    /// Returns the paths of fields and constructors that the longest prefix of `run` reaches from the rows of `ctors` of type `def`, with the length of that prefix: a
     /// name is a field of the header or of a constructor reached, else, after a field, a
     /// constructor of its type.
-    fn reach(&self, def: TypeId, ctors: &[CtorRef], run: &[&str]) -> (Vec<Vec<Slot>>, usize) {
+    fn reach(&self, def: TypeId, ctors: &[CtorRef], run: &[&str]) -> (Vec<Vec<Step>>, usize) {
         let schema = self.schema;
-        let user = |d: &TypeId| !schema.module(schema.ty(*d).module).engine;
-        let mut level: Vec<(Vec<Slot>, Option<TypeId>, Vec<CtorRef>)> =
+        let mut level: Vec<(Vec<Step>, Option<TypeId>, Vec<CtorRef>)> =
             vec![(Vec::new(), Some(def), ctors.to_vec())];
         let mut resolved = 0;
         for w in run {
             let mut next = Vec::new();
-            let typed = level
-                .iter()
-                .filter_map(|(p, d, c)| d.filter(user).map(|d| (p, d, c)));
+            let typed = level.iter().filter_map(|(p, d, c)| d.map(|d| (p, d, c)));
             for (path, def, ctors) in typed {
                 let td = schema.ty(def);
                 let fields: BTreeSet<FieldRef> = match td.field(None, w) {
@@ -544,17 +563,19 @@ impl Objects<'_> {
                         _ => None,
                     };
                     let every = inner
-                        .filter(user)
                         .map(|d| schema.ty(d).ctor_refs().collect())
                         .unwrap_or_default();
-                    next.push((extended(path, Slot::Field(f)), inner, every));
+                    next.push((extended(path, self.field_step(f)), inner, every));
                 }
-                let after_field = matches!(path.last(), Some(Slot::Field(_)));
+                let after_field = matches!(
+                    path.last(),
+                    Some(Step::Of(Slot::Field(_)) | Step::Fixed(PathStep::Field(_)))
+                );
                 if let Some(c) = td
                     .ctor_named(w)
                     .filter(|c| after_field && ctors.contains(c))
                 {
-                    next.push((extended(path, Slot::Ctor(c)), Some(def), vec![c]));
+                    next.push((extended(path, self.ctor_step(c)), Some(def), vec![c]));
                 }
             }
             if next.is_empty() {
@@ -583,14 +604,53 @@ impl Objects<'_> {
         Row::Data(def)
     }
 
-    /// Returns the key part of an element `name` that names `field`: the field when a user module
-    /// declares it, else the name.
+    /// Returns the key part of an element `name` that names `field`: the field, by its fixed id
+    /// when an engine module declares it; the name when it names none.
     fn element(&self, field: Option<Slot>, name: &str) -> Named {
-        let user = |f: &FieldRef| !self.schema.module(self.schema.ty(f.def()).module).engine;
         match field {
-            Some(Slot::Field(f)) if !user(&f) => Named::Token(name.to_string()),
+            Some(Slot::Field(f)) if self.engine_type(f.def()) => {
+                Named::FixedField(self.fixed_field(f))
+            }
             Some(slot) => Named::Field(slot),
             None => Named::Token(name.to_string()),
+        }
+    }
+
+    fn engine_type(&self, def: TypeId) -> bool {
+        self.schema.module(self.schema.ty(def).module).engine
+    }
+
+    fn engine_ids(&self) -> &CatalogIds {
+        self.engine.get_or_init(|| super::engine(self.schema))
+    }
+
+    fn fixed_field(&self, f: FieldRef) -> u64 {
+        self.engine_ids()
+            .field_id(f)
+            .expect("every field of an engine type has a fixed id")
+            .raw()
+    }
+
+    fn fixed_ctor(&self, c: CtorRef) -> u64 {
+        self.engine_ids()
+            .ctor_id(c)
+            .expect("every constructor of an engine type has a fixed id")
+            .raw()
+    }
+
+    fn field_step(&self, f: FieldRef) -> Step {
+        if self.engine_type(f.def()) {
+            Step::Fixed(PathStep::Field(self.fixed_field(f)))
+        } else {
+            Step::Of(Slot::Field(f))
+        }
+    }
+
+    fn ctor_step(&self, c: CtorRef) -> Step {
+        if self.engine_type(c.def()) {
+            Step::Fixed(PathStep::Ctor(self.fixed_ctor(c)))
+        } else {
+            Step::Of(Slot::Ctor(c))
         }
     }
 
@@ -609,6 +669,9 @@ impl Objects<'_> {
             },
         };
         if let Some(c) = def.and_then(|d| schema.ty(d).ctor_named(name)) {
+            if self.engine_type(c.def()) {
+                return Named::FixedCtor(c, self.fixed_ctor(c));
+            }
             return Named::Ctor(Slot::Ctor(c));
         }
         match of {
@@ -677,7 +740,7 @@ impl Row {
         let mut out = BTreeSet::new();
         for part in scope {
             match part {
-                Named::Ctor(Slot::Ctor(c)) => {
+                Named::Ctor(Slot::Ctor(c)) | Named::FixedCtor(c, _) => {
                     out.insert(*c);
                 }
                 Named::Set(Slot::Set(r, name)) => {
@@ -695,7 +758,7 @@ impl Row {
     }
 }
 
-fn extended(path: &[Slot], step: Slot) -> Vec<Slot> {
+fn extended(path: &[Step], step: Step) -> Vec<Step> {
     let mut out = path.to_vec();
     out.push(step);
     out

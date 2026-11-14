@@ -1,0 +1,45 @@
+seed 1
+
+migrate
+  module shop
+  add module shop
+  add type X = { id: Key xs, n: I64 }
+  add relation xs : X key id generate sequence
+  add type P a = { start: a, end: a }
+
+migrate
+  module shop
+  add relation ps : Span (Key xs) key start
+  add relation qs : P (Key xs) key start
+
+run
+  insert xs from ([{ id: xs.key(1), n: 1 }, { id: xs.key(2), n: 2 }])
+  insert ps span(xs.key(1), xs.key(2))
+  insert qs { start: xs.key(1), end: xs.key(2) }
+
+error Violated { constraint: "shop::ps.Span.end", report: 1 rows, redacted: 0 }
+  insert ps span(xs.key(2), xs.key(3))
+
+error Violated { constraint: "shop::qs.P.end", report: 1 rows, redacted: 0 }
+  insert qs { start: xs.key(2), end: xs.key(3) }
+
+query
+  from p in ps select p.end
+----
+xs.key(2)
+
+reopen
+
+query rowsort
+  from i in catalog::indexes where i.id >= catalog::indexes.key(1024) select { kind: i.kind, clause: i.clause, id: i.id }
+----
+{ clause: "index (end) in P", id: indexes.key(1028), kind: Implied }
+{ clause: "index (end) in Span", id: indexes.key(1026), kind: Implied }
+{ clause: "key id", id: indexes.key(1024), kind: PrimaryKey }
+{ clause: "key start", id: indexes.key(1025), kind: PrimaryKey }
+{ clause: "key start", id: indexes.key(1027), kind: PrimaryKey }
+
+query rowsort
+  from c in catalog::index_ctors where c.index == catalog::indexes.key(1026) select c.ctor
+----
+catalog::constructors.key(36)
