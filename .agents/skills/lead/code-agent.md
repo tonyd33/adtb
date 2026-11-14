@@ -262,6 +262,14 @@ the work, not as a separate step. Do not rebuild to break code on purpose: each 
 adtb-sim costs two minutes. Run `house-check` and `size-check` before `check`; when a
 `check` fails only in `house-check`, rerun `house-check`, not `check`. The size in a brief is an estimate; say in the report when the change grew well past it.
 
+The final run of a round is one `check --changed` plus the runs it does not hold: a `--profile deep`
+search, `work/tools/conf`, a reopen script, a benchmark. `check --changed` already runs fmt, clippy,
+the suite, size-check, house-check and every part `check-reach` finds in reach, so do not also run
+`work/tools/suite`, `-p adtb-sim`, `-p adtb-lang`, the damage profile or a workspace clippy beside
+it: each is a subset run twice. Run fmt, house-check and clippy first, alone, so they fail in
+seconds. A round after a review with no blocker reruns fmt, clippy, house-check and the tests of the
+files it touched, not the final run; the lead's check on main covers the rest.
+
 ## Scripts
 
 Keep your scripts and their logs under your workspace's `target/`. A scratchpad
