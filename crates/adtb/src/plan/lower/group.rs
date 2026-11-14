@@ -73,12 +73,13 @@ impl Planner<'_> {
             let g2_tm = self.var_tm(g2);
             let mut map: HashMap<Tm, Tm> = HashMap::new();
             for ((a, _), n) in fused.iter().zip(&names) {
-                let f = self.add(Kind::Field(g2_tm, n.clone()), self.ty(*a));
+                let f = self.b().field(g2_tm, n.clone());
                 map.insert(*a, f);
             }
-            for (f, name) in [(&found.keys, "key"), (&found.rows, "rows")] {
+            let rows: &[Tm] = if rows_used { &found.rows } else { &[] };
+            for (f, name) in [(&found.keys[..], "key"), (rows, "rows")] {
                 for t in f {
-                    let n = self.add(Kind::Field(g2_tm, name.into()), self.ty(*t));
+                    let n = self.b().field(g2_tm, name);
                     map.insert(*t, n);
                 }
             }
@@ -262,8 +263,7 @@ impl Planner<'_> {
         let out = if new == cs {
             t
         } else {
-            let kind = self.t.kind(t).with_children(&new);
-            self.add(kind, self.ty(t))
+            self.b().rebuild_kept(t, &new)
         };
         memo.insert(t, out);
         out

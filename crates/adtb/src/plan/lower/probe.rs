@@ -69,7 +69,7 @@ impl Planner<'_> {
             }
             [f] => {
                 let ty = field_ty(f);
-                vec![(f.clone(), self.add(Kind::Prim(Prim::KeyValue, vec![k]), ty))]
+                vec![(f.clone(), self.b().prim(Prim::KeyValue, vec![k], ty))]
             }
             fs => {
                 let tys: Vec<(String, Ty)> = key_names(self.schema, rel)
@@ -79,12 +79,9 @@ impl Planner<'_> {
                         (f, ty)
                     })
                     .collect();
-                let rec = self.add(Kind::Prim(Prim::KeyValue, vec![k]), Ty::Record(tys));
+                let rec = self.b().prim(Prim::KeyValue, vec![k], Ty::Record(tys));
                 fs.iter()
-                    .map(|f| {
-                        let ty = field_ty(f);
-                        (f.clone(), self.add(Kind::Field(rec, f.clone()), ty))
-                    })
+                    .map(|f| (f.clone(), self.b().field(rec, f.clone())))
                     .collect()
             }
         }

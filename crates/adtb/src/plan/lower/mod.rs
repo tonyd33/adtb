@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use adtb_lang::analysis::Totality;
 use adtb_lang::ast::FnBody;
-use adtb_lang::kernel::{Agg, Kind, PathStep, Prim, Terms, Tm, Var};
+use adtb_lang::kernel::{self, Agg, Kind, PathStep, Prim, Terms, Tm, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{CtorSet, RelId, Ty};
@@ -365,8 +365,8 @@ impl Planner<'_> {
         self.t.ty(t).clone()
     }
 
-    fn add(&mut self, kind: Kind, ty: Ty) -> Tm {
-        self.t.add_unchecked(kind, ty)
+    fn b(&mut self) -> kernel::Build<'_> {
+        kernel::Build::new(self.schema, &mut self.t)
     }
 
     fn fresh(&mut self, name: &str, ty: Ty) -> Var {
@@ -377,8 +377,7 @@ impl Planner<'_> {
         if let Some(t) = self.vars.get(&v) {
             return *t;
         }
-        let ty = self.t.var_info(v).ty.clone();
-        let t = self.add(Kind::Var(v), ty);
+        let t = self.b().var(v);
         self.vars.insert(v, t);
         t
     }
@@ -427,7 +426,7 @@ impl Planner<'_> {
     }
 
     fn empty(&mut self, ty: Ty) -> Tm {
-        self.add(Kind::EmptySet, ty)
+        self.b().empty_set(ty)
     }
 
     fn ctors_of(&self, r: RelId, s: &Option<CtorSet>) -> CtorSet {
@@ -481,7 +480,7 @@ impl Planner<'_> {
                 let from = out.len();
                 self.conjuncts(b, out);
                 for k in &mut out[from..] {
-                    *k = self.facts.sink_let(&mut self.t, x, e, *k);
+                    *k = self.facts.sink_let(self.schema, &mut self.t, x, e, *k);
                 }
             }
             _ => out.push(c),
@@ -497,7 +496,7 @@ impl Planner<'_> {
                 Some(false) => out = self.empty(ty.clone()),
                 None => {
                     let e = self.empty(ty.clone());
-                    out = self.add(Kind::If(*c, out, e), ty.clone());
+                    out = self.b().if_(*c, out, e, ty.clone());
                 }
             }
         }
@@ -529,7 +528,7 @@ impl Planner<'_> {
         }
         let ty = self.ty(rest);
         let inner = self.guarded(&kept, ir, &ty);
-        let rest = self.add(Kind::For(y, src, inner), ty);
+        let rest = self.b().for_(y, src, inner, ty);
         (conds, rest)
     }
 
@@ -564,14 +563,14 @@ impl Planner<'_> {
                 let mut inner = known.clone();
                 inner.insert(x, *c);
                 let live = self.specialise(arm, &inner, &mut HashMap::new())?;
-                let dead = self.add(Kind::Unreachable, ty.clone());
+                let dead = self.b().unreachable(ty.clone());
                 let arms = arms
                     .into_iter()
                     .map(|(d, v, _)| (d, v, if d == *c { live } else { dead }))
                     .collect();
-                self.add(Kind::Case { scrutinee, arms }, ty)
+                self.b().case(scrutinee, arms, ty)
             }
-            kind => {
+            _ => {
                 let cs = self.t.children(t);
                 let new: Vec<Tm> = cs
                     .iter()
@@ -580,7 +579,7 @@ impl Planner<'_> {
                 if new == cs {
                     t
                 } else {
-                    self.add(kind.with_children(&new), self.ty(t))
+                    self.b().rebuild_kept(t, &new)
                 }
             }
         };
@@ -738,7 +737,7 @@ impl Planner<'_> {
             _ if matches!(ty, Ty::Set(_) | Ty::NonEmpty(_)) && self.streams(t) => {
                 self.query(t, Sink::Set, Some(&[]))
             }
-            kind => {
+            _ => {
                 let cs = self.t.children(t);
                 let mut last = None;
                 for (i, c) in cs.iter().enumerate() {
@@ -754,7 +753,7 @@ impl Planner<'_> {
                     lets.push((v, self.eval(*c)?));
                     new[i] = self.var_tm(v);
                 }
-                let e = self.add(kind.with_children(&new), ty);
+                let e = self.b().rebuild_kept(t, &new);
                 Ok(wrap_eval(lets, Eval::Expr(e)))
             }
         }
@@ -873,9 +872,11 @@ impl Planner<'_> {
             .into_iter()
             .map(|c| self.import(c, vars, memo))
             .collect();
-        let kind = from.kind(t).with_children(&cs);
-        let kind = kind.with_vars(&mut |v| *vars.entry(v).or_insert_with(|| self.import_var(v)));
-        let out = self.add(kind, from.ty(t).clone());
+        from.kind(t).with_vars(&mut |v| {
+            vars.entry(v).or_insert_with(|| self.import_var(v));
+            v
+        });
+        let out = self.b().import_kept(from, t, &cs, |v| vars[&v]);
         memo.insert(t, out);
         out
     }
@@ -987,9 +988,9 @@ impl Planner<'_> {
         let row_ty = self.elem_ty(src)?;
         let set_ty = Ty::Set(Box::new(row_ty.clone()));
         let one = self.var_tm(y);
-        let one = self.add(Kind::Singleton(one), set_ty.clone());
+        let one = self.b().singleton(one, set_ty.clone());
         let picked = self.guarded(&filters, one, &set_ty);
-        let picked = self.add(Kind::For(y, src, picked), set_ty.clone());
+        let picked = self.b().for_(y, src, picked, set_ty.clone());
         let group_ty = Ty::Record(vec![
             ("key".into(), self.ty(by)),
             ("rows".into(), Ty::NonEmpty(Box::new(row_ty))),
@@ -1012,7 +1013,8 @@ impl Planner<'_> {
         let body_ty = self.ty(body);
         let each = self.guarded(&kept, rest, &body_ty);
         let from = self.var_tm(s);
-        let source = self.add(Kind::For(y, from, each), self.ty(source));
+        let source_ty = self.ty(source);
+        let source = self.b().for_(y, from, each, source_ty);
         Ok(Some((s, Eval::GroupRows { groups, key: probe }, source)))
     }
 
@@ -1026,7 +1028,7 @@ impl Planner<'_> {
         let record = |p: &mut Self, ts: &[Tm]| {
             let fields: Vec<(String, Tm)> = names.iter().cloned().zip(ts.iter().copied()).collect();
             let ty = Ty::Record(fields.iter().map(|(n, t)| (n.clone(), p.ty(*t))).collect());
-            p.add(Kind::Record(fields), ty)
+            p.b().record(fields, ty)
         };
         (record(self, keys), record(self, probes))
     }
@@ -1209,7 +1211,8 @@ impl Planner<'_> {
             _ => {
                 let y = self.fresh("%e", self.elem_ty(t)?);
                 let body = self.var_tm(y);
-                let body = self.add(Kind::Singleton(body), self.ty(t));
+                let ty = self.ty(t);
+                let body = self.b().singleton(body, ty);
                 self.for_chain(y, t, body, q, sc)
             }
         }
@@ -1250,9 +1253,11 @@ impl Planner<'_> {
         {
             let z = self.fresh("%e", self.elem_ty(inner)?);
             let one = self.var_tm(z);
-            let one = self.add(Kind::Singleton(one), self.ty(inner));
-            let kept = self.add(Kind::Restrict(one, s), self.ty(src));
-            let each = self.add(Kind::For(y, kept, body), self.ty(body));
+            let inner_ty = self.ty(inner);
+            let one = self.b().singleton(one, inner_ty);
+            let kept = self.b().restrict(one, s);
+            let body_ty = self.ty(body);
+            let each = self.b().for_(y, kept, body, body_ty);
             return self.for_chain(z, inner, each, q, sc);
         }
         let (lets, s) = self.lift_here(src, q, sc)?;
@@ -1274,7 +1279,7 @@ impl Planner<'_> {
                 let mut others = conds.clone();
                 others.remove(i);
                 let inner = self.guarded(&others, rest, &ty);
-                let looped = self.add(Kind::For(x, src, inner), ty.clone());
+                let looped = self.b().for_(x, src, inner, ty.clone());
                 return Some(self.guarded(&[c], looped, &ty));
             }
             if let Kind::Case { scrutinee, arms } = self.kind(c)
@@ -1285,15 +1290,9 @@ impl Planner<'_> {
                     let mut cs = conds.clone();
                     cs[i] = arm;
                     let inner = self.guarded(&cs, rest, &ty);
-                    out.push((k, v, self.add(Kind::For(x, src, inner), ty.clone())));
+                    out.push((k, v, self.b().for_(x, src, inner, ty.clone())));
                 }
-                return Some(self.add(
-                    Kind::Case {
-                        scrutinee,
-                        arms: out,
-                    },
-                    ty,
-                ));
+                return Some(self.b().case(scrutinee, out, ty));
             }
         }
         if n < conds.len() {
@@ -1304,22 +1303,16 @@ impl Planner<'_> {
                 let mut out = Vec::new();
                 for (k, v, arm) in arms {
                     let inner = self.guarded(&conds, arm, &ty);
-                    out.push((k, v, self.add(Kind::For(x, src, inner), ty.clone())));
+                    out.push((k, v, self.b().for_(x, src, inner, ty.clone())));
                 }
-                Some(self.add(
-                    Kind::Case {
-                        scrutinee,
-                        arms: out,
-                    },
-                    ty,
-                ))
+                Some(self.b().case(scrutinee, out, ty))
             }
             Kind::If(c, a, b) if invariant(self, c) => {
                 let a = self.guarded(&conds, a, &ty);
                 let b = self.guarded(&conds, b, &ty);
-                let a = self.add(Kind::For(x, src, a), ty.clone());
-                let b = self.add(Kind::For(x, src, b), ty.clone());
-                Some(self.add(Kind::If(c, a, b), ty))
+                let a = self.b().for_(x, src, a, ty.clone());
+                let b = self.b().for_(x, src, b, ty.clone());
+                Some(self.b().if_(c, a, b, ty))
             }
             _ => None,
         }
@@ -1373,7 +1366,7 @@ impl Planner<'_> {
             } else if p.is_empty_set(b) {
                 a
             } else {
-                p.add(Kind::Union(a, b), ty.clone())
+                p.b().union(a, b, ty.clone())
             }
         };
         match self.kind(e) {
@@ -1388,7 +1381,7 @@ impl Planner<'_> {
             }
             Kind::Restrict(a, s) => {
                 let a = self.delta(a, xs, deltas)?;
-                Some(self.add(Kind::Restrict(a, s), ty))
+                Some(self.b().restrict(a, s))
             }
             Kind::For(y, s, b) => {
                 let ds = self.delta(s, xs, deltas)?;
@@ -1396,40 +1389,34 @@ impl Planner<'_> {
                 let left = if self.is_empty_set(ds) {
                     ds
                 } else {
-                    self.add(Kind::For(y, ds, b), ty.clone())
+                    self.b().for_(y, ds, b, ty.clone())
                 };
                 let right = if self.is_empty_set(db) {
                     db
                 } else {
-                    self.add(Kind::For(y, s, db), ty.clone())
+                    self.b().for_(y, s, db, ty.clone())
                 };
                 Some(union(self, left, right))
             }
             Kind::If(c, a, b) if !self.mentions(c, xs) => {
                 let a = self.delta(a, xs, deltas)?;
                 let b = self.delta(b, xs, deltas)?;
-                Some(self.add(Kind::If(c, a, b), ty))
+                Some(self.b().if_(c, a, b, ty))
             }
             Kind::Case { scrutinee, arms } if !self.mentions(scrutinee, xs) => {
                 let mut out = Vec::new();
                 for (c, v, a) in arms {
                     out.push((c, v, self.delta(a, xs, deltas)?));
                 }
-                Some(self.add(
-                    Kind::Case {
-                        scrutinee,
-                        arms: out,
-                    },
-                    ty,
-                ))
+                Some(self.b().case(scrutinee, out, ty))
             }
             Kind::Let(y, a, b) if !self.mentions(a, xs) => {
                 let b = self.delta(b, xs, deltas)?;
-                Some(self.add(Kind::Let(y, a, b), ty))
+                Some(self.b().let_(y, a, b, ty))
             }
             Kind::Fix(inner, b) if inner.iter().all(|(_, x)| !self.mentions(*x, xs)) => {
                 let b = self.delta(b, xs, deltas)?;
-                Some(self.add(Kind::Fix(inner, b), ty))
+                Some(self.b().fix(inner, b, ty))
             }
             _ => None,
         }

@@ -66,7 +66,6 @@ impl<'p, 'a> Walk<'p, 'a> {
     pub(super) fn mark(&mut self) -> R<()> {
         let bound: HashSet<Var> = self
             .src
-            .nodes
             .iter()
             .filter_map(|n| match n.kind {
                 Kind::Let(v, ..) => Some(v),
@@ -120,7 +119,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                 | Kind::Transact(..) => None,
             })
             .collect();
-        for n in &self.src.nodes {
+        for n in self.src.iter() {
             let (rel, rows) = match &n.kind {
                 Kind::Insert(rel, rows) | Kind::Upsert { rel, rows, .. } => (*rel, *rows),
                 Kind::Var(..)

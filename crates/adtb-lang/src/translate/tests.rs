@@ -132,7 +132,6 @@ fn a_hiding_upsert_keeps_its_visible_scope_distinct_from_its_unique_probe() {
                 .unwrap_or_else(|e| panic!("{name}: the upsert translates: {e:?}"));
             let scopes: Vec<_> = q
                 .terms
-                .nodes
                 .iter()
                 .filter_map(|n| match n.kind {
                     Kind::Upsert {

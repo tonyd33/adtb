@@ -79,7 +79,7 @@ pub fn rewrite(schema: &Schema, terms: &mut Terms, root: Tm) -> BTreeMap<Var, In
         todo.extend(terms.children(t));
         if let Some(input) = input {
             let v = terms.var("input·", terms.ty(t).clone());
-            terms.nodes[t.0 as usize].kind = Kind::Var(v);
+            terms.overwrite_kind(t, Kind::Var(v));
             out.insert(v, input);
         }
     }

@@ -59,8 +59,11 @@
 #                     an id. No line allows one.
 # kernel_door:        calls of `Terms::add_unchecked`, which adds a kernel node at a type
 #                     nothing computes or checks. Terms are built through `kernel::Build`, which
-#                     types each node from its children. The lines left are the engine's terms and
-#                     the translation of registered calls.
+#                     types each node from its children. The lines left are the translation of
+#                     registered calls.
+# kernel_overwrite:   calls of `Terms::overwrite_kind`, which replaces a node's kind in place,
+#                     unchecked, under every parent that shares it. The lines left are the
+#                     engine's rewrites of transition reads and input scans into variables.
 # denial_zips:        `.zip(` whose argument names `checks` or `constraints` before its first `)` or
 #                     `;`, or whose receiver chain names one with no `;`, `{` or `}` between, across
 #                     lines: a constraint or check is paired with its term, name or id by its index,
@@ -155,18 +158,9 @@ disallowed_methods prod 9 crates/adtb/src/storage/pager.rs
 disallowed_methods test 1 crates/adtb/src/storage/open_damage_tests.rs
 disallowed_methods test 2 crates/adtb/src/storage/lost_bitmap_tests.rs
 kernel_door prod 36 crates/adtb-lang/src/translate/walk.rs
-kernel_door prod 6 crates/adtb/src/api/command.rs
-kernel_door prod 5 crates/adtb/src/api/dump.rs
-kernel_door prod 3 crates/adtb/src/api/server/store.rs
-kernel_door test 12 crates/adtb/src/exec/tests.rs
-kernel_door prod 1 crates/adtb/src/plan/lower/mod.rs
-kernel_door prod 2 crates/adtb/src/plan/terms.rs
-kernel_door test 13 crates/adtb/src/plan/tests/interp.rs
-kernel_door test 4 crates/adtb/src/plan/tests/mod.rs
-kernel_door test 2 crates/adtb/src/plan/tests/valid.rs
-kernel_door prod 1 crates/adtb/src/write/delta/mod.rs
-kernel_door test 10 crates/adtb/src/write/delta/tests.rs
-kernel_door prod 4 crates/adtb/src/write/fresh.rs
+kernel_overwrite prod 1 crates/adtb/src/write/delta/mod.rs
+kernel_overwrite prod 1 crates/adtb/src/write/input.rs
+kernel_overwrite prod 1 crates/adtb/src/write/restore.rs
 pub_fields prod 1 crates/adtb-bench/src/native/control_fixture.rs
 pub_fields prod 3 crates/adtb-bench/src/native/counter.rs
 pub_fields prod 2 crates/adtb-bench/src/native/engine.rs
@@ -187,7 +181,7 @@ pub_fields prod 3 crates/adtb-lang/src/evolve/keep.rs
 pub_fields prod 26 crates/adtb-lang/src/evolve/mod.rs
 pub_fields prod 8 crates/adtb-lang/src/evolve/resolved.rs
 pub_fields prod 5 crates/adtb-lang/src/evolve/rowmap.rs
-pub_fields prod 14 crates/adtb-lang/src/kernel.rs
+pub_fields prod 13 crates/adtb-lang/src/kernel.rs
 pub_fields prod 3 crates/adtb-lang/src/lex.rs
 pub_fields prod 21 crates/adtb-lang/src/norm/mod.rs
 pub_fields prod 3 crates/adtb-lang/src/parse/mod.rs

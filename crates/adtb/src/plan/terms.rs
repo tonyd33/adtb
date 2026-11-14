@@ -1,7 +1,8 @@
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
-use adtb_lang::kernel::{Frees, Kind, Terms, Tm, Var};
+use adtb_lang::kernel::{Build, Frees, Kind, Terms, Tm, Var};
+use adtb_lang::schema::Schema;
 
 /// Facts about terms of one arena, remembered per term.
 #[derive(Debug, Default)]
@@ -43,7 +44,7 @@ impl Facts {
     ///
     /// Preconditions:
     /// - `e` is copyable.
-    pub fn sink_let(&mut self, terms: &mut Terms, x: Var, e: Tm, c: Tm) -> Tm {
+    pub fn sink_let(&mut self, schema: &Schema, terms: &mut Terms, x: Var, e: Tm, c: Tm) -> Tm {
         if !self.mentions(terms, c, &[x]) {
             return c;
         }
@@ -55,11 +56,11 @@ impl Facts {
             Kind::Prim(p, args) => {
                 let args = args
                     .into_iter()
-                    .map(|a| self.sink_let(terms, x, e, a))
+                    .map(|a| self.sink_let(schema, terms, x, e, a))
                     .collect();
-                terms.add_unchecked(Kind::Prim(p, args), ty)
+                Build::new(schema, terms).prim(p, args, ty)
             }
-            _ => terms.add_unchecked(Kind::Let(x, e, c), ty),
+            _ => Build::new(schema, terms).let_(x, e, c, ty),
         };
         self.sunk.insert((x, e, c), s);
         s

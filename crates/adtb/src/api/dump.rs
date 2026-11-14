@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::ids::{CatRelId, held_id};
-use adtb_lang::kernel::{Kind, Terms};
+use adtb_lang::kernel::{Build, Terms};
 use adtb_lang::schema::{Generator, Schema};
 use adtb_lang::textual::{Form, Header, print, read_document};
 use adtb_lang::types::{RelId, Ty};
@@ -707,12 +707,13 @@ impl<R: Runtime> Engine<R> {
             }));
             let x = terms.var("row·", set.clone());
             params.push((x, Val::set(rows)));
-            let gone = terms.add_unchecked(Kind::Rel(r, None), set.clone());
-            changes.push(terms.add_unchecked(Kind::Delete(r, gone), Ty::Change));
-            let new = terms.add_unchecked(Kind::Var(x), set);
-            changes.push(terms.add_unchecked(Kind::Insert(r, new), Ty::Change));
+            let mut b = Build::new(&self.schema, &mut terms);
+            let gone = b.rel(r, None);
+            changes.push(b.delete(r, gone));
+            let new = b.var(x);
+            changes.push(b.insert(r, new));
         }
-        let all = terms.add_unchecked(Kind::Par(changes), Ty::Change);
+        let all = Build::new(&self.schema, &mut terms).par(changes);
         let text = Text {
             schema: &self.schema,
             terms: &terms,

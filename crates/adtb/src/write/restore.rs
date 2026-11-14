@@ -147,12 +147,14 @@ impl<R: Runtime> Restoring<'_, R> {
             stmt.check_rows(&rows, viol)?;
         }
         let mut terms = db.normal.terms.clone();
-        for node in &mut terms.nodes {
-            if let Kind::Transition(x, r, s) = &node.kind {
-                node.kind = match x {
-                    Transition::Prior => Kind::Rel(*r, s.clone()),
+        for i in 0..terms.len() {
+            let t = Tm(u32::try_from(i).expect("an arena of fewer than 2^32 nodes"));
+            if let Kind::Transition(x, r, s) = terms.kind(t).clone() {
+                let kind = match x {
+                    Transition::Prior => Kind::Rel(r, s),
                     Transition::Inserted | Transition::Deleted => Kind::EmptySet,
                 };
+                terms.overwrite_kind(t, kind);
             }
         }
         let schema = &*db.schema;

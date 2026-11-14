@@ -1,0 +1,36 @@
+# A function matching every constructor of a sum, called on rows of a named set, takes the arms of the set's members.
+schema
+  module test
+  type Entity { id: Key entities, name: Text }
+    = Npc
+    | Pc { player: Text }
+    | Place { parent: Option (Key entities.Place) }
+  relation entities : Entity key id generate sequence
+  set Characters of entities = Npc | Pc
+  fn label (e: Entity) -> Text = match e
+    | Npc n -> n.name
+    | Pc p -> p.player
+    | Place l -> l.name
+  constraint labelled =
+    from c in entities.Characters where label(c) == "" select c
+run
+  transact
+    insert entities.Npc { id: entities.key(1), name: "ann" }
+    insert entities.Pc { id: entities.key(2), name: "bo", player: "pat" }
+    insert entities.Place { id: entities.key(3), name: "inn", parent: None }
+query rowsort
+  from c in entities.Characters select label(c)
+----
+"ann"
+"pat"
+error Violated
+  insert entities.Pc { id: entities.key(4), name: "cy", player: "" }
+run
+  insert entities.Place { id: entities.key(5), name: "", parent: None }
+query rowsort
+  from e in entities select label(e)
+----
+""
+"ann"
+"inn"
+"pat"

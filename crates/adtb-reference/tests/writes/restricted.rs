@@ -56,7 +56,6 @@ impl Step {
             .expect("the upsert checks");
         let olds: Vec<_> = checked
             .terms
-            .nodes
             .iter()
             .filter_map(|node| match node.kind {
                 Kind::Upsert { old, .. } => Some(old),

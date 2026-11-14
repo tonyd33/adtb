@@ -213,6 +213,13 @@ grep -qxF 'kernel_door prod 3 crates/lang/src/k.rs' <<<"$counts" || fail "not co
 grep -qxF 'kernel_door test 3 crates/lang/src/k_tests.rs' <<<"$counts" || fail "test not counted: kernel_door: $counts"
 rm -r crates/lang
 
+# kernel_overwrite counts calls of `overwrite_kind`, by method or path, not its definition.
+mkdir -p crates/lang/src
+printf '%s\n' 'pub fn overwrite_kind(&mut self) {}' 'fn f() { t.overwrite_kind(n, k); t' '    .overwrite_kind(n, k); Terms::overwrite_kind(t, n, k); t.overwrite(n); }' >crates/lang/src/k.rs
+counts=$("$checker" --counts "$scratch")
+grep -qxF 'kernel_overwrite prod 3 crates/lang/src/k.rs' <<<"$counts" || fail "not counted: kernel_overwrite: $counts"
+rm -r crates/lang
+
 # A malformed allowlist line fails.
 printf '%s\n' 'meta prod many crates/adtb/src/exec/a.rs' >work/tools/structure-allowlist
 if "$checker" "$scratch" >out.txt 2>&1; then

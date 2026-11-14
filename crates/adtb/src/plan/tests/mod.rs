@@ -3,7 +3,7 @@ mod valid;
 
 use std::collections::BTreeSet;
 
-use adtb_lang::kernel::{Kind, Terms, Tm, Var};
+use adtb_lang::kernel::{Build, Kind, Terms, Tm, Var};
 use adtb_reference::{Abort, Fault, R, Value};
 use adtb_testkit::uuid;
 
@@ -436,6 +436,25 @@ fn a_partial_sum_in_a_strict_position_is_computed_by_the_group() {
 }
 
 #[test]
+fn no_field_of_a_fused_group_plan_reads_a_label_its_record_lacks() {
+    let f = running();
+    assert_eq!((false, 1), group_of(&f, GROUP));
+    let p = adhoc_plan(&f, GROUP, &[], Rewrites::ALL);
+    let missing: Vec<String> = p
+        .terms
+        .iter()
+        .filter_map(|n| match &n.kind {
+            Kind::Field(e, l) => match p.terms.ty(*e) {
+                Ty::Record(fs) if !fs.iter().any(|(name, _)| name == l) => Some(l.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(Vec::<String>::new(), missing);
+}
+
+#[test]
 fn a_sum_under_a_guard_is_left_to_the_body() {
     let f = running();
     let text = "from o in orders group o by o.user into g
@@ -677,11 +696,9 @@ fn a_function_value_in_a_normal_form_is_an_internal_error() {
     let mut terms = Terms::default();
     let int = Ty::Base(adtb_lang::types::Base::I64);
     let x = terms.var("x", int.clone());
-    let body = terms.add_unchecked(Kind::Var(x), int.clone());
-    let t = terms.add_unchecked(
-        Kind::Lam(x, body),
-        Ty::Fn(Box::new(int.clone()), Box::new(int)),
-    );
+    let mut b = Build::new(&f.schema, &mut terms);
+    let body = b.var(x);
+    let t = b.lam(x, body, Ty::Fn(Box::new(int.clone()), Box::new(int)));
     let got = plan(
         &f.schema,
         &f.normal,
@@ -699,8 +716,8 @@ fn a_dereference_of_a_value_that_is_not_a_key_is_an_internal_error() {
     let f = running();
     let mut terms = Terms::default();
     let int = Ty::Base(adtb_lang::types::Base::I64);
-    let key = terms.add_unchecked(Kind::Const(adtb_lang::kernel::Const::Int(1)), int);
-    let t = terms.add_unchecked(
+    let key = Build::new(&f.schema, &mut terms).constant(adtb_lang::kernel::Const::Int(1), int);
+    let t = terms.add_ill_typed(
         Kind::Deref {
             key,
             reference: false,

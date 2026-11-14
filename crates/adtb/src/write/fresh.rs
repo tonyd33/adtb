@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
-use adtb_lang::kernel::{Kind, Terms, Tm, Var};
-use adtb_lang::schema::Generator;
+use adtb_lang::kernel::{Build, Kind, Terms, Tm, Var};
+use adtb_lang::schema::{Generator, Schema};
 use adtb_lang::types::RelId;
 
 use crate::exec::Val;
@@ -12,10 +12,16 @@ pub type Occurrences = BTreeMap<u32, (Generator, RelId)>;
 /// Returns `t` with each path to a `Fresh` given its own placeholder, numbered, over the
 /// variables bound around it, so that its value is one per evaluation. Adds the
 /// placeholders' numbers to `out`. `outer` holds the variables bound around `t`.
-pub fn rewrite(terms: &mut Terms, t: Tm, outer: &[Var], out: &mut Occurrences) -> Tm {
+pub fn rewrite(
+    schema: &Schema,
+    terms: &mut Terms,
+    t: Tm,
+    outer: &[Var],
+    out: &mut Occurrences,
+) -> Tm {
     let mut fresh = HashMap::new();
     let mut scope = outer.to_vec();
-    walk(terms, t, &mut scope, &mut fresh, out)
+    walk(schema, terms, t, &mut scope, &mut fresh, out)
 }
 
 fn holds_fresh(terms: &Terms, t: Tm, memo: &mut HashMap<Tm, bool>) -> bool {
@@ -46,6 +52,7 @@ fn holds_fresh(terms: &Terms, t: Tm, memo: &mut HashMap<Tm, bool>) -> bool {
 }
 
 fn walk(
+    schema: &Schema,
     terms: &mut Terms,
     t: Tm,
     scope: &mut Vec<Var>,
@@ -56,26 +63,11 @@ fn walk(
         return t;
     }
     if let Kind::Fresh(g, r) = terms.kind(t) {
-        let (generator, rel, ty) = (*g, *r, terms.ty(t).clone());
-        let occurrence =
-            u32::try_from(terms.nodes.len()).expect("an arena of fewer than 2^32 nodes");
-        let scope = scope
-            .clone()
-            .into_iter()
-            .map(|v| {
-                let vty = terms.var_info(v).ty.clone();
-                terms.add_unchecked(Kind::Var(v), vty)
-            })
-            .collect();
-        let p = terms.add_unchecked(
-            Kind::Placeholder {
-                occurrence,
-                generator,
-                rel,
-                scope,
-            },
-            ty,
-        );
+        let (generator, rel) = (*g, *r);
+        let occurrence = u32::try_from(terms.len()).expect("an arena of fewer than 2^32 nodes");
+        let mut b = Build::new(schema, terms);
+        let scope = scope.iter().map(|v| b.var(*v)).collect();
+        let p = b.placeholder(occurrence, generator, rel, scope);
         out.insert(occurrence, (generator, rel));
         return p;
     }
@@ -84,25 +76,26 @@ fn walk(
         let mut at = t;
         while let Kind::Block(w, k) = *terms.kind(at) {
             let ty = terms.ty(at).clone();
-            statements.push((walk(terms, w, scope, memo, out), ty));
+            statements.push((walk(schema, terms, w, scope, memo, out), ty));
             at = k;
         }
-        let rest = walk(terms, at, scope, memo, out);
-        return statements.into_iter().rev().fold(rest, |k, (w, ty)| {
-            terms.add_unchecked(Kind::Block(w, k), ty)
-        });
+        let rest = walk(schema, terms, at, scope, memo, out);
+        let mut b = Build::new(schema, terms);
+        return statements
+            .into_iter()
+            .rev()
+            .fold(rest, |k, (w, ty)| b.block(w, k, ty));
     }
     let kind = terms.kind(t).clone();
-    let ty = terms.ty(t).clone();
     let cs = terms.children(t);
     let mut new = Vec::with_capacity(cs.len());
     for (c, b) in cs.iter().zip(kind.bound()) {
         let n = scope.len();
         scope.extend(b);
-        new.push(walk(terms, *c, scope, memo, out));
+        new.push(walk(schema, terms, *c, scope, memo, out));
         scope.truncate(n);
     }
-    terms.add_unchecked(kind.with_children(&new), ty)
+    Build::new(schema, terms).rebuild_kept(t, &new)
 }
 
 /// Returns `v` with every placeholder replaced by the value `draw` gives it.

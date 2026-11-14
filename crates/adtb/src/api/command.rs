@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use adtb_lang::ast::{self, BundleName, ExprKind, KeyArgs, RecordExpr};
 use adtb_lang::check::{Command, Explained, Program};
 use adtb_lang::ids::{CatConstraintId, held_id};
-use adtb_lang::kernel::{Kind, Terms, Tm, alpha_equal};
+use adtb_lang::kernel::{Build, Terms, Tm, alpha_equal};
 use adtb_lang::resolve::Visible;
 use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::textual::{Form, print};
@@ -840,33 +840,27 @@ impl<R: Runtime> Engine<R> {
         old: Old,
         row: Val,
     ) -> Result<(), write::Error> {
-        let def = schema.relation(rel).elem_def;
-        let at = |ctors| {
-            Ty::Set(Box::new(Ty::Data {
-                def,
-                args: Vec::new(),
-                ctors,
-            }))
-        };
-        let set = at(None);
+        let set = Ty::Set(Box::new(Ty::Data {
+            def: schema.relation(rel).elem_def,
+            args: Vec::new(),
+            ctors: None,
+        }));
         let mut terms = Terms::default();
         let x = terms.var("row·", set.clone());
         let mut params = vec![(x, Val::set([row].into()))];
         let gone = match old {
-            Old::Ctor(c) => {
-                let ctors = schema.normalize_ctors(def, vec![c]);
-                terms.add_unchecked(Kind::Rel(rel, ctors.clone()), at(ctors))
-            }
+            Old::Ctor(c) => Build::new(schema, &mut terms).rel(rel, Some(CtorSet::from([c]))),
             Old::Row(v) => {
-                let y = terms.var("old·", set.clone());
+                let y = terms.var("old·", set);
                 params.push((y, Val::set([v].into())));
-                terms.add_unchecked(Kind::Var(y), set.clone())
+                Build::new(schema, &mut terms).var(y)
             }
         };
-        let del = terms.add_unchecked(Kind::Delete(rel, gone), Ty::Change);
-        let new = terms.add_unchecked(Kind::Var(x), set);
-        let ins = terms.add_unchecked(Kind::Insert(rel, new), Ty::Change);
-        let both = terms.add_unchecked(Kind::Par(vec![del, ins]), Ty::Change);
+        let mut b = Build::new(schema, &mut terms);
+        let del = b.delete(rel, gone);
+        let new = b.var(x);
+        let ins = b.insert(rel, new);
+        let both = b.par(vec![del, ins]);
         let tx = self.db.begin()?;
         let text = Text {
             schema,

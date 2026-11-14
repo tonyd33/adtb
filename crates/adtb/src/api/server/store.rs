@@ -1,4 +1,4 @@
-use adtb_lang::kernel::{Kind, Terms};
+use adtb_lang::kernel::{Build, Terms};
 use adtb_lang::types::{RelId, Ty};
 
 use crate::exec::Val;
@@ -40,15 +40,15 @@ impl Changes {
             }));
             let var = terms.var("row·", ty.clone());
             params.push((var, Val::set([row.clone()].into())));
-            let rows = terms.add_unchecked(Kind::Var(var), ty);
-            let kind = if *insert {
-                Kind::Insert(*rel, rows)
+            let mut b = Build::new(&e.schema, &mut terms);
+            let rows = b.var(var);
+            changes.push(if *insert {
+                b.insert(*rel, rows)
             } else {
-                Kind::Delete(*rel, rows)
-            };
-            changes.push(terms.add_unchecked(kind, Ty::Change));
+                b.delete(*rel, rows)
+            });
         }
-        let change = terms.add_unchecked(Kind::Par(changes), Ty::Change);
+        let change = Build::new(&e.schema, &mut terms).par(changes);
         let text = Text {
             schema: &e.schema,
             terms: &terms,

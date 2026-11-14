@@ -81,15 +81,63 @@ impl<'a> Build<'a> {
     }
 
     /// Returns `kind` at `checked`, except that a `Var`, `Rel` or `Transition` takes the type its
-    /// children give.
+    /// children give, and a `Case` drops the arms of constructors its scrutinee's type excludes.
     ///
     /// Preconditions:
-    /// - `checked` is the type the node `kind` rebuilds was checked at.
+    /// - `checked` is the type of the node `kind` rebuilds.
     pub(crate) fn kept(&mut self, kind: Kind, checked: &Ty) -> Tm {
         match kind {
             Kind::Var(_) | Kind::Rel(..) | Kind::Transition(..) => self.typed(kind),
+            Kind::Case { scrutinee, arms } => self.kept_case(scrutinee, arms, checked.clone()),
             _ => self.put(kind, checked.clone()),
         }
+    }
+
+    /// Returns a `Case` over `scrutinee` at `ty` holding the arms of the constructors its
+    /// scrutinee's type names, the others dropped.
+    pub(crate) fn kept_case(&mut self, scrutinee: Tm, mut arms: Vec<(u32, Var, Tm)>, ty: Ty) -> Tm {
+        if let Ty::Data { ctors: Some(s), .. } = self.terms.ty(scrutinee) {
+            arms.retain(|(c, _, _)| s.contains(c));
+        }
+        self.case(scrutinee, arms, ty)
+    }
+
+    /// Returns node `t` of this arena rebuilt over `children` in place of its own, as `kept`
+    /// rebuilds it at the type of `t`.
+    ///
+    /// Preconditions:
+    /// - `children` are terms of this arena, as many as `t` has.
+    pub fn rebuild_kept(&mut self, t: Tm, children: &[Tm]) -> Tm {
+        assert_eq!(
+            self.terms.children(t).len(),
+            children.len(),
+            "a rebuilt node keeps the number of children of {t:?}"
+        );
+        let kind = self.terms.kind(t).with_children(children);
+        let ty = self.terms.ty(t).clone();
+        self.kept(kind, &ty)
+    }
+
+    /// Returns node `t` of arena `from` copied into this arena over `children`, each variable it
+    /// names replaced by its image under `rename`, as `kept` rebuilds it at the type of `t`.
+    ///
+    /// Preconditions:
+    /// - `children` are terms of this arena, as many as `t` has.
+    /// - `rename` maps every variable `t` names to a variable of this arena of the same type.
+    pub fn import_kept(
+        &mut self,
+        from: &Terms,
+        t: Tm,
+        children: &[Tm],
+        mut rename: impl FnMut(Var) -> Var,
+    ) -> Tm {
+        assert_eq!(
+            from.children(t).len(),
+            children.len(),
+            "an imported node keeps the number of children of {t:?}"
+        );
+        let kind = from.kind(t).with_children(children).with_vars(&mut rename);
+        self.kept(kind, from.ty(t))
     }
 
     /// Returns the type `kind`'s children give it, or `None` when its typing rule leaves the
@@ -437,6 +485,21 @@ impl<'a> Build<'a> {
 
     pub fn fresh(&mut self, g: Generator, r: RelId) -> Tm {
         self.typed(Kind::Fresh(g, r))
+    }
+
+    pub fn placeholder(
+        &mut self,
+        occurrence: u32,
+        generator: Generator,
+        rel: RelId,
+        scope: Vec<Tm>,
+    ) -> Tm {
+        self.typed(Kind::Placeholder {
+            occurrence,
+            generator,
+            rel,
+            scope,
+        })
     }
 
     pub fn at(&mut self, instant: bool, point: Tm, pins: Option<u64>, body: Tm, ty: Ty) -> Tm {

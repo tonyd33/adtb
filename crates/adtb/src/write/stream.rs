@@ -67,7 +67,7 @@ impl<R: Runtime> Database<R> {
         };
         let mut terms = text.terms.clone();
         let mut occurrences = fresh::Occurrences::new();
-        let root = fresh::rewrite(&mut terms, *root, &[], &mut occurrences);
+        let root = fresh::rewrite(text.schema, &mut terms, *root, &[], &mut occurrences);
         if !occurrences.is_empty()
             || !input::rewrite(text.schema, &mut terms, root).is_empty()
             || matches!(terms.ty(root), adtb_lang::types::Ty::Change)

@@ -1076,3 +1076,32 @@ fn validate_normal_accepts_the_new_value_function_of_a_replace() {
     assert_eq!(Ok(()), validate_normal(&fx.schema, &terms, &roots));
     assert_eq!(Ok(()), validate(&fx.schema, &terms, &roots));
 }
+
+#[test]
+fn a_case_rebuilt_over_a_narrower_scrutinee_keeps_only_the_arms_of_its_constructors() {
+    let fx = Fixture::new();
+    let mut terms = Terms::default();
+    let (_, wide) = row_var(&fx, &mut terms, None);
+    let narrow = terms.var("n", fx.row(Some(vec![0, 2])));
+    let arms: Vec<(u32, Var, Tm)> = (0..3)
+        .map(|c| {
+            let x = terms.var("x", fx.row(Some(vec![c])));
+            let body = terms.add(Kind::Const(Const::Int(i128::from(c))), int());
+            (c, x, body)
+        })
+        .collect();
+    let mut b = super::Build::new(&fx.schema, &mut terms);
+    let case = b.case(wide, arms.clone(), int());
+    let read = b.var(narrow);
+    let mut children = vec![read];
+    children.extend(arms.iter().map(|(_, _, body)| *body));
+    let rebuilt = b.rebuild_kept(case, &children);
+    assert_eq!(
+        &Kind::Case {
+            scrutinee: read,
+            arms: vec![arms[0], arms[2]],
+        },
+        terms.kind(rebuilt)
+    );
+    assert_eq!(&int(), terms.ty(rebuilt));
+}

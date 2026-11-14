@@ -179,7 +179,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         let schema = text.schema;
         let mut terms = text.terms.clone();
         let mut fresh = Occurrences::new();
-        let root = fresh::rewrite(&mut terms, root, &[], &mut fresh);
+        let root = fresh::rewrite(schema, &mut terms, root, &[], &mut fresh);
         let inputs = input::rewrite(schema, &mut terms, root);
         Stmt {
             db,

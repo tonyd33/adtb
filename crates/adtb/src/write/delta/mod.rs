@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use adtb_lang::analysis::Totality;
-use adtb_lang::kernel::{Agg, Kind, Prim, Terms, Tm, Transition, Var};
+use adtb_lang::kernel::{Agg, Build, Kind, Prim, Terms, Tm, Transition, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{CtorSet, RelId, RelRef, Ty};
@@ -239,7 +239,7 @@ fn scan(
         Kind::Transition(x, r, s) => {
             let ty = terms.ty(t).clone();
             let v = terms.var(&format!("%transition{}", t.0), ty);
-            terms.nodes[t.0 as usize].kind = Kind::Var(v);
+            terms.overwrite_kind(t, Kind::Var(v));
             out.push((v, x, r, s));
             reads.insert(r);
         }
@@ -340,8 +340,8 @@ struct Compiler<'a> {
 }
 
 impl Compiler<'_> {
-    fn add(&mut self, kind: Kind, ty: Ty) -> Tm {
-        self.terms.add_unchecked(kind, ty)
+    fn b(&mut self) -> Build<'_> {
+        Build::new(self.schema, self.terms)
     }
 
     fn kind(&self, t: Tm) -> Kind {
@@ -399,7 +399,7 @@ impl Compiler<'_> {
                 let from = out.len();
                 self.conjuncts(b, out);
                 for k in &mut out[from..] {
-                    *k = self.facts.sink_let(self.terms, x, e, *k);
+                    *k = self.facts.sink_let(self.schema, self.terms, x, e, *k);
                 }
             }
             _ => out.push(c),
@@ -703,8 +703,9 @@ impl Compiler<'_> {
         };
         let elem = self.terms.var_info(x).ty.clone();
         let d = self.input(o.rel, &o.ctors, Part::Inserted, &elem);
-        let set = self.add(Kind::Var(d), Ty::Set(Box::new(elem)));
-        let new = self.add(Kind::For(x, set, body), self.ty(f));
+        let set = self.b().var(d);
+        let ty = self.ty(f);
+        let new = self.b().for_(x, set, body, ty);
         let t = self.replace(q, &HashMap::from([(f, new)]), &mut HashMap::new());
         let (links, tail) = self.chain(t);
         Ok((self.ordered(links, tail, self.ty(q)), d))
@@ -757,10 +758,10 @@ impl Compiler<'_> {
             let mut via = Vec::new();
             let mut conds = Vec::new();
             let key = self.unfold(*key, &mut via, &mut conds);
-            let key_ty = self.ty(key);
-            let dv = self.add(Kind::Var(d), self.terms.var_info(d).ty.clone());
-            let k = self.add(Kind::Key(dv), key_ty);
-            let eq = self.add(Kind::Prim(Prim::Eq, vec![k, key]), self.bool_ty());
+            let bool_ty = self.bool_ty();
+            let dv = self.b().var(d);
+            let k = self.b().key(dv, o.rel);
+            let eq = self.b().prim(Prim::Eq, vec![k, key], bool_ty);
             candidates.insert(0, eq);
             candidates.extend(conds);
             for (v, src) in via {
@@ -805,7 +806,7 @@ impl Compiler<'_> {
         for (v, src) in &prefix {
             let src = match src {
                 Some(s) => *s,
-                None => self.add(Kind::Var(input), input_ty.clone()),
+                None => self.b().var(input),
             };
             links.push(Link::Gen(*v, src));
         }
@@ -824,20 +825,14 @@ impl Compiler<'_> {
         let ty = self.ty(q);
         let mut map = HashMap::new();
         for (node, conds) in at_top {
-            let wrapped = match self.kind(node) {
-                Kind::For(x, src, body) => {
-                    let body = self.guard(&conds, body, &ty);
-                    Kind::For(x, src, body)
-                }
-                Kind::Let(x, e, body) => {
-                    let body = self.guard(&conds, body, &ty);
-                    Kind::Let(x, e, body)
-                }
+            let children = match self.kind(node) {
+                Kind::For(_, src, body) => [src, self.guard(&conds, body, &ty)],
+                Kind::Let(_, e, body) => [e, self.guard(&conds, body, &ty)],
                 k => {
                     return Err(Broken::TopBinder(TermKind(k)));
                 }
             };
-            let n = self.add(wrapped, self.ty(node));
+            let n = self.b().rebuild_kept(node, &children);
             map.insert(node, n);
         }
         let injected = self.replace(q, &map, &mut HashMap::new());
@@ -857,12 +852,12 @@ impl Compiler<'_> {
             } = self.ty(key)
         {
             let key = self.unfold(key, via, conds);
-            let row_ty = self.ty(t);
-            let e = self.terms.var("%via", row_ty.clone());
-            let src = self.add(Kind::Rel(rel, ctors), Ty::Set(Box::new(row_ty.clone())));
-            let row = self.add(Kind::Var(e), row_ty);
-            let own = self.add(Kind::Key(row), self.ty(key));
-            let eq = self.add(Kind::Prim(Prim::Eq, vec![own, key]), self.bool_ty());
+            let e = self.terms.var("%via", self.ty(t));
+            let bool_ty = self.bool_ty();
+            let src = self.b().rel(rel, ctors);
+            let row = self.b().var(e);
+            let own = self.b().key(row, rel);
+            let eq = self.b().prim(Prim::Eq, vec![own, key], bool_ty);
             via.push((e, src));
             conds.push(eq);
             return row;
@@ -872,8 +867,7 @@ impl Compiler<'_> {
         if new == cs {
             t
         } else {
-            let kind = self.terms.kind(t).with_children(&new);
-            self.add(kind, self.ty(t))
+            self.b().rebuild_kept(t, &new)
         }
     }
 
@@ -906,26 +900,16 @@ impl Compiler<'_> {
                 };
                 wrapped.push((*k, fresh, body));
             }
-            out = self.add(
-                Kind::Case {
-                    scrutinee,
-                    arms: wrapped,
-                },
-                self.bool_ty(),
-            );
+            let bool_ty = self.bool_ty();
+            out = self.b().case(scrutinee, wrapped, bool_ty);
         }
         out
     }
 
     fn falsity(&mut self) -> Tm {
         let ctor = self.schema.engine_ctors().bool_false().index();
-        self.add(
-            Kind::Ctor {
-                ctor,
-                fields: Vec::new(),
-            },
-            self.bool_ty(),
-        )
+        let bool_ty = self.bool_ty();
+        self.b().ctor(ctor, Vec::new(), bool_ty)
     }
 
     /// Returns the leading generators and conditions of the top level of `q`, and what they
@@ -1021,7 +1005,7 @@ impl Compiler<'_> {
         let mut out = tail;
         for step in steps.into_iter().rev() {
             out = match step {
-                Link::Gen(v, s) => self.add(Kind::For(v, s, out), ty.clone()),
+                Link::Gen(v, s) => self.b().for_(v, s, out, ty.clone()),
                 Link::Cond(c) => self.guard(&[c], out, &ty),
             };
         }
@@ -1060,8 +1044,8 @@ impl Compiler<'_> {
     fn guard(&mut self, conds: &[Tm], body: Tm, ty: &Ty) -> Tm {
         let mut out = body;
         for c in conds.iter().rev() {
-            let e = self.add(Kind::EmptySet, ty.clone());
-            out = self.add(Kind::If(*c, out, e), ty.clone());
+            let e = self.b().empty_set(ty.clone());
+            out = self.b().if_(*c, out, e, ty.clone());
         }
         out
     }
@@ -1078,8 +1062,7 @@ impl Compiler<'_> {
         let out = if new == cs {
             t
         } else {
-            let kind = self.terms.kind(t).with_children(&new);
-            self.add(kind, self.ty(t))
+            self.b().rebuild_kept(t, &new)
         };
         memo.insert(t, out);
         out
@@ -1091,14 +1074,14 @@ impl Compiler<'_> {
             return *n;
         }
         let out = match self.kind(t) {
-            Kind::Var(v) if sub.contains_key(&v) => self.add(Kind::Var(sub[&v]), self.ty(t)),
-            kind => {
+            Kind::Var(v) if sub.contains_key(&v) => self.b().var(sub[&v]),
+            _ => {
                 let cs = self.terms.children(t);
                 let new: Vec<Tm> = cs.iter().map(|c| self.subst(*c, sub, memo)).collect();
                 if new == cs {
                     t
                 } else {
-                    self.add(kind.with_children(&new), self.ty(t))
+                    self.b().rebuild_kept(t, &new)
                 }
             }
         };
@@ -1143,9 +1126,9 @@ impl Compiler<'_> {
                 other => return Err(Broken::PriorNotSet(other)),
             };
             let ty = Ty::Set(Box::new(elem.clone()));
-            let y = self.terms.var("%prior", elem.clone());
-            let row = self.add(Kind::Var(y), elem);
-            let body = self.add(Kind::Singleton(row), ty.clone());
+            let y = self.terms.var("%prior", elem);
+            let row = self.b().var(y);
+            let body = self.b().singleton(row, ty.clone());
             let new = self.prior_for(y, rel, &ctors, body, ty);
             map.insert(t, new);
             return Ok(());
@@ -1162,31 +1145,28 @@ impl Compiler<'_> {
         let set_ty = Ty::Set(Box::new(elem.clone()));
         let plus = self.input(rel, ctors, Part::Inserted, &elem);
         let minus = self.input(rel, ctors, Part::Deleted, &elem);
-        let key_ty = Ty::Key {
-            rel: RelRef::Declared(rel),
-            ctors: None,
-        };
-        let z = self.terms.var("%inserted", elem.clone());
-        let zv = self.add(Kind::Var(z), elem.clone());
-        let yv = self.add(Kind::Var(y), elem.clone());
-        let zk = self.add(Kind::Key(zv), key_ty.clone());
-        let yk = self.add(Kind::Key(yv), key_ty);
-        let same = self.add(Kind::Prim(Prim::Eq, vec![zk, yk]), self.bool_ty());
-        let one = self.add(Kind::Singleton(zv), set_ty.clone());
-        let none = self.add(Kind::EmptySet, set_ty.clone());
-        let hit = self.add(Kind::If(same, one, none), set_ty.clone());
-        let plus_set = self.add(Kind::Var(plus), set_ty.clone());
-        let hits = self.add(Kind::For(z, plus_set, hit), set_ty.clone());
-        let kept = self.add(Kind::IsEmpty(hits), self.bool_ty());
+        let bool_ty = self.bool_ty();
+        let z = self.terms.var("%inserted", elem);
+        let mut b = self.b();
+        let zv = b.var(z);
+        let yv = b.var(y);
+        let zk = b.key(zv, rel);
+        let yk = b.key(yv, rel);
+        let same = b.prim(Prim::Eq, vec![zk, yk], bool_ty);
+        let one = b.singleton(zv, set_ty.clone());
+        let none = b.empty_set(set_ty.clone());
+        let hit = b.if_(same, one, none, set_ty.clone());
+        let plus_set = b.var(plus);
+        let hits = b.for_(z, plus_set, hit, set_ty);
+        let kept = b.is_empty(hits);
         let guarded = self.guard_inside(body, kept, &ty);
-        let src = self.add(
-            Kind::Rel(rel, (*ctors != self.all_ctors(rel)).then(|| ctors.clone())),
-            set_ty.clone(),
-        );
-        let state = self.add(Kind::For(y, src, guarded), ty.clone());
-        let minus_set = self.add(Kind::Var(minus), set_ty);
-        let deleted = self.add(Kind::For(y, minus_set, body), ty.clone());
-        self.add(Kind::Union(state, deleted), ty)
+        let selected = (*ctors != self.all_ctors(rel)).then(|| ctors.clone());
+        let mut b = self.b();
+        let src = b.rel(rel, selected);
+        let state = b.for_(y, src, guarded, ty.clone());
+        let minus_set = b.var(minus);
+        let deleted = b.for_(y, minus_set, body, ty.clone());
+        b.union(state, deleted, ty)
     }
 
     /// Returns `body` with `cond` guarding what its leading conditions guard.
@@ -1194,7 +1174,8 @@ impl Compiler<'_> {
         match self.kind(body) {
             Kind::If(c, a, b) if matches!(self.terms.kind(b), Kind::EmptySet) => {
                 let a = self.guard_inside(a, cond, ty);
-                self.add(Kind::If(c, a, b), self.ty(body))
+                let body_ty = self.ty(body);
+                self.b().if_(c, a, b, body_ty)
             }
             _ => self.guard(&[cond], body, ty),
         }

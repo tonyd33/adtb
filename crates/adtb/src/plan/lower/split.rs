@@ -34,9 +34,8 @@ impl Planner<'_> {
                 cs[i] = arm;
                 let inner = self.guarded(&cs, rest, &ty);
                 let inner = self.rename(inner, y, v, &mut HashMap::new());
-                let rows = Ty::Set(Box::new(self.t.var_info(v).ty.clone()));
-                let narrowed = self.add(Kind::Restrict(src, CtorSet::from([k])), rows);
-                return Some(self.add(Kind::For(v, narrowed, inner), ty));
+                let narrowed = self.b().restrict(src, CtorSet::from([k]));
+                return Some(self.b().for_(v, narrowed, inner, ty));
             }
             if self.mentions(scrutinee, &[y])
                 || !self.mentions(c, &[y])
@@ -54,15 +53,9 @@ impl Planner<'_> {
                 let mut cs = conds.clone();
                 cs[i] = arm;
                 let inner = self.guarded(&cs, rest, &ty);
-                out.push((k, v, self.add(Kind::For(y, src, inner), ty.clone())));
+                out.push((k, v, self.b().for_(y, src, inner, ty.clone())));
             }
-            return Some(self.add(
-                Kind::Case {
-                    scrutinee,
-                    arms: out,
-                },
-                ty,
-            ));
+            return Some(self.b().case(scrutinee, out, ty));
         }
         None
     }
@@ -99,15 +92,14 @@ impl Planner<'_> {
             };
             let v = self.fresh("%arm", narrowed.clone());
             let body = if k == ctor {
-                let row = self.add(Kind::Var(v), narrowed);
+                let row = self.b().var(v);
                 let mut out: Option<Tm> = None;
                 for (f, value) in fields.iter().rev() {
-                    let field_ty = self.ty(*value);
-                    let got = self.add(Kind::Field(row, f.clone()), field_ty);
-                    let eq = self.add(Kind::Prim(Prim::Eq, vec![got, *value]), bool_ty.clone());
+                    let got = self.b().field(row, f.clone());
+                    let eq = self.b().prim(Prim::Eq, vec![got, *value], bool_ty.clone());
                     out = Some(match out {
                         None => eq,
-                        Some(rest) => self.add(Kind::If(eq, rest, no), bool_ty.clone()),
+                        Some(rest) => self.b().if_(eq, rest, no, bool_ty.clone()),
                     });
                 }
                 out.unwrap_or_else(|| self.truth())
@@ -116,13 +108,7 @@ impl Planner<'_> {
             };
             arms.push((k, v, body));
         }
-        Some(self.add(
-            Kind::Case {
-                scrutinee: other,
-                arms,
-            },
-            bool_ty,
-        ))
+        Some(self.b().case(other, arms, bool_ty))
     }
 
     /// Add to `out`, after `from`, the constructor value the path `path` holds when the
@@ -162,7 +148,8 @@ impl Planner<'_> {
             }
         }
         fields.sort_by(|a, b| a.0.cmp(&b.0));
-        let value = self.add(Kind::Ctor { ctor, fields }, self.ty(scrutinee));
+        let ty = self.ty(scrutinee);
+        let value = self.b().ctor(ctor, fields, ty);
         out.push((
             Fixed {
                 path: Some(path.to_vec()),
@@ -199,13 +186,7 @@ impl Planner<'_> {
     fn boolean(&mut self, value: CtorRef) -> Tm {
         let ty = self.bool_ty();
         let ctor = value.index();
-        self.add(
-            Kind::Ctor {
-                ctor,
-                fields: Vec::new(),
-            },
-            ty,
-        )
+        self.b().ctor(ctor, Vec::new(), ty)
     }
 
     /// Returns `t` with each read of variable `from` reading `to`, at `to`'s type.
@@ -214,17 +195,14 @@ impl Planner<'_> {
             return *n;
         }
         let out = match self.kind(t) {
-            Kind::Var(v) if v == from => {
-                let ty = self.t.var_info(to).ty.clone();
-                self.add(Kind::Var(to), ty)
-            }
-            kind => {
+            Kind::Var(v) if v == from => self.b().var(to),
+            _ => {
                 let cs = self.t.children(t);
                 let new: Vec<Tm> = cs.iter().map(|c| self.rename(*c, from, to, memo)).collect();
                 if new == cs {
                     t
                 } else {
-                    self.add(kind.with_children(&new), self.ty(t))
+                    self.b().rebuild_kept(t, &new)
                 }
             }
         };

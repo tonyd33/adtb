@@ -684,7 +684,13 @@ impl<R: Runtime> Database<R> {
             .retags
             .iter()
             .map(|(r, (var, body))| {
-                let body = fresh::rewrite(&mut program, *body, &[*var], &mut program_fresh);
+                let body = fresh::rewrite(
+                    &setup.schema,
+                    &mut program,
+                    *body,
+                    &[*var],
+                    &mut program_fresh,
+                );
                 (*r, (*var, body))
             })
             .collect();

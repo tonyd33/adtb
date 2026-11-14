@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use adtb_lang::ast::AdhocItem;
 use adtb_lang::check::{AdhocCommand, Bundles, Command, Explained, Program, Ref, check_adhoc_in};
-use adtb_lang::kernel::{Const, Kind, Terms, Tm, Var};
+use adtb_lang::kernel::{Const, Kind, Node, Terms, Tm, Var};
 use adtb_lang::norm;
 use adtb_lang::parse::{Options, parse_adhoc};
 use adtb_lang::schema::{Schema, Scope};
@@ -273,14 +273,13 @@ impl Prepared {
     pub fn bytes(&self) -> usize {
         let literals: usize = self
             .terms
-            .nodes
             .iter()
             .map(|n| match &n.kind {
                 Kind::Const(Const::Text(t)) => t.len(),
                 _ => 0,
             })
             .sum();
-        size_of_val(self.terms.nodes.as_slice())
+        self.terms.len() * size_of::<Node>()
             + size_of_val(self.terms.vars.as_slice())
             + literals
             + self.params.iter().map(|(_, v)| v.size()).sum::<usize>()

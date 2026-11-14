@@ -649,8 +649,9 @@ fn a_constant_written_out_twice_is_one_literal() {
     let schema = empty_schema();
     let mut terms = Terms::default();
     let text = Ty::Base(Base::Text);
-    let c = terms.add_unchecked(Kind::Const(Const::Text("x".to_owned())), text.clone());
-    let joined = terms.add_unchecked(Kind::Prim(Prim::Concat, vec![c, c]), text);
+    let mut b = Build::new(&schema, &mut terms);
+    let c = b.constant(Const::Text("x".to_owned()), text.clone());
+    let joined = b.prim(Prim::Concat, vec![c, c], text);
     let code = Compiler::new(&schema, &terms)
         .code(joined)
         .expect("the code");
@@ -672,7 +673,7 @@ fn eval_term(schema: &Schema, terms: &Terms, t: Tm) -> Result<Val, Error> {
 fn evaluating_unreachable_is_an_internal_error() {
     let schema = empty_schema();
     let mut terms = Terms::default();
-    let t = terms.add_unchecked(Kind::Unreachable, Ty::Base(Base::I64));
+    let t = Build::new(&schema, &mut terms).unreachable(Ty::Base(Base::I64));
     assert_eq!(Broken::Unreachable, broken(eval_term(&schema, &terms, t)));
 }
 
@@ -712,8 +713,8 @@ fn a_case_with_one_reachable_arm_takes_it_and_fails_on_another_constructor() {
 fn a_reject_of_a_value_that_is_not_text_is_an_internal_error() {
     let schema = empty_schema();
     let mut terms = Terms::default();
-    let m = terms.add_unchecked(Kind::Const(Const::Int(1)), Ty::Base(Base::I64));
-    let t = terms.add_unchecked(Kind::Reject(m), Ty::Base(Base::I64));
+    let m = Build::new(&schema, &mut terms).constant(Const::Int(1), Ty::Base(Base::I64));
+    let t = terms.add_ill_typed(Kind::Reject(m), Ty::Base(Base::I64));
     assert_eq!(Broken::RejectNotText, broken(eval_term(&schema, &terms, t)));
 }
 
@@ -721,7 +722,7 @@ fn a_reject_of_a_value_that_is_not_text_is_an_internal_error() {
 fn a_literal_outside_its_type_is_an_internal_error() {
     let schema = empty_schema();
     let mut terms = Terms::default();
-    let t = terms.add_unchecked(Kind::Const(Const::Int(i128::MAX)), Ty::Base(Base::I64));
+    let t = Build::new(&schema, &mut terms).constant(Const::Int(i128::MAX), Ty::Base(Base::I64));
     assert_eq!(
         Broken::IntegerLiteral,
         broken(eval_term(&schema, &terms, t))
@@ -732,8 +733,8 @@ fn a_literal_outside_its_type_is_an_internal_error() {
 fn a_key_of_a_term_that_is_not_a_key_type_is_an_internal_error() {
     let schema = empty_schema();
     let mut terms = Terms::default();
-    let x = terms.add_unchecked(Kind::Const(Const::Int(1)), Ty::Base(Base::I64));
-    let t = terms.add_unchecked(Kind::Key(x), Ty::Base(Base::I64));
+    let x = Build::new(&schema, &mut terms).constant(Const::Int(1), Ty::Base(Base::I64));
+    let t = terms.add_ill_typed(Kind::Key(x), Ty::Base(Base::I64));
     let what = broken(eval_term(&schema, &terms, t));
     assert_eq!(Broken::KeyNotKeyTyped(Ty::Base(Base::I64)), what);
 }
@@ -758,15 +759,16 @@ fn a_condition_or_scrutinee_that_is_not_a_constructor_is_an_internal_error() {
     let schema = empty_schema();
     let int = Ty::Base(Base::I64);
     let mut terms = Terms::default();
-    let c = terms.add_unchecked(Kind::Const(Const::Int(1)), int.clone());
-    let a = terms.add_unchecked(Kind::Const(Const::Int(2)), int.clone());
-    let t = terms.add_unchecked(Kind::If(c, a, a), int.clone());
+    let mut b = Build::new(&schema, &mut terms);
+    let c = b.constant(Const::Int(1), int.clone());
+    let a = b.constant(Const::Int(2), int.clone());
+    let t = terms.add_ill_typed(Kind::If(c, a, a), int.clone());
     let m = |want| Broken::Mistyped {
         want,
         found: Val::Int(1),
     };
     assert_eq!(m("a Bool"), broken(eval_term(&schema, &terms, t)));
-    let tag = terms.add_unchecked(Kind::Tag(c), int);
+    let tag = terms.add_ill_typed(Kind::Tag(c), int);
     assert_eq!(
         m("a constructor value"),
         broken(eval_term(&schema, &terms, tag))

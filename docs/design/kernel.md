@@ -574,6 +574,9 @@ Postconditions on a normal form, beyond those of §1:
 - A node rebuilt from a checked node, its children normalised, keeps
   the type that node was checked at. A node a reduction puts in place
   of a checked node has that node's type or a subtype of it.
+- A rebuilt `Case` whose scrutinee's type names fewer constructors
+  than the scrutinee it was checked over keeps only the arms of those
+  constructors.
 - A node shared by several parents in the checked term is one node in
   the normal form wherever its free variables have the same values.
 - Every `fix` is stratified

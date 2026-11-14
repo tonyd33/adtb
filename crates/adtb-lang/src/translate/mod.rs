@@ -367,7 +367,6 @@ impl<'a> Pinned<'a> {
         let mut defs = BTreeSet::new();
         let mut rels = BTreeSet::new();
         for t in terms
-            .nodes
             .iter()
             .map(|n| &n.ty)
             .chain(terms.vars.iter().map(|v| &v.ty))

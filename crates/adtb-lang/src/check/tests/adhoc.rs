@@ -466,7 +466,6 @@ fn shown_types(
     pick: impl Fn(&Kind, &Ty) -> Option<(Ty, Ty)>,
 ) -> Vec<(String, String)> {
     terms
-        .nodes
         .iter()
         .filter_map(|n| pick(&n.kind, &n.ty))
         .map(|(a, b)| (s.show_ty(&a), s.show_ty(&b)))

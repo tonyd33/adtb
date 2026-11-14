@@ -1005,7 +1005,7 @@ impl<'a> Normaliser<'a> {
                     _ => unreachable!("checked first-order"),
                 })
                 .collect();
-            return Ok(Val::Tm(self.b().case(s, arms, ty)));
+            return Ok(Val::Tm(self.b().kept_case(s, arms, ty)));
         }
         Ok(Val::Case(s, Rc::new(out)))
     }
@@ -1309,7 +1309,7 @@ impl<'a> Normaliser<'a> {
                             _ => unreachable!("checked first-order"),
                         })
                         .collect();
-                    let t = self.b().case(s, arms, ty);
+                    let t = self.b().kept_case(s, arms, ty);
                     return Ok(Val::Tm(self.bound_afresh(t)));
                 }
                 Ok(Val::Case(s, Rc::new(out)))

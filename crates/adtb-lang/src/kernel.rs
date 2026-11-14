@@ -361,7 +361,7 @@ impl Frees {
 /// An arena of typed kernel terms. A term may be shared by several parents.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Terms {
-    pub nodes: Vec<Node>,
+    nodes: Vec<Node>,
     pub vars: Vec<VarInfo>,
     pub(crate) transport_fields: BTreeSet<Tm>,
 }
@@ -436,8 +436,26 @@ impl Terms {
         self.add(kind, ty)
     }
 
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.nodes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    /// Returns every node of the arena, in the order they were added.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &Node> {
+        self.nodes.iter()
+    }
+
+    /// Replace the kind of node `t` in place, keeping its type, so that every parent of `t` reads
+    /// the new kind.
+    ///
+    /// Preconditions:
+    /// - `kind` at the type of `t` satisfies its kind's typing rule.
+    pub fn overwrite_kind(&mut self, t: Tm, kind: Kind) {
+        self.nodes[t.0 as usize].kind = kind;
     }
 
     pub fn var(&mut self, name: &str, ty: Ty) -> Var {
