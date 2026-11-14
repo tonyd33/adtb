@@ -22,7 +22,7 @@ Repro sketch: bundle B pinned at v1, which has `constraint c = from u in users w
 
 Found by reading; not reproduced.
 
-Ruling (lead, 2026-11-13): a constraint added under a pending drop's name does not end that drop. The re-added constraint is a new object with its own id; the old one stays enforced as a pending drop until the last bundle holding it releases it, so both are enforced at once, told apart by id, and a violation names the one it breaks.
+Ruling (lead, 2026-11-14, amending the ruling of 2026-11-13 that both be enforced): a constraint or check name is what clients see in a violation and in `sys::pending_drops`, so two live objects under one name would be told apart by nothing a client reads. Adding a constraint or check under the name of one whose drop is pending is refused, naming the drop and its holders, until the drop takes effect; after that the re-added one is a new object with a new id, validated over existing rows. evolution.md gains the sentence.
 
 Fix direction: key pending drops of constraints and checks by `CatConstraintId` in memory and in the held rows, and decide `declares` by id.
 
