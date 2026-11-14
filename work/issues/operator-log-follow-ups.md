@@ -17,7 +17,7 @@ From the operator log tracks:
 - `add field` on a type used as a nested value in another relation's field is not mapped; `convert` refuses it.
 - An internal error inside a fill or routing is reported as a refusal string, because `change::Fill` returns `String`.
 - `catalog::Error::Internal` reaches users as `OpenError::Corrupt`; `OpenError` has no internal variant.
-- `add field X` then `rename field X` in one migration is refused by `Source::resolved` ("gone by the migration's end").
+- `add field X` then `rename field X` in one migration is refused by `Source::resolved` (resolved since b5496637: add then rename resolves per operator).
 - Validation evaluates constraints in full with a fixed 1 GiB grant (`VALIDATION_MEMORY` in `crates/adtb/src/catalog/validate.rs`), whatever the relation's size.
 - Revert of a rekey is untested.
 

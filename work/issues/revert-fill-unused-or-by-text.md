@@ -1,6 +1,7 @@
 ---
 created-at: 2026-11-13
-status: open
+status: resolved
+closed: 2026-11-14
 kind: bug
 priority: 330
 summary: "a revert accepts a fill no inverse uses and matches fills to fields by unqualified path text; the unused fill makes the log unresolvable, so every later revert of an earlier migration is refused"
@@ -40,3 +41,7 @@ The same matching by text, found by reading and not reproduced: when one migrati
 Fix direction: match each inverse that needs a fill to its fill clause by the field's catalog id, which `tie_operands` already gives. Refuse a fill that names no field, or that no inverse of the reverted migration consumes, when the revert is applied.
 
 Defect class: class-identity-by-spelling
+
+## Resolved
+
+Landed as tsvtkzlo b5496637 (4 rounds, full check 0, 3756 tests). `Source::resolved` resolves each logged operator against the sources just before and after it (runs of unbuilt sources against the nearest built ones); `renamed_later` is gone, so add then rename of a type, relation, constructor or field in one migration applies and resolves. A revert's fills match the inverse that needs them by (owner catalog id, field name), and its logged fill clauses resolve to the field an inverse took, never by path text. Text the log does not yet hold (`Source::accept`, `Catalog::migrate`, spec examples) refuses a fill no inverse takes ("no inverse of migration NNNN needs `fill PATH`") and a second fill of one field ("the revert fills `PATH` more than once"); replay, reopen and restore never do (`Catalog::replay`, catalog_tests `a_replayed_log_folds_a_revert_with_a_fill_no_inverse_takes`). evolution.md §5.4 lists the refusal. The move-down fill hint shows the `match` the fill needs over the constructors as they stand. The law search asserts every applied migration resolves with operands held around their operator; set-scoped uniques and indexes are `KNOWN` rows (log-resolver-set-scope-as-ctor). Unresolved operators now read "an object `OP` creates or names is in neither the source before it nor the one after it".

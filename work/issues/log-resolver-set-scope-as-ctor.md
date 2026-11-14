@@ -20,4 +20,4 @@ Defect class: Catalog rows and identity by position or spelling.
 
 ## Also alone in a migration
 
-The engine refuses `add index (z) in ts.S` and `add unique ... in r.SET` naming a named set even alone in a migration, with "an object this operator creates or names is gone by the migration's end": crates/adtb-lang resolved.rs:774 resolves each selector ident as a constructor. Reproduced on main and in structure-lang-identity step 6a-2's review.
+The engine refuses `add index (z) in ts.S` and `add unique ... in r.SET` naming a named set even alone in a migration, with "an object `OP` creates or names is in neither the source before it nor the one after it" (was "an object this operator creates or names is gone by the migration's end" before b5496637): crates/adtb-lang resolved.rs:774 resolves each selector ident as a constructor. Reproduced on main and in structure-lang-identity step 6a-2's review.
