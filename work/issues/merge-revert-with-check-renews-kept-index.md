@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-12
-status: open
+status: resolved
 kind: bug
 priority: 310
 summary: "with a check on a merged constructor, reverting the merge gives a set-scoped index it kept a new id"
+closed: 2026-11-13
 tags:
   - class-copied-rules
 ---
@@ -17,3 +18,5 @@ With `check x_set on ts.A` present, reverting `merge constructor T.(A | B) into 
 Direction: the inverse by id restores clauses it did not replace without re-deriving them (structure-lang-identity step 5). Remove the `KNOWN` row.
 
 Defect class: Wildcards and copied rules.
+
+## 2026-11-13: resolved

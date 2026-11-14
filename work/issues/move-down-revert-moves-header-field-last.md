@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-12
-status: open
+status: resolved
 kind: bug
 priority: 300
 summary: "reverting a move of a header field down restores the field at the end of the header, changing the type's field order"
+closed: 2026-11-13
 tags:
   - class-copied-rules
 ---
@@ -17,3 +18,5 @@ On header `{ id, n, o, h }`, `move field T.n to T.(A | B)` reverted with `fill T
 Direction: the inverse restores the header field at its old position (structure-lang-identity step 5, inverses by id). Remove the `KNOWN` row.
 
 Defect class: Wildcards and copied rules.
+
+## 2026-11-13: resolved

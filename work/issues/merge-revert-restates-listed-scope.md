@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-12
-status: open
+status: resolved
 kind: bug
 priority: 330
-summary: "reverting a merge over a clause scoped to some of the merged constructors restores it three times with three new ids"
+summary: reverting a merge over a clause scoped to some of the merged constructors restores it three times with three new ids
+closed: 2026-11-13
 tags:
   - class-copied-rules
 ---
@@ -17,3 +18,5 @@ tags:
 Direction: an inverse computed by id restores the before-clauses and adds none of its own (structure-lang-identity step 5); until then, skip the split's per-product images for clauses the inverse supplies. Test: the scenario restores `index (n) in (A | B)` once.
 
 Defect class: Wildcards and copied rules.
+
+## 2026-11-13: resolved

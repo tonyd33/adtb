@@ -1,9 +1,10 @@
 ---
 created-at: 2026-11-12
-status: open
+status: resolved
 kind: bug
 priority: 330
 summary: "reverting a split restores a unique over the split constructor with the discriminator added, so the revert changes the constraint"
+closed: 2026-11-13
 tags:
   - class-copied-rules
 ---
@@ -17,3 +18,9 @@ Reverting `split constructor T.A into A1 { .. } | A2 { .. }` restores `unique (z
 Direction: an inverse computed by id restores the before-clauses as they were (structure-lang-identity step 5). Test: split then revert a relation with `unique (z) in A`; the clause text and id come back unchanged.
 
 Defect class: Wildcards and copied rules.
+
+## 2026-11-13: resolved
+
+## Correction at close
+
+The restored clause takes a fresh id, not its id before the operator: catalog.md §1.2 gives a re-scoped clause a new id, and a revert creates as its operators do. Fixed by structure-lang-identity step 5c-3.
