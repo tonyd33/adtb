@@ -1,7 +1,6 @@
 use super::write::Site;
 use super::*;
 use crate::ast::{Expr, RecordExpr};
-use crate::kernel::Kind;
 use crate::schema::TypeDef;
 
 impl Checker<'_> {
@@ -61,9 +60,9 @@ impl Checker<'_> {
                     out.push((name.text.clone(), o.tm));
                     tys.push((name.text.clone(), o.ty));
                 }
-                out.sort_by(|a, b| a.0.cmp(&b.0));
                 tys.sort_by(|a, b| a.0.cmp(&b.0));
-                Ok(self.out(Kind::Record(out), Ty::Record(tys)))
+                let tm = self.b().record(out, Ty::Record(tys));
+                Ok(self.out(tm))
             }
             RecordExpr::With(base, fs, _) => {
                 let b = self.synth(base)?;
@@ -85,7 +84,7 @@ impl Checker<'_> {
                             out.push((name.clone(), o.tm));
                         }
                         None => {
-                            let ft = self.terms.transport_field(b.tm, name.clone(), fty.clone());
+                            let ft = self.b().transport_field(b.tm, name.clone());
                             out.push((name.clone(), ft));
                         }
                     }
@@ -100,7 +99,8 @@ impl Checker<'_> {
                         format!("the record has no field `{}`", n.text),
                     ));
                 }
-                Ok(self.out(Kind::Record(out), Ty::Record(tys)))
+                let tm = self.b().record(out, Ty::Record(tys));
+                Ok(self.out(tm))
             }
             RecordExpr::Elided(s) => Err(diag(*s, "an elided record cannot be checked")),
         }
@@ -262,19 +262,13 @@ impl Checker<'_> {
             tms.push((n.text.clone(), o.tm));
             tys.push((n.text.clone(), o.ty));
         }
-        tms.sort_by(|a, b| a.0.cmp(&b.0));
         tys.sort_by(|a, b| a.0.cmp(&b.0));
         let ty = Ty::Sum {
             ctors: vec![(name.to_string(), tys)],
             sel: None,
         };
-        Ok(self.out(
-            Kind::Ctor {
-                ctor: 0,
-                fields: tms,
-            },
-            ty,
-        ))
+        let tm = self.b().ctor(0, tms, ty);
+        Ok(self.out(tm))
     }
 
     /// Builds constructor `c` of `target` from `record`, giving every field.
@@ -293,13 +287,8 @@ impl Checker<'_> {
                     .map(|(n, t, _)| (n, t))
                     .collect();
                 let given = self.record_fields(&fields, record, span, &ty, c)?;
-                return Ok(self.out(
-                    Kind::Ctor {
-                        ctor: c,
-                        fields: given,
-                    },
-                    ty,
-                ));
+                let tm = self.b().ctor(c, given, ty);
+                return Ok(self.out(tm));
             }
             Target::Decl(def, args) => (def, args),
         };
@@ -325,19 +314,13 @@ impl Checker<'_> {
         let (named, base) = self.given_fields(&shape, record)?;
         let (mut given, args_out) = self.ctor_args(&shape, &named, args, base.as_ref())?;
         self.fill_elided(&shape, base.as_ref(), &args_out, &mut given)?;
-        given.sort_by(|a, b| a.0.cmp(&b.0));
         let ty = Ty::Data {
             def,
             args: args_out,
             ctors: self.schema.normalize_ctors(def, vec![c]),
         };
-        Ok(self.out(
-            Kind::Ctor {
-                ctor: c,
-                fields: given,
-            },
-            ty,
-        ))
+        let tm = self.b().ctor(c, given, ty);
+        Ok(self.out(tm))
     }
 
     /// Returns the fields `record` gives, by name, and the value a `with` record copies from.
@@ -483,13 +466,13 @@ impl Checker<'_> {
             let fty = fty.subst(args);
             match base {
                 Some(b) if same_ctor || *header => {
-                    let ft = self.terms.transport_field(b.tm, f.clone(), fty);
+                    let ft = self.b().transport_field(b.tm, f.clone());
                     given.push((f.clone(), ft));
                 }
                 None if *header && self.carry.is_some_and(|(_, d)| d == shape.def) => {
                     let (row, _) = self.carry.expect("a carried row");
                     let rt = self.var_tm(row);
-                    let ft = self.terms.transport_field(rt, f.clone(), fty);
+                    let ft = self.b().transport_field(rt, f.clone());
                     given.push((f.clone(), ft));
                 }
                 _ => match shape.site {

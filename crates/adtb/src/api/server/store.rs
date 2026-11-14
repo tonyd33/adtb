@@ -40,15 +40,15 @@ impl Changes {
             }));
             let var = terms.var("row·", ty.clone());
             params.push((var, Val::set([row.clone()].into())));
-            let rows = terms.add(Kind::Var(var), ty);
+            let rows = terms.add_unchecked(Kind::Var(var), ty);
             let kind = if *insert {
                 Kind::Insert(*rel, rows)
             } else {
                 Kind::Delete(*rel, rows)
             };
-            changes.push(terms.add(kind, Ty::Change));
+            changes.push(terms.add_unchecked(kind, Ty::Change));
         }
-        let change = terms.add(Kind::Par(changes), Ty::Change);
+        let change = terms.add_unchecked(Kind::Par(changes), Ty::Change);
         let text = Text {
             schema: &e.schema,
             terms: &terms,

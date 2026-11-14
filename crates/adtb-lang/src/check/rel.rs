@@ -15,7 +15,7 @@ impl Checker<'_> {
             },
             t => t.clone(),
         };
-        let tm = self.add(Kind::Rel(rel, ctors), Ty::Set(Box::new(elem.clone())));
+        let tm = self.b().rel(rel, ctors);
         Out {
             tm,
             ty: Ty::Set(Box::new(elem)),

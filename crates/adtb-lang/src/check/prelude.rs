@@ -1,6 +1,6 @@
 use super::*;
 use crate::ast::{BinOp, Expr, ExprKind, Lit};
-use crate::kernel::{FileFormat, Kind, Prim, Transition};
+use crate::kernel::{FileFormat, Prim, Transition};
 
 impl Checker<'_> {
     fn arity<'e>(&self, name: &str, es: &'e [Expr], n: usize, span: Span) -> R<&'e [Expr]> {
@@ -19,7 +19,8 @@ impl Checker<'_> {
     }
 
     fn prim(&mut self, p: Prim, args: Vec<Tm>, ty: Ty) -> Out {
-        self.out(Kind::Prim(p, args), ty)
+        let tm = self.b().prim(p, args, ty);
+        self.out(tm)
     }
 
     fn named_ty(&self, name: &str) -> Ty {
@@ -712,7 +713,7 @@ impl Checker<'_> {
                         ));
                     }
                 };
-                Ok(self.out(Kind::Tag(x.tm), ty))
+                Ok(Out::of(self.b().tag(x.tm), ty))
             }
             "print" => {
                 let [a] = self.arity(name, es, 1, span)? else {
@@ -741,7 +742,7 @@ impl Checker<'_> {
                     "deleted" => Transition::Deleted,
                     _ => Transition::Prior,
                 };
-                let mut o = self.out(Kind::Transition(t, rel, ctors), base.ty);
+                let mut o = Out::of(self.b().transition(t, rel, ctors), base.ty);
                 o.rows = Some(rel);
                 Ok(o)
             }

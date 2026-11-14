@@ -62,16 +62,19 @@ fn walk(
         let occ = i64::try_from(terms.nodes.len()).expect("an arena of fewer than 2^63 nodes");
         let mut fields = vec![(
             "0000".to_string(),
-            terms.add(
+            terms.add_unchecked(
                 Kind::Const(Const::Int(i128::from(occ))),
                 Ty::Base(Base::I64),
             ),
         )];
         for (i, v) in scope.clone().into_iter().enumerate() {
             let vty = terms.var_info(v).ty.clone();
-            fields.push((format!("{:04}", i + 1), terms.add(Kind::Var(v), vty)));
+            fields.push((
+                format!("{:04}", i + 1),
+                terms.add_unchecked(Kind::Var(v), vty),
+            ));
         }
-        let p = terms.add(Kind::Record(fields), ty);
+        let p = terms.add_unchecked(Kind::Record(fields), ty);
         out.insert(occ, (g, r));
         return p;
     }
@@ -84,10 +87,9 @@ fn walk(
             at = k;
         }
         let rest = walk(terms, at, scope, memo, out);
-        return statements
-            .into_iter()
-            .rev()
-            .fold(rest, |k, (w, ty)| terms.add(Kind::Block(w, k), ty));
+        return statements.into_iter().rev().fold(rest, |k, (w, ty)| {
+            terms.add_unchecked(Kind::Block(w, k), ty)
+        });
     }
     let kind = terms.kind(t).clone();
     let ty = terms.ty(t).clone();
@@ -99,7 +101,7 @@ fn walk(
         new.push(walk(terms, *c, scope, memo, out));
         scope.truncate(n);
     }
-    terms.add(kind.with_children(&new), ty)
+    terms.add_unchecked(kind.with_children(&new), ty)
 }
 
 /// Returns `v`, of type `ty`, with every placeholder replaced by the value `draw` gives it.

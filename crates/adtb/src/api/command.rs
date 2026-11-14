@@ -855,18 +855,18 @@ impl<R: Runtime> Engine<R> {
         let gone = match old {
             Old::Ctor(c) => {
                 let ctors = schema.normalize_ctors(def, vec![c]);
-                terms.add(Kind::Rel(rel, ctors.clone()), at(ctors))
+                terms.add_unchecked(Kind::Rel(rel, ctors.clone()), at(ctors))
             }
             Old::Row(v) => {
                 let y = terms.var("old·", set.clone());
                 params.push((y, Val::set([v].into())));
-                terms.add(Kind::Var(y), set.clone())
+                terms.add_unchecked(Kind::Var(y), set.clone())
             }
         };
-        let del = terms.add(Kind::Delete(rel, gone), Ty::Change);
-        let new = terms.add(Kind::Var(x), set);
-        let ins = terms.add(Kind::Insert(rel, new), Ty::Change);
-        let both = terms.add(Kind::Par(vec![del, ins]), Ty::Change);
+        let del = terms.add_unchecked(Kind::Delete(rel, gone), Ty::Change);
+        let new = terms.add_unchecked(Kind::Var(x), set);
+        let ins = terms.add_unchecked(Kind::Insert(rel, new), Ty::Change);
+        let both = terms.add_unchecked(Kind::Par(vec![del, ins]), Ty::Change);
         let tx = self.db.begin()?;
         let text = Text {
             schema,

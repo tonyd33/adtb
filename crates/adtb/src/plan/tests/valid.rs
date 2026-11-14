@@ -139,7 +139,7 @@ fn a_case_missing_repeating_or_inventing_an_arm_is_refused() {
     );
     let mut p = p.clone();
     let not_sum = Ty::Set(Box::new(Ty::Base(Base::I64)));
-    let empty = p.terms.add(Kind::EmptySet, not_sum.clone());
+    let empty = p.terms.add_unchecked(Kind::EmptySet, not_sum.clone());
     let Spine::Case(s, _) = spine_mut(&mut p) else {
         panic!("a case at the spine's root")
     };
@@ -289,7 +289,9 @@ fn a_read_of_the_past_breaking_its_shape_is_refused() {
     assert!(at(&mut lookup).reads.indexes.remove(&users));
     assert_eq!(Err(Broken::PastUnlistedIndex(users)), check(&f, &lookup));
     let (mut probe, vars) = valid(&f, KEY_PROBE, &[("k", "Key identities")]);
-    let point = probe.terms.add(Kind::Var(vars[0]), f.ty("Key identities"));
+    let point = probe
+        .terms
+        .add_unchecked(Kind::Var(vars[0]), f.ty("Key identities"));
     probe.root = Eval::At(Box::new(AtRead {
         instant: false,
         point,

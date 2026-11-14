@@ -707,12 +707,12 @@ impl<R: Runtime> Engine<R> {
             }));
             let x = terms.var("row·", set.clone());
             params.push((x, Val::set(rows)));
-            let gone = terms.add(Kind::Rel(r, None), set.clone());
-            changes.push(terms.add(Kind::Delete(r, gone), Ty::Change));
-            let new = terms.add(Kind::Var(x), set);
-            changes.push(terms.add(Kind::Insert(r, new), Ty::Change));
+            let gone = terms.add_unchecked(Kind::Rel(r, None), set.clone());
+            changes.push(terms.add_unchecked(Kind::Delete(r, gone), Ty::Change));
+            let new = terms.add_unchecked(Kind::Var(x), set);
+            changes.push(terms.add_unchecked(Kind::Insert(r, new), Ty::Change));
         }
-        let all = terms.add(Kind::Par(changes), Ty::Change);
+        let all = terms.add_unchecked(Kind::Par(changes), Ty::Change);
         let text = Text {
             schema: &self.schema,
             terms: &terms,

@@ -8,11 +8,11 @@ fn int_ty() -> Ty {
 }
 
 fn int(terms: &mut Terms, i: i128) -> Tm {
-    terms.add(Kind::Const(Const::Int(i)), int_ty())
+    terms.add_ill_typed(Kind::Const(Const::Int(i)), int_ty())
 }
 
 fn text(terms: &mut Terms, t: &str) -> Tm {
-    terms.add(Kind::Const(Const::Text(t.into())), Ty::Base(Base::Text))
+    terms.add_ill_typed(Kind::Const(Const::Text(t.into())), Ty::Base(Base::Text))
 }
 
 fn broken(f: &Fixture, terms: &Terms, t: Tm) -> String {
@@ -27,12 +27,12 @@ fn a_primitive_of_mistyped_operands_is_an_internal_error() {
     let f = Fixture::new("");
     let mut terms = Terms::default();
     let (a, one) = (text(&mut terms, "a"), int(&mut terms, 1));
-    let add = terms.add(Kind::Prim(Prim::Add, vec![a, one]), int_ty());
+    let add = terms.add_ill_typed(Kind::Prim(Prim::Add, vec![a, one]), int_ty());
     let what = broken(&f, &terms, add);
     assert!(what.contains("Add"), "{what}");
-    let lower = terms.add(Kind::Prim(Prim::Lower, vec![one]), Ty::Base(Base::Text));
+    let lower = terms.add_ill_typed(Kind::Prim(Prim::Lower, vec![one]), Ty::Base(Base::Text));
     broken(&f, &terms, lower);
-    let start = terms.add(Kind::Prim(Prim::Start, vec![one]), int_ty());
+    let start = terms.add_ill_typed(Kind::Prim(Prim::Start, vec![one]), int_ty());
     let what = broken(&f, &terms, start);
     assert!(what.starts_with("a span has a start and an end"), "{what}");
 }
@@ -42,7 +42,7 @@ fn a_checked_primitive_of_mistyped_operands_is_an_internal_error_not_none() {
     let f = Fixture::new("");
     let mut terms = Terms::default();
     let (a, one) = (text(&mut terms, "a"), int(&mut terms, 1));
-    let t = terms.add(
+    let t = terms.add_ill_typed(
         Kind::Prim(Prim::CheckedAdd, vec![a, one]),
         f.ty("Option I64"),
     );
@@ -55,7 +55,7 @@ fn a_condition_that_is_not_a_bool_is_an_internal_error() {
     let f = Fixture::new("");
     let mut terms = Terms::default();
     let one = int(&mut terms, 1);
-    let t = terms.add(Kind::If(one, one, one), int_ty());
+    let t = terms.add_ill_typed(Kind::If(one, one, one), int_ty());
     broken(&f, &terms, t);
 }
 
@@ -64,7 +64,7 @@ fn a_case_over_a_value_that_is_not_a_constructor_is_an_internal_error() {
     let f = Fixture::new("");
     let mut terms = Terms::default();
     let one = int(&mut terms, 1);
-    let t = terms.add(
+    let t = terms.add_ill_typed(
         Kind::Case {
             scrutinee: one,
             arms: Vec::new(),
@@ -82,14 +82,14 @@ fn a_case_over_a_value_that_is_not_a_constructor_is_an_internal_error() {
 fn a_case_without_an_arm_for_the_scrutinee_is_an_internal_error() {
     let f = Fixture::new("");
     let mut terms = Terms::default();
-    let none = terms.add(
+    let none = terms.add_ill_typed(
         Kind::Ctor {
             ctor: 0,
             fields: Vec::new(),
         },
         f.ty("Option I64"),
     );
-    let t = terms.add(
+    let t = terms.add_ill_typed(
         Kind::Case {
             scrutinee: none,
             arms: Vec::new(),
@@ -103,7 +103,7 @@ fn a_case_without_an_arm_for_the_scrutinee_is_an_internal_error() {
 fn evaluating_unreachable_is_an_internal_error() {
     let f = Fixture::new("");
     let mut terms = Terms::default();
-    let t = terms.add(Kind::Unreachable, int_ty());
+    let t = terms.add_ill_typed(Kind::Unreachable, int_ty());
     broken(&f, &terms, t);
 }
 
@@ -112,7 +112,7 @@ fn a_reject_of_a_value_that_is_not_text_is_an_internal_error() {
     let f = Fixture::new("");
     let mut terms = Terms::default();
     let one = int(&mut terms, 1);
-    let t = terms.add(Kind::Reject(one), int_ty());
+    let t = terms.add_ill_typed(Kind::Reject(one), int_ty());
     broken(&f, &terms, t);
 }
 
@@ -121,7 +121,7 @@ fn an_application_of_a_value_that_is_not_a_function_is_an_internal_error() {
     let f = Fixture::new("");
     let mut terms = Terms::default();
     let one = int(&mut terms, 1);
-    let t = terms.add(Kind::App(one, one), int_ty());
+    let t = terms.add_ill_typed(Kind::App(one, one), int_ty());
     broken(&f, &terms, t);
 }
 
@@ -130,7 +130,7 @@ fn a_field_a_value_lacks_is_an_internal_error() {
     let f = Fixture::new("");
     let mut terms = Terms::default();
     let one = int(&mut terms, 1);
-    let t = terms.add(Kind::Field(one, "name".into()), int_ty());
+    let t = terms.add_ill_typed(Kind::Field(one, "name".into()), int_ty());
     broken(&f, &terms, t);
 }
 
@@ -138,7 +138,7 @@ fn a_field_a_value_lacks_is_an_internal_error() {
 fn a_decimal_constant_at_another_type_is_an_internal_error() {
     let f = Fixture::new("");
     let mut terms = Terms::default();
-    let t = terms.add(Kind::Const(Const::Decimal(5)), int_ty());
+    let t = terms.add_ill_typed(Kind::Const(Const::Decimal(5)), int_ty());
     broken(&f, &terms, t);
 }
 
@@ -146,8 +146,8 @@ fn a_decimal_constant_at_another_type_is_an_internal_error() {
 fn an_internal_error_is_not_caught_by_try() {
     let f = Fixture::new("");
     let mut terms = Terms::default();
-    let t = terms.add(Kind::Unreachable, int_ty());
-    let tried = terms.add(Kind::Try(t), f.ty("Result I64 Fault"));
+    let t = terms.add_ill_typed(Kind::Unreachable, int_ty());
+    let tried = terms.add_ill_typed(Kind::Try(t), f.ty("Result I64 Fault"));
     let got = f.interp().eval(&terms, tried, &[]);
     assert!(matches!(got, Err(Abort::Internal(_))), "{got:?}");
 }

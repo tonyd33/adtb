@@ -359,20 +359,15 @@ impl Checker<'_> {
                     case_arms.push((c, x, m));
                 }
                 let xt = self.var_tm(xi);
-                self.add(
-                    Kind::Case {
-                        scrutinee: xt,
-                        arms: case_arms,
-                    },
-                    ty.clone(),
-                )
+                self.b().case(xt, case_arms, ty.clone())
             }
             None => {
                 let xt = self.var_tm(xi);
                 self.chain(None, xt, &sty, &irs, &selected, &ty)
             }
         };
-        let o = self.out(Kind::Let(xi, s.tm, body), ty);
+        let tm = self.b().let_(xi, s.tm, body, ty);
+        let o = self.out(tm);
         self.with_row_origin(o, rows)
     }
 
@@ -1137,7 +1132,7 @@ impl Checker<'_> {
         selected: &[Option<Selected>],
         res: &Ty,
     ) -> Tm {
-        let unreachable = self.add(Kind::Unreachable, res.clone());
+        let unreachable = self.b().unreachable(res.clone());
         let yes = self.bool_tm(true);
         let no = self.bool_tm(false);
         let bt = self.bool_ty();
@@ -1189,7 +1184,7 @@ impl Checker<'_> {
             f = if total {
                 body
             } else {
-                self.add(Kind::If(test, body, f), res.clone())
+                self.b().if_(test, body, f, res.clone())
             };
         }
         f
@@ -1255,7 +1250,7 @@ impl Checker<'_> {
         for (name, v) in binds.iter().rev() {
             let vty = self.terms.var_info(*v).ty.clone();
             let sel = self.selector(xi, sty, &alts, name, &vty);
-            out = self.add(Kind::Let(*v, sel, out), res.clone());
+            out = self.b().let_(*v, sel, out, res.clone());
         }
         out
     }
@@ -1283,13 +1278,7 @@ impl Checker<'_> {
             let body = self.select_chain(Some(c), y, &row, &here, name, ty);
             arms.push((c, x, body));
         }
-        self.add(
-            Kind::Case {
-                scrutinee: xt,
-                arms,
-            },
-            ty.clone(),
-        )
+        self.b().case(xt, arms, ty.clone())
     }
 
     /// Returns the value `name` takes in the first of `alts` that matches `y`, binding no variable;
@@ -1304,7 +1293,7 @@ impl Checker<'_> {
         name: &str,
         ty: &Ty,
     ) -> Tm {
-        let unreachable = self.add(Kind::Unreachable, ty.clone());
+        let unreachable = self.b().unreachable(ty.clone());
         let yes = self.bool_tm(true);
         let no = self.bool_tm(false);
         let bt = self.bool_ty();
@@ -1334,7 +1323,7 @@ impl Checker<'_> {
             out = if test == yes {
                 bound
             } else {
-                self.add(Kind::If(test, bound, out), ty.clone())
+                self.b().if_(test, bound, out, ty.clone())
             };
         }
         out
@@ -1349,7 +1338,7 @@ impl Checker<'_> {
     fn let_binder(&mut self, cx: &Cx, n: &str, y: Tm, k: Tm) -> Tm {
         match cx.binds {
             Binding::Lets(binds) => match binds.get(n) {
-                Some(v) => self.add(Kind::Let(*v, y, k), cx.res.clone()),
+                Some(v) => self.b().let_(*v, y, k, cx.res.clone()),
                 None => k,
             },
             Binding::Value(s) if s == n => y,
@@ -1369,11 +1358,11 @@ impl Checker<'_> {
             Pat::Lit { .. } if settled || k == f => k,
             Pat::Lit { tm, .. } => {
                 let bt = self.bool_ty();
-                let test = self.add(Kind::Prim(Prim::Eq, vec![y, *tm]), bt);
+                let test = self.b().prim(Prim::Eq, vec![y, *tm], bt);
                 if self.is_bool(k, true) && self.is_bool(f, false) {
                     return test;
                 }
-                self.add(Kind::If(test, k, f), cx.res.clone())
+                self.b().if_(test, k, f, cx.res.clone())
             }
             Pat::Or(alts) => {
                 let mut out = f;
@@ -1401,7 +1390,7 @@ impl Checker<'_> {
                 if settled && arms.iter().all(|(_, _, b)| *b == k || *b == f) {
                     return k;
                 }
-                self.add(Kind::Case { scrutinee: y, arms }, cx.res.clone())
+                self.b().case(y, arms, cx.res.clone())
             }
         }
     }
@@ -1420,7 +1409,7 @@ impl Checker<'_> {
                 .find(|(n, _)| n == name)
                 .map(|(_, t)| t.clone())
                 .expect("a field of the constructor");
-            let fy = self.add(Kind::Field(y, name.clone()), fty.clone());
+            let fy = self.b().field(y, name.clone());
             out = self.compile(fy, &fty, sub, cx, Cont { k: out, f: cont.f });
         }
         match binder {

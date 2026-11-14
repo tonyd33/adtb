@@ -311,12 +311,8 @@ fn payload_lits(rec: Option<&RecordExpr>) -> Option<Payload> {
 }
 
 impl Checker<'_> {
-    pub(super) fn change(&mut self, kind: Kind) -> Tm {
-        self.add(kind, Ty::Change)
-    }
-
     pub(super) fn singleton(&mut self, x: Tm, elem: &Ty) -> Tm {
-        self.add(Kind::Singleton(x), Ty::Set(Box::new(elem.clone())))
+        self.b().singleton(x, Ty::Set(Box::new(elem.clone())))
     }
 
     /// Checks `e` with nested inserts in it allowed when `ok` and nothing forbids them here.
@@ -334,9 +330,9 @@ impl Checker<'_> {
             let row_ty = self.terms.var_info(n.var).ty.clone();
             let v = self.var_tm(n.var);
             let rows = self.singleton(v, &row_ty);
-            let ins = self.change(Kind::Insert(n.rel, rows));
-            let both = self.change(Kind::Par(vec![ins, w]));
-            w = self.change(Kind::Let(n.var, n.row, both));
+            let ins = self.b().insert(n.rel, rows);
+            let both = self.b().par(vec![ins, w]);
+            w = self.b().let_(n.var, n.row, both, Ty::Change);
         }
         w
     }
@@ -347,9 +343,9 @@ impl Checker<'_> {
             let row_ty = self.terms.var_info(n.var).ty.clone();
             let v = self.var_tm(n.var);
             let rows = self.singleton(v, &row_ty);
-            let ins = self.change(Kind::Insert(n.rel, rows));
-            let blk = self.add(Kind::Block(ins, k), ty.clone());
-            k = self.add(Kind::Let(n.var, n.row, blk), ty.clone());
+            let ins = self.b().insert(n.rel, rows);
+            let blk = self.b().block(ins, k, ty.clone());
+            k = self.b().let_(n.var, n.row, blk, ty.clone());
         }
         k
     }
@@ -378,7 +374,7 @@ impl Checker<'_> {
             } => {
                 let p = self.proposed(target, *from, source, w.span)?;
                 let rows = self.rows_of(&p);
-                let ins = self.change(Kind::Insert(p.rel, rows));
+                let ins = self.b().insert(p.rel, rows);
                 let tm = match rejects {
                     Some(j) => self.rejects(j, ins, source, *from, w.span)?,
                     None => ins,
@@ -407,7 +403,7 @@ impl Checker<'_> {
             } => {
                 let (rel, rows, f, new_ty) =
                     self.update(binder, source.as_ref(), filter.as_ref(), value)?;
-                let tm = self.change(Kind::Replace(rel, rows, f));
+                let tm = self.b().replace(rel, rows, f);
                 Ok((tm, Effect::wrote(rel, new_ty)))
             }
             WriteKind::Delete {
@@ -416,14 +412,14 @@ impl Checker<'_> {
                 filter,
             } => {
                 let (rel, rows) = self.delete(binder, source.as_ref(), filter.as_ref())?;
-                let tm = self.change(Kind::Delete(rel, rows));
+                let tm = self.b().delete(rel, rows);
                 Ok((tm, Effect::deleted(rel)))
             }
             WriteKind::Fail(e) => {
                 let o = self.write_expr(e, Some(&Ty::Base(Base::Text)), true)?;
-                Ok((self.change(Kind::Fail(o.tm)), Effect::fail()))
+                Ok((self.b().fail(o.tm), Effect::fail()))
             }
-            WriteKind::Skip => Ok((self.change(Kind::Skip), Effect::done())),
+            WriteKind::Skip => Ok((self.b().skip(), Effect::done())),
             WriteKind::Seq(ws) if ws.len() == 1 => self.write_form(&ws[0]),
             WriteKind::Seq(ws) => {
                 let mut tms = Vec::new();
@@ -433,7 +429,7 @@ impl Checker<'_> {
                     tms.push(t);
                     eff = eff.and(e);
                 }
-                Ok((self.change(Kind::Par(tms)), eff))
+                Ok((self.b().par(tms), eff))
             }
             WriteKind::If(c, a, b) => {
                 let bt = self.bool_ty();
@@ -444,7 +440,7 @@ impl Checker<'_> {
                     .and_then(|a| Ok((a, self.write_effect(b)?)));
                 self.once = saved;
                 let ((a, ea), (b, eb)) = r?;
-                Ok((self.change(Kind::If(c.tm, a, b)), ea.either(eb)))
+                Ok((self.b().if_(c.tm, a, b, Ty::Change), ea.either(eb)))
             }
             WriteKind::Match(s, arms) => self.write_match(s, arms, w.span),
         }
@@ -630,7 +626,7 @@ impl Checker<'_> {
         if let Some(old) = site.old
             && (header || is_key)
         {
-            return Ok(Some(self.terms.transport_field(old, f.to_string(), fty)));
+            return Ok(Some(self.b().transport_field(old, f)));
         }
         let default = r
             .defaults
@@ -641,7 +637,7 @@ impl Checker<'_> {
         let generated = r.generate.filter(|_| is_key && r.key.len() == 1);
         match (default, generated) {
             (Some(DefaultValue::Generate(g)), _) | (None, Some(g)) => {
-                Ok(Some(self.add(Kind::Fresh(g, site.rel), fty)))
+                Ok(Some(self.b().fresh(g, site.rel)))
             }
             (Some(DefaultValue::Expr(e)), _) => Ok(Some(self.default_expr(site.rel, &e, &fty)?)),
             (None, None) => Ok(None),
@@ -767,7 +763,7 @@ impl Checker<'_> {
                 ),
             ));
         }
-        Ok(self.change(Kind::Rejects { into, insert }))
+        Ok(self.b().rejects(into, insert))
     }
 
     /// Checks an upsert; returns its write, its binding's type or why `let` cannot bind it, its effect and its relation.
@@ -851,15 +847,9 @@ impl Checker<'_> {
         let kept = (!self.terms.replaces(otherwise, old)).then_some(&old_ty);
         let binding = self.upsert_binding(&eff, p.rel, &p.row_ty, kept, span);
         let binding = binding.map(|t| if p.single { t } else { Ty::Set(Box::new(t)) });
-        let tm = self.change(Kind::Upsert {
-            rel: p.rel,
-            rows,
-            on,
-            old,
-            new,
-            otherwise,
-            single: p.single,
-        });
+        let tm = self
+            .b()
+            .upsert(p.rel, rows, on, (old, new), otherwise, p.single);
         Ok((tm, binding, Effect::done().either(eff), p.rel))
     }
 
@@ -1027,8 +1017,8 @@ impl Checker<'_> {
                     let bt = self.bool_ty();
                     let p = self.write_expr(p, Some(&bt), true)?;
                     let set_ty = self.terms.ty(rows).clone();
-                    let none = self.add(Kind::EmptySet, set_ty.clone());
-                    rows = self.add(Kind::If(p.tm, rows, none), set_ty);
+                    let none = self.b().empty_set(set_ty.clone());
+                    rows = self.b().if_(p.tm, rows, none, set_ty);
                 }
                 self.scope.push();
                 let x = self.bind(&binder.text, local.ty.clone(), Some(rel));
@@ -1048,10 +1038,9 @@ impl Checker<'_> {
         })();
         self.scope.pop();
         let new = r?;
-        let f = self.add(
-            Kind::Lam(x, new.tm),
-            Ty::Fn(Box::new(elem), Box::new(whole)),
-        );
+        let f = self
+            .b()
+            .lam(x, new.tm, Ty::Fn(Box::new(elem), Box::new(whole)));
         Ok((rel, rows, f, new.ty))
     }
 
@@ -1063,8 +1052,8 @@ impl Checker<'_> {
         let set_ty = Ty::Set(Box::new(elem.clone()));
         let xt = self.var_tm(x);
         let one = self.singleton(xt, elem);
-        let none = self.add(Kind::EmptySet, set_ty.clone());
-        let body = self.add(Kind::If(p.tm, one, none), set_ty.clone());
+        let none = self.b().empty_set(set_ty.clone());
+        let body = self.b().if_(p.tm, one, none, set_ty.clone());
         Ok(self.for_afresh(x, rows, body, set_ty))
     }
 
@@ -1099,8 +1088,8 @@ impl Checker<'_> {
                     let bt = self.bool_ty();
                     let p = self.write_expr(p, Some(&bt), true)?;
                     let set_ty = self.terms.ty(rows).clone();
-                    let none = self.add(Kind::EmptySet, set_ty.clone());
-                    rows = self.add(Kind::If(p.tm, rows, none), set_ty);
+                    let none = self.b().empty_set(set_ty.clone());
+                    rows = self.b().if_(p.tm, rows, none, set_ty);
                 }
                 Ok((rel, rows))
             }
@@ -1189,7 +1178,7 @@ impl Checker<'_> {
             } => {
                 let p = self.proposed(target, *from, source, w.span)?;
                 let rows = self.rows_of(&p);
-                let ins = self.change(Kind::Insert(p.rel, rows));
+                let ins = self.b().insert(p.rel, rows);
                 let tm = self.rejects(j, ins, source, *from, w.span)?;
                 Ok((LetKind::Bang(tm), Ty::Set(Box::new(p.row_ty)), p.rel))
             }
@@ -1216,7 +1205,7 @@ impl Checker<'_> {
             } => {
                 let (rel, rows, f, new_ty) =
                     self.update(binder, source.as_ref(), filter.as_ref(), value)?;
-                let tm = self.change(Kind::Replace(rel, rows, f));
+                let tm = self.b().replace(rel, rows, f);
                 Ok((LetKind::Bang(tm), Ty::Set(Box::new(new_ty)), rel))
             }
             WriteKind::Delete {
@@ -1266,10 +1255,9 @@ impl Checker<'_> {
         );
         self.scope.pop();
         let new = r?;
-        Ok(self.add(
-            Kind::Lam(x, new.tm),
-            Ty::Fn(Box::new(elem.clone()), Box::new(elem)),
-        ))
+        Ok(self
+            .b()
+            .lam(x, new.tm, Ty::Fn(Box::new(elem.clone()), Box::new(elem))))
     }
 }
 

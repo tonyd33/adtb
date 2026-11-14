@@ -6,11 +6,15 @@ use std::rc::Rc;
 use crate::schema::Generator;
 use crate::types::*;
 
+#[path = "kernel_build.rs"]
+mod build;
 #[cfg(test)]
 #[path = "kernel_tests.rs"]
 mod tests;
 #[path = "kernel_valid.rs"]
 mod valid;
+
+pub use build::Build;
 
 pub use valid::{Invalid, assert_normal, assert_valid, validate, validate_normal};
 
@@ -355,12 +359,6 @@ pub struct Terms {
 }
 
 impl Terms {
-    pub(crate) fn transport_field(&mut self, row: Tm, field: String, ty: Ty) -> Tm {
-        let tm = self.add(Kind::Field(row, field), ty);
-        self.transport_fields.insert(tm);
-        tm
-    }
-
     /// Returns whether `rows` names only `row`.
     fn targets(&self, rows: Tm, row: Var) -> bool {
         matches!(self.kind(rows), Kind::Singleton(x) if matches!(self.kind(*x), Kind::Var(v) if *v == row))
@@ -411,9 +409,23 @@ impl Terms {
         self.transport_fields.contains(&t)
     }
 
-    pub fn add(&mut self, kind: Kind, ty: Ty) -> Tm {
+    fn add(&mut self, kind: Kind, ty: Ty) -> Tm {
         self.nodes.push(Node { kind, ty });
         Tm(self.nodes.len() as u32 - 1)
+    }
+
+    /// Returns a new node of `kind` at `ty`, typed and checked by nothing.
+    ///
+    /// Preconditions:
+    /// - The node satisfies its kind's typing rule.
+    pub fn add_unchecked(&mut self, kind: Kind, ty: Ty) -> Tm {
+        self.add(kind, ty)
+    }
+
+    /// Returns a new node of `kind` at `ty`, which may break its kind's typing rule.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn add_ill_typed(&mut self, kind: Kind, ty: Ty) -> Tm {
+        self.add(kind, ty)
     }
 
     pub(crate) fn len(&self) -> usize {

@@ -1110,7 +1110,7 @@ const SHARED_DEPTH: u32 = 64;
 fn shared_arena() -> (Terms, Tm, Var) {
     let mut terms = Terms::default();
     let c = terms.var("c", Ty::Unit);
-    let test = terms.add(Kind::Var(c), Ty::Unit);
+    let test = terms.add_ill_typed(Kind::Var(c), Ty::Unit);
     let row = terms.var("x", Ty::Unit);
     (terms, test, row)
 }
@@ -1118,7 +1118,7 @@ fn shared_arena() -> (Terms, Tm, Var) {
 #[test]
 fn terms_any_visits_a_shared_term_once() {
     let (mut terms, test, row) = shared_arena();
-    let leaf = terms.add(Kind::Var(row), Ty::Unit);
+    let leaf = terms.add_ill_typed(Kind::Var(row), Ty::Unit);
     let t = terms.doubled(test, leaf, 20);
     let mut visits = 0;
     assert!(!terms.any(t, |_| {
@@ -1134,8 +1134,8 @@ fn terms_any_visits_a_shared_term_once() {
 fn a_write_under_shared_branches_is_checked_for_volatile_reads_once() {
     let s = schema("");
     let (mut terms, test, row) = shared_arena();
-    let rows = terms.add(Kind::Var(row), Ty::Unit);
-    let insert = terms.add(Kind::Insert(RelId(0), rows), Ty::Change);
+    let rows = terms.add_ill_typed(Kind::Var(row), Ty::Unit);
+    let insert = terms.add_ill_typed(Kind::Insert(RelId(0), rows), Ty::Change);
     let t = terms.doubled(test, insert, SHARED_DEPTH);
     assert!(!write_depends_on_volatile(&s, &terms, t));
 }
@@ -1143,18 +1143,18 @@ fn a_write_under_shared_branches_is_checked_for_volatile_reads_once() {
 #[test]
 fn a_sum_over_shared_branches_is_checked_for_merged_bindings_once() {
     let (mut terms, test, row) = shared_arena();
-    let users = terms.add(Kind::Rel(RelId(0), None), Ty::Unit);
-    let element = terms.add(Kind::Var(row), Ty::Unit);
-    let yielded = terms.add(Kind::Singleton(element), Ty::Unit);
-    let each = terms.add(Kind::For(row, users, yielded), Ty::Unit);
+    let users = terms.add_ill_typed(Kind::Rel(RelId(0), None), Ty::Unit);
+    let element = terms.add_ill_typed(Kind::Var(row), Ty::Unit);
+    let yielded = terms.add_ill_typed(Kind::Singleton(element), Ty::Unit);
+    let each = terms.add_ill_typed(Kind::For(row, users, yielded), Ty::Unit);
     let shared_comprehensions = terms.doubled(test, each, SHARED_DEPTH);
     let shared_source = {
         let source = terms.doubled(test, users, SHARED_DEPTH);
-        terms.add(Kind::For(row, source, yielded), Ty::Unit)
+        terms.add_ill_typed(Kind::For(row, source, yielded), Ty::Unit)
     };
     let shared_select = {
         let body = terms.doubled(test, yielded, SHARED_DEPTH);
-        terms.add(Kind::For(row, users, body), Ty::Unit)
+        terms.add_ill_typed(Kind::For(row, users, body), Ty::Unit)
     };
     for (what, source) in [
         ("comprehensions", shared_comprehensions),
@@ -1162,8 +1162,8 @@ fn a_sum_over_shared_branches_is_checked_for_merged_bindings_once() {
         ("select", shared_select),
     ] {
         let y = terms.var("y", Ty::Unit);
-        let body = terms.add(Kind::Var(y), Ty::Unit);
-        let sum = terms.add(
+        let body = terms.add_ill_typed(Kind::Var(y), Ty::Unit);
+        let sum = terms.add_ill_typed(
             Kind::Agg {
                 op: Agg::Sum,
                 var: y,

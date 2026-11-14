@@ -339,7 +339,7 @@ struct Compiler<'a> {
 
 impl Compiler<'_> {
     fn add(&mut self, kind: Kind, ty: Ty) -> Tm {
-        self.terms.add(kind, ty)
+        self.terms.add_unchecked(kind, ty)
     }
 
     fn kind(&self, t: Tm) -> Kind {

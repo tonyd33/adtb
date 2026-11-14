@@ -116,6 +116,11 @@ fn refused(schema: &Schema, terms: &Terms, r: Result<(), Invalid>) {
     }
 }
 
+/// Check `t` against the typing invariant of its kind, its children taken as they are.
+pub(super) fn node(schema: &Schema, terms: &Terms, t: Tm) -> Result<(), String> {
+    Validator { schema, terms }.node(t)
+}
+
 /// Check every term reachable from `roots` against the typing invariants of its kind.
 fn typed(schema: &Schema, terms: &Terms, roots: impl Iterator<Item = Tm>) -> Result<(), Invalid> {
     let v = Validator { schema, terms };
@@ -451,15 +456,18 @@ impl Validator<'_> {
                 let Some(se) = elem(self.ty(*source)) else {
                     return Err("a grouping of a term that is not a set".into());
                 };
-                self.within("the grouping's element", se, &self.terms.var_info(*var).ty)?;
-                let want = Ty::Set(Box::new(Ty::Record(vec![
-                    ("key".into(), self.ty(*by).clone()),
-                    (
-                        "rows".into(),
-                        Ty::NonEmpty(Box::new(self.terms.var_info(*var).ty.clone())),
-                    ),
-                ])));
-                self.within("the grouping", &want, ty)
+                let vt = &self.terms.var_info(*var).ty;
+                self.within("the grouping's element", se, vt)?;
+                if let Ty::Set(el) = ty
+                    && let Ty::Record(fs) = el.as_ref()
+                    && let [(k, key), (r, Ty::NonEmpty(rows))] = fs.as_slice()
+                    && k == "key"
+                    && r == "rows"
+                {
+                    self.within("the grouping's key", self.ty(*by), key)?;
+                    return self.same("the grouping's rows", rows, vt);
+                }
+                Err("the grouping is not a `Set` of `key` and `rows` records".into())
             }
             Kind::Top { count, source, .. } => {
                 self.same("the count", self.ty(*count), &Ty::Base(Base::I64))?;
@@ -886,24 +894,18 @@ impl Validator<'_> {
             return Err("an aggregate over a term that is not a set".into());
         };
         self.within("the aggregate's element", se, &self.terms.var_info(var).ty)?;
-        let nonempty = matches!(st, Ty::NonEmpty(_));
-        let partial = |r: &Ty| -> Ty {
-            if nonempty {
-                r.clone()
-            } else {
-                self.prelude("Option", vec![r.clone()])
+        let partial = |r: &Ty| -> Checked {
+            let optional = self.prelude("Option", vec![r.clone()]);
+            if matches!(st, Ty::NonEmpty(_)) && self.sub(r, ty) {
+                return Ok(());
             }
+            self.within("the aggregate", &optional, ty)
         };
         match op {
             Agg::Count => self.same("`count`", ty, &Ty::Base(Base::I64)),
             Agg::Sum => self.within("`sum`", self.ty(body), ty),
-            Agg::Min | Agg::Max | Agg::Avg => {
-                self.within("the aggregate", &partial(self.ty(body)), ty)
-            }
-            Agg::User(a) => {
-                let def = &self.schema.aggregates[a as usize];
-                self.within("the aggregate", &partial(&def.result), ty)
-            }
+            Agg::Min | Agg::Max | Agg::Avg => partial(self.ty(body)),
+            Agg::User(a) => partial(&self.schema.aggregates[a as usize].result),
         }
     }
 }

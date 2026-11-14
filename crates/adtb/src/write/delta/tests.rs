@@ -91,7 +91,7 @@ fn a_prior_relation_not_a_set_is_an_internal_error() {
     let catalog = Catalog::default();
     let mut terms = Terms::default();
     let v = terms.var("p", int());
-    let t = terms.add(Kind::Var(v), int());
+    let t = terms.add_unchecked(Kind::Var(v), int());
     let mut cx = compiler(&s, &n, &catalog, &mut terms, Some(v));
     assert_eq!(Broken::PriorNotSet(int()), internal(cx.priors(t)));
 }
@@ -102,7 +102,7 @@ fn a_top_level_read_outside_a_for_is_an_internal_error() {
     let n = normal(&s);
     let catalog = Catalog::default();
     let mut terms = Terms::default();
-    let q = terms.add(Kind::EmptySet, Ty::Set(Box::new(int())));
+    let q = terms.add_unchecked(Kind::EmptySet, Ty::Set(Box::new(int())));
     let mut cx = compiler(&s, &n, &catalog, &mut terms, None);
     let o = bare(&s, q, Origin::State);
     assert_eq!(Broken::TopNotFor, internal(cx.top_delta(q, q, &o)));
@@ -114,8 +114,8 @@ fn a_read_of_rows_not_a_set_is_an_internal_error() {
     let n = normal(&s);
     let catalog = Catalog::default();
     let mut terms = Terms::default();
-    let q = terms.add(Kind::EmptySet, Ty::Set(Box::new(int())));
-    let node = terms.add(Kind::Rel(us(&s), None), int());
+    let q = terms.add_unchecked(Kind::EmptySet, Ty::Set(Box::new(int())));
+    let node = terms.add_unchecked(Kind::Rel(us(&s), None), int());
     let mut cx = compiler(&s, &n, &catalog, &mut terms, None);
     let o = bare(&s, node, Origin::State);
     let got = internal(cx.nested_delta(q, &o, &Row::Bare, &Within::default(), &HashMap::new()));
@@ -128,9 +128,9 @@ fn a_change_set_input_not_a_set_is_an_internal_error() {
     let n = normal(&s);
     let catalog = Catalog::default();
     let mut terms = Terms::default();
-    let q = terms.add(Kind::EmptySet, Ty::Set(Box::new(int())));
+    let q = terms.add_unchecked(Kind::EmptySet, Ty::Set(Box::new(int())));
     let v = terms.var("ins", int());
-    let node = terms.add(Kind::Var(v), int());
+    let node = terms.add_unchecked(Kind::Var(v), int());
     let y = terms.var("y", int());
     let mut cx = compiler(&s, &n, &catalog, &mut terms, None);
     let o = bare(&s, node, Origin::Inserted);
@@ -145,17 +145,17 @@ fn a_top_level_binder_outside_a_for_or_let_is_an_internal_error() {
     let catalog = Catalog::default();
     let mut terms = Terms::default();
     let set = Ty::Set(Box::new(int()));
-    let q = terms.add(Kind::EmptySet, set.clone());
+    let q = terms.add_unchecked(Kind::EmptySet, set.clone());
     let rows = terms.var("rows", set.clone());
-    let node = terms.add(Kind::Var(rows), set);
+    let node = terms.add_unchecked(Kind::Var(rows), set);
     let x = terms.var("x", int());
-    let xv = terms.add(Kind::Var(x), int());
+    let xv = terms.add_unchecked(Kind::Var(x), int());
     let bool_ty = Ty::Data {
         def: s.prelude_type("Bool"),
         args: Vec::new(),
         ctors: None,
     };
-    let guard = terms.add(Kind::Prim(Prim::Eq, vec![xv, xv]), bool_ty);
+    let guard = terms.add_unchecked(Kind::Prim(Prim::Eq, vec![xv, xv]), bool_ty);
     let y = terms.var("y", int());
     let mut cx = compiler(&s, &n, &catalog, &mut terms, None);
     let o = bare(&s, node, Origin::Inserted);

@@ -366,7 +366,7 @@ impl Planner<'_> {
     }
 
     fn add(&mut self, kind: Kind, ty: Ty) -> Tm {
-        self.t.add(kind, ty)
+        self.t.add_unchecked(kind, ty)
     }
 
     fn fresh(&mut self, name: &str, ty: Ty) -> Var {

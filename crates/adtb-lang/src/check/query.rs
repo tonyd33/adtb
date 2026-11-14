@@ -47,15 +47,8 @@ impl Checker<'_> {
             ));
         }
         let ty = b.ty.clone();
-        Ok(self.out(
-            Kind::At {
-                instant,
-                point: p.tm,
-                pins: pins.map(|v| v.number),
-                body: b.tm,
-            },
-            ty,
-        ))
+        let tm = self.b().at(instant, p.tm, pins.map(|v| v.number), b.tm, ty);
+        Ok(self.out(tm))
     }
 
     /// A generator's source, as a set and the type of its elements.
@@ -100,11 +93,11 @@ impl Checker<'_> {
     fn assemble(&mut self, frames: Vec<Frame>, mut inner: Tm, set_ty: &Ty) -> Tm {
         for f in frames.into_iter().rev() {
             inner = match f {
-                Frame::For(v, src) => self.add(Kind::For(v, src, inner), set_ty.clone()),
-                Frame::Let(v, bound) => self.add(Kind::Let(v, bound, inner), set_ty.clone()),
+                Frame::For(v, src) => self.b().for_(v, src, inner, set_ty.clone()),
+                Frame::Let(v, bound) => self.b().let_(v, bound, inner, set_ty.clone()),
                 Frame::Where(p) => {
-                    let none = self.add(Kind::EmptySet, set_ty.clone());
-                    self.add(Kind::If(p, inner, none), set_ty.clone())
+                    let none = self.b().empty_set(set_ty.clone());
+                    self.b().if_(p, inner, none, set_ty.clone())
                 }
             };
         }
@@ -117,7 +110,7 @@ impl Checker<'_> {
         let body = self
             .terms
             .renamed(body, &BTreeMap::from([(x, x2)]), &mut self.frees);
-        self.add(Kind::For(x2, source, body), ty)
+        self.b().for_(x2, source, body, ty)
     }
 
     /// The record of `binders` a group or aggregate ranges over, labelled by name.
@@ -137,10 +130,9 @@ impl Checker<'_> {
             fields.push((l.clone(), t));
             tys.push((l.clone(), self.terms.var_info(*v).ty.clone()));
         }
-        fields.sort_by(|a, b| a.0.cmp(&b.0));
         tys.sort_by(|a, b| a.0.cmp(&b.0));
         let ty = Ty::Record(tys);
-        let tm = self.add(Kind::Record(fields), ty.clone());
+        let tm = self.b().record(fields, ty.clone());
         (labels, tm, ty)
     }
 
@@ -171,7 +163,7 @@ impl Checker<'_> {
             let key = self.synth(&g.by)?;
             let (labels, rec, rec_ty) = self.binder_record(&binders);
             let b_ty = Ty::Set(Box::new(rec_ty.clone()));
-            let one = self.add(Kind::Singleton(rec), b_ty.clone());
+            let one = self.b().singleton(rec, b_ty.clone());
             let b_tm = self.assemble(std::mem::take(&mut frames), one, &b_ty);
             let xi = self.fresh(rec_ty.clone());
             let xt = self.var_tm(xi);
@@ -180,21 +172,14 @@ impl Checker<'_> {
             let row_tm = self.var_tm(row);
             let of_row = self.over_record(&labels, row_tm, value.tm);
             let fn_ty = Ty::Fn(Box::new(rec_ty.clone()), Box::new(value.ty.clone()));
-            let lam = self.add(Kind::Lam(row, of_row), fn_ty.clone());
+            let lam = self.b().lam(row, of_row, fn_ty.clone());
             let value_fn = self.fresh(fn_ty);
             let rows_ty = Ty::NonEmpty(Box::new(rec_ty));
             let zeta_ty = Ty::Record(vec![
                 ("key".into(), key.ty),
                 ("rows".into(), rows_ty.clone()),
             ]);
-            let group_tm = self.add(
-                Kind::Group {
-                    var: xi,
-                    source: b_tm,
-                    by,
-                },
-                Ty::Set(Box::new(zeta_ty.clone())),
-            );
+            let group_tm = self.b().group(xi, b_tm, by);
             self.scope.pop();
             self.scope.push();
             let zeta = self.terms.var(&g.into.text, zeta_ty.clone());
@@ -229,7 +214,7 @@ impl Checker<'_> {
     pub(super) fn finish(&mut self, body: Body, elem: Option<&Ty>) -> Out {
         let ty = elem.cloned().unwrap_or_else(|| body.select.ty.clone());
         let set_ty = Ty::Set(Box::new(ty));
-        let one = self.add(Kind::Singleton(body.select.tm), set_ty.clone());
+        let one = self.b().singleton(body.select.tm, set_ty.clone());
         let key_preserving = match self.terms.kind(body.select.tm) {
             Kind::Var(v) => body.binders.contains(v),
             _ => false,
@@ -291,11 +276,11 @@ impl Checker<'_> {
         self.scope.pop();
         r?;
         let set_ty = Ty::Set(Box::new(Ty::Unit));
-        let unit = self.add(Kind::Record(Vec::new()), Ty::Unit);
-        let one = self.add(Kind::Singleton(unit), set_ty.clone());
+        let unit = self.b().unit();
+        let one = self.b().singleton(unit, set_ty.clone());
         let tm = self.assemble(frames, one, &set_ty);
-        let bt = self.bool_ty();
-        Ok(self.out(Kind::Exists(tm), bt))
+        let tm = self.b().exists(tm);
+        Ok(self.out(tm))
     }
 
     /// Rewrites ordering keys written in the scope of a comprehension's `select` as functions of the selected value `x`.
@@ -353,8 +338,7 @@ impl Checker<'_> {
         for (label, ft) in &fields {
             if self.same_term(t, *ft) {
                 let xt = self.var_tm(x);
-                let ty = self.terms.ty(t).clone();
-                return self.add(Kind::Field(xt, label.clone()), ty);
+                return self.b().field(xt, label.clone());
             }
         }
         let node = self.terms.node(t).clone();
@@ -374,7 +358,7 @@ impl Checker<'_> {
             Kind::Tag(inner) => Kind::Tag(self.over_selected(inner, select, x)),
             _ => return t,
         };
-        self.add(kind, node.ty)
+        self.b().rebuilt(kind, &node.ty)
     }
 
     fn same_term(&self, a: Tm, b: Tm) -> bool {
@@ -469,16 +453,8 @@ impl Checker<'_> {
             None => None,
         };
         let ty = source.ty.clone();
-        let o = self.out(
-            Kind::Present {
-                var: x,
-                source: source.tm,
-                keys,
-                take,
-                after,
-            },
-            ty,
-        );
+        let tm = self.b().present(x, source.tm, keys, take, after, ty);
+        let o = self.out(tm);
         Ok(self.with_row_origin(o, self.row_origin(&source)))
     }
 
@@ -544,16 +520,10 @@ impl Checker<'_> {
             }
         }
         let ty = source.ty.clone();
-        let out = self.out(
-            Kind::Present {
-                var: x,
-                source: source.tm,
-                keys: keys.to_vec(),
-                take,
-                after: Some(o.tm),
-            },
-            ty,
-        );
+        let tm = self
+            .b()
+            .present(x, source.tm, keys.to_vec(), take, Some(o.tm), ty);
+        let out = self.out(tm);
         Ok(self.with_row_origin(out, self.row_origin(&source)))
     }
 
@@ -588,15 +558,8 @@ impl Checker<'_> {
             ));
         }
         let ty = source.ty.clone();
-        let o = self.out(
-            Kind::Top {
-                count: n.tm,
-                keys: ks,
-                var: x,
-                source: source.tm,
-            },
-            ty,
-        );
+        let tm = self.b().top(n.tm, ks, x, source.tm, ty);
+        let o = self.out(tm);
         Ok(self.with_row_origin(o, self.row_origin(&source)))
     }
 
@@ -732,7 +695,8 @@ impl Checker<'_> {
         self.scope.pop();
         let b = r?;
         let ty = b.ty.clone();
-        let o = self.out(Kind::Fix(bound, b.tm), ty);
+        let tm = self.b().fix(bound, b.tm, ty);
+        let o = self.out(tm);
         Ok(self.with_row_origin(o, self.row_origin(&b)))
     }
 
@@ -831,9 +795,9 @@ impl Checker<'_> {
                     let pt = self.check(p, &bt)?;
                     let set_ty = Ty::Set(Box::new(elem));
                     let xt = self.var_tm(v);
-                    let one = self.add(Kind::Singleton(xt), set_ty.clone());
-                    let none = self.add(Kind::EmptySet, set_ty.clone());
-                    let body = self.add(Kind::If(pt.tm, one, none), set_ty.clone());
+                    let one = self.b().singleton(xt, set_ty.clone());
+                    let none = self.b().empty_set(set_ty.clone());
+                    let body = self.b().if_(pt.tm, one, none, set_ty.clone());
                     self.for_afresh(v, src.tm, body, set_ty)
                 }
             };
@@ -854,15 +818,13 @@ impl Checker<'_> {
                     let info = local.group.clone().expect("a group");
                     let row_ty = self.elem_ty(&info.rows_ty).expect("rows is a set");
                     let z = self.var_tm(local.var);
-                    let rows_tm =
-                        self.terms
-                            .transport_field(z, "rows".into(), info.rows_ty.clone());
+                    let rows_tm = self.b().transport_field(z, "rows");
                     let xi = self.fresh(row_ty);
                     frames.push(Frame::For(xi, rows_tm));
                     binders.push(xi);
                     let xt = self.var_tm(xi);
                     let gv = self.group_value(&info, xt);
-                    let one = self.add(Kind::Singleton(gv), set_of(info.value_ty.clone()));
+                    let one = self.b().singleton(gv, set_of(info.value_ty.clone()));
                     let y = self.bind(&g.binder.text, info.value_ty.clone(), info.value_rows);
                     frames.push(Frame::For(y, one));
                     binders.push(y);
@@ -880,7 +842,7 @@ impl Checker<'_> {
             }
             let (labels, rec, rec_ty) = self.binder_record(&binders);
             let set_ty = set_of(rec_ty.clone());
-            let one = self.add(Kind::Singleton(rec), set_ty.clone());
+            let one = self.b().singleton(rec, set_ty.clone());
             let source = self.assemble(frames, one, &set_ty);
             let xi = self.fresh(rec_ty);
             (xi, source, nonempty, labels)
@@ -954,15 +916,7 @@ impl Checker<'_> {
             let xt = self.var_tm(var);
             self.over_record(&record_binders, xt, v.tm)
         };
-        Ok(self.out(
-            Kind::Agg {
-                op,
-                var,
-                source,
-                body,
-            },
-            ty,
-        ))
+        Ok(Out::of(self.b().agg(op, var, source, body), ty))
     }
 }
 

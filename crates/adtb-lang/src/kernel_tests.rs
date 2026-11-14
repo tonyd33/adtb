@@ -487,7 +487,7 @@ fn row_var(fx: &Fixture, terms: &mut Terms, ctors: Option<CtorSet>) -> (Var, Tm)
     (r, read)
 }
 
-/// Returns the refusals of calls, keys of values, generated values, `try`, empty sets and groups.
+/// Returns the refusals of calls, keys of values, generated values, `try` and empty sets.
 fn kind_refusals() -> Vec<(&'static str, Build)> {
     vec![
         (
@@ -546,6 +546,12 @@ fn kind_refusals() -> Vec<(&'static str, Build)> {
             let t = terms.add(Kind::EmptySet, Ty::NonEmpty(Box::new(int())));
             (t, Vec::new(), t)
         }),
+    ]
+}
+
+/// Returns the refusals of groupings.
+fn group_refusals() -> Vec<(&'static str, Build)> {
+    vec![
         ("a grouping of a term that is not a set", |_, terms| {
             let x = terms.var("x", int());
             let c = one(terms);
@@ -580,6 +586,71 @@ fn kind_refusals() -> Vec<(&'static str, Build)> {
                 (t, Vec::new(), t)
             },
         ),
+        (
+            "the grouping is not a `Set` of `key` and `rows` records",
+            |_, terms| {
+                let x = terms.var("x", int());
+                let c = one(terms);
+                let source = terms.add(Kind::EmptySet, set(int()));
+                let group = Kind::Group {
+                    var: x,
+                    source,
+                    by: c,
+                };
+                let t = terms.add(group, set(int()));
+                (t, Vec::new(), t)
+            },
+        ),
+        (
+            "the grouping is not a `Set` of `key` and `rows` records",
+            |_, terms| {
+                let x = terms.var("x", int());
+                let c = one(terms);
+                let source = terms.add(Kind::EmptySet, set(int()));
+                let group = Kind::Group {
+                    var: x,
+                    source,
+                    by: c,
+                };
+                let ty = Ty::NonEmpty(Box::new(Ty::Record(vec![
+                    ("key".into(), int()),
+                    ("rows".into(), Ty::NonEmpty(Box::new(int()))),
+                ])));
+                let t = terms.add(group, ty);
+                (t, Vec::new(), t)
+            },
+        ),
+        (
+            "the grouping's key is `Text`, not a subtype of `I64`",
+            |_, terms| {
+                let x = terms.var("x", int());
+                let by = word(terms);
+                let source = terms.add(Kind::EmptySet, set(int()));
+                let group = Kind::Group { var: x, source, by };
+                let ty = set(Ty::Record(vec![
+                    ("key".into(), int()),
+                    ("rows".into(), Ty::NonEmpty(Box::new(int()))),
+                ]));
+                let t = terms.add(group, ty);
+                (t, Vec::new(), t)
+            },
+        ),
+        ("the grouping's rows is `Text`, not `I64`", |_, terms| {
+            let x = terms.var("x", int());
+            let c = one(terms);
+            let source = terms.add(Kind::EmptySet, set(int()));
+            let group = Kind::Group {
+                var: x,
+                source,
+                by: c,
+            };
+            let ty = set(Ty::Record(vec![
+                ("key".into(), int()),
+                ("rows".into(), Ty::NonEmpty(Box::new(text()))),
+            ]));
+            let t = terms.add(group, ty);
+            (t, Vec::new(), t)
+        }),
     ]
 }
 
@@ -613,28 +684,6 @@ fn shape_refusals() -> Vec<(&'static str, Build)> {
                 };
                 let t = terms.add(agg, int());
                 (t, Vec::new(), t)
-            },
-        ),
-        (
-            "the aggregate is `I64`, not a subtype of `Option I64`",
-            |fx, terms| {
-                let x = terms.var("x", int());
-                let r = terms.var("s", Ty::NonEmpty(Box::new(int())));
-                let source = terms.add(Kind::Var(r), Ty::NonEmpty(Box::new(int())));
-                let body = terms.add(Kind::Var(x), int());
-                let agg = Kind::Agg {
-                    op: Agg::Min,
-                    var: x,
-                    source,
-                    body,
-                };
-                let option = Ty::Data {
-                    def: fx.schema.prelude_type("Option"),
-                    args: vec![int()],
-                    ctors: None,
-                };
-                let t = terms.add(agg, option);
-                (t, vec![r], t)
             },
         ),
         ("the sum has no constructor 1", |_, terms| {
@@ -841,6 +890,7 @@ fn validate_refuses_each_broken_invariant_at_the_node_that_breaks_it() {
         data_refusals(),
         value_refusals(),
         kind_refusals(),
+        group_refusals(),
         shape_refusals(),
         write_refusals(),
     ]
@@ -857,7 +907,7 @@ fn validate_refuses_each_broken_invariant_at_the_node_that_breaks_it() {
         }
     }
     assert_eq!(Vec::<String>::new(), differ);
-    assert_eq!(70, cases.len());
+    assert_eq!(73, cases.len());
 }
 
 #[test]
@@ -871,6 +921,49 @@ fn validate_accepts_a_parameter_read_at_its_type_and_a_lambda_at_a_wider_one() {
     let y = terms.var("y", int());
     let param = terms.add(Kind::Var(y), int());
     let roots = [(lam, Vec::new()), (param, vec![y])];
+    assert_eq!(Ok(()), validate(&fx.schema, &terms, &roots));
+}
+
+#[test]
+fn validate_accepts_a_grouping_at_a_wider_key_than_its_by() {
+    let fx = Fixture::new();
+    let mut terms = Terms::default();
+    let (r, read) = row_var(&fx, &mut terms, Some(vec![0]));
+    let by = terms.add(Kind::Field(read, "id".into()), key(fx.ts, Some(vec![0])));
+    let source = terms.add(Kind::EmptySet, set(int()));
+    let x = terms.var("x", int());
+    let group = Kind::Group { var: x, source, by };
+    let ty = set(Ty::Record(vec![
+        ("key".into(), key(fx.ts, None)),
+        ("rows".into(), Ty::NonEmpty(Box::new(int()))),
+    ]));
+    let t = terms.add(group, ty);
+    assert_eq!(Ok(()), validate(&fx.schema, &terms, &[(t, vec![r])]));
+}
+
+#[test]
+fn validate_accepts_a_min_over_a_nonempty_source_at_its_body_type_or_an_option_of_it() {
+    let fx = Fixture::new();
+    let mut terms = Terms::default();
+    let option = Ty::Data {
+        def: fx.schema.prelude_type("Option"),
+        args: vec![int()],
+        ctors: None,
+    };
+    let mut roots = Vec::new();
+    for ty in [int(), option] {
+        let x = terms.var("x", int());
+        let r = terms.var("s", Ty::NonEmpty(Box::new(int())));
+        let source = terms.add(Kind::Var(r), Ty::NonEmpty(Box::new(int())));
+        let body = terms.add(Kind::Var(x), int());
+        let agg = Kind::Agg {
+            op: Agg::Min,
+            var: x,
+            source,
+            body,
+        };
+        roots.push((terms.add(agg, ty), vec![r]));
+    }
     assert_eq!(Ok(()), validate(&fx.schema, &terms, &roots));
 }
 

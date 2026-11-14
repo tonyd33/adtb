@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use crate::ast;
-use crate::kernel::{Frees, IndexField, Kind, PathStep, Terms, Tm, Var};
+use crate::kernel::{Build, Frees, IndexField, Kind, PathStep, Terms, Tm, Var};
 use crate::resolve::{Scope, Visible};
 use crate::schema::{
     DefaultValue, PRELUDE, Schema, TypeDefKind, TypeMode, TypeName, TypeScope, ValueDef,
@@ -44,6 +44,12 @@ pub struct Out {
     pub ty: Ty,
     /// For a row, the relation it is a row of; for a set, the relation its elements are rows of.
     pub rows: Option<RelId>,
+}
+
+impl Out {
+    fn of(tm: Tm, ty: Ty) -> Out {
+        Out { tm, ty, rows: None }
+    }
 }
 
 /// The kernel terms of every body a schema declares.
@@ -269,14 +275,18 @@ impl<'a> Checker<'a> {
         self.ctx == Context::Adhoc
     }
 
-    fn add(&mut self, kind: Kind, ty: Ty) -> Tm {
-        self.type_nodes = self.type_nodes.saturating_add(ty.nodes());
-        self.terms.add(kind, ty)
+    fn b(&mut self) -> Build<'_> {
+        Build::new(self.schema, &mut self.terms).counting(&mut self.type_nodes)
     }
 
-    fn out(&mut self, kind: Kind, ty: Ty) -> Out {
-        let tm = self.add(kind, ty.clone());
-        Out { tm, ty, rows: None }
+    /// Returns `tm` at the type of its node.
+    fn out(&self, tm: Tm) -> Out {
+        Out::of(tm, self.terms.ty(tm).clone())
+    }
+
+    fn constant(&mut self, c: crate::kernel::Const, ty: Ty) -> Out {
+        let tm = self.b().constant(c, ty);
+        self.out(tm)
     }
 
     fn show(&self, ty: &Ty) -> String {
@@ -304,8 +314,7 @@ impl<'a> Checker<'a> {
     }
 
     fn var_tm(&mut self, v: Var) -> Tm {
-        let ty = self.terms.var_info(v).ty.clone();
-        let tm = self.add(Kind::Var(v), ty);
+        let tm = self.b().var(v);
         if self.empty_row_vars.contains(&v) {
             self.empty_row_terms.insert(tm);
         }
@@ -322,13 +331,7 @@ impl<'a> Checker<'a> {
 
     fn bool_tm(&mut self, value: bool) -> Tm {
         let ty = self.bool_ty();
-        self.add(
-            Kind::Ctor {
-                ctor: u32::from(value),
-                fields: Vec::new(),
-            },
-            ty,
-        )
+        self.b().ctor(u32::from(value), Vec::new(), ty)
     }
 
     fn option_ty(&self, t: Ty) -> Ty {
@@ -811,10 +814,8 @@ pub fn row_query(
 ) -> Result<Query, Diag> {
     let mut c = Checker::new(schema, Visible::module(module), Context::Schema);
     let (v, tm, ty) = row_body(&mut c, program, row, body, expected)?;
-    let term = c.terms.add(
-        Kind::Lam(v, tm),
-        Ty::Fn(Box::new(row.clone()), Box::new(ty)),
-    );
+    let term =
+        Build::new(schema, &mut c.terms).lam(v, tm, Ty::Fn(Box::new(row.clone()), Box::new(ty)));
     Ok(Query {
         terms: c.terms,
         term,
@@ -1136,7 +1137,7 @@ impl Checker<'_> {
         for v in vars.into_iter().rev() {
             let pty = self.terms.var_info(v).ty.clone();
             ty = Ty::Fn(Box::new(pty), Box::new(ty));
-            tm = self.add(Kind::Lam(v, tm), ty.clone());
+            tm = self.b().lam(v, tm, ty.clone());
         }
         tm
     }
@@ -1233,7 +1234,7 @@ impl Checker<'_> {
                     .insert(v, (*def, ctors.clone(), name.clone()));
             }
             let xt = self.var_tm(x);
-            let ft = self.add(Kind::Field(xt, name.clone()), fty.clone());
+            let ft = self.b().field(xt, name.clone());
             lets.push((v, ft));
         }
         for c in self.schema.relation(rel).computed.clone() {
@@ -1264,7 +1265,7 @@ impl Checker<'_> {
         self.scope.pop();
         let mut out = r?;
         for (v, ft) in lets.into_iter().rev() {
-            out.tm = self.add(Kind::Let(v, ft, out.tm), out.ty.clone());
+            out.tm = self.b().let_(v, ft, out.tm, out.ty.clone());
         }
         Ok((x, out))
     }
@@ -1276,11 +1277,11 @@ impl Checker<'_> {
         let b = self.bool_ty();
         let (x, pred) = self.in_row(&elem, rel, &mut |c| c.check(p, &b))?;
         let set_ty = Ty::Set(Box::new(elem));
-        let empty = self.add(Kind::EmptySet, set_ty.clone());
+        let empty = self.b().empty_set(set_ty.clone());
         let xt = self.var_tm(x);
-        let one = self.add(Kind::Singleton(xt), set_ty.clone());
-        let body = self.add(Kind::If(pred.tm, empty, one), set_ty.clone());
-        Ok(self.add(Kind::For(x, source.tm, body), set_ty))
+        let one = self.b().singleton(xt, set_ty.clone());
+        let body = self.b().if_(pred.tm, empty, one, set_ty.clone());
+        Ok(self.b().for_(x, source.tm, body, set_ty))
     }
 
     fn default_clause(
@@ -1350,7 +1351,7 @@ impl Checker<'_> {
                     self.note_field(f.span, *def, ctors.as_deref(), &f.text, false);
                 }
                 path.push(PathStep::Field(f.text.clone()));
-                let next = self.out(Kind::Field(o.tm, f.text.clone()), fty);
+                let next = Out::of(self.b().field(o.tm, f.text.clone()), fty);
                 self.along(next, rest, path)
             }
             Seg::Ctor(c) => {
@@ -1390,17 +1391,12 @@ impl Checker<'_> {
                         arms.push((d, y, body.tm));
                     } else {
                         let z = self.fresh(ty::restrict(self.schema, &o.ty, vec![d]));
-                        let none = self.add(Kind::Unreachable, body.ty.clone());
+                        let none = self.b().unreachable(body.ty.clone());
                         arms.push((d, z, none));
                     }
                 }
-                Ok(self.out(
-                    Kind::Case {
-                        scrutinee: o.tm,
-                        arms,
-                    },
-                    body.ty,
-                ))
+                let tm = self.b().case(o.tm, arms, body.ty.clone());
+                Ok(Out::of(tm, body.ty))
             }
         }
     }

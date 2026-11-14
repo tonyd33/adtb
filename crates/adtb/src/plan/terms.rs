@@ -57,9 +57,9 @@ impl Facts {
                     .into_iter()
                     .map(|a| self.sink_let(terms, x, e, a))
                     .collect();
-                terms.add(Kind::Prim(p, args), ty)
+                terms.add_unchecked(Kind::Prim(p, args), ty)
             }
-            _ => terms.add(Kind::Let(x, e, c), ty),
+            _ => terms.add_unchecked(Kind::Let(x, e, c), ty),
         };
         self.sunk.insert((x, e, c), s);
         s

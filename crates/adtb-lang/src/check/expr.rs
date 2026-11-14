@@ -130,7 +130,8 @@ impl Checker<'_> {
                 let x = self.check(a, expected)?;
                 let y = self.check(b, expected)?;
                 let rows = self.row_origin(&x).join(self.row_origin(&y));
-                let o = self.out(Kind::Union(x.tm, y.tm), expected.clone());
+                let tm = self.b().union(x.tm, y.tm, expected.clone());
+                let o = self.out(tm);
                 self.with_row_origin(o, rows)
             }
             ExprKind::Set(es) => self.set_literal(es, Some(expected), e.span)?,
@@ -143,7 +144,8 @@ impl Checker<'_> {
             }
             ExprKind::Reject(x) if self.reject_ok => {
                 let o = self.check(x, &Ty::Base(Base::Text))?;
-                self.out(Kind::Reject(o.tm), expected.clone())
+                let tm = self.b().reject(o.tm, expected.clone());
+                self.out(tm)
             }
             _ => self.synth(e)?,
         };
@@ -193,7 +195,10 @@ impl Checker<'_> {
             }
             ExprKind::Record(r) => self.record(r, None, e.span, None),
             ExprKind::Set(es) => self.set_literal(es, None, e.span),
-            ExprKind::Unit => Ok(self.out(Kind::Record(Vec::new()), Ty::Unit)),
+            ExprKind::Unit => {
+                let tm = self.b().unit();
+                Ok(self.out(tm))
+            }
             ExprKind::Unary(op, x) => self.unary(*op, x, e),
             ExprKind::Binary(op, a, b) => self.binary(*op, a, b, None, e.span),
             ExprKind::Field(x, f) => self.field(x, f),
@@ -241,7 +246,8 @@ impl Checker<'_> {
                 _ => {
                     let inner = self.literal(x, expected)?;
                     let ty = inner.ty.clone();
-                    return Ok(self.out(Kind::Prim(Prim::Neg, vec![inner.tm]), ty));
+                    let tm = self.b().prim(Prim::Neg, vec![inner.tm], ty);
+                    return Ok(self.out(tm));
                 }
             },
             _ => unreachable!("literal() is called on literals"),
@@ -306,11 +312,9 @@ impl Checker<'_> {
                     .map_err(|_| diag(e.span, "malformed float literal"))?;
                 let v = if neg { -v } else { v };
                 match ty {
-                    Ty::Base(Base::F64) if v.is_finite() => {
-                        Ok(self.out(Kind::Const(Const::Float(v)), ty))
-                    }
+                    Ty::Base(Base::F64) if v.is_finite() => Ok(self.constant(Const::Float(v), ty)),
                     Ty::Base(Base::F32) if (v as f32).is_finite() => {
-                        Ok(self.out(Kind::Const(Const::Float(f64::from(v as f32))), ty))
+                        Ok(self.constant(Const::Float(f64::from(v as f32)), ty))
                     }
                     Ty::Base(Base::F32 | Base::F64) => Err(diag(
                         e.span,
@@ -322,7 +326,7 @@ impl Checker<'_> {
                     )),
                 }
             }
-            Lit::Text(t) => Ok(self.out(Kind::Const(Const::Text(t.clone())), Ty::Base(Base::Text))),
+            Lit::Text(t) => Ok(self.constant(Const::Text(t.clone()), Ty::Base(Base::Text))),
             Lit::Duration { amount, unit } => {
                 let Some(per) = ast::duration_unit(unit) else {
                     return Err(diag(e.span, format!("`{unit}` is not a duration unit")));
@@ -332,10 +336,7 @@ impl Checker<'_> {
                     .and_then(|a| a.checked_mul(per))
                     .ok_or_else(|| diag(e.span, "duration out of range"))?;
                 let micros = if neg { -micros } else { micros };
-                Ok(self.out(
-                    Kind::Const(Const::Duration(micros)),
-                    Ty::Base(Base::Duration),
-                ))
+                Ok(self.constant(Const::Duration(micros), Ty::Base(Base::Duration)))
             }
             Lit::Bool(b) => {
                 let tm = self.bool_tm(*b);
@@ -366,7 +367,7 @@ impl Checker<'_> {
                 if value < lo || value > hi {
                     return Err(range_err());
                 }
-                Ok(self.out(Kind::Const(Const::Int(value)), ty.clone()))
+                Ok(self.constant(Const::Int(value), ty.clone()))
             }
             Ty::Base(Base::Decimal(s)) => {
                 if scale > *s {
@@ -382,13 +383,13 @@ impl Checker<'_> {
                     .checked_mul(SCALES[(*s - scale) as usize])
                     .filter(|v| v.abs() < SCALES[38])
                     .ok_or_else(range_err)?;
-                Ok(self.out(Kind::Const(Const::Decimal(unscaled)), ty.clone()))
+                Ok(self.constant(Const::Decimal(unscaled), ty.clone()))
             }
             Ty::Base(Base::F32 | Base::F64) => {
                 let v = value as f64 / SCALES[scale as usize] as f64;
-                Ok(self.out(Kind::Const(Const::Float(v)), ty.clone()))
+                Ok(self.constant(Const::Float(v), ty.clone()))
             }
-            Ty::Param(_) if scale == 0 => Ok(self.out(Kind::Const(Const::Int(value)), ty.clone())),
+            Ty::Param(_) if scale == 0 => Ok(self.constant(Const::Int(value), ty.clone())),
             _ => Err(diag(
                 span,
                 format!("a numeric literal does not check against {}", self.show(ty)),
@@ -417,12 +418,8 @@ impl Checker<'_> {
                 if !matches!(self.ctx, Context::Function | Context::Adhoc) {
                     return Err(diag(q.name.span, "`caller` is not in scope here"));
                 }
-                let ty = Ty::Data {
-                    def: self.schema.principal,
-                    args: Vec::new(),
-                    ctors: None,
-                };
-                return Ok(self.out(Kind::Caller, ty));
+                let tm = self.b().caller();
+                return Ok(self.out(tm));
             }
         }
         match self.lookup_value(q) {
@@ -438,7 +435,7 @@ impl Checker<'_> {
             Err(e) => {
                 if self.adhoc() && q.module.is_none() {
                     if let Some((v, ty)) = self.params.get(&q.name.text).cloned() {
-                        let tm = self.add(Kind::Var(v), ty.clone());
+                        let tm = self.b().var(v);
                         return Ok(Out { tm, ty, rows: None });
                     }
                     if self.ambiguous(&q.name.text) {
@@ -476,14 +473,7 @@ impl Checker<'_> {
             vars.push(v);
             args.push(self.var_tm(v));
         }
-        let call = self.add(
-            Kind::Call {
-                func: f,
-                type_args: Vec::new(),
-                args,
-            },
-            def.result.clone(),
-        );
+        let call = self.b().call(f, Vec::new(), args);
         let result = def.result.clone();
         let tm = self.lams(vars, call, result);
         let ty = self.terms.ty(tm).clone();
@@ -499,9 +489,8 @@ impl Checker<'_> {
             .collect();
         let mut out = self.terms.renamed(tm, &fresh, &mut self.frees);
         for (label, v) in binders.iter().rev() {
-            let vty = self.terms.var_info(*v).ty.clone();
-            let f = self.terms.transport_field(row, label.clone(), vty);
-            out = self.add(Kind::Let(fresh[v], f, out), ty.clone());
+            let f = self.b().transport_field(row, label.clone());
+            out = self.b().let_(fresh[v], f, out, ty.clone());
         }
         out
     }
@@ -509,22 +498,20 @@ impl Checker<'_> {
     /// The grouped value for one row of a group.
     pub(super) fn group_value(&mut self, g: &GroupInfo, row: Tm) -> Tm {
         let f = self.var_tm(g.value);
-        self.add(Kind::App(f, row), g.value_ty.clone())
+        self.b().app(f, row)
     }
 
     /// A group binder used as a set: the values of its grouped expression.
     fn group_as_set(&mut self, zeta: Var, g: &GroupInfo) -> Out {
         let z = self.var_tm(zeta);
-        let rows_tm = self
-            .terms
-            .transport_field(z, "rows".into(), g.rows_ty.clone());
+        let rows_tm = self.b().transport_field(z, "rows");
         let row_elem = self.elem_ty(&g.rows_ty).expect("rows is a set");
         let xi = self.fresh(row_elem);
         let xt = self.var_tm(xi);
         let value = self.group_value(g, xt);
         let set_ty = Ty::NonEmpty(Box::new(g.value_ty.clone()));
-        let one = self.add(Kind::Singleton(value), set_ty.clone());
-        let tm = self.add(Kind::For(xi, rows_tm, one), set_ty.clone());
+        let one = self.b().singleton(value, set_ty.clone());
+        let tm = self.b().for_(xi, rows_tm, one, set_ty.clone());
         Out {
             tm,
             ty: set_ty,
@@ -547,14 +534,16 @@ impl Checker<'_> {
                         format!("`-` does not apply to {}", self.show(&o.ty)),
                     ));
                 }
-                Ok(self.out(Kind::Prim(Prim::Neg, vec![o.tm]), o.ty))
+                let tm = self.b().prim(Prim::Neg, vec![o.tm], o.ty);
+                Ok(self.out(tm))
             }
             UnOp::Not => {
                 let b = self.bool_ty();
                 let o = self.check(x, &b)?;
                 let f = self.bool_tm(false);
                 let t = self.bool_tm(true);
-                Ok(self.out(Kind::If(o.tm, f, t), b))
+                let tm = self.b().if_(o.tm, f, t, b);
+                Ok(self.out(tm))
             }
             UnOp::Key => {
                 if let ExprKind::Write(w) = &x.kind {
@@ -577,7 +566,7 @@ impl Checker<'_> {
                     ],
                     ctors: None,
                 };
-                Ok(self.out(Kind::Try(o.tm), ty))
+                Ok(Out::of(self.b().try_(o.tm), ty))
             }
         }
     }
@@ -587,14 +576,15 @@ impl Checker<'_> {
         if let Some(rel) = o.rows
             && matches!(o.ty, Ty::Data { .. })
         {
+            let tm = self.b().key(o.tm, rel);
             let rel = RelRef::Declared(rel);
-            return Ok(self.out(Kind::Key(o.tm), Ty::Key { rel, ctors }));
+            return Ok(Out::of(tm, Ty::Key { rel, ctors }));
         }
         if let Ty::Data { def, .. } = &o.ty
             && let Some((rel, field)) = self.self_key(*def)
         {
             let rel = RelRef::Declared(rel);
-            return Ok(self.out(Kind::Field(o.tm, field), Ty::Key { rel, ctors }));
+            return Ok(Out::of(self.b().field(o.tm, field), Ty::Key { rel, ctors }));
         }
         Err(diag(
             span,
@@ -668,14 +658,13 @@ impl Checker<'_> {
                 let bt = self.bool_ty();
                 let x = self.check(a, &bt)?;
                 let y = self.check(b, &bt)?;
-                let kind = if op == BinOp::And {
-                    let f = self.bool_tm(false);
-                    Kind::If(x.tm, y.tm, f)
+                let (then, otherwise) = if op == BinOp::And {
+                    (y.tm, self.bool_tm(false))
                 } else {
-                    let t = self.bool_tm(true);
-                    Kind::If(x.tm, t, y.tm)
+                    (self.bool_tm(true), y.tm)
                 };
-                Ok(self.out(kind, bt))
+                let tm = self.b().if_(x.tm, then, otherwise, bt);
+                Ok(self.out(tm))
             }
             BinOp::Union => {
                 let (x, y) = self.union_pair(a, b)?;
@@ -699,7 +688,8 @@ impl Checker<'_> {
                 })?;
                 let rows = self.row_origin(&x).join(self.row_origin(&y));
                 let (x, y) = (self.widen(x, &j), self.widen(y, &j));
-                let o = self.out(Kind::Union(x.tm, y.tm), j);
+                let tm = self.b().union(x.tm, y.tm, j);
+                let o = self.out(tm);
                 Ok(self.with_row_origin(o, rows))
             }
             BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
@@ -740,7 +730,8 @@ impl Checker<'_> {
                     _ => Prim::Ge,
                 };
                 let bt = self.bool_ty();
-                Ok(self.out(Kind::Prim(prim, vec![x.tm, y.tm]), bt))
+                let tm = self.b().prim(prim, vec![x.tm, y.tm], bt);
+                Ok(self.out(tm))
             }
             BinOp::Concat => {
                 let (x, y) = self.operands(a, b, expected)?;
@@ -748,7 +739,8 @@ impl Checker<'_> {
                     (Ty::Base(Base::Text), Ty::Base(Base::Text))
                     | (Ty::Base(Base::Bytes), Ty::Base(Base::Bytes)) => {
                         let ty = x.ty.clone();
-                        Ok(self.out(Kind::Prim(Prim::Concat, vec![x.tm, y.tm]), ty))
+                        let tm = self.b().prim(Prim::Concat, vec![x.tm, y.tm], ty);
+                        Ok(self.out(tm))
                     }
                     _ => Err(diag(
                         span,
@@ -770,7 +762,8 @@ impl Checker<'_> {
                     BinOp::Div => Prim::Div,
                     _ => Prim::Rem,
                 };
-                Ok(self.out(Kind::Prim(prim, vec![x.tm, y.tm]), ty))
+                let tm = self.b().prim(prim, vec![x.tm, y.tm], ty);
+                Ok(self.out(tm))
             }
         }
     }
@@ -930,7 +923,7 @@ impl Checker<'_> {
                 .find(|(n, _)| n == "key")
                 .map(|(_, t)| t)
                 .expect("a group row has a key");
-            return Ok(self.out(Kind::Field(z, "key".into()), kty));
+            return Ok(Out::of(self.b().field(z, "key"), kty));
         }
         let o = self.synth(x)?;
         self.field_of(o, f)
@@ -953,7 +946,7 @@ impl Checker<'_> {
             if let Ty::Data { def, ctors, .. } = &o.ty {
                 self.note_field(f.span, *def, ctors.as_deref(), &f.text, false);
             }
-            return Ok(self.out(Kind::Field(o.tm, f.text.clone()), fty));
+            return Ok(Out::of(self.b().field(o.tm, f.text.clone()), fty));
         }
         if let Some(rel) = o.rows
             && let Some(c) = self
@@ -973,7 +966,8 @@ impl Checker<'_> {
             self.scope.pop();
             self.vis = saved;
             let body = body?;
-            return Ok(self.out(Kind::Let(v, o.tm, body.tm), c.ty));
+            let tm = self.b().let_(v, o.tm, body.tm, c.ty);
+            return Ok(self.out(tm));
         }
         let hint = match &o.ty {
             Ty::Data { def, .. } if *def == self.schema.prelude_type("Option") => {
@@ -1007,13 +1001,7 @@ impl Checker<'_> {
             },
             t => t.clone(),
         };
-        let tm = self.add(
-            Kind::Deref {
-                key: key.tm,
-                reference,
-            },
-            ty.clone(),
-        );
+        let tm = self.b().deref(key.tm, reference);
         Out {
             tm,
             ty,
@@ -1100,7 +1088,7 @@ impl Checker<'_> {
             }
         };
         let narrowed = ty::restrict(self.schema, &elem, set.clone());
-        let out = self.out(Kind::Restrict(o.tm, set), Ty::Set(Box::new(narrowed)));
+        let out = Out::of(self.b().restrict(o.tm, set), Ty::Set(Box::new(narrowed)));
         Ok(self.with_row_origin(out, self.row_origin(&o)))
     }
 
@@ -1217,26 +1205,21 @@ impl Checker<'_> {
         let elem = self.elem_ty(&source.ty).expect("a relation is a set");
         let xi = self.fresh(elem.clone());
         let xt = self.var_tm(xi);
-        let field = self.add(Kind::Field(xt, f.text.clone()), fty.clone());
+        let field = self.b().field(xt, f.text.clone());
         let rhs = if optional {
-            self.add(
-                Kind::Ctor {
-                    ctor: 1,
-                    fields: vec![("value".into(), kappa.tm)],
-                },
-                fty,
-            )
+            self.b().ctor(1, vec![("value".into(), kappa.tm)], fty)
         } else {
             kappa.tm
         };
         let bt = self.bool_ty();
-        let test = self.add(Kind::Prim(Prim::Eq, vec![field, rhs]), bt);
+        let test = self.b().prim(Prim::Eq, vec![field, rhs], bt);
         let set_ty = Ty::Set(Box::new(elem));
         let xt = self.var_tm(xi);
-        let one = self.add(Kind::Singleton(xt), set_ty.clone());
-        let none = self.add(Kind::EmptySet, set_ty.clone());
-        let body = self.add(Kind::If(test, one, none), set_ty.clone());
-        let mut out = self.out(Kind::For(xi, source.tm, body), set_ty);
+        let one = self.b().singleton(xt, set_ty.clone());
+        let none = self.b().empty_set(set_ty.clone());
+        let body = self.b().if_(test, one, none, set_ty.clone());
+        let tm = self.b().for_(xi, source.tm, body, set_ty);
+        let mut out = self.out(tm);
         out.rows = Some(rel);
         Ok(out)
     }
@@ -1280,7 +1263,8 @@ impl Checker<'_> {
                 {
                     return Err(diag(n.span, format!("`{}` is not a key field", n.text)));
                 }
-                self.out(Kind::Record(out), vty.clone())
+                let tm = self.b().record(out, vty.clone());
+                self.out(tm)
             }
             (ast::KeyArgs::Named(ns), t) => match ns.as_slice() {
                 [(n, e)] if self.schema.relation(rel).key == [n.text.clone()] => {
@@ -1298,7 +1282,7 @@ impl Checker<'_> {
             rel: RelRef::Declared(rel),
             ctors: None,
         };
-        Ok(self.out(Kind::KeyOf(rel, value.tm), ty))
+        Ok(Out::of(self.b().key_of(rel, value.tm), ty))
     }
 
     fn set_literal(&mut self, es: &[Expr], expected: Option<&Ty>, span: Span) -> R<Out> {
@@ -1331,7 +1315,7 @@ impl Checker<'_> {
             .into_iter()
             .map(|o| {
                 let o = self.widen(o, &elem);
-                self.add(Kind::Singleton(o.tm), set_ty.clone())
+                self.b().singleton(o.tm, set_ty.clone())
             })
             .collect();
         let tm = self.balanced_union(&ones, &set_ty);
@@ -1345,13 +1329,13 @@ impl Checker<'_> {
     /// Returns the union of `sets` in order, nested to a depth logarithmic in their number.
     fn balanced_union(&mut self, sets: &[Tm], ty: &Ty) -> Tm {
         match sets {
-            [] => self.add(Kind::EmptySet, ty.clone()),
+            [] => self.b().empty_set(ty.clone()),
             [one] => *one,
             _ => {
                 let (left, right) = sets.split_at(sets.len() / 2);
                 let a = self.balanced_union(left, ty);
                 let b = self.balanced_union(right, ty);
-                self.add(Kind::Union(a, b), ty.clone())
+                self.b().union(a, b, ty.clone())
             }
         }
     }
@@ -1390,7 +1374,8 @@ impl Checker<'_> {
             }
         };
         let rows = self.row_origin(&x).join(self.row_origin(&y));
-        let o = self.out(Kind::If(cond.tm, x.tm, y.tm), ty);
+        let tm = self.b().if_(cond.tm, x.tm, y.tm, ty);
+        let o = self.out(tm);
         Ok(self.with_row_origin(o, rows))
     }
 }

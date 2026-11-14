@@ -666,8 +666,8 @@ fn a_function_value_in_a_normal_form_is_an_internal_error() {
     let mut terms = Terms::default();
     let int = Ty::Base(adtb_lang::types::Base::I64);
     let x = terms.var("x", int.clone());
-    let body = terms.add(Kind::Var(x), int.clone());
-    let t = terms.add(
+    let body = terms.add_unchecked(Kind::Var(x), int.clone());
+    let t = terms.add_unchecked(
         Kind::Lam(x, body),
         Ty::Fn(Box::new(int.clone()), Box::new(int)),
     );
@@ -688,8 +688,8 @@ fn a_dereference_of_a_value_that_is_not_a_key_is_an_internal_error() {
     let f = running();
     let mut terms = Terms::default();
     let int = Ty::Base(adtb_lang::types::Base::I64);
-    let key = terms.add(Kind::Const(adtb_lang::kernel::Const::Int(1)), int);
-    let t = terms.add(
+    let key = terms.add_unchecked(Kind::Const(adtb_lang::kernel::Const::Int(1)), int);
+    let t = terms.add_unchecked(
         Kind::Deref {
             key,
             reference: false,

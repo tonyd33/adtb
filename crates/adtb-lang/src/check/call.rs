@@ -1,7 +1,7 @@
 use super::expr::wants_expected;
 use super::*;
 use crate::ast::{CallArgs, Expr};
-use crate::kernel::{Agg, FileFormat, Kind, Prim};
+use crate::kernel::{Agg, FileFormat, Prim};
 
 impl Checker<'_> {
     /// Checks arguments against parameter types over `n` type parameters of a callee, solving those parameters from the synthesized arguments, then from `result` against `expected`.
@@ -87,7 +87,8 @@ impl Checker<'_> {
                 let v = self.bind(&x.text, (**a).clone(), None);
                 let b = self.check(body, r)?;
                 let ty = Ty::Fn(a.clone(), r.clone());
-                Ok(self.out(Kind::Lam(v, b.tm), ty))
+                let tm = self.b().lam(v, b.tm, ty);
+                Ok(self.out(tm))
             }
             ast::LambdaParams::List(params) => {
                 let mut vars = Vec::new();
@@ -238,7 +239,8 @@ impl Checker<'_> {
             args: Vec::new(),
             ctors: None,
         };
-        Ok(self.out(Kind::Prim(Prim::Wrap, vec![o.tm]), ty))
+        let tm = self.b().prim(Prim::Wrap, vec![o.tm], ty);
+        Ok(self.out(tm))
     }
 
     fn apply_local(&mut self, local: Local, args: &CallArgs, span: Span) -> R<Out> {
@@ -253,8 +255,8 @@ impl Checker<'_> {
         if es.is_empty() {
             match ty {
                 Ty::Fn(a, r) if *a == Ty::Unit => {
-                    let unit = self.add(Kind::Record(Vec::new()), Ty::Unit);
-                    f = self.add(Kind::App(f, unit), (*r).clone());
+                    let unit = self.b().unit();
+                    f = self.b().app(f, unit);
                     ty = *r;
                 }
                 _ => {
@@ -273,7 +275,7 @@ impl Checker<'_> {
                 ));
             };
             let x = self.check(e, &a)?.tm;
-            f = self.add(Kind::App(f, x), (*r).clone());
+            f = self.b().app(f, x);
             ty = *r;
         }
         Ok(Out {
@@ -343,14 +345,7 @@ impl Checker<'_> {
             type_args.push(t);
         }
         let result = def.result.subst(&type_args);
-        let mut o = self.out(
-            Kind::Call {
-                func: f,
-                type_args,
-                args: tms,
-            },
-            result,
-        );
+        let mut o = Out::of(self.b().call(f, type_args, tms), result);
         o.rows = self.fn_rows[f.0 as usize];
         Ok(o)
     }

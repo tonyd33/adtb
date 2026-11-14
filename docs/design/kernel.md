@@ -244,7 +244,8 @@ caller's, before reading a type that may hold one.
 
 Where a row gives `τ` from the types of the node's children, `τ` is the
 type the node was checked against: that type or a supertype of it. A
-`Var`, `Rel` or `Transition` has exactly the type its row gives.
+`Var`, `Rel` or `Transition` has exactly the type its row gives; a
+`Group` widens only its `key` field.
 
 | Kind | Invariant |
 | --- | --- |
@@ -276,8 +277,8 @@ type the node was checked against: that type or a supertype of it. A
 | `EmptySet`, `Singleton(e)`, `Union(a, b)` | `τ` is a set type; elements are subtypes of its element type |
 | `For(x, src, b)` | `ty(src)` is a set of `ty(x)`; `τ = ty(b)`, a set |
 | `IsEmpty(e)`, `Exists(e)` | `ty(e)` is a set; `τ = Bool` |
-| `Agg { op, var, source, body }` | `ty(source)` is a set, `Set⁺` when the range is nonempty (a single generator over a group, with no filter); `τ` is `I64` for `count` and `ty(body)` for `sum`; for `min`, `max` and `avg` it is `ty(body)` exactly when the range is nonempty, else `Option ty(body)`; for `User(a)`, `ty(body)` is the type of the aggregate's one parameter and `τ` its declared result type exactly when the range is nonempty, else `Option` of it |
-| `Group { var, source, by }` | `τ = Set { key: ty(by), rows: Set⁺ ty(var) }` |
+| `Agg { op, var, source, body }` | `ty(source)` is a set, `Set⁺` when the range is nonempty (a single generator over a group, with no filter); `τ` is `I64` for `count` and `ty(body)` for `sum`; for `min`, `max` and `avg` it is `Option ty(body)`, or `ty(body)` when `ty(source)` is `Set⁺`; for `User(a)`, `ty(body)` is the type of the aggregate's one parameter and `τ` is `Option` of its declared result type, or that type when `ty(source)` is `Set⁺` |
+| `Group { var, source, by }` | an element of `source` is a subtype of `ty(var)`; `τ = Set { key: K, rows: Set⁺ ty(var) }` with `ty(by)` a subtype of `K` |
 | `Top { count, keys, var, source }` | `ty(count) = I64`; each key is over `var`, ordered, `true` for `desc`; `τ = ty(source)` |
 | `Present { var, source, keys, take, after }` | the final result of an ad hoc statement or a registered query body, nested nowhere else; `take : I64`; `after : Option K` for one key of type `K`, or an `Option` of a record with one field per key, whose fields in name order match the keys in order; `τ = ty(source)`, delivered as a sequence |
 | `Fix(binds, b)` | each body has its binder's type; `τ = ty(b)` |
@@ -564,7 +565,9 @@ Postconditions on a normal form, beyond those of §1:
   contains `Fresh`, and no rewrite of
   [../spec/semantics.md §5.11](../spec/semantics.md#511-normalisation)
   applies anywhere in it.
-- Every node has the type of the node it came from, or a subtype of it.
+- A node rebuilt from a checked node, its children normalised, keeps
+  the type that node was checked at. A node a reduction puts in place
+  of a checked node has that node's type or a subtype of it.
 - A node shared by several parents in the checked term is one node in
   the normal form wherever its free variables have the same values.
 - Every `fix` is stratified

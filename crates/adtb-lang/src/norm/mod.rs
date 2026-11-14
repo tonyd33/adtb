@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use crate::analysis::Totality;
 use crate::check::{Adhoc, AdhocCommand, Program, Query, Txn};
-use crate::kernel::{Agg, Frees, IndexField, Kind, Node, Terms, Tm, Var};
+use crate::kernel::{Agg, Build, Frees, IndexField, Kind, Node, Terms, Tm, Var};
 use crate::schema::Schema;
 use crate::types::*;
 
@@ -95,6 +95,19 @@ pub struct NormalAdhoc {
     /// Each command, its terms normalised.
     pub commands: Vec<AdhocCommand>,
     pub params: BTreeMap<String, Var>,
+}
+
+impl NormalAdhoc {
+    /// Returns each item and each term of a command, its parameters free in it.
+    pub fn roots(&self) -> Vec<(Tm, Vec<Var>)> {
+        let free: Vec<Var> = self.params.values().copied().collect();
+        self.items
+            .iter()
+            .copied()
+            .chain(self.commands.iter().flat_map(|c| c.command.terms()))
+            .map(|t| (t, free.clone()))
+            .collect()
+    }
 }
 
 /// The normal form of a registered query's or transaction's body over its parameters.
@@ -248,12 +261,14 @@ pub fn adhoc(schema: &Schema, p: &Program, a: &Adhoc) -> Result<NormalAdhoc, Err
             ..c.clone()
         });
     }
-    Ok(NormalAdhoc {
+    let adhoc = NormalAdhoc {
         terms: n.out,
         items,
         commands,
         params,
-    })
+    };
+    crate::kernel::assert_normal(schema, &adhoc.terms, &adhoc.roots());
+    Ok(adhoc)
 }
 
 /// Normalises a checked registered query, inlining the functions of `p`.
@@ -426,8 +441,8 @@ impl<'a> Normaliser<'a> {
         self.tot.draws(&self.out, t)
     }
 
-    fn add(&mut self, kind: Kind, ty: Ty) -> Tm {
-        self.out.add(kind, ty)
+    fn b(&mut self) -> Build<'_> {
+        Build::new(self.schema, &mut self.out)
     }
 
     /// Returns `t` with each variable its root binds replaced by a new one.
@@ -687,8 +702,7 @@ impl<'a> Normaliser<'a> {
     }
 
     fn var_tm(&mut self, x: Var) -> Tm {
-        let ty = self.out.var_info(x).ty.clone();
-        self.add(Kind::Var(x), ty)
+        self.b().var(x)
     }
 
     fn step(&mut self, t: Tm, cx: &Cx) -> Result<Val, String> {
@@ -703,8 +717,8 @@ impl<'a> Normaliser<'a> {
             | Kind::EmptySet
             | Kind::Fresh(..)
             | Kind::Unreachable
-            | Kind::Skip => Ok(self.val(node.kind.clone(), ty)),
-            Kind::Field(x, l) => self.field_step(t, *x, l, ty, cx),
+            | Kind::Skip => Ok(self.kept(node.kind.clone(), &ty)),
+            Kind::Field(x, l) => self.field_step(t, *x, l, &ty, cx),
             Kind::Case { scrutinee, arms } => self.case_step(*scrutinee, arms, ty, cx),
             Kind::If(..) | Kind::Let(..) | Kind::LetBang(..) | Kind::Block(..) => self.spine(t, cx),
             Kind::Lam(v, b) => Ok(Val::Lam {
@@ -717,7 +731,7 @@ impl<'a> Normaliser<'a> {
                 func,
                 type_args,
                 args,
-            } => self.call_step(*func, type_args, args, ty, cx),
+            } => self.call_step(*func, type_args, args, &ty, cx),
             Kind::For(v, s, b) => {
                 let s = self.tm(*s, cx)?;
                 Ok(Val::Tm(self.for_over(*v, s, *b, cx, &ty)?))
@@ -728,7 +742,7 @@ impl<'a> Normaliser<'a> {
                 source,
                 body,
             } => self.agg_step(*op, *var, *source, *body, ty, cx),
-            Kind::Group { var, source, by } => self.group_step(*var, *source, *by, ty, cx),
+            Kind::Group { var, source, by } => self.group_step(*var, *source, *by, &ty, cx),
             Kind::Top {
                 count,
                 keys,
@@ -737,8 +751,8 @@ impl<'a> Normaliser<'a> {
             } => self.top_step(*count, keys, *var, *source, ty, cx),
             Kind::Present { .. } => self.present_step(&node.kind, ty, cx),
             Kind::Fix(binds, body) => self.fix_step(binds, *body, ty, cx),
-            Kind::Replace(r, rows, f) => self.replace_step(*r, *rows, *f, ty, cx),
-            Kind::Upsert { .. } => self.upsert_step(&node.kind, ty, cx),
+            Kind::Replace(r, rows, f) => self.replace_step(*r, *rows, *f, cx),
+            Kind::Upsert { .. } => self.upsert_step(&node.kind, cx),
             Kind::Prim(..)
             | Kind::Record(_)
             | Kind::Ctor { .. }
@@ -853,7 +867,7 @@ impl<'a> Normaliser<'a> {
     fn wrap(&mut self, w: Wrap, body: Val) -> Result<Val, String> {
         Ok(match w {
             Wrap::If(c, a, ty) => match (a, body) {
-                (Val::Tm(a), Val::Tm(b)) => self.val(Kind::If(c, a, b), ty),
+                (Val::Tm(a), Val::Tm(b)) => Val::Tm(self.b().if_(c, a, b, ty)),
                 (a, b) => Val::If(c, Rc::new(a), Rc::new(b)),
             },
             Wrap::Memo(k) => {
@@ -866,11 +880,11 @@ impl<'a> Normaliser<'a> {
             }
             Wrap::Block(a, ty) => {
                 let b = self.first_order(body)?;
-                self.val(Kind::Block(a, b), ty)
+                Val::Tm(self.b().block(a, b, ty))
             }
             Wrap::LetBang(x, a, ty) => {
                 let b = self.first_order(body)?;
-                self.val(Kind::LetBang(x, a, b), ty)
+                Val::Tm(self.b().let_bang(x, a, b, ty))
             }
             Wrap::Let(x, bound, ty) => self.kept_let(x, bound, body, ty),
         })
@@ -878,7 +892,7 @@ impl<'a> Normaliser<'a> {
 
     fn kept_let(&mut self, x: Var, bound: Tm, body: Val, ty: Ty) -> Val {
         match body {
-            Val::Tm(r) => self.val(Kind::Let(x, bound, r), ty),
+            Val::Tm(r) => Val::Tm(self.b().let_(x, bound, r, ty)),
             v => Val::Let(x, bound, Rc::new(v)),
         }
     }
@@ -898,8 +912,9 @@ impl<'a> Normaliser<'a> {
             .unwrap_or(0)
     }
 
-    fn val(&mut self, kind: Kind, ty: Ty) -> Val {
-        Val::Tm(self.add(kind, ty))
+    /// Returns `kind`, its children normalised, at the type `ty` it was checked at.
+    fn kept(&mut self, kind: Kind, ty: &Ty) -> Val {
+        Val::Tm(self.b().kept(kind, ty))
     }
 
     fn var_val(&mut self, v: Var, cx: &Cx) -> Val {
@@ -915,10 +930,10 @@ impl<'a> Normaliser<'a> {
     /// Normalises each child of `kind` in order, binding nothing.
     fn congruent(&mut self, kind: &Kind, ty: Ty, cx: &Cx) -> Result<Val, String> {
         let cs = self.tms(&kind.children(), cx)?;
-        Ok(self.val(kind.with_children(&cs), ty))
+        Ok(self.kept(kind.with_children(&cs), &ty))
     }
 
-    fn field_step(&mut self, source: Tm, x: Tm, l: &str, ty: Ty, cx: &Cx) -> Result<Val, String> {
+    fn field_step(&mut self, source: Tm, x: Tm, l: &str, ty: &Ty, cx: &Cx) -> Result<Val, String> {
         let carry = self.src[cx.arena].transport_fields.contains(&source);
         let x = self.tm(x, cx)?;
         let fs = match self.out.kind(x) {
@@ -933,12 +948,12 @@ impl<'a> Normaliser<'a> {
             if others.into_iter().all(|o| self.copyable(o)) {
                 if !carry && self.out.transport_fields.contains(&e) {
                     let node = self.out.node(e).clone();
-                    return Ok(self.val(node.kind, node.ty));
+                    return Ok(self.kept(node.kind, &node.ty));
                 }
                 return Ok(Val::Tm(e));
             }
         }
-        let tm = self.add(Kind::Field(x, l.to_string()), ty);
+        let tm = self.b().kept(Kind::Field(x, l.into()), ty);
         if carry {
             self.out.transport_fields.insert(tm);
         }
@@ -989,7 +1004,7 @@ impl<'a> Normaliser<'a> {
                     _ => unreachable!("checked first-order"),
                 })
                 .collect();
-            return Ok(self.val(Kind::Case { scrutinee: s, arms }, ty));
+            return Ok(Val::Tm(self.b().case(s, arms, ty)));
         }
         Ok(Val::Case(s, Rc::new(out)))
     }
@@ -1005,7 +1020,7 @@ impl<'a> Normaliser<'a> {
         func: FnId,
         type_args: &[Ty],
         args: &[Tm],
-        ty: Ty,
+        ty: &Ty,
         cx: &Cx,
     ) -> Result<Val, String> {
         let type_args: Vec<Ty> = type_args.iter().map(|t| t.subst(&cx.targs)).collect();
@@ -1018,17 +1033,15 @@ impl<'a> Normaliser<'a> {
                 .into_iter()
                 .map(|v| self.first_order(v))
                 .collect::<Result<Vec<_>, _>>()?;
-            return Ok(self.val(
-                Kind::Call {
-                    func,
-                    type_args,
-                    args,
-                },
-                ty,
-            ));
+            let call = Kind::Call {
+                func,
+                type_args,
+                args,
+            };
+            return Ok(Val::Tm(self.b().kept(call, ty)));
         };
         if vals.is_empty() {
-            let unit = self.add(Kind::Record(Vec::new()), Ty::Unit);
+            let unit = self.b().unit();
             vals.push(Val::Tm(unit));
         }
         let mut fty = self.node(FNS, lam).ty.subst(&type_args);
@@ -1054,21 +1067,26 @@ impl<'a> Normaliser<'a> {
     ) -> Result<Val, String> {
         let source = self.tm(source, cx)?;
         let (var, body) = self.under(var, body, cx)?;
-        Ok(self.val(
-            Kind::Agg {
-                op,
-                var,
-                source,
-                body,
-            },
-            ty,
-        ))
+        let agg = Kind::Agg {
+            op,
+            var,
+            source,
+            body,
+        };
+        Ok(Val::Tm(self.b().kept(agg, &ty)))
     }
 
-    fn group_step(&mut self, var: Var, source: Tm, by: Tm, ty: Ty, cx: &Cx) -> Result<Val, String> {
+    fn group_step(
+        &mut self,
+        var: Var,
+        source: Tm,
+        by: Tm,
+        ty: &Ty,
+        cx: &Cx,
+    ) -> Result<Val, String> {
         let source = self.tm(source, cx)?;
         let (var, by) = self.under(var, by, cx)?;
-        Ok(self.val(Kind::Group { var, source, by }, ty))
+        Ok(Val::Tm(self.b().kept(Kind::Group { var, source, by }, ty)))
     }
 
     fn top_step(
@@ -1083,15 +1101,7 @@ impl<'a> Normaliser<'a> {
         let count = self.tm(count, cx)?;
         let source = self.tm(source, cx)?;
         let (var, keys) = self.keys(var, keys, cx)?;
-        Ok(self.val(
-            Kind::Top {
-                count,
-                keys,
-                var,
-                source,
-            },
-            ty,
-        ))
+        Ok(Val::Tm(self.b().top(count, keys, var, source, ty)))
     }
 
     fn present_step(&mut self, kind: &Kind, ty: Ty, cx: &Cx) -> Result<Val, String> {
@@ -1109,15 +1119,8 @@ impl<'a> Normaliser<'a> {
         let (var, keys) = self.keys(*var, keys, cx)?;
         let take = take.map(|t| self.tm(t, cx)).transpose()?;
         let after = after.map(|t| self.tm(t, cx)).transpose()?;
-        Ok(self.val(
-            Kind::Present {
-                var,
-                source,
-                keys,
-                take,
-                after,
-            },
-            ty,
+        Ok(Val::Tm(
+            self.b().present(var, source, keys, take, after, ty),
         ))
     }
 
@@ -1135,20 +1138,20 @@ impl<'a> Normaliser<'a> {
             out.push((x, self.tm(*e, &inner)?));
         }
         match self.norm(body, &inner)? {
-            Val::Tm(b) => Ok(self.val(Kind::Fix(out, b), ty)),
+            Val::Tm(b) => Ok(Val::Tm(self.b().fix(out, b, ty))),
             v => Ok(Val::Fix(out, Rc::new(v))),
         }
     }
 
-    fn replace_step(&mut self, r: RelId, rows: Tm, f: Tm, ty: Ty, cx: &Cx) -> Result<Val, String> {
+    fn replace_step(&mut self, r: RelId, rows: Tm, f: Tm, cx: &Cx) -> Result<Val, String> {
         let rows = self.tm(rows, cx)?;
         let fty = self.node(cx.arena, f).ty.subst(&cx.targs);
         let f = self.norm(f, cx)?;
         let f = self.eta(f, fty)?;
-        Ok(self.val(Kind::Replace(r, rows, f), ty))
+        Ok(Val::Tm(self.b().replace(r, rows, f)))
     }
 
-    fn upsert_step(&mut self, kind: &Kind, ty: Ty, cx: &Cx) -> Result<Val, String> {
+    fn upsert_step(&mut self, kind: &Kind, cx: &Cx) -> Result<Val, String> {
         let Kind::Upsert {
             rel,
             rows,
@@ -1167,18 +1170,14 @@ impl<'a> Normaliser<'a> {
         let (ot, nt) = (self.var_tm(o), self.var_tm(n));
         let inner = cx.with(*old, Val::Tm(ot)).with(*new, Val::Tm(nt));
         let otherwise = self.tm(*otherwise, &inner)?;
-        Ok(self.val(
-            Kind::Upsert {
-                rel: *rel,
-                rows,
-                on: *on,
-                old: o,
-                new: n,
-                otherwise,
-                single: *single,
-            },
-            ty,
-        ))
+        Ok(Val::Tm(self.b().upsert(
+            *rel,
+            rows,
+            *on,
+            (o, n),
+            otherwise,
+            *single,
+        )))
     }
 
     fn keys(
@@ -1249,7 +1248,7 @@ impl<'a> Normaliser<'a> {
         let xt = self.var_tm(x);
         let body = self.then(f, Then::Apply(Val::Tm(xt), (**r).clone()))?;
         let body = self.first_order(body)?;
-        Ok(self.add(Kind::Lam(x, body), ty))
+        Ok(self.b().lam(x, body, ty))
     }
 
     /// Returns whether choosing the function `v` evaluates only copyable terms.
@@ -1291,7 +1290,7 @@ impl<'a> Normaliser<'a> {
                 let a = self.then((*a).clone(), k.clone())?;
                 let b = self.then((*b).clone(), k)?;
                 match (a, b) {
-                    (Val::Tm(a), Val::Tm(b)) => Ok(Val::Tm(self.add(Kind::If(c, a, b), ty))),
+                    (Val::Tm(a), Val::Tm(b)) => Ok(Val::Tm(self.b().if_(c, a, b, ty))),
                     (a, b) => Ok(Val::If(c, Rc::new(a), Rc::new(b))),
                 }
             }
@@ -1309,7 +1308,7 @@ impl<'a> Normaliser<'a> {
                             _ => unreachable!("checked first-order"),
                         })
                         .collect();
-                    let t = self.add(Kind::Case { scrutinee: s, arms }, ty);
+                    let t = self.b().case(s, arms, ty);
                     return Ok(Val::Tm(self.bound_afresh(t)));
                 }
                 Ok(Val::Case(s, Rc::new(out)))
@@ -1318,7 +1317,7 @@ impl<'a> Normaliser<'a> {
                 let ty = k.ty().clone();
                 match self.then((*v).clone(), k)? {
                     Val::Tm(r) => {
-                        let t = self.add(Kind::Let(x, b, r), ty);
+                        let t = self.b().let_(x, b, r, ty);
                         Ok(Val::Tm(self.bound_afresh(t)))
                     }
                     v => Ok(Val::Let(x, b, Rc::new(v))),
@@ -1328,7 +1327,7 @@ impl<'a> Normaliser<'a> {
                 let ty = k.ty().clone();
                 match self.then((*v).clone(), k)? {
                     Val::Tm(r) => {
-                        let t = self.add(Kind::Fix(binds, r), ty);
+                        let t = self.b().fix(binds, r, ty);
                         Ok(Val::Tm(self.bound_afresh(t)))
                     }
                     v => Ok(Val::Fix(binds, Rc::new(v))),
@@ -1340,7 +1339,7 @@ impl<'a> Normaliser<'a> {
     /// Normalises `for var in s do body` for an already normalised source `s`.
     fn for_over(&mut self, var: Var, s: Tm, body: Tm, cx: &Cx, ty: &Ty) -> Result<Tm, String> {
         match self.out.kind(s).clone() {
-            Kind::EmptySet => Ok(self.add(Kind::EmptySet, ty.clone())),
+            Kind::EmptySet => Ok(self.b().empty_set(ty.clone())),
             Kind::Singleton(e) if self.copyable(e) => {
                 let cx = cx.with(var, Val::Tm(e));
                 self.tm(body, &cx)
@@ -1348,21 +1347,21 @@ impl<'a> Normaliser<'a> {
             Kind::Union(a, b) => {
                 let a = self.for_over(var, a, body, cx, ty)?;
                 let b = self.for_over(var, b, body, cx, ty)?;
-                Ok(self.add(Kind::Union(a, b), ty.clone()))
+                Ok(self.b().union(a, b, ty.clone()))
             }
             Kind::For(y, a, b) => {
                 let inner = self.for_over(var, b, body, cx, ty)?;
-                let t = self.add(Kind::For(y, a, inner), ty.clone());
+                let t = self.b().for_(y, a, inner, ty.clone());
                 Ok(self.bound_afresh(t))
             }
             Kind::If(c, a, b) => {
                 let a = self.for_over(var, a, body, cx, ty)?;
                 let b = self.for_over(var, b, body, cx, ty)?;
-                Ok(self.add(Kind::If(c, a, b), ty.clone()))
+                Ok(self.b().if_(c, a, b, ty.clone()))
             }
             _ => {
                 let (x, b) = self.under(var, body, cx)?;
-                Ok(self.add(Kind::For(x, s, b), ty.clone()))
+                Ok(self.b().for_(x, s, b, ty.clone()))
             }
         }
     }

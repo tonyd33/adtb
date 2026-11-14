@@ -819,43 +819,58 @@ impl Checker<'_> {
         if !renumbers(&from, to) {
             return t;
         }
-        let kind = match self.terms.kind(t).clone() {
-            Kind::If(c, a, b) => Kind::If(c, self.renumber(a, to), self.renumber(b, to)),
-            Kind::Let(x, e, b) => Kind::Let(x, e, self.renumber(b, to)),
-            Kind::Case { scrutinee, arms } => Kind::Case {
-                scrutinee,
-                arms: arms
+        let to = to.clone();
+        match self.terms.kind(t).clone() {
+            Kind::If(c, a, b) => {
+                let (a, b) = (self.renumber(a, &to), self.renumber(b, &to));
+                self.b().if_(c, a, b, to)
+            }
+            Kind::Let(x, e, b) => {
+                let b = self.renumber(b, &to);
+                self.b().let_(x, e, b, to)
+            }
+            Kind::Case { scrutinee, arms } => {
+                let arms = arms
                     .into_iter()
-                    .map(|(c, x, b)| (c, x, self.renumber(b, to)))
-                    .collect(),
-            },
-            Kind::Unreachable => Kind::Unreachable,
-            kind => match (&from, to) {
+                    .map(|(c, x, b)| (c, x, self.renumber(b, &to)))
+                    .collect();
+                self.b().case(scrutinee, arms, to)
+            }
+            Kind::Unreachable => self.b().unreachable(to),
+            kind => match (&from, &to) {
                 (Ty::Sum { ctors, .. }, Ty::Sum { ctors: into, .. }) => match kind {
                     Kind::Ctor { ctor, fields } => {
                         let i = index_in(into, &ctors[ctor as usize].0);
-                        let row = ty::restrict(self.schema, to, vec![i]);
-                        return self.add(Kind::Ctor { ctor: i, fields }, row);
+                        let row = ty::restrict(self.schema, &to, vec![i]);
+                        self.b().ctor(i, fields, row)
                     }
-                    _ => return self.retag_anon(t, &from, to),
+                    _ => self.retag_anon(t, &from, &to),
                 },
                 (_, Ty::Set(elem) | Ty::NonEmpty(elem)) => match kind {
-                    Kind::EmptySet => Kind::EmptySet,
-                    Kind::Singleton(e) => Kind::Singleton(self.renumber(e, elem)),
-                    Kind::Union(a, b) => Kind::Union(self.renumber(a, to), self.renumber(b, to)),
-                    Kind::For(x, src, b) => Kind::For(x, src, self.renumber(b, to)),
+                    Kind::EmptySet => self.b().empty_set(to),
+                    Kind::Singleton(e) => {
+                        let e = self.renumber(e, elem);
+                        self.b().singleton(e, to)
+                    }
+                    Kind::Union(a, b) => {
+                        let (a, b) = (self.renumber(a, &to), self.renumber(b, &to));
+                        self.b().union(a, b, to)
+                    }
+                    Kind::For(x, src, b) => {
+                        let b = self.renumber(b, &to);
+                        self.b().for_(x, src, b, to)
+                    }
                     _ => {
                         let x = self.fresh(self.elem_ty(&from).expect("a set"));
                         let xt = self.var_tm(x);
                         let one = self.renumber(xt, elem);
-                        let one = self.add(Kind::Singleton(one), to.clone());
-                        Kind::For(x, t, one)
+                        let one = self.b().singleton(one, to.clone());
+                        self.b().for_(x, t, one, to)
                     }
                 },
                 _ => unreachable!("only sums and sets are renumbered"),
             },
-        };
-        self.add(kind, to.clone())
+        }
     }
 
     /// A `case` over `t`, of anonymous sum `from`, rebuilding each constructor's value at `to`.
@@ -871,23 +886,17 @@ impl Checker<'_> {
             }
             let y = self.fresh(ty::restrict(self.schema, from, vec![c]));
             let mut given = Vec::new();
-            for (f, fty) in fields {
+            for (f, _) in fields {
                 let yt = self.var_tm(y);
-                let ft = self.terms.transport_field(yt, f.clone(), fty.clone());
+                let ft = self.b().transport_field(yt, f.clone());
                 given.push((f.clone(), ft));
             }
             let i = index_in(into, name);
             let row = ty::restrict(self.schema, to, vec![i]);
-            let body = self.add(
-                Kind::Ctor {
-                    ctor: i,
-                    fields: given,
-                },
-                row,
-            );
+            let body = self.b().ctor(i, given, row);
             arms.push((c, y, body));
         }
-        self.add(Kind::Case { scrutinee: t, arms }, to.clone())
+        self.b().case(t, arms, to.clone())
     }
 }
 

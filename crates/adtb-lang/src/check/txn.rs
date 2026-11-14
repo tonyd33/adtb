@@ -59,7 +59,7 @@ impl Checker<'_> {
         self.scope.pop();
         self.read_only = read_only;
         let body = r?;
-        let tm = self.add(Kind::Transact(body.tm, opts), body.ty.clone());
+        let tm = self.b().transact(body.tm, opts, body.ty.clone());
         Ok(Out {
             tm,
             ty: body.ty,
@@ -162,7 +162,8 @@ impl Checker<'_> {
                     ),
                 ));
             }
-            return Ok(self.out(Kind::Record(Vec::new()), Ty::Unit));
+            let tm = self.b().unit();
+            return Ok(self.out(tm));
         };
         self.hoist.push(Vec::new());
         let r = self.write_expr(e, result, true);
@@ -183,7 +184,7 @@ impl Checker<'_> {
     /// Returns item `p` followed by the items after it, `k`.
     fn item_tail(&mut self, p: Pending, k: Out) -> Out {
         let tm = match p {
-            Pending::Write(tm) => self.add(Kind::Block(tm, k.tm), k.ty.clone()),
+            Pending::Write(tm) => self.b().block(tm, k.tm, k.ty.clone()),
             Pending::LetWrite {
                 v,
                 kind,
@@ -194,22 +195,22 @@ impl Checker<'_> {
                     LetKind::Insert { rel, value, single } => {
                         let vt = self.var_tm(v);
                         let rows = if single { self.singleton(vt, &ty) } else { vt };
-                        let ins = self.change(Kind::Insert(rel, rows));
-                        let blk = self.add(Kind::Block(ins, k.tm), k.ty.clone());
-                        self.add(Kind::Let(v, value, blk), k.ty.clone())
+                        let ins = self.b().insert(rel, rows);
+                        let blk = self.b().block(ins, k.tm, k.ty.clone());
+                        self.b().let_(v, value, blk, k.ty.clone())
                     }
                     LetKind::Delete { rel, rows } => {
                         let vt = self.var_tm(v);
-                        let del = self.change(Kind::Delete(rel, vt));
-                        let blk = self.add(Kind::Block(del, k.tm), k.ty.clone());
-                        self.add(Kind::Let(v, rows, blk), k.ty.clone())
+                        let del = self.b().delete(rel, vt);
+                        let blk = self.b().block(del, k.tm, k.ty.clone());
+                        self.b().let_(v, rows, blk, k.ty.clone())
                     }
-                    LetKind::Bang(write) => self.add(Kind::LetBang(v, write, k.tm), k.ty.clone()),
+                    LetKind::Bang(write) => self.b().let_bang(v, write, k.tm, k.ty.clone()),
                 };
                 self.block_nested(nested, body, &k.ty)
             }
             Pending::LetExpr { v, value, nested } => {
-                let tm = self.add(Kind::Let(v, value, k.tm), k.ty.clone());
+                let tm = self.b().let_(v, value, k.tm, k.ty.clone());
                 self.block_nested(nested, tm, &k.ty)
             }
         };

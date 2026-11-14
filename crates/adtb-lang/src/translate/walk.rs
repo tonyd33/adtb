@@ -428,7 +428,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             Kind::Var(v) if self.probed.contains(&v) => {
                 let x = self.var(out, v)?;
                 let ty = out.var_info(x).ty.clone();
-                return Ok(out.add(Kind::Var(x), ty));
+                return Ok(out.add_unchecked(Kind::Var(x), ty));
             }
             other @ (Kind::Var(..)
             | Kind::Const(..)
@@ -479,7 +479,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             }
         };
         let ty = self.ty(&src_ty)?;
-        Ok(out.add(kind, ty))
+        Ok(out.add_unchecked(kind, ty))
     }
 
     /// Returns `kind` with its children, variables and named objects at the later version.
@@ -881,7 +881,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             x = relaid(out, x, &fields);
         }
         let ty = self.ty(src_ty)?;
-        Ok(out.add(Kind::KeyOf(to, x), ty))
+        Ok(out.add_unchecked(Kind::KeyOf(to, x), ty))
     }
 
     /// Returns the value of key `k` as a record laid out as the pin lays out the key.
@@ -894,10 +894,10 @@ impl<'p, 'a> Walk<'p, 'a> {
         let order = self.map.key_order(self.map.from.declared(rel));
         let order = order.map_err(|l| self.p.lost(&l, "reads a key of"))?;
         let (Some(order), Ty::Record(fs)) = (order, &ty) else {
-            return Ok(out.add(Kind::Prim(Prim::KeyValue, vec![k]), ty));
+            return Ok(out.add_unchecked(Kind::Prim(Prim::KeyValue, vec![k]), ty));
         };
         let now = order.iter().map(|(p, n)| (n.clone(), fs[*p].1.clone()));
-        let v = out.add(
+        let v = out.add_unchecked(
             Kind::Prim(Prim::KeyValue, vec![k]),
             Ty::Record(now.collect()),
         );
@@ -915,14 +915,14 @@ impl<'p, 'a> Walk<'p, 'a> {
         let Ty::Data { def, .. } = &xt else {
             let x2 = self.tm(out, x, None)?;
             let fty = self.ty(src_ty)?;
-            return Ok(out.add(Kind::Field(x2, name.to_string()), fty));
+            return Ok(out.add_unchecked(Kind::Field(x2, name.to_string()), fty));
         };
         let set = Map::ctor_set(self.map.from, &xt).unwrap_or_default();
         let kept = |&c: &u32| self.map.ctor(*def, c).is_some();
         if !set.iter().any(kept) {
             let x2 = self.tm(out, x, None)?;
             let fty = self.ty(src_ty)?;
-            return Ok(out.add(Kind::Field(x2, name.to_string()), fty));
+            return Ok(out.add_unchecked(Kind::Field(x2, name.to_string()), fty));
         }
         let given = match self.src.kind(x) {
             Kind::Var(v) => self.rows.get(v).cloned(),
@@ -969,7 +969,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             self.ty(src_ty)?
         };
         if images.values().all(|n| n == image) {
-            return Ok(out.add(Kind::Field(x2, image.clone()), fty));
+            return Ok(out.add_unchecked(Kind::Field(x2, image.clone()), fty));
         }
         let xt = out.ty(x2).clone();
         let mut arms = Vec::new();
@@ -978,14 +978,14 @@ impl<'p, 'a> Walk<'p, 'a> {
             let y = out.var("field", arm_ty.clone());
             let body = match images.get(&k) {
                 Some(image) => {
-                    let row = out.add(Kind::Var(y), arm_ty);
-                    out.add(Kind::Field(row, image.clone()), fty.clone())
+                    let row = out.add_unchecked(Kind::Var(y), arm_ty);
+                    out.add_unchecked(Kind::Field(row, image.clone()), fty.clone())
                 }
-                None => out.add(Kind::Unreachable, fty.clone()),
+                None => out.add_unchecked(Kind::Unreachable, fty.clone()),
             };
             arms.push((k, y, body));
         }
-        Ok(out.add(
+        Ok(out.add_unchecked(
             Kind::Case {
                 scrutinee: x2,
                 arms,
@@ -1008,14 +1008,14 @@ impl<'p, 'a> Walk<'p, 'a> {
         {
             let k = self.built(*def, ctor)?;
             let fields = Vec::new();
-            return Ok(out.add(Kind::Ctor { ctor: k, fields }, ty));
+            return Ok(out.add_unchecked(Kind::Ctor { ctor: k, fields }, ty));
         }
         let Ty::Data { def, .. } = src_ty else {
             let mut given = Vec::with_capacity(fields.len());
             for (n, f) in fields {
                 given.push((n.clone(), self.tm(out, *f, None)?));
             }
-            return Ok(out.add(
+            return Ok(out.add_unchecked(
                 Kind::Ctor {
                     ctor,
                     fields: given,
@@ -1066,7 +1066,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             given.insert(n, value);
         }
         let fields = given.into_iter().collect();
-        Ok(out.add(Kind::Ctor { ctor: k, fields }, ty))
+        Ok(out.add_unchecked(Kind::Ctor { ctor: k, fields }, ty))
     }
 
     /// Returns the later position of constructor `ctor` of `def`, a constructor a term builds.
@@ -1102,9 +1102,9 @@ impl<'p, 'a> Walk<'p, 'a> {
         if !set.contains(&k) {
             return Ok(fallback);
         }
-        let row = out.add(Kind::Var(old), old_ty.clone());
+        let row = out.add_unchecked(Kind::Var(old), old_ty.clone());
         if set == [k] {
-            return Ok(out.add(Kind::Field(row, name.to_string()), fty.clone()));
+            return Ok(out.add_unchecked(Kind::Field(row, name.to_string()), fty.clone()));
         }
         let Ty::Data { args, .. } = &old_ty else {
             return Ok(fallback);
@@ -1118,14 +1118,14 @@ impl<'p, 'a> Walk<'p, 'a> {
             };
             let y = out.var(&format!("{}_{c}", out.var_info(old).name), arm_ty.clone());
             let body = if c == k {
-                let y_tm = out.add(Kind::Var(y), arm_ty);
-                out.add(Kind::Field(y_tm, name.to_string()), fty.clone())
+                let y_tm = out.add_unchecked(Kind::Var(y), arm_ty);
+                out.add_unchecked(Kind::Field(y_tm, name.to_string()), fty.clone())
             } else {
                 fallback
             };
             arms.push((c, y, body));
         }
-        Ok(out.add(
+        Ok(out.add_unchecked(
             Kind::Case {
                 scrutinee: row,
                 arms,
@@ -1157,7 +1157,9 @@ impl<'p, 'a> Walk<'p, 'a> {
             });
         if let Some(i) = default {
             return match &r.defaults[i].value {
-                DefaultValue::Generate(g) => Ok(out.add(Kind::Fresh(*g, rel), fty.clone())),
+                DefaultValue::Generate(g) => {
+                    Ok(out.add_unchecked(Kind::Fresh(*g, rel), fty.clone()))
+                }
                 DefaultValue::Expr(_) => {
                     let normal = self.p.normal()?;
                     let Some(&t) = normal.defaults.get(&(rel, i)) else {
@@ -1208,10 +1210,10 @@ impl<'p, 'a> Walk<'p, 'a> {
             }
             let to_elem = self.ty(e)?;
             let v = out.var("row", to_elem.clone());
-            let row = out.add(Kind::Var(v), to_elem);
+            let row = out.add_unchecked(Kind::Var(v), to_elem);
             let one = self.whole_row(out, e, row, site)?;
-            let body = out.add(Kind::Singleton(one), out.ty(x).clone());
-            return Ok(out.add(Kind::For(v, x, body), out.ty(x).clone()));
+            let body = out.add_unchecked(Kind::Singleton(one), out.ty(x).clone());
+            return Ok(out.add_unchecked(Kind::For(v, x, body), out.ty(x).clone()));
         }
         if !self.gains(&ty, site) {
             return Ok(x);
@@ -1279,10 +1281,10 @@ impl<'p, 'a> Walk<'p, 'a> {
             let arm_ty = restricted(self.map.to, &to_ty, k);
             let y = out.var("stored", arm_ty.clone());
             let Some(c) = self.map.ctor_back(*def, k) else {
-                arms.push((k, y, out.add(Kind::Unreachable, to_ty.clone())));
+                arms.push((k, y, out.add_unchecked(Kind::Unreachable, to_ty.clone())));
                 continue;
             };
-            let y_tm = out.add(Kind::Var(y), arm_ty);
+            let y_tm = out.add_unchecked(Kind::Var(y), arm_ty);
             let mut given = BTreeMap::new();
             for (f, _) in Map::fields(self.map.from, *def, args, c) {
                 let Some(image) = self.map.field(*def, Some(c), &f) else {
@@ -1293,7 +1295,10 @@ impl<'p, 'a> Walk<'p, 'a> {
                     .find(|(n, _)| *n == image)
                     .map(|(_, t)| t)
                     .expect("a field's image is a field of its constructor's image");
-                given.insert(image.clone(), out.add(Kind::Field(y_tm, image), fty));
+                given.insert(
+                    image.clone(),
+                    out.add_unchecked(Kind::Field(y_tm, image), fty),
+                );
             }
             for (n, fty) in Map::fields(self.map.to, *to, to_args, k) {
                 if given.contains_key(&n) {
@@ -1309,9 +1314,13 @@ impl<'p, 'a> Walk<'p, 'a> {
                 given.insert(n, value);
             }
             let fields = given.into_iter().collect();
-            arms.push((k, y, out.add(Kind::Ctor { ctor: k, fields }, to_ty.clone())));
+            arms.push((
+                k,
+                y,
+                out.add_unchecked(Kind::Ctor { ctor: k, fields }, to_ty.clone()),
+            ));
         }
-        Ok(out.add(Kind::Case { scrutinee: x, arms }, to_ty))
+        Ok(out.add_unchecked(Kind::Case { scrutinee: x, arms }, to_ty))
     }
 
     fn case(
@@ -1358,7 +1367,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                 },
                 site,
             )?;
-            return Ok(out.add(kind, ty));
+            return Ok(out.add_unchecked(kind, ty));
         };
         let mut by_ctor = BTreeMap::new();
         for &(c, y, body) in arms {
@@ -1380,12 +1389,12 @@ impl<'p, 'a> Walk<'p, 'a> {
                 None => {
                     let arm_ty = restricted(self.map.to, &s_ty, k);
                     let y = out.var("unreachable", arm_ty);
-                    (y, out.add(Kind::Unreachable, ty.clone()))
+                    (y, out.add_unchecked(Kind::Unreachable, ty.clone()))
                 }
             };
             new_arms.push((k, y, body));
         }
-        Ok(out.add(
+        Ok(out.add_unchecked(
             Kind::Case {
                 scrutinee: s,
                 arms: new_arms,
@@ -1418,12 +1427,12 @@ impl<'p, 'a> Walk<'p, 'a> {
                     }),
                 )?;
                 let fty = self.ty(self.src.ty(f))?;
-                out.add(Kind::Lam(x2, body2), fty)
+                out.add_unchecked(Kind::Lam(x2, body2), fty)
             }
             _ => self.tm(out, f, None)?,
         };
         let ty = self.ty(src_ty)?;
-        Ok(out.add(Kind::Replace(to, rows2, f2), ty))
+        Ok(out.add_unchecked(Kind::Replace(to, rows2, f2), ty))
     }
 }
 
@@ -1456,12 +1465,12 @@ fn relaid(out: &mut Terms, x: Tm, fields: &[(String, String, Ty)]) -> Tm {
             Kind::Record(vs) => vs.iter().find(|(m, _)| m == f).map(|&(_, v)| v),
             _ => None,
         };
-        let v = given.unwrap_or_else(|| out.add(Kind::Field(x, f.clone()), t.clone()));
+        let v = given.unwrap_or_else(|| out.add_unchecked(Kind::Field(x, f.clone()), t.clone()));
         parts.push((n.clone(), v));
     }
     let ty = fields
         .iter()
         .map(|(_, n, t)| (n.clone(), t.clone()))
         .collect();
-    out.add(Kind::Record(parts), Ty::Record(ty))
+    out.add_unchecked(Kind::Record(parts), Ty::Record(ty))
 }

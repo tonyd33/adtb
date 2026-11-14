@@ -455,10 +455,10 @@ fn a_read_of_the_past_or_of_a_file_is_refused_naming_no_operator() {
 fn a_comprehension_yielding_its_row_under_shared_branches_is_walked_once() {
     let mut terms = Terms::default();
     let c = terms.var("c", Ty::Unit);
-    let test = terms.add(Kind::Var(c), Ty::Unit);
+    let test = terms.add_ill_typed(Kind::Var(c), Ty::Unit);
     let row = terms.var("x", Ty::Unit);
-    let element = terms.add(Kind::Var(row), Ty::Unit);
-    let yielded = terms.add(Kind::Singleton(element), Ty::Unit);
+    let element = terms.add_ill_typed(Kind::Var(row), Ty::Unit);
+    let yielded = terms.add_ill_typed(Kind::Singleton(element), Ty::Unit);
     let set = terms.doubled(test, yielded, 64);
     assert!(forms::yields(&terms, set, row));
 }

@@ -179,15 +179,15 @@ impl<'a> Interp<'a> {
         let mut t = self.terms.borrow_mut();
         let (x, y) = (t.var("%a", ty.clone()), t.var("%b", ty.clone()));
         let (xt, yt) = (
-            t.add(Kind::Var(x), ty.clone()),
-            t.add(Kind::Var(y), ty.clone()),
+            t.add_unchecked(Kind::Var(x), ty.clone()),
+            t.add_unchecked(Kind::Var(y), ty.clone()),
         );
         let bool_ty = Ty::Data {
             def: self.schema.prelude_type("Bool"),
             args: Vec::new(),
             ctors: None,
         };
-        let tm = t.add(Kind::Prim(op, vec![xt, yt]), bool_ty);
+        let tm = t.add_unchecked(Kind::Prim(op, vec![xt, yt]), bool_ty);
         drop(t);
         let env = Env::from([(x, a.clone()), (y, b.clone())]);
         Ok(truth(&self.expr(tm, &env)?))
@@ -429,18 +429,25 @@ impl<'a> Interp<'a> {
         let r = t.var("%r", Ty::Unit);
         let tv = t.var("%take", Ty::Base(Base::I64));
         let av = t.var("%after", Ty::Unit);
-        let source = t.add(Kind::Var(s), Ty::Set(Box::new(Ty::Unit)));
-        let row = t.add(Kind::Var(r), Ty::Unit);
+        let source = t.add_unchecked(Kind::Var(s), Ty::Set(Box::new(Ty::Unit)));
+        let row = t.add_unchecked(Kind::Var(r), Ty::Unit);
         let ks = keys
             .iter()
             .enumerate()
-            .map(|(i, (_, d))| (t.add(Kind::Field(row, format!("k{i:03}")), Ty::Unit), *d))
+            .map(|(i, (_, d))| {
+                (
+                    t.add_unchecked(Kind::Field(row, format!("k{i:03}")), Ty::Unit),
+                    *d,
+                )
+            })
             .collect();
         let take_tm = take
             .as_ref()
-            .map(|_| t.add(Kind::Var(tv), Ty::Base(Base::I64)));
-        let after_tm = after.as_ref().map(|_| t.add(Kind::Var(av), Ty::Unit));
-        let tm = t.add(
+            .map(|_| t.add_unchecked(Kind::Var(tv), Ty::Base(Base::I64)));
+        let after_tm = after
+            .as_ref()
+            .map(|_| t.add_unchecked(Kind::Var(av), Ty::Unit));
+        let tm = t.add_unchecked(
             Kind::Present {
                 var: r,
                 source,
@@ -477,10 +484,10 @@ impl<'a> Interp<'a> {
         ]);
         let s = t.var("%s", Ty::Set(Box::new(elem.clone())));
         let r = t.var("%r", elem.clone());
-        let source = t.add(Kind::Var(s), Ty::Set(Box::new(elem.clone())));
-        let row = t.add(Kind::Var(r), elem);
-        let body = t.add(Kind::Field(row, "v".into()), body_ty.clone());
-        let tm = t.add(
+        let source = t.add_unchecked(Kind::Var(s), Ty::Set(Box::new(elem.clone())));
+        let row = t.add_unchecked(Kind::Var(r), elem);
+        let body = t.add_unchecked(Kind::Field(row, "v".into()), body_ty.clone());
+        let tm = t.add_unchecked(
             Kind::Agg {
                 op,
                 var: r,

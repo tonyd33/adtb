@@ -448,6 +448,70 @@ fn normalises(what: &str, text: &str) {
     crate::norm::adhoc(&s, &p, &a).unwrap_or_else(|e| panic!("{what} has no normal form: {e:?}"));
 }
 
+/// Returns the schema and the normal form of ad hoc `text`, asserting the normal form valid.
+fn valid_normal_form(text: &str) -> (Schema, crate::norm::NormalAdhoc) {
+    let (s, a) = adhoc(&[], text).unwrap_or_else(|e| panic!("{text} does not check: {e:?}"));
+    let p = check_schema(&s).expect("the schema checks");
+    let n = crate::norm::adhoc(&s, &p, &a).unwrap_or_else(|e| panic!("{text}: {e:?}"));
+    let got = crate::kernel::validate_normal(&s, &n.terms, &n.roots())
+        .map_err(|e| e.reason().to_string());
+    assert_eq!(Ok(()), got, "{text}");
+    (s, n)
+}
+
+/// Returns each node of `terms` that `pick` maps to a pair of types, shown.
+fn shown_types(
+    s: &Schema,
+    terms: &Terms,
+    pick: impl Fn(&Kind, &Ty) -> Option<(Ty, Ty)>,
+) -> Vec<(String, String)> {
+    terms
+        .nodes
+        .iter()
+        .filter_map(|n| pick(&n.kind, &n.ty))
+        .map(|(a, b)| (s.show_ty(&a), s.show_ty(&b)))
+        .collect()
+}
+
+#[test]
+fn a_grouping_by_a_key_a_reduction_narrows_keeps_its_checked_type() {
+    let (s, n) = valid_normal_form(
+        "from e in identities.EmailPass, i in identities.(Google | Apple)
+         group i by (if true then key i else key e) into g
+         select { key: g.key, n: count(x for x in g) }",
+    );
+    let groups = shown_types(&s, &n.terms, |kind, ty| match (kind, ty) {
+        (Kind::Group { by, .. }, Ty::Set(el)) => match el.as_ref() {
+            Ty::Record(fs) => Some((n.terms.ty(*by).clone(), fs[0].1.clone())),
+            _ => None,
+        },
+        _ => None,
+    });
+    let want = (
+        "Key identities.(Google | Apple)".to_string(),
+        "Key identities".to_string(),
+    );
+    assert_eq!(vec![want], groups);
+}
+
+#[test]
+fn a_match_on_a_key_a_reduction_narrows_keeps_its_checked_type() {
+    let (s, n) = valid_normal_form(
+        "from e in identities.EmailPass, i in identities.(Google | Apple)
+         select (match (if true then key i else key e)
+                 | EmailPass x -> 1 | Google x -> 2 | Apple x -> 3)",
+    );
+    let derefs = shown_types(&s, &n.terms, |kind, ty| match kind {
+        Kind::Deref { key, .. } => Some((n.terms.ty(*key).clone(), ty.clone())),
+        _ => None,
+    });
+    let want = (
+        "Key identities.(Google | Apple)".to_string(),
+        "Identity".to_string(),
+    );
+    assert_eq!(vec![want], derefs);
+}
+
 #[test]
 fn a_long_list_literal_parses_checks_and_normalises() {
     let rows = long_list(10_000, |i| format!("Raw {{ id: raws.key({i}), n: {i} }}"));
