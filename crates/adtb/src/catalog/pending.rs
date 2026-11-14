@@ -15,7 +15,7 @@ use crate::runtime::Runtime;
 use crate::storage::Pager;
 
 use super::Rot;
-use super::ids::{CatFieldId, CatIndexId, CatRelId, field_id, relation};
+use super::ids::{CatConstraintId, CatFieldId, CatIndexId, CatRelId, field_id, relation};
 use super::readers::{Kind, Pending, Readers, enforcing};
 use super::root::Changing;
 use super::rows::IndexSpec;
@@ -23,9 +23,11 @@ use super::{
     Broken, Catalog, Error, INDEX_ROOT, Migrating, ROOTS, delete_rows, indexes, int, uint,
 };
 
-/// The constructor of a roots row naming a pending-dropped constraint and a bundle holding it.
+/// The constructor of a roots row naming a pending-dropped constraint, by its catalog id, and a
+/// bundle holding it.
 pub(super) const HELD_CONSTRAINT: u32 = 6;
-/// The constructor of a roots row naming a pending-dropped check and a bundle holding it.
+/// The constructor of a roots row naming a pending-dropped check, by its catalog id, and a bundle
+/// holding it.
 pub(super) const HELD_CHECK: u32 = 7;
 /// The constructor of a roots row naming a pending-dropped unique, by its index, and a bundle
 /// holding it.
@@ -47,8 +49,8 @@ pub(super) fn held_ctors() -> [heap::CtorType; 4] {
         fields,
     };
     [
-        ctor(HELD_CONSTRAINT, held()),
-        ctor(HELD_CHECK, held()),
+        ctor(HELD_CONSTRAINT, [held(), vec![int()]].concat()),
+        ctor(HELD_CHECK, [held(), vec![int()]].concat()),
         ctor(HELD_UNIQUE, [held(), vec![int()]].concat()),
         ctor(
             HELD_KEY,
@@ -190,8 +192,8 @@ pub(super) fn add(pending: &mut Vec<Pending>, ctor: u32, fields: &[Value]) -> Re
         return Err(corrupt());
     };
     let kind = match (ctor, index) {
-        (HELD_CONSTRAINT, []) => Kind::Constraint,
-        (HELD_CHECK, []) => Kind::Check,
+        (HELD_CONSTRAINT, [id]) => Kind::Constraint(CatConstraintId::from_raw(uint(id)?)),
+        (HELD_CHECK, [id]) => Kind::Check(CatConstraintId::from_raw(uint(id)?)),
         (HELD_UNIQUE, [id]) => Kind::Unique(CatIndexId::from_raw(uint(id)?)),
         (HELD_KEY, [index, rel, Value::Bytes(fields)]) => Kind::Key {
             index: CatIndexId::from_raw(uint(index)?),
@@ -201,8 +203,9 @@ pub(super) fn add(pending: &mut Vec<Pending>, ctor: u32, fields: &[Value]) -> Re
         _ => return Err(corrupt()),
     };
     let dropped = uint(dropped)?;
-    let same = |p: &&mut Pending| p.kind == kind && p.module == *module && p.name == *name;
+    let same = |p: &&mut Pending| p.kind == kind;
     match pending.iter_mut().find(same) {
+        Some(p) if p.module != *module || p.name != *name => return Err(corrupt()),
         Some(p) if p.dropped != dropped => {
             return Err(Rot::DroppedTwice {
                 module: module.clone(),
@@ -231,8 +234,8 @@ fn stored(pending: &[Pending]) -> Vec<Vec<Value>> {
     let mut out = Vec::new();
     for p in pending {
         let ctor = match &p.kind {
-            Kind::Constraint => HELD_CONSTRAINT,
-            Kind::Check => HELD_CHECK,
+            Kind::Constraint(_) => HELD_CONSTRAINT,
+            Kind::Check(_) => HELD_CHECK,
             Kind::Unique(_) => HELD_UNIQUE,
             Kind::Key { .. } => HELD_KEY,
         };
@@ -244,6 +247,7 @@ fn stored(pending: &[Pending]) -> Vec<Vec<Value>> {
                 Value::Text(holder.clone()),
             ];
             match &p.kind {
+                Kind::Constraint(id) | Kind::Check(id) => fields.push(int(id.raw())),
                 Kind::Unique(id) => fields.push(int(id.raw())),
                 Kind::Key {
                     index,
@@ -254,7 +258,6 @@ fn stored(pending: &[Pending]) -> Vec<Vec<Value>> {
                     int(relation.raw()),
                     Value::Bytes(field_bytes(key)),
                 ]),
-                Kind::Constraint | Kind::Check => {}
             }
             out.push(vec![Value::Sum { ctor, fields }]);
         }

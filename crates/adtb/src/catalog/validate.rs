@@ -12,7 +12,7 @@ use crate::runtime::Runtime;
 use crate::storage::PageError;
 
 use super::hosts::unbound;
-use super::ids::CatRelId;
+use super::ids::{CatConstraintId, CatRelId};
 use super::{Broken, Catalog, Error, Migrating};
 
 impl Catalog {
@@ -21,6 +21,8 @@ impl Catalog {
     /// the snapshot of `m.hold` violate it.
     ///
     /// A constraint that reads a transition is not validated.
+    ///
+    /// Fail with [`Broken::ConstraintId`] when a constraint or check has no catalog id.
     pub(super) fn violations<R: Runtime>(
         &self,
         m: &Migrating<'_, R>,
@@ -31,7 +33,7 @@ impl Catalog {
         let (schema, program) = self.checking();
         let normal =
             norm::program(schema, program).map_err(|e| Error::from(Broken::NotNormal(e)))?;
-        let existed: BTreeSet<String> = qualified(old).into_iter().collect();
+        let existed: BTreeSet<CatConstraintId> = constraint_ids(old).flatten().collect();
         let catalog = self.plan();
         let bindings = self.bindings();
         let store = Arc::new(Store::migrating(
@@ -42,9 +44,13 @@ impl Catalog {
         let terms = &normal.terms;
         let named = qualified(schema)
             .into_iter()
+            .zip(constraint_ids(schema))
             .zip(normal.constraints.iter().chain(&normal.checks));
         let mut why = Vec::new();
-        for (name, &t) in named {
+        for ((name, id), &t) in named {
+            let Some(id) = id else {
+                return Err(Error::from(Broken::ConstraintId(name)));
+            };
             let mut reads = BTreeSet::new();
             if transitions(terms, t, &mut reads) {
                 continue;
@@ -55,7 +61,7 @@ impl Catalog {
                     .relation_id(*r)
                     .is_some_and(|id| rewritten.contains(&id))
             });
-            if existed.contains(&name) && !touched {
+            if existed.contains(&id) && !touched {
                 continue;
             }
             let found = violating(schema, &catalog, &normal, t, &store, &budget, &self.hosts)?;
@@ -83,13 +89,12 @@ impl Catalog {
             norm::program(schema, program).map_err(|e| Error::from(Broken::NotNormal(e)))?;
         let catalog = self.plan();
         let budget = Budget::new(self.query_memory);
-        let ids = schema
-            .ids()
-            .constraint_ids()
-            .map(|(_, id)| id.raw())
-            .chain(schema.ids().check_ids().map(|(_, id)| id.raw()));
+        let ids = qualified(schema).into_iter().zip(constraint_ids(schema));
         let mut out = Vec::new();
-        for (id, &t) in ids.zip(normal.constraints.iter().chain(&normal.checks)) {
+        for ((name, id), &t) in ids.zip(normal.constraints.iter().chain(&normal.checks)) {
+            let id = id
+                .ok_or_else(|| Error::from(Broken::ConstraintId(name)))?
+                .raw();
             let mut reads = BTreeSet::new();
             if transitions(&normal.terms, t, &mut reads) || !keep(&reads) {
                 continue;
@@ -151,6 +156,15 @@ fn qualified(schema: &Schema) -> Vec<String> {
         .map(|c| name(c.module, &c.name))
         .chain(schema.checks.iter().map(|c| name(c.module, &c.name)))
         .collect()
+}
+
+/// Returns the catalog id of every constraint, then every check, of `schema`, in declaration
+/// order.
+fn constraint_ids(schema: &Schema) -> impl Iterator<Item = Option<CatConstraintId>> + '_ {
+    let ids = schema.ids();
+    (0..schema.constraints.len())
+        .map(|i| ids.constraint_id(i))
+        .chain((0..schema.checks.len()).map(|i| ids.check_id(i)))
 }
 
 /// Adds the relations `t` reads to `reads`; returns whether it reads a transition.

@@ -11,7 +11,7 @@ use crate::{plan, write};
 
 use super::Error;
 use super::change::Failed;
-use super::ids::{CatCtorId, CatFieldId, CatIndexId, CatRelId};
+use super::ids::{CatConstraintId, CatCtorId, CatFieldId, CatIndexId, CatRelId};
 use super::root::Changing;
 
 /// A guarantee of the checker, the planner, the executor or the catalog itself that does not
@@ -48,14 +48,12 @@ pub enum Broken {
     KeptCtor(CatRelId, CatCtorId),
     /// The schema keeping pending drops has other relations than the version's.
     PendingRelations,
+    /// The schema keeping pending drops lacks this id of this pending-dropped constraint or check.
+    KeptConstraint(String, CatConstraintId),
+    /// A checked schema gives this constraint or check no catalog id.
+    ConstraintId(String),
     /// The old key a pending drop holds has no image in the schema.
     NoImage {
-        module: String,
-        name: String,
-        index: CatIndexId,
-    },
-    /// A pending-dropped key or unique is declared again.
-    PendingRedeclared {
         module: String,
         name: String,
         index: CatIndexId,
@@ -137,14 +135,15 @@ impl fmt::Display for Broken {
             Broken::PendingRelations => {
                 f.write_str("the schema keeping pending drops has the relations of the version")
             }
+            Broken::KeptConstraint(object, id) => write!(
+                f,
+                "the schema keeping pending drops lacks id {id} of {object}"
+            ),
+            Broken::ConstraintId(name) => {
+                write!(f, "constraint or check {name} has no catalog id")
+            }
             Broken::NoImage { module, name, .. } => {
                 write!(f, "pending-dropped {module}::{name} has no image")
-            }
-            Broken::PendingRedeclared { module, name, .. } => {
-                write!(
-                    f,
-                    "pending-dropped {module}::{name} is never declared again"
-                )
             }
             Broken::Map(e) => write!(f, "a data map fails: {}", exec::detail(e)),
             Broken::RowParams(n) => write!(f, "a fill or routing takes the row, not {n} values"),

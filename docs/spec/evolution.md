@@ -1129,7 +1129,11 @@ released (§8).
 Until its drop takes effect, a pending-dropped constraint is a schema
 object for carrying (§6.2) and recheck (§3.2): later structural
 operators rewrite it, and one that leaves it without an image is
-refused, naming it.
+refused, naming it. A migration that adds a constraint or check under
+the name of a pending-dropped constraint or check is refused, naming
+the drop and the bundles holding it; once the drop takes effect the
+name is free, and a constraint added under it is a new one, validated
+as an add (§6.3).
 
 ### 6.5 Grants
 

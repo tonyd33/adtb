@@ -1,0 +1,13 @@
+seed 53
+use no-blank
+
+bundle web-1.0 pins 2 edition "2026-10" use names
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "", detail: "adding check auth::no_blank is refused: pending-dropped constraint auth::no_blank, held by web-1.0, keeps its name until its drop takes effect" } } }
+  module auth
+  add check no_blank on users (name != "x")
+
+bundle web-1.0 pins 2 edition "2026-10" use names
+reopen
+
+error Violated { constraint: "auth::no_blank", report: 1 rows, redacted: 0 }
+  insert users { name: "", tier: Free }

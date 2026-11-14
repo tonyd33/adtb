@@ -1,0 +1,13 @@
+seed 54
+use auth
+log
+  module auth
+  add check ok on users (name != "")
+bundle web-1.0 pins 2 edition "2026-10" use names
+reopen
+
+bundle web-1.0 pins 2 edition "2026-10" use names
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "adding constraint auth::ok is refused: pending-dropped check auth::ok, held by web-1.0, keeps its name until its drop takes effect" } } }
+  module auth
+  drop check ok
+  add constraint ok = from u in users where u.name == "x" select u

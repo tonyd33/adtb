@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use adtb_lang::ast::{Ident, MigrationFile, Operator, OperatorKind, QName};
+use adtb_lang::ast::{MigrationFile, OperatorKind};
 use adtb_lang::evolve::{Kept, Source};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{Schema, Stage, ValueDef};
-use adtb_lang::span::{Diag, Span};
+use adtb_lang::span::Diag;
 use adtb_lang::types::{RelId, Ty, TypeId};
 
 use super::Rot;
@@ -81,8 +81,8 @@ pub(super) struct Pinned {
 /// What a pending drop holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Kind {
-    Constraint,
-    Check,
+    Constraint(CatConstraintId),
+    Check(CatConstraintId),
     Unique(CatIndexId),
     /// The old key of a relaxing rekey of `relation`, over `fields`, enforced by index `index`.
     Key {
@@ -144,8 +144,8 @@ impl Pending {
     /// Returns the declaration a migration keeps for this drop, `None` for a unique or an old key.
     pub(super) fn kept(&self) -> Option<Kept> {
         let check = match self.kind {
-            Kind::Constraint => false,
-            Kind::Check => true,
+            Kind::Constraint(_) => false,
+            Kind::Check(_) => true,
             Kind::Unique(_) | Kind::Key { .. } => return None,
         };
         Some(Kept {
@@ -158,7 +158,7 @@ impl Pending {
     fn unique(&self) -> Option<CatIndexId> {
         match self.kind {
             Kind::Unique(id) => Some(id),
-            Kind::Constraint | Kind::Check | Kind::Key { .. } => None,
+            Kind::Constraint(_) | Kind::Check(_) | Kind::Key { .. } => None,
         }
     }
 }
@@ -375,7 +375,25 @@ pub(super) fn enforcing(source: &Source, pending: &[Pending]) -> Result<Option<C
     }
     let enforced = checked(at)
         .map_err(|ds| Error::Unchecked("the schema keeping the pending drops".to_string(), ds))?;
+    keeps_ids(&enforced.schema, pending)?;
     Ok(Some(enforced))
+}
+
+/// Fail with [`Broken::KeptConstraint`] when `schema` holds no constraint or check of the id a
+/// constraint or check drop of `pending` holds.
+fn keeps_ids(schema: &Schema, pending: &[Pending]) -> Result<(), Error> {
+    let ids = schema.ids();
+    for p in pending {
+        let (id, kept) = match p.kind {
+            Kind::Constraint(id) => (id, ids.constraint_ids().any(|(_, k)| k == id)),
+            Kind::Check(id) => (id, ids.check_ids().any(|(_, k)| k == id)),
+            Kind::Unique(_) | Kind::Key { .. } => continue,
+        };
+        if !kept {
+            return Err(Error::from(Broken::KeptConstraint(p.object(), id)));
+        }
+    }
+    Ok(())
 }
 
 /// The live readers of a catalog, the drops they hold back, and the schema that keeps every
@@ -471,22 +489,23 @@ impl Catalog {
             }
         }
         refused.extend(self.uniques_held(now, &changes.uniques));
+        let dropped: Vec<Pending> = changes
+            .dropped
+            .into_iter()
+            .filter_map(|d| self.dropping(d))
+            .collect();
+        refused.extend(names_held(now, self.readers.pending.iter().chain(&dropped)));
         if !refused.is_empty() {
             return Err(Error::Refused(refused));
         }
-        let (redeclared, mut pending): (Vec<Pending>, Vec<Pending>) = self
-            .readers
-            .pending
-            .iter()
-            .cloned()
-            .partition(|p| declares(now, p));
+        let mut pending = self.readers.pending.clone();
         let keys = self.relaxed_keys(now, &pending);
         pending.extend(keys);
         let lost = super::pending::imageless_keys(now, &pending);
         if !lost.is_empty() {
             return Err(Error::Refused(lost));
         }
-        pending.extend(changes.dropped.into_iter().filter_map(|d| self.dropping(d)));
+        pending.extend(dropped);
         let mut skipped = BTreeSet::new();
         for u in changes.uniques {
             let op = u.op;
@@ -503,10 +522,7 @@ impl Catalog {
         if readers.pending.is_empty() {
             return Ok(readers);
         }
-        let base = match self.readers.enforced() {
-            Some(e) => without(&e.source, &redeclared)?,
-            None => self.source.clone(),
-        };
+        let base = self.readers.enforced().map_or(&self.source, |e| &e.source);
         let kept: Vec<Kept> = readers.pending.iter().filter_map(Pending::kept).collect();
         let objects: Vec<String> = readers.pending.iter().map(Pending::object).collect();
         let no_image =
@@ -524,6 +540,7 @@ impl Catalog {
         {
             return Err(Error::from(Broken::PendingRelations));
         }
+        keeps_ids(&enforced.schema, &readers.pending)?;
         readers.enforced = Some(Arc::new(enforced));
         Ok(readers)
     }
@@ -599,9 +616,9 @@ impl Catalog {
             .map(|(b, _)| b.clone())
             .collect();
         let kind = if d.check {
-            Kind::Check
+            Kind::Check(d.id)
         } else {
-            Kind::Constraint
+            Kind::Constraint(d.id)
         };
         (!blocking.is_empty()).then(|| Pending {
             module: d.module,
@@ -877,57 +894,34 @@ fn uniques(schema: &Schema) -> BTreeMap<CatIndexId, (RelId, String)> {
         .collect()
 }
 
-/// Returns whether `schema` declares the object of pending drop `p` again.
-fn declares(schema: &Schema, p: &Pending) -> bool {
-    schema
-        .module_named(&p.module)
-        .is_some_and(|m| match &p.kind {
-            Kind::Check => schema
-                .checks
-                .iter()
-                .any(|c| c.module == m && c.name == p.name),
-            Kind::Constraint => schema
-                .constraints
-                .iter()
-                .any(|c| c.module == m && c.name == p.name),
-            Kind::Unique(_) | Kind::Key { .. } => false,
+/// Returns why a migration whose result is `next` is refused for each constraint or check it
+/// declares under the name of a constraint or check of `pending`.
+fn names_held<'p>(next: &Schema, pending: impl Iterator<Item = &'p Pending>) -> Vec<String> {
+    pending
+        .filter_map(|p| {
+            let held = match p.kind {
+                Kind::Constraint(_) => "constraint",
+                Kind::Check(_) => "check",
+                Kind::Unique(_) | Kind::Key { .. } => return None,
+            };
+            let named = |m, n: &str| next.module(m).name == p.module && n == p.name;
+            let added = if next.constraints.iter().any(|c| named(c.module, &c.name)) {
+                "constraint"
+            } else if next.checks.iter().any(|c| named(c.module, &c.name)) {
+                "check"
+            } else {
+                return None;
+            };
+            let holders: Vec<&str> = p.blocking.iter().map(String::as_str).collect();
+            Some(format!(
+                "adding {added} {} is refused: pending-dropped {held} {}, held by {}, keeps its \
+                 name until its drop takes effect",
+                p.object(),
+                p.object(),
+                holders.join(", ")
+            ))
         })
-}
-
-/// Returns `source` with the objects of `drops` dropped, at its own version and log.
-///
-/// Fail with [`Error::Unchecked`] when a drop does not apply, and with [`Error::Internal`] for a
-/// unique or an old key.
-pub(super) fn without(source: &Source, drops: &[Pending]) -> Result<Source, Error> {
-    let mut next = source.clone();
-    for p in drops {
-        let ident = |text: &str| Ident {
-            text: text.to_string(),
-            span: Span::default(),
-        };
-        let name = QName {
-            module: Some(ident(&p.module)),
-            name: ident(&p.name),
-        };
-        let kind = match &p.kind {
-            Kind::Check => OperatorKind::DropCheck(name),
-            Kind::Constraint => OperatorKind::DropConstraint(name),
-            Kind::Unique(index) | Kind::Key { index, .. } => {
-                return Err(Error::from(Broken::PendingRedeclared {
-                    module: p.module.clone(),
-                    name: p.name.clone(),
-                    index: *index,
-                }));
-            }
-        };
-        let op = Operator {
-            kind,
-            span: Span::default(),
-        };
-        next.apply(&p.module, &op, "")
-            .map_err(|ds| Error::Unchecked(format!("the drop of {}", p.object()), ds))?;
-    }
-    Ok(next)
+        .collect()
 }
 
 /// Returns `source` checked, or the checker's diagnostics.

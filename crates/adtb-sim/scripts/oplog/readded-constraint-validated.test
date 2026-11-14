@@ -1,0 +1,18 @@
+seed 18
+use shop
+use customers
+
+migrate
+  module shop
+  add constraint nobody =
+    from c in customers
+    where c.name == "zzz"
+    select c
+
+migrate refused MigrationRefused { version: 3, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint shop::nobody is violated by Customer { id: customers.key(2), name: \"bob\" }" } } }
+  module shop
+  drop constraint nobody
+  add constraint nobody =
+    from c in customers
+    where c.name == "bob"
+    select c

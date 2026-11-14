@@ -1,0 +1,40 @@
+seed 51
+use no-blank
+
+bundle web-1.0 pins 2 edition "2026-10" use names
+reopen
+
+run
+  insert users { name: "x", tier: Free }
+
+bundle web-1.0 pins 2 edition "2026-10" use names
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "", detail: "adding constraint auth::no_blank is refused: pending-dropped constraint auth::no_blank, held by web-1.0, keeps its name until its drop takes effect" } } }
+  module auth
+  add constraint no_blank = from u in users where u.name == "x" select u
+
+bundle web-1.0 pins 2 edition "2026-10" use names
+reopen
+
+error Violated { constraint: "auth::no_blank", report: 1 rows, redacted: 0 }
+  insert users { name: "", tier: Free }
+
+reopen
+
+migrate refused MigrationRefused { version: 4, reason: Rejected { reason: SchemaRefused { operator: "", detail: "constraint auth::no_blank is violated by User { id: users.key(1), name: \"x\", tier: Free }" } } }
+  module auth
+  add constraint no_blank = from u in users where u.name == "x" select u
+
+reopen
+
+run
+  delete u in users where u.name == "x"
+
+migrate
+  module auth
+  add constraint no_blank = from u in users where u.name == "x" select u
+
+run
+  insert users { name: "", tier: Free }
+
+error Violated { constraint: "auth::no_blank", report: 1 rows, redacted: 0 }
+  insert users { name: "x", tier: Free }

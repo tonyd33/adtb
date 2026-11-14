@@ -467,6 +467,38 @@ fn a_pending_drop_takes_effect_when_its_last_holding_reader_is_released() {
 }
 
 #[test]
+fn a_constraint_is_added_under_a_pending_drops_name_only_once_the_drop_takes_effect() {
+    const READD: &str =
+        "module auth\nadd constraint no_blank = from u in users where u.name == \"x\" select u\n";
+    at_catalog(104, &[AUTH, NO_BLANK], |catalog, pager, txns| {
+        catalog
+            .register(reader("web-2", 2, vec![whole("auth::users")]))
+            .expect("the reader registers");
+        catalog
+            .migrate(pager, txns, DROP_NO_BLANK)
+            .expect("the drop applies");
+        assert_eq!(
+            vec![
+                "adding constraint auth::no_blank is refused: pending-dropped constraint \
+                 auth::no_blank, held by web-2, keeps its name until its drop takes effect"
+                    .to_string()
+            ],
+            refused(catalog.migrate(pager, txns, READD))
+        );
+        assert_eq!(
+            vec![pending("auth::no_blank", 3, &["web-2"])],
+            catalog.pending_drops()
+        );
+        catalog
+            .release(pager, txns, "web-2")
+            .expect("the reader is released");
+        catalog
+            .migrate(pager, txns, READD)
+            .expect("the name is free once the drop takes effect");
+    });
+}
+
+#[test]
 fn a_pending_drop_takes_effect_at_the_next_embedded_open() {
     let mut sim = Sim::new(103, Config::default());
     run(&mut sim, |rt| {
