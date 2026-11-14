@@ -27,3 +27,7 @@ the exit of `translate/walk.rs`'s entry. Cause to trace; the fix adds that exit 
 Blocks moving translate/walk.rs onto typed constructors (structure-lang-identity step 8b).
 
 Defect class: none until the cause is traced.
+
+## 2026-11-14
+
+Also blocks the plan-exit hook (`plan/validate.rs`): translated registered calls are planned, and the hook sees the same terms (`KeyOf(notes, _) : Key notes.Plain`, `Field(_, "who") : Key identities.(EmailPass | Google)`, `Field(_, "n")` over `T.()`, `Singleton : Set Note.Plain` over a `Note`, `Field(_, "tone") : Tone.Ink`), via `Stmt::eval` -> `plan::lower::plan` -> `plan::validate::validate`. With the hook in, 7 suite tests and 13 scripts under crates/adtb-sim/scripts/bundles fail. The fix restores both the `Stmt::new` and the plan-exit hooks; the plan-exit hook's lines are in the plan-exit-valid track's receipt.
