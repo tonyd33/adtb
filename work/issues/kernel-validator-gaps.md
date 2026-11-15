@@ -24,3 +24,7 @@ Left open by structure-lang-identity step 8a (a1436ec3).
   but not against its selection `sel`;
 - `Transition` placement (only in a constraint body) is not checked;
 - §5 argument types of primitives: arity and result are checked, operand types mostly not.
+
+## 2026-11-14
+
+Also loose: an `Upsert`'s `old` is checked only within `row(rel, None)` (kernel_valid.rs `writes`), weaker than §4.2, which bounds it by the constructor set of `on` restricted to the constructors the conflict branch can see. Translate's `bind_probed` types a pinned `old` narrower, so the tight rule must admit that. Found in the review of structure-lang-identity step 8c.
