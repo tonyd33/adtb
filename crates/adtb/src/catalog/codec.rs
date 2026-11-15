@@ -3,6 +3,7 @@
 
 use std::marker::PhantomData;
 
+use adtb_lang::evolve::{DeployedGrant, GrantRow};
 use adtb_lang::ids::{engine_ctor as k, engine_rel};
 use adtb_lang::schema::Schema;
 use adtb_lang::schema::prelude::ctor;
@@ -15,6 +16,7 @@ use crate::key::{F64, Scalar, Value};
 use super::Rot;
 use super::ids::{CatCtorId, CatRelId, ctor_id, relation};
 use super::layout;
+use super::oplog::Hash;
 
 #[cfg(test)]
 #[path = "codec_tests.rs"]
@@ -233,6 +235,23 @@ impl<T: Decode> Codec<T> {
 
     pub fn relation(&self) -> RelId {
         self.relation
+    }
+
+    /// Returns `v` with field `f` of its constructor holding `value`.
+    ///
+    /// Precondition: [`Codec::decode_val`] reads `v`.
+    pub fn with(&self, v: &Val, f: Field, value: Val) -> Val {
+        let Val::Ctor(c, fields) = v else {
+            panic!("Codec::with takes a value decode_val reads, a constructor's");
+        };
+        let shape = &self.ctors[*c as usize];
+        assert!(
+            f.fields == shape.ctor.fields,
+            "a codec writes a field of the constructor it reads"
+        );
+        let mut fields = fields.to_vec();
+        fields[shape.positions[f.at]] = value;
+        Val::ctor(*c, fields)
     }
 
     fn shape(&self, ctor: u32) -> Result<&Shape<T>, Rot> {
@@ -489,7 +508,15 @@ impl Row<'_> {
         })
     }
 
-    fn optional<T>(&self, f: Field, inner: impl Fn(&Value) -> Option<T>) -> Option<T> {
+    /// Returns the text an `Option Text` field holds.
+    pub fn optional_text(&self, f: Field) -> Option<&str> {
+        self.optional(f, |v| match v {
+            Value::Text(t) => Some(t.as_str()),
+            _ => None,
+        })
+    }
+
+    fn optional<'v, T>(&'v self, f: Field, inner: impl Fn(&'v Value) -> Option<T>) -> Option<T> {
         match self.get(f) {
             Value::Sum {
                 ctor: ctor::SOME,
@@ -512,23 +539,30 @@ pub fn payload_instant(payload: &[Value]) -> i64 {
     }
 }
 
+/// Abort on nested constructor `id` its `Sum` does not list, which `Codec::new` rules out.
+pub fn unlisted(id: CatCtorId) -> ! {
+    panic!("Codec::new checks constructor {id} is listed by its Sum")
+}
+
 /// A row of `catalog::roles`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoleRow {
     id: i64,
     name: String,
+    created: i64,
 }
 
 impl RoleRow {
-    /// Returns the role's id and name.
-    pub fn into_parts(self) -> (i64, String) {
-        (self.id, self.name)
+    /// Returns the role's id, name and creation instant.
+    pub fn into_parts(self) -> (i64, String, i64) {
+        (self.id, self.name, self.created)
     }
 }
 
 const ROLE: Fields = &["id", "name", "created"];
 const ROLE_ID: Field = field(ROLE, "id");
 const ROLE_NAME: Field = field(ROLE, "name");
+const ROLE_CREATED: Field = field(ROLE, "created");
 
 impl Decode for RoleRow {
     const RELATION: CatRelId = engine_rel::ROLES;
@@ -536,6 +570,159 @@ impl Decode for RoleRow {
         Ok(RoleRow {
             id: row.int(ROLE_ID),
             name: row.text(ROLE_NAME).to_owned(),
+            created: row.instant(ROLE_CREATED),
+        })
+    })];
+}
+
+/// What wrote a row of `catalog::grants`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GrantKind {
+    Log,
+    Deployment,
+}
+
+/// A row of `catalog::grants`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoleGrant {
+    id: i64,
+    kind: GrantKind,
+    privilege: String,
+    target: Option<String>,
+    grantee: String,
+    grantor: String,
+    grant_option: bool,
+    dormant: bool,
+}
+
+impl RoleGrant {
+    pub fn id(&self) -> i64 {
+        self.id
+    }
+
+    pub fn kind(&self) -> GrantKind {
+        self.kind
+    }
+
+    /// Returns the fields of the row that decide what its grant option supports.
+    pub fn row(&self) -> GrantRow<'_> {
+        GrantRow {
+            grantor: &self.grantor,
+            grantee: &self.grantee,
+            privilege: &self.privilege,
+            target: self.target.as_deref(),
+            grant_option: self.grant_option,
+            dormant: self.dormant,
+        }
+    }
+
+    /// Returns what the row gives its grantee.
+    pub fn into_deployed(self) -> DeployedGrant {
+        DeployedGrant {
+            grantee: self.grantee,
+            privilege: self.privilege,
+            target: self.target,
+            grant_option: self.grant_option,
+            dormant: self.dormant,
+        }
+    }
+
+    /// Returns whether `other` differs from this row only in id and dormancy.
+    pub fn pairs(&self, other: &RoleGrant) -> bool {
+        RoleGrant {
+            id: other.id,
+            dormant: other.dormant,
+            ..self.clone()
+        } == *other
+    }
+
+    /// Returns `v`, a row of `codec`'s relation it reads, with id `id`.
+    pub fn keyed(codec: &Codec<RoleGrant>, v: &Val, id: i64) -> Val {
+        codec.with(v, GRANT_ID, Val::Int(id))
+    }
+}
+
+const GRANT: Fields = &[
+    "id",
+    "kind",
+    "privilege",
+    "target",
+    "grantee",
+    "grantor",
+    "grant_option",
+    "dormant",
+];
+const GRANT_ID: Field = field(GRANT, "id");
+const KIND: Sum = sum(
+    field(GRANT, "kind"),
+    &[(k::GRANT_LOG, &[]), (k::GRANT_DEPLOYMENT, &[])],
+);
+const PRIVILEGE: Field = field(GRANT, "privilege");
+const TARGET: Field = field(GRANT, "target");
+const GRANTEE: Field = field(GRANT, "grantee");
+const GRANTOR: Field = field(GRANT, "grantor");
+const GRANT_OPTION: Field = field(GRANT, "grant_option");
+const DORMANT_F: Field = field(GRANT, "dormant");
+
+impl Decode for RoleGrant {
+    const RELATION: CatRelId = engine_rel::GRANTS;
+    const CTORS: &'static [Ctor<RoleGrant>] = &[Ctor::new(k::ROLE_GRANT, GRANT, |r| {
+        Ok(RoleGrant {
+            id: r.int(GRANT_ID),
+            kind: match r.ctor(KIND).0 {
+                k::GRANT_LOG => GrantKind::Log,
+                k::GRANT_DEPLOYMENT => GrantKind::Deployment,
+                other => unlisted(other),
+            },
+            privilege: r.text(PRIVILEGE).to_owned(),
+            target: r.optional_text(TARGET).map(str::to_owned),
+            grantee: r.text(GRANTEE).to_owned(),
+            grantor: r.text(GRANTOR).to_owned(),
+            grant_option: r.flag(GRANT_OPTION),
+            dormant: r.flag(DORMANT_F),
+        })
+    })
+    .with_sums(&[KIND])];
+}
+
+/// A row of `catalog::migrations`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MigrationRow {
+    version: u64,
+    hash: Hash,
+    applied: i64,
+}
+
+impl MigrationRow {
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    pub fn hash(&self) -> &Hash {
+        &self.hash
+    }
+
+    /// Returns the instant the migration was applied, in microseconds.
+    pub fn applied(&self) -> i64 {
+        self.applied
+    }
+}
+
+const MIGRATION_ROW: Fields = &["version", "hash", "text", "applied"];
+const VERSION: Field = field(MIGRATION_ROW, "version");
+const HASH: Field = field(MIGRATION_ROW, "hash");
+const APPLIED: Field = field(MIGRATION_ROW, "applied");
+
+impl Decode for MigrationRow {
+    const RELATION: CatRelId = engine_rel::MIGRATIONS;
+    const CTORS: &'static [Ctor<MigrationRow>] = &[Ctor::new(k::MIGRATION, MIGRATION_ROW, |r| {
+        let hash = r.bytes(HASH);
+        Ok(MigrationRow {
+            version: u64::try_from(r.int(VERSION)).map_err(|_| r.bad(VERSION))?,
+            hash: hash
+                .try_into()
+                .map_err(|_| r.refused(format!("holds a hash of {} bytes, not 32", hash.len())))?,
+            applied: r.instant(APPLIED),
         })
     })];
 }

@@ -646,7 +646,12 @@ pub mod engine_rel {
             BUNDLES "bundles",
             REGISTERED "registered",
             FEEDS "feeds",
-            FEED_MEMBERS "feed_members"
+            FEED_MEMBERS "feed_members",
+            GRANTS "grants",
+            CREDENTIALS "credentials",
+            PEER_MAPPINGS "peer_mappings",
+            AUDIT "audit",
+            MIGRATIONS "migrations"
         }
     }
 }
@@ -688,6 +693,22 @@ pub mod engine_ctor {
         }
         "catalog" "Feed" { FEED "Feed" }
         "catalog" "FeedMember" { FEED_MEMBER "FeedMember" }
+        "catalog" "GrantKind" { GRANT_LOG "Log", GRANT_DEPLOYMENT "Deployment" }
+        "catalog" "RoleGrant" { ROLE_GRANT "RoleGrant" }
+        "catalog" "Credential" { CREDENTIAL "Credential" }
+        "catalog" "PeerMapping" { PEER_MAPPING "PeerMapping" }
+        "catalog" "Migration" { MIGRATION "Migration" }
+        "catalog" "AuditEvent" {
+            AUDIT_LOGIN "Login",
+            AUDIT_GRANT "Grant",
+            AUDIT_REGISTER "Register",
+            AUDIT_RETIRE "Retire",
+            AUDIT_SCHEMA_OP "SchemaOp",
+            AUDIT_CALL "Call",
+            AUDIT_DENIED "Denied",
+            AUDIT_COMMIT "Commit",
+            AUDIT_TRUNCATE "Truncate",
+        }
         "catalog" "Setting" {
             SETTING_STATEMENT_LIMIT "StatementLimit",
             SETTING_TRANSACTION_LIMIT "TransactionLimit",

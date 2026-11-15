@@ -23,7 +23,7 @@ pub struct Rewrite {
 
 impl Catalog {
     /// Returns the rows of `r` the latest commit holds.
-    pub fn committed_rows<R: Runtime>(
+    pub(super) fn committed_rows<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,

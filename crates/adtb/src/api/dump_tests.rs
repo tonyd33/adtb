@@ -1,8 +1,9 @@
+use adtb_lang::ids::CatCtorId;
 use adtb_lang::schema::prelude::ctor;
 
 use super::*;
 use crate::catalog::codec::testing::{position, reread, reversed, row, tag};
-use crate::catalog::engine_schema;
+use crate::catalog::{engine_schema, layout};
 use crate::exec;
 use crate::key::Value;
 
@@ -155,4 +156,93 @@ fn a_feed_member_row_sample_decodes_the_same_under_the_shipped_and_the_reversed_
     );
     assert_eq!(Ok(FeedMemberRow { feed: 6 }), old.decode(was, &stored));
     assert_eq!(Ok(FeedMemberRow { feed: 6 }), new.decode(now, &read));
+}
+
+/// Returns the value of a grant row of kind `kind` with id `id`: `read` on `target` given by
+/// `owner` to `web`, dormant when `dormant` is.
+fn grant(schema: &Schema, kind: CatCtorId, id: i64, dormant: bool, target: Option<&str>) -> Val {
+    let codec = Codec::<RoleGrant>::new(schema);
+    let at = (codec.relation(), position(schema, &codec, k::ROLE_GRANT));
+    let Value::Sum { ctor: kind, .. } = tag(schema, at, "kind", kind, Vec::new()) else {
+        panic!("a grant kind is a sum");
+    };
+    let fields = layout::row(schema, at.0, at.1)
+        .iter()
+        .map(|(n, _)| match n.as_str() {
+            "id" => Val::Int(id),
+            "kind" => Val::ctor(kind, Vec::new()),
+            "privilege" => Val::text("read"),
+            "target" => target.map_or_else(Val::none, |t| Val::some(Val::text(t))),
+            "grantee" => Val::text("web"),
+            "grantor" => Val::text("owner"),
+            "grant_option" => Val::bool(false),
+            "dormant" => Val::bool(dormant),
+            other => panic!("a grant has no field `{other}`"),
+        })
+        .collect();
+    Val::ctor(at.1, fields)
+}
+
+#[test]
+fn a_restore_reads_each_dormant_grant_and_refuses_one_with_no_target() {
+    let schema = engine_schema();
+    let codec = Codec::<RoleGrant>::new(&schema);
+    let log = |id, dormant, target| grant(&schema, k::GRANT_LOG, id, dormant, target);
+    let rows = BTreeSet::from([log(3, true, Some("app::t")), log(4, false, Some("app::u"))]);
+    let want = Dormant {
+        id: 3,
+        grantee: "web".into(),
+        privilege: "read".into(),
+        target: "app::t".into(),
+    };
+    assert_eq!(Some(vec![want]), dormant_grants(&schema, &codec, &rows));
+    let untargeted = BTreeSet::from([log(3, true, None)]);
+    assert_eq!(None, dormant_grants(&schema, &codec, &untargeted));
+}
+
+#[test]
+fn a_restore_gives_each_replayed_log_grant_the_id_of_the_dumped_grant_it_pairs_with() {
+    let schema = engine_schema();
+    let codec = Codec::<RoleGrant>::new(&schema);
+    let log = |id, dormant| grant(&schema, k::GRANT_LOG, id, dormant, Some("app::t"));
+    let deployed = grant(&schema, k::GRANT_DEPLOYMENT, 2, false, None);
+    let replayed = vec![log(1, false), deployed.clone()];
+    assert_eq!(
+        Some(BTreeSet::from([log(9, false), deployed])),
+        paired(
+            &schema,
+            &codec,
+            replayed.clone(),
+            BTreeSet::from([log(9, false)])
+        )
+    );
+    assert_eq!(
+        Some(BTreeSet::from([log(9, true)])),
+        paired(
+            &schema,
+            &codec,
+            vec![log(1, true)],
+            BTreeSet::from([log(9, false)])
+        )
+    );
+    assert_eq!(
+        None,
+        paired(
+            &schema,
+            &codec,
+            replayed.clone(),
+            BTreeSet::from([log(9, true)])
+        ),
+        "a dormant dumped grant pairs only with a dormant replayed one"
+    );
+    assert_eq!(
+        None,
+        paired(
+            &schema,
+            &codec,
+            replayed,
+            BTreeSet::from([log(9, false), log(8, true)])
+        ),
+        "every dumped grant pairs"
+    );
 }

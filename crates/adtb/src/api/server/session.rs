@@ -341,7 +341,7 @@ impl<R: Runtime> Engine<R> {
         }
         let seq = store::run(self, false, &mut |e, tx, id, _| {
             let t = Tables::new(&e.schema, id);
-            t.next_id(e, tx, t.audit_relation())
+            t.next_seq(e, tx)
         })?;
         self.audit_seeded.store(true, Ordering::Release);
         Ok(seq)

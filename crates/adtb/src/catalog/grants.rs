@@ -14,9 +14,9 @@ use crate::storage::Pager;
 use crate::write::{self, Sequences};
 
 use super::Rot;
-use super::codec::{Codec, RoleRow};
-use super::values::{self, boolean, relation, tag};
-use super::{Broken, Catalog, DORMANT, Error, Migrating, OWNER_ROLE, delete_rows, int, layout};
+use super::codec::{Codec, GrantKind, RoleGrant, RoleRow};
+use super::values::{self, boolean, tag};
+use super::{Broken, Catalog, DORMANT, Error, Migrating, OWNER_ROLE, delete_rows, int};
 
 /// A log grant whose role did not exist when its row was written. It allows nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,73 +34,29 @@ pub(super) enum Grantees {
     Dormant,
 }
 
-/// A row of `catalog::grants` a snapshot sees.
+/// A row of `catalog::grants` a snapshot sees, as stored and as read.
 struct Stored {
-    id: i64,
-    log: bool,
+    grant: RoleGrant,
     row: Vec<Value>,
 }
 
-/// The relation `catalog::grants`, its one constructor and its field names.
+impl Stored {
+    fn log(&self) -> bool {
+        self.grant.kind() == GrantKind::Log
+    }
+}
+
+/// The relation `catalog::grants` and its one constructor.
 struct Shape {
     grants: RelId,
     ctor: u32,
-    names: Vec<String>,
 }
 
 impl Shape {
     fn of(schema: &Schema) -> Shape {
-        let grants = relation(schema, "grants");
+        let grants = Codec::<RoleGrant>::new(schema).relation();
         let ctor = schema.engine_ctors().role_grant().index();
-        let names = layout::row(schema, grants, ctor)
-            .into_iter()
-            .map(|(n, _)| n)
-            .collect();
-        Shape {
-            grants,
-            ctor,
-            names,
-        }
-    }
-
-    fn at(&self, name: &str) -> usize {
-        self.names
-            .iter()
-            .position(|n| n == name)
-            .unwrap_or_else(|| panic!("catalog RoleGrant declares {name}"))
-    }
-
-    fn text<'r>(&self, row: &'r [Value], name: &'static str) -> Result<&'r str, Error> {
-        match row.get(self.at(name)) {
-            Some(Value::Text(t)) => Ok(t),
-            other => Err(Rot::GrantField {
-                field: name,
-                found: other.cloned(),
-            }
-            .into()),
-        }
-    }
-
-    fn target<'r>(&self, row: &'r [Value]) -> Option<&'r str> {
-        match row.get(self.at("target")) {
-            Some(Value::Sum { fields, .. }) => match fields.first() {
-                Some(Value::Text(t)) => Some(t),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    /// Returns the view of the stored row `row`, whose flags compare to `yes`.
-    fn grant_row<'r>(&self, row: &'r [Value], yes: &Value) -> Result<GrantRow<'r>, Error> {
-        Ok(GrantRow {
-            grantor: self.text(row, "grantor")?,
-            grantee: self.text(row, "grantee")?,
-            privilege: self.text(row, "privilege")?,
-            target: self.target(row),
-            grant_option: row.get(self.at("grant_option")) == Some(yes),
-            dormant: row.get(self.at("dormant")) == Some(yes),
-        })
+        Shape { grants, ctor }
     }
 
     /// Returns the `Log` row of grant `g` with row id `id`.
@@ -162,18 +118,12 @@ impl Catalog {
         txns: &Transactions<R>,
         hold: &Hold,
     ) -> Result<Vec<Stored>, Error> {
-        let shape = Shape::of(&self.schema);
-        let (id, kind) = (shape.at("id"), shape.at("kind"));
-        let log = tag(&self.schema, "catalog", "GrantKind", "Log");
-        self.rows(pager, txns, hold, shape.grants)?
+        let codec = Codec::<RoleGrant>::new(&self.schema);
+        self.rows(pager, txns, hold, codec.relation())?
             .into_iter()
-            .map(|(_, row)| {
-                let Some(&Value::I64(at)) = row.get(id) else {
-                    return Err(Rot::GrantNoId.into());
-                };
+            .map(|(c, row)| {
                 Ok(Stored {
-                    id: at,
-                    log: row.get(kind) == Some(&log),
+                    grant: codec.decode(c, &row)?,
                     row,
                 })
             })
@@ -190,17 +140,14 @@ impl Catalog {
         grants: &[LogGrant],
         revoked: &BTreeSet<String>,
     ) -> Result<(), Error> {
-        let shape = Shape::of(&self.schema);
         let stored = self.stored_grants(m.pager, m.txns, m.hold)?;
-        let held = boolean(true);
-        let rows = stored
-            .iter()
-            .map(|s| shape.grant_row(&s.row, &held))
-            .collect::<Result<Vec<_>, Error>>()?;
+        let rows: Vec<GrantRow<'_>> = stored.iter().map(|s| s.grant.row()).collect();
         let mut why = Vec::new();
         for (s, lost) in stored.iter().zip(&rows) {
-            let kept = grants.iter().any(|g| g.grant_option && g.row == Some(s.id));
-            if !s.log || !lost.grant_option || kept || !revoked.contains(lost.grantee) {
+            let kept = grants
+                .iter()
+                .any(|g| g.grant_option && g.row == Some(s.grant.id()));
+            if !s.log() || !lost.grant_option || kept || !revoked.contains(lost.grantee) {
                 continue;
             }
             for o in rows
@@ -214,7 +161,7 @@ impl Catalog {
                 let deployed = stored
                     .iter()
                     .zip(&rows)
-                    .any(|(d, r)| !d.log && r.keeps(&self.schema, &NoCalls, o));
+                    .any(|(d, r)| !d.log() && r.keeps(&self.schema, &NoCalls, o));
                 if !logged && !deployed {
                     why.push(format!(
                         "revoking `{0}` from `{1}` takes the grant option of the grant of `{0}` on `{2}` that `{1}` gave to `{3}`",
@@ -230,7 +177,7 @@ impl Catalog {
             let had = stored
                 .iter()
                 .zip(&rows)
-                .any(|(s, r)| Some(s.id) == g.row && r.grant_option);
+                .any(|(s, r)| Some(s.grant.id()) == g.row && r.grant_option);
             let text = target(&into.schema, g)?;
             let new = log_grant_row(g, &text);
             if !had && closes_option_cycle(&into.schema, &NoCalls, &rows, new) {
@@ -257,7 +204,10 @@ impl Catalog {
         let codec = Codec::<RoleRow>::new(&self.schema);
         self.rows(pager, txns, hold, codec.relation())?
             .into_iter()
-            .map(|(c, row)| Ok(codec.decode(c, &row)?.into_parts()))
+            .map(|(c, row)| {
+                let (id, name, _) = codec.decode(c, &row)?.into_parts();
+                Ok((id, name))
+            })
             .collect()
     }
 
@@ -282,22 +232,11 @@ impl Catalog {
         let hold = txns.take(Scope::Every)?;
         let stored = self.stored_grants(pager, txns, &hold);
         drop(hold);
-        let shape = Shape::of(&self.schema);
-        let yes = boolean(true);
-        stored?
-            .iter()
-            .filter(|s| !s.log)
-            .map(|s| {
-                let row = shape.grant_row(&s.row, &yes)?;
-                Ok(DeployedGrant {
-                    grantee: row.grantee.to_owned(),
-                    privilege: row.privilege.to_owned(),
-                    target: row.target.map(str::to_owned),
-                    grant_option: row.grant_option,
-                    dormant: row.dormant,
-                })
-            })
-            .collect()
+        Ok(stored?
+            .into_iter()
+            .filter(|s| !s.log())
+            .map(|s| s.grant.into_deployed())
+            .collect())
     }
 
     /// Give each grant of the source the id of the `Log` row the latest commit holds for it.
@@ -312,17 +251,18 @@ impl Catalog {
         let stored = self.stored_grants(pager, txns, &hold);
         drop(hold);
         let shape = Shape::of(&self.schema);
-        for s in stored?.into_iter().filter(|s| s.log) {
+        for s in stored?.into_iter().filter(Stored::log) {
+            let id = s.grant.id();
             let at = self.source.grants.iter().position(|g| {
                 g.row.is_none()
                     && shape
-                        .log_row(&self.schema, g, s.id)
+                        .log_row(&self.schema, g, id)
                         .is_ok_and(|row| row == s.row)
             });
             let Some(at) = at else {
-                return Err(Rot::UntaggedGrant(s.id).into());
+                return Err(Rot::UntaggedGrant(id).into());
             };
-            self.source.grants[at].row = Some(s.id);
+            self.source.grants[at].row = Some(id);
         }
         Ok(())
     }
@@ -388,8 +328,11 @@ impl Catalog {
         let schema = &into.schema;
         let shape = Shape::of(schema);
         let stored = self.stored_grants(m.pager, m.txns, m.hold)?;
-        let old: BTreeMap<i64, &Stored> =
-            stored.iter().filter(|s| s.log).map(|s| (s.id, s)).collect();
+        let old: BTreeMap<i64, &Stored> = stored
+            .iter()
+            .filter(|s| s.log())
+            .map(|s| (s.grant.id(), s))
+            .collect();
         let mut kept = BTreeSet::new();
         let fresh: Vec<usize> = (0..grants.len())
             .filter(|&i| {
@@ -452,7 +395,7 @@ impl Catalog {
             .filter(|g| g.row.is_some_and(|id| kept.contains(&id)))
         {
             let s = old[&g.row.expect("a kept grant has a row")];
-            let row = shape.log_row(schema, g, s.id)?;
+            let row = shape.log_row(schema, g, s.grant.id())?;
             if row != s.row {
                 deleted.push(s.row.clone());
                 inserted.push(row);
@@ -460,13 +403,13 @@ impl Catalog {
         }
         deleted.extend(
             old.values()
-                .filter(|s| !kept.contains(&s.id))
+                .filter(|s| !kept.contains(&s.grant.id()))
                 .map(|s| s.row.clone()),
         );
         if !fresh.is_empty() {
             let floor = stored
                 .iter()
-                .map(|s| s.id)
+                .map(|s| s.grant.id())
                 .max()
                 .unwrap_or(0)
                 .checked_add(1)

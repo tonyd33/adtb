@@ -10,16 +10,17 @@ use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 use adtb_sys::lock::Lock;
 
-use crate::catalog::layout;
-use crate::exec::{self, F64, Val};
+use crate::catalog::codec::{Codec, MigrationRow};
+use crate::catalog::{self, Rot};
+use crate::exec::{self, F64};
 use crate::runtime::{Instant, Io, Op, Runtime, ThreadId};
 use crate::storage::{Pid, RetainedLog};
 use crate::write::{self, Due, Found, panic_text};
 
 use super::command::engine_relation;
-use super::micros;
 use super::settings::Settings;
 use super::verify::{Cursor, Job, Verifier};
+use super::{OpenError, corrupt, micros};
 
 /// The longest a pass runs between saves of its cursor.
 const SAVE_EVERY: Duration = Duration::from_secs(60);
@@ -74,46 +75,40 @@ fn engine_table(schema: &Schema, name: &str) -> RelId {
         .unwrap_or_else(|e| panic!("the engine declares `sys::{name}`: {e:?}"))
 }
 
-/// Returns the instant the first migration of the file was applied, if the file can say.
-fn first_migration<R: Runtime>(verifier: &Verifier<R>, schema: &Schema) -> Option<i64> {
-    let m = schema.module_named("catalog")?;
-    let Some(adtb_lang::schema::ValueDef::Relation(rel)) =
-        schema.module(m).values.get("migrations")
-    else {
-        return None;
-    };
-    let rows = verifier
+/// Returns the instant the first migration of the file was applied, none when the file holds
+/// none or its rows cannot be read.
+///
+/// Fail with `Corrupt` when a row of `catalog::migrations` is damaged.
+fn first_migration<R: Runtime>(verifier: &Verifier<R>) -> Result<Option<i64>, OpenError> {
+    let codec = Codec::<MigrationRow>::new(verifier.catalog.schema());
+    match verifier
         .catalog
-        .committed_rows(&verifier.pager, verifier.db.txns(), *rel)
-        .ok()?;
-    rows.into_iter()
-        .filter_map(|(c, row)| {
-            let fields = layout::row(schema, *rel, c);
-            fields.iter().zip(&row).find_map(|((name, t), v)| {
-                let v = exec::from_stored(&exec::conv(schema, t), v);
-                match v {
-                    Val::Instant(at) if name.as_str() == "applied" => Some(at),
-                    _ => None,
-                }
-            })
-        })
-        .min()
+        .committed(&verifier.pager, verifier.db.txns(), &codec)
+    {
+        Ok(rows) => Ok(rows.iter().map(MigrationRow::applied).min()),
+        Err(e @ catalog::Error::Corrupt(Rot::CatalogRow { .. })) => Err(corrupt(e)),
+        Err(_) => Ok(None),
+    }
 }
 
 impl<R: Runtime> Background<R> {
+    /// Returns the workers of `verifier`'s file, not yet started, counting a file with no scrub
+    /// cursor from the instant its first migration was applied.
+    ///
+    /// Fail with `Corrupt` when a row of `catalog::migrations` is damaged.
     pub(super) fn new(
         verifier: Arc<Verifier<R>>,
         schema: Arc<Schema>,
         settings: &Settings,
-    ) -> Arc<Background<R>> {
+    ) -> Result<Arc<Background<R>>, OpenError> {
         verifier.db.pacer().set(&verifier.rt, settings.budget.get());
         let wall = micros(verifier.pager.wall());
         let born = if verifier.cursor().is_some() {
             wall
         } else {
-            first_migration(&verifier, &schema).unwrap_or(wall)
+            first_migration(&verifier)?.unwrap_or(wall)
         };
-        Arc::new(Background {
+        Ok(Arc::new(Background {
             rt: verifier.rt.clone(),
             findings: engine_table(&schema, "verify_findings"),
             jobs: engine_table(&schema, "jobs"),
@@ -131,7 +126,7 @@ impl<R: Runtime> Background<R> {
                 vacuum_thread: None,
                 vacuums: true,
             }),
-        })
+        }))
     }
 
     /// Returns the workers, starting the vacuum worker only if `on`.
@@ -443,3 +438,7 @@ fn done(page: u64, end: u64) -> f64 {
 fn percent(page: u64, end: u64) -> u64 {
     page * 100 / end.max(1)
 }
+
+#[cfg(test)]
+#[path = "maintenance_tests.rs"]
+mod tests;

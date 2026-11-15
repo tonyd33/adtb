@@ -3,6 +3,7 @@ use std::sync::Arc;
 use adtb_lang::evolve::{Granted, target_covers};
 use adtb_lang::types::Ty;
 
+use crate::catalog::codec::GrantKind;
 use crate::exec::Val;
 use crate::runtime::Runtime;
 
@@ -87,12 +88,12 @@ fn holds_call<R: Runtime>(
             let row = g.target.as_deref();
             match target.function {
                 Some(id) => {
-                    g.kind == "Log"
+                    g.kind == GrantKind::Log
                         && row.and_then(|t| Granted::read_target(&e.schema, "call", t))
                             == Some(Granted::CallFn(id))
                 }
                 None => {
-                    g.kind == "Deployment"
+                    g.kind == GrantKind::Deployment
                         && target_covers(&e.schema, calls, "call", row, Some(&call))
                 }
             }

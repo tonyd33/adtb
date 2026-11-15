@@ -1113,7 +1113,7 @@ impl Catalog {
 
     /// Returns the rows of relation `r` visible at the snapshot of `hold`, each with its
     /// constructor index, by constructor and then in heap order.
-    pub fn rows<R: Runtime>(
+    fn rows<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,

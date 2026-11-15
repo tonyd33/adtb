@@ -39,11 +39,6 @@ pub enum Rot {
     KeptIndexes(Box<Broken>),
     /// A stored index does not key under the stored schema.
     IndexKeying(Box<Error>),
-    GrantField {
-        field: &'static str,
-        found: Option<Value>,
-    },
-    GrantNoId,
     /// A row of a catalog relation, `row` naming the relation and its constructor when it has one,
     /// that does not have the shape the relation declares.
     CatalogRow {
@@ -69,8 +64,6 @@ pub enum Rot {
         ctor: u32,
         fields: Vec<Value>,
     },
-    MigrationRow,
-    MigrationHash,
     NoMigration(u64),
     Exec(exec::Rot),
 }
@@ -116,8 +109,6 @@ impl fmt::Display for Rot {
             ),
             Rot::KeptIndexes(b) => write!(f, "{b}"),
             Rot::IndexKeying(e) => f.write_str(&detail(e)),
-            Rot::GrantField { field, found } => write!(f, "a grant row's {field} is {found:?}"),
-            Rot::GrantNoId => f.write_str("a grant row has no I64 id"),
             Rot::CatalogRow { row, detail } => write!(f, "a row of {row} {detail}"),
             Rot::UntaggedGrant(id) => write!(f, "grant row {id} records no grant of the log"),
             Rot::KeptRow(fields) => write!(f, "a kept row holds {fields:?}"),
@@ -147,8 +138,6 @@ impl fmt::Display for Rot {
             Rot::DeploymentRow { ctor, fields } => {
                 write!(f, "a deployment row of constructor {ctor} holds {fields:?}")
             }
-            Rot::MigrationRow => f.write_str("malformed migration row"),
-            Rot::MigrationHash => f.write_str("a migration hash must hold 32 bytes"),
             Rot::NoMigration(v) => write!(f, "missing migration {v}"),
             Rot::Exec(r) => write!(f, "{r}"),
         }

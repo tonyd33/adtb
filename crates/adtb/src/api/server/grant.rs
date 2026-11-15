@@ -12,6 +12,7 @@ use adtb_lang::parse::{Options, parse_adhoc};
 use adtb_lang::signature::{self, Ids};
 
 use crate::catalog;
+use crate::catalog::codec::GrantKind;
 use crate::runtime::Runtime;
 use crate::write::Txn;
 
@@ -444,7 +445,7 @@ impl<R: Runtime> Giving<'_, R> {
         }
         self.t.grantee(self.e, self.tx, self.grantee)?;
         let held = rows.iter().position(|g| {
-            g.kind == "Deployment"
+            g.kind == GrantKind::Deployment
                 && g.grantee == self.grantee
                 && g.grantor == self.session.name
                 && g.privilege == "call"
@@ -477,7 +478,7 @@ impl<R: Runtime> Giving<'_, R> {
     fn replace(&self, rows: &mut Vec<Grant>, i: usize, given: &Given<'_>) -> Result<(), Error> {
         let option = rows[i].grant_option || self.grant_option;
         let old = rows.remove(i);
-        let id = self.t.next_id(self.e, self.tx, self.t.grants)?;
+        let id = self.t.next_grant_id(self.e, self.tx)?;
         let new = self.t.deployment_grant(id, given, option);
         let schema = &self.e.schema;
         let uncovered: Vec<String> = rows

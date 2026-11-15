@@ -7,8 +7,8 @@ use crate::heap::FieldType;
 use crate::key::{F64, Scalar, Value};
 
 use super::super::{engine_schema, layout, row_type};
-use super::testing::{position, reread, reversed};
-use super::{Codec, Decode, RoleRow, Rot, SettingRow};
+use super::testing::{position, reread, reversed, row, tag};
+use super::{Codec, Decode, GrantKind, MigrationRow, RoleGrant, RoleRow, Rot, SettingRow};
 
 const SECOND: i64 = 1_000_000;
 
@@ -192,6 +192,7 @@ fn a_role_row_reads_by_field_name_and_one_holding_another_type_is_refused() {
         Ok(RoleRow {
             id: 3,
             name: "ops".into(),
+            created: 9,
         }),
         codec.decode(0, &row(Value::Text("ops".into())))
     );
@@ -242,7 +243,7 @@ fn a_setting_row_whose_id_is_not_its_constructors_is_refused_as_damage() {
 fn a_role_row_holding_another_type_in_a_field_no_reader_reads_is_refused() {
     let schema = engine_schema();
     let codec = Codec::<RoleRow>::new(&schema);
-    let row = super::testing::row(
+    let row = row(
         &schema,
         codec.relation(),
         0,
@@ -306,5 +307,210 @@ fn reversing_the_catalogs_sums_moves_the_constructors_of_one_line_sums() {
                 .index()
         };
         assert_ne!(at(&shipped), at(&reversed), "{id}");
+    }
+}
+
+fn some(v: Value) -> Value {
+    Value::Sum {
+        ctor: ctor::SOME,
+        fields: vec![v],
+    }
+}
+
+fn none() -> Value {
+    Value::Sum {
+        ctor: ctor::NONE,
+        fields: Vec::new(),
+    }
+}
+
+fn truth(b: bool) -> Value {
+    Value::Sum {
+        ctor: ctor::bool(b),
+        fields: Vec::new(),
+    }
+}
+
+/// Returns the stored grant row of kind `kind` in `schema`, its fields otherwise `overrides` or
+/// fixed: id 5, `read` on `target` given by `owner` to `web`, with grant option `option` and
+/// dormant as `option` is not.
+fn grant(
+    schema: &schema::Schema,
+    kind: adtb_lang::ids::CatCtorId,
+    target: Option<&str>,
+    option: bool,
+    overrides: &[(&str, Value)],
+) -> Vec<Value> {
+    let codec = Codec::<RoleGrant>::new(schema);
+    let at = (codec.relation(), position(schema, &codec, k::ROLE_GRANT));
+    let mut fields = vec![
+        ("id", Value::I64(5)),
+        ("kind", tag(schema, at, "kind", kind, Vec::new())),
+        ("privilege", Value::Text("read".into())),
+        (
+            "target",
+            target.map_or_else(none, |t| some(Value::Text(t.into()))),
+        ),
+        ("grantee", Value::Text("web".into())),
+        ("grantor", Value::Text("owner".into())),
+        ("grant_option", truth(option)),
+        ("dormant", truth(!option)),
+    ];
+    for (name, v) in overrides {
+        fields
+            .iter_mut()
+            .find(|(n, _)| n == name)
+            .expect("an override names a field")
+            .1 = v.clone();
+    }
+    row(schema, at.0, at.1, &fields)
+}
+
+#[test]
+fn a_catalog_with_its_constructors_reversed_reads_each_stored_grant_row_the_same() {
+    let (shipped, reversed) = (engine_schema(), reversed());
+    let (old, new) = (
+        Codec::<RoleGrant>::new(&shipped),
+        Codec::<RoleGrant>::new(&reversed),
+    );
+    let (was, now) = (
+        position(&shipped, &old, k::ROLE_GRANT),
+        position(&reversed, &new, k::ROLE_GRANT),
+    );
+    let kind_at = |s: &schema::Schema, r: &[Value]| {
+        let names = layout::row(s, old.relation(), 0);
+        let at = names.iter().position(|(n, _)| n == "kind").expect("a kind");
+        match &r[at] {
+            Value::Sum { ctor, .. } => *ctor,
+            other => panic!("kind holds {other:?}"),
+        }
+    };
+    let cases = [
+        (k::GRANT_LOG, Some("app::t"), true, GrantKind::Log),
+        (k::GRANT_DEPLOYMENT, None, false, GrantKind::Deployment),
+    ];
+    for (id, target, option, kind) in cases {
+        let stored = grant(&shipped, id, target, option, &[]);
+        let read = reread(
+            (&shipped, old.relation(), was),
+            (&reversed, new.relation(), now),
+            &stored,
+        );
+        let want = RoleGrant {
+            id: 5,
+            kind,
+            privilege: "read".into(),
+            target: target.map(str::to_owned),
+            grantee: "web".into(),
+            grantor: "owner".into(),
+            grant_option: option,
+            dormant: !option,
+        };
+        assert_eq!(Ok(want.clone()), old.decode(was, &stored), "{kind:?}");
+        assert_eq!(Ok(want), new.decode(now, &read), "{kind:?}");
+        assert_ne!(
+            kind_at(&shipped, &stored),
+            kind_at(&reversed, &read),
+            "{kind:?} moves"
+        );
+    }
+}
+
+#[test]
+fn a_grant_row_holding_another_type_or_constructor_is_refused_as_damage_naming_it() {
+    let schema = engine_schema();
+    let codec = Codec::<RoleGrant>::new(&schema);
+    let c = position(&schema, &codec, k::ROLE_GRANT);
+    for (field, v, text) in [
+        (
+            "target",
+            some(Value::I64(3)),
+            "a row of catalog::grants.RoleGrant holds Sum { ctor: 1, fields: [I64(3)] } in field `target`",
+        ),
+        (
+            "kind",
+            Value::Sum {
+                ctor: 2,
+                fields: Vec::new(),
+            },
+            "a row of catalog::grants.RoleGrant holds Sum { ctor: 2, fields: [] } in field `kind`",
+        ),
+        (
+            "dormant",
+            Value::I64(1),
+            "a row of catalog::grants.RoleGrant holds I64(1) in field `dormant`",
+        ),
+        (
+            "grantee",
+            Value::I64(1),
+            "a row of catalog::grants.RoleGrant holds I64(1) in field `grantee`",
+        ),
+    ] {
+        let stored = grant(&schema, k::GRANT_LOG, Some("app::t"), true, &[(field, v)]);
+        let refused = codec.decode(c, &stored).map_err(|r| r.to_string());
+        assert_eq!(Err(text.to_owned()), refused, "{field}");
+    }
+}
+
+/// Returns the stored migration row of `schema` with version `version` and hash `hash`.
+fn migration(schema: &schema::Schema, version: i64, hash: Vec<u8>) -> Vec<Value> {
+    let codec = Codec::<MigrationRow>::new(schema);
+    let c = position(schema, &codec, k::MIGRATION);
+    row(
+        schema,
+        codec.relation(),
+        c,
+        &[
+            ("version", Value::I64(version)),
+            ("hash", Value::Bytes(hash)),
+            ("text", Value::Text("create relation t".into())),
+            ("applied", Value::Instant(41)),
+        ],
+    )
+}
+
+#[test]
+fn a_migration_row_reads_its_fields_under_the_shipped_and_the_reversed_catalog() {
+    let (shipped, reversed) = (engine_schema(), reversed());
+    let (old, new) = (
+        Codec::<MigrationRow>::new(&shipped),
+        Codec::<MigrationRow>::new(&reversed),
+    );
+    let (was, now) = (
+        position(&shipped, &old, k::MIGRATION),
+        position(&reversed, &new, k::MIGRATION),
+    );
+    let stored = migration(&shipped, 3, vec![7; 32]);
+    let read = reread(
+        (&shipped, old.relation(), was),
+        (&reversed, new.relation(), now),
+        &stored,
+    );
+    let want = MigrationRow {
+        version: 3,
+        hash: [7; 32],
+        applied: 41,
+    };
+    assert_eq!(Ok(&want), old.decode(was, &stored).as_ref());
+    assert_eq!(Ok(want), new.decode(now, &read));
+}
+
+#[test]
+fn a_migration_row_with_a_short_hash_or_a_negative_version_is_refused_as_damage() {
+    let schema = engine_schema();
+    let codec = Codec::<MigrationRow>::new(&schema);
+    let c = position(&schema, &codec, k::MIGRATION);
+    for (stored, text) in [
+        (
+            migration(&schema, 3, vec![7; 31]),
+            "a row of catalog::migrations.Migration holds a hash of 31 bytes, not 32",
+        ),
+        (
+            migration(&schema, -1, vec![7; 32]),
+            "a row of catalog::migrations.Migration holds I64(-1) in field `version`",
+        ),
+    ] {
+        let refused = codec.decode(c, &stored).map_err(|r| r.to_string());
+        assert_eq!(Err(text.to_owned()), refused);
     }
 }

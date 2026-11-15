@@ -7,8 +7,8 @@ use std::time::Duration;
 use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::types::RelId;
 
+use crate::catalog::Catalog;
 use crate::catalog::codec::{Codec, SettingRow};
-use crate::catalog::{Catalog, Error};
 use crate::exec::{F64, Val};
 use crate::mvcc::Transactions;
 use crate::runtime::Runtime;
@@ -59,14 +59,7 @@ impl Settings {
     ) -> Result<Settings, OpenError> {
         let codec = Codec::<SettingRow>::new(catalog.schema());
         let mut out = Settings::default();
-        for (c, row) in catalog
-            .committed_rows(pager, txns, codec.relation())
-            .map_err(corrupt)?
-        {
-            let row = codec
-                .decode(c, &row)
-                .map_err(Error::from)
-                .map_err(corrupt)?;
+        for row in catalog.committed(pager, txns, &codec).map_err(corrupt)? {
             out.set(&row);
         }
         Ok(out)

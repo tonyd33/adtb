@@ -903,7 +903,7 @@ impl<R: Runtime> Engine<R> {
         });
         let opened = opened
             .and_then(|o| o.refusing_unapplied(unapplied))
-            .map(|opened| Engine::of(opened, opening, options));
+            .and_then(|opened| Engine::of(opened, opening, options));
         if opened.is_err() {
             pager.close();
         }
@@ -955,7 +955,13 @@ impl<R: Runtime> Engine<R> {
     }
 
     /// Returns the engine over `opened`, ending the open.
-    fn of(opened: Opened<R>, opening: Opening, options: &OpenOptions) -> Engine<R> {
+    ///
+    /// Fail with `Corrupt` when a row of `catalog::migrations` is damaged.
+    fn of(
+        opened: Opened<R>,
+        opening: Opening,
+        options: &OpenOptions,
+    ) -> Result<Engine<R>, OpenError> {
         drop(opening);
         let Opened {
             rt,
@@ -976,10 +982,10 @@ impl<R: Runtime> Engine<R> {
             fail_kept: Lock::new(None),
         });
         let background =
-            maintenance::Background::new(verifier.clone(), parts.schema.clone(), &parts.settings)
+            maintenance::Background::new(verifier.clone(), parts.schema.clone(), &parts.settings)?
                 .vacuuming(options.background_vacuum());
         let archiver = storage::Archiver::bounding(&pager, options.archive_dir());
-        Engine {
+        Ok(Engine {
             rt,
             schema: parts.schema,
             program: parts.program,
@@ -1008,7 +1014,7 @@ impl<R: Runtime> Engine<R> {
             targets: Lock::new(options.file_root.clone()),
             #[cfg(target_os = "linux")]
             held: Lock::new(None),
-        }
+        })
     }
 
     /// Returns `p`, the checked text of a call. On a database quarantined whole, fail with

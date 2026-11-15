@@ -23,6 +23,7 @@ use adtb_lang::parse::{Options, parse_adhoc};
 use adtb_lang::schema::Schema;
 use adtb_lang::span::Diag;
 
+use crate::catalog::codec::GrantKind;
 use crate::runtime::Runtime;
 
 use super::{Database, Engine, Error, OWNER_ID, OWNER_ROLE, RejectReason, TxnId};
@@ -125,7 +126,7 @@ impl<R: Runtime> RoleAuthority<R> {
             if roles.iter().any(|r| r.name == name) {
                 return Err(Error::invalid(format!("role `{name}` already exists")));
             }
-            let id = t.next_id(e, tx, t.roles)?;
+            let id = t.next_role_id(e, tx)?;
             let role = Role {
                 id: tables::RoleId(id),
                 name: name.to_owned(),
@@ -155,7 +156,7 @@ impl<R: Runtime> RoleAuthority<R> {
             let grants = t.grants(e, tx)?;
             let given: Vec<String> = grants
                 .iter()
-                .filter(|g| g.kind == "Deployment" && g.grantor == name)
+                .filter(|g| g.kind == GrantKind::Deployment && g.grantor == name)
                 .map(Grant::printed)
                 .collect();
             if !given.is_empty() {
@@ -170,10 +171,8 @@ impl<R: Runtime> RoleAuthority<R> {
                     changes.delete(t.grants, grant.value);
                 }
             }
-            for row in t.read(e, tx, t.credentials)? {
-                if t.integer(t.credentials, &row, "role")? == role.id.0 {
-                    changes.delete(t.credentials, row);
-                }
+            for row in t.credentials_of(e, tx, role.id)? {
+                changes.delete(t.credentials, row);
             }
             t.remove_peer_mappings(e, tx, changes, &name)?;
             t.audit(e, changes, OWNER_ROLE, format!("drop role {name}"))
@@ -303,7 +302,7 @@ impl<R: Runtime> RoleAuthority<R> {
                 let matching: Vec<i64> = grants
                     .iter()
                     .filter(|g| {
-                        g.kind == "Deployment"
+                        g.kind == GrantKind::Deployment
                             && g.grantee == statement.from.text
                             && (issuer == OWNER_ROLE || g.grantor == issuer)
                             && revoke.matches(&e.schema, &calls, &g.privilege, g.target.as_deref())
@@ -405,7 +404,10 @@ fn require<R: Runtime>(
 /// grant on a relation, whether or not the relation exists.
 fn refuse_relation_revoke(grants: &[Grant], issuer: &str, statement: &Revoke) -> Result<(), Error> {
     let gave = |g: &Grant| {
-        g.kind == "Deployment" && g.grantor == issuer && g.privilege != "call" && g.target.is_some()
+        g.kind == GrantKind::Deployment
+            && g.grantor == issuer
+            && g.privilege != "call"
+            && g.target.is_some()
     };
     if !statement.privileges.iter().any(grant::on_relation)
         || issuer == OWNER_ROLE

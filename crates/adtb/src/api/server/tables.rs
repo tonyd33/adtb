@@ -2,15 +2,18 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use adtb_lang::evolve::{DeployedGrant, GrantRow};
-use adtb_lang::schema::prelude::ctor;
-use adtb_lang::schema::{CtorRef, Schema, ValueDef};
+use adtb_lang::ids::{CatRelId, engine_ctor as k, engine_rel};
+use adtb_lang::schema::{CtorRef, Schema};
 use adtb_lang::textual::{Form, print};
 use adtb_lang::types::{RelId, Ty};
 
-use crate::catalog::layout;
+use crate::catalog::codec::{
+    Codec, Ctor, Decode, Field, Fields, GrantKind, RoleGrant, RoleRow, field,
+};
+use crate::catalog::{Rot, layout};
 use crate::exec::Val;
 use crate::runtime::Runtime;
-use crate::write::Txn;
+use crate::write::{self, Txn};
 
 use super::super::cause::Broken;
 use super::super::error_value::NoValue;
@@ -33,7 +36,7 @@ pub(super) struct Grant {
     pub(super) grantee: String,
     pub(super) grantor: String,
     pub(super) grant_option: bool,
-    pub(super) kind: String,
+    pub(super) kind: GrantKind,
     pub(super) privilege: String,
     pub(super) target: Option<String>,
     pub(super) dormant: bool,
@@ -54,7 +57,7 @@ impl Grant {
 
     /// Returns what the row gives its grantee, when it is a `Deployment` row.
     pub(super) fn deployed(&self) -> Option<DeployedGrant> {
-        (self.kind == "Deployment").then(|| DeployedGrant {
+        (self.kind == GrantKind::Deployment).then(|| DeployedGrant {
             grantee: self.grantee.clone(),
             privilege: self.privilege.clone(),
             target: self.target.clone(),
@@ -76,7 +79,7 @@ impl Grant {
     }
 
     pub(super) fn capability(&self, capability: Capability, name: &str) -> bool {
-        self.kind == "Deployment"
+        self.kind == GrantKind::Deployment
             && self.privilege == capability.name()
             && self.target.is_none()
             && self.grantee == name
@@ -110,7 +113,7 @@ impl<'s> Tables<'s> {
             grantee: given.grantee.to_owned(),
             grantor: given.grantor.to_owned(),
             grant_option,
-            kind: "Deployment".to_owned(),
+            kind: GrantKind::Deployment,
             privilege: given.privilege.to_owned(),
             target: given.target.map(str::to_owned),
             dormant: false,
@@ -136,7 +139,7 @@ impl<'s> Tables<'s> {
         grant_option: bool,
     ) -> Result<(), Error> {
         let held = rows.iter().position(|g| {
-            g.kind == "Deployment"
+            g.kind == GrantKind::Deployment
                 && !g.dormant
                 && g.grantee == given.grantee
                 && g.grantor == given.grantor
@@ -147,7 +150,7 @@ impl<'s> Tables<'s> {
             Some(i) if rows[i].grant_option || !grant_option => {}
             Some(i) => rows[i] = self.deployment_grant(rows[i].id, given, true),
             None => {
-                let id = self.next_id(e, tx, self.grants)?;
+                let id = self.next_grant_id(e, tx)?;
                 rows.push(self.deployment_grant(id, given, grant_option));
             }
         }
@@ -172,73 +175,46 @@ impl<'s> Tables<'s> {
     }
 
     pub(super) fn new(schema: &'s Schema, call: TxnId) -> Self {
-        let module = schema
-            .module_named("catalog")
-            .expect("the engine declares catalog");
-        let relation = |name: &str| match schema.module(module).values.get(name) {
-            Some(ValueDef::Relation(r)) => *r,
-            _ => panic!("the catalog declares relation {name}"),
+        let relation = |id: CatRelId| {
+            schema
+                .ids()
+                .relation_of(id)
+                .unwrap_or_else(|| panic!("the engine declares relation {id}"))
         };
         Tables {
             schema,
             call,
-            roles: relation("roles"),
-            grants: relation("grants"),
-            credentials: relation("credentials"),
-            peers: relation("peer_mappings"),
-            audit: relation("audit"),
+            roles: relation(engine_rel::ROLES),
+            grants: relation(engine_rel::GRANTS),
+            credentials: relation(engine_rel::CREDENTIALS),
+            peers: relation(engine_rel::PEER_MAPPINGS),
+            audit: relation(engine_rel::AUDIT),
         }
     }
 
-    pub(super) fn read<R: Runtime>(
-        &self,
-        e: &Engine<R>,
-        tx: &Txn,
-        r: RelId,
-    ) -> Result<Vec<Val>, Error> {
+    fn read<R: Runtime>(&self, e: &Engine<R>, tx: &Txn, r: RelId) -> Result<Vec<Val>, Error> {
         e.db.relation_rows(tx, r)
             .map_err(|error| e.write_error(self.call, error))
     }
 
-    fn field<'v>(&self, relation: RelId, row: &'v Val, field: &str) -> Result<&'v Val, Error> {
-        let def = self.schema.ty(self.schema.relation(relation).elem_def);
-        let Val::Ctor(c, values) = row else {
-            return Err(malformed("a catalog row is a constructor"));
-        };
-        if def.ctors().get(*c as usize).is_none() {
-            return Err(malformed("a catalog row has its declared constructor"));
-        }
-        let fields = layout::row(self.schema, relation, *c);
-        if fields.len() != values.len() {
-            return Err(malformed("a catalog row has its declared fields"));
-        }
-        let index = fields
-            .iter()
-            .position(|(name, _)| name == field)
-            .ok_or_else(|| malformed(format!("a catalog row has field `{field}`")))?;
-        Ok(&values[index])
-    }
-
-    fn text(&self, relation: RelId, row: &Val, field: &str) -> Result<String, Error> {
-        match self.field(relation, row, field)? {
-            Val::Text(text) => Ok(text.to_string()),
-            _ => Err(malformed(format!("catalog field `{field}` is Text"))),
-        }
-    }
-
-    pub(super) fn integer(&self, relation: RelId, row: &Val, field: &str) -> Result<i64, Error> {
-        match self.field(relation, row, field)? {
-            Val::Int(value) => Ok(*value),
-            _ => Err(malformed(format!(
-                "catalog field `{field}` is an integer key"
-            ))),
-        }
-    }
-
-    fn flag(&self, relation: RelId, row: &Val, field: &str) -> Result<bool, Error> {
-        self.field(relation, row, field)?
-            .truth()
-            .map_err(|_| malformed(format!("catalog field `{field}` is Bool")))
+    /// Returns each row of `codec`'s relation, read by `codec`, with its value.
+    ///
+    /// Fail with `Internal` when `codec` refuses a row, which the heap decoded by its declared type.
+    fn typed<T: Decode, R: Runtime>(
+        &self,
+        e: &Engine<R>,
+        tx: &Txn,
+        codec: &Codec<T>,
+    ) -> Result<Vec<(T, Val)>, Error> {
+        self.read(e, tx, codec.relation())?
+            .into_iter()
+            .map(|v| {
+                let row = codec.decode_val(self.schema, &v).map_err(|r: Rot| {
+                    e.write_error(self.call, write::Broken::CatalogError(r.into()).into())
+                })?;
+                Ok((row, v))
+            })
+            .collect()
     }
 
     fn row(&self, relation: RelId, ctor: CtorRef, fields: Vec<(&str, Val)>) -> Val {
@@ -260,20 +236,19 @@ impl<'s> Tables<'s> {
     }
 
     pub(super) fn roles<R: Runtime>(&self, e: &Engine<R>, tx: &Txn) -> Result<Vec<Role>, Error> {
-        self.read(e, tx, self.roles)?
-            .iter()
-            .map(|row| {
-                let created = match self.field(self.roles, row, "created")? {
-                    Val::Instant(at) => *at,
-                    _ => return Err(malformed("a role's creation time is Instant")),
-                };
-                Ok(Role {
-                    id: RoleId(self.integer(self.roles, row, "id")?),
-                    name: self.text(self.roles, row, "name")?,
+        let codec = Codec::<RoleRow>::new(self.schema);
+        Ok(self
+            .typed(e, tx, &codec)?
+            .into_iter()
+            .map(|(row, _)| {
+                let (id, name, created) = row.into_parts();
+                Role {
+                    id: RoleId(id),
+                    name,
                     created,
-                })
+                }
             })
-            .collect()
+            .collect())
     }
 
     /// Returns the name of each role, by id.
@@ -329,48 +304,25 @@ impl<'s> Tables<'s> {
     }
 
     pub(super) fn grants<R: Runtime>(&self, e: &Engine<R>, tx: &Txn) -> Result<Vec<Grant>, Error> {
-        self.read(e, tx, self.grants)?
+        let codec = Codec::<RoleGrant>::new(self.schema);
+        Ok(self
+            .typed(e, tx, &codec)?
             .into_iter()
-            .map(|row| {
-                let target = self.optional_text(self.field(self.grants, &row, "target")?)?;
-                let module = self
-                    .schema
-                    .module_named("catalog")
-                    .expect("the catalog exists");
-                let def = self
-                    .schema
-                    .ty(self.schema.module(module).types["GrantKind"]);
-                let kind = match self.field(self.grants, &row, "kind")? {
-                    Val::Ctor(c, fields) if fields.is_empty() => def.ctors().get(*c as usize),
-                    _ => None,
+            .map(|(g, value)| {
+                let row = g.row();
+                Grant {
+                    id: g.id(),
+                    grantee: row.grantee.to_owned(),
+                    grantor: row.grantor.to_owned(),
+                    grant_option: row.grant_option,
+                    kind: g.kind(),
+                    privilege: row.privilege.to_owned(),
+                    target: row.target.map(str::to_owned),
+                    dormant: row.dormant,
+                    value,
                 }
-                .ok_or_else(|| malformed("a grant kind is Log or Deployment"))?
-                .name
-                .clone();
-                Ok(Grant {
-                    id: self.integer(self.grants, &row, "id")?,
-                    grantee: self.text(self.grants, &row, "grantee")?,
-                    grantor: self.text(self.grants, &row, "grantor")?,
-                    grant_option: self.flag(self.grants, &row, "grant_option")?,
-                    dormant: self.flag(self.grants, &row, "dormant")?,
-                    privilege: self.text(self.grants, &row, "privilege")?,
-                    target,
-                    kind,
-                    value: row,
-                })
             })
-            .collect()
-    }
-
-    fn optional_text(&self, value: &Val) -> Result<Option<String>, Error> {
-        let Val::Ctor(c, fields) = value else {
-            return Err(malformed("a grant target is Option Text"));
-        };
-        match (*c, fields.as_ref()) {
-            (ctor::NONE, []) => Ok(None),
-            (ctor::SOME, [Val::Text(text)]) => Ok(Some(text.to_string())),
-            _ => Err(malformed("a grant target is Option Text")),
-        }
+            .collect())
     }
 
     pub(super) fn grant_value(
@@ -402,26 +354,55 @@ impl<'s> Tables<'s> {
         )
     }
 
-    pub(super) fn next_id<R: Runtime>(
+    /// Returns a new id of `catalog::roles`.
+    pub(super) fn next_role_id<R: Runtime>(&self, e: &Engine<R>, tx: &Txn) -> Result<i64, Error> {
+        let highest = self.roles(e, tx)?.iter().map(|r| r.id.0).max();
+        self.drawn(e, self.roles, highest)
+    }
+
+    /// Returns a new id of `catalog::grants`.
+    pub(super) fn next_grant_id<R: Runtime>(&self, e: &Engine<R>, tx: &Txn) -> Result<i64, Error> {
+        let highest = self.grants(e, tx)?.iter().map(|g| g.id).max();
+        self.drawn(e, self.grants, highest)
+    }
+
+    /// Returns a new sequence number of `catalog::audit`.
+    pub(super) fn next_seq<R: Runtime>(&self, e: &Engine<R>, tx: &Txn) -> Result<i64, Error> {
+        let codec = Codec::<AuditRow>::new(self.schema);
+        let rows = self.typed(e, tx, &codec)?;
+        let highest = rows.iter().map(|(a, _)| a.seq).max();
+        self.drawn(e, self.audit, highest)
+    }
+
+    /// Returns a new id of `relation` past `highest`, the highest it holds.
+    fn drawn<R: Runtime>(
         &self,
         e: &Engine<R>,
-        tx: &Txn,
         relation: RelId,
+        highest: Option<i64>,
     ) -> Result<i64, Error> {
-        let field = if relation == self.audit { "seq" } else { "id" };
-        let highest = self
-            .read(e, tx, relation)?
-            .iter()
-            .map(|row| self.integer(relation, row, field))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .max()
-            .unwrap_or(0);
         let floor = highest
+            .unwrap_or(0)
             .checked_add(1)
             .ok_or_else(|| Error::invalid("the deployment identity range is exhausted"))?;
         e.db.deployment_id(relation, floor)
             .map_err(|error| e.write_error(self.call, error))
+    }
+
+    /// Returns the value of each row of `catalog::credentials` of role `role`.
+    pub(super) fn credentials_of<R: Runtime>(
+        &self,
+        e: &Engine<R>,
+        tx: &Txn,
+        role: RoleId,
+    ) -> Result<Vec<Val>, Error> {
+        let codec = Codec::<CredentialRow>::new(self.schema);
+        Ok(self
+            .typed(e, tx, &codec)?
+            .into_iter()
+            .filter(|(c, _)| c.role == role.0)
+            .map(|(_, v)| v)
+            .collect())
     }
 
     pub(super) fn remove_peer_mappings<R: Runtime>(
@@ -431,8 +412,9 @@ impl<'s> Tables<'s> {
         changes: &mut Changes,
         name: &str,
     ) -> Result<(), Error> {
-        for row in self.read(e, tx, self.peers)? {
-            if self.text(self.peers, &row, "role")? == name {
+        let codec = Codec::<PeerRow>::new(self.schema);
+        for (peer, row) in self.typed(e, tx, &codec)? {
+            if peer.role == name {
                 changes.delete(self.peers, row);
             }
         }
@@ -607,6 +589,139 @@ pub(super) fn service(schema: &Schema, name: &str) -> Val {
         schema.engine_ctors().service().index(),
         vec![Val::text(name)],
     )
+}
+
+/// A row of `catalog::credentials`, read for its role.
+struct CredentialRow {
+    role: i64,
+}
+
+const CREDENTIAL: Fields = &[
+    "id",
+    "role",
+    "salt",
+    "iterations",
+    "stored_key",
+    "server_key",
+];
+const CREDENTIAL_ROLE: Field = field(CREDENTIAL, "role");
+
+impl Decode for CredentialRow {
+    const RELATION: CatRelId = engine_rel::CREDENTIALS;
+    const CTORS: &'static [Ctor<CredentialRow>] = &[Ctor::new(k::CREDENTIAL, CREDENTIAL, |r| {
+        Ok(CredentialRow {
+            role: r.int(CREDENTIAL_ROLE),
+        })
+    })];
+}
+
+/// A row of `catalog::peer_mappings`, read for its role.
+struct PeerRow {
+    role: String,
+}
+
+const PEER: Fields = &["listener", "ordinal", "pattern", "role"];
+const PEER_ROLE: Field = field(PEER, "role");
+
+impl Decode for PeerRow {
+    const RELATION: CatRelId = engine_rel::PEER_MAPPINGS;
+    const CTORS: &'static [Ctor<PeerRow>] = &[Ctor::new(k::PEER_MAPPING, PEER, |r| {
+        Ok(PeerRow {
+            role: r.text(PEER_ROLE).to_owned(),
+        })
+    })];
+}
+
+/// A row of `catalog::audit`, read for its sequence number.
+struct AuditRow {
+    seq: i64,
+}
+
+const LOGIN: Fields = &["seq", "at", "role", "principal", "source", "outcome"];
+const GRANT: Fields = &["seq", "at", "role", "principal", "statement"];
+const REGISTER: Fields = &["seq", "at", "role", "principal", "bundle", "version"];
+const RETIRE: Fields = &["seq", "at", "role", "principal", "bundle"];
+const SCHEMA_OP: Fields = &["seq", "at", "role", "principal", "version"];
+const CALL: Fields = &[
+    "seq",
+    "at",
+    "role",
+    "principal",
+    "origin",
+    "args",
+    "outcome",
+];
+const DENIED: Fields = &["seq", "at", "role", "principal", "origin"];
+const COMMIT: Fields = &[
+    "seq",
+    "at",
+    "role",
+    "principal",
+    "position",
+    "origin",
+    "changes",
+];
+const TRUNCATE: Fields = &["seq", "at", "role", "principal", "through", "digest"];
+
+const LOGIN_SEQ: Field = field(LOGIN, "seq");
+const GRANT_SEQ: Field = field(GRANT, "seq");
+const REGISTER_SEQ: Field = field(REGISTER, "seq");
+const RETIRE_SEQ: Field = field(RETIRE, "seq");
+const SCHEMA_OP_SEQ: Field = field(SCHEMA_OP, "seq");
+const CALL_SEQ: Field = field(CALL, "seq");
+const DENIED_SEQ: Field = field(DENIED, "seq");
+const COMMIT_SEQ: Field = field(COMMIT, "seq");
+const TRUNCATE_SEQ: Field = field(TRUNCATE, "seq");
+
+impl Decode for AuditRow {
+    const RELATION: CatRelId = engine_rel::AUDIT;
+    const CTORS: &'static [Ctor<AuditRow>] = &[
+        Ctor::new(k::AUDIT_LOGIN, LOGIN, |r| {
+            Ok(AuditRow {
+                seq: r.int(LOGIN_SEQ),
+            })
+        }),
+        Ctor::new(k::AUDIT_GRANT, GRANT, |r| {
+            Ok(AuditRow {
+                seq: r.int(GRANT_SEQ),
+            })
+        }),
+        Ctor::new(k::AUDIT_REGISTER, REGISTER, |r| {
+            Ok(AuditRow {
+                seq: r.int(REGISTER_SEQ),
+            })
+        }),
+        Ctor::new(k::AUDIT_RETIRE, RETIRE, |r| {
+            Ok(AuditRow {
+                seq: r.int(RETIRE_SEQ),
+            })
+        }),
+        Ctor::new(k::AUDIT_SCHEMA_OP, SCHEMA_OP, |r| {
+            Ok(AuditRow {
+                seq: r.int(SCHEMA_OP_SEQ),
+            })
+        }),
+        Ctor::new(k::AUDIT_CALL, CALL, |r| {
+            Ok(AuditRow {
+                seq: r.int(CALL_SEQ),
+            })
+        }),
+        Ctor::new(k::AUDIT_DENIED, DENIED, |r| {
+            Ok(AuditRow {
+                seq: r.int(DENIED_SEQ),
+            })
+        }),
+        Ctor::new(k::AUDIT_COMMIT, COMMIT, |r| {
+            Ok(AuditRow {
+                seq: r.int(COMMIT_SEQ),
+            })
+        }),
+        Ctor::new(k::AUDIT_TRUNCATE, TRUNCATE, |r| {
+            Ok(AuditRow {
+                seq: r.int(TRUNCATE_SEQ),
+            })
+        }),
+    ];
 }
 
 fn malformed(detail: impl Into<String>) -> Error {

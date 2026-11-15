@@ -8,7 +8,7 @@ use adtb_lang::evolve::{Code, Resolved, RowMap, Source};
 use adtb_lang::kernel;
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_migration};
-use adtb_lang::schema::{self, Schema, Stage};
+use adtb_lang::schema::{Schema, Stage};
 use adtb_lang::translate::operator_text;
 use adtb_lang::types::{RelId, Ty, TypeId};
 
@@ -21,6 +21,7 @@ use crate::runtime::Runtime;
 use crate::storage::Pager;
 
 use super::Rot;
+use super::codec::{Codec, MigrationRow};
 use super::grants::{Dormant, Grantees};
 use super::history::{Rebuilding, key_indexes};
 use super::ids::{stored, type_ctor_id};
@@ -719,22 +720,11 @@ impl Catalog {
         if self.source.version == 0 {
             return Ok([0; 32]);
         }
-        let module = self
-            .schema
-            .module_named("catalog")
-            .expect("the catalog module");
-        let schema::ValueDef::Relation(r) = self.schema.module(module).values["migrations"] else {
-            panic!("the catalog declares migrations as a relation");
-        };
-        for (_, row) in self.rows(m.pager, m.txns, m.hold, r)? {
-            let [Value::I64(version), Value::Bytes(hash), ..] = row.as_slice() else {
-                return Err(Rot::MigrationRow.into());
-            };
-            if *version == i64::try_from(self.source.version).expect("a version fits I64") {
-                return hash
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| Rot::MigrationHash.into());
+        let codec = Codec::<MigrationRow>::new(&self.schema);
+        for (c, row) in self.rows(m.pager, m.txns, m.hold, codec.relation())? {
+            let row = codec.decode(c, &row)?;
+            if row.version() == self.source.version {
+                return Ok(*row.hash());
             }
         }
         Err(Rot::NoMigration(self.source.version).into())

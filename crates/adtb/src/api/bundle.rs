@@ -399,13 +399,13 @@ fn bundle_row(r: &codec::Row<'_>) -> Result<Row, Rot> {
         k::PRIORITY_AD_HOC => exec::Priority::AdHoc,
         k::PRIORITY_BACKGROUND => exec::Priority::Background,
         k::PRIORITY_REGULAR => exec::Priority::Regular,
-        other => unlisted(other),
+        other => codec::unlisted(other),
     };
     let state = match r.ctor(STATE) {
         (k::BUNDLE_ACTIVE, _) => State::Active,
         (k::BUNDLE_SUPERSEDED, at) => State::Superseded(codec::payload_instant(at)),
         (k::BUNDLE_RETIRED, at) => State::Retired(codec::payload_instant(at)),
-        (other, _) => unlisted(other),
+        (other, _) => codec::unlisted(other),
     };
     Ok(Row {
         id: r.int(BUNDLE_ID),
@@ -426,11 +426,6 @@ fn bundle_row(r: &codec::Row<'_>) -> Result<Row, Rot> {
         state,
         latched: false,
     })
-}
-
-/// Abort on nested constructor `id` its `Sum` does not list, which `Codec::new` rules out.
-fn unlisted(id: CatCtorId) -> ! {
-    panic!("Codec::new checks constructor {id} is listed by its Sum")
 }
 
 /// A row of `catalog::registered`: a call with its row id and its bundle's id.

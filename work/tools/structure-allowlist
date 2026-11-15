@@ -77,16 +77,6 @@
 #                     earlier statement, an argument naming one after a `)`, a closure with a block
 #                     in the receiver chain, and pairing without `zip` (index arithmetic,
 #                     `enumerate` into another vector). No line allows one.
-# catalog_row_fields: in production sources of crates/adtb/src/api and crates/adtb/src/catalog
-#                     outside catalog/codec.rs and api/verify.rs, a field of a catalog row read
-#                     by its name or position by hand: `at("..")`, `field(schema, r, row, "..")`,
-#                     `t.text(t.r, &row, "..")` and its kin, `f.get("..")`, `text("..")`,
-#                     `number("..")`, `some("..")`, a name found by `position`, `fields.get(N)`,
-#                     `row.get(name|id|kind)`, a slice pattern over a migrations row.
-# catalog_row_ctors:  in the same sources, a constructor of a catalog row told by its name:
-#                     `self.ctor_name(`, a match arm on a constructor name (`("Active", ..) =>`,
-#                     `"Query" =>`, `"A" | "B"`), `priority(&ctor)`, `types["Type"]`, and
-#                     `tag(&self.schema, ..)` compared against a row.
 # sim_test_opens:     in crates/adtb-sim/tests and adtb's unit-test files (`tests.rs`,
 #                     `*_tests.rs`, `tests/`, `test_world/`), by name: a function taking
 #                     parameters whose name begins with `open`, `opened`, `opens`, `opening` or a
@@ -402,11 +392,3 @@ prelude_positions prod 1 crates/adtb/src/exec/prim/mod.rs
 prelude_positions prod 1 crates/adtb/src/exec/store.rs
 prelude_positions prod 1 crates/adtb/src/write/eval.rs
 prelude_positions prod 1 crates/adtb/src/write/past.rs
-catalog_row_fields prod 11 crates/adtb/src/api/dump.rs
-catalog_row_fields prod 1 crates/adtb/src/api/maintenance.rs
-catalog_row_fields prod 1 crates/adtb/src/api/server/mod.rs
-catalog_row_fields prod 13 crates/adtb/src/api/server/tables.rs
-catalog_row_fields prod 1 crates/adtb/src/catalog/migration.rs
-catalog_row_fields prod 8 crates/adtb/src/catalog/grants.rs
-catalog_row_ctors prod 1 crates/adtb/src/api/server/tables.rs
-catalog_row_ctors prod 1 crates/adtb/src/catalog/grants.rs

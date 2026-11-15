@@ -8,9 +8,11 @@ use adtb_lang::schema::{Generator, Schema};
 use adtb_lang::textual::{Form, Header, print, read_document};
 use adtb_lang::types::{RelId, Ty};
 
-use crate::catalog::codec::{self, Codec, Ctor, Decode, Field, Fields};
+use crate::catalog::codec::{
+    self, Codec, Ctor, Decode, Field, Fields, GrantKind, RoleGrant, RoleRow,
+};
 use crate::catalog::{
-    self, Deployed, Dormant, Fact, Mark, OWNER_ROLE, Origin, Rot, arrows, layout, values,
+    self, Deployed, Dormant, Fact, Mark, OWNER_ROLE, Origin, Rot, arrows, values,
 };
 use crate::exec::Val;
 use crate::runtime::Runtime;
@@ -126,23 +128,6 @@ fn generated(schema: &Schema, secured: bool) -> Vec<RelId> {
     }
     out.sort();
     out
-}
-
-/// Returns field `name` of `row`, a row of `r`.
-fn field<'v>(schema: &Schema, r: RelId, row: &'v Val, name: &str) -> Option<&'v Val> {
-    let Val::Ctor(c, fields) = row else {
-        return None;
-    };
-    let at = layout::row(schema, r, *c)
-        .iter()
-        .position(|(n, _)| n == name)?;
-    fields.get(at)
-}
-
-/// Returns whether `row` of `catalog::grants` is a `Deployment` row.
-fn deployment(schema: &Schema, grants: RelId, row: &Val) -> bool {
-    let kind = schema.engine_ctors().deployment().index();
-    matches!(field(schema, grants, row, "kind"), Some(Val::Ctor(c, _)) if *c == kind)
 }
 
 /// Returns the rows of `r` as a document: `head`, a `data` line naming `r` with its module, then
@@ -511,7 +496,7 @@ fn data_name(schema: &Schema, r: RelId, ctor: u32, form: &str) -> String {
 fn ctor_of(v: &Val) -> u32 {
     match v {
         Val::Ctor(c, _) => *c,
-        _ => 0,
+        _ => panic!("a row of a relation is a value of a constructor of its sum: {v:?}"),
     }
 }
 
@@ -553,20 +538,23 @@ impl<R: Runtime> Engine<R> {
         self.admit_dump().map_err(Refusal::own)?;
         let envelope = self.envelope();
         let failed = |e| self.met(id, e);
+        let broken = |r: Rot| failed(write::Error::from(write::Broken::CatalogError(r.into())));
         let rows = |r| self.db.relation_rows(tx, r).map_err(failed);
         let schema = &*self.schema;
-        let grants = values::relation(schema, "grants");
+        let grants = Codec::<RoleGrant>::new(schema);
+        let (mut logged, mut given) = (BTreeSet::new(), BTreeSet::new());
+        for g in rows(grants.relation())? {
+            match grants.decode_val(schema, &g).map_err(broken)?.kind() {
+                GrantKind::Log => logged.insert(g),
+                GrantKind::Deployment => given.insert(g),
+            };
+        }
         let mut ids = rows_of(schema, &KEYED, rows)?;
-        let mut logged: BTreeSet<Val> = rows(grants)?.into_iter().collect();
-        logged.retain(|g| !deployment(schema, grants, g));
-        ids.insert(grants, logged);
+        ids.insert(grants.relation(), logged);
         let mut sections = vec![(IDS, ids)];
         if secured {
             let mut security = rows_of(schema, &SECURED, rows)?;
-            security
-                .entry(grants)
-                .or_default()
-                .retain(|g| deployment(schema, grants, g));
+            security.insert(grants.relation(), given);
             sections.push((SECURITY, security));
         }
         sections.push((SETTINGS, rows_of(schema, &[SETTINGS], rows)?));
@@ -585,8 +573,7 @@ impl<R: Runtime> Engine<R> {
         let deployed = self.db.deployed(tx, &self.deployment);
         let deployed = deployed.map_err(|e| self.met(id, e.into()))?;
         let bundled = rows_of(schema, &BUNDLED, rows)?;
-        let bundles = bundle_entries(&envelope, schema, &bundled, &deployed)
-            .map_err(|r| failed(write::Error::from(write::Broken::CatalogError(r.into()))))?;
+        let bundles = bundle_entries(&envelope, schema, &bundled, &deployed).map_err(broken)?;
         entries.extend(bundles);
         let mut streams = Vec::new();
         for r in dumped(schema) {
@@ -657,14 +644,8 @@ pub(super) fn restore_dump<R: Runtime>(
     let security = entries
         .get(SECURITY)
         .map(|_| security_rows(&schema, entry(SECURITY)?, e));
-    let security = security.transpose()?.unwrap_or_default();
-    let roles = values::relation(&schema, "roles");
-    let ids = security.get(&roles).into_iter().flatten();
-    let ids = ids.filter_map(|r| match field(&schema, roles, r, "id") {
-        Some(Val::Int(id)) => Some(*id),
-        _ => None,
-    });
-    let roles = ids.chain([OWNER_ID]).collect();
+    let (security, ids) = security.transpose()?.unwrap_or_default();
+    let roles = ids.into_iter().chain([OWNER_ID]).collect();
     let (bundled, facts) = read_bundles(&schema, e, &roles, entry, entries.keys())?;
     let deployed = section(SETTINGS, &[SETTINGS])?.into_iter();
     let deployed = deployed
@@ -672,14 +653,13 @@ pub(super) fn restore_dump<R: Runtime>(
         .chain(bundled)
         .collect();
     let mut ids = section(IDS, &[&KEYED[..], &["grants"]].concat())?;
-    let grants = values::relation(&schema, "grants");
-    let logged = ids.remove(&grants).unwrap_or_default();
-    let key = |g| dormant_grant(&schema, grants, g).map(|d| (d.grantee, d.privilege, d.target));
-    let held = logged
-        .iter()
-        .filter(|g| dormant(&schema, grants, g))
-        .map(key);
-    let held = held.collect::<Option<_>>().ok_or_else(|| damaged(IDS))?;
+    let grants = Codec::<RoleGrant>::new(&schema);
+    let logged = ids.remove(&grants.relation()).unwrap_or_default();
+    let held = dormant_grants(&schema, &grants, &logged).ok_or_else(|| damaged(IDS))?;
+    let held = held
+        .into_iter()
+        .map(|d| (d.grantee, d.privilege, d.target))
+        .collect();
     let parsed = Parsed {
         schema,
         ids,
@@ -735,26 +715,36 @@ pub(super) fn restore_dump<R: Runtime>(
 }
 
 /// Returns the rows of `text`, a `security` entry, by relation of `schema`, the schema of a file
-/// holding no migration.
+/// holding no migration, with the id of each role.
 ///
-/// Fail with `DumpDamaged` naming `security` when its schema owner has another name, or its
-/// grants hold a row of the log.
-fn security_rows(schema: &Schema, text: &str, e: &Envelope) -> Result<Rows, Error> {
+/// Fail with `DumpDamaged` naming `security` when a role or grant row is not one, its schema
+/// owner has another name, or its grants hold a row of the log.
+fn security_rows(schema: &Schema, text: &str, e: &Envelope) -> Result<(Rows, Vec<i64>), Error> {
     let rows = read_sections(schema, text, e, &SECURED).ok_or_else(|| damaged(SECURITY))?;
-    let [roles, grants] = [
-        values::relation(schema, "roles"),
-        values::relation(schema, "grants"),
-    ];
-    let owner = rows[&roles]
+    let (roles, grants) = (
+        Codec::<RoleRow>::new(schema),
+        Codec::<RoleGrant>::new(schema),
+    );
+    let roles = decoded(schema, &roles, &rows).map_err(|_| damaged(SECURITY))?;
+    let grants = decoded(schema, &grants, &rows).map_err(|_| damaged(SECURITY))?;
+    let roles: Vec<(i64, String)> = roles
+        .into_iter()
+        .map(|(r, _)| {
+            let (id, name, _) = r.into_parts();
+            (id, name)
+        })
+        .collect();
+    let owned = roles
         .iter()
-        .find(|r| matches!(field(schema, roles, r, "id"), Some(Val::Int(OWNER_ID))));
-    let named = owner.and_then(|r| field(schema, roles, r, "name"));
-    if !matches!(named, Some(Val::Text(n)) if &**n == OWNER_ROLE)
-        || !rows[&grants].iter().all(|g| deployment(schema, grants, g))
+        .any(|(id, name)| *id == OWNER_ID && name == OWNER_ROLE);
+    if !owned
+        || grants
+            .iter()
+            .any(|(g, _)| g.kind() != GrantKind::Deployment)
     {
         return Err(damaged(SECURITY));
     }
-    Ok(rows)
+    Ok((rows, roles.into_iter().map(|(id, _)| id).collect()))
 }
 
 impl<R: Runtime> Engine<R> {
@@ -855,8 +845,9 @@ fn fill<R: Runtime>(
             .flatten()
             .collect::<Result<Vec<Val>, Error>>()
     };
-    let grants = values::relation(schema, "grants");
-    let kept = paired(schema, grants, read(grants)?, parsed.logged).ok_or_else(|| damaged(IDS))?;
+    let codec = Codec::<RoleGrant>::new(schema);
+    let grants = codec.relation();
+    let kept = paired(schema, &codec, read(grants)?, parsed.logged).ok_or_else(|| damaged(IDS))?;
     if on(&parsed.schema, schema, parsed.ids) != rows_of(schema, &KEYED, read)? {
         return Err(damaged(IDS));
     }
@@ -885,11 +876,7 @@ fn fill<R: Runtime>(
     restoring
         .validate(&dumped(schema).collect::<Vec<_>>())
         .map_err(failed)?;
-    let dormant = deployed[&grants]
-        .iter()
-        .filter(|g| dormant(schema, grants, g))
-        .map(|g| dormant_grant(schema, grants, g).ok_or_else(|| damaged(IDS)))
-        .collect::<Result<_, _>>()?;
+    let dormant = dormant_grants(schema, &codec, &deployed[&grants]).ok_or_else(|| damaged(IDS))?;
     engine.replace_rows(deployed, &parsed.facts)?;
     for (r, next) in resumed {
         engine
@@ -902,51 +889,30 @@ fn fill<R: Runtime>(
 
 /// Returns the rows of `catalog::grants`, `replayed` with each of its `Log` rows given the id of
 /// the row of `logged` that differs from it only in id and, when the replayed row is dormant, in
-/// dormancy, or `None` when the two do not pair.
+/// dormancy, or `None` when the two do not pair or `codec` refuses a row.
 fn paired(
     schema: &Schema,
-    grants: RelId,
+    codec: &Codec<RoleGrant>,
     replayed: Vec<Val>,
-    mut logged: BTreeSet<Val>,
+    logged: BTreeSet<Val>,
 ) -> Option<BTreeSet<Val>> {
-    let fields = layout::row(schema, grants, 0);
-    let at = |name: &str| fields.iter().position(|(n, _)| n == name);
-    let (id, sleeps) = (at("id")?, at("dormant")?);
-    let with = |row: &Val, value: Option<&Val>| match row {
-        Val::Ctor(c, fields) => {
-            let mut fields = fields.to_vec();
-            fields[id] = value.map_or(Val::Int(0), Val::clone);
-            if value.is_none() {
-                fields[sleeps] = Val::Int(0);
-            }
-            Some(Val::ctor(*c, fields))
-        }
-        _ => None,
-    };
+    let read = |v: &Val| codec.decode_val(schema, v).ok();
+    let mut logged: Vec<RoleGrant> = logged.iter().map(read).collect::<Option<_>>()?;
     let mut out = BTreeSet::new();
     for row in replayed {
-        if deployment(schema, grants, &row) {
+        let g = read(&row)?;
+        if g.kind() == GrantKind::Deployment {
             out.insert(row);
             continue;
         }
-        let pair = with(&row, None)?;
-        let from = logged
-            .iter()
-            .find(|d| with(d, None).as_ref() == Some(&pair))
-            .filter(|d| !dormant(schema, grants, d) || dormant(schema, grants, &row))?
-            .clone();
-        logged.remove(&from);
-        out.insert(with(&row, field(schema, grants, &from, "id"))?);
+        let at = logged.iter().position(|d| d.pairs(&g))?;
+        if logged[at].row().dormant && !g.row().dormant {
+            return None;
+        }
+        let from = logged.remove(at);
+        out.insert(RoleGrant::keyed(codec, &row, from.id()));
     }
     logged.is_empty().then_some(out)
-}
-
-/// Returns whether `row` of `catalog::grants` is dormant.
-fn dormant(schema: &Schema, grants: RelId, row: &Val) -> bool {
-    matches!(
-        field(schema, grants, row, "dormant").map(Val::truth),
-        Some(Ok(true))
-    )
 }
 
 /// Returns `rows`, rows of catalog relations of `from`, by the relations of `to` of those names.
@@ -964,26 +930,25 @@ struct Parsed {
     facts: Vec<Fact>,
 }
 
-/// Returns the dormant `Log` row `row` of `catalog::grants` as a restore reports it.
-fn dormant_grant(schema: &Schema, grants: RelId, row: &Val) -> Option<Dormant> {
-    let text = |name: &str| match field(schema, grants, row, name)? {
-        Val::Text(t) => Some(t.to_string()),
-        _ => None,
-    };
-    let target = match field(schema, grants, row, "target")? {
-        Val::Ctor(_, value) => match value.first() {
-            Some(Val::Text(t)) => t.to_string(),
-            _ => String::new(),
-        },
-        _ => return None,
-    };
-    let Val::Int(id) = field(schema, grants, row, "id")? else {
-        return None;
-    };
-    Some(Dormant {
-        id: *id,
-        grantee: text("grantee")?,
-        privilege: text("privilege")?,
-        target,
-    })
+/// Returns each dormant row of `rows`, rows of `catalog::grants`, as a restore reports it, or
+/// `None` when `codec` refuses a row or a dormant row has no target.
+fn dormant_grants(
+    schema: &Schema,
+    codec: &Codec<RoleGrant>,
+    rows: &BTreeSet<Val>,
+) -> Option<Vec<Dormant>> {
+    let mut out = Vec::new();
+    for v in rows {
+        let g = codec.decode_val(schema, v).ok()?;
+        let row = g.row();
+        if row.dormant {
+            out.push(Dormant {
+                id: g.id(),
+                grantee: row.grantee.to_owned(),
+                privilege: row.privilege.to_owned(),
+                target: row.target?.to_owned(),
+            });
+        }
+    }
+    Some(out)
 }

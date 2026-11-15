@@ -9,6 +9,7 @@ use adtb_lang::permission::{self, EffectiveGrants, Mode, Nameable, Requirement, 
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{ConstraintIdx, FnId, RelId};
 
+use crate::catalog::codec::GrantKind;
 use crate::runtime::Runtime;
 use crate::write;
 
@@ -214,7 +215,9 @@ impl Holds {
 fn granted_calls<R: Runtime>(e: &Engine<R>, name: &str, grants: &[Grant]) -> BTreeSet<FnId> {
     grants
         .iter()
-        .filter(|g| g.grantee == name && g.privilege == "call" && !g.dormant && g.kind == "Log")
+        .filter(|g| {
+            g.grantee == name && g.privilege == "call" && !g.dormant && g.kind == GrantKind::Log
+        })
         .filter_map(
             |g| match Granted::read_target(&e.schema, "call", g.target.as_deref()?) {
                 Some(Granted::CallFn(id)) => {
